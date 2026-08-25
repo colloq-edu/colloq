@@ -1,0 +1,7 @@
+jupyter-server>=2.14,<3
+ipykernel>=6.29
+numpy>=1.26
+pandas>=2.2
+matplotlib>=3.8
+scikit-learn>=1.4
+requests>=2.32

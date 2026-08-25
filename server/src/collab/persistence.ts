@@ -1,0 +1,191 @@
+import * as Y from 'yjs'
+import { config } from '../config.js'
+import { getSession, loadDocSnapshot, saveDocSnapshot } from '../db.js'
+
+/**
+ * Durability for session documents.
+ *
+ * We store one whole-document snapshot per session rather than an update log:
+ * a seminar notebook is small, and a single row makes recovery trivial — the
+ * process can be restarted mid-class and every notebook comes back intact.
+ *
+ * Writes are debounced because typing emits an update per keystroke, and the
+ * debounce is capped because a lecturer who types for a solid minute must still
+ * never have more than MAX_DEFER_MS of work exposed to a crash.
+ *
+ * A snapshot is also what makes a late joiner fast, so the cap is a promise:
+ * everything below only decides *when* inside that window to spend the encode,
+ * never whether the promise holds.
+ */
+
+/** Hard ceiling on how old the oldest unsaved edit may get. */
+const MAX_DEFER_MS = 15_000
+
+/** Marks our own writes back into the doc so they don't schedule a re-save. */
+const ORIGIN = 'persistence'
+
+/** Below this the encode is too cheap to be worth deferring. */
+const BACKOFF_FROM_BYTES = 128 * 1024
+
+/** Snapshot timings, for the seminar that has quietly grown a 4 MB notebook. */
+const DEBUG =
+  (process.env.DEBUG ?? '').includes('colloq') || (process.env.LOG_LEVEL ?? '') === 'debug'
+
+interface Binding {
+  sessionId: string
+  doc: Y.Doc
+  onUpdate: (update: Uint8Array, origin: unknown, doc: Y.Doc, tr: Y.Transaction) => void
+  timer: NodeJS.Timeout | null
+  /** Timestamp of the oldest unsaved edit; 0 means the doc is clean. */
+  dirtySince: number
+  /** State of the stored snapshot: what was in it, and how big it was. */
+  savedVector: Uint8Array | null
+  savedBytes: number
+  /** Transactions that deleted something, here and as of the last snapshot. */
+  deletions: number
+  savedDeletions: number
+}
+
+const bindings = new Map<string, Binding>()
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
+/**
+ * How long an idle-but-dirty doc may wait. Encoding a large notebook is
+ * milliseconds of event loop that every keystroke in the room queues behind, so
+ * a big doc drifts toward the ceiling instead of paying that every few seconds.
+ */
+function intervalFor(bytes: number): number {
+  if (bytes <= BACKOFF_FROM_BYTES) return config.snapshotIntervalMs
+  return Math.min(Math.round(config.snapshotIntervalMs * (bytes / BACKOFF_FROM_BYTES)), MAX_DEFER_MS)
+}
+
+function write(binding: Binding): void {
+  if (binding.timer) {
+    clearTimeout(binding.timer)
+    binding.timer = null
+  }
+  if (binding.dirtySince === 0) return
+  binding.dirtySince = 0
+
+  // The last word on a deleted seminar. Anything still holding this document —
+  // a kernel shutting down, a socket that has not noticed yet — would otherwise
+  // put the room back on disk seconds after the owner destroyed it, and a
+  // snapshot with no session row is a file nobody can reach or remove.
+  if (!getSession(binding.sessionId)) return
+
+  // Two questions, because Yjs answers "what changed?" in two places: inserts
+  // advance a client's clock and show up in the state vector, deletions never
+  // do — they only add ranges to the delete set. Skipping on the vector alone
+  // would silently drop a deleted cell from the snapshot.
+  const vector = Y.encodeStateVector(binding.doc)
+  if (
+    binding.savedVector &&
+    binding.deletions === binding.savedDeletions &&
+    sameBytes(vector, binding.savedVector)
+  ) {
+    return
+  }
+
+  try {
+    const began = process.hrtime.bigint()
+    const update = Y.encodeStateAsUpdate(binding.doc)
+    saveDocSnapshot(binding.sessionId, update)
+    binding.savedVector = vector
+    binding.savedDeletions = binding.deletions
+    binding.savedBytes = update.byteLength
+    if (DEBUG) {
+      const ms = Number(process.hrtime.bigint() - began) / 1e6
+      console.debug(
+        `[persistence] ${binding.sessionId} snapshot ${update.byteLength}B in ${ms.toFixed(1)}ms`,
+      )
+    }
+  } catch (err) {
+    // Losing a snapshot must not take the live session down with it.
+    console.error(`[persistence] snapshot failed for ${binding.sessionId}`, err)
+  }
+}
+
+function schedule(binding: Binding): void {
+  const now = Date.now()
+  if (binding.dirtySince === 0) binding.dirtySince = now
+  const deadline = binding.dirtySince + MAX_DEFER_MS
+  // The deadline is measured from the oldest unsaved edit and clamps the
+  // backoff, so a bigger notebook waits longer but never past the ceiling.
+  const delay = Math.max(0, Math.min(intervalFor(binding.savedBytes), deadline - now))
+  if (binding.timer) clearTimeout(binding.timer)
+  binding.timer = setTimeout(() => write(binding), delay)
+}
+
+/**
+ * Hydrate `doc` from its stored snapshot and keep writing it back as it changes.
+ * Returns a disposer that flushes synchronously and stops observing.
+ */
+export function bindPersistence(sessionId: string, doc: Y.Doc): () => void {
+  const previous = bindings.get(sessionId)
+  if (previous) {
+    write(previous)
+    previous.doc.off('update', previous.onUpdate)
+    bindings.delete(sessionId)
+  }
+
+  const binding: Binding = {
+    sessionId,
+    doc,
+    onUpdate: () => {},
+    timer: null,
+    dirtySince: 0,
+    savedVector: null,
+    savedBytes: 0,
+    deletions: 0,
+    savedDeletions: 0,
+  }
+  binding.onUpdate = (_update: Uint8Array, origin: unknown, _doc: Y.Doc, tr: Y.Transaction) => {
+    if (origin === ORIGIN) return
+    if (tr.deleteSet.clients.size > 0) binding.deletions++
+    schedule(binding)
+  }
+
+  const snapshot = loadDocSnapshot(sessionId)
+  if (snapshot) {
+    Y.applyUpdate(doc, snapshot, ORIGIN)
+    // Read the vector out of the stored bytes, not out of the doc: this has to
+    // describe what is on disk. If the doc were handed to us with content the
+    // snapshot never had, the two differ and the next edit writes, as it must.
+    binding.savedVector = Y.encodeStateVectorFromUpdate(snapshot)
+    binding.savedBytes = snapshot.byteLength
+  }
+
+  doc.on('update', binding.onUpdate)
+  bindings.set(sessionId, binding)
+
+  return () => {
+    if (bindings.get(sessionId) !== binding) return
+    bindings.delete(sessionId)
+    doc.off('update', binding.onUpdate)
+    write(binding)
+  }
+}
+
+/**
+ * Stop persisting a session and write nothing — the opposite of the disposer
+ * above, which flushes on its way out. The only caller is a seminar being
+ * deleted: flushing there would write a snapshot row for a room that no longer
+ * exists, which is exactly the state the delete was for.
+ */
+export function discardPersistence(sessionId: string): void {
+  const binding = bindings.get(sessionId)
+  if (!binding) return
+  bindings.delete(sessionId)
+  if (binding.timer) clearTimeout(binding.timer)
+  binding.doc.off('update', binding.onUpdate)
+}
+
+/** Last-chance save for every live document, called on shutdown. */
+export function flushAllPersistence(): void {
+  for (const binding of bindings.values()) write(binding)
+}

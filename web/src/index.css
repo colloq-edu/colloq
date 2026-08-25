@@ -1,0 +1,394 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * HSE palette. The brand hues are identical in both themes; only the ground,
+ * the ink and the primary action flip.
+ *
+ * Bare :root carries the LIGHT set, so a document that never runs JS still has
+ * a complete palette. Dark arrives either from the OS preference or from an
+ * explicit choice — the media query below excludes [data-theme="light"] rather
+ * than standing alone, so an explicit choice wins in either direction.
+ */
+:root {
+  /* Brand — identical in both themes. */
+  --brand: 15 45 105;
+  --brand-2: 55 75 155;
+  --accent: 15 160 215;
+
+  --canvas: 255 255 255;
+  --surface: 243 246 251;
+  --raised: 231 238 249;
+  --sunken: 243 246 251;
+  --line: 220 227 239;
+  --line-soft: 233 238 247;
+  --ink: 16 26 51;
+  --muted: 93 107 138;
+  /* Lifted from 138 147 168, which scored 2.84 on surface and 2.64 on raised —
+     below even the 3:1 large-text floor. Faint now clears 3:1 on every ground,
+     and the rule that goes with it: faint never carries information. Anything
+     that must be read uses muted, which passes AA on all three. */
+  --faint: 124 134 153;
+  /* Dark, not white: `accent` is the same bright cyan in both themes, so the
+     ink that reads on it is the same too. White on #0FA0D7 is 2.99:1. */
+  --accent-ink: 6 32 58;
+
+  /* The bright accent scores 2.99 on white — it cannot be text here. It keeps
+     every non-text job (dots, fills, the running rule); this is what type uses. */
+  --accent-text: 10 110 150;
+
+  /* Cyan on white is too thin to carry a primary action, so the brand does. */
+  --primary: 15 45 105;
+  --primary-ink: 255 255 255;
+
+  /* Darkened just far enough to clear AA on raised, where they are set at
+     10-11px and the 3:1 large-text allowance does not apply. */
+  --positive: 12 122 100;
+  --warning: 155 90 8;
+  --danger: 212 22 47;
+
+  --select: rgb(var(--brand) / 0.14);
+  --ring: rgb(var(--accent) / 0.28);
+  --edit-line: rgb(var(--raised) / 0.75);
+  /* A navy-tinted shadow reads as depth on white; neutral black reads as dirt. */
+  --shadow-color: 15 45 105;
+  --shadow-pop: 0.18;
+
+  /*
+   * Two speeds, and no third. --speed-quick is feedback that has to feel like
+   * the click itself: hover, focus, selection. --speed-regular is something
+   * arriving or leaving, where the eye needs to follow it somewhere.
+   *
+   * Both are theme-independent, so they are defined here and nowhere else.
+   * Only transform and opacity are allowed to travel between two values —
+   * anything that animates geometry or a shadow costs layout or a full repaint
+   * on every frame, which is a fraction of the frame budget spent on nothing.
+   */
+  --speed-quick: 0.1s;
+  --speed-regular: 0.25s;
+
+  color-scheme: light;
+}
+
+/* Something arriving: a peer stepping into your cell, a status settling. */
+@keyframes colloq-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Keep the two dark blocks below in sync — CSS cannot share one token set
+   between a media query and a plain selector. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --canvas: 6 12 28;
+    --surface: 10 19 48;
+    --raised: 14 27 61;
+    --sunken: 6 12 28;
+    --line: 22 36 75;
+    --line-soft: 16 25 58;
+    --ink: 230 231 232;
+    --muted: 155 166 190;
+    --faint: 94 107 133;
+    --accent-ink: 6 32 58;
+
+    --primary: 15 160 215;
+    --primary-ink: 6 32 58;
+
+    --positive: 62 201 167;
+    --warning: 242 163 60;
+    /* On navy the accent is already 6.53:1, so text and signal can be one colour. */
+    --accent-text: 15 160 215;
+    --danger: 242 73 95;
+
+    --select: rgb(var(--accent) / 0.32);
+    --ring: rgb(var(--accent) / 0.2);
+    --edit-line: rgb(var(--raised) / 0.5);
+    --shadow-color: 0 0 0;
+    --shadow-pop: 0.6;
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --canvas: 6 12 28;
+  --surface: 10 19 48;
+  --raised: 14 27 61;
+  --sunken: 6 12 28;
+  --line: 22 36 75;
+  --line-soft: 16 25 58;
+  --ink: 230 231 232;
+  --muted: 155 166 190;
+  --faint: 94 107 133;
+  --accent-ink: 6 32 58;
+
+  --primary: 15 160 215;
+  --primary-ink: 6 32 58;
+
+  --positive: 62 201 167;
+  --warning: 242 163 60;
+  --accent-text: 15 160 215;
+  --danger: 242 73 95;
+
+  --select: rgb(var(--accent) / 0.32);
+  --ring: rgb(var(--accent) / 0.2);
+  --edit-line: rgb(var(--raised) / 0.5);
+  --shadow-color: 0 0 0;
+  --shadow-pop: 0.6;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    border-color: rgb(var(--line));
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    scrollbar-color: rgb(var(--line)) transparent;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overscroll-behavior: none;
+  }
+
+  ::selection {
+    background: var(--select);
+  }
+
+  /* Keyboard-only fallback. Components that draw their own ring opt out with
+     Tailwind's outline-none, which lives in a later layer and therefore wins. */
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--line));
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--faint));
+    background-clip: content-box;
+  }
+
+  input,
+  textarea,
+  button {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-1.5 px-3 py-1.5
+           text-ui font-medium disabled:cursor-not-allowed disabled:opacity-40;
+    transition-property: color, background-color, border-color;
+    transition-duration: var(--speed-quick);
+    transition-timing-function: ease;
+  }
+  .btn-primary {
+    @apply btn bg-primary text-primary-ink hover:brightness-110 active:brightness-95;
+  }
+  .btn-ghost {
+    @apply btn text-muted hover:bg-raised hover:text-ink;
+  }
+  .btn-outline {
+    @apply btn border border-line bg-surface text-ink hover:border-faint hover:bg-raised;
+  }
+  .field {
+    @apply w-full border border-line bg-surface px-3 py-2 text-ui text-ink
+           placeholder:text-faint;
+    transition: border-color var(--speed-quick) ease;
+  }
+  /* Hand-rolled rather than focus:ring-*, because the halo needs a different
+     alpha per theme to stay visible on white and stay quiet on navy. The halo
+     itself lands at once: a box-shadow cannot be composited, so animating it
+     repaints the field on every frame of the fade. */
+  .field:focus {
+    outline: none;
+    border-color: rgb(var(--accent));
+    box-shadow: 0 0 0 4px var(--ring);
+  }
+  .panel {
+    @apply flex min-h-0 flex-col bg-surface;
+  }
+  .panel-title {
+    @apply px-3 pb-1.5 pt-3 text-2xs font-bold uppercase tracking-section text-faint;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 px-1.5 py-0.5 text-2xs font-medium;
+  }
+  .enter {
+    animation: colloq-enter var(--speed-regular) ease-out;
+  }
+}
+
+/* ------------------------------------------------------------- CodeMirror */
+/* Chrome only. The syntax palette lives in components/notebook/cm-theme.ts. */
+
+.cm-editor {
+  background: transparent;
+  font-family: theme('fontFamily.mono');
+  font-size: 13px;
+  line-height: 1.65;
+}
+.cm-editor.cm-focused {
+  outline: none !important;
+}
+.cm-scroller {
+  font-family: inherit !important;
+  overflow-x: auto;
+}
+.cm-content {
+  padding: 8px 0;
+  caret-color: rgb(var(--ink));
+}
+.cm-gutters {
+  background: transparent !important;
+  border: none !important;
+  color: rgb(var(--faint));
+}
+.cm-activeLine {
+  background: var(--edit-line) !important;
+}
+.cm-activeLineGutter {
+  background: transparent !important;
+}
+.cm-selectionBackground,
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--select) !important;
+}
+.cm-cursor {
+  border-left-color: rgb(var(--ink)) !important;
+}
+.cm-placeholder {
+  color: rgb(var(--faint));
+}
+
+/* Remote collaborators, drawn by y-codemirror.next. */
+.cm-ySelection {
+  opacity: 0.9;
+}
+.cm-ySelectionCaret {
+  position: relative;
+  border-left: 2px solid;
+  border-right: 0;
+  margin-left: -1px;
+  box-sizing: border-box;
+}
+.cm-ySelectionInfo {
+  position: absolute;
+  top: -1.2em;
+  left: -2px;
+  /* Off the artboard: a 14px plate of 8.5px caps. Raw px because this is not a
+     Tailwind utility and 8.5 is below the smallest step on the type scale — it
+     is a label on a caret, not text anybody reads as text. */
+  height: 14px;
+  padding: 0 5px;
+  font-size: 8.5px;
+  font-family: theme('fontFamily.sans');
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 14px;
+  white-space: nowrap;
+  /* The label sits on the peer's own colour, which is the same in both themes,
+     so this one must NOT follow the ink. */
+  color: #fff;
+  pointer-events: none;
+  user-select: none;
+  z-index: 20;
+}
+
+/* --------------------------------------------------------------- Markdown */
+
+.prose-note {
+  @apply text-prose text-ink;
+}
+.prose-note > * + * {
+  margin-top: 0.75em;
+}
+.prose-note h1 {
+  @apply mt-0 text-head font-black tracking-tight;
+}
+.prose-note h2 {
+  @apply text-title font-bold tracking-tight;
+}
+.prose-note h3 {
+  @apply text-ui-lg font-bold;
+}
+.prose-note a {
+  @apply text-primary underline underline-offset-2;
+}
+.prose-note ul {
+  @apply list-disc space-y-1 pl-5;
+}
+.prose-note ol {
+  @apply list-decimal space-y-1 pl-5;
+}
+.prose-note blockquote {
+  @apply border-l-2 border-line pl-3 text-muted;
+}
+.prose-note code {
+  @apply bg-raised px-1 py-0.5 font-mono text-code text-ink;
+}
+.prose-note pre {
+  @apply overflow-x-auto border-l-2 border-line bg-surface px-3 py-2.5;
+}
+.prose-note pre code {
+  @apply bg-transparent p-0 text-code;
+}
+.prose-note table {
+  @apply w-full border-collapse text-ui;
+}
+.prose-note th,
+.prose-note td {
+  @apply border border-line px-2 py-1 text-left;
+}
+.prose-note img {
+  @apply max-w-full;
+}
+.prose-note hr {
+  @apply border-line;
+}
+
+/* Cell outputs keep whitespace but must never widen the page. */
+.output-stream {
+  @apply overflow-x-auto whitespace-pre-wrap break-words font-mono text-code;
+}

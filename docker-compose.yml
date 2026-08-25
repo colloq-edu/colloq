@@ -1,0 +1,44 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-dot-env}
+      JUPYTER_URL: http://kernel:8888
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-colloq-dev-token}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
+    volumes:
+      - workspace:/workspace
+      - data:/data
+    depends_on:
+      kernel:
+        condition: service_healthy
+    restart: unless-stopped
+
+  kernel:
+    build:
+      context: ./kernel
+    environment:
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-colloq-dev-token}
+    volumes:
+      - workspace:/workspace
+    # Student code is arbitrary. Keep a runaway cell from taking down the host.
+    mem_limit: ${KERNEL_MEM:-2g}
+    cpus: ${KERNEL_CPUS:-2}
+    pids_limit: 512
+    restart: unless-stopped
+    expose:
+      - "8888"
+
+volumes:
+  workspace:
+  data:

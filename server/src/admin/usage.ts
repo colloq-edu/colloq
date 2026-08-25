@@ -1,0 +1,124 @@
+/**
+ * What the room actually asked the assistant.
+ *
+ * One row per accepted question, counted on our own server rather than read
+ * back from the provider: the provider knows what an API key spent, this knows
+ * what a seminar did — and it is also what the per-student rate limit is
+ * enforced against, which has to be true even for an endpoint that reports no
+ * usage at all (every local runtime).
+ *
+ * Deliberately not stored: the question text. A usage table that quietly
+ * becomes a transcript of what students asked is a different product, and the
+ * thread already lives in the seminar document where the room can see it.
+ */
+import { db } from '../db.js'
+import type { AssistantUsage } from '@shared/admin'
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_usage (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL,
+    participant_id  TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    tokens          INTEGER,
+    created_at      INTEGER NOT NULL
+  );
+  -- The rate limiter runs on every question, and it asks exactly this question.
+  CREATE INDEX IF NOT EXISTS ai_usage_window
+    ON ai_usage(session_id, participant_id, created_at);
+  CREATE INDEX IF NOT EXISTS ai_usage_created ON ai_usage(created_at);
+`)
+
+const insertUsage = db.prepare(
+  'INSERT INTO ai_usage (session_id, participant_id, action, tokens, created_at) VALUES (?, ?, ?, ?, ?)',
+)
+const countWindow = db.prepare(
+  'SELECT COUNT(*) AS n FROM ai_usage WHERE session_id = ? AND participant_id = ? AND created_at >= ?',
+)
+const windowRows = db.prepare(`
+  SELECT created_at FROM ai_usage
+  WHERE session_id = ? AND participant_id = ? AND created_at >= ?
+  ORDER BY created_at ASC
+  LIMIT 1 OFFSET ?
+`)
+const totals = db.prepare(`
+  SELECT COUNT(*)                  AS questions,
+         SUM(tokens)               AS tokens,
+         COUNT(tokens)             AS reported,
+         COUNT(DISTINCT session_id) AS seminars
+  FROM ai_usage WHERE created_at >= ?
+`)
+const byActionRows = db.prepare(
+  'SELECT action, COUNT(*) AS n FROM ai_usage WHERE created_at >= ? GROUP BY action',
+)
+
+export interface QuestionRecord {
+  sessionId: string
+  participantId: string
+  /** The AiAction that was actually run, or 'ask' for a free-form question. */
+  action: string
+  /** Only when the endpoint reported it; most do not on a stream. */
+  tokens?: number | null
+}
+
+export function recordQuestion(question: QuestionRecord): void {
+  insertUsage.run(
+    question.sessionId,
+    question.participantId,
+    question.action,
+    question.tokens ?? null,
+    Date.now(),
+  )
+}
+
+/** Questions from one student in one seminar inside the trailing `windowMs`. */
+export function countRecentQuestions(
+  sessionId: string,
+  participantId: string,
+  windowMs: number,
+): number {
+  const row = countWindow.get(sessionId, participantId, Date.now() - windowMs) as { n: number }
+  return row.n
+}
+
+/**
+ * When the next question would be allowed, for a limit of `limit` per window.
+ * The window slides, so that is the moment the oldest question still counting
+ * against the student falls out of it — not the top of the next hour.
+ */
+export function windowResetAt(
+  sessionId: string,
+  participantId: string,
+  windowMs: number,
+  limit: number,
+): number | null {
+  const cutoff = Date.now() - windowMs
+  const used = countWindow.get(sessionId, participantId, cutoff) as { n: number }
+  if (used.n < limit) return null
+  const row = windowRows.get(sessionId, participantId, cutoff, used.n - limit) as
+    | { created_at: number }
+    | undefined
+  return row ? row.created_at + windowMs : null
+}
+
+export function summariseUsage(sinceMs: number): AssistantUsage {
+  const row = totals.get(sinceMs) as {
+    questions: number
+    tokens: number | null
+    reported: number
+    seminars: number
+  }
+  const byAction: Record<string, number> = {}
+  for (const entry of byActionRows.all(sinceMs) as { action: string; n: number }[]) {
+    byAction[entry.action] = entry.n
+  }
+  return {
+    since: sinceMs,
+    questions: row.questions,
+    // null, not 0: "no endpoint told us" and "nothing was spent" are different
+    // sentences, and only one of them is safe to print next to a token count.
+    tokens: row.reported > 0 ? (row.tokens ?? 0) : null,
+    byAction,
+    seminarsWithQuestions: row.seminars,
+  }
+}

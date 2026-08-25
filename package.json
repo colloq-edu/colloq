@@ -1,0 +1,24 @@
+{
+  "name": "colloq",
+  "private": true,
+  "version": "0.1.0",
+  "description": "One link, one live notebook, one AI. Self-hosted workspace for technical seminars.",
+  "license": "MIT",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "dependencies": {
+    "yjs": "^13.6.21"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @colloq/server & npm run dev -w @colloq/web",
+    "dev:server": "npm run dev -w @colloq/server",
+    "dev:web": "npm run dev -w @colloq/web",
+    "build": "npm run build -w @colloq/web && npm run build -w @colloq/server",
+    "start": "node server/dist/server.js",
+    "typecheck": "npm run typecheck -w @colloq/server && npm run typecheck -w @colloq/web",
+    "e2e": "tsx scripts/e2e.mts",
+    "perf": "tsx scripts/perf.mts"
+  }
+}

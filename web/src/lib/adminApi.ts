@@ -1,0 +1,176 @@
+/**
+ * The /api/admin client.
+ *
+ * Every call sends `credentials: 'include'`. The staff cookie is HttpOnly, so
+ * the browser is the only thing that can attach it — and fetch leaves it off by
+ * default even same-origin, which would make every admin request a silent 401.
+ */
+import type {
+  AdminErrorBody,
+  AdminMe,
+  AdminRole,
+  AdminSeminar,
+  AssistantSettings,
+  AssistantTestResult,
+  AssistantUsage,
+  ClaimRequest,
+  CreateSeminarRequest,
+  InstanceState,
+  SignInWithTokenRequest,
+  Teacher,
+  TeacherWithLink,
+  UpdateAssistantRequest,
+  UpdateSeminarRequest,
+} from '@shared/admin'
+
+export type AdminErrorReason = AdminErrorBody['reason']
+
+/**
+ * `reason` is the branch callers actually want: 'unauthenticated' means send
+ * them to /admin, everything else is a message to show where they stand.
+ */
+export class AdminApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly reason: AdminErrorReason,
+  ) {
+    super(message)
+  }
+}
+
+/**
+ * The two request DTOs the staff list needs that the shared contract does not
+ * name. Nobody is created as an owner: promotion is a second, deliberate act,
+ * which is also why the patch carries nothing but the role.
+ */
+export interface CreateTeacherRequest {
+  name: string
+  email: string
+}
+
+export interface UpdateTeacherRequest {
+  role: AdminRole
+}
+
+const BASE = '/api/admin'
+
+/** A body that is not an AdminErrorBody still has a status worth trusting. */
+function reasonForStatus(status: number): AdminErrorReason {
+  if (status === 401) return 'unauthenticated'
+  if (status === 403) return 'forbidden'
+  return 'invalid'
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    credentials: 'include',
+    headers: {
+      ...(init?.body ? { 'content-type': 'application/json' } : {}),
+      ...init?.headers,
+    },
+  })
+
+  if (!res.ok) {
+    let message = res.statusText
+    let reason = reasonForStatus(res.status)
+    try {
+      const body = (await res.json()) as Partial<AdminErrorBody>
+      if (body?.error) message = body.error
+      if (body?.reason) reason = body.reason
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new AdminApiError(message, res.status, reason)
+  }
+
+  // Deletes and sign-out answer with no body; asking json() for one throws.
+  if (res.status === 204 || res.headers.get('content-length') === '0') return undefined as T
+  return (await res.json()) as T
+}
+
+const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
+
+export const adminApi = {
+  /* ------------------------------------------------------------- session */
+
+  /** Open to anyone: it is what tells the home screen whether to show a form. */
+  state: () => request<InstanceState>('/state'),
+
+  me: () => request<AdminMe>('/me'),
+
+  claim: (body: ClaimRequest) => request<AdminMe>('/claim', { method: 'POST', ...json(body) }),
+
+  signInWithToken: (token: string) =>
+    request<AdminMe>('/signin/token', {
+      method: 'POST',
+      ...json({ token } satisfies SignInWithTokenRequest),
+    }),
+
+  /**
+   * The key travels in the body rather than the path: a URL ends up in access
+   * logs and proxy traces, and this one is a credential until it is spent.
+   */
+  signInWithKey: (key: string) =>
+    request<AdminMe>('/signin/key', { method: 'POST', ...json({ key }) }),
+
+  signOut: () => request<void>('/signout', { method: 'POST' }),
+
+  /* ------------------------------------------------------------ seminars */
+
+  listSeminars: () => request<AdminSeminar[]>('/seminars'),
+
+  createSeminar: (body: CreateSeminarRequest) =>
+    request<AdminSeminar>('/seminars', { method: 'POST', ...json(body) }),
+
+  updateSeminar: (id: string, body: UpdateSeminarRequest) =>
+    request<AdminSeminar>(`/seminars/${encodeURIComponent(id)}`, { method: 'PATCH', ...json(body) }),
+
+  deleteSeminar: (id: string) =>
+    request<void>(`/seminars/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /* ----------------------------------------------------------- assistant */
+
+  assistant: () => request<AssistantSettings>('/assistant'),
+
+  /**
+   * A whole-settings write: omitting `apiKey` leaves the stored secret alone,
+   * which is the only way a form that never receives the key can save the rest.
+   */
+  updateAssistant: (body: UpdateAssistantRequest) =>
+    request<AssistantSettings>('/assistant', { method: 'PUT', ...json(body) }),
+
+  /** Talks to the configured provider from the server, so it proves the real path. */
+  testAssistant: () => request<AssistantTestResult>('/assistant/test', { method: 'POST' }),
+
+  /** `since` is a timestamp in ms; the server clamps it and picks a term by default. */
+  assistantUsage: (since?: number) =>
+    request<AssistantUsage>(since ? `/assistant/usage?since=${since}` : '/assistant/usage'),
+
+  /* ------------------------------------------------------------ teachers */
+
+  listTeachers: () => request<Teacher[]>('/teachers'),
+
+  /** Answers with the link, which is the only moment it is ever readable. */
+  createTeacher: (body: CreateTeacherRequest) =>
+    request<TeacherWithLink>('/teachers', { method: 'POST', ...json(body) }),
+
+  updateTeacher: (id: string, body: UpdateTeacherRequest) =>
+    request<Teacher>(`/teachers/${encodeURIComponent(id)}`, { method: 'PATCH', ...json(body) }),
+
+  deleteTeacher: (id: string) =>
+    request<void>(`/teachers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /** Mints a fresh link and kills the old one in the same call. */
+  rotateTeacherLink: (id: string) =>
+    request<TeacherWithLink>(`/teachers/${encodeURIComponent(id)}/rotate`, { method: 'POST' }),
+
+  /**
+   * The existing link, for re-sending it to someone who mislaid theirs. Owner
+   * only. It goes to the clipboard, never onto the screen — the row keeps
+   * showing the masked shape.
+   */
+  teacherLink: (id: string) =>
+    request<TeacherWithLink>(`/teachers/${encodeURIComponent(id)}/link`),
+}

@@ -1,0 +1,14 @@
+# Development override: run only the kernel in Docker, the app on the host.
+#
+#   mkdir -p workspace && chmod 777 workspace
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up kernel -d
+#   npm run dev
+#
+# The bind mount (instead of the named volume prod uses) is what lets the host
+# server and the containerised kernel see the same files.
+services:
+  kernel:
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./workspace:/workspace
