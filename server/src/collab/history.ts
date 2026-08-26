@@ -44,6 +44,8 @@ interface Burst {
   lastAt: number
   chars: number
   timer: NodeJS.Timeout | null
+  /** Which cells existed, and in what order, when the burst opened. */
+  shape: string
 }
 
 const bursts = new Map<string, Burst>()
@@ -64,6 +66,16 @@ const bursts = new Map<string, Burst>()
  */
 const baselines = new Map<string, Uint8Array>()
 
+/*
+ * The notebook's shape as of each baseline: which cells existed, in what order.
+ *
+ * Carried forward with the baseline for the same reason the baseline is: the
+ * update handler runs *after* the change has landed, so reading the shape off
+ * the live document when a burst opens reads the shape the burst just produced,
+ * and the comparison below can never be true.
+ */
+const shapes = new Map<string, string>()
+
 /**
  * Start recording a room, measuring from the state it currently holds.
  *
@@ -73,6 +85,7 @@ const baselines = new Map<string, Uint8Array>()
  */
 export function beginHistory(sessionId: string, doc: Y.Doc): void {
   baselines.set(sessionId, Y.encodeStateAsUpdate(doc))
+  shapes.set(sessionId, shapeOf(doc))
 
   /*
    * A room with no history yet gets a first row carrying the whole document.
@@ -186,6 +199,15 @@ export function cellsOf(doc: Y.Doc): HistoricCell[] {
   return out
 }
 
+/** Which cells exist and in what order — the notebook's shape, not its text. */
+function shapeOf(doc: Y.Doc): string {
+  return doc
+    .getArray<Y.Map<unknown>>(CELLS_KEY)
+    .toArray()
+    .map((cell) => String(cell.get('id') ?? ''))
+    .join(',')
+}
+
 function docFrom(updates: Uint8Array[]): Y.Doc {
   const doc = new Y.Doc()
   // One transaction for the whole replay: applying twenty updates separately
@@ -229,6 +251,7 @@ function close(key: string): void {
      * make the next real edit look like it changed them too.
      */
     baselines.set(burst.sessionId, Y.encodeStateAsUpdate(after))
+    shapes.set(burst.sessionId, shapeOf(after))
     after.destroy()
     return
   }
@@ -246,6 +269,7 @@ function close(key: string): void {
     // The next version is measured from here, not from wherever the document
     // happens to be when somebody next presses a key.
     baselines.set(burst.sessionId, Y.encodeStateAsUpdate(after))
+    shapes.set(burst.sessionId, shapeOf(after))
     maybeKeyframe(burst.sessionId, after)
   } catch (err) {
     // A history that cannot be written must not stop the seminar being taught.
@@ -310,6 +334,7 @@ export function record(
       lastAt: now,
       chars: 0,
       timer: null,
+      shape: shapes.get(key) ?? '',
     }
     bursts.set(key, burst)
   }
@@ -317,6 +342,20 @@ export function record(
   burst.updates.push(update)
   burst.lastAt = now
   burst.chars += update.byteLength
+
+  /*
+   * Adding, deleting or moving a cell closes the burst at once.
+   *
+   * Typing is a stream and wants grouping; changing the shape of the notebook
+   * is a discrete act, and it is the act people come to this panel to undo. A
+   * deleted cell that takes twelve seconds of silence to appear in the history
+   * is missing exactly when it is being looked for — and the silence is not
+   * even likely, because the person who deleted it usually keeps working.
+   */
+  if (shapeOf(doc) !== burst.shape) {
+    close(key)
+    return
+  }
 
   if (burst.chars >= BURST_MAX_CHARS || now - burst.openedAt >= BURST_MAX_MS) {
     close(key)
@@ -342,6 +381,7 @@ export function flushAllHistory(): void {
 /** Drop a session's open burst without writing it. Used when a seminar is deleted. */
 export function discardBurst(sessionId: string): void {
   baselines.delete(sessionId)
+  shapes.delete(sessionId)
   const burst = bursts.get(sessionId)
   if (!burst) return
   bursts.delete(sessionId)
@@ -462,6 +502,7 @@ export function mark(
     cells: [],
   })
   baselines.set(sessionId, Y.encodeStateAsUpdate(doc))
+  shapes.set(sessionId, shapeOf(doc))
   forgetCache(sessionId)
   return seq
 }

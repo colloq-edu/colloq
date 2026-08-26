@@ -10,7 +10,7 @@ import { Router, type Request, type Response } from 'express'
 import type { CellDiff, Version, VersionKind } from '@shared/history'
 import { sessionAuth } from './sessions.js'
 import { getSessionDoc } from '../collab/index.js'
-import { cellsAt, cellsOf, diffLines, flushHistory, mark, restoreInto } from '../collab/history.js'
+import { cellsAt, cellsOf, diffLines, mark, restoreInto } from '../collab/history.js'
 import { getParticipant, getVersion, listVersions } from '../db.js'
 
 /**
@@ -81,11 +81,14 @@ export function historyRoutes(): Router {
      * through the door would have done anyway.
      */
     getSessionDoc(sessionId)
-    flushHistory(sessionId)
     const rows = listVersions(sessionId, MAX_VERSIONS)
     // Keyframes are bookkeeping — full-document rows written every so often so
     // that rebuilding is cheap. They are not something anybody did.
-    res.json({ versions: rows.filter((r) => r.kind !== 'keyframe').map((r) => toVersion(sessionId, r)) })
+    const versions = rows
+      .filter((r) => r.kind !== 'keyframe')
+      .map((r) => toVersion(sessionId, r))
+
+    res.json({ versions })
   })
 
   /** The notebook as it stood at one version, and what that version changed. */

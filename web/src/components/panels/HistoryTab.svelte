@@ -46,6 +46,12 @@
     try {
       const body = await listVersions(session.session.id, session.token)
       versions = body.versions
+      /*
+       * Only auto-open when nothing is open. A refresh arriving while somebody
+       * is reading an old version must not yank them to the newest row — the
+       * list moves under them constantly during a live seminar, and that is the
+       * one moment they are looking at something on purpose.
+       */
       if (openSeq === null && versions.length > 0) void open(versions[0].seq)
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not read the history'
@@ -105,8 +111,35 @@
     }
   }
 
+  /*
+   * The panel follows the room instead of being a snapshot of the moment it
+   * opened. Somebody deletes a cell, and the row for it appears here without
+   * anybody closing and reopening the drawer.
+   *
+   * Driven by the document rather than by a clock: a room where nothing is
+   * happening asks the server nothing at all, and a room where a lot is
+   * happening asks once per lull rather than once per keystroke. The wait is
+   * deliberate and generous — the server groups a burst of typing into one
+   * version, so refreshing faster would only redraw the same list.
+   */
+  const SETTLE_MS = 1200
+
   $effect(() => {
     void load()
+
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onChange = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        void load()
+      }, SETTLE_MS)
+    }
+    session.doc.on('update', onChange)
+    return () => {
+      if (timer) clearTimeout(timer)
+      session.doc.off('update', onChange)
+    }
   })
 
   /** The row's own words: a checkpoint says its name, everything else its summary. */

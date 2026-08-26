@@ -47,15 +47,18 @@ function write(doc: Y.Doc, index: number, text: string): void {
 test('a burst of typing is one version, not one per keystroke', () => {
   const id = 'hist-burst'
   const doc = room(id, 'p_maria')
+  // Adding the cell is its own version — a change of shape closes the burst.
   doc.transact(() => getCells(doc).push([createCell('code', 'x = 1')]))
-  // Twenty separate transactions, the way twenty keystrokes arrive.
+  const before = listVersions(id, 20).filter((v) => v.kind === 'edit').length
+
+  // Sixteen separate transactions, the way sixteen keystrokes arrive.
   for (const ch of '\nprint(x)\ny = 2\n') write(doc, 0, ch)
   flushHistory(id)
 
-  const versions = listVersions(id, 10).filter((v) => v.kind !== 'keyframe')
-  assert.equal(versions.length, 1, 'twenty keystrokes made more than one version')
+  const versions = listVersions(id, 20).filter((v) => v.kind === 'edit')
+  assert.equal(versions.length, before + 1, 'sixteen keystrokes made more than one version')
   assert.equal(versions[0].author_id, 'p_maria')
-  assert.match(versions[0].summary, /added a cell|edited cell/)
+  assert.match(versions[0].summary, /edited cell/)
 })
 
 test('a different author closes the burst, because it is a different thing done', () => {
@@ -66,13 +69,16 @@ test('a different author closes the burst, because it is a different thing done'
   doc.on('update', (update: Uint8Array) => record(id, doc, update, author))
 
   doc.transact(() => getCells(doc).push([createCell('code', 'a = 1')]))
+  flushHistory(id)
+  const seeded = listVersions(id, 20).filter((v) => v.kind === 'edit').length
+
   write(doc, 0, '\nb = 2')
   author = 'p_john'
   write(doc, 0, '\nc = 3')
   flushHistory(id)
 
-  const versions = listVersions(id, 10).filter((v) => v.kind !== 'keyframe')
-  assert.equal(versions.length, 2)
+  const versions = listVersions(id, 20).filter((v) => v.kind === 'edit')
+  assert.equal(versions.length, seeded + 2)
   // Newest first.
   assert.equal(versions[0].author_id, 'p_john')
   assert.equal(versions[1].author_id, 'p_alexander')
@@ -250,4 +256,27 @@ test('a deleted cell comes back when its version is restored', () => {
     .toArray()
     .map((c) => (c.get('source') as Y.Text).toString())
   assert.ok(sources.includes('doomed'), 'the deleted cell stayed deleted')
+})
+
+test('deleting a cell lands in the history at once, not after the silence', () => {
+  /*
+   * Typing is a stream and wants grouping; removing a cell is a discrete act,
+   * and it is the act people open this panel to undo. Waiting out the idle
+   * timer would hide it for twelve seconds — exactly while it is being looked
+   * for.
+   */
+  const id = 'hist-structure'
+  createSession(id, 'History test', null)
+  const doc = new Y.Doc()
+  beginHistory(id, doc)
+  doc.on('update', (update: Uint8Array) => record(id, doc, update, 'p_sofia'))
+
+  doc.transact(() => getCells(doc).push([createCell('code', 'a'), createCell('code', 'b')]))
+  const afterAdd = listVersions(id, 20).filter((v) => v.kind === 'edit').length
+  assert.equal(afterAdd, 1, 'adding cells waited for the idle timer')
+
+  doc.transact(() => getCells(doc).delete(1, 1))
+  const afterDelete = listVersions(id, 20).filter((v) => v.kind === 'edit')
+  assert.equal(afterDelete.length, 2, 'the deletion waited for the idle timer')
+  assert.match(afterDelete[0].summary, /deleted a cell/)
 })

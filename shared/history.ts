@@ -22,6 +22,14 @@ export type VersionKind =
   /** The room's first state — the notebook it opened with. */
   | 'opened'
 
+/*
+ * A history holds finished facts and nothing else. There is deliberately no
+ * "somebody is typing right now" here: an unfinished edit is not a version, it
+ * is a rumour about one, and a log that reports rumours is a log you cannot
+ * trust the rest of. What is in flight is visible where it belongs — in the
+ * notebook, under that person's cursor.
+ */
+
 /** One line of the timeline. Deliberately small: the list is loaded whole. */
 export interface Version {
   /** Monotonic within a session. Also the address of the state after this edit. */

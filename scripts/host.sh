@@ -83,11 +83,23 @@ else
     || die "на ${LOCAL} никто не отвечает. Запустите colloq (make up) и повторите."
 fi
 
-# Порт может держать не наш контейнер, а сервер, запущенный руками. Туннель на
-# него всё равно встанет — но PUBLIC_URL правится только у контейнера, и об этом
-# надо будет сказать вслух.
-OURS=""
-docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running && OURS=1
+# Кто именно держит порт. Три случая, и все три настоящие:
+#
+#   контейнер   — `make up`, приложение целиком в docker;
+#   хост        — `make run`, сервер на машине, ядро в docker. Так проект и
+#                 запускают каждый день, и .colloq.pid — его расписка;
+#   чужой       — что-то другое. Туннель встанет и на него, но PUBLIC_URL ему
+#                 никто не поправит, и об этом придётся сказать вслух.
+#
+# Различать обязательно: ссылки на семинары строятся из PUBLIC_URL, и семинар,
+# розданный со ссылкой на localhost, — это семинар, на который никто не зашёл.
+PIDFILE="${PIDFILE:-.colloq.pid}"
+WHO="other"
+if docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running; then
+  WHO="container"
+elif [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+  WHO="host"
+fi
 
 say "${BOLD}2/4${OFF} открываю туннель"
 if [ -n "${COLLOQ_HOSTNAME:-}" ]; then
@@ -113,15 +125,30 @@ fi
 
 say "${BOLD}3/4${OFF} перезапускаю приложение с внешним адресом"
 set_public_url "$PUBLIC"
-if [ -n "$OURS" ]; then
-  PUBLIC_URL="$PUBLIC" docker compose up -d app >/dev/null
-else
-  # Молча пройти мимо нельзя: ссылки на семинары строятся из PUBLIC_URL, и
-  # аудитория получит localhost, то есть ничего.
-  say "${RED}    ${LOCAL} держит не контейнер colloq, а другой процесс.${OFF}"
-  say "${DIM}    Его PUBLIC_URL отсюда не поменять — перезапустите его сами с${OFF}"
-  say "${DIM}    PUBLIC_URL=${PUBLIC}, иначе ссылки на семинары будут вести на localhost.${OFF}"
-fi
+case "$WHO" in
+  container)
+    PUBLIC_URL="$PUBLIC" docker compose up -d app >/dev/null
+    ;;
+  host)
+    # Ровно то же, что делает `make run`, только с новым адресом: .env уже
+    # переписан выше, поэтому достаточно поднять процесс заново.
+    kill "$(cat "$PIDFILE")" 2>/dev/null || true
+    sleep 1
+    ( set -a; . ./.env; set +a
+      STATIC_DIR="$PWD/web/dist" nohup node server/dist/server.js > .colloq.log 2>&1 &
+      echo $! > "$PIDFILE" )
+    sleep 2
+    kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null \
+      || { tail -20 .colloq.log >&2; die "сервер не поднялся с новым адресом."; }
+    say "${DIM}    сервер на хосте перезапущен с ${PUBLIC}${OFF}"
+    ;;
+  *)
+    # Молча пройти мимо нельзя: аудитория получит localhost, то есть ничего.
+    say "${RED}    ${LOCAL} держит не colloq, а какой-то другой процесс.${OFF}"
+    say "${DIM}    Его PUBLIC_URL отсюда не поменять — перезапустите его сами с${OFF}"
+    say "${DIM}    PUBLIC_URL=${PUBLIC}, иначе ссылки на семинары будут вести на localhost.${OFF}"
+    ;;
+esac
 
 say "${BOLD}4/4${OFF} проверяю, что снаружи действительно отвечает"
 #
