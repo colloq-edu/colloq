@@ -525,6 +525,30 @@
     color: #e8a3b1;
   }
 
+  /*
+   * On a phone there is no room for two columns: 318px of timeline would leave
+   * the diff about eighty, which is not a diff. The list keeps the width it
+   * needs and the change goes underneath it, so both are readable one at a time
+   * — which is how a narrow screen is read anyway.
+   */
+  @media (max-width: 720px) {
+    .hist {
+      flex-direction: column;
+    }
+
+    .hist-list {
+      width: 100%;
+      flex: 0 0 auto;
+      max-height: 45%;
+      border-right: 0;
+      border-bottom: 1px solid #1b2a52;
+    }
+
+    .hist-foot {
+      display: none;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .hist-go,
     .hist-mini {
