@@ -127,7 +127,7 @@ import type { OracleMode } from './admin.js'
 
 /* ------------------------------------------------------------------- AI */
 
-export type AiAction = 'explain' | 'fix' | 'debug' | 'improve' | 'hint' | 'ask'
+export type AiAction = 'explain' | 'fix' | 'debug' | 'improve' | 'hint' | 'ask' | 'edit'
 
 /**
  * Which actions an oracle in this mode will accept.
@@ -143,6 +143,12 @@ export type AiAction = 'explain' | 'fix' | 'debug' | 'improve' | 'hint' | 'ask'
 export function actionAllowedIn(mode: OracleMode, action: AiAction): boolean {
   if (mode === 'off') return false
   if (mode === 'full') return true
+  /*
+   * 'edit' is deliberately not in the hints list. It does not describe a fix,
+   * it writes one — a diff the room can accept with one press — and a mode
+   * whose whole point is that the student reaches the answer themselves cannot
+   * also hand them the answer as a patch.
+   */
   return action === 'hint' || action === 'ask'
 }
 

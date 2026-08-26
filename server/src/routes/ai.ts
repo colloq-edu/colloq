@@ -25,7 +25,14 @@ import {
   type AiAskResponse,
 } from '@shared/protocol'
 
-const ACTIONS: readonly AiAction[] = ['explain', 'fix', 'debug', 'improve', 'hint', 'ask']
+/*
+ * Written out rather than derived from the type, so adding an action is a
+ * deliberate act on both sides. It is also the list that silently swallowed
+ * 'edit' the first time: the request carried it, this filter dropped it to
+ * undefined, and the turn arrived as a plain question whose answer nobody could
+ * apply — no error anywhere, just a feature that did nothing.
+ */
+const ACTIONS: readonly AiAction[] = ['explain', 'fix', 'debug', 'improve', 'hint', 'ask', 'edit']
 /*
  * A question, not a document. Eight thousand characters is several screens of
  * typing — past that somebody is pasting a file in, and the notebook itself is

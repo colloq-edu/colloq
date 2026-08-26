@@ -25,7 +25,8 @@
 
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { cellSource } from '@shared/notebook'
+  import { acceptPatch, cellSource, patchIsStale, rejectPatch } from '@shared/notebook'
+  import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -45,6 +46,7 @@
     watchCellPeers,
     watchNotebookMeta,
     watchOutputs,
+    watchPatchFor,
     watchText,
   } from '@/lib/yreactive.svelte'
   import CellOutputs from './CellOutputs.svelte'
@@ -343,6 +345,81 @@
     window.dispatchEvent(new CustomEvent('colloq:ask-ai', { detail: { cellId: id, action } }))
   }
 
+  /* ------------------------------------------------------ asking for an edit */
+
+  /*
+   * The oracle button used to fire 'explain' and open the panel — one canned
+   * question, and the answer arrived somewhere else on the screen. What a person
+   * actually wants at a cell is to say what is wrong with it in their own words
+   * and get the corrected cell back where the cell is.
+   *
+   * So the button opens a line to type on, right under the cell, and the answer
+   * comes back as a diff over that same cell. The thread still gets everything —
+   * the question, the reasoning, the code — because the room is entitled to know
+   * why the notebook it is reading changed.
+   */
+  let asking = $state(false)
+  let prompt = $state('')
+  let sending = $state(false)
+  let askError = $state<string | null>(null)
+  let promptBox = $state<HTMLTextAreaElement | null>(null)
+
+  async function sendEdit(): Promise<void> {
+    const message = prompt.trim()
+    if (!message || sending) return
+    sending = true
+    askError = null
+    try {
+      await api.aiAsk(session.session.id, session.token, { message, action: 'edit', cellId: id })
+      prompt = ''
+      asking = false
+    } catch (cause) {
+      askError = cause instanceof Error ? cause.message : 'The oracle could not be reached'
+    } finally {
+      sending = false
+    }
+  }
+
+  /*
+   * The proposal is read from the shared document, not held here: it belongs to
+   * the room. Two people looking at this cell see the same offer, and when one
+   * of them decides, the other watches it resolve.
+   */
+  const patch = watchPatchFor(session.doc, () => id)
+  const proposal = $derived(patch.current)
+  /*
+   * The cell's own text, watched separately from `source`.
+   *
+   * `source` deliberately follows markdown cells only — rendering a note does
+   * not need the text of a code cell, and skipping it saves an observer per
+   * cell. The diff needs exactly the opposite, and reading the wrong one showed
+   * every proposal as pure addition: the old lines were never handed to the
+   * diff, so nothing could be marked as replaced.
+   */
+  const liveText = watchText(() => cell.current)
+
+  const proposedLines = $derived.by(() => {
+    const proposed = proposal?.get('patch')
+    if (typeof proposed !== 'string') return []
+    return diffLines(liveText.current, proposed)
+  })
+  const proposedCounts = $derived(diffCounts(proposedLines))
+  const proposalStale = $derived(proposal ? patchIsStale(session.doc, proposal) : false)
+
+  function accept(): void {
+    if (!proposal) return
+    acceptPatch(session.doc, proposal, session.me.name)
+  }
+
+  function decline(): void {
+    if (!proposal) return
+    rejectPatch(session.doc, proposal, session.me.name)
+  }
+
+  $effect(() => {
+    if (asking) promptBox?.focus()
+  })
+
   function convert() {
     setCellType(session.doc, id, isCode ? 'markdown' : 'code')
     // Whichever way it went, the cell re-renders in its resting form.
@@ -497,9 +574,10 @@
         <button
           type="button"
           class={TOOL}
-          title="Ask AI about this cell"
-          aria-label="Ask AI about this cell"
-          onclick={() => askAi('explain')}
+          title="Ask the oracle to change this cell"
+          aria-label="Ask the oracle to change this cell"
+          aria-pressed={asking}
+          onclick={() => (asking = !asking)}
         >
           <Icon name="sparkles" size={13} class="text-accent-text" />
         </button>
@@ -587,6 +665,79 @@
               {:else}
                 <p class="text-prose text-muted">Empty — double-click to write.</p>
               {/if}
+            </div>
+          {/if}
+
+          <!--
+            Asking the oracle to change this cell, and what it answered.
+
+            Both live under the cell rather than in the side panel, because both are about
+            this cell: the sentence you type is about it, and the diff that comes back
+            replaces it. The panel still receives every word — the question, the reasoning
+            and the code — because the room is entitled to know why the notebook it is
+            reading changed.
+          -->
+          {#if asking}
+            <div class={cn('flex flex-col gap-2 border-l-4 px-3 py-2.5', RULE[tone], 'bg-surface')}>
+              <textarea
+                bind:this={promptBox}
+                bind:value={prompt}
+                rows="2"
+                class="w-full resize-none border border-line bg-canvas px-3 py-2 text-ui text-ink
+                       placeholder:text-faint focus:border-accent focus:outline-none"
+                placeholder="What should this cell do instead?"
+                onkeydown={(event) => {
+                  // Enter sends: this is one sentence, not a document. Shift+Enter is
+                  // there for the person who wants two.
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    void sendEdit()
+                  }
+                  if (event.key === 'Escape') asking = false
+                }}
+              ></textarea>
+              <div class="flex flex-wrap items-center gap-2.5">
+                <button type="button" class="btn-primary h-8" disabled={sending || !prompt.trim()} onclick={sendEdit}>
+                  {#if sending}
+                    <Icon name="spinner" size={13} class="animate-spin" />
+                    Asking…
+                  {:else}
+                    Ask for a rewrite
+                  {/if}
+                </button>
+                <button type="button" class="btn-ghost h-8" onclick={() => (asking = false)}>Cancel</button>
+                {#if askError}
+                  <span class="text-2xs text-danger" role="alert">{askError}</span>
+                {:else}
+                  <span class="text-2xs text-muted">The whole room sees the question and the answer.</span>
+                {/if}
+              </div>
+            </div>
+          {/if}
+
+          {#if proposal}
+            <div class="border-l-4 border-accent bg-accent/[0.04]">
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2">
+                <span class={cn(CAPS, 'text-accent-text')}>Proposed by the oracle</span>
+                <span class="font-mono text-2xs">
+                  {#if proposedCounts.added > 0}<span class="text-positive">+{proposedCounts.added}</span>{/if}
+                  {#if proposedCounts.removed > 0}<span class="ml-1.5 text-danger">−{proposedCounts.removed}</span>{/if}
+                </span>
+                {#if proposalStale}
+                  <!-- Not a refusal: the room may want the rewrite anyway. But accepting
+                       deletes whatever arrived in the meantime, and that has to be said
+                       before the press rather than after. -->
+                  <span class="text-2xs text-warning">
+                    The cell has changed since this was written — accepting replaces it whole.
+                  </span>
+                {/if}
+              </div>
+              <pre class="overflow-x-auto px-3 py-2 font-mono text-code-lg leading-[21px]">{#each proposedLines as line}<span class={cn('block min-h-[21px]', line.kind === 'added' && 'bg-positive/10 text-ink', line.kind === 'removed' && 'bg-danger/10 text-muted line-through', line.kind === 'same' && 'text-muted')}><span class="inline-block w-5 select-none text-center text-faint">{line.kind === 'added' ? '+' : line.kind === 'removed' ? '\u2212' : ' '}</span>{line.text}</span>{/each}</pre>
+              <div class="flex flex-wrap items-center gap-2.5 border-t border-line-soft px-3 py-2">
+                <button type="button" class="btn-primary h-8" onclick={accept}>Accept</button>
+                <button type="button" class="btn-outline h-8" onclick={decline}>Discard</button>
+                <span class="text-2xs text-muted">Accepting writes the cell for everyone, under your name.</span>
+              </div>
             </div>
           {/if}
 

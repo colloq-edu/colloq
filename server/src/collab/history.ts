@@ -437,47 +437,6 @@ export function forgetCache(sessionId: string): void {
 
 /* -------------------------------------------------------------------- diff */
 
-/**
- * Line diff, longest-common-subsequence.
- *
- * Cells are short — tens of lines — so the quadratic table is a few thousand
- * cells of work and needs no cleverness. The alternative, a character diff,
- * reads worse for code: a changed argument shows as a scatter of insertions
- * inside a line instead of the line that changed.
- */
-export function diffLines(before: string, after: string): { kind: 'same' | 'added' | 'removed'; text: string }[] {
-  const a = before.length === 0 ? [] : before.split('\n')
-  const b = after.length === 0 ? [] : after.split('\n')
-
-  const table: number[][] = Array.from({ length: a.length + 1 }, () =>
-    new Array<number>(b.length + 1).fill(0),
-  )
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      table[i][j] = a[i] === b[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1])
-    }
-  }
-
-  const out: { kind: 'same' | 'added' | 'removed'; text: string }[] = []
-  let i = 0
-  let j = 0
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      out.push({ kind: 'same', text: a[i] })
-      i++
-      j++
-    } else if (table[i + 1][j] >= table[i][j + 1]) {
-      out.push({ kind: 'removed', text: a[i] })
-      i++
-    } else {
-      out.push({ kind: 'added', text: b[j] })
-      j++
-    }
-  }
-  while (i < a.length) out.push({ kind: 'removed', text: a[i++] })
-  while (j < b.length) out.push({ kind: 'added', text: b[j++] })
-  return out
-}
 
 /** Record a version that is not a burst: a checkpoint, a restore, the first state. */
 export function mark(

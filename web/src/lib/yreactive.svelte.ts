@@ -30,6 +30,9 @@ import {
   type KernelStatus,
   type YCell,
   type YOutput,
+  getChat,
+  openPatchFor,
+  type YChatEntry,
 } from '@shared/notebook'
 import type { AwarenessUser } from '@shared/protocol'
 
@@ -650,6 +653,35 @@ export function watchCellPeers(awareness: Awareness, id: () => string): Reactive
     get current() {
       const key = id()
       if (key !== bound.value) return index.peers(key)
+      return value.value
+    },
+  }
+}
+
+/**
+ * The proposal standing against one cell, if any.
+ *
+ * Deep, not shallow: a turn's `patch` and `patchState` are set on the entry
+ * long after the entry itself joined the array — the patch is lifted out when
+ * the answer finishes, and the state changes when somebody decides. An
+ * observer on the array alone would show the offer appear and never see it
+ * resolve, so the cell would keep offering a patch that had already been
+ * applied.
+ */
+export function watchPatchFor(doc: Y.Doc, id: () => string): Reactive<YChatEntry | null> {
+  const chat = getChat(doc)
+  const value = box<YChatEntry | null>(null)
+  const read = () => (value.value = openPatchFor(doc, id()))
+
+  $effect(() => {
+    void id()
+    read()
+    chat.observeDeep(read)
+    return () => chat.unobserveDeep(read)
+  })
+
+  return {
+    get current() {
       return value.value
     },
   }

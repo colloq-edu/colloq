@@ -10,7 +10,8 @@ import { Router, type Request, type Response } from 'express'
 import type { CellDiff, Version, VersionKind } from '@shared/history'
 import { sessionAuth } from './sessions.js'
 import { getSessionDoc } from '../collab/index.js'
-import { cellsAt, cellsOf, diffLines, mark, restoreInto } from '../collab/history.js'
+import { cellsAt, cellsOf, mark, restoreInto } from '../collab/history.js'
+import { diffLines } from '@shared/diff'
 import { getParticipant, getVersion, listVersions } from '../db.js'
 
 /**

@@ -18,11 +18,11 @@ import { listVersions } from '../server/src/db.js'
 import {
   beginHistory,
   cellsAt,
-  diffLines,
   flushHistory,
   record,
   restoreInto,
 } from '../server/src/collab/history.js'
+import { diffLines } from '../shared/diff.js'
 import { shutdownCollab } from '../server/src/collab/index.js'
 
 after(() => shutdownCollab())

@@ -107,6 +107,16 @@ export type YOutput = Y.Map<any>
  */
 export type ChatState = 'streaming' | 'done' | 'error'
 
+/**
+ * What happened to a proposed edit.
+ *
+ * `open` is a patch nobody has decided about yet — that is the state the cell
+ * draws a diff for. It lives in the document rather than in the asker's browser
+ * on purpose: a proposal the room can see is a proposal the room can discuss,
+ * and whoever accepts it is doing it in front of everyone rather than quietly.
+ */
+export type PatchState = 'open' | 'accepted' | 'rejected'
+
 export interface ChatSnapshot {
   id: string
   participantId: string
@@ -118,6 +128,21 @@ export interface ChatSnapshot {
   createdAt: number
   answer: string
   state: ChatState
+  /** The complete proposed source of `cellId`, or null when the turn proposed none. */
+  patch: string | null
+  /**
+   * What the cell held when the oracle was asked.
+   *
+   * A proposal is a rewrite of a particular text, and in a room of twenty
+   * people that text moves while the model is still writing. Kept so the cell
+   * can say "this was written against an older version" instead of silently
+   * overwriting somebody's work with an answer to a question about a cell that
+   * no longer exists.
+   */
+  patchBase: string | null
+  patchState: PatchState
+  /** Who accepted or rejected it, for the line the thread shows afterwards. */
+  patchBy: string | null
 }
 
 export type YChatEntry = Y.Map<any>
@@ -133,6 +158,8 @@ export function createChatEntry(input: {
   question: string
   action?: string | null
   cellId?: string | null
+  /** The cell's text at the moment of asking; see ChatSnapshot.patchBase. */
+  patchBase?: string | null
 }): YChatEntry {
   const entry = new Y.Map<any>()
   entry.set('id', newId('q'))
@@ -145,7 +172,94 @@ export function createChatEntry(input: {
   entry.set('createdAt', Date.now())
   entry.set('answer', new Y.Text())
   entry.set('state', 'streaming' as ChatState)
+  entry.set('patch', null)
+  entry.set('patchBase', input.patchBase ?? null)
+  entry.set('patchState', 'open' as PatchState)
+  entry.set('patchBy', null)
   return entry
+}
+
+/**
+ * Accept a proposal: the cell becomes what the oracle wrote.
+ *
+ * The write is an ordinary edit, so it merges like any other, everyone watches
+ * it land at once, and it becomes a version in the room's history under the
+ * name of whoever pressed Accept — not under the oracle's. A person decided;
+ * the model only offered.
+ *
+ * Returns false when there is nothing to apply, which covers the two races that
+ * matter: somebody else accepted it a second earlier, and the cell was deleted
+ * while the answer was being written.
+ */
+export function acceptPatch(doc: Y.Doc, entry: YChatEntry, byName: string): boolean {
+  const patch = entry.get('patch')
+  const cellId = entry.get('cellId')
+  if (typeof patch !== 'string' || typeof cellId !== 'string') return false
+  if (entry.get('patchState') !== 'open') return false
+
+  const cells = getCells(doc)
+  let target: YCell | null = null
+  for (const cell of cells.toArray()) {
+    if (cell.get('id') === cellId) {
+      target = cell
+      break
+    }
+  }
+  if (!target) return false
+
+  const source = target.get('source') as Y.Text | undefined
+  if (!source) return false
+
+  doc.transact(() => {
+    source.delete(0, source.length)
+    source.insert(0, patch)
+    entry.set('patchState', 'accepted' as PatchState)
+    entry.set('patchBy', byName)
+  })
+  return true
+}
+
+/** Turn a proposal down. Nothing is written to the cell; the thread keeps both. */
+export function rejectPatch(doc: Y.Doc, entry: YChatEntry, byName: string): void {
+  if (entry.get('patchState') !== 'open') return
+  doc.transact(() => {
+    entry.set('patchState', 'rejected' as PatchState)
+    entry.set('patchBy', byName)
+  })
+}
+
+/**
+ * Has the cell moved since this proposal was written?
+ *
+ * Not a refusal — the room may well want the rewrite anyway — but it has to be
+ * said out loud before somebody presses Accept, because what they are accepting
+ * is the deletion of whatever arrived in between.
+ */
+export function patchIsStale(doc: Y.Doc, entry: YChatEntry): boolean {
+  const base = entry.get('patchBase')
+  const cellId = entry.get('cellId')
+  if (typeof base !== 'string' || typeof cellId !== 'string') return false
+  for (const cell of getCells(doc).toArray()) {
+    if (cell.get('id') !== cellId) continue
+    const source = cell.get('source')
+    const now = source instanceof Y.Text ? source.toString() : String(source ?? '')
+    return now !== base
+  }
+  return false
+}
+
+/** The proposal on a chat turn, if it made one and nobody has decided yet. */
+export function openPatchFor(doc: Y.Doc, cellId: string): YChatEntry | null {
+  const chat = getChat(doc)
+  for (let i = chat.length - 1; i >= 0; i--) {
+    const entry = chat.get(i)
+    if (entry.get('cellId') !== cellId) continue
+    if (entry.get('patchState') !== 'open') continue
+    const patch = entry.get('patch')
+    if (typeof patch !== 'string' || patch.length === 0) continue
+    return entry
+  }
+  return null
 }
 
 export function chatAnswer(entry: YChatEntry): Y.Text {
@@ -169,6 +283,12 @@ export function readChatEntry(entry: YChatEntry): ChatSnapshot {
     createdAt: (entry.get('createdAt') as number) ?? 0,
     answer: chatAnswer(entry).toString(),
     state: (entry.get('state') as ChatState) ?? 'done',
+    // Absent on every turn written before proposals existed, which is most of
+    // them: a thread from last week must still read.
+    patch: (entry.get('patch') as string | null) ?? null,
+    patchBase: (entry.get('patchBase') as string | null) ?? null,
+    patchState: (entry.get('patchState') as PatchState) ?? 'open',
+    patchBy: (entry.get('patchBy') as string | null) ?? null,
   }
 }
 

@@ -19,6 +19,7 @@ import * as Y from 'yjs'
 import {
   chatAnswer,
   createChatEntry,
+  getCells,
   findChatEntry,
   getChat,
   readChatEntry,
@@ -88,6 +89,14 @@ export function ask(options: AskOptions): string {
     question: asked || actionLabel(options.action),
     action: options.action ?? null,
     cellId: options.cellId ?? null,
+    /*
+     * The cell as it stands right now, so a proposal written against it can
+     * later say whether it is still about the same text. Twenty people share
+     * this notebook and the model takes seconds: the cell can move while the
+     * answer is being written, and applying a rewrite of a paragraph that no
+     * longer exists would delete somebody's work in the name of a fix.
+     */
+    patchBase: options.action === 'edit' ? sourceOfCell(doc, options.cellId ?? null) : null,
   })
   // Read after integration, never before: Yjs refuses to answer get() on a
   // Y.Map that has not joined a document yet and hands back undefined, which
@@ -260,7 +269,54 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
       answer.insert(answer.length, answer.length > 0 ? `\n\n${note}` : note)
     }
     entry.set('state', state)
+    /*
+     * The proposal is lifted out at the end rather than while the answer
+     * streams: a half-written code block is not a patch, and a cell offering to
+     * apply one would be offering to break itself. Only an `edit` turn carries
+     * one — the other actions may print code too, and code in an explanation is
+     * an illustration, not an offer to rewrite anything.
+     */
+    if (state === 'done' && entry.get('action') === 'edit') {
+      const code = lastCodeBlock(chatAnswer(entry).toString())
+      if (code) entry.set('patch', code)
+    }
   }, ORIGIN)
+}
+
+/**
+ * The last fenced code block in an answer, which is the proposed cell.
+ *
+ * The last rather than the first: a model that shows the broken line before the
+ * corrected one puts the answer second, and the prompt asks for exactly one
+ * block precisely so this is unambiguous when it obeys.
+ *
+ * Returns null when there is no block at all, which is a real outcome — "your
+ * cell is already right" is a legitimate reply to a request to change it, and
+ * inventing a patch out of prose would be the model saying nothing and the
+ * interface offering to apply it.
+ */
+export function lastCodeBlock(answer: string): string | null {
+  const fence = /```(?:python|py)?[ \t]*\r?\n([\s\S]*?)```/g
+  let found: string | null = null
+  let match: RegExpExecArray | null
+  while ((match = fence.exec(answer)) !== null) found = match[1]
+  if (found === null) return null
+  // Trailing newline only: leading whitespace can be meaningful indentation in
+  // a block that starts inside a function body.
+  const code = found.replace(/\s+$/, '')
+  return code.length > 0 ? code : null
+}
+
+/** What a cell says at this instant, or null when there is no such cell. */
+function sourceOfCell(doc: Y.Doc, cellId: string | null): string | null {
+  if (!cellId) return null
+  const cells = getCells(doc)
+  for (const cell of cells.toArray()) {
+    if (cell.get('id') !== cellId) continue
+    const source = cell.get('source')
+    return source instanceof Y.Text ? source.toString() : String(source ?? '')
+  }
+  return null
 }
 
 function docOf(sessionId: string): Y.Doc {
@@ -379,6 +435,16 @@ function actionInstruction(action: AiAction | undefined, target: string): string
       return `${capitalize(target)} runs but misbehaves. Reason through what the code and its output together imply, name the most likely cause, and give the one or two checks that would confirm it (a shape, a dtype, a printed value). Offer a fix only once the cause is clear.`
     case 'improve':
       return `Give a better version of ${target} — clearer, faster or more idiomatic — as one runnable Python block, then name the tradeoff in a single line: what it gains and what it costs. If the cell is already fine, say so instead of churning it.`
+    case 'edit':
+      /*
+       * The one action whose output is applied rather than read. Everything in
+       * this instruction serves that: the whole cell, because a fragment cannot
+       * replace anything; exactly one block, because two would leave the
+       * interface guessing which is the answer; and the reasoning first,
+       * because the room is being asked to approve a change and deserves to
+       * know what it does before deciding.
+       */
+      return `Rewrite ${target} to do what was asked. Say in one or two sentences what you are changing and why — that is what the room reads before deciding — then give the COMPLETE new source of the cell as exactly one runnable Python block. Not a fragment and not a diff: what you write replaces the cell entirely, so anything you leave out is deleted. Change nothing that was not asked for. If the cell already does what was asked, say so plainly and give no code block at all.`
     case 'hint':
       return `The student is mid-exercise and must NOT be handed the solution. Give one nudge about ${target}: point at the part worth looking at, or ask the question that unblocks them. No corrected version of their code, no full solution, no line-by-line walkthrough — at most a one-line snippet of a general pattern, and only if it is unavoidable. Two or three sentences.`
     default:
@@ -401,6 +467,8 @@ function actionLabel(action: AiAction | undefined): string {
       return 'Why is this wrong?'
     case 'improve':
       return 'Improve this cell'
+    case 'edit':
+      return 'Rewrite this cell'
     case 'hint':
       return 'Give me a hint'
     default:
