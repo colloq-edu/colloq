@@ -154,7 +154,7 @@
       <Icon name="spinner" size={15} class="animate-spin" />
       Creating…
     {:else}
-      Create and open
+      Create seminar
     {/if}
   </button>
 {/snippet}

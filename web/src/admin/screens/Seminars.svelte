@@ -395,7 +395,16 @@
    */
   $effect(() => {
     const id = justCreatedId
-    if (!id) return
+      /*
+       * `seminars` is read on purpose, not by accident. A seminar made on the
+       * other screen sets this id and then reloads the list, so at the moment
+       * the id changes the row does not exist yet, the query finds nothing, and
+       * the cursor is left on the body — the teacher then goes hunting for the
+       * link this was meant to hand them. Depending on the list as well runs
+       * this again once the rows land.
+       */
+      void seminars.length
+      if (!id) return
     document.querySelector<HTMLButtonElement>(`[data-copy="${id}"]`)?.focus()
   })
 
