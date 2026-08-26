@@ -1,7 +1,7 @@
 /**
  * Renders the live notebook as plain text for the model.
  *
- * The browser sends nothing but a cell id: everything the assistant knows comes
+ * The browser sends nothing but a cell id: everything the oracle knows comes
  * from the server's own copy of the CRDT, read at the moment of the question.
  * That is the whole point of the feature — "why is this broken?" is meaningless
  * without the traceback a classmate produced ten seconds ago, and nobody should
@@ -11,7 +11,7 @@
  * and the newest traceback survive intact, distant cells are elided first.
  */
 import { getMeta, readNotebook, type CellOutput, type CellSnapshot, type DataOutput, type KernelStatus } from '@shared/notebook'
-import { getAssistantSettings } from '../admin/settings.js'
+import { getOracleSettings } from '../admin/settings.js'
 import { getSessionDoc } from '../collab/index.js'
 import { getSession } from '../db.js'
 import { listFiles } from '../workspace.js'
@@ -34,7 +34,7 @@ const MAX_FILES = 40
 export function buildContext(sessionId: string, selectedCellId: string | null): string {
   // Read per question, not per boot: a teacher who lowers the budget mid-class
   // to fit a smaller model must see the next question honour it.
-  const maxTotal = getAssistantSettings().contextChars
+  const maxTotal = getOracleSettings().contextChars
   const { doc } = getSessionDoc(sessionId)
   const cells = readNotebook(doc)
   const meta = getMeta(doc)

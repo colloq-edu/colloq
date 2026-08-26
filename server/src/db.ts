@@ -34,7 +34,7 @@ db.exec(`
     updated_at  INTEGER NOT NULL
   );
 
-  -- The assistant thread moved into the session document, where the whole room
+  -- The oracle thread moved into the session document, where the whole room
   -- can read it; doc_snapshots persists it now. Installs from before that keep
   -- a private per-person transcript on disk until this runs.
   DROP TABLE IF EXISTS ai_messages;

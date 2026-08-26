@@ -13,7 +13,7 @@ import {
 
 const ACTIONS: AiAction[] = ['explain', 'fix', 'debug', 'improve', 'hint', 'ask']
 
-test('an assistant that is off accepts nothing at all', () => {
+test('an oracle that is off accepts nothing at all', () => {
   for (const action of ACTIONS) assert.equal(actionAllowedIn('off', action), false, action)
 })
 

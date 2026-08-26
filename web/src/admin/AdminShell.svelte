@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type AdminTab = 'seminars' | 'environments' | 'assistant' | 'teachers'
+  export type AdminTab = 'seminars' | 'environments' | 'oracle' | 'teachers'
 
   /**
    * The numbers on the nav rows.
@@ -82,7 +82,7 @@
     },
   ])
   const INSTANCE = $derived<NavItem[]>([
-    { id: 'assistant', label: 'Assistant', icon: 'sparkles', href: '/admin/assistant' },
+    { id: 'oracle', label: 'Oracle', icon: 'sparkles', href: '/admin/oracle' },
     {
       id: 'teachers',
       label: 'Who can teach',

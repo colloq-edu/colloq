@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import AdminShell, { type AdminTab } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
-  import Assistant from '@/admin/screens/Assistant.svelte'
+  import Oracle from '@/admin/screens/Oracle.svelte'
   import Environments from '@/admin/screens/Environments.svelte'
   import Seminars from '@/admin/screens/Seminars.svelte'
   import Teachers from '@/admin/screens/Teachers.svelte'
@@ -18,8 +18,8 @@
 
   const exchanging = $derived(readEntryCredential(path) !== null)
   const tab = $derived<AdminTab>(
-    path.startsWith('/admin/assistant')
-      ? 'assistant'
+    path.startsWith('/admin/oracle')
+      ? 'oracle'
       : path.startsWith('/admin/teachers')
         ? 'teachers'
         : path.startsWith('/admin/environments')
@@ -88,8 +88,8 @@
   <AdminShell {tab} {navigate}>
     {#if tab === 'environments'}
       <Environments />
-    {:else if tab === 'assistant'}
-      <Assistant />
+    {:else if tab === 'oracle'}
+      <Oracle />
     {:else if tab === 'teachers'}
       <Teachers />
     {:else}

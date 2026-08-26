@@ -1,6 +1,6 @@
 /**
  * The instance's own routes: the seminars a teacher is running, and the
- * assistant that answers in them.
+ * oracle that answers in them.
  *
  * Everything here is staff-only. The split between staff and owner is
  * deliberate and narrow: a teacher can create, rename and archive rooms all
@@ -13,9 +13,9 @@ import * as Y from 'yjs'
 import { getCells, getMeta } from '@shared/notebook'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import {
-  getAssistantSettings,
-  parseAssistantPatch,
-  updateAssistantSettings,
+  getOracleSettings,
+  parseOraclePatch,
+  updateOracleSettings,
 } from '../admin/settings.js'
 import { summariseUsage } from '../admin/usage.js'
 import { testConnection } from '../ai/provider.js'
@@ -32,7 +32,7 @@ import {
   LIMITS,
   type AdminErrorBody,
   type AdminSeminar,
-  type AssistantTestResult,
+  type OracleTestResult,
   type SeminarStatus,
 } from '@shared/admin'
 
@@ -314,10 +314,10 @@ export function adminInstanceRoutes(): Router {
     })()
   })
 
-  /* -------------------------------------------------------- assistant */
+  /* -------------------------------------------------------- oracle */
 
-  router.get('/api/admin/assistant', requireStaff, (_req, res) => {
-    res.json(getAssistantSettings())
+  router.get('/api/admin/oracle', requireStaff, (_req, res) => {
+    res.json(getOracleSettings())
   })
 
   /*
@@ -330,24 +330,24 @@ export function adminInstanceRoutes(): Router {
    * notices. shared/admin.ts scopes a teacher to READING settings; the GET
    * below is that read, and it is masked.
    */
-  router.put('/api/admin/assistant', ownerOnly('change the assistant settings'), (req, res) => {
-    const parsed = parseAssistantPatch(req.body)
+  router.put('/api/admin/oracle', ownerOnly('change the oracle settings'), (req, res) => {
+    const parsed = parseOraclePatch(req.body)
     if ('error' in parsed) return invalid(res, parsed.error)
     // The response is the masked settings, like the GET: the key goes in and is
     // never handed back, not even to the teacher who just typed it.
-    res.json(updateAssistantSettings(parsed.patch))
+    res.json(updateOracleSettings(parsed.patch))
   })
 
   // Owner-only for the same reason: this is the button that makes the server
   // send a request, with the key attached, to whatever host is configured.
-  router.post('/api/admin/assistant/test', ownerOnly('test the assistant connection'), (_req, res) => {
+  router.post('/api/admin/oracle/test', ownerOnly('test the oracle connection'), (_req, res) => {
     void testConnection().then(
       (result) => res.json(result),
       (err: unknown) => {
         // testConnection turns failures into results; reaching here means the
         // call itself broke, which is still a sentence and not a 500.
-        console.error('[admin] assistant test failed:', err instanceof Error ? err.message : err)
-        const broke: AssistantTestResult = {
+        console.error('[admin] oracle test failed:', err instanceof Error ? err.message : err)
+        const broke: OracleTestResult = {
           ok: false,
           ms: null,
           message: 'The test could not be run — check the server logs.',
@@ -358,7 +358,7 @@ export function adminInstanceRoutes(): Router {
     )
   })
 
-  router.get('/api/admin/assistant/usage', requireStaff, (req, res) => {
+  router.get('/api/admin/oracle/usage', requireStaff, (req, res) => {
     const now = Date.now()
     const asked = Number(req.query.since)
     const since =

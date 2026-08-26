@@ -203,7 +203,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * into two deletes — which collapse into one — and two inserts, which do not:
    * the notebook ends up holding the same cell twice, under one id. Everything
    * downstream is keyed by that id — running it, attributing it, asking the
-   * assistant about it — so a duplicate is not a cosmetic problem.
+   * oracle about it — so a duplicate is not a cosmetic problem.
    *
    * Repaired here rather than in the editor for the reason the title is: there
    * is exactly one server, and it cannot be a stale client racing another. The

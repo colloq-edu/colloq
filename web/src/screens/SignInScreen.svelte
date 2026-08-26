@@ -66,7 +66,7 @@
   <!-- The poster does not depend on anything the server has to say, so it
        paints on the first frame while the cards wait for the instance state. -->
   <Poster title="Teaching workspace" headline="banner" width="hidden w-5/12 xl:flex">
-    Seminars and the assistant are configured here — so that the classroom itself stays a link and
+    Seminars and the oracle are configured here — so that the classroom itself stays a link and
     nothing else.
 
     {#snippet footer()}

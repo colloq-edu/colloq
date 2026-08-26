@@ -1,5 +1,5 @@
 /**
- * The assistant, assembled: notebook context + the room's thread + one
+ * The oracle, assembled: notebook context + the room's thread + one
  * rewritten prompt, streamed straight into the shared document.
  *
  * The thread used to be a per-person inbox. It is now part of the CRDT, and
@@ -11,7 +11,7 @@
  *
  * Two constraints still shape the prompt. The panel is 380px wide and sits next
  * to code someone is mid-thought on, so answers must open with the answer. And
- * a teacher running an exercise needs an assistant that can withhold the
+ * a teacher running an exercise needs an oracle that can withhold the
  * solution on request — that is what the `hint` action is for, and why the
  * action lives here rather than in the client's message box.
  */
@@ -24,7 +24,7 @@ import {
   readChatEntry,
   type ChatState,
 } from '@shared/notebook'
-import { getAssistantSettings } from '../admin/settings.js'
+import { getOracleSettings } from '../admin/settings.js'
 import { getSessionDoc } from '../collab/index.js'
 import { buildContext } from './context.js'
 import { providerModel, providerReady, streamChat, type ChatTurn } from './provider.js'
@@ -145,7 +145,7 @@ async function generate(
   try {
     if (!providerReady()) {
       throw new Error(
-        'No model is set up on this Colloq yet. Whoever runs it can add one under Assistant in the teaching panel.',
+        'No model is set up on this Colloq yet. Whoever runs it can add one under Oracle in the teaching panel.',
       )
     }
 
@@ -191,7 +191,7 @@ async function generate(
       settle(sessionId, entryId, 'done', null)
       return
     }
-    const reason = describe(err) || 'The assistant is unavailable — check the server logs.'
+    const reason = describe(err) || 'The oracle is unavailable — check the server logs.'
     console.error(`[session ${sessionId}] AI request failed:`, reason)
     // The reason goes into the bubble: the room is looking at this thread, and
     // an empty grey box tells a class nothing about what broke.
@@ -323,7 +323,7 @@ function systemPrompt(
   context: string,
 ): string {
   const rules = [
-    'You are the AI assistant built into Colloq, a live seminar notebook that a class is working in right now.',
+    'You are the AI oracle built into Colloq, a live seminar notebook that a class is working in right now.',
     `${participantName} asked this question, and every other person in the seminar can read your reply: answer the room, not a private tab, and name whoever asked when it helps ("${participantName} is running into…").`,
     'Earlier turns in this thread were asked by different people; each question is labelled with its asker.',
     'Lead with the answer in one or two sentences, then the reasoning behind it. Never open with a preamble or a restatement of the question.',
@@ -341,7 +341,7 @@ function systemPrompt(
   // Last, and said to outrank the rest: this is the teacher for this course
   // fencing off a library or a technique, and a rule that loses to our generic
   // guidance is a rule the panel promised and did not keep.
-  const houseRules = getAssistantSettings().houseRules
+  const houseRules = getOracleSettings().houseRules
   if (houseRules) {
     rules.push(
       `House rules set by the teacher of this seminar, which outrank the guidance above: ${houseRules}`,
@@ -362,7 +362,7 @@ function userPrompt(
   if (!instruction) {
     return (
       asked ||
-      `${participantName} opened the assistant without typing anything. In one short line, ask what they are stuck on.`
+      `${participantName} opened the oracle without typing anything. In one short line, ask what they are stuck on.`
     )
   }
   // A quick action can carry a typed note with it; the note narrows the action.

@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * The room's assistant thread.
+   * The room's oracle thread.
    *
    * Nothing here holds an answer: the server publishes both the question and
    * the streaming reply into the session document, and this panel is a reader
@@ -11,7 +11,7 @@
   import type * as Y from 'yjs'
   import { getCells, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
   import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
-  import type { AssistantMode } from '@shared/admin'
+  import type { OracleMode } from '@shared/admin'
   import { api } from '@/lib/api'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchCellIds } from '@/lib/yreactive.svelte'
@@ -46,7 +46,7 @@
   // Raw: the whole array is rebuilt on every observer fire, so deep-proxying
   // each snapshot would be work spent on objects that are replaced next frame.
   let entries = $state.raw<ChatSnapshot[]>(chat.map(readChatEntry))
-  let status = $state<{ enabled: boolean; model: string; mode: AssistantMode } | null>(null)
+  let status = $state<{ enabled: boolean; model: string; mode: OracleMode } | null>(null)
   let draft = $state('')
   let sendError = $state<string | null>(null)
   let armed = $state(false)
@@ -63,7 +63,7 @@
   let composingSent = false
 
   // Optimistic until proven otherwise: a null status means "still checking",
-  // and a dead input while a fetch is in flight reads as a broken assistant.
+  // and a dead input while a fetch is in flight reads as a broken oracle.
   const offline = $derived(status !== null && !status.enabled)
   /*
    * Hints mode is a real state of the room, not an error to discover by
@@ -71,7 +71,7 @@
    * comes from actionAllowedIn, the same function the route refuses with, so
    * the two cannot drift.
    */
-  const mode = $derived<AssistantMode>(status?.mode ?? 'full')
+  const mode = $derived<OracleMode>(status?.mode ?? 'full')
   const quickActions = $derived(QUICK.filter((q) => actionAllowedIn(mode, q.action)))
   const hintsOnly = $derived(mode === 'hints')
   const selected = $derived(cellNumber(session.selectedCellId))
@@ -300,7 +300,7 @@
       // minutes until the next question are the server explaining an
       // instance's rules, and paraphrasing them would leave the student
       // guessing at a limit only the server knows.
-      sendError = err instanceof Error ? err.message : 'Could not reach the assistant.'
+      sendError = err instanceof Error ? err.message : 'Could not reach the oracle.'
     }
   }
 
@@ -365,7 +365,7 @@
 <div class="panel h-full">
   <div class="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4">
     <Icon name="sparkles" size={14} class="shrink-0 text-accent-text" />
-    <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">Assistant</span>
+    <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">Oracle</span>
     <span
       class="inline-flex h-5 shrink-0 items-center bg-raised px-1.5 text-2xs font-bold uppercase
              tracking-caps text-ink"
@@ -480,7 +480,7 @@
 
           {#if entry.state === 'error'}
             <div class="ml-7 mt-2 border-l-2 border-danger bg-danger/[0.05] px-3 py-2 text-code text-danger">
-              <p class="break-words">{entry.answer || 'The assistant did not answer.'}</p>
+              <p class="break-words">{entry.answer || 'The oracle did not answer.'}</p>
               <button
                 type="button"
                 class="mt-2 inline-flex h-6 items-center gap-1 border border-danger/40 px-2 text-2xs font-bold uppercase tracking-caps transition-colors duration-100 hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
@@ -564,7 +564,7 @@
       {/each}
       {#if hintsOnly}
         <span class="text-2xs text-muted">
-          hints only — the assistant points, it does not write the answer
+          hints only — the oracle points, it does not write the answer
         </span>
       {:else if selected === null}
         <span class="text-2xs text-muted">select a cell to use these</span>
@@ -575,16 +575,16 @@
       <!--
         Two different facts wore the same sentence, and it was addressed to
         whoever runs the server while being read by a student who cannot act on
-        it. An assistant switched off by the teacher is a decision, not a fault;
+        it. An oracle switched off by the teacher is a decision, not a fault;
         an unconfigured one is a fault, and only staff can do anything about it —
         so only staff are told where.
       -->
       <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted">
         {#if mode === 'off'}
-          The assistant is switched off for this seminar.
+          The oracle is switched off for this seminar.
         {:else if isHost}
           No model is set up on this Colloq yet — add a key under
-          <span class="font-semibold text-ink">Assistant</span> in the teaching panel.
+          <span class="font-semibold text-ink">Oracle</span> in the teaching panel.
         {:else}
           No model is set up on this Colloq yet, so there is nobody to ask here.
         {/if}
@@ -606,7 +606,7 @@
           bind:this={composer}
           bind:value={draft}
           rows="1"
-          placeholder={selected === null ? "Ask the room's assistant…" : `Ask about cell ${pad(selected)}…`}
+          placeholder={selected === null ? "Ask the room's oracle…" : `Ask about cell ${pad(selected)}…`}
           title="Enter sends, Shift+Enter for a new line"
           class="max-h-40 flex-1 resize-none bg-transparent py-1 text-ui text-ink placeholder:text-muted focus:outline-none"
           oninput={onInput}

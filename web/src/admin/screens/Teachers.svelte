@@ -316,7 +316,7 @@
 
 <AdminPage
   title="Who can teach"
-  subtitle="Everyone here can create seminars and see the assistant’s settings. Students never appear on this list — they have no account."
+  subtitle="Everyone here can create seminars and see the oracle’s settings. Students never appear on this list — they have no account."
   actions={isOwner ? addTeacher : undefined}
 >
   {#if composing}

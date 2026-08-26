@@ -1,10 +1,10 @@
 /**
  * What the model is told happened before.
  *
- * The assistant thread lives in the shared document, and the same `answer`
+ * The oracle thread lives in the shared document, and the same `answer`
  * field carries two very different things: what the model said, and the
  * sentence explaining why it could not. Both were replayed as `role:
- * assistant`, so after one bad key or one timeout the model believed it had
+ * oracle`, so after one bad key or one timeout the model believed it had
  * said "The AI endpoint rejected the API key" — and answered accordingly, for
  * the rest of the seminar.
  */
@@ -71,7 +71,7 @@ test('a failed turn does not come back as something the model said', () => {
   assert.deepEqual(
     turns.filter((t) => t.role === 'assistant'),
     [],
-    'the error sentence was replayed as an assistant turn',
+    'the error sentence was replayed as an oracle turn',
   )
   // The question still happened, and is still worth the context.
   assert.deepEqual(turns, [{ role: 'user', content: 'Maria asked: why is the loss nan?' }])
@@ -82,8 +82,8 @@ test('a cancelled answer is still left out', () => {
   // '(stopped)' is what settle() writes when somebody presses Stop before a
   // single token arrived — it is the room's word for the empty answer.
   say(doc, { question: 'explain this', answer: '(stopped)', state: 'done' })
-  const assistantTurns = recentTurns(doc).filter((t) => t.role === 'assistant')
-  assert.deepEqual(assistantTurns, [], 'the stop marker was replayed as an answer')
+  const oracleTurns = recentTurns(doc).filter((t) => t.role === 'assistant')
+  assert.deepEqual(oracleTurns, [], 'the stop marker was replayed as an answer')
 })
 
 test('one failure does not cost the exchanges around it', () => {
@@ -103,8 +103,8 @@ test('one failure does not cost the exchanges around it', () => {
 test('an answer still streaming is carried, because it is real', () => {
   const doc = room()
   say(doc, { question: 'why?', answer: 'It returns cached blocks to the driver, so', state: 'streaming' })
-  const assistantTurns = recentTurns(doc).filter((t) => t.role === 'assistant')
-  assert.equal(assistantTurns.length, 1)
+  const oracleTurns = recentTurns(doc).filter((t) => t.role === 'assistant')
+  assert.equal(oracleTurns.length, 1)
 })
 
 test('a question nobody typed carries no user turn', () => {

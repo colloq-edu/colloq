@@ -10,9 +10,9 @@ import type {
   AdminMe,
   AdminRole,
   AdminSeminar,
-  AssistantSettings,
-  AssistantTestResult,
-  AssistantUsage,
+  OracleSettings,
+  OracleTestResult,
+  OracleUsage,
   ClaimRequest,
   CreateSeminarRequest,
   EnvironmentsState,
@@ -23,7 +23,7 @@ import type {
   SignInWithTokenRequest,
   Teacher,
   TeacherWithLink,
-  UpdateAssistantRequest,
+  UpdateOracleRequest,
   UpdateSeminarRequest,
 } from '@shared/admin'
 
@@ -171,23 +171,23 @@ export const adminApi = {
   deleteSeminar: (id: string) =>
     request<void>(`/seminars/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  /* ----------------------------------------------------------- assistant */
+  /* ----------------------------------------------------------- oracle */
 
-  assistant: () => request<AssistantSettings>('/assistant'),
+  oracle: () => request<OracleSettings>('/oracle'),
 
   /**
    * A whole-settings write: omitting `apiKey` leaves the stored secret alone,
    * which is the only way a form that never receives the key can save the rest.
    */
-  updateAssistant: (body: UpdateAssistantRequest) =>
-    request<AssistantSettings>('/assistant', { method: 'PUT', ...json(body) }),
+  updateOracle: (body: UpdateOracleRequest) =>
+    request<OracleSettings>('/oracle', { method: 'PUT', ...json(body) }),
 
   /** Talks to the configured provider from the server, so it proves the real path. */
-  testAssistant: () => request<AssistantTestResult>('/assistant/test', { method: 'POST' }),
+  testOracle: () => request<OracleTestResult>('/oracle/test', { method: 'POST' }),
 
   /** `since` is a timestamp in ms; the server clamps it and picks a term by default. */
-  assistantUsage: (since?: number) =>
-    request<AssistantUsage>(since ? `/assistant/usage?since=${since}` : '/assistant/usage'),
+  oracleUsage: (since?: number) =>
+    request<OracleUsage>(since ? `/oracle/usage?since=${since}` : '/oracle/usage'),
 
   /* ------------------------------------------------------------ teachers */
 

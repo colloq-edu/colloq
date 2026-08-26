@@ -12,7 +12,7 @@
  */
 import OpenAI from 'openai'
 import { isKeylessProvider, resolveAiConfig } from '../admin/settings.js'
-import type { AssistantTestResult } from '@shared/admin'
+import type { OracleTestResult } from '@shared/admin'
 
 export interface ChatTurn {
   role: 'system' | 'user' | 'assistant'
@@ -150,7 +150,7 @@ function openStream(messages: PayloadTurn[], temperature: number | undefined, si
  * never heard of that model" — three failures, three different sentences,
  * because "test failed" tells a teacher with a class waiting nothing.
  */
-export async function testConnection(): Promise<AssistantTestResult> {
+export async function testConnection(): Promise<OracleTestResult> {
   const ai = resolveAiConfig()
   if (!ai.baseUrl) return fail('No endpoint address is set — choose a provider or type a base URL.')
   if (!ai.model) return fail('No model is set — type the name the endpoint expects, e.g. gpt-4o-mini.')
@@ -172,7 +172,7 @@ export async function testConnection(): Promise<AssistantTestResult> {
   }
 }
 
-async function diagnose(err: unknown, model: string, baseUrl: string): Promise<AssistantTestResult> {
+async function diagnose(err: unknown, model: string, baseUrl: string): Promise<OracleTestResult> {
   const status = statusOf(err)
   const detail = detailOf(err)
 
@@ -207,7 +207,7 @@ async function afterRejection(
   baseUrl: string,
   status: number,
   detail: string,
-): Promise<AssistantTestResult> {
+): Promise<OracleTestResult> {
   const began = Date.now()
   let models: string[]
   try {
@@ -244,7 +244,7 @@ async function afterRejection(
   }
 }
 
-function fail(message: string): AssistantTestResult {
+function fail(message: string): OracleTestResult {
   return { ok: false, ms: null, message, model: null }
 }
 

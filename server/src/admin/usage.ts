@@ -1,5 +1,5 @@
 /**
- * What the room actually asked the assistant.
+ * What the room actually asked the oracle.
  *
  * One row per accepted question, counted on our own server rather than read
  * back from the provider: the provider knows what an API key spent, this knows
@@ -12,7 +12,7 @@
  * thread already lives in the seminar document where the room can see it.
  */
 import { db } from '../db.js'
-import type { AssistantUsage } from '@shared/admin'
+import type { OracleUsage } from '@shared/admin'
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS ai_usage (
@@ -101,7 +101,7 @@ export function windowResetAt(
   return row ? row.created_at + windowMs : null
 }
 
-export function summariseUsage(sinceMs: number): AssistantUsage {
+export function summariseUsage(sinceMs: number): OracleUsage {
   const row = totals.get(sinceMs) as {
     questions: number
     tokens: number | null

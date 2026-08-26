@@ -88,7 +88,7 @@ export type YOutput = Y.Map<any>
 /* ------------------------------------------------------------------ chat */
 
 /**
- * The assistant thread lives in the document, not in a per-person inbox.
+ * The oracle thread lives in the document, not in a per-person inbox.
  *
  * A seminar loses something when questions go into a private tab: the answer
  * helps one student instead of the room, and the teacher never learns what was

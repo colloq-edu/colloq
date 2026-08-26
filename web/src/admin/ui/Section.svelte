@@ -17,7 +17,7 @@
   The pair wraps rather than squeezing, and it wraps on the width it actually
   has rather than on a breakpoint: the panel's rail is 236px, so a viewport
   number would be measuring the wrong box. A 210px label beside a 40px gutter
-  used to leave the assistant's provider form 226px on a 768px window, which is
+  used to leave the oracle's provider form 226px on a 768px window, which is
   where BASE URL and MODEL printed on top of each other. Below 340px of room for
   the control, the explanation goes above it instead of eating it.
 -->

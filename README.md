@@ -3,7 +3,7 @@
 One link, one live notebook, one AI. A self-hosted workspace for running technical seminars.
 
 The teacher creates a session and shares a link. Students open it, type a name, and land inside a
-collaborative notebook with Python execution, a shared terminal and a built-in assistant. No
+collaborative notebook with Python execution, a shared terminal and a built-in oracle. No
 signup, no email, no course management — the link *is* the seminar.
 
 ```
@@ -113,7 +113,7 @@ To see what is actually installed rather than what was requested: `make env-free
 
 ## The teaching side
 
-Everything a teacher runs lives at `/admin`: the seminars, the assistant's provider and limits, and
+Everything a teacher runs lives at `/admin`: the seminars, the oracle's provider and limits, and
 who else may teach here. Students never see it — they open a seminar link, type a name, and are in.
 
 **The setup token** is written to `<DATA_DIR>/setup-token` (mode 0600, `./data/setup-token` by
@@ -155,8 +155,8 @@ Everything lives in `.env` — see `.env.example` for the full list.
 
 The AI layer talks plain OpenAI-compatible HTTP, so pointing `OPENAI_BASE_URL` at Ollama, vLLM,
 LM Studio or OpenRouter works without touching code. Leaving `OPENAI_API_KEY` empty simply
-disables the assistant; everything else keeps working. All of it can also be set from
-`/admin` → *Assistant*, where a stored value overrides the environment and clearing it hands the
+disables the oracle; everything else keeps working. All of it can also be set from
+`/admin` → *Oracle*, where a stored value overrides the environment and clearing it hands the
 setting back to `.env`.
 
 ## How it works
@@ -164,7 +164,7 @@ setting back to `.env`.
 ```
 Browser ── WS /collab  ── Yjs sync (notebook + presence)
        ── WS /control  ── run / interrupt / restart, kernel status
-       ── HTTP /api    ── sessions, join, files, ask the assistant
+       ── HTTP /api    ── sessions, join, files, ask the oracle
                 │
           Node server ── collab/   holds each session's Y.Doc in memory, snapshots it
                       ── kernel/   one shared kernel per session, FIFO run queue
@@ -315,7 +315,7 @@ whole realtime + execution + CRDT chain in one pass.
 ### Widths
 
 The seminar room holds together from a wide desktop down to a phone: below about 1100px the
-assistant folds into a button in the top bar, below about 700px the files-and-people rail folds
+oracle folds into a button in the top bar, below about 700px the files-and-people rail folds
 into the one beside it, and each opens as a panel over the room that closes on Escape, on a click
 outside, or on the button that opened it. Nothing scrolls the page sideways at any width — the run
 bar scrolls inside itself instead.

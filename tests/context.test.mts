@@ -1,10 +1,10 @@
 /**
- * What the assistant is told about the notebook.
+ * What the oracle is told about the notebook.
  *
  * This is the part of the feature that fails silently: the context is trimmed
  * to fit a window, and if the trimming drops the cell the student selected or
  * the traceback they are staring at, the answer is confidently about the wrong
- * thing. Nobody sees a bug; they see a bad assistant.
+ * thing. Nobody sees a bug; they see a bad oracle.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -14,7 +14,7 @@ import { cellOutputs, cellSource, createCell, getCells, getMeta } from '../share
 import { createSession } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { buildContext } from '../server/src/ai/context.js'
-import { updateAssistantSettings } from '../server/src/admin/settings.js'
+import { updateOracleSettings } from '../server/src/admin/settings.js'
 
 /*
  * Binding a document starts a snapshot timer per seminar. Without this the
@@ -179,9 +179,9 @@ test('the truncation marker says how much really went', () => {
   cellSource(cell).insert(0, `data = "${'q'.repeat(60_000)}"`)
   const cellId = cell.get('id') as string
 
-  updateAssistantSettings({ contextChars: 100_000 })
+  updateOracleSettings({ contextChars: 100_000 })
   const whole = buildContext(id, cellId).length
-  updateAssistantSettings({ contextChars: 20_000 })
+  updateOracleSettings({ contextChars: 20_000 })
   const text = buildContext(id, cellId)
 
   const claimed = /… truncated (\d+) chars …/.exec(text)

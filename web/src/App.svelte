@@ -45,7 +45,7 @@
 
   /*
    * The workspace goes the same way, and for a sharper version of the same
-   * reason: the notebook, the terminal, the assistant and the two rails are the
+   * reason: the notebook, the terminal, the oracle and the two rails are the
    * bulk of this app, and the screen thirty students are looking at is a name
    * field. Statically imported, those bytes had to be fetched, parsed and run
    * before the join form could exist at all.

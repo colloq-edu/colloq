@@ -112,14 +112,14 @@ export type ControlServerMessage =
   | { t: 'error'; message: string }
   | { t: 'pong' }
 
-import type { AssistantMode } from './admin.js'
+import type { OracleMode } from './admin.js'
 
 /* ------------------------------------------------------------------- AI */
 
 export type AiAction = 'explain' | 'fix' | 'debug' | 'improve' | 'hint' | 'ask'
 
 /**
- * Which actions an assistant in this mode will accept.
+ * Which actions an oracle in this mode will accept.
  *
  * One definition, two callers: the route that refuses and the panel that
  * decides whether to draw the button. They were separate, and the panel drew
@@ -129,7 +129,7 @@ export type AiAction = 'explain' | 'fix' | 'debug' | 'improve' | 'hint' | 'ask'
  * 'ask' is a typed question with no instruction of its own, so it survives
  * hints mode; the mode shapes the answer, not the right to ask.
  */
-export function actionAllowedIn(mode: AssistantMode, action: AiAction): boolean {
+export function actionAllowedIn(mode: OracleMode, action: AiAction): boolean {
   if (mode === 'off') return false
   if (mode === 'full') return true
   return action === 'hint' || action === 'ask'
@@ -192,7 +192,7 @@ export interface AwarenessUser {
   role: ParticipantRole
   /** Cell the person is currently focused on, for the "editing here" badge. */
   activeCellId?: string | null
-  /** True while they are typing into the assistant composer. */
+  /** True while they are typing into the oracle composer. */
   composing?: boolean
   /** True while their cursor is in the terminal. */
   inTerminal?: boolean

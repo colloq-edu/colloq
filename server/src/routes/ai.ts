@@ -1,5 +1,5 @@
 /**
- * The assistant's REST surface.
+ * The oracle's REST surface.
  *
  * There is no response stream here any more. Asking is fire-and-forget: the
  * server appends the question to the session document and streams the answer
@@ -12,7 +12,7 @@
  * whole room watches the model appear to produce.
  */
 import { Router } from 'express'
-import { getAssistantSettings } from '../admin/settings.js'
+import { getOracleSettings } from '../admin/settings.js'
 import { countRecentQuestions, recordQuestion, windowResetAt } from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
 import { getParticipant, getSession } from '../db.js'
@@ -40,8 +40,8 @@ export function aiRoutes(): Router {
   const router = Router()
 
   router.get('/api/ai/status', (_req, res) => {
-    const settings = getAssistantSettings()
-    // A student's panel asks one question — "is there an assistant here?" — and
+    const settings = getOracleSettings()
+    // A student's panel asks one question — "is there an oracle here?" — and
     // a mode of 'off' or a limit of zero is the same answer as no API key.
     const enabled = aiReady() && settings.defaultMode !== 'off' && settings.questionsPerHour > 0
     res.json({ enabled, model: aiModel(), mode: settings.defaultMode })
@@ -53,14 +53,14 @@ export function aiRoutes(): Router {
     if (!auth) return res.status(401).json({ error: 'join the session first' })
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
 
-    const settings = getAssistantSettings()
+    const settings = getOracleSettings()
     if (settings.defaultMode === 'off') {
-      return res.status(403).json({ error: 'The assistant is switched off for this instance.' })
+      return res.status(403).json({ error: 'The oracle is switched off for this instance.' })
     }
     if (settings.questionsPerHour === 0) {
       return res
         .status(403)
-        .json({ error: 'The assistant is switched off for this instance — no questions are allowed.' })
+        .json({ error: 'The oracle is switched off for this instance — no questions are allowed.' })
     }
     if (!aiReady()) {
       /*
@@ -72,7 +72,7 @@ export function aiRoutes(): Router {
       return res.status(503).json({
         error:
           auth.role === 'host'
-            ? 'No model is set up on this Colloq yet — add a key under Assistant in the teaching panel.'
+            ? 'No model is set up on this Colloq yet — add a key under Oracle in the teaching panel.'
             : 'No model is set up on this Colloq yet, so there is nobody to ask here.',
       })
     }
@@ -97,7 +97,7 @@ export function aiRoutes(): Router {
     if (settings.defaultMode === 'hints') {
       if (action && !actionAllowedIn('hints', action)) {
         return res.status(403).json({
-          error: 'This assistant is in hints mode: it can point you at the problem, but it will not write the answer for you. Ask for a hint instead.',
+          error: 'This oracle is in hints mode: it can point you at the problem, but it will not write the answer for you. Ask for a hint instead.',
         })
       }
       action = 'hint'
@@ -109,12 +109,12 @@ export function aiRoutes(): Router {
       const resetAt = windowResetAt(sessionId, auth.participantId, HOUR_MS, limit)
       const minutes = resetAt ? Math.max(1, Math.ceil((resetAt - Date.now()) / 60_000)) : 60
       if (resetAt) res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))))
-      // "all 1 assistant question" is not a sentence. A cap of one is the one
+      // "all 1 oracle question" is not a sentence. A cap of one is the one
       // case a teacher is most likely to set deliberately, so it gets its own.
       const spent =
         limit === 1
-          ? 'You have used your one assistant question for this hour in this seminar'
-          : `You have used all ${limit} of your assistant questions for this hour in this seminar`
+          ? 'You have used your one oracle question for this hour in this seminar'
+          : `You have used all ${limit} of your oracle questions for this hour in this seminar`
       return res.status(429).json({
         error: `${spent}. You can ask again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
       })
@@ -168,7 +168,7 @@ export function aiRoutes(): Router {
     // student must not be able to wipe what the class asked.
     if (auth.role !== 'host') {
       return res.status(403).json({
-        error: 'Only the host can clear the assistant thread — those questions belong to the room.',
+        error: 'Only the host can clear the oracle thread — those questions belong to the room.',
       })
     }
     clearThread(req.params.id)

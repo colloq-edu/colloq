@@ -3,8 +3,8 @@
    * The seminar itself: the room, and the three things around it.
    *
    * The layout is one decision repeated — the notebook is the page, and Files,
-   * People and the assistant are what it is surrounded by. Below about 1100px
-   * the assistant folds into a button in the top bar and below about 700px the
+   * People and the oracle are what it is surrounded by. Below about 1100px
+   * the oracle folds into a button in the top bar and below about 700px the
    * left rail follows it, each opening as a panel over the room that closes on
    * Escape, on a click outside, or on the button that opened it. Nothing here
    * scrolls the page sideways at any width.
@@ -418,7 +418,7 @@
 
       <!-- Panels are not on the artboard, which draws both columns open; they
            stay because on a narrow window they are the only way to reach the
-           files, the people and the assistant. -->
+           files, the people and the oracle. -->
       <div class="flex shrink-0 items-center gap-0.5">
         <button
           class={bandIcon(leftShown)}
@@ -433,8 +433,8 @@
           class={bandIcon(rightShown)}
           onclick={toggleRight}
           aria-pressed={rightShown}
-          aria-label="Toggle the AI assistant"
-          title="AI assistant"
+          aria-label="Toggle the AI oracle"
+          title="AI oracle"
         >
           <Icon name="sparkles" size={16} />
         </button>

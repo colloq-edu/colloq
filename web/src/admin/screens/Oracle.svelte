@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Instance-wide assistant settings.
+   * Instance-wide oracle settings.
    *
    * Three rules shape this screen.
    *
@@ -24,11 +24,11 @@
     LIMITS,
     PROVIDER_PRESETS,
     type AiProviderId,
-    type AssistantMode,
-    type AssistantSettings,
-    type AssistantTestResult,
-    type AssistantUsage,
-    type UpdateAssistantRequest,
+    type OracleMode,
+    type OracleSettings,
+    type OracleTestResult,
+    type OracleUsage,
+    type UpdateOracleRequest,
   } from '@shared/admin'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Choice from '@/admin/ui/Choice.svelte'
@@ -50,7 +50,7 @@
   }))
 
   const MODES: Option[] = [
-    { value: 'off', label: 'Off', hint: 'No assistant at all' },
+    { value: 'off', label: 'Off', hint: 'No oracle at all' },
     { value: 'hints', label: 'Hints only', hint: 'Nudges, never the solution' },
     { value: 'full', label: 'Full answers', hint: 'Explains and writes code' },
   ]
@@ -89,13 +89,13 @@
   /* --------------------------------------------------------------- state */
 
   /** The server's last word, and the only thing `dirty` is ever measured against. */
-  let loaded = $state<AssistantSettings | null>(null)
+  let loaded = $state<OracleSettings | null>(null)
   let loadError = $state<string | null>(null)
 
   let provider = $state<AiProviderId>('custom')
   let baseUrl = $state('')
   let model = $state('')
-  let defaultMode = $state<AssistantMode>('full')
+  let defaultMode = $state<OracleMode>('full')
   let houseRules = $state('')
   let questionsText = $state('')
   let contextText = $state('')
@@ -120,11 +120,11 @@
   let noteTimer: ReturnType<typeof setTimeout> | undefined
 
   let testing = $state(false)
-  let test = $state<AssistantTestResult | null>(null)
+  let test = $state<OracleTestResult | null>(null)
   /** Which saved configuration the result above describes. */
   let testedFor = $state<string | null>(null)
 
-  let usage = $state<AssistantUsage | null>(null)
+  let usage = $state<OracleUsage | null>(null)
   let usageError = $state<string | null>(null)
 
   /** Bound so pressing Replace lands the caret in the field it just opened. */
@@ -242,7 +242,7 @@
   }
 
   /** What the test result is about. Change any of it and the last test stops speaking for it. */
-  function signature(settings: AssistantSettings): string {
+  function signature(settings: OracleSettings): string {
     return [
       settings.provider,
       settings.baseUrl,
@@ -260,7 +260,7 @@
 
   async function loadSettings(): Promise<void> {
     try {
-      apply(await adminApi.assistant())
+      apply(await adminApi.oracle())
       loadError = null
     } catch (cause: unknown) {
       loadError = messageFor(cause)
@@ -270,7 +270,7 @@
 
   async function loadUsage(): Promise<void> {
     try {
-      usage = await adminApi.assistantUsage()
+      usage = await adminApi.oracleUsage()
       usageError = null
     } catch (cause: unknown) {
       usageError = messageFor(cause)
@@ -278,7 +278,7 @@
   }
 
   /** The server's answer is the form: it trims, clamps and masks, and we show that. */
-  function apply(settings: AssistantSettings): void {
+  function apply(settings: OracleSettings): void {
     loaded = settings
     provider = settings.provider
     baseUrl = settings.baseUrl
@@ -369,7 +369,7 @@
     const saved = loaded
     if (!saved || !dirty || saving) return
 
-    const patch: UpdateAssistantRequest = {}
+    const patch: UpdateOracleRequest = {}
     if (provider !== saved.provider) patch.provider = provider
     if (baseUrl.trim() !== saved.baseUrl) patch.baseUrl = baseUrl.trim()
     if (model.trim() !== saved.model) patch.model = model.trim()
@@ -383,7 +383,7 @@
     saving = true
     saveError = null
     try {
-      apply(await adminApi.updateAssistant(patch))
+      apply(await adminApi.updateOracle(patch))
       flashSaved()
     } catch (cause: unknown) {
       saveError = messageFor(cause)
@@ -421,7 +421,7 @@
     const about = signature(saved)
     testing = true
     try {
-      test = await adminApi.testAssistant()
+      test = await adminApi.testOracle()
     } catch (cause: unknown) {
       test = { ok: false, ms: null, message: messageFor(cause), model: null }
       reauthenticate(cause)
@@ -495,7 +495,7 @@
 {/snippet}
 
 <AdminPage
-  title="Assistant"
+  title="Oracle"
   subtitle="Instance-wide defaults. Any seminar can tighten them, none can loosen them."
   {actions}
 >
@@ -678,7 +678,7 @@
         {#if clearKey}
           <p class="mt-1.5 text-2xs text-muted">
             Whatever <span class="font-mono text-code">OPENAI_API_KEY</span> supplies takes over
-            again. If the environment supplies nothing, the assistant stops answering until a key is
+            again. If the environment supplies nothing, the oracle stops answering until a key is
             added.
           </p>
         {:else if fromEnvironment}
@@ -735,13 +735,13 @@
         options={MODES}
         value={defaultMode}
         size="lg"
-        onchange={(value) => (defaultMode = value as AssistantMode)}
+        onchange={(value) => (defaultMode = value as OracleMode)}
       />
     </Section>
 
     <Section
       title="House rules"
-      description="Appended to the system prompt. This is where you stop the assistant teaching a library the course has not reached yet."
+      description="Appended to the system prompt. This is where you stop the oracle teaching a library the course has not reached yet."
     >
       <textarea
         id="ai-house-rules"
@@ -782,7 +782,7 @@
           </div>
           <p class={cn('mt-1.5 text-2xs', questions === 0 ? 'text-warning' : 'text-muted')}>
             {#if questions === 0}
-              Zero switches the assistant off in every seminar.
+              Zero switches the oracle off in every seminar.
             {:else}
               {LIMITS.questionsPerHour.min}–{LIMITS.questionsPerHour.max}. Zero switches it off.
             {/if}

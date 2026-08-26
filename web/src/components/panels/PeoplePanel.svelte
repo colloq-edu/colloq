@@ -51,7 +51,7 @@
     if (runs) return `running cell ${runningNo}`
 
     if (person.user.inTerminal) return 'in the terminal'
-    if (person.user.composing) return 'asking the assistant'
+    if (person.user.composing) return 'asking the oracle'
 
     const at = cellNumber(person.user.activeCellId)
     if (at) return `editing cell ${at}`

@@ -1,5 +1,5 @@
 /**
- * Instance settings: a key/value table, and the assistant configuration read
+ * Instance settings: a key/value table, and the oracle configuration read
  * out of it.
  *
  * RESOLUTION ORDER — the whole point of this module. A value written from the
@@ -23,9 +23,9 @@ import {
   LIMITS,
   PROVIDER_PRESETS,
   type AiProviderId,
-  type AssistantMode,
-  type AssistantSettings,
-  type UpdateAssistantRequest,
+  type OracleMode,
+  type OracleSettings,
+  type UpdateOracleRequest,
 } from '@shared/admin'
 
 db.exec(`
@@ -71,7 +71,7 @@ function stored(): Map<string, string> {
   return map
 }
 
-const MODES: readonly AssistantMode[] = ['off', 'hints', 'full']
+const MODES: readonly OracleMode[] = ['off', 'hints', 'full']
 
 /** Providers whose runtime ignores the key entirely; asking for one is asking for a secret that does not exist. */
 const KEYLESS: ReadonlySet<AiProviderId> = new Set<AiProviderId>(['ollama', 'vllm'])
@@ -84,8 +84,8 @@ function asProvider(value: string | undefined, fallback: AiProviderId): AiProvid
   return value && value in PROVIDER_PRESETS ? (value as AiProviderId) : fallback
 }
 
-function asMode(value: string | undefined): AssistantMode {
-  return MODES.includes(value as AssistantMode) ? (value as AssistantMode) : 'full'
+function asMode(value: string | undefined): OracleMode {
+  return MODES.includes(value as OracleMode) ? (value as OracleMode) : 'full'
 }
 
 function asInt(value: string | undefined, fallback: number, min: number, max: number): number {
@@ -127,7 +127,7 @@ export function maskKey(key: string): string {
 
 /* ------------------------------------------------------------------ read */
 
-export function getAssistantSettings(): AssistantSettings {
+export function getOracleSettings(): OracleSettings {
   const rows = stored()
   const key = resolveKey(rows)
   return {
@@ -160,7 +160,7 @@ export interface ResolvedAiConfig {
   provider: AiProviderId
 }
 
-/** What provider.ts talks to. Separate from getAssistantSettings because this one carries the secret. */
+/** What provider.ts talks to. Separate from getOracleSettings because this one carries the secret. */
 export function resolveAiConfig(): ResolvedAiConfig {
   const rows = stored()
   return {
@@ -173,8 +173,8 @@ export function resolveAiConfig(): ResolvedAiConfig {
 
 /* ----------------------------------------------------------------- write */
 
-export function updateAssistantSettings(patch: UpdateAssistantRequest): AssistantSettings {
-  const write = db.transaction((changes: UpdateAssistantRequest) => {
+export function updateOracleSettings(patch: UpdateOracleRequest): OracleSettings {
+  const write = db.transaction((changes: UpdateOracleRequest) => {
     if (changes.provider !== undefined) upsertSetting.run(KEY.provider, changes.provider)
     if (changes.baseUrl !== undefined) {
       set(KEY.baseUrl, changes.baseUrl.trim().replace(/\/+$/, '').slice(0, LIMITS.baseUrl))
@@ -197,7 +197,7 @@ export function updateAssistantSettings(patch: UpdateAssistantRequest): Assistan
     }
   })
   write(patch)
-  return getAssistantSettings()
+  return getOracleSettings()
 }
 
 /** An empty string is "stop overriding this", not "override it with nothing". */
@@ -208,17 +208,17 @@ function set(key: string, value: string): void {
 
 /* ------------------------------------------------------------ validation */
 
-export type PatchResult = { patch: UpdateAssistantRequest } | { error: string }
+export type PatchResult = { patch: UpdateOracleRequest } | { error: string }
 
 /**
  * Parses an untrusted body into a patch. Lives beside the store so the rules a
  * route enforces and the rules the store applies cannot drift apart: wrong
  * *types* are refused here, out-of-range *numbers* are clamped on write.
  */
-export function parseAssistantPatch(body: unknown): PatchResult {
+export function parseOraclePatch(body: unknown): PatchResult {
   if (!body || typeof body !== 'object') return { error: 'a settings object is required' }
   const input = body as Record<string, unknown>
-  const patch: UpdateAssistantRequest = {}
+  const patch: UpdateOracleRequest = {}
 
   if (input.provider !== undefined) {
     if (typeof input.provider !== 'string' || !(input.provider in PROVIDER_PRESETS)) {
@@ -232,8 +232,8 @@ export function parseAssistantPatch(body: unknown): PatchResult {
     patch[field] = input[field] as string
   }
   if (input.defaultMode !== undefined) {
-    if (!MODES.includes(input.defaultMode as AssistantMode)) return { error: 'unknown assistant mode' }
-    patch.defaultMode = input.defaultMode as AssistantMode
+    if (!MODES.includes(input.defaultMode as OracleMode)) return { error: 'unknown oracle mode' }
+    patch.defaultMode = input.defaultMode as OracleMode
   }
   for (const field of ['questionsPerHour', 'contextChars'] as const) {
     if (input[field] === undefined) continue

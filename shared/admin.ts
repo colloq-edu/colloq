@@ -136,28 +136,28 @@ export interface UpdateSeminarRequest {
   archived?: boolean
 }
 
-/* -------------------------------------------------------------- assistant */
+/* -------------------------------------------------------------- oracle */
 
 /**
  * Presets only change which base URL and model are suggested — every one of
  * them speaks the same OpenAI HTTP shape, which is the whole reason the
- * assistant is portable.
+ * oracle is portable.
  */
 export type AiProviderId = 'openai' | 'ollama' | 'vllm' | 'openrouter' | 'custom'
 
-/** What a seminar's assistant is allowed to do. A seminar may lower this, never raise it. */
-export type AssistantMode = 'off' | 'hints' | 'full'
+/** What a seminar's oracle is allowed to do. A seminar may lower this, never raise it. */
+export type OracleMode = 'off' | 'hints' | 'full'
 
-export interface AssistantSettings {
+export interface OracleSettings {
   provider: AiProviderId
   baseUrl: string
   model: string
   /** Masked for display, e.g. 'sk-…8fA2'. The key itself never leaves the server. */
   apiKeyMasked: string | null
-  defaultMode: AssistantMode
+  defaultMode: OracleMode
   /** Appended to the system prompt. This is where a teacher fences off a library. */
   houseRules: string
-  /** Per student, per seminar, per hour. 0 disables the assistant outright. */
+  /** Per student, per seminar, per hour. 0 disables the oracle outright. */
   questionsPerHour: number
   /** Ceiling on the notebook text sent as context. */
   contextChars: number
@@ -166,19 +166,19 @@ export interface AssistantSettings {
   keyFromEnvironment: boolean
 }
 
-export interface UpdateAssistantRequest {
+export interface UpdateOracleRequest {
   provider?: AiProviderId
   baseUrl?: string
   model?: string
   /** Send the new secret to replace it, '' to clear it, omit to leave it alone. */
   apiKey?: string
-  defaultMode?: AssistantMode
+  defaultMode?: OracleMode
   houseRules?: string
   questionsPerHour?: number
   contextChars?: number
 }
 
-export interface AssistantTestResult {
+export interface OracleTestResult {
   ok: boolean
   /** Round trip in ms when ok. */
   ms: number | null
@@ -194,7 +194,7 @@ export interface AssistantTestResult {
  * price table per provider that goes stale silently, and a wrong number about
  * money is worse than no number.
  */
-export interface AssistantUsage {
+export interface OracleUsage {
   since: number
   questions: number
   /** Reported by the provider when it reports usage at all; null otherwise. */

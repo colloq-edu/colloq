@@ -5,7 +5,7 @@
  * the original. Two people nudging the same cell at the same moment merge into
  * two deletes — which collapse into one — and two inserts, which do not: the
  * notebook ends up holding the same cell twice under one id. Running it,
- * attributing it and asking the assistant about it are all keyed by that id.
+ * attributing it and asking the oracle about it are all keyed by that id.
  *
  * The server keeps the first copy and drops the rest, for the reason it also
  * owns the seminar's title: there is one of it, and it cannot be a stale client

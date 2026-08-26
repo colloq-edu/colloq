@@ -3,8 +3,8 @@
   import { actionAllowedIn } from '@shared/protocol'
 
   /**
-   * "Fix with AI" is drawn only where there is an assistant that will take a
-   * 'fix'. An assistant in hints mode is on, and would refuse this button — so
+   * "Fix with AI" is drawn only where there is an oracle that will take a
+   * 'fix'. An oracle in hints mode is on, and would refuse this button — so
    * `enabled` alone is the wrong question and actionAllowedIn is the right one,
    * asked with the same function the route refuses with.
    *
@@ -12,14 +12,14 @@
    * per tab and shared: a status request per cell would be one request per
    * traceback.
    */
-  let assistant: Promise<boolean> | null = null
+  let oracle: Promise<boolean> | null = null
 
-  function assistantEnabled(): Promise<boolean> {
-    assistant ??= api
+  function oracleEnabled(): Promise<boolean> {
+    oracle ??= api
       .aiStatus()
       .then((status) => status.enabled && actionAllowedIn(status.mode, 'fix'))
       .catch(() => false)
-    return assistant
+    return oracle
   }
 </script>
 
@@ -220,7 +220,7 @@
   $effect(() => {
     if (!hasError) return
     let alive = true
-    void assistantEnabled().then((enabled) => {
+    void oracleEnabled().then((enabled) => {
       if (alive) aiReady = enabled
     })
     return () => {
@@ -781,7 +781,7 @@
    * A note in the notebook is the seminar's prose: the artboard leads it with a
    * display heading in the black weight and drops the body to muted, so the
    * code below it stays the loudest thing on the sheet. .prose-note in
-   * index.css is shared with the assistant panel, which wants neither, so the
+   * index.css is shared with the oracle panel, which wants neither, so the
    * notebook's own voice is set here rather than by retuning every reader.
    */
   .note :global(.prose-note h1) {

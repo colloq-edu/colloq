@@ -94,7 +94,7 @@ export default {
         'ui-lg': ['14px', '21px'],
         prose: ['14px', '23px'],   // markdown body, full notebook measure
         /*
-         * The assistant's answers, and the only step above `prose` for running
+         * The oracle's answers, and the only step above `prose` for running
          * text. Same words, half the measure: a markdown cell spans the whole
          * notebook, while an answer lives in a 380px column with a 28px indent
          * — about 45 characters to the line. It is also the one place in the
@@ -140,7 +140,7 @@ export default {
         // it was pasted as an arbitrary value eight times before this existed.
         label: '0.14em',
         caps: '0.08em',
-        // Panel and sidebar section labels — FILES, PEOPLE, ASSISTANT, TEACHING.
+        // Panel and sidebar section labels — FILES, PEOPLE, ORACLE, TEACHING.
         // A step wider than `label`, which is what the artboards draw them at;
         // the two are not interchangeable and the rail is where the difference
         // shows, because three of these labels stack in one column.
