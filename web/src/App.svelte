@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { OPEN_ROOM } from '@shared/rules'
   import { onMount } from 'svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import JoinScreen from '@/screens/JoinScreen.svelte'
@@ -76,7 +77,13 @@
     // An unknown name stays empty rather than becoming a guess: it is only a
     // display fallback for the document's own title, and anything written here
     // could end up seeded into the shared document as the seminar's name.
-    return cached ?? { id, name: '', createdAt: Date.now() }
+    /*
+     * The open room until the server says otherwise. This value only paints the
+     * first frame before the real one arrives, and guessing *stricter* rules
+     * here would grey out controls that are in fact allowed — a lie that
+     * corrects itself a second later, which is the worst kind.
+     */
+    return cached ?? { id, name: '', createdAt: Date.now(), rules: { ...OPEN_ROOM } }
   }
 
   function enter(id: string | null): void {

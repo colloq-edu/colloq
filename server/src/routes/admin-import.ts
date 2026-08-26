@@ -16,6 +16,7 @@ import { Router, type Request, type Response } from 'express'
 import * as Y from 'yjs'
 import { createCell, getCells, getMeta } from '@shared/notebook'
 import { currentStaff, requireStaff } from '../admin/auth.js'
+import { setSeminarCreator } from './admin-instance.js'
 import { newSessionId } from '../auth.js'
 import { getSessionDoc } from '../collab/index.js'
 import { flushPersistence } from '../collab/persistence.js'
@@ -107,6 +108,13 @@ export function adminImportRoutes(): Router {
     // записывается конкретное, а не «как на инстансе».
     createSession(id, name, wanted || activeName())
     const staff = currentStaff(req)
+    /*
+     * The same line the ordinary create path has run all along. Without it an
+     * imported seminar arrives with no author, and the panel's list shows it
+     * blank beside rooms that name theirs — two doors into the same room, and
+     * only one of them signs its work.
+     */
+    if (staff) setSeminarCreator(id, staff.name)
 
     // The document first, the files second: a room whose notebook is empty
     // looks broken, and a room whose data has not landed yet only looks slow.

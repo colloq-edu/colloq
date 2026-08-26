@@ -1,3 +1,4 @@
+import './_env.mts'
 /**
  * Starting a seminar from a link to GitHub.
  *
@@ -7,6 +8,9 @@
  * shapes and nothing invented.
  */
 import { test } from 'node:test'
+import { createSession } from '../server/src/db.js'
+import { setSeminarCreator } from '../server/src/routes/admin-instance.js'
+import { db } from '../server/src/db.js'
 import assert from 'node:assert/strict'
 import {
   filesToTake,
@@ -163,4 +167,23 @@ test('code and licences are not data', () => {
 test('the folder is about its only notebook, or the first by name', () => {
   assert.equal(pickNotebook([entry('b.ipynb'), entry('a.ipynb'), entry('x.csv')])?.name, 'a.ipynb')
   assert.equal(pickNotebook([entry('x.csv')]), null)
+})
+
+test('a seminar imported from GitHub signs its work like any other', () => {
+  /*
+   * The ordinary create path has set the author since the panel existed; the
+   * import path never did. Two doors into the same room, and only one of them
+   * signed — so the list showed imported seminars with a blank author beside
+   * rooms that named theirs.
+   *
+   * Checked at the database, not through the route: what matters is that the
+   * row carries a name, and the route's own auth is exercised elsewhere.
+   */
+  const id = 'import-author'
+  createSession(id, 'Week 02', null)
+  setSeminarCreator(id, 'Alexander K.')
+  const row = db.prepare('SELECT created_by FROM sessions WHERE id = ?').get(id) as
+    | { created_by: string | null }
+    | undefined
+  assert.equal(row?.created_by, 'Alexander K.')
 })

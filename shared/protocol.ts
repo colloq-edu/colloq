@@ -1,3 +1,5 @@
+import type { RoomRules } from './rules.js'
+
 /**
  * Wire contracts between browser and server: the control WebSocket, the REST
  * surface, and the AI streaming endpoint.
@@ -22,6 +24,15 @@ export interface SessionInfo {
   id: string
   name: string
   createdAt: number
+  /**
+   * What this room lets people do.
+   *
+   * Sent to every client so the interface can be honest about itself: a Run
+   * button that a student may not press should look unpressable rather than
+   * fail when pressed. The server enforces the same rules independently — this
+   * copy decides what is drawn, never what is allowed.
+   */
+  rules: RoomRules
 }
 
 export interface FileEntry {

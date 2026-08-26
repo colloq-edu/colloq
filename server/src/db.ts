@@ -3,6 +3,7 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import { config } from './config.js'
 import { colorForId, type Participant, type SessionInfo } from '@shared/protocol'
+import { OPEN_ROOM, readRules, type RoomRules } from '@shared/rules'
 
 fs.mkdirSync(config.dataDir, { recursive: true })
 
@@ -90,24 +91,42 @@ function ensureColumn(table: string, column: string, definition: string): void {
 }
 ensureColumn('sessions', 'environment', 'environment TEXT')
 
+/**
+ * The room's rules, as JSON.
+ *
+ * One column rather than eight, because these are read as a unit — a room opens
+ * and needs all of them — and never queried across seminars: nobody asks "which
+ * seminars let students run cells". A blob also lets a rule be added without an
+ * ALTER, which matters while the set is still settling.
+ *
+ * NULL means the room has never been configured, and readRules turns that into
+ * the permissive default. Every seminar that existed before this column reads as
+ * exactly what it has always been.
+ */
+ensureColumn('sessions', 'rules', 'rules TEXT')
+
 /* ------------------------------------------------------------- sessions */
 
 const insertSession = db.prepare(
   'INSERT INTO sessions (id, name, created_at, environment) VALUES (?, ?, ?, ?)',
 )
 const selectEnvironment = db.prepare('SELECT environment FROM sessions WHERE id = ?')
-const selectSession = db.prepare('SELECT id, name, created_at FROM sessions WHERE id = ?')
+const selectSession = db.prepare('SELECT id, name, created_at, rules FROM sessions WHERE id = ?')
 
 interface SessionRow {
   id: string
   name: string
   created_at: number
+  /** JSON, or NULL for a room nobody has configured. */
+  rules: string | null
 }
 
 export function createSession(id: string, name: string, environment?: string | null): SessionInfo {
   const createdAt = Date.now()
   insertSession.run(id, name, createdAt, environment ?? null)
-  return { id, name, createdAt }
+  // A brand-new room is the open room: nothing has been decided about it yet,
+  // and the default is what Colloq has always been.
+  return { id, name, createdAt, rules: { ...OPEN_ROOM } }
 }
 
 /**
@@ -140,7 +159,9 @@ export function renameSession(id: string, name: string): void {
 
 export function getSession(id: string): SessionInfo | null {
   const row = selectSession.get(id) as SessionRow | undefined
-  return row ? { id: row.id, name: row.name, createdAt: row.created_at } : null
+  return row
+    ? { id: row.id, name: row.name, createdAt: row.created_at, rules: readRules(row.rules ?? null) }
+    : null
 }
 
 /* --------------------------------------------------------- participants */
@@ -229,6 +250,30 @@ export function saveDocSnapshot(sessionId: string, update: Uint8Array): void {
 export function loadDocSnapshot(sessionId: string): Uint8Array | null {
   const row = selectSnapshot.get(sessionId) as { data: Buffer } | undefined
   return row ? new Uint8Array(row.data) : null
+}
+
+/* ------------------------------------------------------------------ rules */
+
+const selectRules = db.prepare(`SELECT rules FROM sessions WHERE id = ?`)
+const updateRules = db.prepare(`UPDATE sessions SET rules = ? WHERE id = ?`)
+
+/** The rules of one room, with everything unset filled in from the open default. */
+export function getRules(sessionId: string): RoomRules {
+  const row = selectRules.get(sessionId) as { rules: string | null } | undefined
+  return readRules(row?.rules ?? null)
+}
+
+/**
+ * Write a room's rules.
+ *
+ * Stored through readRules rather than as handed in: whatever reaches the
+ * database is then a complete, valid set, and a later read cannot be surprised
+ * by a field that a caller forgot or a value nobody recognises.
+ */
+export function setRules(sessionId: string, rules: RoomRules): RoomRules {
+  const clean = readRules(rules)
+  updateRules.run(JSON.stringify(clean), sessionId)
+  return clean
 }
 
 /* ---------------------------------------------------------------- history */
