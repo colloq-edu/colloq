@@ -97,11 +97,11 @@
         <!-- Who you are outranks what you are doing: your own row and a host's
              carry the label, everyone else's carries the live line. -->
         {#if badge && (person.isSelf || !activity)}
-          <span class="truncate text-micro font-bold uppercase tracking-label text-accent-text">
+          <span class="truncate text-2xs font-bold uppercase tracking-label text-accent-text">
             {badge}
           </span>
         {:else if activity}
-          <span class="truncate text-micro tracking-caps text-muted">{activity}</span>
+          <span class="truncate text-2xs tracking-caps text-muted">{activity}</span>
         {/if}
       </div>
 

@@ -367,14 +367,14 @@
     <Icon name="sparkles" size={14} class="shrink-0 text-accent-text" />
     <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">Assistant</span>
     <span
-      class="inline-flex h-5 shrink-0 items-center bg-raised px-1.5 text-micro font-bold uppercase
+      class="inline-flex h-5 shrink-0 items-center bg-raised px-1.5 text-2xs font-bold uppercase
              tracking-caps text-ink"
       title="Everyone in this session reads the same thread"
     >
       shared · {entries.length} Q
     </span>
 
-    <span class="ml-auto min-w-0 truncate font-mono text-micro text-muted">
+    <span class="ml-auto min-w-0 truncate font-mono text-2xs text-muted">
       <!--
         Only when there is something to name. A header reading "gpt-4o-mini"
         above a panel saying "no model is set up on this Colloq yet" is the
@@ -387,7 +387,7 @@
     {#if isHost}
       <button
         type="button"
-        class="btn-ghost h-7 shrink-0 gap-1 px-1.5 text-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {armed
+        class="btn-ghost h-7 shrink-0 gap-1 px-1.5 text-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {armed
           ? 'text-danger hover:text-danger'
           : ''}"
         title="Clear the room's thread"
@@ -412,14 +412,14 @@
       class="flex shrink-0 items-center gap-1.5 overflow-hidden border-b border-line bg-raised px-4 py-1.5"
     >
       <span
-        class="shrink-0 text-micro font-bold uppercase tracking-institution text-muted"
+        class="shrink-0 text-2xs font-bold uppercase tracking-institution text-muted"
         title="Sent with every question: the whole notebook, the kernel status and the workspace file list, plus what is named here"
       >
         Sees
       </span>
       {#each sees.chips as chip (chip.label)}
         <span
-          class="inline-flex h-5 shrink-0 items-center bg-line px-1.5 font-mono text-micro text-muted"
+          class="inline-flex h-5 shrink-0 items-center bg-line px-1.5 font-mono text-2xs text-muted"
           title={chip.title}
         >
           {chip.label}
@@ -427,7 +427,7 @@
       {/each}
       {#if sees.rest.length > 0}
         <span
-          class="inline-flex h-5 shrink-0 items-center px-1.5 font-mono text-micro text-muted"
+          class="inline-flex h-5 shrink-0 items-center px-1.5 font-mono text-2xs text-muted"
           title={sees.rest.join(', ')}
         >
           +{sees.rest.length}
@@ -459,13 +459,13 @@
               {entry.name}
             </span>
             {#if mine}
-              <span class="shrink-0 text-micro text-muted">you</span>
+              <span class="shrink-0 text-2xs text-muted">you</span>
             {/if}
-            <span class="min-w-0 shrink truncate text-micro text-muted">
+            <span class="min-w-0 shrink truncate text-2xs text-muted">
               {askedLabel(entry.cellId)}
             </span>
             <time
-              class="ml-auto shrink-0 font-mono text-micro tabular-nums text-muted"
+              class="ml-auto shrink-0 font-mono text-2xs tabular-nums text-muted"
               datetime={new Date(entry.createdAt).toISOString()}
             >
               {clock(entry.createdAt)}
@@ -483,7 +483,7 @@
               <p class="break-words">{entry.answer || 'The assistant did not answer.'}</p>
               <button
                 type="button"
-                class="mt-2 inline-flex h-6 items-center gap-1 border border-danger/40 px-2 text-micro font-bold uppercase tracking-caps transition-colors duration-100 hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
+                class="mt-2 inline-flex h-6 items-center gap-1 border border-danger/40 px-2 text-2xs font-bold uppercase tracking-caps transition-colors duration-100 hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
                 onclick={() => retry(entry)}
               >
                 <Icon name="restart" size={12} />
@@ -492,11 +492,11 @@
             </div>
           {:else if entry.answer}
             <Markdown
-              class="mt-2.5 pl-7"
+              class="prose-answer mt-2.5 pl-7"
               source={entry.state === 'streaming' ? entry.answer + CARET : entry.answer}
             />
           {:else if entry.state === 'streaming'}
-            <div class="mt-2 flex items-center gap-1.5 pl-7 text-micro text-muted">
+            <div class="mt-2 flex items-center gap-1.5 pl-7 text-2xs text-muted">
               <Icon name="spinner" size={14} class="animate-spin" />
               thinking
             </div>
@@ -505,7 +505,7 @@
           {#if entry.state === 'streaming'}
             <button
               type="button"
-              class="ml-7 mt-2 inline-flex h-6 items-center gap-1 border border-line px-2 text-micro font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:border-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              class="ml-7 mt-2 inline-flex h-6 items-center gap-1 border border-line px-2 text-2xs font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:border-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
               onclick={() => void stop(entry.id)}
             >
               <Icon name="stop" size={12} />
@@ -552,7 +552,7 @@
              size as the outlined one, so nothing shifts when an answer starts. -->
         <button
           type="button"
-          class="inline-flex h-6 shrink-0 items-center border px-2 text-micro font-bold uppercase tracking-caps transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-40 {live
+          class="inline-flex h-6 shrink-0 items-center border px-2 text-2xs font-bold uppercase tracking-caps transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-40 {live
             ? 'border-accent text-accent-text'
             : 'border-transparent bg-line text-ink hover:border-faint disabled:hover:border-transparent'}"
           disabled={selected === null || offline}
@@ -567,7 +567,7 @@
           hints only — the assistant points, it does not write the answer
         </span>
       {:else if selected === null}
-        <span class="text-micro text-muted">select a cell to use these</span>
+        <span class="text-2xs text-muted">select a cell to use these</span>
       {/if}
     </div>
 
@@ -627,7 +627,7 @@
       </div>
     {/if}
 
-    <p class="flex items-start gap-1.5 text-micro text-muted">
+    <p class="flex items-start gap-1.5 text-2xs text-muted">
       <Icon name="users" size={13} class="mt-px shrink-0" />
       <span>
         The whole room sees your question and the answer — asking here keeps it in the seminar

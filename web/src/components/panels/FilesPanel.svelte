@@ -253,7 +253,7 @@
           <span class="min-w-0 flex-1 truncate text-2xs text-muted">Delete {file.name}?</span>
           <button
             type="button"
-            class="shrink-0 text-micro font-bold uppercase tracking-caps text-danger transition-opacity duration-100 hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 disabled:opacity-50"
+            class="shrink-0 text-2xs font-bold uppercase tracking-caps text-danger transition-opacity duration-100 hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 disabled:opacity-50"
             disabled={deleting === file.name}
             onclick={() => remove(file.name)}
           >
@@ -261,7 +261,7 @@
           </button>
           <button
             type="button"
-            class="shrink-0 text-micro font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="shrink-0 text-2xs font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             onclick={() => (confirming = null)}
           >
             Cancel
@@ -291,7 +291,7 @@
           </button>
 
           {#if copied === file.name}
-            <span class="flex shrink-0 items-center gap-1 text-micro font-medium text-positive">
+            <span class="flex shrink-0 items-center gap-1 text-2xs font-medium text-positive">
               <Icon name="check" size={11} />
               copied
             </span>

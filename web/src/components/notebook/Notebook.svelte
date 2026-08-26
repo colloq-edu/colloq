@@ -431,7 +431,7 @@
 
   /* Both adders speak the artboard's caps voice; the inline one sits on a
      raised ground because it lands on top of the hairline it interrupts. */
-  const ADD_LABEL = 'text-micro font-bold uppercase tracking-label'
+  const ADD_LABEL = 'text-2xs font-bold uppercase tracking-label'
   const ADD =
     `inline-flex h-6 items-center gap-1.5 border border-line bg-canvas px-2.5 ${ADD_LABEL} ` +
     'text-muted transition-colors duration-[var(--speed-quick)] hover:text-ink ' +
@@ -702,6 +702,9 @@
             behind this tab. Without a mark the room had the reason on file and
             no reason to look for it.
           -->
+          <!-- 10px и остаётся: цифра в кружке — это форма, которую узнают, а
+               не слово, которое читают. Ровно тот случай, под который шаг
+               micro и заведён. -->
           <span
             class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-accent
                    px-1 font-mono text-micro font-bold text-white"
@@ -710,6 +713,7 @@
             {session.terminalUnread > 9 ? '9+' : session.terminalUnread}
           </span>
         {:else}
+          <!-- Тоже значок: клавиша, а не подпись. -->
           <span class="hidden font-mono text-micro text-muted xl:inline">⌃`</span>
         {/if}
       </button>
@@ -728,7 +732,7 @@
           {#if isHost}
             <button
               type="button"
-              class="text-micro font-bold uppercase tracking-label text-ink
+              class="text-2xs font-bold uppercase tracking-label text-ink
                      transition-opacity duration-[var(--speed-quick)] hover:opacity-70
                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40
                      disabled:pointer-events-none disabled:opacity-40"
@@ -751,7 +755,7 @@
 
       {#if queued > 0}
         <span
-          class={cn(PILL, 'border-line text-micro text-muted')}
+          class={cn(PILL, 'border-line text-2xs text-muted')}
           title="Cells waiting for the kernel"
         >
           <span class="h-1.5 w-1.5 rounded-full bg-muted"></span>
@@ -761,7 +765,7 @@
       <!-- The least load-bearing thing in the strip, and the first to go when
            there is not room for all of it: how many cells there are is visible
            by scrolling the notebook. -->
-      <span class="hidden pl-0.5 pr-5 font-mono text-micro text-muted xl:inline">
+      <span class="hidden pl-0.5 pr-5 font-mono text-2xs text-muted xl:inline">
         {ids.current.length}
         {ids.current.length === 1 ? 'cell' : 'cells'}
       </span>
@@ -809,7 +813,7 @@
     <!-- Shift+Enter and the platform's own modifier now mean different things —
          run and move on, run and stay — so the hint says both. `modKey` reads
          ⌘ on a Mac and Ctrl everywhere else. -->
-    <span class="hidden shrink-0 font-mono text-micro text-muted sm:inline">
+    <span class="hidden shrink-0 font-mono text-2xs text-muted sm:inline">
       A / B to insert · ⇧↵ run &amp; next · {modKey}↵ run in place
     </span>
   </div>

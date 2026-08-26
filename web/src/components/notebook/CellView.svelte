@@ -370,8 +370,13 @@
 
   /** The strip under a cell body: aligned to the code, not to the rule. */
   const FOOTER = 'mt-2.5 flex items-center gap-2 pl-5'
-  /** Caps voice for every small label in the sheet. */
-  const CAPS = 'text-micro font-bold uppercase tracking-label'
+  /**
+   * Caps voice for every small label in the sheet: cell state, run credits,
+   * the cell's own actions. 11px rather than 10 — see the note on the two
+   * smallest steps in tailwind.config.js. This one constant is most of the
+   * 525 runs of 10px the workspace was carrying.
+   */
+  const CAPS = 'text-2xs font-bold uppercase tracking-label'
 </script>
 
 {#if cell.current && ytext}
@@ -595,7 +600,7 @@
               {#if meta.current.execCount !== null || ranByOther}
                 <div class="flex items-center gap-3 border-t border-line-soft px-4 py-1">
                   {#if ranByOther}
-                    <span class="font-mono text-micro text-muted">{ranByOther}</span>
+                    <span class="font-mono text-2xs text-muted">{ranByOther}</span>
                   {/if}
                   {#if meta.current.execCount !== null}
                     <span class={cn('ml-auto', CAPS, 'text-muted')}>
@@ -701,7 +706,7 @@
           {#if queuePosition >= 0}
             <span
               title="Waiting in the run queue"
-              class="inline-flex h-5 items-center bg-raised px-2 font-mono text-micro text-muted"
+              class="inline-flex h-5 items-center bg-raised px-2 font-mono text-2xs text-muted"
             >
               {place(queuePosition + 1)} in queue
             </span>
