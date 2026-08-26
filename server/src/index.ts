@@ -33,6 +33,7 @@ import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { aiRoutes } from './routes/ai.js'
 import { fileRoutes } from './routes/files.js'
 import { sessionRoutes } from './routes/sessions.js'
+import { historyRoutes } from './routes/history.js'
 
 /** A whole notebook's state travels in one sync frame; images make it big. */
 const MAX_WS_PAYLOAD = 16 * 1024 * 1024
@@ -285,6 +286,7 @@ app.use(adminInstanceRoutes())
 app.use(adminEnvironmentRoutes())
 app.use(adminImportRoutes())
 app.use(sessionRoutes())
+app.use(historyRoutes())
 app.use(fileRoutes())
 app.use(aiRoutes())
 
@@ -407,7 +409,8 @@ server.on('upgrade', (req, socket, head) => {
     } catch {
       /* presence bookkeeping must never cost someone their connection */
     }
-    if (channel === 'collab') handleCollabSocket(ws, sessionId, effectiveRole(req, payload))
+    if (channel === 'collab')
+      handleCollabSocket(ws, sessionId, effectiveRole(req, payload), payload.participantId)
     else {
       /*
        * A participant token carries the role it was minted with. A teacher who

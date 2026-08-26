@@ -3,6 +3,7 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
+  import HistoryTab from '@/components/panels/HistoryTab.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
   import { getTerminal, readTerminalLine, type TerminalLineSnapshot } from '@shared/notebook'
@@ -10,9 +11,15 @@
   interface Props {
     /** Hides this drawer. It never sends term:close — the shell belongs to the room. */
     onclose: () => void
+    /**
+     * Which surface to show when the drawer opens. The run bar has a button per
+     * tab, and pressing one has to land on that tab rather than on whatever was
+     * open last time.
+     */
+    open?: 'terminal' | 'kernel' | 'history'
   }
 
-  let { onclose }: Props = $props()
+  let { onclose, open = 'terminal' }: Props = $props()
 
   const session = getSessionState()
   const notebook = watchNotebookMeta(session.doc)
@@ -39,8 +46,19 @@
     return () => terminal.unobserveDeep(read)
   })
 
-  type Tab = 'terminal' | 'kernel'
-  let tab = $state<Tab>('terminal')
+  /*
+   * The drawer is the room's second surface, and everything that belongs over
+   * the notebook rather than beside it lives here as a tab: the shell, what the
+   * kernel said, and what the room did to the notebook. The oracle keeps the
+   * right-hand column because it is read alongside the notebook, not over it.
+   */
+  type Tab = 'terminal' | 'kernel' | 'history'
+  let tab = $state<Tab>(open)
+  // Follows the run bar, but does not fight the tabs inside: pressing a tab
+  // here changes `tab` and leaves `open` alone, so nothing snaps back.
+  $effect(() => {
+    tab = open
+  })
 
   const shown = $derived(tab === 'terminal' ? lines : lines.filter((l) => l.kind === 'system'))
   const running = $derived(lines.some((l) => l.kind === 'command' && l.running))
@@ -327,6 +345,15 @@
     >
       Kernel log
     </button>
+    <button
+      type="button"
+      class="term-tab"
+      class:on={tab === 'history'}
+      aria-pressed={tab === 'history'}
+      onclick={() => (tab = 'history')}
+    >
+      History
+    </button>
 
     <span class="term-badge" title="Everyone in the seminar sees this terminal">
       Shared with the room
@@ -358,6 +385,12 @@
     </button>
   </div>
 
+  {#if tab === 'history'}
+    <!-- История занимает всё тело ящика и приносит свою нижнюю полосу: у неё
+         две колонки и свои действия, а строка ввода команды к ней отношения не
+         имеет. -->
+    <HistoryTab />
+  {:else}
   <div class="term-body" bind:this={scroller} onscroll={onScroll} role="log" aria-live="polite">
     {#if tab === 'kernel'}
       <div class="term-sys">
@@ -454,6 +487,7 @@
       {/if}
     </span>
   </div>
+  {/if}
 </section>
 
 <style>

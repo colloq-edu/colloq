@@ -17,6 +17,7 @@ import {
 import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
 import { getSession, renameSession } from '../db.js'
 import { bindPersistence, flushPersistence, discardPersistence, flushAllPersistence } from './persistence.js'
+import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } from './history.js'
 
 /**
  * The server side of the collaborative document.
@@ -52,6 +53,15 @@ export interface SessionDoc {
 const ORIGIN = 'server'
 
 interface ConnState {
+  /**
+   * Who is on the other end.
+   *
+   * The history needs an author for every change, and the update bytes cannot
+   * give one: an insertion carries the Yjs client that made it, but a deletion
+   * carries the client whose text was deleted — the victim, not the author. The
+   * socket knows, because the token said so when it connected.
+   */
+  participantId: string | null
   /** Awareness clientIDs this socket introduced, so we can retract exactly those. */
   clientIds: Set<number>
   missedPongs: number
@@ -165,6 +175,14 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   docs.set(sessionId, entry)
 
   /*
+   * Start the history from what was just hydrated, before the seeding below.
+   * A brand-new room therefore records its starter cells as its first version,
+   * and a room coming back after a restart does not record its whole notebook
+   * as somebody's edit.
+   */
+  beginHistory(sessionId, doc)
+
+  /*
    * Seed, then put it on disk before returning. A room that has just been
    * created is at its most vulnerable: the snapshot is debounced by seconds and
    * the room is reachable immediately, so a crash in between leaves a seminar
@@ -269,9 +287,22 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     renameSession(sessionId, title)
   })
 
-  doc.on('update', (update: Uint8Array, origin: unknown) =>
-    broadcastDocUpdate(entry, update, origin),
-  )
+  doc.on('update', (update: Uint8Array, origin: unknown) => {
+    broadcastDocUpdate(entry, update, origin)
+    /*
+     * The author comes from the origin, which for anything a person did is the
+     * socket it arrived on. The server's own writes — seeding a new room,
+     * importing from GitHub, the kernel writing an output — have no author, and
+     * that is honest: nobody in the room typed them.
+     *
+     * A restore is skipped here and recorded by the restore itself, under the
+     * name of whoever pressed the button.
+     */
+    if (origin === RESTORE_ORIGIN) return
+    const author =
+      origin instanceof WebSocket ? (entry.conns.get(origin)?.participantId ?? null) : null
+    record(sessionId, doc, update, author)
+  })
 
   awareness.on(
     'update',
@@ -322,12 +353,14 @@ export function handleCollabSocket(
   ws: WebSocket,
   sessionId: string,
   role: ParticipantRole = 'participant',
+  participantId: string | null = null,
 ): void {
   const entry = getEntry(sessionId)
   ws.binaryType = 'arraybuffer'
 
   const state: ConnState = {
     role,
+    participantId,
     clientIds: new Set<number>(),
     missedPongs: 0,
     pingTimer: setInterval(() => {
@@ -422,6 +455,8 @@ export function dropSessionDoc(sessionId: string): void {
   if (!entry) return
   docs.delete(sessionId)
   discardPersistence(sessionId)
+  // The room is gone; an open burst describing it would be a version of nothing.
+  discardBurst(sessionId)
   for (const conn of Array.from(entry.conns.keys())) {
     const state = entry.conns.get(conn)
     if (state) clearInterval(state.pingTimer)
@@ -451,4 +486,7 @@ export function shutdownCollab(): void {
   }
   docs.clear()
   flushAllPersistence()
+  // Whatever somebody was typing when the process was told to stop is still a
+  // thing they did, and the seminar may be reopened tomorrow.
+  flushAllHistory()
 }

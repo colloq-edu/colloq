@@ -13,9 +13,13 @@
     /** The shared terminal drawer, whose tab VH-0 draws at the end of this bar. */
     terminalOpen?: boolean
     ontoggleterminal?: () => void
+    /** The drawer is open on its history tab. */
+    historyOpen?: boolean
+    ontogglehistory?: () => void
   }
 
-  let { terminalOpen = false, ontoggleterminal }: Props = $props()
+  let { terminalOpen = false, ontoggleterminal, historyOpen = false, ontogglehistory }: Props =
+    $props()
 
   const session = getSessionState()
   const ids = watchCellIds(session.doc)
@@ -716,6 +720,28 @@
           <!-- Тоже значок: клавиша, а не подпись. -->
           <span class="hidden font-mono text-micro text-muted xl:inline">⌃`</span>
         {/if}
+      </button>
+    {/if}
+
+    {#if ontogglehistory}
+      <!--
+        The drawer's other surface, and the same slot shape as Terminal beside
+        it: both open the thing that lives over the notebook rather than beside
+        it, so they belong to one another and not to Run and Interrupt.
+      -->
+      <button
+        type="button"
+        class={cn(
+          CAP,
+          'gap-2 border-b-2',
+          historyOpen ? 'border-ink bg-raised text-ink' : 'border-transparent text-muted',
+        )}
+        aria-pressed={historyOpen}
+        title="Who changed what, and how to put it back"
+        onclick={ontogglehistory}
+      >
+        <Icon name="restart" size={12} />
+        History
       </button>
     {/if}
 
