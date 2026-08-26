@@ -154,7 +154,7 @@
   </div>
 {/snippet}
 
-<div class="flex h-full bg-canvas">
+<div class="admin flex h-full bg-canvas">
   <!-- The brand navy is the same value in both themes, so the sidebar keeps its
        own contrast scale (white at a few alphas) rather than the ink tokens. -->
   <!--

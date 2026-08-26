@@ -148,3 +148,85 @@
     transition-property: none;
   }
 }
+
+/*
+ * ------------------------------------------------------- the panel's type ---
+ *
+ * The admin runs one notch larger than the notebook, and the reason is measure
+ * rather than taste.
+ *
+ * The two surfaces borrowed one scale and have opposite densities. In the
+ * notebook 13px is the workhorse and the small steps are chrome around code — a
+ * cell label, a run credit, a keycap, all read at a glance beside something
+ * else. In the panel those same steps carry the sentences that explain what a
+ * setting will do to a room full of people: fourteen separate lines of 11px on
+ * the New seminar screen alone, read slowly, once, before a decision that
+ * cannot be taken back. That is the oracle-column mistake again — the right
+ * step at half the measure.
+ *
+ * Redefined here rather than at 93 call sites because it is one decision about
+ * one surface, and ninety-three edits would be the same decision written badly:
+ * impossible to review, and one missed class away from a screen that disagrees
+ * with itself. Scoped to .admin so the notebook keeps the scale it was tuned
+ * for.
+ *
+ * The floor stays a floor: `micro` moves 10 → 11 and no further, because what
+ * it labels — a status pill, a version stamp — is recognised rather than read.
+ */
+.admin .text-micro {
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.admin .text-2xs {
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.admin .text-code {
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.admin .text-ui {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.admin .text-ui-lg {
+  font-size: 15px;
+  line-height: 22px;
+}
+
+.admin .text-title {
+  font-size: 17px;
+  line-height: 24px;
+}
+
+.admin .text-display {
+  font-size: 28px;
+  line-height: 34px;
+}
+
+/*
+ * Controls, separately, because @apply bakes the value in.
+ *
+ * `.btn` is written as `@apply … text-ui …`, which compiles to a literal 13px at
+ * build time rather than to a class, so the rules above cannot reach it. And
+ * `.btn-primary` is `@apply btn …`, which copies those declarations in — the
+ * element never carries `btn` at all, so the variants have to be named too.
+ * Without this the primary action was smaller than the sentence describing it.
+ */
+.admin .btn,
+.admin .btn-primary,
+.admin .btn-ghost,
+.admin .btn-outline,
+.admin .btn-danger {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.admin .field {
+  font-size: 14px;
+  line-height: 20px;
+}

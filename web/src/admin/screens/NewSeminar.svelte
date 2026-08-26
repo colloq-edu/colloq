@@ -399,9 +399,15 @@
   }
 
   .seg {
-    height: 32px;
+    height: 34px;
     padding-inline: 14px;
-    font-size: 11px;
+    /*
+     * 13, not 11. This is the one live rule on the screen — the answer to "who
+     * runs cells" — and it sat at the floor of the scale while the sentence
+     * explaining it stood two steps above. The most important control on a page
+     * should not be its smallest text.
+     */
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.04em;
     color: rgb(var(--muted));
