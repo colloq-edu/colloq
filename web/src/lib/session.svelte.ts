@@ -295,7 +295,7 @@ export class SessionState {
 
   async refreshFiles() {
     try {
-      const res = await api.listFiles(this.session.id)
+      const res = await api.listFiles(this.session.id, this.token)
       this.files = res.files
     } catch {
       /* the control socket pushes the list too; a failed poll is not fatal */

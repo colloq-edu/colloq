@@ -25,8 +25,19 @@ const MAX_FILES_PER_UPLOAD = 8
 export function fileRoutes(): Router {
   const router = Router()
 
+  /*
+   * Reading the room's folder needs the same credential as writing to it.
+   *
+   * These two GETs used to need nothing at all: anybody who knew a seminar id
+   * could list every file in it and download them. And a seminar id is eight
+   * characters — short on purpose, because the link gets read aloud — so it is
+   * guessable, not secret. The folder holds whatever the teacher dropped in for
+   * the class and whatever the class uploaded, which is exactly the material
+   * that should not leave the room.
+   */
   router.get('/api/sessions/:id/files', (req, res) => {
     if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
+    if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
     res.json({ files: listFiles(req.params.id) })
   })
 
@@ -163,6 +174,15 @@ export function fileRoutes(): Router {
   router.get('/api/sessions/:id/files/:name', (req, res) => {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    /*
+     * The credential arrives in the query string here rather than in a header,
+     * and that is not laziness: a download is an <a href>, and an anchor cannot
+     * carry an Authorization header. sessionAuth already accepts either. The
+     * token is scoped to this one seminar and the instance sends
+     * Referrer-Policy: strict-origin-when-cross-origin, so it does not travel
+     * anywhere the link itself does not already go.
+     */
+    if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
     const full = resolveInSession(sessionId, req.params.name)
     if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
     res.download(full, req.params.name, (err) => {

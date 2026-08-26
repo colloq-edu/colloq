@@ -60,7 +60,10 @@ export const api = {
       `/api/sessions/${id}/participants`,
     ),
 
-  listFiles: (id: string) => request<{ files: FileEntry[] }>(`/api/sessions/${id}/files`),
+  listFiles: (id: string, token: string) =>
+    request<{ files: FileEntry[] }>(`/api/sessions/${id}/files`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
 
   uploadFiles: async (id: string, files: File[], token: string) => {
     const form = new FormData()
@@ -78,8 +81,13 @@ export const api = {
       headers: { authorization: `Bearer ${token}` },
     }),
 
-  fileUrl: (id: string, name: string) =>
-    `/api/sessions/${id}/files/${encodeURIComponent(name)}`,
+  /*
+   * The token rides in the query string because this URL ends up in an
+   * <a href download>, and an anchor cannot send a header. It is the same
+   * seminar-scoped credential the rest of the panel already uses.
+   */
+  fileUrl: (id: string, name: string, token: string) =>
+    `/api/sessions/${id}/files/${encodeURIComponent(name)}?token=${encodeURIComponent(token)}`,
 
   /** `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`. */
   aiStatus: () =>

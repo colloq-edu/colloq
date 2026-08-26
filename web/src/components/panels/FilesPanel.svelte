@@ -310,7 +310,7 @@
                 class="absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 <a
-                  href={api.fileUrl(session.session.id, file.name)}
+                  href={api.fileUrl(session.session.id, file.name, session.token)}
                   download={file.name}
                   class="flex h-6 w-6 items-center justify-center text-faint transition-colors
                          duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2

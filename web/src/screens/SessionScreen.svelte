@@ -304,10 +304,39 @@
   const BAND_BTN =
     'flex shrink-0 items-center justify-center focus-visible:outline-none ' +
     'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white ' +
-    'transition-opacity duration-100 hover:opacity-100'
+    'transition-opacity duration-quick ease-out hover:opacity-100'
 
+  /*
+   * The two panel toggles, and the one place on the band where opacity alone is
+   * not enough.
+   *
+   * They used to differ by nothing but 55% ink versus 100%, which reads as
+   * "this one is dimmer", not as "this one is switched on" — and the shared
+   * `hover:opacity-100` above did literally nothing to the open button, since
+   * it was already at 100. So both of them answered the pointer with silence,
+   * and the state they were reporting was invisible unless you compared the two
+   * against each other.
+   *
+   * A ground fixes both at once. Open is a white wash the button keeps whether
+   * or not the pointer is near it; hover is half that wash, so a closed button
+   * says "press me" and an open one still says "already on". White rather than
+   * the accent on purpose: the accent is this band's one signal colour and it
+   * belongs to the kernel's state, not to which column is showing.
+   *
+   * The press is the house one — 3% under the finger, bound to :active rather
+   * than to a state, so it cannot arrive late. index.css keeps it under reduced
+   * motion for the same reason it keeps every other press: 3% that never
+   * travels is feedback, not decoration.
+   */
   const bandIcon = (on: boolean) =>
-    cn(BAND_BTN, 'h-7 w-7 text-white', on ? 'opacity-100' : 'opacity-55')
+    cn(
+      'flex h-7 w-7 shrink-0 items-center justify-center text-white',
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white',
+      'transition-[background-color,opacity,transform] duration-quick ease-out active:scale-95',
+      on
+        ? 'bg-white/15 opacity-100 hover:bg-white/20'
+        : 'opacity-60 hover:bg-white/10 hover:opacity-100',
+    )
 </script>
 
 <svelte:window onkeydown={onKeydown} />
