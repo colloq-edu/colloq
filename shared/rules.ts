@@ -28,9 +28,9 @@ export interface RoomRules {
   /**
    * Who may run cells.
    *
-   * Enforced in server/src/control.ts on the `run` message. The kernel is one
-   * process shared by everyone, so this is also the only protection a lecture
-   * has against twenty people queueing the same cell at once.
+   * Enforced in server/src/control.ts — mayRun() guards run, runAll and
+   * runAbove. The kernel is one process shared by everyone, so this is also the
+   * only protection a lecture has against twenty people queueing the same cell.
    */
   run: Who
 
@@ -79,8 +79,9 @@ export interface RoomRules {
    * exercise and the next is a demonstration, and they should not have to share
    * a setting.
    *
-   * Enforced: server/src/routes/ai.ts already reads a mode; the per-seminar
-   * override is the new part.
+   * Enforced in server/src/routes/ai.ts — oracleModeFor(). A room may tighten
+   * and may not loosen: an instance that is off cannot be talked back on here,
+   * because that decision belongs to whoever pays for the model.
    */
   oracle: 'inherit' | 'off' | 'hints' | 'full'
 

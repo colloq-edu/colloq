@@ -15,7 +15,7 @@ import { Router } from 'express'
 import { getOracleSettings } from '../admin/settings.js'
 import { countRecentQuestions, recordQuestion, windowResetAt } from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
-import { getParticipant, getSession } from '../db.js'
+import { getParticipant, getRules, getSession } from '../db.js'
 import { sessionAuth } from './sessions.js'
 import {
   actionAllowedIn,
@@ -36,6 +36,26 @@ const MAX_ENTRY_ID = 128
 
 const HOUR_MS = 3_600_000
 
+/**
+ * The mode this seminar actually runs in.
+ *
+ * `inherit` is what every room is until somebody says otherwise. A room may
+ * tighten — full down to hints, hints down to off — and may not loosen: an
+ * instance that is off cannot be talked back on by a seminar's own settings,
+ * because that decision belongs to whoever pays for the model rather than to
+ * whoever booked the room.
+ */
+function oracleModeFor(
+  sessionId: string,
+  instance: 'off' | 'hints' | 'full',
+): 'off' | 'hints' | 'full' {
+  const wanted = getRules(sessionId).oracle
+  if (wanted === 'inherit') return instance
+  if (instance === 'off') return 'off'
+  if (instance === 'hints' && wanted === 'full') return 'hints'
+  return wanted
+}
+
 export function aiRoutes(): Router {
   const router = Router()
 
@@ -54,8 +74,19 @@ export function aiRoutes(): Router {
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
 
     const settings = getOracleSettings()
-    if (settings.defaultMode === 'off') {
-      return res.status(403).json({ error: 'The oracle is switched off for this instance.' })
+    /*
+     * The room may say something different from the instance, and when it does
+     * the room wins — but only downwards. One class is an exercise and the next
+     * is a demonstration, and they should not have to share a setting.
+     */
+    const mode = oracleModeFor(sessionId, settings.defaultMode)
+    if (mode === 'off') {
+      return res.status(403).json({
+        error:
+          settings.defaultMode === 'off'
+            ? 'The oracle is switched off for this instance.'
+            : 'The oracle is switched off for this seminar.',
+      })
     }
     if (settings.questionsPerHour === 0) {
       return res
@@ -94,7 +125,7 @@ export function aiRoutes(): Router {
     // refused outright, and a typed question is answered as a nudge instead of
     // being bounced, so the composer still works during an exercise.
     let action = requested
-    if (settings.defaultMode === 'hints') {
+    if (mode === 'hints') {
       if (action && !actionAllowedIn('hints', action)) {
         return res.status(403).json({
           error: 'This oracle is in hints mode: it can point you at the problem, but it will not write the answer for you. Ask for a hint instead.',

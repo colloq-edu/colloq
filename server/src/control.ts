@@ -29,7 +29,7 @@ import type {
 import type { TokenPayload } from './auth.js'
 import { getSessionDoc } from './collab/index.js'
 import { LINE_LENGTH } from './kernel/format.js'
-import { getParticipant } from './db.js'
+import { getParticipant, getRules } from './db.js'
 import {
   answerInput,
   clearOutputs,
@@ -237,6 +237,28 @@ function parse(data: RawData): ControlClientMessage | null {
   }
 }
 
+/**
+ * May this person start the kernel on something?
+ *
+ * The first of the room's rules to be enforced, and the reason it is first: one
+ * kernel serves everybody, so a class where twenty people press Run is one
+ * queue, and a lecture usually wants the queue to be the teacher's. Every other
+ * rule in RoomRules costs more to keep than this one — they live in the CRDT,
+ * where the server would have to start refusing document updates.
+ *
+ * The refusal is spoken rather than silent. A button that does nothing is a bug
+ * report; a button that says why is a rule.
+ */
+function mayRun(sessionId: string, payload: TokenPayload, ws: WebSocket): boolean {
+  if (payload.role === 'host') return true
+  if (getRules(sessionId).run === 'room') return true
+  send(ws, {
+    t: 'error',
+    message: 'Only the teacher runs cells in this seminar.',
+  })
+  return false
+}
+
 function optionalId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : undefined
 }
@@ -255,6 +277,7 @@ function dispatch(
     case 'run': {
       const id = optionalId(message.cellId)
       if (!id) return
+      if (!mayRun(sessionId, payload, ws)) return
       requestRun(sessionId, [id], displayName(sessionId, payload.participantId), payload.participantId)
       return
     }
@@ -269,6 +292,7 @@ function dispatch(
     }
 
     case 'runAll': {
+      if (!mayRun(sessionId, payload, ws)) return
       const ids = codeCellIds(sessionId)
       if (ids.length > 0) {
         requestRun(sessionId, ids, displayName(sessionId, payload.participantId), payload.participantId)
@@ -279,6 +303,7 @@ function dispatch(
     case 'runAbove': {
       const id = optionalId(message.cellId)
       if (!id) return
+      if (!mayRun(sessionId, payload, ws)) return
       const ids = codeCellIds(sessionId, id)
       if (ids.length > 0) {
         requestRun(sessionId, ids, displayName(sessionId, payload.participantId), payload.participantId)
