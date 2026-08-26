@@ -38,28 +38,49 @@
     <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2232%22%20height%3D%2232%22%20viewBox%3D%220%200%2024%2024%22%3E%3Crect%20width%3D%2224%22%20height%3D%2224%22%20fill%3D%22%230F2D69%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3C%2Fsvg%3E" />
 
     <!--
-      800 and 900 are here for the mastheads. The design is drawn in HSE Sans,
-      which is licensed to the university and cannot be redistributed, so it
-      leads every stack and Inter stands in — but Inter at 700 reads thin where
-      the artboards are black, and the seminar name is the loudest thing on two
-      screens. An instance that has HSE Sans installed gets it for free.
+      HSE Sans now ships with the instance instead of being hoped for.
 
-      Webfonts never block the first frame: the stylesheet is fetched at print
-      priority and promoted once it lands, and every stack below degrades to a
-      system face, so text is readable from the first paint rather than blank.
+      It used to lead every stack and stand or fall on whether the machine
+      happened to have it: the artboards are drawn in it, so a teacher with the
+      font installed saw the product as designed and everybody else saw Inter,
+      which is a tenth wider and reads thin at 700 where the artboards are
+      black. Nobody could see that from a university laptop.
+
+      Four weights, subset to Cyrillic, Latin and typography — 70 KB for all of
+      them, served by the instance itself. That matters more here than on a
+      marketing page: this product's whole claim is that a seminar runs on your
+      own hardware, and a room that needs Google to render its own headings is
+      not that.
+
+      Declared here rather than in the app stylesheet on purpose — that sheet is
+      deferred (see vite.config.ts), and a font that starts loading after the
+      bundle arrives swaps under the reader's eyes.
+    -->
+    <link rel="preload" href="/fonts/hse-sans-900.woff2" as="font" type="font/woff2" crossorigin />
+
+    <!--
+      The mono is still Google's: JetBrains Mono is what the notebook, the
+      terminal and every label are set in, and it is not ours to subset out of a
+      local install. Fetched at print priority and promoted once it lands, so it
+      never blocks the first frame.
+
+      Inter is gone from this request. It was the stand-in for a font we now
+      ship; downloading a second text face to stand in for one that always
+      arrives is paying for nothing. It stays in the stack below as the name to
+      fall back to if the files ever fail.
     -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap"
       media="print"
       onload="this.media='all'"
     />
     <noscript>
       <link
         rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap"
       />
     </noscript>
 
@@ -91,6 +112,45 @@
         --boot-ink: #e6e7e8;
         --boot-line: #16244b;
         color-scheme: dark;
+      }
+
+      /*
+       * The four weights the product actually sets. No 500: HSE Sans has no
+       * Medium, and CSS font matching picks the nearest — SemiBold — on its
+       * own. Declaring 500 with the 600 file would be lying to the browser
+       * about what we have.
+       *
+       * swap, not block: text must be on screen from the first frame. A 15 KB
+       * file swaps faster than a reader crosses the first line, and that is
+       * cheaper than a blank screen in a room of twenty people.
+       */
+      @font-face {
+        font-family: 'HSE Sans';
+        src: url('/fonts/hse-sans-400.woff2') format('woff2');
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'HSE Sans';
+        src: url('/fonts/hse-sans-600.woff2') format('woff2');
+        font-weight: 600;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'HSE Sans';
+        src: url('/fonts/hse-sans-700.woff2') format('woff2');
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'HSE Sans';
+        src: url('/fonts/hse-sans-900.woff2') format('woff2');
+        font-weight: 900;
+        font-style: normal;
+        font-display: swap;
       }
 
       html,

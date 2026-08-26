@@ -57,9 +57,10 @@ export default {
         danger: 'rgb(var(--danger) / <alpha-value>)',
       },
       fontFamily: {
-        // 'HSE Sans' leads because the artboards are drawn in it and an
-        // instance that licenses it should get it; Inter is the stand-in
-        // everyone else sees, and index.html's boot stack says the same.
+        // 'HSE Sans' leads and now always wins: index.html declares it with
+        // @font-face, so the instance serves the four weights itself instead of
+        // hoping the machine has them. Inter stays as the name to fall back to
+        // if those files ever fail to arrive; nothing downloads it any more.
         sans: ["'HSE Sans'", 'Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
