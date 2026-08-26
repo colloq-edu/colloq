@@ -103,6 +103,8 @@ export type YOutput = Y.Map<any>
  *   cellId     string | null         cell the question was anchored to
  *   createdAt  number
  *   answer     Y.Text                appended to while the model streams
+ *   reasoning  Y.Text                the model's own trace, when it sends one
+ *   thoughtMs  number | null         how long the trace took
  *   state      'streaming' | 'done' | 'error'
  */
 export type ChatState = 'streaming' | 'done' | 'error'
@@ -143,6 +145,27 @@ export interface ChatSnapshot {
   patchState: PatchState
   /** Who accepted or rejected it, for the line the thread shows afterwards. */
   patchBy: string | null
+  /**
+   * What the model said to itself before answering, verbatim.
+   *
+   * Empty for most turns: only some endpoints send a trace at all, and asking
+   * for one is limited to the single provider with a documented switch (see
+   * ai/provider.ts). Empty is therefore a normal state and not a fault — the
+   * interface simply has no strip to draw.
+   *
+   * Kept apart from `answer` rather than prefixed into it, because the two are
+   * read differently. The answer is what the room is told; the trace is how it
+   * was arrived at, and a reader who wants it goes looking for it.
+   */
+  reasoning: string
+  /**
+   * Milliseconds between the question and the first word of the answer.
+   *
+   * Measured, not reported: it is the wait a person actually sat through,
+   * which is the number the strip claims. Null while the answer has not
+   * started, and on every turn recorded before this existed.
+   */
+  thoughtMs: number | null
 }
 
 export type YChatEntry = Y.Map<any>
@@ -171,6 +194,8 @@ export function createChatEntry(input: {
   entry.set('cellId', input.cellId ?? null)
   entry.set('createdAt', Date.now())
   entry.set('answer', new Y.Text())
+  entry.set('reasoning', new Y.Text())
+  entry.set('thoughtMs', null)
   entry.set('state', 'streaming' as ChatState)
   entry.set('patch', null)
   entry.set('patchBase', input.patchBase ?? null)
@@ -271,6 +296,28 @@ export function chatAnswer(entry: YChatEntry): Y.Text {
   return text
 }
 
+/**
+ * The entry's reasoning text, created on first use.
+ *
+ * Lazy for the same reason chatAnswer is: a turn written by an older build has
+ * no such key, and every reader of a nine-week-old thread would otherwise have
+ * to guard for it. Creating it on read is safe here because the server is a
+ * Yjs client like any other — the empty text merges with itself.
+ */
+export function chatReasoning(entry: YChatEntry): Y.Text {
+  let text = entry.get('reasoning') as Y.Text | undefined
+  if (!text) {
+    text = new Y.Text()
+    entry.set('reasoning', text)
+  }
+  return text
+}
+
+/** A Y.Text as a string, and anything else as nothing. */
+function readText(value: unknown): string {
+  return value instanceof Y.Text ? value.toString() : ''
+}
+
 export function readChatEntry(entry: YChatEntry): ChatSnapshot {
   return {
     id: entry.get('id') as string,
@@ -281,7 +328,7 @@ export function readChatEntry(entry: YChatEntry): ChatSnapshot {
     action: (entry.get('action') as string | null) ?? null,
     cellId: (entry.get('cellId') as string | null) ?? null,
     createdAt: (entry.get('createdAt') as number) ?? 0,
-    answer: chatAnswer(entry).toString(),
+    answer: readText(entry.get('answer')),
     state: (entry.get('state') as ChatState) ?? 'done',
     // Absent on every turn written before proposals existed, which is most of
     // them: a thread from last week must still read.
@@ -289,6 +336,15 @@ export function readChatEntry(entry: YChatEntry): ChatSnapshot {
     patchBase: (entry.get('patchBase') as string | null) ?? null,
     patchState: (entry.get('patchState') as PatchState) ?? 'open',
     patchBy: (entry.get('patchBy') as string | null) ?? null,
+    /*
+     * Read without creating. chatReasoning() makes the text when it is missing,
+     * which is right for the server about to write into it and wrong here: this
+     * runs in every browser on every observer pass, so a thread of turns from
+     * before reasoning existed would have had each of them written to — a read
+     * that mutates the document, inside the callback that fires on mutations.
+     */
+    reasoning: readText(entry.get('reasoning')),
+    thoughtMs: (entry.get('thoughtMs') as number | null) ?? null,
   }
 }
 

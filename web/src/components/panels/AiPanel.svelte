@@ -17,7 +17,7 @@
   import { watchCellIds } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import Markdown from '@/components/notebook/Markdown.svelte'
+  import ChatTurn from './ChatTurn.svelte'
 
   const QUICK: { action: AiAction; label: string }[] = [
     { action: 'explain', label: 'Explain' },
@@ -34,9 +34,6 @@
    * to send?".
    */
   const MAX_SEES = 3
-
-  /** Rides inside the answer's markdown so it sits right after the last token. */
-  const CARET = '<span class="ai-caret" aria-hidden="true"></span>'
 
   const session = getSessionState()
   const cellIds = watchCellIds(session.doc)
@@ -56,6 +53,15 @@
 
   let scroller = $state<HTMLDivElement | null>(null)
   let composer = $state<HTMLTextAreaElement | null>(null)
+  /**
+   * Where the thread was when the reader stopped following it.
+   *
+   * Needed to tell "you scrolled up" from "you scrolled up and then something
+   * arrived": a button that says there is a new answer when there is not is a
+   * button people stop believing, and one that stays silent when there is loses
+   * the answer entirely. Null while the thread is being followed.
+   */
+  let mark = $state<{ id: string; length: number } | null>(null)
 
   let composeTimer: number | undefined
   let armTimer: number | undefined
@@ -188,7 +194,11 @@
    * student nothing. Nothing is claimed that this browser cannot verify.
    */
   const sees = $derived.by(() => {
-    const chips: { label: string; title: string }[] = []
+    // `tone` exists for exactly one chip. A traceback riding along changes what
+    // the question is — it is no longer "explain this", it is "explain this
+    // failure" — and the row should say so at a glance rather than only to
+    // whoever reads all four chips.
+    const chips: { label: string; title: string; tone?: 'danger' }[] = []
     if (selected !== null) {
       chips.push({
         label: `cell ${pad(selected)}`,
@@ -196,7 +206,11 @@
       })
     }
     if (errored) {
-      chips.push({ label: 'traceback', title: 'The newest error in this notebook, in full' })
+      chips.push({
+        label: 'traceback',
+        title: 'The newest error in this notebook, in full',
+        tone: 'danger',
+      })
     }
 
     // Files fill whatever room the cell and traceback chips leave, so a student
@@ -258,7 +272,35 @@
   function onScroll() {
     if (!scroller) return
     // Reading back through the transcript wins over following the newest answer.
+    const wasPinned = pinned
     pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
+    if (pinned) mark = null
+    else if (wasPinned) {
+      const tail = entries[entries.length - 1]
+      mark = tail ? { id: tail.id, length: tail.answer.length } : { id: '', length: 0 }
+    }
+  }
+
+  /**
+   * Whether something arrived below while the reader was looking elsewhere.
+   *
+   * Both halves count: a whole new question from somebody else, and more of an
+   * answer that was already there. The second is the common one — a student
+   * scrolls up to re-read cell 03's explanation and the answer they are waiting
+   * for finishes underneath them.
+   */
+  const news = $derived.by(() => {
+    if (pinned || !mark) return null
+    const tail = entries[entries.length - 1]
+    if (!tail) return null
+    if (tail.id === mark.id && tail.answer.length <= mark.length) return null
+    return tail
+  })
+
+  function follow() {
+    pinned = true
+    mark = null
+    if (scroller) scroller.scrollTop = scroller.scrollHeight
   }
 
   /* ------------------------------------------------------------- composing */
@@ -401,129 +443,73 @@
     {/if}
   </div>
 
-  <!--
-    What the question carries. It sits above the thread rather than inside the
-    composer because it is true of every question the room asks, not only the
-    one being typed — and because a student has to be able to read it before
-    deciding whether to ask here at all.
-  -->
-  {#if !offline && (sees.chips.length > 0 || sees.rest.length > 0)}
-    <div
-      class="flex shrink-0 items-center gap-1.5 overflow-hidden border-b border-line bg-raised px-4 py-1.5"
-    >
-      <span
-        class="shrink-0 text-2xs font-bold uppercase tracking-institution text-muted"
-        title="Sent with every question: the whole notebook, the kernel status and the workspace file list, plus what is named here"
-      >
-        Sees
-      </span>
-      {#each sees.chips as chip (chip.label)}
-        <span
-          class="inline-flex h-5 shrink-0 items-center bg-line px-1.5 font-mono text-2xs text-muted"
-          title={chip.title}
-        >
-          {chip.label}
-        </span>
+  <div class="relative flex min-h-0 flex-1 flex-col">
+    <div bind:this={scroller} onscroll={onScroll} class="min-h-0 flex-1 overflow-y-auto">
+      {#if entries.length === 0}
+        <!--
+          The first thing a student reads on this panel, so it is not "nothing
+          here yet" — it is the one rule about this thread worth knowing before
+          you use it.
+        -->
+        <div class="flex flex-col items-start gap-2.5 px-4 pb-4 pt-4">
+          <p class="text-answer text-ink">No questions yet.</p>
+          <p class="text-ui text-muted">
+            Whatever you ask goes into the room's thread with your name on it, and the answer
+            arrives on everyone's screen at once. Select a cell first to ask about that cell.
+          </p>
+        </div>
+      {/if}
+
+      {#each entries as entry (entry.id)}
+        <ChatTurn
+          {entry}
+          avatar={avatars.get(entry.participantId) ?? null}
+          cellNumber={cellNumber(entry.cellId)}
+          onretry={() => retry(entry)}
+          onstop={() => void stop(entry.id)}
+        />
       {/each}
-      {#if sees.rest.length > 0}
-        <span
-          class="inline-flex h-5 shrink-0 items-center px-1.5 font-mono text-2xs text-muted"
-          title={sees.rest.join(', ')}
-        >
-          +{sees.rest.length}
-        </span>
+
+      {#if typingLine}
+        <!-- Under the last turn rather than inside the thread: this is an
+             intention, and the thread holds finished facts. -->
+        <div class="flex items-center gap-2 px-4 pb-4 pt-2 text-2xs italic text-muted">
+          <span class="flex shrink-0 -space-x-1.5">
+            {#each typing.slice(0, 3) as user (user.id)}
+              <Avatar size="xs" ring name={user.name} color={user.color} avatar={user.avatar} />
+            {/each}
+          </span>
+          <span class="min-w-0 truncate">{typingLine}</span>
+        </div>
       {/if}
     </div>
-  {/if}
 
-  <div bind:this={scroller} onscroll={onScroll} class="min-h-0 flex-1 overflow-y-auto">
-    {#if entries.length === 0}
-      <p class="px-4 pb-4 pt-3.5 text-2xs text-muted">
-        No questions yet. Whatever you ask goes into the room's thread with your name on it, and the
-        answer arrives on everyone's screen at once — select a cell first to ask about that cell.
-      </p>
-    {/if}
-
-    <div class="divide-y divide-line">
-      {#each entries as entry (entry.id)}
-        {@const mine = entry.participantId === session.me.id}
-        <article class="animate-fade-up px-4 py-4">
-          <header class="flex items-center gap-2">
-            <Avatar
-              size="xs"
-              name={entry.name}
-              color={entry.color}
-              avatar={avatars.get(entry.participantId) ?? null}
-            />
-            <span class="min-w-0 truncate text-2xs font-bold leading-tight text-ink">
-              {entry.name}
-            </span>
-            {#if mine}
-              <span class="shrink-0 text-2xs text-muted">you</span>
-            {/if}
-            <span class="min-w-0 shrink truncate text-2xs text-muted">
-              {askedLabel(entry.cellId)}
-            </span>
-            <time
-              class="ml-auto shrink-0 font-mono text-2xs tabular-nums text-muted"
-              datetime={new Date(entry.createdAt).toISOString()}
-            >
-              {clock(entry.createdAt)}
-            </time>
-          </header>
-
-          <!-- Indented past the avatar, so the thread reads as one column of
-               prose with a face in the margin rather than a chat log. -->
-          <p class="mt-1.5 whitespace-pre-wrap break-words pl-7 text-ui text-ink">
-            {entry.question}
-          </p>
-
-          {#if entry.state === 'error'}
-            <div class="ml-7 mt-2 border-l-2 border-danger bg-danger/[0.05] px-3 py-2 text-code text-danger">
-              <p class="break-words">{entry.answer || 'The oracle did not answer.'}</p>
-              <button
-                type="button"
-                class="mt-2 inline-flex h-6 items-center gap-1 border border-danger/40 px-2 text-2xs font-bold uppercase tracking-caps transition-colors duration-100 hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
-                onclick={() => retry(entry)}
-              >
-                <Icon name="restart" size={12} />
-                Retry
-              </button>
-            </div>
-          {:else if entry.answer}
-            <Markdown
-              class="prose-answer mt-2.5 pl-7"
-              source={entry.state === 'streaming' ? entry.answer + CARET : entry.answer}
-            />
-          {:else if entry.state === 'streaming'}
-            <div class="mt-2 flex items-center gap-1.5 pl-7 text-2xs text-muted">
-              <Icon name="spinner" size={14} class="animate-spin" />
-              thinking
-            </div>
-          {/if}
-
-          {#if entry.state === 'streaming'}
-            <button
-              type="button"
-              class="ml-7 mt-2 inline-flex h-6 items-center gap-1 border border-line px-2 text-2xs font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:border-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              onclick={() => void stop(entry.id)}
-            >
-              <Icon name="stop" size={12} />
-              Stop
-            </button>
-          {/if}
-        </article>
-      {/each}
-    </div>
-
-    {#if typingLine}
-      <div class="flex items-center gap-2 px-4 pb-4 pt-1.5 text-2xs italic text-muted">
-        <span class="flex shrink-0 -space-x-1.5">
-          {#each typing.slice(0, 3) as user (user.id)}
-            <Avatar size="xs" ring name={user.name} color={user.color} avatar={user.avatar} />
-          {/each}
-        </span>
-        <span class="min-w-0 truncate">{typingLine}</span>
+    {#if news}
+      <!--
+        The thread stops chasing the newest answer the moment somebody scrolls
+        back, because reading beats following. Doing that silently, though, is
+        how an answer gets lost, so it says whose it is.
+      -->
+      <div class="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+        <button
+          type="button"
+          class="pointer-events-auto inline-flex h-[26px] animate-fade-up items-center gap-1.5
+                 border border-line bg-canvas pl-1.5 pr-2.5 shadow-pop
+                 transition-colors duration-[var(--speed-quick)] hover:border-faint
+                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          onclick={follow}
+        >
+          <Avatar
+            size="xs"
+            name={news.name}
+            color={news.color}
+            avatar={avatars.get(news.participantId) ?? null}
+          />
+          <span class="text-2xs font-semibold text-ink">
+            {news.participantId === session.me.id ? 'your answer' : `${news.name}'s answer`}
+          </span>
+          <Icon name="chevron-down" size={11} class="text-accent-text" />
+        </button>
       </div>
     {/if}
   </div>
@@ -591,8 +577,51 @@
       </p>
     {:else}
       <div
-        class="flex items-end gap-2 border border-line bg-surface py-1 pl-2 pr-1.5 transition-colors duration-100 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
+        class="flex flex-col items-stretch border border-line bg-surface transition-colors
+               duration-[var(--speed-quick)] focus-within:border-accent focus-within:ring-4
+               focus-within:ring-accent/15"
       >
+        <!--
+          What this question will carry, attached to the box it will leave from.
+          It used to sit above the whole thread, which read as a fact about the
+          room; it is not one. Every chip here comes off THIS browser's
+          selection, so two people looking at the same panel see two different
+          rows — and the only place that is honest is against the field where
+          the person who owns that selection is typing.
+
+          Named piece by piece, and nothing is claimed that this browser cannot
+          verify: ai/context.ts also sends the whole notebook, the kernel status
+          and the file list, which have no chip because they are unconditional
+          and a chip that is always lit says nothing.
+        -->
+        {#if sees.chips.length > 0 || sees.rest.length > 0}
+          <div class="flex items-center gap-1.5 overflow-hidden border-b border-line px-2 py-1.5">
+            <span
+              class="shrink-0 text-2xs font-bold uppercase tracking-institution text-faint"
+              title="Sent with every question: the whole notebook, the kernel status and the workspace file list, plus what is named here"
+            >
+              Sees
+            </span>
+            {#each sees.chips as chip (chip.label)}
+              <span
+                class="inline-flex h-[18px] shrink-0 items-center bg-line px-1.5 font-mono text-2xs {chip.tone ===
+                'danger'
+                  ? 'text-danger'
+                  : 'text-ink'}"
+                title={chip.title}
+              >
+                {chip.label}
+              </span>
+            {/each}
+            {#if sees.rest.length > 0}
+              <span class="shrink-0 font-mono text-2xs text-faint" title={sees.rest.join(', ')}>
+                +{sees.rest.length}
+              </span>
+            {/if}
+          </div>
+        {/if}
+
+        <div class="flex items-end gap-2 py-1 pl-2 pr-1.5">
         <!-- Your face before you type, so it is obvious the room will see this. -->
         <Avatar
           class="mb-1"
@@ -624,42 +653,13 @@
         >
           <Icon name="send" size={14} />
         </button>
+        </div>
       </div>
     {/if}
 
-    <p class="flex items-start gap-1.5 text-2xs text-muted">
-      <Icon name="users" size={13} class="mt-px shrink-0" />
-      <span>
-        The whole room sees your question and the answer — asking here keeps it in the seminar
-        instead of a private tab.
-      </span>
+    <p class="flex items-center gap-1.5 text-2xs text-muted">
+      <Icon name="users" size={13} class="shrink-0" />
+      <span class="min-w-0">The whole room sees your question and the answer.</span>
     </p>
   </div>
 </div>
-
-<style>
-  /*
-   * The caret is inserted into the answer's markdown, which reaches the DOM
-   * through {@html} in <Markdown> — outside Svelte's scoping, hence :global.
-   */
-  @keyframes -global-ai-caret {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.2;
-    }
-  }
-
-  :global(.ai-caret) {
-    display: inline-block;
-    /* Sized off the answer's own type so it reads as the next character. */
-    width: 0.55em;
-    height: 1.05em;
-    margin-left: 2px;
-    vertical-align: -0.18em;
-    background: rgb(var(--accent));
-    animation: ai-caret 1.1s ease-in-out infinite;
-  }
-</style>

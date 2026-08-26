@@ -64,13 +64,25 @@ export function providerModel(): string {
 }
 
 /**
+ * What a delta belongs to. Everything an endpoint volunteers before the answer
+ * proper — OpenRouter's `reasoning`, DeepSeek's `reasoning_content` — is a
+ * different kind of text from the answer and is shown in a different place, so
+ * the two are kept apart from the moment they arrive rather than sorted out
+ * later by looking for a marker inside one string.
+ */
+export type DeltaKind = 'answer' | 'reasoning'
+
+/**
  * Streams one completion, feeding each delta to `onDelta`, and resolves with the
- * full text. An aborted generation resolves with whatever arrived — the student
- * navigated away, that is not an error.
+ * full text of the ANSWER — reasoning is delivered through `onDelta` and is
+ * deliberately not part of the return value, because everything downstream (the
+ * patch extractor, the history summary) is about what the model said, not about
+ * how it got there. An aborted generation resolves with whatever arrived — the
+ * student navigated away, that is not an error.
  */
 export async function streamChat(
   messages: ChatTurn[],
-  onDelta: (text: string) => void,
+  onDelta: (text: string, kind: DeltaKind) => void,
   signal?: AbortSignal,
 ): Promise<string> {
   // Reaches a student verbatim, so it names what is missing rather than an
@@ -81,13 +93,20 @@ export async function streamChat(
   const payload = toPayload(messages)
   let stream: Awaited<ReturnType<typeof openStream>>
   try {
-    stream = await openStream(payload, 0.3, signal)
+    stream = await openStream(payload, 0.3, signal, askForReasoning())
   } catch (err) {
     if (isAbort(err, signal)) return ''
-    // Reasoning-style models reject any temperature but their default; retry bare.
+    /*
+     * Retry with nothing but the message list. Two different endpoints refuse
+     * two different extras — a reasoning-style model rejects any temperature
+     * but its default, and an endpoint that has never heard of `reasoning`
+     * rejects that — and a seminar does not care which of the two it hit. The
+     * bare call is the one every OpenAI-compatible endpoint honours, which is
+     * the whole premise of this module.
+     */
     if (isBadRequest(err)) {
       try {
-        stream = await openStream(payload, undefined, signal)
+        stream = await openStream(payload, undefined, signal, false)
       } catch (retryErr) {
         if (isAbort(retryErr, signal)) return ''
         throw friendly(retryErr)
@@ -100,16 +119,39 @@ export async function streamChat(
   let full = ''
   try {
     for await (const chunk of stream) {
-      const delta = chunk.choices?.[0]?.delta?.content
-      if (!delta) continue
-      full += delta
-      onDelta(delta)
+      const delta = chunk.choices?.[0]?.delta as Delta | undefined
+      /*
+       * Two spellings because two families of endpoint. OpenRouter puts the
+       * trace in `reasoning`; DeepSeek and the runtimes that copied it use
+       * `reasoning_content`. Neither is in the OpenAI SDK's types, which is why
+       * the delta is widened above rather than read through them.
+       */
+      const thinking = delta?.reasoning ?? delta?.reasoning_content
+      if (typeof thinking === 'string' && thinking) onDelta(thinking, 'reasoning')
+      const said = delta?.content
+      if (typeof said === 'string' && said) {
+        full += said
+        onDelta(said, 'answer')
+      }
     }
   } catch (err) {
     if (isAbort(err, signal)) return full
     throw friendly(err)
   }
   return full
+}
+
+/**
+ * The delta as it actually arrives, rather than as the SDK types it.
+ *
+ * Reasoning is not in the OpenAI schema, so it is not in the SDK's types
+ * either; an endpoint that sends it sends it anyway. Widening here keeps the
+ * cast in one place and out of the read loop.
+ */
+interface Delta {
+  content?: string | null
+  reasoning?: string | null
+  reasoning_content?: string | null
 }
 
 type PayloadTurn =
@@ -128,13 +170,33 @@ function toPayload(messages: ChatTurn[]): PayloadTurn[] {
   )
 }
 
-function openStream(messages: PayloadTurn[], temperature: number | undefined, signal?: AbortSignal) {
+/**
+ * Whether to ask this endpoint to show its work.
+ *
+ * Only OpenRouter, and only because it is the one provider here with a
+ * documented switch for it. Everywhere else the trace is taken if it is
+ * volunteered and never requested: sending a field an endpoint has not heard of
+ * to trade a nicety for a 400 in front of a class is not a trade worth making.
+ */
+function askForReasoning(): boolean {
+  return resolveAiConfig().provider === 'openrouter'
+}
+
+function openStream(
+  messages: PayloadTurn[],
+  temperature: number | undefined,
+  signal: AbortSignal | undefined,
+  reasoning: boolean,
+) {
   const model = resolveAiConfig().model
+  // `reasoning` is OpenRouter's own field, so it is not in the SDK's params
+  // type; the cast is at this one call site rather than on the config object.
+  const extra = reasoning ? ({ reasoning: { enabled: true } } as Record<string, unknown>) : {}
   // Two call sites rather than one params object: `stream: true` has to be a
   // literal for the SDK to pick its streaming overload.
   return temperature === undefined
-    ? getClient().chat.completions.create({ model, messages, stream: true }, { signal })
-    : getClient().chat.completions.create({ model, messages, stream: true, temperature }, { signal })
+    ? getClient().chat.completions.create({ model, messages, stream: true, ...extra }, { signal })
+    : getClient().chat.completions.create({ model, messages, stream: true, temperature, ...extra }, { signal })
 }
 
 /* ------------------------------------------------------------------ test */

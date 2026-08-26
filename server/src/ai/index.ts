@@ -18,18 +18,24 @@
 import * as Y from 'yjs'
 import {
   chatAnswer,
+  chatReasoning,
   createChatEntry,
   getCells,
   findChatEntry,
   getChat,
   readChatEntry,
   type ChatState,
+  type YChatEntry,
 } from '@shared/notebook'
 import { getOracleSettings } from '../admin/settings.js'
 import { getSessionDoc } from '../collab/index.js'
 import { buildContext } from './context.js'
 import { providerModel, providerReady, streamChat, type ChatTurn } from './provider.js'
 import type { AiAction } from '@shared/protocol'
+// Re-exported because tests reach for it here, where the patch is actually
+// lifted out of an answer; the parser itself is shared with the panel.
+import { lastCodeBlock } from '@shared/answer'
+export { lastCodeBlock }
 
 /** Marks our writes so persistence and peers can tell them from typing. */
 const ORIGIN = 'ai'
@@ -148,8 +154,14 @@ async function generate(
   const controller = new AbortController()
   inflight.set(key, controller)
 
-  // If the host clears the thread mid-answer there is nothing left to write to.
-  const buffer = new AnswerBuffer(sessionId, entryId, () => controller.abort())
+  /*
+   * Two buffers, because two streams. If the host clears the thread mid-answer
+   * there is nothing left to write to, and either buffer noticing that is
+   * enough to stop the whole generation.
+   */
+  const stop = () => controller.abort()
+  const answer = new StreamBuffer(sessionId, entryId, chatAnswer, stop)
+  const thinking = new StreamBuffer(sessionId, entryId, chatReasoning, stop)
 
   try {
     if (!providerReady()) {
@@ -179,8 +191,32 @@ async function generate(
       },
     ]
 
-    const text = await streamChat(turns, (delta) => buffer.push(delta), controller.signal)
-    buffer.flush()
+    /*
+     * The wait, measured rather than reported: the clock starts when the
+     * request goes out and stops at the first word of the answer, which is
+     * exactly the silence a person sat through. A trace arriving in between
+     * does not stop it — reading the model think is still waiting.
+     */
+    const began = Date.now()
+    let speaking = false
+
+    const text = await streamChat(
+      turns,
+      (delta, kind) => {
+        if (kind === 'reasoning') {
+          thinking.push(delta)
+          return
+        }
+        if (!speaking) {
+          speaking = true
+          recordThought(sessionId, entryId, Date.now() - began)
+        }
+        answer.push(delta)
+      },
+      controller.signal,
+    )
+    thinking.flush()
+    answer.flush()
 
     if (controller.signal.aborted) {
       settle(sessionId, entryId, 'done', text.trim() ? null : STOPPED)
@@ -195,7 +231,8 @@ async function generate(
     }
     settle(sessionId, entryId, 'done', null)
   } catch (err) {
-    buffer.flush()
+    thinking.flush()
+    answer.flush()
     if (controller.signal.aborted) {
       settle(sessionId, entryId, 'done', null)
       return
@@ -211,11 +248,30 @@ async function generate(
 }
 
 /**
- * Accumulates deltas and appends them to the entry's Y.Text one window at a
- * time. Also the place where a vanished entry is noticed — the host may have
- * cleared the thread while the model was still talking.
+ * Stamps how long the room waited before the first word arrived.
+ *
+ * Its own transaction rather than a field on the settle at the end, because it
+ * is true the moment it happens and the panel stops saying "thinking" on the
+ * strength of it — deferring it to the end of the answer would leave the strip
+ * counting up under text that had already arrived.
  */
-class AnswerBuffer {
+function recordThought(sessionId: string, entryId: string, ms: number): void {
+  const doc = docOf(sessionId)
+  const entry = findChatEntry(doc, entryId)
+  if (!entry) return
+  doc.transact(() => entry.set('thoughtMs', ms), ORIGIN)
+}
+
+/**
+ * Accumulates deltas and appends them to one of the entry's Y.Texts a window at
+ * a time. Also the place where a vanished entry is noticed — the host may have
+ * cleared the thread while the model was still talking.
+ *
+ * `pick` rather than a hardcoded field: the answer and the reasoning arrive
+ * interleaved on one stream and are written to two texts, and the only
+ * difference between the two writers is which text they append to.
+ */
+class StreamBuffer {
   private pending = ''
   private timer: NodeJS.Timeout | null = null
   private gone = false
@@ -223,6 +279,7 @@ class AnswerBuffer {
   constructor(
     private readonly sessionId: string,
     private readonly entryId: string,
+    private readonly pick: (entry: YChatEntry) => Y.Text,
     private readonly onGone: () => void,
   ) {}
 
@@ -253,8 +310,8 @@ class AnswerBuffer {
       return
     }
     doc.transact(() => {
-      const answer = chatAnswer(entry)
-      answer.insert(answer.length, text)
+      const into = this.pick(entry)
+      into.insert(into.length, text)
     }, ORIGIN)
   }
 }
@@ -281,30 +338,6 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
       if (code) entry.set('patch', code)
     }
   }, ORIGIN)
-}
-
-/**
- * The last fenced code block in an answer, which is the proposed cell.
- *
- * The last rather than the first: a model that shows the broken line before the
- * corrected one puts the answer second, and the prompt asks for exactly one
- * block precisely so this is unambiguous when it obeys.
- *
- * Returns null when there is no block at all, which is a real outcome — "your
- * cell is already right" is a legitimate reply to a request to change it, and
- * inventing a patch out of prose would be the model saying nothing and the
- * interface offering to apply it.
- */
-export function lastCodeBlock(answer: string): string | null {
-  const fence = /```(?:python|py)?[ \t]*\r?\n([\s\S]*?)```/g
-  let found: string | null = null
-  let match: RegExpExecArray | null
-  while ((match = fence.exec(answer)) !== null) found = match[1]
-  if (found === null) return null
-  // Trailing newline only: leading whitespace can be meaningful indentation in
-  // a block that starts inside a function body.
-  const code = found.replace(/\s+$/, '')
-  return code.length > 0 ? code : null
 }
 
 /** What a cell says at this instant, or null when there is no such cell. */

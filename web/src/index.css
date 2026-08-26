@@ -574,9 +574,73 @@
 .prose-answer {
   @apply text-answer;
 }
+
+/*
+ * The cursor that rides the end of an answer while it streams.
+ *
+ * Global because it is inserted into the answer's markdown and reaches the DOM
+ * through {@html}, which is outside Svelte's scoping; and it lives here rather
+ * than in the panel because the panel is no longer what renders answers — the
+ * part that appends it and the part that styles it should at least be in files
+ * that name the same thing.
+ */
+@keyframes ai-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+.ai-caret {
+  display: inline-block;
+  /* Sized off the answer's own type so it reads as the next character. */
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.18em;
+  background: rgb(var(--accent));
+  animation: ai-caret 1.1s ease-in-out infinite;
+}
 .prose-answer code {
   @apply text-code-lg;
 }
+/*
+ * The model's own trace.
+ *
+ * Rendered as markdown rather than shown raw, because the model writes it as
+ * markdown — a trace displayed literally reads `**Refining the check**` in the
+ * middle of a sentence, which is the interface showing its plumbing. But it is
+ * flattened first: this is scratch text, not an answer, and a real h2 in it
+ * would be the largest type in the panel sitting inside a fold nobody has to
+ * open. One size, one weight for headings, one colour for everything.
+ */
+.prose-trace {
+  @apply text-code text-muted;
+}
+.prose-trace > * + * {
+  margin-top: 0.6em;
+}
+.prose-trace h1,
+.prose-trace h2,
+.prose-trace h3 {
+  @apply text-code font-bold text-muted;
+}
+.prose-trace code {
+  @apply bg-raised px-1 font-mono text-micro text-muted;
+}
+.prose-trace pre {
+  @apply overflow-x-auto bg-raised px-2 py-1.5;
+}
+.prose-trace ul {
+  @apply list-disc pl-4;
+}
+.prose-trace ol {
+  @apply list-decimal pl-4;
+}
+
 .prose-note > * + * {
   margin-top: 0.75em;
 }
