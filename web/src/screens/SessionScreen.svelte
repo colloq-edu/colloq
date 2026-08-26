@@ -358,10 +358,17 @@
     <!-- The live state of the room: who is here, what the machine is doing, and
          the two controls that are about this room rather than about the
          notebook inside it. -->
-    <div class="flex h-11 items-center gap-3 border-t border-brand-2 px-4 sm:gap-4 sm:px-7">
+    <!--
+      45, а не 44: правило сверху съедает пиксель из коробки содержимого, и в
+      оставшихся 43 всякий чётный по высоте ребёнок центрируется на половине
+      пикселя. Круги от этого размывались по кольцу, а на 1x — заметно.
+    -->
+    <div class="flex h-[45px] items-center gap-3 border-t border-brand-2 px-4 sm:gap-4 sm:px-7">
       {#if room.length > 0}
         <div class="flex shrink-0 items-center gap-4" title={roomNames}>
-          <AvatarStack people={room} max={4} size={24} ring="rgb(var(--brand))" tone="onDark" />
+          <!-- 28, как на экране входа: 24 в этой полосе читались мелко, а
+               человек в комнате — единственное, что здесь про людей. -->
+          <AvatarStack people={room} max={4} size={28} ring="rgb(var(--brand))" tone="onDark" />
           <span
             class="hidden shrink-0 text-2xs font-bold uppercase tracking-label text-white/80 sm:inline"
           >

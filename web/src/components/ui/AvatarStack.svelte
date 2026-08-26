@@ -47,14 +47,34 @@
    * say that. The nearest Avatar size still picks the right type size.
    */
   const face = $derived(size <= 22 ? 'xs' : size <= 30 ? 'sm' : size <= 40 ? 'md' : 'lg')
+
+  /*
+   * Кегль метки — доля диаметра, а не ступень. Ступеней четыре, диаметров у
+   * стопки сколько угодно, и на 28px ступень `sm` давала те же 14px, что на
+   * 24px: круг вырос, человек в нём остался прежним.
+   *
+   * 0.58, потому что Apple Color Emoji рисует краску примерно в 0.94 кегля, а
+   * Avatar хочет 0.55 диаметра — это и есть 0.55/0.94. Замерено на живой
+   * стопке, а не выведено из метрик: у цветных растровых эмодзи
+   * actualBoundingBox врёт и отдаёт коробку выкладки.
+   */
+  const glyph = $derived(Math.round(size * 0.58))
 </script>
 
 <div class="flex shrink-0 items-center">
   {#each shown as person, i (person.id)}
     <!-- First person on top, z descending rightwards, so the stack reads as a
          queue rather than as whoever happened to be last in the DOM. -->
+    <!--
+      flex, а не block. Аватар внутри — inline-flex, то есть строчный бокс, и в
+      блочном родителе он садится на базовую линию: под ним остаётся место под
+      выносные элементы, и лицо съезжает вниз и вылезает за кольцо. На круге в
+      24px это три с половиной пикселя — лица стояли ниже чипа «+N», и полоса
+      читалась кривой. Флекс-контейнер базовой линии не строит, и `width/height:
+      100%` ниже кладёт лицо ровно в отверстие кольца.
+    -->
     <span
-      class="cell relative block shrink-0 rounded-full"
+      class="cell relative flex shrink-0 rounded-full"
       style="width: {size}px; height: {size}px; border: 2px solid {ring}; z-index: {shown.length -
         i}; margin-left: {i === 0 ? 0 : -overlap}px"
     >
@@ -64,6 +84,7 @@
         avatar={person.avatar}
         title={person.title}
         size={face}
+        emojiPx={glyph}
       />
     </span>
   {/each}

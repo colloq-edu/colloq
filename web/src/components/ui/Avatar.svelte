@@ -6,6 +6,13 @@
     color: string
     avatar?: string | null
     size?: 'xs' | 'sm' | 'md' | 'lg'
+    /**
+     * Кегль метки в пикселях, если круг задан не ступенью, а числом.
+     * Ступеней четыре, а диаметров у стопки сколько угодно: на 28px ступень
+     * `sm` даёт те же 14px, что и на 24px, и метка вместо 55% диаметра
+     * занимает 47 — то есть чем крупнее круг, тем мельче в нём человек.
+     */
+    emojiPx?: number
     ring?: boolean
     class?: string
     title?: string
@@ -16,6 +23,7 @@
     color,
     avatar = null,
     size = 'sm',
+    emojiPx,
     ring = false,
     class: className = '',
     title,
@@ -52,7 +60,9 @@
   class="relative inline-flex shrink-0 select-none items-center justify-center overflow-hidden
          rounded-full font-semibold uppercase leading-none
          {step.box} {isEmoji ? step.emoji : step.label} {ring ? 'ring-2 ring-surface' : ''} {className}"
-  style="background-color: {color}; color: {inkOn(color)}"
+  style="background-color: {color}; color: {inkOn(color)}{isEmoji && emojiPx
+    ? `; font-size: ${emojiPx}px`
+    : ''}"
 >
   {#if avatar && !isEmoji}
     <img src={avatar} alt={name} class="h-full w-full object-cover" />
