@@ -5,6 +5,7 @@
  * the browser is the only thing that can attach it — and fetch leaves it off by
  * default even same-origin, which would make every admin request a silent 401.
  */
+import type { RoomRules } from '@shared/rules'
 import type {
   AdminErrorBody,
   AdminMe,
@@ -127,7 +128,12 @@ export const adminApi = {
   previewImport: (url: string) =>
     request<ImportPreview>('/import/preview', { method: 'POST', ...json({ url }) }),
 
-  importSeminar: (body: { url: string; name?: string; environment?: string | null }) =>
+  importSeminar: (body: {
+    url: string
+    name?: string
+    environment?: string | null
+    rules?: Partial<RoomRules>
+  }) =>
     request<ImportResult>('/import', { method: 'POST', ...json(body) }),
 
   /* -------------------------------------------------------- environments */

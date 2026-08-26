@@ -150,3 +150,16 @@ function safeParse(text: string): unknown {
 export function isOpenRoom(rules: RoomRules): boolean {
   return (Object.keys(OPEN_ROOM) as (keyof RoomRules)[]).every((key) => rules[key] === OPEN_ROOM[key])
 }
+
+/**
+ * May somebody with this role do the thing this rule governs?
+ *
+ * A function rather than a comparison written out at each call site, because
+ * the host exception is the part that is easy to forget: a rule set to `host`
+ * has to keep letting the host through, and a rule set to `room` has to let
+ * everybody through including the host. Written twice, the second copy is where
+ * the bug goes.
+ */
+export function allows(rule: Who, role: 'host' | 'participant'): boolean {
+  return rule === 'room' || role === 'host'
+}

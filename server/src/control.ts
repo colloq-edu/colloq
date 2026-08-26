@@ -29,6 +29,7 @@ import type {
 import type { TokenPayload } from './auth.js'
 import { getSessionDoc } from './collab/index.js'
 import { LINE_LENGTH } from './kernel/format.js'
+import { allows } from '@shared/rules'
 import { getParticipant, getRules } from './db.js'
 import {
   answerInput,
@@ -250,8 +251,7 @@ function parse(data: RawData): ControlClientMessage | null {
  * report; a button that says why is a rule.
  */
 function mayRun(sessionId: string, payload: TokenPayload, ws: WebSocket): boolean {
-  if (payload.role === 'host') return true
-  if (getRules(sessionId).run === 'room') return true
+  if (allows(getRules(sessionId).run, payload.role)) return true
   send(ws, {
     t: 'error',
     message: 'Only the teacher runs cells in this seminar.',

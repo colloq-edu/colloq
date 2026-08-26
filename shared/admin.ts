@@ -38,6 +38,8 @@
  * nobody who can grant access is an instance that has to be recovered from the
  * setup token.
  */
+import type { RoomRules } from './rules.js'
+
 export type AdminRole = 'owner' | 'teacher'
 
 export interface Teacher {
@@ -129,6 +131,15 @@ export interface CreateSeminarRequest {
    * mid-class is worse than one that never had the newest ones.
    */
   environment?: string | null
+  /**
+   * How the room will run: who may do what, and what its oracle does.
+   *
+   * Optional, and absent means the open room the product has always been —
+   * `OPEN_ROOM` in shared/rules.ts. Only the fields the server can actually
+   * keep have any effect; the rest are stored so that the day they become
+   * enforceable, the seminars created today already say what they wanted.
+   */
+  rules?: Partial<RoomRules>
 }
 
 export interface UpdateSeminarRequest {

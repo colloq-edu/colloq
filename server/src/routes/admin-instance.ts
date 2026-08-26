@@ -23,7 +23,8 @@ import { newSessionId } from '../auth.js'
 import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
 import { config } from '../config.js'
 import { closeControlRoom } from '../control.js'
-import { createSession, db, loadDocSnapshot, sessionEnvironment } from '../db.js'
+import { readRules } from '@shared/rules'
+import { createSession, db, loadDocSnapshot, sessionEnvironment, setRules } from '../db.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { listFiles, sessionDir } from '../workspace.js'
@@ -228,6 +229,17 @@ export function adminInstanceRoutes(): Router {
 
     const id = newSessionId()
     createSession(id, name, environment)
+    /*
+     * Rules are written at creation and not before: there is no draft row to
+     * hold them, so a seminar exists the moment it is created and it exists
+     * with the rules it was created under. readRules() inside setRules fills in
+     * anything the form did not send, so a caller that knows nothing about
+     * rules — a script, an older client — still produces the open room the
+     * product has always been.
+     */
+    if (req.body?.rules && typeof req.body.rules === 'object') {
+      setRules(id, readRules(req.body.rules))
+    }
     const staff = currentStaff(req)
     if (staff) setSeminarCreator(id, staff.name)
 

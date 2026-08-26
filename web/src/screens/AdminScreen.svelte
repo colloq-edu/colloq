@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import AdminShell, { type AdminTab } from '@/admin/AdminShell.svelte'
+  import NewSeminar from '@/admin/screens/NewSeminar.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Oracle from '@/admin/screens/Oracle.svelte'
   import Environments from '@/admin/screens/Environments.svelte'
@@ -15,6 +16,15 @@
    * with replaceState — which fires no popstate for anyone else to hear.
    */
   let path = $state(location.pathname)
+
+  /*
+   * Not a route. Creating is a step inside the seminars tab rather than a place
+   * you can be sent to: a half-filled form behind a URL is a form somebody
+   * returns to expecting their answers to still be there.
+   */
+  let makingSeminar = $state(false)
+  /** The seminar just made on the New seminar screen, handed to the list. */
+  let arrived = $state<string | null>(null)
 
   const exchanging = $derived(readEntryCredential(path) !== null)
   const tab = $derived<AdminTab>(
@@ -92,8 +102,23 @@
       <Oracle />
     {:else if tab === 'teachers'}
       <Teachers />
+    {:else if makingSeminar}
+      <NewSeminar
+          ondone={(createdId) => {
+            makingSeminar = false
+            /*
+             * Back to the list with the link, not into the room.
+             *
+             * Walking straight in feels like the finish, and it is how a class
+             * starts late: the address is what the teacher needs in that second,
+             * and finding it means leaving the room they were just dropped into.
+             * The list puts the new seminar on top with the cursor on its Copy.
+             */
+            arrived = createdId ?? null
+          }}
+        />
     {:else}
-      <Seminars />
+      <Seminars onfull={() => (makingSeminar = true)} {arrived} />
     {/if}
   </AdminShell>
 {/if}

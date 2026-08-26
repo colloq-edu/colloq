@@ -23,6 +23,33 @@
   /** Ticks with the poll below so "started 12 min ago" does not freeze at 12. */
   let now = $state(Date.now())
 
+  interface Props {
+    /** Hands over to the full New seminar screen; absent keeps the inline row. */
+    onfull?: () => void
+    /**
+     * A seminar made on the other screen, so this one can put the room at the
+     * top and the cursor on its Copy button — the same landing the inline form
+     * has always given.
+     */
+    arrived?: string | null
+  }
+
+  let { onfull, arrived = null }: Props = $props()
+
+  /*
+   * Coming back from the New seminar screen. The list is reloaded rather than
+   * patched by hand: the two creation paths return different shapes — a blank
+   * seminar and an import — and reloading is the one branch that is right for
+   * both. Any filter is cleared first, because a filter that hides the room you
+   * just made sends the teacher hunting for a seminar they are looking at.
+   */
+  $effect(() => {
+    if (!arrived) return
+    query = ''
+    justCreatedId = arrived
+    void load()
+  })
+
   let creating = $state(false)
   /**
    * Окружения для выпадающего списка. Грузятся один раз и только когда форма
@@ -318,6 +345,16 @@
   /* -------------------------------------------------------------- create */
 
   function startCreate(): void {
+    /*
+     * The inline row stays for the seminar you make in a hurry between two
+     * classes. Anything that needs a decision — the room's rules, the oracle,
+     * a notebook off GitHub — has a screen of its own, and this hands over to
+     * it rather than growing a form inside a table cell.
+     */
+    if (onfull) {
+      onfull()
+      return
+    }
     creating = true
     if (environments === null) {
       void adminApi
