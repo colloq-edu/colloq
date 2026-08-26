@@ -2,6 +2,7 @@
 #
 # Две вещи, ради которых это существует:
 #
+#   make run               собрать и запустить
 #   make host              поднять семинар и получить ссылку для аудитории
 #   make env-use NAME=cv   переключить ядро на другое окружение Python
 #
@@ -22,7 +23,7 @@ CYAN := \033[36m
 RED  := \033[31m
 OFF  := \033[0m
 
-.PHONY: help up dev down restart logs status ps shell \
+.PHONY: help up dev run stop logs-run down restart logs status ps shell \
         host tunnel-setup \
         env-list env-show env-new env-use env-build env-freeze \
         test check
@@ -42,6 +43,47 @@ dev: .env ## Ядро в docker, сервер на хосте (npm run dev ря�
 	docker compose $(DEV) up kernel -d
 	@printf '$(BOLD)ядро на$(OFF) $(CYAN)http://localhost:8888$(OFF) $(DIM)(окружение: $(CURRENT_ENV))$(OFF)\n'
 	@printf '$(DIM)теперь: npm run dev$(OFF)\n'
+
+## Как это запускается на самом деле.
+##
+## Ядро живёт в docker, а сервер — на хосте: так его видно отладчиком, а
+## пересборка занимает секунды вместо пересборки образа. Поэтому у ядра
+## обязателен dev-override — он публикует 8888 наружу и монтирует ./workspace.
+## Без него ядро в контейнере отвечает само себе, сервер с хоста его не
+## находит, а файлы семинаров расходятся по двум разным папкам. Контейнер при
+## этом выглядит здоровым, поэтому состав файлов задан здесь явно.
+PID := .colloq.pid
+LOG := .colloq.log
+
+run: .env ## Собрать и запустить. Это то, что нужно после любой правки кода
+	@$(MAKE) --no-print-directory stop
+	docker compose $(DEV) up kernel -d
+	@printf '$(DIM)ядро: окружение $(CURRENT_ENV), порт 8888 проброшен$(OFF)\n'
+	npm run build
+	@# nohup и подоболочка: make уходит сразу, а сервер должен пережить и его,
+	@# и закрытие терминала. Всё, что он скажет, включая падение на старте,
+	@# уходит в $(LOG) — иначе оно пропадает вместе с оболочкой.
+	@( set -a; . ./.env; set +a; \
+	   STATIC_DIR="$$PWD/web/dist" nohup node server/dist/server.js > $(LOG) 2>&1 & \
+	   echo $$! > $(PID) )
+	@sleep 2
+	@if kill -0 "$$(cat $(PID) 2>/dev/null)" 2>/dev/null; then \
+	  printf '\n$(BOLD)colloq на$(OFF) $(CYAN)%s$(OFF)\n' \
+	    "$$(grep -E '^PUBLIC_URL=' .env | tail -1 | cut -d= -f2-)"; \
+	  printf '$(DIM)логи: make logs-run · остановить: make stop · наружу: make host$(OFF)\n'; \
+	else \
+	  printf '$(RED)сервер не поднялся. Последнее из $(LOG):$(OFF)\n'; \
+	  tail -20 $(LOG); exit 1; \
+	fi
+
+stop: ## Остановить сервер на хосте (ядро в docker остаётся)
+	@if [ -f $(PID) ] && kill -0 "$$(cat $(PID))" 2>/dev/null; then \
+	  kill "$$(cat $(PID))" && printf '$(DIM)сервер остановлен$(OFF)\n'; \
+	fi
+	@rm -f $(PID)
+
+logs-run: ## Смотреть логи сервера, запущенного через make run
+	@tail -f $(LOG)
 
 down: ## Остановить всё (данные и файлы семинаров остаются)
 	docker compose down
@@ -148,5 +190,6 @@ help: ## Показать этот список
 	@printf '$(BOLD)Colloq$(OFF) $(DIM)— совместные семинары на своём железе$(OFF)\n\n'
 	@grep -hE '^[a-z][a-z-]*:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-16s$(OFF) %s\n", $$1, $$2}'
-	@printf '\n$(DIM)Обычный семинар: make up · make host · раздать ссылку$(OFF)\n'
+	@printf '\n$(DIM)Каждый день:  make run · make host · раздать ссылку$(OFF)\n'
+	@printf '$(DIM)Всё в docker: make up$(OFF)\n'
 	@printf '$(DIM)Окружение ядра сейчас: $(BOLD)$(CURRENT_ENV)$(OFF)\n'
