@@ -70,6 +70,17 @@ export function historyRoutes(): Router {
   router.get('/api/sessions/:id/history', (req: Request, res: Response) => {
     if (!whoever(req, res)) return
     const sessionId = req.params.id
+    /*
+     * Load the room before reading its history.
+     *
+     * A seminar nobody has opened since the server started has no live
+     * document, and therefore no base row — the one carrying a whole notebook
+     * that every rebuild replays from. Without this the panel opens on an empty
+     * list for a room full of work, which is exactly the moment somebody is
+     * looking for something they lost. Binding it is what the first person
+     * through the door would have done anyway.
+     */
+    getSessionDoc(sessionId)
     flushHistory(sessionId)
     const rows = listVersions(sessionId, MAX_VERSIONS)
     // Keyframes are bookkeeping — full-document rows written every so often so

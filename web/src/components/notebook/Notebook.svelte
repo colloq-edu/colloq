@@ -11,15 +11,12 @@
 
   interface Props {
     /** The shared terminal drawer, whose tab VH-0 draws at the end of this bar. */
+    /** The drawer below the sheet is showing. */
     terminalOpen?: boolean
     ontoggleterminal?: () => void
-    /** The drawer is open on its history tab. */
-    historyOpen?: boolean
-    ontogglehistory?: () => void
   }
 
-  let { terminalOpen = false, ontoggleterminal, historyOpen = false, ontogglehistory }: Props =
-    $props()
+  let { terminalOpen = false, ontoggleterminal }: Props = $props()
 
   const session = getSessionState()
   const ids = watchCellIds(session.doc)
@@ -680,9 +677,14 @@
 
     {#if ontoggleterminal}
       <!--
-        A tab, not a button: VH-0 draws the open terminal as the selected tab of
-        this bar, sitting on the drawer it opened. Closed, it is the same slot
+        A tab, not a button: VH-0 draws the open drawer as the selected tab of
+        this bar, sitting on the surface it opened. Closed, it is the same slot
         with the bar's own voice, so the row keeps its shape either way.
+
+        One slot for the whole drawer rather than one per surface. The drawer
+        already has tabs across its own top, and a second row of the same three
+        choices up here would be the same question asked twice — the bar would
+        grow a button every time the drawer grew a tab.
       -->
       <button
         type="button"
@@ -692,11 +694,11 @@
           terminalOpen ? 'border-ink bg-raised text-ink' : 'border-transparent text-muted',
         )}
         aria-pressed={terminalOpen}
-        title="Shared terminal — Ctrl+`"
+        title="Terminal, kernel log and history — Ctrl+`"
         onclick={ontoggleterminal}
       >
         <Icon name="prompt" size={12} />
-        Terminal
+        Panel
         {#if session.terminalStatus === 'busy'}
           <span class="h-1.5 w-1.5 animate-blink rounded-full bg-accent"></span>
         {:else if session.terminalUnread > 0}
@@ -720,28 +722,6 @@
           <!-- Тоже значок: клавиша, а не подпись. -->
           <span class="hidden font-mono text-micro text-muted xl:inline">⌃`</span>
         {/if}
-      </button>
-    {/if}
-
-    {#if ontogglehistory}
-      <!--
-        The drawer's other surface, and the same slot shape as Terminal beside
-        it: both open the thing that lives over the notebook rather than beside
-        it, so they belong to one another and not to Run and Interrupt.
-      -->
-      <button
-        type="button"
-        class={cn(
-          CAP,
-          'gap-2 border-b-2',
-          historyOpen ? 'border-ink bg-raised text-ink' : 'border-transparent text-muted',
-        )}
-        aria-pressed={historyOpen}
-        title="Who changed what, and how to put it back"
-        onclick={ontogglehistory}
-      >
-        <Icon name="restart" size={12} />
-        History
       </button>
     {/if}
 

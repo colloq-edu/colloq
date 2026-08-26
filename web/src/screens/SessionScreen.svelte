@@ -229,8 +229,12 @@
   /* ------------------------------------------------------------ terminal */
 
   let terminalOpen = $state(false)
-  /** Which surface the drawer opens on — see the run bar's two buttons. */
-  let drawerTab = $state<'terminal' | 'history'>('terminal')
+  /*
+   * Which surface the drawer is showing. Lives here rather than in the drawer
+   * because the drawer is unmounted when it closes, and a teacher who closes
+   * the panel to look at a cell should come back to what they were reading.
+   */
+  let drawerTab = $state<'terminal' | 'kernel' | 'history'>('terminal')
   // The session holds the unread count; only this screen knows whether anybody
   // is looking at the transcript.
   $effect(() => session.setTerminalOpen(terminalOpen))
@@ -479,30 +483,11 @@
          it is the same machine the cells run on. -->
     <div class="flex min-w-0 flex-1 flex-col">
       <main class="min-h-0 flex-1 overflow-y-auto">
-        <Notebook
-          {terminalOpen}
-          historyOpen={terminalOpen && drawerTab === 'history'}
-          ontoggleterminal={() => {
-            if (terminalOpen && drawerTab === 'history') {
-              drawerTab = 'terminal'
-              return
-            }
-            drawerTab = 'terminal'
-            toggleTerminal()
-          }}
-          ontogglehistory={() => {
-            if (terminalOpen && drawerTab === 'history') {
-              terminalOpen = false
-              return
-            }
-            drawerTab = 'history'
-            if (!terminalOpen) terminalOpen = true
-          }}
-        />
+        <Notebook {terminalOpen} ontoggleterminal={toggleTerminal} />
       </main>
 
       {#if terminalOpen}
-        <TerminalDrawer open={drawerTab} onclose={() => (terminalOpen = false)} />
+        <TerminalDrawer bind:tab={drawerTab} onclose={() => (terminalOpen = false)} />
       {/if}
     </div>
 

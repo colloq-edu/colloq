@@ -1,4 +1,12 @@
 <script lang="ts">
+  /*
+   * The drawer is the room's second surface, and everything that belongs over
+   * the notebook rather than beside it lives here as a tab: the shell, what the
+   * kernel said, and what the room did to the notebook. The oracle keeps the
+   * right-hand column because it is read alongside the notebook, not over it.
+   */
+  type Tab = 'terminal' | 'kernel' | 'history'
+
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
@@ -12,14 +20,15 @@
     /** Hides this drawer. It never sends term:close — the shell belongs to the room. */
     onclose: () => void
     /**
-     * Which surface to show when the drawer opens. The run bar has a button per
-     * tab, and pressing one has to land on that tab rather than on whatever was
-     * open last time.
+     * Which surface is showing. Bound rather than internal because the drawer is
+     * unmounted when it closes: kept here, the tab would reset every time, and
+     * somebody reading the history would be dropped back into the terminal
+     * every time they closed the panel to look at a cell.
      */
-    open?: 'terminal' | 'kernel' | 'history'
+    tab?: Tab
   }
 
-  let { onclose, open = 'terminal' }: Props = $props()
+  let { onclose, tab = $bindable('terminal' as Tab) }: Props = $props()
 
   const session = getSessionState()
   const notebook = watchNotebookMeta(session.doc)
@@ -46,19 +55,7 @@
     return () => terminal.unobserveDeep(read)
   })
 
-  /*
-   * The drawer is the room's second surface, and everything that belongs over
-   * the notebook rather than beside it lives here as a tab: the shell, what the
-   * kernel said, and what the room did to the notebook. The oracle keeps the
-   * right-hand column because it is read alongside the notebook, not over it.
-   */
-  type Tab = 'terminal' | 'kernel' | 'history'
-  let tab = $state<Tab>(open)
-  // Follows the run bar, but does not fight the tabs inside: pressing a tab
-  // here changes `tab` and leaves `open` alone, so nothing snaps back.
-  $effect(() => {
-    tab = open
-  })
+
 
   const shown = $derived(tab === 'terminal' ? lines : lines.filter((l) => l.kind === 'system'))
   const running = $derived(lines.some((l) => l.kind === 'command' && l.running))
