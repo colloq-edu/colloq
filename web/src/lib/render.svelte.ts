@@ -13,6 +13,11 @@
  * hole gets opened, not how one gets closed.
  */
 
+import { foldAnsiColours } from './ansi'
+import { MARKDOWN_FORBIDDEN_TAGS } from './sanitize'
+
+export { ansi256ToBasic, foldAnsiColours, stripAnsi } from './ansi'
+
 /** What the module exposes once the chunk has landed. */
 export interface Renderers {
   /** Untrusted markdown -> sanitized HTML, external links defused. */
@@ -42,7 +47,9 @@ async function importRenderers(): Promise<Renderers> {
     markdown(source) {
       const raw = marked.parse(source, { async: false, gfm: true, breaks: true })
       const holder = document.createElement('div')
-      holder.appendChild(DOMPurify.sanitize(raw, { RETURN_DOM_FRAGMENT: true }))
+      holder.appendChild(
+        DOMPurify.sanitize(raw, { RETURN_DOM_FRAGMENT: true, FORBID_TAGS: MARKDOWN_FORBIDDEN_TAGS }),
+      )
       // A note is written by a classmate; a link in it must not be able to
       // navigate the seminar tab away from the seminar.
       for (const anchor of holder.querySelectorAll('a[href]')) {
@@ -60,8 +67,15 @@ async function importRenderers(): Promise<Renderers> {
     ansi(text) {
       const converter = new AnsiUp()
       converter.escape_html = true
-      converter.use_classes = false
-      return DOMPurify.sanitize(converter.ansi_to_html(text))
+      /*
+       * Classes, not inline colours. ansi_up's own palette puts an error name at
+       * 2.79:1 on the dark ground — the least readable thing on screen at the
+       * moment it matters most, because a traceback is what you read when
+       * something has just broken. The .ansi-* rules in index.css carry a
+       * palette measured against both grounds instead.
+       */
+      converter.use_classes = true
+      return DOMPurify.sanitize(converter.ansi_to_html(foldAnsiColours(text)))
     },
 
     html: (markup) => DOMPurify.sanitize(markup),
@@ -93,18 +107,3 @@ export function renderers(): Renderers | null {
   return loaded
 }
 
-/*
- * Fallback for the window before the chunk lands. Colour is the only thing
- * lost — dropping the escape codes leaves exactly the text the kernel printed,
- * and it goes out as text, never as markup, so it needs no sanitizer.
- *
- * Covers CSI (\x1b[…), the two-character sequences, and OSC strings, which
- * carry a title or a hyperlink and would otherwise show as visible garbage.
- */
-const ANSI_PATTERN =
-  // eslint-disable-next-line no-control-regex -- escape codes are the subject
-  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g
-
-export function stripAnsi(text: string): string {
-  return text.replace(ANSI_PATTERN, '')
-}

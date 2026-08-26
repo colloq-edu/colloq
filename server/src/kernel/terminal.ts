@@ -13,6 +13,11 @@ import { kernelCwd, sessionDir } from '../workspace.js'
  * command carries the name of whoever typed it, and the room watches the output
  * arrive through the same CRDT that already carries cell outputs.
  *
+ * One shell also means one command at a time. A command typed while another is
+ * running waits its turn here rather than being pushed at a shell that would
+ * buffer it and echo it back later — that produced a transcript where one
+ * person's output printed under another person's command line.
+ *
  * Deliberate scope: this is a line-oriented transcript, not a VT emulator. It
  * understands the escapes that ordinary command output actually uses — colours
  * (dropped), carriage-return redraws (collapsed to the line's final state),
@@ -42,6 +47,7 @@ const PRIME_QUIET_MS = 350
 const PRIME_MAX_MS = 4000
 const CONNECT_TIMEOUT_MS = 20_000
 const REQUEST_TIMEOUT_MS = 15_000
+/** Six, on the same backoff: ~20s. A shell is cheaper to reopen than a kernel. */
 const MAX_RECONNECT_ATTEMPTS = 6
 
 /** A document everyone syncs cannot grow without bound. */
@@ -57,6 +63,14 @@ const MAX_COMMAND_BYTES = 4096
 /** An escape split across chunks is normal; one this long is not an escape. */
 const MAX_PENDING_ESC = 128
 
+/*
+ * The shell's own idea of its size, which everyone in the room then reads.
+ *
+ * A pty has one geometry and the transcript has many readers, so this cannot
+ * follow anybody's window. 120 columns is wide enough that `pip` and `ls -l`
+ * do not wrap into nonsense, and narrow enough to still fit the drawer on a
+ * laptop; 40 rows is what `less` and friends page against.
+ */
 const TERM_ROWS = 40
 const TERM_COLS = 120
 
@@ -79,6 +93,13 @@ interface LedgerEntry {
   lines: number
 }
 
+/** Who typed a command; the transcript puts a face and a name against it. */
+interface Sender {
+  name: string
+  color: string
+  participantId: string
+}
+
 interface Term {
   sessionId: string
   /** Jupyter's terminal name ("1"); null when nothing is allocated. */
@@ -93,6 +114,17 @@ interface Term {
   primeDeadline: number
   waiters: Waiter[]
   queued: string[]
+  /**
+   * Commands typed while the shell was busy, in the order they were typed.
+   *
+   * `queued` above is bytes on their way to the pty; this is whole commands
+   * that have not been sent at all yet. They are held rather than pushed
+   * because a shell buffers what it cannot run and echoes it later, in its own
+   * time: two people typing in one shell produced a transcript where somebody's
+   * output landed under somebody else's command line, and the second command
+   * appeared twice — once as we wrote it, once as the shell echoed it back.
+   */
+  pending: Array<{ text: string; by: Sender }>
   reconnectAttempts: number
   flushTimer: NodeJS.Timeout | null
   quietTimer: NodeJS.Timeout | null
@@ -136,6 +168,7 @@ function getTerm(sessionId: string): Term {
       primeDeadline: 0,
       waiters: [],
       queued: [],
+      pending: [],
       reconnectAttempts: 0,
       flushTimer: null,
       quietTimer: null,
@@ -651,6 +684,7 @@ function finishCommand(term: Term): void {
   term.clearNoticed = false
   clearRunning(term)
   setPhase(term, 'idle')
+  startNextPending(term)
 }
 
 function clearRunning(term: Term): void {
@@ -1035,6 +1069,33 @@ export function runCommand(
     return
   }
 
+  /*
+   * One shell, so one command at a time. A command typed while another is
+   * running waits its turn instead of being pushed at a shell that will buffer
+   * it and echo it back later: that produced a transcript nobody could read —
+   * the first person's last line of output printed underneath the second
+   * person's command, and the second command written twice.
+   *
+   * The line is not written here either. It goes in when the command actually
+   * starts, so the order in the transcript is the order things ran.
+   */
+  if (term.phase === 'busy' && term.commandLine) {
+    if (term.pending.length >= MAX_PENDING_COMMANDS) {
+      systemLine(term, '[colloq] too many commands are already waiting; try again once the shell is free.')
+      return
+    }
+    term.pending.push({ text, by })
+    systemLine(term, `[colloq] ${by.name}'s command is waiting for the shell.`)
+    return
+  }
+
+  dispatch(term, text, by)
+}
+
+/** Hard stop on how many commands may be stacked up behind a busy shell. */
+const MAX_PENDING_COMMANDS = 8
+
+function dispatch(term: Term, text: string, by: Sender): void {
   // Whatever ran before is no longer the thing producing output, whether or not
   // we ever recognised its prompt.
   clearRunning(term)
@@ -1064,15 +1125,33 @@ export function runCommand(
       // fail() already put the reason in the transcript; do not keep claiming
       // this command is running.
       clearRunning(term)
+      startNextPending(term)
     })
+}
+
+/** The shell is free again: give it whatever has been waiting longest. */
+function startNextPending(term: Term): void {
+  const next = term.pending.shift()
+  if (!next) return
+  dispatch(term, next.text, next.by)
 }
 
 export function interruptTerminal(sessionId: string): void {
   const term = terms.get(sessionId)
   if (!term) return
   // Commands still waiting to be sent would run *after* the interrupt, which is
-  // the opposite of what the button means.
+  // the opposite of what the button means. That goes for both queues: the bytes
+  // on their way to the pty, and whole commands still waiting their turn.
   term.queued = []
+  if (term.pending.length > 0) {
+    const dropped = term.pending.splice(0, term.pending.length)
+    systemLine(
+      term,
+      dropped.length === 1
+        ? `[colloq] ${dropped[0].by.name}'s waiting command was dropped.`
+        : `[colloq] ${dropped.length} waiting commands were dropped.`,
+    )
+  }
   sendStdin(term, ETX)
 }
 
@@ -1108,6 +1187,7 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   term.col = 0
   term.raw = ''
   term.queued = []
+  term.pending = []
   term.primed = false
   closeSocket(term)
   const name = term.name

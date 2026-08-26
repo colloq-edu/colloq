@@ -73,7 +73,9 @@ export async function streamChat(
   onDelta: (text: string) => void,
   signal?: AbortSignal,
 ): Promise<string> {
-  if (!providerReady()) throw new Error('AI is not configured — set OPENAI_API_KEY')
+  // Reaches a student verbatim, so it names what is missing rather than an
+  // environment variable they have no way to set.
+  if (!providerReady()) throw new Error('No model is set up on this Colloq yet.')
   if (signal?.aborted) return ''
 
   const payload = toPayload(messages)

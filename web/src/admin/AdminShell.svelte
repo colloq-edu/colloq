@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type AdminTab = 'seminars' | 'assistant' | 'teachers'
+  export type AdminTab = 'seminars' | 'environments' | 'assistant' | 'teachers'
 
   /**
    * The numbers on the nav rows.
@@ -13,16 +13,19 @@
   class NavCounts {
     seminars = $state<number | null>(null)
     teachers = $state<number | null>(null)
+    environments = $state<number | null>(null)
 
     /** Both lists, cheap, and independently: a teacher list that 403s must not
      * cost the seminar count. */
     async load(): Promise<void> {
-      const [seminars, teachers] = await Promise.allSettled([
+      const [seminars, teachers, environments] = await Promise.allSettled([
         adminApi.listSeminars(),
         adminApi.listTeachers(),
+        adminApi.listEnvironments(),
       ])
       if (seminars.status === 'fulfilled') this.seminars = seminars.value.length
       if (teachers.status === 'fulfilled') this.teachers = teachers.value.length
+      if (environments.status === 'fulfilled') this.environments = environments.value.environments.length
     }
   }
 
@@ -38,6 +41,13 @@
   import { adminApi } from '@/lib/adminApi'
   import { cn } from '@/lib/utils'
   import { colorForId } from '@shared/protocol'
+  /*
+   * The panel's own motion, loaded with the panel. Three screens open the same
+   * menu and the same dialog, so the rules are shared rather than copied into
+   * three scoped <style> blocks; the shell is where they enter the bundle
+   * because it is the one component every admin tab is rendered inside.
+   */
+  import '@/admin/motion.css'
 
   interface Props {
     tab: AdminTab
@@ -63,6 +73,13 @@
    */
   const TEACHING = $derived<NavItem[]>([
     { id: 'seminars', label: 'Seminars', icon: 'board', href: '/admin', count: navCounts.seminars },
+    {
+      id: 'environments',
+      label: 'Environments',
+      icon: 'box',
+      href: '/admin/environments',
+      count: navCounts.environments,
+    },
   ])
   const INSTANCE = $derived<NavItem[]>([
     { id: 'assistant', label: 'Assistant', icon: 'sparkles', href: '/admin/assistant' },
@@ -95,7 +112,11 @@
 
 {#snippet section(label: string, items: NavItem[], first: boolean)}
   <div class={cn('flex shrink-0 flex-col gap-px', first ? 'pt-4' : 'pt-5')}>
-    <p class="px-5 pb-2 text-micro font-bold uppercase tracking-section text-white/45">{label}</p>
+    <!-- The group heading is the first thing to go on the narrow rail: with the
+         labels gone it heads a column of icons, which it cannot describe. -->
+    <p class="hidden px-5 pb-2 text-micro font-bold uppercase tracking-section text-white/60 md:block">
+      {label}
+    </p>
 
     {#each items as item (item.id)}
       {@const active = item.id === tab}
@@ -104,6 +125,7 @@
       <a
         href={item.href}
         aria-current={active ? 'page' : undefined}
+        title={item.label}
         onclick={(event) => open(event, item.href)}
         class={cn(
           'flex h-[38px] items-center gap-3 border-l-[3px] pl-[17px] pr-5 transition-colors duration-100',
@@ -114,12 +136,15 @@
         )}
       >
         <Icon name={item.icon} size={15} class="shrink-0" />
-        <span class={cn('min-w-0 flex-1 truncate text-ui', active && 'font-semibold')}>
+        <span class={cn('hidden min-w-0 flex-1 truncate text-ui md:block', active && 'font-semibold')}>
           {item.label}
         </span>
         {#if item.count !== null && item.count !== undefined}
           <span
-            class={cn('shrink-0 font-mono text-micro', active ? 'text-white/70' : 'text-white/50')}
+            class={cn(
+              'hidden shrink-0 font-mono text-micro md:inline',
+              active ? 'text-white/70' : 'text-white/60',
+            )}
           >
             {item.count}
           </span>
@@ -132,29 +157,47 @@
 <div class="flex h-full bg-canvas">
   <!-- The brand navy is the same value in both themes, so the sidebar keeps its
        own contrast scale (white at a few alphas) rather than the ink tokens. -->
-  <nav class="flex w-[236px] shrink-0 flex-col bg-brand">
-    <div class="flex h-16 shrink-0 items-center border-b border-white/10 px-5">
-      <Wordmark version="v0.1" />
+  <!--
+    236px of rail on a 390px screen is 60% of the window spent on navigation,
+    and the panel had no breakpoint at all: the provider form simply sat off
+    the right edge. Below md the rail keeps the one thing it needs — where you
+    are and where else you can go — as icons, and hands the width back. The
+    labels come with the room to draw them.
+  -->
+  <nav class="flex w-14 shrink-0 flex-col bg-brand md:w-[236px]">
+    <div
+      class="flex h-16 shrink-0 items-center justify-center border-b border-white/10
+             md:justify-start md:px-5"
+    >
+      <div class="hidden w-full md:block">
+        <Wordmark version="v0.1" />
+      </div>
+      <!-- The mark alone: the lockup is a word at 0.22em tracking and there is
+           no room for a word here. -->
+      <Icon name="logo" size={18} class="text-white md:hidden" />
     </div>
 
     {@render section('Teaching', TEACHING, true)}
     {@render section('Instance', INSTANCE, false)}
 
     {#if teacher}
-      <div class="mt-auto flex h-[60px] shrink-0 items-center gap-2.5 border-t border-white/10 px-5">
+      <div
+        class="mt-auto flex min-h-[60px] shrink-0 flex-col items-center justify-center gap-1.5
+               border-t border-white/10 py-2 md:flex-row md:justify-start md:gap-2.5 md:px-5 md:py-0"
+      >
         <Avatar name={teacher.name} color={colorForId(teacher.id)} size="md" title={teacher.email} />
-        <div class="min-w-0 flex-1">
+        <div class="hidden min-w-0 flex-1 md:block">
           <p class="truncate text-ui font-semibold text-white">{teacher.name}</p>
           <!-- The artboard puts a faculty here; we have no faculty field, and
                the role is the thing that decides what this person can do. -->
-          <p class="truncate text-micro capitalize text-white/50">{teacher.role}</p>
+          <p class="truncate text-micro capitalize text-white/60">{teacher.role}</p>
         </div>
         <button
           type="button"
           title="Sign out"
           aria-label="Sign out"
           onclick={() => void adminAuth.signOut()}
-          class="shrink-0 p-1.5 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white"
+          class="shrink-0 p-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white"
         >
           <Icon name="x" size={15} />
         </button>

@@ -35,14 +35,20 @@ const SYN = [
 type Syn = (typeof SYN)[number]
 
 /** Humanities, Pre-University, Exact Sciences, Natural Sciences, Social Sciences, Business, HSE Grey. */
+/*
+ * Measured against the ground code is actually drawn on — surface in light,
+ * the lifted navy in dark — not against the page. Four of these were under AA
+ * and the worst was the comment at 2.84:1: in a teaching notebook the comment
+ * is often the explanation, and it was the least readable thing on screen.
+ */
 const LIGHT: Record<Syn, string> = {
   text: '#101A33',
   keyword: '#7D50B9',
-  fn: '#B07800',
+  fn: '#966600',
   type: '#374B9B',
   string: '#00784E',
-  number: '#C05A17',
-  comment: '#8A93A8',
+  number: '#B35415',
+  comment: '#686E7E',
   meta: '#C4471A',
   literal: '#B03040',
   punct: '#5D6B8A',
@@ -55,9 +61,9 @@ const DARK: Record<Syn, string> = {
   type: '#7DA0D2',
   string: '#8FD9A8',
   number: '#EB8C3C',
-  comment: '#5E6B85',
+  comment: '#758096',
   meta: '#EB691E',
-  literal: '#CD5A5A',
+  literal: '#CE5C5C',
   punct: '#9BA6BE',
 }
 
@@ -173,8 +179,13 @@ const theme = EditorView.theme({
   '&:not(.cm-focused) .cm-activeLine': {
     backgroundColor: 'transparent !important',
   },
+  /*
+   * muted, not faint. Beside a label a placeholder is a hint; in an EMPTY cell
+   * it is the only thing on the line, which makes it the content — and content
+   * clears AA. It measured 3.47:1 before this.
+   */
   '.cm-placeholder': {
-    color: 'rgb(var(--faint))',
+    color: 'rgb(var(--muted))',
   },
   '.cm-specialChar': {
     color: 'rgb(var(--danger))',
@@ -187,13 +198,25 @@ const theme = EditorView.theme({
 
   // Ink-on-ground washes rather than a hue: they are legible over either ground
   // without a second palette, and they cannot drift toward the running cyan.
-  '.cm-matchingBracket, &.cm-focused .cm-matchingBracket': {
+  //
+  // Only while this editor has focus, and that is not a detail. Every cell of a
+  // notebook is its own EditorView with its own selection, and a selection does
+  // not go away when the cursor leaves — so an unscoped rule lit the brackets in
+  // every cell the teacher had ever touched, and by the middle of a seminar the
+  // whole document was speckled with grey. The bracket wash answers "where is my
+  // cursor", which is a question exactly one cell can answer at a time.
+  //
+  // @codemirror/language scopes its own default the same way; the bare selector
+  // was here to outrank it and outranked the focus condition instead. It is not
+  // needed: EditorView.theme is ordered after EditorView.baseTheme, so the same
+  // selector wins on precedence alone.
+  '&.cm-focused .cm-matchingBracket': {
     backgroundColor: 'rgb(var(--ink) / 0.16)',
     borderRadius: '2px',
     outline: 'none',
     color: 'inherit',
   },
-  '.cm-nonmatchingBracket, &.cm-focused .cm-nonmatchingBracket': {
+  '&.cm-focused .cm-nonmatchingBracket': {
     backgroundColor: 'rgb(var(--danger) / 0.22)',
     borderRadius: '2px',
     color: 'inherit',

@@ -1,9 +1,16 @@
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import busboy from 'busboy'
 import { Router } from 'express'
 import { config } from '../config.js'
 import { getSession } from '../db.js'
-import { deleteFile, listFiles, resolveInSession } from '../workspace.js'
+import {
+  deleteFile,
+  listFiles,
+  resolveInSession,
+  sweepStaleUploads,
+  whyRefused,
+} from '../workspace.js'
 import { broadcastFiles } from '../control.js'
 import { sessionAuth } from './sessions.js'
 
@@ -11,6 +18,9 @@ interface UploadFailure {
   code: number
   message: string
 }
+
+/** One drop, one armful. Past this the panel's progress rows stop being readable. */
+const MAX_FILES_PER_UPLOAD = 8
 
 export function fileRoutes(): Router {
   const router = Router()
@@ -30,11 +40,22 @@ export function fileRoutes(): Router {
       return res.status(400).json({ error: 'expected a multipart/form-data upload' })
     }
 
+    // Before anything is written: an interrupted upload leaves a hidden temp
+    // that nothing else will ever remove.
+    sweepStaleUploads(sessionId)
+
     let bb: ReturnType<typeof busboy>
     try {
       bb = busboy({
         headers: req.headers,
-        limits: { fileSize: config.maxUploadBytes, files: 8, fields: 4, fieldSize: 4096 },
+        /*
+         * Without this busboy reads a filename as latin-1, and a student at a
+         * Russian university who uploads `данные.csv` gets `Ð´Ð°Ð½Ð½ÑÐµ.csv`
+         * on disk — after which `pd.read_csv('данные.csv')` cannot find their
+         * own file. RFC 7578 says the field is UTF-8; this says so too.
+         */
+        defParamCharset: 'utf8',
+        limits: { fileSize: config.maxUploadBytes, files: MAX_FILES_PER_UPLOAD, fields: 4, fieldSize: 4096 },
       })
     } catch {
       return res.status(400).json({ error: 'malformed upload' })
@@ -56,12 +77,28 @@ export function fileRoutes(): Router {
     bb.on('file', (_field, stream, info) => {
       const target = resolveInSession(sessionId, info.filename ?? '')
       if (!target) {
-        failure ??= { code: 400, message: 'unusable file name' }
+        failure ??= { code: 400, message: whyRefused(info.filename ?? '') }
         stream.resume()
         return
       }
       const name = target.slice(target.lastIndexOf('/') + 1)
-      const out = fs.createWriteStream(target)
+      /*
+       * Written beside the file and renamed over it, never into it.
+       *
+       * `createWriteStream(target)` truncates first and fills afterwards, so a
+       * cell already reading that CSV watched it shrink to nothing and grow
+       * again: it read half the rows, finished without an error, and went on
+       * with half the data. The same window swallowed the old file whenever an
+       * upload was cut off midway — the good copy was gone before the bad one
+       * had arrived. A rename inside one directory is atomic: a reader holding
+       * the old file reads all of it, and everybody after sees the new one
+       * whole. It is the rule the size check below already worked by.
+       *
+       * The temp name starts with a dot, so a half-finished upload never shows
+       * up in the room's file list.
+       */
+      const tmp = `${target.slice(0, target.lastIndexOf('/'))}/.${name}.uploading-${randomBytes(6).toString('hex')}`
+      const out = fs.createWriteStream(tmp)
       writes.push(
         new Promise<void>((resolve) => {
           let truncated = false
@@ -72,20 +109,30 @@ export function fileRoutes(): Router {
             failure ??= { code: 400, message: `upload of ${name} failed` }
           })
           out.on('error', () => {
+            fs.rmSync(tmp, { force: true })
             failure ??= { code: 500, message: `could not write ${name}` }
             resolve()
           })
           out.on('close', () => {
             // A truncated file is worse than no file: pandas would happily read
             // half a CSV and nobody would notice until the numbers were wrong.
+            // Whatever the reason, the half stays in the temp file and the copy
+            // the room already had is never touched.
             if (truncated) {
-              fs.rmSync(target, { force: true })
+              fs.rmSync(tmp, { force: true })
               failure ??= {
                 code: 413,
                 message: `${name} is larger than ${Math.round(config.maxUploadBytes / 1024 / 1024)} MB`,
               }
-            } else {
+              resolve()
+              return
+            }
+            try {
+              fs.renameSync(tmp, target)
               saved.push(name)
+            } catch {
+              fs.rmSync(tmp, { force: true })
+              failure ??= { code: 500, message: `could not write ${name}` }
             }
             resolve()
           })
@@ -95,7 +142,10 @@ export function fileRoutes(): Router {
     })
 
     bb.on('filesLimit', () => {
-      failure ??= { code: 400, message: 'too many files in one upload' }
+      failure ??= {
+        code: 400,
+        message: `Up to ${MAX_FILES_PER_UPLOAD} files at a time — drop the rest in a second go.`,
+      }
     })
 
     bb.on('error', () => {

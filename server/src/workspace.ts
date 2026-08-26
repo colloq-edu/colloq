@@ -20,12 +20,80 @@ export function kernelCwd(sessionId: string): string {
 }
 
 /** Reject anything that could escape the session directory. */
+/*
+ * A control character in a filename is legal on POSIX and a menace everywhere
+ * else: a newline breaks the file list into two rows, a carriage return hides
+ * the rest of the name in the terminal, and neither survives being read back
+ * out of `pd.read_csv`. Participant names are already stripped of them for the
+ * same reason. Refused rather than stripped — silently renaming somebody's
+ * upload is worse than telling them the name will not do.
+ */
+// eslint-disable-next-line no-control-regex -- control characters are the subject
+const CONTROL = /[\u0000-\u001f\u007f]/
+
 export function safeName(name: string): string | null {
   const base = path.basename(name)
   if (!base || base === '.' || base === '..') return null
-  if (base.includes('/') || base.includes('\\') || base.includes('\0')) return null
+  if (base.includes('/') || base.includes('\\')) return null
+  if (CONTROL.test(base)) return null
   if (base.length > 200) return null
+  // A leading dot is filtered out of the listing — that is how the kernel's own
+  // `.ipynb_checkpoints` stays out of the room's way. Accepting an upload and
+  // then never showing it is worse than refusing it, so it is refused here.
+  if (base.startsWith('.')) return null
   return base
+}
+
+/**
+ * Why a name was refused, in a sentence the person who dropped the file can act
+ * on. `safeName` answers yes or no, which is all the server needs and nothing a
+ * student can use: "unusable file name" told them neither which file nor what
+ * about it, in the middle of a class, with the seminar waiting.
+ */
+/**
+ * Clear away temp files an interrupted upload left behind.
+ *
+ * An upload writes beside its target and renames on success, and every failure
+ * path removes its own temp — every path except the process dying mid-write.
+ * What that leaves is a dotfile, so the room never sees it and nobody can
+ * remove it from the panel either. Swept on the next upload into the same
+ * seminar, which is the moment somebody is thinking about that folder anyway.
+ */
+export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 1000): void {
+  const dir = sessionDir(sessionId)
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return
+  }
+  const cutoff = Date.now() - olderThanMs
+  for (const name of names) {
+    if (!/^\..+\.uploading-[0-9a-f]{6,}$/.test(name)) continue
+    const full = path.join(dir, name)
+    try {
+      if (fs.statSync(full).mtimeMs < cutoff) fs.rmSync(full, { force: true })
+    } catch {
+      /* somebody else got there first */
+    }
+  }
+}
+
+export function whyRefused(name: string): string {
+  const base = path.basename(name ?? '')
+  const shown = base.slice(0, 60) || '(no name)'
+  if (!base || base === '.' || base === '..') return 'That upload arrived without a usable file name.'
+  if (base.includes('/') || base.includes('\\')) {
+    return `“${shown}” has a folder path in its name — upload the file itself rather than the folder.`
+  }
+  if (CONTROL.test(base)) return `“${shown}” has characters in its name that a file system will not take.`
+  if (base.length > 200) {
+    return `“${shown.slice(0, 40)}…” has a name of ${base.length} characters — shorten it to 200 or fewer.`
+  }
+  if (base.startsWith('.')) {
+    return `“${shown}” starts with a dot, which hides it from the room's file list. Rename it and drop it again.`
+  }
+  return `“${shown}” cannot be used as a file name here.`
 }
 
 export function resolveInSession(sessionId: string, name: string): string | null {

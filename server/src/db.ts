@@ -40,11 +40,30 @@ db.exec(`
   DROP TABLE IF EXISTS ai_messages;
 `)
 
+/**
+ * The environment a seminar was created with.
+ *
+ * Chosen once, at creation, and then it is that room's Python for good: a
+ * seminar whose packages changed under it mid-class is worse than one that
+ * never had the newest ones. Null means "whatever the instance runs", which is
+ * what every seminar made before environments existed has.
+ *
+ * Guarded by table_info rather than a migration framework — one ALTER, and
+ * SQLite has no ADD COLUMN IF NOT EXISTS.
+ */
+function ensureColumn(table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+  if (columns.some((c) => c.name === column)) return
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`)
+}
+ensureColumn('sessions', 'environment', 'environment TEXT')
+
 /* ------------------------------------------------------------- sessions */
 
 const insertSession = db.prepare(
-  'INSERT INTO sessions (id, name, created_at) VALUES (?, ?, ?)',
+  'INSERT INTO sessions (id, name, created_at, environment) VALUES (?, ?, ?, ?)',
 )
+const selectEnvironment = db.prepare('SELECT environment FROM sessions WHERE id = ?')
 const selectSession = db.prepare('SELECT id, name, created_at FROM sessions WHERE id = ?')
 
 interface SessionRow {
@@ -53,10 +72,38 @@ interface SessionRow {
   created_at: number
 }
 
-export function createSession(id: string, name: string): SessionInfo {
+export function createSession(id: string, name: string, environment?: string | null): SessionInfo {
   const createdAt = Date.now()
-  insertSession.run(id, name, createdAt)
+  insertSession.run(id, name, createdAt, environment ?? null)
   return { id, name, createdAt }
+}
+
+/**
+ * Which environment this room asked for, or null for "whatever the instance
+ * runs". Read on every kernel start rather than cached: an operator can change
+ * the row, and the answer decides which container the room talks to.
+ */
+export function sessionEnvironment(id: string): string | null {
+  const row = selectEnvironment.get(id) as { environment: string | null } | undefined
+  return row?.environment ?? null
+}
+
+const renameSessionStmt = db.prepare('UPDATE sessions SET name = ? WHERE id = ?')
+
+/**
+ * Keeps the row in step with the room's own title.
+ *
+ * The seminar's name lives in two places — this row, which the admin list reads,
+ * and `meta.title` in the shared document, which the header shows and the host
+ * can edit in place. They used to drift in both directions: renaming in the
+ * panel never reached the room, and renaming in the room never reached the
+ * panel, so one seminar quietly had two names.
+ *
+ * The document is the source of truth and this mirrors it. One writer, one
+ * direction.
+ */
+export function renameSession(id: string, name: string): void {
+  renameSessionStmt.run(name, id)
 }
 
 export function getSession(id: string): SessionInfo | null {

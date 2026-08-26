@@ -20,11 +20,15 @@ import type { Duplex } from 'node:stream'
 import { isClaimed, readSetupToken, setupTokenPath } from './admin/auth.js'
 import { verifyToken, type TokenPayload } from './auth.js'
 import { aiEnabled, config } from './config.js'
+import { SECURITY_HEADERS } from './headers.js'
 import { handleCollabSocket, shutdownCollab } from './collab/index.js'
+import { staffFromCookieHeader } from './admin/auth.js'
 import { handleControlSocket } from './control.js'
 import { getSession, touchLastSeen } from './db.js'
 import { shutdownKernels } from './kernel/index.js'
 import { adminAuthRoutes } from './routes/admin-auth.js'
+import { adminEnvironmentRoutes } from './routes/admin-environments.js'
+import { adminImportRoutes } from './routes/admin-import.js'
 import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { aiRoutes } from './routes/ai.js'
 import { fileRoutes } from './routes/files.js'
@@ -248,6 +252,12 @@ function compression(req: Request, res: Response, next: NextFunction): void {
 
 const app = express()
 app.disable('x-powered-by')
+
+app.use((_req, res, next) => {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value)
+  next()
+})
+
 app.use(compression)
 app.use(express.json({ limit: '1mb' }))
 
@@ -272,6 +282,8 @@ app.get('/api/health', (_req, res) => {
 // what put the staff table and the cookie in front of it.
 app.use(adminAuthRoutes())
 app.use(adminInstanceRoutes())
+app.use(adminEnvironmentRoutes())
+app.use(adminImportRoutes())
 app.use(sessionRoutes())
 app.use(fileRoutes())
 app.use(aiRoutes())
@@ -359,6 +371,11 @@ function reject(socket: Duplex): void {
   socket.destroy()
 }
 
+/** A staff cookie outranks whatever role the participant token was minted with. */
+function effectiveRole(req: { headers: { cookie?: string } }, payload: TokenPayload): TokenPayload['role'] {
+  return staffFromCookieHeader(req.headers.cookie) ? 'host' : payload.role
+}
+
 server.on('upgrade', (req, socket, head) => {
   // Until handleUpgrade adopts it this socket has no error handler, and a client
   // that vanishes mid-handshake would otherwise throw out of the event loop.
@@ -390,8 +407,20 @@ server.on('upgrade', (req, socket, head) => {
     } catch {
       /* presence bookkeeping must never cost someone their connection */
     }
-    if (channel === 'collab') handleCollabSocket(ws, sessionId)
-    else handleControlSocket(ws, sessionId, payload)
+    if (channel === 'collab') handleCollabSocket(ws, sessionId, effectiveRole(req, payload))
+    else {
+      /*
+       * A participant token carries the role it was minted with. A teacher who
+       * joined before signing in — or who created the seminar in the admin
+       * panel, which never handed out a host token at all — holds a
+       * 'participant' token for a room that is theirs, and interrupt and
+       * restart were dead for the whole seminar as a result. Staff on this
+       * instance are exactly who those controls are for; the cookie is a
+       * stronger credential than the token and it is re-checked here on every
+       * reconnect rather than baked into anything.
+       */
+      handleControlSocket(ws, sessionId, { ...payload, role: effectiveRole(req, payload) })
+    }
   })
 })
 
@@ -421,11 +450,15 @@ function announceSetupToken(): void {
     [
       '',
       '  ┌ nobody owns this Colloq yet',
-      `  │ 1. open   ${config.publicUrl}/admin`,
-      `  │ 2. paste  ${readSetupToken()}`,
-      '  │ 3. type your name and email — that makes you the owner, and everyone',
-      '  │    else teaching here gets a personal sign-in link from you.',
-      `  └ the same token is in ${setupTokenPath} (0600). Keep it: it is also the`,
+      `  │ open  ${config.publicUrl}/admin/t/${readSetupToken()}`,
+      '  │ then type your name and email — that makes you the owner, and everyone',
+      '  │ else teaching here gets a personal sign-in link from you.',
+      '  │',
+      // The link carries the token, so it is not a URL to paste into a chat.
+      // Saying so next to it is cheaper than explaining it afterwards.
+      '  │ That link IS the key to this instance. Do not share it, and do not',
+      '  │ leave it on screen while the room is watching.',
+      `  └ the token alone is in ${setupTokenPath} (0600). Keep it: it is also the`,
       '    way back in if an owner ever loses their link.',
       '',
     ].join('\n'),

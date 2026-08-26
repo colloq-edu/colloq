@@ -86,8 +86,7 @@ function sign(body: string, linkKey: string): string {
 }
 
 /** Six lines instead of cookie-parser; this is the only cookie the server reads. */
-function readCookie(req: Request, name: string): string | null {
-  const header = req.headers.cookie
+function readCookieHeader(header: string | undefined, name: string): string | null {
   if (!header) return null
   for (const part of header.split(';')) {
     const eq = part.indexOf('=')
@@ -121,7 +120,15 @@ export function clearStaffCookie(res: Response): void {
 }
 
 export function currentStaff(req: Request): Teacher | null {
-  const raw = readCookie(req, STAFF_COOKIE)
+  return staffFromCookieHeader(req.headers.cookie)
+}
+
+/**
+ * The same check against a raw Cookie header. The WebSocket upgrade never sees
+ * an express Request, and interrupt/restart have to be answerable there.
+ */
+export function staffFromCookieHeader(header: string | undefined): Teacher | null {
+  const raw = readCookieHeader(header, STAFF_COOKIE)
   if (!raw) return null
   const dot = raw.lastIndexOf('.')
   if (dot <= 0) return null

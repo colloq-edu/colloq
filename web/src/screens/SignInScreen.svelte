@@ -1,4 +1,12 @@
 <script lang="ts">
+  /**
+   * The way in to the teaching side.
+   *
+   * Two doors, both links, both revocable: a personal sign-in link a teacher
+   * was sent, and the setup token from the server's disk — which claims a fresh
+   * instance and afterwards stays the way back in for an owner who lost theirs.
+   * There is no password to forget, so there is nothing here to reset.
+   */
   import Icon from '@/components/ui/Icon.svelte'
   import Poster from '@/components/ui/Poster.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
@@ -18,6 +26,14 @@
   let name = $state('')
   let email = $state('')
   let emailTouched = false
+
+  // A token that came in through /admin/t/<token> on an instance nobody owns
+  // yet. Filling it in is the whole point of that link: what is left to do is
+  // say who you are.
+  $effect(() => {
+    const offered = adminAuth.offeredSetupToken
+    if (offered && !token) token = offered
+  })
 
   // The prefill arrives with the instance state, a paint after the field does.
   // It fires once and then stands down, so it can never land on top of what the
@@ -49,22 +65,20 @@
 <div class="flex h-full">
   <!-- The poster does not depend on anything the server has to say, so it
        paints on the first frame while the cards wait for the instance state. -->
-  <div class="hidden shrink-0 xl:flex">
-    <Poster title="Teaching workspace" headline="banner" width="w-5/12">
-      Seminars and the assistant are configured here — so that the classroom itself stays a link and
-      nothing else.
+  <Poster title="Teaching workspace" headline="banner" width="hidden w-5/12 xl:flex">
+    Seminars and the assistant are configured here — so that the classroom itself stays a link and
+    nothing else.
 
-      {#snippet footer()}
-        <div class="flex items-start gap-2.5">
-          <Icon name="lock" size={14} class="mt-1 shrink-0 text-white/60" />
-          <p class="text-2xs leading-relaxed text-white/60">
-            Students never reach this screen. They open a seminar link, type a name and are inside —
-            no account, ever.
-          </p>
-        </div>
-      {/snippet}
-    </Poster>
-  </div>
+    {#snippet footer()}
+      <div class="flex items-start gap-2.5">
+        <Icon name="lock" size={14} class="mt-1 shrink-0 text-white/60" />
+        <p class="text-2xs leading-relaxed text-white/60">
+          Students never reach this screen. They open a seminar link, type a name and are inside — no
+          account, ever.
+        </p>
+      </div>
+    {/snippet}
+  </Poster>
 
   <div
     class="flex min-w-0 flex-1 flex-col justify-center gap-[22px] overflow-y-auto px-6 py-12 sm:px-[72px]"
@@ -87,7 +101,7 @@
             <div class="flex flex-col gap-[7px]">
               <label
                 for="setup-token"
-                class="text-2xs font-bold uppercase tracking-label text-faint"
+                class="text-2xs font-bold uppercase tracking-label text-muted"
               >
                 Setup token
               </label>
@@ -105,7 +119,7 @@
               <div class="flex min-w-0 flex-1 flex-col gap-[7px]">
                 <label
                   for="owner-name"
-                  class="text-2xs font-bold uppercase tracking-label text-faint"
+                  class="text-2xs font-bold uppercase tracking-label text-muted"
                 >
                   Your name
                 </label>
@@ -121,7 +135,7 @@
               <div class="flex min-w-0 flex-1 flex-col gap-[7px]">
                 <label
                   for="owner-email"
-                  class="text-2xs font-bold uppercase tracking-label text-faint"
+                  class="text-2xs font-bold uppercase tracking-label text-muted"
                 >
                   Your email
                 </label>
@@ -166,9 +180,21 @@
         </section>
       {/if}
 
+      {#if !claimed}
+        <!--
+          Before anyone owns the instance there is exactly one thing to do, and a
+          second card beside it competes with that. What the card says is still
+          worth knowing — it is what your colleagues will get — so it stays, as
+          one line rather than as a rival.
+        -->
+        <p class="animate-fade-up text-ui text-muted">
+          After this, nobody signs in with a form: each teacher gets a personal link from you, and
+          opening it is the sign-in.
+        </p>
+      {:else}
       <section class="animate-fade-up flex flex-col gap-[18px] bg-surface p-[26px]">
         <div class="flex flex-col gap-1.5">
-          <p class="text-micro font-bold uppercase tracking-label text-faint">
+          <p class="text-micro font-bold uppercase tracking-label text-muted">
             Returning · every time after
           </p>
           <h2 class="text-head font-black tracking-tight text-ink">Sign in</h2>
@@ -187,7 +213,7 @@
           <span class="min-w-0 flex-1 truncate font-mono text-ui text-accent-text">
             {window.location.host}/admin/k/&lt;your-key&gt;
           </span>
-          <span class="shrink-0 text-micro font-bold uppercase tracking-label text-faint">
+          <span class="shrink-0 text-micro font-bold uppercase tracking-label text-muted">
             Example
           </span>
         </div>
@@ -231,6 +257,7 @@
           </form>
         {/if}
       </section>
+      {/if}
     {/if}
   </div>
 </div>

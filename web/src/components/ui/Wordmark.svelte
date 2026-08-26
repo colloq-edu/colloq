@@ -56,7 +56,7 @@
 
   {#if version}
     <span class="flex-1"></span>
-    <span class="shrink-0 font-mono text-micro {onDark ? 'text-white/50' : 'text-faint'}">
+    <span class="shrink-0 font-mono text-micro {onDark ? 'text-white/60' : 'text-faint'}">
       {version}
     </span>
   {/if}

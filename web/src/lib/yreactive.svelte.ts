@@ -1,3 +1,19 @@
+/**
+ * Yjs types, read as Svelte state.
+ *
+ * Yjs notifies by observer callback and Svelte 5 tracks by signal, so every
+ * `watch*` here is the same shape: subscribe on first read, unsubscribe when
+ * the last reader goes away, and hand back a `Reactive` whose `.current` can be
+ * read inside `$derived` like any other rune.
+ *
+ * They are deliberately narrow. A seminar notebook is tens of CodeMirror
+ * instances, each holding several subscriptions, and a watcher that returned
+ * "the whole notebook" would wake every cell on every keystroke anywhere. So
+ * each one watches the smallest thing a component actually renders — this
+ * cell's text, this cell's outputs, this cell's peers — and the coarse ones
+ * (`watchCellIds`, `watchNotebookMeta`) return values cheap enough to compare.
+ */
+
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import {
@@ -247,10 +263,25 @@ export interface CellMeta {
   state: CellState
   execCount: number | null
   runBy: string | null
+  /** Participant id, so "is this run mine?" is not decided by a display name. */
+  runById: string | null
+  /**
+   * Set while the cell is stopped inside input(). The kernel is blocked until
+   * somebody in the room answers, so this is a state of the seminar, not of
+   * whoever pressed Run.
+   */
+  stdin: { prompt: string; password: boolean } | null
 }
 
-const EMPTY_META: CellMeta = { type: 'code', state: 'idle', execCount: null, runBy: null }
-const META_KEYS = ['type', 'state', 'execCount', 'runBy'] as const
+const EMPTY_META: CellMeta = {
+  type: 'code',
+  state: 'idle',
+  execCount: null,
+  runBy: null,
+  runById: null,
+  stdin: null,
+}
+const META_KEYS = ['type', 'state', 'execCount', 'runBy', 'runById', 'stdin'] as const
 
 function readMeta(cell: YCell): CellMeta {
   return {
@@ -258,6 +289,8 @@ function readMeta(cell: YCell): CellMeta {
     state: (cell.get('state') as CellState) ?? 'idle',
     execCount: (cell.get('execCount') as number | null) ?? null,
     runBy: (cell.get('runBy') as string | null) ?? null,
+    runById: (cell.get('runById') as string | null) ?? null,
+    stdin: (cell.get('stdin') as CellMeta['stdin']) ?? null,
   }
 }
 
@@ -266,7 +299,13 @@ function sameMeta(a: CellMeta, b: CellMeta): boolean {
     a.type === b.type &&
     a.state === b.state &&
     a.execCount === b.execCount &&
-    a.runBy === b.runBy
+    a.runBy === b.runBy &&
+    a.runById === b.runById &&
+    // Плоское сравнение: объект приходит из документа заново на каждое
+    // изменение, поэтому сравнивать по ссылке бессмысленно.
+    a.stdin?.prompt === b.stdin?.prompt &&
+    a.stdin?.password === b.stdin?.password &&
+    (a.stdin === null) === (b.stdin === null)
   )
 }
 

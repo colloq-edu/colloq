@@ -13,6 +13,8 @@ import type {
   TerminalStatus,
 } from '@shared/protocol'
 import { api } from './api'
+import { enqueueControl, OFFLINE_REASON } from './controls'
+import { countsAsUnread } from './notes'
 import type { StoredIdentity } from './identity'
 import { bindLocalStore, type LocalStore } from './persistence.svelte'
 
@@ -37,7 +39,12 @@ function wsBase(): string {
  */
 export class SessionState {
   readonly session: SessionInfo
-  readonly me: Participant
+  /*
+   * Reactive, because the role in it can be corrected after the fact: the
+   * control socket reports the role the SERVER will act on, which is not
+   * necessarily the one this browser's token was minted with.
+   */
+  me = $state<Participant>({ id: '', name: '', avatar: null, color: '', role: 'participant' })
   readonly token: string
   readonly doc: Y.Doc
   readonly provider: WebsocketProvider
@@ -60,6 +67,20 @@ export class SessionState {
   lastError = $state<string | null>(null)
   /** Shared terminal lifecycle; 'closed' until somebody opens the drawer. */
   terminalStatus = $state<TerminalStatus>('closed')
+  /**
+   * Kernel notes nobody has read yet.
+   *
+   * The runtime's out-of-band news — "a cell failed, so the 12 cells queued
+   * behind it were not run", "kernel restarted by Maria, every variable is
+   * gone" — is written into the shared transcript, and the transcript lives in
+   * a drawer that starts closed. A room that pressed Run All and watched it
+   * stop at cell 5 had the reason on file and no way to know it was there.
+   *
+   * Only `system` lines count. A classmate's `pip install` is news to nobody:
+   * the person who typed it is watching, and the dot is worth something only
+   * while it stays rare.
+   */
+  terminalUnread = $state(0)
 
   #control: WebSocket | null = null
   #controlQueue: ControlClientMessage[] = []
@@ -88,7 +109,7 @@ export class SessionState {
     getCells(this.doc)
     getMeta(this.doc)
     getChat(this.doc)
-    getTerminal(this.doc)
+    getTerminal(this.doc).observe(this.#onTerminalLines)
 
     // Disk before network, in this order deliberately: IndexedDB answers in
     // single-digit milliseconds and a websocket in hundreds, so the notebook
@@ -138,11 +159,47 @@ export class SessionState {
 
   #onStatus = ({ status }: { status: string }) => {
     this.connected = status === 'connected'
+    // The offline notice is about right now. Leaving it up once the room is back
+    // would contradict the header, which has already stopped saying RECONNECTING.
+    if (this.connected && this.lastError === OFFLINE_REASON) this.lastError = null
   }
 
   #onSync = (isSynced: boolean) => {
+    if (!isSynced) return
     // Fallback only: the server seeds a fresh document before anyone can connect.
-    if (isSynced) ensureInitialNotebook(this.doc, this.session.name)
+    ensureInitialNotebook(this.doc, this.session.name)
+    this.#countUnread = true
+  }
+
+  /**
+   * False until the server has handed over what it already had.
+   *
+   * Without it, walking into a room replayed every note the kernel had ever
+   * written as unread: a student arriving on Tuesday was told there were nine
+   * things to read, all of them from last week's seminar. Unread means arrived
+   * while I was here.
+   */
+  #countUnread = false
+
+  #onTerminalLines = (event: Y.YArrayEvent<Y.Map<unknown>>) => {
+    for (const delta of event.changes.delta) {
+      for (const line of delta.insert ?? []) {
+        const kind = (line as Y.Map<unknown>).get?.('kind')
+        if (countsAsUnread({ kind }, { open: this.#terminalOpen, synced: this.#countUnread })) {
+          this.terminalUnread += 1
+        }
+      }
+    }
+  }
+
+  /**
+   * Told by the screen that owns the drawer. While it is open the room is
+   * reading the transcript, so nothing arriving is unread.
+   */
+  #terminalOpen = false
+  setTerminalOpen(open: boolean) {
+    this.#terminalOpen = open
+    if (open) this.terminalUnread = 0
   }
 
   #readPeers = () => {
@@ -182,7 +239,8 @@ export class SessionState {
       } catch {
         return
       }
-      if (message.t === 'files') this.files = message.files
+      if (message.t === 'role') this.me.role = message.role
+      else if (message.t === 'files') this.files = message.files
       else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'error') this.lastError = message.message
     }
@@ -203,8 +261,14 @@ export class SessionState {
     if (this.#control?.readyState === WebSocket.OPEN) {
       this.#control.send(JSON.stringify(message))
     } else if (message.t !== 'ping') {
-      // A run pressed during a blip should still happen once we are back.
-      this.#controlQueue.push(message)
+      // A press already in flight when the socket closed under it. The controls
+      // disable themselves the moment `connected` turns false, so this window is
+      // about a frame wide — see lib/controls.ts for what it keeps and drops.
+      enqueueControl(this.#controlQueue, message)
+      // Buttons can be greyed out; a keyboard shortcut cannot. Once the room
+      // knows it is disconnected, a Shift+Enter that goes nowhere gets the same
+      // sentence the buttons carry instead of silence.
+      if (!this.connected) this.lastError = OFFLINE_REASON
     }
   }
 
@@ -250,6 +314,7 @@ export class SessionState {
     this.provider.off('status', this.#onStatus)
     this.provider.off('sync', this.#onSync)
     this.awareness.off('change', this.#readPeers)
+    getTerminal(this.doc).unobserve(this.#onTerminalLines)
     this.undoManager.destroy()
     this.provider.destroy()
     this.localStore.destroy()

@@ -8,7 +8,6 @@
 import type { Participant, SessionInfo } from '@shared/protocol'
 
 const KEY = 'colloq.identity.v1'
-const HOST_KEY = 'colloq.host.v1'
 const PROFILE_KEY = 'colloq.profile.v1'
 
 export interface StoredIdentity {
@@ -51,12 +50,6 @@ export function saveIdentity(identity: StoredIdentity): void {
   saveProfile({ name: identity.name, avatar: identity.avatar })
 }
 
-export function forgetIdentity(sessionId: string): void {
-  const map = readMap()
-  delete map[sessionId]
-  writeMap(map)
-}
-
 /** Last used name/avatar, so joining a second seminar is one click. */
 export interface Profile {
   name: string
@@ -73,7 +66,7 @@ export function loadProfile(): Profile {
   return { name: '', avatar: null }
 }
 
-export function saveProfile(profile: Profile): void {
+function saveProfile(profile: Profile): void {
   try {
     localStorage.setItem(PROFILE_KEY, JSON.stringify(profile))
   } catch {
@@ -83,34 +76,49 @@ export function saveProfile(profile: Profile): void {
 
 /* --------------------------------------------------------------- host */
 
-type HostMap = Record<string, { token: string; session: SessionInfo }>
+/*
+ * The host token has no client side any more.
+ *
+ * It was minted by POST /api/sessions and kept here so the browser that created
+ * a seminar could prove ownership after a refresh — machinery for a home screen
+ * that no longer exists. Seminars are made in the panel now and staff are
+ * recognised by their cookie, so nothing ever wrote to this store and every
+ * read came back empty. The server still accepts a host token on join, which is
+ * how a seminar created straight against the API can hand ownership to someone.
+ */
 
-function readHosts(): HostMap {
+/* ---------------------------------------------------------------- staff */
+
+/**
+ * A hint that this browser has signed in to the teaching side.
+ *
+ * It authorises nothing — the staff cookie is HttpOnly and the server is the
+ * only thing that can read it. This exists so the join screen can tell, without
+ * a request, whether it is worth ASKING who the visitor is. Students never have
+ * it, so they never pay for the question, and the answer is still the server's.
+ */
+const STAFF_KEY = 'colloq.staff.v1'
+
+export function markStaff(): void {
   try {
-    const raw = localStorage.getItem(HOST_KEY)
-    return raw ? (JSON.parse(raw) as HostMap) : {}
+    localStorage.setItem(STAFF_KEY, '1')
   } catch {
-    return {}
+    /* private browsing: the teacher just fills the form, as before */
   }
 }
 
-export function saveHostToken(session: SessionInfo, token: string): void {
-  const map = readHosts()
-  map[session.id] = { token, session }
+export function clearStaffMark(): void {
   try {
-    localStorage.setItem(HOST_KEY, JSON.stringify(map))
+    localStorage.removeItem(STAFF_KEY)
   } catch {
     /* ignore */
   }
 }
 
-export function loadHostToken(sessionId: string): string | null {
-  return readHosts()[sessionId]?.token ?? null
-}
-
-/** Sessions this browser created, newest first — the teacher's landing page. */
-export function listHostedSessions(): SessionInfo[] {
-  return Object.values(readHosts())
-    .map((entry) => entry.session)
-    .sort((a, b) => b.createdAt - a.createdAt)
+export function mightBeStaff(): boolean {
+  try {
+    return localStorage.getItem(STAFF_KEY) === '1'
+  } catch {
+    return false
+  }
 }

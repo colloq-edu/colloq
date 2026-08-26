@@ -41,11 +41,6 @@ export function insertCellAfter(doc: Y.Doc, afterId: string | null, type: CellTy
   return insertCell(doc, type, index + 1)
 }
 
-export function insertCellBefore(doc: Y.Doc, beforeId: string, type: CellType): string {
-  const index = indexOf(doc, beforeId)
-  return insertCell(doc, type, Math.max(0, index))
-}
-
 export function deleteCell(doc: Y.Doc, id: string): void {
   const cells = getCells(doc)
   const index = indexOf(doc, id)
@@ -73,7 +68,20 @@ export function moveCell(doc: Y.Doc, id: string, direction: -1 | 1): void {
   })
 }
 
-/** Y.Map instances cannot be re-parented, so a move copies the content. */
+/**
+ * Y.Map instances cannot be re-parented, so a move copies the content.
+ *
+ * Everything the cell was carrying comes with it. The outputs used to be left
+ * behind — a fresh empty array — while `state` and `execCount` were copied, so
+ * a cell that had just printed a number arrived at its new position still
+ * claiming to have run as [3] with nothing under it. Reordering a notebook is
+ * not a reason to throw away what it printed.
+ *
+ * What a copy cannot carry is a *concurrent* edit: somebody typing into this
+ * cell at the moment it moves is typing into the original, and the original is
+ * about to be deleted. That is inherent to a list with no move operation, and
+ * the window is one sync round.
+ */
 function cloneCell(cell: YCell): YCell {
   const copy = new Y.Map<any>()
   copy.set('id', cellId(cell))
@@ -82,11 +90,37 @@ function cloneCell(cell: YCell): YCell {
   const source = cellSource(cell).toString()
   if (source) text.insert(0, source)
   copy.set('source', text)
-  copy.set('outputs', new Y.Array())
+  copy.set('outputs', cloneOutputs(cell))
   copy.set('state', cell.get('state') ?? 'idle')
   copy.set('execCount', cell.get('execCount') ?? null)
   copy.set('runBy', cell.get('runBy') ?? null)
+  copy.set('runById', cell.get('runById') ?? null)
   return copy
+}
+
+/** Outputs are Y types too, so they are rebuilt rather than referenced. */
+function cloneOutputs(cell: YCell): Y.Array<unknown> {
+  const out = new Y.Array<unknown>()
+  const existing = cell.get('outputs')
+  if (!(existing instanceof Y.Array)) return out
+  const copies: unknown[] = []
+  for (const output of existing) {
+    if (!(output instanceof Y.Map)) continue
+    const copy = new Y.Map<any>()
+    for (const [key, value] of output.entries()) {
+      if (value instanceof Y.Text) {
+        const text = new Y.Text()
+        const body = value.toString()
+        if (body) text.insert(0, body)
+        copy.set(key, text)
+      } else {
+        copy.set(key, value)
+      }
+    }
+    copies.push(copy)
+  }
+  if (copies.length > 0) out.push(copies)
+  return out
 }
 
 export function setCellType(doc: Y.Doc, id: string, type: CellType): void {
@@ -110,14 +144,4 @@ export function duplicateCell(doc: Y.Doc, id: string): string | null {
   if (index === -1) return null
   const source = cellSource(cells.get(index)).toString()
   return insertCell(doc, cellType(cells.get(index)), index + 1, source)
-}
-
-export function replaceCellSource(doc: Y.Doc, id: string, next: string): void {
-  const index = indexOf(doc, id)
-  if (index === -1) return
-  const text = cellSource(getCells(doc).get(index))
-  doc.transact(() => {
-    text.delete(0, text.length)
-    text.insert(0, next)
-  })
 }

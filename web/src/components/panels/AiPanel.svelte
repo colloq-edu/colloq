@@ -10,7 +10,8 @@
    */
   import type * as Y from 'yjs'
   import { getCells, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
-  import type { AiAction, AiAskRequest, AwarenessUser } from '@shared/protocol'
+  import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
+  import type { AssistantMode } from '@shared/admin'
   import { api } from '@/lib/api'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchCellIds } from '@/lib/yreactive.svelte'
@@ -45,7 +46,7 @@
   // Raw: the whole array is rebuilt on every observer fire, so deep-proxying
   // each snapshot would be work spent on objects that are replaced next frame.
   let entries = $state.raw<ChatSnapshot[]>(chat.map(readChatEntry))
-  let status = $state<{ enabled: boolean; model: string } | null>(null)
+  let status = $state<{ enabled: boolean; model: string; mode: AssistantMode } | null>(null)
   let draft = $state('')
   let sendError = $state<string | null>(null)
   let armed = $state(false)
@@ -64,6 +65,15 @@
   // Optimistic until proven otherwise: a null status means "still checking",
   // and a dead input while a fetch is in flight reads as a broken assistant.
   const offline = $derived(status !== null && !status.enabled)
+  /*
+   * Hints mode is a real state of the room, not an error to discover by
+   * pressing a button. The chips it refuses are not drawn at all — the rule
+   * comes from actionAllowedIn, the same function the route refuses with, so
+   * the two cannot drift.
+   */
+  const mode = $derived<AssistantMode>(status?.mode ?? 'full')
+  const quickActions = $derived(QUICK.filter((q) => actionAllowedIn(mode, q.action)))
+  const hintsOnly = $derived(mode === 'hints')
   const selected = $derived(cellNumber(session.selectedCellId))
 
   $effect(() => {
@@ -83,7 +93,7 @@
         if (alive) status = res
       })
       .catch(() => {
-        if (alive) status = { enabled: false, model: '' }
+        if (alive) status = { enabled: false, model: '', mode: 'off' }
       })
     return () => {
       alive = false
@@ -357,14 +367,21 @@
     <Icon name="sparkles" size={14} class="shrink-0 text-accent-text" />
     <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">Assistant</span>
     <span
-      class="inline-flex h-5 shrink-0 items-center bg-line px-1.5 text-micro font-bold uppercase tracking-caps text-muted"
+      class="inline-flex h-5 shrink-0 items-center bg-raised px-1.5 text-micro font-bold uppercase
+             tracking-caps text-ink"
       title="Everyone in this session reads the same thread"
     >
       shared · {entries.length} Q
     </span>
 
     <span class="ml-auto min-w-0 truncate font-mono text-micro text-muted">
-      {status?.model ?? ''}
+      <!--
+        Only when there is something to name. A header reading "gpt-4o-mini"
+        above a panel saying "no model is set up on this Colloq yet" is the
+        screen contradicting itself: the model is what the server WOULD use, and
+        until it can, saying it is a claim the room cannot act on.
+      -->
+      {offline ? '' : (status?.model ?? '')}
     </span>
 
     {#if isHost}
@@ -395,7 +412,7 @@
       class="flex shrink-0 items-center gap-1.5 overflow-hidden border-b border-line bg-raised px-4 py-1.5"
     >
       <span
-        class="shrink-0 text-micro font-bold uppercase tracking-institution text-faint"
+        class="shrink-0 text-micro font-bold uppercase tracking-institution text-muted"
         title="Sent with every question: the whole notebook, the kernel status and the workspace file list, plus what is named here"
       >
         Sees
@@ -442,7 +459,7 @@
               {entry.name}
             </span>
             {#if mine}
-              <span class="shrink-0 text-micro text-faint">you</span>
+              <span class="shrink-0 text-micro text-muted">you</span>
             {/if}
             <span class="min-w-0 shrink truncate text-micro text-muted">
               {askedLabel(entry.cellId)}
@@ -462,7 +479,7 @@
           </p>
 
           {#if entry.state === 'error'}
-            <div class="ml-7 mt-2 border-l-2 border-danger bg-danger/10 px-3 py-2 text-code text-danger">
+            <div class="ml-7 mt-2 border-l-2 border-danger bg-danger/[0.05] px-3 py-2 text-code text-danger">
               <p class="break-words">{entry.answer || 'The assistant did not answer.'}</p>
               <button
                 type="button"
@@ -514,7 +531,7 @@
   <div class="flex shrink-0 flex-col gap-2.5 border-t border-line px-4 pb-4 pt-3">
     {#if sendError}
       <div
-        class="flex items-start gap-2 border-l-2 border-danger bg-danger/10 px-3 py-2 text-2xs text-danger"
+        class="flex items-start gap-2 border-l-2 border-danger bg-danger/[0.05] px-3 py-2 text-2xs text-danger"
       >
         <span class="min-w-0 flex-1 break-words">{sendError}</span>
         <button
@@ -529,7 +546,7 @@
     {/if}
 
     <div class="flex flex-wrap items-center gap-1.5">
-      {#each QUICK as quick (quick.action)}
+      {#each quickActions as quick (quick.action)}
         {@const live = liveAction === quick.action}
         <!-- The transparent border on the resting chip keeps the box the same
              size as the outlined one, so nothing shifts when an answer starts. -->
@@ -545,16 +562,32 @@
           {quick.label}
         </button>
       {/each}
-      {#if selected === null}
+      {#if hintsOnly}
+        <span class="text-2xs text-muted">
+          hints only — the assistant points, it does not write the answer
+        </span>
+      {:else if selected === null}
         <span class="text-micro text-muted">select a cell to use these</span>
       {/if}
     </div>
 
     {#if offline}
+      <!--
+        Two different facts wore the same sentence, and it was addressed to
+        whoever runs the server while being read by a student who cannot act on
+        it. An assistant switched off by the teacher is a decision, not a fault;
+        an unconfigured one is a fault, and only staff can do anything about it —
+        so only staff are told where.
+      -->
       <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted">
-        AI is not configured — set
-        <span class="font-mono text-2xs text-ink">OPENAI_API_KEY</span>
-        in <span class="font-mono text-2xs text-ink">.env</span> and restart the server.
+        {#if mode === 'off'}
+          The assistant is switched off for this seminar.
+        {:else if isHost}
+          No model is set up on this Colloq yet — add a key under
+          <span class="font-semibold text-ink">Assistant</span> in the teaching panel.
+        {:else}
+          No model is set up on this Colloq yet, so there is nobody to ask here.
+        {/if}
       </p>
     {:else}
       <div

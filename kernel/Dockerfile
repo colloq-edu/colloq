@@ -11,6 +11,19 @@ RUN apt-get update \
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
+# Окружение семинара — слой поверх базы, а не вместо неё.
+#
+# Два слоя, а не один, ради кеша: база одинакова у всех окружений, поэтому
+# docker переиспользует её, и «завести окружение» стоит только тех пакетов,
+# которых в базе нет. Один общий слой пересобирался бы целиком на каждую
+# правку списка, а это pandas и scikit-learn заново.
+#
+# Копируется ровно выбранный файл, а не вся папка: иначе правка чужого
+# окружения сбрасывала бы кеш этому.
+ARG KERNEL_ENV=base
+COPY environments/${KERNEL_ENV}.txt /tmp/environment.txt
+RUN pip install --no-cache-dir -r /tmp/environment.txt
+
 # Student code runs as this user; it owns nothing outside /workspace.
 RUN useradd --create-home --uid 1000 runner \
  && mkdir -p /workspace \

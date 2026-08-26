@@ -145,7 +145,7 @@ async function generate(
   try {
     if (!providerReady()) {
       throw new Error(
-        'The assistant is not configured on this server — set OPENAI_API_KEY and restart Colloq.',
+        'No model is set up on this Colloq yet. Whoever runs it can add one under Assistant in the teaching panel.',
       )
     }
 
@@ -274,7 +274,7 @@ function docOf(sessionId: string): Y.Doc {
  * so the model can tell a follow-up from a new thread of thought — and so it
  * can say "as Ana asked earlier" without being told who is in the room.
  */
-function recentTurns(doc: Y.Doc): ChatTurn[] {
+export function recentTurns(doc: Y.Doc): ChatTurn[] {
   const chat = getChat(doc)
   const turns: ChatTurn[] = []
   for (let i = Math.max(0, chat.length - MAX_HISTORY_ENTRIES); i < chat.length; i++) {
@@ -287,8 +287,18 @@ function recentTurns(doc: Y.Doc): ChatTurn[] {
       })
     }
     const answer = snapshot.answer.trim()
-    // Old turns are here for continuity of intent, not for their code listings.
-    if (answer && answer !== STOPPED) {
+    /*
+     * A failed turn is not a turn the model took.
+     *
+     * When a request fails, the sentence that explains it — "The AI endpoint
+     * rejected the API key", "the model did not answer within 120 seconds" —
+     * is written into the entry's answer, because that is where the room reads
+     * it. Sent back as `role: assistant` it becomes something the model
+     * believes it said, and every reply after a hiccup was conditioned on a
+     * line about the server's own plumbing. A cancelled answer was already
+     * excluded for the same reason; an errored one was not.
+     */
+    if (answer && answer !== STOPPED && snapshot.state !== 'error') {
       turns.push({ role: 'assistant', content: trimTail(answer, MAX_HISTORY_CHARS) })
     }
   }

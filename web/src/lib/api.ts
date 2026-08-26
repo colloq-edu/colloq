@@ -56,7 +56,9 @@ export const api = {
 
   /** Everyone who has ever joined, newest activity first. */
   listParticipants: (id: string) =>
-    request<{ participants: Participant[] }>(`/api/sessions/${id}/participants`),
+    request<{ participants: Participant[]; online: string[] }>(
+      `/api/sessions/${id}/participants`,
+    ),
 
   listFiles: (id: string) => request<{ files: FileEntry[] }>(`/api/sessions/${id}/files`),
 

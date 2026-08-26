@@ -9,6 +9,7 @@
  * their frame and let the content land instead of drawing a spinner over it.
  */
 import type { AdminMe, ClaimRequest, InstanceState } from '@shared/admin'
+import { clearStaffMark, markStaff } from '@/lib/identity'
 import { AdminApiError, adminApi } from '@/lib/adminApi'
 
 function messageFor(cause: unknown): string {
@@ -35,7 +36,7 @@ class AdminAuth {
     return this.me?.teacher.role === 'owner'
   }
 
-  /** Idempotent: the shell and the home screen both ask, and one request answers both. */
+  /** Idempotent: the shell and every screen inside it ask, and one request answers all. */
   load(): Promise<void> {
     if (this.ready && !this.#inflight) return Promise.resolve()
     return this.refresh()
@@ -54,6 +55,12 @@ class AdminAuth {
       const [state, me] = await Promise.all([adminApi.state(), this.#readMe()])
       this.state = state
       this.me = me
+      // Every path that establishes who you are keeps the hint in step, not just
+      // the explicit sign-in: a teacher who comes back tomorrow restores their
+      // session through here, and the seminar screen would otherwise stop
+      // recognising them.
+      if (me) markStaff()
+      else clearStaffMark()
       this.error = null
     } catch (cause: unknown) {
       this.error = messageFor(cause)
@@ -90,6 +97,20 @@ class AdminAuth {
     return this.#authenticate(() => adminApi.signInWithKey(key))
   }
 
+  /**
+   * A setup token that arrived in the URL but could not be spent yet, because
+   * the instance has no owner and claiming needs a name and an email.
+   *
+   * Held here rather than passed as a prop: the screen that needs it is chosen
+   * by the router two levels up, and threading a value through a branch that
+   * exists for one first-run case would put it in every other path too.
+   */
+  offeredSetupToken = $state<string | null>(null)
+
+  offerSetupToken(token: string): void {
+    this.offeredSetupToken = token
+  }
+
   async signOut(): Promise<void> {
     try {
       await adminApi.signOut()
@@ -98,6 +119,7 @@ class AdminAuth {
       // done with it, and refusing to leave the panel would be absurd.
     }
     this.me = null
+    clearStaffMark()
     this.error = null
     await this.refresh()
   }
@@ -112,10 +134,13 @@ class AdminAuth {
     this.error = null
     try {
       this.me = await exchange()
+      // The seminar side reads this to know whether to ask the server who you are.
+      markStaff()
       this.state = await adminApi.state()
       return true
     } catch (cause: unknown) {
       this.me = null
+      clearStaffMark()
       this.error = messageFor(cause)
       return false
     } finally {

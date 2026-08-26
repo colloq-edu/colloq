@@ -10,7 +10,7 @@
 import fs from 'node:fs'
 import { Router, type Request, type Response } from 'express'
 import * as Y from 'yjs'
-import { getCells } from '@shared/notebook'
+import { getCells, getMeta } from '@shared/notebook'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import {
   getAssistantSettings,
@@ -23,10 +23,12 @@ import { newSessionId } from '../auth.js'
 import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
 import { config } from '../config.js'
 import { closeControlRoom } from '../control.js'
-import { createSession, db, loadDocSnapshot } from '../db.js'
-import { shutdownSession } from '../kernel/index.js'
+import { createSession, db, loadDocSnapshot, sessionEnvironment } from '../db.js'
+import { environmentOf, shutdownSession } from '../kernel/index.js'
+import { activeName, exists as environmentExists } from '../environments.js'
 import { listFiles, sessionDir } from '../workspace.js'
 import {
+  ENVIRONMENT_NAME,
   LIMITS,
   type AdminErrorBody,
   type AdminSeminar,
@@ -78,8 +80,8 @@ interface SeminarRow {
 }
 
 /**
- * Attribution for a seminar opened from the home screen by a signed-in teacher.
- * Exported for routes/sessions.ts, which owns that path.
+ * Attribution for a seminar created through POST /api/sessions rather than
+ * through the panel. Exported for routes/sessions.ts, which owns that path.
  */
 export function setSeminarCreator(sessionId: string, createdBy: string): void {
   updateCreator.run(createdBy, sessionId)
@@ -143,6 +145,12 @@ function toSeminar(row: SeminarRow): AdminSeminar {
     cellCount: cellCount(row.id, liveCount > 0),
     fileCount: fileCount(row.id),
     url: `${config.publicUrl}/s/${row.id}`,
+    /*
+     * Что комната РЕАЛЬНО запустила, если ядро уже поднялось; иначе — что она
+     * попросила при создании. Разница видна ровно тогда, когда она важна:
+     * семинар, переживший переключение, продолжает работать на старом образе.
+     */
+    environment: environmentOf(row.id) ?? sessionEnvironment(row.id),
     createdBy: row.created_by,
     archivedAt: row.archived_at,
   }
@@ -196,8 +204,30 @@ export function adminInstanceRoutes(): Router {
       return invalid(res, `a seminar name must be ${LIMITS.seminarName} characters or fewer`)
     }
 
+    /*
+     * Окружение проверяется, а не принимается на слово: имя становится тегом
+     * образа и именем контейнера, и оно приходит из браузера. Несуществующее
+     * имя лучше отвергнуть здесь, чем обнаружить, когда комната уже полна.
+     */
+    const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
+    if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
+      return invalid(res, `there is no environment called "${wanted}"`)
+    }
+
+    /*
+     * A concrete name is always recorded, never "follow the instance".
+     *
+     * There used to be a third state — null meaning "whatever the instance is
+     * set to" — and it quietly contradicted the promise this feature makes: a
+     * seminar's Python is decided once, so that a room's packages cannot change
+     * under it mid-class. A room left on "follow" would have moved the next
+     * time somebody changed the default. Resolving the default HERE, at
+     * creation, keeps one rule instead of two.
+     */
+    const environment = wanted || activeName()
+
     const id = newSessionId()
-    createSession(id, name)
+    createSession(id, name, environment)
     const staff = currentStaff(req)
     if (staff) setSeminarCreator(id, staff.name)
 
@@ -217,6 +247,10 @@ export function adminInstanceRoutes(): Router {
         return invalid(res, `a seminar name must be ${LIMITS.seminarName} characters or fewer`)
       }
       renameSeminar.run(name, row.id)
+      // ...and into the room, whose header reads the document rather than this
+      // row. Without it a rename in the panel never reached the people inside,
+      // and the seminar quietly had two names.
+      getMeta(getSessionDoc(row.id).doc).set('title', name)
     }
     if (body?.archived !== undefined) {
       if (typeof body.archived !== 'boolean') return invalid(res, 'archived must be true or false')

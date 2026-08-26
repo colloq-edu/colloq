@@ -28,13 +28,19 @@ import type {
 } from '@shared/protocol'
 import type { TokenPayload } from './auth.js'
 import { getSessionDoc } from './collab/index.js'
+import { LINE_LENGTH } from './kernel/format.js'
 import { getParticipant } from './db.js'
 import {
+  answerInput,
   clearOutputs,
+  formatSession,
+  kernelNote,
   interruptSession,
   onWorkspaceChanged,
   requestRun,
   restartSession,
+  cancelRun,
+  startedTheRunningCell,
 } from './kernel/index.js'
 import {
   clearTerminal,
@@ -47,6 +53,7 @@ import {
 } from './kernel/terminal.js'
 import { listFiles } from './workspace.js'
 
+/** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
 /** A socket that ignores this many consecutive pings is a closed laptop lid. */
 const MAX_MISSED_PONGS = 2
@@ -248,14 +255,23 @@ function dispatch(
     case 'run': {
       const id = optionalId(message.cellId)
       if (!id) return
-      requestRun(sessionId, [id], displayName(sessionId, payload.participantId))
+      requestRun(sessionId, [id], displayName(sessionId, payload.participantId), payload.participantId)
+      return
+    }
+
+    case 'cancel': {
+      const id = optionalId(message.cellId)
+      if (!id) return
+      // Silent when there was nothing of theirs waiting: two people pressing
+      // cancel on the same cell is a race, not an error worth a message.
+      cancelRun(sessionId, [id], payload.participantId, payload.role === 'host')
       return
     }
 
     case 'runAll': {
       const ids = codeCellIds(sessionId)
       if (ids.length > 0) {
-        requestRun(sessionId, ids, displayName(sessionId, payload.participantId))
+        requestRun(sessionId, ids, displayName(sessionId, payload.participantId), payload.participantId)
       }
       return
     }
@@ -265,14 +281,26 @@ function dispatch(
       if (!id) return
       const ids = codeCellIds(sessionId, id)
       if (ids.length > 0) {
-        requestRun(sessionId, ids, displayName(sessionId, payload.participantId))
+        requestRun(sessionId, ids, displayName(sessionId, payload.participantId), payload.participantId)
       }
       return
     }
 
     case 'interrupt': {
-      if (payload.role !== 'host') {
-        send(ws, { t: 'error', message: 'Only the host can interrupt the kernel.' })
+      /*
+       * The host can always stop the kernel. So can whoever started the cell
+       * that is running: they are stopping their own work, only one cell runs
+       * at a time, and a seminar with no teacher in the room otherwise has no
+       * way at all to end a loop that will not end itself.
+       *
+       * By participant id, not by name — two students called Anna are two
+       * people, and a name is not a credential.
+       */
+      if (payload.role !== 'host' && !startedTheRunningCell(sessionId, payload.participantId)) {
+        send(ws, {
+          t: 'error',
+          message: 'Only the host, or whoever started the running cell, can interrupt the kernel.',
+        })
         return
       }
       void interruptSession(sessionId).catch((err: unknown) => {
@@ -286,7 +314,7 @@ function dispatch(
         send(ws, { t: 'error', message: 'Only the host can restart the kernel.' })
         return
       }
-      void restartSession(sessionId).catch((err: unknown) => {
+      void restartSession(sessionId, displayName(sessionId, payload.participantId)).catch((err: unknown) => {
         send(ws, { t: 'error', message: reason(err, 'Could not restart the kernel.') })
       })
       return
@@ -294,6 +322,43 @@ function dispatch(
 
     case 'clearOutputs': {
       clearOutputs(sessionId, optionalId(message.cellId))
+      return
+    }
+
+    case 'input': {
+      const value = typeof message.value === 'string' ? message.value : ''
+      void answerInput(sessionId, value).catch((err: unknown) => {
+        send(ws, { t: 'error', message: reason(err, 'Could not send that to the cell.') })
+      })
+      return
+    }
+
+    case 'format': {
+      /*
+       * The result goes to the terminal transcript rather than back down this
+       * socket: everybody's notebook just changed under them, so everybody
+       * deserves the sentence explaining it — not only whoever pressed the
+       * button. It is also the one place that can say "three cells were left
+       * alone", which is the part somebody will want to check.
+       */
+      void formatSession(sessionId)
+        .then((outcome) => {
+          if (outcome.error) return
+          if (outcome.changed === 0 && outcome.skipped === 0) {
+            kernelNote(sessionId, 'Formatted with black — everything was already in shape.')
+            return
+          }
+          const parts = [`${outcome.changed} ${outcome.changed === 1 ? 'cell' : 'cells'} reformatted`]
+          if (outcome.skipped > 0) {
+            parts.push(
+              `${outcome.skipped} left alone (a magic, a shell line, or code mid-sentence — black could not read them)`,
+            )
+          }
+          kernelNote(sessionId, `Formatted with black, ${LINE_LENGTH} columns: ${parts.join('; ')}.`)
+        })
+        .catch((err: unknown) => {
+          send(ws, { t: 'error', message: reason(err, 'Could not format the notebook.') })
+        })
       return
     }
 
@@ -308,7 +373,10 @@ function dispatch(
       const command = typeof message.command === 'string' ? message.command : ''
       if (command.trim().length === 0) return
       if (Buffer.byteLength(command, 'utf8') > MAX_COMMAND_BYTES) {
-        send(ws, { t: 'error', message: 'That command is too long to run in the terminal.' })
+        send(ws, {
+          t: 'error',
+          message: `That command is over ${MAX_COMMAND_BYTES.toLocaleString('en-GB')} characters. Put it in a file and run the file.`,
+        })
         return
       }
       runCommand(sessionId, command, sender(sessionId, payload.participantId))
@@ -364,6 +432,10 @@ export function handleControlSocket(
     room.unwatch = watchKernelStatus(sessionId)
   }
   room.sockets.add(ws)
+
+  // Before anything else: the browser gates its own interrupt/restart controls
+  // on this, and the token it holds may say something staler than the truth.
+  send(ws, { t: 'role', role: payload.role })
 
   let missedPongs = 0
   const pingTimer = setInterval(() => {

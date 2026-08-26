@@ -29,10 +29,20 @@
   import { colorForId } from '@shared/protocol'
 
   /* The lanes. Declared once so the header and every row cannot drift apart. */
-  const COL_ROLE = 'w-[168px] shrink-0 pr-4'
-  const COL_LINK = 'w-[322px] shrink-0 pr-5'
-  const COL_SEEN = 'w-[130px] shrink-0'
+  /*
+   * The lanes give way in order, and the name is not first in it. They used to
+   * be shrink-0, so the only flexible thing in the row was the person — at
+   * 900px that left the name 0px while a masked link nobody can read kept all
+   * 322 of its own. Each lane now states the width it wants and the width it
+   * can be argued down to; the name states a floor of its own (below) so the
+   * argument reaches the link before it reaches the person.
+   */
+  const COL_ROLE = 'w-[168px] min-w-[110px] pr-4'
+  const COL_LINK = 'w-[322px] min-w-[150px] pr-5'
+  const COL_SEEN = 'w-[130px] min-w-[100px]'
   const COL_MENU = 'w-10 shrink-0'
+  /** The person's own floor — an avatar, a name worth reading, and the gap. */
+  const COL_PERSON = 'min-w-[200px] flex-1 pr-5'
 
   /** All a row may ever show of a live link: its shape. */
   const MASKED = `${location.host}${SIGN_IN_PATH}${'·'.repeat(12)}`
@@ -301,7 +311,7 @@
 
 <!-- A span, not a p: it also has to sit inside the composer's <label>. -->
 {#snippet eyebrow(text: string)}
-  <span class="block text-micro font-bold uppercase tracking-label text-faint">{text}</span>
+  <span class="block text-micro font-bold uppercase tracking-label text-muted">{text}</span>
 {/snippet}
 
 <AdminPage
@@ -355,8 +365,16 @@
     </p>
   {/if}
 
+  <!--
+    The sum of every lane's floor. Past it the list scrolls sideways in the page
+    body rather than collapsing further — and it is the row that scrolls, so the
+    rules under the rows run the full width of what they are ruling. The notes
+    below the list stay at the window's own width: they are prose, and prose
+    should never need scrolling to read.
+  -->
+  <div class="min-w-[600px]">
   <div class="sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas">
-    <div class="min-w-0 flex-1 pr-5">{@render eyebrow('Person')}</div>
+    <div class={COL_PERSON}>{@render eyebrow('Person')}</div>
     <div class={COL_ROLE}>{@render eyebrow('Role')}</div>
     <div class={COL_LINK}>{@render eyebrow('Sign-in link')}</div>
     <div class={COL_SEEN}>{@render eyebrow('Last seen')}</div>
@@ -374,7 +392,7 @@
     {@const you = t.id === me?.id}
     {@const locked = stranded(t)}
     <div class="flex min-h-[66px] items-center border-b border-line-soft">
-      <div class="flex min-w-0 flex-1 items-center gap-3 pr-5">
+      <div class={cn(COL_PERSON, 'flex items-center gap-3')}>
         <Avatar name={t.name} color={colorForId(t.id)} size="md" />
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
@@ -394,7 +412,10 @@
           <span class="text-ui capitalize text-muted">{t.role}</span>
         {:else if locked}
           <span class="block text-ui font-semibold text-ink">Owner</span>
-          <span class="block text-2xs text-muted">last owner · locked</span>
+          <span class="flex items-center gap-1.5 text-2xs text-muted">
+            <Icon name="lock" size={11} class="shrink-0" />
+            last owner · locked
+          </span>
         {:else}
           <div class="relative inline-flex items-center">
             <select
@@ -402,7 +423,8 @@
               disabled={roleBusy === t.id}
               aria-label="Role for {t.name}"
               onchange={(event) => void setRole(t, event.currentTarget.value as AdminRole)}
-              class="cursor-pointer appearance-none bg-transparent pr-5 text-ui text-ink outline-none disabled:opacity-50"
+              class="h-6 cursor-pointer appearance-none bg-transparent pr-5 text-ui text-ink
+                     outline-none disabled:opacity-50"
             >
               <option value="owner">Owner</option>
               <option value="teacher">Teacher</option>
@@ -412,11 +434,11 @@
         {/if}
       </div>
 
-      <div class={cn(COL_LINK, 'min-w-0')}>
+      <div class={COL_LINK}>
         {#if t.hasLink}
           <div class="flex items-center gap-2">
             <p
-              class="min-w-0 flex-1 truncate font-mono text-code text-faint"
+              class="min-w-0 flex-1 truncate font-mono text-code text-muted"
               title="Only the shape is ever shown. Copy sends the real link to your clipboard."
             >
               {MASKED}
@@ -468,12 +490,14 @@
               event.stopPropagation()
               menuId = menuId === t.id ? null : t.id
             }}
-            class="p-1 text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
+            class="flex h-6 w-6 items-center justify-center p-1 text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
           >
             <Icon name="more" size={15} />
           </button>
           {#if menuId === t.id}
-            <div class="absolute right-0 top-full z-20 mt-1 w-56 overflow-hidden bg-canvas py-1 shadow-pop">
+            <div
+              class="row-menu absolute right-0 top-full z-20 mt-1 w-56 overflow-hidden bg-canvas py-1 shadow-pop"
+            >
               <button
                 type="button"
                 onclick={() => ask(t, 'rotate')}
@@ -486,7 +510,7 @@
                 <button
                   type="button"
                   onclick={() => ask(t, 'remove')}
-                  class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-danger hover:bg-danger/10"
+                  class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-danger hover:bg-danger/[0.08]"
                 >
                   <Icon name="trash" size={14} />
                   {you ? 'Remove my account' : 'Remove from staff'}
@@ -528,7 +552,7 @@
             type="button"
             disabled={acting === t.id}
             onclick={() => void (confirming?.kind === 'rotate' ? rotate(t) : remove(t))}
-            class="btn border border-danger/40 bg-danger/10 text-danger hover:bg-danger/20"
+            class="btn border border-danger/40 bg-danger/[0.05] text-danger hover:bg-danger/20"
           >
             {#if acting === t.id}
               Working…
@@ -558,13 +582,19 @@
         class="enter border-b border-line-soft border-l-2 border-l-accent bg-accent/5 p-4"
       >
         {@render eyebrow(`Sign-in link for ${shown.name} · shown once`)}
+        <!--
+          What this says has to match what the page can actually do. The link is
+          shown here once and never displayed again — but the copy button in the
+          row still puts it on your clipboard, so "gone for good" would be the
+          screen lying about itself, and the note at the foot of this page says
+          the opposite.
+        -->
         <p class="mt-1.5 max-w-[720px] text-ui text-ink">
           {#if shown.minted}
-            {shown.name} is on the staff list. Send them this link however you already talk to them —
-            it is the only credential they get, and this is the only time it can be read.
+            {shown.name} is on the staff list. Send them this link however you already talk to
+            them — it is the only credential they get.
           {:else}
-            The old link and everything signed in with it are dead. Send {shown.name} this one — it is
-            the only time it can be read.
+            The old link and everything signed in with it are dead. Send {shown.name} this one.
           {/if}
         </p>
         <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -589,16 +619,18 @@
           <p class="mt-2 text-ui text-danger">{copyError}</p>
         {:else if !copied}
           <p class="mt-2 text-2xs text-muted">
-            Once this closes the link is gone for good; the only way to have one again is to rotate it.
+            This is the last time it is shown on screen. Afterwards the copy button on their row
+            still hands it to your clipboard.
           </p>
         {/if}
       </div>
     {/if}
   {/each}
+  </div>
 
   <div class="flex items-center gap-2.5 py-3.5">
     <Icon name="link" size={13} class="shrink-0 text-faint" />
-    <p class="text-2xs text-faint">
+    <p class="text-2xs text-muted">
       {#if isOwner}
         A link is a credential: rotate it when someone leaves — the old one stops working that second
         — and removing a person kills their link immediately.
@@ -613,9 +645,10 @@
     <div class="min-w-0 max-w-[600px] flex-1">
       {@render eyebrow('Why the links look like that')}
       <p class="mt-1.5 text-2xs text-muted">
-        A link is readable once — the moment it is minted or rotated — and is never listed again, so
-        a screen share or a screenshot of this page cannot spill one. Copying it then is the only way
-        to take it away.
+        A link is on screen once — the moment it is minted or rotated — and never again: the rows
+        show only its shape, so a screen share or a screenshot of this page spills nothing. The copy
+        button hands the real one to your clipboard without it passing through the page, which is
+        how you re-send it to someone who mislaid theirs.
       </p>
     </div>
     <div class="w-[392px]">

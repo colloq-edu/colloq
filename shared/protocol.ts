@@ -62,6 +62,14 @@ export interface JoinResponse {
 
 export type ControlClientMessage =
   | { t: 'run'; cellId: string }
+  /**
+   * Take a cell out of the run queue. Not the same as interrupting: the cell
+   * that is *running* is Interrupt's business, and cancelling never reaches it.
+   * A student who pressed Run All behind somebody else's forty-second cell
+   * otherwise had nothing to press — Interrupt belongs to the person whose cell
+   * holds the kernel, and the queue was a one-way door.
+   */
+  | { t: 'cancel'; cellId: string }
   | { t: 'term:open' }
   | { t: 'term:run'; command: string }
   | { t: 'term:interrupt' }
@@ -72,21 +80,60 @@ export type ControlClientMessage =
   | { t: 'interrupt' }
   | { t: 'restart' }
   | { t: 'clearOutputs'; cellId?: string }
+  /**
+   * Put every code cell through black. A cell the formatter refuses — a magic,
+   * a shell line, a line somebody is still typing — is left exactly as it was,
+   * and the rest are still formatted.
+   */
+  | { t: 'format' }
+  /**
+   * An answer to a cell blocked inside input(). Anyone in the room may send
+   * one; the first to arrive is the one the kernel gets.
+   */
+  | { t: 'input'; value: string }
   | { t: 'ping' }
 
 export type TerminalStatus = 'closed' | 'starting' | 'idle' | 'busy' | 'dead'
 
 export type ControlServerMessage =
   | { t: 'ready'; kernel: KernelStatus }
+  /*
+   * The role the SERVER will act on, sent as soon as the socket opens. A
+   * participant token carries the role it was minted with, which goes stale:
+   * a teacher who joined a seminar before signing in holds a 'participant'
+   * token for a room they run, and the client would grey out interrupt and
+   * restart for its own owner. Presence of a staff cookie decides it, and this
+   * is how the browser is told.
+   */
+  | { t: 'role'; role: ParticipantRole }
   | { t: 'terminal'; status: TerminalStatus }
   | { t: 'kernel'; status: KernelStatus }
   | { t: 'files'; files: FileEntry[] }
   | { t: 'error'; message: string }
   | { t: 'pong' }
 
+import type { AssistantMode } from './admin.js'
+
 /* ------------------------------------------------------------------- AI */
 
 export type AiAction = 'explain' | 'fix' | 'debug' | 'improve' | 'hint' | 'ask'
+
+/**
+ * Which actions an assistant in this mode will accept.
+ *
+ * One definition, two callers: the route that refuses and the panel that
+ * decides whether to draw the button. They were separate, and the panel drew
+ * FIX and DEBUG in hints mode and let the student press them to be told no —
+ * which is the rule leaking out as an error message instead of as a design.
+ *
+ * 'ask' is a typed question with no instruction of its own, so it survives
+ * hints mode; the mode shapes the answer, not the right to ask.
+ */
+export function actionAllowedIn(mode: AssistantMode, action: AiAction): boolean {
+  if (mode === 'off') return false
+  if (mode === 'full') return true
+  return action === 'hint' || action === 'ask'
+}
 
 export interface AiAskRequest {
   /** Free-form prompt. Optional when `action` carries the whole intent. */
@@ -121,7 +168,11 @@ export const PARTICIPANT_COLORS = [
   '#8ac44a', // lime
   '#3ec9a7', // teal
   '#4aa8f0', // sky
-  '#7c7cf0', // indigo
+  // Nudged from #7c7cf0, which left initials at 4.48:1 — a hair under AA, and
+  // the one colour in the palette where they were not readable. Six units of
+  // RGB buys 4.74 and keeps it plainly indigo, and plainly not the sky or the
+  // purple either side of it.
+  '#7e82f0', // indigo
   '#c273e6', // violet
   '#ef6ba8', // pink
 ] as const

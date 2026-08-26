@@ -19,6 +19,9 @@
  *   state     CellState               idle | queued | running | ok | error
  *   execCount number | null           In [n]
  *   runBy     string | null           display name of whoever pressed Run
+ *   runById   string | null           and their participant id — names are not
+ *                                     unique in a seminar, so this is what says
+ *                                     whether a run is YOURS
  *
  * An output Y.Map holds:
  *   kind      'stream' | 'data' | 'error'
@@ -69,6 +72,14 @@ export interface CellSnapshot {
   state: CellState
   execCount: number | null
   runBy: string | null
+  runById: string | null
+  /**
+   * Set while the cell is stopped inside input(). The kernel is blocked until
+   * somebody answers, and in a shared room that somebody is not necessarily
+   * whoever pressed Run — so the ask lives in the document, where everybody
+   * can see it.
+   */
+  stdin: { prompt: string; password: boolean } | null
 }
 
 export type YCell = Y.Map<any>
@@ -275,6 +286,7 @@ export function createCell(type: CellType, source = ''): YCell {
   cell.set('state', 'idle' as CellState)
   cell.set('execCount', null)
   cell.set('runBy', null)
+  cell.set('runById', null)
   return cell
 }
 
@@ -353,6 +365,8 @@ export function readCell(cell: YCell): CellSnapshot {
     state: (cell.get('state') as CellState) ?? 'idle',
     execCount: (cell.get('execCount') as number | null) ?? null,
     runBy: (cell.get('runBy') as string | null) ?? null,
+    runById: (cell.get('runById') as string | null) ?? null,
+    stdin: (cell.get('stdin') as CellSnapshot['stdin']) ?? null,
   }
 }
 
@@ -361,12 +375,57 @@ export function readNotebook(doc: Y.Doc): CellSnapshot[] {
 }
 
 /**
- * Give a fresh document something to look at. Safe to call on every load:
- * it only writes when the document is genuinely empty.
+ * Execution belonging to a process that is gone.
+ *
+ * `kernelStatus`, `runningCell`, the queue and every cell's `state` live in the
+ * document, which means they are in the snapshot too. A server that dies with a
+ * cell running comes back, loads all of that, and hands the room a notebook
+ * where one cell spins forever and a queue waits on a run that no longer
+ * exists — against a runtime that has never heard of any of it.
+ *
+ * The truth at hydration is simple: nothing is running, because nothing has
+ * been started yet. Outputs are left exactly as they are — a cell that printed
+ * three lines before the crash really did print them, and deleting them would
+ * hide the only evidence of how far it got.
+ *
+ * Returns how many cells had to be put back to rest, so the caller can decide
+ * whether the room deserves an explanation.
  */
-export function ensureInitialNotebook(doc: Y.Doc, title?: string): void {
+export function clearStaleExecution(doc: Y.Doc): number {
+  const meta = getMeta(doc)
+  const cells = getCells(doc)
+  let cleared = 0
+
+  doc.transact(() => {
+    // The queue is emptied but not counted: every id in it belongs to a cell
+    // that is counted below, and counting both reports each one twice.
+    const queue = meta.get('queue')
+    if (queue instanceof Y.Array && queue.length > 0) queue.delete(0, queue.length)
+    if (meta.get('runningCell') != null) meta.set('runningCell', null)
+
+    const status = meta.get('kernelStatus')
+    if (status === 'busy' || status === 'restarting') meta.set('kernelStatus', 'idle' as KernelStatus)
+
+    for (const cell of cells) {
+      const state = cell.get('state')
+      if (state === 'running' || state === 'queued') {
+        cell.set('state', 'idle' as CellState)
+        cleared++
+      }
+    }
+  }, 'init')
+
+  return cleared
+}
+
+/**
+ * Give a fresh document something to look at. Safe to call on every load: it
+ * only writes when the document is genuinely empty, and says whether it did.
+ */
+export function ensureInitialNotebook(doc: Y.Doc, title?: string): boolean {
   const cells = getCells(doc)
   const meta = getMeta(doc)
+  let seeded = false
   doc.transact(() => {
     if (title && !meta.get('title')) meta.set('title', title)
     if (!meta.has('kernelStatus')) meta.set('kernelStatus', 'starting' as KernelStatus)
@@ -378,6 +437,10 @@ export function ensureInitialNotebook(doc: Y.Doc, title?: string): void {
         ),
         createCell('code', 'print("hello, seminar")'),
       ])
+      seeded = true
     }
   }, 'init')
+  // The caller needs to know, because a seed that never reaches disk is a seed
+  // that happens twice — see getSessionDoc().
+  return seeded
 }

@@ -93,9 +93,9 @@ export function adminAuthRoutes(): Router {
     const state: InstanceState = {
       claimed,
       // Only a fresh install has a claim form to prefill. Afterwards this is
-      // just the operator's address, handed to every anonymous visitor and to
-      // every student who loads the home screen — and on an instance whose
-      // recovery story is "someone sends you a link", that is a phishing target.
+      // just the operator's address, handed to every anonymous visitor who asks
+      // this endpoint — and on an instance whose recovery story is "someone
+      // sends you a link", that is a phishing target.
       suggestedEmail: claimed ? '' : config.adminEmail,
       openSeminarCreation: config.openSeminarCreation,
     }

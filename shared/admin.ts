@@ -77,7 +77,7 @@ export interface InstanceState {
   claimed: boolean
   /** Prefill for the claim form, from ADMIN_EMAIL. Empty when unset. */
   suggestedEmail: string
-  /** Whether students may still create seminars from the home screen. */
+  /** Whether POST /api/sessions accepts a caller who is not staff. No page uses it. */
   openSeminarCreation: boolean
 }
 
@@ -111,11 +111,24 @@ export interface AdminSeminar {
   url: string
   /** Who created it; null for seminars made before there was an admin panel. */
   createdBy: string | null
+  /**
+   * The environment this room's kernel is actually on, or null when it has not
+   * started one yet. Not the configured environment: a seminar that was live
+   * through a switch keeps the image it came up on until its kernel restarts.
+   */
+  environment: string | null
   archivedAt: number | null
 }
 
 export interface CreateSeminarRequest {
   name: string
+  /**
+   * Which environment this room's Python should be. Omitted or null means
+   * whatever the instance runs, which is what every seminar got before this
+   * existed. Chosen once and then fixed: a room whose packages change under it
+   * mid-class is worse than one that never had the newest ones.
+   */
+  environment?: string | null
 }
 
 export interface UpdateSeminarRequest {
@@ -208,7 +221,17 @@ export const PROVIDER_PRESETS: Record<AiProviderId, { label: string; baseUrl: st
   openai: { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
   ollama: { label: 'Ollama', baseUrl: 'http://host.docker.internal:11434/v1', model: 'llama3.1' },
   vllm: { label: 'vLLM', baseUrl: 'http://host.docker.internal:8000/v1', model: '' },
-  openrouter: { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: '' },
+  /*
+   * OpenRouter namespaces its models by vendor: `gpt-4o-mini` is not a model
+   * there, `openai/gpt-4o-mini` is. Leaving this empty meant switching from
+   * OpenAI kept `gpt-4o-mini` in the field — a name that looks right, is
+   * plausible, and fails at the provider with a message about an unknown model.
+   */
+  openrouter: {
+    label: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'openai/gpt-4o-mini',
+  },
   custom: { label: 'Custom', baseUrl: '', model: '' },
 }
 
@@ -227,8 +250,119 @@ export const SIGN_IN_PATH = '/admin/k/'
  * Every /api/admin route answers one of these on failure, so the client has a
  * single branch for "you are not signed in" and can send the user to /admin.
  */
+/**
+ * Why a request was refused, in a word the client can branch on.
+ *
+ * `error` is what a person reads; this is what the code reacts to. The first
+ * four are about who is asking. The rest are about environments, where the
+ * panel does react differently: a build already running is a reason to watch
+ * the log rather than show a failure, and a missing Docker socket is a reason
+ * to explain the `make` command instead of retrying.
+ */
+export type AdminErrorReason =
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'unclaimed'
+  | 'invalid'
+  | 'not_found'
+  | 'too_long'
+  /** The environment is the one the room is running, or is `base`. */
+  | 'in_use'
+  | 'protected'
+  /** This install cannot reach Docker, so it cannot build or switch. */
+  | 'no_docker'
+  | 'building'
+  | 'failed'
+
 export interface AdminErrorBody {
   error: string
-  /** 'unauthenticated' | 'forbidden' | 'unclaimed' | 'invalid' */
-  reason: 'unauthenticated' | 'forbidden' | 'unclaimed' | 'invalid'
+  reason: AdminErrorReason
+}
+
+/* --------------------------------------------------------- environments */
+
+/**
+ * What a seminar's Python is made of.
+ *
+ * An environment is a list of packages that gets baked into a container image
+ * on top of the base every kernel has. The panel calls them environments; on
+ * disk each one is `kernel/environments/<name>.txt`, and in Docker each is the
+ * image tag `colloq-kernel:<name>`.
+ */
+export type EnvironmentState =
+  /** Built and ready — a seminar switched to it starts in seconds. */
+  | 'ready'
+  /** Written down but never built, or edited since the last build. */
+  | 'unbuilt'
+  | 'building'
+  | 'failed'
+
+export interface AdminEnvironment {
+  /** Also the filename and the image tag, so it is restricted to [a-z0-9-]. */
+  name: string
+  state: EnvironmentState
+  /** Packages asked for, one per line, comments and pip flags dropped. */
+  packages: string[]
+  /** Size of the built image in bytes; null when there is nothing built. */
+  imageBytes: number | null
+  /** When the image was built; null when there is nothing built. */
+  builtAt: number | null
+  /** True for the one every seminar on this instance is running right now. */
+  active: boolean
+  /** Last build's error, kept so a failure is readable after the log scrolls. */
+  error: string | null
+}
+
+export interface EnvironmentsState {
+  environments: AdminEnvironment[]
+  /**
+   * Whether this install can build and switch environments at all.
+   *
+   * The server does it by talking to Docker. An app running on the host has a
+   * socket; one in a container only does if the operator mounted it. Without
+   * it the panel still lists and edits environments, and says plainly that
+   * switching is a `make env-use` away.
+   */
+  canBuild: boolean
+  /** Why not, when `canBuild` is false — shown instead of dead buttons. */
+  cannotBuildReason: string | null
+}
+
+export interface SaveEnvironmentRequest {
+  name: string
+  /** The file's whole text, comments and all: this is an editor, not a form. */
+  source: string
+}
+
+/** Same alphabet as a filename and a Docker tag, and short enough to read. */
+export const ENVIRONMENT_NAME = /^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$|^[a-z0-9]$/
+
+/* ------------------------------------------------------ импорт с GitHub */
+
+/**
+ * Что получится из ссылки на GitHub, посчитанное без создания комнаты.
+ *
+ * Показывается до импорта нарочно: преподаватель, вставивший ссылку на папку,
+ * хочет увидеть «сто десять ячеек и train.csv» ДО того, как появится семинар,
+ * а не после.
+ */
+export interface ImportPreview {
+  /** Имя, выведенное из имени файла или папки; его можно переписать. */
+  name: string
+  notebook: string
+  cells: number
+  files: { name: string; size: number }[]
+  /** owner/repo/path — чтобы было видно, откуда это взялось. */
+  source: string
+}
+
+export interface ImportResult {
+  id: string
+  name: string
+  url: string
+  cells: number
+  files: string[]
+  /** Файлы, которые не удалось забрать: имя не годится или скачивание упало. */
+  skipped: string[]
+  createdBy: string | null
 }

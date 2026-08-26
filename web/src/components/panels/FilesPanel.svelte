@@ -2,7 +2,7 @@
   import type { FileEntry } from '@shared/protocol'
   import { api } from '@/lib/api'
   import { getSessionState } from '@/lib/session.svelte'
-  import { formatBytes } from '@/lib/utils'
+  import { formatBytes, splitFileName } from '@/lib/utils'
   import Icon from '@/components/ui/Icon.svelte'
 
   /** One file still on the wire, and the bytes the browser has actually flushed. */
@@ -20,6 +20,18 @@
   let error = $state<string | null>(null)
   let copied = $state<string | null>(null)
   let confirming = $state<string | null>(null)
+
+  /*
+   * A destructive question you cannot back out of with the keyboard is a trap,
+   * and this one appears inline in a row rather than in a dialog you can see
+   * the edges of. Escape cancels it; a delete already in flight is left alone,
+   * because pretending to cancel something the server is doing would be a lie.
+   */
+  function onKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || !confirming) return
+    if (deleting) return
+    confirming = null
+  }
   let deleting = $state<string | null>(null)
   let picker: HTMLInputElement | null = $state(null)
   let copyTimer: number | undefined
@@ -182,6 +194,8 @@
   }
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 <section
   class="relative flex shrink-0 flex-col gap-0.5 px-4 pb-1 pt-5"
   aria-label="Session files"
@@ -192,11 +206,11 @@
 >
   <!-- The rule carries the label out to the count, so the number reads as the
        quiet end of the heading rather than as a badge hung off it. -->
-  <div class="flex items-center gap-2 pb-2">
-    <h2 class="text-2xs font-bold uppercase tracking-section text-faint">Files</h2>
+<div class="flex items-center gap-2 pb-2">
+    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">Files</h2>
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
     {#if listed}
-      <span class="font-mono text-micro tabular-nums text-faint">{session.files.length}</span>
+      <span class="font-mono text-micro tabular-nums text-muted">{session.files.length}</span>
     {:else}
       <!-- Nothing to count yet, so the slot carries the way in instead. -->
       <button
@@ -223,12 +237,7 @@
     }}
   />
 
-  {#if !listed}
-    <p class="px-2 pb-1 text-2xs text-muted">
-      Drop files here. Everyone in the session sees them, and Python reads them by relative path
-      — <span class="font-mono text-ink">pd.read_csv('data.csv')</span>.
-    </p>
-  {:else}
+  {#if listed}
     {#each session.files as file (file.name)}
       <div
         class="group flex h-[30px] items-center gap-2.5 px-2 transition-colors duration-100 hover:bg-raised focus-within:bg-raised"
@@ -252,7 +261,7 @@
           </button>
           <button
             type="button"
-            class="shrink-0 text-micro font-bold uppercase tracking-caps text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="shrink-0 text-micro font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             onclick={() => (confirming = null)}
           >
             Cancel
@@ -261,13 +270,24 @@
           <!-- The row's ground and its tick already say the row is live, so the
                name keeps its ink: the lane stays a column of files rather than
                becoming a column of links. -->
+          <!--
+            Two spans, not one truncated string. `truncate` was on the button
+            itself, which is a flex container — and `text-overflow` does nothing
+            on one, so long names were cut with no ellipsis and no extension at
+            all. The stem shrinks and the extension never does, so `.npz` and
+            `.md` stay told apart at any panel width, and the full name is still
+            one hover away.
+          -->
           <button
             type="button"
-            class="min-w-0 flex-1 truncate text-left font-mono text-code text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-            title="Copy {snippetFor(file.name)}"
+            class="flex min-w-0 flex-1 items-center self-stretch text-left font-mono
+                   text-code text-ink focus-visible:outline-none focus-visible:ring-2
+                   focus-visible:ring-accent/40"
+            title={`${file.name} — copy ${snippetFor(file.name)}`}
             onclick={() => copySnippet(file.name)}
           >
-            {file.name}
+            <span class="truncate">{splitFileName(file.name).stem}</span>
+            <span class="shrink-0">{splitFileName(file.name).ext}</span>
           </button>
 
           {#if copied === file.name}
@@ -292,7 +312,9 @@
                 <a
                   href={api.fileUrl(session.session.id, file.name)}
                   download={file.name}
-                  class="p-1 text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors
+                         duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
+                         focus-visible:ring-accent/40"
                   title="Download"
                   aria-label="Download {file.name}"
                 >
@@ -300,7 +322,9 @@
                 </a>
                 <button
                   type="button"
-                  class="p-1 text-faint transition-colors duration-100 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
+                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors
+                         duration-100 hover:text-danger focus-visible:outline-none
+                         focus-visible:ring-2 focus-visible:ring-danger/40"
                   title="Delete"
                   aria-label="Delete {file.name}"
                   onclick={() => (confirming = file.name)}
@@ -319,7 +343,12 @@
       <div class="flex flex-col gap-1 px-2 pb-1 pt-1.5">
         <div class="flex items-center gap-2.5">
           <span class="h-4 w-[3px] shrink-0 bg-brand-2" aria-hidden="true"></span>
-          <span class="min-w-0 flex-1 truncate font-mono text-code text-muted">{item.name}</span>
+          <!-- Same rule while it is still going up: the extension is what the
+               room is looking for in the list. -->
+          <span class="flex min-w-0 flex-1 font-mono text-code text-muted" title={item.name}>
+            <span class="truncate">{splitFileName(item.name).stem}</span>
+            <span class="shrink-0">{splitFileName(item.name).ext}</span>
+          </span>
           <span
             class="min-w-10 shrink-0 whitespace-nowrap text-right font-mono text-micro tabular-nums text-accent-text"
           >
@@ -344,17 +373,24 @@
       </div>
     {/each}
 
-    <button
-      type="button"
-      class="mt-1.5 flex h-9 shrink-0 items-center justify-center border border-dashed text-2xs transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {dragDepth >
-      0
-        ? 'border-accent bg-accent/10 text-accent-text'
-        : 'border-line text-muted hover:border-faint hover:text-ink'}"
-      onclick={() => picker?.click()}
-    >
-      Drop files — shared with the room
-    </button>
   {/if}
+
+  <!--
+    Always here, in every state. It used to appear only once a file existed,
+    which left an empty room with a paragraph and no target — and the artboard
+    draws the dashed zone whether the list is full or not.
+  -->
+  <button
+    type="button"
+    class="mt-1.5 flex h-9 shrink-0 items-center justify-center border border-dashed text-2xs transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {dragDepth >
+    0
+      ? 'border-accent bg-accent/10 text-accent-text'
+      : 'border-line text-muted hover:border-faint hover:text-ink'}"
+    onclick={() => picker?.click()}
+  >
+    Drop files — shared with the room
+  </button>
+
 
   {#if error}
     <div class="mt-1.5 flex items-start gap-2 border-l-2 border-danger px-2 py-1 text-2xs text-danger">

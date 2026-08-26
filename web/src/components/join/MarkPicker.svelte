@@ -137,9 +137,15 @@
       />
     </div>
 
+    <!-- The picker's own button, and the only one here a student presses more
+         than once — a couple of taps while they read the marks. `press` is the
+         house helper for controls that do not route through .btn: transform
+         only, 120ms (--speed-press, the middle of the press tier) on
+         --ease-out, scale(0.97) under the finger. Opting in by name keeps one
+         press in the product instead of a near-miss copy of it. -->
     <button
       type="button"
-      class="flex h-9 shrink-0 items-center gap-2 border border-line bg-canvas px-3
+      class="press flex h-9 shrink-0 items-center gap-2 border border-line bg-canvas px-3
              text-ui font-semibold text-ink hover:border-faint"
       onclick={surprise}
     >

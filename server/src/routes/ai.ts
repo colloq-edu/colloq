@@ -17,20 +17,24 @@ import { countRecentQuestions, recordQuestion, windowResetAt } from '../admin/us
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
 import { getParticipant, getSession } from '../db.js'
 import { sessionAuth } from './sessions.js'
-import { colorForId, type AiAction, type AiAskRequest, type AiAskResponse } from '@shared/protocol'
+import {
+  actionAllowedIn,
+  colorForId,
+  type AiAction,
+  type AiAskRequest,
+  type AiAskResponse,
+} from '@shared/protocol'
 
 const ACTIONS: readonly AiAction[] = ['explain', 'fix', 'debug', 'improve', 'hint', 'ask']
+/*
+ * A question, not a document. Eight thousand characters is several screens of
+ * typing — past that somebody is pasting a file in, and the notebook itself is
+ * already travelling with the question.
+ */
 const MAX_MESSAGE = 8000
 const MAX_ENTRY_ID = 128
 
 const HOUR_MS = 3_600_000
-
-/**
- * 'ask' is what the composer sends with a typed question: it carries no
- * instruction of its own (see actionInstruction in ai/index.ts), so it is "no
- * action" rather than a request for a particular kind of answer.
- */
-const FREE_FORM: readonly AiAction[] = ['ask']
 
 export function aiRoutes(): Router {
   const router = Router()
@@ -59,12 +63,27 @@ export function aiRoutes(): Router {
         .json({ error: 'The assistant is switched off for this instance — no questions are allowed.' })
     }
     if (!aiReady()) {
-      return res.status(503).json({ error: 'the assistant is not configured on this server' })
+      /*
+       * Where to fix it is staff information. A student who cannot open the
+       * panel is not helped by being sent to it, and an instance that names its
+       * own admin surface to everyone who asks is telling strangers where to
+       * knock. The panel splits this the same way — see AiPanel.
+       */
+      return res.status(503).json({
+        error:
+          auth.role === 'host'
+            ? 'No model is set up on this Colloq yet — add a key under Assistant in the teaching panel.'
+            : 'No model is set up on this Colloq yet, so there is nobody to ask here.',
+      })
     }
 
     const body = req.body as Partial<AiAskRequest> | undefined
     const raw = typeof body?.message === 'string' ? body.message : ''
-    if (raw.length > MAX_MESSAGE) return res.status(400).json({ error: 'message too long' })
+    if (raw.length > MAX_MESSAGE) {
+      return res.status(400).json({
+        error: `That question is longer than ${MAX_MESSAGE.toLocaleString('en-GB')} characters. The notebook travels with it anyway — say the short version.`,
+      })
+    }
     const message = raw.trim()
     const requested = ACTIONS.includes(body?.action as AiAction) ? (body?.action as AiAction) : undefined
     const cellId = typeof body?.cellId === 'string' ? body.cellId : null
@@ -76,7 +95,7 @@ export function aiRoutes(): Router {
     // being bounced, so the composer still works during an exercise.
     let action = requested
     if (settings.defaultMode === 'hints') {
-      if (action && action !== 'hint' && !FREE_FORM.includes(action)) {
+      if (action && !actionAllowedIn('hints', action)) {
         return res.status(403).json({
           error: 'This assistant is in hints mode: it can point you at the problem, but it will not write the answer for you. Ask for a hint instead.',
         })
@@ -90,8 +109,14 @@ export function aiRoutes(): Router {
       const resetAt = windowResetAt(sessionId, auth.participantId, HOUR_MS, limit)
       const minutes = resetAt ? Math.max(1, Math.ceil((resetAt - Date.now()) / 60_000)) : 60
       if (resetAt) res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))))
+      // "all 1 assistant question" is not a sentence. A cap of one is the one
+      // case a teacher is most likely to set deliberately, so it gets its own.
+      const spent =
+        limit === 1
+          ? 'You have used your one assistant question for this hour in this seminar'
+          : `You have used all ${limit} of your assistant questions for this hour in this seminar`
       return res.status(429).json({
-        error: `You have used all ${limit} assistant question${limit === 1 ? '' : 's'} for this hour in this seminar. You can ask again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+        error: `${spent}. You can ask again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
       })
     }
 
@@ -142,7 +167,9 @@ export function aiRoutes(): Router {
     // The thread belongs to the room, so clearing it is the host's call — a
     // student must not be able to wipe what the class asked.
     if (auth.role !== 'host') {
-      return res.status(403).json({ error: 'only the host can clear the shared thread' })
+      return res.status(403).json({
+        error: 'Only the host can clear the assistant thread — those questions belong to the room.',
+      })
     }
     clearThread(req.params.id)
     res.json({ ok: true })

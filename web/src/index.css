@@ -16,6 +16,9 @@
   --brand: 15 45 105;
   --brand-2: 55 75 155;
   --accent: 15 160 215;
+  /* Dark, not white: `accent` is the same bright cyan in both themes, so the
+     ink that reads on it is the same too. White on #0FA0D7 is 2.99:1. */
+  --accent-ink: 6 32 58;
 
   --canvas: 255 255 255;
   --surface: 243 246 251;
@@ -30,10 +33,6 @@
      and the rule that goes with it: faint never carries information. Anything
      that must be read uses muted, which passes AA on all three. */
   --faint: 124 134 153;
-  /* Dark, not white: `accent` is the same bright cyan in both themes, so the
-     ink that reads on it is the same too. White on #0FA0D7 is 2.99:1. */
-  --accent-ink: 6 32 58;
-
   /* The bright accent scores 2.99 on white — it cannot be text here. It keeps
      every non-text job (dots, fills, the running rule); this is what type uses. */
   --accent-text: 10 110 150;
@@ -56,23 +55,84 @@
   --shadow-pop: 0.18;
 
   /*
-   * Two speeds, and no third. --speed-quick is feedback that has to feel like
-   * the click itself: hover, focus, selection. --speed-regular is something
-   * arriving or leaving, where the eye needs to follow it somewhere.
+   * MOTION — SPEED. One step per tier of the budget this product is reviewed
+   * against, and no synonyms. --speed-regular (0.25s) is gone rather than
+   * kept beside --speed-panel: it named a size instead of a job, it sat 30ms
+   * from a step that does the same work, and it had exactly one consumer.
    *
-   * Both are theme-independent, so they are defined here and nowhere else.
+   * --speed-quick   0.10s — the click itself: hover, focus, a colour settling.
+   * --speed-press   0.12s — the transform a control makes under the finger.
+   *                 A shape is tracked by the eye more closely than a hue, so
+   *                 it gets more than a colour change; 120ms is the middle of
+   *                 the 100-160ms press tier and still lands within one blink.
+   * --speed-panel   0.22s — a panel, dropdown or popover arriving (150-250ms).
+   * --speed-drawer  0.32s — a full-height surface travelling in from an edge.
+   *                 The longest distance anything here covers, so the longest
+   *                 step; still well inside the 200-500ms drawer tier and
+   *                 under the 300ms ceiling for UI that is not a drawer.
+   *
+   * All four are theme-independent, so they live here and nowhere else.
    * Only transform and opacity are allowed to travel between two values —
    * anything that animates geometry or a shadow costs layout or a full repaint
    * on every frame, which is a fraction of the frame budget spent on nothing.
    */
   --speed-quick: 0.1s;
-  --speed-regular: 0.25s;
+  --speed-press: 0.12s;
+  --speed-panel: 0.22s;
+  --speed-drawer: 0.32s;
+
+  /*
+   * MOTION — CURVE. The browser keywords are too weak to read as deliberate,
+   * so anything that MOVES takes one of these three. A colour change is the
+   * one thing still allowed the built-in `ease`: it travels nowhere, and that
+   * is the curve the decision table gives it.
+   *
+   * --ease-out    anything entering or leaving. Most of its travel is spent in
+   *               the first third, so the element answers on the frame it was
+   *               asked to move, which is the frame the user is watching.
+   * --ease-in-out something already on screen moving to a new place, where
+   *               both ends need to be soft because neither is a start.
+   * --ease-drawer the iOS/Ionic drawer curve: ease-out's job over a long
+   *               distance, with a longer settle so a full-height panel
+   *               arrives instead of slamming.
+   *
+   * There is deliberately no --ease-in. A curve that starts slow spends its
+   * first frames doing nothing at the exact moment attention is highest, and
+   * a 300ms ease-in FEELS slower than a 300ms ease-out. It is banned, not
+   * merely unused, so nothing can reach for it from here.
+   */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 
   color-scheme: light;
 }
 
-/* Something arriving: a peer stepping into your cell, a status settling. */
+/*
+ * Something arriving: a peer stepping into your cell, a status settling.
+ * The 3px is the entire movement. Nothing in the world appears out of nowhere,
+ * so a pure opacity fade is a lie about where the thing came from; and a taller
+ * offset turns a footer strip into a journey the room has to watch. 3px is
+ * enough to read as "this is new" and too little to read as motion.
+ */
 @keyframes colloq-enter {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/*
+ * The same entrance with the travel removed — the reduced-motion twin, used by
+ * the block below. A separate name rather than an override, because the fade
+ * must keep its real duration: opacity carries the meaning (something is new),
+ * and opacity is not what makes a reader ill.
+ */
+@keyframes colloq-fade {
   from {
     opacity: 0;
   }
@@ -81,14 +141,37 @@
   }
 }
 
+/*
+ * Reduced motion is a reduction, not a blackout — and this block used to be a
+ * blackout: `transition-duration: 1ms` on `*` also killed every colour and
+ * opacity transition, and `animation-iteration-count: 1` froze all eight
+ * spinners and all three carets after a single 1ms turn. On a screen whose
+ * normal state is waiting for a kernel, a spinner that has stopped is a lie
+ * about the system, which is worse for this reader than a spinner that turns.
+ *
+ * So this block names what MOVES instead of muting everything:
+ *   · travel goes — the entrances swap to their fade-only twin;
+ *   · colour and opacity stay, at full duration: they say which cell is live
+ *     and which control is armed, and they displace nothing;
+ *   · looping indicators stay, untouched and therefore still looping;
+ *   · the press scale on .btn stays. It is 120ms of 3% under the finger, it
+ *     never travels, and it is the only proof the click was heard before the
+ *     kernel answers — removing it takes away feedback, not motion.
+ *
+ * Nothing here needs !important: an unlayered rule in this file is emitted
+ * after @tailwind utilities, so it wins on source order at equal specificity.
+ *
+ * It reaches only what CSS owns, which is not everything that moves. The two
+ * largest movements in the product are JavaScript and no media query can touch
+ * them: the side drawers travel ±140px through Svelte's transition:fly, which
+ * runs on element.animate(), and the run bar's hold fill is a WAAPI call of our
+ * own. Both read prefersReducedMotion() (lib/utils.ts) at the call site and
+ * give up the travel there — see SessionScreen and Notebook.
+ */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 1ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 1ms !important;
-    scroll-behavior: auto !important;
+  .enter,
+  .animate-fade-up {
+    animation-name: colloq-fade;
   }
 }
 
@@ -105,7 +188,6 @@
     --ink: 230 231 232;
     --muted: 155 166 190;
     --faint: 94 107 133;
-    --accent-ink: 6 32 58;
 
     --primary: 15 160 215;
     --primary-ink: 6 32 58;
@@ -136,7 +218,6 @@
   --ink: 230 231 232;
   --muted: 155 166 190;
   --faint: 94 107 133;
-  --accent-ink: 6 32 58;
 
   --primary: 15 160 215;
   --primary-ink: 6 32 58;
@@ -214,12 +295,22 @@
 }
 
 @layer components {
+  /*
+   * Two jobs in one control, so the three lists below are positional rather
+   * than one blanket value: colour answers the POINTER and takes the built-in
+   * `ease` a colour change is supposed to take, transform answers the PRESS
+   * and takes --ease-out, which spends its first frames actually moving.
+   * `filter` joins the list because .btn-primary's hover and active states are
+   * brightness() and were transitioning nothing at all — the property was
+   * simply missing from the old three.
+   */
   .btn {
     @apply inline-flex select-none items-center justify-center gap-1.5 px-3 py-1.5
            text-ui font-medium disabled:cursor-not-allowed disabled:opacity-40;
-    transition-property: color, background-color, border-color;
-    transition-duration: var(--speed-quick);
-    transition-timing-function: ease;
+    transition-property: color, background-color, border-color, filter, transform;
+    transition-duration: var(--speed-quick), var(--speed-quick), var(--speed-quick),
+      var(--speed-quick), var(--speed-press);
+    transition-timing-function: ease, ease, ease, ease, var(--ease-out);
   }
   .btn-primary {
     @apply btn bg-primary text-primary-ink hover:brightness-110 active:brightness-95;
@@ -229,6 +320,37 @@
   }
   .btn-outline {
     @apply btn border border-line bg-surface text-ink hover:border-faint hover:bg-raised;
+  }
+  /*
+   * `.press` carries the press for the controls that never route through .btn
+   * — the run bar's caps, the cell tools, the brand band, the theme switch,
+   * the terminal actions. They are hand-built class strings, so they cannot
+   * inherit the button; they opt in with one word, and the product then has
+   * exactly one scale and one curve for "pressed" instead of six near-misses.
+   */
+  .press {
+    transition: transform var(--speed-press) var(--ease-out);
+  }
+  /*
+   * The press itself, and the one transform allowed on a control pressed
+   * hundreds of times a seminar: it is bound to the finger rather than to a
+   * state change, so it can never arrive after the thing it describes. On a
+   * workspace where the kernel may take a second to answer, it is also the
+   * only proof the click was heard. 0.97 — 0.95 reads as a flinch at this
+   * size, 0.99 is invisible. A disabled control stays still, because it did
+   * not hear it.
+   *
+   * Every variant is named because the buttons are written standalone
+   * (`class="btn-primary"`, not `class="btn btn-primary"`) and @apply copies a
+   * rule's declarations, never its sibling selectors — a lone `.btn:active`
+   * would reach four call sites out of thirty-two.
+   */
+  .btn:active:not(:disabled),
+  .btn-primary:active:not(:disabled),
+  .btn-ghost:active:not(:disabled),
+  .btn-outline:active:not(:disabled),
+  .press:active:not(:disabled) {
+    transform: scale(0.97);
   }
   .field {
     @apply w-full border border-line bg-surface px-3 py-2 text-ui text-ink
@@ -247,14 +369,32 @@
   .panel {
     @apply flex min-h-0 flex-col bg-surface;
   }
+  /*
+   * muted, not faint. A panel title names what is in the panel, which is
+   * information — and the palette's own rule is that faint never carries any:
+   * it clears 3:1 for a shape or a placeholder, not the 4.5:1 that something
+   * meant to be read needs.
+   */
   .panel-title {
-    @apply px-3 pb-1.5 pt-3 text-2xs font-bold uppercase tracking-section text-faint;
+    @apply px-3 pb-1.5 pt-3 text-2xs font-bold uppercase tracking-section text-muted;
   }
   .chip {
     @apply inline-flex items-center gap-1 px-1.5 py-0.5 text-2xs font-medium;
   }
+  /*
+   * 160ms, written out rather than tokenised: a strip of peer avatars is a
+   * small thing appearing, which is the 125-200ms tier, and the ladder above
+   * deliberately carries no step there — one literal with a reason beats a
+   * fifth token with one consumer. The 0.25s it used to run at is the speed a
+   * DRAWER travels at, and on an element this size it read as the room
+   * lagging behind the person who moved.
+   *
+   * Still a keyframe, so two peers arriving 40ms apart restart it rather than
+   * retarget it. The honest fix for that is fewer entrances, not a smoother
+   * one, and it belongs at the call site (CellView's footer strip), not here.
+   */
   .enter {
-    animation: colloq-enter var(--speed-regular) ease-out;
+    animation: colloq-enter 160ms var(--ease-out);
   }
 }
 
@@ -297,8 +437,13 @@
 .cm-cursor {
   border-left-color: rgb(var(--ink)) !important;
 }
+/*
+ * muted, not faint. In a field beside a label a placeholder is a hint and faint
+ * is right for it; in an EMPTY cell it is the only thing on the line, so it is
+ * the content, and content clears AA.
+ */
 .cm-placeholder {
-  color: rgb(var(--faint));
+  color: rgb(var(--muted));
 }
 
 /* Remote collaborators, drawn by y-codemirror.next. */
@@ -335,6 +480,82 @@
   user-select: none;
   z-index: 20;
 }
+
+/* ------------------------------------------------------------------- ANSI */
+/*
+ * The kernel colours its tracebacks, and ansi_up's default palette is the 1980s
+ * one: pure #BB0000 red, which lands at 2.79:1 on our dark ground. A traceback
+ * is read at the worst possible moment, so these are measured against the
+ * grounds output is actually drawn on — 6.5:1 or better in both themes — and
+ * kept recognisably the colours the kernel asked for.
+ *
+ * Set by ansi_up's use_classes mode; DOMPurify keeps the class attribute.
+ */
+:root {
+  --ansi-black: #1b2230;
+  --ansi-red: #b3261e;
+  --ansi-green: #136b45;
+  --ansi-yellow: #8a5a00;
+  --ansi-blue: #1b4fa8;
+  --ansi-magenta: #8b3fa8;
+  --ansi-cyan: #0e6a78;
+  --ansi-white: #4a5468;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --ansi-black: #8b94a8;
+    --ansi-red: #f0736b;
+    --ansi-green: #5fcf97;
+    --ansi-yellow: #e0b24a;
+    --ansi-blue: #7fa8e8;
+    --ansi-magenta: #d08ce0;
+    --ansi-cyan: #5fbfcf;
+    --ansi-white: #d6dce8;
+  }
+}
+
+:root[data-theme='dark'] {
+  --ansi-black: #8b94a8;
+  --ansi-red: #f0736b;
+  --ansi-green: #5fcf97;
+  --ansi-yellow: #e0b24a;
+  --ansi-blue: #7fa8e8;
+  --ansi-magenta: #d08ce0;
+  --ansi-cyan: #5fbfcf;
+  --ansi-white: #d6dce8;
+}
+
+.ansi-black-fg { color: var(--ansi-black); }
+.ansi-red-fg { color: var(--ansi-red); }
+.ansi-green-fg { color: var(--ansi-green); }
+.ansi-yellow-fg { color: var(--ansi-yellow); }
+.ansi-blue-fg { color: var(--ansi-blue); }
+.ansi-magenta-fg { color: var(--ansi-magenta); }
+.ansi-cyan-fg { color: var(--ansi-cyan); }
+.ansi-white-fg { color: var(--ansi-white); }
+
+/* The bright pairs differ from their base by weight rather than by a second
+   palette: eight measured colours are enough, sixteen would be eight guesses. */
+.ansi-bright-black-fg { color: var(--ansi-black); font-weight: 600; }
+.ansi-bright-red-fg { color: var(--ansi-red); font-weight: 600; }
+.ansi-bright-green-fg { color: var(--ansi-green); font-weight: 600; }
+.ansi-bright-yellow-fg { color: var(--ansi-yellow); font-weight: 600; }
+.ansi-bright-blue-fg { color: var(--ansi-blue); font-weight: 600; }
+.ansi-bright-magenta-fg { color: var(--ansi-magenta); font-weight: 600; }
+.ansi-bright-cyan-fg { color: var(--ansi-cyan); font-weight: 600; }
+.ansi-bright-white-fg { color: var(--ansi-white); font-weight: 600; }
+
+/* A background from the kernel must not swallow the ink on top of it. */
+[class*='ansi-'][class*='-bg'] { color: rgb(var(--canvas)); }
+.ansi-black-bg { background: var(--ansi-black); }
+.ansi-red-bg { background: var(--ansi-red); }
+.ansi-green-bg { background: var(--ansi-green); }
+.ansi-yellow-bg { background: var(--ansi-yellow); }
+.ansi-blue-bg { background: var(--ansi-blue); }
+.ansi-magenta-bg { background: var(--ansi-magenta); }
+.ansi-cyan-bg { background: var(--ansi-cyan); }
+.ansi-white-bg { background: var(--ansi-white); color: rgb(var(--ink)); }
 
 /* --------------------------------------------------------------- Markdown */
 

@@ -1,10 +1,11 @@
 <script lang="ts">
   import { tick } from 'svelte'
-  import type { CellType } from '@shared/notebook'
+  import { findCell, type CellType } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
+  import { controlDisabled, controlTitle } from '@/lib/controls'
   import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
-  import { cn } from '@/lib/utils'
+  import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
   import { watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import CellView from './CellView.svelte'
 
@@ -20,9 +21,29 @@
   const ids = watchCellIds(session.doc)
   const notebook = watchNotebookMeta(session.doc)
 
-  const isHost = session.me.role === 'host'
+  /*
+   * $derived, not a plain const: the control socket reports the role the server
+   * will actually act on as soon as it opens, and a teacher whose token was
+   * minted before they signed in arrives here as a participant and is corrected
+   * a moment later. A value captured at init would never hear about it.
+   */
+  const isHost = $derived(session.me.role === 'host')
   const kernel = $derived(notebook.current.kernelStatus)
   const queued = $derived(notebook.current.queue.length)
+
+  /*
+   * Whoever started the running cell may stop it, teacher or not: only one cell
+   * runs at a time, and a seminar with nobody senior in the room otherwise has
+   * no way to end a loop. The server enforces the same rule from its own record
+   * of the queue; this only decides how the control is drawn.
+   */
+  const runningIsMine = $derived.by(() => {
+    const running = notebook.current.runningCellId
+    if (!running) return false
+    const found = findCell(session.doc, running)
+    return !!found && (found.cell.get('runById') as string | null) === session.me.id
+  })
+  const canInterrupt = $derived(isHost || runningIsMine)
 
   /* --------------------------------------------------------- navigation */
 
@@ -58,6 +79,8 @@
           direction: -1 | 1
           focus?: boolean
           fallback?: boolean
+          /** Make a cell when there is none to step to; Shift+Enter only. */
+          grow?: boolean
         }>
       ).detail
       if (!detail) return
@@ -66,7 +89,13 @@
       if (from === -1) return
       const back = detail.fallback ? list[from - detail.direction] : undefined
       const target = list[from + detail.direction] ?? back
-      if (!target) return
+      if (!target) {
+        // Shift+Enter on the last cell has nowhere to go, so it makes somewhere:
+        // that is how a notebook grows while somebody types down the page, and
+        // it is what the same key does in the tool this room already knows.
+        if (detail.grow) void addAt(from + 1, 'code')
+        return
+      }
       select(target)
       if (detail.focus !== false) enter(target)
     }
@@ -159,6 +188,11 @@
       if (!current) return
       event.preventDefault()
       session.send({ t: 'run', cellId: current })
+      // Run and move on, the same as inside the editor — but staying in command
+      // mode, because that is where the keystroke came from.
+      const next = list[at + 1]
+      if (next) select(next)
+      else void addAt(list.length, 'code')
       return
     }
     if (event.shiftKey) return
@@ -215,6 +249,186 @@
     if (event.key !== 'd') armedDeleteAt = 0
   }
 
+  /* --------------------------------------------------- hold to restart */
+
+  /*
+   * Restart throws away every variable in the room, and it used to be a plain
+   * click on a button the same size and the same voice as Clear, two slots
+   * away, in a strip the host sweeps through all seminar. The file has already
+   * made this exact judgement once, on the other input path: deleting a cell by
+   * keyboard is two taps of D inside CHORD_MS above, "so a stray D is never
+   * destructive". The pointer path of the control that wipes the WHOLE room
+   * never got it. This is that reasoning, applied where the damage is larger.
+   *
+   * 900ms is picked over CHORD_MS's 700 rather than being a round number: the
+   * pointer is not allowed to be more forgiving than the keyboard, so 700 is
+   * the floor, and a host restarting in front of twenty people should not have
+   * to stand on a button for the two seconds a hold-to-delete usually takes.
+   * 900 clears the floor and is still four times the longest stray click.
+   *
+   * Scope: the second Restart, in the kernel-dead pill below, stays an instant
+   * click. The kernel is already gone there, so there is nothing left to
+   * protect, and that button is the way back — slowing down the one press the
+   * room is desperate to make would be theatre.
+   */
+  const HOLD_MS = 900
+
+  /*
+   * Letting go, and the fade after the send. WAAPI takes numbers, not custom
+   * properties, so these two spell out index.css's --speed-quick (0.1s) and
+   * --ease-out instead of inventing a third speed and a fourth curve. Release
+   * is feedback and belongs in the 100-160ms tier; the curve is ease-out
+   * because a release is something leaving.
+   */
+  const RELEASE_MS = 100
+  const EASE_OUT = 'cubic-bezier(0.23, 1, 0.32, 1)'
+
+  const restartDisabled = $derived(controlDisabled(session.connected, isHost))
+
+  let holdFill = $state<HTMLElement | null>(null)
+  let holdAnim: Animation | null = null
+
+  /** Back to a cold overlay: no fill left applied, no restart still armed. */
+  function clearHold(): void {
+    holdAnim = null
+    for (const running of holdFill?.getAnimations() ?? []) running.cancel()
+  }
+
+  /*
+   * One clock, not two. The obvious build is a CSS transition on the overlay
+   * plus a setTimeout that sends the restart — and then the bar and the timer
+   * agree only by luck. A throttled tab, or any rule that shortens the
+   * transition, makes the bar read "done" while the send is still pending: a
+   * progress indicator lying about a destructive control. Here `finished` and
+   * the pixels come off the same animation, so the frame the bar fills is the
+   * frame the message goes. It is also why nothing here waits on `transitionend`,
+   * which a backgrounded tab never delivers at all.
+   *
+   * The information here is the CLOCK, not the 90px of travel, so reduced
+   * motion takes the travel and keeps the clock: the tint ramps its opacity in
+   * place over the same 900ms instead of sweeping across the button. A hold
+   * with no visible progress is worse for that reader than one that moves —
+   * they would be standing on a destructive button with no way to know how much
+   * longer — and an opacity ramp reports elapsed time just as honestly while
+   * displacing nothing. Being scripted rather than declarative puts this out of
+   * reach of every CSS override, which is what makes this the only place the
+   * preference can be honoured at all, not a reason to skip it.
+   */
+  /** The two ends of the fill, in whichever property this reader gets it. */
+  function holdFrames(from: number, to: number): Keyframe[] {
+    return prefersReducedMotion()
+      ? [
+          { opacity: from, transform: 'scaleX(1)' },
+          { opacity: to, transform: 'scaleX(1)' },
+        ]
+      : [{ transform: `scaleX(${from})` }, { transform: `scaleX(${to})` }]
+  }
+
+  function startHold(): void {
+    const el = holdFill
+    if (!el || holdAnim || restartDisabled) return
+    clearHold()
+    const anim = el.animate(holdFrames(0, 1), {
+      duration: HOLD_MS,
+      // linear: constant motion reporting elapsed time. An eased fill would
+      // misreport how much of the hold is left, and this is not an entrance.
+      easing: 'linear',
+      fill: 'forwards',
+    })
+    holdAnim = anim
+    // cancel() rejects this promise, and a hold somebody let go of is not an
+    // error — swallow it rather than letting it surface as an unhandled one.
+    void anim.finished.then(
+      () => {
+        if (holdAnim === anim) fireRestart(el)
+      },
+      () => {},
+    )
+  }
+
+  /** Every way out of a hold: fingers, keys, a dead socket, a hidden tab. */
+  function cancelHold(): void {
+    const anim = holdAnim
+    if (!anim) return
+    holdAnim = null
+    // Where the fill actually is, read before the cancel wipes it: the
+    // snap-back has to leave from there, not from a full bar it never reached.
+    const progress = anim.effect?.getComputedTiming().progress ?? 0
+    anim.cancel()
+    holdFill?.animate(holdFrames(progress, 0), {
+      duration: RELEASE_MS,
+      easing: EASE_OUT,
+      fill: 'forwards',
+    })
+  }
+
+  function fireRestart(el: HTMLElement): void {
+    holdAnim = null
+    session.send({ t: 'restart' })
+    // The send is the one moment in this interaction that must read, and a bar
+    // that simply sits full until the finger lifts hides it. The overlay
+    // leaves; the `restarting…` pill at the end of this bar takes it from here.
+    el.animate([{ opacity: 1 }, { opacity: 0 }], {
+      duration: RELEASE_MS,
+      easing: EASE_OUT,
+      fill: 'forwards',
+    })
+  }
+
+  /*
+   * Keyboard parity, not an afterthought: the onclick this button used to carry
+   * is gone, and a native <button> turns Enter into a click on keydown and
+   * Space into one on keyup — leaving it would have handed the keyboard an
+   * instant restart straight past the hold. So the keys drive the same hold.
+   */
+  function onRestartKeyDown(event: KeyboardEvent): void {
+    // A finger aborts by sliding off the button; a key has nowhere to slide,
+    // so Escape is its way out.
+    if (event.key === 'Escape') {
+      cancelHold()
+      return
+    }
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    // A held key repeats; only the first one starts the clock.
+    if (event.repeat) return
+    // Space scrolls the page, and both keys synthesise the click removed above.
+    event.preventDefault()
+    startHold()
+  }
+
+  function onRestartKeyUp(event: KeyboardEvent): void {
+    if (event.key === 'Enter' || event.key === ' ') cancelHold()
+  }
+
+  /*
+   * The hold has to survive the room, not just the button. A tab sent to the
+   * background stops painting the fill while the hold is still nominally live,
+   * which is the one case where a restart could land with no visible frame of
+   * warning behind it. Tearing down mid-hold is the same story from the other
+   * end: the animation would outlive the notebook and resolve into a room
+   * nobody is in.
+   */
+  $effect(() => {
+    const onHidden = () => {
+      if (document.hidden) cancelHold()
+    }
+    document.addEventListener('visibilitychange', onHidden)
+    return () => {
+      document.removeEventListener('visibilitychange', onHidden)
+      clearHold()
+    }
+  })
+
+  /*
+   * And the third way the button can go quiet under the finger: CAP carries
+   * `disabled:pointer-events-none`, so if the socket drops mid-hold no
+   * pointerup, pointerleave or pointercancel will ever arrive, and the timer
+   * would fire a restart into a session that cannot hear it.
+   */
+  $effect(() => {
+    if (restartDisabled) cancelHold()
+  })
+
   /* Both adders speak the artboard's caps voice; the inline one sits on a
      raised ground because it lands on top of the hairline it interrupts. */
   const ADD_LABEL = 'text-micro font-bold uppercase tracking-label'
@@ -224,14 +438,78 @@
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'
 
   /*
+   * Whether the run bar has more to the right than the window is showing. Only
+   * true on a screen too narrow for the whole strip — a laptop never sees it.
+   */
+  let runBar = $state<HTMLElement | null>(null)
+  let runBarMore = $state(false)
+  function measureRunBar(): void {
+    const el = runBar
+    if (!el) return
+    runBarMore = el.scrollWidth - el.clientWidth - el.scrollLeft > 4
+  }
+  /*
+   * One read per frame, not one per event. scrollWidth, clientWidth and
+   * scrollLeft each force a synchronous layout, and this bar is `sticky` with a
+   * `backdrop-blur` whose compositing the mask-image toggle changes — on the
+   * only device that ever sees the overflow state, a phone mid-touch-scroll,
+   * that was the frame budget being spent to answer the same question twenty
+   * times between two paints.
+   */
+  let measureFrame = 0
+  function scheduleRunBarMeasure(): void {
+    if (measureFrame) return
+    measureFrame = requestAnimationFrame(() => {
+      measureFrame = 0
+      measureRunBar()
+    })
+  }
+  $effect(() => {
+    const el = runBar
+    if (!el) return
+    measureRunBar()
+    // Re-measure when the window changes, and when the strip itself does: the
+    // terminal tab appears and disappears with the drawer.
+    const observer = new ResizeObserver(scheduleRunBarMeasure)
+    observer.observe(el)
+    for (const child of el.children) observer.observe(child)
+    return () => {
+      observer.disconnect()
+      if (measureFrame) cancelAnimationFrame(measureFrame)
+      measureFrame = 0
+    }
+  })
+
+  /*
    * The run bar is four caps-tracked words, and only the first one is filled.
    * The artboard runs each button the full height of the bar with no rounding
    * and no border, so the hover ground is the whole slot rather than a pill
    * floating inside it.
    */
+  /*
+   * shrink-0: the strip scrolls when the window is too narrow for it, so a
+   * button that gave way would be squeezed to nothing rather than moving out of
+   * view where it can be scrolled back to.
+   */
+  /*
+   * The transition is spelled out rather than `transition-colors` plus the
+   * `.press` helper, and this is the trap JoinScreen.svelte:428-441 documents:
+   * a Tailwind `transition-*` utility is emitted after @layer components and
+   * rewrites `transition-property` wholesale, so the helper's `transform` would
+   * never be in the list and the 0.97 would snap in and snap back. Listing the
+   * three properties together is the only way one control can both settle a
+   * colour and travel under the finger. border-color is in the list because
+   * `transition-colors` carried it and the terminal tab toggles its underline
+   * with it — the point is to add the transform, not to drop a property.
+   *
+   * It lives in CAP rather than on one button because the strip is one strip:
+   * Interrupt, Restart, Clear, Format and the terminal tab all press with the
+   * same 3% and the same curve, or none of them should.
+   */
   const CAP =
-    'inline-flex h-full items-center px-4 text-2xs font-semibold uppercase tracking-label ' +
-    'text-ink transition-colors duration-[var(--speed-quick)] hover:bg-raised ' +
+    'inline-flex h-full shrink-0 items-center px-4 text-2xs font-semibold uppercase tracking-label ' +
+    'text-ink transition-[color,background-color,border-color,transform] duration-press ease-out ' +
+    'enabled:active:scale-[0.97] hover:bg-raised ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset ' +
     'focus-visible:ring-accent/50 disabled:pointer-events-none disabled:opacity-40'
 
@@ -274,18 +552,37 @@
   </div>
 {/snippet}
 
-<div class="mx-auto w-full max-w-[900px] px-4 pb-40">
+<!--
+  The notebook fills its column. It used to be capped at 900px and centred, which
+  on anything wider than a laptop left the cells and the whole toolbar stranded in
+  the middle with empty gutters either side — the artboard shows the strip running
+  edge to edge and the cells using the room they are given. The panels beside it
+  are what bound the measure; this element should not bound it a second time.
+-->
+<div class="w-full pb-40">
   <div
-    class="sticky top-0 z-30 -mx-4 mb-4 flex h-10 items-center border-b border-line
-           bg-canvas/95 backdrop-blur"
+    bind:this={runBar}
+    onscroll={scheduleRunBarMeasure}
+    class={cn(
+      `sticky top-0 z-30 mb-4 flex h-10 items-center overflow-x-auto overflow-y-hidden
+       border-b border-line bg-canvas/95 backdrop-blur [scrollbar-width:none]
+       [&::-webkit-scrollbar]:hidden`,
+      // A phone fits Run all, Interrupt, Restart and Clear and no more, and the
+      // bar cut off flush with the screen edge: the terminal was still there,
+      // one swipe away, with nothing on screen to say so. The fade is the only
+      // thing that says the row continues.
+      runBarMore && '[mask-image:linear-gradient(to_right,#000_calc(100%-40px),transparent)]',
+    )}
   >
     <button
       type="button"
-      class="inline-flex h-full items-center gap-2 bg-primary px-5 text-2xs font-bold uppercase
-             tracking-label text-primary-ink transition-opacity duration-[var(--speed-quick)]
-             hover:opacity-90 focus-visible:outline-none focus-visible:ring-2
-             focus-visible:ring-inset focus-visible:ring-primary-ink/60"
-      title="Run every code cell"
+      class="inline-flex h-full shrink-0 items-center gap-2 bg-primary px-5 text-2xs font-bold uppercase
+             tracking-label text-primary-ink transition-[opacity,transform] duration-press ease-out
+             enabled:active:scale-[0.97] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2
+             focus-visible:ring-inset focus-visible:ring-primary-ink/60
+             disabled:pointer-events-none disabled:opacity-40"
+      disabled={controlDisabled(session.connected)}
+      title={controlTitle(session.connected, 'Run every code cell')}
       onclick={() => session.send({ t: 'runAll' })}
     >
       <Icon name="play" size={12} />
@@ -294,30 +591,87 @@
     <button
       type="button"
       class={CAP}
-      disabled={!isHost}
-      title={isHost ? 'Stop the running cell' : 'Only the host can interrupt the kernel'}
+      disabled={controlDisabled(session.connected, canInterrupt)}
+      title={controlTitle(
+        session.connected,
+        canInterrupt ? 'Stop the running cell' : 'Only the host, or whoever started it, can stop a run',
+      )}
       onclick={() => session.send({ t: 'interrupt' })}
     >
       Interrupt
     </button>
+    <!--
+      Hold, not click — the reasoning and the 900ms are at HOLD_MS above. This
+      is the one place in the notebook where slow is right: the user is
+      deciding, so the press takes its time, while everything the system
+      answers with stays fast. The press comes from CAP, which carries it for
+      the whole strip: the `.press` helper cannot be used beside a Tailwind
+      `transition-*` utility, because the utility rewrites transition-property
+      and leaves the helper's transform out of it.
+    -->
     <button
       type="button"
-      class={CAP}
-      disabled={!isHost}
-      title={isHost
-        ? 'Restart the kernel — every variable is lost'
-        : 'Only the host can restart the kernel'}
-      onclick={() => session.send({ t: 'restart' })}
+      class={cn(CAP, 'relative select-none overflow-hidden')}
+      disabled={restartDisabled}
+      aria-label="Hold to restart the kernel"
+      title={controlTitle(
+        session.connected,
+        isHost
+          ? 'Hold to restart the kernel — every variable is lost'
+          : 'Only the host can restart the kernel',
+      )}
+      onpointerdown={(event) => {
+        // A secondary button opens a context menu instead of pressing, and must
+        // not arm a restart on its way there.
+        if (event.button === 0) startHold()
+      }}
+      onpointerup={cancelHold}
+      onpointerleave={cancelHold}
+      onpointercancel={cancelHold}
+      onblur={cancelHold}
+      onkeydown={onRestartKeyDown}
+      onkeyup={onRestartKeyUp}
     >
-      Restart
+      <!--
+        Scaled, not clipped and not resized: the vocabulary is the upload bar's
+        in FilesPanel, where a width transition would relayout on every progress
+        event and only transform is allowed to move. It is the first child so
+        the label, which is positioned, keeps painting on top of the tint.
+      -->
+      <span
+        bind:this={holdFill}
+        aria-hidden="true"
+        class="pointer-events-none absolute inset-0 origin-left bg-danger/[0.18]"
+        style="transform: scaleX(0)"
+      ></span>
+      <span class="relative">Restart</span>
     </button>
     <button
       type="button"
       class={CAP}
-      title="Clear every output"
+      disabled={controlDisabled(session.connected)}
+      title={controlTitle(session.connected, 'Clear every output')}
       onclick={() => session.send({ t: 'clearOutputs' })}
     >
       Clear
+    </button>
+    <!--
+      Форматирование стоит здесь, а не в меню ячейки: оно про весь ноутбук.
+      Ячейку, которую black прочитать не может — магию, строку с ! или код,
+      который сейчас дописывают, — оно оставляет как есть и идёт дальше, и
+      именно поэтому кнопка одна на всю панель, а не по одной на ячейку.
+    -->
+    <button
+      type="button"
+      class={CAP}
+      disabled={controlDisabled(session.connected)}
+      title={controlTitle(
+        session.connected,
+        'Run black over every code cell — 100 columns. A cell it cannot read is left alone.',
+      )}
+      onclick={() => session.send({ t: 'format' })}
+    >
+      Format
     </button>
 
     {#if ontoggleterminal}
@@ -331,7 +685,7 @@
         class={cn(
           CAP,
           'gap-2 border-b-2',
-          terminalOpen ? 'border-brand bg-raised text-ink' : 'border-transparent text-muted',
+          terminalOpen ? 'border-ink bg-raised text-ink' : 'border-transparent text-muted',
         )}
         aria-pressed={terminalOpen}
         title="Shared terminal — Ctrl+`"
@@ -341,20 +695,34 @@
         Terminal
         {#if session.terminalStatus === 'busy'}
           <span class="h-1.5 w-1.5 animate-blink rounded-full bg-accent"></span>
+        {:else if session.terminalUnread > 0}
+          <!--
+            The kernel's own news — why a Run All stopped, who restarted the
+            kernel — is written into the transcript, and the transcript is
+            behind this tab. Without a mark the room had the reason on file and
+            no reason to look for it.
+          -->
+          <span
+            class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-accent
+                   px-1 font-mono text-micro font-bold text-white"
+            title={`${session.terminalUnread} kernel ${session.terminalUnread === 1 ? 'note' : 'notes'} you have not read`}
+          >
+            {session.terminalUnread > 9 ? '9+' : session.terminalUnread}
+          </span>
         {:else}
-          <span class="hidden font-mono text-micro text-faint xl:inline">⌃`</span>
+          <span class="hidden font-mono text-micro text-muted xl:inline">⌃`</span>
         {/if}
       </button>
     {/if}
 
-    <div class="ml-auto flex items-center gap-2.5">
+    <div class="ml-auto flex shrink-0 items-center gap-2.5">
       <!--
         The artboard's run bar carries the queue and the cell count and nothing
         else — a healthy kernel is reported in the masthead. An unhealthy one is
         not reported anywhere else yet, so it keeps its pill here.
       -->
       {#if kernel === 'dead'}
-        <span class={cn(PILL, 'border-danger/40 bg-danger/10 text-2xs text-danger')}>
+        <span class={cn(PILL, 'border-danger/40 bg-danger/[0.05] text-2xs text-danger')}>
           <span class="h-1.5 w-1.5 rounded-full bg-danger"></span>
           kernel dead
           {#if isHost}
@@ -362,7 +730,10 @@
               type="button"
               class="text-micro font-bold uppercase tracking-label text-ink
                      transition-opacity duration-[var(--speed-quick)] hover:opacity-70
-                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
+                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40
+                     disabled:pointer-events-none disabled:opacity-40"
+              disabled={controlDisabled(session.connected)}
+              title={controlTitle(session.connected, 'Restart the kernel')}
               onclick={() => session.send({ t: 'restart' })}
             >
               Restart
@@ -387,12 +758,18 @@
           {queued} queued
         </span>
       {/if}
-      <span class="pl-0.5 pr-5 font-mono text-micro text-faint">
+      <!-- The least load-bearing thing in the strip, and the first to go when
+           there is not room for all of it: how many cells there are is visible
+           by scrolling the notebook. -->
+      <span class="hidden pl-0.5 pr-5 font-mono text-micro text-muted xl:inline">
         {ids.current.length}
         {ids.current.length === 1 ? 'cell' : 'cells'}
       </span>
     </div>
   </div>
+  <!-- 24px, the artboard's: its cells are 822 wide in an 868 column, while the
+       run bar above them is the full 868 and touches both panels. -->
+  <div class="px-6">
 
   {#each ids.current as id, index (id)}
     {@render adder(index)}
@@ -429,8 +806,12 @@
       Text
     </button>
     <div class="h-px flex-1 bg-line-soft"></div>
-    <span class="hidden shrink-0 font-mono text-micro text-faint sm:inline">
-      A / B to insert · ⇧↵ to run
+    <!-- Shift+Enter and the platform's own modifier now mean different things —
+         run and move on, run and stay — so the hint says both. `modKey` reads
+         ⌘ on a Mac and Ctrl everywhere else. -->
+    <span class="hidden shrink-0 font-mono text-micro text-muted sm:inline">
+      A / B to insert · ⇧↵ run &amp; next · {modKey}↵ run in place
     </span>
+  </div>
   </div>
 </div>

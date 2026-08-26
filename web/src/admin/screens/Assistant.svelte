@@ -185,7 +185,7 @@
       return { tone: 'bg-surface text-muted', icon: null, spin: false, text: 'Not tested' }
     }
     if (!result.ok) {
-      return { tone: 'bg-danger/10 text-danger', icon: 'x', spin: false, text: 'Not connected' }
+      return { tone: 'bg-danger/[0.05] text-danger', icon: 'x', spin: false, text: 'Not connected' }
     }
     return {
       tone: 'bg-positive/10 text-positive',
@@ -393,6 +393,26 @@
     }
   }
 
+  /**
+   * Test what is on screen, saving it first if that is what it takes.
+   *
+   * The test calls the provider, and the provider only knows the SAVED
+   * settings — so pressing Test with a freshly typed key used to report "no API
+   * key is set" while the key sat right there in the field. A line of small
+   * print explained it; the line was read and the trap sprung anyway, which
+   * makes it the button's fault. Now the button says what it will do, and does
+   * the thing the person meant.
+   */
+  async function saveAndTest(): Promise<void> {
+    if (dirty) {
+      await save()
+      // A save that failed has already put its reason on screen. Testing after
+      // it would produce a second, less useful message about the same thing.
+      if (saveError) return
+    }
+    await runTest()
+  }
+
   async function runTest(): Promise<void> {
     const saved = loaded
     if (!saved || testing) return
@@ -413,7 +433,7 @@
 </script>
 
 {#snippet fieldLabel(text: string, forId: string)}
-  <label for={forId} class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-faint">
+  <label for={forId} class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-muted">
     {text}
   </label>
 {/snippet}
@@ -553,8 +573,14 @@
 
       <div class="mt-4">
         {@render fieldLabel('API key', 'ai-key')}
-        <div class="flex gap-2">
-          <div class="min-w-0 flex-1">
+        <!--
+          The key and the button that tests it wrap rather than overlap: at
+          768px "Add a key" was printing 54px into "Test connection". A floor
+          under the key lane is what decides when they separate, because the
+          key row has three things of its own inside it.
+        -->
+        <div class="flex flex-wrap gap-2">
+          <div class="min-w-[220px] flex-1">
             {#if clearKey}
               <div class="field flex items-center gap-3 border-warning">
                 <span class="min-w-0 flex-1 truncate text-ui text-warning">
@@ -562,7 +588,8 @@
                 </span>
                 <button
                   type="button"
-                  class="shrink-0 text-ui font-medium text-accent-text hover:underline"
+                  class="-my-1 flex shrink-0 items-center py-1 text-ui font-medium text-accent-text
+                         hover:underline"
                   onclick={() => (clearKey = false)}
                 >
                   Keep it
@@ -589,9 +616,11 @@
                 >
                   {storedMask ?? 'No key set'}
                 </span>
+                <!-- -my-1 py-1: 19px of type is too small a thing to aim at, and the
+                     row it sits in has the height to give without moving. -->
                 <button
                   type="button"
-                  class="shrink-0 text-ui font-medium text-accent-text hover:underline"
+                  class="-my-1 shrink-0 py-1 text-ui font-medium text-accent-text hover:underline"
                   onclick={startReplace}
                 >
                   {storedMask ? 'Replace' : 'Add a key'}
@@ -611,13 +640,18 @@
 
           <button
             type="button"
-            class="btn-outline min-w-[132px] shrink-0"
-            onclick={() => void runTest()}
-            disabled={testing || !isOwner}
+            class="btn-outline min-w-[152px] shrink-0"
+            onclick={() => void saveAndTest()}
+            disabled={testing || saving || !isOwner}
+            title={dirty
+              ? 'Saves what you typed, then asks the provider'
+              : 'Asks the provider with the settings on this screen'}
           >
-            {#if testing}
+            {#if testing || saving}
               <Icon name="spinner" size={15} class="animate-spin" />
-              Testing…
+              {saving ? 'Saving…' : 'Testing…'}
+            {:else if dirty}
+              Save &amp; test
             {:else}
               Test connection
             {/if}
@@ -666,9 +700,11 @@
         {/if}
 
         {#if dirty}
-          <p class="mt-1.5 text-2xs text-warning">
-            The test calls the provider with the saved settings — save first to test what you just
-            typed.
+          <!-- No longer a warning to obey: the button saves first and says so.
+               This just tells you that pressing it will write, before it does. -->
+          <p class="mt-1.5 text-2xs text-muted">
+            Testing calls the provider, and the provider only sees saved settings — so
+            <b class="font-semibold text-ink">Save &amp; test</b> stores what you typed first.
           </p>
         {/if}
 
@@ -775,7 +811,7 @@
         </div>
 
         <div class="min-w-0">
-          <p class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-faint">
+          <p class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-muted">
             Never send files over
           </p>
           <!-- Dashed, because it is a reading of the environment and not a control:

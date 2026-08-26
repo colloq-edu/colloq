@@ -1,7 +1,23 @@
 <script lang="ts">
+  /**
+   * The seminar itself: the room, and the three things around it.
+   *
+   * The layout is one decision repeated — the notebook is the page, and Files,
+   * People and the assistant are what it is surrounded by. Below about 1100px
+   * the assistant folds into a button in the top bar and below about 700px the
+   * left rail follows it, each opening as a panel over the room that closes on
+   * Escape, on a click outside, or on the button that opened it. Nothing here
+   * scrolls the page sideways at any width.
+   *
+   * This screen owns no seminar state. Everything it draws — the title, who is
+   * here, the kernel's mood, the queue — is read from the shared document or
+   * from awareness, so what it shows is what everybody else is looking at.
+   */
   import { onDestroy } from 'svelte'
   import { cubicOut } from 'svelte/easing'
   import { fade, fly } from 'svelte/transition'
+  import { peopleInRoom } from '@/lib/room'
+  import { gridFaviconHref } from '@/lib/logo'
   import AvatarStack from '@/components/ui/AvatarStack.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import Notebook from '@/components/notebook/Notebook.svelte'
@@ -13,7 +29,7 @@
   import Wordmark from '@/components/ui/Wordmark.svelte'
   import type { StoredIdentity } from '@/lib/identity'
   import { SessionState, setSessionState } from '@/lib/session.svelte'
-  import { cn } from '@/lib/utils'
+  import { cn, prefersReducedMotion } from '@/lib/utils'
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
   import { getMeta, type KernelStatus } from '@shared/notebook'
   import type { SessionInfo } from '@shared/protocol'
@@ -65,19 +81,43 @@
     year: 'numeric',
   })
 
-  // AvatarStack wants a stable id per face, and a client id is exactly that for
-  // as long as the person is in the room.
+  /*
+   * People, not sockets. Keyed on the client id this counted a second tab as a
+   * second student, so the bar could say "4 in the room" above a list of three
+   * — with one of them printed twice. The participant id is also the steadier
+   * face: it survives a reconnect, where the client id does not.
+   */
+  /*
+   * A mark per seminar, in the tab bar.
+   *
+   * The grid is derived from the session id, so it is the same for everybody in
+   * the room and the same next week; a teacher with back-to-back seminars open
+   * can tell the tabs apart at 16px, which is the whole reason a logo is
+   * allowed to change at all. Restored on the way out so the join screen and
+   * the panel keep the brand's own mark.
+   */
+  $effect(() => {
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
+    if (!link) return
+    const brand = link.getAttribute('href')
+    link.setAttribute('href', gridFaviconHref(session.session.id))
+    return () => {
+      if (brand) link.setAttribute('href', brand)
+    }
+  })
+
+  const inRoom = $derived(peopleInRoom(session.peers))
   const room = $derived(
-    session.peers.map((peer) => ({
-      id: String(peer.clientId),
-      name: peer.user.name,
-      avatar: peer.user.avatar,
-      color: peer.user.color,
-      title: peer.isSelf ? `${peer.user.name} (you)` : peer.user.name,
+    inRoom.map((person) => ({
+      id: person.user.id,
+      name: person.user.name,
+      avatar: person.user.avatar,
+      color: person.user.color,
+      title: person.isSelf ? `${person.user.name} (you)` : person.user.name,
     })),
   )
   const roomNames = $derived(
-    session.peers.map((peer) => (peer.isSelf ? `${peer.user.name} (you)` : peer.user.name)).join(', '),
+    inRoom.map((person) => (person.isSelf ? `${person.user.name} (you)` : person.user.name)).join(', '),
   )
 
   /*
@@ -189,6 +229,9 @@
   /* ------------------------------------------------------------ terminal */
 
   let terminalOpen = $state(false)
+  // The session holds the unread count; only this screen knows whether anybody
+  // is looking at the transcript.
+  $effect(() => session.setTerminalOpen(terminalOpen))
 
   function toggleTerminal(): void {
     terminalOpen = !terminalOpen
@@ -272,7 +315,7 @@
     them resolves to the same value on either side of the switch.
   -->
   <header class="shrink-0 bg-brand">
-    <div class="px-7 pt-4">
+    <div class="px-4 pt-4 sm:px-7">
       <a
         href="/"
         aria-label="Back to Colloq"
@@ -285,12 +328,12 @@
 
     <!-- The loudest thing on the screen. Black rather than bold: HSE Sans Black
          is what the artboard is drawn in, and Inter at 700 reads thin here. -->
-    <div class="flex items-end gap-4 px-7 pb-5 pt-3">
+    <div class="flex items-end gap-3 px-4 pb-4 pt-2 sm:gap-4 sm:px-7 sm:pb-5 sm:pt-3">
       {#if isHost}
         <!-- Renaming writes into the shared doc, so the room sees it immediately. -->
         <input
-          class="name-field -mx-1.5 min-w-0 truncate bg-transparent px-1.5 text-marquee
-                 font-black text-white hover:bg-white/5 focus:bg-white/10"
+          class="name-field -mx-1.5 min-w-0 truncate bg-transparent px-1.5 text-marquee-sm
+                 font-black text-white hover:bg-white/5 focus:bg-white/10 sm:text-marquee"
           value={storedTitle}
           oninput={(event) => rename(event.currentTarget.value)}
           aria-label="Seminar title"
@@ -298,7 +341,7 @@
           spellcheck="false"
         />
       {:else}
-        <h1 class="-mx-1.5 min-w-0 truncate px-1.5 text-marquee font-black text-white">
+        <h1 class="-mx-1.5 min-w-0 truncate px-1.5 text-marquee-sm font-black text-white sm:text-marquee">
           {title}
         </h1>
       {/if}
@@ -315,7 +358,7 @@
     <!-- The live state of the room: who is here, what the machine is doing, and
          the two controls that are about this room rather than about the
          notebook inside it. -->
-    <div class="flex h-11 items-center gap-4 border-t border-brand-2 px-7">
+    <div class="flex h-11 items-center gap-3 border-t border-brand-2 px-4 sm:gap-4 sm:px-7">
       {#if room.length > 0}
         <div class="flex shrink-0 items-center gap-4" title={roomNames}>
           <AvatarStack people={room} max={4} size={24} ring="rgb(var(--brand))" tone="onDark" />
@@ -330,11 +373,20 @@
 
       <!-- Kernel. `python3` is the runtime this product runs and nothing else,
            so naming it is a fact rather than a field we do not have. -->
+      <!--
+        Dimmed while the socket is down. What the pill holds then is the last
+        thing the server said, not what the kernel is doing now — nobody knows
+        that — and a live-looking "IDLE" beside a spinner marked RECONNECTING is
+        two claims that cannot both be true. Half opacity says "last known"
+        without adding a word to a bar that is already full.
+      -->
       <div
         class={cn(
-          'flex h-7 shrink-0 items-center gap-2',
+          'flex h-7 shrink-0 items-center gap-2 transition-opacity duration-quick',
           kernel.alarm && 'bg-danger/20 px-2.5 ring-1 ring-inset ring-danger',
+          !session.connected && 'opacity-50',
         )}
+        title={session.connected ? undefined : 'Last known — the connection dropped'}
         role="status"
       >
         <span class={cn('h-1.5 w-1.5 shrink-0 rounded-full', kernel.dot)} aria-hidden="true"></span>
@@ -432,6 +484,14 @@
       </aside>
     {/if}
 
+    <!--
+      The travel below is gated here rather than in index.css, and it has to be:
+      Svelte runs transition:fly through element.animate(), which no media query
+      can reach — the reduced-motion block in index.css names what CSS owns, and
+      these ±140px are the largest movement in the product. Reduced is a
+      reduction, not a blackout: the panel still arrives over 140ms and still
+      fades, it simply stops sliding.
+    -->
     {#if leftIsDrawer && leftDrawer}
       <div class="absolute inset-0 z-40 flex">
         <button
@@ -442,7 +502,7 @@
         ></button>
         <aside
           class="relative flex w-60 max-w-[85vw] flex-col border-r border-line bg-surface shadow-pop"
-          transition:fly={{ x: -140, duration: 140, easing: cubicOut }}
+          transition:fly={{ x: prefersReducedMotion() ? 0 : -140, duration: 140, easing: cubicOut }}
         >
           {@render leftPanels()}
         </aside>
@@ -459,7 +519,7 @@
         ></button>
         <aside
           class="relative flex w-[380px] max-w-[92vw] flex-col border-l border-line bg-surface shadow-pop"
-          transition:fly={{ x: 140, duration: 140, easing: cubicOut }}
+          transition:fly={{ x: prefersReducedMotion() ? 0 : 140, duration: 140, easing: cubicOut }}
         >
           <AiPanel />
         </aside>
@@ -473,7 +533,7 @@
     <div
       role="status"
       class="pointer-events-auto flex max-w-lg items-start gap-2 border border-line bg-raised py-2 pl-3 pr-1.5 shadow-pop"
-      transition:fly={{ y: 8, duration: 140, easing: cubicOut }}
+      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
     >
       <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
       <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">

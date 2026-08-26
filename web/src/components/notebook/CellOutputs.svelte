@@ -2,6 +2,7 @@
   import type { CellOutput } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
+  import { withoutEcho } from '@/lib/traceback'
   import { cn } from '@/lib/utils'
 
   interface Props {
@@ -62,11 +63,14 @@
             <div
               class={cn(
                 'output-stream px-2 py-1',
-                output.name === 'stderr' ? 'text-danger' : 'text-ink/90',
+                // A warning is not a failure. Painting every stderr line in the
+                // colour of a crash is how a room learns to ignore the colour of
+                // a crash — and pip and matplotlib write to stderr constantly.
+                output.name === 'stderr' ? 'text-warning' : 'text-ink/90',
               )}
             >{#if render}{@html render.ansi(output.text)}{:else}{stripAnsi(output.text)}{/if}</div>
           {:else if output.kind === 'error'}
-            {@const traceback = output.traceback.join('\n')}
+            {@const traceback = withoutEcho(output.traceback, output.ename, output.evalue)}
             <div class="px-1 py-0.5">
               <div class="font-mono text-code font-semibold text-danger">
                 {output.ename}{output.evalue ? `: ${output.evalue}` : ''}

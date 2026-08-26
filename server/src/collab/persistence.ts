@@ -118,7 +118,15 @@ function schedule(binding: Binding): void {
   // backoff, so a bigger notebook waits longer but never past the ceiling.
   const delay = Math.max(0, Math.min(intervalFor(binding.savedBytes), deadline - now))
   if (binding.timer) clearTimeout(binding.timer)
+  /*
+   * unref: a pending snapshot must not be the reason a process stays alive. The
+   * server is kept up by its listening socket and shutdownCollab() flushes on
+   * the way out, so nothing is lost — while without it any script that so much
+   * as reads a document hangs for the length of the interval, which is exactly
+   * how the unit suite came to take three minutes to print anything.
+   */
   binding.timer = setTimeout(() => write(binding), delay)
+  binding.timer.unref?.()
 }
 
 /**
@@ -183,6 +191,22 @@ export function discardPersistence(sessionId: string): void {
   bindings.delete(sessionId)
   if (binding.timer) clearTimeout(binding.timer)
   binding.doc.off('update', binding.onUpdate)
+}
+
+/**
+ * Write one document's snapshot now, without waiting for the debounce.
+ *
+ * The debounce exists for typing, where a snapshot per keystroke would be
+ * absurd. A brand-new room is the opposite case: it holds two starter cells and
+ * nothing else, the encode is under a millisecond, and until those bytes are on
+ * disk the room does not exist as far as a crash is concerned — the server
+ * comes back, finds no snapshot, decides the room is new and seeds the starter
+ * cells a second time. The returning clients then merge their real notebook in
+ * on top and the room opens with two Welcome cells.
+ */
+export function flushPersistence(sessionId: string): void {
+  const binding = bindings.get(sessionId)
+  if (binding) write(binding)
 }
 
 /** Last-chance save for every live document, called on shutdown. */

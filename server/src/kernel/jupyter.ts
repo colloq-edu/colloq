@@ -17,13 +17,19 @@ export type KernelPhase = 'starting' | 'idle' | 'busy' | 'restarting' | 'dead'
 
 export interface ExecuteHandlers {
   onExecuteInput(execCount: number): void
+  /**
+   * The cell called input(). Until somebody answers, the kernel is blocked —
+   * this is the one message that makes a running cell wait for a person rather
+   * than for a computer, so the room has to be told, not just the caller.
+   */
+  onInputRequest?(prompt: string, password: boolean): void
   onStream(name: 'stdout' | 'stderr', text: string): void
   onData(mimebundle: Record<string, string>, execCount: number | null): void
   onError(ename: string, evalue: string, traceback: string[]): void
   onClear(): void
 }
 
-type ExecuteStatus = 'ok' | 'error' | 'abort'
+export type ExecuteStatus = 'ok' | 'error' | 'abort'
 
 interface JupyterHeader {
   msg_id: string
@@ -59,7 +65,16 @@ const REQUEST_TIMEOUT_MS = 20_000
 /** How long a run waits for a usable socket before giving up on the kernel. */
 const SOCKET_WAIT_MS = 45_000
 const SOCKET_POLL_MS = 100
+/*
+ * Eight, with the backoff below (500ms doubling to a 5s ceiling), is about
+ * half a minute of trying before the kernel is called dead. Long enough to
+ * ride out a container restart, short enough that a room is not left staring
+ * at a notebook that has quietly stopped.
+ */
 const RECONNECT_MAX_ATTEMPTS = 8
+/** Silence long enough to be worth a question, never long enough to be a wait. */
+const QUIET_MS = config.kernelQuietMs
+const WATCHDOG_MS = config.kernelWatchdogMs
 /** iopub and shell are independent streams, so the reply can beat the final idle. */
 const IDLE_GRACE_MS = 3000
 
@@ -67,16 +82,36 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
+/**
+ * Where a room's Python lives.
+ *
+ * There used to be exactly one Jupyter and its address was a global. Now a
+ * seminar picks an environment, and every environment in use runs its own
+ * container — so the address is a property of the room, not of the process.
+ * Threading it through instead of reading a global is the whole reason two
+ * seminars can be on different Python at the same time.
+ */
+export interface KernelEndpoint {
+  url: string
+  token: string
+}
+
+/** The instance-wide kernel: what a seminar gets when it names no environment. */
+export function defaultEndpoint(): KernelEndpoint {
+  return { url: config.jupyter.url, token: config.jupyter.token }
+}
+
 function jupyterRequest(
+  endpoint: KernelEndpoint,
   path: string,
   init?: { method?: string; body?: string },
   timeoutMs = REQUEST_TIMEOUT_MS,
 ) {
-  return fetch(`${config.jupyter.url}${path}`, {
+  return fetch(`${endpoint.url}${path}`, {
     method: init?.method ?? 'GET',
     body: init?.body,
     headers: {
-      Authorization: `token ${config.jupyter.token}`,
+      Authorization: `token ${endpoint.token}`,
       'Content-Type': 'application/json',
     },
     signal: AbortSignal.timeout(timeoutMs),
@@ -119,16 +154,24 @@ function frameText(data: RawData): string | null {
 export class JupyterKernel {
   private socket: WebSocket | null = null
   private readonly pending = new Map<string, Pending>()
-  private readonly listeners: Array<(phase: KernelPhase) => void> = []
+  private readonly listeners: Array<(phase: KernelPhase, expected: boolean) => void> = []
   private reconnectAttempts = 0
   private reconnectTimer: NodeJS.Timeout | null = null
   private disposed = false
   private _phase: KernelPhase = 'starting'
+  /** When the kernel last said anything at all. See confirmAlive(). */
+  private lastHeard = Date.now()
+  /** msg_id of the execution currently blocked on input(), if any. */
+  private awaitingInput: string | null = null
+  private watchdog: NodeJS.Timeout | null = null
+  private checking: Promise<boolean> | null = null
 
   private constructor(
     readonly sessionId: string,
     private readonly jupyterSessionId: string,
     private readonly kernelId: string,
+    /** Кому принадлежит это ядро: адрес контейнера окружения этой комнаты. */
+    readonly endpoint: KernelEndpoint,
   ) {}
 
   get phase(): KernelPhase {
@@ -144,7 +187,7 @@ export class JupyterKernel {
    * existing session for a path, so a server restart mid-seminar re-attaches to
    * the live kernel with everybody's variables still in it.
    */
-  static async connect(sessionId: string): Promise<JupyterKernel> {
+  static async connect(sessionId: string, endpoint: KernelEndpoint): Promise<JupyterKernel> {
     sessionDir(sessionId)
 
     const deadline = Date.now() + STARTUP_TIMEOUT_MS
@@ -161,7 +204,7 @@ export class JupyterKernel {
 
     while (!created && !fatal && Date.now() < deadline) {
       try {
-        const res = await jupyterRequest('/api/sessions', { method: 'POST', body })
+        const res = await jupyterRequest(endpoint, '/api/sessions', { method: 'POST', body })
         if (res.ok) {
           const parsed = (await res.json()) as { id?: string; kernel?: { id?: string } }
           if (parsed?.id && parsed.kernel?.id) {
@@ -186,28 +229,49 @@ export class JupyterKernel {
     if (fatal) throw fatal
     if (!created) {
       throw new Error(
-        `No Python kernel after ${Math.round(STARTUP_TIMEOUT_MS / 1000)}s at ${config.jupyter.url} (${lastError}). Check that the jupyter service is running and reachable.`,
+        `No Python kernel after ${Math.round(STARTUP_TIMEOUT_MS / 1000)}s at ${endpoint.url} (${lastError}). Check that the jupyter service is running and reachable.`,
       )
     }
 
-    const kernel = new JupyterKernel(sessionId, created.sessionId, created.kernelId)
+    const kernel = new JupyterKernel(sessionId, created.sessionId, created.kernelId, endpoint)
     try {
       await kernel.openSocket(Math.max(10_000, deadline - Date.now()))
     } catch (err) {
       kernel._phase = 'dead'
       throw new Error(
-        `The kernel started but its channel at ${config.jupyter.url} would not open (${errText(err)}).`,
+        `The kernel started but its channel at ${endpoint.url} would not open (${errText(err)}).`,
       )
     }
     kernel.setPhase('idle')
     return kernel
   }
 
-  onPhaseChange(cb: (phase: KernelPhase) => void): void {
+  /**
+   * `expected` is true when the death was found by *asking*, before a cell had
+   * been sent — the caller is about to bring a new kernel up and say so itself,
+   * so a second, grimmer announcement would contradict it.
+   */
+  onPhaseChange(cb: (phase: KernelPhase, expected: boolean) => void): void {
     this.listeners.push(cb)
   }
 
-  async execute(code: string, handlers: ExecuteHandlers): Promise<ExecuteStatus> {
+  /**
+   * @param opts.silent runs the code as a tool rather than as a cell: Jupyter
+   * neither increments the execution count nor broadcasts the result to other
+   * clients. Used by Format, which has to run Python to do its job but must not
+   * leave a footprint in a notebook thirty people are looking at.
+   */
+  async execute(
+    code: string,
+    handlers: ExecuteHandlers,
+    opts?: { silent?: boolean },
+  ): Promise<ExecuteStatus> {
+    // A kernel that has been quiet since before the break may not be there any
+    // more, and the socket will not say so. Between two cells run back to back
+    // this is skipped, so it costs the seminar nothing where it is busiest.
+    if (Date.now() - this.lastHeard > QUIET_MS && !(await this.confirmAlive(true))) {
+      throw new Error('the Python kernel is not running')
+    }
     const socket = await this.waitForSocket()
     const header = this.makeHeader('execute_request')
     const frame = JSON.stringify({
@@ -216,10 +280,17 @@ export class JupyterKernel {
       metadata: {},
       content: {
         code,
-        silent: false,
-        store_history: true,
+        silent: opts?.silent === true,
+        store_history: opts?.silent !== true,
         user_expressions: {},
-        allow_stdin: false,
+        /*
+         * input() has to work. A seminar called "Intro to Python" reaches for
+         * it in the first fifteen minutes, and with stdin refused the cell dies
+         * with StdinNotImplementedError — an error about the frontend, in a
+         * lesson about reading a number. The reply travels back on the stdin
+         * channel; see handleFrame and answerInput below.
+         */
+        allow_stdin: true,
         stop_on_error: true,
       },
       channel: 'shell',
@@ -241,11 +312,138 @@ export class JupyterKernel {
       this.pending.delete(header.msg_id)
       throw new Error(`Could not send the cell to the kernel (${errText(err)}).`)
     }
+    this.startWatchdog()
     return done
   }
 
+  /**
+   * Answer a blocked input() call.
+   *
+   * The reply goes on the stdin channel with the *original* parent header, so
+   * the kernel can match it to the execution that is waiting. Answering when
+   * nothing is waiting is a no-op rather than an error: in a shared room two
+   * people press Send at the same moment, and the second one is not a fault.
+   */
+  async answerInput(value: string): Promise<boolean> {
+    const parent = this.awaitingInput
+    if (!parent) return false
+    this.awaitingInput = null
+    const socket = await this.waitForSocket()
+    socket.send(
+      JSON.stringify({
+        header: this.makeHeader('input_reply'),
+        parent_header: { msg_id: parent },
+        metadata: {},
+        content: { value },
+        channel: 'stdin',
+      }),
+    )
+    return true
+  }
+
+  /** True while a cell is stopped inside input(), waiting for a person. */
+  get waitingForInput(): boolean {
+    return this.awaitingInput !== null
+  }
+
+  /**
+   * Ask Jupyter whether the kernel is still there.
+   *
+   * This exists because the socket lies. When a kernel dies — culled for being
+   * idle, OOM-killed by the container limit, segfaulted by a bad extension, or
+   * simply deleted — Jupyter leaves the channels websocket **open**. No close
+   * frame, no error, nothing. Measured, not assumed: delete a kernel out from
+   * under a live socket and fifteen seconds later readyState is still 1.
+   *
+   * So a room whose kernel had died looked perfectly healthy. Status idle, no
+   * message anywhere, and the next Run vanished into a socket connected to
+   * nothing: the cell sat "running" for as long as anyone cared to watch, every
+   * cell queued behind it waited on it, and the only way out was for somebody
+   * to guess that Restart was the answer.
+   *
+   * One HTTP GET settles it. 404 means gone, and gone is a phase change the
+   * rest of the server already knows how to handle.
+   */
+  private confirmAlive(expected = false): Promise<boolean> {
+    if (this.checking) return this.checking
+    this.checking = (async () => {
+      try {
+        const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}`)
+        if (res.status === 404) {
+          this.setPhase('dead', expected)
+          this.abortPending()
+          return false
+        }
+        // Anything else — a hiccup, a 503, a timeout — is not evidence of
+        // death, and declaring one falsely costs the room every variable it has.
+        //
+        // Evidence of life counts as having heard from it: a cell that thinks
+        // for an hour in silence is then asked about once every QUIET_MS rather
+        // than on every tick of the watchdog.
+        this.lastHeard = Date.now()
+        return true
+      } catch {
+        return true
+      } finally {
+        this.checking = null
+      }
+    })()
+    return this.checking
+  }
+
+  /**
+   * Runs only while a cell is out with the kernel. A long computation is
+   * allowed to be silent for hours; what is not allowed is silence from a
+   * kernel that no longer exists.
+   */
+  private startWatchdog(): void {
+    if (this.watchdog) return
+    this.watchdog = setInterval(() => {
+      if (this.disposed || this._phase === 'dead') return
+      if (this.pending.size === 0) {
+        clearInterval(this.watchdog as NodeJS.Timeout)
+        this.watchdog = null
+        return
+      }
+      if (Date.now() - this.lastHeard < QUIET_MS) return
+      void this.confirmAlive()
+    }, WATCHDOG_MS)
+    // A question about a kernel must never be the reason a process stays up.
+    this.watchdog.unref?.()
+  }
+
+  /**
+   * Let go of work that outlived the server.
+   *
+   * Re-attaching to a live kernel is the good half of a restart: everyone's
+   * variables are still there. The bad half is a cell that was *running* when
+   * the server went down. The kernel never stopped — it is still in
+   * `time.sleep(600)` — and its output has nowhere to go, because the socket
+   * that asked for it died with the old process. Meanwhile the kernel executes
+   * strictly in order, so every Run anybody presses from now on queues silently
+   * behind a cell nobody can see. The room looks alive and nothing happens.
+   *
+   * This is only ever called immediately after connecting, before this server
+   * has sent the kernel a single request, so anything it is busy with is by
+   * definition not ours and nobody is waiting on it. Returns whether it had to.
+   */
+  async releaseOrphanedWork(): Promise<boolean> {
+    try {
+      const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}`)
+      if (!res.ok) return false
+      const info = (await res.json()) as { execution_state?: string }
+      if (info?.execution_state !== 'busy') return false
+      await this.interrupt()
+      return true
+    } catch {
+      // A kernel we cannot ask about is one we leave alone; the seminar is no
+      // worse off than before, and Restart is still there.
+      return false
+    }
+  }
+
   async interrupt(): Promise<void> {
-    const res = await jupyterRequest(`/api/kernels/${this.kernelId}/interrupt`, { method: 'POST' })
+    const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}/interrupt`, { method: 'POST' })
     if (!res.ok) throw new Error(`Jupyter refused the interrupt (HTTP ${res.status}).`)
   }
 
@@ -253,7 +451,7 @@ export class JupyterKernel {
     this.setPhase('restarting')
     // The kernel process is about to be replaced; nothing in flight can finish.
     this.abortPending()
-    const res = await jupyterRequest(`/api/kernels/${this.kernelId}/restart`, { method: 'POST' }, 60_000)
+    const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}/restart`, { method: 'POST' }, 60_000)
     if (!res.ok) {
       this.setPhase('dead')
       throw new Error(`Jupyter refused the restart (HTTP ${res.status}).`)
@@ -275,6 +473,10 @@ export class JupyterKernel {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    if (this.watchdog) {
+      clearInterval(this.watchdog)
+      this.watchdog = null
+    }
     this.abortPending()
     this._phase = 'dead'
     const socket = this.socket
@@ -285,7 +487,7 @@ export class JupyterKernel {
       /* already gone */
     }
     try {
-      await jupyterRequest(`/api/sessions/${this.jupyterSessionId}`, { method: 'DELETE' }, 5000)
+      await jupyterRequest(this.endpoint, `/api/sessions/${this.jupyterSessionId}`, { method: 'DELETE' }, 5000)
     } catch (err) {
       console.error(`[kernel] could not delete jupyter session for ${this.sessionId}:`, errText(err))
     }
@@ -294,12 +496,12 @@ export class JupyterKernel {
   /* ------------------------------------------------------------- internals */
 
   private channelsUrl(): string {
-    const base = new URL(config.jupyter.url)
+    const base = new URL(this.endpoint.url)
     const scheme = base.protocol === 'https:' ? 'wss:' : 'ws:'
     const prefix = base.pathname.replace(/\/+$/, '')
     const query = new URLSearchParams({
       session_id: this.jupyterSessionId,
-      token: config.jupyter.token,
+      token: this.endpoint.token,
     })
     return `${scheme}//${base.host}${prefix}/api/kernels/${this.kernelId}/channels?${query.toString()}`
   }
@@ -315,12 +517,12 @@ export class JupyterKernel {
     }
   }
 
-  private setPhase(phase: KernelPhase): void {
+  private setPhase(phase: KernelPhase, expected = false): void {
     if (this._phase === phase) return
     this._phase = phase
     for (const cb of [...this.listeners]) {
       try {
-        cb(phase)
+        cb(phase, expected)
       } catch (err) {
         console.error(`[kernel] phase listener failed for ${this.sessionId}:`, errText(err))
       }
@@ -334,7 +536,7 @@ export class JupyterKernel {
         // The token rides in the query string for Jupyter's websocket handler and
         // in the header for reverse proxies that strip query strings.
         socket = new WebSocket(this.channelsUrl(), {
-          headers: { Authorization: `token ${config.jupyter.token}` },
+          headers: { Authorization: `token ${this.endpoint.token}` },
         })
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)))
@@ -425,6 +627,7 @@ export class JupyterKernel {
   }
 
   private handleFrame(data: RawData): void {
+    this.lastHeard = Date.now()
     const text = frameText(data)
     if (text === null) return
     let msg: JupyterMessage
@@ -446,6 +649,21 @@ export class JupyterKernel {
         pending.idle = true
         this.maybeSettle(parentId as string, pending)
       }
+      return
+    }
+
+    /*
+     * A request for input arrives on the stdin channel with the parent header
+     * of the cell that asked. It is handled before the `pending` guard below
+     * because there is nothing to settle: the cell is still running, and will
+     * keep running only if somebody answers.
+     */
+    if (msgType === 'input_request') {
+      this.awaitingInput = parentId ?? null
+      pending?.handlers.onInputRequest?.(
+        String(content.prompt ?? ''),
+        content.password === true,
+      )
       return
     }
 

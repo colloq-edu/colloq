@@ -17,6 +17,7 @@ import {
   listParticipants,
   upsertParticipant,
 } from '../db.js'
+import { onlineParticipantIds } from '../collab/index.js'
 import { ensureKernel } from '../kernel/index.js'
 import { setSeminarCreator } from './admin-instance.js'
 import type { AdminErrorBody } from '@shared/admin'
@@ -26,6 +27,13 @@ import type {
   ParticipantRole,
 } from '@shared/protocol'
 
+/*
+ * Lengths that have to survive being drawn, not just stored. A seminar name is
+ * a display heading and a person's name sits in a cell footer and an avatar
+ * tooltip, so both are cut where the layout stops coping rather than where the
+ * column would. The avatar is one emoji, and 512 UTF-16 code units is
+ * room for the longest of them — flags and family sequences run long.
+ */
 const MAX_SESSION_NAME = 80
 const MAX_PARTICIPANT_NAME = 40
 const MAX_AVATAR = 512
@@ -77,8 +85,10 @@ export function sessionRoutes(): Router {
 
     const id = newSessionId()
     const session = createSession(id, name)
-    // A seminar started from the home screen by a signed-in teacher is still
-    // theirs; only an open instance produces one with nobody's name on it.
+    // A seminar created straight against this endpoint by a signed-in teacher
+    // is still theirs. There is no page that does it — the panel has its own
+    // route — so this is the scripted path, and on an open instance it produces
+    // a seminar with nobody's name on it.
     if (staff) setSeminarCreator(id, staff.name)
     const body: CreateSessionResponse = { session, hostToken: signHostToken(id) }
     res.status(201).json(body)
@@ -104,10 +114,21 @@ export function sessionRoutes(): Router {
         ? rawAvatar
         : null
 
-    // Role never comes from the client's stored identity: a signed host token is
-    // the only way to become host, otherwise anyone could paste in someone
-    // else's participantId and inherit their badge.
-    const role: ParticipantRole = verifyHostToken(sessionId, req.body?.hostToken) ? 'host' : 'participant'
+    /*
+     * Role never comes from the client's stored identity — anyone could paste in
+     * someone else's participantId and inherit their badge. Two things grant it:
+     *
+     *  - a signed host token, minted at creation and kept by whoever made the
+     *    room, which is how an open instance with no staff list works;
+     *  - a staff cookie. Seminars created in the admin panel never handed a host
+     *    token to anybody, so nobody could interrupt or restart the kernel in
+     *    them — the controls were dead for the whole room. A teacher signed in
+     *    to this instance is exactly the person those controls are for, and the
+     *    cookie is a stronger credential than the token.
+     */
+    const staff = currentStaff(req)
+    const role: ParticipantRole =
+      staff || verifyHostToken(sessionId, req.body?.hostToken) ? 'host' : 'participant'
 
     const claimed = typeof req.body?.participantId === 'string' ? req.body.participantId : null
     const known = claimed ? getParticipant(sessionId, claimed) : null
@@ -128,7 +149,13 @@ export function sessionRoutes(): Router {
 
   router.get('/api/sessions/:id/participants', (req, res) => {
     if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
-    res.json({ participants: listParticipants(req.params.id) })
+    // `participants` is everyone who ever joined; `online` is who is in the room
+    // this second. The join screen needs the second to say "N already inside"
+    // without counting last term's students.
+    res.json({
+      participants: listParticipants(req.params.id),
+      online: onlineParticipantIds(req.params.id),
+    })
   })
 
   router.get('/api/sessions/:id/link', (req, res) => {

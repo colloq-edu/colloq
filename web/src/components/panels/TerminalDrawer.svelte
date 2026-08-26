@@ -1,6 +1,7 @@
 <script lang="ts">
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import { controlDisabled, controlTitle } from '@/lib/controls'
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
@@ -15,7 +16,13 @@
 
   const session = getSessionState()
   const notebook = watchNotebookMeta(session.doc)
-  const isHost = session.me.role === 'host'
+  /*
+   * $derived, not a plain const: the control socket reports the role the server
+   * will actually act on as soon as it opens, and a teacher whose token was
+   * minted before they signed in arrives here as a participant and is corrected
+   * a moment later. A value captured at init would never hear about it.
+   */
+  const isHost = $derived(session.me.role === 'host')
   const cwd = `/workspace/${session.session.id}`
 
   /* ------------------------------------------------------------- transcript */
@@ -111,6 +118,13 @@
   /* ---------------------------------------------------------------- height */
 
   const HEIGHT_KEY = 'colloq.terminal.height.v1'
+  /*
+   * The drawer is a drawer, not a second window: below 140px it holds fewer
+   * lines than a prompt plus its answer, and above 460px it starts taking the
+   * notebook's half of a laptop screen. The remembered height is clamped into
+   * this on the way in, so an old value from a big monitor cannot swallow a
+   * small one.
+   */
   const MIN_H = 140
   const MAX_H = 460
 
@@ -175,16 +189,20 @@
   let draft = ''
 
   const status = $derived(session.terminalStatus)
-  const canType = $derived(status === 'idle' || status === 'busy')
+  // A command has to reach the server to be a command. Disconnected, the status
+  // in hand is the last one the server sent, which says nothing about now.
+  const canType = $derived(session.connected && (status === 'idle' || status === 'busy'))
 
   const placeholder = $derived(
-    status === 'starting'
-      ? 'starting the shell…'
-      : status === 'dead'
-        ? 'the shell stopped'
-        : status === 'closed'
-          ? 'the shell is not running'
-          : 'pip install seaborn',
+    !session.connected
+      ? 'waiting for the connection…'
+      : status === 'starting'
+        ? 'starting the shell…'
+        : status === 'dead'
+          ? 'the shell stopped'
+          : status === 'closed'
+            ? 'the shell is not running'
+            : 'pip install seaborn',
   )
 
   function submit(): void {
@@ -210,6 +228,23 @@
   }
 
   function onPromptKey(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      // In a prompt, Escape belongs to the shell: it clears the line you are
+      // typing. Closing the drawer out from under someone mid-command would be
+      // the wrong reading of the same key — that is what the handler below is
+      // for, and it deliberately ignores the prompt.
+      const target = event.currentTarget as HTMLInputElement
+      if (target.value) {
+        event.preventDefault()
+        event.stopPropagation()
+        command = ''
+        // Back to the live line, so the next ArrowUp starts from the top of the
+        // history rather than the middle of the recall you just abandoned.
+        historyAt = -1
+        draft = ''
+      }
+      return
+    }
     if (event.key === 'Enter') {
       event.preventDefault()
       submit()
@@ -237,6 +272,18 @@
   // Presence must not stay stuck on "in the terminal" when the drawer unmounts.
   $effect(() => () => session.setInTerminal(false))
 </script>
+
+<!--
+  Escape closes the drawer, unless the prompt has something in it — that case is
+  handled above, where the key means "clear this line".
+-->
+<svelte:window
+  onkeydown={(event) => {
+    if (event.key !== 'Escape') return
+    if (event.defaultPrevented) return
+    onclose()
+  }}
+/>
 
 <!--
   The drawer paints from its own variables instead of the global tokens on
@@ -291,7 +338,8 @@
       <button
         type="button"
         class="term-act"
-        title="Clear the transcript for everyone"
+        disabled={controlDisabled(session.connected)}
+        title={controlTitle(session.connected, 'Clear the transcript for everyone')}
         onclick={() => session.send({ t: 'term:clear' })}
       >
         <Icon name="eraser" size={12} />
@@ -420,7 +468,14 @@
     --tm-edge: #17244a;
     --tm-ink: #e4e8f2;
     --tm-muted: #99a5be;
-    --tm-faint: #5f6b85;
+    /*
+     * Raised from #5f6b85, which measured 3.37:1 on the tab bar and 3.67:1 on
+     * the transcript — under AA, and unnoticed for as long as it was, because
+     * the drawer is shut by default and no contrast pass had ever opened it.
+     * This clears 4.8:1 on both grounds and still sits 3.15:1 below --tm-ink,
+     * so it reads as the quiet tier rather than as body text.
+     */
+    --tm-faint: #78849f;
     --tm-accent: #2eb4e8;
     --tm-live: #3ec9a7;
     --tm-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -554,9 +609,13 @@
       color 100ms ease,
       background-color 100ms ease;
   }
-  .term-act:hover {
+  .term-act:hover:not(:disabled) {
     color: var(--tm-ink);
     background: rgb(255 255 255 / 0.06);
+  }
+  .term-act:disabled {
+    opacity: 0.4;
+    pointer-events: none;
   }
   .term-act:focus-visible,
   .term-tab:focus-visible {

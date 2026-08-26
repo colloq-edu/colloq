@@ -10,8 +10,14 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import WS from 'ws'
 
-const BASE = 'http://localhost:3000'
-const WSB = 'ws://localhost:3000'
+/*
+ * The target is configurable and defaults to the usual dev server. It was a
+ * constant, which is how a run of this script once created a seminar inside an
+ * instance somebody was teaching in. Anything it makes, it removes again at the
+ * end — see cleanUp().
+ */
+const BASE = (process.env.E2E_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '')
+const WSB = BASE.replace(/^http/, 'ws')
 /** Where the server keeps its setup token; config.ts defaults it to <repo>/data. */
 const DATA_DIR = resolve(
   process.env.DATA_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', 'data'),
@@ -158,4 +164,16 @@ const pass =
 
 console.log(pass ? '\nPASS — shared notebook, shared kernel, shared outputs, shared files' : '\nFAIL')
 control.close(); A.p.destroy(); B.p.destroy()
+
+/*
+ * Leave the instance as it was found. A check that runs often and leaves a
+ * seminar behind every time turns somebody's panel into a scrollable list of
+ * this script's leftovers, which is exactly what happened before it did this.
+ */
+const removed = await fetch(`${BASE}/api/admin/seminars/${sid}`, {
+  method: 'DELETE',
+  headers: { cookie: staffCookie },
+})
+console.log(removed.ok ? '8. cleaned up: the test seminar is gone' : `8. could not remove ${sid} (HTTP ${removed.status})`)
+
 process.exit(pass ? 0 : 1)

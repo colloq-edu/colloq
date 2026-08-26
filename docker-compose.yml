@@ -7,8 +7,17 @@ services:
       - "${PORT:-3000}:3000"
     environment:
       PORT: 3000
+      # PORT publishes the container's 3000 on the host; PUBLIC_URL is what goes
+      # into the link students receive. Compose cannot derive one from the other
+      # (it has no nested defaults), so change them together — .env.example
+      # keeps them side by side for exactly this reason.
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
-      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-dot-env}
+      # Empty on purpose. A literal default here would ship every install the
+      # same signing key, and that key is what says who the host is. Left unset
+      # the server generates one on first boot and keeps it in DATA_DIR, so a
+      # restart does not sign the room out. Set it to rotate, or to share one
+      # key across replicas.
+      SESSION_SECRET: ${SESSION_SECRET:-}
       JUPYTER_URL: http://kernel:8888
       JUPYTER_TOKEN: ${JUPYTER_TOKEN:-colloq-dev-token}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -16,6 +25,12 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       AI_PROVIDER: ${AI_PROVIDER:-openai}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
+      # Compose reads .env for substitution only; a variable that is not named
+      # here never reaches the container. Both of these are documented in
+      # .env.example and in the README table, so both have to be forwarded or
+      # the documentation is a lie.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      OPEN_SEMINAR_CREATION: ${OPEN_SEMINAR_CREATION:-false}
     volumes:
       - workspace:/workspace
       - data:/data
@@ -27,6 +42,13 @@ services:
   kernel:
     build:
       context: ./kernel
+      args:
+        # Какое окружение запечено в образ. Списки лежат в kernel/environments/;
+        # `make env-use NAME=cv` переписывает KERNEL_ENV в .env и пересобирает.
+        KERNEL_ENV: ${KERNEL_ENV:-base}
+    # Тег по имени окружения, чтобы переключение назад не пересобирало заново:
+    # каждое окружение — свой образ, они лежат рядом и достаются из кеша.
+    image: colloq-kernel:${KERNEL_ENV:-base}
     environment:
       JUPYTER_TOKEN: ${JUPYTER_TOKEN:-colloq-dev-token}
     volumes:

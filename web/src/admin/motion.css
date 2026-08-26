@@ -1,0 +1,150 @@
+/*
+ * The two surfaces the teacher's panel opens, and the only two it animates.
+ *
+ * Three screens draw the same row menu and the same confirmation dialog, and
+ * every one of them used to be painted in a single frame, fully formed. The
+ * rules live here rather than beside each `{#if}` for the reason index.css
+ * gives for `.press`: three hand-copied blocks are three chances to drift, and
+ * the panel should have one answer to "a menu opened", not three near-misses.
+ * They live here rather than IN index.css because that file is the whole
+ * product's palette and this is one screen's furniture — and because the admin
+ * chunk is lazy, a student who only ever opens the join screen never downloads
+ * it.
+ *
+ * Nothing new is invented: the speeds and the curve are index.css's ladder,
+ * and only transform and opacity ever travel.
+ */
+
+/* ------------------------------------------------------------- row menus */
+
+/*
+ * The ⋯ menu on a row, growing out of the button that produced it.
+ *
+ * It used to arrive whole, with nothing to connect it to the 24px button it
+ * belongs to — and in the seminars table it is positioned in window
+ * coordinates and flips above the button when the window is short, so it could
+ * materialise on the opposite side of its trigger from where it did a moment
+ * earlier. Anchoring the scale at the corner nearest the button fixes exactly
+ * that: the corner stays put and the rest of the menu unfolds away from it, so
+ * the flip reads as the same menu choosing a different side rather than a new
+ * object appearing somewhere else.
+ *
+ * --speed-panel is the step named for this tier — a dropdown arriving, the
+ * 150-250ms row of the budget — and --ease-out puts most of the travel in the
+ * first third, so the items are readable well before the menu has settled.
+ *
+ * Entrance only, and not as a compromise. All three menus close on Escape as
+ * well as on a click, and an exit would therefore be keyboard-initiated a good
+ * part of the time; a keyboard action that animates is a disqualification, not
+ * a judgement call. The menu has to be gone on the frame the key lands. That
+ * is also why this is @starting-style and not a Svelte transition directive:
+ * an exit is the only thing a directive would buy here, and an exit is the one
+ * thing that must not exist. The cost is that re-opening the same menu inside
+ * 220ms restarts the entrance instead of reversing it — acceptable on a
+ * surface a teacher opens a few times a day, and the close it interrupts was
+ * instant anyway.
+ */
+.row-menu {
+  opacity: 1;
+  transform: scale(1);
+  /*
+   * Both of the absolutely-positioned menus (environments, teachers) hang from
+   * the right edge of their button, so the static value is right for them. The
+   * seminars menu is fixed and flips, and overrides this from the inline style
+   * its flip already builds — the code has picked top-vs-bottom by then, so
+   * the origin is a byproduct of a decision that has already been made.
+   */
+  transform-origin: top right;
+  transition:
+    opacity var(--speed-panel) var(--ease-out),
+    transform var(--speed-panel) var(--ease-out);
+}
+
+/*
+ * Written at the top level rather than nested inside the rule above. The
+ * product is Chrome-only, so nesting would work — but this form does not have
+ * to survive Svelte's scoper or PostCSS understanding nesting to reach the
+ * browser, and a rule that is silently dropped is a diff that does nothing.
+ */
+@starting-style {
+  .row-menu {
+    opacity: 0;
+    /*
+     * Never scale(0). These menus are 176-224px wide, so 3% is about six
+     * pixels of travel at the far corner: enough to read as unfolding, too
+     * little to read as a zoom. Something that appears from nothing has no
+     * story about where it came from, which is the entire point of the rule.
+     */
+    transform: scale(0.97);
+  }
+}
+
+/* -------------------------------------------------------------- dialogs */
+
+/*
+ * The confirmations, and the veil under them.
+ *
+ * This is the largest unbridged change anywhere in the panel: forty percent of
+ * ink over the whole viewport, arriving between two frames. Three of the four
+ * dialogs ask something that cannot be taken back — a deleted notebook has no
+ * second copy, a switched default restarts the shared kernel out from under a
+ * running room — and a panel that snaps to dark reads as an error the browser
+ * threw rather than a question the panel is asking. The 220ms is what turns
+ * one into the other.
+ *
+ * The veil owns the fade and the card owns the scale, deliberately: the card
+ * is a child of the veil, so it inherits the fade for free, the two halves
+ * cannot drift out of sync, and neither node had to be restructured to get it.
+ *
+ * --speed-panel and not --speed-drawer: the drawer step is for a full-height
+ * surface crossing the screen, and a centred card crosses nothing. 320ms on it
+ * would read as the panel hesitating before it answers.
+ *
+ * Entrance only, for the same reason as the menu: the delete dialog closes on
+ * Escape, and a veil that lingers after the key is a veil that is in the way.
+ */
+.dialog-veil {
+  opacity: 1;
+  transition: opacity var(--speed-panel) var(--ease-out);
+}
+
+.dialog-card {
+  transform: scale(1);
+  /*
+   * Centre, and this is the one surface where centre is correct: a modal is
+   * not anchored to a trigger, so there is no corner for it to grow out of.
+   */
+  transform-origin: center;
+  transition: transform var(--speed-panel) var(--ease-out);
+}
+
+@starting-style {
+  .dialog-veil {
+    opacity: 0;
+  }
+  .dialog-card {
+    transform: scale(0.97);
+  }
+}
+
+/* ------------------------------------------------------- reduced motion */
+
+/*
+ * A reduction, not a blackout — the same line index.css draws. The fades stay,
+ * at their real duration: they are what stop a menu popping and a page going
+ * dark in one frame, and opacity displaces nothing on screen. The scale goes,
+ * on both surfaces: it is the half that actually moves, and it is therefore
+ * the half a reader who asked for less motion should not be given.
+ *
+ * The transform declarations left over from the blocks above still resolve —
+ * they are simply no longer transitioned, so each surface arrives at its own
+ * size on the first frame and only the fade plays.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .row-menu {
+    transition: opacity var(--speed-panel) var(--ease-out);
+  }
+  .dialog-card {
+    transition-property: none;
+  }
+}

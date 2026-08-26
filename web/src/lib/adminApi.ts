@@ -15,7 +15,11 @@ import type {
   AssistantUsage,
   ClaimRequest,
   CreateSeminarRequest,
+  EnvironmentsState,
+  ImportPreview,
+  ImportResult,
   InstanceState,
+  SaveEnvironmentRequest,
   SignInWithTokenRequest,
   Teacher,
   TeacherWithLink,
@@ -95,7 +99,7 @@ const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 export const adminApi = {
   /* ------------------------------------------------------------- session */
 
-  /** Open to anyone: it is what tells the home screen whether to show a form. */
+  /** Open to anyone: it is what tells the panel whether to show the claim form. */
   state: () => request<InstanceState>('/state'),
 
   me: () => request<AdminMe>('/me'),
@@ -116,6 +120,43 @@ export const adminApi = {
     request<AdminMe>('/signin/key', { method: 'POST', ...json({ key }) }),
 
   signOut: () => request<void>('/signout', { method: 'POST' }),
+
+  /* ------------------------------------------------------- импорт с GitHub */
+
+  /** Что получится из ссылки — до того, как что-то создано. */
+  previewImport: (url: string) =>
+    request<ImportPreview>('/import/preview', { method: 'POST', ...json({ url }) }),
+
+  importSeminar: (body: { url: string; name?: string; environment?: string | null }) =>
+    request<ImportResult>('/import', { method: 'POST', ...json(body) }),
+
+  /* -------------------------------------------------------- environments */
+
+  listEnvironments: () => request<EnvironmentsState>('/environments'),
+
+  /** The file itself. The list carries parsed packages; the editor needs text. */
+  readEnvironment: (name: string) =>
+    request<{ name: string; source: string }>(`/environments/${encodeURIComponent(name)}`),
+
+  saveEnvironment: (name: string, source: string) =>
+    request<{ name: string; source: string }>(`/environments/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      ...json({ name, source } satisfies SaveEnvironmentRequest),
+    }),
+
+  deleteEnvironment: (name: string) =>
+    request<void>(`/environments/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  buildEnvironment: (name: string) =>
+    request<{ name: string }>(`/environments/${encodeURIComponent(name)}/build`, { method: 'POST' }),
+
+  cancelEnvironmentBuild: (name: string) =>
+    request<{ cancelled: boolean }>(`/environments/${encodeURIComponent(name)}/cancel`, {
+      method: 'POST',
+    }),
+
+  useEnvironment: (name: string) =>
+    request<{ active: string }>(`/environments/${encodeURIComponent(name)}/use`, { method: 'POST' }),
 
   /* ------------------------------------------------------------ seminars */
 

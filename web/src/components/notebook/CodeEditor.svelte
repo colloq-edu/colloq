@@ -69,11 +69,22 @@
     autoFocus?: boolean
     onfocus?: () => void
     onrun?: () => void
+    /** Run, then move on — Shift+Enter. See CellView.runAndStep. */
+    onrunstep?: () => void
     onrunandadd?: () => void
     onescape?: () => void
     ondeleteempty?: () => void
     onarrowout?: (direction: -1 | 1) => void
     placeholder?: string
+    /**
+     * What a screen reader announces on arriving here.
+     *
+     * CodeMirror's editable surface is a bare contenteditable: in the
+     * accessibility tree it was the one interactive node on the whole screen
+     * with no name at all, so somebody tabbing through a notebook was told
+     * "edit text, multiline" thirty times with nothing to tell the cells apart.
+     */
+    label?: string
   }
 
   let {
@@ -85,14 +96,27 @@
     autoFocus = false,
     onfocus,
     onrun,
+    onrunstep,
     onrunandadd,
     onescape,
     ondeleteempty,
     onarrowout,
     placeholder = '',
+    label = '',
   }: Props = $props()
 
   let host = $state<HTMLDivElement | null>(null)
+
+  /*
+   * The name has to follow the cell as the notebook is reordered around it, and
+   * rebuilding a CodeMirror to change one attribute would throw away focus, the
+   * cursor and the undo history — so it is set on the node instead. The facet
+   * above covers the first paint; this covers every move after it.
+   */
+  $effect(() => {
+    const node = host?.querySelector('.cm-content')
+    if (node && label) node.setAttribute('aria-label', label)
+  })
   let ready = $state(false)
   /* Seeded here rather than left to the effect below: the shim has to be right
      in the very first render pass, not one flush later. The effect is what
@@ -110,12 +134,13 @@
    */
   const handlers: Pick<
     Props,
-    'onfocus' | 'onrun' | 'onrunandadd' | 'onescape' | 'ondeleteempty' | 'onarrowout'
+    'onfocus' | 'onrun' | 'onrunstep' | 'onrunandadd' | 'onescape' | 'ondeleteempty' | 'onarrowout'
   > = {}
 
   $effect(() => {
     handlers.onfocus = onfocus
     handlers.onrun = onrun
+    handlers.onrunstep = onrunstep
     handlers.onrunandadd = onrunandadd
     handlers.onescape = onescape
     handlers.ondeleteempty = ondeleteempty
@@ -160,7 +185,7 @@
 
     const cellKeymap = Prec.highest(
       keymap.of([
-        { key: 'Shift-Enter', preventDefault: true, run: () => fire(handlers.onrun) },
+        { key: 'Shift-Enter', preventDefault: true, run: () => fire(handlers.onrunstep) },
         { key: 'Mod-Enter', preventDefault: true, run: () => fire(handlers.onrun) },
         { key: 'Alt-Enter', preventDefault: true, run: () => fire(handlers.onrunandadd) },
         {
@@ -195,6 +220,7 @@
           cm.view.EditorView.editable.of(editable),
           hint ? placeholderExt(hint) : [],
           cm.theme.colloqTheme,
+          cm.view.EditorView.contentAttributes.of({ 'aria-label': label }),
           // Yjs is the single source of truth for the text; no local history
           // extension, because the shared UndoManager already owns Mod-Z.
           cm.collab.yCollab(ytext, peers, { undoManager: undo }),

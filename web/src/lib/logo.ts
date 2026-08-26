@@ -5,10 +5,10 @@
  * derived from its session id, which is what makes four open seminars
  * distinguishable in a tab bar — the only reason a changing logo earns its keep.
  */
-export type GridPattern = readonly boolean[]
+type GridPattern = readonly boolean[]
 
 /** Corners and centre. Symmetric on both axes, so it survives 16px. */
-export const BRAND_GRID: GridPattern = [
+const BRAND_GRID: GridPattern = [
   true, false, true,
   false, true, false,
   true, false, true,
@@ -31,7 +31,7 @@ function fnv1a(input: string): number {
   return hash
 }
 
-export function gridForSession(sessionId: string): GridPattern {
+function gridForSession(sessionId: string): GridPattern {
   // Re-salt rather than re-roll randomly: the same id must always give the same
   // mark, for every person in the room and for the whole life of the seminar.
   for (let salt = 0; salt < 32; salt++) {
@@ -58,7 +58,7 @@ interface SvgOptions {
 }
 
 /** Standalone SVG markup, for the favicon data URI and anywhere outside Svelte. */
-export function gridSvg(pattern: GridPattern, options: SvgOptions = {}): string {
+function gridSvg(pattern: GridPattern, options: SvgOptions = {}): string {
   const { size = 32, ink = '#FFFFFF', tint = '#2E4E8C', background } = options
   const cells: string[] = []
   for (let i = 0; i < 9; i++) {

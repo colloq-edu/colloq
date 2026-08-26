@@ -1,11 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import HomeScreen from '@/screens/HomeScreen.svelte'
   import JoinScreen from '@/screens/JoinScreen.svelte'
-  import SessionScreen from '@/screens/SessionScreen.svelte'
   import { api, ApiError } from '@/lib/api'
-  import { listHostedSessions, loadIdentity, type StoredIdentity } from '@/lib/identity'
+  import { loadIdentity, type StoredIdentity } from '@/lib/identity'
   import {
     forgetLocalStore,
     recallSessionInfo,
@@ -45,6 +43,22 @@
   const adminScreen = () =>
     (adminChunk ??= import('@/screens/AdminScreen.svelte').then((m) => m.default))
 
+  /*
+   * The workspace goes the same way, and for a sharper version of the same
+   * reason: the notebook, the terminal, the assistant and the two rails are the
+   * bulk of this app, and the screen thirty students are looking at is a name
+   * field. Statically imported, those bytes had to be fetched, parsed and run
+   * before the join form could exist at all.
+   *
+   * Warmed below the moment a seminar route is on screen, so the chunk is on
+   * the wire while the student is still typing — a returning student, who goes
+   * straight through, never waits on a request that has not already started.
+   */
+  let workspaceChunk: Promise<typeof import('@/screens/SessionScreen.svelte').default> | null =
+    null
+  const workspace = () =>
+    (workspaceChunk ??= import('@/screens/SessionScreen.svelte').then((m) => m.default))
+
   let session = $state<SessionInfo | null>(null)
   let identity = $state<StoredIdentity | null>(null)
   let failure = $state<{ missing: boolean; message: string } | null>(null)
@@ -58,7 +72,7 @@
   /** What this browser already knows about a room, with no request at all. */
   function knownRoom(id: string): SessionInfo {
     const cached =
-      recallSessionInfo(id) ?? listHostedSessions().find((room) => room.id === id)
+      recallSessionInfo(id)
     // An unknown name stays empty rather than becoming a guess: it is only a
     // display fallback for the document's own title, and anything written here
     // could end up seeded into the shared document as the seminar's name.
@@ -78,7 +92,18 @@
   let entered = sessionId
   let entryAttempt = 0
 
+  // After the first paint, not during it: the join screen owes nothing to this.
+  $effect(() => {
+    if (sessionId) void workspace()
+  })
+
   onMount(() => {
+    // replaceState, not push: the bare root should not sit in the back stack as
+    // a place you can return to, because there is nothing there any more.
+    if (location.pathname === '/') {
+      history.replaceState({}, '', '/admin')
+      path = '/admin'
+    }
     const onPop = () => (path = location.pathname)
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
@@ -146,7 +171,15 @@
     <AdminScreen />
   {/await}
 {:else if sessionId === null}
-  <HomeScreen onCreated={(id) => navigate(`/s/${id}`)} />
+  <!--
+    The root is not a screen any more. Students never arrive here — they open a
+    seminar link — so the only person who ever types the bare address is staff,
+    and what they want is the panel. AdminScreen shows the sign-in when there is
+    no session, which is the "or the sign-in" half of it.
+  -->
+  {#await adminScreen() then AdminScreen}
+    <AdminScreen />
+  {/await}
 {:else if failure}
   <div class="flex h-full items-center justify-center px-6">
     <div class="w-full max-w-sm animate-fade-up text-center">
@@ -181,7 +214,12 @@
   {@const me = identity}
   <!-- A new identity means a different person in the room: rebuild everything. -->
   {#key me.participantId}
-    <SessionScreen session={room} identity={me} />
+    <!-- No pending branch, as with the admin panel above: the workspace paints
+         its own empty room while the document loads, and a spinner in front of
+         it would only be a second thing to wait through. -->
+    {#await workspace() then Workspace}
+      <Workspace session={room} identity={me} />
+    {/await}
   {/key}
 {:else if poster}
   <JoinScreen session={poster} onjoined={(next) => (identity = next)} />

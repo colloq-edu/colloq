@@ -5,8 +5,9 @@
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
+  import { seminarLink } from '@/lib/seminar-link'
   import { cn } from '@/lib/utils'
-  import { LIMITS, type AdminSeminar } from '@shared/admin'
+  import { LIMITS, type AdminEnvironment, type AdminSeminar, type ImportPreview } from '@shared/admin'
 
   /**
    * The seminar list, and the one thing a teacher comes here to do: get the
@@ -23,6 +24,80 @@
   let now = $state(Date.now())
 
   let creating = $state(false)
+  /**
+   * Окружения для выпадающего списка. Грузятся один раз и только когда форма
+   * открылась: на экране со списком семинаров они не нужны, а запрос ходит в
+   * docker и стоит заметно дороже, чем чтение таблицы.
+   */
+  let environments = $state<AdminEnvironment[] | null>(null)
+  let newEnvironment = $state('')
+
+  /*
+   * Импорт с GitHub. Материал преподавателя почти никогда не лежит в этом
+   * продукте — он лежит в репозитории курса, по ноутбуку на неделю, и рядом
+   * лежит csv, который этот ноутбук читает. Просить перенести всё руками —
+   * значит просить не пользоваться инструментом.
+   *
+   * Предпросмотр отдельным шагом нарочно: «сто десять ячеек и train.csv» надо
+   * увидеть ДО того, как появится комната, а не после.
+   */
+  let fromGithub = $state(false)
+  let githubUrl = $state('')
+  let preview = $state<ImportPreview | null>(null)
+  let previewing = $state(false)
+  let previewError = $state<string | null>(null)
+
+  let previewTimer: number | undefined
+  $effect(() => {
+    const url = githubUrl.trim()
+    window.clearTimeout(previewTimer)
+    preview = null
+    previewError = null
+    if (!fromGithub || url.length < 20) return
+    // Пауза, а не запрос на каждый символ: ссылку вставляют целиком, но её же
+    // и дописывают руками, а каждый запрос уходит наружу к GitHub.
+    previewTimer = window.setTimeout(() => {
+      previewing = true
+      void adminApi
+        .previewImport(url)
+        .then((p) => {
+          preview = p
+          if (!newName.trim()) newName = p.name
+        })
+        .catch((cause) => (previewError = explain(cause)))
+        .finally(() => (previewing = false))
+    }, 500)
+    return () => window.clearTimeout(previewTimer)
+  })
+
+  async function importFromGithub(event: SubmitEvent): Promise<void> {
+    event.preventDefault()
+    const url = githubUrl.trim()
+    if (!url || createBusy || !preview) return
+    createBusy = true
+    createError = null
+    try {
+      const done = await adminApi.importSeminar({
+        url,
+        name: newName.trim() || undefined,
+        environment: newEnvironment || null,
+      })
+      const list = await adminApi.listSeminars()
+      seminars = list
+      query = ''
+      justCreatedId = done.id
+      creating = false
+      fromGithub = false
+      githubUrl = ''
+      newName = ''
+      newEnvironment = ''
+      preview = null
+    } catch (cause: unknown) {
+      createError = explain(cause)
+    } finally {
+      createBusy = false
+    }
+  }
   let newName = $state('')
   let createBusy = $state(false)
   let createError = $state<string | null>(null)
@@ -38,6 +113,51 @@
   /** At most one row is ever explaining itself; a second failure replaces the first. */
   let rowError = $state<{ id: string; message: string } | null>(null)
   let openMenuId = $state<string | null>(null)
+  /**
+   * Куда поставить открытое меню, в координатах окна.
+   *
+   * Меню нельзя оставить absolute внутри строки: таблица лежит в контейнере с
+   * `overflow-x: auto`, а по спецификации ось, объявленная `visible`, рядом с
+   * не-`visible` сама становится `auto`. Измерено в этой панели — контейнер
+   * отдаёт `overflowY: "auto"`, хотя в разметке про Y нет ни слова. Из-за этого
+   * меню обрезается нижним краем таблицы, а сам список обзаводится собственной
+   * полосой прокрутки и на глаз становится ниже.
+   *
+   * `position: fixed` от прямоугольника кнопки не знает ни о какой обрезке.
+   */
+  let menuStyle = $state('')
+
+  function openMenu(seminar: AdminSeminar, button: HTMLElement): void {
+    if (openMenuId === seminar.id) {
+      openMenuId = null
+      menuStyle = ''
+      return
+    }
+    const box = button.getBoundingClientRect()
+    // right, а не left: меню выравнивается по правому краю кнопки, как и было.
+    const right = Math.round(window.innerWidth - box.right)
+    const below = window.innerHeight - box.bottom - 8
+    const above = box.top - 8
+    /*
+     * Прикрепляемся к той стороне, где больше места, и ограничиваем высоту ею
+     * же. Высоту меню знать не нужно: снизу задаём top, сверху — bottom, и в
+     * обоих случаях оно растёт в свободную сторону. Измерено на окне 560px:
+     * жёсткое «всегда вниз» уводило меню на 191 пиксель за край экрана, откуда
+     * до пункта «удалить» уже не добраться.
+     */
+    /*
+     * transform-origin едет здесь же, а не в классе .row-menu: меню растёт из
+     * своей кнопки, а на какой она стороне — уже решено двумя строками выше.
+     * Отдельная переменная только повторила бы этот выбор и однажды разошлась
+     * бы с ним; при перевороте вниз якорем становится нижний правый угол, и
+     * меню разворачивается вверх, а не вниз от невидимой точки.
+     */
+    menuStyle =
+      below >= above
+        ? `top: ${Math.round(box.bottom + 4)}px; right: ${right}px; max-height: ${Math.round(below)}px; transform-origin: top right`
+        : `bottom: ${Math.round(window.innerHeight - box.top + 4)}px; right: ${right}px; max-height: ${Math.round(above)}px; transform-origin: bottom right`
+    openMenuId = seminar.id
+  }
 
   let doomed = $state<AdminSeminar | null>(null)
   let deleteBusy = $state(false)
@@ -51,23 +171,33 @@
   )
   const canDelete = $derived(adminAuth.isOwner)
 
+  const TABBTN =
+    'inline-flex h-7 items-center px-3 text-2xs font-bold uppercase tracking-label text-muted ' +
+    'transition-colors duration-100 hover:text-ink focus-visible:outline-none ' +
+    'focus-visible:ring-2 focus-visible:ring-accent/50'
+
   const ITEM = 'flex w-full items-center px-2.5 py-1.5 text-left text-ui transition-colors duration-100'
 
   /* ----------------------------------------------------------- formatting */
 
+  /**
+   * The link this row is about. Not `seminar.url` verbatim: that is built from
+   * PUBLIC_URL, and a PUBLIC_URL left on localhost hands the room a link only
+   * this machine can open — and costs the teacher their own host seat, because
+   * another origin carries neither the staff cookie nor the staff hint. See
+   * lib/seminar-link.ts for the rule and what it was measured against.
+   */
+  const linkOf = (seminar: AdminSeminar): string =>
+    seminarLink(seminar.url, location.origin, seminar.id)
+
   /** `/s/abc` — the half of the URL that is worth reading in a dense row. */
   function pathOf(seminar: AdminSeminar): string {
-    try {
-      return new URL(seminar.url).pathname
-    } catch {
-      // publicUrl is operator-configured and can be anything; the id is not.
-      return `/s/${seminar.id}`
-    }
+    return `/s/${seminar.id}`
   }
 
   function hostPathOf(seminar: AdminSeminar): string {
     try {
-      const url = new URL(seminar.url)
+      const url = new URL(linkOf(seminar))
       return `${url.host}${url.pathname}`
     } catch {
       return `/s/${seminar.id}`
@@ -157,16 +287,31 @@
         return
       }
       openMenuId = null
+      menuStyle = ''
     }
-    const onClick = () => (openMenuId = null)
+    const onClick = () => {
+      openMenuId = null
+      menuStyle = ''
+    }
+    // Меню стоит в координатах окна, поэтому при прокрутке оно уехало бы от
+    // своей кнопки. Закрыть — честнее, чем тащить его следом: прокрутка это и
+    // есть «я передумал».
+    const onScroll = () => {
+      openMenuId = null
+      menuStyle = ''
+    }
 
     window.addEventListener('keydown', onKey)
     window.addEventListener('click', onClick)
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onScroll)
     return () => {
       window.clearInterval(tick)
       window.clearTimeout(copyTimer)
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('click', onClick)
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onScroll)
     }
   })
 
@@ -174,6 +319,24 @@
 
   function startCreate(): void {
     creating = true
+    if (environments === null) {
+      void adminApi
+        .listEnvironments()
+        .then((r) => {
+          environments = r.environments
+          /*
+           * Предвыбираем то, что стоит умолчанием на инстансе. Пустого варианта
+           * «как на инстансе» здесь нет намеренно: он был третьим состоянием и
+           * противоречил обещанию, что окружение комнаты выбирается один раз и
+           * дальше под ней не меняется. Незаполненный список — это просто
+           * пустое поле, из которого непонятно, что получит семинар.
+           */
+          if (!newEnvironment) newEnvironment = r.environments.find((e) => e.active)?.name ?? ''
+        })
+        // Не беда: без списка форма просто не покажет выбор, и семинар
+        // получит окружение по умолчанию — то же, что было всегда.
+        .catch(() => (environments = []))
+    }
     createError = null
   }
 
@@ -207,7 +370,7 @@
     createBusy = true
     createError = null
     try {
-      const seminar = await adminApi.createSeminar({ name })
+      const seminar = await adminApi.createSeminar({ name, environment: newEnvironment || null })
       // A filter that hides the row you just made would send the teacher
       // hunting for a seminar they are looking straight at.
       query = ''
@@ -215,6 +378,7 @@
       justCreatedId = seminar.id
       creating = false
       newName = ''
+      newEnvironment = ''
     } catch (cause: unknown) {
       createError = explain(cause)
     } finally {
@@ -226,11 +390,11 @@
 
   async function copy(seminar: AdminSeminar): Promise<void> {
     try {
-      await navigator.clipboard.writeText(seminar.url)
+      await navigator.clipboard.writeText(linkOf(seminar))
     } catch {
       // Blocked on an insecure origin, which is a normal way to self-host. The
       // link is the point of the click, so it goes on screen instead.
-      rowError = { id: seminar.id, message: `The browser blocked the clipboard. The link is ${seminar.url}` }
+      rowError = { id: seminar.id, message: `The browser blocked the clipboard. The link is ${linkOf(seminar)}` }
       return
     }
     if (rowError?.id === seminar.id) rowError = null
@@ -314,8 +478,14 @@
 
 <AdminPage title="Seminars">
   {#snippet actions()}
+    <!--
+      An empty instance gets one path, not three. The search has nothing to
+      search and the button in the corner duplicates the one in the middle of
+      the page, which is where the eye already is.
+    -->
+    {#if seminars.length > 0}
     <div
-      class="flex h-[34px] w-[220px] items-center gap-2 border border-line bg-canvas px-3
+      class="flex h-[34px] w-[220px] max-w-full items-center gap-2 border border-line bg-canvas px-3
              focus-within:border-accent"
     >
       <Icon name="search" size={13} class="shrink-0 text-faint" />
@@ -335,16 +505,27 @@
       <Icon name="plus" size={14} />
       New seminar
     </button>
+    {/if}
   {/snippet}
 
   <!-- Nothing live, no banner. An empty "running now" is a lie with a border. -->
   {#each live as seminar (seminar.id)}
+    <!--
+      Wrapping, and a floor under the name lane. The plate is three things in a
+      row and the row ran out at 860px: RUNNING NOW broke across two lines into
+      the sentence beside it, and the seminar name was squeezed past its own
+      ellipsis. Three items that wrap onto a second line say the same thing at
+      any width; a fixed 74px height is what turned the overflow into an
+      overlap, so it is a floor now rather than a lid.
+    -->
     <section
-      class="-mx-7 flex h-[74px] items-center gap-[22px] border-b border-b-line border-l-[3px] border-l-accent bg-raised pl-[25px] pr-7"
+      class="-mx-7 flex min-h-[74px] flex-wrap items-center gap-x-[22px] gap-y-3 border-b
+             border-b-line border-l-[3px] border-l-accent bg-raised py-3 pl-[25px] pr-7"
     >
-      <div class="flex min-w-0 flex-col gap-[3px]">
+      <div class="flex min-w-[180px] flex-col gap-[3px]">
         <p
-          class="flex items-center gap-[7px] text-micro font-bold uppercase tracking-label text-accent-text"
+          class="flex items-center gap-[7px] whitespace-nowrap text-micro font-bold uppercase
+                 tracking-label text-accent-text"
         >
           <span class="h-[7px] w-[7px] shrink-0 rounded-full bg-accent"></span>
           Running now
@@ -368,7 +549,7 @@
         <button
           type="button"
           onclick={() => copy(seminar)}
-          title="Copy {seminar.url}"
+          title="Copy {linkOf(seminar)}"
           class={cn(
             'flex h-8 items-center gap-2 border border-line bg-canvas px-3 font-mono text-code',
             'transition-colors duration-100 hover:border-faint hover:text-ink',
@@ -379,10 +560,11 @@
           <Icon name={copiedId === seminar.id ? 'check' : 'copy'} size={13} />
         </button>
         <a
-          href={seminar.url}
+          href={linkOf(seminar)}
           target="_blank"
           rel="noreferrer"
-          class="btn-primary h-8 px-3.5 text-2xs font-bold uppercase tracking-caps"
+          class="btn h-8 bg-accent px-3.5 text-2xs font-bold uppercase tracking-caps text-accent-ink
+                 hover:brightness-110"
         >
           Open
         </a>
@@ -399,19 +581,43 @@
 
   <!-- Flush against the header, as on the artboard: the rule under the topbar
        is the table's own top rule, and a gap there reads as a missing row. -->
-  <table class="w-full table-fixed">
+  <!--
+    The columns after the name are fixed and add up to 466px, and table-fixed
+    hands the name whatever is left: at 800px of window that was 42px and at
+    768px it was 10px, so the names vanished and the headings printed on top of
+    each other. The min-width is those 466px plus a lane a name can be read in.
+    It is set where the lane actually dies rather than where it starts to
+    tighten — every window that works today still gets no scrollbar — and it
+    scrolls inside this box, so the page itself still never moves sideways.
+  -->
+  <div class="-mx-1 overflow-x-auto px-1">
+  <table class="w-full min-w-[600px] table-fixed">
     <colgroup>
       <col />
+      <col class="w-[132px]" />
       <col class="w-[104px]" />
       <col class="w-[74px]" />
       <col class="w-[116px]" />
       <col class="w-10" />
     </colgroup>
-    <thead>
-      <tr class="border-b border-line text-micro font-bold uppercase tracking-label text-faint">
+    <thead class={shown.length === 0 && !creating ? 'sr-only' : ''}>
+      <tr class="border-b border-line text-micro font-bold uppercase tracking-label text-muted">
         <th scope="col" class="py-3 text-left">Seminar</th>
+        <!--
+          The environment this room's kernel is ACTUALLY on, which is not always
+          the one configured: a seminar that was live through a switch keeps the
+          image it came up on until its own kernel restarts. That gap is the
+          only reason this column is worth a lane of its own.
+        -->
+        <th scope="col" class="py-3 text-left">Environment</th>
         <th scope="col" class="py-3 text-left">Date</th>
-        <th scope="col" class="py-3 text-right">People</th>
+        <!--
+          "Joined", not "People". This column is everyone who ever joined; the
+          banner above it counts who is connected right now. Both were labelled
+          people, so the same view could read "2 people in the room" beside an
+          11 and give the reader no way to tell which number was wrong.
+        -->
+        <th scope="col" class="py-3 text-right">Joined</th>
         <th scope="col" class="py-3 text-right">Status</th>
         <th scope="col" class="py-3"><span class="sr-only">Actions</span></th>
       </tr>
@@ -419,8 +625,111 @@
     <tbody>
       {#if creating}
         <tr class="border-b border-line-soft bg-surface">
-          <td colspan="5" class="py-3">
-            <form class="flex items-center gap-2" onsubmit={create}>
+          <td colspan="6" class="py-3">
+            <!-- Две двери в одну комнату: пустой семинар и семинар из готового
+                 материала. Переключатель, а не вторая кнопка в шапке: это одно
+                 действие «создать», у которого два источника. -->
+            <div class="mb-2.5 flex items-center gap-1">
+              <button
+                type="button"
+                class={cn(TABBTN, !fromGithub && 'bg-raised text-ink')}
+                onclick={() => ((fromGithub = false), (preview = null))}
+              >
+                Blank
+              </button>
+              <button
+                type="button"
+                class={cn(TABBTN, fromGithub && 'bg-raised text-ink')}
+                onclick={() => (fromGithub = true)}
+              >
+                From GitHub
+              </button>
+            </div>
+
+            {#if fromGithub}
+              <form class="flex flex-col gap-2.5" onsubmit={importFromGithub}>
+                <div class="flex flex-wrap items-center gap-2">
+                  <input
+                    bind:value={githubUrl}
+                    class="field min-w-[420px] flex-1 font-mono text-code-lg"
+                    placeholder="https://github.com/sleep3r/ml_hse/tree/main/week02"
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-label="GitHub link to a notebook or a folder"
+                  />
+                  <button
+                    class="btn-primary"
+                    type="submit"
+                    disabled={!preview || createBusy}
+                  >
+                    {#if createBusy}
+                      <Icon name="spinner" size={15} class="animate-spin" />
+                      Importing…
+                    {:else}
+                      Import
+                    {/if}
+                  </button>
+                  <button class="btn-ghost" type="button" onclick={cancelCreate}>Cancel</button>
+                </div>
+
+                <!--
+                  Имя и окружение стоят ЗДЕСЬ, а не внутри предпросмотра: они
+                  относятся к создаваемой комнате, а не к прочитанной ссылке.
+                  Спрятанные за предпросмотром, они появлялись только после
+                  удачного чтения репозитория — и выглядели так, будто выбора
+                  окружения при импорте нет вовсе.
+                -->
+                <div class="flex flex-wrap items-center gap-2">
+                  <input
+                    bind:value={newName}
+                    class="field max-w-[380px]"
+                    placeholder="Name — filled in from the link"
+                    maxlength={LIMITS.seminarName}
+                    autocomplete="off"
+                    aria-label="Seminar name"
+                  />
+                  {#if environments && environments.length > 1}
+                    <select
+                      bind:value={newEnvironment}
+                      class="field h-[38px] max-w-[240px] font-mono text-code-lg"
+                      aria-label="Python environment"
+                    >
+                      {#each environments as env (env.name)}
+                        <option value={env.name} disabled={env.state !== 'ready'}>
+                          {env.name}{env.active ? ' — default' : ''}{env.state === 'ready'
+                            ? ''
+                            : ' — not built'}
+                        </option>
+                      {/each}
+                    </select>
+                  {/if}
+                </div>
+
+                {#if previewing}
+                  <p class="text-2xs text-muted">Reading the repository…</p>
+                {:else if previewError}
+                  <p class="text-2xs text-danger">{previewError}</p>
+                {:else if preview}
+                  <!-- Что именно приедет. Показано до создания, а не после. -->
+                  <div class="flex flex-wrap items-center gap-2 text-2xs text-muted">
+                    <span class="font-mono text-ink">{preview.notebook}</span>
+                    <span>·</span>
+                    <span>{preview.cells} cells</span>
+                    {#if preview.files.length > 0}
+                      <span>·</span>
+                      {#each preview.files as f (f.name)}
+                        <span class="bg-surface px-2 py-0.5 font-mono text-micro">{f.name}</span>
+                      {/each}
+                    {/if}
+                    <span>·</span>
+                    <span class="font-mono">{preview.source}</span>
+                    <span>·</span>
+                    <span>outputs not imported</span>
+                  </div>
+                {/if}
+              </form>
+            {:else}
+            <form class="flex flex-wrap items-center gap-2" onsubmit={create}>
               <input
                 bind:this={nameInput}
                 bind:value={newName}
@@ -430,6 +739,26 @@
                 autocomplete="off"
                 aria-label="Name of the new seminar"
               />
+
+              <!--
+                Окружение выбирается ОДИН раз, здесь. Дальше это Python этой
+                комнаты навсегда: семинар, у которого пакеты поменялись посреди
+                пары, хуже семинара без самых новых пакетов.
+              -->
+              {#if environments && environments.length > 1}
+                <select
+                  bind:value={newEnvironment}
+                  class="field h-[38px] max-w-[220px] font-mono text-code-lg"
+                  aria-label="Python environment for the new seminar"
+                >
+                                    {#each environments as env (env.name)}
+                    <option value={env.name} disabled={env.state !== 'ready'}>
+                      {env.name}{env.active ? ' — default' : ''}{env.state === 'ready' ? '' : ' — not built'}
+                    </option>
+                  {/each}
+                </select>
+              {/if}
+
               <button class="btn-primary" type="submit" disabled={!newName.trim() || createBusy}>
                 {#if createBusy}
                   <Icon name="spinner" size={15} class="animate-spin" />
@@ -440,6 +769,7 @@
               </button>
               <button class="btn-ghost" type="button" onclick={cancelCreate}>Cancel</button>
             </form>
+            {/if}
             {#if createError}
               <p class="mt-2 text-ui text-danger">{createError}</p>
             {/if}
@@ -468,7 +798,7 @@
               />
             {:else}
               <a
-                href={seminar.url}
+                href={linkOf(seminar)}
                 target="_blank"
                 rel="noreferrer"
                 class="block truncate text-ui font-semibold text-ink hover:underline"
@@ -477,14 +807,19 @@
               </a>
             {/if}
 
-            <div class="mt-0.5 flex items-center gap-2">
+            <!-- Wraps as whole parts, not word by word: "link not shared yet"
+                 broke into four stacked words in a narrow window and made every
+                 row in the table four times as tall. -->
+            <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
               <button
                 type="button"
                 data-copy={seminar.id}
                 onclick={() => copy(seminar)}
-                title="Copy {seminar.url}"
+                title="Copy {linkOf(seminar)}"
                 class={cn(
-                  'flex items-center gap-1.5 font-mono text-2xs transition-colors duration-100',
+                  // -my-1 py-1: the row's path is 16px of type, which is too small
+                  // a thing to aim at. The target grows to 24 and the row does not.
+                  'flex -my-1 items-center gap-1.5 py-1 font-mono text-2xs transition-colors duration-100',
                   'hover:text-ink focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/30',
                   copiedId === seminar.id ? 'text-positive' : 'text-muted',
                 )}
@@ -502,15 +837,34 @@
                 />
               </button>
               {#if seminar.status === 'draft'}
-                <span class="text-2xs text-faint">link not shared yet</span>
+                <span class="whitespace-nowrap text-2xs text-muted">link not shared yet</span>
               {/if}
               {#if seminar.archivedAt}
-                <span class="text-2xs text-faint">archived</span>
+                <span class="whitespace-nowrap text-2xs text-muted">archived</span>
               {/if}
             </div>
 
             {#if rowError?.id === seminar.id}
               <p class="mt-1 text-2xs text-danger">{rowError.message}</p>
+            {/if}
+          </td>
+
+          <td class="py-2 pr-3 align-middle">
+            {#if seminar.environment}
+              <a
+                href="/admin/environments"
+                class="truncate font-mono text-code text-ink underline decoration-line underline-offset-2 hover:decoration-ink"
+                title="This room's kernel is running the {seminar.environment} image"
+              >
+                {seminar.environment}
+              </a>
+            {:else}
+              <!-- No kernel has started here, so there is nothing to report. It
+                   will get whatever is configured when somebody presses Run —
+                   saying that name now would be a guess dressed as a fact. -->
+              <span class="font-mono text-code text-faint" title="No kernel started in this room yet">
+                —
+              </span>
             {/if}
           </td>
 
@@ -558,9 +912,9 @@
                 aria-label="Actions for {seminar.name}"
                 onclick={(event) => {
                   event.stopPropagation()
-                  openMenuId = openMenuId === seminar.id ? null : seminar.id
+                  openMenu(seminar, event.currentTarget as HTMLElement)
                 }}
-                class="p-1 text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
+                class="flex h-6 w-6 items-center justify-center p-1 text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
               >
                 <Icon name="more" size={15} />
               </button>
@@ -569,14 +923,15 @@
                 <div
                   role="menu"
                   tabindex="-1"
-                  class="absolute right-0 top-full z-20 mt-1 w-48 border border-line bg-canvas p-1 shadow-pop"
+                  class="row-menu fixed z-50 w-48 overflow-y-auto border border-line bg-canvas p-1 shadow-pop"
+                  style={menuStyle}
                 >
                   <button role="menuitem" type="button" class="{ITEM} text-ink hover:bg-raised" onclick={() => copy(seminar)}>
                     Copy link
                   </button>
                   <a
                     role="menuitem"
-                    href={seminar.url}
+                    href={linkOf(seminar)}
                     target="_blank"
                     rel="noreferrer"
                     class="{ITEM} text-ink hover:bg-raised"
@@ -599,7 +954,7 @@
                     <button
                       role="menuitem"
                       type="button"
-                      class="{ITEM} text-danger hover:bg-danger/10"
+                      class="{ITEM} text-danger hover:bg-danger/[0.08]"
                       onclick={() => confirmDelete(seminar)}
                     >
                       Delete…
@@ -614,11 +969,11 @@
 
       {#if loading && seminars.length === 0}
         <tr>
-          <td colspan="5" class="py-6 text-ui text-faint">Loading seminars…</td>
+          <td colspan="6" class="py-6 text-ui text-muted">Loading seminars…</td>
         </tr>
       {:else if shown.length === 0 && !creating}
         <tr>
-          <td colspan="5" class="py-12 text-center">
+          <td colspan="6" class="py-12 text-center">
             {#if needle}
               <p class="text-ui text-muted">Nothing here is called “{query.trim()}”.</p>
               <button type="button" class="btn-ghost mt-2" onclick={() => (query = '')}>
@@ -626,7 +981,7 @@
               </button>
             {:else if !loadError}
               <p class="text-ui text-muted">No seminars yet.</p>
-              <p class="mt-1 text-ui text-faint">
+              <p class="mt-1 text-ui text-muted">
                 Make one and you get a link to paste into the group chat.
               </p>
               <button type="button" class="btn-primary mt-3" onclick={startCreate}>
@@ -639,9 +994,10 @@
       {/if}
     </tbody>
   </table>
+  </div>
 
   {#if seminars.length > 0}
-    <p class="mt-4 text-2xs text-faint">
+    <p class="mt-4 text-2xs text-muted">
       {#if needle}
         Showing {shown.length} of {count(seminars.length, 'seminar')}
       {:else}
@@ -658,9 +1014,9 @@
     role="dialog"
     aria-modal="true"
     aria-labelledby="delete-seminar-title"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
   >
-    <div class="w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
+    <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="delete-seminar-title" class="text-title font-semibold text-ink">
         Delete “{doomed.name}”?
       </h2>

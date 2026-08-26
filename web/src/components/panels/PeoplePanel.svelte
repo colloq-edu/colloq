@@ -1,15 +1,9 @@
 <script lang="ts">
   import type { AwarenessUser } from '@shared/protocol'
   import { getSessionState } from '@/lib/session.svelte'
+  import { peopleInRoom, type Person } from '@/lib/room'
   import { watchCell, watchCellIds, watchCellMeta, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
-
-  interface Person {
-    user: AwarenessUser
-    isSelf: boolean
-    /** Open tabs for this human; two tabs are still one person in the room. */
-    tabs: number
-  }
 
   /** Faces before the rest fold into "+N more"; the rail is a glance, not a roster. */
   const CAP = 6
@@ -24,21 +18,9 @@
 
   let expanded = $state(false)
 
-  const people = $derived.by(() => {
-    const byId = new Map<string, Person>()
-    for (const peer of session.peers) {
-      const existing = byId.get(peer.user.id)
-      if (!existing) {
-        byId.set(peer.user.id, { user: peer.user, isSelf: peer.isSelf, tabs: 1 })
-        continue
-      }
-      existing.tabs += 1
-      existing.isSelf ||= peer.isSelf
-      // Whichever tab is actually doing something is the one worth reporting.
-      if (!existing.user.activeCellId && peer.user.activeCellId) existing.user = peer.user
-    }
-    return [...byId.values()]
-  })
+  // One rule for "who is here", shared with the header's avatar row — they used
+  // to count differently and the bar contradicted itself.
+  const people = $derived(peopleInRoom(session.peers))
 
   const shown = $derived(expanded ? people : people.slice(0, CAP))
   const rest = $derived(people.length - shown.length)
@@ -88,9 +70,9 @@
 
 <section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5 pt-5" aria-label="People in the room">
   <div class="flex items-center gap-2 pb-2">
-    <h2 class="text-2xs font-bold uppercase tracking-section text-faint">People</h2>
+    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">People</h2>
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
-    <span class="font-mono text-micro tabular-nums text-faint">{people.length}</span>
+    <span class="font-mono text-micro tabular-nums text-muted">{people.length}</span>
   </div>
 
   {#if people.length === 0}
@@ -140,7 +122,7 @@
          unreachable, so the count opens the rest instead of hiding them. -->
     <button
       type="button"
-      class="flex h-[30px] shrink-0 items-center gap-2.5 px-2 text-left text-2xs text-faint transition-colors duration-100 hover:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      class="flex h-[30px] shrink-0 items-center gap-2.5 px-2 text-left text-2xs text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       onclick={() => (expanded = !expanded)}
     >
       <span class="w-6 shrink-0" aria-hidden="true"></span>

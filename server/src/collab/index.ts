@@ -5,9 +5,18 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import type { Awareness } from 'y-protocols/awareness'
 import { WebSocket, type RawData } from 'ws'
-import { ensureInitialNotebook } from '@shared/notebook'
-import { getSession } from '../db.js'
-import { bindPersistence, discardPersistence, flushAllPersistence } from './persistence.js'
+import type { YCell } from '@shared/notebook'
+import {
+  clearStaleExecution,
+  createTerminalLine,
+  ensureInitialNotebook,
+  getCells,
+  getMeta,
+  getTerminal,
+} from '@shared/notebook'
+import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
+import { getSession, renameSession } from '../db.js'
+import { bindPersistence, flushPersistence, discardPersistence, flushAllPersistence } from './persistence.js'
 
 /**
  * The server side of the collaborative document.
@@ -19,9 +28,16 @@ import { bindPersistence, discardPersistence, flushAllPersistence } from './pers
  * everyone — including whoever opens the link two minutes later.
  */
 
+/** y-websocket's own frame tags. The numbers are the protocol, not a choice. */
 const MESSAGE_SYNC = 0
 const MESSAGE_AWARENESS = 1
 
+/*
+ * Under the thirty seconds that proxies and load balancers commonly use as an
+ * idle timeout. A seminar has long silences — nobody types while the teacher
+ * talks — and a socket dropped for being quiet looks to the room like the
+ * server going away.
+ */
 const PING_INTERVAL_MS = 25_000
 /** A socket that ignores this many consecutive pings is a closed laptop lid. */
 const MAX_MISSED_PONGS = 2
@@ -32,11 +48,21 @@ export interface SessionDoc {
   awareness: Awareness
 }
 
+/** Marks a write as the server's own, so its observers do not chase themselves. */
+const ORIGIN = 'server'
+
 interface ConnState {
   /** Awareness clientIDs this socket introduced, so we can retract exactly those. */
   clientIds: Set<number>
   missedPongs: number
   pingTimer: NodeJS.Timeout
+  /**
+   * The role the token carried. The document is shared and every field in it is
+   * writable by anyone connected — that is what a CRDT is — so this is not an
+   * access list. It is here for the one field the interface already promises is
+   * the host's: the seminar's name.
+   */
+  role: ParticipantRole
 }
 
 interface DocEntry extends SessionDoc {
@@ -138,7 +164,110 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   }
   docs.set(sessionId, entry)
 
-  ensureInitialNotebook(doc, title ?? getSession(sessionId)?.name)
+  /*
+   * Seed, then put it on disk before returning. A room that has just been
+   * created is at its most vulnerable: the snapshot is debounced by seconds and
+   * the room is reachable immediately, so a crash in between leaves a seminar
+   * with a row and no document. On the way back the server would find nothing
+   * stored, conclude the room is new and seed it again — and the students, who
+   * still hold the real notebook, would merge it in underneath a second copy of
+   * the starter cells. Encoding a two-cell document costs less than the
+   * scheduling does.
+   */
+  if (ensureInitialNotebook(doc, title ?? getSession(sessionId)?.name)) {
+    flushPersistence(sessionId)
+  }
+
+  /*
+   * Whatever the snapshot says was running, was not running by the time this
+   * process existed. Cleared here rather than by the kernel, because a room can
+   * be reopened without a kernel ever being asked for one — the notebook has to
+   * be honest before anybody presses anything.
+   */
+  if (clearStaleExecution(doc) > 0) {
+    doc.transact(() => {
+      getTerminal(doc).push([
+        createTerminalLine({
+          kind: 'system',
+          text: 'The server restarted. Cells that were running or queued were put back to rest — run them again when you are ready.',
+        }),
+      ])
+    }, ORIGIN)
+  }
+
+  /*
+   * A cell id appears once.
+   *
+   * Y.Array has no move, so the editor moves a cell by cloning it and deleting
+   * the original. Two people nudging the same cell at the same moment merge
+   * into two deletes — which collapse into one — and two inserts, which do not:
+   * the notebook ends up holding the same cell twice, under one id. Everything
+   * downstream is keyed by that id — running it, attributing it, asking the
+   * assistant about it — so a duplicate is not a cosmetic problem.
+   *
+   * Repaired here rather than in the editor for the reason the title is: there
+   * is exactly one server, and it cannot be a stale client racing another. The
+   * first copy stays, later ones go; they are copies of each other, so which
+   * one survives does not matter, only that the choice is the same everywhere.
+   */
+  const cells = getCells(doc)
+  cells.observe((event: Y.YArrayEvent<YCell>) => {
+    if (event.transaction.origin === ORIGIN) return
+    // Only an insert can introduce one, and the array is tens of items long.
+    if (!event.changes.added.size) return
+    const seen = new Set<string>()
+    const doomed: number[] = []
+    cells.forEach((cell, index) => {
+      const id = cell.get('id')
+      if (typeof id !== 'string') return
+      if (seen.has(id)) doomed.push(index)
+      else seen.add(id)
+    })
+    if (doomed.length === 0) return
+    doc.transact(() => {
+      // Back to front, so the earlier indices stay valid as they go.
+      for (const index of doomed.reverse()) cells.delete(index, 1)
+    }, ORIGIN)
+  })
+
+  /*
+   * The room's title is the seminar's name, and the admin list reads it from the
+   * sessions row. Mirror one into the other so a rename — from the header or
+   * from the panel — is one name and not two.
+   *
+   * Observed rather than written by whoever renamed: there is exactly one
+   * writer this way, and it is the server, which cannot be a stale client.
+   */
+  const meta = getMeta(doc)
+  meta.observe((event: Y.YMapEvent<unknown>) => {
+    if (!event.keysChanged.has('title')) return
+    if (event.transaction.origin === ORIGIN) return
+
+    /*
+     * The header lets only the host rename the room, and this mirrors the name
+     * into the row the admin list reads — so a rename written straight into the
+     * shared document by anyone else would reach further than the interface it
+     * came from. Put it back rather than pass it on.
+     *
+     * This is the one field defended this way. Everything else in the document
+     * is writable by everyone by construction, which the README says out loud.
+     */
+    const from = event.transaction.origin
+    const writer = from instanceof WebSocket ? entry.conns.get(from) : undefined
+    if (writer && writer.role !== 'host') {
+      const previous = event.changes.keys.get('title')?.oldValue
+      doc.transact(() => {
+        if (typeof previous === 'string') meta.set('title', previous)
+        else meta.delete('title')
+      }, ORIGIN)
+      return
+    }
+
+    const title = meta.get('title')
+    if (typeof title !== 'string' || !title.trim()) return
+    if (getSession(sessionId)?.name === title) return
+    renameSession(sessionId, title)
+  })
 
   doc.on('update', (update: Uint8Array, origin: unknown) =>
     broadcastDocUpdate(entry, update, origin),
@@ -189,11 +318,16 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
   }
 }
 
-export function handleCollabSocket(ws: WebSocket, sessionId: string): void {
+export function handleCollabSocket(
+  ws: WebSocket,
+  sessionId: string,
+  role: ParticipantRole = 'participant',
+): void {
   const entry = getEntry(sessionId)
   ws.binaryType = 'arraybuffer'
 
   const state: ConnState = {
+    role,
     clientIds: new Set<number>(),
     missedPongs: 0,
     pingTimer: setInterval(() => {
@@ -240,6 +374,37 @@ export function handleCollabSocket(ws: WebSocket, sessionId: string): void {
 /** Open sockets, not distinct people — a second tab counts twice. */
 export function onlineCount(sessionId: string): number {
   return docs.get(sessionId)?.conns.size ?? 0
+}
+
+/**
+ * The participant ids actually present right now, deduplicated.
+ *
+ * Not the same as onlineCount, which counts sockets: one person with the
+ * seminar open in two tabs is two connections and one participant. And not the
+ * same as the participants table either, which is every name that ever joined —
+ * the join screen said "148 people are already inside" about a room holding one,
+ * because that table never forgets.
+ */
+export function onlineParticipantIds(sessionId: string): string[] {
+  const entry = docs.get(sessionId)
+  if (!entry) return []
+  const ids = new Set<string>()
+  for (const state of entry.awareness.getStates().values()) {
+    /*
+     * Typed against the shared contract on purpose. This read used to be a
+     * hand-written `{ user?: { participantId?: unknown } }`, and the field the
+     * browser actually publishes is `id` — so every real page was invisible
+     * here and the room's online list came back empty for everybody, while the
+     * test client, which happened to send `participantId`, showed thirty. An
+     * inline cast asserts what you meant; the shared type is what is true.
+     *
+     * One person can hold several of these — two tabs, or a reconnect whose old
+     * socket has not timed out — so the set is by participant, not by socket.
+     */
+    const user = (state as { user?: Partial<AwarenessUser> } | undefined)?.user
+    if (typeof user?.id === 'string' && user.id) ids.add(user.id)
+  }
+  return Array.from(ids)
 }
 
 /**

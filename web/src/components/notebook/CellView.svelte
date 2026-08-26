@@ -1,17 +1,23 @@
 <script lang="ts" module>
   import { api } from '@/lib/api'
+  import { actionAllowedIn } from '@shared/protocol'
 
   /**
-   * "Fix with AI" is drawn only where there is an assistant to reach. Every
-   * failing cell asks the same question, so the answer is fetched once per tab
-   * and shared — a status request per cell would be one request per traceback.
+   * "Fix with AI" is drawn only where there is an assistant that will take a
+   * 'fix'. An assistant in hints mode is on, and would refuse this button — so
+   * `enabled` alone is the wrong question and actionAllowedIn is the right one,
+   * asked with the same function the route refuses with.
+   *
+   * Every failing cell asks the same question, so the answer is fetched once
+   * per tab and shared: a status request per cell would be one request per
+   * traceback.
    */
   let assistant: Promise<boolean> | null = null
 
   function assistantEnabled(): Promise<boolean> {
     assistant ??= api
       .aiStatus()
-      .then((status) => status.enabled)
+      .then((status) => status.enabled && actionAllowedIn(status.mode, 'fix'))
       .catch(() => false)
     return assistant
   }
@@ -30,6 +36,7 @@
     moveCell,
     setCellType,
   } from '@/lib/notebook-ops'
+  import { controlDisabled, controlTitle } from '@/lib/controls'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn } from '@/lib/utils'
   import {
@@ -60,6 +67,30 @@
   const meta = watchCellMeta(() => cell.current)
 
   const isCode = $derived(meta.current.type === 'code')
+
+  /*
+   * Ячейка остановилась внутри input().
+   *
+   * Это единственное состояние, в котором ядро ждёт ЧЕЛОВЕКА, а не машину.
+   * Поле показывается всей комнате, а не тому, кто нажал Run: на семинаре
+   * ответ чаще знает не тот, кто запустил, а тот, кто смотрит. Отвечает первый
+   * — это не гонка, которую надо чинить, а то, как устроена аудитория.
+   */
+  const stdin = $derived(meta.current.stdin)
+  let answer = $state('')
+  let answerField = $state<HTMLInputElement | null>(null)
+
+  $effect(() => {
+    if (stdin) answerField?.focus()
+    else answer = ''
+  })
+
+  function sendAnswer(event: SubmitEvent): void {
+    event.preventDefault()
+    if (!stdin) return
+    session.send({ t: 'input', value: answer })
+    answer = ''
+  }
   const cellState = $derived(meta.current.state)
   const running = $derived(cellState === 'running')
 
@@ -104,16 +135,30 @@
             : 'idle',
   )
 
-  /* Idle and error are dimmed on purpose: at 20px black the ordinal is the
-     loudest thing in the gutter, and a resting cell has nothing to announce. */
+  /*
+   * A resting cell has nothing to announce, so the ordinal is quiet — but it is
+   * also how the room refers to a cell out loud ("look at four"), so quiet has a
+   * floor. faint/70 measured 2.1:1 on the dark ground, which is not quiet, it is
+   * gone; and the error ordinal at danger/50 was the dimmest thing on the one
+   * cell everybody is looking at.
+   */
   const ORDINAL = {
     running: 'text-accent-text',
-    error: 'text-danger/50',
-    queued: 'text-accent-text/60',
+    error: 'text-danger',
+    queued: 'text-accent-text/80',
     selected: 'text-ink',
-    idle: 'text-faint/70',
+    idle: 'text-muted',
   } as const
 
+  /*
+   * Вертикальная полоса слева от тела ячейки — единственный признак состояния,
+   * который есть у ЛЮБОЙ ячейки: и у кода, и у прочитанного текста, и у
+   * свёрнутой. Поэтому выбор говорит именно ей.
+   *
+   * Выбранная — цветом чернил, то есть самым тёмным, что есть на листе: она
+   * должна отличаться от покоящейся (тонкая серая линия) на расстоянии
+   * проектора, а не при разглядывании.
+   */
   const RULE = {
     running: 'border-accent',
     error: 'border-danger',
@@ -128,6 +173,20 @@
    * somebody else's keyboard.
    */
   const runBy = $derived(meta.current.runBy)
+  /*
+   * Stopping your own runaway loop should not require a teacher in the room.
+   * The server decides this too, from its own record of the queue — this only
+   * decides whether the control is drawn as usable.
+   */
+  const mineIsRunning = $derived(meta.current.runById === session.me.id)
+  const canInterrupt = $derived(session.me.role === 'host' || mineIsRunning)
+  /*
+   * A queued cell can be taken back; the running one cannot, that is Interrupt.
+   * It matters most in the case the control is for: somebody else's long cell
+   * holds the kernel, you pressed Run All behind it, and Interrupt is not yours
+   * to press. The server checks this again against its own queue.
+   */
+  const canCancel = $derived(session.me.role === 'host' || meta.current.runById === session.me.id)
   const ranByOther = $derived(
     runBy && runBy !== session.me.name && (cellState === 'ok' || cellState === 'error')
       ? `Ran by ${runBy}`
@@ -251,10 +310,24 @@
     window.dispatchEvent(new CustomEvent('colloq:enter-cell', { detail: { cellId: created } }))
   }
 
+  /**
+   * Run, then go on — the pair everyone's fingers already know.
+   *
+   * Shift+Enter and Cmd+Enter both used to do exactly the same thing, so half
+   * of a convention this notebook otherwise imitates down to `In [3]` was
+   * missing: there was no way to run a cell and move on without also inserting
+   * one. Shift+Enter now steps to the next cell and makes one only when there
+   * is no next cell; Cmd/Ctrl+Enter runs and stays; Alt+Enter runs and inserts.
+   */
+  function runAndStep() {
+    run()
+    step(1, true, false, true)
+  }
+
   /** Only Notebook knows the cell order, so hand-offs go through it. */
-  function step(direction: -1 | 1, focus = true, fallback = false) {
+  function step(direction: -1 | 1, focus = true, fallback = false, grow = false) {
     window.dispatchEvent(
-      new CustomEvent('colloq:step-cell', { detail: { cellId: id, direction, focus, fallback } }),
+      new CustomEvent('colloq:step-cell', { detail: { cellId: id, direction, focus, fallback, grow } }),
     )
   }
 
@@ -287,7 +360,9 @@
   })
 
   const TOOL_BASE =
-    'inline-flex h-5 w-6 items-center justify-center text-muted transition-colors ' +
+    // 24px square: WCAG 2.5.8's floor, and the difference between hitting
+    // "move cell up" and hitting the cell above it on a trackpad.
+    'inline-flex h-6 w-6 items-center justify-center text-muted transition-colors ' +
     'duration-[var(--speed-quick)] focus-visible:outline-none focus-visible:ring-2 ' +
     'disabled:opacity-30 disabled:hover:bg-transparent'
   const TOOL = `${TOOL_BASE} hover:bg-line hover:text-ink focus-visible:ring-accent/50`
@@ -317,11 +392,21 @@
          artboard draws the toolbar over a cell whose number is still legible,
          and Run lives in that toolbar rather than under the number. -->
     <div class="h-7 w-8 shrink-0 select-none">
+      <!--
+        Цвет номера меняется мгновенно, и это не экономия, а правило: `tone`
+        переключается стрелкой, Enter и j/k, то есть сотни раз за пару. Метка
+        «вот эта ячейка сейчас живая» — единственное, по чему двадцать человек
+        в комнате понимают, куда смотреть; переход в 100ms сдвигает её на сто
+        миллисекунд позже нажатия, и на быстром переборе ячеек цвет всё время
+        догоняет курсор, вместо того чтобы стоять под ним.
+
+        Тот же довод, что двадцатью строками ниже про кольцо фокуса: подсказка,
+        пришедшая с опозданием, хуже пришедшей резко.
+      -->
       <span
         title={meta.current.execCount === null ? undefined : `Run ${meta.current.execCount}`}
         class={cn(
           'block text-right text-head font-black tabular-nums tracking-tight',
-          'transition-colors duration-[var(--speed-quick)]',
           ORDINAL[tone],
         )}
       >
@@ -335,13 +420,25 @@
       <div
         class={cn(
           'absolute bottom-full right-0 z-10 flex items-center gap-0.5 bg-raised px-1.5 py-0.5',
-          'opacity-0 transition-opacity duration-[var(--speed-quick)]',
-          'group-hover:opacity-100 focus-within:opacity-100',
+          'opacity-0 group-hover:opacity-100 focus-within:opacity-100',
+          // Переход живёт только у невыбранной ячейки, и поэтому достаётся
+          // ровно наведению: мышь ведут медленно и плавное проявление ей
+          // помогает. У выбранной перехода нет — значит стрелка открывает
+          // тулбар в том же кадре, в котором нажата. Уход с ячейки снова
+          // возвращает переход, и тулбар соседа успокаивается, а не пропадает.
+          !selected && 'transition-opacity duration-[var(--speed-quick)]',
           selected && 'opacity-100',
         )}
       >
         {#if isCode}
-          <button type="button" class={TOOL} title="Run cell" aria-label="Run cell" onclick={run}>
+          <button
+            type="button"
+            class={TOOL}
+            disabled={controlDisabled(session.connected)}
+            title={controlTitle(session.connected, 'Run cell')}
+            aria-label="Run cell"
+            onclick={run}
+          >
             <Icon name="play" size={12} class="text-accent-text" />
           </button>
         {:else if !editing}
@@ -420,9 +517,16 @@
                  than one that arrives hard. -->
             <div
               class={cn(
-                'border-l-4 px-3 py-1 transition-colors duration-[var(--speed-quick)]',
+                // Без перехода — по тому же правилу, что и номер выше: и
+                // кромка, и подложка держатся на `tone`, который переключает
+                // клавиатура.
+                'border-l-4 px-3 py-1',
                 RULE[tone],
                 isCode ? 'bg-surface' : 'bg-surface/70',
+                // Выбранная ячейка отличается ещё и подложкой: одна кромка на
+                // широком экране теряется у левого поля, а глаз ищет ячейку в
+                // тексте, а не на границе.
+                selected && !running && !hasError && 'bg-raised',
               )}
               onfocusout={(event) => {
                 // Blurring a note puts it back to rendered form; code cells stay open.
@@ -436,10 +540,12 @@
                 awareness={session.awareness}
                 undoManager={session.undoManager}
                 language={isCode ? 'python' : 'markdown'}
+                label={`${isCode ? 'Code' : 'Text'} cell ${ordinal}`}
                 autoFocus={!isCode && focusOnEdit}
                 placeholder={isCode ? '' : 'Write in markdown…'}
                 onfocus={() => onselect()}
                 onrun={run}
+                onrunstep={runAndStep}
                 onrunandadd={runAndAdd}
                 onescape={() => {
                   if (isCode) root?.querySelector<HTMLElement>('.cm-content')?.blur()
@@ -452,12 +558,29 @@
           {:else}
             <!-- A note at rest carries no chrome at all: it is the seminar's
                  prose, and the editor is a thing you go and get. -->
+            <!--
+              Рельса есть и у прочитанного текста. Её тут не было вовсе: она
+              рисовалась только внутри редактора, поэтому у текстовой ячейки при
+              выборе менялся один номер в поле слева — по нему невозможно
+              сказать, какая ячейка выбрана, если смотреть на текст, а не на
+              поля. Теперь у всех ячеек одна и та же вертикальная полоса, и
+              выбранная отличается от остальных так же, как работающая.
+            -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="note" ondblclick={() => enter()}>
+            <div
+              class={cn(
+                // См. выше: `tone` переключается стрелкой, переходу здесь не
+                // место.
+                'note border-l-4 px-3 py-1',
+                RULE[tone],
+                selected ? 'bg-surface/70' : 'bg-transparent',
+              )}
+              ondblclick={() => enter()}
+            >
               {#if source.current.trim()}
                 <Markdown source={source.current} class="text-prose text-muted" />
               {:else}
-                <p class="text-prose text-faint">Empty — double-click to write.</p>
+                <p class="text-prose text-muted">Empty — double-click to write.</p>
               {/if}
             </div>
           {/if}
@@ -472,7 +595,7 @@
               {#if meta.current.execCount !== null || ranByOther}
                 <div class="flex items-center gap-3 border-t border-line-soft px-4 py-1">
                   {#if ranByOther}
-                    <span class="font-mono text-micro text-faint">{ranByOther}</span>
+                    <span class="font-mono text-micro text-muted">{ranByOther}</span>
                   {/if}
                   {#if meta.current.execCount !== null}
                     <span class={cn('ml-auto', CAPS, 'text-muted')}>
@@ -486,6 +609,45 @@
         </div>
       {:else}
         <div class={cn('border-l-4 bg-surface/50', RULE[tone])} style="height: {parkHeight}px"></div>
+      {/if}
+
+      {#if stdin}
+        <!--
+          Форма стоит под ячейкой, а не в тосте: ждёт именно эта ячейка, и
+          смотреть надо на неё. Кромка цветом бегущей — потому что ячейка и
+          правда бежит, просто остановилась о человека.
+        -->
+        <form
+          class="mt-1.5 flex items-center gap-2 border-l-4 border-accent bg-accent/[0.07] px-3 py-2"
+          onsubmit={sendAnswer}
+        >
+          <span class={cn(CAPS, 'shrink-0 text-accent-text')}>Input</span>
+          {#if stdin.prompt}
+            <span class="shrink-0 font-mono text-code text-ink">{stdin.prompt}</span>
+          {/if}
+          <input
+            bind:this={answerField}
+            bind:value={answer}
+            type={stdin.password ? 'password' : 'text'}
+            class="field h-8 min-w-0 flex-1 font-mono text-code-lg"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label={stdin.prompt || 'The cell is waiting for input'}
+          />
+          <button
+            type="submit"
+            class={cn(
+              'inline-flex h-8 shrink-0 items-center bg-primary px-3 text-primary-ink',
+              CAPS,
+              'transition-opacity duration-[var(--speed-quick)] hover:opacity-90',
+            )}
+          >
+            Send
+          </button>
+        </form>
+        <p class="px-3 pt-1 text-2xs text-muted">
+          The kernel is waiting — anyone in the room can answer.
+        </p>
       {/if}
 
       {#if running}
@@ -508,10 +670,11 @@
           {/if}
           <button
             type="button"
-            disabled={session.me.role !== 'host'}
-            title={session.me.role === 'host'
-              ? 'Stop the running cell'
-              : 'Only the host can interrupt the kernel'}
+            disabled={controlDisabled(session.connected, canInterrupt)}
+            title={controlTitle(
+              session.connected,
+              canInterrupt ? 'Stop the running cell' : 'Only the host, or whoever started it, can stop a run',
+            )}
             onclick={() => session.send({ t: 'interrupt' })}
             class={cn(
               'ml-auto inline-flex h-6 items-center border border-line px-2 text-ink',
@@ -524,16 +687,49 @@
             Interrupt
           </button>
         </div>
-      {:else if cellState === 'queued' && queuePosition >= 0}
+      <!--
+        A queued cell said nothing at all whenever the document's queue had not
+        caught up with the cell's own state — which is exactly the moment after
+        somebody presses Run All, and exactly when the room wants to know that
+        their cell is waiting rather than ignored. The position is extra when we
+        have it; that it is queued, and whose it is, we always have.
+      -->
+      {:else if cellState === 'queued'}
         <div class={FOOTER}>
-          <span
-            title="Waiting in the run queue"
-            class="inline-flex h-5 items-center bg-raised px-2 font-mono text-micro text-muted"
-          >
-            {place(queuePosition + 1)} in queue
-          </span>
+          <!-- The chip is the POSITION. Without one it would only say "queued"
+               beside "queued by John", which is the same word twice. -->
+          {#if queuePosition >= 0}
+            <span
+              title="Waiting in the run queue"
+              class="inline-flex h-5 items-center bg-raised px-2 font-mono text-micro text-muted"
+            >
+              {place(queuePosition + 1)} in queue
+            </span>
+          {/if}
+          <span class={cn(CAPS, 'text-accent-text')}>Queued</span>
           {#if runBy}
-            <span class="text-2xs text-muted">queued by {runBy}</span>
+            <span class="text-2xs text-muted">by {runBy}</span>
+          {/if}
+          {#if canCancel}
+            <button
+              type="button"
+              disabled={controlDisabled(session.connected)}
+              title={controlTitle(session.connected, 'Take this cell out of the queue')}
+              onclick={() => session.send({ t: 'cancel', cellId: id })}
+              class={cn(
+                'ml-auto inline-flex h-6 items-center border border-line px-2 text-ink',
+                CAPS,
+                // Spelled out, not `.press`: a Tailwind transition-* utility rewrites
+                // transition-property, so the helper's transform would be left out of
+                // the list and the scale would snap. Same shape the run bar's CAP uses.
+                'transition-[color,background-color,border-color,transform] duration-press ease-out',
+                'enabled:active:scale-[0.97] hover:bg-raised',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                'disabled:pointer-events-none disabled:opacity-40',
+              )}
+            >
+              Cancel
+            </button>
           {/if}
         </div>
       {:else if hasError && aiReady}

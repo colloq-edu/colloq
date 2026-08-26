@@ -404,6 +404,22 @@ async function timedJson(url: string, init?: RequestInit): Promise<{ ms: number;
  * walks, cookie and all.
  */
 let staffCookie = ''
+/** Seminar ids this run created, so it can take them away again. */
+const madeHere: string[][] = []
+
+async function cleanUpSeminars(): Promise<void> {
+  const ids = madeHere.flat()
+  if (ids.length === 0 || !staffCookie) return
+  let gone = 0
+  for (const id of ids) {
+    const res = await fetch(`${BASE}/api/admin/seminars/${id}`, {
+      method: 'DELETE',
+      headers: { cookie: staffCookie },
+    })
+    if (res.ok) gone++
+  }
+  console.log(`\ncleaned up ${gone}/${ids.length} seminars this run created`)
+}
 
 const post = (body: unknown): RequestInit => ({
   method: 'POST',
@@ -450,6 +466,7 @@ async function api(): Promise<ApiRow[]> {
   await run('GET  /api/health', async () => (await timedJson(`${BASE}/api/health`)).ms)
 
   const created: string[] = []
+  madeHere.push(created)
   await run('POST /api/sessions', async (i) => {
     const r = await timedJson(`${BASE}/api/sessions`, post({ name: `perf ${Date.now()}-${i}` }))
     if (r.body?.session?.id) created.push(r.body.session.id)
@@ -499,6 +516,7 @@ async function sync(): Promise<SyncReport | { error: string }> {
   const created = await j(`${BASE}/api/sessions`, post({ name: `perf sync ${Date.now()}` }))
   const sid = created?.session?.id
   if (!sid) return { error: 'could not create a session' }
+  madeHere.push([sid])
   const A = await j(`${BASE}/api/sessions/${sid}/join`, post({ name: 'perf-A', hostToken: created.hostToken }))
   const B = await j(`${BASE}/api/sessions/${sid}/join`, post({ name: 'perf-B' }))
 
@@ -781,6 +799,12 @@ if (JSON_MODE) {
     ok: failed.length === 0,
   }, null, 2))
 }
+
+/*
+ * Everything this harness made, it removes. Twenty-one seminars a run is
+ * nothing on its own and a panel nobody can read after a morning of them.
+ */
+await cleanUpSeminars()
 
 // Explicit: live websockets and http agents would otherwise hold the loop open.
 process.exit(failed.length === 0 ? 0 : 1)

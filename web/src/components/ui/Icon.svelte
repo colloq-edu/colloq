@@ -50,6 +50,12 @@
     spinner: '<path d="M12 3a9 9 0 1 0 9 9"/>',
     bolt: '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>',
     eraser: '<path d="M8 20H5l-2-2 9-9 6 6-5 5z"/><path d="M12 5l4-2 5 5-3 4"/>',
+    // A shipping crate: an environment is a built container image, and the
+    // Environments artboard draws it as one.
+    box: '<path d="M21 8.5v7a1.6 1.6 0 0 1-.85 1.41l-7.4 3.9a1.6 1.6 0 0 1-1.5 0l-7.4-3.9A1.6 1.6 0 0 1 3 15.5v-7"/><path d="M3.4 7.6l8.6-4.5 8.6 4.5-8.6 4.5-8.6-4.5z"/><path d="M12 12.1V20"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.6h.01"/>',
+    alert:
+      '<path d="M10.6 3.9 2.5 18a1.6 1.6 0 0 0 1.4 2.4h16.2A1.6 1.6 0 0 0 21.5 18L13.4 3.9a1.6 1.6 0 0 0-2.8 0z"/><path d="M12 9v4.5"/><path d="M12 17.2h.01"/>',
     // The brand grid: corners and centre filled, edges as a tint of the same ink.
     logo:
       '<rect x="2" y="2" width="6" height="6" rx="1.6" fill="currentColor" stroke="none"/>' +

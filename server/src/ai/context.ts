@@ -16,8 +16,19 @@ import { getSessionDoc } from '../collab/index.js'
 import { getSession } from '../db.js'
 import { listFiles } from '../workspace.js'
 
+/*
+ * How much of a cell travels, per cell.
+ *
+ * These are not the budget — buildContext() has one of those and honours it.
+ * They are what a cell is worth *before* the budget starts dropping whole
+ * cells: about forty lines of code and twenty of output, which is a cell a
+ * person would read on screen. The cell being asked about, and the newest
+ * failure, are rendered `full` and get twice the output; everything else is a
+ * reminder that it exists.
+ */
 const MAX_SOURCE = 1_500
 const MAX_OUTPUT = 800
+/** Names only, so a room that uploaded a folder does not spend the budget on it. */
 const MAX_FILES = 40
 
 export function buildContext(sessionId: string, selectedCellId: string | null): string {
@@ -153,11 +164,36 @@ function elide(cell: CellSnapshot, index: number): string {
  * Keeps both ends of a long region: the head says what it is, and the tail of a
  * traceback is where the actual error lives.
  */
+/**
+ * Keep the opening and the ending, say what went missing in between.
+ *
+ * The marker counts against the limit rather than being added on top of it: a
+ * budget that the sentence explaining the budget pushes you over is not a
+ * budget, and a teacher who sets contextChars to fit a small model's window
+ * means the number they typed. Two passes because the marker's own length
+ * depends on the figure it carries.
+ *
+ * The figure stays what was actually dropped. It was already right before —
+ * the head and tail came to exactly `limit` — but it stops being right the
+ * moment the marker is taken out of the budget, so it is now derived from the
+ * lengths actually kept rather than from the limit.
+ */
 function clip(text: string, limit: number): string {
   if (text.length <= limit) return text
-  const head = text.slice(0, Math.ceil(limit * 0.65)).trimEnd()
-  const tail = text.slice(text.length - Math.floor(limit * 0.35)).trimStart()
-  return `${head}\n… truncated ${text.length - limit} chars …\n${tail}`
+  const mark = (dropped: number) => `\n… truncated ${dropped} chars …\n`
+
+  let room = Math.max(0, limit - mark(text.length).length)
+  let head = Math.ceil(room * 0.65)
+  let dropped = text.length - room
+  room = Math.max(0, limit - mark(dropped).length)
+  head = Math.ceil(room * 0.65)
+  const tail = room - head
+  dropped = text.length - head - tail
+
+  const out = `${text.slice(0, head).trimEnd()}${mark(dropped)}${text.slice(text.length - tail).trimStart()}`
+  // trimEnd/trimStart only ever shorten it; the guard is for a limit so small
+  // that the marker alone does not fit.
+  return out.length <= limit ? out : out.slice(0, limit)
 }
 
 function clipLine(text: string, limit: number): string {
