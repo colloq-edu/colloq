@@ -36,6 +36,33 @@
   /* The bright accent scores 2.99 on white — it cannot be text here. It keeps
      every non-text job (dots, fills, the running rule); this is what type uses. */
   --accent-text: 10 110 150;
+  /*
+   * SYNTAX. Drawn from the HSE departmental palette, so the editor belongs to
+   * the same system as everything else, and measured against the ground code is
+   * actually drawn on — surface in light, the lifted navy in dark — not against
+   * the page. Four of these were once under AA and the worst was the comment at
+   * 2.84:1, which in a teaching notebook is often the explanation itself.
+   *
+   * One colour is banned outright: the accent cyan is the live-execution signal
+   * everywhere else, and a cell that is merely selected must never be mistaken
+   * for a cell that is running.
+   *
+   * They live here rather than inside the editor's theme because code is no
+   * longer only in cells. The oracle answers with it, a proposal diffs it, and
+   * the history shows what a version changed — all outside any EditorView, and
+   * all of which were reading it as grey text because the palette was scoped to
+   * a `.cm-editor` ancestor they do not have.
+   */
+  --syn-text: #101a33;
+  --syn-keyword: #7d50b9;
+  --syn-fn: #966600;
+  --syn-type: #374b9b;
+  --syn-string: #00784e;
+  --syn-number: #b35415;
+  --syn-comment: #686e7e;
+  --syn-meta: #c4471a;
+  --syn-literal: #b03040;
+  --syn-punct: #5d6b8a;
 
   /* Cyan on white is too thin to carry a primary action, so the brand does. */
   --primary: 15 45 105;
@@ -196,6 +223,16 @@
     --warning: 242 163 60;
     /* On navy the accent is already 6.53:1, so text and signal can be one colour. */
     --accent-text: 15 160 215;
+    --syn-text: #d6dce8;
+    --syn-keyword: #b98fe8;
+    --syn-fn: #ffd746;
+    --syn-type: #7da0d2;
+    --syn-string: #8fd9a8;
+    --syn-number: #eb8c3c;
+    --syn-comment: #758096;
+    --syn-meta: #eb691e;
+    --syn-literal: #ce5c5c;
+    --syn-punct: #9ba6be;
     --danger: 242 73 95;
 
     --select: rgb(var(--accent) / 0.32);
@@ -225,6 +262,16 @@
   --positive: 62 201 167;
   --warning: 242 163 60;
   --accent-text: 15 160 215;
+  --syn-text: #d6dce8;
+  --syn-keyword: #b98fe8;
+  --syn-fn: #ffd746;
+  --syn-type: #7da0d2;
+  --syn-string: #8fd9a8;
+  --syn-number: #eb8c3c;
+  --syn-comment: #758096;
+  --syn-meta: #eb691e;
+  --syn-literal: #ce5c5c;
+  --syn-punct: #9ba6be;
   --danger: 242 73 95;
 
   --select: rgb(var(--accent) / 0.32);

@@ -30,6 +30,7 @@
   import type { AiAction } from '@shared/protocol'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import CodeLine from '@/components/ui/CodeLine.svelte'
   import {
     deleteCell,
     duplicateCell,
@@ -40,6 +41,7 @@
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn } from '@/lib/utils'
+  import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import {
     watchCell,
     watchCellMeta,
@@ -404,6 +406,14 @@
     return diffLines(liveText.current, proposed)
   })
   const proposedCounts = $derived(diffCounts(proposedLines))
+  // Painted by the editor's own rules, so the proposal reads like the cell it
+  // is offering to replace rather than like a quotation of it.
+  $effect(() => {
+    if (proposal) void loadSyntax()
+  })
+  const proposedTokens = $derived(
+    diffTokens(proposedLines, liveText.current, (proposal?.get('patch') as string) ?? '', syntax()),
+  )
   const proposalStale = $derived(proposal ? patchIsStale(session.doc, proposal) : false)
 
   function accept(): void {
@@ -732,7 +742,7 @@
                   </span>
                 {/if}
               </div>
-              <pre class="overflow-x-auto px-3 py-2 font-mono text-code-lg leading-[21px]">{#each proposedLines as line}<span class={cn('block min-h-[21px]', line.kind === 'added' && 'bg-positive/10 text-ink', line.kind === 'removed' && 'bg-danger/10 text-muted line-through', line.kind === 'same' && 'text-muted')}><span class="inline-block w-5 select-none text-center text-faint">{line.kind === 'added' ? '+' : line.kind === 'removed' ? '\u2212' : ' '}</span>{line.text}</span>{/each}</pre>
+              <div class="overflow-x-auto whitespace-pre px-3 py-2 font-mono text-code-lg leading-[21px]"><div class="w-max min-w-full">{#each proposedLines as line, index (index)}<span class={cn('block min-h-[21px]', line.kind === 'added' && 'bg-positive/10', line.kind === 'removed' && 'bg-danger/10', line.kind === 'same' && 'opacity-55')}><span class="inline-block w-5 select-none text-center text-faint">{line.kind === 'added' ? '+' : line.kind === 'removed' ? '\u2212' : ' '}</span><CodeLine tokens={proposedTokens[index] ?? []} /></span>{/each}</div></div>
               <div class="flex flex-wrap items-center gap-2.5 border-t border-line-soft px-3 py-2">
                 <button type="button" class="btn-primary h-8" onclick={accept}>Accept</button>
                 <button type="button" class="btn-outline h-8" onclick={decline}>Discard</button>

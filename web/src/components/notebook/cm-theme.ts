@@ -34,54 +34,20 @@ const SYN = [
 
 type Syn = (typeof SYN)[number]
 
-/** Humanities, Pre-University, Exact Sciences, Natural Sciences, Social Sciences, Business, HSE Grey. */
-/*
- * Measured against the ground code is actually drawn on — surface in light,
- * the lifted navy in dark — not against the page. Four of these were under AA
- * and the worst was the comment at 2.84:1: in a teaching notebook the comment
- * is often the explanation, and it was the least readable thing on screen.
- */
-const LIGHT: Record<Syn, string> = {
-  text: '#101A33',
-  keyword: '#7D50B9',
-  fn: '#966600',
-  type: '#374B9B',
-  string: '#00784E',
-  number: '#B35415',
-  comment: '#686E7E',
-  meta: '#C4471A',
-  literal: '#B03040',
-  punct: '#5D6B8A',
-}
-
-const DARK: Record<Syn, string> = {
-  text: '#D6DCE8',
-  keyword: '#B98FE8',
-  fn: '#FFD746',
-  type: '#7DA0D2',
-  string: '#8FD9A8',
-  number: '#EB8C3C',
-  comment: '#758096',
-  meta: '#EB691E',
-  literal: '#CE5C5C',
-  punct: '#9BA6BE',
-}
-
 const syn = (name: Syn) => `var(--syn-${name})`
-
-function tokens(value: (name: Syn) => string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const name of SYN) out[`--syn-${name}`] = value(name)
-  return out
-}
 
 const pair = (light: string, dark: string) => `light-dark(${light}, ${dark})`
 
-/** Palette hues need alpha for washes; deriving it here keeps one source of truth. */
-function wash(hex: string, alpha: number): string {
-  const n = Number.parseInt(hex.slice(1), 16)
-  return `rgb(${(n >> 16) & 255} ${(n >> 8) & 255} ${n & 255} / ${alpha})`
-}
+/**
+ * A hue at low alpha, mixed from the token rather than from a hex.
+ *
+ * The palette used to be two records in this file, which is why this used to
+ * take a literal. It is in index.css now — with everything else the product
+ * paints with — so the only way to reach a syntax hue from here is the variable,
+ * and color-mix is what puts alpha on one.
+ */
+const wash = (name: Syn, alpha: number) =>
+  `color-mix(in srgb, ${syn(name)} ${Math.round(alpha * 100)}%, transparent)`
 
 /*
  * The palette lists booleans twice — beside numbers, and beside None and self.
@@ -152,12 +118,9 @@ const highlight = HighlightStyle.define([
  */
 const theme = EditorView.theme({
   '&': {
-    ...tokens((name) => pair(LIGHT[name], DARK[name])),
     color: syn('text'),
     backgroundColor: 'transparent',
   },
-  ':root[data-theme="light"] &': tokens((name) => LIGHT[name]),
-  ':root[data-theme="dark"] &': tokens((name) => DARK[name]),
 
   /*
    * No `{ dark: true }`: that facet is static, so it would be a lie in half of
@@ -262,7 +225,7 @@ const theme = EditorView.theme({
     color: 'rgb(var(--muted))',
   },
   '.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]': {
-    backgroundColor: pair(wash(LIGHT.keyword, 0.14), wash(DARK.keyword, 0.2)),
+    backgroundColor: pair(wash('keyword', 0.14), wash('keyword', 0.2)),
     color: 'rgb(var(--ink))',
   },
   '.cm-tooltip.cm-tooltip-autocomplete-disabled > ul > li[aria-selected]': {
@@ -293,3 +256,10 @@ const theme = EditorView.theme({
 })
 
 export const colloqTheme: Extension = [theme, syntaxHighlighting(highlight)]
+
+/*
+ * Exported so code that is NOT in an editor can be painted by the same rules —
+ * an oracle answer, a proposed rewrite, a version diff. They run it through
+ * highlightTree and mount `highlight.module` themselves; see lib/syntax.
+ */
+export { highlight }

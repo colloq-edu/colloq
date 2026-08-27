@@ -19,6 +19,7 @@
   import { getCells } from '@shared/notebook'
   import { cn } from '@/lib/utils'
   import Icon from '@/components/ui/Icon.svelte'
+  import Code from '@/components/ui/Code.svelte'
   import Markdown from '@/components/notebook/Markdown.svelte'
 
   interface Props {
@@ -152,8 +153,7 @@
             </button>
           {/if}
         </div>
-        <pre
-          class="overflow-x-auto px-2.5 py-2 font-mono text-code text-ink">{part.code}</pre>
+        <Code code={part.code} lang={part.lang} class="px-2.5 py-2" />
       </div>
     {/if}
   {/each}

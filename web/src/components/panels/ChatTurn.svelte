@@ -22,10 +22,13 @@
   import type { AiAction } from '@shared/protocol'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchText } from '@/lib/yreactive.svelte'
+  import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import { cn } from '@/lib/utils'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import Markdown from '@/components/notebook/Markdown.svelte'
+  import Code from '@/components/ui/Code.svelte'
+  import CodeLine from '@/components/ui/CodeLine.svelte'
   import AnswerBody from './AnswerBody.svelte'
 
   interface Props {
@@ -57,6 +60,16 @@
   const against = $derived(entry.patchState === 'open' ? live.current : (entry.patchBase ?? ''))
   const patchLines = $derived(entry.patch === null ? [] : diffLines(against, entry.patch))
   const patchCounts = $derived(diffCounts(patchLines))
+  /*
+   * Both sides of the diff, painted by the editor's own rules. A proposal is
+   * read to decide whether to accept it, and deciding means seeing that the
+   * green line calls a function where the red one indexed a list — which is
+   * exactly the distinction colour makes and a wall of one-colour mono does not.
+   */
+  $effect(() => {
+    if (entry.patch !== null) void loadSyntax()
+  })
+  const patchTokens = $derived(diffTokens(patchLines, against, entry.patch ?? '', syntax()))
   /*
    * Somebody edited the cell while the model was writing. The proposal is not
    * hidden and not applied quietly: it says what it was written against and
@@ -325,8 +338,16 @@
           {/if}
         </div>
 
+        <!--
+          Two boxes, and both are needed. The outer one scrolls; the inner one
+          is as wide as the widest line (w-max) but never narrower than the box
+          (min-w-full), which is what the rows then fill. With the rows sized
+          against the scroll box instead, a line long enough to scroll left its
+          neighbours' red and green tints behind at the old edge.
+        -->
         <div class="overflow-x-auto py-0">
-          {#each patchLines as line, index (index)}<span
+          <div class="w-max min-w-full">
+            {#each patchLines as line, index (index)}<span
               class={cn(
                 'flex min-h-[20px] items-start',
                 line.kind === 'added' && 'bg-positive/10',
@@ -342,12 +363,14 @@
               ><span
                 class={cn(
                   'whitespace-pre font-mono text-code leading-5',
-                  line.kind === 'removed' && 'text-muted',
-                  line.kind === 'same' && 'text-faint',
-                  line.kind === 'added' && 'text-ink',
-                )}>{line.text}</span
+                  // Unchanged lines are context, not news. Held back rather than
+                  // recoloured, so the syntax still reads and the eye still goes
+                  // to the two rows that changed.
+                  line.kind === 'same' && 'opacity-55',
+                )}><CodeLine tokens={patchTokens[index] ?? []} /></span
               ></span
             >{/each}
+          </div>
         </div>
 
         {#if applied}
@@ -418,8 +441,7 @@
           </span>
         </button>
         {#if showRejected}
-          <pre
-            class="overflow-x-auto border-l border-line pl-2.5 font-mono text-code text-muted">{entry.patch}</pre>
+          <Code code={entry.patch} class="border-l border-line pl-2.5" />
         {/if}
       </div>
     {/if}
