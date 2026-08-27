@@ -27,7 +27,7 @@ import { SECURITY_HEADERS } from './headers.js'
 import { handleCollabSocket, shutdownCollab } from './collab/index.js'
 import { staffFromCookieHeader } from './admin/auth.js'
 import { handleControlSocket } from './control.js'
-import { checkpoint, db, getSession, touchLastSeen } from './db.js'
+import { closeDatabase, db, getSession, touchLastSeen } from './db.js'
 import { shutdownKernels } from './kernel/index.js'
 import { jupyterReachable } from './kernel/jupyter.js'
 import { adminAuthRoutes } from './routes/admin-auth.js'
@@ -558,9 +558,19 @@ async function shutdown(signal: string): Promise<void> {
   } catch (err) {
     console.error('colloq: could not stop kernels:', err instanceof Error ? err.message : err)
   }
-  // Последним: журнал WAL сводится в саму базу, чтобы `colloq.db` остановленного
-  // инстанса был целой базой, а не вчерашней с довеском рядом.
-  checkpoint()
+  /*
+   * Последним: база закрывается по-настоящему.
+   *
+   * Раньше процесс просто уходил через process.exit, и журнал WAL оставался
+   * лежать рядом: `colloq.db` остановленного инстанса был вчерашним, а весь
+   * день — в файле, который никто не копирует. db.close() сводит журнал и
+   * закрывает файл, то есть делает ровно то, чего ждут от «остановлено».
+   */
+  try {
+    closeDatabase()
+  } catch (err) {
+    console.error('colloq: could not close the database:', err instanceof Error ? err.message : err)
+  }
 
   clearTimeout(force)
   process.exit(0)

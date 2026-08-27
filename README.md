@@ -30,6 +30,21 @@ name and email, and the instance is yours — then create a seminar and share th
 `make` with no target lists everything. The two that matter are `make host` and
 `make env-use`; both have a section below.
 
+### Backing it up
+
+The database holds the seminars, the staff list, the version history and the oracle
+settings; `./workspace` holds the files a room uploaded. Copy both:
+
+```bash
+make backup                       # → backups/colloq-<date>.db
+cp -r workspace workspace-backup
+```
+
+`make backup` is safe to run mid-seminar. Copying `data/colloq.db` by hand is not —
+SQLite runs in WAL mode, so part of the day sits in `colloq.db-wal` beside it and a
+copy of the one file alone can be hours behind. `make backup` writes a single
+consistent file instead. Restoring is putting the two back.
+
 ### One instance, two ways to start it
 
 `make up` runs everything in Docker. `make run` builds and runs the server on your

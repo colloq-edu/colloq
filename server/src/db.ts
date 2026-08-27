@@ -42,6 +42,25 @@ for (const suffix of ['', '-wal', '-shm']) {
  */
 const CHECKPOINT_EVERY_MS = 5 * 60 * 1000
 
+/**
+ * Снять копию базы, не останавливая семинар.
+ *
+ * `VACUUM INTO` читает согласованный снимок и пишет один готовый файл — без
+ * `-wal` рядом и без вопроса «а всё ли доехало». Копирование `colloq.db` на
+ * ходу этого не даёт: половина дня лежит в журнале, и копия отстаёт на часы.
+ *
+ * Путь не должен существовать — SQLite отказывается писать поверх, и это
+ * правильно: перезаписать чужую копию молча хуже, чем не сделать новую.
+ */
+export function backupTo(file: string): void {
+  db.exec(`VACUUM INTO ${quote(file)}`)
+}
+
+/** SQLite не принимает параметр в VACUUM INTO, так что путь экранируется руками. */
+function quote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
 export function checkpoint(): void {
   try {
     db.pragma('wal_checkpoint(TRUNCATE)')
@@ -54,6 +73,20 @@ export function checkpoint(): void {
 const checkpointTimer = setInterval(checkpoint, CHECKPOINT_EVERY_MS)
 // Не повод держать процесс живым.
 checkpointTimer.unref?.()
+
+/**
+ * Свести журнал и закрыть файл — на выходе.
+ *
+ * `process.exit` не закрывает базу: журнал WAL остаётся лежать рядом, и
+ * `colloq.db` остановленного инстанса — это вчерашний день, а сегодняшний в
+ * файле, который никто не копирует. better-sqlite3 при close() сам делает
+ * контрольную точку.
+ */
+export function closeDatabase(): void {
+  clearInterval(checkpointTimer)
+  checkpoint()
+  db.close()
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (

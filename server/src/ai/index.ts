@@ -169,6 +169,34 @@ async function generate(
    * enough to stop the whole generation.
    */
   const stop = () => controller.abort()
+
+  /*
+   * Сторож на замолчавший поток.
+   *
+   * Таймаут в SDK снимается по первым заголовкам ответа, а не по последнему
+   * кадру: провайдер, который открыл поток и замолчал на середине предложения,
+   * не считается ни упавшим, ни медленным — соединение просто стоит. В комнате
+   * это выглядит как «думает» без конца, и отменить может только тот, кто
+   * спрашивал, если догадается.
+   *
+   * Две минуты между кадрами — заведомо больше любой настоящей паузы: даже
+   * рассуждающая модель отдаёт след порциями, а не одним куском в конце.
+   */
+  const SILENCE_MS = 120_000
+  let silence: NodeJS.Timeout | null = null
+  /** Отличает «замолчал провайдер» от «нажали Stop»: отмена одна, причины разные. */
+  let wentQuiet = false
+  const heard = () => {
+    if (silence) clearTimeout(silence)
+    silence = setTimeout(() => {
+      silence = null
+      wentQuiet = true
+      controller.abort()
+    }, SILENCE_MS)
+    silence.unref?.()
+  }
+  heard()
+
   const answer = new StreamBuffer(sessionId, entryId, chatAnswer, stop)
   const thinking = new StreamBuffer(sessionId, entryId, chatReasoning, stop)
 
@@ -213,6 +241,7 @@ async function generate(
     const text = await streamChat(
       turns,
       (delta, kind) => {
+        heard()
         if (kind === 'reasoning') {
           thinking.push(delta)
           return
@@ -232,6 +261,17 @@ async function generate(
     answer.flush()
 
     if (controller.signal.aborted) {
+      if (wentQuiet) {
+        settle(
+          sessionId,
+          entryId,
+          text.trim() ? 'done' : 'error',
+          text.trim()
+            ? null
+            : 'The AI endpoint opened a reply and then went quiet. Ask again.',
+        )
+        return
+      }
       settle(sessionId, entryId, 'done', text.trim() ? null : STOPPED)
       return
     }
@@ -256,6 +296,7 @@ async function generate(
     // an empty grey box tells a class nothing about what broke.
     settle(sessionId, entryId, 'error', reason)
   } finally {
+    if (silence) clearTimeout(silence)
     inflight.delete(key)
   }
 }
@@ -443,9 +484,21 @@ function systemPrompt(
   action: AiAction | undefined,
   context: string,
 ): string {
+  /*
+   * Имя спросившего — в конце, а не во второй строке.
+   *
+   * Провайдеры кешируют общий префикс запроса, и цена кеш-попадания в разы
+   * ниже. Префикс здесь длинный — правила плюс вся тетрадь, — и он одинаков у
+   * всей комнаты… был бы, если бы во второй строке не стояло имя. Двадцать
+   * студентов задают двадцать вопросов, и ни один префикс не совпадает ни с
+   * одним другим: кеш не срабатывает никогда.
+   *
+   * Ниже — то же самое, слово в слово, только после тетради. Правило от этого
+   * не слабеет: последнее в системном запросе модель держит не хуже второго.
+   */
   const rules = [
     'You are the AI oracle built into Colloq, a live seminar notebook that a class is working in right now.',
-    `${participantName} asked this question, and every other person in the seminar can read your reply: answer the room, not a private tab, and name whoever asked when it helps ("${participantName} is running into…").`,
+    'Every person in the seminar can read your reply: answer the room, not a private tab.',
     'Earlier turns in this thread were asked by different people; each question is labelled with its asker.',
     'Lead with the answer in one or two sentences, then the reasoning behind it. Never open with a preamble or a restatement of the question.',
     'When you propose code, give exactly one runnable Python block that drops into this notebook as written — no ellipses, no pseudo-code.',
@@ -468,7 +521,12 @@ function systemPrompt(
       `House rules set by the teacher of this seminar, which outrank the guidance above: ${houseRules}`,
     )
   }
-  return `${rules.join('\n')}\n\n--- LIVE NOTEBOOK ---\n${context}`
+  /*
+   * Всё, что зависит от спросившего, — после тетради, одной строкой: до сюда
+   * запрос слово в слово одинаков у всей комнаты, и провайдер может отдать его
+   * из кеша.
+   */
+  return `${rules.join('\n')}\n\n--- LIVE NOTEBOOK ---\n${context}\n\n--- WHO IS ASKING ---\n${participantName} asked this question; name them when it helps ("${participantName} is running into…").`
 }
 
 function userPrompt(

@@ -11,3 +11,4 @@ workspace/
 # Локальный запуск через make run.
 .colloq.pid
 .colloq.log
+backups/

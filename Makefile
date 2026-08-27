@@ -26,7 +26,7 @@ OFF  := \033[0m
 .PHONY: help up dev run stop logs-run down restart logs status ps shell \
         host relay-setup tunnel-setup \
         env-list env-show env-new env-use env-build env-freeze \
-        test check
+        backup test check
 
 ## ------------------------------------------------------------------ запуск
 
@@ -108,6 +108,20 @@ stop: ## Остановить сервер на хосте (ядро в docker �
 
 logs-run: ## Смотреть логи сервера, запущенного через make run
 	@tail -f $(LOG)
+
+backup: ## Снять копию базы в backups/ (можно на ходу, семинар не останавливается)
+	@# VACUUM INTO читает согласованный снимок и пишет один готовый файл. Копия
+	@# самого colloq.db этого не даёт: в режиме WAL половина дня лежит в журнале
+	@# рядом, и файл, скопированный на ходу, отстаёт на часы. Проверено.
+	@#
+	@# Файлы семинаров (./workspace) сюда не входят — это отдельная папка, её
+	@# копируют как папку. В базе лежат сами семинары, преподаватели, история
+	@# версий и настройки оракула.
+	@mkdir -p backups
+	@out="backups/colloq-$$(date +%Y%m%d-%H%M%S).db"; \
+	  sqlite3 data/colloq.db "VACUUM INTO '$$PWD/$$out'" \
+	    && printf '$(BOLD)копия:$(OFF) %s $(DIM)(%s)$(OFF)\n' "$$out" "$$(du -h "$$out" | cut -f1)" \
+	    || { printf '$(RED)не вышло. Нужен sqlite3 — brew install sqlite$(OFF)\n'; exit 1; }
 
 down: ## Остановить всё (данные и файлы семинаров остаются)
 	docker compose down
