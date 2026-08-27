@@ -14,6 +14,7 @@
   import { oracleModeIn, readRules } from '@shared/rules'
   import type { OracleMode } from '@shared/admin'
   import { api } from '@/lib/api'
+  import { oracleDraft } from '@/lib/drafts.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchCellIds } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
@@ -45,7 +46,14 @@
   // each snapshot would be work spent on objects that are replaced next frame.
   let entries = $state.raw<ChatSnapshot[]>(chat.map(readChatEntry))
   let status = $state<{ enabled: boolean; model: string; mode: OracleMode } | null>(null)
-  let draft = $state('')
+  /*
+   * Вопрос переживает закрытие панели.
+   *
+   * Панель размонтируется вместе со своей кнопкой, а спрашивают обычно про
+   * ячейку, на которую в этот момент и хочется посмотреть: свернул, глянул,
+   * развернул — вопроса нет. Черновик живёт во вкладке, а не в компоненте.
+   */
+  const composing = oracleDraft
   let sendError = $state<string | null>(null)
   let armed = $state(false)
   let pinned = $state(true)
@@ -358,9 +366,9 @@
   }
 
   function submit() {
-    const message = draft.trim()
+    const message = composing.question.trim()
     if (!message) return
-    draft = ''
+    composing.question = ''
     if (composer) {
       composer.style.height = 'auto'
       composer.focus()
@@ -644,7 +652,7 @@
         />
         <textarea
           bind:this={composer}
-          bind:value={draft}
+          bind:value={composing.question}
           rows="1"
           placeholder={selected === null ? "Ask the room's oracle…" : `Ask about cell ${pad(selected)}…`}
           title="Enter sends, Shift+Enter for a new line"
@@ -652,14 +660,14 @@
           oninput={onInput}
           onkeydown={onKeydown}
           onblur={() => {
-            if (!draft.trim()) stopComposing()
+            if (!composing.question.trim()) stopComposing()
           }}
         ></textarea>
         <button
           type="button"
           class="btn-primary h-7 w-7 shrink-0 px-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-label="Send"
-          disabled={!draft.trim()}
+          disabled={!composing.question.trim()}
           onclick={submit}
         >
           <Icon name="send" size={14} />

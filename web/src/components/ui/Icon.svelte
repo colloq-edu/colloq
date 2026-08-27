@@ -45,6 +45,8 @@
       '<path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.4 5.4l1.6 1.6M17 17l1.6 1.6M18.6 5.4L17 7M7 17l-1.6 1.6"/>',
     moon: '<path d="M20.2 14.4A8.4 8.4 0 0 1 9.6 3.8a8.4 8.4 0 1 0 10.6 10.6z"/>',
     text: '<path d="M5 6h14M5 12h9M5 18h12"/>',
+    // Карандаш: правка того, что уже записано.
+    pencil: '<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="M14.5 7.5 16.5 9.5"/>',
     send: '<path d="M4.5 12L20 4.5 15 20l-3.5-6.5z"/><path d="M11.5 13.5L20 4.5"/>',
     more: '<circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/>',
     spinner: '<path d="M12 3a9 9 0 1 0 9 9"/>',

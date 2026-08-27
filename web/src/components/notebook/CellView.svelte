@@ -67,13 +67,15 @@
   interface Props {
     id: string
     index: number
+    /** Последняя в тетради: «вниз» ей некуда, и кнопка это показывает. */
+    last: boolean
     selected: boolean
     /** False while the cell sits far outside the viewport; see Notebook.svelte. */
     near?: boolean
     onselect: () => void
   }
 
-  let { id, index, selected, near = true, onselect }: Props = $props()
+  let { id, index, last, selected, near = true, onselect }: Props = $props()
 
   const session = getSessionState()
   const cell = watchCell(session.doc, () => id)
@@ -577,6 +579,7 @@
           class={TOOL}
           title="Move down"
           aria-label="Move cell down"
+          disabled={last}
           onclick={() => moveCell(session.doc, id, 1)}
         >
           <Icon name="chevron-down" size={13} />

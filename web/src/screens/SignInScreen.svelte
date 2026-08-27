@@ -258,6 +258,36 @@
         {/if}
       </section>
       {/if}
+    {:else}
+      <!--
+        Сервер не ответил — и раньше здесь не было ничего.
+
+        Весь правый столбец висел на `{#if instance}`, а состояние инстанса не
+        читалось, когда вход по ключу проваливался: ключ из ссылки уже потрачен,
+        адресная строка переписана, экран пуст. Отозванный ключ выглядел как
+        белая страница, и по ней нельзя было понять ни что случилось, ни что
+        делать.
+      -->
+      <section class="animate-fade-up flex flex-col gap-5 border border-line p-[26px]">
+        <div class="flex flex-col gap-1.5">
+          <h2 class="text-head font-black tracking-tight text-ink">Could not reach the panel</h2>
+          <p class="text-ui text-muted">
+            {adminAuth.error ?? 'The server did not answer.'}
+          </p>
+          <p class="text-ui text-muted">
+            If you came here from a sign-in link, it may have been rotated — the link stops working
+            the moment a new one is minted. Ask whoever runs this instance for a fresh one.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="btn-outline h-11 self-start px-6 text-2xs font-bold uppercase tracking-caps"
+          disabled={adminAuth.loading}
+          onclick={() => void adminAuth.refresh()}
+        >
+          {adminAuth.loading ? 'Trying…' : 'Try again'}
+        </button>
+      </section>
     {/if}
   </div>
 </div>

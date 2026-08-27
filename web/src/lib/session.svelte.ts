@@ -40,6 +40,8 @@ function wsBase(): string {
 export class SessionState {
   /** Not readonly: the room's rules can change while the seminar is running. */
   session: SessionInfo = $state.raw({} as SessionInfo)
+  /** True once the server has said the seminar is gone; stops the reconnect loop. */
+  gone = $state(false)
   /*
    * Reactive, because the role in it can be corrected after the fact: the
    * control socket reports the role the SERVER will act on, which is not
@@ -265,10 +267,24 @@ export class SessionState {
       else if (message.t === 'error') this.lastError = message.message
     }
 
-    socket.onclose = () => {
+    socket.onclose = (event: CloseEvent) => {
       window.clearInterval(this.#heartbeat)
       this.#control = null
       if (this.#disposed) return
+      /*
+       * The server says why when it closes on purpose.
+       *
+       * A deleted seminar closes with 1001 and a reason, and nobody read
+       * either: the browser simply reconnected, was refused, backed off, and
+       * spun "RECONNECTING" for the rest of the day in front of a person whose
+       * room no longer existed. Reconnecting is right for a network blip and
+       * wrong for a room that is gone, and the difference is in this event.
+       */
+      if (event.code === 1001 && /deleted/i.test(event.reason ?? '')) {
+        this.gone = true
+        this.lastError = 'This seminar was deleted. Nothing here can be saved or reopened.'
+        return
+      }
       this.#retries += 1
       const delay = Math.min(500 * 2 ** Math.min(this.#retries, 5), 8000)
       this.#reconnectTimer = window.setTimeout(() => this.#connectControl(), delay)
@@ -320,6 +336,11 @@ export class SessionState {
     } catch {
       /* the control socket pushes the list too; a failed poll is not fatal */
     }
+  }
+
+  /** Сообщить о том, что сломалось на этой стороне, тем же способом, что и сервер. */
+  showError(message: string) {
+    this.lastError = message
   }
 
   dismissError() {

@@ -34,6 +34,7 @@ import {
   oldestOwner,
   rotateLinkKey,
   touchTeacherLastSeen,
+  updateTeacherIdentity,
   updateTeacherRole,
 } from '../admin/store.js'
 import { config } from '../config.js'
@@ -244,13 +245,45 @@ export function adminAuthRoutes(): Router {
     res.status(200).json(withLink(minted))
   })
 
+  /*
+   * Одна ручка на роль и на имя с адресом.
+   *
+   * Роль была единственным, что здесь принималось, и опечатка в фамилии
+   * лечилась удалением с заводом заново: новая ссылка, потерянное авторство
+   * семинаров и выброшенный из панели человек — ради одной буквы. Поля
+   * необязательные: кто прислал только роль, работает как раньше.
+   */
   router.patch('/api/admin/teachers/:id', requireOwner, (req, res) => {
+    const target = getTeacher(req.params.id)
+    if (!target) return fail(res, 404, 'invalid', 'no such teacher')
+
+    const wantsIdentity = req.body?.name !== undefined || req.body?.email !== undefined
+    if (wantsIdentity) {
+      const name = normalizeName(req.body?.name)
+      if (!name) return fail(res, 400, 'invalid', 'a name is required')
+      if (name.length > LIMITS.teacherName) {
+        return fail(res, 400, 'invalid', `name must be ${LIMITS.teacherName} characters or fewer`)
+      }
+      const email = normalizeEmail(typeof req.body?.email === 'string' ? req.body.email : '')
+      if (!email || email.length > LIMITS.email || !looksLikeEmail(email)) {
+        return fail(res, 400, 'invalid', 'a valid email address is required')
+      }
+      const taken = getTeacherByEmail(email)
+      if (taken && taken.id !== target.id) {
+        return fail(res, 409, 'invalid', 'someone with that email is already on the staff list')
+      }
+      const renamed = updateTeacherIdentity(target.id, { name, email })
+      if (!renamed) {
+        return fail(res, 409, 'invalid', 'someone with that email is already on the staff list')
+      }
+      // Смена только имени и адреса — роль трогать незачем.
+      if (req.body?.role === undefined) return res.json(renamed)
+    }
+
     const role = req.body?.role as AdminRole | undefined
     if (role !== 'owner' && role !== 'teacher') {
       return fail(res, 400, 'invalid', "role must be 'owner' or 'teacher'")
     }
-    const target = getTeacher(req.params.id)
-    if (!target) return fail(res, 404, 'invalid', 'no such teacher')
 
     if (target.role === 'owner' && role === 'teacher' && countOwners() <= 1) {
       return fail(res, 409, 'invalid', 'the last owner cannot be demoted')

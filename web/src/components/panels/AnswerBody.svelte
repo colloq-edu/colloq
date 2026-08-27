@@ -21,6 +21,7 @@
   import Icon from '@/components/ui/Icon.svelte'
   import Code from '@/components/ui/Code.svelte'
   import Markdown from '@/components/notebook/Markdown.svelte'
+  import { copyText } from '@/lib/clipboard'
 
   interface Props {
     source: string
@@ -81,7 +82,7 @@
 
   async function copy(index: number, code: string) {
     try {
-      await navigator.clipboard.writeText(code)
+      await copyText(code)
       copied = index
       window.clearTimeout(copiedTimer)
       copiedTimer = window.setTimeout(() => (copied = null), 1400)

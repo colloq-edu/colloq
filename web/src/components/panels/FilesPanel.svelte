@@ -4,6 +4,7 @@
   import { getSessionState } from '@/lib/session.svelte'
   import { formatBytes, splitFileName } from '@/lib/utils'
   import Icon from '@/components/ui/Icon.svelte'
+  import { copyText } from '@/lib/clipboard'
 
   /** One file still on the wire, and the bytes the browser has actually flushed. */
   interface Upload {
@@ -189,7 +190,7 @@
 
   async function copySnippet(name: string) {
     try {
-      await navigator.clipboard.writeText(snippetFor(name))
+      await copyText(snippetFor(name))
       copied = name
       window.clearTimeout(copyTimer)
       copyTimer = window.setTimeout(() => (copied = null), 1400)

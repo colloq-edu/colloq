@@ -8,6 +8,7 @@
   import { seminarLink } from '@/lib/seminar-link'
   import { cn } from '@/lib/utils'
   import { LIMITS, type AdminEnvironment, type AdminSeminar, type ImportPreview } from '@shared/admin'
+  import { copyText } from '@/lib/clipboard'
 
   /**
    * The seminar list, and the one thing a teacher comes here to do: get the
@@ -193,8 +194,20 @@
 
   const live = $derived(seminars.filter((s) => s.status === 'live'))
   const needle = $derived(query.trim().toLowerCase())
+  /**
+   * Archived seminars are off the list until asked for.
+   *
+   * The button says "To take it off the list… archive it" and the list did not
+   * take it off anything: a term of archived rooms sat between this week's,
+   * and the word meant nothing. They are still reachable — a checkbox away,
+   * with a count, because archiving is a label and not a deletion.
+   */
+  let showArchived = $state(false)
+  const archivedCount = $derived(seminars.filter((s) => s.archivedAt).length)
   const shown = $derived(
-    needle ? seminars.filter((s) => s.name.toLowerCase().includes(needle)) : seminars,
+    seminars
+      .filter((s) => showArchived || !s.archivedAt)
+      .filter((s) => (needle ? s.name.toLowerCase().includes(needle) : true)),
   )
   const canDelete = $derived(adminAuth.isOwner)
 
@@ -436,7 +449,7 @@
 
   async function copy(seminar: AdminSeminar): Promise<void> {
     try {
-      await navigator.clipboard.writeText(linkOf(seminar))
+      await copyText(linkOf(seminar))
     } catch {
       // Blocked on an insecure origin, which is a normal way to self-host. The
       // link is the point of the click, so it goes on screen instead.
@@ -543,6 +556,17 @@
         class="min-w-0 flex-1 bg-transparent text-ui text-ink outline-none placeholder:text-faint"
       />
     </div>
+    {#if archivedCount}
+      <label
+        class="flex h-[34px] cursor-pointer select-none items-center gap-2 border border-line
+               bg-canvas px-3 text-2xs font-bold uppercase tracking-caps text-muted
+               hover:text-ink"
+      >
+        <input type="checkbox" bind:checked={showArchived} class="accent-accent" />
+        Archived
+        <span class="tabular-nums text-faint">{archivedCount}</span>
+      </label>
+    {/if}
     <button
       type="button"
       onclick={startCreate}
@@ -887,6 +911,16 @@
               {/if}
               {#if seminar.archivedAt}
                 <span class="whitespace-nowrap text-2xs text-muted">archived</span>
+              {/if}
+              <!--
+                Кто завёл комнату. Хранилось с самого начала и не показывалось
+                нигде: на общем инстансе кафедры список — это чужие семинары
+                вперемешку со своими, и «удалить» стоит рядом с каждым. Правит
+                по-прежнему любой преподаватель — это одна кафедра, а не
+                арендаторы, — но чьё это, теперь видно до нажатия.
+              -->
+              {#if seminar.createdBy}
+                <span class="whitespace-nowrap text-2xs text-faint">by {seminar.createdBy}</span>
               {/if}
             </div>
 

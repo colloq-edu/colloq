@@ -847,6 +847,7 @@
       <CellView
         {id}
         {index}
+        last={index === ids.current.length - 1}
         selected={session.selectedCellId === id}
         near={isNear(id, index)}
         onselect={() => session.selectCell(id)}

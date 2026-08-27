@@ -27,6 +27,7 @@
   import { cn, relativeTime } from '@/lib/utils'
   import { LIMITS, SIGN_IN_PATH, type AdminRole, type Teacher } from '@shared/admin'
   import { colorForId } from '@shared/protocol'
+  import { copyText } from '@/lib/clipboard'
 
   /* The lanes. Declared once so the header and every row cannot drift apart. */
   /*
@@ -84,6 +85,16 @@
 
   let menuId = $state<string | null>(null)
   let roleBusy = $state<string | null>(null)
+  /**
+   * Правка имени и адреса, открытая полосой прямо в строке.
+   *
+   * Раньше опечатка в фамилии лечилась только «удалить и завести заново»: новая
+   * ссылка, потерянное авторство семинаров и выброшенный из панели человек ради
+   * одной буквы. Черновик держится отдельно от `teachers`, чтобы брошенная
+   * правка не перекрашивала строку.
+   */
+  let editing = $state<{ id: string; name: string; email: string } | null>(null)
+  let savingEdit = $state(false)
   /** A refusal with no confirmation band to land in still has to be seen. */
   let rowError = $state<{ id: string; message: string } | null>(null)
 
@@ -186,6 +197,42 @@
     }
   }
 
+  function startEdit(t: Teacher): void {
+    menuId = null
+    confirming = null
+    rowError = null
+    editing = { id: t.id, name: t.name, email: t.email }
+  }
+
+  async function saveEdit(event: SubmitEvent): Promise<void> {
+    event.preventDefault()
+    const draft = editing
+    if (!draft) return
+    const name = draft.name.trim()
+    const email = draft.email.trim()
+    if (!name) return void (rowError = { id: draft.id, message: 'A name is required.' })
+    if (!email) {
+      return void (rowError = {
+        id: draft.id,
+        message: 'An email address is required — it is how they are identified.',
+      })
+    }
+
+    savingEdit = true
+    rowError = null
+    try {
+      const updated = await adminApi.updateTeacher(draft.id, { name, email })
+      put(updated)
+      editing = null
+      // Своё имя стоит в шапке панели — оболочка узнаёт его от сервера.
+      if (updated.id === me?.id) void adminAuth.refresh()
+    } catch (cause: unknown) {
+      rowError = { id: draft.id, message: report(cause) }
+    } finally {
+      savingEdit = false
+    }
+  }
+
   function ask(t: Teacher, kind: 'rotate' | 'remove'): void {
     menuId = null
     confirmError = null
@@ -249,7 +296,7 @@
     rowCopyError = null
     try {
       const { signInUrl } = await adminApi.teacherLink(t.id)
-      await navigator.clipboard.writeText(signInUrl)
+      await copyText(signInUrl)
       copiedRow = t.id
       clearTimeout(copiedRowTimer)
       copiedRowTimer = setTimeout(() => (copiedRow = null), 2200)
@@ -268,7 +315,7 @@
 
   async function copy(url: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(url)
+      await copyText(url)
       copied = true
       copyError = null
       // A confirmation that never leaves stops being one.
@@ -285,6 +332,7 @@
   function onKeydown(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return
     if (menuId) return void (menuId = null)
+    if (editing) return void (editing = null)
     // Not while the call is in flight: the band is where its answer lands.
     if (confirming && !acting) confirming = null
   }
@@ -500,6 +548,14 @@
             >
               <button
                 type="button"
+                onclick={() => startEdit(t)}
+                class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-ink hover:bg-raised"
+              >
+                <Icon name="pencil" size={14} class="text-faint" />
+                Edit name and email
+              </button>
+              <button
+                type="button"
                 onclick={() => ask(t, 'rotate')}
                 class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-ink hover:bg-raised"
               >
@@ -524,6 +580,41 @@
 
     {#if rowError?.id === t.id}
       <p class="border-b border-line-soft py-2.5 pl-11 text-ui text-danger">{rowError.message}</p>
+    {/if}
+
+    {#if editing?.id === t.id}
+      <form
+        onsubmit={(event) => void saveEdit(event)}
+        class="flex flex-wrap items-end gap-3 border-b border-line-soft bg-surface py-4 pl-11 pr-4"
+      >
+        <label class="min-w-[180px] flex-1">
+          {@render eyebrow('Name')}
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            autofocus
+            bind:value={editing.name}
+            maxlength={LIMITS.teacherName}
+            class="field mt-1.5 text-ui"
+          />
+        </label>
+        <label class="min-w-[210px] flex-1">
+          {@render eyebrow('Email')}
+          <input
+            bind:value={editing.email}
+            type="email"
+            maxlength={LIMITS.email}
+            spellcheck="false"
+            class="field mt-1.5 font-mono text-2xs"
+          />
+        </label>
+        <button type="submit" class="btn-primary" disabled={savingEdit}>
+          {savingEdit ? 'Saving…' : 'Save'}
+        </button>
+        <button type="button" class="btn-ghost" onclick={() => (editing = null)}>Cancel</button>
+        <p class="w-full text-2xs text-muted">
+          Their sign-in link keeps working — this changes the name and the address, nothing else.
+        </p>
+      </form>
     {/if}
 
     {#if confirming?.id === t.id}

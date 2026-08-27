@@ -54,8 +54,11 @@ export interface CreateTeacherRequest {
   email: string
 }
 
+/** Роль, личные данные или и то и другое — сервер принимает любую комбинацию. */
 export interface UpdateTeacherRequest {
-  role: AdminRole
+  role?: AdminRole
+  name?: string
+  email?: string
 }
 
 const BASE = '/api/admin'

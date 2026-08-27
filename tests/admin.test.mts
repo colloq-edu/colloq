@@ -17,6 +17,7 @@ import {
   listTeachers,
   normalizeEmail,
   rotateLinkKey,
+  updateTeacherIdentity,
   updateTeacherRole,
 } from '../server/src/admin/store.js'
 import { issueStaffCookie, staffFromCookieHeader, verifySetupToken } from '../server/src/admin/auth.js'
@@ -111,4 +112,27 @@ test('a wrong setup token is refused and a right one is not', () => {
   assert.equal(verifySetupToken(''), false)
   assert.equal(verifySetupToken(null), false)
   assert.equal(verifySetupToken(12345), false)
+})
+
+test('a teacher can be renamed without losing their link', () => {
+  const marina = fresh('Ada Lovelace', 'ada@example.edu')
+  const key = linkKeyOf(marina.id)
+
+  const fixed = updateTeacherIdentity(marina.id, { name: 'Ada Lovelace', email: 'Ada@Example.edu ' })
+  assert.equal(fixed?.name, 'Ada Lovelace')
+  // Тот же адрес, приведённый к одному виду — как и на заведении.
+  assert.equal(fixed?.email, 'ada@example.edu')
+  // Смысл правки в том, что ссылка остаётся: иначе это удаление с заводом заново.
+  assert.equal(linkKeyOf(marina.id), key)
+  assert.ok(getTeacherByEmail('ada@example.edu'))
+  assert.equal(getTeacherByEmail('ada@example.edu'), null)
+})
+
+test('a rename onto somebody else’s address is refused, not merged', () => {
+  const one = fresh('Sergey', 'sergey@hse.ru')
+  fresh('Olga', 'olga@hse.ru')
+
+  assert.equal(updateTeacherIdentity(one.id, { name: 'Sergey', email: 'olga@hse.ru' }), null)
+  // Отказ не должен переименовать наполовину.
+  assert.equal(getTeacherByEmail('sergey@hse.ru')?.id, one.id)
 })

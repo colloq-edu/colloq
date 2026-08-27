@@ -59,6 +59,7 @@ const insertStaff = db.prepare(`
   VALUES (@id, @email, @name, @role, @created_at, NULL, NULL)
 `)
 const updateRole = db.prepare('UPDATE staff SET role = ? WHERE id = ?')
+const updateIdentity = db.prepare('UPDATE staff SET name = ?, email = ? WHERE id = ?')
 const updateLinkKey = db.prepare('UPDATE staff SET link_key = ? WHERE id = ?')
 const deleteById = db.prepare('DELETE FROM staff WHERE id = ?')
 const touchSeen = db.prepare('UPDATE staff SET last_seen_at = ? WHERE id = ?')
@@ -144,6 +145,29 @@ export function createTeacher(input: { email: string; name: string; role: AdminR
 
 export function updateTeacherRole(id: string, role: AdminRole): Teacher | null {
   if (updateRole.run(role, id).changes === 0) return null
+  return getTeacher(id)
+}
+
+/**
+ * Переименовать преподавателя или поправить адрес.
+ *
+ * До этого исправить опечатку в фамилии можно было только удалением и заводом
+ * заново — с новой ссылкой, потерянным авторством у семинаров и выброшенным из
+ * панели человеком. Null, если адрес уже занят: решает UNIQUE-индекс, как и на
+ * заведении.
+ */
+export function updateTeacherIdentity(
+  id: string,
+  input: { name: string; email: string },
+): Teacher | null {
+  try {
+    if (updateIdentity.run(input.name, normalizeEmail(input.email), id).changes === 0) return null
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && String(err.code).startsWith('SQLITE_CONSTRAINT')) {
+      return null
+    }
+    throw err
+  }
   return getTeacher(id)
 }
 

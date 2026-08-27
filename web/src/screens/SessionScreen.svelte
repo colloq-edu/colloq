@@ -34,6 +34,7 @@
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
   import { getMeta, type KernelStatus } from '@shared/notebook'
   import type { SessionInfo } from '@shared/protocol'
+  import { copyText } from '@/lib/clipboard'
 
   interface Props {
     session: SessionInfo
@@ -348,8 +349,11 @@
 
   async function copyLink(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(`${location.origin}/s/${info.id}`)
+      await copyText(`${location.origin}/s/${info.id}`)
     } catch {
+      // Ссылка — это весь смысл нажатия, и молча ничего не делать здесь хуже
+      // всего: человек уверен, что скопировал, и вставляет в чат прошлое.
+      session.showError(`The browser blocked the clipboard. The link is ${location.origin}/s/${info.id}`)
       return
     }
     copied = true
@@ -635,7 +639,32 @@
   </div>
 </div>
 
-{#if session.lastError}
+<!--
+  Комната, которой больше нет.
+  
+  Сервер закрывает сокет с 1001 и причиной, и раньше её никто не читал:
+  браузер просто переподключался, получал отказ и крутил «RECONNECTING» до
+  конца дня перед человеком, чьего семинара уже не существует. Это не полоска
+  внизу, а конец работы — поэтому во весь экран.
+-->
+{#if session.gone}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-canvas/95 px-6">
+    <div class="w-full max-w-sm text-center">
+      <span
+        class="mx-auto flex h-10 w-10 items-center justify-center border border-line bg-surface text-faint"
+      >
+        <Icon name="link" size={16} />
+      </span>
+      <h1 class="mt-4 text-title font-semibold tracking-tight text-ink">Этот семинар удалён</h1>
+      <p class="mt-2 text-ui text-muted">
+        Комнаты больше нет: ни ноутбука, ни файлов, ни истории. Ссылка тоже
+        перестала работать — если она нужна была, спросите преподавателя.
+      </p>
+    </div>
+  </div>
+{/if}
+
+{#if session.lastError && !session.gone}
   <div class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
     <div
       role="status"

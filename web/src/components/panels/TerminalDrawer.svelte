@@ -15,6 +15,7 @@
   import { getSessionState } from '@/lib/session.svelte'
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
   import { getTerminal, readTerminalLine, type TerminalLineSnapshot } from '@shared/notebook'
+  import { terminalDraft } from '@/lib/drafts.svelte'
 
   interface Props {
     /** Hides this drawer. It never sends term:close — the shell belongs to the room. */
@@ -197,11 +198,15 @@
   /* ---------------------------------------------------------------- prompt */
 
   let input: HTMLInputElement | null = $state(null)
-  let command = $state('')
-  /** Only this person's commands: a shared history would be unusable in a room. */
-  let history: string[] = []
-  let historyAt = -1
-  let draft = ''
+  /*
+   * Черновик и история живут вне ящика.
+   *
+   * Ящик размонтируется, когда его закрывают, и раньше вместе с ним пропадала
+   * половина набранной команды и весь список для стрелки вверх: закрыл, чтобы
+   * посмотреть на ячейку, открыл — пусто. Теперь это состояние вкладки, а не
+   * компонента.
+   */
+  const term = terminalDraft
 
   const status = $derived(session.terminalStatus)
   // A command has to reach the server to be a command. Disconnected, the status
@@ -220,26 +225,40 @@
             : 'pip install seaborn',
   )
 
+  /**
+   * Оболочку можно завести заново, пока есть кому её просить.
+   *
+   * Не в 'starting': там уже идёт запуск. Не без связи: сообщение никуда не
+   * уйдёт, а кнопка сделает вид, что ушло.
+   */
+  const canRevive = $derived(session.connected && (status === 'dead' || status === 'closed'))
+
+  function revive(): void {
+    if (!canRevive) return
+    session.send({ t: 'term:open' })
+    queueMicrotask(() => input?.focus())
+  }
+
   function submit(): void {
-    const value = command.trim()
+    const value = term.command.trim()
     if (!value || !canType) return
     session.send({ t: 'term:run', command: value })
-    history = [value, ...history.filter((entry) => entry !== value)].slice(0, 100)
-    historyAt = -1
-    draft = ''
-    command = ''
+    term.history = [value, ...term.history.filter((entry) => entry !== value)].slice(0, 100)
+    term.at = -1
+    term.stashed = ''
+    term.command = ''
     pinned = true
   }
 
   function recall(step: 1 | -1): void {
-    if (history.length === 0) return
-    if (historyAt === -1 && step === 1) draft = command
-    const next = historyAt + step
+    if (term.history.length === 0) return
+    if (term.at === -1 && step === 1) term.stashed = term.command
+    const next = term.at + step
     if (next < -1) return
-    historyAt = Math.min(next, history.length - 1)
-    command = historyAt === -1 ? draft : history[historyAt]
+    term.at = Math.min(next, term.history.length - 1)
+    term.command = term.at === -1 ? term.stashed : term.history[term.at]
     // Land the caret at the end of the recalled line, the way a shell does.
-    queueMicrotask(() => input?.setSelectionRange(command.length, command.length))
+    queueMicrotask(() => input?.setSelectionRange(term.command.length, term.command.length))
   }
 
   function onPromptKey(event: KeyboardEvent): void {
@@ -252,11 +271,11 @@
       if (target.value) {
         event.preventDefault()
         event.stopPropagation()
-        command = ''
+        term.command = ''
         // Back to the live line, so the next ArrowUp starts from the top of the
         // history rather than the middle of the recall you just abandoned.
-        historyAt = -1
-        draft = ''
+        term.at = -1
+        term.stashed = ''
       }
       return
     }
@@ -457,7 +476,7 @@
     <span class="term-sigil">$</span>
     <input
       bind:this={input}
-      bind:value={command}
+      bind:value={term.command}
       class="term-input"
       type="text"
       spellcheck="false"
@@ -472,7 +491,7 @@
       onblur={() => session.setInTerminal(false)}
     />
     <!-- A block cursor only while the line is empty, so it never fights the real caret. -->
-    {#if canType && command.length === 0}
+    {#if canType && term.command.length === 0}
       <span class="term-caret"></span>
     {/if}
     <span class="term-hint">
@@ -481,6 +500,18 @@
         ctrl-c stops it
       {:else if canType}
         ↑ history
+      {:else if canRevive}
+        <!--
+          `exit` в общей оболочке — тупик.
+
+          Оболочку заказывали при открытии ящика, а мёртвая оболочка ящик не
+          закрывает: строка гасла, надпись говорила «the shell stopped», и
+          выхода из этого не было — надо было догадаться закрыть терминал и
+          открыть заново. Один и тот же term:open, только теперь его видно.
+        -->
+        <button type="button" class="term-revive" onclick={revive}>
+          Start a new shell
+        </button>
       {:else}
         {status}
       {/if}
@@ -798,6 +829,19 @@
     background: var(--tm-accent);
     opacity: 0.75;
     animation: tmblink 1.1s ease-in-out infinite;
+  }
+
+  .term-revive {
+    font-family: var(--tm-sans);
+    font-size: 10px;
+    color: var(--tm-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .term-revive:hover {
+    color: var(--tm-ink);
   }
 
   .term-hint {

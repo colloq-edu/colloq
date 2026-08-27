@@ -34,13 +34,19 @@
     runBy: (runningMeta.current.runBy as string | null) ?? null,
   })
 
-  /** Подпись на наведение: куда именно уведёт нажатие. */
+  /**
+   * Подпись на наведение: куда именно уведёт нажатие.
+   *
+   * По-английски, как и весь остальной интерфейс: это единственные четыре
+   * строки во всём приложении, которые были написаны по-русски, и в списке
+   * рядом с «Files», «People» и «Run» они читались как чужая вставка.
+   */
   function hintFor(person: Person, place: RevealTarget): string {
-    const who = person.isSelf ? 'себе' : person.user.name
-    if (place.where === 'terminal') return `К ${who} в терминал`
-    if (place.where === 'oracle') return `К ${who} в тред оракула`
+    const who = person.isSelf ? 'you' : person.user.name
+    if (place.where === 'terminal') return `Go to ${who} in the terminal`
+    if (place.where === 'oracle') return `Go to ${who}’s thread with the oracle`
     const index = view.cellIds.indexOf(place.cellId)
-    return index === -1 ? 'К ячейке' : `К ячейке ${String(index + 1).padStart(2, '0')}`
+    return index === -1 ? 'Go to the cell' : `Go to cell ${String(index + 1).padStart(2, '0')}`
   }
 
   function go(place: RevealTarget): void {
