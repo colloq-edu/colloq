@@ -86,6 +86,8 @@ interface Runtime {
   queue: QueueItem[]
   pumping: boolean
   currentCell: string | null
+  /** Which press of Run the running cell came from; see stopBatchOf. */
+  currentBatch: number | null
   /** Who asked for the running cell — the server's own record, not the document's. */
   currentRunById: string | null
   writer: OutputWriter | null
@@ -115,6 +117,7 @@ function getRuntime(sessionId: string): Runtime {
       queue: [],
       pumping: false,
       currentCell: null,
+      currentBatch: null,
       currentRunById: null,
       writer: null,
       environment: null,
@@ -361,8 +364,19 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
 
 export async function interruptSession(sessionId: string): Promise<void> {
   const runtime = getRuntime(sessionId)
-  // Drop the tail first: interrupting cell 3 of 10 must not start cell 4.
-  dropQueue(runtime)
+  /*
+   * Drop the tail first: interrupting cell 3 of 10 must not start cell 4.
+   *
+   * The tail is this press of Run, not the whole room's. Dropping everything
+   * meant a student stopping their own loop silently cancelled thirty cells
+   * the teacher had queued with Run All — who then saw a notebook that had
+   * simply stopped, decided Run All had not worked, and pressed it again. It
+   * also walked straight past the ownership check above, which exists exactly
+   * so one person cannot cancel another's work.
+   */
+  const running = runtime.currentCell
+  if (running) stopBatchOf(runtime, running)
+  else dropQueue(runtime)
   if (!runtime.kernel || runtime.kernel.phase === 'dead') return
   try {
     await runtime.kernel.interrupt()
@@ -399,17 +413,25 @@ export async function shutdownSession(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * Stopping the server, not the seminars.
+ *
+ * This used to DELETE every Jupyter session, which killed every kernel in
+ * every room. `make run` is what the Makefile tells a teacher to do after any
+ * edit, so a one-line change wiped the variables of every class in progress —
+ * and the re-attach path, built precisely so a restart is invisible, only ever
+ * ran after a crash. Now the sockets are dropped and the processes are left
+ * running; a room's kernel is ended when the room is (shutdownSession).
+ */
 export async function shutdownKernels(): Promise<void> {
   const all = [...runtimes.values()]
   runtimes.clear()
-  await Promise.allSettled(
-    all.map(async (runtime) => {
-      runtime.queue.length = 0
-      runtime.writer?.dispose()
-      runtime.writer = null
-      await runtime.kernel?.dispose()
-    }),
-  )
+  for (const runtime of all) {
+    runtime.queue.length = 0
+    runtime.writer?.dispose()
+    runtime.writer = null
+    runtime.kernel?.detach()
+  }
 }
 
 /**
@@ -509,6 +531,41 @@ function failed(runtime: Runtime, cellId: string): boolean {
  * only one worth reading is the first. Cells queued by anybody else stay: their
  * work is not what just broke.
  */
+/**
+ * Drop what was queued by the same press of Run as the cell now running.
+ *
+ * Everything else in the queue belongs to somebody else's press and is none of
+ * this interrupt's business.
+ */
+function stopBatchOf(runtime: Runtime, cellId: string): void {
+  const mine = runtime.queue.find((item) => item.cellId === cellId)
+  const batch = mine?.batch ?? runtime.currentBatch
+  if (batch === null || batch === undefined) return
+  const dropped = runtime.queue.filter((item) => item.batch === batch)
+  if (dropped.length === 0) return
+  runtime.queue = runtime.queue.filter((item) => item.batch !== batch)
+
+  const { doc } = getSessionDoc(runtime.sessionId)
+  doc.transact(() => {
+    for (const item of dropped) {
+      const found = findCell(doc, item.cellId)
+      if (!found) continue
+      found.cell.set('state', 'idle' as CellState)
+      found.cell.set('runBy', null)
+      found.cell.set('runById', null)
+    }
+  }, ORIGIN)
+  syncQueue(runtime)
+  // Said out loud, because a queue that empties without a word reads as a
+  // product that ignored the button.
+  kernelNote(
+    runtime.sessionId,
+    dropped.length === 1
+      ? 'The interrupt also dropped the one cell queued behind it.'
+      : `The interrupt also dropped the ${dropped.length} cells queued behind it.`,
+  )
+}
+
 function stopBatch(runtime: Runtime, failedItem: QueueItem): void {
   const dropped = runtime.queue.filter((item) => item.batch === failedItem.batch)
   if (dropped.length === 0) return
@@ -560,6 +617,7 @@ async function pump(runtime: Runtime): Promise<void> {
   } finally {
     runtime.pumping = false
     runtime.currentCell = null
+    runtime.currentBatch = null
     runtime.currentRunById = null
     syncQueue(runtime)
     const phase = runtime.kernel?.phase ?? 'dead'
@@ -577,6 +635,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   const source = cellSource(cell).toString()
   const writer = new OutputWriter(doc, item.cellId)
   runtime.currentCell = item.cellId
+  runtime.currentBatch = item.batch
   runtime.currentRunById = item.runById
   runtime.writer = writer
   syncQueue(runtime)
@@ -594,6 +653,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
 
   if (source.trim().length === 0) {
     runtime.currentCell = null
+    runtime.currentBatch = null
     runtime.writer = null
     writer.dispose()
     setCellState(runtime.sessionId, item.cellId, 'ok')
@@ -645,6 +705,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     writer.dispose()
     runtime.writer = null
     runtime.currentCell = null
+    runtime.currentBatch = null
     // The prompt belongs to a running cell. Whatever ended the run — an answer,
     // an interrupt, a dead kernel — it must not be left on screen asking.
     const target = findCell(doc, item.cellId)
@@ -669,6 +730,7 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
     writer.dispose()
     runtime.writer = null
     runtime.currentCell = null
+    runtime.currentBatch = null
     if (runtime.queue[0]?.cellId === stuck) runtime.queue.shift()
     setCellState(runtime.sessionId, stuck, 'error')
   }

@@ -51,6 +51,7 @@ import {
   openTerminal,
   runCommand,
   terminalPhase,
+  typedRunningCommand,
 } from './kernel/terminal.js'
 import { listFiles } from './workspace.js'
 
@@ -409,7 +410,20 @@ function dispatch(
     }
 
     case 'term:interrupt': {
-      interruptTerminal(sessionId)
+      /*
+       * Same rule as the kernel's interrupt, and for the same reason: Ctrl+C
+       * throws away every command still waiting, including other people's. The
+       * shell is shared, so whoever's command is running may stop it, and the
+       * host may stop anything.
+       */
+      if (payload.role !== 'host' && !typedRunningCommand(sessionId, payload.participantId)) {
+        send(ws, {
+          t: 'error',
+          message: 'Only the host, or whoever typed the running command, can stop the terminal.',
+        })
+        return
+      }
+      interruptTerminal(sessionId, displayName(sessionId, payload.participantId))
       return
     }
 

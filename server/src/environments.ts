@@ -156,9 +156,14 @@ interface RunResult {
   out: string
 }
 
-function run(command: string, args: string[], timeoutMs = 15_000): Promise<RunResult> {
+function run(
+  command: string,
+  args: string[],
+  timeoutMs = 15_000,
+  extraEnv?: Record<string, string>,
+): Promise<RunResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd: ROOT })
+    const child = spawn(command, args, { cwd: ROOT, env: { ...process.env, ...extraEnv } })
     let out = ''
     const done = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
     child.stdout.on('data', (d: Buffer) => (out += d.toString()))
@@ -354,7 +359,22 @@ export async function activate(name: string): Promise<{ ok: boolean; out: string
   const files = (await usesDevOverride())
     ? ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
     : []
-  const res = await run('docker', ['compose', ...files, 'up', '-d', 'kernel'], 120_000)
+  /*
+   * KERNEL_ENV is passed explicitly, and that is the whole fix.
+   *
+   * compose resolves `image: colloq-kernel:${KERNEL_ENV:-base}` from the
+   * environment before it looks at the .env file, and this process was started
+   * by `make run`, which had already exported the OLD value. So writing the
+   * file and calling compose brought the container back up on the previous
+   * image while the panel reported the new one — "nlp is active", and
+   * `import transformers` still failing in every room.
+   */
+  const res = await run(
+    'docker',
+    ['compose', ...files, 'up', '-d', 'kernel'],
+    120_000,
+    { KERNEL_ENV: name },
+  )
   return { ok: res.code === 0, out: res.out }
 }
 
@@ -362,8 +382,33 @@ export async function activate(name: string): Promise<{ ok: boolean; out: string
 
 function stateOf(name: string, built: ImageFacts | null): EnvironmentState {
   if (isBuilding(name)) return 'building'
-  if (failures.has(name)) return 'failed'
-  return built ? 'ready' : 'unbuilt'
+  /*
+   * A built image outranks a remembered failure.
+   *
+   * `failures` lives in memory and is only ever cleared by starting another
+   * build, so one bad rebuild hid a perfectly good image: the environment
+   * vanished from the seminar form and lost its "Make default" until somebody
+   * restarted the process. The error is still reported beside the row; it just
+   * no longer pretends there is nothing there.
+   */
+  if (!built) return failures.has(name) ? 'failed' : 'unbuilt'
+  /*
+   * Edited since the last build is not ready — that is what `unbuilt` says in
+   * the contract, and it was never returned. Saving a package list and seeing
+   * "Ready · built 3 days ago" is how a room ends up on the old image with
+   * nothing on screen disagreeing.
+   */
+  return editedSinceBuild(name, built) ? 'unbuilt' : 'ready'
+}
+
+/** Whether the package list was written after the image was built. */
+function editedSinceBuild(name: string, built: ImageFacts): boolean {
+  try {
+    return fs.statSync(fileFor(name)).mtimeMs > built.builtAt
+  } catch {
+    // No file to compare against; the image is all there is.
+    return false
+  }
 }
 
 export async function listEnvironments(): Promise<AdminEnvironment[]> {

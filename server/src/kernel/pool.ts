@@ -97,12 +97,33 @@ const endpoints = new Map<string, KernelEndpoint>()
 /** One start at a time per environment, shared by concurrent callers. */
 const starting = new Map<string, Promise<KernelEndpoint>>()
 
+/** Whether a container was created from the image this environment now has. */
+async function sameImage(container: string, env: string): Promise<boolean> {
+  const [running, current] = await Promise.all([
+    run(['inspect', container, '--format', '{{.Image}}']),
+    run(['image', 'inspect', `${IMAGE_PREFIX}:${env}`, '--format', '{{.Id}}']),
+  ])
+  if (running.code !== 0 || current.code !== 0) return true
+  return running.out.trim() === current.out.trim()
+}
+
 async function startContainer(env: string): Promise<KernelEndpoint> {
   const container = containerFor(env)
   const state = await stateOf(container)
 
-  if (state === 'stopped') {
-    await run(['start', container], 60_000)
+  if (state === 'stopped' || state === 'running') {
+    /*
+     * A container built from an older image is not this environment any more.
+     * It was reused on name alone, so rebuilding a list of packages left every
+     * room on the previous image while the panel reported the new one — the
+     * student's `import transformers` failed and nothing on screen disagreed.
+     */
+    if (!(await sameImage(container, env))) {
+      await run(['rm', '-f', container], 60_000)
+      endpoints.delete(env)
+      return startContainer(env)
+    }
+    if (state === 'stopped') await run(['start', container], 60_000)
   } else if (state === 'missing') {
     if (!(await imageExists(env))) {
       throw new Error(
@@ -121,10 +142,11 @@ async function startContainer(env: string): Promise<KernelEndpoint> {
         '-d',
         '--name',
         container,
-        // Docker picks the host port. Fixing one would collide the moment a
-        // second environment came up, and the port is never typed by a person.
+        // Docker picks the host port, and the loopback address is not
+        // optional: without it the environment's Jupyter is on every
+        // interface, and the seminar's Wi-Fi is one of them.
         '-p',
-        '0:8888',
+        '127.0.0.1:0:8888',
         '-e',
         `JUPYTER_TOKEN=${config.jupyter.token}`,
         '-v',

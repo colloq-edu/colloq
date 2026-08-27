@@ -141,6 +141,14 @@ interface Term {
    * appeared twice — once as we wrote it, once as the shell echoed it back.
    */
   pending: Array<{ text: string; by: Sender }>
+  /**
+   * Who typed the command the shell is running now, or null between commands.
+   *
+   * Ctrl+C throws away everything queued, including other people's, so the
+   * same rule the kernel's interrupt uses applies here: the host, or whoever's
+   * command is actually running.
+   */
+  runningBy: string | null
   reconnectAttempts: number
   flushTimer: NodeJS.Timeout | null
   quietTimer: NodeJS.Timeout | null
@@ -175,6 +183,7 @@ function getTerm(sessionId: string): Term {
   if (!term) {
     term = {
       sessionId,
+      runningBy: null,
       // Заглушка до открытия: настоящий адрес спрашивается у окружения комнаты
       // в openTerminal, где уже можно ждать поднятия контейнера.
       endpoint: defaultEndpoint(),
@@ -1132,6 +1141,7 @@ const MAX_PENDING_COMMANDS = 8
 function dispatch(term: Term, text: string, by: Sender): void {
   // Whatever ran before is no longer the thing producing output, whether or not
   // we ever recognised its prompt.
+  term.runningBy = by.participantId
   clearRunning(term)
   detachOutput(term)
   term.partial = ''
@@ -1170,7 +1180,12 @@ function startNextPending(term: Term): void {
   dispatch(term, next.text, next.by)
 }
 
-export function interruptTerminal(sessionId: string): void {
+/** Whoever typed the command the shell is running now, or null between commands. */
+export function typedRunningCommand(sessionId: string, participantId: string): boolean {
+  return terms.get(sessionId)?.runningBy === participantId
+}
+
+export function interruptTerminal(sessionId: string, by?: string): void {
   const term = terms.get(sessionId)
   if (!term) return
   // Commands still waiting to be sent would run *after* the interrupt, which is
@@ -1186,6 +1201,9 @@ export function interruptTerminal(sessionId: string): void {
         : `[colloq] ${dropped.length} waiting commands were dropped.`,
     )
   }
+  // Named, because a shared shell that goes quiet without saying who did it is
+  // a room where everybody assumes it was somebody else.
+  if (by) systemLine(term, `[colloq] ${by} pressed Ctrl+C.`)
   sendStdin(term, ETX)
 }
 

@@ -511,6 +511,37 @@ export class JupyterKernel {
     this.setPhase('idle')
   }
 
+  /**
+   * Let go of the kernel without ending it.
+   *
+   * Used when the server itself is stopping. The kernel is a process in
+   * another container with every variable the room has built; a restart of the
+   * server after a one-line edit must not cost the seminar its state. The
+   * socket closes, the timers stop, and the next start re-attaches — which is
+   * what the whole re-attach path was built for and what the README promises.
+   */
+  detach(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.listeners.length = 0
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    if (this.watchdog) {
+      clearInterval(this.watchdog)
+      this.watchdog = null
+    }
+    this.abortPending()
+    const socket = this.socket
+    this.socket = null
+    try {
+      socket?.close()
+    } catch {
+      /* already gone */
+    }
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
