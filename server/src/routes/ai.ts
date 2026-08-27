@@ -167,6 +167,21 @@ export function aiRoutes(): Router {
     // Name and colour are resolved server-side: the bubble in everyone's panel
     // must say who really asked, not who the client claims to be.
     const participant = getParticipant(sessionId, auth.participantId)
+    /*
+     * Строка расхода заводится до вопроса, а не после.
+     *
+     * Считать при приёме — старое и правильное решение: запрос к провайдеру
+     * уже ушёл, чем бы он ни кончился, и предел, считающий только удачи,
+     * позволял бы бесконечно долбить сломанную ручку. Изменилось одно: строка
+     * теперь возвращает свой номер, и последний кадр потока кладёт на неё
+     * настоящий расход вместо вечного NULL.
+     */
+    const usageId = recordQuestion({
+      sessionId,
+      participantId: auth.participantId,
+      action: action ?? 'ask',
+    })
+
     const entryId = ask({
       sessionId,
       participantId: auth.participantId,
@@ -175,15 +190,7 @@ export function aiRoutes(): Router {
       message,
       action,
       cellId,
-    })
-
-    // Counted at acceptance, not at completion: the request has been sent to the
-    // provider by then whatever the answer turns out to be, and a limit that
-    // only counted successes would let a broken endpoint be retried forever.
-    recordQuestion({
-      sessionId,
-      participantId: auth.participantId,
-      action: action ?? 'ask',
+      usageId,
     })
 
     // 202: the question is in the document, the answer is still being written.

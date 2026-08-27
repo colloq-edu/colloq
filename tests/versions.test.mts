@@ -61,7 +61,7 @@ test('a burst of typing is one version, not one per keystroke', () => {
   assert.match(versions[0].summary, /edited cell/)
 })
 
-test('a different author closes the burst, because it is a different thing done', () => {
+test('двое, печатающие одновременно, дают одну версию комнаты, а не по одной на нажатие', () => {
   const id = 'hist-authors'
   createSession(id, 'History test', null)
   const doc = new Y.Doc()
@@ -72,16 +72,35 @@ test('a different author closes the burst, because it is a different thing done'
   flushHistory(id)
   const seeded = listVersions(id, 20).filter((v) => v.kind === 'edit').length
 
+  // Раньше смена автора закрывала всплеск, и чередующиеся нажатия давали по
+  // версии на каждое: сорок строк за минуту работы вдвоём.
   write(doc, 0, '\nb = 2')
   author = 'p_john'
   write(doc, 0, '\nc = 3')
+  author = 'p_alexander'
+  write(doc, 0, '\nd = 4')
   flushHistory(id)
 
   const versions = listVersions(id, 20).filter((v) => v.kind === 'edit')
-  assert.equal(versions.length, seeded + 2)
-  // Newest first.
-  assert.equal(versions[0].author_id, 'p_john')
-  assert.equal(versions[1].author_id, 'p_alexander')
+  assert.equal(versions.length, seeded + 1)
+  // Всплеск, в который писали двое, не принадлежит никому из них.
+  assert.equal(versions[0].author_id, null)
+})
+
+test('всплеск одного человека по-прежнему подписан им', () => {
+  const id = 'hist-one-author'
+  createSession(id, 'History test', null)
+  const doc = new Y.Doc()
+  doc.on('update', (update: Uint8Array) => record(id, doc, update, 'p_maria'))
+
+  doc.transact(() => getCells(doc).push([createCell('code', 'a = 1')]))
+  flushHistory(id)
+
+  write(doc, 0, '\nb = 2')
+  flushHistory(id)
+
+  const versions = listVersions(id, 20).filter((v) => v.kind === 'edit')
+  assert.equal(versions[0].author_id, 'p_maria')
 })
 
 test('output and run state are not versions', () => {
@@ -407,4 +426,26 @@ test('удалённая ячейка возвращается со своим i
   restoreInto(id, doc, good, 'p_alexander', null, '18:04')
   restoreInto(id, doc, good, 'p_alexander', null, '18:05')
   assert.equal(getCells(doc).length, 2, 'второй откат сделал копию')
+})
+
+test('полный снимок пишется по накопленным байтам, а не каждые двадцать пять строк', () => {
+  const id = 'hist-keyframes'
+  createSession(id, 'History test', null)
+  const doc = new Y.Doc()
+  doc.on('update', (update: Uint8Array) => record(id, doc, update, 'p_alexander'))
+
+  doc.transact(() => getCells(doc).push([createCell('code', 'a = 1')]))
+  flushHistory(id)
+
+  // Тридцать маленьких правок — больше старого порога в двадцать пять строк, но
+  // байтов в них на порядки меньше шестидесяти четырёх килобайт.
+  for (let i = 0; i < 30; i++) {
+    write(doc, 0, `\n# ${i}`)
+    flushHistory(id)
+  }
+
+  const frames = listVersions(id, 200).filter((v) => v.kind === 'keyframe')
+  // Потолок по строкам оставлен, так что один-два снимка здесь законны; смысл
+  // проверки в том, что их не по одному на каждые двадцать пять байт правок.
+  assert.ok(frames.length <= 2, `снимков ${frames.length}, ожидалось не больше двух`)
 })

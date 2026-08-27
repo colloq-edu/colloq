@@ -11,6 +11,7 @@
  * import would mean a teacher's fix only landing on the next restart.
  */
 import OpenAI from 'openai'
+import { config } from '../config.js'
 import { isKeylessProvider, resolveAiConfig } from '../admin/settings.js'
 import type { OracleTestResult } from '@shared/admin'
 
@@ -84,6 +85,15 @@ export async function streamChat(
   messages: ChatTurn[],
   onDelta: (text: string, kind: DeltaKind) => void,
   signal?: AbortSignal,
+  /**
+   * Сколько токенов ушло, если провайдер сказал.
+   *
+   * Просить об этом надо явно — `stream_options.include_usage`, — и раньше
+   * никто не просил: столбец в таблице оставался пустым, а панель писала
+   * «tokens — not reported by this endpoint», хотя не рассказывал не он.
+   * Приходит одним последним кадром, уже без выбора.
+   */
+  onUsage?: (totalTokens: number) => void,
 ): Promise<string> {
   // Reaches a student verbatim, so it names what is missing rather than an
   // environment variable they have no way to set.
@@ -119,6 +129,10 @@ export async function streamChat(
   let full = ''
   try {
     for await (const chunk of stream) {
+      // Кадр с расходом приходит последним и без choices — его надо забрать до
+      // того, как код ниже полезет в delta, которой в нём нет.
+      const spent = (chunk as { usage?: { total_tokens?: number } | null }).usage
+      if (spent && typeof spent.total_tokens === 'number') onUsage?.(spent.total_tokens)
       const delta = chunk.choices?.[0]?.delta as Delta | undefined
       /*
        * Two spellings because two families of endpoint. OpenRouter puts the
@@ -179,7 +193,16 @@ function toPayload(messages: ChatTurn[]): PayloadTurn[] {
  * to trade a nicety for a 400 in front of a class is not a trade worth making.
  */
 function askForReasoning(): boolean {
-  return resolveAiConfig().provider === 'openrouter'
+  /*
+   * Выключено, пока не попросят.
+   *
+   * Было «всегда на OpenRouter», и это тихо удваивало счёт: у рассуждающих
+   * моделей след стоит как ответ, а иногда дороже, и его просили на каждый
+   * вопрос — включая «объясни эту ошибку», где думать нечего. След остаётся
+   * виден, когда провайдер отдаёт его сам; здесь только про то, доплачивать ли
+   * за него отдельно.
+   */
+  return resolveAiConfig().provider === 'openrouter' && config.ai.reasoning
 }
 
 function openStream(
@@ -194,9 +217,17 @@ function openStream(
   const extra = reasoning ? ({ reasoning: { enabled: true } } as Record<string, unknown>) : {}
   // Two call sites rather than one params object: `stream: true` has to be a
   // literal for the SDK to pick its streaming overload.
+  /*
+   * Расход — отдельной просьбой.
+   *
+   * Поле из спецификации OpenAI, и его понимают все, кто ей следует; кто не
+   * понимает — ответит 400, и тогда сработает голая попытка ниже, ровно как с
+   * temperature и reasoning. Плата за попытку — один лишний кадр в потоке.
+   */
+  const usage = { stream_options: { include_usage: true } }
   return temperature === undefined
-    ? getClient().chat.completions.create({ model, messages, stream: true, ...extra }, { signal })
-    : getClient().chat.completions.create({ model, messages, stream: true, temperature, ...extra }, { signal })
+    ? getClient().chat.completions.create({ model, messages, stream: true, ...usage, ...extra }, { signal })
+    : getClient().chat.completions.create({ model, messages, stream: true, temperature, ...usage, ...extra }, { signal })
 }
 
 /* ------------------------------------------------------------------ test */

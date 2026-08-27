@@ -94,6 +94,16 @@ export const config = {
     apiKey: env('OPENAI_API_KEY', ''),
     baseUrl: env('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
     model: env('OPENAI_MODEL', 'gpt-4o-mini'),
+    /**
+     * Просить ли у модели её рассуждение отдельным полем.
+     *
+     * Выключено. Было «всегда на OpenRouter», и это тихо удваивало счёт: у
+     * рассуждающих моделей след стоит как ответ, а иногда дороже, и его
+     * просили на каждый вопрос — включая «объясни эту ошибку», где думать не о
+     * чем. След всё равно виден, когда провайдер отдаёт его сам; здесь только
+     * про то, доплачивать ли за него.
+     */
+    reasoning: env('AI_REASONING', 'false') === 'true',
   },
 
   maxUploadBytes: Number(env('MAX_UPLOAD_MB', '50')) * 1024 * 1024,

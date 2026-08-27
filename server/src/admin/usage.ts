@@ -61,14 +61,32 @@ export interface QuestionRecord {
   tokens?: number | null
 }
 
-export function recordQuestion(question: QuestionRecord): void {
-  insertUsage.run(
+/** Returns the row's id, so the token count can land on it when the answer ends. */
+export function recordQuestion(question: QuestionRecord): number {
+  const res = insertUsage.run(
     question.sessionId,
     question.participantId,
     question.action,
     question.tokens ?? null,
     Date.now(),
   )
+  return Number(res.lastInsertRowid)
+}
+
+const setTokens = db.prepare('UPDATE ai_usage SET tokens = ? WHERE id = ?')
+
+/**
+ * Сколько на самом деле стоил вопрос.
+ *
+ * Считается вопрос при приёме, а токены известны только в конце ответа — и до
+ * сих пор не были известны никогда: `stream_options.include_usage` никто не
+ * просил, столбец оставался пустым, а плитка в панели писала «tokens — not
+ * reported by this endpoint». На инстансе с чужим ключом это единственное
+ * место, где видно, во что обошёлся семестр.
+ */
+export function noteTokens(id: number, tokens: number): void {
+  if (!Number.isFinite(tokens) || tokens <= 0) return
+  setTokens.run(Math.round(tokens), id)
 }
 
 /** Questions from one student in one seminar inside the trailing `windowMs`. */

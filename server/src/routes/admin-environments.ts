@@ -24,6 +24,8 @@ import {
   watchBuild,
   writeSource,
 } from '../environments.js'
+import { sessionsOnEnvironment } from '../db.js'
+import { expectKernelChurn } from '../kernel/index.js'
 import {
   ENVIRONMENT_NAME,
   type AdminErrorBody,
@@ -94,6 +96,31 @@ export function adminEnvironmentRoutes(): Router {
     if (name === 'base') {
       return fail(res, 409, 'protected', 'base is what every environment is built on top of.')
     }
+    /*
+     * Комнаты, которые на нём стоят.
+     *
+     * Проверялось только «не то ли это окружение, на котором работает
+     * инстанс». Семинар, которому окружение выбрали при создании, держит его
+     * имя в своей строке — и после удаления просыпался в комнате, где ядро не
+     * поднимается вовсе: имя есть, образа нет. Узнавали об этом на первом Run
+     * посреди пары.
+     *
+     * Отказ, а не молчаливый перевод на общее окружение: у семинара по
+     * компьютерному зрению и семинара на голом Python разные тетради, и решать
+     * за преподавателя, что «сойдёт и так», нельзя.
+     */
+    const attached = sessionsOnEnvironment(name)
+    if (attached.length > 0) {
+      const names = attached.slice(0, 3).map((s) => s.name).join(', ')
+      const more = attached.length > 3 ? `, and ${attached.length - 3} more` : ''
+      return fail(
+        res,
+        409,
+        'in_use',
+        `${attached.length === 1 ? 'A seminar runs' : `${attached.length} seminars run`} on ${name} (${names}${more}). ` +
+          'Move them to another environment first — deleting this one would leave them with no kernel at all.',
+      )
+    }
     removeEnvironment(name)
     res.status(204).end()
   })
@@ -122,6 +149,9 @@ export function adminEnvironmentRoutes(): Router {
     if (isBuilding(name)) return fail(res, 409, 'building', 'That environment is still building.')
     const docker = await dockerAvailable()
     if (!docker.ok) return fail(res, 409, 'no_docker', docker.reason ?? 'docker is unavailable')
+    // Пересоздание контейнера снимет ядро у всех, кто сейчас считает, и без
+    // этой строки каждая такая комната услышит «ядру не хватило памяти».
+    expectKernelChurn(`Someone switched this instance to the ${name} environment, so the kernel was replaced.`)
     const result = await activate(name)
     if (!result.ok) {
       return fail(res, 500, 'failed', `The kernel did not come back: ${result.out.slice(-400)}`)

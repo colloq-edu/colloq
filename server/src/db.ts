@@ -156,6 +156,23 @@ export function sessionEnvironment(id: string): string | null {
   return row?.environment ?? null
 }
 
+const selectByEnvironment = db.prepare(
+  'SELECT id, name FROM sessions WHERE environment = ? ORDER BY created_at DESC',
+)
+
+/**
+ * Семинары, привязанные к окружению.
+ *
+ * Удаление окружения проверяло только «не то ли это, на котором сейчас
+ * работает инстанс». Семинар, которому окружение выбрали при создании, хранит
+ * его имя в своей строке — и после удаления просыпался в комнате, где ядро не
+ * поднимается вовсе: имя есть, образа нет. Обнаруживалось это на первом Run
+ * посреди пары.
+ */
+export function sessionsOnEnvironment(name: string): { id: string; name: string }[] {
+  return selectByEnvironment.all(name) as { id: string; name: string }[]
+}
+
 const renameSessionStmt = db.prepare('UPDATE sessions SET name = ? WHERE id = ?')
 
 /**

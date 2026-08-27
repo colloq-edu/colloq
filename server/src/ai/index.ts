@@ -28,6 +28,7 @@ import {
   type YChatEntry,
 } from '@shared/notebook'
 import { getOracleSettings } from '../admin/settings.js'
+import { noteTokens } from '../admin/usage.js'
 import { getSessionDoc } from '../collab/index.js'
 import { buildContext } from './context.js'
 import { providerModel, providerReady, streamChat, type ChatTurn } from './provider.js'
@@ -72,6 +73,14 @@ export interface AskOptions {
   message: string
   action?: AiAction
   cellId?: string | null
+  /**
+   * Строка расхода, заведённая при приёме вопроса.
+   *
+   * Вопрос считают сразу, а токены известны только в конце ответа — и до сих
+   * пор не были известны никогда. Идентификатор проходит сюда, чтобы последний
+   * кадр потока лёг именно на свою строку, а не на «примерно ту».
+   */
+  usageId?: number
 }
 
 /**
@@ -215,6 +224,9 @@ async function generate(
         answer.push(delta)
       },
       controller.signal,
+      (tokens) => {
+        if (options.usageId !== undefined) noteTokens(options.usageId, tokens)
+      },
     )
     thinking.flush()
     answer.flush()

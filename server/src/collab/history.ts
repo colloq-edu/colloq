@@ -25,6 +25,7 @@ import {
   BURST_MAX_CHARS,
   BURST_MAX_MS,
   KEYFRAME_EVERY,
+  KEYFRAME_MIN_BYTES,
   type HistoricCell,
   type VersionKind,
 } from '@shared/history'
@@ -37,7 +38,16 @@ export const RESTORE_ORIGIN = 'history-restore'
 
 interface Burst {
   sessionId: string
-  authorId: string | null
+  /**
+   * Кто печатал. Множество, а не один: см. `record`.
+   *
+   * Пока это был один человек, смена автора закрывала всплеск — и два студента,
+   * печатающие в одной комнате одновременно, давали по версии на каждое
+   * нажатие. Сорок нажатий — сорок строк истории и шесть мегабайт байтов, а
+   * чекпоинт «до упражнения» вылетал из окна на четыреста строк за десятки
+   * секунд. Всплеск, в который писали двое, так и записывается — «the room».
+   */
+  authors: Set<string | null>
   updates: Uint8Array[]
   /** State of the document when the burst opened, for the summary and the counts. */
   before: Uint8Array
@@ -78,6 +88,18 @@ const baselines = new Map<string, Uint8Array>()
 const shapes = new Map<string, string>()
 
 /**
+ * Тексты ячеек на момент последнего закрытия — то, с чем сравнивают следующий
+ * всплеск.
+ *
+ * Раньше каждое закрытие разворачивало документ дважды: один раз «до», один
+ * «после». На трёхмегабайтной тетради это семь миллисекунд блокировки цикла
+ * событий на нажатие клавиши — при том, что «до» мы уже разворачивали в прошлый
+ * раз и могли запомнить. Здесь и запоминаем; если записи нет (сервер только
+ * поднялся), разворачиваем, как раньше.
+ */
+const digests = new Map<string, Map<string, string>>()
+
+/**
  * Start recording a room, measuring from the state it currently holds.
  *
  * Called once the document is hydrated and before it is seeded, so a brand-new
@@ -87,6 +109,9 @@ const shapes = new Map<string, string>()
 export function beginHistory(sessionId: string, doc: Y.Doc): void {
   baselines.set(sessionId, Y.encodeStateAsUpdate(doc))
   shapes.set(sessionId, shapeOf(doc))
+  // Запомненные тексты идут в ногу с базовой точкой: сравнивать следующий
+  // всплеск с чужим слепком — это приписать ему всё, что было до него.
+  digests.set(sessionId, new Map(cellsOf(doc).map((c) => [c.id, c.source])))
 
   /*
    * A room with no history yet gets a first row carrying the whole document.
@@ -124,14 +149,15 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
  * the reader wants to know that cell 04 was edited, and only the two documents
  * can say that.
  */
-function describe(before: Y.Doc, after: Y.Doc): {
+function describe(
+  was: Map<string, string>,
+  now: Map<string, string>,
+): {
   summary: string
   added: number
   removed: number
   cells: string[]
 } {
-  const was = new Map(cellsOf(before).map((c) => [c.id, c.source]))
-  const now = new Map(cellsOf(after).map((c) => [c.id, c.source]))
 
   const created: string[] = []
   const deleted: string[] = []
@@ -228,10 +254,24 @@ function close(key: string): void {
   if (burst.updates.length === 0) return
 
   const merged = Y.mergeUpdates(burst.updates)
-  const before = docFrom([burst.before])
   const after = docFrom([burst.before, merged])
-  const facts = describe(before, after)
-  before.destroy()
+  /*
+   * «До» берётся из памяти, а не разворачивается заново.
+   *
+   * Это тот же документ, который в прошлый раз был «после»: его тексты уже
+   * посчитали и положили сюда. Разворачивать его второй раз — семь
+   * миллисекунд блокировки цикла событий на нажатие клавиши в трёхмегабайтной
+   * тетради. Запись пропадает только при перезапуске сервера, и тогда
+   * разворачиваем, как раньше.
+   */
+  let was = digests.get(burst.sessionId)
+  if (!was) {
+    const before = docFrom([burst.before])
+    was = new Map(cellsOf(before).map((c) => [c.id, c.source]))
+    before.destroy()
+  }
+  const now = new Map(cellsOf(after).map((c) => [c.id, c.source]))
+  const facts = describe(was, now)
 
   /*
    * A burst that changed no text is not a version.
@@ -274,7 +314,8 @@ function close(key: string): void {
       sessionId: burst.sessionId,
       update: merged,
       kind: quiet ? 'quiet' : 'edit',
-      authorId: burst.authorId,
+      // Один автор — его имя; двое и больше — «the room», что и есть правда.
+      authorId: burst.authors.size === 1 ? [...burst.authors][0] : null,
       createdAt: burst.lastAt,
       label: null,
       ...facts,
@@ -283,9 +324,10 @@ function close(key: string): void {
     // happens to be when somebody next presses a key.
     baselines.set(burst.sessionId, Y.encodeStateAsUpdate(after))
     shapes.set(burst.sessionId, shapeOf(after))
+    digests.set(burst.sessionId, now)
     // Quiet rows count toward the keyframe interval too: they are replayed
     // like any other, so they are exactly what the interval is bounding.
-    maybeKeyframe(burst.sessionId, after)
+    maybeKeyframe(burst.sessionId, after, merged.byteLength)
   } catch (err) {
     // A history that cannot be written must not stop the seminar being taught.
     console.error(`[history] could not record a version for ${burst.sessionId}`, err)
@@ -294,14 +336,37 @@ function close(key: string): void {
 }
 
 /**
- * Write the whole document every KEYFRAME_EVERY versions.
+ * Байты, накопленные с прошлого полного снимка, по комнатам.
  *
- * Without this, rebuilding the state at version N costs N updates and the cost
- * grows all class. With it the cost is bounded by the interval, and the price
- * is one extra row of full-document bytes every twenty-five edits.
+ * Живёт в памяти и переживает не всё: после перезапуска сервера счётчик
+ * начинается заново, и первый снимок в комнате придёт по счёту строк. Это
+ * дешевле, чем хранить его в базе ради оценки, которая всё равно приблизительна.
  */
-function maybeKeyframe(sessionId: string, doc: Y.Doc): void {
-  if (versionCount(sessionId) % KEYFRAME_EVERY !== 0) return
+const sinceKeyframe = new Map<string, number>()
+
+/**
+ * Полный снимок документа — когда дельты уже стоят как он сам.
+ *
+ * Правило было «каждые двадцать пять строк», и на трёхмегабайтной тетради оно
+ * означало три мегабайта каждые двадцать пять нажатий: за пару такой семинар
+ * писал сотни мегабайт снимков, между которыми лежало по сотне килобайт
+ * настоящих правок. Считать надо не строки, а байты: полная копия имеет смысл
+ * ровно тогда, когда дельт с прошлой копии накопилось столько же — тогда
+ * история занимает вдвое больше документа, а не во сколько попало раз.
+ *
+ * Порог по строкам остаётся сверху: он ограничивает не место, а длину
+ * повтора, и без него крошечная тетрадь с тысячей мелких правок собиралась бы
+ * из тысячи кусков.
+ */
+function maybeKeyframe(sessionId: string, doc: Y.Doc, wrote: number): void {
+  const size = Y.encodeStateAsUpdate(doc).byteLength
+  const grown = (sinceKeyframe.get(sessionId) ?? 0) + wrote
+  sinceKeyframe.set(sessionId, grown)
+
+  const byBytes = grown >= Math.max(size, KEYFRAME_MIN_BYTES)
+  const byRows = versionCount(sessionId) % KEYFRAME_EVERY === 0
+  if (!byBytes && !byRows) return
+
   appendVersion({
     sessionId,
     update: Y.encodeStateAsUpdate(doc),
@@ -314,6 +379,7 @@ function maybeKeyframe(sessionId: string, doc: Y.Doc): void {
     removed: 0,
     cells: [],
   })
+  sinceKeyframe.set(sessionId, 0)
 }
 
 /**
@@ -332,17 +398,25 @@ export function record(
   const existing = bursts.get(key)
   const now = Date.now()
 
-  // A different person is a different thing done, so their first keystroke
-  // closes whatever was open rather than joining it.
-  if (existing && existing.authorId !== authorId) {
-    close(key)
-  }
+  /*
+   * Второй человек присоединяется ко всплеску, а не закрывает его.
+   *
+   * «Другой человек — другое дело» звучит правильно и стоит дорого: двое,
+   * печатающих одновременно, чередуют нажатия, каждое закрывает предыдущий
+   * всплеск, и получается версия на нажатие — сорок строк истории за минуту
+   * работы, из которых чекпоинт «до упражнения» вылетает за окно.
+   *
+   * Всплеск, в который писали двое, записывается без автора и читается как
+   * «the room» — это честнее, чем приписать его тому, кто нажал последним, и
+   * ровно так же честно, как строка, которую пишет сам сервер.
+   */
+  if (existing) existing.authors.add(authorId)
 
   let burst = bursts.get(key)
   if (!burst) {
     burst = {
       sessionId,
-      authorId,
+      authors: new Set([authorId]),
       updates: [],
       before: baselines.get(key) ?? Y.encodeStateAsUpdate(new Y.Doc()),
       openedAt: now,
@@ -397,6 +471,8 @@ export function flushAllHistory(): void {
 export function discardBurst(sessionId: string): void {
   baselines.delete(sessionId)
   shapes.delete(sessionId)
+  digests.delete(sessionId)
+  sinceKeyframe.delete(sessionId)
   const burst = bursts.get(sessionId)
   if (!burst) return
   bursts.delete(sessionId)
@@ -477,6 +553,7 @@ export function mark(
   })
   baselines.set(sessionId, Y.encodeStateAsUpdate(doc))
   shapes.set(sessionId, shapeOf(doc))
+  digests.set(sessionId, new Map(cellsOf(doc).map((c) => [c.id, c.source])))
   forgetCache(sessionId)
   return seq
 }

@@ -83,6 +83,19 @@ interface Runtime {
   kernel: JupyterKernel | null
   /** In-flight connect, shared by concurrent ensureKernel callers. */
   starting: Promise<void> | null
+  /**
+   * In-flight restart, if one is running.
+   *
+   * Гонка Run и Restart. Перезапуск сбрасывал очередь, объявлял 'restarting' и
+   * уходил ждать ядро; Run в эту же секунду клал ячейку в очередь и будил
+   * насос, который видел живое (ещё) ядро и слал execute в то, что уже
+   * перезапускается. Ответа на такой execute не приходит никогда: очередь
+   * стоит, комната видит «idle», а `currentCell` занят до следующего Restart.
+   *
+   * Обещание, а не флажок: и второе нажатие Restart, и насос ждут одного и
+   * того же — того же самого перезапуска, а не своего.
+   */
+  restarting: Promise<void> | null
   queue: QueueItem[]
   pumping: boolean
   currentCell: string | null
@@ -114,6 +127,7 @@ function getRuntime(sessionId: string): Runtime {
       sessionId,
       kernel: null,
       starting: null,
+      restarting: null,
       queue: [],
       pumping: false,
       currentCell: null,
@@ -204,6 +218,34 @@ function dropQueue(runtime: Runtime): void {
   syncQueue(runtime)
 }
 
+/**
+ * Окно, в котором ядра падают не сами по себе.
+ *
+ * Смена окружения пересоздаёт контейнер, и все комнаты, которые в этот момент
+ * что-то считали, теряют ядро разом. Каждая слышала «The kernel ran out of
+ * memory» — фразу правильную для девяноста девяти падений из ста и совершенно
+ * ложную здесь. Преподаватель шёл смотреть, чья ячейка съела память, а её
+ * никто не ел: администратор нажал «использовать это окружение».
+ *
+ * Окно, а не флажок на комнату: пересоздание идёт по всем контейнерам сразу и
+ * растянуто на секунды, а знает о нём один HTTP-запрос, который к этому
+ * времени уже ответил.
+ */
+let churn: { reason: string; until: number } | null = null
+
+export function expectKernelChurn(reason: string, ms = 120_000): void {
+  churn = { reason, until: Date.now() + ms }
+}
+
+function churnReason(): string | null {
+  if (!churn) return null
+  if (Date.now() > churn.until) {
+    churn = null
+    return null
+  }
+  return churn.reason
+}
+
 function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
   /*
    * Jupyter restarting the kernel by itself — the container's OOM killer,
@@ -218,11 +260,14 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
     dropQueue(runtime)
     setStatus(runtime, 'restarting')
+    const known = churnReason()
     kernelNote(
       runtime.sessionId,
-      hadWork
-        ? 'The kernel ran out of memory and is coming back on its own. Every variable is gone; whatever was queued was dropped.'
-        : 'The kernel restarted on its own — usually memory. Every variable is gone.',
+      known
+        ? `${known} Every variable is gone${hadWork ? '; whatever was queued was dropped' : ''}.`
+        : hadWork
+          ? 'The kernel ran out of memory and is coming back on its own. Every variable is gone; whatever was queued was dropped.'
+          : 'The kernel restarted on its own — usually memory. Every variable is gone.',
     )
     return
   }
@@ -236,11 +281,14 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     if (expected) return
     // A kernel usually dies because a cell asked for more memory than the
     // container has. Saying so beats a room staring at a notebook that stopped.
+    const known = churnReason()
     kernelNote(
       runtime.sessionId,
-      hadWork
-        ? 'The kernel stopped while a cell was running — usually memory. Whatever was queued was dropped; restart to carry on.'
-        : 'The kernel stopped. Restart it to run anything.',
+      known
+        ? `${known}${hadWork ? ' Whatever was queued was dropped.' : ''} Run a cell to start a fresh one.`
+        : hadWork
+          ? 'The kernel stopped while a cell was running — usually memory. Whatever was queued was dropped; restart to carry on.'
+          : 'The kernel stopped. Restart it to run anything.',
     )
     return
   }
@@ -358,19 +406,33 @@ export function kernelNote(sessionId: string, text: string): void {
 
 export async function restartSession(sessionId: string, restartedBy?: string): Promise<void> {
   const runtime = getRuntime(sessionId)
+  // Два нажатия — один перезапуск. Второе присоединяется к первому, а не
+  // запускает поверх него ещё один.
+  if (runtime.restarting) return runtime.restarting
   dropQueue(runtime)
   setStatus(runtime, 'restarting')
+
+  runtime.restarting = (async () => {
+    try {
+      if (runtime.kernel && runtime.kernel.phase !== 'dead') await runtime.kernel.restart()
+      else await ensureKernel(sessionId)
+      resetAllCells(sessionId, runtime.currentCell)
+      setStatus(runtime, 'idle')
+      kernelNote(sessionId, restartedBy ? `Kernel restarted by ${restartedBy}. Every variable is gone and the queue was dropped.` : 'Kernel restarted. Every variable is gone and the queue was dropped.')
+    } catch (err) {
+      // Never a rejection: the person clicked a button, the document carries the news.
+      console.error(`[kernel] restart failed for ${sessionId}:`, errText(err))
+      setStatus(runtime, 'dead')
+      kernelNote(sessionId, 'The kernel did not come back after the restart. Nothing can run until it does.')
+    }
+  })()
+
   try {
-    if (runtime.kernel && runtime.kernel.phase !== 'dead') await runtime.kernel.restart()
-    else await ensureKernel(sessionId)
-    resetAllCells(sessionId)
-    setStatus(runtime, 'idle')
-    kernelNote(sessionId, restartedBy ? `Kernel restarted by ${restartedBy}. Every variable is gone and the queue was dropped.` : 'Kernel restarted. Every variable is gone and the queue was dropped.')
-  } catch (err) {
-    // Never a rejection: the person clicked a button, the document carries the news.
-    console.error(`[kernel] restart failed for ${sessionId}:`, errText(err))
-    setStatus(runtime, 'dead')
-    kernelNote(sessionId, 'The kernel did not come back after the restart. Nothing can run until it does.')
+    await runtime.restarting
+  } finally {
+    runtime.restarting = null
+    // Что успели поставить в очередь, пока ядро возвращалось, — теперь можно.
+    void pump(runtime)
   }
 }
 
@@ -607,6 +669,13 @@ async function pump(runtime: Runtime): Promise<void> {
   runtime.pumping = true
   try {
     while (runtime.queue.length > 0) {
+      // Перезапуск идёт — ждать его, а не слать execute в ядро, которого через
+      // мгновение не будет. Ответ на такой execute не приходит никогда.
+      if (runtime.restarting) {
+        await runtime.restarting.catch(() => {})
+        // Перезапуск сбрасывает очередь; всё, что осталось, пришло после него.
+        if (runtime.queue.length === 0) break
+      }
       try {
         await ensureKernel(runtime.sessionId)
       } catch (err) {
@@ -815,11 +884,20 @@ export function clearOutputs(sessionId: string, cellId?: string): void {
   }, ORIGIN)
 }
 
-function resetAllCells(sessionId: string): void {
+/**
+ * Всё обратно в покой — кроме той ячейки, которую в этот момент разбирает насос.
+ *
+ * Перезапуск обрывает исполнение, но насос узнаёт об этом на своём await и
+ * доводит ячейку до конца сам: пишет в неё KernelDied и ставит состояние. Если
+ * пройтись по ней здесь, состояние ляжет раньше — и насос допишет своё поверх,
+ * оставив ячейку «running» в комнате, где ничего не выполняется.
+ */
+function resetAllCells(sessionId: string, except: string | null = null): void {
   const { doc } = getSessionDoc(sessionId)
   const cells = getCells(doc)
   doc.transact(() => {
     cells.forEach((cell) => {
+      if (except && idOf(cell) === except) return
       // In [3] after a restart would be a lie: the counter starts over.
       cell.set('execCount', null)
       cell.set('state', 'idle' as CellState)
