@@ -1,6 +1,7 @@
 import * as Y from 'yjs'
 import {
   cellId,
+  cloneCell,
   cellSource,
   cellType,
   createCell,
@@ -82,46 +83,9 @@ export function moveCell(doc: Y.Doc, id: string, direction: -1 | 1): void {
  * about to be deleted. That is inherent to a list with no move operation, and
  * the window is one sync round.
  */
-function cloneCell(cell: YCell): YCell {
-  const copy = new Y.Map<any>()
-  copy.set('id', cellId(cell))
-  copy.set('type', cellType(cell))
-  const text = new Y.Text()
-  const source = cellSource(cell).toString()
-  if (source) text.insert(0, source)
-  copy.set('source', text)
-  copy.set('outputs', cloneOutputs(cell))
-  copy.set('state', cell.get('state') ?? 'idle')
-  copy.set('execCount', cell.get('execCount') ?? null)
-  copy.set('runBy', cell.get('runBy') ?? null)
-  copy.set('runById', cell.get('runById') ?? null)
-  return copy
-}
+
 
 /** Outputs are Y types too, so they are rebuilt rather than referenced. */
-function cloneOutputs(cell: YCell): Y.Array<unknown> {
-  const out = new Y.Array<unknown>()
-  const existing = cell.get('outputs')
-  if (!(existing instanceof Y.Array)) return out
-  const copies: unknown[] = []
-  for (const output of existing) {
-    if (!(output instanceof Y.Map)) continue
-    const copy = new Y.Map<any>()
-    for (const [key, value] of output.entries()) {
-      if (value instanceof Y.Text) {
-        const text = new Y.Text()
-        const body = value.toString()
-        if (body) text.insert(0, body)
-        copy.set(key, text)
-      } else {
-        copy.set(key, value)
-      }
-    }
-    copies.push(copy)
-  }
-  if (copies.length > 0) out.push(copies)
-  return out
-}
 
 export function setCellType(doc: Y.Doc, id: string, type: CellType): void {
   const index = indexOf(doc, id)

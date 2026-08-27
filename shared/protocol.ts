@@ -129,6 +129,13 @@ export type ControlServerMessage =
   | { t: 'terminal'; status: TerminalStatus }
   | { t: 'kernel'; status: KernelStatus }
   | { t: 'files'; files: FileEntry[] }
+  /*
+   * The room's rules changed. They can be edited after a seminar is made, and
+   * the server reads them fresh on every request — so a room told nothing
+   * would keep drawing a Run button that had just started refusing, which
+   * reads as a broken product rather than a rule.
+   */
+  | { t: 'rules'; rules: RoomRules }
   | { t: 'error'; message: string }
   | { t: 'pong' }
 

@@ -265,7 +265,9 @@
       submit()
       return
     }
-    if (event.key === 'c' && event.ctrlKey) {
+    // По коду клавиши: на русской раскладке event.key здесь «с», и Ctrl+C —
+    // единственный путь остановить зависший pip в общем шелле — не работал.
+    if (event.code === 'KeyC' && event.ctrlKey) {
       // Copying a selection wins; an empty selection means "stop that command".
       const target = event.currentTarget as HTMLInputElement
       if (target.selectionStart !== target.selectionEnd) return

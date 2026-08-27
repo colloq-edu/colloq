@@ -36,7 +36,7 @@
   import { acceptPatch, cellSource, patchIsStale, rejectPatch } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
-  import { oracleModeIn } from '@shared/rules'
+  import { allows, oracleModeIn, readRules } from '@shared/rules'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
@@ -80,6 +80,9 @@
   const meta = watchCellMeta(() => cell.current)
 
   const isCode = $derived(meta.current.type === 'code')
+  // The room's own rule, read where the button is drawn — the server has
+  // enforced it since rules existed and the interface never asked.
+  const mayRun = $derived(allows(readRules(session.session.rules).run, session.me.role))
 
   /*
    * Ячейка остановилась внутри input().
@@ -236,7 +239,7 @@
     void oracleStatus().then(({ enabled, mode }) => {
       // Narrowed to this room: an instance on `full` still has to obey a
       // seminar set to hints, and this button is exactly what hints refuses.
-      const here = oracleModeIn(session.session.rules, mode)
+      const here = oracleModeIn(readRules(session.session.rules), mode)
       if (alive) aiReady = enabled && actionAllowedIn(here, 'fix')
     })
     return () => {
@@ -538,8 +541,11 @@
           <button
             type="button"
             class={TOOL}
-            disabled={controlDisabled(session.connected)}
-            title={controlTitle(session.connected, 'Run cell')}
+            disabled={controlDisabled(session.connected, mayRun)}
+            title={controlTitle(
+              session.connected,
+              mayRun ? 'Run cell' : 'This seminar is set so only the teacher runs cells',
+            )}
             aria-label="Run cell"
             onclick={run}
           >

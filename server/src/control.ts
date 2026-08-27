@@ -82,7 +82,7 @@ function send(ws: WebSocket, message: ControlServerMessage): void {
   }
 }
 
-function broadcast(sessionId: string, message: ControlServerMessage): void {
+export function broadcast(sessionId: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
   if (!room) return
   const frame = JSON.stringify(message)

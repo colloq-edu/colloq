@@ -464,9 +464,12 @@ export function newId(prefix = 'c'): string {
   )
 }
 
-export function createCell(type: CellType, source = ''): YCell {
+export function createCell(type: CellType, source = '', id?: string): YCell {
   const cell = new Y.Map<any>()
-  cell.set('id', newId())
+  // An id may be supplied: restoring a deleted cell has to bring back the one
+  // it had, or a second restore cannot tell it is already there and makes
+  // another copy.
+  cell.set('id', id ?? newId())
   cell.set('type', type)
   const text = new Y.Text()
   if (source) text.insert(0, source)
@@ -503,6 +506,50 @@ export function cellOutputs(cell: YCell): Y.Array<YOutput> {
     cell.set('outputs', outputs)
   }
   return outputs
+}
+
+/**
+ * A copy of a cell, id and all.
+ *
+ * Y.Array has no move, so reordering means rebuilding — and a rebuilt sheet
+ * has to hold the same cells, not new ones with the same text: every caret,
+ * every open proposal and every history row names a cell by its id.
+ */
+export function cloneCell(cell: YCell): YCell {
+  const copy = new Y.Map<any>()
+  copy.set('id', cell.get('id'))
+  copy.set('type', cell.get('type'))
+  const text = new Y.Text()
+  const source = cell.get('source')
+  const was = source instanceof Y.Text ? source.toString() : String(source ?? '')
+  if (was) text.insert(0, was)
+  copy.set('source', text)
+  const outputs = new Y.Array<YOutput>()
+  const had = cell.get('outputs')
+  if (had instanceof Y.Array) {
+    for (const out of had.toArray()) outputs.push([cloneOutput(out)])
+  }
+  copy.set('outputs', outputs)
+  copy.set('state', cell.get('state') ?? ('idle' as CellState))
+  copy.set('execCount', cell.get('execCount') ?? null)
+  copy.set('runBy', cell.get('runBy') ?? null)
+  copy.set('runById', cell.get('runById') ?? null)
+  return copy
+}
+
+function cloneOutput(output: YOutput): YOutput {
+  const copy = new Y.Map<any>()
+  for (const [key, value] of output.entries()) {
+    if (value instanceof Y.Text) {
+      const text = new Y.Text()
+      const was = value.toString()
+      if (was) text.insert(0, was)
+      copy.set(key, text)
+    } else {
+      copy.set(key, value)
+    }
+  }
+  return copy as YOutput
 }
 
 export function findCell(doc: Y.Doc, id: string): { cell: YCell; index: number } | null {

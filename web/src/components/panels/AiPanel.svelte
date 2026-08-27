@@ -11,7 +11,7 @@
   import type * as Y from 'yjs'
   import { getCells, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
   import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
-  import { oracleModeIn } from '@shared/rules'
+  import { oracleModeIn, readRules } from '@shared/rules'
   import type { OracleMode } from '@shared/admin'
   import { api } from '@/lib/api'
   import { getSessionState } from '@/lib/session.svelte'
@@ -87,7 +87,7 @@
    * function the route enforces with, so the two cannot drift.
    */
   const mode = $derived<OracleMode>(
-    oracleModeIn(session.session.rules, status?.mode ?? 'full'),
+    oracleModeIn(readRules(session.session.rules), status?.mode ?? 'full'),
   )
   const quickActions = $derived(QUICK.filter((q) => actionAllowedIn(mode, q.action)))
   const hintsOnly = $derived(mode === 'hints')

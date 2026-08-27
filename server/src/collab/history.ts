@@ -28,7 +28,8 @@ import {
   type HistoricCell,
   type VersionKind,
 } from '@shared/history'
-import { CELLS_KEY, createCell, getCells, type YCell } from '@shared/notebook'
+import {
+  cloneCell, CELLS_KEY, createCell, getCells, type YCell } from '@shared/notebook'
 import { appendVersion, hasHistoryBase, updatesUpTo, versionCount } from '../db.js'
 
 /** Marks writes this module makes into a live doc, so they are not re-recorded twice. */
@@ -493,6 +494,36 @@ export function mark(
  * Returns how many cells actually changed, so a restore that would do nothing
  * does not leave a row in the timeline claiming it did something.
  */
+/**
+ * Put the cells named by `order` back in that order, in place.
+ *
+ * Cells the version did not have keep their relative places at the end: they
+ * were written after it, and a restore is not a reason to throw them away.
+ * Returns how many cells actually moved, so a restore that only reorders is
+ * still recorded as having changed something.
+ */
+function reorder(cells: Y.Array<YCell>, order: string[]): number {
+  const wanted = new Map(order.map((id, i) => [id, i]))
+  const current = cells.toArray()
+  const target = [...current].sort((a, b) => {
+    const ai = wanted.get(a.get('id') as string)
+    const bi = wanted.get(b.get('id') as string)
+    if (ai === undefined && bi === undefined) return current.indexOf(a) - current.indexOf(b)
+    if (ai === undefined) return 1
+    if (bi === undefined) return -1
+    return ai - bi
+  })
+  const same = target.every((cell, i) => cell === current[i])
+  if (same) return 0
+
+  // Y.Array has no move, so the sheet is rebuilt from clones. It is one
+  // transaction and one restore, not something a person does while typing.
+  const rebuilt = target.map((cell) => cloneCell(cell))
+  cells.delete(0, cells.length)
+  cells.insert(0, rebuilt)
+  return 1
+}
+
 export function restoreInto(
   sessionId: string,
   doc: Y.Doc,
@@ -513,12 +544,14 @@ export function restoreInto(
       const index = live.get(want.id)
       if (index === undefined) {
         /*
-         * The cell was deleted after this version. It comes back at the end
-         * rather than at its old index: the notebook has moved on, and guessing
-         * where it belongs among cells that did not exist then is worse than
-         * putting it somewhere obvious.
+         * The cell was deleted after this version, so it is recreated — with
+         * its own id, not a fresh one. A new id made the restore
+         * unrepeatable: press it twice and the notebook had two copies,
+         * because the second pass could not find what the first had put back.
+         *
+         * Position is decided below, once every cell exists.
          */
-        cells.push([createCell(want.type, want.source)])
+        cells.push([createCell(want.type, want.source, want.id)])
         changed++
         continue
       }
@@ -529,6 +562,17 @@ export function restoreInto(
       source.insert(0, want.source)
       changed++
     }
+
+    /*
+     * Order is part of the version too.
+     *
+     * "Restore the whole notebook" put every text back and left the cells
+     * wherever they had since been dragged, which is not the notebook anybody
+     * pressed the button for. Only for a whole restore: putting one cell back
+     * is about that cell, and shuffling the sheet around it would be a
+     * surprise nobody asked for.
+     */
+    if (!onlyCell) changed += reorder(cells, wanted.map((w) => w.id))
   }, RESTORE_ORIGIN)
 
   if (changed > 0) {

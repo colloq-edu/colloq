@@ -38,7 +38,8 @@ function wsBase(): string {
  * the local CRDT state and every unsynced keystroke with it.
  */
 export class SessionState {
-  readonly session: SessionInfo
+  /** Not readonly: the room's rules can change while the seminar is running. */
+  session: SessionInfo = $state.raw({} as SessionInfo)
   /*
    * Reactive, because the role in it can be corrected after the fact: the
    * control socket reports the role the SERVER will act on, which is not
@@ -237,6 +238,13 @@ export class SessionState {
       try {
         message = JSON.parse(event.data as string) as ControlServerMessage
       } catch {
+        return
+      }
+      if (message.t === 'rules') {
+        // Правила меняются на ходу, и комната обязана узнать сразу: кнопка,
+        // которая только что начала отказывать, без объяснения читается как
+        // поломка, а не как решение преподавателя.
+        this.session = { ...this.session, rules: message.rules }
         return
       }
       if (message.t === 'role') {

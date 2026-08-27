@@ -3,6 +3,7 @@
   import { findCell, type CellType } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
+  import { allows, readRules } from '@shared/rules'
   import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
@@ -177,8 +178,29 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
-    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
+    if (event.defaultPrevented) return
     if (claimedByFocus(event.target, event.key)) return
+
+    /*
+     * Undo, from the notebook rather than from inside a cell.
+     *
+     * The undo manager existed and nothing was ever bound to it: inside a cell
+     * CodeMirror handles Mod+Z through yCollab, and in command mode — which is
+     * where cells are DELETED, by D-D or by the trash — Ctrl+Z did nothing at
+     * all. The one action the room cannot get back any other way was the one
+     * action without an undo.
+     *
+     * Checked before the modifier guard below, which exists to let the browser
+     * keep its own shortcuts and would otherwise swallow this one. By code,
+     * not by key: on a Russian layout the letter is я.
+     */
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.code === 'KeyZ') {
+      event.preventDefault()
+      if (event.shiftKey) session.undoManager.redo()
+      else session.undoManager.undo()
+      return
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey) return
 
     const list = ids.current
     if (list.length === 0) return
@@ -188,6 +210,14 @@
     if (event.key === 'Enter' && event.shiftKey) {
       if (!current) return
       event.preventDefault()
+      /*
+       * In a room where only the teacher runs, this does nothing — and must
+       * therefore do nothing at all. It used to send the run, have it refused,
+       * and still step down the sheet and grow an empty cell at the end of the
+       * shared document: a keystroke that changed the notebook for everybody
+       * on behalf of a run that never happened.
+       */
+      if (!mayRun) return
       session.send({ t: 'run', cellId: current })
       // Run and move on, the same as inside the editor — but staying in command
       // mode, because that is where the keystroke came from.
@@ -198,7 +228,15 @@
     }
     if (event.shiftKey) return
 
-    switch (event.key) {
+    /*
+     * By code, not by key.
+     *
+     * `event.key` on a Russian layout is ф, и, ь, н, в — so every command-mode
+     * shortcut simply stopped existing for anybody typing in Russian, which in
+     * this product is most of the room. The physical key is what the shortcut
+     * was ever about; Ctrl+` was already done this way.
+     */
+    switch (event.code === 'Escape' || event.key.startsWith('Arrow') || event.key === 'Enter' ? event.key : LETTERS[event.code] ?? event.key) {
       case 'ArrowUp':
         event.preventDefault()
         select(list[at <= 0 ? 0 : at - 1])
@@ -247,7 +285,7 @@
       default:
         return
     }
-    if (event.key !== 'd') armedDeleteAt = 0
+    if ((LETTERS[event.code] ?? event.key) !== 'd') armedDeleteAt = 0
   }
 
   /* --------------------------------------------------- hold to restart */
@@ -284,7 +322,26 @@
   const RELEASE_MS = 100
   const EASE_OUT = 'cubic-bezier(0.23, 1, 0.32, 1)'
 
+  /** Physical keys the command mode uses, so the layout does not matter. */
+  const LETTERS: Record<string, string> = {
+    KeyA: 'a',
+    KeyB: 'b',
+    KeyM: 'm',
+    KeyY: 'y',
+    KeyD: 'd',
+  }
+
   const restartDisabled = $derived(controlDisabled(session.connected, isHost))
+  /*
+   * The room's own rule, read where the button is drawn.
+   *
+   * The server has enforced this since rules existed; the interface never
+   * asked. A seminar set to "teacher runs the cells" showed everybody a live
+   * Run button whose every press came back refused — and Shift+Enter went
+   * further, stepping down the sheet and adding an empty cell at the end of
+   * the shared document for a run that never happened.
+   */
+  const mayRun = $derived(allows(readRules(session.session.rules).run, session.me.role))
 
   let holdFill = $state<HTMLElement | null>(null)
   let holdAnim: Animation | null = null
@@ -582,8 +639,11 @@
              enabled:active:scale-[0.97] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2
              focus-visible:ring-inset focus-visible:ring-primary-ink/60
              disabled:pointer-events-none disabled:opacity-40"
-      disabled={controlDisabled(session.connected)}
-      title={controlTitle(session.connected, 'Run every code cell')}
+      disabled={controlDisabled(session.connected, mayRun)}
+      title={controlTitle(
+        session.connected,
+        mayRun ? 'Run every code cell' : 'This seminar is set so only the teacher runs cells',
+      )}
       onclick={() => session.send({ t: 'runAll' })}
     >
       <Icon name="play" size={12} />

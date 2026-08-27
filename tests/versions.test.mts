@@ -358,3 +358,53 @@ test('the server writing an output before an edit does not corrupt the edit', ()
   assert.equal(changed, 0, 'restoring the current state changed the document')
   assert.equal((getCells(doc).get(0).get('source') as Y.Text).toString(), 'x = 1')
 })
+
+test('откат всего ноутбука возвращает и порядок', () => {
+  /*
+   * «Restore the whole notebook» возвращал только тексты и оставлял ячейки
+   * там, куда их с тех пор перетащили, — это не тот ноутбук, ради которого
+   * нажимали кнопку.
+   */
+  const id = 'hist-order'
+  const doc = room(id, 'p_maria')
+  doc.transact(() => getCells(doc).push([createCell('code', 'one'), createCell('code', 'two')]))
+  flushHistory(id)
+  const good = listVersions(id, 20).filter((v) => v.kind === 'edit')[0].seq
+
+  // Переставляем так, как это делает редактор: клон с тем же id.
+  doc.transact(() => {
+    const cells = getCells(doc)
+    const moved = cells.get(1)
+    const clone = createCell('code', (moved.get('source') as Y.Text).toString(), moved.get('id') as string)
+    cells.delete(1, 1)
+    cells.insert(0, [clone])
+  })
+  flushHistory(id)
+  assert.deepEqual(
+    getCells(doc).toArray().map((c) => (c.get('source') as Y.Text).toString()),
+    ['two', 'one'],
+    'перестановка не применилась',
+  )
+
+  restoreInto(id, doc, good, 'p_alexander', null, '18:04')
+  assert.deepEqual(
+    getCells(doc).toArray().map((c) => (c.get('source') as Y.Text).toString()),
+    ['one', 'two'],
+    'порядок не вернулся',
+  )
+})
+
+test('удалённая ячейка возвращается со своим id, и повтор не двоит', () => {
+  const id = 'hist-reid'
+  const doc = room(id, 'p_maria')
+  doc.transact(() => getCells(doc).push([createCell('code', 'keep'), createCell('code', 'gone')])) 
+  flushHistory(id)
+  const good = listVersions(id, 20).filter((v) => v.kind === 'edit')[0].seq
+
+  doc.transact(() => getCells(doc).delete(1, 1))
+  flushHistory(id)
+
+  restoreInto(id, doc, good, 'p_alexander', null, '18:04')
+  restoreInto(id, doc, good, 'p_alexander', null, '18:05')
+  assert.equal(getCells(doc).length, 2, 'второй откат сделал копию')
+})

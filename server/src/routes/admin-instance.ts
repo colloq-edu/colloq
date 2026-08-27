@@ -22,9 +22,9 @@ import { testConnection } from '../ai/provider.js'
 import { newSessionId } from '../auth.js'
 import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
 import { config } from '../config.js'
-import { closeControlRoom } from '../control.js'
+import { broadcast, closeControlRoom } from '../control.js'
 import { readRules } from '@shared/rules'
-import { createSession, db, discardHistory, loadDocSnapshot, sessionEnvironment, setRules } from '../db.js'
+import { createSession, db, discardHistory, getRules, loadDocSnapshot, sessionEnvironment, setRules } from '../db.js'
 import { forgetCache } from '../collab/history.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
 import { activeName, exists as environmentExists } from '../environments.js'
@@ -252,7 +252,7 @@ export function adminInstanceRoutes(): Router {
     const row = seminarOr404(req, res)
     if (!row) return
 
-    const body = req.body as { name?: unknown; archived?: unknown } | undefined
+    const body = req.body as { name?: unknown; archived?: unknown; rules?: unknown } | undefined
     if (body?.name !== undefined) {
       const name = normalize(body.name)
       if (!name) return invalid(res, 'a seminar name is required')
@@ -270,6 +270,24 @@ export function adminInstanceRoutes(): Router {
       // Archiving is a label on the list, not a lock: a room with people still
       // in it keeps working, which is why nothing here touches the document.
       setArchived.run(body.archived ? Date.now() : null, row.id)
+    }
+
+    if (body?.rules !== undefined) {
+      /*
+       * Rules can be changed after the fact, and could always have been: the
+       * server reads them fresh on every request, so a change takes effect at
+       * once. Only the panel had no way to send one — a seminar created with
+       * "everyone may run" stayed that way for its whole life, and the teacher
+       * who wanted a lecture had to make a second room.
+       */
+      if (typeof body.rules !== 'object' || body.rules === null) {
+        return invalid(res, 'rules must be an object')
+      }
+      setRules(row.id, readRules({ ...getRules(row.id), ...(body.rules as object) }))
+      // The room finds out now, not on its next reload: the panel greys its
+      // controls from this, and a rule nobody was told about is a rule that
+      // looks like a bug when a button stops working.
+      broadcast(row.id, { t: 'rules', rules: getRules(row.id) })
     }
 
     res.json(toSeminar(selectSeminar.get(row.id) as SeminarRow))
