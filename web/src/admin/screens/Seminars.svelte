@@ -561,6 +561,7 @@
         class="flex h-[34px] cursor-pointer select-none items-center gap-2 border border-line
                bg-canvas px-3 text-2xs font-bold uppercase tracking-caps text-muted
                hover:text-ink"
+        title="{seminars.length - archivedCount} active · {archivedCount} archived"
       >
         <input type="checkbox" bind:checked={showArchived} class="accent-accent" />
         Archived

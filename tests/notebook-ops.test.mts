@@ -129,3 +129,28 @@ test('an operation on a cell that is gone is a no-op, not a crash', () => {
   assert.equal(duplicateCell(doc, 'c_never_existed'), null)
   assert.deepEqual(order(cells), before)
 })
+
+test('двигают ячейку — пересоздают соседа, а не её', () => {
+  const { doc, cells, made, ids } = notebook(['a = 1', 'b = 2'])
+  const moving = made[0]
+  const movingText = moving.get('source') as Y.Text
+
+  moveCell(doc, ids[0], 1)
+
+  // Порядок тот же, что и был бы при любом способе.
+  assert.equal(order(cells).join(','), 'b = 2,a = 1')
+
+  /*
+   * Та ячейка, на кнопке которой стоял палец, — тот же самый объект.
+   *
+   * У Y.Array нет перемещения, так что одну из двух приходится пересоздавать
+   * клоном, и всё привязанное к ней — редактор, курсор, набранное в этот миг —
+   * пересоздаётся вместе с ней. Пусть это будет сосед.
+   */
+  const after = cells.toArray().find((c) => (c.get('id') as string) === ids[0])!
+  assert.equal(after, moving, 'подвинули саму ячейку вместо соседа')
+
+  // И её Y.Text по-прежнему живой: то, что в него пишет CodeMirror, доезжает.
+  movingText.insert(movingText.length, ' + 1')
+  assert.equal(order(cells).join(','), 'b = 2,a = 1 + 1')
+})

@@ -178,7 +178,9 @@ Everything lives in `.env` — see `.env.example` for the full list.
 | `OPEN_SEMINAR_CREATION` | Let anyone with the URL create a seminar (default off: staff only) |
 | `JUPYTER_TOKEN` | Shared secret between the app and the kernel container |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Any OpenAI-compatible endpoint |
+| `AI_REASONING` | Ask the model for its reasoning trace as well (default off — on a reasoning model the trace costs about as much as the answer) |
 | `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling for student code |
+| `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | One file, and everything one seminar holds (default 50 and 1024) |
 
 The AI layer talks plain OpenAI-compatible HTTP, so pointing `OPENAI_BASE_URL` at Ollama, vLLM,
 LM Studio or OpenRouter works without touching code. Leaving `OPENAI_API_KEY` empty simply

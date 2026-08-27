@@ -61,11 +61,23 @@ export function moveCell(doc: Y.Doc, id: string, direction: -1 | 1): void {
   if (to < 0 || to >= cells.length) return
 
   doc.transact(() => {
-    // Y.Array has no move: clone the cell, then delete the original.
-    const source = cells.get(from)
-    const clone = cloneCell(source)
-    cells.delete(from, 1)
-    cells.insert(to, [clone])
+    /*
+     * Переезжает сосед, а не та ячейка, которую двигают.
+     *
+     * У Y.Array нет перемещения: одну из двух ячеек всё равно придётся
+     * пересоздать клоном, и всё, что к ней привязано, пересоздастся вместе с
+     * ней — редактор, курсор, выделение, буквы, набранные в этот миг. Раньше
+     * это была та самая ячейка, на кнопке которой стоял палец и в которой
+     * стоял курсор: человек нажимал «вниз» и терял место в строке, а иногда
+     * пару символов.
+     *
+     * Поменять ячейки местами можно, двигая любую из двух: результат тот же.
+     * Так что пересоздаётся соседняя — та, в которую только что заведомо никто
+     * не печатал, потому что печатали в этой.
+     */
+    const neighbour = cloneCell(cells.get(to))
+    cells.delete(to, 1)
+    cells.insert(from, [neighbour])
   })
 }
 
@@ -78,10 +90,11 @@ export function moveCell(doc: Y.Doc, id: string, direction: -1 | 1): void {
  * claiming to have run as [3] with nothing under it. Reordering a notebook is
  * not a reason to throw away what it printed.
  *
- * What a copy cannot carry is a *concurrent* edit: somebody typing into this
- * cell at the moment it moves is typing into the original, and the original is
+ * What a copy cannot carry is a *concurrent* edit: somebody typing into the
+ * copied cell at that moment is typing into the original, and the original is
  * about to be deleted. That is inherent to a list with no move operation, and
- * the window is one sync round.
+ * the window is one sync round — which is why `moveCell` copies the neighbour
+ * rather than the cell whose button was just pressed.
  */
 
 
