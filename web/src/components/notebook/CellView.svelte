@@ -111,7 +111,48 @@
     answer = ''
   }
   const cellState = $derived(meta.current.state)
+
+  /*
+   * Мгновенная ячейка не мигает.
+   *
+   * `print(1)` проходит очередь и выполнение за десятки миллисекунд, и на этих
+   * десятках миллисекунд интерфейс успевал показать всё: полоса вспыхивала
+   * акцентом, номер менял цвет, снизу появлялась и пропадала строка состояния,
+   * кнопка в тулбаре оборачивалась в квадрат и обратно. Получалось моргание на
+   * ровном месте — и тем заметнее, чем быстрее ячейка.
+   *
+   * Поэтому состояние занятости показывают не сразу: если выполнение кончилось
+   * раньше порога, показывать было нечего и никто ничего не увидел. Если оно
+   * живёт дольше — всё появляется разом, и появляется уже надолго.
+   *
+   * Порог местный и в документ не попадает: это про то, как рисуют, а не про
+   * то, что происходит. Двести миллисекунд — обычная граница, за которой
+   * человек начинает замечать ожидание; ниже неё указатель успевает только
+   * мигнуть.
+   */
+  const BUSY_VISIBLE_MS = 200
+  const busy = $derived(cellState === 'running' || cellState === 'queued')
+  let showBusy = $state(false)
+  $effect(() => {
+    if (!busy) {
+      showBusy = false
+      return
+    }
+    const id = window.setTimeout(() => (showBusy = true), BUSY_VISIBLE_MS)
+    return () => window.clearTimeout(id)
+  })
+
+  /**
+   * Состояние, каким его рисуют, — против того, каким оно есть.
+   *
+   * Отличаются они только в те двести миллисекунд, пока занятость ещё не
+   * показывают. Решения принимаются по настоящему `cellState` (см. `run`),
+   * рисуется — по этому.
+   */
+  const shownState = $derived(busy && !showBusy ? 'idle' : cellState)
   const running = $derived(cellState === 'running')
+  /** То же для разметки: полоса, строка состояния и лицо кнопки ждут порога. */
+  const shownRunning = $derived(running && showBusy)
 
   let editing = $state(false)
   /** Only true when edit mode was entered deliberately, so a peer cannot steal focus. */
@@ -143,11 +184,11 @@
    * you have clicked on is still, first, a cell that failed.
    */
   const tone = $derived(
-    running
+    shownRunning
       ? 'running'
       : hasError
         ? 'error'
-        : cellState === 'queued'
+        : shownState === 'queued'
           ? 'queued'
           : selected
             ? 'selected'
@@ -253,7 +294,7 @@
   })
 
   const slot = $derived(
-    runSlot(cellState, {
+    runSlot(shownState, {
       connected: session.connected,
       mayRun,
       canCancel,
@@ -762,7 +803,7 @@
                 // Выбранная ячейка отличается ещё и подложкой: одна кромка на
                 // широком экране теряется у левого поля, а глаз ищет ячейку в
                 // тексте, а не на границе.
-                selected && !running && !hasError && 'bg-raised',
+                selected && !shownRunning && !hasError && 'bg-raised',
               )}
               onfocusout={(event) => {
                 // Blurring a note puts it back to rendered form; code cells stay open.
@@ -874,7 +915,7 @@
               и RULE.running на работающей ячейке, и RULE.error на упавшей, ради
               исправления которой предложение и просили.
             -->
-            <div class={cn('border-l-4 bg-accent/[0.04]', running ? 'border-accent/40' : 'border-accent')}>
+            <div class={cn('border-l-4 bg-accent/[0.04]', shownRunning ? 'border-accent/40' : 'border-accent')}>
               <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2">
                 <span class={cn(CAPS, 'text-accent-text')}>Proposed by the oracle</span>
                 <span class="font-mono text-2xs">
@@ -953,7 +994,7 @@
             'mt-1.5 flex items-center gap-2 border-l-4 bg-accent/[0.07] px-3 py-2',
             // В пару к RULE.running: на работающей ячейке кромка приглушена, и
             // сплошной акцент здесь читался бы как третий оттенок в столбце.
-            running ? 'border-accent/40' : 'border-accent',
+            shownRunning ? 'border-accent/40' : 'border-accent',
           )}
           onsubmit={sendAnswer}
         >
@@ -1001,7 +1042,7 @@
         одного удара в секунду — то есть ничего из того, ради чего движение
         убирают.
       -->
-      {#if running}
+      {#if shownRunning}
         <span
           aria-hidden="true"
           class="pointer-events-none absolute inset-y-0 left-0 w-1 animate-blink bg-accent"
@@ -1009,7 +1050,7 @@
       {/if}
       </div>
 
-      {#if running}
+      {#if shownRunning}
         <!--
           Строка состояния этой ячейки для всей комнаты.
 
@@ -1046,6 +1087,21 @@
             Полоса при этом дышит, а секундомер считает: прошедшее время
             выполнения — всё ещё прошедшее время выполнения.
           -->
+          <!--
+            Крутящийся значок у самого слова.
+
+            Полоса слева говорит комнате, КАКАЯ ячейка занята, и читается через
+            весь зал; этот значок говорит одному человеку, что система жива, и
+            читается с расстояния вытянутой руки. Разные вопросы и разные
+            дистанции, поэтому их двое. Значок приглушённый: спорить с
+            акцентным словом рядом он не должен.
+
+            У ожидания ввода не крутится — там ничего не происходит, пока
+            кто-нибудь не ответит, и вертящийся значок обещал бы работу.
+          -->
+          {#if !stdin}
+            <Icon name="spinner" size={12} class="shrink-0 animate-spin text-accent-text/70" />
+          {/if}
           <span class={cn(CAPS, 'text-accent-text')}>{stdin ? 'Waiting' : 'Running'}</span>
           {#if runBy}
             <span class="text-2xs text-muted">started by {runBy}</span>
@@ -1089,7 +1145,7 @@
         their cell is waiting rather than ignored. The position is extra when we
         have it; that it is queued, and whose it is, we always have.
       -->
-      {:else if cellState === 'queued'}
+      {:else if shownState === 'queued'}
         <div class={FOOTER}>
           <!-- The chip is the POSITION. Without one it would only say "queued"
                beside "queued by John", which is the same word twice. -->
