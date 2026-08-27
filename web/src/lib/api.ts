@@ -86,8 +86,23 @@ export const api = {
    * <a href download>, and an anchor cannot send a header. It is the same
    * seminar-scoped credential the rest of the panel already uses.
    */
-  fileUrl: (id: string, name: string, token: string) =>
-    `/api/sessions/${id}/files/${encodeURIComponent(name)}?token=${encodeURIComponent(token)}`,
+  /**
+   * A download link, good for this one file for five minutes.
+   *
+   * Two steps rather than one because an `<a href download>` cannot carry a
+   * header: the session token goes up in a header to fetch a ticket, and only
+   * the ticket rides in the URL. The link used to carry the session token
+   * itself, which meant "copy link address" into a group chat handed every
+   * reader the control socket under the teacher's name.
+   */
+  fileTicket: (id: string, name: string, token: string) =>
+    request<{ token: string }>(
+      `/api/sessions/${id}/files/${encodeURIComponent(name)}/ticket`,
+      { headers: { authorization: `Bearer ${token}` } },
+    ),
+
+  fileUrl: (id: string, name: string, ticket: string) =>
+    `/api/sessions/${id}/files/${encodeURIComponent(name)}?token=${encodeURIComponent(ticket)}`,
 
   /** `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`. */
   aiStatus: () =>

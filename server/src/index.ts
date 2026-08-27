@@ -373,9 +373,17 @@ function reject(socket: Duplex): void {
   socket.destroy()
 }
 
-/** A staff cookie outranks whatever role the participant token was minted with. */
+/**
+ * The role for this connection, decided now rather than read from the token.
+ *
+ * A staff cookie grants host; nothing else does, for the same reason the HTTP
+ * side works this way (see sessionAuth): a role baked into a token at join time
+ * is a role nobody can take away, and a teacher removed from the staff list
+ * kept Restart in every room they had ever opened. The socket is re-checked on
+ * every reconnect, so signing out takes the powers with it within seconds.
+ */
 function effectiveRole(req: { headers: { cookie?: string } }, payload: TokenPayload): TokenPayload['role'] {
-  return staffFromCookieHeader(req.headers.cookie) ? 'host' : payload.role
+  return staffFromCookieHeader(req.headers.cookie) ? 'host' : 'participant'
 }
 
 server.on('upgrade', (req, socket, head) => {

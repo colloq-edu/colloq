@@ -61,15 +61,42 @@ function normalize(value: unknown): string {
  */
 export function sessionAuth(req: Request): TokenPayload | null {
   const header = req.headers.authorization ?? ''
-  const raw = header.startsWith('Bearer ')
-    ? header.slice(7).trim()
-    : typeof req.query.token === 'string'
-      ? req.query.token
-      : ''
+  /*
+   * Header only. The query string used to be accepted here as well, for the
+   * one route that needs it — a download is an `<a href download>` and an
+   * anchor cannot send a header — but accepting it everywhere meant the string
+   * that opens the control socket travelled in a URL a teacher could copy into
+   * a group chat. The download route has its own short-lived credential now
+   * (signDownloadToken); this one takes a header and nothing else.
+   */
+  const raw = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
   const payload = verifyToken(raw)
   if (!payload || payload.sessionId !== req.params.id) return null
-  return currentStaff(req) ? { ...payload, role: 'host' } : payload
+  /*
+   * The role is decided here, on every request, and never read from the token.
+   *
+   * It used to be baked in at join time, which made `host` permanent: a teacher
+   * removed from the staff list kept Restart, Clear and Restore in every room
+   * they had ever opened, because their old token still said so. The cookie is
+   * the only thing that can be taken away, so it is the only thing that grants.
+   * The one exception is a seminar created straight against the API, where a
+   * host token is the only credential there is — that is minted host and stays
+   * host, and it is the path no browser walks.
+   */
+  if (currentStaff(req)) return { ...payload, role: 'host' }
+  return payload.role === 'host' && hostByToken.has(payload.participantId)
+    ? payload
+    : { ...payload, role: 'participant' }
 }
+
+/**
+ * Participants whose host badge came from a host token rather than a cookie.
+ *
+ * Small and in memory on purpose: it is the scripted path — a seminar made by
+ * POST /api/sessions, whose creator holds the only credential that exists for
+ * it. A restart forgets them, and forgetting is the safe direction.
+ */
+const hostByToken = new Set<string>()
 
 export function sessionRoutes(): Router {
   const router = Router()
@@ -165,6 +192,8 @@ export function sessionRoutes(): Router {
     const participantId = known ? known.id : newParticipantId()
 
     const participant = upsertParticipant({ id: participantId, sessionId, name, avatar, role })
+    // Only a host token earns a lasting badge; a cookie is re-read per request.
+    if (role === 'host' && !staff) hostByToken.add(participantId)
     const token = signToken({ sessionId, participantId, role })
 
     // Warm the kernel while the student is still reading the page; a failure

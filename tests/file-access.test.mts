@@ -20,7 +20,7 @@ import http from 'node:http'
 import express from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { signToken } from '../server/src/auth.js'
+import { signDownloadToken, signToken } from '../server/src/auth.js'
 import { createSession } from '../server/src/db.js'
 import { fileRoutes } from '../server/src/routes/files.js'
 import { sessionDir } from '../server/src/workspace.js'
@@ -65,13 +65,45 @@ test('somebody in the room can list them', async () => {
   assert.ok(body.files.some((f) => f.name === 'handout.csv'))
 })
 
-test('a download carries its credential in the query string', async () => {
-  // The only shape an <a href download> can use.
+test('a download carries a ticket in the query string, not the session token', async () => {
+  /*
+   * An <a href download> cannot send a header, so something must ride in the
+   * URL — but the session token opens the control socket, and a link with it
+   * in is a link that hands Restart to whoever it is forwarded to. What rides
+   * there now names one file and dies in five minutes.
+   */
+  const ticket = signDownloadToken(ROOM, 'handout.csv')
   const res = await fetch(
-    `${base}/api/sessions/${ROOM}/files/handout.csv?token=${encodeURIComponent(token())}`,
+    `${base}/api/sessions/${ROOM}/files/handout.csv?token=${encodeURIComponent(ticket)}`,
   )
   assert.equal(res.status, 200)
   assert.match(await res.text(), /1,2/)
+})
+
+test('the session token no longer opens a download from the query string', async () => {
+  const res = await fetch(
+    `${base}/api/sessions/${ROOM}/files/handout.csv?token=${encodeURIComponent(token())}`,
+  )
+  assert.equal(res.status, 401)
+})
+
+test('a ticket for one file does not open another', async () => {
+  fs.writeFileSync(path.join(sessionDir(ROOM), 'secret.csv'), 'x\n')
+  const ticket = signDownloadToken(ROOM, 'handout.csv')
+  const res = await fetch(
+    `${base}/api/sessions/${ROOM}/files/secret.csv?token=${encodeURIComponent(ticket)}`,
+  )
+  assert.equal(res.status, 401)
+})
+
+test('only the teacher can remove a file from the room', async () => {
+  fs.writeFileSync(path.join(sessionDir(ROOM), 'theirs.csv'), 'a\n')
+  const asStudent = await fetch(`${base}/api/sessions/${ROOM}/files/theirs.csv`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token()}` },
+  })
+  assert.equal(asStudent.status, 403)
+  assert.ok(fs.existsSync(path.join(sessionDir(ROOM), 'theirs.csv')), 'a student deleted it anyway')
 })
 
 test('a token for another seminar opens nothing here', async () => {

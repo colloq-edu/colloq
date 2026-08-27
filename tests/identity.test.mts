@@ -22,7 +22,8 @@ import type { Request, Response } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
-import { signToken } from '../server/src/auth.js'
+import { createHmac } from 'node:crypto'
+import { signToken, verifyToken, TOKEN_MAX_AGE_MS } from '../server/src/auth.js'
 import { createSession, getParticipant } from '../server/src/db.js'
 import { sessionAuth, sessionRoutes } from '../server/src/routes/sessions.js'
 import type { JoinRequest, JoinResponse } from '../shared/protocol.js'
@@ -185,4 +186,36 @@ test('no credential at all is nobody, cookie or not', () => {
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   assert.equal(sessionAuth(request('', mintCookie(teacher))), null)
+})
+
+/* ------------------------------------------------ роль нельзя запечь навсегда */
+
+test('токен с role:host не даёт host без cookie', async () => {
+  /*
+   * Роль решается на каждом запросе и никогда не читается из токена. Иначе
+   * host был бы вечным: преподаватель, удалённый из списка, сохранял бы
+   * Restart и Restore во всех комнатах, куда когда-либо заходил, — токен всё
+   * ещё говорил бы, что он хозяин.
+   */
+  const student = await join({ name: 'Ada' })
+  const forged = signToken({ sessionId: ROOM, participantId: student.participant.id, role: 'host' })
+  assert.equal(sessionAuth(request(forged))?.role, 'participant', 'запечённый host пережил проверку')
+})
+
+test('токен старше предельного возраста не принимается', () => {
+  const stale = signToken({
+    sessionId: ROOM,
+    participantId: 'p_old',
+    role: 'participant',
+    iat: Date.now() - TOKEN_MAX_AGE_MS - 1000,
+  })
+  assert.equal(verifyToken(stale), null, 'вечный токен — это выданная навсегда возможность')
+})
+
+test('токен без отметки времени читается: комната посреди пары не должна разлогиниться', () => {
+  const body = Buffer.from(
+    JSON.stringify({ sessionId: ROOM, participantId: 'p_ageless', role: 'participant' }),
+  ).toString('base64url')
+  const sig = createHmac('sha256', process.env.SESSION_SECRET as string).update(body).digest('base64url')
+  assert.equal(verifyToken(`${body}.${sig}`)?.participantId, 'p_ageless')
 })

@@ -20,6 +20,29 @@
   let error = $state<string | null>(null)
   let copied = $state<string | null>(null)
   let confirming = $state<string | null>(null)
+  const isHost = $derived(session.me.role === 'host')
+
+  /**
+   * Fetch a ticket, then let the browser take the file.
+   *
+   * The anchor is gone because an anchor could only carry the session token,
+   * and that token opens the control socket: a link copied into the group chat
+   * handed every reader Restart and Restore under the teacher's name. The
+   * ticket in this URL is good for one file for five minutes.
+   */
+  async function download(name: string): Promise<void> {
+    try {
+      const { token } = await api.fileTicket(session.session.id, name, session.token)
+      const a = document.createElement('a')
+      a.href = api.fileUrl(session.session.id, name, token)
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Could not download that file.'
+    }
+  }
 
   /*
    * A destructive question you cannot back out of with the keyboard is a trap,
@@ -309,28 +332,33 @@
               <span
                 class="absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
               >
-                <a
-                  href={api.fileUrl(session.session.id, file.name, session.token)}
-                  download={file.name}
+                <button
+                  type="button"
                   class="flex h-6 w-6 items-center justify-center text-faint transition-colors
                          duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
                          focus-visible:ring-accent/40"
                   title="Download"
                   aria-label="Download {file.name}"
+                  onclick={() => void download(file.name)}
                 >
                   <Icon name="download" size={13} />
-                </a>
-                <button
-                  type="button"
-                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors
-                         duration-100 hover:text-danger focus-visible:outline-none
-                         focus-visible:ring-2 focus-visible:ring-danger/40"
-                  title="Delete"
-                  aria-label="Delete {file.name}"
-                  onclick={() => (confirming = file.name)}
-                >
-                  <Icon name="trash" size={13} />
                 </button>
+                <!-- Removing a file is the teacher's: the folder is shared in
+                     both directions, and the handout the class is working from
+                     sat one click from anybody. -->
+                {#if isHost}
+                  <button
+                    type="button"
+                    class="flex h-6 w-6 items-center justify-center text-faint transition-colors
+                           duration-100 hover:text-danger focus-visible:outline-none
+                           focus-visible:ring-2 focus-visible:ring-danger/40"
+                    title="Delete"
+                    aria-label="Delete {file.name}"
+                    onclick={() => (confirming = file.name)}
+                  >
+                    <Icon name="trash" size={13} />
+                  </button>
+                {/if}
               </span>
             </div>
           {/if}

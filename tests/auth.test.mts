@@ -16,9 +16,14 @@ import {
 
 const payload = { sessionId: 's1', participantId: 'p_1', role: 'participant' as const }
 
-test('a token round-trips its payload', () => {
+test('a token round-trips its payload, plus the moment it was minted', () => {
+  // iat is added at signing: a token with no expiry is a capability handed out
+  // for good, and an age limit is the only revocation a stateless one can have.
   const parsed = verifyToken(signToken(payload))
-  assert.deepEqual(parsed, payload)
+  assert.equal(parsed?.sessionId, payload.sessionId)
+  assert.equal(parsed?.participantId, payload.participantId)
+  assert.equal(parsed?.role, payload.role)
+  assert.ok(typeof parsed?.iat === 'number' && Date.now() - parsed.iat < 5000)
 })
 
 test('a tampered body is refused', () => {

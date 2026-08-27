@@ -12,6 +12,7 @@ import {
   whyRefused,
 } from '../workspace.js'
 import { broadcastFiles } from '../control.js'
+import { signDownloadToken, verifyDownloadToken } from '../auth.js'
 import { sessionAuth } from './sessions.js'
 
 interface UploadFailure {
@@ -182,7 +183,15 @@ export function fileRoutes(): Router {
      * Referrer-Policy: strict-origin-when-cross-origin, so it does not travel
      * anywhere the link itself does not already go.
      */
-    if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
+    /*
+     * Either a header from a fetch, or the file's own short-lived token in the
+     * query string — the anchor case. What is no longer accepted here is the
+     * session token in a URL: it opens the control socket, and a link with it
+     * in is a link that hands Restart to whoever it is forwarded to.
+     */
+    const ticket = typeof req.query.token === 'string' ? req.query.token : ''
+    const allowed = sessionAuth(req) !== null || verifyDownloadToken(sessionId, req.params.name, ticket)
+    if (!allowed) return res.status(401).json({ error: 'join the session first' })
     const full = resolveInSession(sessionId, req.params.name)
     if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
     res.download(full, req.params.name, (err) => {
@@ -190,10 +199,36 @@ export function fileRoutes(): Router {
     })
   })
 
-  router.delete('/api/sessions/:id/files/:name', (req, res) => {
+  /**
+   * A ticket to download one file.
+   *
+   * The panel asks for it with a header, then puts the ticket in the anchor —
+   * so the credential that travels in a URL is good for one file for five
+   * minutes, and for nothing else at all.
+   */
+  router.get('/api/sessions/:id/files/:name/ticket', (req, res) => {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
     if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
+    const full = resolveInSession(sessionId, req.params.name)
+    if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
+    res.json({ token: signDownloadToken(sessionId, req.params.name) })
+  })
+
+  router.delete('/api/sessions/:id/files/:name', (req, res) => {
+    const sessionId = req.params.id
+    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    const who = sessionAuth(req)
+    if (!who) return res.status(401).json({ error: 'join the session first' })
+    /*
+     * Host only. The folder is shared in both directions — anyone in the room
+     * could delete the handout the class was working from, and the trash icon
+     * sat in everyone's panel with one confirmation behind it. Adding a file is
+     * additive and stays open to all; removing one is not.
+     */
+    if (who.role !== 'host') {
+      return res.status(403).json({ error: 'Only the teacher can remove a file from the room.' })
+    }
     if (!deleteFile(sessionId, req.params.name)) {
       return res.status(404).json({ error: 'file not found' })
     }
