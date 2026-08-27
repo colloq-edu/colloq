@@ -228,8 +228,17 @@
           <span class="flex h-[34px] items-center border border-line bg-canvas px-2.5 font-mono text-2xs text-faint">
             github.com/…/week02
           </span>
+          <!--
+            Про «публичный» сказано здесь, а не в сообщении об ошибке.
+
+            GitHub отвечает анонимному запросу к приватному репозиторию 404, а
+            не 403 — иначе по коду ответа перебирали бы чужие названия. Ошибка
+            теперь называет обе причины, но узнать об этом до того, как
+            вставишь ссылку, лучше, чем после.
+          -->
           <span class="text-2xs text-muted">
-            The first .ipynb by name, plus the data beside it. Outputs are dropped.
+            The first .ipynb by name, plus the data beside it. Outputs are dropped. Public
+            repositories only.
           </span>
         </button>
       </div>

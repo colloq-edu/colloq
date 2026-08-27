@@ -568,8 +568,16 @@
         </button>
       {/each}
       {#if hintsOnly}
+        <!--
+          «Просят подсказку», а не «решения не будет».
+
+          Режим подсказок держится на формулировке запроса к модели: мы просим
+          не давать решение, повторяем эту просьбу после слов студента — и на
+          этом всё, потому что больше сделать нечего. Обещать классу, что
+          решение не появится, значит обещать за модель.
+        -->
         <span class="text-2xs text-muted">
-          hints only — the oracle points, it does not write the answer
+          hints only — the oracle is asked to nudge rather than solve
         </span>
       {:else if selected === null}
         <span class="text-2xs text-muted">select a cell to use these</span>

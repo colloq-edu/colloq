@@ -93,6 +93,10 @@
    * одной буквы. Черновик держится отдельно от `teachers`, чтобы брошенная
    * правка не перекрашивала строку.
    */
+  let newSetupToken = $state<string | null>(null)
+  let setupTokenError = $state<string | null>(null)
+  let rotatingSetup = $state(false)
+
   let editing = $state<{ id: string; name: string; email: string } | null>(null)
   let savingEdit = $state(false)
   /** A refusal with no confirmation band to land in still has to be seen. */
@@ -194,6 +198,19 @@
       rowError = { id: t.id, message: report(cause) }
     } finally {
       roleBusy = null
+    }
+  }
+
+  async function rotateSetup(): Promise<void> {
+    rotatingSetup = true
+    setupTokenError = null
+    try {
+      const { token } = await adminApi.rotateSetupToken()
+      newSetupToken = token
+    } catch (cause: unknown) {
+      setupTokenError = report(cause)
+    } finally {
+      rotatingSetup = false
     }
   }
 
@@ -731,6 +748,45 @@
       {/if}
     </p>
   </div>
+
+  <!--
+    Токен установки — четвёртая дверь в панель, о которой этот экран молчал.
+
+    Он подписывает вошедшего как самого старого владельца и печатается `make
+    host` при каждом запуске: он есть в истории терминала, на снимках проектора
+    и в переписке, куда его пересылали. Отозвать его было нечем — а «rotate it
+    when someone leaves» выше относилось к ссылкам преподавателей и про эту
+    дверь не говорило ничего.
+  -->
+  {#if isOwner}
+    <div class="flex flex-wrap items-start gap-3 border-t border-line-soft py-3.5">
+      <div class="min-w-0 max-w-[600px] flex-1">
+        {@render eyebrow('Setup token')}
+        <p class="mt-1.5 text-2xs text-muted">
+          The token printed at every start signs whoever holds it in as the longest-standing owner.
+          It has been in terminal history, on a projector and in whatever chat it was pasted into.
+          Rotating it kills the old one instantly; the next start prints the new one.
+        </p>
+        {#if newSetupToken}
+          <p class="mt-2 break-all font-mono text-2xs text-ink">{newSetupToken}</p>
+          <p class="mt-1 text-2xs text-muted">
+            Shown once. It is also printed by the server at every start, so there is nothing to write
+            down.
+          </p>
+        {:else if setupTokenError}
+          <p class="mt-2 text-2xs text-danger">{setupTokenError}</p>
+        {/if}
+      </div>
+      <button
+        type="button"
+        class="btn-outline shrink-0"
+        disabled={rotatingSetup}
+        onclick={() => void rotateSetup()}
+      >
+        {rotatingSetup ? 'Rotating…' : 'Rotate setup token'}
+      </button>
+    </div>
+  {/if}
 
   <div class="flex flex-wrap items-start gap-14 border-t border-line-soft pt-5">
     <div class="min-w-0 max-w-[600px] flex-1">

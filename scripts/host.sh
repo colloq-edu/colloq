@@ -181,11 +181,27 @@ CONF
   # Ждём подтверждения от сервера, а не «прошло N секунд»: занятый кем-то
   # поддомен или неверный секрет — это отказ, который приходит сразу, и молча
   # пойти дальше значило бы раздать ссылку в никуда.
+  #
+  # Строки — те, что frpc печатает на самом деле. Прежний `proxy name .* already`
+  # не совпадал ни с чем: frpc 0.71 пишет `start error: proxy [hse] already
+  # exists`. Из-за этого занятый поддомен — самый частый отказ, когда семинар
+  # уже поднят на другой машине, — распознавался не сразу, а через тридцать
+  # секунд ожидания, и назывался «не дождался ответа».
+  #
+  # Проверено на живом ретрансляторе: второй frpc с тем же именем печатает
+  # ровно эту строку через четверть секунды.
+  #
   ok=""
   for _ in $(seq 1 30); do
     grep -q 'start proxy success' "$LOG" 2>/dev/null && { ok=1; break; }
-    if grep -qiE 'login to server failed|proxy name .* already|authentication failed' "$LOG" 2>/dev/null; then
-      grep -iE 'login to server failed|already|authentication' "$LOG" | head -3 >&2
+    if grep -qE 'already exists' "$LOG" 2>/dev/null; then
+      die "поддомен ${COLLOQ_HOSTNAME} уже занят — этот семинар открыт с другой машины.\n  Закройте его там или возьмите другое имя: make host HOST=<имя>.colloq.ru"
+    fi
+    if grep -qiE 'login to server failed|authorization failed|authentication failed|token in login doesn' "$LOG" 2>/dev/null; then
+      die "ретранслятор не принял секрет. Проверьте RELAY_TOKEN в .env."
+    fi
+    if grep -qiE 'start error|login to server failed' "$LOG" 2>/dev/null; then
+      grep -iE 'start error|login to server failed' "$LOG" | head -3 >&2
       die "ретранслятор отказал."
     fi
     kill -0 "$TUNNEL_PID" 2>/dev/null || { cat "$LOG" >&2; die "frpc умер, не открыв туннель."; }

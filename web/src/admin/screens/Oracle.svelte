@@ -51,7 +51,9 @@
 
   const MODES: Option[] = [
     { value: 'off', label: 'Off', hint: 'No oracle at all' },
-    { value: 'hints', label: 'Hints only', hint: 'Nudges, never the solution' },
+    // «Просят подсказку», а не «решения не будет»: режим держится на
+    // формулировке запроса к модели, и обещать за неё мы не можем.
+    { value: 'hints', label: 'Hints only', hint: 'Asked to nudge, not to solve' },
     { value: 'full', label: 'Full answers', hint: 'Explains and writes code' },
   ]
 

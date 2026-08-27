@@ -239,4 +239,13 @@ export const adminApi = {
    */
   teacherLink: (id: string) =>
     request<TeacherWithLink>(`/teachers/${encodeURIComponent(id)}/link`),
+
+  /**
+   * Отозвать токен установки и получить новый.
+   *
+   * Токен подписывает вошедшего как самого старого владельца и печатается
+   * `make host` при каждом запуске: он есть в истории терминала, на снимках
+   * проектора и в чатах, куда его пересылали. Отозвать его было нечем.
+   */
+  rotateSetupToken: () => request<{ token: string }>('/setup-token/rotate', { method: 'POST' }),
 }

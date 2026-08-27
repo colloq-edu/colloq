@@ -19,6 +19,7 @@ import {
   ownerOnly,
   requireOwner,
   requireStaff,
+  rotateSetupToken,
   verifySetupToken,
 } from '../admin/auth.js'
 import {
@@ -153,6 +154,20 @@ export function adminAuthRoutes(): Router {
     touchTeacherLastSeen(owner.id)
     issueStaffCookie(res, owner)
     res.json(meOf(getTeacher(owner.id) ?? owner))
+  })
+
+  /*
+   * Отозвать токен установки.
+   *
+   * Он подписывает вошедшего как самого старого владельца и печатается
+   * `make host` при каждом запуске: он есть в истории терминала, на снимках
+   * проектора и в переписке, куда его пересылали. Отозвать его было нечем.
+   *
+   * Только владелец, и ответ содержит новый токен: он показывается один раз,
+   * как и ссылки преподавателей.
+   */
+  router.post('/api/admin/setup-token/rotate', ownerOnly('rotate the setup token'), (_req, res) => {
+    res.json({ token: rotateSetupToken() })
   })
 
   router.post('/api/admin/signin/key', (req, res) => {

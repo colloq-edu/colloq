@@ -34,10 +34,34 @@ function loadSetupToken(): string {
   return token
 }
 
-const setupToken = loadSetupToken()
+let setupToken = loadSetupToken()
 
 export function readSetupToken(): string {
   return setupToken
+}
+
+/**
+ * Выписать новый токен установки и выбросить старый.
+ *
+ * Токен подписывает вошедшего как самого старого владельца и печатается
+ * `make host` при каждом запуске — то есть живёт в истории терминала, в
+ * скриншотах проектора и в чатах, куда его пересылали. Отозвать его было
+ * нечем: файл можно было удалить руками, но об этом не сказано нигде, а
+ * инструкция «rotate it when someone leaves» относилась к ссылкам
+ * преподавателей и про этот токен молчала.
+ *
+ * Записывается через временный файл и rename: иначе между открытием и записью
+ * есть мгновение, когда токена нет ни старого, ни нового, и запуск в этот
+ * момент завёл бы третий.
+ */
+export function rotateSetupToken(): string {
+  const token = crypto.randomBytes(24).toString('base64url')
+  const tmp = `${SETUP_TOKEN_FILE}.new`
+  fs.mkdirSync(config.dataDir, { recursive: true })
+  fs.writeFileSync(tmp, token + '\n', { mode: 0o600 })
+  fs.renameSync(tmp, SETUP_TOKEN_FILE)
+  setupToken = token
+  return token
 }
 
 export const setupTokenPath = SETUP_TOKEN_FILE

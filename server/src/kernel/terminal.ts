@@ -682,7 +682,23 @@ function flush(term: Term): void {
  * is a guess: the prompt is just text. So both halves have to hold — output has
  * stopped for QUIET_MS *and* what is left on the line looks like a prompt. When
  * they do not, the command stays marked running, which is the honest answer for
- * `sleep 60`, `python`, and anything else waiting on input.
+ * `sleep 60` and anything else waiting on input.
+ *
+ * `>` в наборе — не просмотр, а решение.
+ *
+ * Комментарий выше говорил про `python` как про случай, который тут держится
+ * «running», и это было неправдой: `>>> ` кончается на `>`, и REPL, запущенный
+ * в общем шеле, считается закончившимся сразу. Считается — и хорошо: пока
+ * команда «running», её вывод не отдают, а сидящий в python рассчитывает
+ * увидеть свои строки. Без `>` REPL в общей оболочке был бы немым.
+ *
+ * Плата известная: строка, которая случайно кончилась на `>` посреди работы,
+ * будет принята за приглашение. Она должна для этого ещё и провисеть QUIET_MS
+ * молча, так что на практике это `>>> ` и `... `.
+ *
+ * `%` в конце строки — из-под zsh (его приглашение) и из индикаторов
+ * выполнения, которые печатают проценты. Второе решается тем же молчанием:
+ * индикатор, который двигается, не молчит.
  */
 function promptLike(tail: string): boolean {
   if (tail.length === 0 || tail.length > 200) return false
