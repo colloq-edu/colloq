@@ -11,6 +11,9 @@
  * of it and no proxy to add compression or cache headers, so this file has to
  * do both itself.
  */
+// Первым: он правит console, а импорты поднимаются наверх — всё, что модули
+// печатают при загрузке, должно застать уже исправленную.
+import './log.js'
 import http from 'node:http'
 import path from 'node:path'
 import zlib from 'node:zlib'
@@ -24,8 +27,9 @@ import { SECURITY_HEADERS } from './headers.js'
 import { handleCollabSocket, shutdownCollab } from './collab/index.js'
 import { staffFromCookieHeader } from './admin/auth.js'
 import { handleControlSocket } from './control.js'
-import { getSession, touchLastSeen } from './db.js'
+import { checkpoint, db, getSession, touchLastSeen } from './db.js'
 import { shutdownKernels } from './kernel/index.js'
+import { jupyterReachable } from './kernel/jupyter.js'
 import { adminAuthRoutes } from './routes/admin-auth.js'
 import { adminEnvironmentRoutes } from './routes/admin-environments.js'
 import { adminImportRoutes } from './routes/admin-import.js'
@@ -262,20 +266,48 @@ app.use((_req, res, next) => {
 app.use(compression)
 app.use(express.json({ limit: '1mb' }))
 
+/*
+ * «Здоров» значит «здесь можно вести семинар».
+ *
+ * Раньше значило «процесс отвечает», и этого хватало, чтобы host.sh и
+ * `make status` напечатали «Colloq доступен по ссылке» над инстансом, где
+ * Docker выключен со вчера: комната открывается, ссылка работает, а первый Run
+ * через семьдесят секунд отвечает KERNEL DEAD. Проверяются обе вещи, без
+ * которых семинара не будет: своя база и Jupyter.
+ */
 app.get('/api/health', (_req, res) => {
   const began = process.hrtime.bigint()
   // "The process answered" says nothing about whether it answered *quickly*. A
   // trip through the event loop costs nothing and reports what a probe wants to
   // know: how long the next student's keystroke would have to queue.
   setImmediate(() => {
-    const loopLagMs = Number(process.hrtime.bigint() - began) / 1e6
-    res.setHeader('Cache-Control', 'no-store')
-    res.setHeader('Server-Timing', `loop;dur=${loopLagMs.toFixed(3)}`)
-    res.json({
-      ok: true,
-      uptimeMs: Date.now() - STARTED_AT,
-      loopLagMs: Number(loopLagMs.toFixed(3)),
-    })
+    void (async () => {
+      const loopLagMs = Number(process.hrtime.bigint() - began) / 1e6
+      let dbOk = true
+      let reason: string | null = null
+      try {
+        db.prepare('SELECT 1').get()
+      } catch (err) {
+        dbOk = false
+        reason = err instanceof Error ? `The database is unreadable: ${err.message}` : 'The database is unreadable'
+      }
+      const kernel = await jupyterReachable()
+      if (dbOk && !kernel.ok) reason = kernel.reason
+
+      const ok = dbOk && kernel.ok
+      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('Server-Timing', `loop;dur=${loopLagMs.toFixed(3)}`)
+      // 503, а не 200 с полем: зонды смотрят на код, и только код заставляет
+      // скрипт остановиться вместо того, чтобы напечатать ссылку.
+      res.status(ok ? 200 : 503).json({
+        ok,
+        reason,
+        kernel: kernel.ok,
+        database: dbOk,
+        uptimeMs: Date.now() - STARTED_AT,
+        loopLagMs: Number(loopLagMs.toFixed(3)),
+      })
+    })()
   })
 })
 /*
@@ -345,14 +377,19 @@ if (config.staticDir) {
   })
 }
 
-app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
   if (res.headersSent) return next(err)
   // express.json rejects malformed bodies with an HTML error page by default,
   // which the browser's JSON-only client cannot read.
   if (err instanceof SyntaxError && 'body' in err) {
     return res.status(400).json({ error: 'malformed JSON body' })
   }
-  console.error('[http] unhandled error:', err instanceof Error ? err.message : err)
+  // Со стеком и с путём: без них строка в журнале говорит «что-то сломалось»
+  // и не говорит где — а именно за этим в журнал и лезут.
+  console.error(
+    `[http] unhandled error on ${req.method} ${req.originalUrl}:`,
+    err instanceof Error ? (err.stack ?? err.message) : err,
+  )
   res.status(500).json({ error: 'internal error' })
 })
 
@@ -521,6 +558,9 @@ async function shutdown(signal: string): Promise<void> {
   } catch (err) {
     console.error('colloq: could not stop kernels:', err instanceof Error ? err.message : err)
   }
+  // Последним: журнал WAL сводится в саму базу, чтобы `colloq.db` остановленного
+  // инстанса был целой базой, а не вчерашней с довеском рядом.
+  checkpoint()
 
   clearTimeout(force)
   process.exit(0)
@@ -531,5 +571,25 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'))
 
 // A stray rejection from a kernel or model call must not end the class.
 process.on('unhandledRejection', (err: unknown) => {
-  console.error('colloq: unhandled rejection:', err instanceof Error ? err.message : err)
+  console.error('colloq: unhandled rejection:', err instanceof Error ? (err.stack ?? err.message) : err)
+})
+
+/*
+ * Необработанное исключение — не то же, что отвергнутое обещание.
+ *
+ * Обещание можно проглотить: где-то не дождались ответа, семинар от этого не
+ * ломается. Исключение, дошедшее сюда, оставляет процесс в состоянии, о
+ * котором никто ничего не знает, — а по умолчанию node в этом случае просто
+ * умирает молча, без единой строки о причине. Пишем причину и уходим с
+ * ненулевым кодом: перезапуск честнее, чем сервер, про который неизвестно,
+ * работает ли он.
+ */
+process.on('uncaughtException', (err: unknown) => {
+  console.error('colloq: uncaught exception:', err instanceof Error ? (err.stack ?? err.message) : err)
+  try {
+    shutdownCollab()
+  } catch {
+    // Снимки — последнее, что можно попробовать спасти, и не повод не выйти.
+  }
+  process.exit(1)
 })

@@ -28,6 +28,33 @@ for (const suffix of ['', '-wal', '-shm']) {
   }
 }
 
+/*
+ * Свести журнал в саму базу — раз в пять минут и на выходе.
+ *
+ * В режиме WAL записи копятся в отдельном файле и переезжают в основной, когда
+ * SQLite сочтёт нужным. Семинар пишет много и почти не читает, так что момент
+ * может не наступать часами: `colloq.db` выглядит вчерашним, а весь день лежит
+ * в `-wal` рядом. Скопировать «базу» в этот момент — значит скопировать
+ * вчерашний день, и именно так делают все, кто копирует один файл.
+ *
+ * TRUNCATE, а не PASSIVE: он ждёт читателей и оставляет журнал пустым, так что
+ * после него `colloq.db` — это действительно вся база.
+ */
+const CHECKPOINT_EVERY_MS = 5 * 60 * 1000
+
+export function checkpoint(): void {
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)')
+  } catch (err) {
+    // Занят читателем — не беда: следующий заход через пять минут.
+    console.error('[db] checkpoint failed:', err instanceof Error ? err.message : err)
+  }
+}
+
+const checkpointTimer = setInterval(checkpoint, CHECKPOINT_EVERY_MS)
+// Не повод держать процесс живым.
+checkpointTimer.unref?.()
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,

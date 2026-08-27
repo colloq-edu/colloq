@@ -57,20 +57,44 @@ LOG := .colloq.log
 
 run: .env ## Собрать и запустить. Это то, что нужно после любой правки кода
 	@$(MAKE) --no-print-directory stop
+	@# Контейнерный app и хостовой сервер — это два Colloq на одном порту.
+	@# Раньше второй просто падал с EADDRINUSE, а после `make down` вставал на
+	@# то же место уже пустым: те же localhost:3000, другая база, другой
+	@# setup-token, ссылки из расписания отвечают 404. Теперь об этом говорят
+	@# вслух и одной командой.
+	@if docker compose ps --status running --services 2>/dev/null | grep -qx app; then \
+	  printf '$(RED)в docker уже работает app — это второй Colloq на том же порту$(OFF)\n'; \
+	  printf '$(DIM)остановить его: make down · или пользоваться им как есть: make logs$(OFF)\n'; \
+	  exit 1; \
+	fi
 	docker compose $(DEV) up kernel -d
 	@printf '$(DIM)ядро: окружение $(CURRENT_ENV), порт 8888 проброшен$(OFF)\n'
 	npm run build
 	@# nohup и подоболочка: make уходит сразу, а сервер должен пережить и его,
 	@# и закрытие терминала. Всё, что он скажет, включая падение на старте,
 	@# уходит в $(LOG) — иначе оно пропадает вместе с оболочкой.
+	@# Дописывается, а не перезаписывается: `>` стирал прошлую неделю на каждом
+	@# запуске, и «в четверг что-то сломалось» было нечем проверять.
 	@( set -a; . ./.env; set +a; \
-	   STATIC_DIR="$$PWD/web/dist" nohup node server/dist/server.js > $(LOG) 2>&1 & \
+	   STATIC_DIR="$$PWD/web/dist" nohup node server/dist/server.js >> $(LOG) 2>&1 & \
 	   echo $$! > $(PID) )
-	@sleep 2
-	@if kill -0 "$$(cat $(PID) 2>/dev/null)" 2>/dev/null; then \
+	@# Ждём, пока сервер скажет, что готов, а не две секунды наугад: две
+	@# секунды — это либо долго, либо мало, и «мало» печатает ссылку над
+	@# инстансом, который ещё поднимается. /api/health отвечает 200 только
+	@# когда и база читается, и Jupyter отзывается.
+	@ok=; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+	  if ! kill -0 "$$(cat $(PID) 2>/dev/null)" 2>/dev/null; then break; fi; \
+	  if curl -fsS -m 2 "http://localhost:$${PORT:-3000}/api/health" >/dev/null 2>&1; then ok=1; break; fi; \
+	  sleep 1; \
+	done; \
+	if [ -n "$$ok" ]; then \
 	  printf '\n$(BOLD)colloq на$(OFF) $(CYAN)%s$(OFF)\n' \
 	    "$$(grep -E '^PUBLIC_URL=' .env | tail -1 | cut -d= -f2-)"; \
 	  printf '$(DIM)логи: make logs-run · остановить: make stop · наружу: make host$(OFF)\n'; \
+	elif kill -0 "$$(cat $(PID) 2>/dev/null)" 2>/dev/null; then \
+	  printf '$(RED)сервер запущен, но не отвечает готовностью — ядро не поднялось?$(OFF)\n'; \
+	  printf '$(DIM)проверить: docker compose ps · логи: make logs-run$(OFF)\n'; \
+	  tail -20 $(LOG); exit 1; \
 	else \
 	  printf '$(RED)сервер не поднялся. Последнее из $(LOG):$(OFF)\n'; \
 	  tail -20 $(LOG); exit 1; \

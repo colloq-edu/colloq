@@ -32,8 +32,19 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       OPEN_SEMINAR_CREATION: ${OPEN_SEMINAR_CREATION:-false}
     volumes:
-      - workspace:/workspace
-      - data:/data
+      # Bind-монты, а не именованные тома, и это существенно.
+      #
+      # `make up` и `make run` — два способа поднять один и тот же Colloq, и с
+      # томами они поднимали два разных: у одного база и файлы лежали в томе
+      # docker, у другого в ./data и ./workspace рядом с кодом. Разные семинары,
+      # разные преподаватели, разные setup-token — при одинаковом адресе
+      # localhost:3000. Неделя занятий, заведённая через `make up`, наутро
+      # открывалась пустой панелью, а ссылки из расписания отвечали 404.
+      #
+      # Один каталог на оба режима: где данные лежат, теперь видно в файловом
+      # менеджере, и скопировать их — это скопировать папку.
+      - ./workspace:/workspace
+      - ./data:/data
     depends_on:
       kernel:
         condition: service_healthy
@@ -52,7 +63,7 @@ services:
     environment:
       JUPYTER_TOKEN: ${JUPYTER_TOKEN:-colloq-dev-token}
     volumes:
-      - workspace:/workspace
+      - ./workspace:/workspace
     # Student code is arbitrary. Keep a runaway cell from taking down the host.
     mem_limit: ${KERNEL_MEM:-2g}
     cpus: ${KERNEL_CPUS:-2}
@@ -61,6 +72,3 @@ services:
     expose:
       - "8888"
 
-volumes:
-  workspace:
-  data:

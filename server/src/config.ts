@@ -56,9 +56,51 @@ function persistedSecret(): string {
   return secret
 }
 
+/*
+ * Адрес, по которому комнату видно снаружи, — перечитываемый.
+ *
+ * Он был константой, прочитанной один раз при запуске, и `make host` этим
+ * пользовался наоборот: при Ctrl+C скрипт возвращает PUBLIC_URL в .env на
+ * localhost, а живой сервер продолжает раздавать https-ссылку на туннель,
+ * которого уже нет. Преподаватель копирует адрес из панели и рассылает его
+ * группе — адрес не открывается ни у кого, включая его самого.
+ *
+ * Файл перечитывается не чаще раза в две секунды: спрашивают его на каждой
+ * ссылке в списке семинаров, а меняется он дважды за жизнь процесса.
+ */
+const envFile = path.join(repoRoot, '.env')
+let publicUrlCache: { at: number; value: string } | null = null
+
+function readPublicUrl(): string {
+  const fallback = `http://localhost:${env('PORT', '3000')}`
+  const now = Date.now()
+  if (publicUrlCache && now - publicUrlCache.at < 2000) return publicUrlCache.value
+
+  // Переменная окружения главнее файла: контейнер и systemd задают её прямо, и
+  // .env рядом с ними может быть чужим или отсутствовать вовсе.
+  let value = process.env.PUBLIC_URL ?? ''
+  if (!value) {
+    try {
+      const line = fs
+        .readFileSync(envFile, 'utf8')
+        .split('\n')
+        .reverse()
+        .find((l) => /^\s*PUBLIC_URL\s*=/.test(l))
+      if (line) value = line.slice(line.indexOf('=') + 1).trim().replace(/^['"]|['"]$/g, '')
+    } catch {
+      /* .env нет — это норма */
+    }
+  }
+  const resolved = (value || fallback).replace(/\/+$/, '')
+  publicUrlCache = { at: now, value: resolved }
+  return resolved
+}
+
 export const config = {
   port: Number(env('PORT', '3000')),
-  publicUrl: env('PUBLIC_URL', `http://localhost:${env('PORT', '3000')}`).replace(/\/+$/, ''),
+  get publicUrl(): string {
+    return readPublicUrl()
+  },
 
   /** Signs participant tokens, host tokens and the staff cookie. See sessionSecret(). */
   // `||` rather than a fallback argument: persistedSecret() writes a file, and

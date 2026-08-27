@@ -71,17 +71,33 @@ function reasonForStatus(status: number): AdminErrorReason {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    credentials: 'include',
-    headers: {
-      ...(init?.body ? { 'content-type': 'application/json' } : {}),
-      ...init?.headers,
-    },
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      credentials: 'include',
+      headers: {
+        ...(init?.body ? { 'content-type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    })
+  } catch (cause: unknown) {
+    // «Failed to fetch» — фраза из отладчика, одинаковая для упавшего сервера,
+    // оборванного вайфая и закрытого туннеля. Ни одного из них она не называет.
+    if (cause instanceof TypeError) {
+      throw new AdminApiError(
+        'Could not reach the server — check the connection and try again.',
+        0,
+        'network',
+      )
+    }
+    throw cause
+  }
 
   if (!res.ok) {
-    let message = res.statusText
+    // HTTP/2 отменил строку состояния: res.statusText там пустая всегда, и
+    // отказ доезжал до экрана пустой строкой, которую `{#if error}` не рисует.
+    let message = res.statusText || `The request failed (${res.status})`
     let reason = reasonForStatus(res.status)
     try {
       const body = (await res.json()) as Partial<AdminErrorBody>

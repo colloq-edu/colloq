@@ -30,6 +30,18 @@ name and email, and the instance is yours — then create a seminar and share th
 `make` with no target lists everything. The two that matter are `make host` and
 `make env-use`; both have a section below.
 
+### One instance, two ways to start it
+
+`make up` runs everything in Docker. `make run` builds and runs the server on your
+machine with only the kernel in Docker — faster after a code change, which is why it
+exists. **They are the same instance:** both keep the database in `./data` and the
+seminars' files in `./workspace`, next to this README, so a seminar created one way
+opens the other way and a backup is a copy of two folders.
+
+They cannot run at the same time — both want port 3000 — and `make run` says so
+rather than failing halfway. `make up` is the one to use unless you are changing
+code; `make down` stops the Docker one, `make stop` the host one.
+
 ## Giving the room a link
 
 A seminar on `localhost` is a seminar for one person. `make host` opens a Cloudflare

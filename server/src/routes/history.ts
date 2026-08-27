@@ -75,9 +75,14 @@ export function historyRoutes(): Router {
   /**
    * The timeline.
    *
-   * Flushed first: whatever somebody is typing right now is an open burst that
-   * has not been written yet, and a history that is missing the last minute is
-   * the one minute people actually ask about.
+   * НЕ сбрасывает открытый всплеск, хотя когда-то сбрасывал и комментарий об
+   * этом пережил правку на несколько месяцев. Сбрасывать нельзя: чтение
+   * истории — это чтение, а закрытие всплеска пишет версию, и панель, открытая
+   * посреди набора, разрезала бы чужую строку пополам (коммит 862ca42).
+   *
+   * Последняя минута появляется не здесь, а у того, кто смотрит: панель
+   * перечитывает список ещё раз через BURST_IDLE_MS после последней правки —
+   * ровно тогда, когда сервер её и запишет.
    */
   router.get('/api/sessions/:id/history', (req: Request, res: Response) => {
     if (!whoever(req, res)) return

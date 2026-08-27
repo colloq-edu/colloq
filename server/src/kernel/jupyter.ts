@@ -155,6 +155,38 @@ function frameText(data: RawData): string | null {
   }
 }
 
+/**
+ * Отвечает ли Jupyter — с коротким кешем, чтобы это можно было спрашивать часто.
+ *
+ * `/api/health` говорил `ok: true`, пока жив сам процесс, а `host.sh` и
+ * `make status` ему верили. Docker выключен, вчерашний node ещё стоит — и
+ * скрипт печатает «Colloq доступен по ссылке», после чего комната через
+ * семьдесят секунд получает KERNEL DEAD. Проверка отвечает на настоящий
+ * вопрос: сможет ли здесь запуститься Python.
+ *
+ * Кеш на пять секунд: проба ходит по сети, а зонды опрашивают health раз в
+ * секунду и не должны каждым запросом дёргать Jupyter.
+ */
+let lastProbe: { at: number; ok: boolean; reason: string | null } | null = null
+
+export async function jupyterReachable(): Promise<{ ok: boolean; reason: string | null }> {
+  const now = Date.now()
+  if (lastProbe && now - lastProbe.at < 5000) return { ok: lastProbe.ok, reason: lastProbe.reason }
+
+  let ok = false
+  let reason: string | null = null
+  try {
+    // /api/status — самая дешёвая ручка Jupyter, и она есть у всех его версий.
+    const res = await jupyterRequest(defaultEndpoint(), '/api/status', undefined, 3000)
+    ok = res.ok
+    if (!ok) reason = `Jupyter answered ${res.status}`
+  } catch (err) {
+    reason = err instanceof Error ? `Jupyter is unreachable: ${err.message}` : 'Jupyter is unreachable'
+  }
+  lastProbe = { at: now, ok, reason }
+  return { ok, reason }
+}
+
 export class JupyterKernel {
   private socket: WebSocket | null = null
   private readonly pending = new Map<string, Pending>()

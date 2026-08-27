@@ -284,6 +284,13 @@ export type AdminErrorReason =
   | 'no_docker'
   | 'building'
   | 'failed'
+  /**
+   * Запрос не доехал: сервера нет, сети нет, туннель закрыт.
+   *
+   * Не от сервера — его сочиняет клиент, когда fetch отверг обещание. Отдельно
+   * от 'invalid', потому что «попробуйте ещё раз» здесь осмысленно, а там нет.
+   */
+  | 'network'
 
 export interface AdminErrorBody {
   error: string

@@ -97,8 +97,17 @@ function readCookieHeader(header: string | undefined, name: string): string | nu
   return null
 }
 
-/** Secure would make the cookie undeliverable on a self-hosted http instance. */
-const secureCookie = config.publicUrl.startsWith('https')
+/**
+ * Secure would make the cookie undeliverable on a self-hosted http instance.
+ *
+ * Функция, а не константа: PUBLIC_URL теперь перечитывается — `make host`
+ * поднимает туннель и опускает его, не перезапуская сервер, — и печенье,
+ * выданное с чужим признаком, либо не доедет по https, либо не поставится по
+ * http. Считать его надо в момент выдачи, а не в момент запуска.
+ */
+function secureCookie(): boolean {
+  return config.publicUrl.startsWith('https')
+}
 
 export function issueStaffCookie(res: Response, teacher: Teacher): void {
   const body = Buffer.from(JSON.stringify({ tid: teacher.id, iat: Date.now() } satisfies StaffCookieBody)).toString(
@@ -110,13 +119,13 @@ export function issueStaffCookie(res: Response, teacher: Teacher): void {
     sameSite: 'lax',
     path: '/',
     maxAge: COOKIE_MAX_AGE_MS,
-    secure: secureCookie,
+    secure: secureCookie(),
   })
 }
 
 export function clearStaffCookie(res: Response): void {
   // The attributes must match the ones it was set with or the browser keeps it.
-  res.clearCookie(STAFF_COOKIE, { httpOnly: true, sameSite: 'lax', path: '/', secure: secureCookie })
+  res.clearCookie(STAFF_COOKIE, { httpOnly: true, sameSite: 'lax', path: '/', secure: secureCookie() })
 }
 
 export function currentStaff(req: Request): Teacher | null {

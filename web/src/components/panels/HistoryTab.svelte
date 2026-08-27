@@ -12,7 +12,7 @@
    * That is the whole performance story here, and it is enough: a seminar's
    * history is dozens of rows, not thousands.
    */
-  import type { Version } from '@shared/history'
+  import { BURST_IDLE_MS, type Version } from '@shared/history'
   import Icon from '@/components/ui/Icon.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import {
@@ -124,20 +124,39 @@
    */
   const SETTLE_MS = 1200
 
+  /**
+   * И ещё раз — когда сервер закроет всплеск.
+   *
+   * Быстрое обновление ловит всё, что уже записано, и в тихой комнате не ловит
+   * ничего: сервер собирает набранное в одну версию и пишет её через
+   * BURST_IDLE_MS молчания. Человек печатал, панель обновилась через секунду и
+   * ничего не нашла, обновлений больше нет — и строка правки не появлялась
+   * никогда, хотя в базе она лежала с двенадцатой секунды. Полсекунды сверху —
+   * на дорогу и на запись.
+   */
+  const BURST_SETTLED_MS = BURST_IDLE_MS + 500
+
   $effect(() => {
     void load()
 
-    let timer: ReturnType<typeof setTimeout> | null = null
+    let soon: ReturnType<typeof setTimeout> | null = null
+    let settled: ReturnType<typeof setTimeout> | null = null
     const onChange = () => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => {
-        timer = null
+      if (soon) clearTimeout(soon)
+      if (settled) clearTimeout(settled)
+      soon = setTimeout(() => {
+        soon = null
         void load()
       }, SETTLE_MS)
+      settled = setTimeout(() => {
+        settled = null
+        void load()
+      }, BURST_SETTLED_MS)
     }
     session.doc.on('update', onChange)
     return () => {
-      if (timer) clearTimeout(timer)
+      if (soon) clearTimeout(soon)
+      if (settled) clearTimeout(settled)
       session.doc.off('update', onChange)
     }
   })
