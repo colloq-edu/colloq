@@ -1,0 +1,75 @@
+/**
+ * Куда ходит общий терминал.
+ *
+ * Адрес Jupyter — свойство комнаты, а не процесса: ради этого два семинара и
+ * могут одновременно сидеть на разном Python. Ядро это соблюдало с самого
+ * появления окружений, а терминал читал глобальную настройку — и в семинаре с
+ * выбранным окружением `pip install` уходил в контейнер, которого Python этой
+ * комнаты не видит. Команда отрабатывала, писала «successfully installed» и не
+ * меняла ничего, что можно было бы импортировать из ячейки.
+ *
+ * Проверка идёт по исходнику, а не по поведению, и это осознанно: чтобы поймать
+ * возврат этой ошибки в работе, нужны два живых контейнера Jupyter и
+ * терминадо-сокет к каждому — то есть проверка, которой не будет в CI и которая
+ * не запустится на ноутбуке без докера. А ошибка вся целиком в одной строке:
+ * взяли адрес не оттуда. Такую строку видно чтением.
+ */
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const read = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8')
+
+test('терминал не читает адрес Jupyter из настроек инстанса', () => {
+  const source = read('server/src/kernel/terminal.ts')
+  const offenders = source
+    .split('\n')
+    .map((line, index) => ({ line: line.trim(), no: index + 1 }))
+    .filter(({ line }) => line.includes('config.jupyter'))
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `терминал снова берёт адрес из config.jupyter — в комнате со своим окружением ` +
+      `он уйдёт в чужой контейнер:\n` +
+      offenders.map(({ no, line }) => `  terminal.ts:${no}  ${line}`).join('\n'),
+  )
+})
+
+test('терминал спрашивает адрес у окружения комнаты', () => {
+  const source = read('server/src/kernel/terminal.ts')
+  assert.ok(
+    source.includes('endpointForEnvironment(sessionEnvironment('),
+    'терминал должен разрешать адрес через окружение семинара, как это делает ядро',
+  )
+})
+
+test('ядро и терминал разрешают адрес одинаково', () => {
+  /*
+   * Две подсистемы, одно правило. Если одна из них когда-нибудь начнёт
+   * вычислять адрес по-своему, разойдутся они молча: обе будут работать, просто
+   * в разных контейнерах, и заметит это студент, у которого импорт не находит
+   * только что поставленный пакет.
+   */
+  const kernel = read('server/src/kernel/index.ts')
+  const terminal = read('server/src/kernel/terminal.ts')
+  const call = 'endpointForEnvironment(sessionEnvironment(sessionId))'
+  assert.ok(kernel.includes(call), 'ядро больше не разрешает адрес через окружение')
+  assert.ok(terminal.includes(call), 'терминал больше не разрешает адрес через окружение')
+})
+
+test('смена адреса обесценивает запомненное имя pty', () => {
+  /*
+   * pty с именем «1» есть в каждом контейнере. Запомнив имя из одного и
+   * подключившись с ним к другому, терминал привёл бы комнату в чужую
+   * оболочку — не в свою, но и не в пустоту, что хуже ошибки.
+   */
+  const source = read('server/src/kernel/terminal.ts')
+  assert.ok(
+    /if \(endpoint\.url !== term\.endpoint\.url\) term\.name = null/.test(source),
+    'при смене адреса имя pty должно сбрасываться',
+  )
+})

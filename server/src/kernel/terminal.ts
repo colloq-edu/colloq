@@ -1,8 +1,10 @@
 import { WebSocket, type RawData } from 'ws'
 import { createTerminalLine, getTerminal, terminalText, type YTerminalLine } from '@shared/notebook'
 import { getSessionDoc } from '../collab/index.js'
-import { config } from '../config.js'
+import { sessionEnvironment } from '../db.js'
 import { kernelCwd, sessionDir } from '../workspace.js'
+import { defaultEndpoint, type KernelEndpoint } from './jupyter.js'
+import { endpointForEnvironment } from './pool.js'
 
 /**
  * One shared terminal per seminar, in the same container as the kernel.
@@ -102,6 +104,20 @@ interface Sender {
 
 interface Term {
   sessionId: string
+  /**
+   * Which Jupyter this room's shell lives in.
+   *
+   * A property of the room, not of the process — the same rule the kernel
+   * follows, and for the same reason. A seminar on its own environment runs in
+   * its own container, and a terminal that went to the instance-wide address
+   * instead put `pip install` into a container the room's Python never sees:
+   * the command succeeded, said so, and changed nothing that any cell could
+   * import.
+   *
+   * Resolved when the terminal opens and kept for its life, so a reconnect
+   * returns to the same pty rather than hunting for it in a second container.
+   */
+  endpoint: KernelEndpoint
   /** Jupyter's terminal name ("1"); null when nothing is allocated. */
   name: string | null
   socket: WebSocket | null
@@ -159,6 +175,9 @@ function getTerm(sessionId: string): Term {
   if (!term) {
     term = {
       sessionId,
+      // Заглушка до открытия: настоящий адрес спрашивается у окружения комнаты
+      // в openTerminal, где уже можно ждать поднятия контейнера.
+      endpoint: defaultEndpoint(),
       name: null,
       socket: null,
       phase: 'closed',
@@ -714,19 +733,19 @@ function onChunk(term: Term, chunk: string): void {
 
 /* ----------------------------------------------------------------- socket */
 
-function jupyterRequest(path: string, method: string) {
-  return fetch(`${config.jupyter.url}${path}`, {
+function jupyterRequest(endpoint: KernelEndpoint, path: string, method: string) {
+  return fetch(`${endpoint.url}${path}`, {
     method,
     headers: {
-      Authorization: `token ${config.jupyter.token}`,
+      Authorization: `token ${endpoint.token}`,
       'Content-Type': 'application/json',
     },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
 }
 
-async function createJupyterTerminal(): Promise<string> {
-  const res = await jupyterRequest('/api/terminals', 'POST')
+async function createJupyterTerminal(endpoint: KernelEndpoint): Promise<string> {
+  const res = await jupyterRequest(endpoint, '/api/terminals', 'POST')
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
       throw new Error(
@@ -743,19 +762,19 @@ async function createJupyterTerminal(): Promise<string> {
   return String(name)
 }
 
-async function deleteJupyterTerminal(name: string): Promise<void> {
-  const res = await jupyterRequest(`/api/terminals/${encodeURIComponent(name)}`, 'DELETE')
+async function deleteJupyterTerminal(endpoint: KernelEndpoint, name: string): Promise<void> {
+  const res = await jupyterRequest(endpoint, `/api/terminals/${encodeURIComponent(name)}`, 'DELETE')
   // 404 means somebody beat us to it, which is the outcome we wanted anyway.
   if (!res.ok && res.status !== 404) {
     throw new Error(`Jupyter would not close the terminal (HTTP ${res.status}).`)
   }
 }
 
-function socketUrl(name: string): string {
-  const base = new URL(config.jupyter.url)
+function socketUrl(endpoint: KernelEndpoint, name: string): string {
+  const base = new URL(endpoint.url)
   const scheme = base.protocol === 'https:' ? 'wss:' : 'ws:'
   const prefix = base.pathname.replace(/\/+$/, '')
-  const query = new URLSearchParams({ token: config.jupyter.token })
+  const query = new URLSearchParams({ token: endpoint.token })
   return `${scheme}//${base.host}${prefix}/terminals/websocket/${encodeURIComponent(name)}?${query.toString()}`
 }
 
@@ -784,8 +803,8 @@ function connect(term: Term): Promise<void> {
     try {
       // The token rides in the query string for terminado and in the header for
       // reverse proxies that strip query strings.
-      socket = new WebSocket(socketUrl(name), {
-        headers: { Authorization: `token ${config.jupyter.token}` },
+      socket = new WebSocket(socketUrl(term.endpoint, name), {
+        headers: { Authorization: `token ${term.endpoint.token}` },
       })
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)))
@@ -998,8 +1017,23 @@ export function openTerminal(sessionId: string): Promise<void> {
     adoptTranscript(term)
     sessionDir(sessionId)
     try {
+      /*
+       * Куда идти за оболочкой — решает окружение комнаты, а не глобальная
+       * настройка. Это может занять минуту: если контейнер окружения ещё не
+       * поднят, здесь он и поднимется — ровно та же пауза, что при первом
+       * запуске ячейки, и по той же причине.
+       */
+      const endpoint = await endpointForEnvironment(sessionEnvironment(sessionId))
+      /*
+       * Смена адреса обесценивает запомненное имя: pty с этим именем живёт в
+       * другом контейнере, и попытка к нему подключиться в лучшем случае
+       * промахнётся, а в худшем приведёт нас в чужую оболочку.
+       */
+      if (endpoint.url !== term.endpoint.url) term.name = null
+      term.endpoint = endpoint
+
       const remembered = term.name !== null
-      if (!term.name) term.name = await createJupyterTerminal()
+      if (!term.name) term.name = await createJupyterTerminal(endpoint)
       try {
         await connect(term)
       } catch (err) {
@@ -1007,7 +1041,7 @@ export function openTerminal(sessionId: string): Promise<void> {
         // restarted, terminal reaped). Allocate a fresh one rather than making
         // someone click Open twice to find that out.
         if (!remembered) throw err
-        term.name = await createJupyterTerminal()
+        term.name = await createJupyterTerminal(endpoint)
         await connect(term)
       }
       sendSize(term)
@@ -1197,7 +1231,7 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   systemLine(term, '[colloq] terminal closed.')
   if (!name) return
   try {
-    await deleteJupyterTerminal(name)
+    await deleteJupyterTerminal(term.endpoint, name)
   } catch (err) {
     // The pty may outlive us, but the room's view of it is already correct.
     console.error(`[terminal] could not delete terminal for ${sessionId}:`, errText(err))
@@ -1216,7 +1250,7 @@ export async function shutdownTerminals(): Promise<void> {
       const name = term.name
       term.name = null
       // Left behind, these ptys would outlive the process and hold the container's memory.
-      if (name) await deleteJupyterTerminal(name)
+      if (name) await deleteJupyterTerminal(term.endpoint, name)
     }),
   )
 }
