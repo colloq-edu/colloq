@@ -36,7 +36,7 @@ import type {
   Participant,
 } from '@shared/protocol'
 import type { TokenPayload } from './auth.js'
-import { getSessionDoc } from './collab/index.js'
+import { applyOnBehalf, getSessionDoc } from './collab/index.js'
 import { LINE_LENGTH } from './kernel/format.js'
 import { allows } from '@shared/rules'
 import { getParticipant, getRules } from './db.js'
@@ -397,8 +397,18 @@ function dispatch(
       const entry = findChatEntry(doc, entryId)
       if (!entry) return
       const who = displayName(sessionId, payload.participantId)
-      if (message.accept) acceptPatch(doc, entry, who)
-      else rejectPatch(doc, entry, who)
+      /*
+       * От имени нажавшего, а не от имени сервера.
+       *
+       * Приняв патч, сервер переписывает текст ячейки — это правка документа,
+       * и в истории у неё должен быть автор. Без этого версия оказывалась
+       * ничьей: строка читалась как «the room», хотя нажал конкретный человек,
+       * и Ctrl+Z у него самого до собственной правки не доставал.
+       */
+      applyOnBehalf(sessionId, payload.participantId, () => {
+        if (message.accept) acceptPatch(doc, entry, who)
+        else rejectPatch(doc, entry, who)
+      })
       return
     }
 

@@ -440,7 +440,7 @@
           {#if line.running}
             <span class="term-live">
               <span class="term-live-dot"></span>
-              {elapsed(line.createdAt, now)}
+              {elapsed(line.createdAt, now - session.clockSkewMs)}
             </span>
           {/if}
         </div>

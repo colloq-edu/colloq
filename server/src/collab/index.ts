@@ -20,6 +20,27 @@ import { bindPersistence, flushPersistence, discardPersistence, flushAllPersiste
 import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } from './history.js'
 
 /**
+ * Происхождение для записи, которую сервер делает от чьего-то имени.
+ *
+ * `onBehalfOf(id)` в транзакции — и версия в истории подписана этим человеком,
+ * а не «комнатой». Составить такую строку может только код на сервере:
+ * обновление от клиента приходит с сокетом в качестве происхождения.
+ */
+const BEHALF_PREFIX = 'on-behalf:'
+
+/**
+ * Записать в документ комнаты от имени человека, а не от имени сервера.
+ *
+ * Вложенная `doc.transact` присоединяется к внешней, и происхождение остаётся
+ * внешним — поэтому обёртка работает даже вокруг кода, который заводит свою
+ * транзакцию сам (а `acceptPatch` именно такой).
+ */
+export function applyOnBehalf(sessionId: string, participantId: string, write: () => void): void {
+  const { doc } = getSessionDoc(sessionId)
+  doc.transact(write, `${BEHALF_PREFIX}${participantId}`)
+}
+
+/**
  * The server side of the collaborative document.
  *
  * This speaks the y-websocket wire protocol (the browser uses the stock
@@ -299,8 +320,26 @@ function getEntry(sessionId: string, title?: string): DocEntry {
      * name of whoever pressed the button.
      */
     if (origin === RESTORE_ORIGIN) return
+    /*
+     * Автор берётся из происхождения обновления.
+     *
+     * Обычно это сокет, по которому оно пришло. Но сервер и сам иногда пишет в
+     * документ от чьего-то имени — сейчас так применяется предложение оракула:
+     * решение принимает сервер, чтобы две вкладки не вписали патч дважды, и
+     * без этой ветки версия в истории оказывалась ничьей. Строка «принял
+     * Пётр» превращалась в «the room», а Ctrl+Z у самого Петра переставал
+     * доставать до его же собственной правки.
+     *
+     * Форма — `on-behalf:<participantId>`: строка, которую может составить
+     * только код на сервере, потому что клиентское обновление приходит с
+     * сокетом в качестве происхождения и никогда со строкой.
+     */
     const author =
-      origin instanceof WebSocket ? (entry.conns.get(origin)?.participantId ?? null) : null
+      origin instanceof WebSocket
+        ? (entry.conns.get(origin)?.participantId ?? null)
+        : typeof origin === 'string' && origin.startsWith(BEHALF_PREFIX)
+          ? origin.slice(BEHALF_PREFIX.length)
+          : null
     record(sessionId, doc, update, author)
   })
 

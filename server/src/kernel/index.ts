@@ -101,6 +101,19 @@ interface Runtime {
   currentCell: string | null
   /** Which press of Run the running cell came from; see stopBatchOf. */
   currentBatch: number | null
+  /**
+   * Что и когда начали, по часам сервера.
+   *
+   * Дубль поля `startedAt` в документе — и дубль намеренный: документ пишет вся
+   * комната, а по этому числу считается длительность, которую потом показывают
+   * как факт. Живой секундомер растёт из документа, длительность — отсюда.
+   *
+   * Пара, а не одно число: `currentCell` обнуляется в `finally` у `runOne`
+   * СТРОКОЙ РАНЬШЕ, чем вызывается `setCellState`, так что связать отметку с
+   * ячейкой через него нельзя — длительность просто перестала бы записываться,
+   * и заметил бы это только тест.
+   */
+  started: { cellId: string; at: number } | null
   /** Who asked for the running cell — the server's own record, not the document's. */
   currentRunById: string | null
   writer: OutputWriter | null
@@ -132,6 +145,7 @@ function getRuntime(sessionId: string): Runtime {
       pumping: false,
       currentCell: null,
       currentBatch: null,
+      started: null,
       currentRunById: null,
       writer: null,
       environment: null,
@@ -190,8 +204,27 @@ async function runOnKernel(
     if (runtime.kernel && runtime.kernel.phase !== 'dead') throw err
     kernelNote(runtime.sessionId, 'The kernel had stopped. Starting a fresh one — variables from before are gone.')
     await ensureKernel(runtime.sessionId)
+    /*
+     * Секундомер заводится заново, когда ядро наконец есть.
+     *
+     * Подъём холодного контейнера — это до полутора минут, и они шли в счёт
+     * ячейки: однострочник отчитывался о полутора минутах работы, хотя считал
+     * миллисекунды. Ждали при этом не его.
+     */
+    restamp(runtime)
     return await runtime.kernel!.execute(source, handlers)
   }
+}
+
+/** Заново отметить начало выполнения — и в среде, и в документе. */
+function restamp(runtime: Runtime): void {
+  const cellId = runtime.currentCell
+  if (!cellId) return
+  const at = Date.now()
+  runtime.started = { cellId, at }
+  const { doc } = getSessionDoc(runtime.sessionId)
+  const found = findCell(doc, cellId)
+  if (found) doc.transact(() => found.cell.set('startedAt', at), ORIGIN)
 }
 
 /**
@@ -213,17 +246,26 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
   const { doc } = getSessionDoc(sessionId)
   const found = findCell(doc, cellId)
   if (!found) return
+  /*
+   * Длительность считается по записи сервера, а не по полю документа.
+   *
+   * `startedAt` лежит в общем документе, а его пишет кто угодно в комнате — это
+   * устройство продукта, а не дыра. Считать по нему длительность значило дать
+   * любому студенту дописать преподавателю «выполнялось три часа». Поле в
+   * документе остаётся тем, чем и было: числом, от которого в браузере растёт
+   * секундомер. Настоящее время начала сервер держит у себя.
+   */
+  const runtime = runtimes.get(sessionId)
+  const startedAt = runtime?.started?.cellId === cellId ? runtime.started.at : null
   doc.transact(() => {
     const was = found.cell.get('state') as CellState | undefined
-    const started = found.cell.get('startedAt') as number | null | undefined
     found.cell.set('state', state)
-    if (started != null) {
-      found.cell.set('startedAt', null)
-      if (was === 'running' && (state === 'ok' || state === 'error')) {
-        found.cell.set('ranMs', Math.max(0, Date.now() - started))
-      }
+    if (found.cell.get('startedAt') != null) found.cell.set('startedAt', null)
+    if (was === 'running' && (state === 'ok' || state === 'error') && startedAt !== null) {
+      found.cell.set('ranMs', Math.max(0, Date.now() - startedAt))
     }
   }, ORIGIN)
+  if (runtime?.started?.cellId === cellId) runtime.started = null
 }
 
 /**
@@ -260,9 +302,46 @@ export function sweepOrphanRuns(sessionId: string): number {
       if (ours) continue
       cell.set('state', 'idle' as CellState)
       cell.set('startedAt', null)
+      // Вместе с состоянием гаснет и вопрос ядра.
+      //
+      // Ячейка, остановившаяся в input(), несёт `stdin` — по нему рисуется
+      // форма ответа. Погасить состояние и оставить форму значит показать
+      // комнате поле ввода, за которым уже никого нет: отвечать некому,
+      // «Send» уходит в пустоту, и убрать это с экрана нечем.
+      if (cell.get('stdin') != null) cell.set('stdin', null)
       repaired++
     }
   }, ORIGIN)
+
+  /*
+   * Половина призрака — тоже призрак.
+   *
+   * Кроме состояния ячеек тот же умерший процесс оставляет за собой своё
+   * зеркало в meta: `runningCell`, `queue` и `kernelStatus`. Их пишет только
+   * сервер, клиент их читает — и читает по ним чип «2 queued» в панели,
+   * строку «Maria — running cell 05» в списке людей и то, рисовать ли комнатный
+   * Interrupt включённым. Почистить ячейки и оставить зеркало значило починить
+   * то, что видно, и оставить то, по чему считают.
+   *
+   * `syncQueue` умеет ровно это и сам ничего не пишет, когда зеркало и так
+   * право. Когда среды исполнения нет вовсе — а это и есть случай после
+   * перезапуска — чистим прямо, как это делает clearStaleExecution.
+   */
+  if (repaired > 0) {
+    if (runtime) syncQueue(runtime)
+    else {
+      const meta = getMeta(doc)
+      doc.transact(() => {
+        const queue = meta.get('queue')
+        if (queue instanceof Y.Array && queue.length > 0) queue.delete(0, queue.length)
+        if (meta.get('runningCell') != null) meta.set('runningCell', null)
+        const status = meta.get('kernelStatus')
+        if (status === 'busy' || status === 'restarting') {
+          meta.set('kernelStatus', 'idle' as KernelStatus)
+        }
+      }, ORIGIN)
+    }
+  }
 
   // runBy, runById, execCount, ranMs и вывод остаются: та же позиция, что у
   // clearStaleExecution — мы гасим то, что происходит, и не трогаем то, что
@@ -533,10 +612,6 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
  */
 export async function interruptSession(sessionId: string, cellId?: string): Promise<void> {
   const runtime = getRuntime(sessionId)
-  // Цель успела смениться — значит нажали в промежутке, и делать нечего.
-  // Молча, как и `cancel`: двое, останавливающие одну ячейку, — это гонка, а
-  // не ошибка, о которой стоит писать в комнату.
-  if (cellId !== undefined && runtime.currentCell !== cellId) return
   /*
    * Drop the tail first: interrupting cell 3 of 10 must not start cell 4.
    *
@@ -548,8 +623,21 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
    * so one person cannot cancel another's work.
    */
   const running = runtime.currentCell
+  /*
+   * Проверка цели стоит только на второй ветке, и это существенно.
+   *
+   * Сначала она стояла над всей функцией, и получалось строго хуже задуманного:
+   * нажатие, промахнувшееся мимо своей ячейки, не делало вообще ничего — а
+   * ядро в этот момент считает следующую ячейку того же Run All, и человек,
+   * который жал «стоп», остаётся с работающей тетрадью и молчащей кнопкой.
+   *
+   * Опасна была ровно нижняя ветка: `dropQueue` выносит очередь всей комнаты,
+   * включая чужие батчи. `stopBatchOf` так не умеет — он ограничен батчем той
+   * ячейки, которая сейчас выполняется, — поэтому остановить текущую работу
+   * можно и промахнувшимся нажатием, а вот разбирать очередь по промаху нельзя.
+   */
   if (running) stopBatchOf(runtime, running)
-  else dropQueue(runtime)
+  else if (cellId === undefined) dropQueue(runtime)
   if (!runtime.kernel || runtime.kernel.phase === 'dead') return
   try {
     await runtime.kernel.interrupt()
@@ -822,6 +910,10 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   runtime.currentBatch = item.batch
   runtime.currentRunById = item.runById
   runtime.writer = writer
+  // Одно и то же число в двух местах: в документ — чтобы росли часы у всех, в
+  // среду исполнения — чтобы длительность считалась по нашей записи.
+  const startedAt = Date.now()
+  runtime.started = { cellId: item.cellId, at: startedAt }
   syncQueue(runtime)
   setStatus(runtime, 'busy')
 
@@ -844,7 +936,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
      * `ranMs` гасится вместе с `execCount` и по той же причине: время прошлого
      * выполнения перестаёт быть правдой в тот момент, когда началось это.
      */
-    cell.set('startedAt', Date.now())
+    cell.set('startedAt', startedAt)
     cell.set('ranMs', null)
   }, ORIGIN)
   // Stale output is cleared at the start of the run, not when queued: until a

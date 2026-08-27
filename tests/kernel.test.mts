@@ -771,12 +771,18 @@ test('прерванное выполнение не получает време
   }
 })
 
-test('«стоп», нацеленный в чужую ячейку, не трогает ничего', async () => {
+test('промахнувшийся «стоп» останавливает работу, но не разбирает очередь', async () => {
   /*
    * Кнопка на ячейке нарисована по документу, а документ отстаёт от сервера на
-   * круг: нажатие в промежутке между двумя ячейками Run All попадало в ветку
-   * «ничего не выполняется» и выносило очередь всей комнаты — включая батчи
-   * людей, которые ничего не нажимали.
+   * круг: к моменту, когда нажатие доедет, выполняться может уже следующая
+   * ячейка того же Run All. Опасна тут была только вторая ветка
+   * `interruptSession` — `dropQueue` выносит очередь всей комнаты, включая
+   * чужие батчи. Останавливать текущую работу промахнувшимся нажатием не
+   * опасно: `stopBatchOf` ограничен батчем той ячейки, которая выполняется, а
+   * попади нажатие точно в цель — сняло бы ровно тот же батч.
+   *
+   * Сначала проверка цели стояла над всей функцией, и промах не делал вообще
+   * ничего: человек жал «стоп», тетрадь продолжала считать, кнопка молчала.
    */
   const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
   const { getCells, createCell } = await import('../shared/notebook.js')
@@ -796,19 +802,15 @@ test('«стоп», нацеленный в чужую ячейку, не тро
   assert.ok(await until(() => room.state() === 'running'), 'первая не пошла')
   assert.ok(await until(() => tail.every((c) => c.get('state') === 'queued')), 'хвост не встал в очередь')
 
-  // Целимся в ячейку, которая уже не выполняется.
+  // Целимся в ячейку, которой в комнате нет вовсе — крайний случай промаха.
   await interruptSession(room.id, 'no-such-cell')
-
-  await wait(200)
-  assert.equal(room.state(), 'running', 'промахнувшийся «стоп» остановил выполнение')
-  assert.ok(
-    tail.every((c) => c.get('state') === 'queued'),
-    `промахнувшийся «стоп» вынес очередь: ${tail.map((c) => String(c.get('state'))).join(',')}`,
-  )
-
-  await interruptSession(room.id, room.cellId)
   swallowExecutes = false
-  assert.ok(await until(() => room.state() !== 'running'), 'нацеленный «стоп» не сработал')
+
+  assert.ok(await until(() => room.state() !== 'running'), 'промах не остановил работу')
+  assert.ok(
+    await until(() => tail.every((c) => c.get('state') === 'idle')),
+    'хвост своего батча остался стоять',
+  )
 })
 
 test('призрачная работающая ячейка убирается проходом, а живая — нет', async () => {
@@ -876,4 +878,57 @@ test('обычная ячейка от этого ничего не теряет
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
   assert.ok(await until(() => room.state() === 'ok'))
   assert.match(JSON.stringify(readNotebook(room.doc)[1].outputs), /print\(1\)/)
+})
+
+
+test('проход чистит и зеркало в meta, а не только ячейки', async () => {
+  /*
+   * Тот же умерший процесс оставляет за собой не только состояние ячеек, но и
+   * своё зеркало в meta: runningCell, queue и kernelStatus. По ним считают чип
+   * «2 queued» в панели, строку «Maria — running cell 05» в списке людей и то,
+   * рисовать ли комнатный Interrupt включённым. Починить ячейки и оставить
+   * зеркало значило починить видимое и оставить то, по чему считают.
+   */
+  const { sweepOrphanRuns } = await import('../server/src/kernel/index.js')
+  const { getMeta } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const meta = getMeta(room.doc)
+
+  room.doc.transact(() => {
+    room.cell.set('state', 'running')
+    room.cell.set('startedAt', Date.now() - 60_000)
+    room.cell.set('stdin', { prompt: 'Имя: ', password: false })
+    meta.set('runningCell', room.cellId)
+    meta.set('kernelStatus', 'busy')
+  })
+
+  assert.equal(sweepOrphanRuns(room.id), 1)
+  assert.equal(room.state(), 'idle')
+  assert.equal(room.startedAt(), null)
+  // Форма ввода, за которой уже никого нет, — это поле, чей «Send» уходит в пустоту.
+  assert.equal(room.cell.get('stdin'), null, 'вопрос ядра остался на экране')
+  assert.equal(meta.get('runningCell'), null, 'зеркало всё ещё называет работающую ячейку')
+  assert.notEqual(meta.get('kernelStatus'), 'busy', 'ядро всё ещё числится занятым')
+})
+
+test('длительность считается по записи сервера, а не по полю документа', async () => {
+  /*
+   * `startedAt` лежит в общем документе, а его пишет кто угодно в комнате — это
+   * устройство продукта. Считать по нему длительность значило дать любому
+   * студенту дописать преподавателю «выполнялось три часа».
+   */
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  room.type('print(1)')
+  requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
+
+  // Пока считается — подделываем отметку в документе, как это может сделать
+  // любая вкладка в комнате.
+  await until(() => room.state() === 'running' || room.state() === 'ok')
+  room.doc.transact(() => room.cell.set('startedAt', Date.now() - 3 * 60 * 60 * 1000))
+
+  assert.ok(await until(() => room.state() === 'ok'), `ячейка кончилась как ${String(room.state())}`)
+  const took = room.ranMs()
+  assert.ok(typeof took === 'number', 'длительность не записана')
+  assert.ok(took < 60_000, `подделка попала в длительность: ${took} мс`)
 })

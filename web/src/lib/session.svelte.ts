@@ -100,6 +100,8 @@ export class SessionState {
   #retries = 0
   #disposed = false
   #pingSentAt: number | null = null
+  /** Самый быстрый круг на этом соединении: по нему и берут поправку часов. */
+  #bestRtt = Number.POSITIVE_INFINITY
 
   constructor(session: SessionInfo, identity: StoredIdentity) {
     this.session = session
@@ -238,6 +240,8 @@ export class SessionState {
 
     socket.onopen = () => {
       this.#retries = 0
+      // Новое соединение — новая сеть: прошлый лучший круг про неё ничего не знает.
+      this.#bestRtt = Number.POSITIVE_INFINITY
       for (const queued of this.#controlQueue.splice(0)) socket.send(JSON.stringify(queued))
       const beat = () => {
         if (socket.readyState !== WebSocket.OPEN) return
@@ -295,7 +299,24 @@ export class SessionState {
         const sent = this.#pingSentAt
         if (sent !== null) {
           const rtt = Date.now() - sent
-          this.clockSkewMs = sent + rtt / 2 - message.now
+          /*
+           * Побеждает лучшая проба, а не последняя.
+           *
+           * Оценка «половина круга» верна ровно настолько, насколько дорога
+           * туда похожа на дорогу обратно. На мобильной сети круг гуляет от
+           * сотни миллисекунд до секунды, и брать каждую новую пробу значит
+           * дёргать поправку на полсекунды в обе стороны — а из неё растёт
+           * секундомер, который в этот момент показывают комнате. Он бы шёл
+           * назад.
+           *
+           * Чем короче круг, тем меньше в нём места для перекоса, так что
+           * лучшая проба — самая быстрая. Минимум сбрасывается на каждом новом
+           * соединении: сеть за это время могла стать другой.
+           */
+          if (rtt <= this.#bestRtt) {
+            this.#bestRtt = rtt
+            this.clockSkewMs = sent + rtt / 2 - message.now
+          }
           this.#pingSentAt = null
         }
       }
