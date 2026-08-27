@@ -13,8 +13,20 @@
 # и это выяснится ровно в тот момент, когда тридцать человек уже сидят в классе.
 # Поэтому адрес туннеля узнаётся первым, а приложение перезапускается уже с ним.
 #
-#   ./scripts/host.sh                          быстрый туннель, случайный адрес
-#   COLLOQ_HOSTNAME=seminar.sleep3r.ru ./scripts/host.sh   свой постоянный адрес
+# Транспортов три, и выбираются они сами по имени, которое вы просите:
+#
+#   ./scripts/host.sh                       быстрый туннель Cloudflare, адрес
+#                                           случайный и живёт до Ctrl+C
+#   COLLOQ_HOSTNAME=seminar.sleep3r.ru      именованный туннель Cloudflare
+#   COLLOQ_HOSTNAME=hse.colloq.ru           свой ретранслятор
+#
+# Последнее — не прихоть. Туннель Cloudflare всегда выходит на пограничные
+# адреса Cloudflare, и снять с них проксирование нельзя: запись
+# *.cfargotunnel.com имеет смысл только для их прокси. А из России эти адреса
+# не открываются. Семинар, выставленный через Cloudflare, недоступен ровно той
+# аудитории, ради которой его и выставляют, — поэтому под colloq.ru стоит своя
+# машина, а до неё инстанс дотягивается исходящим соединением frpc, так же как
+# дотягивался бы до Cloudflare. Ставится: brew install frpc.
 #
 set -euo pipefail
 
@@ -24,9 +36,34 @@ RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; CYAN=$'\033[36m'; OFF=$'\033[0
 say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
-command -v cloudflared >/dev/null 2>&1 || die \
-  "cloudflared не установлен. brew install cloudflared — и запустите снова."
 command -v docker >/dev/null 2>&1 || die "docker не установлен."
+
+# Настройки ретранслятора живут в .env рядом со всем остальным. Пусто — значит
+# этот инстанс им не пользуется, и остаётся Cloudflare.
+read_env() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \r' || true; }
+RELAY_DOMAIN="$(read_env RELAY_DOMAIN)"
+RELAY_ADDR="$(read_env RELAY_ADDR)"
+RELAY_PORT="$(read_env RELAY_PORT)"; RELAY_PORT="${RELAY_PORT:-7000}"
+RELAY_TOKEN="$(read_env RELAY_TOKEN)"
+
+# Транспорт выбирается именем, а не отдельным флагом: имя под нашей зоной
+# может обслужить только наш ретранслятор, а любое другое — только Cloudflare.
+# Флаг здесь был бы третьим способом сказать то, что уже сказано адресом.
+VIA="cloudflare"
+if [ -n "${COLLOQ_HOSTNAME:-}" ] && [ -n "$RELAY_DOMAIN" ] \
+   && [ "${COLLOQ_HOSTNAME%".$RELAY_DOMAIN"}" != "$COLLOQ_HOSTNAME" ]; then
+  VIA="relay"
+fi
+
+if [ "$VIA" = relay ]; then
+  command -v frpc >/dev/null 2>&1 || die \
+    "frpc не установлен. brew install frpc — и запустите снова."
+  [ -n "$RELAY_ADDR" ]  || die "в .env нет RELAY_ADDR — адреса ретранслятора."
+  [ -n "$RELAY_TOKEN" ] || die "в .env нет RELAY_TOKEN — общего секрета ретранслятора."
+else
+  command -v cloudflared >/dev/null 2>&1 || die \
+    "cloudflared не установлен. brew install cloudflared — и запустите снова."
+fi
 
 # PORT нужен до старта туннеля: на него cloudflared и будет светить.
 PORT="$(grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ' || true)"
@@ -102,7 +139,48 @@ elif [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; t
 fi
 
 say "${BOLD}2/4${OFF} открываю туннель"
-if [ -n "${COLLOQ_HOSTNAME:-}" ]; then
+if [ "$VIA" = relay ]; then
+  # Поддомен — это всё, что инстанс просит у ретранслятора: frps выдаёт имена
+  # только под своей зоной, поэтому попросить чужое имя нельзя даже с секретом.
+  SUB="${COLLOQ_HOSTNAME%".$RELAY_DOMAIN"}"
+  CONF="$(mktemp -t colloq-frpc)"
+  # Секрет уходит в файл, а не в аргументы: командная строка видна всей машине
+  # через ps, и общий ключ ретранслятора там светиться не должен.
+  cat > "$CONF" <<CONF
+serverAddr = "${RELAY_ADDR}"
+serverPort = ${RELAY_PORT}
+auth.method = "token"
+auth.token = "${RELAY_TOKEN}"
+log.to = "console"
+log.level = "info"
+
+[[proxies]]
+name = "${SUB}"
+type = "http"
+localIP = "127.0.0.1"
+localPort = ${PORT}
+subdomain = "${SUB}"
+CONF
+  chmod 600 "$CONF"
+  frpc -c "$CONF" >"$LOG" 2>&1 &
+  TUNNEL_PID=$!
+  PUBLIC="https://${COLLOQ_HOSTNAME}"
+  # Ждём подтверждения от сервера, а не «прошло N секунд»: занятый кем-то
+  # поддомен или неверный секрет — это отказ, который приходит сразу, и молча
+  # пойти дальше значило бы раздать ссылку в никуда.
+  ok=""
+  for _ in $(seq 1 30); do
+    grep -q 'start proxy success' "$LOG" 2>/dev/null && { ok=1; break; }
+    if grep -qiE 'login to server failed|proxy name .* already|authentication failed' "$LOG" 2>/dev/null; then
+      grep -iE 'login to server failed|already|authentication' "$LOG" | head -3 >&2
+      die "ретранслятор отказал."
+    fi
+    kill -0 "$TUNNEL_PID" 2>/dev/null || { cat "$LOG" >&2; die "frpc умер, не открыв туннель."; }
+    sleep 1
+  done
+  rm -f "$CONF"
+  [ -n "$ok" ] || { cat "$LOG" >&2; die "не дождался ответа ретранслятора за 30 секунд."; }
+elif [ -n "${COLLOQ_HOSTNAME:-}" ]; then
   # Именованный туннель: постоянный адрес, но его нужно один раз завести
   # (make tunnel-setup). Без этого cloudflared не знает, куда маршрутизировать.
   cloudflared tunnel --no-autoupdate run --url "$LOCAL" colloq >"$LOG" 2>&1 &

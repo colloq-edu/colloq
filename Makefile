@@ -24,7 +24,7 @@ RED  := \033[31m
 OFF  := \033[0m
 
 .PHONY: help up dev run stop logs-run down restart logs status ps shell \
-        host tunnel-setup \
+        host relay-setup tunnel-setup \
         env-list env-show env-new env-use env-build env-freeze \
         test check
 
@@ -108,6 +108,10 @@ shell: ## Оболочка внутри ядра — посмотреть, чт�
 
 host: .env ## Выставить семинар наружу и получить ссылку. HOST=... — свой адрес
 	@COLLOQ_HOSTNAME="$(HOST)" ./scripts/host.sh
+
+relay-setup: ## Поставить ретранслятор для *.colloq.ru. WHERE=root@адрес
+	@test -n "$(WHERE)" || { printf '$(RED)Укажите машину: make relay-setup WHERE=root@203.0.113.11$(OFF)\n'; exit 1; }
+	@./scripts/relay-setup.sh "$(WHERE)"
 
 tunnel-setup: ## Один раз завести постоянный адрес. HOST=seminar.example.ru
 	@test -n "$(HOST)" || { printf '$(RED)Укажите адрес: make tunnel-setup HOST=seminar.example.ru$(OFF)\n'; exit 1; }
