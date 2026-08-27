@@ -5,11 +5,28 @@ import { config } from './config.js'
 import { colorForId, type Participant, type SessionInfo } from '@shared/protocol'
 import { OPEN_ROOM, readRules, type RoomRules } from '@shared/rules'
 
-fs.mkdirSync(config.dataDir, { recursive: true })
+fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
 
-export const db = new Database(path.join(config.dataDir, 'colloq.db'))
+const dbPath = path.join(config.dataDir, 'colloq.db')
+export const db = new Database(dbPath)
 db.pragma('journal_mode = WAL')
 db.pragma('synchronous = NORMAL')
+
+/*
+ * The file holds the sign-in keys of every teacher and the instance's model
+ * key, in clear text — which is fine while only this process can read it, and
+ * was not: SQLite creates by umask, so on a shared machine it landed 0644 next
+ * to the 0600 session secret. WAL and shm are the same data and get the same
+ * treatment.
+ */
+for (const suffix of ['', '-wal', '-shm']) {
+  try {
+    fs.chmodSync(`${dbPath}${suffix}`, 0o600)
+  } catch {
+    // -wal and -shm may not exist yet; the next open makes them under the
+    // directory's 0700, which is already closed to everyone else.
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (

@@ -72,6 +72,24 @@ export function recordQuestion(question: QuestionRecord): void {
 }
 
 /** Questions from one student in one seminar inside the trailing `windowMs`. */
+const countRoomWindow = db.prepare(
+  'SELECT COUNT(*) AS n FROM ai_usage WHERE session_id = ? AND created_at >= ?',
+)
+
+/**
+ * Questions the whole room has asked in the window.
+ *
+ * The per-person cap is trivially escaped: a private window is a new
+ * participantId and a fresh allowance, and nothing about a seminar link stops
+ * anyone opening ten. A second ceiling over the room is what actually bounds
+ * what an hour of oracle can cost, and it is the number a teacher who set
+ * "5 per student" thought they were setting.
+ */
+export function countRoomQuestions(sessionId: string, windowMs: number): number {
+  const row = countRoomWindow.get(sessionId, Date.now() - windowMs) as { n: number }
+  return row.n
+}
+
 export function countRecentQuestions(
   sessionId: string,
   participantId: string,

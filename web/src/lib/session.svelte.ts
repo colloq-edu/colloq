@@ -239,7 +239,19 @@ export class SessionState {
       } catch {
         return
       }
-      if (message.t === 'role') this.me.role = message.role
+      if (message.t === 'role') {
+        /*
+         * The server's answer outranks the stored one, and the room has to
+         * hear it too: the role travels in awareness, and awareness is what
+         * draws the Host badge on everyone else's screen. Setting the field
+         * alone left a stale badge sitting there for the whole seminar.
+         */
+        if (this.me.role !== message.role) {
+          this.me.role = message.role
+          const current = this.awareness.getLocalState()?.user as AwarenessUser | undefined
+          if (current) this.awareness.setLocalStateField('user', { ...current, role: message.role })
+        }
+      }
       else if (message.t === 'files') this.files = message.files
       else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'error') this.lastError = message.message

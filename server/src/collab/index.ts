@@ -314,6 +314,16 @@ function getEntry(sessionId: string, title?: string): DocEntry {
       if (state) {
         for (const id of changes.added) state.clientIds.add(id)
         for (const id of changes.removed) state.clientIds.delete(id)
+        /*
+         * Before the relay, not after. Awareness is whatever the client says
+         * it is — that is the point of it, and why a caret can carry a colour.
+         * But `role` is not a preference: the People panel draws a Host badge
+         * from it, and one edit to localStorage put a second teacher in front
+         * of the room. The server knows the real role for this socket, so it
+         * corrects the state and then broadcasts the corrected one. The forger
+         * still lies to their own screen; nobody else hears it.
+         */
+        pinRole(entry, state, changes.added.concat(changes.updated))
       }
       broadcastAwareness(entry, changes.added.concat(changes.updated, changes.removed))
     },
@@ -346,6 +356,27 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
   } catch (err) {
     // One malformed frame should cost that socket its message, not the seminar.
     console.error(`[collab] bad message in ${entry.sessionId}`, err)
+  }
+}
+
+/**
+ * Force this connection's awareness role back to what the socket was opened
+ * with. Cheap: one map lookup per awareness frame, and awareness frames are
+ * already the chattiest thing on this wire.
+ */
+function pinRole(entry: DocEntry, state: ConnState, clientIds: number[]): void {
+  if (!state.participantId) return
+  for (const clientId of clientIds) {
+    const local = entry.awareness.getStates().get(clientId) as
+      | { user?: { id?: string; role?: ParticipantRole } }
+      | undefined
+    const user = local?.user
+    if (!user) continue
+    if (user.id === state.participantId && user.role === state.role) continue
+    entry.awareness.states.set(clientId, {
+      ...local,
+      user: { ...user, id: state.participantId, role: state.role },
+    })
   }
 }
 

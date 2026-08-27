@@ -44,6 +44,14 @@ const MAX_ENTRY_ID = 128
 const HOUR_MS = 3_600_000
 
 /**
+ * How many per-student allowances one room may spend in an hour.
+ *
+ * Thirty is a full lecture hall: the ceiling only ever meets a room where the
+ * same person keeps coming back under new names, or a script.
+ */
+const ROOM_MULTIPLIER = 30
+
+/**
  * The mode this seminar actually runs in.
  *
  * `inherit` is what every room is until somebody says otherwise. A room may

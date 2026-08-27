@@ -24,8 +24,9 @@ import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { createHmac } from 'node:crypto'
 import { signToken, verifyToken, TOKEN_MAX_AGE_MS } from '../server/src/auth.js'
-import { createSession, getParticipant } from '../server/src/db.js'
+import { createSession, db, getParticipant } from '../server/src/db.js'
 import { sessionAuth, sessionRoutes } from '../server/src/routes/sessions.js'
+import { historyRoutes } from '../server/src/routes/history.js'
 import type { JoinRequest, JoinResponse } from '../shared/protocol.js'
 
 const ROOM = 'identity-test'
@@ -37,6 +38,7 @@ before(async () => {
   const app = express()
   app.use(express.json())
   app.use(sessionRoutes())
+  app.use(historyRoutes())
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
@@ -218,4 +220,24 @@ test('токен без отметки времени читается: комн
   ).toString('base64url')
   const sig = createHmac('sha256', process.env.SESSION_SECRET as string).update(body).digest('base64url')
   assert.equal(verifyToken(`${body}.${sig}`)?.participantId, 'p_ageless')
+})
+
+/* ------------------------------------------------ удалённый семинар уносит своё */
+
+test('история удалённого семинара не читается и не воскрешает комнату', async () => {
+  /*
+   * Маршруты истории были единственной дверью, через которую удалённый
+   * семинар оставался открыт: getSessionDoc строит документ для любого id,
+   * который ему дали, — старый токен доставал ноутбук комнаты, о которой
+   * панель уже отчиталась, что её нет, и заодно клал её обратно в память.
+   */
+  const gone = 'identity-gone'
+  createSession(gone, 'Удалённый', null)
+  const me = signToken({ sessionId: gone, participantId: 'p_x', role: 'participant' })
+  db.prepare('DELETE FROM sessions WHERE id = ?').run(gone)
+
+  const res = await fetch(`${base}/api/sessions/${gone}/history`, {
+    headers: { authorization: `Bearer ${me}` },
+  })
+  assert.equal(res.status, 404)
 })

@@ -12,7 +12,7 @@ import { sessionAuth } from './sessions.js'
 import { getSessionDoc } from '../collab/index.js'
 import { cellsAt, cellsOf, mark, restoreInto } from '../collab/history.js'
 import { diffLines } from '@shared/diff'
-import { getParticipant, getVersion, listVersions } from '../db.js'
+import { getParticipant, getVersion, listVersions, getSession } from '../db.js'
 
 /**
  * Everyone in the room may read the history — the notebook is shared, so who
@@ -20,6 +20,17 @@ import { getParticipant, getVersion, listVersions } from '../db.js'
  * writing routes below check for the host on top of this.
  */
 function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
+  /*
+   * The room has to still exist. Without this the history routes were the one
+   * door a deleted seminar was still open through: getSessionDoc() below
+   * builds a document for any id it is handed, so a stale token fetched the
+   * notebook of a room the panel had already reported gone — and, worse, put
+   * that room back in memory.
+   */
+  if (!getSession(req.params.id)) {
+    res.status(404).json({ error: 'session not found' })
+    return null
+  }
   const payload = sessionAuth(req)
   if (!payload) {
     res.status(401).json({ error: 'this history belongs to a seminar you are not in' })

@@ -24,7 +24,8 @@ import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
 import { config } from '../config.js'
 import { closeControlRoom } from '../control.js'
 import { readRules } from '@shared/rules'
-import { createSession, db, loadDocSnapshot, sessionEnvironment, setRules } from '../db.js'
+import { createSession, db, discardHistory, loadDocSnapshot, sessionEnvironment, setRules } from '../db.js'
+import { forgetCache } from '../collab/history.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { listFiles, sessionDir } from '../workspace.js'
@@ -306,9 +307,15 @@ export function adminInstanceRoutes(): Router {
         const purge = db.transaction((id: string) => {
           deleteParticipants.run(id)
           deleteSnapshot.run(id)
+          // The history is the notebook, in full, one keyframe at a time. A
+          // seminar deleted with it left behind is a seminar the dialog said
+          // was gone and whose every cell is still on disk — and still served
+          // over HTTP to anyone holding an old token.
+          discardHistory(id)
           deleteSeminarRow.run(id)
         })
         purge(row.id)
+        forgetCache(row.id)
 
         try {
           fs.rmSync(sessionDir(row.id), { recursive: true, force: true })
