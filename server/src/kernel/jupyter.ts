@@ -805,6 +805,32 @@ export class JupyterKernel {
       if (!pending) return
       const status = content.status
       pending.status = status === 'ok' || status === 'error' || status === 'abort' ? status : 'ok'
+      /*
+       * `print?` ничего не печатает — и это не фигура речи.
+       *
+       * IPython превращает `имя?` в запрос справки, и ответ на него не идёт
+       * по iopub вовсе: ни stream, ни display_data, ни execute_result. Он
+       * приезжает сюда, в execute_reply, полем `payload` — куском, который в
+       * настоящем ноутбуке открывается «страницей» внизу окна. Мы читали из
+       * этого сообщения один только status, так что вся справка отправлялась в
+       * никуда: человек писал `print?`, ячейка отрабатывала за миллисекунды и
+       * оставалась пустой, будто вопросительный знак ничего не значит.
+       *
+       * Отдаём его как обычный вывод: внутри `text/plain` с ANSI-раскраской,
+       * которую наш рендер уже умеет — той же дорогой ходят трейсбеки.
+       *
+       * Раньше settle: после него писать уже некуда.
+       */
+      const payload = Array.isArray(content.payload) ? content.payload : []
+      for (const item of payload) {
+        const part = item as { source?: unknown; data?: unknown }
+        // 'page' — это `?`, `??`, %pinfo и %pdoc. Остальные виды (set_next_input
+        // от %load, ask_exit от exit()) меняют не вывод, а состояние сеанса, и
+        // показывать их как вывод было бы неправдой.
+        if (part.source !== 'page') continue
+        const bundle = toStringBundle(part.data)
+        if (Object.keys(bundle).length > 0) pending.handlers.onData(bundle, null)
+      }
       this.maybeSettle(parentId as string, pending)
       return
     }

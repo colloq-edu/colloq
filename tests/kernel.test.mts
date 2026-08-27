@@ -125,6 +125,30 @@ before(async () => {
           reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return
         }
+        /*
+         * `имя?` — справка, и приходит она не по iopub.
+         *
+         * IPython отвечает на неё полем `payload` в самом execute_reply, тем
+         * самым куском, который в настоящем ноутбуке открывается «страницей»
+         * внизу окна. Ни stream, ни display_data при этом нет вовсе — поэтому
+         * ячейка и оставалась пустой, пока сервер читал из этого сообщения
+         * один только status. Подделка повторяет ту же форму.
+         */
+        if (/\?$/.test(msg.content.code.trim())) {
+          reply(ws, msg.header, 'execute_reply', {
+            status: 'ok',
+            execution_count: 1,
+            payload: [
+              {
+                source: 'page',
+                data: { 'text/plain': 'Signature: print(*args)\nDocstring: Prints the values.' },
+                start: 0,
+              },
+            ],
+          })
+          reply(ws, msg.header, 'status', { execution_state: 'idle' })
+          return
+        }
         reply(ws, msg.header, 'stream', { name: 'stdout', text: `${msg.content.code}\n` })
         reply(ws, msg.header, 'execute_reply', { status: 'ok', execution_count: 1 })
         reply(ws, msg.header, 'status', { execution_state: 'idle' })
@@ -818,4 +842,38 @@ test('призрачная работающая ячейка убирается 
   const { interruptSession } = await import('../server/src/kernel/index.js')
   await interruptSession(room.id)
   swallowExecutes = false
+})
+
+
+test('справка по вопросительному знаку доезжает до ячейки', async () => {
+  /*
+   * `print?` печатал пустоту. Ответ на такой вопрос IPython кладёт в payload
+   * самого execute_reply — «страницей», которую настоящий ноутбук открывает
+   * внизу окна, — и по iopub не присылает ничего. Сервер читал из этого
+   * сообщения только status, так что вся справка уходила в никуда: ячейка
+   * отрабатывала за миллисекунды и оставалась пустой, будто вопросительный
+   * знак ничего не значит.
+   */
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { readNotebook } = await import('../shared/notebook.js')
+  const room = await seminar()
+  room.type('print?')
+  requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
+  assert.ok(await until(() => room.state() === 'ok'), `ячейка кончилась как ${String(room.state())}`)
+
+  const outputs = readNotebook(room.doc)[1].outputs
+  assert.equal(outputs.length, 1, `выводов ${outputs.length}, а справка должна быть одна`)
+  assert.match(JSON.stringify(outputs), /Docstring/, 'справка не доехала до ячейки')
+})
+
+test('обычная ячейка от этого ничего не теряет', async () => {
+  // Полезная проверка ровно потому, что справка ходит по тому же сообщению,
+  // что и статус: сломать обычный путь тут проще всего.
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { readNotebook } = await import('../shared/notebook.js')
+  const room = await seminar()
+  room.type('print(1)')
+  requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
+  assert.ok(await until(() => room.state() === 'ok'))
+  assert.match(JSON.stringify(readNotebook(room.doc)[1].outputs), /print\(1\)/)
 })
