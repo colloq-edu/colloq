@@ -15,6 +15,10 @@ import { sessionDir } from '../workspace.js'
 
 export type KernelPhase = 'starting' | 'idle' | 'busy' | 'restarting' | 'dead'
 
+/** How long a self-restarting kernel gets to come back before it is called dead. */
+const COMEBACK_MS = 60_000
+const COMEBACK_POLL_MS = 1_000
+
 export interface ExecuteHandlers {
   onExecuteInput(execCount: number): void
   /**
@@ -392,6 +396,45 @@ export class JupyterKernel {
   }
 
   /**
+   * After Jupyter restarts the kernel on its own, wait for the new process.
+   *
+   * The new process announces itself to nobody: `idle` is only ever sent in
+   * reply to a request, and no request is out. So the phase would have stayed
+   * `restarting` for as long as anyone cared to look — it did, for minutes,
+   * with a kernel that was perfectly idle behind it. One GET a second until
+   * Jupyter reports the new process idle, then the phase follows. Gone in the
+   * meantime (404, or five restarts in a row and Jupyter gave up) is death,
+   * and death the rest of the server already knows how to handle.
+   */
+  private async awaitComeback(): Promise<void> {
+    const deadline = Date.now() + COMEBACK_MS
+    while (Date.now() < deadline) {
+      if (this.disposed || this._phase !== 'restarting') return
+      try {
+        const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}`)
+        if (res.status === 404) {
+          this.setPhase('dead')
+          return
+        }
+        if (res.ok) {
+          const info = (await res.json()) as { execution_state?: string }
+          if (info?.execution_state === 'idle') {
+            this.lastHeard = Date.now()
+            this.setPhase('idle')
+            return
+          }
+        }
+      } catch {
+        // Jupyter itself is unreachable for a moment; keep asking.
+      }
+      await delay(COMEBACK_POLL_MS)
+    }
+    // Still not back: treat it as gone, so Restart is offered rather than a
+    // status that never moves.
+    if (!this.disposed && this._phase === 'restarting') this.setPhase('dead')
+  }
+
+  /**
    * Runs only while a cell is out with the kernel. A long computation is
    * allowed to be silent for hours; what is not allowed is silence from a
    * kernel that no longer exists.
@@ -448,7 +491,10 @@ export class JupyterKernel {
   }
 
   async restart(): Promise<void> {
-    this.setPhase('restarting')
+    // `expected`: somebody pressed the button. The unexpected kind — Jupyter
+    // restarting by itself after the OOM killer — arrives as a status frame in
+    // handleFrame and is the one the room needs a sentence about.
+    this.setPhase('restarting', true)
     // The kernel process is about to be replaced; nothing in flight can finish.
     this.abortPending()
     const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}/restart`, { method: 'POST' }, 60_000)
@@ -644,6 +690,31 @@ export class JupyterKernel {
 
     if (msgType === 'status') {
       const state = content.execution_state
+      /*
+       * `restarting` is Jupyter's own word for "the process died and I am
+       * bringing up another one" — the container's OOM killer, most often. It
+       * keeps the kernel id and the socket, so nothing else here would notice:
+       * the request that was running never gets its reply, and the room sat at
+       * `busy` forever. Treating it as the death it is aborts the pending work,
+       * drops the queue and tells the room why — the same path as a kernel that
+       * vanished outright, because from the notebook's side it did.
+       */
+      if (state === 'restarting') {
+        /*
+         * Not `dead`. Jupyter keeps the kernel id and this socket and brings
+         * the process back on its own — the next frames here are the new
+         * process's `starting` and, once asked something, its `idle`. Calling
+         * it dead made the room start a SECOND kernel against a Jupyter that
+         * was already restarting the first, and left the status stuck on the
+         * way. What is actually lost is the work in flight and every variable;
+         * the phase says so, the pending work is aborted, and the room gets a
+         * sentence from onPhase. The kernel object itself stays valid.
+         */
+        this.abortPending()
+        this.setPhase('restarting')
+        void this.awaitComeback()
+        return
+      }
       if (state === 'busy' || state === 'idle' || state === 'starting') this.setPhase(state)
       if (pending && state === 'idle') {
         pending.idle = true

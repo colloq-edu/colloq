@@ -102,6 +102,31 @@ export function resolveInSession(sessionId: string, name: string): string | null
   const dir = sessionDir(sessionId)
   const full = path.join(dir, base)
   if (!full.startsWith(dir + path.sep)) return null
+  /*
+   * The name check above is about the REQUEST: it stops `../` from leaving the
+   * folder. This one is about the ENTRY: it stops a symlink inside the folder
+   * from pointing out of it. They are different holes and only the first was
+   * closed. The kernel container runs any Python a student types on the same
+   * mounted workspace, so `os.symlink('/data/session-secret', 'key.txt')` put
+   * a file in the room's list that the download route then streamed — the
+   * secret every token in the product is signed with.
+   *
+   * realpath follows the link; a target outside the folder is refused. A path
+   * that does not exist yet (an upload about to land) resolves as itself.
+   */
+  let real: string
+  try {
+    real = fs.realpathSync(full)
+  } catch {
+    return full
+  }
+  let realDir: string
+  try {
+    realDir = fs.realpathSync(dir)
+  } catch {
+    return null
+  }
+  if (real !== realDir && !real.startsWith(realDir + path.sep)) return null
   return full
 }
 
@@ -117,7 +142,10 @@ export function listFiles(sessionId: string): FileEntry[] {
   for (const name of names) {
     if (name.startsWith('.') || name === '__pycache__') continue
     try {
-      const stat = fs.statSync(path.join(dir, name))
+      // lstat, not stat: a symlink is not a file of this room, whatever it
+      // points at, and listing it as one is how a link to a secret became a
+      // download button.
+      const stat = fs.lstatSync(path.join(dir, name))
       if (!stat.isFile()) continue
       entries.push({ name, size: stat.size, modifiedAt: stat.mtimeMs })
     } catch {

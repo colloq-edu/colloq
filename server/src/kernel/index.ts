@@ -202,6 +202,27 @@ function dropQueue(runtime: Runtime): void {
 }
 
 function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
+  /*
+   * Jupyter restarting the kernel by itself — the container's OOM killer,
+   * almost always. The process is gone and coming back under the same id, so
+   * this is neither `dead` (nothing to start) nor an ordinary phase (there is
+   * something to say). The cell that was running gets its KernelDied from the
+   * aborted execute; what is said here is for the rest of the room, and the
+   * queue is dropped because everything in it assumed variables that no longer
+   * exist.
+   */
+  if (phase === 'restarting' && !expected) {
+    const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
+    dropQueue(runtime)
+    setStatus(runtime, 'restarting')
+    kernelNote(
+      runtime.sessionId,
+      hadWork
+        ? 'The kernel ran out of memory and is coming back on its own. Every variable is gone; whatever was queued was dropped.'
+        : 'The kernel restarted on its own — usually memory. Every variable is gone.',
+    )
+    return
+  }
   if (phase === 'dead') {
     const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
     dropQueue(runtime)

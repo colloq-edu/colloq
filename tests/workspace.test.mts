@@ -6,7 +6,10 @@ import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { resolveInSession, safeName, sessionDir } from '../server/src/workspace.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import { createSession } from '../server/src/db.js'
+import { listFiles, resolveInSession, safeName, sessionDir } from '../server/src/workspace.js'
 
 const SID = 'seminar1'
 
@@ -94,4 +97,32 @@ test('a name at the length limit is kept and one past it is not', () => {
   const at = 'a'.repeat(196) + '.csv'
   assert.equal(safeName(at), at)
   assert.equal(safeName('a'.repeat(201)), null)
+})
+
+/* ------------------------------------------------ a symlink is not a file of the room */
+
+/**
+ * The kernel container runs any Python a student types, on the same mounted
+ * workspace the server serves files from. So a cell can plant a symlink in the
+ * room's folder pointing anywhere the server can read — and the server reads
+ * its own session secret. The name check catches `../` in the request; it says
+ * nothing about what an entry inside the folder points at.
+ */
+test('a symlink pointing out of the room is neither listed nor resolved', () => {
+  const id = 'ws-symlink'
+  createSession(id, 'Symlink test', null)
+  const dir = sessionDir(id)
+  const secret = path.join(os.tmpdir(), `colloq-secret-${process.pid}`)
+  fs.writeFileSync(secret, 'the signing key')
+  fs.writeFileSync(path.join(dir, 'honest.csv'), 'a,b\n')
+  fs.symlinkSync(secret, path.join(dir, 'key.txt'))
+  try {
+    assert.deepEqual(listFiles(id).map((f) => f.name), ['honest.csv'], 'the link was listed as a file')
+    assert.equal(resolveInSession(id, 'key.txt'), null, 'the link resolved to a download')
+    assert.ok(resolveInSession(id, 'honest.csv'), 'an honest file still resolves')
+    // A name that does not exist yet must still resolve — that is how uploads land.
+    assert.ok(resolveInSession(id, 'arriving.csv'), 'a not-yet-written name stopped resolving')
+  } finally {
+    fs.rmSync(secret, { force: true })
+  }
 })
