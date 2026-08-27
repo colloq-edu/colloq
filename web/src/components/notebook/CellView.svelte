@@ -61,7 +61,7 @@
     watchText,
   } from '@/lib/yreactive.svelte'
   import { runSlot } from '@/lib/run-slot'
-  import { nextHeld, outputSeat, unnumberedResult } from '@/lib/output-seat'
+  import { nextHeld, NO_HELD, outputSeat, unnumberedResult, type Held } from '@/lib/output-seat'
   import CellOutputs from './CellOutputs.svelte'
   import CodeEditor from './CodeEditor.svelte'
   import Markdown from './Markdown.svelte'
@@ -298,8 +298,8 @@
 
   /** Сколько область намерила собой сейчас; пишется на внутренний узел. */
   let outputsMeasured = $state(0)
-  /** Сколько она занимала, когда в ней последний раз что-то было. */
-  let heldOutputHeight = $state(0)
+  /** Сколько она занимала, когда в ней последний раз что-то было, и чем это было. */
+  let heldOutput = $state<Held>(NO_HELD)
   /** Сколько картинок ещё не сообщили свой размер; приходит из CellOutputs. */
   let outputsPending = $state(0)
 
@@ -308,7 +308,7 @@
       running,
       outputs: outputs.current.length,
       pendingImages: outputsPending,
-      held: heldOutputHeight,
+      held: heldOutput,
     }),
   )
 
@@ -323,11 +323,12 @@
 
   // Запоминание высоты. Обе проверки внутри nextHeld несущие — см. модуль.
   $effect(() => {
-    heldOutputHeight = nextHeld(heldOutputHeight, {
+    heldOutput = nextHeld(heldOutput, {
       running,
       outputs: outputs.current.length,
       pendingImages: outputsPending,
       measured: outputsMeasured,
+      hasError,
     })
   })
 
@@ -1016,11 +1017,26 @@
             держать медленные, то есть вывернуть оба механизма наизнанку.
           -->
           {#if isCode && (outputs.current.length > 0 || outputFloor > 0)}
+            <!--
+              Пустое место не рисует ничего — ни фона, ни кромки.
+
+              Первая версия оставляла блоку и `bg-surface/50`, и цветную кромку,
+              и утверждала в комментарии, что пустым он «неотличим от отступа».
+              Это была неправда: получался серый прямоугольник с полосой, ростом
+              с прошлый вывод. На трейсбеке — в полэкрана. Не неподвижность, а
+              дыра, и именно так о ней и сообщили.
+
+              Смысл резерва в том, что страница не двигается, а не в том, что на
+              ней что-то стоит. Поэтому пока класть нечего, блок — чистая
+              высота.
+            -->
+            {@const seatOnly = outputs.current.length === 0}
             <div
               class={cn(
-                'border-l-4 transition-[background-color] duration-[var(--speed-quick)]',
-                RULE[tone],
-                hasError ? 'bg-danger/5' : 'bg-surface/50',
+                'transition-[background-color] duration-[var(--speed-quick)]',
+                !seatOnly && 'border-l-4',
+                !seatOnly && RULE[tone],
+                !seatOnly && (hasError ? 'bg-danger/5' : 'bg-surface/50'),
               )}
               style:min-height={outputFloor > 0 ? `${outputFloor}px` : undefined}
             >

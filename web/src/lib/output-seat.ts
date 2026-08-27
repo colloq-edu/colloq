@@ -19,33 +19,53 @@
  * Модуль чистый и без DOM: сюда же ходит тест. Импортов из `@/` здесь нет —
  * этот путь знает сборщик и не знает tsx.
  */
-import type { CellState } from '@shared/notebook'
+import type { CellState } from "@shared/notebook";
+
+/**
+ * Что область занимала в прошлый раз — и чем это было.
+ *
+ * `fromError` не украшение: место резервируют в расчёте на то, что новый вывод
+ * окажется примерно того же размера. Для ячейки, которую перезапускают без
+ * изменений, это верно. Для ячейки, которая упала, — неверно ровно наоборот:
+ * её перезапускают, ПОТОМУ ЧТО в ней что-то поменяли, и ждать трейсбека того
+ * же роста нет никаких оснований. А трейсбеки высокие, так что ошибка тут
+ * дороже всего: полтысячи пикселей пустоты в расчёте на то, чего не будет.
+ */
+export interface Held {
+  px: number;
+  fromError: boolean;
+}
+
+export const NO_HELD: Held = { px: 0, fromError: false };
 
 export interface SeatInput {
   /** Настоящее состояние выполнения, а не то, что рисуют: это про раскладку. */
-  running: boolean
+  running: boolean;
   /** Сколько выводов сейчас в документе. */
-  outputs: number
+  outputs: number;
   /** Сколько картинок ещё не сообщили свой размер. */
-  pendingImages: number
-  /** Высота, которую область занимала в прошлый раз. */
-  held: number
+  pendingImages: number;
+  held: Held;
 }
 
 /** Пол в пикселях: сколько места область не отдаёт прямо сейчас. */
 export function outputSeat(input: SeatInput): number {
-  if (!input.running) return 0
+  if (!input.running) return 0;
+  // Упавший вывод места не держит: см. Held.fromError.
+  if (input.held.fromError) return 0;
   // Держим, пока показывать нечего — и пока показанное ещё не обмерилось.
-  if (input.outputs === 0 || input.pendingImages > 0) return input.held
-  return 0
+  if (input.outputs === 0 || input.pendingImages > 0) return input.held.px;
+  return 0;
 }
 
 export interface RatchetInput {
-  running: boolean
-  outputs: number
-  pendingImages: number
+  running: boolean;
+  outputs: number;
+  pendingImages: number;
   /** Сколько область намерила собой сейчас. */
-  measured: number
+  measured: number;
+  /** Есть ли среди того, что намерили, трейсбек. */
+  hasError: boolean;
 }
 
 /**
@@ -62,14 +82,14 @@ export interface RatchetInput {
  * раскодирования имеет нулевую высоту. Запомнить её — то же самое, только
  * тише: график в девятьсот пикселей запомнился бы как восемь.
  */
-export function nextHeld(held: number, input: RatchetInput): number {
+export function nextHeld(held: Held, input: RatchetInput): Held {
   if (input.outputs > 0 && input.pendingImages === 0 && input.measured > 0) {
-    return input.measured
+    return { px: input.measured, fromError: input.hasError };
   }
   // Вывод убрали руками и ничего не запускают — забыть, иначе следующий запуск
   // зарезервирует место под то, чего в ячейке давно нет.
-  if (input.outputs === 0 && !input.running) return 0
-  return held
+  if (input.outputs === 0 && !input.running) return NO_HELD;
+  return held;
 }
 
 /**
@@ -86,11 +106,13 @@ export function nextHeld(held: number, input: RatchetInput): number {
  * трейсбеком и без номера — но оно происходило.
  */
 export function unnumberedResult(input: {
-  state: CellState
-  execCount: number | null
-  outputs: number
+  state: CellState;
+  execCount: number | null;
+  outputs: number;
 }): boolean {
-  return input.outputs > 0 && input.execCount === null && input.state === 'idle'
+  return (
+    input.outputs > 0 && input.execCount === null && input.state === "idle"
+  );
 }
 
 /**
@@ -106,6 +128,9 @@ export function unnumberedResult(input: {
  * кусок с рендерерами, и ключ по нему перебрал бы все выводы в тетради в тот
  * момент, когда они загрузились.
  */
-export function outputKey(index: number, output: { kind: string; name?: string }): string {
-  return `${index}:${output.kind}:${output.kind === 'stream' ? (output.name ?? '') : ''}`
+export function outputKey(
+  index: number,
+  output: { kind: string; name?: string },
+): string {
+  return `${index}:${output.kind}:${output.kind === "stream" ? (output.name ?? "") : ""}`;
 }
