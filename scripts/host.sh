@@ -251,7 +251,7 @@ case "$WHO" in
     kill "$(cat "$PIDFILE")" 2>/dev/null || true
     sleep 1
     ( set -a; . ./.env; set +a
-      STATIC_DIR="$PWD/web/dist" nohup node server/dist/server.js > .colloq.log 2>&1 &
+      STATIC_DIR="$PWD/web/dist" nohup node server/dist/server.js >> .colloq.log 2>&1 &
       echo $! > "$PIDFILE" )
     sleep 2
     kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null \

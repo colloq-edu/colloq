@@ -456,7 +456,19 @@ function dispatch(
         })
         return
       }
-      interruptTerminal(sessionId, displayName(sessionId, payload.participantId))
+      /*
+       * Хост сбрасывает всю очередь, остальные — только своё.
+       *
+       * У хоста кнопка означает «прекратить в этой комнате всё» и всегда
+       * означала. У студента она означает «останови мою зависшую команду», и
+       * раньше означала то же, что у хоста: прервав свой `pip install`, он
+       * молча уносил всё, что успел поставить в очередь преподаватель.
+       */
+      interruptTerminal(
+        sessionId,
+        displayName(sessionId, payload.participantId),
+        payload.role === 'host' ? undefined : payload.participantId,
+      )
       return
     }
 

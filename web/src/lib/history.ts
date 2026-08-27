@@ -8,7 +8,7 @@
  * walking back up the timeline over versions already opened costs nothing.
  */
 import type { CellDiff, HistoricCell, Version } from '@shared/history'
-import { ApiError } from './api'
+import { ApiError, statusMessage } from './api'
 
 export interface VersionDetail {
   version: Version
@@ -17,16 +17,27 @@ export interface VersionDetail {
 }
 
 async function get<T>(path: string, token: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init?.body ? { 'content-type': 'application/json' } : {}),
-      ...init?.headers,
-    },
-  })
+  let res: Response
+  try {
+    res = await fetch(path, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init?.body ? { 'content-type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    })
+  } catch (cause: unknown) {
+    // То же, что и в api.ts: «Failed to fetch» — фраза из отладчика, а по
+    // HTTP/2 у отказа ещё и пустая строка состояния. Панель истории рисует
+    // ошибку через `{#if}`, и пустая строка не рисуется вовсе.
+    if (cause instanceof TypeError) {
+      throw new ApiError('Could not reach the server — check the connection and try again.', 0)
+    }
+    throw cause
+  }
   if (!res.ok) {
-    let message = res.statusText
+    let message = statusMessage(res)
     try {
       const body = (await res.json()) as { error?: string }
       if (body?.error) message = body.error

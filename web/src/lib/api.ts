@@ -27,7 +27,7 @@ export class ApiError extends Error {
  * будто ничего не произошло. Код есть всегда, и назвать его — уже лучше, чем
  * промолчать.
  */
-function statusMessage(res: Response): string {
+export function statusMessage(res: Response): string {
   if (res.statusText) return res.statusText
   if (res.status === 401) return 'Not signed in (401)'
   if (res.status === 403) return 'Not allowed (403)'

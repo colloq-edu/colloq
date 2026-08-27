@@ -1206,7 +1206,11 @@ export function typedRunningCommand(sessionId: string, participantId: string): b
   return terms.get(sessionId)?.runningBy === participantId
 }
 
-export function interruptTerminal(sessionId: string, by?: string): void {
+/**
+ * @param by       Кто нажал — для строки в транскрипте.
+ * @param byId     Его participantId. Хост не передаёт: он останавливает всё.
+ */
+export function interruptTerminal(sessionId: string, by?: string, byId?: string): void {
   const term = terms.get(sessionId)
   if (!term) return
   // Commands still waiting to be sent would run *after* the interrupt, which is
@@ -1214,13 +1218,30 @@ export function interruptTerminal(sessionId: string, by?: string): void {
   // on their way to the pty, and whole commands still waiting their turn.
   term.queued = []
   if (term.pending.length > 0) {
-    const dropped = term.pending.splice(0, term.pending.length)
-    systemLine(
-      term,
-      dropped.length === 1
-        ? `[colloq] ${dropped[0].by.name}'s waiting command was dropped.`
-        : `[colloq] ${dropped.length} waiting commands were dropped.`,
-    )
+    /*
+     * Из очереди выпадает своё, а не всё подряд.
+     *
+     * Ctrl+C останавливает команду, которая идёт. Очередь за ней — это чужие
+     * команды, поставленные другими людьми, и раньше студент, прервавший свой
+     * зависший `pip install`, молча уносил вместе с ним всё, что успел
+     * поставить в очередь преподаватель. То же правило, что у ячеек: свой
+     * батч, а не чужой.
+     *
+     * Хост приходит сюда без byId и по-прежнему сбрасывает всё: у него кнопка
+     * означает «прекратить в этой комнате всё», и это тоже осмысленно.
+     */
+    const mine = byId ? term.pending.filter((item) => item.by.participantId === byId) : term.pending
+    const keep = byId ? term.pending.filter((item) => item.by.participantId !== byId) : []
+    const dropped = mine.length
+    term.pending = keep
+    if (dropped > 0) {
+      systemLine(
+        term,
+        dropped === 1
+          ? `[colloq] ${mine[0].by.name}'s waiting command was dropped.`
+          : `[colloq] ${dropped} waiting commands were dropped.`,
+      )
+    }
   }
   // Named, because a shared shell that goes quiet without saying who did it is
   // a room where everybody assumes it was somebody else.

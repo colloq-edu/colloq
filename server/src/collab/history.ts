@@ -539,6 +539,23 @@ export function mark(
   summary: string,
 ): number {
   flushHistory(sessionId)
+  /*
+   * У возврата версии есть что показать, и он это показывал как «ничего».
+   *
+   * `added: 0, removed: 0, cells: []` — правда для чекпоинта: его ставят
+   * поверх текста, ничего не меняя. Для возврата это неправда: он переписывает
+   * ячейки, и панель, у которой список изменений пуст, честно печатала «This
+   * moment was marked, not edited» — над строкой, которая только что заменила
+   * половину тетради. Ровно ту правку, ради которой в историю и лезут.
+   *
+   * Считается так же, как для всплеска: что было до, что стало после.
+   */
+  const now = new Map(cellsOf(doc).map((c) => [c.id, c.source]))
+  const facts =
+    kind === 'restore'
+      ? describe(digests.get(sessionId) ?? new Map(), now)
+      : { summary: '', added: 0, removed: 0, cells: [] as string[] }
+
   const seq = appendVersion({
     sessionId,
     update: Y.encodeStateAsUpdate(doc),
@@ -546,14 +563,16 @@ export function mark(
     authorId,
     createdAt: Date.now(),
     label,
+    // Слова возврата — свои («restored the version from …»), а не те, что
+    // сочинил describe: важно, что это возврат, а не что «отредактировали 3».
     summary,
-    added: 0,
-    removed: 0,
-    cells: [],
+    added: facts.added,
+    removed: facts.removed,
+    cells: facts.cells,
   })
   baselines.set(sessionId, Y.encodeStateAsUpdate(doc))
   shapes.set(sessionId, shapeOf(doc))
-  digests.set(sessionId, new Map(cellsOf(doc).map((c) => [c.id, c.source])))
+  digests.set(sessionId, now)
   forgetCache(sessionId)
   return seq
 }

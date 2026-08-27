@@ -50,7 +50,21 @@
 
     const credential = readEntryCredential(location.pathname)
     if (credential?.kind === 'key') {
-      void adminAuth.signInWithKey(credential.value).finally(spend)
+      /*
+       * Ключ тратится, только если сервер его увидел.
+       *
+       * Раньше здесь стоял безусловный `.finally(spend)`: адресная строка
+       * переписывалась и при обычном обрыве связи — вайфай моргнул, поезд
+       * въехал в туннель, — и ссылка, которая была единственной дорогой в
+       * панель, исчезала навсегда за один неудачный запрос. Отозванный ключ
+       * тратить правильно (он всё равно мёртв), а не доехавший — нет.
+       */
+      void adminAuth
+        .signInWithKey(credential.value)
+        .then((signedIn) => {
+          if (signedIn || adminAuth.state) spend()
+        })
+        .catch(() => {})
     } else if (credential?.kind === 'token') {
       const setupToken = credential.value
       void adminAuth
