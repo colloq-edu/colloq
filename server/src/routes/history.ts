@@ -86,7 +86,9 @@ export function historyRoutes(): Router {
     // Keyframes are bookkeeping — full-document rows written every so often so
     // that rebuilding is cheap. They are not something anybody did.
     const versions = rows
-      .filter((r) => r.kind !== 'keyframe')
+      // Two kinds are bookkeeping, not story: the keyframe is a snapshot the
+      // replay starts from, the quiet row is bytes the replay must not skip.
+      .filter((r) => r.kind !== 'keyframe' && r.kind !== 'quiet')
       .map((r) => toVersion(sessionId, r))
 
     res.json({ versions })

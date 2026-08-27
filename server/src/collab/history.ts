@@ -244,23 +244,35 @@ function close(key: string): void {
    * So the filter is the whole point rather than an optimisation: history here
    * means the history of what the room wrote.
    */
-  if (facts.cells.length === 0) {
-    /*
-     * Still advance the baseline. The outputs and run states in this burst are
-     * now part of the document, and leaving them outside the baseline would
-     * make the next real edit look like it changed them too.
-     */
-    baselines.set(burst.sessionId, Y.encodeStateAsUpdate(after))
-    shapes.set(burst.sessionId, shapeOf(after))
-    after.destroy()
-    return
-  }
+  /*
+   * Filtered from the TIMELINE, never from the RECORD.
+   *
+   * These are different things and they used to be one. The bytes of a burst
+   * that changed no text were thrown away with its row, and Yjs does not
+   * forgive that: every later update names the clocks it was built on, so a
+   * replay that skips a burst reaches an update whose predecessor is missing
+   * and quietly applies nothing from there on. Rebuilding any version after
+   * the gap gave a document with the old cell order and none of the typing
+   * since — and restoring it wrote that document over the live one, for
+   * everybody. The row was invisible; the hole it left was not.
+   *
+   * So a burst with nothing to say still writes its bytes, as a `quiet` row
+   * the list does not show. Same trick as the keyframe: present for replay,
+   * absent from the story.
+   *
+   * Two things land here that describe() cannot see and that are not noise:
+   * moving a cell (a clone with the same id and text — Y.Array has no move)
+   * and changing its type. Both are structural facts the timeline should tell,
+   * and one day will; today the important thing is that they no longer
+   * corrupt everything recorded after them.
+   */
+  const quiet = facts.cells.length === 0
 
   try {
     appendVersion({
       sessionId: burst.sessionId,
       update: merged,
-      kind: 'edit',
+      kind: quiet ? 'quiet' : 'edit',
       authorId: burst.authorId,
       createdAt: burst.lastAt,
       label: null,
@@ -270,6 +282,8 @@ function close(key: string): void {
     // happens to be when somebody next presses a key.
     baselines.set(burst.sessionId, Y.encodeStateAsUpdate(after))
     shapes.set(burst.sessionId, shapeOf(after))
+    // Quiet rows count toward the keyframe interval too: they are replayed
+    // like any other, so they are exactly what the interval is bounding.
     maybeKeyframe(burst.sessionId, after)
   } catch (err) {
     // A history that cannot be written must not stop the seminar being taught.

@@ -21,6 +21,15 @@ export type VersionKind =
   | 'restore'
   /** The room's first state — the notebook it opened with. */
   | 'opened'
+  /**
+   * A burst that changed no text — outputs, run states, a moved cell.
+   *
+   * Never shown: the timeline is the history of what the room wrote. But
+   * always stored, because Yjs replay cannot skip an update — every later one
+   * names the clocks it was built on. A skipped burst is a hole, and every
+   * version rebuilt across the hole came out wrong.
+   */
+  | 'quiet'
 
 /*
  * A history holds finished facts and nothing else. There is deliberately no

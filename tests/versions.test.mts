@@ -89,7 +89,11 @@ test('output and run state are not versions', () => {
   const doc = room(id, 'p_maria')
   doc.transact(() => getCells(doc).push([createCell('code', 'print(1)')]))
   flushHistory(id)
-  const before = listVersions(id, 20).length
+  // What the room reads: the list the route serves, which hides bookkeeping
+  // rows. The raw table may well grow — a burst with nothing to say still
+  // stores its bytes — and that is the point of the test after this one.
+  const told = () => listVersions(id, 20).filter((v) => v.kind !== 'keyframe' && v.kind !== 'quiet')
+  const before = told().length
 
   // The kernel writing back: a run count, a state, a stream of output. All of
   // it is a real change to the document and none of it is something a person
@@ -105,7 +109,7 @@ test('output and run state are not versions', () => {
   })
   flushHistory(id)
 
-  assert.equal(listVersions(id, 20).length, before, 'the kernel wrote itself into the timeline')
+  assert.equal(told().length, before, 'the kernel wrote itself into the timeline')
 })
 
 test('a version can be read back as the notebook it was', () => {
@@ -279,4 +283,78 @@ test('deleting a cell lands in the history at once, not after the silence', () =
   const afterDelete = listVersions(id, 20).filter((v) => v.kind === 'edit')
   assert.equal(afterDelete.length, 2, 'the deletion waited for the idle timer')
   assert.match(afterDelete[0].summary, /deleted a cell/)
+})
+
+/* ------------------------------------------- a quiet burst is still bytes */
+
+/**
+ * Yjs replay cannot skip an update: every later one names the clocks it was
+ * built on. A burst that changed no text used to be dropped whole — row and
+ * bytes — and every version rebuilt across that gap came out wrong. Two ways to
+ * make such a burst, and both are ordinary seminar traffic.
+ */
+test('moving a cell does not corrupt the versions after it', () => {
+  const id = 'hist-quiet-move'
+  const doc = room(id, 'p_maria')
+  doc.transact(() => getCells(doc).push([createCell('code', 'one'), createCell('code', 'two')]))
+  flushHistory(id)
+
+  // A move is a clone with the same id and text — Y.Array has no move — so
+  // describe() sees nothing written and the burst is "quiet".
+  doc.transact(() => {
+    const cells = getCells(doc)
+    const moved = cells.get(1)
+    const clone = createCell('code', (moved.get('source') as Y.Text).toString())
+    clone.set('id', moved.get('id'))
+    cells.delete(1, 1)
+    cells.insert(0, [clone])
+  })
+  flushHistory(id)
+
+  // Typing after the move: this version is built on the move's clocks.
+  write(doc, 0, ' more')
+  flushHistory(id)
+
+  const latest = listVersions(id, 50).filter((v) => v.kind === 'edit')[0]
+  const rebuilt = cellsAt(id, latest.seq).map((c) => c.source)
+  const live = getCells(doc).toArray().map((c) => (c.get('source') as Y.Text).toString())
+  assert.deepEqual(rebuilt, live, 'the version rebuilt across the move is not the document')
+
+  // The list still says nothing about it: quiet rows are stored, not shown.
+  assert.ok(listVersions(id, 50).every((v) => v.kind !== 'quiet' || v.summary === ''))
+})
+
+test('the server writing an output before an edit does not corrupt the edit', () => {
+  const id = 'hist-quiet-output'
+  const doc = room(id, 'p_maria')
+  doc.transact(() => getCells(doc).push([createCell('code', 'x=1')]))
+  flushHistory(id)
+
+  // An output landing: bytes in the document, nothing the timeline should say.
+  doc.transact(() => {
+    const cell = getCells(doc).get(0)
+    cell.set('state', 'done')
+    cell.set('execCount', 1)
+  })
+  flushHistory(id)
+
+  // A real edit on top of it — say the formatter rewrote the cell.
+  doc.transact(() => {
+    const source = getCells(doc).get(0).get('source') as Y.Text
+    source.delete(0, source.length)
+    source.insert(0, 'x = 1')
+  })
+  flushHistory(id)
+
+  const latest = listVersions(id, 50).filter((v) => v.kind === 'edit')[0]
+  assert.deepEqual(
+    cellsAt(id, latest.seq).map((c) => c.source),
+    ['x = 1'],
+    'the edit after an output-only burst rebuilt as something else',
+  )
+
+  // And restoring it is a no-op, not a wipe.
+  const changed = restoreInto(id, doc, latest.seq, 'p_alexander', null, '18:04')
+  assert.equal(changed, 0, 'restoring the current state changed the document')
+  assert.equal((getCells(doc).get(0).get('source') as Y.Text).toString(), 'x = 1')
 })
