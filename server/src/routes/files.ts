@@ -14,6 +14,7 @@ import {
 } from '../workspace.js'
 import { broadcastFiles } from '../control.js'
 import { signDownloadToken, verifyDownloadToken } from '../auth.js'
+import { currentStaff } from '../admin/auth.js'
 import { sessionAuth } from './sessions.js'
 
 interface UploadFailure {
@@ -46,7 +47,19 @@ export function fileRoutes(): Router {
   router.post('/api/sessions/:id/files', (req, res) => {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
-    if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
+    /*
+     * Либо участник комнаты, либо преподаватель этого инстанса.
+     *
+     * Второе понадобилось, когда материалы стало можно прикреплять при
+     * создании семинара: панель ходит с печеньем преподавателя и токена
+     * участника у неё нет — она в комнату не заходила. Печенье при этом
+     * credential не слабее, а сильнее: оно отзывается удалением из списка
+     * преподавателей, а токен участника живёт своей жизнью. Ровно тот же довод
+     * записан в sessions.ts над проверкой роли.
+     */
+    if (!sessionAuth(req) && !currentStaff(req)) {
+      return res.status(401).json({ error: 'join the session first' })
+    }
 
     const contentType = req.headers['content-type'] ?? ''
     if (!contentType.includes('multipart/form-data')) {

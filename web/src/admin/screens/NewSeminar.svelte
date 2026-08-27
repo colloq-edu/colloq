@@ -20,7 +20,7 @@
   import Section from '@/admin/ui/Section.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminApi } from '@/lib/adminApi'
-  import { cn } from '@/lib/utils'
+  import { builtAgo, cn, imageSize } from '@/lib/utils'
   import { LIMITS, type AdminEnvironment, type ImportPreview } from '@shared/admin'
   import { OPEN_ROOM, type RoomRules, type Who } from '@shared/rules'
 
@@ -32,8 +32,120 @@
   let { ondone }: Props = $props()
 
   let name = $state('')
-  let fromGithub = $state(false)
+  /*
+   * Три двери, а не флаг.
+   *
+   * Было `fromGithub: boolean` — ровно два состояния, и третье в него не
+   * помещается. Перечисление, потому что дверей теперь три и когда-нибудь
+   * может стать четыре.
+   */
+  let source = $state<'blank' | 'file' | 'github'>('blank')
+  const fromGithub = $derived(source === 'github')
   let githubUrl = $state('')
+
+  /** Выбранная тетрадь: имя для заголовка, текст для сервера. */
+  let notebook = $state<{ filename: string; text: string; cells: number } | null>(null)
+  let notebookError = $state<string | null>(null)
+  let picker = $state<HTMLInputElement | null>(null)
+  let dragging = $state(false)
+  /** Тот же предел, что и на сервере; тянуть его сюда неоткуда, MAX_UPLOAD_MB в .env. */
+  const LIMITS_UPLOAD_MB = 50
+
+  /*
+   * Три двери одной ширины: 568 на троих с зазором 10 — это 182 на карточку,
+   * ровно как в макете. Обводка выбранной толще слева, как у всего
+   * выбранного в этом продукте.
+   */
+  const DOOR =
+    'flex w-[182px] shrink-0 flex-col gap-2.5 border p-3.5 text-left ' +
+    'transition-colors duration-[var(--speed-quick)] ease-out'
+  const DOOR_ON = 'border-accent border-l-[3px] bg-surface'
+  const DOOR_OFF = 'border-line bg-canvas hover:border-faint'
+  const CAP = 'text-2xs font-bold uppercase tracking-label'
+
+  /**
+   * Прочитать тетрадь и посчитать, что в ней.
+   *
+   * Разбор здесь только ради двух чисел на карточке — сколько ячеек и как
+   * назвать семинар. Настоящий разбор делает сервер тем же кодом, которым
+   * разбирает импорт с GitHub: два парсера, расходящиеся во мнениях о том,
+   * что такое ячейка, — это способ однажды потерять половину чужой тетради.
+   */
+  async function takeNotebook(file: File | null): Promise<void> {
+    if (!file) return
+    notebookError = null
+    if (!/\.ipynb$/i.test(file.name)) {
+      notebookError = `${file.name} is not a notebook — Colloq opens .ipynb files.`
+      return
+    }
+    try {
+      const text = await file.text()
+      const doc = JSON.parse(text) as { cells?: unknown[] }
+      const cells = Array.isArray(doc.cells) ? doc.cells.length : 0
+      if (cells === 0) {
+        notebookError = 'That notebook has no cells in it.'
+        return
+      }
+      notebook = { filename: file.name, text, cells }
+      source = 'file'
+      if (!name.trim()) name = tidyName(file.name)
+    } catch {
+      notebookError = 'That file would not parse — .ipynb is JSON, and this is not.'
+    }
+  }
+
+  /* ------------------------------------------------------------ материалы */
+
+  /**
+   * Всё, что комната откроет с первой минуты.
+   *
+   * Лежит здесь до нажатия Create и уезжает после: загрузка требует
+   * существующего семинара. Тетрадь, выбранная как источник, в этот список не
+   * попадает — она станет самим документом комнаты, а не файлом рядом с ним.
+   */
+  let materials = $state<File[]>([])
+
+  const materialBytes = $derived(materials.reduce((sum, f) => sum + f.size, 0))
+
+  function addMaterials(list: FileList | File[] | null): void {
+    const picked = Array.from(list ?? [])
+    if (picked.length === 0) return
+    // По имени, а не по ссылке: один и тот же файл, выбранный дважды, — это
+    // один файл, и вторая строка в списке была бы враньём.
+    const have = new Set(materials.map((f) => f.name))
+    materials = [...materials, ...picked.filter((f) => !have.has(f.name))]
+  }
+
+  /** Возвращает имена тех, кто не доехал. */
+  async function uploadMaterials(sessionId: string): Promise<string[]> {
+    const failed: string[] = []
+    for (const file of materials) {
+      try {
+        await adminApi.uploadMaterial(sessionId, file)
+      } catch {
+        failed.push(file.name)
+      }
+    }
+    return failed
+  }
+
+  /**
+   * Тетрадь ли это.
+   *
+   * Функцией, а не регуляркой по месту: в разметке Svelte выражение,
+   * начинающееся с `{/`, читается как закрывающий тег блока, и `{/\.ipynb$/…}`
+   * ломает разбор шаблона целиком — с сообщением про непарный блок, которое
+   * никуда не указывает.
+   */
+  function isNotebook(filename: string): boolean {
+    return /\.ipynb$/i.test(filename)
+  }
+
+  /** `01_HSE_Intro_to_Python.ipynb` → «HSE Intro to Python». */
+  function tidyName(filename: string): string {
+    const bare = filename.replace(/\.ipynb$/i, '').replace(/^[0-9]+[-_. ]*/, '')
+    return bare.replace(/[-_]+/g, ' ').trim()
+  }
   let environment = $state('')
   let environments = $state<AdminEnvironment[] | null>(null)
 
@@ -92,7 +204,12 @@
   })
 
   const canCreate = $derived(
-    !busy && (fromGithub ? Boolean(preview) : name.trim().length > 0),
+    !busy &&
+      (source === 'github'
+        ? Boolean(preview)
+        : source === 'file'
+          ? Boolean(notebook)
+          : name.trim().length > 0),
   )
 
   async function create(): Promise<void> {
@@ -100,18 +217,47 @@
     busy = true
     error = null
     try {
-      const seminar = fromGithub
-        ? await adminApi.importSeminar({
-            url: githubUrl.trim(),
-            name: name.trim() || undefined,
-            environment: environment || null,
-            rules,
-          })
-        : await adminApi.createSeminar({
-            name: name.trim(),
-            environment: environment || null,
-            rules,
-          })
+      const seminar =
+        source === 'github'
+          ? await adminApi.importSeminar({
+              url: githubUrl.trim(),
+              name: name.trim() || undefined,
+              environment: environment || null,
+              rules,
+            })
+          : source === 'file' && notebook
+            ? await adminApi.importNotebook({
+                notebook: notebook.text,
+                filename: notebook.filename,
+                name: name.trim() || undefined,
+                environment: environment || null,
+                rules,
+              })
+            : await adminApi.createSeminar({
+                name: name.trim(),
+                environment: environment || null,
+                rules,
+              })
+
+      /*
+       * Материалы уезжают после того, как комната появилась.
+       *
+       * Загрузка требует существующего семинара — файлы кладутся в его
+       * каталог, — а черновик комнаты ради этого заводить дороже, чем оно
+       * стоит. Плата известная и небольшая: если файл не доехал, комната уже
+       * есть, и об этом говорят вслух вместо того, чтобы делать вид, что
+       * ничего не создано.
+       */
+      if (materials.length > 0) {
+        const failed = await uploadMaterials(seminar.id)
+        if (failed.length > 0) {
+          error =
+            `The seminar was created, but ${failed.length === 1 ? 'one file' : `${failed.length} files`} ` +
+            `did not upload: ${failed.join(', ')}. Add them from the room.`
+          busy = false
+          return
+        }
+      }
       ondone(seminar.id)
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not create the seminar'
@@ -193,39 +339,69 @@
         seeds, the other names the file it will take. A tab pair says "pick a
         mode"; these say "pick a starting point".
       -->
-      <div class="flex flex-wrap gap-3">
+      <div class="flex gap-2.5">
         <button
           type="button"
-          class={cn(
-            'flex w-[280px] shrink-0 flex-col gap-2.5 border p-3.5 text-left',
-            'transition-colors duration-[var(--speed-quick)] ease-out',
-            !fromGithub ? 'border-accent bg-surface' : 'border-line bg-canvas hover:border-faint',
-          )}
-          aria-pressed={!fromGithub}
-          onclick={() => ((fromGithub = false), (preview = null))}
+          class={cn(DOOR, source === 'blank' ? DOOR_ON : DOOR_OFF)}
+          aria-pressed={source === 'blank'}
+          onclick={() => ((source = 'blank'), (preview = null))}
         >
-          <span class="text-2xs font-bold uppercase tracking-label text-ink">Blank notebook</span>
+          <span class="flex items-center gap-1.5">
+            <Icon name="file" size={13} class={source === 'blank' ? 'text-accent-text' : 'text-muted'} />
+            <span class={cn(CAP, source === 'blank' ? 'text-ink' : 'text-muted')}>Blank</span>
+          </span>
           <!-- The bytes ensureInitialNotebook() actually seeds, not a description
                of them: a door should show what is behind it. -->
-          <span class="flex flex-col gap-0.5 border border-line bg-canvas px-2.5 py-2 font-mono text-2xs">
-            <span class="text-muted"># Welcome</span>
-            <span class="text-ink">print("hello, seminar")</span>
+          <span class="flex flex-col gap-0.5 border border-line bg-canvas px-2.5 py-2 font-mono text-micro">
+            <span class="text-faint"># Welcome</span>
+            <span class="text-muted">print("hello")</span>
           </span>
-          <span class="text-2xs text-muted">Exactly these two cells. Nothing else is seeded.</span>
+          <span class="text-2xs leading-tight text-muted">Two cells. Nothing else is seeded.</span>
         </button>
 
         <button
           type="button"
-          class={cn(
-            'flex w-[280px] shrink-0 flex-col gap-2.5 border p-3.5 text-left',
-            'transition-colors duration-[var(--speed-quick)] ease-out',
-            fromGithub ? 'border-accent bg-surface' : 'border-line bg-canvas hover:border-faint',
-          )}
-          aria-pressed={fromGithub}
-          onclick={() => (fromGithub = true)}
+          class={cn(DOOR, source === 'file' ? DOOR_ON : DOOR_OFF)}
+          aria-pressed={source === 'file'}
+          onclick={() => ((source = 'file'), (preview = null), picker?.click())}
         >
-          <span class="text-2xs font-bold uppercase tracking-label text-ink">From GitHub</span>
-          <span class="flex h-[34px] items-center border border-line bg-canvas px-2.5 font-mono text-2xs text-faint">
+          <span class="flex items-center gap-1.5">
+            <Icon name="upload" size={13} class={source === 'file' ? 'text-accent-text' : 'text-muted'} />
+            <span class={cn(CAP, source === 'file' ? 'text-ink' : 'text-muted')}>From a file</span>
+          </span>
+          <span
+            class={cn(
+              'flex h-[33px] items-center gap-2 border px-2.5 font-mono text-micro',
+              notebook ? 'border-faint bg-canvas text-ink' : 'border-line bg-canvas text-faint',
+            )}
+          >
+            {#if notebook}
+              <Icon name="file" size={12} class="shrink-0 text-accent-text" />
+              <span class="truncate">{notebook.filename}</span>
+            {:else}
+              week07.ipynb
+            {/if}
+          </span>
+          <span class="text-2xs leading-tight text-muted">
+            {#if notebook}
+              {notebook.cells} cells · outputs are dropped
+            {:else}
+              Drop a .ipynb here. Outputs are dropped.
+            {/if}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          class={cn(DOOR, source === 'github' ? DOOR_ON : DOOR_OFF)}
+          aria-pressed={source === 'github'}
+          onclick={() => (source = 'github')}
+        >
+          <span class="flex items-center gap-1.5">
+            <Icon name="link" size={13} class={source === 'github' ? 'text-accent-text' : 'text-muted'} />
+            <span class={cn(CAP, source === 'github' ? 'text-ink' : 'text-muted')}>From GitHub</span>
+          </span>
+          <span class="flex h-[33px] items-center border border-line bg-canvas px-2.5 font-mono text-micro text-faint">
             github.com/…/week02
           </span>
           <!--
@@ -233,15 +409,28 @@
 
             GitHub отвечает анонимному запросу к приватному репозиторию 404, а
             не 403 — иначе по коду ответа перебирали бы чужие названия. Ошибка
-            теперь называет обе причины, но узнать об этом до того, как
-            вставишь ссылку, лучше, чем после.
+            называет обе причины, но узнать об этом до того, как вставишь
+            ссылку, лучше, чем после.
           -->
-          <span class="text-2xs text-muted">
-            The first .ipynb by name, plus the data beside it. Outputs are dropped. Public
-            repositories only.
-          </span>
+          <span class="text-2xs leading-tight text-muted">Public repositories only.</span>
         </button>
       </div>
+
+      <!--
+        Настоящий input лежит скрытым: у нативного «выберите файл» вид,
+        который нельзя привести к остальному экрану, а дверь должна выглядеть
+        дверью. Нажатие на карточку открывает его.
+      -->
+      <input
+        bind:this={picker}
+        type="file"
+        accept=".ipynb,application/json"
+        class="hidden"
+        onchange={(event) => void takeNotebook(event.currentTarget.files?.[0] ?? null)}
+      />
+      {#if notebookError}
+        <p class="text-2xs text-danger">{notebookError}</p>
+      {/if}
 
       {#if fromGithub}
         <input
@@ -275,19 +464,228 @@
     title="Environment"
     description="The container every cell runs in. Chosen once, and then it is this room's Python for good."
   >
+    <!--
+      Не строка со списком, а карточка с содержимым.
+
+      Раньше здесь стоял `<select>`, и выбор был выбором имени: `cv-torch-2.1`
+      против `nlp-hf` — два слова, за которыми для человека, не собиравшего эти
+      образы, не стоит ничего. Всё нужное сервер отдаёт и так: список пакетов,
+      размер образа, когда собран. Показать это дешевле, чем объяснять словами,
+      и честнее, чем не показывать.
+
+      Версии Python здесь нет намеренно: сервер её не знает, а придумать
+      правдоподобную строчку — ровно тот жанр, который этот экран запрещает.
+    -->
     {#if environments && environments.length > 0}
-      <select bind:value={environment} class="field max-w-[280px] font-mono text-code-lg">
-        {#each environments as env (env.name)}
-          <option value={env.name} disabled={env.state !== 'ready'}>
-            {env.name}{env.active ? ' — the instance default' : ''}{env.state === 'ready'
-              ? ''
-              : ' — not built'}
-          </option>
-        {/each}
-      </select>
+      {@const chosen = environments.find((e) => e.name === environment) ?? null}
+      <div class="flex flex-col gap-2.5">
+        {#if chosen}
+          <div class="flex flex-col border border-line">
+            <label class="flex cursor-pointer items-center gap-3 px-3.5 py-3">
+              <span class="h-2 w-2 shrink-0 bg-accent"></span>
+              <span class="font-mono text-code-lg font-medium text-ink">{chosen.name}</span>
+              {#if chosen.state === 'ready'}
+                <span class="inline-flex h-[18px] items-center bg-positive/10 px-1.5 text-micro font-bold uppercase tracking-label text-positive">
+                  built
+                </span>
+              {/if}
+              <span class="ml-auto text-2xs text-muted">
+                {[
+                  chosen.imageBytes ? imageSize(chosen.imageBytes) : null,
+                  chosen.builtAt ? builtAgo(chosen.builtAt) : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </span>
+              <select
+                bind:value={environment}
+                class="absolute h-0 w-0 opacity-0"
+                aria-label="Python environment"
+              >
+                {#each environments as env (env.name)}
+                  <option value={env.name} disabled={env.state !== 'ready'}>{env.name}</option>
+                {/each}
+              </select>
+            </label>
+            {#if chosen.packages.length > 0}
+              <div class="flex flex-wrap items-center gap-1.5 px-3.5 pb-3 pl-[34px]">
+                {#each chosen.packages.slice(0, 5) as pkg (pkg)}
+                  <span class="bg-surface px-2 py-0.5 font-mono text-micro text-muted">{pkg}</span>
+                {/each}
+                {#if chosen.packages.length > 5}
+                  <span class="text-2xs text-faint">+ {chosen.packages.length - 5} more</span>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- Остальные окружения одной строкой: несобранное среди них помечено, -->
+        <!-- и выбрать его нельзя — комната на нём не поднимется. -->
+        {#if environments.length > 1}
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-micro font-bold uppercase tracking-label text-faint">or choose</span>
+            {#each environments.filter((e) => e.name !== environment) as env (env.name)}
+              <button
+                type="button"
+                disabled={env.state !== 'ready'}
+                title={env.state === 'ready'
+                  ? `Use ${env.name}`
+                  : `${env.name} has not been built — a room cannot open on it`}
+                onclick={() => (environment = env.name)}
+                class={cn(
+                  'inline-flex h-6 items-center gap-1.5 px-2 font-mono text-2xs',
+                  env.state === 'ready'
+                    ? 'border border-line text-muted hover:border-faint hover:text-ink'
+                    : 'border border-dashed border-line text-faint',
+                )}
+              >
+                {#if env.state !== 'ready'}
+                  <span class="h-1 w-1 shrink-0 bg-warning"></span>
+                {/if}
+                {env.name}
+                {#if env.state !== 'ready'}
+                  <span class="font-sans text-micro text-warning">not built</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     {:else}
       <p class="text-2xs text-muted">Whatever this instance runs.</p>
     {/if}
+  </Section>
+
+  <!--
+    Материалы, прикреплённые до того, как комната открылась.
+
+    Здесь же лежит ответ на вопрос «а если семинар — это несколько тетрадей».
+    Единицей сделан МАТЕРИАЛ, а не тетрадь: семинар несёт список файлов, и
+    ровно один из них — живой документ, который правят вместе. Остальные
+    тетради студент открывает и скачивает как файлы.
+
+    Сегодня это стоит ноль: живая тетрадь — тот самый единственный Yjs-документ,
+    который уже есть, а остальное лежит в /workspace обычными файлами. Завтра,
+    когда живую тетрадь захочется переключать на ходу, менять придётся один
+    указатель, а не модель данных.
+
+    Чего здесь намеренно нет: переключателя «сделать живой» между несколькими
+    .ipynb. Сервер этого пока не умеет, а рисовать настройку, которой нет, —
+    ровно то, что запрещает правило честности в шапке этого файла.
+  -->
+  <Section
+    title="Materials"
+    description="Everything the class opens, in the room from the first minute. Data sits beside the notebook; students download it or read it from a cell."
+  >
+    <div class="flex flex-col">
+      {#if materials.length > 0}
+        <div class="flex items-center gap-3 border-b border-line pb-2">
+          <span class="w-[13px] shrink-0"></span>
+          <span class="flex-1 text-micro font-bold uppercase tracking-label text-faint">file</span>
+          <span class="w-24 shrink-0 text-micro font-bold uppercase tracking-label text-faint">role</span>
+          <span class="w-14 shrink-0 text-right text-micro font-bold uppercase tracking-label text-faint">size</span>
+          <span class="w-[13px] shrink-0"></span>
+        </div>
+      {/if}
+
+      <!--
+        Тетрадь-источник стоит первой строкой и снять её нельзя: она станет
+        самим документом комнаты, а не файлом рядом с ним. Именно это и говорит
+        чип LIVE — «вот эту правят вместе».
+      -->
+      {#if notebook}
+        <div class="flex items-center gap-3 border-b border-line border-l-[3px] border-l-accent bg-surface py-2.5 pl-2 pr-2">
+          <Icon name="file" size={13} class="shrink-0 text-accent-text" />
+          <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span class="truncate font-mono text-2xs font-medium text-ink">{notebook.filename}</span>
+            <span class="text-micro text-muted">{notebook.cells} cells · outputs dropped</span>
+          </span>
+          <span class="w-24 shrink-0">
+            <span class="inline-flex h-[18px] items-center gap-1.5 bg-accent px-2 text-micro font-bold uppercase tracking-label text-white">
+              <span class="h-1 w-1 bg-white"></span>
+              live
+            </span>
+          </span>
+          <span class="w-14 shrink-0 text-right font-mono text-micro text-muted">—</span>
+          <span class="w-[13px] shrink-0"></span>
+        </div>
+      {/if}
+
+      {#each materials as file (file.name)}
+        <div class="flex items-center gap-3 border-b border-line py-2.5 pl-[11px] pr-2">
+          <Icon
+            name={isNotebook(file.name) ? 'file' : 'box'}
+            size={13}
+            class="shrink-0 text-faint"
+          />
+          <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span class="truncate font-mono text-2xs text-ink">{file.name}</span>
+            <span class="text-micro text-muted">
+              {#if isNotebook(file.name)}
+                Students can open it; nobody edits it together
+              {:else}
+                Sits beside the notebook — open("{file.name}")
+              {/if}
+            </span>
+          </span>
+          <span class="w-24 shrink-0 text-2xs text-faint">
+            {isNotebook(file.name) ? 'notebook' : 'data'}
+          </span>
+          <span class="w-14 shrink-0 text-right font-mono text-micro text-muted">
+            {imageSize(file.size)}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 text-faint transition-colors duration-[var(--speed-quick)] hover:text-ink"
+            aria-label={`Take ${file.name} out of the seminar`}
+            onclick={() => (materials = materials.filter((f) => f.name !== file.name))}
+          >
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+      {/each}
+
+      <label
+        class={cn(
+          'mt-3 flex cursor-pointer items-center gap-2.5 border border-dashed p-3.5',
+          dragging ? 'border-accent bg-surface' : 'border-line hover:border-faint',
+        )}
+        ondragover={(event) => {
+          event.preventDefault()
+          dragging = true
+        }}
+        ondragleave={() => (dragging = false)}
+        ondrop={(event) => {
+          event.preventDefault()
+          dragging = false
+          addMaterials(event.dataTransfer?.files ?? null)
+        }}
+      >
+        <Icon name="upload" size={15} class="shrink-0 text-faint" />
+        <span class="text-2xs text-muted">
+          Drop notebooks, data or slides — or <span class="text-accent-text underline decoration-line underline-offset-2">browse</span>.
+          Up to {Math.round(LIMITS_UPLOAD_MB)} MB each.
+        </span>
+        <input
+          type="file"
+          multiple
+          class="hidden"
+          onchange={(event) => {
+            addMaterials(event.currentTarget.files)
+            event.currentTarget.value = ''
+          }}
+        />
+      </label>
+
+      {#if materials.length > 0}
+        <p class="pt-2.5 text-2xs text-faint">
+          {materials.length + (notebook ? 1 : 0)}
+          {materials.length + (notebook ? 1 : 0) === 1 ? 'material' : 'materials'} ·
+          {imageSize(materialBytes)}
+        </p>
+      {/if}
+    </div>
   </Section>
 
   <Section

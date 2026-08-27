@@ -167,3 +167,29 @@ export function spell(ms: number | null): string {
  * исчезает.
  */
 export const NOTICED_MS = 2_000
+
+
+/* ------------------------------------------------- образы окружений */
+
+/**
+ * Размер образа и когда он собран — теми же словами в панели и в форме.
+ *
+ * Обе жили в Environments.svelte, а форма создания семинара стала показывать
+ * то же самое. Третья копия появилась бы в ту же неделю — так уже было с
+ * длительностями выше.
+ */
+export function imageSize(bytes: number | null): string {
+  if (bytes === null) return '—'
+  const gb = bytes / 1e9
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`
+}
+
+/** «built 3 days ago», «built 4h ago», «built just now», «never built». */
+export function builtAgo(ts: number | null, now = Date.now()): string {
+  if (ts === null) return 'never built'
+  const days = Math.floor((now - ts) / 86_400_000)
+  if (days > 1) return `built ${days} days ago`
+  const hours = Math.floor((now - ts) / 3_600_000)
+  if (hours >= 1) return `built ${hours}h ago`
+  return 'built just now'
+}

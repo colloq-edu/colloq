@@ -16,7 +16,7 @@
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
-  import { cn } from '@/lib/utils'
+  import { builtAgo, cn, imageSize } from '@/lib/utils'
   import { ENVIRONMENT_NAME, type AdminEnvironment, type EnvironmentsState } from '@shared/admin'
 
   // Not `state`: a variable by that name breaks the `$state` rune — Svelte
@@ -251,20 +251,6 @@
 
   /* ---------------------------------------------------------- formatting */
 
-  function size(bytes: number | null): string {
-    if (bytes === null) return '—'
-    const gb = bytes / 1e9
-    return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`
-  }
-
-  function ago(ts: number | null): string {
-    if (ts === null) return 'never built'
-    const days = Math.floor((Date.now() - ts) / 86_400_000)
-    if (days > 1) return `built ${days} days ago`
-    const hours = Math.floor((Date.now() - ts) / 3_600_000)
-    if (hours >= 1) return `built ${hours}h ago`
-    return 'built just now'
-  }
 
   /** A stable colour per environment, so a row is recognisable at a glance. */
   function swatch(name: string): string {
@@ -349,7 +335,7 @@
                 <span class="truncate font-mono text-ui-lg font-semibold text-ink">{env.name}</span>
               </div>
               <p class="truncate text-2xs text-muted">
-                Python 3.11 · {size(env.imageBytes)} · {ago(env.builtAt)} ·
+                Python 3.11 · {imageSize(env.imageBytes)} · {builtAgo(env.builtAt)} ·
                 {env.packages.length} packages over the base
               </p>
             </div>

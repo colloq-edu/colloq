@@ -104,41 +104,26 @@ export function adminImportRoutes(): Router {
     const asked = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
     const name = (asked || seminarNameFor(plan.notebookTarget ?? target)).slice(0, LIMITS.seminarName)
 
-    const id = newSessionId()
-    // То же правило, что и при обычном создании: имя окружения
-    // записывается конкретное, а не «как на инстансе».
-    createSession(id, name, wanted || activeName())
-    /*
-     * The same block the create-from-scratch route has, and it was missing
-     * here: the form sends `rules` down both paths, and this one dropped them
-     * on the floor. "From GitHub" with "Teacher only" and "Oracle: off" made a
-     * room where everybody could Run and the oracle answered — and rules are
-     * written at creation, so there was nowhere to fix it afterwards.
-     */
-    if (req.body?.rules && typeof req.body.rules === 'object') {
-      setRules(id, readRules(req.body.rules))
-    }
     const staff = currentStaff(req)
     /*
-     * The same line the ordinary create path has run all along. Without it an
-     * imported seminar arrives with no author, and the panel's list shows it
-     * blank beside rooms that name theirs — two doors into the same room, and
-     * only one of them signs its work.
+     * Одна общая функция на все двери — см. seedSeminar.
+     *
+     * Здесь когда-то стоял свой список: создать сессию, записать правила,
+     * подписать автора, положить ячейки. Правила из него однажды выпали, и
+     * «из GitHub» с «только преподаватель» и выключенным оракулом делало
+     * комнату, где запускать мог каждый. Правила пишутся при создании, так что
+     * чинить это было уже негде.
+     *
+     * Документ раньше файлов: комната с пустой тетрадью выглядит сломанной, а
+     * комната, куда ещё не доехали данные, — просто медленной.
      */
-    if (staff) setSeminarCreator(id, staff.name)
-
-    // The document first, the files second: a room whose notebook is empty
-    // looks broken, and a room whose data has not landed yet only looks slow.
-    const { doc } = getSessionDoc(id)
-    doc.transact(() => {
-      const cells = getCells(doc)
-      // The server seeds a starter notebook for a fresh room; an import is
-      // exactly the case where that starter is in the way.
-      if (cells.length > 0) cells.delete(0, cells.length)
-      cells.push(plan.cells.map((c) => createCell(c.type, c.source)))
-      getMeta(doc).set('title', name)
-    }, 'import')
-    flushPersistence(id)
+    const id = seedSeminar({
+      name,
+      environment: wanted || activeName(),
+      rules: req.body?.rules,
+      cells: plan.cells,
+      author: staff?.name ?? null,
+    })
 
     const written: string[] = []
     const skipped: string[] = []
@@ -170,7 +155,107 @@ export function adminImportRoutes(): Router {
     })
   })
 
+  /*
+   * Третья дверь: тетрадь с диска.
+   *
+   * Ровно тот же путь, что и импорт с GitHub, минус сеть: файл уже у нас, и
+   * разбирает его тот же `notebookCells`. Отдельный маршрут, а не поле у
+   * общего создания, потому что здесь есть чему не получиться по-своему —
+   * файл может оказаться не тетрадью, а тетрадь может оказаться пустой, и об
+   * этом надо сказать разными словами.
+   *
+   * Тело JSON, а не multipart: .ipynb — это и есть JSON, читать его в браузере
+   * и слать текстом дешевле, чем поднимать busboy ради одного поля. Предел
+   * на тело запроса общий, 1 МБ (см. express.json в index.ts) — тетрадь без
+   * выводов в него укладывается с огромным запасом.
+   */
+  router.post('/api/admin/import/notebook', requireStaff, (req: Request, res: Response) => {
+    const raw = typeof req.body?.notebook === 'string' ? req.body.notebook : ''
+    if (!raw.trim()) return fail(res, 400, 'invalid', 'no notebook was sent')
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return fail(res, 400, 'invalid', 'That file is not a notebook — .ipynb is JSON, and this would not parse.')
+    }
+
+    const cells = notebookCells(parsed)
+    if (cells.length === 0) {
+      return fail(res, 400, 'invalid', 'That notebook has no cells with anything in them.')
+    }
+
+    const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
+    if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
+      return fail(res, 400, 'invalid', `there is no environment called "${wanted}"`)
+    }
+
+    const asked = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
+    const fallback = typeof req.body?.filename === 'string' ? req.body.filename : ''
+    const name = (asked || tidyNotebookName(fallback) || 'Untitled seminar').slice(0, LIMITS.seminarName)
+
+    const staff = currentStaff(req)
+    const id = seedSeminar({
+      name,
+      environment: wanted || activeName(),
+      rules: req.body?.rules,
+      cells,
+      author: staff?.name ?? null,
+    })
+
+    res.status(201).json({
+      id,
+      name,
+      url: `${config.publicUrl}/s/${id}`,
+      cells: cells.length,
+      files: [],
+      skipped: [],
+      createdBy: staff?.name ?? null,
+    })
+  })
+
   return router
+}
+
+/**
+ * Завести комнату и положить в неё тетрадь.
+ *
+ * Общая часть двух дверей — с GitHub и с диска. Была написана дважды подряд в
+ * одном маршруте, и второй раз в ней уже потерялись правила комнаты; вынесена,
+ * чтобы третья дверь не потеряла что-нибудь своё.
+ */
+function seedSeminar(input: {
+  name: string
+  environment: string | null
+  rules: unknown
+  cells: ReturnType<typeof notebookCells>
+  author: string | null
+}): string {
+  const id = newSessionId()
+  createSession(id, input.name, input.environment)
+  if (input.rules && typeof input.rules === 'object') setRules(id, readRules(input.rules))
+  if (input.author) setSeminarCreator(id, input.author)
+
+  const { doc } = getSessionDoc(id)
+  doc.transact(() => {
+    const cells = getCells(doc)
+    // Стартовая тетрадь, которую сервер сеет свежей комнате, здесь только мешает.
+    if (cells.length > 0) cells.delete(0, cells.length)
+    cells.push(input.cells.map((c) => createCell(c.type, c.source)))
+    getMeta(doc).set('title', input.name)
+  }, 'import')
+  flushPersistence(id)
+  return id
+}
+
+/**
+ * Имя семинара из имени файла: `01_HSE_Intro_to_Python.ipynb` → «HSE Intro to
+ * Python». Та же чистка, что и у ссылки с GitHub, и по той же причине —
+ * порядковый номер и подчёркивания в заголовке комнаты не нужны никому.
+ */
+function tidyNotebookName(filename: string): string {
+  const bare = filename.replace(/\.ipynb$/i, '').replace(/^[0-9]+[-_. ]*/, '')
+  return bare.replace(/[-_]+/g, ' ').trim()
 }
 
 /* ------------------------------------------------------------------ plan */

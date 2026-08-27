@@ -222,6 +222,47 @@ export const adminApi = {
   createTeacher: (body: CreateTeacherRequest) =>
     request<TeacherWithLink>('/teachers', { method: 'POST', ...json(body) }),
 
+  /**
+   * Третья дверь: тетрадь с диска.
+   *
+   * Тело JSON, а не multipart: .ipynb — это и есть JSON, и читать его в
+   * браузере дешевле, чем поднимать разбор многочастного тела ради одного поля.
+   */
+  importNotebook: (body: {
+    notebook: string
+    filename: string
+    name?: string
+    environment?: string | null
+    rules?: unknown
+  }) => request<ImportResult>('/import/notebook', { method: 'POST', ...json(body) }),
+
+  /**
+   * Материал в комнату, от имени преподавателя.
+   *
+   * Идёт мимо `${BASE}`: это маршрут семинара, а не панели, и принимает он
+   * печенье преподавателя наравне с токеном участника. `credentials: 'include'`
+   * здесь и есть вся авторизация.
+   */
+  uploadMaterial: async (sessionId: string, file: File): Promise<void> => {
+    const form = new FormData()
+    form.append('file', file, file.name)
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files`, {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    })
+    if (!res.ok) {
+      let message = res.statusText || `The upload failed (${res.status})`
+      try {
+        const body = (await res.json()) as { error?: string }
+        if (body?.error) message = body.error
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new AdminApiError(message, res.status, reasonForStatus(res.status))
+    }
+  },
+
   updateTeacher: (id: string, body: UpdateTeacherRequest) =>
     request<Teacher>(`/teachers/${encodeURIComponent(id)}`, { method: 'PATCH', ...json(body) }),
 
