@@ -23,6 +23,7 @@
   import { getSessionState } from '@/lib/session.svelte'
   import { watchText } from '@/lib/yreactive.svelte'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
+  import { revealCell } from '@/lib/reveal'
   import { cn } from '@/lib/utils'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -141,11 +142,7 @@
 
   /** Take the notebook to the cell this turn is about. */
   function reveal() {
-    if (!entry.cellId) return
-    session.selectCell(entry.cellId)
-    document
-      .querySelector(`[data-cell-id="${entry.cellId}"]`)
-      ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    if (entry.cellId) revealCell(session, entry.cellId)
   }
 
   function decide(accept: boolean) {

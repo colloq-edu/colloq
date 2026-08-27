@@ -1,9 +1,11 @@
 <script lang="ts">
   import type { AwarenessUser } from '@shared/protocol'
   import { getSessionState } from '@/lib/session.svelte'
-  import { peopleInRoom, type Person } from '@/lib/room'
+  import { peopleInRoom, whereabouts, type Person } from '@/lib/room'
+  import { reveal, revealCell, type RevealTarget } from '@/lib/reveal'
   import { watchCell, watchCellIds, watchCellMeta, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
+  import { cn } from '@/lib/utils'
 
   /** Faces before the rest fold into "+N more"; the rail is a glance, not a roster. */
   const CAP = 6
@@ -25,39 +27,25 @@
   const shown = $derived(expanded ? people : people.slice(0, CAP))
   const rest = $derived(people.length - shown.length)
 
-  /** Cell numbers read as they do in the gutter: 01, 02, 03. */
-  function cellNumber(id: string | null | undefined): string | null {
-    if (!id) return null
-    const index = cellIds.current.indexOf(id)
-    return index === -1 ? null : String(index + 1).padStart(2, '0')
+  /** Ячейки, запуск и кто его нажал — всё, из чего считается «где кто». */
+  const view = $derived({
+    cellIds: cellIds.current,
+    runningCellId: meta.current.runningCellId,
+    runBy: (runningMeta.current.runBy as string | null) ?? null,
+  })
+
+  /** Подпись на наведение: куда именно уведёт нажатие. */
+  function hintFor(person: Person, place: RevealTarget): string {
+    const who = person.isSelf ? 'себе' : person.user.name
+    if (place.where === 'terminal') return `К ${who} в терминал`
+    if (place.where === 'oracle') return `К ${who} в тред оракула`
+    const index = view.cellIds.indexOf(place.cellId)
+    return index === -1 ? 'К ячейке' : `К ячейке ${String(index + 1).padStart(2, '0')}`
   }
 
-  /*
-   * One sentence per person, from awareness and the run state and nothing else.
-   * Ordered by what interrupts what: a run outranks where the cursor happens to
-   * be, and "N tabs open" is only worth saying when there is nothing happening
-   * in any of them. A person we can say nothing true about gets no line.
-   */
-  function activityFor(person: Person): string | null {
-    const runningId = meta.current.runningCellId
-    const runningNo = cellNumber(runningId)
-    // Whoever pressed Run and whoever is standing in the cell while it runs are
-    // both truthfully running it. runBy is a display name, so two students who
-    // share one would both claim the run — the cursor test is what usually
-    // decides it, and a wrong attribution here costs a word, not a state.
-    const runs =
-      runningNo !== null &&
-      (runningMeta.current.runBy === person.user.name || person.user.activeCellId === runningId)
-    if (runs) return `running cell ${runningNo}`
-
-    if (person.user.inTerminal) return 'in the terminal'
-    if (person.user.composing) return 'asking the oracle'
-
-    const at = cellNumber(person.user.activeCellId)
-    if (at) return `editing cell ${at}`
-
-    if (person.tabs > 1) return `${person.tabs} tabs open`
-    return null
+  function go(place: RevealTarget): void {
+    if (place.where === 'cell') revealCell(session, place.cellId)
+    else reveal(place)
   }
 
   /** The identity line replaces the activity line for you, and marks a host. */
@@ -80,9 +68,33 @@
   {/if}
 
   {#each shown as person (person.user.id)}
-    {@const activity = activityFor(person)}
+    {@const seen = whereabouts(person, view)}
+    {@const activity = seen.line}
     {@const badge = badgeFor(person)}
-    <div class="flex min-h-[34px] items-center gap-2.5 px-2">
+    {@const place = seen.place}
+    <!--
+      Строка становится кнопкой ровно тогда, когда ей есть куда вести. Про
+      человека, о котором нечего сказать, и показать нечего: он в комнате, но
+      не в каком-то её месте — и подсветка под курсором на такой строке
+      обещала бы переход, которого не будет.
+
+      svelte:element, а не два одинаковых блока разметки: у ряда семь
+      вложенных элементов, и вторая копия разошлась бы с первой на первой же
+      правке отступа.
+    -->
+    <svelte:element
+      this={place ? 'button' : 'div'}
+      role={place ? 'button' : undefined}
+      type={place ? 'button' : undefined}
+      title={place ? hintFor(person, place) : undefined}
+      onclick={place ? () => go(place) : undefined}
+      class={cn(
+        'flex min-h-[34px] w-full items-center gap-2.5 px-2 text-left',
+        place &&
+          'transition-colors duration-[var(--speed-quick)] hover:bg-line ' +
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+      )}
+    >
       <Avatar
         name={person.user.name}
         color={person.user.color}
@@ -114,7 +126,7 @@
           aria-hidden="true"
         ></span>
       </span>
-    </div>
+    </svelte:element>
   {/each}
 
   {#if rest > 0 || expanded}

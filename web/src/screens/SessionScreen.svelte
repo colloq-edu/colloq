@@ -17,6 +17,7 @@
   import { cubicOut } from 'svelte/easing'
   import { fade, fly } from 'svelte/transition'
   import { peopleInRoom } from '@/lib/room'
+  import { REVEAL_EVENT, revealCell, type RevealTarget } from '@/lib/reveal'
   import { gridFaviconHref } from '@/lib/logo'
   import AvatarStack from '@/components/ui/AvatarStack.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -238,6 +239,40 @@
   // The session holds the unread count; only this screen knows whether anybody
   // is looking at the transcript.
   $effect(() => session.setTerminalOpen(terminalOpen))
+
+  /*
+   * «Покажи, где он» из списка людей.
+   *
+   * Строка про человека давно знала, где он — «правит ячейку 04», «в
+   * терминале», — но никуда не вела: увидеть было можно, дойти нельзя.
+   * Обрабатывается здесь, потому что две трети мест это панели, а панелями
+   * распоряжается этот экран и никто больше.
+   */
+  $effect(() => {
+    const onReveal = (event: Event) => {
+      const target = (event as CustomEvent<RevealTarget>).detail
+      if (!target) return
+      // На узком экране левая панель лежит поверх ноутбука: не убрать её
+      // значит привести человека к ячейке, которую он не увидит.
+      if (leftIsDrawer) leftDrawer = false
+      if (target.where === 'cell') {
+        revealCell(session, target.cellId)
+        return
+      }
+      if (target.where === 'terminal') {
+        drawerTab = 'terminal'
+        if (!terminalOpen) toggleTerminal()
+        return
+      }
+      if (rightIsDrawer) rightDrawer = true
+      else if (!rightOpen) {
+        rightOpen = true
+        persistPanels()
+      }
+    }
+    window.addEventListener(REVEAL_EVENT, onReveal)
+    return () => window.removeEventListener(REVEAL_EVENT, onReveal)
+  })
 
   function toggleTerminal(): void {
     terminalOpen = !terminalOpen
