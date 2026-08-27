@@ -13,7 +13,12 @@
  */
 import { Router } from 'express'
 import { getOracleSettings } from '../admin/settings.js'
-import { countRecentQuestions, recordQuestion, windowResetAt } from '../admin/usage.js'
+import {
+  countRecentQuestions,
+  countRoomQuestions,
+  recordQuestion,
+  windowResetAt,
+} from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
 import { oracleModeIn } from '@shared/rules'
 import { getParticipant, getRules, getSession } from '../db.js'
@@ -148,6 +153,28 @@ export function aiRoutes(): Router {
     }
 
     const limit = settings.questionsPerHour
+
+    /*
+     * Потолок на комнату, а не только на человека.
+     *
+     * Личный предел обходится перезаходом: имя в этой комнате ничем не
+     * подтверждено — в этом весь смысл «одна ссылка, и всё», — так что новая
+     * вкладка инкогнито даёт нового участника и свежие N вопросов. Настоящей
+     * границы у счёта не было вовсе, а панель обещала защиту.
+     *
+     * Тридцать личных пределов на всю комнату: класс из двадцати человек, где
+     * каждый спросил вдвое больше положенного, в него ещё укладывается, а
+     * один человек, который открывает вкладки в цикле, — уже нет.
+     */
+    const roomLimit = limit * ROOM_MULTIPLIER
+    const roomUsed = countRoomQuestions(sessionId, HOUR_MS)
+    if (roomUsed >= roomLimit) {
+      res.setHeader('Retry-After', '600')
+      return res.status(429).json({
+        error: `This seminar has used all ${roomLimit} of its oracle questions for the hour. Ask your teacher — they can raise the limit in the panel.`,
+      })
+    }
+
     const used = countRecentQuestions(sessionId, auth.participantId, HOUR_MS)
     if (used >= limit) {
       const resetAt = windowResetAt(sessionId, auth.participantId, HOUR_MS, limit)
