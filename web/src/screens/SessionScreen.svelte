@@ -546,16 +546,27 @@
 
       <ThemeSwitch tone="onDark" />
 
-      <!-- The link, readable and attached to the button that takes it. -->
-      <div class="flex h-7 shrink-0 items-center">
+      <!--
+        The link, readable and attached to the button that takes it.
+
+        Показывается с 1024px, а не с 1280: до этого адрес прятался на любом
+        ноутбуке уже 13", то есть на большинстве машин, с которых семинар и
+        ведут. А адрес на экране — это запасной ход, когда буфер обмена не
+        работает: его можно продиктовать или переписать руками. Прятать его
+        именно там, где он чаще всего и нужен, — ровно наоборот.
+
+        `select-all`, чтобы одно нажатие выделяло его целиком.
+      -->
+      <div class="flex h-7 min-w-0 shrink items-center">
         <span
-          class="hidden h-full select-all items-center border border-r-0 border-brand-2 px-3
-                 font-mono text-2xs text-white/80 xl:flex"
+          class="hidden h-full min-w-0 select-all items-center truncate border border-r-0
+                 border-brand-2 px-3 font-mono text-2xs text-white/80 lg:flex"
+          title={shareUrl}
         >
           {shareUrl}
         </span>
         <button
-          class={cn(BAND_BTN, 'h-full gap-2 bg-white px-3 text-brand opacity-100')}
+          class={cn(BAND_BTN, 'h-full shrink-0 gap-2 bg-white px-3 text-brand opacity-100')}
           onclick={copyLink}
           title="Copy the seminar link"
         >

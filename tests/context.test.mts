@@ -228,3 +228,24 @@ test('на большом ноутбуке выбранная ячейка до�
     updateOracleSettings({ contextChars: 20_000 })
   }
 })
+
+test('когда не помещается даже свёрнутое, выбранная ячейка всё равно доезжает', () => {
+  /*
+   * Свёртка пропусков в диапазоны спасает почти всегда — но не когда бюджет
+   * меньше самих закреплённых блоков: ячейка с большим выводом, две
+   * закреплённые подряд. Тогда старый обрез резал середину, а середина — это и
+   * есть та ячейка, о которой спросили. Лучше выбросить обзор и оставить её.
+   */
+  const { id, doc, ids } = seminar(40)
+  const source = cellSource(getCells(doc).get(20))
+  source.delete(0, source.length)
+  source.insert(0, `NEEDLE = 1\n${'# заполнитель\n'.repeat(40)}`)
+
+  updateOracleSettings({ contextChars: 400 })
+  try {
+    const text = buildContext(id, ids[20])
+    assert.ok(text.includes('NEEDLE'), 'выбранная ячейка не доехала при тесном бюджете')
+  } finally {
+    updateOracleSettings({ contextChars: 20_000 })
+  }
+})

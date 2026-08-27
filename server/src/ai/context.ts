@@ -92,7 +92,29 @@ export function buildContext(sessionId: string, selectedCellId: string | null): 
   if (text.length > maxTotal) {
     text = [header, ...collapse(blocks, pinned)].join('\n\n')
   }
-  return text.length > maxTotal ? clip(text, maxTotal) : text
+  if (text.length <= maxTotal) return text
+
+  /*
+   * Даже свёрнутое не помещается — значит, дело в самих закреплённых блоках.
+   *
+   * `clip` режет середину, а середина — это и есть ячейка, о которой спросили:
+   * вопрос про 118-ю уходил без 118-й, пока чип в панели горел «Sees cell 118».
+   * Свёртка это почти всегда лечит, но не всегда: ячейка с гигантским выводом
+   * или два закреплённых блока подряд переберут бюджет и сами по себе.
+   *
+   * Тогда лучше выбросить обзор и оставить то, ради чего запрос отправляли:
+   * заголовок и закреплённые блоки, подрезанные каждый по отдельности. Хуже,
+   * чем полная тетрадь, и несравнимо лучше, чем полная тетрадь без той
+   * единственной ячейки, о которой речь.
+   */
+  const kept = blocks.filter((_, i) => pinned.has(i))
+  if (kept.length > 0) {
+    const room = Math.max(200, Math.floor((maxTotal - header.length - 40) / kept.length))
+    const trimmed = kept.map((block) => (block.length > room ? clip(block, room) : block))
+    const focused = [header, '[the rest of the notebook was too long to include]', ...trimmed].join('\n\n')
+    if (focused.length <= maxTotal) return focused
+  }
+  return clip(text, maxTotal)
 }
 
 /**

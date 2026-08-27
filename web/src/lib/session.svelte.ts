@@ -12,7 +12,7 @@ import type {
   SessionInfo,
   TerminalStatus,
 } from '@shared/protocol'
-import { api } from './api'
+import { api, ApiError } from './api'
 import { enqueueControl, OFFLINE_REASON } from './controls'
 import { countsAsUnread } from './notes'
 import type { StoredIdentity } from './identity'
@@ -286,11 +286,50 @@ export class SessionState {
         return
       }
       this.#retries += 1
+      /*
+       * Протухший ключ выглядит как обрыв связи и не проходит сам.
+       *
+       * Сервер отказывает в рукопожатии без кода и без слов — сказать их
+       * некуда, соединения ещё нет. Браузер отступает и пробует снова, вечно:
+       * «RECONNECTING» перед человеком, чей ключ просрочен, и никакого способа
+       * это понять. После нескольких неудач спрашиваем сервер обычным
+       * запросом — у него есть, чем ответить.
+       */
+      if (this.#retries === 4) void this.#diagnose()
       const delay = Math.min(500 * 2 ** Math.min(this.#retries, 5), 8000)
       this.#reconnectTimer = window.setTimeout(() => this.#connectControl(), delay)
     }
 
     socket.onerror = () => socket.close()
+  }
+
+  /**
+   * Почему нас не пускают — спросить по HTTP, раз сокет молчит.
+   *
+   * Три случая, и все три надо разделить: комнаты нет (её удалили, пока мы
+   * отступали), ключ не годится (истёк или подписан другим секретом — сервер
+   * перезапустили с новым), сервер просто недоступен. Последнее — обычный
+   * обрыв, и переподключаться правильно; первые два не пройдут никогда.
+   */
+  async #diagnose(): Promise<void> {
+    try {
+      await api.getSession(this.session.id)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        this.gone = true
+        this.lastError = 'This seminar was deleted. Nothing here can be saved or reopened.'
+      }
+      // Всё остальное — сеть; молчим и продолжаем отступать.
+      return
+    }
+
+    /*
+     * Комната есть, а нас не пускают: дело в ключе. Он лежит в этом браузере
+     * и в комнате больше не действует — второй раз назваться тем же именем
+     * можно, а вот молча починиться нельзя, потому что имя выбирает человек.
+     */
+    this.lastError =
+      'Your place in this seminar has expired. Reload the page and type your name again — the notebook is unchanged.'
   }
 
   send(message: ControlClientMessage) {

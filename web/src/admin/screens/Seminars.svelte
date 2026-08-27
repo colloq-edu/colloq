@@ -210,6 +210,8 @@
       .filter((s) => (needle ? s.name.toLowerCase().includes(needle) : true)),
   )
   const canDelete = $derived(adminAuth.isOwner)
+  /** Чей это семинар — сверяется с createdBy, который пишется тем же именем. */
+  const me = $derived(adminAuth.me?.teacher ?? null)
 
   const TABBTN =
     'inline-flex h-7 items-center px-3 text-2xs font-bold uppercase tracking-label text-muted ' +
@@ -474,6 +476,27 @@
     const name = renameValue.trim()
     renamingId = null
     if (!name || name === seminar.name) return
+
+    /*
+     * Чужую живую комнату не переименовывают молча.
+     *
+     * Имя семинара стоит в шапке у всех, кто сейчас внутри, и меняется у них
+     * мгновенно: посреди пары заголовок над тетрадью вдруг становится другим.
+     * Для своей комнаты это ожидаемо — ты и переименовываешь. Для чужой, где
+     * идёт занятие, стоит спросить.
+     *
+     * Спрашиваем только когда сходятся оба условия: в комнате есть люди и
+     * завёл её кто-то другой. Правку своей опечатки это не трогает.
+     */
+    const mine = !seminar.createdBy || seminar.createdBy === me?.name
+    if (!mine && seminar.liveCount > 0) {
+      const crowd = seminar.liveCount === 1 ? 'is 1 person' : `are ${seminar.liveCount} people`
+      const ok = window.confirm(
+        `There ${crowd} in “${seminar.name}” right now, and ${seminar.createdBy} set it up. ` +
+          `The new name appears in their header immediately. Rename it to “${name}”?`,
+      )
+      if (!ok) return
+    }
 
     // Safe to paint: a name is one string, and putting the old one back costs
     // the teacher nothing but the correction they were going to make anyway.
