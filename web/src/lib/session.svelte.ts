@@ -42,6 +42,14 @@ export class SessionState {
   session: SessionInfo = $state.raw({} as SessionInfo)
   /** True once the server has said the seminar is gone; stops the reconnect loop. */
   gone = $state(false)
+  /**
+   * Часы этого браузера минус часы сервера, в миллисекундах.
+   *
+   * Ноль, пока не ответил первый pong. Отнимается от локального `Date.now()`
+   * везде, где считают от серверной отметки времени — сейчас это секундомер
+   * работающей ячейки.
+   */
+  clockSkewMs = $state(0)
   /*
    * Reactive, because the role in it can be corrected after the fact: the
    * control socket reports the role the SERVER will act on, which is not
@@ -91,6 +99,7 @@ export class SessionState {
   #heartbeat: number | undefined
   #retries = 0
   #disposed = false
+  #pingSentAt: number | null = null
 
   constructor(session: SessionInfo, identity: StoredIdentity) {
     this.session = session
@@ -230,9 +239,16 @@ export class SessionState {
     socket.onopen = () => {
       this.#retries = 0
       for (const queued of this.#controlQueue.splice(0)) socket.send(JSON.stringify(queued))
-      this.#heartbeat = window.setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: 'ping' }))
-      }, 25_000)
+      const beat = () => {
+        if (socket.readyState !== WebSocket.OPEN) return
+        this.#pingSentAt = Date.now()
+        socket.send(JSON.stringify({ t: 'ping' }))
+      }
+      // Сразу, а не через двадцать пять секунд: первая проба часов нужна до
+      // первого запуска ячейки, а первый запуск на семинаре — это тот самый,
+      // который смотрит вся комната.
+      beat()
+      this.#heartbeat = window.setInterval(beat, 25_000)
     }
 
     socket.onmessage = (event) => {
@@ -260,6 +276,27 @@ export class SessionState {
           this.me.role = message.role
           const current = this.awareness.getLocalState()?.user as AwarenessUser | undefined
           if (current) this.awareness.setLocalStateField('user', { ...current, role: message.role })
+        }
+      }
+      else if (message.t === 'pong') {
+        /*
+         * Поправка к часам браузера, снятая по кругу.
+         *
+         * `startedAt` на ячейке — серверное время, секундомер тикает здесь.
+         * Без поправки у того, чьи часы спешат на сорок секунд, только что
+         * запущенная ячейка показывает «40.0s», а у того, чьи отстают, —
+         * застывший «0.0s» на работающей ячейке.
+         *
+         * Половина круга — обычная оценка: считаем, что ответ шёл столько же,
+         * сколько вопрос. Без усреднения и без выбора минимальной пробы:
+         * ошибка ограничена половиной круга, а это заметно меньше десятой
+         * доли секунды, которую показывает счётчик.
+         */
+        const sent = this.#pingSentAt
+        if (sent !== null) {
+          const rtt = Date.now() - sent
+          this.clockSkewMs = sent + rtt / 2 - message.now
+          this.#pingSentAt = null
         }
       }
       else if (message.t === 'files') this.files = message.files

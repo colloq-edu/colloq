@@ -11,6 +11,8 @@ import {
   cellId,
   cellOutputs,
   cellSource,
+  cloneCell,
+  clearStaleExecution,
   createCell,
   createChatEntry,
   createTerminalLine,
@@ -240,4 +242,81 @@ test('replaceText справляется с дописыванием и с по�
 
   replaceText(text, '')
   assert.equal(text.toString(), '')
+})
+
+test('клон несёт секундомер, время выполнения и форму ввода', () => {
+  /*
+   * `moveCell` пересоздаёт клоном соседнюю ячейку, а не ту, которую двигают:
+   * подвинуть пятую, пока считается шестая, значит пересобрать шестую целиком.
+   * Ключ, забытый в cloneCell, исчезает у неё посреди выполнения — с
+   * `startedAt` это остановившийся секундомер на работающей ячейке, а с
+   * `stdin` пропавшая у всей комнаты форма ввода, пока ядро ждёт ответа.
+   *
+   * Клон читается после того, как попал в документ: Yjs не отвечает на get()
+   * у типа, который ещё никуда не вставлен, и молча отдаёт undefined.
+   */
+  const doc = blank()
+  const cell = createCell('code', 'x = 1')
+  doc.transact(() => getCells(doc).push([cell]))
+  doc.transact(() => {
+    cell.set('state', 'running')
+    cell.set('startedAt', 1_700_000_000_000)
+    cell.set('ranMs', 4_200)
+    cell.set('stdin', { prompt: 'Имя: ', password: false })
+  })
+
+  const copy = cloneCell(cell)
+  doc.transact(() => getCells(doc).push([copy]))
+
+  assert.equal(copy.get('startedAt'), 1_700_000_000_000)
+  assert.equal(copy.get('ranMs'), 4_200)
+  assert.deepEqual(copy.get('stdin'), { prompt: 'Имя: ', password: false })
+})
+
+test('свежая ячейка заводится без секундомера, и старая читается без него', () => {
+  const doc = blank()
+  const fresh = createCell('code', 'x = 1')
+  doc.transact(() => getCells(doc).push([fresh]))
+  assert.equal(readCell(fresh).startedAt, null)
+  assert.equal(readCell(fresh).ranMs, null)
+
+  // Тетрадь, записанная до появления этих ключей: get() отдаёт undefined, а
+  // весь просмотр сравнивает с null.
+  const old = createCell('code', 'y = 2')
+  doc.transact(() => {
+    getCells(doc).push([old])
+    old.delete('startedAt')
+    old.delete('ranMs')
+  })
+  assert.equal(readCell(old).startedAt, null)
+  assert.equal(readCell(old).ranMs, null)
+})
+
+test('перезапуск сервера гасит секундомер, но не стирает измеренное время', () => {
+  const doc = blank()
+  const wasRunning = createCell('code', 'a')
+  const wasDone = createCell('code', 'b')
+  doc.transact(() => {
+    getCells(doc).push([wasRunning, wasDone])
+    wasRunning.set('state', 'running')
+    wasRunning.set('startedAt', 1_700_000_000_000)
+    wasDone.set('state', 'ok')
+    wasDone.set('ranMs', 4_200)
+    // Протухшая отметка на успокоившейся ячейке: так выглядит слияние от
+    // вкладки, пережившей падение сервера.
+    wasDone.set('startedAt', 1_700_000_000_000)
+  })
+
+  const cleared = clearStaleExecution(doc)
+
+  assert.equal(wasRunning.get('state'), 'idle')
+  assert.equal(wasRunning.get('startedAt'), null)
+  // Отметка погашена и у второй, но она не считается сброшенной работой:
+  // `cleared` уходит в строку «Cells that were running or queued were put back
+  // to rest», и приписать туда лишнюю ячейку значит сказать классу неправду.
+  assert.equal(wasDone.get('startedAt'), null)
+  assert.equal(wasDone.get('state'), 'ok')
+  assert.equal(cleared, 1)
+  // Измеренное время — факт с одних серверных часов; перезапуск его не отменяет.
+  assert.equal(wasDone.get('ranMs'), 4_200)
 })

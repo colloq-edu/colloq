@@ -194,11 +194,80 @@ async function runOnKernel(
   }
 }
 
+/**
+ * Единственная дверь из 'running' наружу — и потому единственное место, где
+ * гасится секундомер.
+ *
+ * Сюда приходят все три конца выполнения: пустая ячейка, обычное завершение и
+ * `reportDeadKernel`. Бросок из `execute` тоже: `runOne` ловит его сам и
+ * доходит до этой же строки. Поэтому три ключа — `state`, `startedAt`, `ranMs`
+ * — держатся согласованными здесь, а не в трёх местах порознь.
+ *
+ * `ranMs` пишется только на исходах, которые действительно чем-то кончились:
+ * у прерванного выполнения нет времени завершения, и напечатать его рядом с
+ * `Out [n]` значило бы объявить результат, которого не было. Проверка на
+ * `was === 'running'` нужна ради `reportDeadKernel`: он приходит сюда и за
+ * ячейками, которые стояли в очереди и не начинались.
+ */
 function setCellState(sessionId: string, cellId: string, state: CellState): void {
   const { doc } = getSessionDoc(sessionId)
   const found = findCell(doc, cellId)
   if (!found) return
-  doc.transact(() => found.cell.set('state', state), ORIGIN)
+  doc.transact(() => {
+    const was = found.cell.get('state') as CellState | undefined
+    const started = found.cell.get('startedAt') as number | null | undefined
+    found.cell.set('state', state)
+    if (started != null) {
+      found.cell.set('startedAt', null)
+      if (was === 'running' && (state === 'ok' || state === 'error')) {
+        found.cell.set('ranMs', Math.max(0, Date.now() - started))
+      }
+    }
+  }, ORIGIN)
+}
+
+/**
+ * Ячейки, которые документ считает работающими, а сервер о них не знает.
+ *
+ * `clearStaleExecution` проходит один раз, при подъёме комнаты, — и этого мало.
+ * Вкладка, открытая в момент падения сервера, держит свои обновления и при
+ * переподключении сливает их обратно как есть. Yjs решает по каждому ключу
+ * отдельно и по последней записи, так что 'running' из умершего процесса может
+ * пережить сброс — и до этой правки такая ячейка просто тихо стояла. Теперь она
+ * дышит и считает секунды до конца пары: анимация сделала старую тихую беду
+ * громкой, и чинить её приходится здесь.
+ *
+ * `runtimes.get`, а не `getRuntime`: комната, в которой никто ничего не
+ * запускал, не должна обзаводиться средой исполнения от одной проверки.
+ *
+ * Отвергнутый вариант — повесить отложенный проход на `doc.on('update')` в
+ * collab. Это точный момент, и он же цикл: ядро берёт `getSessionDoc` у collab,
+ * так что обратный импорт замкнул бы модули друг на друга. Три дешёвых повода
+ * лучше одного красивого цикла.
+ */
+export function sweepOrphanRuns(sessionId: string): number {
+  const runtime = runtimes.get(sessionId)
+  const { doc } = getSessionDoc(sessionId)
+  const cells = getCells(doc)
+  let repaired = 0
+
+  doc.transact(() => {
+    for (const cell of cells) {
+      const state = cell.get('state')
+      if (state !== 'running' && state !== 'queued') continue
+      const id = idOf(cell)
+      const ours = runtime && (runtime.currentCell === id || runtime.queue.some((q) => q.cellId === id))
+      if (ours) continue
+      cell.set('state', 'idle' as CellState)
+      cell.set('startedAt', null)
+      repaired++
+    }
+  }, ORIGIN)
+
+  // runBy, runById, execCount, ranMs и вывод остаются: та же позиция, что у
+  // clearStaleExecution — мы гасим то, что происходит, и не трогаем то, что
+  // произошло.
+  return repaired
 }
 
 /** Queued work the kernel will never get to; put those cells back to rest. */
@@ -448,8 +517,26 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
   }
 }
 
-export async function interruptSession(sessionId: string): Promise<void> {
+/**
+ * @param cellId Ячейка, ради которой нажали. Комнатная кнопка её не называет.
+ *
+ * Нажатие на самой ячейке называет свою цель, и это исправление, а не удобство.
+ * Кнопка нарисована по состоянию документа, а документ отстаёт от сервера на
+ * круг: нажать «стоп» в промежутке между двумя ячейками Run All значило попасть
+ * в ветку `else` внизу и вынести очередь всей комнаты — включая батчи людей,
+ * которые ничего не нажимали. Пока «стоп» жил только внизу ячейки, попасть в
+ * этот промежуток было трудно; кнопка под курсором делает это лёгким.
+ *
+ * Без `cellId` поведение прежнее, и эта ветка нужна: комнатный Interrupt в
+ * верхней панели — единственный способ разобрать скопившуюся очередь одним
+ * нажатием, когда не выполняется ничего.
+ */
+export async function interruptSession(sessionId: string, cellId?: string): Promise<void> {
   const runtime = getRuntime(sessionId)
+  // Цель успела смениться — значит нажали в промежутке, и делать нечего.
+  // Молча, как и `cancel`: двое, останавливающие одну ячейку, — это гонка, а
+  // не ошибка, о которой стоит писать в комнату.
+  if (cellId !== undefined && runtime.currentCell !== cellId) return
   /*
    * Drop the tail first: interrupting cell 3 of 10 must not start cell 4.
    *
@@ -538,6 +625,10 @@ let batchCounter = 0
 
 export function requestRun(sessionId: string, cellIds: string[], runBy: string, runById: string): void {
   const runtime = getRuntime(sessionId)
+  // Нажатие чинит комнату, в которой нажали: если в ней осталась ячейка,
+  // которую документ считает работающей, а сервер о ней не знает, — самое
+  // время это заметить. См. sweepOrphanRuns.
+  sweepOrphanRuns(sessionId)
   const { doc } = getSessionDoc(sessionId)
   const batch = ++batchCounter
 
@@ -739,6 +830,22 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     cell.set('runBy', item.runBy)
     cell.set('runById', item.runById)
     cell.set('execCount', null)
+    /*
+     * Одно число в транзакции, которая и так происходит.
+     *
+     * Живой секундомер на ячейке — это ровно эта отметка плюс счёт в браузере.
+     * Писать сюда каждую секунду было бы проще на вид и разрушительно на деле:
+     * поле, меняющееся чаще раза в двенадцать секунд, навсегда держит открытым
+     * всплеск истории (и приписывает комнате всё, что за это время напечатали
+     * люди), и заставляет запись на диск кодировать снимок каждые несколько
+     * секунд в пустой комнате. Здесь же — ноль лишних обновлений Yjs, ноль
+     * лишних рассылок и ноль лишних всплесков.
+     *
+     * `ranMs` гасится вместе с `execCount` и по той же причине: время прошлого
+     * выполнения перестаёт быть правдой в тот момент, когда началось это.
+     */
+    cell.set('startedAt', Date.now())
+    cell.set('ranMs', null)
   }, ORIGIN)
   // Stale output is cleared at the start of the run, not when queued: until a
   // cell actually starts, the last result is still the truth on screen.
@@ -913,6 +1020,10 @@ function resetAllCells(sessionId: string, except: string | null = null): void {
       // In [3] after a restart would be a lie: the counter starts over.
       cell.set('execCount', null)
       cell.set('state', 'idle' as CellState)
+      // И секундомер вместе с ним: ядро, которое считало, перезапущено, а
+      // время прошлого выполнения относилось к нему.
+      cell.set('startedAt', null)
+      cell.set('ranMs', null)
     })
   }, ORIGIN)
 }

@@ -49,6 +49,7 @@ import {
   onWorkspaceChanged,
   requestRun,
   restartSession,
+  sweepOrphanRuns,
   cancelRun,
   startedTheRunningCell,
 } from './kernel/index.js'
@@ -281,7 +282,15 @@ function dispatch(
 ): void {
   switch (message.t) {
     case 'ping':
-      send(ws, { t: 'pong' })
+      // Пульс раз в 25 секунд — и заодно самый частый повод заметить ячейку,
+      // которую документ считает работающей, а сервер о ней не знает. Это то,
+      // что ограничивает жизнь такого призрака одним ударом пульса, а не
+      // «пока кто-нибудь что-нибудь не нажмёт». Проход читает по одному ключу
+      // на ячейку и пишет только там, где документ неправ.
+      sweepOrphanRuns(sessionId)
+      // Часы сервера в ответ: по ним браузер считает свою поправку и не
+      // показывает «40.0s» на только что запущенной ячейке. См. session.svelte.ts.
+      send(ws, { t: 'pong', now: Date.now() })
       return
 
     case 'run': {
@@ -338,7 +347,16 @@ function dispatch(
         })
         return
       }
-      void interruptSession(sessionId).catch((err: unknown) => {
+      /*
+       * Нажатие на ячейке называет свою цель, комнатное — нет.
+       *
+       * Кнопка на ячейке нарисована по состоянию документа, а документ отстаёт
+       * от сервера на круг: нажатие в промежутке между двумя ячейками Run All
+       * попадало в ветку «ничего не выполняется» и выносило очередь всей
+       * комнаты. Право проверено выше и по-прежнему по среде исполнения, а не
+       * по документу: имя цели ничего не разрешает, оно только уточняет.
+       */
+      void interruptSession(sessionId, optionalId(message.cellId)).catch((err: unknown) => {
         send(ws, { t: 'error', message: reason(err, 'Could not interrupt the kernel.') })
       })
       return
@@ -566,6 +584,9 @@ export function handleControlSocket(
   ws.on('close', drop)
   ws.on('error', drop)
 
+  // Переподключившаяся вкладка — это ровно тот, кто приносит с собой ячейку,
+  // «работающую» в процессе, которого больше нет. Один проход на подключение.
+  sweepOrphanRuns(sessionId)
   send(ws, { t: 'ready', kernel: kernelStatus(sessionId) })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
   let files: FileEntry[]

@@ -49,7 +49,7 @@
   } from '@/lib/notebook-ops'
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import { getSessionState } from '@/lib/session.svelte'
-  import { cn } from '@/lib/utils'
+  import { cn, elapsed, NOTICED_MS, spell } from '@/lib/utils'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import {
     watchCell,
@@ -60,6 +60,7 @@
     watchPatchFor,
     watchText,
   } from '@/lib/yreactive.svelte'
+  import { runSlot } from '@/lib/run-slot'
   import CellOutputs from './CellOutputs.svelte'
   import CodeEditor from './CodeEditor.svelte'
   import Markdown from './Markdown.svelte'
@@ -178,7 +179,18 @@
    * проектора, а не при разглядывании.
    */
   const RULE = {
-    running: 'border-accent',
+    /*
+     * Работающая — приглушённая, и это не описка: поверх неё лежит дышащая
+     * полоса той же ширины и на том же месте (см. разметку ниже). Пара даёт
+     * линию, которая ходит между полным акцентом и 55 % — ярче всех на листе
+     * в верхней точке и близко к очереди в нижней. Различает их не яркость, а
+     * то, что одна движется: ядро выполняет по одной ячейке, так что в тетради
+     * движется ровно одна вещь.
+     *
+     * Врозь эти два значения бессмысленны: без полосы работающая ячейка станет
+     * бледнее стоящей в очереди. Менять их можно только вместе.
+     */
+    running: 'border-accent/40',
     error: 'border-danger',
     queued: 'border-accent/50',
     selected: 'border-ink',
@@ -205,6 +217,49 @@
    * to press. The server checks this again against its own queue.
    */
   const canCancel = $derived(session.me.role === 'host' || meta.current.runById === session.me.id)
+  /*
+   * Два одинаковых по виду выражения не сливаются в одно намеренно: сервер
+   * отвечает на них из разных записей — на «остановить» из среды исполнения,
+   * на «убрать из очереди» из очереди, — и совпадают они по сегодняшнему
+   * правилу, а не по устройству.
+   */
+
+  /*
+   * Первое место в тулбаре: запуск, отмена или стоп — смотря что делает ячейка.
+   *
+   * Раньше здесь всегда была кнопка запуска, и на работающей ячейке она была
+   * включена и не делала ничего: `requestRun` на сервере пропускает и то, что
+   * уже выполняется, и то, что уже в очереди. Решение вынесено в отдельный
+   * модуль — там же оно и проверяется тестами.
+   */
+  /*
+   * Тик секундомера — здесь, а не в документе.
+   *
+   * Пятая доля секунды, а не целая: десятая доля — это и есть та цифра, по
+   * которой видно, работает ячейка или висит. Интервал заводится только на
+   * время выполнения и снимается в уборке, так что при выключенном ядре в
+   * тетради не тикает ничего.
+   *
+   * Ядро выполняет по одной ячейке, поэтому во всей вкладке живёт не больше
+   * одного такого интервала — сколько бы ячеек в тетради ни было, и без
+   * какого-либо согласования между ними: эффект смотрит на `running` своей
+   * ячейки, и этого достаточно.
+   */
+  let now = $state(Date.now())
+  $effect(() => {
+    if (!running) return
+    const id = window.setInterval(() => (now = Date.now()), 200)
+    return () => window.clearInterval(id)
+  })
+
+  const slot = $derived(
+    runSlot(cellState, {
+      connected: session.connected,
+      mayRun,
+      canCancel,
+      canInterrupt,
+    }),
+  )
   const ranByOther = $derived(
     runBy && runBy !== session.me.name && (cellState === 'ok' || cellState === 'error')
       ? `Ran by ${runBy}`
@@ -314,17 +369,37 @@
     focusOnEdit = false
   }
 
-  function run() {
+  /**
+   * Запустить — и сказать, получилось ли.
+   *
+   * Кнопку в тулбаре мы починили, но клавиши шли мимо неё: Cmd+Enter на уже
+   * работающей ячейке отправлял `run`, сервер его молча выбрасывал, и человек
+   * оставался с ощущением, что нажатие не дошло. Возвращаемое значение нужно
+   * тем двум, кто вызывает `run` перед тем, как что-то сделать с тетрадью:
+   * шагнуть и вставить ячейку от имени выполнения, которого не было, — это
+   * правка документа у всей комнаты за чужой счёт.
+   */
+  function run(): boolean {
     if (!isCode) {
       commitMarkdown()
-      return
+      return false
     }
+    if (!mayRun) {
+      // Словами сервера, дословно. Кнопка, которая молчит, — это сообщение об
+      // ошибке; кнопка, которая объясняет, — это правило.
+      session.showError('Only the teacher runs cells in this seminar.')
+      return false
+    }
+    // Молча: ячейка сама показывает, что она делает, — и полосой, и строкой
+    // состояния, и лицом кнопки. Плашка про то, что и так видно, — это шум.
+    if (cellState === 'running' || cellState === 'queued') return false
     onselect()
     session.send({ t: 'run', cellId: id })
+    return true
   }
 
   async function runAndAdd() {
-    run()
+    if (!run()) return
     const created = insertCellAfter(session.doc, id, meta.current.type)
     session.selectCell(created)
     await tick()
@@ -341,7 +416,7 @@
    * is no next cell; Cmd/Ctrl+Enter runs and stays; Alt+Enter runs and inserts.
    */
   function runAndStep() {
-    run()
+    if (!run()) return
     step(1, true, false, true)
   }
 
@@ -518,8 +593,20 @@
         Тот же довод, что двадцатью строками ниже про кольцо фокуса: подсказка,
         пришедшая с опозданием, хуже пришедшей резко.
       -->
+      <!--
+        Подпись на номере — единственное место, где о времени может сказать
+        ячейка без вывода: строка «Out [n]» рисуется только под выводом, а у
+        текстовой ячейки её нет вовсе.
+      -->
       <span
-        title={meta.current.execCount === null ? undefined : `Run ${meta.current.execCount}`}
+        title={[
+          meta.current.execCount === null ? null : `Run ${meta.current.execCount}`,
+          meta.current.ranMs !== null && meta.current.ranMs >= NOTICED_MS
+            ? spell(meta.current.ranMs)
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || undefined}
         class={cn(
           'block text-right text-head font-black tabular-nums tracking-tight',
           ORDINAL[tone],
@@ -546,18 +633,36 @@
         )}
       >
         {#if isCode}
+          <!--
+            Одно место, три лица: запустить, убрать из очереди, остановить.
+
+            Гасим, а не прячем, в каждом отказе — включая чужую ячейку в
+            очереди, где внизу «отменить» как раз прячут. Асимметрия
+            намеренная и про раскладку: внизу это последняя кнопка в ряду и
+            её исчезновение ничего не двигает, а здесь пропажа первого слота
+            подвинет «вверх» и «вниз» под курсор, который целился в одну из
+            них. Ради этого же в run-slot.ts пришлось сочинить фразу отказа
+            для «отменить», которой в продукте не было.
+
+            Перехода на смене лица нет. `transition-colors` в TOOL отвечает
+            курсору, а не состоянию, и цвет живёт на самом значке. Лицо здесь
+            меняется от состояния ядра, пришедшего по сети, — плавное
+            перетекание нарисовало бы кнопку, наполовину «пуск», наполовину
+            «стоп», ровно в тот момент, когда человек решает, нажимать ли.
+          -->
           <button
             type="button"
             class={TOOL}
-            disabled={controlDisabled(session.connected, mayRun)}
-            title={controlTitle(
-              session.connected,
-              mayRun ? 'Run cell' : 'This seminar is set so only the teacher runs cells',
-            )}
-            aria-label="Run cell"
-            onclick={run}
+            disabled={slot.disabled}
+            title={slot.title}
+            aria-label={slot.label}
+            onclick={() => {
+              if (slot.action === 'run') run()
+              else if (slot.action === 'cancel') session.send({ t: 'cancel', cellId: id })
+              else session.send({ t: 'interrupt', cellId: id })
+            }}
           >
-            <Icon name="play" size={12} class="text-accent-text" />
+            <Icon name={slot.icon} size={slot.size} class={slot.tint} />
           </button>
         {:else if !editing}
           <button
@@ -629,6 +734,17 @@
         </button>
       </div>
 
+      <!--
+        Обёртка ради одной дышащей полосы, лежащей поверх левой кромки.
+
+        Просто блок вокруг блочных соседей, так что раскладка не меняется, а
+        `bind:clientHeight` остаётся на том же внутреннем div — парковка не
+        затронута. Полоса стоит вне `{#if mounted}` намеренно: работающая
+        ячейка сейчас никогда не паркуется (`pinned` включает `running`), но
+        если это правило когда-нибудь изменят, припаркованная работающая
+        ячейка получит зажжённую кромку, а не полосу бледнее очереди.
+      -->
+      <div class="relative">
       {#if mounted}
         <div bind:clientHeight={contentHeight}>
           {#if showEditor}
@@ -753,7 +869,12 @@
           {/if}
 
           {#if proposal}
-            <div class="border-l-4 border-accent bg-accent/[0.04]">
+            <!--
+              Та же пара, что у формы ввода: сплошной акцент здесь перекрывал
+              и RULE.running на работающей ячейке, и RULE.error на упавшей, ради
+              исправления которой предложение и просили.
+            -->
+            <div class={cn('border-l-4 bg-accent/[0.04]', running ? 'border-accent/40' : 'border-accent')}>
               <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2">
                 <span class={cn(CAPS, 'text-accent-text')}>Proposed by the oracle</span>
                 <span class="font-mono text-2xs">
@@ -800,7 +921,16 @@
                   {/if}
                   {#if meta.current.execCount !== null}
                     <span class={cn('ml-auto', CAPS, 'text-muted')}>
-                      Out [{meta.current.execCount}]
+                      <!--
+                        Сколько это заняло — рядом с номером выполнения, и
+                        только если заняло сколько-нибудь заметное время. Под
+                        две секунды цифра сообщает, что компьютер справился
+                        быстро, а таких ячеек в тетради к концу пары сорок.
+                      -->
+                      Out [{meta.current.execCount}]{meta.current.ranMs !== null &&
+                      meta.current.ranMs >= NOTICED_MS
+                        ? ` · ${spell(meta.current.ranMs)}`
+                        : ''}
                     </span>
                   {/if}
                 </div>
@@ -819,7 +949,12 @@
           правда бежит, просто остановилась о человека.
         -->
         <form
-          class="mt-1.5 flex items-center gap-2 border-l-4 border-accent bg-accent/[0.07] px-3 py-2"
+          class={cn(
+            'mt-1.5 flex items-center gap-2 border-l-4 bg-accent/[0.07] px-3 py-2',
+            // В пару к RULE.running: на работающей ячейке кромка приглушена, и
+            // сплошной акцент здесь читался бы как третий оттенок в столбце.
+            running ? 'border-accent/40' : 'border-accent',
+          )}
           onsubmit={sendAnswer}
         >
           <span class={cn(CAPS, 'shrink-0 text-accent-text')}>Input</span>
@@ -851,10 +986,49 @@
         </p>
       {/if}
 
+      <!--
+        Единственное, что движется в тетради.
+        
+        Ширина в 4px — это ровно `border-l-4`, и стоит она на том же месте: не
+        вторая линия рядом, а та же самая, зажжённая. Под ней приглушённый
+        `RULE.running`, поверх — акцент, дышащий с 1 до 0.25; вместе выходит
+        кромка, ходящая между полным акцентом и 55 %.
+        
+        Дыхание остаётся и при prefers-reduced-motion, и это записано в
+        политике в index.css: непрерывные указатели не гасят, потому что
+        остановившийся указатель — это ложь о системе. Полоса никуда не едет,
+        меняет одно композитное свойство, не доходит до нуля и делает меньше
+        одного удара в секунду — то есть ничего из того, ради чего движение
+        убирают.
+      -->
       {#if running}
-        <!-- The artboard's run bar: who is running it, and the one control that
-             matters while it is. Elapsed time is not on the cell in the
-             document, so it is not claimed here. -->
+        <span
+          aria-hidden="true"
+          class="pointer-events-none absolute inset-y-0 left-0 w-1 animate-blink bg-accent"
+        ></span>
+      {/if}
+      </div>
+
+      {#if running}
+        <!--
+          Строка состояния этой ячейки для всей комнаты.
+
+          Остаётся, хотя «стоп» теперь есть и в тулбаре, — и вот почему.
+          Тулбар открывается по наведению, а работающая ячейка сплошь и рядом
+          не та, под которой курсор: Run All считает седьмую, пока правят
+          двенадцатую. Сделать единственную кнопку остановки той, до которой
+          надо ещё доехать мышью, — худший из возможных разменов ровно в тот
+          момент, когда кто-то хочет убить бесконечный цикл; на планшете
+          наведения нет вовсе. К тому же строка рисуется вне `{#if mounted}` и
+          говорит про ячейку, чей редактор припаркован, и несёт то, чего в
+          значок 24×24 не положишь: кто запустил, его лицо и сколько идёт.
+
+          Секундомер здесь. Раньше на этом месте стояло «времени выполнения нет
+          в документе, поэтому мы его и не заявляем» — теперь есть: одна
+          отметка, записанная ядром в той же транзакции, что начинает
+          выполнение. Считает её этот компонент, потому что то, что ещё идёт,
+          считают там, где смотрят.
+        -->
         <div class={FOOTER}>
           {#if runner}
             <Avatar
@@ -865,9 +1039,28 @@
               title={`${runner.name} started this run`}
             />
           {/if}
-          <span class={cn(CAPS, 'text-accent-text')}>Running</span>
+          <!--
+            «Ждёт», когда ячейка остановилась о человека: она правда
+            выполняется, но сказать «Running» прямо над формой, которая
+            говорит «ядро ждёт ответа», значит дать листу поспорить с собой.
+            Полоса при этом дышит, а секундомер считает: прошедшее время
+            выполнения — всё ещё прошедшее время выполнения.
+          -->
+          <span class={cn(CAPS, 'text-accent-text')}>{stdin ? 'Waiting' : 'Running'}</span>
           {#if runBy}
             <span class="text-2xs text-muted">started by {runBy}</span>
+          {/if}
+          <!--
+            Секундомер и «стоп» — одна группа, прижатая вправо: группа растёт
+            влево, поэтому правый край кнопки не двигается, когда появляются
+            цифры. `tabular-nums` и `shrink-0`, иначе ряд дёргается пять раз в
+            секунду.
+          -->
+          <div class="ml-auto flex items-center gap-2">
+          {#if meta.current.startedAt !== null}
+            <span class="shrink-0 font-mono text-2xs tabular-nums text-muted">
+              {elapsed(meta.current.startedAt, now - session.clockSkewMs)}
+            </span>
           {/if}
           <button
             type="button"
@@ -876,9 +1069,9 @@
               session.connected,
               canInterrupt ? 'Stop the running cell' : 'Only the host, or whoever started it, can stop a run',
             )}
-            onclick={() => session.send({ t: 'interrupt' })}
+            onclick={() => session.send({ t: 'interrupt', cellId: id })}
             class={cn(
-              'ml-auto inline-flex h-6 items-center border border-line px-2 text-ink',
+              'inline-flex h-6 items-center border border-line px-2 text-ink',
               CAPS,
               'transition-colors duration-[var(--speed-quick)] hover:bg-raised',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
@@ -887,6 +1080,7 @@
           >
             Interrupt
           </button>
+          </div>
         </div>
       <!--
         A queued cell said nothing at all whenever the document's queue had not

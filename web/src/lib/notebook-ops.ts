@@ -109,6 +109,15 @@ export function setCellType(doc: Y.Doc, id: string, type: CellType): void {
     if (type === 'markdown') {
       cell.set('state', 'idle')
       cell.set('execCount', null)
+      /*
+       * Единственное место, где состояние выполнения пишет клиент.
+       *
+       * «Превратить в текст» стоит в том же тулбаре, что и «стоп», — одно
+       * нажатие от работающей ячейки. Не погасить здесь секундомер значит
+       * оставить его идти на ячейке, которая больше не ячейка с кодом.
+       */
+      cell.set('startedAt', null)
+      cell.set('ranMs', null)
       const outputs = cell.get('outputs')
       if (outputs instanceof Y.Array && outputs.length > 0) outputs.delete(0, outputs.length)
     }

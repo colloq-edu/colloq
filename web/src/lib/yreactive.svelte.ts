@@ -274,6 +274,14 @@ export interface CellMeta {
    * whoever pressed Run.
    */
   stdin: { prompt: string; password: boolean } | null
+  /**
+   * Серверные часы в момент, когда это выполнение началось. Читается только
+   * при state === 'running': в любом другом состоянии значение — мусор от
+   * прошлого раза, который никто не смотрит.
+   */
+  startedAt: number | null
+  /** Сколько длилось последнее ЗАВЕРШЁННОЕ выполнение. У прерванного — null. */
+  ranMs: number | null
 }
 
 const EMPTY_META: CellMeta = {
@@ -283,8 +291,31 @@ const EMPTY_META: CellMeta = {
   runBy: null,
   runById: null,
   stdin: null,
+  startedAt: null,
+  ranMs: null,
 }
-const META_KEYS = ['type', 'state', 'execCount', 'runBy', 'runById', 'stdin'] as const
+/*
+ * Ключи, изменение которых будит читателей ячейки.
+ *
+ * Добавить сюда два новых бесплатно: оба пишутся в той же транзакции, что
+ * меняет `state`, а `state` в списке и так. Ни одна ячейка не проснётся сверх
+ * того, что просыпалась раньше.
+ *
+ * И следствие, ради которого это написано: поле, меняющееся по таймеру, сюда
+ * добавлять нельзя. Оно будило бы каждый кадр каждого читателя ячейки — а
+ * весь этот модуль существует ровно затем, чтобы сорок ячеек не просыпались
+ * по восемьдесят раз на один Run All.
+ */
+const META_KEYS = [
+  'type',
+  'state',
+  'execCount',
+  'runBy',
+  'runById',
+  'stdin',
+  'startedAt',
+  'ranMs',
+] as const
 
 function readMeta(cell: YCell): CellMeta {
   return {
@@ -294,6 +325,8 @@ function readMeta(cell: YCell): CellMeta {
     runBy: (cell.get('runBy') as string | null) ?? null,
     runById: (cell.get('runById') as string | null) ?? null,
     stdin: (cell.get('stdin') as CellMeta['stdin']) ?? null,
+    startedAt: (cell.get('startedAt') as number | null) ?? null,
+    ranMs: (cell.get('ranMs') as number | null) ?? null,
   }
 }
 
@@ -308,7 +341,11 @@ function sameMeta(a: CellMeta, b: CellMeta): boolean {
     // изменение, поэтому сравнивать по ссылке бессмысленно.
     a.stdin?.prompt === b.stdin?.prompt &&
     a.stdin?.password === b.stdin?.password &&
-    (a.stdin === null) === (b.stdin === null)
+    (a.stdin === null) === (b.stdin === null) &&
+    // Поле, забытое здесь, означает, что руна отдаст равный объект и часы на
+    // ячейке не пойдут вовсе: сравнение поимённое, и молчит оно тихо.
+    a.startedAt === b.startedAt &&
+    a.ranMs === b.ranMs
   )
 }
 

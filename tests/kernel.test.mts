@@ -199,6 +199,9 @@ async function seminar() {
       text.insert(0, source)
     },
     state: () => cell.get('state'),
+    startedAt: () => cell.get('startedAt') as number | null,
+    ranMs: () => cell.get('ranMs') as number | null,
+    cell,
     status: () => getMeta(doc).get('kernelStatus'),
     notes: () =>
       getTerminal(doc)
@@ -668,4 +671,151 @@ test('two clears in the same moment are one clear', async () => {
   await wait(200)
   assert.equal((cell.get('outputs') as Y.Array<unknown>).length, 0)
   assert.equal(getCells(room.doc).length, 2, 'clearing removed a cell')
+})
+
+
+/* ------------------------------------------------------- the run's clock */
+
+test('секундомер заводится при старте и гаснет в конце', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  room.type('print(1)')
+
+  const before = Date.now()
+  requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
+  assert.ok(await until(() => room.state() === 'running' || room.state() === 'ok'), 'ячейка не пошла')
+  if (room.state() === 'running') {
+    const at = room.startedAt()
+    assert.ok(at !== null, 'работающая ячейка без отметки начала')
+    assert.ok(at >= before - 1000 && at <= Date.now() + 1000, `отметка не похожа на сейчас: ${at}`)
+  }
+
+  assert.ok(await until(() => room.state() === 'ok'), `ячейка кончилась как ${String(room.state())}`)
+  // Погашен — иначе полоса дышала бы и часы шли бы на успокоившейся ячейке.
+  assert.equal(room.startedAt(), null, 'секундомер остался идти после завершения')
+  const took = room.ranMs()
+  assert.ok(typeof took === 'number' && took >= 0, `длительность не записана: ${String(took)}`)
+})
+
+test('стоящая в очереди ячейка секундомера не заводит', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { getCells, createCell } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const cells = getCells(room.doc)
+  const second = createCell('code', 'print("two")')
+  room.doc.transact(() => cells.push([second]))
+  room.type('while True: pass')
+
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId, second.get('id') as string], 'Maria', 'p_maria')
+  assert.ok(await until(() => second.get('state') === 'queued'), 'вторая не встала в очередь')
+  assert.equal(second.get('startedAt'), null, 'очередь завела секундомер')
+
+  const { interruptSession } = await import('../server/src/kernel/index.js')
+  await interruptSession(room.id)
+  swallowExecutes = false
+})
+
+test('прерванное выполнение не получает времени завершения', async () => {
+  const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  room.type('while True: pass')
+
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  await interruptSession(room.id)
+  swallowExecutes = false
+
+  assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+  assert.equal(room.startedAt(), null, 'секундомер остался идти после остановки')
+
+  /*
+   * Правило: длительность получают только те исходы, которые чем-то кончились.
+   *
+   * Прерывание при живом ядре кладёт ячейку в 'idle' — выполнения не было, и
+   * времени завершения у него нет: напечатать его рядом с Out [n] значило бы
+   * объявить результат, которого не появилось. Если же ядро при этом умерло,
+   * ячейка кончается 'error' — это настоящий конец, пусть и плохой, и время у
+   * него есть.
+   */
+  if (room.state() === 'idle') {
+    assert.equal(room.ranMs(), null, 'прерванная ячейка обзавелась длительностью')
+  } else {
+    assert.equal(room.state(), 'error', `неожиданный исход прерывания: ${String(room.state())}`)
+    assert.ok(typeof room.ranMs() === 'number', 'упавшая ячейка осталась без длительности')
+  }
+})
+
+test('«стоп», нацеленный в чужую ячейку, не трогает ничего', async () => {
+  /*
+   * Кнопка на ячейке нарисована по документу, а документ отстаёт от сервера на
+   * круг: нажатие в промежутке между двумя ячейками Run All попадало в ветку
+   * «ничего не выполняется» и выносило очередь всей комнаты — включая батчи
+   * людей, которые ничего не нажимали.
+   */
+  const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
+  const { getCells, createCell } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const cells = getCells(room.doc)
+  const tail = [createCell('code', 'print("two")'), createCell('code', 'print("three")')]
+  room.doc.transact(() => cells.push(tail))
+  room.type('while True: pass')
+
+  swallowExecutes = true
+  requestRun(
+    room.id,
+    [room.cellId, tail[0].get('id') as string, tail[1].get('id') as string],
+    'Maria',
+    'p_maria',
+  )
+  assert.ok(await until(() => room.state() === 'running'), 'первая не пошла')
+  assert.ok(await until(() => tail.every((c) => c.get('state') === 'queued')), 'хвост не встал в очередь')
+
+  // Целимся в ячейку, которая уже не выполняется.
+  await interruptSession(room.id, 'no-such-cell')
+
+  await wait(200)
+  assert.equal(room.state(), 'running', 'промахнувшийся «стоп» остановил выполнение')
+  assert.ok(
+    tail.every((c) => c.get('state') === 'queued'),
+    `промахнувшийся «стоп» вынес очередь: ${tail.map((c) => String(c.get('state'))).join(',')}`,
+  )
+
+  await interruptSession(room.id, room.cellId)
+  swallowExecutes = false
+  assert.ok(await until(() => room.state() !== 'running'), 'нацеленный «стоп» не сработал')
+})
+
+test('призрачная работающая ячейка убирается проходом, а живая — нет', async () => {
+  /*
+   * Вкладка, открытая в момент падения сервера, сливает свои обновления
+   * обратно как есть, и 'running' из умершего процесса может пережить сброс.
+   * До появления анимации такая ячейка тихо стояла; теперь она дышала бы и
+   * считала секунды до конца пары.
+   */
+  const { sweepOrphanRuns } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+
+  room.doc.transact(() => {
+    room.cell.set('state', 'running')
+    room.cell.set('startedAt', Date.now() - 60_000)
+  })
+
+  assert.equal(sweepOrphanRuns(room.id), 1)
+  assert.equal(room.state(), 'idle')
+  assert.equal(room.startedAt(), null)
+
+  // А по-настоящему работающую ячейку проход не трогает.
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  room.type('while True: pass')
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  assert.equal(sweepOrphanRuns(room.id), 0, 'проход снял работающую ячейку')
+  assert.equal(room.state(), 'running')
+
+  const { interruptSession } = await import('../server/src/kernel/index.js')
+  await interruptSession(room.id)
+  swallowExecutes = false
 })

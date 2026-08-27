@@ -154,3 +154,22 @@ test('двигают ячейку — пересоздают соседа, а н
   movingText.insert(movingText.length, ' + 1')
   assert.equal(order(cells).join(','), 'b = 2,a = 1 + 1')
 })
+
+test('перестановка соседа не сбивает секундомер работающей ячейки', () => {
+  /*
+   * Настоящий путь той же беды: двигают пятую, пересоздаётся шестая. Пока
+   * ячейка считается, её `startedAt` — это то, из чего в комнате растёт цифра
+   * секундомера; исчезнув, он останавливает часы на работающей ячейке.
+   */
+  const { doc, cells, made, ids } = notebook(['a = 1', 'b = 2'])
+  doc.transact(() => {
+    made[1].set('state', 'running')
+    made[1].set('startedAt', 1_700_000_000_000)
+  })
+
+  moveCell(doc, ids[0], 1)
+
+  const still = cells.toArray().find((c) => (c.get('id') as string) === ids[1])!
+  assert.equal(still.get('state'), 'running')
+  assert.equal(still.get('startedAt'), 1_700_000_000_000, 'секундомер потерялся при перестановке')
+})

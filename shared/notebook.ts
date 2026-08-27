@@ -22,6 +22,20 @@
  *   runById   string | null           and their participant id — names are not
  *                                     unique in a seminar, so this is what says
  *                                     whether a run is YOURS
+ *   stdin     {prompt,password}|null  set while the cell is stopped in input()
+ *   startedAt number | null           server clock at the instant this run
+ *                                     began; the cell's live timer counts from
+ *                                     it. Written by the kernel, never read
+ *                                     unless state is 'running'
+ *   ranMs     number | null           how long the last SETTLED run took. Also
+ *                                     the kernel's; an interrupted run leaves
+ *                                     it null, because it has no finish time
+ *
+ * The last three are written only by the server and are display-only: nothing
+ * in this product may gate a control on them. The list above was short by one
+ * for months — `stdin` was written by the kernel and documented nowhere, which
+ * is exactly how it came to be missing from cloneCell and to vanish whenever a
+ * neighbouring cell moved.
  *
  * An output Y.Map holds:
  *   kind      'stream' | 'data' | 'error'
@@ -73,6 +87,10 @@ export interface CellSnapshot {
   execCount: number | null
   runBy: string | null
   runById: string | null
+  /** Server clock when this run began. Meaningful only while state is 'running'. */
+  startedAt: number | null
+  /** How long the last settled run took. Null after an interrupt: it never finished. */
+  ranMs: number | null
   /**
    * Set while the cell is stopped inside input(). The kernel is blocked until
    * somebody answers, and in a shared room that somebody is not necessarily
@@ -514,6 +532,8 @@ export function createCell(type: CellType, source = '', id?: string): YCell {
   cell.set('execCount', null)
   cell.set('runBy', null)
   cell.set('runById', null)
+  cell.set('startedAt', null)
+  cell.set('ranMs', null)
   return cell
 }
 
@@ -569,6 +589,20 @@ export function cloneCell(cell: YCell): YCell {
   copy.set('execCount', cell.get('execCount') ?? null)
   copy.set('runBy', cell.get('runBy') ?? null)
   copy.set('runById', cell.get('runById') ?? null)
+  /*
+   * Всё, что ключ забыл здесь, пропадает при перестановке соседа.
+   *
+   * `moveCell` пересоздаёт клоном не ту ячейку, которую двигают, а соседнюю —
+   * так что подвинуть ячейку 5, пока считается ячейка 6, значит пересобрать
+   * шестую целиком. Ключ, не переписанный сюда, исчезает у неё посреди
+   * выполнения: с `startedAt` это остановившийся секундомер на работающей
+   * ячейке, а с `stdin` — форма ввода, пропавшая у всей комнаты, пока ядро
+   * ждёт ответа. Второе лежало здесь ненайденным ровно потому, что список
+   * ключей в шапке файла его не называл.
+   */
+  copy.set('stdin', cell.get('stdin') ?? null)
+  copy.set('startedAt', cell.get('startedAt') ?? null)
+  copy.set('ranMs', cell.get('ranMs') ?? null)
   return copy
 }
 
@@ -638,6 +672,10 @@ export function readCell(cell: YCell): CellSnapshot {
     runBy: (cell.get('runBy') as string | null) ?? null,
     runById: (cell.get('runById') as string | null) ?? null,
     stdin: (cell.get('stdin') as CellSnapshot['stdin']) ?? null,
+    // `?? null`, not a cast: a notebook written before these keys existed
+    // returns undefined, and the view compares against null.
+    startedAt: (cell.get('startedAt') as number | null) ?? null,
+    ranMs: (cell.get('ranMs') as number | null) ?? null,
   }
 }
 
@@ -683,6 +721,23 @@ export function clearStaleExecution(doc: Y.Doc): number {
         cell.set('state', 'idle' as CellState)
         cleared++
       }
+      /*
+       * Секундомер гасится у каждой ячейки, и это не считается за сброс.
+       *
+       * `cleared` уходит в строку, которую комната читает в журнале ядра —
+       * «Cells that were running or queued were put back to rest». Прибавить
+       * сюда ячейку, у которой только протухшая отметка времени, значит
+       * сказать классу, что их работу отменили, когда ничего не отменяли.
+       *
+       * Нестрогое `!= null`: в тетради, записанной до появления этого ключа,
+       * он `undefined`, и строгая проверка переписывала бы каждую ячейку при
+       * каждом открытии комнаты — то есть открывала бы всплеск истории и
+       * будила запись на диск на ровном месте.
+       */
+      if (cell.get('startedAt') != null) cell.set('startedAt', null)
+      // `ranMs` не трогаем: это измеренный факт с одних серверных часов, и
+      // перезапуск не делает его неправдой. Стереть — значит убрать «· 4s»
+      // из всей тетради при каждом обновлении сервера.
     }
 
     /*

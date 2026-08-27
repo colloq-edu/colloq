@@ -24,7 +24,7 @@
   import { watchText } from '@/lib/yreactive.svelte'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import { revealCell } from '@/lib/reveal'
-  import { cn } from '@/lib/utils'
+  import { cn, NOTICED_MS, spell } from '@/lib/utils'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import Markdown from '@/components/notebook/Markdown.svelte'
@@ -101,18 +101,9 @@
    * seconds "thought for 1s" is a line of furniture reporting that a computer
    * was fast, and the thread has forty of those in it by the end of a class.
    */
-  const NOTICED_MS = 2_000
   const thinking = $derived(
     entry.reasoning.trim().length > 0 || (entry.thoughtMs !== null && entry.thoughtMs >= NOTICED_MS),
   )
-
-  /** "4s", "1m 20s" — the wait as a person would say it, not as milliseconds. */
-  function spell(ms: number | null): string {
-    if (ms === null) return ''
-    const total = Math.round(ms / 1000)
-    if (total < 60) return `${total}s`
-    return `${Math.floor(total / 60)}m ${total % 60}s`
-  }
 
   function pad(n: number): string {
     return String(n).padStart(2, '0')

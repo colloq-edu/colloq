@@ -20,6 +20,7 @@ import {
   MAX_QUEUED_CONTROL,
   OFFLINE_REASON,
 } from '../web/src/lib/controls.js'
+import type { ControlClientMessage } from '../shared/protocol.js'
 
 /* ------------------------------------------------ what the button says */
 
@@ -105,4 +106,22 @@ test('enqueueControl hands back the same array it was given', () => {
   const q: unknown[] = []
   assert.equal(enqueueControl(q, { t: 'runAll' }), q)
   assert.equal(enqueueControl(q, { t: 'runAll' }), q)
+})
+
+test('«стоп» с целью и «стоп» без цели — два разных нажатия', () => {
+  /*
+   * Кнопка на ячейке называет свою цель, комнатная в верхней панели нет: одна
+   * останавливает конкретное выполнение, другая ещё и разбирает очередь, когда
+   * не выполняется ничего. Свернуть их в одно значило бы вернуть ту самую
+   * гонку, из-за которой нажатие в промежутке между двумя ячейками Run All
+   * выносило очередь всей комнаты.
+   */
+  const queue: ControlClientMessage[] = []
+  enqueueControl(queue, { t: 'interrupt' })
+  enqueueControl(queue, { t: 'interrupt', cellId: 'c1' })
+  assert.equal(queue.length, 2, 'нажатия слились в одно')
+
+  // А два одинаковых — по-прежнему одно.
+  enqueueControl(queue, { t: 'interrupt', cellId: 'c1' })
+  assert.equal(queue.length, 2, 'повтор одного и того же нажатия удвоился')
 })

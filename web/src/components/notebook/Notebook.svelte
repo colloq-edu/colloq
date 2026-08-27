@@ -217,7 +217,13 @@
        * shared document: a keystroke that changed the notebook for everybody
        * on behalf of a run that never happened.
        */
-      if (!mayRun) return
+      // Вслух, а не молча: та же фраза, которой отвечает сервер. Отказ, о
+      // котором не сказали, читается как поломка, а не как решение
+      // преподавателя — и в тулбаре ячейки это уже исправлено.
+      if (!mayRun) {
+        session.showError('Only the teacher runs cells in this seminar.')
+        return
+      }
       session.send({ t: 'run', cellId: current })
       // Run and move on, the same as inside the editor — but staying in command
       // mode, because that is where the keystroke came from.

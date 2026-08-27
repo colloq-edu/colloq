@@ -16,6 +16,7 @@
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
   import { getTerminal, readTerminalLine, type TerminalLineSnapshot } from '@shared/notebook'
   import { terminalDraft } from '@/lib/drafts.svelte'
+  import { elapsed } from '@/lib/utils'
 
   interface Props {
     /** Hides this drawer. It never sends term:close — the shell belongs to the room. */
@@ -103,12 +104,6 @@
     const id = window.setInterval(() => (now = Date.now()), 200)
     return () => window.clearInterval(id)
   })
-
-  function elapsed(since: number): string {
-    const seconds = Math.max(0, now - since) / 1000
-    if (seconds < 60) return `${seconds.toFixed(1)}s`
-    return `${Math.floor(seconds / 60)}m ${String(Math.floor(seconds % 60)).padStart(2, '0')}s`
-  }
 
   /* -------------------------------------------------------------- scrolling */
 
@@ -445,7 +440,7 @@
           {#if line.running}
             <span class="term-live">
               <span class="term-live-dot"></span>
-              {elapsed(line.createdAt)}
+              {elapsed(line.createdAt, now)}
             </span>
           {/if}
         </div>
