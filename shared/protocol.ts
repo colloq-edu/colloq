@@ -58,6 +58,15 @@ export interface JoinRequest {
   avatar?: string | null
   /** Sent on a repeat visit so the same person keeps their identity. */
   participantId?: string | null
+  /**
+   * The token minted for that participant, proving the claim above.
+   *
+   * Every participant id in a room is broadcast to the room — awareness carries
+   * it so a caret can be attributed to a face — so "I am p_xyz" is a sentence
+   * any student can say about anybody. Only the browser that joined as them has
+   * the token, so that is what the claim is checked against.
+   */
+  token?: string | null
   /** Proves "I created this seminar" across a page refresh. */
   hostToken?: string | null
 }

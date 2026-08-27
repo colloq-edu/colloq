@@ -47,6 +47,17 @@ function normalize(value: unknown): string {
 /**
  * Bearer credential that must belong to the `:id` in the path. Lives here
  * because this module mints the tokens; the file and AI routes import it.
+ *
+ * A staff cookie outranks the role the token was minted with — the same rule
+ * the WebSocket upgrade applies in effectiveRole(), and it has to be the same
+ * rule or the product answers one question two ways. It did: a teacher who
+ * opened the seminar link before signing in holds a participant token for a
+ * room that is theirs, and while the sockets let them interrupt the kernel, the
+ * HTTP side refused them a checkpoint, a restore and the thread's own eraser.
+ * Same person, same browser, same second, two answers.
+ *
+ * Re-read per request rather than baked into the token, so signing out of the
+ * teaching side takes the powers with it on the next call.
  */
 export function sessionAuth(req: Request): TokenPayload | null {
   const header = req.headers.authorization ?? ''
@@ -57,7 +68,7 @@ export function sessionAuth(req: Request): TokenPayload | null {
       : ''
   const payload = verifyToken(raw)
   if (!payload || payload.sessionId !== req.params.id) return null
-  return payload
+  return currentStaff(req) ? { ...payload, role: 'host' } : payload
 }
 
 export function sessionRoutes(): Router {
@@ -130,8 +141,27 @@ export function sessionRoutes(): Router {
     const role: ParticipantRole =
       staff || verifyHostToken(sessionId, req.body?.hostToken) ? 'host' : 'participant'
 
+    /*
+     * Coming back as yourself has to be proved.
+     *
+     * Awareness broadcasts every participant id to the whole room, because that
+     * is how a caret gets a face — so "I am p_xyz" is a sentence any student in
+     * the seminar can say about anybody in it. It never granted the badge: the
+     * role is decided above, from credentials this request carries. But an
+     * unproved claim still overwrote the row it named, which meant one person
+     * could rename another in the participants list, take their avatar, and set
+     * the role recorded against them back to participant.
+     *
+     * The proof is the token minted for that participant when they joined. Only
+     * their own browser has it. Without it — a cleared store, another machine —
+     * the visitor is somebody new, which is the honest reading of "I cannot show
+     * you anything that says I was here before".
+     */
     const claimed = typeof req.body?.participantId === 'string' ? req.body.participantId : null
-    const known = claimed ? getParticipant(sessionId, claimed) : null
+    const proof = verifyToken(typeof req.body?.token === 'string' ? req.body.token : null)
+    const proved =
+      claimed !== null && proof !== null && proof.sessionId === sessionId && proof.participantId === claimed
+    const known = proved ? getParticipant(sessionId, claimed) : null
     const participantId = known ? known.id : newParticipantId()
 
     const participant = upsertParticipant({ id: participantId, sessionId, name, avatar, role })

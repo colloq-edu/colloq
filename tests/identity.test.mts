@@ -1,0 +1,188 @@
+/**
+ * Who you are when you come back, and who says so.
+ *
+ * Joining twice from the same browser has to land on the same person — a
+ * refresh that turns one student into two ruins the participants list and the
+ * carets with it. Joining as somebody ELSE has to be impossible, and that is
+ * less obvious than it sounds: awareness broadcasts every participant id to the
+ * whole room so a caret can be attributed to a face, which makes "I am p_xyz" a
+ * sentence any student in the seminar can say about anybody in it.
+ *
+ * The role is the other half. It never comes from what the client stored — a
+ * badge you can hand yourself is not a badge — and it has to be re-decided on
+ * every join, because the same person can be a student at ten past and staff at
+ * quarter past.
+ */
+import './_env.mts'
+import http from 'node:http'
+import express from 'express'
+import { after, before, test } from 'node:test'
+import assert from 'node:assert/strict'
+import type { Request, Response } from 'express'
+import { STAFF_COOKIE } from '../shared/admin.js'
+import { issueStaffCookie } from '../server/src/admin/auth.js'
+import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
+import { signToken } from '../server/src/auth.js'
+import { createSession, getParticipant } from '../server/src/db.js'
+import { sessionAuth, sessionRoutes } from '../server/src/routes/sessions.js'
+import type { JoinRequest, JoinResponse } from '../shared/protocol.js'
+
+const ROOM = 'identity-test'
+let base = ''
+let server: http.Server
+
+before(async () => {
+  createSession(ROOM, 'Identity', null)
+  const app = express()
+  app.use(express.json())
+  app.use(sessionRoutes())
+  server = http.createServer(app)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  const port = typeof address === 'object' && address ? address.port : 0
+  base = `http://127.0.0.1:${port}`
+})
+
+after(() => server?.close())
+
+/** issueStaffCookie writes onto express's Response; this is the smallest thing that shape. */
+function mintCookie(teacher: Parameters<typeof issueStaffCookie>[1]): string {
+  let value = ''
+  const res = { cookie: (_n: string, v: string) => (value = v) } as unknown as Response
+  issueStaffCookie(res, teacher)
+  return `${STAFF_COOKIE}=${value}`
+}
+
+/** The smallest thing sessionAuth reads: a bearer header, a cookie, and :id. */
+function request(token: string, cookie?: string): Request {
+  return {
+    headers: { authorization: token ? `Bearer ${token}` : '', cookie },
+    query: {},
+    params: { id: ROOM },
+  } as unknown as Request
+}
+
+async function join(body: JoinRequest): Promise<JoinResponse> {
+  const res = await fetch(`${base}/api/sessions/${ROOM}/join`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  assert.equal(res.status, 200)
+  return (await res.json()) as JoinResponse
+}
+
+test('a refresh keeps the same person', async () => {
+  const first = await join({ name: 'Maria' })
+  const again = await join({
+    name: 'Maria',
+    participantId: first.participant.id,
+    token: first.token,
+  })
+  assert.equal(again.participant.id, first.participant.id)
+})
+
+test('claiming an id without its token makes somebody new', async () => {
+  /*
+   * The id alone is not a secret — it is on every caret in the room. Presented
+   * without the token that was minted with it, it buys nothing: the visitor is
+   * a person the room has not met.
+   */
+  const maria = await join({ name: 'Maria' })
+  const stranger = await join({ name: 'Not Maria', participantId: maria.participant.id })
+
+  assert.notEqual(stranger.participant.id, maria.participant.id)
+  const stored = getParticipant(ROOM, maria.participant.id)
+  assert.equal(stored?.name, 'Maria', 'the row was overwritten by somebody else')
+})
+
+test('a token for another room does not open this one', async () => {
+  const maria = await join({ name: 'Maria' })
+  const elsewhere = signToken({
+    sessionId: 'another-room',
+    participantId: maria.participant.id,
+    role: 'host',
+  })
+  const stranger = await join({
+    name: 'Not Maria',
+    participantId: maria.participant.id,
+    token: elsewhere,
+  })
+  assert.notEqual(stranger.participant.id, maria.participant.id)
+})
+
+test('a token for another participant does not open this identity', async () => {
+  const maria = await join({ name: 'Maria' })
+  const john = await join({ name: 'John' })
+  const stranger = await join({
+    name: 'Not Maria',
+    participantId: maria.participant.id,
+    token: john.token,
+  })
+  assert.notEqual(stranger.participant.id, maria.participant.id)
+})
+
+test('the stored role is not a credential', async () => {
+  /*
+   * A browser holding a host token from an earlier life cannot spend it as a
+   * claim: role is decided from the staff cookie and the host token, and a
+   * participant token that merely SAYS host proves only which participant it is.
+   */
+  const maria = await join({ name: 'Maria' })
+  const forged = signToken({
+    sessionId: ROOM,
+    participantId: maria.participant.id,
+    role: 'host',
+  })
+  const back = await join({ name: 'Maria', participantId: maria.participant.id, token: forged })
+  assert.equal(back.participant.id, maria.participant.id, 'it is still her')
+  assert.equal(back.participant.role, 'participant', 'and she is still a student')
+})
+
+test('a wrong host token is refused rather than believed', async () => {
+  const nobody = await join({ name: 'Maria', hostToken: 'not-a-token' })
+  assert.equal(nobody.participant.role, 'participant')
+})
+
+/* ------------------------------------------- the same rule on both channels */
+
+test('a teacher who joined as a student is a host to HTTP too', async () => {
+  /*
+   * The gap this closes. The WebSocket upgrade has always let a staff cookie
+   * outrank the role a token was minted with — a teacher who opened the link
+   * before signing in holds a participant token for a room that is theirs — but
+   * sessionAuth read the token alone. So the same person in the same browser
+   * could interrupt the kernel over the socket and be refused a checkpoint over
+   * HTTP in the same second.
+   */
+  const teacher = createTeacher({ name: 'Ada', email: 'ada.identity@hse.ru', role: 'teacher' })
+  assert.ok(teacher)
+  rotateLinkKey(teacher.id)
+
+  const student = await join({ name: 'Ada' })
+  assert.equal(student.participant.role, 'participant', 'joined before signing in')
+
+  const asStudent = sessionAuth(request(student.token))
+  assert.equal(asStudent?.role, 'participant')
+
+  const asStaff = sessionAuth(request(student.token, mintCookie(teacher)))
+  assert.equal(asStaff?.role, 'host', 'the cookie did not outrank the token')
+  assert.equal(asStaff?.participantId, student.participant.id, 'and it is still them')
+})
+
+test('a staff cookie does not open a token minted for another room', () => {
+  // The cookie raises a role; it never replaces the check that the credential
+  // belongs to the seminar in the path.
+  const teacher = createTeacher({ name: 'Grace', email: 'grace.identity@hse.ru', role: 'teacher' })
+  assert.ok(teacher)
+  rotateLinkKey(teacher.id)
+  const elsewhere = signToken({ sessionId: 'another-room', participantId: 'p_x', role: 'host' })
+  assert.equal(sessionAuth(request(elsewhere, mintCookie(teacher))), null)
+})
+
+test('no credential at all is nobody, cookie or not', () => {
+  const teacher = createTeacher({ name: 'Katherine', email: 'kj.identity@hse.ru', role: 'teacher' })
+  assert.ok(teacher)
+  rotateLinkKey(teacher.id)
+  assert.equal(sessionAuth(request('', mintCookie(teacher))), null)
+})

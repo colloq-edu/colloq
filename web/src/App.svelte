@@ -4,7 +4,13 @@
   import Icon from '@/components/ui/Icon.svelte'
   import JoinScreen from '@/screens/JoinScreen.svelte'
   import { api, ApiError } from '@/lib/api'
-  import { loadIdentity, type StoredIdentity } from '@/lib/identity'
+  import {
+    clearStaffMark,
+    loadIdentity,
+    mightBeStaff,
+    saveIdentity,
+    type StoredIdentity,
+  } from '@/lib/identity'
   import {
     forgetLocalStore,
     recallSessionInfo,
@@ -164,6 +170,65 @@
     }
   })
 
+  /**
+   * Catching up with a role that changed after this browser stored one.
+   *
+   * The stored identity is a cache of a decision the server made once, at join
+   * time — and there is one way for it to go out of date that matters. A teacher
+   * opens the seminar link first, types their name like everybody else, and gets
+   * a participant's identity; later they sign in to the teaching panel and open
+   * the same seminar from the list. Nothing re-joins: App sees a stored identity
+   * and goes straight to the workspace, so the badge, the kernel controls and
+   * every host-only rule stayed with the student they arrived as, in the one
+   * browser they will be teaching from.
+   *
+   * JoinScreen has always asked the server about this — it is the screen that
+   * knows a visitor might be staff. It simply never runs for somebody who has
+   * been here before.
+   *
+   * The local mark is a trigger, not a credential: it says only that this
+   * browser has signed in to the teaching side at some point, so it is worth
+   * ASKING. The answer is the server's, and it comes from the same join route
+   * with the same rules, reading the same HttpOnly cookie. A stale mark is worth
+   * exactly one refused request, after which it is dropped.
+   */
+  $effect(() => {
+    const id = sessionId
+    const me = identity
+    if (!id || !me || me.role === 'host' || !mightBeStaff()) return
+
+    let cancelled = false
+    void api
+      .join(id, { name: me.name, avatar: me.avatar, participantId: me.participantId, token: me.token })
+      .then((res) => {
+        if (cancelled) return
+        if (res.participant.role !== 'host') {
+          // Signed out since, or never staff in the first place. Stop asking.
+          clearStaffMark()
+          return
+        }
+        const next: StoredIdentity = {
+          sessionId: id,
+          participantId: res.participant.id,
+          token: res.token,
+          name: res.participant.name,
+          avatar: res.participant.avatar,
+          color: res.participant.color,
+          role: res.participant.role,
+        }
+        saveIdentity(next)
+        identity = next
+      })
+      .catch(() => {
+        // Offline, or the server blinked. Whoever is here keeps working as
+        // whoever they already were; the next load asks again.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  })
+
   // The join screen's poster half does not depend on the seminar name, so it
   // paints immediately; a non-breaking space holds the line the name lands on so
   // its arrival never pushes the form down.
@@ -219,8 +284,14 @@
 {:else if session && identity}
   {@const room = session}
   {@const me = identity}
-  <!-- A new identity means a different person in the room: rebuild everything. -->
-  {#key me.participantId}
+  <!--
+    Keyed on the token, not on the person. A different participant is obviously
+    a different room to be in, but so is the same participant holding a new
+    credential: SessionState reads the token once and opens both sockets with
+    it, so a role upgraded in place would have painted a host's controls over a
+    connection the server still answers as a student's.
+  -->
+  {#key me.token}
     <!-- No pending branch, as with the admin panel above: the workspace paints
          its own empty room while the document loads, and a spinner in front of
          it would only be a second thing to wait through. -->

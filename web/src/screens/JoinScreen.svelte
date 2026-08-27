@@ -171,9 +171,10 @@
       const result = await api.join(session.id, {
         name: who,
         avatar: mark,
-        // Both are what keeps a refresh from turning one person into two, and
-        // the teacher into a plain participant.
+        // What keeps a refresh from turning one person into two — and the
+        // token beside it is what proves the claim is ours to make.
         participantId: mine?.participantId ?? null,
+        token: mine?.token ?? null,
       })
       const identity: StoredIdentity = {
         sessionId: session.id,
