@@ -159,6 +159,37 @@ function deny(res: Response, status: number, reason: AdminErrorBody['reason'], e
   res.status(status).json(body)
 }
 
+/**
+ * Своё происхождение, а не чужое.
+ *
+ * Печенье выдаётся с `sameSite: 'lax'`, и этого уже почти хватает: браузер не
+ * приложит его к межсайтовому POST. «Почти» — потому что это правило браузера,
+ * а не сервера, и держится оно ровно до первой машины со старым браузером или
+ * расширением, которое решает за него.
+ *
+ * Заголовок Origin в межсайтовом запросе обязателен, в своём — совпадает с
+ * хостом. Запрос без него — это curl или сам сервер, и отказывать им нельзя:
+ * `make host` ходит в собственный API. Проверяется поэтому только присланный.
+ *
+ * Ставится на всё, что пишет, включая выход: выкинутый из панели посреди
+ * семинара преподаватель — это не «всего лишь logout», а комната без хозяина.
+ */
+export function sameOrigin(req: Request, res: Response, next: NextFunction): void {
+  const origin = req.get('origin')
+  if (!origin) return next()
+  let host: string
+  try {
+    host = new URL(origin).host
+  } catch {
+    return deny(res, 403, 'forbidden', 'that request came from somewhere this server does not serve')
+  }
+  // req.host отбрасывает порт, а он здесь значимый: 5173 и 8080 — разные сайты.
+  if (host !== req.get('host')) {
+    return deny(res, 403, 'forbidden', 'that request came from somewhere this server does not serve')
+  }
+  next()
+}
+
 export function requireStaff(req: Request, res: Response, next: NextFunction): void {
   const teacher = currentStaff(req)
   if (!teacher) return deny(res, 401, 'unauthenticated', 'sign in to use the admin panel')

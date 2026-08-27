@@ -216,6 +216,42 @@ export function createChatEntry(input: {
  * matter: somebody else accepted it a second earlier, and the cell was deleted
  * while the answer was being written.
  */
+/**
+ * Заменить текст, не переписывая его целиком.
+ *
+ * `delete(0, length)` с последующим `insert(0, next)` — это «весь текст исчез,
+ * появился другой». Для CRDT так и есть: у всех, кто стоял в этой ячейке,
+ * курсор уезжает в начало, выделение пропадает, а сосед, печатавший в конце
+ * файла, обнаруживает свою строку посреди чужой. Между тем «принять правку» и
+ * «вернуть версию» меняют обычно несколько строк из сорока.
+ *
+ * Общее начало и общий конец остаются нетронутыми, переписывается середина.
+ * Это не полноценный diff — вставка в начало файла, повторяющая его конец, всё
+ * ещё перепишет много лишнего, — но там, где текст правят, а не сочиняют
+ * заново, курсоры стоят на месте.
+ */
+export function replaceText(text: Y.Text, next: string): void {
+  const before = text.toString()
+  if (before === next) return
+
+  let head = 0
+  const max = Math.min(before.length, next.length)
+  while (head < max && before[head] === next[head]) head++
+
+  let tail = 0
+  while (
+    tail < max - head &&
+    before[before.length - 1 - tail] === next[next.length - 1 - tail]
+  ) {
+    tail++
+  }
+
+  const removed = before.length - head - tail
+  if (removed > 0) text.delete(head, removed)
+  const added = next.slice(head, next.length - tail)
+  if (added) text.insert(head, added)
+}
+
 export function acceptPatch(doc: Y.Doc, entry: YChatEntry, byName: string): boolean {
   const patch = entry.get('patch')
   const cellId = entry.get('cellId')
@@ -250,8 +286,7 @@ export function acceptPatch(doc: Y.Doc, entry: YChatEntry, byName: string): bool
     if (entry.get('patchState') !== 'open') return
     entry.set('patchState', 'accepted' as PatchState)
     entry.set('patchBy', byName)
-    source.delete(0, source.length)
-    source.insert(0, patch)
+    replaceText(source, patch)
     applied = true
   })
   return applied

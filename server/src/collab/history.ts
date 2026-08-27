@@ -29,7 +29,7 @@ import {
   type VersionKind,
 } from '@shared/history'
 import {
-  cloneCell, CELLS_KEY, createCell, getCells, type YCell } from '@shared/notebook'
+  cloneCell, CELLS_KEY, createCell, getCells, replaceText, type YCell } from '@shared/notebook'
 import { appendVersion, hasHistoryBase, updatesUpTo, versionCount } from '../db.js'
 
 /** Marks writes this module makes into a live doc, so they are not re-recorded twice. */
@@ -558,8 +558,9 @@ export function restoreInto(
       const cell = cells.get(index) as YCell
       const source = cell.get('source') as Y.Text | undefined
       if (!source || source.toString() === want.source) continue
-      source.delete(0, source.length)
-      source.insert(0, want.source)
+      // Не «весь текст исчез, появился другой»: у всех, кто стоит в этой
+      // ячейке, курсор уехал бы в начало. Меняется только то, что отличается.
+      replaceText(source, want.source)
       changed++
     }
 

@@ -17,7 +17,7 @@ import zlib from 'node:zlib'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { WebSocketServer } from 'ws'
 import type { Duplex } from 'node:stream'
-import { isClaimed, readSetupToken, setupTokenPath } from './admin/auth.js'
+import { isClaimed, readSetupToken, sameOrigin, setupTokenPath } from './admin/auth.js'
 import { verifyToken, type TokenPayload } from './auth.js'
 import { aiEnabled, config } from './config.js'
 import { SECURITY_HEADERS } from './headers.js'
@@ -277,6 +277,18 @@ app.get('/api/health', (_req, res) => {
       loopLagMs: Number(loopLagMs.toFixed(3)),
     })
   })
+})
+/*
+ * Ничего с чужой страницы не пишет в панель.
+ *
+ * Печенье выдаётся с sameSite: 'lax', и браузер не приложит его к межсайтовому
+ * POST — но это правило браузера, а не сервера. Одна проверка на весь /api/admin
+ * дешевле, чем помнить про неё на каждом новом маршруте; GET не трогаем, читать
+ * с чужой страницы всё равно нечего — ответ туда не попадёт.
+ */
+app.use('/api/admin', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next()
+  sameOrigin(req, res, next)
 })
 // The teaching side goes on before the session routes read from it: POST
 // /api/sessions asks currentStaff() who is calling, and the admin routers are

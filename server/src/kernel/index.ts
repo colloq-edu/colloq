@@ -270,10 +270,22 @@ export function ensureKernel(sessionId: string): Promise<void> {
    * seminar is usually in the middle of something and can decide whether to
    * wait or go on without Python.
    */
+  const envName = sessionEnvironment(sessionId) ?? activeName()
   const slow = setTimeout(() => {
+    /*
+     * Про то окружение, которое поднимается, а не про глобальный адрес.
+     *
+     * Здесь стоял `config.jupyter.url` — «kernel:8888», общая настройка. Но
+     * ждут обычно не его: комната на своём окружении поднимает свой контейнер,
+     * и это те самые полторы минуты. Названный не тот адрес превращает
+     * объяснение в загадку — идти чинить kernel:8888, который в этот момент
+     * жив и совершенно ни при чём.
+     */
     kernelNote(
       sessionId,
-      `The kernel is taking longer than usual to start at ${config.jupyter.url}. Still trying — nothing can run until it answers.`,
+      envName
+        ? `Starting the ${envName} environment — its container has to come up first, which takes up to a minute and a half on a cold start. Still trying; nothing can run until it answers.`
+        : `The kernel is taking longer than usual to start at ${config.jupyter.url}. Still trying — nothing can run until it answers.`,
     )
   }, SLOW_START_NOTICE_MS)
 
@@ -281,7 +293,7 @@ export function ensureKernel(sessionId: string): Promise<void> {
     setStatus(runtime, 'starting')
     // Read at the moment the kernel is built, not at the moment it is asked
     // for: that is the value the container will actually have.
-    runtime.environment = sessionEnvironment(sessionId) ?? activeName()
+    runtime.environment = envName
     if (dead) {
       try {
         await dead.dispose()

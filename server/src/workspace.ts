@@ -155,6 +155,38 @@ export function listFiles(sessionId: string): FileEntry[] {
   return entries.sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/**
+ * Сколько места занимает комната.
+ *
+ * Ограничение на один файл было всегда, на комнату целиком — нет: пятьдесят
+ * мегабайт за раз и сто заходов дают пять гигабайт, а диск на этом сервере
+ * общий с базой, снимками тетрадей и образами окружений. Кончится он молча и
+ * сразу для всех.
+ *
+ * Считаются и недописанные загрузки: место они занимают ровно так же.
+ */
+export function sessionBytes(sessionId: string): number {
+  const dir = sessionDir(sessionId)
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return 0
+  }
+  let total = 0
+  for (const name of names) {
+    try {
+      const stat = fs.lstatSync(path.join(dir, name))
+      // lstat: символическая ссылка занимает свой размер, а не размер цели —
+      // и уж точно не даёт списать на комнату чужой гигабайт.
+      if (stat.isFile()) total += stat.size
+    } catch {
+      /* исчез между readdir и stat */
+    }
+  }
+  return total
+}
+
 export function deleteFile(sessionId: string, name: string): boolean {
   const full = resolveInSession(sessionId, name)
   if (!full) return false

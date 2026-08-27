@@ -98,6 +98,17 @@ export const config = {
 
   maxUploadBytes: Number(env('MAX_UPLOAD_MB', '50')) * 1024 * 1024,
 
+  /**
+   * Потолок на всю комнату, а не на один файл.
+   *
+   * Ограничение было только на файл: пятьдесят мегабайт за раз и сто заходов
+   * дают пять гигабайт на одном семинаре. Диск здесь общий с базой, снимками
+   * тетрадей и образами окружений, и кончается он молча и сразу для всех.
+   * Гигабайт — это двадцать предельных файлов; настоящему семинару столько не
+   * нужно, а промахнувшемуся ногой по клавише хватит, чтобы остановиться.
+   */
+  maxSessionBytes: Number(env('MAX_SESSION_MB', '1024')) * 1024 * 1024,
+
   /** How often an idle-but-dirty document is written to disk. */
   snapshotIntervalMs: 4000,
   /** Coalescing window for kernel stdout/stderr before it hits the CRDT. */

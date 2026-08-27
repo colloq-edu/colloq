@@ -191,7 +191,22 @@ async function ghJson(path: string): Promise<unknown> {
     headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'colloq' },
     signal: AbortSignal.timeout(20_000),
   })
-  if (res.status === 404) throw new Error('GitHub has nothing at that address — check the link.')
+  /*
+   * 404 здесь значит и «нет такого», и «есть, но не для вас».
+   *
+   * Приватному репозиторию GitHub отвечает анонимному запросу именно 404, а не
+   * 403: иначе по коду ответа можно было бы перебирать чужие названия. Для
+   * преподавателя, который скопировал ссылку из адресной строки браузера, где
+   * он в свой репозиторий залогинен, «GitHub has nothing at that address» —
+   * это неправда, и он идёт искать опечатку там, где её нет.
+   */
+  if (res.status === 404) {
+    throw new Error(
+      'GitHub has nothing at that address — or the repository is private. ' +
+        'This server reads GitHub anonymously, so a private repository looks exactly like a missing one. ' +
+        'Check the link, and if it is private, upload the files instead.',
+    )
+  }
   if (res.status === 403) {
     throw new Error(
       'GitHub is rate-limiting this server (sixty anonymous requests an hour). Try again shortly.',

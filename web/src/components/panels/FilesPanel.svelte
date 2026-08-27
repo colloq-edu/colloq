@@ -18,6 +18,9 @@
 
   let dragDepth = $state(0)
   let uploads = $state<Upload[]>([])
+  /** Не ошибка, а предупреждение: загрузка прошла, но что-то заменила собой. */
+  let note = $state<string | null>(null)
+  let noteTimer: number | undefined
   let error = $state<string | null>(null)
   let copied = $state<string | null>(null)
   let confirming = $state<string | null>(null)
@@ -121,7 +124,10 @@
    * One request per file, in sequence: a batched multipart body can only report
    * a batch percentage, and the design puts the percentage on the row.
    */
-  function put(file: File, onSent: (sent: number) => void): Promise<FileEntry[]> {
+  function put(
+    file: File,
+    onSent: (sent: number) => void,
+  ): Promise<{ files: FileEntry[]; replaced: string[] }> {
     return new Promise((resolve, reject) => {
       const form = new FormData()
       form.append('file', file, file.name)
@@ -133,14 +139,15 @@
         if (event.lengthComputable) onSent(event.loaded)
       }
       xhr.onload = () => {
-        let body: { files?: FileEntry[]; error?: string } = {}
+        let body: { files?: FileEntry[]; replaced?: string[]; error?: string } = {}
         try {
           body = JSON.parse(xhr.responseText) as typeof body
         } catch {
           /* non-JSON error body */
         }
-        if (xhr.status >= 200 && xhr.status < 300 && body.files) resolve(body.files)
-        else reject(new Error(body.error || xhr.statusText || 'Upload failed'))
+        if (xhr.status >= 200 && xhr.status < 300 && body.files) {
+          resolve({ files: body.files, replaced: body.replaced ?? [] })
+        } else reject(new Error(body.error || xhr.statusText || 'Upload failed'))
       }
       xhr.onerror = () => reject(new Error('Upload failed'))
       xhr.send(form)
@@ -160,17 +167,38 @@
     }))
     uploads = [...uploads, ...queued]
 
+    /*
+     * Что легло поверх уже лежавшего.
+     *
+     * Одноимённый файл заменялся молча: человек роняет в комнату свою
+     * `data.csv`, а под этим именем уже лежит чужая, на которой в семинаре
+     * что-то считают. Отменить это нечем, но и узнавать об этом по числам —
+     * слишком поздно. Собирается за весь заход и говорится одной строкой.
+     */
+    const overwritten: string[] = []
+
     for (let i = 0; i < files.length; i++) {
       const { id } = queued[i]
       try {
-        session.files = await put(files[i], (sent) => {
+        const done = await put(files[i], (sent) => {
           uploads = uploads.map((item) => (item.id === id ? { ...item, sent } : item))
         })
+        session.files = done.files
+        overwritten.push(...done.replaced)
       } catch (err) {
         error = err instanceof Error ? err.message : `Could not upload ${files[i].name}`
       } finally {
         uploads = uploads.filter((item) => item.id !== id)
       }
+    }
+
+    if (overwritten.length > 0 && !error) {
+      note =
+        overwritten.length === 1
+          ? `${overwritten[0]} replaced a file that was already here.`
+          : `${overwritten.length} files replaced ones that were already here: ${overwritten.join(', ')}`
+      window.clearTimeout(noteTimer)
+      noteTimer = window.setTimeout(() => (note = null), 8000)
     }
   }
 
@@ -429,6 +457,22 @@
         class="shrink-0 p-0.5 transition-opacity duration-100 hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
         aria-label="Dismiss"
         onclick={() => (error = null)}
+      >
+        <Icon name="x" size={11} />
+      </button>
+    </div>
+  {/if}
+
+  <!-- Не ошибка: загрузка прошла — но прошла поверх чужого файла, и молчать
+       об этом нельзя. Отдельная полоса, потому что цвет здесь другой. -->
+  {#if note && !error}
+    <div class="mt-1.5 flex items-start gap-2 border-l-2 border-line px-2 py-1 text-2xs text-muted">
+      <span class="min-w-0 flex-1 break-words">{note}</span>
+      <button
+        type="button"
+        class="shrink-0 p-0.5 transition-opacity duration-100 hover:opacity-70"
+        aria-label="Dismiss"
+        onclick={() => (note = null)}
       >
         <Icon name="x" size={11} />
       </button>

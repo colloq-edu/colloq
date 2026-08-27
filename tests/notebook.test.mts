@@ -27,6 +27,7 @@ import {
   readNotebook,
   readOutput,
   readTerminalLine,
+  replaceText,
   terminalText,
 } from '../shared/notebook.js'
 
@@ -194,4 +195,49 @@ test('a terminal line streams its output the way a shell does', () => {
   assert.equal(readTerminalLine(line).kind, 'command')
   assert.equal(readTerminalLine(line).name, 'John')
   assert.match(readTerminalLine(out).text, /Successfully installed/)
+})
+
+test('принятая правка переписывает только то, что изменилось', () => {
+  const doc = new Y.Doc()
+  const text = new Y.Text()
+  doc.getMap('holder').set('t', text)
+  text.insert(0, 'import pandas as pd\ndf = pd.read_csv("a.csv")\nprint(df)\n')
+
+  // Курсор соседа — то, ради чего всё это. Y.RelativePosition переживает
+  // правку соседних строк и не переживает «удалить всё и вставить заново».
+  const caret = Y.createRelativePositionFromTypeIndex(text, text.length - 1)
+
+  replaceText(text, 'import pandas as pd\ndf = pd.read_csv("b.csv")\nprint(df)\n')
+
+  assert.equal(text.toString(), 'import pandas as pd\ndf = pd.read_csv("b.csv")\nprint(df)\n')
+  const after = Y.createAbsolutePositionFromRelativePosition(caret, doc)
+  assert.equal(after?.index, text.length - 1)
+})
+
+test('replaceText на одинаковом тексте не пишет ничего', () => {
+  const doc = new Y.Doc()
+  const text = new Y.Text()
+  doc.getMap('holder').set('t', text)
+  text.insert(0, 'x = 1\n')
+
+  let updates = 0
+  doc.on('update', () => updates++)
+  replaceText(text, 'x = 1\n')
+  assert.equal(updates, 0)
+})
+
+test('replaceText справляется с дописыванием и с полной заменой', () => {
+  const doc = new Y.Doc()
+  const text = new Y.Text()
+  doc.getMap('holder').set('t', text)
+  text.insert(0, 'a\n')
+
+  replaceText(text, 'a\nb\n')
+  assert.equal(text.toString(), 'a\nb\n')
+
+  replaceText(text, 'совсем другое')
+  assert.equal(text.toString(), 'совсем другое')
+
+  replaceText(text, '')
+  assert.equal(text.toString(), '')
 })
