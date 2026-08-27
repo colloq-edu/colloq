@@ -17,7 +17,7 @@
    * differently is a log you have to read rather than scan.
    */
   import type { ChatSnapshot } from '@shared/notebook'
-  import { acceptPatch, findChatEntry, findCell, rejectPatch } from '@shared/notebook'
+  import { findChatEntry, findCell } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
   import { getSessionState } from '@/lib/session.svelte'
@@ -145,11 +145,18 @@
     if (entry.cellId) revealCell(session, entry.cellId)
   }
 
+  /*
+   * Решает сервер, а не эта вкладка.
+   *
+   * Проверка «предложение ещё открыто» внутри транзакции спасала от двух
+   * нажатий здесь и не спасала от двух браузеров: каждый читал в своей копии
+   * `'open'`, каждый писал, и Yjs добросовестно сливал обе правки — ячейка
+   * получала патч дважды. У сервера копия одна, и он разбирает сообщения по
+   * очереди.
+   */
   function decide(accept: boolean) {
-    const target = findChatEntry(session.doc, entry.id)
-    if (!target) return
-    if (accept) acceptPatch(session.doc, target, session.me.name)
-    else rejectPatch(session.doc, target, session.me.name)
+    if (!findChatEntry(session.doc, entry.id)) return
+    session.send({ t: 'ai:decide', entryId: entry.id, accept })
   }
 
   const CHIP = 'inline-flex h-4 shrink-0 items-center px-1.5 text-micro font-bold uppercase tracking-caps'

@@ -18,7 +18,16 @@
  * something the whole room can see: shared history, and the shell itself.
  */
 import { WebSocket, type RawData } from 'ws'
-import { cellId, cellType, getCells, getMeta, type KernelStatus } from '@shared/notebook'
+import {
+  acceptPatch,
+  cellId,
+  cellType,
+  findChatEntry,
+  getCells,
+  getMeta,
+  rejectPatch,
+  type KernelStatus,
+} from '@shared/notebook'
 import { colorForId } from '@shared/protocol'
 import type {
   ControlClientMessage,
@@ -348,6 +357,30 @@ function dispatch(
 
     case 'clearOutputs': {
       clearOutputs(sessionId, optionalId(message.cellId))
+      return
+    }
+
+    /*
+     * Решение по предложению оракула принимает сервер.
+     *
+     * Проверка «ещё открыто» внутри транзакции спасала от двух нажатий в одной
+     * вкладке и не спасала от двух браузеров: каждый читал в своей копии
+     * `'open'`, каждый писал, и Yjs добросовестно сливал обе правки — ячейка
+     * получала патч дважды. У сервера копия одна, и сообщения он разбирает по
+     * очереди: второе видит то, что поставило первое.
+     *
+     * Имя берётся из соединения, а не из сообщения: в документе будет написано,
+     * кто принял, и написать туда чужое имя нельзя.
+     */
+    case 'ai:decide': {
+      const entryId = typeof message.entryId === 'string' ? message.entryId : ''
+      if (!entryId) return
+      const { doc } = getSessionDoc(sessionId)
+      const entry = findChatEntry(doc, entryId)
+      if (!entry) return
+      const who = displayName(sessionId, payload.participantId)
+      if (message.accept) acceptPatch(doc, entry, who)
+      else rejectPatch(doc, entry, who)
       return
     }
 

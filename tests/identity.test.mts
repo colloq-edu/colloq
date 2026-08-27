@@ -21,6 +21,7 @@ import assert from 'node:assert/strict'
 import type { Request, Response } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
+import { signHostToken, verifyHostToken } from '../server/src/auth.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { createHmac } from 'node:crypto'
 import { signToken, verifyToken, TOKEN_MAX_AGE_MS } from '../server/src/auth.js'
@@ -240,4 +241,27 @@ test('история удалённого семинара не читается
     headers: { authorization: `Bearer ${me}` },
   })
   assert.equal(res.status, 404)
+})
+
+test('ключ ведущего стареет и не переписывается', () => {
+  const room = 'host-token-age'
+
+  const fresh = signHostToken(room)
+  assert.equal(verifyHostToken(room, fresh), true)
+
+  // Чужой комнате он не подходит, даже свежий.
+  assert.equal(verifyHostToken('other-room', fresh), false)
+
+  // Срок стоит в самом ключе и покрыт подписью: продлить его нельзя, не зная
+  // секрета. Именно это и пробуют — переписать отметку на завтрашнюю.
+  const [id, , sig] = fresh.split('.')
+  const forged = `${id}.${(Date.now() + 86_400_000).toString(36)}.${sig}`
+  assert.equal(verifyHostToken(room, forged), false, 'подделанный срок приняли')
+
+  // Ключ, выписанный больше тридцати дней назад, больше не ключ.
+  const old = `${id}.${(Date.now() - 31 * 24 * 60 * 60 * 1000).toString(36)}.${sig}`
+  assert.equal(verifyHostToken(room, old), false)
+
+  // И старая двухчастная форма — та, что не старела никогда.
+  assert.equal(verifyHostToken(room, `${id}.${sig}`), false, 'бессрочный ключ всё ещё принимается')
 })

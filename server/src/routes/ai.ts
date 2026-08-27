@@ -228,6 +228,15 @@ export function aiRoutes(): Router {
   router.post('/api/sessions/:id/ai/cancel', (req, res) => {
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
+    /*
+     * 404 до того, как кто-нибудь тронет документ.
+     *
+     * `cancel` идёт в `docOf`, а тот в `getSessionDoc`, который поднимает
+     * комнату: заводит историю строкой «opened», сеет стартовую тетрадь и
+     * пишет снимок. Для удалённого семинара это воскрешение — по старому
+     * токену, из строки, которой в списке уже нет.
+     */
+    if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
 
     const entryId = typeof req.body?.entryId === 'string' ? req.body.entryId : ''
     if (!entryId || entryId.length > MAX_ENTRY_ID) {
@@ -242,6 +251,8 @@ export function aiRoutes(): Router {
   router.delete('/api/sessions/:id/ai/thread', (req, res) => {
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
+    // То же, что и в cancel: clearThread поднимает комнату, а поднимать нечего.
+    if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
     // The thread belongs to the room, so clearing it is the host's call — a
     // student must not be able to wipe what the class asked.
     if (auth.role !== 'host') {

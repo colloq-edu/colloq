@@ -56,9 +56,35 @@ test('ядро и терминал разрешают адрес одинако�
    */
   const kernel = read('server/src/kernel/index.ts')
   const terminal = read('server/src/kernel/terminal.ts')
-  const call = 'endpointForEnvironment(sessionEnvironment(sessionId))'
-  assert.ok(kernel.includes(call), 'ядро больше не разрешает адрес через окружение')
-  assert.ok(terminal.includes(call), 'терминал больше не разрешает адрес через окружение')
+
+  /*
+   * Проверяется правило, а не буква.
+   *
+   * Раньше здесь стояло точное выражение `endpointForEnvironment(session
+   * Environment(sessionId))`, и тест сломался от правки, которая ничего не
+   * меняла по смыслу: имя окружения понадобилось второй раз — чтобы забыть
+   * протухший адрес при отказе, — и переехало в переменную. Само правило
+   * осталось тем же, а проверка его не пережила.
+   */
+  for (const [name, source] of [
+    ['ядро', kernel],
+    ['терминал', terminal],
+  ] as const) {
+    assert.ok(
+      source.includes('endpointForEnvironment('),
+      `${name} больше не разрешает адрес через пул окружений`,
+    )
+    assert.ok(
+      source.includes('sessionEnvironment(sessionId)'),
+      `${name} больше не спрашивает окружение у семинара`,
+    )
+    /*
+     * Про defaultEndpoint() здесь проверки нет, и это осознанно: в terminal.ts
+     * он стоит заглушкой в свежесозданной записи, до того как терминал вообще
+     * открывали. Настоящий адрес спрашивается в openTerminal. Запрет на само
+     * упоминание поймал бы эту строку и ничего бы этим не улучшил.
+     */
+  }
 })
 
 test('смена адреса обесценивает запомненное имя pty', () => {

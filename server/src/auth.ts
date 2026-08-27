@@ -102,18 +102,50 @@ export function verifyDownloadToken(
 }
 
 /** Host credential handed out at session creation; proves ownership after a refresh. */
+/**
+ * Ключ ведущего к комнате — со сроком, как и у участника.
+ *
+ * Раньше подписывалось голое `host:<sessionId>`: такой ключ не старел никогда.
+ * Отозвать его можно было только сбросом SESSION_SECRET, то есть выкинув из
+ * всех комнат сразу всех. А живёт он там же, где живут ссылки, — в истории
+ * терминала, в чате, в закладке.
+ *
+ * Отметка времени в самом ключе, а не рядом: подпись покрывает и её, так что
+ * переписать срок нельзя, не зная секрета. Тот же тридцатидневный предел, что
+ * у токена участника, и по той же причине — семестр длиннее, но семинар нет.
+ */
 export function signHostToken(sessionId: string): string {
+  const issued = Date.now().toString(36)
   const sig = crypto
     .createHmac('sha256', config.sessionSecret)
-    .update(`host:${sessionId}`)
+    .update(`host:${sessionId}:${issued}`)
     .digest('base64url')
-  return `${sessionId}.${sig}`
+  return `${sessionId}.${issued}.${sig}`
 }
 
 export function verifyHostToken(sessionId: string, token: string | undefined | null): boolean {
-  if (!token) return false
-  const expected = signHostToken(sessionId)
-  const a = Buffer.from(token)
+  if (typeof token !== 'string' || !token) return false
+  const parts = token.split('.')
+  /*
+   * Двухчастные ключи — выданные до того, как у них появился срок.
+   *
+   * Принимать их значило бы оставить дыру открытой ради удобства, а отвергать
+   * молча — выкинуть из своих комнат тех, кто держит вкладку со вчера. Второе
+   * честнее: ключ выдаётся заново при следующем заходе через панель, а комната
+   * от этого не пропадает — теряется только значок ведущего.
+   */
+  if (parts.length !== 3) return false
+  const [claimed, issued, sig] = parts
+  if (claimed !== sessionId) return false
+
+  const at = Number.parseInt(issued, 36)
+  if (!Number.isFinite(at) || Date.now() - at > TOKEN_MAX_AGE_MS) return false
+
+  const expected = crypto
+    .createHmac('sha256', config.sessionSecret)
+    .update(`host:${sessionId}:${issued}`)
+    .digest('base64url')
+  const a = Buffer.from(sig)
   const b = Buffer.from(expected)
   return a.length === b.length && crypto.timingSafeEqual(a, b)
 }

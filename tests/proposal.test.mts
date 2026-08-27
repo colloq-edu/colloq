@@ -16,6 +16,7 @@ import {
   clearStaleExecution,
   createCell,
   createChatEntry,
+  findChatEntry,
   getCells,
   getChat,
   openPatchFor,
@@ -159,4 +160,77 @@ test('ход, брошенный на полуслове, не крутит сп
 
   assert.equal(entry.get('state'), 'error')
   assert.match(chatAnswer(entry).toString(), /server restarted/)
+})
+
+test('два браузера, принявшие одно предложение, не вписывают патч дважды', () => {
+  /*
+   * Настоящая гонка — не два нажатия в одной вкладке (её ловила проверка
+   * внутри транзакции), а две копии документа. Каждая читает `'open'`, каждая
+   * пишет, Yjs добросовестно сливает обе правки — и ячейка получает патч
+   * дважды. Здесь это и воспроизводится: два Y.Doc, синхронизируемых после.
+   */
+  const server = new Y.Doc()
+  const cellIdValue = 'c_race'
+  server.transact(() => {
+    getCells(server).push([createCell('code', 'x = 1', cellIdValue)])
+    getChat(server).push([
+      createChatEntry({
+        participantId: 'p_one',
+        name: 'One',
+        color: '#111111',
+        question: 'перепиши',
+        action: 'edit',
+        cellId: cellIdValue,
+        patchBase: 'x = 1',
+      }),
+    ])
+  })
+  const id = (getChat(server).get(0).get('id') as string) ?? ''
+  server.transact(() => {
+    const entry = findChatEntry(server, id)!
+    entry.set('patch', 'x = 2')
+    entry.set('patchState', 'open')
+  })
+
+  // Два клиента, каждый со своей копией.
+  const a = new Y.Doc()
+  const b = new Y.Doc()
+  Y.applyUpdate(a, Y.encodeStateAsUpdate(server))
+  Y.applyUpdate(b, Y.encodeStateAsUpdate(server))
+
+  // Так было раньше: каждый решает у себя.
+  acceptPatch(a, findChatEntry(a, id)!, 'One')
+  acceptPatch(b, findChatEntry(b, id)!, 'Two')
+  Y.applyUpdate(server, Y.encodeStateAsUpdate(a))
+  Y.applyUpdate(server, Y.encodeStateAsUpdate(b))
+  const both = (getCells(server).get(0).get('source') as Y.Text).toString()
+
+  // А так теперь: решение идёт на сервер, и он применяет его к одной копии.
+  const clean = new Y.Doc()
+  clean.transact(() => {
+    getCells(clean).push([createCell('code', 'x = 1', cellIdValue)])
+    getChat(clean).push([
+      createChatEntry({
+        participantId: 'p_one',
+        name: 'One',
+        color: '#111111',
+        question: 'перепиши',
+        action: 'edit',
+        cellId: cellIdValue,
+        patchBase: 'x = 1',
+      }),
+    ])
+  })
+  const cleanId = getChat(clean).get(0).get('id') as string
+  clean.transact(() => {
+    const entry = findChatEntry(clean, cleanId)!
+    entry.set('patch', 'x = 2')
+    entry.set('patchState', 'open')
+  })
+  assert.equal(acceptPatch(clean, findChatEntry(clean, cleanId)!, 'One'), true)
+  assert.equal(acceptPatch(clean, findChatEntry(clean, cleanId)!, 'Two'), false, 'второе решение прошло')
+  assert.equal((getCells(clean).get(0).get('source') as Y.Text).toString(), 'x = 2')
+
+  // И ради ясности: без сервера результат был другим.
+  assert.notEqual(both, 'x = 2', 'гонка перестала воспроизводиться — проверка потеряла смысл')
 })

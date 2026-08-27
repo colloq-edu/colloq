@@ -33,7 +33,7 @@
 
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { acceptPatch, cellSource, patchIsStale, rejectPatch } from '@shared/notebook'
+  import { cellSource, patchIsStale } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
   import { allows, oracleModeIn, readRules } from '@shared/rules'
@@ -433,14 +433,20 @@
   )
   const proposalStale = $derived(proposal ? patchIsStale(session.doc, proposal) : false)
 
+  /*
+   * Решает сервер, а не эта вкладка. См. ChatTurn.decide: две вкладки,
+   * читающие `'open'` каждая в своей копии, писали патч в ячейку дважды.
+   */
   function accept(): void {
-    if (!proposal) return
-    acceptPatch(session.doc, proposal, session.me.name)
+    const id = proposal?.get('id')
+    if (typeof id !== 'string') return
+    session.send({ t: 'ai:decide', entryId: id, accept: true })
   }
 
   function decline(): void {
-    if (!proposal) return
-    rejectPatch(session.doc, proposal, session.me.name)
+    const id = proposal?.get('id')
+    if (typeof id !== 'string') return
+    session.send({ t: 'ai:decide', entryId: id, accept: false })
   }
 
   $effect(() => {

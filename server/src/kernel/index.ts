@@ -38,7 +38,7 @@ import { config } from '../config.js'
 import { sessionEnvironment } from '../db.js'
 import { activeName } from '../environments.js'
 import { formatNotebook, type FormatOutcome } from './format.js'
-import { endpointForEnvironment } from './pool.js'
+import { endpointForEnvironment, forgetEnvironment } from './pool.js'
 import { getSessionDoc } from '../collab/index.js'
 import { JupyterKernel, type ExecuteStatus, type KernelPhase } from './jupyter.js'
 import { OutputWriter } from './outputs.js'
@@ -349,10 +349,12 @@ export function ensureKernel(sessionId: string): Promise<void> {
         /* it was already gone */
       }
     }
+    // Какое окружение сейчас спрашиваем — понадобится, если оно не ответит.
+    const wanted = sessionEnvironment(sessionId)
     try {
       // Куда идти за Python — решает окружение комнаты, а не глобальная
       // настройка: два семинара могут одновременно сидеть на разном.
-      const endpoint = await endpointForEnvironment(sessionEnvironment(sessionId))
+      const endpoint = await endpointForEnvironment(wanted)
       const kernel = await JupyterKernel.connect(sessionId, endpoint)
       runtime.kernel = kernel
       kernel.onPhaseChange((phase, expected) => onPhase(runtime, phase, expected))
@@ -368,6 +370,16 @@ export function ensureKernel(sessionId: string): Promise<void> {
       setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
     } catch (err) {
       setStatus(runtime, 'dead')
+      /*
+       * Забыть запомненный адрес контейнера.
+       *
+       * Порт у контейнера окружения случайный, и пул его кеширует. После
+       * `docker restart colloq-env-cv` порт другой, а комната ходит по старому
+       * — и будет ходить, пока не перезапустят весь сервер: «No Python kernel
+       * after 60s» на каждый Run, при живом и здоровом контейнере рядом.
+       * Функция для этого была написана и не вызывалась ниоткуда.
+       */
+      if (wanted) forgetEnvironment(wanted)
       // Into the shared record too: the person who presses Run sees the message
       // on their cell, and everyone else sees a notebook that stopped.
       kernelNote(sessionId, errText(err))

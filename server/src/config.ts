@@ -76,21 +76,30 @@ function readPublicUrl(): string {
   const now = Date.now()
   if (publicUrlCache && now - publicUrlCache.at < 2000) return publicUrlCache.value
 
-  // Переменная окружения главнее файла: контейнер и systemd задают её прямо, и
-  // .env рядом с ними может быть чужим или отсутствовать вовсе.
-  let value = process.env.PUBLIC_URL ?? ''
-  if (!value) {
-    try {
-      const line = fs
-        .readFileSync(envFile, 'utf8')
-        .split('\n')
-        .reverse()
-        .find((l) => /^\s*PUBLIC_URL\s*=/.test(l))
-      if (line) value = line.slice(line.indexOf('=') + 1).trim().replace(/^['"]|['"]$/g, '')
-    } catch {
-      /* .env нет — это норма */
-    }
+  /*
+   * Файл главнее переменной окружения — и это не описка.
+   *
+   * Сначала было наоборот, «как обычно», и от этого не работало ровно то, ради
+   * чего всё затевалось: `make run` и `scripts/host.sh` перед запуском node
+   * делают `set -a; . ./.env`, так что PUBLIC_URL всегда уже в process.env — и
+   * файл, который host.sh правит при Ctrl+C, не перечитывался никогда.
+   *
+   * В контейнере .env рядом нет (образ его не копирует), а PUBLIC_URL приходит
+   * через compose — там читается переменная, как и раньше. То есть правило
+   * простое: где файл есть, он и главный; где нет — окружение.
+   */
+  let value = ''
+  try {
+    const line = fs
+      .readFileSync(envFile, 'utf8')
+      .split('\n')
+      .reverse()
+      .find((l) => /^\s*PUBLIC_URL\s*=/.test(l))
+    if (line) value = line.slice(line.indexOf('=') + 1).trim().replace(/^['"]|['"]$/g, '')
+  } catch {
+    /* .env нет — это норма */
   }
+  if (!value) value = process.env.PUBLIC_URL ?? ''
   const resolved = (value || fallback).replace(/\/+$/, '')
   publicUrlCache = { at: now, value: resolved }
   return resolved

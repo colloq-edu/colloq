@@ -4,7 +4,7 @@ import { getSessionDoc } from '../collab/index.js'
 import { sessionEnvironment } from '../db.js'
 import { kernelCwd, sessionDir } from '../workspace.js'
 import { defaultEndpoint, type KernelEndpoint } from './jupyter.js'
-import { endpointForEnvironment } from './pool.js'
+import { endpointForEnvironment, forgetEnvironment } from './pool.js'
 
 /**
  * One shared terminal per seminar, in the same container as the kernel.
@@ -1073,6 +1073,11 @@ export function openTerminal(sessionId: string): Promise<void> {
       startPrime(term, true)
     } catch (err) {
       term.name = null
+      // Порт контейнера окружения случайный и запоминается пулом; после
+      // `docker restart` он другой. Забыть — иначе следующая попытка пойдёт по
+      // тому же мёртвому адресу, и так до перезапуска всего сервера.
+      const env = sessionEnvironment(sessionId)
+      if (env) forgetEnvironment(env)
       const message = `could not open the shared terminal — ${errText(err)}`
       fail(term, message)
       throw new Error(message)
