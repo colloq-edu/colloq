@@ -32,7 +32,7 @@
 </script>
 
 <script lang="ts">
-  import { onMount, tick } from 'svelte'
+  import { onMount, tick, untrack } from 'svelte'
   import { cellSource, patchIsStale } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
@@ -322,14 +322,33 @@
   )
 
   // Запоминание высоты. Обе проверки внутри nextHeld несущие — см. модуль.
+  /*
+   * Запоминание высоты — и две ловушки Svelte, в которые я уже попал.
+   *
+   * Эффект читает прошлое значение и пишет новое, а `nextHeld` возвращает
+   * ОБЪЕКТ. Значит, даже когда ничего не изменилось, присваивается новая
+   * ссылка — эффект зависит от того, что сам же и пишет, и перезапускается
+   * вечно. Svelte это ловит и валит всё приложение целиком:
+   * effect_update_depth_exceeded, тетрадь перестаёт рисоваться, ячейки
+   * двоятся. Первый раз это прошло незамеченным ровно потому, что раньше
+   * функция возвращала число, и 900 === 900 останавливало круг само.
+   *
+   * Поэтому: прошлое значение читается через untrack — эффект зависит только
+   * от входов, — и присваивание происходит, лишь когда что-то правда стало
+   * другим. Любой из этих двух приёмов закрывает дыру; здесь стоят оба,
+   * потому что цена ошибки — не «чуть дёргается», а «приложение не работает».
+   */
   $effect(() => {
-    heldOutput = nextHeld(heldOutput, {
+    const input = {
       running,
       outputs: outputs.current.length,
       pendingImages: outputsPending,
       measured: outputsMeasured,
       hasError,
-    })
+    }
+    const previous = untrack(() => heldOutput)
+    const next = nextHeld(previous, input)
+    if (next.px !== previous.px || next.fromError !== previous.fromError) heldOutput = next
   })
 
   const slot = $derived(

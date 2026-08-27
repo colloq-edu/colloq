@@ -67,6 +67,17 @@ run: .env ## Собрать и запустить. Это то, что нужн�
 	  printf '$(DIM)остановить его: make down · или пользоваться им как есть: make logs$(OFF)\n'; \
 	  exit 1; \
 	fi
+	@# И вообще любой, кто держит порт. `make stop` выше знает только про тот
+	@# процесс, чей PID записан в файле, — а второй сервер мог поднять кто
+	@# угодно, хоть скрипт туннеля. Два Yjs-авторитета на одну комнату дают
+	@# полупустую тетрадь с задвоенными ячейками и вечное переподключение, и
+	@# понять это по экрану невозможно. Проверка стоит одну команду.
+	@if lsof -ti :$${PORT:-3000} >/dev/null 2>&1; then \
+	  printf '$(RED)порт $${PORT:-3000} уже занят:$(OFF)\n'; \
+	  lsof -i :$${PORT:-3000} -sTCP:LISTEN | tail -n +2 | awk '{printf "  %s (pid %s)\n", $$1, $$2}'; \
+	  printf '$(DIM)это второй Colloq — остановите его и повторите: make stop · make down$(OFF)\n'; \
+	  exit 1; \
+	fi
 	docker compose $(DEV) up kernel -d
 	@printf '$(DIM)ядро: окружение $(CURRENT_ENV), порт 8888 проброшен$(OFF)\n'
 	npm run build
@@ -105,6 +116,14 @@ stop: ## Остановить сервер на хосте (ядро в docker �
 	  kill "$$(cat $(PID))" && printf '$(DIM)сервер остановлен$(OFF)\n'; \
 	fi
 	@rm -f $(PID)
+	@# Про чужие расписки мы не знаем: сервер мог поднять не make run, и тогда
+	@# его PID нигде не записан. Сказать о нём вслух — единственный способ не
+	@# оставить человека с двумя Colloq, о втором из которых он не догадывается.
+	@others="$$(pgrep -f 'node server/dist/server.js' 2>/dev/null || true)"; \
+	if [ -n "$$others" ]; then \
+	  printf '$(RED)на хосте остались процессы сервера:$(OFF) %s\n' "$$(echo $$others | tr '\n' ' ')"; \
+	  printf '$(DIM)их подняли не через make run — снять: pkill -f "node server/dist/server.js"$(OFF)\n'; \
+	fi
 
 logs-run: ## Смотреть логи сервера, запущенного через make run
 	@tail -f $(LOG)
