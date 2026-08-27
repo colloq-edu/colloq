@@ -346,7 +346,28 @@ function isBadRequest(err: unknown): boolean {
 function friendly(err: unknown): Error {
   const status = (err as { status?: number } | null)?.status
   const ai = resolveAiConfig()
-  console.warn('[ai] request failed', status ? `status ${status}` : 'no response')
+  /*
+   * The original message goes to the log and nowhere else. It carries request
+   * internals, and the sentence a student reads is written below — but without
+   * this line a failing oracle left the operator nothing at all to look at.
+   */
+  console.warn(
+    '[ai] request failed',
+    status ? `status ${status}` : 'no response',
+    err instanceof Error ? `— ${err.message}` : '',
+  )
+
+  /*
+   * A timeout is not "could not reach". With one retry in the SDK the real
+   * wait is about four minutes, and the room was told the endpoint was
+   * unreachable — which sends a teacher to check the network rather than the
+   * model, and is wrong: the endpoint answered, slowly.
+   */
+  if (isTimeout(err)) {
+    return new Error(
+      'The AI endpoint took too long to answer. It may be a slow model, or a very large notebook — try again, or ask about one cell.',
+    )
+  }
 
   if (status === 401 || status === 403) {
     return new Error('The AI endpoint rejected the API key — check it in the admin panel, or OPENAI_API_KEY.')
@@ -355,7 +376,15 @@ function friendly(err: unknown): Error {
     return new Error(`The AI endpoint has no model "${ai.model}" — check the model name.`)
   }
   if (status === 400) {
-    return new Error(`The AI endpoint rejected the request for model "${ai.model}".`)
+    // The endpoint's own words: a 400 is almost always a real reason — an
+    // unsupported parameter, a context that does not fit — and hiding it left
+    // the one person who could act on it guessing.
+    const detail = detailOf(err)
+    return new Error(
+      detail
+        ? `The AI endpoint rejected the request for model "${ai.model}": ${detail}`
+        : `The AI endpoint rejected the request for model "${ai.model}".`,
+    )
   }
   if (status === 429) {
     return new Error('The AI endpoint is rate-limiting us — try again in a moment.')
@@ -363,5 +392,9 @@ function friendly(err: unknown): Error {
   if (status !== undefined && status >= 500) {
     return new Error('The AI endpoint returned a server error.')
   }
-  return new Error(`Could not reach the AI endpoint at ${ai.baseUrl}.`)
+  /*
+   * The address is not shown. It is the operator's configuration, sometimes an
+   * internal host, and the student reading this cannot act on it either way.
+   */
+  return new Error('Could not reach the AI endpoint. Whoever runs this Colloq can check its address and key.')
 }

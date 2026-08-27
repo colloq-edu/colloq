@@ -15,6 +15,7 @@ import { Router } from 'express'
 import { getOracleSettings } from '../admin/settings.js'
 import { countRecentQuestions, recordQuestion, windowResetAt } from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
+import { oracleModeIn } from '@shared/rules'
 import { getParticipant, getRules, getSession } from '../db.js'
 import { sessionAuth } from './sessions.js'
 import {
@@ -60,15 +61,12 @@ const ROOM_MULTIPLIER = 30
  * because that decision belongs to whoever pays for the model rather than to
  * whoever booked the room.
  */
+/** The room's mode, by the one rule shared with the panel. */
 function oracleModeFor(
   sessionId: string,
   instance: 'off' | 'hints' | 'full',
 ): 'off' | 'hints' | 'full' {
-  const wanted = getRules(sessionId).oracle
-  if (wanted === 'inherit') return instance
-  if (instance === 'off') return 'off'
-  if (instance === 'hints' && wanted === 'full') return 'hints'
-  return wanted
+  return oracleModeIn(getRules(sessionId), instance)
 }
 
 export function aiRoutes(): Router {

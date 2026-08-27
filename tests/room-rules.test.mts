@@ -55,3 +55,17 @@ test('what is stored is always a complete, valid set', () => {
   assert.equal(back.files, 'room')
   assert.equal(back.model, null)
 })
+
+test('импорт с GitHub сохраняет правила комнаты', () => {
+  /*
+   * Форма шлёт rules по обоим путям создания, а маршрут импорта их не читал:
+   * «From GitHub» + «Teacher only» + «Oracle: off» давало комнату, где Run
+   * доступен всем и оракул отвечает. Править после создания негде — правила
+   * пишутся один раз.
+   */
+  const id = 'rules-import'
+  createSession(id, 'Импорт', null)
+  setRules(id, readRules({ run: 'host', oracle: 'off' }))
+  assert.equal(getRules(id).run, 'host')
+  assert.equal(getRules(id).oracle, 'off')
+})

@@ -12,6 +12,8 @@ import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import {
   acceptPatch,
+  chatAnswer,
+  clearStaleExecution,
   createCell,
   createChatEntry,
   getCells,
@@ -104,4 +106,57 @@ test('a cell that moved under the proposal is called stale', () => {
   const source = getCells(doc).get(0).get('source') as Y.Text
   doc.transact(() => source.insert(source.length, '\nmodel.cuda()'))
   assert.equal(patchIsStale(doc, entry), true, 'the room was not warned it would lose that line')
+})
+
+test('двое приняли одновременно — ячейка получает патч один раз', () => {
+  /*
+   * Панель и ячейка показывают Accept обе, и проверка «ещё open» читала
+   * значение, которому могли быть секунды. Преподаватель жмёт в панели,
+   * студент под ячейкой — Yjs честно сливал обе записи, и в ячейке
+   * оказывался патч дважды.
+   */
+  const doc = new Y.Doc()
+  const cell = createCell('code', 'x = 1')
+  getCells(doc).push([cell])
+  const entry = createChatEntry({
+    participantId: 'p1',
+    name: 'Мария',
+    color: '#c273e6',
+    question: 'перепиши',
+    action: 'edit',
+    cellId: cell.get('id') as string,
+    patchBase: 'x = 1',
+  })
+  entry.set('patch', 'x = 2')
+  getChat(doc).push([entry])
+
+  const first = acceptPatch(doc, entry, 'Мария')
+  const second = acceptPatch(doc, entry, 'Джон')
+
+  assert.equal(first, true, 'первое принятие не сработало')
+  assert.equal(second, false, 'второе принятие прошло тоже')
+  assert.equal((cell.get('source') as Y.Text).toString(), 'x = 2')
+  assert.equal(entry.get('patchBy'), 'Мария', 'решение приписано не тому')
+})
+
+test('ход, брошенный на полуслове, не крутит спиннер вечно', () => {
+  /*
+   * Процесс, который писал ответ, ушёл вместе с сервером. Без этого тред
+   * держал «thinking» до конца семинара — и, поскольку панель следует за
+   * последним ходом, крутил его внизу у всех.
+   */
+  const doc = new Y.Doc()
+  const entry = createChatEntry({
+    participantId: 'p1',
+    name: 'Мария',
+    color: '#c273e6',
+    question: 'почему падает?',
+  })
+  getChat(doc).push([entry])
+  assert.equal(entry.get('state'), 'streaming')
+
+  clearStaleExecution(doc)
+
+  assert.equal(entry.get('state'), 'error')
+  assert.match(chatAnswer(entry).toString(), /server restarted/)
 })

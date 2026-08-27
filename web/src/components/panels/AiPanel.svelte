@@ -11,6 +11,7 @@
   import type * as Y from 'yjs'
   import { getCells, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
   import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
+  import { oracleModeIn } from '@shared/rules'
   import type { OracleMode } from '@shared/admin'
   import { api } from '@/lib/api'
   import { getSessionState } from '@/lib/session.svelte'
@@ -77,7 +78,17 @@
    * comes from actionAllowedIn, the same function the route refuses with, so
    * the two cannot drift.
    */
-  const mode = $derived<OracleMode>(status?.mode ?? 'full')
+  /*
+   * The instance's answer, narrowed by this room's own rule.
+   *
+   * /api/ai/status knows nothing about a seminar, so on its own it said "full"
+   * for a room the server runs in hints — and the panel drew Explain, Fix and
+   * Debug, each of which came back 403 when pressed. oracleModeIn is the same
+   * function the route enforces with, so the two cannot drift.
+   */
+  const mode = $derived<OracleMode>(
+    oracleModeIn(session.session.rules, status?.mode ?? 'full'),
+  )
   const quickActions = $derived(QUICK.filter((q) => actionAllowedIn(mode, q.action)))
   const hintsOnly = $derived(mode === 'hints')
   const selected = $derived(cellNumber(session.selectedCellId))

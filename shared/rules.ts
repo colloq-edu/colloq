@@ -163,3 +163,27 @@ export function isOpenRoom(rules: RoomRules): boolean {
 export function allows(rule: Who, role: 'host' | 'participant'): boolean {
   return rule === 'room' || role === 'host'
 }
+
+/**
+ * The oracle mode a room actually runs under.
+ *
+ * Two settings meet here: what the instance allows and what the seminar asked
+ * for. A room may tighten and may never loosen — an instance that is off
+ * cannot be talked back on, because that decision belongs to whoever pays for
+ * the model.
+ *
+ * Exported from shared because the server enforces it and the panel draws
+ * from it, and those two were computing different answers: the panel asked
+ * `/api/ai/status`, which knows nothing about a seminar, so a room set to
+ * hints still showed Explain, Fix and Debug — and every press came back 403.
+ */
+export function oracleModeIn(
+  rules: RoomRules,
+  instance: 'off' | 'hints' | 'full',
+): 'off' | 'hints' | 'full' {
+  const wanted = rules.oracle
+  if (wanted === 'inherit') return instance
+  if (instance === 'off') return 'off'
+  if (instance === 'hints' && wanted === 'full') return 'hints'
+  return wanted
+}

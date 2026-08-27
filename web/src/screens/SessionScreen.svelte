@@ -274,6 +274,36 @@
     return () => window.removeEventListener(REVEAL_EVENT, onReveal)
   })
 
+  /*
+   * «Спросить оракула» из ячейки, когда панели оракула на экране нет.
+   *
+   * Единственный слушатель этого события живёт внутри AiPanel, а панель есть
+   * только при открытой правой колонке — то есть на экране шире 1100px или в
+   * выдвижном ящике. Под проектором с зумом кнопка «Fix with AI» под
+   * трейсбеком нажималась в пустоту: ни спиннера, ни ошибки, ни вопроса.
+   *
+   * Этот слушатель открывает панель и пересылает событие ей — уже
+   * смонтированной. Он стоит перед ней в очереди только когда её нет.
+   */
+  $effect(() => {
+    const onAsk = (event: Event) => {
+      if (rightShown) return
+      const detail = (event as CustomEvent).detail
+      if (rightIsDrawer) rightDrawer = true
+      else {
+        rightOpen = true
+        persistPanels()
+      }
+      // Следующим кадром: панель должна смонтироваться и повесить свой
+      // слушатель, иначе вопрос уйдёт снова в пустоту.
+      requestAnimationFrame(() =>
+        window.dispatchEvent(new CustomEvent('colloq:ask-ai', { detail })),
+      )
+    }
+    window.addEventListener('colloq:ask-ai', onAsk)
+    return () => window.removeEventListener('colloq:ask-ai', onAsk)
+  })
+
   function toggleTerminal(): void {
     terminalOpen = !terminalOpen
     // The shell belongs to the room, so ask for one only when nobody has

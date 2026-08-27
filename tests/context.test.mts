@@ -208,3 +208,23 @@ test('one seminar never sees another one', () => {
   assert.ok(!text.includes('SECRET_FROM_THE_OTHER_ROOM'), "another seminar's notebook was in the context")
   assert.match(text, new RegExp(`Context seminar ${a.id}`))
 })
+
+test('на большом ноутбуке выбранная ячейка доезжает целиком', () => {
+  /*
+   * Заглушки по строке на ячейку сами по себе съедали бюджет, и финальный
+   * обрез резал текст посередине — ровно там, где стоит якорь. Вопрос про
+   * ячейку уходил без неё, а чип «Sees cell NN» в панели горел.
+   */
+  const { id, doc, ids } = seminar(40)
+  const source = cellSource(getCells(doc).get(35))
+  source.delete(0, source.length)
+  source.insert(0, 'THE_ONE_THEY_ASKED_ABOUT = 1\n')
+  updateOracleSettings({ contextChars: 900 })
+  try {
+    const text = buildContext(id, ids[35])
+    assert.ok(text.includes('THE_ONE_THEY_ASKED_ABOUT'), 'выбранная ячейка не доехала')
+    assert.match(text, /cells \d+–\d+/, 'пропуски не свёрнуты в диапазоны')
+  } finally {
+    updateOracleSettings({ contextChars: 20_000 })
+  }
+})

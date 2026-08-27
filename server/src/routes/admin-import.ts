@@ -21,7 +21,8 @@ import { newSessionId } from '../auth.js'
 import { getSessionDoc } from '../collab/index.js'
 import { flushPersistence } from '../collab/persistence.js'
 import { config } from '../config.js'
-import { createSession } from '../db.js'
+import { readRules } from '@shared/rules'
+import { createSession, setRules } from '../db.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import {
   fetchRaw,
@@ -107,6 +108,16 @@ export function adminImportRoutes(): Router {
     // То же правило, что и при обычном создании: имя окружения
     // записывается конкретное, а не «как на инстансе».
     createSession(id, name, wanted || activeName())
+    /*
+     * The same block the create-from-scratch route has, and it was missing
+     * here: the form sends `rules` down both paths, and this one dropped them
+     * on the floor. "From GitHub" with "Teacher only" and "Oracle: off" made a
+     * room where everybody could Run and the oracle answered — and rules are
+     * written at creation, so there was nowhere to fix it afterwards.
+     */
+    if (req.body?.rules && typeof req.body.rules === 'object') {
+      setRules(id, readRules(req.body.rules))
+    }
     const staff = currentStaff(req)
     /*
      * The same line the ordinary create path has run all along. Without it an

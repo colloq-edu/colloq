@@ -12,13 +12,21 @@
    * per tab and shared: a status request per cell would be one request per
    * traceback.
    */
-  let oracle: Promise<boolean> | null = null
+  let oracle: Promise<{ enabled: boolean; mode: 'off' | 'hints' | 'full' }> | null = null
 
-  function oracleEnabled(): Promise<boolean> {
+  /**
+   * What the instance allows, once per tab.
+   *
+   * Narrowing to this room happens at the call site: the instance's answer
+   * knows nothing about a seminar, and a room may be stricter than it. Asked
+   * here it would draw "Fix with AI" in a hints-only seminar and every press
+   * would come back 403.
+   */
+  function oracleStatus(): Promise<{ enabled: boolean; mode: 'off' | 'hints' | 'full' }> {
     oracle ??= api
       .aiStatus()
-      .then((status) => status.enabled && actionAllowedIn(status.mode, 'fix'))
-      .catch(() => false)
+      .then((status) => ({ enabled: status.enabled, mode: status.mode }))
+      .catch(() => ({ enabled: false, mode: 'off' as const }))
     return oracle
   }
 </script>
@@ -28,6 +36,7 @@
   import { acceptPatch, cellSource, patchIsStale, rejectPatch } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
+  import { oracleModeIn } from '@shared/rules'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
@@ -224,8 +233,11 @@
   $effect(() => {
     if (!hasError) return
     let alive = true
-    void oracleEnabled().then((enabled) => {
-      if (alive) aiReady = enabled
+    void oracleStatus().then(({ enabled, mode }) => {
+      // Narrowed to this room: an instance on `full` still has to obey a
+      // seminar set to hints, and this button is exactly what hints refuses.
+      const here = oracleModeIn(session.session.rules, mode)
+      if (alive) aiReady = enabled && actionAllowedIn(here, 'fix')
     })
     return () => {
       alive = false
@@ -744,9 +756,17 @@
               </div>
               <div class="overflow-x-auto whitespace-pre px-3 py-2 font-mono text-code-lg leading-[21px]"><div class="w-max min-w-full">{#each proposedLines as line, index (index)}<span class={cn('block min-h-[21px]', line.kind === 'added' && 'bg-positive/10', line.kind === 'removed' && 'bg-danger/10', line.kind === 'same' && 'opacity-55')}><span class="inline-block w-5 select-none text-center text-faint">{line.kind === 'added' ? '+' : line.kind === 'removed' ? '\u2212' : ' '}</span><CodeLine tokens={proposedTokens[index] ?? []} /></span>{/each}</div></div>
               <div class="flex flex-wrap items-center gap-2.5 border-t border-line-soft px-3 py-2">
-                <button type="button" class="btn-primary h-8" onclick={accept}>Accept</button>
-                <button type="button" class="btn-outline h-8" onclick={decline}>Discard</button>
-                <span class="text-2xs text-muted">Accepting writes the cell for everyone, under your name.</span>
+                <!-- Когда почва ушла, залитая кнопка меняет владельца: рефлекс
+                     после пяти принятий — нажать заполненную, и он обязан
+                     попадать в безопасный исход. Так же в панели оракула. -->
+                {#if proposalStale}
+                  <button type="button" class="btn-primary h-8" onclick={decline}>Discard</button>
+                  <button type="button" class="btn-outline h-8" onclick={accept}>Apply anyway</button>
+                {:else}
+                  <button type="button" class="btn-primary h-8" onclick={accept}>Accept</button>
+                  <button type="button" class="btn-outline h-8" onclick={decline}>Discard</button>
+                  <span class="text-2xs text-muted">Accepting writes the cell for everyone, under your name.</span>
+                {/if}
               </div>
             </div>
           {/if}

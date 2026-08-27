@@ -76,7 +76,55 @@ export function buildContext(sessionId: string, selectedCellId: string | null): 
     blocks[i] = elide(cells[i], i)
     text = assemble()
   }
+
+  /*
+   * Still over budget with every droppable cell already elided.
+   *
+   * On a notebook of two hundred cells the one-line stubs alone are thousands
+   * of characters, and the final clip cut the text in the middle — which is
+   * exactly where the anchor sits. The result was a question about cell 118
+   * sent without cell 118, while the panel's "Sees cell 118" chip was lit.
+   *
+   * So the stubs collapse into ranges instead: one line for a run of elided
+   * cells, and the pinned blocks stay whole. Only if even that overflows does
+   * the old clip run, and by then the notebook is not the reason.
+   */
+  if (text.length > maxTotal) {
+    text = [header, ...collapse(blocks, pinned)].join('\n\n')
+  }
   return text.length > maxTotal ? clip(text, maxTotal) : text
+}
+
+/**
+ * Fold consecutive elided cells into one line each run.
+ *
+ * "[cells 10–118] 109 cells elided" costs a line where 109 stubs cost a page,
+ * and says the same thing: there is a notebook here, and this is not the part
+ * you were asked about.
+ */
+function collapse(blocks: string[], pinned: Set<number>): string[] {
+  const out: string[] = []
+  let runFrom = -1
+  const flush = (to: number) => {
+    if (runFrom < 0) return
+    const n = to - runFrom + 1
+    out.push(
+      n === 1
+        ? blocks[runFrom]
+        : `[cells ${runFrom}–${to}] — … ${n} cells elided …`,
+    )
+    runFrom = -1
+  }
+  for (let i = 0; i < blocks.length; i++) {
+    if (pinned.has(i)) {
+      flush(i - 1)
+      out.push(blocks[i])
+      continue
+    }
+    if (runFrom < 0) runFrom = i
+  }
+  flush(blocks.length - 1)
+  return out
 }
 
 /**

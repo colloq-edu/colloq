@@ -235,13 +235,26 @@ export function acceptPatch(doc: Y.Doc, entry: YChatEntry, byName: string): bool
   const source = target.get('source') as Y.Text | undefined
   if (!source) return false
 
+  /*
+   * Claim first, write second, both in one transaction.
+   *
+   * The check above reads a value that may be seconds old: the panel and the
+   * cell both show Accept, and a teacher pressing one while a student presses
+   * the other produced two writes and a cell holding the patch twice. Yjs will
+   * merge both — that is what it is for — so the guard has to be inside the
+   * transaction, where re-reading the state is the last thing that happens
+   * before the write.
+   */
+  let applied = false
   doc.transact(() => {
-    source.delete(0, source.length)
-    source.insert(0, patch)
+    if (entry.get('patchState') !== 'open') return
     entry.set('patchState', 'accepted' as PatchState)
     entry.set('patchBy', byName)
+    source.delete(0, source.length)
+    source.insert(0, patch)
+    applied = true
   })
-  return true
+  return applied
 }
 
 /** Turn a proposal down. Nothing is written to the cell; the thread keeps both. */
@@ -588,6 +601,25 @@ export function clearStaleExecution(doc: Y.Doc): number {
         cell.set('state', 'idle' as CellState)
         cleared++
       }
+    }
+
+    /*
+     * A turn left mid-answer is in the same position as a cell left mid-run:
+     * the process that was writing it is gone, and nothing will ever finish
+     * it. Without this the thread kept a "thinking" spinner turning for the
+     * rest of the seminar — and, because the newest turn is the one the panel
+     * follows, it turned at the bottom of everybody's screen.
+     */
+    for (const entry of getChat(doc)) {
+      if (entry.get('state') !== 'streaming') continue
+      const answer = entry.get('answer')
+      const said = answer instanceof Y.Text ? answer.toString() : ''
+      if (!said.trim()) {
+        const text = answer instanceof Y.Text ? answer : null
+        text?.insert(text.length, 'The answer stopped when the server restarted.')
+      }
+      entry.set('state', 'error' as ChatState)
+      cleared++
     }
   }, 'init')
 
