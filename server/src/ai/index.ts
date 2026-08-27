@@ -34,7 +34,7 @@ import { providerModel, providerReady, streamChat, type ChatTurn } from './provi
 import type { AiAction } from '@shared/protocol'
 // Re-exported because tests reach for it here, where the patch is actually
 // lifted out of an answer; the parser itself is shared with the panel.
-import { lastCodeBlock } from '@shared/answer'
+import { lastCodeBlock, type CellKind } from '@shared/answer'
 export { lastCodeBlock }
 
 /** Marks our writes so persistence and peers can tell them from typing. */
@@ -187,6 +187,7 @@ async function generate(
           options.participantName,
           options.action,
           options.cellId ?? null,
+          kindOfCell(docOf(sessionId), options.cellId ?? null),
         ),
       },
     ]
@@ -334,10 +335,29 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
      * an illustration, not an offer to rewrite anything.
      */
     if (state === 'done' && entry.get('action') === 'edit') {
-      const code = lastCodeBlock(chatAnswer(entry).toString())
+      // Тем же видом, каким спрашивали: у текстовой ячейки заграждение
+      // помечено markdown, и питоновский набор его не примет.
+      const kind = kindOfCell(doc, (entry.get('cellId') as string | null) ?? null)
+      const code = lastCodeBlock(chatAnswer(entry).toString(), kind)
       if (code) entry.set('patch', code)
     }
   }, ORIGIN)
+}
+
+/**
+ * Whether the cell being rewritten holds code or prose.
+ *
+ * `code` when there is no such cell, which is the shape of every other default
+ * in this file: a notebook is mostly code, and a request that names a cell
+ * nobody can find should behave like the common case rather than refuse.
+ */
+function kindOfCell(doc: Y.Doc, cellId: string | null): CellKind {
+  if (!cellId) return 'code'
+  for (const cell of getCells(doc).toArray()) {
+    if (cell.get('id') !== cellId) continue
+    return cell.get('type') === 'markdown' ? 'markdown' : 'code'
+  }
+  return 'code'
 }
 
 /** What a cell says at this instant, or null when there is no such cell. */
@@ -444,9 +464,10 @@ function userPrompt(
   participantName: string,
   action: AiAction | undefined,
   cellId: string | null,
+  kind: CellKind,
 ): string {
   const target = cellId ? 'the selected cell' : 'the most recently run cell'
-  const instruction = actionInstruction(action, target)
+  const instruction = actionInstruction(action, target, kind)
 
   if (!instruction) {
     return (
@@ -458,7 +479,11 @@ function userPrompt(
   return asked ? `${instruction}\n\n${participantName} also wrote: "${asked}"` : instruction
 }
 
-function actionInstruction(action: AiAction | undefined, target: string): string | null {
+function actionInstruction(
+  action: AiAction | undefined,
+  target: string,
+  kind: CellKind,
+): string | null {
   switch (action) {
     case 'explain':
       return `Explain ${target}: what it does and why it is written that way, in plain language, assuming the class has not met this pattern before. Do not rewrite the code unless something in it is genuinely wrong.`
@@ -477,7 +502,13 @@ function actionInstruction(action: AiAction | undefined, target: string): string
        * because the room is being asked to approve a change and deserves to
        * know what it does before deciding.
        */
-      return `Rewrite ${target} to do what was asked. Say in one or two sentences what you are changing and why — that is what the room reads before deciding — then give the COMPLETE new source of the cell as exactly one runnable Python block. Not a fragment and not a diff: what you write replaces the cell entirely, so anything you leave out is deleted. Change nothing that was not asked for. If the cell already does what was asked, say so plainly and give no code block at all.`
+      // Одна и та же механика для двух видов ячеек, но просить надо разное:
+      // текстовую ячейку нельзя переписать «запускаемым блоком Python», а
+      // ровно этого прежняя формулировка и требовала — оттого предложение для
+      // текстовой ячейки не рождалось вовсе.
+      return kind === 'markdown'
+        ? `Rewrite ${target} to do what was asked. It is a TEXT cell: markdown prose that the class reads, not code that runs. Say in one or two sentences what you are changing and why — that is what the room reads before deciding — then give the COMPLETE new text of the cell as exactly one fenced block tagged \`markdown\`. Not a fragment and not a diff: what you write replaces the cell entirely, so anything you leave out is deleted. Keep the author's voice and language. Change nothing that was not asked for. If the cell already says what was asked, say so plainly and give no block at all.`
+        : `Rewrite ${target} to do what was asked. Say in one or two sentences what you are changing and why — that is what the room reads before deciding — then give the COMPLETE new source of the cell as exactly one runnable Python block. Not a fragment and not a diff: what you write replaces the cell entirely, so anything you leave out is deleted. Change nothing that was not asked for. If the cell already does what was asked, say so plainly and give no code block at all.`
     case 'hint':
       return `The student is mid-exercise and must NOT be handed the solution. Give one nudge about ${target}: point at the part worth looking at, or ask the question that unblocks them. No corrected version of their code, no full solution, no line-by-line walkthrough — at most a one-line snippet of a general pattern, and only if it is unavoidable. Two or three sentences.`
     default:

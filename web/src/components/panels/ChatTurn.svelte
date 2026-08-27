@@ -65,11 +65,17 @@
    * read to decide whether to accept it, and deciding means seeing that the
    * green line calls a function where the red one indexed a list — which is
    * exactly the distinction colour makes and a wall of one-colour mono does not.
+   *
+   * Только для кодовых ячеек: у текстовой в предложении проза, и питоновская
+   * раскраска подсветила бы в ней слово for посреди предложения.
    */
+  const patchIsCode = $derived(cell === null || cell.get('type') !== 'markdown')
   $effect(() => {
-    if (entry.patch !== null) void loadSyntax()
+    if (entry.patch !== null && patchIsCode) void loadSyntax()
   })
-  const patchTokens = $derived(diffTokens(patchLines, against, entry.patch ?? '', syntax()))
+  const patchTokens = $derived(
+    diffTokens(patchLines, against, entry.patch ?? '', patchIsCode ? syntax() : null),
+  )
   /*
    * Somebody edited the cell while the model was writing. The proposal is not
    * hidden and not applied quietly: it says what it was written against and

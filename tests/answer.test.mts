@@ -96,3 +96,36 @@ test('reading a turn never writes to the document', () => {
   assert.equal(snapshot.reasoning, '')
   assert.equal(snapshot.thoughtMs, null)
 })
+
+/* ------------------------------------------------ ячейки бывают не только с кодом */
+
+test('переписывание текстовой ячейки берёт markdown-заграждение', () => {
+  /*
+   * Ровно та ошибка, из-за которой предложение для текстовой ячейки не
+   * рождалось вовсе: набор языков знал только про Python, ответ приходил
+   * помеченным markdown, и патч не извлекался — запрос уходил, ответ ложился
+   * в тред, а под ячейкой не появлялось ничего. Со стороны комнаты это
+   * выглядело так, будто правка работает только для кода.
+   */
+  const answer = 'Сокращаю до одной строки.\n\n```markdown\n# Привет\n```'
+  assert.equal(lastCodeBlock(answer, 'markdown'), '# Привет')
+  assert.equal(lastCodeBlock(answer, 'code'), null, 'кодовая ячейка не должна принять markdown')
+})
+
+test('текстовой ячейке годится и md, и голое заграждение', () => {
+  // Модель, которую попросили «дать целиком новый текст», пишет ``` куда чаще,
+  // чем ```markdown, и отказ от голого заграждения выбросил бы большую часть
+  // предложений, которые комната вообще видит.
+  assert.equal(lastCodeBlock('вот:\n\n```md\nтекст\n```', 'markdown'), 'текст')
+  assert.equal(lastCodeBlock('вот:\n\n```\nтекст\n```', 'markdown'), 'текст')
+})
+
+test('кодовой ячейке не подсовывают пример на другом языке', () => {
+  const answer = 'В оболочке:\n\n```bash\npip install torch\n```'
+  assert.equal(lastCodeBlock(answer, 'code'), null)
+  assert.equal(lastCodeBlock(answer, 'markdown'), null)
+})
+
+test('по умолчанию извлекается код — так зовут почти все', () => {
+  assert.equal(lastCodeBlock('```python\nx = 1\n```'), 'x = 1')
+})

@@ -84,15 +84,36 @@ export function splitAnswer(answer: string): AnswerPart[] {
   return parts.filter((part) => part.kind === 'prose' || part.code.trim() !== '')
 }
 
-/** Languages a block may be tagged with and still be taken as a cell's source. */
-const PYTHON = new Set(['', 'python', 'py', 'python3'])
+/**
+ * Which fences may be taken as a cell's new source, by what kind of cell it is.
+ *
+ * Both sets include the untagged fence, and that is not laziness: a model asked
+ * for "the complete new source" writes ``` far more often than it writes
+ * ```python, and refusing an untagged block would throw away most of the
+ * proposals a room ever sees. The tags either side of it are there so a
+ * correctly-labelled block is never mistaken for the wrong kind — a ```python
+ * block in an answer about a text cell is an example, not the cell.
+ */
+const FENCES: Record<CellKind, ReadonlySet<string>> = {
+  code: new Set(['', 'python', 'py', 'python3']),
+  markdown: new Set(['', 'markdown', 'md', 'text']),
+}
+
+/** What sort of cell a patch is for. Mirrors CellType in shared/notebook. */
+export type CellKind = 'code' | 'markdown'
 
 /**
- * The last fenced python block in an answer, which is the proposed cell.
+ * The last fenced block in an answer, which is the proposed cell.
  *
  * The last rather than the first: a model that shows the broken line before the
  * corrected one puts the answer second, and the prompt asks for exactly one
  * block precisely so this is unambiguous when it obeys.
+ *
+ * `kind` decides which fences count. Without it this function knew only about
+ * Python, so asking the oracle to rewrite a TEXT cell produced an answer with
+ * nothing the interface could apply: the request went out, the reply landed in
+ * the thread, and no proposal ever appeared under the cell. From the room's
+ * side that read as the feature being for code cells only.
  *
  * Returns null when there is no block at all, which is a real outcome — "your
  * cell is already right" is a legitimate reply to a request to change it, and
@@ -101,10 +122,11 @@ const PYTHON = new Set(['', 'python', 'py', 'python3'])
  * never arrived, because that is a stopped generation and applying half of one
  * would break the cell it claims to fix.
  */
-export function lastCodeBlock(answer: string): string | null {
+export function lastCodeBlock(answer: string, kind: CellKind = 'code'): string | null {
+  const allowed = FENCES[kind]
   let found: string | null = null
   for (const part of splitAnswer(answer)) {
-    if (part.kind !== 'code' || !part.closed || !PYTHON.has(part.lang)) continue
+    if (part.kind !== 'code' || !part.closed || !allowed.has(part.lang)) continue
     found = part.code
   }
   if (found === null) return null
