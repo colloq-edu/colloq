@@ -57,6 +57,16 @@ They cannot run at the same time — both want port 3000 — and `make run` says
 rather than failing halfway. `make up` is the one to use unless you are changing
 code; `make down` stops the Docker one, `make stop` the host one.
 
+Before this they were two instances: `make up` kept its data in Docker named volumes
+(`colloq_data`, `colloq_workspace`) and `make run` in `./data` and `./workspace`. If
+you have seminars in the old volumes, move them over once before starting:
+
+```bash
+docker run --rm -v colloq_data:/from -v "$PWD/data":/to alpine cp -a /from/. /to/
+docker run --rm -v colloq_workspace:/from -v "$PWD/workspace":/to alpine cp -a /from/. /to/
+docker volume rm colloq_data colloq_workspace
+```
+
 ## Giving the room a link
 
 A seminar on `localhost` is a seminar for one person. `make host` opens a Cloudflare
