@@ -85,7 +85,7 @@ interface KernelLike {
       onStream(name: 'stdout' | 'stderr', text: string): void
       onData(mimebundle: Record<string, string>, execCount: number | null): void
       onError(ename: string, evalue: string, traceback: string[]): void
-      onClear(): void
+      onClear(wait: boolean): void
     },
     opts?: { silent?: boolean },
   ): Promise<'ok' | 'error' | 'abort'>

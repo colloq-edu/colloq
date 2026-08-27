@@ -149,3 +149,118 @@ test('writing to a disposed writer is a no-op, not a crash', async () => {
     .join('\n')
   assert.ok(!said.includes('after dispose'), 'a disposed writer still wrote')
 })
+
+/* ------------------------------- отложенное стирание (clear_output wait=True) */
+
+test('обещание заменить ничего не трогает, пока замены нет', async () => {
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  writer.stream('stdout', 'кадр 1\n')
+  await settle()
+  assert.equal(outputsOf(doc, id).length, 1)
+
+  // `clear_output(wait=True)` — «сотри, когда будет чем заменить».
+  writer.supersede()
+  await settle()
+  assert.equal(outputsOf(doc, id).length, 1, 'стёрли раньше времени')
+
+  writer.stream('stdout', 'кадр 2\n')
+  await settle()
+  const outs = outputsOf(doc, id)
+  assert.equal(outs.length, 1)
+  assert.match(JSON.stringify(outs), /кадр 2/)
+  assert.doesNotMatch(JSON.stringify(outs), /кадр 1/)
+})
+
+test('новый кадр не подклеивается в хвост старого', async () => {
+  /*
+   * Стереть после mutate, а не до, значит дать append() слить оба кадра в один
+   * Y.Text: получилась бы строка «кадр 1\nкадр 2» без границы — и она поехала
+   * бы и в снимок, и в экспорт. Не устаревший кадр, а порча.
+   */
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  writer.stream('stdout', 'кадр 1\n')
+  await settle()
+  writer.supersede()
+  writer.stream('stdout', 'кадр 2\n')
+  await settle()
+
+  const outs = outputsOf(doc, id)
+  assert.equal(outs.length, 1, `записей ${outs.length}, а должна быть одна`)
+  assert.equal(outs[0].kind, 'stream')
+  assert.equal(outs[0].text, 'кадр 2\n')
+})
+
+test('обещание, за которым ничего не пришло, выполняется в конце', async () => {
+  // Иначе стёртый кадр виджета не вернулся бы никогда: на экране осталась бы
+  // картинка, которую ядро уже отменило.
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  writer.stream('stdout', 'кадр 1\n')
+  await settle()
+  writer.supersede()
+  writer.dispose()
+  assert.equal(outputsOf(doc, id).length, 0, 'отменённый кадр остался на экране')
+})
+
+test('немедленное стирание снимает отложенное', async () => {
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  writer.stream('stdout', 'кадр 1\n')
+  await settle()
+  writer.supersede()
+  writer.clear()
+  writer.stream('stdout', 'a')
+  await settle()
+
+  const outs = outputsOf(doc, id)
+  assert.equal(outs.length, 1)
+  assert.equal(outs[0].text, 'a', 'отложенное стирание съело то, что уже написали')
+})
+
+test('упёршаяся в потолок ячейка всё же принимает замену', async () => {
+  /*
+   * Раньше `stream` отказывал каждому куску после переполнения — включая тот,
+   * который должен был выполнить отложенное стирание и сбросить бюджет. Ячейка
+   * держала прошлый вывод до конца выполнения, и в коротком тесте этого не
+   * видно вовсе.
+   */
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  writer.stream('stdout', 'x'.repeat(600_000))
+  await settle()
+  assert.ok(outputsOf(doc, id).length > 0)
+
+  writer.supersede()
+  writer.stream('stdout', 'после переполнения\n')
+  await settle()
+
+  const outs = outputsOf(doc, id)
+  assert.equal(outs.length, 1, `записей ${outs.length}`)
+  assert.equal(outs[0].text, 'после переполнения\n')
+})
+
+test('первый вывод не ждёт окна склейки', async () => {
+  // Окно существует, чтобы двести записей не стали двумястами обновлениями. На
+  // первом байте оно не экономит ничего и стоит тех миллисекунд, которые
+  // комната смотрит на пустое место.
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  writer.stream('stdout', 'первая строка\n')
+  assert.equal(outputsOf(doc, id).length, 1, 'первый вывод придержали')
+
+  // А дальше — как было: два куска в одном тике склеиваются.
+  writer.stream('stdout', 'вторая\n')
+  writer.stream('stdout', 'третья\n')
+  await settle()
+  const outs = outputsOf(doc, id)
+  assert.equal(outs.length, 1)
+  assert.match(outs[0].text ?? '', /первая строка\nвторая\nтретья/)
+})

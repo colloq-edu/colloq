@@ -938,10 +938,25 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
      */
     cell.set('startedAt', startedAt)
     cell.set('ranMs', null)
+    /*
+     * Прошлый вывод стирается здесь же, в этой самой транзакции.
+     *
+     * Стирается по-прежнему на старте, а не в очереди: пока ячейка не пошла,
+     * прошлый результат — всё ещё правда на экране. Изменилось одно: раньше
+     * это была отдельная транзакция строкой ниже, и клиент получал два
+     * события. На первом просыпался наблюдатель полей — `execCount` уходил в
+     * null, и пропадала строка `Out [n]`, это двадцать четыре пикселя. На
+     * втором просыпался наблюдатель вывода, и пропадало тело. Между этими
+     * двумя кадрами область успевала обмериться на те же двадцать четыре
+     * пикселя короче — то есть место под новый вывод резервировалось неверным,
+     * — и комната видела лишний скачок.
+     *
+     * Одна транзакция — одно обновление на проводе, один вызов record() и один
+     * обход shapeOf на запуск. На Run All из сорока ячеек в комнате из
+     * двадцати это сорок обновлений и восемьсот кадров, которых больше нет.
+     */
+    writer.clear()
   }, ORIGIN)
-  // Stale output is cleared at the start of the run, not when queued: until a
-  // cell actually starts, the last result is still the truth on screen.
-  writer.clear()
 
   if (source.trim().length === 0) {
     runtime.currentCell = null
@@ -970,7 +985,8 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
       onStream: (name, text) => writer.stream(name, text),
       onData: (mimebundle, execCount) => writer.data(mimebundle, execCount),
       onError: (ename, evalue, traceback) => writer.error(ename, evalue, traceback),
-      onClear: () => writer.clear(),
+      // wait=True — обещание заменить, wait=False — стереть сейчас. См. OutputWriter.
+      onClear: (wait) => (wait ? writer.supersede() : writer.clear()),
       /*
        * input() blocks the kernel until a person types something, so the ask
        * goes into the shared document rather than to whoever pressed Run: in a
@@ -1023,7 +1039,27 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
     runtime.writer = null
     runtime.currentCell = null
     runtime.currentBatch = null
-    if (runtime.queue[0]?.cellId === stuck) runtime.queue.shift()
+    const waiting = runtime.queue[0]?.cellId === stuck
+    if (waiting) runtime.queue.shift()
+    /*
+     * Ячейка, которая только стояла в очереди, теряет номер вместе с ядром.
+     *
+     * Её прошлый результат остаётся — это единственное свидетельство того, что
+     * она когда-то показывала, и стирать его незачем. А вот номер над ним
+     * теперь врёт: под одним `Out [12] · 3.4 s` оказывается содержимое двух
+     * разных выполнений, `hasError` красит всю ячейку как упавшую, и
+     * `newestErrorIndex` в контексте оракула отдаёт модели таблицу двенадцатого
+     * выполнения как обстоятельства падения, которое не принадлежит никакому.
+     */
+    if (waiting) {
+      const found = findCell(doc, stuck)
+      if (found) {
+        doc.transact(() => {
+          found.cell.set('execCount', null)
+          found.cell.set('ranMs', null)
+        }, ORIGIN)
+      }
+    }
     setCellState(runtime.sessionId, stuck, 'error')
   }
   dropQueue(runtime)
@@ -1108,9 +1144,23 @@ function resetAllCells(sessionId: string, except: string | null = null): void {
   const cells = getCells(doc)
   doc.transact(() => {
     cells.forEach((cell) => {
-      if (except && idOf(cell) === except) return
-      // In [3] after a restart would be a lie: the counter starts over.
+      /*
+       * Номер снимается со всех, состояние — не со всех.
+       *
+       * Исключение существует ради гонки: ячейку, которую сейчас разбирает
+       * насос, он допишет сам, и трогать её состояние отсюда значит получить
+       * «running» в комнате, где ничего не выполняется. К номеру это не
+       * относится: за это выполнение его больше никто не запишет — execute_input
+       * уже был, а setCellState номера не касается, — и счётчик, который его
+       * выдал, принадлежит ядру, которого больше нет.
+       *
+       * Раньше исключение накрывало и номер, и получалось хуже всего: после
+       * перезапуска сорок результатов оставались на экране, а единственный
+       * проверяемый факт о них — номер выполнения — исчезал молча. Теперь
+       * номера нет у всех, и клиент говорит об этом словами.
+       */
       cell.set('execCount', null)
+      if (except && idOf(cell) === except) return
       cell.set('state', 'idle' as CellState)
       // И секундомер вместе с ним: ядро, которое считало, перезапущено, а
       // время прошлого выполнения относилось к нему.

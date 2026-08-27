@@ -242,3 +242,38 @@ test('the room is told, once, when it comes back', () => {
   assert.equal(notes.length, 1, `expected one line, got ${notes.length}`)
   assert.match(notes[0], /restarted/i)
 })
+
+test('перезапуск снимает номер со всех результатов, включая тот, что не тронул', async () => {
+  /*
+   * Раньше исключение для ячейки, которую разбирает насос, накрывало и номер:
+   * после перезапуска сорок результатов оставались на экране, а единственный
+   * проверяемый факт о них — номер выполнения — исчезал у всех, кроме одной.
+   * Получалось, что самая свежая ячейка выглядела единственной настоящей.
+   */
+  const { createSession } = await import('../server/src/db.js')
+  const { getSessionDoc } = await import('../server/src/collab/index.js')
+  const { getCells, createCell } = await import('../shared/notebook.js')
+  const { restartSession } = await import('../server/src/kernel/index.js')
+
+  const id = `restart-numbers-${Date.now().toString(36)}`
+  createSession(id, 'Restart numbers')
+  const { doc } = getSessionDoc(id)
+  const cells = getCells(doc)
+
+  const done = createCell('code', 'print(1)')
+  const alsoDone = createCell('code', 'print(2)')
+  doc.transact(() => {
+    cells.push([done, alsoDone])
+    for (const [i, cell] of [done, alsoDone].entries()) {
+      cell.set('state', 'ok')
+      cell.set('execCount', i + 1)
+    }
+  })
+
+  await restartSession(id, 'Alexander')
+
+  for (const cell of [done, alsoDone]) {
+    assert.equal(cell.get('execCount'), null, 'номер пережил перезапуск ядра')
+    assert.equal(cell.get('state'), 'idle')
+  }
+})

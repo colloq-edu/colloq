@@ -28,6 +28,18 @@ export class OutputWriter {
   private truncated = false
   private noticed = false
   private disposed = false
+  /**
+   * Обещание: следующая запись не добавляет, а заменяет.
+   *
+   * Заводится только на `clear_output(wait=True)` — том самом, которым
+   * рисуются прогресс-бары и виджеты. Слово «wait» в нём значит «сотри, когда
+   * будет чем заменить», а мы стирали сразу: массив пустел немедленно, замена
+   * ждала окно склейки, и комната смотрела, как анимация мигает раз двадцать в
+   * секунду. Само по себе обещание в документ не пишет ничего.
+   */
+  private superseded = false
+  /** Была ли в этом выполнении хоть одна запись; см. stream(). */
+  private wrote = false
 
   constructor(
     private readonly doc: Y.Doc,
@@ -35,16 +47,53 @@ export class OutputWriter {
   ) {}
 
   stream(name: StreamName, text: string): void {
-    if (this.disposed || this.truncated || !text) return
+    if (this.disposed || !text) return
+    /*
+     * Упёршаяся в потолок ячейка всё же должна пропустить замену.
+     *
+     * Раньше здесь стояло `|| this.truncated`, и ячейка, набравшая свои 400 КБ,
+     * отказывала каждому следующему куску — включая тот, который должен был
+     * выполнить отложенное стирание и сбросить бюджет. Отложенное обещание не
+     * срабатывало никогда, и ячейка держала прошлый вывод до конца выполнения.
+     * В коротком тесте этого не видно вовсе.
+     */
+    if (this.truncated && !this.superseded) return
     const last = this.pending[this.pending.length - 1]
     if (last && last.name === name) last.text += text
     else this.pending.push({ name, text })
+    /*
+     * Первый вывод не ждёт окна склейки.
+     *
+     * Склейка существует, чтобы двести записей не стали двумястами
+     * обновлениями, — а на первом байте она не экономит ничего и стоит ровно
+     * тех пятидесяти миллисекунд, которые комната смотрит на пустое место
+     * после нажатия. Дальше всё как было.
+     *
+     * `clear()` этот признак не сбрасывает: иначе перерисовка прогресс-бара
+     * начала бы писать без склейки двадцать раз в секунду.
+     */
+    if (!this.wrote) {
+      this.flush()
+      return
+    }
     if (!this.timer) {
       this.timer = setTimeout(() => {
         this.timer = null
         this.flush()
       }, config.outputFlushMs)
     }
+  }
+
+  /**
+   * Стереть не сейчас, а когда будет чем заменить.
+   *
+   * `clear_output(wait=True)` — это «сотри в тот момент, когда придёт
+   * следующий кадр». Ничего не пишет и ничего не планирует: всю работу делает
+   * следующая запись, а если её не будет — конец выполнения (см. dispose).
+   */
+  supersede(): void {
+    if (this.disposed) return
+    this.superseded = true
   }
 
   data(mimebundle: Record<string, string>, execCount: number | null): void {
@@ -97,6 +146,9 @@ export class OutputWriter {
     this.used = 0
     this.truncated = false
     this.noticed = false
+    // Немедленное стирание отвечает на тот же вопрос, что и отложенное, — и
+    // отвечает раньше. Обещание больше не нужно.
+    this.superseded = false
     this.write((outputs) => {
       if (outputs.length > 0) outputs.delete(0, outputs.length)
     })
@@ -124,6 +176,19 @@ export class OutputWriter {
 
   dispose(): void {
     this.flush()
+    /*
+     * Невыполненное обещание выполняется здесь.
+     *
+     * Если до конца выполнения так ничего и не пришло, заменять было нечем — а
+     * стереть просили. Без этой строки стёртый кадр виджета не возвращался бы
+     * никогда: на экране остаётся картинка, которую ядро уже отменило.
+     *
+     * Именно в dispose, а не третьим методом, который надо помнить: это
+     * единственная строка, до которой доходит каждое начатое выполнение —
+     * finally у runOne, короткий путь пустой ячейки, catch с KernelError и
+     * reportDeadKernel.
+     */
+    if (this.superseded) this.write(() => {})
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null
@@ -140,7 +205,29 @@ export class OutputWriter {
   private write(mutate: (outputs: Y.Array<YOutput>) => void): void {
     const found = findCell(this.doc, this.cellId)
     if (!found) return
-    this.doc.transact(() => mutate(cellOutputs(found.cell)), ORIGIN)
+    this.wrote = true
+    this.doc.transact(() => {
+      const outputs = cellOutputs(found.cell)
+      /*
+       * Обещание разрешается здесь, до `mutate`, и это существенно.
+       *
+       * Стереть после — значит дать `append()` подклеить новый кадр в хвост
+       * Y.Text старого: получилась бы одна строка «a\nb» без границы, и она
+       * поехала бы и в снимок, и в экспорт. Не устаревший кадр, а порча.
+       *
+       * Бюджет сбрасывается тоже здесь, а не в `supersede()`: сбросить его
+       * заранее — значит вернуть упёршейся ячейке её 400 КБ в тот момент,
+       * когда на экране ещё висит прошлый вывод.
+       */
+      if (this.superseded) {
+        this.superseded = false
+        this.used = 0
+        this.truncated = false
+        this.noticed = false
+        if (outputs.length > 0) outputs.delete(0, outputs.length)
+      }
+      mutate(outputs)
+    }, ORIGIN)
   }
 
   private budgeted(text: string): string {

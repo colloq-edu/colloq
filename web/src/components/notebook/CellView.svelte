@@ -61,6 +61,7 @@
     watchText,
   } from '@/lib/yreactive.svelte'
   import { runSlot } from '@/lib/run-slot'
+  import { nextHeld, outputSeat, unnumberedResult } from '@/lib/output-seat'
   import CellOutputs from './CellOutputs.svelte'
   import CodeEditor from './CodeEditor.svelte'
   import Markdown from './Markdown.svelte'
@@ -291,6 +292,43 @@
     if (!running) return
     const id = window.setInterval(() => (now = Date.now()), 200)
     return () => window.clearInterval(id)
+  })
+
+  /* ------------------------------------------------- место под вывод */
+
+  /** Сколько область намерила собой сейчас; пишется на внутренний узел. */
+  let outputsMeasured = $state(0)
+  /** Сколько она занимала, когда в ней последний раз что-то было. */
+  let heldOutputHeight = $state(0)
+  /** Сколько картинок ещё не сообщили свой размер; приходит из CellOutputs. */
+  let outputsPending = $state(0)
+
+  const outputFloor = $derived(
+    outputSeat({
+      running,
+      outputs: outputs.current.length,
+      pendingImages: outputsPending,
+      held: heldOutputHeight,
+    }),
+  )
+
+  const unnumbered = $derived(
+    isCode &&
+      unnumberedResult({
+        state: cellState,
+        execCount: meta.current.execCount,
+        outputs: outputs.current.length,
+      }),
+  )
+
+  // Запоминание высоты. Обе проверки внутри nextHeld несущие — см. модуль.
+  $effect(() => {
+    heldOutputHeight = nextHeld(heldOutputHeight, {
+      running,
+      outputs: outputs.current.length,
+      pendingImages: outputsPending,
+      measured: outputsMeasured,
+    })
   })
 
   const slot = $derived(
@@ -956,34 +994,90 @@
             </div>
           {/if}
 
-          {#if isCode && outputs.current.length > 0}
+          <!--
+            Область вывода не сжимается, пока в неё нечего положить.
+
+            Вывод стирается в момент старта — прошлое число, выглядящее свежим,
+            на проекторе хуже любого рывка, — но высота остаётся. Перезапуск
+            ячейки, печатающей то же самое, не двигает страницу вовсе; ячейка,
+            у которой вывод правда изменился в размере, двигается один раз и на
+            настоящую разницу. Сейчас каждая двигается дважды.
+
+            Это пол, а не обещание: у блока нет ни верхней, ни нижней, ни правой
+            границы и нет скругления, так что пустым он неотличим от отступа.
+            Не предмет, стоящий пустым, а ячейка, которая ещё не сжалась. Что
+            происходит, объясняют дышащая полоса слева и строка Running под ней
+            — добавлять сюда третью подпись значило бы сказать одно и то же
+            трижды.
+
+            Читается настоящее `running`, а не `shownRunning`: это раскладка, а
+            не сигнал занятости. Порог в двести миллисекунд к ней не относится
+            — привязать место к нему значило бы схлопывать быстрые ячейки и
+            держать медленные, то есть вывернуть оба механизма наизнанку.
+          -->
+          {#if isCode && (outputs.current.length > 0 || outputFloor > 0)}
             <div
-              class={cn('border-l-4', RULE[tone], hasError ? 'bg-danger/5' : 'bg-surface/50')}
+              class={cn(
+                'border-l-4 transition-[background-color] duration-[var(--speed-quick)]',
+                RULE[tone],
+                hasError ? 'bg-danger/5' : 'bg-surface/50',
+              )}
+              style:min-height={outputFloor > 0 ? `${outputFloor}px` : undefined}
             >
-              <div class="px-2 py-1.5">
-                <CellOutputs outputs={outputs.current} />
+              <!--
+                Мерит один узел, держит другой — и это обязательно.
+
+                Повесь `min-height` и `bind:clientHeight` на один элемент, и
+                резерв начнёт читать сам себя: запомненная высота дорастёт до
+                самой большой, какая когда-либо была, и обратно уже не
+                опустится. В быстром тесте это выглядит совершенно правильно.
+              -->
+              <div bind:clientHeight={outputsMeasured}>
+                {#if outputs.current.length > 0}
+                  <div class="px-2 py-1.5">
+                    <CellOutputs outputs={outputs.current} bind:pending={outputsPending} />
+                  </div>
+                  {#if meta.current.execCount !== null || ranByOther || unnumbered}
+                    <div class="flex items-center gap-3 border-t border-line-soft px-4 py-1">
+                      {#if unnumbered}
+                        <!--
+                          Результат, у которого отняли номер выполнения.
+                          
+                          Словами, а не оттенком: язык переживает и проектор, и
+                          скриншот в чате, и дальтонизм. Это состояние, а не
+                          промелькнувший переход, — оно висит ровно столько,
+                          сколько остаётся правдой. Цвет — тот же, каким этажом
+                          выше помечено «предложение устарело».
+                        -->
+                        <span class="text-2xs text-warning">
+                          From an earlier run — the kernel restarted or the cell was restored.
+                        </span>
+                      {/if}
+                      {#if ranByOther}
+                        <span class="font-mono text-2xs text-muted">{ranByOther}</span>
+                      {/if}
+                      {#if meta.current.execCount !== null || unnumbered}
+                        <span class={cn('ml-auto', CAPS, 'text-muted')}>
+                          <!--
+                            Сколько это заняло — рядом с номером выполнения, и
+                            только если заняло сколько-нибудь заметное время. Под
+                            две секунды цифра сообщает, что компьютер справился
+                            быстро, а таких ячеек в тетради к концу пары сорок.
+                          -->
+                          {#if meta.current.execCount === null}
+                            Out [—]
+                          {:else}
+                            Out [{meta.current.execCount}]{meta.current.ranMs !== null &&
+                            meta.current.ranMs >= NOTICED_MS
+                              ? ` · ${spell(meta.current.ranMs)}`
+                              : ''}
+                          {/if}
+                        </span>
+                      {/if}
+                    </div>
+                  {/if}
+                {/if}
               </div>
-              {#if meta.current.execCount !== null || ranByOther}
-                <div class="flex items-center gap-3 border-t border-line-soft px-4 py-1">
-                  {#if ranByOther}
-                    <span class="font-mono text-2xs text-muted">{ranByOther}</span>
-                  {/if}
-                  {#if meta.current.execCount !== null}
-                    <span class={cn('ml-auto', CAPS, 'text-muted')}>
-                      <!--
-                        Сколько это заняло — рядом с номером выполнения, и
-                        только если заняло сколько-нибудь заметное время. Под
-                        две секунды цифра сообщает, что компьютер справился
-                        быстро, а таких ячеек в тетради к концу пары сорок.
-                      -->
-                      Out [{meta.current.execCount}]{meta.current.ranMs !== null &&
-                      meta.current.ranMs >= NOTICED_MS
-                        ? ` · ${spell(meta.current.ranMs)}`
-                        : ''}
-                    </span>
-                  {/if}
-                </div>
-              {/if}
             </div>
           {/if}
         </div>

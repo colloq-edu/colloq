@@ -27,6 +27,8 @@ let wss: WebSocketServer
 let port = 0
 /** Set to hang instead of answering, the way a kernel that is thinking does. */
 let swallowExecutes = false
+/** Счётчик выполнений подделки — то же, что In [n] у настоящего ядра. */
+let executions = 0
 /**
  * Requests the fake is sitting on. A real kernel answers an interrupted request
  * with an aborted reply and an idle status; without that the caller waits for
@@ -113,6 +115,12 @@ before(async () => {
           return
         }
         reply(ws, msg.header, 'status', { execution_state: 'busy' })
+        /*
+         * Номер выполнения приезжает в execute_input, и настоящее ядро шлёт
+         * его всегда — а подделка не слала никогда, так что execCount в тестах
+         * молча оставался null и любая проверка про номер была бессмысленной.
+         */
+        reply(ws, msg.header, 'execute_input', { code: msg.content.code, execution_count: ++executions })
         // A cell whose source says so fails, so a suite can build a notebook
         // that breaks in the middle without needing a real Python.
         if (/RAISE/.test(msg.content.code)) {
@@ -146,6 +154,14 @@ before(async () => {
               },
             ],
           })
+          reply(ws, msg.header, 'status', { execution_state: 'idle' })
+          return
+        }
+        // Ячейка, которая ничего не печатает: `x = 1`, определение функции,
+        // импорт. Настоящее ядро на такую отвечает ровно этим — реплаем и
+        // idle, без единого iopub-вывода.
+        if (/SILENT/.test(msg.content.code)) {
+          reply(ws, msg.header, 'execute_reply', { status: 'ok', execution_count: 1 })
           reply(ws, msg.header, 'status', { execution_state: 'idle' })
           return
         }
@@ -931,4 +947,63 @@ test('длительность считается по записи сервер
   const took = room.ranMs()
   assert.ok(typeof took === 'number', 'длительность не записана')
   assert.ok(took < 60_000, `подделка попала в длительность: ${took} мс`)
+})
+
+test('запуск открывается одной транзакцией', async () => {
+  /*
+   * Раньше старт выполнения был двумя записями подряд: сначала поля ячейки,
+   * потом стирание вывода. Клиент получал два события — на первом просыпался
+   * наблюдатель полей и пропадала строка «Out [n]», на втором пропадало тело.
+   * Между этими кадрами область успевала обмериться на двадцать четыре
+   * пикселя короче, то есть место под новый вывод резервировалось неверным.
+   *
+   * Проверка молчаливая по своей природе: разъедини транзакции обратно, и всё
+   * продолжит работать — просто чуть заметнее дёргаться.
+   */
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  room.type('print(1)')
+  requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
+  assert.ok(await until(() => room.state() === 'ok'))
+
+  const marks: Array<{ outs: number; state: string; exec: unknown }> = []
+  const on = () => {
+    marks.push({
+      outs: (room.cell.get('outputs') as { length: number }).length,
+      state: String(room.cell.get('state')),
+      exec: room.cell.get('execCount'),
+    })
+  }
+  room.doc.on('afterTransaction', on)
+  requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
+  assert.ok(await until(() => room.state() === 'ok'))
+  room.doc.off('afterTransaction', on)
+
+  // Ровно одна транзакция обнуляет вывод, и она же объявляет ячейку
+  // работающей и снимает номер.
+  const emptied = marks.filter((m, i) => m.outs === 0 && (i === 0 || marks[i - 1].outs > 0))
+  assert.equal(emptied.length, 1, `вывод обнулялся ${emptied.length} раз(а)`)
+  assert.equal(emptied[0].state, 'running', 'стирание и объявление разошлись по разным транзакциям')
+  assert.equal(emptied[0].exec, null, 'номер снялся не в той же транзакции')
+})
+
+test('выполнение, которое ничего не печатает, не оставляет прошлого вывода', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  room.type('print(1)')
+  requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
+  assert.ok(await until(() => room.state() === 'ok'))
+  assert.ok((room.cell.get('outputs') as { length: number }).length > 0, 'первый запуск ничего не напечатал')
+
+  // Подделка Jupyter отвечает потоком на любой код, кроме этого маркера.
+  room.type('SILENT')
+  requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
+  assert.ok(await until(() => room.state() === 'ok'))
+  await wait(150)
+  assert.equal(
+    (room.cell.get('outputs') as { length: number }).length,
+    0,
+    'ячейка держит результат выполнения, которого больше нет',
+  )
+  assert.notEqual(room.cell.get('execCount'), null, 'у прошедшего выполнения нет номера')
 })

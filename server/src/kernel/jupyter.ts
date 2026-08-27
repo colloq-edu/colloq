@@ -30,7 +30,8 @@ export interface ExecuteHandlers {
   onStream(name: 'stdout' | 'stderr', text: string): void
   onData(mimebundle: Record<string, string>, execCount: number | null): void
   onError(ename: string, evalue: string, traceback: string[]): void
-  onClear(): void
+  /** @param wait `clear_output(wait=True)` — стереть, когда будет чем заменить. */
+  onClear(wait: boolean): void
 }
 
 export type ExecuteStatus = 'ok' | 'error' | 'abort'
@@ -861,9 +862,16 @@ export class JupyterKernel {
           )
           break
         case 'clear_output':
-          // `wait: true` means "clear when the next output arrives"; at the
-          // writer's coalescing window the difference is imperceptible.
-          handlers.onClear()
+          /*
+           * `wait` — это не мелочь, вопреки прежнему комментарию здесь.
+           *
+           * Он утверждал, что на окне склейки разница незаметна. Разница ровно
+           * в том, чем рисуются прогресс-бары и виджеты:
+           * `while ...: clear_output(wait=True); print(frame)` очищал массив
+           * немедленно, а замена ждала до config.outputFlushMs — и комната
+           * смотрела, как анимация мигает раз двадцать в секунду.
+           */
+          handlers.onClear(Boolean(content.wait))
           break
         default:
           break

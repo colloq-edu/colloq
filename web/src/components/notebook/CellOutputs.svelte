@@ -4,12 +4,54 @@
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
   import { withoutEcho } from '@/lib/traceback'
   import { cn } from '@/lib/utils'
+  import { outputKey } from '@/lib/output-seat'
 
   interface Props {
     outputs: CellOutput[]
+    /**
+     * Сколько картинок ещё не сообщили свой размер.
+     *
+     * Наружу — чтобы ячейка не отпустила зарезервированное место раньше, чем
+     * появится чем его занять. См. `outputSeat`.
+     */
+    pending?: number
   }
 
-  let { outputs }: Props = $props()
+  let { outputs, pending = $bindable(0) }: Props = $props()
+
+  /**
+   * Картинка, которая ещё не раскодировалась.
+   *
+   * `imageSrc` собирает data-URI, а у `<img>` нет ни width, ни height, ни
+   * aspect-ratio — значит, только что созданный элемент занимает нисколько,
+   * пока base64 не раскодируется. Без этого счётчика место освобождалось бы в
+   * тот кадр, когда массив перестал быть пустым, и комната видела бы три
+   * состояния подряд: девятьсот пикселей резерва, восьмипиксельная белая
+   * полоска и рывок обратно на девятьсот. То есть ровно тот рывок, от
+   * которого избавлялись, только с лишним промежуточным кадром.
+   *
+   * По событиям load/error, никаких таймеров; и всё это в любом случае
+   * ограничено выполнением, потому что резерв живёт только пока `running`.
+   */
+  function decoding(node: HTMLImageElement) {
+    if (node.complete) return
+    let counted = true
+    pending += 1
+    const done = () => {
+      if (!counted) return
+      counted = false
+      pending -= 1
+    }
+    node.addEventListener('load', done)
+    node.addEventListener('error', done)
+    return {
+      destroy() {
+        done()
+        node.removeEventListener('load', done)
+        node.removeEventListener('error', done)
+      },
+    }
+  }
 
   /** Roughly twenty-five lines of output — past that a cell starts eating the page. */
   const COLLAPSE_PX = 420
@@ -53,7 +95,13 @@
 </script>
 
 <div class="space-y-1.5">
-  {#each outputs as output, i (i)}
+  <!--
+    Ключ по форме места, а не по его номеру: `clear_output(wait=True)` меняет
+    N записей на M в одной транзакции, и трейсбек на девятьсот пикселей
+    становится графиком на двести внутри той же обёртки с прежним `heights[0]`
+    — график рисуется подрезанным, под ним висит «Show more» из ниоткуда.
+  -->
+  {#each outputs as output, i (outputKey(i, output))}
     {@const clipped = tall(i) && !expanded[i]}
     <div class="relative">
       <div class="overflow-hidden" style:max-height={clipped ? `${COLLAPSE_PX}px` : undefined}>
@@ -87,6 +135,7 @@
               <!-- Plots are drawn for paper: a transparent figure needs a light
                    backing or its black axes vanish into the canvas. -->
               <img
+                use:decoding
                 src={imageSrc(mime, output.data[mime])}
                 alt="Cell output"
                 class="max-w-full bg-white/95 p-1"
