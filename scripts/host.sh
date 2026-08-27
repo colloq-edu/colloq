@@ -72,13 +72,19 @@ LOCAL="http://localhost:${PORT}"
 
 LOG="$(mktemp -t colloq-tunnel)"
 TUNNEL_PID=""
+# Ставили ли мы PUBLIC_URL сами — см. cleanup.
+TOUCHED_ENV=""
 
 cleanup() {
   local code=$?
   [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null || true
   # Ссылка мертва вместе с туннелем. Оставить её в .env значит, что следующий
   # `make up` без туннеля раздаст студентам адрес, который никуда не ведёт.
-  if [ -f .env ] && grep -qE '^PUBLIC_URL=https://' .env 2>/dev/null; then
+  #
+  # Только если её ставили мы: отказ на первом шаге — «докера нет», «инстанс
+  # нездоров» — не повод переписывать чужую настройку, к которой мы ещё не
+  # прикасались.
+  if [ -n "$TOUCHED_ENV" ] && [ -f .env ] && grep -qE '^PUBLIC_URL=https://' .env 2>/dev/null; then
     restore_public_url
     say "${DIM}PUBLIC_URL возвращён на ${LOCAL}${OFF}"
   fi
@@ -125,7 +131,8 @@ elif [ -f "${PIDFILE:-.colloq.pid}" ] && kill -0 "$(cat "${PIDFILE:-.colloq.pid}
   # поднимет и app, и на порту окажется второй Colloq с другой базой поверх
   # первого. Это и был «третий переход»: три разных инстанса за одно утро.
   #
-  die "colloq на ${LOCAL} работает, но не готов вести семинар — обычно это выключенный Docker.\n  Проверьте: curl -s ${LOCAL}/api/health"
+  die "colloq на ${LOCAL} работает, но не готов вести семинар — обычно это выключенный Docker.
+  Проверьте: curl -s ${LOCAL}/api/health"
 else
   say "${DIM}    не отвечает — поднимаю docker compose${OFF}"
   docker compose up -d --wait >/dev/null 2>&1 || docker compose up -d >/dev/null 2>&1 || true
@@ -195,7 +202,8 @@ CONF
   for _ in $(seq 1 30); do
     grep -q 'start proxy success' "$LOG" 2>/dev/null && { ok=1; break; }
     if grep -qE 'already exists' "$LOG" 2>/dev/null; then
-      die "поддомен ${COLLOQ_HOSTNAME} уже занят — этот семинар открыт с другой машины.\n  Закройте его там или возьмите другое имя: make host HOST=<имя>.colloq.ru"
+      die "поддомен ${COLLOQ_HOSTNAME} уже занят — этот семинар открыт с другой машины.
+  Закройте его там или возьмите другое имя: make host HOST=<имя>.colloq.ru"
     fi
     if grep -qiE 'login to server failed|authorization failed|authentication failed|token in login doesn' "$LOG" 2>/dev/null; then
       die "ретранслятор не принял секрет. Проверьте RELAY_TOKEN в .env."
@@ -232,6 +240,7 @@ fi
 
 say "${BOLD}3/4${OFF} перезапускаю приложение с внешним адресом"
 set_public_url "$PUBLIC"
+TOUCHED_ENV=1
 case "$WHO" in
   container)
     PUBLIC_URL="$PUBLIC" docker compose up -d app >/dev/null
