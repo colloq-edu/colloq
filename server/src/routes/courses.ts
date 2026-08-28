@@ -133,6 +133,11 @@ export function courseRoutes(): Router {
 
     const items: CourseItem[] = [];
     for (const raw of incoming as Record<string, unknown>[]) {
+      if (raw?.kind === "planned") {
+        const name = str(raw.name, MAX_COURSE_NAME);
+        if (name) items.push({ kind: "planned", name, when: str(raw.when, 40) });
+        continue;
+      }
       if (raw?.kind === "gone") {
         items.push({
           kind: "gone",
@@ -267,16 +272,16 @@ export function courseRoutes(): Router {
       name: course.name,
       blurb: course.blurb,
       items: freshItems(course.items).map((item) =>
-        item.kind === "gone"
-          ? item
-          : {
+        item.kind === "seminar"
+          ? {
               kind: "seminar",
               // Идентификатор комнаты наружу не уходит: восемь его символов —
               // это всё право писать в неё.
               sessionId: "",
               name: item.name,
               publication: item.publication,
-            },
+            }
+          : item,
       ),
     };
     res.json({ course: view });

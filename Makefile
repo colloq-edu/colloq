@@ -180,6 +180,12 @@ shell: ## Оболочка внутри ядра — посмотреть, чт�
 host: .env ## Выставить семинар наружу и получить ссылку. HOST=... — свой адрес
 	@COLLOQ_HOSTNAME="$(HOST)" ./scripts/host.sh
 
+course: ## Курс из расписания в таблице. SHEET=<id> GID=<gid> COL="ML · сильная"
+	@test -n "$(SHEET)" || { printf '$(RED)Укажите таблицу: make course SHEET=<id> COL="ML · сильная"$(OFF)\n'; exit 1; }
+	@npx tsx scripts/course-from-sheet.mts \
+	  --sheet "$(SHEET)" --gid "$${GID:-0}" --column "$(COL)" \
+	  $(if $(NAME),--name "$(NAME)",) $(if $(BLURB),--blurb "$(BLURB)",) $(if $(DRY),--dry,)
+
 relay-setup: ## Поставить ретранслятор для *.colloq.ru. WHERE=root@адрес
 	@test -n "$(WHERE)" || { printf '$(RED)Укажите машину: make relay-setup WHERE=root@203.0.113.11$(OFF)\n'; exit 1; }
 	@./scripts/relay-setup.sh "$(WHERE)"

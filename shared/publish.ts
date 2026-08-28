@@ -40,7 +40,25 @@ export interface CourseItemGone {
   at: number;
 }
 
-export type CourseItem = CourseItemSeminar | CourseItemGone;
+/**
+ * Тема, которую ещё не вели.
+ *
+ * Курс заводят в начале семестра, а комнаты появляются по одной, раз в неделю.
+ * Без этой строки страница курса в сентябре была бы пустой — или пришлось бы
+ * завести тридцать комнат вперёд, каждую со своей ссылкой, ведущей в пустую
+ * тетрадь за три месяца до занятия.
+ *
+ * `when` — неделя словами расписания («31 авг — 6 сен»), а не дата: расписание
+ * так и составляют, и переводить его в числа значит выдумать день, которого в
+ * нём нет.
+ */
+export interface CourseItemPlanned {
+  kind: "planned";
+  name: string;
+  when: string;
+}
+
+export type CourseItem = CourseItemSeminar | CourseItemGone | CourseItemPlanned;
 
 export interface Course {
   id: CourseId;
@@ -133,11 +151,11 @@ export interface PublicSeminar {
  * Такой момент нельзя отметить, пока в поле не напишут слова.
  */
 export interface PublishCandidate {
-  seq: number
-  label: string
-  at: number
-  cellCount: number
-  kind: string
+  seq: number;
+  label: string;
+  at: number;
+  cellCount: number;
+  kind: string;
 }
 
 /* -------------------------------------------------------------- ограничения */

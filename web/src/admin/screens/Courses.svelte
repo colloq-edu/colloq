@@ -308,7 +308,22 @@
           <span class="w-[26px] shrink-0 font-mono text-2xs text-faint">
             {String(index + 1).padStart(2, '0')}
           </span>
-          {#if item.kind === 'gone'}
+          {#if item.kind === 'planned'}
+            <div class="min-w-0 flex-1">
+              <p class="text-ui text-ink">{item.name}</p>
+              <p class="mt-0.5 text-2xs text-faint">по плану · {item.when}</p>
+            </div>
+            <div class="flex w-[290px] shrink-0 items-baseline gap-3">
+              <span class="text-ui text-muted">комнаты ещё нет</span>
+              <button
+                type="button"
+                class="text-ui font-semibold text-muted hover:text-ink"
+                onclick={() => drop(index)}
+              >
+                Убрать строку
+              </button>
+            </div>
+          {:else if item.kind === 'gone'}
             <div class="min-w-0 flex-1">
               <p class="text-ui text-muted">{item.name}</p>
               <p class="mt-0.5 text-2xs text-faint">
