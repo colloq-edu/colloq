@@ -35,6 +35,14 @@ import {
   setRules,
 } from '../db.js'
 import { forgetCache } from '../collab/history.js'
+import {
+  deletePublication,
+  entombSeminar,
+  listCourses,
+  orphanPublication,
+  publicationOf,
+  stepHeadings,
+} from '../publish/store.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { listFiles, sessionDir } from '../workspace.js'
@@ -146,6 +154,7 @@ function toSeminar(row: SeminarRow): AdminSeminar {
   // actually holds (collab/index.ts). A second tab counts twice; the control
   // socket keeps no per-session tally to cross-check against.
   const liveCount = onlineCount(row.id)
+  const publication = publicationOf(row.id)
   return {
     id: row.id,
     name: row.name,
@@ -165,7 +174,20 @@ function toSeminar(row: SeminarRow): AdminSeminar {
     createdBy: row.created_by,
     archivedAt: row.archived_at,
     rules: getRules(row.id),
+    publication: publication
+      ? { id: publication.id, state: publication.state, steps: stepHeadings(publication.id).length }
+      : null,
+    courses: coursesWith(row.id),
   }
+}
+
+/** Курсы, в которых состоит семинар. Строка списка показывает их ссылками. */
+function coursesWith(sessionId: string): { id: string; name: string }[] {
+  return listCourses()
+    .filter((course) =>
+      course.items.some((item) => item.kind === 'seminar' && item.sessionId === sessionId),
+    )
+    .map((course) => ({ id: course.id, name: course.name }))
 }
 
 /* ------------------------------------------------------------------ input */
@@ -323,6 +345,8 @@ export function adminInstanceRoutes(): Router {
   router.delete('/api/admin/seminars/:id', ownerOnly('delete a seminar'), (req, res) => {
     const row = seminarOr404(req, res)
     if (!row) return
+    // `?reading=drop` — «удалить и то и другое». Умолчание сохраняет чтение.
+    const keepReading = req.query.reading !== 'drop'
     // Awaited in order, because every one of these writers gets at the document
     // through getSessionDoc(), which creates one on demand: stopping them after
     // the eviction would rebuild the room and save a snapshot of it.
@@ -346,6 +370,22 @@ export function adminInstanceRoutes(): Router {
         forgetCache(row.id)
         // Правила той же комнаты лежат в памяти — забыть вместе с ней.
         forgetRules(row.id)
+        /*
+         * Опубликованная страница — отдельный предмет, и её судьба спрашивается
+         * отдельно. Она собрана целиком и лежит своими строками: за ней не
+         * стоит ни комнаты, ни документа, так что «удалить комнату, чтение
+         * оставить» — это выбор, а не отговорка. По умолчанию оставляется:
+         * ссылку у студентов не отозвать, и страница, отвечающая 404 там, где
+         * вчера был семинар, — худшее из двух.
+         */
+        const pub = publicationOf(row.id)
+        if (pub) {
+          if (keepReading) orphanPublication(row.id)
+          else deletePublication(pub.id)
+        }
+        // В курсах остаётся надгробие: пропавшая четвёртая неделя ломает курс
+        // для того, кто на ней сидел, и сдвигает нумерацию остальных.
+        entombSeminar(row.id, row.name)
 
         try {
           fs.rmSync(sessionDir(row.id), { recursive: true, force: true })

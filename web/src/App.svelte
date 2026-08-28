@@ -89,7 +89,18 @@
      * here would grey out controls that are in fact allowed — a lie that
      * corrects itself a second later, which is the worst kind.
      */
-    return cached ?? { id, name: '', createdAt: Date.now(), rules: { ...OPEN_ROOM } }
+    // published/course пусты до ответа сервера: указатель на опубликованную
+    // версию — это утверждение о факте, а первый кадр его не знает.
+    return (
+      cached ?? {
+        id,
+        name: '',
+        createdAt: Date.now(),
+        rules: { ...OPEN_ROOM },
+        published: null,
+        course: null,
+      }
+    )
   }
 
   function enter(id: string | null): void {

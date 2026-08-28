@@ -33,6 +33,7 @@ import { adminAuthRoutes } from './routes/admin-auth.js'
 import { adminEnvironmentRoutes } from './routes/admin-environments.js'
 import { adminImportRoutes } from './routes/admin-import.js'
 import { adminInstanceRoutes } from './routes/admin-instance.js'
+import { courseRoutes } from './routes/courses.js'
 import { aiRoutes } from './routes/ai.js'
 import { fileRoutes } from './routes/files.js'
 import { roleFor, sessionRoutes } from './routes/sessions.js'
@@ -326,6 +327,7 @@ app.use('/api/admin', (req, res, next) => {
 // what put the staff table and the cookie in front of it.
 app.use(adminAuthRoutes())
 app.use(adminInstanceRoutes())
+app.use(courseRoutes())
 app.use(adminEnvironmentRoutes())
 app.use(adminImportRoutes())
 app.use(sessionRoutes())

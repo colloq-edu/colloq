@@ -128,6 +128,79 @@ db.exec(`
    * the notebook now" and is overwritten constantly; this one is append-only
    * and answers "what was it then". A single table would have to be both.
    */
+  /*
+   * Курс — постоянная публичная страница, собирающая семестр семинаров в том
+   * порядке, в каком их вели. Единственный адрес в Colloq, который человек
+   * стал бы сохранить в закладки.
+   *
+   * Состав и порядок — одним фактом, JSON-массивом: и то и другое читается
+   * только целиком, «в каких курсах состоит этот семинар» никто не спрашивает,
+   * а хранить порядок отдельными числами значит уметь их разъезжаться. Ровно
+   * так же в этом коде уже хранится «shape» в collab/history.ts.
+   */
+  CREATE TABLE IF NOT EXISTS courses (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    blurb      TEXT,
+    created_at INTEGER NOT NULL,
+    created_by TEXT,
+    items      TEXT NOT NULL DEFAULT '[]',
+    rev        INTEGER NOT NULL DEFAULT 0
+  );
+
+  /*
+   * Публикация — второй предмет, выведенный из того, что записала комната.
+   *
+   * «session_id» обнуляется, когда семинар удаляют, а чтение решили оставить:
+   * страницы уже собраны и лежат здесь, за ними ничего не стоит. Поэтому же
+   * «title» своя копия — семинара может уже не быть, а страница обязана
+   * называться.
+   */
+  CREATE TABLE IF NOT EXISTS publications (
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT UNIQUE,
+    title        TEXT NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'published',
+    published_at INTEGER NOT NULL,
+    published_by TEXT,
+    revision     INTEGER NOT NULL DEFAULT 1,
+    orphaned_at  INTEGER
+  );
+
+  /*
+   * Шаг — момент, который назвал преподаватель, и тетрадь на этот момент.
+   *
+   * «page» — уже спроецированная страница, а не ссылка на строку истории.
+   * Ссылка означала бы разворачивать многомегабайтный документ Yjs на каждый
+   * публичный запрос — в том же процессе, который в эту минуту ведёт занятие,
+   * и без всякого ограничения частоты. Плюс собранная страница переживает
+   * удаление семинара, что и делает «оставить чтение» возможным выбором.
+   */
+  CREATE TABLE IF NOT EXISTS publication_steps (
+    pub   TEXT NOT NULL,
+    seq   INTEGER NOT NULL,
+    ord   INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    at    INTEGER NOT NULL,
+    page  TEXT NOT NULL,
+    PRIMARY KEY (pub, seq)
+  );
+
+  /*
+   * Крупное содержимое выводов — по одному разу на публикацию.
+   *
+   * График matplotlib весит сотни килобайт и одинаков во всех шагах, где его
+   * ячейка не менялась. По хэшу он лежит один раз и раздаётся с вечным
+   * кэшем — страницу открывают с телефона.
+   */
+  CREATE TABLE IF NOT EXISTS publication_blobs (
+    pub  TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    body BLOB NOT NULL,
+    PRIMARY KEY (pub, hash)
+  );
+
   CREATE TABLE IF NOT EXISTS doc_history (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id  TEXT NOT NULL,
@@ -218,7 +291,7 @@ export function createSession(id: string, name: string, environment?: string | n
   insertSession.run(id, name, createdAt, environment ?? null)
   // A brand-new room is the open room: nothing has been decided about it yet,
   // and the default is what Colloq has always been.
-  return { id, name, createdAt, rules: { ...OPEN_ROOM } }
+  return { id, name, createdAt, rules: { ...OPEN_ROOM }, published: null, course: null }
 }
 
 /**
@@ -268,8 +341,20 @@ export function renameSession(id: string, name: string): void {
 
 export function getSession(id: string): SessionInfo | null {
   const row = selectSession.get(id) as SessionRow | undefined
+  /*
+   * `published` и `course` здесь всегда пусты, и это не забывчивость: они
+   * живут в таблицах публикаций, а те импортируют этот модуль. Заполняет их
+   * маршрут `/api/sessions/:id` — единственное место, где они нужны.
+   */
   return row
-    ? { id: row.id, name: row.name, createdAt: row.created_at, rules: readRules(row.rules ?? null) }
+    ? {
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at,
+        rules: readRules(row.rules ?? null),
+        published: null,
+        course: null,
+      }
     : null
 }
 

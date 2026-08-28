@@ -125,6 +125,10 @@ export interface AdminSeminar {
    * существующего семинара, а не только задать их при создании.
    */
   rules: RoomRules
+  /** Публичная страница этого семинара, если она есть. */
+  publication: { id: string; state: 'published' | 'withdrawn'; steps: number } | null
+  /** Курсы, в которых он состоит. Обычно один, но запрета на два нет. */
+  courses: { id: string; name: string }[]
 }
 
 export interface CreateSeminarRequest {

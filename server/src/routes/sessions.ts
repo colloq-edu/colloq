@@ -22,6 +22,7 @@ import {
 } from "../db.js";
 import { onlineParticipantIds } from "../collab/index.js";
 import { ensureKernel } from "../kernel/index.js";
+import { listCourses, publicationOf, stepHeadings } from "../publish/store.js";
 import { broadcast } from "../control.js";
 import { readRules } from "@shared/rules";
 import { setSeminarCreator } from "./admin-instance.js";
@@ -160,7 +161,26 @@ export function sessionRoutes(): Router {
   router.get("/api/sessions/:id", (req, res) => {
     const session = getSession(req.params.id);
     if (!session) return res.status(404).json({ error: "session not found" });
-    res.json(session);
+    /*
+     * Указатель на опубликованную версию — здесь, потому что здесь его читает
+     * экран входа. Это чинит единственный адрес, который у студента правда
+     * есть: ссылка в чате ведёт в комнату, и без подсказки человек через
+     * неделю вводит имя в закончившееся занятие и остаётся в нём один.
+     */
+    const pub = publicationOf(session.id);
+    const course = pub
+      ? (listCourses().find((c) =>
+          c.items.some((i) => i.kind === "seminar" && i.sessionId === session.id),
+        ) ?? null)
+      : null;
+    res.json({
+      ...session,
+      published:
+        pub && pub.state === "published"
+          ? { id: pub.id, steps: stepHeadings(pub.id).length }
+          : null,
+      course: course ? { id: course.id, name: course.name } : null,
+    });
   });
 
   router.post("/api/sessions/:id/join", (req, res) => {
