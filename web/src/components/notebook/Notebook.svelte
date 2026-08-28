@@ -3,7 +3,7 @@
   import { findCell, type CellType } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
-  import { allows, readRules } from '@shared/rules'
+  import { allowsRun, readRules } from '@shared/rules'
   import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
@@ -347,7 +347,12 @@
    * further, stepping down the sheet and adding an empty cell at the end of
    * the shared document for a run that never happened.
    */
-  const mayRun = $derived(allows(readRules(session.session.rules).run, session.me.role))
+  const rules = $derived(readRules(session.session.rules))
+  const mayRun = $derived(allowsRun(rules.run, session.me.role, 'one'))
+  /* Run All и Run Above — отдельное право: при «по одной» ядро одно, и разница
+     между «двадцать человек считают» и «двадцать человек забили очередь на
+     восемьсот ячеек» ровно в этом. */
+  const mayRunAll = $derived(allowsRun(rules.run, session.me.role, 'bulk'))
 
   let holdFill = $state<HTMLElement | null>(null)
   let holdAnim: Animation | null = null

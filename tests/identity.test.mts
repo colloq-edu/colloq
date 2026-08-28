@@ -25,8 +25,8 @@ import { signHostToken, verifyHostToken } from '../server/src/auth.js'
 import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { createHmac } from 'node:crypto'
 import { signToken, verifyToken, TOKEN_MAX_AGE_MS } from '../server/src/auth.js'
-import { createSession, db, getParticipant } from '../server/src/db.js'
-import { sessionAuth, sessionRoutes } from '../server/src/routes/sessions.js'
+import { createSession, db, getParticipant, isTokenHost } from '../server/src/db.js'
+import { roleFor, sessionAuth, sessionRoutes } from '../server/src/routes/sessions.js'
 import { historyRoutes } from '../server/src/routes/history.js'
 import type { JoinRequest, JoinResponse } from '../shared/protocol.js'
 
@@ -66,10 +66,10 @@ function request(token: string, cookie?: string): Request {
   } as unknown as Request
 }
 
-async function join(body: JoinRequest): Promise<JoinResponse> {
+async function join(body: JoinRequest, cookie?: string): Promise<JoinResponse> {
   const res = await fetch(`${base}/api/sessions/${ROOM}/join`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: cookie ? { 'content-type': 'application/json', cookie } : { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
   assert.equal(res.status, 200)
@@ -264,4 +264,74 @@ test('ключ ведущего стареет и не переписывает�
 
   // И старая двухчастная форма — та, что не старела никогда.
   assert.equal(verifyHostToken(room, `${id}.${sig}`), false, 'бессрочный ключ всё ещё принимается')
+})
+
+test('ведущий по токену переживает перезапуск сервера', async () => {
+  /*
+   * Список «кто провёл хост-токен» жил в памяти процесса. После `make stop`
+   * автор семинара, заведённого скриптом, приходил в свою комнату гостем:
+   * кнопки Restart и Interrupt мертвы, объяснения нет, а другого ключа от этой
+   * комнаты не существует — куки у него нет по построению.
+   *
+   * Перезапуск здесь изображается честно: спрашиваем не то, что помнит модуль,
+   * а то, что лежит в базе.
+   */
+  const hostToken = signHostToken(ROOM)
+  const author = await join({ name: 'Scripted', hostToken })
+  assert.equal(author.participant.role, 'host', 'токен не дал ведущего')
+
+  assert.equal(
+    isTokenHost(ROOM, author.participant.id),
+    true,
+    'после перезапуска процесса вспомнить это будет неоткуда',
+  )
+  // И у обычного студента такой записи нет — иначе она ничего не значит.
+  const student = await join({ name: 'Nina' })
+  assert.equal(isTokenHost(ROOM, student.participant.id), false)
+})
+
+test('вход по HTTP и вход по сокету отвечают одинаково', async () => {
+  /*
+   * Функций было две, и они расходились: HTTP смотрел в множество выданных
+   * токенов, сокет про него не знал вовсе. Автор скриптового семинара получал
+   * `host` на кнопках и `participant` на соединении, которым эти кнопки
+   * работают, — то есть кнопки, которые ничего не делают.
+   */
+  const author = await join({ name: 'Scripted Two', hostToken: signHostToken(ROOM) })
+  const student = await join({ name: 'Olga' })
+  const teacher = createTeacher({ name: 'Emmy', email: 'emmy.identity@hse.ru', role: 'teacher' })
+  assert.ok(teacher)
+  rotateLinkKey(teacher.id)
+  const cookie = mintCookie(teacher)
+
+  const cases = [
+    { who: 'автор по токену', id: author.participant.id, cookie: undefined, expect: 'host' },
+    { who: 'студент', id: student.participant.id, cookie: undefined, expect: 'participant' },
+    { who: 'студент с кукой', id: student.participant.id, cookie, expect: 'host' },
+  ] as const
+
+  for (const { who, id, cookie, expect } of cases) {
+    const token = signToken({ sessionId: ROOM, participantId: id, role: 'participant' })
+    const overHttp = sessionAuth(request(token, cookie))?.role
+    const overSocket = roleFor(cookie, { sessionId: ROOM, participantId: id })
+    assert.equal(overHttp, overSocket, `входы разошлись: ${who}`)
+    // И это не «оба всегда participant» — иначе сходство ничего не стоит.
+    assert.equal(overSocket, expect, `${who}: не та роль`)
+  }
+})
+
+test('кука даёт ведущего только пока она есть', async () => {
+  // Куку можно отобрать — в этом её смысл, и поэтому «ведущий по куке» никогда
+  // не записывается в строку участника.
+  const teacher = createTeacher({ name: 'Sofia', email: 'sofia.identity@hse.ru', role: 'teacher' })
+  assert.ok(teacher)
+  rotateLinkKey(teacher.id)
+  const joined = await join({ name: 'Sofia' }, mintCookie(teacher))
+  assert.equal(joined.participant.role, 'host', 'кука не дала ведущего при входе')
+  assert.equal(
+    isTokenHost(ROOM, joined.participant.id),
+    false,
+    'вход по куке записался навсегда — отобрать права уже нечем',
+  )
+  assert.equal(roleFor(undefined, { sessionId: ROOM, participantId: joined.participant.id }), 'participant')
 })

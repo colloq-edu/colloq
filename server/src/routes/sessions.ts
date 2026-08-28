@@ -1,19 +1,20 @@
 import { Router, type Request } from 'express'
-import { currentStaff } from '../admin/auth.js'
+import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
 import {
   newParticipantId,
   newSessionId,
   signHostToken,
   signToken,
+  type TokenPayload,
   verifyHostToken,
   verifyToken,
-  type TokenPayload,
 } from '../auth.js'
 import { config } from '../config.js'
 import {
   createSession,
   getParticipant,
   getSession,
+  isTokenHost,
   listParticipants,
   upsertParticipant,
 } from '../db.js'
@@ -83,20 +84,26 @@ export function sessionAuth(req: Request): TokenPayload | null {
    * host token is the only credential there is — that is minted host and stays
    * host, and it is the path no browser walks.
    */
-  if (currentStaff(req)) return { ...payload, role: 'host' }
-  return payload.role === 'host' && hostByToken.has(payload.participantId)
-    ? payload
-    : { ...payload, role: 'participant' }
+  return { ...payload, role: roleFor(req.headers.cookie, payload) }
 }
 
 /**
- * Participants whose host badge came from a host token rather than a cookie.
+ * Кто это — на этот запрос, а не на момент входа.
  *
- * Small and in memory on purpose: it is the scripted path — a seminar made by
- * POST /api/sessions, whose creator holds the only credential that exists for
- * it. A restart forgets them, and forgetting is the safe direction.
+ * Одна функция на оба входа нарочно. Их было две, и они отвечали по-разному:
+ * HTTP помнил выданные хост-токены в множестве в памяти, а сокет про это
+ * множество не знал вовсе — так что автор семинара, заведённого скриптом,
+ * получал `host` на кнопках и `participant` на соединении, которым эти кнопки
+ * работают. Расходиться им теперь негде.
  */
-const hostByToken = new Set<string>()
+export function roleFor(
+  cookieHeader: string | undefined,
+  payload: Pick<TokenPayload, 'sessionId' | 'participantId'>,
+): TokenPayload['role'] {
+  // Кука сильнее и проверяется первой: её можно отобрать, и в этом смысл.
+  if (staffFromCookieHeader(cookieHeader)) return 'host'
+  return isTokenHost(payload.sessionId, payload.participantId) ? 'host' : 'participant'
+}
 
 export function sessionRoutes(): Router {
   const router = Router()
@@ -191,9 +198,16 @@ export function sessionRoutes(): Router {
     const known = proved ? getParticipant(sessionId, claimed) : null
     const participantId = known ? known.id : newParticipantId()
 
-    const participant = upsertParticipant({ id: participantId, sessionId, name, avatar, role })
-    // Only a host token earns a lasting badge; a cookie is re-read per request.
-    if (role === 'host' && !staff) hostByToken.add(participantId)
+    // Хост-токен — единственное, что записывается насовсем: куку перечитывают
+    // на каждом запросе, и «ведущий по куке» в строке был бы навсегда.
+    const participant = upsertParticipant({
+      id: participantId,
+      sessionId,
+      name,
+      avatar,
+      role,
+      tokenHost: role === 'host' && !staff,
+    })
     const token = signToken({ sessionId, participantId, role })
 
     // Warm the kernel while the student is still reading the page; a failure

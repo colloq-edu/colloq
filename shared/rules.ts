@@ -24,6 +24,35 @@
 /** Who a rule lets act. `room` is everyone in it, `host` is whoever is teaching. */
 export type Who = 'room' | 'host'
 
+/**
+ * Кто запускает ячейки — и сколько сразу.
+ *
+ * `single` — это лаборатория, где считают все, но ядро одно: каждый держит в
+ * очереди не больше одной своей ячейки, а Run All и Run Above остаются
+ * преподавателю. Без этой середины выбор был между «двадцать человек забивают
+ * очередь на сорок ячеек» и «никто, кроме меня».
+ */
+export type RunWho = 'room' | 'single' | 'host'
+
+/**
+ * Кто меняет состав тетради.
+ *
+ * `add` — заготовленный листок: дописать своё можно, убрать и переставить
+ * чужое нельзя. Это самый частый вид семинара, и до сих пор для него не было
+ * значения: приходилось выбирать между «правят все» и «структура моя».
+ */
+export type StructureWho = 'room' | 'add' | 'host'
+
+/**
+ * Оболочка комнаты.
+ *
+ * `off` закрывает ящик у всех, включая преподавателя: «в этой комнате
+ * терминала нет» — свойство комнаты, а не чьё-то право. Что это закрывает
+ * именно ящик, а не оболочку, сказано в панели вслух: `!pip install` в ячейке
+ * идёт в тот же контейнер.
+ */
+export type ShellWho = 'room' | 'host' | 'off'
+
 export interface RoomRules {
   /**
    * Who may run cells.
@@ -31,45 +60,104 @@ export interface RoomRules {
    * Enforced in server/src/control.ts — mayRun() guards run, runAll and
    * runAbove. The kernel is one process shared by everyone, so this is also the
    * only protection a lecture has against twenty people queueing the same cell.
+   *
+   * Одна связка, о которой стоит помнить и которая напечатана в панели:
+   * `run: 'host'` без `edit: 'host'` — не граница. Ядро читает исходник ячейки
+   * в тот момент, когда до неё доходит очередь, а не когда нажали Run, так что
+   * студент, которому запускать нельзя, всё равно пишет тот Python, который
+   * выполнит преподавательский Run — в том же контейнере.
    */
-  run: Who
+  run: RunWho
 
   /**
-   * Who may change what is written in the notebook.
+   * Who may change what the cells say — their text, and whether a cell is code
+   * or a note.
    *
-   * NOT ENFORCED YET, and the interface says so. The notebook is a CRDT: every
-   * browser holds the whole document and syncs it through the server, so making
-   * this real means the server refusing update messages from people the rule
-   * excludes — which it can do, since it is the hub, but which it does not do
-   * today.
+   * Enforced in server/src/collab/gate.ts, called from collab/index.ts before
+   * the update is applied. Обещание здесь такое же, как у `run`: «этого не
+   * произошло», а не «произошло и мы отменили». Отменять в CRDT нельзя:
+   * откат удаления не воскрешает ячейку, а создаёт новую, и все, у кого старая
+   * открыта, печатают в надгробие — без ошибки и без единого события.
+   *
+   * Сюда же входят две кнопки, которые переписывают ячейки, надев другое лицо:
+   * форматирование и «принять» у предложения оракула.
    */
   edit: Who
 
   /**
-   * Who may add and remove cells.
+   * Who may add, delete and reorder cells.
    *
-   * NOT ENFORCED YET, same reason as `edit` and the same fix. Kept separate
-   * because the two are genuinely different in a seminar: a class that may fill
-   * in a prepared exercise but not restructure the sheet is the common case,
-   * and the common case deserves its own switch.
+   * Enforced in server/src/collab/gate.ts for add and delete, and in
+   * control.ts for the move — перестановка уехала на сервер, потому что она
+   * пересоздаёт ячейку вместе с выводом, а вывод клиент писать не вправе.
+   *
+   * Отдельно от `edit`, потому что в семинаре это разные вещи: класс, который
+   * заполняет заготовленный листок, но не перекраивает его, — самый частый
+   * случай, и у него теперь есть своё значение `add`.
    */
-  structure: Who
+  structure: StructureWho
 
   /**
-   * Who may type in the shared terminal.
+   * The room's shell.
    *
-   * NOT ENFORCED YET for input; `term:clear` and `term:close` are already
-   * host-only in control.ts.
+   * Enforced in server/src/control.ts — every `term:*` action. `term:clear` and
+   * `term:close` были host-only и раньше.
+   *
+   * Закрывает ящик, а не оболочку, и в панели это сказано вслух: `!pip install`
+   * в ячейке идёт в тот же контейнер. Пока ячейка умеет `!rm`, «терминала нет»
+   * — про интерфейс, а не про изоляцию.
    */
-  terminal: Who
+  terminal: ShellWho
 
   /**
    * Who may put files into the room's folder.
    *
-   * NOT ENFORCED YET — the upload route checks that you belong to the seminar,
-   * not what you may do in it.
+   * Enforced in server/src/routes/files.ts. Забрать файл — уже право
+   * преподавателя, и было им раньше.
+   *
+   * Сильно ровно настолько, насколько строже из `terminal` и `run`: контейнер
+   * ядра монтирует ту же папку, так что `os.listdir()` — это список,
+   * `open(...)` — скачивание, а `os.remove(...)` — удаление. Это про порядок в
+   * папке, а не про тайну, и в панели так и написано.
    */
   files: Who
+
+  /**
+   * Кто стирает общую работу: все выводы в тетради, ленту терминала, тред
+   * оракула.
+   *
+   * Enforced in server/src/control.ts (clearOutputs, term:clear) и
+   * routes/ai.ts (DELETE /ai/thread).
+   *
+   * Три стирания, у которых до сих пор было три разных ответа. Два из них уже
+   * были правом преподавателя, а у третьего — `clearOutputs` без имени ячейки —
+   * не было никакой проверки: любой участник сносил результаты, которые класс
+   * только что посчитал, и вернуть их нельзя ничем, кроме преподавательского
+   * восстановления версии: вывод пишет ядро, и клиентская отмена до него не
+   * достаёт. Значение по умолчанию `host` — это починка, а не новое
+   * ограничение.
+   */
+  wipe: Who
+
+  /**
+   * Кто перезапускает ядро — с потерей всех переменных комнаты.
+   *
+   * Enforced in server/src/control.ts. Сегодня это зашито в код без права
+   * сказать иначе; записать зашитое так, чтобы его можно было ОСЛАБИТЬ, — то,
+   * чего просит открытая лаборатория, из которой преподаватель уже ушёл, а
+   * ядро зависло.
+   */
+  restart: Who
+
+  /**
+   * Кто читает историю комнаты.
+   *
+   * Enforced in server/src/routes/history.ts. История — это по сути запись
+   * набора: решение, вставленное в ячейку и стёртое до пары, читается в ней
+   * потом всегда. Восстановление версии и отметка чекпоинта остаются
+   * преподавателю при любом значении.
+   */
+  history: Who
 
   /**
    * Whether the room's oracle answers at all, and how much it gives away.
@@ -106,11 +194,24 @@ export const OPEN_ROOM: RoomRules = {
   structure: 'room',
   terminal: 'room',
   files: 'room',
+  /*
+   * Три новых поля — и два из них по умолчанию строгие, потому что записывают
+   * то, что и так было правдой: `term:clear` и очистка треда оракула уже были
+   * правом преподавателя, а перезапуск ядра зашит в код без права сказать
+   * иначе. Единственное настоящее изменение — `clearOutputs`, у которого не
+   * было проверки вовсе; см. комментарий у `wipe`.
+   */
+  wipe: 'host',
+  restart: 'host',
+  history: 'room',
   oracle: 'inherit',
   model: null,
 }
 
 const WHO = new Set<Who>(['room', 'host'])
+const RUN = new Set<RunWho>(['room', 'single', 'host'])
+const STRUCTURE = new Set<StructureWho>(['room', 'add', 'host'])
+const SHELL = new Set<ShellWho>(['room', 'host', 'off'])
 const ORACLE = new Set<RoomRules['oracle']>(['inherit', 'off', 'hints', 'full'])
 
 /**
@@ -125,12 +226,24 @@ export function readRules(raw: unknown): RoomRules {
   const source = (typeof raw === 'string' ? safeParse(raw) : raw) as Partial<RoomRules> | null
   if (!source || typeof source !== 'object') return { ...OPEN_ROOM }
   const who = (value: unknown, fallback: Who): Who => (WHO.has(value as Who) ? (value as Who) : fallback)
+  const one = <T>(set: Set<T>, value: unknown, fallback: T): T =>
+    set.has(value as T) ? (value as T) : fallback
   return {
-    run: who(source.run, OPEN_ROOM.run),
+    /*
+     * Каждое поле падает на своё умолчание отдельно от других — это и есть
+     * миграция. Строка, записанная старой сборкой, держит 'room' или 'host' в
+     * трёх полях, у которых теперь по три значения: оба переживают чтение
+     * нетронутыми, а третьего значения там просто нет. Новые три поля в старых
+     * строках отсутствуют вовсе и читаются своими умолчаниями.
+     */
+    run: one(RUN, source.run, OPEN_ROOM.run),
     edit: who(source.edit, OPEN_ROOM.edit),
-    structure: who(source.structure, OPEN_ROOM.structure),
-    terminal: who(source.terminal, OPEN_ROOM.terminal),
+    structure: one(STRUCTURE, source.structure, OPEN_ROOM.structure),
+    terminal: one(SHELL, source.terminal, OPEN_ROOM.terminal),
     files: who(source.files, OPEN_ROOM.files),
+    wipe: who(source.wipe, OPEN_ROOM.wipe),
+    restart: who(source.restart, OPEN_ROOM.restart),
+    history: who(source.history, OPEN_ROOM.history),
     oracle: ORACLE.has(source.oracle as RoomRules['oracle'])
       ? (source.oracle as RoomRules['oracle'])
       : OPEN_ROOM.oracle,
@@ -162,6 +275,62 @@ export function isOpenRoom(rules: RoomRules): boolean {
  */
 export function allows(rule: Who, role: 'host' | 'participant'): boolean {
   return rule === 'room' || role === 'host'
+}
+
+/**
+ * Можно ли запускать — и одну ячейку или весь лист.
+ *
+ * `single` разрешает нажатие на ячейке и запрещает Run All и Run Above: ядро
+ * одно, и разница между «двадцать человек считают» и «двадцать человек забили
+ * очередь на восемьсот ячеек» — ровно в этом.
+ */
+export function allowsRun(rule: RunWho, role: 'host' | 'participant', kind: 'one' | 'bulk'): boolean {
+  if (role === 'host') return true
+  if (rule === 'host') return false
+  return kind === 'one' || rule === 'room'
+}
+
+/**
+ * Сколько своих ячеек человек держит в очереди одновременно.
+ *
+ * Не право, а потолок: при `single` очередь у каждого своя длиной в одну
+ * ячейку, и нажатие на второй ждёт, а не отвергается молча.
+ */
+export function runQueueCap(rule: RunWho, role: 'host' | 'participant'): number {
+  return rule === 'single' && role !== 'host' ? 1 : Number.POSITIVE_INFINITY
+}
+
+/**
+ * Можно ли менять состав тетради — и что именно менять.
+ *
+ * Три глагола, потому что `add` разрешает ровно первый: дописать своё в
+ * заготовленный листок можно, убрать и переставить чужое нельзя.
+ */
+export function allowsStructure(
+  rule: StructureWho,
+  role: 'host' | 'participant',
+  verb: 'add' | 'remove' | 'move',
+): boolean {
+  if (role === 'host') return true
+  if (rule === 'room') return true
+  return rule === 'add' && verb === 'add'
+}
+
+/**
+ * Оболочка: есть ли она в комнате вообще и можно ли в неё писать.
+ *
+ * `off` отказывает и преподавателю: «в этой комнате терминала нет» — свойство
+ * комнаты, а не чьё-то право, и ящик, который видит один человек из двадцати,
+ * — это не «нет терминала».
+ */
+export function allowsShell(
+  rule: ShellWho,
+  role: 'host' | 'participant',
+  act: 'exist' | 'type',
+): boolean {
+  if (rule === 'off') return false
+  if (rule === 'room') return true
+  return act === 'exist' || role === 'host'
 }
 
 /**

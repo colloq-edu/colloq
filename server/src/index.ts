@@ -25,7 +25,6 @@ import { verifyToken, type TokenPayload } from './auth.js'
 import { aiEnabled, config } from './config.js'
 import { SECURITY_HEADERS } from './headers.js'
 import { handleCollabSocket, shutdownCollab } from './collab/index.js'
-import { staffFromCookieHeader } from './admin/auth.js'
 import { handleControlSocket } from './control.js'
 import { closeDatabase, db, getSession, touchLastSeen } from './db.js'
 import { shutdownKernels } from './kernel/index.js'
@@ -36,7 +35,7 @@ import { adminImportRoutes } from './routes/admin-import.js'
 import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { aiRoutes } from './routes/ai.js'
 import { fileRoutes } from './routes/files.js'
-import { sessionRoutes } from './routes/sessions.js'
+import { roleFor, sessionRoutes } from './routes/sessions.js'
 import { historyRoutes } from './routes/history.js'
 
 /** A whole notebook's state travels in one sync frame; images make it big. */
@@ -423,16 +422,16 @@ function reject(socket: Duplex): void {
 }
 
 /**
- * The role for this connection, decided now rather than read from the token.
+ * Роль этого соединения — решается сейчас, а не читается из токена.
  *
- * A staff cookie grants host; nothing else does, for the same reason the HTTP
- * side works this way (see sessionAuth): a role baked into a token at join time
- * is a role nobody can take away, and a teacher removed from the staff list
- * kept Restart in every room they had ever opened. The socket is re-checked on
- * every reconnect, so signing out takes the powers with it within seconds.
+ * Роль, зашитая в токен при входе, — это роль, которую нельзя отобрать:
+ * преподаватель, убранный из списка, сохранял Restart во всех комнатах,
+ * которые когда-либо открывал. Сокет перепроверяется на каждом переподключении,
+ * так что выход из панели снимает права за секунды. Считает `roleFor` —
+ * та же самая, что и на HTTP-стороне, чтобы двум входам было негде разойтись.
  */
 function effectiveRole(req: { headers: { cookie?: string } }, payload: TokenPayload): TokenPayload['role'] {
-  return staffFromCookieHeader(req.headers.cookie) ? 'host' : 'participant'
+  return roleFor(req.headers.cookie, payload)
 }
 
 server.on('upgrade', (req, socket, head) => {

@@ -169,6 +169,21 @@ function ensureColumn(table: string, column: string, definition: string): void {
 ensureColumn('sessions', 'environment', 'environment TEXT')
 
 /**
+ * Проведён ли этот участник в ведущие хост-токеном.
+ *
+ * Роль в строке рядом — не ответ на этот вопрос: туда пишется и «ведущий по
+ * куке», а кука тем и хороша, что её можно отобрать. Преподаватель, убранный
+ * из списка, обязан потерять Restart во всех комнатах, которые когда-либо
+ * открывал; строка с role='host' вернула бы его навсегда.
+ *
+ * Токен — другое дело: он и есть единственный ключ от семинара, заведённого
+ * скриптом мимо панели, отобрать его нельзя, и переживать перезапуск он
+ * обязан. Раньше это множество жило в памяти процесса — и после `make stop`
+ * автор комнаты приходил в неё гостем, без объяснений.
+ */
+ensureColumn('participants', 'token_host', 'token_host INTEGER NOT NULL DEFAULT 0')
+
+/**
  * The room's rules, as JSON.
  *
  * One column rather than eight, because these are read as a unit — a room opens
@@ -261,12 +276,13 @@ export function getSession(id: string): SessionInfo | null {
 /* --------------------------------------------------------- participants */
 
 const upsertParticipantStmt = db.prepare(`
-  INSERT INTO participants (id, session_id, name, avatar, color, role, last_seen)
-  VALUES (@id, @session_id, @name, @avatar, @color, @role, @last_seen)
+  INSERT INTO participants (id, session_id, name, avatar, color, role, token_host, last_seen)
+  VALUES (@id, @session_id, @name, @avatar, @color, @role, @token_host, @last_seen)
   ON CONFLICT(id) DO UPDATE SET
     name = excluded.name,
     avatar = excluded.avatar,
     role = excluded.role,
+    token_host = excluded.token_host,
     last_seen = excluded.last_seen
 `)
 const selectParticipant = db.prepare('SELECT * FROM participants WHERE id = ? AND session_id = ?')
@@ -282,6 +298,7 @@ interface ParticipantRow {
   avatar: string | null
   color: string
   role: string
+  token_host?: number
   last_seen: number
 }
 
@@ -301,9 +318,14 @@ export function upsertParticipant(p: {
   name: string
   avatar: string | null
   role: Participant['role']
+  /** Ведущий по токену — см. столбец token_host. Куку сюда передавать нельзя. */
+  tokenHost?: boolean
 }): Participant {
   const existing = selectParticipant.get(p.id, p.sessionId) as ParticipantRow | undefined
   const color = existing?.color ?? colorForId(p.id)
+  // Единожды выданное токеном не отбирается позже входом без токена: ключ от
+  // комнаты остаётся ключом, даже если владелец открыл её со второй вкладки.
+  const tokenHost = p.tokenHost || existing?.token_host === 1
   upsertParticipantStmt.run({
     id: p.id,
     session_id: p.sessionId,
@@ -311,9 +333,19 @@ export function upsertParticipant(p: {
     avatar: p.avatar,
     color,
     role: p.role,
+    token_host: tokenHost ? 1 : 0,
     last_seen: Date.now(),
   })
   return { id: p.id, name: p.name, avatar: p.avatar, color, role: p.role }
+}
+
+/**
+ * Проводил ли этот участник хост-токен — единственное, что переживает
+ * перезапуск и не отбирается кукой. См. столбец token_host.
+ */
+export function isTokenHost(sessionId: string, participantId: string): boolean {
+  const row = selectParticipant.get(participantId, sessionId) as ParticipantRow | undefined
+  return row?.token_host === 1
 }
 
 export function getParticipant(sessionId: string, participantId: string): Participant | null {

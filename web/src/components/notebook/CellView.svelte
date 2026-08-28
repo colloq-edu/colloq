@@ -36,7 +36,7 @@
   import { cellSource, patchIsStale } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
-  import { allows, oracleModeIn, readRules } from '@shared/rules'
+  import { allowsRun, oracleModeIn, readRules } from '@shared/rules'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
@@ -86,7 +86,7 @@
   const isCode = $derived(meta.current.type === 'code')
   // The room's own rule, read where the button is drawn — the server has
   // enforced it since rules existed and the interface never asked.
-  const mayRun = $derived(allows(readRules(session.session.rules).run, session.me.role))
+  const mayRun = $derived(allowsRun(readRules(session.session.rules).run, session.me.role, 'one'))
 
   /*
    * Ячейка остановилась внутри input().
