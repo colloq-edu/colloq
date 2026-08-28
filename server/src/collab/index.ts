@@ -230,14 +230,6 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   docs.set(sessionId, entry);
 
   /*
-   * Start the history from what was just hydrated, before the seeding below.
-   * A brand-new room therefore records its starter cells as its first version,
-   * and a room coming back after a restart does not record its whole notebook
-   * as somebody's edit.
-   */
-  beginHistory(sessionId, doc);
-
-  /*
    * Seed, then put it on disk before returning. A room that has just been
    * created is at its most vulnerable: the snapshot is debounced by seconds and
    * the room is reachable immediately, so a crash in between leaves a seminar
@@ -250,6 +242,23 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   if (ensureInitialNotebook(doc, title ?? getSession(sessionId)?.name)) {
     flushPersistence(sessionId);
   }
+
+  /*
+   * История начинается ПОСЛЕ засева, и это не мелочь порядка.
+   *
+   * Стояло раньше — с комментарием, обещавшим ровно обратное: «новая комната
+   * записывает свои стартовые ячейки первой версией». Не записывала. Слепок
+   * снимался с пустого документа (две байты), засев происходил следом и в
+   * историю не попадал вовсе — наблюдатель `doc.on('update')` вешается ещё
+   * ниже. Дальше каждая строка была дельтой к документу, которого история
+   * никогда не видела: Yjs складывал их в pending, и ЛЮБАЯ версия
+   * разворачивалась в пустую тетрадь. Молча — вкладка «История» показывала
+   * ноль ячеек и не жаловалась.
+   *
+   * Проверено на живой базе: у семинара с двадцатью одной строкой все
+   * двадцать одна давали ноль ячеек.
+   */
+  beginHistory(sessionId, doc);
 
   /*
    * Whatever the snapshot says was running, was not running by the time this

@@ -505,6 +505,23 @@ const selectRange = db.prepare(`
   WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq ASC
 `)
 
+/**
+ * Байты самой свежей строки, которая сама по себе является целым документом.
+ *
+ * Ими проверяется, что историю комнаты вообще можно развернуть: дельта без
+ * основания под ней разворачивается в пустую тетрадь и делает это молча.
+ */
+const selectNewestWhole = db.prepare(`
+  SELECT update_blob FROM doc_history
+  WHERE session_id = ? AND kind IN ('opened', 'keyframe', 'restore', 'checkpoint')
+  ORDER BY seq DESC LIMIT 1
+`)
+
+export function newestWholeDocument(sessionId: string): Uint8Array | null {
+  const row = selectNewestWhole.get(sessionId) as { update_blob: Buffer } | undefined
+  return row ? new Uint8Array(row.update_blob) : null
+}
+
 export function updatesUpTo(sessionId: string, seq: number): Uint8Array[] {
   const keyframe = selectKeyframeAt.get(sessionId, seq) as { seq: number } | undefined
   const from = keyframe ? keyframe.seq : 0

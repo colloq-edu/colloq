@@ -31,7 +31,13 @@ import {
 } from '@shared/history'
 import {
   cloneCell, CELLS_KEY, createCell, getCells, replaceText, type YCell } from '@shared/notebook'
-import { appendVersion, hasHistoryBase, updatesUpTo, versionCount } from '../db.js'
+import {
+  appendVersion,
+  hasHistoryBase,
+  newestWholeDocument,
+  updatesUpTo,
+  versionCount,
+} from '../db.js'
 
 /** Marks writes this module makes into a live doc, so they are not re-recorded twice. */
 export const RESTORE_ORIGIN = 'history-restore'
@@ -126,7 +132,10 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
    * them to, and would rebuild to an empty notebook for ever; giving it a base
    * now costs one row and makes everything from this moment on readable.
    */
-  if (hasHistoryBase(sessionId)) return
+  if (hasHistoryBase(sessionId)) {
+    repairBrokenBase(sessionId, doc)
+    return
+  }
   appendVersion({
     sessionId,
     update: Y.encodeStateAsUpdate(doc),
@@ -139,6 +148,61 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
     removed: 0,
     cells: [],
   })
+}
+
+/**
+ * Починить историю, из которой нельзя собрать ни одной версии.
+ *
+ * Комнаты, записанные до того, как порядок «сначала засев, потом история» был
+ * исправлен, имеют базовую строку, снятую с ПУСТОГО документа. Строка есть,
+ * `hasHistoryBase` довольна, а разворачивается всё в ноль ячеек — и так
+ * навсегда: следующие дельты ссылаются на структуры, которых в истории нет.
+ *
+ * Прошлое этим не восстановить: тех байтов не существует нигде. Но будущее
+ * спасается одной строкой — снимком того, что в комнате есть сейчас. С неё
+ * начнутся все последующие проигрывания, и вкладка «История» перестанет
+ * показывать пустую тетрадь.
+ *
+ * Проверка дешёвая: разворачивается сама свежайшая цельнодокументная строка, а
+ * не вся история. Комната, где хоть раз ставили чекпоинт, такую строку уже
+ * имеет, и чинить нечего.
+ */
+function repairBrokenBase(sessionId: string, doc: Y.Doc): void {
+  // Живой документ пуст — сравнивать не с чем, и починка была бы записью
+  // пустоты поверх пустоты.
+  if (cellsOf(doc).length === 0) return
+  const base = newestWholeDocument(sessionId)
+  if (base === null) return
+
+  const probe = new Y.Doc()
+  let cells = 0
+  try {
+    Y.applyUpdate(probe, base)
+    cells = probe.getArray(CELLS_KEY).length
+  } catch {
+    cells = 0
+  }
+  probe.destroy()
+  if (cells > 0) return
+
+  appendVersion({
+    sessionId,
+    update: Y.encodeStateAsUpdate(doc),
+    kind: 'keyframe',
+    authorId: null,
+    createdAt: Date.now(),
+    label: null,
+    summary: 'the notebook as it stood',
+    added: 0,
+    removed: 0,
+    cells: [],
+  })
+  forgetCache(sessionId)
+  console.warn(
+    `[history] ${sessionId}: база истории была снята с пустого документа — ` +
+      `ни одна версия не разворачивалась. Записан снимок текущей тетради; ` +
+      `версии до него остаются нечитаемыми.`,
+  )
 }
 
 /**
