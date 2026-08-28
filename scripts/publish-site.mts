@@ -26,9 +26,14 @@ const { values } = parseArgs({
   },
 });
 
-const site = path.resolve(
-  values.site ?? process.env.SITE_DIR ?? "../colloq-site",
-);
+/*
+ * Сайт лежит в этом же репозитории, в `site/`.
+ *
+ * Был отдельный, с оговоркой «Pages не умеет приватные репозитории» — неправда:
+ * Pages отдаёт публичный сайт из закрытого исходника. Отдельный стоил второго
+ * клона рядом, без которого выкладка просто не собиралась.
+ */
+const site = path.resolve(values.site ?? process.env.SITE_DIR ?? "site");
 const base = (
   values.base ??
   process.env.SITE_BASE ??
@@ -40,7 +45,9 @@ process.env.SESSION_SECRET ??= "site-export";
 process.env.KERNEL_ISOLATION ??= "off";
 
 if (!existsSync(site)) {
-  console.error(`${site} — такого каталога нет. Укажите его: make site SITE=site`);
+  console.error(
+    `${site} — такого каталога нет. Укажите его: make site SITE=site`,
+  );
   process.exit(1);
 }
 
