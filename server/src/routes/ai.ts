@@ -20,7 +20,7 @@ import {
   windowResetAt,
 } from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
-import { oracleModeIn } from '@shared/rules'
+import { allows, oracleModeIn } from '@shared/rules'
 import { getParticipant, getRules, getSession } from '../db.js'
 import { sessionAuth } from './sessions.js'
 import {
@@ -255,7 +255,9 @@ export function aiRoutes(): Router {
     if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
     // The thread belongs to the room, so clearing it is the host's call — a
     // student must not be able to wipe what the class asked.
-    if (auth.role !== 'host') {
+    // Стирать общее — то же право, что и стереть всю доску: лента вопросов
+    // принадлежит комнате, а не тому, кто спросил последним.
+    if (!allows(getRules(req.params.id).wipe, auth.role)) {
       return res.status(403).json({
         error: 'Only the host can clear the oracle thread — those questions belong to the room.',
       })

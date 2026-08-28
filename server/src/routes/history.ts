@@ -9,10 +9,11 @@
 import { Router, type Request, type Response } from 'express'
 import type { CellDiff, Version, VersionKind } from '@shared/history'
 import { sessionAuth } from './sessions.js'
+import { allows } from '@shared/rules'
 import { getSessionDoc } from '../collab/index.js'
 import { cellsAt, cellsOf, mark, restoreInto } from '../collab/history.js'
 import { diffLines } from '@shared/diff'
-import { getParticipant, getVersion, listVersions, getSession } from '../db.js'
+import { getParticipant, getRules, getVersion, listVersions, getSession } from '../db.js'
 
 /**
  * Everyone in the room may read the history — the notebook is shared, so who
@@ -34,6 +35,16 @@ function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
   const payload = sessionAuth(req)
   if (!payload) {
     res.status(401).json({ error: 'this history belongs to a seminar you are not in' })
+    return null
+  }
+  /*
+   * Лента — по правилу комнаты. По умолчанию её видит вся комната: тетрадь
+   * общая, и кто что менял — не секрет от тех, при ком это менялось. Но
+   * семинар, где тетрадь показывают, а не пишут вместе, вправе её закрыть:
+   * там лента — это черновики преподавателя, которые он не показывал.
+   */
+  if (!allows(getRules(req.params.id).history, payload.role)) {
+    res.status(403).json({ error: 'Лента версий в этом семинаре — преподавательская.' })
     return null
   }
   return payload

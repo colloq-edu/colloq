@@ -24,9 +24,19 @@ import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
 import { config } from '../config.js'
 import { broadcast, closeControlRoom } from '../control.js'
 import { readRules } from '@shared/rules'
-import { createSession, db, discardHistory, getRules, loadDocSnapshot, sessionEnvironment, setRules } from '../db.js'
+import {
+  createSession,
+  db,
+  discardHistory,
+  forgetRules,
+  getRules,
+  loadDocSnapshot,
+  sessionEnvironment,
+  setRules,
+} from '../db.js'
 import { forgetCache } from '../collab/history.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
+import { clearTerminal, closeTerminal } from '../kernel/terminal.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { listFiles, sessionDir } from '../workspace.js'
 import {
@@ -288,6 +298,14 @@ export function adminInstanceRoutes(): Router {
       // controls from this, and a rule nobody was told about is a rule that
       // looks like a bug when a button stops working.
       broadcast(row.id, { t: 'rules', rules: getRules(row.id) })
+      // «Терминала нет» — обещание про комнату, а не про кнопку: открытую
+      // оболочку надо закрыть, иначе обещание сдержано наполовину.
+      if (getRules(row.id).terminal === 'off') {
+        clearTerminal(row.id)
+        void closeTerminal(row.id).catch(() => {
+          /* закрывать было нечего */
+        })
+      }
     }
 
     res.json(toSeminar(selectSeminar.get(row.id) as SeminarRow))
@@ -334,6 +352,8 @@ export function adminInstanceRoutes(): Router {
         })
         purge(row.id)
         forgetCache(row.id)
+        // Правила той же комнаты лежат в памяти — забыть вместе с ней.
+        forgetRules(row.id)
 
         try {
           fs.rmSync(sessionDir(row.id), { recursive: true, force: true })

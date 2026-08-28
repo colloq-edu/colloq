@@ -384,9 +384,29 @@ const selectRules = db.prepare(`SELECT rules FROM sessions WHERE id = ?`)
 const updateRules = db.prepare(`UPDATE sessions SET rules = ? WHERE id = ?`)
 
 /** The rules of one room, with everything unset filled in from the open default. */
+/**
+ * Правила комнаты в памяти.
+ *
+ * Кэш появился, когда правила встали на путь нажатия клавиши: классификатор
+ * спрашивает их на каждый кадр синхронизации, а это чтение SQLite и
+ * `JSON.parse` — двадцать печатающих дают полторы сотни таких в секунду за
+ * ничто. Инвалидируется в `setRules` и при удалении семинара; больше правила
+ * не меняет никто.
+ */
+const rulesCache = new Map<string, RoomRules>()
+
 export function getRules(sessionId: string): RoomRules {
+  const cached = rulesCache.get(sessionId)
+  if (cached) return cached
   const row = selectRules.get(sessionId) as { rules: string | null } | undefined
-  return readRules(row?.rules ?? null)
+  const rules = readRules(row?.rules ?? null)
+  rulesCache.set(sessionId, rules)
+  return rules
+}
+
+/** Забыть правила комнаты: они изменились или комнаты больше нет. */
+export function forgetRules(sessionId: string): void {
+  rulesCache.delete(sessionId)
 }
 
 /**
@@ -399,6 +419,7 @@ export function getRules(sessionId: string): RoomRules {
 export function setRules(sessionId: string, rules: RoomRules): RoomRules {
   const clean = readRules(rules)
   updateRules.run(JSON.stringify(clean), sessionId)
+  rulesCache.set(sessionId, clean)
   return clean
 }
 

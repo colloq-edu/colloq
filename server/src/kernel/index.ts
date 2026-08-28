@@ -20,7 +20,7 @@
  * cell is not collateral damage.
  */
 
-import * as Y from 'yjs'
+import * as Y from "yjs";
 import {
   cellId as idOf,
   cellOutputs,
@@ -33,16 +33,20 @@ import {
   getTerminal,
   type CellState,
   type KernelStatus,
-} from '@shared/notebook'
-import { config } from '../config.js'
-import { sessionEnvironment } from '../db.js'
-import { activeName } from '../environments.js'
-import { formatNotebook, type FormatOutcome } from './format.js'
-import { endpointForEnvironment, forgetEnvironment } from './pool.js'
-import { getSessionDoc } from '../collab/index.js'
-import { JupyterKernel, type ExecuteStatus, type KernelPhase } from './jupyter.js'
-import { OutputWriter } from './outputs.js'
-import { closeTerminal } from './terminal.js'
+} from "@shared/notebook";
+import { config } from "../config.js";
+import { sessionEnvironment } from "../db.js";
+import { activeName } from "../environments.js";
+import { formatNotebook, type FormatOutcome } from "./format.js";
+import { endpointForEnvironment, forgetEnvironment } from "./pool.js";
+import { getSessionDoc } from "../collab/index.js";
+import {
+  JupyterKernel,
+  type ExecuteStatus,
+  type KernelPhase,
+} from "./jupyter.js";
+import { OutputWriter } from "./outputs.js";
+import { closeTerminal } from "./terminal.js";
 
 /**
  * The per-session Python runtime.
@@ -56,15 +60,14 @@ import { closeTerminal } from './terminal.js'
  */
 
 /** Marks every write this module makes to a session document. */
-const ORIGIN = 'kernel'
+const ORIGIN = "kernel";
 /** Long enough that a healthy cold start never trips it, short enough to matter. */
-const SLOW_START_NOTICE_MS = 8_000
-
+const SLOW_START_NOTICE_MS = 8_000;
 
 interface QueueItem {
-  cellId: string
-  runBy: string
-  runById: string
+  cellId: string;
+  runBy: string;
+  runById: string;
   /**
    * Which press of Run this cell came from.
    *
@@ -75,14 +78,14 @@ interface QueueItem {
    * to behave. Cells somebody else queued in the meantime are untouched: their
    * work has nothing to do with this failure.
    */
-  batch: number
+  batch: number;
 }
 
 interface Runtime {
-  sessionId: string
-  kernel: JupyterKernel | null
+  sessionId: string;
+  kernel: JupyterKernel | null;
   /** In-flight connect, shared by concurrent ensureKernel callers. */
-  starting: Promise<void> | null
+  starting: Promise<void> | null;
   /**
    * In-flight restart, if one is running.
    *
@@ -95,12 +98,12 @@ interface Runtime {
    * Обещание, а не флажок: и второе нажатие Restart, и насос ждут одного и
    * того же — того же самого перезапуска, а не своего.
    */
-  restarting: Promise<void> | null
-  queue: QueueItem[]
-  pumping: boolean
-  currentCell: string | null
+  restarting: Promise<void> | null;
+  queue: QueueItem[];
+  pumping: boolean;
+  currentCell: string | null;
   /** Which press of Run the running cell came from; see stopBatchOf. */
-  currentBatch: number | null
+  currentBatch: number | null;
   /**
    * Что и когда начали, по часам сервера.
    *
@@ -113,10 +116,10 @@ interface Runtime {
    * ячейкой через него нельзя — длительность просто перестала бы записываться,
    * и заметил бы это только тест.
    */
-  started: { cellId: string; at: number } | null
+  started: { cellId: string; at: number } | null;
   /** Who asked for the running cell — the server's own record, not the document's. */
-  currentRunById: string | null
-  writer: OutputWriter | null
+  currentRunById: string | null;
+  writer: OutputWriter | null;
   /**
    * Which environment this room's kernel actually came up on.
    *
@@ -125,16 +128,17 @@ interface Runtime {
    * Python it started with until its own kernel is replaced. The panel says so
    * in the footnote; this is what makes the column able to say it too.
    */
-  environment: string | null
+  environment: string | null;
 }
 
-const runtimes = new Map<string, Runtime>()
-const workspaceListeners: Array<(sessionId: string) => void> = []
+const runtimes = new Map<string, Runtime>();
+const workspaceListeners: Array<(sessionId: string) => void> = [];
 
-const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
+const errText = (err: unknown) =>
+  err instanceof Error ? err.message : String(err);
 
 function getRuntime(sessionId: string): Runtime {
-  let runtime = runtimes.get(sessionId)
+  let runtime = runtimes.get(sessionId);
   if (!runtime) {
     runtime = {
       sessionId,
@@ -149,43 +153,46 @@ function getRuntime(sessionId: string): Runtime {
       currentRunById: null,
       writer: null,
       environment: null,
-    }
-    runtimes.set(sessionId, runtime)
+    };
+    runtimes.set(sessionId, runtime);
   }
-  return runtime
+  return runtime;
 }
 
 /* --------------------------------------------------------- document mirror */
 
 function setStatus(runtime: Runtime, status: KernelStatus): void {
-  const { doc } = getSessionDoc(runtime.sessionId)
-  const meta = getMeta(doc)
-  if (meta.get('kernelStatus') === status) return
-  doc.transact(() => meta.set('kernelStatus', status), ORIGIN)
+  const { doc } = getSessionDoc(runtime.sessionId);
+  const meta = getMeta(doc);
+  if (meta.get("kernelStatus") === status) return;
+  doc.transact(() => meta.set("kernelStatus", status), ORIGIN);
 }
 
 function syncQueue(runtime: Runtime): void {
-  const { doc } = getSessionDoc(runtime.sessionId)
-  const meta = getMeta(doc)
-  const ids = runtime.queue.map((item) => item.cellId)
-  const running = runtime.currentCell ?? null
+  const { doc } = getSessionDoc(runtime.sessionId);
+  const meta = getMeta(doc);
+  const ids = runtime.queue.map((item) => item.cellId);
+  const running = runtime.currentCell ?? null;
 
-  const existing = meta.get('queue')
-  const current = existing instanceof Y.Array ? (existing.toArray() as string[]) : null
+  const existing = meta.get("queue");
+  const current =
+    existing instanceof Y.Array ? (existing.toArray() as string[]) : null;
   const queueUnchanged =
-    current !== null && current.length === ids.length && current.every((id, i) => id === ids[i])
-  if (queueUnchanged && meta.get('runningCell') === running) return
+    current !== null &&
+    current.length === ids.length &&
+    current.every((id, i) => id === ids[i]);
+  if (queueUnchanged && meta.get("runningCell") === running) return;
 
   doc.transact(() => {
-    let list = meta.get('queue') as Y.Array<string> | undefined
+    let list = meta.get("queue") as Y.Array<string> | undefined;
     if (!(list instanceof Y.Array)) {
-      list = new Y.Array<string>()
-      meta.set('queue', list)
+      list = new Y.Array<string>();
+      meta.set("queue", list);
     }
-    if (list.length > 0) list.delete(0, list.length)
-    if (ids.length > 0) list.push(ids)
-    meta.set('runningCell', running)
-  }, ORIGIN)
+    if (list.length > 0) list.delete(0, list.length);
+    if (ids.length > 0) list.push(ids);
+    meta.set("runningCell", running);
+  }, ORIGIN);
 }
 
 /**
@@ -196,14 +203,17 @@ function syncQueue(runtime: Runtime): void {
 async function runOnKernel(
   runtime: Runtime,
   source: string,
-  handlers: Parameters<JupyterKernel['execute']>[1],
+  handlers: Parameters<JupyterKernel["execute"]>[1],
 ): Promise<ExecuteStatus> {
   try {
-    return await runtime.kernel!.execute(source, handlers)
+    return await runtime.kernel!.execute(source, handlers);
   } catch (err) {
-    if (runtime.kernel && runtime.kernel.phase !== 'dead') throw err
-    kernelNote(runtime.sessionId, 'The kernel had stopped. Starting a fresh one — variables from before are gone.')
-    await ensureKernel(runtime.sessionId)
+    if (runtime.kernel && runtime.kernel.phase !== "dead") throw err;
+    kernelNote(
+      runtime.sessionId,
+      "The kernel had stopped. Starting a fresh one — variables from before are gone.",
+    );
+    await ensureKernel(runtime.sessionId);
     /*
      * Секундомер заводится заново, когда ядро наконец есть.
      *
@@ -211,20 +221,20 @@ async function runOnKernel(
      * ячейки: однострочник отчитывался о полутора минутах работы, хотя считал
      * миллисекунды. Ждали при этом не его.
      */
-    restamp(runtime)
-    return await runtime.kernel!.execute(source, handlers)
+    restamp(runtime);
+    return await runtime.kernel!.execute(source, handlers);
   }
 }
 
 /** Заново отметить начало выполнения — и в среде, и в документе. */
 function restamp(runtime: Runtime): void {
-  const cellId = runtime.currentCell
-  if (!cellId) return
-  const at = Date.now()
-  runtime.started = { cellId, at }
-  const { doc } = getSessionDoc(runtime.sessionId)
-  const found = findCell(doc, cellId)
-  if (found) doc.transact(() => found.cell.set('startedAt', at), ORIGIN)
+  const cellId = runtime.currentCell;
+  if (!cellId) return;
+  const at = Date.now();
+  runtime.started = { cellId, at };
+  const { doc } = getSessionDoc(runtime.sessionId);
+  const found = findCell(doc, cellId);
+  if (found) doc.transact(() => found.cell.set("startedAt", at), ORIGIN);
 }
 
 /**
@@ -242,10 +252,14 @@ function restamp(runtime: Runtime): void {
  * `was === 'running'` нужна ради `reportDeadKernel`: он приходит сюда и за
  * ячейками, которые стояли в очереди и не начинались.
  */
-function setCellState(sessionId: string, cellId: string, state: CellState): void {
-  const { doc } = getSessionDoc(sessionId)
-  const found = findCell(doc, cellId)
-  if (!found) return
+function setCellState(
+  sessionId: string,
+  cellId: string,
+  state: CellState,
+): void {
+  const { doc } = getSessionDoc(sessionId);
+  const found = findCell(doc, cellId);
+  if (!found) return;
   /*
    * Длительность считается по записи сервера, а не по полю документа.
    *
@@ -255,17 +269,22 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
    * документе остаётся тем, чем и было: числом, от которого в браузере растёт
    * секундомер. Настоящее время начала сервер держит у себя.
    */
-  const runtime = runtimes.get(sessionId)
-  const startedAt = runtime?.started?.cellId === cellId ? runtime.started.at : null
+  const runtime = runtimes.get(sessionId);
+  const startedAt =
+    runtime?.started?.cellId === cellId ? runtime.started.at : null;
   doc.transact(() => {
-    const was = found.cell.get('state') as CellState | undefined
-    found.cell.set('state', state)
-    if (found.cell.get('startedAt') != null) found.cell.set('startedAt', null)
-    if (was === 'running' && (state === 'ok' || state === 'error') && startedAt !== null) {
-      found.cell.set('ranMs', Math.max(0, Date.now() - startedAt))
+    const was = found.cell.get("state") as CellState | undefined;
+    found.cell.set("state", state);
+    if (found.cell.get("startedAt") != null) found.cell.set("startedAt", null);
+    if (
+      was === "running" &&
+      (state === "ok" || state === "error") &&
+      startedAt !== null
+    ) {
+      found.cell.set("ranMs", Math.max(0, Date.now() - startedAt));
     }
-  }, ORIGIN)
-  if (runtime?.started?.cellId === cellId) runtime.started = null
+  }, ORIGIN);
+  if (runtime?.started?.cellId === cellId) runtime.started = null;
 }
 
 /**
@@ -288,30 +307,33 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
  * лучше одного красивого цикла.
  */
 export function sweepOrphanRuns(sessionId: string): number {
-  const runtime = runtimes.get(sessionId)
-  const { doc } = getSessionDoc(sessionId)
-  const cells = getCells(doc)
-  let repaired = 0
+  const runtime = runtimes.get(sessionId);
+  const { doc } = getSessionDoc(sessionId);
+  const cells = getCells(doc);
+  let repaired = 0;
 
   doc.transact(() => {
     for (const cell of cells) {
-      const state = cell.get('state')
-      if (state !== 'running' && state !== 'queued') continue
-      const id = idOf(cell)
-      const ours = runtime && (runtime.currentCell === id || runtime.queue.some((q) => q.cellId === id))
-      if (ours) continue
-      cell.set('state', 'idle' as CellState)
-      cell.set('startedAt', null)
+      const state = cell.get("state");
+      if (state !== "running" && state !== "queued") continue;
+      const id = idOf(cell);
+      const ours =
+        runtime &&
+        (runtime.currentCell === id ||
+          runtime.queue.some((q) => q.cellId === id));
+      if (ours) continue;
+      cell.set("state", "idle" as CellState);
+      cell.set("startedAt", null);
       // Вместе с состоянием гаснет и вопрос ядра.
       //
       // Ячейка, остановившаяся в input(), несёт `stdin` — по нему рисуется
       // форма ответа. Погасить состояние и оставить форму значит показать
       // комнате поле ввода, за которым уже никого нет: отвечать некому,
       // «Send» уходит в пустоту, и убрать это с экрана нечем.
-      if (cell.get('stdin') != null) cell.set('stdin', null)
-      repaired++
+      if (cell.get("stdin") != null) cell.set("stdin", null);
+      repaired++;
     }
-  }, ORIGIN)
+  }, ORIGIN);
 
   /*
    * Половина призрака — тоже призрак.
@@ -328,42 +350,44 @@ export function sweepOrphanRuns(sessionId: string): number {
    * перезапуска — чистим прямо, как это делает clearStaleExecution.
    */
   if (repaired > 0) {
-    if (runtime) syncQueue(runtime)
+    if (runtime) syncQueue(runtime);
     else {
-      const meta = getMeta(doc)
+      const meta = getMeta(doc);
       doc.transact(() => {
-        const queue = meta.get('queue')
-        if (queue instanceof Y.Array && queue.length > 0) queue.delete(0, queue.length)
-        if (meta.get('runningCell') != null) meta.set('runningCell', null)
-        const status = meta.get('kernelStatus')
-        if (status === 'busy' || status === 'restarting') {
-          meta.set('kernelStatus', 'idle' as KernelStatus)
+        const queue = meta.get("queue");
+        if (queue instanceof Y.Array && queue.length > 0)
+          queue.delete(0, queue.length);
+        if (meta.get("runningCell") != null) meta.set("runningCell", null);
+        const status = meta.get("kernelStatus");
+        if (status === "busy" || status === "restarting") {
+          meta.set("kernelStatus", "idle" as KernelStatus);
         }
-      }, ORIGIN)
+      }, ORIGIN);
     }
   }
 
   // runBy, runById, execCount, ranMs и вывод остаются: та же позиция, что у
   // clearStaleExecution — мы гасим то, что происходит, и не трогаем то, что
   // произошло.
-  return repaired
+  return repaired;
 }
 
 /** Queued work the kernel will never get to; put those cells back to rest. */
 function dropQueue(runtime: Runtime): void {
   if (runtime.queue.length === 0) {
-    syncQueue(runtime)
-    return
+    syncQueue(runtime);
+    return;
   }
-  const dropped = runtime.queue.splice(0, runtime.queue.length)
-  const { doc } = getSessionDoc(runtime.sessionId)
+  const dropped = runtime.queue.splice(0, runtime.queue.length);
+  const { doc } = getSessionDoc(runtime.sessionId);
   doc.transact(() => {
     for (const item of dropped) {
-      const found = findCell(doc, item.cellId)
-      if (found && found.cell.get('state') === 'queued') found.cell.set('state', 'idle' as CellState)
+      const found = findCell(doc, item.cellId);
+      if (found && found.cell.get("state") === "queued")
+        found.cell.set("state", "idle" as CellState);
     }
-  }, ORIGIN)
-  syncQueue(runtime)
+  }, ORIGIN);
+  syncQueue(runtime);
 }
 
 /**
@@ -379,19 +403,19 @@ function dropQueue(runtime: Runtime): void {
  * растянуто на секунды, а знает о нём один HTTP-запрос, который к этому
  * времени уже ответил.
  */
-let churn: { reason: string; until: number } | null = null
+let churn: { reason: string; until: number } | null = null;
 
 export function expectKernelChurn(reason: string, ms = 120_000): void {
-  churn = { reason, until: Date.now() + ms }
+  churn = { reason, until: Date.now() + ms };
 }
 
 function churnReason(): string | null {
-  if (!churn) return null
+  if (!churn) return null;
   if (Date.now() > churn.until) {
-    churn = null
-    return null
+    churn = null;
+    return null;
   }
-  return churn.reason
+  return churn.reason;
 }
 
 function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
@@ -404,44 +428,44 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
    * queue is dropped because everything in it assumed variables that no longer
    * exist.
    */
-  if (phase === 'restarting' && !expected) {
-    const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
-    dropQueue(runtime)
-    setStatus(runtime, 'restarting')
-    const known = churnReason()
+  if (phase === "restarting" && !expected) {
+    const hadWork = runtime.currentCell !== null || runtime.queue.length > 0;
+    dropQueue(runtime);
+    setStatus(runtime, "restarting");
+    const known = churnReason();
     kernelNote(
       runtime.sessionId,
       known
-        ? `${known} Every variable is gone${hadWork ? '; whatever was queued was dropped' : ''}.`
+        ? `${known} Every variable is gone${hadWork ? "; whatever was queued was dropped" : ""}.`
         : hadWork
-          ? 'The kernel ran out of memory and is coming back on its own. Every variable is gone; whatever was queued was dropped.'
-          : 'The kernel restarted on its own — usually memory. Every variable is gone.',
-    )
-    return
+          ? "The kernel ran out of memory and is coming back on its own. Every variable is gone; whatever was queued was dropped."
+          : "The kernel restarted on its own — usually memory. Every variable is gone.",
+    );
+    return;
   }
-  if (phase === 'dead') {
-    const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
-    dropQueue(runtime)
-    setStatus(runtime, 'dead')
+  if (phase === "dead") {
+    const hadWork = runtime.currentCell !== null || runtime.queue.length > 0;
+    dropQueue(runtime);
+    setStatus(runtime, "dead");
     // Found by asking, before the cell was sent: the run is about to be retried
     // on a fresh kernel and will say so itself. Two notices, one of them about a
     // cell that then runs perfectly well, is worse than one.
-    if (expected) return
+    if (expected) return;
     // A kernel usually dies because a cell asked for more memory than the
     // container has. Saying so beats a room staring at a notebook that stopped.
-    const known = churnReason()
+    const known = churnReason();
     kernelNote(
       runtime.sessionId,
       known
-        ? `${known}${hadWork ? ' Whatever was queued was dropped.' : ''} Run a cell to start a fresh one.`
+        ? `${known}${hadWork ? " Whatever was queued was dropped." : ""} Run a cell to start a fresh one.`
         : hadWork
-          ? 'The kernel stopped while a cell was running — usually memory. Whatever was queued was dropped; restart to carry on.'
-          : 'The kernel stopped. Restart it to run anything.',
-    )
-    return
+          ? "The kernel stopped while a cell was running — usually memory. Whatever was queued was dropped; restart to carry on."
+          : "The kernel stopped. Restart it to run anything.",
+    );
+    return;
   }
   // A cell mid-run keeps the room's status honest even between kernel messages.
-  setStatus(runtime, runtime.currentCell ? 'busy' : phase)
+  setStatus(runtime, runtime.currentCell ? "busy" : phase);
 }
 
 /* ---------------------------------------------------------------- lifecycle */
@@ -452,12 +476,13 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
  * brings a fresh one up instead of demanding a manual restart.
  */
 export function ensureKernel(sessionId: string): Promise<void> {
-  const runtime = getRuntime(sessionId)
-  if (runtime.kernel && runtime.kernel.phase !== 'dead') return Promise.resolve()
-  if (runtime.starting) return runtime.starting
+  const runtime = getRuntime(sessionId);
+  if (runtime.kernel && runtime.kernel.phase !== "dead")
+    return Promise.resolve();
+  if (runtime.starting) return runtime.starting;
 
-  const dead = runtime.kernel
-  runtime.kernel = null
+  const dead = runtime.kernel;
+  runtime.kernel = null;
 
   /*
    * A kernel that cannot be reached takes the full startup timeout to say so,
@@ -466,7 +491,7 @@ export function ensureKernel(sessionId: string): Promise<void> {
    * seminar is usually in the middle of something and can decide whether to
    * wait or go on without Python.
    */
-  const envName = sessionEnvironment(sessionId) ?? activeName()
+  const envName = sessionEnvironment(sessionId) ?? activeName();
   const slow = setTimeout(() => {
     /*
      * Про то окружение, которое поднимается, а не про глобальный адрес.
@@ -482,42 +507,47 @@ export function ensureKernel(sessionId: string): Promise<void> {
       envName
         ? `Starting the ${envName} environment — its container has to come up first, which takes up to a minute and a half on a cold start. Still trying; nothing can run until it answers.`
         : `The kernel is taking longer than usual to start at ${config.jupyter.url}. Still trying — nothing can run until it answers.`,
-    )
-  }, SLOW_START_NOTICE_MS)
+    );
+  }, SLOW_START_NOTICE_MS);
 
   runtime.starting = (async () => {
-    setStatus(runtime, 'starting')
+    setStatus(runtime, "starting");
     // Read at the moment the kernel is built, not at the moment it is asked
     // for: that is the value the container will actually have.
-    runtime.environment = envName
+    runtime.environment = envName;
     if (dead) {
       try {
-        await dead.dispose()
+        await dead.dispose();
       } catch {
         /* it was already gone */
       }
     }
     // Какое окружение сейчас спрашиваем — понадобится, если оно не ответит.
-    const wanted = sessionEnvironment(sessionId)
+    const wanted = sessionEnvironment(sessionId);
     try {
       // Куда идти за Python — решает окружение комнаты, а не глобальная
       // настройка: два семинара могут одновременно сидеть на разном.
-      const endpoint = await endpointForEnvironment(wanted)
-      const kernel = await JupyterKernel.connect(sessionId, endpoint)
-      runtime.kernel = kernel
-      kernel.onPhaseChange((phase, expected) => onPhase(runtime, phase, expected))
+      const endpoint = await endpointForEnvironment(wanted);
+      const kernel = await JupyterKernel.connect(sessionId, endpoint);
+      runtime.kernel = kernel;
+      kernel.onPhaseChange((phase, expected) =>
+        onPhase(runtime, phase, expected),
+      );
       // Before anything of ours is sent: a kernel that is already busy is
       // finishing a cell for a server that no longer exists, and it would make
       // every Run in this room wait behind output nobody will ever see.
       if (await kernel.releaseOrphanedWork()) {
         kernelNote(
           sessionId,
-          'The kernel kept running while the server was away, so every variable is still here. The one cell it was in the middle of was stopped — its output had nowhere left to go.',
-        )
+          "The kernel kept running while the server was away, so every variable is still here. The one cell it was in the middle of was stopped — its output had nowhere left to go.",
+        );
       }
-      setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
+      setStatus(
+        runtime,
+        runtime.currentCell ? "busy" : (kernel.phase as KernelStatus),
+      );
     } catch (err) {
-      setStatus(runtime, 'dead')
+      setStatus(runtime, "dead");
       /*
        * Забыть запомненный адрес контейнера.
        *
@@ -527,18 +557,18 @@ export function ensureKernel(sessionId: string): Promise<void> {
        * after 60s» на каждый Run, при живом и здоровом контейнере рядом.
        * Функция для этого была написана и не вызывалась ниоткуда.
        */
-      if (wanted) forgetEnvironment(wanted)
+      if (wanted) forgetEnvironment(wanted);
       // Into the shared record too: the person who presses Run sees the message
       // on their cell, and everyone else sees a notebook that stopped.
-      kernelNote(sessionId, errText(err))
-      throw err
+      kernelNote(sessionId, errText(err));
+      throw err;
     } finally {
-      clearTimeout(slow)
-      runtime.starting = null
+      clearTimeout(slow);
+      runtime.starting = null;
     }
-  })()
+  })();
 
-  return runtime.starting
+  return runtime.starting;
 }
 
 /**
@@ -555,44 +585,56 @@ export function ensureKernel(sessionId: string): Promise<void> {
  */
 export function kernelNote(sessionId: string, text: string): void {
   try {
-    const { doc } = getSessionDoc(sessionId)
+    const { doc } = getSessionDoc(sessionId);
     doc.transact(() => {
-      getTerminal(doc).push([createTerminalLine({ kind: 'system', text })])
-    }, ORIGIN)
+      getTerminal(doc).push([createTerminalLine({ kind: "system", text })]);
+    }, ORIGIN);
   } catch {
     // Never let a log line be the reason a restart fails.
   }
 }
 
-export async function restartSession(sessionId: string, restartedBy?: string): Promise<void> {
-  const runtime = getRuntime(sessionId)
+export async function restartSession(
+  sessionId: string,
+  restartedBy?: string,
+): Promise<void> {
+  const runtime = getRuntime(sessionId);
   // Два нажатия — один перезапуск. Второе присоединяется к первому, а не
   // запускает поверх него ещё один.
-  if (runtime.restarting) return runtime.restarting
-  dropQueue(runtime)
-  setStatus(runtime, 'restarting')
+  if (runtime.restarting) return runtime.restarting;
+  dropQueue(runtime);
+  setStatus(runtime, "restarting");
 
   runtime.restarting = (async () => {
     try {
-      if (runtime.kernel && runtime.kernel.phase !== 'dead') await runtime.kernel.restart()
-      else await ensureKernel(sessionId)
-      resetAllCells(sessionId, runtime.currentCell)
-      setStatus(runtime, 'idle')
-      kernelNote(sessionId, restartedBy ? `Kernel restarted by ${restartedBy}. Every variable is gone and the queue was dropped.` : 'Kernel restarted. Every variable is gone and the queue was dropped.')
+      if (runtime.kernel && runtime.kernel.phase !== "dead")
+        await runtime.kernel.restart();
+      else await ensureKernel(sessionId);
+      resetAllCells(sessionId, runtime.currentCell);
+      setStatus(runtime, "idle");
+      kernelNote(
+        sessionId,
+        restartedBy
+          ? `Kernel restarted by ${restartedBy}. Every variable is gone and the queue was dropped.`
+          : "Kernel restarted. Every variable is gone and the queue was dropped.",
+      );
     } catch (err) {
       // Never a rejection: the person clicked a button, the document carries the news.
-      console.error(`[kernel] restart failed for ${sessionId}:`, errText(err))
-      setStatus(runtime, 'dead')
-      kernelNote(sessionId, 'The kernel did not come back after the restart. Nothing can run until it does.')
+      console.error(`[kernel] restart failed for ${sessionId}:`, errText(err));
+      setStatus(runtime, "dead");
+      kernelNote(
+        sessionId,
+        "The kernel did not come back after the restart. Nothing can run until it does.",
+      );
     }
-  })()
+  })();
 
   try {
-    await runtime.restarting
+    await runtime.restarting;
   } finally {
-    runtime.restarting = null
+    runtime.restarting = null;
     // Что успели поставить в очередь, пока ядро возвращалось, — теперь можно.
-    void pump(runtime)
+    void pump(runtime);
   }
 }
 
@@ -610,8 +652,11 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
  * верхней панели — единственный способ разобрать скопившуюся очередь одним
  * нажатием, когда не выполняется ничего.
  */
-export async function interruptSession(sessionId: string, cellId?: string): Promise<void> {
-  const runtime = getRuntime(sessionId)
+export async function interruptSession(
+  sessionId: string,
+  cellId?: string,
+): Promise<void> {
+  const runtime = getRuntime(sessionId);
   /*
    * Drop the tail first: interrupting cell 3 of 10 must not start cell 4.
    *
@@ -622,7 +667,7 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
    * also walked straight past the ownership check above, which exists exactly
    * so one person cannot cancel another's work.
    */
-  const running = runtime.currentCell
+  const running = runtime.currentCell;
   /*
    * Проверка цели стоит только на второй ветке, и это существенно.
    *
@@ -636,13 +681,13 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
    * ячейки, которая сейчас выполняется, — поэтому остановить текущую работу
    * можно и промахнувшимся нажатием, а вот разбирать очередь по промаху нельзя.
    */
-  if (running) stopBatchOf(runtime, running)
-  else if (cellId === undefined) dropQueue(runtime)
-  if (!runtime.kernel || runtime.kernel.phase === 'dead') return
+  if (running) stopBatchOf(runtime, running);
+  else if (cellId === undefined) dropQueue(runtime);
+  if (!runtime.kernel || runtime.kernel.phase === "dead") return;
   try {
-    await runtime.kernel.interrupt()
+    await runtime.kernel.interrupt();
   } catch (err) {
-    console.error(`[kernel] interrupt failed for ${sessionId}:`, errText(err))
+    console.error(`[kernel] interrupt failed for ${sessionId}:`, errText(err));
   }
 }
 
@@ -655,22 +700,25 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
  * Every other caller wants restartSession, which keeps the room.
  */
 export async function shutdownSession(sessionId: string): Promise<void> {
-  const runtime = runtimes.get(sessionId)
+  const runtime = runtimes.get(sessionId);
   if (runtime) {
-    runtimes.delete(sessionId)
-    runtime.queue.length = 0
-    runtime.writer?.dispose()
-    runtime.writer = null
+    runtimes.delete(sessionId);
+    runtime.queue.length = 0;
+    runtime.writer?.dispose();
+    runtime.writer = null;
     try {
-      await runtime.kernel?.dispose()
+      await runtime.kernel?.dispose();
     } catch (err) {
-      console.error(`[kernel] could not stop ${sessionId}:`, errText(err))
+      console.error(`[kernel] could not stop ${sessionId}:`, errText(err));
     }
   }
   try {
-    await closeTerminal(sessionId)
+    await closeTerminal(sessionId);
   } catch (err) {
-    console.error(`[kernel] could not stop the terminal for ${sessionId}:`, errText(err))
+    console.error(
+      `[kernel] could not stop the terminal for ${sessionId}:`,
+      errText(err),
+    );
   }
 }
 
@@ -685,13 +733,13 @@ export async function shutdownSession(sessionId: string): Promise<void> {
  * running; a room's kernel is ended when the room is (shutdownSession).
  */
 export async function shutdownKernels(): Promise<void> {
-  const all = [...runtimes.values()]
-  runtimes.clear()
+  const all = [...runtimes.values()];
+  runtimes.clear();
   for (const runtime of all) {
-    runtime.queue.length = 0
-    runtime.writer?.dispose()
-    runtime.writer = null
-    runtime.kernel?.detach()
+    runtime.queue.length = 0;
+    runtime.writer?.dispose();
+    runtime.writer = null;
+    runtime.kernel?.detach();
   }
 }
 
@@ -702,40 +750,83 @@ export async function shutdownKernels(): Promise<void> {
  * client could write `runById` into a cell itself. The queue is the server's
  * own record of who asked for what.
  */
-export function startedTheRunningCell(sessionId: string, participantId: string): boolean {
-  const runtime = runtimes.get(sessionId)
-  return runtime?.currentRunById === participantId
+export function startedTheRunningCell(
+  sessionId: string,
+  participantId: string,
+): boolean {
+  const runtime = runtimes.get(sessionId);
+  return runtime?.currentRunById === participantId;
+}
+
+/**
+ * Стоит ли в очереди только то, что поставил этот человек.
+ *
+ * Комнатное «остановить» выносит очередь целиком, а очередь общая: одно нажатие
+ * убирало чужие пачки под тем же правом, под которым человек останавливает
+ * свою ячейку. Пустая очередь считается своей — останавливать нечего.
+ */
+export function queueIsOnly(sessionId: string, participantId: string): boolean {
+  const runtime = runtimes.get(sessionId);
+  if (!runtime) return true;
+  return runtime.queue.every((item) => item.runById === participantId);
 }
 
 /* -------------------------------------------------------------- run queue */
 
-let batchCounter = 0
+let batchCounter = 0;
 
-export function requestRun(sessionId: string, cellIds: string[], runBy: string, runById: string): void {
-  const runtime = getRuntime(sessionId)
+/**
+ * Поставить ячейки в очередь.
+ *
+ * `cap` — сколько своих ячеек этот человек держит в очереди одновременно; при
+ * правиле «по одной» это единица. Потолок, а не право: он и делает «по одной»
+ * границей, а не счётчиком нажатий — скриптовый цикл из кадров `{t:'run'}`
+ * ставит одну ячейку и получает фразу на остальные. Возвращает, сколько
+ * ячеек не поместилось, чтобы вызывающий сказал это один раз, а не двадцать.
+ */
+export function requestRun(
+  sessionId: string,
+  cellIds: string[],
+  runBy: string,
+  runById: string,
+  cap = Number.POSITIVE_INFINITY,
+): number {
+  const runtime = getRuntime(sessionId);
   // Нажатие чинит комнату, в которой нажали: если в ней осталась ячейка,
   // которую документ считает работающей, а сервер о ней не знает, — самое
   // время это заметить. См. sweepOrphanRuns.
-  sweepOrphanRuns(sessionId)
-  const { doc } = getSessionDoc(sessionId)
-  const batch = ++batchCounter
+  sweepOrphanRuns(sessionId);
+  const { doc } = getSessionDoc(sessionId);
+  const batch = ++batchCounter;
+
+  // Считается по среде исполнения, а не по документу: документ пишут все.
+  let mine =
+    runtime.queue.filter((item) => item.runById === runById).length +
+    (runtime.currentRunById === runById ? 1 : 0);
+  let refused = 0;
 
   doc.transact(() => {
     for (const cellId of cellIds) {
-      const found = findCell(doc, cellId)
+      const found = findCell(doc, cellId);
       // Markdown cells arrive in every runAll list; skipping them is not an error.
-      if (!found || cellType(found.cell) !== 'code') continue
-      if (runtime.currentCell === cellId) continue
-      if (runtime.queue.some((item) => item.cellId === cellId)) continue
-      runtime.queue.push({ cellId, runBy, runById, batch })
-      found.cell.set('state', 'queued' as CellState)
-      found.cell.set('runBy', runBy)
-      found.cell.set('runById', runById)
+      if (!found || cellType(found.cell) !== "code") continue;
+      if (runtime.currentCell === cellId) continue;
+      if (runtime.queue.some((item) => item.cellId === cellId)) continue;
+      if (mine >= cap) {
+        refused += 1;
+        continue;
+      }
+      mine += 1;
+      runtime.queue.push({ cellId, runBy, runById, batch });
+      found.cell.set("state", "queued" as CellState);
+      found.cell.set("runBy", runBy);
+      found.cell.set("runById", runById);
     }
-  }, ORIGIN)
+  }, ORIGIN);
 
-  syncQueue(runtime)
-  void pump(runtime)
+  syncQueue(runtime);
+  void pump(runtime);
+  return refused;
 }
 
 /**
@@ -757,36 +848,36 @@ export function cancelRun(
   participantId: string,
   isHost: boolean,
 ): number {
-  const runtime = getRuntime(sessionId)
-  const wanted = new Set(cellIds)
-  const removed: string[] = []
+  const runtime = getRuntime(sessionId);
+  const wanted = new Set(cellIds);
+  const removed: string[] = [];
 
   runtime.queue = runtime.queue.filter((item) => {
-    if (!wanted.has(item.cellId)) return true
-    if (!isHost && item.runById !== participantId) return true
-    removed.push(item.cellId)
-    return false
-  })
-  if (removed.length === 0) return 0
+    if (!wanted.has(item.cellId)) return true;
+    if (!isHost && item.runById !== participantId) return true;
+    removed.push(item.cellId);
+    return false;
+  });
+  if (removed.length === 0) return 0;
 
-  const { doc } = getSessionDoc(sessionId)
+  const { doc } = getSessionDoc(sessionId);
   doc.transact(() => {
     for (const cellId of removed) {
-      const found = findCell(doc, cellId)
-      if (!found) continue
-      found.cell.set('state', 'idle' as CellState)
-      found.cell.set('runBy', null)
-      found.cell.set('runById', null)
+      const found = findCell(doc, cellId);
+      if (!found) continue;
+      found.cell.set("state", "idle" as CellState);
+      found.cell.set("runBy", null);
+      found.cell.set("runById", null);
     }
-  }, ORIGIN)
-  syncQueue(runtime)
-  return removed.length
+  }, ORIGIN);
+  syncQueue(runtime);
+  return removed.length;
 }
 
 /** Did the cell that just ran end in a traceback? */
 function failed(runtime: Runtime, cellId: string): boolean {
-  const { doc } = getSessionDoc(runtime.sessionId)
-  return findCell(doc, cellId)?.cell.get('state') === 'error'
+  const { doc } = getSessionDoc(runtime.sessionId);
+  return findCell(doc, cellId)?.cell.get("state") === "error";
 }
 
 /**
@@ -803,125 +894,132 @@ function failed(runtime: Runtime, cellId: string): boolean {
  * this interrupt's business.
  */
 function stopBatchOf(runtime: Runtime, cellId: string): void {
-  const mine = runtime.queue.find((item) => item.cellId === cellId)
-  const batch = mine?.batch ?? runtime.currentBatch
-  if (batch === null || batch === undefined) return
-  const dropped = runtime.queue.filter((item) => item.batch === batch)
-  if (dropped.length === 0) return
-  runtime.queue = runtime.queue.filter((item) => item.batch !== batch)
+  const mine = runtime.queue.find((item) => item.cellId === cellId);
+  const batch = mine?.batch ?? runtime.currentBatch;
+  if (batch === null || batch === undefined) return;
+  const dropped = runtime.queue.filter((item) => item.batch === batch);
+  if (dropped.length === 0) return;
+  runtime.queue = runtime.queue.filter((item) => item.batch !== batch);
 
-  const { doc } = getSessionDoc(runtime.sessionId)
+  const { doc } = getSessionDoc(runtime.sessionId);
   doc.transact(() => {
     for (const item of dropped) {
-      const found = findCell(doc, item.cellId)
-      if (!found) continue
-      found.cell.set('state', 'idle' as CellState)
-      found.cell.set('runBy', null)
-      found.cell.set('runById', null)
+      const found = findCell(doc, item.cellId);
+      if (!found) continue;
+      found.cell.set("state", "idle" as CellState);
+      found.cell.set("runBy", null);
+      found.cell.set("runById", null);
     }
-  }, ORIGIN)
-  syncQueue(runtime)
+  }, ORIGIN);
+  syncQueue(runtime);
   // Said out loud, because a queue that empties without a word reads as a
   // product that ignored the button.
   kernelNote(
     runtime.sessionId,
     dropped.length === 1
-      ? 'The interrupt also dropped the one cell queued behind it.'
+      ? "The interrupt also dropped the one cell queued behind it."
       : `The interrupt also dropped the ${dropped.length} cells queued behind it.`,
-  )
+  );
 }
 
 function stopBatch(runtime: Runtime, failedItem: QueueItem): void {
-  const dropped = runtime.queue.filter((item) => item.batch === failedItem.batch)
-  if (dropped.length === 0) return
-  runtime.queue = runtime.queue.filter((item) => item.batch !== failedItem.batch)
+  const dropped = runtime.queue.filter(
+    (item) => item.batch === failedItem.batch,
+  );
+  if (dropped.length === 0) return;
+  runtime.queue = runtime.queue.filter(
+    (item) => item.batch !== failedItem.batch,
+  );
 
-  const { doc } = getSessionDoc(runtime.sessionId)
+  const { doc } = getSessionDoc(runtime.sessionId);
   doc.transact(() => {
     for (const item of dropped) {
-      const found = findCell(doc, item.cellId)
-      if (!found) continue
-      found.cell.set('state', 'idle' as CellState)
-      found.cell.set('runBy', null)
-      found.cell.set('runById', null)
+      const found = findCell(doc, item.cellId);
+      if (!found) continue;
+      found.cell.set("state", "idle" as CellState);
+      found.cell.set("runBy", null);
+      found.cell.set("runById", null);
     }
-  }, ORIGIN)
-  syncQueue(runtime)
+  }, ORIGIN);
+  syncQueue(runtime);
   kernelNote(
     runtime.sessionId,
     dropped.length === 1
-      ? 'A cell failed, so the one queued behind it was not run.'
+      ? "A cell failed, so the one queued behind it was not run."
       : `A cell failed, so the ${dropped.length} cells queued behind it were not run.`,
-  )
+  );
 }
 
 async function pump(runtime: Runtime): Promise<void> {
-  if (runtime.pumping) return
-  runtime.pumping = true
+  if (runtime.pumping) return;
+  runtime.pumping = true;
   try {
     while (runtime.queue.length > 0) {
       // Перезапуск идёт — ждать его, а не слать execute в ядро, которого через
       // мгновение не будет. Ответ на такой execute не приходит никогда.
       if (runtime.restarting) {
-        await runtime.restarting.catch(() => {})
+        await runtime.restarting.catch(() => {});
         // Перезапуск сбрасывает очередь; всё, что осталось, пришло после него.
-        if (runtime.queue.length === 0) break
+        if (runtime.queue.length === 0) break;
       }
       try {
-        await ensureKernel(runtime.sessionId)
+        await ensureKernel(runtime.sessionId);
       } catch (err) {
-        reportDeadKernel(runtime, errText(err))
-        return
+        reportDeadKernel(runtime, errText(err));
+        return;
       }
-      const item = runtime.queue.shift()
-      if (!item) break
-      await runOne(runtime, item)
-      if (runtime.kernel && runtime.kernel.phase === 'dead') {
-        dropQueue(runtime)
-        return
+      const item = runtime.queue.shift();
+      if (!item) break;
+      await runOne(runtime, item);
+      if (runtime.kernel && runtime.kernel.phase === "dead") {
+        dropQueue(runtime);
+        return;
       }
-      if (failed(runtime, item.cellId)) stopBatch(runtime, item)
+      if (failed(runtime, item.cellId)) stopBatch(runtime, item);
     }
   } catch (err) {
     // The queue must not die silently with cells stuck on "running".
-    console.error(`[kernel] run queue failed for ${runtime.sessionId}:`, errText(err))
-    reportDeadKernel(runtime, errText(err))
+    console.error(
+      `[kernel] run queue failed for ${runtime.sessionId}:`,
+      errText(err),
+    );
+    reportDeadKernel(runtime, errText(err));
   } finally {
-    runtime.pumping = false
-    runtime.currentCell = null
-    runtime.currentBatch = null
-    runtime.currentRunById = null
-    syncQueue(runtime)
-    const phase = runtime.kernel?.phase ?? 'dead'
-    setStatus(runtime, phase === 'busy' ? 'idle' : (phase as KernelStatus))
+    runtime.pumping = false;
+    runtime.currentCell = null;
+    runtime.currentBatch = null;
+    runtime.currentRunById = null;
+    syncQueue(runtime);
+    const phase = runtime.kernel?.phase ?? "dead";
+    setStatus(runtime, phase === "busy" ? "idle" : (phase as KernelStatus));
   }
 }
 
 async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
-  const { doc } = getSessionDoc(runtime.sessionId)
-  const found = findCell(doc, item.cellId)
+  const { doc } = getSessionDoc(runtime.sessionId);
+  const found = findCell(doc, item.cellId);
   // Someone deleted the cell while it sat in the queue.
-  if (!found || cellType(found.cell) !== 'code') return
+  if (!found || cellType(found.cell) !== "code") return;
 
-  const cell = found.cell
-  const source = cellSource(cell).toString()
-  const writer = new OutputWriter(doc, item.cellId)
-  runtime.currentCell = item.cellId
-  runtime.currentBatch = item.batch
-  runtime.currentRunById = item.runById
-  runtime.writer = writer
+  const cell = found.cell;
+  const source = cellSource(cell).toString();
+  const writer = new OutputWriter(doc, item.cellId);
+  runtime.currentCell = item.cellId;
+  runtime.currentBatch = item.batch;
+  runtime.currentRunById = item.runById;
+  runtime.writer = writer;
   // Одно и то же число в двух местах: в документ — чтобы росли часы у всех, в
   // среду исполнения — чтобы длительность считалась по нашей записи.
-  const startedAt = Date.now()
-  runtime.started = { cellId: item.cellId, at: startedAt }
-  syncQueue(runtime)
-  setStatus(runtime, 'busy')
+  const startedAt = Date.now();
+  runtime.started = { cellId: item.cellId, at: startedAt };
+  syncQueue(runtime);
+  setStatus(runtime, "busy");
 
   doc.transact(() => {
-    cell.set('state', 'running' as CellState)
-    cell.set('runBy', item.runBy)
-    cell.set('runById', item.runById)
-    cell.set('execCount', null)
+    cell.set("state", "running" as CellState);
+    cell.set("runBy", item.runBy);
+    cell.set("runById", item.runById);
+    cell.set("execCount", null);
     /*
      * Одно число в транзакции, которая и так происходит.
      *
@@ -936,8 +1034,8 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
      * `ranMs` гасится вместе с `execCount` и по той же причине: время прошлого
      * выполнения перестаёт быть правдой в тот момент, когда началось это.
      */
-    cell.set('startedAt', startedAt)
-    cell.set('ranMs', null)
+    cell.set("startedAt", startedAt);
+    cell.set("ranMs", null);
     /*
      * Прошлый вывод стирается здесь же, в этой самой транзакции.
      *
@@ -955,19 +1053,19 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
      * обход shapeOf на запуск. На Run All из сорока ячеек в комнате из
      * двадцати это сорок обновлений и восемьсот кадров, которых больше нет.
      */
-    writer.clear()
-  }, ORIGIN)
+    writer.clear();
+  }, ORIGIN);
 
   if (source.trim().length === 0) {
-    runtime.currentCell = null
-    runtime.currentBatch = null
-    runtime.writer = null
-    writer.dispose()
-    setCellState(runtime.sessionId, item.cellId, 'ok')
-    return
+    runtime.currentCell = null;
+    runtime.currentBatch = null;
+    runtime.writer = null;
+    writer.dispose();
+    setCellState(runtime.sessionId, item.cellId, "ok");
+    return;
   }
 
-  let state: CellState = 'idle'
+  let state: CellState = "idle";
   try {
     /*
      * A kernel can die between two cells without anything saying so — Jupyter
@@ -979,12 +1077,14 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
      */
     const status = await runOnKernel(runtime, source, {
       onExecuteInput: (execCount) => {
-        const target = findCell(doc, item.cellId)
-        if (target) doc.transact(() => target.cell.set('execCount', execCount), ORIGIN)
+        const target = findCell(doc, item.cellId);
+        if (target)
+          doc.transact(() => target.cell.set("execCount", execCount), ORIGIN);
       },
       onStream: (name, text) => writer.stream(name, text),
       onData: (mimebundle, execCount) => writer.data(mimebundle, execCount),
-      onError: (ename, evalue, traceback) => writer.error(ename, evalue, traceback),
+      onError: (ename, evalue, traceback) =>
+        writer.error(ename, evalue, traceback),
       // wait=True — обещание заменить, wait=False — стереть сейчас. См. OutputWriter.
       onClear: (wait) => (wait ? writer.supersede() : writer.clear()),
       /*
@@ -995,52 +1095,55 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
        * to find out why.
        */
       onInputRequest: (prompt, password) => {
-        const target = findCell(doc, item.cellId)
+        const target = findCell(doc, item.cellId);
         if (target) {
-          doc.transact(() => target.cell.set('stdin', { prompt, password }), ORIGIN)
+          doc.transact(
+            () => target.cell.set("stdin", { prompt, password }),
+            ORIGIN,
+          );
         }
       },
-    })
-    state = status === 'ok' ? 'ok' : status === 'error' ? 'error' : 'idle'
-    if (status === 'abort' && runtime.kernel?.phase === 'dead') {
-      writer.error('KernelDied', deadMessage(), [])
-      state = 'error'
+    });
+    state = status === "ok" ? "ok" : status === "error" ? "error" : "idle";
+    if (status === "abort" && runtime.kernel?.phase === "dead") {
+      writer.error("KernelDied", deadMessage(), []);
+      state = "error";
     }
   } catch (err) {
-    writer.error('KernelError', errText(err), [])
-    state = 'error'
+    writer.error("KernelError", errText(err), []);
+    state = "error";
   } finally {
-    writer.dispose()
-    runtime.writer = null
-    runtime.currentCell = null
-    runtime.currentBatch = null
+    writer.dispose();
+    runtime.writer = null;
+    runtime.currentCell = null;
+    runtime.currentBatch = null;
     // The prompt belongs to a running cell. Whatever ended the run — an answer,
     // an interrupt, a dead kernel — it must not be left on screen asking.
-    const target = findCell(doc, item.cellId)
-    if (target?.cell.get('stdin')) {
-      doc.transact(() => target.cell.set('stdin', null), ORIGIN)
+    const target = findCell(doc, item.cellId);
+    if (target?.cell.get("stdin")) {
+      doc.transact(() => target.cell.set("stdin", null), ORIGIN);
     }
   }
 
-  setCellState(runtime.sessionId, item.cellId, state)
-  syncQueue(runtime)
+  setCellState(runtime.sessionId, item.cellId, state);
+  syncQueue(runtime);
   // The cell may have written a CSV; the Files panel should not need a refresh.
-  notifyWorkspaceChanged(runtime.sessionId)
+  notifyWorkspaceChanged(runtime.sessionId);
 }
 
 /** A kernel that will not come up is an output on the cell, never a crash. */
 function reportDeadKernel(runtime: Runtime, message: string): void {
-  const { doc } = getSessionDoc(runtime.sessionId)
-  const stuck = runtime.currentCell ?? runtime.queue[0]?.cellId ?? null
+  const { doc } = getSessionDoc(runtime.sessionId);
+  const stuck = runtime.currentCell ?? runtime.queue[0]?.cellId ?? null;
   if (stuck) {
-    const writer = runtime.writer ?? new OutputWriter(doc, stuck)
-    writer.error('KernelError', message, [])
-    writer.dispose()
-    runtime.writer = null
-    runtime.currentCell = null
-    runtime.currentBatch = null
-    const waiting = runtime.queue[0]?.cellId === stuck
-    if (waiting) runtime.queue.shift()
+    const writer = runtime.writer ?? new OutputWriter(doc, stuck);
+    writer.error("KernelError", message, []);
+    writer.dispose();
+    runtime.writer = null;
+    runtime.currentCell = null;
+    runtime.currentBatch = null;
+    const waiting = runtime.queue[0]?.cellId === stuck;
+    if (waiting) runtime.queue.shift();
     /*
      * Ячейка, которая только стояла в очереди, теряет номер вместе с ядром.
      *
@@ -1052,22 +1155,22 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
      * выполнения как обстоятельства падения, которое не принадлежит никакому.
      */
     if (waiting) {
-      const found = findCell(doc, stuck)
+      const found = findCell(doc, stuck);
       if (found) {
         doc.transact(() => {
-          found.cell.set('execCount', null)
-          found.cell.set('ranMs', null)
-        }, ORIGIN)
+          found.cell.set("execCount", null);
+          found.cell.set("ranMs", null);
+        }, ORIGIN);
       }
     }
-    setCellState(runtime.sessionId, stuck, 'error')
+    setCellState(runtime.sessionId, stuck, "error");
   }
-  dropQueue(runtime)
-  setStatus(runtime, 'dead')
+  dropQueue(runtime);
+  setStatus(runtime, "dead");
 }
 
 function deadMessage(): string {
-  return 'The Python kernel stopped responding — restart it to keep going. (A cell that allocates all the memory will do this.)'
+  return "The Python kernel stopped responding — restart it to keep going. (A cell that allocates all the memory will do this.)";
 }
 
 /* ------------------------------------------------------------------ outputs */
@@ -1081,19 +1184,25 @@ function deadMessage(): string {
  * whole design rather than a fallback.
  */
 export async function formatSession(sessionId: string): Promise<FormatOutcome> {
-  const runtime = getRuntime(sessionId)
+  const runtime = getRuntime(sessionId);
   try {
-    await ensureKernel(sessionId)
+    await ensureKernel(sessionId);
   } catch (err) {
-    return { changed: 0, skipped: 0, unchanged: 0, error: errText(err) }
+    return { changed: 0, skipped: 0, unchanged: 0, error: errText(err) };
   }
-  const kernel = runtime.kernel
+  const kernel = runtime.kernel;
   if (!kernel) {
-    return { changed: 0, skipped: 0, unchanged: 0, error: 'The kernel is not running.' }
+    return {
+      changed: 0,
+      skipped: 0,
+      unchanged: 0,
+      error: "The kernel is not running.",
+    };
   }
-  const outcome = await formatNotebook(sessionId, kernel)
-  if (outcome.error) kernelNote(sessionId, `Formatting failed: ${outcome.error}`)
-  return outcome
+  const outcome = await formatNotebook(sessionId, kernel);
+  if (outcome.error)
+    kernelNote(sessionId, `Formatting failed: ${outcome.error}`);
+  return outcome;
 }
 
 /**
@@ -1103,32 +1212,46 @@ export async function formatSession(sessionId: string): Promise<FormatOutcome> {
  * race to guard against but how a seminar works: the person at the keyboard is
  * not always the person who knows the number.
  */
-export async function answerInput(sessionId: string, value: string): Promise<boolean> {
-  const runtime = runtimes.get(sessionId)
-  const kernel = runtime?.kernel
-  if (!kernel || !kernel.waitingForInput) return false
-  const answered = await kernel.answerInput(value)
+/**
+ * Ответить ячейке, остановившейся внутри `input()`.
+ *
+ * `cellId` — не украшение: без него ответ уходил тому, на чём ядро оказалось
+ * заблокировано в этот момент, кем угодно и с любого экрана. Ячейка сменилась
+ * между отрисовкой формы и нажатием Enter — и пароль, набранный для своей
+ * ячейки, уходит в чужую.
+ */
+export async function answerInput(
+  sessionId: string,
+  value: string,
+  cellId?: string,
+): Promise<boolean> {
+  const runtime = runtimes.get(sessionId);
+  const kernel = runtime?.kernel;
+  if (!kernel || !kernel.waitingForInput) return false;
+  if (cellId && runtime.currentCell !== cellId) return false;
+  const answered = await kernel.answerInput(value);
   if (answered && runtime.currentCell) {
-    const { doc } = getSessionDoc(sessionId)
-    const target = findCell(doc, runtime.currentCell)
-    if (target) doc.transact(() => target.cell.set('stdin', null), ORIGIN)
+    const { doc } = getSessionDoc(sessionId);
+    const target = findCell(doc, runtime.currentCell);
+    if (target) doc.transact(() => target.cell.set("stdin", null), ORIGIN);
   }
-  return answered
+  return answered;
 }
 
 export function clearOutputs(sessionId: string, cellId?: string): void {
-  const { doc } = getSessionDoc(sessionId)
-  const cells = getCells(doc)
+  const { doc } = getSessionDoc(sessionId);
+  const cells = getCells(doc);
   doc.transact(() => {
     cells.forEach((cell) => {
-      if (cellId && idOf(cell) !== cellId) return
-      const outputs = cellOutputs(cell)
-      if (outputs.length > 0) outputs.delete(0, outputs.length)
-      const state = cell.get('state') as CellState | undefined
+      if (cellId && idOf(cell) !== cellId) return;
+      const outputs = cellOutputs(cell);
+      if (outputs.length > 0) outputs.delete(0, outputs.length);
+      const state = cell.get("state") as CellState | undefined;
       // Leave queued and running cells alone; their state belongs to the queue.
-      if (state === 'ok' || state === 'error') cell.set('state', 'idle' as CellState)
-    })
-  }, ORIGIN)
+      if (state === "ok" || state === "error")
+        cell.set("state", "idle" as CellState);
+    });
+  }, ORIGIN);
 }
 
 /**
@@ -1140,8 +1263,8 @@ export function clearOutputs(sessionId: string, cellId?: string): void {
  * оставив ячейку «running» в комнате, где ничего не выполняется.
  */
 function resetAllCells(sessionId: string, except: string | null = null): void {
-  const { doc } = getSessionDoc(sessionId)
-  const cells = getCells(doc)
+  const { doc } = getSessionDoc(sessionId);
+  const cells = getCells(doc);
   doc.transact(() => {
     cells.forEach((cell) => {
       /*
@@ -1159,33 +1282,35 @@ function resetAllCells(sessionId: string, except: string | null = null): void {
        * проверяемый факт о них — номер выполнения — исчезал молча. Теперь
        * номера нет у всех, и клиент говорит об этом словами.
        */
-      cell.set('execCount', null)
-      if (except && idOf(cell) === except) return
-      cell.set('state', 'idle' as CellState)
+      cell.set("execCount", null);
+      if (except && idOf(cell) === except) return;
+      cell.set("state", "idle" as CellState);
       // И секундомер вместе с ним: ядро, которое считало, перезапущено, а
       // время прошлого выполнения относилось к нему.
-      cell.set('startedAt', null)
-      cell.set('ranMs', null)
-    })
-  }, ORIGIN)
+      cell.set("startedAt", null);
+      cell.set("ranMs", null);
+    });
+  }, ORIGIN);
 }
 
 /* -------------------------------------------------------------- workspace */
 
 export function onWorkspaceChanged(cb: (sessionId: string) => void): void {
-  workspaceListeners.push(cb)
+  workspaceListeners.push(cb);
 }
 
 function notifyWorkspaceChanged(sessionId: string): void {
   for (const cb of [...workspaceListeners]) {
     try {
-      cb(sessionId)
+      cb(sessionId);
     } catch (err) {
-      console.error(`[kernel] workspace listener failed for ${sessionId}:`, errText(err))
+      console.error(
+        `[kernel] workspace listener failed for ${sessionId}:`,
+        errText(err),
+      );
     }
   }
 }
-
 
 /**
  * The environment a room's kernel is actually running, or null when it has not
@@ -1194,5 +1319,5 @@ function notifyWorkspaceChanged(sessionId: string): void {
  * be quietly wrong about exactly the case worth knowing.
  */
 export function environmentOf(sessionId: string): string | null {
-  return runtimes.get(sessionId)?.environment ?? null
+  return runtimes.get(sessionId)?.environment ?? null;
 }

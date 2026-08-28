@@ -107,7 +107,7 @@
   function sendAnswer(event: SubmitEvent): void {
     event.preventDefault()
     if (!stdin) return
-    session.send({ t: 'input', value: answer })
+    session.send({ t: 'input', value: answer, cellId: id })
     answer = ''
   }
   const cellState = $derived(meta.current.state)

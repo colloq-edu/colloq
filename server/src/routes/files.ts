@@ -1,9 +1,9 @@
-import { randomBytes } from 'node:crypto'
-import fs from 'node:fs'
-import busboy from 'busboy'
-import { Router } from 'express'
-import { config } from '../config.js'
-import { getSession } from '../db.js'
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import busboy from "busboy";
+import { Router } from "express";
+import { config } from "../config.js";
+import { getSession } from "../db.js";
 import {
   deleteFile,
   listFiles,
@@ -11,22 +11,24 @@ import {
   sessionBytes,
   sweepStaleUploads,
   whyRefused,
-} from '../workspace.js'
-import { broadcastFiles } from '../control.js'
-import { signDownloadToken, verifyDownloadToken } from '../auth.js'
-import { currentStaff } from '../admin/auth.js'
-import { sessionAuth } from './sessions.js'
+} from "../workspace.js";
+import { broadcastFiles } from "../control.js";
+import { signDownloadToken, verifyDownloadToken } from "../auth.js";
+import { currentStaff } from "../admin/auth.js";
+import { sessionAuth } from "./sessions.js";
+import { allows } from "@shared/rules";
+import { getRules } from "../db.js";
 
 interface UploadFailure {
-  code: number
-  message: string
+  code: number;
+  message: string;
 }
 
 /** One drop, one armful. Past this the panel's progress rows stop being readable. */
-const MAX_FILES_PER_UPLOAD = 8
+const MAX_FILES_PER_UPLOAD = 8;
 
 export function fileRoutes(): Router {
-  const router = Router()
+  const router = Router();
 
   /*
    * Reading the room's folder needs the same credential as writing to it.
@@ -38,15 +40,18 @@ export function fileRoutes(): Router {
    * the class and whatever the class uploaded, which is exactly the material
    * that should not leave the room.
    */
-  router.get('/api/sessions/:id/files', (req, res) => {
-    if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
-    if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
-    res.json({ files: listFiles(req.params.id) })
-  })
+  router.get("/api/sessions/:id/files", (req, res) => {
+    if (!getSession(req.params.id))
+      return res.status(404).json({ error: "session not found" });
+    if (!sessionAuth(req))
+      return res.status(401).json({ error: "join the session first" });
+    res.json({ files: listFiles(req.params.id) });
+  });
 
-  router.post('/api/sessions/:id/files', (req, res) => {
-    const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+  router.post("/api/sessions/:id/files", (req, res) => {
+    const sessionId = req.params.id;
+    if (!getSession(sessionId))
+      return res.status(404).json({ error: "session not found" });
     /*
      * Либо участник комнаты, либо преподаватель этого инстанса.
      *
@@ -57,20 +62,31 @@ export function fileRoutes(): Router {
      * преподавателей, а токен участника живёт своей жизнью. Ровно тот же довод
      * записан в sessions.ts над проверкой роли.
      */
-    if (!sessionAuth(req) && !currentStaff(req)) {
-      return res.status(401).json({ error: 'join the session first' })
+    const joined = sessionAuth(req);
+    if (!joined && !currentStaff(req)) {
+      return res.status(401).json({ error: "join the session first" });
+    }
+    // Роль решается тут же: печенье преподавателя сильнее токена участника, и
+    // человек, вошедший в комнату до входа в панель, — всё равно преподаватель.
+    const role = currentStaff(req) ? "host" : (joined?.role ?? "participant");
+    if (!allows(getRules(sessionId).files, role)) {
+      return res
+        .status(403)
+        .json({ error: "Файлы в эту комнату добавляет преподаватель." });
     }
 
-    const contentType = req.headers['content-type'] ?? ''
-    if (!contentType.includes('multipart/form-data')) {
-      return res.status(400).json({ error: 'expected a multipart/form-data upload' })
+    const contentType = req.headers["content-type"] ?? "";
+    if (!contentType.includes("multipart/form-data")) {
+      return res
+        .status(400)
+        .json({ error: "expected a multipart/form-data upload" });
     }
 
     // Before anything is written: an interrupted upload leaves a hidden temp
     // that nothing else will ever remove.
-    sweepStaleUploads(sessionId)
+    sweepStaleUploads(sessionId);
 
-    let bb: ReturnType<typeof busboy>
+    let bb: ReturnType<typeof busboy>;
     try {
       bb = busboy({
         headers: req.headers,
@@ -80,21 +96,26 @@ export function fileRoutes(): Router {
          * on disk — after which `pd.read_csv('данные.csv')` cannot find their
          * own file. RFC 7578 says the field is UTF-8; this says so too.
          */
-        defParamCharset: 'utf8',
-        limits: { fileSize: config.maxUploadBytes, files: MAX_FILES_PER_UPLOAD, fields: 4, fieldSize: 4096 },
-      })
+        defParamCharset: "utf8",
+        limits: {
+          fileSize: config.maxUploadBytes,
+          files: MAX_FILES_PER_UPLOAD,
+          fields: 4,
+          fieldSize: 4096,
+        },
+      });
     } catch {
-      return res.status(400).json({ error: 'malformed upload' })
+      return res.status(400).json({ error: "malformed upload" });
     }
 
-    const saved: string[] = []
+    const saved: string[] = [];
     /** Имена, которые легли поверх уже лежавших: об этом надо сказать вслух. */
-    const replaced: string[] = []
-    const writes: Promise<void>[] = []
+    const replaced: string[] = [];
+    const writes: Promise<void>[] = [];
     /** Все недописанные файлы этого запроса — их надо убрать, чем бы он ни кончился. */
-    const temps = new Set<string>()
-    let failure: UploadFailure | null = null
-    let answered = false
+    const temps = new Set<string>();
+    let failure: UploadFailure | null = null;
+    let answered = false;
     /*
      * Место, занятое комнатой до этой загрузки.
      *
@@ -102,7 +123,7 @@ export function fileRoutes(): Router {
      * пересчёт каталога на каждый файл — это лишний readdir на каждый файл.
      * Дальше к нему прибавляется то, что уже записано в этом же заходе.
      */
-    let budgetUsed = sessionBytes(sessionId)
+    let budgetUsed = sessionBytes(sessionId);
     /*
      * Потолок закрывает загрузку, но не ячейку.
      *
@@ -121,37 +142,40 @@ export function fileRoutes(): Router {
      * обычный путь: переименовать temp на место. Половина CSV ложилась поверх
      * целого, pandas читал её без ошибки, и о потере узнавали по числам.
      */
-    let aborted = false
-    req.on('aborted', () => {
-      aborted = true
-      failure ??= { code: 400, message: 'the upload was cut off' }
+    let aborted = false;
+    req.on("aborted", () => {
+      aborted = true;
+      failure ??= { code: 400, message: "the upload was cut off" };
       // Отвечать некому, но временные файлы убрать всё равно надо.
       void Promise.all(writes).then(() => {
-        for (const tmp of temps) fs.rmSync(tmp, { force: true })
-      })
-    })
+        for (const tmp of temps) fs.rmSync(tmp, { force: true });
+      });
+    });
 
     const finish = () => {
-      if (answered) return
-      answered = true
-      if (saved.length > 0) broadcastFiles(sessionId)
+      if (answered) return;
+      answered = true;
+      if (saved.length > 0) broadcastFiles(sessionId);
       // Всё, что не доехало до места, убирается здесь: обрыв на середине
       // запроса не даёт сработать ни одному из путей выше.
-      for (const tmp of temps) fs.rmSync(tmp, { force: true })
-      if (failure) return res.status(failure.code).json({ error: failure.message, files: listFiles(sessionId) })
-      res.json({ files: listFiles(sessionId), replaced })
-    }
+      for (const tmp of temps) fs.rmSync(tmp, { force: true });
+      if (failure)
+        return res
+          .status(failure.code)
+          .json({ error: failure.message, files: listFiles(sessionId) });
+      res.json({ files: listFiles(sessionId), replaced });
+    };
 
-    bb.on('file', (_field, stream, info) => {
-      const target = resolveInSession(sessionId, info.filename ?? '')
+    bb.on("file", (_field, stream, info) => {
+      const target = resolveInSession(sessionId, info.filename ?? "");
       if (!target) {
-        failure ??= { code: 400, message: whyRefused(info.filename ?? '') }
-        stream.resume()
-        return
+        failure ??= { code: 400, message: whyRefused(info.filename ?? "") };
+        stream.resume();
+        return;
       }
-      const name = target.slice(target.lastIndexOf('/') + 1)
+      const name = target.slice(target.lastIndexOf("/") + 1);
       // Заметить, что имя занято, до того как его займут: после rename не отличить.
-      const existed = fs.existsSync(target)
+      const existed = fs.existsSync(target);
       /*
        * Written beside the file and renamed over it, never into it.
        *
@@ -167,41 +191,41 @@ export function fileRoutes(): Router {
        * The temp name starts with a dot, so a half-finished upload never shows
        * up in the room's file list.
        */
-      const tmp = `${target.slice(0, target.lastIndexOf('/'))}/.${name}.uploading-${randomBytes(6).toString('hex')}`
-      temps.add(tmp)
-      const out = fs.createWriteStream(tmp)
+      const tmp = `${target.slice(0, target.lastIndexOf("/"))}/.${name}.uploading-${randomBytes(6).toString("hex")}`;
+      temps.add(tmp);
+      const out = fs.createWriteStream(tmp);
       writes.push(
         new Promise<void>((resolve) => {
-          let truncated = false
-          stream.on('limit', () => {
-            truncated = true
-          })
-          stream.on('error', () => {
-            failure ??= { code: 400, message: `upload of ${name} failed` }
-          })
-          out.on('error', () => {
-            fs.rmSync(tmp, { force: true })
-            failure ??= { code: 500, message: `could not write ${name}` }
-            resolve()
-          })
-          out.on('close', () => {
+          let truncated = false;
+          stream.on("limit", () => {
+            truncated = true;
+          });
+          stream.on("error", () => {
+            failure ??= { code: 400, message: `upload of ${name} failed` };
+          });
+          out.on("error", () => {
+            fs.rmSync(tmp, { force: true });
+            failure ??= { code: 500, message: `could not write ${name}` };
+            resolve();
+          });
+          out.on("close", () => {
             // A truncated file is worse than no file: pandas would happily read
             // half a CSV and nobody would notice until the numbers were wrong.
             // Whatever the reason, the half stays in the temp file and the copy
             // the room already had is never touched.
             if (truncated) {
-              fs.rmSync(tmp, { force: true })
+              fs.rmSync(tmp, { force: true });
               failure ??= {
                 code: 413,
                 message: `${name} is larger than ${Math.round(config.maxUploadBytes / 1024 / 1024)} MB`,
-              }
-              resolve()
-              return
+              };
+              resolve();
+              return;
             }
             if (aborted) {
-              fs.rmSync(tmp, { force: true })
-              resolve()
-              return
+              fs.rmSync(tmp, { force: true });
+              resolve();
+              return;
             }
             /*
              * Потолок на комнату целиком, а не на один файл.
@@ -212,67 +236,82 @@ export function fileRoutes(): Router {
              * переименованный temp здесь же и удаляется, так что за отказ
              * место не платят.
              */
-            let written = 0
+            let written = 0;
             try {
-              written = fs.statSync(tmp).size
+              written = fs.statSync(tmp).size;
             } catch {
               /* исчез — разберётся ветка ниже */
             }
-            let already = 0
+            let already = 0;
             try {
-              already = fs.statSync(target).size
+              already = fs.statSync(target).size;
             } catch {
               // Файла с таким именем ещё нет: место под него не освободится.
             }
             if (budgetUsed + written - already > config.maxSessionBytes) {
-              fs.rmSync(tmp, { force: true })
+              fs.rmSync(tmp, { force: true });
               failure ??= {
                 code: 413,
                 message:
                   `This seminar has room for ${Math.round(config.maxSessionBytes / 1024 / 1024)} MB of files ` +
                   `and ${name} does not fit. Delete something first.`,
-              }
-              resolve()
-              return
+              };
+              resolve();
+              return;
+            }
+            /*
+             * Заменить чужой файл — это удалить его, а удаление уже
+             * преподавательское. Дыра была ровно такой ширины: DELETE
+             * спрашивал роль, а загрузка файла с тем же именем — нет.
+             */
+            if (existed && role !== "host") {
+              fs.rmSync(tmp, { force: true });
+              failure ??= {
+                code: 403,
+                message: `${name} уже есть в этой комнате — заменить его может преподаватель.`,
+              };
+              resolve();
+              return;
             }
             try {
-              fs.renameSync(tmp, target)
-              budgetUsed += written - already
-              saved.push(name)
-              if (already > 0 || existed) replaced.push(name)
+              fs.renameSync(tmp, target);
+              budgetUsed += written - already;
+              saved.push(name);
+              if (already > 0 || existed) replaced.push(name);
             } catch {
-              fs.rmSync(tmp, { force: true })
-              failure ??= { code: 500, message: `could not write ${name}` }
+              fs.rmSync(tmp, { force: true });
+              failure ??= { code: 500, message: `could not write ${name}` };
             }
-            resolve()
-          })
-          stream.pipe(out)
+            resolve();
+          });
+          stream.pipe(out);
         }),
-      )
-    })
+      );
+    });
 
-    bb.on('filesLimit', () => {
+    bb.on("filesLimit", () => {
       failure ??= {
         code: 400,
         message: `Up to ${MAX_FILES_PER_UPLOAD} files at a time — drop the rest in a second go.`,
-      }
-    })
+      };
+    });
 
-    bb.on('error', () => {
-      failure ??= { code: 400, message: 'malformed upload' }
-      void Promise.all(writes).then(finish)
-    })
+    bb.on("error", () => {
+      failure ??= { code: 400, message: "malformed upload" };
+      void Promise.all(writes).then(finish);
+    });
 
-    bb.on('close', () => {
-      void Promise.all(writes).then(finish)
-    })
+    bb.on("close", () => {
+      void Promise.all(writes).then(finish);
+    });
 
-    req.pipe(bb)
-  })
+    req.pipe(bb);
+  });
 
-  router.get('/api/sessions/:id/files/:name', (req, res) => {
-    const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+  router.get("/api/sessions/:id/files/:name", (req, res) => {
+    const sessionId = req.params.id;
+    if (!getSession(sessionId))
+      return res.status(404).json({ error: "session not found" });
     /*
      * The credential arrives in the query string here rather than in a header,
      * and that is not laziness: a download is an <a href>, and an anchor cannot
@@ -287,15 +326,20 @@ export function fileRoutes(): Router {
      * session token in a URL: it opens the control socket, and a link with it
      * in is a link that hands Restart to whoever it is forwarded to.
      */
-    const ticket = typeof req.query.token === 'string' ? req.query.token : ''
-    const allowed = sessionAuth(req) !== null || verifyDownloadToken(sessionId, req.params.name, ticket)
-    if (!allowed) return res.status(401).json({ error: 'join the session first' })
-    const full = resolveInSession(sessionId, req.params.name)
-    if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
+    const ticket = typeof req.query.token === "string" ? req.query.token : "";
+    const allowed =
+      sessionAuth(req) !== null ||
+      verifyDownloadToken(sessionId, req.params.name, ticket);
+    if (!allowed)
+      return res.status(401).json({ error: "join the session first" });
+    const full = resolveInSession(sessionId, req.params.name);
+    if (!full || !fs.existsSync(full))
+      return res.status(404).json({ error: "file not found" });
     res.download(full, req.params.name, (err) => {
-      if (err && !res.headersSent) res.status(404).json({ error: 'file not found' })
-    })
-  })
+      if (err && !res.headersSent)
+        res.status(404).json({ error: "file not found" });
+    });
+  });
 
   /**
    * A ticket to download one file.
@@ -304,35 +348,41 @@ export function fileRoutes(): Router {
    * so the credential that travels in a URL is good for one file for five
    * minutes, and for nothing else at all.
    */
-  router.get('/api/sessions/:id/files/:name/ticket', (req, res) => {
-    const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
-    if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
-    const full = resolveInSession(sessionId, req.params.name)
-    if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
-    res.json({ token: signDownloadToken(sessionId, req.params.name) })
-  })
+  router.get("/api/sessions/:id/files/:name/ticket", (req, res) => {
+    const sessionId = req.params.id;
+    if (!getSession(sessionId))
+      return res.status(404).json({ error: "session not found" });
+    if (!sessionAuth(req))
+      return res.status(401).json({ error: "join the session first" });
+    const full = resolveInSession(sessionId, req.params.name);
+    if (!full || !fs.existsSync(full))
+      return res.status(404).json({ error: "file not found" });
+    res.json({ token: signDownloadToken(sessionId, req.params.name) });
+  });
 
-  router.delete('/api/sessions/:id/files/:name', (req, res) => {
-    const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
-    const who = sessionAuth(req)
-    if (!who) return res.status(401).json({ error: 'join the session first' })
+  router.delete("/api/sessions/:id/files/:name", (req, res) => {
+    const sessionId = req.params.id;
+    if (!getSession(sessionId))
+      return res.status(404).json({ error: "session not found" });
+    const who = sessionAuth(req);
+    if (!who) return res.status(401).json({ error: "join the session first" });
     /*
      * Host only. The folder is shared in both directions — anyone in the room
      * could delete the handout the class was working from, and the trash icon
      * sat in everyone's panel with one confirmation behind it. Adding a file is
      * additive and stays open to all; removing one is not.
      */
-    if (who.role !== 'host') {
-      return res.status(403).json({ error: 'Only the teacher can remove a file from the room.' })
+    if (who.role !== "host") {
+      return res
+        .status(403)
+        .json({ error: "Only the teacher can remove a file from the room." });
     }
     if (!deleteFile(sessionId, req.params.name)) {
-      return res.status(404).json({ error: 'file not found' })
+      return res.status(404).json({ error: "file not found" });
     }
-    broadcastFiles(sessionId)
-    res.json({ files: listFiles(sessionId) })
-  })
+    broadcastFiles(sessionId);
+    res.json({ files: listFiles(sessionId) });
+  });
 
-  return router
+  return router;
 }
