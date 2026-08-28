@@ -35,6 +35,9 @@
   import { getMeta, type KernelStatus } from '@shared/notebook'
   import type { SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
+  import { api } from '@/lib/api'
+  import { readRules, type RoomRules } from '@shared/rules'
+  import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
   interface Props {
     session: SessionInfo
@@ -51,6 +54,46 @@
   // this component when the room or the person actually changes.
   // svelte-ignore state_referenced_locally
   const session = new SessionState(info, identity)
+
+  /*
+   * Строка про смену правил живёт шесть секунд и уходит сама: её читают один
+   * раз, а закрывать её крестиком — просить о работе за объявление.
+   */
+  /* --------------------------------------------------- пульт правил комнаты */
+
+  let rulesOpen = $state(false)
+  let rulesBusy = $state(false)
+  const roomRules = $derived(readRules(session.session.rules))
+
+  /**
+   * Один переключатель — один запрос.
+   *
+   * Присланное накладывается на текущее на сервере, а не заменяет его: экран,
+   * трогающий одну строку, не должен уметь молча вернуть остальные семь к
+   * умолчаниям. Ответ приходит и сюда, и всей комнате — рассылкой по
+   * управляющему сокету, так что своё же изменение прилетит обратно тем же
+   * путём, что и чужое.
+   */
+  async function setRule(patch: Partial<RoomRules>) {
+    rulesBusy = true
+    try {
+      const body = await api.setRoomRules(session.session.id, identity.token, patch)
+      session.session = { ...session.session, rules: body.rules }
+    } catch (err) {
+      session.showError(err instanceof Error ? err.message : 'Правило не сохранилось.')
+    } finally {
+      rulesBusy = false
+    }
+  }
+
+  const RULES_NOTICE_MS = 6000
+  let rulesNoticeUp = $state(false)
+  $effect(() => {
+    if (session.rulesChangedAt === 0) return
+    rulesNoticeUp = true
+    const timer = window.setTimeout(() => (rulesNoticeUp = false), RULES_NOTICE_MS)
+    return () => window.clearTimeout(timer)
+  })
   setSessionState(session)
   onDestroy(() => session.destroy())
 
@@ -524,6 +567,25 @@
            stay because on a narrow window they are the only way to reach the
            files, the people and the oracle. -->
       <div class="flex shrink-0 items-center gap-0.5">
+        {#if isHost}
+          <!--
+            Пульт правил стоит здесь, а не только в панели.
+
+            Лекция, лабораторная и консультация — три фазы одной пары, а
+            правило, до которого можно дотянуться только из админки и только
+            при создании семинара, — это правило, до которого преподаватель не
+            дотягивается в ту минуту, когда оно нужно.
+          -->
+          <button
+            class={bandIcon(rulesOpen)}
+            onclick={() => (rulesOpen = !rulesOpen)}
+            aria-pressed={rulesOpen}
+            aria-label="Что можно делать в комнате"
+            title="Что можно делать в комнате"
+          >
+            <Icon name="lock" size={16} />
+          </button>
+        {/if}
         <button
           class={bandIcon(leftShown)}
           onclick={toggleLeft}
@@ -670,6 +732,72 @@
       <p class="mt-2 text-ui text-muted">
         Комнаты больше нет: ни ноутбука, ни файлов, ни истории. Ссылка тоже
         перестала работать — если она нужна была, спросите преподавателя.
+      </p>
+    </div>
+  </div>
+{/if}
+
+<!--
+  Пульт правил: тот же список, что и в панели, теми же словами.
+
+  Ложится на полосу состояния, а не открывается отдельной страницей: это
+  инструмент, который берут посреди пары на десять секунд, а не экран, на
+  который уходят.
+-->
+{#if rulesOpen && isHost && !session.gone}
+  <div
+    class="fixed inset-0 z-40"
+    role="presentation"
+    onclick={() => (rulesOpen = false)}
+    onkeydown={(event) => {
+      if (event.key === 'Escape') rulesOpen = false
+    }}
+  ></div>
+  <div
+    class="fixed right-3 top-[104px] z-50 w-[min(30rem,calc(100vw-1.5rem))] border border-line bg-raised shadow-pop sm:right-6"
+    role="dialog"
+    aria-label="Что можно делать в комнате"
+    transition:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: cubicOut }}
+  >
+    <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
+      <h2 class="text-2xs font-bold uppercase tracking-section text-muted">
+        Что можно делать в комнате
+      </h2>
+      <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
+      <button
+        class="btn-ghost h-6 w-6 shrink-0 px-0"
+        onclick={() => (rulesOpen = false)}
+        aria-label="Закрыть"
+      >
+        <Icon name="x" size={14} />
+      </button>
+    </div>
+    <div class="max-h-[min(60vh,32rem)] overflow-y-auto px-4">
+      <RoomRulesRows rules={roomRules} busy={rulesBusy} onchange={setRule} />
+    </div>
+    <p class="border-t border-line px-4 py-2 text-2xs text-muted">
+      Комната узнаёт сразу — перезаходить никому не нужно.
+    </p>
+  </div>
+{/if}
+
+<!--
+  Правила изменились — одна строка, и она уходит сама.
+
+  Двадцать человек, у которых редакторы вдруг стали «только чтение» без единой
+  фразы, решат, что сломались их ноутбуки. Строка спокойная, не как ошибка: это
+  не поломка, а решение преподавателя, и сказано оно ровно один раз.
+-->
+{#if rulesNoticeUp && !session.gone}
+  <div class="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
+    <div
+      role="status"
+      class="pointer-events-none flex items-center gap-2 border border-line bg-raised px-3 py-1.5 shadow-pop"
+      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
+    >
+      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+      <p class="text-ui leading-snug text-muted">
+        Преподаватель изменил, что можно делать в этой комнате.
       </p>
     </div>
   </div>

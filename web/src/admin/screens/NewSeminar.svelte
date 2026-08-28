@@ -22,7 +22,8 @@
   import { adminApi } from '@/lib/adminApi'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
   import { LIMITS, type AdminEnvironment, type ImportPreview } from '@shared/admin'
-  import { OPEN_ROOM, type RoomRules, type Who } from '@shared/rules'
+  import { OPEN_ROOM, type RoomRules } from '@shared/rules'
+  import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
   interface Props {
     /** Back to the list, with the new seminar's id when one was made. */
@@ -266,11 +267,6 @@
   }
 
   /** One row of the rules table: a question, a sentence, and two answers. */
-  const WHO: { value: Who; label: string }[] = [
-    { value: 'room', label: 'Everyone' },
-    { value: 'host', label: 'Teacher only' },
-  ]
-
   const ORACLE: { value: RoomRules['oracle']; label: string; note: string }[] = [
     { value: 'inherit', label: 'As set for the instance', note: 'whatever Oracle settings say' },
     { value: 'off', label: 'Off', note: 'no oracle in this room at all' },
@@ -278,19 +274,6 @@
     { value: 'full', label: 'Full answers', note: 'explains and writes code' },
   ]
 
-  /*
-   * What the room does today and cannot yet be told not to. Listed, not
-   * switched: every one of these lives in the shared document or in a route
-   * that checks only that you belong to the seminar, so a switch here would be
-   * a promise the server does not keep. The right-hand note says why, because
-   * "coming soon" tells a teacher nothing they can plan around.
-   */
-  const NOT_YET: { what: string; why: string }[] = [
-    { what: 'Edit what is written in the cells', why: 'the notebook is shared by design' },
-    { what: 'Add, delete and reorder cells', why: 'history can undo any of it' },
-    { what: 'Open the terminal and run commands', why: 'same container as the kernel' },
-    { what: 'Upload and delete files', why: 'reading them already needs the link' },
-  ]
 </script>
 
 {#snippet actions()}
@@ -690,52 +673,18 @@
 
   <Section
     title="The room"
-    description="A lecture and a lab are not the same room. What the class may do is set here, once, before anyone joins."
+    description="A lecture and a lab are not the same room. Set here before anyone joins — and changeable from inside the seminar at any point, without anybody rejoining."
   >
     <div class="flex flex-col gap-4">
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div class="min-w-0 flex-1 basis-64">
-          <p class="text-ui font-semibold text-ink">Who may run cells</p>
-          <p class="mt-0.5 text-2xs text-muted">
-            One kernel serves the room, so twenty people pressing Run is one queue.
-          </p>
-        </div>
-        <div class="flex shrink-0 border border-line">
-          {#each WHO as option (option.value)}
-            <button
-              type="button"
-              class="seg {rules.run === option.value ? 'seg-on' : ''}"
-              aria-pressed={rules.run === option.value}
-              onclick={() => (rules.run = option.value)}
-            >
-              {option.label}
-            </button>
-          {/each}
-        </div>
-      </div>
-
-      <div class="border border-line bg-surface">
-        <div class="flex items-center gap-2.5 border-b border-line px-3.5 py-2">
-          <span class="text-micro font-bold uppercase tracking-caps text-muted">Not yet settings</span>
-          <span class="text-2xs text-faint">the room does all of this today, for everyone in it</span>
-        </div>
-        {#each NOT_YET as row (row.what)}
-          <div
-            class="flex items-center gap-3 border-b border-line-soft px-3.5 py-2 last:border-b-0"
-          >
-            <span class="min-w-0 flex-1 text-ui text-muted">{row.what}</span>
-            <span class="shrink-0 font-mono text-micro text-faint">{row.why}</span>
-          </div>
-        {/each}
-      </div>
+      <RoomRulesRows {rules} onchange={(patch) => (rules = { ...rules, ...patch })} />
 
       <div class="flex items-start gap-2.5 border-l-2 border-accent bg-accent/[0.06] px-3.5 py-3">
         <Icon name="lock" size={13} class="mt-0.5 shrink-0 text-accent-text" />
         <div class="min-w-0">
-          <p class="text-ui font-semibold text-ink">Yours alone already, with no setting to lose</p>
+          <p class="text-ui font-semibold text-ink">Yours alone, with no setting to lose</p>
           <p class="mt-1 text-2xs text-muted">
-            Restarting the kernel · interrupting a cell somebody else started · clearing and closing
-            the terminal · renaming the seminar · restoring an old version and marking a checkpoint.
+            Interrupting a cell somebody else started · renaming the seminar · restoring an old
+            version and marking a checkpoint · deleting somebody's file.
           </p>
         </div>
       </div>
@@ -805,39 +754,6 @@
     font-weight: 700;
   }
 
-  .seg {
-    height: 34px;
-    padding-inline: 14px;
-    /*
-     * 13, not 11. This is the one live rule on the screen — the answer to "who
-     * runs cells" — and it sat at the floor of the scale while the sentence
-     * explaining it stood two steps above. The most important control on a page
-     * should not be its smallest text.
-     */
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: rgb(var(--muted));
-    background: none;
-    border: 0;
-    cursor: pointer;
-    /* Bound to the finger, not to the state, so it cannot arrive late. */
-    transition:
-      background-color var(--speed-quick) var(--ease-out),
-      color var(--speed-quick) var(--ease-out),
-      transform var(--speed-press) var(--ease-out);
-  }
-
-  .seg:active {
-    transform: scale(0.97);
-  }
-
-  .seg-on {
-    background: rgb(var(--brand));
-    color: #fff;
-    font-weight: 700;
-  }
-
   .oracle-card {
     display: flex;
     flex-direction: column;
@@ -871,14 +787,12 @@
   }
 
   .tab-btn:focus-visible,
-  .seg:focus-visible,
   .oracle-card:focus-visible {
     outline: 2px solid rgb(var(--accent));
     outline-offset: 2px;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .seg,
     .oracle-card {
       transition-property: background-color, border-color, color;
     }

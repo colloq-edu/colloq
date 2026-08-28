@@ -36,7 +36,8 @@
   import { cellSource, patchIsStale } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
-  import { allowsRun, oracleModeIn, readRules } from '@shared/rules'
+  import { oracleModeIn, readRules } from '@shared/rules'
+  import { permitsIn } from '@/lib/may'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
@@ -85,7 +86,13 @@
   const isCode = $derived(meta.current.type === 'code')
   // The room's own rule, read where the button is drawn — the server has
   // enforced it since rules existed and the interface never asked.
-  const mayRun = $derived(allowsRun(readRules(session.session.rules).run, session.me.role, 'one'))
+  /*
+   * Что в этой комнате можно — одним местом. Правило, которое останавливает,
+   * обязано сказать об этом там, где нажимают, и ДО нажатия: кнопка, молча
+   * ничего не делающая, читается как поломка и приходит обратно баг-репортом.
+   */
+  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const mayRun = $derived(may.run)
 
   /*
    * Ячейка остановилась внутри input().
@@ -506,6 +513,13 @@
 
   async function runAndAdd() {
     if (!run()) return
+    // Alt+Enter дописывает ячейку — а дописывать в этой комнате может быть
+    // нельзя. Тогда запуск состоялся, а ячейка не появляется, и это правильно:
+    // без проверки она появлялась бы у автора и отказывалась сервером.
+    if (!may.add) {
+      session.showError(may.structureWhy + '.')
+      return
+    }
     const created = insertCellAfter(session.doc, id, meta.current.type)
     session.selectCell(created)
     await tick()
@@ -534,6 +548,10 @@
   }
 
   function removeSelf(focus: boolean) {
+    if (!may.remove) {
+      session.showError(may.structureWhy + '.')
+      return
+    }
     // Hand the selection on first, while this cell is still in the list. `fallback`
     // covers deleting the very first cell, which has no cell above it to land on.
     step(-1, focus, true)
@@ -621,6 +639,10 @@
   function accept(): void {
     const id = proposal?.get('id')
     if (typeof id !== 'string') return
+    if (!may.edit) {
+      session.showError(may.editWhy + '.')
+      return
+    }
     session.send({ t: 'ai:decide', entryId: id, accept: true })
   }
 
@@ -635,6 +657,10 @@
   })
 
   function convert() {
+    if (!may.edit) {
+      session.showError(may.editWhy + '.')
+      return
+    }
     setCellType(session.doc, id, isCode ? 'markdown' : 'code')
     // Whichever way it went, the cell re-renders in its resting form.
     focusOnEdit = false
@@ -784,9 +810,9 @@
         <button
           type="button"
           class={TOOL}
-          title="Move up"
+          title={may.move ? 'Move up' : may.structureWhy}
           aria-label="Move cell up"
-          disabled={index === 0}
+          disabled={index === 0 || !may.move}
           onclick={() => session.send({ t: 'cells:move', cellId: id, direction: -1 })}
         >
           <Icon name="chevron-up" size={13} />
@@ -794,9 +820,9 @@
         <button
           type="button"
           class={TOOL}
-          title="Move down"
+          title={may.move ? 'Move down' : may.structureWhy}
           aria-label="Move cell down"
-          disabled={last}
+          disabled={last || !may.move}
           onclick={() => session.send({ t: 'cells:move', cellId: id, direction: 1 })}
         >
           <Icon name="chevron-down" size={13} />
@@ -804,8 +830,9 @@
         <button
           type="button"
           class={TOOL}
-          title="Duplicate"
+          title={may.add ? 'Duplicate' : may.structureWhy}
           aria-label="Duplicate cell"
+          disabled={!may.add}
           onclick={() => duplicateCell(session.doc, id)}
         >
           <Icon name="duplicate" size={13} />
@@ -813,8 +840,9 @@
         <button
           type="button"
           class={TOOL}
-          title={isCode ? 'Convert to text — M' : 'Convert to code — Y'}
+          title={may.edit ? (isCode ? 'Convert to text — M' : 'Convert to code — Y') : may.editWhy}
           aria-label={isCode ? 'Convert to markdown' : 'Convert to code'}
+          disabled={!may.edit}
           onclick={convert}
         >
           <Icon name={isCode ? 'text' : 'code'} size={13} />
@@ -832,8 +860,9 @@
         <button
           type="button"
           class={TOOL_DANGER}
-          title="Delete cell"
+          title={may.remove ? 'Delete cell' : may.structureWhy}
           aria-label="Delete cell"
+          disabled={!may.remove}
           onclick={() => removeSelf(false)}
         >
           <Icon name="trash" size={13} />
@@ -883,6 +912,7 @@
                 undoManager={session.undoManager}
                 language={isCode ? 'python' : 'markdown'}
                 label={`${isCode ? 'Code' : 'Text'} cell ${ordinal}`}
+                readOnly={!may.edit}
                 autoFocus={!isCode && focusOnEdit}
                 placeholder={isCode ? '' : 'Write in markdown…'}
                 onfocus={() => onselect()}

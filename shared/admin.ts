@@ -120,6 +120,11 @@ export interface AdminSeminar {
    */
   environment: string | null
   archivedAt: number | null
+  /**
+   * Что комната разрешает. Нужно списку, чтобы можно было менять правила
+   * существующего семинара, а не только задать их при создании.
+   */
+  rules: RoomRules
 }
 
 export interface CreateSeminarRequest {
@@ -145,6 +150,14 @@ export interface CreateSeminarRequest {
 export interface UpdateSeminarRequest {
   name?: string
   archived?: boolean
+  /**
+   * Правила комнаты. Накладываются на текущие, а не заменяют их.
+   *
+   * Раньше правила задавались один раз, при создании, и преподаватель, решивший
+   * закрыть прошлонедельную комнату, не мог ничего — приходилось заводить
+   * вторую.
+   */
+  rules?: Partial<RoomRules>
 }
 
 /* -------------------------------------------------------------- oracle */

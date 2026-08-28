@@ -266,7 +266,24 @@ export class SessionState {
         // Правила меняются на ходу, и комната обязана узнать сразу: кнопка,
         // которая только что начала отказывать, без объяснения читается как
         // поломка, а не как решение преподавателя.
+        const first = this.session.rules === undefined
+        const changed = JSON.stringify(this.session.rules) !== JSON.stringify(message.rules)
         this.session = { ...this.session, rules: message.rules }
+        /*
+         * И сказать словами — один раз, не на приветственной пачке.
+         *
+         * Двадцать человек, у которых редакторы вдруг стали «только чтение» без
+         * единой фразы, решат, что сломались их ноутбуки. А та же фраза при
+         * каждом переподключении — это шум, который перестают читать.
+         */
+        if (!first && changed) this.rulesChangedAt = Date.now()
+        return
+      }
+      if (message.t === 'refused') {
+        // Отказ адресован одному человеку и объясняет, где именно его правка
+        // не прошла. Обычный путь — предотвращение; сюда попадают гонка и
+        // подделанный клиент.
+        this.lastError = message.message
         return
       }
       if (message.t === 'role') {
@@ -434,6 +451,14 @@ export class SessionState {
       /* the control socket pushes the list too; a failed poll is not fatal */
     }
   }
+
+  /**
+   * Когда преподаватель в последний раз менял правила комнаты.
+   *
+   * Метка, а не текст: строку рисует комната, и рисует один раз — по этой
+   * метке она сама решает, когда её убрать.
+   */
+  rulesChangedAt = $state(0)
 
   /** Сообщить о том, что сломалось на этой стороне, тем же способом, что и сервер. */
   showError(message: string) {

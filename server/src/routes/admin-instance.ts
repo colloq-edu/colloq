@@ -165,6 +165,7 @@ function toSeminar(row: SeminarRow): AdminSeminar {
     environment: environmentOf(row.id) ?? sessionEnvironment(row.id),
     createdBy: row.created_by,
     archivedAt: row.archived_at,
+    rules: getRules(row.id),
   }
 }
 

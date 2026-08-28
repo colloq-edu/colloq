@@ -9,6 +9,8 @@
   import { cn } from '@/lib/utils'
   import { LIMITS, type AdminEnvironment, type AdminSeminar, type ImportPreview } from '@shared/admin'
   import { copyText } from '@/lib/clipboard'
+  import RoomRulesRows from '@/components/RoomRulesRows.svelte'
+  import type { RoomRules } from '@shared/rules'
 
   /**
    * The seminar list, and the one thing a teacher comes here to do: get the
@@ -507,6 +509,35 @@
     } catch (cause: unknown) {
       patch(seminar.id, { name: before })
       rowError = { id: seminar.id, message: `Could not rename it — ${explain(cause)}` }
+    }
+  }
+
+  /* --------------------------------------------------------------- rules */
+
+  /**
+   * Правила существующего семинара.
+   *
+   * Раньше они задавались один раз, при создании: `updateSeminar` звали только с
+   * `{name}` или `{archived}`, и преподаватель, решивший закрыть тетрадь в
+   * прошлонедельной комнате, не мог ничего — только завести вторую.
+   *
+   * Один переключатель — один запрос, как и в самой комнате: маршрут
+   * накладывает присланное на текущее и сам рассылает `{t:'rules'}`, так что
+   * открытая комната узнаёт сразу.
+   */
+  let ruling = $state<AdminSeminar | null>(null)
+  let rulesBusy = $state(false)
+
+  async function setRule(seminar: AdminSeminar, patchRules: Partial<RoomRules>): Promise<void> {
+    rulesBusy = true
+    try {
+      const updated = await adminApi.updateSeminar(seminar.id, { rules: patchRules })
+      replace(updated)
+      ruling = updated
+    } catch (cause: unknown) {
+      rowError = { id: seminar.id, message: `Правило не сохранилось — ${explain(cause)}` }
+    } finally {
+      rulesBusy = false
     }
   }
 
@@ -1049,6 +1080,14 @@
                     role="menuitem"
                     type="button"
                     class="{ITEM} text-ink hover:bg-raised"
+                    onclick={() => (ruling = seminar)}
+                  >
+                    Rules…
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    class="{ITEM} text-ink hover:bg-raised"
                     onclick={() => void archive(seminar, !seminar.archivedAt)}
                   >
                     {seminar.archivedAt ? 'Move back to the list' : 'Archive'}
@@ -1110,6 +1149,41 @@
     </p>
   {/if}
 </AdminPage>
+
+{#if ruling}
+  <!-- Тот же список и теми же словами, что в самой комнате: настройка, которую
+       в двух местах называют по-разному, — это две настройки. -->
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="seminar-rules-title"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="dialog-card flex max-h-full w-full max-w-[560px] flex-col border border-line bg-canvas shadow-pop">
+      <div class="flex items-baseline gap-3 border-b border-line px-5 py-3.5">
+        <h2 id="seminar-rules-title" class="min-w-0 truncate text-title font-semibold text-ink">
+          {ruling.name}
+        </h2>
+        <span class="shrink-0 text-2xs text-muted">что можно делать в комнате</span>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5">
+        <RoomRulesRows
+          rules={ruling.rules}
+          busy={rulesBusy}
+          onchange={(patch) => void setRule(ruling as AdminSeminar, patch)}
+        />
+      </div>
+      <div class="flex items-center gap-3 border-t border-line px-5 py-3">
+        <p class="min-w-0 flex-1 text-2xs text-muted">
+          Открытая комната узнаёт сразу — перезаходить никому не нужно.
+        </p>
+        <button type="button" class="btn-primary shrink-0" onclick={() => (ruling = null)}>
+          Готово
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if doomed}
   <!-- Nothing is painted before the server agrees: this is the one action on

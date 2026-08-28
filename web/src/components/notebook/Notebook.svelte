@@ -3,7 +3,7 @@
   import { findCell, type CellType } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
-  import { allowsRun, readRules } from '@shared/rules'
+  import { permitsIn } from '@/lib/may'
   import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
@@ -65,6 +65,16 @@
   }
 
   async function addAt(index: number, type: CellType) {
+    /*
+     * Вслух, а не молча — и на клавише тоже. Отказ, о котором не сказали,
+     * читается как поломка, а не как решение преподавателя; а без этой
+     * проверки нажатие «a» уходило в общий документ, сервер отказывал кадру, и
+     * человек оставался с курсором в ячейке, которой нет ни у кого.
+     */
+    if (!may.add) {
+      session.showError(may.structureWhy + '.')
+      return
+    }
     const created = insertCell(session.doc, type, index)
     select(created)
     // The new cell has to exist in the DOM before it can take focus.
@@ -267,16 +277,22 @@
       case 'm':
         if (!current) return
         event.preventDefault()
-        setCellType(session.doc, current, 'markdown')
+        if (!may.edit) session.showError(may.editWhy + '.')
+        else setCellType(session.doc, current, 'markdown')
         break
       case 'y':
         if (!current) return
         event.preventDefault()
-        setCellType(session.doc, current, 'code')
+        if (!may.edit) session.showError(may.editWhy + '.')
+        else setCellType(session.doc, current, 'code')
         break
       case 'd': {
         if (!current) return
         event.preventDefault()
+        if (!may.remove) {
+          session.showError(may.structureWhy + '.')
+          break
+        }
         const now = Date.now()
         if (now - armedDeleteAt < CHORD_MS) {
           armedDeleteAt = 0
@@ -337,7 +353,14 @@
     KeyD: 'd',
   }
 
-  const restartDisabled = $derived(controlDisabled(session.connected, isHost))
+  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const rules = $derived(may.rules)
+  const mayRun = $derived(may.run)
+  /* Run All и Run Above — отдельное право: при «по одной» ядро одно, и разница
+     между «двадцать человек считают» и «двадцать человек забили очередь на
+     восемьсот ячеек» ровно в этом. */
+  const mayRunAll = $derived(may.bulk)
+  const restartDisabled = $derived(controlDisabled(session.connected, may.restart))
   /*
    * The room's own rule, read where the button is drawn.
    *
@@ -347,12 +370,6 @@
    * further, stepping down the sheet and adding an empty cell at the end of
    * the shared document for a run that never happened.
    */
-  const rules = $derived(readRules(session.session.rules))
-  const mayRun = $derived(allowsRun(rules.run, session.me.role, 'one'))
-  /* Run All и Run Above — отдельное право: при «по одной» ядро одно, и разница
-     между «двадцать человек считают» и «двадцать человек забили очередь на
-     восемьсот ячеек» ровно в этом. */
-  const mayRunAll = $derived(allowsRun(rules.run, session.me.role, 'bulk'))
 
   let holdFill = $state<HTMLElement | null>(null)
   let holdAnim: Animation | null = null
@@ -650,10 +667,10 @@
              enabled:active:scale-[0.97] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2
              focus-visible:ring-inset focus-visible:ring-primary-ink/60
              disabled:pointer-events-none disabled:opacity-40"
-      disabled={controlDisabled(session.connected, mayRun)}
+      disabled={controlDisabled(session.connected, mayRun && mayRunAll)}
       title={controlTitle(
         session.connected,
-        mayRun ? 'Run every code cell' : 'This seminar is set so only the teacher runs cells',
+        !mayRun ? may.runWhy : mayRunAll ? 'Run every code cell' : may.bulkWhy,
       )}
       onclick={() => session.send({ t: 'runAll' })}
     >
@@ -688,9 +705,9 @@
       aria-label="Hold to restart the kernel"
       title={controlTitle(
         session.connected,
-        isHost
+        may.restart
           ? 'Hold to restart the kernel — every variable is lost'
-          : 'Only the host can restart the kernel',
+          : may.restartWhy,
       )}
       onpointerdown={(event) => {
         // A secondary button opens a context menu instead of pressing, and must
@@ -721,8 +738,8 @@
     <button
       type="button"
       class={CAP}
-      disabled={controlDisabled(session.connected)}
-      title={controlTitle(session.connected, 'Clear every output')}
+      disabled={controlDisabled(session.connected, may.wipe)}
+      title={controlTitle(session.connected, may.wipe ? 'Clear every output' : may.wipeWhy)}
       onclick={() => session.send({ t: 'clearOutputs' })}
     >
       Clear
@@ -736,10 +753,14 @@
     <button
       type="button"
       class={CAP}
-      disabled={controlDisabled(session.connected)}
+      disabled={controlDisabled(session.connected, may.edit && may.bulk)}
       title={controlTitle(
         session.connected,
-        'Run black over every code cell — 100 columns. A cell it cannot read is left alone.',
+        !may.edit
+          ? may.editWhy
+          : !may.bulk
+            ? may.bulkWhy
+            : 'Run black over every code cell — 100 columns. A cell it cannot read is left alone.',
       )}
       onclick={() => session.send({ t: 'format' })}
     >

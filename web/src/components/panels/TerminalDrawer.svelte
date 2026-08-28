@@ -10,6 +10,7 @@
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
+  import { permitsIn } from '@/lib/may'
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
   import HistoryTab from '@/components/panels/HistoryTab.svelte'
   import { getSessionState } from '@/lib/session.svelte'
@@ -41,6 +42,15 @@
    * a moment later. A value captured at init would never hear about it.
    */
   const isHost = $derived(session.me.role === 'host')
+  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  /*
+   * Ящик может открыться на вкладке, которой в этой комнате нет: вкладка —
+   * состояние родителя и переживает и смену правила, и переоткрытие. Тогда
+   * показывается терминал — он есть всегда, даже когда в него нельзя писать.
+   */
+  const shownTab = $derived<Tab>(
+    tab === 'history' && !may.history ? 'terminal' : tab === 'terminal' && !may.shell ? 'kernel' : tab,
+  )
   const cwd = `/workspace/${session.session.id}`
 
   /* ------------------------------------------------------------- transcript */
@@ -59,7 +69,7 @@
 
 
 
-  const shown = $derived(tab === 'terminal' ? lines : lines.filter((l) => l.kind === 'system'))
+  const shown = $derived(shownTab === 'terminal' ? lines : lines.filter((l) => l.kind === 'system'))
   const running = $derived(lines.some((l) => l.kind === 'command' && l.running))
 
   /**
@@ -206,10 +216,17 @@
   const status = $derived(session.terminalStatus)
   // A command has to reach the server to be a command. Disconnected, the status
   // in hand is the last one the server sent, which says nothing about now.
-  const canType = $derived(session.connected && (status === 'idle' || status === 'busy'))
+  const canType = $derived(
+    // Правило комнаты сюда же: расшифровку смотрят все — оболочка общая, и
+    // видеть, что делает преподаватель, класс должен, — а печатать в неё
+    // может быть нельзя.
+    may.shellWrite && session.connected && (status === 'idle' || status === 'busy'),
+  )
 
   const placeholder = $derived(
-    !session.connected
+    !may.shellWrite
+      ? 'оболочка в этом семинаре принадлежит преподавателю'
+      : !session.connected
       ? 'waiting for the connection…'
       : status === 'starting'
         ? 'starting the shell…'
@@ -339,34 +356,40 @@
   </div>
 
   <div class="term-tabs">
+    <!-- `terminal: 'off'` — свойство комнаты, а не чьё-то право: вкладки нет ни
+         у кого. Ящик остаётся: в нём ещё журнал ядра и лента версий. -->
+    {#if may.shell}
+      <button
+        type="button"
+        class="term-tab"
+        class:on={shownTab === 'terminal'}
+        aria-pressed={shownTab === 'terminal'}
+        onclick={() => (tab = 'terminal')}
+      >
+        Terminal
+        {#if running}<span class="term-live-dot"></span>{/if}
+      </button>
+    {/if}
     <button
       type="button"
       class="term-tab"
-      class:on={tab === 'terminal'}
-      aria-pressed={tab === 'terminal'}
-      onclick={() => (tab = 'terminal')}
-    >
-      Terminal
-      {#if running}<span class="term-live-dot"></span>{/if}
-    </button>
-    <button
-      type="button"
-      class="term-tab"
-      class:on={tab === 'kernel'}
-      aria-pressed={tab === 'kernel'}
+      class:on={shownTab === 'kernel'}
+      aria-pressed={shownTab === 'kernel'}
       onclick={() => (tab = 'kernel')}
     >
       Kernel log
     </button>
-    <button
-      type="button"
-      class="term-tab"
-      class:on={tab === 'history'}
-      aria-pressed={tab === 'history'}
-      onclick={() => (tab = 'history')}
-    >
-      History
-    </button>
+    {#if may.history}
+      <button
+        type="button"
+        class="term-tab"
+        class:on={shownTab === 'history'}
+        aria-pressed={shownTab === 'history'}
+        onclick={() => (tab = 'history')}
+      >
+        History
+      </button>
+    {/if}
 
     <span class="term-badge" title="Everyone in the seminar sees this terminal">
       Shared with the room
@@ -374,7 +397,7 @@
 
     <span class="term-cwd" title={cwd}>{cwd}</span>
 
-    {#if isHost}
+    {#if may.wipe}
       <button
         type="button"
         class="term-act"
@@ -398,14 +421,14 @@
     </button>
   </div>
 
-  {#if tab === 'history'}
+  {#if shownTab === 'history'}
     <!-- История занимает всё тело ящика и приносит свою нижнюю полосу: у неё
          две колонки и свои действия, а строка ввода команды к ней отношения не
          имеет. -->
     <HistoryTab />
   {:else}
   <div class="term-body" bind:this={scroller} onscroll={onScroll} role="log" aria-live="polite">
-    {#if tab === 'kernel'}
+    {#if shownTab === 'kernel'}
       <div class="term-sys">
         python kernel · {notebook.current.kernelStatus} — terminal · {status}
       </div>
@@ -413,7 +436,7 @@
 
     {#if shown.length === 0}
       <p class="term-empty">
-        {#if tab === 'terminal'}
+        {#if shownTab === 'terminal'}
           This shell runs in the same container as the kernel, so
           <code>pip install pandas</code> here changes the environment for every cell and everyone in
           the room. <code>!pip install pandas</code> inside a cell does exactly the same thing.
@@ -450,13 +473,16 @@
         <pre class="term-out">{#if render}{@html render.ansi(text)}{:else}{stripAnsi(text)}{/if}</pre>
       {:else}
         <div class="term-sys">
-          {#if tab === 'kernel'}<span class="term-time">{clock(line.createdAt)}</span>{/if}
+          {#if shownTab === 'kernel'}<span class="term-time">{clock(line.createdAt)}</span>{/if}
           {line.text}
         </div>
       {/if}
     {/each}
   </div>
 
+  <!-- Журнал ядра и комната без оболочки строки ввода не имеют вовсе: пустое
+       приглашение $ под журналом обещает то, чего в этой комнате нет. -->
+  {#if shownTab === 'terminal'}
   <div class="term-prompt" class:off={!canType}>
     <span class="term-av">
       <Avatar
@@ -512,6 +538,7 @@
       {/if}
     </span>
   </div>
+  {/if}
   {/if}
 </section>
 

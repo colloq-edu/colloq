@@ -8,6 +8,7 @@ import type {
   Participant,
   SessionInfo,
 } from '@shared/protocol'
+import type { RoomRules } from '@shared/rules'
 
 export class ApiError extends Error {
   constructor(
@@ -93,6 +94,19 @@ export const api = {
     request<{ participants: Participant[]; online: string[] }>(
       `/api/sessions/${id}/participants`,
     ),
+
+  /**
+   * Правила комнаты — из самой комнаты.
+   *
+   * Накладывается на текущее на сервере: экран, трогающий одну строку, не
+   * должен уметь молча вернуть остальные к умолчаниям.
+   */
+  setRoomRules: (id: string, token: string, rules: Partial<RoomRules>) =>
+    request<{ rules: RoomRules }>(`/api/sessions/${id}/rules`, {
+      method: 'PATCH',
+      body: JSON.stringify({ rules }),
+      headers: { authorization: `Bearer ${token}` },
+    }),
 
   listFiles: (id: string, token: string) =>
     request<{ files: FileEntry[] }>(`/api/sessions/${id}/files`, {

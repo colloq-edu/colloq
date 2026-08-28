@@ -5,6 +5,7 @@
   import { formatBytes, splitFileName } from '@/lib/utils'
   import Icon from '@/components/ui/Icon.svelte'
   import { copyText } from '@/lib/clipboard'
+  import { permitsIn } from '@/lib/may'
 
   /** One file still on the wire, and the bytes the browser has actually flushed. */
   interface Upload {
@@ -25,6 +26,7 @@
   let copied = $state<string | null>(null)
   let confirming = $state<string | null>(null)
   const isHost = $derived(session.me.role === 'host')
+  const may = $derived(permitsIn(session.session.rules, session.me.role))
 
   /**
    * Fetch a ticket, then let the browser take the file.
@@ -242,6 +244,12 @@
   function onDrop(event: DragEvent) {
     event.preventDefault()
     dragDepth = 0
+    // Сказать до броска нельзя — но и молча съесть файл нельзя тем более:
+    // отпущенный файл, о котором ничего не произошло, читается как поломка.
+    if (!may.files) {
+      error = may.filesWhy + '.'
+      return
+    }
     upload(event.dataTransfer?.files ?? null)
   }
 </script>
@@ -263,7 +271,7 @@
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
     {#if listed}
       <span class="font-mono text-micro tabular-nums text-muted">{session.files.length}</span>
-    {:else}
+    {:else if may.files}
       <!-- Nothing to count yet, so the slot carries the way in instead. -->
       <button
         type="button"
@@ -480,11 +488,15 @@
   {/if}
 
   {#if dragDepth > 0 && !listed}
-    <!-- With no list there is no drop zone to light up, so the panel becomes one. -->
+    <!-- With no list there is no drop zone to light up, so the panel becomes one.
+         Комната, где файлы кладёт преподаватель, говорит это прямо здесь: узнать
+         об отказе, уже отпустив файл, — то же самое, что не узнать. -->
     <div
-      class="pointer-events-none absolute inset-x-4 inset-y-3 flex items-center justify-center border border-dashed border-accent bg-accent/10 text-2xs text-accent-text"
+      class="pointer-events-none absolute inset-x-4 inset-y-3 flex items-center justify-center border border-dashed text-2xs {may.files
+        ? 'border-accent bg-accent/10 text-accent-text'
+        : 'border-line bg-surface/80 text-muted'}"
     >
-      Drop files — shared with the room
+      {may.files ? 'Drop files — shared with the room' : may.filesWhy}
     </div>
   {/if}
 </section>

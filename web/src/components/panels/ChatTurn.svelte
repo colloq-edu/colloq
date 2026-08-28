@@ -24,6 +24,7 @@
   import { watchText } from '@/lib/yreactive.svelte'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import { revealCell } from '@/lib/reveal'
+  import { permitsIn } from '@/lib/may'
   import { cn, NOTICED_MS, spell } from '@/lib/utils'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -145,6 +146,8 @@
    * получала патч дважды. У сервера копия одна, и он разбирает сообщения по
    * очереди.
    */
+  const may = $derived(permitsIn(session.session.rules, session.me.role))
+
   function decide(accept: boolean) {
     if (!findChatEntry(session.doc, entry.id)) return
     session.send({ t: 'ai:decide', entryId: entry.id, accept })
@@ -406,11 +409,25 @@
                 <button type="button" class="btn-primary h-7" onclick={() => decide(false)}>
                   Discard
                 </button>
-                <button type="button" class="btn-outline h-7" onclick={() => decide(true)}>
+                <!-- Применить — правка тетради, и правило комнаты про неё же.
+                     Отклонить остаётся всем: снятая плашка ничего не рушит. -->
+                <button
+                  type="button"
+                  class="btn-outline h-7"
+                  disabled={!may.edit}
+                  title={may.edit ? '' : may.editWhy}
+                  onclick={() => decide(true)}
+                >
                   Apply anyway
                 </button>
               {:else}
-                <button type="button" class="btn-primary h-7" onclick={() => decide(true)}>
+                <button
+                  type="button"
+                  class="btn-primary h-7"
+                  disabled={!may.edit}
+                  title={may.edit ? '' : may.editWhy}
+                  onclick={() => decide(true)}
+                >
                   Accept
                 </button>
                 <button type="button" class="btn-outline h-7" onclick={() => decide(false)}>

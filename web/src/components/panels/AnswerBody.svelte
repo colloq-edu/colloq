@@ -16,6 +16,7 @@
   import { splitAnswer } from '@shared/answer'
   import { getSessionState } from '@/lib/session.svelte'
   import { insertCell } from '@/lib/notebook-ops'
+  import { permitsIn } from '@/lib/may'
   import { getCells } from '@shared/notebook'
   import { cn } from '@/lib/utils'
   import Icon from '@/components/ui/Icon.svelte'
@@ -102,6 +103,13 @@
    * as something new.
    */
   function toCell(code: string) {
+    // Ответ оракула становится ячейкой — то есть добавляется ячейка, а это
+    // право комнаты. Иначе кнопка «в ячейку» делала бы вид, что сработала.
+    const may = permitsIn(session.session.rules, session.me.role)
+    if (!may.add) {
+      session.showError(may.structureWhy + '.')
+      return
+    }
     const cells = getCells(session.doc).toArray()
     const at = cellId ? cells.findIndex((cell) => cell.get('id') === cellId) : -1
     const created = insertCell(session.doc, 'code', at === -1 ? cells.length : at + 1, code)
