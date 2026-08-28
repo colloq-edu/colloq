@@ -35,9 +35,36 @@
      * has always given.
      */
     arrived?: string | null
+    /** Уводит на экран публикации: это решение, а не пункт меню с эффектом. */
+    onpublish?: (sessionId: string) => void
   }
 
-  let { onfull, arrived = null }: Props = $props()
+  let { onfull, arrived = null, onpublish }: Props = $props()
+
+  /**
+   * Снять или вернуть публичную страницу.
+   *
+   * Снятая страница отвечает «преподаватель её снял», а не 404: ссылку у
+   * студентов не отозвать, и упереться в ошибку там, где вчера был семинар, —
+   * худшее из двух.
+   */
+  async function withdraw(seminar: AdminSeminar, hide: boolean): Promise<void> {
+    try {
+      if (hide) await adminApi.withdraw(seminar.id)
+      else await adminApi.republish(seminar.id)
+      // Перечитываем список: у строки поменялось состояние публикации.
+      seminars = await adminApi.listSeminars()
+    } catch (cause: unknown) {
+      rowError = { id: seminar.id, message: `Не получилось — ${explain(cause)}` }
+    }
+  }
+
+  async function copyPublished(seminar: AdminSeminar): Promise<void> {
+    if (!seminar.publication) return
+    await copyText(`${location.origin}/p/${seminar.publication.id}`)
+    copiedId = seminar.id
+    setTimeout(() => (copiedId = copiedId === seminar.id ? null : copiedId), 1600)
+  }
 
   /*
    * Coming back from the New seminar screen. The list is reloaded rather than
@@ -977,6 +1004,30 @@
               {#if seminar.createdBy}
                 <span class="whitespace-nowrap text-2xs text-faint">by {seminar.createdBy}</span>
               {/if}
+              <!-- Курс и публикация — в той же строке, что и ссылка: это факты
+                   об этом семинаре, а не второй столбец в таблице, где их уже
+                   шесть. -->
+              {#each seminar.courses as course (course.id)}
+                <a
+                  class="whitespace-nowrap text-2xs text-accent-text"
+                  href={`/admin/courses/${course.id}`}
+                >
+                  · {course.name}
+                </a>
+              {/each}
+              {#if seminar.publication?.state === 'published'}
+                <a
+                  class="whitespace-nowrap text-2xs text-muted underline decoration-line underline-offset-2"
+                  href={`/p/${seminar.publication.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  · опубликован · {seminar.publication.steps}
+                  {seminar.publication.steps === 1 ? 'шаг' : 'шага'}
+                </a>
+              {:else if seminar.publication}
+                <span class="whitespace-nowrap text-2xs text-muted">· страница снята</span>
+              {/if}
             </div>
 
             {#if rowError?.id === seminar.id}
@@ -1084,6 +1135,42 @@
                   >
                     Rules…
                   </button>
+                  <div class="my-1 border-t border-line-soft"></div>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    class="{ITEM} text-ink hover:bg-raised"
+                    onclick={() => onpublish?.(seminar.id)}
+                  >
+                    {seminar.publication ? 'Опубликовать снова…' : 'Опубликовать…'}
+                  </button>
+                  {#if seminar.publication?.state === 'published'}
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="{ITEM} text-ink hover:bg-raised"
+                      onclick={() => void copyPublished(seminar)}
+                    >
+                      Копировать публичную ссылку
+                    </button>
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="{ITEM} text-ink hover:bg-raised"
+                      onclick={() => void withdraw(seminar, true)}
+                    >
+                      Снять страницу
+                    </button>
+                  {:else if seminar.publication}
+                    <button
+                      role="menuitem"
+                      type="button"
+                      class="{ITEM} text-ink hover:bg-raised"
+                      onclick={() => void withdraw(seminar, false)}
+                    >
+                      Вернуть страницу
+                    </button>
+                  {/if}
                   <button
                     role="menuitem"
                     type="button"

@@ -6,6 +6,8 @@
   import Oracle from '@/admin/screens/Oracle.svelte'
   import Environments from '@/admin/screens/Environments.svelte'
   import Seminars from '@/admin/screens/Seminars.svelte'
+  import Courses from '@/admin/screens/Courses.svelte'
+  import Publish from '@/admin/screens/Publish.svelte'
   import Teachers from '@/admin/screens/Teachers.svelte'
   import SignInScreen from '@/screens/SignInScreen.svelte'
   import { readEntryCredential, SPENT_PATH } from '@/admin/entry'
@@ -34,8 +36,19 @@
         ? 'teachers'
         : path.startsWith('/admin/environments')
           ? 'environments'
-          : 'seminars',
+          : path.startsWith('/admin/courses')
+            ? 'courses'
+            : 'seminars',
   )
+
+  /*
+   * Открытый курс — в адресе, в отличие от формы создания семинара: сюда
+   * возвращаются, этой ссылкой делятся с коллегой, и «назад» обязана уводить в
+   * список курсов, а не из панели.
+   */
+  const openCourse = $derived(/^\/admin\/courses\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
+  /* Публикация — тоже адрес: это экран, на котором принимают решение. */
+  const publishing = $derived(/^\/admin\/publish\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
 
   onMount(() => {
     const onPop = () => (path = location.pathname)
@@ -110,7 +123,11 @@
   <SignInScreen />
 {:else}
   <AdminShell {tab} {navigate}>
-    {#if tab === 'environments'}
+    {#if publishing}
+      <Publish sessionId={publishing} {navigate} />
+    {:else if tab === 'courses'}
+      <Courses open={openCourse} {navigate} />
+    {:else if tab === 'environments'}
       <Environments />
     {:else if tab === 'oracle'}
       <Oracle />
@@ -132,7 +149,11 @@
           }}
         />
     {:else}
-      <Seminars onfull={() => (makingSeminar = true)} {arrived} />
+      <Seminars
+        onfull={() => (makingSeminar = true)}
+        {arrived}
+        onpublish={(id) => navigate(`/admin/publish/${id}`)}
+      />
     {/if}
   </AdminShell>
 {/if}

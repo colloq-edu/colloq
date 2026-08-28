@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type AdminTab = 'seminars' | 'environments' | 'oracle' | 'teachers'
+  export type AdminTab = 'seminars' | 'courses' | 'environments' | 'oracle' | 'teachers'
 
   /**
    * The numbers on the nav rows.
@@ -12,18 +12,21 @@
    */
   class NavCounts {
     seminars = $state<number | null>(null)
+    courses = $state<number | null>(null)
     teachers = $state<number | null>(null)
     environments = $state<number | null>(null)
 
     /** Both lists, cheap, and independently: a teacher list that 403s must not
      * cost the seminar count. */
     async load(): Promise<void> {
-      const [seminars, teachers, environments] = await Promise.allSettled([
+      const [seminars, courses, teachers, environments] = await Promise.allSettled([
         adminApi.listSeminars(),
+        adminApi.listCourses(),
         adminApi.listTeachers(),
         adminApi.listEnvironments(),
       ])
       if (seminars.status === 'fulfilled') this.seminars = seminars.value.length
+      if (courses.status === 'fulfilled') this.courses = courses.value.length
       if (teachers.status === 'fulfilled') this.teachers = teachers.value.length
       if (environments.status === 'fulfilled') this.environments = environments.value.environments.length
     }
@@ -73,6 +76,13 @@
    */
   const TEACHING = $derived<NavItem[]>([
     { id: 'seminars', label: 'Seminars', icon: 'board', href: '/admin', count: navCounts.seminars },
+    {
+      id: 'courses',
+      label: 'Courses',
+      icon: 'folder',
+      href: '/admin/courses',
+      count: navCounts.courses,
+    },
     {
       id: 'environments',
       label: 'Environments',

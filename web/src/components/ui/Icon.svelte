@@ -38,6 +38,9 @@
     lock: '<rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/>',
     // The Seminars nav mark: a board with a header rail, not a code glyph.
     board: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/>',
+    // Курс — папка семинаров. Единственное место в продукте, где эта метафора
+    // уместна: остальное к файлам отношения не имеет.
+    folder: '<path d="M3 6.2A1.7 1.7 0 0 1 4.7 4.5h4.1l2 2.4h8.5A1.7 1.7 0 0 1 21 8.6v9.7a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 18.3V6.2z"/>',
     // The theme pair. Both live here so the switch on the brand band and the one
     // on the canvas cannot drift apart.
     sun:

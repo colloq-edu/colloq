@@ -315,6 +315,49 @@ export function courseRoutes(): Router {
   });
 
   /**
+   * Тетрадь файлом .ipynb.
+   *
+   * Единственный способ унести код с собой целиком: в самой комнате экспорта
+   * нет вовсе, а выделить мышью через несколько ячеек нельзя — каждая из них
+   * отдельный редактор. Отдаётся последний шаг, то есть тетрадь на момент
+   * публикации.
+   *
+   * Выводы в файл не кладутся. Notebook без них открывается везде и весит
+   * килобайты; с ними это мегабайты base64 в файле, который студент несёт к
+   * себе, чтобы запустить заново, — и первым делом всё равно нажмёт «Run».
+   */
+  router.get('/api/p/:id/notebook.ipynb', (req, res) => {
+    const pub = getPublication(req.params.id)
+    if (!pub || pub.state !== 'published') return res.status(404).end()
+    const headings = stepHeadings(pub.id)
+    const last = headings.at(-1)
+    const step = last ? readStep(pub.id, last.seq) : null
+    if (!step) return res.status(404).end()
+
+    const notebook = {
+      cells: step.cells.map((cell) => ({
+        cell_type: cell.type,
+        metadata: {},
+        source: cell.source.split(/(?<=\n)/),
+        ...(cell.type === 'code' ? { execution_count: null, outputs: [] } : {}),
+      })),
+      metadata: {
+        kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' },
+        language_info: { name: 'python' },
+      },
+      nbformat: 4,
+      nbformat_minor: 5,
+    }
+    const name = pub.title.replace(/[^\p{L}\p{N} _-]/gu, '').trim() || 'notebook'
+    res.setHeader('content-type', 'application/x-ipynb+json; charset=utf-8')
+    res.setHeader(
+      'content-disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(name)}.ipynb`,
+    )
+    res.send(JSON.stringify(notebook, null, 1))
+  })
+
+  /**
    * Крупные куски выводов — по хэшу содержимого.
    *
    * Хэш и есть версия, поэтому кэш вечный: страницу открывают с телефона, а

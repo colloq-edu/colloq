@@ -28,12 +28,28 @@
    * the browser already knows would buy nothing but a spinner.
    */
   const SESSION_PATH = /^\/s\/([A-Za-z0-9_-]{1,64})\/?$/
+  /*
+   * Две публичные страницы: курс и опубликованный семинар.
+   *
+   * Свои префиксы и свои идентификаторы, отдельные от `/s/`, и это не
+   * аккуратность в именах: восемь символов комнаты — это всё право писать в
+   * неё. Ссылка, данная классу «на почитать», не должна открывать им живую
+   * тетрадь, поэтому у публикации адрес свой, а id комнаты в неё не входит.
+   */
+  const COURSE_PATH = /^\/c\/([A-Za-z0-9_-]{1,64})\/?$/
+  const PUBLIC_PATH = /^\/p\/([A-Za-z0-9_-]{1,64})(?:\/(-?\d+))?\/?$/
 
   let path = $state(location.pathname)
   const sessionId = $derived(SESSION_PATH.exec(path)?.[1] ?? null)
   // The teaching side. It routes its own sub-paths; this only has to get out of
   // the way, and to do so before the seminar route touches localStorage.
   const isAdmin = $derived(path === '/admin' || path.startsWith('/admin/'))
+  const courseId = $derived(COURSE_PATH.exec(path)?.[1] ?? null)
+  const publicSeminar = $derived.by(() => {
+    const match = PUBLIC_PATH.exec(path)
+    if (!match) return null
+    return { id: match[1], step: match[2] === undefined ? null : Number(match[2]) }
+  })
 
   /*
    * The admin panel arrives on demand, for the same reason the notebook's
@@ -65,6 +81,16 @@
     null
   const workspace = () =>
     (workspaceChunk ??= import('@/screens/SessionScreen.svelte').then((m) => m.default))
+
+  /*
+   * Публичные страницы — тоже отдельным куском, и по более резкому поводу, чем
+   * панель: это единственные адреса Colloq, которые открывают с телефона, из
+   * дома, через неделю после занятия. Тащить туда редактор, терминал и оракула
+   * значит платить за них тем, кто пришёл прочитать тетрадь.
+   */
+  let readerChunk: Promise<typeof import('@/screens/ReaderScreen.svelte').default> | null = null
+  const reader = () =>
+    (readerChunk ??= import('@/screens/ReaderScreen.svelte').then((m) => m.default))
 
   let session = $state<SessionInfo | null>(null)
   let identity = $state<StoredIdentity | null>(null)
@@ -246,7 +272,16 @@
   const poster = $derived(session ? { ...session, name: session.name || '\u00a0' } : null)
 </script>
 
-{#if isAdmin}
+{#if courseId || publicSeminar}
+  <!-- Ни токена, ни личности, ни сокетов: эти страницы читают и всё. -->
+  {#await reader() then Reader}
+    <Reader
+      course={courseId}
+      publication={publicSeminar}
+      onnavigate={(next) => navigate(next)}
+    />
+  {/await}
+{:else if isAdmin}
   <!-- No pending branch: the chunk is one request on a local network and the
        panel itself paints an empty canvas until the server answers, so a
        spinner here would only add a second flash to the same wait. -->

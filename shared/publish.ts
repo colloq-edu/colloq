@@ -125,6 +125,21 @@ export interface PublicSeminar {
   orphaned: boolean;
 }
 
+/**
+ * Момент, который может стать шагом.
+ *
+ * `label` пуст, когда момент никто не называл: это служебный снимок, и «Снимок
+ * №14» в рельсе у студента — не название, а признание, что назвать забыли.
+ * Такой момент нельзя отметить, пока в поле не напишут слова.
+ */
+export interface PublishCandidate {
+  seq: number
+  label: string
+  at: number
+  cellCount: number
+  kind: string
+}
+
 /* -------------------------------------------------------------- ограничения */
 
 export const MAX_COURSE_NAME = 120;

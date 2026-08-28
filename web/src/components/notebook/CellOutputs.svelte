@@ -84,9 +84,16 @@
     return Object.keys(data).find((mime) => mime.startsWith('text/')) ?? null
   }
 
-  /** Kernels send bare base64; a few libraries send a full data URI already. */
+  /**
+   * Kernels send bare base64; a few libraries send a full data URI already.
+   *
+   * И третий случай: на опубликованной странице крупные картинки лежат
+   * отдельными записями и приезжают обычным адресом. Собирать из него data-URI
+   * значило бы вставить `data:image/png;base64,/api/p/...`.
+   */
   function imageSrc(mime: string, payload: string): string {
-    return payload.startsWith('data:') ? payload : `data:${mime};base64,${payload.replace(/\s/g, '')}`
+    if (payload.startsWith('data:') || payload.startsWith('/')) return payload
+    return `data:${mime};base64,${payload.replace(/\s/g, '')}`
   }
 
   function tall(index: number): boolean {

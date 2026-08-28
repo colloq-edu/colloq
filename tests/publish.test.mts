@@ -29,6 +29,7 @@ import {
   publicationOf,
   readStep,
   setCourseItems,
+  setPublicationState,
   stepHeadings,
   writePublication,
 } from '../server/src/publish/store.js'
@@ -179,4 +180,44 @@ test('повторная публикация сохраняет адрес и �
   assert.equal(stepHeadings(two.id).length, 2)
   assert.equal(publicationOf(id)?.id, one.id)
   assert.ok(readStep(two.id, null), 'первый шаг не читается')
+})
+
+test('двое, переставляющие курс в одну минуту, не теряют порядок молча', () => {
+  /*
+   * Права преподавателей на инстансе общие, экран семинаров перечитывается сам,
+   * а состав курса пишется целиком одним значением. Без сравнения версии второй
+   * записавший стирал бы работу первого и никто бы этого не заметил.
+   */
+  const course = createCourse('Курс', null, 'Ада')
+  const one = { kind: 'gone' as const, name: 'Первый', at: 1 }
+  const two = { kind: 'gone' as const, name: 'Второй', at: 2 }
+
+  const first = setCourseItems(course.id, course.rev, [one, two])
+  assert.ok(first, 'первая запись не прошла')
+  // Второй экран держит курс таким, каким прочитал его до этого.
+  assert.equal(setCourseItems(course.id, course.rev, [two, one]), null, 'устаревшая запись прошла')
+  assert.deepEqual(getCourse(course.id)!.items.map((i) => i.kind === 'gone' && i.name), [
+    'Первый',
+    'Второй',
+  ])
+})
+
+test('снятая страница остаётся адресом, а не превращается в 404', () => {
+  // Ссылку у студентов не отозвать: страница обязана ответить, что её сняли.
+  const id = 'pub-withdrawn'
+  const doc = taught(id)
+  const bag = newBlobBag()
+  const pub = writePublication({
+    sessionId: id,
+    title: 'Снятая',
+    by: null,
+    steps: [{ seq: 0, label: 'сейчас', at: Date.now(), cells: pageOfDoc(doc, bag) }],
+    blobs: bag.all(),
+  })
+  setPublicationState(pub.id, 'withdrawn')
+  const back = publicationOf(id)
+  assert.equal(back?.state, 'withdrawn')
+  assert.equal(back?.id, pub.id, 'снятие поменяло адрес')
+  // Шаги остаются на месте: вернуть страницу — это одно нажатие, а не публикация заново.
+  assert.equal(stepHeadings(pub.id).length, 1)
 })

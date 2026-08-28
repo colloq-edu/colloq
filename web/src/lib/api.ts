@@ -9,6 +9,7 @@ import type {
   SessionInfo,
 } from '@shared/protocol'
 import type { RoomRules } from '@shared/rules'
+import type { PublicCourseView, PublicSeminar, PublicStep } from '@shared/publish'
 
 export class ApiError extends Error {
   constructor(
@@ -101,6 +102,22 @@ export const api = {
    * Накладывается на текущее на сервере: экран, трогающий одну строку, не
    * должен уметь молча вернуть остальные к умолчаниям.
    */
+  /* --------------------------------------------------- публичное чтение */
+
+  /**
+   * Курс и опубликованный семинар — без токена и без входа.
+   *
+   * Отдельные адреса, а не `/api/sessions/...`: у публикации свой
+   * идентификатор именно затем, чтобы ссылка «на почитать» не открывала живую
+   * комнату.
+   */
+  course: (id: string) => request<{ course: PublicCourseView }>(`/api/c/${id}`),
+
+  publication: (id: string) => request<{ seminar: PublicSeminar }>(`/api/p/${id}`),
+
+  step: (id: string, seq: number | null) =>
+    request<{ step: PublicStep }>(`/api/p/${id}/step/${seq === null ? 'first' : seq}`),
+
   setRoomRules: (id: string, token: string, rules: Partial<RoomRules>) =>
     request<{ rules: RoomRules }>(`/api/sessions/${id}/rules`, {
       method: 'PATCH',

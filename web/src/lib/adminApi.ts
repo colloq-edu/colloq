@@ -27,6 +27,7 @@ import type {
   UpdateOracleRequest,
   UpdateSeminarRequest,
 } from '@shared/admin'
+import type { Course, CourseItem, PublishCandidate } from '@shared/publish'
 
 export type AdminErrorReason = AdminErrorBody['reason']
 
@@ -192,6 +193,58 @@ export const adminApi = {
 
   updateSeminar: (id: string, body: UpdateSeminarRequest) =>
     request<AdminSeminar>(`/seminars/${encodeURIComponent(id)}`, { method: 'PATCH', ...json(body) }),
+
+  /* ------------------------------------------------------------ курсы */
+
+  listCourses: () => request<{ courses: Course[] }>('/courses').then((r) => r.courses),
+
+  course: (id: string) =>
+    request<{ course: Course }>(`/courses/${encodeURIComponent(id)}`).then((r) => r.course),
+
+  createCourse: (body: { name: string; blurb?: string }) =>
+    request<{ course: Course }>('/courses', { method: 'POST', ...json(body) }).then((r) => r.course),
+
+  updateCourse: (id: string, body: { name?: string; blurb?: string | null }) =>
+    request<{ course: Course }>(`/courses/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      ...json(body),
+    }).then((r) => r.course),
+
+  /**
+   * Состав и порядок — целиком, со сравнением версии.
+   *
+   * 409 несёт курс таким, какой он сейчас: это не ошибка, а гонка, и экран
+   * должен показать правду, а не спорить с ней.
+   */
+  setCourseItems: (id: string, rev: number, items: CourseItem[]) =>
+    request<{ course: Course }>(`/courses/${encodeURIComponent(id)}/items`, {
+      method: 'PUT',
+      ...json({ rev, items }),
+    }).then((r) => r.course),
+
+  deleteCourse: (id: string) =>
+    request<void>(`/courses/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  /* ------------------------------------------------------- публикация */
+
+  publishInfo: (id: string) =>
+    request<{
+      title: string
+      candidates: PublishCandidate[]
+      publication: { id: string; steps: { seq: number; label: string; at: number }[] } | null
+    }>(`/seminars/${encodeURIComponent(id)}/publish`),
+
+  publish: (id: string, steps: { seq: number; label: string; at: number }[], finalLabel?: string) =>
+    request<{ publication: { id: string; steps: { seq: number; label: string }[] } }>(
+      `/seminars/${encodeURIComponent(id)}/publish`,
+      { method: 'POST', ...json({ steps, finalLabel }) },
+    ),
+
+  withdraw: (id: string) =>
+    request<void>(`/seminars/${encodeURIComponent(id)}/publish`, { method: 'DELETE' }),
+
+  republish: (id: string) =>
+    request<void>(`/seminars/${encodeURIComponent(id)}/publish/restore`, { method: 'POST' }),
 
   deleteSeminar: (id: string) =>
     request<void>(`/seminars/${encodeURIComponent(id)}`, { method: 'DELETE' }),
