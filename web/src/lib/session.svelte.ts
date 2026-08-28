@@ -2,7 +2,15 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import type { Awareness } from 'y-protocols/awareness'
 import { getContext, setContext } from 'svelte'
-import { ensureInitialNotebook, getCells, getChat, getMeta, getTerminal } from '@shared/notebook'
+import {
+  cellSource,
+  ensureInitialNotebook,
+  findCell,
+  getCells,
+  getChat,
+  getMeta,
+  getTerminal,
+} from '@shared/notebook'
 import type {
   AwarenessUser,
   ControlClientMessage,
@@ -17,6 +25,7 @@ import { enqueueControl, OFFLINE_REASON } from './controls'
 import { countsAsUnread } from './notes'
 import type { StoredIdentity } from './identity'
 import { bindLocalStore, type LocalStore } from './persistence.svelte'
+import { REFUSED_CLOSE, stashRefusal } from './refusal'
 
 export interface Peer {
   clientId: number
@@ -156,6 +165,7 @@ export class SessionState {
 
     this.provider.on('status', this.#onStatus)
     this.provider.on('sync', this.#onSync)
+    this.provider.on('connection-close', this.#onCollabClose)
     this.awareness.on('change', this.#readPeers)
     this.#readPeers()
 
@@ -460,6 +470,41 @@ export class SessionState {
    */
   rulesChangedAt = $state(0)
 
+  /**
+   * Сервер отказал в правке и закрыл соединение.
+   *
+   * Дальше без пересборки документа этот браузер нем: у него остались структуры
+   * на тактах, которых у сервера нет, и каждый следующий кадр ссылается на них.
+   * Подробности и почему это перезагрузка, а не пересборка на месте, — в
+   * `lib/refusal.ts`.
+   *
+   * Не зависит от управляющего сокета: тот переподключается сам по себе, и если
+   * бы возврат в согласованное состояние держался на его сообщении, один обрыв
+   * оставил бы человека немым навсегда, а заметить это было бы некому.
+   */
+  #onCollabClose = (event: CloseEvent | null): void => {
+    if (this.#disposed || event?.code !== REFUSED_CLOSE) return
+    this.#disposed = true
+    const cell = this.selectedCellId ? findCell(this.doc, this.selectedCellId) : null
+    stashRefusal({
+      sessionId: this.session.id,
+      message: this.lastError ?? 'Эту правку не приняли.',
+      text: cell ? cellSource(cell.cell).toString() : '',
+      at: Date.now(),
+    })
+    /*
+     * Кэш стирается до перезагрузки: иначе `y-indexeddb` переиграет отказанную
+     * правку при следующем открытии, а BroadcastChannel уже отдал её соседним
+     * вкладкам — и всё начнётся заново.
+     */
+    void this.localStore
+      .clear()
+      .catch(() => {
+        /* хранилище недоступно — перезагрузка всё равно нужна */
+      })
+      .then(() => window.location.reload())
+  }
+
   /** Сообщить о том, что сломалось на этой стороне, тем же способом, что и сервер. */
   showError(message: string) {
     this.lastError = message
@@ -476,6 +521,7 @@ export class SessionState {
     this.#control?.close()
     this.provider.off('status', this.#onStatus)
     this.provider.off('sync', this.#onSync)
+    this.provider.off('connection-close', this.#onCollabClose)
     this.awareness.off('change', this.#readPeers)
     getTerminal(this.doc).unobserve(this.#onTerminalLines)
     this.undoManager.destroy()

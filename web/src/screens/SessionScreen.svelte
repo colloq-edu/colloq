@@ -35,6 +35,7 @@
   import { getMeta, type KernelStatus } from '@shared/notebook'
   import type { SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
+  import { takeRefusal } from '@/lib/refusal'
   import { api } from '@/lib/api'
   import { readRules, type RoomRules } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
@@ -59,6 +60,28 @@
    * Строка про смену правил живёт шесть секунд и уходит сама: её читают один
    * раз, а закрывать её крестиком — просить о работе за объявление.
    */
+  /*
+   * Правку не приняли — и вот она.
+   *
+   * Браузер, которому отказали, пересобирает документ перезагрузкой (см.
+   * `lib/refusal.ts`), и без этой панели это было бы молчаливым стиранием чужой
+   * работы, что не лучше молчаливо онемевшего браузера.
+   */
+  // Один раз при монтировании, как и SessionState выше: записка про тот заход,
+  // который только что закончился отказом, и роутер пересоздаёт этот компонент,
+  // когда комната действительно меняется.
+  // svelte-ignore state_referenced_locally
+  const refusal = takeRefusal(info.id)
+  let refusalShown = $state(refusal !== null)
+  let refusalCopied = $state(false)
+
+  async function copyRefused(): Promise<void> {
+    if (!refusal) return
+    await copyText(refusal.text)
+    refusalCopied = true
+    setTimeout(() => (refusalCopied = false), 1600)
+  }
+
   /* --------------------------------------------------- пульт правил комнаты */
 
   let rulesOpen = $state(false)
@@ -733,6 +756,46 @@
         Комнаты больше нет: ни ноутбука, ни файлов, ни истории. Ссылка тоже
         перестала работать — если она нужна была, спросите преподавателя.
       </p>
+    </div>
+  </div>
+{/if}
+
+{#if refusal && refusalShown}
+  <!--
+    Модальное, а не строкой: человек только что потерял несколько секунд работы,
+    и текст, который он не успеет прочитать, — это тот же потерянный текст.
+  -->
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="refused-title"
+    class="fixed inset-0 z-[60] flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="flex max-h-full w-full max-w-[520px] flex-col border border-line bg-canvas shadow-pop">
+      <div class="border-b border-line px-5 py-3.5">
+        <h2 id="refused-title" class="text-title font-semibold text-ink">Эту правку не приняли</h2>
+        <p class="mt-1 text-ui leading-snug text-muted">{refusal.message}</p>
+      </div>
+      {#if refusal.text}
+        <div class="min-h-0 flex-1 overflow-y-auto border-b border-line bg-surface px-5 py-3">
+          <p class="pb-1.5 text-2xs font-bold uppercase tracking-caps text-muted">
+            Вот что было в вашей ячейке
+          </p>
+          <pre
+            class="whitespace-pre-wrap break-words font-mono text-code leading-relaxed text-ink">{refusal.text}</pre>
+        </div>
+      {/if}
+      <div class="flex items-center gap-2 px-5 py-3">
+        {#if refusal.text}
+          <button type="button" class="btn-ghost" onclick={() => void copyRefused()}>
+            {refusalCopied ? 'Скопировано' : 'Скопировать'}
+          </button>
+        {/if}
+        <span class="flex-1"></span>
+        <button type="button" class="btn-primary" onclick={() => (refusalShown = false)}>
+          Понятно
+        </button>
+      </div>
     </div>
   </div>
 {/if}

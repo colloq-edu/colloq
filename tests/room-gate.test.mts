@@ -14,6 +14,19 @@ import * as Y from 'yjs'
 import { classify, permits } from '../server/src/collab/gate.js'
 import { OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import { CELLS_KEY, META_KEY, createCell } from '../shared/notebook.js'
+import { stashRefusal, takeRefusal } from '../web/src/lib/refusal.js'
+
+/*
+ * У узла нет sessionStorage — а модуль про него и написан. Подделка ровно того
+ * размера, который он читает: если он однажды начнёт хранить иначе, тест это
+ * заметит, а не пройдёт мимо.
+ */
+const store = new Map<string, string>()
+;(globalThis as { sessionStorage?: unknown }).sessionStorage = {
+  getItem: (k: string) => store.get(k) ?? null,
+  setItem: (k: string, v: string) => void store.set(k, v),
+  removeItem: (k: string) => void store.delete(k),
+}
 
 function pair(): { server: Y.Doc; client: Y.Doc; frame: (write: () => void) => Uint8Array } {
   const server = new Y.Doc()
@@ -135,4 +148,38 @@ test('правило, поменявшееся посреди пары, дейс
   Y.applyUpdate(server, before)
   const after = frame(() => typing(client))
   assert.ok(passes(server, after, { edit: 'host' }, 'participant'))
+})
+
+/* ------------------------------------------- что делает отказанный браузер */
+
+test('записка об отказе переживает перезагрузку — и ровно один раз', () => {
+  /*
+   * Браузер, которому отказали, пересобирает документ перезагрузкой: убрать у
+   * него структуру протокол не умеет, а без пересборки он нем навсегда — все
+   * его следующие кадры ссылаются на такты, которых у сервера нет.
+   *
+   * Перезагрузка без записки была бы молчаливым стиранием чужой работы, что не
+   * лучше молчаливо онемевшего браузера.
+   */
+  const note = {
+    sessionId: 'gate-room',
+    message: 'Тетрадь принадлежит преподавателю.',
+    text: 'df.head()',
+    at: Date.now(),
+  }
+  stashRefusal(note)
+  const back = takeRefusal('gate-room')
+  assert.equal(back?.text, 'df.head()')
+  assert.equal(back?.message, note.message)
+  // Ровно один раз: показать её на второй перезагрузке — объяснять человеку то,
+  // чего он уже не помнит.
+  assert.equal(takeRefusal('gate-room'), null)
+})
+
+test('записка из другой комнаты и записка позавчерашняя не показываются', () => {
+  stashRefusal({ sessionId: 'другая', message: 'нет', text: 'x', at: Date.now() })
+  assert.equal(takeRefusal('gate-room'), null, 'чужая комната показала записку')
+
+  stashRefusal({ sessionId: 'gate-room', message: 'нет', text: 'x', at: Date.now() - 300_000 })
+  assert.equal(takeRefusal('gate-room'), null, 'старая записка пережила свой смысл')
 })
