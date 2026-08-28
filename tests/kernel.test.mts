@@ -82,6 +82,27 @@ before(async () => {
       res.end(JSON.stringify({ id: kernelMatch[1], execution_state: kernel.busy ? 'busy' : 'idle' }))
       return
     }
+    if (req.method === 'POST' && /\/restart$/.test(url.pathname)) {
+      /*
+       * Перезапуск, какой его делает настоящий Jupyter: тот же id ядра, тот же
+       * сокет, процесс за ними — новый. Подделка этого не умела вовсе и
+       * отвечала 404, так что `restartSession` уходил в catch и до сброса
+       * ячеек не доходил никогда — а тест на этот сброс поэтому пришлось бы
+       * гонять против живого контейнера. Один раз так и вышло: зелёный, пока
+       * рядом случайно работало ядро.
+       */
+      const id = /^\/api\/kernels\/([^/]+)\/restart$/.exec(url.pathname)?.[1]
+      const kernel = id ? kernels.get(id) : undefined
+      if (kernel) kernel.busy = false
+      // Ожидающие выполнения умирают вместе с процессом.
+      for (const { socket, parent } of held.splice(0)) {
+        reply(socket, parent, 'execute_reply', { status: 'abort', execution_count: 1 })
+        reply(socket, parent, 'status', { execution_state: 'idle' })
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ id, name: 'python3' }))
+      return
+    }
     if (req.method === 'POST' && /\/interrupt$/.test(url.pathname)) {
       const id = /^\/api\/kernels\/([^/]+)\/interrupt$/.exec(url.pathname)?.[1]
       const kernel = id ? kernels.get(id) : undefined
@@ -1006,4 +1027,39 @@ test('выполнение, которое ничего не печатает, �
     'ячейка держит результат выполнения, которого больше нет',
   )
   assert.notEqual(room.cell.get('execCount'), null, 'у прошедшего выполнения нет номера')
+})
+
+
+test('перезапуск снимает номер выполнения со всех результатов', async () => {
+  /*
+   * Исключение для ячейки, которую разбирает насос, накрывало и номер: после
+   * перезапуска сорок результатов оставались на экране, а единственный
+   * проверяемый факт о них исчезал у всех, кроме одной — и самая свежая
+   * ячейка выглядела единственной настоящей.
+   *
+   * Живёт здесь, а не в restart.test.mts: `restartSession` поднимает ядро, и
+   * там его нет. Первая версия этого теста шла через него, зелёной была ровно
+   * до тех пор, пока рядом случайно работал контейнер, и падала шестьюдесятью
+   * секундами таймаута, когда его не стало.
+   */
+  const { requestRun, restartSession } = await import('../server/src/kernel/index.js')
+  const { getCells, createCell } = await import('../shared/notebook.js')
+  const room = await seminar()
+
+  const second = createCell('code', 'print("two")')
+  room.doc.transact(() => getCells(room.doc).push([second]))
+
+  room.type('print(1)')
+  requestRun(room.id, [room.cellId, second.get('id') as string], 'Alexander', 'p_1')
+  assert.ok(await until(() => room.state() === 'ok'), `ячейка кончилась как ${String(room.state())}`)
+  assert.ok(await until(() => second.get('state') === 'ok'), 'вторая не отработала')
+  assert.notEqual(room.cell.get('execCount'), null, 'номера не было и до перезапуска')
+
+  await restartSession(room.id, 'Alexander')
+
+  for (const cell of [room.cell, second]) {
+    assert.equal(cell.get('execCount'), null, 'номер пережил перезапуск ядра')
+    assert.equal(cell.get('state'), 'idle')
+    assert.equal(cell.get('startedAt'), null)
+  }
 })
