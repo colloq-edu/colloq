@@ -14,9 +14,14 @@ import {
   deleteCell,
   duplicateCell,
   insertCellAfter,
-  moveCell,
   setCellType,
 } from '../web/src/lib/notebook-ops.js'
+/*
+ * Перестановка делается на сервере, а не в браузере: клон соседа несёт её
+ * вывод, а запись вывода из браузера закрыта в любой комнате. Свойства
+ * перестановки от переезда не изменились, и проверяются они здесь же.
+ */
+import { moveInCells, resetRetyped } from '../server/src/collab/ops.js'
 
 function notebook(sources: string[]) {
   const doc = new Y.Doc()
@@ -51,7 +56,7 @@ test('a cell keeps what it printed when it moves', () => {
   })
   printed(made[0], '42\n')
 
-  moveCell(doc, ids[0], 1)
+  moveInCells(doc, ids[0], 1)
   const moved = cells.toArray().find((c) => (c.get('id') as string) === ids[0])!
   assert.equal(order(cells).join(','), 'b = 2,a = 1', 'the cell did not move')
   const outputs = moved.get('outputs') as Y.Array<Y.Map<unknown>>
@@ -67,7 +72,7 @@ test('a cell keeps what it printed when it moves', () => {
 test('the copied output is a copy, not the same object twice', () => {
   const { doc, cells, made, ids } = notebook(['x', 'y'])
   printed(made[0], 'before\n')
-  moveCell(doc, ids[0], 1)
+  moveInCells(doc, ids[0], 1)
   const moved = cells.toArray().find((c) => (c.get('id') as string) === ids[0])!
   const text = (moved.get('outputs') as Y.Array<Y.Map<unknown>>).get(0).get('text') as Y.Text
   text.insert(text.length, 'after\n')
@@ -76,8 +81,8 @@ test('the copied output is a copy, not the same object twice', () => {
 
 test('a move at the edge of the notebook does nothing', () => {
   const { doc, cells, ids } = notebook(['one', 'two'])
-  moveCell(doc, ids[0], -1)
-  moveCell(doc, ids[1], 1)
+  moveInCells(doc, ids[0], -1)
+  moveInCells(doc, ids[1], 1)
   assert.deepEqual(order(cells), ['one', 'two'])
 })
 
@@ -90,19 +95,44 @@ test('the notebook is never left with nothing in it', () => {
   assert.equal(cellSource(cells.get(0) as never).toString(), '')
 })
 
-test('turning a cell into prose drops the outputs it can no longer have', () => {
+test('ставшая текстом ячейка теряет вывод — но гасит его сервер', () => {
+  /*
+   * Две половины одного действия. Браузер пишет только вид: пока он гасил
+   * здесь состояние выполнения, правило «вывод и состояние пишет только
+   * сервер» имело исключение — то есть не было правилом. Секундомер и вывод
+   * гасит сервер, увидев принятую смену вида.
+   */
   const { doc, cells, made, ids } = notebook(['print(1)'])
   doc.transact(() => {
     made[0].set('state', 'ok')
     made[0].set('execCount', 7)
   })
   printed(made[0], '1\n')
+
   setCellType(doc, ids[0], 'markdown')
   const cell = cells.get(0)
   assert.equal(cell.get('type'), 'markdown')
+  assert.equal(
+    (cell.get('outputs') as Y.Array<unknown>).length,
+    1,
+    'браузер сам погасил вывод — значит по-прежнему пишет серверные поля',
+  )
+
+  doc.transact(() => resetRetyped(doc, [ids[0]]))
   assert.equal((cell.get('outputs') as Y.Array<unknown>).length, 0)
   assert.equal(cell.get('execCount'), null)
   assert.equal(cell.get('state'), 'idle')
+})
+
+test('сервер не гасит выполнение у ячейки, оставшейся кодом', () => {
+  // Ячейка, которую сделали текстом и тут же вернули обратно, за один круг: имя
+  // в списке есть, а вид уже снова 'code' — гасить нечего.
+  const { doc, cells, made, ids } = notebook(['print(1)'])
+  doc.transact(() => made[0].set('state', 'ok'))
+  printed(made[0], '1\n')
+  doc.transact(() => resetRetyped(doc, [ids[0]]))
+  assert.equal((cells.get(0).get('outputs') as Y.Array<unknown>).length, 1)
+  assert.equal(cells.get(0).get('state'), 'ok')
 })
 
 test('a duplicate is a new cell, not the same one twice', () => {
@@ -123,7 +153,7 @@ test('inserting after a cell puts it next, not at the end', () => {
 test('an operation on a cell that is gone is a no-op, not a crash', () => {
   const { doc, cells } = notebook(['one', 'two'])
   const before = order(cells)
-  moveCell(doc, 'c_never_existed', 1)
+  moveInCells(doc, 'c_never_existed', 1)
   deleteCell(doc, 'c_never_existed')
   setCellType(doc, 'c_never_existed', 'markdown')
   assert.equal(duplicateCell(doc, 'c_never_existed'), null)
@@ -135,7 +165,7 @@ test('двигают ячейку — пересоздают соседа, а н
   const moving = made[0]
   const movingText = moving.get('source') as Y.Text
 
-  moveCell(doc, ids[0], 1)
+  moveInCells(doc, ids[0], 1)
 
   // Порядок тот же, что и был бы при любом способе.
   assert.equal(order(cells).join(','), 'b = 2,a = 1')
@@ -167,7 +197,7 @@ test('перестановка соседа не сбивает секундом
     made[1].set('startedAt', 1_700_000_000_000)
   })
 
-  moveCell(doc, ids[0], 1)
+  moveInCells(doc, ids[0], 1)
 
   const still = cells.toArray().find((c) => (c.get('id') as string) === ids[1])!
   assert.equal(still.get('state'), 'running')

@@ -16,9 +16,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import { classify, MAX_SYNC_FRAME_BYTES } from '../server/src/collab/gate.js'
+import { rememberDeleted, rememberedIn, settleFresh } from '../server/src/collab/ops.js'
 import { CELLS_KEY, CHAT_KEY, META_KEY, TERMINAL_KEY } from '../shared/notebook.js'
 
 /** Сервер и браузер: два документа, синхронные на старте. */
+/** Имя комнаты — сервер помнит удаления по семинарам. */
+const ROOM = 'gate-test'
+
 function pair(): { server: Y.Doc; client: Y.Doc; frame: (write: () => void) => Uint8Array } {
   const server = new Y.Doc()
   const client = new Y.Doc()
@@ -38,7 +42,7 @@ function pair(): { server: Y.Doc; client: Y.Doc; frame: (write: () => void) => U
       captured = captured ? Y.mergeUpdates([captured, update]) : update
     }
     client.on('update', grab)
-    client.transact(write, 'browser')
+    client.transact(write)
     client.off('update', grab)
     assert.ok(captured, 'транзакция не дала обновления')
     return captured
@@ -348,4 +352,108 @@ test('мусор вместо кадра отказывается, а не пр�
   // как проверка перестала смотреть.
   const { server } = pair()
   assert.ok(refused(classify(server, new Uint8Array([9, 9, 9, 9, 9, 9]))))
+})
+
+/* -------------------------------------------------- отмена собственного удаления */
+
+test('Ctrl+Z после удаления посчитавшей ячейки проходит и возвращает вывод', () => {
+  /*
+   * Жест, который гейт ломал молча и в любой комнате. Yjs отменяет удаление
+   * КОПИЕЙ — то есть браузер предлагает серверу новую ячейку с готовым
+   * выводом, — а пол запрещает браузеру писать вывод. Отказ здесь означал бы
+   * пересборку документа за обычное Ctrl+Z.
+   *
+   * Разводит это память сервера: он помнит, что у него удалили. И вывод
+   * возвращает свой, а не присланный, так что пол цел.
+   */
+  const { server, client, frame } = pair()
+  server.transact(() => {
+    const map = cellAt(server, 0)
+    const out = new Y.Map<unknown>()
+    out.set('kind', 'stream')
+    out.set('name', 'stdout')
+    out.set('text', new Y.Text('42\n'))
+    ;(map.get('outputs') as Y.Array<unknown>).push([out])
+    map.set('state', 'ok')
+    map.set('execCount', 7)
+    map.set('runBy', 'Мария')
+  }, 'server')
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+
+  const undo = new Y.UndoManager(client.getArray(CELLS_KEY), {
+    trackedOrigins: new Set([null, 'local']),
+    captureTimeout: 400,
+  })
+
+  const removal = frame(() => client.transact(() => client.getArray(CELLS_KEY).delete(0, 1)))
+  const gone = ok(classify(server, removal))
+  assert.deepEqual(gone.removed, ['c1'], 'сервер не узнает, что запоминать')
+  // Сервер запоминает ДО применения: после него читать уже нечего.
+  rememberDeleted(ROOM, server, gone.removed)
+  Y.applyUpdate(server, removal)
+
+  let back: Uint8Array | null = null
+  const grab = (u: Uint8Array): void => {
+    back = back ? Y.mergeUpdates([back, u]) : u
+  }
+  client.on('update', grab)
+  undo.undo()
+  client.off('update', grab)
+  assert.ok(back)
+
+  const restored = ok(classify(server, back!, rememberedIn(ROOM)))
+  assert.deepEqual(restored.created, ['c1'], 'отмена не опознана как создание ячейки')
+  Y.applyUpdate(server, back!)
+  server.transact(() => settleFresh(ROOM, server, restored.created), 'server')
+
+  const cell = cellAt(server, 0)
+  assert.equal(cell.get('id'), 'c1', 'вернулась не та ячейка')
+  const outputs = cell.get('outputs') as Y.Array<Y.Map<unknown>>
+  assert.equal(outputs.length, 1, 'ячейка вернулась без вывода')
+  assert.equal((outputs.get(0).get('text') as Y.Text).toString(), '42\n')
+  assert.equal(cell.get('execCount'), 7)
+  assert.equal(cell.get('runBy'), 'Мария')
+  assert.equal(cell.get('startedAt'), null, 'секундомер вернулся на ячейке, которую никто не считает')
+})
+
+test('подделанный вывод не проходит, а совпавшее имя его не отмывает', () => {
+  const { server, client, frame } = pair()
+  const bytes = frame(() => {
+    client.getArray(CELLS_KEY).push([cell('c7', 'x')])
+    const out = new Y.Map<unknown>()
+    out.set('kind', 'data')
+    out.set('json', JSON.stringify({ 'text/html': '<style>*{display:none}</style>' }))
+    ;(cellAt(client, 2).get('outputs') as Y.Array<unknown>).push([out])
+  })
+
+  // Сервер такого удаления не помнит — «новая ячейка с готовым выводом»
+  // остаётся тем, чем была.
+  assert.ok(refused(classify(server, bytes)))
+
+  /*
+   * А если бы помнил — кадр проходит, но вывод в документ всё равно кладёт
+   * сервер, из своей записи. Здесь его записи нет, поэтому не кладёт ничего:
+   * вывода, которого сервер не производил, в документе не появляется даже
+   * тогда, когда имя ячейки совпало с удалённой.
+   */
+  assert.equal(classify(server, bytes, new Set(['c7'])).ok, true)
+  Y.applyUpdate(server, bytes)
+  server.transact(() => settleFresh(ROOM, server, ['c7']), 'server')
+  const made = server
+    .getArray(CELLS_KEY)
+    .toArray()
+    .find((c) => (c as Y.Map<unknown>).get('id') === 'c7') as Y.Map<unknown>
+  assert.equal((made.get('outputs') as Y.Array<unknown>).length, 0, 'подделанный вывод остался в документе')
+})
+
+test('новая ячейка всегда чиста, даже если браузер прислал её грязной', () => {
+  const { server, client, frame } = pair()
+  const bytes = frame(() => client.getArray(CELLS_KEY).push([cell('c8', 'x')]))
+  const judged = ok(classify(server, bytes))
+  Y.applyUpdate(server, bytes)
+  server.transact(() => settleFresh(ROOM, server, judged.created), 'server')
+  const made = server.getArray(CELLS_KEY).toArray().find((c) => (c as Y.Map<unknown>).get('id') === 'c8') as Y.Map<unknown>
+  assert.equal(made.get('state'), 'idle')
+  assert.equal(made.get('execCount'), null)
+  assert.equal(made.get('stdin') ?? null, null)
 })

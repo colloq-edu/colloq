@@ -44,7 +44,6 @@
     deleteCell,
     duplicateCell,
     insertCellAfter,
-    moveCell,
     setCellType,
   } from '@/lib/notebook-ops'
   import { controlDisabled, controlTitle } from '@/lib/controls'
@@ -788,7 +787,7 @@
           title="Move up"
           aria-label="Move cell up"
           disabled={index === 0}
-          onclick={() => moveCell(session.doc, id, -1)}
+          onclick={() => session.send({ t: 'cells:move', cellId: id, direction: -1 })}
         >
           <Icon name="chevron-up" size={13} />
         </button>
@@ -798,7 +797,7 @@
           title="Move down"
           aria-label="Move cell down"
           disabled={last}
-          onclick={() => moveCell(session.doc, id, 1)}
+          onclick={() => session.send({ t: 'cells:move', cellId: id, direction: 1 })}
         >
           <Icon name="chevron-down" size={13} />
         </button>

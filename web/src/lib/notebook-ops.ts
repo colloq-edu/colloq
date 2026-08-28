@@ -1,7 +1,6 @@
 import * as Y from 'yjs'
 import {
   cellId,
-  cloneCell,
   cellSource,
   cellType,
   createCell,
@@ -53,75 +52,35 @@ export function deleteCell(doc: Y.Doc, id: string): void {
   })
 }
 
-export function moveCell(doc: Y.Doc, id: string, direction: -1 | 1): void {
-  const cells = getCells(doc)
-  const from = indexOf(doc, id)
-  if (from === -1) return
-  const to = from + direction
-  if (to < 0 || to >= cells.length) return
-
-  doc.transact(() => {
-    /*
-     * Переезжает сосед, а не та ячейка, которую двигают.
-     *
-     * У Y.Array нет перемещения: одну из двух ячеек всё равно придётся
-     * пересоздать клоном, и всё, что к ней привязано, пересоздастся вместе с
-     * ней — редактор, курсор, выделение, буквы, набранные в этот миг. Раньше
-     * это была та самая ячейка, на кнопке которой стоял палец и в которой
-     * стоял курсор: человек нажимал «вниз» и терял место в строке, а иногда
-     * пару символов.
-     *
-     * Поменять ячейки местами можно, двигая любую из двух: результат тот же.
-     * Так что пересоздаётся соседняя — та, в которую только что заведомо никто
-     * не печатал, потому что печатали в этой.
-     */
-    const neighbour = cloneCell(cells.get(to))
-    cells.delete(to, 1)
-    cells.insert(from, [neighbour])
-  })
-}
-
 /**
- * Y.Map instances cannot be re-parented, so a move copies the content.
+ * Можно ли двигать эту ячейку — только чтобы не рисовать мёртвую кнопку.
  *
- * Everything the cell was carrying comes with it. The outputs used to be left
- * behind — a fresh empty array — while `state` and `execCount` were copied, so
- * a cell that had just printed a number arrived at its new position still
- * claiming to have run as [3] with nothing under it. Reordering a notebook is
- * not a reason to throw away what it printed.
- *
- * What a copy cannot carry is a *concurrent* edit: somebody typing into the
- * copied cell at that moment is typing into the original, and the original is
- * about to be deleted. That is inherent to a list with no move operation, and
- * the window is one sync round — which is why `moveCell` copies the neighbour
- * rather than the cell whose button was just pressed.
+ * Сама перестановка делается на сервере (`cells:move`): у Y.Array нет
+ * перемещения, так что соседнюю ячейку приходится пересоздать клоном, а клон
+ * несёт её вывод — и запись чужого вывода из браузера закрыта в любой комнате.
+ * Переупорядочить тетрадь не повод выбрасывать то, что она напечатала, поэтому
+ * уехала операция, а не свойство.
  */
-
-
-/** Outputs are Y types too, so they are rebuilt rather than referenced. */
+export function canMoveCell(doc: Y.Doc, id: string, direction: -1 | 1): boolean {
+  const from = indexOf(doc, id)
+  if (from === -1) return false
+  const to = from + direction
+  return to >= 0 && to < getCells(doc).length
+}
 
 export function setCellType(doc: Y.Doc, id: string, type: CellType): void {
   const index = indexOf(doc, id)
   if (index === -1) return
   const cell = getCells(doc).get(index)
-  doc.transact(() => {
-    cell.set('type', type)
-    if (type === 'markdown') {
-      cell.set('state', 'idle')
-      cell.set('execCount', null)
-      /*
-       * Единственное место, где состояние выполнения пишет клиент.
-       *
-       * «Превратить в текст» стоит в том же тулбаре, что и «стоп», — одно
-       * нажатие от работающей ячейки. Не погасить здесь секундомер значит
-       * оставить его идти на ячейке, которая больше не ячейка с кодом.
-       */
-      cell.set('startedAt', null)
-      cell.set('ranMs', null)
-      const outputs = cell.get('outputs')
-      if (outputs instanceof Y.Array && outputs.length > 0) outputs.delete(0, outputs.length)
-    }
-  })
+  /*
+   * Пишется только вид. Гашение секундомера и вывода — забота сервера: он
+   * делает это, увидев принятую смену вида (`collab/ops.ts · resetAfterRetype`).
+   *
+   * Здесь было единственное место, где состояние выполнения писал браузер, и
+   * пока оно было, правило «вывод и состояние пишет только сервер» имело
+   * исключение — то есть не было правилом.
+   */
+  doc.transact(() => cell.set('type', type))
 }
 
 export function duplicateCell(doc: Y.Doc, id: string): string | null {

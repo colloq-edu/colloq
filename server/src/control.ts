@@ -36,9 +36,10 @@ import type {
   Participant,
 } from '@shared/protocol'
 import type { TokenPayload } from './auth.js'
-import { applyOnBehalf, getSessionDoc } from './collab/index.js'
+import { applyOnBehalf, getSessionDoc, onRefusal } from './collab/index.js'
+import { moveInCells } from './collab/ops.js'
 import { LINE_LENGTH } from './kernel/format.js'
-import { allows, allowsRun } from '@shared/rules'
+import { allows, allowsRun, allowsStructure } from '@shared/rules'
 import { getParticipant, getRules } from './db.js'
 import {
   answerInput,
@@ -146,6 +147,25 @@ export function broadcastFiles(sessionId: string): void {
 
 // Registered once, at import: the kernel runtime has no idea who is listening.
 onWorkspaceChanged(broadcastFiles)
+
+/**
+ * Кому принадлежит управляющий сокет.
+ *
+ * Отказ в правке адресован одному человеку, а не комнате: рассказывать всем
+ * двадцати, что кто-то попробовал написать в чужую тетрадь, — не то, что нужно
+ * ни автору правки, ни остальным.
+ */
+const owner = new WeakMap<WebSocket, string>()
+
+function tell(sessionId: string, participantId: string, message: ControlServerMessage): void {
+  const room = rooms.get(sessionId)
+  if (!room) return
+  for (const ws of room.sockets) if (owner.get(ws) === participantId) send(ws, message)
+}
+
+onRefusal((sessionId, participantId, refusal) => {
+  tell(sessionId, participantId, { t: 'refused', rule: refusal.rule, message: refusal.message })
+})
 
 // The transcript is in the document; the terminal's health is not, so it comes
 // down this channel the same way kernel status does.
@@ -379,6 +399,28 @@ function dispatch(
     }
 
     /*
+     * Перестановка ячейки — серверная операция, и это вынужденно: см.
+     * `collab/ops.ts`. Право проверяется здесь, а не в классификаторе, потому
+     * что в документе этого глагола больше нет вовсе.
+     */
+    case 'cells:move': {
+      const rules = getRules(sessionId)
+      if (!allowsStructure(rules.structure, payload.role, 'move')) {
+        send(ws, { t: 'error', message: 'В этом семинаре порядок ячеек меняет преподаватель.' })
+        return
+      }
+      const id = typeof message.cellId === 'string' ? message.cellId : ''
+      const direction = message.direction === -1 || message.direction === 1 ? message.direction : null
+      if (!id || direction === null) return
+      // От имени нажавшего: у версии в истории должен быть автор.
+      const { doc } = getSessionDoc(sessionId)
+      applyOnBehalf(sessionId, payload.participantId, () => {
+        moveInCells(doc, id, direction)
+      })
+      return
+    }
+
+    /*
      * Решение по предложению оракула принимает сервер.
      *
      * Проверка «ещё открыто» внутри транзакции спасала от двух нажатий в одной
@@ -544,6 +586,7 @@ export function handleControlSocket(
     room.unwatch = watchKernelStatus(sessionId)
   }
   room.sockets.add(ws)
+  owner.set(ws, payload.participantId)
 
   // Before anything else: the browser gates its own interrupt/restart controls
   // on this, and the token it holds may say something staler than the truth.

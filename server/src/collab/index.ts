@@ -1,11 +1,11 @@
-import * as Y from 'yjs'
-import * as encoding from 'lib0/encoding'
-import * as decoding from 'lib0/decoding'
-import * as syncProtocol from 'y-protocols/sync'
-import * as awarenessProtocol from 'y-protocols/awareness'
-import type { Awareness } from 'y-protocols/awareness'
-import { WebSocket, type RawData } from 'ws'
-import type { YCell } from '@shared/notebook'
+import * as Y from "yjs";
+import * as encoding from "lib0/encoding";
+import * as decoding from "lib0/decoding";
+import * as syncProtocol from "y-protocols/sync";
+import * as awarenessProtocol from "y-protocols/awareness";
+import type { Awareness } from "y-protocols/awareness";
+import { WebSocket, type RawData } from "ws";
+import type { YCell } from "@shared/notebook";
 import {
   clearStaleExecution,
   createTerminalLine,
@@ -13,11 +13,30 @@ import {
   getCells,
   getMeta,
   getTerminal,
-} from '@shared/notebook'
-import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
-import { getSession, renameSession } from '../db.js'
-import { bindPersistence, flushPersistence, discardPersistence, flushAllPersistence } from './persistence.js'
-import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } from './history.js'
+} from "@shared/notebook";
+import type { AwarenessUser, ParticipantRole } from "@shared/protocol";
+import { getRules, getSession, renameSession } from "../db.js";
+import { classify, permits } from "./gate.js";
+import {
+  forgetSession,
+  rememberDeleted,
+  rememberedIn,
+  resetRetyped,
+  settleFresh,
+} from "./ops.js";
+import {
+  bindPersistence,
+  flushPersistence,
+  discardPersistence,
+  flushAllPersistence,
+} from "./persistence.js";
+import {
+  RESTORE_ORIGIN,
+  beginHistory,
+  discardBurst,
+  flushAllHistory,
+  record,
+} from "./history.js";
 
 /**
  * Происхождение для записи, которую сервер делает от чьего-то имени.
@@ -26,7 +45,7 @@ import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } f
  * а не «комнатой». Составить такую строку может только код на сервере:
  * обновление от клиента приходит с сокетом в качестве происхождения.
  */
-const BEHALF_PREFIX = 'on-behalf:'
+const BEHALF_PREFIX = "on-behalf:";
 
 /**
  * Записать в документ комнаты от имени человека, а не от имени сервера.
@@ -35,9 +54,13 @@ const BEHALF_PREFIX = 'on-behalf:'
  * внешним — поэтому обёртка работает даже вокруг кода, который заводит свою
  * транзакцию сам (а `acceptPatch` именно такой).
  */
-export function applyOnBehalf(sessionId: string, participantId: string, write: () => void): void {
-  const { doc } = getSessionDoc(sessionId)
-  doc.transact(write, `${BEHALF_PREFIX}${participantId}`)
+export function applyOnBehalf(
+  sessionId: string,
+  participantId: string,
+  write: () => void,
+): void {
+  const { doc } = getSessionDoc(sessionId);
+  doc.transact(write, `${BEHALF_PREFIX}${participantId}`);
 }
 
 /**
@@ -51,8 +74,8 @@ export function applyOnBehalf(sessionId: string, participantId: string, write: (
  */
 
 /** y-websocket's own frame tags. The numbers are the protocol, not a choice. */
-const MESSAGE_SYNC = 0
-const MESSAGE_AWARENESS = 1
+const MESSAGE_SYNC = 0;
+const MESSAGE_AWARENESS = 1;
 
 /*
  * Under the thirty seconds that proxies and load balancers commonly use as an
@@ -60,18 +83,18 @@ const MESSAGE_AWARENESS = 1
  * talks — and a socket dropped for being quiet looks to the room like the
  * server going away.
  */
-const PING_INTERVAL_MS = 25_000
+const PING_INTERVAL_MS = 25_000;
 /** A socket that ignores this many consecutive pings is a closed laptop lid. */
-const MAX_MISSED_PONGS = 2
+const MAX_MISSED_PONGS = 2;
 
 export interface SessionDoc {
-  sessionId: string
-  doc: Y.Doc
-  awareness: Awareness
+  sessionId: string;
+  doc: Y.Doc;
+  awareness: Awareness;
 }
 
 /** Marks a write as the server's own, so its observers do not chase themselves. */
-const ORIGIN = 'server'
+const ORIGIN = "server";
 
 interface ConnState {
   /**
@@ -82,87 +105,98 @@ interface ConnState {
    * carries the client whose text was deleted — the victim, not the author. The
    * socket knows, because the token said so when it connected.
    */
-  participantId: string | null
+  participantId: string | null;
   /** Awareness clientIDs this socket introduced, so we can retract exactly those. */
-  clientIds: Set<number>
-  missedPongs: number
-  pingTimer: NodeJS.Timeout
+  clientIds: Set<number>;
+  missedPongs: number;
+  pingTimer: NodeJS.Timeout;
   /**
    * The role the token carried. The document is shared and every field in it is
    * writable by anyone connected — that is what a CRDT is — so this is not an
    * access list. It is here for the one field the interface already promises is
    * the host's: the seminar's name.
    */
-  role: ParticipantRole
+  role: ParticipantRole;
 }
 
 interface DocEntry extends SessionDoc {
-  conns: Map<WebSocket, ConnState>
-  dispose: () => void
+  conns: Map<WebSocket, ConnState>;
+  dispose: () => void;
 }
 
-const docs = new Map<string, DocEntry>()
+const docs = new Map<string, DocEntry>();
 
 function toUint8Array(data: RawData): Uint8Array {
-  if (data instanceof ArrayBuffer) return new Uint8Array(data)
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (Array.isArray(data)) {
-    const joined = Buffer.concat(data)
-    return new Uint8Array(joined.buffer, joined.byteOffset, joined.byteLength)
+    const joined = Buffer.concat(data);
+    return new Uint8Array(joined.buffer, joined.byteOffset, joined.byteLength);
   }
-  const buf = data as Buffer
-  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+  const buf = data as Buffer;
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }
 
 function send(entry: DocEntry, conn: WebSocket, message: Uint8Array): void {
-  if (conn.readyState !== WebSocket.CONNECTING && conn.readyState !== WebSocket.OPEN) {
-    closeConn(entry, conn)
-    return
+  if (
+    conn.readyState !== WebSocket.CONNECTING &&
+    conn.readyState !== WebSocket.OPEN
+  ) {
+    closeConn(entry, conn);
+    return;
   }
   try {
     conn.send(message, (err) => {
-      if (err) closeConn(entry, conn)
-    })
+      if (err) closeConn(entry, conn);
+    });
   } catch {
-    closeConn(entry, conn)
+    closeConn(entry, conn);
   }
 }
 
 function closeConn(entry: DocEntry, conn: WebSocket): void {
-  const state = entry.conns.get(conn)
-  if (!state) return
-  entry.conns.delete(conn)
-  clearInterval(state.pingTimer)
+  const state = entry.conns.get(conn);
+  if (!state) return;
+  entry.conns.delete(conn);
+  clearInterval(state.pingTimer);
   // Without this the People panel keeps showing whoever just walked out.
-  awarenessProtocol.removeAwarenessStates(entry.awareness, Array.from(state.clientIds), null)
+  awarenessProtocol.removeAwarenessStates(
+    entry.awareness,
+    Array.from(state.clientIds),
+    null,
+  );
   try {
-    conn.close()
+    conn.close();
   } catch {
     /* already gone */
   }
 }
 
-function broadcastDocUpdate(entry: DocEntry, update: Uint8Array, origin: unknown): void {
-  const encoder = encoding.createEncoder()
-  encoding.writeVarUint(encoder, MESSAGE_SYNC)
-  syncProtocol.writeUpdate(encoder, update)
-  const message = encoding.toUint8Array(encoder)
+function broadcastDocUpdate(
+  entry: DocEntry,
+  update: Uint8Array,
+  origin: unknown,
+): void {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_SYNC);
+  syncProtocol.writeUpdate(encoder, update);
+  const message = encoding.toUint8Array(encoder);
   for (const conn of entry.conns.keys()) {
     // Origin is a connection only for edits that arrived on it; server-side
     // writes (kernel output, AI edits) carry another origin and go to everyone.
-    if (conn === origin) continue
-    send(entry, conn, message)
+    if (conn === origin) continue;
+    send(entry, conn, message);
   }
 }
 
 function broadcastAwareness(entry: DocEntry, clients: number[]): void {
-  const encoder = encoding.createEncoder()
-  encoding.writeVarUint(encoder, MESSAGE_AWARENESS)
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
   encoding.writeVarUint8Array(
     encoder,
     awarenessProtocol.encodeAwarenessUpdate(entry.awareness, clients),
-  )
-  const message = encoding.toUint8Array(encoder)
-  for (const conn of entry.conns.keys()) send(entry, conn, message)
+  );
+  const message = encoding.toUint8Array(encoder);
+  for (const conn of entry.conns.keys()) send(entry, conn, message);
 }
 
 /**
@@ -174,17 +208,17 @@ function broadcastAwareness(entry: DocEntry, clients: number[]): void {
  * copy and the merge would show both.
  */
 export function getSessionDoc(sessionId: string, title?: string): SessionDoc {
-  return getEntry(sessionId, title)
+  return getEntry(sessionId, title);
 }
 
 function getEntry(sessionId: string, title?: string): DocEntry {
-  const existing = docs.get(sessionId)
-  if (existing) return existing
+  const existing = docs.get(sessionId);
+  if (existing) return existing;
 
-  const doc = new Y.Doc()
-  const awareness = new awarenessProtocol.Awareness(doc)
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
   // The server is a writer, not a person in the room.
-  awareness.setLocalState(null)
+  awareness.setLocalState(null);
 
   const entry: DocEntry = {
     sessionId,
@@ -192,8 +226,8 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     awareness,
     conns: new Map(),
     dispose: bindPersistence(sessionId, doc),
-  }
-  docs.set(sessionId, entry)
+  };
+  docs.set(sessionId, entry);
 
   /*
    * Start the history from what was just hydrated, before the seeding below.
@@ -201,7 +235,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * and a room coming back after a restart does not record its whole notebook
    * as somebody's edit.
    */
-  beginHistory(sessionId, doc)
+  beginHistory(sessionId, doc);
 
   /*
    * Seed, then put it on disk before returning. A room that has just been
@@ -214,7 +248,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * scheduling does.
    */
   if (ensureInitialNotebook(doc, title ?? getSession(sessionId)?.name)) {
-    flushPersistence(sessionId)
+    flushPersistence(sessionId);
   }
 
   /*
@@ -227,11 +261,11 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     doc.transact(() => {
       getTerminal(doc).push([
         createTerminalLine({
-          kind: 'system',
-          text: 'The server restarted. Cells that were running or queued were put back to rest — run them again when you are ready.',
+          kind: "system",
+          text: "The server restarted. Cells that were running or queued were put back to rest — run them again when you are ready.",
         }),
-      ])
-    }, ORIGIN)
+      ]);
+    }, ORIGIN);
   }
 
   /*
@@ -249,25 +283,25 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * first copy stays, later ones go; they are copies of each other, so which
    * one survives does not matter, only that the choice is the same everywhere.
    */
-  const cells = getCells(doc)
+  const cells = getCells(doc);
   cells.observe((event: Y.YArrayEvent<YCell>) => {
-    if (event.transaction.origin === ORIGIN) return
+    if (event.transaction.origin === ORIGIN) return;
     // Only an insert can introduce one, and the array is tens of items long.
-    if (!event.changes.added.size) return
-    const seen = new Set<string>()
-    const doomed: number[] = []
+    if (!event.changes.added.size) return;
+    const seen = new Set<string>();
+    const doomed: number[] = [];
     cells.forEach((cell, index) => {
-      const id = cell.get('id')
-      if (typeof id !== 'string') return
-      if (seen.has(id)) doomed.push(index)
-      else seen.add(id)
-    })
-    if (doomed.length === 0) return
+      const id = cell.get("id");
+      if (typeof id !== "string") return;
+      if (seen.has(id)) doomed.push(index);
+      else seen.add(id);
+    });
+    if (doomed.length === 0) return;
     doc.transact(() => {
       // Back to front, so the earlier indices stay valid as they go.
-      for (const index of doomed.reverse()) cells.delete(index, 1)
-    }, ORIGIN)
-  })
+      for (const index of doomed.reverse()) cells.delete(index, 1);
+    }, ORIGIN);
+  });
 
   /*
    * The room's title is the seminar's name, and the admin list reads it from the
@@ -277,10 +311,10 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * Observed rather than written by whoever renamed: there is exactly one
    * writer this way, and it is the server, which cannot be a stale client.
    */
-  const meta = getMeta(doc)
+  const meta = getMeta(doc);
   meta.observe((event: Y.YMapEvent<unknown>) => {
-    if (!event.keysChanged.has('title')) return
-    if (event.transaction.origin === ORIGIN) return
+    if (!event.keysChanged.has("title")) return;
+    if (event.transaction.origin === ORIGIN) return;
 
     /*
      * The header lets only the host rename the room, and this mirrors the name
@@ -291,25 +325,26 @@ function getEntry(sessionId: string, title?: string): DocEntry {
      * This is the one field defended this way. Everything else in the document
      * is writable by everyone by construction, which the README says out loud.
      */
-    const from = event.transaction.origin
-    const writer = from instanceof WebSocket ? entry.conns.get(from) : undefined
-    if (writer && writer.role !== 'host') {
-      const previous = event.changes.keys.get('title')?.oldValue
+    const from = event.transaction.origin;
+    const writer =
+      from instanceof WebSocket ? entry.conns.get(from) : undefined;
+    if (writer && writer.role !== "host") {
+      const previous = event.changes.keys.get("title")?.oldValue;
       doc.transact(() => {
-        if (typeof previous === 'string') meta.set('title', previous)
-        else meta.delete('title')
-      }, ORIGIN)
-      return
+        if (typeof previous === "string") meta.set("title", previous);
+        else meta.delete("title");
+      }, ORIGIN);
+      return;
     }
 
-    const title = meta.get('title')
-    if (typeof title !== 'string' || !title.trim()) return
-    if (getSession(sessionId)?.name === title) return
-    renameSession(sessionId, title)
-  })
+    const title = meta.get("title");
+    if (typeof title !== "string" || !title.trim()) return;
+    if (getSession(sessionId)?.name === title) return;
+    renameSession(sessionId, title);
+  });
 
-  doc.on('update', (update: Uint8Array, origin: unknown) => {
-    broadcastDocUpdate(entry, update, origin)
+  doc.on("update", (update: Uint8Array, origin: unknown) => {
+    broadcastDocUpdate(entry, update, origin);
     /*
      * The author comes from the origin, which for anything a person did is the
      * socket it arrived on. The server's own writes — seeding a new room,
@@ -319,7 +354,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
      * A restore is skipped here and recorded by the restore itself, under the
      * name of whoever pressed the button.
      */
-    if (origin === RESTORE_ORIGIN) return
+    if (origin === RESTORE_ORIGIN) return;
     /*
      * Автор берётся из происхождения обновления.
      *
@@ -337,22 +372,23 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     const author =
       origin instanceof WebSocket
         ? (entry.conns.get(origin)?.participantId ?? null)
-        : typeof origin === 'string' && origin.startsWith(BEHALF_PREFIX)
+        : typeof origin === "string" && origin.startsWith(BEHALF_PREFIX)
           ? origin.slice(BEHALF_PREFIX.length)
-          : null
-    record(sessionId, doc, update, author)
-  })
+          : null;
+    record(sessionId, doc, update, author);
+  });
 
   awareness.on(
-    'update',
+    "update",
     (
       changes: { added: number[]; updated: number[]; removed: number[] },
       origin: unknown,
     ) => {
-      const state = origin instanceof WebSocket ? entry.conns.get(origin) : undefined
+      const state =
+        origin instanceof WebSocket ? entry.conns.get(origin) : undefined;
       if (state) {
-        for (const id of changes.added) state.clientIds.add(id)
-        for (const id of changes.removed) state.clientIds.delete(id)
+        for (const id of changes.added) state.clientIds.add(id);
+        for (const id of changes.removed) state.clientIds.delete(id);
         /*
          * Before the relay, not after. Awareness is whatever the client says
          * it is — that is the point of it, and why a caret can carry a colour.
@@ -362,40 +398,168 @@ function getEntry(sessionId: string, title?: string): DocEntry {
          * corrects the state and then broadcasts the corrected one. The forger
          * still lies to their own screen; nobody else hears it.
          */
-        pinRole(entry, state, changes.added.concat(changes.updated))
+        pinRole(entry, state, changes.added.concat(changes.updated));
       }
-      broadcastAwareness(entry, changes.added.concat(changes.updated, changes.removed))
+      broadcastAwareness(
+        entry,
+        changes.added.concat(changes.updated, changes.removed),
+      );
     },
-  )
+  );
 
-  return entry
+  return entry;
 }
 
-function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void {
+/**
+ * Подтипы протокола синхронизации. Числа — сам протокол, а не выбор.
+ *
+ * `1` (step2) и `2` (update) проверяются одинаково. Проверять только `2` — дыра
+ * шириной в одно переподключение: сервер шлёт step1 при каждом соединении,
+ * браузер отвечает step2 всем, чего у сервера нет, и любой отказ отмывается
+ * повторным входом.
+ */
+const SYNC_STEP2 = 1;
+const SYNC_UPDATE = 2;
+
+/**
+ * Отказать этому соединению в кадре.
+ *
+ * Закрытие, а не молчание. Ничто в протоколе синхронизации не умеет убрать у
+ * клиента структуру, которая у него уже есть: слияние CRDT — объединение, и
+ * ни `encodeStateAsUpdate`, ни полный круг step1/step2 не уберут отказанный
+ * текст с экрана того, кто его набрал. Поэтому клиент, получивший 4403,
+ * пересобирает документ с нуля — и новый clientID заодно лечит разрыв в
+ * тактах, из-за которого следующее разрешённое нажатие иначе легло бы в
+ * `pendingStructs` за тактом, который сервер не принял.
+ */
+function refuse(
+  entry: DocEntry,
+  conn: WebSocket,
+  refusal: { rule: "structure" | "edit" | "title"; message: string },
+): void {
+  const state = entry.conns.get(conn);
+  if (state?.participantId && refusalListener) {
+    refusalListener(entry.sessionId, state.participantId, refusal);
+  }
   try {
-    const decoder = decoding.createDecoder(data)
-    const encoder = encoding.createEncoder()
+    conn.close(4403, refusal.rule);
+  } catch {
+    /* сокет уже закрыт — отказ всё равно состоялся: кадр не применён */
+  }
+}
+
+type RefusalListener = (
+  sessionId: string,
+  participantId: string,
+  refusal: { rule: "structure" | "edit" | "title"; message: string },
+) => void;
+
+let refusalListener: RefusalListener | null = null;
+
+/**
+ * Кому сообщать словами об отказе. Регистрирует `control.ts`: сообщение уходит
+ * по управляющему сокету, а импортировать его отсюда значило бы замкнуть цикл.
+ */
+export function onRefusal(listener: RefusalListener): void {
+  refusalListener = listener;
+}
+
+function handleMessage(
+  entry: DocEntry,
+  conn: WebSocket,
+  data: Uint8Array,
+): void {
+  try {
+    const decoder = decoding.createDecoder(data);
+    const encoder = encoding.createEncoder();
     switch (decoding.readVarUint(decoder)) {
       case MESSAGE_SYNC: {
-        encoding.writeVarUint(encoder, MESSAGE_SYNC)
-        syncProtocol.readSyncMessage(decoder, encoder, entry.doc, conn)
+        /*
+         * Проверка до применения, и позже её поставить некуда: ретрансляция,
+         * запись в историю и запись на диск висят синхронно внутри
+         * `applyUpdate` внутри `readSyncMessage`. Подтип читается с копии
+         * декодера, чтобы настоящий остался нетронутым, если кадр принят.
+         */
+        const peek = decoding.clone(decoder);
+        const subtype = decoding.readVarUint(peek);
+        let accepted: { retyped: string[]; created: string[] } | null = null;
+        if (subtype === SYNC_STEP2 || subtype === SYNC_UPDATE) {
+          const state = entry.conns.get(conn);
+          const judgement = classify(
+            entry.doc,
+            decoding.readVarUint8Array(peek),
+            rememberedIn(entry.sessionId),
+          );
+          if (!judgement.ok) {
+            // Пол комнаты: это не право, а то, что сервер пишет сам.
+            return refuse(entry, conn, {
+              rule: "edit",
+              message: floorMessage(judgement.why),
+            });
+          }
+          const verdict = permits(
+            judgement.verdicts,
+            getRules(entry.sessionId),
+            state?.role ?? "participant",
+          );
+          if (!verdict.ok) return refuse(entry, conn, verdict);
+          /*
+           * Запомнить ДО применения: после него читать уже нечего, а без этого
+           * Ctrl+Z вернул бы ячейку без вывода — Yjs отменяет удаление копией,
+           * и вывод в копии пришлось бы взять у браузера, чего пол не разрешает.
+           */
+          rememberDeleted(entry.sessionId, entry.doc, judgement.removed);
+          accepted = judgement;
+        }
+        encoding.writeVarUint(encoder, MESSAGE_SYNC);
+        syncProtocol.readSyncMessage(decoder, encoder, entry.doc, conn);
+        if (accepted) {
+          const { retyped, created } = accepted;
+          if (retyped.length > 0 || created.length > 0) {
+            entry.doc.transact(() => {
+              resetRetyped(entry.doc, retyped);
+              settleFresh(entry.sessionId, entry.doc, created);
+            }, ORIGIN);
+          }
+        }
         // A bare message type and nothing after it means there is nothing to say.
-        if (encoding.length(encoder) > 1) send(entry, conn, encoding.toUint8Array(encoder))
-        break
+        if (encoding.length(encoder) > 1)
+          send(entry, conn, encoding.toUint8Array(encoder));
+        break;
       }
       case MESSAGE_AWARENESS: {
         awarenessProtocol.applyAwarenessUpdate(
           entry.awareness,
           decoding.readVarUint8Array(decoder),
           conn,
-        )
-        break
+        );
+        break;
       }
     }
   } catch (err) {
-    // One malformed frame should cost that socket its message, not the seminar.
-    console.error(`[collab] bad message in ${entry.sessionId}`, err)
+    /*
+     * Отказ, а не проглатывание.
+     *
+     * Раньше здесь стояло «одному кривому кадру стоить сокету сообщения, а не
+     * семинару» — и это верно ровно до появления проверки: проглотить кадр
+     * синхронизации значит навсегда и молча онеметь, потому что клиент считает
+     * его доставленным и никогда не повторит. Развалившаяся проверка обязана
+     * отказывать, иначе она выполняется после того, как перестала смотреть.
+     */
+    console.error(`[collab] bad message in ${entry.sessionId}`, err);
+    refuse(entry, conn, {
+      rule: "edit",
+      message: "Правку не удалось разобрать — она не отправлена.",
+    });
   }
+}
+
+/**
+ * Слова для отказа по полу комнаты — то есть не по правилу, а по тому, что
+ * сервер пишет сам. Человеку незачем знать про пути внутри документа.
+ */
+function floorMessage(why: string): string {
+  return `Эта правка не принята: ${why}.`;
 }
 
 /**
@@ -404,29 +568,29 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
  * already the chattiest thing on this wire.
  */
 function pinRole(entry: DocEntry, state: ConnState, clientIds: number[]): void {
-  if (!state.participantId) return
+  if (!state.participantId) return;
   for (const clientId of clientIds) {
     const local = entry.awareness.getStates().get(clientId) as
       | { user?: { id?: string; role?: ParticipantRole } }
-      | undefined
-    const user = local?.user
-    if (!user) continue
-    if (user.id === state.participantId && user.role === state.role) continue
+      | undefined;
+    const user = local?.user;
+    if (!user) continue;
+    if (user.id === state.participantId && user.role === state.role) continue;
     entry.awareness.states.set(clientId, {
       ...local,
       user: { ...user, id: state.participantId, role: state.role },
-    })
+    });
   }
 }
 
 export function handleCollabSocket(
   ws: WebSocket,
   sessionId: string,
-  role: ParticipantRole = 'participant',
+  role: ParticipantRole = "participant",
   participantId: string | null = null,
 ): void {
-  const entry = getEntry(sessionId)
-  ws.binaryType = 'arraybuffer'
+  const entry = getEntry(sessionId);
+  ws.binaryType = "arraybuffer";
 
   const state: ConnState = {
     role,
@@ -435,48 +599,53 @@ export function handleCollabSocket(
     missedPongs: 0,
     pingTimer: setInterval(() => {
       if (state.missedPongs >= MAX_MISSED_PONGS) {
-        closeConn(entry, ws)
-        ws.terminate()
-        return
+        closeConn(entry, ws);
+        ws.terminate();
+        return;
       }
-      state.missedPongs++
+      state.missedPongs++;
       try {
-        ws.ping()
+        ws.ping();
       } catch {
-        closeConn(entry, ws)
-        ws.terminate()
+        closeConn(entry, ws);
+        ws.terminate();
       }
     }, PING_INTERVAL_MS),
-  }
-  entry.conns.set(ws, state)
+  };
+  entry.conns.set(ws, state);
 
-  ws.on('pong', () => {
-    state.missedPongs = 0
-  })
-  ws.on('message', (data: RawData) => handleMessage(entry, ws, toUint8Array(data)))
-  ws.on('close', () => closeConn(entry, ws))
-  ws.on('error', () => closeConn(entry, ws))
+  ws.on("pong", () => {
+    state.missedPongs = 0;
+  });
+  ws.on("message", (data: RawData) =>
+    handleMessage(entry, ws, toUint8Array(data)),
+  );
+  ws.on("close", () => closeConn(entry, ws));
+  ws.on("error", () => closeConn(entry, ws));
 
-  const encoder = encoding.createEncoder()
-  encoding.writeVarUint(encoder, MESSAGE_SYNC)
-  syncProtocol.writeSyncStep1(encoder, entry.doc)
-  send(entry, ws, encoding.toUint8Array(encoder))
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_SYNC);
+  syncProtocol.writeSyncStep1(encoder, entry.doc);
+  send(entry, ws, encoding.toUint8Array(encoder));
 
-  const states = entry.awareness.getStates()
+  const states = entry.awareness.getStates();
   if (states.size > 0) {
-    const awarenessEncoder = encoding.createEncoder()
-    encoding.writeVarUint(awarenessEncoder, MESSAGE_AWARENESS)
+    const awarenessEncoder = encoding.createEncoder();
+    encoding.writeVarUint(awarenessEncoder, MESSAGE_AWARENESS);
     encoding.writeVarUint8Array(
       awarenessEncoder,
-      awarenessProtocol.encodeAwarenessUpdate(entry.awareness, Array.from(states.keys())),
-    )
-    send(entry, ws, encoding.toUint8Array(awarenessEncoder))
+      awarenessProtocol.encodeAwarenessUpdate(
+        entry.awareness,
+        Array.from(states.keys()),
+      ),
+    );
+    send(entry, ws, encoding.toUint8Array(awarenessEncoder));
   }
 }
 
 /** Open sockets, not distinct people — a second tab counts twice. */
 export function onlineCount(sessionId: string): number {
-  return docs.get(sessionId)?.conns.size ?? 0
+  return docs.get(sessionId)?.conns.size ?? 0;
 }
 
 /**
@@ -489,9 +658,9 @@ export function onlineCount(sessionId: string): number {
  * because that table never forgets.
  */
 export function onlineParticipantIds(sessionId: string): string[] {
-  const entry = docs.get(sessionId)
-  if (!entry) return []
-  const ids = new Set<string>()
+  const entry = docs.get(sessionId);
+  if (!entry) return [];
+  const ids = new Set<string>();
   for (const state of entry.awareness.getStates().values()) {
     /*
      * Typed against the shared contract on purpose. This read used to be a
@@ -504,10 +673,10 @@ export function onlineParticipantIds(sessionId: string): string[] {
      * One person can hold several of these — two tabs, or a reconnect whose old
      * socket has not timed out — so the set is by participant, not by socket.
      */
-    const user = (state as { user?: Partial<AwarenessUser> } | undefined)?.user
-    if (typeof user?.id === 'string' && user.id) ids.add(user.id)
+    const user = (state as { user?: Partial<AwarenessUser> } | undefined)?.user;
+    if (typeof user?.id === "string" && user.id) ids.add(user.id);
   }
-  return Array.from(ids)
+  return Array.from(ids);
 }
 
 /**
@@ -521,42 +690,44 @@ export function onlineParticipantIds(sessionId: string): string[] {
  * it. Called before the rows are dropped, so nothing can write between the two.
  */
 export function dropSessionDoc(sessionId: string): void {
-  const entry = docs.get(sessionId)
-  if (!entry) return
-  docs.delete(sessionId)
-  discardPersistence(sessionId)
+  const entry = docs.get(sessionId);
+  if (!entry) return;
+  docs.delete(sessionId);
+  discardPersistence(sessionId);
   // The room is gone; an open burst describing it would be a version of nothing.
-  discardBurst(sessionId)
+  discardBurst(sessionId);
+  // И то, что сервер помнил об удалённых в ней ячейках: возвращать некуда.
+  forgetSession(sessionId);
   for (const conn of Array.from(entry.conns.keys())) {
-    const state = entry.conns.get(conn)
-    if (state) clearInterval(state.pingTimer)
-    entry.conns.delete(conn)
+    const state = entry.conns.get(conn);
+    if (state) clearInterval(state.pingTimer);
+    entry.conns.delete(conn);
     try {
-      conn.close(1001, 'this seminar was deleted')
+      conn.close(1001, "this seminar was deleted");
     } catch {
       /* already gone */
     }
   }
-  entry.doc.destroy()
+  entry.doc.destroy();
 }
 
 export function shutdownCollab(): void {
   for (const entry of docs.values()) {
     for (const conn of Array.from(entry.conns.keys())) {
-      const state = entry.conns.get(conn)
-      if (state) clearInterval(state.pingTimer)
-      entry.conns.delete(conn)
+      const state = entry.conns.get(conn);
+      if (state) clearInterval(state.pingTimer);
+      entry.conns.delete(conn);
       try {
-        conn.close(1001, 'server shutting down')
+        conn.close(1001, "server shutting down");
       } catch {
         /* already gone */
       }
     }
-    entry.dispose()
+    entry.dispose();
   }
-  docs.clear()
-  flushAllPersistence()
+  docs.clear();
+  flushAllPersistence();
   // Whatever somebody was typing when the process was told to stop is still a
   // thing they did, and the seminar may be reopened tomorrow.
-  flushAllHistory()
+  flushAllHistory();
 }

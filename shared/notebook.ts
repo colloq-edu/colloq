@@ -652,6 +652,28 @@ export function readOutput(output: YOutput): CellOutput | null {
   return null
 }
 
+/**
+ * Обратная к `readOutput`: вывод из снимка обратно в документ.
+ *
+ * Нужна там, где вывод в документ возвращает сервер по своей памяти, а не
+ * копирует то, что прислал браузер: отмена удаления ячейки. Форма — та же, что
+ * пишет ядро (`kernel/outputs.ts`), иначе на экране будет чужая.
+ */
+export function writeOutput(output: CellOutput): YOutput {
+  const map = new Y.Map<any>()
+  map.set('kind', output.kind)
+  if (output.kind === 'stream') {
+    map.set('name', output.name)
+    const text = new Y.Text()
+    if (output.text) text.insert(0, output.text)
+    map.set('text', text)
+    return map as YOutput
+  }
+  const { kind: _kind, ...rest } = output
+  map.set('json', JSON.stringify(rest))
+  return map as YOutput
+}
+
 export function readOutputs(cell: YCell): CellOutput[] {
   const out: CellOutput[] = []
   cellOutputs(cell).forEach((o: YOutput) => {

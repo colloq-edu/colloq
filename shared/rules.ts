@@ -22,7 +22,7 @@
  */
 
 /** Who a rule lets act. `room` is everyone in it, `host` is whoever is teaching. */
-export type Who = 'room' | 'host'
+export type Who = "room" | "host";
 
 /**
  * Кто запускает ячейки — и сколько сразу.
@@ -32,7 +32,7 @@ export type Who = 'room' | 'host'
  * преподавателю. Без этой середины выбор был между «двадцать человек забивают
  * очередь на сорок ячеек» и «никто, кроме меня».
  */
-export type RunWho = 'room' | 'single' | 'host'
+export type RunWho = "room" | "single" | "host";
 
 /**
  * Кто меняет состав тетради.
@@ -41,7 +41,7 @@ export type RunWho = 'room' | 'single' | 'host'
  * чужое нельзя. Это самый частый вид семинара, и до сих пор для него не было
  * значения: приходилось выбирать между «правят все» и «структура моя».
  */
-export type StructureWho = 'room' | 'add' | 'host'
+export type StructureWho = "room" | "add" | "host";
 
 /**
  * Оболочка комнаты.
@@ -51,7 +51,7 @@ export type StructureWho = 'room' | 'add' | 'host'
  * именно ящик, а не оболочку, сказано в панели вслух: `!pip install` в ячейке
  * идёт в тот же контейнер.
  */
-export type ShellWho = 'room' | 'host' | 'off'
+export type ShellWho = "room" | "host" | "off";
 
 export interface RoomRules {
   /**
@@ -67,7 +67,7 @@ export interface RoomRules {
    * студент, которому запускать нельзя, всё равно пишет тот Python, который
    * выполнит преподавательский Run — в том же контейнере.
    */
-  run: RunWho
+  run: RunWho;
 
   /**
    * Who may change what the cells say — their text, and whether a cell is code
@@ -82,7 +82,7 @@ export interface RoomRules {
    * Сюда же входят две кнопки, которые переписывают ячейки, надев другое лицо:
    * форматирование и «принять» у предложения оракула.
    */
-  edit: Who
+  edit: Who;
 
   /**
    * Who may add, delete and reorder cells.
@@ -95,7 +95,7 @@ export interface RoomRules {
    * заполняет заготовленный листок, но не перекраивает его, — самый частый
    * случай, и у него теперь есть своё значение `add`.
    */
-  structure: StructureWho
+  structure: StructureWho;
 
   /**
    * The room's shell.
@@ -107,7 +107,7 @@ export interface RoomRules {
    * в ячейке идёт в тот же контейнер. Пока ячейка умеет `!rm`, «терминала нет»
    * — про интерфейс, а не про изоляцию.
    */
-  terminal: ShellWho
+  terminal: ShellWho;
 
   /**
    * Who may put files into the room's folder.
@@ -120,7 +120,7 @@ export interface RoomRules {
    * `open(...)` — скачивание, а `os.remove(...)` — удаление. Это про порядок в
    * папке, а не про тайну, и в панели так и написано.
    */
-  files: Who
+  files: Who;
 
   /**
    * Кто стирает общую работу: все выводы в тетради, ленту терминала, тред
@@ -137,7 +137,7 @@ export interface RoomRules {
    * достаёт. Значение по умолчанию `host` — это починка, а не новое
    * ограничение.
    */
-  wipe: Who
+  wipe: Who;
 
   /**
    * Кто перезапускает ядро — с потерей всех переменных комнаты.
@@ -147,7 +147,7 @@ export interface RoomRules {
    * чего просит открытая лаборатория, из которой преподаватель уже ушёл, а
    * ядро зависло.
    */
-  restart: Who
+  restart: Who;
 
   /**
    * Кто читает историю комнаты.
@@ -157,7 +157,7 @@ export interface RoomRules {
    * потом всегда. Восстановление версии и отметка чекпоинта остаются
    * преподавателю при любом значении.
    */
-  history: Who
+  history: Who;
 
   /**
    * Whether the room's oracle answers at all, and how much it gives away.
@@ -171,7 +171,7 @@ export interface RoomRules {
    * and may not loosen: an instance that is off cannot be talked back on here,
    * because that decision belongs to whoever pays for the model.
    */
-  oracle: 'inherit' | 'off' | 'hints' | 'full'
+  oracle: "inherit" | "off" | "hints" | "full";
 
   /**
    * A model for this room only, or null to use the instance's.
@@ -180,7 +180,7 @@ export interface RoomRules {
    * questions and one that will ask five do not want the same model, and the
    * teacher knows which is which before the class starts.
    */
-  model: string | null
+  model: string | null;
 }
 
 /**
@@ -189,11 +189,11 @@ export interface RoomRules {
  * teacher never opens the settings.
  */
 export const OPEN_ROOM: RoomRules = {
-  run: 'room',
-  edit: 'room',
-  structure: 'room',
-  terminal: 'room',
-  files: 'room',
+  run: "room",
+  edit: "room",
+  structure: "room",
+  terminal: "room",
+  files: "room",
   /*
    * Три новых поля — и два из них по умолчанию строгие, потому что записывают
    * то, что и так было правдой: `term:clear` и очистка треда оракула уже были
@@ -201,18 +201,23 @@ export const OPEN_ROOM: RoomRules = {
    * иначе. Единственное настоящее изменение — `clearOutputs`, у которого не
    * было проверки вовсе; см. комментарий у `wipe`.
    */
-  wipe: 'host',
-  restart: 'host',
-  history: 'room',
-  oracle: 'inherit',
+  wipe: "host",
+  restart: "host",
+  history: "room",
+  oracle: "inherit",
   model: null,
-}
+};
 
-const WHO = new Set<Who>(['room', 'host'])
-const RUN = new Set<RunWho>(['room', 'single', 'host'])
-const STRUCTURE = new Set<StructureWho>(['room', 'add', 'host'])
-const SHELL = new Set<ShellWho>(['room', 'host', 'off'])
-const ORACLE = new Set<RoomRules['oracle']>(['inherit', 'off', 'hints', 'full'])
+const WHO = new Set<Who>(["room", "host"]);
+const RUN = new Set<RunWho>(["room", "single", "host"]);
+const STRUCTURE = new Set<StructureWho>(["room", "add", "host"]);
+const SHELL = new Set<ShellWho>(["room", "host", "off"]);
+const ORACLE = new Set<RoomRules["oracle"]>([
+  "inherit",
+  "off",
+  "hints",
+  "full",
+]);
 
 /**
  * Read rules off whatever was stored, filling in anything absent.
@@ -223,11 +228,14 @@ const ORACLE = new Set<RoomRules['oracle']>(['inherit', 'off', 'hints', 'full'])
  * permissive default rather than to an error.
  */
 export function readRules(raw: unknown): RoomRules {
-  const source = (typeof raw === 'string' ? safeParse(raw) : raw) as Partial<RoomRules> | null
-  if (!source || typeof source !== 'object') return { ...OPEN_ROOM }
-  const who = (value: unknown, fallback: Who): Who => (WHO.has(value as Who) ? (value as Who) : fallback)
+  const source = (
+    typeof raw === "string" ? safeParse(raw) : raw
+  ) as Partial<RoomRules> | null;
+  if (!source || typeof source !== "object") return { ...OPEN_ROOM };
+  const who = (value: unknown, fallback: Who): Who =>
+    WHO.has(value as Who) ? (value as Who) : fallback;
   const one = <T>(set: Set<T>, value: unknown, fallback: T): T =>
-    set.has(value as T) ? (value as T) : fallback
+    set.has(value as T) ? (value as T) : fallback;
   return {
     /*
      * Каждое поле падает на своё умолчание отдельно от других — это и есть
@@ -244,24 +252,29 @@ export function readRules(raw: unknown): RoomRules {
     wipe: who(source.wipe, OPEN_ROOM.wipe),
     restart: who(source.restart, OPEN_ROOM.restart),
     history: who(source.history, OPEN_ROOM.history),
-    oracle: ORACLE.has(source.oracle as RoomRules['oracle'])
-      ? (source.oracle as RoomRules['oracle'])
+    oracle: ORACLE.has(source.oracle as RoomRules["oracle"])
+      ? (source.oracle as RoomRules["oracle"])
       : OPEN_ROOM.oracle,
-    model: typeof source.model === 'string' && source.model.trim() ? source.model.trim().slice(0, 80) : null,
-  }
+    model:
+      typeof source.model === "string" && source.model.trim()
+        ? source.model.trim().slice(0, 80)
+        : null,
+  };
 }
 
 function safeParse(text: string): unknown {
   try {
-    return JSON.parse(text)
+    return JSON.parse(text);
   } catch {
-    return null
+    return null;
   }
 }
 
 /** True when this room is the product's own default — nothing to show, nothing to explain. */
 export function isOpenRoom(rules: RoomRules): boolean {
-  return (Object.keys(OPEN_ROOM) as (keyof RoomRules)[]).every((key) => rules[key] === OPEN_ROOM[key])
+  return (Object.keys(OPEN_ROOM) as (keyof RoomRules)[]).every(
+    (key) => rules[key] === OPEN_ROOM[key],
+  );
 }
 
 /**
@@ -273,8 +286,8 @@ export function isOpenRoom(rules: RoomRules): boolean {
  * everybody through including the host. Written twice, the second copy is where
  * the bug goes.
  */
-export function allows(rule: Who, role: 'host' | 'participant'): boolean {
-  return rule === 'room' || role === 'host'
+export function allows(rule: Who, role: "host" | "participant"): boolean {
+  return rule === "room" || role === "host";
 }
 
 /**
@@ -284,10 +297,14 @@ export function allows(rule: Who, role: 'host' | 'participant'): boolean {
  * одно, и разница между «двадцать человек считают» и «двадцать человек забили
  * очередь на восемьсот ячеек» — ровно в этом.
  */
-export function allowsRun(rule: RunWho, role: 'host' | 'participant', kind: 'one' | 'bulk'): boolean {
-  if (role === 'host') return true
-  if (rule === 'host') return false
-  return kind === 'one' || rule === 'room'
+export function allowsRun(
+  rule: RunWho,
+  role: "host" | "participant",
+  kind: "one" | "bulk",
+): boolean {
+  if (role === "host") return true;
+  if (rule === "host") return false;
+  return kind === "one" || rule === "room";
 }
 
 /**
@@ -296,8 +313,11 @@ export function allowsRun(rule: RunWho, role: 'host' | 'participant', kind: 'one
  * Не право, а потолок: при `single` очередь у каждого своя длиной в одну
  * ячейку, и нажатие на второй ждёт, а не отвергается молча.
  */
-export function runQueueCap(rule: RunWho, role: 'host' | 'participant'): number {
-  return rule === 'single' && role !== 'host' ? 1 : Number.POSITIVE_INFINITY
+export function runQueueCap(
+  rule: RunWho,
+  role: "host" | "participant",
+): number {
+  return rule === "single" && role !== "host" ? 1 : Number.POSITIVE_INFINITY;
 }
 
 /**
@@ -308,12 +328,12 @@ export function runQueueCap(rule: RunWho, role: 'host' | 'participant'): number 
  */
 export function allowsStructure(
   rule: StructureWho,
-  role: 'host' | 'participant',
-  verb: 'add' | 'remove' | 'move',
+  role: "host" | "participant",
+  verb: "add" | "remove" | "move",
 ): boolean {
-  if (role === 'host') return true
-  if (rule === 'room') return true
-  return rule === 'add' && verb === 'add'
+  if (role === "host") return true;
+  if (rule === "room") return true;
+  return rule === "add" && verb === "add";
 }
 
 /**
@@ -325,12 +345,12 @@ export function allowsStructure(
  */
 export function allowsShell(
   rule: ShellWho,
-  role: 'host' | 'participant',
-  act: 'exist' | 'type',
+  role: "host" | "participant",
+  act: "exist" | "type",
 ): boolean {
-  if (rule === 'off') return false
-  if (rule === 'room') return true
-  return act === 'exist' || role === 'host'
+  if (rule === "off") return false;
+  if (rule === "room") return true;
+  return act === "exist" || role === "host";
 }
 
 /**
@@ -348,11 +368,11 @@ export function allowsShell(
  */
 export function oracleModeIn(
   rules: RoomRules,
-  instance: 'off' | 'hints' | 'full',
-): 'off' | 'hints' | 'full' {
-  const wanted = rules.oracle
-  if (wanted === 'inherit') return instance
-  if (instance === 'off') return 'off'
-  if (instance === 'hints' && wanted === 'full') return 'hints'
-  return wanted
+  instance: "off" | "hints" | "full",
+): "off" | "hints" | "full" {
+  const wanted = rules.oracle;
+  if (wanted === "inherit") return instance;
+  if (instance === "off") return "off";
+  if (instance === "hints" && wanted === "full") return "hints";
+  return wanted;
 }
