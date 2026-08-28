@@ -464,6 +464,50 @@ export function onRefusal(listener: RefusalListener): void {
   refusalListener = listener;
 }
 
+/**
+ * Сколько лиц одно соединение может завести в комнате.
+ *
+ * Одно на вкладку — норма; вторым бывает переход между провайдерами при
+ * переподключении. Четыре — потолок с запасом, а без потолка один сокет
+ * наполняет панель людей выдуманными участниками, у каждого из которых имя,
+ * цвет и курсор в чужой ячейке.
+ */
+const MAX_AWARENESS_CLIENTS = 4;
+
+/**
+ * Кадр присутствия — только про себя.
+ *
+ * `applyAwarenessUpdate` принимает состояние ЛЮБОГО clientID, лишь бы такт был
+ * выше: то есть один участник мог убрать всех остальных из панели людей для
+ * всей комнаты или переписать чужой курсор вместе с именем и ролью. Сокет
+ * знает, кого он привёл (`state.clientIds`), — и всё остальное отвергается.
+ *
+ * Отвергается кадр целиком, а не по одному лицу: у пакета присутствия нет
+ * способа выкинуть из середины одну запись, и разбирать его на части значило бы
+ * пересобирать его же протокол.
+ */
+export function ownAwareness(
+  entry: Pick<DocEntry, "conns" | "awareness">,
+  conn: WebSocket,
+  payload: Uint8Array,
+): boolean {
+  const state = entry.conns.get(conn);
+  if (!state) return false;
+  const decoder = decoding.createDecoder(payload);
+  const count = decoding.readVarUint(decoder);
+  for (let i = 0; i < count; i += 1) {
+    const clientId = decoding.readVarUint(decoder);
+    decoding.readVarUint(decoder); // такт — не наше дело
+    decoding.readVarString(decoder); // само состояние тоже
+    if (state.clientIds.has(clientId)) continue;
+    // Новое лицо этого сокета — можно, пока их не слишком много.
+    if (state.clientIds.size + 1 > MAX_AWARENESS_CLIENTS) return false;
+    if (entry.awareness.getStates().has(clientId)) return false;
+    state.clientIds.add(clientId);
+  }
+  return true;
+}
+
 function handleMessage(
   entry: DocEntry,
   conn: WebSocket,
@@ -528,11 +572,9 @@ function handleMessage(
         break;
       }
       case MESSAGE_AWARENESS: {
-        awarenessProtocol.applyAwarenessUpdate(
-          entry.awareness,
-          decoding.readVarUint8Array(decoder),
-          conn,
-        );
+        const payload = decoding.readVarUint8Array(decoder);
+        if (!ownAwareness(entry, conn, payload)) break;
+        awarenessProtocol.applyAwarenessUpdate(entry.awareness, payload, conn);
         break;
       }
     }

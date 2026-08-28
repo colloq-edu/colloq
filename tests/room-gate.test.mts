@@ -11,6 +11,9 @@ import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
+import type { WebSocket } from 'ws'
+import { ownAwareness } from '../server/src/collab/index.js'
 import { classify, permits } from '../server/src/collab/gate.js'
 import { OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import { CELLS_KEY, META_KEY, createCell } from '../shared/notebook.js'
@@ -182,4 +185,64 @@ test('записка из другой комнаты и записка поза
 
   stashRefusal({ sessionId: 'gate-room', message: 'нет', text: 'x', at: Date.now() - 300_000 })
   assert.equal(takeRefusal('gate-room'), null, 'старая записка пережила свой смысл')
+})
+
+/* ------------------------------------------------------------ присутствие */
+
+test('кадр присутствия про чужого человека не принимается', () => {
+  /*
+   * `applyAwarenessUpdate` принимает состояние ЛЮБОГО clientID, лишь бы такт
+   * был выше. То есть один участник мог убрать всех остальных из панели людей
+   * для всей комнаты или переписать чужой курсор вместе с именем и ролью.
+   */
+  const alice = new Awareness(new Y.Doc())
+  alice.setLocalStateField('user', { name: 'Алиса' })
+  const bob = new Awareness(new Y.Doc())
+  bob.setLocalStateField('user', { name: 'Боб' })
+
+  const room = new Awareness(new Y.Doc())
+  applyAwarenessUpdate(room, encodeAwarenessUpdate(bob, [bob.clientID]), 'bob')
+
+  const socket = {} as WebSocket
+  const entry = {
+    awareness: room,
+    conns: new Map([[socket, { clientIds: new Set<number>() } as never]]),
+  }
+
+  // Своё лицо — можно, и сокет его запоминает.
+  assert.equal(ownAwareness(entry, socket, encodeAwarenessUpdate(alice, [alice.clientID])), true)
+  assert.equal(ownAwareness(entry, socket, encodeAwarenessUpdate(alice, [alice.clientID])), true)
+
+  // Чужое, уже стоящее в комнате, — нет.
+  assert.equal(
+    ownAwareness(entry, socket, encodeAwarenessUpdate(bob, [bob.clientID])),
+    false,
+    'один сокет переписал чужое присутствие',
+  )
+
+  alice.destroy()
+  bob.destroy()
+  room.destroy()
+})
+
+test('один сокет не наполняет комнату выдуманными людьми', () => {
+  // Без потолка панель людей заполняется участниками, у каждого из которых имя,
+  // цвет и курсор в чужой ячейке.
+  const room = new Awareness(new Y.Doc())
+  const socket = {} as WebSocket
+  const entry = {
+    awareness: room,
+    conns: new Map([[socket, { clientIds: new Set<number>() } as never]]),
+  }
+  const made: Awareness[] = []
+  let accepted = 0
+  for (let i = 0; i < 8; i += 1) {
+    const face = new Awareness(new Y.Doc())
+    face.setLocalStateField('user', { name: `Призрак ${i}` })
+    made.push(face)
+    if (ownAwareness(entry, socket, encodeAwarenessUpdate(face, [face.clientID]))) accepted += 1
+  }
+  assert.equal(accepted, 4, 'потолок на лица с одного сокета не сработал')
+  for (const face of made) face.destroy()
+  room.destroy()
 })
