@@ -1,0 +1,56 @@
+# colloq.ru — лендинг и опубликованные семинары.
+#
+# Сайт лежит в `site/` этого же репозитория, а не в отдельном. Отдельный
+# заводился с оговоркой «Pages не умеет приватные репозитории», и это было
+# неправдой: Pages отдаёт публичный сайт из закрытого исходника, что и
+# происходит здесь.
+#
+# Каталог произвольный именно потому, что публикуется workflow, а не ветка:
+# сборка «из ветки» умеет только корень и /docs, а корень тут занят продуктом.
+name: Deploy site to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    # Только когда меняется сам сайт. Иначе каждая правка ядра или тетради
+    # перевыкладывала бы страницы, к которым не имеет отношения.
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Одна выкладка за раз: две одновременные разложили бы вперемешку.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ничего лишнего в артефакт
+        # Страницы семинаров собираются `make site` и проверяются на своей
+        # стороне; здесь — последняя застава: в site/ не должно оказаться ни
+        # базы, ни рабочих папок комнат, ни ключей.
+        run: |
+          set -e
+          bad=$(find site -maxdepth 2 \( -name '*.db' -o -name '*.sqlite*' -o -name '.env*' \
+                -o -name 'setup-token' -o -name 'id_*' \) -print)
+          if [ -n "$bad" ]; then
+            echo "в site/ попало то, чего там быть не должно:"; echo "$bad"; exit 1
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

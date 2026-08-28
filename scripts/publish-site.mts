@@ -39,20 +39,25 @@ process.env.WORKSPACE_DIR ??= "workspace";
 process.env.SESSION_SECRET ??= "site-export";
 process.env.KERNEL_ISOLATION ??= "off";
 
-if (!existsSync(path.join(site, ".git"))) {
-  console.error(
-    `${site} — не репозиторий. Укажите его: make site SITE=../colloq-site`,
-  );
+if (!existsSync(site)) {
+  console.error(`${site} — такого каталога нет. Укажите его: make site SITE=site`);
   process.exit(1);
 }
 
+/** Репозиторий, в котором лежит сайт: обычно этот же. */
+const repo = path.resolve(site, "..");
+
 const git = (...args: string[]): { code: number; out: string } => {
-  const res = spawnSync("git", ["-C", site, ...args], { encoding: "utf8" });
+  const res = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
   return {
     code: res.status ?? -1,
     out: `${res.stdout ?? ""}${res.stderr ?? ""}`.trim(),
   };
 };
+
+/** Путь внутри репозитория — им оперирует git, а не абсолютным. */
+const inRepo = (dir: string): string =>
+  path.relative(repo, path.join(site, dir));
 
 const { exportSite } = await import("../server/src/publish/export.js");
 const report = exportSite(site, base);
@@ -74,7 +79,7 @@ for (const seminar of report.seminars) {
   );
 }
 
-const status = git("status", "--porcelain", "--", "c", "p");
+const status = git("status", "--porcelain", "--", inRepo("c"), inRepo("p"));
 if (status.out.length === 0) {
   console.log("\nна сайте всё то же самое — пушить нечего");
   process.exit(0);
@@ -96,7 +101,9 @@ if (values.dry) {
  * целиком, если ни одного семинара ещё не публиковали, — а курс на сайте уже
  * лежит и должен доехать.
  */
-const dirs = ["c", "p"].filter((dir) => existsSync(path.join(site, dir)));
+const dirs = ["c", "p"]
+  .filter((dir) => existsSync(path.join(site, dir)))
+  .map(inRepo);
 
 for (const step of [
   ["add", "--", ...dirs],

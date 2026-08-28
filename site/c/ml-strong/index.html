@@ -1,0 +1,78 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>ML · сильная</title><style>
+:root{--ink:#101A33;--muted:#5D6B8A;--faint:#9BA6BE;--line:#DCE3EF;--surface:#F3F6FB;--accent:#0B7FAB;--warn:#8E6B00;--err:#8E2334;--bg:#fff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-text-size-adjust:100%}
+a{color:var(--accent)}
+.wrap{max-width:820px;margin:0 auto;padding:56px 20px 80px}
+h1{font-size:38px;line-height:1.1;letter-spacing:-.02em;margin:0 0 12px}
+.blurb{font-size:16px;color:var(--muted);margin:0 0 14px;max-width:36em}
+.addr{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);margin:0 0 40px}
+.rows{border-top:1px solid var(--line);margin:0;padding:0;list-style:none}
+.row{display:flex;align-items:baseline;gap:20px;border-bottom:1px solid var(--line);padding:18px 0}
+.row .n{width:34px;flex:0 0 auto;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint)}
+.row .t{flex:1 1 auto;font-size:17px;font-weight:600;min-width:0}
+.row .s{flex:0 0 auto;color:var(--muted);font-size:14px;white-space:nowrap}
+.row.off .t{font-weight:400;color:var(--muted)}
+.row a{text-decoration:none;color:inherit;display:flex;align-items:baseline;gap:20px;width:100%}
+.row a:hover .t{color:var(--accent)}
+.foot-note{color:var(--muted);font-size:14px;margin-top:34px}
+header.top{border-bottom:1px solid var(--line);padding:36px 20px 22px}
+header.top .in{max-width:1180px;margin:0 auto}
+header.top h1{font-size:32px;margin:0 0 8px}
+.meta{color:var(--muted);font-size:14px;margin:0}
+.body{max-width:1180px;margin:0 auto;padding:0 20px;display:flex;gap:36px;align-items:flex-start}
+.rail{width:250px;flex:0 0 auto;padding:26px 0;border-right:1px solid var(--line);position:sticky;top:0}
+.rail h2{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.rail a{display:block;text-decoration:none;color:var(--muted);border-left:3px solid transparent;padding:7px 12px 7px 11px;margin-right:18px}
+.rail a.on{border-left-color:var(--accent);background:var(--surface);color:var(--ink);font-weight:600}
+.rail .w{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);display:block;margin-top:2px;font-weight:400}
+.main{flex:1 1 auto;min-width:0;padding:26px 0 70px;max-width:820px}
+.intro{background:var(--surface);border-left:3px solid var(--accent);padding:13px 16px;margin:0 0 30px}
+.intro p{margin:0 0 5px;color:var(--muted);font-size:14px}
+.intro p:last-child{margin:0}
+.note{margin:0 0 22px}
+.note h2{font-size:22px;margin:0 0 8px}.note h3{font-size:18px;margin:0 0 6px}
+.note p{margin:0 0 8px}
+.cell{border:1px solid var(--line);margin:0 0 22px}
+.code{margin:0;padding:13px 15px;background:#FBFCFE;overflow-x:auto;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}
+.outs{border-top:1px solid var(--line);padding:11px 15px}
+.out{margin:0;overflow-x:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+.out.err{color:var(--err)}
+.img{margin:0}.img img{max-width:100%;height:auto;display:block}
+.foot{border-top:1px solid var(--line);background:#FBFCFE;padding:6px 15px;text-align:right;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+.foot .warn{color:var(--warn)}.foot .quiet{color:var(--faint)}
+.take{border-top:1px solid var(--line);margin-top:34px;padding-top:18px;font-size:14px}
+@media(max-width:860px){.body{display:block}.rail{width:auto;border-right:0;border-bottom:1px solid var(--line);position:static;padding:20px 0}.rail a{margin-right:0}}
+@media(prefers-color-scheme:dark){:root{--ink:#E8EDF7;--muted:#9AA7C0;--faint:#6B7897;--line:#26304A;--surface:#161E33;--accent:#4FC3F0;--warn:#E0B44A;--err:#F0868E;--bg:#0D1526}.code,.foot{background:#111A2E}}
+</style></head><body>
+<div class="wrap">
+<h1>ML · сильная</h1>
+<p class="blurb">Сильная группа. Расписание на год — семинары появляются здесь по мере занятий.</p>
+<p class="addr">colloq.ru/c/ml-strong</p>
+<ul class="rows"><li class="row off"><span class="n">01</span><span class="t">Торч: тензоры, автодифф, свой цикл обучения</span><span class="s">31 авг — 6 сен</span></li>
+<li class="row off"><span class="n">02</span><span class="t">Дообучение и файн-тюнинг: зафриженные веса, головы, разморозка</span><span class="s">7–13 сен</span></li>
+<li class="row off"><span class="n">03</span><span class="t">EDA</span><span class="s">14–20 сен</span></li>
+<li class="row off"><span class="n">04</span><span class="t">Лики и хаки данных</span><span class="s">21–27 сен</span></li>
+<li class="row off"><span class="n">05</span><span class="t">Пайплайны для экспериментов: разделение, гипер-параметры, логирование</span><span class="s">28 сен — 4 окт</span></li>
+<li class="row off"><span class="n">06</span><span class="t">CNN: свёртки и компьютерное зрение</span><span class="s">5–11 окт</span></li>
+<li class="row off"><span class="n">07</span><span class="t">NLP: тексты и эмбеддинги</span><span class="s">12–18 окт</span></li>
+<li class="row off"><span class="n">08</span><span class="t">Metric learning: обучение без меток класса</span><span class="s">19–25 окт</span></li>
+<li class="row off"><span class="n">09</span><span class="t">Поиск похожих по эмбеддингам</span><span class="s">26 окт — 1 ноя</span></li>
+<li class="row off"><span class="n">10</span><span class="t">Работа с временными рядами</span><span class="s">2–8 ноя</span></li>
+<li class="row off"><span class="n">11</span><span class="t">Self-supervised: метка делается из самих данных</span><span class="s">9–15 ноя</span></li>
+<li class="row off"><span class="n">12</span><span class="t">GAN: идея, генератор и дискриминатор</span><span class="s">16–22 ноя</span></li>
+<li class="row off"><span class="n">13</span><span class="t">GAN: обучение и нестабильность</span><span class="s">23–29 ноя</span></li>
+<li class="row off"><span class="n">14</span><span class="t">РЛ: среда вместо датасета</span><span class="s">30 ноя — 6 дек</span></li>
+<li class="row off"><span class="n">15</span><span class="t">РЛ: эвристики и битвы между агентами</span><span class="s">7–13 дек</span></li>
+<li class="row off"><span class="n">16</span><span class="t">RAG</span><span class="s">14–20 дек</span></li>
+<li class="row off"><span class="n">17</span><span class="t">Работа со звуком</span><span class="s">21–27 дек</span></li>
+<li class="row off"><span class="n">18</span><span class="t">каникулы и буфер</span><span class="s">28 дек — 10 янв</span></li>
+<li class="row off"><span class="n">19</span><span class="t">Воксели, рендеринг</span><span class="s">11–17 янв</span></li>
+<li class="row off"><span class="n">20</span><span class="t">Биологические данные: объектов мало, признаков тысячи</span><span class="s">18–24 янв</span></li>
+<li class="row off"><span class="n">21</span><span class="t">Кросс-доменные задачи</span><span class="s">25–31 янв</span></li>
+<li class="row off"><span class="n">22</span><span class="t">Ручная разметка данных и сбор датасетов???</span><span class="s">1–7 мар</span></li>
+<li class="row off"><span class="n">23</span><span class="t">повторение: разбор слабых мест года</span><span class="s">22–28 мар</span></li>
+<li class="row off"><span class="n">24</span><span class="t">итоговое соревнование и разбор</span><span class="s">29 мар — 4 апр</span></li></ul>
+<p class="foot-note">Каждый семинар курса появляется здесь — по мере того, как их проводят. Сохраните эту страницу.</p>
+</div>
+</body></html>

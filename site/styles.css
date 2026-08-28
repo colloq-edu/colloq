@@ -1,0 +1,2750 @@
+/*
+ * Лендинг Colloq. Палитра и шкала взяты один в один из самого продукта
+ * (web/src/index.css и web/tailwind.config.js), чтобы страница и приложение
+ * не разъезжались: сайт — это тот же печатный объект, что и семинар внутри.
+ */
+
+/*
+ * ------------------------------------------------------------ HSE Sans ---
+ *
+ * Корпоративный шрифт университета, подмножеством: кириллица, латиница,
+ * типографские знаки. Четыре веса — те, что страница действительно набирает;
+ * Thin и Italic не берутся, потому что на ней нет ни одного места, где они бы
+ * включились, а каждый лишний файл это ещё один запрос.
+ *
+ * swap, а не block: текст обязан быть виден с первого кадра. Подмена
+ * начертания на 15-килобайтном файле происходит быстрее, чем читатель
+ * добирается до конца первой строки, и это дешевле, чем пустой экран.
+ *
+ * 500 в стеке нет намеренно: у HSE Sans нет Medium, и правило подбора CSS
+ * само возьмёт ближайший — SemiBold. Объявлять 500 файлом от 600 значило бы
+ * соврать браузеру о том, что у нас есть.
+ */
+@font-face {
+  font-family: 'HSE Sans';
+  src: url('fonts/hse-sans-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HSE Sans';
+  src: url('fonts/hse-sans-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HSE Sans';
+  src: url('fonts/hse-sans-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'HSE Sans';
+  src: url('fonts/hse-sans-900.woff2') format('woff2');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* Синь ВШЭ — земля героя и подвала. Одинакова в обеих темах продукта. */
+  --brand: #0f2d69;
+  --brand-2: #374b9b;
+  /* Единственный яркий цвет на всю страницу: голубая метка приводки. */
+  --accent: #0fa0d7;
+  --accent-soft: #4fc3ee;
+  /* Та же метка как текст на белом: яркая не проходит по контрасту. */
+  --accent-text: #0a6e96;
+
+  --canvas: #ffffff;
+  --surface: #f3f6fb;
+  --raised: #e7eef9;
+  --line: #dce3ef;
+  --ink: #101a33;
+  --muted: #5d6b8a;
+  --faint: #9ba6be;
+
+  /* Тёмная земля терминала — ровно та, на которой работает ночная тема. */
+  --term-bg: #060c1c;
+  --term-line: #16244b;
+  --term-ink: #9ba6be;
+  --term-faint: #5e6b85;
+  --term-ok: #3ec9a7;
+
+  /*
+   * HSE Sans, и страница привозит его с собой.
+   *
+   * Раньше он просто стоял первым в стеке — и это работало ровно у тех, у кого
+   * шрифт установлен, то есть у автора и у части ФКН. Все остальные видели
+   * Inter, в котором те же слова шире на десятую, и заголовок, подогнанный под
+   * метрики HSE Sans, ложился на три строки вместо двух. Хуже всего, что с
+   * машины, где шрифт стоит, эту поломку нельзя увидеть в принципе.
+   *
+   * Теперь четыре начертания лежат в /fonts и грузятся страницей — 72 КБ на
+   * все, потому что подмножество оставляет кириллицу, латиницу и типографику,
+   * а больше здесь ничего и не набрано. Inter остался в стеке подстраховкой на
+   * случай, если файлы не доедут.
+   */
+  --sans: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Поле страницы: 96px на макете, ужимается до 20px на телефоне. */
+  --gutter: clamp(20px, 6.7vw, 96px);
+
+  /*
+   * Движение. До этой правки на всю страницу приходился один transition и ни
+   * одной кривой. Обе кривые — усиленные варианты стандартных: встроенные
+   * ease-* слишком вялые, на них движение читается как задержка, а не как
+   * ответ. ease-in не заведён намеренно и не должен появиться: он тормозит в
+   * первый момент — ровно тогда, когда за движением следят внимательнее всего.
+   */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+
+  /*
+   * Длительности одним словарём, чтобы страница говорила в одном темпе.
+   * Всё, что отвечает руке, живёт под 300ms; машинный набор считается
+   * посимвольно и в бюджет интерфейса не входит — это объяснение, не отклик.
+   */
+  --t-color: 120ms; /* смена цвета: столько уже живут ссылки шапки */
+  --t-press: 140ms; /* отклик на нажатие: рука не должна ждать ответа */
+  --t-swap: 200ms; /* подмена текста в переключателе кресел */
+  --t-out: 260ms; /* появление вывода ячейки: это событие, а не перекраска */
+  --t-type: 18ms; /* один символ машинного набора в терминале */
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/*
+ * Правило браузера `[hidden] { display: none }` живёт в его таблице и
+ * проигрывает по весу любому классу с display. На двери прячутся именно такие
+ * элементы — сетка меток (grid) и карточка (flex), — и без этой строки они
+ * оставались бы на экране обоими состояниями сразу.
+ */
+[hidden] {
+  display: none !important;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+/*
+ * Три якоря в шапке до этого телепортировали страницу: щелчок мгновенно
+ * подменял весь экран, и связь между «где я был» и «куда попал» терялась.
+ * scroll-margin здесь не нужен — липкой шапки на странице нет, а у всех трёх
+ * целей уже есть padding-top до 112px, то есть воздуха над заголовком вдвое
+ * больше любого разумного margin.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 28px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+h1,
+h2,
+h3,
+p,
+ul {
+  margin: 0;
+}
+
+ul {
+  padding: 0;
+  list-style: none;
+}
+
+/* ------------------------------------------------------------- голоса */
+
+.label {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  line-height: 18px;
+  color: var(--accent-text);
+  text-transform: uppercase;
+}
+
+.label--on-brand {
+  color: var(--accent);
+}
+
+.h2 {
+  font-size: clamp(30px, 3.4vw, 48px);
+  font-weight: 900;
+  line-height: 1.16;
+  letter-spacing: -0.03em;
+}
+
+.lead {
+  font-size: clamp(17px, 1.6vw, 22px);
+  line-height: 1.55;
+}
+
+.prose {
+  color: var(--muted);
+}
+
+.on-brand .prose {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/*
+ * Скрыто от глаза, но не от клавиатуры и не от скринридера: legend и сами
+ * радиокнопки переключателя обязаны остаться в дереве доступности.
+ * display:none отобрал бы у переключателя фокус и стрелки.
+ */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------------------------------------- секции */
+
+.section {
+  padding: clamp(64px, 7.8vw, 112px) var(--gutter);
+}
+
+.section--brand {
+  background: var(--brand);
+  color: #fff;
+}
+
+.section--surface {
+  background: var(--surface);
+}
+
+.inner {
+  max-width: 1248px;
+  margin: 0 auto;
+}
+
+/*
+ * Полосы со снимками уходят за поле страницы: на макете рабочий экран
+ * обрезан правым и нижним краем разворота, и это кадр, а не картинка в рамке.
+ */
+.bleed {
+  padding-left: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+}
+
+/* --------------------------------------------------------------- шапка */
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding-bottom: clamp(56px, 10vw, 120px);
+}
+
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+}
+
+.wordmark span {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: clamp(16px, 2.8vw, 40px);
+  margin-left: auto;
+  flex: none;
+}
+
+.nav-links a {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  text-decoration: none;
+  transition: color var(--t-color) ease;
+}
+
+.nav-links a:focus-visible {
+  color: #fff;
+}
+
+/*
+ * Тач выдаёт hover по тапу: без гейта нажатый якорь остаётся подсвеченным всю
+ * плавную прокрутку и читается как «я всё ещё здесь». Гейт тот же, что у
+ * .cell-run:hover ниже, — политика на странице одна.
+ */
+@media (hover: hover) and (pointer: fine) {
+  .nav-links a:hover {
+    color: #fff;
+  }
+}
+
+/* Ссылки, которых пока нет: они не кликаются и не притворяются кликабельными. */
+.nav-links .dead {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.32);
+  cursor: default;
+}
+
+/* --------------------------------------------------------------- герой */
+
+.hero {
+  padding-bottom: clamp(64px, 7.5vw, 88px);
+}
+
+.hero-top {
+  display: flex;
+  align-items: flex-end;
+  gap: 48px;
+}
+
+.hero-headline {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.hero h1 {
+  /*
+   * Самое громкое на странице. Black, а не Bold: артборды нарисованы в
+   * HSE Sans Black, и Inter на 700 здесь читается тонко.
+   */
+  font-size: clamp(38px, 6vw, 86px);
+  font-weight: 900;
+  line-height: 0.98;
+  letter-spacing: -0.035em;
+  /*
+   * В em, а не в px: мера должна ужиматься вместе с кеглем, иначе на планшете
+   * заголовок разъезжается на лишнюю строку. 10.4em при 86px — те же 893px,
+   * на которых он ломается после «делают,» и не оставляет «а» висеть в конце.
+   */
+  max-width: 10.4em;
+}
+
+/* Правая рейка героя: кто уже внутри и чем это поднимается. */
+.hero-rail {
+  flex: none;
+  width: 292px;
+  padding-left: 28px;
+  padding-bottom: 8px;
+  border-left: 1px solid var(--brand-2);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.rail-note {
+  font-size: 14px;
+  line-height: 22px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.rail-block {
+  padding-top: 16px;
+  border-top: 1px solid var(--brand-2);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rail-cmd {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--accent);
+}
+
+/*
+ * ------------------------------------------------- чужие каретки в тексте ---
+ *
+ * Слой лежит поверх текста и ничего в нём не двигает: он абсолютный, пустой и
+ * непрокликиваемый. Текст под ним остаётся обычным текстом — его можно
+ * выделить мышью, его читает скринридер, он переносится как переносился.
+ *
+ * Координаты приходят из скрипта в пикселях, потому что вычислить их может
+ * только браузер: где кончается пятый символ третьей строки, знает он один, и
+ * знает после каждого перетекания.
+ */
+.live {
+  /* Единственное, что разметка отдаёт слою: точку отсчёта. */
+  position: relative;
+}
+
+.cursors {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cur {
+  position: absolute;
+  inset: 0;
+}
+
+/*
+ * Каретка. Ездит трансформом, а не координатами: left и top пересчитывают
+ * раскладку абзаца каждый кадр, трансформ двигает готовый слой.
+ *
+ * 420ms — против 220ms в первой редакции. Такт сцены длинный, человек за
+ * каретку дёргается редко, и на этой скорости видно, что курсор именно едет
+ * через строку, а не переставлен через неё.
+ */
+.cur-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  background: var(--tint);
+  transform: translate(-40px, -40px);
+  opacity: 0;
+  transition:
+    transform 420ms var(--ease-out),
+    opacity var(--t-out) var(--ease-out);
+}
+
+/* Каретки не мигают. Мигание — про твой собственный курсор: оно говорит
+   «сюда попадёт следующая буква». Чужая каретка так не говорит, а четыре
+   мигалки на первом экране складываются в гирлянду. */
+.cur.is-on .cur-bar {
+  opacity: 1;
+}
+
+/*
+ * Подпись. Показывается, когда человек тронулся, и гаснет через полторы
+ * секунды: постоянные ярлыки превращают абзац в подписанный чертёж.
+ * Чернила выбирает скрипт по светлоте плашки — белым по жёлтому имя не
+ * прочитать.
+ */
+.cur-tag {
+  position: absolute;
+  left: -1px;
+  bottom: 100%;
+  margin-bottom: 5px;
+  padding: 2px 6px;
+  background: var(--tint);
+  color: var(--cur-ink, #fff);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity var(--t-out) var(--ease-out);
+}
+
+.cur.is-say .cur-tag {
+  opacity: 1;
+}
+
+/*
+ * Выделение. Прямоугольник на каждую строку — перенос режет выделение, и
+ * одной коробкой его не описать. Появляется без переезда: выделение это
+ * событие, а не предмет, который куда-то едет.
+ */
+/* 0.18, а не 0.24: на заголовке выделение занимает пол-экрана, и на такой
+   площади даже четверть плотности перекрашивает белые буквы в цвет плашки. */
+.cur-sel u {
+  position: absolute;
+  background: var(--tint);
+  opacity: 0.18;
+  text-decoration: none;
+  border-radius: 1px;
+  animation: sel-in 200ms var(--ease-out) both;
+}
+
+@keyframes sel-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Строка комнаты: круги и, когда есть что сказать, имя вошедшего. */
+.room-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.avatars {
+  display: flex;
+  align-items: center;
+  /* Уходящий круг встаёт абсолютом на своё же место и гаснет поверх полосы —
+     координаты ему нужно от чего-то считать. */
+  position: relative;
+  flex: none;
+}
+
+/*
+ * Имя того, кто только что пришёл или ушёл. Приходит и уходит только
+ * прозрачностью: строка стоит последней, ничего собой не двигает, и лишнее
+ * движение рядом с едущими кругами читалось бы как второй источник шума.
+ */
+.room-say {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Без min-width флекс-элемент не сжимается ниже своего текста, и вместо
+     многоточия строка вылезала бы за рейку. */
+  min-width: 0;
+  opacity: 0;
+  transition: opacity var(--t-out) var(--ease-out);
+}
+
+.room-say.is-on {
+  opacity: 1;
+}
+
+/* Ушёл — тем же кеглем, но не сигнальным цветом: приход это событие, уход
+   это просто факт, и красить их одинаково значит соврать про важность. */
+.room-say.is-gone {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.avatars span {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid var(--brand);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex: none;
+}
+
+.avatars span + span {
+  /* Нахлёст. Он же — стартовая точка входной анимации ниже: правка одного
+     числа обязана править и второе, иначе круг поедет не из-под соседа. */
+  margin-left: -10px;
+}
+
+/*
+ * Смещение соседей. Скрипт ставит сдвинутым кругам их прежнюю координату
+ * трансформом и тут же её снимает — едет вот этот переход.
+ *
+ * 260ms и только transform: 260ms — верх «сменного» яруса, и на такте в
+ * две-пять секунд это ровно та скорость, на которой видно, что круг именно
+ * едет, а не переставлен. Трансформ выбран не за красоту: left и margin
+ * пересчитывают раскладку всей полосы каждый кадр, трансформ двигает
+ * готовый слой.
+ */
+.avatars span {
+  transition: transform var(--t-out) var(--ease-out);
+}
+
+/*
+ * Уходящий. Он уже вне потока, поэтому может позволить себе уменьшиться:
+ * соседи в этот момент едут своим ходом и его размер их не касается.
+ * 0.72, а не 0 — в ничто ничто и не уходит, круг просто отдаляется.
+ */
+.avatars span.is-out {
+  animation: av-out var(--t-out) var(--ease-out) both;
+  pointer-events: none;
+}
+
+@keyframes av-out {
+  to {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+}
+
+/*
+ * Пять кругов собираются в полосу один раз при загрузке. Это единственная
+ * картинка «людей» в герое, и движение здесь объясняет слово «комната»:
+ * люди приходят по одному, а не рисуются разом. Шаг 60ms — на пределе, где
+ * каскад ещё читается как последовательность, а не как задержка.
+ * translateX(-10px) равен нахлёсту выше: круг выезжает ровно из-под соседа.
+ * Из ничего ничто не растёт: старт 0.94, а не 0.
+ *
+ * Класс вешает и через 1.2s снимает скрипт. Поэтому: без JS аватары просто
+ * есть (базовое состояние видимое), и сцена не может проиграть второй раз
+ * посреди чтения — например, когда узкое окно растянули до широкого и рейка
+ * героя (styles.css: .hero-rail в @media max-width:1100px) снова включилась.
+ */
+/*
+ * Приходящий человек. Класс вешает скрипт ровно на один круг и ровно на один
+ * такт — это не состояние, а событие, поэтому оно и живёт в анимации, а не в
+ * переходе. Уход не анимируется намеренно: круг, который выцветает перед тем
+ * как исчезнуть, задерживает соседей, и полоса дёргается дважды вместо раза.
+ */
+.avatars span.is-new {
+  animation: av-in 280ms var(--ease-out) both;
+}
+
+.avatars.is-in span {
+  animation: av-in 280ms var(--ease-out) both;
+}
+
+.avatars.is-in span:nth-child(1) {
+  animation-delay: 80ms;
+}
+
+.avatars.is-in span:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.avatars.is-in span:nth-child(3) {
+  animation-delay: 200ms;
+}
+
+.avatars.is-in span:nth-child(4) {
+  animation-delay: 260ms;
+}
+
+.avatars.is-in span:nth-child(5) {
+  animation-delay: 320ms;
+}
+
+@keyframes av-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px) scale(0.94);
+  }
+}
+
+.hero-bottom {
+  display: flex;
+  gap: 48px;
+  padding-top: clamp(36px, 4.5vw, 56px);
+}
+
+/*
+ * Мера у прозы, а не у колонки: две кнопки с меткой «скоро» шире 600px и
+ * иначе переносятся друг под друга, чего на макете нет.
+ */
+.hero-bottom > div {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.hero-bottom .lead {
+  max-width: 600px;
+}
+
+/*
+ * Полоса цифр закрывает нижний край героя: до неё .hero-bottom обрывался
+ * пустотой справа от прозы, а сам герой заканчивался ничем. Четыре колонки
+ * flex:1 1 0 при 1248px дают ровно 312px — лента, делённая воздухом внутри
+ * колонок, а не четыре карточки с зазорами. Линия сверху — тем же --brand-2,
+ * что держит рейку героя: это третья горизонталь разворота, а не виджет.
+ * Движения здесь нет намеренно: блок уже в первом экране, и «проявление»
+ * ничего бы не открыло — только задержало бы чтение.
+ */
+/* Одна яркая точка на полосу — та цифра, которую страница обещает в «Трёх шагах». */
+/* --------------------------------------------------------------- кнопки */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/*
+ * Ни одна кнопка на этой странице пока никуда не ведёт: исходники не открыты,
+ * демо-комнаты нет. Поэтому это не ссылки, а объявления — рамка вместо заливки,
+ * приглушённый текст и метка «скоро». Ничего, что притворяется нажимаемым.
+ */
+.btn-dead {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  height: 56px;
+  padding: 0 24px;
+  border: 1px solid var(--line);
+  color: var(--faint);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: default;
+  user-select: none;
+}
+
+.on-brand .btn-dead {
+  border-color: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.soon {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  background: var(--raised);
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  flex: none;
+}
+
+.on-brand .soon {
+  background: rgba(15, 160, 215, 0.16);
+  color: var(--accent-soft);
+}
+
+.actions-note {
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--muted);
+  max-width: 600px;
+}
+
+.on-brand .actions-note {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* ----------------------------------------------------------- боль (why) */
+
+.why-head {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(24px, 6vw, 96px);
+  padding-bottom: clamp(48px, 5.5vw, 80px);
+  border-bottom: 1px solid var(--line);
+}
+
+.why-head .label {
+  flex: none;
+  width: 180px;
+  padding-top: 14px;
+}
+
+.why-row {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(24px, 6vw, 96px);
+  padding: 44px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.why-row .num {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--faint);
+  flex: none;
+  width: 180px;
+}
+
+.why-row h3 {
+  font-size: clamp(20px, 2vw, 26px);
+  font-weight: 700;
+  line-height: 1.32;
+  letter-spacing: -0.01em;
+  flex: none;
+  width: 520px;
+  max-width: 100%;
+}
+
+.why-row p {
+  font-size: 17px;
+  line-height: 28px;
+  color: var(--muted);
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* --------------------------------------------------------- снимки экрана */
+
+.shot-head {
+  display: flex;
+  align-items: flex-end;
+  gap: clamp(24px, 6vw, 96px);
+  padding: 0 var(--gutter) clamp(40px, 4.5vw, 64px);
+  max-width: calc(1248px + var(--gutter) * 2);
+  margin: 0 auto;
+}
+
+.shot-head > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 660px;
+}
+
+.shot-head p {
+  max-width: 428px;
+  font-size: 17px;
+  line-height: 28px;
+}
+
+/*
+ * Кадр, а не иллюстрация: снимок держит натуральный масштаб и уезжает за
+ * правый край, вместо того чтобы ужаться до нечитаемого. Слева поле страницы.
+ */
+.shot-frame {
+  overflow: hidden;
+  height: 640px;
+  padding-left: var(--gutter);
+}
+
+.shot-frame img {
+  width: 1440px;
+  max-width: none;
+  height: 900px;
+  border: 1px solid var(--term-line);
+}
+
+/*
+ * ---------------------------------------------------------------- дверь ---
+ *
+ * Экран входа, свёрстанный заново вместо снимка. Палитра и кегли взяты из
+ * самого экрана (web/src/screens/JoinScreen.svelte), а не подобраны на глаз:
+ * тёмный борт — это Poster, правая колонка — это форма, шириной ровно в
+ * половину продуктового max-w-md с полями.
+ *
+ * Пропорция 60/40 — та же, что в продукте (w-3/5). На узком окне борт уходит
+ * целиком, и форма получает всю ширину: половина афиши и половина формы не
+ * дают ни того, ни другого.
+ */
+.door-band {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.door {
+  display: flex;
+  min-height: clamp(430px, 41vw, 548px);
+}
+
+/* --------------------------------------------------------------- афиша */
+
+.door-poster {
+  width: 60%;
+  flex: 0 0 60%;
+  display: flex;
+  flex-direction: column;
+  background: var(--brand);
+  color: #fff;
+  padding: 26px var(--gutter) 26px;
+  /* Единственное место страницы, где текст на синем набран не по сетке
+     секции: полоса во всю ширину, поэтому поле берётся из gutter. */
+  overflow: hidden;
+}
+
+.door-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #fff;
+}
+
+.door-dash {
+  width: 26px;
+  height: 1px;
+  background: var(--brand-2);
+  flex: 0 0 auto;
+}
+
+.door-org {
+  color: var(--accent-soft);
+  /* На узком борте название факультета срезается раньше, чем герб продукта. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.door-bill {
+  margin-top: auto;
+  margin-bottom: auto;
+  padding: 24px 0;
+}
+
+.door-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent-soft);
+  padding-bottom: 14px;
+}
+
+.door-title {
+  font-size: clamp(30px, 4.4vw, 66px);
+  line-height: 1.03;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.door-when {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 18px;
+  font-size: 15px;
+  line-height: 24px;
+  color: #fff;
+}
+
+.door-when span {
+  font-family: var(--mono);
+  color: var(--accent-soft);
+}
+
+.door-when i {
+  width: 1px;
+  height: 16px;
+  background: var(--brand-2);
+  flex: 0 0 auto;
+}
+
+/*
+ * Строка «кто уже внутри». Место под неё держится всегда — в продукте она
+ * приезжает вместе с ответом сервера и до этой правки подбрасывала заголовок
+ * на половину своей высоты.
+ */
+.door-inside {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 28px;
+  font-size: 15px;
+  line-height: 24px;
+  color: #fff;
+}
+
+.door-stack {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+/*
+ * Кольцо — border внутри коробки, а не box-shadow снаружи: тень не занимает
+ * места, круг из-за неё оказывается на четыре пикселя шире объявленного, и
+ * нахлёст съедает уже не край соседа, а его первую букву.
+ *
+ * Порядок наложения обратный порядку в разметке — так же, как в продукте
+ * (AvatarStack раздаёт z-index по убыванию). Кто пришёл раньше, тот выше:
+ * иначе каждый следующий круг закрывает предыдущему левый бок, то есть ровно
+ * ту сторону, с которой инициалы читаются.
+ */
+.door-stack span {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--brand);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 800;
+  color: #fff;
+  margin-left: -8px;
+}
+
+.door-stack span:first-child {
+  margin-left: 0;
+}
+
+.door-stack span:nth-child(1) { z-index: 5; }
+.door-stack span:nth-child(2) { z-index: 4; }
+.door-stack span:nth-child(3) { z-index: 3; }
+.door-stack span:nth-child(4) { z-index: 2; }
+.door-stack span:nth-child(5) { z-index: 1; }
+
+/* Свой круг носит эмодзи, а не инициалы: 10px, на которых читаются «МР»,
+   для рисунка животного — точка. */
+.door-stack span.is-me {
+  font-size: 16px;
+}
+
+/* Появление круга — то же событие и та же кривая, что в рейке героя. */
+.door-stack span.is-new {
+  animation: av-in 280ms var(--ease-out) both;
+}
+
+/* ---------------------------------------------------------------- форма */
+
+.door-form {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 24px;
+  padding: 40px clamp(24px, 3.6vw, 56px);
+  background: var(--canvas);
+}
+
+.door-bill--small {
+  display: none;
+}
+
+.door-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Колонка формы шириной ровно в продуктовый max-w-md. */
+  width: 100%;
+  max-width: 448px;
+  margin: 0 auto;
+}
+
+.door-field label,
+.door-legend label {
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.door-legend {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.door-hint {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+/*
+ * Поле — линованная коробка на земле страницы, а не залитая плашка: на этом
+ * экране заполнить надо ровно одно, и подсказывать это должна рамка.
+ * Переход только по цвету рамки и только 120ms: фокус обязан быть уже там,
+ * когда палец ещё едет.
+ */
+.door-form input[type='text'] {
+  width: 100%;
+  font-family: inherit;
+  font-size: 22px;
+  line-height: 30px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 11px 15px;
+  transition: border-color var(--t-color) var(--ease-out);
+}
+
+.door-form input[type='text']::placeholder {
+  font-weight: 400;
+  color: var(--faint);
+}
+
+.door-form input[type='text']:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* -------------------------------------------------------------- метка */
+
+.door-mark {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 12px;
+}
+
+.door-glyph {
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  line-height: 1;
+  background: var(--accent);
+  /* Метка меняется по такту вместе с именем — это подмена содержимого,
+     а не перекраска, поэтому 200ms и та же кривая, что у кресел. */
+  transition: background-color var(--t-swap) var(--ease-out);
+}
+
+.door-glyph.is-swap {
+  animation: mark-swap 200ms var(--ease-out) both;
+}
+
+@keyframes mark-swap {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+}
+
+.door-said {
+  flex: 1 1 11rem;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--muted);
+}
+
+.door-said b {
+  display: block;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--ink);
+  padding-bottom: 2px;
+}
+
+.door-change {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition:
+    border-color var(--t-color) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
+}
+
+.door-change:hover {
+  border-color: var(--faint);
+}
+
+.door-change:active {
+  transform: scale(0.97);
+}
+
+/*
+ * Сетка меток. Открывается на месте карточки — так же, как в продукте, — и
+ * ряды в ней не выезжают по одному: сорок кругов, вылетающих каскадом, это
+ * фейерверк на месте выбора. Появляется вся сетка разом.
+ */
+.door-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 10px;
+  animation: grid-in 160ms var(--ease-out) both;
+}
+
+@keyframes grid-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.door-grid button {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(15px, 1.5vw, 19px);
+  line-height: 1;
+  background: var(--canvas);
+  border: 1px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  transition:
+    background-color var(--t-color) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
+}
+
+.door-grid button:hover {
+  background: var(--raised);
+}
+
+.door-grid button:active {
+  transform: scale(0.9);
+}
+
+.door-grid button[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* -------------------------------------------------------------- кнопка */
+
+.door-go {
+  width: 100%;
+  max-width: 448px;
+  margin: 0 auto;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--brand);
+  border: 0;
+  cursor: pointer;
+  transition:
+    opacity var(--t-color) var(--ease-out),
+    transform var(--t-press) var(--ease-out);
+}
+
+.door-go:hover {
+  opacity: 0.9;
+}
+
+.door-go:active {
+  transform: scale(0.97);
+}
+
+.door-go[disabled] {
+  opacity: 0.4;
+  cursor: default;
+  transform: none;
+}
+
+.door-go-mark {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Тот же видимый фокус, что у кнопки ячейки: дверь проходится с клавиатуры
+   целиком — поле, «Change», двадцать четыре метки, кнопка, — и ни на одном
+   шаге курсор не имеет права пропасть. У поля свою роль играет цвет рамки. */
+.door-change:focus-visible,
+.door-grid button:focus-visible,
+.door-go:focus-visible,
+.door-again:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+.door-foot {
+  width: 100%;
+  max-width: 448px;
+  margin: 0 auto;
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--muted);
+}
+
+.door-again {
+  font: inherit;
+  color: var(--accent-text);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.shot-caption {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--faint);
+  padding: 18px var(--gutter) 0;
+  max-width: calc(1248px + var(--gutter) * 2);
+  margin: 0 auto;
+}
+
+/* ---------------------------------------------------------------- шаги */
+
+.steps-head {
+  display: flex;
+  align-items: baseline;
+  gap: 32px;
+  padding-bottom: clamp(40px, 4.5vw, 64px);
+}
+
+.steps-head .rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+.steps-head .meta {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: none;
+}
+
+.steps {
+  display: flex;
+  gap: 56px;
+}
+
+.step {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.step-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.step-rule i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.step-rule b {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+.step .label {
+  letter-spacing: 0.14em;
+}
+
+.step h3 {
+  font-size: clamp(22px, 2.2vw, 28px);
+  font-weight: 700;
+  line-height: 1.28;
+  letter-spacing: -0.015em;
+  /* Две строки заголовка держат прозу трёх колонок на одной линии. */
+  min-height: 72px;
+}
+
+.step p {
+  font-size: 17px;
+  line-height: 28px;
+  color: var(--muted);
+}
+
+/* -------------------------------------------------- девяносто минут (пара) */
+
+/*
+ * Печатное расписание: узкая колонка времени слева, линейки между строками.
+ * Намеренно не форма «Трёх шагов» (точка + линейка + три равные колонки в
+ * ряд) — иначе читатель второй раз прочитает одну и ту же фигуру и решит,
+ * что это тот же блок другими словами.
+ */
+.tline-head {
+  display: flex;
+  align-items: flex-end;
+  gap: clamp(24px, 6vw, 96px);
+  padding-bottom: clamp(32px, 3.6vw, 48px);
+}
+
+.tline-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 660px;
+}
+
+.tline-head .prose {
+  max-width: 428px;
+  font-size: 17px;
+  line-height: 28px;
+}
+
+/*
+ * Переключатель кресел. Нативная радиогруппа: Tab заводит внутрь один раз,
+ * стрелки меняют перспективу, Home/End уводят к краям — ровно то поведение,
+ * которого ждут от сегментного контрола, и ноль строк JS на него.
+ * Бордер один, на контейнере: две рамки встык дали бы 2px шов посередине.
+ */
+.roles {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: min(360px, 100%);
+  margin: 0 0 clamp(28px, 3vw, 40px);
+  padding: 0;
+  border: 1px solid var(--brand-2);
+  min-inline-size: 0;
+}
+
+.roles label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Не фиксированная высота: моноширинный uppercase с трекингом .14em при
+     40px рискует обрезаться, а 44px — минимальная цель для пальца. */
+  min-height: 44px;
+  padding: 0 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.62);
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    color var(--t-color) ease,
+    transform var(--t-press) var(--ease-out);
+}
+
+.roles label:last-of-type {
+  border-left: 1px solid var(--brand-2);
+}
+
+.roles input:checked + label {
+  color: #fff;
+}
+
+/* Нажатие обязано быть слышно рукой раньше, чем глазом. */
+.roles label:active {
+  transform: scale(0.97);
+}
+
+.roles input:focus-visible + label {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+/*
+ * Бегущая метка — единственная яркая точка секции и единственное, что
+ * показывает состояние. --t-swap (200ms) и ease-in-out: она не входит и не
+ * уходит, она едет из точки в точку, а такому движению нужна и разгонка, и
+ * торможение. 200ms — верх бюджета сегментного контрола; на 260ms кривая
+ * cubic-bezier(0.77, 0, 0.175, 1) первую треть почти не двигается, и метка
+ * воспринимается медленнее собственного числа.
+ */
+.roles-ind {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 50%;
+  height: 2px;
+  background: var(--accent);
+  transition-property: transform;
+  transition-duration: var(--t-swap);
+  transition-timing-function: var(--ease-in-out);
+}
+
+/*
+ * Класс-дубль ко всем :has ниже. Он не про изящество: Firefox ESR 115 всё ещё
+ * стоит на институтских машинах и :has не знает, а страница у нас как раз
+ * университетская. Скрипт синхронизирует класс с радиокнопкой; правила
+ * одинаковые, поэтому в современном браузере дубль просто ничего не меняет.
+ */
+.roles:has(#role-s:checked) .roles-ind,
+#para.seat-s .roles-ind {
+  transform: translateX(100%);
+}
+
+.tline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tline-row {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(20px, 4vw, 64px);
+  padding: 26px 0;
+  border-top: 1px solid var(--brand-2);
+}
+
+.tline-row:last-child {
+  border-bottom: 1px solid var(--brand-2);
+}
+
+.tline-time {
+  flex: none;
+  width: 88px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 30px;
+  color: rgba(255, 255, 255, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Обе версии строки лежат в одной ячейке грида: контейнер держит высоту по
+ * длинной, поэтому при переключении ни строка ниже, ни секция под ней не
+ * прыгают. Это и есть назначение движения здесь — не украсить смену текста,
+ * а не дать ей дёрнуть страницу.
+ */
+.swhat {
+  display: grid;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.swhat > div {
+  grid-area: 1 / 1;
+  display: flex;
+  gap: clamp(20px, 4vw, 64px);
+  transition:
+    opacity 160ms var(--ease-out) 100ms,
+    visibility 0s;
+}
+
+/*
+ * Уход и приход разведены во времени: при одновременном кроссфейде две
+ * кириллические строки видно как две наложенные, а не как одну сменившуюся.
+ * Уходит быстрее (120ms), приходит с задержкой в 100ms — глаз успевает
+ * увидеть чистое поле между состояниями.
+ * Базовое состояние — версия преподавателя: если :has не поддержан,
+ * страница остаётся читаемой, просто без второго кресла.
+ */
+.swhat [data-seat='s'] {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 120ms var(--ease-out),
+    visibility 0s linear 120ms;
+}
+
+#para:has(#role-s:checked) .swhat [data-seat='s'],
+#para.seat-s .swhat [data-seat='s'] {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 160ms var(--ease-out) 100ms,
+    visibility 0s;
+}
+
+#para:has(#role-s:checked) .swhat [data-seat='t'],
+#para.seat-s .swhat [data-seat='t'] {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 120ms var(--ease-out),
+    visibility 0s linear 120ms;
+}
+
+.swhat h3 {
+  flex: none;
+  width: 340px;
+  font-size: clamp(19px, 1.8vw, 22px);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.swhat p {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 16px;
+  line-height: 26px;
+}
+
+/* ------------------------------------------------------------- свойства */
+
+.feat-head {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(24px, 6vw, 96px);
+  padding-bottom: clamp(36px, 4vw, 56px);
+}
+
+.feat-head h2 {
+  max-width: 660px;
+}
+
+.feat-head p {
+  max-width: 428px;
+  font-size: 17px;
+  line-height: 28px;
+  color: var(--muted);
+  padding-top: 8px;
+}
+
+.feat-row {
+  display: flex;
+  gap: 56px;
+  border-top: 1px solid var(--line);
+}
+
+.feat {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 36px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.feat-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.feat-title svg {
+  flex: none;
+}
+
+.feat-title h3 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.feat p {
+  font-size: 16px;
+  line-height: 26px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------- живая ячейка */
+
+/*
+ * Две ячейки одного документа и одно ядро на двоих. Единственное место на
+ * странице, где продукт можно потрогать рукой, а не прочитать про него:
+ * запустите свою ячейку первой — и получите NameError, потому что переменную
+ * создаёт не тот, кто её читает. Объяснение здесь делает не движение, а
+ * порядок нажатий; движение только не даёт выводу выскочить из ниоткуда.
+ * Рамка без радиуса и без тени: на сером это документ, а не карточка.
+ */
+.kernel {
+  margin-bottom: clamp(36px, 4vw, 56px);
+  padding: 20px clamp(16px, 2vw, 24px) 18px;
+  background: var(--canvas);
+  border: 1px solid var(--line);
+}
+
+.kernel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+}
+
+.kernel-head .label {
+  flex: none;
+}
+
+/*
+ * Единственная фраза, объясняющая, что произошло. Две строки зарезервированы
+ * заранее: пять реплик по 58–75 знаков пересекают границу «одна строка / две»
+ * на планшетных ширинах, и без резерва шапка ядра толкала бы обе ячейки вниз
+ * ровно тогда, когда читатель тянется ко второй, — тот же рывок, ради которого
+ * этажом ниже стоит .cell-out { min-height: 36px }.
+ * Подмена — та же идиома, что у .swhat: уход 120ms, приход 160ms с задержкой
+ * в 100ms, чтобы глаз увидел чистое поле между репликами, а не две наложенные.
+ */
+.kernel-hint {
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--muted);
+  flex: 1 1 260px;
+  min-width: 0;
+  min-height: 48px;
+  transition: opacity 160ms var(--ease-out) 100ms;
+}
+
+.kernel-hint.is-out {
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+}
+
+.cell {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: start;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+}
+
+.cell-who {
+  grid-column: 2;
+  grid-row: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding-bottom: 10px;
+}
+
+/*
+ * Промпт проходит In [ ] → In [*] → In [1]. Цвет меняется за те же 120ms,
+ * что и единственная существующая на странице смена цвета — ссылки шапки;
+ * второй идиомы для одного и того же события заводить незачем.
+ */
+.cell-prompt {
+  grid-column: 1;
+  grid-row: 2;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 26px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  transition: color var(--t-color) ease;
+}
+
+.cell[data-run='running'] .cell-prompt {
+  color: var(--accent-text);
+}
+
+.cell-src {
+  grid-column: 2;
+  grid-row: 2;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 26px;
+  color: var(--ink);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.cell-run {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: start;
+  justify-self: end;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition:
+    transform var(--t-press) var(--ease-out),
+    border-color var(--t-color) ease;
+}
+
+/* Настоящая кнопка обязана отвечать на нажатие раньше, чем придёт результат. */
+.cell-run:active {
+  transform: scale(0.97);
+}
+
+/*
+ * ...но только тогда, когда нажатие что-то делает. Для занятой и для уже
+ * стоящей в очереди ячейки press() выходит вхолостую, и отклик обязан
+ * замолчать вместе с ней: кнопка, которая ужимается и не делает ничего,
+ * отчитывается за действие, которое было отброшено. Состояние уже размечено
+ * атрибутом data-run, править скрипт не нужно.
+ */
+.cell[data-run='running'] .cell-run,
+.cell[data-run='queued'] .cell-run {
+  color: var(--muted);
+}
+
+.cell[data-run='running'] .cell-run:active,
+.cell[data-run='queued'] .cell-run:active {
+  transform: none;
+}
+
+/* На странице до сих пор не было ни одного видимого состояния фокуса —
+   новому контролу оно обязательно. */
+.cell-run:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+/* Тач по кнопке не должен оставлять её в «наведённом» состоянии. */
+@media (hover: hover) and (pointer: fine) {
+  .cell-run:hover {
+    border-color: var(--accent-text);
+  }
+}
+
+/*
+ * Место под вывод занято всегда. Раскрытие высоты сдвинуло бы вторую ячейку —
+ * ту самую, на которую читатель смотрит и куда сейчас потянется, — то есть
+ * произвело бы ровно тот рывок, ради которого движение сюда и ставится.
+ * Строка вывода не переносится, а прокручивается: так высота не зависит от
+ * ширины экрана и не меняется в момент появления текста.
+ */
+.cell-out {
+  grid-column: 2 / -1;
+  grid-row: 3;
+  min-height: 36px;
+  padding-top: 10px;
+  overflow-x: auto;
+}
+
+.cell-out p {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 26px;
+  color: var(--ink);
+  white-space: pre;
+  opacity: 0;
+  transform: translateY(4px);
+  /* transition, а не keyframes: при быстрых повторных нажатиях переход
+     переприцеливается с текущей точки, кейфрейм начал бы с нуля.
+     Базовая длительность — уход, и он короче прихода: приход вывода это
+     событие (--t-out, 260ms), а уход — ответ системы, он обязан щёлкать.
+     Скрипт стирает текст ровно через 160ms, то есть после того, как строка
+     выцвела, а не посреди собственного фейда. */
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
+}
+
+.cell[data-run='done'] .cell-out p,
+.cell[data-run='error'] .cell-out p,
+.cell[data-run='queued'] .cell-out p {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--t-out) var(--ease-out),
+    transform var(--t-out) var(--ease-out);
+}
+
+/* Ошибка и очередь — не результат: тот же моноширинный голос, но приглушённый. */
+.cell[data-run='error'] .cell-out p,
+.cell[data-run='queued'] .cell-out p {
+  color: var(--muted);
+}
+
+/*
+ * --muted, а не --faint: оговорка о том, что блок постановочный, не имеет
+ * права быть слабейшим текстом на странице. #9ba6be на белом даёт 2.4:1 —
+ * ниже порога AA; #5d6b8a даёт 5.4:1.
+ */
+.kernel-note {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--muted);
+}
+
+/* -------------------------------------------------------------- границы */
+
+.limits {
+  display: flex;
+  gap: clamp(32px, 6vw, 96px);
+}
+
+.limits > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.limits h2 {
+  max-width: 660px;
+}
+
+.limits > div:first-child p {
+  max-width: 560px;
+  color: var(--muted);
+}
+
+/* Прямой потомок: внутри секции появился второй ярус со своими списками. */
+.limits > ul {
+  flex: none;
+  width: 492px;
+  max-width: 100%;
+  padding-top: 6px;
+}
+
+.limits > ul li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 18px;
+  color: var(--muted);
+}
+
+.limits > ul li svg {
+  flex: none;
+}
+
+.limits .label {
+  color: var(--faint);
+  padding-bottom: 18px;
+  display: block;
+}
+
+/*
+ * Второй ярус той же секции. .limits — flex-строка, поэтому третий ребёнок
+ * без переноса встал бы третьей колонкой рядом со списком: перенос включается
+ * здесь, а не в разметке. Отступ сверху даёт row-gap самой .limits, своего
+ * margin-top у яруса нет — иначе он сложился бы вдвое.
+ */
+.limits {
+  flex-wrap: wrap;
+}
+
+.leak {
+  flex: 0 0 100%;
+  width: 100%;
+  display: flex;
+  gap: clamp(32px, 6vw, 96px);
+  padding-top: clamp(28px, 3vw, 40px);
+  border-top: 1px solid var(--line);
+}
+
+/* 180px — та же колонка, на которой стоят метки «Зачем» и номера строк:
+   ярус читается как продолжение секции, а не как новая сетка. */
+.leak h3 {
+  flex: none;
+  width: 180px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.28;
+  letter-spacing: -0.015em;
+}
+
+.leak-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.leak .label {
+  padding-bottom: 0;
+}
+
+.leak-col li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 0;
+  border-bottom: none;
+  font-size: 17px;
+  line-height: 28px;
+  color: var(--muted);
+}
+
+.leak-col li + li {
+  margin-top: 10px;
+}
+
+/*
+ * Маркер приглушённый, а не акцентный: ярко подсвеченной оказалась бы именно
+ * колонка утечки. Отступ детерминированный (11px при строке 28px), а не
+ * baseline: базовая линия пустого флекс-элемента считается по нижнему краю и
+ * разъезжается между браузерами.
+ */
+.leak-col--out li::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin-top: 11px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.leak-note {
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--muted);
+  max-width: 460px;
+  padding-top: 4px;
+}
+
+/* ---------------------------------------------------------------- «а если» */
+
+/*
+ * Две колонки, разделённые вертикальной линейкой. Вертикальный разделитель на
+ * светлом фоне на странице не использован ни разу (border-left есть только у
+ * рейки героя, и та на синем), поэтому блок не путается ни с «болью», ни со
+ * свойствами. Движения здесь нет вовсе — это текст, который сканируют, чтобы
+ * найти своё возражение, и любая задержка тут работает против него.
+ */
+.ifs-head {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(24px, 6vw, 96px);
+  padding-bottom: clamp(32px, 3.6vw, 48px);
+}
+
+.ifs-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 660px;
+}
+
+.ifs-head > p {
+  max-width: 428px;
+  font-size: 17px;
+  line-height: 28px;
+  color: var(--muted);
+  padding-top: 8px;
+}
+
+.ifs {
+  display: flex;
+  gap: 0;
+}
+
+.ifs-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ifs-col:first-child {
+  padding-right: clamp(24px, 4vw, 56px);
+}
+
+.ifs-col + .ifs-col {
+  border-left: 1px solid var(--line);
+  padding-left: clamp(24px, 4vw, 56px);
+}
+
+.ifs-item {
+  padding: 28px 0;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ifs-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+/* Вопрос в кавычках-ёлочках и без знака вопроса: он уже задан кавычками и
+   заголовком секции. */
+.ifs-item h3 {
+  font-size: clamp(19px, 1.7vw, 22px);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+}
+
+.ifs-item p {
+  font-size: 16px;
+  line-height: 26px;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------- терминал */
+
+.deploy {
+  display: flex;
+  gap: clamp(32px, 6vw, 96px);
+}
+
+.deploy > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.term {
+  flex: none;
+  width: 552px;
+  max-width: 100%;
+  background: var(--term-bg);
+  border: 1px solid var(--term-line);
+}
+
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--term-line);
+}
+
+.term-bar i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.term-bar span {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--term-faint);
+}
+
+.term pre {
+  margin: 0;
+  padding: 20px 16px;
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 26px;
+  color: var(--term-ink);
+  /* Команду должно быть видно целиком; на узком экране полоса прокрутки.
+     white-space задан явно: набор по clip-path читается как печать только
+     пока строка — один непереносящийся ряд. */
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.term-out {
+  padding: 18px 16px;
+  border-top: 1px solid var(--term-line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.term-out b {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--term-ok);
+}
+
+.term-out span {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--term-faint);
+}
+
+/*
+ * Сцена ниже печатает команду и показывает удачный ответ — а поставить эту
+ * команду сегодня некуда: репозиторий закрыт. Оговорка стоит на земле самого
+ * терминала и вне .term-out, чтобы не проявляться вместе с «ответом системы».
+ * --term-ink, а не --term-faint: оговорка не может быть слабее того, что она
+ * оговаривает (--term-faint на этом фоне даёт 3.6:1, --term-ink — 8:1).
+ */
+.term-note {
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--term-line);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--term-ink);
+}
+
+/*
+ * Терминал печатает последнюю строку и только потом отвечает «готов».
+ * Секция называется «Ставится одной командой» — печатается ровно одна
+ * команда, та самая: показывать, как машина набирает git clone, значит
+ * потратить внимание не на то, что продаётся. Объяснение здесь — пауза между
+ * командой и ответом: контейнер действительно поднимается не мгновенно, и
+ * эта пауза и есть содержание секции.
+ *
+ * Арифметика такта (её же считает скрипт по длине самой строки):
+ *   160ms задержка → набор 17 символов x 18ms = 306ms → каретка 2 x 520ms
+ *   = 1040ms ожидания → ответ системы 280ms. Вся сцена около 1.8s, один раз.
+ * Число шагов steps() берётся из длины текста, а не вписано руками: правка
+ * команды физически не может рассинхронизировать набор.
+ * Класс .term--live вешает скрипт, поэтому без JS блок выглядит как раньше.
+ */
+.term--live .term-cmd {
+  display: inline-block;
+  clip-path: inset(0 100% 0 0);
+}
+
+.term--live.is-run .term-cmd {
+  animation-name: term-type;
+  animation-duration: var(--type-dur, 306ms);
+  animation-timing-function: steps(var(--type-n, 17), end);
+  animation-delay: 160ms;
+  animation-fill-mode: forwards;
+}
+
+@keyframes term-type {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/*
+ * Каретка в относительных единицах: правка line-height у pre не должна
+ * ломать её размер. Мигает ровно два раза, пока ждём контейнер, и гаснет
+ * в тот момент, когда приходит ответ, — на статичной странице ничто не
+ * должно мигать бесконечно, пока рядом читают текст.
+ */
+.term-caret {
+  display: inline-block;
+  width: 1ch;
+  height: 1em;
+  margin-left: 2px;
+  background: var(--term-ink);
+  vertical-align: text-bottom;
+  opacity: 0;
+}
+
+.term--live.is-run .term-caret {
+  animation-name: term-caret;
+  animation-duration: 520ms;
+  animation-timing-function: step-end;
+  animation-delay: var(--caret-delay, 466ms);
+  animation-iteration-count: 2;
+  animation-fill-mode: forwards;
+}
+
+@keyframes term-caret {
+  0%,
+  49.9% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.term--live .term-out {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* Ответ системы приходит снизу и с ease-out: он входит в кадр, а входящему
+   нужен быстрый старт, иначе система кажется медленнее, чем она есть. */
+.term--live.is-run .term-out {
+  animation-name: term-out;
+  animation-duration: 280ms;
+  animation-timing-function: var(--ease-out);
+  animation-delay: var(--out-delay, 1506ms);
+  animation-fill-mode: forwards;
+}
+
+@keyframes term-out {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Мягкий вариант того же для reduced-motion: без набора и без сдвига. */
+@keyframes term-soft {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------- финал */
+
+.finale {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 48px;
+  text-align: center;
+}
+
+.finale h2 {
+  font-size: clamp(32px, 4.6vw, 64px);
+  font-weight: 900;
+  line-height: 1.09;
+  letter-spacing: -0.035em;
+  max-width: 900px;
+}
+
+.finale .actions {
+  justify-content: center;
+}
+
+.finale .actions-note {
+  max-width: 560px;
+}
+
+/* --------------------------------------------------------------- подвал */
+
+.foot {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(32px, 6vw, 96px);
+  padding: 56px var(--gutter);
+  background: var(--brand);
+  color: #fff;
+}
+
+.foot-inner {
+  max-width: 1248px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(32px, 6vw, 96px);
+  flex-wrap: wrap;
+}
+
+.foot-about {
+  flex: 1 1 320px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.foot-about p {
+  font-size: 14px;
+  line-height: 22px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.foot-col {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 180px;
+}
+
+.foot-col .label {
+  font-size: 11px;
+}
+
+.foot-col span {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.foot-col .dim {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.foot-col .host {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+/* Единственная ссылка в подвале, по которой можно написать автору. Выглядит
+   как соседние строки и подчёркивается только под курсором: подвал — это
+   справка, а не набор кнопок. */
+.foot-col a.host {
+  text-decoration: none;
+  transition: color var(--t-color) ease;
+}
+
+.foot-col a.host:hover {
+  color: rgba(255, 255, 255, 0.95);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ------------------------------------------------------- узкие экраны */
+
+/*
+ * Дверь теряет афишу раньше остальной страницы — на 1024px, ровно там же, где
+ * её теряет продукт (Poster объявлен как `hidden w-3/5 lg:flex`). Рубеж не
+ * подобран под макет: ниже него сорок процентов ширины перестают вмещать
+ * карточку метки одной строкой, и она разваливается на три этажа — аватар,
+ * фраза, кнопка, — вместо того чтобы читаться одной. Форме нужна вся ширина
+ * раньше, чем странице нужен телефонный режим.
+ */
+@media (max-width: 1023px) {
+  .door-poster {
+    display: none;
+  }
+
+  .door {
+    min-height: 0;
+  }
+
+  /* Название семинара не уходит вместе с афишей: студент обязан видеть, какую
+     комнату открыла ссылка, на любой ширине. Та же мысль, набранная кеглем,
+     который помещается над полем. */
+  .door-bill--small {
+    display: block;
+    width: 100%;
+    max-width: 448px;
+    margin: 0 auto;
+    padding: 0;
+  }
+
+  .door-bill--small .door-eyebrow {
+    color: var(--muted);
+  }
+
+  .door-bill--small .door-title {
+    color: var(--ink);
+    font-size: clamp(30px, 4.4vw, 40px);
+  }
+
+  .door-form {
+    padding: 44px clamp(24px, 3.6vw, 56px) 48px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .hero-rail {
+    display: none;
+  }
+
+  .why-head,
+  .why-row {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .why-head .label,
+  .why-row .num {
+    width: auto;
+    padding-top: 0;
+  }
+
+  .why-row h3 {
+    width: auto;
+  }
+
+  .steps,
+  .feat-row {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .step {
+    padding: 28px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .step h3 {
+    min-height: 0;
+  }
+
+  .feat {
+    padding: 28px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .feat-row {
+    border-top: none;
+  }
+
+  .feat-row:first-of-type {
+    border-top: 1px solid var(--line);
+  }
+
+  .feat-head,
+  .shot-head,
+  .limits,
+  .deploy,
+  .tline-head,
+  .ifs-head {
+    flex-direction: column;
+    gap: 32px;
+    align-items: flex-start;
+  }
+
+  .limits ul,
+  .term {
+    width: 100%;
+  }
+
+  /*
+   * Ниже 1100px натуральный масштаб перестаёт быть кадром и становится
+   * обрезком: при 900px в коробке 420px от снимка оставалось 58% ширины и
+   * 47% высоты — четверть площади, — а панель оракула, названная в alt,
+   * не попадала в кадр вовсе. Снимок показывается целиком.
+   */
+  .shot-frame {
+    height: auto;
+    padding-left: 0;
+  }
+
+  .shot-frame img {
+    width: 100%;
+    height: auto;
+    border-left: none;
+    border-right: none;
+  }
+
+  /* Полоса цифр обязана пережить этот брейкпойнт: здесь выключается рейка
+     героя, и без полосы у героя не остаётся ничего, кроме заголовка,
+     абзаца и двух мёртвых кнопок — самое пустое состояние страницы. */
+  .swhat > div {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .swhat h3 {
+    width: auto;
+  }
+
+  /* В колонке flex-basis считается по высоте — 100% здесь дал бы не ширину. */
+  .leak {
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .leak h3 {
+    width: auto;
+  }
+
+  .ifs {
+    flex-direction: column;
+  }
+
+  .ifs-col:first-child {
+    padding-right: 0;
+  }
+
+  .ifs-col + .ifs-col {
+    border-left: none;
+    padding-left: 0;
+  }
+
+  .ifs-col + .ifs-col .ifs-item:first-child {
+    border-top: 1px solid var(--line);
+    padding-top: 28px;
+  }
+}
+
+@media (max-width: 700px) {
+  body {
+    font-size: 16px;
+  }
+
+  /* Линейка между заголовком и «≈ 40 секунд» схлопывается в ноль, и подпись
+     повисает сбоку от двух строк. Проще положить её под заголовок. */
+  .steps-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .steps-head .rule {
+    display: none;
+  }
+
+  .nav-links a:not(.dead) {
+    display: none;
+  }
+
+  .hero-bottom {
+    padding-top: 32px;
+  }
+
+  .btn-dead {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  /*
+   * На телефоне полоса показывает не весь экран входа, а его правую панель.
+   * Целый кадр 1440x900 в коробке 390px ужимал интерфейсный текст до 3-4px:
+   * подпись просит рассмотреть имя, метку и кнопку, а рассматривать было
+   * нечего. Снимок увеличен до 1060px (при DPR 2 это ровно источник 2160w) и
+   * прижат правым краем, поэтому окно кадра — x 910–1440, y 248–647 по файлу
+   * 1440x900: поле имени, карточка метки и кнопка входа целиком.
+   * Ниже 390px тот же кадр просто уменьшается вместе с окном — правый край
+   * остаётся правым краем, и поле имени не срезается.
+   */
+  .door-form {
+    padding: 36px var(--gutter) 40px;
+    gap: 20px;
+  }
+
+  .door-bill--small .door-title {
+    font-size: 32px;
+  }
+
+  /* 28px, а не 34: h1 на телефоне упирается в нижнюю границу clamp (38px),
+     и близкие кегли начинают спорить друг с другом. */
+  .roles {
+    width: 100%;
+  }
+
+  .tline-row {
+    flex-direction: column;
+    gap: 8px;
+    padding: 22px 0;
+  }
+
+  .tline-time {
+    width: auto;
+    line-height: 20px;
+  }
+
+  /* Кнопка уходит под ячейку и получает полноценную цель для пальца.
+     58px — ширина «In [ ]» плюс воздух: при 48px промпт вставал вплотную
+     к коду и читался как его часть. */
+  .cell {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+
+  .cell-run {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    justify-self: stretch;
+    margin-top: 14px;
+    min-height: 44px;
+  }
+}
+
+/*
+ * Reduced motion — это «меньше и мягче», а не «ноль». Прежний блок глушил
+ * подряд все transition на странице, вместе с подсветкой ссылок шапки: она
+ * помогает понять состояние и ничего не двигает. Гребёнка ниже гасит только
+ * то, что действительно ездит, — длительности анимаций, их повторы и плавную
+ * прокрутку; всё остальное снимается точечно.
+ *
+ * Именно 1ms, а не animation:none: конечный кадр у набора, аватаров и ответа
+ * терминала задан через forwards, и none оставил бы их на первом кадре —
+ * то есть невидимыми навсегда.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Селектор повторяет .avatars.is-in span со styles.css: сцена объявлена
+     именно там, и гард по .avatars span (0,1,1) проигрывал ей по
+     специфичности — то есть не применялся никогда. Тройкой, а не одним
+     animation:none: иначе остался бы opacity:0 из кейфрейма. */
+  .avatars.is-in span {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  /* На двери имя не набирается само: поле сразу стоит заполненным, метка
+     не перебирается. Гард в скрипте — первый рубеж, здесь снимается всё, что
+     всё-таки могло бы поехать. */
+  .door-glyph.is-swap,
+  .door-stack span.is-new,
+  .door-grid {
+    animation: none;
+  }
+
+  /* Команда стоит напечатанной, каретки нет — но ответ системы по-прежнему
+     проявляется: это не украшение, а граница между «я ввёл» и «оно
+     ответило». Движения в нём не остаётся, только прозрачность. */
+  .term--live .term-cmd {
+    clip-path: none !important;
+  }
+
+  .term--live .term-caret {
+    display: none;
+  }
+
+  /* Гейт на .is-run тот же, что у полной сцены: ответ проявляется, когда
+     терминал попал в кадр, а не молча на загрузке страницы. */
+  .term--live.is-run .term-out {
+    transform: none !important;
+    animation: term-soft 200ms var(--ease-out) both !important;
+  }
+
+  /* Всё, что ездит по экрану, снимается поимённо. */
+  .cell-run:active,
+  .roles label:active {
+    transform: none;
+  }
+
+  /* Нажатие всё равно обязано быть слышно: вместо масштаба отвечает рамка.
+     И так же молчит там, где нажатие ничего не делает. */
+  .cell-run:active {
+    border-color: var(--accent-text);
+  }
+
+  .cell[data-run='running'] .cell-run:active,
+  .cell[data-run='queued'] .cell-run:active {
+    border-color: var(--line);
+  }
+
+  /* Один селектор на все состояния вывода — и результат, и ошибку, и очередь. */
+  .cell-out p {
+    transform: none !important;
+    transition: opacity 120ms linear !important;
+  }
+
+  .roles-ind {
+    transition-duration: 1ms !important;
+  }
+}
