@@ -274,6 +274,46 @@
     { value: 'full', label: 'Full answers', note: 'explains and writes code' },
   ]
 
+  /*
+   * Чего в этом списке нет и почему. «Скоро будет» преподавателю не говорит
+   * ничего, что можно спланировать, поэтому у каждой строки своя причина, и
+   * список сокращается, но не пустеет.
+   */
+  const NOT_YET: { what: string; why: string }[] = [
+    { what: 'Read the cells', why: 'every browser holds the whole notebook' },
+    { what: 'Read the terminal transcript', why: 'it is in the shared document too' },
+    { what: 'Lock one prepared cell, leave the answer cells open', why: 'a cell has no lock to read' },
+    { what: "Edit your own answer but not your neighbour's", why: 'a cell has no owner' },
+    { what: 'Keep one student’s oracle question private', why: 'one thread, one document root' },
+    { what: 'Remove somebody from the room', why: 'a token can expire, not be withdrawn' },
+    { what: 'A model for this room only', why: 'not a permission, and read nowhere yet' },
+  ]
+
+  /*
+   * И три сцепки — проверенные факты об этом коде, а не оговорки. Правило
+   * честности к ним относится ровно так же, как к переключателям.
+   */
+  const COUPLINGS: { what: string; why: string; when: (r: RoomRules) => boolean }[] = [
+    {
+      what: 'Running is not a boundary while typing is open.',
+      why:
+        'The kernel reads a cell’s source at the instant it runs it, not when Run was pressed — so a ' +
+        'student who may not run still writes the Python the teacher’s Run executes.',
+      when: (r) => r.run !== 'room' && r.edit === 'room',
+    },
+    {
+      what: 'Files are only as locked as the kernel is.',
+      why:
+        'The container mounts this room’s folder, so os.listdir() is the listing, open(...) is the ' +
+        'download and os.remove(...) is the delete — for anyone who may run a cell.',
+      when: (r) => r.files !== 'room' && r.run !== 'host',
+    },
+    {
+      what: 'Turning the terminal off closes the drawer, not the shell.',
+      why: '!pip install inside a cell is the same container, and the drawer’s own empty state says so.',
+      when: (r) => r.terminal !== 'room' && r.run !== 'host',
+    },
+  ]
 </script>
 
 {#snippet actions()}
@@ -677,6 +717,38 @@
   >
     <div class="flex flex-col gap-4">
       <RoomRulesRows {rules} onchange={(patch) => (rules = { ...rules, ...patch })} />
+
+      <!--
+        Три сцепки, напечатанные здесь, а не спрятанные в коде. Каждая — про
+        то, где переключатель выше значит меньше, чем кажется; правило чести то
+        же, что и у самих переключателей: не обещать того, чего продукт не
+        держит. Показываются только когда относятся к делу — комната, которую
+        никто не ужимал, не видит ни одной.
+      -->
+      {#each COUPLINGS.filter((c) => c.when(rules)) as note (note.what)}
+        <div class="flex items-start gap-2.5 border-l-2 border-warning bg-warning/[0.07] px-3.5 py-2.5">
+          <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
+          <p class="min-w-0 text-2xs leading-snug text-muted">
+            <span class="font-semibold text-ink">{note.what}</span>
+            {note.why}
+          </p>
+        </div>
+      {/each}
+
+      <div class="border border-line bg-surface">
+        <div class="flex items-center gap-2.5 border-b border-line px-3.5 py-2">
+          <span class="text-micro font-bold uppercase tracking-caps text-muted">Not yet settings</span>
+          <span class="text-2xs text-faint">and the reason, which is not "coming soon"</span>
+        </div>
+        {#each NOT_YET as row (row.what)}
+          <div
+            class="flex items-center gap-3 border-b border-line-soft px-3.5 py-2 last:border-b-0"
+          >
+            <span class="min-w-0 flex-1 text-ui text-muted">{row.what}</span>
+            <span class="shrink-0 text-right font-mono text-micro text-faint">{row.why}</span>
+          </div>
+        {/each}
+      </div>
 
       <div class="flex items-start gap-2.5 border-l-2 border-accent bg-accent/[0.06] px-3.5 py-3">
         <Icon name="lock" size={13} class="mt-0.5 shrink-0 text-accent-text" />
