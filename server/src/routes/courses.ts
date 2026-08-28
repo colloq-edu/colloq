@@ -16,16 +16,20 @@ import {
   MAX_COURSE_NAME,
   MAX_STEPS,
   MAX_STEP_LABEL,
+  slugOk,
   type CourseItem,
   type PublicCourseView,
   type PublicSeminar,
 } from "@shared/publish";
 import { candidatesFor } from "../publish/candidates.js";
 import { newBlobBag, pageAt, pageOfDoc } from "../publish/build.js";
+import { notebookOf } from "../publish/notebook.js";
 import {
   createCourse,
   deleteCourse,
   getCourse,
+  findCourse,
+  findPublication,
   getPublication,
   listCourses,
   publicationOf,
@@ -33,6 +37,8 @@ import {
   readStep,
   renameCourse,
   setCourseItems,
+  setCourseSlug,
+  setPublicationSlug,
   setPublicationState,
   stepHeadings,
   writePublication,
@@ -61,6 +67,7 @@ function freshItems(items: CourseItem[]): CourseItem[] {
         pub && pub.state === "published"
           ? {
               id: pub.id,
+              slug: pub.slug,
               publishedAt: pub.publishedAt,
               steps: stepHeadings(pub.id).length,
             }
@@ -135,7 +142,8 @@ export function courseRoutes(): Router {
     for (const raw of incoming as Record<string, unknown>[]) {
       if (raw?.kind === "planned") {
         const name = str(raw.name, MAX_COURSE_NAME);
-        if (name) items.push({ kind: "planned", name, when: str(raw.when, 40) });
+        if (name)
+          items.push({ kind: "planned", name, when: str(raw.when, 40) });
         continue;
       }
       if (raw?.kind === "gone") {
@@ -174,6 +182,38 @@ export function courseRoutes(): Router {
   router.delete("/api/admin/courses/:id", requireStaff, (req, res) => {
     deleteCourse(req.params.id);
     res.json({ ok: true });
+  });
+
+  /**
+   * Имя в адресе — курсу или публикации.
+   *
+   * Отдельным маршрутом, а не полем в PATCH: занятое имя — это отказ, о
+   * котором надо сказать словами, а не пропажа среди трёх других полей,
+   * сохранившихся успешно.
+   */
+  router.put("/api/admin/slug/:kind/:id", requireStaff, (req, res) => {
+    const raw = req.body?.slug;
+    const slug =
+      typeof raw === "string" && raw.trim() ? raw.trim().toLowerCase() : null;
+    if (slug !== null && !slugOk(slug)) {
+      return bad(
+        res,
+        "Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.",
+      );
+    }
+    const course = req.params.kind === "course";
+    const target = course
+      ? getCourse(req.params.id)
+      : getPublication(req.params.id);
+    if (!target) return res.status(404).json({ error: "not found" });
+
+    const outcome = course
+      ? setCourseSlug(target.id, slug)
+      : setPublicationSlug(target.id, slug);
+    if (outcome === "taken") {
+      return res.status(409).json({ error: `Адрес «${slug}» уже занят.` });
+    }
+    res.json({ slug });
   });
 
   /* -------------------------------------------------------- публикация */
@@ -265,10 +305,13 @@ export function courseRoutes(): Router {
   /* ---------------------------------------------------------- публично */
 
   router.get("/api/c/:id", (req, res) => {
-    const course = getCourse(req.params.id);
+    // По имени или по идентификатору: ссылка, розданная до того, как курсу
+    // дали имя, обязана работать и после.
+    const course = findCourse(req.params.id);
     if (!course) return res.status(404).json({ error: "course not found" });
     const view: PublicCourseView = {
       id: course.id,
+      slug: course.slug,
       name: course.name,
       blurb: course.blurb,
       items: freshItems(course.items).map((item) =>
@@ -288,7 +331,7 @@ export function courseRoutes(): Router {
   });
 
   router.get("/api/p/:id", (req, res) => {
-    const pub = getPublication(req.params.id);
+    const pub = findPublication(req.params.id);
     if (!pub) return res.status(404).json({ error: "publication not found" });
     const course = listCourses().find((c) =>
       c.items.some(
@@ -297,6 +340,7 @@ export function courseRoutes(): Router {
     );
     const seminar: PublicSeminar = {
       id: pub.id,
+      slug: pub.slug,
       title: pub.title,
       state: pub.state,
       publishedAt: pub.publishedAt,
@@ -308,7 +352,7 @@ export function courseRoutes(): Router {
   });
 
   router.get("/api/p/:id/step/:seq", (req, res) => {
-    const pub = getPublication(req.params.id);
+    const pub = findPublication(req.params.id);
     if (!pub || pub.state !== "published") {
       return res.status(404).json({ error: "publication not found" });
     }
@@ -331,36 +375,20 @@ export function courseRoutes(): Router {
    * килобайты; с ними это мегабайты base64 в файле, который студент несёт к
    * себе, чтобы запустить заново, — и первым делом всё равно нажмёт «Run».
    */
-  router.get('/api/p/:id/notebook.ipynb', (req, res) => {
-    const pub = getPublication(req.params.id)
-    if (!pub || pub.state !== 'published') return res.status(404).end()
-    const headings = stepHeadings(pub.id)
-    const last = headings.at(-1)
-    const step = last ? readStep(pub.id, last.seq) : null
-    if (!step) return res.status(404).end()
-
-    const notebook = {
-      cells: step.cells.map((cell) => ({
-        cell_type: cell.type,
-        metadata: {},
-        source: cell.source.split(/(?<=\n)/),
-        ...(cell.type === 'code' ? { execution_count: null, outputs: [] } : {}),
-      })),
-      metadata: {
-        kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' },
-        language_info: { name: 'python' },
-      },
-      nbformat: 4,
-      nbformat_minor: 5,
-    }
-    const name = pub.title.replace(/[^\p{L}\p{N} _-]/gu, '').trim() || 'notebook'
-    res.setHeader('content-type', 'application/x-ipynb+json; charset=utf-8')
+  router.get("/api/p/:id/notebook.ipynb", (req, res) => {
+    const pub = findPublication(req.params.id);
+    if (!pub || pub.state !== "published") return res.status(404).end();
+    const body = notebookOf(pub.id);
+    if (body.length === 0) return res.status(404).end();
+    const name =
+      pub.title.replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "notebook";
+    res.setHeader("content-type", "application/x-ipynb+json; charset=utf-8");
     res.setHeader(
-      'content-disposition',
+      "content-disposition",
       `attachment; filename*=UTF-8''${encodeURIComponent(name)}.ipynb`,
-    )
-    res.send(JSON.stringify(notebook, null, 1))
-  })
+    );
+    res.send(body);
+  });
 
   /**
    * Крупные куски выводов — по хэшу содержимого.
@@ -369,7 +397,7 @@ export function courseRoutes(): Router {
    * график на полмегабайта не должен приезжать дважды.
    */
   router.get("/api/p/:id/blob/:hash", (req, res) => {
-    const pub = getPublication(req.params.id);
+    const pub = findPublication(req.params.id);
     if (!pub || pub.state !== "published") return res.status(404).end();
     const blob = readBlob(pub.id, req.params.hash);
     if (!blob) return res.status(404).end();

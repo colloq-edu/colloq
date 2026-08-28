@@ -10,7 +10,12 @@
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
-  import { MAX_STEP_LABEL, type PublishCandidate } from '@shared/publish'
+  import {
+    MAX_STEP_LABEL,
+    slugOk,
+    suggestSlug,
+    type PublishCandidate,
+  } from '@shared/publish'
 
   interface Props {
     sessionId: string
@@ -78,6 +83,32 @@
     }
   }
 
+  /** Имя в адресе, выбранное человеком. Предлагается из названия семинара. */
+  let slug = $state('')
+  let slugDraft = $state('')
+  $effect(() => {
+    if (done && !slugDraft) slugDraft = suggestSlug(title)
+  })
+
+  async function saveSlug(): Promise<void> {
+    if (!done) return
+    const next = slugDraft.trim().toLowerCase()
+    if (next && !slugOk(next)) {
+      error = 'Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.'
+      return
+    }
+    busy = true
+    error = null
+    try {
+      await adminApi.setSlug('publication', done, next || null)
+      slug = next
+    } catch (cause) {
+      error = cause instanceof AdminApiError ? cause.message : 'адрес не сохранился'
+    } finally {
+      busy = false
+    }
+  }
+
   const stamp = (at: number): string =>
     new Date(at).toLocaleString('ru-RU', {
       hour: '2-digit',
@@ -116,16 +147,42 @@
     {/if}
 
     {#if done}
-      <div class="max-w-[640px] border border-line bg-surface p-5">
+      <div class="flex max-w-[640px] flex-col gap-3 border border-line bg-surface p-5">
         <p class="text-ui text-muted">Страница класса:</p>
         <a
-          class="mt-1.5 block font-mono text-ui-lg text-accent-text"
-          href={`/p/${done}`}
+          class="block font-mono text-ui-lg text-accent-text"
+          href={`/p/${slug || done}`}
           target="_blank"
           rel="noreferrer"
         >
-          {location.host}/p/{done}
+          {location.host}/p/{slug || done}
         </a>
+        <!--
+          Адрес диктуют вслух и пишут на доске: восемь случайных символов
+          запоминаются хуже, чем «week-05», и переспрашивают их чаще. Старый
+          адрес продолжает работать — ссылку, которую уже дали, ломать нельзя.
+        -->
+        <div class="flex flex-wrap items-center gap-2 border-t border-line pt-3">
+          <span class="font-mono text-2xs text-muted">{location.host}/p/</span>
+          <input
+            class="h-7 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
+                   placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+            placeholder={done}
+            maxlength={64}
+            bind:value={slugDraft}
+            onkeydown={(event) => {
+              if (event.key === 'Enter') void saveSlug()
+            }}
+          />
+          <button
+            type="button"
+            class="btn-primary h-7 px-3 text-2xs"
+            disabled={busy || slugDraft.trim() === slug}
+            onclick={() => void saveSlug()}
+          >
+            Дать имя адресу
+          </button>
+        </div>
       </div>
     {:else}
       <!-- Шаги -->

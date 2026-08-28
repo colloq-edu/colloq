@@ -12,7 +12,13 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { copyText } from '@/lib/clipboard'
-  import { MAX_COURSE_BLURB, MAX_COURSE_NAME, type Course, type CourseItem } from '@shared/publish'
+  import {
+    MAX_COURSE_NAME,
+    slugOk,
+    suggestSlug,
+    type Course,
+    type CourseItem,
+  } from '@shared/publish'
   import type { AdminSeminar } from '@shared/admin'
 
   interface Props {
@@ -146,7 +152,36 @@
     setTimeout(() => (copied = copied === key ? null : copied), 1600)
   }
 
-  const publicUrl = (id: string): string => `${location.host}/c/${id}`
+  /**
+   * Черновик адреса.
+   *
+   * Предложение из названия — только когда имени ещё нет: подставлять его
+   * поверх выбранного человеком значило бы переписывать чужое решение при
+   * каждом открытии экрана.
+   */
+  let slugDraft = $state('')
+  $effect(() => {
+    slugDraft = course?.slug ?? (course ? suggestSlug(course.name) : '')
+  })
+
+  async function saveSlug(): Promise<void> {
+    if (!course) return
+    const next = slugDraft.trim().toLowerCase()
+    if (next && !slugOk(next)) {
+      error = 'Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.'
+      return
+    }
+    busy = true
+    error = null
+    try {
+      await adminApi.setSlug('course', course.id, next || null)
+      await loadOne(course.id)
+    } catch (cause) {
+      error = explain(cause)
+    } finally {
+      busy = false
+    }
+  }
   const ROW = 'flex items-center gap-4 border-t border-line py-2.5'
   const ARROW =
     'flex h-6 w-6 items-center justify-center border border-line text-muted transition-colors ' +
@@ -250,7 +285,32 @@
         ← Все курсы
       </button>
 
-      <p class="pb-5 font-mono text-2xs text-muted">{publicUrl(shown.id)}</p>
+      <!--
+        Адрес курса — то, что диктуют классу вслух и пишут на доске. Поэтому он
+        редактируется прямо здесь, а не прячется в настройках: восемь случайных
+        символов запоминаются хуже, чем «ml-strong», и переспрашивают их чаще.
+      -->
+      <div class="flex flex-wrap items-center gap-2 pb-5">
+        <span class="font-mono text-2xs text-muted">{location.host}/c/</span>
+        <input
+          class="h-7 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
+                 placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+          placeholder={shown.id}
+          maxlength={64}
+          bind:value={slugDraft}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') void saveSlug()
+          }}
+        />
+        {#if slugDraft.trim() !== (shown.slug ?? '')}
+          <button type="button" class="btn-primary h-7 px-3 text-2xs" disabled={busy} onclick={() => void saveSlug()}>
+            Сохранить адрес
+          </button>
+        {/if}
+        {#if shown.slug}
+          <span class="text-2xs text-muted">старый адрес /c/{shown.id} тоже работает</span>
+        {/if}
+      </div>
 
       {#if error}
         <p class="pb-4 text-ui text-danger">{error}</p>

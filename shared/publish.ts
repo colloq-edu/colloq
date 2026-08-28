@@ -24,7 +24,12 @@ export interface CourseItemSeminar {
   sessionId: string;
   name: string;
   /** Есть ли у него публичная страница и что на ней. */
-  publication: { id: PublicationId; publishedAt: number; steps: number } | null;
+  publication: {
+    id: PublicationId;
+    slug: string | null;
+    publishedAt: number;
+    steps: number;
+  } | null;
 }
 
 /**
@@ -60,8 +65,73 @@ export interface CourseItemPlanned {
 
 export type CourseItem = CourseItemSeminar | CourseItemGone | CourseItemPlanned;
 
+/**
+ * Имя, выбранное человеком, для адреса.
+ *
+ * Только строчные, цифры и дефис: адрес диктуют вслух и пишут на доске, а
+ * заглавные в нём — источник вопроса «а с большой или с маленькой?». Точек и
+ * слэшей нет намеренно — путь собирается подстановкой, и вылезти из него
+ * нельзя.
+ */
+export const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/;
+
+export function slugOk(value: string): boolean {
+  return SLUG_RE.test(value);
+}
+
+/**
+ * Слово из названия — предложение, а не приговор: человек стирает и пишет своё.
+ */
+export function suggestSlug(name: string): string {
+  const TRANSLIT: Record<string, string> = {
+    а: "a",
+    б: "b",
+    в: "v",
+    г: "g",
+    д: "d",
+    е: "e",
+    ё: "e",
+    ж: "zh",
+    з: "z",
+    и: "i",
+    й: "y",
+    к: "k",
+    л: "l",
+    м: "m",
+    н: "n",
+    о: "o",
+    п: "p",
+    р: "r",
+    с: "s",
+    т: "t",
+    у: "u",
+    ф: "f",
+    х: "h",
+    ц: "c",
+    ч: "ch",
+    ш: "sh",
+    щ: "sch",
+    ъ: "",
+    ы: "y",
+    ь: "",
+    э: "e",
+    ю: "yu",
+    я: "ya",
+  };
+  const out = [...name.toLowerCase()]
+    .map((ch) => TRANSLIT[ch] ?? ch)
+    .join("")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64)
+    .replace(/-+$/, "");
+  return out.length >= 3 ? out : "";
+}
+
 export interface Course {
   id: CourseId;
+  /** Имя в адресе. `null` — адрес остаётся идентификатором. */
+  slug: string | null;
   name: string;
   blurb: string | null;
   createdAt: number;
@@ -87,6 +157,7 @@ export interface Course {
  */
 export interface PublicCourseView {
   id: CourseId;
+  slug: string | null;
   name: string;
   blurb: string | null;
   items: CourseItem[];
@@ -133,6 +204,7 @@ export type PublicationState = "published" | "withdrawn";
 
 export interface PublicSeminar {
   id: PublicationId;
+  slug: string | null;
   title: string;
   state: PublicationState;
   publishedAt: number;

@@ -140,6 +140,7 @@ db.exec(`
    */
   CREATE TABLE IF NOT EXISTS courses (
     id         TEXT PRIMARY KEY,
+    slug       TEXT UNIQUE,
     name       TEXT NOT NULL,
     blurb      TEXT,
     created_at INTEGER NOT NULL,
@@ -158,6 +159,7 @@ db.exec(`
    */
   CREATE TABLE IF NOT EXISTS publications (
     id           TEXT PRIMARY KEY,
+    slug         TEXT UNIQUE,
     session_id   TEXT UNIQUE,
     title        TEXT NOT NULL,
     state        TEXT NOT NULL DEFAULT 'published',
@@ -269,6 +271,25 @@ ensureColumn('participants', 'token_host', 'token_host INTEGER NOT NULL DEFAULT 
  * exactly what it has always been.
  */
 ensureColumn('sessions', 'rules', 'rules TEXT')
+
+/*
+ * Имя в адресе, выбранное человеком.
+ *
+ * Восьмисимвольный идентификатор годится для комнаты, которую открывают один
+ * раз по ссылке из чата. Курс дают классу на год, и `colloq.ru/c/ml-strong`
+ * запоминается, диктуется вслух и переживает потерю сообщения, а
+ * `/c/vspnrgt5` не делает ничего из этого.
+ *
+ * Столбцами, а не в JSON: единственность адреса должна держать база, иначе два
+ * курса однажды окажутся по одному пути. Оба добавляются миграцией, потому что
+ * таблицы уже могли завестись у того, кто обновился на день раньше.
+ */
+ensureColumn('courses', 'slug', 'slug TEXT')
+ensureColumn('publications', 'slug', 'slug TEXT')
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS courses_slug ON courses(slug) WHERE slug IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS publications_slug ON publications(slug) WHERE slug IS NOT NULL;
+`)
 
 /* ------------------------------------------------------------- sessions */
 

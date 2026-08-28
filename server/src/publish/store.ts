@@ -45,6 +45,7 @@ const clip = (value: unknown, max: number): string =>
 
 interface CourseRow {
   id: string;
+  slug: string | null;
   name: string;
   blurb: string | null;
   created_at: number;
@@ -63,6 +64,7 @@ function toCourse(row: CourseRow): Course {
   }
   return {
     id: row.id,
+    slug: row.slug,
     name: row.name,
     blurb: row.blurb,
     createdAt: row.created_at,
@@ -77,6 +79,17 @@ const insertCourse = db.prepare(`
   VALUES (?, ?, ?, ?, ?, '[]', 0)
 `);
 const selectCourse = db.prepare("SELECT * FROM courses WHERE id = ?");
+/*
+ * По имени ИЛИ по идентификатору — одним запросом.
+ *
+ * Обещание постоянного адреса: ссылка, розданная с восьмисимвольным id, обязана
+ * работать и после того, как курсу дали человеческое имя. Ломать её ради
+ * красоты нового адреса — ровно то, чего этот раздел не должен делать никогда.
+ */
+const selectCourseByAny = db.prepare(
+  "SELECT * FROM courses WHERE id = ? OR slug = ? LIMIT 1",
+);
+const updateCourseSlug = db.prepare("UPDATE courses SET slug = ? WHERE id = ?");
 const selectCourses = db.prepare(
   "SELECT * FROM courses ORDER BY created_at DESC",
 );
@@ -107,6 +120,28 @@ export function createCourse(
 export function getCourse(id: string): Course | null {
   const row = selectCourse.get(id) as CourseRow | undefined;
   return row ? toCourse(row) : null;
+}
+
+/** Курс по адресу — имени или идентификатору. Оба ведут в одно место. */
+export function findCourse(handle: string): Course | null {
+  const row = selectCourseByAny.get(handle, handle) as CourseRow | undefined;
+  return row ? toCourse(row) : null;
+}
+
+/**
+ * Назначить курсу имя в адресе.
+ *
+ * `null` снимает имя; занятое чужим — отказ, а не молчаливая перезапись: два
+ * курса по одному адресу означают, что один из них исчез для тех, кому его уже
+ * дали.
+ */
+export function setCourseSlug(id: string, slug: string | null): "ok" | "taken" {
+  if (slug !== null) {
+    const owner = findCourse(slug);
+    if (owner && owner.id !== id) return "taken";
+  }
+  updateCourseSlug.run(slug, id);
+  return "ok";
 }
 
 export function listCourses(): Course[] {
@@ -172,6 +207,7 @@ export function entombSeminar(sessionId: string, name: string): void {
 
 interface PublicationRow {
   id: string;
+  slug: string | null;
   session_id: string | null;
   title: string;
   state: string;
@@ -183,6 +219,7 @@ interface PublicationRow {
 
 export interface Publication {
   id: string;
+  slug: string | null;
   sessionId: string | null;
   title: string;
   state: PublicationState;
@@ -195,6 +232,7 @@ export interface Publication {
 function toPublication(row: PublicationRow): Publication {
   return {
     id: row.id,
+    slug: row.slug,
     sessionId: row.session_id,
     title: row.title,
     state: row.state === "withdrawn" ? "withdrawn" : "published",
@@ -206,6 +244,12 @@ function toPublication(row: PublicationRow): Publication {
 }
 
 const selectPub = db.prepare("SELECT * FROM publications WHERE id = ?");
+const selectPubByAny = db.prepare(
+  "SELECT * FROM publications WHERE id = ? OR slug = ? LIMIT 1",
+);
+const updatePubSlug = db.prepare(
+  "UPDATE publications SET slug = ? WHERE id = ?",
+);
 const selectPubForSession = db.prepare(
   "SELECT * FROM publications WHERE session_id = ?",
 );
@@ -252,6 +296,24 @@ const selectBlob = db.prepare(
 export function getPublication(id: string): Publication | null {
   const row = selectPub.get(id) as PublicationRow | undefined;
   return row ? toPublication(row) : null;
+}
+
+/** Публикация по адресу — имени или идентификатору. */
+export function findPublication(handle: string): Publication | null {
+  const row = selectPubByAny.get(handle, handle) as PublicationRow | undefined;
+  return row ? toPublication(row) : null;
+}
+
+export function setPublicationSlug(
+  id: string,
+  slug: string | null,
+): "ok" | "taken" {
+  if (slug !== null) {
+    const owner = findPublication(slug);
+    if (owner && owner.id !== id) return "taken";
+  }
+  updatePubSlug.run(slug, id);
+  return "ok";
 }
 
 export function publicationOf(sessionId: string): Publication | null {

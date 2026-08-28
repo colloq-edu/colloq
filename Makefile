@@ -180,6 +180,9 @@ shell: ## Оболочка внутри ядра — посмотреть, чт�
 host: .env ## Выставить семинар наружу и получить ссылку. HOST=... — свой адрес
 	@COLLOQ_HOSTNAME="$(HOST)" ./scripts/host.sh
 
+site: ## Выложить опубликованные семинары на colloq.ru. DRY=1 — только собрать
+	@npx tsx scripts/publish-site.mts $(if $(SITE),--site "$(SITE)",) $(if $(BASE),--base "$(BASE)",) $(if $(DRY),--dry,)
+
 course: ## Курс из расписания в таблице. SHEET=<id> GID=<gid> COL="ML · сильная"
 	@test -n "$(SHEET)" || { printf '$(RED)Укажите таблицу: make course SHEET=<id> COL="ML · сильная"$(OFF)\n'; exit 1; }
 	@npx tsx scripts/course-from-sheet.mts \

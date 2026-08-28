@@ -222,6 +222,18 @@ export const adminApi = {
       ...json({ rev, items }),
     }).then((r) => r.course),
 
+  /**
+   * Имя в адресе — курсу или публикации.
+   *
+   * Отдельным вызовом, а не полем в PATCH: занятое имя — отказ, о котором надо
+   * сказать словами, а не пропажа среди других полей, сохранившихся успешно.
+   */
+  setSlug: (kind: 'course' | 'publication', id: string, slug: string | null) =>
+    request<{ slug: string | null }>(`/slug/${kind}/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      ...json({ slug }),
+    }),
+
   deleteCourse: (id: string) =>
     request<void>(`/courses/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
