@@ -408,7 +408,14 @@ function optionalId(value: unknown): string | undefined {
     : undefined;
 }
 
-function dispatch(
+/**
+ * Разбор одного сообщения управляющего сокета.
+ *
+ * Экспортируется ради теста: таблица прав живёт здесь, и проверять её через
+ * настоящий сокет значило бы поднимать ядро ради того, чтобы убедиться, что до
+ * ядра не дошло. Каждый отказ отвечает раньше всякого действия.
+ */
+export function dispatch(
   ws: WebSocket,
   sessionId: string,
   payload: TokenPayload,
