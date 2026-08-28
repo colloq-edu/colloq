@@ -3,7 +3,7 @@
  *
  * A seminar is not always the same shape. A lecture wants a notebook the class
  * can read and nobody can rearrange; a lab wants everyone typing at once; an
- * exam wants the oracle switched off and the terminal shut. Today the product
+ * exam wants the oracle switched off and the notebook read-only. Today the product
  * has one shape — everybody can do everything — and the teacher's only recourse
  * is asking the room nicely.
  *
@@ -51,7 +51,6 @@ export type StructureWho = "room" | "add" | "host";
  * именно ящик, а не оболочку, сказано в панели вслух: `!pip install` в ячейке
  * идёт в тот же контейнер.
  */
-export type ShellWho = "room" | "host" | "off";
 
 export interface RoomRules {
   /**
@@ -98,25 +97,13 @@ export interface RoomRules {
   structure: StructureWho;
 
   /**
-   * The room's shell.
-   *
-   * Enforced in server/src/control.ts — every `term:*` action. `term:clear` and
-   * `term:close` были host-only и раньше.
-   *
-   * Закрывает ящик, а не оболочку, и в панели это сказано вслух: `!pip install`
-   * в ячейке идёт в тот же контейнер. Пока ячейка умеет `!rm`, «терминала нет»
-   * — про интерфейс, а не про изоляцию.
-   */
-  terminal: ShellWho;
-
-  /**
    * Who may put files into the room's folder.
    *
    * Enforced in server/src/routes/files.ts. Забрать файл — уже право
    * преподавателя, и было им раньше.
    *
-   * Сильно ровно настолько, насколько строже из `terminal` и `run`: контейнер
-   * ядра монтирует ту же папку, так что `os.listdir()` — это список,
+   * Сильно ровно настолько, насколько разрешает `run`: контейнер ядра
+   * монтирует ту же папку, так что `os.listdir()` — это список,
    * `open(...)` — скачивание, а `os.remove(...)` — удаление. Это про порядок в
    * папке, а не про тайну, и в панели так и написано.
    */
@@ -192,7 +179,6 @@ export const OPEN_ROOM: RoomRules = {
   run: "room",
   edit: "room",
   structure: "room",
-  terminal: "room",
   files: "room",
   /*
    * Три новых поля — и два из них по умолчанию строгие, потому что записывают
@@ -211,7 +197,6 @@ export const OPEN_ROOM: RoomRules = {
 const WHO = new Set<Who>(["room", "host"]);
 const RUN = new Set<RunWho>(["room", "single", "host"]);
 const STRUCTURE = new Set<StructureWho>(["room", "add", "host"]);
-const SHELL = new Set<ShellWho>(["room", "host", "off"]);
 const ORACLE = new Set<RoomRules["oracle"]>([
   "inherit",
   "off",
@@ -247,7 +232,6 @@ export function readRules(raw: unknown): RoomRules {
     run: one(RUN, source.run, OPEN_ROOM.run),
     edit: who(source.edit, OPEN_ROOM.edit),
     structure: one(STRUCTURE, source.structure, OPEN_ROOM.structure),
-    terminal: one(SHELL, source.terminal, OPEN_ROOM.terminal),
     files: who(source.files, OPEN_ROOM.files),
     wipe: who(source.wipe, OPEN_ROOM.wipe),
     restart: who(source.restart, OPEN_ROOM.restart),
@@ -334,23 +318,6 @@ export function allowsStructure(
   if (role === "host") return true;
   if (rule === "room") return true;
   return rule === "add" && verb === "add";
-}
-
-/**
- * Оболочка: есть ли она в комнате вообще и можно ли в неё писать.
- *
- * `off` отказывает и преподавателю: «в этой комнате терминала нет» — свойство
- * комнаты, а не чьё-то право, и ящик, который видит один человек из двадцати,
- * — это не «нет терминала».
- */
-export function allowsShell(
-  rule: ShellWho,
-  role: "host" | "participant",
-  act: "exist" | "type",
-): boolean {
-  if (rule === "off") return false;
-  if (rule === "room") return true;
-  return act === "exist" || role === "host";
 }
 
 /**

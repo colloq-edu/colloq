@@ -18,16 +18,7 @@ export interface RuleOption {
 
 export interface RuleRow {
   key: keyof RoomRules &
-    (
-      | "run"
-      | "edit"
-      | "structure"
-      | "terminal"
-      | "files"
-      | "wipe"
-      | "restart"
-      | "history"
-    );
+    ("run" | "edit" | "structure" | "files" | "wipe" | "restart" | "history");
   title: string;
   note: string;
   options: RuleOption[];
@@ -54,16 +45,6 @@ export const RULE_ROWS: RuleRow[] = [
     title: "Менять состав тетради",
     note: "«Только дописывать» — можно добавить свою ячейку, но не убрать и не переставить чужую.",
     options: [EVERYONE, { value: "add", label: "Только дописывать" }, TEACHER],
-  },
-  {
-    key: "terminal",
-    title: "Оболочка",
-    note: "Тот же контейнер, что и у ядра. «Нет» убирает её из комнаты у всех, включая преподавателя.",
-    options: [
-      EVERYONE,
-      { value: "host", label: "Смотреть" },
-      { value: "off", label: "Нет" },
-    ],
   },
   {
     key: "files",

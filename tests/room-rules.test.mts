@@ -41,7 +41,7 @@ test('rules survive a round trip through the database', () => {
   const back = getRules(id)
   assert.equal(back.run, 'host')
   assert.equal(back.oracle, 'hints')
-  assert.equal(back.terminal, 'room', 'an untouched rule changed')
+  assert.equal(back.edit, 'room', 'an untouched rule changed')
   assert.ok(!isOpenRoom(back))
 })
 

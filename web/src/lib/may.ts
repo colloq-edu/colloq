@@ -13,7 +13,6 @@
 import {
   allows,
   allowsRun,
-  allowsShell,
   allowsStructure,
   readRules,
   type RoomRules,
@@ -38,11 +37,6 @@ export interface Permits {
   /** Переставить или продублировать. */
   move: boolean;
   structureWhy: string;
-  /** Есть ли оболочка в комнате вообще. */
-  shell: boolean;
-  /** Можно ли в неё писать. */
-  shellWrite: boolean;
-  shellWhy: string;
   /** Стереть всё разом: доска, терминал, лента оракула. */
   wipe: boolean;
   wipeWhy: string;
@@ -80,9 +74,6 @@ export function permitsIn(rules: unknown, role: ParticipantRole): Permits {
       read.structure === "add" && role !== "host"
         ? "Здесь можно добавлять свои ячейки, но не убирать и не переставлять"
         : "Состав тетради в этом семинаре — преподавательский",
-    shell: allowsShell(read.terminal, role, "exist"),
-    shellWrite: allowsShell(read.terminal, role, "type"),
-    shellWhy: "Оболочка в этом семинаре принадлежит преподавателю",
     wipe: allows(read.wipe, role),
     wipeWhy: "Стирать общее здесь может преподаватель",
     restart: allows(read.restart, role),

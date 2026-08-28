@@ -11,7 +11,6 @@ import assert from 'node:assert/strict'
 import {
   allows,
   allowsRun,
-  allowsShell,
   allowsStructure,
   isOpenRoom,
   OPEN_ROOM,
@@ -25,7 +24,6 @@ test('семинар, записанный до новых полей, откр�
   const read = readRules(stored)
   assert.equal(read.run, 'room')
   assert.equal(read.structure, 'room')
-  assert.equal(read.terminal, 'room')
   // Новые три отсутствовали вовсе — читаются умолчаниями.
   assert.equal(read.wipe, 'host')
   assert.equal(read.restart, 'host')
@@ -35,19 +33,18 @@ test('семинар, записанный до новых полей, откр�
 })
 
 test('строгое значение из старой записи тоже переживает', () => {
-  const read = readRules({ run: 'host', structure: 'host', terminal: 'host' })
+  const read = readRules({ run: 'host', structure: 'host', wipe: 'room' })
   assert.equal(read.run, 'host')
   assert.equal(read.structure, 'host')
-  assert.equal(read.terminal, 'host')
+  assert.equal(read.wipe, 'room')
 })
 
 test('незнакомое значение падает на разрешительное, а не на строгое', () => {
   // Правило, которое от испорченной строки становится строже, запирает комнату
   // посреди пары и объяснить это некому.
-  const read = readRules({ run: 'sometimes', structure: 42, terminal: null, wipe: 'everyone' })
+  const read = readRules({ run: 'sometimes', structure: 42, wipe: 'everyone' })
   assert.equal(read.run, OPEN_ROOM.run)
   assert.equal(read.structure, OPEN_ROOM.structure)
-  assert.equal(read.terminal, OPEN_ROOM.terminal)
   assert.equal(read.wipe, OPEN_ROOM.wipe)
 })
 
@@ -77,14 +74,6 @@ test('«только дописывать» разрешает ровно пер
   }
 })
 
-test('«терминала нет» относится и к преподавателю', () => {
-  // Ящик, который видит один человек из двадцати, — это не «нет терминала».
-  assert.equal(allowsShell('off', 'host', 'exist'), false)
-  assert.equal(allowsShell('off', 'host', 'type'), false)
-  assert.equal(allowsShell('host', 'participant', 'exist'), true, 'класс должен видеть, что делает преподаватель')
-  assert.equal(allowsShell('host', 'participant', 'type'), false)
-  assert.equal(allowsShell('room', 'participant', 'type'), true)
-})
 
 test('allows не забывает про преподавателя', () => {
   assert.equal(allows('host', 'host'), true)

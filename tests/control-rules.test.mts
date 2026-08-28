@@ -97,31 +97,17 @@ test('в лекционной комнате студент не чистит и
 
 /* --------------------------------------------------------------- оболочка */
 
-test('«смотреть» оставляет расшифровку и закрывает ввод', () => {
-  const id = room({ terminal: 'host' })
-  assert.match(say(id, 'participant', { t: 'term:run', command: 'ls' }) ?? '', /преподавател/i)
-  // Открыть оболочку студент может: класс должен видеть, что делает преподаватель.
-  assert.equal(say(id, 'participant', { t: 'term:open' }), null)
-})
-
-test('«терминала нет» относится и к преподавателю', () => {
-  // Ящик, который видит один человек из двадцати, — это не «нет терминала».
-  const id = room({ terminal: 'off' })
-  for (const role of ['host', 'participant'] as const) {
-    assert.match(say(id, role, { t: 'term:open' }) ?? '', /терминала нет/i)
-    assert.match(say(id, role, { t: 'term:run', command: 'ls' }) ?? '', /терминала нет/i)
-    assert.match(say(id, role, { t: 'term:close' }) ?? '', /терминала нет/i)
-  }
-})
-
-test('открыть и закрыть оболочку — одно право', () => {
+test('открыть и закрыть оболочку — не одно право', () => {
   /*
-   * Раньше открытие не спрашивало никого, а закрытие было преподавательским:
-   * закрытую оболочку открывал обратно следующий клик любого студента.
+   * Открыть может любой: оболочка общая и в этом её смысл. Закрыть — то же, что
+   * стереть расшифровку: гасит её тот, кто вправе стирать общее, иначе один
+   * клик убирает у комнаты то, что она смотрела.
    */
   const id = room({})
   assert.equal(say(id, 'participant', { t: 'term:open' }), null)
-  assert.equal(say(id, 'participant', { t: 'term:close' }), null)
+  assert.equal(say(id, 'participant', { t: 'term:run', command: 'ls' }), null)
+  assert.ok(say(id, 'participant', { t: 'term:close' }))
+  assert.equal(say(id, 'host', { t: 'term:close' }), null)
 })
 
 /* ------------------------------------------------------------ состав и ядро */
@@ -185,7 +171,6 @@ test('в комнате, где ничего не решали, студенту
     { t: 'format' },
     { t: 'term:open' },
     { t: 'term:run', command: 'ls' },
-    { t: 'term:close' },
     { t: 'cells:move', cellId: 'c_nope', direction: 1 },
   ]
   for (const message of messages) {

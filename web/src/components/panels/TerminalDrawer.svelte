@@ -49,7 +49,7 @@
    * показывается терминал — он есть всегда, даже когда в него нельзя писать.
    */
   const shownTab = $derived<Tab>(
-    tab === 'history' && !may.history ? 'terminal' : tab === 'terminal' && !may.shell ? 'kernel' : tab,
+    tab === 'history' && !may.history ? 'terminal' : tab,
   )
   const cwd = `/workspace/${session.session.id}`
 
@@ -217,16 +217,11 @@
   // A command has to reach the server to be a command. Disconnected, the status
   // in hand is the last one the server sent, which says nothing about now.
   const canType = $derived(
-    // Правило комнаты сюда же: расшифровку смотрят все — оболочка общая, и
-    // видеть, что делает преподаватель, класс должен, — а печатать в неё
-    // может быть нельзя.
-    may.shellWrite && session.connected && (status === 'idle' || status === 'busy'),
+    session.connected && (status === 'idle' || status === 'busy'),
   )
 
   const placeholder = $derived(
-    !may.shellWrite
-      ? 'оболочка в этом семинаре принадлежит преподавателю'
-      : !session.connected
+    !session.connected
       ? 'waiting for the connection…'
       : status === 'starting'
         ? 'starting the shell…'
@@ -356,20 +351,16 @@
   </div>
 
   <div class="term-tabs">
-    <!-- `terminal: 'off'` — свойство комнаты, а не чьё-то право: вкладки нет ни
-         у кого. Ящик остаётся: в нём ещё журнал ядра и лента версий. -->
-    {#if may.shell}
-      <button
-        type="button"
-        class="term-tab"
-        class:on={shownTab === 'terminal'}
-        aria-pressed={shownTab === 'terminal'}
-        onclick={() => (tab = 'terminal')}
-      >
-        Terminal
-        {#if running}<span class="term-live-dot"></span>{/if}
-      </button>
-    {/if}
+    <button
+      type="button"
+      class="term-tab"
+      class:on={shownTab === 'terminal'}
+      aria-pressed={shownTab === 'terminal'}
+      onclick={() => (tab = 'terminal')}
+    >
+      Terminal
+      {#if running}<span class="term-live-dot"></span>{/if}
+    </button>
     <button
       type="button"
       class="term-tab"
@@ -480,8 +471,8 @@
     {/each}
   </div>
 
-  <!-- Журнал ядра и комната без оболочки строки ввода не имеют вовсе: пустое
-       приглашение $ под журналом обещает то, чего в этой комнате нет. -->
+  <!-- У журнала ядра строки ввода нет: пустое приглашение $ под ним обещает
+       то, чего там не бывает. -->
   {#if shownTab === 'terminal'}
   <div class="term-prompt" class:off={!canType}>
     <span class="term-av">

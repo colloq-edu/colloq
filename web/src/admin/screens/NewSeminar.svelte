@@ -308,11 +308,6 @@
         'download and os.remove(...) is the delete — for anyone who may run a cell.',
       when: (r) => r.files !== 'room' && r.run !== 'host',
     },
-    {
-      what: 'Turning the terminal off closes the drawer, not the shell.',
-      why: '!pip install inside a cell is the same container, and the drawer’s own empty state says so.',
-      when: (r) => r.terminal !== 'room' && r.run !== 'host',
-    },
   ]
 </script>
 

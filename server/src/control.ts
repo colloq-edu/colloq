@@ -42,7 +42,6 @@ import { LINE_LENGTH } from "./kernel/format.js";
 import {
   allows,
   allowsRun,
-  allowsShell,
   allowsStructure,
   runQueueCap,
   type Who,
@@ -346,30 +345,6 @@ function may(
 ): boolean {
   if (allows(rule, payload.role)) return true;
   send(ws, { t: "error", message });
-  return false;
-}
-
-/**
- * Оболочка: есть ли она в комнате и можно ли в неё писать.
- *
- * `off` отказывает и преподавателю — это свойство комнаты, а не чьё-то право:
- * ящик, который видит один человек из двадцати, — это не «нет терминала».
- */
-function mayShell(
-  sessionId: string,
-  payload: TokenPayload,
-  ws: WebSocket,
-  act: "exist" | "type",
-): boolean {
-  const rule = getRules(sessionId).terminal;
-  if (allowsShell(rule, payload.role, act)) return true;
-  send(ws, {
-    t: "error",
-    message:
-      rule === "off"
-        ? "В этом семинаре терминала нет."
-        : "Оболочка в этом семинаре принадлежит преподавателю.",
-  });
   return false;
 }
 
@@ -741,13 +716,6 @@ export function dispatch(
     }
 
     case "term:open": {
-      /*
-       * Одно правило на открыть и закрыть, и это и делает его правилом: раньше
-       * открытие не спрашивало никого, а закрытие было преподавательским — так
-       * что закрытую преподавателем оболочку открывал обратно следующий клик
-       * любого студента.
-       */
-      if (!mayShell(sessionId, payload, ws, "exist")) return;
       void openTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
           t: "error",
@@ -758,7 +726,6 @@ export function dispatch(
     }
 
     case "term:run": {
-      if (!mayShell(sessionId, payload, ws, "type")) return;
       const command =
         typeof message.command === "string" ? message.command : "";
       if (command.trim().length === 0) return;
@@ -823,7 +790,18 @@ export function dispatch(
     }
 
     case "term:close": {
-      if (!mayShell(sessionId, payload, ws, "exist")) return;
+      // Закрыть оболочку — то же, что стереть расшифровку: она общая, и гасит
+      // её тот же, кто вправе стирать общее.
+      if (
+        !may(
+          getRules(sessionId).wipe,
+          payload,
+          ws,
+          "Only the host can close the terminal.",
+        )
+      ) {
+        return;
+      }
       void closeTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
           t: "error",

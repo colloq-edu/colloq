@@ -22,7 +22,6 @@ import {
 } from "../db.js";
 import { onlineParticipantIds } from "../collab/index.js";
 import { ensureKernel } from "../kernel/index.js";
-import { clearTerminal, closeTerminal } from "../kernel/terminal.js";
 import { broadcast } from "../control.js";
 import { readRules } from "@shared/rules";
 import { setSeminarCreator } from "./admin-instance.js";
@@ -291,14 +290,6 @@ export function sessionRoutes(): Router {
      * кнопка перестала работать и никто не знает почему.
      */
     broadcast(sessionId, { t: "rules", rules });
-    // «Терминала нет» — обещание про комнату: открытую оболочку надо закрыть,
-    // иначе половина обещания.
-    if (rules.terminal === "off") {
-      clearTerminal(sessionId);
-      void closeTerminal(sessionId).catch(() => {
-        /* закрывать было нечего */
-      });
-    }
     res.json({ rules });
   });
 
