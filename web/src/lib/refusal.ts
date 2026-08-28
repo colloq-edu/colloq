@@ -28,6 +28,44 @@
 export const REFUSED_CLOSE = 4403
 
 const KEY = 'colloq.refused'
+const TRIES = 'colloq.refused.tries'
+
+/**
+ * Сколько раз подряд одна вкладка соглашается перезагрузиться из-за отказа.
+ *
+ * Перезагрузка лечит только вместе с очисткой кэша: если `clear()` не удался —
+ * приватное окно, запрет на хранилище, — `y-indexeddb` переиграет отказанную
+ * правку, сервер откажет снова, и страница начнёт перезагружаться по кругу.
+ * Немой браузер плох; браузер, который перезагружается вечно, хуже.
+ */
+const MAX_RELOADS = 2
+
+/**
+ * Согласиться на ещё одну перезагрузку — или отказаться и остаться на месте.
+ *
+ * Счётчик обнуляется, как только соединение снова живёт (`refusalHealed`), так
+ * что второй отказ через полчаса — это снова первый.
+ */
+export function mayReload(): boolean {
+  let tries = 0
+  try {
+    tries = Number(sessionStorage.getItem(TRIES) ?? '0') || 0
+    sessionStorage.setItem(TRIES, String(tries + 1))
+  } catch {
+    // Хранилища нет — значит и переигрывать нечего: перезагрузка сработает.
+    return true
+  }
+  return tries < MAX_RELOADS
+}
+
+/** Соединение живёт — прошлые отказы больше ни о чём не говорят. */
+export function refusalHealed(): void {
+  try {
+    sessionStorage.removeItem(TRIES)
+  } catch {
+    /* нечего забывать */
+  }
+}
 
 export interface RefusalNote {
   sessionId: string

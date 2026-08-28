@@ -17,7 +17,7 @@ import { ownAwareness } from '../server/src/collab/index.js'
 import { classify, permits } from '../server/src/collab/gate.js'
 import { OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import { CELLS_KEY, META_KEY, createCell } from '../shared/notebook.js'
-import { stashRefusal, takeRefusal } from '../web/src/lib/refusal.js'
+import { mayReload, refusalHealed, stashRefusal, takeRefusal } from '../web/src/lib/refusal.js'
 
 /*
  * У узла нет sessionStorage — а модуль про него и написан. Подделка ровно того
@@ -245,4 +245,21 @@ test('один сокет не наполняет комнату выдуман�
   assert.equal(accepted, 4, 'потолок на лица с одного сокета не сработал')
   for (const face of made) face.destroy()
   room.destroy()
+})
+
+test('перезагрузка после отказа не превращается в круг', () => {
+  /*
+   * Перезагрузка лечит только вместе с очисткой кэша. Если `clear()` не удался
+   * — приватное окно, запрет на хранилище, — `y-indexeddb` переиграет
+   * отказанную правку, сервер откажет снова, и страница начнёт
+   * перезагружаться по кругу. Немой браузер плох; вечно перезагружающийся хуже.
+   */
+  refusalHealed()
+  assert.equal(mayReload(), true)
+  assert.equal(mayReload(), true)
+  assert.equal(mayReload(), false, 'третья перезагрузка подряд — это круг')
+
+  // Соединение ожило — следующий отказ снова первый.
+  refusalHealed()
+  assert.equal(mayReload(), true)
 })

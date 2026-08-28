@@ -25,7 +25,7 @@ import { enqueueControl, OFFLINE_REASON } from './controls'
 import { countsAsUnread } from './notes'
 import type { StoredIdentity } from './identity'
 import { bindLocalStore, type LocalStore } from './persistence.svelte'
-import { REFUSED_CLOSE, stashRefusal } from './refusal'
+import { mayReload, REFUSED_CLOSE, refusalHealed, stashRefusal } from './refusal'
 
 export interface Peer {
   clientId: number
@@ -190,6 +190,9 @@ export class SessionState {
 
   #onSync = (isSynced: boolean) => {
     if (!isSynced) return
+    // Сервер принял этот документ — значит прошлые отказы больше ни о чём не
+    // говорят, и следующий, если он будет, снова получит право на перезагрузку.
+    refusalHealed()
     // Fallback only: the server seeds a fresh document before anyone can connect.
     ensureInitialNotebook(this.doc, this.session.name)
     this.#countUnread = true
@@ -502,7 +505,16 @@ export class SessionState {
       .catch(() => {
         /* хранилище недоступно — перезагрузка всё равно нужна */
       })
-      .then(() => window.location.reload())
+      .then(() => {
+        /*
+         * И только если это не превращается в круг. Перезагрузка лечит вместе с
+         * очисткой кэша; если очистка не удалась, отказанная правка переиграется
+         * и всё начнётся заново. Немой браузер плох, вечно перезагружающийся —
+         * хуже, поэтому после двух попыток остаёмся на месте с сообщением.
+         */
+        if (mayReload()) window.location.reload()
+        else this.#disposed = false
+      })
   }
 
   /** Сообщить о том, что сломалось на этой стороне, тем же способом, что и сервер. */
