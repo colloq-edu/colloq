@@ -144,6 +144,14 @@ backup: ## Снять копию базы в backups/ (можно на ходу,
 
 down: ## Остановить всё (данные и файлы семинаров остаются)
 	docker compose down
+	@# И контейнеры семинаров: у каждой комнаты свой, compose про них не знает —
+	@# их поднимает сервер по ходу занятия. Без этой строки «остановить всё»
+	@# оставляло бы работать по контейнеру на каждую комнату, открытую сегодня.
+	@ids="$$(docker ps -aq --filter 'label=colloq.kind=room-kernel' 2>/dev/null)"; \
+	if [ -n "$$ids" ]; then \
+	  docker rm -f $$ids >/dev/null && \
+	  printf '$(DIM)убрано контейнеров семинаров: %s$(OFF)\n' "$$(echo $$ids | wc -w | tr -d ' ')"; \
+	fi
 
 restart: ## Перезапустить, не пересобирая
 	docker compose restart
@@ -153,6 +161,12 @@ logs: ## Смотреть логи (Ctrl+C — выйти)
 
 status: ## Что запущено и в каком состоянии
 	@docker compose ps
+	@# Контейнеры семинаров стоят отдельно от compose: по одному на комнату,
+	@# поднимаются по ходу занятия и убираются, когда комната два часа пуста.
+	@rooms="$$(docker ps --filter 'label=colloq.kind=room-kernel' --format '{{.Label "colloq.session"}} {{.Status}}' 2>/dev/null)"; \
+	if [ -n "$$rooms" ]; then \
+	  printf '\n$(DIM)ядра семинаров:$(OFF)\n'; echo "$$rooms" | sed 's/^/  /'; \
+	fi
 	@printf '\n$(DIM)окружение ядра:$(OFF) $(BOLD)$(CURRENT_ENV)$(OFF)\n'
 	@printf '$(DIM)PUBLIC_URL:$(OFF) %s\n' "$$(grep -E '^PUBLIC_URL=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
 

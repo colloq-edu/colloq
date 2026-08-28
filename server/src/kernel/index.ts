@@ -38,8 +38,13 @@ import { config } from "../config.js";
 import { sessionEnvironment } from "../db.js";
 import { activeName } from "../environments.js";
 import { formatNotebook, type FormatOutcome } from "./format.js";
-import { endpointForEnvironment, forgetEnvironment } from "./pool.js";
-import { getSessionDoc } from "../collab/index.js";
+import {
+  dropRoomKernel,
+  endpointForSession,
+  forgetSessionKernel,
+  runningRoomKernels,
+} from "./pool.js";
+import { getSessionDoc, onlineCount } from "../collab/index.js";
 import {
   JupyterKernel,
   type ExecuteStatus,
@@ -525,9 +530,9 @@ export function ensureKernel(sessionId: string): Promise<void> {
     // Какое окружение сейчас спрашиваем — понадобится, если оно не ответит.
     const wanted = sessionEnvironment(sessionId);
     try {
-      // Куда идти за Python — решает окружение комнаты, а не глобальная
-      // настройка: два семинара могут одновременно сидеть на разном.
-      const endpoint = await endpointForEnvironment(wanted);
+      // Куда идти за Python — решает сама комната: у каждой свой контейнер, и
+      // окружение выбирает только образ, из которого он поднят.
+      const endpoint = await endpointForSession(sessionId, wanted);
       const kernel = await JupyterKernel.connect(sessionId, endpoint);
       runtime.kernel = kernel;
       kernel.onPhaseChange((phase, expected) =>
@@ -551,13 +556,12 @@ export function ensureKernel(sessionId: string): Promise<void> {
       /*
        * Забыть запомненный адрес контейнера.
        *
-       * Порт у контейнера окружения случайный, и пул его кеширует. После
-       * `docker restart colloq-env-cv` порт другой, а комната ходит по старому
-       * — и будет ходить, пока не перезапустят весь сервер: «No Python kernel
-       * after 60s» на каждый Run, при живом и здоровом контейнере рядом.
-       * Функция для этого была написана и не вызывалась ниоткуда.
+       * Порт у контейнера комнаты случайный, и пул его кеширует. После
+       * `docker restart colloq-room-<id>` порт другой, а комната ходит по
+       * старому — и будет ходить, пока не перезапустят весь сервер: «No Python
+       * kernel after 60s» на каждый Run, при живом и здоровом контейнере рядом.
        */
-      if (wanted) forgetEnvironment(wanted);
+      forgetSessionKernel(sessionId);
       // Into the shared record too: the person who presses Run sees the message
       // on their cell, and everyone else sees a notebook that stopped.
       kernelNote(sessionId, errText(err));
@@ -720,7 +724,79 @@ export async function shutdownSession(sessionId: string): Promise<void> {
       errText(err),
     );
   }
+  /*
+   * И сам контейнер комнаты.
+   *
+   * Контейнер теперь один на семинар, а не один на окружение: не убрать его —
+   * значит оставить по контейнеру на каждую пару, когда-либо проведённую на
+   * этой машине. Файлы комнаты лежат на хосте и это переживают; уходит только
+   * Python со всеми переменными, что и означает «семинар закончился».
+   */
+  try {
+    await dropRoomKernel(sessionId);
+  } catch (err) {
+    console.error(
+      `[kernel] could not remove the container for ${sessionId}:`,
+      errText(err),
+    );
+  }
 }
+
+/* --------------------------------------------------------- уборка простоя */
+
+/**
+ * Сколько контейнер комнаты живёт после того, как из неё все вышли.
+ *
+ * Пара идёт полтора часа; два часа пустой комнаты — это «занятие кончилось», а
+ * не «преподаватель вышел за кофе». Раньше уборки не требовалось вовсе:
+ * контейнер был один на окружение и обслуживал всех. Теперь их по одному на
+ * семинар, и без уборки на машине копится по контейнеру на каждую когда-либо
+ * проведённую пару.
+ */
+const IDLE_KERNEL_MS = 2 * 60 * 60 * 1000;
+const SWEEP_EVERY_MS = 10 * 60 * 1000;
+
+/** Когда в комнате в последний раз кто-то был. */
+const lastOccupied = new Map<string, number>();
+
+async function sweepIdleKernels(): Promise<void> {
+  const now = Date.now();
+  for (const sessionId of runningRoomKernels()) {
+    const runtime = runtimes.get(sessionId);
+    // Считающая комната занята, даже если все закрыли вкладки: у ячейки есть
+    // хозяин, который вернётся за результатом.
+    const busy =
+      onlineCount(sessionId) > 0 ||
+      !!runtime?.currentCell ||
+      (runtime?.queue.length ?? 0) > 0;
+    if (busy) {
+      lastOccupied.set(sessionId, now);
+      continue;
+    }
+    const since = lastOccupied.get(sessionId);
+    if (since === undefined) {
+      // Первый раз видим её пустой — отсчёт начинается сейчас, а не от нуля.
+      lastOccupied.set(sessionId, now);
+      continue;
+    }
+    if (now - since < IDLE_KERNEL_MS) continue;
+    lastOccupied.delete(sessionId);
+    try {
+      await shutdownSession(sessionId);
+    } catch (err) {
+      console.error(
+        `[kernel] idle sweep failed for ${sessionId}:`,
+        errText(err),
+      );
+    }
+  }
+}
+
+/*
+ * `unref`: таймер не должен держать процесс живым — тесты и одноразовые
+ * скрипты импортируют этот модуль и обязаны уметь завершиться.
+ */
+setInterval(() => void sweepIdleKernels(), SWEEP_EVERY_MS).unref();
 
 /**
  * Stopping the server, not the seminars.

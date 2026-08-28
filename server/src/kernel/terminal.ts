@@ -4,7 +4,7 @@ import { getSessionDoc } from '../collab/index.js'
 import { sessionEnvironment } from '../db.js'
 import { kernelCwd, sessionDir } from '../workspace.js'
 import { defaultEndpoint, type KernelEndpoint } from './jupyter.js'
-import { endpointForEnvironment, forgetEnvironment } from './pool.js'
+import { endpointForSession, forgetSessionKernel } from './pool.js'
 
 /**
  * One shared terminal per seminar, in the same container as the kernel.
@@ -1043,12 +1043,12 @@ export function openTerminal(sessionId: string): Promise<void> {
     sessionDir(sessionId)
     try {
       /*
-       * Куда идти за оболочкой — решает окружение комнаты, а не глобальная
-       * настройка. Это может занять минуту: если контейнер окружения ещё не
+       * Оболочка идёт в контейнер этой же комнаты — тот самый, в котором
+       * считаются её ячейки. Это может занять минуту: если контейнер ещё не
        * поднят, здесь он и поднимется — ровно та же пауза, что при первом
        * запуске ячейки, и по той же причине.
        */
-      const endpoint = await endpointForEnvironment(sessionEnvironment(sessionId))
+      const endpoint = await endpointForSession(sessionId, sessionEnvironment(sessionId))
       /*
        * Смена адреса обесценивает запомненное имя: pty с этим именем живёт в
        * другом контейнере, и попытка к нему подключиться в лучшем случае
@@ -1073,11 +1073,10 @@ export function openTerminal(sessionId: string): Promise<void> {
       startPrime(term, true)
     } catch (err) {
       term.name = null
-      // Порт контейнера окружения случайный и запоминается пулом; после
+      // Порт контейнера комнаты случайный и запоминается пулом; после
       // `docker restart` он другой. Забыть — иначе следующая попытка пойдёт по
       // тому же мёртвому адресу, и так до перезапуска всего сервера.
-      const env = sessionEnvironment(sessionId)
-      if (env) forgetEnvironment(env)
+      forgetSessionKernel(sessionId)
       const message = `could not open the shared terminal — ${errText(err)}`
       fail(term, message)
       throw new Error(message)

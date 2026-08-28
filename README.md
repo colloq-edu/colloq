@@ -186,10 +186,11 @@ Everything lives in `.env` — see `.env.example` for the full list.
 | `SESSION_SECRET` | Signs participant tokens and staff cookies. Leave empty — generated on first boot and kept in `DATA_DIR`. Set it to rotate |
 | `ADMIN_EMAIL` | Prefills the address on the first-run claim screen |
 | `OPEN_SEMINAR_CREATION` | Let anyone with the URL create a seminar (default off: staff only) |
-| `JUPYTER_TOKEN` | Shared secret between the app and the kernel container |
+| `JUPYTER_TOKEN` | Fallback secret for the shared compose kernel. Each seminar's own container gets its own token, derived from `SESSION_SECRET` |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Any OpenAI-compatible endpoint |
 | `AI_REASONING` | Ask the model for its reasoning trace as well (default off — on a reasoning model the trace costs about as much as the answer) |
-| `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling for student code |
+| `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling per seminar — each room runs its own container |
+| `KERNEL_ISOLATION` | `auto` (default) gives every seminar its own container, with only its own folder mounted. `off` shares one kernel, and then any room can read every other room's files on that machine |
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | One file, and everything one seminar holds (default 50 and 1024) |
 
 The AI layer talks plain OpenAI-compatible HTTP, so pointing `OPENAI_BASE_URL` at Ollama, vLLM,

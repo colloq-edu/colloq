@@ -39,11 +39,11 @@ test('терминал не читает адрес Jupyter из настрое�
   )
 })
 
-test('терминал спрашивает адрес у окружения комнаты', () => {
+test('терминал спрашивает адрес у самой комнаты', () => {
   const source = read('server/src/kernel/terminal.ts')
   assert.ok(
-    source.includes('endpointForEnvironment(sessionEnvironment('),
-    'терминал должен разрешать адрес через окружение семинара, как это делает ядро',
+    source.includes('endpointForSession(sessionId,'),
+    'терминал должен разрешать адрес через контейнер комнаты, как это делает ядро',
   )
 })
 
@@ -70,9 +70,15 @@ test('ядро и терминал разрешают адрес одинако�
     ['ядро', kernel],
     ['терминал', terminal],
   ] as const) {
+    /*
+     * Одна комната — один контейнер, и оболочка обязана попасть в тот же, где
+     * считаются ячейки: `!pip install` в терминале и `import` в ячейке должны
+     * говорить об одном Python. Раньше правилом было «через окружение»; теперь
+     * оно строже — через саму комнату.
+     */
     assert.ok(
-      source.includes('endpointForEnvironment('),
-      `${name} больше не разрешает адрес через пул окружений`,
+      source.includes('endpointForSession(sessionId,'),
+      `${name} больше не разрешает адрес через контейнер комнаты`,
     )
     assert.ok(
       source.includes('sessionEnvironment(sessionId)'),

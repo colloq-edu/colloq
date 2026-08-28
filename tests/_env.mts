@@ -29,4 +29,14 @@ process.env.ADMIN_EMAIL = 'owner@test.local'
  */
 process.env.JUPYTER_URL = 'http://127.0.0.1:1'
 
+/*
+ * И контейнеров у тестов тоже нет.
+ *
+ * У комнаты теперь свой контейнер (`kernel/pool.ts`), и без этой строки сюита
+ * поднимала настоящий на каждый семинар: один прогон оставил на машине
+ * тридцать шесть висящих `colloq-room-*`. Подделка Jupyter в `kernel.test.mts`
+ * заменяет собой ядро целиком, так что поднимать нечего.
+ */
+process.env.KERNEL_ISOLATION = 'off'
+
 export const TEST_ROOT = root
