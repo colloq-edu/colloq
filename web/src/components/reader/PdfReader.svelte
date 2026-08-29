@@ -8,7 +8,7 @@
   дерущаяся с пальцем на трекпаде, даёт залипание, которое выглядит поломкой.
 -->
 <script lang="ts">
-  import { onMount, untrack } from 'svelte'
+  import { onMount } from 'svelte'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import Icon from '@/components/ui/Icon.svelte'
   import { api } from '@/lib/api'

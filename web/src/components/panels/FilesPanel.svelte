@@ -101,11 +101,16 @@
   const GAP = 2
   const SIZE_LANE = 40
 
-  function laneWidth(entry: FileEntry): number {
-    // Строка для ячейки и скачивание есть всегда; удаление — у преподавателя.
-    const actions = 2 + (isHost ? 1 : 0)
-    return Math.max(SIZE_LANE, actions * BUTTON + (actions - 1) * GAP)
-  }
+  /**
+   * Ширина полосы действий — по числу кнопок в строке, а не константой.
+   *
+   * Действия лежат absolute и в раскладке не участвуют: полоса, рассчитанная на
+   * две кнопки, третью выкладывает поверх имени файла. Так это однажды и
+   * случилось, когда у PDF появилось «открыть».
+   */
+  const laneWidth = $derived(
+    Math.max(SIZE_LANE, (isHost ? 3 : 2) * BUTTON + ((isHost ? 3 : 2) - 1) * GAP),
+  )
 
   function toggle(path: string): void {
     const next = new Set(collapsed)
@@ -587,7 +592,7 @@
           -->
           <div
             class="relative mr-2 flex h-6 shrink-0 items-center justify-end"
-            style={`min-width:${entry.dir ? 0 : laneWidth(entry)}px`}
+            style={`min-width:${entry.dir ? 0 : laneWidth}px`}
           >
             {#if here.length > 0}
               <!-- Кто держит файл открытым. Стоит поверх размера и не прячется

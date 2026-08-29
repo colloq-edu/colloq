@@ -9,7 +9,7 @@
 <script lang="ts">
   import Icon from '@/components/ui/Icon.svelte'
   import { getSessionState } from '@/lib/session.svelte'
-  import { baseOf, runnerFor } from '@shared/paths'
+  import { runnerFor } from '@shared/paths'
 
   interface Props {
     path: string
@@ -106,7 +106,7 @@
             <span class="text-2xs text-muted">{user.name}</span>
           </span>
         {/each}
-        <span class="text-2xs text-faint">{here.length === 1 ? 'здесь' : 'здесь'}</span>
+        <span class="text-2xs text-faint">здесь</span>
       </span>
     {/if}
   </div>
