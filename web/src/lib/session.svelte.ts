@@ -360,7 +360,18 @@ export class SessionState {
           this.#pingSentAt = null
         }
       }
-      else if (message.t === 'files') this.files = message.files
+      else if (message.t === 'files') {
+        this.files = message.files
+        /*
+         * Файл могли удалить или переписать прямо на занятии: удаляет
+         * преподаватель, а переписать может любая ячейка — `df.to_csv` идёт в
+         * ту же папку. Читалка, оставшаяся на документе, которого нет, — это
+         * пустая область без объяснения.
+         */
+        if (this.board && !message.files.some((file) => file.name === this.board)) {
+          this.board = null
+        }
+      } else if (message.t === 'board') this.board = message.open
       else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'error') this.lastError = message.message
     }

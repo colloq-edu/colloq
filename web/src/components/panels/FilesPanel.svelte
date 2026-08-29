@@ -41,6 +41,17 @@
    */
   const isPdf = (name: string): boolean => name.toLowerCase().endsWith('.pdf')
 
+  /** Кнопка 24 пикселя, зазор между ними два; сорок — место под размер файла. */
+  const BUTTON = 24
+  const GAP = 2
+  const SIZE_LANE = 40
+
+  function laneWidth(name: string): number {
+    // Скачать есть всегда; открыть — у PDF; удалить — у преподавателя.
+    const actions = 1 + (isPdf(name) ? 1 : 0) + (isHost ? 1 : 0)
+    return Math.max(SIZE_LANE, actions * BUTTON + (actions - 1) * GAP)
+  }
+
   /**
    * Fetch a ticket, then let the browser take the file.
    *
@@ -369,11 +380,22 @@
               copied
             </span>
           {:else}
-            <!-- The size lane is the actions lane: both start at the same 40px
-                 so the numbers stay in one column down the list, and the lane
-                 grows rather than wrapping when a size runs long. Actions stay
-                 in the DOM so they can be tabbed to; only their opacity hides. -->
-            <div class="relative flex h-6 min-w-10 shrink-0 items-center justify-end">
+            <!--
+              The size lane is the actions lane: both start at the same place so
+              the numbers stay in one column down the list, and the lane grows
+              rather than wrapping when a size runs long. Actions stay in the
+              DOM so they can be tabbed to; only their opacity hides.
+
+              Ширина считается по числу действий в ЭТОЙ строке, а не берётся
+              константой. Действия лежат absolute и в раскладке не участвуют:
+              полоса, рассчитанная на две кнопки, третью просто выкладывает
+              поверх имени файла — что и случилось, когда у PDF появилось
+              «открыть». Имя ужимается ровно настолько, сколько нужно.
+            -->
+            <div
+              class="relative flex h-6 shrink-0 items-center justify-end"
+              style={`min-width:${laneWidth(file.name)}px`}
+            >
               <span
                 class="whitespace-nowrap font-mono text-micro tabular-nums text-muted transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0"
               >
