@@ -1020,6 +1020,55 @@ check(
   await beam.js(`return getComputedStyle(document.querySelector('.fixed.inset-0')).backgroundColor`),
 )
 
+/*
+ * Снимки лекции — по просьбе `--shot`, как и снимок комнаты ниже.
+ *
+ * Пульт и проекция проверяются глазами и ничем больше: полоса пульта несёт
+ * десяток кнопок, и влезают ли они в ширину планшета — вопрос, на который
+ * никакая проверка условием не отвечает.
+ */
+if (process.argv.includes('--shot')) {
+  for (const [who, page] of [
+    ['ui-lecture.png', host],
+    ['ui-projection.png', beam],
+  ] as const) {
+    await page.send('Page.bringToFront')
+    // Ждём нарисованную страницу, а не секунду: фоновая вкладка не рисует
+    // вовсе, и снимок «через секунду после переключения» ловил чёрный экран.
+    await until(page, `[...document.querySelectorAll('canvas')].some(c=>c.width>1)`, `лист для ${who}`)
+    await wait(400)
+    const shot = await page.send('Page.captureScreenshot', { format: 'png' })
+    const where = path.resolve(who)
+    writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
+    console.log(`  снимок: ${where}`)
+  }
+  await host.send('Page.bringToFront')
+  await wait(400)
+}
+
+/*
+ * Проекция показывает страницу, а не чёрный прямоугольник.
+ *
+ * Самая дорогая ошибка этого экрана: он и в исправном виде почти весь чёрный,
+ * так что пустой лист на нём не отличить от «ещё не приехало». Окно выводится
+ * вперёд нарочно — headless не рисует фоновые вкладки вовсе, а проекция на
+ * балке всегда на виду.
+ */
+await beam.send('Page.bringToFront')
+const beamDrew = await until(
+  beam,
+  `[...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`,
+  'проекция нарисовала страницу',
+)
+check(
+  beamDrew,
+  'проекция показывает лист, а не пустоту',
+  await beam.js(
+    `return document.querySelector('.shadow-pop')?.getAttribute('style') ?? 'листа нет'`,
+  ),
+)
+await host.send('Page.bringToFront')
+
 /* Пауза гасит проекцию, но не пульт: у ведущего страница остаётся. */
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
