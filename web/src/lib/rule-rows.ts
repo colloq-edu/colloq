@@ -1,5 +1,5 @@
 /**
- * Восемь строк, которыми описывается комната.
+ * Девять строк, которыми описывается комната.
  *
  * Одно место на панель и на пульт в самой комнате — иначе две поверхности
  * спрашивают одно и то же разными словами, и преподаватель, поставивший
@@ -18,7 +18,17 @@ export interface RuleOption {
 
 export interface RuleRow {
   key: keyof RoomRules &
-    ('run' | 'edit' | 'structure' | 'board' | 'files' | 'wipe' | 'restart' | 'history')
+    (
+      | 'run'
+      | 'edit'
+      | 'structure'
+      | 'board'
+      | 'files'
+      | 'agent'
+      | 'wipe'
+      | 'restart'
+      | 'history'
+    )
   title: string
   note: string
   options: RuleOption[]
@@ -54,9 +64,15 @@ export const RULE_ROWS: RuleRow[] = [
   },
   {
     key: 'files',
-    title: 'Добавлять файлы',
-    note: 'Скачивать материалы может вся комната всегда — на это правило не влияет.',
+    title: 'Заводить и править файлы',
+    note: 'Скачивать материалы может вся комната всегда — на это правило не влияет. Убирать и переименовывать — преподавательское при любом значении.',
     options: [EVERYONE, TEACHER],
+  },
+  {
+    key: 'agent',
+    title: 'Оракул правит файлы сам',
+    note: 'Режим «сделать»: оракул читает папку, меняет файлы и запускает их, а весь ход отменяется одной кнопкой. В ячейки он по-прежнему только предлагает.',
+    options: [EVERYONE, TEACHER, { value: 'off', label: 'Никто' }],
   },
   {
     key: 'history',

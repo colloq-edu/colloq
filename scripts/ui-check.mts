@@ -168,7 +168,12 @@ async function tab(url: string): Promise<Tab> {
     const m = JSON.parse(raw.toString())
     if (m.method === 'Runtime.exceptionThrown') {
       const d = m.params.exceptionDetails
-      trouble.push('искл: ' + (d?.exception?.description ?? d?.text ?? '?'))
+      trouble.push(
+        'искл: ' +
+          (d?.exception?.description ??
+            [d?.text, d?.exception?.value, d?.exception?.className].filter(Boolean).join(' ') ??
+            '?'),
+      )
     }
     if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
       trouble.push(
@@ -228,6 +233,16 @@ await enter(host, 'Ада')
 
 const student = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}`)
 await student.send('Network.clearBrowserCookies')
+/*
+ * И localStorage — иначе второй вкладкой в комнату входит ТОТ ЖЕ человек.
+ *
+ * Личность участника лежит в localStorage, а он общий на весь профиль браузера:
+ * вкладка молча входила по сохранённому имени, экрана входа не видела, и обе
+ * вкладки оказывались одним участником с двумя курсорами. Половина проверок про
+ * «двое в комнате» при этом проходила — присутствие различает вкладки, а не
+ * людей, — и ровно поэтому подмена не была заметна.
+ */
+await student.js('localStorage.clear(); return 1')
 await student.send('Page.reload')
 await enter(student, 'Нина')
 
@@ -253,8 +268,11 @@ check(gap !== null && gap >= 0, 'кнопки не наезжают на имя 
 const before = await student.js('return document.querySelectorAll("canvas").length')
 check(before === 0, 'до нажатия у студента документа нет', `канвасов ${before}`)
 
+/* Нажатие по имени файла в дереве открывает его: у преподавателя PDF уезжает
+   на общий экран комнаты, у остальных — открывается себе. */
 await host.js(
-  'const b=document.querySelector(\'[aria-label^="Открыть"]\'); if(!b) throw new Error("кнопки «Открыть» нет"); b.click(); return 1',
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').includes('lecture.pdf'));` +
+    `if(!b) throw new Error('строки lecture.pdf в дереве нет'); b.click(); return 1`,
 )
 
 /**
@@ -352,11 +370,12 @@ check(
 
 /* Документ должно быть чем закрыть — и у комнаты, а не только у себя. */
 check(
-  (await host.js('return !!document.querySelector(\'[aria-label="Закрыть документ"]\')')) === true,
+  (await host.js('return !!document.querySelector(\'[aria-label="Закрыть lecture.pdf"]\')')) ===
+    true,
   'документ есть чем закрыть',
   'кнопка на вкладке',
 )
-await host.js('document.querySelector(\'[aria-label="Закрыть документ"]\').click(); return 1')
+await host.js('document.querySelector(\'[aria-label="Закрыть lecture.pdf"]\').click(); return 1')
 await until(
   host,
   'document.querySelectorAll("canvas").length === 0',
@@ -383,6 +402,113 @@ check(
   )) === false,
   'строка вкладок исчезла вместе с документом',
   'вкладок нет',
+)
+
+/* ------------------------------------------------- редактор и дерево */
+
+/**
+ * Новый файл, набранный в дереве, доезжает до второго браузера — и обратно.
+ *
+ * Это и есть то, ради чего файлы стали документами Yjs: два человека в одном
+ * скрипте. Проверка идёт через настоящий CodeMirror, а не через запись в Y.Text
+ * напрямую: сломаться может ровно то место, где редактор привязывается к
+ * общему тексту, и подмена его руками проверила бы всё, кроме него.
+ */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>x.getAttribute('aria-label')==='Новый файл');` +
+    `if(!b) throw new Error('кнопки «новый файл» нет'); b.click(); return 1`,
+)
+await wait(400)
+await host.js(
+  `const i=document.querySelector('input.font-mono');` +
+    `if(!i) throw new Error('поля для имени нет; в панели: ' + (document.querySelector('section[aria-label]')?.innerText||'').slice(0,200));` +
+    `const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;` +
+    `set.call(i,'train.py'); i.dispatchEvent(new Event('input',{bubbles:true}));` +
+    `i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); return 1`,
+)
+/*
+ * Ищем по `title`, а не по тексту строки. Имя в дереве разложено на две части —
+ * основу и расширение, — чтобы расширение не съедалось многоточием, и между
+ * ними в разметке стоит перенос строки. И `textContent`, и `innerText` отдают
+ * его как пробел, так что `train.py` там выглядит как `train .py` и на
+ * подстроку не ловится. `title` — это полный путь, тот самый, по которому файл
+ * и открывают.
+ */
+const inTree = `[...document.querySelectorAll('button')].some(b=>(b.title||'').startsWith('train.py'))`
+await until(host, inTree, 'файл появился в дереве')
+check((await host.js(`return ${inTree}`)) === true, 'новый файл появился в дереве', 'train.py')
+await until(student, inTree, 'файл доехал до студента')
+check(
+  (await student.js(`return ${inTree}`)) === true,
+  'и у всей комнаты, а не только у автора',
+  'train.py',
+)
+
+await until(host, `!!document.querySelector('.cm-file .cm-content')`, 'редактор открылся')
+check(
+  (await host.js(`return !!document.querySelector('.cm-file .cm-content')`)) === true,
+  'новый файл сразу открылся в редакторе',
+  'CodeMirror на месте',
+)
+check(
+  (await host.js(
+    `return [...document.querySelectorAll('button')].some(b=>/запустить/i.test(b.textContent||''))`,
+  )) === true,
+  'у скрипта есть чем его запустить',
+  'кнопка «Запустить»',
+)
+
+/*
+ * Печатаем в редакторе преподавателя — как человек, а не в обход.
+ *
+ * `Input.insertText` доставляет текст в фокус тем же путём, что и клавиатура,
+ * так что проверяются и обработчики CodeMirror, и привязка к общему тексту.
+ * Дотянуться до `EditorView` из страницы нечем: наружу он не выставлен, и это
+ * правильно — тест, который лезет во внутренности, проверяет их, а не продукт.
+ */
+await host.js(`document.querySelector('.cm-file .cm-content').focus(); return 1`)
+await host.send('Input.insertText', { text: "print('привет из общего файла')" })
+await wait(600)
+await student.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').includes('train.py'));` +
+    `if(!b) throw new Error('строки train.py у студента нет'); b.click(); return 1`,
+)
+await until(
+  student,
+  `(document.querySelector('.cm-file .cm-content')?.textContent||'').includes('привет из общего файла')`,
+  'текст доехал до студента',
+)
+check(
+  (await student.js(
+    `return (document.querySelector('.cm-file .cm-content')?.textContent||'').includes('привет из общего файла')`,
+  )) === true,
+  'набранное в файле видно второму человеку',
+  await student.js(
+    `return (document.querySelector('.cm-file .cm-content')?.textContent||'').slice(0,40)`,
+  ),
+)
+
+/* Панель файлов говорит, кто ещё в этом файле. */
+const seesNina = `(document.body.textContent||'').includes('Нина')`
+await until(host, seesNina, 'преподаватель видит студента в файле')
+check(
+  (await host.js(`return ${seesNina}`)) === true,
+  'видно, кто ещё правит этот файл',
+  'Нина здесь',
+)
+
+/* Вкладка закрывается у себя и не трогает никого больше. */
+await student.js(`document.querySelector('[aria-label="Закрыть train.py"]').click(); return 1`)
+await wait(500)
+check(
+  (await student.js(`return !document.querySelector('.cm-file .cm-content')`)) === true,
+  'вкладка файла закрывается',
+  'редактора нет',
+)
+check(
+  (await host.js(`return !!document.querySelector('.cm-file .cm-content')`)) === true,
+  'закрытая у себя вкладка не закрылась у соседа',
+  'у преподавателя открыт',
 )
 
 for (const [who, page] of [

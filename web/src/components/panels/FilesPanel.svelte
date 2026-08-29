@@ -1,4 +1,18 @@
 <script lang="ts">
+  /**
+   * Папка семинара деревом.
+   *
+   * Список приходит с сервера уже в том порядке, в каком его рисуют — обход в
+   * глубину, папки перед файлами, — так что здесь не строится никакое дерево:
+   * строка знает свою глубину из числа косых черт в пути, а свёрнутая папка
+   * прячет всё, что под ней. Это и есть причина, по которой сервер отдаёт
+   * плоский список: дерево, собранное дважды с двух сторон, — два места, где
+   * порядок может разойтись.
+   *
+   * Нажатие на файл открывает его, а не копирует строку для ячейки: открывать
+   * стало чем. Строка для ячейки осталась кнопкой в полосе действий, и она
+   * по-прежнему первая — на семинаре по данным её нажимают чаще всего.
+   */
   import type { FileEntry } from '@shared/protocol'
   import { api } from '@/lib/api'
   import { getSessionState } from '@/lib/session.svelte'
@@ -6,6 +20,7 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { copyText } from '@/lib/clipboard'
   import { permitsIn } from '@/lib/may'
+  import { baseOf, joinPath, kindOf, parentOf, safeSegment, whySegmentRefused } from '@shared/paths'
 
   /** One file still on the wire, and the bytes the browser has actually flushed. */
   interface Upload {
@@ -16,15 +31,21 @@
   }
 
   interface Props {
-    /** Открыть документ: у преподавателя — комнате, у остальных — себе. */
-    onopen?: (name: string) => void
+    /** Открыть файл: редактор, читалка или просмотр — решает вызвавший. */
+    onopen?: (path: string) => void
+    /** Что открыто сейчас — эта строка подсвечена. */
+    active?: string | null
+    /** Файл переименовали: вкладка на него должна поехать следом. */
+    onrename?: (from: string, to: string) => void
   }
 
-  let { onopen }: Props = $props()
+  let { onopen, active = null, onrename }: Props = $props()
 
   const session = getSessionState()
 
   let dragDepth = $state(0)
+  /** Папка, на которую сейчас несут файл. Пустая строка — корень. */
+  let dragInto = $state<string | null>(null)
   let uploads = $state<Upload[]>([])
   /** Не ошибка, а предупреждение: загрузка прошла, но что-то заменила собой. */
   let note = $state<string | null>(null)
@@ -35,21 +56,76 @@
   const isHost = $derived(session.me.role === 'host')
   const may = $derived(permitsIn(session.session.rules, session.me.role))
 
-  /*
-   * По расширению, а не по MIME: в списке файлов комнаты MIME нет, а
-   * запрашивать его на каждую строку — запрос на файл ради одной иконки.
+  /** Свёрнутые папки. Всё, чего здесь нет, развёрнуто: дерево видно целиком. */
+  let collapsed = $state<Set<string>>(new Set())
+  /** Куда лягут «новый файл» и «новая папка». Пустая строка — корень. */
+  let target = $state('')
+  /** Строка ввода: заводим новое или переименовываем существующее. */
+  let draft = $state<{ kind: 'file' | 'dir' | 'rename'; dir: string; from?: string } | null>(null)
+  let draftName = $state('')
+  let draftInput = $state<HTMLInputElement | null>(null)
+
+  const visible = $derived(
+    session.files.filter((entry) => {
+      for (const folder of collapsed) {
+        if (entry.path.startsWith(folder + '/')) return false
+      }
+      return true
+    }),
+  )
+
+  const fileCount = $derived(session.files.filter((entry) => !entry.dir).length)
+  const listed = $derived(session.files.length > 0 || uploads.length > 0)
+
+  const depthOf = (path: string): number => path.split('/').length - 1
+
+  /**
+   * Кто держит этот файл открытым — из присутствия комнаты.
+   *
+   * Не курсоры: те живут в присутствии самого файла и до комнаты не доходят.
+   * Здесь — только «кто здесь», и этого хватает, чтобы не начать править файл,
+   * который в этот момент правит сосед, ничего об этом не зная.
    */
-  const isPdf = (name: string): boolean => name.toLowerCase().endsWith('.pdf')
+  function peersIn(path: string): { id: string; color: string; name: string }[] {
+    const out: { id: string; color: string; name: string }[] = []
+    for (const peer of session.peers) {
+      if (peer.isSelf || peer.user.editing !== path) continue
+      if (out.some((seen) => seen.id === peer.user.id)) continue
+      out.push({ id: peer.user.id, color: peer.user.color, name: peer.user.name })
+    }
+    return out.slice(0, 3)
+  }
 
   /** Кнопка 24 пикселя, зазор между ними два; сорок — место под размер файла. */
   const BUTTON = 24
   const GAP = 2
   const SIZE_LANE = 40
 
-  function laneWidth(name: string): number {
-    // Скачать есть всегда; открыть — у PDF; удалить — у преподавателя.
-    const actions = 1 + (isPdf(name) ? 1 : 0) + (isHost ? 1 : 0)
+  function laneWidth(entry: FileEntry): number {
+    // Строка для ячейки и скачивание есть всегда; удаление — у преподавателя.
+    const actions = 2 + (isHost ? 1 : 0)
     return Math.max(SIZE_LANE, actions * BUTTON + (actions - 1) * GAP)
+  }
+
+  function toggle(path: string): void {
+    const next = new Set(collapsed)
+    if (next.has(path)) next.delete(path)
+    else next.add(path)
+    collapsed = next
+  }
+
+  function pick(entry: FileEntry): void {
+    if (entry.dir) {
+      target = entry.path
+      toggle(entry.path)
+      return
+    }
+    target = parentOf(entry.path)
+    if (kindOf(entry.path) === 'binary') {
+      void download(entry.path)
+      return
+    }
+    onopen?.(entry.path)
   }
 
   /**
@@ -60,18 +136,92 @@
    * handed every reader Restart and Restore under the teacher's name. The
    * ticket in this URL is good for one file for five minutes.
    */
-  async function download(name: string): Promise<void> {
+  async function download(path: string): Promise<void> {
     try {
-      const { token } = await api.fileTicket(session.session.id, name, session.token)
+      const { token } = await api.fileTicket(session.session.id, path, session.token)
       const a = document.createElement('a')
-      a.href = api.fileUrl(session.session.id, name, token)
-      a.download = name
+      a.href = api.fileUrl(session.session.id, path, token)
+      a.download = baseOf(path)
       document.body.appendChild(a)
       a.click()
       a.remove()
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Could not download that file.'
+      error = err instanceof Error ? err.message : 'Не удалось скачать файл.'
     }
+  }
+
+  /* ------------------------------------------------------- новое и имена */
+
+  function startDraft(kind: 'file' | 'dir'): void {
+    draft = { kind, dir: target }
+    draftName = ''
+    queueMicrotask(() => draftInput?.focus())
+  }
+
+  function startRename(entry: FileEntry): void {
+    if (!isHost) return
+    draft = { kind: 'rename', dir: parentOf(entry.path), from: entry.path }
+    draftName = entry.name
+    queueMicrotask(() => {
+      draftInput?.focus()
+      // Выделено имя без расширения: переименовывают обычно его, а не `.py`.
+      const dot = draftName.lastIndexOf('.')
+      draftInput?.setSelectionRange(0, dot > 0 ? dot : draftName.length)
+    })
+  }
+
+  function commitDraft(): void {
+    const current = draft
+    if (!current) return
+    const name = draftName.trim()
+    if (!name) return cancelDraft()
+    if (!safeSegment(name)) {
+      error = whySegmentRefused(name)
+      return
+    }
+    const path = joinPath(current.dir, name)
+    if (current.kind === 'rename') {
+      if (current.from && current.from !== path) {
+        session.send({ t: 'tree:move', from: current.from, to: path })
+        onrename?.(current.from, path)
+      }
+    } else if (current.kind === 'dir') {
+      session.send({ t: 'tree:mkdir', path })
+    } else {
+      session.send({ t: 'tree:new', path })
+      // Открыть сразу: новый файл заводят, чтобы в него что-то написать, и
+      // лишний поиск его же в дереве — это работа на ровном месте.
+      pendingOpen = path
+    }
+    cancelDraft()
+  }
+
+  /**
+   * Файл, который завели и хотят открыть, как только он появится в списке.
+   *
+   * Список приходит с сервера, а не сочиняется здесь: открывать файл до того,
+   * как сервер подтвердил, что он есть, значило бы открывать вкладку на то,
+   * чего может и не оказаться — имя занято, папка исчезла, правило поменялось.
+   *
+   * `$state`, а не обычная переменная, и это не украшение: эффект ниже читает
+   * её первой строкой и на `null` выходит, ничего больше не прочитав. Обычная
+   * переменная не была бы его зависимостью — эффект отработал бы один раз при
+   * монтировании и не проснулся бы никогда, а файл открывался бы «когда-нибудь
+   * потом», то есть при следующей чужой правке.
+   */
+  let pendingOpen = $state<string | null>(null)
+
+  $effect(() => {
+    if (!pendingOpen) return
+    const waiting = pendingOpen
+    if (!session.files.some((entry) => entry.path === waiting)) return
+    pendingOpen = null
+    onopen?.(waiting)
+  })
+
+  function cancelDraft(): void {
+    draft = null
+    draftName = ''
   }
 
   /*
@@ -81,16 +231,15 @@
    * because pretending to cancel something the server is doing would be a lie.
    */
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Escape' || !confirming) return
-    if (deleting) return
+    if (event.key !== 'Escape') return
+    if (draft) return cancelDraft()
+    if (!confirming || deleting) return
     confirming = null
   }
   let deleting = $state<string | null>(null)
   let picker: HTMLInputElement | null = $state(null)
   let copyTimer: number | undefined
   let nextUploadId = 0
-
-  const listed = $derived(session.files.length > 0 || uploads.length > 0)
 
   $effect(() => () => window.clearTimeout(copyTimer))
 
@@ -125,9 +274,12 @@
       case 'gif':
       case 'webp':
         return `Image.open(${path})`
+      case 'py':
+        // Скрипт запускают, а не читают: `%run` — то, что человек на самом деле
+        // хочет напечатать в ячейке, когда несёт туда имя файла.
+        return `%run ${name}`
       case 'txt':
       case 'md':
-      case 'py':
         return `open(${path}).read()`
       default:
         return `open(${path}, 'rb').read()`
@@ -152,10 +304,14 @@
    */
   function put(
     file: File,
+    dir: string,
     onSent: (sent: number) => void,
   ): Promise<{ files: FileEntry[]; replaced: string[] }> {
     return new Promise((resolve, reject) => {
       const form = new FormData()
+      // Папка первой: busboy разбирает части по порядку, и поле, приехавшее
+      // после файла, опоздало бы ровно на тот файл, ради которого его послали.
+      form.append('dir', dir)
       form.append('file', file, file.name)
 
       const xhr = new XMLHttpRequest()
@@ -180,7 +336,7 @@
     })
   }
 
-  async function upload(list: FileList | File[] | null) {
+  async function upload(list: FileList | File[] | null, dir: string) {
     const files = Array.from(list ?? [])
     if (files.length === 0) return
     error = null
@@ -206,13 +362,13 @@
     for (let i = 0; i < files.length; i++) {
       const { id } = queued[i]
       try {
-        const done = await put(files[i], (sent) => {
+        const done = await put(files[i], dir, (sent) => {
           uploads = uploads.map((item) => (item.id === id ? { ...item, sent } : item))
         })
         session.files = done.files
         overwritten.push(...done.replaced)
       } catch (err) {
-        error = err instanceof Error ? err.message : `Could not upload ${files[i].name}`
+        error = err instanceof Error ? err.message : `Не удалось загрузить ${files[i].name}`
       } finally {
         uploads = uploads.filter((item) => item.id !== id)
       }
@@ -221,35 +377,31 @@
     if (overwritten.length > 0 && !error) {
       note =
         overwritten.length === 1
-          ? `${overwritten[0]} replaced a file that was already here.`
-          : `${overwritten.length} files replaced ones that were already here: ${overwritten.join(', ')}`
+          ? `${overwritten[0]} лёг поверх файла, который уже был здесь.`
+          : `Поверх уже лежавших легли: ${overwritten.join(', ')}`
       window.clearTimeout(noteTimer)
       noteTimer = window.setTimeout(() => (note = null), 8000)
     }
   }
 
-  async function remove(name: string) {
-    deleting = name
+  function remove(entry: FileEntry): void {
+    deleting = entry.path
     error = null
-    try {
-      const res = await api.deleteFile(session.session.id, name, session.token)
-      session.files = res.files
-      confirming = null
-    } catch (err) {
-      error = err instanceof Error ? err.message : `Could not delete ${name}`
-    } finally {
-      deleting = null
-    }
+    session.send({ t: 'tree:remove', path: entry.path })
+    confirming = null
+    // Ответа нет: список файлов приходит комнате целиком, и строка исчезает
+    // вместе с ним. Отказ, если он будет, придёт обычной строкой ошибки.
+    window.setTimeout(() => (deleting = null), 600)
   }
 
-  async function copySnippet(name: string) {
+  async function copySnippet(path: string) {
     try {
-      await copyText(snippetFor(name))
-      copied = name
+      await copyText(snippetFor(path))
+      copied = path
       window.clearTimeout(copyTimer)
       copyTimer = window.setTimeout(() => (copied = null), 1400)
     } catch {
-      error = 'The browser blocked clipboard access'
+      error = 'Браузер не дал доступ к буферу обмена'
     }
   }
 
@@ -265,47 +417,69 @@
     event.dataTransfer.dropEffect = 'copy'
   }
 
-  function onDrop(event: DragEvent) {
+  function onDrop(event: DragEvent, dir: string | null) {
     event.preventDefault()
+    event.stopPropagation()
+    const into = dir ?? ''
     dragDepth = 0
+    dragInto = null
     // Сказать до броска нельзя — но и молча съесть файл нельзя тем более:
     // отпущенный файл, о котором ничего не произошло, читается как поломка.
     if (!may.files) {
       error = may.filesWhy + '.'
       return
     }
-    upload(event.dataTransfer?.files ?? null)
+    void upload(event.dataTransfer?.files ?? null, into)
   }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
 <section
-  class="relative flex shrink-0 flex-col gap-0.5 px-4 pb-1 pt-5"
-  aria-label="Session files"
+  class="relative flex shrink-0 flex-col gap-0 px-3 pb-1 pt-5"
+  aria-label="Файлы семинара"
   ondragenter={onDragEnter}
   ondragover={onDragOver}
   ondragleave={() => (dragDepth = Math.max(0, dragDepth - 1))}
-  ondrop={onDrop}
+  ondrop={(event) => onDrop(event, '')}
 >
-  <!-- The rule carries the label out to the count, so the number reads as the
-       quiet end of the heading rather than as a badge hung off it. -->
-<div class="flex items-center gap-2 pb-2">
-    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">Files</h2>
+  <!-- Полоса уводит заголовок к действиям, так что кнопки читаются как тихий
+       конец заголовка, а не как значки, повешенные на него. -->
+  <div class="flex items-center gap-2 px-1 pb-2">
+    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">Файлы</h2>
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
-    {#if listed}
-      <span class="font-mono text-micro tabular-nums text-muted">{session.files.length}</span>
-    {:else if may.files}
-      <!-- Nothing to count yet, so the slot carries the way in instead. -->
-      <button
-        type="button"
-        class="-my-1 -mr-1 flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-        title="Upload files"
-        aria-label="Upload files"
-        onclick={() => picker?.click()}
-      >
-        <Icon name="upload" size={14} />
-      </button>
+    {#if may.files}
+      <div class="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          title={target ? `Новый файл в ${target}` : 'Новый файл'}
+          aria-label="Новый файл"
+          onclick={() => startDraft('file')}
+        >
+          <Icon name="file-plus" size={13} />
+        </button>
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          title={target ? `Новая папка в ${target}` : 'Новая папка'}
+          aria-label="Новая папка"
+          onclick={() => startDraft('dir')}
+        >
+          <Icon name="folder-plus" size={13} />
+        </button>
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          title="Загрузить файлы"
+          aria-label="Загрузить файлы"
+          onclick={() => picker?.click()}
+        >
+          <Icon name="upload" size={13} />
+        </button>
+      </div>
+    {:else if listed}
+      <span class="font-mono text-micro tabular-nums text-muted">{fileCount}</span>
     {/if}
   </div>
 
@@ -315,209 +489,267 @@
     multiple
     class="hidden"
     onchange={(event) => {
-      const target = event.currentTarget
-      upload(target.files)
-      target.value = ''
+      const input = event.currentTarget
+      void upload(input.files, target)
+      input.value = ''
     }}
   />
 
-  {#if listed}
-    {#each session.files as file (file.name)}
-      <div
-        class="group flex h-[30px] items-center gap-2.5 px-2 transition-colors duration-100 hover:bg-raised focus-within:bg-raised"
-      >
-        <!-- Every row carries a tick on the rail; under the pointer it becomes
-             the action colour, which is what says the row is live. -->
-        <span
-          class="h-4 w-[3px] shrink-0 bg-line transition-colors duration-100 group-hover:bg-primary group-focus-within:bg-primary"
-          aria-hidden="true"
-        ></span>
+  {#snippet nameField()}
+    <input
+      bind:this={draftInput}
+      bind:value={draftName}
+      class="min-w-0 flex-1 border-0 bg-canvas px-1 py-0.5 font-mono text-code text-ink outline-none ring-1 ring-accent/50"
+      spellcheck="false"
+      autocomplete="off"
+      onblur={commitDraft}
+      onkeydown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          commitDraft()
+        }
+      }}
+    />
+  {/snippet}
 
-        {#if confirming === file.name}
-          <span class="min-w-0 flex-1 truncate text-2xs text-muted">Delete {file.name}?</span>
-          <button
-            type="button"
-            class="shrink-0 text-2xs font-bold uppercase tracking-caps text-danger transition-opacity duration-100 hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 disabled:opacity-50"
-            disabled={deleting === file.name}
-            onclick={() => remove(file.name)}
-          >
-            {deleting === file.name ? 'Deleting' : 'Delete'}
-          </button>
-          <button
-            type="button"
-            class="shrink-0 text-2xs font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-            onclick={() => (confirming = null)}
-          >
-            Cancel
-          </button>
+  {#each visible as entry (entry.path)}
+    {@const depth = depthOf(entry.path)}
+    {@const here = peersIn(entry.path)}
+    <div
+      class="group relative flex h-[26px] items-center transition-colors duration-100
+             {active === entry.path ? 'bg-raised' : 'hover:bg-raised focus-within:bg-raised'}
+             {dragInto === entry.path ? 'ring-1 ring-inset ring-accent' : ''}"
+      style={`padding-left:${4 + depth * 14}px`}
+      ondragenter={(event) => {
+        if (!entry.dir || !event.dataTransfer?.types.includes('Files')) return
+        dragInto = entry.path
+      }}
+      ondragleave={() => {
+        if (dragInto === entry.path) dragInto = null
+      }}
+      ondrop={(event) => onDrop(event, entry.dir ? entry.path : parentOf(entry.path))}
+      role="presentation"
+    >
+      <!-- Открытый файл отмечен полосой у самого края: она не занимает места в
+           строке и видна, даже когда имя ужато до многоточия. -->
+      {#if active === entry.path}
+        <span class="absolute inset-y-0 left-0 w-0.5 bg-accent" aria-hidden="true"></span>
+      {/if}
+
+      <span class="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+        {#if entry.dir}
+          <Icon
+            name="chevron-down"
+            size={9}
+            class={collapsed.has(entry.path) ? '-rotate-90 text-muted' : 'text-muted'}
+          />
+        {/if}
+      </span>
+      <span class="flex h-3.5 w-[18px] shrink-0 items-center justify-center">
+        <Icon
+          name={entry.dir ? 'folder' : 'file'}
+          size={12}
+          class={active === entry.path ? 'text-ink' : 'text-faint'}
+        />
+      </span>
+
+      {#if draft?.kind === 'rename' && draft.from === entry.path}
+        {@render nameField()}
+      {:else}
+        <button
+          type="button"
+          class="flex min-w-0 flex-1 items-center self-stretch text-left font-mono text-code
+                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset
+                 focus-visible:ring-accent/40
+                 {entry.dir
+            ? 'font-medium text-ink'
+            : active === entry.path
+              ? 'font-semibold text-ink'
+              : 'text-muted'}"
+          title={entry.dir ? entry.path : `${entry.path} — открыть`}
+          onclick={() => pick(entry)}
+          ondblclick={() => startRename(entry)}
+        >
+          <span class="truncate">{splitFileName(entry.name).stem}</span>
+          <span class="shrink-0">{splitFileName(entry.name).ext}</span>
+        </button>
+
+        {#if copied === entry.path}
+          <span class="flex shrink-0 items-center gap-1 pr-2 text-2xs font-medium text-positive">
+            <Icon name="check" size={11} />
+            скопировано
+          </span>
         {:else}
-          <!-- The row's ground and its tick already say the row is live, so the
-               name keeps its ink: the lane stays a column of files rather than
-               becoming a column of links. -->
           <!--
-            Two spans, not one truncated string. `truncate` was on the button
-            itself, which is a flex container — and `text-overflow` does nothing
-            on one, so long names were cut with no ellipsis and no extension at
-            all. The stem shrinks and the extension never does, so `.npz` and
-            `.md` stay told apart at any panel width, and the full name is still
-            one hover away.
+            Полоса размера — она же полоса действий: обе начинаются в одном
+            месте, так что числа стоят колонкой, а действия не наезжают на имя.
+            Ширина считается по числу кнопок в ЭТОЙ строке.
           -->
-          <button
-            type="button"
-            class="flex min-w-0 flex-1 items-center self-stretch text-left font-mono
-                   text-code text-ink focus-visible:outline-none focus-visible:ring-2
-                   focus-visible:ring-accent/40"
-            title={`${file.name} — copy ${snippetFor(file.name)}`}
-            onclick={() => copySnippet(file.name)}
+          <div
+            class="relative mr-2 flex h-6 shrink-0 items-center justify-end"
+            style={`min-width:${entry.dir ? 0 : laneWidth(entry)}px`}
           >
-            <span class="truncate">{splitFileName(file.name).stem}</span>
-            <span class="shrink-0">{splitFileName(file.name).ext}</span>
-          </button>
-
-          {#if copied === file.name}
-            <span class="flex shrink-0 items-center gap-1 text-2xs font-medium text-positive">
-              <Icon name="check" size={11} />
-              copied
-            </span>
-          {:else}
-            <!--
-              The size lane is the actions lane: both start at the same place so
-              the numbers stay in one column down the list, and the lane grows
-              rather than wrapping when a size runs long. Actions stay in the
-              DOM so they can be tabbed to; only their opacity hides.
-
-              Ширина считается по числу действий в ЭТОЙ строке, а не берётся
-              константой. Действия лежат absolute и в раскладке не участвуют:
-              полоса, рассчитанная на две кнопки, третью просто выкладывает
-              поверх имени файла — что и случилось, когда у PDF появилось
-              «открыть». Имя ужимается ровно настолько, сколько нужно.
-            -->
-            <div
-              class="relative flex h-6 shrink-0 items-center justify-end"
-              style={`min-width:${laneWidth(file.name)}px`}
-            >
+            {#if here.length > 0}
+              <!-- Кто держит файл открытым. Стоит поверх размера и не прячется
+                   под указателем: это то, ради чего на строку и смотрят. -->
+              <span class="flex items-center gap-1 pr-0.5">
+                {#each here as peer (peer.id)}
+                  <span
+                    class="h-1.5 w-1.5 rounded-full"
+                    style={`background:${peer.color}`}
+                    title={`${peer.name} — здесь`}
+                  ></span>
+                {/each}
+              </span>
+            {:else if !entry.dir}
               <span
                 class="whitespace-nowrap font-mono text-micro tabular-nums text-muted transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0"
               >
-                {formatBytes(file.size)}
+                {formatBytes(entry.size)}
               </span>
-              <span
-                class="absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
-              >
-                <!--
-                  Открыть PDF, не выходя из комнаты. У преподавателя — сразу
-                  всем: право `board` про общий экран, а не про чтение, и
-                  смотреть у себя может любой. Клик по имени не трогаем: он
-                  копирует питоновский сниппет, и это уже привычка.
-                -->
-                {#if isPdf(file.name)}
-                  <button
-                    type="button"
-                    class="flex h-6 w-6 items-center justify-center text-faint transition-colors
-                           duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
-                           focus-visible:ring-accent/40"
-                    title={may.board ? 'Показать комнате' : 'Открыть у себя'}
-                    aria-label="Открыть {file.name}"
-                    onclick={() => onopen?.(file.name)}
-                  >
-                    <Icon name="board" size={13} />
-                  </button>
-                {/if}
+            {/if}
+            <span
+              class="absolute inset-y-0 right-0 flex items-center gap-0.5 bg-raised opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              {#if !entry.dir}
                 <button
                   type="button"
-                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors
-                         duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
-                         focus-visible:ring-accent/40"
-                  title="Download"
-                  aria-label="Download {file.name}"
-                  onclick={() => void download(file.name)}
+                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  title={`Скопировать ${snippetFor(entry.path)}`}
+                  aria-label="Скопировать строку для ячейки"
+                  onclick={() => void copySnippet(entry.path)}
                 >
-                  <Icon name="download" size={13} />
+                  <Icon name="copy" size={12} />
                 </button>
-                <!-- Removing a file is the teacher's: the folder is shared in
-                     both directions, and the handout the class is working from
-                     sat one click from anybody. -->
-                {#if isHost}
-                  <button
-                    type="button"
-                    class="flex h-6 w-6 items-center justify-center text-faint transition-colors
-                           duration-100 hover:text-danger focus-visible:outline-none
-                           focus-visible:ring-2 focus-visible:ring-danger/40"
-                    title="Delete"
-                    aria-label="Delete {file.name}"
-                    onclick={() => (confirming = file.name)}
-                  >
-                    <Icon name="trash" size={13} />
-                  </button>
-                {/if}
-              </span>
-            </div>
-          {/if}
+                <button
+                  type="button"
+                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  title="Скачать"
+                  aria-label={`Скачать ${entry.name}`}
+                  onclick={() => void download(entry.path)}
+                >
+                  <Icon name="download" size={12} />
+                </button>
+              {/if}
+              <!-- Убрать файл — преподавательское: папка общая в обе стороны, и
+                   раздатка, по которой работает класс, была в одном нажатии от
+                   любого. -->
+              {#if isHost}
+                <button
+                  type="button"
+                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
+                  title="Убрать"
+                  aria-label={`Убрать ${entry.name}`}
+                  onclick={() => (confirming = entry.path)}
+                >
+                  <Icon name="trash" size={12} />
+                </button>
+              {/if}
+            </span>
+          </div>
         {/if}
-      </div>
-    {/each}
+      {/if}
+    </div>
 
-    {#each uploads as item (item.id)}
-      {@const done = percent(item)}
-      <div class="flex flex-col gap-1 px-2 pb-1 pt-1.5">
-        <div class="flex items-center gap-2.5">
-          <span class="h-4 w-[3px] shrink-0 bg-brand-2" aria-hidden="true"></span>
-          <!-- Same rule while it is still going up: the extension is what the
-               room is looking for in the list. -->
-          <span class="flex min-w-0 flex-1 font-mono text-code text-muted" title={item.name}>
-            <span class="truncate">{splitFileName(item.name).stem}</span>
-            <span class="shrink-0">{splitFileName(item.name).ext}</span>
-          </span>
-          <span
-            class="min-w-10 shrink-0 whitespace-nowrap text-right font-mono text-micro tabular-nums text-accent-text"
-          >
-            {done}%
-          </span>
-        </div>
-        <!-- Scaled, not resized: a width transition would relayout the row on
-             every progress event, and only transform is allowed to move. -->
-        <div
-          class="h-0.5 bg-line"
-          role="progressbar"
-          aria-label="Uploading {item.name}"
-          aria-valuenow={done}
-          aria-valuemin={0}
-          aria-valuemax={100}
+    {#if confirming === entry.path}
+      <div
+        class="flex h-[26px] items-center gap-2 bg-raised pr-2"
+        style={`padding-left:${4 + depth * 14 + 32}px`}
+      >
+        <span class="min-w-0 flex-1 truncate text-2xs text-muted">
+          {entry.dir ? 'Убрать папку со всем, что в ней?' : 'Убрать?'}
+        </span>
+        <button
+          type="button"
+          class="shrink-0 text-2xs font-bold uppercase tracking-caps text-danger transition-opacity duration-100 hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 disabled:opacity-50"
+          disabled={deleting === entry.path}
+          onclick={() => remove(entry)}
         >
-          <div
-            class="h-full origin-left bg-accent"
-            style="transform: scaleX({done / 100}); transition: transform var(--speed-quick) linear"
-          ></div>
-        </div>
+          {deleting === entry.path ? 'Убираю' : 'Убрать'}
+        </button>
+        <button
+          type="button"
+          class="shrink-0 text-2xs font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          onclick={() => (confirming = null)}
+        >
+          Отмена
+        </button>
       </div>
-    {/each}
+    {/if}
+  {/each}
 
+  {#if draft && draft.kind !== 'rename'}
+    <!-- Строка ввода стоит там, где файл появится: в выбранной папке, с её
+         отступом. Отступ на единицу больше, потому что это её содержимое. -->
+    <div
+      class="flex h-[26px] items-center pr-2"
+      style={`padding-left:${4 + (draft.dir ? depthOf(draft.dir) + 1 : 0) * 14}px`}
+    >
+      <span class="h-3.5 w-3.5 shrink-0"></span>
+      <span class="flex h-3.5 w-[18px] shrink-0 items-center justify-center">
+        <Icon name={draft.kind === 'dir' ? 'folder' : 'file'} size={12} class="text-faint" />
+      </span>
+      {@render nameField()}
+    </div>
   {/if}
 
+  {#each uploads as item (item.id)}
+    {@const done = percent(item)}
+    <div class="flex flex-col gap-1 px-2 pb-1 pt-1.5">
+      <div class="flex items-center gap-2.5">
+        <span class="h-4 w-[3px] shrink-0 bg-brand-2" aria-hidden="true"></span>
+        <span class="flex min-w-0 flex-1 font-mono text-code text-muted" title={item.name}>
+          <span class="truncate">{splitFileName(item.name).stem}</span>
+          <span class="shrink-0">{splitFileName(item.name).ext}</span>
+        </span>
+        <span
+          class="min-w-10 shrink-0 whitespace-nowrap text-right font-mono text-micro tabular-nums text-accent-text"
+        >
+          {done}%
+        </span>
+      </div>
+      <!-- Scaled, not resized: a width transition would relayout the row on
+           every progress event, and only transform is allowed to move. -->
+      <div
+        class="h-0.5 bg-line"
+        role="progressbar"
+        aria-label="Загружается {item.name}"
+        aria-valuenow={done}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          class="h-full origin-left bg-accent"
+          style="transform: scaleX({done / 100}); transition: transform var(--speed-quick) linear"
+        ></div>
+      </div>
+    </div>
+  {/each}
+
   <!--
-    Always here, in every state. It used to appear only once a file existed,
-    which left an empty room with a paragraph and no target — and the artboard
-    draws the dashed zone whether the list is full or not.
+    Есть всегда, в любом состоянии: пустая комната иначе оставалась бы с
+    абзацем и без цели.
   -->
   <button
     type="button"
-    class="mt-1.5 flex h-9 shrink-0 items-center justify-center border border-dashed text-2xs transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {dragDepth >
+    class="mx-1 mt-2 flex h-9 shrink-0 items-center justify-center border border-dashed text-2xs transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {dragDepth >
     0
       ? 'border-accent bg-accent/10 text-accent-text'
       : 'border-line text-muted hover:border-faint hover:text-ink'}"
     onclick={() => picker?.click()}
   >
-    Drop files — shared with the room
+    {target ? `Файлы — в папку ${target}` : 'Файлы — общие с комнатой'}
   </button>
 
-
   {#if error}
-    <div class="mt-1.5 flex items-start gap-2 border-l-2 border-danger px-2 py-1 text-2xs text-danger">
+    <div
+      class="mt-1.5 flex items-start gap-2 border-l-2 border-danger px-2 py-1 text-2xs text-danger"
+    >
       <span class="min-w-0 flex-1 break-words">{error}</span>
       <button
         type="button"
         class="shrink-0 p-0.5 transition-opacity duration-100 hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
-        aria-label="Dismiss"
+        aria-label="Убрать"
         onclick={() => (error = null)}
       >
         <Icon name="x" size={11} />
@@ -533,7 +765,7 @@
       <button
         type="button"
         class="shrink-0 p-0.5 transition-opacity duration-100 hover:opacity-70"
-        aria-label="Dismiss"
+        aria-label="Убрать"
         onclick={() => (note = null)}
       >
         <Icon name="x" size={11} />
@@ -542,15 +774,15 @@
   {/if}
 
   {#if dragDepth > 0 && !listed}
-    <!-- With no list there is no drop zone to light up, so the panel becomes one.
-         Комната, где файлы кладёт преподаватель, говорит это прямо здесь: узнать
-         об отказе, уже отпустив файл, — то же самое, что не узнать. -->
+    <!-- Без списка светиться нечему, и панель становится целью сама. Комната,
+         где файлы кладёт преподаватель, говорит это прямо здесь: узнать об
+         отказе, уже отпустив файл, — то же самое, что не узнать. -->
     <div
       class="pointer-events-none absolute inset-x-4 inset-y-3 flex items-center justify-center border border-dashed text-2xs {may.files
         ? 'border-accent bg-accent/10 text-accent-text'
         : 'border-line bg-surface/80 text-muted'}"
     >
-      {may.files ? 'Drop files — shared with the room' : may.filesWhy}
+      {may.files ? 'Файлы — общие с комнатой' : may.filesWhy}
     </div>
   {/if}
 </section>

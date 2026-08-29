@@ -12,7 +12,7 @@
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import Icon from '@/components/ui/Icon.svelte'
   import { api } from '@/lib/api'
-  import { leaderFor, sameLead, type Lead } from '@/lib/follow'
+  import type { Lead } from '@/lib/follow'
   import { loadPdf } from '@/lib/pdf.svelte'
   import { getSessionState } from '@/lib/session.svelte'
 
@@ -31,27 +31,18 @@
     /** Наружу — строке вкладок: она показывает и место, и за кем идём. */
     page: number
     pages: number
-    lead: Lead | null
     /**
-     * Ведущий БЫЛ и пропал.
+     * За кем идти по этому документу — считает экран, а не читалка.
      *
-     * Отдельно от `lead === null`, потому что это разные вещи. Ведущего нет у
-     * всякого, кто ни за кем не шёл: у самого преподавателя, за которым идут
-     * остальные, и у студента, открывшего свой файл. Говорить им «преподаватель
-     * вышел» — сообщать о событии, которого не было.
+     * Считалось здесь, и это было ошибкой ровно в одном месте: читалка
+     * размонтируется, когда человек уходит в тетрадь, а метка «преподаватель на
+     * стр. 4» на вкладке должна оставаться живой и оттуда. Считать её в экране
+     * стоит того же, а работает и когда смотреть некому.
      */
-    orphaned: boolean
+    lead: Lead | null
   }
 
-  let {
-    file,
-    shared,
-    catchUp,
-    page = $bindable(1),
-    pages = $bindable(0),
-    lead = $bindable(null),
-    orphaned = $bindable(false),
-  }: Props = $props()
+  let { file, shared, catchUp, lead, page = $bindable(1), pages = $bindable(0) }: Props = $props()
   const session = getSessionState()
 
   let doc = $state<PDFDocumentProxy | null>(null)
@@ -64,32 +55,8 @@
    */
   // svelte-ignore state_referenced_locally
   let following = $state(shared)
-  let sticky = $state<number | null>(null)
   /** Ставится, пока страницу двигает код, — чтобы не принять это за жест. */
   let programmatic = false
-
-  /*
-   * Ведущий пересчитывается на каждое изменение присутствия — но записывается
-   * только если правда изменился.
-   *
-   * `leaderFor` собирает новый объект каждый раз, а `lead` связан с родителем:
-   * без проверки на равенство родитель перерисовывается, свойство приезжает
-   * обратно, эффект считает заново — и так до срыва по глубине. `untrack` на
-   * чтении `sticky` и `lead` нужен по той же причине: эффект пишет их обоих.
-   */
-  $effect(() => {
-    const peers = session.peers
-    const next = leaderFor(
-      peers,
-      file,
-      untrack(() => sticky),
-    )
-    if (sameLead(untrack(() => lead), next)) return
-    lead = next
-    if (next) sticky = next.clientId
-    // «Был и пропал» — а не «его нет»: см. свойство `orphaned`.
-    orphaned = next === null && untrack(() => sticky) !== null
-  })
 
   onMount(() => {
     let cancelled = false

@@ -368,7 +368,7 @@ export class SessionState {
          * ту же папку. Читалка, оставшаяся на документе, которого нет, — это
          * пустая область без объяснения.
          */
-        if (this.board && !message.files.some((file) => file.name === this.board)) {
+        if (this.board && !message.files.some((file) => !file.dir && file.path === this.board)) {
           this.board = null
         }
       } else if (message.t === 'board') this.board = message.open
@@ -492,6 +492,20 @@ export class SessionState {
       return
     }
     this.#patchUser({ viewing })
+  }
+
+  /**
+   * Какой файл этот человек правит прямо сейчас.
+   *
+   * Панель файлов рисует по нему точки «кто здесь». Курсоры внутри самого файла
+   * сюда не входят вовсе: они живут в присутствии того документа, который
+   * открыт, и до комнаты не доходят — иначе каждое нажатие в файле стоило бы
+   * кадра присутствия всей комнате.
+   */
+  setEditing(path: string | null) {
+    const current = (this.awareness.getLocalState()?.user as AwarenessUser | undefined)?.editing
+    if ((current ?? null) === path) return
+    this.#patchUser({ editing: path })
   }
 
   #patchUser(patch: Partial<AwarenessUser>) {

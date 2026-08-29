@@ -234,12 +234,12 @@
 
     // Files fill whatever room the cell and traceback chips leave, so a student
     // looking at a failure still sees the failure named first.
-    const files = session.files
+    const files = session.files.filter((file) => !file.dir)
     const room = Math.max(0, MAX_SEES - chips.length)
     for (const file of files.slice(0, room)) {
-      chips.push({ label: file.name, title: `${file.name} — in the workspace listing` })
+      chips.push({ label: file.path, title: `${file.path} — in the workspace listing` })
     }
-    const rest = files.slice(room).map((file) => file.name)
+    const rest = files.slice(room).map((file) => file.path)
     return { chips, rest }
   })
 

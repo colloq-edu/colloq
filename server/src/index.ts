@@ -27,6 +27,7 @@ import { SECURITY_HEADERS } from './headers.js'
 import { handleCollabSocket, shutdownCollab } from './collab/index.js'
 import { handleFileSocket } from './collab/files.js'
 import { normalizePath } from '@shared/paths'
+
 import { handleControlSocket } from './control.js'
 import { closeDatabase, db, getSession, touchLastSeen } from './db.js'
 import { shutdownKernels } from './kernel/index.js'
@@ -44,7 +45,16 @@ import { historyRoutes } from './routes/history.js'
 /** A whole notebook's state travels in one sync frame; images make it big. */
 const MAX_WS_PAYLOAD = 16 * 1024 * 1024
 const SHUTDOWN_GRACE_MS = 8000
-const UPGRADE_PATH = /^\/(collab|control|file)\/([A-Za-z0-9_-]{1,64})\/?$/
+const UPGRADE_PATH = /^\/(collab|control)\/([A-Za-z0-9_-]{1,64})\/?$/
+/*
+ * У файла в адресе два отрезка: комната и сам файл, путь в base64url.
+ *
+ * Путь ушёл из строки запроса в адрес не ради красоты: y-websocket заводит
+ * BroadcastChannel по адресу без параметров, и два разных файла одной комнаты,
+ * открытые в двух вкладках браузера, оказывались в одном канале — правки одного
+ * приезжали в документ другого. Имя комнаты обязано быть разным.
+ */
+const FILE_PATH = /^\/file\/([A-Za-z0-9_-]{1,64})\/([A-Za-z0-9_-]{1,2048})\/?$/
 const STARTED_AT = Date.now()
 
 /* -------------------------------------------------------------- compression */
@@ -438,6 +448,15 @@ function effectiveRole(req: { headers: { cookie?: string } }, payload: TokenPayl
   return roleFor(req.headers.cookie, payload)
 }
 
+/** Имя комнаты файла обратно в путь. Кривая строка — это просто не путь. */
+function decodeRoom(room: string): string {
+  try {
+    return Buffer.from(room, 'base64url').toString('utf8')
+  } catch {
+    return ''
+  }
+}
+
 server.on('upgrade', (req, socket, head) => {
   // Until handleUpgrade adopts it this socket has no error handler, and a client
   // that vanishes mid-handshake would otherwise throw out of the event loop.
@@ -450,9 +469,11 @@ server.on('upgrade', (req, socket, head) => {
     return reject(socket)
   }
 
-  const match = UPGRADE_PATH.exec(url.pathname)
+  const asFile = FILE_PATH.exec(url.pathname)
+  const match = asFile ?? UPGRADE_PATH.exec(url.pathname)
   if (!match) return reject(socket)
-  const [, channel, sessionId] = match
+  const channel = asFile ? 'file' : match[1]
+  const sessionId = asFile ? asFile[1] : match[2]
 
   // The token is the whole authorization story: it names the session it was
   // minted for, so a valid token for seminar A cannot open seminar B.
@@ -473,13 +494,11 @@ server.on('upgrade', (req, socket, head) => {
       handleCollabSocket(ws, sessionId, effectiveRole(req, payload), payload.participantId)
     else if (channel === 'file') {
       /*
-       * Путь — в строке запроса, а не в адресе, и это не стиль: у файла есть
-       * папки, а адрес сокета разбирается одним выражением, которому косая
-       * черта внутри имени была бы неотличима от косой черты канала. Проверяет
-       * его тот же `normalizePath`, что и всё остальное, — и до него сюда не
+       * Путь приезжает вторым отрезком адреса, в base64url. Проверяет его тот
+       * же `normalizePath`, что и всё остальное в продукте, — и до него сюда не
        * доходит ничего, кроме уже проверенного токена этой самой комнаты.
        */
-      const wanted = normalizePath(url.searchParams.get('path') ?? '')
+      const wanted = normalizePath(decodeRoom(asFile?.[2] ?? ''))
       if (!wanted) {
         try {
           ws.close(4404, 'нет такого файла')

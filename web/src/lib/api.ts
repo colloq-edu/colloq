@@ -140,8 +140,8 @@ export const api = {
     })
   },
 
-  deleteFile: (id: string, name: string, token: string) =>
-    request<{ files: FileEntry[] }>(`/api/sessions/${id}/files/${encodeURIComponent(name)}`, {
+  deleteFile: (id: string, path: string, token: string) =>
+    request<{ files: FileEntry[] }>(`/api/sessions/${id}/file?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
       headers: { authorization: `Bearer ${token}` },
     }),
@@ -160,14 +160,19 @@ export const api = {
    * itself, which meant "copy link address" into a group chat handed every
    * reader the control socket under the teacher's name.
    */
-  fileTicket: (id: string, name: string, token: string) =>
+  fileTicket: (id: string, path: string, token: string) =>
     request<{ token: string }>(
-      `/api/sessions/${id}/files/${encodeURIComponent(name)}/ticket`,
+      `/api/sessions/${id}/file/ticket?path=${encodeURIComponent(path)}`,
       { headers: { authorization: `Bearer ${token}` } },
     ),
 
-  fileUrl: (id: string, name: string, ticket: string) =>
-    `/api/sessions/${id}/files/${encodeURIComponent(name)}?token=${encodeURIComponent(ticket)}`,
+  /*
+   * Путь — в строке запроса, а не в адресе, и так везде в продукте: косая черта
+   * внутри имени живёт в адресе только как `%2F`, а его по дороге разворачивает
+   * то один прокси, то другой.
+   */
+  fileUrl: (id: string, path: string, ticket: string) =>
+    `/api/sessions/${id}/file?path=${encodeURIComponent(path)}&token=${encodeURIComponent(ticket)}`,
 
   /**
    * Тот же файл, но без билета в строке запроса — для читалки.
@@ -177,8 +182,7 @@ export const api = {
    * по нему запрашивает документ кусками и показывает первую страницу, не
    * дожидаясь последней.
    */
-  fileRaw: (id: string, name: string) =>
-    `/api/sessions/${id}/files/${encodeURIComponent(name)}`,
+  fileRaw: (id: string, path: string) => `/api/sessions/${id}/file?path=${encodeURIComponent(path)}`,
 
   /** `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`. */
   aiStatus: () =>

@@ -10,7 +10,14 @@
  * Фразы живут здесь же, рядом с правом: `controls.ts` уже умеет складывать их
  * с «нет связи» и знает, что связь важнее правила.
  */
-import { allows, allowsRun, allowsStructure, readRules, type RoomRules } from '@shared/rules'
+import {
+  allows,
+  allowsAgent,
+  allowsRun,
+  allowsStructure,
+  readRules,
+  type RoomRules,
+} from '@shared/rules'
 import type { ParticipantRole } from '@shared/protocol'
 
 export interface Permits {
@@ -39,9 +46,12 @@ export interface Permits {
   restartWhy: string
   /** Видеть ленту версий. */
   history: boolean
-  /** Добавлять файлы. */
+  /** Заводить и править файлы семинара. */
   files: boolean
   filesWhy: string
+  /** Просить оракула не ответить, а сделать: править файлы самому. */
+  agent: boolean
+  agentWhy: string
   /** Ставить документ на общий экран комнаты. Смотреть себе может любой. */
   board: boolean
   boardWhy: string
@@ -77,7 +87,15 @@ export function permitsIn(rules: unknown, role: ParticipantRole): Permits {
     restartWhy: 'Перезапускает ядро преподаватель',
     history: allows(read.history, role),
     files: allows(read.files, role),
-    filesWhy: 'Файлы в эту комнату добавляет преподаватель',
+    // Одна фраза на два места — панель файлов и полосу над редактором:
+    // «добавляет» не годится там, где речь про правку, а «правит» — там, где
+    // про перетаскивание.
+    filesWhy: 'Файлы в этой комнате — преподавательские',
+    agent: allowsAgent(read.agent, role),
+    agentWhy:
+      read.agent === 'off'
+        ? 'В этом семинаре оракул файлы не трогает'
+        : 'Просить оракула править файлы здесь может преподаватель',
     board: allows(read.board, role),
     boardWhy: 'Показывать документ всей комнате здесь может преподаватель',
   }

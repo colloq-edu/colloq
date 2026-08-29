@@ -243,13 +243,14 @@ export function runnerFor(path: string): 'python' | 'shell' | null {
  * `null` — подсветки нет, и это нормально: .csv и .log читаются как текст, а
  * грамматика, натянутая не на тот язык, красит хуже, чем не красит вовсе.
  */
-export type Highlight = 'python' | 'markdown' | 'json' | 'javascript' | 'css' | 'html'
+export type Highlight = 'python' | 'markdown' | 'json' | 'yaml' | 'javascript' | 'css' | 'html'
 
 export function highlightFor(path: string): Highlight | null {
   const ext = extOf(path)
   if (ext === 'py' || ext === 'pyi') return 'python'
   if (ext === 'md' || ext === 'markdown') return 'markdown'
   if (ext === 'json' || ext === 'jsonl' || ext === 'ipynb') return 'json'
+  if (ext === 'yaml' || ext === 'yml') return 'yaml'
   if (
     ext === 'js' ||
     ext === 'mjs' ||

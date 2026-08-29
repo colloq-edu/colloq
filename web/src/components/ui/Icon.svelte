@@ -41,6 +41,10 @@
     // Курс — папка семинаров. Единственное место в продукте, где эта метафора
     // уместна: остальное к файлам отношения не имеет.
     folder: '<path d="M3 6.2A1.7 1.7 0 0 1 4.7 4.5h4.1l2 2.4h8.5A1.7 1.7 0 0 1 21 8.6v9.7a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 18.3V6.2z"/>',
+    'file-plus':
+      '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 11v6M9 14h6"/>',
+    'folder-plus':
+      '<path d="M3 6.2A1.7 1.7 0 0 1 4.7 4.5h4.1l2 2.4h8.5A1.7 1.7 0 0 1 21 8.6v9.7a1.7 1.7 0 0 1-1.7 1.7H4.7A1.7 1.7 0 0 1 3 18.3V6.2z"/><path d="M12 10.5v6M9 13.5h6"/>',
     // The theme pair. Both live here so the switch on the brand band and the one
     // on the canvas cannot drift apart.
     sun:

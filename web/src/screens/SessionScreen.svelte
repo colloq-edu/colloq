@@ -13,7 +13,7 @@
    * here, the kernel's mood, the queue — is read from the shared document or
    * from awareness, so what it shows is what everybody else is looking at.
    */
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { cubicOut } from 'svelte/easing'
   import { fade, fly } from 'svelte/transition'
   import { peopleInRoom } from '@/lib/room'
@@ -39,8 +39,13 @@
   import { takeRefusal } from '@/lib/refusal'
   import { permitsIn } from '@/lib/may'
   import TabStrip from '@/components/reader/TabStrip.svelte'
-  import type { Lead } from '@/lib/follow'
+  import FileEditor from '@/components/editor/FileEditor.svelte'
+  import FileBar from '@/components/editor/FileBar.svelte'
+  import { leaderFor, sameLead, type Lead } from '@/lib/follow'
   import { loadPdf } from '@/lib/pdf.svelte'
+  import { Tabs } from '@/lib/tabs.svelte'
+  import { holdFile, releaseFile, type FileDoc } from '@/lib/filedoc.svelte'
+  import { baseOf, kindOf, runnerFor } from '@shared/paths'
   import { api } from '@/lib/api'
   import { readRules, type RoomRules } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
@@ -268,59 +273,119 @@
   const may = $derived(permitsIn(session.session.rules, session.me.role))
 
   /**
-   * Документ, открытый лично этим человеком, — в отличие от доски комнаты.
+   * Что открыто в центре — тетрадь и файлы, которые открыли.
    *
-   * Состояние живёт здесь, а не в самой читалке: она размонтируется при
-   * переходе в тетрадь, а место в документе терять нельзя — человек вернётся
-   * на ту же страницу, а не в начало.
+   * Список своих вкладок живёт здесь, а не в каждом компоненте: вкладка
+   * переживает уход в тетрадь и обратно, а место в документе и курсор в
+   * редакторе теряются от размонтирования. Общий документ комнаты приходит
+   * сбоку — от сервера — и встаёт в тот же ряд.
    */
-  let readerOpen = $state<string | null>(null)
+  // svelte-ignore state_referenced_locally
+  const tabs = new Tabs(info.id)
+  const row = $derived(tabs.row(session.board))
+  const activePath = $derived(typeof tabs.active === 'string' ? tabs.active : null)
+  const activeKind = $derived(activePath ? kindOf(activePath) : null)
 
-  /*
-   * Что вообще открыто: своё, если человек открыл сам, иначе доска комнаты.
-   * Так опоздавший сразу видит то, что смотрит комната, а открывший своё не
-   * теряет его от того, что преподаватель что-то поставил.
-   */
-  const reading = $derived(readerOpen ?? session.board)
-
-  /**
-   * Что занимает центр: тетрадь или документ.
-   *
-   * Не две колонки, а два режима занятия: либо смотрим лекцию, либо работаем.
-   * Колонка рядом с тетрадью означала бы, что ни на то ни на другое места не
-   * хватает — а страница A4 в трети экрана нечитаема.
-   */
-  let centre = $state<'notebook' | 'document'>('notebook')
   /** Что читалка сообщает наружу: строка вкладок показывает это за неё. */
   let readerPage = $state(1)
   let readerPages = $state(0)
   let lead = $state<Lead | null>(null)
   /** Ведущий был и пропал — не то же самое, что «ведущего нет». */
   let orphaned = $state(false)
+  /** За кем шли до сих пор: пока он на месте, ведущего не меняют. */
+  let sticky = $state<number | null>(null)
+
+  /**
+   * Документ, по которому вообще есть за кем идти.
+   *
+   * Тот, что открыт сейчас, — или, если человек ушёл в тетрадь, общий документ
+   * комнаты: метка «преподаватель на стр. 4» на вкладке должна оставаться живой
+   * и из тетради, иначе о том, что лекция уехала, узнаёшь, только
+   * переключившись.
+   */
+  const followFile = $derived(
+    activeKind === 'pdf'
+      ? activePath
+      : session.board && kindOf(session.board) === 'pdf'
+        ? session.board
+        : null,
+  )
+
+  /*
+   * Ведущий пересчитывается на каждое изменение присутствия — но записывается,
+   * только если правда изменился: `leaderFor` собирает новый объект каждый раз,
+   * а эффект пишет то же состояние, которое читает.
+   */
+  $effect(() => {
+    const peers = session.peers
+    const file = followFile
+    if (!file) {
+      // Смотреть нечего — и «преподаватель вышел» тут значило бы сообщать о
+      // событии, которого не было.
+      if (untrack(() => lead) !== null) lead = null
+      if (untrack(() => sticky) !== null) sticky = null
+      if (untrack(() => orphaned)) orphaned = false
+      return
+    }
+    const next = leaderFor(
+      peers,
+      file,
+      untrack(() => sticky),
+    )
+    if (sameLead(untrack(() => lead), next)) return
+    lead = next
+    if (next) sticky = next.clientId
+    // «Был и пропал» — а не «его нет».
+    orphaned = next === null && untrack(() => sticky) !== null
+  })
   /** Нажатия «догнать» — счётчиком: догонять можно и дважды подряд. */
   let catchUp = $state(0)
 
   /*
-   * Документ появился — комната смотрит его: это и есть «началась лекция».
-   * Пропал — все возвращаются в тетрадь, потому что смотреть больше нечего.
-   * Сравнение с прошлым значением, а не просто чтение: иначе переключение
-   * вкладкой тут же отменялось бы этим же эффектом.
+   * Документ появился на общем экране — комната смотрит его: это и есть
+   * «началась лекция». Пропал — все возвращаются в тетрадь, потому что
+   * смотреть больше нечего. Сравнение с прошлым значением, а не просто
+   * чтение: иначе переключение вкладкой тут же отменялось бы этим же эффектом.
    */
-  let lastReading: string | null = null
+  let lastBoard: string | null = null
   $effect(() => {
-    const now = reading
-    if (now === lastReading) return
-    lastReading = now
-    centre = now ? 'document' : 'notebook'
-    /*
-     * Документ закрыт совсем — вот теперь позиции больше нет. Читалка этого
-     * сделать не может: она исчезает и от переключения на тетрадь, а место в
-     * документе при этом никуда не девается.
-     */
-    if (!now) {
-      session.setViewing(null)
-      lead = null
-    }
+    const now = session.board
+    if (now === lastBoard) return
+    const was = lastBoard
+    lastBoard = now
+    if (now) tabs.show(now)
+    else if (untrack(() => tabs.active) === was) tabs.show(null)
+  })
+
+  /*
+   * Место в документе живёт, пока документ вообще открыт, — а не пока на него
+   * смотрят.
+   *
+   * Разница ровно в одном случае, и он самый частый: преподаватель ушёл в
+   * тетрадь показать ячейку. Он никуда не «выходил» из лекции, и комната должна
+   * по-прежнему видеть на вкладке «Ада на стр. 4» — иначе о том, что лекция
+   * уехала дальше, узнаёшь, только переключившись. Читалка этого сделать не
+   * может: она размонтируется вместе с переключением вкладки.
+   */
+  $effect(() => {
+    if (!followFile) session.setViewing(null)
+  })
+
+  /*
+   * Файл, который правит этот человек, — комнате. Панель файлов рисует по нему
+   * точки «кто здесь», а полоса над редактором — имена.
+   */
+  $effect(() => {
+    session.setEditing(activeKind === 'text' ? activePath : null)
+  })
+
+  /*
+   * Вкладка на файл, которого больше нет, — пустая область без объяснения.
+   * Файл мог убрать преподаватель, а мог переписать `os.remove` в ячейке.
+   */
+  $effect(() => {
+    const alive = new Set(session.files.filter((file) => !file.dir).map((file) => file.path))
+    untrack(() => tabs.keepOnly(alive))
   })
 
   /*
@@ -329,35 +394,98 @@
    * открывать.
    */
   $effect(() => {
-    if (session.files.some((file) => file.name.toLowerCase().endsWith('.pdf'))) {
+    if (session.files.some((file) => !file.dir && kindOf(file.path) === 'pdf')) {
       void loadPdf()
     }
   })
 
+  /* --------------------------------------------------- документы файлов */
+
   /**
-   * Закрыть документ.
+   * Документы открытых текстовых файлов.
    *
-   * Своё закрывает кто угодно; документ, стоящий на общем экране, убирает тот,
-   * кому это разрешено — и убирает у всех сразу. Если права нет, а документ
-   * общий, закрыть его у себя тоже можно: смотреть никого не заставляют.
+   * Держатся для ВСЕХ открытых вкладок, а не только для текущей: соединение
+   * поднимается за сотню миллисекунд, но вместе с ним пересобирается история
+   * отмен, и переключение между двумя файлами туда-обратно стирало бы Ctrl+Z в
+   * обоих. Пять открытых файлов — пять сокетов; семинар, где не открыли ни
+   * одного, держит ровно те два, что держал всегда.
    */
-  function closeReader(): void {
-    if (readerOpen) readerOpen = null
-    else if (may.board) session.send({ t: 'board:close' })
-    else {
-      // Общий документ без права его убрать: уходим в тетрадь, у комнаты он
-      // остаётся. Вернуться — вкладкой, она никуда не делась.
-      centre = 'notebook'
+  let docs = $state<Record<string, FileDoc>>({})
+
+  $effect(() => {
+    const want = new Set(
+      row.filter(
+        (key): key is string => typeof key === 'string' && kindOf(key) === 'text',
+      ),
+    )
+    untrack(() => {
+      for (const path of want) {
+        if (!docs[path]) docs[path] = holdFile(session.session.id, path, session.token)
+      }
+      for (const path of Object.keys(docs)) {
+        if (want.has(path)) continue
+        releaseFile(session.session.id, path)
+        delete docs[path]
+      }
+    })
+  })
+
+  onDestroy(() => {
+    for (const path of Object.keys(docs)) releaseFile(session.session.id, path)
+    docs = {}
+  })
+
+  const activeDoc = $derived(activePath && activeKind === 'text' ? docs[activePath] : undefined)
+
+  /*
+   * Файл, который сервер закрыл с 4404, исчез с диска между списком и
+   * открытием — гонка узкая и вполне обычная: преподаватель убрал файл ровно в
+   * ту секунду, когда студент по нему нажал.
+   */
+  $effect(() => {
+    const doc = activeDoc
+    if (doc?.missing && activePath) tabs.close(activePath, session.board)
+  })
+
+  /**
+   * Закрыть вкладку.
+   *
+   * Свою закрывает кто угодно; документ, стоящий на общем экране, убирает тот,
+   * кому это разрешено, — и убирает у всех сразу. Если права нет, а документ
+   * общий, уйти от него в тетрадь всё равно можно: смотреть никого не
+   * заставляют, а вкладка остаётся стоять.
+   */
+  function closeTab(path: string): void {
+    if (path === session.board && may.board) {
+      session.send({ t: 'board:close' })
+      tabs.show(null)
       return
     }
-    centre = 'notebook'
+    tabs.close(path, session.board)
   }
 
-  function openReader(name: string): void {
-    // Преподаватель ставит комнате; остальные открывают себе.
-    if (may.board) session.send({ t: 'board:open', name })
-    else readerOpen = name
-    centre = 'document'
+  /**
+   * Открыть файл из панели.
+   *
+   * PDF у преподавателя уезжает на общий экран комнаты — это лекция, её смотрят
+   * вместе. Всё остальное открывается себе: у скрипта нет «общего экрана», его
+   * правят и запускают, а кто рядом — видно по точкам в дереве.
+   */
+  function openFile(path: string): void {
+    if (kindOf(path) === 'pdf' && may.board) {
+      session.send({ t: 'board:open', name: path })
+      tabs.show(path)
+      return
+    }
+    tabs.open(path)
+  }
+
+  function runFile(path: string): void {
+    session.send({ t: 'file:run', path })
+    // Вывод идёт в терминал, и открыть его — часть запуска: иначе нажатие
+    // выглядит как ничего не сделавшее.
+    terminalOpen = true
+    drawerTab = 'terminal'
   }
 
   const leftShown = $derived(leftIsDrawer ? leftDrawer : leftOpen)
@@ -779,47 +907,88 @@
     <!-- The drawer sits inside the notebook column, not under the whole app:
          it is the same machine the cells run on. -->
     <div class="flex min-w-0 flex-1 flex-col">
-      {#if reading}
+      {#if row.length > 1}
         <!--
-          Вкладки появляются только когда есть что переключать: в комнате без
-          документа этой строки нет вовсе, и она не стоит ни пикселя высоты.
+          Вкладки появляются только когда есть что переключать: в комнате, где
+          не открыли ни файла, этой строки нет вовсе, и она не стоит ни пикселя
+          высоты.
         -->
         <TabStrip
-          file={reading}
-          mode={centre}
+          tabs={row}
+          active={tabs.active}
+          board={session.board}
+          mayBoard={may.board}
           {lead}
           {orphaned}
-          shared={reading === session.board}
           page={readerPage}
           pages={readerPages}
-          onmode={(next) => (centre = next)}
+          onshow={(key) => tabs.show(key)}
+          onclose={closeTab}
           oncatchup={() => (catchUp += 1)}
-          onclose={closeReader}
+        />
+      {/if}
+
+      {#if activePath && activeKind === 'text'}
+        <FileBar
+          path={activePath}
+          mayRun={may.run && runnerFor(activePath) !== null}
+          mayEdit={may.files}
+          whyReadOnly={may.filesWhy}
+          refused={activeDoc?.refused ?? false}
+          onrun={() => runFile(activePath)}
         />
       {/if}
 
       <!--
         Тетрадь прячется, а не размонтируется: в ней курсор, прокрутка и
         полтора десятка редакторов CodeMirror, и пересобирать их на каждое
-        переключение режима значит терять место в тексте.
+        переключение вкладки значит терять место в тексте.
       -->
-      <main
-        class="min-h-0 flex-1 overflow-y-auto"
-        class:hidden={reading !== null && centre === 'document'}
-      >
+      <main class="min-h-0 flex-1 overflow-y-auto" class:hidden={tabs.active !== null}>
         <Notebook {terminalOpen} ontoggleterminal={toggleTerminal} />
       </main>
 
-      {#if reading && centre === 'document'}
+      {#if activePath && activeKind === 'pdf'}
         <PdfReader
-          file={reading}
-          shared={reading === session.board}
+          file={activePath}
+          shared={activePath === session.board}
           {catchUp}
+          {lead}
           bind:page={readerPage}
           bind:pages={readerPages}
-          bind:lead
-          bind:orphaned
         />
+      {:else if activePath && activeKind === 'text'}
+        {#if activeDoc}
+          {#key activePath}
+            <FileEditor
+              file={activeDoc}
+              readOnly={!may.files || activeDoc.refused}
+              onrun={runnerFor(activePath) && may.run ? () => runFile(activePath) : null}
+            />
+          {/key}
+        {:else}
+          <div class="flex min-h-0 flex-1 items-center justify-center text-ui text-muted">
+            Открываю {baseOf(activePath)}…
+          </div>
+        {/if}
+      {:else if activePath && activeKind === 'image'}
+        <!-- Картинку смотрят, а не правят. Скачивание — в дереве, там же, где
+             у всех остальных файлов. -->
+        <div class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-surface p-6">
+          <img
+            src={api.fileRaw(session.session.id, activePath)}
+            alt={baseOf(activePath)}
+            class="max-h-full max-w-full object-contain"
+          />
+        </div>
+      {:else if activePath}
+        <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+          <p class="text-ui text-ink">{baseOf(activePath)} — не текст.</p>
+          <p class="text-2xs text-muted">
+            Такой файл можно скачать или прочитать из ячейки; открывать его в
+            редакторе значило бы показать мусор и предложить его сохранить.
+          </p>
+        </div>
       {/if}
 
       {#if terminalOpen}
@@ -1035,7 +1204,11 @@
      them but the 24px the panels already carry. -->
 {#snippet leftPanels()}
   <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
-    <FilesPanel onopen={openReader} />
+    <FilesPanel
+      onopen={openFile}
+      active={activePath}
+      onrename={(from, to) => tabs.rename(from, to)}
+    />
     <PeoplePanel />
   </div>
 {/snippet}
