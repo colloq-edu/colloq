@@ -30,7 +30,15 @@ import {
   type VersionKind,
 } from '@shared/history'
 import {
-  cloneCell, CELLS_KEY, createCell, getCells, replaceText, type YCell } from '@shared/notebook'
+  addBook,
+  bookList,
+  cloneCell,
+  CELLS_KEY,
+  createCell,
+  DEFAULT_BOOK,
+  replaceText,
+  type YCell,
+} from '@shared/notebook'
 import {
   appendVersion,
   hasHistoryBase,
@@ -222,7 +230,6 @@ function describe(
   removed: number
   cells: string[]
 } {
-
   const created: string[] = []
   const deleted: string[] = []
   const changed: string[] = []
@@ -271,6 +278,22 @@ function describe(
   }
 
   return { summary, added, removed, cells: [...new Set([...created, ...changed, ...deleted])] }
+}
+
+/**
+ * Свободное имя для возвращаемой тетради комнаты.
+ *
+ * Её прежний путь история не хранит — она хранит ячейки, — а имя по умолчанию
+ * могло за это время достаться кому-то ещё.
+ */
+function freeBookName(doc: Y.Doc): string {
+  const taken = new Set(bookList(doc).map((book) => book.path))
+  if (!taken.has(DEFAULT_BOOK)) return DEFAULT_BOOK
+  for (let n = 2; n < 100; n++) {
+    const candidate = `Тетрадь ${n}.ipynb`
+    if (!taken.has(candidate)) return candidate
+  }
+  return DEFAULT_BOOK
 }
 
 /** The cells of a document, flattened to what the history cares about. */
@@ -592,7 +615,6 @@ export function forgetCache(sessionId: string): void {
 
 /* -------------------------------------------------------------------- diff */
 
-
 /** Record a version that is not a burst: a checkpoint, a restore, the first state. */
 export function mark(
   sessionId: string,
@@ -696,7 +718,21 @@ export function restoreInto(
   let changed = 0
 
   doc.transact(() => {
-    const cells = getCells(doc)
+    /*
+     * История — про ТЕТРАДЬ КОМНАТЫ, и это её корень, а не «первая по списку».
+     *
+     * Разница видна ровно в одном случае и стоит дорого: тетрадь комнаты убрали,
+     * первой стала другая — и возврат версии вписал бы в неё ячейки чужого
+     * листа. Корень тут прибит намеренно; всё, что этот модуль читает и пишет,
+     * читает и пишет его.
+     *
+     * Если тетради комнаты в списке больше нет, возврат версии её и
+     * возвращает: это и есть то, о чём просят, нажимая «вернуть».
+     */
+    if (!bookList(doc).some((book) => book.root === CELLS_KEY)) {
+      addBook(doc, freeBookName(doc), CELLS_KEY)
+    }
+    const cells = doc.getArray<YCell>(CELLS_KEY)
     const live = new Map(cells.toArray().map((cell, index) => [cell.get('id') as string, index]))
 
     for (const want of wanted) {
@@ -749,7 +785,11 @@ export function restoreInto(
      * is about that cell, and shuffling the sheet around it would be a
      * surprise nobody asked for.
      */
-    if (!onlyCell) changed += reorder(cells, wanted.map((w) => w.id))
+    if (!onlyCell)
+      changed += reorder(
+        cells,
+        wanted.map((w) => w.id),
+      )
   }, RESTORE_ORIGIN)
 
   if (changed > 0) {

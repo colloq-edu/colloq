@@ -14,6 +14,7 @@ import path from 'node:path'
 import { createSession } from '../server/src/db.js'
 import { listFiles, readText, sessionDir } from '../server/src/workspace.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
+import { restoreInto } from '../server/src/collab/history.js'
 import {
   bookText,
   createBook,
@@ -183,4 +184,39 @@ test('ячейки убранной тетради не остаются вис�
   assert.equal(bookCells(doc, root).length, 1)
   dropBook(ROOM, 'на-выброс.ipynb')
   assert.equal(bookCells(doc, root).length, 0)
+})
+
+test('возврат версии не вписывает историю в чужую тетрадь', () => {
+  /*
+   * История комнаты — про её тетрадь, и корень у неё прибит. Разница видна
+   * ровно в одном случае и стоит дорого: тетрадь комнаты убрали, первой в
+   * списке стала другая — и возврат версии вписал бы в неё ячейки чужого листа.
+   */
+  const id = 'books-history'
+  createSession(id, 'История', null)
+  const { doc } = getSessionDoc(id)
+  ensureInitialNotebook(doc, 'История')
+  const roomBook = bookAt(doc, 'Тетрадь.ipynb')!
+  assert.equal(roomBook.root, 'cells')
+
+  createBook(id, 'вторая.ipynb')
+  const second = bookAt(doc, 'вторая.ipynb')!
+  doc.transact(() => bookCells(doc, second.root).push([createCell('code', 'своё = 1')]))
+
+  dropBook(id, 'Тетрадь.ipynb')
+  assert.equal(allBooks(doc)[0].book.root, second.root, 'первой стала вторая тетрадь')
+
+  // Возврат к версии, где у комнаты была своя тетрадь: ячейки обязаны лечь в
+  // неё же, а не в ту, что оказалась первой.
+  restoreInto(id, doc, 1, null, null, 'тест')
+  const restored = allBooks(doc).find((entry) => entry.book.root === 'cells')
+  assert.ok(restored, 'тетрадь комнаты не вернулась')
+  const inSecond = bookCells(doc, second.root)
+    .toArray()
+    .map((cell) => cellSource(cell).toString())
+  assert.ok(inSecond.includes('своё = 1'), 'вторая тетрадь потеряла своё')
+  assert.ok(
+    !inSecond.some((source) => source.includes('hello, seminar')),
+    'в чужую тетрадь вписали ячейки комнаты',
+  )
 })
