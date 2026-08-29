@@ -32,6 +32,15 @@
     page: number
     pages: number
     lead: Lead | null
+    /**
+     * Ведущий БЫЛ и пропал.
+     *
+     * Отдельно от `lead === null`, потому что это разные вещи. Ведущего нет у
+     * всякого, кто ни за кем не шёл: у самого преподавателя, за которым идут
+     * остальные, и у студента, открывшего свой файл. Говорить им «преподаватель
+     * вышел» — сообщать о событии, которого не было.
+     */
+    orphaned: boolean
   }
 
   let {
@@ -41,6 +50,7 @@
     page = $bindable(1),
     pages = $bindable(0),
     lead = $bindable(null),
+    orphaned = $bindable(false),
   }: Props = $props()
   const session = getSessionState()
 
@@ -77,6 +87,8 @@
     if (sameLead(untrack(() => lead), next)) return
     lead = next
     if (next) sticky = next.clientId
+    // «Был и пропал» — а не «его нет»: см. свойство `orphaned`.
+    orphaned = next === null && untrack(() => sticky) !== null
   })
 
   onMount(() => {

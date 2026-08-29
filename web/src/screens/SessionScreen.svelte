@@ -295,6 +295,8 @@
   let readerPage = $state(1)
   let readerPages = $state(0)
   let lead = $state<Lead | null>(null)
+  /** Ведущий был и пропал — не то же самое, что «ведущего нет». */
+  let orphaned = $state(false)
   /** Нажатия «догнать» — счётчиком: догонять можно и дважды подряд. */
   let catchUp = $state(0)
 
@@ -331,6 +333,25 @@
       void loadPdf()
     }
   })
+
+  /**
+   * Закрыть документ.
+   *
+   * Своё закрывает кто угодно; документ, стоящий на общем экране, убирает тот,
+   * кому это разрешено — и убирает у всех сразу. Если права нет, а документ
+   * общий, закрыть его у себя тоже можно: смотреть никого не заставляют.
+   */
+  function closeReader(): void {
+    if (readerOpen) readerOpen = null
+    else if (may.board) session.send({ t: 'board:close' })
+    else {
+      // Общий документ без права его убрать: уходим в тетрадь, у комнаты он
+      // остаётся. Вернуться — вкладкой, она никуда не делась.
+      centre = 'notebook'
+      return
+    }
+    centre = 'notebook'
+  }
 
   function openReader(name: string): void {
     // Преподаватель ставит комнате; остальные открывают себе.
@@ -767,10 +788,13 @@
           file={reading}
           mode={centre}
           {lead}
+          {orphaned}
+          shared={reading === session.board}
           page={readerPage}
           pages={readerPages}
           onmode={(next) => (centre = next)}
           oncatchup={() => (catchUp += 1)}
+          onclose={closeReader}
         />
       {/if}
 
@@ -794,6 +818,7 @@
           bind:page={readerPage}
           bind:pages={readerPages}
           bind:lead
+          bind:orphaned
         />
       {/if}
 

@@ -334,6 +334,57 @@ check(
   'метки нет',
 )
 
+/*
+ * «Преподаватель вышел» — только тому, кто за кем-то шёл и потерял. У самого
+ * преподавателя ведущего нет никогда: за собой не идут.
+ */
+await host.js(
+  'const t=[...document.querySelectorAll("button")].find(b=>/lecture\\.pdf/.test(b.textContent||"")); t&&t.click(); return 1',
+)
+await wait(500)
+check(
+  (await host.js('return /вышел/.test(document.body.innerText)')) === false,
+  'преподавателю не пишут, что он вышел',
+  await host.js(
+    'return /[^\\n]*вышел[^\\n]*/.exec(document.body.innerText)?.[0]?.trim() ?? "не пишут"',
+  ),
+)
+
+/* Документ должно быть чем закрыть — и у комнаты, а не только у себя. */
+check(
+  (await host.js('return !!document.querySelector(\'[aria-label="Закрыть документ"]\')')) === true,
+  'документ есть чем закрыть',
+  'кнопка на вкладке',
+)
+await host.js('document.querySelector(\'[aria-label="Закрыть документ"]\').click(); return 1')
+await until(
+  host,
+  'document.querySelectorAll("canvas").length === 0',
+  'документ закрылся у преподавателя',
+)
+await until(
+  student,
+  'document.querySelectorAll("canvas").length === 0',
+  'документ закрылся у студента',
+)
+check(
+  (await host.js('return document.querySelectorAll("canvas").length')) === 0,
+  'закрытие убирает документ у преподавателя',
+  await host.js('return document.querySelectorAll("canvas").length'),
+)
+check(
+  (await student.js('return document.querySelectorAll("canvas").length')) === 0,
+  'и у всей комнаты',
+  await student.js('return document.querySelectorAll("canvas").length'),
+)
+check(
+  (await student.js(
+    'return /lecture\\.pdf/.test(document.querySelector("main")?.parentElement?.textContent ?? "")',
+  )) === false,
+  'строка вкладок исчезла вместе с документом',
+  'вкладок нет',
+)
+
 for (const [who, page] of [
   ['преподаватель', host],
   ['студент', student],

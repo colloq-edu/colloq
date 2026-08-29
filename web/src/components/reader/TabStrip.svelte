@@ -17,14 +17,20 @@
     mode: 'notebook' | 'document'
     /** За кем идём, если есть за кем. */
     lead: Lead | null
+    /** Ведущий был и пропал — не то же самое, что «ведущего нет». */
+    orphaned: boolean
+    /** Можно ли убрать документ у комнаты, а не только у себя. */
+    shared: boolean
     page: number
     pages: number
     onmode: (mode: 'notebook' | 'document') => void
     /** Догнать преподавателя: читалка слушает это как счётчик. */
     oncatchup: () => void
+    onclose: () => void
   }
 
-  let { file, mode, lead, page, pages, onmode, oncatchup }: Props = $props()
+  let { file, mode, lead, orphaned, shared, page, pages, onmode, oncatchup, onclose }: Props =
+    $props()
 
   /*
    * Отстал ли смотрящий. Порог, а не точное равенство: иначе строка мигает всё
@@ -61,6 +67,23 @@
     {/if}
   </button>
 
+  <!--
+    Закрыть. У того, кто ставил документ комнате, — убирает у всех; у
+    открывшего себе — только у себя. Кнопка живёт на вкладке документа, а не
+    в панели файлов: закрывают то, что смотрят, там же, где смотрят.
+  -->
+  <button
+    type="button"
+    class="flex w-8 shrink-0 items-center justify-center text-faint transition-colors duration-100
+           hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset
+           focus-visible:ring-accent/40"
+    title={shared ? 'Убрать документ у всей комнаты' : 'Закрыть документ'}
+    aria-label="Закрыть документ"
+    onclick={onclose}
+  >
+    <Icon name="x" size={13} />
+  </button>
+
   <span class="flex-1"></span>
 
   {#if mode === 'document'}
@@ -80,9 +103,12 @@
           <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
           <span class="text-2xs font-semibold text-muted">Идём за {lead.name}</span>
         </span>
-      {:else}
-        <!-- Ведущего нет: экран остаётся где стоял, и об этом сказано, а не
-             оставлено на догадку. -->
+      {:else if orphaned}
+        <!--
+          Только тому, кто ЗА КЕМ-ТО ШЁЛ и потерял. У самого преподавателя
+          ведущего нет никогда — за собой не идут, — и говорить ему «вы вышли»
+          значит сообщать о событии, которого не было.
+        -->
         <span class="text-2xs text-muted">Преподаватель вышел — дальше сами</span>
       {/if}
       {#if pages > 0}
