@@ -32,7 +32,7 @@
   import type { StoredIdentity } from '@/lib/identity'
   import { SessionState, setSessionState } from '@/lib/session.svelte'
   import { cn, prefersReducedMotion } from '@/lib/utils'
-  import { watchNotebookMeta } from '@/lib/yreactive.svelte'
+  import { watchBooks, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import { getMeta, type KernelStatus } from '@shared/notebook'
   import type { SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
@@ -286,6 +286,24 @@
   const activePath = $derived(typeof tabs.active === 'string' ? tabs.active : null)
   const activeKind = $derived(activePath ? kindOf(activePath) : null)
 
+  /** Тетради комнаты: список живёт в документе и приходит ко всем. */
+  const books = watchBooks(session.doc)
+  /*
+   * Первый заход в комнату открывает её тетрадь.
+   *
+   * Один раз и только человеку, который здесь впервые: закрыв всё, он получает
+   * пустой центр и подсказку слева, и открывать тетрадь заново каждым заходом
+   * значило бы отменять его же решение.
+   */
+  let seeded = false
+  $effect(() => {
+    if (seeded || !tabs.firstVisit) return
+    const first = books.current[0]
+    if (!first) return
+    seeded = true
+    untrack(() => tabs.open(first.path))
+  })
+
   /** Что читалка сообщает наружу: строка вкладок показывает это за неё. */
   let readerPage = $state(1)
   let readerPages = $state(0)
@@ -376,7 +394,9 @@
    * точки «кто здесь», а полоса над редактором — имена.
    */
   $effect(() => {
-    session.setEditing(activeKind === 'text' ? activePath : null)
+    // И тетрадь тоже: «кто здесь» в дереве отвечает на один вопрос — не правит
+    // ли этот файл кто-то ещё прямо сейчас, — и для тетради он тот же самый.
+    session.setEditing(activeKind === 'text' || activeKind === 'notebook' ? activePath : null)
   })
 
   /*
@@ -385,6 +405,15 @@
    */
   $effect(() => {
     const alive = new Set(session.files.filter((file) => !file.dir).map((file) => file.path))
+    /*
+     * Тетради — по списку комнаты, а не по списку файлов.
+     *
+     * Файл тетради пишется проекцией через секунду после правки, а сама тетрадь
+     * существует в комнате сразу. Пока список файлов не догнал, вкладка на неё
+     * закрывалась бы у всех — и первым делом у того, кто только что вошёл: его
+     * тетрадь открывается раньше, чем её файл появляется на диске.
+     */
+    for (const book of books.current) alive.add(book.path)
     untrack(() => tabs.keepOnly(alive))
   })
 
@@ -476,6 +505,15 @@
       session.send({ t: 'board:open', name: path })
       tabs.show(path)
       return
+    }
+    /*
+     * .ipynb, который ещё не тетрадь, надо сперва внести в комнату: ячейки
+     * переезжают из файла в документ, и это делает сервер один раз, а не
+     * двадцать браузеров наперегонки. Вкладка открывается сразу и до прихода
+     * тетради говорит «открываю» — это честнее, чем не реагировать на нажатие.
+     */
+    if (kindOf(path) === 'notebook' && !books.current.some((book) => book.path === path)) {
+      session.send({ t: 'book:open', path })
     }
     tabs.open(path)
   }
@@ -849,6 +887,41 @@
         >
           <Icon name="file" size={16} />
         </button>
+        <!--
+          Ящик снизу — такая же поверхность комнаты, как панели по краям, и
+          переключается там же, где они. Стоял он до сих пор в тулбаре тетради,
+          среди Run All и Restart, — то есть среди того, что ЗАПУСКАЕТ, а не
+          того, что открывает и закрывает. Порядок слева направо повторяет
+          экран: файлы слева, ящик снизу, оракул справа.
+        -->
+        <button
+          class={cn(bandIcon(terminalOpen), 'relative')}
+          onclick={toggleTerminal}
+          aria-pressed={terminalOpen}
+          aria-label="Терминал, журнал ядра и история"
+          title="Терминал, журнал ядра и история — Ctrl+`"
+        >
+          <Icon name="prompt" size={16} />
+          {#if session.terminalStatus === 'busy'}
+            <span
+              class="absolute right-1 top-1 h-1.5 w-1.5 animate-blink rounded-full bg-accent"
+            ></span>
+          {:else if session.terminalUnread > 0}
+            <!--
+              Новости самого ядра — почему остановился Run All, кто перезапустил
+              — пишутся в ленту, а лента за этой кнопкой. Без метки у комнаты
+              была причина на руках и ни одного повода её искать.
+            -->
+            <span
+              class="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center
+                     justify-center rounded-full bg-accent px-1 font-mono text-micro
+                     font-bold text-white"
+              title={`${session.terminalUnread} непрочитанных сообщений ядра`}
+            >
+              {session.terminalUnread > 9 ? '9+' : session.terminalUnread}
+            </span>
+          {/if}
+        </button>
         <button
           class={bandIcon(rightShown)}
           onclick={toggleRight}
@@ -907,7 +980,7 @@
     <!-- The drawer sits inside the notebook column, not under the whole app:
          it is the same machine the cells run on. -->
     <div class="flex min-w-0 flex-1 flex-col">
-      {#if row.length > 1}
+      {#if row.length > 0}
         <!--
           Вкладки появляются только когда есть что переключать: в комнате, где
           не открыли ни файла, этой строки нет вовсе, и она не стоит ни пикселя
@@ -940,15 +1013,39 @@
       {/if}
 
       <!--
-        Тетрадь прячется, а не размонтируется: в ней курсор, прокрутка и
-        полтора десятка редакторов CodeMirror, и пересобирать их на каждое
-        переключение вкладки значит терять место в тексте.
+        Тетрадь прячется, а не размонтируется: в ней курсор, прокрутка и полтора
+        десятка редакторов CodeMirror, и пересобирать их на каждое переключение
+        вкладки значит терять место в тексте. Скрытых тетрадей столько, сколько
+        открыто вкладок, — а не одна на комнату.
       -->
-      <main class="min-h-0 flex-1 overflow-y-auto" class:hidden={tabs.active !== null}>
-        <Notebook {terminalOpen} ontoggleterminal={toggleTerminal} />
-      </main>
+      {#each row as path (path)}
+        {#if kindOf(path) === 'notebook'}
+          <main
+            class="min-h-0 flex-1 overflow-y-auto"
+            class:hidden={activePath !== path}
+            aria-hidden={activePath !== path}
+          >
+            {#if books.current.some((book) => book.path === path)}
+              <Notebook book={path} />
+            {:else}
+              <div class="flex h-full items-center justify-center text-ui text-muted">
+                Открываю {baseOf(path)}…
+              </div>
+            {/if}
+          </main>
+        {/if}
+      {/each}
 
-      {#if activePath && activeKind === 'pdf'}
+      {#if activePath === null}
+        <!--
+          Ничего не открыто — это состояние, а не поломка: раньше его не было,
+          потому что тетрадь нельзя было закрыть.
+        -->
+        <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-6 text-center">
+          <p class="text-ui text-ink">Ничего не открыто.</p>
+          <p class="text-2xs text-muted">Файлы и тетради комнаты — в панели слева.</p>
+        </div>
+      {:else if activeKind === 'pdf'}
         <PdfReader
           file={activePath}
           shared={activePath === session.board}

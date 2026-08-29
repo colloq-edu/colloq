@@ -89,7 +89,11 @@ test('order follows arrival, so the list does not reshuffle as people type', () 
  */
 
 const room = (over: Partial<RoomView> = {}): RoomView => ({
-  cellIds: ['c1', 'c2', 'c3'],
+  numbers: new Map([
+    ['c1', 1],
+    ['c2', 2],
+    ['c3', 3],
+  ]),
   runningCellId: null,
   runBy: null,
   ...over,
@@ -182,8 +186,8 @@ test('фраза и место не расходятся ни в одном со
             else {
               const no = line.slice(-2)
               assert.ok(place && place.where === 'cell', `«${line}» ведёт не в ячейку`)
-              const index = view.cellIds.indexOf((place as { cellId: string }).cellId)
-              assert.equal(String(index + 1).padStart(2, '0'), no, `«${line}» ведёт в другую ячейку`)
+              const number = view.numbers.get((place as { cellId: string }).cellId)
+              assert.equal(String(number).padStart(2, '0'), no, `«${line}» ведёт в другую ячейку`)
             }
           }
 })

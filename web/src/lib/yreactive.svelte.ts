@@ -17,11 +17,12 @@
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import {
+  allCellArrays,
+  bookList,
   cellId,
   cellOutputs,
   cellSource,
   cellType,
-  getCells,
   getMeta,
   readOutput,
   type CellOutput,
@@ -30,6 +31,7 @@ import {
   type KernelStatus,
   type YCell,
   type YOutput,
+  type Book,
   getChat,
   openPatchFor,
   type YChatEntry,
@@ -153,47 +155,115 @@ const EMPTY_IDS: string[] = []
  * ids whose Y.Map instance actually moved, because notebook-ops clones a cell
  * to move it and leaves every other cell's map alone.
  */
+/**
+ * Ячейки всех тетрадей комнаты, в одном месте.
+ *
+ * Реестр один на документ, а не на тетрадь, и это то же решение, что и у
+ * `findCell` на сервере: ячейку ищут по имени, не зная, в какой она тетради.
+ * Поэтому `get(id)` не спрашивает про тетрадь, а порядок — спрашивает: «выше» и
+ * «ниже» имеет смысл только внутри одного листа.
+ *
+ * Тетради появляются и исчезают на ходу — их список сам лежит в документе, — и
+ * подписки пересобираются, когда он меняется.
+ */
 class CellRegistry {
-  readonly ids = box<string[]>(EMPTY_IDS)
-
-  readonly #cells: Y.Array<YCell>
+  readonly #doc: Y.Doc
+  readonly #arrays = new Map<string, Y.Array<YCell>>()
+  readonly #ids = new Map<string, Box<string[]>>()
   readonly #byId = new Map<string, YCell>()
   readonly #watchers = new Map<string, Set<(cell: YCell | null) => void>>()
+  /**
+   * Номер ячейки — тот же, что нарисован у неё в поле слева.
+   *
+   * Счёт идёт внутри своей тетради и начинается заново в каждой: панель людей и
+   * лента оракула называют ячейку тем же числом, которое человек видит рядом с
+   * ней. Собирается здесь, потому что здесь и так есть все списки.
+   */
+  readonly numbering = box<Map<string, number>>(new Map())
 
   constructor(doc: Y.Doc) {
-    this.#cells = getCells(doc)
-    this.#sync(false)
-    this.#cells.observe(this.#onChange)
+    this.#doc = doc
+    this.#rebind(false)
+    // Список тетрадей живёт в meta: он меняется, когда в комнате открывают или
+    // убирают тетрадь, и подписки должны за ним поспевать.
+    getMeta(doc).observe(() => this.#rebind(true))
+  }
+
+  /** Подписаться на те массивы, которые сейчас числятся тетрадями. */
+  #rebind(notify: boolean): void {
+    const wanted = new Map<string, Y.Array<YCell>>()
+    for (const cells of allCellArrays(this.#doc)) {
+      const root = Y.findRootTypeKey(cells)
+      wanted.set(root, cells)
+    }
+    for (const [root, array] of this.#arrays) {
+      if (wanted.get(root) === array) continue
+      array.unobserve(this.#onChange)
+      this.#arrays.delete(root)
+    }
+    for (const [root, array] of wanted) {
+      if (this.#arrays.has(root)) continue
+      this.#arrays.set(root, array)
+      array.observe(this.#onChange)
+    }
+    this.#sync(notify)
   }
 
   #onChange = () => this.#sync(true)
 
+  #box(root: string): Box<string[]> {
+    let found = this.#ids.get(root)
+    if (!found) {
+      found = box<string[]>(EMPTY_IDS)
+      this.#ids.set(root, found)
+    }
+    return found
+  }
+
   #sync(notify: boolean): void {
-    const cells = this.#cells.toArray()
-    const ids: string[] = []
     const seen = new Set<string>()
 
-    for (const cell of cells) {
-      const id = cellId(cell)
-      ids.push(id)
-      seen.add(id)
-      if (this.#byId.get(id) === cell) continue
-      this.#byId.set(id, cell)
-      if (notify) this.#wake(id, cell)
+    for (const [root, array] of this.#arrays) {
+      const ids: string[] = []
+      for (const cell of array.toArray()) {
+        const id = cellId(cell)
+        ids.push(id)
+        seen.add(id)
+        if (this.#byId.get(id) === cell) continue
+        this.#byId.set(id, cell)
+        if (notify) this.#wake(id, cell)
+      }
+      const target = this.#box(root)
+      if (!sameIds(ids, target.value)) target.value = ids
     }
+
     for (const id of [...this.#byId.keys()]) {
       if (seen.has(id)) continue
       this.#byId.delete(id)
       if (notify) this.#wake(id, null)
     }
 
-    if (!sameIds(ids, this.ids.value)) this.ids.value = ids
+    const numbers = new Map<string, number>()
+    for (const target of this.#ids.values()) {
+      target.value.forEach((id, at) => numbers.set(id, at + 1))
+    }
+    if (!sameNumbers(numbers, this.numbering.value)) this.numbering.value = numbers
+    // Тетрадь, которую убрали из комнаты: её список опустошается, иначе экран
+    // держал бы ячейки, которых в документе больше нет.
+    for (const [root, target] of this.#ids) {
+      if (this.#arrays.has(root) || target.value.length === 0) continue
+      target.value = EMPTY_IDS
+    }
   }
 
   #wake(id: string, cell: YCell | null): void {
     const watchers = this.#watchers.get(id)
     if (!watchers) return
     for (const watcher of watchers) watcher(cell)
+  }
+
+  ids(root: string): Box<string[]> {
+    return this.#box(root)
   }
 
   get(id: string): YCell | null {
@@ -214,6 +284,12 @@ class CellRegistry {
   }
 }
 
+function sameNumbers(a: Map<string, number>, b: Map<string, number>): boolean {
+  if (a.size !== b.size) return false
+  for (const [id, n] of a) if (b.get(id) !== n) return false
+  return true
+}
+
 const cellRegistries = new WeakMap<Y.Doc, CellRegistry>()
 
 function cellRegistry(doc: Y.Doc): CellRegistry {
@@ -225,19 +301,61 @@ function cellRegistry(doc: Y.Doc): CellRegistry {
   return registry
 }
 
-/** Ordered cell ids. Fires on insert/delete/move, and only when the sequence
-    genuinely differs — not on typing, not on a run. */
-export function watchCellIds(doc: Y.Doc): Reactive<string[]> {
+/** Ordered cell ids of ONE notebook. Fires on insert/delete/move, and only when
+    the sequence genuinely differs — not on typing, not on a run. */
+export function watchCellIds(doc: Y.Doc, root: () => string): Reactive<string[]> {
   const registry = cellRegistry(doc)
   return {
     get current() {
-      return registry.ids.value
+      return registry.ids(root()).value
     },
   }
 }
 
-/** The Y.Map behind one id. Replaced only when that cell is re-parented, which
-    a move does (Y.Array has no move, so the cell is cloned) and nothing else. */
+/**
+ * Тетради комнаты по порядку.
+ *
+ * Список живёт в `meta`, потому что он часть документа: открытая тетрадь — это
+ * состояние комнаты, а не вкладки, и опоздавший видит те же тетради, что и все.
+ */
+export function watchBooks(doc: Y.Doc): Reactive<Book[]> {
+  const value = box<Book[]>(bookList(doc))
+  const meta = getMeta(doc)
+  const read = () => {
+    const next = bookList(doc)
+    if (sameBooks(next, value.value)) return
+    value.value = next
+  }
+  meta.observeDeep(read)
+  return {
+    get current() {
+      return value.value
+    },
+  }
+}
+
+function sameBooks(a: Book[], b: Book[]): boolean {
+  return a.length === b.length && a.every((x, i) => x.path === b[i].path && x.root === b[i].root)
+}
+
+/**
+ * Номера ячеек: имя → число, которое нарисовано у неё слева.
+ *
+ * Панелям, которые называют ячейку по номеру, тетрадь знать не нужно и вредно:
+ * ячейка могла прийти из любой, а число у неё одно.
+ */
+export function watchCellNumbers(doc: Y.Doc): Reactive<Map<string, number>> {
+  const registry = cellRegistry(doc)
+  return {
+    get current() {
+      return registry.numbering.value
+    },
+  }
+}
+
+/** The Y.Map behind one id, in whichever notebook it lives. Replaced only when
+    that cell is re-parented, which a move does (Y.Array has no move, so the
+    cell is cloned) and nothing else. */
 export function watchCell(doc: Y.Doc, id: () => string): Reactive<YCell | null> {
   const registry = cellRegistry(doc)
   const value = box<YCell | null>(null)

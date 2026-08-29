@@ -24,6 +24,7 @@ import {
   writeOutput,
   type CellSnapshot,
   type YCell,
+  findCell,
 } from '@shared/notebook'
 
 /**
@@ -37,10 +38,12 @@ import {
  * отстаёт от сервера на круг.
  */
 export function moveInCells(doc: Y.Doc, id: string, direction: -1 | 1): boolean {
-  const cells = doc.getArray<YCell>(CELLS_KEY)
-  let from = -1
-  for (let i = 0; i < cells.length; i += 1) if (cellId(cells.get(i)) === id) from = i
-  if (from === -1) return false
+  // В той тетради, где ячейка лежит: комнате их несколько, а «выше» и «ниже»
+  // имеет смысл только внутри одной.
+  const found = findCell(doc, id)
+  if (!found) return false
+  const cells = found.cells
+  const from = found.index
   const to = from + direction
   if (to < 0 || to >= cells.length) return false
 

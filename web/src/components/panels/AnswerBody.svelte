@@ -17,7 +17,7 @@
   import { getSessionState } from '@/lib/session.svelte'
   import { insertCell } from '@/lib/notebook-ops'
   import { permitsIn } from '@/lib/may'
-  import { getCells } from '@shared/notebook'
+  import { bookCells, findCell, mainRoot, rootOfCell } from '@shared/notebook'
   import { cn } from '@/lib/utils'
   import Icon from '@/components/ui/Icon.svelte'
   import Code from '@/components/ui/Code.svelte'
@@ -110,9 +110,15 @@
       session.showError(may.structureWhy + '.')
       return
     }
-    const cells = getCells(session.doc).toArray()
-    const at = cellId ? cells.findIndex((cell) => cell.get('id') === cellId) : -1
-    const created = insertCell(session.doc, 'code', at === -1 ? cells.length : at + 1, code)
+    /*
+     * В ту тетрадь, о которой был разговор, — и в тетрадь комнаты, если
+     * разговор был ни о какой. Тетрадей несколько, и класть ответ про чужой
+     * лист в свой значило бы отвечать не туда, куда смотрели.
+     */
+    const root = (cellId ? rootOfCell(session.doc, cellId) : null) ?? mainRoot(session.doc)
+    const found = cellId ? findCell(session.doc, cellId) : null
+    const at = found ? found.index + 1 : bookCells(session.doc, root).length
+    const created = insertCell(session.doc, root, 'code', at, code)
     session.selectCell(created)
     // The cell exists in the document before it exists on screen.
     requestAnimationFrame(() =>

@@ -21,6 +21,7 @@ import { WebSocket, type RawData } from 'ws'
 import {
   acceptPatch,
   cellId,
+  cellsAt,
   cellType,
   findChatEntry,
   getCells,
@@ -74,8 +75,23 @@ import {
   statPath,
   type TreeResult,
 } from './workspace.js'
-import { MAX_DEPTH, baseOf, normalizePath, runnerFor, whySegmentRefused } from '@shared/paths'
+import {
+  MAX_DEPTH,
+  baseOf,
+  kindOf,
+  normalizePath,
+  runnerFor,
+  whySegmentRefused,
+} from '@shared/paths'
 import { forgetFile, onFileSaved } from './collab/files.js'
+import {
+  createBook,
+  dropBook,
+  forgetMissingBooks,
+  moveBook,
+  onBooksWritten,
+  openBook,
+} from './collab/books.js'
 import { undoTurn } from './ai/agent.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
@@ -215,8 +231,19 @@ function forgetMissingBoard(sessionId: string): void {
  */
 onFileSaved((sessionId) => broadcastFiles(sessionId))
 
+/*
+ * Тетрадь легла на диск — комната узнаёт про файл.
+ *
+ * Без этого файл тетради появлялся бы в дереве только после чьей-нибудь
+ * загрузки: проекция пишется сама, а сказать об этом некому.
+ */
+onBooksWritten((sessionId) => broadcastFiles(sessionId))
+
 // Registered once, at import: the kernel runtime has no idea who is listening.
 onWorkspaceChanged((sessionId) => {
+  // Файл тетради могли убрать мимо дерева — `os.remove` в ячейке. Тетрадь без
+  // файла — это вкладка, которую нечем закрыть и незачем показывать.
+  forgetMissingBooks(sessionId)
   forgetMissingBoard(sessionId)
   broadcastFiles(sessionId)
 })
@@ -282,8 +309,11 @@ function watchKernelStatus(sessionId: string): () => void {
  * and returns nothing if the id is unknown, so a stale "run above" from a tab
  * that missed a deletion cannot silently turn into "run the whole notebook".
  */
-function codeCellIds(sessionId: string, upToCellId?: string): string[] {
-  const cells = getCells(getSessionDoc(sessionId).doc)
+function codeCellIds(sessionId: string, book: string | undefined, upToCellId?: string): string[] {
+  const doc = getSessionDoc(sessionId).doc
+  // Без пути — тетрадь комнаты: так читаются сообщения вкладок, открытых до
+  // появления нескольких тетрадей.
+  const cells = (book ? cellsAt(doc, book) : null) ?? getCells(doc)
   const ids: string[] = []
   for (let i = 0; i < cells.length; i++) {
     const cell = cells.get(i)
@@ -439,6 +469,17 @@ function treeTrouble(outcome: TreeResult, path: string): string {
   return `«${base}» сейчас занят — попробуйте ещё раз через секунду.`
 }
 
+/**
+ * Какую тетрадь называет сообщение.
+ *
+ * `undefined` — тетрадь комнаты. Так же читается сообщение вкладки, открытой до
+ * того, как тетрадей стало несколько: путь в нём просто не проставлен, и
+ * подразумевается единственная, которая тогда была.
+ */
+function bookOf(message: { book?: unknown }): string | undefined {
+  return typeof message.book === 'string' && message.book ? message.book : undefined
+}
+
 function optionalId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : undefined
 }
@@ -489,7 +530,7 @@ export function dispatch(
     case 'runAll': {
       if (!mayRun(sessionId, payload, ws)) return
       if (!mayBulkRun(sessionId, payload, ws)) return
-      queue(ws, sessionId, payload, codeCellIds(sessionId))
+      queue(ws, sessionId, payload, codeCellIds(sessionId, bookOf(message)))
       return
     }
 
@@ -498,7 +539,7 @@ export function dispatch(
       if (!id) return
       if (!mayRun(sessionId, payload, ws)) return
       if (!mayBulkRun(sessionId, payload, ws)) return
-      queue(ws, sessionId, payload, codeCellIds(sessionId, id))
+      queue(ws, sessionId, payload, codeCellIds(sessionId, bookOf(message), id))
       return
     }
 
@@ -581,7 +622,7 @@ export function dispatch(
         ? may(rules.edit, payload, ws, 'В этом семинаре тетрадь принадлежит преподавателю.')
         : may(rules.wipe, payload, ws, 'Стирать всю доску здесь может преподаватель.')
       if (!allowed) return
-      clearOutputs(sessionId, one)
+      clearOutputs(sessionId, one, bookOf(message))
       return
     }
 
@@ -656,6 +697,21 @@ export function dispatch(
         send(ws, { t: 'error', message: refusedPath(message.path) })
         return
       }
+      /*
+       * Файл с именем .ipynb — это просьба о тетради, а не о пустом файле.
+       * Заводится он сразу тетрадью: иначе человек получил бы файл, который
+       * открывается редактором как строка JSON, и должен был бы догадаться,
+       * что с ним делать.
+       */
+      if (message.t === 'tree:new' && kindOf(wanted) === 'notebook') {
+        const made = createBook(sessionId, wanted)
+        if (!made.ok) {
+          send(ws, { t: 'error', message: made.why })
+          return
+        }
+        broadcastFiles(sessionId)
+        return
+      }
       const outcome =
         message.t === 'tree:mkdir' ? makeDir(sessionId, wanted) : makeFile(sessionId, wanted)
       if (outcome !== 'ok') {
@@ -663,6 +719,39 @@ export function dispatch(
         return
       }
       broadcastFiles(sessionId)
+      return
+    }
+
+    /*
+     * Внести .ipynb в комнату.
+     *
+     * Право то же, что и у заведения файла: тетрадь, внесённая в комнату,
+     * становится её частью — она попадает в снимок, в историю и на экран ко
+     * всем. Читать её глазами при этом может кто угодно и без этого: файл
+     * скачивается, как любой другой.
+     */
+    case 'book:open': {
+      if (
+        !may(
+          getRules(sessionId).files,
+          payload,
+          ws,
+          'Открывать тетради в этом семинаре может преподаватель.',
+        )
+      ) {
+        return
+      }
+      const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
+      if (!wanted) {
+        send(ws, { t: 'error', message: refusedPath(message.path) })
+        return
+      }
+      const opened = openBook(sessionId, wanted)
+      if (!opened.ok) {
+        send(ws, { t: 'error', message: opened.why })
+        return
+      }
+      if (opened.imported) broadcastFiles(sessionId)
       return
     }
 
@@ -690,6 +779,8 @@ export function dispatch(
       // именем. Наблюдатель заметит это сам, но не раньше двух секунд — а
       // вкладки, открытые на нём, должны узнать сразу.
       forgetFile(sessionId, from)
+      // Тетрадь переезжает вместе со своим файлом: корень тот же, путь новый.
+      moveBook(sessionId, from, to)
       if (boardOf(sessionId) === from) setBoard(sessionId, to)
       broadcastFiles(sessionId)
       return
@@ -713,6 +804,7 @@ export function dispatch(
         return
       }
       forgetFile(sessionId, wanted)
+      dropBook(sessionId, wanted)
       forgetMissingBoard(sessionId)
       broadcastFiles(sessionId)
       return
@@ -894,7 +986,7 @@ export function dispatch(
        * button. It is also the one place that can say "three cells were left
        * alone", which is the part somebody will want to check.
        */
-      void formatSession(sessionId)
+      void formatSession(sessionId, bookOf(message))
         .then((outcome) => {
           if (outcome.error) return
           if (outcome.changed === 0 && outcome.skipped === 0) {

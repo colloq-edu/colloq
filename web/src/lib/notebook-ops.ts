@@ -1,10 +1,11 @@
 import * as Y from 'yjs'
 import {
+  bookCells,
   cellId,
   cellSource,
   cellType,
   createCell,
-  getCells,
+  findCell,
   type CellType,
   type YCell,
 } from '@shared/notebook'
@@ -14,37 +15,43 @@ import {
  *
  * Every mutation is wrapped in a transaction so remote peers see one atomic
  * change instead of a flicker of intermediate states, and undo groups sensibly.
+ *
+ * Тетрадей в комнате несколько, и каждая правка называет свою: `root` — имя
+ * корня той тетради, в которой нажали. Единственное исключение — то, что
+ * адресуется ИМЕНЕМ ячейки: имя в комнате одно, и по нему тетрадь находится
+ * сама (см. `findCell`). Так вызывающему не приходится помнить, из какой
+ * тетради ячейка, ради операции, которой это всё равно.
  */
 
-function indexOf(doc: Y.Doc, id: string): number {
-  const cells = getCells(doc)
-  for (let i = 0; i < cells.length; i++) if (cellId(cells.get(i)) === id) return i
-  return -1
+function arrayOf(doc: Y.Doc, root: string): Y.Array<YCell> {
+  return bookCells(doc, root)
 }
 
 export function insertCell(
   doc: Y.Doc,
+  root: string,
   type: CellType,
   at: number,
   source = '',
 ): string {
-  const cells = getCells(doc)
+  const cells = arrayOf(doc, root)
   const cell = createCell(type, source)
   const index = Math.max(0, Math.min(at, cells.length))
   doc.transact(() => cells.insert(index, [cell]))
   return cellId(cell)
 }
 
-export function insertCellAfter(doc: Y.Doc, afterId: string | null, type: CellType): string {
-  const cells = getCells(doc)
-  const index = afterId ? indexOf(doc, afterId) : cells.length - 1
-  return insertCell(doc, type, index + 1)
+export function insertCellAfter(doc: Y.Doc, root: string, afterId: string | null, type: CellType): string {
+  const cells = arrayOf(doc, root)
+  const found = afterId ? findCell(doc, afterId) : null
+  const index = found ? found.index : cells.length - 1
+  return insertCell(doc, root, type, index + 1)
 }
 
 export function deleteCell(doc: Y.Doc, id: string): void {
-  const cells = getCells(doc)
-  const index = indexOf(doc, id)
-  if (index === -1) return
+  const found = findCell(doc, id)
+  if (!found) return
+  const { cells, index } = found
   doc.transact(() => {
     cells.delete(index, 1)
     // Never leave the room staring at an empty page.
@@ -62,16 +69,15 @@ export function deleteCell(doc: Y.Doc, id: string): void {
  * уехала операция, а не свойство.
  */
 export function canMoveCell(doc: Y.Doc, id: string, direction: -1 | 1): boolean {
-  const from = indexOf(doc, id)
-  if (from === -1) return false
-  const to = from + direction
-  return to >= 0 && to < getCells(doc).length
+  const found = findCell(doc, id)
+  if (!found) return false
+  const to = found.index + direction
+  return to >= 0 && to < found.cells.length
 }
 
 export function setCellType(doc: Y.Doc, id: string, type: CellType): void {
-  const index = indexOf(doc, id)
-  if (index === -1) return
-  const cell = getCells(doc).get(index)
+  const found = findCell(doc, id)
+  if (!found) return
   /*
    * Пишется только вид. Гашение секундомера и вывода — забота сервера: он
    * делает это, увидев принятую смену вида (`collab/ops.ts · resetAfterRetype`).
@@ -80,13 +86,12 @@ export function setCellType(doc: Y.Doc, id: string, type: CellType): void {
    * пока оно было, правило «вывод и состояние пишет только сервер» имело
    * исключение — то есть не было правилом.
    */
-  doc.transact(() => cell.set('type', type))
+  doc.transact(() => found.cell.set('type', type))
 }
 
-export function duplicateCell(doc: Y.Doc, id: string): string | null {
-  const cells = getCells(doc)
-  const index = indexOf(doc, id)
-  if (index === -1) return null
-  const source = cellSource(cells.get(index)).toString()
-  return insertCell(doc, cellType(cells.get(index)), index + 1, source)
+export function duplicateCell(doc: Y.Doc, root: string, id: string): string | null {
+  const found = findCell(doc, id)
+  if (!found) return null
+  const source = cellSource(found.cell).toString()
+  return insertCell(doc, root, cellType(found.cell), found.index + 1, source)
 }

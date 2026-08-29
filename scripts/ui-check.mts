@@ -400,8 +400,8 @@ check(
   (await student.js(
     'return /lecture\\.pdf/.test(document.querySelector("main")?.parentElement?.textContent ?? "")',
   )) === false,
-  'строка вкладок исчезла вместе с документом',
-  'вкладок нет',
+  'вкладка документа исчезла вместе с ним',
+  'вкладки нет',
 )
 
 /* ------------------------------------------------- редактор и дерево */
@@ -509,6 +509,64 @@ check(
   (await host.js(`return !!document.querySelector('.cm-file .cm-content')`)) === true,
   'закрытая у себя вкладка не закрылась у соседа',
   'у преподавателя открыт',
+)
+
+/* ---------------------------------------------- тетрадь — это файл */
+
+/**
+ * Тетрадь комнаты лежит в её папке файлом и открывается вкладкой, как всё
+ * остальное. Это и есть то, ради чего она перестала быть особой: файл видно в
+ * дереве, его можно скачать, прочитать из ячейки и открыть рядом со второй.
+ */
+check(
+  (await host.js(
+    `return [...document.querySelectorAll('button')].some(b=>(b.title||'').startsWith('Тетрадь.ipynb'))`,
+  )) === true,
+  'тетрадь комнаты лежит в дереве файлом',
+  'Тетрадь.ipynb',
+)
+
+/* Вторая тетрадь заводится и открывается рядом с первой. */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>x.getAttribute('aria-label')==='Новая тетрадь');` +
+    `if(!b) throw new Error('кнопки «новая тетрадь» нет'); b.click(); return 1`,
+)
+await wait(400)
+await host.js(
+  `const i=document.querySelector('input.font-mono');` +
+    `if(!i) throw new Error('поля для имени нет');` +
+    `const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;` +
+    `set.call(i,'разбор.ipynb'); i.dispatchEvent(new Event('input',{bubbles:true}));` +
+    `i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); return 1`,
+)
+const twoBooks = `[...document.querySelectorAll('main')].length >= 2`
+await until(host, twoBooks, 'вторая тетрадь открылась')
+check(
+  (await host.js(`return ${twoBooks}`)) === true,
+  'вторая тетрадь открывается рядом с первой',
+  await host.js(`return document.querySelectorAll('main').length + ' тетрадей'`),
+)
+check(
+  (await host.js(`return document.querySelectorAll('main:not(.hidden)').length`)) === 1,
+  'показана ровно одна из них',
+  'одна',
+)
+/* И у неё свой тулбар: «Run all» относится к той тетради, в которой нажали. */
+check(
+  (await host.js(
+    `return (document.querySelector('main:not(.hidden)')?.textContent||'').includes('Run all')`,
+  )) === true,
+  'у второй тетради свой тулбар',
+  'Run all на месте',
+)
+
+/* Закрыть можно и тетрадь — раньше её вкладка была вечной. */
+await host.js(`document.querySelector('[aria-label="Закрыть разбор.ipynb"]').click(); return 1`)
+await wait(400)
+check(
+  (await host.js(`return document.querySelectorAll('main').length`)) === 1,
+  'тетрадь закрывается, как любой другой файл',
+  'осталась одна',
 )
 
 for (const [who, page] of [

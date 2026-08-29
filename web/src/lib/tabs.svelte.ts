@@ -1,19 +1,21 @@
 /**
  * Что открыто в центре экрана.
  *
- * Центр у комнаты один, и в нём всегда есть тетрадь. Всё остальное — файлы,
- * которые кто-то открыл: свои, видимые только ему, и один общий — тот, который
- * преподаватель поставил на общий экран.
+ * Всё — файлы, включая тетради: тетрадь перестала быть особой вкладкой,
+ * приколоченной первой, и стала тем, чем она и является, — файлом, который
+ * открывается ячейками. Первая тетрадь комнаты открывается сама при первом
+ * заходе; дальше она закрывается и открывается, как любой другой файл.
  *
  * Три правила, из которых состоит вся эта модель.
  *
- * **Тетрадь не закрывается.** Она не файл и не вкладка в обычном смысле: это то,
- * ради чего комната существует. Её вкладка стоит первой всегда.
+ * **Ничего открытого — это состояние, а не поломка.** Закрыв последнюю вкладку,
+ * человек видит пустой центр и подсказку слева. Раньше такого состояния не
+ * было, потому что тетрадь закрыть было нельзя.
  *
  * **Общий документ — вкладка у всех.** Он приходит с сервера и появляется у
  * каждого, включая тех, кто зашёл в середине занятия. Закрыть его у комнаты
- * может тот, кому это разрешает правило; остальные могут только уйти от него в
- * тетрадь, и вкладка остаётся стоять.
+ * может тот, кому это разрешает правило; остальные могут только уйти от него,
+ * и вкладка остаётся стоять.
  *
  * **Свои вкладки переживают перезагрузку.** Список путей лежит в localStorage
  * рядом с состоянием панелей. Файла может уже не быть — тогда вкладка тихо
@@ -21,7 +23,7 @@
  * поэтому проверяется не при чтении из хранилища, а от списка.
  */
 
-/** Ключ вкладки: `null` — тетрадь, строка — путь файла. */
+/** Ключ вкладки: путь файла, или `null` — не открыто ничего. */
 export type TabKey = string | null
 
 const STORE_PREFIX = 'colloq.tabs.'
@@ -34,10 +36,20 @@ export class Tabs {
   /** Что показано сейчас. `null` — тетрадь. */
   active = $state<TabKey>(null)
 
+  /**
+   * Человек в этой комнате впервые — ему открывают тетрадь.
+   *
+   * Отличается от «закрыл всё»: у второго в хранилище лежит пустой список, и
+   * открывать ему тетрадь заново значило бы отменять его же решение каждым
+   * заходом.
+   */
+  readonly firstVisit: boolean
+
   readonly #key: string
 
   constructor(sessionId: string) {
     this.#key = STORE_PREFIX + sessionId
+    this.firstVisit = readRaw(this.#key) === null
     this.mine = read(this.#key)
   }
 
@@ -47,9 +59,8 @@ export class Tabs {
    * Общий стоит вторым и не дублируется тем, кто открыл его же себе: одна
    * вкладка на файл, кто бы её ни завёл.
    */
-  row(board: string | null): TabKey[] {
-    const files = board ? [board, ...this.mine.filter((path) => path !== board)] : [...this.mine]
-    return [null, ...files]
+  row(board: string | null): string[] {
+    return board ? [board, ...this.mine.filter((path) => path !== board)] : [...this.mine]
   }
 
   /** Открыть файл и перейти на него. Уже открытый просто становится текущим. */
@@ -116,10 +127,10 @@ export class Tabs {
    * обратно.
    */
   #neighbour(closing: string, board: string | null): TabKey {
-    const row = this.row(board)
-    const at = row.indexOf(closing)
-    if (at <= 0) return null
-    return row[at - 1] ?? null
+    const row = this.row(board).filter((path) => path !== closing)
+    if (row.length === 0) return null
+    const at = this.row(board).indexOf(closing)
+    return row[Math.max(0, at - 1)] ?? null
   }
 
   #remember(): void {
@@ -131,9 +142,17 @@ export class Tabs {
   }
 }
 
+function readRaw(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
 function read(key: string): string[] {
   try {
-    const raw = localStorage.getItem(key)
+    const raw = readRaw(key)
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []

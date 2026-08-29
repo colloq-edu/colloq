@@ -4,6 +4,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { getContext, setContext } from 'svelte'
 import {
   cellSource,
+  allCellArrays,
   ensureInitialNotebook,
   findCell,
   getCells,
@@ -162,6 +163,18 @@ export class SessionState {
       trackedOrigins: new Set([null, 'local']),
       captureTimeout: 400,
     })
+    /*
+     * Отмена достаёт до всех тетрадей комнаты, а не только до первой.
+     *
+     * Тетради открывают на ходу, и область действия UndoManager приходится
+     * дописывать по мере их появления: без этого Ctrl+Z во второй тетради молча
+     * не делал бы ничего — худший вид отказа, потому что клавиша сработала.
+     */
+    const widen = () => {
+      for (const cells of allCellArrays(this.doc)) this.undoManager.addToScope([cells])
+    }
+    widen()
+    getMeta(this.doc).observeDeep(widen)
 
     const user: AwarenessUser = {
       id: identity.participantId,

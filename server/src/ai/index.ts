@@ -20,7 +20,7 @@ import {
   chatAnswer,
   chatReasoning,
   createChatEntry,
-  getCells,
+  findCell,
   findChatEntry,
   getChat,
   readChatEntry,
@@ -406,23 +406,18 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
  */
 function kindOfCell(doc: Y.Doc, cellId: string | null): CellKind {
   if (!cellId) return 'code'
-  for (const cell of getCells(doc).toArray()) {
-    if (cell.get('id') !== cellId) continue
-    return cell.get('type') === 'markdown' ? 'markdown' : 'code'
-  }
-  return 'code'
+  const found = cellId ? findCell(doc, cellId) : null
+  if (!found) return 'code'
+  return found.cell.get('type') === 'markdown' ? 'markdown' : 'code'
 }
 
 /** What a cell says at this instant, or null when there is no such cell. */
 function sourceOfCell(doc: Y.Doc, cellId: string | null): string | null {
   if (!cellId) return null
-  const cells = getCells(doc)
-  for (const cell of cells.toArray()) {
-    if (cell.get('id') !== cellId) continue
-    const source = cell.get('source')
-    return source instanceof Y.Text ? source.toString() : String(source ?? '')
-  }
-  return null
+  const found = findCell(doc, cellId)
+  if (!found) return null
+  const source = found.cell.get('source')
+  return source instanceof Y.Text ? source.toString() : String(source ?? '')
 }
 
 function docOf(sessionId: string): Y.Doc {

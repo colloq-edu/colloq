@@ -68,6 +68,8 @@
 
   interface Props {
     id: string
+    /** Корень тетради, в которой эта ячейка: см. Notebook.svelte. */
+    bookRoot: string
     index: number
     /** Последняя в тетради: «вниз» ей некуда, и кнопка это показывает. */
     last: boolean
@@ -77,7 +79,7 @@
     onselect: () => void
   }
 
-  let { id, index, last, selected, near = true, onselect }: Props = $props()
+  let { id, bookRoot, index, last, selected, near = true, onselect }: Props = $props()
 
   const session = getSessionState()
   const cell = watchCell(session.doc, () => id)
@@ -520,7 +522,7 @@
       session.showError(may.structureWhy + '.')
       return
     }
-    const created = insertCellAfter(session.doc, id, meta.current.type)
+    const created = insertCellAfter(session.doc, bookRoot, id, meta.current.type)
     session.selectCell(created)
     await tick()
     window.dispatchEvent(new CustomEvent('colloq:enter-cell', { detail: { cellId: created } }))
@@ -833,7 +835,7 @@
           title={may.add ? 'Duplicate' : may.structureWhy}
           aria-label="Duplicate cell"
           disabled={!may.add}
-          onclick={() => duplicateCell(session.doc, id)}
+          onclick={() => duplicateCell(session.doc, bookRoot, id)}
         >
           <Icon name="duplicate" size={13} />
         </button>

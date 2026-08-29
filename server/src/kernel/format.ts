@@ -24,7 +24,7 @@
  * path: no count, no broadcast, no trace in the document.
  */
 import * as Y from 'yjs'
-import { getCells, type YCell } from '@shared/notebook'
+import { cellsAt, getCells, type YCell } from '@shared/notebook'
 import { getSessionDoc } from '../collab/index.js'
 
 /** Marks writes as ours, so persistence and peers can tell them from typing. */
@@ -102,9 +102,12 @@ interface KernelLike {
 export async function formatNotebook(
   sessionId: string,
   kernel: KernelLike,
+  book?: string,
 ): Promise<FormatOutcome> {
   const { doc } = getSessionDoc(sessionId)
-  const cells = getCells(doc)
+  // Форматируют ту тетрадь, в тулбаре которой нажали, а не всю комнату:
+  // переписать чужой лист по нажатию в своём — не то, что обещает кнопка.
+  const cells = (book ? cellsAt(doc, book) : null) ?? getCells(doc)
 
   const targets: { cell: YCell; text: string }[] = []
   for (const cell of cells.toArray()) {

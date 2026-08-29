@@ -3,7 +3,7 @@
   import { getSessionState } from '@/lib/session.svelte'
   import { peopleInRoom, whereabouts, type Person } from '@/lib/room'
   import { reveal, revealCell, type RevealTarget } from '@/lib/reveal'
-  import { watchCell, watchCellIds, watchCellMeta, watchNotebookMeta } from '@/lib/yreactive.svelte'
+  import { watchCell, watchCellNumbers, watchCellMeta, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import { cn } from '@/lib/utils'
 
@@ -11,7 +11,7 @@
   const CAP = 6
 
   const session = getSessionState()
-  const cellIds = watchCellIds(session.doc)
+  const cellNumbers = watchCellNumbers(session.doc)
   const meta = watchNotebookMeta(session.doc)
   // The one cell the kernel is inside, if any — the difference between someone
   // sitting in a cell and someone waiting on it.
@@ -29,7 +29,7 @@
 
   /** Ячейки, запуск и кто его нажал — всё, из чего считается «где кто». */
   const view = $derived({
-    cellIds: cellIds.current,
+    numbers: cellNumbers.current,
     runningCellId: meta.current.runningCellId,
     runBy: (runningMeta.current.runBy as string | null) ?? null,
   })
@@ -45,8 +45,8 @@
     const who = person.isSelf ? 'you' : person.user.name
     if (place.where === 'terminal') return `Go to ${who} in the terminal`
     if (place.where === 'oracle') return `Go to ${who}’s thread with the oracle`
-    const index = view.cellIds.indexOf(place.cellId)
-    return index === -1 ? 'Go to the cell' : `Go to cell ${String(index + 1).padStart(2, '0')}`
+    const number = view.numbers.get(place.cellId)
+    return number === undefined ? 'Go to the cell' : `Go to cell ${String(number).padStart(2, '0')}`
   }
 
   function go(place: RevealTarget): void {

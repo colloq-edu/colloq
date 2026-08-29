@@ -50,6 +50,180 @@ export const META_KEY = 'meta'
 export const CHAT_KEY = 'chat'
 export const TERMINAL_KEY = 'terminal'
 
+/* ----------------------------------------------------------------- тетради */
+
+/**
+ * Тетрадей в комнате несколько, и каждая — файл.
+ *
+ * Была одна и была вшита в документ корнем `cells`. Это оказалось не свойством
+ * семинара, а ограничением: на паре открывают прошлую тетрадь рядом с нынешней,
+ * разбирают чужое решение, показывают заготовку. Тетрадь — такой же файл, как
+ * .py и .csv, просто открывается она ячейками.
+ *
+ * Каждая тетрадь — свой корень в документе комнаты, а не свой документ. Это
+ * решение, и вот его цена и выгода. Выгода: снимок в базе, история версий,
+ * запрет по правилам и кеш в браузере работают для всех тетрадей ровно так же,
+ * как работали для одной, — ни одна из этих четырёх машин не тронута. Цена:
+ * тетрадь, открытая один раз, остаётся в документе комнаты насовсем, даже если
+ * файл потом убрали; снимок растёт.
+ *
+ * Корень первой тетради — по-прежнему `cells`, и это не косметика: у комнат,
+ * которые уже идут, в этом корне лежит вся история версий и весь кеш в
+ * браузерах. Переименовать корень значило бы обнулить и то и другое молча.
+ */
+export const BOOKS_KEY = 'books'
+const BOOK_PREFIX = 'nb:'
+
+/** Как зовётся тетрадь комнаты, пока её не переименовали. */
+export const DEFAULT_BOOK = 'Тетрадь.ipynb'
+
+export interface Book {
+  /** Путь файла в папке семинара. */
+  path: string
+  /** Имя корня в документе. У первой тетради — `cells`. */
+  root: string
+}
+
+/** Корень для новой тетради по её пути. Первая — `cells`, остальные — по пути. */
+export function rootForNewBook(doc: Y.Doc, path: string): string {
+  return bookList(doc).length === 0 ? CELLS_KEY : BOOK_PREFIX + path
+}
+
+/** Этот корень — тетрадь? Нужен разбору правок: см. collab/gate.ts. */
+export function isBookRoot(root: string): boolean {
+  return root === CELLS_KEY || root.startsWith(BOOK_PREFIX)
+}
+
+/**
+ * Тетради комнаты по порядку.
+ *
+ * Пустой список у комнаты, которая ещё не завела ни одной, — и у всякой
+ * комнаты, созданной до появления этого списка. Второй случай чинится при
+ * первом же открытии: см. `ensureInitialNotebook`.
+ */
+export function bookList(doc: Y.Doc): Book[] {
+  const raw = getMeta(doc).get(BOOKS_KEY)
+  if (!(raw instanceof Y.Array)) return []
+  const out: Book[] = []
+  raw.forEach((item) => {
+    if (!(item instanceof Y.Map)) return
+    const path = item.get('path')
+    const root = item.get('root')
+    if (typeof path === 'string' && typeof root === 'string' && path) out.push({ path, root })
+  })
+  return out
+}
+
+function booksArray(doc: Y.Doc): Y.Array<Y.Map<any>> {
+  const meta = getMeta(doc)
+  const raw = meta.get(BOOKS_KEY)
+  if (raw instanceof Y.Array) return raw
+  const made = new Y.Array<Y.Map<any>>()
+  meta.set(BOOKS_KEY, made)
+  return made
+}
+
+/** Тетрадь по пути — или `null`, если такого файла комната тетрадью не считает. */
+export function bookAt(doc: Y.Doc, path: string): Book | null {
+  return bookList(doc).find((book) => book.path === path) ?? null
+}
+
+/** Ячейки тетради по её корню. */
+export function bookCells(doc: Y.Doc, root: string): Y.Array<YCell> {
+  return doc.getArray<YCell>(root)
+}
+
+/**
+ * В какой тетради лежит эта ячейка — имя её корня.
+ *
+ * `null` — ячейки в комнате нет вовсе. Нужно там, где по ячейке надо найти её
+ * лист: добавить соседку, продублировать, вставить ответ оракула рядом.
+ */
+export function rootOfCell(doc: Y.Doc, id: string): string | null {
+  const found = findCell(doc, id)
+  if (!found) return null
+  try {
+    return Y.findRootTypeKey(found.cells)
+  } catch {
+    return null
+  }
+}
+
+/** Ячейки тетради по пути. Пустой массив, если тетради нет. */
+export function cellsAt(doc: Y.Doc, path: string): Y.Array<YCell> | null {
+  const book = bookAt(doc, path)
+  return book ? bookCells(doc, book.root) : null
+}
+
+/** Корень тетради комнаты — первой в списке. */
+export function mainRoot(doc: Y.Doc): string {
+  return bookList(doc)[0]?.root ?? CELLS_KEY
+}
+
+/** Все тетради комнаты со своими ячейками — для проходов, которые касаются всех. */
+export function allBooks(doc: Y.Doc): { book: Book; cells: Y.Array<YCell> }[] {
+  return bookList(doc).map((book) => ({ book, cells: bookCells(doc, book.root) }))
+}
+
+/**
+ * Все массивы ячеек в документе — включая тот случай, когда списка тетрадей ещё
+ * нет.
+ *
+ * Списка нет ровно у двух документов: у комнаты, открытой впервые после
+ * появления нескольких тетрадей (список припишут через мгновение), и у
+ * документа в тесте, собранного руками из одного корня. Оба обязаны вести себя
+ * как комната с одной тетрадью, иначе проверки, которые ходят по всем тетрадям,
+ * молча перестают что-либо проверять.
+ */
+export function allCellArrays(doc: Y.Doc): Y.Array<YCell>[] {
+  const books = allBooks(doc)
+  if (books.length > 0) return books.map(({ cells }) => cells)
+  return [legacyCells(doc)]
+}
+
+/**
+ * Записать тетрадь в список.
+ *
+ * Идемпотентно: путь, который уже там есть, возвращается как есть. Иначе две
+ * вкладки, открывшие один файл одновременно, завели бы две тетради на один
+ * путь, и половина комнаты печатала бы во вторую.
+ */
+export function addBook(doc: Y.Doc, path: string, root?: string): Book {
+  const existing = bookAt(doc, path)
+  if (existing) return existing
+  const made: Book = { path, root: root ?? rootForNewBook(doc, path) }
+  const row = new Y.Map<any>()
+  row.set('path', made.path)
+  row.set('root', made.root)
+  booksArray(doc).push([row])
+  return made
+}
+
+/** Тетрадь переехала вместе с файлом: корень остаётся тем же, меняется путь. */
+export function renameBook(doc: Y.Doc, from: string, to: string): void {
+  const list = booksArray(doc)
+  for (let i = 0; i < list.length; i++) {
+    const row = list.get(i)
+    if (row instanceof Y.Map && row.get('path') === from) row.set('path', to)
+  }
+}
+
+/**
+ * Убрать тетрадь из списка.
+ *
+ * Ячейки из документа не выбрасываются: их корень остаётся, потому что выкинуть
+ * корень в Yjs нечем, а очистка массива — это правка, которую увидит история и
+ * которую можно отменить обратно в комнате, где файла уже нет. Список — вот
+ * что решает, тетрадь это или нет.
+ */
+export function removeBook(doc: Y.Doc, path: string): void {
+  const list = booksArray(doc)
+  for (let i = list.length - 1; i >= 0; i--) {
+    const row = list.get(i)
+    if (row instanceof Y.Map && row.get('path') === path) list.delete(i, 1)
+  }
+}
+
 export type CellType = 'code' | 'markdown'
 export type CellState = 'idle' | 'queued' | 'running' | 'ok' | 'error'
 export type KernelStatus = 'starting' | 'idle' | 'busy' | 'restarting' | 'dead'
@@ -601,7 +775,21 @@ export function readTerminalLine(line: YTerminalLine): TerminalLineSnapshot {
 
 /* ----------------------------------------------------------------- cells */
 
+/**
+ * Ячейки ТЕТРАДИ КОМНАТЫ — первой из списка.
+ *
+ * То, что раньше значило «ячейки», и там, где смысл именно такой, оно осталось:
+ * история версий, публикация и контекст оракула про комнату, а не про любой
+ * файл, который в ней открыли. Всё, что должно работать с любой тетрадью,
+ * зовёт `bookCells` или `allBooks`.
+ */
 export function getCells(doc: Y.Doc): Y.Array<YCell> {
+  const first = bookList(doc)[0]
+  if (first) return doc.getArray<YCell>(first.root)
+  return legacyCells(doc)
+}
+
+function legacyCells(doc: Y.Doc): Y.Array<YCell> {
   return doc.getArray<YCell>(CELLS_KEY)
 }
 
@@ -723,11 +911,26 @@ function cloneOutput(output: YOutput): YOutput {
   return copy as YOutput
 }
 
-export function findCell(doc: Y.Doc, id: string): { cell: YCell; index: number } | null {
-  const cells = getCells(doc)
-  for (let i = 0; i < cells.length; i++) {
-    const cell = cells.get(i)
-    if (cellId(cell) === id) return { cell, index: i }
+/**
+ * Ячейка по имени — в какой бы тетради комнаты она ни лежала.
+ *
+ * Именно так вся работа с одной ячейкой остаётся не знающей про тетради: ядру,
+ * оракулу и управляющему сокету достаточно имени, и ни одному из них не
+ * приходится таскать с собой путь файла. Имя ячейки в комнате одно —
+ * это чинится отдельно, см. проверку на двойников в collab/index.ts.
+ *
+ * Проход по всем тетрадям стоит столько же, сколько стоил проход по одной,
+ * пока тетрадь была одна, и растёт линейно от числа открытых.
+ */
+export function findCell(
+  doc: Y.Doc,
+  id: string,
+): { cell: YCell; index: number; cells: Y.Array<YCell> } | null {
+  for (const cells of allCellArrays(doc)) {
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells.get(i)
+      if (cellId(cell) === id) return { cell, index: i, cells }
+    }
   }
   return null
 }
@@ -826,7 +1029,9 @@ export function readNotebook(doc: Y.Doc): CellSnapshot[] {
  */
 export function clearStaleExecution(doc: Y.Doc): number {
   const meta = getMeta(doc)
-  const cells = getCells(doc)
+  // По всем тетрадям, а не по одной: очередь у комнаты общая, и ячейка,
+  // застрявшая в «работает», может стоять в любой из открытых.
+  const cells = allCellArrays(doc).flatMap((array) => array.toArray())
   let cleared = 0
 
   doc.transact(() => {
@@ -895,12 +1100,22 @@ export function clearStaleExecution(doc: Y.Doc): number {
  * only writes when the document is genuinely empty, and says whether it did.
  */
 export function ensureInitialNotebook(doc: Y.Doc, title?: string): boolean {
-  const cells = getCells(doc)
   const meta = getMeta(doc)
   let seeded = false
   doc.transact(() => {
     if (title && !meta.get('title')) meta.set('title', title)
     if (!meta.has('kernelStatus')) meta.set('kernelStatus', 'starting' as KernelStatus)
+    /*
+     * Список тетрадей — первым делом, и он же миграция.
+     *
+     * У комнаты, которая шла до появления нескольких тетрадей, ячейки лежат в
+     * корне `cells` и списка нет вовсе. Здесь ей приписывают ровно одну запись,
+     * указывающую на тот же самый корень: ни одна ячейка не двигается, кеш в
+     * браузерах и история версий остаются теми же. Файл на диске появится
+     * следом — его пишет проекция, см. collab/books.ts.
+     */
+    if (bookList(doc).length === 0) addBook(doc, DEFAULT_BOOK, CELLS_KEY)
+    const cells = getCells(doc)
     if (cells.length === 0) {
       cells.push([
         createCell(

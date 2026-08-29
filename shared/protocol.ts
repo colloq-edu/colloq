@@ -118,8 +118,16 @@ export type ControlClientMessage =
   | { t: 'term:interrupt' }
   | { t: 'term:clear' }
   | { t: 'term:close' }
-  | { t: 'runAll' }
-  | { t: 'runAbove'; cellId: string }
+  /**
+   * Весь лист — и `book` называет, ЧЕЙ лист.
+   *
+   * Тетрадей в комнате несколько, и «запустить всё» в одной не означает
+   * «запустить всё в комнате»: ядро общее, а листы разные. Отсутствие поля —
+   * тетрадь комнаты, то есть первая: так читаются сообщения вкладок, открытых
+   * до появления нескольких тетрадей.
+   */
+  | { t: 'runAll'; book?: string }
+  | { t: 'runAbove'; cellId: string; book?: string }
   /**
    * Остановить выполнение.
    *
@@ -132,13 +140,13 @@ export type ControlClientMessage =
    */
   | { t: 'interrupt'; cellId?: string }
   | { t: 'restart' }
-  | { t: 'clearOutputs'; cellId?: string }
+  | { t: 'clearOutputs'; cellId?: string; book?: string }
   /**
    * Put every code cell through black. A cell the formatter refuses — a magic,
    * a shell line, a line somebody is still typing — is left exactly as it was,
    * and the rest are still formatted.
    */
-  | { t: 'format' }
+  | { t: 'format'; book?: string }
   /**
    * Ответ ячейке, остановившейся внутри `input()`.
    *
@@ -202,6 +210,14 @@ export type ControlClientMessage =
    */
   | { t: 'tree:mkdir'; path: string }
   | { t: 'tree:new'; path: string }
+  /**
+   * Внести .ipynb в комнату — то есть открыть его тетрадью.
+   *
+   * Отдельное сообщение, а не побочный эффект открытия вкладки: ячейки
+   * переезжают из файла в документ комнаты, и это должен сделать сервер один
+   * раз, а не двадцать браузеров наперегонки.
+   */
+  | { t: 'book:open'; path: string }
   | { t: 'tree:move'; from: string; to: string }
   | { t: 'tree:remove'; path: string }
   /**

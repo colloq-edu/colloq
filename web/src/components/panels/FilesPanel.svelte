@@ -19,6 +19,7 @@
   import { formatBytes, splitFileName } from '@/lib/utils'
   import Icon from '@/components/ui/Icon.svelte'
   import { copyText } from '@/lib/clipboard'
+  import { iconFor } from '@/lib/file-icons'
   import { permitsIn } from '@/lib/may'
   import { baseOf, joinPath, kindOf, parentOf, safeSegment, whySegmentRefused } from '@shared/paths'
 
@@ -61,7 +62,9 @@
   /** Куда лягут «новый файл» и «новая папка». Пустая строка — корень. */
   let target = $state('')
   /** Строка ввода: заводим новое или переименовываем существующее. */
-  let draft = $state<{ kind: 'file' | 'dir' | 'rename'; dir: string; from?: string } | null>(null)
+  let draft = $state<{ kind: 'file' | 'dir' | 'book' | 'rename'; dir: string; from?: string } | null>(
+    null,
+  )
   let draftName = $state('')
   let draftInput = $state<HTMLInputElement | null>(null)
 
@@ -126,6 +129,7 @@
       return
     }
     target = parentOf(entry.path)
+    // Двоичное не открыть ничем: нажатие на нём означает «дай мне его сюда».
     if (kindOf(entry.path) === 'binary') {
       void download(entry.path)
       return
@@ -157,10 +161,15 @@
 
   /* ------------------------------------------------------- новое и имена */
 
-  function startDraft(kind: 'file' | 'dir'): void {
+  function startDraft(kind: 'file' | 'dir' | 'book'): void {
     draft = { kind, dir: target }
-    draftName = ''
-    queueMicrotask(() => draftInput?.focus())
+    // У тетради расширение подставлено и выделено не будет: человек набирает
+    // имя, а `.ipynb` — не его забота.
+    draftName = kind === 'book' ? '.ipynb' : ''
+    queueMicrotask(() => {
+      draftInput?.focus()
+      draftInput?.setSelectionRange(0, 0)
+    })
   }
 
   function startRename(entry: FileEntry): void {
@@ -184,7 +193,7 @@
       error = whySegmentRefused(name)
       return
     }
-    const path = joinPath(current.dir, name)
+    const path = joinPath(current.dir, current.kind === 'book' && !name.endsWith('.ipynb') ? name + '.ipynb' : name)
     if (current.kind === 'rename') {
       if (current.from && current.from !== path) {
         session.send({ t: 'tree:move', from: current.from, to: path })
@@ -192,6 +201,9 @@
       }
     } else if (current.kind === 'dir') {
       session.send({ t: 'tree:mkdir', path })
+    } else if (current.kind === 'book') {
+      session.send({ t: 'tree:new', path })
+      pendingOpen = path
     } else {
       session.send({ t: 'tree:new', path })
       // Открыть сразу: новый файл заводят, чтобы в него что-то написать, и
@@ -467,6 +479,15 @@
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          title={target ? `Новая тетрадь в ${target}` : 'Новая тетрадь'}
+          aria-label="Новая тетрадь"
+          onclick={() => startDraft('book')}
+        >
+          <Icon name="notebook" size={13} />
+        </button>
+        <button
+          type="button"
+          class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           title={target ? `Новая папка в ${target}` : 'Новая папка'}
           aria-label="Новая папка"
           onclick={() => startDraft('dir')}
@@ -552,7 +573,7 @@
       </span>
       <span class="flex h-3.5 w-[18px] shrink-0 items-center justify-center">
         <Icon
-          name={entry.dir ? 'folder' : 'file'}
+          name={entry.dir ? 'folder' : iconFor(entry.path)}
           size={12}
           class={active === entry.path ? 'text-ink' : 'text-faint'}
         />
@@ -692,7 +713,15 @@
     >
       <span class="h-3.5 w-3.5 shrink-0"></span>
       <span class="flex h-3.5 w-[18px] shrink-0 items-center justify-center">
-        <Icon name={draft.kind === 'dir' ? 'folder' : 'file'} size={12} class="text-faint" />
+        <Icon
+          name={draft.kind === 'dir'
+            ? 'folder'
+            : draft.kind === 'book'
+              ? 'notebook'
+              : iconFor(draftName || 'x.txt')}
+          size={12}
+          class="text-faint"
+        />
       </span>
       {@render nameField()}
     </div>

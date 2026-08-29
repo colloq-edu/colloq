@@ -6,6 +6,7 @@ import { config } from '../config.js'
 import { getSession } from '../db.js'
 import { baseOf, joinPath, normalizePath } from '@shared/paths'
 import { forgetFile } from '../collab/files.js'
+import { dropBook, isBookFile } from '../collab/books.js'
 import {
   deleteFile,
   listFiles,
@@ -273,6 +274,23 @@ export function fileRoutes(): Router {
               return
             }
             /*
+             * Поверх тетради комнаты не ложится ничто.
+             *
+             * Файл тетради — проекция документа: он переписывается из комнаты
+             * через секунду после любой правки. Принять загрузку значило бы
+             * показать «загружено» и молча вернуть прежнее содержимое — худший
+             * вид отказа. Внести тетрадь заново можно, убрав её из комнаты.
+             */
+            if (isBookFile(sessionId, joinPath(intoDir, name))) {
+              fs.rmSync(tmp, { force: true })
+              failure ??= {
+                code: 409,
+                message: `${name} — тетрадь этой комнаты. Её правят в ней самой, а не загрузкой.`,
+              }
+              resolve()
+              return
+            }
+            /*
              * Заменить чужой файл — это удалить его, а удаление уже
              * преподавательское. Дыра была ровно такой ширины: DELETE
              * спрашивал роль, а загрузка файла с тем же именем — нет.
@@ -391,6 +409,7 @@ export function fileRoutes(): Router {
       return res.status(404).json({ error: 'file not found' })
     }
     forgetFile(sessionId, wanted)
+    dropBook(sessionId, wanted)
     broadcastFiles(sessionId)
     res.json({ files: listFiles(sessionId) })
   })

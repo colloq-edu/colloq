@@ -25,14 +25,16 @@ import {
   cellId as idOf,
   cellOutputs,
   cellSource,
+  allCellArrays,
+  cellsAt,
   cellType,
   createTerminalLine,
   findCell,
-  getCells,
   getMeta,
   getTerminal,
   type CellState,
   type KernelStatus,
+  type YCell,
 } from '@shared/notebook'
 import { config } from '../config.js'
 import { sessionEnvironment } from '../db.js'
@@ -297,7 +299,9 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
 export function sweepOrphanRuns(sessionId: string): number {
   const runtime = runtimes.get(sessionId)
   const { doc } = getSessionDoc(sessionId)
-  const cells = getCells(doc)
+  // По всем тетрадям комнаты: ядро одно, очередь одна, и застрявшая ячейка
+  // может стоять в любой открытой.
+  const cells = allCellArrays(doc).flatMap((array: Y.Array<YCell>) => array.toArray())
   let repaired = 0
 
   doc.transact(() => {
@@ -1200,7 +1204,7 @@ function deadMessage(): string {
  * formatter refuses is left alone — see kernel/format.ts for why that is the
  * whole design rather than a fallback.
  */
-export async function formatSession(sessionId: string): Promise<FormatOutcome> {
+export async function formatSession(sessionId: string, book?: string): Promise<FormatOutcome> {
   const runtime = getRuntime(sessionId)
   try {
     await ensureKernel(sessionId)
@@ -1216,7 +1220,7 @@ export async function formatSession(sessionId: string): Promise<FormatOutcome> {
       error: 'The kernel is not running.',
     }
   }
-  const outcome = await formatNotebook(sessionId, kernel)
+  const outcome = await formatNotebook(sessionId, kernel, book)
   if (outcome.error) kernelNote(sessionId, `Formatting failed: ${outcome.error}`)
   return outcome
 }
@@ -1254,11 +1258,27 @@ export async function answerInput(
   return answered
 }
 
-export function clearOutputs(sessionId: string, cellId?: string): void {
+/**
+ * Стереть выводы.
+ *
+ * С именем ячейки — у одной, в какой бы тетради она ни лежала. Без имени — у
+ * ВСЕЙ комнаты, а не у одной тетради: кнопка так и называется, и стирать
+ * половину было бы обещанием, которого она не давала.
+ */
+export function clearOutputs(sessionId: string, cellId?: string, book?: string): void {
   const { doc } = getSessionDoc(sessionId)
-  const cells = getCells(doc)
+  /*
+   * Тетрадь названа — стираем в ней; не названа — во всей комнате.
+   *
+   * Кнопка «Clear» стоит в тулбаре ОДНОЙ тетради и называет её; перезапуск ядра
+   * не называет никого, потому что уносит переменные всей комнаты сразу.
+   */
+  const named = book ? cellsAt(doc, book) : null
+  const cells = named
+    ? named.toArray()
+    : allCellArrays(doc).flatMap((array: Y.Array<YCell>) => array.toArray())
   doc.transact(() => {
-    cells.forEach((cell) => {
+    cells.forEach((cell: YCell) => {
       if (cellId && idOf(cell) !== cellId) return
       const outputs = cellOutputs(cell)
       if (outputs.length > 0) outputs.delete(0, outputs.length)
@@ -1279,9 +1299,10 @@ export function clearOutputs(sessionId: string, cellId?: string): void {
  */
 function resetAllCells(sessionId: string, except: string | null = null): void {
   const { doc } = getSessionDoc(sessionId)
-  const cells = getCells(doc)
+  // Перезапуск ядра уносит переменные всей комнаты, а не одной тетради.
+  const cells = allCellArrays(doc).flatMap((array: Y.Array<YCell>) => array.toArray())
   doc.transact(() => {
-    cells.forEach((cell) => {
+    cells.forEach((cell: YCell) => {
       /*
        * Номер снимается со всех, состояние — не со всех.
        *

@@ -65,8 +65,15 @@ export interface Whereabouts {
 
 /** Состояние комнаты, из которого считается «где кто». */
 export interface RoomView {
-  /** Ячейки в порядке документа: отсюда номера и проверка, что ячейка ещё есть. */
-  cellIds: readonly string[]
+  /**
+   * Номер каждой ячейки — тот же, что нарисован у неё в поле слева.
+   *
+   * Карта, а не список в порядке документа: тетрадей в комнате несколько, счёт
+   * в каждой свой, и «ячейка 04» должна означать ту самую четвёртую, которую
+   * человек видит, — в какой бы тетради она ни лежала. Заодно отсюда же видно,
+   * что ячейка ещё существует.
+   */
+  numbers: ReadonlyMap<string, number>
   runningCellId: string | null
   /** Отображаемое имя того, кто нажал Run. */
   runBy: string | null
@@ -75,8 +82,8 @@ export interface RoomView {
 /** Номера ячеек читаются так же, как в поле у края: 01, 02, 03. */
 function cellNumber(view: RoomView, id: string | null | undefined): string | null {
   if (!id) return null
-  const index = view.cellIds.indexOf(id)
-  return index === -1 ? null : String(index + 1).padStart(2, '0')
+  const number = view.numbers.get(id)
+  return number === undefined ? null : String(number).padStart(2, '0')
 }
 
 /**

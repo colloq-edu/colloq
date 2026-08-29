@@ -23,7 +23,14 @@
  * 67 мкс. Двадцать печатающих дают ~160 кадров в секунду.
  */
 import * as Y from 'yjs'
-import { CELLS_KEY, CHAT_KEY, META_KEY, TERMINAL_KEY } from '@shared/notebook'
+import {
+  allCellArrays,
+  CELLS_KEY,
+  CHAT_KEY,
+  isBookRoot,
+  META_KEY,
+  TERMINAL_KEY,
+} from '@shared/notebook'
 import { allows, allowsStructure, type RoomRules } from '@shared/rules'
 
 /** Что кадр делает — в терминах правил комнаты, а не байтов. */
@@ -256,7 +263,7 @@ class Frame {
       }
       // Элемент, лежащий прямо в корне cells, и есть ячейка.
       if (item.parentSub === null && parent._item === null && parent.doc) {
-        if (Y.findRootTypeKey(parent) === CELLS_KEY) cell = item
+        if (isBookRoot(Y.findRootTypeKey(parent))) cell = item
       }
       current = parent
     }
@@ -295,7 +302,7 @@ class Frame {
         cell: cell ? { kind: 'item', item: cell } : null,
         cellIsFresh: false,
       }
-      if (container.length === 1 && container[0] === CELLS_KEY && item.parentSub === null) {
+      if (container.length === 1 && isBookRoot(container[0]) && item.parentSub === null) {
         here.cell = target
       }
       this.placeMemo.set(item, here)
@@ -338,7 +345,7 @@ class Frame {
       }
     }
 
-    if (here.container.length === 1 && here.container[0] === CELLS_KEY && here.sub === null) {
+    if (here.container.length === 1 && isBookRoot(here.container[0]) && here.sub === null) {
       here.cell = target
       here.cellIsFresh = true
     }
@@ -370,7 +377,7 @@ class Frame {
     const path = slot.join('/')
     if (slot[0] === '<gc>') return null
 
-    if (slot[0] === CELLS_KEY) {
+    if (isBookRoot(slot[0])) {
       const cellId = this.cellIdOf(place)
       // Сам состав тетради.
       if (slot.length === 2 && slot[1] === '[]') {
@@ -448,11 +455,15 @@ class Frame {
        */
       if (namesHere.has(id)) throw new Refusal('две новые ячейки с одним именем', path)
       namesHere.add(id)
+      /*
+       * Во ВСЕХ тетрадях комнаты, а не в одной: ячейку ищут по имени, не зная,
+       * в какой она тетради (см. `findCell`), и совпадение имён в двух разных
+       * тетрадях означало бы, что «Запустить» иногда запускает не ту.
+       */
       if (
-        this.doc
-          .getArray(CELLS_KEY)
-          .toArray()
-          .some((c) => c instanceof Y.Map && c.get('id') === id)
+        allCellArrays(this.doc).some((cells) =>
+          cells.toArray().some((c) => c instanceof Y.Map && c.get('id') === id),
+        )
       ) {
         throw new Refusal('ячейка с таким именем уже есть', path)
       }

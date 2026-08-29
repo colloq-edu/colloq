@@ -9,7 +9,7 @@
    * nothing, so every question is attributed and lands on all screens at once.
    */
   import type * as Y from 'yjs'
-  import { getCells, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
+  import { allCellArrays, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
   import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
   import { oracleModeIn, readRules } from '@shared/rules'
   import type { OracleMode } from '@shared/admin'
@@ -17,7 +17,7 @@
   import { oracleDraft } from '@/lib/drafts.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { permitsIn } from '@/lib/may'
-  import { watchCellIds } from '@/lib/yreactive.svelte'
+  import { watchCellNumbers } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import ChatTurn from './ChatTurn.svelte'
@@ -39,7 +39,7 @@
   const MAX_SEES = 3
 
   const session = getSessionState()
-  const cellIds = watchCellIds(session.doc)
+  const cellNumbers = watchCellNumbers(session.doc)
   const chat = getChat(session.doc)
   const isHost = $derived(session.me.role === 'host')
 
@@ -139,8 +139,10 @@
   $effect(() => {
     // Named so the dependency on the cell sequence is deliberate: a cell added
     // or removed means a different set of maps to listen to.
-    void cellIds.current
-    const cells = getCells(session.doc).toArray()
+    void cellNumbers.current
+    // Все тетради комнаты: красная точка «где-то упало» — про комнату, а не
+    // про тот лист, который сейчас открыт.
+    const cells = allCellArrays(session.doc).flatMap((array) => array.toArray())
     const read = () => (errored = cells.some((cell) => cell.get('state') === 'error'))
     const detach = cells.map((cell) => {
       const onKeys = (event: Y.YMapEvent<any>) => {
@@ -256,8 +258,7 @@
 
   function cellNumber(id: string | null | undefined): number | null {
     if (!id) return null
-    const index = cellIds.current.indexOf(id)
-    return index === -1 ? null : index + 1
+    return cellNumbers.current.get(id) ?? null
   }
 
   /** Cells are named 01…04 in the gutter; the thread has to agree with it. */

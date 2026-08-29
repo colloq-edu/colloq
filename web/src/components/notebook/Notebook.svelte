@@ -7,20 +7,26 @@
   import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
-  import { watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
+  import { watchBooks, watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import CellView from './CellView.svelte'
 
   interface Props {
-    /** The shared terminal drawer, whose tab VH-0 draws at the end of this bar. */
-    /** The drawer below the sheet is showing. */
-    terminalOpen?: boolean
-    ontoggleterminal?: () => void
+    /**
+     * Путь тетради: она такой же файл, как всё остальное в папке семинара.
+     *
+     * Корень в документе выводится из пути, а не приходит сюда: путь — это то,
+     * что видит человек в дереве и во вкладке, а корень — внутреннее имя,
+     * которое у первой тетради осталось прежним ради истории и кеша.
+     */
+    book: string
   }
 
-  let { terminalOpen = false, ontoggleterminal }: Props = $props()
+  let { book }: Props = $props()
 
   const session = getSessionState()
-  const ids = watchCellIds(session.doc)
+  const books = watchBooks(session.doc)
+  const root = $derived(books.current.find((entry) => entry.path === book)?.root ?? '')
+  const ids = watchCellIds(session.doc, () => root)
   const notebook = watchNotebookMeta(session.doc)
 
   /*
@@ -75,7 +81,7 @@
       session.showError(may.structureWhy + '.')
       return
     }
-    const created = insertCell(session.doc, type, index)
+    const created = insertCell(session.doc, root, type, index)
     select(created)
     // The new cell has to exist in the DOM before it can take focus.
     await tick()
@@ -672,7 +678,7 @@
         session.connected,
         !mayRun ? may.runWhy : mayRunAll ? 'Run every code cell' : may.bulkWhy,
       )}
-      onclick={() => session.send({ t: 'runAll' })}
+      onclick={() => session.send({ t: 'runAll', book })}
     >
       <Icon name="play" size={12} />
       Run all
@@ -740,7 +746,7 @@
       class={CAP}
       disabled={controlDisabled(session.connected, may.wipe)}
       title={controlTitle(session.connected, may.wipe ? 'Clear every output' : may.wipeWhy)}
-      onclick={() => session.send({ t: 'clearOutputs' })}
+      onclick={() => session.send({ t: 'clearOutputs', book })}
     >
       Clear
     </button>
@@ -762,60 +768,10 @@
             ? may.bulkWhy
             : 'Run black over every code cell — 100 columns. A cell it cannot read is left alone.',
       )}
-      onclick={() => session.send({ t: 'format' })}
+      onclick={() => session.send({ t: 'format', book })}
     >
       Format
     </button>
-
-    {#if ontoggleterminal}
-      <!--
-        A tab, not a button: VH-0 draws the open drawer as the selected tab of
-        this bar, sitting on the surface it opened. Closed, it is the same slot
-        with the bar's own voice, so the row keeps its shape either way.
-
-        One slot for the whole drawer rather than one per surface. The drawer
-        already has tabs across its own top, and a second row of the same three
-        choices up here would be the same question asked twice — the bar would
-        grow a button every time the drawer grew a tab.
-      -->
-      <button
-        type="button"
-        class={cn(
-          CAP,
-          'gap-2 border-b-2',
-          terminalOpen ? 'border-ink bg-raised text-ink' : 'border-transparent text-muted',
-        )}
-        aria-pressed={terminalOpen}
-        title="Terminal, kernel log and history — Ctrl+`"
-        onclick={ontoggleterminal}
-      >
-        <Icon name="prompt" size={12} />
-        Panel
-        {#if session.terminalStatus === 'busy'}
-          <span class="h-1.5 w-1.5 animate-blink rounded-full bg-accent"></span>
-        {:else if session.terminalUnread > 0}
-          <!--
-            The kernel's own news — why a Run All stopped, who restarted the
-            kernel — is written into the transcript, and the transcript is
-            behind this tab. Without a mark the room had the reason on file and
-            no reason to look for it.
-          -->
-          <!-- 10px и остаётся: цифра в кружке — это форма, которую узнают, а
-               не слово, которое читают. Ровно тот случай, под который шаг
-               micro и заведён. -->
-          <span
-            class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-accent
-                   px-1 font-mono text-micro font-bold text-white"
-            title={`${session.terminalUnread} kernel ${session.terminalUnread === 1 ? 'note' : 'notes'} you have not read`}
-          >
-            {session.terminalUnread > 9 ? '9+' : session.terminalUnread}
-          </span>
-        {:else}
-          <!-- Тоже значок: клавиша, а не подпись. -->
-          <span class="hidden font-mono text-micro text-muted xl:inline">⌃`</span>
-        {/if}
-      </button>
-    {/if}
 
     <div class="ml-auto flex shrink-0 items-center gap-2.5">
       <!--
@@ -879,6 +835,7 @@
       <CellView
         {id}
         {index}
+        bookRoot={root}
         last={index === ids.current.length - 1}
         selected={session.selectedCellId === id}
         near={isNear(id, index)}

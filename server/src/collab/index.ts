@@ -7,6 +7,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { WebSocket, type RawData } from 'ws'
 import type { YCell } from '@shared/notebook'
 import {
+  allCellArrays,
   clearStaleExecution,
   createTerminalLine,
   ensureInitialNotebook,
@@ -26,6 +27,7 @@ import {
 } from './persistence.js'
 import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } from './history.js'
 import { flushAllFiles, forgetFiles } from './files.js'
+import { watchBooks } from './books.js'
 import { forgetUndo } from '../ai/agent.js'
 
 /**
@@ -203,6 +205,18 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     dispose: bindPersistence(sessionId, doc),
   }
   docs.set(sessionId, entry)
+  /*
+   * Файлы тетрадей — сразу после того, как документ попал в реестр, и до
+   * засева: наблюдатель должен увидеть засев обычной правкой, а `watchBooks`
+   * зовёт `getSessionDoc` изнутри и нашёл бы полупостроенную комнату, встань он
+   * строкой выше.
+   */
+  const unwatchBooks = watchBooks(sessionId, doc)
+  const closeBinding = entry.dispose
+  entry.dispose = () => {
+    unwatchBooks()
+    closeBinding()
+  }
 
   /*
    * Seed, then put it on disk before returning. A room that has just been
@@ -267,24 +281,34 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * first copy stays, later ones go; they are copies of each other, so which
    * one survives does not matter, only that the choice is the same everywhere.
    */
-  const cells = getCells(doc)
-  cells.observe((event: Y.YArrayEvent<YCell>) => {
-    if (event.transaction.origin === ORIGIN) return
-    // Only an insert can introduce one, and the array is tens of items long.
-    if (!event.changes.added.size) return
-    const seen = new Set<string>()
-    const doomed: number[] = []
-    cells.forEach((cell, index) => {
-      const id = cell.get('id')
-      if (typeof id !== 'string') return
-      if (seen.has(id)) doomed.push(index)
-      else seen.add(id)
+  /*
+   * Наблюдатель на весь документ, а не на один массив ячеек: тетрадей в комнате
+   * несколько, они появляются на ходу, и подписка на каждую при появлении — это
+   * ещё одно место, где можно забыть отписаться.
+   */
+  doc.on('afterTransaction', (transaction: Y.Transaction) => {
+    if (transaction.origin === ORIGIN) return
+    // Только вставка заводит двойника, и только в массиве ячеек.
+    let touched = false
+    transaction.changed.forEach((_keys, type) => {
+      if (type instanceof Y.Array) touched = true
     })
-    if (doomed.length === 0) return
-    doc.transact(() => {
-      // Back to front, so the earlier indices stay valid as they go.
-      for (const index of doomed.reverse()) cells.delete(index, 1)
-    }, ORIGIN)
+    if (!touched) return
+    for (const cells of allCellArrays(doc)) {
+      const seen = new Set<string>()
+      const doomed: number[] = []
+      cells.forEach((cell: YCell, index: number) => {
+        const id = cell.get('id')
+        if (typeof id !== 'string') return
+        if (seen.has(id)) doomed.push(index)
+        else seen.add(id)
+      })
+      if (doomed.length === 0) continue
+      doc.transact(() => {
+        // Back to front, so the earlier indices stay valid as they go.
+        for (const index of doomed.reverse()) cells.delete(index, 1)
+      }, ORIGIN)
+    }
   })
 
   /*
