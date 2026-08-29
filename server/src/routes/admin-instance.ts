@@ -28,6 +28,7 @@ import {
   createSession,
   db,
   discardHistory,
+  discardNotes,
   forgetRules,
   getRules,
   loadDocSnapshot,
@@ -364,6 +365,9 @@ export function adminInstanceRoutes(): Router {
           // was gone and whose every cell is still on disk — and still served
           // over HTTP to anyone holding an old token.
           discardHistory(id)
+          // И заметки лекции: это единственное, что преподаватель писал себе
+          // сам, и оставлять их в базе удалённой комнаты не за чем.
+          discardNotes(id)
           deleteSeminarRow.run(id)
         })
         purge(row.id)

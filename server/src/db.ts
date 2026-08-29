@@ -635,6 +635,85 @@ export function updatesUpTo(sessionId: string, seq: number): Uint8Array[] {
   return rows.map((row) => new Uint8Array(row.update_blob))
 }
 
+/* ------------------------------------------------------- заметки лекции */
+
+/*
+ * Заметки спикера: что сказать на этой странице.
+ *
+ * В базе, а не в документе комнаты, и это не про удобство. Документ комнаты
+ * синхронизируется ЦЕЛИКОМ каждому вошедшему — тетрадь, чат, всё, — и заметка
+ * «здесь спросить, кто помнит формулу Байеса; если молчат, вывести на доске»
+ * приехала бы всему классу вместе с первой страницей. Речь преподавателя себе
+ * самому — единственное в этом продукте, что комнате видеть не полагается.
+ *
+ * И не в памяти процесса, в отличие от чернил: чернила живут час, а заметки
+ * пишут накануне вечером. Перезапуск сервера обязан их пережить.
+ *
+ * Ключ — семинар, файл и страница: заметки привязаны к странице документа, а не
+ * к лекции, поэтому переживают и её конец, и вторую лекцию по тому же файлу
+ * через неделю.
+ */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS lecture_notes (
+    session_id  TEXT NOT NULL,
+    file        TEXT NOT NULL,
+    page        INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (session_id, file, page)
+  );
+`)
+
+const selectNotes = db.prepare(
+  'SELECT page, text FROM lecture_notes WHERE session_id = ? AND file = ? ORDER BY page',
+)
+const upsertNote = db.prepare(
+  `INSERT INTO lecture_notes (session_id, file, page, text, updated_at)
+   VALUES (@session_id, @file, @page, @text, @updated_at)
+   ON CONFLICT(session_id, file, page) DO UPDATE SET text = @text, updated_at = @updated_at`,
+)
+const dropNote = db.prepare(
+  'DELETE FROM lecture_notes WHERE session_id = ? AND file = ? AND page = ?',
+)
+const dropNotesOf = db.prepare('DELETE FROM lecture_notes WHERE session_id = ?')
+const moveNotes = db.prepare(
+  'UPDATE lecture_notes SET file = ? WHERE session_id = ? AND file = ?',
+)
+
+/** Все заметки к одному документу: страница → текст. */
+export function notesOf(sessionId: string, file: string): Record<number, string> {
+  const rows = selectNotes.all(sessionId, file) as { page: number; text: string }[]
+  const out: Record<number, string> = {}
+  for (const row of rows) out[row.page] = row.text
+  return out
+}
+
+/** Пустая заметка — это её отсутствие, а не строка из пробелов. */
+export function setNote(sessionId: string, file: string, page: number, text: string): void {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    dropNote.run(sessionId, file, page)
+    return
+  }
+  upsertNote.run({
+    session_id: sessionId,
+    file,
+    page,
+    text: trimmed,
+    updated_at: Date.now(),
+  })
+}
+
+/** Файл переименовали — заметки переезжают за ним. */
+export function moveNotesTo(sessionId: string, from: string, to: string): void {
+  moveNotes.run(to, sessionId, from)
+}
+
+/** Семинар удалили — заметки уходят с ним. */
+export function discardNotes(sessionId: string): void {
+  dropNotesOf.run(sessionId)
+}
+
 const countVersions = db.prepare(
   `SELECT COUNT(*) AS n FROM doc_history WHERE session_id = ?`,
 )

@@ -46,10 +46,10 @@ export function inkOf(sessionId: string): InkStroke[] {
 
 export function startLecture(
   sessionId: string,
-  state: Omit<LectureState, 'page' | 'blank'>,
+  state: Omit<LectureState, 'page' | 'blank' | 'startedAt'>,
 ): LectureState {
   const room: Room = {
-    state: { ...state, page: 1, blank: false },
+    state: { ...state, page: 1, blank: false, startedAt: Date.now() },
     ink: new Map(),
   }
   rooms.set(sessionId, room)
@@ -138,6 +138,23 @@ export function undoInk(sessionId: string, page: number): string | null {
   const strokes = rooms.get(sessionId)?.ink.get(page)
   if (!strokes || strokes.length === 0) return null
   return strokes.pop()?.id ?? null
+}
+
+/**
+ * Стереть один штрих — тот, по которому провели ластиком.
+ *
+ * Отдельно от `undoInk`: отмена снимает ПОСЛЕДНИЙ, а ластик — тот, до которого
+ * дотронулись, и это разные жесты. Возвращает, был ли он там: рассылать
+ * «сотрите штрих, которого нет» значит заставлять двадцать браузеров
+ * перерисовывать страницу на пустом месте.
+ */
+export function eraseInk(sessionId: string, page: number, id: string): boolean {
+  const strokes = rooms.get(sessionId)?.ink.get(page)
+  if (!strokes) return false
+  const at = strokes.findIndex((stroke) => stroke.id === id)
+  if (at === -1) return false
+  strokes.splice(at, 1)
+  return true
 }
 
 /** Стереть страницу целиком, или всю лекцию, если страница не названа. */
