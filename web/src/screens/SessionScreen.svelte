@@ -27,6 +27,8 @@
   import PeoplePanel from '@/components/panels/PeoplePanel.svelte'
   import TerminalDrawer from '@/components/panels/TerminalDrawer.svelte'
   import PdfReader from '@/components/reader/PdfReader.svelte'
+  import LectureView from '@/components/lecture/LectureView.svelte'
+  import { fullscreenPossible, goFullscreen, leaveFullscreen } from '@/lib/fullscreen'
   import ImageView from '@/components/reader/ImageView.svelte'
   import ThemeSwitch from '@/components/ui/ThemeSwitch.svelte'
   import Wordmark from '@/components/ui/Wordmark.svelte'
@@ -54,9 +56,13 @@
   interface Props {
     session: SessionInfo
     identity: StoredIdentity
+    /** Этот экран висит на проекторе: адрес `/s/:id/screen`. */
+    projection?: boolean
+    /** Уйти на другой адрес, не пересобирая комнату. */
+    onnavigate?: (to: string) => void
   }
 
-  let { session: info, identity }: Props = $props()
+  let { session: info, identity, projection = false, onnavigate }: Props = $props()
 
   // Context can only be written during initialisation, so the live session is
   // built here rather than in the router — by now both the room and the person
@@ -283,7 +289,7 @@
    */
   // svelte-ignore state_referenced_locally
   const tabs = new Tabs(info.id)
-  const row = $derived(tabs.row(session.board))
+  const row = $derived(tabs.row(session.board, session.lecture?.file ?? null))
   const activePath = $derived(typeof tabs.active === 'string' ? tabs.active : null)
   const activeKind = $derived(activePath ? kindOf(activePath) : null)
 
@@ -360,6 +366,68 @@
   /** Нажатия «догнать» — счётчиком: догонять можно и дважды подряд. */
   let catchUp = $state(0)
 
+  /* ------------------------------------------------------------- лекция */
+
+  /**
+   * Идёт ли лекция по тому, что открыто сейчас.
+   *
+   * Лекция всегда стоит и на общем экране — это одно и то же решение, принятое
+   * сервером (см. `lecture:start`), — поэтому вкладка на неё есть у всех, и
+   * специально открывать её никому не нужно.
+   */
+  const lecture = $derived(session.lecture)
+  const leading = $derived(lecture !== null && lecture.by === session.me.id)
+  const lectureHere = $derived(lecture !== null && lecture.file === activePath)
+
+  /**
+   * «Читать самому».
+   *
+   * Лекция показывает всем одну страницу — ту, на которой ведущий. Но комната,
+   * где студент не может отлистнуть назад и перечитать формулу, — это
+   * трансляция экрана, а не семинар, и весь продукт устроен наоборот: за
+   * преподавателем ИДУТ, а не привязаны к нему. Поэтому выйти в обычную читалку
+   * можно одним нажатием — и вернуться тем же.
+   *
+   * Сбрасывается со сменой лекции: следующая начинается общей для всех.
+   */
+  let soloRead = $state(false)
+  $effect(() => {
+    void lecture?.file
+    untrack(() => (soloRead = false))
+  })
+
+  /**
+   * Уйти на проекцию и вернуться.
+   *
+   * Адресом, а не флагом: проекцию открывают на машине у проектора, её ссылку
+   * кладут в закладки, и она обязана пережить перезагрузку. Полный экран
+   * просится ровно здесь, из живого нажатия, — из эффекта после навигации
+   * браузер его не даёт.
+   */
+  function toProjection(): void {
+    void goFullscreen(document.documentElement)
+    onnavigate?.(`/s/${session.session.id}/screen`)
+  }
+
+  function fromProjection(): void {
+    void leaveFullscreen()
+    onnavigate?.(`/s/${session.session.id}`)
+  }
+
+  /*
+   * Escape уводит с проекции. Первым нажатием браузер закрывает полный экран
+   * сам и до страницы событие не доводит — поэтому на балке Escape нажимают
+   * дважды, и это ровно то, что нужно: случайное нажатие не гасит лекцию.
+   */
+  $effect(() => {
+    if (!projection) return
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') fromProjection()
+    }
+    window.addEventListener('keydown', onEscape)
+    return () => window.removeEventListener('keydown', onEscape)
+  })
+
   /*
    * Документ появился на общем экране — комната смотрит его: это и есть
    * «началась лекция». Пропал — все возвращаются в тетрадь, потому что
@@ -388,6 +456,23 @@
    */
   $effect(() => {
     if (!followFile) session.setViewing(null)
+  })
+
+  /*
+   * Пока идёт лекция, «кто где» по этому документу не считается вовсе.
+   *
+   * Место в документе нужно, чтобы за человеком можно было ПОЙТИ; во время
+   * лекции идти некуда — страница одна на всех и приезжает от ведущего. Метка
+   * «преподаватель на стр. 4» рядом с лекцией была бы вторым источником той же
+   * правды, и он бы врал: у ведущего читалки нет, и последнее, что он успел
+   * сообщить, — это страница, на которой он стоял до начала лекции. Заодно
+   * гаснет счётчик в строке вкладок: во время лекции номер живёт в её полосе.
+   */
+  $effect(() => {
+    if (!lectureHere || soloRead) return
+    session.setViewing(null)
+    readerPage = 1
+    readerPages = 0
   })
 
   /*
@@ -781,6 +866,54 @@
 
 <svelte:window onkeydown={onKeydown} />
 
+{#if projection}
+  <!--
+    Экран на балке. Комната под ним не рисуется вовсе — ни вкладок, ни панелей,
+    ни тетради: это единственное место в продукте, которое смотрят двадцать
+    человек сразу, и всё, что на нём есть лишнего, они и увидят. Соединение при
+    этом то же самое: SessionState живёт в этом же компоненте и переход сюда его
+    не трогает.
+  -->
+  <div class="fixed inset-0 z-[90] flex flex-col bg-black">
+    {#if lecture}
+      <LectureView {lecture} role="projection" onleave={fromProjection} />
+    {:else}
+      <!--
+        Лекции ещё нет. Это обычное дело: проектор включают до пары, а ссылку
+        открывают заранее — экран должен сказать, что он готов и чего ждёт, а не
+        показывать чёрный прямоугольник, в котором нельзя отличить «жду» от
+        «сломалось».
+      -->
+      <div class="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+        <span class="text-2xs font-bold uppercase tracking-institution text-white/40">
+          проекция
+        </span>
+        <p class="text-marquee-sm font-black text-white">{title}</p>
+        <p class="max-w-md text-ui text-white/50">
+          Экран готов. Он покажет документ, как только преподаватель начнёт лекцию.
+        </p>
+        <div class="mt-4 flex items-center gap-2">
+          {#if fullscreenPossible()}
+            <button
+              type="button"
+              class="border border-white/20 px-3 py-1.5 text-2xs font-bold uppercase tracking-label text-white/70 transition-colors duration-100 hover:border-white/40 hover:text-white"
+              onclick={() => void goFullscreen(document.documentElement)}
+            >
+              Во весь экран
+            </button>
+          {/if}
+          <button
+            type="button"
+            class="px-3 py-1.5 text-2xs font-bold uppercase tracking-label text-white/40 transition-colors duration-100 hover:text-white/70"
+            onclick={fromProjection}
+          >
+            Вернуться в комнату
+          </button>
+        </div>
+      </div>
+    {/if}
+  </div>
+{:else}
 <div class="flex h-full min-h-0 flex-col overflow-hidden bg-canvas">
   <!--
     Two bands, one brand ground. The navy is the printed object the room is
@@ -1098,14 +1231,25 @@
           <p class="text-2xs text-muted">Файлы и тетради комнаты — в панели слева.</p>
         </div>
       {:else if activeKind === 'pdf'}
-        <PdfReader
-          file={activePath}
-          shared={activePath === session.board}
-          {catchUp}
-          {lead}
-          bind:page={readerPage}
-          bind:pages={readerPages}
-        />
+        {#if lecture && lectureHere && !soloRead}
+          <LectureView
+            {lecture}
+            role={leading ? 'presenter' : 'audience'}
+            onproject={toProjection}
+            onsolo={leading ? undefined : () => (soloRead = true)}
+          />
+        {:else}
+          <PdfReader
+            file={activePath}
+            shared={activePath === session.board}
+            mayLead={may.board && lecture === null}
+            backToLecture={lectureHere ? () => (soloRead = false) : null}
+            {catchUp}
+            {lead}
+            bind:page={readerPage}
+            bind:pages={readerPages}
+          />
+        {/if}
       {:else if activePath && activeKind === 'text'}
         {#if activeDoc}
           {#key activePath}
@@ -1193,6 +1337,7 @@
     {/if}
   </div>
 </div>
+{/if}
 
 <!--
   Комната, которой больше нет.

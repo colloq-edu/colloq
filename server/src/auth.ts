@@ -101,6 +101,56 @@ export function verifyDownloadToken(
   return a.length === b.length && crypto.timingSafeEqual(a, b)
 }
 
+/**
+ * Ключ, которым преподаватель отдаёт СВОЙ пульт своему же планшету.
+ *
+ * Задача звучит просто: вести пару с айпада, не входя на нём заново и не
+ * перенося вручную ни имени, ни прав. Но токен участника в адресе — это ровно
+ * то, от чего ушёл `signDownloadToken`: строка, которой открывается
+ * управляющий сокет, в ссылке, которую копируют в чат.
+ *
+ * Поэтому в ссылке едет не токен, а ключ на обмен: он живёт десять минут,
+ * годится один раз и ни для чего, кроме обмена, — по нему нельзя ни открыть
+ * сокет, ни скачать файл. Планшет меняет его на обычный токен участника и
+ * дальше живёт как всякий вошедший.
+ *
+ * Десять минут — это «дошёл до кафедры и открыл»; ссылка, забытая в чате,
+ * протухает раньше, чем её прочитают.
+ */
+export const HANDOFF_TTL_MS = 10 * 60 * 1000
+
+export function signHandoffToken(sessionId: string, participantId: string): string {
+  const until = Date.now() + HANDOFF_TTL_MS
+  const body = `handoff:${sessionId}\u0000${participantId}\u0000${until}`
+  const sig = crypto.createHmac('sha256', config.sessionSecret).update(body).digest('base64url')
+  return `${Buffer.from(participantId).toString('base64url')}.${until.toString(36)}.${sig}`
+}
+
+/** Кому этот ключ принадлежит — или null, если он чужой, кривой или протух. */
+export function verifyHandoffToken(sessionId: string, token: string | undefined | null): string | null {
+  if (typeof token !== 'string') return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  const [who, untilRaw, sig] = parts
+  const until = Number.parseInt(untilRaw, 36)
+  if (!Number.isFinite(until) || Date.now() > until) return null
+  let participantId: string
+  try {
+    participantId = Buffer.from(who, 'base64url').toString('utf8')
+  } catch {
+    return null
+  }
+  if (!participantId) return null
+  const expected = crypto
+    .createHmac('sha256', config.sessionSecret)
+    .update(`handoff:${sessionId}\u0000${participantId}\u0000${until}`)
+    .digest('base64url')
+  const a = Buffer.from(sig)
+  const b = Buffer.from(expected)
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null
+  return participantId
+}
+
 /** Host credential handed out at session creation; proves ownership after a refresh. */
 /**
  * Ключ ведущего к комнате — со сроком, как и у участника.

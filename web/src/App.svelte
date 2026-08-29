@@ -27,7 +27,21 @@
    * room before has the room on disk: waiting for the server to confirm what
    * the browser already knows would buy nothing but a spinner.
    */
-  const SESSION_PATH = /^\/s\/([A-Za-z0-9_-]{1,64})\/?$/
+  /*
+   * `/s/:id` — комната, `/s/:id/screen` — её проекция на балке в аудитории.
+   *
+   * Один адрес на два экрана: проекция — это та же комната тем же человеком, а
+   * не отдельная страница. Отсюда и хвост в том же выражении, а не вторая
+   * регулярка: id остаётся одним и тем же, и переход между ними НЕ пересобирает
+   * сессию — сокеты, документ и присутствие остаются на месте, меняется только
+   * то, что нарисовано.
+   *
+   * Адресом, а не кнопкой, потому что проекцию открывают на другой машине —
+   * той, что воткнута в проектор. Её ссылку можно положить в закладки на
+   * кафедральном ноутбуке, и после перезагрузки она вернётся сама.
+   */
+  const SESSION_PATH =
+    /^\/s\/([A-Za-z0-9_-]{1,64})(?:\/(screen)|\/t\/([A-Za-z0-9_.-]{8,512}))?\/?$/
   /*
    * Две публичные страницы: курс и опубликованный семинар.
    *
@@ -41,6 +55,9 @@
 
   let path = $state(location.pathname)
   const sessionId = $derived(SESSION_PATH.exec(path)?.[1] ?? null)
+  const projecting = $derived(SESSION_PATH.exec(path)?.[2] === 'screen')
+  /** Ключ из ссылки на пульт: планшет меняет его на обычный вход. */
+  const handoffKey = $derived(SESSION_PATH.exec(path)?.[3] ?? null)
   // The teaching side. It routes its own sub-paths; this only has to get out of
   // the way, and to do so before the seminar route touches localStorage.
   const isAdmin = $derived(path === '/admin' || path.startsWith('/admin/'))
@@ -266,6 +283,62 @@
     }
   })
 
+  /**
+   * Ссылка на пульт: обменять ключ на вход и стереть его из адреса.
+   *
+   * Планшет открывает `/s/:id/t/<ключ>` и должен оказаться в комнате ТЕМ ЖЕ
+   * человеком, что и ноутбук, — без формы имени и без второго участника в
+   * списке. Ключ одноразовый и живёт минуты, но адрес переживает и то и
+   * другое: он остаётся в истории, во вкладках и на снимке экрана, который
+   * преподаватель потом покажет классу. Поэтому сразу после обмена адрес
+   * заменяется на обычный — replaceState, чтобы «назад» не возвращало на
+   * мёртвый ключ.
+   */
+  let claiming = $state(false)
+  let claimedKey: string | null = null
+  $effect(() => {
+    const id = sessionId
+    const key = handoffKey
+    if (!id || !key || claimedKey === key) return
+    claimedKey = key
+    claiming = true
+    void api
+      .claimHandoff(id, key)
+      .then((res) => {
+        const next: StoredIdentity = {
+          sessionId: id,
+          participantId: res.participant.id,
+          token: res.token,
+          name: res.participant.name,
+          avatar: res.participant.avatar,
+          color: res.participant.color,
+          role: res.participant.role,
+        }
+        saveIdentity(next)
+        session = res.session
+        identity = next
+      })
+      .catch((cause: unknown) => {
+        /*
+         * Ключ протух — это обычный ход дела, а не поломка: ссылку открыли
+         * через час. Показываем причину и оставляем экран входа: войти по
+         * имени по-прежнему можно, просто без чужих прав.
+         */
+        failure = {
+          missing: false,
+          message:
+            cause instanceof ApiError
+              ? cause.message
+              : 'Ссылка на пульт не сработала — попросите новую.',
+        }
+      })
+      .finally(() => {
+        claiming = false
+        history.replaceState({}, '', `/s/${id}`)
+        path = `/s/${id}`
+      })
+  })
+
   // The join screen's poster half does not depend on the seminar name, so it
   // paints immediately; a non-breaking space holds the line the name lands on so
   // its arrival never pushes the form down.
@@ -327,6 +400,18 @@
       </div>
     </div>
   </div>
+{:else if claiming || handoffKey}
+  <!--
+    Обмен ключа на вход. Занимает один запрос, но экран входа мигнуть за это
+    время успевает — а человек, который только что открыл ссылку «свой пульт»,
+    увидел бы форму «как вас зовут» и решил бы, что ссылка не сработала.
+  -->
+  <div class="flex h-full items-center justify-center bg-canvas">
+    <div class="flex items-center gap-2 text-ui text-muted">
+      <Icon name="spinner" size={14} class="animate-spin" />
+      Входим в комнату…
+    </div>
+  </div>
 {:else if session && identity}
   {@const room = session}
   {@const me = identity}
@@ -342,7 +427,12 @@
          its own empty room while the document loads, and a spinner in front of
          it would only be a second thing to wait through. -->
     {#await workspace() then Workspace}
-      <Workspace session={room} identity={me} />
+      <Workspace
+        session={room}
+        identity={me}
+        projection={projecting}
+        onnavigate={(next) => navigate(next)}
+      />
     {/await}
   {/key}
 {:else if poster}

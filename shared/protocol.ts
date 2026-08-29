@@ -9,6 +9,7 @@ import type { RoomRules } from './rules.js'
  * file listing) only.
  */
 import type { CellSnapshot, KernelStatus } from './notebook'
+import type { InkStroke, LectureState } from './lecture'
 
 export type ParticipantRole = 'host' | 'participant'
 
@@ -74,6 +75,19 @@ export interface CreateSessionResponse {
   session: SessionInfo
   /** Signed host credential; the browser keeps it in localStorage. */
   hostToken: string
+}
+
+/**
+ * Ключ, которым преподаватель отдаёт свой пульт планшету.
+ *
+ * Не токен: по нему нельзя ни открыть сокет, ни скачать файл — только один раз
+ * обменять его на обычный вход, и только пока он жив. Срок приезжает вместе с
+ * ключом, чтобы экран мог сказать «ссылка живёт десять минут» и не врать, если
+ * срок однажды поменяется.
+ */
+export interface HandoffResponse {
+  key: string
+  livesMs: number
 }
 
 export interface JoinRequest {
@@ -229,6 +243,43 @@ export type ControlClientMessage =
    * считается».
    */
   | { t: 'file:run'; path: string }
+  /* ---------------------------------------------------------- лекция */
+  /**
+   * Начать лекцию: одна страница на проекторе и один человек за пультом.
+   *
+   * Отдельно от общего экрана (`board:open`), потому что это другое занятие. У
+   * общего экрана каждый смотрит документ у себя и волен уйти вперёд; у лекции
+   * есть ОДНА проекция, которую видит зал, и её страницу двигает ведущий.
+   */
+  | { t: 'lecture:start'; file: string }
+  | { t: 'lecture:stop' }
+  | { t: 'lecture:page'; page: number }
+  /** Чёрный экран: гасит проекцию, оставляя страницу у ведущего на пульте. */
+  | { t: 'lecture:blank'; on: boolean }
+  /**
+   * Дописать штрих карандашом.
+   *
+   * Точками, а не целым штрихом в конце: зал должен видеть линию, пока её
+   * ведут. Координаты — доли страницы: пиксель планшета не значит ничего ни на
+   * проекторе, ни у студента.
+   */
+  | {
+      t: 'ink'
+      page: number
+      id: string
+      color: string
+      width: number
+      /** Пары долей: x0, y0, x1, y1 … */
+      points: number[]
+    }
+  | { t: 'ink:undo'; page: number }
+  | { t: 'ink:clear'; page?: number }
+  /**
+   * Указка. Эфемерна намеренно: где она была секунду назад — не факт о лекции,
+   * а движение руки, и хранить его негде и незачем.
+   */
+  | { t: 'laser'; page: number; x: number; y: number }
+  | { t: 'laser:off' }
   | { t: 'ping' }
 
 export type TerminalStatus = 'closed' | 'starting' | 'idle' | 'busy' | 'dead'
@@ -275,6 +326,21 @@ export type ControlServerMessage =
    * зашедший в середине занятия, не узнает, что комната что-то смотрит.
    */
   | { t: 'board'; open: string | null }
+  /**
+   * Лекция комнаты, или `null`, если её нет.
+   *
+   * Приходит и в приветственной пачке, и при каждой смене: опоздавший должен
+   * увидеть ту же страницу, что и зал, не дожидаясь, пока ведущий перелистнёт.
+   */
+  | { t: 'lecture'; state: LectureState | null }
+  /** Все чернила лекции — при подключении и после «стереть». */
+  | { t: 'ink'; strokes: InkStroke[] }
+  /** Новые точки. Штрих с известным именем дополняется, незнакомый — заводится. */
+  | { t: 'ink:add'; stroke: InkStroke }
+  | { t: 'ink:drop'; page: number; id: string }
+  | { t: 'ink:clear'; page: number | null }
+  /** Где указка прямо сейчас, или `null` — её убрали. */
+  | { t: 'laser'; at: { color: string; page: number; x: number; y: number } | null }
   | { t: 'refused'; rule: 'structure' | 'edit' | 'title' | 'files'; message: string }
   | { t: 'error'; message: string }
   /**

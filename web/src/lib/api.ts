@@ -3,6 +3,7 @@ import type {
   AiAskResponse,
   CreateSessionResponse,
   FileEntry,
+  HandoffResponse,
   JoinRequest,
   JoinResponse,
   Participant,
@@ -90,6 +91,26 @@ export const api = {
     request<JoinResponse>(`/api/sessions/${id}/join`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  /**
+   * Ключ, которым преподаватель отдаёт свой пульт планшету.
+   *
+   * Ключ, а не токен: см. `signHandoffToken` на сервере. Живёт десять минут и
+   * годится ровно на один обмен ниже.
+   */
+  handoff: (id: string, token: string) =>
+    request<HandoffResponse>(`/api/sessions/${id}/handoff`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({}),
+    }),
+
+  /** Планшет меняет ключ из ссылки на обычный вход — тем же человеком. */
+  claimHandoff: (id: string, key: string) =>
+    request<JoinResponse>(`/api/sessions/${id}/handoff/claim`, {
+      method: 'POST',
+      body: JSON.stringify({ key }),
     }),
 
   /** Everyone who has ever joined, newest activity first. */

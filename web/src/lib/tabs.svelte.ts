@@ -59,8 +59,15 @@ export class Tabs {
    * Общий стоит вторым и не дублируется тем, кто открыл его же себе: одна
    * вкладка на файл, кто бы её ни завёл.
    */
-  row(board: string | null): string[] {
-    return board ? [board, ...this.mine.filter((path) => path !== board)] : [...this.mine]
+  row(...pinned: (string | null)[]): string[] {
+    /*
+     * Приколотые — те, что комната открыла всем: общий экран и лекция. Они идут
+     * первыми и не дублируются теми, кто открыл их же себе: одна вкладка на
+     * файл, кто бы её ни завёл.
+     */
+    const first = pinned.filter((path): path is string => typeof path === 'string' && path !== '')
+    const seen = new Set(first)
+    return [...new Set(first), ...this.mine.filter((path) => !seen.has(path))]
   }
 
   /** Открыть файл и перейти на него. Уже открытый просто становится текущим. */

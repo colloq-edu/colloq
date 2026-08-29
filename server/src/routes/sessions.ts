@@ -1,11 +1,14 @@
 import { Router, type Request } from 'express'
 import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
 import {
+  HANDOFF_TTL_MS,
   newParticipantId,
   newSessionId,
+  signHandoffToken,
   signHostToken,
   signToken,
   type TokenPayload,
+  verifyHandoffToken,
   verifyHostToken,
   verifyToken,
 } from '../auth.js'
@@ -27,7 +30,12 @@ import { broadcast } from '../control.js'
 import { readRules } from '@shared/rules'
 import { setSeminarCreator } from './admin-instance.js'
 import type { AdminErrorBody } from '@shared/admin'
-import type { CreateSessionResponse, JoinResponse, ParticipantRole } from '@shared/protocol'
+import type {
+  CreateSessionResponse,
+  HandoffResponse,
+  JoinResponse,
+  ParticipantRole,
+} from '@shared/protocol'
 
 /*
  * Lengths that have to survive being drawn, not just stored. A seminar name is
@@ -252,6 +260,85 @@ export function sessionRoutes(): Router {
     })
 
     const body: JoinResponse = { session, participant, token }
+    res.json(body)
+  })
+
+  /**
+   * Отдать свой пульт своему планшету.
+   *
+   * Лекцию ведут с айпада: страницу листают пальцем, пишут Pencil'ом, а
+   * проектор показывает то, что приезжает по сети. Но чтобы планшет стал
+   * пультом, он должен войти в комнату ТЕМ ЖЕ человеком и с теми же правами —
+   * а прав у преподавателя ровно два источника, и оба на другой машине: кука
+   * панели и токен в её localStorage.
+   *
+   * Эта дверь выдаёт ключ на обмен (см. signHandoffToken): десять минут, одна
+   * задача. Заодно за участником записывается `tokenHost` — иначе на планшете,
+   * где куки нет, тот же самый человек оказался бы студентом, а лекцию по
+   * правилу `board` вёл бы не он.
+   *
+   * Названо вслух: ключ пускает в комнату ВАМИ. Кто откроет ссылку, тот и
+   * преподаватель — поэтому она живёт десять минут и поэтому экран, который её
+   * показывает, говорит об этом прямо.
+   */
+  router.post('/api/sessions/:id/handoff', (req, res) => {
+    const sessionId = req.params.id
+    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    const payload = sessionAuth(req)
+    if (!payload) return res.status(401).json({ error: 'join the session first' })
+    if (payload.role !== 'host') {
+      return res.status(403).json({ error: 'Пульт лекции передаёт преподаватель.' })
+    }
+    const known = getParticipant(sessionId, payload.participantId)
+    if (!known) return res.status(404).json({ error: 'participant not found' })
+    // Право переезжает вместе с человеком: на планшете куки нет, и без этой
+    // строки он вошёл бы собой, но студентом.
+    upsertParticipant({
+      id: known.id,
+      sessionId,
+      name: known.name,
+      avatar: known.avatar,
+      role: 'host',
+      tokenHost: true,
+    })
+    const body: HandoffResponse = {
+      key: signHandoffToken(sessionId, known.id),
+      livesMs: HANDOFF_TTL_MS,
+    }
+    res.json(body)
+  })
+
+  /**
+   * Планшет меняет ключ на обычный вход.
+   *
+   * Ответ той же формы, что и у `/join`: дальше планшет ничем не отличается от
+   * всякого вошедшего — тот же токен, та же личность в localStorage, тот же
+   * сокет. Имени не спрашивает и спросить не может: человек тут уже известен,
+   * и предлагать ему назваться заново значило бы заводить второго.
+   */
+  router.post('/api/sessions/:id/handoff/claim', (req, res) => {
+    const sessionId = req.params.id
+    const session = getSession(sessionId)
+    if (!session) return res.status(404).json({ error: 'session not found' })
+    const who = verifyHandoffToken(sessionId, req.body?.key)
+    if (!who) {
+      return res.status(401).json({ error: 'Ссылка на пульт устарела — попросите новую.' })
+    }
+    const known = getParticipant(sessionId, who)
+    if (!known) return res.status(404).json({ error: 'participant not found' })
+    const participant = upsertParticipant({
+      id: known.id,
+      sessionId,
+      name: known.name,
+      avatar: known.avatar,
+      role: 'host',
+      tokenHost: true,
+    })
+    const body: JoinResponse = {
+      session,
+      participant,
+      token: signToken({ sessionId, participantId: known.id, role: 'host' }),
+    }
     res.json(body)
   })
 

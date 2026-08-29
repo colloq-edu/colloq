@@ -21,6 +21,7 @@ import type {
   SessionInfo,
   TerminalStatus,
 } from '@shared/protocol'
+import type { InkStroke, LectureState } from '@shared/lecture'
 import { api, ApiError } from './api'
 import { enqueueControl, OFFLINE_REASON } from './controls'
 import { countsAsUnread } from './notes'
@@ -143,6 +144,33 @@ export class SessionState {
    * опоздавший не увидел бы ничего, пока преподаватель не пошевелится.
    */
   board = $state<string | null>(null)
+
+  /**
+   * Лекция комнаты: одна страница на проекторе и один человек за пультом.
+   *
+   * `null` — лекции нет. Приходит с сервера в приветственной пачке и при каждой
+   * смене, как и общий экран: опоздавший должен увидеть ту же страницу, что и
+   * зал.
+   */
+  lecture = $state<LectureState | null>(null)
+  /**
+   * Чернила лекции, все страницы разом.
+   *
+   * `$state.raw`, а не глубоко реактивный массив: точки дописываются пачками по
+   * двадцать раз в секунду, и оборачивать каждую в прокси значит платить за
+   * реактивность, которой никто не пользуется — рисует их холст, а не разметка.
+   * Перерисовку заказывает `inkRevision`.
+   */
+  ink = $state.raw<InkStroke[]>([])
+  /** Счётчик правок чернил: холст перерисовывается по нему, а не по массиву. */
+  inkRevision = $state(0)
+  /**
+   * Указка ведущего или `null`.
+   *
+   * Не хранится нигде: где она была секунду назад — движение руки, а не факт о
+   * лекции. Гаснет сама, когда ведущий перестаёт её двигать.
+   */
+  laser = $state<{ color: string; page: number; x: number; y: number } | null>(null)
 
   #control: WebSocket | null = null
   #controlQueue: ControlClientMessage[] = []
@@ -414,6 +442,40 @@ export class SessionState {
           this.board = null
         }
       } else if (message.t === 'board') this.board = message.open
+      else if (message.t === 'lecture') {
+        this.lecture = message.state
+        // Лекция кончилась — чернила с ней: сервер их уже забыл.
+        if (!message.state) {
+          this.ink = []
+          this.inkRevision += 1
+          this.laser = null
+        }
+      } else if (message.t === 'ink') {
+        this.ink = message.strokes
+        this.inkRevision += 1
+      } else if (message.t === 'ink:add') {
+        /*
+         * Дописать точки к штриху с тем же именем — или завести новый.
+         *
+         * Сервер шлёт только НОВЫЕ точки: штрих в тысячу точек, пересылаемый на
+         * каждую двадцатую, — это гигабайты трафика на лекцию.
+         */
+        const stroke = message.stroke
+        const at = this.ink.findIndex((known) => known.id === stroke.id)
+        if (at === -1) this.ink = [...this.ink, stroke]
+        else {
+          const grown = { ...this.ink[at], points: [...this.ink[at].points, ...stroke.points] }
+          this.ink = [...this.ink.slice(0, at), grown, ...this.ink.slice(at + 1)]
+        }
+        this.inkRevision += 1
+      } else if (message.t === 'ink:drop') {
+        this.ink = this.ink.filter((stroke) => stroke.id !== message.id)
+        this.inkRevision += 1
+      } else if (message.t === 'ink:clear') {
+        const page = message.page
+        this.ink = page === null ? [] : this.ink.filter((stroke) => stroke.page !== page)
+        this.inkRevision += 1
+      } else if (message.t === 'laser') this.laser = message.at
       else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'error') this.lastError = message.message
     }

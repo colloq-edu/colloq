@@ -266,6 +266,23 @@ await student.js('localStorage.clear(); return 1')
 await student.send('Page.reload')
 await enter(student, 'Нина')
 
+/*
+ * Кука преподавателя ставится заново.
+ *
+ * `Network.clearBrowserCookies` выше чистит ВЕСЬ браузер, а не одну вкладку, —
+ * то есть заодно выкидывает преподавателя из панели. Заметно это не сразу:
+ * сокеты, открытые до чистки, живут с прежними правами, а вот следующий
+ * HTTP-запрос приходит уже без куки, и сервер честно отвечает «это может
+ * преподаватель». В настоящей комнате такого не бывает — там у каждого свой
+ * браузер, — так что чинится это здесь, а не в продукте.
+ */
+await host.send('Network.setCookie', {
+  name: STAFF_COOKIE,
+  value: cookieValue,
+  domain: '127.0.0.1',
+  path: '/',
+})
+
 check(
   (await host.js('return !document.querySelector("input#join-name")')) === true,
   'преподаватель вошёл в комнату',
@@ -809,6 +826,230 @@ check(
   'выбор страницы не закрывает полосу',
   'осталась открыта',
 )
+/*
+ * Лекция: пульт у ведущего, страница и чернила — у всех.
+ *
+ * Проверяется здесь то, что нельзя увидеть на одной вкладке: страница, которую
+ * листает планшет, и линия, которую рисует Pencil, обязаны появиться у
+ * СТУДЕНТА. Всё это едет по управляющему сокету и живёт в памяти сервера, то
+ * есть ломается молча — у ведущего на экране остаётся ровно то же самое.
+ */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Лекция');` +
+    `if(!b) throw new Error('кнопки «Лекция» в читалке нет'); b.click(); return 1`,
+)
+const presenterBar = `[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`
+await until(host, presenterBar, 'пульт лекции появился')
+check(
+  (await host.js(`return ${presenterBar}`)) === true,
+  'у ведущего появляется пульт лекции',
+  'да',
+)
+
+const audience = `(document.body.textContent||'').includes('Лекцию ведёт Ада')`
+await until(student, audience, 'студент увидел лекцию')
+check(
+  (await student.js(`return ${audience}`)) === true,
+  'студент видит лекцию, не открывая её сам',
+  await student.js(
+    `return (document.querySelector('canvas.ink')? 'со слоем чернил' : 'без слоя чернил')`,
+  ),
+)
+check(
+  (await student.js(
+    `return [...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`,
+  )) === false,
+  'пульта у студента нет',
+  'нет',
+)
+
+/* Страницу листает ведущий — приезжает она ко всем. */
+await host.js(
+  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Следующая страница').click(); return 1`,
+)
+const onSecond = `[...document.querySelectorAll('span')].some(s=>/^2 \\/ 3$/.test((s.textContent||'').trim()))`
+await until(student, onSecond, 'страница доехала до студента')
+check(
+  (await student.js(`return ${onSecond}`)) === true,
+  'страница ведущего листается у всей комнаты',
+  await student.js(
+    `return [...document.querySelectorAll('span')].map(s=>(s.textContent||'').trim()).find(t=>/^\\d+ \\/ \\d+$/.test(t)) ?? 'счётчика нет'`,
+  ),
+)
+
+/*
+ * Лист занимает место, а не схлопывается в ноль.
+ *
+ * Размер листа считался ТОЛЬКО по наблюдателю за размером, а он молчит, пока
+ * браузер не рисует вкладку: проекция, открытая вторым окном и не получившая
+ * фокуса, оставалась пустой — белый прямоугольник в ноль пикселей, в который
+ * pdf.js не рисует, потому что рисовать некуда. На экране это «лекция не
+ * открылась», и виноватым выглядел бы документ.
+ */
+const sheetWidth = `Math.round(document.querySelector('canvas.ink').getBoundingClientRect().width)`
+// Ждём, а не спим: лист получает размер, когда приедет сам документ, а он
+// приезжает по сети — на холодной вкладке дольше, чем на прогретой.
+await until(host, `${sheetWidth} > 200`, 'лист лекции получил размер')
+check(
+  ((await host.js(`return ${sheetWidth}`)) as number) > 200,
+  'страница лекции занимает своё место',
+  `${await host.js(`return ${sheetWidth}`)}px`,
+)
+
+/*
+ * Чернила. Перо берётся нажатием на цвет — двух переключателей ради четырёх
+ * цветов нет, — а дальше это обычные PointerEvent'ы: у Pencil тот же путь.
+ */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'')==='Перо, красный');` +
+    `if(!b) throw new Error('пера в пульте нет'); b.click(); return 1`,
+)
+await wait(200)
+const strokeOn = (page: Tab) =>
+  page.js(
+    `const c=document.querySelector('canvas.ink');` +
+      `if(!c||!c.width) return -1;` +
+      `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+      `let n=0; for(let i=3;i<d.length;i+=4) if(d[i]>16) n+=1; return n`,
+  )
+check(((await strokeOn(student)) as number) <= 0, 'до штриха страница чистая', 'пусто')
+
+await host.js(
+  `const c=document.querySelector('canvas.ink');` +
+    `if(!c) throw new Error('слоя чернил нет');` +
+    `const r=c.getBoundingClientRect();` +
+    `const at=(t,fx,fy)=>c.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:1,pointerType:'pen',` +
+    `buttons:t==='pointerup'?0:1,pressure:0.5,clientX:r.left+r.width*fx,clientY:r.top+r.height*fy}));` +
+    `at('pointerdown',0.2,0.3); at('pointermove',0.4,0.45); at('pointermove',0.6,0.35);` +
+    `at('pointermove',0.8,0.5); at('pointerup',0.8,0.5); return 1`,
+)
+await until(student, `(async()=>{const c=document.querySelector('canvas.ink');if(!c||!c.width)return false;` +
+  `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+  `for(let i=3;i<d.length;i+=4) if(d[i]>16) return true; return false})()`, 'штрих доехал до студента')
+const inked = (await strokeOn(student)) as number
+check(inked > 0, 'штрих ведущего появляется у студента', `${inked} закрашенных точек`)
+
+/* Стёрли — и стёрлось у всех, а не только у того, кто рисовал. */
+await host.js(
+  `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Стереть').click(); return 1`,
+)
+await until(student, `(async()=>{const c=document.querySelector('canvas.ink');if(!c)return true;` +
+  `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+  `for(let i=3;i<d.length;i+=4) if(d[i]>16) return false; return true})()`, 'чернила стёрлись у студента')
+check(((await strokeOn(student)) as number) <= 0, 'стирание доезжает до всей комнаты', 'чисто')
+
+/*
+ * Пульт на планшет.
+ *
+ * Лекцию ведут с айпада, а войти на нём заново нечем: ни пароля, ни аккаунта в
+ * этом продукте нет. Ссылка обязана впустить ТЕМ ЖЕ человеком — иначе в
+ * комнате появится второй «Ада», а вести лекцию будет некому. Проверяется
+ * именно это: открытая в чистой вкладке ссылка не спрашивает имени и даёт
+ * пульт, а не место в зале.
+ */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('Ссылка, по которой'));` +
+    `if(!b) throw new Error('кнопки «Пульт» нет'); b.click(); return 1`,
+)
+await until(host, `!!document.querySelector('[aria-label="Пульт на планшет"]')`, 'ссылка на пульт готова')
+const consoleLink = (await host.js(
+  `return document.querySelector('[aria-label="Пульт на планшет"] .select-all')?.textContent?.trim() ?? ''`,
+)) as string
+check(
+  consoleLink.includes(`/s/${ROOM}/t/`),
+  'ссылка на пульт выдаётся ведущему',
+  consoleLink ? consoleLink.slice(0, 34) + '…'
+    : await host.js(
+        `return (document.querySelector('[aria-label="Пульт на планшет"]')?.textContent||'').trim().slice(0,120)`,
+      ),
+)
+
+const pad = await tab(consoleLink)
+await until(
+  pad,
+  `[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`,
+  'планшет вошёл и получил пульт',
+)
+check(
+  (await pad.js(`return !document.querySelector('input#join-name')`)) === true,
+  'планшет не спрашивает имени',
+  'вошёл сразу',
+)
+check(
+  (await pad.js(`return location.pathname`)) === `/s/${ROOM}`,
+  'ключ убран из адреса после входа',
+  await pad.js('return location.pathname'),
+)
+check(
+  (await pad.js(
+    `return [...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`,
+  )) === true,
+  'планшет получает пульт, а не место в зале',
+  'пульт на месте',
+)
+/*
+ * И вторым человеком в комнате он не становится: список людей считает людей, а
+ * не вкладки. Второй «Ада» в списке — это лекция, которую ведёт непонятно кто.
+ */
+check(
+  (await host.js(
+    `return [...document.body.textContent.matchAll(/Ада/g)].length`,
+  )) as number >= 1,
+  'в комнате по-прежнему один ведущий',
+  await host.js(`return (document.body.textContent||'').match(/(\\d+) in the room/)?.[1] ?? '?'`),
+)
+for (const line of pad.trouble.slice(0, 3)) console.log(`  (планшет) ${line}`)
+
+/*
+ * Проекция — отдельный адрес, а не кнопка: её открывают на машине у проектора,
+ * и она обязана пережить перезагрузку. Ни вкладок, ни панелей на ней быть не
+ * должно — это единственный экран, который смотрят двадцать человек сразу.
+ */
+const beam = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}/screen`)
+await until(beam, `document.querySelectorAll('canvas').length > 0`, 'проекция открылась')
+check(
+  (await beam.js(`return document.querySelectorAll('[role="tablist"], input#join-name').length === 0`)) === true,
+  'на проекции нет ни вкладок, ни экрана входа',
+  'чистый экран',
+)
+check(
+  (await beam.js(
+    `return getComputedStyle(document.querySelector('.fixed.inset-0')).backgroundColor`,
+  )) === 'rgb(0, 0, 0)',
+  'проекция чёрная, как экран в аудитории',
+  await beam.js(`return getComputedStyle(document.querySelector('.fixed.inset-0')).backgroundColor`),
+)
+
+/* Пауза гасит проекцию, но не пульт: у ведущего страница остаётся. */
+await host.js(
+  `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
+)
+await until(beam, `(document.body.textContent||'').includes('пауза')`, 'проекция погасла')
+check(
+  (await host.js(`return document.querySelectorAll('canvas').length > 0`)) === true,
+  'пауза гасит зал, а у ведущего страница остаётся',
+  'да',
+)
+await host.js(
+  `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
+)
+
+/* Конец лекции возвращает всех в обычную читалку. */
+await host.js(
+  `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Закончить').click(); return 1`,
+)
+await until(
+  student,
+  `!(document.body.textContent||'').includes('Лекцию ведёт')`,
+  'лекция кончилась у студента',
+)
+check(
+  (await student.js(`return !(document.body.textContent||'').includes('Лекцию ведёт')`)) === true,
+  'конец лекции убирает её у всех',
+  'убрал',
+)
+for (const line of beam.trouble.slice(0, 3)) console.log(`  (проекция) ${line}`)
+
 await host.js(`document.querySelector('[aria-label="Закрыть lecture.pdf"]')?.click(); return 1`)
 await wait(400)
 

@@ -10,6 +10,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
+  import ConsoleLink from '@/components/lecture/ConsoleLink.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { api } from '@/lib/api'
   import type { Lead } from '@/lib/follow'
@@ -41,9 +42,22 @@
      * стоит того же, а работает и когда смотреть некому.
      */
     lead: Lead | null
+    /** Может ли этот человек начать по документу лекцию. */
+    mayLead?: boolean
+    /** Лекция по этому документу идёт, а он ушёл читать сам, — как вернуться. */
+    backToLecture?: (() => void) | null
   }
 
-  let { file, shared, catchUp, lead, page = $bindable(1), pages = $bindable(0) }: Props = $props()
+  let {
+    file,
+    shared,
+    catchUp,
+    lead,
+    mayLead = false,
+    backToLecture = null,
+    page = $bindable(1),
+    pages = $bindable(0),
+  }: Props = $props()
   const session = getSessionState()
 
   let doc = $state<PDFDocumentProxy | null>(null)
@@ -400,6 +414,51 @@
     </button>
 
     <span class="flex-1"></span>
+
+    {#if backToLecture}
+      <!--
+        Лекция по этому документу идёт прямо сейчас, а этот человек отошёл
+        читать сам. Дорога назад обязана быть там же, где он ушёл, — иначе
+        «Читать самому» это дверь в одну сторону до конца пары.
+      -->
+      <button
+        type="button"
+        class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
+               text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
+               focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+        title="Вернуться к странице, на которой ведущий"
+        onclick={() => backToLecture?.()}
+      >
+        <Icon name="board" size={12} />
+        К лекции
+      </button>
+    {:else if mayLead}
+      <!--
+        Начать лекцию. Кнопка стоит в читалке, а не в панели файлов, потому что
+        решение это не про файл, а про то, что с ним делают: тот же PDF минуту
+        назад листали молча, а теперь по нему ведут пару.
+      -->
+      <button
+        type="button"
+        class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
+               text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
+               focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+        title="Вести по этому документу лекцию: страница, перо и указка — у вас"
+        onclick={() => session.send({ t: 'lecture:start', file })}
+      >
+        <Icon name="pencil" size={12} />
+        Лекция
+      </button>
+      <!--
+        Ссылка на пульт стоит рядом с «Лекцией», а не только внутри неё: пульт
+        нужен ДО начала — планшет берут в руки, а лекцию начинают уже с него.
+      -->
+      <ConsoleLink
+        class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
+               text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
+               focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+      />
+    {/if}
 
     {#if !following && lead}
       <!-- Отстал намеренно: следование снимается любым своим жестом, и сказать

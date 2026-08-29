@@ -38,6 +38,35 @@
   /** Ширина миниатюры. Больше — уже не миниатюра, меньше — уже не страница. */
   const WIDTH = 108
 
+  /**
+   * Пропорция места под миниатюру — из первой страницы документа.
+   *
+   * Стоял A4 намертво, и полоса врала на всём, что не A4: лекцию читают по
+   * слайдам, а слайд горизонтальный — то есть в полосе висел столбик высоких
+   * белых прямоугольников, в каждый из которых потом впечатывалась плоская
+   * картинка, и до первой отрисовки полоса показывала документ, которого нет.
+   * Считается один раз по первой странице: миниатюра — это место под картинку,
+   * а не сама картинка, и разнобой в двести страниц её не касается.
+   */
+  let aspect = $state('1 / 1.414')
+  $effect(() => {
+    const source = doc
+    let dropped = false
+    void source
+      .getPage(1)
+      .then((first) => {
+        if (dropped) return
+        const view = first.getViewport({ scale: 1 })
+        aspect = `${Math.round(view.width)} / ${Math.round(view.height)}`
+      })
+      .catch(() => {
+        /* документ не читается — полоса и так останется пустой */
+      })
+    return () => {
+      dropped = true
+    }
+  })
+
   /*
    * Что уже нарисовано. Обычный Set, а не $state: он не читается разметкой —
    * им пользуется только наблюдатель, чтобы не рисовать одно и то же дважды.
@@ -56,6 +85,12 @@
       node.height = viewport.height
       node.style.width = '100%'
       node.style.height = 'auto'
+      /*
+       * Нарисованная страница знает свою пропорцию сама, а заданная снаружи
+       * пропорция места её бы перекрыла: в документе, где после сотни слайдов
+       * идёт вертикальное приложение, оно оказалось бы сплющенным в слайд.
+       */
+      node.style.aspectRatio = 'auto'
       const context = node.getContext('2d')
       if (!context) return
       await source.render({ canvas: node, canvasContext: context, viewport }).promise
@@ -129,7 +164,7 @@
               ? 'border-accent'
               : 'border-line hover:border-faint'}"
           >
-            <canvas use:lazy={index} class="block w-full" style="aspect-ratio: 1 / 1.414"></canvas>
+            <canvas use:lazy={index} class="block w-full" style={`aspect-ratio: ${aspect}`}></canvas>
           </span>
           {#if teacher && lead}
             <!-- Метка цветом преподавателя: из дизайна, и она отвечает на

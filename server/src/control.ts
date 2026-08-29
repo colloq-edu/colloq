@@ -85,6 +85,20 @@ import {
 } from '@shared/paths'
 import { forgetFile, onFileSaved } from './collab/files.js'
 import {
+  addInk,
+  clearInk,
+  forgetLecture,
+  inkOf,
+  isPresenter,
+  lectureOf,
+  moveLecture,
+  setBlank,
+  startLecture,
+  stopLecture,
+  turnTo,
+  undoInk,
+} from './lecture.js'
+import {
   createBook,
   dropBook,
   forgetMissingBooks,
@@ -152,6 +166,7 @@ export function closeControlRoom(sessionId: string): void {
   rooms.delete(sessionId)
   // И доску: комнаты больше нет, показывать нечего и некому.
   boards.delete(sessionId)
+  forgetLecture(sessionId)
   room.unwatch()
   for (const ws of room.sockets) {
     try {
@@ -201,6 +216,16 @@ function setBoard(sessionId: string, name: string | null): void {
   if (name === null) boards.delete(sessionId)
   else boards.set(sessionId, name)
   broadcast(sessionId, { t: 'board', open: name })
+  /*
+   * Лекция идёт по документу на общем экране, и убрать документ — значит
+   * закончить лекцию. Иначе комната получает пульт, листающий то, чего никто
+   * не видит, и чернила на файле, закрытом у всех.
+   */
+  const lecture = lectureOf(sessionId)
+  if (lecture && lecture.file !== name) {
+    stopLecture(sessionId)
+    broadcast(sessionId, { t: 'lecture', state: null })
+  }
 }
 
 /**
@@ -669,6 +694,140 @@ export function dispatch(
       return
     }
 
+    /* ------------------------------------------------------------ лекция */
+
+    /**
+     * Начать лекцию.
+     *
+     * Право то же, что у общего экрана: ставить документ перед всей комнатой.
+     * Ведущий один — тот, кто начал; вторая попытка перехватывает пульт, и это
+     * намеренно: двое преподавателей в комнате — обычное дело, а спорить о том,
+     * чей планшет главный, посреди пары невозможно.
+     */
+    case 'lecture:start': {
+      if (
+        !may(
+          getRules(sessionId).board,
+          payload,
+          ws,
+          'Вести лекцию в этом семинаре может преподаватель.',
+        )
+      ) {
+        return
+      }
+      const wanted = normalizePath(typeof message.file === 'string' ? message.file : '')
+      if (!wanted || kindOf(wanted) !== 'pdf') {
+        send(ws, { t: 'error', message: 'На проектор выводится документ PDF.' })
+        return
+      }
+      if (!statPath(sessionId, wanted)) {
+        send(ws, { t: 'error', message: 'Этого файла в комнате уже нет.' })
+        return
+      }
+      /*
+       * Лекция ставит документ и на общий экран — до того, как начаться.
+       *
+       * Не для красоты: правило «доска ушла — лекция кончилась» выше держится
+       * ровно на том, что это один и тот же файл. Порядок важен — setBoard
+       * успевает закрыть предыдущую лекцию, если она шла по другому документу,
+       * и только потом комната узнаёт о новой.
+       */
+      setBoard(sessionId, wanted)
+      const started = startLecture(sessionId, {
+        file: wanted,
+        by: payload.participantId,
+        byName: displayName(sessionId, payload.participantId),
+        color: colorForId(payload.participantId),
+      })
+      broadcast(sessionId, { t: 'lecture', state: started })
+      broadcast(sessionId, { t: 'ink', strokes: [] })
+      return
+    }
+
+    case 'lecture:stop': {
+      if (
+        !may(getRules(sessionId).board, payload, ws, 'Закончить лекцию может преподаватель.')
+      ) {
+        return
+      }
+      stopLecture(sessionId)
+      broadcast(sessionId, { t: 'lecture', state: null })
+      return
+    }
+
+    /*
+     * Дальше — то, чем управляет ПУЛЬТ. Право здесь не спрашивается: страницу,
+     * чернила и указку двигает тот, кто ведёт, и только он. Отказ молчаливый —
+     * это не решение преподавателя, о котором надо рассказать, а сообщение от
+     * вкладки, которая не знает, что лекцию уже ведёт кто-то другой.
+     */
+    case 'lecture:page': {
+      if (!isPresenter(sessionId, payload.participantId)) return
+      const turned = turnTo(sessionId, Number(message.page))
+      if (turned) broadcast(sessionId, { t: 'lecture', state: turned })
+      return
+    }
+
+    case 'lecture:blank': {
+      if (!isPresenter(sessionId, payload.participantId)) return
+      const blanked = setBlank(sessionId, message.on === true)
+      if (blanked) broadcast(sessionId, { t: 'lecture', state: blanked })
+      return
+    }
+
+    case 'ink': {
+      if (!isPresenter(sessionId, payload.participantId)) return
+      const stroke = addInk(sessionId, {
+        id: optionalId(message.id) ?? '',
+        page: Number(message.page),
+        color: typeof message.color === 'string' ? message.color.slice(0, 32) : '#000000',
+        width: Number.isFinite(message.width) ? Math.min(0.05, Math.max(0.0005, message.width)) : 0.004,
+        points: Array.isArray(message.points) ? (message.points as number[]) : [],
+      })
+      if (stroke) broadcast(sessionId, { t: 'ink:add', stroke })
+      return
+    }
+
+    case 'ink:undo': {
+      if (!isPresenter(sessionId, payload.participantId)) return
+      const page = Number(message.page)
+      const dropped = undoInk(sessionId, page)
+      if (dropped) broadcast(sessionId, { t: 'ink:drop', page, id: dropped })
+      return
+    }
+
+    case 'ink:clear': {
+      if (!isPresenter(sessionId, payload.participantId)) return
+      const page = Number.isFinite(message.page) ? Number(message.page) : undefined
+      clearInk(sessionId, page)
+      broadcast(sessionId, { t: 'ink:clear', page: page ?? null })
+      return
+    }
+
+    /*
+     * Указка не хранится вовсе: где она была секунду назад — не факт о лекции,
+     * а движение руки. Поэтому её просто пересылают, и опоздавший её не видит,
+     * пока ведущий не пошевелит рукой, — то есть примерно через полсекунды.
+     */
+    case 'laser': {
+      const lecture = lectureOf(sessionId)
+      if (!lecture || lecture.by !== payload.participantId) return
+      const x = Number(message.x)
+      const y = Number(message.y)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return
+      broadcast(sessionId, {
+        t: 'laser',
+        at: { color: lecture.color, page: Number(message.page), x, y },
+      })
+      return
+    }
+
+    case 'laser:off': {
+      if (!isPresenter(sessionId, payload.participantId)) return
+      broadcast(sessionId, { t: 'laser', at: null })
+      return
+    }
+
     /*
      * Правка дерева файлов. Четыре глагола и две границы между ними.
      *
@@ -781,6 +940,8 @@ export function dispatch(
       forgetFile(sessionId, from)
       // Тетрадь переезжает вместе со своим файлом: корень тот же, путь новый.
       moveBook(sessionId, from, to)
+      const moved = moveLecture(sessionId, from, to)
+      if (moved) broadcast(sessionId, { t: 'lecture', state: moved })
       if (boardOf(sessionId) === from) setBoard(sessionId, to)
       broadcastFiles(sessionId)
       return
@@ -1136,6 +1297,14 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    * переоткроет, — то есть, скорее всего, никогда.
    */
   send(ws, { t: 'board', open: boardOf(sessionId) })
+  /*
+   * И лекция, если она идёт: опоздавший должен увидеть ту же страницу, что и
+   * зал, вместе с тем, что на ней уже нарисовано, — а не белый лист до
+   * следующего движения ведущего.
+   */
+  const lecture = lectureOf(sessionId)
+  send(ws, { t: 'lecture', state: lecture })
+  if (lecture) send(ws, { t: 'ink', strokes: inkOf(sessionId) })
 
   let missedPongs = 0
   const pingTimer = setInterval(() => {
