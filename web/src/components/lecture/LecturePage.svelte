@@ -32,9 +32,20 @@
     over?: Snippet<[{ w: number; h: number }]>
     /** Тише и мельче: следующая страница на пульте. */
     dim?: boolean
+    /**
+     * Без тени: лист рисует пульт, и растушёвку вокруг бумаги он делает сам.
+     *
+     * `shadow-pop` — тень цвета #0F2D69 плюс кольцо `line`. В комнате она
+     * нужна: там лист лежит на светлом `surface`, и без кольца белая бумага
+     * сливается с фоном. На ночном грунте пульта она не рисует ничего —
+     * четыре ступени растушёвки поверх неё всё равно перекрывают кольцо, — а
+     * платить за неё приходится полной перерисовкой листа каждый кадр, пока
+     * по нему ведут пером.
+     */
+    bare?: boolean
   }
 
-  let { doc, page, over, dim = false }: Props = $props()
+  let { doc, page, over, dim = false, bare = false }: Props = $props()
 
   let box = $state<HTMLDivElement | null>(null)
   let canvas = $state<HTMLCanvasElement | null>(null)
@@ -206,10 +217,16 @@
 
 <div bind:this={box} class="relative flex min-h-0 min-w-0 flex-1 items-center justify-center">
   <!-- Лист и всё, что на нём, — одним блоком: слой чернил обязан совпадать с
-       листом пиксель в пиксель, а не с контейнером вокруг. -->
+       листом пиксель в пиксель, а не с контейнером вокруг.
+
+       Бумага чистого листа (страница с отрицательным номером) чуть темнее
+       белой. Сплошной белый прямоугольник 928×522 — самый яркий кадр всего
+       продукта, и держат его в тёмной аудитории на вытянутой руке; гамма
+       проектора эти пять процентов съедает, зал разницы не увидит, а с пульта
+       они уходят даром. -->
   <div
-    class="relative shadow-pop {dim ? 'opacity-70' : ''}"
-    style={`width:${fit.w}px;height:${fit.h}px;background:#fff`}
+    class="relative {bare ? '' : 'shadow-pop'} {dim ? 'opacity-70' : ''}"
+    style={`width:${fit.w}px;height:${fit.h}px;background:${page < 0 ? '#F4F6FA' : '#fff'}`}
   >
     <canvas bind:this={canvas} class="block h-full w-full"></canvas>
     {@render over?.(fit)}

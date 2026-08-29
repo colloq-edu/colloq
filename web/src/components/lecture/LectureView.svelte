@@ -117,8 +117,16 @@
     }
   }
 
+  /*
+   * Трекингов здесь ровно два, и разница между ними носит смысл: 0.14em
+   * (`tracking-label`) называет ДЕЙСТВИЕ — то, что нажимают, — а 0.2em
+   * (`tracking-section`) называет МЕСТО: «дальше», «пауза». Стояли на одном и
+   * том же 11-пиксельном капсе четыре разных трекинга (0.08 на кнопках, 0.16 на
+   * состоянии проекции, 0.2 на именах областей); различить их читатель не может,
+   * а удержать согласованными не может никто, и через месяц они разъезжаются.
+   */
   const TOOL =
-    'flex h-8 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase tracking-caps ' +
+    'flex h-8 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase tracking-label ' +
     'transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 ' +
     'focus-visible:ring-inset focus-visible:ring-accent/40'
 </script>
@@ -135,7 +143,7 @@
   <div class="fixed inset-0 z-[100] flex flex-col bg-black">
     {#if lecture.blank}
       <div class="flex flex-1 items-center justify-center">
-        <span class="text-2xs uppercase tracking-institution text-white/30">пауза</span>
+        <span class="text-2xs uppercase tracking-section text-white/30">пауза</span>
       </div>
     {:else if failure}
       <div class="flex flex-1 items-center justify-center px-8 text-center text-ui text-white/70">
@@ -359,7 +367,7 @@
           -->
           <aside class="hidden w-[28%] shrink-0 flex-col gap-2 lg:flex">
             {#if pages > page}
-              <span class="text-2xs font-bold uppercase tracking-institution text-faint">
+              <span class="text-micro font-bold uppercase tracking-section text-muted">
                 дальше
               </span>
               <div class="flex min-h-0 basis-[42%]">

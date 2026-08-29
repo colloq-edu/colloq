@@ -291,9 +291,21 @@
   const TRAIL_MAX = 96
   let trail: { x: number; y: number; page: number; at: number }[] = []
   let trailFrame: number | undefined
+  /**
+   * Где указка СЕЙЧАС. Отдельно от хвоста, и это не мелочь.
+   *
+   * Хвост гаснет по времени — на то он и хвост. Голова живёт, пока указку
+   * держат: указкой чаще всего СТОЯТ на месте («вот здесь») — точек больше не
+   * приходит, и точка, живущая по тому же таймеру, что и след, пропадала через
+   * четыре десятых секунды. На экране это выглядело так: нажал — мигнуло —
+   * ничего. Гасит голову только отпущенная указка (laser:off) — или уход на
+   * другую страницу.
+   */
+  let head: { x: number; y: number; page: number } | null = null
 
   function pushTrail(x: number, y: number, at: number): void {
     const now = performance.now()
+    head = { x, y, page: at }
     /*
      * Между кадрами указки сорок миллисекунд и полметра экрана. Ломаная из
      * присланных точек рвётся на быстром движении, поэтому промежуток
@@ -326,15 +338,23 @@
       const changed = kept.length !== trail.length
       trail = kept
       if (changed || trail.length > 0) paintWet()
+      // Догорает только хвост. Голова стоит, пока указку держат, и кадры ради
+      // неё не крутятся: она не меняется.
       if (trail.length > 0) burn()
     })
   }
 
+  /** Указку отпустили — гаснет всё, и голова первой. */
+  function douse(): void {
+    head = null
+    trail = []
+    paintWet()
+  }
+
   function paintLaser(paint: CanvasRenderingContext2D): void {
+    if (!head || head.page !== page) return
     const dots = trail.filter((dot) => dot.page === page)
-    if (dots.length === 0) return
     const now = performance.now()
-    const head = dots[dots.length - 1]
     const radius = Math.max(9, w * 0.011)
 
     /*
@@ -358,18 +378,17 @@
      * Голова. Мягкое пятно вокруг ядра: на проекторе яркая точка в четыре
      * пикселя теряется в белом слайде, а свечение видно с последнего ряда.
      */
-    const alive = Math.max(0, 1 - (now - head.at) / TRAIL_MS)
     const x = head.x * w
     const y = head.y * h
     const halo = paint.createRadialGradient(x, y, 0, x, y, radius * 2.6)
     halo.addColorStop(0, LASER)
     halo.addColorStop(1, 'transparent')
-    paint.globalAlpha = 0.42 * alive
+    paint.globalAlpha = 0.42
     paint.fillStyle = halo
     paint.beginPath()
     paint.arc(x, y, radius * 2.6, 0, Math.PI * 2)
     paint.fill()
-    paint.globalAlpha = alive
+    paint.globalAlpha = 1
     paint.fillStyle = LASER
     paint.beginPath()
     paint.arc(x, y, radius * 0.5, 0, Math.PI * 2)
@@ -386,8 +405,11 @@
    */
   $effect(() => {
     const spot = session.laser
-    if (!spot) return
     if (untrack(() => beaming !== null || hold?.beaming === true)) return
+    if (!spot) {
+      untrack(() => douse())
+      return
+    }
     pushTrail(spot.x, spot.y, spot.page)
   })
 
@@ -735,6 +757,9 @@
   function beamOff(): void {
     beamNow()
     session.send({ t: 'laser:off' })
+    // Своё — сразу: ждать эха, чтобы погасить СВОЮ же указку, значит держать
+    // её на экране лишний круг по сети после того, как палец подняли.
+    douse()
   }
 
   /* --------------------------------------------- пружинная указка пальцем */

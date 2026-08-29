@@ -55,11 +55,23 @@
     folded?: boolean
     /** Свернуть или развернуть. Не передан — шеврона в шапке нет вовсе. */
     onfold?: (folded: boolean) => void
+    /**
+     * Открыть лист «Ещё» — полный экран, «Закончить», смена документа, левая
+     * рука, справка про сон экрана.
+     *
+     * Кнопка живёт ЗДЕСЬ, а не на рейле и не в полосе сверху, потому что полосы
+     * сверху больше нет: её груз разложен по местам, и всё редкое собрано в
+     * один лист. Шапка ленты — единственная горизонталь, оставшаяся на пульте,
+     * и «⋯» в её правом углу — то место, куда за редким тянутся не глядя.
+     * Не передан — троеточия в шапке нет вовсе (в колонке ведущего на ноутбуке
+     * открывать нечего).
+     */
+    onmore?: () => void
     /** В поле фокус: родитель по этому флагу гасит перо на листе лекции. */
     onedit?: (editing: boolean) => void
   }
 
-  let { file, page, compact = false, folded = false, onfold, onedit }: Props = $props()
+  let { file, page, compact = false, folded = false, onfold, onmore, onedit }: Props = $props()
 
   const session = getSessionState()
 
@@ -71,8 +83,13 @@
    * может сделать, поэтому режем здесь, а не надеемся на сервер.
    */
   const MAX = 3000
-  /** С этого места считаем вслух: до потолка осталось три строки. */
-  const WARN = 2700
+  /*
+   * С этого места считаем вслух. Было 300 знаков — это половина заметки, и
+   * число висело у ведущего перед глазами всю вторую половину каждой длинной
+   * страницы, ничего не сообщая. 150 — это примерно две строки при умолчании:
+   * ровно тот момент, когда фразу ещё можно дописать короче, а не переписывать.
+   */
+  const WARN = 2850
   /*
    * 400 мс после последнего нажатия — пауза между словами, а не между
    * фразами. Меньше — и каждое слово едет отдельным кадром на два экрана;
@@ -94,8 +111,34 @@
    * Ступени размера. Единственное место в продукте, где растут БУКВЫ, а не
    * коробки, и это сознательно: весь остальной текст читают, уткнувшись в
    * экран, а заметку — подняв голову, урывками между взглядами в зал.
+   *
+   * Ступеней три, и самая мелкая уже крупная (18/26 против рабочих 13/19):
+   * выбор стоит между «читаю», «читаю не глядя» и «читаю через зал», а не
+   * между шестью кеглями, из которых пять мелкие.
    */
-  const SIZES = ['text-answer', 'text-head', 'text-display'] as const
+  const SIZES = ['text-prompt-sm', 'text-prompt', 'text-prompt-lg'] as const
+  /*
+   * Умолчание — СРЕДНЯЯ, а не нижняя.
+   *
+   * Раньше лестница начиналась снизу, и человек, впервые открывший пульт за
+   * минуту до пары, получал самый мелкий кегль: чтобы прочитать свою же
+   * заметку, надо наклониться к планшету, а наклоняться посреди фразы некогда
+   * — и некогда искать кнопку размера. Умолчание обязано быть тем размером, с
+   * которым лекцию можно провести, ни разу ничего не настроив.
+   */
+  const DEFAULT_STEP = 1
+  /*
+   * В узкой колонке ведущего умолчание другое — НИЖНЕЕ.
+   *
+   * Средняя ступень обоснована мерой ленты пульта: 22 px на 658 px — это
+   * шестьдесят знаков в строке, настоящий абзац речи. В колонке на ноутбуке
+   * мера втрое короче, и те же 22 px дают пятнадцать знаков, то есть столбик
+   * обрывков — ровно то, из-за чего из этого дома убрана верхняя ступень.
+   * Одна и та же ступень значит разное на разной мере, поэтому дом выбирает
+   * себе начало лестницы сам. Явно выбранное человеком уважается в обоих
+   * домах: выбор хранится один на устройство.
+   */
+  const DEFAULT_COMPACT_STEP = 0
   const SIZE_KEY = 'colloq.pult.notesSize'
 
   const host = $derived(session.me.role === 'host')
@@ -134,6 +177,12 @@
   let sentAt = Number.NEGATIVE_INFINITY
   let timer: number | undefined
 
+  /*
+   * В узкой колонке ведущего верхней ступени нет: 28 px на 300 px колонки —
+   * это одиннадцать знаков в строке, то есть столбик обрывков вместо абзаца.
+   * Лестница там кончается на умолчании, и это честнее, чем дать нажать
+   * кнопку, которая делает текст хуже.
+   */
   const ladder = $derived(compact ? SIZES.slice(0, 2) : SIZES)
   const size = $derived(ladder[Math.min(step, ladder.length - 1)])
   const left = $derived(MAX - draft.length)
@@ -149,13 +198,14 @@
   }
 
   function readStep(): number {
+    const fallback = compact ? DEFAULT_COMPACT_STEP : DEFAULT_STEP
     try {
       const raw = localStorage.getItem(SIZE_KEY)
-      const value = raw === null ? 0 : Number.parseInt(raw, 10)
-      return Number.isFinite(value) && value >= 0 && value < SIZES.length ? value : 0
+      const value = raw === null ? fallback : Number.parseInt(raw, 10)
+      return Number.isFinite(value) && value >= 0 && value < SIZES.length ? value : fallback
     } catch {
-      /* приватный режим — просто начнём с обычного размера */
-      return 0
+      /* приватный режим — просто начнём с умолчания этого дома */
+      return fallback
     }
   }
 
@@ -316,64 +366,116 @@
 </script>
 
 {#if host}
-  <section
-    class="flex min-h-0 flex-1 flex-col overflow-hidden bg-canvas {compact
-      ? ''
-      : 'border-t border-line'}"
-  >
+  <!--
+    Волоска сверху лента НЕ РИСУЕТ, хотя шов «лист / заметки» на пульте есть.
+    Шов принадлежит стыку, а стык держит родитель: он один знает, что справа
+    от ленты стоит ещё и колонка «дальше». Пока волосок был здесь, над
+    заметками их выходило два — свой поверх родительского, — а над «дальше»
+    один: линия толщиной в два пикселя на половине ширины и в один на другой.
+  -->
+  <section class="flex min-h-0 flex-1 flex-col overflow-hidden bg-canvas">
     <!--
-      Шапка домашней формы: имя, волосяная линия до самого края, действия
-      справа. Точка рядом с именем — единственный признак того, что у ЭТОЙ
-      страницы заметка есть: в свёрнутом виде другого способа узнать нет.
+      Шапка 32: слева имя места, справа кластер целей. Волосяной линии между
+      ними больше нет — на ночном пульте светящаяся линия во всю ширину читается
+      как шрам, а разделять здесь нечего: имя и кластер разведены пустотой.
+
+      Точка-полоса рядом с именем — единственный признак того, что у ЭТОЙ
+      страницы заметка есть: в свёрнутом виде другого способа узнать нет. Полоса
+      2×12, а не кружок: скруглений в этом продукте нет вовсе, а круглый диск
+      краски на ленте читался бы как образец пигмента, которым он не является.
     -->
-    <header class="flex h-7 shrink-0 items-center gap-2 {compact ? 'px-2' : 'px-4'}">
-      <span class="text-2xs font-bold uppercase tracking-section text-muted">заметки</span>
+    <!-- Отступ 30, как поле вокруг листа: левый край «ЗАМЕТКИ», левый край
+         текста и левая кромка листа стоят на одной вертикали, а правый край
+         кластера — на той же, что правая кромка листа и эскиз «дальше». -->
+    <header class="flex h-8 shrink-0 items-center gap-2 {compact ? 'px-2' : 'px-[30px]'}">
+      <span class="text-micro font-bold uppercase tracking-section text-muted">заметки</span>
       {#if arrived && draft.trim()}
-        <span
-          class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-          title="У этой страницы есть заметка"
-        ></span>
+        <span class="h-3 w-0.5 shrink-0 bg-accent" title="У этой страницы есть заметка"></span>
       {/if}
-      <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
-      {#if arrived && left <= MAX - WARN}
-        <span class="font-mono text-2xs tabular-nums text-muted">осталось {left}</span>
-      {/if}
-      {#if arrived}
-        <button
-          type="button"
-          class="{TAP} h-7 px-2 text-2xs font-bold uppercase tracking-caps text-muted hover:text-ink"
-          title="Размер текста заметки — по кругу"
-          onclick={bigger}
-        >
-          крупнее
-        </button>
-      {/if}
-      {#if onfold}
-        <button
-          type="button"
-          class="{TAP} flex h-7 w-7 items-center justify-center text-muted hover:text-ink"
-          aria-label={folded ? 'Развернуть заметки' : 'Свернуть заметки'}
-          aria-pressed={folded}
-          title={folded ? 'Развернуть заметки' : 'Свернуть заметки'}
-          onclick={() => onfold?.(!folded)}
-        >
-          <Icon name={folded ? 'chevron-up' : 'chevron-down'} size={14} />
-        </button>
-      {/if}
+      <span class="flex-1" aria-hidden="true"></span>
+      <!--
+        Кластер идёт БЕЗ зазоров между целями: пальцем сюда попадают, не
+        отрывая глаз от зала, а зазор между соседними целями — это полоска, на
+        которой нажатие не срабатывает вовсе. Разделяет их размер и глиф, как
+        и на рейлах, где между клавишами одного семейства нет ни волоска.
+      -->
+      <div class="flex items-center">
+        {#if arrived}
+          <!--
+            Ступень размера. Слова «крупнее» здесь больше нет: его читают один
+            раз в жизни, а светит оно каждую секунду лекции, — работу подписи
+            берёт глиф. «A» и стрелка нарисованы врозь: стрелку рисует SVG, а не
+            знак ↕ из шрифта, потому что HSE Sans его не несёт и система
+            подставила бы под него чужую гарнитуру — на пульте это выглядит как
+            чужая деталь.
+          -->
+          <button
+            type="button"
+            class="{TAP} flex h-8 items-center justify-center gap-px text-muted hover:text-ink
+                   {compact ? 'w-8' : 'w-11'}"
+            aria-label="Заметки крупнее"
+            title="Размер текста заметки — по кругу"
+            onclick={bigger}
+          >
+            <span class="text-title font-bold leading-none" aria-hidden="true">A</span>
+            <svg
+              width="7"
+              height="12"
+              viewBox="0 0 7 12"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.25"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3.5 1v10M1 3.5 3.5 1 6 3.5M1 8.5 3.5 11 6 8.5" />
+            </svg>
+          </button>
+        {/if}
+        {#if onfold}
+          <button
+            type="button"
+            class="{TAP} flex h-8 items-center justify-center text-muted hover:text-ink
+                   {compact ? 'w-8' : 'w-11'}"
+            aria-label={folded ? 'Развернуть заметки' : 'Свернуть заметки'}
+            aria-pressed={folded}
+            title={folded ? 'Развернуть заметки' : 'Свернуть заметки'}
+            onclick={() => onfold?.(!folded)}
+          >
+            <Icon name={folded ? 'chevron-up' : 'chevron-down'} size={16} />
+          </button>
+        {/if}
+        {#if onmore}
+          <button
+            type="button"
+            class="{TAP} flex h-8 items-center justify-center text-muted hover:text-ink
+                   {compact ? 'w-8' : 'w-11'}"
+            aria-label="Ещё"
+            title="Ещё: во весь экран, левая рука, сменить документ, закончить"
+            onclick={() => onmore?.()}
+          >
+            <Icon name="more" size={16} />
+          </button>
+        {/if}
+      </div>
     </header>
 
     {#if !folded}
-      <div class="min-h-0 flex-1 overflow-hidden">
+      <!--
+        Отступ держит КОРОБКА, а не поле: мера текста — ровно 660 px, и если
+        отдать padding полю, тридцать два из них съест сам padding, а мера
+        поедет вслед за ним. Шире 660 строка перестаёт возвращаться глазу с
+        одного взгляда — а её и читают одним взглядом, подняв голову.
+      -->
+      <div class="relative min-h-0 flex-1 overflow-hidden {compact ? 'px-2' : 'px-[30px]'}">
         {#if !arrived}
           <!--
             Не «пусто», а «ещё не приехало». Разница в одну строку здесь стоит
             дороже всего остального файла: пустое поле вместо вчерашних
             двадцати строк читается как потерянная работа.
           -->
-          <p
-            class="flex items-center gap-2 {compact ? 'px-2' : 'px-4'} py-2 text-2xs text-muted"
-            aria-live="polite"
-          >
+          <p class="flex items-center gap-2 py-2 text-2xs text-muted" aria-live="polite">
             <Icon name="spinner" size={14} class="shrink-0 animate-spin" />
             Заметки загружаются
           </p>
@@ -392,9 +494,9 @@
             maxlength={MAX}
             aria-label="Заметки к странице {page}"
             placeholder="Что сказать на этой странице…"
-            class="{size} block max-h-full w-full resize-none overscroll-contain bg-transparent
-                   pb-3 text-ink placeholder:text-muted focus-visible:outline-offset-0
-                   {compact ? 'min-h-[3rem] px-2' : 'min-h-[4rem] px-4'}"
+            class="{size} pult-caret block max-h-full w-full max-w-[660px] resize-none overscroll-contain
+                   bg-transparent pb-6 text-ink placeholder:text-muted focus-visible:outline-offset-0
+                   {compact ? 'min-h-[3rem]' : 'min-h-[4rem]'}"
             oninput={onInput}
             onfocus={() => {
               typing = true
@@ -407,8 +509,43 @@
               commit()
             }}
           ></textarea>
+
+          {#if left <= MAX - WARN}
+            <!--
+              Счётчик стоит у ПРАВОГО КРАЯ МЕРЫ, а не в шапке: он говорит про
+              текст, и смотреть на него надо туда же, куда пишут. В шапке он
+              занимал место цели кластера и переставлял соседей ровно в тот
+              момент, когда до них дотягиваются не глядя.
+
+              Грунт под числом — тот же canvas: коробка прокручивается вместе с
+              текстом, и без подложки последняя строка проезжала бы сквозь
+              цифры. Ничего светлее грунта здесь не появляется.
+            -->
+            <span
+              class="pointer-events-none absolute bottom-0 max-w-[660px] text-right
+                     {compact ? 'left-2 right-2' : 'left-[30px] right-[30px]'}"
+            >
+              <span class="bg-canvas pl-2 font-mono text-2xs tabular-nums text-faint">
+                осталось {left}
+              </span>
+            </span>
+          {/if}
         {/if}
       </div>
     {/if}
   </section>
 {/if}
+
+<style>
+  /*
+   * Каретка — акцентом, а не цветом текста.
+   *
+   * Глобальная каретка в продукте цвета `ink`, то есть на пульте почти белая:
+   * в тёмной ленте её не видно вовсе, и первое, что делает человек, ткнув в
+   * заметку, — ищет, куда он попал. Акцент на этом экране один, и работа у
+   * него ровно эта: «вы пишете сюда».
+   */
+  .pult-caret {
+    caret-color: rgb(var(--accent));
+  }
+</style>

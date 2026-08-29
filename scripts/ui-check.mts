@@ -785,9 +785,9 @@ await until(
   'миниатюры нарисовались',
 )
 check(
-  (await host.js(
+  ((await host.js(
     `return [...document.querySelectorAll('[data-rail] canvas')].filter(c=>c.width>0).length`,
-  )) > 0,
+  )) as number) > 0,
   'миниатюры страниц рисуются',
   await host.js(
     `return document.querySelectorAll('[data-rail] canvas').length + ' страниц в полосе'`,
@@ -929,6 +929,57 @@ await until(student, `(async()=>{const c=document.querySelector('canvas.ink-dry'
 const inked = (await strokeOn(student)) as number
 check(inked > 0, 'штрих ведущего появляется у студента', `${inked} закрашенных точек`)
 
+/*
+ * Указка: нажали и ДЕРЖИТЕ.
+ *
+ * Ею чаще всего стоят на месте — «вот здесь», — то есть новых точек не
+ * приходит вовсе. Хвост при этом обязан догореть, а сама точка остаться:
+ * однажды она гасла вместе с хвостом через четыре десятых секунды, и на
+ * экране это выглядело как «нажал, мигнуло, ничего».
+ */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>/указк/i.test((x.textContent||'')+(x.getAttribute('aria-label')||'')));` +
+    `if(!b) throw new Error('указки в пульте лекции нет'); b.click(); return 1`,
+)
+await wait(200)
+await host.js(
+  `const c=document.querySelector('canvas.ink-wet');const r=c.getBoundingClientRect();` +
+    `const at=(t,fx,fy)=>c.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:2,pointerType:'pen',` +
+    `buttons:t==='pointerup'?0:1,clientX:r.left+r.width*fx,clientY:r.top+r.height*fy}));` +
+    `at('pointerdown',0.5,0.5); at('pointermove',0.55,0.52); return 1`,
+)
+const redOn = (page: Tab) =>
+  page.js(
+    `const c=document.querySelector('canvas.ink-wet');` +
+      `if(!c||!c.width) return -1;` +
+      `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+      `let n=0; for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) n+=1; return n`,
+  )
+await until(student, `(async()=>{const c=document.querySelector('canvas.ink-wet');if(!c||!c.width)return false;` +
+  `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+  `for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) return true; return false})()`,
+  'указка доехала до студента')
+// Ждём дольше, чем живёт хвост: голова обязана остаться.
+await wait(1400)
+const stillLit = (await redOn(student)) as number
+check(stillLit > 0, 'указка не гаснет, пока её держат', `${stillLit} красных точек через 1.4 с`)
+
+/* Отпустили — гаснет у всех. */
+await host.js(
+  `const c=document.querySelector('canvas.ink-wet');const r=c.getBoundingClientRect();` +
+    `c.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:2,pointerType:'pen',buttons:0,` +
+    `clientX:r.left+r.width*0.55,clientY:r.top+r.height*0.52})); return 1`,
+)
+await until(student, `(async()=>{const c=document.querySelector('canvas.ink-wet');if(!c)return true;` +
+  `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+  `for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) return false; return true})()`,
+  'указка погасла у студента')
+check(((await redOn(student)) as number) <= 0, 'отпущенная указка гаснет у всех', 'погасла')
+/* Возвращаем перо: дальше проверки рисуют им. */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'')==='Перо, красный');b&&b.click(); return 1`,
+)
+
 /* Стёрли — и стёрлось у всех, а не только у того, кто рисовал. */
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Стереть').click(); return 1`,
@@ -937,6 +988,51 @@ await until(student, `(async()=>{const c=document.querySelector('canvas.ink-dry'
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `for(let i=3;i<d.length;i+=4) if(d[i]>16) return false; return true})()`, 'чернила стёрлись у студента')
 check(((await strokeOn(student)) as number) <= 0, 'стирание доезжает до всей комнаты', 'чисто')
+
+/* ------------------------------------------------------- имена органов пульта */
+
+/*
+ * Пульт ищется по ARIA-именам, и это не педантичность, а единственный
+ * оставшийся способ его найти.
+ *
+ * Раньше проверка искала клавиши по словам на них — «Лист», «Указка»,
+ * «Закончить». Слов на пульте больше нет: подписей осталось четыре на весь
+ * прибор, пигмент показывают чипом бумаги с настоящим штрихом, «Назад» — это
+ * один шеврон, а «Закончить» уехало последней строкой в лист «Ещё». Проверка
+ * по тексту после этого искала бы то, чего на экране нет вовсе, и молчала бы
+ * ровно про тот пульт, который держат в руках.
+ *
+ * Имена ниже — §7 договора, буква в букву. Они же — всё, чем эти клавиши
+ * названы для голосового доступа, так что переименование ломает не проверку, а
+ * пульт, и ломает молча. Поэтому список один и лежит здесь, а не рассыпан по
+ * селекторам.
+ */
+const PULT = {
+  gauge: 'Выбрать страницу',
+  blank: 'Чистый лист',
+  toSlide: 'Вернуться к слайду',
+  dim: 'Затемнить проекцию',
+  undim: 'Вернуть проекцию',
+  laser: 'Указка',
+  prev: 'Предыдущая страница',
+  next: 'Следующая страница',
+  undo: 'Отменить последний штрих',
+  eraser: 'Ластик',
+  marker: 'Маркер',
+  red: 'Перо, красное',
+  green: 'Перо, зелёное',
+  black: 'Перо, чёрное',
+  fader: 'Яркость листа',
+  more: 'Ещё',
+  bigger: 'Заметки крупнее',
+} as const
+
+/** Выражение «такой орган на экране есть». */
+const named = (aria: string) => `!!document.querySelector('[aria-label=${JSON.stringify(aria)}]')`
+/** Нажать орган по имени — с внятной жалобой, если его нет. */
+const press = (aria: string) =>
+  `const b=document.querySelector('[aria-label=${JSON.stringify(aria)}]');` +
+  `if(!b) throw new Error('на пульте нет органа «${aria}»'); b.click(); return 1`
 
 /*
  * Пульт на планшет.
@@ -965,11 +1061,16 @@ check(
 )
 
 const pad = await tab(consoleLink)
-await until(
-  pad,
-  `[...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`,
-  'планшет вошёл и получил пульт',
-)
+/*
+ * Признак пульта — прибор, а не «Закончить».
+ *
+ * «Закончить» с постоянно видимой поверхности убрано (§8.2 чертежа): красное
+ * рядом с пальцем весь час ради нажатия, которое случается один раз. Прибор же
+ * есть у пульта всегда — это единственное место в продукте, где живёт номер
+ * страницы.
+ */
+const padHasPult = named(PULT.gauge)
+await until(pad, padHasPult, 'планшет вошёл и получил пульт')
 check(
   (await pad.js(`return !document.querySelector('input#join-name')`)) === true,
   'планшет не спрашивает имени',
@@ -981,11 +1082,9 @@ check(
   await pad.js('return location.pathname'),
 )
 check(
-  (await pad.js(
-    `return [...document.querySelectorAll('button')].some(b=>(b.textContent||'').trim()==='Закончить')`,
-  )) === true,
+  (await pad.js(`return ${padHasPult}`)) === true,
   'планшет получает пульт, а не место в зале',
-  'пульт на месте',
+  'прибор на месте',
 )
 /*
  * И вторым человеком в комнате он не становится: список людей считает людей, а
@@ -1073,16 +1172,284 @@ const pultReady = await until(
 )
 check(pultReady, 'пульт показывает лист лекции', await pult.js(`return location.pathname`))
 check(
-  (await pult.js(
-    `return [...document.querySelectorAll('button')].some(b=>(b.getAttribute('aria-label')||'').includes('Указка'))
-      || [...document.querySelectorAll('button')].some(b=>/указк/i.test(b.textContent||''))`,
-  )) === true,
+  (await pult.js(`return ${named(PULT.laser)}`)) === true,
   'у пульта есть свои инструменты',
   await pult.js(`return document.querySelectorAll('button').length + ' кнопок'`),
 )
+
+/*
+ * Весь §7 разом, а не одно имя.
+ *
+ * Проверка по одной клавише ловит переименование ровно этой клавиши; ломается
+ * же обычно всё семейство сразу — «перо, красный» вместо «Перо, красное»,
+ * «Стереть» вместо «Ластик». Пары — это один орган в двух состояниях, и
+ * присутствовать обязано ровно одно из двух.
+ */
+const missing = (await pult.js(
+  `const one=${JSON.stringify([
+    PULT.gauge,
+    PULT.laser,
+    PULT.prev,
+    PULT.next,
+    PULT.undo,
+    PULT.eraser,
+    PULT.marker,
+    PULT.red,
+    PULT.green,
+    PULT.black,
+    PULT.fader,
+    PULT.more,
+    PULT.bigger,
+  ])};` +
+    `const two=${JSON.stringify([
+      [PULT.blank, PULT.toSlide],
+      [PULT.dim, PULT.undim],
+    ])};` +
+    `const has=n=>!!document.querySelector('[aria-label="'+n+'"]');` +
+    `const out=one.filter(n=>!has(n));` +
+    `for(const pair of two) if(!pair.some(has)) out.push(pair.join(' / '));` +
+    `return out.join(', ')`,
+)) as string
+check(missing === '', 'органы пульта названы по договору', missing || 'все имена на месте')
+
+/*
+ * ВЕРХНЕЙ НИТИ НЕТ ВОВСЕ.
+ *
+ * Нить 52 px во всю ширину была вторым по яркости предметом ночного пульта
+ * после самого листа и ставила стенные часы — их смотрят раз в десять минут —
+ * выше номера страницы, который смотрят каждую фразу. Её груз разложен: часы и
+ * номер в прибор, имя документа на экран выбора, остальное в лист «Ещё».
+ *
+ * Ищем не класс (класс переименуют и проверка позеленеет), а форму: полосу во
+ * всю ширину, прижатую к верхней кромке, ростом с полосу chrome. Поле листа
+ * под фильтр не попадает — оно вдвое выше и держит холст.
+ */
+const band = (await pult.js(
+  `const root=document.querySelector('.pult-root')||document.body;` +
+    `const w=window.innerWidth;` +
+    `const wide=[...root.querySelectorAll('*')].filter(el=>{` +
+    `const r=el.getBoundingClientRect();` +
+    `return r.top<8 && r.width>w*0.8 && r.height>=28 && r.height<=110 && !el.querySelector('canvas')});` +
+    `return wide.slice(0,3).map(el=>el.tagName.toLowerCase()+'.'+` +
+    `String(typeof el.className==='string'?el.className:'').slice(0,28)+' '+` +
+    `Math.round(el.getBoundingClientRect().height)+'px').join(' | ')`,
+)) as string
+check(band === '', 'верхней нити на пульте нет', band || 'полос chrome нет')
+
+/*
+ * «Закончить» не висит рядом с пальцем.
+ *
+ * Красное в тёмном зале — самое громкое, что бывает, а нажимают его один раз
+ * за лекцию и в момент, когда никто никуда не спешит. Место такому — последней
+ * строкой листа «Ещё», и проверяется это с двух сторон: здесь слова нет, ниже —
+ * оно есть в поднятом листе.
+ *
+ * ПОРЯДОК ЗДЕСЬ — ЧАСТЬ ПРОВЕРКИ: строка обязана стоять ДО того, как «Ещё»
+ * открыт. Переставленная вниз, она требует от пульта того, чего договор от
+ * него не требует, — и два правила начинают спорить друг с другом на ровном
+ * месте. Лист поднимается ниже по файлу и закрывается сразу после.
+ */
+check(
+  (await pult.js(`return !/закончить/i.test(document.body.innerText||'')`)) === true,
+  'красного «Закончить» на виду нет',
+  await pult.js(
+    `return /[^\\n]*закончить[^\\n]*/i.exec(document.body.innerText||'')?.[0]?.trim() ?? 'нет'`,
+  ),
+)
+
+/*
+ * ПРИБОР И ЗАЛ ВИДЯТ ОДИН НОМЕР.
+ *
+ * Номер живёт в ОДНОМ месте продукта — в приборе, — и весь смысл этого номера
+ * в том, что он не отстаёт от зала. Разойтись они умеют молча: на пульте
+ * рисуется своё намерение, а до проектора оно не доехало, и на экране это
+ * выглядит исправным пультом.
+ */
+const roomPage =
+  `(()=>{const t=document.body.innerText||'';` +
+  `const m=/на стр\\. (\\d+)/.exec(t)||/(?:^|\\n)\\s*(\\d+)\\s*\\/\\s*\\d+\\s*(?:\\n|$)/.exec(t);` +
+  `return m?m[1]:''})()`
+const gaugeText =
+  `(()=>{const g=document.querySelector('[aria-label=${JSON.stringify(PULT.gauge)}]');` +
+  `return ((g&&(g.innerText||g.textContent))||'').replace(/\\s+/g,' ').trim()})()`
+const gaugePage = `(()=>{const m=/\\d+/.exec(${gaugeText});return m?m[0]:''})()`
+
+const roomNow = (await student.js(`return ${roomPage}`)) as string
+const gaugeNow = (await pult.js(`return ${gaugePage}`)) as string
+check(
+  gaugeNow !== '' && gaugeNow === roomNow,
+  'прибор показывает номер страницы',
+  `прибор ${gaugeNow || '—'} · зал ${roomNow || '—'}`,
+)
+
+/*
+ * И этот номер живой: листаем с пульта и ждём зал. Назад, а не вперёд, когда
+ * есть куда: на последней странице «ВПЕРЁД» выключено, и проверка проверяла бы
+ * выключенную клавишу.
+ */
+const backwards = Number(roomNow) > 1
+const wantPage = String(Number(roomNow) + (backwards ? -1 : 1))
+await pult.js(press(backwards ? PULT.prev : PULT.next))
+const caught = await until(student, `${roomPage} === ${JSON.stringify(wantPage)}`, 'зал догнал пульт', 8000)
+const gaugeAfter = (await pult.js(`return ${gaugePage}`)) as string
+check(
+  caught && gaugeAfter === wantPage,
+  'страница с пульта доезжает до зала',
+  `прибор ${gaugeAfter || '—'} · зал ${(await student.js(`return ${roomPage}`)) || '—'}`,
+)
+
+/*
+ * ФЕЙДЕР ЛИСТА.
+ *
+ * Лист — единственный источник света на пульте, и у него обязан быть
+ * регулятор, не выходящий из приложения: три ступени пелены поверх листа И
+ * чернил, 0 / 0.28 / 0.55, умолчание «зал».
+ *
+ * Меряется не класс пелены, а её работа: самая тёмная полупрозрачная заливка,
+ * накрывающая лист целиком. Реализация свободна — `opacity` на плите, alpha в
+ * самом цвете, — а вот число обязано меняться, иначе фейдер щёлкает вхолостую
+ * и это видно только глазами в тёмном зале. `[data-pult-veil]`, если он есть,
+ * снимает всю эту геометрию.
+ */
+const veil =
+  `(()=>{const alpha=el=>{const cs=getComputedStyle(el);` +
+  `const m=/^rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)$/.exec(cs.backgroundColor);` +
+  `if(!m) return 0;` +
+  `const a=(m[4]===undefined?1:parseFloat(m[4]))*parseFloat(cs.opacity||'1');` +
+  `return (+m[1]<=40&&+m[2]<=40&&+m[3]<=48)?a:0};` +
+  `const marked=document.querySelector('[data-pult-veil]');` +
+  `if(marked) return Math.round(alpha(marked)*100)/100;` +
+  `const sheet=[...document.querySelectorAll('canvas')].map(c=>c.getBoundingClientRect())` +
+  `.filter(r=>r.width>200).sort((a,b)=>b.width-a.width)[0];` +
+  `if(!sheet) return -1;` +
+  `let top=0;` +
+  `for(const el of document.querySelectorAll('body *')){` +
+  `const r=el.getBoundingClientRect();` +
+  `const ix=Math.max(0,Math.min(r.right,sheet.right)-Math.max(r.left,sheet.left));` +
+  `const iy=Math.max(0,Math.min(r.bottom,sheet.bottom)-Math.max(r.top,sheet.top));` +
+  `if(ix*iy<sheet.width*sheet.height*0.9) continue;` +
+  `const a=alpha(el);` +
+  `if(a>0.95||a<=top) continue;` +
+  `top=a}` +
+  `return Math.round(top*100)/100})()`
+/*
+ * Указка на пульте: НАЖАЛИ — и она работает.
+ *
+ * Клавиша была чистой пружиной: светила, только пока её держат, — а чтобы
+ * точка появилась, надо было держать клавишу на рейле И одновременно вести по
+ * листу. Две руки на планшете и ни одной мыши на ноутбуке; на экране это
+ * читалось как «кнопка нажимается, и ничего не происходит». Теперь тап
+ * оставляет указку включённой, и проверяется именно тап.
+ */
+await pult.send('Page.bringToFront')
+await pult.js(press(PULT.laser))
+await wait(200)
+check(
+  (await pult.js(
+    `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') === 'true'`,
+  )) === true,
+  'тап по указке оставляет её включённой',
+  await pult.js(
+    `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') ?? 'нет клавиши'`,
+  ),
+)
+await pult.js(
+  `const c=document.querySelector('canvas.ink-wet');` +
+    `if(!c) throw new Error('слоя чернил на пульте нет');` +
+    `const r=c.getBoundingClientRect();` +
+    `const at=(t,fx,fy)=>c.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:7,pointerType:'pen',` +
+    `buttons:t==='pointerup'?0:1,clientX:r.left+r.width*fx,clientY:r.top+r.height*fy}));` +
+    `at('pointerdown',0.4,0.6); at('pointermove',0.45,0.58); return 1`,
+)
+const pultRed =
+  `(()=>{const c=document.querySelector('canvas.ink-wet');` +
+  `if(!c||!c.width) return -1;` +
+  `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+  `let n=0; for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) n+=1; return n})()`
+const litUp = await until(pult, `${pultRed} > 0`, 'указка пульта зажглась', 8000)
+check(litUp, 'указка пульта светит после нажатия', `${await pult.js(`return ${pultRed}`)} красных точек`)
+/* Гасим тем же тапом: указка — единственный инструмент, который иначе
+   остаётся гулять по проектору до конца пары. */
+await pult.js(
+  `const c=document.querySelector('canvas.ink-wet');const r=c.getBoundingClientRect();` +
+    `c.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:7,pointerType:'pen',buttons:0,` +
+    `clientX:r.left+r.width*0.45,clientY:r.top+r.height*0.58})); return 1`,
+)
+await pult.js(press(PULT.laser))
+await wait(300)
+check(
+  (await pult.js(
+    `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') === 'false'`,
+  )) === true,
+  'вторым тапом указка гаснет',
+  await pult.js(
+    `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') ?? '?'`,
+  ),
+)
+
+/* Корпус и колодец сюда не попадают: они непрозрачны (alpha 1), пелена — нет. */
+const faderCells =
+  `(()=>{const root=document.querySelector('[aria-label=${JSON.stringify(PULT.fader)}]');` +
+  `if(!root) return [];` +
+  `let cells=[...root.querySelectorAll('button,[role="radio"],[role="button"]')];` +
+  `if(!cells.length&&root.matches('button,[role="radio"],[role="button"]')) cells=[root];` +
+  `if(!cells.length) cells=[...root.children];` +
+  `return cells})()`
+const faderSteps = (await pult.js(`return ${faderCells}.length`)) as number
+check(faderSteps === 3, 'у фейдера листа три ступени', `ячеек ${faderSteps}`)
+/*
+ * Меряется ступень В ПОКОЕ, а не через фиксированную паузу.
+ *
+ * У пелены переход 320 мс, а `getComputedStyle` отдаёт значение последнего
+ * расчёта стиля — то есть текущий кадр анимации. Кадры на пульте редкие:
+ * headless без ускорителя перерисовывает лист лекции целиком, и «подождать
+ * 450 мс» на занятой машине ловило пелену ещё на старте перехода. Проверка
+ * при этом объявляла сломанным фейдер, у которого в разметке стояло ровно
+ * то, что просил договор. Ждём, пока значение перестанет меняться: два
+ * одинаковых чтения подряд, кадр между ними вытягивается своим rAF.
+ */
+async function restingVeil(): Promise<number> {
+  let last = Number.NaN
+  for (let attempt = 0; attempt < 15; attempt += 1) {
+    await wait(200)
+    const now = (await pult.js(
+      `await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));` +
+        `return ${veil}`,
+    )) as number
+    if (now === last) return now
+    last = now
+  }
+  return last
+}
+
+const ladder: number[] = []
+for (let i = 0; i < faderSteps; i += 1) {
+  await pult.js(`${faderCells}[${i}].click(); return 1`)
+  ladder.push(await restingVeil())
+}
+const rungs = [...ladder].sort((a, b) => a - b)
+check(
+  rungs.length === 3 &&
+    rungs[0] <= 0.05 &&
+    rungs[1] > 0.2 &&
+    rungs[1] < 0.36 &&
+    rungs[2] > 0.46 &&
+    rungs[2] < 0.64,
+  'фейдер меняет непрозрачность пелены',
+  rungs.length ? rungs.join(' · ') : 'пелены не нашли',
+)
+/* Возвращаем «зал»: это умолчание, и с ним живёт весь остальной прогон. */
+const hall = ladder.indexOf(rungs[1])
+if (hall >= 0) {
+  await pult.js(`${faderCells}[${hall}].click(); return 1`)
+  await restingVeil()
+}
+
 await pult.js(
   `if(!document.querySelector('textarea')){` +
-    `const b=[...document.querySelectorAll('button')].find(x=>/заметк/i.test(x.textContent||'')||/заметк/i.test(x.getAttribute('aria-label')||''));` +
+    `const b=[...document.querySelectorAll('button')].find(x=>{` +
+    `const n=(x.getAttribute('aria-label')||'')+' '+(x.textContent||'');` +
+    `return /заметк/i.test(n)&&!/крупнее|ещё/i.test(n)});` +
     `b&&b.click()} return 1`,
 )
 await wait(500)
@@ -1099,7 +1466,52 @@ check(
   'комната на пульт не переехала',
   'только лекция',
 )
+/*
+ * ЛИСТ «ЕЩЁ» — И ТО, ЧТО ОН ОТКРЫВАЕТСЯ ИЗ ШАПКИ ЗАМЕТОК.
+ *
+ * Груз убранной нити лежит здесь: полный экран, «Сменить документ», «Левая
+ * рука», справка про сон экрана и «Закончить лекцию». Открывать это неоткуда,
+ * кроме «⋯» в шапке ленты заметок, и место кнопки — часть договора: шапка
+ * заметок начинается ПОД листом. Кнопка, уехавшая обратно наверх, — это
+ * вернувшаяся нить, только из одного знака.
+ */
+const morePlace = (await pult.js(
+  `const b=document.querySelector('[aria-label=${JSON.stringify(PULT.more)}]');` +
+    `const sheet=[...document.querySelectorAll('canvas')].map(c=>c.getBoundingClientRect())` +
+    `.filter(r=>r.width>200).sort((a,b)=>b.width-a.width)[0];` +
+    `if(!b) return 'кнопки «Ещё» нет';` +
+    `if(!sheet) return 'листа нет';` +
+    `const r=b.getBoundingClientRect();` +
+    `return r.top>=sheet.bottom ? 'ниже листа' : 'выше нижней кромки листа на '+Math.round(sheet.bottom-r.top)+'px'`,
+)) as string
+check(morePlace === 'ниже листа', '«Ещё» живёт в шапке ленты заметок', morePlace)
+
+await pult.js(press(PULT.more))
+await wait(400)
+const endsHere = (await pult.js(
+  `return /закончить лекц/i.test(document.body.innerText||'')` +
+    ` || !!document.querySelector('[aria-label="Закончить лекцию"]')`,
+)) as boolean
+check(endsHere === true, 'в листе «Ещё» есть «Закончить лекцию»', endsHere ? 'есть' : 'нет')
+
+/* Закрываем и ложем, и Escape: закрыть лист обязаны оба, а дальше проверке
+   нужен пульт, а не поднятая плита поверх него. */
+await pult.js(`document.querySelector('[aria-label="Закрыть"]')?.click(); return 1`)
+for (const type of ['keyDown', 'keyUp'] as const) {
+  await pult.send('Input.dispatchKeyEvent', {
+    type,
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  })
+}
+await until(pult, `!/закончить лекц/i.test(document.body.innerText||'')`, 'лист «Ещё» закрылся', 4000)
+
 if (process.argv.includes('--shot')) {
+  // Снимок делается с ЖИВЫМ пультом: вкладка, ушедшая в фон, теряет сокет, и
+  // без этого ожидания на снимок попадала полоса «нет связи».
+  await until(pult, `[...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`, 'пульт для снимка')
   await wait(700)
   const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
   const where = path.resolve('ui-pult.png')
@@ -1141,10 +1553,13 @@ await host.send('Page.bringToFront')
  * знать. Проверяется именно это — что на балке чисто, а не последний слайд.
  */
 await pult.send('Page.bringToFront')
-await pult.js(
-  `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Лист');` +
-    `if(!b) throw new Error('кнопки «Лист» на пульте нет'); b.click(); return 1`,
-)
+/*
+ * Клавиша осталась клавишей, но слова на ней больше нет: чистый лист заводят
+ * посреди фразы, и два нажатия (лента страниц → «+ новый лист») для этого —
+ * уже отказ. Ищется по имени, не по подписи.
+ */
+await until(pult, named(PULT.blank), 'клавиша чистого листа на месте')
+await pult.js(press(PULT.blank))
 const blankSheet =
   `(async()=>{const c=[...document.querySelectorAll('canvas')].find(n=>n.getBoundingClientRect().width>200);` +
   `if(!c||!c.width) return false;` +
@@ -1153,19 +1568,21 @@ const blankSheet =
 await beam.send('Page.bringToFront')
 const cleared = await until(beam, blankSheet, 'проекция стала чистым листом', 12000)
 check(cleared, 'чистый лист доезжает до проектора', 'белое поле')
+/*
+ * Говорит об этом прибор, и только он: у чистого листа нет доли колоды, поэтому
+ * вместо «7 / 24» там «Л2», а вместо линейки темпа — слово «ЛИСТ». Спрашиваем
+ * прибор, а не всю страницу: слово «лист» умеет случайно найтись где угодно.
+ */
+await pult.send('Page.bringToFront')
+const boardGauge = (await pult.js(`return ${gaugeText}`)) as string
 check(
-  (await pult.js(`return /лист/i.test(document.body.textContent||'')`)) === true,
+  /Л\s*\d/i.test(boardGauge) || /лист/i.test(boardGauge),
   'пульт говорит, что показывает лист, а не страницу',
-  await pult.js(
-    `return [...document.querySelectorAll('span')].map(n=>(n.textContent||'').trim()).find(t=>/^лист /i.test(t)) ?? '—'`,
-  ),
+  boardGauge || 'прибор молчит',
 )
 /* И назад к слайдам — тем же нажатием: исписанный лист никуда не делся. */
-await pult.send('Page.bringToFront')
-await pult.js(
-  `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='К слайду');` +
-    `if(!b) throw new Error('возврата к слайду нет'); b.click(); return 1`,
-)
+await until(pult, named(PULT.toSlide), 'возврат к слайду появился')
+await pult.js(press(PULT.toSlide))
 await beam.send('Page.bringToFront')
 await until(beam, `!${blankSheet}`, 'проекция вернулась к слайду')
 await host.send('Page.bringToFront')
