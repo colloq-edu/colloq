@@ -8,11 +8,11 @@
   дерущаяся с пальцем на трекпаде, даёт залипание, которое выглядит поломкой.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import Icon from '@/components/ui/Icon.svelte'
   import { api } from '@/lib/api'
-  import { adrift, leaderFor, type Lead } from '@/lib/follow'
+  import { leaderFor, sameLead, type Lead } from '@/lib/follow'
   import { loadPdf } from '@/lib/pdf.svelte'
   import { getSessionState } from '@/lib/session.svelte'
 
@@ -21,16 +21,31 @@
     file: string
     /** Пришёл ли документ от комнаты — тогда по умолчанию идём за преподавателем. */
     shared: boolean
-    onclose: () => void
+    /**
+     * Счётчик нажатий «догнать» в строке вкладок.
+     *
+     * Счётчик, а не флаг: догнать можно дважды подряд, а флаг во второй раз не
+     * изменится и ничего не произойдёт.
+     */
+    catchUp: number
+    /** Наружу — строке вкладок: она показывает и место, и за кем идём. */
+    page: number
+    pages: number
+    lead: Lead | null
   }
 
-  let { file, shared, onclose }: Props = $props()
+  let {
+    file,
+    shared,
+    catchUp,
+    page = $bindable(1),
+    pages = $bindable(0),
+    lead = $bindable(null),
+  }: Props = $props()
   const session = getSessionState()
 
   let doc = $state<PDFDocumentProxy | null>(null)
   let failure = $state<string | null>(null)
-  let pages = $state(0)
-  let page = $state(1)
   let scroller = $state<HTMLElement | null>(null)
   /*
    * Умолчание: документ, который поставила комната, смотрят вместе; документ,
@@ -43,16 +58,26 @@
   /** Ставится, пока страницу двигает код, — чтобы не принять это за жест. */
   let programmatic = false
 
-  const lead = $derived(leaderFor(session.peers, file, sticky))
-  $effect(() => {
-    if (lead) sticky = lead.clientId
-  })
   /*
-   * Ведущий пропал. Экран остаётся где стоял: увести его в никуда хуже, чем
-   * оставить на месте и сказать, что вести стало некому.
+   * Ведущий пересчитывается на каждое изменение присутствия — но записывается
+   * только если правда изменился.
+   *
+   * `leaderFor` собирает новый объект каждый раз, а `lead` связан с родителем:
+   * без проверки на равенство родитель перерисовывается, свойство приезжает
+   * обратно, эффект считает заново — и так до срыва по глубине. `untrack` на
+   * чтении `sticky` и `lead` нужен по той же причине: эффект пишет их обоих.
    */
-  const orphaned = $derived(following && sticky !== null && lead === null)
-  const behind = $derived(!following && lead !== null && adrift({ page, y: 0 }, lead))
+  $effect(() => {
+    const peers = session.peers
+    const next = leaderFor(
+      peers,
+      file,
+      untrack(() => sticky),
+    )
+    if (sameLead(untrack(() => lead), next)) return
+    lead = next
+    if (next) sticky = next.clientId
+  })
 
   onMount(() => {
     let cancelled = false
@@ -147,6 +172,20 @@
     goTo({ page: lead.page, y: lead.y })
   })
 
+  /*
+   * «Догнать» нажали в строке вкладок. Плавно — это единственное место, где
+   * плавность уместна: жест человека, а не чужой пиксель прокрутки.
+   */
+  // svelte-ignore state_referenced_locally
+  let caught = catchUp
+  $effect(() => {
+    if (catchUp === caught) return
+    caught = catchUp
+    if (!lead) return
+    following = true
+    goTo({ page: lead.page, y: lead.y }, true)
+  })
+
   function onScroll(): void {
     const here = place()
     page = here.page
@@ -156,26 +195,22 @@
     session.setViewing({ file, page: here.page, y: here.y })
   }
 
-  onMount(() => () => session.setViewing(null))
+/*
+ * Позиция НЕ снимается при размонтировании.
+ *
+ * Читалка исчезает, когда человек переключился на тетрадь, — но место в
+ * документе от этого не перестало существовать. Снимать его здесь значило бы:
+ * преподаватель на секунду ушёл в тетрадь дописать ячейку — и вся комната
+ * потеряла метку «он на странице 4», хотя лекция никуда не делась. Снимает её
+ * тот, кто знает, что документ закрыт совсем, — экран комнаты.
+ */
 </script>
 
-<section class="flex h-full min-h-0 flex-col bg-surface">
-  <header class="flex shrink-0 items-center gap-2 border-b border-line bg-canvas px-3 py-2">
-    <Icon name="file" size={13} class="shrink-0 text-muted" />
-    <span class="min-w-0 flex-1 truncate text-ui font-semibold text-ink">{file}</span>
-    {#if pages > 0}
-      <span class="shrink-0 font-mono text-2xs text-muted">{page} / {pages}</span>
-    {/if}
-    <button
-      class="btn-ghost h-6 w-6 shrink-0 px-0"
-      title="Закрыть у себя"
-      aria-label="Закрыть"
-      onclick={onclose}
-    >
-      <Icon name="x" size={14} />
-    </button>
-  </header>
-
+<!--
+  Ни шапки, ни нижней плашки: имя файла, номер страницы и «за кем идём» живут в
+  строке вкладок над центром. Два места, говорящие одно и то же, расходятся.
+-->
+<section class="flex min-h-0 flex-1 flex-col bg-surface">
   <div
     bind:this={scroller}
     class="min-h-0 flex-1 overflow-y-auto px-3 py-3"
@@ -198,28 +233,4 @@
     {/if}
   </div>
 
-  {#if behind && lead}
-    <!-- Плашка, а не диалог: она сообщает и предлагает, но ничего не требует. -->
-    <button
-      class="flex shrink-0 items-center gap-2 border-t border-line bg-canvas px-3 py-2 text-left"
-      onclick={() => {
-        following = true
-        goTo({ page: lead.page, y: lead.y }, true)
-      }}
-    >
-      <span class="h-2 w-2 shrink-0 rounded-full" style={`background:${lead.color}`}></span>
-      <span class="min-w-0 flex-1 truncate text-ui text-muted">
-        {lead.name} на странице {lead.page}
-      </span>
-      <span class="shrink-0 text-ui font-semibold text-accent-text">Догнать</span>
-    </button>
-  {:else if orphaned}
-    <p class="shrink-0 border-t border-line bg-canvas px-3 py-2 text-ui text-muted">
-      Преподаватель вышел — дальше сами.
-    </p>
-  {:else if following && lead}
-    <p class="shrink-0 border-t border-line bg-canvas px-3 py-2 text-ui text-muted">
-      Идём за {lead.name}
-    </p>
-  {/if}
 </section>

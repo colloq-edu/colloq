@@ -133,6 +133,8 @@ if (!up) {
 interface Tab {
   js: (expr: string) => Promise<unknown>
   send: (method: string, params?: Record<string, unknown>) => Promise<any>
+  /** Что страница успела сломать: исключения и ошибки консоли. */
+  trouble: string[]
 }
 
 async function tab(url: string): Promise<Tab> {
@@ -156,6 +158,24 @@ async function tab(url: string): Promise<Tab> {
       waiters.set(id, resolve)
       ws.send(JSON.stringify({ id, method, params }))
     })
+  /*
+   * Исключения и жалобы консоли собираются с самого начала: проверка, молчащая
+   * о том, что на странице что-то упало, отправляет искать причину в код,
+   * который ни при чём.
+   */
+  const trouble: string[] = []
+  ws.on('message', (raw: Buffer) => {
+    const m = JSON.parse(raw.toString())
+    if (m.method === 'Runtime.exceptionThrown') {
+      const d = m.params.exceptionDetails
+      trouble.push('искл: ' + (d?.exception?.description ?? d?.text ?? '?'))
+    }
+    if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
+      trouble.push(
+        'консоль: ' + m.params.args.map((a: any) => a.value ?? a.description ?? a.type).join(' '),
+      )
+    }
+  })
   await send('Runtime.enable')
   await send('Page.enable')
   await send('Network.enable')
@@ -169,7 +189,7 @@ async function tab(url: string): Promise<Tab> {
     if (failed) throw new Error(failed.exception?.description ?? failed.text)
     return res.result?.result?.value
   }
-  return { js, send }
+  return { js, send, trouble }
 }
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -275,6 +295,51 @@ check(
 )
 
 /* ------------------------------------------------------------------ итог */
+
+/* ------------------------------------------------- два режима одного центра */
+
+check(
+  (await host.js('return !!document.querySelector("main.hidden")')) === true,
+  'документ занял центр, а не колонку рядом',
+  'тетрадь скрыта',
+)
+
+await host.js(
+  'const t=[...document.querySelectorAll("button")].find(b=>/Тетрадь/.test(b.textContent||"")); if(!t) throw new Error("вкладки «Тетрадь» нет: " + [...document.querySelectorAll("button")].map(b=>JSON.stringify((b.textContent||"").trim().slice(0,20))).join(",")); t.click(); return 1',
+)
+await wait(600)
+check(
+  (await host.js('return !document.querySelector("main.hidden")')) === true,
+  'вкладка возвращает в тетрадь',
+  'тетрадь видна',
+)
+/*
+ * Метку «где преподаватель» проверяем у СТУДЕНТА: сам преподаватель за собой не
+ * идёт, и у него её быть не должно. Спросить об этом его же — проверить не то.
+ */
+await student.js(
+  'const t=[...document.querySelectorAll("button")].find(b=>/Тетрадь/.test(b.textContent||"")); t&&t.click(); return 1',
+)
+await wait(600)
+check(
+  (await student.js('return /на стр\\. \\d+/.test(document.body.innerText)')) === true,
+  'из тетради студент видит, где преподаватель',
+  await student.js(
+    'return /[^\\n]*на стр\\. \\d+/.exec(document.body.innerText)?.[0]?.trim() ?? "нет"',
+  ),
+)
+check(
+  (await host.js('return /на стр\\. \\d+/.test(document.body.innerText)')) === false,
+  'преподаватель не идёт за самим собой',
+  'метки нет',
+)
+
+for (const [who, page] of [
+  ['преподаватель', host],
+  ['студент', student],
+] as const) {
+  for (const line of page.trouble.slice(0, 4)) console.log(`  (${who}) ${line}`)
+}
 
 let failed = 0
 for (const r of results) {

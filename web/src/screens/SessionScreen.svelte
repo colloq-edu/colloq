@@ -38,6 +38,8 @@
   import { copyText } from '@/lib/clipboard'
   import { takeRefusal } from '@/lib/refusal'
   import { permitsIn } from '@/lib/may'
+  import TabStrip from '@/components/reader/TabStrip.svelte'
+  import type { Lead } from '@/lib/follow'
   import { loadPdf } from '@/lib/pdf.svelte'
   import { api } from '@/lib/api'
   import { readRules, type RoomRules } from '@shared/rules'
@@ -263,109 +265,80 @@
 
   /* ------------------------------------------------------------- читалка */
 
-  /**
-   * Открытый документ и ширина колонки под него.
-   *
-   * Состояние живёт здесь, а не в самой читалке: компонент размонтируется при
-   * закрытии колонки, а место в документе терять нельзя — человек вернётся на
-   * ту же страницу, а не в начало.
-   */
   const may = $derived(permitsIn(session.session.rules, session.me.role))
+
+  /**
+   * Документ, открытый лично этим человеком, — в отличие от доски комнаты.
+   *
+   * Состояние живёт здесь, а не в самой читалке: она размонтируется при
+   * переходе в тетрадь, а место в документе терять нельзя — человек вернётся
+   * на ту же страницу, а не в начало.
+   */
   let readerOpen = $state<string | null>(null)
-  const READER_MIN = 320
-  const READER_MAX = 900
-  let readerWidth = $state(
-    Number(localStorage.getItem('colloq.reader.width.v1')) || 460,
-  )
 
   /*
-   * Что показывать: своё, если человек открыл сам, иначе доска комнаты. Так
-   * опоздавший сразу видит то, что комната смотрит, а открывший своё не теряет
-   * его от того, что преподаватель что-то поставил.
+   * Что вообще открыто: своё, если человек открыл сам, иначе доска комнаты.
+   * Так опоздавший сразу видит то, что смотрит комната, а открывший своё не
+   * теряет его от того, что преподаватель что-то поставил.
    */
+  const reading = $derived(readerOpen ?? session.board)
+
+  /**
+   * Что занимает центр: тетрадь или документ.
+   *
+   * Не две колонки, а два режима занятия: либо смотрим лекцию, либо работаем.
+   * Колонка рядом с тетрадью означала бы, что ни на то ни на другое места не
+   * хватает — а страница A4 в трети экрана нечитаема.
+   */
+  let centre = $state<'notebook' | 'document'>('notebook')
+  /** Что читалка сообщает наружу: строка вкладок показывает это за неё. */
+  let readerPage = $state(1)
+  let readerPages = $state(0)
+  let lead = $state<Lead | null>(null)
+  /** Нажатия «догнать» — счётчиком: догонять можно и дважды подряд. */
+  let catchUp = $state(0)
+
   /*
-   * Спрятать у себя — не закрыть у комнаты. Студент, которому надо на минуту
-   * освободить экран под тетрадь, не должен для этого выходить из общего
-   * просмотра: вернётся — и снова идёт со всеми.
+   * Документ появился — комната смотрит его: это и есть «началась лекция».
+   * Пропал — все возвращаются в тетрадь, потому что смотреть больше нечего.
+   * Сравнение с прошлым значением, а не просто чтение: иначе переключение
+   * вкладкой тут же отменялось бы этим же эффектом.
    */
-  let readerHidden = $state(false)
-  const shown = $derived(readerOpen ?? session.board)
-  const reading = $derived(readerHidden ? null : shown)
-  const readerShown = $derived(reading !== null)
-  /*
-   * Новый документ на общем экране показывается, даже если предыдущий прятали:
-   * «спрятал» относилось к тому документу, а не к любому будущему.
-   */
+  let lastReading: string | null = null
   $effect(() => {
-    void shown
-    readerHidden = false
+    const now = reading
+    if (now === lastReading) return
+    lastReading = now
+    centre = now ? 'document' : 'notebook'
+    /*
+     * Документ закрыт совсем — вот теперь позиции больше нет. Читалка этого
+     * сделать не может: она исчезает и от переключения на тетрадь, а место в
+     * документе при этом никуда не девается.
+     */
+    if (!now) {
+      session.setViewing(null)
+      lead = null
+    }
   })
 
   /*
-   * Прогрев по факту, а не на каждый вход в комнату.
-   *
-   * Библиотека и воркер — полтора мегабайта, и платить за них должен только
-   * тот, у кого в комнате правда есть что открывать. На лекционном вайфае это
-   * секунды, за которые преподаватель успевает перелистнуть, поэтому греем в
-   * тот момент, когда в списке файлов появился PDF, а не когда на него нажали.
+   * Прогрев по факту, а не на каждый вход в комнату: библиотека и воркер — это
+   * полтора мегабайта, и платить за них должен тот, у кого правда есть что
+   * открывать.
    */
   $effect(() => {
     if (session.files.some((file) => file.name.toLowerCase().endsWith('.pdf'))) {
       void loadPdf()
     }
   })
-  /* Четыре колонки на ноутбуке не живут: читалка выталкивает оракула. */
-  const readerIsDrawer = $derived(!roomyEnough)
-
-  $effect(() => {
-    // Правая колонка уступает читалке, а не делит с ней последние пиксели.
-    if (reading && !readerIsDrawer && !wideEnough) rightOpen = false
-  })
-
-  function closeReader(): void {
-    /*
-     * Закрыть у себя — не то же самое, что убрать у комнаты. Убрать с общего
-     * экрана может тот, кому это разрешено; у себя закрывает кто угодно, и
-     * доска комнаты при этом остаётся стоять.
-     */
-    if (readerOpen) readerOpen = null
-    else if (may.board) session.send({ t: 'board:close' })
-    else readerOpen = null
-  }
 
   function openReader(name: string): void {
     // Преподаватель ставит комнате; остальные открывают себе.
     if (may.board) session.send({ t: 'board:open', name })
     else readerOpen = name
+    centre = 'document'
   }
 
-  function startResize(event: PointerEvent): void {
-    const from = event.clientX
-    const was = readerWidth
-    const target = event.currentTarget as HTMLElement
-    target.setPointerCapture(event.pointerId)
-    const move = (moved: PointerEvent) => {
-      readerWidth = Math.min(READER_MAX, Math.max(READER_MIN, was + moved.clientX - from))
-    }
-    const done = () => {
-      target.releasePointerCapture(event.pointerId)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', done)
-      localStorage.setItem('colloq.reader.width.v1', String(readerWidth))
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', done)
-  }
-
-  /** Ширина меняется и с клавиатуры: ручка мышью — не единственный способ. */
-  function onResizeKey(event: KeyboardEvent): void {
-    const step = event.shiftKey ? 64 : 16
-    if (event.key === 'ArrowLeft') readerWidth = Math.max(READER_MIN, readerWidth - step)
-    else if (event.key === 'ArrowRight') readerWidth = Math.min(READER_MAX, readerWidth + step)
-    else return
-    event.preventDefault()
-    localStorage.setItem('colloq.reader.width.v1', String(readerWidth))
-  }
   const leftShown = $derived(leftIsDrawer ? leftDrawer : leftOpen)
   const rightShown = $derived(rightIsDrawer ? rightDrawer : rightOpen)
 
@@ -699,19 +672,6 @@
            stay because on a narrow window they are the only way to reach the
            files, the people and the oracle. -->
       <div class="flex shrink-0 items-center gap-0.5">
-        {#if shown}
-          <!-- Читалка есть в комнате: дать способ убрать её с глаз, не
-               закрывая документ у остальных. -->
-          <button
-            class={bandIcon(readerShown)}
-            onclick={() => (readerHidden = !readerHidden)}
-            aria-pressed={readerShown}
-            aria-label="Показать документ"
-            title={reading}
-          >
-            <Icon name="board" size={16} />
-          </button>
-        {/if}
         {#if isHost}
           <!--
             Пульт правил стоит здесь, а не только в панели.
@@ -795,45 +755,47 @@
       </aside>
     {/if}
 
-    <!--
-      Читалка — своя колонка слева от тетради, а не оверлей и не ящик.
-
-      Оверлей закрывает тетрадь, и чтобы записать за преподавателем, его надо
-      закрыть — то есть потерять то, за чем следишь. Ящик снизу ограничен по
-      высоте и носит тёмную палитру машины: страница A4 в нём выглядит как
-      вывод команды. Семинар со слайдами — это два предмета рядом, и раскладка
-      должна говорить именно это.
-    -->
-    {#if reading && !readerIsDrawer}
-      <aside
-        class="flex shrink-0 flex-col border-r border-line"
-        style={`width:${readerWidth}px`}
-      >
-        <PdfReader
-          file={reading}
-          shared={reading === session.board}
-          onclose={closeReader}
-        />
-      </aside>
-      <!-- Ручка: ось X, тот же приём, что у ящика терминала. -->
-      <!-- Кнопка, а не div с ролью: ручка должна ловиться табом и работать
-           стрелками, а не только мышью. -->
-      <button
-        type="button"
-        class="w-1 shrink-0 cursor-col-resize border-0 bg-line p-0 transition-colors hover:bg-accent/40
-               focus-visible:bg-accent/60 focus-visible:outline-none"
-        aria-label="Ширина читалки — стрелками влево и вправо"
-        onpointerdown={startResize}
-        onkeydown={onResizeKey}
-      ></button>
-    {/if}
-
     <!-- The drawer sits inside the notebook column, not under the whole app:
          it is the same machine the cells run on. -->
     <div class="flex min-w-0 flex-1 flex-col">
-      <main class="min-h-0 flex-1 overflow-y-auto">
+      {#if reading}
+        <!--
+          Вкладки появляются только когда есть что переключать: в комнате без
+          документа этой строки нет вовсе, и она не стоит ни пикселя высоты.
+        -->
+        <TabStrip
+          file={reading}
+          mode={centre}
+          {lead}
+          page={readerPage}
+          pages={readerPages}
+          onmode={(next) => (centre = next)}
+          oncatchup={() => (catchUp += 1)}
+        />
+      {/if}
+
+      <!--
+        Тетрадь прячется, а не размонтируется: в ней курсор, прокрутка и
+        полтора десятка редакторов CodeMirror, и пересобирать их на каждое
+        переключение режима значит терять место в тексте.
+      -->
+      <main
+        class="min-h-0 flex-1 overflow-y-auto"
+        class:hidden={reading !== null && centre === 'document'}
+      >
         <Notebook {terminalOpen} ontoggleterminal={toggleTerminal} />
       </main>
+
+      {#if reading && centre === 'document'}
+        <PdfReader
+          file={reading}
+          shared={reading === session.board}
+          {catchUp}
+          bind:page={readerPage}
+          bind:pages={readerPages}
+          bind:lead
+        />
+      {/if}
 
       {#if terminalOpen}
         <TerminalDrawer bind:tab={drawerTab} onclose={() => (terminalOpen = false)} />
