@@ -28,7 +28,9 @@
   import TerminalDrawer from '@/components/panels/TerminalDrawer.svelte'
   import PdfReader from '@/components/reader/PdfReader.svelte'
   import LectureView from '@/components/lecture/LectureView.svelte'
+  import ConsoleView from '@/components/lecture/ConsoleView.svelte'
   import { fullscreenPossible, goFullscreen, leaveFullscreen } from '@/lib/fullscreen'
+  import { keepAwake } from '@/lib/wakelock'
   import ImageView from '@/components/reader/ImageView.svelte'
   import ThemeSwitch from '@/components/ui/ThemeSwitch.svelte'
   import Wordmark from '@/components/ui/Wordmark.svelte'
@@ -56,13 +58,27 @@
   interface Props {
     session: SessionInfo
     identity: StoredIdentity
-    /** Этот экран висит на проекторе: адрес `/s/:id/screen`. */
-    projection?: boolean
+    /**
+     * Который из трёх экранов комнаты нарисован.
+     *
+     * `room` — семинар, как его видят все; `screen` — проекция на балке
+     * (`/s/:id/screen`); `pult` — пульт в руках у преподавателя
+     * (`/s/:id/pult`). Один проп, а не два флага: экраны взаимоисключающие, и
+     * пара булевых умела бы означать то, чего не бывает.
+     *
+     * Все три живут в ОДНОМ компоненте, потому что живут на одном соединении:
+     * `SessionState` создаётся ниже один раз, и переход между экранами его не
+     * трогает — сокеты, документ и присутствие остаются на месте.
+     */
+    mode?: 'room' | 'screen' | 'pult'
     /** Уйти на другой адрес, не пересобирая комнату. */
     onnavigate?: (to: string) => void
   }
 
-  let { session: info, identity, projection = false, onnavigate }: Props = $props()
+  let { session: info, identity, mode = 'room', onnavigate }: Props = $props()
+
+  const projection = $derived(mode === 'screen')
+  const pult = $derived(mode === 'pult')
 
   // Context can only be written during initialisation, so the live session is
   // built here rather than in the router — by now both the room and the person
@@ -426,6 +442,89 @@
     }
     window.addEventListener('keydown', onEscape)
     return () => window.removeEventListener('keydown', onEscape)
+  })
+
+  /* ---------------------------------------------------------------- пульт */
+
+  /**
+   * Экран не гаснет, пока стоит пульт или проекция.
+   *
+   * Автоблокировка iPad по умолчанию — две минуты, а преподаватель говорит
+   * дольше; у ноутбука с проектором та же беда под другим именем — заставка.
+   * Оба экрана существуют ровно для того, чтобы на них смотрели, ничего при
+   * этом не нажимая, — то есть ровно для того случая, который система считает
+   * бездействием.
+   *
+   * Держится по режиму, а не по нажатию: жеста этот API не требует, а брать
+   * блокировку на входе и забывать отпустить — значит держать экран включённым
+   * в комнате, где она не нужна. Отпускается возвратом эффекта, то есть на
+   * уходе с экрана и на размонтировании.
+   *
+   * Отказ здесь молча: сказать о нём есть кому только на пульте — там для этого
+   * своя строка в верхней нити, и пульт просит блокировку сам (две блокировки
+   * на один документ независимы, экран не гаснет, пока держат хоть одну). На
+   * проекции читателей двадцать, и предупреждение «экран может погаснуть» на
+   * весь зал — это шум, который никто из зала всё равно не починит.
+   */
+  $effect(() => {
+    if (mode === 'room') return
+    return keepAwake(() => {})
+  })
+
+  /**
+   * Уйти из пульта.
+   *
+   * Лекцию это НЕ останавливает и останавливать не должно: пульт — это руки, а
+   * не сама лекция, и человек, заглянувший в тетрадь показать ячейку, не
+   * закончил пару. Но исчезнувший пульт нужно объяснить — иначе тот, кто
+   * промахнулся мимо кнопки, будет искать, куда делась лекция, вместо того
+   * чтобы вернуться одним нажатием.
+   */
+  const PULT_NOTICE_MS = 6000
+  let pultNoticeUp = $state(false)
+
+  function leavePult(): void {
+    if (lecture !== null && leading) pultNoticeUp = true
+    onnavigate?.(`/s/${session.session.id}`)
+  }
+
+  function toPult(): void {
+    pultNoticeUp = false
+    onnavigate?.(`/s/${session.session.id}/pult`)
+  }
+
+  $effect(() => {
+    if (!pultNoticeUp) return
+    const timer = window.setTimeout(() => (pultNoticeUp = false), PULT_NOTICE_MS)
+    return () => window.clearTimeout(timer)
+  })
+
+  /*
+   * Свайп от левой кромки — это «назад» в истории Safari, и выключить его на
+   * iPad нельзя ничем. У пульта левая кромка — это рука, которой планшет
+   * держат: пролистнуть лекцию назад одним неверным миллиметром и оказаться в
+   * комнате с вкладками и оракулом — вопрос времени.
+   *
+   * Поэтому по `popstate` возвращаемся на пульт — но только в одном случае:
+   * лекцию ведёт ЭТОТ человек с ЭТОГО устройства, и ушли мы в свою же комнату.
+   * За пределы комнаты не держим вовсе. Капкан, из которого не выйти «назад»,
+   * дороже случайного выхода, а настоящий выход есть и он видимый — «В комнату»
+   * в «Ещё».
+   *
+   * Слушатель App'а срабатывает раньше нашего и уже поставил новый путь;
+   * `onnavigate` кладёт поверх него запись пульта, так что и следующее «назад»
+   * приводит сюда же.
+   */
+  $effect(() => {
+    if (!pult || lecture === null || !leading) return
+    const room = `/s/${session.session.id}`
+    const back = () => {
+      if (location.pathname === room || location.pathname === `${room}/`) {
+        onnavigate?.(`${room}/pult`)
+      }
+    }
+    window.addEventListener('popstate', back)
+    return () => window.removeEventListener('popstate', back)
   })
 
   /*
@@ -874,7 +973,18 @@
     этом то же самое: SessionState живёт в этом же компоненте и переход сюда его
     не трогает.
   -->
-  <div class="fixed inset-0 z-[90] flex flex-col bg-black">
+  <!--
+    Отступы под вырезом — на контейнере, а не в каждой строке: с
+    `viewport-fit=cover` (см. index.html) страница занимает физический экран
+    целиком, и на планшете, поставленном вместо проектора, «Экран готов»
+    оказалось бы под чёлкой. На ноутбуке у проектора все четыре нуля, и правило
+    не стоит ничего.
+  -->
+  <div
+    class="fixed inset-0 z-[90] flex flex-col bg-black
+           pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]
+           pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]"
+  >
     {#if lecture}
       <LectureView {lecture} role="projection" onleave={fromProjection} />
     {:else}
@@ -912,6 +1022,23 @@
         </div>
       </div>
     {/if}
+  </div>
+{:else if pult}
+  <!--
+    Пульт. Комната под ним не рисуется вовсе — по той же причине, что и под
+    проекцией, только повёрнутой в другую сторону: на проекцию смотрят двадцать
+    человек и лишнего им видеть нельзя, а пульт держат в руках посреди фразы, и
+    лишнее там — это лишняя секунда молчания в аудитории. Ни вкладок, ни панели
+    файлов, ни оракула, ни терминала.
+    Соединение то же самое: `SessionState` живёт в этом же компоненте, и приход
+    сюда его не трогает — ни сокетов, ни документа, ни присутствия.
+    Обёртка даёт пульту только место и подложку: правила касания (лупа по
+    долгому нажатию, серая вспышка на каждом тапе) и отступы под вырезом стоят
+    внутри ConsoleView — там знают, какая кромка чем занята, и там же они
+    кончаются, не задевая ни тетрадь, ни читалку.
+  -->
+  <div class="fixed inset-0 z-[95] bg-canvas">
+    <ConsoleView onexit={leavePult} />
   </div>
 {:else}
 <div class="flex h-full min-h-0 flex-col overflow-hidden bg-canvas">
@@ -1455,8 +1582,42 @@
   фразы, решат, что сломались их ноутбуки. Строка спокойная, не как ошибка: это
   не поломка, а решение преподавателя, и сказано оно ровно один раз.
 -->
+<!--
+  Пульт закрыли, а лекция идёт.
+
+  Уход из пульта — это не конец пары, и объявить об этом надо ровно один раз:
+  без строки человек, промахнувшийся мимо кнопки, ищет пропавшую лекцию, а не
+  дорогу обратно. Кнопка рядом с фразой, потому что вернуться нужно ЗДЕСЬ и
+  СЕЙЧАС — на пульт из комнаты другого пути нет: адрес его никто не помнит, а
+  ссылку-ключ пришлось бы просить заново.
+-->
+{#if pultNoticeUp && mode === 'room' && !session.gone}
+  <div
+    class="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4
+           pb-[env(safe-area-inset-bottom)]"
+  >
+    <div
+      role="status"
+      class="pointer-events-auto flex items-center gap-2 border border-line bg-raised py-1.5 pl-3 pr-1.5 shadow-pop"
+      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
+    >
+      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+      <p class="text-ui leading-snug text-muted">Пульт закрыт, лекция идёт.</p>
+      <button
+        class="btn-ghost h-6 px-2 text-2xs font-bold uppercase tracking-label"
+        onclick={toPult}
+      >
+        Вернуться к пульту
+      </button>
+    </div>
+  </div>
+{/if}
+
 {#if rulesNoticeUp && !session.gone}
-  <div class="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
+  <div
+    class="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4
+           pb-[env(safe-area-inset-bottom)]"
+  >
     <div
       role="status"
       class="pointer-events-none flex items-center gap-2 border border-line bg-raised px-3 py-1.5 shadow-pop"
@@ -1470,8 +1631,23 @@
   </div>
 {/if}
 
-{#if session.lastError && !session.gone}
-  <div class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4">
+<!-- Нижние отступы у всех трёх строк — с `viewport-fit=cover` (index.html)
+     четыре пикселя ниже домашнего индикатора значат, что кнопка «закрыть»
+     оказалась под системным свайпом. -->
+<!--
+  Полосу ошибки пульт и проекция рисуют сами и по-своему.
+
+  Эта — общая комнатная: она ложится поверх всего с `z-50`, говорит
+  по-английски («Waiting for the connection…») и приносит с собой крестик,
+  который на планшете нажимают ладонью. Пульт про обрыв связи уже сказал
+  своей строкой и своими словами, а на проекции в аудитории любая всплывшая
+  плашка — это плашка, которую читает весь зал.
+-->
+{#if session.lastError && !session.gone && !pult && !projection}
+  <div
+    class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4
+           pb-[env(safe-area-inset-bottom)]"
+  >
     <div
       role="status"
       class="pointer-events-auto flex max-w-lg items-start gap-2 border border-line bg-raised py-2 pl-3 pr-1.5 shadow-pop"

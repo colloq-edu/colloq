@@ -72,10 +72,54 @@ export function isPresenter(sessionId: string, participantId: string): boolean {
   return rooms.get(sessionId)?.state.by === participantId
 }
 
+/**
+ * Передать пульт другому преподавателю, НЕ начиная лекцию заново.
+ *
+ * Второй ведущий берёт управление тем же `lecture:start` по тому же файлу —
+ * другого сообщения у него нет. Без этой развилки такое нажатие уходило бы в
+ * `startLecture`, а он заводит комнату с нуля: страница возвращается на первую,
+ * чернила стираются все до одного, часы лекции начинают отсчёт сначала. То
+ * есть нажатие «взять пульт» на сороковой минуте стирало бы сорок минут
+ * разметки — и делало бы это на проекторе, при всех.
+ *
+ * Меняется поэтому ровно то, что значит «кто ведёт»: имя, подпись и цвет
+ * указки. Страница, чернила, пауза и отметка начала — не наши: они про лекцию,
+ * а не про руки, которые её ведут.
+ *
+ * По ТОМУ ЖЕ файлу: другой документ — это уже другая лекция, и начинать её
+ * надо начисто. Возвращает новое состояние или `null`, если передавать нечего,
+ * — как и остальные правки состояния в этом файле.
+ */
+export function handOver(
+  sessionId: string,
+  file: string,
+  by: string,
+  byName: string,
+  color: string,
+): LectureState | null {
+  const room = rooms.get(sessionId)
+  if (!room || room.state.file !== file) return null
+  room.state = { ...room.state, by, byName, color }
+  return room.state
+}
+
+/**
+ * Сколько чистых листов разрешено завести.
+ *
+ * Их номера отрицательные и заводятся нажатием — то есть их количество это то,
+ * сколько раз преподаватель нажал кнопку. Потолок здесь не про злой умысел, а
+ * про заевшую кнопку: страницы с чернилами держатся в памяти, и уходить она
+ * должна конечно.
+ */
+const MAX_BOARDS = 50
+
 export function turnTo(sessionId: string, page: number): LectureState | null {
   const room = rooms.get(sessionId)
   if (!room) return null
-  const wanted = Math.max(1, Math.floor(page))
+  // Ноль — не страница: это мусор из вкладки. Минус — чистый лист (см. словарь).
+  const asked = Math.trunc(page)
+  if (asked === 0 || !Number.isFinite(asked)) return null
+  const wanted = asked < 0 ? Math.max(-MAX_BOARDS, asked) : asked
   if (room.state.page === wanted) return null
   room.state = { ...room.state, page: wanted }
   return room.state
@@ -105,7 +149,9 @@ export function addInk(
 ): InkStroke | null {
   const room = rooms.get(sessionId)
   if (!room) return null
-  const page = Math.max(1, Math.floor(patch.page))
+  // Чистый лист — такая же страница, только с отрицательным номером.
+  const page = Math.trunc(patch.page)
+  if (page === 0 || !Number.isFinite(page)) return null
   const points = patch.points.slice(0, MAX_POINTS_PER_MESSAGE).filter(Number.isFinite)
   if (points.length < 2) return null
 

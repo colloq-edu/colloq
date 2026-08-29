@@ -10,7 +10,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
-  import ConsoleLink from '@/components/lecture/ConsoleLink.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { api } from '@/lib/api'
   import type { Lead } from '@/lib/follow'
@@ -223,7 +222,21 @@
         at = next
         void draw(node, at.index)
       },
-      destroy() {},
+      /*
+       * Уходя, холст отдаёт свой буфер.
+       *
+       * `width = height = 1` — единственное, что заставляет WebKit его
+       * отпустить: сборщик мусора отдаёт эти буферы когда угодно, только не
+       * вовремя. Бюджет памяти холстов на iPad один НА ПРОЦЕСС, и колода в
+       * шестьдесят страниц выбирает его целиком; переполнив его, WebKit
+       * начинает рисовать холсты прозрачными — причём произвольные, не
+       * обязательно те, что его переполнили. Обнулиться может лист идущей
+       * лекции в соседней вкладке, и эта строка защищает не читалку, а его.
+       */
+      destroy() {
+        node.width = 1
+        node.height = 1
+      },
     }
   }
 
@@ -449,15 +462,6 @@
         <Icon name="pencil" size={12} />
         Лекция
       </button>
-      <!--
-        Ссылка на пульт стоит рядом с «Лекцией», а не только внутри неё: пульт
-        нужен ДО начала — планшет берут в руки, а лекцию начинают уже с него.
-      -->
-      <ConsoleLink
-        class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
-               text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
-               focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-      />
     {/if}
 
     {#if !following && lead}

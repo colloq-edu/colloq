@@ -35,13 +35,14 @@ import type {
   ControlServerMessage,
   FileEntry,
   Participant,
+  ParticipantRole,
 } from '@shared/protocol'
 import type { TokenPayload } from './auth.js'
 import { applyOnBehalf, getSessionDoc, onRefusal } from './collab/index.js'
 import { moveInCells } from './collab/ops.js'
 import { LINE_LENGTH } from './kernel/format.js'
 import { allows, allowsAgent, allowsRun, allowsStructure, runQueueCap, type Who } from '@shared/rules'
-import { getParticipant, getRules } from './db.js'
+import { getParticipant, getRules, moveNotesTo, notesOf, setNote } from './db.js'
 import {
   answerInput,
   clearOutputs,
@@ -87,7 +88,9 @@ import { forgetFile, onFileSaved } from './collab/files.js'
 import {
   addInk,
   clearInk,
+  eraseInk,
   forgetLecture,
+  handOver,
   inkOf,
   isPresenter,
   lectureOf,
@@ -116,6 +119,16 @@ const MAX_MISSED_PONGS = 2
 const MAX_FRAME_BYTES = 8192
 /** A shell command, not a shell script: anything longer is a paste accident. */
 const MAX_COMMAND_BYTES = 4096
+/**
+ * Речь к одной странице — абзац, а не глава.
+ *
+ * Три тысячи знаков стоят не от вкуса, а от потолка кадра: кириллица в UTF-8 —
+ * два байта, шесть тысяч байт текста плюс путь и обвязка укладываются в 8192, а
+ * кадр толще `parse` выбрасывает МОЛЧА — ни ошибки, ни строки в журнале.
+ * Страница речи, исчезнувшая без единого слова посреди пары, — худшее, что этот
+ * провод может сделать, поэтому потолок назван вслух и отказ на нём говорящий.
+ */
+const MAX_NOTE_CHARS = 3000
 
 interface Room {
   sockets: Set<WebSocket>
@@ -287,6 +300,58 @@ function tell(sessionId: string, participantId: string, message: ControlServerMe
   if (!room) return
   for (const ws of room.sockets) if (owner.get(ws) === participantId) send(ws, message)
 }
+
+/**
+ * С какой ролью сокет подключился — рядом с `owner` и по той же причине.
+ *
+ * Не `getParticipant(...).role`: в таблице лежит роль, с которой человек вошёл
+ * в комнату, а сокет живёт с ЭФФЕКТИВНОЙ (см. `effectiveRole` в index.ts).
+ * Преподаватель, вошедший студентом по ссылке в чате и уже залогиненный в
+ * панель, в таблице до сих пор участник — спросить её значило бы отказать ему в
+ * его собственных заметках на его собственной лекции.
+ */
+const rank = new WeakMap<WebSocket, ParticipantRole>()
+
+/**
+ * Сказать всем преподавателям комнаты — и никому больше.
+ *
+ * Единственная рассылка в этом файле, у которой адресат уже комнаты, и это не
+ * осторожность, а суть заметок: «здесь спросить, кто помнит формулу Байеса;
+ * если молчат — вывести на доске» — это речь преподавателя самому себе, и
+ * `broadcast` раздал бы её двадцати студентам вместе с ответом на вопрос,
+ * который ещё не задан.
+ *
+ * И не `tell`: у семинара бывает двое ведущих, и правку, сделанную на ноутбуке
+ * первого, обязан увидеть планшет второго. Один и тот же преподаватель с двух
+ * устройств — тоже сюда: планшет входит по ключу ТЕМ ЖЕ участником, так что
+ * `tell` покрыл бы только его, а второго преподавателя — нет.
+ */
+function toHosts(sessionId: string, file: string, message: ControlServerMessage): void {
+  const room = rooms.get(sessionId)
+  if (!room) return
+  const frame = JSON.stringify(message)
+  for (const ws of room.sockets) {
+    if (ws.readyState !== WebSocket.OPEN || rank.get(ws) !== 'host') continue
+    // И только тем, кто спрашивал про ЭТОТ документ.
+    if (notesOpen.get(ws) !== file) continue
+    try {
+      ws.send(frame)
+    } catch {
+      /* dropped; the close handler will clean it up */
+    }
+  }
+}
+
+/**
+ * Какой документ этот сокет спрашивал заметками.
+ *
+ * Роли мало. Ведущий входит на планшет по ключу тем же участником, и обе его
+ * вкладки — пульт и ПРОЕКЦИЯ на кафедральном ноутбуке — одинаково «хосты». Речь
+ * преподавателя самому себе не должна доезжать до машины, которая стоит
+ * раскрытой перед аудиторией, даже если на экран она это не выводит: файл,
+ * которого там нет в памяти, невозможно случайно показать.
+ */
+const notesOpen = new WeakMap<WebSocket, string>()
 
 onRefusal((sessionId, participantId, refusal) => {
   tell(sessionId, participantId, {
@@ -725,6 +790,59 @@ export function dispatch(
         return
       }
       /*
+       * Та же лекция, но другими руками — это ПЕРЕДАЧА пульта, а не начало.
+       *
+       * Второму преподавателю нечем сказать «возьму управление»: кнопка «взять
+       * пульт» шлёт тот же `lecture:start` по тому же файлу. Провалившись
+       * дальше, оно ушло бы в `startLecture` и стёрло бы всё, ради чего пульт и
+       * берут: страницу вернуло бы на первую, чернила — все до одного, часы
+       * лекции — в ноль. Сорок минут разметки, стёртые нажатием «перехватить»,
+       * и стёртые на проекторе при всех.
+       *
+       * Только когда ведёт КТО-ТО ДРУГОЙ: то же нажатие своего же пульта — это
+       * «начать заново», и заново значит начисто. Общий экран здесь не трогаем
+       * — документ на нём уже стоит, это та же лекция.
+       */
+      const going = lectureOf(sessionId)
+      if (going && going.file === wanted && going.by === payload.participantId) {
+        /*
+         * Свой же документ своими же руками — это НИЧЕГО.
+         *
+         * «Ещё → сменить документ» показывает все PDF комнаты, и тот, что идёт
+         * сейчас, стоит в том же ряду. Нажатие по нему читается как «убедиться,
+         * что открыт правильный», а не как «начать заново начисто» — а стоило
+         * бы это сорока минутами разметки и часами лекции, стёртыми на
+         * проекторе при всех. Начать заново — это закончить и начать: два
+         * нажатия, второе из которых человек делает уже осознанно.
+         */
+        return
+      }
+      if (going && going.file === wanted) {
+        /*
+         * Взять пульт у другого — дело преподавателя, а не правила `board`.
+         *
+         * Правило решает, кому ставить документ залу; забрать управление у
+         * того, кто уже ведёт, — другой поступок, и в открытой комнате, где
+         * доску ставит любой, он означал бы, что студент посреди пары молча
+         * забирает страницу, чернила и указку себе.
+         */
+        if (payload.role !== 'host') {
+          send(ws, { t: 'error', message: 'Взять пульт у ведущего может преподаватель.' })
+          return
+        }
+        const taken = handOver(
+          sessionId,
+          wanted,
+          payload.participantId,
+          displayName(sessionId, payload.participantId),
+          colorForId(payload.participantId),
+        )
+        if (taken) {
+          broadcast(sessionId, { t: 'lecture', state: taken })
+          return
+        }
+      }
+      /*
        * Лекция ставит документ и на общий экран — до того, как начаться.
        *
        * Не для красоты: правило «доска ушла — лекция кончилась» выше держится
@@ -752,6 +870,75 @@ export function dispatch(
       }
       stopLecture(sessionId)
       broadcast(sessionId, { t: 'lecture', state: null })
+      return
+    }
+
+    /*
+     * Заметки спикера. Право — роль хоста, и это не то же самое, что право
+     * вести лекцию.
+     *
+     * Не `isPresenter`: заметки пишут накануне вечером, когда лекции нет вовсе и
+     * вести некому. И не правило `board`: правило решает, кому показывать
+     * документ залу, а заметка залу не показывается никогда — в открытой
+     * комнате, где доску ставит любой, она осталась бы преподавательской.
+     */
+    case 'notes:open': {
+      if (payload.role !== 'host') {
+        send(ws, { t: 'error', message: 'Заметки к лекции видит преподаватель.' })
+        return
+      }
+      const file = normalizePath(typeof message.file === 'string' ? message.file : '')
+      if (!file) {
+        send(ws, { t: 'error', message: refusedPath(message.file) })
+        return
+      }
+      /*
+       * Ответ — одному сокету, а не всем хостам: это ответ на вопрос, который
+       * задала одна вкладка. Второму преподавателю, ничего не спрашивавшему,
+       * приехала бы карта к документу, которого у него не открыто, и его пульт
+       * подменил бы ею свою.
+       */
+      notesOpen.set(ws, file)
+      send(ws, { t: 'notes', file, notes: notesOf(sessionId, file) })
+      return
+    }
+
+    case 'notes:set': {
+      if (payload.role !== 'host') {
+        send(ws, { t: 'error', message: 'Заметки к лекции пишет преподаватель.' })
+        return
+      }
+      const file = normalizePath(typeof message.file === 'string' ? message.file : '')
+      if (!file) {
+        send(ws, { t: 'error', message: refusedPath(message.file) })
+        return
+      }
+      const page = Number(message.page)
+      if (!Number.isFinite(page) || page < 1) {
+        // Тоже вслух: всё, что теряет написанный текст, обязано это сказать.
+        send(ws, { t: 'error', message: 'Заметка пишется к странице документа.' })
+        return
+      }
+      const text = typeof message.text === 'string' ? message.text : ''
+      if (text.length > MAX_NOTE_CHARS) {
+        /*
+         * Вслух, а не обрезать. Обрезанная посередине фраза выглядит как
+         * сохранённая, и человек узнаёт о потере на паре, читая обрубок; клиент
+         * держит тот же потолок полем `maxlength`, так что сюда доезжает только
+         * то, что мимо клиента.
+         */
+        send(ws, {
+          t: 'error',
+          message: `Заметка к странице — не длиннее ${MAX_NOTE_CHARS} знаков.`,
+        })
+        return
+      }
+      const at = Math.floor(page)
+      setNote(sessionId, file, at, text)
+      // Тем же текстом, каким он лёг в базу: `setNote` подрезает края, а пустая
+      // заметка — это её отсутствие, и эхо обязано говорить то же самое, иначе
+      // у второго устройства останется строка из пробелов там, где строки нет.
+      toHosts(sessionId, file, { t: 'notes:one', file, page: at, text: text.trim() })
       return
     }
 
@@ -796,6 +983,21 @@ export function dispatch(
       return
     }
 
+    case 'ink:erase': {
+      if (!isPresenter(sessionId, payload.participantId)) return
+      const page = Number(message.page)
+      const id = optionalId(message.id)
+      if (!id || !Number.isFinite(page)) return
+      /*
+       * Рассылаем только то, что действительно стёрли. Ластик проходит по
+       * одному штриху десяток раз за движение руки, и «сотрите штрих, которого
+       * нет» заставляло бы двадцать браузеров перерисовывать страницу впустую —
+       * ровно за этим `eraseInk` и отвечает, был ли он там.
+       */
+      if (eraseInk(sessionId, page, id)) broadcast(sessionId, { t: 'ink:drop', page, id })
+      return
+    }
+
     case 'ink:clear': {
       if (!isPresenter(sessionId, payload.participantId)) return
       const page = Number.isFinite(message.page) ? Number(message.page) : undefined
@@ -815,10 +1017,7 @@ export function dispatch(
       const x = Number(message.x)
       const y = Number(message.y)
       if (!Number.isFinite(x) || !Number.isFinite(y)) return
-      broadcast(sessionId, {
-        t: 'laser',
-        at: { color: lecture.color, page: Number(message.page), x, y },
-      })
+      broadcast(sessionId, { t: 'laser', at: { page: Number(message.page), x, y } })
       return
     }
 
@@ -940,6 +1139,16 @@ export function dispatch(
       forgetFile(sessionId, from)
       // Тетрадь переезжает вместе со своим файлом: корень тот же, путь новый.
       moveBook(sessionId, from, to)
+      /*
+       * И заметки спикера — они привязаны к пути документа, а не к лекции.
+       *
+       * Переименовать файл посреди пары — обычное дело: преподаватель правит
+       * «лекция3.pdf» на «Лекция 3. Поток и дивергенция.pdf». Без этой строки
+       * вечер, потраченный на речь к двадцати четырём страницам, превращается в
+       * строки, к которым больше нет ключа: старого пути на диске уже нет, а
+       * восстановить их из интерфейса нечем.
+       */
+      moveNotesTo(sessionId, from, to)
       const moved = moveLecture(sessionId, from, to)
       if (moved) broadcast(sessionId, { t: 'lecture', state: moved })
       if (boardOf(sessionId) === from) setBoard(sessionId, to)
@@ -1278,6 +1487,10 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   }
   room.sockets.add(ws)
   owner.set(ws, payload.participantId)
+  // Роль запоминается здесь и больше нигде: `toHosts` спрашивает только её, а
+  // сокет живёт с той ролью, с которой пришёл, — ровно с той, которую dispatch
+  // проверяет на каждом сообщении.
+  rank.set(ws, payload.role)
 
   // Before anything else: the browser gates its own interrupt/restart controls
   // on this, and the token it holds may say something staler than the truth.

@@ -13,9 +13,11 @@ import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
-import { createSession, setRules } from '../server/src/db.js'
+import { createSession, notesOf, setRules } from '../server/src/db.js'
+import { makeFile } from '../server/src/workspace.js'
 import { OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import { dispatch } from '../server/src/control.js'
+import { addInk, inkOf, lectureOf, startLecture, stopLecture, turnTo } from '../server/src/lecture.js'
 import type { ControlClientMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 
@@ -226,4 +228,130 @@ test('на общий экран нельзя поставить то, чего 
   const id = room({})
   assert.match(say(id, 'host', { t: 'board:open', name: 'нет-такого.pdf' }) ?? '', /файла/i)
   assert.match(say(id, 'host', { t: 'board:open', name: '' }) ?? '', /файла/i)
+})
+
+/* --------------------------------------------------------- заметки спикера */
+
+test('заметки спикера — это роль преподавателя, а не правило комнаты', () => {
+  /*
+   * Комната, где документ на общий экран ставит любой, — обычная. Заметки в
+   * ней всё равно преподавательские: правило `board` решает, кому показывать
+   * документ ЗАЛУ, а заметка залу не показывается никогда.
+   */
+  const id = room({ board: 'room' })
+  assert.match(say(id, 'participant', { t: 'notes:open', file: 'l.pdf' }) ?? '', /преподавател/i)
+  assert.match(
+    say(id, 'participant', { t: 'notes:set', file: 'l.pdf', page: 1, text: 'спросить про Гаусса' }) ??
+      '',
+    /преподавател/i,
+  )
+  assert.deepEqual(notesOf(id, 'l.pdf'), {}, 'студент дописался в чужую речь')
+
+  assert.equal(say(id, 'host', { t: 'notes:open', file: 'l.pdf' }), null)
+  assert.equal(say(id, 'host', { t: 'notes:set', file: 'l.pdf', page: 1, text: 'спросить про Гаусса' }), null)
+  assert.deepEqual(notesOf(id, 'l.pdf'), { 1: 'спросить про Гаусса' })
+})
+
+test('заметка длиннее потолка не пропадает молча', () => {
+  /*
+   * Кадр толще 8192 байт сервер выбрасывает в `parse` без единого слова, и
+   * страница речи исчезает посреди пары. Потолок на знаки стоит с запасом под
+   * кириллицу, и отказ на нём говорящий — иначе он ничем не лучше молчания.
+   */
+  const id = room({})
+  assert.match(
+    say(id, 'host', { t: 'notes:set', file: 'l.pdf', page: 1, text: 'я'.repeat(3001) }) ?? '',
+    /3000/,
+  )
+  assert.deepEqual(notesOf(id, 'l.pdf'), {})
+})
+
+/* ----------------------------------------------------------------- ластик */
+
+test('ластик слушается ведущего и молчит у всех остальных', () => {
+  /*
+   * Отказ здесь молчаливый намеренно: это не решение преподавателя, о котором
+   * надо рассказать, а вкладка, не знающая, что лекцию ведёт кто-то другой.
+   */
+  const id = room({})
+  startLecture(id, { file: 'l.pdf', by: 'p_host', byName: 'Пётр Ильич', color: '#0f2d69' })
+  addInk(id, { id: 's1', page: 3, color: '#d4162f', width: 0.005, points: [0.1, 0.1, 0.2, 0.2] })
+
+  assert.equal(say(id, 'participant', { t: 'ink:erase', page: 3, id: 's1' }), null)
+  assert.equal(inkOf(id).length, 1, 'не ведущий стёр чужой штрих')
+
+  assert.equal(say(id, 'host', { t: 'ink:erase', page: 3, id: 's1' }), null)
+  assert.equal(inkOf(id).length, 0)
+  stopLecture(id)
+})
+
+/* ------------------------------------------------------------ передача рук */
+
+test('второй преподаватель берёт пульт, не начиная лекцию заново', () => {
+  /*
+   * Кнопки «взять пульт» в проводе нет: она шлёт тот же `lecture:start` по
+   * тому же файлу. Если он уйдёт в `startLecture`, нажатие на сороковой минуте
+   * вернёт страницу на первую, сотрёт всю разметку и обнулит часы — и сделает
+   * это на проекторе, при всех. Здесь проверяется именно развилка в `dispatch`:
+   * сама передача рук проверена в lecture.test.mts.
+   */
+  const id = room({})
+  makeFile(id, 'l3.pdf', '%PDF-1.4')
+  startLecture(id, { file: 'l3.pdf', by: 'p_first', byName: 'Ада', color: '#d4162f' })
+  turnTo(id, 14)
+  addInk(id, { id: 's1', page: 14, color: '#d4162f', width: 0.005, points: [0.1, 0.1, 0.2, 0.2] })
+  const began = lectureOf(id)?.startedAt
+
+  const { ws } = socket()
+  dispatch(ws, id, { sessionId: id, participantId: 'p_second', role: 'host' }, {
+    t: 'lecture:start',
+    file: 'l3.pdf',
+  })
+
+  assert.equal(lectureOf(id)?.by, 'p_second', 'пульт не перешёл')
+  assert.equal(lectureOf(id)?.page, 14, 'страница вернулась к началу')
+  assert.equal(lectureOf(id)?.startedAt, began, 'часы лекции пошли заново')
+  assert.equal(inkOf(id).length, 1, 'разметка стёрлась')
+  stopLecture(id)
+})
+
+test('тот же преподаватель по тому же файлу не начинает ничего', () => {
+  /*
+   * Список «сменить документ» показывает все PDF комнаты, и текущий стоит в том
+   * же ряду: нажатие по нему читается как «убедиться, что открыт правильный».
+   * Стоило это сорока минутами разметки и часами лекции, стёртыми на проекторе
+   * при всех. Начать заново — это «Закончить» и потом «Лекция»: два нажатия,
+   * второе из которых делают осознанно.
+   */
+  const id = room({})
+  makeFile(id, 'l3.pdf', '%PDF-1.4')
+  startLecture(id, { file: 'l3.pdf', by: 'p_host', byName: 'Ада', color: '#d4162f' })
+  turnTo(id, 14)
+  addInk(id, { id: 's1', page: 14, color: '#d4162f', width: 0.005, points: [0.1, 0.1, 0.2, 0.2] })
+  const began = lectureOf(id)?.startedAt
+
+  assert.equal(say(id, 'host', { t: 'lecture:start', file: 'l3.pdf' }), null)
+  assert.equal(lectureOf(id)?.page, 14, 'страница вернулась к началу')
+  assert.equal(lectureOf(id)?.startedAt, began, 'часы пошли заново')
+  assert.equal(inkOf(id).length, 1, 'разметка стёрлась')
+  stopLecture(id)
+})
+
+test('пульт у ведущего забирает преподаватель, а не всякий, кому можно доску', () => {
+  /*
+   * Правило `board` решает, кому ставить документ залу. Забрать управление у
+   * того, кто уже ведёт, — другой поступок: в открытой комнате это значило бы,
+   * что студент посреди пары молча берёт себе страницу, чернила и указку, а
+   * преподаватель узнаёт об этом по пропавшему пульту.
+   */
+  const id = room({ board: 'room' })
+  makeFile(id, 'l4.pdf', '%PDF-1.4')
+  startLecture(id, { file: 'l4.pdf', by: 'p_host', byName: 'Ада', color: '#d4162f' })
+  turnTo(id, 9)
+
+  const denied = say(id, 'participant', { t: 'lecture:start', file: 'l4.pdf' })
+  assert.match(String(denied ?? ''), /преподаватель/)
+  assert.equal(lectureOf(id)?.by, 'p_host', 'пульт ушёл студенту')
+  assert.equal(lectureOf(id)?.page, 9)
+  stopLecture(id)
 })

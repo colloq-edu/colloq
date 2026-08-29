@@ -886,7 +886,7 @@ check(
  * pdf.js не рисует, потому что рисовать некуда. На экране это «лекция не
  * открылась», и виноватым выглядел бы документ.
  */
-const sheetWidth = `Math.round(document.querySelector('canvas.ink').getBoundingClientRect().width)`
+const sheetWidth = `Math.round(document.querySelector('canvas.ink-dry').getBoundingClientRect().width)`
 // Ждём, а не спим: лист получает размер, когда приедет сам документ, а он
 // приезжает по сети — на холодной вкладке дольше, чем на прогретой.
 await until(host, `${sheetWidth} > 200`, 'лист лекции получил размер')
@@ -907,7 +907,7 @@ await host.js(
 await wait(200)
 const strokeOn = (page: Tab) =>
   page.js(
-    `const c=document.querySelector('canvas.ink');` +
+    `const c=document.querySelector('canvas.ink-dry');` +
       `if(!c||!c.width) return -1;` +
       `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
       `let n=0; for(let i=3;i<d.length;i+=4) if(d[i]>16) n+=1; return n`,
@@ -915,7 +915,7 @@ const strokeOn = (page: Tab) =>
 check(((await strokeOn(student)) as number) <= 0, 'до штриха страница чистая', 'пусто')
 
 await host.js(
-  `const c=document.querySelector('canvas.ink');` +
+  `const c=document.querySelector('canvas.ink-wet');` +
     `if(!c) throw new Error('слоя чернил нет');` +
     `const r=c.getBoundingClientRect();` +
     `const at=(t,fx,fy)=>c.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:1,pointerType:'pen',` +
@@ -923,7 +923,7 @@ await host.js(
     `at('pointerdown',0.2,0.3); at('pointermove',0.4,0.45); at('pointermove',0.6,0.35);` +
     `at('pointermove',0.8,0.5); at('pointerup',0.8,0.5); return 1`,
 )
-await until(student, `(async()=>{const c=document.querySelector('canvas.ink');if(!c||!c.width)return false;` +
+await until(student, `(async()=>{const c=document.querySelector('canvas.ink-dry');if(!c||!c.width)return false;` +
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `for(let i=3;i<d.length;i+=4) if(d[i]>16) return true; return false})()`, 'штрих доехал до студента')
 const inked = (await strokeOn(student)) as number
@@ -933,7 +933,7 @@ check(inked > 0, 'штрих ведущего появляется у студе
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Стереть').click(); return 1`,
 )
-await until(student, `(async()=>{const c=document.querySelector('canvas.ink');if(!c)return true;` +
+await until(student, `(async()=>{const c=document.querySelector('canvas.ink-dry');if(!c)return true;` +
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `for(let i=3;i<d.length;i+=4) if(d[i]>16) return false; return true})()`, 'чернила стёрлись у студента')
 check(((await strokeOn(student)) as number) <= 0, 'стирание доезжает до всей комнаты', 'чисто')
@@ -976,8 +976,8 @@ check(
   'вошёл сразу',
 )
 check(
-  (await pad.js(`return location.pathname`)) === `/s/${ROOM}`,
-  'ключ убран из адреса после входа',
+  (await pad.js(`return location.pathname`)) === `/s/${ROOM}/pult`,
+  'ключ убран из адреса, а планшет открыт пультом',
   await pad.js('return location.pathname'),
 )
 check(
@@ -991,12 +991,17 @@ check(
  * И вторым человеком в комнате он не становится: список людей считает людей, а
  * не вкладки. Второй «Ада» в списке — это лекция, которую ведёт непонятно кто.
  */
+/*
+ * Планшет — не второй человек в комнате: он входит тем же участником. Список
+ * людей считает ЛЮДЕЙ, а не вкладки, и второй «Ада» в нём означал бы лекцию,
+ * которую ведёт непонятно кто.
+ */
+const inRoom = `(document.body.textContent||'').match(/(\\d+) in the room/)?.[1] ?? '?'`
+await until(host, `${inRoom} === '2'`, 'счёт людей в комнате устоялся', 8000)
 check(
-  (await host.js(
-    `return [...document.body.textContent.matchAll(/Ада/g)].length`,
-  )) as number >= 1,
-  'в комнате по-прежнему один ведущий',
-  await host.js(`return (document.body.textContent||'').match(/(\\d+) in the room/)?.[1] ?? '?'`),
+  (await host.js(`return ${inRoom}`)) === '2',
+  'планшет не стал вторым человеком в комнате',
+  (await host.js(`return ${inRoom} + ' · ' + [...document.querySelectorAll('[title]')].map(n=>n.getAttribute('title')).filter(t=>/Ада|Нина/.test(t||'')).join(' | ')`)) as string,
 )
 for (const line of pad.trouble.slice(0, 3)) console.log(`  (планшет) ${line}`)
 
@@ -1047,6 +1052,64 @@ if (process.argv.includes('--shot')) {
 }
 
 /*
+ * Пульт — отдельное приложение, и меряется оно планшетом.
+ *
+ * Окно проверки 1600×1000, то есть ноутбук; пульт же держат в руках, и всё в
+ * нём рассчитано на 1180×820 с двойным пикселем. Вкладке выдаётся ровно эта
+ * геометрия — иначе проверяется раскладка, которой на планшете не бывает.
+ */
+const pult = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}/pult`)
+await pult.send('Emulation.setDeviceMetricsOverride', {
+  width: 1180,
+  height: 820,
+  deviceScaleFactor: 2,
+  mobile: false,
+})
+await pult.send('Page.bringToFront')
+const pultReady = await until(
+  pult,
+  `[...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`,
+  'пульт нарисовал страницу',
+)
+check(pultReady, 'пульт показывает лист лекции', await pult.js(`return location.pathname`))
+check(
+  (await pult.js(
+    `return [...document.querySelectorAll('button')].some(b=>(b.getAttribute('aria-label')||'').includes('Указка'))
+      || [...document.querySelectorAll('button')].some(b=>/указк/i.test(b.textContent||''))`,
+  )) === true,
+  'у пульта есть свои инструменты',
+  await pult.js(`return document.querySelectorAll('button').length + ' кнопок'`),
+)
+await pult.js(
+  `if(!document.querySelector('textarea')){` +
+    `const b=[...document.querySelectorAll('button')].find(x=>/заметк/i.test(x.textContent||'')||/заметк/i.test(x.getAttribute('aria-label')||''));` +
+    `b&&b.click()} return 1`,
+)
+await wait(500)
+check(
+  (await pult.js(`return !!document.querySelector('textarea')`)) === true,
+  'заметки спикера на пульте пишутся',
+  await pult.js(`return document.querySelector('textarea')?.placeholder ?? 'поля нет'`),
+)
+/* Комнаты на пульте нет вовсе: ни вкладок, ни панели файлов, ни оракула. */
+check(
+  (await pult.js(
+    `return !document.querySelector('[aria-label="Toggle the AI oracle"]') && !document.querySelector('[role="tablist"]')`,
+  )) === true,
+  'комната на пульт не переехала',
+  'только лекция',
+)
+if (process.argv.includes('--shot')) {
+  await wait(700)
+  const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
+  const where = path.resolve('ui-pult.png')
+  writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
+  console.log(`  снимок: ${where}`)
+}
+for (const line of pult.trouble.slice(0, 3)) console.log(`  (пульт) ${line}`)
+await host.send('Page.bringToFront')
+
+/*
  * Проекция показывает страницу, а не чёрный прямоугольник.
  *
  * Самая дорогая ошибка этого экрана: он и в исправном виде почти весь чёрный,
@@ -1067,6 +1130,44 @@ check(
     `return document.querySelector('.shadow-pop')?.getAttribute('style') ?? 'листа нет'`,
   ),
 )
+await host.send('Page.bringToFront')
+
+/*
+ * Чистый лист.
+ *
+ * Слайд кончился, а вывод формулы — нет. Лист заводится с пульта и обязан
+ * доехать до проектора белым полем: страница с отрицательным номером есть в
+ * лекции, но её нет в документе, и всё, что умеет только PDF, должно об этом
+ * знать. Проверяется именно это — что на балке чисто, а не последний слайд.
+ */
+await pult.send('Page.bringToFront')
+await pult.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Лист');` +
+    `if(!b) throw new Error('кнопки «Лист» на пульте нет'); b.click(); return 1`,
+)
+const blankSheet =
+  `(async()=>{const c=[...document.querySelectorAll('canvas')].find(n=>n.getBoundingClientRect().width>200);` +
+  `if(!c||!c.width) return false;` +
+  `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+  `for(let i=3;i<d.length;i+=4) if(d[i]>16) return false; return true})()`
+await beam.send('Page.bringToFront')
+const cleared = await until(beam, blankSheet, 'проекция стала чистым листом', 12000)
+check(cleared, 'чистый лист доезжает до проектора', 'белое поле')
+check(
+  (await pult.js(`return /лист/i.test(document.body.textContent||'')`)) === true,
+  'пульт говорит, что показывает лист, а не страницу',
+  await pult.js(
+    `return [...document.querySelectorAll('span')].map(n=>(n.textContent||'').trim()).find(t=>/^лист /i.test(t)) ?? '—'`,
+  ),
+)
+/* И назад к слайдам — тем же нажатием: исписанный лист никуда не делся. */
+await pult.send('Page.bringToFront')
+await pult.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='К слайду');` +
+    `if(!b) throw new Error('возврата к слайду нет'); b.click(); return 1`,
+)
+await beam.send('Page.bringToFront')
+await until(beam, `!${blankSheet}`, 'проекция вернулась к слайду')
 await host.send('Page.bringToFront')
 
 /* Пауза гасит проекцию, но не пульт: у ведущего страница остаётся. */

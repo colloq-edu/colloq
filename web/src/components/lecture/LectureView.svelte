@@ -27,6 +27,7 @@
   import ConsoleLink from './ConsoleLink.svelte'
   import InkLayer from './InkLayer.svelte'
   import LecturePage from './LecturePage.svelte'
+  import NotesPad from './NotesPad.svelte'
 
   interface Props {
     /*
@@ -185,7 +186,7 @@
           <Icon name="chevron-left" size={14} />
         </button>
         <span class="flex items-center px-1 font-mono text-2xs tabular-nums text-ink">
-          {page} / {pages || '—'}
+          {#if page < 0}лист{:else}{page} / {pages || '—'}{/if}
         </span>
         <button
           type="button"
@@ -288,7 +289,9 @@
         <span class="text-faint">·</span>
         <span class="font-mono">{baseOf(lecture.file)}</span>
         <span class="flex-1"></span>
-        <span class="font-mono tabular-nums">{page} / {pages || '—'}</span>
+        <span class="font-mono tabular-nums">
+          {#if page < 0}чистый лист{:else}{page} / {pages || '—'}{/if}
+        </span>
         {#if onsolo}
           <!--
             Отойти от общей страницы — и вернуться. За преподавателем в этом
@@ -309,7 +312,20 @@
     {/if}
 
     {#if failure}
-      <p class="p-4 text-ui text-muted">{failure}</p>
+      <!--
+        Документ не открылся — У НАС: истёк токен, лопнула сеть, битый кэш. У
+        проектора он при этом, скорее всего, открыт, и лекцию можно довести по
+        кнопкам и по заметкам. Отнимать у ведущего то, что ещё работает,
+        из-за собственной неудачи — худшее, что этот экран может сделать.
+      -->
+      <div class="flex min-h-0 flex-1 gap-3 p-3">
+        <p class="min-w-0 flex-1 text-ui text-muted">{failure}</p>
+        {#if presenting}
+          <aside class="hidden w-[28%] shrink-0 flex-col lg:flex">
+            <NotesPad file={lecture.file} {page} compact />
+          </aside>
+        {/if}
+      </div>
     {:else}
       <div class="flex min-h-0 flex-1 gap-3 p-3">
         <LecturePage {doc} {page}>
@@ -326,18 +342,32 @@
           {/snippet}
         </LecturePage>
 
-        {#if presenting && pages > page}
+        {#if presenting}
           <!--
-            Следующая страница — только у ведущего и только когда она есть.
-            Это и есть Speaker View: знать, что будет дальше, не заглядывая
-            вперёд на проекторе.
+            Колонка ведущего — и есть Speaker View: что будет дальше и что про
+            это сказать. Знать это, не заглядывая вперёд на проекторе.
+
+            «Дальше» показывается, только когда следующая страница есть, а
+            заметки — всегда: на последнем слайде говорить ещё нужно, и лента,
+            исчезнувшая именно там, читалась бы как поломка. Заметкам отдана
+            нижняя, большая половина колонки: их читают, подняв голову от
+            экрана, а на эскиз смотрят краем глаза.
+
+            Ни залу, ни проекции заметки не достаются ни в каком виде — ни
+            пустыми, ни свёрнутыми: то, что «просто пустое», однажды окажется
+            непустым, и увидит это вся аудитория.
           -->
-          <div class="hidden w-[28%] shrink-0 flex-col gap-2 lg:flex">
-            <span class="text-2xs font-bold uppercase tracking-institution text-faint">
-              дальше
-            </span>
-            <LecturePage {doc} page={page + 1} dim />
-          </div>
+          <aside class="hidden w-[28%] shrink-0 flex-col gap-2 lg:flex">
+            {#if pages > page}
+              <span class="text-2xs font-bold uppercase tracking-institution text-faint">
+                дальше
+              </span>
+              <div class="flex min-h-0 basis-[42%]">
+                <LecturePage {doc} page={page + 1} dim />
+              </div>
+            {/if}
+            <NotesPad file={lecture.file} {page} compact />
+          </aside>
         {/if}
       </div>
     {/if}

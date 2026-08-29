@@ -16,7 +16,9 @@ import assert from 'node:assert/strict'
 import {
   addInk,
   clearInk,
+  eraseInk,
   forgetLecture,
+  handOver,
   inkOf,
   isPresenter,
   lectureOf,
@@ -53,7 +55,9 @@ test('ведущий — тот, кто начал, и только он', () =>
   assert.equal(isPresenter('нет такой комнаты', 'teacher'), false)
 })
 
-test('вторая попытка перехватывает пульт и стирает чернила прошлой лекции', () => {
+test('лекция по другому документу начинается начисто', () => {
+  // Другой документ — другая лекция, и чернила от прошлой на его страницах
+  // означали бы разметку, сделанную поверх чужого текста.
   const id = room()
   addInk(id, { id: 's1', page: 1, color: '#000', width: 0.004, points: [0.1, 0.1] })
   startLecture(id, { file: 'other.pdf', by: 'second', byName: 'Борис', color: '#0f2d69' })
@@ -62,13 +66,70 @@ test('вторая попытка перехватывает пульт и ст�
   assert.deepEqual(inkOf(id), [])
 })
 
+test('передача пульта меняет руки и не трогает саму лекцию', () => {
+  /*
+   * Второму преподавателю нечем сказать «возьму управление»: кнопка «взять
+   * пульт» шлёт тот же `lecture:start` по тому же файлу. Если он уйдёт в
+   * `startLecture`, нажатие на сороковой минуте вернёт страницу на первую,
+   * сотрёт всю разметку и обнулит часы — при всех, на проекторе.
+   */
+  const id = room()
+  turnTo(id, 14)
+  setBlank(id, true)
+  addInk(id, { id: 's1', page: 14, color: '#000', width: 0.004, points: [0.1, 0.1] })
+  const began = lectureOf(id)?.startedAt
+
+  const taken = handOver(id, 'slides.pdf', 'second', 'Борис', '#0f2d69')
+  assert.equal(taken?.by, 'second')
+  assert.equal(taken?.byName, 'Борис')
+  assert.equal(taken?.color, '#0f2d69')
+
+  assert.equal(taken?.page, 14, 'страница вернулась к началу')
+  assert.equal(taken?.blank, true, 'пауза снялась сама собой')
+  assert.equal(taken?.startedAt, began, 'часы лекции пошли заново')
+  assert.equal(inkOf(id).length, 1, 'разметка стёрлась')
+  assert.equal(isPresenter(id, 'second'), true)
+  assert.equal(isPresenter(id, 'teacher'), false)
+})
+
+test('передавать нечего, если файл другой или лекции нет вовсе', () => {
+  // По другому документу это уже не передача рук, а новая лекция, и начинать
+  // её надо начисто — здесь мы про это молчим и отдаём решение вызывающему.
+  const id = room()
+  assert.equal(handOver(id, 'other.pdf', 'second', 'Борис', '#0f2d69'), null)
+  assert.equal(lectureOf(id)?.by, 'teacher')
+  assert.equal(handOver('нет такой комнаты', 'slides.pdf', 'second', 'Борис', '#0f2d69'), null)
+})
+
 test('страница не уходит ниже первой и не рассылается, когда не менялась', () => {
   const id = room()
   assert.equal(turnTo(id, 4)?.page, 4)
-  // Ноль и минус — не «предыдущая», а мусор из вкладки; страницы ноль не бывает.
-  assert.equal(turnTo(id, 0)?.page, 1)
-  assert.equal(turnTo(id, 1), null, 'та же страница — рассылать нечего')
+  // Ноль — не страница, а мусор из вкладки: рассылать по нему нечего.
+  assert.equal(turnTo(id, 0), null)
+  assert.equal(lectureOf(id)?.page, 4, 'нулевая страница доехала до зала')
+  assert.equal(turnTo(id, 4), null, 'та же страница — рассылать нечего')
   assert.equal(turnTo(id, 2.7)?.page, 2, 'дробная страница округляется вниз')
+})
+
+test('чистый лист — такая же страница, только с минусом', () => {
+  /*
+   * Слайд кончился, а вывод формулы нет: преподаватель заводит белое поле
+   * прямо посреди лекции. Отдельным полем состояния это было бы вторым
+   * источником правды о том, что сейчас на экране, и он разъехался бы с
+   * номером страницы на первом же перелистывании. Поэтому чистый лист —
+   * страница с отрицательным номером, и всё остальное про него уже работает.
+   */
+  const id = room()
+  assert.equal(turnTo(id, -1)?.page, -1)
+  addInk(id, { id: 'b1', page: -1, color: '#111', width: 0.004, points: [0.1, 0.1, 0.2, 0.2] })
+  assert.deepEqual(inkOf(id).map((stroke) => stroke.page), [-1])
+
+  // И возвращение к слайду ничего с ним не делает: чернила листа остаются на нём.
+  assert.equal(turnTo(id, 3)?.page, 3)
+  assert.equal(inkOf(id).length, 1)
+
+  // Заевшая кнопка не заводит листов без конца.
+  assert.equal(turnTo(id, -5000)?.page, -50)
 })
 
 test('пауза переключается один раз', () => {
@@ -152,6 +213,42 @@ test('отменяется последний штрих и только на с
   assert.equal(undoInk(id, 1), 'a')
   assert.equal(undoInk(id, 1), null, 'на пустой странице отменять нечего')
   assert.equal(inkOf(id).length, 1)
+})
+
+test('ластик убирает названный штрих, а не последний', () => {
+  /*
+   * Отмена снимает ПОСЛЕДНИЙ, ластик — тот, до которого дотронулись. Разница
+   * видна ровно тогда, когда она дорога: провели ластиком по первой из трёх
+   * линий и получили бы вместо неё стёртую третью.
+   */
+  const id = room()
+  addInk(id, { id: 'a', page: 1, color: '#111', width: 0.004, points: [0, 0] })
+  addInk(id, { id: 'b', page: 1, color: '#111', width: 0.004, points: [0, 0] })
+  addInk(id, { id: 'c', page: 1, color: '#111', width: 0.004, points: [0, 0] })
+
+  assert.equal(eraseInk(id, 1, 'a'), true)
+  assert.deepEqual(inkOf(id).map((stroke) => stroke.id), ['b', 'c'])
+})
+
+test('ластик отвечает, был ли там штрих', () => {
+  /*
+   * Ластик проходит по одному штриху десяток раз за движение руки, и без
+   * этого ответа каждое попадание рассылало бы «сотрите штрих, которого нет»
+   * — двадцать браузеров перерисовывали бы страницу впустую.
+   */
+  const id = room()
+  addInk(id, { id: 'a', page: 1, color: '#111', width: 0.004, points: [0, 0] })
+
+  assert.equal(eraseInk(id, 1, 'a'), true)
+  assert.equal(eraseInk(id, 1, 'a'), false, 'второй проход по тому же штриху')
+  assert.equal(eraseInk(id, 1, 'нет такого'), false)
+  // Страница называется в сообщении, и чужая не должна годиться: иначе ластик
+  // на восьмом слайде стирал бы разметку с седьмого.
+  addInk(id, { id: 'b', page: 2, color: '#111', width: 0.004, points: [0, 0] })
+  assert.equal(eraseInk(id, 1, 'b'), false)
+  assert.equal(eraseInk(id, 9, 'b'), false, 'страницы без чернил вовсе')
+  assert.equal(inkOf(id).length, 1)
+  assert.equal(eraseInk('нет такой комнаты', 1, 'a'), false)
 })
 
 test('стирается страница или вся лекция', () => {

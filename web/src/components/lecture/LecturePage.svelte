@@ -106,7 +106,12 @@
    */
   $effect(() => {
     const source = doc
-    const index = page
+    /*
+     * У чистого листа своей страницы в документе нет (см. shared/lecture.ts):
+     * пропорцию он берёт у первой — чтобы белое поле было той же формы, что и
+     * слайды, и лекция не меняла бы формат посреди себя.
+     */
+    const index = page < 0 ? 1 : page
     if (!source) return
     let dropped = false
     void source
@@ -144,7 +149,18 @@
     const source = doc
     const index = page
     const { w, h } = fit
-    if (!node || !source || w === 0) return
+    if (!node || w === 0) return
+    if (index < 0) {
+      /*
+       * Чистый лист. Холст гасится, а белым его делает подложка: рисовать
+       * пустоту незачем, но и оставлять на холсте прошлый слайд нельзя — под
+       * чернилами проступил бы текст страницы, с которой на него ушли.
+       */
+      const paint = node.getContext('2d')
+      if (paint) paint.clearRect(0, 0, node.width, node.height)
+      return
+    }
+    if (!source) return
 
     let dropped = false
     void (async () => {
