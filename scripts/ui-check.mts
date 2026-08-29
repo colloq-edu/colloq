@@ -64,6 +64,18 @@ function samplePdf(pages = 3): string {
 
 mkdirSync(path.join(root, 'workspace', ROOM), { recursive: true })
 writeFileSync(path.join(root, 'workspace', ROOM, 'lecture.pdf'), samplePdf(), 'latin1')
+/*
+ * Картинка — настоящая, чтобы браузер правда её разобрал.
+ *
+ * GIF на один пиксель: сорок три байта, ни одной зависимости и ни одной
+ * контрольной суммы, которую пришлось бы считать руками. Проверяется по
+ * `naturalWidth`: он больше нуля только у картинки, которая доехала и
+ * разобралась, — сломанный `<img>` показывает `alt` и ноль.
+ */
+writeFileSync(
+  path.join(root, 'workspace', ROOM, 'схема.gif'),
+  Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'),
+)
 
 /* ---------------------------------------------------------------- сервер */
 
@@ -674,6 +686,59 @@ check(
   ),
 )
 
+/*
+ * Номер выделенной ячейки — метка, а не тёмный прямоугольник.
+ *
+ * `cn` — это clsx, он классы не разрешает: цвет состояния и цвет метки
+ * оставались оба, и цифры выходили цвета собственного фона. На экране это
+ * читалось как залитый квадрат вместо номера.
+ */
+await host.js(
+  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
+    `cells[0].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
+)
+await wait(300)
+const inkOnInk = await host.js(
+  `const cell=document.querySelector('[aria-label$="selected"]');` +
+    `const span=[...cell.querySelectorAll('span')].find(s=>/^\\d\\d$/.test((s.textContent||'').trim()));` +
+    `if(!span) return 'номера не нашли';` +
+    `const css=getComputedStyle(span);` +
+    `return css.color === css.backgroundColor ? 'цифры цвета фона' : css.color + ' на ' + css.backgroundColor`,
+)
+check(
+  typeof inkOnInk === 'string' && inkOnInk.includes(' на '),
+  'номер выделенной ячейки читается, а не залит',
+  inkOnInk,
+)
+
+/*
+ * Картинка открывается, а не показывает своё имя.
+ *
+ * У файла в комнате нет открытого адреса: `<img>` с прямой ссылкой получал 401
+ * и рисовал `alt` — то есть имя файла. Выглядело это как «картинки не
+ * открываются», и это была правда.
+ */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('схема.gif'));` +
+    `if(!b) throw new Error('картинки нет в дереве'); b.click(); return 1`,
+)
+await until(
+  host,
+  `(document.querySelector('main img, img[alt="схема.gif"]')?.naturalWidth ?? 0) > 0`,
+  'картинка загрузилась',
+)
+check(
+  (await host.js(
+    `return (document.querySelector('img[alt="схема.gif"]')?.naturalWidth ?? 0) > 0`,
+  )) === true,
+  'картинка открывается, а не показывает своё имя',
+  await host.js(
+    `return (document.querySelector('img[alt="схема.gif"]')?.naturalWidth ?? 0) + 'px'`,
+  ),
+)
+await host.js(`document.querySelector('[aria-label="Закрыть схема.gif"]')?.click(); return 1`)
+await wait(300)
+
 /* Быстрых действий в панели оракула больше нет. */
 check(
   (await host.js(
@@ -704,7 +769,14 @@ if (process.argv.includes('--shot')) {
   await host.js(
     `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('Тетрадь.ipynb')); b&&b.click(); return 1`,
   )
-  await wait(800)
+  await wait(500)
+  // С выделенной ячейкой: залитый номер — самое мелкое, что стоит смотреть
+  // глазами, и ровно то, что однажды оказалось тёмным квадратом.
+  await host.js(
+    `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
+      `cells[1]?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
+  )
+  await wait(400)
   const shot = await host.send('Page.captureScreenshot', { format: 'png' })
   const where = path.resolve('ui-check.png')
   writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))

@@ -742,7 +742,10 @@
     <!-- Gutter: one ordinal, coloured by state. It stays put on hover — the
          artboard draws the toolbar over a cell whose number is still legible,
          and Run lives in that toolbar rather than under the number. -->
-    <div class="h-7 w-8 shrink-0 select-none">
+    <!-- Номер прижат вправо флексом, а не `text-align` на блоке во всю ширину:
+         залитая метка выделения обязана обнимать две цифры, а не красить всё
+         поле от края до края. -->
+    <div class="flex h-7 w-8 shrink-0 select-none justify-end">
       <!--
         Цвет номера меняется мгновенно, и это не экономия, а правило: `tone`
         переключается стрелкой, Enter и j/k, то есть сотни раз за пару. Метка
@@ -769,19 +772,22 @@
           .filter(Boolean)
           .join(' · ') || undefined}
         class={cn(
-          'block text-right text-head font-black tabular-nums tracking-tight',
-          ORDINAL[tone],
+          'text-head font-black tabular-nums tracking-tight',
           /*
            * Выделенная ячейка помечена НОМЕРОМ, а не подложкой, и это
            * единственная метка, которая переживает любое состояние.
            *
            * Подложка гаснет у работающей и у упавшей — там свои цвета, и
            * закрашивать их было бы враньём. А спрашивают оракула чаще всего
-           * ровно про упавшую: не видеть, попала она в выделение или нет, — это
-           * вопрос, заданный вслепую. Залитый номер поверх любого состояния
-           * читается сразу и ничего не перекрывает.
+           * ровно про упавшую: не видеть, попала она в выделение или нет, —
+           * это вопрос, заданный вслепую.
+           *
+           * Цвет состояния при этом НЕ добавляется: `cn` — это clsx, он классы
+           * не разрешает, и `text-ink` из `ORDINAL.selected` вместе с
+           * `text-canvas` давали цифры цвета фона на фоне того же цвета —
+           * тёмный прямоугольник вместо номера.
            */
-          selected && 'bg-ink px-1 text-canvas',
+          selected ? 'bg-ink px-1 text-canvas' : ORDINAL[tone],
         )}
       >
         {ordinal}

@@ -222,17 +222,33 @@
     session.editingPath && kindOf(session.editingPath) === 'text' ? session.editingPath : null,
   )
 
-  const focus = $derived.by(() => {
-    const numbers = session.selection
+  const focusNumbers = $derived(
+    session.selection
       .map((id) => cellNumbers.current.get(id))
       .filter((n): n is number => n !== undefined)
       .sort((a, b) => a - b)
-      .map(pad)
+      .map(pad),
+  )
+
+  /**
+   * То же самое двумя падежами.
+   *
+   * Строка «Особенно» перечисляет — там именительный; подсказка в поле стоит
+   * после предлога — там винительный. «Спросить про ячейка 02» бросается в
+   * глаза сильнее, чем стоит эта пара строк.
+   */
+  const focus = $derived.by(() => {
     const parts: string[] = []
-    if (numbers.length === 1) parts.push(`ячейка ${numbers[0]}`)
-    else if (numbers.length > 1) parts.push(`ячейки ${numbers.join(', ')}`)
+    if (focusNumbers.length === 1) parts.push(`ячейка ${focusNumbers[0]}`)
+    else if (focusNumbers.length > 1) parts.push(`ячейки ${focusNumbers.join(', ')}`)
     if (openFile) parts.push(openFile)
     return parts
+  })
+
+  const focusAsked = $derived.by(() => {
+    if (focusNumbers.length === 1) return `ячейку ${focusNumbers[0]}`
+    if (focusNumbers.length > 1) return `ячейки ${focusNumbers.join(', ')}`
+    return openFile
   })
 
   function plural(n: number, one: string, few: string, many: string): string {
@@ -705,8 +721,8 @@
           rows="1"
           placeholder={doing && mayDo
             ? 'Что сделать с файлами семинара…'
-            : focus.length > 0
-              ? `Спросить про ${focus[0]}…`
+            : focusAsked
+              ? `Спросить про ${focusAsked}…`
               : 'Спросить оракула комнаты…'}
           title="Enter sends, Shift+Enter for a new line"
           class="max-h-40 flex-1 resize-none bg-transparent py-1 text-ui text-ink placeholder:text-muted focus:outline-none"

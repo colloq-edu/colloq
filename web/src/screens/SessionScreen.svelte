@@ -27,6 +27,7 @@
   import PeoplePanel from '@/components/panels/PeoplePanel.svelte'
   import TerminalDrawer from '@/components/panels/TerminalDrawer.svelte'
   import PdfReader from '@/components/reader/PdfReader.svelte'
+  import ImageView from '@/components/reader/ImageView.svelte'
   import ThemeSwitch from '@/components/ui/ThemeSwitch.svelte'
   import Wordmark from '@/components/ui/Wordmark.svelte'
   import type { StoredIdentity } from '@/lib/identity'
@@ -1122,13 +1123,7 @@
       {:else if activePath && activeKind === 'image'}
         <!-- Картинку смотрят, а не правят. Скачивание — в дереве, там же, где
              у всех остальных файлов. -->
-        <div class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-surface p-6">
-          <img
-            src={api.fileRaw(session.session.id, activePath)}
-            alt={baseOf(activePath)}
-            class="max-h-full max-w-full object-contain"
-          />
-        </div>
+        <ImageView path={activePath} />
       {:else if activePath && activeKind !== 'notebook'}
         <!--
           Тетрадь сюда не попадает: она нарисована выше, в своём `main`. Без
