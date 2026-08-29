@@ -48,7 +48,10 @@ async function importRenderers(): Promise<Renderers> {
       const raw = marked.parse(source, { async: false, gfm: true, breaks: true })
       const holder = document.createElement('div')
       holder.appendChild(
-        DOMPurify.sanitize(raw, { RETURN_DOM_FRAGMENT: true, FORBID_TAGS: MARKDOWN_FORBIDDEN_TAGS }),
+        DOMPurify.sanitize(raw, {
+          RETURN_DOM_FRAGMENT: true,
+          FORBID_TAGS: MARKDOWN_FORBIDDEN_TAGS,
+        }),
       )
       // A note is written by a classmate; a link in it must not be able to
       // navigate the seminar tab away from the seminar.
@@ -106,4 +109,3 @@ export function loadRenderers(): Promise<Renderers> {
 export function renderers(): Renderers | null {
   return loaded
 }
-

@@ -16,9 +16,7 @@ export const cn = (...parts: ClassValue[]) => clsx(parts)
  * fade, the colour and the clock.
  */
 export function prefersReducedMotion(): boolean {
-  return (
-    typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
 export function formatBytes(bytes: number): string {
@@ -63,9 +61,7 @@ export function luminance(hex: string): number {
   if (!m) return 0
   const n = parseInt(m[1], 16)
   return (
-    0.2126 * channel((n >> 16) & 255) +
-    0.7152 * channel((n >> 8) & 255) +
-    0.0722 * channel(n & 255)
+    0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255)
   )
 }
 
@@ -90,8 +86,7 @@ export function relativeTime(ts: number): string {
 }
 
 /** Meta on macOS, Ctrl elsewhere — used for shortcut hints in the UI. */
-const isMac =
-  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || '')
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || '')
 export const modKey = isMac ? '⌘' : 'Ctrl'
 
 /**
@@ -167,7 +162,6 @@ export function spell(ms: number | null): string {
  * исчезает.
  */
 export const NOTICED_MS = 2_000
-
 
 /* ------------------------------------------------- образы окружений */
 

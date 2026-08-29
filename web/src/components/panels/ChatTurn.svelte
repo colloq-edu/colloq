@@ -38,14 +38,22 @@
     /** The emoji this person chose, when they are still in the room. */
     avatar: string | null
     /** 1-based position of the cell asked about, or null when it is gone. */
+    /** Номер ячейки, к которой ход привязан: туда ляжет предложение. */
     cellNumber: number | null
+    /**
+     * Номера ячеек, о которых спрашивали.
+     *
+     * Отдельно от `cellNumber`: спросить можно про несколько, а предложить
+     * правку — в одну. Пусто у ходов, записанных до выделения нескольких.
+     */
+    askedAbout: number[]
     onretry: () => void
     onstop: () => void
     /** Отменить ход целиком: файлы вернутся к тому, что было до него. */
     onundo: () => void
   }
 
-  let { entry, avatar, cellNumber, onretry, onstop, onundo }: Props = $props()
+  let { entry, avatar, cellNumber, askedAbout, onretry, onstop, onundo }: Props = $props()
 
   /** Что говорит строка шага: глагол, цель и итог. */
   const VERB: Record<string, string> = {
@@ -194,8 +202,12 @@
       {#if badge}
         <span class={cn(CHIP, 'bg-raised text-muted')}>{badge}</span>
       {/if}
-      {#if cellNumber !== null}
-        <!-- A link, not a label: the notebook is usually somewhere else by now. -->
+      {#if askedAbout.length > 0}
+        <!--
+          Ссылка, а не подпись: тетрадь к этому времени обычно уже уехала. Ведёт
+          к ПЕРВОЙ из названных — той, с которой разговор начался; остальные
+          названы рядом, чтобы было видно, о чём вообще шла речь.
+        -->
         <button
           type="button"
           class={cn(
@@ -204,7 +216,23 @@
             'transition-colors duration-[var(--speed-quick)] hover:border-faint hover:text-ink',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
           )}
-          title="Go to cell {pad(cellNumber)}"
+          title={askedAbout.length === 1
+            ? `Перейти к ячейке ${pad(askedAbout[0])}`
+            : `Спрашивали про ячейки ${askedAbout.map(pad).join(', ')} — перейти к первой`}
+          onclick={reveal}
+        >
+          {askedAbout.map(pad).join(' · ')}
+        </button>
+      {:else if cellNumber !== null}
+        <button
+          type="button"
+          class={cn(
+            CHIP,
+            'border border-line font-mono normal-case tracking-normal text-muted',
+            'transition-colors duration-[var(--speed-quick)] hover:border-faint hover:text-ink',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+          )}
+          title="Перейти к ячейке {pad(cellNumber)}"
           onclick={reveal}
         >
           {pad(cellNumber)}

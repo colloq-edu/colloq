@@ -12,31 +12,16 @@
   import { allCellArrays, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
   import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
   import { oracleModeIn, readRules } from '@shared/rules'
+  import { kindOf } from '@shared/paths'
   import type { OracleMode } from '@shared/admin'
   import { api } from '@/lib/api'
   import { oracleDraft } from '@/lib/drafts.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { permitsIn } from '@/lib/may'
-  import { watchCellNumbers } from '@/lib/yreactive.svelte'
+  import { watchBooks, watchCellNumbers } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import ChatTurn from './ChatTurn.svelte'
-
-  const QUICK: { action: AiAction; label: string }[] = [
-    { action: 'explain', label: 'Explain' },
-    { action: 'fix', label: 'Fix' },
-    { action: 'debug', label: 'Debug' },
-    { action: 'improve', label: 'Improve' },
-    { action: 'hint', label: 'Hint' },
-  ]
-
-  /**
-   * How many named chips the SEES row shows before the rest collapse into "+N".
-   * Three is what fits on one line at the panel's width without wrapping, and a
-   * row that wraps stops being a glanceable one-line answer to "what am I about
-   * to send?".
-   */
-  const MAX_SEES = 3
 
   const session = getSessionState()
   const cellNumbers = watchCellNumbers(session.doc)
@@ -98,9 +83,7 @@
   const mode = $derived<OracleMode>(
     oracleModeIn(readRules(session.session.rules), status?.mode ?? 'full'),
   )
-  const quickActions = $derived(QUICK.filter((q) => actionAllowedIn(mode, q.action)))
   const hintsOnly = $derived(mode === 'hints')
-  const selected = $derived(cellNumber(session.selectedCellId))
 
   $effect(() => {
     const read = () => (entries = chat.map(readChatEntry))
@@ -207,54 +190,52 @@
   })
 
   /**
-   * What the next question will actually carry, named piece by piece.
+   * Что оракул видит — и на что смотрит особенно.
    *
-   * Every chip here is something ai/context.ts demonstrably puts in the prompt:
-   * the selected cell, the newest traceback, and the workspace file list. The
-   * context also carries the whole notebook and the kernel status, which have
-   * no chip because they are unconditional — a chip that is always lit tells a
-   * student nothing. Nothing is claimed that this browser cannot verify.
+   * Две строки вместо ряда чипов, и это не косметика. Чипы перечисляли выбранную
+   * ячейку, трейсбек и несколько имён файлов — то есть КУСКИ того, что и так
+   * едет целиком, — а про тетрадь и остальные файлы молчали, потому что «чип,
+   * который горит всегда, ничего не говорит». Получалось ровно наоборот: список
+   * из трёх имён читался как «вот это он и видит», и человек не понимал, почему
+   * ответ знает про соседнюю ячейку.
+   *
+   * Теперь сказано прямо: базово видно всё, что есть в комнате. А выделение и
+   * открытый файл ДОБАВЛЯЮТСЯ к этому — как то, на чём просят сосредоточиться.
    */
-  const sees = $derived.by(() => {
-    // `tone` exists for exactly one chip. A traceback riding along changes what
-    // the question is — it is no longer "explain this", it is "explain this
-    // failure" — and the row should say so at a glance rather than only to
-    // whoever reads all four chips.
-    const chips: { label: string; title: string; tone?: 'danger' }[] = []
-    if (selected !== null) {
-      chips.push({
-        label: `cell ${pad(selected)}`,
-        title: `Cell ${pad(selected)} — its code and its output go with the question`,
-      })
-    }
-    if (errored) {
-      chips.push({
-        label: 'traceback',
-        title: 'The newest error in this notebook, in full',
-        tone: 'danger',
-      })
-    }
+  const books = watchBooks(session.doc)
 
-    // Files fill whatever room the cell and traceback chips leave, so a student
-    // looking at a failure still sees the failure named first.
-    const files = session.files.filter((file) => !file.dir)
-    const room = Math.max(0, MAX_SEES - chips.length)
-    for (const file of files.slice(0, room)) {
-      chips.push({ label: file.path, title: `${file.path} — in the workspace listing` })
-    }
-    const rest = files.slice(room).map((file) => file.path)
-    return { chips, rest }
+  const fileCount = $derived(session.files.filter((file) => !file.dir).length)
+
+  const seesAll = $derived(
+    `всю комнату: ${plural(books.current.length, 'тетрадь', 'тетради', 'тетрадей')}` +
+      `, ${plural(fileCount, 'файл', 'файла', 'файлов')}`,
+  )
+
+  /** Открытый текстовый файл едет целиком; тетрадь — нет: она и так в ячейках. */
+  const openFile = $derived(
+    session.editingPath && kindOf(session.editingPath) === 'text' ? session.editingPath : null,
+  )
+
+  const focus = $derived.by(() => {
+    const numbers = session.selection
+      .map((id) => cellNumbers.current.get(id))
+      .filter((n): n is number => n !== undefined)
+      .sort((a, b) => a - b)
+      .map(pad)
+    const parts: string[] = []
+    if (numbers.length === 1) parts.push(`ячейка ${numbers[0]}`)
+    else if (numbers.length > 1) parts.push(`ячейки ${numbers.join(', ')}`)
+    if (openFile) parts.push(openFile)
+    return parts
   })
 
-  /**
-   * The artboard draws one action chip outlined rather than filled. The only
-   * thing that can honestly be "current" in this panel is the action whose
-   * answer is still arriving, so that is what lights up.
-   */
-  const liveAction = $derived.by(() => {
-    const tail = entries[entries.length - 1]
-    return tail?.state === 'streaming' ? ((tail.action as AiAction | null) ?? null) : null
-  })
+  function plural(n: number, one: string, few: string, many: string): string {
+    const mod10 = n % 10
+    const mod100 = n % 100
+    if (mod10 === 1 && mod100 !== 11) return `${n} ${one}`
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} ${few}`
+    return `${n} ${many}`
+  }
 
   function cellNumber(id: string | null | undefined): number | null {
     if (!id) return null
@@ -390,7 +371,7 @@
       void ask({ message, mode: 'agent' })
       return
     }
-    void ask({ message, action: 'ask', cellId: session.selectedCellId })
+    void ask({ message, action: 'ask', cellIds: [...session.selection] })
   }
 
   /** Отменить ход целиком: файлы возвращаются к тому, что было до него. */
@@ -496,7 +477,17 @@
           <p class="text-answer text-ink">No questions yet.</p>
           <p class="text-ui text-muted">
             Whatever you ask goes into the room's thread with your name on it, and the answer
-            arrives on everyone's screen at once. Select a cell first to ask about that cell.
+            arrives on everyone's screen at once.
+          </p>
+          <!--
+            «Выделите ячейку, чтобы спросить о ней» было неправдой ровно
+            наоборот: вопрос и без выделения уезжал вместе со всей тетрадью, а
+            строка советовала сделать обязательным то, что всего лишь наводит
+            фокус.
+          -->
+          <p class="text-ui text-muted">
+            Оракул видит комнату целиком. Выделите ячейки, если хотите, чтобы он смотрел
+            прежде всего на них.
           </p>
         </div>
       {/if}
@@ -506,6 +497,10 @@
           {entry}
           avatar={avatars.get(entry.participantId) ?? null}
           cellNumber={cellNumber(entry.cellId)}
+          askedAbout={(entry.cellIds.length > 0 ? entry.cellIds : entry.cellId ? [entry.cellId] : [])
+            .map((id) => cellNumber(id))
+            .filter((n): n is number => n !== null)
+            .sort((a, b) => a - b)}
           onretry={() => retry(entry)}
           onstop={() => void stop(entry.id)}
           onundo={() => undo(entry.id)}
@@ -573,39 +568,22 @@
       </div>
     {/if}
 
-    <div class="flex flex-wrap items-center gap-1.5">
-      {#each quickActions as quick (quick.action)}
-        {@const live = liveAction === quick.action}
-        <!-- The transparent border on the resting chip keeps the box the same
-             size as the outlined one, so nothing shifts when an answer starts. -->
-        <button
-          type="button"
-          class="inline-flex h-6 shrink-0 items-center border px-2 text-2xs font-bold uppercase tracking-caps transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-40 {live
-            ? 'border-accent text-accent-text'
-            : 'border-transparent bg-line text-ink hover:border-faint disabled:hover:border-transparent'}"
-          disabled={selected === null || offline}
-          onclick={() =>
-            void ask({ message: '', action: quick.action, cellId: session.selectedCellId })}
-        >
-          {quick.label}
-        </button>
-      {/each}
-      {#if hintsOnly}
-        <!--
-          «Просят подсказку», а не «решения не будет».
+    {#if hintsOnly}
+      <!--
+        «Просят подсказку», а не «решения не будет».
 
-          Режим подсказок держится на формулировке запроса к модели: мы просим
-          не давать решение, повторяем эту просьбу после слов студента — и на
-          этом всё, потому что больше сделать нечего. Обещать классу, что
-          решение не появится, значит обещать за модель.
-        -->
-        <span class="text-2xs text-muted">
-          hints only — the oracle is asked to nudge rather than solve
-        </span>
-      {:else if selected === null}
-        <span class="text-2xs text-muted">select a cell to use these</span>
-      {/if}
-    </div>
+        Режим подсказок держится на формулировке запроса к модели: мы просим не
+        давать решение, повторяем эту просьбу после слов студента — и на этом
+        всё, потому что больше сделать нечего. Обещать классу, что решение не
+        появится, значит обещать за модель.
+
+        Строка осталась там, где стояли кнопки: она про комнату, а не про
+        кнопку, и исчезнуть вместе с ними не должна была.
+      -->
+      <p class="text-2xs text-muted">
+        режим подсказок — оракула просят подтолкнуть, а не решить за вас
+      </p>
+    {/if}
 
     {#if offline}
       <!--
@@ -644,32 +622,37 @@
           and the file list, which have no chip because they are unconditional
           and a chip that is always lit says nothing.
         -->
-        {#if sees.chips.length > 0 || sees.rest.length > 0}
-          <div class="flex items-center gap-1.5 overflow-hidden border-b border-line px-2 py-1.5">
+        <!--
+          Что уедет с этим вопросом — над самим полем, а не над лентой: это
+          факт про ЭТУ вкладку, а не про комнату. Выделение у каждого своё, и
+          двое, глядящие на одну панель, видят здесь разное.
+        -->
+        <div class="flex flex-col gap-0.5 border-b border-line px-2 py-1.5">
+          <div class="flex items-baseline gap-1.5">
             <span
               class="shrink-0 text-2xs font-bold uppercase tracking-institution text-faint"
-              title="Sent with every question: the whole notebook, the kernel status and the workspace file list, plus what is named here"
+              title="Тетради целиком, список файлов, состояние ядра и лента вопросов"
             >
-              Sees
+              Видит
             </span>
-            {#each sees.chips as chip (chip.label)}
-              <span
-                class="inline-flex h-[18px] shrink-0 items-center bg-line px-1.5 font-mono text-2xs {chip.tone ===
-                'danger'
-                  ? 'text-danger'
-                  : 'text-ink'}"
-                title={chip.title}
-              >
-                {chip.label}
-              </span>
-            {/each}
-            {#if sees.rest.length > 0}
-              <span class="shrink-0 font-mono text-2xs text-faint" title={sees.rest.join(', ')}>
-                +{sees.rest.length}
-              </span>
-            {/if}
+            <span class="min-w-0 truncate text-2xs text-muted">{seesAll}</span>
           </div>
-        {/if}
+          {#if focus.length > 0}
+            <!-- Появляется только когда есть на чём сосредоточиться: строка,
+                 которая горит всегда, ничего не говорит. -->
+            <div class="flex items-baseline gap-1.5">
+              <span
+                class="shrink-0 text-2xs font-bold uppercase tracking-institution text-accent-text"
+                title="Это уедет отдельно и с просьбой смотреть в первую очередь сюда"
+              >
+                Особенно
+              </span>
+              <span class="min-w-0 truncate font-mono text-2xs text-ink">
+                {focus.join(' · ')}
+              </span>
+            </div>
+          {/if}
+        </div>
 
         <!--
           Спросить или сделать — переключателем, а не догадкой по формулировке.
@@ -716,9 +699,9 @@
           rows="1"
           placeholder={doing && mayDo
             ? 'Что сделать с файлами семинара…'
-            : selected === null
-              ? "Ask the room's oracle…"
-              : `Ask about cell ${pad(selected)}…`}
+            : focus.length > 0
+              ? `Спросить про ${focus[0]}…`
+              : 'Спросить оракула комнаты…'}
           title="Enter sends, Shift+Enter for a new line"
           class="max-h-40 flex-1 resize-none bg-transparent py-1 text-ui text-ink placeholder:text-muted focus:outline-none"
           oninput={onInput}

@@ -111,7 +111,10 @@ export function whereabouts(person: Person, view: RoomView): Whereabouts {
     runningNo !== null &&
     (view.runBy === person.user.name || person.user.activeCellId === view.runningCellId)
   if (runs && view.runningCellId) {
-    return { line: `running cell ${runningNo}`, place: { where: 'cell', cellId: view.runningCellId } }
+    return {
+      line: `running cell ${runningNo}`,
+      place: { where: 'cell', cellId: view.runningCellId },
+    }
   }
 
   if (person.user.inTerminal) return { line: 'in the terminal', place: { where: 'terminal' } }

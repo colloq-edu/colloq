@@ -53,11 +53,7 @@ export function listVersions(sessionId: string, token: string): Promise<{ versio
   return get(`/api/sessions/${sessionId}/history`, token)
 }
 
-export function readVersion(
-  sessionId: string,
-  seq: number,
-  token: string,
-): Promise<VersionDetail> {
+export function readVersion(sessionId: string, seq: number, token: string): Promise<VersionDetail> {
   return get(`/api/sessions/${sessionId}/history/${seq}`, token)
 }
 

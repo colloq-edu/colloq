@@ -83,8 +83,39 @@ export class SessionState {
   hydrated = $state(false)
   peers = $state<Peer[]>([])
   files = $state<FileEntry[]>([])
-  /** Cell the local user is working in — drives AI context and the run target. */
+  /**
+   * Ячейка, с которой работают клавиатура и курсор, — якорь выделения.
+   *
+   * Всегда входит в `selection`, пока выделение не пусто. Комната видит именно
+   * её: присутствие отвечает на вопрос «где человек», а он в один момент в
+   * одном месте.
+   */
   selectedCellId = $state<string | null>(null)
+  /**
+   * Все выделенные ячейки, в порядке документа.
+   *
+   * Список, а не одна: вопрос оракулу про две ячейки — обычное дело, и до сих
+   * пор его нельзя было задать иначе как словами. Порядок держат те, кто
+   * выделяет: он свой у каждой тетради.
+   */
+  selection = $state<string[]>([])
+  /**
+   * Файл, открытый у этого человека прямо сейчас, — или `null`.
+   *
+   * Тот же путь, что уезжает в присутствие. Хранится ещё и здесь, потому что
+   * панель оракула должна назвать его в строке «особенно»: спрашивают почти
+   * всегда про то, на что смотрят.
+   */
+  editingPath = $state<string | null>(null)
+  /**
+   * Показать вкладку, в которой лежит эта ячейка.
+   *
+   * Ставит экран комнаты — только он знает про вкладки. Ссылка на ячейку
+   * приходит из панели людей и из треда оракула, то есть мимо тетради, и без
+   * этого вела в спрятанную: `scrollIntoView` внутри `display:none` не делает
+   * ничего, и переход выглядел как сломанная кнопка.
+   */
+  showCell: ((cellId: string) => void) | null = null
   lastError = $state<string | null>(null)
   /** Shared terminal lifecycle; 'closed' until somebody opens the drawer. */
   terminalStatus = $state<TerminalStatus>('closed')
@@ -334,8 +365,7 @@ export class SessionState {
           const current = this.awareness.getLocalState()?.user as AwarenessUser | undefined
           if (current) this.awareness.setLocalStateField('user', { ...current, role: message.role })
         }
-      }
-      else if (message.t === 'pong') {
+      } else if (message.t === 'pong') {
         /*
          * Поправка к часам браузера, снятая по кругу.
          *
@@ -372,8 +402,7 @@ export class SessionState {
           }
           this.#pingSentAt = null
         }
-      }
-      else if (message.t === 'files') {
+      } else if (message.t === 'files') {
         this.files = message.files
         /*
          * Файл могли удалить или переписать прямо на занятии: удаляет
@@ -471,7 +500,62 @@ export class SessionState {
 
   /* --------------------------------------------------------------- state */
 
+  /**
+   * Выделить одну ячейку — и снять выделение со всех остальных.
+   *
+   * `null` снимает выделение совсем: до сих пор такого вызова в продукте не
+   * было ни одного, и выйти из состояния «выбрано» было нельзя до
+   * перезагрузки страницы. Клик мимо ячейки и Escape зовут именно его.
+   */
   selectCell(id: string | null) {
+    this.selection = id ? [id] : []
+    this.#setAnchor(id)
+  }
+
+  /**
+   * Добавить ячейку к выделению или убрать её оттуда — Cmd (Ctrl) с кликом.
+   *
+   * Вопрос оракулу про две ячейки — обычное дело на семинаре («почему вот это
+   * ломает вот то»), и до сих пор его нельзя было задать иначе как словами.
+   */
+  toggleCell(id: string) {
+    if (this.selection.includes(id)) {
+      const rest = this.selection.filter((other) => other !== id)
+      this.selection = rest
+      // Якорь уходит на последнюю оставшуюся: клавиатуре нужно, откуда шагать.
+      if (this.selectedCellId === id) this.#setAnchor(rest.at(-1) ?? null)
+      return
+    }
+    this.selection = [...this.selection, id]
+    this.#setAnchor(id)
+  }
+
+  /**
+   * Растянуть выделение до этой ячейки — Shift с кликом или Shift со стрелкой.
+   *
+   * Порядок приходит снаружи: он свой у каждой тетради, и знать его здесь
+   * неоткуда. Якорь не двигается — от него и меряется диапазон, пока Shift не
+   * отпустили.
+   */
+  extendTo(id: string, order: readonly string[]) {
+    const from = this.selectedCellId ? order.indexOf(this.selectedCellId) : -1
+    const to = order.indexOf(id)
+    if (to === -1) return
+    if (from === -1) return this.selectCell(id)
+    const [lo, hi] = from <= to ? [from, to] : [to, from]
+    this.selection = order.slice(lo, hi + 1)
+  }
+
+  /**
+   * Кого показывать комнате как «правит ячейку 04».
+   *
+   * Одну, а не список: присутствие отвечает на вопрос «где человек», а он в
+   * один момент времени в одном месте. Кадр не шлётся, если ничего не
+   * изменилось, — соседние `setViewing` и `setEditing` делают так же, а
+   * `selectCell` до сих пор слал его на каждый повторный клик по той же ячейке.
+   */
+  #setAnchor(id: string | null) {
+    if (this.selectedCellId === id) return
     this.selectedCellId = id
     this.#patchUser({ activeCellId: id })
   }
@@ -516,6 +600,7 @@ export class SessionState {
    * кадра присутствия всей комнате.
    */
   setEditing(path: string | null) {
+    this.editingPath = path
     const current = (this.awareness.getLocalState()?.user as AwarenessUser | undefined)?.editing
     if ((current ?? null) === path) return
     this.#patchUser({ editing: path })

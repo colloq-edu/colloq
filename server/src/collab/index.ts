@@ -188,6 +188,23 @@ export function getSessionDoc(sessionId: string, title?: string): SessionDoc {
   return getEntry(sessionId, title)
 }
 
+/**
+ * Документ комнаты, если он уже открыт, — и `null`, если нет.
+ *
+ * Отличается от `getSessionDoc` ровно тем, что НЕ заводит его. Разница
+ * оказалась не косметической: отложенная работа, доехавшая после закрытия
+ * комнаты — запись файла тетради, уборка за удалённым файлом, — звала
+ * `getSessionDoc`, тот честно строил комнату заново из снимка, новая комната
+ * заводила себе таймеры, и следующая отложенная работа строила её опять.
+ * Процесс переставал завершаться, а удалённая комната возвращалась в память.
+ *
+ * Правило простое: заводить документ имеет право только то, что делает человек.
+ * Всё, что доезжает само, обязано спрашивать так.
+ */
+export function peekSessionDoc(sessionId: string): SessionDoc | null {
+  return docs.get(sessionId) ?? null
+}
+
 function getEntry(sessionId: string, title?: string): DocEntry {
   const existing = docs.get(sessionId)
   if (existing) return existing

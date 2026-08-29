@@ -73,10 +73,7 @@ export function markName(mark: string | null): string {
  * A full room hands out a duplicate rather than refusing to let someone in —
  * two foxes is a worse cursor, not a closed door.
  */
-export function freeMark(
-  taken: ReadonlyMap<string, string>,
-  prefer?: string | null,
-): string {
+export function freeMark(taken: ReadonlyMap<string, string>, prefer?: string | null): string {
   if (prefer && BY_MARK.has(prefer) && !taken.has(prefer)) return prefer
   const free = MARKS.filter((entry) => !taken.has(entry.mark))
   const pool = free.length > 0 ? free : MARKS

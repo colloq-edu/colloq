@@ -153,8 +153,7 @@ export const adminApi = {
     name?: string
     environment?: string | null
     rules?: Partial<RoomRules>
-  }) =>
-    request<ImportResult>('/import', { method: 'POST', ...json(body) }),
+  }) => request<ImportResult>('/import', { method: 'POST', ...json(body) }),
 
   /* -------------------------------------------------------- environments */
 
@@ -174,7 +173,9 @@ export const adminApi = {
     request<void>(`/environments/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
   buildEnvironment: (name: string) =>
-    request<{ name: string }>(`/environments/${encodeURIComponent(name)}/build`, { method: 'POST' }),
+    request<{ name: string }>(`/environments/${encodeURIComponent(name)}/build`, {
+      method: 'POST',
+    }),
 
   cancelEnvironmentBuild: (name: string) =>
     request<{ cancelled: boolean }>(`/environments/${encodeURIComponent(name)}/cancel`, {
@@ -182,7 +183,9 @@ export const adminApi = {
     }),
 
   useEnvironment: (name: string) =>
-    request<{ active: string }>(`/environments/${encodeURIComponent(name)}/use`, { method: 'POST' }),
+    request<{ active: string }>(`/environments/${encodeURIComponent(name)}/use`, {
+      method: 'POST',
+    }),
 
   /* ------------------------------------------------------------ seminars */
 
@@ -192,7 +195,10 @@ export const adminApi = {
     request<AdminSeminar>('/seminars', { method: 'POST', ...json(body) }),
 
   updateSeminar: (id: string, body: UpdateSeminarRequest) =>
-    request<AdminSeminar>(`/seminars/${encodeURIComponent(id)}`, { method: 'PATCH', ...json(body) }),
+    request<AdminSeminar>(`/seminars/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      ...json(body),
+    }),
 
   /* ------------------------------------------------------------ курсы */
 
@@ -202,7 +208,9 @@ export const adminApi = {
     request<{ course: Course }>(`/courses/${encodeURIComponent(id)}`).then((r) => r.course),
 
   createCourse: (body: { name: string; blurb?: string }) =>
-    request<{ course: Course }>('/courses', { method: 'POST', ...json(body) }).then((r) => r.course),
+    request<{ course: Course }>('/courses', { method: 'POST', ...json(body) }).then(
+      (r) => r.course,
+    ),
 
   updateCourse: (id: string, body: { name?: string; blurb?: string | null }) =>
     request<{ course: Course }>(`/courses/${encodeURIComponent(id)}`, {
@@ -343,8 +351,7 @@ export const adminApi = {
    * only. It goes to the clipboard, never onto the screen — the row keeps
    * showing the masked shape.
    */
-  teacherLink: (id: string) =>
-    request<TeacherWithLink>(`/teachers/${encodeURIComponent(id)}/link`),
+  teacherLink: (id: string) => request<TeacherWithLink>(`/teachers/${encodeURIComponent(id)}/link`),
 
   /**
    * Отозвать токен установки и получить новый.

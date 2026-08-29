@@ -8,11 +8,7 @@
 type GridPattern = readonly boolean[]
 
 /** Corners and centre. Symmetric on both axes, so it survives 16px. */
-const BRAND_GRID: GridPattern = [
-  true, false, true,
-  false, true, false,
-  true, false, true,
-]
+const BRAND_GRID: GridPattern = [true, false, true, false, true, false, true, false, true]
 
 /**
  * Below four filled cells the mark reads as empty, above seven as a solid

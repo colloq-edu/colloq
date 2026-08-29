@@ -354,6 +354,8 @@ export interface ChatSnapshot {
   question: string
   action: string | null
   cellId: string | null
+  /** Ячейки, о которых спрашивали. Пусто у ходов, записанных до выделения нескольких. */
+  cellIds: string[]
   createdAt: number
   answer: string
   state: ChatState
@@ -419,6 +421,7 @@ export function createChatEntry(input: {
   question: string
   action?: string | null
   cellId?: string | null
+  cellIds?: string[]
   /** The cell's text at the moment of asking; see ChatSnapshot.patchBase. */
   patchBase?: string | null
   mode?: 'ask' | 'agent'
@@ -431,6 +434,13 @@ export function createChatEntry(input: {
   entry.set('question', input.question)
   entry.set('action', input.action ?? null)
   entry.set('cellId', input.cellId ?? null)
+  /*
+   * Ячейки, на которых просили сосредоточиться, — отдельно от той, к которой
+   * ход ПРИВЯЗАН. Привязка одна: предложение переписывает один текст, у него
+   * одна база и одно решение на всех. Список — про то, о чём спрашивали, и
+   * тред называет его словами.
+   */
+  entry.set('cellIds', input.cellIds ?? [])
   entry.set('createdAt', Date.now())
   entry.set('answer', new Y.Text())
   entry.set('reasoning', new Y.Text())
@@ -542,14 +552,15 @@ export function acceptPatch(doc: Y.Doc, entry: YChatEntry, byName: string): bool
   if (typeof patch !== 'string' || typeof cellId !== 'string') return false
   if (entry.get('patchState') !== 'open') return false
 
-  const cells = getCells(doc)
-  let target: YCell | null = null
-  for (const cell of cells.toArray()) {
-    if (cell.get('id') === cellId) {
-      target = cell
-      break
-    }
-  }
+  /*
+   * По всем тетрадям, а не по первой.
+   *
+   * Ячейку ищут по имени и не зная тетради — так работает `findCell`, так
+   * работают ядро и оракул. Здесь поиск был свой и только по первой: ячейка во
+   * второй открытой тетради получала законное на вид предложение, а «принять»
+   * молча возвращало false — кнопка нажималась и не делала ничего.
+   */
+  const target = findCell(doc, cellId)?.cell ?? null
   if (!target) return false
 
   const source = target.get('source') as Y.Text | undefined
@@ -596,13 +607,13 @@ export function patchIsStale(doc: Y.Doc, entry: YChatEntry): boolean {
   const base = entry.get('patchBase')
   const cellId = entry.get('cellId')
   if (typeof base !== 'string' || typeof cellId !== 'string') return false
-  for (const cell of getCells(doc).toArray()) {
-    if (cell.get('id') !== cellId) continue
-    const source = cell.get('source')
-    const now = source instanceof Y.Text ? source.toString() : String(source ?? '')
-    return now !== base
-  }
-  return false
+  // По всем тетрадям — по той же причине, что и в `acceptPatch`: иначе
+  // предложение для ячейки во второй тетради никогда не считалось устаревшим.
+  const found = findCell(doc, cellId)
+  if (!found) return false
+  const source = found.cell.get('source')
+  const now = source instanceof Y.Text ? source.toString() : String(source ?? '')
+  return now !== base
 }
 
 /** The proposal on a chat turn, if it made one and nobody has decided yet. */
@@ -659,6 +670,7 @@ export function readChatEntry(entry: YChatEntry): ChatSnapshot {
     question: (entry.get('question') as string) ?? '',
     action: (entry.get('action') as string | null) ?? null,
     cellId: (entry.get('cellId') as string | null) ?? null,
+    cellIds: Array.isArray(entry.get('cellIds')) ? (entry.get('cellIds') as string[]) : [],
     createdAt: (entry.get('createdAt') as number) ?? 0,
     answer: readText(entry.get('answer')),
     state: (entry.get('state') as ChatState) ?? 'done',

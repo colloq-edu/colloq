@@ -19,9 +19,19 @@
      * которое у первой тетради осталось прежним ради истории и кеша.
      */
     book: string
+    /**
+     * Эта тетрадь показана, а не спрятана за другой вкладкой.
+     *
+     * Клавиатура комнаты — одна на всё окно (`<svelte:window onkeydown>`), а
+     * тетрадей смонтировано столько, сколько открыто вкладок: скрытые прячутся
+     * классом, а не размонтируются, чтобы не терять курсор. Без этой проверки
+     * нажатие «a» вставляло ячейку в КАЖДУЮ открытую тетрадь, а Shift+Enter
+     * отправлял два запуска — и оба в разные листы.
+     */
+    active: boolean
   }
 
-  let { book }: Props = $props()
+  let { book, active }: Props = $props()
 
   const session = getSessionState()
   const books = watchBooks(session.doc)
@@ -86,6 +96,27 @@
     // The new cell has to exist in the DOM before it can take focus.
     await tick()
     enter(created)
+  }
+
+  /**
+   * Нажали по ячейке — одной, или добавили к выделенным.
+   *
+   * Cmd на маке и Ctrl на остальном — тот же модификатор, которым выделяют
+   * вразбивку везде; Shift — диапазон. Внутри редактора модификаторы
+   * принадлежат ему: Cmd-клик в тексте ставит второй курсор, и перехватывать
+   * его здесь значило бы ломать редактор ради панели.
+   */
+  function pick(id: string, event?: MouseEvent | PointerEvent): void {
+    const inEditor = (event?.target as HTMLElement | null)?.closest('.cm-editor') !== null
+    if (event && !inEditor && (event.metaKey || event.ctrlKey)) {
+      session.toggleCell(id)
+      return
+    }
+    if (event && !inEditor && event.shiftKey && session.selectedCellId) {
+      session.extendTo(id, ids.current)
+      return
+    }
+    session.selectCell(id)
   }
 
   /** A cell handing off to its neighbour; only this component knows the order. */
@@ -194,6 +225,7 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
+    if (!active) return
     if (event.defaultPrevented) return
     if (claimedByFocus(event.target, event.key)) return
 
@@ -248,6 +280,25 @@
       else void addAt(list.length, 'code')
       return
     }
+    /*
+     * Shift со стрелкой растягивает выделение — до общего запрета на Shift ниже.
+     *
+     * Растягивают ОТ ЯКОРЯ: он не двигается, пока Shift держат, и это то же
+     * поведение, что у списка файлов в любой системе. Обычная стрелка ниже
+     * выделение схлопывает — тоже как везде.
+     */
+    if (event.shiftKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      event.preventDefault()
+      const edge = session.selection.length > 0 ? session.selection : current ? [current] : []
+      const step = event.key === 'ArrowUp' ? -1 : 1
+      const tip = step === -1 ? list.indexOf(edge[0]) : list.indexOf(edge[edge.length - 1])
+      const next = list[Math.max(0, Math.min(list.length - 1, (tip === -1 ? at : tip) + step))]
+      if (next) {
+        session.extendTo(next, list)
+        reveal(next)
+      }
+      return
+    }
     if (event.shiftKey) return
 
     /*
@@ -271,6 +322,16 @@
         if (!current) return
         event.preventDefault()
         enter(current)
+        break
+      case 'Escape':
+        /*
+         * Выйти из состояния «выбрано» было нельзя вообще: `selectCell(null)`
+         * не звался нигде во всём приложении, и выделение жило до перезагрузки
+         * страницы. Escape в командном режиме проваливался в `default`.
+         */
+        if (session.selection.length === 0) return
+        event.preventDefault()
+        session.selectCell(null)
         break
       case 'a':
         event.preventDefault()
@@ -837,9 +898,10 @@
         {index}
         bookRoot={root}
         last={index === ids.current.length - 1}
-        selected={session.selectedCellId === id}
+        selected={session.selection.includes(id)}
+        anchor={session.selectedCellId === id}
         near={isNear(id, index)}
-        onselect={() => session.selectCell(id)}
+        onselect={(event) => pick(id, event)}
       />
     </div>
   {/each}

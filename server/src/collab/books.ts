@@ -34,7 +34,7 @@ import {
 } from '@shared/notebook'
 import { parseIpynb, writeIpynb } from '@shared/ipynb'
 import { baseOf, kindOf } from '@shared/paths'
-import { getSessionDoc } from './index.js'
+import { getSessionDoc, peekSessionDoc } from './index.js'
 import { listFiles, makeFile, readText, statPath, writeText } from '../workspace.js'
 
 const ORIGIN = 'server'
@@ -71,7 +71,11 @@ function flatten(cells: Y.Array<any>): { type: 'code' | 'markdown'; source: stri
  * панель файлов моргала бы всю пару.
  */
 export function projectBooks(sessionId: string): void {
-  const { doc } = getSessionDoc(sessionId)
+  // Заглянуть, а не завести: комнату могли закрыть, пока таймер ждал, и
+  // строить её заново ради записи файла — значит воскрешать удалённое.
+  const open = peekSessionDoc(sessionId)
+  if (!open) return
+  const { doc } = open
   for (const { book, cells } of allBooks(doc)) {
     const text = writeIpynb(flatten(cells))
     const now = readText(sessionId, book.path)
@@ -198,7 +202,8 @@ export function createBook(sessionId: string, path: string): OpenBookResult {
 
 /** Тетрадь переехала вместе с файлом. */
 export function moveBook(sessionId: string, from: string, to: string): void {
-  const { doc } = getSessionDoc(sessionId)
+  const doc = peekSessionDoc(sessionId)?.doc
+  if (!doc) return
   if (!bookAt(doc, from)) return
   doc.transact(() => renameBook(doc, from, to), ORIGIN)
   schedule(sessionId)
@@ -206,7 +211,8 @@ export function moveBook(sessionId: string, from: string, to: string): void {
 
 /** Файла больше нет — и тетради тоже. */
 export function dropBook(sessionId: string, path: string): void {
-  const { doc } = getSessionDoc(sessionId)
+  const doc = peekSessionDoc(sessionId)?.doc
+  if (!doc) return
   if (!bookAt(doc, path)) return
   doc.transact(() => removeBook(doc, path), ORIGIN)
 }
@@ -218,7 +224,8 @@ export function dropBook(sessionId: string, path: string): void {
  * ещё не открывали, — обычный файл, и записывать поверх него можно.
  */
 export function isBookFile(sessionId: string, path: string): boolean {
-  return bookAt(getSessionDoc(sessionId).doc, path) !== null
+  const doc = peekSessionDoc(sessionId)?.doc
+  return doc ? bookAt(doc, path) !== null : false
 }
 
 /**
@@ -228,7 +235,8 @@ export function isBookFile(sessionId: string, path: string): boolean {
  * списке файлов; вкладки закрываются сами, потому что файла в списке нет.
  */
 export function forgetMissingBooks(sessionId: string): string[] {
-  const { doc } = getSessionDoc(sessionId)
+  const doc = peekSessionDoc(sessionId)?.doc
+  if (!doc) return []
   const alive = new Set(
     listFiles(sessionId)
       .filter((entry) => !entry.dir)
@@ -246,7 +254,8 @@ export function forgetMissingBooks(sessionId: string): string[] {
 
 /** Текст ячеек тетради — для оракула и для всего, что читает её как текст. */
 export function bookText(sessionId: string, path: string): string | null {
-  const { doc } = getSessionDoc(sessionId)
+  const doc = peekSessionDoc(sessionId)?.doc
+  if (!doc) return null
   const book = bookAt(doc, path)
   if (!book) return null
   return writeIpynb(flatten(bookCells(doc, book.root)))

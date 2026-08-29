@@ -18,17 +18,7 @@ export interface RuleOption {
 
 export interface RuleRow {
   key: keyof RoomRules &
-    (
-      | 'run'
-      | 'edit'
-      | 'structure'
-      | 'board'
-      | 'files'
-      | 'agent'
-      | 'wipe'
-      | 'restart'
-      | 'history'
-    )
+    ('run' | 'edit' | 'structure' | 'board' | 'files' | 'agent' | 'wipe' | 'restart' | 'history')
   title: string
   note: string
   options: RuleOption[]

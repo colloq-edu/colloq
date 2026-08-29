@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createSession } from '../server/src/db.js'
 import { listFiles, readText, sessionDir } from '../server/src/workspace.js'
-import { getSessionDoc } from '../server/src/collab/index.js'
+import { dropSessionDoc, getSessionDoc, peekSessionDoc } from '../server/src/collab/index.js'
 import { restoreInto } from '../server/src/collab/history.js'
 import {
   bookText,
@@ -21,6 +21,7 @@ import {
   dropBook,
   isBookFile,
   moveBook,
+  forgetMissingBooks,
   openBook,
   projectBooks,
 } from '../server/src/collab/books.js'
@@ -219,4 +220,25 @@ test('возврат версии не вписывает историю в чу
     !inSecond.some((source) => source.includes('hello, seminar')),
     'в чужую тетрадь вписали ячейки комнаты',
   )
+})
+
+test('закрытая комната не воскресает от отложенной работы', () => {
+  /*
+   * Запись файла тетради отложена на полторы секунды, и за это время комнату
+   * могли закрыть — удалить семинар, остановить процесс. Отложенная работа
+   * звала `getSessionDoc`, тот честно строил комнату заново из снимка, новая
+   * комната заводила себе таймеры, и следующая отложенная работа строила её
+   * опять: процесс переставал завершаться, а удалённая комната возвращалась.
+   */
+  const id = 'books-ghost'
+  createSession(id, 'Призрак', null)
+  getSessionDoc(id)
+  dropSessionDoc(id)
+  assert.equal(peekSessionDoc(id), null)
+
+  projectBooks(id)
+  forgetMissingBooks(id)
+  moveBook(id, 'Тетрадь.ipynb', 'другая.ipynb')
+  dropBook(id, 'Тетрадь.ipynb')
+  assert.equal(peekSessionDoc(id), null, 'комната вернулась в память сама собой')
 })

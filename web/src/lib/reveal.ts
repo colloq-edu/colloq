@@ -32,6 +32,15 @@ export const REVEAL_EVENT = 'colloq:reveal'
  * и померить её высоту до перерисовки значит увести экран не туда.
  */
 export function revealCell(session: SessionState, cellId: string): void {
+  /*
+   * Сначала показать ТЕТРАДЬ, в которой ячейка, и только потом ячейку.
+   *
+   * Тетрадей в комнате несколько, и все открытые смонтированы: неактивные
+   * спрятаны классом. `scrollIntoView` внутри спрятанного ничего не делает —
+   * переход «покажи, где он» из списка людей или из треда молча выделял
+   * невидимое.
+   */
+  session.showCell?.(cellId)
   session.selectCell(cellId)
   requestAnimationFrame(() => {
     document

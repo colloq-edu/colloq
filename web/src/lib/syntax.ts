@@ -72,7 +72,10 @@ export function spread(code: string, ranges: readonly Range[]): Token[][] {
       const sliceFrom = Math.max(from, lineStart)
       const sliceTo = Math.min(to, lineEnd)
       if (sliceTo > sliceFrom) {
-        out[line].push({ text: source[line].slice(sliceFrom - lineStart, sliceTo - lineStart), cls })
+        out[line].push({
+          text: source[line].slice(sliceFrom - lineStart, sliceTo - lineStart),
+          cls,
+        })
       }
       if (to <= lineEnd) break
       line++

@@ -575,6 +575,74 @@ check(
   'чисто',
 )
 
+/* ------------------------------------------- выделение нескольких ячеек */
+
+/**
+ * Выделение — то, чем человек говорит оракулу «смотри сюда».
+ *
+ * Всё, что здесь проверяется, до сих пор было невозможно: выделить вторую
+ * ячейку, снять выделение вообще. Считаем по aria-label, а не по цвету: цвет
+ * читается глазами, метка — и глазами, и экранным диктором.
+ */
+const selectedCount = `document.querySelectorAll('[aria-label$="selected"]').length`
+
+await host.js(
+  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
+    `if(cells.length < 2) throw new Error('в тетради меньше двух ячеек');` +
+    `cells[0].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
+)
+await wait(300)
+check(
+  (await host.js(`return ${selectedCount}`)) === 1,
+  'нажатие выделяет одну ячейку',
+  await host.js(`return ${selectedCount}`),
+)
+
+/* Cmd (Ctrl) добавляет вторую, не снимая первую. */
+await host.js(
+  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
+    `cells[1].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,metaKey:true})); return 1`,
+)
+await wait(300)
+check(
+  (await host.js(`return ${selectedCount}`)) === 2,
+  'Cmd добавляет вторую ячейку к выделению',
+  await host.js(`return ${selectedCount}`),
+)
+
+/* Тем же Cmd она снимается обратно. */
+await host.js(
+  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
+    `cells[1].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,metaKey:true})); return 1`,
+)
+await wait(300)
+check(
+  (await host.js(`return ${selectedCount}`)) === 1,
+  'тем же нажатием снимается обратно',
+  await host.js(`return ${selectedCount}`),
+)
+
+/*
+ * Нажатие мимо ячейки снимает выделение. До сих пор выйти из состояния
+ * «выбрано» было нельзя ничем, кроме перезагрузки страницы.
+ */
+await host.js(`const main=document.querySelector('main:not(.hidden)');` + `main.click(); return 1`)
+await wait(300)
+check(
+  (await host.js(`return ${selectedCount}`)) === 0,
+  'нажатие мимо ячейки снимает выделение',
+  await host.js(`return ${selectedCount}`),
+)
+
+/* Быстрых действий в панели оракула больше нет. */
+check(
+  (await host.js(
+    `return [...document.querySelectorAll('button')].some(b=>/^(Explain|Fix|Debug|Improve|Hint)$/.test((b.textContent||'').trim()))`,
+  )) === false,
+  'кнопок «объясни/почини/улучши» в панели нет',
+  'убраны',
+)
+
 /* Закрыть можно и тетрадь — раньше её вкладка была вечной. */
 await host.js(`document.querySelector('[aria-label="Закрыть разбор.ipynb"]').click(); return 1`)
 await wait(400)

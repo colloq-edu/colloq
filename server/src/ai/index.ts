@@ -72,7 +72,10 @@ export interface AskOptions {
   participantColor: string
   message: string
   action?: AiAction
+  /** Ячейка, к которой привязан ход: туда ляжет предложение. Одна. */
   cellId?: string | null
+  /** Выделение спрашивающего: на чём просят сосредоточиться. Может быть пусто. */
+  cellIds?: string[]
   /**
    * Строка расхода, заведённая при приёме вопроса.
    *
@@ -104,6 +107,9 @@ export function ask(options: AskOptions): string {
     question: asked || actionLabel(options.action),
     action: options.action ?? null,
     cellId: options.cellId ?? null,
+    // Выделение спрашивающего — чтобы тред мог сказать «про ячейки 03 и 04», а
+    // не «про ячейку 03», когда спросили про обе.
+    cellIds: options.cellIds ?? [],
     /*
      * The cell as it stands right now, so a proposal written against it can
      * later say whether it is still about the same text. Twenty people share
@@ -213,7 +219,7 @@ async function generate(
         content: systemPrompt(
           options.participantName,
           options.action,
-          readContext(sessionId, options.cellId ?? null, options.participantId),
+          readContext(sessionId, focusOf(options), options.participantId),
         ),
       },
       ...history,
@@ -462,9 +468,21 @@ export function recentTurns(doc: Y.Doc): ChatTurn[] {
   return turns
 }
 
-function readContext(sessionId: string, cellId: string | null, askedBy?: string | null): string {
+/**
+ * На чём просят сосредоточиться.
+ *
+ * Выделение спрашивающего, а если его нет — та единственная ячейка, к которой
+ * ход привязан (так спрашивают кнопки в самой ячейке). Пусто — обычный случай:
+ * смотрят на всё сразу.
+ */
+function focusOf(options: AskOptions): string[] {
+  if (options.cellIds && options.cellIds.length > 0) return options.cellIds
+  return options.cellId ? [options.cellId] : []
+}
+
+function readContext(sessionId: string, focus: string[], askedBy?: string | null): string {
   try {
-    return buildContext(sessionId, cellId, askedBy)
+    return buildContext(sessionId, focus, askedBy)
   } catch (err) {
     // A question without the notebook is worth answering; a dead thread is not.
     console.warn(`[session ${sessionId}] could not build AI context:`, describe(err))

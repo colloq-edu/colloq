@@ -76,7 +76,8 @@ export function foldAnsiColours(text: string): string {
 
 function nearestCube(v: number): number {
   let best = 0
-  for (let i = 1; i < CUBE.length; i++) if (Math.abs(CUBE[i] - v) < Math.abs(CUBE[best] - v)) best = i
+  for (let i = 1; i < CUBE.length; i++)
+    if (Math.abs(CUBE[i] - v) < Math.abs(CUBE[best] - v)) best = i
   return best
 }
 

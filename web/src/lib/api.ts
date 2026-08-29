@@ -46,7 +46,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     res = await fetch(path, {
       ...init,
       headers: {
-        ...(init?.body && !(init.body instanceof FormData) ? { 'content-type': 'application/json' } : {}),
+        ...(init?.body && !(init.body instanceof FormData)
+          ? { 'content-type': 'application/json' }
+          : {}),
         ...init?.headers,
       },
     })
@@ -92,9 +94,7 @@ export const api = {
 
   /** Everyone who has ever joined, newest activity first. */
   listParticipants: (id: string) =>
-    request<{ participants: Participant[]; online: string[] }>(
-      `/api/sessions/${id}/participants`,
-    ),
+    request<{ participants: Participant[]; online: string[] }>(`/api/sessions/${id}/participants`),
 
   /**
    * Правила комнаты — из самой комнаты.
@@ -161,10 +161,9 @@ export const api = {
    * reader the control socket under the teacher's name.
    */
   fileTicket: (id: string, path: string, token: string) =>
-    request<{ token: string }>(
-      `/api/sessions/${id}/file/ticket?path=${encodeURIComponent(path)}`,
-      { headers: { authorization: `Bearer ${token}` } },
-    ),
+    request<{ token: string }>(`/api/sessions/${id}/file/ticket?path=${encodeURIComponent(path)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
 
   /*
    * Путь — в строке запроса, а не в адресе, и так везде в продукте: косая черта
@@ -182,7 +181,8 @@ export const api = {
    * по нему запрашивает документ кусками и показывает первую страницу, не
    * дожидаясь последней.
    */
-  fileRaw: (id: string, path: string) => `/api/sessions/${id}/file?path=${encodeURIComponent(path)}`,
+  fileRaw: (id: string, path: string) =>
+    `/api/sessions/${id}/file?path=${encodeURIComponent(path)}`,
 
   /** `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`. */
   aiStatus: () =>

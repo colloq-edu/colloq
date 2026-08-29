@@ -11,7 +11,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import {
+  BOOKS_KEY,
+  CELLS_KEY,
   acceptPatch,
+  addBook,
+  bookCells,
+  cellSource,
   chatAnswer,
   clearStaleExecution,
   createCell,
@@ -19,6 +24,7 @@ import {
   findChatEntry,
   getCells,
   getChat,
+  getMeta,
   openPatchFor,
   patchIsStale,
   rejectPatch,
@@ -228,9 +234,46 @@ test('два браузера, принявшие одно предложени�
     entry.set('patchState', 'open')
   })
   assert.equal(acceptPatch(clean, findChatEntry(clean, cleanId)!, 'One'), true)
-  assert.equal(acceptPatch(clean, findChatEntry(clean, cleanId)!, 'Two'), false, 'второе решение прошло')
+  assert.equal(
+    acceptPatch(clean, findChatEntry(clean, cleanId)!, 'Two'),
+    false,
+    'второе решение прошло',
+  )
   assert.equal((getCells(clean).get(0).get('source') as Y.Text).toString(), 'x = 2')
 
   // И ради ясности: без сервера результат был другим.
   assert.notEqual(both, 'x = 2', 'гонка перестала воспроизводиться — проверка потеряла смысл')
+})
+
+test('предложение для ячейки во второй тетради принимается, а не молчит', () => {
+  /*
+   * Поиск ячейки здесь был свой и только по первой тетради, тогда как всё
+   * остальное — ядро, оракул, `findCell` — ходит по всем. Ячейка во второй
+   * открытой тетради получала законное на вид предложение, а «принять» молча
+   * возвращало false: кнопка нажималась и не делала ничего.
+   */
+  const doc = new Y.Doc()
+  const second = new Y.Array<Y.Map<any>>()
+  getMeta(doc).set(BOOKS_KEY, new Y.Array())
+  addBook(doc, 'первая.ipynb', CELLS_KEY)
+  const book = addBook(doc, 'вторая.ipynb')
+  void second
+  const cell = createCell('code', 'было = 1')
+  bookCells(doc, book.root).push([cell])
+
+  const entry = createChatEntry({
+    participantId: 'p1',
+    name: 'Ада',
+    color: '#000',
+    question: 'перепиши',
+    action: 'edit',
+    cellId: cell.get('id') as string,
+    patchBase: 'было = 1',
+  })
+  getChat(doc).push([entry])
+  entry.set('patch', 'стало = 2')
+
+  assert.equal(patchIsStale(doc, entry), false)
+  assert.equal(acceptPatch(doc, entry, 'Ада'), true, 'принять не сработало')
+  assert.equal(cellSource(cell).toString(), 'стало = 2')
 })

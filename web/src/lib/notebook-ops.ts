@@ -41,7 +41,12 @@ export function insertCell(
   return cellId(cell)
 }
 
-export function insertCellAfter(doc: Y.Doc, root: string, afterId: string | null, type: CellType): string {
+export function insertCellAfter(
+  doc: Y.Doc,
+  root: string,
+  afterId: string | null,
+  type: CellType,
+): string {
   const cells = arrayOf(doc, root)
   const found = afterId ? findCell(doc, afterId) : null
   const index = found ? found.index : cells.length - 1

@@ -32,8 +32,8 @@
   import type { StoredIdentity } from '@/lib/identity'
   import { SessionState, setSessionState } from '@/lib/session.svelte'
   import { cn, prefersReducedMotion } from '@/lib/utils'
-  import { watchBooks, watchNotebookMeta } from '@/lib/yreactive.svelte'
-  import { getMeta, type KernelStatus } from '@shared/notebook'
+  import { watchBooks, watchCellNumbers, watchNotebookMeta } from '@/lib/yreactive.svelte'
+  import { getMeta, rootOfCell, type KernelStatus } from '@shared/notebook'
   import type { SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
   import { takeRefusal } from '@/lib/refusal'
@@ -387,6 +387,41 @@
    */
   $effect(() => {
     if (!followFile) session.setViewing(null)
+  })
+
+  /*
+   * Как показать ячейку, где бы она ни лежала.
+   *
+   * Ставится один раз: ссылки на ячейки приходят из панели людей и из треда
+   * оракула, и обе не знают ни про вкладки, ни про тетради.
+   */
+  session.showCell = (cellId: string) => {
+    const root = rootOfCell(session.doc, cellId)
+    if (!root) return
+    const book = books.current.find((entry) => entry.root === root)
+    if (book) tabs.show(book.path)
+  }
+
+  /*
+   * Выделение переживало собственные ячейки.
+   *
+   * Ячейку можно удалить — свою и чужую, — а выделение до сих пор оставалось
+   * указывать на неё: чип оракула гас, а Shift+Enter отправлял запуск мёртвой
+   * ячейки. Проверяется по всем тетрадям комнаты сразу, потому что выделение
+   * одно на человека, а тетрадей несколько.
+   */
+  const everyCell = watchCellNumbers(session.doc)
+  $effect(() => {
+    const alive = everyCell.current
+    untrack(() => {
+      const kept = session.selection.filter((id) => alive.has(id))
+      if (kept.length !== session.selection.length) {
+        session.selection = kept
+        if (session.selectedCellId && !alive.has(session.selectedCellId)) {
+          session.selectCell(kept.at(-1) ?? null)
+        }
+      }
+    })
   })
 
   /*
@@ -1020,13 +1055,29 @@
       -->
       {#each row as path (path)}
         {#if kindOf(path) === 'notebook'}
+          <!--
+            Нажатие мимо ячейки снимает выделение.
+
+            До сих пор выйти из состояния «выбрано» было нельзя ничем: способ
+            выделить был один — нажать на ячейку, — а способа не выделять не
+            было вовсе. Обработчик стоит на колонке, а не на самой тетради:
+            ниже последней ячейки лежит пустое место, и оно тоже «мимо».
+            Проверяется цель нажатия, а не координата: кнопка тулбара — тоже
+            мимо ячейки, и это верно, она относится ко всей тетради.
+          -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
           <main
             class="min-h-0 flex-1 overflow-y-auto"
             class:hidden={activePath !== path}
             aria-hidden={activePath !== path}
+            onclick={(event) => {
+              if ((event.target as HTMLElement | null)?.closest('[data-cell-id]')) return
+              if (session.selection.length > 0) session.selectCell(null)
+            }}
           >
             {#if books.current.some((book) => book.path === path)}
-              <Notebook book={path} />
+              <Notebook book={path} active={activePath === path} />
             {:else}
               <div class="flex h-full items-center justify-center text-ui text-muted">
                 Открываю {baseOf(path)}…

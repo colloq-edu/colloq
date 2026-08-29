@@ -73,13 +73,31 @@
     index: number
     /** Последняя в тетради: «вниз» ей некуда, и кнопка это показывает. */
     last: boolean
+    /** Ячейка входит в выделение — их может быть несколько. */
     selected: boolean
+    /**
+     * Та самая, с которой работают клавиатура и курсор.
+     *
+     * Отдельно от `selected`, потому что при выделении нескольких ячеек ровно
+     * одна из них остаётся якорем: от неё меряется диапазон, в неё уходит Enter
+     * и её видит комната как «правит ячейку 04».
+     */
+    anchor?: boolean
     /** False while the cell sits far outside the viewport; see Notebook.svelte. */
     near?: boolean
-    onselect: () => void
+    onselect: (event?: MouseEvent | PointerEvent) => void
   }
 
-  let { id, bookRoot, index, last, selected, near = true, onselect }: Props = $props()
+  let {
+    id,
+    bookRoot,
+    index,
+    last,
+    selected,
+    anchor = false,
+    near = true,
+    onselect,
+  }: Props = $props()
 
   const session = getSessionState()
   const cell = watchCell(session.doc, () => id)
@@ -437,7 +455,16 @@
    * the machine has the least to spare. The gutter ordinal and the queue chip
    * live outside the parked region, so a parked cell still shows its place.
    */
-  const pinned = $derived(selected || focusWithin || editing || running)
+  /*
+   * Якорь, а не всё выделение.
+   *
+   * Выделенная ячейка не паркуется — иначе экран прыгал бы под курсором. Но
+   * выделенных теперь бывает много: выделив сорок ячеек, чтобы спросить про
+   * них разом, человек построил бы сорок редакторов CodeMirror — ровно ту
+   * работу, ради избавления от которой парковка и написана. Курсор всё равно
+   * в одной.
+   */
+  const pinned = $derived(anchor || focusWithin || editing || running)
   const mounted = $derived(near || pinned)
 
   onMount(() => {
@@ -702,9 +729,9 @@
   <div
     bind:this={root}
     role="group"
-    aria-label={`Cell ${index + 1}`}
+    aria-label={selected ? `Cell ${index + 1}, selected` : `Cell ${index + 1}`}
     data-cell-id={id}
-    onpointerdown={() => onselect()}
+    onpointerdown={(event) => onselect(event)}
     onfocusin={() => (focusWithin = true)}
     onfocusout={(event) => {
       const next = event.relatedTarget as Node | null
@@ -744,6 +771,17 @@
         class={cn(
           'block text-right text-head font-black tabular-nums tracking-tight',
           ORDINAL[tone],
+          /*
+           * Выделенная ячейка помечена НОМЕРОМ, а не подложкой, и это
+           * единственная метка, которая переживает любое состояние.
+           *
+           * Подложка гаснет у работающей и у упавшей — там свои цвета, и
+           * закрашивать их было бы враньём. А спрашивают оракула чаще всего
+           * ровно про упавшую: не видеть, попала она в выделение или нет, — это
+           * вопрос, заданный вслепую. Залитый номер поверх любого состояния
+           * читается сразу и ничего не перекрывает.
+           */
+          selected && 'bg-ink px-1 text-canvas',
         )}
       >
         {ordinal}

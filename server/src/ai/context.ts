@@ -10,12 +10,22 @@
  * Budget order, when the notebook is bigger than the window: the selected cell
  * and the newest traceback survive intact, distant cells are elided first.
  */
-import { getMeta, readNotebook, type CellOutput, type CellSnapshot, type DataOutput, type KernelStatus } from '@shared/notebook'
+import type * as Y from 'yjs'
+import {
+  allBooks,
+  getMeta,
+  readCell,
+  type CellOutput,
+  type CellSnapshot,
+  type DataOutput,
+  type KernelStatus,
+} from '@shared/notebook'
 import { getOracleSettings } from '../admin/settings.js'
 import { getSessionDoc } from '../collab/index.js'
 import { getSession } from '../db.js'
 import { listFiles } from '../workspace.js'
 import { currentText } from '../collab/files.js'
+import { kindOf } from '@shared/paths'
 
 /*
  * How much of a cell travels, per cell.
@@ -42,9 +52,31 @@ const MAX_FILES = 40
  */
 const MAX_OPEN_FILE = 8_000
 
+/**
+ * Одна ячейка в кадре: сама ячейка, её тетрадь и номер внутри этой тетради.
+ *
+ * Тетрадей в комнате несколько, и номер у ячейки свой в каждой — тот самый,
+ * который нарисован у неё в поле слева. Пока список был плоским и одним,
+ * номером служил индекс в нём; с двумя тетрадями это разошлось бы молча.
+ */
+interface Entry {
+  cell: CellSnapshot
+  book: string
+  /** 1-based, как в поле у края и как в панели. */
+  no: number
+  /** Первая ячейка своей тетради — над ней ставится её заголовок. */
+  first: boolean
+}
+
 export function buildContext(
   sessionId: string,
-  selectedCellId: string | null,
+  /**
+   * На чём просят сосредоточиться — выделение спрашивающего.
+   *
+   * Не «что показать»: тетради едут целиком в любом случае. Это про порядок
+   * внимания — что закрепить в кадре и о чём сказать модели прямо.
+   */
+  focus: readonly string[],
   /**
    * Кто спрашивает.
    *
@@ -60,17 +92,35 @@ export function buildContext(
   // to fit a smaller model must see the next question honour it.
   const maxTotal = getOracleSettings().contextChars
   const { doc } = getSessionDoc(sessionId)
-  const cells = readNotebook(doc)
   const meta = getMeta(doc)
+
+  /*
+   * ВСЕ тетради комнаты, а не первая.
+   *
+   * Пока тетрадь была одна, «ячейки комнаты» и «ячейки тетради» значили одно и
+   * то же. С несколькими вопрос про ячейку во второй уходил с заголовком
+   * «SELECTED CELL: none» и без самой ячейки — а панель при этом честно
+   * показывала её номер, и ответ приходил уверенный и про чужой код.
+   */
+  const entries: Entry[] = allBooks(doc).flatMap(({ book, cells }) =>
+    cells.toArray().map((cell, at) => ({
+      cell: readCell(cell),
+      book: book.path,
+      no: at + 1,
+      first: at === 0,
+    })),
+  )
 
   const sessionName =
     getSession(sessionId)?.name ?? (meta.get('title') as string | undefined) ?? 'Untitled seminar'
   const kernel = (meta.get('kernelStatus') as KernelStatus | undefined) ?? 'idle'
 
-  const selectedIndex = selectedCellId ? cells.findIndex((c) => c.id === selectedCellId) : -1
-  const errorIndex = newestErrorIndex(cells)
-  const pinned = new Set<number>()
-  if (selectedIndex >= 0) pinned.add(selectedIndex)
+  const wanted = new Set(focus)
+  const focused = entries
+    .map((entry, i) => (wanted.has(entry.cell.id) ? i : -1))
+    .filter((i) => i >= 0)
+  const errorIndex = newestErrorIndex(entries.map((entry) => entry.cell))
+  const pinned = new Set<number>(focused)
   if (errorIndex >= 0) pinned.add(errorIndex)
 
   const header = [
@@ -78,27 +128,45 @@ export function buildContext(
     `KERNEL: ${kernel}`,
     `FILES IN WORKSPACE: ${describeFiles(sessionId)}`,
     ...openFileBlock(sessionId, askedBy ?? null),
-    selectedIndex >= 0
-      ? `SELECTED CELL: ${selectedIndex} (id ${cells[selectedIndex].id})`
-      : 'SELECTED CELL: none',
-    `NOTEBOOK (${cells.length} cell${cells.length === 1 ? '' : 's'}, top to bottom; trimmed regions are marked "… truncated …"):`,
+    /*
+     * «Смотри сюда в первую очередь», а не «вот всё, что есть».
+     *
+     * Формулировка важна: тетради в кадре целиком, и модель, прочитавшая
+     * «SELECTED CELL: none», раньше вела себя так, будто ей ничего не дали.
+     */
+    focused.length > 0
+      ? `THE STUDENT IS ASKING ABOUT: ${focused
+          .map((i) => `cell ${pad(entries[i].no)} of ${entries[i].book}`)
+          .join(', ')} — answer about these first; everything else below is context.`
+      : 'THE STUDENT IS ASKING ABOUT: nothing in particular — they have selected no cells.',
+    `NOTEBOOKS (${entries.length} cell${entries.length === 1 ? '' : 's'} across ${bookCount(doc)}; trimmed regions are marked "… truncated …"):`,
   ].join('\n')
 
-  const blocks = cells.map((cell, i) => renderCell(cell, i, pinned.has(i), i === selectedIndex))
+  const blocks = entries.map(
+    (entry, i) => bookHead(entry) + renderCell(entry, pinned.has(i), wanted.has(entry.cell.id)),
+  )
   const assemble = () => [header, ...blocks].join('\n\n')
 
-  // Attention follows the student: drop the cells furthest from what they are
-  // looking at, never the cell they asked about or the failure they hit.
-  const anchor = selectedIndex >= 0 ? selectedIndex : errorIndex >= 0 ? errorIndex : cells.length - 1
-  const droppable = cells
+  /*
+   * Что выбрасывать первым.
+   *
+   * Сначала — чужие тетради: если спросили про ячейку в одной, содержимое
+   * другой стоит в кадре дешевле всего. Потом — то, что дальше от места, куда
+   * человек смотрит. Закреплённое не выбрасывается никогда.
+   */
+  const anchor = focused[0] ?? (errorIndex >= 0 ? errorIndex : entries.length - 1)
+  const homeBooks = new Set(focused.map((i) => entries[i].book))
+  const strangeness = (i: number) =>
+    (homeBooks.size > 0 && !homeBooks.has(entries[i].book) ? 1_000_000 : 0) + Math.abs(i - anchor)
+  const droppable = entries
     .map((_, i) => i)
     .filter((i) => !pinned.has(i))
-    .sort((a, b) => Math.abs(b - anchor) - Math.abs(a - anchor))
+    .sort((a, b) => strangeness(b) - strangeness(a))
 
   let text = assemble()
   for (const i of droppable) {
     if (text.length <= maxTotal) break
-    blocks[i] = elide(cells[i], i)
+    blocks[i] = bookHead(entries[i]) + elide(entries[i])
     text = assemble()
   }
 
@@ -115,7 +183,7 @@ export function buildContext(
    * the old clip run, and by then the notebook is not the reason.
    */
   if (text.length > maxTotal) {
-    text = [header, ...collapse(blocks, pinned)].join('\n\n')
+    text = [header, ...collapse(blocks, pinned, entries)].join('\n\n')
   }
   if (text.length <= maxTotal) return text
 
@@ -136,10 +204,29 @@ export function buildContext(
   if (kept.length > 0) {
     const room = Math.max(200, Math.floor((maxTotal - header.length - 40) / kept.length))
     const trimmed = kept.map((block) => (block.length > room ? clip(block, room) : block))
-    const focused = [header, '[the rest of the notebook was too long to include]', ...trimmed].join('\n\n')
-    if (focused.length <= maxTotal) return focused
+    const focusedText = [
+      header,
+      '[the rest of the notebook was too long to include]',
+      ...trimmed,
+    ].join('\n\n')
+    if (focusedText.length <= maxTotal) return focusedText
   }
   return clip(text, maxTotal)
+}
+
+/** Заголовок тетради — над первой её ячейкой, и только над ней. */
+function bookHead(entry: Entry): string {
+  return entry.first ? `### notebook ${entry.book}\n` : ''
+}
+
+function bookCount(doc: Y.Doc): string {
+  const n = allBooks(doc).length
+  return `${n} notebook${n === 1 ? '' : 's'}`
+}
+
+/** 01, 02, 03 — тот же номер, который нарисован у ячейки в поле слева. */
+function pad(no: number): string {
+  return String(no).padStart(2, '0')
 }
 
 /**
@@ -149,7 +236,7 @@ export function buildContext(
  * and says the same thing: there is a notebook here, and this is not the part
  * you were asked about.
  */
-function collapse(blocks: string[], pinned: Set<number>): string[] {
+function collapse(blocks: string[], pinned: Set<number>, entries: Entry[]): string[] {
   const out: string[] = []
   let runFrom = -1
   const flush = (to: number) => {
@@ -158,7 +245,10 @@ function collapse(blocks: string[], pinned: Set<number>): string[] {
     out.push(
       n === 1
         ? blocks[runFrom]
-        : `[cells ${runFrom}–${to}] — … ${n} cells elided …`,
+        : // Номера — те же, что у человека на экране, и с именем тетради:
+          // «03–07» без него неотличимо в двух тетрадях сразу.
+          `[${entries[runFrom].book} cells ${pad(entries[runFrom].no)}–${pad(entries[to].no)}]` +
+            ` — … ${n} cells elided …`,
     )
     runFrom = -1
   }
@@ -192,12 +282,19 @@ function newestErrorIndex(cells: CellSnapshot[]): number {
   return best
 }
 
-function renderCell(cell: CellSnapshot, index: number, full: boolean, selected: boolean): string {
-  const head = [`[cell ${index}]`, cell.type, cell.state]
+function renderCell(entry: Entry, full: boolean, selected: boolean): string {
+  const cell = entry.cell
+  /*
+   * Номер — тот же, что видит человек: 1-based, с ведущим нулём.
+   *
+   * Был индекс с нуля, и это расходилось молча: студент пишет «в 03-й падает»,
+   * модель читает «[cell 3]» — то есть четвёртую, — и виноватой выглядит модель.
+   */
+  const head = [`[cell ${pad(entry.no)}]`, cell.type, cell.state]
   if (cell.execCount !== null) head.push(`In[${cell.execCount}]`)
   if (cell.runBy) head.push(`run by ${cell.runBy}`)
 
-  const lines = [head.join(' · ') + (selected ? '   <-- the student has this cell selected' : '')]
+  const lines = [head.join(' · ') + (selected ? '   <-- ASKED ABOUT' : '')]
 
   const source = cell.source.trim()
   if (!source) lines.push('(empty)')
@@ -245,11 +342,12 @@ function renderData(output: DataOutput, limit: number): string {
   return parts.length ? parts.join('\n') : '(no data)'
 }
 
-function elide(cell: CellSnapshot, index: number): string {
+function elide(entry: Entry): string {
+  const cell = entry.cell
   const source = cell.source.trim()
   const lineCount = source ? source.split('\n').length : 0
   const first = source.split('\n').find((line) => line.trim().length > 0) ?? ''
-  const head = [`[cell ${index}]`, cell.type, cell.state]
+  const head = [`[cell ${pad(entry.no)}]`, cell.type, cell.state]
   if (cell.execCount !== null) head.push(`In[${cell.execCount}]`)
   const preview = first ? ` starting "${clipLine(first.trim(), 60)}"` : ''
   return `${head.join(' · ')} — … ${lineCount} line${lineCount === 1 ? '' : 's'} elided …${preview}`
@@ -305,6 +403,15 @@ function openFileBlock(sessionId: string, askedBy: string | null): string[] {
   if (!askedBy) return []
   const path = editingPath(sessionId, askedBy)
   if (!path) return []
+  /*
+   * Тетрадь сюда не попадает, хотя она тоже «открытый файл».
+   *
+   * Её содержимое уже в кадре — ячейками, с выводами и состояниями. Файл же
+   * тетради это её проекция на диск: JSON без выводов, отстающий на полторы
+   * секунды. До восьми тысяч знаков того же самого, но хуже и вторым голосом —
+   * и вытесняющих собой настоящие ячейки, потому что заголовок бюджет не режет.
+   */
+  if (kindOf(path) === 'notebook') return []
   const text = currentText(sessionId, path)
   if (text === null) return []
   const shown = text.length > MAX_OPEN_FILE ? text.slice(0, MAX_OPEN_FILE) : text
@@ -324,7 +431,9 @@ function editingPath(sessionId: string, participantId: string): string | null {
 }
 
 function describeFiles(sessionId: string): string {
-  const names = listFiles(sessionId).filter((f) => !f.dir).map((f) => f.path)
+  const names = listFiles(sessionId)
+    .filter((f) => !f.dir)
+    .map((f) => f.path)
   if (names.length === 0) return '(none)'
   if (names.length <= MAX_FILES) return names.join(', ')
   return `${names.slice(0, MAX_FILES).join(', ')} … and ${names.length - MAX_FILES} more`

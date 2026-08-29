@@ -137,6 +137,14 @@ export function aiRoutes(): Router {
     const message = raw.trim()
     const requested = ACTIONS.includes(body?.action as AiAction) ? (body?.action as AiAction) : undefined
     const cellId = typeof body?.cellId === 'string' ? body.cellId : null
+    /*
+     * Выделение спрашивающего. Потолок — не про безопасность, а про смысл:
+     * «сосредоточься на сорока ячейках» значит «ни на чём», а место в кадре
+     * они займут за счёт остальной тетради.
+     */
+    const cellIds = Array.isArray(body?.cellIds)
+      ? body.cellIds.filter((id): id is string => typeof id === 'string' && id.length > 0).slice(0, 20)
+      : []
     if (!message && !requested) return res.status(400).json({ error: 'nothing to ask' })
 
     // Hints mode: the allowed action set is exactly {hint}. The quick actions
@@ -254,6 +262,7 @@ export function aiRoutes(): Router {
           message,
           action,
           cellId,
+          cellIds,
           usageId,
         })
 
