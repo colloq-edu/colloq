@@ -175,6 +175,30 @@ export interface RoomRules {
   oracle: "inherit" | "off" | "hints" | "full";
 
   /**
+   * Кто может дать оракулу писать в файлы семинара — «сделать», а не «спросить».
+   *
+   * Enforced in server/src/routes/ai.ts.
+   *
+   * Отдельно от `oracle`, потому что это другой вопрос. `oracle` — сколько
+   * подсказывать; `agent` — можно ли ему брать в руки папку комнаты. Режим
+   * «сделать» правит файлы сам, без нажатия «принять» на каждую правку: иначе
+   * он не может посмотреть на свою же ошибку и починить её, а без этого он не
+   * агент, а тот же ответ в другой обёртке. Плата — правки видны всем сразу; в
+   * обмен весь ход отменяется одной кнопкой.
+   *
+   * Умолчание `host`, а не `room`, и это единственное новое ограничение: в
+   * лаборатории на двадцать человек двадцать одновременных «сделать» в одной
+   * папке — это не помощь, а перезапись друг друга. Комната, где это уместно,
+   * включается одним переключателем.
+   *
+   * Тетради это правило не касается никогда: в ячейки оракул по-прежнему
+   * ПРЕДЛАГАЕТ, и предложение принимает человек. Причина не в осторожности, а в
+   * устройстве: у ячейки есть вывод, который пишет ядро, и правка ячейки мимо
+   * человека стирала бы результат, который комната только что посчитала.
+   */
+  agent: 'off' | 'host' | 'room'
+
+  /**
    * A model for this room only, or null to use the instance's.
    *
    * NOT ENFORCED YET. Worth having because a seminar that will ask two hundred
@@ -204,6 +228,7 @@ export const OPEN_ROOM: RoomRules = {
   wipe: "host",
   restart: "host",
   board: "host",
+  agent: "host",
   history: "room",
   oracle: "inherit",
   model: null,
@@ -212,6 +237,7 @@ export const OPEN_ROOM: RoomRules = {
 const WHO = new Set<Who>(["room", "host"]);
 const RUN = new Set<RunWho>(["room", "single", "host"]);
 const STRUCTURE = new Set<StructureWho>(["room", "add", "host"]);
+const AGENT = new Set<RoomRules["agent"]>(["off", "host", "room"]);
 const ORACLE = new Set<RoomRules["oracle"]>([
   "inherit",
   "off",
@@ -251,6 +277,7 @@ export function readRules(raw: unknown): RoomRules {
     wipe: who(source.wipe, OPEN_ROOM.wipe),
     restart: who(source.restart, OPEN_ROOM.restart),
     board: who(source.board, OPEN_ROOM.board),
+    agent: one(AGENT, source.agent, OPEN_ROOM.agent),
     history: who(source.history, OPEN_ROOM.history),
     oracle: ORACLE.has(source.oracle as RoomRules["oracle"])
       ? (source.oracle as RoomRules["oracle"])
@@ -334,6 +361,22 @@ export function allowsStructure(
   if (role === "host") return true;
   if (rule === "room") return true;
   return rule === "add" && verb === "add";
+}
+
+/**
+ * Может ли этот человек запустить оракула в режиме «сделать».
+ *
+ * Отдельная функция, а не `allows`, потому что у правила три значения: `off`
+ * закрывает режим у всех, включая преподавателя, — «в этой комнате оракул
+ * файлов не трогает» есть свойство комнаты, а не чьё-то право. Тот же довод,
+ * что и у оболочки, когда она была.
+ */
+export function allowsAgent(
+  rule: RoomRules["agent"],
+  role: "host" | "participant",
+): boolean {
+  if (rule === "off") return false;
+  return rule === "room" || role === "host";
 }
 
 /**

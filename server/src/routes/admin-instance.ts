@@ -137,7 +137,7 @@ function cellCount(sessionId: string, live: boolean): number {
 /** listFiles, not a bare readdir: the number on the card has to be the number the Files panel shows. */
 function fileCount(sessionId: string): number {
   try {
-    return listFiles(sessionId).length
+    return listFiles(sessionId).filter((entry) => !entry.dir).length
   } catch {
     return 0
   }

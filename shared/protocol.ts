@@ -47,7 +47,19 @@ export interface SessionInfo {
 }
 
 export interface FileEntry {
+  /** Имя без папок — то, что видно в строке дерева. */
   name: string
+  /**
+   * Путь от корня папки семинара: `src/model.py`.
+   *
+   * Отдельно от `name`, а не вместо него, и это выбор в пользу тех, кто уже
+   * написан: у файла в корне `path === name`, так что всё, что читало `name`
+   * до появления папок, читает его и дальше и видит ровно то же самое. Адресуют
+   * файл — по `path`; показывают — `name`.
+   */
+  path: string
+  /** Папка. У неё `size` нулевой и смысла не имеет. */
+  dir: boolean
   size: number
   modifiedAt: number
 }
@@ -172,6 +184,27 @@ export type ControlClientMessage =
    */
   | { t: 'board:open'; name: string }
   | { t: 'board:close' }
+  /**
+   * Правка дерева: завести, переименовать, убрать.
+   *
+   * Через управляющий сокет, а не REST, ровно по той причине, по которой через
+   * него ходит `cells:move`: результат должен увидеть не тот, кто нажал, а вся
+   * комната, и сообщение `files` уже рассылается всем. Ответ на отказ приходит
+   * тому же одному человеку строкой `refused`.
+   */
+  | { t: 'tree:mkdir'; path: string }
+  | { t: 'tree:new'; path: string }
+  | { t: 'tree:move'; from: string; to: string }
+  | { t: 'tree:remove'; path: string }
+  /**
+   * Запустить файл — скриптом, а не ячейкой.
+   *
+   * Уезжает в тот же терминал, в котором живёт `term:run`: у комнаты один
+   * контейнер, одна лента вывода и одна кнопка «прервать», и заводить скриптам
+   * вторую значит показывать два разных ответа на вопрос «что сейчас
+   * считается».
+   */
+  | { t: 'file:run'; path: string }
   | { t: 'ping' }
 
 export type TerminalStatus = 'closed' | 'starting' | 'idle' | 'busy' | 'dead'
@@ -218,7 +251,7 @@ export type ControlServerMessage =
    * зашедший в середине занятия, не узнает, что комната что-то смотрит.
    */
   | { t: 'board'; open: string | null }
-  | { t: 'refused'; rule: 'structure' | 'edit' | 'title'; message: string }
+  | { t: 'refused'; rule: 'structure' | 'edit' | 'title' | 'files'; message: string }
   | { t: 'error'; message: string }
   /**
    * Ответ на пульс, и заодно часы сервера.
@@ -321,6 +354,18 @@ export interface AwarenessUser {
   composing?: boolean
   /** True while their cursor is in the terminal. */
   inTerminal?: boolean
+  /**
+   * Какой файл человек правит прямо сейчас — путь, или null, если тетрадь.
+   *
+   * В присутствии, как и `viewing`, и по той же причине: место работы
+   * эфемерно, оно ничего не значит после ухода вкладки и не должно попадать ни
+   * в историю версий, ни под Ctrl+Z. Панель файлов рисует по нему точки «кто
+   * здесь», а редактор — строку «Ада правит здесь».
+   *
+   * Курсоры внутри самого файла сюда не входят: они живут в присутствии ТОГО
+   * документа, который открыт, и до комнаты не доходят вовсе.
+   */
+  editing?: string | null
   /**
    * Какой документ человек смотрит и где он в нём.
    *

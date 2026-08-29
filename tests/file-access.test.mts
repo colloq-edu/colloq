@@ -2,7 +2,7 @@
  * Who may read a seminar's folder.
  *
  * Both of these routes used to need nothing at all: `GET /files` listed every
- * file in a room and `GET /files/:name` handed any of them over, with no
+ * file in a room and `GET /file?path=` handed any of them over, with no
  * credential of any kind. A seminar id is eight characters — short on purpose,
  * because the link gets read aloud in a lecture hall — so it is guessable
  * rather than secret, and the folder holds the material the class was given and
@@ -52,7 +52,7 @@ test('a stranger cannot list the room’s files', async () => {
 })
 
 test('a stranger cannot download the room’s files', async () => {
-  const res = await fetch(`${base}/api/sessions/${ROOM}/files/handout.csv`)
+  const res = await fetch(`${base}/api/sessions/${ROOM}/file?path=handout.csv`)
   assert.equal(res.status, 401)
 })
 
@@ -74,7 +74,7 @@ test('a download carries a ticket in the query string, not the session token', a
    */
   const ticket = signDownloadToken(ROOM, 'handout.csv')
   const res = await fetch(
-    `${base}/api/sessions/${ROOM}/files/handout.csv?token=${encodeURIComponent(ticket)}`,
+    `${base}/api/sessions/${ROOM}/file?path=handout.csv&token=${encodeURIComponent(ticket)}`,
   )
   assert.equal(res.status, 200)
   assert.match(await res.text(), /1,2/)
@@ -82,7 +82,7 @@ test('a download carries a ticket in the query string, not the session token', a
 
 test('the session token no longer opens a download from the query string', async () => {
   const res = await fetch(
-    `${base}/api/sessions/${ROOM}/files/handout.csv?token=${encodeURIComponent(token())}`,
+    `${base}/api/sessions/${ROOM}/file?path=handout.csv&token=${encodeURIComponent(token())}`,
   )
   assert.equal(res.status, 401)
 })
@@ -91,14 +91,14 @@ test('a ticket for one file does not open another', async () => {
   fs.writeFileSync(path.join(sessionDir(ROOM), 'secret.csv'), 'x\n')
   const ticket = signDownloadToken(ROOM, 'handout.csv')
   const res = await fetch(
-    `${base}/api/sessions/${ROOM}/files/secret.csv?token=${encodeURIComponent(ticket)}`,
+    `${base}/api/sessions/${ROOM}/file?path=secret.csv&token=${encodeURIComponent(ticket)}`,
   )
   assert.equal(res.status, 401)
 })
 
 test('only the teacher can remove a file from the room', async () => {
   fs.writeFileSync(path.join(sessionDir(ROOM), 'theirs.csv'), 'a\n')
-  const asStudent = await fetch(`${base}/api/sessions/${ROOM}/files/theirs.csv`, {
+  const asStudent = await fetch(`${base}/api/sessions/${ROOM}/file?path=theirs.csv`, {
     method: 'DELETE',
     headers: { authorization: `Bearer ${token()}` },
   })
@@ -109,7 +109,7 @@ test('only the teacher can remove a file from the room', async () => {
 test('a token for another seminar opens nothing here', async () => {
   const other = signToken({ sessionId: 'some-other-room', participantId: 'p_test', role: 'participant' })
   const res = await fetch(
-    `${base}/api/sessions/${ROOM}/files/handout.csv?token=${encodeURIComponent(other)}`,
+    `${base}/api/sessions/${ROOM}/file?path=handout.csv&token=${encodeURIComponent(other)}`,
   )
   assert.equal(res.status, 401)
 })

@@ -4,9 +4,12 @@ import busboy from 'busboy'
 import { Router } from 'express'
 import { config } from '../config.js'
 import { getSession } from '../db.js'
+import { baseOf, joinPath, normalizePath } from '@shared/paths'
+import { forgetFile } from '../collab/files.js'
 import {
   deleteFile,
   listFiles,
+  safeName,
   resolveInSession,
   sessionBytes,
   sweepStaleUploads,
@@ -101,6 +104,20 @@ export function fileRoutes(): Router {
       return res.status(400).json({ error: 'malformed upload' })
     }
 
+    /*
+     * В какую папку кладём. Поле формы, а не часть имени файла: имя приходит из
+     * файловой системы того, кто перетаскивает, и дописывать в него путь значит
+     * зависеть от того, что браузер положил в `filename`. Приходит раньше самих
+     * файлов, потому что панель добавляет его в форму первым; клиент, который
+     * так не делает, кладёт в корень — и это честный ответ, а не тихая ошибка.
+     */
+    let intoDir = ''
+    bb.on('field', (name, value) => {
+      if (name !== 'dir') return
+      const wanted = normalizePath(typeof value === 'string' ? value : '')
+      if (wanted !== null) intoDir = wanted
+    })
+
     const saved: string[] = []
     /** Имена, которые легли поверх уже лежавших: об этом надо сказать вслух. */
     const replaced: string[] = []
@@ -160,13 +177,16 @@ export function fileRoutes(): Router {
     }
 
     bb.on('file', (_field, stream, info) => {
-      const target = resolveInSession(sessionId, info.filename ?? '')
-      if (!target) {
+      const dropped = safeName(info.filename ?? '')
+      const target = dropped ? resolveInSession(sessionId, joinPath(intoDir, dropped)) : null
+      if (!target || !dropped) {
         failure ??= { code: 400, message: whyRefused(info.filename ?? '') }
         stream.resume()
         return
       }
-      const name = target.slice(target.lastIndexOf('/') + 1)
+      const name = dropped
+      /* Папка могла не существовать — панель умеет перетащить файл на новую. */
+      fs.mkdirSync(target.slice(0, target.lastIndexOf('/')), { recursive: true })
       // Заметить, что имя занято, до того как его займут: после rename не отличить.
       const existed = fs.existsSync(target)
       /*
@@ -301,30 +321,33 @@ export function fileRoutes(): Router {
     req.pipe(bb)
   })
 
-  router.get('/api/sessions/:id/files/:name', (req, res) => {
+  /**
+   * Скачать файл.
+   *
+   * Путь — в строке запроса, а не в адресе, и это единственный способ адресовать
+   * файл во всём продукте. Косая черта внутри имени в адресе живёт только в
+   * виде `%2F`, а его по дороге разворачивает то один прокси, то другой — и
+   * `src/model.py` превращается либо в две части пути, либо в 404 в
+   * зависимости от того, что стоит перед сервером. Строка запроса не
+   * нормализуется никем.
+   */
+  router.get('/api/sessions/:id/file', (req, res) => {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
-    /*
-     * The credential arrives in the query string here rather than in a header,
-     * and that is not laziness: a download is an <a href>, and an anchor cannot
-     * carry an Authorization header. sessionAuth already accepts either. The
-     * token is scoped to this one seminar and the instance sends
-     * Referrer-Policy: strict-origin-when-cross-origin, so it does not travel
-     * anywhere the link itself does not already go.
-     */
+    const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
+    if (!wanted) return res.status(400).json({ error: 'bad path' })
     /*
      * Either a header from a fetch, or the file's own short-lived token in the
-     * query string — the anchor case. What is no longer accepted here is the
-     * session token in a URL: it opens the control socket, and a link with it
-     * in is a link that hands Restart to whoever it is forwarded to.
+     * query string — the anchor case. What is not accepted here is the session
+     * token in a URL: it opens the control socket, and a link with it in is a
+     * link that hands Restart to whoever it is forwarded to.
      */
     const ticket = typeof req.query.token === 'string' ? req.query.token : ''
-    const allowed =
-      sessionAuth(req) !== null || verifyDownloadToken(sessionId, req.params.name, ticket)
+    const allowed = sessionAuth(req) !== null || verifyDownloadToken(sessionId, wanted, ticket)
     if (!allowed) return res.status(401).json({ error: 'join the session first' })
-    const full = resolveInSession(sessionId, req.params.name)
+    const full = resolveInSession(sessionId, wanted)
     if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
-    res.download(full, req.params.name, (err) => {
+    res.download(full, baseOf(wanted), (err) => {
       if (err && !res.headersSent) res.status(404).json({ error: 'file not found' })
     })
   })
@@ -336,32 +359,38 @@ export function fileRoutes(): Router {
    * so the credential that travels in a URL is good for one file for five
    * minutes, and for nothing else at all.
    */
-  router.get('/api/sessions/:id/files/:name/ticket', (req, res) => {
+  router.get('/api/sessions/:id/file/ticket', (req, res) => {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
     if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
-    const full = resolveInSession(sessionId, req.params.name)
+    const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
+    if (!wanted) return res.status(400).json({ error: 'bad path' })
+    const full = resolveInSession(sessionId, wanted)
     if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
-    res.json({ token: signDownloadToken(sessionId, req.params.name) })
+    res.json({ token: signDownloadToken(sessionId, wanted) })
   })
 
-  router.delete('/api/sessions/:id/files/:name', (req, res) => {
+  /**
+   * Убрать файл или папку.
+   *
+   * Право преподавателя, и было им и раньше: папка общая в обе стороны, и любой
+   * в комнате мог убрать раздатку, по которой класс работает. Добавить — прибавка
+   * и остаётся открытой всем; убрать — нет.
+   */
+  router.delete('/api/sessions/:id/file', (req, res) => {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
     const who = sessionAuth(req)
     if (!who) return res.status(401).json({ error: 'join the session first' })
-    /*
-     * Host only. The folder is shared in both directions — anyone in the room
-     * could delete the handout the class was working from, and the trash icon
-     * sat in everyone's panel with one confirmation behind it. Adding a file is
-     * additive and stays open to all; removing one is not.
-     */
     if (who.role !== 'host') {
       return res.status(403).json({ error: 'Only the teacher can remove a file from the room.' })
     }
-    if (!deleteFile(sessionId, req.params.name)) {
+    const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
+    if (!wanted) return res.status(400).json({ error: 'bad path' })
+    if (!deleteFile(sessionId, wanted)) {
       return res.status(404).json({ error: 'file not found' })
     }
+    forgetFile(sessionId, wanted)
     broadcastFiles(sessionId)
     res.json({ files: listFiles(sessionId) })
   })

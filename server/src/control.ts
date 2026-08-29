@@ -65,7 +65,17 @@ import {
   terminalPhase,
   typedRunningCommand,
 } from './kernel/terminal.js'
-import { listFiles } from './workspace.js'
+import {
+  deleteFile,
+  listFiles,
+  makeDir,
+  makeFile,
+  movePath,
+  statPath,
+  type TreeResult,
+} from './workspace.js'
+import { MAX_DEPTH, baseOf, normalizePath, runnerFor, whySegmentRefused } from '@shared/paths'
+import { forgetFile, onFileSaved } from './collab/files.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
@@ -187,13 +197,22 @@ function forgetMissingBoard(sessionId: string): void {
   const open = boards.get(sessionId)
   if (!open) return
   try {
-    if (!listFiles(sessionId).some((file) => file.name === open)) {
+    if (!listFiles(sessionId).some((file) => !file.dir && file.path === open)) {
       setBoard(sessionId, null)
     }
   } catch {
     /* папку не прочитать — доску не трогаем, это не повод её закрывать */
   }
 }
+
+/*
+ * Файл лёг на диск — комната узнаёт новый размер и время.
+ *
+ * Редактор сохраняется сам каждые несколько секунд, и без этой строки панель
+ * файлов показывала бы размер, каким он был при открытии вкладки: «0 B» у
+ * файла, в котором уже сорок строк.
+ */
+onFileSaved((sessionId) => broadcastFiles(sessionId))
 
 // Registered once, at import: the kernel runtime has no idea who is listening.
 onWorkspaceChanged((sessionId) => {
@@ -394,6 +413,31 @@ function queue(ws: WebSocket, sessionId: string, payload: TokenPayload, ids: str
   }
 }
 
+/**
+ * Почему путь не годится — теми же словами, что и в поле ввода панели.
+ *
+ * Отказ приходит на последний сегмент: остальные человек не набирал, они
+ * пришли из дерева, и жаловаться на них значило бы указывать не туда.
+ */
+function refusedPath(raw: unknown): string {
+  const shown = typeof raw === 'string' ? raw : ''
+  const last = shown.split('/').filter(Boolean).pop() ?? ''
+  if (!last) return 'Имя не может быть пустым.'
+  if (shown.split('/').filter(Boolean).length > MAX_DEPTH) {
+    return `Слишком глубоко: папок в папке бывает не больше ${MAX_DEPTH}.`
+  }
+  return whySegmentRefused(last)
+}
+
+/** Что сказать, когда путь годится, а сделать всё равно не вышло. */
+function treeTrouble(outcome: TreeResult, path: string): string {
+  const base = baseOf(path)
+  if (outcome === 'exists') return `«${base}» в этой папке уже есть.`
+  if (outcome === 'missing') return `«${base}» в комнате больше нет.`
+  if (outcome === 'bad-name') return whySegmentRefused(base)
+  return `«${base}» сейчас занят — попробуйте ещё раз через секунду.`
+}
+
 function optionalId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : undefined
 }
@@ -560,7 +604,7 @@ export function dispatch(
       const name = typeof message.name === 'string' ? message.name : ''
       // Существование проверяется здесь, а не у смотрящего: иначе комната
       // получит имя, которого нет, и двадцать человек увидят пустую область.
-      if (!name || !listFiles(sessionId).some((file) => file.name === name)) {
+      if (!name || !listFiles(sessionId).some((file) => !file.dir && file.path === name)) {
         send(ws, { t: 'error', message: 'Такого файла в комнате нет.' })
         return
       }
@@ -580,6 +624,128 @@ export function dispatch(
         return
       }
       setBoard(sessionId, null)
+      return
+    }
+
+    /*
+     * Правка дерева файлов. Четыре глагола и две границы между ними.
+     *
+     * Завести — по правилу `files`, тому же, по которому файл загружают: и то и
+     * другое ДОБАВЛЯЕТ, и открытая комната, куда каждый кладёт своё решение, —
+     * обычный семинар. Убрать и переименовать — преподавательские, потому что
+     * оба УБИРАЮТ: старого пути после переименования нет ровно так же, как нет
+     * удалённого файла, и раздатка, которую класс разбирает, исчезает у всех
+     * одинаково. Это не новое ограничение — удаление было правом
+     * преподавателя и раньше.
+     */
+    case 'tree:mkdir':
+    case 'tree:new': {
+      if (
+        !may(
+          getRules(sessionId).files,
+          payload,
+          ws,
+          'Заводить файлы в этом семинаре может преподаватель.',
+        )
+      ) {
+        return
+      }
+      const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
+      if (!wanted) {
+        send(ws, { t: 'error', message: refusedPath(message.path) })
+        return
+      }
+      const outcome =
+        message.t === 'tree:mkdir' ? makeDir(sessionId, wanted) : makeFile(sessionId, wanted)
+      if (outcome !== 'ok') {
+        send(ws, { t: 'error', message: treeTrouble(outcome, wanted) })
+        return
+      }
+      broadcastFiles(sessionId)
+      return
+    }
+
+    case 'tree:move': {
+      if (payload.role !== 'host') {
+        send(ws, {
+          t: 'error',
+          message: 'Переименовать файл в комнате может преподаватель.',
+        })
+        return
+      }
+      const from = normalizePath(typeof message.from === 'string' ? message.from : '')
+      const to = normalizePath(typeof message.to === 'string' ? message.to : '')
+      if (!from || !to) {
+        send(ws, { t: 'error', message: refusedPath(from ? message.to : message.from) })
+        return
+      }
+      const outcome = movePath(sessionId, from, to)
+      if (outcome !== 'ok') {
+        send(ws, { t: 'error', message: treeTrouble(outcome, to) })
+        return
+      }
+      // Документ старого пути больше ни на что не смотрит: у него на диске
+      // ничего нет, и следующее сохранение воскресило бы файл под прежним
+      // именем. Наблюдатель заметит это сам, но не раньше двух секунд — а
+      // вкладки, открытые на нём, должны узнать сразу.
+      forgetFile(sessionId, from)
+      if (boardOf(sessionId) === from) setBoard(sessionId, to)
+      broadcastFiles(sessionId)
+      return
+    }
+
+    case 'tree:remove': {
+      if (payload.role !== 'host') {
+        send(ws, {
+          t: 'error',
+          message: 'Убрать файл из комнаты может преподаватель.',
+        })
+        return
+      }
+      const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
+      if (!wanted) {
+        send(ws, { t: 'error', message: refusedPath(message.path) })
+        return
+      }
+      if (!deleteFile(sessionId, wanted)) {
+        send(ws, { t: 'error', message: 'Этого файла в комнате уже нет.' })
+        return
+      }
+      forgetFile(sessionId, wanted)
+      forgetMissingBoard(sessionId)
+      broadcastFiles(sessionId)
+      return
+    }
+
+    /*
+     * Запуск скрипта. Право — то же, что у ячейки: это тот же контейнер, тот же
+     * Python и та же чужая машина. Разница только в том, что вывод идёт в
+     * терминал, а не в ячейку.
+     */
+    case 'file:run': {
+      if (!mayRun(sessionId, payload, ws)) return
+      const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
+      const runner = wanted ? runnerFor(wanted) : null
+      if (!wanted || !runner) {
+        send(ws, { t: 'error', message: 'Этот файл нечем запустить.' })
+        return
+      }
+      if (!statPath(sessionId, wanted)) {
+        send(ws, { t: 'error', message: 'Этого файла в комнате уже нет.' })
+        return
+      }
+      /*
+       * Кавычки одинарные с экранированием: имя файла набирает человек, и в нём
+       * бывает пробел, скобка и апостроф. Строка уходит в ту же оболочку, что и
+       * всё, что люди набирают в терминале руками, — и разница в том, что эту
+       * строку человек не набирал и увидеть перед запуском не мог.
+       */
+      const quoted = `'${wanted.replace(/'/g, `'\\''`)}'`
+      runCommand(
+        sessionId,
+        runner === 'python' ? `python -u ${quoted}` : `bash ${quoted}`,
+        sender(sessionId, payload.participantId),
+      )
       return
     }
 

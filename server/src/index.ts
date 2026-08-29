@@ -25,6 +25,8 @@ import { verifyToken, type TokenPayload } from './auth.js'
 import { aiEnabled, config } from './config.js'
 import { SECURITY_HEADERS } from './headers.js'
 import { handleCollabSocket, shutdownCollab } from './collab/index.js'
+import { handleFileSocket } from './collab/files.js'
+import { normalizePath } from '@shared/paths'
 import { handleControlSocket } from './control.js'
 import { closeDatabase, db, getSession, touchLastSeen } from './db.js'
 import { shutdownKernels } from './kernel/index.js'
@@ -42,7 +44,7 @@ import { historyRoutes } from './routes/history.js'
 /** A whole notebook's state travels in one sync frame; images make it big. */
 const MAX_WS_PAYLOAD = 16 * 1024 * 1024
 const SHUTDOWN_GRACE_MS = 8000
-const UPGRADE_PATH = /^\/(collab|control)\/([A-Za-z0-9_-]{1,64})\/?$/
+const UPGRADE_PATH = /^\/(collab|control|file)\/([A-Za-z0-9_-]{1,64})\/?$/
 const STARTED_AT = Date.now()
 
 /* -------------------------------------------------------------- compression */
@@ -469,7 +471,25 @@ server.on('upgrade', (req, socket, head) => {
     }
     if (channel === 'collab')
       handleCollabSocket(ws, sessionId, effectiveRole(req, payload), payload.participantId)
-    else {
+    else if (channel === 'file') {
+      /*
+       * Путь — в строке запроса, а не в адресе, и это не стиль: у файла есть
+       * папки, а адрес сокета разбирается одним выражением, которому косая
+       * черта внутри имени была бы неотличима от косой черты канала. Проверяет
+       * его тот же `normalizePath`, что и всё остальное, — и до него сюда не
+       * доходит ничего, кроме уже проверенного токена этой самой комнаты.
+       */
+      const wanted = normalizePath(url.searchParams.get('path') ?? '')
+      if (!wanted) {
+        try {
+          ws.close(4404, 'нет такого файла')
+        } catch {
+          /* уже закрыт */
+        }
+        return
+      }
+      handleFileSocket(ws, sessionId, wanted, effectiveRole(req, payload), payload.participantId)
+    } else {
       /*
        * A participant token carries the role it was minted with. A teacher who
        * joined before signing in — or who created the seminar in the admin

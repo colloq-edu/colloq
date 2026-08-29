@@ -271,7 +271,7 @@ function clipLine(text: string, limit: number): string {
 }
 
 function describeFiles(sessionId: string): string {
-  const names = listFiles(sessionId).map((f) => f.name)
+  const names = listFiles(sessionId).filter((f) => !f.dir).map((f) => f.path)
   if (names.length === 0) return '(none)'
   if (names.length <= MAX_FILES) return names.join(', ')
   return `${names.slice(0, MAX_FILES).join(', ')} … and ${names.length - MAX_FILES} more`

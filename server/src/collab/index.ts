@@ -25,6 +25,7 @@ import {
   flushAllPersistence,
 } from './persistence.js'
 import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } from './history.js'
+import { flushAllFiles, forgetFiles } from './files.js'
 
 /**
  * Происхождение для записи, которую сервер делает от чьего-то имени.
@@ -696,6 +697,9 @@ export function onlineParticipantIds(sessionId: string): string[] {
  * it. Called before the rows are dropped, so nothing can write between the two.
  */
 export function dropSessionDoc(sessionId: string): void {
+  // Открытые файлы этой комнаты — тоже её: их надо дописать и закрыть до того,
+  // как исчезнет папка, иначе последнее сохранение создаст её заново.
+  forgetFiles(sessionId)
   const entry = docs.get(sessionId)
   if (!entry) return
   docs.delete(sessionId)
@@ -733,6 +737,9 @@ export function shutdownCollab(): void {
   }
   docs.clear()
   flushAllPersistence()
+  // То же и для файлов: набранное за последние полсекунды — это работа, а
+  // остановка процесса — не повод её терять.
+  flushAllFiles()
   // Whatever somebody was typing when the process was told to stop is still a
   // thing they did, and the seminar may be reopened tomorrow.
   flushAllHistory()
