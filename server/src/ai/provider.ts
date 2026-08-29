@@ -18,6 +18,25 @@ import type { OracleTestResult } from '@shared/admin'
 export interface ChatTurn {
   role: 'system' | 'user' | 'assistant'
   content: string
+  /** Инструменты, которые модель попросила выполнить этим ходом. */
+  calls?: ToolCall[]
+  /** Ответ инструмента: у него есть адресат — тот вызов, на который он отвечает. */
+  callId?: string
+}
+
+/** Один вызов инструмента: имя и аргументы, как их прислала модель. */
+export interface ToolCall {
+  id: string
+  name: string
+  /** JSON строкой — ровно как пришло. Разбирает вызывающий, он же и отвечает за кривое. */
+  args: string
+}
+
+/** Описание инструмента в том виде, в каком его понимает OpenAI-совместимый эндпоинт. */
+export interface ToolSpec {
+  name: string
+  description: string
+  parameters: Record<string, unknown>
 }
 
 /** A teacher pressed a button and is watching a spinner; the seminar timeout is far too long for that. */
@@ -226,8 +245,110 @@ function openStream(
    */
   const usage = { stream_options: { include_usage: true } }
   return temperature === undefined
-    ? getClient().chat.completions.create({ model, messages, stream: true, ...usage, ...extra }, { signal })
-    : getClient().chat.completions.create({ model, messages, stream: true, temperature, ...usage, ...extra }, { signal })
+    ? getClient().chat.completions.create(
+        { model, messages, stream: true, ...usage, ...extra },
+        { signal },
+      )
+    : getClient().chat.completions.create(
+        { model, messages, stream: true, temperature, ...usage, ...extra },
+        { signal },
+      )
+}
+
+/**
+ * Один ход с инструментами — без потока.
+ *
+ * Поток здесь не нужен и был бы вреден: аргументы инструмента приезжают в
+ * потоке по кускам незавершённого JSON, и собирать его обратно приходится
+ * по-разному у разных провайдеров — ровно та зависимость от конкретного
+ * эндпоинта, которой этот модуль избегает. Видимый прогресс у режима «сделать»
+ * даёт лента шагов, а не набегающие буквы: «прочитал src/model.py» полезнее
+ * половины предложения.
+ *
+ * `tools` пустой — обычный ход без инструментов; так же зовётся последний шаг,
+ * когда агент уже всё сделал и осталось только сказать словами.
+ */
+export async function completeWithTools(
+  messages: ChatTurn[],
+  tools: ToolSpec[],
+  signal?: AbortSignal,
+  onUsage?: (totalTokens: number) => void,
+): Promise<{ text: string; calls: ToolCall[] }> {
+  if (!providerReady()) throw new Error('No model is set up on this Colloq yet.')
+  const model = resolveAiConfig().model
+  const payload = {
+    model,
+    messages: toToolPayload(messages),
+    ...(tools.length > 0
+      ? {
+          tools: tools.map((tool) => ({
+            type: 'function' as const,
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.parameters,
+            },
+          })),
+          tool_choice: 'auto' as const,
+        }
+      : {}),
+  }
+  let answer
+  try {
+    answer = await getClient().chat.completions.create(payload as never, { signal })
+  } catch (err) {
+    if (isAbort(err, signal)) return { text: '', calls: [] }
+    /*
+     * Эндпоинт, который не умеет инструменты, отвечает 400 — и это не поломка,
+     * а свойство того, куда указали. Отдельная фраза, потому что «сделать» на
+     * такой модели не заработает никогда, сколько ни повторяй, а «спросить»
+     * работает прекрасно.
+     */
+    if (isBadRequest(err) && tools.length > 0) {
+      throw new Error(
+        'Эта модель не умеет пользоваться инструментами — режим «сделать» ей недоступен. ' +
+          'Спросить её по-прежнему можно.',
+      )
+    }
+    throw friendly(err)
+  }
+  const spent = (answer as { usage?: { total_tokens?: number } | null }).usage
+  if (spent && typeof spent.total_tokens === 'number') onUsage?.(spent.total_tokens)
+  const choice = (answer as { choices?: Array<{ message?: RawMessage }> }).choices?.[0]?.message
+  const calls: ToolCall[] = []
+  for (const call of choice?.tool_calls ?? []) {
+    if (!call?.function?.name) continue
+    calls.push({
+      id: typeof call.id === 'string' ? call.id : `call_${calls.length}`,
+      name: call.function.name,
+      args: typeof call.function.arguments === 'string' ? call.function.arguments : '{}',
+    })
+  }
+  return { text: typeof choice?.content === 'string' ? choice.content : '', calls }
+}
+
+/** Сообщение, как его правда присылают: `tool_calls` нет в типах SDK для этой формы. */
+interface RawMessage {
+  content?: string | null
+  tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
+}
+
+function toToolPayload(messages: ChatTurn[]): unknown[] {
+  return messages.map((turn) => {
+    if (turn.role === 'assistant' && turn.calls && turn.calls.length > 0) {
+      return {
+        role: 'assistant',
+        content: turn.content || null,
+        tool_calls: turn.calls.map((call) => ({
+          id: call.id,
+          type: 'function',
+          function: { name: call.name, arguments: call.args },
+        })),
+      }
+    }
+    if (turn.callId) return { role: 'tool', tool_call_id: turn.callId, content: turn.content }
+    return { role: turn.role, content: turn.content }
+  })
 }
 
 /* ------------------------------------------------------------------ test */
@@ -246,9 +367,12 @@ function openStream(
 export async function testConnection(): Promise<OracleTestResult> {
   const ai = resolveAiConfig()
   if (!ai.baseUrl) return fail('No endpoint address is set — choose a provider or type a base URL.')
-  if (!ai.model) return fail('No model is set — type the name the endpoint expects, e.g. gpt-4o-mini.')
+  if (!ai.model)
+    return fail('No model is set — type the name the endpoint expects, e.g. gpt-4o-mini.')
   if (!ai.apiKey && !isKeylessProvider(ai.provider)) {
-    return fail('No API key is set — paste one, or switch the provider to a local runtime that does not need one.')
+    return fail(
+      'No API key is set — paste one, or switch the provider to a local runtime that does not need one.',
+    )
   }
 
   const began = Date.now()
@@ -270,13 +394,19 @@ async function diagnose(err: unknown, model: string, baseUrl: string): Promise<O
   const detail = detailOf(err)
 
   if (status === 401 || status === 403) {
-    return fail(`${baseUrl} rejected the API key. Paste the key again, or check it has not been revoked.`)
+    return fail(
+      `${baseUrl} rejected the API key. Paste the key again, or check it has not been revoked.`,
+    )
   }
   if (status === 429) {
-    return fail('The endpoint answered but is rate-limiting or out of quota — the key and address are right, the account is not ready.')
+    return fail(
+      'The endpoint answered but is rate-limiting or out of quota — the key and address are right, the account is not ready.',
+    )
   }
   if (status !== null && status >= 500) {
-    return fail(`${baseUrl} answered with a server error (${status}). The address and key look right; the endpoint itself is unwell.`)
+    return fail(
+      `${baseUrl} answered with a server error (${status}). The address and key look right; the endpoint itself is unwell.`,
+    )
   }
   if (status === 400 || status === 404 || status === 422) {
     return await afterRejection(model, baseUrl, status, detail)
@@ -287,7 +417,9 @@ async function diagnose(err: unknown, model: string, baseUrl: string): Promise<O
   // No status at all: nothing answered, so this is the address or the network.
   const code = causeCode(err)
   if (isTimeout(err)) {
-    return fail(`${baseUrl} did not answer within ${TEST_TIMEOUT_MS / 1000} seconds. Is it running, and reachable from the Colloq container?`)
+    return fail(
+      `${baseUrl} did not answer within ${TEST_TIMEOUT_MS / 1000} seconds. Is it running, and reachable from the Colloq container?`,
+    )
   }
   return fail(
     `Could not reach ${baseUrl}${code ? ` (${code})` : ''}. Check the address — a local runtime needs a host the server can see, not localhost inside a container.`,
@@ -309,10 +441,14 @@ async function afterRejection(
   } catch (listErr) {
     const listStatus = statusOf(listErr)
     if (listStatus === 401 || listStatus === 403) {
-      return fail(`${baseUrl} rejected the API key. Paste the key again, or check it has not been revoked.`)
+      return fail(
+        `${baseUrl} rejected the API key. Paste the key again, or check it has not been revoked.`,
+      )
     }
     if (status === 404) {
-      return fail(`${baseUrl} answered 404 for both a completion and /models — the base URL is probably wrong (most endpoints need the /v1 on the end).`)
+      return fail(
+        `${baseUrl} answered 404 for both a completion and /models — the base URL is probably wrong (most endpoints need the /v1 on the end).`,
+      )
     }
     return fail(`${baseUrl} refused the request: ${detail || `HTTP ${status}`}`)
   }
@@ -401,7 +537,9 @@ function friendly(err: unknown): Error {
   }
 
   if (status === 401 || status === 403) {
-    return new Error('The AI endpoint rejected the API key — check it in the admin panel, or OPENAI_API_KEY.')
+    return new Error(
+      'The AI endpoint rejected the API key — check it in the admin panel, or OPENAI_API_KEY.',
+    )
   }
   if (status === 404) {
     return new Error(`The AI endpoint has no model "${ai.model}" — check the model name.`)
@@ -427,5 +565,7 @@ function friendly(err: unknown): Error {
    * The address is not shown. It is the operator's configuration, sometimes an
    * internal host, and the student reading this cannot act on it either way.
    */
-  return new Error('Could not reach the AI endpoint. Whoever runs this Colloq can check its address and key.')
+  return new Error(
+    'Could not reach the AI endpoint. Whoever runs this Colloq can check its address and key.',
+  )
 }

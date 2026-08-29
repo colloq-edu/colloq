@@ -140,7 +140,16 @@ interface Term {
    * output landed under somebody else's command line, and the second command
    * appeared twice — once as we wrote it, once as the shell echoed it back.
    */
-  pending: Array<{ text: string; by: Sender }>
+  pending: Array<{ text: string; by: Sender; done?: Done }>
+  /**
+   * Кому сказать, что команда кончилась, — если её ждут.
+   *
+   * Ждёт её сейчас ровно один: оракул в режиме «сделать». Человек за клавиатурой
+   * видит вывод и так, а агенту надо на него посмотреть, чтобы решить, что
+   * делать дальше, — иначе он «запускает» вслепую и рассказывает про результат,
+   * которого не видел.
+   */
+  runningDone: Done | null
   /**
    * Who typed the command the shell is running now, or null between commands.
    *
@@ -197,6 +206,7 @@ function getTerm(sessionId: string): Term {
       waiters: [],
       queued: [],
       pending: [],
+      runningDone: null,
       reconnectAttempts: 0,
       flushTimer: null,
       quietTimer: null,
@@ -719,6 +729,11 @@ function armQuiet(term: Term): void {
 
 function finishCommand(term: Term): void {
   flush(term)
+  /*
+   * Вывод забирается ДО `detachOutput`: она отвязывает запись, и после неё
+   * читать уже нечего. Тот, кто ждёт, получает ровно то, что увидела комната.
+   */
+  settleRun(term, true)
   // The prompt is the shell talking to itself; the transcript has its own frame.
   detachOutput(term)
   term.partial = ''
@@ -729,6 +744,32 @@ function finishCommand(term: Term): void {
   clearRunning(term)
   setPhase(term, 'idle')
   startNextPending(term)
+}
+
+/**
+ * Сказать ожидающему, чем кончилось, и забыть его.
+ *
+ * `finished: false` — команда не доработала: оболочка умерла, терминал закрыли,
+ * процесс останавливают. Это не то же самое, что «команда кончилась с ошибкой»,
+ * и агенту важно различать: во втором случае есть на что смотреть, в первом
+ * смотреть не на что.
+ */
+function settleRun(term: Term, finished: boolean): void {
+  const done = term.runningDone
+  if (!done) return
+  term.runningDone = null
+  const line = term.outputLine
+  let output = ''
+  try {
+    if (line) output = terminalText(line).toString()
+  } catch {
+    /* запись уже отвязали — вывода просто нет */
+  }
+  try {
+    done({ output, finished })
+  } catch (err) {
+    console.error('[terminal] ожидающий команды упал:', errText(err))
+  }
 }
 
 function clearRunning(term: Term): void {
@@ -923,6 +964,7 @@ function onShellExit(term: Term): void {
   term.primed = false
   term.name = null
   closeSocket(term)
+  settleRun(term, false)
   rejectWaiters(term, new Error('the shell exited'))
   setPhase(term, 'closed')
   systemLine(term, '[colloq] the shell exited — open the terminal again to start a new one.')
@@ -1123,12 +1165,14 @@ export function runCommand(
   sessionId: string,
   command: string,
   by: { name: string; color: string; participantId: string },
+  done?: Done,
 ): void {
   const term = getTerm(sessionId)
   const text = command.replace(/\r/g, '').replace(/\n+$/, '')
   if (text.trim().length === 0) return
   if (Buffer.byteLength(text, 'utf8') > MAX_COMMAND_BYTES) {
     systemLine(term, '[colloq] that command is too long to send to the terminal.')
+    done?.({ output: '', finished: false })
     return
   }
 
@@ -1152,15 +1196,21 @@ export function runCommand(
     return
   }
 
-  dispatch(term, text, by)
+  dispatch(term, text, by, done)
 }
 
 /** Hard stop on how many commands may be stacked up behind a busy shell. */
 const MAX_PENDING_COMMANDS = 8
 
-function dispatch(term: Term, text: string, by: Sender): void {
+/** Чем кончилась команда: весь её вывод и то, дождались ли конца вообще. */
+export type Done = (result: { output: string; finished: boolean }) => void
+
+function dispatch(term: Term, text: string, by: Sender, done?: Done): void {
   // Whatever ran before is no longer the thing producing output, whether or not
   // we ever recognised its prompt.
+  // И тот, кто ждал предыдущую, ждёт зря: её вывод уже не соберётся.
+  settleRun(term, false)
+  term.runningDone = done ?? null
   term.runningBy = by.participantId
   clearRunning(term)
   detachOutput(term)
@@ -1197,7 +1247,7 @@ function dispatch(term: Term, text: string, by: Sender): void {
 function startNextPending(term: Term): void {
   const next = term.pending.shift()
   if (!next) return
-  dispatch(term, next.text, next.by)
+  dispatch(term, next.text, next.by, next.done)
 }
 
 /** Whoever typed the command the shell is running now, or null between commands. */
@@ -1285,6 +1335,7 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   closeSocket(term)
   const name = term.name
   term.name = null
+  settleRun(term, false)
   rejectWaiters(term, new Error('the terminal was closed'))
   setPhase(term, 'closed')
   systemLine(term, '[colloq] terminal closed.')

@@ -20,7 +20,8 @@ import {
   windowResetAt,
 } from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
-import { allows, oracleModeIn } from '@shared/rules'
+import { stopWork, work } from '../ai/agent.js'
+import { allows, allowsAgent, oracleModeIn } from '@shared/rules'
 import { getParticipant, getRules, getSession } from '../db.js'
 import { sessionAuth } from './sessions.js'
 import {
@@ -152,6 +153,33 @@ export function aiRoutes(): Router {
       action = 'hint'
     }
 
+    /*
+     * «Сделать» — не вопрос, и правило у него своё.
+     *
+     * Проверяется здесь, а не в агенте: отказ должен прийти до того, как в
+     * тред ляжет поручение, — иначе комната увидит запись «сделай то-то», за
+     * которой ничего не последует, и это читается как поломка, а не как
+     * правило. Режим подсказок сюда не пускает никого: оракул, который не
+     * пишет ответ за студента, тем более не пишет его в файл.
+     */
+    const doing = body?.mode === 'agent'
+    if (doing) {
+      if (mode === 'hints') {
+        return res.status(403).json({
+          error:
+            'Этот оракул работает подсказками: он покажет, где смотреть, но не станет делать за вас.',
+        })
+      }
+      if (!allowsAgent(getRules(sessionId).agent, auth.role)) {
+        return res.status(403).json({
+          error:
+            getRules(sessionId).agent === 'off'
+              ? 'В этом семинаре оракул файлы не трогает.'
+              : 'Просить оракула править файлы здесь может преподаватель.',
+        })
+      }
+    }
+
     const limit = settings.questionsPerHour
 
     /*
@@ -209,16 +237,25 @@ export function aiRoutes(): Router {
       action: action ?? 'ask',
     })
 
-    const entryId = ask({
-      sessionId,
-      participantId: auth.participantId,
-      participantName: participant?.name ?? 'Someone',
-      participantColor: participant?.color ?? colorForId(auth.participantId),
-      message,
-      action,
-      cellId,
-      usageId,
-    })
+    const entryId = doing
+      ? work({
+          sessionId,
+          participantId: auth.participantId,
+          participantName: participant?.name ?? 'Someone',
+          participantColor: participant?.color ?? colorForId(auth.participantId),
+          message,
+          usageId,
+        })
+      : ask({
+          sessionId,
+          participantId: auth.participantId,
+          participantName: participant?.name ?? 'Someone',
+          participantColor: participant?.color ?? colorForId(auth.participantId),
+          message,
+          action,
+          cellId,
+          usageId,
+        })
 
     // 202: the question is in the document, the answer is still being written.
     const accepted: AiAskResponse = { entryId }
@@ -244,6 +281,9 @@ export function aiRoutes(): Router {
     }
     // Open to anyone present: a runaway answer is on every screen in the room,
     // and stopping it destroys nothing — the text that arrived stays put.
+    // Ход оракула — не поток, и обрывается он иначе: см. agent.stopWork. Обе
+    // остановки зовутся здесь, потому что кнопка на записи одна.
+    stopWork(req.params.id, entryId)
     cancel(req.params.id, entryId)
     res.json({ ok: true })
   })

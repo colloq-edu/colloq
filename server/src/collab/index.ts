@@ -26,6 +26,7 @@ import {
 } from './persistence.js'
 import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } from './history.js'
 import { flushAllFiles, forgetFiles } from './files.js'
+import { forgetUndo } from '../ai/agent.js'
 
 /**
  * Происхождение для записи, которую сервер делает от чьего-то имени.
@@ -700,6 +701,8 @@ export function dropSessionDoc(sessionId: string): void {
   // Открытые файлы этой комнаты — тоже её: их надо дописать и закрыть до того,
   // как исчезнет папка, иначе последнее сохранение создаст её заново.
   forgetFiles(sessionId)
+  // И то, что оракул помнил о ней ради отмены: возвращать больше некуда.
+  forgetUndo(sessionId)
   const entry = docs.get(sessionId)
   if (!entry) return
   docs.delete(sessionId)

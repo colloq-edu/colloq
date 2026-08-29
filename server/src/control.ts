@@ -39,7 +39,7 @@ import type { TokenPayload } from './auth.js'
 import { applyOnBehalf, getSessionDoc, onRefusal } from './collab/index.js'
 import { moveInCells } from './collab/ops.js'
 import { LINE_LENGTH } from './kernel/format.js'
-import { allows, allowsRun, allowsStructure, runQueueCap, type Who } from '@shared/rules'
+import { allows, allowsAgent, allowsRun, allowsStructure, runQueueCap, type Who } from '@shared/rules'
 import { getParticipant, getRules } from './db.js'
 import {
   answerInput,
@@ -76,6 +76,7 @@ import {
 } from './workspace.js'
 import { MAX_DEPTH, baseOf, normalizePath, runnerFor, whySegmentRefused } from '@shared/paths'
 import { forgetFile, onFileSaved } from './collab/files.js'
+import { undoTurn } from './ai/agent.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
@@ -754,6 +755,31 @@ export function dispatch(
      * `collab/ops.ts`. Право проверяется здесь, а не в классификаторе, потому
      * что в документе этого глагола больше нет вовсе.
      */
+    /*
+     * Отменить ход оракула: вернуть файлы к тому, что было до него.
+     *
+     * Право то же, что и у самого режима «сделать»: кто мог его запустить, тот
+     * может и отменить. Отдельного правила здесь не заводится — «разрешено
+     * начинать, но не разрешено откатывать» было бы худшей из возможных пар.
+     */
+    case 'ai:undo': {
+      if (!allowsAgent(getRules(sessionId).agent, payload.role)) {
+        send(ws, { t: 'error', message: 'Отменять ход оракула здесь может преподаватель.' })
+        return
+      }
+      const entryId = optionalId(message.entryId)
+      if (!entryId) return
+      const touched = undoTurn(sessionId, entryId, displayName(sessionId, payload.participantId))
+      if (touched === null) {
+        send(ws, {
+          t: 'error',
+          message:
+            'Этот ход уже нельзя отменить: сервер помнит прежние файлы только до перезапуска.',
+        })
+      }
+      return
+    }
+
     case 'cells:move': {
       const rules = getRules(sessionId)
       if (!allowsStructure(rules.structure, payload.role, 'move')) {

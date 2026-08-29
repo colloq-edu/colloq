@@ -128,6 +128,35 @@ export type YOutput = Y.Map<any>
 export type ChatState = 'streaming' | 'done' | 'error'
 
 /**
+ * Что оракул делал сам, шаг за шагом.
+ *
+ * Лента шагов живёт в документе рядом с ответом, а не в логах сервера, и это
+ * то же решение, что и у самого треда: комната должна видеть, что именно
+ * произошло с её файлами, а не читать про это в пересказе. Из неё же считается
+ * отмена — по ней видно, чего касались.
+ *
+ * `read` в ленте нужен не меньше правок: «оракул поменял train.py» без «оракул
+ * сначала прочитал src/model.py» читается как угадывание.
+ */
+export type StepKind = 'read' | 'write' | 'new' | 'run' | 'note'
+
+export interface AgentStep {
+  kind: StepKind
+  /** Файл, которого шаг касался. Для `run` — что запускали. */
+  target: string
+  /** Строк прибавилось и убавилось; только у правок. */
+  added: number
+  removed: number
+  /** Код выхода; только у запуска. `null` — не дождались. */
+  exit: number | null
+  /** Короткая выжимка: хвост вывода, первые строки правки, причина отказа. */
+  note: string
+}
+
+/** Отменяемость хода: у обычного вопроса её нет вовсе. */
+export type UndoState = 'none' | 'available' | 'done'
+
+/**
  * What happened to a proposed edit.
  *
  * `open` is a patch nobody has decided about yet — that is the state the cell
@@ -184,6 +213,17 @@ export interface ChatSnapshot {
    * started, and on every turn recorded before this existed.
    */
   thoughtMs: number | null
+  /**
+   * Спрашивали или просили сделать.
+   *
+   * Разные вещи, и в ленте они выглядят по-разному: у вопроса есть ответ, у
+   * поручения — ещё и список того, что случилось с файлами комнаты.
+   */
+  mode: 'ask' | 'agent'
+  steps: AgentStep[]
+  undo: UndoState
+  /** Кто отменил ход, для строки, которую тред показывает потом. */
+  undoBy: string | null
 }
 
 export type YChatEntry = Y.Map<any>
@@ -201,6 +241,7 @@ export function createChatEntry(input: {
   cellId?: string | null
   /** The cell's text at the moment of asking; see ChatSnapshot.patchBase. */
   patchBase?: string | null
+  mode?: 'ask' | 'agent'
 }): YChatEntry {
   const entry = new Y.Map<any>()
   entry.set('id', newId('q'))
@@ -219,7 +260,52 @@ export function createChatEntry(input: {
   entry.set('patchBase', input.patchBase ?? null)
   entry.set('patchState', 'open' as PatchState)
   entry.set('patchBy', null)
+  entry.set('mode', input.mode ?? 'ask')
+  entry.set('steps', new Y.Array<Y.Map<any>>())
+  entry.set('undo', 'none' as UndoState)
+  entry.set('undoBy', null)
   return entry
+}
+
+/** Лента шагов этого хода. Пустая у всего, что не «сделать». */
+export function chatSteps(entry: YChatEntry): Y.Array<Y.Map<any>> {
+  const current = entry.get('steps')
+  if (current instanceof Y.Array) return current
+  const made = new Y.Array<Y.Map<any>>()
+  entry.set('steps', made)
+  return made
+}
+
+/**
+ * Дописать шаг.
+ *
+ * Каждый шаг — отдельная запись, а не перезапись всей ленты: комната смотрит на
+ * неё, пока оракул работает, и переписывание целиком дёргало бы список на
+ * каждый шаг.
+ */
+export function addStep(entry: YChatEntry, step: AgentStep): void {
+  const row = new Y.Map<any>()
+  row.set('kind', step.kind)
+  row.set('target', step.target)
+  row.set('added', step.added)
+  row.set('removed', step.removed)
+  row.set('exit', step.exit)
+  row.set('note', step.note)
+  chatSteps(entry).push([row])
+}
+
+function readStep(row: unknown): AgentStep | null {
+  if (!(row instanceof Y.Map)) return null
+  const kind = row.get('kind')
+  if (typeof kind !== 'string') return null
+  return {
+    kind: kind as StepKind,
+    target: typeof row.get('target') === 'string' ? (row.get('target') as string) : '',
+    added: typeof row.get('added') === 'number' ? (row.get('added') as number) : 0,
+    removed: typeof row.get('removed') === 'number' ? (row.get('removed') as number) : 0,
+    exit: typeof row.get('exit') === 'number' ? (row.get('exit') as number) : null,
+    note: typeof row.get('note') === 'string' ? (row.get('note') as string) : '',
+  }
 }
 
 /**
@@ -411,7 +497,23 @@ export function readChatEntry(entry: YChatEntry): ChatSnapshot {
      */
     reasoning: readText(entry.get('reasoning')),
     thoughtMs: (entry.get('thoughtMs') as number | null) ?? null,
+    // Всё, чего не было у ходов, записанных до режима «сделать»: тред недельной
+    // давности обязан читаться, а не падать на отсутствующем поле.
+    mode: entry.get('mode') === 'agent' ? 'agent' : 'ask',
+    steps: readSteps(entry.get('steps')),
+    undo: (entry.get('undo') as UndoState) ?? 'none',
+    undoBy: (entry.get('undoBy') as string | null) ?? null,
   }
+}
+
+function readSteps(value: unknown): AgentStep[] {
+  if (!(value instanceof Y.Array)) return []
+  const out: AgentStep[] = []
+  value.forEach((row) => {
+    const step = readStep(row)
+    if (step) out.push(step)
+  })
+  return out
 }
 
 export function findChatEntry(doc: Y.Doc, id: string): YChatEntry | null {

@@ -15,6 +15,7 @@ import { getOracleSettings } from '../admin/settings.js'
 import { getSessionDoc } from '../collab/index.js'
 import { getSession } from '../db.js'
 import { listFiles } from '../workspace.js'
+import { currentText } from '../collab/files.js'
 
 /*
  * How much of a cell travels, per cell.
@@ -31,7 +32,30 @@ const MAX_OUTPUT = 800
 /** Names only, so a room that uploaded a folder does not spend the budget on it. */
 const MAX_FILES = 40
 
-export function buildContext(sessionId: string, selectedCellId: string | null): string {
+/**
+ * Сколько текста открытого файла едет вместе с вопросом.
+ *
+ * Восемь тысяч знаков — это примерно двести строк: столько человек держит перед
+ * глазами, когда спрашивает «почему тут падает». Файл длиннее едет началом, и
+ * про обрезку сказано вслух — модель, дописывающая конец файла, которого не
+ * видела, хуже модели, которая переспросила.
+ */
+const MAX_OPEN_FILE = 8_000
+
+export function buildContext(
+  sessionId: string,
+  selectedCellId: string | null,
+  /**
+   * Кто спрашивает.
+   *
+   * Нужно ради одной вещи: какой файл у этого человека сейчас открыт в
+   * редакторе. Спрашивают почти всегда про то, на что смотрят, а до сих пор в
+   * контекст ехали только имена файлов — модель отвечала про `train.py`, ни
+   * строчки из него не видев. Берётся из присутствия комнаты, а не из запроса:
+   * там это уже есть и уже чинится сервером.
+   */
+  askedBy?: string | null,
+): string {
   // Read per question, not per boot: a teacher who lowers the budget mid-class
   // to fit a smaller model must see the next question honour it.
   const maxTotal = getOracleSettings().contextChars
@@ -53,6 +77,7 @@ export function buildContext(sessionId: string, selectedCellId: string | null): 
     `SESSION: ${sessionName}`,
     `KERNEL: ${kernel}`,
     `FILES IN WORKSPACE: ${describeFiles(sessionId)}`,
+    ...openFileBlock(sessionId, askedBy ?? null),
     selectedIndex >= 0
       ? `SELECTED CELL: ${selectedIndex} (id ${cells[selectedIndex].id})`
       : 'SELECTED CELL: none',
@@ -268,6 +293,34 @@ function clip(text: string, limit: number): string {
 
 function clipLine(text: string, limit: number): string {
   return text.length <= limit ? text : text.slice(0, limit - 1) + '…'
+}
+
+/**
+ * Файл, открытый у спрашивающего, — целиком или началом.
+ *
+ * Пустой массив, если файл не открыт: заголовок «OPEN FILE: none» стоил бы
+ * места на каждом вопросе ради строки, которая ничего не говорит.
+ */
+function openFileBlock(sessionId: string, askedBy: string | null): string[] {
+  if (!askedBy) return []
+  const path = editingPath(sessionId, askedBy)
+  if (!path) return []
+  const text = currentText(sessionId, path)
+  if (text === null) return []
+  const shown = text.length > MAX_OPEN_FILE ? text.slice(0, MAX_OPEN_FILE) : text
+  const cut = text.length > MAX_OPEN_FILE ? '\n… truncated …' : ''
+  return [`OPEN FILE (${path}), what they are looking at right now:`, shown + cut]
+}
+
+/** Какой файл правит этот участник — из присутствия комнаты. */
+function editingPath(sessionId: string, participantId: string): string | null {
+  const { awareness } = getSessionDoc(sessionId)
+  for (const state of awareness.getStates().values()) {
+    const user = (state as { user?: { id?: string; editing?: string | null } } | undefined)?.user
+    if (user?.id !== participantId) continue
+    if (typeof user.editing === 'string' && user.editing) return user.editing
+  }
+  return null
 }
 
 function describeFiles(sessionId: string): string {

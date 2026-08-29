@@ -16,6 +16,7 @@
   import { api } from '@/lib/api'
   import { oracleDraft } from '@/lib/drafts.svelte'
   import { getSessionState } from '@/lib/session.svelte'
+  import { permitsIn } from '@/lib/may'
   import { watchCellIds } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -365,6 +366,17 @@
     }
   }
 
+  /**
+   * Спросить или сделать.
+   *
+   * Переключатель, а не догадка по формулировке: «перепиши train.py» — это и
+   * вопрос, и поручение, в зависимости от того, чего человек хочет, и угадывать
+   * тут значит иногда молча трогать чужие файлы. Стоит рядом с полем, помнится
+   * между вопросами и гаснет там, где режим запрещён правилом комнаты.
+   */
+  let doing = $state(false)
+  const mayDo = $derived(permitsIn(session.session.rules, session.me.role).agent)
+
   function submit() {
     const message = composing.question.trim()
     if (!message) return
@@ -373,7 +385,16 @@
       composer.style.height = 'auto'
       composer.focus()
     }
+    if (doing && mayDo) {
+      void ask({ message, mode: 'agent' })
+      return
+    }
     void ask({ message, action: 'ask', cellId: session.selectedCellId })
+  }
+
+  /** Отменить ход целиком: файлы возвращаются к тому, что было до него. */
+  function undo(entryId: string) {
+    session.send({ t: 'ai:undo', entryId })
   }
 
   function retry(entry: ChatSnapshot) {
@@ -486,6 +507,7 @@
           cellNumber={cellNumber(entry.cellId)}
           onretry={() => retry(entry)}
           onstop={() => void stop(entry.id)}
+          onundo={() => undo(entry.id)}
         />
       {/each}
 
@@ -648,6 +670,35 @@
           </div>
         {/if}
 
+        <!--
+          Спросить или сделать — переключателем, а не догадкой по формулировке.
+          «Перепиши train.py» — это и вопрос, и поручение; угадывать значит
+          иногда молча трогать чужие файлы. Там, где режим закрыт правилом
+          комнаты, переключателя нет вовсе, а не есть и отказывает.
+        -->
+        {#if mayDo}
+          <div class="flex items-center gap-1 px-2 pb-0.5 pt-1.5">
+            <div class="flex items-stretch border border-line bg-canvas">
+              <button
+                type="button"
+                class="px-2 py-0.5 text-2xs font-semibold transition-colors duration-100
+                       {doing ? 'text-muted hover:text-ink' : 'bg-primary text-primary-ink'}"
+                onclick={() => (doing = false)}
+              >
+                Спросить
+              </button>
+              <button
+                type="button"
+                class="px-2 py-0.5 text-2xs font-semibold transition-colors duration-100
+                       {doing ? 'bg-primary text-primary-ink' : 'text-muted hover:text-ink'}"
+                onclick={() => (doing = true)}
+              >
+                Сделать
+              </button>
+            </div>
+          </div>
+        {/if}
+
         <div class="flex items-end gap-2 py-1 pl-2 pr-1.5">
         <!-- Your face before you type, so it is obvious the room will see this. -->
         <Avatar
@@ -662,7 +713,11 @@
           bind:this={composer}
           bind:value={composing.question}
           rows="1"
-          placeholder={selected === null ? "Ask the room's oracle…" : `Ask about cell ${pad(selected)}…`}
+          placeholder={doing && mayDo
+            ? 'Что сделать с файлами семинара…'
+            : selected === null
+              ? "Ask the room's oracle…"
+              : `Ask about cell ${pad(selected)}…`}
           title="Enter sends, Shift+Enter for a new line"
           class="max-h-40 flex-1 resize-none bg-transparent py-1 text-ui text-ink placeholder:text-muted focus:outline-none"
           oninput={onInput}
@@ -686,7 +741,11 @@
 
     <p class="flex items-center gap-1.5 text-2xs text-muted">
       <Icon name="users" size={13} class="shrink-0" />
-      <span class="min-w-0">The whole room sees your question and the answer.</span>
+      <span class="min-w-0">
+        {doing && mayDo
+          ? 'Правит файлы семинара сам. Тетрадь не трогает — там по-прежнему предлагает.'
+          : 'The whole room sees your question and the answer.'}
+      </span>
     </p>
   </div>
 </div>

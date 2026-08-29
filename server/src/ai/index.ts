@@ -213,7 +213,7 @@ async function generate(
         content: systemPrompt(
           options.participantName,
           options.action,
-          readContext(sessionId, options.cellId ?? null),
+          readContext(sessionId, options.cellId ?? null, options.participantId),
         ),
       },
       ...history,
@@ -467,9 +467,9 @@ export function recentTurns(doc: Y.Doc): ChatTurn[] {
   return turns
 }
 
-function readContext(sessionId: string, cellId: string | null): string {
+function readContext(sessionId: string, cellId: string | null, askedBy?: string | null): string {
   try {
-    return buildContext(sessionId, cellId)
+    return buildContext(sessionId, cellId, askedBy)
   } catch (err) {
     // A question without the notebook is worth answering; a dead thread is not.
     console.warn(`[session ${sessionId}] could not build AI context:`, describe(err))

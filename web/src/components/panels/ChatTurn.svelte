@@ -41,9 +41,27 @@
     cellNumber: number | null
     onretry: () => void
     onstop: () => void
+    /** Отменить ход целиком: файлы вернутся к тому, что было до него. */
+    onundo: () => void
   }
 
-  let { entry, avatar, cellNumber, onretry, onstop }: Props = $props()
+  let { entry, avatar, cellNumber, onretry, onstop, onundo }: Props = $props()
+
+  /** Что говорит строка шага: глагол, цель и итог. */
+  const VERB: Record<string, string> = {
+    read: 'прочитал',
+    write: 'изменил',
+    new: 'завёл',
+    run: 'запустил',
+    note: 'не вышло',
+  }
+  const STEP_ICON: Record<string, 'search' | 'pencil' | 'file-plus' | 'play' | 'alert'> = {
+    read: 'search',
+    write: 'pencil',
+    new: 'file-plus',
+    run: 'play',
+    note: 'alert',
+  }
 
   const session = getSessionState()
   const mine = $derived(entry.participantId === session.me.id)
@@ -268,6 +286,57 @@
       </div>
     {/if}
 
+    <!--
+      Что оракул делал сам. Лента живёт в документе рядом с ответом, а не в
+      логах сервера: комната должна видеть, что именно случилось с её файлами,
+      а не читать про это в пересказе.
+    -->
+    {#if entry.steps.length > 0}
+      <div class="flex flex-col border border-line bg-canvas">
+        {#each entry.steps as step, at (at)}
+          <div
+            class="flex items-center gap-2 px-2.5 py-1.5 {at > 0 ? 'border-t border-line-soft' : ''}"
+          >
+            <Icon
+              name={STEP_ICON[step.kind] ?? 'info'}
+              size={12}
+              class="shrink-0 {step.kind === 'note' ? 'text-warning' : 'text-faint'}"
+            />
+            <span class="shrink-0 text-2xs text-muted">{VERB[step.kind] ?? step.kind}</span>
+            <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink" title={step.target}>
+              {step.target}
+            </span>
+            {#if step.kind === 'write' || step.kind === 'new'}
+              <span class="shrink-0 font-mono text-2xs font-semibold text-positive">
+                +{step.added}
+              </span>
+              <span class="shrink-0 font-mono text-2xs font-semibold text-danger">
+                −{step.removed}
+              </span>
+            {:else if step.kind === 'run'}
+              <span
+                class="shrink-0 font-mono text-2xs {step.exit === 0
+                  ? 'text-positive'
+                  : 'text-danger'}"
+              >
+                код {step.exit ?? '?'}
+              </span>
+            {:else if step.note}
+              <span class="max-w-[45%] shrink-0 truncate text-2xs text-muted" title={step.note}>
+                {step.note}
+              </span>
+            {/if}
+          </div>
+        {/each}
+        {#if entry.state === 'streaming'}
+          <div class="flex items-center gap-2 border-t border-line-soft px-2.5 py-1.5">
+            <Icon name="spinner" size={12} class="shrink-0 animate-spin text-faint" />
+            <span class="text-2xs text-muted">думает, что дальше</span>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if entry.state === 'error'}
       <div class="flex flex-col items-start gap-2 border-l-2 border-danger bg-danger/[0.06] px-2.5 py-2">
         <!-- Verbatim: a limit and the minutes until the next question are known
@@ -301,6 +370,27 @@
         <Icon name="stop" size={10} />
         Stop
       </button>
+    {/if}
+
+    <!--
+      Отмена всего хода. Одна кнопка, потому что ход — это одно решение:
+      разбирать его по правкам значило бы просить человека выяснять, какая из
+      четырёх правок лишняя, посреди пары.
+    -->
+    {#if entry.undo === 'available'}
+      <div class="flex flex-col gap-1.5 border-t border-line pt-2">
+        <p class="text-2xs leading-snug text-muted">
+          Оракул поменял файлы сам. Отмена вернёт их к тому, что было до этого вопроса.
+        </p>
+        <button type="button" class={cn(GHOST, 'self-start')} onclick={onundo}>
+          <Icon name="restart" size={11} />
+          Отменить всё
+        </button>
+      </div>
+    {:else if entry.undo === 'done'}
+      <p class="border-t border-line pt-2 text-2xs text-muted">
+        Ход отменён{entry.undoBy ? ` — ${entry.undoBy}` : ''}: файлы вернулись к тому, что было.
+      </p>
     {/if}
 
     {#if entry.patch !== null && entry.patchState !== 'rejected'}
