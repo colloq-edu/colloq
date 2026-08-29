@@ -489,6 +489,13 @@ check(
 await host.js(`document.querySelector('.cm-file .cm-content').focus(); return 1`)
 await host.send('Input.insertText', { text: "print('привет из общего файла')" })
 await wait(600)
+// Ждём строку, а не надеемся на неё: список файлов приезжает сообщением, и
+// нажать по нему на кадр раньше — это гонка, а не проверка.
+await until(
+  student,
+  `[...document.querySelectorAll('button')].some(x=>(x.title||'').includes('train.py'))`,
+  'строка train.py доехала до студента',
+)
 await student.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').includes('train.py'));` +
     `if(!b) throw new Error('строки train.py у студента нет'); b.click(); return 1`,
@@ -686,6 +693,125 @@ check(
   ),
 )
 
+/* ------------------------------------------------ управление читалкой */
+
+/**
+ * Открытым документом можно управлять: приблизить и найти страницу.
+ *
+ * Раньше читалка была одной прокруткой без единой кнопки: увеличить лекцию,
+ * набранную десятым кеглем, было нечем, а попасть на двадцатую страницу — только
+ * пролистав девятнадцать.
+ */
+await host.js(
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('lecture.pdf'));` +
+    `if(!b) throw new Error('lecture.pdf нет в дереве'); b.click(); return 1`,
+)
+await until(host, `document.querySelectorAll('canvas').length >= 3`, 'документ открылся заново')
+
+const zoomShown = `[...document.querySelectorAll('button')].find(b=>/^\\d+%$/.test((b.textContent||'').trim()))?.textContent.trim()`
+check(
+  (await host.js(`return ${zoomShown}`)) === '100%',
+  'читалка открывается по ширине',
+  await host.js(`return ${zoomShown} ?? 'кнопки масштаба нет'`),
+)
+
+const pageWidth = `Math.round(document.querySelector('[data-page="1"]').getBoundingClientRect().width)`
+const wasWide = (await host.js(`return ${pageWidth}`)) as number
+await host.js(
+  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Крупнее').click(); return 1`,
+)
+await wait(600)
+check(
+  ((await host.js(`return ${pageWidth}`)) as number) > wasWide,
+  'страница правда становится крупнее',
+  `${wasWide} → ${await host.js(`return ${pageWidth}`)}`,
+)
+check(
+  (await host.js(`return ${zoomShown}`)) === '125%',
+  'и доля называет, насколько',
+  await host.js(`return ${zoomShown}`),
+)
+
+/* Нажатие на долю возвращает «по ширине» — единственный масштаб без выбора. */
+await host.js(
+  `[...document.querySelectorAll('button')].find(b=>(b.title||'')==='По ширине').click(); return 1`,
+)
+await wait(600)
+check(
+  ((await host.js(`return ${pageWidth}`)) as number) === wasWide,
+  'доля возвращает страницу по ширине',
+  await host.js(`return ${zoomShown}`),
+)
+
+/*
+ * Полоса страниц закрыта по умолчанию, открывается кнопкой и НЕ отнимает
+ * ширину у страницы: она накладка, а колонка заставила бы перерисовать
+ * документ на каждое открытие.
+ */
+check(
+  (await host.js(`return !!document.querySelector('[data-rail]')`)) === false,
+  'полоса страниц закрыта по умолчанию',
+  'её нет',
+)
+await host.js(
+  `[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Полоса страниц').click(); return 1`,
+)
+await until(host, `!!document.querySelector('[data-rail]')`, 'полоса открылась')
+check(
+  ((await host.js(`return ${pageWidth}`)) as number) < wasWide,
+  'полоса берёт себе колонку, а не ложится поверх страницы',
+  `${wasWide} → ${await host.js(`return ${pageWidth}`)}`,
+)
+await until(
+  host,
+  `[...document.querySelectorAll('[data-rail] canvas')].some(c=>c.width>0)`,
+  'миниатюры нарисовались',
+)
+check(
+  (await host.js(
+    `return [...document.querySelectorAll('[data-rail] canvas')].filter(c=>c.width>0).length`,
+  )) > 0,
+  'миниатюры страниц рисуются',
+  await host.js(
+    `return document.querySelectorAll('[data-rail] canvas').length + ' страниц в полосе'`,
+  ),
+)
+
+/* Выбрали страницу — полоса закрылась сама. */
+/*
+ * Выбор страницы уводит прокрутку к ней.
+ *
+ * Меряется в том же вызове, что и нажатие: место в документе — это `scrollTop`,
+ * и сравнивать его надо с положением самой страницы, а не со счётчиком в строке
+ * вкладок. Счётчик обновляется от события прокрутки, то есть кадром позже, и
+ * зависеть от того, успел ли headless-браузер выпустить этот кадр, — значит
+ * проверять браузер.
+ */
+const landed = (await host.js(
+  `const sc=document.querySelector('[role=document]');` +
+    `document.querySelector('[data-thumb="3"]').click();` +
+    `const sheet=sc.querySelector('[data-page="3"]');` +
+    `const at=sheet.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;` +
+    // Начало страницы обязано остаться ВИДНО: прокрутка не должна уехать за
+    // верх листа. Промах в тридцать четыре пикселя — высоту полосы управления —
+    // выглядел как «прыгает низковато»: сверху был конец предыдущей страницы.
+    `return JSON.stringify({over: Math.round(sc.scrollTop - at), page: sc.scrollTop})`,
+)) as string
+const over = JSON.parse(landed).over as number
+check(
+  over <= 0 && over > -200,
+  'прыжок показывает начало страницы, а не её середину',
+  `верх листа на ${-over}px ниже кромки`,
+)
+await wait(700)
+check(
+  (await host.js(`return !!document.querySelector('[data-rail]')`)) === true,
+  'выбор страницы не закрывает полосу',
+  'осталась открыта',
+)
+await host.js(`document.querySelector('[aria-label="Закрыть lecture.pdf"]')?.click(); return 1`)
+await wait(400)
+
 /*
  * Номер выделенной ячейки — метка, а не тёмный прямоугольник.
  *
@@ -766,9 +892,22 @@ check(
  * не поднимая всё руками.
  */
 if (process.argv.includes('--shot')) {
+  // Снимок делаем с ОТКРЫТЫМ документом и полосой страниц: это самое новое, что
+  // есть на экране, и единственное, что проверяется глазами.
   await host.js(
-    `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('Тетрадь.ipynb')); b&&b.click(); return 1`,
+    `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('lecture.pdf')); b&&b.click(); return 1`,
   )
+  await wait(1200)
+  // Ждём сам документ: до его прихода полосы страниц нет по построению, и
+  // слепое нажатие на «Страницы» в этот момент закрывало ровно то, ради чего
+  // снимок и делается.
+  await until(host, `document.querySelectorAll('canvas').length > 0`, 'документ для снимка')
+  await host.js(
+    `if(!document.querySelector('[data-rail]')){` +
+      `[...document.querySelectorAll('button')].find(x=>x.getAttribute('aria-label')==='Полоса страниц')?.click()}` +
+      `return 1`,
+  )
+  await wait(900)
   await wait(500)
   // С выделенной ячейкой: залитый номер — самое мелкое, что стоит смотреть
   // глазами, и ровно то, что однажды оказалось тёмным квадратом.
