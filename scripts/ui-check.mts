@@ -76,6 +76,14 @@ process.env.PUBLIC_URL = `http://127.0.0.1:${PORT}`
 process.env.JUPYTER_URL = 'http://127.0.0.1:1'
 process.env.KERNEL_ISOLATION = 'off'
 process.env.STATIC_DIR = path.resolve('web/dist')
+/*
+ * Оракул — «настроен», но никуда не ходит: ключ выдуманный, адрес заведомо
+ * мёртвый. Проверка не задаёт ни одного вопроса; ключ нужен ровно затем, чтобы
+ * панель нарисовала наборную строку, а не заглушку «модель не настроена», —
+ * иначе половину панели никакая проверка не видит.
+ */
+process.env.OPENAI_API_KEY = 'ui-check-not-a-real-key'
+process.env.OPENAI_BASE_URL = 'http://127.0.0.1:1/v1'
 
 await import('../server/src/index.js')
 const { createSession } = await import('../server/src/db.js')
@@ -632,6 +640,38 @@ check(
   (await host.js(`return ${selectedCount}`)) === 0,
   'нажатие мимо ячейки снимает выделение',
   await host.js(`return ${selectedCount}`),
+)
+
+/*
+ * Панель называет зону видимости — и добавляет к ней выделенное.
+ *
+ * «Видит» стоит всегда: она про то, что уедет в любом случае. «Особенно»
+ * появляется только когда есть на чём сосредоточиться — строка, которая горит
+ * всегда, ничего не говорит.
+ */
+check(
+  (await host.js(`return (document.body.textContent||'').includes('всю комнату')`)) === true,
+  'панель говорит, что оракул видит комнату целиком',
+  await host.js(
+    `return /всю комнату[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'молчит'`,
+  ),
+)
+check(
+  (await host.js(`return (document.body.textContent||'').includes('Особенно')`)) === false,
+  'без выделения «особенно» не показывают',
+  'нет строки',
+)
+await host.js(
+  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
+    `cells[1].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
+)
+await wait(400)
+check(
+  (await host.js(`return (document.body.textContent||'').includes('Особенно')`)) === true,
+  'выделенная ячейка добавляется к зоне видимости',
+  await host.js(
+    `return /Особенно[^А-Я]*/.exec(document.body.textContent||'')?.[0]?.trim() ?? 'молчит'`,
+  ),
 )
 
 /* Быстрых действий в панели оракула больше нет. */

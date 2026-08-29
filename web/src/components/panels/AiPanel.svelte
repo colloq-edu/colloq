@@ -204,7 +204,13 @@
    */
   const books = watchBooks(session.doc)
 
-  const fileCount = $derived(session.files.filter((file) => !file.dir).length)
+  /*
+   * Файлы, КРОМЕ тетрадей: тетради названы отдельно, и складывать их дважды
+   * значит обещать больше, чем в комнате есть.
+   */
+  const fileCount = $derived(
+    session.files.filter((file) => !file.dir && kindOf(file.path) !== 'notebook').length,
+  )
 
   const seesAll = $derived(
     `всю комнату: ${plural(books.current.length, 'тетрадь', 'тетради', 'тетрадей')}` +
