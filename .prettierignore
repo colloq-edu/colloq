@@ -6,3 +6,7 @@ data
 workspace
 site/c
 site/p
+
+# .svelte не форматируется: плагина prettier-plugin-svelte в проекте нет,
+# а вписывать парсер, которого не установлено, — это ошибка на каждый прогон.
+*.svelte
