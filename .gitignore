@@ -12,3 +12,6 @@ workspace/
 .colloq.pid
 .colloq.log
 backups/
+
+# Снимок, который делает `make ui --shot`: смотрят его глазами и тут же выбрасывают.
+ui-check.png

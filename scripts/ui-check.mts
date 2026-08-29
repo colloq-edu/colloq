@@ -560,6 +560,21 @@ check(
   'Run all на месте',
 )
 
+/*
+ * Под открытой тетрадью не должно быть ничего лишнего.
+ *
+ * Ветка «этот файл — не текст» добиралась до тетради последней и была формально
+ * права: .ipynb действительно не открывают редактором. Печаталась она ПОД
+ * тетрадью, то есть под работающим листом с ячейками.
+ */
+check(
+  (await host.js(
+    `return (document.querySelector('main:not(.hidden)')?.parentElement?.textContent||'').includes('не текст')`,
+  )) === false,
+  'под тетрадью не пишут, что она не текст',
+  'чисто',
+)
+
 /* Закрыть можно и тетрадь — раньше её вкладка была вечной. */
 await host.js(`document.querySelector('[aria-label="Закрыть разбор.ipynb"]').click(); return 1`)
 await wait(400)
@@ -568,6 +583,25 @@ check(
   'тетрадь закрывается, как любой другой файл',
   'осталась одна',
 )
+
+/*
+ * Снимок экрана на память — по просьбе `--shot`.
+ *
+ * Проверки отвечают на вопрос «работает ли», и ни одна из них не отвечает на
+ * «как это выглядит». Значки видов файла, отступы вкладок и плотность дерева
+ * проверяются только глазами, и снимок — единственный способ посмотреть на них,
+ * не поднимая всё руками.
+ */
+if (process.argv.includes('--shot')) {
+  await host.js(
+    `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'').startsWith('Тетрадь.ipynb')); b&&b.click(); return 1`,
+  )
+  await wait(800)
+  const shot = await host.send('Page.captureScreenshot', { format: 'png' })
+  const where = path.resolve('ui-check.png')
+  writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
+  console.log(`  снимок: ${where}`)
+}
 
 for (const [who, page] of [
   ['преподаватель', host],

@@ -30,6 +30,7 @@ import {
   bookCells,
   cellSource,
   createCell,
+  ensureInitialNotebook,
   getCells,
 } from '../shared/notebook.js'
 
@@ -154,4 +155,32 @@ test('текст тетради берут из комнаты, а не с от�
   // Файл ещё не переписан — проекция отложена, — а оракулу нужно то, что в
   // комнате прямо сейчас.
   assert.match(bookText(ROOM, 'Тетрадь.ipynb') ?? '', /только_что/)
+})
+
+test('убранная тетрадь не возвращается сама', () => {
+  /*
+   * Комната, где тетрадь убрали намеренно, при следующем открытии получала её
+   * обратно вместе со всеми ячейками: список пуст — значит, надо завести, — и
+   * удаление отменялось само, стоило перезапустить сервер.
+   */
+  const { doc } = getSessionDoc(ROOM)
+  const before = allBooks(doc).length
+  dropBook(ROOM, 'прошлая.ipynb')
+  ensureInitialNotebook(doc, 'Тетради')
+  assert.equal(allBooks(doc).length, before - 1, 'тетрадь воскресла')
+  assert.equal(bookAt(doc, 'прошлая.ipynb'), null)
+})
+
+test('ячейки убранной тетради не остаются висеть в документе', () => {
+  // Иначе брошенный корень читался бы как «ячейки комнаты» всем, что помнит
+  // старое имя: публикацией, контекстом оракула, историей.
+  const { doc } = getSessionDoc(ROOM)
+  const flat = writeIpynb([{ type: 'code', source: 'останется_ли = True\n' }])
+  fs.writeFileSync(path.join(sessionDir(ROOM), 'на-выброс.ipynb'), flat)
+  const opened = openBook(ROOM, 'на-выброс.ipynb')
+  assert.ok(opened.ok)
+  const root = opened.book.root
+  assert.equal(bookCells(doc, root).length, 1)
+  dropBook(ROOM, 'на-выброс.ipynb')
+  assert.equal(bookCells(doc, root).length, 0)
 })

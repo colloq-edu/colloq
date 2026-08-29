@@ -1078,7 +1078,12 @@
             class="max-h-full max-w-full object-contain"
           />
         </div>
-      {:else if activePath}
+      {:else if activePath && activeKind !== 'notebook'}
+        <!--
+          Тетрадь сюда не попадает: она нарисована выше, в своём `main`. Без
+          этого условия под открытой тетрадью печаталось «не текст» — ветка
+          добиралась до неё последней и была формально права.
+        -->
         <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <p class="text-ui text-ink">{baseOf(activePath)} — не текст.</p>
           <p class="text-2xs text-muted">

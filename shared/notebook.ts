@@ -209,18 +209,24 @@ export function renameBook(doc: Y.Doc, from: string, to: string): void {
 }
 
 /**
- * Убрать тетрадь из списка.
+ * Убрать тетрадь: и из списка, и её ячейки.
  *
- * Ячейки из документа не выбрасываются: их корень остаётся, потому что выкинуть
- * корень в Yjs нечем, а очистка массива — это правка, которую увидит история и
- * которую можно отменить обратно в комнате, где файла уже нет. Список — вот
- * что решает, тетрадь это или нет.
+ * Ячейки стираются, а не бросаются вместе с корнем. Выкинуть корень в Yjs
+ * нечем, и брошенный полный ячеек корень — это тетрадь, которую комната считает
+ * удалённой, а всё, что читает «ячейки комнаты» по старой памяти (публикация,
+ * контекст оракула), продолжает видеть. Возврат версии вернёт и то и другое:
+ * история хранит состояние документа целиком, а не список правок.
  */
 export function removeBook(doc: Y.Doc, path: string): void {
   const list = booksArray(doc)
   for (let i = list.length - 1; i >= 0; i--) {
     const row = list.get(i)
-    if (row instanceof Y.Map && row.get('path') === path) list.delete(i, 1)
+    if (!(row instanceof Y.Map) || row.get('path') !== path) continue
+    const root = row.get('root')
+    list.delete(i, 1)
+    if (typeof root !== 'string') continue
+    const cells = bookCells(doc, root)
+    if (cells.length > 0) cells.delete(0, cells.length)
   }
 }
 
@@ -1114,7 +1120,17 @@ export function ensureInitialNotebook(doc: Y.Doc, title?: string): boolean {
      * браузерах и история версий остаются теми же. Файл на диске появится
      * следом — его пишет проекция, см. collab/books.ts.
      */
-    if (bookList(doc).length === 0) addBook(doc, DEFAULT_BOOK, CELLS_KEY)
+    /*
+     * Флажок, а не пустота списка: комната, где тетрадь убрали НАМЕРЕННО, при
+     * следующем открытии получала её обратно вместе со всеми ячейками —
+     * удаление отменялось само, стоило перезапустить сервер.
+     */
+    if (!meta.get('booksSeeded')) {
+      meta.set('booksSeeded', true)
+      if (bookList(doc).length === 0) addBook(doc, DEFAULT_BOOK, CELLS_KEY)
+    }
+    const first = bookList(doc)[0]
+    if (!first) return
     const cells = getCells(doc)
     if (cells.length === 0) {
       cells.push([
