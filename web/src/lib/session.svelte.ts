@@ -102,6 +102,16 @@ export class SessionState {
    */
   terminalUnread = $state(0)
 
+  /**
+   * Документ, который комната смотрит вместе, или `null`.
+   *
+   * Приходит с сервера — и в приветственной пачке, и при каждой смене. Живёт в
+   * комнате, а не в присутствии: присутствие исчезает вместе с вкладкой, и
+   * закрытый ноутбук преподавателя убрал бы материал у всех сразу, а
+   * опоздавший не увидел бы ничего, пока преподаватель не пошевелится.
+   */
+  board = $state<string | null>(null)
+
   #control: WebSocket | null = null
   #controlQueue: ControlClientMessage[] = []
   #reconnectTimer: number | undefined
@@ -449,6 +459,28 @@ export class SessionState {
 
   setInTerminal(inTerminal: boolean) {
     this.#patchUser({ inTerminal })
+  }
+
+  /**
+   * Где этот человек в документе, который смотрит.
+   *
+   * Пишется на каждое перелистывание, и это дороже, чем кажется: присутствие —
+   * самый болтливый провод в продукте, а прокрутка мышью даёт десятки событий в
+   * секунду. Поэтому сюда приходит уже страница, а не пиксель, и вызывающий
+   * обязан звать это только когда страница СМЕНИЛАСЬ.
+   */
+  setViewing(viewing: { file: string; page: number; y: number } | null) {
+    const current = (this.awareness.getLocalState()?.user as AwarenessUser | undefined)?.viewing
+    if (
+      current?.file === viewing?.file &&
+      current?.page === viewing?.page &&
+      // Доля высоты — дробная: сравнивать точно значит слать кадр на каждый
+      // пиксель прокрутки, а присутствие — самый болтливый провод в продукте.
+      Math.abs((current?.y ?? 0) - (viewing?.y ?? 0)) < 0.02
+    ) {
+      return
+    }
+    this.#patchUser({ viewing })
   }
 
   #patchUser(patch: Partial<AwarenessUser>) {

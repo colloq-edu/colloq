@@ -10,78 +10,77 @@
  * Фразы живут здесь же, рядом с правом: `controls.ts` уже умеет складывать их
  * с «нет связи» и знает, что связь важнее правила.
  */
-import {
-  allows,
-  allowsRun,
-  allowsStructure,
-  readRules,
-  type RoomRules,
-} from "@shared/rules";
-import type { ParticipantRole } from "@shared/protocol";
+import { allows, allowsRun, allowsStructure, readRules, type RoomRules } from '@shared/rules'
+import type { ParticipantRole } from '@shared/protocol'
 
 export interface Permits {
-  rules: RoomRules;
+  rules: RoomRules
   /** Печатать в ячейках. */
-  edit: boolean;
-  editWhy: string;
+  edit: boolean
+  editWhy: string
   /** Запустить ячейку. */
-  run: boolean;
-  runWhy: string;
+  run: boolean
+  runWhy: string
   /** Запустить весь лист: Run All, Run Above, форматирование. */
-  bulk: boolean;
-  bulkWhy: string;
+  bulk: boolean
+  bulkWhy: string
   /** Добавить ячейку. */
-  add: boolean;
+  add: boolean
   /** Убрать ячейку. */
-  remove: boolean;
+  remove: boolean
   /** Переставить или продублировать. */
-  move: boolean;
-  structureWhy: string;
+  move: boolean
+  structureWhy: string
   /** Стереть всё разом: доска, терминал, лента оракула. */
-  wipe: boolean;
-  wipeWhy: string;
+  wipe: boolean
+  wipeWhy: string
   /** Перезапустить ядро. */
-  restart: boolean;
-  restartWhy: string;
+  restart: boolean
+  restartWhy: string
   /** Видеть ленту версий. */
-  history: boolean;
+  history: boolean
   /** Добавлять файлы. */
-  files: boolean;
-  filesWhy: string;
+  files: boolean
+  filesWhy: string
+  /** Ставить документ на общий экран комнаты. Смотреть себе может любой. */
+  board: boolean
+  boardWhy: string
 }
 
-const HOSTS = "В этом семинаре это делает преподаватель";
+const HOSTS = 'В этом семинаре это делает преподаватель'
 
 export function permitsIn(rules: unknown, role: ParticipantRole): Permits {
-  const read = readRules(rules);
-  const structure = (verb: "add" | "remove" | "move"): boolean =>
-    allowsStructure(read.structure, role, verb);
+  const read = readRules(rules)
+  const structure = (verb: 'add' | 'remove' | 'move'): boolean =>
+    allowsStructure(read.structure, role, verb)
   return {
     rules: read,
     edit: allows(read.edit, role),
-    editWhy: "Тетрадь в этом семинаре принадлежит преподавателю",
-    run: allowsRun(read.run, role, "one"),
-    runWhy: "Ячейки в этом семинаре запускает преподаватель",
-    bulk: allowsRun(read.run, role, "bulk"),
+    editWhy: 'Тетрадь в этом семинаре принадлежит преподавателю',
+    run: allowsRun(read.run, role, 'one'),
+    runWhy: 'Ячейки в этом семинаре запускает преподаватель',
+    bulk: allowsRun(read.run, role, 'bulk'),
     bulkWhy:
-      read.run === "single" && role !== "host"
-        ? "Здесь считают по одной ячейке"
-        : "Весь лист в этом семинаре запускает преподаватель",
-    add: structure("add"),
-    remove: structure("remove"),
-    move: structure("move"),
+      read.run === 'single' && role !== 'host'
+        ? 'Здесь считают по одной ячейке'
+        : 'Весь лист в этом семинаре запускает преподаватель',
+    add: structure('add'),
+    remove: structure('remove'),
+    move: structure('move'),
     structureWhy:
-      read.structure === "add" && role !== "host"
-        ? "Здесь можно добавлять свои ячейки, но не убирать и не переставлять"
-        : "Состав тетради в этом семинаре — преподавательский",
+      read.structure === 'add' && role !== 'host'
+        ? 'Здесь можно добавлять свои ячейки, но не убирать и не переставлять'
+        : 'Состав тетради в этом семинаре — преподавательский',
     wipe: allows(read.wipe, role),
-    wipeWhy: "Стирать общее здесь может преподаватель",
+    wipeWhy: 'Стирать общее здесь может преподаватель',
     restart: allows(read.restart, role),
-    restartWhy: "Перезапускает ядро преподаватель",
+    restartWhy: 'Перезапускает ядро преподаватель',
     history: allows(read.history, role),
     files: allows(read.files, role),
-    filesWhy: "Файлы в эту комнату добавляет преподаватель",
-  };
+    filesWhy: 'Файлы в эту комнату добавляет преподаватель',
+    board: allows(read.board, role),
+    boardWhy: 'Показывать документ всей комнате здесь может преподаватель',
+  }
 }
 
-export { HOSTS };
+export { HOSTS }

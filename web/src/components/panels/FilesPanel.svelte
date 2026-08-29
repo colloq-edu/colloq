@@ -15,6 +15,13 @@
     sent: number
   }
 
+  interface Props {
+    /** Открыть документ: у преподавателя — комнате, у остальных — себе. */
+    onopen?: (name: string) => void
+  }
+
+  let { onopen }: Props = $props()
+
   const session = getSessionState()
 
   let dragDepth = $state(0)
@@ -27,6 +34,12 @@
   let confirming = $state<string | null>(null)
   const isHost = $derived(session.me.role === 'host')
   const may = $derived(permitsIn(session.session.rules, session.me.role))
+
+  /*
+   * По расширению, а не по MIME: в списке файлов комнаты MIME нет, а
+   * запрашивать его на каждую строку — запрос на файл ради одной иконки.
+   */
+  const isPdf = (name: string): boolean => name.toLowerCase().endsWith('.pdf')
 
   /**
    * Fetch a ticket, then let the browser take the file.
@@ -369,6 +382,25 @@
               <span
                 class="absolute inset-y-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
               >
+                <!--
+                  Открыть PDF, не выходя из комнаты. У преподавателя — сразу
+                  всем: право `board` про общий экран, а не про чтение, и
+                  смотреть у себя может любой. Клик по имени не трогаем: он
+                  копирует питоновский сниппет, и это уже привычка.
+                -->
+                {#if isPdf(file.name)}
+                  <button
+                    type="button"
+                    class="flex h-6 w-6 items-center justify-center text-faint transition-colors
+                           duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
+                           focus-visible:ring-accent/40"
+                    title={may.board ? 'Показать комнате' : 'Открыть у себя'}
+                    aria-label="Открыть {file.name}"
+                    onclick={() => onopen?.(file.name)}
+                  >
+                    <Icon name="board" size={13} />
+                  </button>
+                {/if}
                 <button
                   type="button"
                   class="flex h-6 w-6 items-center justify-center text-faint transition-colors

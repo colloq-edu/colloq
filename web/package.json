@@ -4,10 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "npm run pdf:worker && vite",
+    "build": "npm run pdf:worker && vite build",
     "preview": "vite preview",
-    "typecheck": "svelte-check --tsconfig ./tsconfig.json --threshold error"
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json --threshold error",
+    "pdf:worker": "node -e \"const{copyFileSync,mkdirSync}=require('fs');mkdirSync('public/pdf',{recursive:true});copyFileSync(require.resolve('pdfjs-dist/build/pdf.worker.min.mjs'),'public/pdf/pdf.worker.min.mjs')\""
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.4",
@@ -22,6 +23,7 @@
     "clsx": "^2.1.1",
     "dompurify": "^3.2.3",
     "marked": "^15.0.4",
+    "pdfjs-dist": "^6.2.108",
     "y-codemirror.next": "^0.3.5",
     "y-indexeddb": "^9.0.12",
     "y-protocols": "^1.0.6",

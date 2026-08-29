@@ -169,6 +169,17 @@ export const api = {
   fileUrl: (id: string, name: string, ticket: string) =>
     `/api/sessions/${id}/files/${encodeURIComponent(name)}?token=${encodeURIComponent(ticket)}`,
 
+  /**
+   * Тот же файл, но без билета в строке запроса — для читалки.
+   *
+   * Билет нужен якорю: `<a download>` не умеет отправить заголовок. Читалка
+   * ходит сама и отправляет токен заголовком, поэтому адрес чистый — а pdf.js
+   * по нему запрашивает документ кусками и показывает первую страницу, не
+   * дожидаясь последней.
+   */
+  fileRaw: (id: string, name: string) =>
+    `/api/sessions/${id}/files/${encodeURIComponent(name)}`,
+
   /** `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`. */
   aiStatus: () =>
     request<{ enabled: boolean; model: string; mode: 'full' | 'hints' | 'off' }>('/api/ai/status'),

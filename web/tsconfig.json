@@ -15,5 +15,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "../shared/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.svelte", "../shared/**/*.ts"]
 }

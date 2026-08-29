@@ -17,7 +17,7 @@
  * able to install it. Clearing and closing are host-only, because both destroy
  * something the whole room can see: shared history, and the shell itself.
  */
-import { WebSocket, type RawData } from "ws";
+import { WebSocket, type RawData } from 'ws'
 import {
   acceptPatch,
   cellId,
@@ -27,26 +27,20 @@ import {
   getMeta,
   rejectPatch,
   type KernelStatus,
-} from "@shared/notebook";
-import { colorForId } from "@shared/protocol";
+} from '@shared/notebook'
+import { colorForId } from '@shared/protocol'
 import type {
   ControlClientMessage,
   ControlServerMessage,
   FileEntry,
   Participant,
-} from "@shared/protocol";
-import type { TokenPayload } from "./auth.js";
-import { applyOnBehalf, getSessionDoc, onRefusal } from "./collab/index.js";
-import { moveInCells } from "./collab/ops.js";
-import { LINE_LENGTH } from "./kernel/format.js";
-import {
-  allows,
-  allowsRun,
-  allowsStructure,
-  runQueueCap,
-  type Who,
-} from "@shared/rules";
-import { getParticipant, getRules } from "./db.js";
+} from '@shared/protocol'
+import type { TokenPayload } from './auth.js'
+import { applyOnBehalf, getSessionDoc, onRefusal } from './collab/index.js'
+import { moveInCells } from './collab/ops.js'
+import { LINE_LENGTH } from './kernel/format.js'
+import { allows, allowsRun, allowsStructure, runQueueCap, type Who } from '@shared/rules'
+import { getParticipant, getRules } from './db.js'
 import {
   answerInput,
   clearOutputs,
@@ -60,7 +54,7 @@ import {
   cancelRun,
   queueIsOnly,
   startedTheRunningCell,
-} from "./kernel/index.js";
+} from './kernel/index.js'
 import {
   clearTerminal,
   closeTerminal,
@@ -70,47 +64,44 @@ import {
   runCommand,
   terminalPhase,
   typedRunningCommand,
-} from "./kernel/terminal.js";
-import { listFiles } from "./workspace.js";
+} from './kernel/terminal.js'
+import { listFiles } from './workspace.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
-const PING_INTERVAL_MS = 25_000;
+const PING_INTERVAL_MS = 25_000
 /** A socket that ignores this many consecutive pings is a closed laptop lid. */
-const MAX_MISSED_PONGS = 2;
+const MAX_MISSED_PONGS = 2
 /** Control frames are tiny by construction; anything larger is not ours. */
-const MAX_FRAME_BYTES = 8192;
+const MAX_FRAME_BYTES = 8192
 /** A shell command, not a shell script: anything longer is a paste accident. */
-const MAX_COMMAND_BYTES = 4096;
+const MAX_COMMAND_BYTES = 4096
 
 interface Room {
-  sockets: Set<WebSocket>;
-  unwatch: () => void;
+  sockets: Set<WebSocket>
+  unwatch: () => void
 }
 
-const rooms = new Map<string, Room>();
+const rooms = new Map<string, Room>()
 
 /* ----------------------------------------------------------------- send */
 
 function send(ws: WebSocket, message: ControlServerMessage): void {
-  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.readyState !== WebSocket.OPEN) return
   try {
-    ws.send(JSON.stringify(message));
+    ws.send(JSON.stringify(message))
   } catch {
     /* the socket died between the check and the write */
   }
 }
 
-export function broadcast(
-  sessionId: string,
-  message: ControlServerMessage,
-): void {
-  const room = rooms.get(sessionId);
-  if (!room) return;
-  const frame = JSON.stringify(message);
+export function broadcast(sessionId: string, message: ControlServerMessage): void {
+  const room = rooms.get(sessionId)
+  if (!room) return
+  const frame = JSON.stringify(message)
   for (const ws of room.sockets) {
-    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (ws.readyState !== WebSocket.OPEN) continue
     try {
-      ws.send(frame);
+      ws.send(frame)
     } catch {
       /* dropped; the close handler will clean it up */
     }
@@ -129,34 +120,86 @@ export function broadcast(
  * getSessionDoc(), which would build the deleted room again from nothing.
  */
 export function closeControlRoom(sessionId: string): void {
-  const room = rooms.get(sessionId);
-  if (!room) return;
-  rooms.delete(sessionId);
-  room.unwatch();
+  const room = rooms.get(sessionId)
+  if (!room) return
+  rooms.delete(sessionId)
+  // И доску: комнаты больше нет, показывать нечего и некому.
+  boards.delete(sessionId)
+  room.unwatch()
   for (const ws of room.sockets) {
     try {
-      ws.close(1001, "this seminar was deleted");
+      ws.close(1001, 'this seminar was deleted')
     } catch {
       /* already gone */
     }
   }
-  room.sockets.clear();
+  room.sockets.clear()
 }
 
 export function broadcastFiles(sessionId: string): void {
-  const room = rooms.get(sessionId);
-  if (!room || room.sockets.size === 0) return;
-  let files: FileEntry[];
+  const room = rooms.get(sessionId)
+  if (!room || room.sockets.size === 0) return
+  let files: FileEntry[]
   try {
-    files = listFiles(sessionId);
+    files = listFiles(sessionId)
   } catch {
-    return;
+    return
   }
-  broadcast(sessionId, { t: "files", files });
+  broadcast(sessionId, { t: 'files', files })
+}
+
+/* ------------------------------------------------------- общий экран */
+
+/**
+ * Документ, который комната смотрит вместе.
+ *
+ * В памяти процесса, рядом с комнатой, а не в общем документе и не в
+ * присутствии. Присутствие исчезает вместе с вкладкой — закрытый ноутбук
+ * преподавателя убрал бы материал у всех. Общий документ Yjs пишет каждую
+ * запись в ленту версий, и «открыл PDF» стало бы строкой истории, а Ctrl+Z в
+ * ячейке — способом закрыть его всей комнате.
+ *
+ * Цена названа вслух: перезапуск сервера закрывает доску у всех. Так же уходит
+ * и очередь запуска, и это то же самое обещание — комната переживает обрыв
+ * связи, но не перезапуск процесса.
+ */
+const boards = new Map<string, string>()
+
+/** Что комната смотрит сейчас. */
+export function boardOf(sessionId: string): string | null {
+  return boards.get(sessionId) ?? null
+}
+
+function setBoard(sessionId: string, name: string | null): void {
+  if (name === null) boards.delete(sessionId)
+  else boards.set(sessionId, name)
+  broadcast(sessionId, { t: 'board', open: name })
+}
+
+/**
+ * Файл пропал или его переписали — доску надо закрыть.
+ *
+ * Удалить файл может преподаватель, а переписать — любая ячейка: `df.to_csv`
+ * идёт в ту же папку. Читалка, продолжающая показывать документ, которого нет,
+ * — это пустая область без объяснения.
+ */
+function forgetMissingBoard(sessionId: string): void {
+  const open = boards.get(sessionId)
+  if (!open) return
+  try {
+    if (!listFiles(sessionId).some((file) => file.name === open)) {
+      setBoard(sessionId, null)
+    }
+  } catch {
+    /* папку не прочитать — доску не трогаем, это не повод её закрывать */
+  }
 }
 
 // Registered once, at import: the kernel runtime has no idea who is listening.
-onWorkspaceChanged(broadcastFiles);
+onWorkspaceChanged((sessionId) => {
+  forgetMissingBoard(sessionId)
+  broadcastFiles(sessionId)
+})
 
 /**
  * Кому принадлежит управляющий сокет.
@@ -165,41 +208,34 @@ onWorkspaceChanged(broadcastFiles);
  * двадцати, что кто-то попробовал написать в чужую тетрадь, — не то, что нужно
  * ни автору правки, ни остальным.
  */
-const owner = new WeakMap<WebSocket, string>();
+const owner = new WeakMap<WebSocket, string>()
 
-function tell(
-  sessionId: string,
-  participantId: string,
-  message: ControlServerMessage,
-): void {
-  const room = rooms.get(sessionId);
-  if (!room) return;
-  for (const ws of room.sockets)
-    if (owner.get(ws) === participantId) send(ws, message);
+function tell(sessionId: string, participantId: string, message: ControlServerMessage): void {
+  const room = rooms.get(sessionId)
+  if (!room) return
+  for (const ws of room.sockets) if (owner.get(ws) === participantId) send(ws, message)
 }
 
 onRefusal((sessionId, participantId, refusal) => {
   tell(sessionId, participantId, {
-    t: "refused",
+    t: 'refused',
     rule: refusal.rule,
     message: refusal.message,
-  });
-});
+  })
+})
 
 // The transcript is in the document; the terminal's health is not, so it comes
 // down this channel the same way kernel status does.
-onTerminalPhase((sessionId, status) =>
-  broadcast(sessionId, { t: "terminal", status }),
-);
+onTerminalPhase((sessionId, status) => broadcast(sessionId, { t: 'terminal', status }))
 
 /* ----------------------------------------------------------------- doc */
 
 function kernelStatus(sessionId: string): KernelStatus {
   try {
-    const status = getMeta(getSessionDoc(sessionId).doc).get("kernelStatus");
-    return typeof status === "string" ? (status as KernelStatus) : "starting";
+    const status = getMeta(getSessionDoc(sessionId).doc).get('kernelStatus')
+    return typeof status === 'string' ? (status as KernelStatus) : 'starting'
   } catch {
-    return "starting";
+    return 'starting'
   }
 }
 
@@ -209,16 +245,16 @@ function kernelStatus(sessionId: string): KernelStatus {
  * that are watching only the control channel honest.
  */
 function watchKernelStatus(sessionId: string): () => void {
-  const meta = getMeta(getSessionDoc(sessionId).doc);
-  let last = meta.get("kernelStatus") as KernelStatus | undefined;
+  const meta = getMeta(getSessionDoc(sessionId).doc)
+  let last = meta.get('kernelStatus') as KernelStatus | undefined
   const onChange = () => {
-    const status = meta.get("kernelStatus") as KernelStatus | undefined;
-    if (!status || status === last) return;
-    last = status;
-    broadcast(sessionId, { t: "kernel", status });
-  };
-  meta.observe(onChange);
-  return () => meta.unobserve(onChange);
+    const status = meta.get('kernelStatus') as KernelStatus | undefined
+    if (!status || status === last) return
+    last = status
+    broadcast(sessionId, { t: 'kernel', status })
+  }
+  meta.observe(onChange)
+  return () => meta.unobserve(onChange)
 }
 
 /**
@@ -227,23 +263,23 @@ function watchKernelStatus(sessionId: string): () => void {
  * that missed a deletion cannot silently turn into "run the whole notebook".
  */
 function codeCellIds(sessionId: string, upToCellId?: string): string[] {
-  const cells = getCells(getSessionDoc(sessionId).doc);
-  const ids: string[] = [];
+  const cells = getCells(getSessionDoc(sessionId).doc)
+  const ids: string[] = []
   for (let i = 0; i < cells.length; i++) {
-    const cell = cells.get(i);
-    const id = cellId(cell);
-    if (cellType(cell) === "code") ids.push(id);
-    if (upToCellId !== undefined && id === upToCellId) return ids;
+    const cell = cells.get(i)
+    const id = cellId(cell)
+    if (cellType(cell) === 'code') ids.push(id)
+    if (upToCellId !== undefined && id === upToCellId) return ids
   }
-  return upToCellId === undefined ? ids : [];
+  return upToCellId === undefined ? ids : []
 }
 
 /** Output attribution is a human name or nothing worth showing. */
 function displayName(sessionId: string, participantId: string): string {
   try {
-    return getParticipant(sessionId, participantId)?.name || "Someone";
+    return getParticipant(sessionId, participantId)?.name || 'Someone'
   } catch {
-    return "Someone";
+    return 'Someone'
   }
 }
 
@@ -255,38 +291,38 @@ function sender(
   sessionId: string,
   participantId: string,
 ): { name: string; color: string; participantId: string } {
-  let participant: Participant | null = null;
+  let participant: Participant | null = null
   try {
-    participant = getParticipant(sessionId, participantId);
+    participant = getParticipant(sessionId, participantId)
   } catch {
-    participant = null;
+    participant = null
   }
   return {
-    name: participant?.name || "Someone",
+    name: participant?.name || 'Someone',
     color: participant?.color || colorForId(participantId),
     participantId,
-  };
+  }
 }
 
 /* ------------------------------------------------------------- dispatch */
 
 function frameText(data: RawData): string {
-  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
-  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
-  return (data as Buffer).toString("utf8");
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8')
+  return (data as Buffer).toString('utf8')
 }
 
 function parse(data: RawData): ControlClientMessage | null {
-  const text = frameText(data);
-  if (text.length === 0 || text.length > MAX_FRAME_BYTES) return null;
+  const text = frameText(data)
+  if (text.length === 0 || text.length > MAX_FRAME_BYTES) return null
   try {
-    const parsed: unknown = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object") return null;
-    const t = (parsed as { t?: unknown }).t;
-    if (typeof t !== "string") return null;
-    return parsed as ControlClientMessage;
+    const parsed: unknown = JSON.parse(text)
+    if (!parsed || typeof parsed !== 'object') return null
+    const t = (parsed as { t?: unknown }).t
+    if (typeof t !== 'string') return null
+    return parsed as ControlClientMessage
   } catch {
-    return null;
+    return null
   }
 }
 
@@ -302,17 +338,13 @@ function parse(data: RawData): ControlClientMessage | null {
  * The refusal is spoken rather than silent. A button that does nothing is a bug
  * report; a button that says why is a rule.
  */
-function mayRun(
-  sessionId: string,
-  payload: TokenPayload,
-  ws: WebSocket,
-): boolean {
-  if (allowsRun(getRules(sessionId).run, payload.role, "one")) return true;
+function mayRun(sessionId: string, payload: TokenPayload, ws: WebSocket): boolean {
+  if (allowsRun(getRules(sessionId).run, payload.role, 'one')) return true
   send(ws, {
-    t: "error",
-    message: "Only the teacher runs cells in this seminar.",
-  });
-  return false;
+    t: 'error',
+    message: 'Only the teacher runs cells in this seminar.',
+  })
+  return false
 }
 
 /**
@@ -322,30 +354,20 @@ function mayRun(
  * забили очередь на восемьсот ячеек» ровно здесь. «По одной» разрешает нажать
  * на ячейке и запрещает Run All.
  */
-function mayBulkRun(
-  sessionId: string,
-  payload: TokenPayload,
-  ws: WebSocket,
-): boolean {
-  if (allowsRun(getRules(sessionId).run, payload.role, "bulk")) return true;
+function mayBulkRun(sessionId: string, payload: TokenPayload, ws: WebSocket): boolean {
+  if (allowsRun(getRules(sessionId).run, payload.role, 'bulk')) return true
   send(ws, {
-    t: "error",
-    message:
-      "В этом семинаре весь лист запускает преподаватель — запускайте по одной ячейке.",
-  });
-  return false;
+    t: 'error',
+    message: 'В этом семинаре весь лист запускает преподаватель — запускайте по одной ячейке.',
+  })
+  return false
 }
 
 /** Право по простому правилу, с одной фразой на отказ. */
-function may(
-  rule: Who,
-  payload: TokenPayload,
-  ws: WebSocket,
-  message: string,
-): boolean {
-  if (allows(rule, payload.role)) return true;
-  send(ws, { t: "error", message });
-  return false;
+function may(rule: Who, payload: TokenPayload, ws: WebSocket, message: string): boolean {
+  if (allows(rule, payload.role)) return true
+  send(ws, { t: 'error', message })
+  return false
 }
 
 /**
@@ -355,32 +377,25 @@ function may(
  * одновременно. Это и делает правило границей, а не счётчиком нажатий:
  * скриптовый цикл получает одну ячейку в очереди и одну фразу.
  */
-function queue(
-  ws: WebSocket,
-  sessionId: string,
-  payload: TokenPayload,
-  ids: string[],
-): void {
-  if (ids.length === 0) return;
+function queue(ws: WebSocket, sessionId: string, payload: TokenPayload, ids: string[]): void {
+  if (ids.length === 0) return
   const refused = requestRun(
     sessionId,
     ids,
     displayName(sessionId, payload.participantId),
     payload.participantId,
     runQueueCap(getRules(sessionId).run, payload.role),
-  );
+  )
   if (refused > 0) {
     send(ws, {
-      t: "error",
-      message: "В этом семинаре считают по одной ячейке — ваша уже в очереди.",
-    });
+      t: 'error',
+      message: 'В этом семинаре считают по одной ячейке — ваша уже в очереди.',
+    })
   }
 }
 
 function optionalId(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 && value.length <= 128
-    ? value
-    : undefined;
+  return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : undefined
 }
 
 /**
@@ -397,57 +412,52 @@ export function dispatch(
   message: ControlClientMessage,
 ): void {
   switch (message.t) {
-    case "ping":
+    case 'ping':
       // Пульс раз в 25 секунд — и заодно самый частый повод заметить ячейку,
       // которую документ считает работающей, а сервер о ней не знает. Это то,
       // что ограничивает жизнь такого призрака одним ударом пульса, а не
       // «пока кто-нибудь что-нибудь не нажмёт». Проход читает по одному ключу
       // на ячейку и пишет только там, где документ неправ.
-      sweepOrphanRuns(sessionId);
+      sweepOrphanRuns(sessionId)
       // Часы сервера в ответ: по ним браузер считает свою поправку и не
       // показывает «40.0s» на только что запущенной ячейке. См. session.svelte.ts.
-      send(ws, { t: "pong", now: Date.now() });
-      return;
+      send(ws, { t: 'pong', now: Date.now() })
+      return
 
-    case "run": {
-      const id = optionalId(message.cellId);
-      if (!id) return;
-      if (!mayRun(sessionId, payload, ws)) return;
-      queue(ws, sessionId, payload, [id]);
-      return;
+    case 'run': {
+      const id = optionalId(message.cellId)
+      if (!id) return
+      if (!mayRun(sessionId, payload, ws)) return
+      queue(ws, sessionId, payload, [id])
+      return
     }
 
-    case "cancel": {
-      const id = optionalId(message.cellId);
-      if (!id) return;
+    case 'cancel': {
+      const id = optionalId(message.cellId)
+      if (!id) return
       // Silent when there was nothing of theirs waiting: two people pressing
       // cancel on the same cell is a race, not an error worth a message.
-      cancelRun(
-        sessionId,
-        [id],
-        payload.participantId,
-        payload.role === "host",
-      );
-      return;
+      cancelRun(sessionId, [id], payload.participantId, payload.role === 'host')
+      return
     }
 
-    case "runAll": {
-      if (!mayRun(sessionId, payload, ws)) return;
-      if (!mayBulkRun(sessionId, payload, ws)) return;
-      queue(ws, sessionId, payload, codeCellIds(sessionId));
-      return;
+    case 'runAll': {
+      if (!mayRun(sessionId, payload, ws)) return
+      if (!mayBulkRun(sessionId, payload, ws)) return
+      queue(ws, sessionId, payload, codeCellIds(sessionId))
+      return
     }
 
-    case "runAbove": {
-      const id = optionalId(message.cellId);
-      if (!id) return;
-      if (!mayRun(sessionId, payload, ws)) return;
-      if (!mayBulkRun(sessionId, payload, ws)) return;
-      queue(ws, sessionId, payload, codeCellIds(sessionId, id));
-      return;
+    case 'runAbove': {
+      const id = optionalId(message.cellId)
+      if (!id) return
+      if (!mayRun(sessionId, payload, ws)) return
+      if (!mayBulkRun(sessionId, payload, ws)) return
+      queue(ws, sessionId, payload, codeCellIds(sessionId, id))
+      return
     }
 
-    case "interrupt": {
+    case 'interrupt': {
       /*
        * The host can always stop the kernel. So can whoever started the cell
        * that is running: they are stopping their own work, only one cell runs
@@ -457,16 +467,12 @@ export function dispatch(
        * By participant id, not by name — two students called Anna are two
        * people, and a name is not a credential.
        */
-      if (
-        payload.role !== "host" &&
-        !startedTheRunningCell(sessionId, payload.participantId)
-      ) {
+      if (payload.role !== 'host' && !startedTheRunningCell(sessionId, payload.participantId)) {
         send(ws, {
-          t: "error",
-          message:
-            "Only the host, or whoever started the running cell, can interrupt the kernel.",
-        });
-        return;
+          t: 'error',
+          message: 'Only the host, or whoever started the running cell, can interrupt the kernel.',
+        })
+        return
       }
       /*
        * Нажатие на ячейке называет свою цель, комнатное — нет.
@@ -483,77 +489,98 @@ export function dispatch(
        * ячейку». Это не право, а поведение: у себя останавливай что угодно,
        * чужие пачки не трогай.
        */
-      const target = optionalId(message.cellId);
-      if (
-        !target &&
-        payload.role !== "host" &&
-        !queueIsOnly(sessionId, payload.participantId)
-      ) {
+      const target = optionalId(message.cellId)
+      if (!target && payload.role !== 'host' && !queueIsOnly(sessionId, payload.participantId)) {
         send(ws, {
-          t: "error",
-          message: "В очереди ячейки других — остановите свою, нажав на ней.",
-        });
-        return;
+          t: 'error',
+          message: 'В очереди ячейки других — остановите свою, нажав на ней.',
+        })
+        return
       }
       void interruptSession(sessionId, target).catch((err: unknown) => {
         send(ws, {
-          t: "error",
-          message: reason(err, "Could not interrupt the kernel."),
-        });
-      });
-      return;
+          t: 'error',
+          message: reason(err, 'Could not interrupt the kernel.'),
+        })
+      })
+      return
     }
 
-    case "restart": {
+    case 'restart': {
       // Перезапуск сбрасывает все переменные у всей комнаты, поэтому по
       // умолчанию он преподавательский; но комната, где работают вдвоём,
       // вправе решить иначе.
-      if (
-        !may(
-          getRules(sessionId).restart,
-          payload,
-          ws,
-          "Only the host can restart the kernel.",
-        )
-      ) {
-        return;
+      if (!may(getRules(sessionId).restart, payload, ws, 'Only the host can restart the kernel.')) {
+        return
       }
-      void restartSession(
-        sessionId,
-        displayName(sessionId, payload.participantId),
-      ).catch((err: unknown) => {
-        send(ws, {
-          t: "error",
-          message: reason(err, "Could not restart the kernel."),
-        });
-      });
-      return;
+      void restartSession(sessionId, displayName(sessionId, payload.participantId)).catch(
+        (err: unknown) => {
+          send(ws, {
+            t: 'error',
+            message: reason(err, 'Could not restart the kernel.'),
+          })
+        },
+      )
+      return
     }
 
-    case "clearOutputs": {
+    case 'clearOutputs': {
       /*
        * Своя ячейка и вся доска — разные действия, и правила у них разные.
        * Иначе «стирать всё — преподавателю» запрещало бы студенту прибрать за
        * собой в собственной ячейке, чего никто не имел в виду.
        */
-      const one = optionalId(message.cellId);
-      const rules = getRules(sessionId);
+      const one = optionalId(message.cellId)
+      const rules = getRules(sessionId)
       const allowed = one
-        ? may(
-            rules.edit,
-            payload,
-            ws,
-            "В этом семинаре тетрадь принадлежит преподавателю.",
-          )
-        : may(
-            rules.wipe,
-            payload,
-            ws,
-            "Стирать всю доску здесь может преподаватель.",
-          );
-      if (!allowed) return;
-      clearOutputs(sessionId, one);
-      return;
+        ? may(rules.edit, payload, ws, 'В этом семинаре тетрадь принадлежит преподавателю.')
+        : may(rules.wipe, payload, ws, 'Стирать всю доску здесь может преподаватель.')
+      if (!allowed) return
+      clearOutputs(sessionId, one)
+      return
+    }
+
+    /**
+     * Поставить документ на общий экран.
+     *
+     * Смотреть и листать самому может любой всегда — файл комнаты и так
+     * скачивается кем угодно из неё. Право здесь про другое: про общий экран.
+     */
+    case 'board:open': {
+      if (
+        !may(
+          getRules(sessionId).board,
+          payload,
+          ws,
+          'Ставить документ на общий экран в этом семинаре может преподаватель.',
+        )
+      ) {
+        return
+      }
+      const name = typeof message.name === 'string' ? message.name : ''
+      // Существование проверяется здесь, а не у смотрящего: иначе комната
+      // получит имя, которого нет, и двадцать человек увидят пустую область.
+      if (!name || !listFiles(sessionId).some((file) => file.name === name)) {
+        send(ws, { t: 'error', message: 'Такого файла в комнате нет.' })
+        return
+      }
+      setBoard(sessionId, name)
+      return
+    }
+
+    case 'board:close': {
+      if (
+        !may(
+          getRules(sessionId).board,
+          payload,
+          ws,
+          'Убрать документ с общего экрана в этом семинаре может преподаватель.',
+        )
+      ) {
+        return
+      }
+      setBoard(sessionId, null)
+      return
     }
 
     /*
@@ -561,27 +588,25 @@ export function dispatch(
      * `collab/ops.ts`. Право проверяется здесь, а не в классификаторе, потому
      * что в документе этого глагола больше нет вовсе.
      */
-    case "cells:move": {
-      const rules = getRules(sessionId);
-      if (!allowsStructure(rules.structure, payload.role, "move")) {
+    case 'cells:move': {
+      const rules = getRules(sessionId)
+      if (!allowsStructure(rules.structure, payload.role, 'move')) {
         send(ws, {
-          t: "error",
-          message: "В этом семинаре порядок ячеек меняет преподаватель.",
-        });
-        return;
+          t: 'error',
+          message: 'В этом семинаре порядок ячеек меняет преподаватель.',
+        })
+        return
       }
-      const id = typeof message.cellId === "string" ? message.cellId : "";
+      const id = typeof message.cellId === 'string' ? message.cellId : ''
       const direction =
-        message.direction === -1 || message.direction === 1
-          ? message.direction
-          : null;
-      if (!id || direction === null) return;
+        message.direction === -1 || message.direction === 1 ? message.direction : null
+      if (!id || direction === null) return
       // От имени нажавшего: у версии в истории должен быть автор.
-      const { doc } = getSessionDoc(sessionId);
+      const { doc } = getSessionDoc(sessionId)
       applyOnBehalf(sessionId, payload.participantId, () => {
-        moveInCells(doc, id, direction);
-      });
-      return;
+        moveInCells(doc, id, direction)
+      })
+      return
     }
 
     /*
@@ -596,26 +621,25 @@ export function dispatch(
      * Имя берётся из соединения, а не из сообщения: в документе будет написано,
      * кто принял, и написать туда чужое имя нельзя.
      */
-    case "ai:decide": {
-      const entryId =
-        typeof message.entryId === "string" ? message.entryId : "";
-      if (!entryId) return;
-      const { doc } = getSessionDoc(sessionId);
-      const entry = findChatEntry(doc, entryId);
-      if (!entry) return;
+    case 'ai:decide': {
+      const entryId = typeof message.entryId === 'string' ? message.entryId : ''
+      if (!entryId) return
+      const { doc } = getSessionDoc(sessionId)
+      const entry = findChatEntry(doc, entryId)
+      if (!entry) return
       if (
         message.accept &&
         !may(
           getRules(sessionId).edit,
           payload,
           ws,
-          "Применить правку оракула здесь может преподаватель — спросить его можно по-прежнему.",
+          'Применить правку оракула здесь может преподаватель — спросить его можно по-прежнему.',
         )
       ) {
         // Отклонить может кто угодно: снятая плашка ничего не разрушает.
-        return;
+        return
       }
-      const who = displayName(sessionId, payload.participantId);
+      const who = displayName(sessionId, payload.participantId)
       /*
        * От имени нажавшего, а не от имени сервера.
        *
@@ -625,42 +649,37 @@ export function dispatch(
        * и Ctrl+Z у него самого до собственной правки не доставал.
        */
       applyOnBehalf(sessionId, payload.participantId, () => {
-        if (message.accept) acceptPatch(doc, entry, who);
-        else rejectPatch(doc, entry, who);
-      });
-      return;
+        if (message.accept) acceptPatch(doc, entry, who)
+        else rejectPatch(doc, entry, who)
+      })
+      return
     }
 
-    case "input": {
+    case 'input': {
       /*
        * Отвечает тот, чья ячейка спрашивает, — или преподаватель. Та же форма,
        * что у «остановить», и по той же причине: приглашение ко вводу живёт в
        * документе, потому что его должна видеть комната, — но видеть и
        * отвечать не одно и то же, а `input()` под паролем тем более.
        */
-      if (
-        payload.role !== "host" &&
-        !startedTheRunningCell(sessionId, payload.participantId)
-      ) {
+      if (payload.role !== 'host' && !startedTheRunningCell(sessionId, payload.participantId)) {
         send(ws, {
-          t: "error",
-          message: "Ответить может тот, чья ячейка спрашивает.",
-        });
-        return;
+          t: 'error',
+          message: 'Ответить может тот, чья ячейка спрашивает.',
+        })
+        return
       }
-      const value = typeof message.value === "string" ? message.value : "";
-      void answerInput(sessionId, value, optionalId(message.cellId)).catch(
-        (err: unknown) => {
-          send(ws, {
-            t: "error",
-            message: reason(err, "Could not send that to the cell."),
-          });
-        },
-      );
-      return;
+      const value = typeof message.value === 'string' ? message.value : ''
+      void answerInput(sessionId, value, optionalId(message.cellId)).catch((err: unknown) => {
+        send(ws, {
+          t: 'error',
+          message: reason(err, 'Could not send that to the cell.'),
+        })
+      })
+      return
     }
 
-    case "format": {
+    case 'format': {
       /*
        * Строже обоих соседей: black и переписывает каждую ячейку с кодом, и
        * выполняется на общем ядре. Хватило бы одного из двух, чтобы спросить.
@@ -670,12 +689,12 @@ export function dispatch(
           getRules(sessionId).edit,
           payload,
           ws,
-          "В этом семинаре тетрадь принадлежит преподавателю.",
+          'В этом семинаре тетрадь принадлежит преподавателю.',
         )
       ) {
-        return;
+        return
       }
-      if (!mayBulkRun(sessionId, payload, ws)) return;
+      if (!mayBulkRun(sessionId, payload, ws)) return
       /*
        * The result goes to the terminal transcript rather than back down this
        * socket: everybody's notebook just changed under them, so everybody
@@ -685,78 +704,70 @@ export function dispatch(
        */
       void formatSession(sessionId)
         .then((outcome) => {
-          if (outcome.error) return;
+          if (outcome.error) return
           if (outcome.changed === 0 && outcome.skipped === 0) {
-            kernelNote(
-              sessionId,
-              "Formatted with black — everything was already in shape.",
-            );
-            return;
+            kernelNote(sessionId, 'Formatted with black — everything was already in shape.')
+            return
           }
           const parts = [
-            `${outcome.changed} ${outcome.changed === 1 ? "cell" : "cells"} reformatted`,
-          ];
+            `${outcome.changed} ${outcome.changed === 1 ? 'cell' : 'cells'} reformatted`,
+          ]
           if (outcome.skipped > 0) {
             parts.push(
               `${outcome.skipped} left alone (a magic, a shell line, or code mid-sentence — black could not read them)`,
-            );
+            )
           }
           kernelNote(
             sessionId,
-            `Formatted with black, ${LINE_LENGTH} columns: ${parts.join("; ")}.`,
-          );
+            `Formatted with black, ${LINE_LENGTH} columns: ${parts.join('; ')}.`,
+          )
         })
         .catch((err: unknown) => {
           send(ws, {
-            t: "error",
-            message: reason(err, "Could not format the notebook."),
-          });
-        });
-      return;
+            t: 'error',
+            message: reason(err, 'Could not format the notebook.'),
+          })
+        })
+      return
     }
 
-    case "term:open": {
+    case 'term:open': {
       void openTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
-          t: "error",
-          message: reason(err, "Could not open the terminal."),
-        });
-      });
-      return;
+          t: 'error',
+          message: reason(err, 'Could not open the terminal.'),
+        })
+      })
+      return
     }
 
-    case "term:run": {
-      const command =
-        typeof message.command === "string" ? message.command : "";
-      if (command.trim().length === 0) return;
-      if (Buffer.byteLength(command, "utf8") > MAX_COMMAND_BYTES) {
+    case 'term:run': {
+      const command = typeof message.command === 'string' ? message.command : ''
+      if (command.trim().length === 0) return
+      if (Buffer.byteLength(command, 'utf8') > MAX_COMMAND_BYTES) {
         send(ws, {
-          t: "error",
-          message: `That command is over ${MAX_COMMAND_BYTES.toLocaleString("en-GB")} characters. Put it in a file and run the file.`,
-        });
-        return;
+          t: 'error',
+          message: `That command is over ${MAX_COMMAND_BYTES.toLocaleString('en-GB')} characters. Put it in a file and run the file.`,
+        })
+        return
       }
-      runCommand(sessionId, command, sender(sessionId, payload.participantId));
-      return;
+      runCommand(sessionId, command, sender(sessionId, payload.participantId))
+      return
     }
 
-    case "term:interrupt": {
+    case 'term:interrupt': {
       /*
        * Same rule as the kernel's interrupt, and for the same reason: Ctrl+C
        * throws away every command still waiting, including other people's. The
        * shell is shared, so whoever's command is running may stop it, and the
        * host may stop anything.
        */
-      if (
-        payload.role !== "host" &&
-        !typedRunningCommand(sessionId, payload.participantId)
-      ) {
+      if (payload.role !== 'host' && !typedRunningCommand(sessionId, payload.participantId)) {
         send(ws, {
-          t: "error",
-          message:
-            "Only the host, or whoever typed the running command, can stop the terminal.",
-        });
-        return;
+          t: 'error',
+          message: 'Only the host, or whoever typed the running command, can stop the terminal.',
+        })
+        return
       }
       /*
        * Хост сбрасывает всю очередь, остальные — только своё.
@@ -769,74 +780,63 @@ export function dispatch(
       interruptTerminal(
         sessionId,
         displayName(sessionId, payload.participantId),
-        payload.role === "host" ? undefined : payload.participantId,
-      );
-      return;
+        payload.role === 'host' ? undefined : payload.participantId,
+      )
+      return
     }
 
-    case "term:clear": {
+    case 'term:clear': {
       if (
         !may(
           getRules(sessionId).wipe,
           payload,
           ws,
-          "Only the host can clear the terminal — that history belongs to the room.",
+          'Only the host can clear the terminal — that history belongs to the room.',
         )
       ) {
-        return;
+        return
       }
-      clearTerminal(sessionId);
-      return;
+      clearTerminal(sessionId)
+      return
     }
 
-    case "term:close": {
+    case 'term:close': {
       // Закрыть оболочку — то же, что стереть расшифровку: она общая, и гасит
       // её тот же, кто вправе стирать общее.
-      if (
-        !may(
-          getRules(sessionId).wipe,
-          payload,
-          ws,
-          "Only the host can close the terminal.",
-        )
-      ) {
-        return;
+      if (!may(getRules(sessionId).wipe, payload, ws, 'Only the host can close the terminal.')) {
+        return
       }
       void closeTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
-          t: "error",
-          message: reason(err, "Could not close the terminal."),
-        });
-      });
-      return;
+          t: 'error',
+          message: reason(err, 'Could not close the terminal.'),
+        })
+      })
+      return
     }
   }
 }
 
 function reason(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
+  return err instanceof Error && err.message ? err.message : fallback
 }
 
 /* --------------------------------------------------------------- socket */
 
-export function handleControlSocket(
-  ws: WebSocket,
-  sessionId: string,
-  payload: TokenPayload,
-): void {
-  let room = rooms.get(sessionId);
+export function handleControlSocket(ws: WebSocket, sessionId: string, payload: TokenPayload): void {
+  let room = rooms.get(sessionId)
   if (!room) {
-    room = { sockets: new Set<WebSocket>(), unwatch: () => {} };
-    rooms.set(sessionId, room);
+    room = { sockets: new Set<WebSocket>(), unwatch: () => {} }
+    rooms.set(sessionId, room)
     // Attach after the room exists, so the first status change has somewhere to go.
-    room.unwatch = watchKernelStatus(sessionId);
+    room.unwatch = watchKernelStatus(sessionId)
   }
-  room.sockets.add(ws);
-  owner.set(ws, payload.participantId);
+  room.sockets.add(ws)
+  owner.set(ws, payload.participantId)
 
   // Before anything else: the browser gates its own interrupt/restart controls
   // on this, and the token it holds may say something staler than the truth.
-  send(ws, { t: "role", role: payload.role });
+  send(ws, { t: 'role', role: payload.role })
   /*
    * И правила — здесь же, а не только при их изменении.
    *
@@ -845,66 +845,69 @@ export function handleControlSocket(
    * тогда, когда он всего нужнее, и человек упирается в отказы сервера вместо
    * того, чтобы видеть, чего в этой комнате нельзя.
    */
-  send(ws, { t: "rules", rules: getRules(sessionId) });
+  send(ws, { t: 'rules', rules: getRules(sessionId) })
+  /*
+   * И что комната смотрит сейчас. Без этой строки человек, зашедший в середине
+   * занятия, не узнает про открытый документ, пока преподаватель его не
+   * переоткроет, — то есть, скорее всего, никогда.
+   */
+  send(ws, { t: 'board', open: boardOf(sessionId) })
 
-  let missedPongs = 0;
+  let missedPongs = 0
   const pingTimer = setInterval(() => {
     if (missedPongs >= MAX_MISSED_PONGS) {
-      ws.terminate();
-      return;
+      ws.terminate()
+      return
     }
-    missedPongs++;
+    missedPongs++
     try {
-      ws.ping();
+      ws.ping()
     } catch {
-      ws.terminate();
+      ws.terminate()
     }
-  }, PING_INTERVAL_MS);
+  }, PING_INTERVAL_MS)
 
   const drop = () => {
-    clearInterval(pingTimer);
-    const current = rooms.get(sessionId);
-    if (!current) return;
-    current.sockets.delete(ws);
+    clearInterval(pingTimer)
+    const current = rooms.get(sessionId)
+    if (!current) return
+    current.sockets.delete(ws)
     if (current.sockets.size === 0) {
-      current.unwatch();
-      rooms.delete(sessionId);
+      current.unwatch()
+      rooms.delete(sessionId)
     }
-  };
+  }
 
-  ws.on("pong", () => {
-    missedPongs = 0;
-  });
+  ws.on('pong', () => {
+    missedPongs = 0
+  })
 
-  ws.on("message", (data: RawData, isBinary: boolean) => {
-    if (isBinary) return;
-    const message = parse(data);
-    if (!message) return;
+  ws.on('message', (data: RawData, isBinary: boolean) => {
+    if (isBinary) return
+    const message = parse(data)
+    if (!message) return
     try {
-      dispatch(ws, sessionId, payload, message);
+      dispatch(ws, sessionId, payload, message)
     } catch (err) {
       // One bad request costs that click, never the seminar.
-      console.error(
-        `[control ${sessionId}] ${message.t} failed:`,
-        reason(err, "unknown error"),
-      );
-      send(ws, { t: "error", message: reason(err, "That did not work.") });
+      console.error(`[control ${sessionId}] ${message.t} failed:`, reason(err, 'unknown error'))
+      send(ws, { t: 'error', message: reason(err, 'That did not work.') })
     }
-  });
+  })
 
-  ws.on("close", drop);
-  ws.on("error", drop);
+  ws.on('close', drop)
+  ws.on('error', drop)
 
   // Переподключившаяся вкладка — это ровно тот, кто приносит с собой ячейку,
   // «работающую» в процессе, которого больше нет. Один проход на подключение.
-  sweepOrphanRuns(sessionId);
-  send(ws, { t: "ready", kernel: kernelStatus(sessionId) });
-  send(ws, { t: "terminal", status: terminalPhase(sessionId) });
-  let files: FileEntry[];
+  sweepOrphanRuns(sessionId)
+  send(ws, { t: 'ready', kernel: kernelStatus(sessionId) })
+  send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
+  let files: FileEntry[]
   try {
-    files = listFiles(sessionId);
+    files = listFiles(sessionId)
   } catch {
-    files = [];
+    files = []
   }
-  send(ws, { t: "files", files });
+  send(ws, { t: 'files', files })
 }

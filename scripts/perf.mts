@@ -144,6 +144,13 @@ const LIB_MARKERS: Record<string, string> = {
   ansi_up: 'ansi-bright',
   yjs: 'Yjs was already imported',
   svelte: 'svelte.dev/e/',
+  /*
+   * pdf.js — полтора мегабайта, из них 139 КБ gzip в чанке и 365 КБ в воркере
+   * рядом. Маркер здесь именно затем, чтобы один невнимательный статический
+   * импорт не положил эти байты в блокирующий граф экрана входа: без строки
+   * гейт про pdf.js просто не знает и промолчит.
+   */
+  pdfjs: 'PDFWorker',
 }
 
 /** Only these belong on the join screen; the rest are notebook-only weight. */

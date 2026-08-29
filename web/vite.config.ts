@@ -17,6 +17,9 @@ const YJS = /^(yjs|y-websocket|y-protocols|y-indexeddb|lib0)$/
 /* marked, DOMPurify and ansi_up are loaded together by lib/render.svelte.ts and
    are useless apart, so they ship as one chunk rather than three requests. */
 const RENDER = /^(marked|dompurify|ansi_up)$/
+/* pdf.js приезжает только когда в комнате открыли документ; воркер к нему идёт
+   мимо сборщика, отдельным файлом из public/ — см. lib/pdf.svelte.ts. */
+const PDF = /^pdfjs-dist$/
 
 const NODE_MODULES = 'node_modules/'
 
@@ -37,6 +40,7 @@ function manualChunks(id: string): string | undefined {
   if (CODEMIRROR.test(pkg)) return 'codemirror'
   if (YJS.test(pkg)) return 'yjs'
   if (RENDER.test(pkg)) return 'render'
+  if (PDF.test(pkg)) return 'pdf'
   return undefined
 }
 

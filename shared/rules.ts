@@ -97,6 +97,20 @@ export interface RoomRules {
   structure: StructureWho;
 
   /**
+   * Кто может поставить документ на общий экран комнаты.
+   *
+   * Enforced in server/src/control.ts — `board:open` и `board:close`.
+   *
+   * Смотреть и листать самому может любой всегда: файл комнаты и так
+   * скачивается кем угодно из неё. Правило про другое — про общий экран, и
+   * потому стоит рядом с `wipe` и `restart`, а не с `files`.
+   *
+   * Умолчание `host`, но не гвоздь: семинар, где студенты по очереди
+   * показывают свои материалы, — не выдумка, а гвоздь закрыл бы его навсегда.
+   */
+  board: Who;
+
+  /**
    * Who may put files into the room's folder.
    *
    * Enforced in server/src/routes/files.ts. Забрать файл — уже право
@@ -189,6 +203,7 @@ export const OPEN_ROOM: RoomRules = {
    */
   wipe: "host",
   restart: "host",
+  board: "host",
   history: "room",
   oracle: "inherit",
   model: null,
@@ -235,6 +250,7 @@ export function readRules(raw: unknown): RoomRules {
     files: who(source.files, OPEN_ROOM.files),
     wipe: who(source.wipe, OPEN_ROOM.wipe),
     restart: who(source.restart, OPEN_ROOM.restart),
+    board: who(source.board, OPEN_ROOM.board),
     history: who(source.history, OPEN_ROOM.history),
     oracle: ORACLE.has(source.oracle as RoomRules["oracle"])
       ? (source.oracle as RoomRules["oracle"])
