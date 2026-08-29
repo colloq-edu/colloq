@@ -58,9 +58,19 @@ test('every action the protocol names is one the route accepts', async () => {
   assert.ok(line, 'the route no longer declares ACTIONS the way this test reads it')
   const accepted = [...line[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()
 
+  /*
+   * Объединение читается до точки с запятой, а не до конца строки.
+   *
+   * Раньше здесь стояло `(.*)`, и тест падал от одного прогона prettier,
+   * который разложил объединение по строкам, ничего не изменив по смыслу.
+   * Проверка, ломающаяся от переноса строки, ловит форматирование, а не
+   * расхождение — а расхождение здесь и есть то, ради чего она написана.
+   */
   const protocol = await readFile(new URL('../shared/protocol.ts', import.meta.url), 'utf8')
-  const union = protocol.match(/export type AiAction = (.*)/)
-  assert.ok(union, 'AiAction is no longer a single-line union')
+  // До пустой строки: объединение может быть и в одну строку, и в столбик, а
+  // за ним идёт комментарий, в котором те же слова в кавычках упомянуты ещё раз.
+  const union = protocol.match(/export type AiAction =([\s\S]*?)\n[ \t]*\n/)
+  assert.ok(union, 'AiAction is no longer declared as a union type')
   const declared = [...union[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()
 
   assert.deepEqual(accepted, declared)

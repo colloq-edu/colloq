@@ -1,0 +1,8 @@
+node_modules
+web/dist
+web/public/pdf
+server/dist
+data
+workspace
+site/c
+site/p

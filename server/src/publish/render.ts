@@ -18,20 +18,16 @@
  * никогда. Для замороженного предмета отдельный простой отрисовщик — верный
  * размен; за ним следит `tests/render.test.mts`.
  */
-import {
-  BLOB_PREFIX,
-  type PublicCell,
-  type PublicCourseView,
-} from "@shared/publish";
-import type { CellOutput } from "@shared/notebook";
+import { BLOB_PREFIX, type PublicCell, type PublicCourseView } from '@shared/publish'
+import type { CellOutput } from '@shared/notebook'
 
 /** Экранирование текста, попадающего в HTML. */
 function esc(value: string): string {
   return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 /**
@@ -46,46 +42,43 @@ function esc(value: string): string {
 function markdown(source: string): string {
   const inline = (text: string): string =>
     esc(text)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
-      .replace(
-        /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-        '<a href="$2" rel="noreferrer">$1</a>',
-      );
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>')
 
-  const out: string[] = [];
-  let list: string[] = [];
+  const out: string[] = []
+  let list: string[] = []
   const flush = (): void => {
-    if (list.length === 0) return;
-    out.push(`<ul>${list.map((li) => `<li>${inline(li)}</li>`).join("")}</ul>`);
-    list = [];
-  };
-  for (const line of source.split("\n")) {
-    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
-    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (list.length === 0) return
+    out.push(`<ul>${list.map((li) => `<li>${inline(li)}</li>`).join('')}</ul>`)
+    list = []
+  }
+  for (const line of source.split('\n')) {
+    const heading = /^(#{1,4})\s+(.*)$/.exec(line)
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line)
     if (heading) {
-      flush();
-      const level = Math.min(heading[1].length + 1, 5);
-      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      flush()
+      const level = Math.min(heading[1].length + 1, 5)
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`)
     } else if (bullet) {
-      list.push(bullet[1]);
-    } else if (line.trim() === "") {
-      flush();
+      list.push(bullet[1])
+    } else if (line.trim() === '') {
+      flush()
     } else {
-      flush();
-      out.push(`<p>${inline(line)}</p>`);
+      flush()
+      out.push(`<p>${inline(line)}</p>`)
     }
   }
-  flush();
-  return out.join("\n");
+  flush()
+  return out.join('\n')
 }
 
 /** Адрес крупного куска вывода внутри выгруженного каталога. */
 function blobHref(value: string, mime: string): string {
-  const hash = value.slice(BLOB_PREFIX.length);
-  const ext = mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "bin";
-  return `blob/${hash}.${ext}`;
+  const hash = value.slice(BLOB_PREFIX.length)
+  const ext = mime.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
+  return `blob/${hash}.${ext}`
 }
 
 function outputHtml(output: CellOutput, depth: number): string {
@@ -96,31 +89,28 @@ function outputHtml(output: CellOutput, depth: number): string {
    * публикации, и картинка не находилась бы именно на той странице, которую
    * открывают первой.
    */
-  const up = "../".repeat(depth - 1);
-  if (output.kind === "stream") {
-    return `<pre class="out ${output.name === "stderr" ? "err" : ""}">${esc(output.text)}</pre>`;
+  const up = '../'.repeat(depth - 1)
+  if (output.kind === 'stream') {
+    return `<pre class="out ${output.name === 'stderr' ? 'err' : ''}">${esc(output.text)}</pre>`
   }
-  if (output.kind === "error") {
-    return `<pre class="out err">${esc([output.ename + ": " + output.evalue, "", ...output.traceback].join("\n"))}</pre>`;
+  if (output.kind === 'error') {
+    return `<pre class="out err">${esc([output.ename + ': ' + output.evalue, '', ...output.traceback].join('\n'))}</pre>`
   }
-  const image = Object.entries(output.data).find(([mime]) =>
-    mime.startsWith("image/"),
-  );
+  const image = Object.entries(output.data).find(([mime]) => mime.startsWith('image/'))
   if (image) {
-    const [mime, value] = image;
+    const [mime, value] = image
     const src = value.startsWith(BLOB_PREFIX)
       ? up + blobHref(value, mime)
-      : `data:${mime};base64,${value.replace(/\s/g, "")}`;
-    return `<p class="img"><img src="${esc(src)}" alt="вывод ячейки"></p>`;
+      : `data:${mime};base64,${value.replace(/\s/g, '')}`
+    return `<p class="img"><img src="${esc(src)}" alt="вывод ячейки"></p>`
   }
-  const text = output.data["text/plain"];
-  return text ? `<pre class="out">${esc(text)}</pre>` : "";
+  const text = output.data['text/plain']
+  return text ? `<pre class="out">${esc(text)}</pre>` : ''
 }
 
 function cellHtml(cell: PublicCell, depth: number): string {
-  if (cell.type === "markdown")
-    return `<div class="note">${markdown(cell.source)}</div>`;
-  const outputs = cell.outputs.map((o) => outputHtml(o, depth)).join("\n");
+  if (cell.type === 'markdown') return `<div class="note">${markdown(cell.source)}</div>`
+  const outputs = cell.outputs.map((o) => outputHtml(o, depth)).join('\n')
   /*
    * `Out [—]` — вывод есть, а выполнения за ним уже нет: перезапускали ядро
    * или возвращали версию. Промолчать честнее, чем подставить номер.
@@ -130,16 +120,16 @@ function cellHtml(cell: PublicCell, depth: number): string {
       ? cell.outputs.length > 0
         ? '<span class="warn">Out [—]</span>'
         : '<span class="quiet">не запускалась</span>'
-      : `Out [${cell.execCount}]${cell.ranMs !== null ? ` · ${(cell.ranMs / 1000).toFixed(1)}s` : ""}`;
+      : `Out [${cell.execCount}]${cell.ranMs !== null ? ` · ${(cell.ranMs / 1000).toFixed(1)}s` : ''}`
   return [
     '<div class="cell">',
     `<pre class="code">${esc(cell.source)}</pre>`,
-    outputs ? `<div class="outs">${outputs}</div>` : "",
+    outputs ? `<div class="outs">${outputs}</div>` : '',
     `<div class="foot">${stamp}</div>`,
-    "</div>",
+    '</div>',
   ]
     .filter(Boolean)
-    .join("\n");
+    .join('\n')
 }
 
 /**
@@ -195,7 +185,7 @@ header.top h1{font-size:32px;margin:0 0 8px}
 .take{border-top:1px solid var(--line);margin-top:34px;padding-top:18px;font-size:14px}
 @media(max-width:860px){.body{display:block}.rail{width:auto;border-right:0;border-bottom:1px solid var(--line);position:static;padding:20px 0}.rail a{margin-right:0}}
 @media(prefers-color-scheme:dark){:root{--ink:#E8EDF7;--muted:#9AA7C0;--faint:#6B7897;--line:#26304A;--surface:#161E33;--accent:#4FC3F0;--warn:#E0B44A;--err:#F0868E;--bg:#0D1526}.code,.foot{background:#111A2E}}
-`;
+`
 
 /** Голова документа. `noindex` — страницу дают классу, а не поисковику. */
 function head(title: string, depth: number): string {
@@ -206,102 +196,102 @@ function head(title: string, depth: number): string {
     '<meta name="robots" content="noindex">',
     `<title>${esc(title)}</title>`,
     `<style>${STYLE}</style>`,
-    "</head><body>",
-  ].join("");
+    '</head><body>',
+  ].join('')
 }
 
-const FOOT = "</body></html>";
+const FOOT = '</body></html>'
 
 export interface RenderedStep {
-  seq: number;
-  label: string;
-  at: number;
-  cells: PublicCell[];
+  seq: number
+  label: string
+  at: number
+  cells: PublicCell[]
 }
 
 const when = (at: number): string =>
-  new Date(at).toLocaleDateString("ru-RU", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
+  new Date(at).toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  })
 const clock = (at: number): string =>
-  new Date(at).toLocaleTimeString("ru-RU", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  new Date(at).toLocaleTimeString('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 
 /** Страница курса. */
 export function renderCourse(course: PublicCourseView, base: string): string {
   const rows = course.items
     .map((item, index) => {
-      const n = String(index + 1).padStart(2, "0");
-      if (item.kind === "gone") {
-        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">семинар удалён</span></li>`;
+      const n = String(index + 1).padStart(2, '0')
+      if (item.kind === 'gone') {
+        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">семинар удалён</span></li>`
       }
-      if (item.kind === "planned") {
-        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(item.when)}</span></li>`;
+      if (item.kind === 'planned') {
+        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(item.when)}</span></li>`
       }
       if (!item.publication) {
-        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">ещё не опубликован</span></li>`;
+        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">ещё не опубликован</span></li>`
       }
-      const href = `${base}/p/${item.publication.slug ?? item.publication.id}/`;
+      const href = `${base}/p/${item.publication.slug ?? item.publication.id}/`
       const steps =
         item.publication.steps === 1
-          ? "одна страница"
-          : `${item.publication.steps} ${item.publication.steps < 5 ? "шага" : "шагов"}`;
+          ? 'одна страница'
+          : `${item.publication.steps} ${item.publication.steps < 5 ? 'шага' : 'шагов'}`
       return [
         '<li class="row">',
         `<a href="${esc(href)}">`,
         `<span class="n">${n}</span>`,
         `<span class="t">${esc(item.name)}</span>`,
         `<span class="s">${esc(when(item.publication.publishedAt))} · ${steps}</span>`,
-        "</a></li>",
-      ].join("");
+        '</a></li>',
+      ].join('')
     })
-    .join("\n");
+    .join('\n')
 
   return [
     head(course.name, 1),
     '<div class="wrap">',
     `<h1>${esc(course.name)}</h1>`,
-    course.blurb ? `<p class="blurb">${esc(course.blurb)}</p>` : "",
-    `<p class="addr">${esc(base.replace(/^https?:\/\//, ""))}/c/${esc(course.slug ?? course.id)}</p>`,
+    course.blurb ? `<p class="blurb">${esc(course.blurb)}</p>` : '',
+    `<p class="addr">${esc(base.replace(/^https?:\/\//, ''))}/c/${esc(course.slug ?? course.id)}</p>`,
     `<ul class="rows">${rows}</ul>`,
     '<p class="foot-note">Каждый семинар курса появляется здесь — по мере того, как их проводят. Сохраните эту страницу.</p>',
-    "</div>",
+    '</div>',
     FOOT,
-  ].join("\n");
+  ].join('\n')
 }
 
 export interface SeminarPage {
-  title: string;
-  publishedAt: number;
-  course: { name: string; handle: string } | null;
-  steps: { seq: number; label: string; at: number; cellCount: number }[];
-  step: RenderedStep;
+  title: string
+  publishedAt: number
+  course: { name: string; handle: string } | null
+  steps: { seq: number; label: string; at: number; cellCount: number }[]
+  step: RenderedStep
   /** Глубина относительно корня публикации: 1 у первого шага, 2 у остальных. */
-  depth: number;
-  base: string;
+  depth: number
+  base: string
 }
 
 /** Страница одного шага. */
 export function renderStep(page: SeminarPage): string {
-  const many = page.steps.length > 1;
-  const up = page.depth === 1 ? "" : "../";
+  const many = page.steps.length > 1
+  const up = page.depth === 1 ? '' : '../'
   const rail = many
     ? [
         '<nav class="rail"><h2>Шаги семинара</h2>',
         ...page.steps.map((s, i) => {
-          const on = s.seq === page.step.seq;
+          const on = s.seq === page.step.seq
           // `./`, а не пустая строка: пустой href — это «текущий URL целиком»,
           // включая querystring, и в архиве такая ссылка ведёт себя странно.
-          const href = i === 0 ? `${up || "./"}` : `${up}${s.seq}/`;
-          return `<a class="${on ? "on" : ""}" href="${esc(href)}">${esc(s.label)}<span class="w">${clock(s.at)} · ${s.cellCount}</span></a>`;
+          const href = i === 0 ? `${up || './'}` : `${up}${s.seq}/`
+          return `<a class="${on ? 'on' : ''}" href="${esc(href)}">${esc(s.label)}<span class="w">${clock(s.at)} · ${s.cellCount}</span></a>`
         }),
-        "</nav>",
-      ].join("\n")
-    : "";
+        '</nav>',
+      ].join('\n')
+    : ''
 
   return [
     head(page.title, page.depth),
@@ -310,27 +300,27 @@ export function renderStep(page: SeminarPage): string {
     '<p class="meta">',
     page.course
       ? `<a href="${esc(page.base)}/c/${esc(page.course.handle)}/">${esc(page.course.name)}</a> · `
-      : "",
+      : '',
     `опубликован ${esc(when(page.publishedAt))}`,
-    many ? ` · ${page.steps.length} шага` : "",
-    "</p></div></header>",
+    many ? ` · ${page.steps.length} шага` : '',
+    '</p></div></header>',
     '<div class="body">',
     rail,
     '<main class="main">',
     '<div class="intro">',
-    "<p>Здесь то, что писали и запускали на этом занятии. Того, что говорили, здесь нет.</p>",
+    '<p>Здесь то, что писали и запускали на этом занятии. Того, что говорили, здесь нет.</p>',
     many
-      ? "<p>Моменты, которые отметил преподаватель. Выводы — те, что тетрадь держала в этот момент: у ячейки, код которой поменяли после запуска, остаётся прежний результат.</p>"
-      : "",
-    "<p>Ничьих имён на этой странице нет.</p>",
-    "</div>",
-    page.step.cells.map((cell) => cellHtml(cell, page.depth)).join("\n"),
+      ? '<p>Моменты, которые отметил преподаватель. Выводы — те, что тетрадь держала в этот момент: у ячейки, код которой поменяли после запуска, остаётся прежний результат.</p>'
+      : '',
+    '<p>Ничьих имён на этой странице нет.</p>',
+    '</div>',
+    page.step.cells.map((cell) => cellHtml(cell, page.depth)).join('\n'),
     `<p class="take"><a href="${up}notebook.ipynb" download>Скачать тетрадь (.ipynb)</a></p>`,
-    "</main></div>",
+    '</main></div>',
     FOOT,
   ]
     .filter(Boolean)
-    .join("\n");
+    .join('\n')
 }
 
-export { blobHref };
+export { blobHref }

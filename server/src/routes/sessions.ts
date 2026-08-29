@@ -1,5 +1,5 @@
-import { Router, type Request } from "express";
-import { currentStaff, staffFromCookieHeader } from "../admin/auth.js";
+import { Router, type Request } from 'express'
+import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
 import {
   newParticipantId,
   newSessionId,
@@ -8,8 +8,8 @@ import {
   type TokenPayload,
   verifyHostToken,
   verifyToken,
-} from "../auth.js";
-import { config } from "../config.js";
+} from '../auth.js'
+import { config } from '../config.js'
 import {
   createSession,
   getParticipant,
@@ -19,19 +19,15 @@ import {
   listParticipants,
   setRules,
   upsertParticipant,
-} from "../db.js";
-import { onlineParticipantIds } from "../collab/index.js";
-import { ensureKernel } from "../kernel/index.js";
-import { listCourses, publicationOf, stepHeadings } from "../publish/store.js";
-import { broadcast } from "../control.js";
-import { readRules } from "@shared/rules";
-import { setSeminarCreator } from "./admin-instance.js";
-import type { AdminErrorBody } from "@shared/admin";
-import type {
-  CreateSessionResponse,
-  JoinResponse,
-  ParticipantRole,
-} from "@shared/protocol";
+} from '../db.js'
+import { onlineParticipantIds } from '../collab/index.js'
+import { ensureKernel } from '../kernel/index.js'
+import { listCourses, publicationOf, stepHeadings } from '../publish/store.js'
+import { broadcast } from '../control.js'
+import { readRules } from '@shared/rules'
+import { setSeminarCreator } from './admin-instance.js'
+import type { AdminErrorBody } from '@shared/admin'
+import type { CreateSessionResponse, JoinResponse, ParticipantRole } from '@shared/protocol'
 
 /*
  * Lengths that have to survive being drawn, not just stored. A seminar name is
@@ -40,17 +36,17 @@ import type {
  * column would. The avatar is one emoji, and 512 UTF-16 code units is
  * room for the longest of them — flags and family sequences run long.
  */
-const MAX_SESSION_NAME = 80;
-const MAX_PARTICIPANT_NAME = 40;
-const MAX_AVATAR = 512;
+const MAX_SESSION_NAME = 80
+const MAX_PARTICIPANT_NAME = 40
+const MAX_AVATAR = 512
 
 /** Collapse whitespace and drop control characters so a name cannot break the roster layout. */
 function normalize(value: unknown): string {
-  if (typeof value !== "string") return "";
+  if (typeof value !== 'string') return ''
   return value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /**
@@ -69,7 +65,7 @@ function normalize(value: unknown): string {
  * teaching side takes the powers with it on the next call.
  */
 export function sessionAuth(req: Request): TokenPayload | null {
-  const header = req.headers.authorization ?? "";
+  const header = req.headers.authorization ?? ''
   /*
    * Header only. The query string used to be accepted here as well, for the
    * one route that needs it — a download is an `<a href download>` and an
@@ -78,9 +74,9 @@ export function sessionAuth(req: Request): TokenPayload | null {
    * a group chat. The download route has its own short-lived credential now
    * (signDownloadToken); this one takes a header and nothing else.
    */
-  const raw = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  const payload = verifyToken(raw);
-  if (!payload || payload.sessionId !== req.params.id) return null;
+  const raw = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+  const payload = verifyToken(raw)
+  if (!payload || payload.sessionId !== req.params.id) return null
   /*
    * The role is decided here, on every request, and never read from the token.
    *
@@ -92,7 +88,7 @@ export function sessionAuth(req: Request): TokenPayload | null {
    * host token is the only credential there is — that is minted host and stays
    * host, and it is the path no browser walks.
    */
-  return { ...payload, role: roleFor(req.headers.cookie, payload) };
+  return { ...payload, role: roleFor(req.headers.cookie, payload) }
 }
 
 /**
@@ -106,98 +102,91 @@ export function sessionAuth(req: Request): TokenPayload | null {
  */
 export function roleFor(
   cookieHeader: string | undefined,
-  payload: Pick<TokenPayload, "sessionId" | "participantId">,
-): TokenPayload["role"] {
+  payload: Pick<TokenPayload, 'sessionId' | 'participantId'>,
+): TokenPayload['role'] {
   // Кука сильнее и проверяется первой: её можно отобрать, и в этом смысл.
-  if (staffFromCookieHeader(cookieHeader)) return "host";
-  return isTokenHost(payload.sessionId, payload.participantId)
-    ? "host"
-    : "participant";
+  if (staffFromCookieHeader(cookieHeader)) return 'host'
+  return isTokenHost(payload.sessionId, payload.participantId) ? 'host' : 'participant'
 }
 
 export function sessionRoutes(): Router {
-  const router = Router();
+  const router = Router()
 
-  router.post("/api/sessions", (req, res) => {
+  router.post('/api/sessions', (req, res) => {
     // Who may open a room. An instance with OPEN_SEMINAR_CREATION off is one
     // where a visitor spinning up a seminar would be spending the owner's API
     // key, so staff are the only ones left; the students who matter here arrive
     // through /join with a link and never touch this route.
-    const staff = currentStaff(req);
+    const staff = currentStaff(req)
     if (!config.openSeminarCreation && !staff) {
       const denied: AdminErrorBody = {
         error:
-          "Only staff can create a seminar on this instance. Ask for a link to the one you are joining.",
-        reason: "forbidden",
-      };
-      return res.status(403).json(denied);
+          'Only staff can create a seminar on this instance. Ask for a link to the one you are joining.',
+        reason: 'forbidden',
+      }
+      return res.status(403).json(denied)
     }
 
-    const name = normalize(req.body?.name);
-    if (!name)
-      return res.status(400).json({ error: "a session name is required" });
+    const name = normalize(req.body?.name)
+    if (!name) return res.status(400).json({ error: 'a session name is required' })
     if (name.length > MAX_SESSION_NAME) {
-      return res
-        .status(400)
-        .json({
-          error: `session name must be ${MAX_SESSION_NAME} characters or fewer`,
-        });
+      return res.status(400).json({
+        error: `session name must be ${MAX_SESSION_NAME} characters or fewer`,
+      })
     }
 
-    const id = newSessionId();
-    const session = createSession(id, name);
+    const id = newSessionId()
+    const session = createSession(id, name)
     // A seminar created straight against this endpoint by a signed-in teacher
     // is still theirs. There is no page that does it — the panel has its own
     // route — so this is the scripted path, and on an open instance it produces
     // a seminar with nobody's name on it.
-    if (staff) setSeminarCreator(id, staff.name);
+    if (staff) setSeminarCreator(id, staff.name)
     const body: CreateSessionResponse = {
       session,
       hostToken: signHostToken(id),
-    };
-    res.status(201).json(body);
-  });
+    }
+    res.status(201).json(body)
+  })
 
-  router.get("/api/sessions/:id", (req, res) => {
-    const session = getSession(req.params.id);
-    if (!session) return res.status(404).json({ error: "session not found" });
+  router.get('/api/sessions/:id', (req, res) => {
+    const session = getSession(req.params.id)
+    if (!session) return res.status(404).json({ error: 'session not found' })
     /*
      * Указатель на опубликованную версию — здесь, потому что здесь его читает
      * экран входа. Это чинит единственный адрес, который у студента правда
      * есть: ссылка в чате ведёт в комнату, и без подсказки человек через
      * неделю вводит имя в закончившееся занятие и остаётся в нём один.
      */
-    const pub = publicationOf(session.id);
+    const pub = publicationOf(session.id)
     const course = pub
       ? (listCourses().find((c) =>
-          c.items.some((i) => i.kind === "seminar" && i.sessionId === session.id),
+          c.items.some((i) => i.kind === 'seminar' && i.sessionId === session.id),
         ) ?? null)
-      : null;
+      : null
     res.json({
       ...session,
       published:
-        pub && pub.state === "published"
+        pub && pub.state === 'published'
           ? { id: pub.id, steps: stepHeadings(pub.id).length }
           : null,
       course: course ? { id: course.id, name: course.name } : null,
-    });
-  });
+    })
+  })
 
-  router.post("/api/sessions/:id/join", (req, res) => {
-    const sessionId = req.params.id;
-    const session = getSession(sessionId);
-    if (!session) return res.status(404).json({ error: "session not found" });
+  router.post('/api/sessions/:id/join', (req, res) => {
+    const sessionId = req.params.id
+    const session = getSession(sessionId)
+    if (!session) return res.status(404).json({ error: 'session not found' })
 
-    const name = normalize(req.body?.name).slice(0, MAX_PARTICIPANT_NAME);
-    if (!name) return res.status(400).json({ error: "a name is required" });
+    const name = normalize(req.body?.name).slice(0, MAX_PARTICIPANT_NAME)
+    if (!name) return res.status(400).json({ error: 'a name is required' })
 
-    const rawAvatar = req.body?.avatar;
+    const rawAvatar = req.body?.avatar
     const avatar =
-      typeof rawAvatar === "string" &&
-      rawAvatar.length > 0 &&
-      rawAvatar.length <= MAX_AVATAR
+      typeof rawAvatar === 'string' && rawAvatar.length > 0 && rawAvatar.length <= MAX_AVATAR
         ? rawAvatar
-        : null;
+        : null
 
     /*
      * Role never comes from the client's stored identity — anyone could paste in
@@ -211,11 +200,9 @@ export function sessionRoutes(): Router {
      *    to this instance is exactly the person those controls are for, and the
      *    cookie is a stronger credential than the token.
      */
-    const staff = currentStaff(req);
+    const staff = currentStaff(req)
     const role: ParticipantRole =
-      staff || verifyHostToken(sessionId, req.body?.hostToken)
-        ? "host"
-        : "participant";
+      staff || verifyHostToken(sessionId, req.body?.hostToken) ? 'host' : 'participant'
 
     /*
      * Coming back as yourself has to be proved.
@@ -233,20 +220,15 @@ export function sessionRoutes(): Router {
      * the visitor is somebody new, which is the honest reading of "I cannot show
      * you anything that says I was here before".
      */
-    const claimed =
-      typeof req.body?.participantId === "string"
-        ? req.body.participantId
-        : null;
-    const proof = verifyToken(
-      typeof req.body?.token === "string" ? req.body.token : null,
-    );
+    const claimed = typeof req.body?.participantId === 'string' ? req.body.participantId : null
+    const proof = verifyToken(typeof req.body?.token === 'string' ? req.body.token : null)
     const proved =
       claimed !== null &&
       proof !== null &&
       proof.sessionId === sessionId &&
-      proof.participantId === claimed;
-    const known = proved ? getParticipant(sessionId, claimed) : null;
-    const participantId = known ? known.id : newParticipantId();
+      proof.participantId === claimed
+    const known = proved ? getParticipant(sessionId, claimed) : null
+    const participantId = known ? known.id : newParticipantId()
 
     // Хост-токен — единственное, что записывается насовсем: куку перечитывают
     // на каждом запросе, и «ведущий по куке» в строке был бы навсегда.
@@ -256,9 +238,9 @@ export function sessionRoutes(): Router {
       name,
       avatar,
       role,
-      tokenHost: role === "host" && !staff,
-    });
-    const token = signToken({ sessionId, participantId, role });
+      tokenHost: role === 'host' && !staff,
+    })
+    const token = signToken({ sessionId, participantId, role })
 
     // Warm the kernel while the student is still reading the page; a failure
     // here is not fatal, the control socket reports kernel health on its own.
@@ -266,12 +248,12 @@ export function sessionRoutes(): Router {
       console.warn(
         `[session ${sessionId}] kernel warmup failed:`,
         err instanceof Error ? err.message : err,
-      );
-    });
+      )
+    })
 
-    const body: JoinResponse = { session, participant, token };
-    res.json(body);
-  });
+    const body: JoinResponse = { session, participant, token }
+    res.json(body)
+  })
 
   /**
    * Правила комнаты — из самой комнаты.
@@ -284,39 +266,31 @@ export function sessionRoutes(): Router {
    * трогает один переключатель, не должен уметь молча вернуть остальные к
    * умолчаниям.
    */
-  router.patch("/api/sessions/:id/rules", (req, res) => {
-    const sessionId = req.params.id;
-    if (!getSession(sessionId))
-      return res.status(404).json({ error: "session not found" });
-    const payload = sessionAuth(req);
-    if (!payload)
-      return res.status(401).json({ error: "join the session first" });
-    if (payload.role !== "host") {
-      return res
-        .status(403)
-        .json({ error: "Правила этого семинара задаёт преподаватель." });
+  router.patch('/api/sessions/:id/rules', (req, res) => {
+    const sessionId = req.params.id
+    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    const payload = sessionAuth(req)
+    if (!payload) return res.status(401).json({ error: 'join the session first' })
+    if (payload.role !== 'host') {
+      return res.status(403).json({ error: 'Правила этого семинара задаёт преподаватель.' })
     }
-    const incoming: unknown = req.body?.rules;
-    if (typeof incoming !== "object" || incoming === null) {
-      return res.status(400).json({ error: "rules must be an object" });
+    const incoming: unknown = req.body?.rules
+    if (typeof incoming !== 'object' || incoming === null) {
+      return res.status(400).json({ error: 'rules must be an object' })
     }
-    const rules = setRules(
-      sessionId,
-      readRules({ ...getRules(sessionId), ...incoming }),
-    );
+    const rules = setRules(sessionId, readRules({ ...getRules(sessionId), ...incoming }))
     /*
      * Комната узнаёт сейчас, а не при следующей перезагрузке: интерфейс гасит
      * по этому кнопки, и правило, о котором не сказали, выглядит как поломка —
      * кнопка перестала работать и никто не знает почему.
      */
-    broadcast(sessionId, { t: "rules", rules });
-    res.json({ rules });
-  });
+    broadcast(sessionId, { t: 'rules', rules })
+    res.json({ rules })
+  })
 
-  router.get("/api/sessions/:id/participants", (req, res) => {
-    const sessionId = req.params.id;
-    if (!getSession(sessionId))
-      return res.status(404).json({ error: "session not found" });
+  router.get('/api/sessions/:id/participants', (req, res) => {
+    const sessionId = req.params.id
+    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
     /*
      * `participants` — все, кто когда-либо заходил; `online` — кто в комнате
      * сейчас. Экрану входа нужно второе, чтобы сказать «трое уже внутри» и не
@@ -328,21 +302,20 @@ export function sessionRoutes(): Router {
      * него весь семестр. Тот, кто уже внутри, видит список целиком: он и так
      * видит их курсоры.
      */
-    const online = onlineParticipantIds(sessionId);
-    const everyone = listParticipants(sessionId);
-    if (sessionAuth(req)) return res.json({ participants: everyone, online });
-    const inside = new Set(online);
+    const online = onlineParticipantIds(sessionId)
+    const everyone = listParticipants(sessionId)
+    if (sessionAuth(req)) return res.json({ participants: everyone, online })
+    const inside = new Set(online)
     res.json({
       participants: everyone.filter((p) => inside.has(p.id)),
       online,
-    });
-  });
+    })
+  })
 
-  router.get("/api/sessions/:id/link", (req, res) => {
-    if (!getSession(req.params.id))
-      return res.status(404).json({ error: "session not found" });
-    res.json({ url: `${config.publicUrl}/s/${req.params.id}` });
-  });
+  router.get('/api/sessions/:id/link', (req, res) => {
+    if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
+    res.json({ url: `${config.publicUrl}/s/${req.params.id}` })
+  })
 
-  return router;
+  return router
 }

@@ -16,39 +16,35 @@
  * Пустая страница у студента невозможна не потому, что о ней позаботились, а
  * потому, что такой шаг не собирается.
  */
-import { createHash } from "node:crypto";
-import * as Y from "yjs";
-import {
-  readNotebook,
-  type CellOutput,
-  type CellSnapshot,
-} from "@shared/notebook";
-import { BLOB_MIN_BYTES, BLOB_PREFIX, type PublicCell } from "@shared/publish";
-import { updatesUpTo } from "../db.js";
+import { createHash } from 'node:crypto'
+import * as Y from 'yjs'
+import { readNotebook, type CellOutput, type CellSnapshot } from '@shared/notebook'
+import { BLOB_MIN_BYTES, BLOB_PREFIX, type PublicCell } from '@shared/publish'
+import { updatesUpTo } from '../db.js'
 
 /** Крупные куски выводов, вынесенные по хэшу. Наполняется по ходу сборки. */
 export interface BlobBag {
-  put(mime: string, base64: string): string;
-  all(): { hash: string; mime: string; body: Buffer }[];
+  put(mime: string, base64: string): string
+  all(): { hash: string; mime: string; body: Buffer }[]
 }
 
 export function newBlobBag(): BlobBag {
-  const seen = new Map<string, { mime: string; body: Buffer }>();
+  const seen = new Map<string, { mime: string; body: Buffer }>()
   return {
     put(mime, base64) {
-      const body = Buffer.from(base64, "base64");
-      const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
-      if (!seen.has(hash)) seen.set(hash, { mime, body });
-      return `${BLOB_PREFIX}${hash}`;
+      const body = Buffer.from(base64, 'base64')
+      const hash = createHash('sha256').update(body).digest('hex').slice(0, 32)
+      if (!seen.has(hash)) seen.set(hash, { mime, body })
+      return `${BLOB_PREFIX}${hash}`
     },
     all() {
       return [...seen].map(([hash, v]) => ({
         hash,
         mime: v.mime,
         body: v.body,
-      }));
+      }))
     },
-  };
+  }
 }
 
 /**
@@ -59,17 +55,15 @@ export function newBlobBag(): BlobBag {
  * менялась. Шесть шагов давали бы шесть копий одной картинки.
  */
 function projectOutput(output: CellOutput, blobs: BlobBag): CellOutput {
-  if (output.kind !== "data") return output;
-  const data: Record<string, string> = {};
+  if (output.kind !== 'data') return output
+  const data: Record<string, string> = {}
   for (const [mime, value] of Object.entries(output.data)) {
     data[mime] =
-      typeof value === "string" &&
-      value.length >= BLOB_MIN_BYTES &&
-      mime.startsWith("image/")
+      typeof value === 'string' && value.length >= BLOB_MIN_BYTES && mime.startsWith('image/')
         ? blobs.put(mime, value)
-        : value;
+        : value
   }
-  return { ...output, data };
+  return { ...output, data }
 }
 
 /** Ячейка на публичной странице. Белый список — см. шапку файла. */
@@ -88,32 +82,27 @@ function projectCell(cell: CellSnapshot, blobs: BlobBag): PublicCell {
      */
     execCount: cell.execCount,
     ranMs: cell.ranMs,
-  };
+  }
 }
 
 /** Тетрадь на момент версии `seq`, спроецированная для публикации. */
-export function pageAt(
-  sessionId: string,
-  seq: number,
-  blobs: BlobBag,
-): PublicCell[] | null {
-  const doc = new Y.Doc();
+export function pageAt(sessionId: string, seq: number, blobs: BlobBag): PublicCell[] | null {
+  const doc = new Y.Doc()
   try {
     doc.transact(() => {
-      for (const update of updatesUpTo(sessionId, seq))
-        Y.applyUpdate(doc, update, "publish");
-    });
-    const cells = readNotebook(doc);
-    if (cells.length === 0) return null;
-    return cells.map((c) => projectCell(c, blobs));
+      for (const update of updatesUpTo(sessionId, seq)) Y.applyUpdate(doc, update, 'publish')
+    })
+    const cells = readNotebook(doc)
+    if (cells.length === 0) return null
+    return cells.map((c) => projectCell(c, blobs))
   } catch {
-    return null;
+    return null
   } finally {
-    doc.destroy();
+    doc.destroy()
   }
 }
 
 /** Тетрадь как она есть прямо сейчас — последняя страница публикации. */
 export function pageOfDoc(doc: Y.Doc, blobs: BlobBag): PublicCell[] {
-  return readNotebook(doc).map((c) => projectCell(c, blobs));
+  return readNotebook(doc).map((c) => projectCell(c, blobs))
 }

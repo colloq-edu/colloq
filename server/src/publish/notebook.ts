@@ -10,13 +10,13 @@
  * мегабайты base64 в файле, который студент несёт к себе, чтобы запустить
  * заново, и первым делом всё равно нажмёт «Run».
  */
-import { readStep, stepHeadings } from "./store.js";
+import { readStep, stepHeadings } from './store.js'
 
 export function notebookOf(pub: string): string {
-  const headings = stepHeadings(pub);
-  const last = headings.at(-1);
-  const step = last ? readStep(pub, last.seq) : null;
-  const cells = step?.cells ?? [];
+  const headings = stepHeadings(pub)
+  const last = headings.at(-1)
+  const step = last ? readStep(pub, last.seq) : null
+  const cells = step?.cells ?? []
   const notebook = {
     cells: cells.map((cell) => ({
       cell_type: cell.type,
@@ -24,18 +24,18 @@ export function notebookOf(pub: string): string {
       // Массивом строк с сохранёнными переводами: так пишет сам Jupyter, и
       // diff такого файла в git читается построчно.
       source: cell.source.split(/(?<=\n)/),
-      ...(cell.type === "code" ? { execution_count: null, outputs: [] } : {}),
+      ...(cell.type === 'code' ? { execution_count: null, outputs: [] } : {}),
     })),
     metadata: {
       kernelspec: {
-        display_name: "Python 3",
-        language: "python",
-        name: "python3",
+        display_name: 'Python 3',
+        language: 'python',
+        name: 'python3',
       },
-      language_info: { name: "python" },
+      language_info: { name: 'python' },
     },
     nbformat: 4,
     nbformat_minor: 5,
-  };
-  return JSON.stringify(notebook, null, 1);
+  }
+  return JSON.stringify(notebook, null, 1)
 }

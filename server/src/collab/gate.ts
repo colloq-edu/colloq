@@ -22,27 +22,27 @@
  * классификация с разрешением родителей — 1.77 мкс, применение тех же байт —
  * 67 мкс. Двадцать печатающих дают ~160 кадров в секунду.
  */
-import * as Y from "yjs";
-import { CELLS_KEY, CHAT_KEY, META_KEY, TERMINAL_KEY } from "@shared/notebook";
-import { allows, allowsStructure, type RoomRules } from "@shared/rules";
+import * as Y from 'yjs'
+import { CELLS_KEY, CHAT_KEY, META_KEY, TERMINAL_KEY } from '@shared/notebook'
+import { allows, allowsStructure, type RoomRules } from '@shared/rules'
 
 /** Что кадр делает — в терминах правил комнаты, а не байтов. */
-export type GateRule = "structure" | "edit" | "title";
+export type GateRule = 'structure' | 'edit' | 'title'
 
 export interface Verdict {
-  rule: GateRule;
+  rule: GateRule
   /** Только для `structure`: что именно с составом тетради. */
-  verb?: "add" | "remove";
+  verb?: 'add' | 'remove'
   /** Ячейка, если её удалось назвать, — для сообщения человеку. */
-  cellId: string | null;
+  cellId: string | null
   /** Разрешённый путь, для сообщения и для теста. */
-  path: string;
+  path: string
 }
 
 export type Judgement =
   | {
-      ok: true;
-      verdicts: Verdict[];
+      ok: true
+      verdicts: Verdict[]
       /**
        * Ячейки, у которых кадр меняет `type`.
        *
@@ -51,7 +51,7 @@ export type Judgement =
        * сразу после применения — единственное место, где клиент писал
        * серверные поля, перестало существовать.
        */
-      retyped: string[];
+      retyped: string[]
       /**
        * Ячейки, которые кадр создаёт.
        *
@@ -59,16 +59,16 @@ export type Judgement =
        * вывод стирает, свой — если это отмена удаления — возвращает по
        * собственной записи.
        */
-      created: string[];
+      created: string[]
       /**
        * Ячейки, которые кадр удаляет.
        *
        * Сервер запоминает их ДО применения: после применения читать уже нечего,
        * а без этого Ctrl+Z вернул бы ячейку без вывода.
        */
-      removed: string[];
+      removed: string[]
     }
-  | { ok: false; why: string; path: string };
+  | { ok: false; why: string; path: string }
 
 /**
  * Потолок на кадр, до всякой классификации и одинаковый для всех.
@@ -78,7 +78,7 @@ export type Judgement =
  * SQLite-блоб и ещё раз копируется в ключевой кадр истории. Классификатор без
  * этого потолка просто аккуратно разбирает бомбу.
  */
-export const MAX_SYNC_FRAME_BYTES = 256 * 1024;
+export const MAX_SYNC_FRAME_BYTES = 256 * 1024
 
 /**
  * Сколько элементов классификатор согласен обойти в одном кадре.
@@ -87,40 +87,40 @@ export const MAX_SYNC_FRAME_BYTES = 256 * 1024;
  * несколько байт на проводе. Настоящее удаление, даже «выделить всё в большой
  * ячейке», не даёт и тысячи. Упереться в потолок — отказ, а не пропуск.
  */
-const MAX_WALK = 100_000;
+const MAX_WALK = 100_000
 
 /** Ключи ячейки, которые пишет только сервер. Клиенту они закрыты всегда. */
 const SERVER_OWNED = new Set([
-  "outputs",
-  "state",
-  "execCount",
-  "runBy",
-  "runById",
-  "startedAt",
-  "ranMs",
-  "stdin",
-]);
+  'outputs',
+  'state',
+  'execCount',
+  'runBy',
+  'runById',
+  'startedAt',
+  'ranMs',
+  'stdin',
+])
 
 /** Что несёт свежесозданная ячейка. Ничего сверх — иначе отказ. */
 const FRESH_KEYS = new Set([
-  "id",
-  "type",
-  "source",
-  "outputs",
-  "state",
-  "execCount",
-  "runBy",
-  "runById",
-  "startedAt",
-  "ranMs",
-]);
+  'id',
+  'type',
+  'source',
+  'outputs',
+  'state',
+  'execCount',
+  'runBy',
+  'runById',
+  'startedAt',
+  'ranMs',
+])
 
 class Refusal extends Error {
   constructor(
     readonly why: string,
     readonly path: string,
   ) {
-    super(`${why} (${path})`);
+    super(`${why} (${path})`)
   }
 }
 
@@ -131,34 +131,31 @@ class Refusal extends Error {
  * классификатор, — по клиенту список диапазонов.
  */
 interface DeleteSet {
-  clients: Map<number, { clock: number; len: number }[]>;
+  clients: Map<number, { clock: number; len: number }[]>
 }
 
 /** Любая структура из кадра: Item, GC или Skip — Yjs не сужает этот тип. */
-type Struct = Y.Item | { id: Y.ID; length: number };
+type Struct = Y.Item | { id: Y.ID; length: number }
 
 /** Куда разрешилась ссылка: в надгробие, в свежую структуру или в живой элемент. */
-type Target =
-  | { kind: "gc" }
-  | { kind: "fresh"; struct: Y.Item }
-  | { kind: "item"; item: Y.Item };
+type Target = { kind: 'gc' } | { kind: 'fresh'; struct: Y.Item } | { kind: 'item'; item: Y.Item }
 
 /** Место: контейнер, в котором вещь лежит, и ключ, если контейнер — Y.Map. */
 interface Place {
-  container: string[];
-  sub: string | null;
+  container: string[]
+  sub: string | null
   /** Структура, занимающая место `cells/[]` на этом пути, если он туда ведёт. */
-  cell: Target | null;
+  cell: Target | null
   /** Создаётся ли эта ячейка прямо в этом кадре. */
-  cellIsFresh: boolean;
+  cellIsFresh: boolean
 }
 
 function isItem(struct: Struct): struct is Y.Item {
-  return struct instanceof Y.Item;
+  return struct instanceof Y.Item
 }
 
 function segment(sub: string | null): string {
-  return sub === null ? "[]" : `::${sub}`;
+  return sub === null ? '[]' : `::${sub}`
 }
 
 /**
@@ -169,11 +166,11 @@ function segment(sub: string | null): string {
  * по одному значило бы шестнадцать раз пройти дерево до корня.
  */
 class Frame {
-  private readonly byId = new Map<string, Y.Item>();
-  private readonly placeMemo = new Map<Y.Item, Place>();
+  private readonly byId = new Map<string, Y.Item>()
+  private readonly placeMemo = new Map<Y.Item, Place>()
   /** Новые ячейки, к которым кадр приложил вывод. */
-  private readonly carriesOutput = new Set<Y.Item>();
-  private walked = 0;
+  private readonly carriesOutput = new Set<Y.Item>()
+  private walked = 0
 
   constructor(
     private readonly doc: Y.Doc,
@@ -184,17 +181,16 @@ class Frame {
     // Каждая структура покрывает столько тактов, сколько в ней длины: запись в
     // ячейку, созданную этим же кадром, ищется именно так.
     for (const struct of this.dec.structs) {
-      if (!isItem(struct)) continue;
+      if (!isItem(struct)) continue
       for (let i = 0; i < struct.length; i += 1) {
-        this.byId.set(`${struct.id.client}:${struct.id.clock + i}`, struct);
+        this.byId.set(`${struct.id.client}:${struct.id.clock + i}`, struct)
       }
     }
   }
 
   private step(path: string): void {
-    this.walked += 1;
-    if (this.walked > MAX_WALK)
-      throw new Refusal("кадр слишком велик для разбора", path);
+    this.walked += 1
+    if (this.walked > MAX_WALK) throw new Refusal('кадр слишком велик для разбора', path)
   }
 
   /**
@@ -220,19 +216,15 @@ class Frame {
    * проверка состояния идёт первой, а не в `catch` после.
    */
   private resolve(id: Y.ID, path: string): Target {
-    this.step(path);
+    this.step(path)
     if (id.clock >= Y.getState(this.doc.store, id.client)) {
-      const fresh = this.byId.get(`${id.client}:${id.clock}`);
-      if (!fresh)
-        throw new Refusal(
-          "ссылка на содержимое, которого у семинара нет",
-          path,
-        );
-      return { kind: "fresh", struct: fresh };
+      const fresh = this.byId.get(`${id.client}:${id.clock}`)
+      if (!fresh) throw new Refusal('ссылка на содержимое, которого у семинара нет', path)
+      return { kind: 'fresh', struct: fresh }
     }
-    const found = Y.getItem(this.doc.store, id);
-    if (!(found instanceof Y.Item)) return { kind: "gc" };
-    return { kind: "item", item: found };
+    const found = Y.getItem(this.doc.store, id)
+    if (!(found instanceof Y.Item)) return { kind: 'gc' }
+    return { kind: 'item', item: found }
   }
 
   /**
@@ -242,32 +234,31 @@ class Frame {
    * читается, а «правку по пути cells/[]/::source/[]» — нет.
    */
   private pathOfType(type: Y.AbstractType<unknown>): {
-    segs: string[];
-    cell: Y.Item | null;
+    segs: string[]
+    cell: Y.Item | null
   } {
-    const segs: string[] = [];
-    let cell: Y.Item | null = null;
-    let current: Y.AbstractType<unknown> = type;
+    const segs: string[] = []
+    let cell: Y.Item | null = null
+    let current: Y.AbstractType<unknown> = type
     for (;;) {
-      this.step(segs.join("/"));
-      const item = current._item;
+      this.step(segs.join('/'))
+      const item = current._item
       if (item === null) {
         // `findRootTypeKey` бросает на оторванном типе — до неё надо дойти живым.
-        if (!current.doc)
-          throw new Refusal("запись в тип вне документа", segs.join("/"));
-        segs.unshift(Y.findRootTypeKey(current));
-        return { segs, cell };
+        if (!current.doc) throw new Refusal('запись в тип вне документа', segs.join('/'))
+        segs.unshift(Y.findRootTypeKey(current))
+        return { segs, cell }
       }
-      segs.unshift(segment(item.parentSub));
-      const parent = item.parent;
+      segs.unshift(segment(item.parentSub))
+      const parent = item.parent
       if (!(parent instanceof Y.AbstractType)) {
-        throw new Refusal("родитель не разрешается", segs.join("/"));
+        throw new Refusal('родитель не разрешается', segs.join('/'))
       }
       // Элемент, лежащий прямо в корне cells, и есть ячейка.
       if (item.parentSub === null && parent._item === null && parent.doc) {
-        if (Y.findRootTypeKey(parent) === CELLS_KEY) cell = item;
+        if (Y.findRootTypeKey(parent) === CELLS_KEY) cell = item
       }
-      current = parent;
+      current = parent
     }
   }
 
@@ -286,166 +277,148 @@ class Frame {
    * `set('kernelStatus')` дают побайтово одинаковые структуры.
    */
   private place(target: Target, path: string): Place {
-    if (target.kind === "gc")
-      return { container: ["<gc>"], sub: null, cell: null, cellIsFresh: false };
+    if (target.kind === 'gc')
+      return { container: ['<gc>'], sub: null, cell: null, cellIsFresh: false }
 
-    if (target.kind === "item") {
-      const item = target.item;
-      const memo = this.placeMemo.get(item);
-      if (memo) return memo;
-      const parent = item.parent;
+    if (target.kind === 'item') {
+      const item = target.item
+      const memo = this.placeMemo.get(item)
+      if (memo) return memo
+      const parent = item.parent
       if (!(parent instanceof Y.AbstractType)) {
-        throw new Refusal("родитель не разрешается", path);
+        throw new Refusal('родитель не разрешается', path)
       }
-      const { segs: container, cell } = this.pathOfType(parent);
+      const { segs: container, cell } = this.pathOfType(parent)
       const here: Place = {
         container,
         sub: item.parentSub,
-        cell: cell ? { kind: "item", item: cell } : null,
+        cell: cell ? { kind: 'item', item: cell } : null,
         cellIsFresh: false,
-      };
-      if (
-        container.length === 1 &&
-        container[0] === CELLS_KEY &&
-        item.parentSub === null
-      ) {
-        here.cell = target;
       }
-      this.placeMemo.set(item, here);
-      return here;
+      if (container.length === 1 && container[0] === CELLS_KEY && item.parentSub === null) {
+        here.cell = target
+      }
+      this.placeMemo.set(item, here)
+      return here
     }
 
-    const struct = target.struct;
-    const memo = this.placeMemo.get(struct);
-    if (memo) return memo;
-    this.step(path);
+    const struct = target.struct
+    const memo = this.placeMemo.get(struct)
+    if (memo) return memo
+    this.step(path)
 
-    let here: Place;
-    const parent = struct.parent;
-    if (typeof parent === "string") {
+    let here: Place
+    const parent = struct.parent
+    if (typeof parent === 'string') {
       here = {
         container: [parent],
         sub: struct.parentSub,
         cell: null,
         cellIsFresh: false,
-      };
+      }
     } else if (parent instanceof Y.ID) {
-      const owner = this.resolve(parent, path);
+      const owner = this.resolve(parent, path)
       here = {
         container: this.slot(owner, path),
         sub: struct.parentSub,
         cell: this.place(owner, path).cell,
         cellIsFresh: this.place(owner, path).cellIsFresh,
-      };
+      }
     } else {
       // Родителя на проводе нет — берём его у соседа, вместе с ключом.
-      const neighbourId = struct.origin ?? struct.rightOrigin;
-      if (!neighbourId)
-        throw new Refusal("структура без родителя и без соседа", path);
-      const neighbour = this.resolve(neighbourId, path);
-      const beside = this.place(neighbour, path);
+      const neighbourId = struct.origin ?? struct.rightOrigin
+      if (!neighbourId) throw new Refusal('структура без родителя и без соседа', path)
+      const neighbour = this.resolve(neighbourId, path)
+      const beside = this.place(neighbour, path)
       here = {
         container: beside.container,
         sub: beside.sub,
         cell: beside.cell,
         cellIsFresh: beside.cellIsFresh,
-      };
+      }
     }
 
-    if (
-      here.container.length === 1 &&
-      here.container[0] === CELLS_KEY &&
-      here.sub === null
-    ) {
-      here.cell = target;
-      here.cellIsFresh = true;
+    if (here.container.length === 1 && here.container[0] === CELLS_KEY && here.sub === null) {
+      here.cell = target
+      here.cellIsFresh = true
     }
-    this.placeMemo.set(struct, here);
-    return here;
+    this.placeMemo.set(struct, here)
+    return here
   }
 
   /** Полный путь самой вещи: место контейнера плюс её собственный сегмент. */
   private slot(target: Target, path: string): string[] {
-    if (target.kind === "gc") return ["<gc>"];
-    const here = this.place(target, path);
-    return [...here.container, segment(here.sub)];
+    if (target.kind === 'gc') return ['<gc>']
+    const here = this.place(target, path)
+    return [...here.container, segment(here.sub)]
   }
 
   /** Имя ячейки, если его можно прочитать: только ради сообщения человеку. */
   private cellIdOf(place: Place): string | null {
-    const cell = place.cell;
-    if (!cell || cell.kind !== "item") return null;
-    const content = cell.item.content;
-    if (!(content instanceof Y.ContentType)) return null;
-    const map = content.type;
-    if (!(map instanceof Y.Map)) return null;
-    const id: unknown = map.get("id");
-    return typeof id === "string" ? id : null;
+    const cell = place.cell
+    if (!cell || cell.kind !== 'item') return null
+    const content = cell.item.content
+    if (!(content instanceof Y.ContentType)) return null
+    const map = content.type
+    if (!(map instanceof Y.Map)) return null
+    const id: unknown = map.get('id')
+    return typeof id === 'string' ? id : null
   }
 
   /** Правило для разрешённого пути. `null` — глагол, который никого не касается. */
-  private verdictFor(
-    slot: string[],
-    place: Place,
-    op: "insert" | "delete",
-  ): Verdict | null {
-    const path = slot.join("/");
-    if (slot[0] === "<gc>") return null;
+  private verdictFor(slot: string[], place: Place, op: 'insert' | 'delete'): Verdict | null {
+    const path = slot.join('/')
+    if (slot[0] === '<gc>') return null
 
     if (slot[0] === CELLS_KEY) {
-      const cellId = this.cellIdOf(place);
+      const cellId = this.cellIdOf(place)
       // Сам состав тетради.
-      if (slot.length === 2 && slot[1] === "[]") {
+      if (slot.length === 2 && slot[1] === '[]') {
         return {
-          rule: "structure",
-          verb: op === "insert" ? "add" : "remove",
+          rule: 'structure',
+          verb: op === 'insert' ? 'add' : 'remove',
           cellId,
           path,
-        };
+        }
       }
-      if (slot.length < 3)
-        throw new Refusal("запись в неизвестное место тетради", path);
+      if (slot.length < 3) throw new Refusal('запись в неизвестное место тетради', path)
 
-      const key = slot[2].startsWith("::") ? slot[2].slice(2) : null;
-      if (key === null)
-        throw new Refusal("запись в неизвестное место тетради", path);
+      const key = slot[2].startsWith('::') ? slot[2].slice(2) : null
+      if (key === null) throw new Refusal('запись в неизвестное место тетради', path)
 
       // Ячейка, созданная этим же кадром, — часть создания целиком; её значения
       // проверяются отдельно, в checkFresh.
-      if (place.cellIsFresh)
-        return { rule: "structure", verb: "add", cellId, path };
+      if (place.cellIsFresh) return { rule: 'structure', verb: 'add', cellId, path }
 
       if (SERVER_OWNED.has(key)) {
-        throw new Refusal("это поле пишет сервер, а не браузер", path);
+        throw new Refusal('это поле пишет сервер, а не браузер', path)
       }
-      if (key === "id") throw new Refusal("имя ячейки не меняется", path);
-      if (key === "source") {
+      if (key === 'id') throw new Refusal('имя ячейки не меняется', path)
+      if (key === 'source') {
         // Внутрь текста — правка; замена самого ключа — нет: она сносит Y.Text,
         // в котором в этот момент стоят чужие курсоры.
-        if (slot.length === 3)
-          throw new Refusal("текст ячейки заменяется целиком", path);
-        return { rule: "edit", cellId, path };
+        if (slot.length === 3) throw new Refusal('текст ячейки заменяется целиком', path)
+        return { rule: 'edit', cellId, path }
       }
-      if (key === "type") {
-        if (slot.length !== 3)
-          throw new Refusal("запись в неизвестное место тетради", path);
-        return { rule: "edit", cellId, path };
+      if (key === 'type') {
+        if (slot.length !== 3) throw new Refusal('запись в неизвестное место тетради', path)
+        return { rule: 'edit', cellId, path }
       }
-      throw new Refusal("неизвестный ключ ячейки", path);
+      throw new Refusal('неизвестный ключ ячейки', path)
     }
 
     if (slot[0] === META_KEY) {
-      if (slot.length === 2 && slot[1] === "::title") {
-        return { rule: "title", cellId: null, path };
+      if (slot.length === 2 && slot[1] === '::title') {
+        return { rule: 'title', cellId: null, path }
       }
-      throw new Refusal("это поле семинара пишет сервер", path);
+      throw new Refusal('это поле семинара пишет сервер', path)
     }
 
     if (slot[0] === CHAT_KEY || slot[0] === TERMINAL_KEY) {
-      throw new Refusal("эту ленту пишет сервер", path);
+      throw new Refusal('эту ленту пишет сервер', path)
     }
 
-    throw new Refusal("запись в раздел, которого у документа нет", path);
+    throw new Refusal('запись в раздел, которого у документа нет', path)
   }
 
   /**
@@ -457,43 +430,40 @@ class Frame {
    * ввести пароль и складывает нажатия в чужую переменную.
    */
   private checkFresh(fresh: Map<Y.Item, Map<string, Y.Item>>): string[] {
-    const namesHere = new Set<string>();
-    const created: string[] = [];
+    const namesHere = new Set<string>()
+    const created: string[] = []
     for (const [cell, keys] of fresh) {
-      const path = `${CELLS_KEY}/[]`;
+      const path = `${CELLS_KEY}/[]`
       for (const key of keys.keys()) {
-        if (!FRESH_KEYS.has(key))
-          throw new Refusal(`новая ячейка несёт лишнее поле «${key}»`, path);
+        if (!FRESH_KEYS.has(key)) throw new Refusal(`новая ячейка несёт лишнее поле «${key}»`, path)
       }
-      const id = valueOf(keys.get("id"));
-      if (typeof id !== "string" || id.length === 0 || id.length > 128) {
-        throw new Refusal("у новой ячейки нет имени", path);
+      const id = valueOf(keys.get('id'))
+      if (typeof id !== 'string' || id.length === 0 || id.length > 128) {
+        throw new Refusal('у новой ячейки нет имени', path)
       }
       /*
        * Имя обязано быть новым. Совпадающее имя — не опечатка, а захват:
        * «Запустить» преподавателя ищет ячейку по имени и выполнит чужой
        * исходник.
        */
-      if (namesHere.has(id))
-        throw new Refusal("две новые ячейки с одним именем", path);
-      namesHere.add(id);
+      if (namesHere.has(id)) throw new Refusal('две новые ячейки с одним именем', path)
+      namesHere.add(id)
       if (
         this.doc
           .getArray(CELLS_KEY)
           .toArray()
-          .some((c) => c instanceof Y.Map && c.get("id") === id)
+          .some((c) => c instanceof Y.Map && c.get('id') === id)
       ) {
-        throw new Refusal("ячейка с таким именем уже есть", path);
+        throw new Refusal('ячейка с таким именем уже есть', path)
       }
 
-      const type = valueOf(keys.get("type"));
-      if (type !== "code" && type !== "markdown")
-        throw new Refusal("у новой ячейки нет вида", path);
+      const type = valueOf(keys.get('type'))
+      if (type !== 'code' && type !== 'markdown') throw new Refusal('у новой ячейки нет вида', path)
 
-      if (!isType(keys.get("source"), Y.Text))
-        throw new Refusal("текст новой ячейки не Y.Text", path);
-      if (!isType(keys.get("outputs"), Y.Array))
-        throw new Refusal("вывод новой ячейки не Y.Array", path);
+      if (!isType(keys.get('source'), Y.Text))
+        throw new Refusal('текст новой ячейки не Y.Text', path)
+      if (!isType(keys.get('outputs'), Y.Array))
+        throw new Refusal('вывод новой ячейки не Y.Array', path)
 
       /*
        * Новая ячейка приходит с выводом ровно в одном законном случае: Yjs
@@ -509,45 +479,41 @@ class Frame {
        */
       const claimsRun =
         this.carriesOutput.has(cell) ||
-        ["state", "execCount", "runBy", "runById", "ranMs"].some((key) => {
-          const value = keys.get(key);
-          return (
-            value !== undefined &&
-            valueOf(value) !== null &&
-            valueOf(value) !== "idle"
-          );
-        });
+        ['state', 'execCount', 'runBy', 'runById', 'ranMs'].some((key) => {
+          const value = keys.get(key)
+          return value !== undefined && valueOf(value) !== null && valueOf(value) !== 'idle'
+        })
       if (claimsRun && !this.remembered.has(id)) {
-        throw new Refusal("новая ячейка объявляет себя выполнявшейся", path);
+        throw new Refusal('новая ячейка объявляет себя выполнявшейся', path)
       }
-      created.push(id);
+      created.push(id)
     }
-    return created;
+    return created
   }
 
   /** Разбор всего кадра. Бросает `Refusal` — кадр не применяется целиком. */
   judge(): {
-    verdicts: Verdict[];
-    retyped: string[];
-    created: string[];
-    removed: string[];
+    verdicts: Verdict[]
+    retyped: string[]
+    created: string[]
+    removed: string[]
   } {
-    const verdicts: Verdict[] = [];
-    const seen = new Set<string>();
-    const retyped: string[] = [];
+    const verdicts: Verdict[] = []
+    const seen = new Set<string>()
+    const retyped: string[] = []
     /** Свежие ячейки: карта ключей, которые кадр в них кладёт. */
-    const fresh = new Map<Y.Item, Map<string, Y.Item>>();
+    const fresh = new Map<Y.Item, Map<string, Y.Item>>()
 
     const keep = (verdict: Verdict | null): void => {
-      if (!verdict) return;
-      const key = `${verdict.rule}:${verdict.verb ?? ""}:${verdict.path}:${verdict.cellId ?? ""}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      verdicts.push(verdict);
-    };
+      if (!verdict) return
+      const key = `${verdict.rule}:${verdict.verb ?? ''}:${verdict.path}:${verdict.cellId ?? ''}`
+      if (seen.has(key)) return
+      seen.add(key)
+      verdicts.push(verdict)
+    }
 
     for (const struct of this.dec.structs) {
-      if (!isItem(struct)) continue;
+      if (!isItem(struct)) continue
       /*
        * Новизна — не оптимизация, а то, что даёт гейту пережить обычную
        * перезагрузку страницы. `y-indexeddb` переигрывает локальный кэш при
@@ -557,79 +523,64 @@ class Frame {
        * отказывался бы в любой комнате, при любых правилах, а предписанная
        * перестройка стирала бы студенту кэш.
        */
-      if (
-        struct.id.clock + struct.length <=
-        Y.getState(this.doc.store, struct.id.client)
-      )
-        continue;
+      if (struct.id.clock + struct.length <= Y.getState(this.doc.store, struct.id.client)) continue
 
-      const target: Target = { kind: "fresh", struct };
-      const place = this.place(target, CELLS_KEY);
-      const slot = this.slot(target, CELLS_KEY);
-      const verdict = this.verdictFor(slot, place, "insert");
-      keep(verdict);
+      const target: Target = { kind: 'fresh', struct }
+      const place = this.place(target, CELLS_KEY)
+      const slot = this.slot(target, CELLS_KEY)
+      const verdict = this.verdictFor(slot, place, 'insert')
+      keep(verdict)
 
-      if (place.cellIsFresh && place.cell?.kind === "fresh") {
-        const cell = place.cell.struct;
-        const keys = fresh.get(cell) ?? new Map<string, Y.Item>();
-        fresh.set(cell, keys);
+      if (place.cellIsFresh && place.cell?.kind === 'fresh') {
+        const cell = place.cell.struct
+        const keys = fresh.get(cell) ?? new Map<string, Y.Item>()
+        fresh.set(cell, keys)
         // Ключи ячейки лежат на глубине 3; глубже — уже содержимое.
-        if (slot.length === 3 && slot[2].startsWith("::"))
-          keys.set(slot[2].slice(2), struct);
-        else if (slot.length > 3 && slot[2] !== "::source") {
+        if (slot.length === 3 && slot[2].startsWith('::')) keys.set(slot[2].slice(2), struct)
+        else if (slot.length > 3 && slot[2] !== '::source') {
           // Готовый вывод у новой ячейки — законен только как отмена удаления;
           // судит об этом checkFresh, которому нужно её имя.
-          if (slot[2] !== "::outputs") {
-            throw new Refusal(
-              "новая ячейка несёт готовое содержимое",
-              slot.join("/"),
-            );
+          if (slot[2] !== '::outputs') {
+            throw new Refusal('новая ячейка несёт готовое содержимое', slot.join('/'))
           }
-          this.carriesOutput.add(cell);
+          this.carriesOutput.add(cell)
         }
-      } else if (
-        verdict?.rule === "edit" &&
-        slot.length === 3 &&
-        slot[2] === "::type"
-      ) {
-        const value = valueOf(struct);
-        if (value !== "code" && value !== "markdown") {
-          throw new Refusal("такого вида ячейки не бывает", slot.join("/"));
+      } else if (verdict?.rule === 'edit' && slot.length === 3 && slot[2] === '::type') {
+        const value = valueOf(struct)
+        if (value !== 'code' && value !== 'markdown') {
+          throw new Refusal('такого вида ячейки не бывает', slot.join('/'))
         }
-        if (verdict.cellId) retyped.push(verdict.cellId);
+        if (verdict.cellId) retyped.push(verdict.cellId)
       }
     }
 
-    const created = this.checkFresh(fresh);
+    const created = this.checkFresh(fresh)
 
     for (const [client, ranges] of this.dec.ds.clients) {
       for (const range of ranges) {
-        let clock = range.clock;
-        const end = range.clock + range.len;
+        let clock = range.clock
+        const end = range.clock + range.len
         while (clock < end) {
-          this.step(`${CELLS_KEY}#${client}`);
-          const target = this.resolve(
-            Y.createID(client, clock),
-            `${CELLS_KEY}#${client}`,
-          );
-          if (target.kind === "gc") {
-            clock += 1;
-            continue;
+          this.step(`${CELLS_KEY}#${client}`)
+          const target = this.resolve(Y.createID(client, clock), `${CELLS_KEY}#${client}`)
+          if (target.kind === 'gc') {
+            clock += 1
+            continue
           }
-          const struct = target.kind === "item" ? target.item : target.struct;
-          const step = Math.max(1, struct.id.clock + struct.length - clock);
-          clock += step;
+          const struct = target.kind === 'item' ? target.item : target.struct
+          const step = Math.max(1, struct.id.clock + struct.length - clock)
+          clock += step
           // Уже удалённое ничего не меняет — и это тот же кэш из IndexedDB.
-          if (target.kind === "item" && target.item.deleted) continue;
-          keep(this.verdictFor(...this.outermost(target)));
+          if (target.kind === 'item' && target.item.deleted) continue
+          keep(this.verdictFor(...this.outermost(target)))
         }
       }
     }
 
     const removed = verdicts
-      .filter((v) => v.rule === "structure" && v.verb === "remove" && v.cellId)
-      .map((v) => v.cellId as string);
-    return { verdicts, retyped, created, removed };
+      .filter((v) => v.rule === 'structure' && v.verb === 'remove' && v.cellId)
+      .map((v) => v.cellId as string)
+    return { verdicts, retyped, created, removed }
   }
 
   /**
@@ -647,55 +598,53 @@ class Frame {
    * путей в ровно один приговор — «удаление, родитель которого корень cells» —
    * и пятнадцать поглощённых.
    */
-  private outermost(target: Target): [string[], Place, "delete"] {
-    let best = target;
-    let current = target;
+  private outermost(target: Target): [string[], Place, 'delete'] {
+    let best = target
+    let current = target
     for (;;) {
-      this.step("");
-      const owner = this.ownerOf(current);
-      if (!owner) break;
-      if (owner.kind === "gc") break;
-      const id = owner.kind === "item" ? owner.item.id : owner.struct.id;
-      if (!Y.isDeleted(this.dec.ds, id)) break;
-      best = owner;
-      current = owner;
+      this.step('')
+      const owner = this.ownerOf(current)
+      if (!owner) break
+      if (owner.kind === 'gc') break
+      const id = owner.kind === 'item' ? owner.item.id : owner.struct.id
+      if (!Y.isDeleted(this.dec.ds, id)) break
+      best = owner
+      current = owner
     }
-    return [this.slot(best, ""), this.place(best, ""), "delete"];
+    return [this.slot(best, ''), this.place(best, ''), 'delete']
   }
 
   /** Элемент, в котором лежит контейнер этой вещи, — на один уровень выше. */
   private ownerOf(target: Target): Target | null {
-    if (target.kind === "gc") return null;
-    if (target.kind === "item") {
-      const parent = target.item.parent;
-      if (!(parent instanceof Y.AbstractType)) return null;
-      return parent._item ? { kind: "item", item: parent._item } : null;
+    if (target.kind === 'gc') return null
+    if (target.kind === 'item') {
+      const parent = target.item.parent
+      if (!(parent instanceof Y.AbstractType)) return null
+      return parent._item ? { kind: 'item', item: parent._item } : null
     }
-    const parent = target.struct.parent;
-    if (typeof parent === "string") return null;
-    if (parent instanceof Y.ID) return this.resolve(parent, "");
-    const neighbourId = target.struct.origin ?? target.struct.rightOrigin;
-    if (!neighbourId) return null;
-    return this.ownerOf(this.resolve(neighbourId, ""));
+    const parent = target.struct.parent
+    if (typeof parent === 'string') return null
+    if (parent instanceof Y.ID) return this.resolve(parent, '')
+    const neighbourId = target.struct.origin ?? target.struct.rightOrigin
+    if (!neighbourId) return null
+    return this.ownerOf(this.resolve(neighbourId, ''))
   }
 }
 
 /** Значение простого ключа Y.Map из структуры кадра. */
 function valueOf(struct: Y.Item | undefined): unknown {
-  if (!struct) return undefined;
-  const content = struct.content;
-  if (content instanceof Y.ContentAny) return content.arr[0];
-  if (content instanceof Y.ContentString) return content.str;
-  if (content instanceof Y.ContentType) return content.type;
-  return undefined;
+  if (!struct) return undefined
+  const content = struct.content
+  if (content instanceof Y.ContentAny) return content.arr[0]
+  if (content instanceof Y.ContentString) return content.str
+  if (content instanceof Y.ContentType) return content.type
+  return undefined
 }
 
 function isType(struct: Y.Item | undefined, kind: unknown): boolean {
-  if (!struct) return false;
-  const content = struct.content;
-  return (
-    content instanceof Y.ContentType && content.type instanceof (kind as never)
-  );
+  if (!struct) return false
+  const content = struct.content
+  return content instanceof Y.ContentType && content.type instanceof (kind as never)
 }
 
 /**
@@ -707,25 +656,20 @@ export function classify(
   remembered: ReadonlySet<string> = new Set(),
 ): Judgement {
   if (payload.byteLength > MAX_SYNC_FRAME_BYTES) {
-    return { ok: false, why: "слишком большой кадр", path: "" };
+    return { ok: false, why: 'слишком большой кадр', path: '' }
   }
   try {
     const dec = Y.decodeUpdate(payload) as unknown as {
-      structs: Struct[];
-      ds: DeleteSet;
-    };
-    const { verdicts, retyped, created, removed } = new Frame(
-      doc,
-      dec,
-      remembered,
-    ).judge();
-    return { ok: true, verdicts, retyped, created, removed };
+      structs: Struct[]
+      ds: DeleteSet
+    }
+    const { verdicts, retyped, created, removed } = new Frame(doc, dec, remembered).judge()
+    return { ok: true, verdicts, retyped, created, removed }
   } catch (err) {
-    if (err instanceof Refusal)
-      return { ok: false, why: err.why, path: err.path };
+    if (err instanceof Refusal) return { ok: false, why: err.why, path: err.path }
     // Развалившийся разбор — отказ, а не пропуск: пропустить то, что не смогли
     // прочитать, значит выполнить это после того, как проверка перестала смотреть.
-    return { ok: false, why: "кадр не разбирается", path: "" };
+    return { ok: false, why: 'кадр не разбирается', path: '' }
   }
 }
 
@@ -739,36 +683,36 @@ export function classify(
 export function permits(
   verdicts: Verdict[],
   rules: RoomRules,
-  role: "host" | "participant",
+  role: 'host' | 'participant',
 ): { ok: true } | { ok: false; rule: GateRule; message: string } {
   for (const verdict of verdicts) {
-    if (verdict.rule === "title") {
-      if (role === "host") continue;
+    if (verdict.rule === 'title') {
+      if (role === 'host') continue
       return {
         ok: false,
-        rule: "title",
-        message: "Имя семинара меняет преподаватель.",
-      };
+        rule: 'title',
+        message: 'Имя семинара меняет преподаватель.',
+      }
     }
-    if (verdict.rule === "edit") {
-      if (allows(rules.edit, role)) continue;
+    if (verdict.rule === 'edit') {
+      if (allows(rules.edit, role)) continue
       return {
         ok: false,
-        rule: "edit",
+        rule: 'edit',
         message:
-          "В этом семинаре тетрадь принадлежит преподавателю — написанное вами не отправлено.",
-      };
+          'В этом семинаре тетрадь принадлежит преподавателю — написанное вами не отправлено.',
+      }
     }
-    const verb = verdict.verb ?? "add";
-    if (allowsStructure(rules.structure, role, verb)) continue;
+    const verb = verdict.verb ?? 'add'
+    if (allowsStructure(rules.structure, role, verb)) continue
     return {
       ok: false,
-      rule: "structure",
+      rule: 'structure',
       message:
-        verb === "add"
-          ? "В этом семинаре ячейки добавляет преподаватель."
-          : "В этом семинаре ячейки убирает преподаватель.",
-    };
+        verb === 'add'
+          ? 'В этом семинаре ячейки добавляет преподаватель.'
+          : 'В этом семинаре ячейки убирает преподаватель.',
+    }
   }
-  return { ok: true };
+  return { ok: true }
 }
