@@ -1471,11 +1471,18 @@ await pult.js(
  * а «Пером» — так её никогда не забудешь гулять по проектору до конца пары.
  */
 await pult.js(press(PULT.pen))
-await wait(600)
+/*
+ * Обведённая фигура догорает и после смены инструмента — так же, как в зале:
+ * гасить её на пульте мгновенно значило бы показывать ведущему не то, что
+ * видит зал. Ждём конца горения (HOLD_MS + FADE_MS в InkLayer) и требуем
+ * пустоты: указка, забытая нажатой, — это как раз то, чего быть не должно.
+ */
+const wentOut = await until(pult, `${pultRed} === 0`, 'фигура указки догорела', 4000)
 check(
-  (await pult.js(
-    `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') === 'false'`,
-  )) === true && ((await pult.js(`return ${pultRed}`)) as number) === 0,
+  wentOut &&
+    (await pult.js(
+      `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') === 'false'`,
+    )) === true,
   'выбор пера снимает указку',
   `указка aria-pressed=${await pult.js(
     `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') ?? '?'`,

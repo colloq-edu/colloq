@@ -510,15 +510,80 @@
    * временем, и хвост от этого мерцал: середины гасли не в том порядке, в
    * каком легли. Гладкость теперь даёт голова (см. ниже), а не подделка.
    */
-  const TRAIL_MS = 420
-  const TRAIL_MAX = 96
+  /*
+   * Сколько живёт след. Было 420 мс — росчерк гас раньше, чем ведущий успевал
+   * договорить фразу про то, что им обвёл: «обвёл — и уже нет». Секунда с
+   * лишним держит обведённое ровно столько, чтобы на него посмотрели и с
+   * последнего ряда, и не превращает след в линию, которую примут за чернила:
+   * он всё это время тает.
+   */
+  /*
+   * Сколько след держится ЦЕЛИКОМ и сколько гаснет.
+   *
+   * Указкой обводят фигуру и говорят про неё: «вот эта область». Пока говорят,
+   * фигура обязана стоять — вся, а не таять с хвоста. Поэтому у следа две
+   * поры: он держится в полную силу HOLD_MS после того, как перо подняли, и
+   * потом гаснет ЦЕЛИКОМ за FADE_MS. Возраста у отдельной точки больше нет:
+   * прежнее «каждая точка живёт свои 1.2 с» и было той самой кристаллизацией —
+   * след разъедало с хвоста, пока голова ещё писала.
+   */
+  const HOLD_MS = 900
+  const FADE_MS = 900
+  /*
+   * Потолок точек одной фигуры. Точку кладёт кадр (см. `tick`), то есть
+   * шестьдесят в секунду: шестьсот — это десять секунд непрерывного обведения,
+   * дольше которых одним движением не водят, а дальше самые старые точки
+   * уходят из головы фигуры.
+   */
+  const TRAIL_MAX = 600
+  /*
+   * Шаг пересборки следа, в пикселях холста.
+   *
+   * По проводу указка идёт двадцатью пятью кадрами в секунду: при быстром
+   * движении между двумя сэмплами — сантиметры, и след, соединённый прямыми,
+   * читается на проекторе многоугольником — «кручу кружок, а выходит
+   * пятиугольник». Поэтому перед отрисовкой точки пересобираются кривой
+   * Катмулла — Рома с шагом в четыре пикселя: у себя это почти ничего не
+   * меняет (сэмплы и так плотные), а в зале и на проекторе даёт ту же гладкую
+   * линию, что видит ведущий.
+   */
+  const TRAIL_STEP_PX = 4
+  /*
+   * Фигур на слайде несколько.
+   *
+   * Указкой не обводят одним росчерком: подчеркнули строку, потом обвели
+   * формулу, потом ткнули в ось. Пока каждое новое касание стирало предыдущее,
+   * договорить фразу было нельзя — половина показанного пропадала под рукой.
+   * Теперь касание заводит СВОЮ фигуру, и каждая доживает свой век сама;
+   * потолок держит слайд от того, чтобы за пару превратиться в чернила.
+   */
+  const MARKS_MAX = 8
   interface Dot {
     x: number
     y: number
-    page: number
-    at: number
   }
-  let trail: Dot[] = []
+  interface Mark {
+    page: number
+    dots: Dot[]
+    /** Когда перо отпустили; `null` — эту фигуру ведут прямо сейчас. */
+    letGo: number | null
+    /** С какой яркостью фигура нарисована сейчас на холсте. */
+    shown: number
+  }
+
+  /** Во сколько сил горит фигура: HOLD_MS стоит, FADE_MS тает. */
+  function glow(mark: Mark, now: number): number {
+    if (mark.letGo === null) return 1
+    const since = now - mark.letGo
+    return since <= HOLD_MS ? 1 : Math.max(0, 1 - (since - HOLD_MS) / FADE_MS)
+  }
+  let marks: Mark[] = []
+
+  /** Фигура под пером — последняя, пока её не отпустили. */
+  function drawnNow(): Mark | null {
+    const last = marks[marks.length - 1]
+    return last && last.letGo === null ? last : null
+  }
 
   /**
    * Голова указки — пружина, а не последняя точка.
@@ -532,11 +597,10 @@
    * между кадрами провода. Пружина аналитическая, не шаговая: шаговая с такой
    * жёсткостью на пропущенном кадре разлетается.
    *
-   * Отдельно от хвоста, и это не мелочь. Хвост гаснет по времени — на то он и
-   * хвост. Голова живёт, пока указку держат: указкой чаще всего СТОЯТ на месте
-   * («вот здесь»), и точка, живущая по таймеру следа, пропадала через четыре
-   * десятых секунды. Гасит голову только отпущенная указка (laser:off) — или
-   * уход на другую страницу.
+   * Голова живёт, пока указку держат: указкой чаще всего СТОЯТ на месте («вот
+   * здесь»), и точка, живущая по таймеру, пропадала бы под рукой. Гасит голову
+   * только отпущенная указка (laser:off) — или уход на другую страницу; сама
+   * фигура после этого стоит и тает своим чередом.
    */
   const SPRING = 110 // рад/с: остаток 4 % через 50 мс
   interface Head {
@@ -586,7 +650,23 @@
     return !still
   }
 
-  function pushTrail(x: number, y: number, at: number, when: number): void {
+  /**
+   * Куда указку ведут. Сама линия кладётся не здесь.
+   *
+   * Раньше в след попадали сырые сэмплы, а голова шла к ним пружиной — и
+   * лента, дойдя до самого свежего сэмпла, возвращалась назад, к отставшей
+   * голове. Эта петля и читалась как «хвост догоняет своё начало», причём
+   * только на планшете: там сэмплов сто двадцать в секунду, и отставание
+   * головы успевает набрать сантиметр, а по проводу их двадцать пять — голова
+   * долетает между кадрами.
+   *
+   * Теперь сэмпл только двигает ЦЕЛЬ, а в линию ложится то, что нарисовано, —
+   * положение головы на каждом кадре. Лента поэтому всегда кончается ровно
+   * головой (складка невозможна в принципе), а пружина заодно работает
+   * сглаживанием: дрожь пера в неё не проходит, и по проводу между двумя
+   * редкими сэмплами получаются свои шестьдесят точек в секунду, а не прямая.
+   */
+  function aim(x: number, y: number, at: number): void {
     if (!head || head.page !== at) {
       // Появилась — сразу на месте: голова, подлетающая из угла, читалась бы
       // как «указка залипла».
@@ -596,15 +676,32 @@
       head.tx = x
       head.ty = y
     }
-    trail.push({ x, y, page: at, at: when })
-    if (trail.length > TRAIL_MAX) trail = trail.slice(-TRAIL_MAX)
+    if (!drawnNow()) {
+      marks.push({ page: at, dots: [{ x: head.x, y: head.y }], letGo: null, shown: 0 })
+      if (marks.length > MARKS_MAX) marks = marks.slice(-MARKS_MAX)
+    }
     wake()
   }
 
-  /** Указку отпустили — гаснет всё, и голова первой. */
-  function douse(): void {
+  /**
+   * Указку отпустили.
+   *
+   * `soft` — обычный случай: гаснет ГОЛОВА, а след догорает сам за свои
+   * TRAIL_MS. Ровно этого и ждут от указки: обвёл, отпустил — обведённое ещё
+   * секунду видно и залу, и на проекторе. Начисто (`soft = false`) гасит
+   * только то, после чего следу негде лежать: смена страницы, уход слоя,
+   * отобранный лист.
+   */
+  function douse(soft = false): void {
     head = null
-    trail = []
+    if (soft) {
+      // Фигуру, которую только что обвели, оставляем стоять: HOLD_MS в полную
+      // силу, потом FADE_MS на общее угасание. Отсчёт ведётся отсюда.
+      const now = drawnNow()
+      if (now) now.letGo = performance.now()
+    } else {
+      marks = []
+    }
     wake()
   }
 
@@ -635,15 +732,122 @@
     liveFrame = undefined
     const now = performance.now()
     const moving = settleHead(now)
-    const kept = trail.filter((dot) => now - dot.at < TRAIL_MS)
-    const burning = kept.length !== trail.length
-    trail = kept
-    if (liveDirty || moving || burning || trail.length > 0) paintLive(now)
+    /*
+     * Линию кладёт кадр, а не сэмпл: точка ставится там, где голова НАРИСОВАНА
+     * (см. `aim`). Полпикселя — порог, ниже которого точка ничего не добавляет,
+     * кроме работы: стоящая на месте указка не копит тысячу точек в одном
+     * пятне.
+     */
+    const led = drawnNow()
+    if (head && led && led.page === head.page) {
+      const last = led.dots[led.dots.length - 1]
+      if (!last || Math.hypot((head.x - last.x) * w, (head.y - last.y) * h) >= 0.5) {
+        led.dots.push({ x: head.x, y: head.y })
+        if (led.dots.length > TRAIL_MAX) led.dots = led.dots.slice(-TRAIL_MAX)
+      }
+    }
+    /*
+     * Догорела до конца — фигура уходит целиком, одним куском, какой и стояла.
+     *
+     * И главное: пока фигура ДЕРЖИТСЯ, на холсте не меняется ничего — а кадр
+     * всё равно перерисовывал её шестьдесят раз в секунду почти секунду
+     * подряд. На проекторе с программным растром это и был самый дорогой
+     * простой в показе: работа ради того же самого изображения. Теперь кадр
+     * рисует, только если яркость какой-то фигуры действительно другая (или
+     * фигура появилась, ушла, голова летит).
+     */
+    let alive = false
+    let burnt = false
+    let changed = false
+    for (const mark of marks) {
+      if (mark.letGo !== null && now - mark.letGo >= HOLD_MS + FADE_MS) {
+        burnt = true
+        continue
+      }
+      if (mark.letGo !== null) alive = true
+      // Фигура с другой страницы не рисуется вовсе — и кадра ради себя не просит.
+      if (mark.page === page && Math.abs(glow(mark, now) - mark.shown) > 0.004) changed = true
+    }
+    if (burnt) marks = marks.filter((mark) => mark.letGo === null || now - mark.letGo < HOLD_MS + FADE_MS)
+    if (liveDirty || moving || changed || burnt) paintLive(now)
     liveDirty = false
-    // Кадры крутятся, пока есть чему меняться самому: голова летит, хвост
-    // догорает. Стоящая голова и кольцо кадров не требуют — они не меняются.
-    if (moving || trail.length > 0) liveFrame = requestAnimationFrame(tick)
+    /*
+     * Кадры крутятся, пока есть незакрытое дело: голова летит к перу или
+     * какая-то фигура ещё не догорела. Стоящую фигуру кадр всё равно
+     * обходит — иначе некому заметить, что HOLD_MS вышли и пора гаснуть, —
+     * но НЕ РИСУЕТ её: пока яркость та же, `changed` остаётся ложью и
+     * живой холст не трогают вовсе. Дорог здесь растр, а не обход списка.
+     */
+    if (moving || alive) liveFrame = requestAnimationFrame(tick)
   }
+
+  /**
+   * След, пересобранный кривой в пиксели холста.
+   *
+   * Центростремительная кривая Катмулла — Рома: обычная (равномерная) на
+   * резком повороте даёт петлю, а указкой как раз обводят — то есть поворот
+   * здесь не исключение, а основной случай. Голова добавляется последней
+   * точкой: она отстаёт от последнего сэмпла на пружину, и без неё лента
+   * висела бы в воздухе перед пятном.
+   */
+  function smoothTrail(mark: Mark): { x: number; y: number }[] {
+    const pts: { x: number; y: number }[] = []
+    for (const dot of mark.dots) pts.push({ x: dot.x * w, y: dot.y * h })
+    const out: { x: number; y: number }[] = []
+    if (pts.length === 0) return out
+    out.push({ x: pts[0].x, y: pts[0].y })
+    if (pts.length === 1) return out
+
+    for (let i = 0; i < pts.length - 1; i += 1) {
+      const p0 = pts[i === 0 ? 0 : i - 1]
+      const p1 = pts[i]
+      const p2 = pts[i + 1]
+      const p3 = pts[i + 2 < pts.length ? i + 2 : pts.length - 1]
+      const span = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+      // Шагов ровно столько, сколько нужно этому промежутку: на медленном
+      // движении сэмплы и так в пикселе друг от друга, и делить их незачем.
+      const steps = Math.max(1, Math.min(16, Math.ceil(span / TRAIL_STEP_PX)))
+      for (let k = 1; k <= steps; k += 1) {
+        const t = k / steps
+        const t2 = t * t
+        const t3 = t2 * t
+        out.push({
+          x:
+            0.5 *
+            (2 * p1.x +
+              (-p0.x + p2.x) * t +
+              (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+              (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+          y:
+            0.5 *
+            (2 * p1.y +
+              (-p0.y + p2.y) * t +
+              (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+              (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
+        })
+      }
+    }
+    /*
+     * Потолок точек на кадр. Длинная фигура — это до тысячи точек после
+     * пересборки, а лента строится по ним ДВАЖДЫ (ореол и ядро), то есть
+     * четыре тысячи отрезков в кадре. Триста шестьдесят — предел, за которым
+     * глаз разницы уже не видит (на длинной фигуре это точка каждые
+     * шесть-восемь пикселей, а стык круглый), а кадр перестаёт зависеть от
+     * того, как долго водили указкой. Число маленькое не зря: обводка с
+     * круглым стыком стоит дуги на каждой точке, и на программном растре
+     * проектора это самая дорогая часть кадра.
+     */
+    if (out.length > 120) {
+      const stride = Math.ceil(out.length / 120)
+      const thin: { x: number; y: number }[] = []
+      for (let i = 0; i < out.length; i += stride) thin.push(out[i])
+      const last = out[out.length - 1]
+      if (thin[thin.length - 1] !== last) thin.push(last)
+      return thin
+    }
+    return out
+  }
+
 
   function paintLive(now: number): void {
     const node = liveCanvas
@@ -662,40 +866,77 @@
       paint.stroke()
     }
 
-    if (head && head.page === page) {
-      const radius = Math.max(9, w * 0.011)
+    const radius = Math.max(9, w * 0.011)
+    if (marks.length > 0) {
       /*
-       * Хвост рисуется отрезками, а не одной линией: у каждого своя прозрачность
-       * и своя толщина, иначе он не сужается к концу и читается как штрих.
+       * СЛЕД — ОДНА ПЛОТНАЯ СВЕТЯЩАЯСЯ ЛИНИЯ.
+       *
+       * Ни цепочки пятен, ни сужения к хвосту, ни поточечного угасания: всё
+       * это читалось как «хвост из шариков, догоняющий голову», и как
+       * кристаллизация — след разъедало с конца, пока рука ещё вела. Указка не
+       * комета: ею обводят фигуру, и фигура обязана стоять целиком, пока про
+       * неё говорят. Гаснет она тоже целиком: HOLD_MS стоит, FADE_MS тает.
+       *
+       * Линия ОБВОДИТСЯ, а не заливается. Заливка контура (две стороны ленты
+       * одним путём) на самопересечении гасит саму себя: у петли и у резкого
+       * поворота стороны идут навстречу, обмотки складываются в ноль — и в
+       * мазке появляются дыры. На проводе с его двадцатью пятью сэмплами это
+       * почти не встречалось, а на планшете, где точек в пять раз больше, след
+       * рассыпался в шероховатость и вдруг снова становился плотным. Обводка
+       * круглым стыком таких дыр не знает вовсе и стоит не дороже.
        */
-      let prev: Dot | null = null
-      for (const dot of trail) {
-        if (dot.page !== page) continue
-        if (prev) {
-          const life = 1 - (now - dot.at) / TRAIL_MS
-          if (life > 0) {
-            paint.globalAlpha = 0.5 * life * life
-            paint.strokeStyle = LASER
-            paint.lineWidth = Math.max(1.5, radius * 0.9 * life)
-            paint.beginPath()
-            paint.moveTo(prev.x * w, prev.y * h)
-            paint.lineTo(dot.x * w, dot.y * h)
-            paint.stroke()
-          }
+      /*
+       * Стык СРЕЗАННЫЙ, а не круглый. Круглый стык — дуга на каждой точке, и
+       * растеризатор проектора (программный, без видеокарты) на длинной фигуре
+       * тратит на них четверть кадра. При шаге в шесть-восемь пикселей и
+       * плавном повороте руки срез от дуги не отличить, а концы у линии всё
+       * равно круглые — их всего два.
+       */
+      paint.lineJoin = 'bevel'
+      paint.lineCap = 'round'
+      paint.strokeStyle = LASER
+      const core = radius * 0.34
+      for (const mark of marks) {
+        if (mark.page !== page) continue
+        const dim = glow(mark, now)
+        mark.shown = dim
+        if (dim <= 0) continue
+        const path = smoothTrail(mark)
+        if (path.length === 0) continue
+        if (path.length === 1) {
+          // Ткнули и не повели: точка «вот здесь» — тоже фигура.
+          paint.globalAlpha = 0.85 * dim
+          paint.beginPath()
+          paint.arc(path[0].x, path[0].y, core, 0, Math.PI * 2)
+          paint.fill()
+          continue
         }
-        prev = dot
+        const line = new Path2D()
+        line.moveTo(path[0].x, path[0].y)
+        for (let i = 1; i < path.length; i += 1) line.lineTo(path[i].x, path[i].y)
+        /*
+         * Ореол — то, чем луч виден с последнего ряда на белом слайде, — идёт
+         * по РЕДКОЙ копии пути: он в пять раз шире ядра и размыт прозрачностью,
+         * и лишние точки в нём не видны никак, а стоят дорого — широкая обводка
+         * с круглым стыком на программном растре и есть тот кадр, который
+         * проваливается.
+         */
+        const wide = new Path2D()
+        wide.moveTo(path[0].x, path[0].y)
+        for (let i = 4; i < path.length; i += 4) wide.lineTo(path[i].x, path[i].y)
+        wide.lineTo(path[path.length - 1].x, path[path.length - 1].y)
+        paint.globalAlpha = 0.18 * dim
+        paint.lineWidth = core * 5.2
+        paint.stroke(wide)
+        // Ядро.
+        paint.globalAlpha = 0.85 * dim
+        paint.lineWidth = core * 2
+        paint.stroke(line)
       }
-      // Последний отрезок — от последнего сэмпла к голове: голова отстаёт от
-      // него на пружину, и без него хвост висел бы в воздухе перед пятном.
-      if (prev) {
-        paint.globalAlpha = 0.5
-        paint.strokeStyle = LASER
-        paint.lineWidth = radius * 0.9
-        paint.beginPath()
-        paint.moveTo(prev.x * w, prev.y * h)
-        paint.lineTo(head.x * w, head.y * h)
-        paint.stroke()
-      }
+      paint.globalAlpha = 1
+    }
+
+    if (head && head.page === page) {
       /*
        * Голова. Мягкое пятно вокруг ядра: на проекторе яркая точка в четыре
        * пикселя теряется в белом слайде, а свечение видно с последнего ряда.
@@ -703,23 +944,74 @@
       const x = head.x * w
       const y = head.y * h
       shownHead = { x, y, at: now }
-      const halo = paint.createRadialGradient(x, y, 0, x, y, radius * 2.6)
+      /*
+       * Голова — не отдельный шар, догоняющий ленту, а её горящий конец:
+       * ореол вдвое меньше прежнего и ядро чуть крупнее, так что вместе с
+       * лентой они читаются одной вещью. Свечение всё равно нужно: яркая точка
+       * в четыре пикселя теряется на белом слайде за десять метров.
+       */
+      const halo = paint.createRadialGradient(x, y, 0, x, y, radius * 1.5)
       halo.addColorStop(0, LASER)
       halo.addColorStop(1, 'transparent')
-      paint.globalAlpha = 0.42
+      paint.globalAlpha = 0.5
       paint.fillStyle = halo
       paint.beginPath()
-      paint.arc(x, y, radius * 2.6, 0, Math.PI * 2)
+      paint.arc(x, y, radius * 1.5, 0, Math.PI * 2)
       paint.fill()
       paint.globalAlpha = 1
       paint.fillStyle = LASER
       paint.beginPath()
-      paint.arc(x, y, radius * 0.5, 0, Math.PI * 2)
+      paint.arc(x, y, radius * 0.55, 0, Math.PI * 2)
       paint.fill()
-      paint.globalAlpha = 1
     }
 
     if (!head || head.page !== page) shownHead = null
+
+    if (ring && live && tool === 'laser') {
+      /*
+       * Тень указки — СЕРАЯ, а не красная: красным на этом экране светит
+       * только то, что видит зал, и тень, покрашенная в тот же цвет, читалась
+       * бы как «я уже показываю», хотя пера ещё нет на стекле.
+       */
+      const x = ring.x * w
+      const y = ring.y * h
+      const r = Math.max(4, radius * 0.42)
+      paint.globalAlpha = 0.5
+      paint.fillStyle = 'rgba(120,132,153,1)'
+      paint.beginPath()
+      paint.arc(x, y, r, 0, Math.PI * 2)
+      paint.fill()
+      paint.globalAlpha = 0.45
+      paint.strokeStyle = 'rgba(255,255,255,0.9)'
+      paint.lineWidth = 1.5
+      paint.beginPath()
+      paint.arc(x, y, r + 1.5, 0, Math.PI * 2)
+      paint.stroke()
+      paint.globalAlpha = 1
+    }
+
+    if (ring && live && (tool === 'pen' || tool === 'marker')) {
+      /*
+       * Тень пера: пятно ровно той ширины, какой ляжет штрих, и того же цвета,
+       * но вполсилы — это ещё не чернила. Тонкая тёмная обводка держит её на
+       * белом слайде, где полупрозрачное пятно своего цвета иначе теряется.
+       */
+      const x = ring.x * w
+      const y = ring.y * h
+      const r = Math.max(3, (width * w) / 2)
+      paint.globalAlpha = 0.55
+      paint.fillStyle = color
+      paint.beginPath()
+      paint.arc(x, y, r, 0, Math.PI * 2)
+      paint.fill()
+      paint.globalAlpha = 0.5
+      paint.strokeStyle = 'rgba(255,255,255,0.85)'
+      paint.lineWidth = 1.5
+      paint.beginPath()
+      paint.arc(x, y, r + 1.5, 0, Math.PI * 2)
+      paint.stroke()
+      paint.globalAlpha = 1
+    }
 
     if (ring && live && tool === 'eraser') {
       /*
@@ -769,10 +1061,11 @@
     untrack(() => {
       if (own || performance.now() < quietUntil) return
       if (!spot) {
-        douse()
+        // Ведущий отпустил указку: голова гаснет, обведённое догорает.
+        douse(true)
         return
       }
-      pushTrail(spot.x, spot.y, spot.page, performance.now())
+      aim(spot.x, spot.y, spot.page)
     })
   })
 
@@ -1059,6 +1352,13 @@
   }
 
   function openStroke(pointer: number, byFinger: boolean, place: { x: number; y: number }, force: number): void {
+    /*
+     * Перо коснулось — тень кончика убирается. У ластика кольцо в контакте
+     * остаётся (по нему смотрят, попадает ли он по штриху), а у пера под
+     * кончиком уже своя линия: пятно поверх неё читается как клякса, которой
+     * рука не вела.
+     */
+    if (ring && tool !== 'eraser') ring = null
     const stroke = newStroke(place.x, place.y, force)
     wet = [...wet, stroke]
     rememberWet()
@@ -1157,37 +1457,14 @@
     spot = to
     // Себе — сразу, не дожидаясь круга по сети: свою указку сравнивают с
     // собственной рукой, и отставание видно только здесь.
-    pushTrail(to.x, to.y, page, when)
+    aim(to.x, to.y, page)
     if (spotTimer === undefined) spotTimer = window.setTimeout(beamNow, SEND_EVERY_MS)
-  }
-
-  /**
-   * Перо оторвали от стекла, но оно ещё парит над листом.
-   *
-   * Гасить сразу нельзя: следующий же сэмпл парения зажигает указку заново, и
-   * у зала точка моргает на каждом отрыве пера — а перо при показе отрывают
-   * постоянно. Поэтому подъём только отпускает указатель, а луч живёт ещё
-   * 300 мс; парение за это время его подхватывает без единого `laser:off`,
-   * а если парения нет (перо унесли, мышь на стенде) — гаснет по таймеру.
-   */
-  const LINGER_MS = 300
-  let lingerTimer: number | undefined
-  function beamLinger(): void {
-    beaming = null
-    window.clearTimeout(lingerTimer)
-    lingerTimer = window.setTimeout(() => {
-      lingerTimer = undefined
-      if (beaming === null) beamOff()
-    }, LINGER_MS)
-    syncBusy()
   }
 
   /** Указку отпустили или сменили инструмент: `laser:off` один раз, своё — сразу. */
   function beamOff(): void {
     window.clearTimeout(spotTimer)
     spotTimer = undefined
-    window.clearTimeout(lingerTimer)
-    lingerTimer = undefined
     spot = null
     beaming = null
     if (lit) {
@@ -1196,8 +1473,9 @@
       quietUntil = performance.now() + QUIET_AFTER_OFF_MS
     }
     // Своё — сразу: ждать эха, чтобы погасить СВОЮ же указку, значит держать
-    // её на экране лишний круг по сети после того, как палец подняли.
-    douse()
+    // её на экране лишний круг по сети после того, как палец подняли. След при
+    // этом остаётся догорать: он и есть то, ради чего указкой обводят.
+    douse(true)
     syncBusy()
   }
 
@@ -1448,9 +1726,7 @@
       // Первое касание — сразу: указка, появляющаяся через сорок миллисекунд
       // после того, как на неё нажали, ощущается как залипшей.
       beaming = event.pointerId
-      window.clearTimeout(lingerTimer)
-      lingerTimer = undefined
-      pushTrail(place.x, place.y, page, event.timeStamp)
+      aim(place.x, place.y, page)
       spot = place
       beamNow()
       // И пиксель — в этом же обработчике, не дожидаясь кадра: холодный старт
@@ -1556,23 +1832,54 @@
     if (!mine(event)) return
     if (tool === 'laser') {
       /*
-       * Парящее перо тоже светит. Pencil над листом — это и есть «показываю»:
-       * на проекторе такая указка ничем не отличается от нажатой, а ведущему
-       * не приходится давить на стекло, чтобы показать формулу.
+       * ПАРЕНИЕ БОЛЬШЕ НЕ СВЕТИТ.
+       *
+       * Раньше Pencil, поднесённый к стеклу, уже вёл луч по проектору: рука
+       * идёт к листу — зал видит красную линию, которую никто не показывал.
+       * Теперь парение показывает только СВОЮ тень (серую, как у пера), а луч
+       * зажигается касанием — тем же движением, каким берут настоящую указку в
+       * руку и нажимают кнопку.
        */
       const hover = event.buttons === 0
-      if (hover && event.pointerType !== 'pen') return
-      if (!hover && beaming !== event.pointerId) return
-      // Парение подхватило луч после отрыва пера: гасить его больше незачем.
-      if (hover && lingerTimer !== undefined) {
-        window.clearTimeout(lingerTimer)
-        lingerTimer = undefined
+      if (hover) {
+        if (event.pointerType === 'touch') return
+        const place = at(event)
+        if (!place) return
+        ring = place
+        wake()
+        return
       }
+      if (beaming !== event.pointerId) return
+      if (ring) ring = null
       event.preventDefault()
       for (const step of samples(event)) {
         const place = at(step)
         if (place) beam(place, step.timeStamp)
       }
+      return
+    }
+    /*
+     * Тень пера и маркера — то же, что кольцо ластика: пятно ровно там, куда
+     * ляжет штрих, и ровно той ширины. Без неё Pencil на планшете «промахивается
+     * мимо строки» — на стекле нет курсора, и до первого касания не видно, где
+     * кончик. В КОНТАКТЕ её нет: там уже есть сам штрих, и вторая метка под
+     * пером мешала бы смотреть на букву (у ластика наоборот — кольцо и есть его
+     * рабочая площадь, потому и остаётся).
+     */
+    if (tool === 'pen' || tool === 'marker') {
+      // Палец тени не двигает и не гасит: иначе ладонь, лежащая на листе,
+      // сбивала бы тень парящего рядом пера каждым своим дрожанием.
+      if (event.pointerType === 'touch') return
+      const place = event.buttons === 0 ? at(event) : null
+      if (!place) {
+        if (ring) {
+          ring = null
+          wake()
+        }
+        return
+      }
+      ring = place
+      wake()
       return
     }
     if (tool === 'eraser') {
@@ -1607,8 +1914,12 @@
       return
     }
     if (beaming === event.pointerId) {
-      if (event.type === 'pointercancel') beamOff()
-      else beamLinger()
+      /*
+       * Перо подняли — луч выключен, и без всякого догорания: парение его
+       * больше не подхватывает, гасить «на всякий случай через 300 мс» стало
+       * нечего. Обведённая фигура при этом остаётся стоять — см. `douse`.
+       */
+      beamOff()
       return
     }
     if (erasing === event.pointerId) {
@@ -1631,7 +1942,8 @@
       ring = null
       wake()
     }
-    if (tool === 'laser' && event.pointerType === 'pen' && beaming === null && lit) beamOff()
+    // Луч зажигается только касанием, поэтому уход парящего пера его не
+    // касается: гасить нечего, а обведённая фигура держится сама.
   }
 
   /*
@@ -1682,9 +1994,11 @@
     const now = page
     untrack(() => {
       if (drawing && drawing.stroke.page !== now) closeStroke()
-      if (head && head.page !== now) {
-        head = null
-        trail = []
+      // Страница сменилась: след предыдущей не тает у неё на глазах, а уходит
+      // вместе с ней — на новом листе ему взяться неоткуда.
+      if ((head && head.page !== now) || marks.some((mark) => mark.page !== now)) {
+        if (head && head.page !== now) head = null
+        marks = marks.filter((mark) => mark.page === now)
         wake()
       }
     })
@@ -1761,7 +2075,6 @@
   $effect(() => () => {
     window.clearTimeout(flushTimer)
     window.clearTimeout(spotTimer)
-    window.clearTimeout(lingerTimer)
     window.clearTimeout(settleTimer)
     window.clearTimeout(forgetTimer)
     if (liveFrame !== undefined) cancelAnimationFrame(liveFrame)

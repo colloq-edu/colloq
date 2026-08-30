@@ -924,8 +924,12 @@ async function laserHold(points: [number, number][], stepMs = 4) {
   await wait(120)
   await pult.js(`window.__laser.release=performance.now()-window.__laser.t0; return 1`)
   await pen('mouseReleased', px[px.length - 1])
-  // После подъёма смотрим ещё секунду с лишним: луч обязан погаснуть и не вернуться.
-  await wait(1300)
+  /*
+   * После подъёма смотрим до конца жизни фигуры: она держится HOLD_MS и гаснет
+   * за FADE_MS (900 + 900 в InkLayer), и всё это время не должна вспыхивать
+   * заново — парение её больше не подхватывает.
+   */
+  await wait(2200)
   const raw = (await pult.js(`window.__laser.stop=true; return window.__laser`)) as {
     first: number
     firstRed: number
@@ -1710,7 +1714,7 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
       laser.offAfterMs >= 0 && !laser.relit && !cold.relit,
       '8. поднятая указка гаснет и не вспыхивает снова',
       laser.offAfterMs < 0
-        ? 'не погасла за 1.3 с'
+        ? 'не погасла за 2.2 с'
         : `погасла через ${laser.offAfterMs} мс · вспышка после: ${laser.relit || cold.relit ? 'была' : 'нет'}`,
     )
     /*
@@ -1728,9 +1732,15 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     )
   }
 
-  /* ----------------------------- 9. Pencil парит над листом с указкой */
+  /* ------------------- 9. Pencil парит над листом: тень, но не луч */
 
   {
+    /*
+     * Парение больше НЕ светит. Раньше поднесённый к стеклу Pencil уже вёл луч
+     * по проектору: рука идёт к листу — зал видит красную линию, которую никто
+     * не показывал. Теперь у себя видна серая тень кончика, а у зала — ничего;
+     * луч зажигается касанием.
+     */
     const g = await geometry()
     await pult.js(press(PULT.laser))
     await wait(200)
@@ -1738,30 +1748,156 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
       await hover(onCanvas(g, 0.3 + 0.03 * i, 0.5))
       await wait(16)
     }
-    const litHere = await until(
-      pult,
-      `${inkExpr('ink-live', [])}.red > 0`,
-      'указка от парящего пера',
-      3000,
+    await wait(300)
+    const hoverHere = await measure()
+    check(
+      hoverHere.live.red === 0 && redAtStudent(hoverHere) === 0,
+      '9. парящее перо не зажигает указку',
+      `на пульте красных ${hoverHere.live.red} · у студента ${redAtStudent(hoverHere)}`,
     )
-    const litThere = await until(
+    /* Тень — серая: не красная (красным светит только то, что видит зал) и не
+       пустое место (иначе непонятно, куда попадёт луч). */
+    const shade = (await pult.js(
+      `const c=document.querySelector('canvas.ink-live');` +
+        `if(!c||!c.width) return -1;` +
+        `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+        `let grey=0;` +
+        `for(let i=0;i<d.length;i+=4){` +
+        `if(d[i+3]<24) continue;` +
+        `const mx=Math.max(d[i],d[i+1],d[i+2]), mn=Math.min(d[i],d[i+1],d[i+2]);` +
+        `if(mx-mn<40) grey+=1}` +
+        `return grey`,
+    )) as number
+    check(shade > 0, '9. у парящего пера видна серая тень', `серых точек ${shade}`)
+
+    /* Касание — и вот теперь луч, и его видит зал. */
+    await strokeAt([onCanvas(g, 0.35, 0.55), onCanvas(g, 0.55, 0.5), onCanvas(g, 0.7, 0.6)], {
+      speed: 220,
+    })
+    const beam = await until(
       student,
       `(${inkExpr('ink-live', [])}.red > 0) || (${inkExpr('ink-wet', [])}.red > 0)`,
-      'парящая указка у студента',
+      'луч от касания дошёл до зала',
       5000,
     )
-    check(
-      litHere && litThere,
-      '9. парящее перо ведёт указку и у зала',
-      `на пульте ${litHere ? 'светит' : 'нет'} · у студента ${litThere ? 'светит' : 'нет'}`,
-    )
-    await hover(onRail(g))
+    check(beam, '9. луч зажигается касанием и доходит до зала', beam ? 'дошёл' : 'нет')
+
+    /*
+     * Обведённая фигура ДЕРЖИТСЯ, а потом гаснет целиком: HOLD_MS = 900 и
+     * FADE_MS = 900 в InkLayer. Сначала убеждаемся, что через полсекунды после
+     * подъёма пера она ещё на месте (это и есть «зафиксировал — стоит»), потом
+     * ждём, пока истает.
+     */
+    await wait(500)
+    const held = (await measure()).live.red
+    check(held > 0, '9. фигура держится после подъёма пера', `${held} красных через 0.5 с`)
+
     await pult.js(press(PULT.pen))
-    await wait(600)
+    await until(pult, `(${inkExpr('ink-live', [])}.red === 0)`, 'фигура погасла на пульте', 4000)
+    await until(
+      student,
+      `(${inkExpr('ink-live', [])}.red === 0) && (${inkExpr('ink-wet', [])}.red === 0)`,
+      'фигура погасла у зала',
+      4000,
+    )
+
+    /*
+     * ТЕНЬ ЕСТЬ У ВСЕХ ПЕРЬЕВ, а не только у ластика и указки: на стекле нет
+     * курсора, и до касания не видно, куда попадёт кончик. Считаем непрозрачные
+     * точки живого холста в квадратике вокруг парящего пера — далеко от того
+     * места, где пойдёт штрих.
+     */
+    const box = (fx: number, fy: number, half = 0.06) =>
+      `(()=>{const c=document.querySelector('canvas.ink-live');` +
+      `if(!c||!c.width) return -1;` +
+      `const W=c.width,H=c.height;` +
+      `const x0=Math.round((${fx}-${half})*W),x1=Math.round((${fx}+${half})*W);` +
+      `const y0=Math.round((${fy}-${half})*H),y1=Math.round((${fy}+${half})*H);` +
+      `const d=c.getContext('2d').getImageData(x0,y0,Math.max(1,x1-x0),Math.max(1,y1-y0)).data;` +
+      `let n=0;for(let i=3;i<d.length;i+=4) if(d[i]>16) n+=1;return n})()`
+    const shadeAt: [number, number] = [0.28, 0.36]
+    for (let i = 0; i <= 4; i += 1) {
+      await hover(onCanvas(g, shadeAt[0] + 0.004 * i, shadeAt[1]))
+      await wait(16)
+    }
+    await wait(120)
+    const penShade = (await pult.js(`return ${box(shadeAt[0], shadeAt[1])}`)) as number
+    check(penShade > 0, '9. у парящего пера видна тень', `точек тени ${penShade}`)
+
+    /*
+     * И ПРОПАДАЕТ ПОД КАСАНИЕМ — в отличие от кольца ластика: там кольцо и есть
+     * рабочая площадь, а здесь под пером уже есть сам штрих, и вторая метка
+     * мешала бы смотреть на букву. Пишем далеко от места парения и, не поднимая
+     * пера, смотрим на тот же квадратик.
+     */
+    await pult.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      ...onCanvas(g, 0.72, 0.72),
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+      pointerType: 'pen',
+      force: 0.5,
+    })
+    await pult.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      ...onCanvas(g, 0.78, 0.74),
+      button: 'left',
+      buttons: 1,
+      pointerType: 'pen',
+      force: 0.5,
+    })
+    await wait(140)
+    const shadeUnderPen = (await pult.js(`return ${box(shadeAt[0], shadeAt[1])}`)) as number
+    await pult.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      ...onCanvas(g, 0.78, 0.74),
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+      pointerType: 'pen',
+      force: 0,
+    })
+    check(
+      shadeUnderPen === 0,
+      '9. тень пера уходит под касанием',
+      `в квадратике парения ${shadeUnderPen} точек, пока перо на листе`,
+    )
+    await clean()
+
+    /*
+     * НЕСКОЛЬКО ФИГУР ЖИВУТ ВМЕСТЕ. Подчеркнули строку, потом обвели формулу —
+     * и подчёркивание никуда не делось: пока каждое касание стирало предыдущее,
+     * договорить фразу про показанное было нельзя.
+     */
+    await pult.js(press(PULT.laser))
+    await wait(200)
+    const left: [number, number] = [0.3, 0.3]
+    const right: [number, number] = [0.72, 0.68]
+    await strokeAt([onCanvas(g, 0.22, 0.3), onCanvas(g, 0.38, 0.3)], { speed: 180 })
+    await wait(250)
+    await strokeAt([onCanvas(g, 0.64, 0.68), onCanvas(g, 0.8, 0.68)], { speed: 180 })
+    await wait(120)
+    const redBox = (fx: number, fy: number) =>
+      `(()=>{const c=document.querySelector('canvas.ink-live');` +
+      `if(!c||!c.width) return -1;` +
+      `const W=c.width,H=c.height;` +
+      `const x0=Math.round((${fx}-0.1)*W),y0=Math.round((${fy}-0.08)*H);` +
+      `const d=c.getContext('2d').getImageData(x0,y0,Math.round(0.2*W),Math.round(0.16*H)).data;` +
+      `let n=0;for(let i=0;i<d.length;i+=4) if(d[i+3]>24&&d[i]>150&&d[i+1]<120) n+=1;return n})()`
+    const first = (await pult.js(`return ${redBox(left[0], left[1])}`)) as number
+    const second = (await pult.js(`return ${redBox(right[0], right[1])}`)) as number
+    check(
+      first > 0 && second > 0,
+      '9. вторая фигура не стирает первую',
+      `в первой ${first} красных, во второй ${second}`,
+    )
+    await pult.js(press(PULT.pen))
+    await until(pult, `(${inkExpr('ink-live', [])}.red === 0)`, 'фигуры догорели', 4000)
     const m = await measure()
     check(
       m.live.red === 0 && redAtStudent(m) === 0,
-      '9. после выбора пера указка погасла везде',
+      '9. фигура гаснет целиком и везде',
       `на пульте ${m.live.red} · у студента ${redAtStudent(m)}`,
     )
     await penTool()
