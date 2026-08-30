@@ -330,67 +330,287 @@ ul {
   padding-bottom: clamp(64px, 7.5vw, 88px);
 }
 
-.hero-top {
-  display: flex;
-  align-items: flex-end;
-  gap: 48px;
+/* Точка отсчёта для треда оракула: он висит справа сверху, см. .oracle. */
+.hero .inner {
+  position: relative;
 }
 
-.hero-headline {
-  flex: 1 1 auto;
-  min-width: 0;
+/*
+ * ГЕРОЙ. Заголовок и лид одной колонкой, комната строкой, диптих во всю ширину.
+ *
+ * Было: заголовок и правая рейка в 292 px рядом, лид и кнопки — ниже. Рейка
+ * повторяла то, что страница показывает дальше (экран входа, «Развернуть»), и
+ * при 1100 px исчезала совсем — то есть половина обещания героя жила только на
+ * широком мониторе. Диптих на её месте говорит то, чего страница не говорила
+ * вовсе: занятие бывает двух родов, и оба здесь.
+ */
+.hero-head {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 24px;
+  padding-top: clamp(24px, 3.2vw, 48px);
 }
 
 .hero h1 {
   /*
    * Самое громкое на странице. Black, а не Bold: артборды нарисованы в
    * HSE Sans Black, и Inter на 700 здесь читается тонко.
+   *
+   * Кегль снижен с 86 до 72: над заголовком больше нет надзага, и он стоит
+   * первым — а первым 86 px читаются как крик. Мера в em, а не в px: она
+   * должна ужиматься вместе с кеглем, иначе на планшете заголовок разъезжается
+   * на лишнюю строку.
    */
-  font-size: clamp(38px, 6vw, 86px);
+  font-size: clamp(36px, 5.2vw, 72px);
   font-weight: 900;
-  line-height: 0.98;
-  letter-spacing: -0.035em;
+  line-height: 1;
+  letter-spacing: -0.04em;
   /*
-   * В em, а не в px: мера должна ужиматься вместе с кеглем, иначе на планшете
-   * заголовок разъезжается на лишнюю строку. 10.4em при 86px — те же 893px,
-   * на которых он ломается после «делают,» и не оставляет «а» висеть в конце.
+   * Мера в em, а не в px: она обязана ужиматься вместе с кеглем. 9.6em ломает
+   * строку после «делают,» — по запятой, а не по «а не», которое иначе висит
+   * в конце первой строки хвостом.
    */
-  max-width: 10.4em;
+  max-width: 9.6em;
 }
 
-/* Правая рейка героя: кто уже внутри и чем это поднимается. */
-.hero-rail {
+.hero .lead {
+  max-width: 620px;
+}
+
+/*
+ * Живая комната — строкой, а не колонкой.
+ *
+ * Сцена в скрипте не переписывалась: те же `#room`, `#room-n`, `#room-say`,
+ * тот же FLIP на переездах. Изменилось только место: сорок пикселей под лидом
+ * вместо трёхсот справа, и счёт стоит рядом с кругами, а не абзацем под ними.
+ */
+.room-count {
+  font-size: 15px;
+  line-height: 24px;
+  color: rgba(255, 255, 255, 0.72);
   flex: none;
-  width: 292px;
-  padding-left: 28px;
-  padding-bottom: 8px;
+}
+
+/*
+ * ОРАКУЛ В ГЕРОЕ. Абсолютом, а не колонкой грида.
+ *
+ * Заголовок держит меру в em и обязан ломаться сам; если положить его и тред в
+ * общий грид, мера станет зависеть от ширины треда, и строка «а не смотрят»
+ * поедет от правки в чужом блоке. Поэтому тред висит справа сверху, а на узком
+ * экране просто встаёт в поток под лидом.
+ */
+.oracle {
+  position: absolute;
+  top: clamp(120px, 12vw, 168px);
+  right: 0;
+  width: 352px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oracle-thread {
+  border: 1px solid var(--brand-2);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oracle-ask {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 15px;
+  line-height: 23px;
+  color: #fff;
+}
+
+.oracle-face {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+}
+
+/* Ответ отбит линейкой, как ветка треда в самой панели оракула. */
+.oracle-answer {
+  margin-left: 11px;
+  padding-left: 23px;
   border-left: 1px solid var(--brand-2);
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 22px;
+  color: rgba(255, 255, 255, 0.72);
 }
 
-.rail-note {
+.oracle-answer code {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.oracle-scope {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.oracle-note {
   font-size: 14px;
   line-height: 22px;
   color: rgba(255, 255, 255, 0.62);
 }
 
-.rail-block {
-  padding-top: 16px;
-  border-top: 1px solid var(--brand-2);
+/*
+ * ДИПТИХ. Две ипостаси занятия, одинакового веса.
+ *
+ * `minmax(0, 1fr)` вместо `1fr`: колонка грида по умолчанию не уже своего
+ * содержимого, а внутри лежит `pre` с длинной строкой кода — без этого правая
+ * половина уезжала бы за край страницы.
+ */
+.duo {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  padding-top: clamp(40px, 4.5vw, 56px);
+}
+
+.duo-item {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
 }
 
-.rail-cmd {
+.duo-frame {
+  height: clamp(240px, 21vw, 300px);
+  overflow: hidden;
+}
+
+.duo-frame--light {
+  background: #fff;
+  padding: 22px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Чёрный, а не --ink: это проекция в тёмном зале, а не поверхность продукта. */
+.duo-frame--dark {
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.duo-cell-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.duo-num {
+  color: var(--faint);
+}
+
+.duo-state {
+  letter-spacing: 0.14em;
+  color: var(--accent-text);
+}
+
+.duo-code {
+  background: var(--surface);
+  border-left: 2px solid var(--accent);
+  padding: 12px 16px;
   font-family: var(--mono);
   font-size: 13px;
-  color: var(--accent);
+  line-height: 20px;
+  color: #374b9b;
+  white-space: pre;
+  overflow: hidden;
+}
+
+.duo-code span {
+  display: block;
+}
+
+.duo-out {
+  padding-left: 16px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--ink);
+}
+
+.duo-who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.duo-dots {
+  display: inline-flex;
+  flex: none;
+}
+
+.duo-dots i {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+}
+
+.duo-dots i + i {
+  margin-left: -8px;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+/* Лист внутри проекции: та же пропорция 16:9, что и на настоящем проекторе. */
+.duo-slide {
+  position: relative;
+  width: 76%;
+  aspect-ratio: 460 / 258;
+  background: #fff;
+  padding: 24px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.duo-slide-h {
+  font-size: clamp(15px, 1.4vw, 20px);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin-bottom: 3px;
+}
+
+.duo-line {
+  height: 5px;
+  background: var(--line);
+}
+
+.duo-ink {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 /*
@@ -612,7 +832,7 @@ ul {
  * Класс вешает и через 1.2s снимает скрипт. Поэтому: без JS аватары просто
  * есть (базовое состояние видимое), и сцена не может проиграть второй раз
  * посреди чтения — например, когда узкое окно растянули до широкого и рейка
- * героя (styles.css: .hero-rail в @media max-width:1100px) снова включилась.
+ * героя (styles.css: диптих в @media max-width:1100px) снова включилась.
  */
 /*
  * Приходящий человек. Класс вешает скрипт ровно на один круг и ровно на один
@@ -655,36 +875,6 @@ ul {
   }
 }
 
-.hero-bottom {
-  display: flex;
-  gap: 48px;
-  padding-top: clamp(36px, 4.5vw, 56px);
-}
-
-/*
- * Мера у прозы, а не у колонки: две кнопки с меткой «скоро» шире 600px и
- * иначе переносятся друг под друга, чего на макете нет.
- */
-.hero-bottom > div {
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
-}
-
-.hero-bottom .lead {
-  max-width: 600px;
-}
-
-/*
- * Полоса цифр закрывает нижний край героя: до неё .hero-bottom обрывался
- * пустотой справа от прозы, а сам герой заканчивался ничем. Четыре колонки
- * flex:1 1 0 при 1248px дают ровно 312px — лента, делённая воздухом внутри
- * колонок, а не четыре карточки с зазорами. Линия сверху — тем же --brand-2,
- * что держит рейку героя: это третья горизонталь разворота, а не виджет.
- * Движения здесь нет намеренно: блок уже в первом экране, и «проявление»
- * ничего бы не открыло — только задержало бы чтение.
- */
-/* Одна яркая точка на полосу — та цифра, которую страница обещает в «Трёх шагах». */
 /* --------------------------------------------------------------- кнопки */
 
 .actions {
@@ -2457,8 +2647,25 @@ ul {
 }
 
 @media (max-width: 1100px) {
-  .hero-rail {
-    display: none;
+  /*
+   * Диптих в столбик, второй кадр остаётся: он и есть половина обещания
+   * страницы. Прежняя рейка героя на этой ширине пряталась совсем — и вместе с
+   * ней пропадала живая комната.
+   */
+  .duo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /*
+   * Тред встаёт в поток под лидом: на узком экране справа от заголовка нет
+   * места, а прятать его совсем значило бы снова потерять треть рассказа —
+   * ровно то, чем была плоха прежняя рейка.
+   */
+  .oracle {
+    position: static;
+    width: auto;
+    max-width: 520px;
+    padding-top: 8px;
   }
 
   .why-head,
@@ -2602,8 +2809,8 @@ ul {
     display: none;
   }
 
-  .hero-bottom {
-    padding-top: 32px;
+  .duo-frame {
+    height: clamp(200px, 52vw, 260px);
   }
 
   .btn-dead {
@@ -2746,5 +2953,78 @@ ul {
 
   .roles-ind {
     transition-duration: 1ms !important;
+  }
+}
+
+/* ------------------------------------------------------------- лекция --- */
+
+/*
+ * Шапка секции той же формы, что и у «Зачем»: метка колонкой слева, заголовок
+ * рядом. Своё имя, а не `.why-head`, потому что здесь нет линейки снизу —
+ * под шапкой идёт лид, а не сразу строки.
+ */
+.sec-head {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(24px, 6vw, 96px);
+}
+
+.sec-head .label {
+  flex: none;
+  width: 180px;
+  padding-top: 14px;
+}
+
+.sec-lead {
+  max-width: 760px;
+  padding-top: 20px;
+}
+
+/*
+ * Три карточки без рамок: информация лежит прямо на поверхности, а линейка
+ * сверху отбивает их друг от друга — тот же приём, что у «Что ломается».
+ */
+.lec-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(24px, 3vw, 40px);
+  padding-top: clamp(36px, 4vw, 56px);
+}
+
+.lec-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.lec-card p:last-child {
+  font-size: 16px;
+  line-height: 26px;
+  color: var(--muted);
+}
+
+.lec-note {
+  padding-top: clamp(28px, 3vw, 40px);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--faint);
+}
+
+@media (max-width: 900px) {
+  .lec-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sec-head {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .sec-head .label {
+    width: auto;
+    padding-top: 0;
   }
 }
