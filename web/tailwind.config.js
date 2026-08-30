@@ -211,6 +211,19 @@ export default {
           to: { opacity: '1', transform: 'translateY(0)' },
         },
         blink: { '0%, 100%': { opacity: '1' }, '50%': { opacity: '0.25' } },
+        /*
+         * Выдвижной лист пульта — заметки, «Ещё», страницы — выезжает СНИЗУ.
+         * Отсюда и на 100 % высоты: лист приходит из-под кромки планшета, как
+         * всякий лист на iPad, а не «появляется» — появление из ниоткуда на
+         * ночном экране читается как вспышка. Именованные кадры здесь, а не
+         * в scoped-стиле ConsoleView, потому что лист заметок в портрете
+         * пристыкован и не едет, а в ландшафте едет; кто его показывает, тот
+         * и решает, и решать должен одной утилитой.
+         */
+        'pult-slide': {
+          from: { transform: 'translateY(100%)' },
+          to: { transform: 'translateY(0)' },
+        },
       },
       animation: {
         // 160ms is the small-entrance tier (125-200ms), and the curve is the
@@ -225,6 +238,10 @@ export default {
         // own in-out curve is a snap-and-hold, which on a live dot reads as a
         // fault rather than a pulse.
         blink: 'blink 1.1s ease-in-out infinite',
+        // 220 мс — ярус панели, кривая — дверная: лист ПРИБЫВАЕТ, а не
+        // хлопает. `both`, чтобы на первом кадре лист уже стоял за кромкой, а
+        // не мигнул на месте до старта анимации.
+        'pult-slide': 'pult-slide var(--speed-panel) var(--ease-drawer) both',
       },
     },
   },

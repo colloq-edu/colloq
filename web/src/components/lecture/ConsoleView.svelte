@@ -6,36 +6,34 @@
   вопроса — что сейчас на экране, что дальше, что сказать, сколько прошло, — и
   каждый лишний орган управления это лишняя секунда молчания в аудитории.
 
-  ПУЛЬТ — ПРЕДМЕТ, А НЕ ЭКРАН: тёмный корпус с двумя обработанными кромками и
-  одним светящимся окном. Горизонтальных полос chrome нет ни одной. Верхней
-  нити, которая жила здесь раньше, больше нет: на ночном грунте это была
-  волосяная почти белая линия во всю ширину — второй по яркости предмет после
-  листа, — и она ставила стенные часы (смотрят раз в десять минут) в позицию
-  первого чтения, а номер страницы (смотрят каждую фразу) — ниже, в рейл.
-  Иерархия была перевёрнута. Груз нити разложен: часы и номер — в ПРИБОР слева,
-  имя документа — на экран выбора, полный экран, «Закончить», «Сменить
-  документ», «Левая рука» и справка про сон экрана — в лист «Ещё», который
-  открывается кнопкой «⋯» в шапке ленты заметок.
+  ПЛАНКА — GOODNOTES, А НЕ СТРАНИЦА В БРАУЗЕРЕ. Первый заход на iPad кончился
+  словами «слишком плохо»: лист стоял окошком в верхней трети, ладонь на его
+  полях запускала системное выделение, второй контакт ладони ронял штрих, а
+  указка жила отдельной пружиной, которую перо не снимало. Из этого выведены
+  четыре правила, по которым построен файл.
 
-  ТРИ ПРАВИЛА, ИЗ КОТОРЫХ ВЫВЕДЕНО ОСТАЛЬНОЕ.
-
-  1. Цель мерится инструментом, который на неё жмёт. Палец — 17–20 мм, отсюда
-     держащий рейл 104 px и клавиши от 88. Pencil — 1 мм, отсюда пишущий рейл
-     88 px и клавиши от 64. Рейлы РАЗНОЙ ширины, и ширина принадлежит руке: при
-     «левой руке» 104 едут вместе с рейлом.
-  2. Верх рейла — глазу, низ — пальцу. Прибор наверху и почти не нажимается;
-     всё, что жмут вслепую посреди фразы, прижато к низу.
-  3. Справа — то, что жмёт перо; слева — то, что жмёт большой палец. Отсюда
-     «Отменить» на пишущем рейле (ошибка пера, и рука уже над листом) и «Лист»
-     на держащем (это навигация, а не инструмент).
+  1. ЛИСТ — ВЕСЬ ОСТАТОК ЭКРАНА. Один рейл (72 px в ландшафте, 64 снизу в
+     портрете), поля 12 px, и всё остальное — бумага. Раньше поле листа было
+     постоянной высоты 584 под один iPad 11", а под ним лежала лента заметок
+     236 px и колонка «дальше»: на 12.9" и в портрете лист тонул. Теперь
+     заметки — выдвижной лист снизу поверх бумаги (ландшафт) или пристыкованный
+     остаток под ней (портрет), а «дальше» — эскиз в полосе-подглядке.
+  2. У КАСАНИЙ НА ЛИСТЕ ОДИН ХОЗЯИН — слой чернил. Пульт не слушает на
+     `.pult-sheet` ни одного pointer-события: ладонь — не жест, свайпа по листу
+     нет, второй палец ничего не роняет. Единственный жест пальцами на листе —
+     двухпальцевый тап, и его разбирает сам слой, отдавая сюда `onundo`.
+  3. УКАЗКА — ИНСТРУМЕНТ ПАЛИТРЫ, в одном ряду с пером, маркером и ластиком.
+     Взяли перо — указка снялась сама, как в любом приложении для заметок.
+     Пружина осталась только там, где её держат физически: клавиша L и
+     удержание клавиши на рейле дольше 300 мс.
+  4. ВЕСЬ ПУЛЬТ — БЕЗ ВЫДЕЛЕНИЯ И БЕЗ СИСТЕМНЫХ ЖЕСТОВ: `user-select: none` на
+     корне, `touch-action: none` на листе с полями. Единственное место, где
+     текст выделяют, — поле заметок.
 
   СВЕТ. Единственный источник — лист. Всё остальное живёт на ночном корпусе.
   Пульт НЕ СЛЕДУЕТ ТЕМЕ КОМНАТЫ: тёмный зал — факт о мире, а не настройка, и в
   светлой теме (умолчание ОС у большинства) человек получал бы белую плиту
   1180×820 в руки в тёмной аудитории. Тему одалживаем через `borrowTheme`.
-
-  РЕЖИМА «РУКА» НЕТ. Инструмент — это то, чем становится ПЕРО; палец не рисует
-  никогда, если перо на этом экране уже видели (`InkLayer` знает это сам).
 
   ПУЛЬТ НЕ ЖДЁТ СЕРВЕР. Страницу листает у себя мгновенно и показывает
   расхождение с проектором линейкой темпа, а не подменой числа: число, которое
@@ -183,7 +181,10 @@
      */
     if (!mayTurn) {
       behind = false
-      wanted = at
+      // Эффект читает `wanted` и здесь же пишет его: без `untrack` это тот
+      // самый цикл, который валит приложение (effect_update_depth_exceeded),
+      // стоит `at !== wanted` продержаться дольше одного повтора.
+      untrack(() => (wanted = at))
       return
     }
     const late = window.setTimeout(() => (behind = true), 600)
@@ -210,7 +211,6 @@
     const top = pages > 0 ? pages : Math.max(next, (lecture?.page ?? 1) + 1)
     // Отрицательный номер — чистый лист, и его в границы документа не загоняют.
     const target = next < 0 ? next : Math.min(Math.max(1, next), top)
-    drag = 0
     if (target === wanted) return
     wanted = target
     if (leading) session.send({ t: 'lecture:page', page: target })
@@ -308,7 +308,6 @@
    * измеримы: на проекторе с внутризальным контрастом ~300:1 синий и чёрный
    * оба падают в нижние 8 % шкалы и с восьмого ряда неразличимы, а на ночном
    * рейле диск #0f2d69 на корпусе — это 1.5:1, его не видно вовсе.
-   * Освободившиеся 75 px ушли в мёртвую зону запястья, которой не хватало.
    *
    * Имена — договор с проверкой интерфейса, менять нельзя.
    */
@@ -322,97 +321,130 @@
    *
    * Подсветка обязана быть светлее бумаги под текстом, и такой цвет ровно
    * один. Прозрачность едет В САМОМ цвете (восемь знаков), чтобы штрих лёг
-   * одним `stroke()` и альфа не удваивалась на самопересечениях.
+   * одним `stroke()` и альфа не удваивалась на самопересечениях. Поэтому
+   * повторный тап по «Маркеру» не открывает ничего: выбирать там нечего.
    */
   const MARKER = '#ffd60a80'
-  const PEN_WIDTH = 0.005
   const MARKER_WIDTH = 0.022
+  /**
+   * Три толщины пера долями ширины страницы. Средняя — прежняя единственная
+   * 0.005 (5 px на 1084): тонкая под формулы мелким почерком, толстая под
+   * заголовок через весь слайд. Точки в палитре 4/6/10 px — это форма, а не
+   * масштаб: разница в толщине читается за один взгляд.
+   */
+  const WIDTHS = [
+    { width: 0.0035, name: 'Тонкое', dot: 4 },
+    { width: 0.005, name: 'Среднее', dot: 6 },
+    { width: 0.008, name: 'Толстое', dot: 10 },
+  ]
 
-  /** Перо по умолчанию — ЧЁРНОЕ: на рейле оно ближе всех к руке. */
-  let tool = $state<'pen' | 'marker' | 'eraser'>('pen')
-  let inkColor = $state(INKS[2].color)
-
-  const strokeColor = $derived(tool === 'marker' ? MARKER : inkColor)
-  const strokeWidth = $derived(tool === 'marker' ? MARKER_WIDTH : PEN_WIDTH)
+  type Tool = 'pen' | 'marker' | 'eraser' | 'laser'
 
   /**
-   * Маркер и ластик переключаются туда и обратно — обратно в перо, а не в
-   * «руку»: руки здесь нет, и вернуться к письму человек обязан тем же
-   * нажатием, каким ушёл.
+   * Инструмент — ОДИН, и указка в нём. «Перо, чёрное, среднее» при входе, и
+   * это не хранится: инструмент — состояние руки на эту пару, а не настройка.
    */
-  function pick(next: 'marker' | 'eraser'): void {
-    tool = tool === next ? 'pen' : next
+  let tool = $state<Tool>('pen')
+  let inkColor = $state(INKS[2].color)
+  let penWidth = $state(WIDTHS[1].width)
+
+  const strokeColor = $derived(tool === 'marker' ? MARKER : inkColor)
+  const strokeWidth = $derived(tool === 'marker' ? MARKER_WIDTH : penWidth)
+
+  /**
+   * Любой выбор — присваивание. Указка при этом снимается сама: в GoodNotes,
+   * Notability и Freeform указка — такой же инструмент, как перо, и взятое
+   * перо её убирает. Прежняя схема «указка поверх выбранного пера» требовала
+   * отдельного выключения и оставляла красную точку гулять по проектору.
+   */
+  function pick(next: Tool): void {
+    tool = next
+    palette = false
   }
 
   function penIn(color: string): void {
     tool = 'pen'
     inkColor = color
+    palette = false
+  }
+
+  function penWide(width: number): void {
+    tool = 'pen'
+    penWidth = width
+    palette = false
   }
 
   /**
-   * УКАЗКА: короткое нажатие включает, долгое — пружина.
-   *
-   * Пружиной она была задумана из хорошего довода: забытая указка — красная
-   * точка, гуляющая по проектору всю оставшуюся пару. Но чистая пружина
-   * оказалась кнопкой, которая ничего не делает: чтобы точка появилась, надо
-   * ДЕРЖАТЬ клавишу на рейле И одновременно вести по листу, а это две руки на
-   * планшете и ни одной мыши на ноутбуке. Первое же, что о ней сказали вслух:
-   * «нажимается, но указка не работает — просто пустое нажатие».
-   *
-   * Поэтому оба поведения, и различает их время удержания. Тап (меньше 300 мс)
-   * — режим: указка остаётся включённой, пока её не выключат тем же тапом или
-   * не возьмут другой инструмент. Удержание — как держат настоящую указку:
-   * отпустили клавишу, и погасло.
-   *
-   * Довод про забытую указку при этом не пропал: пока она включена, клавиша
-   * горит плитой на рейле, а на листе живёт красная точка — забыть её труднее,
-   * чем режим пера.
+   * ПАЛИТРА ПЕРА — всплывает по тапу по УЖЕ АКТИВНОМУ перу, как в любом
+   * приложении для заметок: первый тап берёт инструмент, второй открывает его
+   * настройки. Закрывается выбором, тапом мимо, Escape и первым же касанием
+   * листа (`busy`): палитра, оставшаяся висеть над формулой, — это лишний
+   * объект между глазом и тем, что пишут.
    */
-  let pointing = $state(false)
-  /** Когда нажали клавишу: тап и удержание — разные жесты. */
-  let pointFrom = 0
-  /** Тап включил указку режимом — тогда подъём клавиши её не гасит. */
-  let pointLatched = $state(false)
-  const TAP_MS = 300
+  let palette = $state(false)
 
-  const pointingNow = $derived((pointing || pointLatched) && leading && !offline)
+  function penKey(): void {
+    if (tool === 'pen') palette = !palette
+    else pick('pen')
+  }
 
-  function pointDown(): void {
+  /**
+   * ПРУЖИНА УКАЗКИ — временная подмена инструмента, а не режим.
+   *
+   * Держат клавишу L или клавишу «Указка» на рейле дольше 300 мс — светит;
+   * отпустили — вернулся тот инструмент, что был. Тап короче 300 мс — обычный
+   * выбор инструмента. Довод про забытую указку при этом не пропал: пока
+   * она выбрана, клавиша горит плитой на рейле, а на листе живёт красная
+   * точка, и первое же перо её снимает.
+   */
+  let sprung = $state(false)
+  const SPRING_MS = 300
+  let springTimer: number | undefined
+  /** Клавиша на рейле нажата и ещё не отпущена. */
+  let laserKeyDown = false
+
+  function laserDown(): void {
     if (!leading || offline) return
-    // Второй тап по горящей указке — выключить: тем же нажатием, каким включили.
-    if (pointLatched) {
-      pointLatched = false
-      pointing = false
-      return
-    }
-    pointFrom = performance.now()
-    pointing = true
+    laserKeyDown = true
+    window.clearTimeout(springTimer)
+    springTimer = window.setTimeout(() => {
+      if (laserKeyDown) sprung = true
+    }, SPRING_MS)
   }
 
-  function pointUp(): void {
-    if (!pointing) return
-    if (performance.now() - pointFrom < TAP_MS) {
-      // Это был тап: указка остаётся гореть.
-      pointLatched = true
+  function laserUp(): void {
+    if (!laserKeyDown) return
+    laserKeyDown = false
+    window.clearTimeout(springTimer)
+    if (sprung) {
+      sprung = false
       return
     }
-    pointing = false
+    laserToggle()
   }
 
-  function pointOff(): void {
-    pointing = false
-    pointLatched = false
+  function laserToggle(): void {
+    if (!leading || offline) return
+    pick(tool === 'laser' ? 'pen' : 'laser')
+  }
+
+  function laserCancel(): void {
+    laserKeyDown = false
+    window.clearTimeout(springTimer)
+    sprung = false
   }
 
   /*
-   * Указку гасит всё, что отменяет её смысл: обрыв связи (светить некуда),
-   * потеря пульта и уход с экрана. Без этого «горит, а не работает» —
-   * состояние, из которого не выбраться нажатием.
+   * Обрыв связи и потеря пульта снимают указку: светить некуда, а горящая
+   * клавиша при этом обещала бы то, чего не делает. Возвращаемся к перу —
+   * тому инструменту, которым продолжают работать и без связи.
    */
   $effect(() => {
     const alive = leading && !offline
     untrack(() => {
-      if (!alive && (pointing || pointLatched)) pointOff()
+      if (alive) return
+      laserCancel()
+      if (tool === 'laser') tool = 'pen'
     })
   })
 
@@ -453,13 +485,23 @@
    */
   const HOLD_MS = 500
   let holdTimer: number | undefined
-  let held = false
+  let wiped = false
+  /**
+   * Клавиша ластика нажата и ещё не отпущена — как `laserKeyDown` у указки.
+   *
+   * Без этого флага `pointerup` срабатывал БЕЗ пары: перехватчик ладони
+   * глотает `pointerdown`, а подъём пропускает (иначе удержание не отпустить),
+   * и пятка ладони, легшая на «Ластик» посреди буквы и поднявшаяся, брала
+   * ластик — следующим движением пера преподаватель стирал написанное.
+   */
+  let eraserKeyDown = false
 
   function eraserDown(): void {
-    held = false
+    wiped = false
+    eraserKeyDown = true
     window.clearTimeout(holdTimer)
     holdTimer = window.setTimeout(() => {
-      held = true
+      wiped = true
       wipePage()
     }, HOLD_MS)
   }
@@ -467,8 +509,16 @@
   function eraserUp(): void {
     window.clearTimeout(holdTimer)
     holdTimer = undefined
-    if (!held) pick('eraser')
-    held = false
+    if (!eraserKeyDown) return
+    eraserKeyDown = false
+    if (!wiped) pick('eraser')
+    wiped = false
+  }
+
+  function eraserCancel(): void {
+    window.clearTimeout(holdTimer)
+    holdTimer = undefined
+    eraserKeyDown = false
   }
 
   /* ---------------------------------------------------------------- часы */
@@ -492,12 +542,9 @@
   )
 
   /**
-   * Секундомер, и ПОСЛЕ ЧАСА ОН ТЕРЯЕТ СЕКУНДЫ: «1:02», а не «1:02:15».
-   *
-   * Семь знаков моноширинного тридцатого кегля — это 126 px, а рейл шириной
-   * 104. Резать кегль ради второй половины пары нельзя: часы читают боковым
-   * зрением. К тому же через час секунды и не значат ничего — вопрос в этот
-   * момент звучит «сколько осталось», а не «сколько прошло».
+   * Секундомер, и ПОСЛЕ ЧАСА ОН ТЕРЯЕТ СЕКУНДЫ: «1:02», а не «1:02:15». Через
+   * час секунды не значат ничего — вопрос в этот момент звучит «сколько
+   * осталось», а не «сколько прошло».
    */
   function stopwatch(ms: number): string {
     const total = Math.floor(ms / 1000)
@@ -510,8 +557,7 @@
   /*
    * Стенные часы собираются руками, а не `toLocaleTimeString`: в аудитории
    * время читают в двадцатичетырёхчасовом виде независимо от того, какой язык
-   * стоит в планшете, а «2:36 PM» под секундомером лекции читается вдвое
-   * дольше.
+   * стоит в планшете, а «2:36 PM» под номером страницы читается вдвое дольше.
    */
   function hhmm(ms: number): string {
     const at = new Date(ms)
@@ -526,12 +572,12 @@
   let box = $state({ w: 0, h: 0 })
 
   /**
-   * Порог раскладки читается наблюдателем за размером, а не медиа-запросом.
+   * Ориентация читается наблюдателем за размером, а не медиа-запросом.
    *
    * На iPadOS окно меняет размер непрерывно (Split View, оконная
    * многозадачность), `orientationchange` приходит раньше, чем раскладка
-   * устоится, а «портрет» — это не поворот, а ширина. Наблюдатель отвечает на
-   * тот вопрос, который мы на самом деле задаём.
+   * устоится, а «портрет» — это не поворот, а пропорция окна. Наблюдатель
+   * отвечает на тот вопрос, который мы на самом деле задаём.
    */
   $effect(() => {
     const node = root
@@ -550,14 +596,21 @@
     return () => watch.disconnect()
   })
 
-  /** Полная раскладка с рейлами. Ниже порога — честная деградация, не вторая схема. */
-  const wide = $derived(box.w >= 700 && box.h >= 560)
+  /**
+   * Две раскладки одной логики, а не «широкая и деградация». Портрет — рейл
+   * снизу под большой палец держащей руки, заметки пристыкованы под листом;
+   * ландшафт — рейл сбоку, заметки выдвигаются. Порога «wide» больше нет: он
+   * был мерой одного экрана 1180×820, а планшетов у людей три размера и две
+   * ориентации.
+   */
+  const portrait = $derived(box.h > box.w)
   /** Slide Over: пульт остаётся живым, но перестаёт быть пультом. */
   const tiny = $derived(box.w > 0 && box.w < 420)
 
   const HAND_KEY = 'colloq.pult.hand'
   const NOTES_KEY = 'colloq.pult.notes'
   const LAMP_KEY = 'colloq.pult.lamp'
+  const FINGER_KEY = 'colloq.pult.finger'
 
   function remembered(key: string): string | null {
     try {
@@ -576,39 +629,47 @@
     }
   }
 
-  /**
-   * Левша: рейлы меняются местами ЦЕЛИКОМ — вместе с шириной и с полосами
-   * «включено». Ширина принадлежит руке, а не стороне экрана: под большим
-   * пальцем всегда 104, под пером всегда 88.
-   */
+  /** Левша: рейл переезжает на правую кромку целиком, вместе с палитрой. */
   let hand = $state<'right' | 'left'>(remembered(HAND_KEY) === 'left' ? 'left' : 'right')
-
-  /**
-   * Свёрнута ли лента заметок: выбор человека, а `null` — выбора ещё не было.
-   *
-   * Три состояния, а не два, потому что умолчание здесь зависит от документа.
-   * Тому, у кого к этой колоде не написано ни строчки, лента отнимает 200 px
-   * колодца и не даёт взамен ничего; тому, кто вчера расписал двадцать четыре
-   * страницы, свёрнутая лента прячет ровно то, ради чего он открыл пульт.
-   */
-  const NOTES_CHOICE = remembered(NOTES_KEY)
-  let foldChoice = $state<'folded' | 'open' | null>(
-    NOTES_CHOICE === 'folded' || NOTES_CHOICE === 'open' ? NOTES_CHOICE : null,
-  )
-  const folded = $derived(
-    foldChoice !== null
-      ? foldChoice === 'folded'
-      : session.notesFile === file && Object.keys(session.notes).length === 0,
-  )
 
   function setHand(next: 'right' | 'left'): void {
     hand = next
     remember(HAND_KEY, next)
   }
 
-  function setFolded(next: boolean): void {
-    foldChoice = next ? 'folded' : 'open'
-    remember(NOTES_KEY, next ? 'folded' : 'open')
+  /**
+   * Открыт ли выдвижной лист заметок (ландшафт). Ключ тот же, что у прежней
+   * ленты: `open` — человек хочет видеть заметки с первой секунды, всё
+   * остальное — закрыто. Умолчание закрыто, потому что лист лежит ПОВЕРХ
+   * бумаги: открытый при входе, он прятал бы ровно то, ради чего пульт
+   * открыли. Заметка при этом не пропадает — её первые строки видны в
+   * полосе-подглядке под листом.
+   */
+  let notesOpen = $state(remembered(NOTES_KEY) === 'open')
+
+  function setNotes(open: boolean): void {
+    notesOpen = open
+    remember(NOTES_KEY, open ? 'open' : 'folded')
+  }
+
+  /**
+   * РИСОВАТЬ ПАЛЬЦЕМ. Умолчание — да: у того, кто открыл пульт без Pencil'а,
+   * иначе нет способа поставить на слайде ни одной черты. Первое же перо на
+   * этом экране выключает палец (`onpen` из слоя чернил) и говорит об этом
+   * тостом: с этого момента палец на листе — ладонь, а не инструмент. Строка
+   * в «Ещё» возвращает, если Pencil сел посреди пары.
+   */
+  let fingerOn = $state(remembered(FINGER_KEY) !== 'off')
+
+  function setFinger(on: boolean): void {
+    fingerOn = on
+    remember(FINGER_KEY, on ? 'on' : 'off')
+  }
+
+  function penFound(): void {
+    if (!fingerOn) return
+    setFinger(false)
+    say('Перо найдено — палец больше не рисует')
   }
 
   /* ------------------------------------------------------------- фейдер */
@@ -617,14 +678,14 @@
    * ФЕЙДЕР ЛИСТА — регулятор единственного источника света на этом экране.
    *
    * Лист — единственное светлое пятно пульта, и в тёмной аудитории на второй
-   * половине пары он слепит: 928×522 белого в руках, пока зал сидит в темноте.
-   * Выходить за этим в системную яркость нельзя — она гасит заодно заметки,
-   * которые как раз надо читать, и стоит трёх касаний по шторке.
+   * половине пары он слепит: 1084×610 белого в руках, пока зал сидит в
+   * темноте. Выходить за этим в системную яркость нельзя — она гасит заодно
+   * заметки, которые как раз надо читать, и стоит трёх касаний по шторке.
    *
    * Три детента, а не циклическая кнопка: у фейдера всегда видно текущее
    * положение. Работает пеленой ПОВЕРХ листа и чернил — и не касается ни
-   * рейлов, ни ленты заметок, ни проектора вовсе: зал видит свою проекцию
-   * такой, какой видел.
+   * рейла, ни заметок, ни проектора вовсе: зал видит свою проекцию такой,
+   * какой видел.
    */
   const LAMPS = [
     { name: 'Полный свет', veil: 0, bar: 4 },
@@ -652,12 +713,11 @@
   /* --------------------------------------------------------------- листы */
 
   /**
-   * Что поднято снизу. Один лист за раз: два — это уже интерфейс, а не пульт.
-   *
-   * Объявлено раньше всего, что его читает: пока лист открыт, перо на слайде
-   * не рисует, и `canDraw` ниже спрашивает именно отсюда.
+   * Что поднято снизу поверх всего. Один лист за раз: два — это уже
+   * интерфейс, а не пульт. Пока такой лист открыт, перо на слайде не рисует:
+   * лист накрывает лист.
    */
-  let pane = $state<'pages' | 'more' | 'grab' | 'ink' | 'files' | null>(null)
+  let pane = $state<'pages' | 'more' | 'grab' | 'files' | null>(null)
   /** Подтверждение «стереть страницу» — внутри строки листа «Ещё». */
   let wipeAsked = $state(false)
   /** Подтверждение «закончить лекцию» — там же, последней строкой. */
@@ -665,91 +725,119 @@
 
   function openPane(next: typeof pane): void {
     pane = next
+    palette = false
     wipeAsked = false
     stopAsked = false
   }
 
-  /* --------------------------------------------------- перо, ладонь, свайп */
+  /* ----------------------------------------------------- перо и ладонь */
 
-  /** Слой чернил держит указатель: идёт штрих, стирание или указка. */
+  /** Слой чернил держит указатель: идёт штрих, стирание или указка светит. */
   let busy = $state(false)
   let lastBusyAt = 0
-  /** Отменить начатый штрих: второй палец, открытый лист, правка заметки. */
-  let suspend = $state(false)
-  /** Лист правки заметки открыт — перо на слайде в это время не рисует. */
+  /** В поле заметок фокус — перо на слайде в это время не рисует. */
   let editing = $state(false)
-  /** Видели ли перо на ЭТОМ экране: пока нет — палец рисует, а не листает. */
-  let penSeen = false
 
-  const sheetOpen = $derived(pane !== null)
-  const canDraw = $derived(leading && !failure && !editing && !sheetOpen)
-  /** Чем слой чернил занят прямо сейчас. Указка — пружина и бьёт всё остальное. */
-  const liveTool = $derived(!canDraw ? 'off' : pointingNow ? 'laser' : tool)
+  const paneOpen = $derived(pane !== null)
+  /**
+   * Открытый лист заметок `canDraw` НЕ меняет: он занимает нижнюю половину, а
+   * верхняя остаётся бумагой, на которой пишут. Гасит перо только фокус в
+   * поле — и тогда слой чернил закрывает штрих, а не стирает его.
+   */
+  const canDraw = $derived(leading && !failure && !paneOpen)
+  /** Чем слой чернил занят прямо сейчас. Пружина подменяет инструмент на время. */
+  const liveTool = $derived(!canDraw ? 'off' : sprung ? 'laser' : tool)
 
   function onbusy(next: boolean): void {
     busy = next
     if (!next) lastBusyAt = performance.now()
+    // Первое касание листа закрывает палитру: её работа кончилась.
+    else palette = false
   }
 
   /**
    * Ладонь, легшая на рейл.
    *
-   * Отсечение внутри слоя чернил спасает только сам лист; кнопки — нет.
-   * Левша кладёт руку слева сверху, ровно туда, где живёт «Назад». Поэтому
-   * на корне пульта стоит перехватчик: пока перо занято или отпущено меньше
-   * 600 мс назад, касания до КНОПОК не доходят.
+   * Слой чернил игнорирует ладонь на самом листе; кнопки рейла — нет. Левша
+   * кладёт руку справа сверху, ровно туда, где живёт «Перо». Поэтому на корне
+   * пульта стоит перехватчик: пока перо занято или отпущено меньше 600 мс
+   * назад, касания пальцем до КЛАВИШ РЕЙЛА не доходят.
    *
    * 600 мс — эвристика: короче — ладонь успеет нажать «Указку», длиннее —
    * большой палец перестанет работать сразу после того, как дописали слово.
    *
-   * Лист исключён нарочно: его касания разбирает слой чернил (указка пальцем),
-   * и проглоченный `pointerup` оставил бы указку гореть. `preventDefault` на
-   * `pointerdown` НЕ отменяет последующий `click` — его глотаем отдельно; в
-   * Safari он приходит как PointerEvent и несёт `pointerType`.
+   * Глотаются ТОЛЬКО `pointerdown` и `click`; `pointerup` и `pointercancel`
+   * проходят всегда — иначе клавиша с удержанием (ластик, указка) осталась
+   * бы нажатой без подъёма и стёрла бы страницу по таймеру. `preventDefault`
+   * на `pointerdown` НЕ отменяет последующий `click`, поэтому перехватчик
+   * помнит указатель: нажатие принадлежит касанию целиком, и проглоченное
+   * касание глотается до конца, в том числе его `click`.
+   *
+   * ВТОРОЕ ПРАВИЛО — ПО РАЗМЕРУ ПЯТНА, и оно действует на всём пульте, а не
+   * только на рейле: касание шириной от 40 px — пятка ладони, и она не
+   * нажимает ничего. Подушечка пальца на стекле — 15–20 px, пятка — 40–60.
+   * Первое правило молчит, пока перо не коснулось листа, а пятка садится на
+   * 100–300 мс РАНЬШЕ кончика — ровно на «Вперёд» (правша) или на «Указку»
+   * (левша, рейл справа), и на поле заметок в портрете, где она уводила фокус
+   * в textarea и поднимала клавиатуру посреди фразы. Размер браузер отдаёт не
+   * везде (старые WebKit — 1×1), поэтому это второй замок, а не замена
+   * первому.
    */
   const PALM_MS = 600
+  const PALM_PX = 40
 
   $effect(() => {
     const node = root
     if (!node) return
-    /*
-     * Перехватчик помнит УКАЗАТЕЛЬ, а не только момент.
-     *
-     * Решать про каждое событие отдельно было половиной охраны: `pointerdown`
-     * ладони глотался, пока перо занято, а `pointerup` и `click` того же
-     * касания проходили, стоило истечь шестистам миллисекундам с подъёма пера.
-     * То есть ровно в том случае, ради которого всё написано: ладонь легла на
-     * «ЛИСТ», преподаватель дописал строку, поднял перо — и палец, всё ещё
-     * лежащий на кнопке, нажимал её на подъёме. Нажатие принадлежит касанию
-     * целиком, поэтому проглоченное касание глотается до конца.
-     */
     const swallowed = new Set<number>()
     const watch = (event: Event): void => {
       const pointer = event as PointerEvent
-      if (!('pointerType' in pointer)) return
-      if (pointer.pointerType === 'pen') {
-        penSeen = true
-        return
-      }
-      if (pointer.pointerType !== 'touch') return
-      if ((event.target as Element | null)?.closest('.pult-sheet')) return
+      if (!('pointerType' in pointer) || pointer.pointerType !== 'touch') return
       const id = pointer.pointerId
       const known = swallowed.has(id)
-      if (!known && !busy && performance.now() - lastBusyAt >= PALM_MS) return
-      if (event.type === 'pointerdown') swallowed.add(id)
-      else if (event.type === 'pointerup' || event.type === 'pointercancel') {
-        // `click` приходит ПОСЛЕ `pointerup`, поэтому забываем указатель не
-        // сразу, а следующей задачей — иначе нажатие проскочит последним.
-        setTimeout(() => swallowed.delete(id), 0)
+      const heel =
+        event.type === 'pointerdown' && (pointer.width >= PALM_PX || pointer.height >= PALM_PX)
+      const onRail = !!(event.target as Element | null)?.closest('.pult-rail')
+      if (!known && !heel && !(onRail && (busy || performance.now() - lastBusyAt < PALM_MS))) return
+      if (event.type === 'pointerdown') {
+        swallowed.add(id)
+        // `click` приходит после `pointerup`, а `pointerup` мы не трогаем —
+        // забываем указатель по таймеру, которого хватит на любой тап.
+        setTimeout(() => swallowed.delete(id), 1500)
       }
       event.stopPropagation()
       if (event.cancelable) event.preventDefault()
     }
-    const names = ['pointerdown', 'pointerup', 'pointercancel', 'click'] as const
-    for (const name of names) node.addEventListener(name, watch, true)
+    node.addEventListener('pointerdown', watch, true)
+    node.addEventListener('click', watch, true)
     return () => {
-      for (const name of names) node.removeEventListener(name, watch, true)
+      node.removeEventListener('pointerdown', watch, true)
+      node.removeEventListener('click', watch, true)
     }
+  })
+
+  /**
+   * Палитра закрывается ПЕРВЫМ касанием мимо неё — и касание идёт дальше.
+   *
+   * Раньше под палитрой лежало ложе-кнопка во весь пульт, поверх слоя ввода:
+   * первый штрих уходил в ложе и не рисовался, а сама палитра оставалась
+   * открытой — перо, начав на ложе, поднималось на листе, и `click` не
+   * приходил. Теперь ложа нет: слушаем `pointerdown` на корне в фазе захвата,
+   * закрываем палитру и НЕ останавливаем событие — как в GoodNotes, где
+   * попап уходит, а штрих идёт. Касание по самой палитре и по клавише
+   * «Перо» (она палитру и переключает) не в счёт.
+   */
+  $effect(() => {
+    const node = root
+    if (!node) return
+    const away = (event: Event): void => {
+      if (!palette) return
+      const target = event.target as Element | null
+      if (target?.closest('[data-pult-palette], [aria-label="Перо"]')) return
+      palette = false
+    }
+    node.addEventListener('pointerdown', away, true)
+    return () => node.removeEventListener('pointerdown', away, true)
   })
 
   /**
@@ -771,100 +859,100 @@
     }
   })
 
-  /*
-   * Свайп по листу.
+  /**
+   * ЛИСТАНИЕ СВАЙПОМ — ПО РЕЙЛУ, а не по листу.
    *
-   * Одним пальцем — только когда перо уже видели: пока рисует палец, свайп
-   * забрал бы у него штрих. Двумя — всегда: это запасной путь для того, у
-   * кого Pencil сел посреди пары.
-   *
-   * Старт дальше 24 px от левой кромки листа: у самой кромки живёт системный
-   * «назад» Safari, который не выключается ничем.
-   *
-   * Одиночного тапа по листу нет вовсе. Планшет лежит на кафедре, его задевают
-   * рукавом, а перелистнувшийся слайд посреди фразы видит весь зал.
+   * Свайп по листу убран целиком: ладонь пишущей руки приходит обычным
+   * `touch` и едет вместе с рукой ровно на те же 64 px, и слайд
+   * перелистывался посреди формулы у всего зала. Рейл ладонью не задевают,
+   * а большой палец на нём и так лежит. Горизонтальный в ландшафте (рейл
+   * сбоку), вертикальный в портрете (рейл снизу). Клавиша под пальцем при
+   * сдвиге больше 12 px не нажимается: её `click` глотается на подъёме.
    */
   const SWIPE_MIN = 64
-  const SWIPE_CAP = 56
-  const EDGE_GUARD = 24
+  const SWIPE_SLOP = 12
 
-  let drag = $state(0)
-  let sliding = $state(false)
-  /** Сколько живёт касание, о конце которого нам не сказали. */
-  const STALE_MS = 4000
-  const touching = new Map<number, { x: number; y: number; at: number }>()
-  let gesture: { id: number; x: number; y: number; live: boolean } | null = null
-
-  function sheetDown(event: PointerEvent): void {
-    if (event.pointerType !== 'touch') return
-    /*
-     * Перо на листе — значит, и рука на нём.
-     *
-     * Ладонь пишущей руки приходит обычным `touch` и едет вправо вместе с
-     * рукой: ровно свайп, ровно те же 64 пикселя. Слайд перелистывался
-     * посреди формулы, у всего зала. Та же мера, что и на кнопках: пока перо
-     * занято и 600 мс после — палец на листе не значит ничего.
-     */
-    if (busy || performance.now() - lastBusyAt < PALM_MS) return
-    /*
-     * Заодно выкидываем фантомы. Касание, начатое на листе и отпущенное над
-     * рейлом, не приносит сюда `pointerup` — а один такой призрак в карте
-     * значит, что следующий же палец даёт «двое», и перо не рисует до
-     * перезагрузки вкладки.
-     */
-    const now = performance.now()
-    for (const [id, seen] of touching) if (now - seen.at > STALE_MS) touching.delete(id)
-    touching.set(event.pointerId, { x: event.clientX, y: event.clientY, at: now })
-    if (!mayTurn) return
-    if (touching.size === 2) {
-      // Второй палец отменяет начатый пальцем штрих и берёт листание себе.
-      suspend = true
-      gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, live: true }
-      sliding = true
-      return
+  function swipe(node: HTMLElement, axis: () => 'x' | 'y') {
+    let start: { id: number; x: number; y: number } | null = null
+    let moved = false
+    const down = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch' || start !== null) return
+      start = { id: event.pointerId, x: event.clientX, y: event.clientY }
+      moved = false
     }
-    if (touching.size > 2) return
-    const edge = (event.target as Element | null)?.closest('.pult-sheet')?.getBoundingClientRect()
-    const far = edge === undefined ? true : event.clientX - edge.left > EDGE_GUARD
-    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, live: penSeen && far }
-    sliding = gesture.live
-  }
-
-  function sheetMove(event: PointerEvent): void {
-    if (event.pointerType !== 'touch') return
-    const seen = touching.get(event.pointerId)
-    if (seen) {
-      seen.x = event.clientX
-      seen.y = event.clientY
-      seen.at = performance.now()
+    const move = (event: PointerEvent): void => {
+      if (!start || start.id !== event.pointerId) return
+      const d = axis() === 'x' ? event.clientX - start.x : event.clientY - start.y
+      if (Math.abs(d) > SWIPE_SLOP) moved = true
     }
-    if (!gesture || gesture.id !== event.pointerId || !gesture.live) return
-    const dx = event.clientX - gesture.x
-    const dy = event.clientY - gesture.y
-    if (Math.abs(dx) <= Math.abs(dy) * 1.6) return
-    // Лист едет за пальцем, но недалеко: это ответ на жест, а не путешествие.
-    drag = Math.max(-SWIPE_CAP, Math.min(SWIPE_CAP, dx))
-  }
-
-  function sheetUp(event: PointerEvent): void {
-    if (event.pointerType !== 'touch') return
-    const done = gesture && gesture.id === event.pointerId ? gesture : null
-    touching.delete(event.pointerId)
-    if (done) {
-      const dx = event.clientX - done.x
-      const dy = event.clientY - done.y
-      gesture = null
-      sliding = false
-      drag = 0
-      if (done.live && Math.abs(dx) >= SWIPE_MIN && Math.abs(dx) > Math.abs(dy) * 1.6) {
-        step(dx < 0 ? 1 : -1)
+    const up = (event: PointerEvent): void => {
+      if (!start || start.id !== event.pointerId) return
+      const along = axis() === 'x' ? event.clientX - start.x : event.clientY - start.y
+      const across = axis() === 'x' ? event.clientY - start.y : event.clientX - start.x
+      start = null
+      if (event.type === 'pointercancel') return
+      /*
+       * Подъём тоже обязан быть на рейле, и перо в этот момент — не в деле.
+       * Касание, начатое на рейле и уехавшее на лист, — это ладонь левши,
+       * севшая на правый рейл и поехавшая влево вместе с рукой: те же 64 px,
+       * что и свайп, и у зала переворачивалась страница посреди формулы.
+       */
+      const under = document.elementFromPoint(event.clientX, event.clientY)
+      if (!under || !node.contains(under)) return
+      if (busy) return
+      if (Math.abs(along) >= SWIPE_MIN && Math.abs(along) > Math.abs(across) * 1.6) {
+        // Влево или вверх — вперёд: лист «утаскивают» за собой.
+        if (mayTurn) step(along < 0 ? 1 : -1)
       }
     }
-    if (touching.size === 0) {
-      suspend = false
-      gesture = null
-      sliding = false
-      drag = 0
+    const click = (event: Event): void => {
+      if (!moved) return
+      moved = false
+      event.stopPropagation()
+      event.preventDefault()
+    }
+    node.addEventListener('pointerdown', down)
+    node.addEventListener('pointermove', move)
+    node.addEventListener('pointerup', up)
+    node.addEventListener('pointercancel', up)
+    node.addEventListener('click', click, true)
+    return {
+      destroy() {
+        node.removeEventListener('pointerdown', down)
+        node.removeEventListener('pointermove', move)
+        node.removeEventListener('pointerup', up)
+        node.removeEventListener('pointercancel', up)
+        node.removeEventListener('click', click, true)
+      },
+    }
+  }
+
+  /**
+   * Свайп вниз по шапке листа заметок закрывает его — так закрывают любой
+   * выдвижной лист на планшете, и палец тянется туда раньше, чем к шеврону.
+   */
+  function sheetSwipe(node: HTMLElement) {
+    let start: { id: number; y: number } | null = null
+    const down = (event: PointerEvent): void => {
+      if (event.pointerType !== 'touch') return
+      const top = node.getBoundingClientRect().top
+      if (event.clientY - top > 48) return
+      start = { id: event.pointerId, y: event.clientY }
+    }
+    const up = (event: PointerEvent): void => {
+      if (!start || start.id !== event.pointerId) return
+      const dy = event.clientY - start.y
+      start = null
+      if (dy >= 40) setNotes(false)
+    }
+    node.addEventListener('pointerdown', down)
+    node.addEventListener('pointerup', up)
+    node.addEventListener('pointercancel', () => (start = null))
+    return {
+      destroy() {
+        node.removeEventListener('pointerdown', down)
+        node.removeEventListener('pointerup', up)
+      },
     }
   }
 
@@ -888,6 +976,40 @@
   function toggleFullscreen(): void {
     if (full) void leaveFullscreen()
     else if (root) void goFullscreen(root)
+  }
+
+  /**
+   * ЛОЖЕ «КОСНИТЕСЬ, ЧТОБЫ ВЗЯТЬ ПУЛЬТ».
+   *
+   * Полный экран дают только из живого жеста, а лекция, начатая с ноутбука
+   * и открытая на планшете по ключу, никакого жеста не имеет: пульт
+   * появлялся в окне Safari с адресной строкой, и первое, что делал человек,
+   * — искал, как её убрать. Ложе превращает первое касание в этот жест.
+   * Показывается один раз и только когда полный экран вообще возможен и не
+   * взят; «Вести» и «Взять пульт» просят его сами, и ложе им не нужно.
+   */
+  let cover = $state(false)
+  let coverShown = false
+  /** Лекцию начали или перехватили с ЭТОГО экрана — жест уже был. */
+  let startedHere = false
+
+  $effect(() => {
+    const mine = leading
+    const shown = full
+    untrack(() => {
+      if (!mine) {
+        cover = false
+        return
+      }
+      if (coverShown || startedHere || shown || !fullscreenPossible()) return
+      coverShown = true
+      cover = true
+    })
+  })
+
+  function takeConsole(): void {
+    cover = false
+    if (root) void goFullscreen(root)
   }
 
   /**
@@ -917,6 +1039,12 @@
   )
 
   const AUTOLOCK = 'Настройки → Экран и яркость → Автоблокировка → Никогда.'
+  /**
+   * Гид-доступ — единственное, что убирает с iPad жест «домой» и шторки, и
+   * без него ладонь, съехавшая к нижней кромке, сворачивает пульт посреди
+   * лекции. Это настройка устройства, и пульт может только о ней сказать.
+   */
+  const GUIDED = 'Настройки → Универсальный доступ → Гид-доступ, затем трижды боковая кнопка.'
 
   /*
    * Пульт всегда тёмный — и это не вкус, а физика аудитории: см. borrowTheme.
@@ -941,10 +1069,9 @@
   /**
    * Одна строка на шесть секунд — вместо модального окна.
    *
-   * Живёт в шве между листом и лентой заметок, а не белой плашкой со дна:
-   * `bg-ink text-canvas` на тёмной ветке — это светлый чип #E6E7E8,
-   * вспыхивающий на шесть секунд в тёмном зале, и вдобавок он накрывал бы
-   * речь заметки, которая теперь внизу.
+   * Живёт в левом нижнем углу листа, а не белой плашкой со дна: `bg-ink
+   * text-canvas` на тёмной ветке — это светлый чип #E6E7E8, вспыхивающий на
+   * шесть секунд в тёмном зале.
    */
   let notice = $state<string | null>(null)
   let noticeKind = $state<'note' | 'refusal'>('note')
@@ -988,11 +1115,8 @@
   })
 
   /*
-   * Про сон экрана говорим ОДИН РАЗ и тостом.
-   *
-   * Раньше это была постоянная янтарная кнопка в нити — вторая по громкости
-   * вещь на ночном пульте ради разового предупреждения о факте про
-   * УСТРОЙСТВО, а не про лекцию. Дальше справка живёт текстом в «Ещё».
+   * Про сон экрана говорим ОДИН РАЗ и тостом. Дальше справка живёт текстом в
+   * «Ещё».
    */
   let darkTold = false
   $effect(() => {
@@ -1007,6 +1131,7 @@
   $effect(() => () => {
     window.clearTimeout(noticeTimer)
     window.clearTimeout(holdTimer)
+    window.clearTimeout(springTimer)
   })
 
   /* ------------------------------------------------------------- лекция */
@@ -1037,6 +1162,7 @@
      */
     prep = path
     pane = null
+    startedHere = true
     if (root) void goFullscreen(root)
   }
 
@@ -1046,6 +1172,7 @@
     // а не новая лекция — страница, чернила и часы остаются на месте.
     session.send({ t: 'lecture:start', file: lecture.file })
     pane = null
+    startedHere = true
     if (root) void goFullscreen(root)
   }
 
@@ -1095,7 +1222,7 @@
     if (!node || pane !== 'pages') return
     // Открываем прокрученной так, чтобы текущая стояла в левой трети: соседи
     // справа — это то, куда идут, и они должны быть видны сразу.
-    const at = wanted > 0 ? wanted : pages + (-wanted)
+    const at = wanted > 0 ? wanted : pages + -wanted
     node.scrollLeft = Math.max(0, (at - 1) * THUMB_STEP - node.clientWidth / 3)
     scanStrip(node)
   })
@@ -1143,8 +1270,7 @@
    * прямоугольника, а именно по разметке к нему и возвращаются («там, где я
    * выводил предел»). Холст на это тратить нельзя: бюджет один на процесс и
    * уже расписан под слайды. Точки хранятся долями страницы, так что
-   * пересчёт в 160×90 — умножение, а `vector-effect` тут не нужен: масштаба
-   * у SVG нет, координаты уже в пикселях плитки.
+   * пересчёт в 160×90 — умножение.
    */
   function boardInk(index: number): { d: string; color: string; width: number }[] {
     return session.ink
@@ -1160,6 +1286,68 @@
       })
   }
 
+  /* ---------------------------------------------------------- лист и заметки */
+
+  /**
+   * Что LecturePage оставил под листом (ландшафт) и сколько занял (портрет).
+   * Приходит через `onfit`; на этом строится полоса-подглядка и высота
+   * листовой коробки в портрете.
+   */
+  let fitRest = $state(0)
+  let fitHeight = $state(0)
+
+  function onfit(size: { w: number; h: number; rest: number }): void {
+    fitRest = size.rest
+    fitHeight = size.h
+  }
+
+  /**
+   * Высота коробки листа в портрете — ПО ЛИСТУ, а не «половина экрана».
+   *
+   * До первого замера отдаём 45 % высоты: слайд 16:9 на 834 впишется по
+   * ширине и займёт 456, а не 537, и остаток сообщит `onfit`. Сжав коробку до
+   * листа плюс поля, получаем то же вписывание (по ширине — ничего не
+   * меняется, по высоте — остаётся ровно та высота, что и была), то есть
+   * схема сходится за один шаг и не качается.
+   */
+  /**
+   * ПОДЛОКОТНИК в портрете: 96 px колодца под листом, принадлежащих коробке
+   * листа, а не заметкам. Поле заметок начиналось в 53 px под нижней кромкой
+   * бумаги, и пятка ладони, пишущей на нижней трети слайда, попадала в
+   * textarea: фокус уходил в заметки, слой ввода гас, на iPad всплывала
+   * клавиатура на полэкрана, а Pencil, заехавший на поле, начинал Scribble.
+   * Слой ввода накрывает подлокотник вместе с бумагой (`reach`), и ладонь на
+   * нём — ничто.
+   */
+  const PALM_REST = 96
+  const portraitSheetH = $derived(
+    fitHeight > 0 ? fitHeight + 24 + PALM_REST : Math.round(box.h * 0.45) + PALM_REST,
+  )
+
+  /**
+   * Размер коробки листа — для слоя ввода чернил.
+   *
+   * Слой ввода накрывает коробку целиком, а не одну страницу: поля — это
+   * место пятки ладони и край, с которого начинают штрих (InkLayer, `reach`).
+   * Страница лежит по центру коробки по ширине и прижата к её верху под
+   * полем 12; остаток под ней — тоже коробка.
+   */
+  const SHEET_PAD = 12
+  let sheetW = $state(0)
+  let sheetH = $state(0)
+  function inkReach(size: { w: number; h: number }): { top: number; right: number; bottom: number; left: number } {
+    const side = Math.max(0, (sheetW - size.w) / 2)
+    return { top: SHEET_PAD, right: side, bottom: Math.max(0, sheetH - SHEET_PAD - size.h), left: side }
+  }
+
+  /** Заметка к этой странице, для подглядки: только когда они уже приехали. */
+  const peekNote = $derived(session.notesFile === file ? (session.notes[wanted] ?? '') : '')
+  /** Полоса-подглядка живёт, когда под листом есть хотя бы 110 px. */
+  const peekShown = $derived(!portrait && !notesOpen && fitRest >= 110 && file !== null)
+
+  /** Ширина выдвижного листа заметок по кеглю: 400 на 820, 480 на 12.9". */
+  const notesSheetH = $derived(box.h >= 1000 ? 480 : 400)
+
   /* ---------------------------------------------------------- клавиатура */
 
   /*
@@ -1172,9 +1360,15 @@
     const target = event.target as HTMLElement | null
     const typing = target?.closest('input, textarea, [contenteditable]') != null
     if (event.key === 'Escape') {
-      if (pane !== null) {
+      if (palette) {
+        event.preventDefault()
+        palette = false
+      } else if (pane !== null) {
         event.preventDefault()
         openPane(null)
+      } else if (!portrait && notesOpen) {
+        event.preventDefault()
+        setNotes(false)
       }
       return
     }
@@ -1198,13 +1392,13 @@
       event.preventDefault()
       pick('marker')
     } else if (event.code === 'KeyL') {
-      // Указка — пружина и на клавиатуре тоже: держат — светит. Автоповтор
-      // сюда приходит десятками, и каждый повтор просто подтверждает `true`.
+      // Указка на клавиатуре — пружина: держат — светит. Автоповтор сюда
+      // приходит десятками, и каждый повтор просто подтверждает `true`.
       event.preventDefault()
-      pointDown()
+      if (leading && !offline) sprung = true
     } else if (event.code === 'KeyN') {
       event.preventDefault()
-      setFolded(!folded)
+      if (!portrait) setNotes(!notesOpen)
     } else if (/^Digit[1-3]$/.test(event.code)) {
       event.preventDefault()
       penIn(INKS[Number(event.code.slice(5)) - 1].color)
@@ -1212,7 +1406,7 @@
   }
 
   function onkeyup(event: KeyboardEvent): void {
-    if (event.code === 'KeyL') pointUp()
+    if (event.code === 'KeyL') sprung = false
   }
 
   /* ------------------------------------------------------------- классы */
@@ -1236,14 +1430,10 @@
    *
    * В покое заливки нет вовсе — только подпись или глиф на корпусе: панель
    * инструментов в покое это надписи на теле предмета, а не двенадцать
-   * коробок. Под пальцем — `bg-line` (ближайший домашний токен к плите
-   * нажатия #1B2540). Включённая — `bg-raised` (ближайший к #16233F) плюс
-   * полоса 3 px на ВНУТРЕННЕЙ кромке, см. `mark()`.
-   *
-   * Шаблон «глиф сверху, слово снизу» здесь не используется: именно он делал
-   * пульт таблицей, выдавая каждому органу одинаковую двухстрочную массу.
+   * коробок. Под пальцем — `bg-line`. Включённая — `bg-raised` плюс полоса
+   * 3 px на ВНУТРЕННЕЙ кромке, см. `mark()`.
    */
-  const KEY = `relative flex w-full shrink-0 items-center justify-center ${PRESS} enabled:active:bg-line`
+  const KEY = `relative flex shrink-0 items-center justify-center ${PRESS} enabled:active:bg-line`
   /** Подпись действия: 0.14em называет ДЕЙСТВИЕ. Трекингов на пульте ровно два. */
   const CAP = 'text-2xs font-bold uppercase tracking-label'
   /** Название места: 0.2em называет МЕСТО (полоса, область). */
@@ -1252,30 +1442,26 @@
   const ROW = `flex h-16 w-full items-center gap-3 px-6 text-left text-answer ${PRESS} enabled:active:bg-line`
 
   /**
-   * Подпись выключенной клавиши.
-   *
-   * Чертёж просит #47526E — нарочно ниже пола читаемости: это ОТСУТСТВИЕ, а
-   * не информация. Голого хекса в разметке не заводим: `faint` (#5E6B85) на
-   * 70 % поверх корпуса даёт (69,81,108) — тот же цвет с точностью до
-   * кодового значения.
-   *
-   * Константой — только для варианта БЕЗ приставки. `disabled:text-faint/70`
-   * и `bg-faint/70` выписаны в разметке буквами: сборщик Tailwind ищет классы
-   * ТЕКСТОМ по исходнику и склеенной строки `disabled:{OFF}` не увидит — из
-   * такой записи получается класс, для которого не сгенерировано правило, то
-   * есть молча ничего.
+   * Подпись выключенной клавиши: `faint` на 70 % — ОТСУТСТВИЕ, а не
+   * информация. `disabled:text-faint/70` выписан в разметке буквами: сборщик
+   * Tailwind ищет классы текстом и склеенной строки не увидит.
    */
   const OFF = 'text-faint/70'
+
+  /** Сторона «внутренней» кромки клавиши: та, что смотрит на лист. */
+  const inner = $derived<'left' | 'right' | 'top'>(
+    portrait ? 'top' : hand === 'left' ? 'left' : 'right',
+  )
 </script>
 
-<svelte:window {onkeydown} {onkeyup} onblur={pointOff} />
+<svelte:window {onkeydown} {onkeyup} onblur={laserCancel} />
 
 <!--
   Отступы под вырезом и домашним индикатором — на корне, одним местом. Ни
   одного `vh`: цепочка `height: 100%` не зависит ни от панелей Safari, ни от
   того, в каком окне сейчас живёт планшет.
 
-  Грунт корня — колодец (`canvas`): середина проваливается, а корпус рейлов
+  Грунт корня — колодец (`canvas`): середина проваливается, а корпус рейла
   (`surface`) выходит вперёд. Шаг между ними ~1,5 % — его не читают, его
   чувствуют.
 -->
@@ -1295,57 +1481,114 @@
     </div>
   {:else if lecture === null && prep === null}
     {@render chooser()}
-  {:else if wide}
+  {:else if portrait}
     <!--
-      Рейлы разной ширины, и ширина принадлежит РУКЕ, а не стороне экрана:
-      под большим пальцем всегда 104, под пером всегда 88. При «левой руке»
-      меняется порядок колонок, и 104 едут вместе с держащим рейлом.
+      ПОРТРЕТ. Лист сверху на полях 12, заметки пристыкованы на весь остаток,
+      рейл снизу — под большим пальцем держащей руки. Клавиши «Заметки» нет:
+      заметки и так на экране.
     -->
-    <div class="flex min-h-0 flex-1 {hand === 'left' ? 'flex-row-reverse' : ''}">
-      {@render holdRail()}
-      {@render middle()}
-      <!-- У подготовки пишущего рейла нет вовсе: писать пером накануне
-           незачем — чернила живут в лекции, а не в документе. -->
-      {#if leading || watching}{@render penRail()}{/if}
+    <div class="flex min-h-0 flex-1 flex-col">
+      <div
+        class="pult-sheet relative shrink-0 p-3"
+        style={`height:${portraitSheetH}px`}
+        role="group"
+        aria-label="Страница лекции"
+        bind:clientWidth={sheetW}
+        bind:clientHeight={sheetH}
+      >
+        {@render sheet()}
+      </div>
+      {#if file !== null}
+        <div class="flex min-h-0 flex-1 flex-col border-t border-line" data-pult-notes>
+          <NotesPad
+            {file}
+            page={wanted}
+            folded={false}
+            docked
+            onmore={() => openPane('more')}
+            onedit={(next) => (editing = next)}
+          />
+        </div>
+      {/if}
+      {@render bottomRail()}
     </div>
   {:else}
     <!--
-      Узкий пульт: рейлов нет, потому что для двух рук нет места; всё, что
-      жали большим пальцем, уезжает в нижнюю полосу, где большой палец и
-      лежит. Это названная деградация, а не вторая раскладка.
+      ЛАНДШАФТ. Один рейл 72 px у кромки, и ширина принадлежит руке: при
+      «левой руке» он переезжает на правую кромку вместе с палитрой.
     -->
-    <div class="flex min-h-0 flex-1 flex-col">
-      {@render middle()}
-      {@render bar()}
+    <div class="flex min-h-0 flex-1 {hand === 'left' ? 'flex-row-reverse' : ''}">
+      {@render sideRail()}
+      <div class="relative min-h-0 min-w-0 flex-1">
+        <!--
+          Коробка листа — С ПОЛЯМИ 12 px, как и в портрете: поля принадлежат
+          листу, а не колодцу. На них лежит пятка ладони и с них начинают
+          штрих, и слой ввода чернил накрывает их вместе с бумагой.
+        -->
+        <div
+          class="pult-sheet absolute inset-0 p-3"
+          role="group"
+          aria-label="Страница лекции"
+          bind:clientWidth={sheetW}
+          bind:clientHeight={sheetH}
+        >
+          {@render sheet()}
+          {#if peekShown}
+            {@render peek()}
+          {/if}
+        </div>
+        {#if file !== null && notesOpen}
+          {@render notesSheet()}
+        {/if}
+      </div>
     </div>
   {/if}
 
+  {#if palette && leading}
+    {@render palettePop()}
+  {/if}
+
   {@render panes()}
+
+  {#if cover}
+    <!--
+      Ложе первого касания. Одна плита во весь пульт, один глагол. Тап
+      уносит в полный экран и открывает то, что под ним, — сам лист при этом
+      уже нарисован и готов.
+    -->
+    <button
+      type="button"
+      class="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-canvas"
+      aria-label="Коснуться и начать"
+      onclick={takeConsole}
+    >
+      <span class="text-ui-lg text-ink">Коснитесь, чтобы взять пульт</span>
+      <span class="{CAP} text-muted">пульт развернётся во весь экран</span>
+    </button>
+  {/if}
 </div>
 
 <!-- ============================================================== прибор -->
 
-{#snippet fader(cell: string, gap: string, tall: number)}
+{#snippet fader(cell: string, tall: number)}
   <!--
     Три детента, а не циклическая кнопка: у фейдера всегда видно текущее
     положение. Столбики растут 4 / 9 / 14 — положение читается формой, а не
     подписью, и нащупывается на слух руки за один взгляд.
   -->
-  <div class="flex {gap}" role="radiogroup" aria-label="Яркость листа">
+  <div class="flex" role="radiogroup" aria-label="Яркость листа">
     {#each LAMPS as level, index (level.name)}
       <button
         type="button"
         role="radio"
         aria-checked={lamp === index}
         aria-label={level.name}
-        class="{PRESS} flex {cell} items-end justify-center pb-1.5 {lamp === index
-          ? 'bg-raised'
-          : ''}"
+        class="{PRESS} flex {cell} items-end justify-center pb-1 {lamp === index ? 'bg-raised' : ''}"
         onclick={() => setLamp(index)}
       >
         <span
           class="block w-[14px] {lamp === index ? 'bg-ink' : 'bg-faint/70'}"
-          style={`height:${Math.round((level.bar * tall) / 36)}px`}
+          style={`height:${Math.round((level.bar * tall) / 14)}px`}
           aria-hidden="true"
         ></span>
       </button>
@@ -1353,146 +1596,129 @@
   </div>
 {/snippet}
 
+{#snippet tempo(width: string)}
+  <!--
+    ЛИНЕЙКА ТЕМПА — доля колоды как форма, а не как арифметика: где мы в
+    этой пачке. При расхождении с проектором она же становится циановой и
+    ползёт петлёй 1.2 с — «мы всё ещё ждём». Это сноска, а не замена числа:
+    большое число показывает то, что вы РЕШИЛИ, и обязано стоять неподвижно.
+  -->
+  <span class="block h-[2px] {width} bg-line" aria-hidden="true">
+    <span
+      class="block h-full w-full origin-left {behind
+        ? 'pult-catchup bg-accent'
+        : 'bg-muted transition-transform duration-[160ms] ease-out'}"
+      style={behind ? undefined : `transform:scaleX(${pages > 0 ? Math.min(1, wanted / pages) : 0})`}
+    ></span>
+  </span>
+{/snippet}
+
 {#snippet gauge()}
   <!--
-    ПРИБОР. Не кнопка по своей сути, а ПОКАЗАНИЕ: номер, темп, часы, яркость.
-    Плита остаётся нажимаемой (открывает ленту страниц), но на это не
-    рассчитывают — лентой листают, когда планшет лежит на кафедре, а не когда
-    его держат и говорят. Верх рейла — глазу, низ — пальцу.
+    ПРИБОР 72×120. Не кнопка по своей сути, а ПОКАЗАНИЕ: номер, доля колоды,
+    стенные часы, яркость. Плита нажимается (открывает ленту страниц), но на
+    это не рассчитывают. Секундомер отсюда уехал в шапку заметок и в «Ещё»:
+    на 72 px ему не встать рядом с номером, а смотрят его реже номера.
 
-    Всё флагуется влево на x = 16, кроме самого номера: у моноцифр боковые
-    полуапроши, метрический край стоит правее видимого, и без поправки −2 px
-    сорокапиксельное число выглядит сдвинутым вправо относительно всего
-    столбца под ним.
+    Номер флагуется влево с поправкой −2 px: у моноцифр боковые полуапроши,
+    и без поправки число выглядит сдвинутым вправо относительно столбца.
   -->
-  <div class="relative h-[220px] w-full shrink-0">
+  <div class="relative h-[120px] w-full shrink-0">
     <button
       type="button"
-      class="{PRESS} absolute inset-x-0 top-0 h-[150px] enabled:active:bg-line"
+      class="{PRESS} absolute inset-x-0 top-0 h-[92px] enabled:active:bg-line"
       aria-label="Выбрать страницу"
       onclick={() => openPane('pages')}
     >
       {#if behind && lecture}
         <!--
-          ЧТО ВИДИТ ЗАЛ, когда проектор отстал. Мелко, сбоку и ПЕРВЫМ — и
-          порядок здесь носит смысл, а не украшает: сноска отвечает на вопрос
-          «где они», большое число — на вопрос «где я», и первым читают тот,
-          которого не видно из-за спины. Само большое число при этом не
-          трогается вовсе: оно показывает то, что вы РЕШИЛИ, и обязано стоять
-          неподвижно — иначе пульт начинает спорить с собственной кнопкой.
-
-          Появляется только после 600 мс расхождения, вместе с петлёй на
-          линейке темпа: на каждом обычном перелистывании эта строчка мигала
-          бы по сотне миллисекунд, то есть весь час.
+          ЧТО ВИДИТ ЗАЛ, когда проектор отстал. Мелко, справа и ПЕРВЫМ:
+          сноска отвечает на вопрос «где они», большое число — «где я».
+          Появляется только после 600 мс расхождения, вместе с петлёй.
         -->
         <span
-          class="absolute right-2.5 top-[26px] flex h-[13px] items-center font-mono text-code tabular-nums text-muted"
+          class="absolute right-1.5 top-1.5 flex h-[13px] items-center font-mono text-code tabular-nums text-muted"
         >
           {lecture.page < 0 ? `Л${-lecture.page}` : lecture.page}&nbsp;→
         </span>
       {/if}
       <span
-        class="absolute left-[14px] top-4 flex h-10 items-center font-mono text-gauge-lg tabular-nums {watching ||
+        class="absolute left-[10px] top-2 flex h-8 items-center font-mono text-gauge tabular-nums {watching ||
         preparing
           ? 'text-muted'
           : 'text-ink'}"
       >
         {onBoard ? `Л${-wanted}` : wanted}
       </span>
-
-      {#if !onBoard}
-        <!-- Знаменатель отдельной строкой, а не в хвост номеру: иначе он
-             ездит при переходе 9 → 10. -->
-        <span
-          class="absolute left-4 top-[58px] flex h-[13px] items-center font-mono text-code tabular-nums text-faint"
-        >
-          / {pages || '—'}
-        </span>
-      {/if}
-
       {#if onBoard}
-        <!-- У чистого листа доли колоды нет, и рисовать пустую линейку значит
-             врать. На её месте — имя того, что показано. -->
-        <span class="absolute left-4 top-[73px] flex h-[13px] items-center {SECTION} text-muted">
+        <span class="absolute left-3 top-[44px] flex h-[13px] items-center {SECTION} text-muted">
           лист
         </span>
       {:else}
-        <!--
-          ЛИНЕЙКА ТЕМПА — доля колоды как форма, а не как арифметика: где мы в
-          этой пачке. При расхождении с проектором она же становится циановой
-          и ползёт петлёй 1.2 с — «мы всё ещё ждём». Это сноска, а не замена
-          числа: большое число показывает то, что вы РЕШИЛИ, и обязано стоять
-          неподвижно.
-        -->
-        <span class="absolute left-4 top-[79px] block h-[2px] w-[72px] bg-line" aria-hidden="true">
-          <span
-            class="block h-full w-full origin-left {behind
-              ? 'pult-catchup bg-accent'
-              : 'bg-muted transition-transform duration-[160ms] ease-out'}"
-            style={behind
-              ? undefined
-              : `transform:scaleX(${pages > 0 ? Math.min(1, wanted / pages) : 0})`}
-          ></span>
-        </span>
-      {/if}
-
-      {#if preparing}
-        <!-- Лекции нет — числу не с чем сходиться, и часов у подготовки тоже
-             нет: секундомер от «когда открыл вкладку» врал бы про пару. -->
-        <span class="absolute left-4 top-[93px] flex h-8 items-center {SECTION} text-faint">
-          подготовка
-        </span>
-      {:else}
+        <!-- Знаменатель отдельной строкой: иначе он ездит при переходе 9 → 10. -->
         <span
-          class="absolute left-4 top-[93px] flex h-8 items-center font-mono text-gauge tabular-nums text-ink"
+          class="absolute left-3 top-[44px] flex h-[13px] items-center font-mono text-code tabular-nums text-faint"
         >
-          {stopwatch(runningFor)}
+          / {pages || '—'}
         </span>
-        <span
-          class="absolute left-4 top-[129px] flex h-[13px] items-center font-mono text-code tabular-nums text-muted"
-        >
-          {wall}
-        </span>
+        <span class="absolute left-3 top-[62px]">{@render tempo('w-[52px]')}</span>
       {/if}
+      <span
+        class="absolute left-3 top-[70px] flex h-[13px] items-center font-mono text-code tabular-nums text-muted"
+      >
+        {preparing ? 'подготовка' : wall}
+      </span>
     </button>
 
-    <div class="absolute left-4 top-[150px]">
-      {@render fader('h-9 w-6', 'gap-1', 36)}
+    <div class="absolute left-[3px] top-[94px]">
+      {@render fader('h-6 w-[22px]', 14)}
     </div>
-
-    {#if offline}
-      <!--
-        Второй знак обрыва (первый — красный шов по внутренним кромкам
-        рейлов). Ни модального окна, ни блокировки: пульт не сломан, рисовать
-        можно, зал видит последнюю доехавшую страницу — и её номер здесь и
-        назван, чтобы человек знал, о чём говорит зал.
-      -->
-      <div class="absolute inset-x-4 top-[186px]" aria-live="polite">
-        <span class="block {CAP} text-danger">Нет связи</span>
-        <span class="block pt-0.5 font-mono text-code tabular-nums text-muted">
-          зал видит {lecture ? Math.abs(lecture.page) : '—'}
-        </span>
-      </div>
-    {/if}
   </div>
 {/snippet}
 
-<!-- ============================================================== рейлы -->
+{#snippet gaugeFlat()}
+  <!--
+    Прибор нижнего рейла, 104×64: номер слева, знаменатель, темп и фейдер
+    столбиком справа. Та же иерархия, положенная набок.
+  -->
+  <div class="relative flex h-full w-[104px] shrink-0">
+    <button
+      type="button"
+      class="{PRESS} relative flex h-full w-[52px] flex-col items-start justify-center pl-2 enabled:active:bg-line"
+      aria-label="Выбрать страницу"
+      onclick={() => openPane('pages')}
+    >
+      <span
+        class="font-mono text-gauge tabular-nums {watching || preparing ? 'text-muted' : 'text-ink'}"
+      >
+        {onBoard ? `Л${-wanted}` : wanted}
+      </span>
+      {#if !onBoard}
+        <span class="font-mono text-micro tabular-nums text-faint">/ {pages || '—'}</span>
+      {/if}
+    </button>
+    <div class="flex w-[52px] flex-col items-start justify-center gap-1">
+      {#if !onBoard}
+        {@render tempo('w-[44px]')}
+      {/if}
+      {#if !tiny}
+        {@render fader('h-5 w-4', 12)}
+      {/if}
+    </div>
+  </div>
+{/snippet}
+
+<!-- ============================================================== рейл -->
 
 {#snippet toast()}
   <!--
     Одна строка на шесть секунд. Полоса 2 px слева называет род: accent —
-    сообщение, danger — отказ. Рисуется в ДВУХ домах — в шве под листом и внизу
-    экрана выбора документа, — и второй дом не украшение: «Лекция закончена»
-    говорится ровно в тот момент, когда лист исчезает и остаётся выбор, и в
-    одном только шве этой строки не увидел бы никто.
+    сообщение, danger — отказ.
   -->
   {#if notice}
     <div class="pointer-events-none relative flex h-8 items-center bg-raised px-4" aria-live="polite">
       <span
-        class="absolute inset-y-0 left-0 w-[2px] {noticeKind === 'refusal'
-          ? 'bg-danger'
-          : 'bg-accent'}"
+        class="absolute inset-y-0 left-0 w-[2px] {noticeKind === 'refusal' ? 'bg-danger' : 'bg-accent'}"
         aria-hidden="true"
       ></span>
       <span class="{CAP} text-ink">{notice}</span>
@@ -1500,89 +1726,199 @@
   {/if}
 {/snippet}
 
-{#snippet mark(on: boolean, side: 'left' | 'right', amber: boolean)}
+{#snippet mark(on: boolean, amber: boolean)}
   <!--
     Полоса «включено» на ВНУТРЕННЕЙ кромке — той, что смотрит на лист.
-    Направление несёт смысл: «вот что перо делает там». При смене на левшу
-    переезжает вместе с рейлом. Не анимируется: состояние приходит мгновенно.
+    Направление несёт смысл: «вот что перо делает там». Не анимируется:
+    состояние приходит мгновенно.
   -->
   {#if on}
     <span
-      class="absolute inset-y-0 {side === 'left' ? 'left-0' : 'right-0'} w-[3px] {amber
-        ? 'bg-warning'
-        : 'bg-ink'}"
+      class="absolute {inner === 'top'
+        ? 'inset-x-0 top-0 h-[3px]'
+        : inner === 'left'
+          ? 'inset-y-0 left-0 w-[3px]'
+          : 'inset-y-0 right-0 w-[3px]'} {amber ? 'bg-warning' : 'bg-ink'}"
       aria-hidden="true"
     ></span>
   {/if}
 {/snippet}
 
-{#snippet holdRail()}
-  {@const inner = hand === 'right' ? 'right' : 'left'}
+{#snippet chip(color: string, marker: boolean, dot: number)}
   <!--
-    ДЕРЖАЩИЙ РЕЙЛ, 104 px под большой палец. Разделительных волосков между
-    клавишами нет: разделяет корпус — зазор 8 значит «соседи по семейству»,
-    вырез 16 значит «граница семейств» и нащупывается краем пальца. Восемь
-    светящихся линий на рейле были бы восемью источниками света.
+    ЧИП ПИГМЕНТА — ОБРАЗЕЦ НА БУМАГЕ: плашка 40×24 белой бумаги, внутри
+    настоящий штрих с круглой концевой. Тёмный диск #101a33 на ночном корпусе
+    — это 1.5:1, чёрного пера на рейле не было видно вовсе; на бумаге видно
+    всё. Точка толщины — та же, что в палитре: чип говорит, ЧЕМ ляжет штрих.
+  -->
+  <span class="block h-6 w-10 bg-white" aria-hidden="true">
+    <svg width="40" height="24" viewBox="0 0 40 24" class="block">
+      {#if marker}
+        <line x1="9" y1="12" x2="31" y2="12" stroke={color} stroke-width="14" stroke-linecap="round" />
+      {:else}
+        <line x1="9" y1="16" x2="31" y2="8" stroke={color} stroke-width={dot} stroke-linecap="round" />
+      {/if}
+    </svg>
+  </span>
+{/snippet}
+
+{#snippet toolKeys(size: string, gap: string)}
+  <!--
+    ПАЛИТРА ИНСТРУМЕНТОВ — ОДИН РЯД: перо, маркер, ластик, указка. Ровно
+    так, как в приложениях для заметок: взял одно — снял другое. Указка тут
+    же, а не отдельной пружиной на другом рейле.
+  -->
+  <button
+    type="button"
+    class="{KEY} {size} {tool === 'pen' ? 'bg-raised' : ''}"
+    aria-label="Перо"
+    aria-pressed={tool === 'pen'}
+    aria-expanded={palette}
+    onclick={penKey}
+  >
+    {@render mark(tool === 'pen', false)}
+    {@render chip(inkColor, false, WIDTHS.find((w) => w.width === penWidth)?.dot ?? 6)}
+  </button>
+  <span class={gap} aria-hidden="true"></span>
+  <button
+    type="button"
+    class="{KEY} {size} {tool === 'marker' ? 'bg-raised' : ''}"
+    aria-label="Маркер"
+    aria-pressed={tool === 'marker'}
+    onclick={() => pick('marker')}
+  >
+    {@render mark(tool === 'marker', false)}
+    {@render chip(MARKER, true, 0)}
+  </button>
+  <span class={gap} aria-hidden="true"></span>
+  <!--
+    Ластик стирает ШТРИХАМИ, а не пикселями: в проводе есть только «убрать
+    штрих по имени». Удержание полсекунды стирает страницу целиком.
+  -->
+  <button
+    type="button"
+    class="{KEY} {size} {tool === 'eraser' ? 'bg-raised text-ink' : 'text-muted'}"
+    aria-label="Ластик"
+    aria-pressed={tool === 'eraser'}
+    onpointerdown={eraserDown}
+    onpointerup={eraserUp}
+    onpointerleave={eraserCancel}
+    onpointercancel={eraserCancel}
+    onclick={(event) => {
+      // С клавиатуры `click` приходит с detail === 0 и без пары
+      // pointerdown/pointerup — иначе кнопка была бы недоступна без пальца.
+      if (event.detail === 0) pick('eraser')
+    }}
+  >
+    {@render mark(tool === 'eraser', false)}
+    <Icon name="eraser" size={24} />
+  </button>
+  <span class={gap} aria-hidden="true"></span>
+  <button
+    type="button"
+    class="{KEY} {size} {CAP} {tool === 'laser' || sprung ? 'bg-raised' : ''} {offline
+      ? OFF
+      : tool === 'laser' || sprung
+        ? 'text-ink'
+        : 'text-muted'}"
+    aria-label="Указка"
+    aria-pressed={tool === 'laser'}
+    disabled={offline}
+    onpointerdown={laserDown}
+    onpointerup={laserUp}
+    onpointercancel={laserCancel}
+    onpointerleave={laserCancel}
+    onclick={(event) => {
+      // Нажатие БЕЗ пары pointerdown/pointerup: клавиатура, VoiceOver,
+      // автоматическая проверка. Их `click` приходит с detail === 0.
+      if (event.detail === 0) laserToggle()
+    }}
+  >
+    {@render mark(tool === 'laser' || sprung, false)}
+    Указка
+  </button>
+{/snippet}
+
+{#snippet sideRail()}
+  <!--
+    ОДИН РЕЙЛ, 72 px. Разделительных волосков между клавишами нет: разделяет
+    корпус — зазор 4 значит «соседи по семейству», вырез 16 значит «граница
+    семейств». Сверху вниз: прибор, инструменты, «Отменить», распорка,
+    навигация по колоде, листание. Верх рейла — глазу, низ — пальцу.
 
     Внутренняя кромка при обрыве связи краснеет: тонкий красный шов по
     стороне светящегося окна виден боковым зрением и не занимает ни одного
     пикселя раскладки.
   -->
   <div
-    class="pult-rail flex w-[104px] shrink-0 flex-col bg-surface {hand === 'left'
+    use:swipe={() => 'x'}
+    class="pult-rail flex w-[72px] shrink-0 flex-col bg-surface {hand === 'left'
       ? 'border-l'
       : 'border-r'} {offline ? 'border-danger/40' : 'border-line'}"
   >
     {@render gauge()}
+    <span class="h-4 shrink-0" aria-hidden="true"></span>
 
-    <!-- Мёртвая зона: сюда ложится ладонь держащей руки. -->
-    <span class="min-h-[72px] flex-1" aria-hidden="true"></span>
-
-    {#if mayTurn}
+    {#if leading}
+      {@render toolKeys('h-14 w-full', 'h-1 shrink-0')}
+      <span class="h-2 shrink-0" aria-hidden="true"></span>
       <!--
-        ЛИСТ остаётся клавишей, хотя чертёж кладёт его в ленту страниц: чистый
-        лист заводят посреди фразы («слайд кончился, а вывод формулы — нет»),
-        и два нажатия для этого — уже отказ. В ленте он тоже есть, последней
-        плиткой, и это чинит дыру с недостижимыми заведёнными листами.
+        ОТМЕНИТЬ — под инструментами: плохой штрих делает перо, и рука уже
+        над листом рядом с рейлом.
       -->
       <button
         type="button"
-        class="{KEY} h-[72px] {onBoard ? 'bg-raised text-ink' : 'text-muted'} {CAP}"
+        class="{KEY} h-11 w-full text-muted"
+        onclick={undoStroke}
+        aria-label="Отменить последний штрих"
+      >
+        <Icon name="undo" size={22} />
+      </button>
+    {/if}
+
+    <span class="min-h-6 flex-1" aria-hidden="true"></span>
+
+    {#if mayTurn}
+      <!--
+        ЛИСТ остаётся клавишей: чистый лист заводят посреди фразы («слайд
+        кончился, а вывод формулы — нет»), и два нажатия для этого — уже
+        отказ. В ленте страниц он тоже есть, последней плиткой.
+      -->
+      <button
+        type="button"
+        class="{KEY} h-14 w-full {onBoard ? 'bg-raised text-ink' : 'text-muted'} {CAP}"
         aria-label={onBoard ? 'Вернуться к слайду' : 'Чистый лист'}
         aria-pressed={onBoard}
         onclick={() => (onBoard ? backToSlides() : newBoard())}
       >
-        {@render mark(onBoard, inner, false)}
+        {@render mark(onBoard, false)}
         {onBoard ? 'Слайд' : 'Лист'}
       </button>
-      <span class="h-2 shrink-0" aria-hidden="true"></span>
+      <span class="h-1 shrink-0" aria-hidden="true"></span>
     {/if}
 
     {#if preparing}
-      <!--
-        На месте ЗАТЕМНИТЬ у подготовки — «ВЕСТИ». Единственная залитая
-        циановая плита на пульте, и она оправдана тем, что за ней ровно одно
-        действие и оно кончает подготовку.
-      -->
+      <!-- На месте ГАСИТЬ у подготовки — «ВЕСТИ»: единственная залитая
+           циановая плита на пульте, и за ней ровно одно действие. -->
       <button
         type="button"
-        class="{KEY} h-[88px] bg-accent text-accent-ink {CAP}"
+        class="{KEY} h-14 w-full bg-accent text-accent-ink {CAP}"
         onclick={() => prep && start(prep)}
       >
         Вести
       </button>
-      <span class="h-2 shrink-0" aria-hidden="true"></span>
-      <!-- Слот указки у подготовки пуст: указывать некому. -->
-      <span class="h-[88px] shrink-0" aria-hidden="true"></span>
+      <span class="h-1 shrink-0" aria-hidden="true"></span>
     {:else if leading}
       <!--
-        ЗАТЕМНИТЬ. Состояние света показывает сам свет: у пульта отнимается
+        ГАСИТЬ. Состояние света показывает сам свет: у пульта отнимается
         свет, а не добавляется. Янтарь — единственное его место на пульте;
-        красного здесь нет, потому что пауза — не отказ.
+        красного здесь нет, потому что пауза — не отказ. Слово короткое не
+        от бедности: «ЗАТЕМНИТЬ» в девять капителей с разрядкой шире клавиши
+        72 px и выползало за рейл на обе стороны.
       -->
       <button
         type="button"
-        class="{KEY} h-[88px] {CAP} {lecture?.blank ? 'bg-raised' : ''} {offline
+        class="{KEY} h-14 w-full {CAP} {lecture?.blank ? 'bg-raised' : ''} {offline
           ? OFF
           : lecture?.blank
             ? 'text-warning'
@@ -1592,89 +1928,68 @@
         disabled={offline}
         onclick={() => blank(!lecture?.blank)}
       >
-        {@render mark(lecture?.blank === true, inner, true)}
-        {lecture?.blank ? 'Затемнено' : 'Затемнить'}
+        {@render mark(lecture?.blank === true, true)}
+        {lecture?.blank ? 'Темно' : 'Гасить'}
       </button>
-      <span class="h-2 shrink-0" aria-hidden="true"></span>
+      <span class="h-1 shrink-0" aria-hidden="true"></span>
+    {:else if watching}
       <!--
-        УКАЗКА — пружина: держат пальцем, светит на проекторе, отпустили —
-        погасла. Клавиатурная L ведёт себя так же. Забытая указка — красная
-        точка, гуляющая по проектору до конца пары.
+        Ведёт другой. Единственная клавиша: контур без заливки — залитая
+        плита горела бы все сорок минут чужой лекции ради одного нажатия.
       -->
       <button
         type="button"
-        class="{KEY} h-[88px] {CAP} {pointingNow ? 'bg-raised' : ''} {offline
-          ? OFF
-          : pointingNow
-            ? 'text-ink'
-            : 'text-muted'}"
-        aria-label="Указка"
-        aria-pressed={pointingNow}
-        disabled={offline}
-        onpointerdown={pointDown}
-        onpointerup={pointUp}
-        onpointercancel={pointOff}
-        onkeydown={(event) => {
-          if (event.key === ' ' || event.key === 'Enter') pointDown()
-        }}
-        onkeyup={pointUp}
-        onclick={(event) => {
-          /*
-           * Нажатие БЕЗ пары pointerdown/pointerup: клавиатура, VoiceOver,
-           * автоматическая проверка. Их `click` приходит с detail === 0, и без
-           * этой ветки клавиша была бы доступна только пальцу и мыши — то есть
-           * недоступна ровно тем, ради кого пишут aria-имена.
-           */
-          if (event.detail === 0) pointLatched = !pointLatched
-        }}
+        class="{PRESS} mx-1 flex h-[112px] shrink-0 items-center justify-center border border-accent px-1 text-center {CAP} text-accent-text active:bg-line"
+        onclick={() => openPane('grab')}
       >
-        {@render mark(pointingNow, inner, false)}
-        Указка
+        Взять пульт
+      </button>
+      <span class="h-1 shrink-0" aria-hidden="true"></span>
+    {/if}
+
+    {#if file !== null}
+      <button
+        type="button"
+        class="{KEY} h-14 w-full {CAP} {notesOpen ? 'bg-raised text-ink' : 'text-muted'}"
+        aria-label="Заметки"
+        aria-pressed={notesOpen}
+        onclick={() => setNotes(!notesOpen)}
+      >
+        {@render mark(notesOpen, false)}
+        Заметки
       </button>
     {/if}
-    <!-- Ведёт другой: свет и указка не рисуются вовсе, и пустота на их месте
-         и есть сообщение. Место разбирают распорки выше и ниже. -->
 
-    <!-- ВЫРЕЗ 16: граница семейств «свет» и «навигация». -->
+    <!-- ВЫРЕЗ 16: граница семейств «колода» и «листание». -->
     <span class="h-4 shrink-0" aria-hidden="true"></span>
 
     {#if mayTurn}
-      <!-- Только шеврон, без слова: назад листают в восемь раз реже, и работу
-           подписи здесь берёт размер цели — 80 против 140 у «Вперёд». -->
       <button
         type="button"
-        class="{KEY} h-[80px] text-muted disabled:text-faint/70"
+        class="{KEY} h-14 w-full text-muted disabled:text-faint/70"
         disabled={onBoard ? -wanted >= boards : wanted <= 1}
         aria-label="Предыдущая страница"
         onclick={() => step(-1)}
       >
         <Icon name="chevron-left" size={24} />
       </button>
-      <span class="h-2 shrink-0" aria-hidden="true"></span>
-      <!--
-        Самая большая вещь на пульте, и это верно: вперёд листают в восемь раз
-        чаще, чем назад, и жмут вслепую посреди фразы.
-      -->
+      <span class="h-1 shrink-0" aria-hidden="true"></span>
+      <!-- Самая большая клавиша: вперёд листают в восемь раз чаще, чем назад. -->
       <button
         type="button"
-        class="{KEY} h-[140px] flex-col gap-1.5 text-ink disabled:text-faint/70"
+        class="{KEY} h-24 w-full flex-col gap-1 text-ink disabled:text-faint/70"
         disabled={!onBoard && pages > 0 && wanted >= pages}
         aria-label="Следующая страница"
         onclick={() => step(1)}
       >
         <Icon name="chevron-right" size={28} />
-        <span class="text-ui font-bold uppercase tracking-label">
-          {forwardReturns ? 'К слайду' : 'Вперёд'}
-        </span>
+        <span class="{CAP}">{forwardReturns ? 'К слайду' : 'Вперёд'}</span>
         {#if forwardReturns}
-          <!-- Иначе переход с последней доски обратно выглядит как сбой. -->
           <span class="font-mono text-code tabular-nums text-faint">{lastSlide}</span>
         {/if}
       </button>
     {:else}
-      <span class="min-h-0 flex-1" aria-hidden="true"></span>
-      <!-- Чтобы пустота внизу рейла не читалась поломкой. -->
-      <span class="flex h-5 shrink-0 items-center justify-center px-1 {SECTION} text-muted">
+      <span class="flex h-14 shrink-0 items-center justify-center px-1 {SECTION} text-muted">
         <span class="truncate">Ведёт {lecture?.byName}</span>
       </span>
     {/if}
@@ -1684,151 +1999,180 @@
   </div>
 {/snippet}
 
-{#snippet chip(color: string, marker: boolean)}
+{#snippet bottomRail()}
   <!--
-    ЧИП ПИГМЕНТА — не кружок краски в воздухе, а ОБРАЗЕЦ НА БУМАГЕ: плашка
-    52×30 белой бумаги, внутри настоящий штрих настоящей ширины с круглой
-    концевой. Перо 5 px = PEN_WIDTH 0.005 × 928, маркер 20 px = 0.022 × 928.
-
-    Три причины разом. Тёмный диск #101a33 на ночном корпусе — это 1.5:1,
-    чёрного пера на рейле не было видно вовсе. Чип показывает, ЧЕМ штрих ляжет
-    на слайд. И маркер с перьями читаются одной семьёй пигмента, а не
-    «инструмент и цвет», — после чего слово «Маркер» перестаёт быть нужным.
-
-    Размера выбранный чип НЕ меняет: рост 22 → 28 читается как «эта краска
-    толще», то есть врёт про инструмент. Выбор показывают плита и кромка.
-  -->
-  <span class="block h-[30px] w-[52px] bg-white" aria-hidden="true">
-    <svg width="52" height="30" viewBox="0 0 52 30" class="block">
-      {#if marker}
-        <line x1="12" y1="15" x2="40" y2="15" stroke={color} stroke-width="20" stroke-linecap="round" />
-      {:else}
-        <line x1="12" y1="21" x2="40" y2="9" stroke={color} stroke-width="5" stroke-linecap="round" />
-      {/if}
-    </svg>
-  </span>
-{/snippet}
-
-{#snippet penRail()}
-  {@const inner = hand === 'right' ? 'left' : 'right'}
-  <!--
-    ПИШУЩИЙ РЕЙЛ, 88 px под перо. Ни одного слова: пигмент показывают, а не
-    называют. Верхние 348 px — мёртвая зона запястья пишущей руки, почти
-    половина рейла; раньше её было 88, и это была причина ложных нажатий
-    посреди штриха.
+    НИЖНИЙ РЕЙЛ портрета, 64 px: та же последовательность, положенная набок.
+    Свайп по нему — вертикальный.
   -->
   <div
-    class="pult-rail flex w-[88px] shrink-0 flex-col bg-surface {hand === 'left'
-      ? 'border-r'
-      : 'border-l'} {offline ? 'border-danger/40' : 'border-line'}"
+    use:swipe={() => 'y'}
+    class="pult-rail flex h-16 shrink-0 items-stretch border-t bg-surface {offline
+      ? 'border-danger/40'
+      : 'border-line'}"
   >
-    <span class="min-h-0 flex-1" aria-hidden="true"></span>
-
+    {@render gaugeFlat()}
+    <span class="w-4 shrink-0" aria-hidden="true"></span>
     {#if leading}
-      <!--
-        ОТМЕНИТЬ приехало сюда с держащего рейла, и это главный переезд:
-        плохой штрих делает ПЕРО, и рука, которая его сделала, уже в воздухе
-        над листом. Тянуться через весь лист или снимать с хвата большой палец
-        — оба варианта неправильные. «Отменить» и «стереть» — одно семейство
-        «вернуть назад», и стоять они должны вместе.
-      -->
+      {@render toolKeys('h-full w-[72px]', 'w-0')}
+      <span class="w-2 shrink-0" aria-hidden="true"></span>
       <button
         type="button"
-        class="{KEY} h-16 text-muted"
+        class="{KEY} h-full w-12 text-muted"
         onclick={undoStroke}
         aria-label="Отменить последний штрих"
       >
-        <Icon name="undo" size={24} />
+        <Icon name="undo" size={22} />
       </button>
-      <span class="h-2 shrink-0" aria-hidden="true"></span>
-      <!--
-        Ластик стирает ШТРИХАМИ, а не пикселями: в проводе есть только «убрать
-        штрих по имени», и пиксельное стирание потребовало бы нового формата и
-        переписывания всей истории лекции. Удержание полсекунды стирает
-        страницу целиком.
-      -->
+    {/if}
+    <span class="min-w-4 flex-1" aria-hidden="true"></span>
+    {#if mayTurn}
       <button
         type="button"
-        class="{KEY} h-16 {tool === 'eraser' ? 'bg-raised text-ink' : 'text-muted'}"
-        aria-label="Ластик"
-        aria-pressed={tool === 'eraser'}
-        onpointerdown={eraserDown}
-        onpointerup={eraserUp}
-        onpointerleave={() => window.clearTimeout(holdTimer)}
-        onpointercancel={() => window.clearTimeout(holdTimer)}
-        onclick={(event) => {
-          // С клавиатуры `click` приходит с detail === 0 и без пары
-          // pointerdown/pointerup — иначе кнопка была бы недоступна без пальца.
-          if (event.detail === 0) pick('eraser')
-        }}
+        class="{KEY} h-full w-[72px] {onBoard ? 'bg-raised text-ink' : 'text-muted'} {CAP}"
+        aria-label={onBoard ? 'Вернуться к слайду' : 'Чистый лист'}
+        aria-pressed={onBoard}
+        onclick={() => (onBoard ? backToSlides() : newBoard())}
       >
-        {@render mark(tool === 'eraser', inner, false)}
-        <Icon name="eraser" size={24} />
+        {@render mark(onBoard, false)}
+        {onBoard ? 'Слайд' : 'Лист'}
       </button>
-
-      <!-- ВЫРЕЗ 16: граница «вернуть назад» и «пигмент». Волоска здесь нет. -->
-      <span class="h-4 shrink-0" aria-hidden="true"></span>
-
+    {/if}
+    {#if preparing}
       <button
         type="button"
-        class="{KEY} h-[75px] {tool === 'marker' ? 'bg-raised' : ''}"
-        aria-label="Маркер"
-        aria-pressed={tool === 'marker'}
-        onclick={() => pick('marker')}
+        class="{KEY} h-full w-[72px] bg-accent text-accent-ink {CAP}"
+        onclick={() => prep && start(prep)}
       >
-        {@render mark(tool === 'marker', inner, false)}
-        {@render chip(MARKER, true)}
+        Вести
       </button>
-      {#each INKS as choice (choice.color)}
-        {@const on = tool === 'pen' && inkColor === choice.color}
-        <!-- Волосок только между чипами одного семейства — самый тихий из
-             трёх весов линий на пульте. -->
-        <span class="h-px w-full shrink-0 bg-line-soft" aria-hidden="true"></span>
-        <button
-          type="button"
-          class="{KEY} h-[75px] {on ? 'bg-raised' : ''}"
-          aria-label={choice.name}
-          aria-pressed={on}
-          onclick={() => penIn(choice.color)}
-        >
-          {@render mark(on, inner, false)}
-          {@render chip(choice.color, false)}
-        </button>
-      {/each}
+    {:else if leading}
+      <button
+        type="button"
+        class="{KEY} h-full w-[72px] {CAP} {lecture?.blank ? 'bg-raised' : ''} {offline
+          ? OFF
+          : lecture?.blank
+            ? 'text-warning'
+            : 'text-muted'}"
+        aria-label={lecture?.blank ? 'Вернуть проекцию' : 'Затемнить проекцию'}
+        aria-pressed={lecture?.blank}
+        disabled={offline}
+        onclick={() => blank(!lecture?.blank)}
+      >
+        {@render mark(lecture?.blank === true, true)}
+        {lecture?.blank ? 'Темно' : 'Гасить'}
+      </button>
     {:else if watching}
-      <!--
-        Ведёт другой. Единственная клавиша рейла, прижатая к низу: контур без
-        заливки — залитая циановая плита горела бы все сорок минут чужой
-        лекции ради одного нажатия.
-      -->
       <button
         type="button"
-        class="{PRESS} mx-auto mb-0 flex h-[172px] w-[88px] shrink-0 items-center justify-center border border-accent px-2 text-center {CAP} text-accent-text active:bg-line"
+        class="{PRESS} my-2 flex w-[104px] shrink-0 items-center justify-center border border-accent px-1 text-center {CAP} text-accent-text active:bg-line"
         onclick={() => openPane('grab')}
       >
         Взять пульт
       </button>
     {/if}
-
-    <span class="h-5 shrink-0" aria-hidden="true"></span>
+    <span class="w-4 shrink-0" aria-hidden="true"></span>
+    {#if mayTurn}
+      <button
+        type="button"
+        class="{KEY} h-full w-16 text-muted disabled:text-faint/70"
+        disabled={onBoard ? -wanted >= boards : wanted <= 1}
+        aria-label="Предыдущая страница"
+        onclick={() => step(-1)}
+      >
+        <Icon name="chevron-left" size={24} />
+      </button>
+      <button
+        type="button"
+        class="{KEY} h-full w-[112px] gap-2 text-ink disabled:text-faint/70"
+        disabled={!onBoard && pages > 0 && wanted >= pages}
+        aria-label="Следующая страница"
+        onclick={() => step(1)}
+      >
+        <Icon name="chevron-right" size={28} />
+        <span class="{CAP}">{forwardReturns ? 'К слайду' : 'Вперёд'}</span>
+      </button>
+    {:else}
+      <span class="flex w-[112px] shrink-0 items-center justify-center px-1 {SECTION} text-muted">
+        <span class="truncate">Ведёт {lecture?.byName}</span>
+      </span>
+    {/if}
   </div>
 {/snippet}
 
-<!-- ============================================================== середина -->
+<!-- ============================================================== палитра -->
+
+{#snippet palettePop()}
+  <!--
+    ПАЛИТРА ПЕРА: цвет и толщина, 232×120. Стоит рядом с клавишей «Перо» —
+    справа от рейла на её высоте (ландшафт) или над рейлом (портрет), — а не
+    листом снизу: это настройка инструмента, и глаз не должен уходить от
+    руки. Ложа под ней нет: тап мимо закрывает её перехватчиком на корне
+    (см. эффект у `palette`) и идёт дальше — на лист, на клавишу, куда
+    попал; ложе-кнопка во весь пульт съедало первый штрих.
+
+    Корпус палитры для указателя ПРОЗРАЧЕН, нажимаются только её кнопки:
+    палитра висит над бумагой, и перо, севшее в её поле или зазор, раньше
+    уходило в корпус — штрих не рисовался, палитра не закрывалась. Теперь
+    такое перо попадает в слой ввода, а перехватчик закрывает палитру.
+  -->
+  <div
+    class="pointer-events-none absolute z-20 flex w-[232px] flex-col gap-2 border border-line bg-surface p-3"
+    style={portrait
+      ? `left: calc(120px + env(safe-area-inset-left)); bottom: calc(76px + env(safe-area-inset-bottom))`
+      : hand === 'left'
+        ? `right: calc(84px + env(safe-area-inset-right)); top: calc(136px + env(safe-area-inset-top))`
+        : `left: calc(84px + env(safe-area-inset-left)); top: calc(136px + env(safe-area-inset-top))`}
+    data-pult-palette
+  >
+    <div class="flex gap-2" role="radiogroup" aria-label="Цвет пера">
+      {#each INKS as choice (choice.color)}
+        {@const on = inkColor === choice.color}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={on}
+          aria-label={choice.name}
+          class="{PRESS} pointer-events-auto flex h-11 w-16 items-center justify-center {on ? 'bg-raised' : ''} active:bg-line"
+          onclick={() => penIn(choice.color)}
+        >
+          {@render chip(choice.color, false, 6)}
+        </button>
+      {/each}
+    </div>
+    <div class="flex gap-2" role="radiogroup" aria-label="Толщина">
+      {#each WIDTHS as choice (choice.width)}
+        {@const on = penWidth === choice.width}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={on}
+          aria-label={choice.name}
+          class="{PRESS} pointer-events-auto flex h-11 w-16 items-center justify-center {on ? 'bg-raised' : ''} active:bg-line"
+          onclick={() => penWide(choice.width)}
+        >
+          <span
+            class="block rounded-full {on ? 'bg-ink' : 'bg-muted'}"
+            style={`width:${choice.dot}px;height:${choice.dot}px`}
+            aria-hidden="true"
+          ></span>
+        </button>
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
+<!-- ============================================================== лист -->
 
 {#snippet sheetOver(size: { w: number; h: number })}
   <!--
     Всё, что лежит НА листе, — одним местом и в порядке отрисовки.
 
-    1. Пелена затемнения. Чертёж просит увести полотно страницы на opacity
-       0.28, оставив чернила на 1.0: рисунок готовят под затемнением и
-       снимают паузу уже с ним. Полотно рисует LecturePage, и снаружи его
-       непрозрачность не достать — зато пелена цвета колодца на 0.72 ПОД
-       слоем чернил даёт ровно тот же кадр.
-    2. Чернила.
-    3. Пелена фейдера — поверх листа И чернил, но ни на рейлы, ни на ленту
-       заметок она не заходит: пелена живёт внутри листа.
-    4. Растушёвка — ступенями, наружу.
+    1. Пелена затемнения: полотно на 0.28, чернила на 1.0 — рисунок готовят
+       под затемнением и снимают паузу уже с ним. Пелена цвета колодца на
+       0.72 ПОД слоем чернил даёт ровно тот кадр.
+    2. Чернила — три холста и слой ввода, хозяин всех касаний листа.
+    3. Пелена фейдера — поверх листа И чернил, внутри листа.
+    4. Растушёвка: 1 px кромка `line` и 6 px тени бумаги на колодце.
     5. Плита «зал видит чёрное» и цель во весь лист.
   -->
   {#if lecture?.blank}
@@ -1838,25 +2182,23 @@
 
   <InkLayer
     page={wanted}
-    live={canDraw}
+    live={canDraw && !editing}
     tool={liveTool}
     color={strokeColor}
     width={strokeWidth}
+    finger={fingerOn}
     w={size.w}
     h={size.h}
+    reach={inkReach(size)}
     {onbusy}
-    suspend={suspend || editing || sheetOpen}
+    onundo={undoStroke}
+    onpen={penFound}
   />
 
   <!--
-    Мгновенный скачок яркости на треть — событие вспышечной адаптации;
-    театральные фейдеры не щёлкают. 320 мс, и туда, и обратно.
-
-    `data-pult-veil` — метка для проверки интерфейса, и она здесь не украшение:
-    поверх листа лежат ДВЕ пелены цвета колодца, и вторая, затемнение на 0.72,
-    темнее любой ступени фейдера. Не назвав нужную, проверка мерила бы самую
-    тёмную и на затемнённом слайде объявляла бы фейдер сломанным. Метка стоит
-    ровно на одной пелене — на той, которой управляет фейдер.
+    `data-pult-veil` — метка для проверки интерфейса: поверх листа лежат ДВЕ
+    пелены цвета колодца, и метка стоит ровно на той, которой управляет
+    фейдер. 320 мс — театральные фейдеры не щёлкают.
   -->
   <span
     class="pult-veil pointer-events-none absolute inset-0 bg-canvas"
@@ -1865,311 +2207,176 @@
     aria-hidden="true"
   ></span>
 
-  <!-- В узкой раскладке растушёвка сжимается до 12 px (2/5/5): двадцать
-       четыре просто не помещаются в поля 22/26. -->
-  <span
-    class="{wide ? 'pult-halo' : 'pult-halo-tight'} pointer-events-none absolute inset-0"
-    aria-hidden="true"
-  ></span>
+  <span class="pult-halo pointer-events-none absolute inset-0" aria-hidden="true"></span>
 
   {#if lecture?.blank}
     <!--
-      Цель — ВЕСЬ лист, а не полоска: это цель, в которую попадают не глядя.
-      Прежняя белая полоса 1004×44 и полная инверсия «паузы» были двумя самыми
-      яркими объектами ночного пульта, и оба стояли рядом с пальцем.
+      Цель — ПЛИТА 320×56 внизу листа, а не весь лист. Была во весь лист
+      «чтобы попадать не глядя», и это отменяло то, ради чего затемняют:
+      спрятать зал, подготовить вывод пером, показать — первое же касание
+      пера возвращало проекцию и не рисовало, а случайная ладонь снимала
+      затемнение. Внизу по центру: туда не ложится ни пятка правши, ни левши,
+      и туда же смотрят, когда ищут «вернуть».
     -->
     <button
       type="button"
-      class="absolute inset-0 flex items-center justify-center"
+      class="{PRESS} absolute bottom-6 left-1/2 z-10 flex h-[56px] w-[320px] -translate-x-1/2 flex-col items-center justify-center gap-1 border border-line bg-surface/[0.88]"
       onclick={() => blank(false)}
       disabled={!leading || offline}
     >
-      <span
-        class="flex h-[56px] w-[320px] flex-col items-center justify-center gap-1 border border-line bg-surface/[0.88]"
-      >
-        <span class="{CAP} text-warning">Зал видит чёрное</span>
-        <span class="{SECTION} text-muted">Нажмите, чтобы вернуть</span>
-      </span>
+      <span class="{CAP} text-warning">Зал видит чёрное</span>
+      <span class="{SECTION} text-muted">Нажмите, чтобы вернуть</span>
     </button>
   {/if}
 {/snippet}
 
-{#snippet middle()}
-  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+{#snippet sheet()}
+  {#if failure}
     <!--
-      ПОЛЕ ЛИСТА. Поля вокруг (30 сбоку, 30 сверху, 32 снизу) выбраны так,
-      чтобы 24 px растушёвки помещались со всех сторон, а нижние 32 остались
-      швом, в котором живёт тост.
-
-      Роль стоит ради проверки доступности, и она честная: свайп по листу —
-      это удобство для пальца, а не единственный путь. Всё, что он делает,
-      делают и клавиши рейла, и стрелки на клавиатуре.
+      Не открылся ВАШ экземпляр — истёк токен, лопнула сеть, битый кэш, — а
+      у проектора документ, скорее всего, открыт. Поэтому рейл, номер и
+      заметки продолжают работать: отнимать управление из-за собственной
+      неудачи — худшее, что пульт может сделать.
     -->
-    <!--
-      Высота поля ПОСТОЯННА, а не «сколько осталось».
-      
-      Была `flex-1`, и сворачивание ленты растило лист на двести пикселей:
-      LecturePage пересчитывал вписывание, холст переразмеривался, а вместе с
-      ним ехали чернила, растушёвка и пелена — от нажатия на шеврон, который к
-      листу отношения не имеет. Освободившееся место остаётся голым колодцем
-      ниже (распорка под этим блоком): пустота дешевле движения.
-    -->
-    <div
-      class="pult-sheet relative flex min-h-0 min-w-0 shrink-0 {wide
-        ? 'h-[584px] px-[30px] pb-8 pt-[30px]'
-        : 'h-[376px] px-[22px] pb-[26px] pt-[26px]'}"
-      role="group"
-      aria-label="Страница лекции"
-      onpointerdown={sheetDown}
-      onpointermove={sheetMove}
-      onpointerup={sheetUp}
-      onpointercancel={sheetUp}
-    >
-      {#if failure}
-        <!--
-          Не открылся ВАШ экземпляр — истёк токен, лопнула сеть, битый кэш, — а
-          у проектора документ, скорее всего, открыт. Поэтому рейлы, часы,
-          номер и заметки продолжают работать: отнимать управление из-за
-          собственной неудачи — худшее, что пульт может сделать. На месте
-          листа не светится НИЧЕГО: пустое место честно говорит, что
-          показывать нечем.
-        -->
-        <div class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-          <Icon name="alert" size={24} class="text-danger" />
-          <p class="text-answer text-ink">Не удалось открыть документ</p>
-          <p class="font-mono text-code text-faint">{file}</p>
-          <div class="mt-3 flex gap-3">
-            <button
-              type="button"
-              class="{PRESS} flex h-12 w-[176px] items-center justify-center border border-line {CAP} text-muted"
-              onclick={() => (attempt += 1)}
-            >
-              Попробовать снова
-            </button>
-            <button
-              type="button"
-              class="{PRESS} flex h-12 w-[176px] items-center justify-center border border-line {CAP} text-muted"
-              onclick={() => openPane('files')}
-            >
-              Сменить документ
-            </button>
-          </div>
-        </div>
-      {:else}
-        <div
-          class="flex min-h-0 min-w-0 flex-1"
-          style={`transform:translateX(${drag}px);transition:${sliding ? 'none' : 'transform 100ms var(--ease-out)'}`}
+    <div class="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+      <Icon name="alert" size={24} class="text-danger" />
+      <p class="text-answer text-ink">Не удалось открыть документ</p>
+      <p class="font-mono text-code text-faint">{file}</p>
+      <div class="mt-3 flex gap-3">
+        <button
+          type="button"
+          class="{PRESS} flex h-12 w-[176px] items-center justify-center border border-line {CAP} text-muted"
+          onclick={() => (attempt += 1)}
         >
-          <LecturePage {doc} page={wanted} bare>
-            {#snippet over(size)}
-              {@render sheetOver(size)}
-            {/snippet}
-          </LecturePage>
-        </div>
-      {/if}
-
-      <!--
-        ТОСТ живёт в шве между листом и лентой — ровно в тех свободных
-        пикселях, которые оставлены под растушёвку и ниже неё.
-      -->
-      <div class="absolute bottom-0 {wide ? 'left-[30px]' : 'left-[22px]'}">
-        {@render toast()}
+          Попробовать снова
+        </button>
+        <button
+          type="button"
+          class="{PRESS} flex h-12 w-[176px] items-center justify-center border border-line {CAP} text-muted"
+          onclick={() => openPane('files')}
+        >
+          Сменить документ
+        </button>
       </div>
     </div>
+  {:else}
+    <!--
+      Лист прижат к ВЕРХУ коробки, а не к центру: остаток под ним — место
+      подглядки заметок и эскиза «дальше», а не два одинаковых зазора.
+    -->
+    <div class="flex h-full min-h-0 min-w-0 flex-col">
+      <LecturePage {doc} page={wanted} bare align="top" {onfit}>
+        {#snippet over(size)}
+          {@render sheetOver(size)}
+        {/snippet}
+      </LecturePage>
+    </div>
+  {/if}
 
-    {#if file !== null}
-      <!--
-        ЛЕНТА ЗАМЕТОК живёт ПОД листом, во всю его ширину, а не колонкой сбоку:
-        колонка в 300 px даёт 35 знаков в строке и превращает речь в столбик
-        обрывков, полоса в 658 — настоящий абзац, который читается одним
-        взглядом.
+  {#if fullscreenPossible() && !full && !cover && !lecture?.blank}
+    <!--
+      Клавиша «Во весь экран» 200×44 — В ЛЕВОМ НИЖНЕМ УГЛУ коробки листа, там
+      же, где тост: единственное место, куда не ложится ни ладонь, ни перо.
+      Была полосой 400 по центру верха — на первой строке слайда, поверх слоя
+      ввода, и штрих по заголовку уходил в кнопку; под листом по центру —
+      ровно там, откуда начинают штрих с нижнего поля. Просить полный экран
+      можно только из жеста, и клавиша — это жест. При затемнении её место
+      занимает плита «Зал видит чёрное».
+    -->
+    <button
+      type="button"
+      class="{PRESS} absolute bottom-2 left-2 z-10 flex h-11 w-[200px] items-center justify-center gap-2 border border-line bg-surface/[0.88] {CAP} text-accent-text"
+      aria-label="Во весь экран"
+      onclick={toggleFullscreen}
+    >
+      Во весь экран <Icon name="chevron-right" size={16} />
+    </button>
+  {/if}
 
-        Рисуется во ВСЕХ состояниях, где пульт вообще что-то показывает, — в
-        том числе когда ведёт другой и когда документ не открылся: её шапка
-        несёт «⋯», а «⋯» — единственный вход в «Ещё», то есть в «В комнату»,
-        «Во весь экран» и «Закончить лекцию». Свёрнутая лента шапку сохраняет.
+  <!-- Тост — в левом нижнем углу листа: там, куда не ложится ни ладонь, ни перо; над клавишей «Во весь экран», если она есть. -->
+  <div class="absolute left-2 z-10 {fullscreenPossible() && !full && !cover && !lecture?.blank ? 'bottom-14' : 'bottom-2'}">
+    {@render toast()}
+  </div>
+{/snippet}
 
-        Свёрнутая — 36 px, и ЛИСТ ПРИ ЭТОМ НЕ ДВИГАЕТСЯ И НЕ МЕНЯЕТ РАЗМЕРА:
-        освободившиеся 200 px остаются голым колодцем. Движение листа стоит
-        дороже пустоты. Заметки видит только хост — NotesPad проверяет это сам.
-
-        Шов сверху рисует ЭТА коробка, и только она: справа от ленты стоит ещё
-        и колонка «дальше», а волосок обязан идти через обе. При обрыве связи
-        он не краснеет — знаков обрыва ровно два, и оба названы (внутренние
-        кромки рейлов и две строки в приборе). Третья красная линия во всю
-        ширину окна — это уже заливка тревогой той поверхности, на которой
-        человек в этот момент читает свою следующую фразу.
-      -->
-      <!-- Голый колодец: сюда уходит место, освобождённое свёрнутой лентой. -->
-      <div class="min-h-0 flex-1" aria-hidden="true"></div>
-
-      <!--
-        В УЗКОМ ДОМЕ ЛЕНТА НЕ СВОРАЧИВАЕТСЯ НАСИЛЬНО.
-        
-        Раньше она была свёрнута всегда, а шеврон родитель не передавал — то
-        есть в Split View заметок не было вовсе и развернуть их было нечем.
-        Это ровно наоборот: рядом с пультом в такой раскладке лежит конспект
-        или чат, лист мелкий, и главным содержимым экрана становится как раз
-        то, что надо СКАЗАТЬ. Сворачивать вручную можно и здесь — тем же
-        шевроном.
-      -->
-      <div class="flex shrink-0 border-t border-line {folded ? 'h-9' : wide ? 'h-[236px]' : 'h-[284px]'}">
-        <NotesPad
-          {file}
-          page={wanted}
-          compact={!wide}
-          {folded}
-          onfold={setFolded}
-          onmore={() => openPane('more')}
-          onedit={(next) => (editing = next)}
-        />
-        {#if wide && !folded && doc && !onBoard && pages > wanted}
-          <!--
-            «Что дальше» — второй из четырёх вопросов говорящего, и ответ на
-            него обязан стоять рядом с третьим («что сказать»).
-
-            НЕ НАЖИМАЕТСЯ. 249 px кнопки, листающей страницу, стояли ровно
-            там, куда ложится основание ладони пишущей руки при письме в
-            нижней части листа. Эскиз — показание, как и номер; листает
-            качалка.
-          -->
-          <div class="relative flex w-[276px] shrink-0 flex-col border-l border-line">
-            <span class="flex h-8 shrink-0 items-center pl-[22px] {SECTION} text-muted">дальше</span>
-            <span class="relative ml-[22px] flex h-[126px] w-[224px] bg-white">
-              <LecturePage {doc} page={wanted + 1} bare />
-              <!-- Эскиз едет по фейдеру вместе с листом: он такая же бумага. -->
-              <span
-                class="pult-veil pointer-events-none absolute inset-0 bg-canvas"
-                style={`opacity:${veil}`}
-                aria-hidden="true"
-              ></span>
-            </span>
-            <span
-              class="mt-2 flex h-[13px] items-center justify-end pr-[30px] font-mono text-code tabular-nums text-faint"
-            >
-              {wanted + 1}
-            </span>
-          </div>
+{#snippet peek()}
+  <!--
+    ПОДГЛЯДКА под листом: первые строки заметки к этой странице и эскиз
+    «дальше» справа. ПОКАЗАНИЕ, А НЕ КНОПКА: полоса лежит ровно там, где у
+    правши пятка ладони, и пока она была входом в лист заметок, ладонь
+    открывала его поверх нижней половины бумаги посреди письма, а штрих,
+    начатый с нижнего поля, уходил в кнопку. Под бумагой в приложениях для
+    заметок не лежит ничего нажимаемого; вход в заметки — клавиша «Заметки» на
+    рейле и N. `pointer-events: none`: касания идут в слой ввода, который
+    ладонь игнорирует. Живёт только когда под листом ≥110 px; меньше — голый
+    колодец, полоса в две строки читалась бы как обрезанный текст.
+  -->
+  <div
+    class="pointer-events-none absolute inset-x-3 bottom-3 flex gap-3"
+    style={`height:${Math.max(0, fitRest - 12)}px`}
+    data-pult-notes
+    aria-hidden="true"
+  >
+    <div
+      class="flex min-w-0 flex-1 flex-col items-start overflow-hidden px-3 py-2 text-left"
+    >
+      <span class="flex items-center gap-2">
+        <span class="{SECTION} text-muted">заметки</span>
+        {#if peekNote.trim()}
+          <span class="h-3 w-0.5 shrink-0 bg-accent" aria-hidden="true"></span>
         {/if}
+        <span class="font-mono text-code tabular-nums text-muted">
+          {preparing ? '' : stopwatch(runningFor)}
+        </span>
+      </span>
+      <span class="mt-1 line-clamp-3 whitespace-pre-line text-prompt-sm text-ink">
+        {peekNote.trim() || 'Что сказать на этой странице…'}
+      </span>
+    </div>
+    {#if doc && !onBoard && pages > wanted && !tiny}
+      <!-- «Что дальше» — показание, как и номер; не нажимается. -->
+      <div class="relative flex w-40 shrink-0 flex-col">
+        <span class="relative flex h-[90px] w-40 bg-white">
+          <LecturePage {doc} page={wanted + 1} bare />
+          <span
+            class="pult-veil pointer-events-none absolute inset-0 bg-canvas"
+            style={`opacity:${veil}`}
+            aria-hidden="true"
+          ></span>
+        </span>
+        <span class="mt-1 flex justify-end font-mono text-code tabular-nums text-faint">
+          дальше {wanted + 1}
+        </span>
       </div>
     {/if}
   </div>
 {/snippet}
 
-<!-- ====================================================== нижняя полоса -->
-
-{#snippet bar()}
+{#snippet notesSheet()}
   <!--
-    УЗКАЯ РАСКЛАДКА. Честная деградация той же логикой: рейлов нет, потому что
-    для двух рук нет места; всё, что жали большим пальцем, уезжает вниз, где
-    большой палец и лежит. 84 px, а не 76: на ночном пульте цель нащупывают, а
-    не видят.
-
-    «Указка» уходит совсем — она стала пружиной и живёт удержанием пальца на
-    листе. «Отменить» — в листе «Перо». Всё остальное — в «Ещё».
+    ВЫДВИЖНОЙ ЛИСТ ЗАМЕТОК — снизу, поверх бумаги, на 400 (480 на 12.9").
+    Корпус на 0.96: сквозь него чуть виден лист, чтобы не терялось, где ты.
+    Верхняя половина бумаги остаётся рабочей: перо там рисует, пока фокус не
+    в поле. Секундомер лекции — в шапке, его ведёт сам NotesPad: сюда
+    поднимают глаза между фразами, и «сколько прошло» читается тем же
+    взглядом.
   -->
-  <div class="pult-bar flex h-[84px] shrink-0 items-stretch border-t border-line bg-surface">
-    <button
-      type="button"
-      class="{PRESS} relative flex w-[104px] shrink-0 flex-col items-center justify-center gap-0.5 active:bg-line"
-      aria-label="Выбрать страницу"
-      onclick={() => openPane('pages')}
-    >
-      <span class="font-mono text-gauge tabular-nums text-ink">
-        {onBoard ? `Л${-wanted}` : wanted}
-      </span>
-      {#if !onBoard}
-        <span class="font-mono text-2xs tabular-nums text-faint">/ {pages || '—'}</span>
-        <span class="mt-0.5 block h-[2px] w-[56px] bg-line" aria-hidden="true">
-          <span
-            class="block h-full w-full origin-left {behind
-              ? 'pult-catchup bg-accent'
-              : 'bg-muted transition-transform duration-[160ms] ease-out'}"
-            style={behind
-              ? undefined
-              : `transform:scaleX(${pages > 0 ? Math.min(1, wanted / pages) : 0})`}
-          ></span>
-        </span>
-      {/if}
-    </button>
-    <button
-      type="button"
-      class="{PRESS} flex w-[72px] shrink-0 items-center justify-center text-muted active:bg-line disabled:text-faint/70"
-      disabled={!mayTurn || (onBoard ? -wanted >= boards : wanted <= 1)}
-      aria-label="Предыдущая страница"
-      onclick={() => step(-1)}
-    >
-      <Icon name="chevron-left" size={24} />
-    </button>
-    <button
-      type="button"
-      class="{PRESS} flex min-w-[100px] flex-1 items-center justify-center gap-2 text-ink active:bg-line disabled:text-faint/70"
-      disabled={!mayTurn || (!onBoard && pages > 0 && wanted >= pages)}
-      aria-label="Следующая страница"
-      onclick={() => step(1)}
-    >
-      <Icon name="chevron-right" size={28} />
-      <span class="text-ui font-bold uppercase tracking-label">
-        {forwardReturns ? 'К слайду' : 'Вперёд'}
-      </span>
-    </button>
-    {#if leading}
-      <button
-        type="button"
-        class="{PRESS} flex w-[72px] shrink-0 items-center justify-center active:bg-line"
-        aria-label="Перо и цвет"
-        onclick={() => openPane('ink')}
-      >
-        {@render chip(tool === 'marker' ? MARKER : inkColor, tool === 'marker')}
-      </button>
-      {#if !tiny}
-        <button
-          type="button"
-          class="{PRESS} flex w-[72px] shrink-0 items-center justify-center {tool === 'eraser'
-            ? 'bg-raised text-ink'
-            : 'text-muted'} active:bg-line"
-          aria-label="Ластик"
-          aria-pressed={tool === 'eraser'}
-          onclick={() => pick('eraser')}
-        >
-          <Icon name="eraser" size={24} />
-        </button>
-      {/if}
-    {/if}
-    {#if !tiny}
-      <!-- Фейдер едет сюда, а не в «Ещё»: за яркостью тянутся посреди фразы,
-           и два нажатия для этого — уже отказ. -->
-      <div class="flex w-[56px] shrink-0 items-center justify-center">
-        {@render fader('h-7 w-4', 'gap-0.5', 28)}
-      </div>
-    {/if}
-    {#if leading}
-      <button
-        type="button"
-        class="{PRESS} flex w-[72px] shrink-0 items-center justify-center px-1 text-center {CAP} {lecture?.blank
-          ? 'bg-raised'
-          : ''} {offline ? OFF : lecture?.blank ? 'text-warning' : 'text-muted'} active:bg-line"
-        aria-label={lecture?.blank ? 'Вернуть проекцию' : 'Затемнить проекцию'}
-        aria-pressed={lecture?.blank}
-        disabled={offline}
-        onclick={() => blank(!lecture?.blank)}
-      >
-        {lecture?.blank ? 'Затемнено' : 'Затемнить'}
-      </button>
-    {:else if preparing}
-      <!--
-        «Вести» живёт на держащем рейле, а рейлов здесь нет. Без этой клавиши
-        подготовка в Split View была бы ловушкой: документ выбран, заметки
-        пишутся, а начать лекцию нечем.
-      -->
-      <button
-        type="button"
-        class="{PRESS} flex w-[88px] shrink-0 items-center justify-center bg-accent {CAP} text-accent-ink"
-        onclick={() => prep && start(prep)}
-      >
-        Вести
-      </button>
-    {/if}
+  <div
+    use:sheetSwipe
+    class="animate-pult-slide absolute inset-x-0 bottom-0 z-10 flex flex-col border-t border-line bg-surface/[0.96]"
+    style={`height:${notesSheetH}px`}
+    data-pult-notes
+  >
+    <div class="flex min-h-0 flex-1 flex-col">
+      <NotesPad
+        file={file ?? ''}
+        page={wanted}
+        folded={false}
+        onfold={() => setNotes(false)}
+        onmore={() => openPane('more')}
+        onedit={(next) => (editing = next)}
+      />
+    </div>
   </div>
 {/snippet}
 
@@ -2223,13 +2430,9 @@
 
 {#snippet chooser()}
   <!--
-    ЛЕКЦИИ НЕТ. Рейлы не рисуются вовсе: пустой рейл выглядит как сломанный
+    ЛЕКЦИИ НЕТ. Рейл не рисуется вовсе: пустой рейл выглядит как сломанный
     пульт. Грунт остаётся ночным — сюда приходят из освещённого коридора, и
     пусть глаза адаптируются на настройке, а не на первом слайде.
-
-    Никакого крупного набора: числу здесь нечего показывать, и ступень
-    прибора просто молчит. Нажатие по строке начинает лекцию И просит полный
-    экран одним живым жестом.
   -->
   <div class="flex min-h-0 flex-1 justify-center overflow-y-auto px-6 pb-10 pt-12">
     <div class="w-full max-w-[720px]">
@@ -2266,11 +2469,7 @@
         {/if}
       </div>
 
-      <!-- Фейдер надо один раз показать, и это единственное место, где на это
-           есть время. -->
-      <p class="pt-6 {CAP} text-faint">
-        Яркость листа — три ступени в левом рейле. Начните с «зала»
-      </p>
+      <p class="pt-6 {CAP} text-faint">Яркость листа — три ступени под номером страницы. Начните с «зала»</p>
 
       <div class="pt-6">{@render toast()}</div>
     </div>
@@ -2294,7 +2493,7 @@
         onclick={() => openPane(null)}
       ></button>
 
-      <div class="pult-slide relative max-h-full overflow-y-auto border-t border-line bg-surface">
+      <div class="animate-pult-slide relative max-h-full overflow-y-auto border-t border-line bg-surface">
         {#if pane === 'pages'}
           <div class="flex h-10 items-center justify-between px-6">
             <span class="{SECTION} text-muted">Страницы</span>
@@ -2350,10 +2549,8 @@
             {/each}
 
             <!--
-              За вырезом — ЗАВЕДЁННЫЕ ЧИСТЫЕ ЛИСТЫ. Это чинит дыру: раньше в
-              ленте были только 1…pages, и к исписанному чистому листу можно
-              было вернуться единственным способом — нажать «Назад» нужное
-              число раз.
+              За вырезом — ЗАВЕДЁННЫЕ ЧИСТЫЕ ЛИСТЫ: иначе к исписанному листу
+              можно было бы вернуться только нажимая «Назад» нужное число раз.
             -->
             <span class="h-[90px] w-4 shrink-0" aria-hidden="true"></span>
             <span class="h-[90px] w-px shrink-0 bg-line" aria-hidden="true"></span>
@@ -2371,10 +2568,7 @@
                   openPane(null)
                 }}
               >
-                <span
-                  class="relative block bg-white"
-                  style={`width:${THUMB_W}px;height:${THUMB_H}px`}
-                >
+                <span class="relative block bg-white" style={`width:${THUMB_W}px;height:${THUMB_H}px`}>
                   <svg width={THUMB_W} height={THUMB_H} class="block">
                     {#each boardInk(index) as line, at (at)}
                       <path
@@ -2422,70 +2616,6 @@
               </button>
             {/if}
           </div>
-        {:else if pane === 'ink'}
-          <!-- Лист «Перо» узкой раскладки: пигмент, ластик и «отменить», -->
-          <!-- которому в полосе места нет. -->
-          <div class="flex h-10 items-center px-6">
-            <span class="{SECTION} text-muted">Перо</span>
-          </div>
-          <div class="flex items-stretch border-t border-line-soft">
-            <button
-              type="button"
-              class="{PRESS} flex h-[76px] flex-1 items-center justify-center {tool === 'marker'
-                ? 'bg-raised'
-                : ''}"
-              aria-label="Маркер"
-              aria-pressed={tool === 'marker'}
-              onclick={() => {
-                pick('marker')
-                openPane(null)
-              }}
-            >
-              {@render chip(MARKER, true)}
-            </button>
-            {#each INKS as choice (choice.color)}
-              {@const on = tool === 'pen' && inkColor === choice.color}
-              <button
-                type="button"
-                class="{PRESS} flex h-[76px] flex-1 items-center justify-center border-l border-line-soft {on
-                  ? 'bg-raised'
-                  : ''}"
-                aria-label={choice.name}
-                aria-pressed={on}
-                onclick={() => {
-                  penIn(choice.color)
-                  openPane(null)
-                }}
-              >
-                {@render chip(choice.color, false)}
-              </button>
-            {/each}
-          </div>
-          <button
-            type="button"
-            class="{ROW} border-t border-line-soft text-ink"
-            aria-label="Отменить последний штрих"
-            onclick={() => {
-              undoStroke()
-              openPane(null)
-            }}
-          >
-            <Icon name="undo" size={18} class="text-muted" />
-            Отменить штрих
-          </button>
-          <button
-            type="button"
-            class="{ROW} border-t border-line-soft text-ink"
-            aria-pressed={tool === 'eraser'}
-            onclick={() => {
-              pick('eraser')
-              openPane(null)
-            }}
-          >
-            <Icon name="eraser" size={18} class="text-muted" />
-            <span class="flex-1">Ластик</span>
-            {#if tool === 'eraser'}<span class="{CAP} text-muted">вкл</span>{/if}
-          </button>
         {:else if pane === 'grab'}
           <div class="p-6">
             <p class="text-answer text-ink">
@@ -2506,8 +2636,7 @@
             <span class="{SECTION} text-muted">Документ</span>
           </div>
           <!-- Пиксели, а не `vh`: единица высоты окна на iPad живёт своей
-               жизнью между панелями Safari и Split View, а лист и без того
-               ограничен сверху высотой пульта. -->
+               жизнью между панелями Safari и Split View. -->
           <div class="max-h-[360px] overflow-y-auto border-t border-line-soft px-6">
             {@render fileList(start, false)}
           </div>
@@ -2515,15 +2644,19 @@
           <!--
             ЛИСТ «ЕЩЁ» — единственный вход ко всему, что делают раз за пару или
             раз в жизни. Здесь же живёт «Закончить лекцию», и живёт ПОСЛЕДНЕЙ
-            СТРОКОЙ: красное в тёмном зале — самое громкое, что бывает, и
-            висеть рядом с пальцем весь час ради одного нажатия оно не должно.
+            СТРОКОЙ: красное в тёмном зале — самое громкое, что бывает.
+            Глифов в строках нет ни одного: слева имя действия, справа его
+            значение.
           -->
-          <!--
-            Глифов в строках нет ни одного, и это то же решение, что и на
-            рейлах: список из восьми одинаковых значков — двенадцать коробок,
-            а не восемь действий. Слева имя действия, справа его значение.
-          -->
-          <button type="button" class="{ROW} text-ink" onclick={onexit}>В комнату</button>
+          {#if lecture}
+            <div class="flex h-12 items-center justify-between px-6">
+              <span class="{SECTION} text-muted">лекция идёт</span>
+              <span class="font-mono text-gauge tabular-nums text-ink">{stopwatch(runningFor)}</span>
+            </div>
+          {/if}
+          <button type="button" class="{ROW} border-t border-line-soft text-ink" onclick={onexit}>
+            В комнату
+          </button>
           {#if fullscreenPossible()}
             <button
               type="button"
@@ -2547,11 +2680,19 @@
             <span class="flex-1">Левая рука</span>
             <span class="{CAP} text-muted">{hand === 'left' ? 'вкл' : 'выкл'}</span>
           </button>
+          {#if leading}
+            <button
+              type="button"
+              class="{ROW} border-t border-line-soft text-ink"
+              aria-label="Рисовать пальцем"
+              aria-pressed={fingerOn}
+              onclick={() => setFinger(!fingerOn)}
+            >
+              <span class="flex-1">Рисовать пальцем</span>
+              <span class="{CAP} text-muted">{fingerOn ? 'вкл' : 'выкл'}</span>
+            </button>
+          {/if}
           {#if mayTurn}
-            <!--
-              «Чистый лист» дублем: в узкой раскладке клавиши ЛИСТ нет вовсе,
-              а лист заводят посреди фразы.
-            -->
             <button
               type="button"
               class="{ROW} border-t border-line-soft text-ink"
@@ -2622,6 +2763,8 @@
                 {AUTOLOCK}
               {/if}
             </p>
+            <p class="pt-3 text-answer text-ink">Ладонь не сворачивает пульт</p>
+            <p class="pt-1 text-2xs text-muted">{GUIDED}</p>
           </div>
           <div class="h-px w-full bg-line-soft" aria-hidden="true"></div>
 
@@ -2653,11 +2796,8 @@
               </button>
             {/if}
           {:else if preparing}
-            <!--
-              У подготовки заканчивать нечего: та же последняя строка выводит
-              обратно к выбору документа, и красного здесь нет — ничего не
-              разрушается.
-            -->
+            <!-- У подготовки заканчивать нечего: та же последняя строка
+                 выводит обратно к выбору документа, и красного здесь нет. -->
             <button
               type="button"
               class="{ROW} text-muted"
@@ -2677,62 +2817,27 @@
 
 <style>
   /*
-   * Лупа и меню «скопировать» по долгому нажатию, серая вспышка по касанию и
-   * зум по двойному тапу — три системных жеста, которые на пульте не значат
-   * ничего, а стоят посреди лекции дорого. Первые два отменяются только
-   * вебкитовскими свойствами; третий — `touch-action` на полосах, потому что
-   * листают быстрыми повторными нажатиями, а это и есть двойной тап.
-   *
-   * Правила живут здесь, а не в `index.css`: за пределами пульта они вредны —
-   * в тетради текст выделяют осмысленно, а по документу в читалке щипком
-   * ведут.
+   * ВЕСЬ ПУЛЬТ — БЕЗ ВЫДЕЛЕНИЯ И БЕЗ СИСТЕМНЫХ ЖЕСТОВ: `.pult-root`,
+   * `.pult-sheet` и поле заметок описаны в `index.css` под `[data-pult]` —
+   * признак адреса гарантирует, что запреты не доедут до тетради. Здесь
+   * остаётся рейл: по нему листают свайпом, и браузеру его отдавать нельзя.
    */
-  .pult-root {
-    -webkit-touch-callout: none;
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  .pult-rail,
-  .pult-bar {
-    touch-action: manipulation;
+  .pult-rail {
+    touch-action: none;
   }
 
   /*
-   * РАСТУШЁВКА ВОКРУГ ЛИСТА — вместо тени.
-   *
-   * Тень `shadow-pop` цвета #0F2D69 на ночном грунте не рисовала ничего и
-   * стоила полной перерисовки каждого кадра. Здесь вместо неё четыре КОЛЬЦА с
-   * нулевым размытием: бумага → 1 px кромки → 2 px → 10 px → 12 px → колодец.
-   *
-   * ИМЕННО СТУПЕНЯМИ, А НЕ ГРАДИЕНТОМ. Между двумя последними ступенями
-   * три-шесть кодовых значений на канал; градиент, растянутый на 24 px,
-   * разложит их в полосы Маха каждые пять пикселей, и на IPS-панели iPad в
-   * тёмной комнате это видно невооружённым глазом — вокруг листа появляется
-   * концентрическая рябь, которой нет в разметке.
-   *
-   * Голые хексы здесь — сознательное исключение, названное в задании: это
-   * растушёвка бумаги, а не краска интерфейса, и её ступени подобраны к
-   * конкретным кодовым значениям колодца. Токена, который значил бы «на два
-   * шага светлее колодца», в продукте нет и заводить его ради одного места
-   * незачем.
-   *
-   * Свечения (glow) нет: свечение в этом продукте означает состояние, а лист —
-   * не состояние.
+   * РАСТУШЁВКА ВОКРУГ ЛИСТА — вместо тени: 1 px кромки цвета `line` и 6 px
+   * тени бумаги на колодце. Ступенями, а не градиентом: градиент на IPS
+   * в тёмной комнате раскладывается в полосы Маха. #131b31 — единственный
+   * голый хекс: это тень бумаги, подобранная к кодовым значениям колодца, а
+   * не краска интерфейса; токена «на два шага светлее колодца» в продукте
+   * нет, и заводить его ради одного места незачем.
    */
   .pult-halo {
     box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.1),
-      0 0 0 3px #2a3654,
-      0 0 0 13px #131b31,
-      0 0 0 25px #0e1526;
-  }
-
-  .pult-halo-tight {
-    box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.1),
-      0 0 0 3px #2a3654,
-      0 0 0 8px #131b31,
-      0 0 0 13px #0e1526;
+      0 0 0 1px rgb(var(--line)),
+      0 0 0 7px #131b31;
   }
 
   /*
@@ -2743,23 +2848,9 @@
     transition: opacity 320ms var(--ease-out);
   }
 
-  .pult-slide {
-    animation: slide-in 220ms var(--ease-drawer) both;
-  }
-
-  @keyframes slide-in {
-    from {
-      transform: translateY(100%);
-    }
-    to {
-      transform: none;
-    }
-  }
-
   /*
    * Петля схождения — ЕДИНСТВЕННАЯ на пульте, и она честна: «мы всё ещё
-   * ждём». Живёт на линейке темпа, которая и так есть, а не заводит второй
-   * объект под числом. Ползёт scaleX, а не width: ширина — это раскладка.
+   * ждём». Ползёт scaleX, а не width: ширина — это раскладка.
    */
   .pult-catchup {
     animation: catchup 1.2s var(--ease-out) infinite;
@@ -2776,14 +2867,11 @@
   }
 
   /*
-   * Сокращение, а не выключатель: движение уходит, появление остаётся. Панель,
-   * возникшая без всякого перехода, всё равно честнее панели, которая
-   * приехала мимо человека, попросившего не двигать экран. Нажатие
-   * (`scale(0.97)`) остаётся всегда: на экране, который может не измениться
-   * вовсе, это единственное доказательство, что касание услышано.
+   * Сокращение, а не выключатель: движение уходит, появление остаётся.
+   * Нажатие (`scale(0.97)`) остаётся всегда: на экране, который может не
+   * измениться вовсе, это единственное доказательство, что касание услышано.
    */
   @media (prefers-reduced-motion: reduce) {
-    .pult-slide,
     .pult-catchup {
       animation-duration: 1ms;
     }

@@ -16,7 +16,7 @@
 -->
 <script lang="ts">
   import type { PDFDocumentProxy } from 'pdfjs-dist'
-  import type { Snippet } from 'svelte'
+  import { untrack, type Snippet } from 'svelte'
 
   interface Props {
     doc: PDFDocumentProxy | null
@@ -43,9 +43,31 @@
      * по нему ведут пером.
      */
     bare?: boolean
+    /**
+     * Куда прижать лист, если он ниже отведённого места.
+     *
+     * Умолчание — по центру: так живут читалка, проекция и колонка ведущего,
+     * и их не трогаем. Пульт просит `top`: коробка листа там — весь остаток
+     * экрана, а 16:9 в ней ниже, чем коробка; лист, висящий по центру,
+     * оставлял бы над собой пустой колодец, и рука, тянущаяся писать на
+     * верхнюю строку слайда, ложилась бы на середину планшета. Остаток
+     * уходит ВНИЗ — под полосу заметок и эскиз «дальше» (см. `onfit`).
+     */
+    align?: 'center' | 'top'
+    /**
+     * Сколько лист занял и сколько осталось.
+     *
+     * `rest` — высота колодца под листом внутри отведённой коробки. Пульт по
+     * ней решает, влезает ли туда peek-полоса заметок: это ЗНАНИЕ ЛИСТА, а
+     * вторичный замер снаружи расходился бы с ним на кадр, и полоса мигала бы
+     * при каждом повороте. Зовётся только когда лист есть (w > 0): до прихода
+     * пропорции остаток равен всей коробке, и это не «место под заметки», а
+     * «ещё ничего не знаем».
+     */
+    onfit?: (size: { w: number; h: number; rest: number }) => void
   }
 
-  let { doc, page, over, dim = false, bare = false }: Props = $props()
+  let { doc, page, over, dim = false, bare = false, align = 'center', onfit }: Props = $props()
 
   let box = $state<HTMLDivElement | null>(null)
   let canvas = $state<HTMLCanvasElement | null>(null)
@@ -148,6 +170,19 @@
     return byWidth.h <= h ? byWidth : { w: h * aspect, h }
   })
 
+  /*
+   * Отдать место наружу. Через `untrack`: родитель в ответ переставляет свою
+   * раскладку, и если бы его руны читались отсюда отслеживаемо, эффект
+   * подписался бы на то, что сам же и вызывает, — круг до
+   * effect_update_depth_exceeded, на котором в этом продукте уже обжигались.
+   */
+  $effect(() => {
+    const size = fit
+    const rest = Math.max(0, room.h - size.h)
+    if (size.w === 0) return
+    untrack(() => onfit?.({ w: size.w, h: size.h, rest }))
+  })
+
   /**
    * Отрисовка. Отменяет предыдущую: страницу листают быстрее, чем считается
    * A4, и pdf.js отказывается рисовать в занятый холст — «Cannot use the same
@@ -215,7 +250,10 @@
   })
 </script>
 
-<div bind:this={box} class="relative flex min-h-0 min-w-0 flex-1 items-center justify-center">
+<div
+  bind:this={box}
+  class="relative flex min-h-0 min-w-0 flex-1 justify-center {align === 'top' ? 'items-start' : 'items-center'}"
+>
   <!-- Лист и всё, что на нём, — одним блоком: слой чернил обязан совпадать с
        листом пиксель в пиксель, а не с контейнером вокруг.
 

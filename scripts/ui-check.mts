@@ -22,8 +22,10 @@ import path from 'node:path'
 import WS from 'ws'
 
 const HEADED = process.argv.includes('--headed')
-const PORT = 3891
-const CDP_PORT = 9334
+// Порты переопределяются окружением — чтобы отлаживать сам стенд, пока
+// на штатных идёт полный прогон.
+const PORT = Number(process.env.UI_CHECK_PORT ?? 3891)
+const CDP_PORT = Number(process.env.UI_CHECK_CDP ?? 9334)
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
 const root = mkdtempSync(path.join(tmpdir(), 'colloq-ui-'))
@@ -31,7 +33,11 @@ const ROOM = 'uicheck1'
 
 /* ------------------------------------------------------- маленький PDF */
 
-/** Настоящий PDF на три страницы, собранный руками: без зависимостей. */
+/**
+ * Настоящий PDF на три страницы, собранный руками: без зависимостей.
+ * Страницы 16:9 (960×540), как слайды лекции: раскладка пульта меряется
+ * долей экрана под листом, и для A4-портрета эти пороги не имеют смысла.
+ */
 function samplePdf(pages = 3): string {
   const obj = (n: number, body: string) => `${n} 0 obj\n${body}\nendobj\n`
   const font = 3 + pages * 2
@@ -39,11 +45,11 @@ function samplePdf(pages = 3): string {
   const kids = Array.from({ length: pages }, (_, i) => `${3 + i * 2} 0 R`).join(' ')
   parts.push(obj(2, `<< /Type /Pages /Kids [${kids}] /Count ${pages} >>`))
   for (let i = 0; i < pages; i += 1) {
-    const stream = `BT /F1 48 Tf 72 700 Td (Stranica ${i + 1}) Tj ET`
+    const stream = `BT /F1 48 Tf 72 440 Td (Stranica ${i + 1}) Tj ET`
     parts.push(
       obj(
         3 + i * 2,
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${4 + i * 2} 0 R >>`,
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 960 540] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${4 + i * 2} 0 R >>`,
       ),
       obj(4 + i * 2, `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`),
     )
@@ -804,10 +810,15 @@ check(
  * зависеть от того, успел ли headless-браузер выпустить этот кадр, — значит
  * проверять браузер.
  */
+/*
+ * Прыгаем на ВТОРУЮ страницу, а не на последнюю: страницы здесь 16:9, как
+ * слайды, и последняя короче окна — до верха её не докрутить ничем, и
+ * проверка ругала бы читалку за то, что документ кончился.
+ */
 const landed = (await host.js(
   `const sc=document.querySelector('[role=document]');` +
-    `document.querySelector('[data-thumb="3"]').click();` +
-    `const sheet=sc.querySelector('[data-page="3"]');` +
+    `document.querySelector('[data-thumb="2"]').click();` +
+    `const sheet=sc.querySelector('[data-page="2"]');` +
     `const at=sheet.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;` +
     // Начало страницы обязано остаться ВИДНО: прокрутка не должна уехать за
     // верх листа. Промах в тридцать четыре пикселя — высоту полосы управления —
@@ -914,11 +925,20 @@ const strokeOn = (page: Tab) =>
   )
 check(((await strokeOn(student)) as number) <= 0, 'до штриха страница чистая', 'пусто')
 
+/*
+ * Синтетическое перо целится в СЛОЙ ВВОДА, а не в холст.
+ *
+ * Касания у слоя чернил принимает один элемент — `div.ink-input` поверх трёх
+ * холстов (§1 договора): холсты — соседи, а не родители, и событие, посланное
+ * холсту, до обработчиков не доходит. Координаты при этом считаются от холста:
+ * слой ввода шире него на поля листа.
+ */
+const inkTarget =
+  `const c=document.querySelector('canvas.ink-wet');const input=document.querySelector('.ink-input')||c;` +
+  `if(!c) throw new Error('слоя чернил нет');const r=c.getBoundingClientRect();`
 await host.js(
-  `const c=document.querySelector('canvas.ink-wet');` +
-    `if(!c) throw new Error('слоя чернил нет');` +
-    `const r=c.getBoundingClientRect();` +
-    `const at=(t,fx,fy)=>c.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:1,pointerType:'pen',` +
+  inkTarget +
+    `const at=(t,fx,fy)=>input.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:1,pointerType:'pen',` +
     `buttons:t==='pointerup'?0:1,pressure:0.5,clientX:r.left+r.width*fx,clientY:r.top+r.height*fy}));` +
     `at('pointerdown',0.2,0.3); at('pointermove',0.4,0.45); at('pointermove',0.6,0.35);` +
     `at('pointermove',0.8,0.5); at('pointerup',0.8,0.5); return 1`,
@@ -943,22 +963,22 @@ await host.js(
 )
 await wait(200)
 await host.js(
-  `const c=document.querySelector('canvas.ink-wet');const r=c.getBoundingClientRect();` +
-    `const at=(t,fx,fy)=>c.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:2,pointerType:'pen',` +
+  inkTarget +
+    `const at=(t,fx,fy)=>input.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:2,pointerType:'pen',` +
     `buttons:t==='pointerup'?0:1,clientX:r.left+r.width*fx,clientY:r.top+r.height*fy}));` +
     `at('pointerdown',0.5,0.5); at('pointermove',0.55,0.52); return 1`,
 )
-const redOn = (page: Tab) =>
-  page.js(
-    `const c=document.querySelector('canvas.ink-wet');` +
-      `if(!c||!c.width) return -1;` +
-      `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
-      `let n=0; for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) n+=1; return n`,
-  )
-await until(student, `(async()=>{const c=document.querySelector('canvas.ink-wet');if(!c||!c.width)return false;` +
-  `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
-  `for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) return true; return false})()`,
-  'указка доехала до студента')
+/*
+ * Красное ищется на ЖИВОМ холсте: по §3 договора указка, кольцо ластика и
+ * предсказанный кончик живут на `ink-live`, а мокрый — только чернила. Мокрый
+ * всё же суммируется — у зала слой может рисовать эхо указки по-своему.
+ */
+const redExpr =
+  `(()=>{let n=0;for(const cls of ['ink-live','ink-wet']){const c=document.querySelector('canvas.'+cls);` +
+  `if(!c||!c.width) continue;const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
+  `for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) n+=1}return n})()`
+const redOn = (page: Tab) => page.js(`return ${redExpr}`)
+await until(student, `${redExpr} > 0`, 'указка доехала до студента')
 // Ждём дольше, чем живёт хвост: голова обязана остаться.
 await wait(1400)
 const stillLit = (await redOn(student)) as number
@@ -966,14 +986,11 @@ check(stillLit > 0, 'указка не гаснет, пока её держат'
 
 /* Отпустили — гаснет у всех. */
 await host.js(
-  `const c=document.querySelector('canvas.ink-wet');const r=c.getBoundingClientRect();` +
-    `c.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:2,pointerType:'pen',buttons:0,` +
+  inkTarget +
+    `input.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:2,pointerType:'pen',buttons:0,` +
     `clientX:r.left+r.width*0.55,clientY:r.top+r.height*0.52})); return 1`,
 )
-await until(student, `(async()=>{const c=document.querySelector('canvas.ink-wet');if(!c)return true;` +
-  `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
-  `for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) return false; return true})()`,
-  'указка погасла у студента')
+await until(student, `${redExpr} === 0`, 'указка погасла у студента')
 check(((await redOn(student)) as number) <= 0, 'отпущенная указка гаснет у всех', 'погасла')
 /* Возвращаем перо: дальше проверки рисуют им. */
 await host.js(
@@ -1025,6 +1042,13 @@ const PULT = {
   fader: 'Яркость листа',
   more: 'Ещё',
   bigger: 'Заметки крупнее',
+  pen: 'Перо',
+  notes: 'Заметки',
+  finger: 'Рисовать пальцем',
+  fullscreen: 'Во весь экран',
+  thin: 'Тонкое',
+  mid: 'Среднее',
+  thick: 'Толстое',
 } as const
 
 /** Выражение «такой орган на экране есть». */
@@ -1033,6 +1057,9 @@ const named = (aria: string) => `!!document.querySelector('[aria-label=${JSON.st
 const press = (aria: string) =>
   `const b=document.querySelector('[aria-label=${JSON.stringify(aria)}]');` +
   `if(!b) throw new Error('на пульте нет органа «${aria}»'); b.click(); return 1`
+/** Состояние защёлки клавиши: 'true' / 'false' / 'нет'. */
+const pressedIs = (aria: string) =>
+  `(document.querySelector('[aria-label=${JSON.stringify(aria)}]')?.getAttribute('aria-pressed') ?? 'нет')`
 
 /*
  * Пульт на планшет.
@@ -1167,10 +1194,23 @@ await pult.send('Emulation.setDeviceMetricsOverride', {
 await pult.send('Page.bringToFront')
 const pultReady = await until(
   pult,
-  `[...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`,
+  `!!document.querySelector('.ink-input') && [...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`,
   'пульт нарисовал страницу',
 )
 check(pultReady, 'пульт показывает лист лекции', await pult.js(`return location.pathname`))
+/*
+ * Лекция уже идёт, а пульт открыт по ключу — над листом ложе «Коснитесь,
+ * чтобы взять пульт»: полный экран просится только из живого жеста. Клавиши
+ * под ним в DOM есть, и `press` их нажал бы и так, но снимок показал бы
+ * плиту, а не пульт. Снимается оно так же, как пальцем.
+ */
+async function takeConsole(): Promise<void> {
+  if (!(await pult.js(`return !!document.querySelector('[aria-label="Коснуться и начать"]')`))) return
+  await pult.js(`document.querySelector('[aria-label="Коснуться и начать"]').click(); return 1`)
+  await until(pult, `!document.querySelector('[aria-label="Коснуться и начать"]')`, 'ложе первого касания ушло', 4000)
+  await wait(300)
+}
+await takeConsole()
 check(
   (await pult.js(`return ${named(PULT.laser)}`)) === true,
   'у пульта есть свои инструменты',
@@ -1185,32 +1225,69 @@ check(
  * «Стереть» вместо «Ластик». Пары — это один орган в двух состояниях, и
  * присутствовать обязано ровно одно из двух.
  */
-const missing = (await pult.js(
-  `const one=${JSON.stringify([
-    PULT.gauge,
-    PULT.laser,
-    PULT.prev,
-    PULT.next,
-    PULT.undo,
-    PULT.eraser,
-    PULT.marker,
-    PULT.red,
-    PULT.green,
-    PULT.black,
-    PULT.fader,
-    PULT.more,
-    PULT.bigger,
-  ])};` +
-    `const two=${JSON.stringify([
-      [PULT.blank, PULT.toSlide],
-      [PULT.dim, PULT.undim],
-    ])};` +
-    `const has=n=>!!document.querySelector('[aria-label="'+n+'"]');` +
-    `const out=one.filter(n=>!has(n));` +
-    `for(const pair of two) if(!pair.some(has)) out.push(pair.join(' / '));` +
-    `return out.join(', ')`,
-)) as string
-check(missing === '', 'органы пульта названы по договору', missing || 'все имена на месте')
+/*
+ * Цвета и толщины живут во всплывающей палитре, а «Заметки крупнее» — в
+ * шапке выдвижного листа заметок; на рейле их нет. Палитру открывает тап по
+ * АКТИВНОМУ «Перу» (по неактивному — выбор пера), лист заметок — клавиша
+ * «Заметки». Оба открываются здесь ровно на время переклички и закрываются.
+ */
+const has = (aria: string) => `!!document.querySelector('[aria-label=${JSON.stringify(aria)}]')`
+async function openPalette(): Promise<boolean> {
+  await pult.js(press(PULT.pen))
+  await wait(200)
+  if (!(await pult.js(`return !!document.querySelector('[data-pult-palette]')`))) {
+    await pult.js(press(PULT.pen))
+    await wait(200)
+  }
+  return (await pult.js(`return !!document.querySelector('[data-pult-palette]')`)) === true
+}
+async function escape(): Promise<void> {
+  for (const type of ['keyDown', 'keyUp'] as const) {
+    await pult.send('Input.dispatchKeyEvent', {
+      type,
+      key: 'Escape',
+      code: 'Escape',
+      windowsVirtualKeyCode: 27,
+      nativeVirtualKeyCode: 27,
+    })
+  }
+  await wait(250)
+}
+const onRail = [PULT.gauge, PULT.pen, PULT.marker, PULT.laser, PULT.prev, PULT.next, PULT.undo, PULT.eraser, PULT.fader, PULT.notes]
+const inPalette = [PULT.red, PULT.green, PULT.black, PULT.thin, PULT.mid, PULT.thick]
+const inNotes = [PULT.more, PULT.bigger]
+const absent: string[] = []
+for (const n of onRail) if (!(await pult.js(`return ${has(n)}`))) absent.push(n)
+for (const pair of [
+  [PULT.blank, PULT.toSlide],
+  [PULT.dim, PULT.undim],
+]) {
+  if (!(await pult.js(`return ${has(pair[0])} || ${has(pair[1])}`))) absent.push(pair.join(' / '))
+}
+const paletteOpen = await openPalette()
+if (!paletteOpen) absent.push('палитра [data-pult-palette]')
+else for (const n of inPalette) if (!(await pult.js(`return ${has(n)}`))) absent.push(n)
+check(
+  paletteOpen &&
+    (await pult.js(
+      `const p=document.querySelector('[data-pult-palette]');` +
+        `return !!p.querySelector('[role="radiogroup"][aria-label="Цвет пера"]') && !!p.querySelector('[role="radiogroup"][aria-label="Толщина"]')`,
+    )) === true,
+  'палитра пера — два ряда: цвет и толщина',
+  paletteOpen ? 'radiogroup «Цвет пера» и «Толщина»' : 'палитра не открылась',
+)
+await escape()
+check(
+  (await pult.js(`return !document.querySelector('[data-pult-palette]')`)) === true,
+  'палитра закрывается Escape',
+  'закрыта',
+)
+await pult.js(press(PULT.notes))
+await wait(500)
+const notesOpen = (await pult.js(`return !!document.querySelector('[data-pult-notes] textarea')`)) === true
+if (!notesOpen) absent.push('лист заметок [data-pult-notes]')
+else for (const n of inNotes) if (!(await pult.js(`return ${has(n)}`))) absent.push(n)
+check(absent.length === 0, 'органы пульта названы по договору', absent.length ? absent.join(', ') : 'все имена на месте')
 
 /*
  * ВЕРХНЕЙ НИТИ НЕТ ВОВСЕ.
@@ -1354,37 +1431,39 @@ check(
   ),
 )
 await pult.js(
-  `const c=document.querySelector('canvas.ink-wet');` +
-    `if(!c) throw new Error('слоя чернил на пульте нет');` +
-    `const r=c.getBoundingClientRect();` +
-    `const at=(t,fx,fy)=>c.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:7,pointerType:'pen',` +
+  inkTarget +
+    `const at=(t,fx,fy)=>input.dispatchEvent(new PointerEvent(t,{bubbles:true,pointerId:7,pointerType:'pen',` +
     `buttons:t==='pointerup'?0:1,clientX:r.left+r.width*fx,clientY:r.top+r.height*fy}));` +
     `at('pointerdown',0.4,0.6); at('pointermove',0.45,0.58); return 1`,
 )
+/* Красное — на живом холсте: указка по §3 договора живёт на `ink-live`. */
 const pultRed =
-  `(()=>{const c=document.querySelector('canvas.ink-wet');` +
+  `(()=>{const c=document.querySelector('canvas.ink-live');` +
   `if(!c||!c.width) return -1;` +
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `let n=0; for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) n+=1; return n})()`
 const litUp = await until(pult, `${pultRed} > 0`, 'указка пульта зажглась', 8000)
-check(litUp, 'указка пульта светит после нажатия', `${await pult.js(`return ${pultRed}`)} красных точек`)
-/* Гасим тем же тапом: указка — единственный инструмент, который иначе
-   остаётся гулять по проектору до конца пары. */
+check(litUp, 'указка пульта светит после нажатия', `${await pult.js(`return ${pultRed}`)} красных точек на ink-live`)
 await pult.js(
-  `const c=document.querySelector('canvas.ink-wet');const r=c.getBoundingClientRect();` +
-    `c.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:7,pointerType:'pen',buttons:0,` +
+  inkTarget +
+    `input.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:7,pointerType:'pen',buttons:0,` +
     `clientX:r.left+r.width*0.45,clientY:r.top+r.height*0.58})); return 1`,
 )
-await pult.js(press(PULT.laser))
-await wait(300)
+/*
+ * Указка — инструмент палитры, а не отдельный режим: в GoodNotes и Notability
+ * выбор пера её снимает, и здесь тоже. Гасится она не вторым тапом по себе,
+ * а «Пером» — так её никогда не забудешь гулять по проектору до конца пары.
+ */
+await pult.js(press(PULT.pen))
+await wait(600)
 check(
   (await pult.js(
     `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') === 'false'`,
-  )) === true,
-  'вторым тапом указка гаснет',
-  await pult.js(
+  )) === true && ((await pult.js(`return ${pultRed}`)) as number) === 0,
+  'выбор пера снимает указку',
+  `указка aria-pressed=${await pult.js(
     `return document.querySelector('[aria-label=${JSON.stringify(PULT.laser)}]')?.getAttribute('aria-pressed') ?? '?'`,
-  ),
+  )} · красных на ink-live ${await pult.js(`return ${pultRed}`)}`,
 )
 
 /* Корпус и колодец сюда не попадают: они непрозрачны (alpha 1), пелена — нет. */
@@ -1445,18 +1524,35 @@ if (hall >= 0) {
   await restingVeil()
 }
 
-await pult.js(
-  `if(!document.querySelector('textarea')){` +
-    `const b=[...document.querySelectorAll('button')].find(x=>{` +
-    `const n=(x.getAttribute('aria-label')||'')+' '+(x.textContent||'');` +
-    `return /заметк/i.test(n)&&!/крупнее|ещё/i.test(n)});` +
-    `b&&b.click()} return 1`,
+/*
+ * Заметки в ландшафте — выдвижной лист поверх нижней части страницы: лист
+ * лекции занимает весь остаток экрана, и постоянной ленты под ним больше
+ * нет. Клавиша «Заметки» на рейле его поднимает и держит `aria-pressed`;
+ * выше лист уже открыт перекличкой органов — здесь проверяется, что он
+ * закрывается и открывается снова.
+ */
+await pult.js(press(PULT.notes))
+await wait(400)
+check(
+  (await pult.js(`return !document.querySelector('[data-pult-notes] textarea')`)) === true &&
+    (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'false',
+  'клавиша «Заметки» сворачивает лист заметок',
+  `aria-pressed=${await pult.js(`return ${pressedIs(PULT.notes)}`)}`,
 )
+await pult.js(press(PULT.notes))
 await wait(500)
 check(
-  (await pult.js(`return !!document.querySelector('textarea')`)) === true,
-  'заметки спикера на пульте пишутся',
-  await pult.js(`return document.querySelector('textarea')?.placeholder ?? 'поля нет'`),
+  (await pult.js(`return !!document.querySelector('[data-pult-notes] textarea')`)) === true &&
+    (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'true',
+  'заметки спикера выдвигаются и пишутся',
+  await pult.js(`return document.querySelector('[data-pult-notes] textarea')?.placeholder ?? 'поля нет'`),
+)
+check(
+  (await pult.js(
+    `const t=document.querySelector('[data-pult-notes] textarea');return t?getComputedStyle(t).userSelect:'нет'`,
+  )) !== 'none',
+  'в поле заметок текст выделяется',
+  await pult.js(`const t=document.querySelector('[data-pult-notes] textarea');return 'user-select='+(t?getComputedStyle(t).userSelect:'нет')`),
 )
 /* Комнаты на пульте нет вовсе: ни вкладок, ни панели файлов, ни оракула. */
 check(
@@ -1477,14 +1573,14 @@ check(
  */
 const morePlace = (await pult.js(
   `const b=document.querySelector('[aria-label=${JSON.stringify(PULT.more)}]');` +
-    `const sheet=[...document.querySelectorAll('canvas')].map(c=>c.getBoundingClientRect())` +
-    `.filter(r=>r.width>200).sort((a,b)=>b.width-a.width)[0];` +
     `if(!b) return 'кнопки «Ещё» нет';` +
-    `if(!sheet) return 'листа нет';` +
-    `const r=b.getBoundingClientRect();` +
-    `return r.top>=sheet.bottom ? 'ниже листа' : 'выше нижней кромки листа на '+Math.round(sheet.bottom-r.top)+'px'`,
+    `const notes=document.querySelector('[data-pult-notes]');` +
+    `if(!notes) return 'листа заметок нет';` +
+    `if(!notes.contains(b)) return 'вне листа заметок';` +
+    `const r=b.getBoundingClientRect(),n=notes.getBoundingClientRect();` +
+    `return r.top-n.top<=48 ? 'в шапке заметок' : 'в листе заметок, но на '+Math.round(r.top-n.top)+'px ниже шапки'`,
 )) as string
-check(morePlace === 'ниже листа', '«Ещё» живёт в шапке ленты заметок', morePlace)
+check(morePlace === 'в шапке заметок', '«Ещё» живёт в шапке листа заметок', morePlace)
 
 await pult.js(press(PULT.more))
 await wait(400)
@@ -1493,6 +1589,12 @@ const endsHere = (await pult.js(
     ` || !!document.querySelector('[aria-label="Закончить лекцию"]')`,
 )) as boolean
 check(endsHere === true, 'в листе «Ещё» есть «Закончить лекцию»', endsHere ? 'есть' : 'нет')
+/* Там же — «Рисовать пальцем»: единственное место, где палец возвращают перу. */
+check(
+  (await pult.js(`return ${has(PULT.finger)}`)) === true,
+  'в листе «Ещё» есть «Рисовать пальцем»',
+  await pult.js(`return ${pressedIs(PULT.finger)}`).then((v) => `aria-pressed=${v}`),
+)
 
 /* Закрываем и ложем, и Escape: закрыть лист обязаны оба, а дальше проверке
    нужен пульт, а не поднятая плита поверх него. */
@@ -1508,16 +1610,88 @@ for (const type of ['keyDown', 'keyUp'] as const) {
 }
 await until(pult, `!/закончить лекц/i.test(document.body.innerText||'')`, 'лист «Ещё» закрылся', 4000)
 
-if (process.argv.includes('--shot')) {
-  // Снимок делается с ЖИВЫМ пультом: вкладка, ушедшая в фон, теряет сокет, и
-  // без этого ожидания на снимок попадала полоса «нет связи».
-  await until(pult, `[...document.querySelectorAll('canvas')].some(c=>c.getBoundingClientRect().width>200)`, 'пульт для снимка')
-  await wait(700)
-  const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
-  const where = path.resolve('ui-pult.png')
-  writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
-  console.log(`  снимок: ${where}`)
+/* Лист заметок сворачивается: дальше меряется сам лист лекции. */
+await pult.js(press(PULT.notes))
+await wait(400)
+
+/*
+ * ЛИСТ ВО ВЕСЬ ОСТАТОК ЭКРАНА — на трёх планшетах.
+ *
+ * Раскладка считалась под один iPad 11" в ландшафте, и на 12.9" и в портрете
+ * лист тонул в верхней трети экрана: «документ в каком-то окошке». Теперь
+ * лист — всё, что осталось от рейла и полей, и проверяется это числом, а не
+ * глазами: доля экрана под холстом, верхняя кромка и ширина коробки. Порог
+ * доли — от геометрии: 16:9 в ландшафте укладывается на ≈2/3 экрана, в
+ * портрете шириной 810 — на треть, остальное отдано заметкам.
+ *
+ * Каждая геометрия открывается ЗАНОВО: пульт меряет окно при старте, и
+ * вкладка, пересчитанная на ходу, показала бы не то, что рисуется на iPad.
+ */
+const READY = `!!document.querySelector('.ink-input') && (document.querySelector('canvas.ink-wet')?.getBoundingClientRect().width||0)>200`
+for (const [W, H, file] of [
+  [1180, 820, 'ui-pult.png'],
+  [1366, 1024, 'ui-pult-129.png'],
+  [834, 1194, 'ui-pult-portrait.png'],
+] as const) {
+  await pult.send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 2, mobile: false })
+  await pult.send('Page.reload')
+  await pult.send('Page.bringToFront')
+  const drawn = await until(pult, READY, `пульт ${W}×${H} нарисовал лист`)
+  await wait(500)
+  await takeConsole()
+  const portrait = H > W
+  // Лист заметок помнится ключом; в ландшафте меряется и снимается голый лист.
+  if (!portrait && (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'true') {
+    await pult.js(press(PULT.notes))
+    await wait(400)
+  }
+  const g = (await pult.js(
+    `const r=e=>{if(!e) return null;const b=e.getBoundingClientRect();return {left:b.left,top:b.top,width:b.width,height:b.height,right:b.right,bottom:b.bottom}};` +
+      `return {canvas:r(document.querySelector('canvas.ink-wet')),rail:r(document.querySelector('.pult-rail')),notes:r(document.querySelector('[data-pult-notes]'))}`,
+  )) as { canvas: DOMRect | null; rail: DOMRect | null; notes: DOMRect | null }
+  const share = g.canvas ? (g.canvas.width * g.canvas.height) / (W * H) : 0
+  const railW = g.rail && !portrait ? g.rail.width : 0
+  const need = portrait ? 0.3 : 0.55
+  check(
+    drawn && !!g.canvas && share >= need && g.canvas.top <= 24 && g.canvas.width >= 0.8 * (W - railW - 24),
+    `${W}×${H}: лист занимает экран`,
+    g.canvas
+      ? `${Math.round(g.canvas.width)}×${Math.round(g.canvas.height)} — ${Math.round(share * 100)}% экрана (нужно ≥${Math.round(need * 100)}%), верх ${Math.round(g.canvas.top)}px`
+      : 'холста нет',
+  )
+  const railPlace = !g.rail
+    ? 'рейла нет'
+    : portrait
+      ? g.rail.bottom >= H - 1
+        ? 'снизу'
+        : `не снизу (bottom ${Math.round(g.rail.bottom)})`
+      : g.rail.left === 0
+        ? 'слева'
+        : `не слева (left ${Math.round(g.rail.left)})`
+  check(railPlace === (portrait ? 'снизу' : 'слева'), `${W}×${H}: рейл ${portrait ? 'снизу' : 'слева'}`, railPlace)
+  if (portrait) {
+    // В портрете заметки не выдвигаются, а пристыкованы между листом и рейлом.
+    check(
+      !!g.notes && !!g.canvas && g.notes.top >= g.canvas.bottom && (!g.rail || g.notes.bottom <= g.rail.top + 1),
+      `${W}×${H}: заметки пристыкованы под листом`,
+      g.notes ? `заметки ${Math.round(g.notes.width)}×${Math.round(g.notes.height)} с y=${Math.round(g.notes.top)}` : 'заметок нет',
+    )
+  }
+  if (process.argv.includes('--shot')) {
+    // Снимок делается с ЖИВЫМ пультом: вкладка, ушедшая в фон, теряет сокет, и
+    // без этого ожидания на снимок попадала полоса «нет связи».
+    await wait(400)
+    const shot = await pult.send('Page.captureScreenshot', { format: 'png' })
+    const where = path.resolve(file)
+    writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
+    console.log(`  снимок: ${where}`)
+  }
 }
+/* Обратно на 11": с этой геометрией живёт остаток прогона. */
+await pult.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 820, deviceScaleFactor: 2, mobile: false })
+await pult.send('Page.reload')
+await until(pult, READY, 'пульт вернулся на 11"')
+await takeConsole()
 for (const line of pult.trouble.slice(0, 3)) console.log(`  (пульт) ${line}`)
 await host.send('Page.bringToFront')
 
