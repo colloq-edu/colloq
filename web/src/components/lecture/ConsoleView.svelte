@@ -979,38 +979,18 @@
   }
 
   /**
-   * ЛОЖЕ «КОСНИТЕСЬ, ЧТОБЫ ВЗЯТЬ ПУЛЬТ».
+   * ПОЛНЫЙ ЭКРАН — ТОЛЬКО ПО ПРОСЬБЕ.
    *
-   * Полный экран дают только из живого жеста, а лекция, начатая с ноутбука
-   * и открытая на планшете по ключу, никакого жеста не имеет: пульт
-   * появлялся в окне Safari с адресной строкой, и первое, что делал человек,
-   * — искал, как её убрать. Ложе превращает первое касание в этот жест.
-   * Показывается один раз и только когда полный экран вообще возможен и не
-   * взят; «Вести» и «Взять пульт» просят его сами, и ложе им не нужно.
+   * Пульт разворачивался сам: «Вести» и «Взять пульт» просили полный экран
+   * тем же живым жестом, а пришедшему по ссылке-ключу показывалось ложе
+   * «коснитесь, чтобы взять пульт» — исключительно ради того, чтобы получить
+   * жест и развернуться. То есть человек, открывший пульт посмотреть, чинить
+   * заметки или подготовиться к паре, всякий раз оказывался в экране без
+   * адресной строки и выходил из него руками.
+   *
+   * Теперь разворачивает только клавиша «Во весь экран» — в углу листа, в
+   * нижней полосе и в листе «Ещё». Ложа первого касания нет вовсе.
    */
-  let cover = $state(false)
-  let coverShown = false
-  /** Лекцию начали или перехватили с ЭТОГО экрана — жест уже был. */
-  let startedHere = false
-
-  $effect(() => {
-    const mine = leading
-    const shown = full
-    untrack(() => {
-      if (!mine) {
-        cover = false
-        return
-      }
-      if (coverShown || startedHere || shown || !fullscreenPossible()) return
-      coverShown = true
-      cover = true
-    })
-  })
-
-  function takeConsole(): void {
-    cover = false
-    if (root) void goFullscreen(root)
-  }
 
   /**
    * Экран не гаснет, пока пульт в работе.
@@ -1162,8 +1142,6 @@
      */
     prep = path
     pane = null
-    startedHere = true
-    if (root) void goFullscreen(root)
   }
 
   function grab(): void {
@@ -1172,8 +1150,6 @@
     // а не новая лекция — страница, чернила и часы остаются на месте.
     session.send({ t: 'lecture:start', file: lecture.file })
     pane = null
-    startedHere = true
-    if (root) void goFullscreen(root)
   }
 
   function stop(): void {
@@ -1550,22 +1526,6 @@
 
   {@render panes()}
 
-  {#if cover}
-    <!--
-      Ложе первого касания. Одна плита во весь пульт, один глагол. Тап
-      уносит в полный экран и открывает то, что под ним, — сам лист при этом
-      уже нарисован и готов.
-    -->
-    <button
-      type="button"
-      class="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-canvas"
-      aria-label="Коснуться и начать"
-      onclick={takeConsole}
-    >
-      <span class="text-ui-lg text-ink">Коснитесь, чтобы взять пульт</span>
-      <span class="{CAP} text-muted">пульт развернётся во весь экран</span>
-    </button>
-  {/if}
 </div>
 
 <!-- ============================================================== прибор -->
@@ -2273,7 +2233,7 @@
     </div>
   {/if}
 
-  {#if fullscreenPossible() && !full && !cover && !lecture?.blank}
+  {#if fullscreenPossible() && !full && !lecture?.blank}
     <!--
       Клавиша «Во весь экран» 200×44 — В ЛЕВОМ НИЖНЕМ УГЛУ коробки листа, там
       же, где тост: единственное место, куда не ложится ни ладонь, ни перо.
@@ -2294,7 +2254,7 @@
   {/if}
 
   <!-- Тост — в левом нижнем углу листа: там, куда не ложится ни ладонь, ни перо; над клавишей «Во весь экран», если она есть. -->
-  <div class="absolute left-2 z-10 {fullscreenPossible() && !full && !cover && !lecture?.blank ? 'bottom-14' : 'bottom-2'}">
+  <div class="absolute left-2 z-10 {fullscreenPossible() && !full && !lecture?.blank ? 'bottom-14' : 'bottom-2'}">
     {@render toast()}
   </div>
 {/snippet}
