@@ -20,6 +20,7 @@
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import Icon from '@/components/ui/Icon.svelte'
   import { api } from '@/lib/api'
+  import { fullscreenNow, fullscreenPossible, goFullscreen } from '@/lib/fullscreen'
   import { loadPdf } from '@/lib/pdf.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import type { LectureState } from '@shared/lecture'
@@ -101,9 +102,40 @@
    * Ровно то, что нажимают, не глядя, — и то, что шлёт презентационная
    * кликалка, если её воткнуть в компьютер у проектора.
    */
+  /**
+   * Свои ли это слайды. Проекция стоит на компьютере у проектора, и обычно это
+   * тот же преподаватель, что ведёт с планшета (планшет входит по ключу тем же
+   * участником), — тогда клавиатура и кликер, воткнутые в этот компьютер,
+   * листают лекцию. Чужую лекцию проекция не листает: сервер такое отбросит, а
+   * молчаливое нажатие лучше, чем перелистывание чужого слайда.
+   */
+  const mine = $derived(lecture.by === session.me.id)
+
+  /* Полный экран проекции — по первому жесту в её окне, см. SessionScreen. */
+  let full = $state(fullscreenNow())
+  $effect(() => {
+    const sync = () => (full = fullscreenNow())
+    document.addEventListener('fullscreenchange', sync)
+    document.addEventListener('webkitfullscreenchange', sync)
+    return () => {
+      document.removeEventListener('fullscreenchange', sync)
+      document.removeEventListener('webkitfullscreenchange', sync)
+    }
+  })
+
+  function fillScreen(): void {
+    if (fullscreenPossible() && !fullscreenNow()) void goFullscreen(document.documentElement)
+  }
+
   function onkeydown(event: KeyboardEvent): void {
-    if (!presenting) return
-    const target = event.target as HTMLElement | null
+    if (role === 'projection' && event.code === 'KeyF') {
+      event.preventDefault()
+      fillScreen()
+      return
+    }
+    if (!presenting && !(role === 'projection' && mine)) return
+    // Цель бывает и не элементом (документ, окно): у них нет `closest`.
+    const target = event.target instanceof Element ? event.target : null
     if (target?.closest('input, textarea, [contenteditable]')) return
     if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
       event.preventDefault()
@@ -140,7 +172,16 @@
     под Escape и под щелчок в углу: случайное нажатие мышью по проекции не
     должно прерывать лекцию.
   -->
-  <div class="fixed inset-0 z-[100] flex flex-col bg-black">
+  <!--
+    Щелчок по проекции — полный экран. Проекция теперь открывается отдельным
+    окном, а полный экран в чужом окне не попросить: браузер даёт его только
+    по жесту в самом окне. Первое, что делают с новым окном, — щёлкают в него,
+    и этого достаточно. Кнопки нет намеренно: любая кнопка на проекции —
+    кнопка, которую видит зал.
+  -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="fixed inset-0 z-[100] flex flex-col bg-black" onclick={fillScreen}>
     {#if lecture.blank}
       <div class="flex flex-1 items-center justify-center">
         <span class="text-2xs uppercase tracking-section text-white/30">пауза</span>
@@ -171,10 +212,23 @@
       class="absolute right-0 top-0 h-12 w-12 text-white/0 transition-colors duration-100 hover:text-white/40 focus-visible:outline-none"
       title="Выйти из проекции — Escape"
       aria-label="Выйти из проекции"
-      onclick={() => onleave?.()}
+      onclick={(event) => {
+        event.stopPropagation()
+        onleave?.()
+      }}
     >
       <Icon name="x" size={16} />
     </button>
+    {#if !full && fullscreenPossible()}
+      <!--
+        Подсказка живёт только ПОКА окно не во весь экран — то есть пока
+        проекцию ещё настраивают, а не показывают залу. Стрелки названы
+        только тому, чьи это слайды: чужие она не листает.
+      -->
+      <p class="pointer-events-none absolute bottom-4 right-5 text-2xs uppercase tracking-label text-white/35">
+        {mine ? '← → листать · ' : ''}щелчок или F — во весь экран
+      </p>
+    {/if}
   </div>
 {:else}
   <section class="flex min-h-0 flex-1 flex-col bg-surface">

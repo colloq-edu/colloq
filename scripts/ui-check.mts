@@ -957,7 +957,12 @@ check(inked > 0, 'штрих ведущего появляется у студе
  * приходит вовсе. Хвост при этом обязан догореть, а сама точка остаться:
  * однажды она гасла вместе с хвостом через четыре десятых секунды, и на
  * экране это выглядело как «нажал, мигнуло, ничего».
+ *
+ * Вкладка ведущего — вперёд: `laser:off` уходит по таймеру догорания (300 мс),
+ * а таймеры вкладки, пролежавшей в фоне дольше пяти минут, headless Chrome
+ * замедляет до раза в минуту. Проверка тогда ждала не продукт, а браузер.
  */
+await host.send('Page.bringToFront')
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>/указк/i.test((x.textContent||'')+(x.getAttribute('aria-label')||'')));` +
     `if(!b) throw new Error('указки в пульте лекции нет'); b.click(); return 1`,
@@ -979,21 +984,31 @@ const redExpr =
   `if(!c||!c.width) continue;const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `for(let i=0;i<d.length;i+=4) if(d[i+3]>24 && d[i]>150 && d[i+1]<120) n+=1}return n})()`
 const redOn = (page: Tab) => page.js(`return ${redExpr}`)
+/*
+ * Меряем у СТУДЕНТА — значит, вперёд выводим студента: живой слой рисуется
+ * по requestAnimationFrame, а фоновой вкладке кадров не дают вовсе. Пиксели на
+ * холсте, который никто не рисует, — это не «указка не доехала».
+ */
+await student.send('Page.bringToFront')
 await until(student, `${redExpr} > 0`, 'указка доехала до студента')
 // Ждём дольше, чем живёт хвост: голова обязана остаться.
 await wait(1400)
 const stillLit = (await redOn(student)) as number
 check(stillLit > 0, 'указка не гаснет, пока её держат', `${stillLit} красных точек через 1.4 с`)
 
-/* Отпустили — гаснет у всех. */
+/* Отпустили — гаснет у всех. Ведущий вперёд: таймер догорания — его. */
+await host.send('Page.bringToFront')
 await host.js(
   inkTarget +
     `input.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:2,pointerType:'pen',buttons:0,` +
     `clientX:r.left+r.width*0.55,clientY:r.top+r.height*0.52})); return 1`,
 )
+await wait(500)
+await student.send('Page.bringToFront')
 await until(student, `${redExpr} === 0`, 'указка погасла у студента')
 check(((await redOn(student)) as number) <= 0, 'отпущенная указка гаснет у всех', 'погасла')
 /* Возвращаем перо: дальше проверки рисуют им. */
+await host.send('Page.bringToFront')
 await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'')==='Перо, красный');b&&b.click(); return 1`,
 )
@@ -1720,6 +1735,65 @@ check(
 await host.send('Page.bringToFront')
 
 /*
+ * Стрелки на проекции листают лекцию.
+ *
+ * Проекция стоит на компьютере у проектора, и в него воткнуты клавиатура и
+ * кликер — а кликер шлёт ровно стрелки и PageDown. Листает только тот, чьи
+ * это слайды: здесь окно проекции вошло тем же преподавателем, что ведёт.
+ */
+await beam.send('Page.bringToFront')
+/*
+ * Нажимаем, пока зал не перевернёт страницу. Окно проекции в headless-браузере
+ * долго лежало в фоне, и его сокет мог оборваться: нажатие тогда ждёт
+ * переподключения в очереди. Человек так не делает — у проекции свой монитор,
+ * — а проверка так делать обязана, иначе она проверяет фоновые вкладки Chrome.
+ */
+const onThird = `[...document.querySelectorAll('span')].some(s=>/^3 \\/ 3$/.test((s.textContent||'').trim()))`
+const arrow = (key: string) =>
+  beam.js(`document.body.dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},bubbles:true})); return 1`)
+async function pressUntil(key: string, seen: string, what: string): Promise<boolean> {
+  for (let i = 0; i < 12; i += 1) {
+    await arrow(key)
+    if (await until(student, seen, what, 1500)) return true
+  }
+  return false
+}
+await wait(400)
+check(await pressUntil('ArrowRight', onThird, 'стрелка на проекции долистала до третьей'), 'стрелки на проекции листают лекцию', 'вперёд: 3 / 3')
+check(await pressUntil('ArrowLeft', onSecond, 'стрелка на проекции вернула вторую'), 'и назад тоже', 'назад: 2 / 3')
+await host.send('Page.bringToFront')
+
+/*
+ * «На проектор» из комнаты — отдельным окном, а комната остаётся.
+ *
+ * Раньше проекция уходила в ту же вкладку, и комната на этом компьютере
+ * заканчивалась. Здесь смотрим, что адрес вкладки не сменился, а окно
+ * проекции появилось среди целей браузера.
+ */
+/*
+ * `window.open` подменён: синтетический клик — не жест человека, и браузер
+ * не даёт ему открыть окно, а продукт по запасному пути уводит вкладку сам.
+ * Проверяем намерение — куда открывают и что вкладка остаётся, — а не
+ * политику всплывающих окон headless-браузера.
+ */
+await host.js(
+  `window.__opened=null; window.open=(u)=>{window.__opened=String(u); return {focus(){}, closed:false}};` +
+    `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='На проектор');` +
+    `if(!b) throw new Error('кнопки «На проектор» нет'); b.click(); return 1`,
+)
+await wait(600)
+check(
+  (await host.js(`return location.pathname`)) === `/s/${ROOM}`,
+  'комната остаётся на месте после «На проектор»',
+  await host.js(`return location.pathname`),
+)
+check(
+  (await host.js(`return window.__opened`)) === `/s/${ROOM}/screen`,
+  'проекция открывается отдельным окном',
+  await host.js(`return String(window.__opened)`),
+)
+
+/*
  * Чистый лист.
  *
  * Слайд кончился, а вывод формулы — нет. Лист заводится с пульта и обязан
@@ -1759,6 +1833,7 @@ check(
 await until(pult, named(PULT.toSlide), 'возврат к слайду появился')
 await pult.js(press(PULT.toSlide))
 await beam.send('Page.bringToFront')
+await wait(300)
 await until(beam, `!${blankSheet}`, 'проекция вернулась к слайду')
 await host.send('Page.bringToFront')
 

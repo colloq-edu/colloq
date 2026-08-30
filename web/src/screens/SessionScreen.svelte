@@ -420,14 +420,36 @@
    * просится ровно здесь, из живого нажатия, — из эффекта после навигации
    * браузер его не даёт.
    */
+  /**
+   * На проектор — ОТДЕЛЬНЫМ окном, а не этой же вкладкой.
+   *
+   * Проекция уходила в ту же вкладку, и комната на этом компьютере
+   * заканчивалась: чтобы показать ячейку, преподаватель выходил с проектора.
+   * Окно — это то, что кладут на второй монитор и отдают в Zoom как «экран»,
+   * пока в первом окне продолжается работа. Имя окна — чтобы второе нажатие
+   * находило уже открытое, а не плодило проекции. Полный экран в новом окне
+   * просит само окно по первому нажатию в нём: жест из этого окна туда не
+   * переносится, а без жеста браузер полный экран не даёт.
+   *
+   * Всплывающие окна бывают запрещены — тогда, как раньше, уходим сами.
+   */
   function toProjection(): void {
+    const url = `/s/${session.session.id}/screen`
+    const opened = window.open(url, `colloq-screen-${session.session.id}`, 'popup=yes,width=1280,height=720')
+    if (opened) {
+      opened.focus()
+      return
+    }
     void goFullscreen(document.documentElement)
-    onnavigate?.(`/s/${session.session.id}/screen`)
+    onnavigate?.(url)
   }
 
   function fromProjection(): void {
     void leaveFullscreen()
-    onnavigate?.(`/s/${session.session.id}`)
+    // Окно, открытое из комнаты, закрывается; вкладка, в которую пришли по
+    // адресу, возвращается в комнату.
+    if (window.opener) window.close()
+    if (!window.closed) onnavigate?.(`/s/${session.session.id}`)
   }
 
   /*
