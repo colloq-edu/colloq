@@ -2963,16 +2963,18 @@ ul {
  * рядом. Своё имя, а не `.why-head`, потому что здесь нет линейки снизу —
  * под шапкой идёт лид, а не сразу строки.
  */
+/*
+ * Шапка секции: метка НАД заголовком, всё по одной левой кромке.
+ *
+ * Была колонкой слева, как в «Зачем», — но там под шапкой идут строки с
+ * такой же колонкой номеров, а здесь под ней лид и карточки от края. Заголовок
+ * оказывался сдвинут вправо один на всю секцию, и это читалось как ошибка
+ * вёрстки, а не как сетка.
+ */
 .sec-head {
   display: flex;
-  align-items: flex-start;
-  gap: clamp(24px, 6vw, 96px);
-}
-
-.sec-head .label {
-  flex: none;
-  width: 180px;
-  padding-top: 14px;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .sec-lead {
@@ -3018,13 +3020,4 @@ ul {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .sec-head {
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .sec-head .label {
-    width: auto;
-    padding-top: 0;
-  }
 }
