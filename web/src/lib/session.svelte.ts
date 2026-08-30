@@ -22,6 +22,7 @@ import type {
   TerminalStatus,
 } from '@shared/protocol'
 import type { InkStroke, LectureState } from '@shared/lecture'
+import { readRules, type RoomRules } from '@shared/rules'
 import { api, ApiError } from './api'
 import { enqueueControl, OFFLINE_REASON } from './controls'
 import { countsAsUnread } from './notes'
@@ -48,6 +49,19 @@ function wsBase(): string {
  * deliberately not reactive to its own inputs, because rebuilding it would drop
  * the local CRDT state and every unsynced keystroke with it.
  */
+/**
+ * Одни ли это правила — по смыслу, а не по байтам.
+ *
+ * Сервер и кэш страницы могут держать одно и то же с разным порядком ключей
+ * или с полем, которого в старой строке ещё не было: `readRules` приводит обе
+ * стороны к полному набору с умолчаниями, и сравниваются уже они.
+ */
+function sameRules(a: unknown, b: unknown): boolean {
+  const left = readRules(a)
+  const right = readRules(b)
+  return (Object.keys(left) as (keyof RoomRules)[]).every((key) => left[key] === right[key])
+}
+
 export class SessionState {
   /** Not readonly: the room's rules can change while the seminar is running. */
   session: SessionInfo = $state.raw({} as SessionInfo)
@@ -401,15 +415,30 @@ export class SessionState {
         // Правила меняются на ходу, и комната обязана узнать сразу: кнопка,
         // которая только что начала отказывать, без объяснения читается как
         // поломка, а не как решение преподавателя.
-        const first = this.session.rules === undefined
-        const changed = JSON.stringify(this.session.rules) !== JSON.stringify(message.rules)
+        /*
+         * «Первый кадр» — первый ПО СОКЕТУ, а не «правил ещё не было».
+         *
+         * Раньше первым считался кадр при `session.rules === undefined`, а
+         * такого не бывает: правила у страницы есть с первого кадра — из кэша
+         * или из умолчания OPEN_ROOM, — и приветственная пачка сокета в любой
+         * комнате с неоткрытыми правилами отличалась от них. То есть каждая
+         * перезагрузка страницы говорила «преподаватель изменил, что можно
+         * делать», хотя никто ничего не менял. Сравнение к тому же шло по
+         * JSON.stringify, которому важен порядок ключей.
+         */
+        const first = !this.#rulesArrived
+        this.#rulesArrived = true
+        const changed = !sameRules(this.session.rules, message.rules)
         this.session = { ...this.session, rules: message.rules }
         /*
          * И сказать словами — один раз, не на приветственной пачке.
          *
          * Двадцать человек, у которых редакторы вдруг стали «только чтение» без
          * единой фразы, решат, что сломались их ноутбуки. А та же фраза при
-         * каждом переподключении — это шум, который перестают читать.
+         * каждом переподключении — это шум, который перестают читать. На
+         * переподключении кадр тоже приветственный, но правила к тому моменту
+         * уже настоящие: если они правда сменились, пока связи не было, сказать
+         * об этом надо.
          */
         if (!first && changed) this.rulesChangedAt = Date.now()
         return
@@ -798,6 +827,8 @@ export class SessionState {
    * метке она сама решает, когда её убрать.
    */
   rulesChangedAt = $state(0)
+  /** Приходили ли правила по сокету за жизнь этого состояния. См. разбор `rules`. */
+  #rulesArrived = false
 
   /**
    * Сервер отказал в правке и закрыл соединение.

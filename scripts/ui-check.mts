@@ -295,6 +295,7 @@ check(
   'да',
 )
 
+
 /*
  * Кнопки действий лежат absolute и в раскладке не участвуют: полоса,
  * рассчитанная на две, третью выкладывает поверх имени файла. Меряем зазор.
@@ -1903,6 +1904,56 @@ if (process.argv.includes('--shot')) {
   writeFileSync(where, Buffer.from(shot.result.data as string, 'base64'))
   console.log(`  снимок: ${where}`)
 }
+
+/*
+ * Правила комнаты: перезагрузка — не «преподаватель изменил».
+ *
+ * Плашка о смене правил всплывала на каждой перезагрузке страницы в любой
+ * комнате с неоткрытыми правилами: «первым кадром» считался кадр при
+ * отсутствии правил у страницы, а правила у неё есть всегда — из кэша или из
+ * умолчания. Поэтому сначала делаем правила неоткрытыми ПО-НАСТОЯЩЕМУ (той же
+ * дверью, что и пульт правил), потом перезагружаем студента и смотрим, что
+ * плашки нет, — и что настоящая смена её всё-таки показывает.
+ */
+const RULES_NOTICE = `/Преподаватель изменил, что можно делать/.test(document.body.textContent||'')`
+const patchRules = (rules: Record<string, string>) =>
+  `const me=JSON.parse(localStorage.getItem('colloq.identity.v1')||'{}')[${JSON.stringify(ROOM)}];` +
+  `const r=await fetch('/api/sessions/${ROOM}/rules',{method:'PATCH',headers:{'content-type':'application/json',authorization:'Bearer '+me.token},body:JSON.stringify({rules:${JSON.stringify(rules)}})});` +
+  `return r.status`
+check((await host.js(patchRules({ edit: 'host' }))) === 200, 'правила комнаты меняются с экрана', 'edit: host')
+await until(student, RULES_NOTICE, 'студент увидел смену правил')
+check(
+  (await student.js(`return ${RULES_NOTICE}`)) === true,
+  'настоящая смена правил показывает плашку',
+  'показала',
+)
+/*
+ * «Перезагрузка» — второй вкладкой того же преподавателя, а не Page.reload.
+ *
+ * Для ошибки это одно и то же: страница поднимается с правилами из кэша и
+ * получает приветственный кадр сокета. А для проверки — нет: перезагруженная
+ * вкладка ведущего пересобирает токен и вкладки и сбивает десяток проверок
+ * ниже, а перезагруженный студент вошёл бы с кукой преподавателя из общего
+ * хранилища браузера. Вторая вкладка ничего из этого не трогает и закрывается
+ * сразу после.
+ */
+const again = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}`)
+await until(
+  again,
+  `!document.querySelector('input#join-name') && [...document.querySelectorAll('button')].some(b=>(b.title||'').startsWith('lecture.pdf'))`,
+  'вторая вкладка преподавателя открылась',
+)
+await wait(1500)
+check(
+  (await again.js(`return ${RULES_NOTICE}`)) === false,
+  'перезагрузка страницы не выдаёт себя за смену правил',
+  'плашки нет',
+)
+await again.send('Page.navigate', { url: 'about:blank' })
+await wait(400)
+/* Возвращаем открытую комнату — какой она и была. */
+check((await host.js(patchRules({ edit: 'room' }))) === 200, 'правила вернулись к открытым', 'edit: room')
+await wait(600)
 
 for (const [who, page] of [
   ['преподаватель', host],
