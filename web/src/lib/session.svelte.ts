@@ -184,7 +184,7 @@ export class SessionState {
    * Не хранится нигде: где она была секунду назад — движение руки, а не факт о
    * лекции. Гаснет сама, когда ведущий перестаёт её двигать.
    */
-  laser = $state<{ page: number; x: number; y: number } | null>(null)
+  laser = $state<{ page: number; x: number; y: number; shape: 'dot' | 'line' } | null>(null)
 
   /**
    * Заметки спикера к `notesFile`: номер страницы → текст.

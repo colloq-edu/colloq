@@ -61,6 +61,17 @@
     live: boolean
     /** Чем рисуем сейчас: перо, маркер, ластик или указка. */
     tool: 'pen' | 'marker' | 'eraser' | 'laser' | 'off'
+    /**
+     * Указка: точкой или линией.
+     *
+     * Это два разных жеста, и раньше был только второй. ЛИНИЕЙ обводят —
+     * «вот эта область», «вот от сюда до сюда», — и след обязан держаться,
+     * пока про обведённое говорят. ТОЧКОЙ показывают — «вот здесь», «эта
+     * строка», — и след тогда мешает: за полминуты объяснения слайд
+     * покрывается красной паутиной, сквозь которую уже не видно самого слайда.
+     * Одно вместо другого не работает ни в одну сторону, поэтому выбор.
+     */
+    laserShape?: 'dot' | 'line'
     color: string
     /** Толщина в долях ширины страницы. */
     width: number
@@ -118,6 +129,7 @@
     page,
     live,
     tool,
+    laserShape = 'line',
     color,
     width,
     // `pressure` намеренно не читается: см. комментарий к пропу.
@@ -676,7 +688,12 @@
       head.tx = x
       head.ty = y
     }
-    if (!drawnNow()) {
+    /*
+     * Точкой — фигуры не заводим вовсе. Не «рисуем и прячем»: несуществующая
+     * фигура не копит точек, не просит кадров на затухание и не уходит по
+     * проводу, а голова у указки была своя всегда — она и есть точка.
+     */
+    if (shapeNow === 'line' && !drawnNow()) {
       marks.push({ page: at, dots: [{ x: head.x, y: head.y }], letGo: null, shown: 0 })
       if (marks.length > MARKS_MAX) marks = marks.slice(-MARKS_MAX)
     }
@@ -915,19 +932,18 @@
         line.moveTo(path[0].x, path[0].y)
         for (let i = 1; i < path.length; i += 1) line.lineTo(path[i].x, path[i].y)
         /*
-         * Ореол — то, чем луч виден с последнего ряда на белом слайде, — идёт
-         * по РЕДКОЙ копии пути: он в пять раз шире ядра и размыт прозрачностью,
-         * и лишние точки в нём не видны никак, а стоят дорого — широкая обводка
-         * с круглым стыком на программном растре и есть тот кадр, который
-         * проваливается.
+         * Ореол идёт по ТОМУ ЖЕ пути, что и ядро.
+         *
+         * Раньше — по редкой копии, каждой четвёртой точке: экономия была
+         * задумана против круглого стыка на программном растре. Но стык давно
+         * срезанный и стоит дёшево, а шаг в шестнадцать пикселей на полосе,
+         * которая в пять раз шире ядра, виден как ломаная — светящийся контур
+         * вокруг гладкого ядра шёл углами. Экономили на том, что и так уже не
+         * дорого, а платили тем, ради чего указку и завели.
          */
-        const wide = new Path2D()
-        wide.moveTo(path[0].x, path[0].y)
-        for (let i = 4; i < path.length; i += 4) wide.lineTo(path[i].x, path[i].y)
-        wide.lineTo(path[path.length - 1].x, path[path.length - 1].y)
         paint.globalAlpha = 0.18 * dim
         paint.lineWidth = core * 5.2
-        paint.stroke(wide)
+        paint.stroke(line)
         // Ядро.
         paint.globalAlpha = 0.85 * dim
         paint.lineWidth = core * 2
@@ -1055,6 +1071,16 @@
    */
   const QUIET_AFTER_OFF_MS = 400
   let quietUntil = 0
+  /**
+   * Форма указки, которой светит ВЕДУЩИЙ.
+   *
+   * У себя мы знаем её из пропа, а зал и проектор — только из эха: свой проп у
+   * них всегда `line` по умолчанию, и без этой строки ведущий показывал бы
+   * точкой, а зал видел бы линию. Своя форма важнее приехавшей ровно пока
+   * указка наша.
+   */
+  let shownShape = $state<'dot' | 'line'>('line')
+  const shapeNow = $derived(live && tool === 'laser' ? laserShape : shownShape)
   $effect(() => {
     const spot = session.laser
     const own = live && tool === 'laser'
@@ -1065,6 +1091,7 @@
         douse(true)
         return
       }
+      shownShape = spot.shape
       aim(spot.x, spot.y, spot.page)
     })
   })
@@ -1360,6 +1387,10 @@
      */
     if (ring && tool !== 'eraser') ring = null
     const stroke = newStroke(place.x, place.y, force)
+    // Фильтр начинается с той точки, где перо коснулось: иначе новый штрих
+    // выехал бы из конца предыдущего, притянутый его последним значением.
+    smoothX = place.x
+    smoothY = place.y
     wet = [...wet, stroke]
     rememberWet()
     drawing = { pointer, byFinger, stroke }
@@ -1418,10 +1449,41 @@
     arm()
   }
 
+  /**
+   * ЛЁГКОЕ СГЛАЖИВАНИЕ ВХОДА.
+   *
+   * Кривая через середины отрезков (`trace`) убирает грани между сэмплами, но
+   * идёт РОВНО по тем точкам, что прислал браузер, — вместе с дрожью руки и
+   * шумом сенсора. На листе в 1084 px это незаметно, на проекторе в 1920 —
+   * видно всему залу: буква ведётся уверенно, а выглядит шершавой.
+   *
+   * Фильтр здесь самый простой и самый дешёвый: новая точка тянется к
+   * пришедшей на семь десятых пути. Ровно `0.7`, а не меньше: на этом
+   * коэффициенте кончик отстаёт примерно на треть сэмпла — для пера с его
+   * сотней двадцатью сэмплами в секунду это около трёх миллисекунд, то есть
+   * не отстаёт вовсе. Всё, что сильнее, начинает «плыть» на резком повороте, а
+   * поворот — основной случай в рукописи.
+   *
+   * Сглаживается ДО отправки и до отрисовки, одним значением: зал обязан
+   * получить ту же линию, что видит ведущий, иначе на проекторе будет своя
+   * рукопись. Первая точка штриха не сглаживается ничем — ей не с чем.
+   */
+  const SMOOTH = 0.7
+  let smoothX = 0
+  let smoothY = 0
+
   /** Добавить сэмпл к штриху под пером; у потолка сервера — начать новый с той же точки. */
   function addPoint(place: { x: number; y: number }, force: number): void {
     if (!drawing) return
     const stroke = drawing.stroke
+    if (stroke.points.length >= 2) {
+      smoothX += (place.x - smoothX) * SMOOTH
+      smoothY += (place.y - smoothY) * SMOOTH
+      place = { x: smoothX, y: smoothY }
+    } else {
+      smoothX = place.x
+      smoothY = place.y
+    }
     pending.push(place.x, place.y)
     stroke.points.push(place.x, place.y)
     stroke.force.push(force)
@@ -1448,7 +1510,7 @@
     window.clearTimeout(spotTimer)
     spotTimer = undefined
     if (!spot) return
-    session.send({ t: 'laser', page, x: spot.x, y: spot.y })
+    session.send({ t: 'laser', page, x: spot.x, y: spot.y, shape: laserShape })
     lit = true
     spot = null
   }

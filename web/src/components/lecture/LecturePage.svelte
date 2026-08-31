@@ -16,7 +16,7 @@
 -->
 <script lang="ts">
   import type { PDFDocumentProxy } from 'pdfjs-dist'
-  import { untrack, type Snippet } from 'svelte'
+  import { onDestroy, type Snippet, untrack } from 'svelte'
 
   interface Props {
     doc: PDFDocumentProxy | null
@@ -190,6 +190,27 @@
    */
   let running: { cancel(): void; promise: Promise<unknown> } | null = null
 
+  /**
+   * ЗАПАСНОЙ ХОЛСТ — ПРОТИВ МОРГАНИЯ.
+   *
+   * pdf.js заливает холст белым ПЕРЕД тем, как рисовать страницу. Пока
+   * страница считается, на экране стоит эта заливка, и переключение слайда
+   * читается как вспышка: на планшете, где считается медленнее, — как моргание
+   * на каждое нажатие. Никакой отменой это не лечится: заливка не ошибка, она
+   * часть отрисовки.
+   *
+   * Поэтому рисуем в сторону, а на экран переносим готовое — одним
+   * `drawImage`, за который зритель не успевает увидеть промежуточного
+   * состояния. Видимый холст всё это время держит ПРОШЛУЮ страницу: лучше
+   * секунду смотреть на предыдущий слайд, чем полсекунды на белое поле.
+   *
+   * Холст один на компонент, а не на отрисовку: бюджет холстов на iPad один
+   * на процесс, и при переполнении WebKit начинает отдавать холсты
+   * прозрачными — в том числе не те, что его переполнили (см. ленту эскизов).
+   * Уезжая, отдаём буфер: `width = height = 1`.
+   */
+  let buffer: HTMLCanvasElement | null = null
+
   $effect(() => {
     const node = canvas
     const source = doc
@@ -249,13 +270,21 @@
        * настоящей смене размера: поворот планшета иначе гасил бы страницу на
        * ровном месте.
        */
-      if (node.width !== Math.round(viewport.width) || node.height !== Math.round(viewport.height)) {
-        node.width = Math.round(viewport.width)
-        node.height = Math.round(viewport.height)
-      }
+      const W = Math.round(viewport.width)
+      const H = Math.round(viewport.height)
       const paint = node.getContext('2d')
       if (!paint) return
-      const task = sheet.render({ canvas: node, canvasContext: paint, viewport })
+      buffer ??= document.createElement('canvas')
+      // Присвоение размера стирает холст и состояние контекста — но буфер и
+      // так рисуется с нуля, так что здесь это бесплатно.
+      if (buffer.width !== W || buffer.height !== H) {
+        buffer.width = W
+        buffer.height = H
+      }
+      const spare = buffer.getContext('2d')
+      if (!spare) return
+      spare.clearRect(0, 0, W, H)
+      const task = sheet.render({ canvas: buffer, canvasContext: spare, viewport })
       /*
        * КТО ДВИГАЕТ ОТРИСОВКУ.
        *
@@ -293,6 +322,18 @@
       running = task
       try {
         await task.promise
+        if (dropped) return
+        /*
+         * Готовое — на экран. Размер видимого холста меняем ТОЛЬКО здесь и
+         * только при настоящей смене: присвоение стирает пиксели даже когда
+         * значение то же самое, и поворот планшета иначе гасил бы страницу на
+         * ровном месте.
+         */
+        if (node.width !== W || node.height !== H) {
+          node.width = W
+          node.height = H
+        }
+        paint.drawImage(buffer, 0, 0)
       } catch {
         // Отменили ради следующей страницы — обычный ход дела.
       } finally {
@@ -303,6 +344,18 @@
     return () => {
       dropped = true
     }
+  })
+
+  /*
+   * Уезжая, отдаём буфер. Холст, оставленный в памяти, на iPad не бесплатен:
+   * бюджет один на процесс, а лист лекции живёт рядом с лентой эскизов, где
+   * холстов ещё десяток.
+   */
+  onDestroy(() => {
+    if (!buffer) return
+    buffer.width = 1
+    buffer.height = 1
+    buffer = null
   })
 </script>
 

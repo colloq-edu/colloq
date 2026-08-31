@@ -371,9 +371,11 @@
    * Имена — договор с проверкой интерфейса, менять нельзя.
    */
   const INKS = [
-    { color: '#d4162f', name: 'Перо, красное' },
-    { color: '#0c7a64', name: 'Перо, зелёное' },
     { color: '#101a33', name: 'Перо, чёрное' },
+    { color: '#d4162f', name: 'Перо, красное' },
+    { color: '#0f2d69', name: 'Перо, синее' },
+    { color: '#0c7a64', name: 'Перо, зелёное' },
+    { color: '#9b5a08', name: 'Перо, оранжевое' },
   ]
   /**
    * Маркер — один цвет, и это решение, а не недоделка.
@@ -386,16 +388,34 @@
   const MARKER = '#ffd60a80'
   const MARKER_WIDTH = 0.022
   /**
-   * Три толщины пера долями ширины страницы. Средняя — прежняя единственная
-   * 0.005 (5 px на 1084): тонкая под формулы мелким почерком, толстая под
-   * заголовок через весь слайд. Точки в палитре 4/6/10 px — это форма, а не
-   * масштаб: разница в толщине читается за один взгляд.
+   * Пять толщин пера долями ширины страницы.
+   *
+   * Было три, и между «Тонким» и «Средним» помещалась вся мелкая формульная
+   * работа, а между «Средним» и «Толстым» — весь заголовок: шаг в полтора раза
+   * слишком крупен, чтобы попасть в нужное. Пять ступеней идут примерно в
+   * √2 раза каждая — это тот шаг, на котором соседние ещё различимы глазом, но
+   * уже не приходится выбирать между «тонко» и «слишком толсто».
+   *
+   * Точка в палитре теперь не «форма», а МАСШТАБ: её диаметр — настоящая
+   * толщина штриха на листе, переведённая в пиксели палитры. Раньше 4/6/10
+   * рисовали разницу крупнее, чем она есть, и выбранное на палитре не
+   * совпадало с тем, что ложилось на бумагу.
+   *
+   * Средние имена сохранены: они — договор с проверкой интерфейса.
    */
   const WIDTHS = [
-    { width: 0.0035, name: 'Тонкое', dot: 4 },
-    { width: 0.005, name: 'Среднее', dot: 6 },
-    { width: 0.008, name: 'Толстое', dot: 10 },
+    { width: 0.0025, name: 'Очень тонкое' },
+    { width: 0.0035, name: 'Тонкое' },
+    { width: 0.005, name: 'Среднее' },
+    { width: 0.008, name: 'Толстое' },
+    { width: 0.012, name: 'Очень толстое' },
   ]
+  /**
+   * Диаметр точки в палитре: доля ширины страницы, умноженная на ширину листа
+   * пульта. Лист на планшете около 1084 px, так что 0.005 даёт те же 5–6 px,
+   * что и на бумаге, — палитра показывает штрих, а не значок штриха.
+   */
+  const dotOf = (width: number) => Math.max(3, Math.round(width * 1084))
 
   type Tool = 'pen' | 'marker' | 'eraser' | 'laser'
 
@@ -418,19 +438,26 @@
    */
   function pick(next: Tool): void {
     tool = next
-    palette = false
+    palette = null
   }
 
+  /*
+   * ВЫБОР НЕ ЗАКРЫВАЕТ ПАЛИТРУ.
+   *
+   * Закрывал: каждое нажатие на цвет или толщину прятало её, и чтобы
+   * попробовать синий потолще, приходилось открывать заново дважды. А
+   * пробуют именно так — подбором, глядя на лист, а не выбирая вслепую из
+   * головы. Палитру закрывают четыре вещи, и все они означают «я закончил»:
+   * повторный тап по перу, тап мимо, Escape и первое касание листа (`busy`).
+   */
   function penIn(color: string): void {
     tool = 'pen'
     inkColor = color
-    palette = false
   }
 
   function penWide(width: number): void {
     tool = 'pen'
     penWidth = width
-    palette = false
   }
 
   /**
@@ -440,11 +467,47 @@
    * листа (`busy`): палитра, оставшаяся висеть над формулой, — это лишний
    * объект между глазом и тем, что пишут.
    */
-  let palette = $state(false)
+  /**
+   * Какая палитра открыта: перьевая, указочная или никакая.
+   *
+   * Была `boolean` на одну перьевую. У указки теперь тоже есть что выбирать
+   * (точка или линия), и заводить ей второй флаг значило бы держать в голове,
+   * что они не могут быть открыты вдвоём. Одно значение делает это правилом, а
+   * не договорённостью.
+   */
+  let palette = $state<null | 'pen' | 'laser'>(null)
 
   function penKey(): void {
-    if (tool === 'pen') palette = !palette
+    if (tool === 'pen') palette = palette === 'pen' ? null : 'pen'
     else pick('pen')
+  }
+
+  /**
+   * УКАЗКА: ТОЧКА ИЛИ ЛИНИЯ.
+   *
+   * Два разных жеста. Линией обводят — «вот эта область», — и след обязан
+   * держаться, пока про обведённое говорят. Точкой показывают — «вот здесь», —
+   * и след тогда мешает: за полминуты объяснения слайд затягивает красной
+   * паутиной. Линия остаётся по умолчанию: с неё пульт начинал, и она же
+   * нужна чаще.
+   */
+  let laserShape = $state<'dot' | 'line'>('line')
+  /** Тот же красный, что жжёт InkLayer: палитра обязана показывать настоящий цвет. */
+  const LASER_RED = '#ff2b1d'
+
+  /*
+   * Второй тап по указке открывает ЕЁ палитру, а не возвращает перо.
+   *
+   * Так же, как у пера: первый тап берёт инструмент, второй показывает, что у
+   * него можно выбрать. Раньше второй тап гасил указку — удобно, пока выбирать
+   * было нечего; теперь у неё две формы, и прятать их за третьим жестом значило
+   * бы завести орган, о котором никто не узнает. Гасят указку тем же, чем гасят
+   * ластик, — берут перо.
+   */
+  function laserKey(): void {
+    if (!leading || offline) return
+    if (tool === 'laser') palette = palette === 'laser' ? null : 'laser'
+    else pick('laser')
   }
 
   /**
@@ -479,12 +542,7 @@
       sprung = false
       return
     }
-    laserToggle()
-  }
-
-  function laserToggle(): void {
-    if (!leading || offline) return
-    pick(tool === 'laser' ? 'pen' : 'laser')
+    laserKey()
   }
 
   function laserCancel(): void {
@@ -784,7 +842,7 @@
 
   function openPane(next: typeof pane): void {
     pane = next
-    palette = false
+    palette = null
     wipeAsked = false
     stopAsked = false
   }
@@ -794,8 +852,11 @@
   /** Слой чернил держит указатель: идёт штрих, стирание или указка светит. */
   let busy = $state(false)
   let lastBusyAt = 0
-  /** В поле заметок фокус — перо на слайде в это время не рисует. */
-  let editing = $state(false)
+  /*
+   * Флага «в заметках фокус» больше нет: на пульте заметки прибиты, поля ввода
+   * там нет вовсе, и гасить перо стало не от чего. Правят речь на ноутбуке,
+   * где ей и место, — см. `readonly` в NotesPad.
+   */
 
   const paneOpen = $derived(pane !== null)
   /**
@@ -811,7 +872,7 @@
     busy = next
     if (!next) lastBusyAt = performance.now()
     // Первое касание листа закрывает палитру: её работа кончилась.
-    else palette = false
+    else palette = null
   }
 
   /**
@@ -890,10 +951,10 @@
     const node = root
     if (!node) return
     const away = (event: Event): void => {
-      if (!palette) return
+      if (palette === null) return
       const target = event.target as Element | null
-      if (target?.closest('[data-pult-palette], [aria-label="Перо"]')) return
-      palette = false
+      if (target?.closest('[data-pult-palette], [aria-label="Перо"], [aria-label="Указка"]')) return
+      palette = null
     }
     node.addEventListener('pointerdown', away, true)
     return () => node.removeEventListener('pointerdown', away, true)
@@ -1395,9 +1456,9 @@
     const target = event.target as HTMLElement | null
     const typing = target?.closest('input, textarea, [contenteditable]') != null
     if (event.key === 'Escape') {
-      if (palette) {
+      if (palette !== null) {
         event.preventDefault()
-        palette = false
+        palette = null
       } else if (pane !== null) {
         event.preventDefault()
         openPane(null)
@@ -1535,14 +1596,8 @@
       </div>
       {#if file !== null}
         <div class="flex min-h-0 flex-1 flex-col border-t border-line" data-pult-notes>
-          <NotesPad
-            {file}
-            page={wanted}
-            folded={false}
-            docked
-            onmore={() => openPane('more')}
-            onedit={(next) => (editing = next)}
-          />
+          <!-- readonly: речь пишут за столом, на пуле её читают. См. NotesPad. -->
+          <NotesPad {file} page={wanted} folded={false} docked readonly onmore={() => openPane('more')} />
         </div>
       {/if}
       {@render bottomRail()}
@@ -1579,8 +1634,10 @@
     </div>
   {/if}
 
-  {#if palette && leading}
+  {#if palette === 'pen' && leading}
     {@render palettePop()}
+  {:else if palette === 'laser' && leading}
+    {@render laserPop()}
   {/if}
 
   {@render panes()}
@@ -1763,21 +1820,26 @@
   {/if}
 {/snippet}
 
-{#snippet chip(color: string, marker: boolean, dot: number)}
+{#snippet swatch(color: string, thick: number)}
   <!--
-    ЧИП ПИГМЕНТА — ОБРАЗЕЦ НА БУМАГЕ: плашка 40×24 белой бумаги, внутри
-    настоящий штрих с круглой концевой. Тёмный диск #101a33 на ночном корпусе
-    — это 1.5:1, чёрного пера на рейле не было видно вовсе; на бумаге видно
-    всё. Точка толщины — та же, что в палитре: чип говорит, ЧЕМ ляжет штрих.
+    МАЗОК ПОД ЗНАЧКОМ — НА БУМАГЕ. Значок говорит, какой это инструмент, мазок
+    — каким он сейчас пишет. Раньше на клавише стоял только образец, и перо от
+    маркера отличалось формой штриха внутри него, то есть надо было
+    присмотреться; на рейле, куда тянутся не глядя, присматриваться некогда.
+
+    Бумага под мазком не украшение: корпус пульта ночной, и чёрное перо
+    (#101a33) на нём даёт 1.5:1 — то есть не видно вовсе. Ровно за этим здесь
+    и стоял прежний чип, и этот довод правку значков пережил.
+
+    Высота мазка — настоящая толщина штриха, обрезанная сверху: линия в
+    четырнадцать пикселей на клавише в сорок восемь читалась бы плитой, а не
+    линией.
   -->
-  <span class="block h-6 w-10 bg-white" aria-hidden="true">
-    <svg width="40" height="24" viewBox="0 0 40 24" class="block">
-      {#if marker}
-        <line x1="9" y1="12" x2="31" y2="12" stroke={color} stroke-width="14" stroke-linecap="round" />
-      {:else}
-        <line x1="9" y1="16" x2="31" y2="8" stroke={color} stroke-width={dot} stroke-linecap="round" />
-      {/if}
-    </svg>
+  <span class="flex h-[11px] w-7 items-center justify-center bg-white" aria-hidden="true">
+    <span
+      class="block w-5 rounded-full"
+      style={`height:${Math.min(6, Math.max(2, thick))}px;background:${color}`}
+    ></span>
   </span>
 {/snippet}
 
@@ -1789,25 +1851,27 @@
   -->
   <button
     type="button"
-    class="{KEY} {size} {tool === 'pen' ? 'bg-raised' : ''}"
+    class="{KEY} {size} flex-col gap-1 {tool === 'pen' ? 'bg-raised' : ''}"
     aria-label="Перо"
     aria-pressed={tool === 'pen'}
-    aria-expanded={palette}
+    aria-expanded={palette === 'pen'}
     onclick={penKey}
   >
     {@render mark(tool === 'pen', false)}
-    {@render chip(inkColor, false, WIDTHS.find((w) => w.width === penWidth)?.dot ?? 6)}
+    <Icon name="pencil" size={22} />
+    {@render swatch(inkColor, dotOf(penWidth))}
   </button>
   <span class={gap} aria-hidden="true"></span>
   <button
     type="button"
-    class="{KEY} {size} {tool === 'marker' ? 'bg-raised' : ''}"
+    class="{KEY} {size} flex-col gap-1 {tool === 'marker' ? 'bg-raised' : ''}"
     aria-label="Маркер"
     aria-pressed={tool === 'marker'}
     onclick={() => pick('marker')}
   >
     {@render mark(tool === 'marker', false)}
-    {@render chip(MARKER, true, 0)}
+    <Icon name="marker" size={22} />
+    {@render swatch(MARKER, 10)}
   </button>
   <span class={gap} aria-hidden="true"></span>
   <!--
@@ -1835,7 +1899,7 @@
   <span class={gap} aria-hidden="true"></span>
   <button
     type="button"
-    class="{KEY} {size} {CAP} {tool === 'laser' || sprung ? 'bg-raised' : ''} {offline
+    class="{KEY} {size} {tool === 'laser' || sprung ? 'bg-raised' : ''} {offline
       ? OFF
       : tool === 'laser' || sprung
         ? 'text-ink'
@@ -1850,11 +1914,11 @@
     onclick={(event) => {
       // Нажатие БЕЗ пары pointerdown/pointerup: клавиатура, VoiceOver,
       // автоматическая проверка. Их `click` приходит с detail === 0.
-      if (event.detail === 0) laserToggle()
+      if (event.detail === 0) laserKey()
     }}
   >
     {@render mark(tool === 'laser' || sprung, false)}
-    Указка
+    <Icon name="laser" size={22} />
   </button>
 {/snippet}
 
@@ -2120,6 +2184,58 @@
 
 <!-- ============================================================== палитра -->
 
+{#snippet laserPop()}
+  <!--
+    Палитра указки. Та же коробка, что у пера, и та же мера: одна форма выбора
+    на весь пульт. Две строки, потому что выбирать здесь ровно из двух вещей, и
+    у каждой — своё имя и своя картинка, а не подпись под непонятным значком.
+  -->
+  <div
+    class="pointer-events-none absolute z-20 flex w-[268px] flex-col border border-line bg-surface p-3"
+    style={portrait
+      ? `left: calc(120px + env(safe-area-inset-left)); bottom: calc(76px + env(safe-area-inset-bottom))`
+      : hand === 'left'
+        ? `right: calc(84px + env(safe-area-inset-right)); top: calc(136px + env(safe-area-inset-top))`
+        : `left: calc(84px + env(safe-area-inset-left)); top: calc(136px + env(safe-area-inset-top))`}
+    data-pult-palette
+  >
+    <div class="flex flex-col" role="radiogroup" aria-label="Указка">
+      {#each [{ id: 'line', name: 'Линия', says: 'обводить' }, { id: 'dot', name: 'Точка', says: 'показывать' }] as choice (choice.id)}
+        {@const on = laserShape === choice.id}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={on}
+          aria-label={choice.name}
+          class="{PRESS} pointer-events-auto flex h-12 items-center gap-3 px-2 {on ? 'bg-raised' : ''} active:bg-line"
+          onclick={() => (laserShape = choice.id as 'dot' | 'line')}
+        >
+          <!-- Картинка рисует ровно то, что случится на листе: линия с
+               гаснущим хвостом или одна точка. -->
+          <svg width="40" height="20" viewBox="0 0 40 20" class="block shrink-0" aria-hidden="true">
+            {#if choice.id === 'line'}
+              <path
+                d="M4 14 C 12 4, 20 18, 36 7"
+                fill="none"
+                stroke={LASER_RED}
+                stroke-width="3"
+                stroke-linecap="round"
+                opacity="0.45"
+              />
+              <circle cx="36" cy="7" r="3.4" fill={LASER_RED} />
+            {:else}
+              <circle cx="20" cy="10" r="3.4" fill={LASER_RED} />
+              <circle cx="20" cy="10" r="7.5" fill={LASER_RED} opacity="0.22" />
+            {/if}
+          </svg>
+          <span class="{on ? 'text-ink' : 'text-muted'} text-ui-lg">{choice.name}</span>
+          <span class="{CAP} ml-auto text-faint">{choice.says}</span>
+        </button>
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
 {#snippet palettePop()}
   <!--
     ПАЛИТРА ПЕРА: цвет и толщина, 232×120. Стоит рядом с клавишей «Перо» —
@@ -2135,7 +2251,7 @@
     такое перо попадает в слой ввода, а перехватчик закрывает палитру.
   -->
   <div
-    class="pointer-events-none absolute z-20 flex w-[232px] flex-col gap-2 border border-line bg-surface p-3"
+    class="pointer-events-none absolute z-20 flex w-[268px] flex-col gap-2.5 border border-line bg-surface p-3"
     style={portrait
       ? `left: calc(120px + env(safe-area-inset-left)); bottom: calc(76px + env(safe-area-inset-bottom))`
       : hand === 'left'
@@ -2143,7 +2259,13 @@
         : `left: calc(84px + env(safe-area-inset-left)); top: calc(136px + env(safe-area-inset-top))`}
     data-pult-palette
   >
-    <div class="flex gap-2" role="radiogroup" aria-label="Цвет пера">
+    <!--
+      Цвета — кружками в один ряд, как в любом приложении для заметок: цвет
+      показывают цветом, а не подписью. Выбранный обведён кольцом чернил, а не
+      залит плитой: плита под цветным кружком спорит с самим кружком, и на
+      беглый взгляд неясно, что здесь выбрано — цвет или плитка.
+    -->
+    <div class="flex justify-between" role="radiogroup" aria-label="Цвет пера">
       {#each INKS as choice (choice.color)}
         {@const on = inkColor === choice.color}
         <button
@@ -2151,14 +2273,23 @@
           role="radio"
           aria-checked={on}
           aria-label={choice.name}
-          class="{PRESS} pointer-events-auto flex h-11 w-16 items-center justify-center {on ? 'bg-raised' : ''} active:bg-line"
+          class="{PRESS} pointer-events-auto flex h-11 w-11 items-center justify-center"
           onclick={() => penIn(choice.color)}
         >
-          {@render chip(choice.color, false, 6)}
+          <span
+            class="block h-7 w-7 rounded-full {on ? 'ring-2 ring-ink ring-offset-2 ring-offset-surface' : ''}"
+            style={`background:${choice.color}`}
+            aria-hidden="true"
+          ></span>
         </button>
       {/each}
     </div>
-    <div class="flex gap-2" role="radiogroup" aria-label="Толщина">
+    <span class="h-px bg-line" aria-hidden="true"></span>
+    <!--
+      Толщина — точками настоящего размера, слева направо по возрастанию.
+      Кольцо то же, что у цвета: одна форма выбора на всю палитру.
+    -->
+    <div class="flex items-center justify-between" role="radiogroup" aria-label="Толщина">
       {#each WIDTHS as choice (choice.width)}
         {@const on = penWidth === choice.width}
         <button
@@ -2166,12 +2297,17 @@
           role="radio"
           aria-checked={on}
           aria-label={choice.name}
-          class="{PRESS} pointer-events-auto flex h-11 w-16 items-center justify-center {on ? 'bg-raised' : ''} active:bg-line"
+          class="{PRESS} pointer-events-auto flex h-11 w-11 items-center justify-center"
           onclick={() => penWide(choice.width)}
         >
+          <!-- Точка чернильная, а НЕ цвета пера: этот ряд про размер, цвет
+               сказан рядом. Цветная точка на ночном корпусе к тому же тонет —
+               чёрное перо давало бы пять невидимых кружков. -->
           <span
-            class="block rounded-full {on ? 'bg-ink' : 'bg-muted'}"
-            style={`width:${choice.dot}px;height:${choice.dot}px`}
+            class="block rounded-full {on
+              ? 'bg-ink ring-2 ring-ink ring-offset-[6px] ring-offset-surface'
+              : 'bg-muted'}"
+            style={`width:${dotOf(choice.width)}px;height:${dotOf(choice.width)}px`}
             aria-hidden="true"
           ></span>
         </button>
@@ -2201,8 +2337,9 @@
 
   <InkLayer
     page={wanted}
-    live={canDraw && !editing}
+    live={canDraw}
     tool={liveTool}
+    {laserShape}
     color={strokeColor}
     width={strokeWidth}
     finger={fingerOn}
@@ -2391,9 +2528,9 @@
         file={file ?? ''}
         page={wanted}
         folded={false}
+        readonly
         onfold={() => setNotes(false)}
         onmore={() => openPane('more')}
-        onedit={(next) => (editing = next)}
       />
     </div>
   </div>

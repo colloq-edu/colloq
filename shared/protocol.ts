@@ -306,7 +306,14 @@ export type ControlClientMessage =
    * Указка. Эфемерна намеренно: где она была секунду назад — не факт о лекции,
    * а движение руки, и хранить его негде и незачем.
    */
-  | { t: 'laser'; page: number; x: number; y: number }
+  /*
+   * Указка. `shape` — точкой показывают или линией обводят; едет вместе с
+   * точкой, потому что зал обязан видеть ТО ЖЕ, что ведущий. Форма живёт в
+   * каждом кадре, а не в отдельном сообщении о смене режима: кадр указки и так
+   * идёт двадцать пять раз в секунду, лишний байт в нём дешевле, чем ещё одно
+   * состояние, которое можно пропустить и разъехаться.
+   */
+  | { t: 'laser'; page: number; x: number; y: number; shape?: 'dot' | 'line' }
   | { t: 'laser:off' }
   | { t: 'ping' }
 
@@ -393,7 +400,7 @@ export type ControlServerMessage =
    * из общей привычки красить всё по автору, и на лекции второго
    * преподавателя указка оказывалась синей — то есть неотличимой от чернил.
    */
-  | { t: 'laser'; at: { page: number; x: number; y: number } | null }
+  | { t: 'laser'; at: { page: number; x: number; y: number; shape: 'dot' | 'line' } | null }
   | { t: 'refused'; rule: 'structure' | 'edit' | 'title' | 'files'; message: string }
   | { t: 'error'; message: string }
   /**

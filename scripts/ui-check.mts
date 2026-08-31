@@ -1292,15 +1292,62 @@ check(
   'палитра пера — два ряда: цвет и толщина',
   paletteOpen ? 'radiogroup «Цвет пера» и «Толщина»' : 'палитра не открылась',
 )
+/*
+ * ВЫБОР НЕ ЗАКРЫВАЕТ ПАЛИТРУ. Закрывал — и чтобы попробовать синий потолще,
+ * приходилось открывать её дважды; а пробуют именно так, подбором, глядя на
+ * лист. Проверяется обе половины: и цвет, и толщина.
+ */
+if (paletteOpen) {
+  await pult.js(press(PULT.green))
+  await wait(200)
+  const afterColor = (await pult.js(`return !!document.querySelector('[data-pult-palette]')`)) === true
+  await pult.js(press(PULT.thick))
+  await wait(200)
+  const afterWidth = (await pult.js(`return !!document.querySelector('[data-pult-palette]')`)) === true
+  check(
+    afterColor && afterWidth,
+    'выбор цвета и толщины не закрывает палитру',
+    `после цвета ${afterColor ? 'открыта' : 'ЗАКРЫЛАСЬ'}, после толщины ${afterWidth ? 'открыта' : 'ЗАКРЫЛАСЬ'}`,
+  )
+  // Возвращаем чёрное среднее — дальше по прогону от них зависят снимки.
+  await pult.js(press(PULT.black))
+  await wait(150)
+  await pult.js(press(PULT.mid))
+  await wait(150)
+}
 await escape()
 check(
   (await pult.js(`return !document.querySelector('[data-pult-palette]')`)) === true,
   'палитра закрывается Escape',
   'закрыта',
 )
+
+/*
+ * У УКАЗКИ СВОЯ ПАЛИТРА: точкой показывают, линией обводят. Открывается тем же
+ * жестом, что и перьевая, — повторным тапом по уже взятому инструменту.
+ */
+await pult.js(press(PULT.laser))
+await wait(250)
+await pult.js(press(PULT.laser))
+await wait(350)
+const laserPalette = (await pult.js(`return !!document.querySelector('[data-pult-palette]')`)) === true
+check(
+  laserPalette &&
+    (await pult.js(`return ${has('Линия')} && ${has('Точка')}`)) === true,
+  'у указки есть выбор: линия или точка',
+  laserPalette
+    ? await pult.js(
+        `return (document.querySelector('[data-pult-palette]')?.textContent||'').replace(/\\s+/g,' ').trim().slice(0,40)`,
+      )
+    : 'палитра указки не открылась',
+)
+await escape()
+await pult.js(press(PULT.pen))
+await wait(200)
 await pult.js(press(PULT.notes))
 await wait(500)
-const notesOpen = (await pult.js(`return !!document.querySelector('[data-pult-notes] textarea')`)) === true
+// Поля ввода в заметках на пульте нет вовсе — они прибиты (см. §9 ниже).
+const notesOpen = (await pult.js(`return !!document.querySelector('[data-pult-notes] .pult-prompt')`)) === true
 if (!notesOpen) absent.push('лист заметок [data-pult-notes]')
 else for (const n of inNotes) if (!(await pult.js(`return ${has(n)}`))) absent.push(n)
 check(absent.length === 0, 'органы пульта названы по договору', absent.length ? absent.join(', ') : 'все имена на месте')
@@ -1557,7 +1604,7 @@ if (hall >= 0) {
 await pult.js(press(PULT.notes))
 await wait(400)
 check(
-  (await pult.js(`return !document.querySelector('[data-pult-notes] textarea')`)) === true &&
+  (await pult.js(`return !document.querySelector('[data-pult-notes] .pult-prompt')`)) === true &&
     (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'false',
   'клавиша «Заметки» сворачивает лист заметок',
   `aria-pressed=${await pult.js(`return ${pressedIs(PULT.notes)}`)}`,
@@ -1565,17 +1612,35 @@ check(
 await pult.js(press(PULT.notes))
 await wait(500)
 check(
-  (await pult.js(`return !!document.querySelector('[data-pult-notes] textarea')`)) === true &&
+  (await pult.js(`return !!document.querySelector('[data-pult-notes] .pult-prompt')`)) === true &&
     (await pult.js(`return ${pressedIs(PULT.notes)}`)) === 'true',
-  'заметки спикера выдвигаются и пишутся',
-  await pult.js(`return document.querySelector('[data-pult-notes] textarea')?.placeholder ?? 'поля нет'`),
+  'заметки спикера выдвигаются и читаются',
+  await pult.js(
+    `return (document.querySelector('[data-pult-notes] .pult-prompt')?.textContent||'').trim().slice(0,40) || 'листа нет'`,
+  ),
+)
+/*
+ * ЗАМЕТКИ НА ПУЛЬТЕ ПРИБИТЫ. Речь пишут за столом, на пуле её читают: поля
+ * ввода здесь нет вовсе, и это проверяется прямо — не «поле не в фокусе», а
+ * «поля не существует». Пока оно было, планшет ловил им случайное касание
+ * ладони, поднимал клавиатуру на полэкрана, а Pencil начинал переводить
+ * росчерк в текст.
+ */
+check(
+  (await pult.js(`return !document.querySelector('[data-pult-notes] textarea')`)) === true,
+  'заметки на пульте не правятся',
+  await pult.js(
+    `return 'полей ввода '+document.querySelectorAll('[data-pult-notes] textarea, [data-pult-notes] [contenteditable]').length`,
+  ),
 )
 check(
   (await pult.js(
-    `const t=document.querySelector('[data-pult-notes] textarea');return t?getComputedStyle(t).userSelect:'нет'`,
+    `const t=document.querySelector('[data-pult-notes] .pult-prompt');return t?getComputedStyle(t).userSelect:'нет'`,
   )) !== 'none',
-  'в поле заметок текст выделяется',
-  await pult.js(`const t=document.querySelector('[data-pult-notes] textarea');return 'user-select='+(t?getComputedStyle(t).userSelect:'нет')`),
+  'текст заметок выделяется',
+  await pult.js(
+    `const t=document.querySelector('[data-pult-notes] .pult-prompt');return 'user-select='+(t?getComputedStyle(t).userSelect:'нет')`,
+  ),
 )
 /* Комнаты на пульте нет вовсе: ни вкладок, ни панели файлов, ни оракула. */
 check(

@@ -1017,7 +1017,8 @@ export function dispatch(
       const x = Number(message.x)
       const y = Number(message.y)
       if (!Number.isFinite(x) || !Number.isFinite(y)) return
-      broadcast(sessionId, { t: 'laser', at: { page: Number(message.page), x, y } })
+      const shape = message.shape === 'dot' ? 'dot' : 'line'
+      broadcast(sessionId, { t: 'laser', at: { page: Number(message.page), x, y, shape } })
       return
     }
 
