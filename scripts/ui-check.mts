@@ -2037,6 +2037,94 @@ await wait(400)
 check((await host.js(patchRules({ edit: 'room' }))) === 200, 'правила вернулись к открытым', 'edit: room')
 await wait(600)
 
+/* ---------------------------------------------- тред оракула и его низ */
+
+/*
+ * Тред обязан ехать за вопросами аудитории, пока читатель стоит внизу, — и
+ * замирать, как только он ушёл вверх читать. Ловится это только очередью
+ * вопросов: один вопрос успевает дорисоваться, и низ не уезжает.
+ *
+ * Проверка стоит в самом конце: она добавляет в комнату восемь поворотов
+ * треда, и любая проверка выше, считающая записи, сбилась бы об них.
+ */
+const OPEN_ORACLE =
+  `const b=document.querySelector('[aria-label="Toggle the AI oracle"]');` +
+  `if(b && !document.querySelector('textarea')) b.click(); return 1`
+await host.send('Page.bringToFront')
+await host.js(OPEN_ORACLE)
+await student.js(OPEN_ORACLE)
+await wait(900)
+
+/** Окно прокрутки треда: сколько осталось до низа и где мы стоим. */
+const THREAD =
+  `const s=[...document.querySelectorAll('div')].filter(d=>(d.className||'').includes('overflow-y-auto')).pop();` +
+  `if(!s) return null; return {gap: Math.round(s.scrollHeight - s.scrollTop - s.clientHeight), top: Math.round(s.scrollTop)}`
+
+/*
+ * Вопрос длинный намеренно: поворот треда дорастает уже ПОСЛЕ того, как мы
+ * прокрутили вниз, и раньше в этот зазор проваливалась вся механика — событие
+ * нашей же прокрутки приходило в обработчик, когда высота успела подрасти, и
+ * тред отцеплялся от низа сам себе.
+ */
+const LONG =
+  'Вопрос номер N: не понимаю, почему на третьей ячейке вылезает traceback про то, ' +
+  'что объект не поддерживает индексацию, хотя выше по тетради ровно такая же строка ' +
+  'отрабатывает без единой жалобы; расскажи подробно, что тут происходит и куда смотреть'
+
+async function askOracle(page: Tab, text: string): Promise<void> {
+  await page.js(
+    `const t=[...document.querySelectorAll('textarea')].pop();` +
+      `if(!t) throw new Error('поля вопроса нет');` +
+      `const set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;` +
+      `set.call(t,${JSON.stringify(text)}); t.dispatchEvent(new Event('input',{bubbles:true})); return 1`,
+  )
+  await wait(200)
+  await page.js(
+    `const t=[...document.querySelectorAll('textarea')].pop();` +
+      `t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); return 1`,
+  )
+  await wait(900)
+}
+
+const gaps: number[] = []
+for (let n = 1; n <= 6; n += 1) {
+  await askOracle(student, LONG.replace('N', String(n)))
+  const at = (await host.js(THREAD)) as { gap: number } | null
+  gaps.push(at?.gap ?? 999)
+}
+check(
+  gaps.every((g) => g < 40),
+  'тред оракула держится низа на каждом вопросе',
+  `зазоры: ${gaps.join(', ')}`,
+)
+
+/* Ушедшего вверх читателя новый вопрос не дёргает: чтение важнее слежения. */
+await host.js(
+  `const s=[...document.querySelectorAll('div')].filter(d=>(d.className||'').includes('overflow-y-auto')).pop();` +
+    `s.scrollTop = Math.max(0, s.scrollTop - 260); s.dispatchEvent(new Event('scroll')); return 1`,
+)
+await wait(400)
+const parked = (await host.js(THREAD)) as { top: number } | null
+await askOracle(student, LONG.replace('N', '7'))
+const stayed = (await host.js(THREAD)) as { top: number } | null
+check(
+  parked !== null && stayed !== null && Math.abs(stayed.top - parked.top) < 8,
+  'ушедшего вверх по треду новый вопрос не дёргает',
+  `стоял на ${parked?.top}, остался на ${stayed?.top}`,
+)
+check(
+  (await host.js(`return !!document.querySelector('button.animate-fade-up')`)) === true,
+  'внизу треда появилась метка о новом ответе',
+  'есть',
+)
+
+/* И метка возвращает вниз, снова прицепляя тред. */
+await host.js(`const b=document.querySelector('button.animate-fade-up'); if(b) b.click(); return 1`)
+await wait(500)
+await askOracle(student, LONG.replace('N', '8'))
+const back = (await host.js(THREAD)) as { gap: number } | null
+check((back?.gap ?? 999) < 40, 'по метке тред снова идёт за вопросами', `зазор ${back?.gap}`)
+
 for (const [who, page] of [
   ['преподаватель', host],
   ['студент', student],

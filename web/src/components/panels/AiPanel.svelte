@@ -47,6 +47,8 @@
   let errored = $state(false)
 
   let scroller = $state<HTMLDivElement | null>(null)
+  /** Содержимое треда: за его ростом следит наблюдатель размера, см. ниже. */
+  let thread = $state<HTMLDivElement | null>(null)
   let composer = $state<HTMLTextAreaElement | null>(null)
   /**
    * Where the thread was when the reader stopped following it.
@@ -280,29 +282,82 @@
 
   /* ------------------------------------------------------------- scrolling */
 
+  function toBottom(): void {
+    if (scroller) scroller.scrollTop = scroller.scrollHeight
+  }
+
   $effect(() => {
     const tail = entries[entries.length - 1]
     // Depend on the tail's length too, or a streaming answer scrolls out of view.
     void entries.length
     void tail?.answer.length
     if (!pinned || !scroller) return
-    const el = scroller
     // After the DOM has the new text, not before.
     requestAnimationFrame(() => {
-      if (pinned) el.scrollTop = el.scrollHeight
+      if (pinned) toBottom()
     })
   })
 
+  /*
+   * СЛЕДОВАТЬ ЗА РАСТУЩИМ, А НЕ ТОЛЬКО ЗА НОВЫМ.
+   *
+   * Прежний эффект просыпался на приход записи. Но высота треда меняется и без
+   * новых записей: ответ дописывается в уже стоящий пузырь, под последним
+   * поворотом появляется строка «Нина печатает», поле вопроса растёт до ста
+   * шестидесяти пикселей и отъедает их у треда. Ни одно из этого не двигает
+   * прокрутку само, и низ тихо уезжает под нижний край: на мерке тред уползал
+   * на 37 пикселей за один вопрос и оставался там до следующего.
+   *
+   * Наблюдатель размера смотрит и за содержимым, и за самим окном треда —
+   * второе как раз про выросшее поле ввода.
+   */
+  $effect(() => {
+    const box = scroller
+    const inner = thread
+    if (!box || !inner) return
+    const watch = new ResizeObserver(() => {
+      if (pinned) toBottom()
+    })
+    watch.observe(inner)
+    watch.observe(box)
+    return () => watch.disconnect()
+  })
+
+  /**
+   * Где тред стоял в прошлый раз, чтобы отличить «читатель ушёл вверх» от
+   * «содержимое выросло». Не руна: её никто не рисует.
+   */
+  let lastTop = 0
+
   function onScroll() {
     if (!scroller) return
-    // Reading back through the transcript wins over following the newest answer.
-    const wasPinned = pinned
-    pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40
-    if (pinned) mark = null
-    else if (wasPinned) {
-      const tail = entries[entries.length - 1]
-      mark = tail ? { id: tail.id, length: tail.answer.length } : { id: '', length: 0 }
+    const el = scroller
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    /*
+     * ОТЦЕПИТЬСЯ ОТ НИЗА МОЖЕТ ТОЛЬКО ЧЕЛОВЕК.
+     *
+     * Событие прокрутки приходит и от нашей собственной строки
+     * `scrollTop = scrollHeight`, и раньше оно же тред и отцепляло: пока
+     * событие шло до обработчика, ответ дописывался, `scrollHeight` успевал
+     * подрасти, и мы честно вычисляли «до низа далеко» — то есть сами себе
+     * ставили «читатель ушёл вверх». Дальше тред стоял мёртво, а вопросы
+     * аудитории уходили под край. Ровно на это и пожаловались.
+     *
+     * Признак человека один и надёжный: прокрутка ВВЕРХ. Ни рост содержимого,
+     * ни наша собственная строка `scrollTop` не уменьшают. Пиксель допуска —
+     * на дробную прокрутку при масштабе, отличном от ста процентов.
+     */
+    const wentUp = el.scrollTop < lastTop - 1
+    lastTop = el.scrollTop
+    if (gap < 40) {
+      pinned = true
+      mark = null
+      return
     }
+    if (!wentUp || !pinned) return
+    pinned = false
+    const tail = entries[entries.length - 1]
+    mark = tail ? { id: tail.id, length: tail.answer.length } : { id: '', length: 0 }
   }
 
   /**
@@ -324,7 +379,7 @@
   function follow() {
     pinned = true
     mark = null
-    if (scroller) scroller.scrollTop = scroller.scrollHeight
+    toBottom()
   }
 
   /* ------------------------------------------------------------- composing */
@@ -489,6 +544,9 @@
 
   <div class="relative flex min-h-0 flex-1 flex-col">
     <div bind:this={scroller} onscroll={onScroll} class="min-h-0 flex-1 overflow-y-auto">
+      <!-- Обёртка нужна наблюдателю размера: он смотрит за высотой СОДЕРЖИМОГО,
+           а у самого окна прокрутки она не меняется, сколько бы туда ни дописали. -->
+      <div bind:this={thread}>
       {#if entries.length === 0}
         <!--
           The first thing a student reads on this panel, so it is not "nothing
@@ -541,6 +599,7 @@
           <span class="min-w-0 truncate">{typingLine}</span>
         </div>
       {/if}
+      </div>
     </div>
 
     {#if news}
