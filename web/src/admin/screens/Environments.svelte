@@ -334,9 +334,23 @@
               <div class="flex items-center gap-2">
                 <span class="truncate font-mono text-ui-lg font-semibold text-ink">{env.name}</span>
               </div>
+              <!--
+                Only the facts that exist. The row used to print size and build
+                date unconditionally, so an environment that had never been
+                built still read "— · never built" — two placeholders where
+                there is simply nothing to say — and one that WAS built but
+                edited since read "216 MB · built 5 days ago" beside a pill
+                saying "Not built". Both halves were true of different things.
+              -->
               <p class="truncate text-2xs text-muted">
-                Python 3.11 · {imageSize(env.imageBytes)} · {builtAgo(env.builtAt)} ·
-                {env.packages.length} packages over the base
+                {[
+                  'Python 3.11',
+                  env.imageBytes === null ? null : imageSize(env.imageBytes),
+                  env.builtAt === null ? null : builtAgo(env.builtAt),
+                  `${env.packages.length} packages over the base`,
+                ]
+                  .filter((part) => part !== null)
+                  .join(' · ')}
               </p>
             </div>
 
@@ -369,6 +383,16 @@
                 <span class={cn(PILL, 'bg-danger text-white', justFinished === env.name && 'enter')}>
                   Build failed
                 </span>
+              {:else if env.builtAt !== null}
+                <!--
+                  BUILT, BUT STALE — and that is not the same as "not built".
+                  The image exists, rooms are running it right now; what changed
+                  is the package list, saved after the build. Calling that "Not
+                  built" beside "216 MB · built 5 days ago" is how the panel
+                  contradicts itself in one line, and the reader is left unable
+                  to tell whether anything is there at all.
+                -->
+                <span class={cn(PILL, 'text-warning')}>Needs rebuild</span>
               {:else}
                 <span class={cn(PILL, 'text-muted')}>Not built</span>
               {/if}

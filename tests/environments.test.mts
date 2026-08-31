@@ -10,7 +10,7 @@
 import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parsePackages } from '../server/src/environments.js'
+import { listChanged, parsePackages } from '../server/src/environments.js'
 import { ENVIRONMENT_NAME } from '../shared/admin.js'
 
 /* ------------------------------------------------ what counts as a package */
@@ -66,4 +66,40 @@ test('a name that would escape the directory or break a tag is refused', () => {
 test('a name is short enough to read in a table row', () => {
   assert.ok(ENVIRONMENT_NAME.test('a'.repeat(32)))
   assert.ok(!ENVIRONMENT_NAME.test('a'.repeat(33)))
+})
+
+/* ------------------------------------------- собрана ли она на самом деле */
+
+/*
+ * «Собрана или нет» решалось сравнением времени правки файла со временем
+ * сборки образа — то есть отвечало на другой вопрос: не изменился ли список, а
+ * трогали ли файл. Открыть список и сохранить не меняя, или просто иметь файл
+ * новее образа, собранного через docker compose, — этого хватало, чтобы на
+ * рабочей среде повисло «Needs rebuild» рядом с «216 MB · built 5 days ago».
+ */
+test('сохранение без изменений — не изменение', () => {
+  assert.equal(listChanged('torch>=2.4\ntimm>=1.0\n', 'torch>=2.4\ntimm>=1.0\n'), false)
+})
+
+test('комментарий и пустая строка не меняют того, что поставит pip', () => {
+  assert.equal(
+    listChanged('torch>=2.4\ntimm>=1.0\n', '# зрение\n\ntorch>=2.4\n\ntimm>=1.0\n'),
+    false,
+  )
+})
+
+test('тот же список в другом порядке — тот же список', () => {
+  assert.equal(listChanged('torch>=2.4\ntimm>=1.0\n', 'timm>=1.0\ntorch>=2.4\n'), false)
+})
+
+test('новый пакет — изменение', () => {
+  assert.equal(listChanged('torch>=2.4\n', 'torch>=2.4\nnumpy\n'), true)
+})
+
+test('другая версия того же пакета — изменение', () => {
+  assert.equal(listChanged('torch>=2.4\n', 'torch>=2.5\n'), true)
+})
+
+test('убранный пакет — изменение', () => {
+  assert.equal(listChanged('torch>=2.4\ntimm>=1.0\n', 'torch>=2.4\n'), true)
 })

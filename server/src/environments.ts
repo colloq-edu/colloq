@@ -57,6 +57,47 @@ function fileFor(name: string): string {
   return path.join(ENV_DIR, `${name}.txt`)
 }
 
+/**
+ * What the package list looked like when the image was last built.
+ *
+ * Staleness used to be decided by comparing the file's mtime to the image's
+ * creation time, and that answers a different question: whether the file was
+ * WRITTEN since, not whether it says anything new. Opening the list and saving
+ * it unchanged — or the file simply being created later than an image built by
+ * `docker compose` — was enough to put "Needs rebuild" on a perfectly current
+ * environment, which is exactly how `base` ended up reading "216 MB · built 5
+ * days ago" beside a pill saying it was never built.
+ *
+ * The stamp holds the built list itself, so the comparison is about content.
+ * No stamp (an image from before this file existed) falls back to the mtime,
+ * which is the old behaviour and the safer guess: better to offer a rebuild
+ * nobody needs than to hide one somebody does.
+ */
+function stampFor(name: string): string {
+  if (!ENVIRONMENT_NAME.test(name)) throw new Error(`bad environment name: ${name}`)
+  return path.join(ENV_DIR, `.${name}.built`)
+}
+
+/**
+ * Did the package list actually change since it was built?
+ *
+ * Compares what the lists SAY, not how they are written: a comment added, a
+ * blank line, trailing whitespace, the same packages in another order — none of
+ * those change what pip installs, and none of them should put "Needs rebuild"
+ * on a working environment. Exported because this rule is the whole difference
+ * between an honest badge and a nagging one, and it is worth pinning.
+ */
+export function listChanged(stamped: string, current: string): boolean {
+  const meaningful = (source: string) =>
+    source
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !line.startsWith('#'))
+      .sort()
+      .join('\n')
+  return meaningful(stamped) !== meaningful(current)
+}
+
 export function listNames(): string[] {
   try {
     return fs
@@ -104,6 +145,9 @@ export function writeSource(name: string, source: string): void {
 
 export function removeEnvironment(name: string): void {
   fs.rmSync(fileFor(name), { force: true })
+  // Штамп уходит вместе со списком: иначе среда, заведённая под тем же именем
+  // заново, сравнивалась бы с чужой сборкой.
+  fs.rmSync(stampFor(name), { force: true })
 }
 
 export function exists(name: string): boolean {
@@ -325,6 +369,14 @@ export async function startBuild(name: string): Promise<void> {
       // "it failed" and "tensorflow==1.15 does not exist".
       failures.set(name, build.lines.filter((l) => /error|ERROR/.test(l)).pop() ?? `build exited ${code}`)
     }
+    if (!build.failed) {
+      // Remember WHAT was built, so the next comparison is about content.
+      try {
+        fs.writeFileSync(stampFor(name), readSource(name))
+      } catch {
+        // No stamp is not a failure: staleness falls back to mtime, as before.
+      }
+    }
     push(build, build.failed ? `— build failed (${code})` : '— build finished')
   })
 }
@@ -403,6 +455,13 @@ function stateOf(name: string, built: ImageFacts | null): EnvironmentState {
 
 /** Whether the package list was written after the image was built. */
 function editedSinceBuild(name: string, built: ImageFacts): boolean {
+  let stamped: string | null = null
+  try {
+    stamped = fs.readFileSync(stampFor(name), 'utf8')
+  } catch {
+    stamped = null
+  }
+  if (stamped !== null) return listChanged(stamped, readSource(name))
   try {
     return fs.statSync(fileFor(name)).mtimeMs > built.builtAt
   } catch {
