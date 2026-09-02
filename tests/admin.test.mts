@@ -61,7 +61,10 @@ test('an email is one identity however it was typed', () => {
   const ada = fresh('Ada', 'Ada.Lovelace@HSE.RU', 'owner')
   assert.equal(ada.email, 'ada.lovelace@hse.ru')
   // The same person, shouted: a second row here is a second account nobody knows about.
-  assert.equal(createTeacher({ name: 'Ada again', email: ' ADA.lovelace@hse.ru ', role: 'teacher' }), null)
+  assert.equal(
+    createTeacher({ name: 'Ada again', email: ' ADA.lovelace@hse.ru ', role: 'teacher' }),
+    null,
+  )
   assert.ok(getTeacherByEmail('ada.lovelace@hse.ru'))
 })
 
@@ -103,7 +106,10 @@ test('a forged or absent cookie is nobody', () => {
   const marina = fresh('Marina', 'marina@hse.ru')
   const cookie = mintCookie(marina)
   const value = cookie.slice(STAFF_COOKIE.length + 1)
-  const [body, sig] = [value.slice(0, value.lastIndexOf('.')), value.slice(value.lastIndexOf('.') + 1)]
+  const [body, sig] = [
+    value.slice(0, value.lastIndexOf('.')),
+    value.slice(value.lastIndexOf('.') + 1),
+  ]
 
   assert.equal(staffFromCookieHeader(undefined), null)
   assert.equal(staffFromCookieHeader(''), null)
@@ -146,7 +152,10 @@ test('a teacher can be renamed without losing their link', () => {
   const marina = fresh('Ada Lovelace', 'ada@example.edu')
   const key = linkKeyOf(marina.id)
 
-  const fixed = updateTeacherIdentity(marina.id, { name: 'Ada Lovelace', email: 'Ada@Example.edu ' })
+  const fixed = updateTeacherIdentity(marina.id, {
+    name: 'Ada Lovelace',
+    email: 'Ada@Example.edu ',
+  })
   assert.equal(fixed?.name, 'Ada Lovelace')
   // Тот же адрес, приведённый к одному виду — как и на заведении.
   assert.equal(fixed?.email, 'ada@example.edu')
@@ -350,8 +359,18 @@ test('панель заканчивает занятие и открывает �
     body: { finished: true },
   })
   assert.equal(finished.status, 200)
-  const row = (await finished.json()) as { finishedAt: number | null; rules: { run: string } }
+  const row = (await finished.json()) as {
+    finishedAt: number | null
+    status: string
+    rules: { run: string }
+  }
   assert.equal(typeof row.finishedAt, 'number', 'строка списка не назвала время')
+  /*
+   * И слово в списке сменилось. Раньше пустая комната и законченное занятие
+   * показывались одним и тем же `ended`, так что звонок в панели ничего не
+   * менял: закончил — а строка говорит то же, что и до.
+   */
+  assert.equal(row.status, 'finished', 'слово в списке не заметило звонка')
   assert.equal(row.rules.run, 'room', 'в настройках оказалось ужесточение вместо выбранного')
   assert.equal(isFinished(room), true)
   assert.equal(getRules(room).run, 'host', 'права в комнате остались прежними')
@@ -361,7 +380,14 @@ test('панель заканчивает занятие и открывает �
     body: { finished: false },
   })
   assert.equal(resumed.status, 200)
-  assert.equal(((await resumed.json()) as { finishedAt: number | null }).finishedAt, null)
+  const back = (await resumed.json()) as { finishedAt: number | null; status: string }
+  assert.equal(back.finishedAt, null)
+  /*
+   * И слово вернулось к тому, что происходит само. В эту комнату не заходил
+   * никто, поэтому `draft` — «ссылку ещё не давали»; заходили бы и ушли, было
+   * бы `idle`. Важно, что «закончено» больше не прилипает к пустой комнате.
+   */
+  assert.equal(back.status, 'draft')
   assert.equal(isFinished(room), false)
   // И комната вернулась ровно в ту настройку, из которой её закончили.
   assert.equal(storedRules(room).run, 'room')

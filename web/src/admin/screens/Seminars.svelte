@@ -1105,24 +1105,6 @@
                 <span class="whitespace-nowrap text-2xs text-muted">archived</span>
               {/if}
               <!--
-                Решение преподавателя, а не подсчёт подключённых, — и потому не
-                в столбце Status: `status` отвечает на «есть ли кто-то в комнате
-                сейчас» (семинар без единого человека может идти, а законченный
-                — стоять с полным залом), а в те 116 пикселей эта строка и не
-                влезала: с `whitespace-nowrap` она выезжала влево на число
-                зашедших. Здесь она стоит среди других фактов о семинаре, рядом
-                с «archived» и «опубликован», и переносится вместе с ними.
-              -->
-              {#if seminar.finishedAt}
-                {@const over = new Date(seminar.finishedAt).toLocaleString()}
-                <span
-                  class="whitespace-nowrap text-2xs text-muted"
-                  title="Закончено {over} — в комнате теперь только читают"
-                >
-                  занятие закончено
-                </span>
-              {/if}
-              <!--
                 Кто завёл комнату. Хранилось с самого начала и не показывалось
                 нигде: на общем инстансе кафедры список — это чужие семинары
                 вперемешку со своими, и «удалить» стоит рядом с каждым. Правит
@@ -1196,7 +1178,29 @@
 
           <td class="py-2 align-middle">
             <div class="flex items-center justify-end gap-2">
-              {#if seminar.status === 'live'}
+              {#if seminar.status === 'finished'}
+                <!--
+                  Решение преподавателя стоит там же, где остальные три слова, и
+                  сильнее их: раньше «сейчас никого» и «занятие закончено»
+                  показывались одним словом Ended, так что звонок ничего в
+                  списке не менял. Точка слева — если в законченной комнате
+                  всё-таки кто-то есть: перечитывают разбор, и это видно.
+                -->
+                <span
+                  class="chip h-[22px] gap-1.5 bg-warning/[0.14] px-2 text-micro font-bold uppercase tracking-caps text-warning"
+                  title="Занятие закончено {new Date(
+                    seminar.finishedAt ?? 0,
+                  ).toLocaleString()} — в комнате теперь только читают"
+                >
+                  {#if seminar.liveCount > 0}
+                    <span
+                      class="h-[5px] w-[5px] rounded-full bg-accent"
+                      title="{people(seminar.liveCount)} в комнате сейчас"
+                    ></span>
+                  {/if}
+                  Finished
+                </span>
+              {:else if seminar.status === 'live'}
                 <span
                   class="chip h-[22px] gap-1.5 bg-accent/15 px-2 text-micro font-bold uppercase tracking-caps text-accent-text"
                 >
@@ -1210,9 +1214,10 @@
                   Draft
                 </span>
               {:else}
-                <!-- Bare, so the three states share one right-hand lane: an ended
-                     seminar is a fact, not a badge. -->
-                <span class="text-micro font-bold uppercase tracking-caps text-muted">Ended</span>
+                <!-- Bare, so the four states share one right-hand lane: an empty
+                     room is a fact, not a badge. Слово честное: заходили, а
+                     сейчас никого — «закончено» это не значит. -->
+                <span class="text-micro font-bold uppercase tracking-caps text-muted">Empty</span>
               {/if}
             </div>
           </td>

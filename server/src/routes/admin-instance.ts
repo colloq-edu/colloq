@@ -176,10 +176,22 @@ function fileCount(sessionId: string): number {
   }
 }
 
-function statusOf(liveCount: number, totalParticipants: number): SeminarStatus {
+/**
+ * Одно слово о семинаре — и решение преподавателя сильнее подсчёта.
+ *
+ * Пока звонка не было, слово отвечает на «что там сейчас»: кто-то в комнате,
+ * ссылку не давали, пусто. После звонка отвечать на это бессмысленно: комната
+ * закончена, и то, что в ней трое перечитывают разбор, не делает пару идущей.
+ */
+function statusOf(
+  liveCount: number,
+  totalParticipants: number,
+  finishedAt: number | null,
+): SeminarStatus {
+  if (finishedAt !== null) return 'finished'
   if (liveCount > 0) return 'live'
   // Nobody has ever joined: the link was made and never used.
-  return totalParticipants === 0 ? 'draft' : 'ended'
+  return totalParticipants === 0 ? 'draft' : 'idle'
 }
 
 function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
@@ -192,7 +204,7 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
     id: row.id,
     name: row.name,
     createdAt: row.created_at,
-    status: statusOf(liveCount, row.participants),
+    status: statusOf(liveCount, row.participants, finishedAt(row.id)),
     liveCount,
     totalParticipants: row.participants,
     cellCount: cellCount(row.id, liveCount > 0),
@@ -493,12 +505,10 @@ export function adminInstanceRoutes(): Router {
           err instanceof Error ? err.message : err,
         )
         if (!res.headersSent)
-          res
-            .status(500)
-            .json({
-              error: 'the seminar could not be deleted',
-              reason: 'invalid',
-            } satisfies AdminErrorBody)
+          res.status(500).json({
+            error: 'the seminar could not be deleted',
+            reason: 'invalid',
+          } satisfies AdminErrorBody)
       }
     })()
   })
