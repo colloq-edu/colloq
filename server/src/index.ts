@@ -32,6 +32,8 @@ import { handleControlSocket } from './control.js'
 import { closeDatabase, db, getSession, touchLastSeen } from './db.js'
 import { shutdownKernels } from './kernel/index.js'
 import { jupyterReachable } from './kernel/jupyter.js'
+import { isolationAvailable } from './kernel/pool.js'
+import { activeName, listEnvironments } from './environments.js'
 import { adminAuthRoutes } from './routes/admin-auth.js'
 import { adminEnvironmentRoutes } from './routes/admin-environments.js'
 import { adminImportRoutes } from './routes/admin-import.js'
@@ -278,6 +280,45 @@ app.use((_req, res, next) => {
 app.use(compression)
 app.use(express.json({ limit: '1mb' }))
 
+/**
+ * Готов ли Python, которым будет пользоваться комната, — а не тот, что рядом.
+ *
+ * При изоляции (KERNEL_ISOLATION=auto и живой docker) у каждой комнаты свой
+ * контейнер из образа `colloq-kernel:<окружение>`, и общего ядра compose не
+ * трогает никто. Здоровье спрашивало именно его: несобранный образ активного
+ * окружения давал зелёный ответ над инстансом, где не поднимется ни одна
+ * комната, а упавшее ядро compose — красный над инстансом, где всё работает.
+ *
+ * Ответ кэшируется на те же пять секунд, что и проба Jupyter: `docker image
+ * inspect` — это процесс, а зонд ходит сюда раз в секунду.
+ */
+let kernelProbe: { at: number; ok: boolean; reason: string | null } | null = null
+
+async function kernelHealth(): Promise<{ ok: boolean; reason: string | null }> {
+  if (!(await isolationAvailable())) return jupyterReachable()
+  const now = Date.now()
+  if (kernelProbe && now - kernelProbe.at < 5000)
+    return { ok: kernelProbe.ok, reason: kernelProbe.reason }
+
+  const active = activeName()
+  let ok = false
+  let reason: string | null = null
+  try {
+    // builtAt, а не state: «правили список после сборки» — это повод пересобрать,
+    // а не причина отказаться начинать пару на прежнем образе.
+    const environment = (await listEnvironments()).find((env) => env.name === active)
+    ok = !!environment && environment.builtAt !== null
+    if (!environment) reason = `There is no environment called "${active}"`
+    else if (!ok)
+      reason = `The "${active}" environment has never been built — build it in the panel`
+  } catch (err) {
+    reason =
+      err instanceof Error ? `Docker did not answer: ${err.message}` : 'Docker did not answer'
+  }
+  kernelProbe = { at: now, ok, reason }
+  return { ok, reason }
+}
+
 /*
  * «Здоров» значит «здесь можно вести семинар».
  *
@@ -285,7 +326,7 @@ app.use(express.json({ limit: '1mb' }))
  * `make status` напечатали «Colloq доступен по ссылке» над инстансом, где
  * Docker выключен со вчера: комната открывается, ссылка работает, а первый Run
  * через семьдесят секунд отвечает KERNEL DEAD. Проверяются обе вещи, без
- * которых семинара не будет: своя база и Jupyter.
+ * которых семинара не будет: своя база и Python комнаты.
  */
 app.get('/api/health', (_req, res) => {
   const began = process.hrtime.bigint()
@@ -303,7 +344,7 @@ app.get('/api/health', (_req, res) => {
         dbOk = false
         reason = err instanceof Error ? `The database is unreadable: ${err.message}` : 'The database is unreadable'
       }
-      const kernel = await jupyterReachable()
+      const kernel = await kernelHealth()
       if (dbOk && !kernel.ok) reason = kernel.reason
 
       const ok = dbOk && kernel.ok
@@ -397,6 +438,27 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
   if (err instanceof SyntaxError && 'body' in err) {
     return res.status(400).json({ error: 'malformed JSON body' })
   }
+  /*
+   * Отказ клиенту — это отказ клиенту, а не поломка сервера.
+   *
+   * body-parser отвергает слишком большое тело ошибкой с `status: 413`
+   * (`entity.too.large`), а неизвестную кодировку — с 415, и ни та ни другая не
+   * SyntaxError: обе доезжали до ветки ниже, то есть до 500 «internal error» и
+   * стека в журнале. Преподаватель, импортирующий тетрадь с картинками, видел
+   * «The server failed» вместо «слишком большой файл», а журнал — испуг на
+   * ровном месте. 4xx с внятной строкой отдаём как есть; 5xx оставляем ниже.
+   */
+  const failed = err as { status?: unknown; statusCode?: unknown; type?: unknown } | null
+  const status = failed?.status ?? failed?.statusCode
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    // Своими словами отвечает только body-parser — у его ошибок есть `type`, и
+    // они говорят про присланное тело. У прочих 4xx в тексте бывает путь на
+    // диске, и отдавать его наружу незачем.
+    const said = typeof failed?.type === 'string' && err instanceof Error ? err.message : ''
+    return res
+      .status(status)
+      .json({ error: status === 413 ? 'request body too large' : said || 'bad request' })
+  }
   // Со стеком и с путём: без них строка в журнале говорит «что-то сломалось»
   // и не говорит где — а именно за этим в журнал и лезут.
   console.error(
@@ -485,41 +547,63 @@ server.on('upgrade', (req, socket, head) => {
   if (!getSession(sessionId)) return reject(socket)
 
   wss.handleUpgrade(req, socket, head, (ws) => {
+    /*
+     * Всё тело — под try, и это не перестраховка.
+     *
+     * ws зовёт этот колбэк без своего перехвата, так что синхронное исключение
+     * отсюда уходит в `uncaughtException`, а тот завершает процесс: одна кривая
+     * печенька в заголовке одного участника (её разбирает effectiveRole)
+     * закрывала весь инстанс — все комнаты, все терминалы, все ядра. Цена
+     * ошибки здесь обязана быть равна одному сокету: браузер переподключится
+     * через секунду и придёт сюда снова.
+     */
     try {
-      touchLastSeen(payload.participantId)
-    } catch {
-      /* presence bookkeeping must never cost someone their connection */
-    }
-    if (channel === 'collab')
-      handleCollabSocket(ws, sessionId, effectiveRole(req, payload), payload.participantId)
-    else if (channel === 'file') {
-      /*
-       * Путь приезжает вторым отрезком адреса, в base64url. Проверяет его тот
-       * же `normalizePath`, что и всё остальное в продукте, — и до него сюда не
-       * доходит ничего, кроме уже проверенного токена этой самой комнаты.
-       */
-      const wanted = normalizePath(decodeRoom(asFile?.[2] ?? ''))
-      if (!wanted) {
-        try {
-          ws.close(4404, 'нет такого файла')
-        } catch {
-          /* уже закрыт */
-        }
-        return
+      try {
+        touchLastSeen(payload.participantId)
+      } catch {
+        /* presence bookkeeping must never cost someone their connection */
       }
-      handleFileSocket(ws, sessionId, wanted, effectiveRole(req, payload), payload.participantId)
-    } else {
-      /*
-       * A participant token carries the role it was minted with. A teacher who
-       * joined before signing in — or who created the seminar in the admin
-       * panel, which never handed out a host token at all — holds a
-       * 'participant' token for a room that is theirs, and interrupt and
-       * restart were dead for the whole seminar as a result. Staff on this
-       * instance are exactly who those controls are for; the cookie is a
-       * stronger credential than the token and it is re-checked here on every
-       * reconnect rather than baked into anything.
-       */
-      handleControlSocket(ws, sessionId, { ...payload, role: effectiveRole(req, payload) })
+      if (channel === 'collab')
+        handleCollabSocket(ws, sessionId, effectiveRole(req, payload), payload.participantId)
+      else if (channel === 'file') {
+        /*
+         * Путь приезжает вторым отрезком адреса, в base64url. Проверяет его тот
+         * же `normalizePath`, что и всё остальное в продукте, — и до него сюда не
+         * доходит ничего, кроме уже проверенного токена этой самой комнаты.
+         */
+        const wanted = normalizePath(decodeRoom(asFile?.[2] ?? ''))
+        if (!wanted) {
+          try {
+            ws.close(4404, 'нет такого файла')
+          } catch {
+            /* уже закрыт */
+          }
+          return
+        }
+        handleFileSocket(ws, sessionId, wanted, effectiveRole(req, payload), payload.participantId)
+      } else {
+        /*
+         * A participant token carries the role it was minted with. A teacher who
+         * joined before signing in — or who created the seminar in the admin
+         * panel, which never handed out a host token at all — holds a
+         * 'participant' token for a room that is theirs, and interrupt and
+         * restart were dead for the whole seminar as a result. Staff on this
+         * instance are exactly who those controls are for; the cookie is a
+         * stronger credential than the token and it is re-checked here on every
+         * reconnect rather than baked into anything.
+         */
+        handleControlSocket(ws, sessionId, { ...payload, role: effectiveRole(req, payload) })
+      }
+    } catch (err) {
+      console.error(
+        `[ws] ${channel} ${sessionId}: соединение не открылось —`,
+        err instanceof Error ? (err.stack ?? err.message) : err,
+      )
+      try {
+        ws.close(1011, 'соединение не открылось')
+      } catch {
+        ws.terminate()
+      }
     }
   })
 })

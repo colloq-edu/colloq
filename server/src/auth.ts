@@ -18,6 +18,17 @@ export interface TokenPayload {
    * mid-seminar must not log everybody out on deploy.
    */
   iat?: number
+  /**
+   * Чьей кукой этот токен получил права ведущего — при передаче пульта.
+   *
+   * «Ведущий по куке» намеренно никогда не пишется в строку участника: куку
+   * можно отобрать, и в этом весь смысл роли (см. db.ts, столбец token_host).
+   * Планшет куки не имеет, поэтому право переезжает сюда — но не насовсем:
+   * `roleFor` спрашивает, состоит ли ещё этот преподаватель в штате, и с
+   * удалением из списка пульт перестаёт быть пультом. Подпись покрывает поле,
+   * так что вписать себе чужой id нельзя.
+   */
+  staff?: string
 }
 
 /**
@@ -119,36 +130,83 @@ export function verifyDownloadToken(
  */
 export const HANDOFF_TTL_MS = 10 * 60 * 1000
 
-export function signHandoffToken(sessionId: string, participantId: string): string {
+/** Кто получит пульт и чьей кукой это право держится (null — своим токеном). */
+export interface HandoffHolder {
+  participantId: string
+  staff: string | null
+}
+
+export function signHandoffToken(
+  sessionId: string,
+  participantId: string,
+  staff: string | null = null,
+): string {
   const until = Date.now() + HANDOFF_TTL_MS
-  const body = `handoff:${sessionId}\u0000${participantId}\u0000${until}`
+  const who = staff ? `${participantId}\u0000${staff}` : participantId
+  const body = `handoff:${sessionId}\u0000${who}\u0000${until}`
   const sig = crypto.createHmac('sha256', config.sessionSecret).update(body).digest('base64url')
-  return `${Buffer.from(participantId).toString('base64url')}.${until.toString(36)}.${sig}`
+  return `${Buffer.from(who).toString('base64url')}.${until.toString(36)}.${sig}`
 }
 
 /** Кому этот ключ принадлежит — или null, если он чужой, кривой или протух. */
-export function verifyHandoffToken(sessionId: string, token: string | undefined | null): string | null {
+export function verifyHandoffToken(
+  sessionId: string,
+  token: string | undefined | null,
+): HandoffHolder | null {
   if (typeof token !== 'string') return null
   const parts = token.split('.')
   if (parts.length !== 3) return null
   const [who, untilRaw, sig] = parts
   const until = Number.parseInt(untilRaw, 36)
   if (!Number.isFinite(until) || Date.now() > until) return null
-  let participantId: string
+  let decoded: string
   try {
-    participantId = Buffer.from(who, 'base64url').toString('utf8')
+    decoded = Buffer.from(who, 'base64url').toString('utf8')
   } catch {
     return null
   }
+  const [participantId, staff] = decoded.split('\u0000')
   if (!participantId) return null
   const expected = crypto
     .createHmac('sha256', config.sessionSecret)
-    .update(`handoff:${sessionId}\u0000${participantId}\u0000${until}`)
+    .update(`handoff:${sessionId}\u0000${decoded}\u0000${until}`)
     .digest('base64url')
   const a = Buffer.from(sig)
   const b = Buffer.from(expected)
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null
-  return participantId
+  return { participantId, staff: staff || null }
+}
+
+/**
+ * Потраченные ключи — ровно до их же срока.
+ *
+ * «Годится один раз» было написано в трёх местах и не было правдой нигде:
+ * ключ проверялся подписью и сроком, а помечать его потраченным было нечем —
+ * ссылка, уехавшая не в то окно AirDrop, десять минут пускала в комнату
+ * преподавателем сколько угодно устройств. Множество в памяти, а не таблица:
+ * жить ему столько же, сколько ключу, а десять минут после падения процесса
+ * стоят меньше, чем таблица, которую никто не чистит.
+ */
+const spentHandoffs = new Map<string, number>()
+
+/**
+ * Проверить ключ и тут же его погасить. Второй обмен того же ключа — null,
+ * как и чужого: планшет меняет ключ ровно однажды, а копия ссылки из чата
+ * приезжает к уже потраченному.
+ */
+export function spendHandoffToken(
+  sessionId: string,
+  token: string | undefined | null,
+): HandoffHolder | null {
+  const holder = verifyHandoffToken(sessionId, token)
+  if (!holder) return null
+  const now = Date.now()
+  // Уборка здесь же: ключей мало, а Map иначе растёт весь семестр.
+  for (const [key, until] of spentHandoffs) if (until <= now) spentHandoffs.delete(key)
+  const key = `${sessionId}\u0000${token as string}`
+  if (spentHandoffs.has(key)) return null
+  spentHandoffs.set(key, now + HANDOFF_TTL_MS)
+  return holder
 }
 
 /** Host credential handed out at session creation; proves ownership after a refresh. */

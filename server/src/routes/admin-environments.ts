@@ -3,9 +3,10 @@
  *
  * Staff-only, like everything else in the panel. Building and switching are
  * owner-only: a build occupies the machine the whole faculty is teaching on,
- * and switching takes every running seminar's variables away — both are actions
- * on people who are not in the request, which is the line the rest of this
- * surface already draws.
+ * and switching decides what every seminar created from now on will run — and,
+ * where rooms share one kernel, takes their variables away as well. Both are
+ * actions on people who are not in the request, which is the line the rest of
+ * this surface already draws.
  */
 import { Router, type Request, type Response } from 'express'
 import { ownerOnly, requireStaff } from '../admin/auth.js'
@@ -26,6 +27,7 @@ import {
 } from '../environments.js'
 import { sessionsOnEnvironment } from '../db.js'
 import { expectKernelChurn } from '../kernel/index.js'
+import { isolationAvailable } from '../kernel/pool.js'
 import {
   ENVIRONMENT_NAME,
   type AdminErrorBody,
@@ -51,6 +53,17 @@ export function adminEnvironmentRoutes(): Router {
       environments: await listEnvironments(),
       canBuild: docker.ok,
       cannotBuildReason: docker.reason,
+      /*
+       * Делят ли комнаты одно ядро — правда, которую знает только сервер.
+       *
+       * Экраны обещали контейнер на семинар безусловно («runs in its own
+       * container», «The container mounts this room's folder»), а на установке
+       * без сокета, без сети комнат или с KERNEL_ISOLATION=off это неправда
+       * сразу в двух местах: комнаты видят файлы друг друга, и «Make default»
+       * действительно забирает переменные у открытых семинаров. Признак едет
+       * вместе со списком, потому что показывают его там же.
+       */
+      shared: !(await isolationAvailable()),
     }
     res.json(body)
   })
@@ -78,7 +91,40 @@ export function adminEnvironmentRoutes(): Router {
     if (source.length > MAX_SOURCE) {
       return fail(res, 400, 'too_long', `A package list is at most ${MAX_SOURCE / 1024} KB.`)
     }
-    writeSource(name, source)
+    /*
+     * Создание и правка — разные намерения, хотя запрос один и тот же.
+     *
+     * Перезапись верна, когда открыли существующий список. Но форма «New
+     * environment» шлёт тот же PUT, и на занятом имени она затирала чужой
+     * список пакетов целиком: две вкладки, планшет рядом с ноутбуком, curl —
+     * и от окружения не остаётся ни строки, а истории у этих файлов нет.
+     * `If-None-Match: *` — это и есть «только если такого ещё нет»; тот же
+     * барьер стоит на клиенте и в `make env-new`.
+     */
+    if (req.get('if-none-match')?.trim() === '*' && exists(name)) {
+      return fail(
+        res,
+        409,
+        'exists',
+        `An environment called ${name} already exists. Open it to change its packages, or pick another name.`,
+      )
+    }
+    try {
+      writeSource(name, source)
+    } catch (err) {
+      /*
+       * Каталог со списками — папка хоста, смонтированная внутрь. Когда её
+       * владелец не совпадает с пользователем, от которого работает сервер,
+       * запись падает EACCES — и раньше это уходило в общий обработчик голым
+       * «internal error», по которому не понять ни что произошло, ни где.
+       */
+      return fail(
+        res,
+        500,
+        'failed',
+        `Could not write kernel/environments/${name}.txt: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
     res.json({ name, source: readSource(name) })
   })
 
@@ -113,12 +159,24 @@ export function adminEnvironmentRoutes(): Router {
     if (attached.length > 0) {
       const names = attached.slice(0, 3).map((s) => s.name).join(', ')
       const more = attached.length > 3 ? `, and ${attached.length - 3} more` : ''
+      /*
+       * Инструкция должна быть выполнимой.
+       *
+       * Здесь стояло «Move them to another environment first», а перевести
+       * семинар на другое окружение нельзя ничем: имя выбирается при создании и
+       * дальше не меняется ни в панели, ни через PATCH. Архивные семинары
+       * считаются наравне с живыми — они точно так же откроются и потребуют
+       * свой образ, — поэтому сказано и про них: иначе прошлосеместровый
+       * архивный семинар держит имя навсегда, а человек ищет несуществующую
+       * кнопку.
+       */
       return fail(
         res,
         409,
         'in_use',
         `${attached.length === 1 ? 'A seminar runs' : `${attached.length} seminars run`} on ${name} (${names}${more}). ` +
-          'Move them to another environment first — deleting this one would leave them with no kernel at all.',
+          'A seminar keeps the environment it was created with — archived ones included — so this name is ' +
+          'free only once those seminars are deleted.',
       )
     }
     removeEnvironment(name)
@@ -149,10 +207,24 @@ export function adminEnvironmentRoutes(): Router {
     if (isBuilding(name)) return fail(res, 409, 'building', 'That environment is still building.')
     const docker = await dockerAvailable()
     if (!docker.ok) return fail(res, 409, 'no_docker', docker.reason ?? 'docker is unavailable')
-    // Пересоздание контейнера снимет ядро у всех, кто сейчас считает, и без
-    // этой строки каждая такая комната услышит «ядру не хватило памяти».
-    expectKernelChurn(`Someone switched this instance to the ${name} environment, so the kernel was replaced.`)
-    const result = await activate(name)
+    /*
+     * Ядро compose трогаем только когда комнаты в нём и живут.
+     *
+     * При изоляции у каждой комнаты свой контейнер из образа её окружения, и
+     * «Make default» до них не дотягивается вовсе. Окно churn при этом стояло
+     * всегда: любое настоящее падение ядра в ближайшие две минуты — OOM от
+     * ячейки студента — объяснялось «кто-то переключил окружение», и
+     * преподаватель шёл искать админа вместо своей ячейки.
+     */
+    const shared = !(await isolationAvailable())
+    if (shared) {
+      // Пересоздание контейнера снимет ядро у всех, кто сейчас считает, и без
+      // этой строки каждая такая комната услышит «ядру не хватило памяти».
+      expectKernelChurn(
+        `Someone switched this instance to the ${name} environment, so the kernel was replaced.`,
+      )
+    }
+    const result = await activate(name, shared)
     if (!result.ok) {
       return fail(res, 500, 'failed', `The kernel did not come back: ${result.out.slice(-400)}`)
     }

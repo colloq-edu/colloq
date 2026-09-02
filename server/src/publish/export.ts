@@ -11,15 +11,18 @@
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { BLOB_PREFIX, type PublicCourseView } from '@shared/publish'
-import { blobHref, renderCourse, renderStep } from './render.js'
+import { BLOB_PREFIX, type CourseItem, type PublicCourseView } from '@shared/publish'
+import { blobHref, renderCourse, renderRedirect, renderStep } from './render.js'
 import {
+  formerSlugs,
   getPublication,
   listCourses,
   publicationOf,
   readBlob,
   readStep,
+  stepCount,
   stepHeadings,
+  type Publication,
 } from './store.js'
 import { db, getSession } from '../db.js'
 import { notebookOf } from './notebook.js'
@@ -59,7 +62,18 @@ export function exportSite(root: string, base: string): ExportReport {
 
   const courses = listCourses()
   for (const course of courses) {
-    const items = course.items.map((item) => {
+    const items = course.items.map((item): CourseItem => {
+      /*
+       * Надгробие с чтением: страницу могли снять уже после удаления комнаты, и
+       * тогда ссылки на неё быть не должно — выгружаться она перестала.
+       */
+      if (item.kind === 'gone') {
+        if (!item.publication) return item
+        const pub = getPublication(item.publication.id)
+        return pub && pub.state === 'published'
+          ? { ...item, publication: { id: pub.id, slug: pub.slug } }
+          : { kind: 'gone', name: item.name, at: item.at, publication: null }
+      }
       if (item.kind !== 'seminar') return item
       const session = getSession(item.sessionId)
       const pub = publicationOf(item.sessionId)
@@ -73,7 +87,7 @@ export function exportSite(root: string, base: string): ExportReport {
                 id: pub.id,
                 slug: pub.slug,
                 publishedAt: pub.publishedAt,
-                steps: stepHeadings(pub.id).length,
+                steps: stepCount(pub.id),
               }
             : null,
       }
@@ -87,14 +101,33 @@ export function exportSite(root: string, base: string): ExportReport {
     }
     const handle = handleOf(course)
     write(path.join(root, 'c', handle, 'index.html'), renderCourse(view, base))
+    /*
+     * Адрес по идентификатору обещан буквами (store.ts): ссылку, розданную до
+     * того, как курсу дали имя, ломать нельзя. На живом сервере это делает
+     * `WHERE id = ? OR slug = ?`, а на Pages маршрутизации нет — значит файл.
+     * Прежние имена — тот же долг: курс переименовали, а ссылка со старым
+     * именем уже у класса.
+     */
+    for (const was of [course.id, ...formerSlugs('course', course.id)]) {
+      if (was === handle) continue
+      write(
+        path.join(root, 'c', was, 'index.html'),
+        renderRedirect(`${base}/c/${handle}/`, course.name),
+      )
+    }
     report.courses.push({ handle, name: course.name, rows: items.length })
   }
 
   /** Курс, в котором состоит семинар, — для пути наверх со страницы шага. */
-  const courseOf = (sessionId: string | null): { name: string; handle: string } | null => {
-    if (!sessionId) return null
+  const courseOf = (pub: Publication): { name: string; handle: string } | null => {
     const found = courses.find((c) =>
-      c.items.some((i) => i.kind === 'seminar' && i.sessionId === sessionId),
+      c.items.some((i) =>
+        i.kind === 'seminar'
+          ? pub.sessionId !== null && i.sessionId === pub.sessionId
+          : // У осиротевшей страницы комнаты нет: её держит надгробие курса, и
+            // только оно связывает её с курсом обратно.
+            i.kind === 'gone' && i.publication?.id === pub.id,
+      ),
     )
     return found ? { name: found.name, handle: handleOf(found) } : null
   }
@@ -123,6 +156,8 @@ export function exportSite(root: string, base: string): ExportReport {
     const dir = path.join(root, 'p', handle)
     const headings = stepHeadings(pub.id)
     if (headings.length === 0) continue
+    /** Адреса, по которым эту страницу уже давали: идентификатор и прежние имена. */
+    const also = [pub.id, ...formerSlugs('publication', pub.id)].filter((a) => a !== handle)
 
     headings.forEach((heading, index) => {
       const step = readStep(pub.id, heading.seq)
@@ -130,7 +165,7 @@ export function exportSite(root: string, base: string): ExportReport {
       const html = renderStep({
         title: pub.title,
         publishedAt: pub.publishedAt,
-        course: courseOf(pub.sessionId),
+        course: courseOf(pub),
         steps: headings,
         step,
         // Первый шаг — корень публикации, остальные лежат на шаг глубже.
@@ -143,6 +178,16 @@ export function exportSite(root: string, base: string): ExportReport {
           : path.join(dir, String(heading.seq), 'index.html'),
         html,
       )
+      // Тот же долг, что и у курса: и идентификатор, и прежнее имя переживают новое.
+      for (const was of also) {
+        const to = index === 0 ? `${base}/p/${handle}/` : `${base}/p/${handle}/${heading.seq}/`
+        write(
+          index === 0
+            ? path.join(root, 'p', was, 'index.html')
+            : path.join(root, 'p', was, String(heading.seq), 'index.html'),
+          renderRedirect(to, pub.title),
+        )
+      }
     })
 
     // Картинки — один раз на публикацию, по хэшу: он же и есть их версия.

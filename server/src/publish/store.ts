@@ -41,6 +41,72 @@ function newId(): string {
 const clip = (value: unknown, max: number): string =>
   typeof value === 'string' ? value.trim().slice(0, max) : ''
 
+/* ----------------------------------------------------------------- адреса */
+
+/**
+ * Адреса, по которым страницу уже кому-то дали.
+ *
+ * Имя в адресе можно поменять, а розданную ссылку — нет: она записана в чате
+ * группы, в чьих-то закладках и на доске. Адрес по идентификатору переживает
+ * появление имени сам собой (`WHERE id = ? OR slug = ?`), а прежнее имя
+ * помнить негде — после переименования оно превращалось в 404 и на сайте, и на
+ * живом сервере.
+ *
+ * Снятие страницы адрес не отменяет: ссылка обязана сказать «её сняли», а не
+ * «такой страницы здесь нет». Адреса забываются вместе со строкой — в
+ * `deleteCourse` и `deletePublication`, когда указывать больше некуда.
+ *
+ * Таблица заводится здесь, а не в `db.ts`: остальные таблицы публикаций пишет
+ * только этот модуль, и третий владелец схемы — ровно то расползание, о
+ * котором сказано в шапке файла.
+ */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS publish_addresses (
+    kind  TEXT NOT NULL,
+    slug  TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    at    INTEGER NOT NULL,
+    PRIMARY KEY (kind, slug)
+  )
+`)
+
+type AddressKind = 'course' | 'publication'
+
+const rememberAddress = db.prepare(
+  'INSERT OR REPLACE INTO publish_addresses (kind, slug, owner, at) VALUES (?, ?, ?, ?)',
+)
+const forgetAddress = db.prepare('DELETE FROM publish_addresses WHERE kind = ? AND slug = ?')
+const forgetAddressesOf = db.prepare('DELETE FROM publish_addresses WHERE kind = ? AND owner = ?')
+const selectAddressOwner = db.prepare(
+  'SELECT owner FROM publish_addresses WHERE kind = ? AND slug = ?',
+)
+const selectAddresses = db.prepare(
+  'SELECT slug FROM publish_addresses WHERE kind = ? AND owner = ? ORDER BY at',
+)
+
+/**
+ * Имя сменили: старое остаётся адресом, а новое перестаёт быть чьим-то старым.
+ *
+ * Живое имя всегда главнее прежнего — иначе по одному адресу лежали бы и
+ * страница, и указатель на чужую.
+ */
+function moveAddress(kind: AddressKind, id: string, was: string | null, now: string | null): void {
+  if (was === now) return
+  if (was) rememberAddress.run(kind, was, id, Date.now())
+  if (now) forgetAddress.run(kind, now)
+}
+
+/** Кому принадлежал этот адрес раньше. */
+function addressOwner(kind: AddressKind, slug: string): string | null {
+  const row = selectAddressOwner.get(kind, slug) as { owner: string } | undefined
+  return row ? row.owner : null
+}
+
+/** Прежние имена — по ним выгрузка кладёт указатели на нынешний адрес. */
+export function formerSlugs(kind: AddressKind, id: string): string[] {
+  return (selectAddresses.all(kind, id) as { slug: string }[]).map((row) => row.slug)
+}
+
 /* ------------------------------------------------------------------ курсы */
 
 interface CourseRow {
@@ -115,7 +181,10 @@ export function getCourse(id: string): Course | null {
 /** Курс по адресу — имени или идентификатору. Оба ведут в одно место. */
 export function findCourse(handle: string): Course | null {
   const row = selectCourseByAny.get(handle, handle) as CourseRow | undefined
-  return row ? toCourse(row) : null
+  if (row) return toCourse(row)
+  // И по прежнему имени: ссылку, розданную под ним, переименование не отменяет.
+  const was = addressOwner('course', handle)
+  return was ? getCourse(was) : null
 }
 
 /**
@@ -126,11 +195,13 @@ export function findCourse(handle: string): Course | null {
  * дали.
  */
 export function setCourseSlug(id: string, slug: string | null): 'ok' | 'taken' {
+  const current = getCourse(id)
   if (slug !== null) {
     const owner = findCourse(slug)
     if (owner && owner.id !== id) return 'taken'
   }
   updateCourseSlug.run(slug, id)
+  moveAddress('course', id, current?.slug ?? null, slug)
   return 'ok'
 }
 
@@ -164,6 +235,8 @@ export function setCourseItems(id: string, rev: number, items: CourseItem[]): Co
 
 export function deleteCourse(id: string): void {
   deleteCourseRow.run(id)
+  // Адреса удалённого курса освобождаются: указывать им больше некуда.
+  forgetAddressesOf.run('course', id)
 }
 
 /**
@@ -172,14 +245,46 @@ export function deleteCourse(id: string): void {
  * Строка остаётся с именем и датой: курс, из которого молча пропала четвёртая
  * неделя, сломан для того, кто на ней сидел, а нумерация остальных уезжает и
  * перестаёт совпадать с расписанием.
+ *
+ * И с ссылкой на чтение, если его оставили. Удаление комнаты по умолчанию
+ * сохраняет страницу — ссылку у студентов не отозвать, — но `session_id` у неё
+ * при этом обнуляется, и надгробие без этой ссылки становилось тупиком:
+ * страница открывается по прямому адресу, а с курса до неё не дойти. Ссылку
+ * кладёт в строку `orphanPublication`, пока связь ещё есть; если её там нет,
+ * ищем сами — семинар могли похоронить и при живой странице.
  */
 export function entombSeminar(sessionId: string, name: string): void {
+  const live = publicationOf(sessionId)
   for (const course of listCourses()) {
     let touched = false
     const items = course.items.map((item) => {
       if (item.kind !== 'seminar' || item.sessionId !== sessionId) return item
       touched = true
-      return { kind: 'gone' as const, name, at: Date.now() }
+      const link = item.publication ?? live
+      return {
+        kind: 'gone' as const,
+        name,
+        at: Date.now(),
+        publication: link ? { id: link.id, slug: link.slug } : null,
+      }
+    })
+    if (touched) setCourseItems(course.id, course.rev, items)
+  }
+}
+
+/**
+ * Убрать из надгробий ссылку на страницу, которой больше нет.
+ *
+ * Публикацию можно удалить совсем — и тогда строка курса, обещающая «страница
+ * осталась», обещает 404.
+ */
+export function forgetPublicationInCourses(pubId: string): void {
+  for (const course of listCourses()) {
+    let touched = false
+    const items = course.items.map((item) => {
+      if (item.kind !== 'gone' || item.publication?.id !== pubId) return item
+      touched = true
+      return { kind: 'gone' as const, name: item.name, at: item.at, publication: null }
     })
     if (touched) setCourseItems(course.id, course.rev, items)
   }
@@ -229,6 +334,7 @@ const selectPub = db.prepare('SELECT * FROM publications WHERE id = ?')
 const selectPubByAny = db.prepare('SELECT * FROM publications WHERE id = ? OR slug = ? LIMIT 1')
 const updatePubSlug = db.prepare('UPDATE publications SET slug = ? WHERE id = ?')
 const selectPubForSession = db.prepare('SELECT * FROM publications WHERE session_id = ?')
+const selectPubs = db.prepare('SELECT * FROM publications ORDER BY published_at DESC')
 const insertPub = db.prepare(`
   INSERT INTO publications (id, session_id, title, state, published_at, published_by, revision)
   VALUES (@id, @session_id, @title, 'published', @published_at, @published_by, 1)
@@ -249,9 +355,22 @@ const insertStep = db.prepare(`
   INSERT INTO publication_steps (pub, seq, ord, label, at, page)
   VALUES (@pub, @seq, @ord, @label, @at, @page)
 `)
+/*
+ * Заголовки без самой страницы.
+ *
+ * `page` — это все текстовые выводы шага целиком: лог обучения, трейсбеки,
+ * таблицы в text/html. Читать и разбирать их ради одного числа приходилось на
+ * каждый публичный запрос курса, в том самом процессе, который в эту минуту
+ * ведёт занятие. Длину массива считает SQLite; `json_valid` — на случай строки,
+ * записанной не нами: испорченная страница должна дать ноль, а не ошибку
+ * запроса.
+ */
 const selectHeadings = db.prepare(`
-  SELECT seq, label, at, page FROM publication_steps WHERE pub = ? ORDER BY ord
+  SELECT seq, label, at,
+         CASE WHEN json_valid(page) THEN json_array_length(page) ELSE 0 END AS cell_count
+  FROM publication_steps WHERE pub = ? ORDER BY ord
 `)
+const countSteps = db.prepare('SELECT COUNT(*) AS n FROM publication_steps WHERE pub = ?')
 const selectStep = db.prepare(
   'SELECT seq, label, at, page FROM publication_steps WHERE pub = ? AND seq = ?',
 )
@@ -270,24 +389,39 @@ export function getPublication(id: string): Publication | null {
   return row ? toPublication(row) : null
 }
 
-/** Публикация по адресу — имени или идентификатору. */
+/** Публикация по адресу — имени, идентификатору или прежнему имени. */
 export function findPublication(handle: string): Publication | null {
   const row = selectPubByAny.get(handle, handle) as PublicationRow | undefined
-  return row ? toPublication(row) : null
+  if (row) return toPublication(row)
+  const was = addressOwner('publication', handle)
+  return was ? getPublication(was) : null
 }
 
 export function setPublicationSlug(id: string, slug: string | null): 'ok' | 'taken' {
+  const current = getPublication(id)
   if (slug !== null) {
     const owner = findPublication(slug)
     if (owner && owner.id !== id) return 'taken'
   }
   updatePubSlug.run(slug, id)
+  moveAddress('publication', id, current?.slug ?? null, slug)
   return 'ok'
 }
 
 export function publicationOf(sessionId: string): Publication | null {
   const row = selectPubForSession.get(sessionId) as PublicationRow | undefined
   return row ? toPublication(row) : null
+}
+
+/**
+ * Все страницы, включая те, за которыми уже нет комнаты.
+ *
+ * Осиротевшая публикация не находится больше ни по одному адресу панели:
+ * семинара нет, а маршруты снятия ключуются его идентификатором. Без этого
+ * списка снять такую страницу можно было только правкой базы руками.
+ */
+export function listPublications(): Publication[] {
+  return (selectPubs.all() as PublicationRow[]).map(toPublication)
 }
 
 export interface BuiltStep {
@@ -347,8 +481,35 @@ export function setPublicationState(id: string, state: PublicationState): void {
   setPubState.run(state, id)
 }
 
-/** Семинар удалили, а чтение решили оставить. */
+/**
+ * Семинар удалили, а чтение решили оставить.
+ *
+ * Ссылка на страницу перекладывается в строки курсов ДО того, как связь с
+ * комнатой исчезнет: `session_id` сейчас обнулится, и найти страницу по
+ * семинару станет нечем. Дальше строку заменит надгробие, и ссылка останется
+ * в нём — иначе курс, единственный адрес, который дают классу, ведёт в тупик.
+ */
 export function orphanPublication(sessionId: string): void {
+  const pub = publicationOf(sessionId)
+  if (pub) {
+    for (const course of listCourses()) {
+      let touched = false
+      const items = course.items.map((item) => {
+        if (item.kind !== 'seminar' || item.sessionId !== sessionId) return item
+        touched = true
+        return {
+          ...item,
+          publication: {
+            id: pub.id,
+            slug: pub.slug,
+            publishedAt: pub.publishedAt,
+            steps: stepCount(pub.id),
+          },
+        }
+      })
+      if (touched) setCourseItems(course.id, course.rev, items)
+    }
+  }
   orphanPub.run(Date.now(), sessionId)
 }
 
@@ -358,7 +519,10 @@ export function deletePublication(id: string): void {
     clearSteps.run(id)
     clearBlobs.run(id)
     deletePubRow.run(id)
+    forgetAddressesOf.run('publication', id)
   })()
+  // Надгробие в курсе обещало «страница осталась» — теперь не осталась.
+  forgetPublicationInCourses(id)
 }
 
 interface StepRow {
@@ -366,6 +530,13 @@ interface StepRow {
   label: string
   at: number
   page: string
+}
+
+interface HeadingRow {
+  seq: number
+  label: string
+  at: number
+  cell_count: number
 }
 
 function parsePage(row: StepRow): PublicCell[] {
@@ -378,12 +549,17 @@ function parsePage(row: StepRow): PublicCell[] {
 }
 
 export function stepHeadings(pub: string): StepHeading[] {
-  return (selectHeadings.all(pub) as StepRow[]).map((row) => ({
+  return (selectHeadings.all(pub) as HeadingRow[]).map((row) => ({
     seq: row.seq,
     label: row.label,
     at: row.at,
-    cellCount: parsePage(row).length,
+    cellCount: row.cell_count,
   }))
+}
+
+/** Сколько шагов — там, где нужно только число. */
+export function stepCount(pub: string): number {
+  return Number((countSteps.get(pub) as { n: number }).n)
 }
 
 export function readStep(pub: string, seq: number | null): BuiltStep | null {

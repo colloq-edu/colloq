@@ -116,7 +116,21 @@ function readCookieHeader(header: string | undefined, name: string): string | nu
     const eq = part.indexOf('=')
     if (eq < 0) continue
     if (part.slice(0, eq).trim() !== name) continue
-    return decodeURIComponent(part.slice(eq + 1).trim())
+    const raw = part.slice(eq + 1).trim()
+    /*
+     * Кривая печенька — это не печенька, а не повод бросить исключение.
+     *
+     * `decodeURIComponent('%')` бросает URIError, и здесь это стоило процесса:
+     * ту же функцию зовёт разбор роли на рукопожатии сокета, где никакого
+     * try/catch над колбэком нет, — так что `Cookie: colloq_staff=%` от любого
+     * участника доходил до uncaughtException и клал весь инстанс со всеми
+     * комнатами. Значение всё равно обязано быть подписью, которая не сойдётся.
+     */
+    try {
+      return decodeURIComponent(raw)
+    } catch {
+      return raw
+    }
   }
   return null
 }
@@ -124,13 +138,25 @@ function readCookieHeader(header: string | undefined, name: string): string | nu
 /**
  * Secure would make the cookie undeliverable on a self-hosted http instance.
  *
- * Функция, а не константа: PUBLIC_URL теперь перечитывается — `make host`
- * поднимает туннель и опускает его, не перезапуская сервер, — и печенье,
- * выданное с чужим признаком, либо не доедет по https, либо не поставится по
- * http. Считать его надо в момент выдачи, а не в момент запуска.
+ * По схеме ЭТОГО запроса, а не по PUBLIC_URL. Считалось по PUBLIC_URL, и пока
+ * `make host` держит туннель, вход с айпада по адресу вида http://192.168.1.5
+ * выдавал печенье с Secure: браузер его молча не сохранял, панель мелькала и
+ * тут же отвечала 401 — экран входа без единого слова о причине. Тот же
+ * неверный признак попадал и в clearCookie, то есть в обратном случае выход из
+ * панели её не удалял. PUBLIC_URL остаётся тем, чем и был, — адресом для ссылок.
+ *
+ * `res.req`, а не отдельный параметр: печенье выдают шесть маршрутов и три
+ * стенда, а express кладёт запрос на ответ сам. Подделка без него (тесты,
+ * скрипты) читается как http — там его и нет.
  */
-function secureCookie(): boolean {
-  return config.publicUrl.startsWith('https')
+function secureCookie(res: Response): boolean {
+  const req = res.req as Request | undefined
+  if (!req) return false
+  if (req.secure) return true
+  // За ретранслятором сервер видит http всегда — https знает только caddy, и
+  // говорит об этом единственным способом, который у него есть.
+  const forwarded = req.get?.('x-forwarded-proto') ?? ''
+  return forwarded.split(',')[0].trim().toLowerCase() === 'https'
 }
 
 export function issueStaffCookie(res: Response, teacher: Teacher): void {
@@ -143,13 +169,18 @@ export function issueStaffCookie(res: Response, teacher: Teacher): void {
     sameSite: 'lax',
     path: '/',
     maxAge: COOKIE_MAX_AGE_MS,
-    secure: secureCookie(),
+    secure: secureCookie(res),
   })
 }
 
 export function clearStaffCookie(res: Response): void {
   // The attributes must match the ones it was set with or the browser keeps it.
-  res.clearCookie(STAFF_COOKIE, { httpOnly: true, sameSite: 'lax', path: '/', secure: secureCookie() })
+  res.clearCookie(STAFF_COOKIE, {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/',
+    secure: secureCookie(res),
+  })
 }
 
 export function currentStaff(req: Request): Teacher | null {
@@ -217,10 +248,29 @@ export function sameOrigin(req: Request, res: Response, next: NextFunction): voi
     return deny(res, 403, 'forbidden', 'that request came from somewhere this server does not serve')
   }
   // req.host отбрасывает порт, а он здесь значимый: 5173 и 8080 — разные сайты.
-  if (host !== req.get('host')) {
+  if (host !== req.get('host') && !(thisMachine(host) && thisMachine(req.get('host') ?? ''))) {
     return deny(res, 403, 'forbidden', 'that request came from somewhere this server does not serve')
   }
   next()
+}
+
+/**
+ * Два адреса на этой же машине — это `npm run dev`, а не чужой сайт.
+ *
+ * Страницу в разработке отдаёт Vite со своего порта, а его прокси переписывает
+ * Host на адрес сервера (changeOrigin) — сравнивать после этого нечего, и
+ * панель отвечала 403 на КАЖДУЮ запись, включая сам вход: в dev-сборке в неё
+ * нельзя было попасть вовсе, хотя README обещает работу через прокси.
+ *
+ * Уступка тут ровно нулевая: для браузера localhost:5173 и localhost:3000 —
+ * один сайт (SameSite смотрит на имя, а не на порт), так что печенье с `lax`
+ * и без этой строки поехало бы с таким запросом. Настоящий инстанс живёт на
+ * имени или на адресе в сети, и для него правило прежнее.
+ */
+const LOOPBACK = /^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\])$/i
+
+function thisMachine(hostPort: string): boolean {
+  return LOOPBACK.test(hostPort.replace(/:\d+$/, ''))
 }
 
 export function requireStaff(req: Request, res: Response, next: NextFunction): void {

@@ -19,7 +19,7 @@
 import { createHash } from 'node:crypto'
 import * as Y from 'yjs'
 import { readNotebook, type CellOutput, type CellSnapshot } from '@shared/notebook'
-import { BLOB_MIN_BYTES, BLOB_PREFIX, type PublicCell } from '@shared/publish'
+import { BLOB_MIMES, BLOB_MIN_BYTES, BLOB_PREFIX, type PublicCell } from '@shared/publish'
 import { updatesUpTo } from '../db.js'
 
 /** Крупные куски выводов, вынесенные по хэшу. Наполняется по ходу сборки. */
@@ -53,13 +53,16 @@ export function newBlobBag(): BlobBag {
  * Крупное содержимое уезжает в отдельную запись: график matplotlib — это
  * base64 на сотни килобайт, одинаковый во всех шагах, где его ячейка не
  * менялась. Шесть шагов давали бы шесть копий одной картинки.
+ *
+ * Уезжает только то, что перечислено в `BLOB_MIMES`: запись хранит
+ * раскодированные байты, а `image/svg+xml` — это XML-текст, а не base64.
  */
 function projectOutput(output: CellOutput, blobs: BlobBag): CellOutput {
   if (output.kind !== 'data') return output
   const data: Record<string, string> = {}
   for (const [mime, value] of Object.entries(output.data)) {
     data[mime] =
-      typeof value === 'string' && value.length >= BLOB_MIN_BYTES && mime.startsWith('image/')
+      typeof value === 'string' && value.length >= BLOB_MIN_BYTES && BLOB_MIMES.has(mime)
         ? blobs.put(mime, value)
         : value
   }

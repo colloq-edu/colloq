@@ -42,11 +42,12 @@ import {
   listCourses,
   orphanPublication,
   publicationOf,
-  stepHeadings,
+  stepCount,
 } from '../publish/store.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { listFiles, sessionDir } from '../workspace.js'
+import type { Course } from '@shared/publish'
 import {
   ENVIRONMENT_NAME,
   LIMITS,
@@ -118,16 +119,29 @@ export function setSeminarCreator(sessionId: string, createdBy: string): void {
  * A live room is read from the doc that is already there; everything else is
  * decoded from its stored snapshot, which for a room with nobody in it is what
  * the next visitor would load anyway.
+ *
+ * И пересчитывается, только когда снимок изменился. Список запрашивается при
+ * каждой смене вкладки и раз в двадцать секунд на экране семинаров, а
+ * декодирование чужой тетради с картинками — это миллисекунды блокировки того
+ * же цикла событий, который обслуживает CRDT живых комнат. Ключ — отметка
+ * времени снимка: поменяться ей неоткуда, кроме записи снимка.
  */
+const cellCounts = new Map<string, { at: number; count: number }>()
+const snapshotStamp = db.prepare('SELECT updated_at FROM doc_snapshots WHERE session_id = ?')
+
 function cellCount(sessionId: string, live: boolean): number {
   try {
     if (live) return getCells(getSessionDoc(sessionId).doc).length
+    const at = (snapshotStamp.get(sessionId) as { updated_at: number } | undefined)?.updated_at ?? 0
+    const cached = cellCounts.get(sessionId)
+    if (cached && cached.at === at) return cached.count
     const snapshot = loadDocSnapshot(sessionId)
     if (!snapshot) return 0
     const doc = new Y.Doc()
     Y.applyUpdate(doc, snapshot)
     const count = getCells(doc).length
     doc.destroy()
+    cellCounts.set(sessionId, { at, count })
     return count
   } catch {
     // A card with a zero on it is better than a list that will not load.
@@ -135,10 +149,29 @@ function cellCount(sessionId: string, live: boolean): number {
   }
 }
 
-/** listFiles, not a bare readdir: the number on the card has to be the number the Files panel shows. */
+/**
+ * listFiles, not a bare readdir: the number on the card has to be the number the
+ * Files panel shows.
+ *
+ * И тоже по отметке времени, а не обходом на каждую строку. `listFiles` читает
+ * комнату целиком — readdir и lstat на каждую запись, до двух тысяч, синхронно
+ * и в том же цикле событий, что обслуживает живые комнаты, — а список
+ * запрашивается при каждой смене вкладки и раз в двадцать секунд. Ключ — mtime
+ * корня комнаты: туда падают и загрузки, и удаления, и всё, что ядро кладёт
+ * рядом с тетрадью. Файл, записанный вглубь подпапки, оставит на карточке
+ * прежнее число до следующего изменения корня — это число на карточке, а не
+ * список файлов.
+ */
+const fileCounts = new Map<string, { at: number; count: number }>()
+
 function fileCount(sessionId: string): number {
   try {
-    return listFiles(sessionId).filter((entry) => !entry.dir).length
+    const at = fs.statSync(sessionDir(sessionId)).mtimeMs
+    const cached = fileCounts.get(sessionId)
+    if (cached && cached.at === at) return cached.count
+    const count = listFiles(sessionId).filter((entry) => !entry.dir).length
+    fileCounts.set(sessionId, { at, count })
+    return count
   } catch {
     return 0
   }
@@ -150,7 +183,7 @@ function statusOf(liveCount: number, totalParticipants: number): SeminarStatus {
   return totalParticipants === 0 ? 'draft' : 'ended'
 }
 
-function toSeminar(row: SeminarRow): AdminSeminar {
+function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
   // Open collab sockets, which is the only "who is here right now" the server
   // actually holds (collab/index.ts). A second tab counts twice; the control
   // socket keeps no per-session tally to cross-check against.
@@ -176,15 +209,25 @@ function toSeminar(row: SeminarRow): AdminSeminar {
     archivedAt: row.archived_at,
     rules: getRules(row.id),
     publication: publication
-      ? { id: publication.id, state: publication.state, steps: stepHeadings(publication.id).length }
+      ? {
+          id: publication.id,
+          slug: publication.slug,
+          state: publication.state,
+          steps: stepCount(publication.id),
+        }
       : null,
-    courses: coursesWith(row.id),
+    courses: coursesWith(row.id, courses),
   }
 }
 
-/** Курсы, в которых состоит семинар. Строка списка показывает их ссылками. */
-function coursesWith(sessionId: string): { id: string; name: string }[] {
-  return listCourses()
+/**
+ * Курсы, в которых состоит семинар. Строка списка показывает их ссылками.
+ *
+ * Список курсов передаётся, а не запрашивается заново: на семестре в шестьдесят
+ * семинаров это было шестьдесят одинаковых чтений на один ответ.
+ */
+function coursesWith(sessionId: string, courses: Course[]): { id: string; name: string }[] {
+  return courses
     .filter((course) =>
       course.items.some((item) => item.kind === 'seminar' && item.sessionId === sessionId),
     )
@@ -229,7 +272,8 @@ export function adminInstanceRoutes(): Router {
 
   router.get('/api/admin/seminars', requireStaff, (_req, res) => {
     const rows = selectSeminars.all() as SeminarRow[]
-    res.json(rows.map(toSeminar))
+    const courses = listCourses()
+    res.json(rows.map((row) => toSeminar(row, courses)))
   })
 
   router.post('/api/admin/seminars', requireStaff, (req, res) => {
@@ -374,6 +418,8 @@ export function adminInstanceRoutes(): Router {
         forgetCache(row.id)
         // Правила той же комнаты лежат в памяти — забыть вместе с ней.
         forgetRules(row.id)
+        cellCounts.delete(row.id)
+        fileCounts.delete(row.id)
         /*
          * Опубликованная страница — отдельный предмет, и её судьба спрашивается
          * отдельно. Она собрана целиком и лежит своими строками: за ней не

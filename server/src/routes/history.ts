@@ -10,10 +10,10 @@ import { Router, type Request, type Response } from 'express'
 import type { CellDiff, Version, VersionKind } from '@shared/history'
 import { sessionAuth } from './sessions.js'
 import { allows } from '@shared/rules'
-import { getSessionDoc } from '../collab/index.js'
+import { cellsWithCarets, getSessionDoc } from '../collab/index.js'
 import { cellsAt, cellsOf, mark, restoreInto } from '../collab/history.js'
 import { diffLines } from '@shared/diff'
-import { getParticipant, getRules, getVersion, listVersions, getSession } from '../db.js'
+import { getParticipant, getRules, getVersion, listStoryVersions, getSession } from '../db.js'
 
 /**
  * Everyone in the room may read the history — the notebook is shared, so who
@@ -50,20 +50,29 @@ function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
   return payload
 }
 
-/** The timeline is read whole; a seminar that produced more than this is an outlier. */
+/**
+ * The timeline is read whole; a seminar that produced more than this is an outlier.
+ *
+ * Столько же берётся и названных моментов, отдельным окном: чекпоинт нельзя
+ * вытеснить правками (см. listStoryVersions).
+ */
 const MAX_VERSIONS = 400
 
-function toVersion(sessionId: string, row: {
-  seq: number
-  kind: string
-  author_id: string | null
-  created_at: number
-  label: string | null
-  summary: string
-  added: number
-  removed: number
-  cells: string
-}): Version {
+function toVersion(
+  sessionId: string,
+  row: {
+    seq: number
+    kind: string
+    author_id: string | null
+    created_at: number
+    label: string | null
+    summary: string
+    added: number
+    removed: number
+    cells: string
+    target_seq: number | null
+  },
+): Version {
   const person = row.author_id ? getParticipant(sessionId, row.author_id) : null
   return {
     seq: row.seq,
@@ -77,6 +86,7 @@ function toVersion(sessionId: string, row: {
     added: row.added,
     removed: row.removed,
     cells: JSON.parse(row.cells) as string[],
+    targetSeq: row.target_seq,
   }
 }
 
@@ -109,14 +119,21 @@ export function historyRoutes(): Router {
      * through the door would have done anyway.
      */
     getSessionDoc(sessionId)
-    const rows = listVersions(sessionId, MAX_VERSIONS)
-    // Keyframes are bookkeeping — full-document rows written every so often so
-    // that rebuilding is cheap. They are not something anybody did.
-    const versions = rows
-      // Two kinds are bookkeeping, not story: the keyframe is a snapshot the
-      // replay starts from, the quiet row is bytes the replay must not skip.
-      .filter((r) => r.kind !== 'keyframe' && r.kind !== 'quiet')
-      .map((r) => toVersion(sessionId, r))
+    /*
+     * Служебные строки отсеивает SQL, а не этот обработчик.
+     *
+     * Два вида — бухгалтерия, а не история: keyframe, с которого начинается
+     * повтор, и quiet, байты которого повтору нельзя пропустить. Пока окно в
+     * четыреста строк резалось до фильтра, их было столько, что окно уходило
+     * на них целиком: пара с работающими ячейками писала тихую строку каждые
+     * несколько секунд, и панель показывала горстку правок или пустоту — при
+     * сотне правок и чекпоинте «до упражнения» в базе.
+     *
+     * И названные моменты запрос берёт своим окном: даже из одних правок
+     * четыреста строк на активной паре набираются за час, а чекпоинт ставят,
+     * чтобы к нему вернуться в конце.
+     */
+    const versions = listStoryVersions(sessionId, MAX_VERSIONS).map((r) => toVersion(sessionId, r))
 
     res.json({ versions })
   })
@@ -163,48 +180,58 @@ export function historyRoutes(): Router {
    * once, and because it is an edit it is itself a version, so a restore can be
    * undone by restoring what came before it.
    */
-  router.post(
-    '/api/sessions/:id/history/:seq/restore',
-    (req: Request, res: Response) => {
-      const identity = whoever(req, res)
-      if (!identity) return
-      if (identity.role !== 'host') {
-        return res.status(403).json({ error: 'only the host can restore a version' })
-      }
-      const sessionId = req.params.id
-      const seq = Number(req.params.seq)
-      const row = getVersion(sessionId, seq)
-      if (!row) return res.status(404).json({ error: 'no such version' })
+  router.post('/api/sessions/:id/history/:seq/restore', (req: Request, res: Response) => {
+    const identity = whoever(req, res)
+    if (!identity) return
+    if (identity.role !== 'host') {
+      return res.status(403).json({ error: 'only the host can restore a version' })
+    }
+    const sessionId = req.params.id
+    const seq = Number(req.params.seq)
+    const row = getVersion(sessionId, seq)
+    if (!row) return res.status(404).json({ error: 'no such version' })
 
-      const onlyCell = typeof req.body?.cellId === 'string' ? req.body.cellId : null
-      const { doc } = getSessionDoc(sessionId)
-      const stamp = new Date(row.created_at)
-      const at = `${String(stamp.getHours()).padStart(2, '0')}:${String(stamp.getMinutes()).padStart(2, '0')}`
+    const onlyCell = typeof req.body?.cellId === 'string' ? req.body.cellId : null
+    const { doc } = getSessionDoc(sessionId)
+    /*
+     * Время здесь не собирается. Сервер форматировал его по своему поясу — в
+     * образе node это UTC, — а строки ленты рисует браузер по своему: в
+     * аудитории UTC+3 подпись «restored the version from 15:04» указывала на
+     * строку, которой в списке нет. Версия называется адресом (`targetSeq`),
+     * а часы рисует тот, кто смотрит.
+     */
+    const changed = restoreInto(
+      sessionId,
+      doc,
+      seq,
+      identity.participantId,
+      onlyCell,
+      // Кто сейчас печатает — перестановке ячеек: подвинуть ячейку она может
+      // только пересоздав её клоном, а клон уносит нажатия, ушедшие в старый
+      // `Y.Text` за круг до сервера. Где выбор есть, останется та, где курсор.
+      cellsWithCarets(doc),
+    )
 
-      const changed = restoreInto(sessionId, doc, seq, identity.participantId, onlyCell, at)
-
-      res.json({ restored: changed })
-    },
-  )
+    res.json({ restored: changed })
+  })
 
   /** Name this moment, so it can be found later without reading the whole list. */
-  router.post(
-    '/api/sessions/:id/history/checkpoint',
-    (req: Request, res: Response) => {
-      const identity = whoever(req, res)
-      if (!identity) return
-      if (identity.role !== 'host') {
-        return res.status(403).json({ error: 'only the host can set a checkpoint' })
-      }
-      const sessionId = req.params.id
-      const label = String(req.body?.label ?? '').trim().slice(0, 80)
-      if (!label) return res.status(400).json({ error: 'a checkpoint needs a name' })
+  router.post('/api/sessions/:id/history/checkpoint', (req: Request, res: Response) => {
+    const identity = whoever(req, res)
+    if (!identity) return
+    if (identity.role !== 'host') {
+      return res.status(403).json({ error: 'only the host can set a checkpoint' })
+    }
+    const sessionId = req.params.id
+    const label = String(req.body?.label ?? '')
+      .trim()
+      .slice(0, 80)
+    if (!label) return res.status(400).json({ error: 'a checkpoint needs a name' })
 
-      const { doc } = getSessionDoc(sessionId)
-      const seq = mark(sessionId, doc, 'checkpoint', identity.participantId, label, label)
-      res.status(201).json({ seq, cells: cellsOf(doc).length })
-    },
-  )
+    const { doc } = getSessionDoc(sessionId)
+    const seq = mark(sessionId, doc, 'checkpoint', identity.participantId, label, label)
+    res.status(201).json({ seq, cells: cellsOf(doc).length })
+  })
 
   return router
 }

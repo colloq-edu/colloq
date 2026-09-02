@@ -8,10 +8,11 @@
  * ограничения частоты.
  */
 import { Router, type Request, type Response } from 'express'
-import { requireStaff, currentStaff } from '../admin/auth.js'
+import { ownerOnly, requireStaff, currentStaff } from '../admin/auth.js'
 import { getSession, renameSession } from '../db.js'
 import { getSessionDoc } from '../collab/index.js'
 import {
+  BLOB_MIMES,
   MAX_COURSE_BLURB,
   MAX_COURSE_NAME,
   MAX_STEPS,
@@ -27,11 +28,13 @@ import { notebookOf } from '../publish/notebook.js'
 import {
   createCourse,
   deleteCourse,
+  deletePublication,
   getCourse,
   findCourse,
   findPublication,
   getPublication,
   listCourses,
+  listPublications,
   publicationOf,
   readBlob,
   readStep,
@@ -40,6 +43,7 @@ import {
   setCourseSlug,
   setPublicationSlug,
   setPublicationState,
+  stepCount,
   stepHeadings,
   writePublication,
   type BuiltStep,
@@ -54,7 +58,18 @@ function bad(res: Response, message: string): void {
 
 /** Курс с живыми именами семинаров: имя могли поменять после добавления. */
 function freshItems(items: CourseItem[]): CourseItem[] {
-  return items.map((item) => {
+  return items.map((item): CourseItem => {
+    /*
+     * У надгробия ссылка на оставшееся чтение — но страницу могли снять уже
+     * после удаления комнаты, и тогда вести на неё некуда.
+     */
+    if (item.kind === 'gone') {
+      if (!item.publication) return item
+      const pub = getPublication(item.publication.id)
+      return pub && pub.state === 'published'
+        ? { ...item, publication: { id: pub.id, slug: pub.slug } }
+        : { kind: 'gone', name: item.name, at: item.at, publication: null }
+    }
     if (item.kind !== 'seminar') return item
     const session = getSession(item.sessionId)
     if (!session) return item
@@ -69,7 +84,7 @@ function freshItems(items: CourseItem[]): CourseItem[] {
               id: pub.id,
               slug: pub.slug,
               publishedAt: pub.publishedAt,
-              steps: stepHeadings(pub.id).length,
+              steps: stepCount(pub.id),
             }
           : null,
     }
@@ -140,10 +155,27 @@ export function courseRoutes(): Router {
         continue
       }
       if (raw?.kind === 'gone') {
+        /*
+         * Ссылка на оставшееся чтение переживает перестановку строк.
+         *
+         * Не прислали — берём из того, что уже записано: экран, который про эту
+         * ссылку ничего не знает, иначе стирал бы её первым же сохранением
+         * курса, и надгробие снова становилось тупиком.
+         */
+        const name = str(raw.name, MAX_COURSE_NAME)
+        const at = Number(raw.at) || Date.now()
+        const sent = raw.publication as { id?: unknown } | null | undefined
+        const known = course.items.find((i) => i.kind === 'gone' && i.name === name && i.at === at)
+        const id =
+          typeof sent?.id === 'string'
+            ? sent.id
+            : (known?.kind === 'gone' && known.publication?.id) || null
+        const pub = id ? getPublication(id) : null
         items.push({
           kind: 'gone',
-          name: str(raw.name, MAX_COURSE_NAME),
-          at: Number(raw.at) || Date.now(),
+          name,
+          at,
+          publication: pub ? { id: pub.id, slug: pub.slug } : null,
         })
         continue
       }
@@ -278,6 +310,52 @@ export function courseRoutes(): Router {
     res.json({ ok: true })
   })
 
+  /**
+   * Страницы, ключом которым служит их собственный адрес.
+   *
+   * Удаление семинара по умолчанию оставляет чтение и обнуляет `session_id` —
+   * и все маршруты выше, ключуемые идентификатором комнаты, начинают отвечать
+   * 404. Страница при этом жива: отдаётся сервером и выкладывается на сайт
+   * каждым `make site`. Снять её было нечем, а на ней мог остаться чужой
+   * персональный вывод.
+   */
+  router.get('/api/admin/publications', requireStaff, (_req, res) => {
+    res.json({
+      publications: listPublications().map((pub) => ({
+        ...pub,
+        steps: stepCount(pub.id),
+        orphaned: pub.sessionId === null,
+      })),
+    })
+  })
+
+  router.delete('/api/admin/publications/:id', requireStaff, (req, res) => {
+    const pub = getPublication(req.params.id)
+    if (!pub) return res.status(404).json({ error: 'publication not found' })
+    setPublicationState(pub.id, 'withdrawn')
+    res.json({ ok: true })
+  })
+
+  router.post('/api/admin/publications/:id/restore', requireStaff, (req, res) => {
+    const pub = getPublication(req.params.id)
+    if (!pub) return res.status(404).json({ error: 'publication not found' })
+    setPublicationState(pub.id, 'published')
+    res.json({ ok: true })
+  })
+
+  /**
+   * Совсем: строки страницы стираются, надгробие в курсе теряет ссылку.
+   *
+   * Владельцем, как и удаление семинара: снять страницу — это одно нажатие и
+   * обратимо, а стереть её нечем отменить.
+   */
+  router.delete('/api/admin/publications/:id/forever', ownerOnly('delete a page'), (req, res) => {
+    const pub = getPublication(req.params.id)
+    if (!pub) return res.status(404).json({ error: 'publication not found' })
+    deletePublication(pub.id)
+    res.json({ ok: true })
+  })
+
   /* ---------------------------------------------------------- публично */
 
   router.get('/api/c/:id', (req, res) => {
@@ -309,8 +387,14 @@ export function courseRoutes(): Router {
   router.get('/api/p/:id', (req, res) => {
     const pub = findPublication(req.params.id)
     if (!pub) return res.status(404).json({ error: 'publication not found' })
+    // У осиротевшей страницы комнаты нет, и по `sessionId` курс не найдётся:
+    // обратно её держит надгробие. Путь наверх должен оставаться и у неё.
     const course = listCourses().find((c) =>
-      c.items.some((i) => i.kind === 'seminar' && i.sessionId === pub.sessionId),
+      c.items.some((i) =>
+        i.kind === 'seminar'
+          ? pub.sessionId !== null && i.sessionId === pub.sessionId
+          : i.kind === 'gone' && i.publication?.id === pub.id,
+      ),
     )
     const seminar: PublicSeminar = {
       id: pub.id,
@@ -368,13 +452,23 @@ export function courseRoutes(): Router {
    *
    * Хэш и есть версия, поэтому кэш вечный: страницу открывают с телефона, а
    * график на полмегабайта не должен приезжать дважды.
+   *
+   * Тип берётся не из записи, а из белого списка: mime вывода приходит из
+   * документа комнаты, то есть от кого угодно, а `content-type` решает, чем
+   * ответ будет при переходе по прямой ссылке. `image/svg+xml` — это документ,
+   * и скрипт внутри него исполнился бы на origin инстанса, с печеньем того,
+   * кто ссылку открыл. Такое и всё незнакомое уходит вложением, которое
+   * браузер не показывает; `sandbox` — на случай, если его всё-таки откроют.
    */
   router.get('/api/p/:id/blob/:hash', (req, res) => {
     const pub = findPublication(req.params.id)
     if (!pub || pub.state !== 'published') return res.status(404).end()
     const blob = readBlob(pub.id, req.params.hash)
     if (!blob) return res.status(404).end()
-    res.setHeader('content-type', blob.mime)
+    const known = BLOB_MIMES.has(blob.mime)
+    res.setHeader('content-type', known ? blob.mime : 'application/octet-stream')
+    res.setHeader('content-disposition', known ? 'inline' : 'attachment; filename="output.bin"')
+    res.setHeader('content-security-policy', "sandbox; default-src 'none'")
     res.setHeader('cache-control', 'public, max-age=31536000, immutable')
     res.send(blob.body)
   })

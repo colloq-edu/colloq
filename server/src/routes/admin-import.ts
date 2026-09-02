@@ -11,8 +11,7 @@
  * only, public repositories only, no token, one folder deep.
  */
 import fs from 'node:fs'
-import path from 'node:path'
-import { Router, type Request, type Response } from 'express'
+import { Router, type NextFunction, type Request, type Response } from 'express'
 import * as Y from 'yjs'
 import { createCell, getCells, getMeta } from '@shared/notebook'
 import { currentStaff, requireStaff } from '../admin/auth.js'
@@ -36,7 +35,8 @@ import {
   type GithubTarget,
   type RepoEntry,
 } from '../github.js'
-import { safeName, sessionDir } from '../workspace.js'
+import { safeSegment } from '@shared/paths'
+import { resolveInSession } from '../workspace.js'
 import { ENVIRONMENT_NAME, LIMITS, type AdminErrorBody } from '@shared/admin'
 
 function fail(res: Response, status: number, reason: AdminErrorBody['reason'], message: string): void {
@@ -45,6 +45,19 @@ function fail(res: Response, status: number, reason: AdminErrorBody['reason'], m
 
 /** A committed notebook can be megabytes of base64 output; the JSON still parses. */
 const MAX_NOTEBOOK = 25 * 1024 * 1024
+
+/**
+ * Отклонённое обещание — в обработчик ошибок, а не в пустоту.
+ *
+ * Express 4 не знает про async: брошенное после первого `await` не доходит до
+ * error-middleware вовсе, `unhandledRejection` пишет строку в журнал, а запрос
+ * не отвечает никогда — превью крутится, пока браузер не сдастся.
+ */
+const wrap =
+  (handler: (req: Request, res: Response) => Promise<void>) =>
+  (req: Request, res: Response, next: NextFunction): void => {
+    handler(req, res).catch(next)
+  }
 
 export function adminImportRoutes(): Router {
   const router = Router()
@@ -56,31 +69,35 @@ export function adminImportRoutes(): Router {
    * anything is created. A teacher pasting a folder link wants to see "twelve
    * cells and train.csv" before a room exists, not after.
    */
-  router.post('/api/admin/import/preview', requireStaff, async (req: Request, res: Response) => {
-    const target = parseGithubUrl(String(req.body?.url ?? ''))
-    if (!target) {
-      return fail(
-        res,
-        400,
-        'invalid',
-        'That is not a GitHub link. Paste the address of a notebook or of the week\'s folder.',
-      )
-    }
-    try {
-      const plan = await planFor(target)
-      res.json({
-        name: seminarNameFor(plan.notebookTarget ?? target),
-        notebook: plan.notebookName,
-        cells: plan.cells.length,
-        files: plan.files.map((f) => ({ name: f.name, size: f.size })),
-        source: `${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}`,
-      })
-    } catch (err) {
-      fail(res, 400, 'invalid', err instanceof Error ? err.message : 'Could not read that link.')
-    }
-  })
+  router.post(
+    '/api/admin/import/preview',
+    requireStaff,
+    wrap(async (req: Request, res: Response) => {
+      const target = parseGithubUrl(String(req.body?.url ?? ''))
+      if (!target) {
+        return fail(
+          res,
+          400,
+          'invalid',
+          'That is not a GitHub link. Paste the address of a notebook or of the week\'s folder.',
+        )
+      }
+      try {
+        const plan = await planFor(target)
+        res.json({
+          name: seminarNameFor(plan.notebookTarget ?? target),
+          notebook: plan.notebookName,
+          cells: plan.cells.length,
+          files: plan.files.map((f) => ({ name: f.name, size: f.size })),
+          source: `${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}`,
+        })
+      } catch (err) {
+        fail(res, 400, 'invalid', err instanceof Error ? err.message : 'Could not read that link.')
+      }
+    }),
+  )
 
-  router.post('/api/admin/import', requireStaff, async (req: Request, res: Response) => {
+  router.post('/api/admin/import', requireStaff, wrap(async (req: Request, res: Response) => {
     const target = parseGithubUrl(String(req.body?.url ?? ''))
     if (!target) {
       return fail(res, 400, 'invalid', 'That is not a GitHub link.')
@@ -128,15 +145,26 @@ export function adminImportRoutes(): Router {
     const written: string[] = []
     const skipped: string[] = []
     for (const file of plan.files) {
-      const safe = safeName(file.name)
-      if (!safe || !file.downloadUrl) {
+      /*
+       * Имя меряется той же меркой, что и всё остальное в дереве комнаты.
+       *
+       * Здесь спрашивали `safeName` — двести символов, пробел с краю можно, — а
+       * панель, загрузка и переименование спрашивают `safeSegment`: сто двадцать
+       * и нельзя. Имя из середины этой щели ложилось на диск и было видно в
+       * дереве, но открыть, скачать или переименовать его было уже нечем:
+       * `normalizePath` такой путь не пропускает. Файл, до которого не
+       * дотянуться, хуже непривезённого — такие уезжают в `skipped`, где
+       * преподаватель их видит списком.
+       */
+      const target = safeSegment(file.name) ? resolveInSession(id, file.name) : null
+      if (!target || !file.downloadUrl) {
         skipped.push(file.name)
         continue
       }
       try {
         const buf = await fetchRaw(file.downloadUrl, config.maxUploadBytes)
-        fs.writeFileSync(path.join(sessionDir(id), safe), buf)
-        written.push(safe)
+        fs.writeFileSync(target, buf)
+        written.push(file.name)
       } catch {
         // One unreadable file must not cost the whole import: the notebook is
         // already in the room and the teacher can drag the rest in by hand.
@@ -153,7 +181,7 @@ export function adminImportRoutes(): Router {
       skipped,
       createdBy: staff?.name ?? null,
     })
-  })
+  }))
 
   /*
    * Третья дверь: тетрадь с диска.
@@ -165,19 +193,31 @@ export function adminImportRoutes(): Router {
    * этом надо сказать разными словами.
    *
    * Тело JSON, а не multipart: .ipynb — это и есть JSON, читать его в браузере
-   * и слать текстом дешевле, чем поднимать busboy ради одного поля. Предел
-   * на тело запроса общий, 1 МБ (см. express.json в index.ts) — тетрадь без
-   * выводов в него укладывается с огромным запасом.
+   * и слать текстом дешевле, чем поднимать busboy ради одного поля.
+   *
+   * Приезжают только ячейки — `cell_type` и `source`, — а не файл целиком.
+   * Предел на тело общий, 1 МБ (см. express.json в index.ts), и сохранённая
+   * тетрадь с парой графиков его пробивает: выводы в ней — это мегабайты
+   * base64, которые здесь всё равно выбрасываются. Разбирает их тот же
+   * `notebookCells`, что и импорт с GitHub: второй разбор, расходящийся во
+   * мнениях о том, что такое ячейка, однажды потерял бы половину чужой
+   * тетради. Поле `notebook` с текстом файла принимается по-прежнему — для
+   * тетради, которая в предел укладывается.
    */
   router.post('/api/admin/import/notebook', requireStaff, (req: Request, res: Response) => {
+    const sent: unknown = req.body?.cells
     const raw = typeof req.body?.notebook === 'string' ? req.body.notebook : ''
-    if (!raw.trim()) return fail(res, 400, 'invalid', 'no notebook was sent')
 
     let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      return fail(res, 400, 'invalid', 'That file is not a notebook — .ipynb is JSON, and this would not parse.')
+    if (Array.isArray(sent)) {
+      parsed = { cells: sent }
+    } else {
+      if (!raw.trim()) return fail(res, 400, 'invalid', 'no notebook was sent')
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        return fail(res, 400, 'invalid', 'That file is not a notebook — .ipynb is JSON, and this would not parse.')
+      }
     }
 
     const cells = notebookCells(parsed)

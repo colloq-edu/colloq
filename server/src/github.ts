@@ -53,8 +53,21 @@ export function parseGithubUrl(input: string): GithubTarget | null {
   }
   if (url.hostname !== 'github.com' && url.hostname !== 'www.github.com') return null
 
-  // A trailing #cell or ?plain=1 is what you get from GitHub's own UI.
-  const pathname = decodeURIComponent(url.pathname.replace(/\/+$/, '') || '/')
+  /*
+   * A trailing #cell or ?plain=1 is what you get from GitHub's own UI.
+   *
+   * Decoding is guarded, not just parsing: the WHATWG parser lets a lone `%`
+   * through the path (`95%_CI.ipynb`, copied out of a chat rather than the
+   * address bar), and decodeURIComponent throws URIError on it. Thrown from an
+   * async handler under Express 4 that is not an error page — it is a request
+   * that never answers, and a preview spinner that turns forever.
+   */
+  let pathname: string
+  try {
+    pathname = decodeURIComponent(url.pathname.replace(/\/+$/, '') || '/')
+  } catch {
+    return null
+  }
 
   const blob = BLOB.exec(pathname)
   if (blob) {

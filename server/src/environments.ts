@@ -12,11 +12,15 @@
  * implementations: both read the same directory and both write the same
  * `KERNEL_ENV` line in `.env`. Edit a file by hand and the panel shows it.
  *
- * What this deliberately does NOT do is give each seminar its own environment.
- * One instance runs one kernel container, so switching switches for everybody —
- * and the panel says so before it does it. Per-seminar environments need a
- * container per environment and a kernel address per seminar; that is a
- * different shape of program, not a flag.
+ * Which environment a seminar gets is decided when the seminar is created and
+ * then fixed (`sessions.environment`); the room starts its own container from
+ * that image. So the active environment here is the DEFAULT — what the next
+ * seminar will be created with — and not something switching takes away from
+ * rooms that already exist. The one arrangement where it is instance-wide is
+ * the old one: `KERNEL_ISOLATION=off`, or a server that cannot start a
+ * container for a room at all (no Docker socket, no permission on it, no room
+ * network). Then every room shares the compose kernel and restarting it does
+ * empty everybody's variables — which is exactly what `shared` tells the panel.
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -157,6 +161,27 @@ export function exists(name: string): boolean {
 /* ------------------------------------------------- which one is running */
 
 /**
+ * Какое окружение считается умолчанием: строка `.env`, а если её нет — то, что
+ * compose передал процессу переменной окружения.
+ *
+ * Второе — про контейнер. В образе app файла `.env` нет и быть не должно (это
+ * файл хоста), поэтому без запасного пути под `make up` панель всегда отвечала
+ * «base», а новый семинар записывался на base при собранном ядре `cv`: имя
+ * окружения у семинара — это то, из какого образа поднимется его контейнер,
+ * когда сервер увидит docker.
+ */
+export function pickActiveName(envFile: string | null, fromEnv: string | undefined): string {
+  const line = envFile
+    ?.split('\n')
+    .reverse()
+    .find((l) => l.startsWith('KERNEL_ENV='))
+  const value = line?.slice('KERNEL_ENV='.length).trim()
+  if (value && ENVIRONMENT_NAME.test(value)) return value
+  const forwarded = fromEnv?.trim()
+  return forwarded && ENVIRONMENT_NAME.test(forwarded) ? forwarded : 'base'
+}
+
+/**
  * `KERNEL_ENV` in `.env` — the same line `make env-use` writes.
  *
  * Read from disk on every call rather than cached: the make targets edit this
@@ -164,17 +189,13 @@ export function exists(name: string): boolean {
  * wrong environment as active for as long as the server ran.
  */
 export function activeName(): string {
+  let text: string | null = null
   try {
-    const line = fs
-      .readFileSync(ENV_FILE, 'utf8')
-      .split('\n')
-      .reverse()
-      .find((l) => l.startsWith('KERNEL_ENV='))
-    const value = line?.slice('KERNEL_ENV='.length).trim()
-    return value && ENVIRONMENT_NAME.test(value) ? value : 'base'
+    text = fs.readFileSync(ENV_FILE, 'utf8')
   } catch {
-    return 'base'
+    text = null
   }
+  return pickActiveName(text, process.env.KERNEL_ENV)
 }
 
 export function setActiveName(name: string): void {
@@ -227,9 +248,10 @@ function run(
  * Whether this install can build at all.
  *
  * The server builds by shelling out to Docker. On the host that just works; in
- * a container it needs `/var/run/docker.sock` mounted, which is a decision an
- * operator makes deliberately. Rather than offer buttons that fail, the panel
- * asks first and says what is missing.
+ * a container it needs `/var/run/docker.sock` — `docker-compose.yml` mounts it,
+ * but reading it also takes the group that owns it (`DOCKER_GID`, which
+ * `make up` works out). Rather than offer buttons that fail, the panel asks
+ * first and says what is missing.
  */
 export async function dockerAvailable(): Promise<{ ok: boolean; reason: string | null }> {
   const version = await run('docker', ['version', '--format', '{{.Server.Version}}'], 8000)
@@ -237,8 +259,29 @@ export async function dockerAvailable(): Promise<{ ok: boolean; reason: string |
     return {
       ok: false,
       reason:
-        'Docker is not reachable from the server. Running in a container? Mount /var/run/docker.sock. ' +
+        'Docker is not reachable from the server. Running in a container? It needs /var/run/docker.sock ' +
+        'and DOCKER_GID, the group that owns it — `make up` sets both. ' +
         'Environments still list and edit here; switching is `make env-use NAME=<name>`.',
+    }
+  }
+  /*
+   * Собирать и переключать — это `docker compose` над ЭТИМ репозиторием, а не
+   * просто «виден ли docker».
+   *
+   * В образе app лежат dist, статика и списки пакетов — ни docker-compose.yml,
+   * ни kernel/Dockerfile, ни .env хоста. Клиент docker там теперь есть, он
+   * нужен для контейнера комнаты, и без этой проверки панель предлагала бы
+   * Build, падающий «no configuration file provided», и «Make default»,
+   * который записал бы умолчание в .env ВНУТРИ контейнера — то есть до первой
+   * же пересборки, пока compose всё это время читает файл на хосте.
+   */
+  if (!fs.existsSync(path.join(ROOT, 'docker-compose.yml'))) {
+    return {
+      ok: false,
+      reason:
+        'The server runs in a container and the repository is not in it: building an environment, ' +
+        'and making one the default, need docker-compose.yml and the .env next to it. ' +
+        'Environments still list and edit here; both are `make env-build` / `make env-use NAME=<name>` on the host.',
     }
   }
   return { ok: true, reason: null }
@@ -331,9 +374,15 @@ export async function startBuild(name: string): Promise<void> {
   if (isBuilding(name)) return
   failures.delete(name)
 
-  const files = (await usesDevOverride())
-    ? ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
-    : []
+  /*
+   * Слот занимается синхронно, до первого await, и это существенно.
+   *
+   * Между проверкой `isBuilding` и `builds.set` стоял `docker compose ps` —
+   * сотни миллисекунд, за которые второй Build на то же имя (вторая вкладка,
+   * планшет рядом с ноутбуком) проходил проверку и запускал вторую сборку.
+   * Первая при этом вытеснялась из карты: её лог и Cancel становились
+   * недоступны, а закончившись, она молча дописывала штамп.
+   */
   const build: Build = {
     name,
     lines: [],
@@ -344,6 +393,12 @@ export async function startBuild(name: string): Promise<void> {
     child: null,
   }
   builds.set(name, build)
+
+  const files = (await usesDevOverride())
+    ? ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
+    : []
+  // Cancel мог прийти, пока мы спрашивали docker: тогда начинать нечего.
+  if (build.done) return
 
   const child = spawn('docker', ['compose', ...files, 'build', 'kernel'], {
     cwd: ROOT,
@@ -399,15 +454,51 @@ async function usesDevOverride(): Promise<boolean> {
 }
 
 /**
+ * Переключения идут по одному.
+ *
+ * `docker compose up -d kernel` — операция над одной службой одного проекта, и
+ * два таких вызова внахлёст спорят за один контейнер: второй падает на
+ * конфликте имени, а панель показывает «The kernel did not come back» там, где
+ * ядро прекрасно вернулось — просто не для этого запроса. Очередь общая, а не
+ * по имени окружения: служба одна, и два РАЗНЫХ имени ссорятся за неё ровно
+ * так же.
+ */
+let switching: Promise<void> = Promise.resolve()
+
+/**
  * Point the instance's kernel at an environment.
  *
  * Writes `KERNEL_ENV` first and restarts second, in that order: the file is
  * what every later `make up` and every panel read will believe, and a restart
  * that succeeded against a file that did not get written is a lie that outlives
  * the process.
+ *
+ * `restartShared` — правда ли комнаты сидят на ядре compose. Когда у каждой
+ * свой контейнер, пересоздавать эту службу незачем: ни одна комната в неё не
+ * ходит, а перезапуск на минуту занимает машину и выглядит в панели так, будто
+ * что-то произошло с семинарами. Тогда «Make default» — это ровно запись
+ * умолчания для новых семинаров, и больше ничего.
  */
-export async function activate(name: string): Promise<{ ok: boolean; out: string }> {
+export function activate(
+  name: string,
+  restartShared = true,
+): Promise<{ ok: boolean; out: string }> {
+  const done = switching.then(() => switchTo(name, restartShared))
+  // Очередь не рвётся от неудачного переключения: следующему всё равно надо
+  // дать ход, иначе панель залипает до перезапуска сервера.
+  switching = done.then(
+    () => undefined,
+    () => undefined,
+  )
+  return done
+}
+
+async function switchTo(
+  name: string,
+  restartShared: boolean,
+): Promise<{ ok: boolean; out: string }> {
   setActiveName(name)
+  if (!restartShared) return { ok: true, out: '' }
   const files = (await usesDevOverride())
     ? ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
     : []

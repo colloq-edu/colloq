@@ -21,6 +21,19 @@
 import { BLOB_PREFIX, type PublicCell, type PublicCourseView } from '@shared/publish'
 import type { CellOutput } from '@shared/notebook'
 
+/**
+ * Текст без управляющих последовательностей.
+ *
+ * Ядро печатает цвет как есть, и в комнате его красит ansi_up. Здесь скриптов
+ * нет вовсе, так что выбор простой: либо снять escape-последовательности, либо
+ * оставить студенту `[0;31m` посреди трейсбека — а трейсбеки IPython красит
+ * всегда. Тот же набор, что в комнате (web/src/lib/ansi.ts).
+ */
+// eslint-disable-next-line no-control-regex -- escape-коды здесь и есть предмет
+const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g
+
+const plain = (value: string): string => value.replace(ANSI, '')
+
 /** Экранирование текста, попадающего в HTML. */
 function esc(value: string): string {
   return value
@@ -81,6 +94,33 @@ function blobHref(value: string, mime: string): string {
   return `blob/${hash}.${ext}`
 }
 
+/**
+ * Трейсбек без того, что уже написано над ним.
+ *
+ * IPython открывает его строкой «Ename Traceback (most recent call last)» и
+ * закрывает «Ename: evalue» — обе стоят заголовком выше. Комната снимает это
+ * же (web/src/lib/traceback.ts); без этого страница читает одну ошибку трижды.
+ * Снимается только точный повтор: угадывать, что здесь лишнее, — способ убрать
+ * единственную полезную строку.
+ */
+const BANNER = /Traceback \(most recent call last\)/
+function tracebackBody(lines: string[], ename: string, evalue: string): string {
+  const kept = lines.map(plain)
+  const bare = (line: string): string => line.trim()
+  const rule = /^[-─—]{3,}$/
+  if (kept.length > 1 && rule.test(bare(kept[0])) && BANNER.test(bare(kept[1]))) kept.shift()
+  if (kept.length > 0 && bare(kept[0]).startsWith(ename) && BANNER.test(bare(kept[0]))) kept.shift()
+  const dropBlanks = (): void => {
+    while (kept.length > 0 && bare(kept[kept.length - 1]) === '') kept.pop()
+  }
+  dropBlanks()
+  // `KeyboardInterrupt: ` — ошибка без значения всё равно закрывается двоеточием.
+  const echoes = evalue ? [`${ename}: ${evalue}`] : [ename, `${ename}:`]
+  if (kept.length > 0 && echoes.includes(bare(kept[kept.length - 1]))) kept.pop()
+  dropBlanks()
+  return kept.join('\n')
+}
+
 function outputHtml(output: CellOutput, depth: number): string {
   /*
    * Картинки лежат в корне публикации, рядом с первым шагом. Первый шаг — сам
@@ -91,21 +131,31 @@ function outputHtml(output: CellOutput, depth: number): string {
    */
   const up = '../'.repeat(depth - 1)
   if (output.kind === 'stream') {
-    return `<pre class="out ${output.name === 'stderr' ? 'err' : ''}">${esc(output.text)}</pre>`
+    return `<pre class="out ${output.name === 'stderr' ? 'err' : ''}">${esc(plain(output.text))}</pre>`
   }
   if (output.kind === 'error') {
-    return `<pre class="out err">${esc([output.ename + ': ' + output.evalue, '', ...output.traceback].join('\n'))}</pre>`
+    const head = output.ename + (output.evalue ? ': ' + output.evalue : '')
+    const body = tracebackBody(output.traceback, output.ename, output.evalue)
+    return `<pre class="out err">${esc([plain(head), body].filter(Boolean).join('\n\n'))}</pre>`
   }
   const image = Object.entries(output.data).find(([mime]) => mime.startsWith('image/'))
   if (image) {
     const [mime, value] = image
+    /*
+     * SVG приходит от ядра XML-текстом, а не base64, и в отдельную запись не
+     * уезжает (см. BLOB_MIMES): `data:image/svg+xml;base64,<xml>` давал пустую
+     * рамку. Картинкой, а не разметкой прямо в странице: внутри `<img>` скрипт
+     * из чужого вывода не исполняется.
+     */
     const src = value.startsWith(BLOB_PREFIX)
       ? up + blobHref(value, mime)
-      : `data:${mime};base64,${value.replace(/\s/g, '')}`
+      : mime === 'image/svg+xml'
+        ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(value)}`
+        : `data:${mime};base64,${value.replace(/\s/g, '')}`
     return `<p class="img"><img src="${esc(src)}" alt="вывод ячейки"></p>`
   }
   const text = output.data['text/plain']
-  return text ? `<pre class="out">${esc(text)}</pre>` : ''
+  return text ? `<pre class="out">${esc(plain(text))}</pre>` : ''
 }
 
 function cellHtml(cell: PublicCell, depth: number): string {
@@ -209,17 +259,47 @@ export interface RenderedStep {
   cells: PublicCell[]
 }
 
-const when = (at: number): string =>
-  new Date(at).toLocaleDateString('ru-RU', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  })
-const clock = (at: number): string =>
-  new Date(at).toLocaleTimeString('ru-RU', {
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+/*
+ * Часовой пояс страницы задаётся явно, а не берётся у процесса.
+ *
+ * Выгрузку запускают на сервере, а не в аудитории: в контейнере и на обычном
+ * VPS пояс не задан вовсе, то есть UTC, — и занятие, которое шло в Москве в
+ * 15:04, страница подписывала «12:04». По такой подписи не найти, о какой паре
+ * речь, а проверить её на статике нечем: в комнате время рисует браузер, здесь
+ * рисовать некому.
+ *
+ * Пояс инстанса — `TZ`, и спрашивается она при каждом форматировании, а не
+ * один раз при загрузке модуля: приезжает она из `.env` через dotenv в
+ * config.ts, а этот модуль грузится раньше него. По той же причине пояс
+ * передаётся опцией — переменная, прочитанная после старта, поясом процесса
+ * может уже не стать.
+ */
+const HOME_ZONE = 'Europe/Moscow'
+const DATE_FORM: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long', year: 'numeric' }
+const TIME_FORM: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
+
+function formatter(form: Intl.DateTimeFormatOptions, zone: string): Intl.DateTimeFormat {
+  try {
+    return new Intl.DateTimeFormat('ru-RU', { ...form, timeZone: zone })
+  } catch {
+    // `TZ=МСК` и прочие имена, которых нет в базе поясов: опечатка в .env не
+    // должна ронять выгрузку целиком.
+    return new Intl.DateTimeFormat('ru-RU', { ...form, timeZone: HOME_ZONE })
+  }
+}
+
+let clocks: { zone: string; date: Intl.DateTimeFormat; time: Intl.DateTimeFormat } | null = null
+
+function forms(): { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat } {
+  const zone = process.env.TZ?.trim() || HOME_ZONE
+  if (!clocks || clocks.zone !== zone) {
+    clocks = { zone, date: formatter(DATE_FORM, zone), time: formatter(TIME_FORM, zone) }
+  }
+  return clocks
+}
+
+const when = (at: number): string => forms().date.format(at)
+const clock = (at: number): string => forms().time.format(at)
 
 /** Страница курса. */
 export function renderCourse(course: PublicCourseView, base: string): string {
@@ -227,7 +307,23 @@ export function renderCourse(course: PublicCourseView, base: string): string {
     .map((item, index) => {
       const n = String(index + 1).padStart(2, '0')
       if (item.kind === 'gone') {
-        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">семинар удалён</span></li>`
+        /*
+         * Комнаты нет, а чтение осталось — это умолчание при удалении семинара,
+         * и без ссылки строка была бы тупиком: страница жива, а с курса —
+         * единственного адреса, который дают классу, — до неё не дойти.
+         */
+        if (!item.publication) {
+          return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">семинар удалён</span></li>`
+        }
+        const gone = `${base}/p/${item.publication.slug ?? item.publication.id}/`
+        return [
+          '<li class="row">',
+          `<a href="${esc(gone)}">`,
+          `<span class="n">${n}</span>`,
+          `<span class="t">${esc(item.name)}</span>`,
+          '<span class="s">комната закрыта, страница осталась</span>',
+          '</a></li>',
+        ].join('')
       }
       if (item.kind === 'planned') {
         return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(item.when)}</span></li>`
@@ -259,6 +355,33 @@ export function renderCourse(course: PublicCourseView, base: string): string {
     `<p class="addr">${esc(base.replace(/^https?:\/\//, ''))}/c/${esc(course.slug ?? course.id)}</p>`,
     `<ul class="rows">${rows}</ul>`,
     '<p class="foot-note">Каждый семинар курса появляется здесь — по мере того, как их проводят. Сохраните эту страницу.</p>',
+    '</div>',
+    FOOT,
+  ].join('\n')
+}
+
+/**
+ * Страница-указатель со старого адреса на нынешний.
+ *
+ * Курсу или публикации дали имя, и каталог теперь лежит под ним — а ссылка,
+ * розданная классу с восьмисимвольным идентификатором, обязана работать и
+ * после. На живом сервере это делает `WHERE id = ? OR slug = ?`; на Pages
+ * маршрутизации нет вовсе, поэтому старый адрес остаётся файлом, который
+ * перекладывает на новый. Ссылка внизу — на случай, если `refresh` выключен.
+ */
+export function renderRedirect(to: string, title: string): string {
+  return [
+    '<!doctype html><html lang="ru"><head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<meta name="robots" content="noindex">',
+    `<meta http-equiv="refresh" content="0; url=${esc(to)}">`,
+    `<link rel="canonical" href="${esc(to)}">`,
+    `<title>${esc(title)}</title>`,
+    `<style>${STYLE}</style>`,
+    '</head><body>',
+    '<div class="wrap">',
+    `<p class="blurb">Страница переехала: <a href="${esc(to)}">${esc(to)}</a></p>`,
     '</div>',
     FOOT,
   ].join('\n')
