@@ -26,8 +26,8 @@ import { readRules, type RoomRules } from '@shared/rules'
 import { api, ApiError } from './api'
 import { enqueueControl, OFFLINE_REASON } from './controls'
 import { countsAsUnread } from './notes'
-import type { StoredIdentity } from './identity'
-import { bindLocalStore, type LocalStore } from './persistence.svelte'
+import { forgetIdentity, type StoredIdentity } from './identity'
+import { bindLocalStore, forgetSessionInfo, type LocalStore } from './persistence.svelte'
 import { mayReload, REFUSED_CLOSE, refusalHealed, stashRefusal } from './refusal'
 
 export interface Peer {
@@ -62,11 +62,31 @@ function sameRules(a: unknown, b: unknown): boolean {
   return (Object.keys(left) as (keyof RoomRules)[]).every((key) => left[key] === right[key])
 }
 
+/**
+ * Что на закрытом сокете выбрасывается, а не встаёт в очередь.
+ *
+ * Очередь короткая (16, см. controls.ts) и хранит нажатия: запуск ячейки,
+ * перезапуск ядра, команду терминалу. Кадры лекции туда не годятся вовсе.
+ * Точки чернил живут в мокром штрихе и досылаются сами, когда связь вернётся,
+ * а указка — это положение руки секунду назад, и досылать его некуда. Зато
+ * пальцем их набирается по десятку в секунду: очередь переполнялась ими
+ * досуха и выбрасывала настоящие нажатия, ради которых заведена.
+ */
+const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>(['ping', 'ink', 'laser'])
+
 export class SessionState {
   /** Not readonly: the room's rules can change while the seminar is running. */
   session: SessionInfo = $state.raw({} as SessionInfo)
   /** True once the server has said the seminar is gone; stops the reconnect loop. */
   gone = $state(false)
+  /**
+   * Комната есть, а ключ этого браузера она больше не признаёт.
+   *
+   * Экран, увидев это, отдаёт человека форме имени: сама себя такая комната не
+   * чинит — имя выбирает человек, а не программа. Запись о прошлой личности к
+   * этому моменту уже стёрта (см. `#diagnose`).
+   */
+  expired = $state(false)
   /**
    * Часы этого браузера минус часы сервера, в миллисекундах.
    *
@@ -89,13 +109,48 @@ export class SessionState {
   readonly localStore: LocalStore
 
   /** Collab socket health. Editing keeps working while false; the CRDT catches up. */
-  connected = $state(false)
+  collabConnected = $state(false)
+  /**
+   * Управляющий сокет открыт — то есть Run, перезапуск и терминал дойдут.
+   *
+   * Отдельно от `collabConnected`, потому что провода два и поднимаются они
+   * порознь: y-websocket отступает максимум на 2,5 с, наш собственный — до 8 с.
+   */
+  controlConnected = $state(false)
+  /**
+   * Комната на связи — по ОБОИМ проводам.
+   *
+   * По этому полю гаснут все кнопки управляющего (Run, Restart, терминал) и
+   * зажигается «Reconnecting», а раньше в нём стоял один только сокет
+   * совместной работы. После рестарта сервера он поднимается первым: надпись
+   * гасла, кнопки загорались, нажатия молча уходили в очередь и выполнялись
+   * через несколько секунд — Run All, про который человек уже решил, что он не
+   * сработал. Печатать при этом можно и без связи, но печатанье — это CRDT, и
+   * его никто не гасит.
+   */
+  readonly connected = $derived(this.collabConnected && this.controlConnected)
   /**
    * The on-disk copy has been replayed. Until then an empty notebook means
    * "not read yet", not "there is nothing here" — the difference between a
    * skeleton and a wrong empty state.
    */
   hydrated = $state(false)
+  /**
+   * Список файлов комнаты хоть раз приезжал.
+   *
+   * «Не спрашивали ещё» и «файлов нет» — разные вещи, и путать их дорого:
+   * вкладки живут по этому списку, и пустой на первом кадре стирал их все.
+   */
+  filesArrived = $state(false)
+  /**
+   * Список показан не целиком: обход папок упёрся в потолок.
+   *
+   * Признак едет рядом со списком и заменяется каждым кадром — сервер шлёт
+   * `false` явно, так что «уже не обрезано» доезжает так же честно, как
+   * «обрезано». Панель файлов говорит об этом строкой внизу дерева: человек,
+   * не нашедший свой файл, ищет его заново, а про потолок не догадывается.
+   */
+  filesTruncated = $state(false)
   peers = $state<Peer[]>([])
   files = $state<FileEntry[]>([])
   /**
@@ -307,9 +362,19 @@ export class SessionState {
   }
 
   #onStatus = ({ status }: { status: string }) => {
-    this.connected = status === 'connected'
-    // The offline notice is about right now. Leaving it up once the room is back
-    // would contradict the header, which has already stopped saying RECONNECTING.
+    this.collabConnected = status === 'connected'
+    this.#backOnline()
+  }
+
+  /**
+   * Связь вернулась — снять строку про её отсутствие.
+   *
+   * Зовётся с обоих проводов: строка висит, пока молчит хоть один, и убирать
+   * её должен тот, кто починился последним. The offline notice is about right
+   * now; leaving it up once the room is back would contradict the header, which
+   * has already stopped saying RECONNECTING.
+   */
+  #backOnline() {
     if (this.connected && this.lastError === OFFLINE_REASON) this.lastError = null
   }
 
@@ -378,6 +443,8 @@ export class SessionState {
 
     socket.onopen = () => {
       this.#retries = 0
+      this.controlConnected = true
+      this.#backOnline()
       // Новое соединение — новая сеть: прошлый лучший круг про неё ничего не знает.
       this.#bestRtt = Number.POSITIVE_INFINITY
       for (const queued of this.#controlQueue.splice(0)) socket.send(JSON.stringify(queued))
@@ -501,6 +568,8 @@ export class SessionState {
         }
       } else if (message.t === 'files') {
         this.files = message.files
+        this.filesArrived = true
+        this.filesTruncated = message.truncated === true
         /*
          * Файл могли удалить или переписать прямо на занятии: удаляет
          * преподаватель, а переписать может любая ячейка — `df.to_csv` идёт в
@@ -584,6 +653,17 @@ export class SessionState {
     socket.onclose = (event: CloseEvent) => {
       window.clearInterval(this.#heartbeat)
       this.#control = null
+      this.controlConnected = false
+      /*
+       * Указка не переживает разрыв.
+       *
+       * Она — положение руки прямо сейчас, и держится ровно тем, что кадры
+       * идут. Оборвалась связь — кадров нет, а красное пятно осталось бы висеть
+       * на слайде до конца лекции, показывая туда, где ведущий был минуту
+       * назад. Гаснет здесь, а не по таймауту: неподвижная указка кадров не
+       * шлёт вовсе, и таймаут погасил бы штатный показ.
+       */
+      this.laser = null
       if (this.#disposed) return
       /*
        * The server says why when it closes on purpose.
@@ -595,8 +675,7 @@ export class SessionState {
        * wrong for a room that is gone, and the difference is in this event.
        */
       if (event.code === 1001 && /deleted/i.test(event.reason ?? '')) {
-        this.gone = true
-        this.lastError = 'This seminar was deleted. Nothing here can be saved or reopened.'
+        this.#roomIsGone()
         return
       }
       this.#retries += 1
@@ -608,13 +687,38 @@ export class SessionState {
        * «RECONNECTING» перед человеком, чей ключ просрочен, и никакого способа
        * это понять. После нескольких неудач спрашиваем сервер обычным
        * запросом — у него есть, чем ответить.
+       *
+       * И спрашиваем не один раз: сервер, которого перезапускают, недоступен и
+       * по HTTP тоже, а `#retries` обнуляется только удачным соединением —
+       * одна проба на четвёртой неудаче попадала ровно в те секунды, когда
+       * ответить некому, и «Reconnecting» после этого крутился молча до конца
+       * дня. Каждая четвёртая — это проба примерно раз в полминуты.
        */
-      if (this.#retries === 4) void this.#diagnose()
+      if (this.#retries % 4 === 0) void this.#diagnose()
       const delay = Math.min(500 * 2 ** Math.min(this.#retries, 5), 8000)
       this.#reconnectTimer = window.setTimeout(() => this.#connectControl(), delay)
     }
 
     socket.onerror = () => socket.close()
+  }
+
+  /**
+   * Комнаты больше нет: закрыть за собой всё, что в неё стучится.
+   *
+   * Управляющий сокет останавливает сам себя (`return` до отсчёта попыток), а
+   * вот сокет совместной работы этого не знает и продолжает проситься на
+   * апгрейд каждые 2,5 с до закрытия вкладки — тридцать оставленных открытыми
+   * вкладок класса дают серверу дюжину отказов в секунду за пустой экран
+   * «Этот семинар удалён». Заодно уходит и местная копия: комната удалена, и
+   * кэш, из которого её можно снова смонтировать, — это ложь на диске.
+   */
+  #roomIsGone(): void {
+    if (this.gone) return
+    this.gone = true
+    this.lastError = 'This seminar was deleted. Nothing here can be saved or reopened.'
+    this.provider.disconnect()
+    forgetSessionInfo(this.session.id)
+    void this.localStore.clear()
   }
 
   /**
@@ -629,27 +733,30 @@ export class SessionState {
     try {
       await api.getSession(this.session.id)
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        this.gone = true
-        this.lastError = 'This seminar was deleted. Nothing here can be saved or reopened.'
-      }
+      if (err instanceof ApiError && err.status === 404) this.#roomIsGone()
       // Всё остальное — сеть; молчим и продолжаем отступать.
       return
     }
 
     /*
      * Комната есть, а нас не пускают: дело в ключе. Он лежит в этом браузере
-     * и в комнате больше не действует — второй раз назваться тем же именем
-     * можно, а вот молча починиться нельзя, потому что имя выбирает человек.
+     * и в комнате больше не действует — молча починиться нельзя, потому что
+     * имя выбирает человек.
+     *
+     * Поэтому запись о том, кем мы здесь были, стирается, и экран говорит об
+     * этом наверх: комната уступает место форме имени. Раньше здесь стояла
+     * строка «перезагрузите страницу и назовитесь заново» — совет, который не
+     * работал: личность оставалась в хранилище, и перезагрузка приводила в ту
+     * же комнату с тем же негодным ключом, и так до ручной чистки браузера.
      */
-    this.lastError =
-      'Your place in this seminar has expired. Reload the page and type your name again — the notebook is unchanged.'
+    forgetIdentity(this.session.id)
+    this.expired = true
   }
 
   send(message: ControlClientMessage) {
     if (this.#control?.readyState === WebSocket.OPEN) {
       this.#control.send(JSON.stringify(message))
-    } else if (message.t !== 'ping') {
+    } else if (!DISCARDED_OFFLINE.has(message.t)) {
       // A press already in flight when the socket closed under it. The controls
       // disable themselves the moment `connected` turns false, so this window is
       // about a frame wide — see lib/controls.ts for what it keeps and drops.
@@ -815,6 +922,8 @@ export class SessionState {
     try {
       const res = await api.listFiles(this.session.id, this.token)
       this.files = res.files
+      this.filesArrived = true
+      this.filesTruncated = res.truncated === true
     } catch {
       /* the control socket pushes the list too; a failed poll is not fatal */
     }

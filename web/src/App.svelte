@@ -16,6 +16,7 @@
     recallSessionInfo,
     rememberSessionInfo,
   } from '@/lib/persistence.svelte'
+  import { isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '@/lib/routes'
   import type { SessionInfo } from '@shared/protocol'
 
   /**
@@ -28,60 +29,28 @@
    * the browser already knows would buy nothing but a spinner.
    */
   /*
-   * `/s/:id` — комната, `/s/:id/screen` — её проекция на балке в аудитории,
-   * `/s/:id/pult` — пульт в руках у преподавателя.
-   *
-   * Один адрес на три экрана: и проекция, и пульт — это та же комната тем же
-   * человеком, а не отдельные страницы. Отсюда и хвост в том же выражении, а не
-   * три регулярки: id остаётся одним и тем же, и переход между ними НЕ
-   * пересобирает сессию — сокеты, документ и присутствие остаются на месте,
-   * меняется только то, что нарисовано.
-   *
-   * Адресом, а не кнопкой, потому что оба открывают на ДРУГОЙ машине: проекцию
-   * — на той, что воткнута в проектор, пульт — на планшете. Ссылку проекции
-   * кладут в закладки кафедрального ноутбука, и после перезагрузки она
-   * вернётся сама; на пульт приводит ссылка-ключ (см. обмен ниже).
+   * Адреса и их разбор живут в `lib/routes.ts` — там же, где их проверяют
+   * тесты: регулярка, тихо переставшая совпадать, сборку не уронит, а высадит
+   * планшет с живым ключом в адресной строке на экран входа.
    */
-  const SESSION_PATH =
-    /^\/s\/([A-Za-z0-9_-]{1,64})(?:\/(screen|pult)|\/t\/([A-Za-z0-9_.-]{8,512}))?\/?$/
-  /*
-   * Две публичные страницы: курс и опубликованный семинар.
-   *
-   * Свои префиксы и свои идентификаторы, отдельные от `/s/`, и это не
-   * аккуратность в именах: восемь символов комнаты — это всё право писать в
-   * неё. Ссылка, данная классу «на почитать», не должна открывать им живую
-   * тетрадь, поэтому у публикации адрес свой, а id комнаты в неё не входит.
-   */
-  const COURSE_PATH = /^\/c\/([A-Za-z0-9_-]{1,64})\/?$/
-  const PUBLIC_PATH = /^\/p\/([A-Za-z0-9_-]{1,64})(?:\/(-?\d+))?\/?$/
-
   let path = $state(location.pathname)
-  const sessionId = $derived(SESSION_PATH.exec(path)?.[1] ?? null)
   /**
-   * Какой из трёх экранов комнаты открыт.
+   * Комната и то, каким из трёх её экранов её открыли.
    *
-   * Одним значением, а не двумя флагами: экранов ровно три и они
+   * Режим одним значением, а не двумя флагами: экранов ровно три и они
    * взаимоисключающие, а пара `projection` + `pult` умеет быть включённой
-   * одновременно — то есть умеет означать то, чего не бывает. Хвост адреса уже
-   * разобран регуляркой, здесь остаётся только назвать его.
+   * одновременно — то есть умеет означать то, чего не бывает.
    */
-  const mode = $derived.by((): 'room' | 'screen' | 'pult' => {
-    const tail = SESSION_PATH.exec(path)?.[2]
-    if (tail === 'screen') return 'screen'
-    if (tail === 'pult') return 'pult'
-    return 'room'
-  })
+  const roomRoute = $derived(readRoomRoute(path))
+  const sessionId = $derived(roomRoute?.id ?? null)
+  const mode = $derived(roomRoute?.mode ?? 'room')
   /** Ключ из ссылки на пульт: планшет меняет его на обычный вход. */
-  const handoffKey = $derived(SESSION_PATH.exec(path)?.[3] ?? null)
+  const handoffKey = $derived(roomRoute?.handoffKey ?? null)
   // The teaching side. It routes its own sub-paths; this only has to get out of
   // the way, and to do so before the seminar route touches localStorage.
-  const isAdmin = $derived(path === '/admin' || path.startsWith('/admin/'))
-  const courseId = $derived(COURSE_PATH.exec(path)?.[1] ?? null)
-  const publicSeminar = $derived.by(() => {
-    const match = PUBLIC_PATH.exec(path)
-    if (!match) return null
-    return { id: match[1], step: match[2] === undefined ? null : Number(match[2]) }
-  })
+  const isAdmin = $derived(isAdminPath(path))
+  const courseId = $derived(readCourseId(path))
+  const publicSeminar = $derived(readPublicRoute(path))
 
   /*
    * The admin panel arrives on demand, for the same reason the notebook's
@@ -128,6 +97,21 @@
   let identity = $state<StoredIdentity | null>(null)
   let failure = $state<{ missing: boolean; message: string } | null>(null)
   let attempt = $state(0)
+  /** Что сказать на экране входа тому, кого туда вернули не по его воле. */
+  let notice = $state<string | null>(null)
+
+  /**
+   * Место в комнате перестало действовать — назваться придётся заново.
+   *
+   * Ключ участника живёт тридцать дней и перестаёт проверяться сразу после
+   * смены SESSION_SECRET; оба сокета тогда отвергаются на рукопожатии, и
+   * комната крутит «Reconnecting» вечно. Починить это молча нельзя — имя
+   * выбирает человек, — поэтому сохранённая личность стирается (SessionState
+   * это уже сделала), и App возвращается к форме имени с этой строкой.
+   * Тетрадь при этом на сервере цела, и сказать об этом важнее всего.
+   */
+  const EXPIRED_NOTICE =
+    'Your place in this seminar expired, so the room asked for your name again. The notebook is unchanged.'
 
   function navigate(next: string): void {
     if (next !== location.pathname) history.pushState({}, '', next)
@@ -163,6 +147,7 @@
 
   function enter(id: string | null): void {
     failure = null
+    notice = null
     identity = id ? loadIdentity(id) : null
     session = id ? knownRoom(id) : null
   }
@@ -373,13 +358,25 @@
 
 {#if courseId || publicSeminar}
   <!-- Ни токена, ни личности, ни сокетов: эти страницы читают и всё. -->
-  {#await reader() then Reader}
-    <Reader
-      course={courseId}
-      publication={publicSeminar}
-      onnavigate={(next) => navigate(next)}
-    />
-  {/await}
+  <!--
+    По ключу страницы, а не по одному условию на обе: `/c/…` и `/p/…` — один и
+    тот же компонент, и переход между ними (нажатие на семинар в списке курса)
+    менял только пропсы. Экран при этом оставался прежним: загруженный курс
+    никто не гасил, и студент, ткнув в занятие, видел тот же список.
+
+    Ключ без шага: `/p/:id/3` → `/p/:id/4` — это перелистывание внутри одной
+    публикации, и пересобирать её ради него значило бы загружать семинар
+    заново на каждый шаг.
+  -->
+  {#key courseId ?? publicSeminar?.id}
+    {#await reader() then Reader}
+      <Reader
+        course={courseId}
+        publication={publicSeminar}
+        onnavigate={(next) => navigate(next)}
+      />
+    {/await}
+  {/key}
 {:else if isAdmin}
   <!-- No pending branch: the chunk is one request on a local network and the
        panel itself paints an empty canvas until the server answers, so a
@@ -458,9 +455,13 @@
         identity={me}
         {mode}
         onnavigate={(next) => navigate(next)}
+        onexpired={() => {
+          identity = null
+          notice = EXPIRED_NOTICE
+        }}
       />
     {/await}
   {/key}
 {:else if poster}
-  <JoinScreen session={poster} onjoined={(next) => (identity = next)} />
+  <JoinScreen session={poster} {notice} onjoined={(next) => (identity = next)} />
 {/if}

@@ -73,9 +73,16 @@
     mode?: 'room' | 'screen' | 'pult'
     /** Уйти на другой адрес, не пересобирая комнату. */
     onnavigate?: (to: string) => void
+    /**
+     * Место в комнате перестало действовать — вернуть человека к форме имени.
+     *
+     * Комната сама этого сделать не может: экран входа живёт выше, а
+     * сохранённую личность к этому моменту уже стёрли (см. `#diagnose`).
+     */
+    onexpired?: () => void
   }
 
-  let { session: info, identity, mode = 'room', onnavigate }: Props = $props()
+  let { session: info, identity, mode = 'room', onnavigate, onexpired }: Props = $props()
 
   const projection = $derived(mode === 'screen')
   const pult = $derived(mode === 'pult')
@@ -152,6 +159,16 @@
   })
   setSessionState(session)
   onDestroy(() => session.destroy())
+
+  /*
+   * Ключ этого браузера комната больше не признаёт — уступаем место форме
+   * имени. Одной строкой и без вопросов: сокеты отсюда уже не поднимутся
+   * никогда, а «Reconnecting» перед человеком, которому нечего ждать, — это
+   * вечный спиннер.
+   */
+  $effect(() => {
+    if (session.expired) onexpired?.()
+  })
 
   const meta = watchNotebookMeta(session.doc)
   const storedTitle = $derived(meta.current.title)
@@ -324,12 +341,32 @@
     const first = books.current[0]
     if (!first) return
     seeded = true
-    untrack(() => tabs.open(first.path))
+    untrack(() => {
+      /*
+       * Экран у комнаты не отбирается. Опоздавший приходит в идущую лекцию,
+       * общий документ приезжает раньше тетради (сокет управляющего отвечает
+       * сразу, документ — после круга sync), и посев перебивал его тетрадью:
+       * зал смотрит слайд, а он — ячейки. Тетрадь встаёт вкладкой, а активной
+       * остаётся то, что комната уже показывает.
+       */
+      const shown = tabs.active
+      tabs.open(first.path)
+      if (shown !== null) tabs.show(shown)
+    })
   })
 
   /** Что читалка сообщает наружу: строка вкладок показывает это за неё. */
   let readerPage = $state(1)
   let readerPages = $state(0)
+  /**
+   * Идём ли за ведущим прямо сейчас — по мнению самой читалки.
+   *
+   * Одного номера страницы для строки вкладок мало: отстать можно и не сменив
+   * страницу, одной прокруткой в пределах листа. Пока признак сюда не доходил,
+   * строка писала «Идём за Анной» тому, кто уже отстал по своей воле, — а
+   * читалка строкой ниже честно говорила «смотрите сами».
+   */
+  let readerFollowing = $state(true)
   let lead = $state<Lead | null>(null)
   /** Ведущий был и пропал — не то же самое, что «ведущего нет». */
   let orphaned = $state(false)
@@ -606,7 +643,15 @@
     const root = rootOfCell(session.doc, cellId)
     if (!root) return
     const book = books.current.find((entry) => entry.root === root)
-    if (book) tabs.show(book.path)
+    /*
+     * Открыть, а не показать: тетрадей в комнате несколько, и та, в которой
+     * лежит ячейка, у этого человека может быть не открыта вовсе — внёс её
+     * преподаватель, а сам он её не трогал. `show` в этом случае ставил
+     * активной вкладку, которой нет в ряду: центр экрана пустел, ни одна
+     * вкладка не подсвечивалась, и «покажи, где он» оказывалось кнопкой,
+     * которая врёт.
+     */
+    if (book) tabs.open(book.path)
   }
 
   /*
@@ -646,6 +691,17 @@
    * Файл мог убрать преподаватель, а мог переписать `os.remove` в ячейке.
    */
   $effect(() => {
+    /*
+     * И только когда список правда приезжал.
+     *
+     * «Не спрашивали ещё» и «файлов нет» — разные вещи, а на первом кадре они
+     * выглядели одинаково: `files` пуст до ответа сервера, документ ещё не
+     * переигран с диска, и первый же прогон этого эффекта выбрасывал все
+     * запомненные вкладки и записывал в хранилище пустой список. Обещание
+     * «свои вкладки переживают перезагрузку» не выполнялось ни разу: каждый
+     * F5 у каждого участника оставлял пустой центр.
+     */
+    if (!session.filesArrived || !session.hydrated) return
     const alive = new Set(session.files.filter((file) => !file.dir).map((file) => file.path))
     /*
      * Тетради — по списку комнаты, а не по списку файлов.
@@ -715,7 +771,11 @@
    */
   $effect(() => {
     const doc = activeDoc
-    if (doc?.missing && activePath) tabs.close(activePath, session.board)
+    if (doc?.missing && activePath) {
+      // С теми же приколотыми вкладками, что нарисованы: соседа слева считают
+      // по ряду, и ряд без лекции сдвинул бы человека не туда.
+      tabs.close(activePath, session.board, session.lecture?.file ?? null)
+    }
   })
 
   /**
@@ -725,14 +785,42 @@
    * кому это разрешено, — и убирает у всех сразу. Если права нет, а документ
    * общий, уйти от него в тетрадь всё равно можно: смотреть никого не
    * заставляют, а вкладка остаётся стоять.
+   *
+   * Пока идёт лекция, крестик не убирает документ ни у кого: лекцию
+   * заканчивают явным «Закончить», и сервер `board:close` в это время всё
+   * равно отвергает словами. Крестик на её вкладке — это «уйти отсюда», и
+   * сорок минут разметки на проекторе не должны зависеть от промаха мимо
+   * соседней вкладки.
    */
   function closeTab(path: string): void {
-    if (path === session.board && may.board) {
+    if (path === session.board && may.board && lecture === null) {
       session.send({ t: 'board:close' })
       tabs.show(null)
       return
     }
-    tabs.close(path, session.board)
+    tabs.close(path, session.board, session.lecture?.file ?? null)
+  }
+
+  /**
+   * Поставить документ на общий экран комнаты.
+   *
+   * Отдельное действие, а не побочный эффект открытия файла: право `board` —
+   * про общий экран, а не про чтение («смотреть и листать у себя может любой
+   * всегда», см. `rule-rows.ts` и обработчик на сервере).
+   *
+   * Полоса с кнопкой держится до прихода общего документа, а не гаснет по
+   * нажатию: ответ идёт круг, и отказать сервер тоже умеет («такого файла в
+   * комнате нет»). Кнопка, исчезнувшая раньше ответа, оставила бы человека без
+   * второй попытки.
+   *
+   * Активной вкладка становится только та, что уже нарисована в ряду. Файл,
+   * которого у себя ещё нет, приедет вкладкой вместе с ответом — тем же
+   * кадром, что и у всех; поставить его активным раньше значило бы показать
+   * пустой центр на круг сети, а при отказе — навсегда.
+   */
+  function showToRoom(path: string): void {
+    session.send({ t: 'board:open', name: path })
+    if (row.includes(path)) tabs.show(path)
   }
 
   /**
@@ -741,11 +829,22 @@
    * PDF у преподавателя уезжает на общий экран комнаты — это лекция, её смотрят
    * вместе. Всё остальное открывается себе: у скрипта нет «общего экрана», его
    * правят и запускают, а кто рядом — видно по точкам в дереве.
+   *
+   * У преподавателя — и только у него. В комнате, где правило `board` отдано
+   * всем (семинар, где студенты по очереди показывают своё), клик любого
+   * студента по методичке забирал экран у тридцати человек: вкладка прыгала у
+   * всех, а прочитать что-то у себя было нельзя вовсе — то есть право не
+   * добавляло возможность, а отнимало. Студент открывает себе, а показать
+   * комнате может кнопкой над читалкой.
+   *
+   * И не во время лекции: пока она идёт, общий экран занят ею, сервер смену
+   * документа отвергает словами («Идёт лекция по «…» — сначала закончите её»),
+   * и щелчок по файлу в панели превращался бы в отказ на ровном месте. Открыть
+   * себе можно всегда — этим же щелчком.
    */
   function openFile(path: string): void {
-    if (kindOf(path) === 'pdf' && may.board) {
-      session.send({ t: 'board:open', name: path })
-      tabs.show(path)
+    if (kindOf(path) === 'pdf' && may.board && isHost && lecture === null) {
+      showToRoom(path)
       return
     }
     /*
@@ -1311,6 +1410,7 @@
           mayBoard={may.board}
           {lead}
           {orphaned}
+          following={readerFollowing}
           page={readerPage}
           pages={readerPages}
           onshow={(key) => tabs.show(key)}
@@ -1422,19 +1522,71 @@
             onsolo={leading ? undefined : () => (soloRead = true)}
           />
         {:else}
-          <PdfReader
-            file={activePath}
-            shared={activePath === session.board}
-            mayLead={may.board && lecture === null}
-            backToLecture={lectureHere ? () => (soloRead = false) : null}
-            {catchUp}
-            {lead}
-            bind:page={readerPage}
-            bind:pages={readerPages}
-          />
+          {#if may.board && lecture === null && activePath !== session.board}
+            <!--
+              «На общий экран» — то самое отдельное действие, ради которого
+              открытие файла перестало забирать экран у комнаты. Полоса под
+              вкладкой, как у скрипта: у каждой вкладки свои действия, и они
+              всегда под ней.
+            -->
+            <div class="flex h-[34px] shrink-0 items-stretch border-b border-line bg-canvas">
+              <button
+                type="button"
+                class="flex shrink-0 items-center gap-2 bg-primary px-4 text-2xs font-bold
+                       uppercase tracking-label text-primary-ink transition duration-quick
+                       hover:brightness-110 active:brightness-95 focus-visible:outline-none
+                       focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+                title="Показать этот документ всей комнате — вкладка откроется у каждого"
+                onclick={() => showToRoom(activePath)}
+              >
+                <Icon name="board" size={11} />
+                На общий экран
+              </button>
+              <span class="flex-1"></span>
+              {#if session.board}
+                <span class="flex shrink-0 items-center px-5 text-2xs text-muted">
+                  Сейчас комната смотрит {baseOf(session.board)}
+                </span>
+              {/if}
+            </div>
+          {/if}
+          <!--
+            По файлу, а не по одной ветке на все PDF: читалка открывает документ
+            один раз при монтировании, и смена файла в той же ветке оставляла на
+            экране страницы прошлого — под новым именем вкладки, с его же
+            счётчиком страниц, и «идём за …» сходилось по номерам, потому что
+            все смотрели один и тот же не тот документ.
+          -->
+          {#key activePath}
+            <PdfReader
+              file={activePath}
+              shared={activePath === session.board}
+              mayLead={may.board && lecture === null}
+              backToLecture={lectureHere ? () => (soloRead = false) : null}
+              {catchUp}
+              {lead}
+              bind:page={readerPage}
+              bind:pages={readerPages}
+              bind:following={readerFollowing}
+            />
+          {/key}
         {/if}
       {:else if activePath && activeKind === 'text'}
-        {#if activeDoc}
+        {#if activeDoc?.tooBig}
+          <!--
+            Файл есть, просто он велик для редактора. Вкладка остаётся стоять:
+            «файла нет» её закрывает, а тут закрывать нечего — человек нажал по
+            живому файлу, и ему нужен ответ, а не исчезнувшая вкладка.
+          -->
+          <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+            <p class="text-ui text-ink">{baseOf(activePath)} — больше полутора мегабайт.</p>
+            <p class="text-2xs text-muted">
+              Редактор держит такой файл целиком у каждого в комнате, поэтому
+              открывать его здесь нельзя. Его можно скачать из панели файлов
+              или прочитать из ячейки — построчно, сколько нужно.
+            </p>
+          </div>
+        {:else if activeDoc}
           {#key activePath}
             <FileEditor
               file={activeDoc}
@@ -1625,8 +1777,19 @@
     <div class="max-h-[min(60vh,32rem)] overflow-y-auto px-4">
       <RoomRulesRows rules={roomRules} busy={rulesBusy} onchange={setRule} />
     </div>
+    <!--
+      Второй строкой — то, что видно из зала.
+
+      Ужесточение правила действует раньше, чем о нём узнают чужие браузеры:
+      кадр, вылетевший до рассылки, гейт уже не принимает, и такой вкладке
+      приходится пересобрать документ перезагрузкой (см. `lib/refusal.ts`).
+      Попадает в это окно тот, кто печатал в ту самую секунду, — и он увидит
+      окно «Эту правку не приняли». Обещать ему обратное — значит объяснять
+      ему потом, что сломалось.
+    -->
     <p class="border-t border-line px-4 py-2 text-2xs text-muted">
-      Комната узнаёт сразу — перезаходить никому не нужно.
+      Комната узнаёт сразу — перезаходить никому не нужно. У того, кто печатал в
+      эту самую секунду, страница перезагрузится.
     </p>
   </div>
 {/if}

@@ -154,7 +154,15 @@ export function recallSessionInfo(sessionId: string): SessionInfo | null {
 export function rememberSessionInfo(session: SessionInfo): void {
   const rooms = readRooms()
   const known = rooms[session.id]
-  if (known && known.name === session.name && known.createdAt === session.createdAt) return
+  /*
+   * Карточка сравнивается целиком, а не по имени с датой.
+   *
+   * В ней лежат ещё правила комнаты и указатель на публикацию, а меняются они
+   * чаще имени: преподаватель закрыл тетрадь на запись — и следующий заход
+   * по-прежнему рисовал первый кадр по правилам полугодовой давности, пока не
+   * ответит сервер. Лишняя запись в хранилище стоит микросекунды.
+   */
+  if (known && JSON.stringify(known) === JSON.stringify(session)) return
   rooms[session.id] = session
   writeRooms(rooms)
 }

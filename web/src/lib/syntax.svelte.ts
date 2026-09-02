@@ -54,12 +54,23 @@ async function importSyntax(): Promise<Syntax> {
 let loaded = $state<Syntax | null>(null)
 let inFlight: Promise<Syntax> | null = null
 
-/** Idempotent: a thread of forty code blocks fetches the grammar once. */
+/**
+ * Idempotent: a thread of forty code blocks fetches the grammar once.
+ *
+ * Отказ не кешируется: обещание, отклонённое одним оборванным запросом,
+ * оставило бы вкладку без подсветки до перезагрузки — следующий блок кода
+ * пробует снова. Та же оговорка, что у `loadRenderers`.
+ */
 export function loadSyntax(): Promise<Syntax> {
-  return (inFlight ??= importSyntax().then((ready) => {
-    loaded = ready
-    return ready
-  }))
+  return (inFlight ??= importSyntax()
+    .then((ready) => {
+      loaded = ready
+      return ready
+    })
+    .catch((err: unknown) => {
+      inFlight = null
+      throw err
+    }))
 }
 
 /**

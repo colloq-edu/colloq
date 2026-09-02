@@ -29,7 +29,11 @@
           bracketMatching,
           indentOnInput,
         })),
-        import('@codemirror/state').then(({ EditorState, Prec }) => ({ EditorState, Prec })),
+        import('@codemirror/state').then(({ Compartment, EditorState, Prec }) => ({
+          Compartment,
+          EditorState,
+          Prec,
+        })),
         import('@codemirror/view').then(
           ({ EditorView, highlightActiveLine, keymap, placeholder }) => ({
             EditorView,
@@ -58,6 +62,7 @@
   import { flushSync, untrack } from 'svelte'
   import type * as Y from 'yjs'
   import type { Awareness } from 'y-protocols/awareness'
+  import type { Compartment } from '@codemirror/state'
   import type { EditorView } from '@codemirror/view'
 
   interface Props {
@@ -161,6 +166,13 @@
     lang: Props['language']
     editable: boolean
     hint: string
+    /** Отсек, через который правило edit меняют, не разбирая редактор. */
+    writable: Compartment
+  }
+
+  /** Обе стороны «можно ли печатать» — одним куском, чтобы их нельзя было развести. */
+  function writableExtensions(cm: CodeMirror, editable: boolean) {
+    return [cm.state.EditorState.readOnly.of(!editable), cm.view.EditorView.editable.of(editable)]
   }
 
   function createView(cm: CodeMirror, options: ViewOptions): EditorView {
@@ -168,7 +180,7 @@
     const { bracketMatching, indentOnInput } = cm.language
     const { EditorState, Prec } = cm.state
     const { highlightActiveLine, keymap, placeholder: placeholderExt } = cm.view
-    const { parent, ytext, peers, undo, lang, editable, hint } = options
+    const { parent, ytext, peers, undo, lang, editable, hint, writable } = options
 
     /** Leave the cell only from its outer edge, and never out from under a popup. */
     function arrowOut(view: EditorView, direction: -1 | 1): boolean {
@@ -216,8 +228,7 @@
           indentOnInput(),
           highlightActiveLine(),
           cm.view.EditorView.lineWrapping,
-          EditorState.readOnly.of(!editable),
-          cm.view.EditorView.editable.of(editable),
+          writable.of(writableExtensions(cm, editable)),
           hint ? placeholderExt(hint) : [],
           cm.theme.colloqTheme,
           cm.view.EditorView.contentAttributes.of({ 'aria-label': label }),
@@ -249,17 +260,40 @@
     return () => ytext.unobserve(sync)
   })
 
+  /**
+   * Переконфигурировать живой редактор под новое правило edit — или null, пока
+   * редактора нет.
+   *
+   * `$state.raw`, потому что второй эффект должен проснуться, когда редактор
+   * построился заново (другая тетрадь, другой язык), а не только когда правило
+   * поменялось.
+   */
+  let setWritable = $state.raw<((editable: boolean) => void) | null>(null)
+  /** Что стоит в живом редакторе сейчас — чтобы не переконфигурировать впустую. */
+  let writableNow = true
+
   $effect(() => {
     const parent = host
     const ytext = text
     const peers = awareness
     const undo = undoManager
     const lang = language
-    const editable = !readOnly
     if (!parent) return
 
     const hint = untrack(() => placeholder)
     const focusOnReady = untrack(() => autoFocus)
+    /*
+     * `readOnly` здесь НЕ отслеживается, и это несущее решение.
+     *
+     * Пока отслеживался, преподаватель, переключивший «Печатать в ячейках» на
+     * «только преподаватель» посреди пары, разбирал редактор у всех: destroy
+     * уносит сфокусированный .cm-content, `holdingFocus` считается уже после
+     * него и врёт, autoFocus у кодовой ячейки нет — фокус не возвращался
+     * никому. Следующие буквы уходили в командный режим тетради, где «a»
+     * вставляет ячейку всей комнате, а «d d» удаляет выбранную. Теперь правило
+     * живёт в отсеке и меняется на месте — см. эффект ниже.
+     */
+    const editable = untrack(() => !readOnly)
 
     let view: EditorView | null = null
     let disposed = false
@@ -269,7 +303,8 @@
       // Asked at the last moment rather than tracked: whatever the shim did
       // with focus, this is the one question that matters.
       const holdingFocus = parent.contains(document.activeElement)
-      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint })
+      const writable = new cm.state.Compartment()
+      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable })
       /*
        * Order matters, and nothing paints between these three statements. The
        * editor goes in first so focus can move straight from the shim into it:
@@ -278,15 +313,34 @@
        */
       if (focusOnReady || holdingFocus) view.focus()
       ready = true
+      const built = view
+      writableNow = editable
+      setWritable = (next) =>
+        built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
       flushSync()
     })
 
     return () => {
       disposed = true
+      setWritable = null
       view?.destroy()
       view = null
       ready = false
     }
+  })
+
+  /*
+   * Правило edit меняется посреди пары, и редактор его переживает: меняется
+   * один отсек, фокус, курсор, прокрутка и открытая подсказка остаются на
+   * месте. Строится редактор уже с верным значением, так что первый прогон
+   * этого эффекта — обычно холостой.
+   */
+  $effect(() => {
+    const apply = setWritable
+    const editable = !readOnly
+    if (!apply || editable === writableNow) return
+    writableNow = editable
+    apply(editable)
   })
 </script>
 

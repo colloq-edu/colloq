@@ -7,10 +7,13 @@ const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
 /* ------------------------------------------------------------------ chunks */
 
 /*
- * One chunk per heavy vendor. Two payoffs: a student who opens the join screen
- * never downloads the editor, the markdown renderer or the ANSI parser, and a
+ * One chunk per heavy vendor. Two payoffs: a student who opens '/' never
+ * downloads the editor, the markdown renderer or the ANSI parser, and a
  * student who comes back next week revalidates only the chunks that actually
  * changed instead of one monolith whose hash moves on every app edit.
+ *
+ * Экран входа живёт на /s/:id, и там codemirror с render нарочно приезжают
+ * сразу: за входом всегда идёт комната — см. firstPaint ниже.
  */
 const CODEMIRROR = /^(@codemirror\/|@lezer\/|y-codemirror\.next$|style-mod$|w3c-keyname$|crelt$)/
 const YJS = /^(yjs|y-websocket|y-protocols|y-indexeddb|lib0)$/
@@ -117,6 +120,9 @@ export default defineConfig({
       '/api': { target: API_TARGET, changeOrigin: true },
       '/collab': { target: API_TARGET, ws: true },
       '/control': { target: API_TARGET, ws: true },
+      // Документ открытого файла — четвёртый сокет сервера, и забыть его здесь
+      // значит редактор, который на стенде «подключается» до конца дня.
+      '/file': { target: API_TARGET, ws: true },
     },
   },
   build: {

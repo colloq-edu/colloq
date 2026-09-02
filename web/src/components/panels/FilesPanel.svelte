@@ -21,6 +21,7 @@
   import { copyText } from '@/lib/clipboard'
   import { iconFor } from '@/lib/file-icons'
   import { permitsIn } from '@/lib/may'
+  import { watchBooks } from '@/lib/yreactive.svelte'
   import { baseOf, joinPath, kindOf, parentOf, safeSegment, whySegmentRefused } from '@shared/paths'
 
   /** One file still on the wire, and the bytes the browser has actually flushed. */
@@ -56,6 +57,9 @@
   let confirming = $state<string | null>(null)
   const isHost = $derived(session.me.role === 'host')
   const may = $derived(permitsIn(session.session.rules, session.me.role))
+  /** Тетради комнаты: `.ipynb`, который уже открыт как тетрадь, — не файл. */
+  const books = watchBooks(session.doc)
+  const isBook = (path: string): boolean => books.current.some((book) => book.path === path)
 
   /** Свёрнутые папки. Всё, чего здесь нет, развёрнуто: дерево видно целиком. */
   let collapsed = $state<Set<string>>(new Set())
@@ -79,6 +83,20 @@
 
   const fileCount = $derived(session.files.filter((entry) => !entry.dir).length)
   const listed = $derived(session.files.length > 0 || uploads.length > 0)
+
+  /**
+   * Дерево показано не целиком.
+   *
+   * Сервер обходит папки уровень за уровнем и упирается в потолок (см.
+   * `listTree` в workspace.ts): самое глубокое в список не попадает. Молчать
+   * об этом нельзя — человек, не нашедший свой файл, ищет его заново, а не
+   * догадывается о потолке.
+   *
+   * Признак едет рядом со списком, в сообщении `files`, и лежит в состоянии
+   * комнаты (`session.filesTruncated`): он заменяется каждым кадром, так что
+   * строка гаснет сама, как только дерево снова помещается целиком.
+   */
+  const truncated = $derived(session.filesTruncated)
 
   const depthOf = (path: string): number => path.split('/').length - 1
 
@@ -132,6 +150,17 @@
     // Двоичное не открыть ничем: нажатие на нём означает «дай мне его сюда».
     if (kindOf(entry.path) === 'binary') {
       void download(entry.path)
+      return
+    }
+    /*
+     * Тетрадь, которой в комнате ещё нет, вносит сервер — и по правилу `files`
+     * может отказать. Вкладка на неё открылась бы сразу и осталась бы навсегда
+     * с «Открываю…»: тетради, которую не завели, в комнате не появится, и
+     * закрывать вкладку нечему. Отказ — здесь, до нажатия, теми же словами,
+     * которыми ответил бы сервер.
+     */
+    if (kindOf(entry.path) === 'notebook' && !may.files && !isBook(entry.path)) {
+      error = 'Открывать тетради в этом семинаре может преподаватель.'
       return
     }
     onopen?.(entry.path)
@@ -196,6 +225,24 @@
     const path = joinPath(current.dir, current.kind === 'book' && !name.endsWith('.ipynb') ? name + '.ipynb' : name)
     if (current.kind === 'rename') {
       if (current.from && current.from !== path) {
+        /*
+         * Занятое имя видно отсюда — список файлов комнаты уже здесь.
+         *
+         * Вкладка переезжает на новое имя сразу и обязана: рассылка списка
+         * приходит позже и закрыла бы её как вкладку на исчезнувший файл. Но
+         * если сервер откажет, списка не будет вовсе, а вкладка уже стоит на
+         * несуществующем пути — редактор отпустит документ вместе с историей
+         * отмен и закроется по 4404. Поэтому то, чем сервер отказал бы,
+         * проверяется до отправки, его же словами.
+         */
+        if (!session.files.some((entry) => entry.path === current.from)) {
+          error = `«${baseOf(current.from)}» в комнате больше нет.`
+          return
+        }
+        if (session.files.some((entry) => entry.path === path)) {
+          error = `«${baseOf(path)}» в этой папке уже есть.`
+          return
+        }
         session.send({ t: 'tree:move', from: current.from, to: path })
         onrename?.(current.from, path)
       }
@@ -249,8 +296,15 @@
    */
   function onKeydown(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return
-    if (draft) return cancelDraft()
+    // Съеденный ключ помечается: ящик терминала закрывается по Escape, если он
+    // никому не понадобился, и «отменил имя файла» — это как раз тот случай,
+    // когда он понадобился.
+    if (draft) {
+      event.preventDefault()
+      return cancelDraft()
+    }
     if (!confirming || deleting) return
+    event.preventDefault()
     confirming = null
   }
   let deleting = $state<string | null>(null)
@@ -356,6 +410,12 @@
   async function upload(list: FileList | File[] | null, dir: string) {
     const files = Array.from(list ?? [])
     if (files.length === 0) return
+    // Право — до первого байта: отказ, приходящий после выбора файла, человек
+    // читает как поломку, а не как правило комнаты.
+    if (!may.files) {
+      error = may.filesWhy + '.'
+      return
+    }
     error = null
 
     const queued: Upload[] = files.map((file) => ({
@@ -534,6 +594,13 @@
           event.preventDefault()
           commitDraft()
         }
+        // Escape закрывает поле — и только его. Тот же ключ у окна закрывает
+        // ящик терминала, если никто не сказал, что он уже занят делом.
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          cancelDraft()
+        }
       }}
     />
   {/snippet}
@@ -682,8 +749,15 @@
         class="flex h-[26px] items-center gap-2 bg-raised pr-2"
         style={`padding-left:${4 + depth * 14 + 32}px`}
       >
+        <!-- Тетрадь спрашивает своё: с файлом уходят и её ячейки у всей
+             комнаты, а вернуть их из истории нельзя — лента версий ведётся по
+             тетради комнаты, а не по каждой открытой. -->
         <span class="min-w-0 flex-1 truncate text-2xs text-muted">
-          {entry.dir ? 'Убрать папку со всем, что в ней?' : 'Убрать?'}
+          {entry.dir
+            ? 'Убрать папку со всем, что в ней?'
+            : isBook(entry.path)
+              ? 'Убрать тетрадь и её ячейки у всей комнаты?'
+              : 'Убрать?'}
         </span>
         <button
           type="button"
@@ -727,6 +801,15 @@
     </div>
   {/if}
 
+  <!-- Список кончился, но папка — нет. Строка стоит там же, где кончается
+       дерево: это ответ на вопрос «а где мой файл?», заданный глазами. -->
+  {#if truncated}
+    <p class="px-2 pt-1.5 text-2xs leading-snug text-muted">
+      Файлов в комнате больше, чем помещается в список: самые глубокие папки не раскрыты. Их видно
+      из ячейки — <span class="font-mono">os.listdir()</span>.
+    </p>
+  {/if}
+
   {#each uploads as item (item.id)}
     {@const done = percent(item)}
     <div class="flex flex-col gap-1 px-2 pb-1 pt-1.5">
@@ -762,17 +845,24 @@
 
   <!--
     Есть всегда, в любом состоянии: пустая комната иначе оставалась бы с
-    абзацем и без цели.
+    абзацем и без цели. Там, где файлы кладёт преподаватель, кнопка остаётся на
+    месте и называет правило — как оверлей для брошенного файла: открыть выбор
+    и отказать после значит потратить чужое время на решение, известное заранее.
   -->
   <button
     type="button"
-    class="mx-1 mt-2 flex h-9 shrink-0 items-center justify-center border border-dashed text-2xs transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {dragDepth >
-    0
+    class="mx-1 mt-2 flex h-9 shrink-0 items-center justify-center border border-dashed text-2xs transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed {dragDepth >
+    0 && may.files
       ? 'border-accent bg-accent/10 text-accent-text'
-      : 'border-line text-muted hover:border-faint hover:text-ink'}"
+      : 'border-line text-muted'} {may.files ? 'hover:border-faint hover:text-ink' : ''}"
+    disabled={!may.files}
     onclick={() => picker?.click()}
   >
-    {target ? `Файлы — в папку ${target}` : 'Файлы — общие с комнатой'}
+    {#if !may.files}
+      {may.filesWhy}
+    {:else}
+      {target ? `Файлы — в папку ${target}` : 'Файлы — общие с комнатой'}
+    {/if}
   </button>
 
   {#if error}

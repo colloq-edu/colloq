@@ -7,7 +7,8 @@
  * seminar from a second client and reading the result in a real browser, none
  * of them ran — no <script>, no on* attribute, no javascript: href survived.
  *
- * Two tags did survive, and both are a lever on people other than their author.
+ * What survived is listed below, and every item on the list is a lever on
+ * people other than its author.
  *
  * `style` is not scoped to the cell. `<style>* { display: none }</style>` in a
  * text cell blanks the seminar for the whole room, and `<style>@import
@@ -17,8 +18,31 @@
  * `form` survives with its action intact, which puts a button in the middle of
  * the notebook that posts wherever its author chose.
  *
- * Kernel output keeps both. `df.style` is a real pandas feature and it emits a
- * scoped <style>; and anybody who can make the kernel emit HTML can already run
- * whatever they like inside it, so there is nothing left there to protect.
+ * `audio` and `video` survive with `autoplay` and `loop`, which is sound in
+ * everybody's room that its author does not have to be able to stop.
+ *
+ * Kernel output keeps all of them. `df.style` is a real pandas feature and it
+ * emits a scoped <style>; and anybody who can make the kernel emit HTML can
+ * already run whatever they like inside it, so there is nothing left there to
+ * protect.
  */
-export const MARKDOWN_FORBIDDEN_TAGS = ['style', 'form']
+export const MARKDOWN_FORBIDDEN_TAGS = ['style', 'form', 'audio', 'video']
+
+/**
+ * И атрибут `style` — он же половина той самой дыры.
+ *
+ * Тег запрещён, а атрибут DOMPurify оставляет по умолчанию и значение его не
+ * разбирает вовсе: ни CSS, ни адресов внутри. `<div style="position:fixed;
+ * inset:0;background:#000;z-index:9999">` из одной текстовой ячейки — чёрный
+ * экран у всех тридцати человек и у ноутбука в проекторе, причём поверх
+ * интерфейса: удалить ячейку мышью уже нельзя, а перезагрузка возвращает ту же
+ * ячейку. Ровно тот вред, от которого закрывались тегом.
+ *
+ * Заметке оформление не нужно: размеры, отбивки и цвета в ней задаёт
+ * `.prose-note`, и он делает это одинаково у всех.
+ *
+ * `input` и `canvas` в списке НЕТ намеренно: чекбокс — это список задач
+ * из GFM (`- [ ] сделать`), а холст без скрипта, которого сюда не пронести,
+ * не рисует ничего.
+ */
+export const MARKDOWN_FORBIDDEN_ATTRS = ['style']

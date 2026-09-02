@@ -55,6 +55,26 @@ export function keepAwake(report: (state: WakeState) => void): () => void {
 
   let wanted = true
   let held: WakeLockSentinel | null = null
+  /*
+   * Повтор после отказа — по таймеру, а не только по возвращению во вкладку.
+   *
+   * Отпустить блокировку агент может в любой момент и при ВИДИМОЙ странице:
+   * упал заряд, включился режим энергосбережения. Тогда `visibilitychange` не
+   * случится вовсе, и без этого таймера пульт до конца пары утверждал бы, что
+   * планшет не заснёт, — а он засыпает через две минуты речи без касаний.
+   * Минута, потому что причина проходит сама (планшет поставили на зарядку), а
+   * просить чаще значит ничего не менять и жечь тот же заряд.
+   */
+  const RETRY_MS = 60_000
+  let retryTimer: ReturnType<typeof setTimeout> | undefined
+
+  const retryLater = (): void => {
+    if (!wanted || retryTimer !== undefined) return
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined
+      void ask()
+    }, RETRY_MS)
+  }
 
   const ask = async (): Promise<void> => {
     // Просить, пока страницу не видно, бессмысленно — браузер откажет, и мы
@@ -70,15 +90,24 @@ export function keepAwake(report: (state: WakeState) => void): () => void {
         return
       }
       held = next
-      // Отпустил браузер — не мы. Обнуляем ссылку, но молчим: это случается
-      // при уходе в фон, и говорить там некому.
+      /*
+       * Отпустил браузер — не мы. При уходе в ФОН молчим: экран и так погашен,
+       * а вернутся к вкладке — попросим снова по `visibilitychange`. А вот
+       * отпущенная при ВИДИМОЙ странице блокировка — это отказ, и молчать о нём
+       * нельзя: показывающий продолжал бы обещать, что экран не гаснет.
+       */
       next.addEventListener('release', () => {
-        if (held === next) held = null
+        if (held !== next) return
+        held = null
+        if (!wanted || document.visibilityState !== 'visible') return
+        report('refused')
+        retryLater()
       })
       report('on')
     } catch {
       held = null
       report('refused')
+      retryLater()
     }
   }
 
@@ -91,6 +120,8 @@ export function keepAwake(report: (state: WakeState) => void): () => void {
 
   return () => {
     wanted = false
+    clearTimeout(retryTimer)
+    retryTimer = undefined
     document.removeEventListener('visibilitychange', onVisible)
     const last = held
     held = null

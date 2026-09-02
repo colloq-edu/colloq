@@ -47,13 +47,18 @@
      * правку — в одну. Пусто у ходов, записанных до выделения нескольких.
      */
     askedAbout: number[]
+    /**
+     * Можно ли завести ход «сделать» в этой комнате: правило `agent` плюс
+     * режим оракула. Считает панель — режим инстанса знает только она.
+     */
+    canDo: boolean
     onretry: () => void
     onstop: () => void
     /** Отменить ход целиком: файлы вернутся к тому, что было до него. */
     onundo: () => void
   }
 
-  let { entry, avatar, cellNumber, askedAbout, onretry, onstop, onundo }: Props = $props()
+  let { entry, avatar, cellNumber, askedAbout, canDo, onretry, onstop, onundo }: Props = $props()
 
   /** Что говорит строка шага: глагол, цель и итог. */
   const VERB: Record<string, string> = {
@@ -173,6 +178,11 @@
    * очереди.
    */
   const may = $derived(permitsIn(session.session.rules, session.me.role))
+  /*
+   * Отменить ход — там же, где его можно завести, плюс преподаватель всегда:
+   * ровно так это читает сервер (control.ts, case 'ai:undo').
+   */
+  const mayUndo = $derived(session.me.role === 'host' || may.agent)
 
   function decide(accept: boolean) {
     if (!findChatEntry(session.doc, entry.id)) return
@@ -372,17 +382,21 @@
         <p class="break-words text-code text-danger">
           {entry.answer || 'The oracle did not answer.'}
         </p>
-        <button
-          type="button"
-          class="inline-flex h-[22px] items-center gap-1.5 border border-danger/45 px-1.5 text-2xs
-                 font-bold uppercase tracking-caps text-danger transition-colors
-                 duration-[var(--speed-quick)] hover:bg-danger/15 focus-visible:outline-none
-                 focus-visible:ring-2 focus-visible:ring-danger/40"
-          onclick={onretry}
-        >
-          <Icon name="restart" size={11} />
-          Retry
-        </button>
+        <!-- Повтор хода «сделать» — это тот же ход: там, где его нельзя
+             завести, нечего и повторять. -->
+        {#if entry.mode !== 'agent' || canDo}
+          <button
+            type="button"
+            class="inline-flex h-[22px] items-center gap-1.5 border border-danger/45 px-1.5 text-2xs
+                   font-bold uppercase tracking-caps text-danger transition-colors
+                   duration-[var(--speed-quick)] hover:bg-danger/15 focus-visible:outline-none
+                   focus-visible:ring-2 focus-visible:ring-danger/40"
+            onclick={onretry}
+          >
+            <Icon name="restart" size={11} />
+            Retry
+          </button>
+        {/if}
       </div>
     {:else if entry.answer}
       <AnswerBody source={entry.answer} {streaming} cellId={entry.cellId} omit={entry.patch} />
@@ -407,17 +421,31 @@
     -->
     {#if entry.undo === 'available'}
       <div class="flex flex-col gap-1.5 border-t border-line pt-2">
+        <!-- Обещано ровно то, что делается: сервер возвращает только файлы, до
+             которых после хода никто не дотянулся, а переименованные и
+             переписанные пропускает и называет их в ответе. -->
         <p class="text-2xs leading-snug text-muted">
-          Оракул поменял файлы сам. Отмена вернёт их к тому, что было до этого вопроса.
+          Оракул поменял файлы сам. Отмена вернёт те из них, которых после этого никто не трогал.
         </p>
-        <button type="button" class={cn(GHOST, 'self-start')} onclick={onundo}>
+        <!-- Отменяет ход тот, кому разрешено его завести: сервер отказывает
+             всем остальным (control.ts), а кнопка, которая врёт до нажатия,
+             хуже её отсутствия. Строка выше остаётся — она про то, что
+             случилось, а не про то, что можно. -->
+        <button
+          type="button"
+          class={cn(GHOST, 'self-start disabled:cursor-not-allowed disabled:opacity-40')}
+          disabled={!mayUndo}
+          title={mayUndo ? '' : may.agentWhy}
+          onclick={onundo}
+        >
           <Icon name="restart" size={11} />
           Отменить всё
         </button>
       </div>
     {:else if entry.undo === 'done'}
       <p class="border-t border-line pt-2 text-2xs text-muted">
-        Ход отменён{entry.undoBy ? ` — ${entry.undoBy}` : ''}: файлы вернулись к тому, что было.
+        Ход отменён{entry.undoBy ? ` — ${entry.undoBy}` : ''}: файлы, которых с тех пор никто не
+        менял, вернулись к тому, что было.
       </p>
     {/if}
 

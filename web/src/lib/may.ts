@@ -25,7 +25,7 @@ export interface Permits {
   /** Печатать в ячейках. */
   edit: boolean
   editWhy: string
-  /** Запустить ячейку. */
+  /** Запустить: ячейку, файл над редактором, команду в общей оболочке. */
   run: boolean
   runWhy: string
   /** Запустить весь лист: Run All, Run Above, форматирование. */
@@ -68,7 +68,10 @@ export function permitsIn(rules: unknown, role: ParticipantRole): Permits {
     edit: allows(read.edit, role),
     editWhy: 'Тетрадь в этом семинаре принадлежит преподавателю',
     run: allowsRun(read.run, role, 'one'),
-    runWhy: 'Ячейки в этом семинаре запускает преподаватель',
+    // Одна фраза на три места — кнопка ячейки, «Запустить» над файлом и строка
+    // ввода в терминале, — и те же слова, которыми отказывает сервер
+    // (control.ts, term:run): правило одно, значит и объяснение одно.
+    runWhy: 'В этом семинаре запускает преподаватель — и ячейки, и команды оболочки',
     bulk: allowsRun(read.run, role, 'bulk'),
     bulkWhy:
       read.run === 'single' && role !== 'host'

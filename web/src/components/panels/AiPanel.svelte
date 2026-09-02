@@ -18,6 +18,7 @@
   import { oracleDraft } from '@/lib/drafts.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { permitsIn } from '@/lib/may'
+  import { plural } from '@/lib/plural'
   import { watchBooks, watchCellNumbers } from '@/lib/yreactive.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -65,9 +66,6 @@
   /** What the room currently believes about us, so we only announce changes. */
   let composingSent = false
 
-  // Optimistic until proven otherwise: a null status means "still checking",
-  // and a dead input while a fetch is in flight reads as a broken oracle.
-  const offline = $derived(status !== null && !status.enabled)
   /*
    * Hints mode is a real state of the room, not an error to discover by
    * pressing a button. The chips it refuses are not drawn at all — the rule
@@ -86,6 +84,19 @@
     oracleModeIn(readRules(session.session.rules), status?.mode ?? 'full'),
   )
   const hintsOnly = $derived(mode === 'hints')
+  /*
+   * Спрашивать негде — по любой из двух причин.
+   *
+   * Optimistic until proven otherwise: a null status means "still checking",
+   * and a dead input while a fetch is in flight reads as a broken oracle.
+   *
+   * Режим комнаты входит сюда наравне с инстансом. Правило «оракул выключен»
+   * ставят на контрольную, и живое поле, отвечающее на каждый вопрос красной
+   * строкой 403, читается классом как поломка, а не как решение
+   * преподавателя. Правило комнаты известно этой вкладке сразу, ждать статуса
+   * ему незачем.
+   */
+  const offline = $derived(mode === 'off' || (status !== null && !status.enabled))
 
   $effect(() => {
     const read = () => (entries = chat.map(readChatEntry))
@@ -214,10 +225,13 @@
     session.files.filter((file) => !file.dir && kindOf(file.path) !== 'notebook').length,
   )
 
-  const seesAll = $derived(
-    `всю комнату: ${plural(books.current.length, 'тетрадь', 'тетради', 'тетрадей')}` +
-      `, ${plural(fileCount, 'файл', 'файла', 'файлов')}`,
-  )
+  const seesAll = $derived.by(() => {
+    const nb = books.current.length
+    return (
+      `всю комнату: ${nb} ${plural(nb, 'тетрадь', 'тетради', 'тетрадей')}` +
+      `, ${fileCount} ${plural(fileCount, 'файл', 'файла', 'файлов')}`
+    )
+  })
 
   /** Открытый текстовый файл едет целиком; тетрадь — нет: она и так в ячейках. */
   const openFile = $derived(
@@ -252,14 +266,6 @@
     if (focusNumbers.length > 1) return `ячейки ${focusNumbers.join(', ')}`
     return openFile
   })
-
-  function plural(n: number, one: string, few: string, many: string): string {
-    const mod10 = n % 10
-    const mod100 = n % 100
-    if (mod10 === 1 && mod100 !== 11) return `${n} ${one}`
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} ${few}`
-    return `${n} ${many}`
-  }
 
   function cellNumber(id: string | null | undefined): number | null {
     if (!id) return null
@@ -435,6 +441,22 @@
    */
   let doing = $state(false)
   const mayDo = $derived(permitsIn(session.session.rules, session.me.role).agent)
+  /*
+   * И режим оракула, а не только правило `agent`.
+   *
+   * В режиме подсказок сервер отказывает поручению безусловно: оракул, который
+   * не пишет ответ за студента, тем более не пишет его в файл. Переключателю
+   * там нечего предлагать — «нет вовсе» вместо «есть и отказывает».
+   */
+  const canDo = $derived(mayDo && !hintsOnly)
+  /*
+   * Правило меняют посреди пары — переключатель уходит вместе со своим
+   * положением. Иначе комната, вернувшаяся из подсказок, встречает человека
+   * взведённым «Сделать», которого он не выбирал.
+   */
+  $effect(() => {
+    if (!canDo) doing = false
+  })
 
   function submit() {
     const message = composing.question.trim()
@@ -444,7 +466,7 @@
       composer.style.height = 'auto'
       composer.focus()
     }
-    if (doing && mayDo) {
+    if (doing && canDo) {
       void ask({ message, mode: 'agent' })
       return
     }
@@ -457,6 +479,18 @@
   }
 
   function retry(entry: ChatSnapshot) {
+    /*
+     * Повтор поручения — поручение.
+     *
+     * Без `mode` «почини train.py и запусти» уходило обычным вопросом: модель
+     * объясняла, что сделала бы, и не делала ничего, — а нажимали Retry ровно
+     * под ходом «сделать». Действие и ячейка агенту не передаются: у него их
+     * не было и в первый раз.
+     */
+    if (entry.mode === 'agent') {
+      void ask({ message: entry.question, mode: 'agent' })
+      return
+    }
     void ask({
       message: entry.question,
       action: (entry.action as AiAction | null) ?? undefined,
@@ -581,6 +615,7 @@
             .map((id) => cellNumber(id))
             .filter((n): n is number => n !== null)
             .sort((a, b) => a - b)}
+          {canDo}
           onretry={() => retry(entry)}
           onstop={() => void stop(entry.id)}
           onundo={() => undo(entry.id)}
@@ -673,15 +708,28 @@
         it. An oracle switched off by the teacher is a decision, not a fault;
         an unconfigured one is a fault, and only staff can do anything about it —
         so only staff are told where.
+
+        Выключен — кем: сервер различает решение админа и решение
+        преподавателя (routes/ai.ts), и панель обязана называть то же самое,
+        иначе решение админа приходит классу как решение преподавателя.
+
+        А вот «ключа нет» и «лимит ноль» /api/ai/status одинаково отдаёт как
+        `enabled: false`, и различить их отсюда нечем — поэтому подсказка хосту
+        называет оба места сразу, а не то, которое у него уже настроено.
       -->
       <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted">
         {#if mode === 'off'}
-          The oracle is switched off for this seminar.
+          {#if status?.mode === 'off'}
+            The oracle is switched off for this instance.
+          {:else}
+            The oracle is switched off for this seminar.
+          {/if}
         {:else if isHost}
-          No model is set up on this Colloq yet — add a key under
-          <span class="font-semibold text-ink">Oracle</span> in the teaching panel.
+          The oracle is not answering here — check
+          <span class="font-semibold text-ink">Oracle</span> in the teaching panel: either no model
+          is set up, or the hourly limit is set to zero.
         {:else}
-          No model is set up on this Colloq yet, so there is nobody to ask here.
+          The oracle is not answering on this Colloq, so there is nobody to ask here.
         {/if}
       </p>
     {:else}
@@ -738,10 +786,11 @@
         <!--
           Спросить или сделать — переключателем, а не догадкой по формулировке.
           «Перепиши train.py» — это и вопрос, и поручение; угадывать значит
-          иногда молча трогать чужие файлы. Там, где режим закрыт правилом
-          комнаты, переключателя нет вовсе, а не есть и отказывает.
+          иногда молча трогать чужие файлы. Там, где режим закрыт — правилом
+          комнаты или режимом подсказок, — переключателя нет вовсе, а не есть и
+          отказывает.
         -->
-        {#if mayDo}
+        {#if canDo}
           <div class="flex items-center gap-1 px-2 pb-0.5 pt-1.5">
             <div class="flex items-stretch border border-line bg-canvas">
               <button
@@ -778,7 +827,7 @@
           bind:this={composer}
           bind:value={composing.question}
           rows="1"
-          placeholder={doing && mayDo
+          placeholder={doing && canDo
             ? 'Что сделать с файлами семинара…'
             : focusAsked
               ? `Спросить про ${focusAsked}…`
@@ -807,7 +856,7 @@
     <p class="flex items-center gap-1.5 text-2xs text-muted">
       <Icon name="users" size={13} class="shrink-0" />
       <span class="min-w-0">
-        {doing && mayDo
+        {doing && canDo
           ? 'Правит файлы семинара сам. Тетрадь не трогает — там по-прежнему предлагает.'
           : 'The whole room sees your question and the answer.'}
       </span>

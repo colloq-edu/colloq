@@ -146,8 +146,10 @@ export const api = {
       headers: { authorization: `Bearer ${token}` },
     }),
 
+  // `truncated` — дерево показано не целиком: обход упёрся в потолок. Тот же
+  // признак едет в сообщении `files` по сокету, и комната хранит один флаг.
   listFiles: (id: string, token: string) =>
-    request<{ files: FileEntry[] }>(`/api/sessions/${id}/files`, {
+    request<{ files: FileEntry[]; truncated?: boolean }>(`/api/sessions/${id}/files`, {
       headers: { authorization: `Bearer ${token}` },
     }),
 

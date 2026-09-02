@@ -31,10 +31,19 @@
 
   interface Props {
     session: SessionInfo
+    /**
+     * Почему человек снова видит эту форму, если он тут уже был.
+     *
+     * Пусто в обычном случае: студент, открывший ссылку впервые, ничего не
+     * терял и объяснять ему нечего. Строка появляется, когда сохранённое место
+     * в комнате перестало работать (см. App): без неё форма имени посреди
+     * занятия читается как «всё сломалось».
+     */
+    notice?: string | null
     onjoined: (identity: StoredIdentity) => void
   }
 
-  let { session, onjoined }: Props = $props()
+  let { session, notice = null, onjoined }: Props = $props()
 
   const profile = loadProfile()
   // Derived, not read once: App hands this screen a fresh session object when
@@ -324,6 +333,14 @@
           {/if}
         </div>
       </div>
+
+      {#if notice}
+        <!-- Спокойной строкой, не красной: место в комнате истекает само, и
+             человек, который сюда попал, ничего не сделал неправильно. -->
+        <p class="border border-line bg-surface px-4 py-3 text-ui text-muted" role="status">
+          {notice}
+        </p>
+      {/if}
 
       {#if session.published}
         <!--

@@ -17,8 +17,9 @@
   import { getSessionState } from '@/lib/session.svelte'
   import { insertCell } from '@/lib/notebook-ops'
   import { permitsIn } from '@/lib/may'
-  import { bookCells, findCell, mainRoot, rootOfCell } from '@shared/notebook'
+  import { bookAt, bookCells, findCell, mainRoot, rootOfCell } from '@shared/notebook'
   import { cn } from '@/lib/utils'
+  import { revealCell } from '@/lib/reveal'
   import Icon from '@/components/ui/Icon.svelte'
   import Code from '@/components/ui/Code.svelte'
   import Markdown from '@/components/notebook/Markdown.svelte'
@@ -111,19 +112,26 @@
       return
     }
     /*
-     * В ту тетрадь, о которой был разговор, — и в тетрадь комнаты, если
+     * В ту тетрадь, о которой был разговор, — и в ту, что открыта, если
      * разговор был ни о какой. Тетрадей несколько, и класть ответ про чужой
-     * лист в свой значило бы отвечать не туда, куда смотрели.
+     * лист в свой значило бы отвечать не туда, куда смотрели; а тетрадь
+     * комнаты, выбранная за неимением ячейки, — это чужой лист для всякого,
+     * кто открыл второй.
      */
-    const root = (cellId ? rootOfCell(session.doc, cellId) : null) ?? mainRoot(session.doc)
+    const open = session.editingPath ? bookAt(session.doc, session.editingPath) : null
+    const root =
+      (cellId ? rootOfCell(session.doc, cellId) : null) ?? open?.root ?? mainRoot(session.doc)
     const found = cellId ? findCell(session.doc, cellId) : null
     const at = found ? found.index + 1 : bookCells(session.doc, root).length
     const created = insertCell(session.doc, root, 'code', at, code)
-    session.selectCell(created)
-    // The cell exists in the document before it exists on screen.
-    requestAnimationFrame(() =>
-      document.querySelector(`[data-cell-id="${created}"]`)?.scrollIntoView({ block: 'center' }),
-    )
+    /*
+     * Через revealCell, а не выделением с прокруткой: тетрадь, в которую легла
+     * ячейка, может быть спрятанной — все открытые смонтированы, неактивные
+     * скрыты классом, — и `scrollIntoView` внутри спрятанного не делает
+     * ничего. Нажатие выглядело как несработавшее, а второе нажатие заводило
+     * вторую такую же ячейку.
+     */
+    revealCell(session, created)
   }
 
   const STRIP =

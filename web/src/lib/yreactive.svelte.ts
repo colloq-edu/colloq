@@ -181,12 +181,33 @@ class CellRegistry {
    */
   readonly numbering = box<Map<string, number>>(new Map())
 
+  /** Корни, на которые реестр подписан сейчас, — по ним и видно, что список сменился. */
+  #bound: string[] = []
+
   constructor(doc: Y.Doc) {
     this.#doc = doc
     this.#rebind(false)
-    // Список тетрадей живёт в meta: он меняется, когда в комнате открывают или
-    // убирают тетрадь, и подписки должны за ним поспевать.
-    getMeta(doc).observe(() => this.#rebind(true))
+    /*
+     * Список тетрадей живёт в meta: он меняется, когда в комнате открывают или
+     * убирают тетрадь, и подписки должны за ним поспевать.
+     *
+     * Глубоко, а не мелко. Вторая и следующие тетради дописываются push'ем во
+     * вложенный `meta.books`, а мелкий observe на Y.Map вложенного изменения
+     * не видит вовсе: вкладка открывалась (её рисует watchBooks, у него
+     * observeDeep), а ячеек в ней не было — реестр просыпался только когда
+     * кто-нибудь трогал верхнеуровневый ключ, то есть на первом же запуске
+     * ячейки. Работы при этом не прибавилось, а убавилось: раньше пересборка
+     * шла на любую запись в meta, теперь — только когда список корней правда
+     * стал другим.
+     */
+    getMeta(doc).observeDeep(() => {
+      if (sameIds(this.#rootKeys(), this.#bound)) return
+      this.#rebind(true)
+    })
+  }
+
+  #rootKeys(): string[] {
+    return allCellArrays(this.#doc).map((cells) => Y.findRootTypeKey(cells))
   }
 
   /** Подписаться на те массивы, которые сейчас числятся тетрадями. */
@@ -196,6 +217,7 @@ class CellRegistry {
       const root = Y.findRootTypeKey(cells)
       wanted.set(root, cells)
     }
+    this.#bound = [...wanted.keys()]
     for (const [root, array] of this.#arrays) {
       if (wanted.get(root) === array) continue
       array.unobserve(this.#onChange)
@@ -319,14 +341,32 @@ export function watchCellIds(doc: Y.Doc, root: () => string): Reactive<string[]>
  * состояние комнаты, а не вкладки, и опоздавший видит те же тетради, что и все.
  */
 export function watchBooks(doc: Y.Doc): Reactive<Book[]> {
-  const value = box<Book[]>(bookList(doc))
   const meta = getMeta(doc)
+  // Простой снимок, не руна: сравнивать через `value` значило бы зависеть от
+  // того, что этот же наблюдатель и пишет.
+  let previous = bookList(doc)
+  const value = box<Book[]>(previous)
   const read = () => {
     const next = bookList(doc)
-    if (sameBooks(next, value.value)) return
+    if (sameBooks(next, previous)) return
+    previous = next
     value.value = next
   }
-  meta.observeDeep(read)
+
+  /*
+   * Подписка живёт ровно столько, сколько её читатель.
+   *
+   * Вкладки ящика терминала (история, файлы, оракул) монтируются и исчезают на
+   * каждом переключении, а `observeDeep` без ответной отписки оставлял бы от
+   * каждого монтажа вечного наблюдателя на meta — к концу пары их там десятки,
+   * и каждый пересобирает список тетрадей на любую запись в документе.
+   */
+  $effect(() => {
+    read()
+    meta.observeDeep(read)
+    return () => meta.unobserveDeep(read)
+  })
+
   return {
     get current() {
       return value.value
@@ -500,9 +540,35 @@ export function watchCellMeta(cell: () => YCell | null): Reactive<CellMeta> {
 
 const EMPTY_OUTPUTS: CellOutput[] = []
 
+/**
+ * Разобранный вывод, пока запись не менялась.
+ *
+ * `readOutput` для data и error разбирает JSON целиком, а читателя будит
+ * КАЖДАЯ склейка stdout — до двадцати раз в секунду у стримящей ячейки.
+ * Картинка, которая с прошлого раза не двигалась, разбиралась заново вместе с
+ * каждым кадром прогресс-бара; потолок ячейки в 400 КБ говорит, сколько это
+ * стоило. Ключ — сама запись Y.Map: WeakMap отпускает её вместе с документом,
+ * а хранимая строка `json` отвечает на «а не переписали ли её».
+ */
+const parsedOutputs = new WeakMap<YOutput, { json: string; value: CellOutput }>()
+
 function readOutputSnapshot(cell: YCell): CellOutput[] {
   const out: CellOutput[] = []
   cellOutputs(cell).forEach((entry: YOutput) => {
+    const json = entry.get('json')
+    if (typeof json === 'string') {
+      const cached = parsedOutputs.get(entry)
+      if (cached && cached.json === json) {
+        out.push(cached.value)
+        return
+      }
+      const parsed = readOutput(entry)
+      if (!parsed) return
+      parsedOutputs.set(entry, { json, value: parsed })
+      out.push(parsed)
+      return
+    }
+    // Поток: текст лежит в Y.Text, разбирать нечего.
     const parsed = readOutput(entry)
     if (parsed) out.push(parsed)
   })
@@ -510,6 +576,8 @@ function readOutputSnapshot(cell: YCell): CellOutput[] {
 }
 
 function sameOutput(a: CellOutput, b: CellOutput): boolean {
+  // Та же запись, не тронутая с прошлого раза, — см. parsedOutputs.
+  if (a === b) return true
   if (a.kind !== b.kind) return false
   if (a.kind === 'stream' && b.kind === 'stream') {
     // Length first: a stream that just grew differs in O(1), which is the case

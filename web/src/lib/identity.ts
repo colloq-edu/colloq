@@ -50,6 +50,24 @@ export function saveIdentity(identity: StoredIdentity): void {
   saveProfile({ name: identity.name, avatar: identity.avatar })
 }
 
+/**
+ * Забыть, кем этот браузер был в этой комнате.
+ *
+ * Нужно ровно тогда, когда сохранённая личность перестала работать: ключ живёт
+ * тридцать дней, а после смены SESSION_SECRET перестаёт проверяться сразу, и
+ * оба сокета отвергаются на рукопожатии. Пока запись лежит здесь, App входит
+ * по ней мимо формы имени — то есть перезагрузка, которую комната сама и
+ * советует, возвращает человека в то же самое «Reconnecting» навсегда.
+ *
+ * Профиль (имя и метка) остаётся: назваться придётся заново, но не набирать.
+ */
+export function forgetIdentity(sessionId: string): void {
+  const map = readMap()
+  if (!(sessionId in map)) return
+  delete map[sessionId]
+  writeMap(map)
+}
+
 /** Last used name/avatar, so joining a second seminar is one click. */
 export interface Profile {
   name: string

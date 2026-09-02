@@ -3,7 +3,7 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
   import { withoutEcho } from '@/lib/traceback'
-  import { cn } from '@/lib/utils'
+  import { cn, collapseCarriage } from '@/lib/utils'
   import { outputKey } from '@/lib/output-seat'
 
   interface Props {
@@ -70,14 +70,25 @@
 
   const render = $derived(renderers())
 
+  /**
+   * Растровые картинки — те, что показывает `<img>`.
+   *
+   * Набор тот же, что публикация выносит в отдельные записи (`BLOB_MIMES` в
+   * shared/publish.ts), и это не совпадение: вынесенное приезжает сюда не
+   * base64, а адресом, а показать адрес умеет только картинка. Список
+   * кончался на png и jpeg, так что гифка — единственное, чем показывают
+   * обучение по эпохам, — не рисовалась вовсе: `pickMime` её не выбирал.
+   */
+  const IMG_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
   /*
    * Preference order for a rich result. The second list is what we can show
    * before the sanitizer exists: a data URI needs no sanitizing, and text/plain
    * goes out as text — SVG and HTML wait, because rendering either of them
    * unsanitized is not a trade worth one frame.
    */
-  const MIME_ORDER = ['image/png', 'image/jpeg', 'image/svg+xml', 'text/html', 'text/plain']
-  const MIME_ORDER_PLAIN = ['image/png', 'image/jpeg', 'text/plain']
+  const MIME_ORDER = [...IMG_MIMES, 'image/svg+xml', 'text/html', 'text/plain']
+  const MIME_ORDER_PLAIN = [...IMG_MIMES, 'text/plain']
 
   function pickMime(data: Record<string, string>, rich: boolean): string | null {
     for (const mime of rich ? MIME_ORDER : MIME_ORDER_PLAIN) if (data[mime]) return mime
@@ -85,18 +96,58 @@
   }
 
   /**
-   * Kernels send bare base64; a few libraries send a full data URI already.
+   * Не само содержимое, а адрес, по которому оно лежит.
    *
-   * И третий случай: на опубликованной странице крупные картинки лежат
-   * отдельными записями и приезжают обычным адресом. Собирать из него data-URI
-   * значило бы вставить `data:image/png;base64,/api/p/...`.
+   * Третий случай после base64 и data-URI: на опубликованной странице крупные
+   * картинки вынесены в отдельные записи, и в наборе стоит
+   * `/api/p/<pub>/blob/<хэш>`.
+   *
+   * Узнаётся по `/api/`, а не по одной косой черте: base64 любого JPEG
+   * начинается с «/9j/» — так кодируется SOI FF D8 FF, — и по косой черте
+   * фотография с CV-семинара уходила в src сырым payload'ом, то есть битым
+   * значком у всей комнаты. PNG спасала только своя первая буква.
    */
+  function isAddress(payload: string): boolean {
+    return payload.startsWith('/api/')
+  }
+
+  /**
+   * Показывать ли эту запись картинкой.
+   *
+   * Не только по mime. Соседние ветки отдают значение как разметку (SVG, HTML)
+   * или как текст, поэтому адрес, попавший в любую из них, напечатался бы
+   * строкой «/api/p/…/blob/…» на месте графика. Что именно публикация выносит
+   * в записи, решает сервер, и список там может вырасти — а картинкой, взятой
+   * по адресу, показывается что угодно из вынесенного.
+   */
+  function asImage(mime: string, payload: string): boolean {
+    return IMG_MIMES.includes(mime) || isAddress(payload)
+  }
+
+  /** Kernels send bare base64; a few libraries send a full data URI already. */
   function imageSrc(mime: string, payload: string): string {
-    if (payload.startsWith('data:') || payload.startsWith('/')) return payload
+    if (payload.startsWith('data:') || isAddress(payload)) return payload
     return `data:${mime};base64,${payload.replace(/\s/g, '')}`
   }
 
-  function tall(index: number): boolean {
+  /**
+   * Картинку не режем.
+   *
+   * Порог считан по строкам текста, а картинка не строки: у обрезанного
+   * графика под кромкой остаются нижняя ось и подписи, и кнопка обещает «Show
+   * more» — как будто ниже ещё вывод, а не остаток той же картинки. Сетка из
+   * make_grid и retina-фигура выше 460 пикселей на семинаре — обычное дело.
+   * Таблица и текст схлопываются по-прежнему: у них ниже кромки правда лежит
+   * продолжение.
+   */
+  function isPicture(output: CellOutput, rich: boolean): boolean {
+    if (output.kind !== 'data') return false
+    const mime = pickMime(output.data, rich)
+    return mime !== null && (IMG_MIMES.includes(mime) || mime === 'image/svg+xml')
+  }
+
+  function tall(index: number, output: CellOutput): boolean {
+    if (isPicture(output, render !== null)) return false
     return (heights[index] ?? 0) > COLLAPSE_PX + 40
   }
 </script>
@@ -109,12 +160,15 @@
     — график рисуется подрезанным, под ним висит «Show more» из ниоткуда.
   -->
   {#each outputs as output, i (outputKey(i, output))}
-    {@const clipped = tall(i) && !expanded[i]}
+    {@const clipped = tall(i, output) && !expanded[i]}
     <div class="relative">
       <div class="overflow-hidden" style:max-height={clipped ? `${COLLAPSE_PX}px` : undefined}>
         <div bind:clientHeight={heights[i]}>
           <!-- eslint-disable svelte/no-at-html-tags -- every {@html} below is sanitized in lib/render -->
           {#if output.kind === 'stream'}
+            <!-- Прогресс-бар — одна перерисовываемая строка, а не двести
+                 напечатанных: см. collapseCarriage. -->
+            {@const text = collapseCarriage(output.text)}
             <div
               class={cn(
                 'output-stream px-2 py-1',
@@ -123,7 +177,7 @@
                 // a crash — and pip and matplotlib write to stderr constantly.
                 output.name === 'stderr' ? 'text-warning' : 'text-ink/90',
               )}
-            >{#if render}{@html render.ansi(output.text)}{:else}{stripAnsi(output.text)}{/if}</div>
+            >{#if render}{@html render.ansi(text)}{:else}{stripAnsi(text)}{/if}</div>
           {:else if output.kind === 'error'}
             {@const traceback = withoutEcho(output.traceback, output.ename, output.evalue)}
             <div class="px-1 py-0.5">
@@ -138,34 +192,35 @@
             </div>
           {:else}
             {@const mime = pickMime(output.data, render !== null)}
-            {#if mime === 'image/png' || mime === 'image/jpeg'}
+            {@const payload = mime ? output.data[mime] : ''}
+            {#if mime && asImage(mime, payload)}
               <!-- Plots are drawn for paper: a transparent figure needs a light
                    backing or its black axes vanish into the canvas. -->
               <img
                 use:decoding
-                src={imageSrc(mime, output.data[mime])}
+                src={imageSrc(mime, payload)}
                 alt="Cell output"
                 class="max-w-full bg-white/95 p-1"
               />
             {:else if mime === 'image/svg+xml' && render}
               <div class="output-svg max-w-full overflow-x-auto bg-white/95 p-1">
-                {@html render.svg(output.data[mime])}
+                {@html render.svg(payload)}
               </div>
             {:else if mime === 'text/html' && render}
               <div class="output-html overflow-x-auto px-2 py-1 text-code text-ink">
-                {@html render.html(output.data[mime])}
+                {@html render.html(payload)}
               </div>
             {:else if mime}
               <div
                 class="output-stream px-2 py-1 text-ink/90"
-              >{#if render}{@html render.ansi(output.data[mime])}{:else}{stripAnsi(output.data[mime])}{/if}</div>
+              >{#if render}{@html render.ansi(payload)}{:else}{stripAnsi(payload)}{/if}</div>
             {/if}
           {/if}
           <!-- eslint-enable svelte/no-at-html-tags -->
         </div>
       </div>
 
-      {#if tall(i)}
+      {#if tall(i, output)}
         <div class="mt-1 border-t border-line-soft pt-1">
           <button
             type="button"

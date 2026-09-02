@@ -1,5 +1,6 @@
 import * as Y from 'yjs'
 import {
+  allCellArrays,
   bookCells,
   cellId,
   cellSource,
@@ -62,6 +63,33 @@ export function deleteCell(doc: Y.Doc, id: string): void {
     // Never leave the room staring at an empty page.
     if (cells.length === 0) cells.push([createCell('code')])
   })
+}
+
+/** Словами сервера: ровно этим `control.ts` отвечает на вторую ячейку. */
+export const ONE_AT_A_TIME = 'В этом семинаре считают по одной ячейке — ваша уже в очереди.'
+
+/**
+ * Есть ли у этого человека ячейка, которая сейчас считается или ждёт очереди.
+ *
+ * Потолок очереди при правиле «по одной» живёт на сервере (`runQueueCap`), и
+ * клиент его не видел: он проверял только право запускать, отправлял запуск,
+ * получал отказ — и всё равно успевал шагнуть вниз и дописать пустую ячейку в
+ * общую тетрадь. Пять нажатий — пять пустых ячеек у всего класса.
+ *
+ * Считаем по документу, потому что состояние ячеек в нём и есть та очередь:
+ * `requestRun` меряет то же самое своей средой исполнения (очередь плюс
+ * текущая ячейка того же человека). Решает всё равно сервер — здесь только
+ * чтобы не править общий документ за отказанный запуск.
+ */
+export function hasPendingRun(doc: Y.Doc, participantId: string): boolean {
+  for (const cells of allCellArrays(doc)) {
+    for (const cell of cells.toArray()) {
+      const state = cell.get('state')
+      if (state !== 'running' && state !== 'queued') continue
+      if ((cell.get('runById') as string | null) === participantId) return true
+    }
+  }
+  return false
 }
 
 /**

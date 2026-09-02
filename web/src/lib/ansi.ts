@@ -74,6 +74,34 @@ export function foldAnsiColours(text: string): string {
   })
 }
 
+/*
+ * Одна escape-последовательность целиком, от начала строки. Те же три вида, что
+ * и в ANSI_PATTERN ниже, но с якорем: здесь спрашивают не «где они», а
+ * «дописана ли последняя». Отсюда и разница в третьей ветке: `]` из неё убран,
+ * иначе начатый OSC (`\x1b]8;;http://…`) считался бы законченным двухсимвольным
+ * escape'ом и его разрезали бы пополам.
+ */
+// eslint-disable-next-line no-control-regex -- escape codes are the subject
+const ANSI_COMPLETE = /^\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\^_])/
+
+/**
+ * Длина огрызка escape-последовательности в конце текста; 0 — если его нет.
+ *
+ * Поток ядра приезжает кусками, и кусок кончается где угодно — в том числе
+ * посреди `\x1b[38;5;1`. Тому, кто конвертирует буфер целиком, это безразлично:
+ * следующий флеш принесёт его вместе с хвостом. А тому, кто дорисовывает
+ * ТОЛЬКО хвост (см. `ansi` в render.svelte.ts), резать здесь нельзя — половина
+ * кода уйдёт в разбор как мусор, а вторая половина покрасит остаток лога
+ * наугад. Такой огрызок оставляют ждать следующего флеша: на экране он всё
+ * равно невидим.
+ */
+export function pendingEscape(text: string): number {
+  const at = text.lastIndexOf('\x1b')
+  if (at < 0) return 0
+  const rest = text.length - at
+  return ANSI_COMPLETE.test(text.slice(at)) ? 0 : rest
+}
+
 function nearestCube(v: number): number {
   let best = 0
   for (let i = 1; i < CUBE.length; i++)

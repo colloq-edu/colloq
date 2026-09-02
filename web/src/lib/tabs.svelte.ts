@@ -92,14 +92,22 @@ export class Tabs {
    * отдельным правом. Уйти от него в тетрадь всё равно можно, и это здесь и
    * происходит.
    */
-  close(path: string, board: string | null): boolean {
+  close(path: string, board: string | null, lecture: string | null = null): boolean {
     const wasActive = this.active === path
+    /*
+     * Место в ряду считается ДО удаления.
+     *
+     * После него закрываемой вкладки в ряду уже нет, `indexOf` даёт -1, и
+     * «сосед слева» превращался в «самая левая вкладка»: закрыв третий из
+     * четырёх файлов, человек оказывался в первом.
+     */
+    const at = this.row(board, lecture).indexOf(path)
     if (this.mine.includes(path)) {
       this.mine = this.mine.filter((open) => open !== path)
       this.#remember()
     }
     const stays = board === path
-    if (wasActive) this.active = stays ? null : this.#neighbour(path, board)
+    if (wasActive) this.active = stays ? null : this.#neighbour(at, board, lecture)
     return stays
   }
 
@@ -132,11 +140,14 @@ export class Tabs {
    * К соседу слева, а не в тетрадь: закрывая третий из четырёх открытых файлов,
    * человек занимается файлами, и выкидывать его из них — это лишний путь
    * обратно.
+   *
+   * `at` — место закрытой вкладки в том ряду, который был нарисован; ряда с
+   * ней здесь уже нет, и сосед слева стоит на том же месте, что и стоял.
+   * Ряд строится с теми же приколотыми, иначе счёт разойдётся с экраном.
    */
-  #neighbour(closing: string, board: string | null): TabKey {
-    const row = this.row(board).filter((path) => path !== closing)
+  #neighbour(at: number, board: string | null, lecture: string | null): TabKey {
+    const row = this.row(board, lecture)
     if (row.length === 0) return null
-    const at = this.row(board).indexOf(closing)
     return row[Math.max(0, at - 1)] ?? null
   }
 

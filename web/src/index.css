@@ -690,6 +690,17 @@
 }
 
 /*
+ * Проза опубликованной страницы. Тот же набор правил, один шаг вверх: страницу
+ * читают с телефона через неделю после занятия, а не в колонке рядом с кодом.
+ *
+ * Ставится рядом с .prose-note и НИЖЕ него — как .prose-answer и по той же
+ * причине: селекторы одного веса, спор решает порядок в файле.
+ */
+.prose-cell {
+  @apply text-ui-lg;
+}
+
+/*
  * The cursor that rides the end of an answer while it streams.
  *
  * Global because it is inserted into the answer's markdown and reaches the DOM

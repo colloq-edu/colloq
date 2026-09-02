@@ -9,6 +9,7 @@
 <script lang="ts">
   import Icon from '@/components/ui/Icon.svelte'
   import { getSessionState } from '@/lib/session.svelte'
+  import { permitsIn } from '@/lib/may'
   import { runnerFor } from '@shared/paths'
 
   interface Props {
@@ -27,6 +28,14 @@
   let { path, mayRun, mayEdit, whyReadOnly, refused, onrun }: Props = $props()
 
   const session = getSessionState()
+
+  /*
+   * Право приходит пропсом, а фраза — отсюда: правило `run` объясняется одними
+   * и теми же словами в трёх местах (кнопка ячейки, эта кнопка, строка ввода в
+   * терминале), и это те слова, которыми отказывает сервер. Своя короткая
+   * копия расходилась с ними молча.
+   */
+  const may = $derived(permitsIn(session.session.rules, session.me.role))
 
   const runner = $derived(runnerFor(path))
   const entry = $derived(session.files.find((file) => file.path === path))
@@ -66,15 +75,15 @@
     <button
       type="button"
       class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
-             transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2
+             transition duration-quick focus-visible:outline-none focus-visible:ring-2
              focus-visible:ring-inset focus-visible:ring-accent/40
              {mayRun
-        ? 'bg-primary text-primary-ink hover:bg-brand-2'
+        ? 'bg-primary text-primary-ink hover:brightness-110 active:brightness-95'
         : 'cursor-not-allowed bg-surface text-faint'}"
       disabled={!mayRun}
       title={mayRun
         ? `${runner === 'python' ? 'python -u' : 'bash'} ${path} — вывод в терминале`
-        : 'Запускает преподаватель'}
+        : may.runWhy}
       onclick={onrun}
     >
       <Icon name="play" size={11} />
@@ -86,9 +95,17 @@
 
   <div class="flex shrink-0 items-center gap-2.5 px-5">
     {#if refused || !mayEdit}
+      <!--
+        Правило важнее отказа, а не наоборот.
+
+        «Правку не приняли» — про правку, которой не было: тому, кто в этой
+        комнате и так только читает, сокет отказывает при самом открытии, и
+        человек, ничего не напечатавший, получал упрёк вместо правила. Отказ
+        называется только там, где печатать было можно.
+      -->
       <span class="flex items-center gap-1.5 text-2xs text-muted">
         <Icon name="lock" size={11} />
-        {refused ? 'Правку не приняли — дальше только чтение' : whyReadOnly}
+        {mayEdit ? 'Правку не приняли — дальше только чтение' : whyReadOnly}
       </span>
     {:else if savedAt}
       <!-- Время последней записи на диск, а не «есть несохранённое»: файл

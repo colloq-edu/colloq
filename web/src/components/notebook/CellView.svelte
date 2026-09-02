@@ -26,7 +26,16 @@
     oracle ??= api
       .aiStatus()
       .then((status) => ({ enabled: status.enabled, mode: status.mode }))
-      .catch(() => ({ enabled: false, mode: 'off' as const }))
+      .catch((cause: unknown) => {
+        /*
+         * Отказ не запоминается. Раньше он превращался в заглушку «оракула
+         * нет», и вкладка, открытая в момент перезапуска сервера, до конца
+         * пары не рисовала «Fix with AI» ни под одним трейсбеком — при том что
+         * панель оракула рядом спрашивает статус заново и показывает модель.
+         */
+        oracle = null
+        throw cause
+      })
     return oracle
   }
 </script>
@@ -44,7 +53,9 @@
   import {
     deleteCell,
     duplicateCell,
+    hasPendingRun,
     insertCellAfter,
+    ONE_AT_A_TIME,
     setCellType,
   } from '@/lib/notebook-ops'
   import { controlDisabled, controlTitle } from '@/lib/controls'
@@ -118,24 +129,31 @@
    * Ячейка остановилась внутри input().
    *
    * Это единственное состояние, в котором ядро ждёт ЧЕЛОВЕКА, а не машину.
-   * Поле показывается всей комнате, а не тому, кто нажал Run: на семинаре
-   * ответ чаще знает не тот, кто запустил, а тот, кто смотрит. Отвечает первый
-   * — это не гонка, которую надо чинить, а то, как устроена аудитория.
+   * Что ячейка ждёт ответа, видит вся комната — приглашение ко вводу живёт в
+   * документе. А отвечает тот, чья ячейка спрашивает, или преподаватель: так
+   * решает сервер (`control.ts`, case 'input', тем же `startedTheRunningCell`,
+   * что и «остановить»), и `input()` под паролем — как раз про то, почему
+   * видеть и отвечать не одно и то же.
+   *
+   * Поле и фокус идут за этим правом. Пока не шли, подпись звала отвечать всю
+   * комнату, курсор выпрыгивал из чужой ячейки в каждом браузере, а набранный
+   * ответ стирался вместе с отказом сервера.
    */
   const stdin = $derived(meta.current.stdin)
   let answer = $state('')
   let answerField = $state<HTMLInputElement | null>(null)
 
   $effect(() => {
-    if (stdin) answerField?.focus()
-    else answer = ''
+    if (stdin && canAnswer) answerField?.focus()
+    else if (!stdin) answer = ''
   })
 
   function sendAnswer(event: SubmitEvent): void {
     event.preventDefault()
     if (!stdin) return
     session.send({ t: 'input', value: answer, cellId: id })
-    answer = ''
+    // Поле чистит эффект выше, когда ядро перестало ждать. Стереть здесь
+    // значило бы потерять набранное вместе с любым отказом.
   }
   const cellState = $derived(meta.current.state)
 
@@ -279,6 +297,12 @@
   const mineIsRunning = $derived(meta.current.runById === session.me.id)
   const canInterrupt = $derived(session.me.role === 'host' || mineIsRunning)
   /*
+   * Ответить в input() — тот же круг людей и та же серверная проверка, что у
+   * «остановить». Отдельным именем, потому что это другой вопрос к комнате: не
+   * «чью работу ты прерываешь», а «чья ячейка спрашивает».
+   */
+  const canAnswer = $derived(canInterrupt)
+  /*
    * A queued cell can be taken back; the running one cannot, that is Interrupt.
    * It matters most in the case the control is for: somebody else's long cell
    * holds the kernel, you pressed Run All behind it, and Interrupt is not yours
@@ -417,13 +441,23 @@
   // fails never asks. The promise behind it is shared across every cell.
   $effect(() => {
     if (!hasError) return
+    // Правила читаются синхронно, а не внутри .then: из промиса эффект их не
+    // отслеживает, и семинар, переключённый с hints на full посреди пары, не
+    // перерисовывал кнопку до смены состояния ячейки.
+    const rules = readRules(session.session.rules)
     let alive = true
-    void oracleStatus().then(({ enabled, mode }) => {
-      // Narrowed to this room: an instance on `full` still has to obey a
-      // seminar set to hints, and this button is exactly what hints refuses.
-      const here = oracleModeIn(readRules(session.session.rules), mode)
-      if (alive) aiReady = enabled && actionAllowedIn(here, 'fix')
-    })
+    void oracleStatus().then(
+      ({ enabled, mode }) => {
+        // Narrowed to this room: an instance on `full` still has to obey a
+        // seminar set to hints, and this button is exactly what hints refuses.
+        const here = oracleModeIn(rules, mode)
+        if (alive) aiReady = enabled && actionAllowedIn(here, 'fix')
+      },
+      // Спросим снова со следующим трейсбеком: кеш отказ не запомнил.
+      () => {
+        if (alive) aiReady = false
+      },
+    )
     return () => {
       alive = false
     }
@@ -468,9 +502,22 @@
   const mounted = $derived(near || pinned)
 
   onMount(() => {
-    // A note with nothing in it has nothing to render; drop straight into edit.
+    /*
+     * A note with nothing in it has nothing to render; drop straight into edit.
+     *
+     * Только у того, кто её завёл. Ячейка приезжает по CRDT пустой и монтируется
+     * у всей комнаты в тот же миг, а выйти из редактора зрителю нечем: `editing`
+     * сбрасывают только свой blur, Escape и смена вида, а в лекционной комнате
+     * редактор ещё и не берёт фокус. Тридцать человек до конца пары смотрели на
+     * markdown-исходник вместо прозы — и на живой CodeMirror, который из-за
+     * `editing` не паркуется.
+     *
+     * `selected` и есть «завёл я»: вставка выделяет ячейку в той же синхронной
+     * паре, что и создаёт её (см. addAt в Notebook.svelte).
+     */
+    if (!selected) return
     if (meta.current.type === 'markdown' && source.current.trim() === '') {
-      focusOnEdit = selected
+      focusOnEdit = true
       editing = true
     }
   })
@@ -535,6 +582,20 @@
     // Молча: ячейка сама показывает, что она делает, — и полосой, и строкой
     // состояния, и лицом кнопки. Плашка про то, что и так видно, — это шум.
     if (cellState === 'running' || cellState === 'queued') return false
+    /*
+     * «По одной»: сервер возьмёт у участника одну ячейку зараз и на вторую
+     * ответит отказом — а Shift+Enter и Alt+Enter к тому моменту уже шагнули и
+     * дописали пустую ячейку в общую тетрадь. Проверяем тем же счётом и теми
+     * же словами.
+     */
+    if (
+      may.rules.run === 'single' &&
+      session.me.role !== 'host' &&
+      hasPendingRun(session.doc, session.me.id)
+    ) {
+      session.showError(ONE_AT_A_TIME)
+      return false
+    }
     onselect()
     session.send({ t: 'run', cellId: id })
     return true
@@ -903,6 +964,27 @@
         >
           <Icon name="sparkles" size={13} class="text-accent-text" />
         </button>
+        {#if isCode}
+          <!--
+            Прибрать за собой в своей ячейке.
+
+            Правило «стирать общее» про доску целиком, и сервер это различает
+            (`clearOutputs` с именем ячейки спрашивает право печатать, а не
+            право стирать). В комнате с `wipe: host` подсказка под правилом
+            обещала, что свою ячейку человек чистит всегда, — а нажать было
+            нечего: клиент умел стирать только всю тетрадь разом.
+          -->
+          <button
+            type="button"
+            class={TOOL}
+            title={controlTitle(session.connected, may.edit ? 'Clear this cell’s output' : may.editWhy)}
+            aria-label="Clear cell output"
+            disabled={!may.edit || controlDisabled(session.connected)}
+            onclick={() => session.send({ t: 'clearOutputs', cellId: id })}
+          >
+            <Icon name="eraser" size={13} />
+          </button>
+        {/if}
         <button
           type="button"
           class={TOOL_DANGER}
@@ -1214,25 +1296,31 @@
           {#if stdin.prompt}
             <span class="shrink-0 font-mono text-code text-ink">{stdin.prompt}</span>
           {/if}
-          <input
-            bind:this={answerField}
-            bind:value={answer}
-            type={stdin.password ? 'password' : 'text'}
-            class="field h-8 min-w-0 flex-1 font-mono text-code-lg"
-            autocomplete="off"
-            spellcheck="false"
-            aria-label={stdin.prompt || 'The cell is waiting for input'}
-          />
-          <button
-            type="submit"
-            class={cn(
-              'inline-flex h-8 shrink-0 items-center bg-primary px-3 text-primary-ink',
-              CAPS,
-              'transition-opacity duration-[var(--speed-quick)] hover:opacity-90',
-            )}
-          >
-            Send
-          </button>
+          <!--
+            Поле — только тому, чей ответ примут. Остальным остаётся сама
+            плашка: что ячейка встала и чего она ждёт, комната видеть должна.
+          -->
+          {#if canAnswer}
+            <input
+              bind:this={answerField}
+              bind:value={answer}
+              type={stdin.password ? 'password' : 'text'}
+              class="field h-8 min-w-0 flex-1 font-mono text-code-lg"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label={stdin.prompt || 'The cell is waiting for input'}
+            />
+            <button
+              type="submit"
+              class={cn(
+                'inline-flex h-8 shrink-0 items-center bg-primary px-3 text-primary-ink',
+                CAPS,
+                'transition-opacity duration-[var(--speed-quick)] hover:opacity-90',
+              )}
+            >
+              Send
+            </button>
+          {/if}
         </form>
       {/if}
 
@@ -1269,7 +1357,11 @@
       -->
       {#if stdin}
         <p class="px-3 pt-1 text-2xs text-muted">
-          The kernel is waiting — anyone in the room can answer.
+          {#if canAnswer}
+            The kernel is waiting for your answer.
+          {:else}
+            The kernel is waiting — {runBy ?? 'whoever started this cell'} or the teacher answers.
+          {/if}
         </p>
       {/if}
 

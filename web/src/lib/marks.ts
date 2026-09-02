@@ -60,6 +60,19 @@ export const MARKS: readonly Mark[] = [
 
 const BY_MARK = new Map(MARKS.map((entry) => [entry.mark, entry]))
 
+/**
+ * Метка ли это вообще.
+ *
+ * Спрашивает Avatar, и вопрос не праздный: метка приезжает в чужие браузеры
+ * через присутствие, то есть как угодно правленным клиентом, а рисуется у
+ * каждого в комнате — в списке людей, в шапке, под ячейкой, в терминале.
+ * Строка из этого списка — единственное, что продукт когда-либо выдаёт;
+ * всё остальное рисовать НЕ надо.
+ */
+export function isMark(value: string | null | undefined): boolean {
+  return !!value && BY_MARK.has(value)
+}
+
 /** The word the card puts in front of the student: "The fox is yours". */
 export function markName(mark: string | null): string {
   return (mark && BY_MARK.get(mark)?.name) || 'mark'

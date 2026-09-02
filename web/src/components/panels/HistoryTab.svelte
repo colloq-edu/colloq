@@ -13,8 +13,11 @@
    * history is dozens of rows, not thousands.
    */
   import { BURST_IDLE_MS, type Version } from '@shared/history'
+  import { CELLS_KEY } from '@shared/notebook'
+  import { baseOf } from '@shared/paths'
   import Icon from '@/components/ui/Icon.svelte'
   import { getSessionState } from '@/lib/session.svelte'
+  import { watchBooks } from '@/lib/yreactive.svelte'
   import {
     clock,
     initialsOf,
@@ -27,6 +30,20 @@
 
   const session = getSessionState()
   const isHost = $derived(session.me.role === 'host')
+
+  /**
+   * История — про одну тетрадь, и панель обязана назвать какую.
+   *
+   * `collab/history` читает, описывает и возвращает ровно корень `cells` — там
+   * это названо прибитым намеренно. У комнаты тетрадей может быть несколько, и
+   * кнопка без имени правит не тот лист, который человек видит на экране.
+   * Тетради с корнем `cells` может уже не быть (её убрали) — тогда возврат
+   * заведёт её заново, и назвать её заранее нечем.
+   */
+  const books = watchBooks(session.doc)
+  const versioned = $derived(books.current.find((book) => book.root === CELLS_KEY) ?? null)
+  const versionedName = $derived(versioned ? baseOf(versioned.path) : 'the room notebook')
+  const otherBooks = $derived(books.current.length - (versioned ? 1 : 0))
 
   let versions = $state<Version[]>([])
   let loading = $state(true)
@@ -62,6 +79,15 @@
 
   async function open(seq: number): Promise<void> {
     openSeq = seq
+    /*
+     * Ошибка принадлежит попытке, а не панели.
+     *
+     * Правая колонка рисует ошибку вместо содержимого, а обнулялась она только
+     * в `load()` — то есть от правки в документе. В тихой комнате (лекция,
+     * никто не печатает) одна моргнувшая сеть закрывала диффы всех следующих
+     * версий до конца пары.
+     */
+    error = null
     const cached = seen.get(seq)
     if (cached) {
       detail = cached
@@ -161,14 +187,38 @@
     }
   })
 
-  /** The row's own words: a checkpoint says its name, everything else its summary. */
+  /**
+   * The row's own words: a checkpoint says its name, everything else its summary.
+   *
+   * Время возвращённой версии дописывает браузер, а не сервер: сервер шлёт
+   * адрес (`targetSeq`), потому что часы у него свои — в контейнере UTC, — и
+   * собранное там «from 15:04» указывало бы в аудитории UTC+3 на строку,
+   * которой в списке нет. Здесь оно берётся из той же строки, теми же часами,
+   * что рисуют всю ленту. Строки может и не быть: список обрезан или версия
+   * приехала раньше — тогда подпись остаётся как есть.
+   */
   function saying(v: Version): string {
-    return v.kind === 'checkpoint' ? (v.label ?? 'checkpoint') : v.summary
+    if (v.kind === 'checkpoint') return v.label ?? 'checkpoint'
+    if (v.kind === 'restore' && v.targetSeq !== null) {
+      const target = versions.find((row) => row.seq === v.targetSeq)
+      if (target) return `${v.summary} from ${clock(target.createdAt)}`
+    }
+    return v.summary
   }
 </script>
 
 <div class="hist">
   <div class="hist-list" role="list">
+    <!-- Лента не про всю комнату, а про одну тетрадь. Сказать это надо до
+         первого клика: в комнате с двумя тетрадями «ничего не записалось»
+         читается как пропажа правок, а не как границы истории. -->
+    {#if otherBooks > 0}
+      <p class="hist-note hist-note--aside">
+        Only {versionedName} is kept here — edits in the room's other {otherBooks === 1
+          ? 'notebook'
+          : 'notebooks'} are not in this list, and a restore leaves them alone.
+      </p>
+    {/if}
     {#if loading && versions.length === 0}
       <p class="hist-note">Reading the history…</p>
     {:else if versions.length === 0}
@@ -216,11 +266,27 @@
     {:else if !detail}
       <p class="hist-note">Rebuilding that version…</p>
     {:else if detail.diffs.length === 0}
-      <p class="hist-note">
-        {detail.version.kind === 'opened'
-          ? 'The notebook the room opened with.'
-          : 'This moment was marked, not edited — the notebook is as it was just before it.'}
-      </p>
+      <!--
+        Чекпоинт и «opened» ничего не правят: список затронутых ячеек у них
+        пуст по построению, и одной фразы вместо содержимого хватало ровно до
+        первого «вернуть» — кнопку возврата нажимали вслепую. Тетрадь этой
+        версии сервер и так присылает целиком, каждым нажатием.
+      -->
+      <div class="hist-diffs">
+        <p class="hist-note">
+          {detail.version.kind === 'opened'
+            ? 'The notebook the room opened with.'
+            : 'This moment was marked, not edited — the notebook is as it was just before it.'}
+        </p>
+        {#each detail.cells as c, at (c.id)}
+          <div class="hist-diff">
+            <div class="hist-diff-head">
+              <b>{c.type === 'markdown' ? 'text' : 'code'} {at + 1}</b>
+            </div>
+            <pre class="hist-lines hist-source">{c.source}</pre>
+          </div>
+        {/each}
+      </div>
     {:else}
       <div class="hist-diffs">
         {#each detail.diffs as d (d.cellId)}
@@ -258,7 +324,14 @@
           maxlength="80"
           onkeydown={(e) => {
             if (e.key === 'Enter') void checkpoint()
-            if (e.key === 'Escape') naming = false
+            // Escape закрывает поле — и только его: тот же ключ у окна закрывает
+            // весь ящик, если никто не сказал, что он уже занят делом, а ящик
+            // уносит с собой и открытую версию, и место в списке.
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              e.stopPropagation()
+              naming = false
+            }
           }}
         />
         <button type="button" class="hist-go" disabled={busy || !label.trim()} onclick={checkpoint}>
@@ -266,9 +339,15 @@
         </button>
       {:else}
         {#if isHost && openSeq !== null && detail}
-          <button type="button" class="hist-go" disabled={busy} onclick={() => restore()}>
+          <button
+            type="button"
+            class="hist-go"
+            disabled={busy}
+            title="A restore rewrites the room notebook and leaves the other ones alone"
+            onclick={() => restore()}
+          >
             <Icon name="restart" size={12} />
-            Restore the whole notebook
+            Restore all of {versionedName}
           </button>
         {/if}
         {#if isHost}
@@ -466,6 +545,13 @@
     overflow-x: auto;
   }
 
+  /* Содержимое версии без правок: та же лесенка, что у диффа, но без колонки
+     под плюс и минус — менять здесь нечего. */
+  .hist-source {
+    padding-left: 26px;
+    color: #5f6e92;
+  }
+
   .hist-line {
     display: block;
     color: #5f6e92;
@@ -575,6 +661,14 @@
 
   .hist-note--bad {
     color: #e8a3b1;
+  }
+
+  /* Границы истории, а не событие в ней: тише строк и отделено от них. */
+  .hist-note--aside {
+    padding: 10px 14px;
+    font-size: 11px;
+    line-height: 1.45;
+    border-bottom: 1px solid #1b2a52;
   }
 
   /*

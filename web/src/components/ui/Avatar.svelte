@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isMark } from '@/lib/marks'
   import { initials, inkOn } from '@/lib/utils'
 
   interface Props {
@@ -43,7 +44,16 @@
   } as const
 
   const step = $derived(SIZES[size])
-  const isEmoji = $derived(!!avatar && !avatar.startsWith('http') && !avatar.startsWith('data:'))
+  /*
+   * Метка — только та, что есть в списке комнаты, а не «всё, что не похоже на
+   * адрес». Отличать по префиксу значило рисовать <img src> из любой строки:
+   * метка доезжает сюда присутствием, то есть от правленного клиента, и
+   * `avatar="https://…/px.png"` заставлял браузер каждого в комнате — и ноутбук
+   * у проектора — стучаться на чужой адрес при каждой отрисовке списка людей.
+   * Незнакомая строка рисуется инициалами: круг человека на месте, чужого
+   * запроса нет.
+   */
+  const isEmoji = $derived(isMark(avatar))
 
   /*
    * Everyone gets the same solid disc in their own colour — the colour that is
@@ -64,9 +74,7 @@
     ? `; font-size: ${emojiPx}px`
     : ''}"
 >
-  {#if avatar && !isEmoji}
-    <img src={avatar} alt={name} class="h-full w-full object-cover" />
-  {:else if isEmoji}
+  {#if isEmoji}
     <!-- normal-case: an emoji is unaffected, but a text avatar would be shouted. -->
     <span class="normal-case leading-none">{avatar}</span>
   {:else}

@@ -17,7 +17,7 @@
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
   import { getTerminal, readTerminalLine, type TerminalLineSnapshot } from '@shared/notebook'
   import { terminalDraft } from '@/lib/drafts.svelte'
-  import { elapsed } from '@/lib/utils'
+  import { collapseCarriage, elapsed } from '@/lib/utils'
 
   interface Props {
     /** Hides this drawer. It never sends term:close — the shell belongs to the room. */
@@ -75,18 +75,14 @@
   /**
    * pip and friends redraw one line in place with \r; keeping every frame would
    * print a hundred copies of the same progress bar.
+   *
+   * Свёртка — общая с тетрадью (`utils.ts`, и она же под тестом). Своё здесь
+   * одно: хвостовые переводы строк срезаются, потому что в журнале пустая
+   * строка под командой — это дырка между командой и следующей строкой, а в
+   * выводе ячейки — часть текста.
    */
-  function collapseCarriage(raw: string): string {
-    const text = raw.replace(/\n+$/, '')
-    if (!text.includes('\r')) return text
-    return text
-      .split('\n')
-      .map((line) => {
-        let last = ''
-        for (const frame of line.split('\r')) if (frame !== '') last = frame
-        return last
-      })
-      .join('\n')
+  function transcriptText(raw: string): string {
+    return collapseCarriage(raw.replace(/\n+$/, ''))
   }
 
   /* The ANSI parser and the sanitizer are fetched with the notebook's renderers
@@ -214,22 +210,30 @@
   const term = terminalDraft
 
   const status = $derived(session.terminalStatus)
-  // A command has to reach the server to be a command. Disconnected, the status
-  // in hand is the last one the server sent, which says nothing about now.
-  const canType = $derived(
-    session.connected && (status === 'idle' || status === 'busy'),
-  )
+  /*
+   * A command has to reach the server to be a command. Disconnected, the status
+   * in hand is the last one the server sent, which says nothing about now.
+   *
+   * И правило `run`: `python train.py` в оболочке — тот же контейнер и то же
+   * процессорное время, что и Run на ячейке, и сервер отказывает здесь тем же
+   * правилом. Без гашения человек набирает команду целиком и упирается в отказ
+   * на Enter — правило, которое узнают после работы, читается как поломка.
+   * Читать чужой вывод при этом может вся комната: оболочка общая.
+   */
+  const canType = $derived(session.connected && may.run && (status === 'idle' || status === 'busy'))
 
   const placeholder = $derived(
     !session.connected
       ? 'waiting for the connection…'
-      : status === 'starting'
-        ? 'starting the shell…'
-        : status === 'dead'
-          ? 'the shell stopped'
-          : status === 'closed'
-            ? 'the shell is not running'
-            : 'pip install seaborn',
+      : !may.run
+        ? may.runWhy
+        : status === 'starting'
+          ? 'starting the shell…'
+          : status === 'dead'
+            ? 'the shell stopped'
+            : status === 'closed'
+              ? 'the shell is not running'
+              : 'pip install seaborn',
   )
 
   /**
@@ -459,7 +463,7 @@
           {/if}
         </div>
       {:else if line.kind === 'output'}
-        {@const text = collapseCarriage(line.text)}
+        {@const text = transcriptText(line.text)}
         <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/render -->
         <pre class="term-out">{#if render}{@html render.ansi(text)}{:else}{stripAnsi(text)}{/if}</pre>
       {:else}

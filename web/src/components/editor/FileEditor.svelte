@@ -40,7 +40,11 @@
           search,
           searchKeymap,
         })),
-        import('@codemirror/state').then(({ EditorState, Prec }) => ({ EditorState, Prec })),
+        import('@codemirror/state').then(({ Compartment, EditorState, Prec }) => ({
+          Compartment,
+          EditorState,
+          Prec,
+        })),
         import('@codemirror/view').then(
           ({ EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers }) => ({
             EditorView,
@@ -57,6 +61,12 @@
   }
 
   type Core = Awaited<ReturnType<typeof importCore>>
+
+  /** Обе стороны «можно ли печатать» — одним куском, чтобы их нельзя было развести. */
+  function writableExtensions(cm: Core, editable: boolean) {
+    return [cm.state.EditorState.readOnly.of(!editable), cm.view.EditorView.editable.of(editable)]
+  }
+
   let coreInFlight: Promise<Core> | null = null
   function loadCore(): Promise<Core> {
     return (coreInFlight ??= importCore())
@@ -94,7 +104,7 @@
   import { untrack } from 'svelte'
   import type { EditorView } from '@codemirror/view'
   import type { FileDoc } from '@/lib/filedoc.svelte'
-  import { highlightFor } from '@shared/paths'
+  import { baseOf, highlightFor } from '@shared/paths'
   import { getSessionState } from '@/lib/session.svelte'
 
   interface Props {
@@ -141,11 +151,30 @@
   })
 
   let view: EditorView | null = null
+  /**
+   * Переключить правило в живом редакторе. `null`, пока редактора нет.
+   *
+   * `$state.raw`, потому что второй эффект должен проснуться и когда редактор
+   * построился заново (другой файл), а не только когда правило поменялось.
+   */
+  let setWritable = $state.raw<((editable: boolean) => void) | null>(null)
+  /** Что стоит в живом редакторе сейчас — чтобы не переконфигурировать впустую. */
+  let writableNow = true
 
   $effect(() => {
     const parent = host
     const doc = file
-    const editable = !readOnly
+    /*
+     * `readOnly` здесь НЕ отслеживается, и это несущее решение.
+     *
+     * Пока отслеживался, преподаватель, поменявший правило `files` посреди
+     * пары, разбирал редактор у всех: `destroy` уносит сфокусированный
+     * `.cm-content` вместе с курсором, выделением и прокруткой, и человек,
+     * писавший в файл, оказывался в никуда прокрученном чужом тексте. Теперь
+     * правило живёт в отсеке и меняется на месте — см. эффект ниже; так же
+     * сделано в ячейках (CodeEditor.svelte).
+     */
+    const editable = untrack(() => !readOnly)
     if (!parent) return
 
     let disposed = false
@@ -185,6 +214,7 @@
         ]),
       )
 
+      const writable = new cm.state.Compartment()
       made = new EditorView({
         state: EditorState.create({
           doc: doc.text.toString(),
@@ -203,8 +233,7 @@
             highlightSelectionMatches(),
             search({ top: true }),
             EditorView.lineWrapping,
-            EditorState.readOnly.of(!editable),
-            EditorView.editable.of(editable),
+            writable.of(writableExtensions(cm, editable)),
             cm.theme.fileTheme,
             grammar ? (grammar.extension as never) : [],
             // Общий текст — источник правды; своей истории у редактора нет,
@@ -227,15 +256,33 @@
         parent,
       })
       view = made
+      const built = made
+      writableNow = editable
+      setWritable = (next) =>
+        built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
       ready = true
     })
 
     return () => {
       disposed = true
+      setWritable = null
       made?.destroy()
       if (view === made) view = null
       ready = false
     }
+  })
+
+  /*
+   * Правило `files` меняется посреди пары, и редактор его переживает: меняется
+   * один отсек, а фокус, курсор и прокрутка остаются на месте. Строится
+   * редактор уже с верным значением, так что первый прогон — холостой.
+   */
+  $effect(() => {
+    const apply = setWritable
+    const editable = !readOnly
+    if (!apply || editable === writableNow) return
+    writableNow = editable
+    apply(editable)
   })
 
   /* Первый показ файла ставит курсор в редактор: человек его открыл, чтобы читать
@@ -247,7 +294,21 @@
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col bg-canvas">
-  <div bind:this={host} class="cm-file min-h-0 flex-1 overflow-hidden"></div>
+  {#if file.ready}
+    <div bind:this={host} class="cm-file min-h-0 flex-1 overflow-hidden"></div>
+  {:else}
+    <!--
+      До прихода текста редактора нет вовсе.
+
+      Пустой документ до `sync` значит «ещё не прочитан», а не «файл пуст», —
+      и редактор, показавший пустоту, приглашает в неё печатать, тем более что
+      сам ставит в неё курсор. Напечатанное не пропадало, а сливалось с
+      приехавшим файлом и через секунду уезжало на диск ко всей комнате.
+    -->
+    <div class="flex min-h-0 flex-1 items-center justify-center text-ui text-muted">
+      Открываю {baseOf(file.path)}…
+    </div>
+  {/if}
 </div>
 
 <style>

@@ -31,6 +31,15 @@ const TEXT_KEY = 'text'
 const REFUSED = 4403
 /** Файла больше нет, или он не открывается как текст. */
 const MISSING = 4404
+/**
+ * Файл есть, но он слишком велик, чтобы его редактировать.
+ *
+ * Отдельно от 4404, потому что это разные ответы человеку: «файла нет» —
+ * вкладку закрыть, «файл на сто мегабайт» — предложить скачать его или
+ * прочитать из ячейки. Раньше и то и другое приходило кодом 4404, и вкладка на
+ * живой файл молча закрывалась.
+ */
+const TOO_BIG = 4413
 
 /**
  * Имя комнаты для одного файла: путь в base64url.
@@ -72,6 +81,8 @@ export class FileDoc {
   refused = $state(false)
   /** Файла больше нет. Вкладку надо закрыть, а не показывать пустоту. */
   missing = $state(false)
+  /** Файл слишком велик для редактора. Вкладка остаётся — с объяснением. */
+  tooBig = $state(false)
 
   #tabs = 0
   #closed = false
@@ -128,6 +139,9 @@ export class FileDoc {
       this.#hangUp()
     } else if (event?.code === MISSING) {
       this.missing = true
+      this.#hangUp()
+    } else if (event?.code === TOO_BIG) {
+      this.tooBig = true
       this.#hangUp()
     }
   }

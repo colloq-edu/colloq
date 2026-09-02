@@ -4,7 +4,13 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import { permitsIn } from '@/lib/may'
-  import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
+  import {
+    deleteCell,
+    hasPendingRun,
+    insertCell,
+    ONE_AT_A_TIME,
+    setCellType,
+  } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
   import { watchBooks, watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
@@ -59,9 +65,34 @@
     const running = notebook.current.runningCellId
     if (!running) return false
     const found = findCell(session.doc, running)
-    return !!found && (found.cell.get('runById') as string | null) === session.me.id
+    /*
+     * Ячейку могли удалить, пока она считалась: удаление работающей ячейки
+     * клиент разрешает, meta продолжает называть исчезнувший id, а «стоп» на
+     * самой ячейке ушёл вместе с ней. Сервер помнит, кто её запустил, документ
+     * — уже нет; гасить единственную оставшуюся кнопку по незнанию значит
+     * оставить комнату без преподавателя с бесконечным циклом и без выхода.
+     * Право проверит сервер, здесь мы только не мешаем нажать.
+     */
+    if (!found) return true
+    return (found.cell.get('runById') as string | null) === session.me.id
   })
   const canInterrupt = $derived(isHost || runningIsMine)
+
+  /**
+   * Что шлёт «Interrupt» из полосы.
+   *
+   * Безымянное нажатие сервер понимает как «разобрать очередь целиком» и
+   * отказывает участнику, пока в ней стоят чужие ячейки, — а кнопка при этом
+   * горит и обещает остановить выполняющуюся. Не-хост называет цель, и тогда
+   * ветка про чужую очередь не срабатывает вовсе: он останавливает ровно свою
+   * ячейку. У преподавателя нажатие остаётся безымянным — тем и отличается
+   * комнатная кнопка от кнопки на ячейке.
+   */
+  function interruptMessage(): { t: 'interrupt'; cellId?: string } {
+    const running = notebook.current.runningCellId
+    if (isHost || !running) return { t: 'interrupt' }
+    return { t: 'interrupt', cellId: running }
+  }
 
   /* --------------------------------------------------------- navigation */
 
@@ -272,6 +303,25 @@
         session.showError('Only the teacher runs cells in this seminar.')
         return
       }
+      /*
+       * Те же две проверки, что делает CellView.run, и по той же причине: шаг
+       * и «дописать ячейку в конце листа» правят общий документ, поэтому им
+       * нельзя случаться от имени запуска, которого не было.
+       *
+       * Первая — про эту ячейку: сервер молча пропускает ту, что уже считается
+       * или стоит в очереди. Вторая — про очередь этого человека: при «по
+       * одной» вторая ячейка отвергается с этой самой фразой.
+       */
+      const state = findCell(session.doc, current)?.cell.get('state')
+      if (state === 'running' || state === 'queued') return
+      if (
+        rules.run === 'single' &&
+        !isHost &&
+        hasPendingRun(session.doc, session.me.id)
+      ) {
+        session.showError(ONE_AT_A_TIME)
+        return
+      }
       session.send({ t: 'run', cellId: current })
       // Run and move on, the same as inside the editor — but staying in command
       // mode, because that is where the keystroke came from.
@@ -291,7 +341,24 @@
       event.preventDefault()
       const edge = session.selection.length > 0 ? session.selection : current ? [current] : []
       const step = event.key === 'ArrowUp' ? -1 : 1
-      const tip = step === -1 ? list.indexOf(edge[0]) : list.indexOf(edge[edge.length - 1])
+      /*
+       * Кончик — это край, которым выделение ушло ОТ якоря, а не тот, что
+       * совпал с направлением стрелки. Иначе Shift+↑ после двух Shift+↓ не
+       * сжимал диапазон снизу, а тянул новый вверх от якоря: 3,4,5 → 2,3, и
+       * вопрос оракулу уходил не про те ячейки.
+       *
+       * Края берём как минимум и максимум, а не как первый и последний
+       * элемент: Cmd-кликом выделение собирается в порядке нажатий.
+       */
+      let low = list.length
+      let high = -1
+      for (const id of edge) {
+        const seat = list.indexOf(id)
+        if (seat === -1) continue
+        if (seat < low) low = seat
+        if (seat > high) high = seat
+      }
+      const tip = high === -1 ? -1 : at === -1 ? (step === -1 ? low : high) : high !== at ? high : low
       const next = list[Math.max(0, Math.min(list.length - 1, (tip === -1 ? at : tip) + step))]
       if (next) {
         session.extendTo(next, list)
@@ -752,7 +819,7 @@
         session.connected,
         canInterrupt ? 'Stop the running cell' : 'Only the host, or whoever started it, can stop a run',
       )}
-      onclick={() => session.send({ t: 'interrupt' })}
+      onclick={() => session.send(interruptMessage())}
     >
       Interrupt
     </button>
@@ -844,7 +911,10 @@
         <span class={cn(PILL, 'border-danger/40 bg-danger/[0.05] text-2xs text-danger')}>
           <span class="h-1.5 w-1.5 rounded-full bg-danger"></span>
           kernel dead
-          {#if isHost}
+          <!-- По правилу, а не по роли: кнопка в полосе слушается may.restart,
+               и в открытой лаборатории без преподавателя плашка без кнопки
+               оставляла студентов гадать, что Restart есть где-то выше. -->
+          {#if may.restart}
             <button
               type="button"
               class="text-2xs font-bold uppercase tracking-label text-ink
