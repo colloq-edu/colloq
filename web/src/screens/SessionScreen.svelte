@@ -43,6 +43,7 @@
   import { copyText } from '@/lib/clipboard'
   import { takeRefusal } from '@/lib/refusal'
   import { permitsIn } from '@/lib/may'
+  import { controlDisabled, controlTitle } from '@/lib/controls'
   import TabStrip from '@/components/reader/TabStrip.svelte'
   import FileEditor from '@/components/editor/FileEditor.svelte'
   import FileBar from '@/components/editor/FileBar.svelte'
@@ -52,7 +53,7 @@
   import { holdFile, releaseFile, type FileDoc } from '@/lib/filedoc.svelte'
   import { baseOf, kindOf, runnerFor } from '@shared/paths'
   import { api } from '@/lib/api'
-  import { readRules, type RoomRules } from '@shared/rules'
+  import { actsAfterClass, CLASS_IS_OVER, readRules, type RoomRules } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
   interface Props {
@@ -155,6 +156,69 @@
     if (session.rulesChangedAt === 0) return
     rulesNoticeUp = true
     const timer = window.setTimeout(() => (rulesNoticeUp = false), RULES_NOTICE_MS)
+    return () => window.clearTimeout(timer)
+  })
+
+  /* ------------------------------------------------------- конец занятия */
+
+  /**
+   * Закончить занятие — и открыть его обратно.
+   *
+   * Управляющим сокетом, а не запросом: правила комната узнаёт рассылкой по
+   * нему же, и конец занятия должен приезжать той же дорогой и в том же
+   * порядке. Своё нажатие вернётся сюда кадром `class`, как чужое, — поэтому
+   * здесь ничего не записывается вперёд сервера.
+   */
+  function setClassOver(over: boolean): void {
+    session.send({ t: over ? 'class:finish' : 'class:resume' })
+  }
+
+  /**
+   * Когда занятие закончили — цифрами, которые человек помнит.
+   *
+   * Час, пока это сегодня, и день, когда нет: комнату открывают и через
+   * неделю, а «закончено в 15:40» в такой вкладке врёт про день. Полная дата
+   * остаётся в подсказке.
+   */
+  const finishedStamp = $derived.by(() => {
+    const at = session.session.finishedAt
+    if (at === null) return ''
+    const when = new Date(at)
+    const pad = (value: number) => String(value).padStart(2, '0')
+    return when.toDateString() === new Date().toDateString()
+      ? `${pad(when.getHours())}:${pad(when.getMinutes())}`
+      : `${pad(when.getDate())}.${pad(when.getMonth() + 1)}`
+  })
+  const finishedLong = $derived.by(() => {
+    const at = session.session.finishedAt
+    if (at === null) return ''
+    return `Занятие закончено ${new Date(at).toLocaleString(undefined, {
+      day: 'numeric',
+      month: 'long',
+      hour: '2-digit',
+      minute: '2-digit',
+    })} — комната открыта на чтение`
+  })
+
+  /*
+   * Переход — одной строкой, и она уходит сама.
+   *
+   * По образцу строки про правила, и по метке, а не по сравнению с местной
+   * переменной: у двадцати человек разом гаснут кнопки, и без единой фразы это
+   * читается как поломка ноутбука, а не как конец пары.
+   *
+   * Метку ставит разбор кадра (`session.classChangedAt`) и молчит на первом
+   * кадре соединения — поэтому вошедшему в давно законченную комнату строка не
+   * всплывает: про это говорит чип в полосе состояния. Своё сравнение здесь
+   * держаться не может: две смены признака подряд гасили таймер уборкой
+   * эффекта и не заводили новый, и строка оставалась висеть до конца пары.
+   */
+  const CLASS_NOTICE_MS = 6000
+  let classNoticeUp = $state(false)
+  $effect(() => {
+    if (session.classChangedAt === 0) return
+    classNoticeUp = true
+    const timer = window.setTimeout(() => (classNoticeUp = false), CLASS_NOTICE_MS)
     return () => window.clearTimeout(timer)
   })
   setSessionState(session)
@@ -310,7 +374,7 @@
 
   /* ------------------------------------------------------------- читалка */
 
-  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
 
   /**
    * Что открыто в центре — тетрадь и файлы, которые открыли.
@@ -986,7 +1050,19 @@
     // The shell belongs to the room, so ask for one only when nobody has
     // started it yet; reopening my own drawer must never restart a live shell.
     const status = session.terminalStatus
-    if (terminalOpen && (status === 'closed' || status === 'dead')) {
+    /*
+     * Ящик открывается всегда — лента общая, и читать её после пары как раз и
+     * приходят, — а вот будить оболочку после конца занятия участнику нельзя.
+     * Правилом это не выражается, поэтому та же `actsAfterClass`, по которой
+     * решает сервер: он такую просьбу не исполнит и отказа не пришлёт. Без
+     * этой проверки открытый почитать ящик поднимал бы уснувший контейнер —
+     * молча и от имени того, кто ни о чём не просил.
+     */
+    if (
+      terminalOpen &&
+      (status === 'closed' || status === 'dead') &&
+      actsAfterClass(may.finished, session.me.role)
+    ) {
       session.send({ t: 'term:open' })
     }
   }
@@ -1267,6 +1343,28 @@
         >
           <Icon name="spinner" size={12} class="animate-spin" />
           <span class="text-2xs font-bold uppercase tracking-label">Reconnecting</span>
+        </div>
+      {/if}
+
+      <!--
+        Занятие закончено — всем, а не одним участникам.
+
+        Спокойный чип, не тревога: комната жива, и это решение преподавателя, а
+        не поломка. Преподавателю он тоже нужен — он же и объясняет, почему у
+        него одного всё работает. Время рядом, потому что «закончено» без часа
+        — это факт, который нечем проверить, когда вернулся через день.
+      -->
+      {#if session.finished}
+        <div
+          class="flex h-7 shrink-0 items-center gap-2 bg-white/10 px-2.5"
+          role="status"
+          title={finishedLong}
+          transition:fade={{ duration: 120 }}
+        >
+          <span class="text-2xs font-bold uppercase tracking-label text-white">
+            Занятие закончено
+          </span>
+          <span class="hidden font-mono text-2xs text-white/60 sm:inline">{finishedStamp}</span>
         </div>
       {/if}
 
@@ -1704,6 +1802,16 @@
     Модальное, а не строкой: человек только что потерял несколько секунд работы,
     и текст, который он не успеет прочитать, — это тот же потерянный текст.
   -->
+  <!--
+    Печатал в секунду звонка — и об этом надо сказать звонком, а не правкой.
+
+    Гейт отказал теми же словами, что и всё остальное после конца занятия
+    (CLASS_IS_OVER, server/src/collab/gate.ts), — по ним окно и узнаёт свой
+    случай. Заголовок «Эту правку не приняли» здесь врёт про причину: правку не
+    приняли не потому, что она плохая, и не потому, что кто-то поменял правило,
+    а потому, что пара кончилась ровно между двумя нажатиями клавиш.
+  -->
+  {@const overClass = refusal.message === CLASS_IS_OVER}
   <div
     role="dialog"
     aria-modal="true"
@@ -1712,8 +1820,17 @@
   >
     <div class="flex max-h-full w-full max-w-[520px] flex-col border border-line bg-canvas shadow-pop">
       <div class="border-b border-line px-5 py-3.5">
-        <h2 id="refused-title" class="text-title font-semibold text-ink">Эту правку не приняли</h2>
-        <p class="mt-1 text-ui leading-snug text-muted">{refusal.message}</p>
+        <h2 id="refused-title" class="text-title font-semibold text-ink">
+          {overClass ? 'Занятие закончено' : 'Эту правку не приняли'}
+        </h2>
+        <p class="mt-1 text-ui leading-snug text-muted">
+          {#if overClass}
+            Вы печатали, когда занятие закончили, — эту правку уже не приняли, и вкладке пришлось
+            перечитать тетрадь. Комната на месте: её теперь читают.
+          {:else}
+            {refusal.message}
+          {/if}
+        </p>
       </div>
       {#if refusal.text}
         <div class="min-h-0 flex-1 overflow-y-auto border-b border-line bg-surface px-5 py-3">
@@ -1776,6 +1893,46 @@
     </div>
     <div class="max-h-[min(60vh,32rem)] overflow-y-auto px-4">
       <RoomRulesRows rules={roomRules} busy={rulesBusy} onchange={setRule} />
+    </div>
+    <!--
+      Конец занятия — здесь, под правилами, а не восьмой строкой среди них.
+
+      Правило отвечает на «кому можно», а это — «идёт ли пара»: оно накрывает
+      все восемь разом и снимается тем же нажатием, и выбранные правила при
+      этом остаются на месте, чтобы вернуться, когда занятие продолжат.
+    -->
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line px-4 py-3">
+      <div class="min-w-0 flex-1 basis-56">
+        <p class="text-ui font-semibold text-ink">
+          {session.finished ? 'Занятие закончено' : 'Занятие идёт'}
+        </p>
+        <p class="mt-0.5 text-2xs leading-snug text-muted">
+          {#if session.finished}
+            Участники только читают. Вернуть занятие можно в любую минуту — правила встанут те же.
+          {:else}
+            Участники смогут только читать: ни запуска, ни правки, ни терминала. Комната и файлы
+            остаются на месте.
+          {/if}
+        </p>
+      </div>
+      <!-- Как «Перезапустить ядро»: без связи нажатие никуда не уйдёт, и
+           кнопка, сделавшая вид, что ушло, здесь дороже прочих — половина
+           комнаты продолжит печатать в занятии, которое, как кажется,
+           закончили. -->
+      <button
+        type="button"
+        class="btn-outline h-[30px] shrink-0 text-2xs font-semibold"
+        disabled={controlDisabled(session.connected)}
+        title={controlTitle(
+          session.connected,
+          session.finished
+            ? 'Открыть занятие обратно — участники снова смогут считать и печатать'
+            : 'Закончить занятие — участникам останется чтение',
+        )}
+        onclick={() => setClassOver(!session.finished)}
+      >
+        {session.finished ? 'Продолжить занятие' : 'Закончить занятие'}
+      </button>
     </div>
     <!--
       Второй строкой — то, что видно из зала.
@@ -1845,6 +2002,34 @@
       <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
       <p class="text-ui leading-snug text-muted">
         Преподаватель изменил, что можно делать в этой комнате.
+      </p>
+    </div>
+  </div>
+{/if}
+
+<!--
+  Занятие кончилось — или пошло снова. Теми же шестью секундами и тем же
+  спокойным тоном, что и строка про правила: это не поломка, а решение
+  преподавателя, и сказать его надо ровно один раз. Что было и осталось —
+  тетрадь, файлы, лента — стоит в самой фразе: гаснут кнопки, а не комната.
+-->
+{#if classNoticeUp && !session.gone}
+  <div
+    class="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4
+           pb-[env(safe-area-inset-bottom)]"
+  >
+    <div
+      role="status"
+      class="pointer-events-none flex items-center gap-2 border border-line bg-raised px-3 py-1.5 shadow-pop"
+      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
+    >
+      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+      <p class="text-ui leading-snug text-muted">
+        {#if session.finished}
+          Занятие закончено. Тетрадь, файлы и ответы оракула остаются — их можно читать.
+        {:else}
+          Занятие продолжается — можно снова считать и печатать.
+        {/if}
       </p>
     </div>
   </div>

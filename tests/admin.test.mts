@@ -36,7 +36,8 @@ import {
 import { parseOraclePatch } from '../server/src/admin/settings.js'
 import { adminAuthRoutes } from '../server/src/routes/admin-auth.js'
 import { adminInstanceRoutes } from '../server/src/routes/admin-instance.js'
-import { createSession } from '../server/src/db.js'
+import { createSession, getRules, isFinished, setRules, storedRules } from '../server/src/db.js'
+import { OPEN_ROOM } from '../shared/rules.js'
 import { setPublicationSlug, writePublication } from '../server/src/publish/store.js'
 import { sessionDir } from '../server/src/workspace.js'
 
@@ -327,6 +328,44 @@ test('карточка семинара называет адрес страни
   const res = await call('GET', '/api/admin/seminars', { cookie: mintCookie(owner) })
   const rows = (await res.json()) as { id: string; publication: { slug: string | null } | null }[]
   assert.equal(rows.find((row) => row.id === room)?.publication?.slug, 'week-one')
+})
+
+test('панель заканчивает занятие и открывает его обратно', async () => {
+  /*
+   * Та же дверь, что кнопка в комнате: преподаватель, закрывший вкладку и
+   * вспомнивший про это в метро, не должен возвращаться в неё ради одного
+   * нажатия. Проверяется вместе с тем, что строка списка отдаёт ВЫБРАННЫЕ
+   * правила: нарисовав в настройках ужесточённые, панель записала бы их обратно
+   * первым же переключателем — и открывать занятие было бы уже не во что.
+   */
+  const owner = oldestOwner()
+  assert.ok(owner)
+  const cookie = mintCookie(owner)
+  const room = 'admin-finish'
+  createSession(room, 'Занятие', null)
+  setRules(room, { ...OPEN_ROOM, run: 'room', edit: 'room' })
+
+  const finished = await call('PATCH', `/api/admin/seminars/${room}`, {
+    cookie,
+    body: { finished: true },
+  })
+  assert.equal(finished.status, 200)
+  const row = (await finished.json()) as { finishedAt: number | null; rules: { run: string } }
+  assert.equal(typeof row.finishedAt, 'number', 'строка списка не назвала время')
+  assert.equal(row.rules.run, 'room', 'в настройках оказалось ужесточение вместо выбранного')
+  assert.equal(isFinished(room), true)
+  assert.equal(getRules(room).run, 'host', 'права в комнате остались прежними')
+
+  const resumed = await call('PATCH', `/api/admin/seminars/${room}`, {
+    cookie,
+    body: { finished: false },
+  })
+  assert.equal(resumed.status, 200)
+  assert.equal(((await resumed.json()) as { finishedAt: number | null }).finishedAt, null)
+  assert.equal(isFinished(room), false)
+  // И комната вернулась ровно в ту настройку, из которой её закончили.
+  assert.equal(storedRules(room).run, 'room')
+  assert.equal(getRules(room).run, 'room')
 })
 
 test('a cookie older than its month is nobody', () => {

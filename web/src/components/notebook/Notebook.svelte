@@ -299,8 +299,13 @@
       // Вслух, а не молча: та же фраза, которой отвечает сервер. Отказ, о
       // котором не сказали, читается как поломка, а не как решение
       // преподавателя — и в тулбаре ячейки это уже исправлено.
+      //
+      // Из `may`, а не своими словами: здесь стоял литерал про правило, и
+      // после звонка он рассказывал про правило, которого никто не менял, —
+      // человек шёл искать преподавателя вместо того, чтобы узнать, что пара
+      // кончилась.
       if (!mayRun) {
-        session.showError('Only the teacher runs cells in this seminar.')
+        session.showError(may.runWhy + '.')
         return
       }
       /*
@@ -487,7 +492,7 @@
     KeyD: 'd',
   }
 
-  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   const rules = $derived(may.rules)
   const mayRun = $derived(may.run)
   /* Run All и Run Above — отдельное право: при «по одной» ядро одно, и разница

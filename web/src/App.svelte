@@ -139,6 +139,9 @@
         name: '',
         createdAt: Date.now(),
         rules: { ...OPEN_ROOM },
+        // И «занятие идёт» — по тому же доводу, что и открытые правила рядом:
+        // угадать строже значит погасить кнопки, которые на самом деле живые.
+        finishedAt: null,
         published: null,
         course: null,
       }

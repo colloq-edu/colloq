@@ -634,6 +634,37 @@
     }
   }
 
+  /**
+   * Закончить занятие — и открыть его обратно.
+   *
+   * Та же дверь, что кнопка в самой комнате: преподаватель, закрывший вкладку и
+   * вспомнивший про это в метро, не должен возвращаться в неё ради одного
+   * нажатия. Правила при этом не переписываются — сервер накладывает конец
+   * занятия поверх них и отступает, не тронув настройку, — поэтому обратное
+   * движение здесь же и стоит ровно одного нажатия.
+   *
+   * Красится наперёд, как «Архивировать»: это одно поле, и вернуть его на место
+   * стоит того же нажатия, которое человек и собирался сделать.
+   */
+  async function finish(seminar: AdminSeminar, finished: boolean): Promise<void> {
+    const before = seminar.finishedAt
+    // Прошлый отказ этой строки — про прошлое нажатие. Оставить его под
+    // перекрашенной пометкой значит показать рядом две противоположные правды.
+    if (rowError?.id === seminar.id) rowError = null
+    patch(seminar.id, { finishedAt: finished ? Date.now() : null })
+    try {
+      replace(await adminApi.updateSeminar(seminar.id, { finished }))
+    } catch (cause: unknown) {
+      patch(seminar.id, { finishedAt: before })
+      rowError = {
+        id: seminar.id,
+        message: finished
+          ? `Занятие не закончилось — ${explain(cause)}`
+          : `Занятие не открылось обратно — ${explain(cause)}`,
+      }
+    }
+  }
+
   async function archive(seminar: AdminSeminar, archived: boolean): Promise<void> {
     const before = seminar.archivedAt
     patch(seminar.id, { archivedAt: archived ? Date.now() : null })
@@ -1146,7 +1177,23 @@
           </td>
 
           <td class="py-2 align-middle">
-            <div class="flex justify-end">
+            <div class="flex items-center justify-end gap-2">
+              <!--
+                Решение преподавателя, а не подсчёт подключённых — и потому
+                рядом со статусом, а не вместо него. `status` отвечает на «есть
+                ли кто-то в комнате сейчас»: семинар без единого человека может
+                идти, а законченный — стоять с полным залом, который
+                перечитывает разбор.
+              -->
+              {#if seminar.finishedAt}
+                {@const over = new Date(seminar.finishedAt).toLocaleString()}
+                <span
+                  class="whitespace-nowrap text-2xs text-muted"
+                  title="Закончено {over} — в комнате теперь только читают"
+                >
+                  занятие закончено
+                </span>
+              {/if}
               {#if seminar.status === 'live'}
                 <span
                   class="chip h-[22px] gap-1.5 bg-accent/15 px-2 text-micro font-bold uppercase tracking-caps text-accent-text"
@@ -1213,6 +1260,14 @@
                     onclick={() => (ruling = seminar)}
                   >
                     Rules…
+                  </button>
+                  <button
+                    role="menuitem"
+                    type="button"
+                    class="{ITEM} text-ink hover:bg-raised"
+                    onclick={() => void finish(seminar, !seminar.finishedAt)}
+                  >
+                    {seminar.finishedAt ? 'Продолжить занятие' : 'Закончить занятие'}
                   </button>
                   <div class="my-1 border-t border-line-soft"></div>
                   <button
@@ -1341,7 +1396,22 @@
       </div>
       <div class="flex items-center gap-3 border-t border-line px-5 py-3">
         <p class={cn('min-w-0 flex-1 text-2xs', rulesError ? 'text-danger' : 'text-muted')}>
-          {rulesError ?? 'Открытая комната узнаёт сразу — перезаходить никому не нужно.'}
+          {#if rulesError}
+            {rulesError}
+          {:else}
+            Открытая комната узнаёт сразу — перезаходить никому не нужно.
+            <!-- Пока занятие закончено, выбранное здесь не действует: конец занятия
+                 накладывается поверх правил и настройку не трогает (shared/rules.ts ·
+                 rulesAfterClass). Без этой строки список читается как неправда — в комнате
+                 всё преподавательское, а здесь написано другое, — и преподаватель идёт
+                 чинить то, что не сломано. -->
+            {#if ruling.finishedAt}
+              <span class="text-ink">
+                Занятие закончено: пока его не продолжат, в комнате всё преподавательское, а
+                выбранное здесь включится вместе с занятием.
+              </span>
+            {/if}
+          {/if}
         </p>
         <button
           type="button"

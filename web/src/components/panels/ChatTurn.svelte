@@ -20,6 +20,7 @@
   import { findChatEntry, findCell } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
+  import { actsAfterClass, CLASS_IS_OVER } from '@shared/rules'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchText } from '@/lib/yreactive.svelte'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
@@ -177,12 +178,28 @@
    * получала патч дважды. У сервера копия одна, и он разбирает сообщения по
    * очереди.
    */
-  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   /*
    * Отменить ход — там же, где его можно завести, плюс преподаватель всегда:
    * ровно так это читает сервер (control.ts, case 'ai:undo').
    */
   const mayUndo = $derived(session.me.role === 'host' || may.agent)
+  /*
+   * Действует ли этот человек после звонка.
+   *
+   * Для того, у чего правила нет вовсе: спросить снова, оборвать запись,
+   * отклонить предложение. Та же `actsAfterClass`, которой отвечает сервер, —
+   * второго механизма прав здесь заводить нельзя.
+   */
+  const acts = $derived(actsAfterClass(may.finished, session.me.role))
+  /*
+   * «Стоп» после звонка — только своей записи.
+   *
+   * Оборвать чужой ответ — это разрушение чужой работы, и переспросить после
+   * конца занятия участнику уже нечем. Свою — ту, что он сам и попросил до
+   * звонка, — он останавливает всегда: это его вопрос и его ответ.
+   */
+  const mayStop = $derived(acts || mine)
 
   function decide(accept: boolean) {
     if (!findChatEntry(session.doc, entry.id)) return
@@ -383,8 +400,10 @@
           {entry.answer || 'The oracle did not answer.'}
         </p>
         <!-- Повтор хода «сделать» — это тот же ход: там, где его нельзя
-             завести, нечего и повторять. -->
-        {#if entry.mode !== 'agent' || canDo}
+             завести, нечего и повторять. После звонка нечего повторять вовсе:
+             оракул отвечает одному преподавателю (routes/ai.ts), и кнопка
+             вернула бы красную строку отказа под красной строкой ошибки. -->
+        {#if acts && (entry.mode !== 'agent' || canDo)}
           <button
             type="button"
             class="inline-flex h-[22px] items-center gap-1.5 border border-danger/45 px-1.5 text-2xs
@@ -408,7 +427,16 @@
     {/if}
 
     {#if streaming}
-      <button type="button" class={cn(GHOST, 'self-start')} onclick={onstop}>
+      <!-- Кнопка остаётся стоять и после звонка: запись идёт, и молча
+           исчезнувший «Стоп» читался бы как «оракула уже не остановить». Она
+           гаснет и говорит, почему, — но только на чужой записи. -->
+      <button
+        type="button"
+        class={cn(GHOST, 'self-start disabled:cursor-not-allowed disabled:opacity-40')}
+        disabled={!mayStop}
+        title={mayStop ? '' : CLASS_IS_OVER}
+        onclick={onstop}
+      >
         <Icon name="stop" size={10} />
         Stop
       </button>
@@ -552,11 +580,20 @@
                 reflex must land on the safe outcome.
               -->
               {#if stale}
-                <button type="button" class="btn-primary h-7" onclick={() => decide(false)}>
+                <button
+                  type="button"
+                  class="btn-primary h-7"
+                  disabled={!acts}
+                  title={acts ? '' : CLASS_IS_OVER}
+                  onclick={() => decide(false)}
+                >
                   Discard
                 </button>
                 <!-- Применить — правка тетради, и правило комнаты про неё же.
-                     Отклонить остаётся всем: снятая плашка ничего не рушит. -->
+                     Отклонить остаётся всем, пока идёт занятие: снятая плашка
+                     ничего не рушит. После звонка рушит: предложение исчезнет
+                     насовсем, а попросить его заново уже нечем — оракул
+                     отвечает одному преподавателю. -->
                 <button
                   type="button"
                   class="btn-outline h-7"
@@ -576,7 +613,13 @@
                 >
                   Accept
                 </button>
-                <button type="button" class="btn-outline h-7" onclick={() => decide(false)}>
+                <button
+                  type="button"
+                  class="btn-outline h-7"
+                  disabled={!acts}
+                  title={acts ? '' : CLASS_IS_OVER}
+                  onclick={() => decide(false)}
+                >
                   Discard
                 </button>
                 <div class="flex-1"></div>

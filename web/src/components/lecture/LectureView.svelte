@@ -26,6 +26,7 @@
   import { getSessionState } from '@/lib/session.svelte'
   import type { LectureState } from '@shared/lecture'
   import { baseOf } from '@shared/paths'
+  import { actsAfterClass } from '@shared/rules'
   import ConsoleLink from './ConsoleLink.svelte'
   import InkLayer from './InkLayer.svelte'
   import LecturePage from './LecturePage.svelte'
@@ -152,6 +153,23 @@
   const page = $derived(lecture.page)
   /** Хостовое здесь только заметки и ссылка-ключ: лекцию может вести и студент. */
   const host = $derived(session.me.role === 'host')
+
+  /**
+   * Занятие кончилось — пульт стал преподавательским.
+   *
+   * Лекцию звонок НЕ гасит: сорок минут разметки живут только в памяти сервера,
+   * истории у них нет, и стирать их концом пары нельзя. Но управлять ею
+   * студент, который её вёл, больше не может — страницу, чернила и паузу сервер
+   * от него теперь не примет (control.ts), — поэтому здесь гаснет весь пульт
+   * разом: и полоса, и перо, и клавиатура. Кнопка, которая молчит, читается как
+   * поломка, а мазок, которого не видит зал, — как поломка вдвойне.
+   *
+   * Правилом `board` это не выражается: оно про то, кто ставит документ на
+   * общий экран, а не про то, кто ведёт уже начатую лекцию. Значит, та же
+   * `actsAfterClass`, что и у сервера.
+   */
+  const acts = $derived(actsAfterClass(session.finished, session.me.role))
+  const pult = $derived(presenting && acts)
 
   /**
    * «Стереть» спросила и ждёт второго нажатия.
@@ -312,7 +330,9 @@
       fillScreen()
       return
     }
-    if (!presenting && !(role === 'projection' && mine)) return
+    // `acts` и на проекции: клавиатура у проектора листает лекцию так же, как
+    // пульт, и после звонка сервер её так же не послушает.
+    if (!pult && !(role === 'projection' && mine && acts)) return
     // Цель бывает и не элементом (документ, окно): у них нет `closest`.
     const target = event.target instanceof Element ? event.target : null
     if (target?.closest('input, textarea, [contenteditable]')) return
@@ -411,7 +431,7 @@
   </div>
 {:else}
   <section class="flex min-h-0 flex-1 flex-col bg-surface">
-    {#if presenting}
+    {#if pult}
       <!--
         Пульт. Полоса под вкладками — там же, где у тетради Run All: у каждой
         вкладки своя, и она всегда под ней.
@@ -552,6 +572,26 @@
           Закончить
         </button>
       </div>
+    {:else if presenting}
+      <!--
+        Лекцию вёл он, а звонок уже был. Одна строка вместо полосы: лекция на
+        экране осталась — и страница, и чернила, — а пульт стал
+        преподавательским. Молча снятые клавиши читались бы как поломка
+        планшета посреди аудитории.
+      -->
+      <div
+        class="flex h-[34px] shrink-0 items-center gap-2 border-b border-line bg-canvas px-4 text-2xs text-muted"
+      >
+        <!-- Спокойная точка, не тревожная: это решение преподавателя, а не
+             поломка, и лекция на экране как стояла, так и стоит. -->
+        <span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
+        Занятие закончено — лекцией теперь управляет преподаватель. Страница и чернила остаются.
+        <span class="flex-1"></span>
+        <span class="font-mono tabular-nums">
+          {#if page < 0}чистый лист{:else}{page} / {pages || '—'}{/if}
+        </span>
+        {@render projectButton()}
+      </div>
     {:else}
       <!-- Залу — одна строка: кто ведёт и что идёт. Управления нет вовсе. -->
       <div
@@ -612,8 +652,8 @@
           {#snippet over(size)}
             <InkLayer
               {page}
-              live={presenting}
-              tool={presenting ? tool : 'off'}
+              live={pult}
+              tool={pult ? tool : 'off'}
               color={ink}
               width={0.004}
               w={size.w}
@@ -622,7 +662,7 @@
           {/snippet}
         </LecturePage>
 
-        {#if presenting && (host || (page > 0 && pages > page))}
+        {#if pult && (host || (page > 0 && pages > page))}
           <!--
             Колонка ведущего — и есть Speaker View: что будет дальше и что про
             это сказать. Знать это, не заглядывая вперёд на проекторе.

@@ -221,6 +221,16 @@ there is no interface for it, since `/` goes to the panel, so it is a switch for
 than a page. On an instance with an API key in it, whoever can reach that endpoint is spending your
 money.
 
+**A class ends with one press**, and the room stays open. *Закончить занятие* — in the room itself,
+or on the seminar's row here — leaves the notebook, the files, the terminal transcript and the
+oracle's answers exactly where they are, because that is what the week after a seminar is for. What
+it takes away is acting: running a cell, editing, the shell, asking the oracle, uploading a file and
+restarting the kernel become the teacher's, and every refusal says that the class is over rather
+than naming a rule nobody changed. It is laid over the seminar's settings instead of rewriting them,
+so *Продолжить занятие* — the same one press — puts the room back in exactly the settings it was
+closed from. It is not the *Ended* label on the list: that one counts who is connected right now,
+and a finished seminar can be full of people re-reading the discussion.
+
 ## Configuration
 
 Everything lives in `.env` — see `.env.example` for the full list.

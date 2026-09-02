@@ -160,6 +160,7 @@ const ROOM = {
   name: 'Регуляризация',
   createdAt: 1_700_000_000_000,
   rules: { ...OPEN_ROOM },
+  finishedAt: null,
   published: null,
   course: null,
 }

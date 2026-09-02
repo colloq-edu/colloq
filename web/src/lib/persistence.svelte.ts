@@ -148,7 +148,19 @@ function writeRooms(rooms: RoomMap): void {
 
 export function recallSessionInfo(sessionId: string): SessionInfo | null {
   const room = readRooms()[sessionId]
-  return room && room.id === sessionId ? room : null
+  if (!room || room.id !== sessionId) return null
+  /*
+   * Конец занятия хранится вместе с остальной карточкой — она пишется целиком,
+   * — но карточка могла лечь сюда ещё до того, как занятие стало кончаться, и
+   * тогда поля в ней просто нет. `undefined` — это не `null`, то есть комната
+   * прочитала бы старую карточку как законченное занятие и на секунду показала
+   * бы погашенной каждую комнату, куда человек возвращается.
+   *
+   * Незнание — это «занятие идёт». Угадать строже значит соврать: запуск
+   * ячейки, который на самом деле разрешён, всё равно уйдёт на сервер и там
+   * решится, а погашенная кнопка не спрашивает никого.
+   */
+  return { ...room, finishedAt: room.finishedAt ?? null }
 }
 
 export function rememberSessionInfo(session: SessionInfo): void {

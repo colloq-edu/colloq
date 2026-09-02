@@ -45,7 +45,7 @@
   import { cellSource, patchIsStale } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
-  import { oracleModeIn, readRules } from '@shared/rules'
+  import { actsAfterClass, CLASS_IS_OVER, oracleModeIn, readRules } from '@shared/rules'
   import { permitsIn } from '@/lib/may'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -122,8 +122,14 @@
    * обязано сказать об этом там, где нажимают, и ДО нажатия: кнопка, молча
    * ничего не делающая, читается как поломка и приходит обратно баг-репортом.
    */
-  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   const mayRun = $derived(may.run)
+  /*
+   * Действует ли этот человек после звонка — для того, у чего правила нет:
+   * ответить на `input()`, отклонить предложение оракула. Та же
+   * `actsAfterClass`, которой отвечает сервер.
+   */
+  const acts = $derived(actsAfterClass(may.finished, session.me.role))
 
   /*
    * Ячейка остановилась внутри input().
@@ -300,8 +306,13 @@
    * Ответить в input() — тот же круг людей и та же серверная проверка, что у
    * «остановить». Отдельным именем, потому что это другой вопрос к комнате: не
    * «чью работу ты прерываешь», а «чья ячейка спрашивает».
+   *
+   * И конец занятия: правилом это не выражается — правил про `input()` нет, —
+   * поэтому здесь та же `actsAfterClass`, которой отвечает сервер. Случай
+   * редкий и настоящий: занятие заканчивают, пока чья-то ячейка стоит в
+   * ожидании ввода, и поле, которому сервер откажет, лучше не рисовать.
    */
-  const canAnswer = $derived(canInterrupt)
+  const canAnswer = $derived(canInterrupt && acts)
   /*
    * A queued cell can be taken back; the running one cannot, that is Interrupt.
    * It matters most in the case the control is for: somebody else's long cell
@@ -739,6 +750,18 @@
   function decline(): void {
     const id = proposal?.get('id')
     if (typeof id !== 'string') return
+    /*
+     * После звонка отклонять нельзя, хотя правила про это нет.
+     *
+     * Пока занятие идёт, «Отклонить» ничего не рушит: не понравилось —
+     * спросили ещё раз. После конца пары спрашивать нечем, оракул отвечает
+     * одному преподавателю, — и снятая плашка уносит с собой чужую работу
+     * навсегда. Та же граница стоит на сервере.
+     */
+    if (!acts) {
+      session.showError(CLASS_IS_OVER + '.')
+      return
+    }
     session.send({ t: 'ai:decide', entryId: id, accept: false })
   }
 
@@ -954,12 +977,16 @@
         >
           <Icon name={isCode ? 'text' : 'code'} size={13} />
         </button>
+        <!-- Спросить — тоже действие: после конца занятия оракул отвечает
+             одному преподавателю (may.ask), и строка, в которую человек успеет
+             написать фразу, — это отказ, полученный уже после работы. -->
         <button
           type="button"
           class={TOOL}
-          title="Ask the oracle to change this cell"
+          title={may.ask ? 'Ask the oracle to change this cell' : may.askWhy}
           aria-label="Ask the oracle to change this cell"
           aria-pressed={asking}
+          disabled={!may.ask}
           onclick={() => (asking = !asking)}
         >
           <Icon name="sparkles" size={13} class="text-accent-text" />
@@ -1094,7 +1121,7 @@
             and the code — because the room is entitled to know why the notebook it is
             reading changed.
           -->
-          {#if asking}
+          {#if asking && may.ask}
             <div class={cn('flex flex-col gap-2 border-l-4 px-3 py-2.5', RULE[tone], 'bg-surface')}>
               <textarea
                 bind:this={promptBox}
@@ -1359,6 +1386,11 @@
         <p class="px-3 pt-1 text-2xs text-muted">
           {#if canAnswer}
             The kernel is waiting for your answer.
+          {:else if !acts}
+            <!-- Две разные причины, и звонок из них старше: звать к полю того,
+                 кто эту ячейку и запустил, после конца занятия — значит звать
+                 человека к отказу. Имени здесь поэтому нет. -->
+            Занятие закончено — на ввод отвечает преподаватель.
           {:else}
             The kernel is waiting — {runBy ?? 'whoever started this cell'} or the teacher answers.
           {/if}
@@ -1498,7 +1530,7 @@
             </button>
           {/if}
         </div>
-      {:else if hasError && aiReady}
+      {:else if hasError && aiReady && may.ask}
         <div class={FOOTER}>
           <button
             type="button"

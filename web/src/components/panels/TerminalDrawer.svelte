@@ -16,6 +16,7 @@
   import { getSessionState } from '@/lib/session.svelte'
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
   import { getTerminal, readTerminalLine, type TerminalLineSnapshot } from '@shared/notebook'
+  import { actsAfterClass } from '@shared/rules'
   import { terminalDraft } from '@/lib/drafts.svelte'
   import { collapseCarriage, elapsed } from '@/lib/utils'
 
@@ -42,7 +43,7 @@
    * a moment later. A value captured at init would never hear about it.
    */
   const isHost = $derived(session.me.role === 'host')
-  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   /*
    * Ящик может открыться на вкладке, которой в этой комнате нет: вкладка —
    * состояние родителя и переживает и смену правила, и переоткрытие. Тогда
@@ -240,9 +241,17 @@
    * Оболочку можно завести заново, пока есть кому её просить.
    *
    * Не в 'starting': там уже идёт запуск. Не без связи: сообщение никуда не
-   * уйдёт, а кнопка сделает вид, что ушло.
+   * уйдёт, а кнопка сделает вид, что ушло. И не после конца занятия: ящик
+   * сервер открывает всем — расшифровка общая, за ней сюда и приходят, — но
+   * оболочку и контейнер участнику не будит и отказа при этом не шлёт.
+   * Кнопка без этой проверки была бы худшим из всего: нажал, и не случилось
+   * ничего, даже слова. Правила про `term:open` нет, поэтому здесь та же
+   * `actsAfterClass`, по которой сервер и решает.
    */
-  const canRevive = $derived(session.connected && (status === 'dead' || status === 'closed'))
+  const acts = $derived(actsAfterClass(may.finished, session.me.role))
+  const canRevive = $derived(
+    session.connected && (status === 'dead' || status === 'closed') && acts,
+  )
 
   function revive(): void {
     if (!canRevive) return
@@ -528,6 +537,16 @@
         <button type="button" class="term-revive" onclick={revive}>
           Start a new shell
         </button>
+      {:else if !acts && (status === 'dead' || status === 'closed')}
+        <!--
+          На месте кнопки — причина, а не слово `dead`.
+
+          Оболочку после звонка заводит преподаватель, и без этой строки в ящик
+          приходят читать ленту, а встречают английский диагноз мёртвой машины.
+          Про сам звонок сказано рядом — в приглашении строки; здесь только то,
+          чего не хватает на месте кнопки.
+        -->
+        оболочку заводит преподаватель
       {:else}
         {status}
       {/if}

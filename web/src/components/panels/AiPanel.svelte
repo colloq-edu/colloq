@@ -440,7 +440,8 @@
    * между вопросами и гаснет там, где режим запрещён правилом комнаты.
    */
   let doing = $state(false)
-  const mayDo = $derived(permitsIn(session.session.rules, session.me.role).agent)
+  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
+  const mayDo = $derived(may.agent)
   /*
    * И режим оракула, а не только правило `agent`.
    *
@@ -456,6 +457,15 @@
    */
   $effect(() => {
     if (!canDo) doing = false
+    /*
+     * И «Иван печатает вопрос…» — тем же движением.
+     *
+     * Строка живёт в присутствии, а не в этом компоненте: поле после звонка
+     * исчезает целиком, ни `blur`, ни ввода больше не будет, и снять флаг
+     * некому — он висит у всей комнаты до перезагрузки вкладки. Иван при этом
+     * уже ничего не печатает: спрашивать ему нечем.
+     */
+    if (!may.ask) stopComposing()
   })
 
   function submit() {
@@ -732,6 +742,13 @@
           The oracle is not answering on this Colloq, so there is nobody to ask here.
         {/if}
       </p>
+    {:else if !may.ask}
+      <!--
+        Занятие кончилось — поля нет вовсе, а не есть и отказывает.
+        Тред при этом остаётся открытым и прокручивается: за разбором,
+        который оракул написал на паре, сюда как раз и возвращаются.
+      -->
+      <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted">{may.askWhy}</p>
     {:else}
       <div
         class="flex flex-col items-stretch border border-line bg-surface transition-colors

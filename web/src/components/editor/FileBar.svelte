@@ -35,7 +35,7 @@
    * терминале), и это те слова, которыми отказывает сервер. Своя короткая
    * копия расходилась с ними молча.
    */
-  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
 
   const runner = $derived(runnerFor(path))
   const entry = $derived(session.files.find((file) => file.path === path))

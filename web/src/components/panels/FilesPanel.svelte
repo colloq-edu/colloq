@@ -56,7 +56,7 @@
   let copied = $state<string | null>(null)
   let confirming = $state<string | null>(null)
   const isHost = $derived(session.me.role === 'host')
-  const may = $derived(permitsIn(session.session.rules, session.me.role))
+  const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   /** Тетради комнаты: `.ipynb`, который уже открыт как тетрадь, — не файл. */
   const books = watchBooks(session.doc)
   const isBook = (path: string): boolean => books.current.some((book) => book.path === path)
@@ -160,7 +160,9 @@
      * которыми ответил бы сервер.
      */
     if (kindOf(entry.path) === 'notebook' && !may.files && !isBook(entry.path)) {
-      error = 'Открывать тетради в этом семинаре может преподаватель.'
+      // Из `may`, как в двух соседних ветках: свои слова здесь после звонка
+      // называли правило, которого никто не менял.
+      error = may.filesWhy + '.'
       return
     }
     onopen?.(entry.path)

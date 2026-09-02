@@ -92,11 +92,14 @@
    * draws it, in mono, and deliberately not localised: "25.08 · 18:10" is a
    * blackboard note, not a date field.
    */
-  const stamp = $derived.by(() => {
-    const at = new Date(session.createdAt)
+  function stampOf(ms: number): string {
+    const at = new Date(ms)
     const pad = (value: number) => String(value).padStart(2, '0')
     return `${pad(at.getDate())}.${pad(at.getMonth() + 1)} · ${pad(at.getHours())}:${pad(at.getMinutes())}`
-  })
+  }
+  const stamp = $derived(stampOf(session.createdAt))
+  /** Когда занятие закончили — теми же цифрами, что и час его начала. */
+  const finishedStamp = $derived(session.finishedAt === null ? null : stampOf(session.finishedAt))
 
   /*
    * The button names the person only while the picker is open. That is the
@@ -339,6 +342,21 @@
              человек, который сюда попал, ничего не сделал неправильно. -->
         <p class="border border-line bg-surface px-4 py-3 text-ui text-muted" role="status">
           {notice}
+        </p>
+      {/if}
+
+      {#if finishedStamp}
+        <!--
+          Сказать до входа, а не после.
+
+          Иначе человек называет имя, заходит и упирается в тетрадь, где не
+          нажимается ничего, — а это ровно то, что читается как сломанная
+          комната. Форма остаётся рабочей: комната открыта на чтение, и войти в
+          неё за разбором — обычное дело.
+        -->
+        <p class="border border-line bg-surface px-4 py-3 text-ui text-muted" role="status">
+          Занятие закончено {finishedStamp}. Войти можно — тетрадь, файлы и ответы оракула на
+          месте, но здесь теперь только читают.
         </p>
       {/if}
 

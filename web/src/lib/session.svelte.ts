@@ -25,6 +25,7 @@ import type { InkStroke, LectureState } from '@shared/lecture'
 import { readRules, type RoomRules } from '@shared/rules'
 import { api, ApiError } from './api'
 import { enqueueControl, OFFLINE_REASON } from './controls'
+import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
 import { forgetIdentity, type StoredIdentity } from './identity'
 import { bindLocalStore, forgetSessionInfo, type LocalStore } from './persistence.svelte'
@@ -77,6 +78,16 @@ const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>(['ping', 'ink', 'la
 export class SessionState {
   /** Not readonly: the room's rules can change while the seminar is running. */
   session: SessionInfo = $state.raw({} as SessionInfo)
+  /**
+   * Занятие закончено: комната открыта на чтение, действует преподаватель.
+   *
+   * Геттер поверх `session.finishedAt`, потому что время интересно только тем,
+   * кто его показывает, а всем остальным нужен ответ «да или нет» — его и ждёт
+   * `permitsIn` третьим аргументом.
+   */
+  get finished(): boolean {
+    return this.session.finishedAt !== null
+  }
   /** True once the server has said the seminar is gone; stops the reconnect loop. */
   gone = $state(false)
   /**
@@ -187,6 +198,13 @@ export class SessionState {
    */
   showCell: ((cellId: string) => void) | null = null
   lastError = $state<string | null>(null)
+  /**
+   * Последний отказ гейта — со временем, чтобы не выдать старый за новый.
+   *
+   * Не `$state`: его читает только записка, которую кладут перед перезагрузкой,
+   * и ничего в интерфейсе от него не зависит.
+   */
+  #refusal: { message: string; at: number } | null = null
   /** Shared terminal lifecycle; 'closed' until somebody opens the drawer. */
   terminalStatus = $state<TerminalStatus>('closed')
   /**
@@ -510,11 +528,54 @@ export class SessionState {
         if (!first && changed) this.rulesChangedAt = Date.now()
         return
       }
+      if (message.t === 'class') {
+        /*
+         * Занятие закончилось — или снова идёт.
+         *
+         * Отдельно от правил и рядом с ними: хранимые правила при этом не
+         * меняются, а кнопки гаснут все разом, и без слов это читается как
+         * поломка ноутбука, а не как решение преподавателя.
+         *
+         * Защёлка «первый кадр» — та же, что у правил, и по той же причине.
+         * Пока сервер не ответил, карточка комнаты угадывает «занятие идёт»
+         * (App.svelte · knownRoom): угадать строже значит погасить живые
+         * кнопки. Значит в комнате, где пара кончилась вчера, первый же кадр
+         * расходится с угаданным, и открывший ссылку впервые слышал «занятие
+         * закончено» так, будто звонок прозвенел при нём.
+         *
+         * Защёлка одна на комнату, а не на сокет, — и переподключение остаётся
+         * событием: звонок, прозвеневший, пока связи не было, комната всё-таки
+         * объявит.
+         *
+         * Сравнение по «есть или нет», а не по самому времени: переприсланная
+         * та же отметка — не новость.
+         */
+        const first = !this.#classArrived
+        this.#classArrived = true
+        const wasFinished = this.finished
+        this.session = { ...this.session, finishedAt: message.finishedAt }
+        const changed = wasFinished !== this.finished
+        if (!first && changed) this.classChangedAt = Date.now()
+        /*
+         * А файлы оживают и на первом кадре: метка выше — про слова, которые
+         * говорят один раз, а это починка, и молчать ей незачем. Вкладка файла,
+         * закрытая отказом из-за конца занятия, сама не переподключается
+         * (lib/filedoc.svelte.ts) и без этого осталась бы мёртвой до
+         * перезагрузки страницы.
+         */
+        if (changed && !this.finished) reopenRefusedFiles(this.session.id)
+        return
+      }
       if (message.t === 'refused') {
         // Отказ адресован одному человеку и объясняет, где именно его правка
         // не прошла. Обычный путь — предотвращение; сюда попадают гонка и
         // подделанный клиент.
         this.lastError = message.message
+        // И отдельно — для записки, которую человек прочитает уже после
+        // перезагрузки: `lastError` держит ЛЮБУЮ последнюю ошибку и сам не
+        // гаснет (тост закрывают крестиком), так что отказ десятиминутной
+        // давности объяснял бы человеку не то, во что он упёрся сейчас.
+        this.#refusal = { message: message.message, at: Date.now() }
         return
       }
       if (message.t === 'role') {
@@ -938,6 +999,16 @@ export class SessionState {
   rulesChangedAt = $state(0)
   /** Приходили ли правила по сокету за жизнь этого состояния. См. разбор `rules`. */
   #rulesArrived = false
+  /** То же про конец занятия: первый кадр — не событие. См. разбор `class`. */
+  #classArrived = false
+
+  /**
+   * Когда занятие закончили или открыли обратно.
+   *
+   * Такая же метка, как у правил, и по той же причине: строку рисует комната —
+   * ей нужен момент, а слова она выберет сама по `finished`.
+   */
+  classChangedAt = $state(0)
 
   /**
    * Сервер отказал в правке и закрыл соединение.
@@ -957,7 +1028,12 @@ export class SessionState {
     const cell = this.selectedCellId ? findCell(this.doc, this.selectedCellId) : null
     stashRefusal({
       sessionId: this.session.id,
-      message: this.lastError ?? 'Эту правку не приняли.',
+      // Свежий отказ — тот, что и закрыл соединение; всё, что старше нескольких
+      // секунд, пришло по другому поводу и объясняло бы не то.
+      message:
+        this.#refusal && Date.now() - this.#refusal.at < 15_000
+          ? this.#refusal.message
+          : 'Эту правку не приняли.',
       text: cell ? cellSource(cell.cell).toString() : '',
       at: Date.now(),
     })

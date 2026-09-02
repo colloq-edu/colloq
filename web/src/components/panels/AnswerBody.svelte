@@ -106,7 +106,7 @@
   function toCell(code: string) {
     // Ответ оракула становится ячейкой — то есть добавляется ячейка, а это
     // право комнаты. Иначе кнопка «в ячейку» делала бы вид, что сработала.
-    const may = permitsIn(session.session.rules, session.me.role)
+    const may = permitsIn(session.session.rules, session.me.role, session.finished)
     if (!may.add) {
       session.showError(may.structureWhy + '.')
       return
