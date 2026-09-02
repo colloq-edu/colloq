@@ -21,8 +21,10 @@ import {
 } from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
 import { stopAll, stopWork, work } from '../ai/agent.js'
-import { allows, allowsAgent, oracleModeIn } from '@shared/rules'
-import { getParticipant, getRules, getSession } from '../db.js'
+import { peekSessionDoc } from '../collab/index.js'
+import { findChatEntry } from '@shared/notebook'
+import { actsAfterClass, allows, allowsAgent, CLASS_IS_OVER, oracleModeIn } from '@shared/rules'
+import { getParticipant, getRules, getSession, isFinished } from '../db.js'
 import { sessionAuth } from './sessions.js'
 import {
   actionAllowedIn,
@@ -75,6 +77,20 @@ function oracleModeFor(
   return oracleModeIn(getRules(sessionId), instance)
 }
 
+/**
+ * Своя ли это запись в треде — та, которую спросил он сам.
+ *
+ * `peekSessionDoc`, а не `getSessionDoc`: спрашиваем ради отказа, а отказ —
+ * не повод заводить комнату заново (та же причина написана над самим
+ * `peekSessionDoc`). Незнакомая запись считается чужой: останавливать в ней
+ * нечего, и лучше пусть об этом скажет отказ, чем молчание.
+ */
+function askedBy(sessionId: string, entryId: string, participantId: string): boolean {
+  const doc = peekSessionDoc(sessionId)?.doc
+  const entry = doc ? findChatEntry(doc, entryId) : null
+  return entry ? (entry.get('participantId') as string) === participantId : false
+}
+
 export function aiRoutes(): Router {
   const router = Router()
 
@@ -91,6 +107,20 @@ export function aiRoutes(): Router {
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
     if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+
+    /*
+     * Занятие закончено — спрашивает один преподаватель.
+     *
+     * Правилом это не выразить: у `oracle` нет измерения «кто» — он про
+     * подробность ответа для всей комнаты, включая ведущего. Отказ стоит раньше
+     * всех остальных, потому что вопрос ложится в общий тред: запись «объясни
+     * это», под которой никогда не появится ответ, читается как поломка, а не
+     * как конец пары. Режим «сделать» этой же проверкой и закрыт — участник до
+     * него не доходит.
+     */
+    if (!actsAfterClass(isFinished(sessionId), auth.role)) {
+      return res.status(403).json({ error: CLASS_IS_OVER })
+    }
 
     const settings = getOracleSettings()
     /*
@@ -300,6 +330,21 @@ export function aiRoutes(): Router {
     // Open to anyone present: a runaway answer is on every screen in the room,
     // and stopping it destroys nothing — the text that arrived stays put.
     /*
+     * После звонка — только СВОЮ запись, ту, что человек сам и спросил.
+     *
+     * «Ничего не разрушает» верно, пока запись твоя. Оборвать чужой ход — это
+     * остановить агента преподавателя посреди правки файлов: половина комнаты
+     * переписана, половина нет, и такого состояния никто не просил. А свою
+     * запись — спрошенную до звонка и всё ещё пишущуюся — он останавливает
+     * всегда: она его, и остановить её как раз можно без потерь.
+     */
+    if (
+      !actsAfterClass(isFinished(req.params.id), auth.role) &&
+      !askedBy(req.params.id, entryId, auth.participantId)
+    ) {
+      return res.status(403).json({ error: CLASS_IS_OVER })
+    }
+    /*
      * Ход оракула — не поток, и обрывается он иначе: см. agent.stopWork. Обе
      * остановки зовутся здесь, потому что кнопка на записи одна, но через
      * запятую их звать нельзя: `cancel` тут же помечает запись законченной, а
@@ -322,7 +367,12 @@ export function aiRoutes(): Router {
     // принадлежит комнате, а не тому, кто спросил последним.
     if (!allows(getRules(req.params.id).wipe, auth.role)) {
       return res.status(403).json({
-        error: 'Only the host can clear the oracle thread — those questions belong to the room.',
+        // После конца занятия `wipe` ужесточается сам (db.getRules), но называть
+        // человеку правило тут уже неверно: он пойдёт искать преподавателя,
+        // который ничего не менял.
+        error: isFinished(req.params.id)
+          ? CLASS_IS_OVER
+          : 'Only the host can clear the oracle thread — those questions belong to the room.',
       })
     }
     /*

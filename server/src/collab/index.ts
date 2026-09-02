@@ -16,7 +16,7 @@ import {
   getTerminal,
 } from '@shared/notebook'
 import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
-import { getRules, getSession, renameSession } from '../db.js'
+import { getRules, getSession, isFinished, renameSession } from '../db.js'
 import { classify, permits } from './gate.js'
 import { forgetSession, onCarets, rememberDeleted, resetRetyped, settleFresh } from './ops.js'
 import {
@@ -683,10 +683,18 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
               message: subtype === SYNC_STEP2 ? STALE_SYNC : floorMessage(judgement.why),
             })
           }
+          /*
+           * Конец занятия едет отдельно от правил, хотя ужесточает их же.
+           * `getRules` уже отдаёт преподавательские правила, так что отказ
+           * состоится и без этого признака; но по одним правилам гейт не
+           * отличит закончившуюся пару от комнаты, где тетрадь и так закрыта, а
+           * фразы у них разные.
+           */
           const verdict = permits(
             judgement.verdicts,
             getRules(entry.sessionId),
             state?.role ?? 'participant',
+            isFinished(entry.sessionId),
           )
           if (!verdict.ok) return refuse(entry, conn, verdict)
           /*

@@ -36,9 +36,9 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 import type { Awareness } from 'y-protocols/awareness'
 import { WebSocket, type RawData } from 'ws'
 import type { ParticipantRole } from '@shared/protocol'
-import { allows } from '@shared/rules'
+import { actsAfterClass, allows, CLASS_IS_OVER } from '@shared/rules'
 import { isInside } from '@shared/paths'
-import { getRules } from '../db.js'
+import { getRules, isFinished } from '../db.js'
 import { MAX_TEXT_BYTES, readText, statPath, writeText } from '../workspace.js'
 import { ownAwareness } from './index.js'
 
@@ -325,7 +325,7 @@ function saveNow(entry: FileDoc): boolean {
    */
   if (text.length > MAX_TEXT_BYTES) {
     entry.gone = true
-    closeAll(entry, 4403, 'файл больше потолка')
+    closeAll(entry, 4403, 'Файл больше потолка — дальше только чтение.')
     dispose(entry)
     return false
   }
@@ -525,10 +525,16 @@ function closeConn(entry: FileDoc, conn: WebSocket): void {
  * синхронизации не умеет убрать у клиента структуру, которая у него уже есть.
  * Клиент, получивший 4403, пересобирает документ и показывает, что правка не
  * прошла.
+ *
+ * Причина — словами. У файлового сокета нет управляющего канала, по которому
+ * комнатный гейт досылает фразу отказа (`collab/index.ts · onRefusal`), и
+ * единственное место, где сюда помещается объяснение, — поле `reason` кадра
+ * закрытия. Оно ограничено 123 байтами: фраза, которая в них не влезет,
+ * `ws` не отправит, а бросит.
  */
-function refuse(entry: FileDoc, conn: WebSocket): void {
+function refuse(entry: FileDoc, conn: WebSocket, why: string): void {
   try {
-    conn.close(4403, 'files')
+    conn.close(4403, why)
   } catch {
     /* уже закрыт */
   }
@@ -577,7 +583,19 @@ function handleMessage(entry: FileDoc, conn: WebSocket, data: Uint8Array): void 
             !allows(getRules(entry.sessionId).files, role) &&
             carriesEdit(decoding.readVarUint8Array(peek))
           ) {
-            return refuse(entry, conn)
+            /*
+             * Слова — те же, которыми гаснет кнопка в панели файлов
+             * (`web/src/lib/may.ts · filesWhy`): правило одно, значит и
+             * объяснение одно. После конца занятия правило неотличимо от
+             * «файлы преподавательские», а причина другая, и сказать надо её.
+             */
+            return refuse(
+              entry,
+              conn,
+              actsAfterClass(isFinished(entry.sessionId), role)
+                ? 'Файлы в этой комнате — преподавательские'
+                : CLASS_IS_OVER,
+            )
           }
         }
         encoding.writeVarUint(encoder, MESSAGE_SYNC)
@@ -594,7 +612,7 @@ function handleMessage(entry: FileDoc, conn: WebSocket, data: Uint8Array): void 
     }
   } catch (err) {
     console.error(`[files] bad message in ${entry.sessionId}:${entry.path}`, err)
-    refuse(entry, conn)
+    refuse(entry, conn, 'Правку не удалось разобрать — она не отправлена.')
   }
 }
 

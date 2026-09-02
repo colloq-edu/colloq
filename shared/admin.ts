@@ -141,6 +141,15 @@ export interface AdminSeminar {
   } | null
   /** Курсы, в которых он состоит. Обычно один, но запрета на два нет. */
   courses: { id: string; name: string }[]
+  /**
+   * Когда преподаватель закончил занятие — или null, пока оно идёт.
+   *
+   * Не то же, что `status: 'ended'` рядом: тот считает подключённых прямо
+   * сейчас («никого нет»), а это — решение преподавателя, после которого в
+   * комнате только читают. Семинар без единого человека в списке может идти, а
+   * законченный — стоять с полным залом, который перечитывает разбор.
+   */
+  finishedAt: number | null
 }
 
 export interface CreateSeminarRequest {
@@ -166,6 +175,14 @@ export interface CreateSeminarRequest {
 export interface UpdateSeminarRequest {
   name?: string
   archived?: boolean
+  /**
+   * Закончить занятие или открыть его снова — из панели.
+   *
+   * Та же дверь, что кнопка в комнате: преподаватель, закрывший вкладку и
+   * вспомнивший про это в метро, не должен возвращаться в комнату ради одного
+   * нажатия.
+   */
+  finished?: boolean
   /**
    * Правила комнаты. Накладываются на текущие, а не заменяют их.
    *
@@ -257,7 +274,10 @@ export const LIMITS = {
   contextChars: { min: 2_000, max: 100_000, default: 20_000 },
 } as const
 
-export const PROVIDER_PRESETS: Record<AiProviderId, { label: string; baseUrl: string; model: string }> = {
+export const PROVIDER_PRESETS: Record<
+  AiProviderId,
+  { label: string; baseUrl: string; model: string }
+> = {
   openai: { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
   ollama: { label: 'Ollama', baseUrl: 'http://host.docker.internal:11434/v1', model: 'llama3.1' },
   vllm: { label: 'vLLM', baseUrl: 'http://host.docker.internal:8000/v1', model: '' },

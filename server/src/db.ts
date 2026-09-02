@@ -3,7 +3,7 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import { config } from './config.js'
 import { colorForId, type Participant, type SessionInfo } from '@shared/protocol'
-import { OPEN_ROOM, readRules, type RoomRules } from '@shared/rules'
+import { OPEN_ROOM, readRules, rulesAfterClass, type RoomRules } from '@shared/rules'
 
 fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
 
@@ -288,6 +288,21 @@ ensureColumn('participants', 'token_host', 'token_host INTEGER NOT NULL DEFAULT 
  */
 ensureColumn('sessions', 'rules', 'rules TEXT')
 
+/**
+ * Когда преподаватель закончил занятие.
+ *
+ * NULL — занятие идёт, и так читается каждый семинар, заведённый до этой
+ * колонки. Время, а не флаг: комната и панель показывают «закончено в 15:40», и
+ * это же время отвечает на вопрос «когда пара кончилась», который иначе
+ * пришлось бы искать по истории.
+ *
+ * Колонкой, а не полем в `rules`: правила — это настройка, которую
+ * преподаватель выбрал, а конец занятия — состояние, которое обязано пройти
+ * поверх любой настройки и отступить, не переписав её (shared/rules.ts ·
+ * rulesAfterClass).
+ */
+ensureColumn('sessions', 'finished_at', 'finished_at INTEGER')
+
 /*
  * Имя в адресе, выбранное человеком.
  *
@@ -313,7 +328,9 @@ const insertSession = db.prepare(
   'INSERT INTO sessions (id, name, created_at, environment) VALUES (?, ?, ?, ?)',
 )
 const selectEnvironment = db.prepare('SELECT environment FROM sessions WHERE id = ?')
-const selectSession = db.prepare('SELECT id, name, created_at, rules FROM sessions WHERE id = ?')
+const selectSession = db.prepare(
+  'SELECT id, name, created_at, rules, finished_at FROM sessions WHERE id = ?',
+)
 
 interface SessionRow {
   id: string
@@ -321,6 +338,8 @@ interface SessionRow {
   created_at: number
   /** JSON, or NULL for a room nobody has configured. */
   rules: string | null
+  /** Время конца занятия, или NULL, пока оно идёт. */
+  finished_at: number | null
 }
 
 export function createSession(id: string, name: string, environment?: string | null): SessionInfo {
@@ -328,7 +347,15 @@ export function createSession(id: string, name: string, environment?: string | n
   insertSession.run(id, name, createdAt, environment ?? null)
   // A brand-new room is the open room: nothing has been decided about it yet,
   // and the default is what Colloq has always been.
-  return { id, name, createdAt, rules: { ...OPEN_ROOM }, published: null, course: null }
+  return {
+    id,
+    name,
+    createdAt,
+    rules: { ...OPEN_ROOM },
+    finishedAt: null,
+    published: null,
+    course: null,
+  }
 }
 
 /**
@@ -389,6 +416,13 @@ export function getSession(id: string): SessionInfo | null {
         name: row.name,
         createdAt: row.created_at,
         rules: readRules(row.rules ?? null),
+        /*
+         * Хранимые правила и конец занятия едут порознь, и порознь же читаются
+         * клиентом: он накладывает одно на другое сам (shared/rules.ts ·
+         * rulesAfterClass), чтобы в настройках комнаты преподаватель видел то,
+         * что выбрал, а не то, во что это превратил конец пары.
+         */
+        finishedAt: row.finished_at ?? null,
         published: null,
         course: null,
       }
@@ -502,8 +536,9 @@ export function loadDocSnapshot(sessionId: string): Uint8Array | null {
 
 /* ------------------------------------------------------------------ rules */
 
-const selectRules = db.prepare(`SELECT rules FROM sessions WHERE id = ?`)
+const selectRules = db.prepare(`SELECT rules, finished_at FROM sessions WHERE id = ?`)
 const updateRules = db.prepare(`UPDATE sessions SET rules = ? WHERE id = ?`)
+const updateFinished = db.prepare(`UPDATE sessions SET finished_at = ? WHERE id = ?`)
 
 /** The rules of one room, with everything unset filled in from the open default. */
 /**
@@ -515,15 +550,64 @@ const updateRules = db.prepare(`UPDATE sessions SET rules = ? WHERE id = ?`)
  * ничто. Инвалидируется в `setRules` и при удалении семинара; больше правила
  * не меняет никто.
  */
-const rulesCache = new Map<string, RoomRules>()
+const rulesCache = new Map<string, { rules: RoomRules; finishedAt: number | null }>()
 
-export function getRules(sessionId: string): RoomRules {
+function roomOf(sessionId: string): { rules: RoomRules; finishedAt: number | null } {
   const cached = rulesCache.get(sessionId)
   if (cached) return cached
-  const row = selectRules.get(sessionId) as { rules: string | null } | undefined
-  const rules = readRules(row?.rules ?? null)
-  rulesCache.set(sessionId, rules)
-  return rules
+  const row = selectRules.get(sessionId) as
+    | { rules: string | null; finished_at: number | null }
+    | undefined
+  const room = { rules: readRules(row?.rules ?? null), finishedAt: row?.finished_at ?? null }
+  rulesCache.set(sessionId, room)
+  return room
+}
+
+/**
+ * Правила, по которым комната живёт СЕЙЧАС.
+ *
+ * Отсюда их берут все проверки прав, и поэтому конец занятия наложен здесь, в
+ * одном месте: правило, которое кто-нибудь начнёт спрашивать завтра, приедет
+ * ужесточённым само, без строчки «а ещё проверь, не кончилось ли занятие» —
+ * той самой строчки, которую забывают.
+ */
+export function getRules(sessionId: string): RoomRules {
+  const room = roomOf(sessionId)
+  return room.finishedAt === null ? room.rules : rulesAfterClass(room.rules)
+}
+
+/**
+ * Правила, которые преподаватель ВЫБРАЛ.
+ *
+ * Их показывают в настройках и на них накладывают патч. Спрашивать здесь
+ * действующие было бы потерей настройки: PATCH накладывает изменение на
+ * текущее, так что одно нажатие посреди законченного занятия записало бы
+ * ужесточение в базу навсегда, и открывать занятие было бы уже не во что.
+ */
+export function storedRules(sessionId: string): RoomRules {
+  return roomOf(sessionId).rules
+}
+
+/** Когда занятие закончили, или null, пока оно идёт. */
+export function finishedAt(sessionId: string): number | null {
+  return roomOf(sessionId).finishedAt
+}
+
+/** Закончено ли занятие в этой комнате. */
+export function isFinished(sessionId: string): boolean {
+  return roomOf(sessionId).finishedAt !== null
+}
+
+/**
+ * Закончить занятие или открыть его снова.
+ *
+ * Пишет и время, и кэш: правила спрашиваются на каждый кадр синхронизации, и
+ * забытый сброс кэша означал бы, что конец занятия вступает в силу после
+ * перезапуска сервера.
+ */
+export function setFinished(sessionId: string, at: number | null): void {
+  updateFinished.run(at, sessionId)
+  rulesCache.set(sessionId, { rules: roomOf(sessionId).rules, finishedAt: at })
 }
 
 /** Забыть правила комнаты: они изменились или комнаты больше нет. */
@@ -541,7 +625,7 @@ export function forgetRules(sessionId: string): void {
 export function setRules(sessionId: string, rules: RoomRules): RoomRules {
   const clean = readRules(rules)
   updateRules.run(JSON.stringify(clean), sessionId)
-  rulesCache.set(sessionId, clean)
+  rulesCache.set(sessionId, { rules: clean, finishedAt: roomOf(sessionId).finishedAt })
   return clean
 }
 

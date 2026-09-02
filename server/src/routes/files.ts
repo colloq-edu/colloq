@@ -20,8 +20,8 @@ import { broadcastFiles } from '../control.js'
 import { signDownloadToken, verifyDownloadToken } from '../auth.js'
 import { currentStaff } from '../admin/auth.js'
 import { sessionAuth } from './sessions.js'
-import { allows } from '@shared/rules'
-import { getRules } from '../db.js'
+import { allows, CLASS_IS_OVER } from '@shared/rules'
+import { getRules, isFinished } from '../db.js'
 
 interface UploadFailure {
   code: number
@@ -73,7 +73,14 @@ export function fileRoutes(): Router {
     // человек, вошедший в комнату до входа в панель, — всё равно преподаватель.
     const role = currentStaff(req) ? 'host' : (joined?.role ?? 'participant')
     if (!allows(getRules(sessionId).files, role)) {
-      return res.status(403).json({ error: 'Файлы в эту комнату добавляет преподаватель.' })
+      // Законченное занятие ужесточает `files` само (db.getRules); отдельная тут
+      // только фраза — человеку важно не правило, а то, что пара кончилась.
+      // Скачивание и чтение ниже не трогаются: после пары в файлы и ходят.
+      return res.status(403).json({
+        error: isFinished(sessionId)
+          ? CLASS_IS_OVER
+          : 'Файлы в эту комнату добавляет преподаватель.',
+      })
     }
 
     const contentType = req.headers['content-type'] ?? ''

@@ -31,7 +31,13 @@ import {
   META_KEY,
   TERMINAL_KEY,
 } from '@shared/notebook'
-import { allows, allowsStructure, type RoomRules } from '@shared/rules'
+import {
+  actsAfterClass,
+  allows,
+  allowsStructure,
+  CLASS_IS_OVER,
+  type RoomRules,
+} from '@shared/rules'
 
 /** Что кадр делает — в терминах правил комнаты, а не байтов. */
 export type GateRule = 'structure' | 'edit' | 'title'
@@ -688,19 +694,30 @@ export function classify(doc: Y.Doc, payload: Uint8Array): Judgement {
  * Отдельно от разбора нарочно: разбор говорит, ЧТО в кадре, и не знает ни про
  * комнату, ни про роль; правила говорят, кому это можно. Тест на разбор от
  * правил не зависит, и наоборот.
+ *
+ * @param finished — закончено ли занятие. На право оно здесь уже не влияет:
+ * правила приезжают сюда действующими (`db.ts · getRules`), то есть после конца
+ * пары — преподавательскими, и участнику откажут без всякой добавочной
+ * проверки. Влияет оно на слова: по одним правилам «преподаватель закрыл
+ * тетрадь» и «занятие кончилось» неотличимы, а человеку надо сказать второе —
+ * иначе он пойдёт искать преподавателя, который ничего не менял. Поэтому
+ * необязательный: забытый аргумент стоит неточной фразы, а не открытой двери.
  */
 export function permits(
   verdicts: Verdict[],
   rules: RoomRules,
   role: 'host' | 'participant',
+  finished = false,
 ): { ok: true } | { ok: false; rule: GateRule; message: string } {
+  const acts = actsAfterClass(finished, role)
+  const why = (own: string): string => (acts ? own : CLASS_IS_OVER)
   for (const verdict of verdicts) {
     if (verdict.rule === 'title') {
       if (role === 'host') continue
       return {
         ok: false,
         rule: 'title',
-        message: 'Имя семинара меняет преподаватель.',
+        message: why('Имя семинара меняет преподаватель.'),
       }
     }
     if (verdict.rule === 'edit') {
@@ -708,8 +725,9 @@ export function permits(
       return {
         ok: false,
         rule: 'edit',
-        message:
+        message: why(
           'В этом семинаре тетрадь принадлежит преподавателю — написанное вами не отправлено.',
+        ),
       }
     }
     const verb = verdict.verb ?? 'add'
@@ -717,10 +735,11 @@ export function permits(
     return {
       ok: false,
       rule: 'structure',
-      message:
+      message: why(
         verb === 'add'
           ? 'В этом семинаре ячейки добавляет преподаватель.'
           : 'В этом семинаре ячейки убирает преподаватель.',
+      ),
     }
   }
   return { ok: true }

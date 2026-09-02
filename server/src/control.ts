@@ -54,14 +54,26 @@ import {
 import { moveInCells } from './collab/ops.js'
 import { LINE_LENGTH } from './kernel/format.js'
 import {
+  actsAfterClass,
   allows,
   allowsAgent,
   allowsRun,
   allowsStructure,
+  CLASS_IS_OVER,
   runQueueCap,
   type Who,
 } from '@shared/rules'
-import { getParticipant, getRules, moveNotesTo, notesOf, setNote } from './db.js'
+import {
+  finishedAt,
+  getParticipant,
+  getRules,
+  isFinished,
+  moveNotesTo,
+  notesOf,
+  setFinished,
+  setNote,
+  storedRules,
+} from './db.js'
 import {
   answerInput,
   clearOutputs,
@@ -131,7 +143,7 @@ import {
   onBooksWritten,
   openBook,
 } from './collab/books.js'
-import { undoTurn } from './ai/agent.js'
+import { stopAll, undoTurn } from './ai/agent.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
@@ -578,6 +590,26 @@ function parse(data: RawData): ControlClientMessage | null {
   }
 }
 
+/** Точка на конце — как у соседних фраз: это законченное предложение. */
+const OVER = `${CLASS_IS_OVER}.`
+
+/**
+ * Отказ по праву — и одна фраза на все отказы законченного занятия.
+ *
+ * Права после конца занятия ужесточаются сами: их спрашивают у `getRules`, а
+ * та отдаёт действующие (db.ts). А вот слова остались бы прежними — «В этом
+ * семинаре запускает преподаватель» посылает человека искать преподавателя,
+ * который ничего не менял. Поэтому подмена фразы стоит в одном месте, через
+ * которое проходят все отказы по праву: проверка, дописанная завтра, получит
+ * её даром, если откажет через этот helper.
+ */
+function refuse(ws: WebSocket, sessionId: string, payload: TokenPayload, message: string): void {
+  send(ws, {
+    t: 'error',
+    message: actsAfterClass(isFinished(sessionId), payload.role) ? message : OVER,
+  })
+}
+
 /**
  * May this person start the kernel on something?
  *
@@ -597,7 +629,7 @@ function mayRun(
   message = 'Only the teacher runs cells in this seminar.',
 ): boolean {
   if (allowsRun(getRules(sessionId).run, payload.role, 'one')) return true
-  send(ws, { t: 'error', message })
+  refuse(ws, sessionId, payload, message)
   return false
 }
 
@@ -610,17 +642,25 @@ function mayRun(
  */
 function mayBulkRun(sessionId: string, payload: TokenPayload, ws: WebSocket): boolean {
   if (allowsRun(getRules(sessionId).run, payload.role, 'bulk')) return true
-  send(ws, {
-    t: 'error',
-    message: 'В этом семинаре весь лист запускает преподаватель — запускайте по одной ячейке.',
-  })
+  refuse(
+    ws,
+    sessionId,
+    payload,
+    'В этом семинаре весь лист запускает преподаватель — запускайте по одной ячейке.',
+  )
   return false
 }
 
 /** Право по простому правилу, с одной фразой на отказ. */
-function may(rule: Who, payload: TokenPayload, ws: WebSocket, message: string): boolean {
+function may(
+  sessionId: string,
+  rule: Who,
+  payload: TokenPayload,
+  ws: WebSocket,
+  message: string,
+): boolean {
   if (allows(rule, payload.role)) return true
-  send(ws, { t: 'error', message })
+  refuse(ws, sessionId, payload, message)
   return false
 }
 
@@ -652,6 +692,28 @@ function lectureInTheWay(
     message: `Идёт лекция по «${baseOf(going.file)}» — сначала закончите её.`,
   })
   return true
+}
+
+/**
+ * Пульт в руках — и занятие ещё идёт.
+ *
+ * Ведущий не всегда преподаватель: в комнате с `board: 'room'` студенты по
+ * очереди показывают своё, и пульт у студента — не дыра, а смысл настройки.
+ * Поэтому после звонка одной роли мало, а `isPresenter` мало тем более: иначе
+ * студент-ведущий листает страницы всему залу, рисует и гасит экран в комнате,
+ * где все остальные уже только читают.
+ *
+ * Саму лекцию звонок не гасит — сорок минут разметки живут только в памяти, и
+ * терять их нажатием «Закончить занятие» дороже, чем оставить картинку на
+ * экране, зрителем в ней участник и так был. Отбирается управление:
+ * преподаватель перехватывает пульт тем же `lecture:start` или заканчивает
+ * лекцию, как и раньше.
+ */
+function atTheRemote(sessionId: string, payload: TokenPayload): boolean {
+  return (
+    isPresenter(sessionId, payload.participantId) &&
+    actsAfterClass(isFinished(sessionId), payload.role)
+  )
 }
 
 /**
@@ -838,10 +900,12 @@ export function dispatch(
        * people, and a name is not a credential.
        */
       if (payload.role !== 'host' && !startedTheRunningCell(sessionId, payload.participantId)) {
-        send(ws, {
-          t: 'error',
-          message: 'Only the host, or whoever started the running cell, can interrupt the kernel.',
-        })
+        refuse(
+          ws,
+          sessionId,
+          payload,
+          'Only the host, or whoever started the running cell, can interrupt the kernel.',
+        )
         return
       }
       /*
@@ -880,7 +944,15 @@ export function dispatch(
       // Перезапуск сбрасывает все переменные у всей комнаты, поэтому по
       // умолчанию он преподавательский; но комната, где работают вдвоём,
       // вправе решить иначе.
-      if (!may(getRules(sessionId).restart, payload, ws, 'Only the host can restart the kernel.')) {
+      if (
+        !may(
+          sessionId,
+          getRules(sessionId).restart,
+          payload,
+          ws,
+          'Only the host can restart the kernel.',
+        )
+      ) {
         return
       }
       void restartSession(sessionId, displayName(sessionId, payload.participantId)).catch(
@@ -903,8 +975,14 @@ export function dispatch(
       const one = optionalId(message.cellId)
       const rules = getRules(sessionId)
       const allowed = one
-        ? may(rules.edit, payload, ws, 'В этом семинаре тетрадь принадлежит преподавателю.')
-        : may(rules.wipe, payload, ws, 'Стирать всю доску здесь может преподаватель.')
+        ? may(
+            sessionId,
+            rules.edit,
+            payload,
+            ws,
+            'В этом семинаре тетрадь принадлежит преподавателю.',
+          )
+        : may(sessionId, rules.wipe, payload, ws, 'Стирать всю доску здесь может преподаватель.')
       if (!allowed) return
       const book = bookOf(message)
       /*
@@ -929,6 +1007,7 @@ export function dispatch(
     case 'board:open': {
       if (
         !may(
+          sessionId,
           getRules(sessionId).board,
           payload,
           ws,
@@ -956,6 +1035,7 @@ export function dispatch(
     case 'board:close': {
       if (
         !may(
+          sessionId,
           getRules(sessionId).board,
           payload,
           ws,
@@ -966,6 +1046,61 @@ export function dispatch(
       }
       if (lectureInTheWay(sessionId, payload, ws, null)) return
       setBoard(sessionId, null)
+      return
+    }
+
+    /* ----------------------------------------------------------- занятие */
+
+    /**
+     * Закончить занятие — и открыть его обратно.
+     *
+     * Комната от этого не закрывается: тетрадь, файлы, лента терминала и
+     * ответы оракула остаются открытыми на чтение — после пары в них и ходят.
+     * Закрываются действия, и закрываются сами: проверки прав спрашивают
+     * действующие правила, а те после конца занятия преподавательские
+     * (shared/rules.ts · rulesAfterClass).
+     *
+     * Лекцию при этом не гасим: сорок минут разметки живут только в памяти, и
+     * терять их нажатием «Закончить занятие» — потеря работы, а зрителем в
+     * лекции участник и так был. И ядро не гасим: преподаватель после пары ещё
+     * считает, холодный старт стоит минуты, а простаивающее приберёт уборка.
+     */
+    case 'class:finish':
+    case 'class:resume': {
+      const finish = message.t === 'class:finish'
+      if (payload.role !== 'host') {
+        refuse(
+          ws,
+          sessionId,
+          payload,
+          finish
+            ? 'Закончить занятие может преподаватель.'
+            : 'Открыть занятие обратно может преподаватель.',
+        )
+        return
+      }
+      /*
+       * Второе нажатие — не ошибка: у преподавателя открыты две вкладки, и на
+       * второй кнопка та же. Но и не новое время — «закончено в 15:40» не
+       * должно переезжать на 16:10 оттого, что по кнопке попали ещё раз.
+       */
+      if (finish === (finishedAt(sessionId) !== null)) return
+      const at = finish ? Date.now() : null
+      setFinished(sessionId, at)
+      broadcast(sessionId, { t: 'class', finishedAt: at })
+      /*
+       * И оборвать идущий ход оракула — там же, где его обрывают стирание
+       * треда и удаление семинара. Иначе он ещё десяток шагов правит файлы в
+       * комнате, где всем остальным уже только читать.
+       *
+       * А очередь ячеек, поставленная до звонка, доводится до конца — и это не
+       * непоследовательность. Ход обрывается ровно потому, что он ПРАВИТ ФАЙЛЫ
+       * дальше: каждый следующий его шаг переписывает комнату уже после звонка.
+       * Ячейка не переписывает ничего — она досчитывает то, что человек
+       * запустил, пока было можно, и её вывод как раз и есть то, за чем в
+       * комнату приходят после пары. Начатое доводится, начать — уже нельзя.
+       */
+      if (finish) stopAll(sessionId)
       return
     }
 
@@ -982,6 +1117,7 @@ export function dispatch(
     case 'lecture:start': {
       if (
         !may(
+          sessionId,
           getRules(sessionId).board,
           payload,
           ws,
@@ -1037,7 +1173,7 @@ export function dispatch(
          * забирает страницу, чернила и указку себе.
          */
         if (payload.role !== 'host') {
-          send(ws, { t: 'error', message: 'Взять пульт у ведущего может преподаватель.' })
+          refuse(ws, sessionId, payload, 'Взять пульт у ведущего может преподаватель.')
           return
         }
         const taken = handOver(
@@ -1084,7 +1220,15 @@ export function dispatch(
     }
 
     case 'lecture:stop': {
-      if (!may(getRules(sessionId).board, payload, ws, 'Закончить лекцию может преподаватель.')) {
+      if (
+        !may(
+          sessionId,
+          getRules(sessionId).board,
+          payload,
+          ws,
+          'Закончить лекцию может преподаватель.',
+        )
+      ) {
         return
       }
       /*
@@ -1095,7 +1239,7 @@ export function dispatch(
        * разметкой.
        */
       if (payload.role !== 'host' && !isPresenter(sessionId, payload.participantId)) {
-        send(ws, { t: 'error', message: 'Закончить чужую лекцию может преподаватель.' })
+        refuse(ws, sessionId, payload, 'Закончить чужую лекцию может преподаватель.')
         return
       }
       stopLecture(sessionId)
@@ -1115,7 +1259,7 @@ export function dispatch(
      */
     case 'notes:open': {
       if (payload.role !== 'host') {
-        send(ws, { t: 'error', message: 'Заметки к лекции видит преподаватель.' })
+        refuse(ws, sessionId, payload, 'Заметки к лекции видит преподаватель.')
         return
       }
       const file = normalizePath(typeof message.file === 'string' ? message.file : '')
@@ -1136,7 +1280,7 @@ export function dispatch(
 
     case 'notes:set': {
       if (payload.role !== 'host') {
-        send(ws, { t: 'error', message: 'Заметки к лекции пишет преподаватель.' })
+        refuse(ws, sessionId, payload, 'Заметки к лекции пишет преподаватель.')
         return
       }
       const file = normalizePath(typeof message.file === 'string' ? message.file : '')
@@ -1175,26 +1319,27 @@ export function dispatch(
 
     /*
      * Дальше — то, чем управляет ПУЛЬТ. Право здесь не спрашивается: страницу,
-     * чернила и указку двигает тот, кто ведёт, и только он. Отказ молчаливый —
-     * это не решение преподавателя, о котором надо рассказать, а сообщение от
-     * вкладки, которая не знает, что лекцию уже ведёт кто-то другой.
+     * чернила и указку двигает тот, кто ведёт, и только он — пока идёт занятие
+     * (см. `atTheRemote`). Отказ молчаливый — это не решение преподавателя, о
+     * котором надо рассказать, а сообщение от вкладки, которая ещё не знает,
+     * что лекцию ведёт кто-то другой или что прозвенел звонок.
      */
     case 'lecture:page': {
-      if (!isPresenter(sessionId, payload.participantId)) return
+      if (!atTheRemote(sessionId, payload)) return
       const turned = turnTo(sessionId, Number(message.page))
       if (turned) broadcast(sessionId, { t: 'lecture', state: turned })
       return
     }
 
     case 'lecture:blank': {
-      if (!isPresenter(sessionId, payload.participantId)) return
+      if (!atTheRemote(sessionId, payload)) return
       const blanked = setBlank(sessionId, message.on === true)
       if (blanked) broadcast(sessionId, { t: 'lecture', state: blanked })
       return
     }
 
     case 'ink': {
-      if (!isPresenter(sessionId, payload.participantId)) return
+      if (!atTheRemote(sessionId, payload)) return
       const stroke = addInk(sessionId, {
         id: optionalId(message.id) ?? '',
         page: Number(message.page),
@@ -1209,7 +1354,7 @@ export function dispatch(
     }
 
     case 'ink:undo': {
-      if (!isPresenter(sessionId, payload.participantId)) return
+      if (!atTheRemote(sessionId, payload)) return
       const page = Number(message.page)
       const dropped = undoInk(sessionId, page)
       if (dropped) broadcast(sessionId, { t: 'ink:drop', page, id: dropped })
@@ -1217,7 +1362,7 @@ export function dispatch(
     }
 
     case 'ink:erase': {
-      if (!isPresenter(sessionId, payload.participantId)) return
+      if (!atTheRemote(sessionId, payload)) return
       const page = Number(message.page)
       const id = optionalId(message.id)
       if (!id || !Number.isFinite(page)) return
@@ -1232,7 +1377,7 @@ export function dispatch(
     }
 
     case 'ink:clear': {
-      if (!isPresenter(sessionId, payload.participantId)) return
+      if (!atTheRemote(sessionId, payload)) return
       const page = Number.isFinite(message.page) ? Number(message.page) : undefined
       clearInk(sessionId, page)
       broadcast(sessionId, { t: 'ink:clear', page: page ?? null })
@@ -1245,8 +1390,7 @@ export function dispatch(
      * пока ведущий не пошевелит рукой, — то есть примерно через полсекунды.
      */
     case 'laser': {
-      const lecture = lectureOf(sessionId)
-      if (!lecture || lecture.by !== payload.participantId) return
+      if (!atTheRemote(sessionId, payload)) return
       const x = Number(message.x)
       const y = Number(message.y)
       // И страница — так же, как x и y: без проверки NaN уезжает в кадр как
@@ -1260,7 +1404,7 @@ export function dispatch(
     }
 
     case 'laser:off': {
-      if (!isPresenter(sessionId, payload.participantId)) return
+      if (!atTheRemote(sessionId, payload)) return
       broadcast(sessionId, { t: 'laser', at: null })
       return
     }
@@ -1280,6 +1424,7 @@ export function dispatch(
     case 'tree:new': {
       if (
         !may(
+          sessionId,
           getRules(sessionId).files,
           payload,
           ws,
@@ -1329,6 +1474,7 @@ export function dispatch(
     case 'book:open': {
       if (
         !may(
+          sessionId,
           getRules(sessionId).files,
           payload,
           ws,
@@ -1353,10 +1499,7 @@ export function dispatch(
 
     case 'tree:move': {
       if (payload.role !== 'host') {
-        send(ws, {
-          t: 'error',
-          message: 'Переименовать файл в комнате может преподаватель.',
-        })
+        refuse(ws, sessionId, payload, 'Переименовать файл в комнате может преподаватель.')
         return
       }
       const from = normalizePath(typeof message.from === 'string' ? message.from : '')
@@ -1408,10 +1551,7 @@ export function dispatch(
 
     case 'tree:remove': {
       if (payload.role !== 'host') {
-        send(ws, {
-          t: 'error',
-          message: 'Убрать файл из комнаты может преподаватель.',
-        })
+        refuse(ws, sessionId, payload, 'Убрать файл из комнаты может преподаватель.')
         return
       }
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
@@ -1497,7 +1637,7 @@ export function dispatch(
      */
     case 'ai:undo': {
       if (payload.role !== 'host' && !allowsAgent(getRules(sessionId).agent, payload.role)) {
-        send(ws, { t: 'error', message: 'Отменять ход оракула здесь может преподаватель.' })
+        refuse(ws, sessionId, payload, 'Отменять ход оракула здесь может преподаватель.')
         return
       }
       const entryId = optionalId(message.entryId)
@@ -1516,10 +1656,7 @@ export function dispatch(
     case 'cells:move': {
       const rules = getRules(sessionId)
       if (!allowsStructure(rules.structure, payload.role, 'move')) {
-        send(ws, {
-          t: 'error',
-          message: 'В этом семинаре порядок ячеек меняет преподаватель.',
-        })
+        refuse(ws, sessionId, payload, 'В этом семинаре порядок ячеек меняет преподаватель.')
         return
       }
       const id = typeof message.cellId === 'string' ? message.cellId : ''
@@ -1555,13 +1692,26 @@ export function dispatch(
       if (
         message.accept &&
         !may(
+          sessionId,
           getRules(sessionId).edit,
           payload,
           ws,
           'Применить правку оракула здесь может преподаватель — спросить его можно по-прежнему.',
         )
       ) {
-        // Отклонить может кто угодно: снятая плашка ничего не разрушает.
+        // Отклонить может кто угодно: снятая плашка ничего не разрушает — пока
+        // занятие идёт и оракула можно спросить заново.
+        return
+      }
+      /*
+       * А после звонка — разрушает, и потому закрыто и отклонение. `patchState`
+       * становится `rejected` навсегда, а вернуть предложение нечем: спросить
+       * оракула участник уже не может, и снятая им плашка — это стёртая чужая
+       * работа. Правилом это не выражается: `edit` спрашивают у «принять», у
+       * «отклонить» правила нет вовсе — поэтому та же граница, что у `input`.
+       */
+      if (!actsAfterClass(isFinished(sessionId), payload.role)) {
+        send(ws, { t: 'error', message: OVER })
         return
       }
       const who = displayName(sessionId, payload.participantId)
@@ -1588,10 +1738,16 @@ export function dispatch(
        * отвечать не одно и то же, а `input()` под паролем тем более.
        */
       if (payload.role !== 'host' && !startedTheRunningCell(sessionId, payload.participantId)) {
-        send(ws, {
-          t: 'error',
-          message: 'Ответить может тот, чья ячейка спрашивает.',
-        })
+        refuse(ws, sessionId, payload, 'Ответить может тот, чья ячейка спрашивает.')
+        return
+      }
+      /*
+       * И не после конца занятия — правилом это не выражается, а действие то
+       * же: строка уходит в чужое ядро и двигает чужой счёт дальше. Читать
+       * приглашение ко вводу в ленте по-прежнему может вся комната.
+       */
+      if (!actsAfterClass(isFinished(sessionId), payload.role)) {
+        send(ws, { t: 'error', message: OVER })
         return
       }
       const value = typeof message.value === 'string' ? message.value : ''
@@ -1611,6 +1767,7 @@ export function dispatch(
        */
       if (
         !may(
+          sessionId,
           getRules(sessionId).edit,
           payload,
           ws,
@@ -1669,6 +1826,24 @@ export function dispatch(
     }
 
     case 'term:open': {
+      /*
+       * Открыть ящик — не действие, а взгляд: расшифровка общая, и после конца
+       * занятия её дочитывают так же, как тетрадь. Набрать в нём команду
+       * нельзя — это `term:run` и правило `run`. Цена названа вслух: уснувший
+       * контейнер ящик поднимет, но ящик, который не открывается, читается как
+       * поломка, а не как правило.
+       *
+       * А после звонка эту цену платить уже не за что: поднять контейнер и
+       * завести новую оболочку ради ленты, которую и так отдаёт документ, —
+       * минута ожидания и лишние гигабайты в комнате, где всем, кроме
+       * преподавателя, только читать. Поэтому участнику ящик открывается и
+       * читается, а оболочка остаётся спать. Отказа нет — есть статус: без него
+       * вкладка ждала бы запуска, которого никто не начинал.
+       */
+      if (!actsAfterClass(isFinished(sessionId), payload.role)) {
+        send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
+        return
+      }
       void openTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
           t: 'error',
@@ -1718,10 +1893,12 @@ export function dispatch(
        * host may stop anything.
        */
       if (payload.role !== 'host' && !typedRunningCommand(sessionId, payload.participantId)) {
-        send(ws, {
-          t: 'error',
-          message: 'Only the host, or whoever typed the running command, can stop the terminal.',
-        })
+        refuse(
+          ws,
+          sessionId,
+          payload,
+          'Only the host, or whoever typed the running command, can stop the terminal.',
+        )
         return
       }
       /*
@@ -1743,6 +1920,7 @@ export function dispatch(
     case 'term:clear': {
       if (
         !may(
+          sessionId,
           getRules(sessionId).wipe,
           payload,
           ws,
@@ -1758,7 +1936,15 @@ export function dispatch(
     case 'term:close': {
       // Закрыть оболочку — то же, что стереть расшифровку: она общая, и гасит
       // её тот же, кто вправе стирать общее.
-      if (!may(getRules(sessionId).wipe, payload, ws, 'Only the host can close the terminal.')) {
+      if (
+        !may(
+          sessionId,
+          getRules(sessionId).wipe,
+          payload,
+          ws,
+          'Only the host can close the terminal.',
+        )
+      ) {
         return
       }
       void closeTerminal(sessionId).catch((err: unknown) => {
@@ -1804,7 +1990,17 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    * тогда, когда он всего нужнее, и человек упирается в отказы сервера вместо
    * того, чтобы видеть, чего в этой комнате нельзя.
    */
-  send(ws, { t: 'rules', rules: getRules(sessionId) })
+  send(ws, { t: 'rules', rules: storedRules(sessionId) })
+  /*
+   * Правила здесь — ХРАНИМЫЕ, а конец занятия едет отдельным кадром, и клиент
+   * накладывает одно на другое сам (shared/rules.ts · rulesAfterClass). Иначе
+   * преподаватель, открывший настройки комнаты после конца пары, увидел бы в
+   * них не то, что выбрал, а то, во что это превратил конец занятия.
+   *
+   * А кадр — по той же причине, что и правила: зашедший в середине обязан
+   * увидеть, что пара кончилась, сразу, а не по первому отказу.
+   */
+  send(ws, { t: 'class', finishedAt: finishedAt(sessionId) })
   /*
    * И что комната смотрит сейчас. Без этой строки человек, зашедший в середине
    * занятия, не узнает про открытый документ, пока преподаватель его не

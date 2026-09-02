@@ -12,12 +12,9 @@ import { Router, type Request, type Response } from 'express'
 import * as Y from 'yjs'
 import { getCells, getMeta } from '@shared/notebook'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
-import {
-  getOracleSettings,
-  parseOraclePatch,
-  updateOracleSettings,
-} from '../admin/settings.js'
+import { getOracleSettings, parseOraclePatch, updateOracleSettings } from '../admin/settings.js'
 import { summariseUsage } from '../admin/usage.js'
+import { stopAll } from '../ai/agent.js'
 import { testConnection } from '../ai/provider.js'
 import { newSessionId } from '../auth.js'
 import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
@@ -29,11 +26,13 @@ import {
   db,
   discardHistory,
   discardNotes,
+  finishedAt,
   forgetRules,
-  getRules,
   loadDocSnapshot,
   sessionEnvironment,
+  setFinished,
   setRules,
+  storedRules,
 } from '../db.js'
 import { forgetCache } from '../collab/history.js'
 import {
@@ -207,7 +206,14 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
     environment: environmentOf(row.id) ?? sessionEnvironment(row.id),
     createdBy: row.created_by,
     archivedAt: row.archived_at,
-    rules: getRules(row.id),
+    /*
+     * Выбранные правила, а не действующие: в форме редактирования человек
+     * обязан видеть то, что он выбрал. Законченное занятие ужесточает права
+     * поверх них (shared/rules.ts · rulesAfterClass) и отступает, не тронув
+     * настройку, — а `finishedAt` рядом говорит, идёт ли оно сейчас.
+     */
+    rules: storedRules(row.id),
+    finishedAt: finishedAt(row.id),
     publication: publication
       ? {
           id: publication.id,
@@ -239,7 +245,10 @@ function coursesWith(sessionId: string, courses: Course[]): { id: string; name: 
 /** Collapse whitespace and drop control characters so a name cannot break the list layout. */
 function normalize(value: unknown): string {
   if (typeof value !== 'string') return ''
-  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+  return value
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function invalid(res: Response, error: string): Response {
@@ -329,7 +338,9 @@ export function adminInstanceRoutes(): Router {
     const row = seminarOr404(req, res)
     if (!row) return
 
-    const body = req.body as { name?: unknown; archived?: unknown; rules?: unknown } | undefined
+    const body = req.body as
+      | { name?: unknown; archived?: unknown; finished?: unknown; rules?: unknown }
+      | undefined
     if (body?.name !== undefined) {
       const name = normalize(body.name)
       if (!name) return invalid(res, 'a seminar name is required')
@@ -349,6 +360,33 @@ export function adminInstanceRoutes(): Router {
       setArchived.run(body.archived ? Date.now() : null, row.id)
     }
 
+    if (body?.finished !== undefined) {
+      if (typeof body.finished !== 'boolean') return invalid(res, 'finished must be true or false')
+      /*
+       * Та же дверь, что кнопка в комнате: преподаватель, закрывший вкладку и
+       * вспомнивший про занятие в метро, не должен возвращаться в семинар ради
+       * одного нажатия.
+       *
+       * Уже законченному время не переписывается: панель шлёт форму целиком, и
+       * переименование семинара сдвигало бы «закончено в 15:40» на сейчас —
+       * час, который спрашивают потом, чтобы узнать, когда кончилась пара.
+       */
+      const was = finishedAt(row.id)
+      const at = body.finished ? (was ?? Date.now()) : null
+      if (at !== was) {
+        setFinished(row.id, at)
+        // Комната узнаёт сейчас, а не при перезагрузке: иначе у студента ещё
+        // горят кнопки, которые сервер уже не примет, и отказ читается как
+        // поломка. Тем же кадром она и открывается обратно.
+        broadcast(row.id, { t: 'class', finishedAt: at })
+        // И ход агента обрывается — ровно как у кнопки в комнате
+        // (control.ts · class:finish). Иначе «Закончить занятие» из панели
+        // оставляет оракула править файлы там, где всем остальным уже только
+        // читать.
+        if (at !== null) stopAll(row.id)
+      }
+    }
+
     if (body?.rules !== undefined) {
       /*
        * Rules can be changed after the fact, and could always have been: the
@@ -360,11 +398,11 @@ export function adminInstanceRoutes(): Router {
       if (typeof body.rules !== 'object' || body.rules === null) {
         return invalid(res, 'rules must be an object')
       }
-      setRules(row.id, readRules({ ...getRules(row.id), ...(body.rules as object) }))
+      setRules(row.id, readRules({ ...storedRules(row.id), ...(body.rules as object) }))
       // The room finds out now, not on its next reload: the panel greys its
       // controls from this, and a rule nobody was told about is a rule that
       // looks like a bug when a button stops working.
-      broadcast(row.id, { t: 'rules', rules: getRules(row.id) })
+      broadcast(row.id, { t: 'rules', rules: storedRules(row.id) })
     }
 
     res.json(toSeminar(selectSeminar.get(row.id) as SeminarRow))
@@ -442,13 +480,25 @@ export function adminInstanceRoutes(): Router {
         } catch (err) {
           // The row is already gone; a workspace we could not remove is a stray
           // directory, not a half-deleted seminar.
-          console.warn(`[admin] could not remove workspace for ${row.id}:`, err instanceof Error ? err.message : err)
+          console.warn(
+            `[admin] could not remove workspace for ${row.id}:`,
+            err instanceof Error ? err.message : err,
+          )
         }
 
         res.status(204).end()
       } catch (err) {
-        console.error(`[admin] deleting ${row.id} failed:`, err instanceof Error ? err.message : err)
-        if (!res.headersSent) res.status(500).json({ error: 'the seminar could not be deleted', reason: 'invalid' } satisfies AdminErrorBody)
+        console.error(
+          `[admin] deleting ${row.id} failed:`,
+          err instanceof Error ? err.message : err,
+        )
+        if (!res.headersSent)
+          res
+            .status(500)
+            .json({
+              error: 'the seminar could not be deleted',
+              reason: 'invalid',
+            } satisfies AdminErrorBody)
       }
     })()
   })

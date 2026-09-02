@@ -17,7 +17,7 @@ import { config } from '../config.js'
 import {
   createSession,
   getParticipant,
-  getRules,
+  storedRules,
   getSession,
   isTokenHost,
   listParticipants,
@@ -455,6 +455,12 @@ export function sessionRoutes(): Router {
    * Присланное накладывается на текущее, а не заменяет его: экран, который
    * трогает один переключатель, не должен уметь молча вернуть остальные к
    * умолчаниям.
+   *
+   * Законченное занятие эту дверь не закрывает: преподаватель готовит в той же
+   * комнате следующую пару, а правила — выбор, который конец занятия ужесточает
+   * поверх, не переписывая (shared/rules.ts · rulesAfterClass). Поэтому и
+   * накладывается на `storedRules`: возьми проверка действующие, одно нажатие
+   * посреди законченного занятия записало бы «всё преподавателю» насовсем.
    */
   router.patch('/api/sessions/:id/rules', (req, res) => {
     const sessionId = req.params.id
@@ -468,11 +474,15 @@ export function sessionRoutes(): Router {
     if (typeof incoming !== 'object' || incoming === null) {
       return res.status(400).json({ error: 'rules must be an object' })
     }
-    const rules = setRules(sessionId, readRules({ ...getRules(sessionId), ...incoming }))
+    const rules = setRules(sessionId, readRules({ ...storedRules(sessionId), ...incoming }))
     /*
      * Комната узнаёт сейчас, а не при следующей перезагрузке: интерфейс гасит
      * по этому кнопки, и правило, о котором не сказали, выглядит как поломка —
      * кнопка перестала работать и никто не знает почему.
+     *
+     * Едет выбранное, а не действующее: конец занятия комната накладывает сама
+     * (web/src/lib/may.ts), и прислать ей уже ужесточённое значило бы показать
+     * преподавателю в настройках не его выбор.
      */
     broadcast(sessionId, { t: 'rules', rules })
     res.json({ rules })
