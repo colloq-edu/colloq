@@ -20,6 +20,7 @@
    */
   import { onMount } from 'svelte'
   import { adminAuth } from '@/admin/auth.svelte'
+  import { navCounts } from '@/admin/AdminShell.svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -28,6 +29,7 @@
   import { LIMITS, SIGN_IN_PATH, type AdminRole, type Teacher } from '@shared/admin'
   import { colorForId } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
+  import { seminarLink } from '@/lib/seminar-link'
 
   /* The lanes. Declared once so the header and every row cannot drift apart. */
   /*
@@ -47,6 +49,27 @@
 
   /** All a row may ever show of a live link: its shape. */
   const MASKED = `${location.host}${SIGN_IN_PATH}${'·'.repeat(12)}`
+
+  /**
+   * Ссылка входа — от адреса, который коллега сможет открыть.
+   *
+   * Сервер строит её из PUBLIC_URL, и PUBLIC_URL, оставленный на localhost,
+   * отдаёт в чат ссылку, которую не открыть ни с одной другой машины; маска в
+   * строке при этом рисуется от `location.host`, то есть форма и содержимое
+   * расходятся. Для ссылки семинара это правило уже написано и измерено
+   * (lib/seminar-link.ts) — начало адреса берётся у него же, чтобы правило
+   * осталось одним на две ссылки, а путь остаётся серверным: в нём ключ.
+   */
+  function reachable(signInUrl: string): string {
+    try {
+      const chosen = new URL(seminarLink(signInUrl, location.origin, 'x'))
+      const link = new URL(signInUrl)
+      return `${chosen.origin}${link.pathname}${link.search}`
+    } catch {
+      // PUBLIC_URL задаёт оператор, и это может быть что угодно.
+      return signInUrl
+    }
+  }
 
   interface Reveal {
     teacherId: string
@@ -96,6 +119,9 @@
   let newSetupToken = $state<string | null>(null)
   let setupTokenError = $state<string | null>(null)
   let rotatingSetup = $state(false)
+  /** Показан один раз — значит его должно быть чем взять, не выделяя мышью. */
+  let copiedSetup = $state(false)
+  let copiedSetupTimer: ReturnType<typeof setTimeout> | undefined
 
   let editing = $state<{ id: string; name: string; email: string } | null>(null)
   let savingEdit = $state(false)
@@ -135,11 +161,22 @@
   async function load(): Promise<void> {
     try {
       teachers = await adminApi.listTeachers()
+      loaded = true
       listError = null
     } catch (cause: unknown) {
       listError = report(cause)
     }
   }
+
+  /*
+   * Число в боковой навигации — отсюда, как у семинаров и курсов: шелл
+   * спрашивает список сам только пока не знает его, а после добавленного или
+   * удалённого человека правду знает этот экран.
+   */
+  let loaded = $state(false)
+  $effect(() => {
+    if (loaded) navCounts.teachers = teachers.length
+  })
 
   function put(updated: Teacher): void {
     teachers = teachers.map((t) => (t.id === updated.id ? updated : t))
@@ -168,7 +205,12 @@
       composing = false
       draftName = ''
       draftEmail = ''
-      show({ teacherId: minted.teacher.id, name: minted.teacher.name, url: minted.signInUrl, minted: true })
+      show({
+        teacherId: minted.teacher.id,
+        name: minted.teacher.name,
+        url: reachable(minted.signInUrl),
+        minted: true,
+      })
     } catch (cause: unknown) {
       composeError = report(cause)
     } finally {
@@ -204,6 +246,7 @@
   async function rotateSetup(): Promise<void> {
     rotatingSetup = true
     setupTokenError = null
+    copiedSetup = false
     try {
       const { token } = await adminApi.rotateSetupToken()
       newSetupToken = token
@@ -211,6 +254,18 @@
       setupTokenError = report(cause)
     } finally {
       rotatingSetup = false
+    }
+  }
+
+  async function copySetupToken(token: string): Promise<void> {
+    try {
+      await copyText(token)
+      copiedSetup = true
+      clearTimeout(copiedSetupTimer)
+      copiedSetupTimer = setTimeout(() => (copiedSetup = false), 2200)
+    } catch {
+      // Небезопасное происхождение — обычный способ хостить это самому.
+      setupTokenError = 'The browser would not take the clipboard — copy the token by hand.'
     }
   }
 
@@ -268,7 +323,12 @@
       const minted = await adminApi.rotateTeacherLink(t.id)
       put(minted.teacher)
       confirming = null
-      show({ teacherId: t.id, name: minted.teacher.name, url: minted.signInUrl, minted: !t.hasLink })
+      show({
+        teacherId: t.id,
+        name: minted.teacher.name,
+        url: reachable(minted.signInUrl),
+        minted: !t.hasLink,
+      })
     } catch (cause: unknown) {
       const message = report(cause)
       if (banded) confirmError = message
@@ -313,7 +373,7 @@
     rowCopyError = null
     try {
       const { signInUrl } = await adminApi.teacherLink(t.id)
-      await copyText(signInUrl)
+      await copyText(reachable(signInUrl))
       copiedRow = t.id
       clearTimeout(copiedRowTimer)
       copiedRowTimer = setTimeout(() => (copiedRow = null), 2200)
@@ -762,16 +822,34 @@
     <div class="flex flex-wrap items-start gap-3 border-t border-line-soft py-3.5">
       <div class="min-w-0 max-w-[600px] flex-1">
         {@render eyebrow('Setup token')}
+        <!--
+          Печатает токен `make host`, читая его из файла, — не сервер: тот
+          молчит, как только у инстанса появился владелец, а этот блок виден
+          только владельцу. Обещание «следующий запуск его напечатает» было
+          верно ровно там, где его никто не читает.
+        -->
         <p class="mt-1.5 text-2xs text-muted">
-          The token printed at every start signs whoever holds it in as the longest-standing owner.
-          It has been in terminal history, on a projector and in whatever chat it was pasted into.
-          Rotating it kills the old one instantly; the next start prints the new one.
+          The setup token signs whoever holds it in as the longest-standing owner. It has been in
+          terminal history, on a projector and in whatever chat it was pasted into. Rotating it kills
+          the old one instantly and writes the new one to
+          <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>.
         </p>
         {#if newSetupToken}
-          <p class="mt-2 break-all font-mono text-2xs text-ink">{newSetupToken}</p>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <p class="min-w-0 break-all font-mono text-2xs text-ink">{newSetupToken}</p>
+            <button
+              type="button"
+              class="btn-ghost shrink-0 text-2xs"
+              onclick={() => void copySetupToken(newSetupToken ?? '')}
+            >
+              {copiedSetup ? 'Copied' : 'Copy'}
+            </button>
+          </div>
           <p class="mt-1 text-2xs text-muted">
-            Shown once. It is also printed by the server at every start, so there is nothing to write
-            down.
+            Shown once here. <span class="font-mono">make host</span> prints it again at every start,
+            reading it from
+            <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span> —
+            the server itself stops announcing it once the instance has an owner.
           </p>
         {:else if setupTokenError}
           <p class="mt-2 text-2xs text-danger">{setupTokenError}</p>

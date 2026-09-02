@@ -7,12 +7,18 @@
    * log as it happens — a pip install of torch is four minutes of silence
    * otherwise, and silence is indistinguishable from a hang.
    *
-   * The screen is honest about one thing the artboard leaves implicit: an
-   * instance runs ONE kernel container, so switching switches for everybody.
-   * That is said next to the button rather than discovered afterwards.
+   * The screen is honest about one thing the artboard leaves implicit: a
+   * seminar picks its environment when it is created and keeps it, so the
+   * active one is only what the NEXT room gets — switching does not move a
+   * class that is already running. That is said next to the button rather than
+   * discovered afterwards. Where the rooms of this install have no containers
+   * of their own (`shared` on the list), none of that holds, and the screen
+   * says the other thing instead — one kernel for everybody, and switching
+   * restarts it under a class.
    */
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
+  import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
@@ -29,12 +35,24 @@
 
   const isOwner = $derived(adminAuth.isOwner)
   const canBuild = $derived(envs?.canBuild ?? false)
+  /*
+   * Комнаты делят одно ядро, и своего контейнера у них нет.
+   *
+   * Приезжает вместе со списком: сервер, который не видит docker (под `make
+   * up`) или которому изоляцию выключили, поднимает не контейнер на комнату, а
+   * общее ядро compose. Комната об этом уже слышит словами в журнале ядра, а
+   * панель до сих пор обещала обратное безусловно.
+   */
+  const sharedKernel = $derived(envs?.shared ?? false)
 
   /* ------------------------------------------------------------- loading */
 
   async function refresh(): Promise<void> {
     try {
       envs = await adminApi.listEnvironments()
+      // Число в боковой навигации — отсюда: иначе шелл спрашивал docker второй
+      // раз за тот же переход, ради той же цифры.
+      navCounts.environments = envs.environments.length
       error = null
     } catch (cause) {
       error = cause instanceof AdminApiError ? cause.message : 'Could not read the environments.'
@@ -176,52 +194,125 @@
   let draftName = $state('')
   let draftSource = $state('')
   let creating = $state(false)
+  /**
+   * Черновик в диалоге — правда об этом окружении, а не остаток прошлого.
+   *
+   * Диалог открывается до ответа сервера, а `draftSource` до него хранит текст
+   * предыдущего открытого окружения. Неудачное чтение — истёкшее печенье,
+   * оборванная сеть — оставляло на экране «Environment cv» со списком пакетов
+   * nlp и активной кнопкой Save, которая этот список туда и записывала. Пока
+   * не прочитали, сохранять нечего.
+   */
+  let editorReady = $state(false)
+  /** Отказ виден там, где нажали: строка таблицы лежит под затемнением. */
+  let editorError = $state<string | null>(null)
+
+  const explain = (cause: unknown, fallback: string): string =>
+    cause instanceof AdminApiError ? cause.message : fallback
 
   async function openEditor(name: string): Promise<void> {
     rowError = null
+    editorError = null
     creating = false
     draftName = name
+    draftSource = ''
+    editorReady = false
     editing = name
-    draftSource = (await adminApi.readEnvironment(name)).source
+    try {
+      draftSource = (await adminApi.readEnvironment(name)).source
+      editorReady = true
+    } catch (cause) {
+      editorError = explain(cause, `Could not read ${name}.`)
+    }
   }
 
   function openCreate(): void {
     rowError = null
+    editorError = null
     creating = true
     editing = ''
     draftName = ''
+    editorReady = true
     draftSource =
       '# Installed on top of the base (numpy, pandas, matplotlib, scikit-learn),\n' +
       '# so there is no need to list those. One package per line:\n#\n#   transformers>=4.44\n'
   }
 
+  /**
+   * Имя, которого ещё нет.
+   *
+   * Второй «Duplicate» того же окружения предлагал то же `-copy` и молча
+   * переписывал первую копию — уже отредактированную.
+   */
+  function freeName(base: string): string {
+    const taken = new Set((envs?.environments ?? []).map((e: AdminEnvironment) => e.name))
+    const fit = (value: string): string => value.slice(0, 32).replace(/-+$/, '')
+    if (!taken.has(fit(base))) return fit(base)
+    for (let n = 2; n < 100; n += 1) {
+      const candidate = fit(`${base}-${n}`)
+      if (!taken.has(candidate)) return candidate
+    }
+    return fit(base)
+  }
+
   function duplicate(env: AdminEnvironment): void {
-    void (async () => {
-      const source = (await adminApi.readEnvironment(env.name)).source
-      creating = true
-      editing = ''
-      draftName = `${env.name}-copy`.slice(0, 32)
-      draftSource = source
-    })()
+    rowError = null
+    editorError = null
+    creating = true
+    editing = ''
+    draftName = freeName(`${env.name}-copy`)
+    draftSource = ''
+    editorReady = false
+    void adminApi
+      .readEnvironment(env.name)
+      .then((r) => {
+        draftSource = r.source
+        editorReady = true
+      })
+      // Раньше здесь не было ничего: при отказе диалог просто не открывался, и
+      // «Duplicate» выглядел как кнопка, которая ничего не делает.
+      .catch((cause) => (editorError = explain(cause, `Could not read ${env.name}.`)))
   }
 
   const nameOk = $derived(ENVIRONMENT_NAME.test(draftName.trim()))
+  /** Имя, уже занятое на этом же экране. Правка своего же имени — не занятость. */
+  const nameTaken = $derived(
+    creating && (envs?.environments ?? []).some((e: AdminEnvironment) => e.name === draftName.trim()),
+  )
 
   async function save(): Promise<void> {
     const name = draftName.trim()
-    if (!nameOk) return
+    if (!nameOk || !editorReady || busy !== null) return
+    /*
+     * Создание — это создание, а не правка вслепую.
+     *
+     * PUT один и тот же для обоих, поэтому имя, уже занятое, молча перетирало
+     * чужой список пакетов: сорок строк, набранных руками, которых больше нигде
+     * нет. Тот же барьер стоит в CLI — `make env-new` отказывается, если файл
+     * уже есть.
+     */
+    if (nameTaken) {
+      editorError = `There is already an environment called ${name} — open it with Edit packages.`
+      return
+    }
     busy = name
     rowError = null
+    editorError = null
     try {
-      await adminApi.saveEnvironment(name, draftSource)
+      // `creating` едет до сервера заголовком: список на экране успевает
+      // устареть, и тогда занятость видит только он.
+      await adminApi.saveEnvironment(name, draftSource, { creating })
       editing = null
       creating = false
       await refresh()
     } catch (cause) {
-      rowError = {
-        name,
-        message: cause instanceof AdminApiError ? cause.message : 'Could not save that.',
-      }
+      editorError = explain(cause, 'Could not save that.')
+      /*
+       * Имя заняли, пока диалог был открыт: вторая вкладка, планшет рядом.
+       * Перечитываем список, чтобы имя показалось занятым и здесь — а набранные
+       * строки остаются в поле: их писали руками, и под другим именем они те же.
+       */
+      if (cause instanceof AdminApiError && cause.reason === 'exists') await refresh()
     } finally {
       busy = null
     }
@@ -233,7 +324,7 @@
 
   async function confirmDelete(): Promise<void> {
     const name = doomed
-    if (!name) return
+    if (!name || busy !== null) return
     await act(name, () => adminApi.deleteEnvironment(name))
     doomed = null
   }
@@ -244,7 +335,9 @@
 
   async function confirmUse(): Promise<void> {
     const name = switching
-    if (!name) return
+    // Второе нажатие — второй `docker compose up` по тому же проекту: ядро
+    // пересоздаётся дважды, а второй запрос падает на конфликте контейнера.
+    if (!name || busy !== null) return
     await act(name, () => adminApi.useEnvironment(name))
     switching = null
   }
@@ -317,6 +410,20 @@
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">{envs.cannotBuildReason}</p>
+      </div>
+    {/if}
+
+    {#if sharedKernel}
+      <!-- А это как раз про сломанное обещание, а не про способ установки:
+           умолчание обещает контейнер на комнату, и здесь его нет. -->
+      <div class="mb-4 flex items-start gap-2.5 border border-line bg-warning/[0.08] px-3 py-2.5">
+        <Icon name="alert" size={14} class="mt-0.5 shrink-0 text-warning" />
+        <p class="text-2xs leading-relaxed text-muted">
+          Every seminar on this server shares one Python container: rooms read and delete each
+          other’s files, the memory limit is one for all of them, and the environment a seminar was
+          created with is not applied — they all run the default one. Run the server where it can
+          see Docker (make run) to give every room a container of its own.
+        </p>
       </div>
     {/if}
 
@@ -520,16 +627,37 @@
             <p class="border-t border-line px-3.5 py-2 text-2xs text-danger">{rowError.message}</p>
           {/if}
         </section>
+      {:else}
+        <!-- Пустой каталог — это установка, где никто ещё не заводил окружений,
+             а не поломка. Раньше на этом месте была молчаливая пустота. -->
+        <div class="border border-line px-3.5 py-6 text-center">
+          <p class="text-ui text-muted">No environments yet.</p>
+          <p class="mt-1 text-2xs text-muted">
+            Rooms run on the base image: numpy, pandas, matplotlib, scikit-learn. Make one to add
+            your course's own packages on top.
+          </p>
+          <button type="button" class="{BTN} mt-3" onclick={openCreate}>
+            <Icon name="plus" size={14} />
+            New environment
+          </button>
+        </div>
       {/each}
     </div>
 
     <p class="mt-4 flex items-start gap-2 text-2xs leading-relaxed text-muted">
       <Icon name="info" size={13} class="mt-0.5 shrink-0" />
       <span>
-        An environment is a container image, and every environment somebody is using runs in its
-        own container. A seminar picks one when it is created and keeps it, so making a different
-        one the default changes what the <b class="font-semibold text-ink">next</b> seminar gets —
-        not what an existing one is running.
+        An environment is a container image.
+        {#if sharedKernel}
+          This server runs all of its rooms in one shared kernel, so the default is not what the
+          next seminar gets — it is what every room here gets, the open ones too, as soon as that
+          kernel restarts.
+        {:else}
+          Every environment somebody is using runs in its own container. A seminar picks one when
+          it is created and keeps it, so making a different one the default changes what the
+          <b class="font-semibold text-ink">next</b> seminar gets — not what an existing one is
+          running.
+        {/if}
       </span>
     </p>
     </div>
@@ -563,8 +691,14 @@
               autocomplete="off"
               spellcheck="false"
             />
-            <p class="text-2xs text-muted">
-              Lowercase letters, digits and dashes — the name becomes a filename and a Docker tag.
+            <p class={cn('text-2xs', nameTaken ? 'text-danger' : 'text-muted')}>
+              {#if nameTaken}
+                {draftName.trim()} already exists, and creating does not overwrite it — pick
+                another name, or edit that one with Edit packages on its row.
+              {:else}
+                Lowercase letters, digits and dashes — the name becomes a filename and a Docker
+                tag.
+              {/if}
             </p>
           </div>
         {/if}
@@ -573,11 +707,14 @@
           <label for="env-source" class="text-2xs font-bold uppercase tracking-label text-muted">
             Packages
           </label>
+          <!-- Пока файл не приехал, поле не принимает текст: иначе набранное за
+               эти полсекунды затирается ответом сервера. -->
           <textarea
             id="env-source"
             bind:value={draftSource}
             rows="14"
-            class="field bg-canvas px-4 py-3 font-mono text-code-lg leading-relaxed"
+            disabled={!editorReady}
+            class="field bg-canvas px-4 py-3 font-mono text-code-lg leading-relaxed disabled:opacity-60"
             spellcheck="false"
           ></textarea>
           <p class="text-2xs text-muted">
@@ -587,14 +724,14 @@
       </div>
 
       <div class="flex items-center gap-2 border-t border-line px-5 py-3.5">
-        <p class="flex-1 text-2xs text-muted">
-          Saving only writes the file. Building is what puts it in a kernel.
+        <p class={cn('min-w-0 flex-1 text-2xs', editorError ? 'text-danger' : 'text-muted')}>
+          {editorError ?? 'Saving only writes the file. Building is what puts it in a kernel.'}
         </p>
         <button class={BTN} onclick={() => ((editing = null), (creating = false))}>Cancel</button>
         <button
           class="inline-flex h-8 items-center bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
           onclick={save}
-          disabled={!nameOk || busy !== null}
+          disabled={!nameOk || nameTaken || !editorReady || busy !== null}
         >
           Save
         </button>
@@ -612,13 +749,18 @@
         The package list goes. The built image stays in Docker — remove it separately if
         you no longer want it.
       </p>
+      <!-- Кнопки гаснут на время запроса. Диалог висит до ответа, а второе
+           нажатие уходило вторым запросом: он приходил к уже удалённому
+           окружению и отвечал «no such environment» — ложной ошибкой поверх
+           успеха. -->
       <div class="mt-5 flex justify-end gap-2">
-        <button class={BTN} onclick={() => (doomed = null)}>Cancel</button>
+        <button class={BTN} onclick={() => (doomed = null)} disabled={busy !== null}>Cancel</button>
         <button
-          class="inline-flex h-8 items-center bg-danger px-4 text-2xs font-bold uppercase tracking-label text-white"
+          class="inline-flex h-8 items-center bg-danger px-4 text-2xs font-bold uppercase tracking-label text-white disabled:opacity-40"
           onclick={confirmDelete}
+          disabled={busy !== null}
         >
-          Delete
+          {busy === doomed ? 'Deleting…' : 'Delete'}
         </button>
       </div>
     </div>
@@ -630,20 +772,40 @@
     <div class="dialog-card w-full max-w-md border border-line bg-canvas p-5 shadow-pop">
       <h2 class="text-head font-black tracking-tight text-ink">Make {switching} the default?</h2>
       <p class="mt-2 text-ui text-muted">
-        Seminars created from now on get {switching}. Seminars already pinned to another
-        environment are untouched — they run in their own containers.
+        Seminars created from now on get {switching}.
+        {#if !sharedKernel}
+          Seminars already pinned to another environment are untouched — they run in their own
+          containers.
+        {/if}
       </p>
-      <p class="mt-2 text-ui text-muted">
-        The shared kernel does restart, so any room currently running on the old default loses its
-        variables and has to run those cells again. The cells and the files themselves stay.
-      </p>
+      <!--
+        Про перезапуск — только там, где он и правда бывает. Когда у каждой
+        комнаты свой контейнер, «Make default» до чужого ядра не дотягивается
+        вовсе, и обещание потерянных переменных было обещанием беды, которой не
+        будет. Условие приходилось называть словами, пока признака общего ядра
+        не было в ответе списка; теперь он приезжает вместе с ним, и
+        предупреждение стоит ровно там, где перезапуск случится.
+      -->
+      {#if sharedKernel}
+        <p class="mt-2 text-ui text-muted">
+          The rooms here share one kernel, and switching restarts it: a class running right now
+          loses its variables and has to run those cells again. The cells and the files themselves
+          stay.
+        </p>
+      {/if}
+      <!-- Те же гаснущие кнопки: два нажатия — два `docker compose up`, и
+           второй падает на конфликте контейнера, отвечая «ядро не вернулось»
+           там, где переключение уже состоялось. -->
       <div class="mt-5 flex justify-end gap-2">
-        <button class={BTN} onclick={() => (switching = null)}>Cancel</button>
+        <button class={BTN} onclick={() => (switching = null)} disabled={busy !== null}>
+          Cancel
+        </button>
         <button
-          class="inline-flex h-8 items-center bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink"
+          class="inline-flex h-8 items-center bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink disabled:opacity-40"
           onclick={confirmUse}
+          disabled={busy !== null}
         >
-          Make default
+          {busy === switching ? 'Switching…' : 'Make default'}
         </button>
       </div>
     </div>

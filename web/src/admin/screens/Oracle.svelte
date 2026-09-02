@@ -57,9 +57,16 @@
     { value: 'full', label: 'Full answers', hint: 'Explains and writes code' },
   ]
 
-  /** The quick actions a cell offers, plus 'ask' for anything typed by hand. */
+  /**
+   * The quick actions a cell offers, plus 'ask' for anything typed by hand.
+   *
+   * И 'work' — режим «сделать» из комнаты. Он писался под 'ask' и был в
+   * разбивке неотличим от вопроса, хотя один такой ход ходит к модели до
+   * двенадцати раз: самая дорогая строка стояла без подписи.
+   */
   const ACTION_LABELS: Record<string, string> = {
     ask: 'Asked in words',
+    work: 'Asked to do it',
     explain: 'Explain',
     fix: 'Fix my error',
     debug: 'Debug',

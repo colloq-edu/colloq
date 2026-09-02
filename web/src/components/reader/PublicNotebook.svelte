@@ -13,7 +13,7 @@
   import { copyText } from '@/lib/clipboard'
   import Code from '@/components/ui/Code.svelte'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
-  import { BLOB_PREFIX, type PublicCell } from '@shared/publish'
+  import { BLOB_MIMES, BLOB_PREFIX, type PublicCell } from '@shared/publish'
   import type { CellOutput } from '@shared/notebook'
 
   interface Props {
@@ -34,14 +34,22 @@
    * В странице стоит `blob:<хэш>` — то есть содержимое, вынесенное из JSON,
    * чтобы шесть шагов не несли шесть копий одного графика. Хэш и есть версия,
    * поэтому адрес раздаётся с вечным кэшем.
+   *
+   * Адрес получают только растровые mime (`BLOB_MIMES`) — те, что рисуются
+   * <img>. Ставить его всем ключам подряд значило отдать путь в ветку SVG, а
+   * та санитайзит его как разметку и печатает строкой: на месте графика
+   * graphviz читатель видел «/api/p/x9tb4kwm/blob/6f1c…». Ссылка на запись,
+   * которую нечем показать, из набора убирается совсем: тогда выбор дойдёт до
+   * text/plain — репр вместо строки адреса. Публикации, собранные до того, как
+   * сервер перестал выносить нерастровое, тем и лечатся.
    */
   function blobbed(output: CellOutput): CellOutput {
     if (output.kind !== 'data') return output
     const data: Record<string, string> = {}
     for (const [mime, value] of Object.entries(output.data)) {
-      data[mime] = value.startsWith(BLOB_PREFIX)
-        ? `/api/p/${publication}/blob/${value.slice(BLOB_PREFIX.length)}`
-        : value
+      if (!value.startsWith(BLOB_PREFIX)) data[mime] = value
+      else if (BLOB_MIMES.has(mime))
+        data[mime] = `/api/p/${publication}/blob/${value.slice(BLOB_PREFIX.length)}`
     }
     return { ...output, data }
   }
@@ -60,8 +68,10 @@
 <div class="flex flex-col gap-6">
   {#each cells as cell (cell.id)}
     {#if cell.type === 'markdown'}
-      <!-- Проза семинара — без рамки: она и есть текст страницы. -->
-      <div class="prose-cell text-ui-lg leading-relaxed text-ink">
+      <!-- Проза семинара — без рамки: она и есть текст страницы. Набор правил
+           тот же, что у заметки в комнате (`.prose-note`), — обещание «те же
+           ячейки» держится ими, а не вторым описанием того же. -->
+      <div class="prose-note prose-cell leading-relaxed">
         {#if render}
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/render -->
           {@html render.markdown(cell.source)}

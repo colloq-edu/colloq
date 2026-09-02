@@ -16,19 +16,33 @@
     teachers = $state<number | null>(null)
     environments = $state<number | null>(null)
 
-    /** Both lists, cheap, and independently: a teacher list that 403s must not
-     * cost the seminar count. */
+    /**
+     * Только то, чего ещё никто не сказал — и независимо: список
+     * преподавателей, отвечающий 403, не должен стоить счётчика семинаров.
+     *
+     * Раньше здесь спрашивались все четыре списка на каждый переход по вкладкам,
+     * а экран, на который переходили, тут же спрашивал то же самое второй раз.
+     * Списки не дешёвые: `/seminars` на каждую строку разбирает снимок тетради
+     * в Y.Doc, `/environments` — это `docker version` плюс `docker image
+     * inspect` на каждое окружение, и всё это в том же цикле событий, который
+     * в эту секунду ведёт чужую пару. Экраны знают свои числа и кладут их сюда
+     * сами.
+     */
     async load(): Promise<void> {
-      const [seminars, courses, teachers, environments] = await Promise.allSettled([
-        adminApi.listSeminars(),
-        adminApi.listCourses(),
-        adminApi.listTeachers(),
-        adminApi.listEnvironments(),
+      await Promise.allSettled([
+        this.seminars === null
+          ? adminApi.listSeminars().then((list) => (this.seminars = list.length))
+          : null,
+        this.courses === null
+          ? adminApi.listCourses().then((list) => (this.courses = list.length))
+          : null,
+        this.teachers === null
+          ? adminApi.listTeachers().then((list) => (this.teachers = list.length))
+          : null,
+        this.environments === null
+          ? adminApi.listEnvironments().then((r) => (this.environments = r.environments.length))
+          : null,
       ])
-      if (seminars.status === 'fulfilled') this.seminars = seminars.value.length
-      if (courses.status === 'fulfilled') this.courses = courses.value.length
-      if (teachers.status === 'fulfilled') this.teachers = teachers.value.length
-      if (environments.status === 'fulfilled') this.environments = environments.value.environments.length
     }
   }
 
@@ -104,8 +118,9 @@
 
   const teacher = $derived(adminAuth.me?.teacher ?? null)
 
-  // Re-asked on every navigation rather than polled: the two screens that can
-  // change a count are both one click away, and they push the new one anyway.
+  // Досчитывается на навигации, а не опрашивается: спрашивается при этом только
+  // ещё неизвестное, а изменившееся число кладёт сюда сам экран, который его
+  // изменил.
   $effect(() => {
     void tab
     void navCounts.load()

@@ -62,6 +62,27 @@ export interface UpdateTeacherRequest {
   email?: string
 }
 
+/**
+ * Публичная страница сама по себе, а не как поле семинара.
+ *
+ * `orphaned` — страница, у которой комнату удалили: все остальные маршруты
+ * публикации ключуются идентификатором комнаты, так что снять её было нечем,
+ * хотя сервер её отдаёт, а `make site` выкладывает.
+ */
+export interface AdminPublication {
+  id: string
+  slug: string | null
+  sessionId: string | null
+  title: string
+  state: 'published' | 'withdrawn'
+  publishedAt: number
+  publishedBy: string | null
+  revision: number
+  orphanedAt: number | null
+  steps: number
+  orphaned: boolean
+}
+
 const BASE = '/api/admin'
 
 /** A body that is not an AdminErrorBody still has a status worth trusting. */
@@ -163,9 +184,19 @@ export const adminApi = {
   readEnvironment: (name: string) =>
     request<{ name: string; source: string }>(`/environments/${encodeURIComponent(name)}`),
 
-  saveEnvironment: (name: string, source: string) =>
+  /**
+   * Записать список пакетов; в режиме создания — только если имени ещё нет.
+   *
+   * PUT один и тот же для «завёл окружение» и «поправил список», а намерения
+   * разные: форма создания на занятом имени затирала чужой список целиком, и
+   * проверка по списку на экране закрывает это только до тех пор, пока рядом
+   * нет второй вкладки. `If-None-Match: *` — это «только если такого ещё нет»:
+   * сервер отвечает 409 с reason 'exists' и файла не трогает.
+   */
+  saveEnvironment: (name: string, source: string, opts?: { creating?: boolean }) =>
     request<{ name: string; source: string }>(`/environments/${encodeURIComponent(name)}`, {
       method: 'PUT',
+      headers: opts?.creating ? { 'if-none-match': '*' } : {},
       ...json({ name, source } satisfies SaveEnvironmentRequest),
     }),
 
@@ -247,18 +278,29 @@ export const adminApi = {
 
   /* ------------------------------------------------------- публикация */
 
+  /**
+   * `slug` описан здесь намеренно: сервер отдавал его с самого начала, а тип
+   * его отбрасывал — и экран публикации, не зная о действующем адресе,
+   * предлагал новый из названия и ломал тот, что уже продиктовали классу.
+   */
   publishInfo: (id: string) =>
     request<{
       title: string
       candidates: PublishCandidate[]
-      publication: { id: string; steps: { seq: number; label: string; at: number }[] } | null
+      publication: {
+        id: string
+        slug: string | null
+        steps: { seq: number; label: string; at: number }[]
+      } | null
     }>(`/seminars/${encodeURIComponent(id)}/publish`),
 
   publish: (id: string, steps: { seq: number; label: string; at: number }[], finalLabel?: string) =>
-    request<{ publication: { id: string; steps: { seq: number; label: string }[] } }>(
-      `/seminars/${encodeURIComponent(id)}/publish`,
-      { method: 'POST', ...json({ steps, finalLabel }) },
-    ),
+    request<{
+      publication: { id: string; slug: string | null; steps: { seq: number; label: string }[] }
+    }>(`/seminars/${encodeURIComponent(id)}/publish`, {
+      method: 'POST',
+      ...json({ steps, finalLabel }),
+    }),
 
   withdraw: (id: string) =>
     request<void>(`/seminars/${encodeURIComponent(id)}/publish`, { method: 'DELETE' }),
@@ -266,8 +308,39 @@ export const adminApi = {
   republish: (id: string) =>
     request<void>(`/seminars/${encodeURIComponent(id)}/publish/restore`, { method: 'POST' }),
 
-  deleteSeminar: (id: string) =>
-    request<void>(`/seminars/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /**
+   * Комната — и, если так решили, её публичная страница.
+   *
+   * Умолчание сервера — страницу оставить: розданную классу ссылку не отозвать.
+   * Но выбор он объявляет («судьба страницы спрашивается отдельно»), а задать
+   * вопрос может только панель — иначе осиротевшую страницу уже ничем не снять.
+   */
+  deleteSeminar: (id: string, dropReading = false) =>
+    request<void>(`/seminars/${encodeURIComponent(id)}${dropReading ? '?reading=drop' : ''}`, {
+      method: 'DELETE',
+    }),
+
+  /* ------------------------------------------- страницы без комнаты */
+
+  /**
+   * Публикации, ключом которым служит их собственный адрес.
+   *
+   * Всё остальное здесь спрашивает публикацию по семинару, а у осиротевшей
+   * семинара уже нет: `withdraw`/`republish` отвечают ей 404, и снять её можно
+   * было только правкой SQLite.
+   */
+  listPublications: () =>
+    request<{ publications: AdminPublication[] }>('/publications').then((r) => r.publications),
+
+  withdrawPublication: (id: string) =>
+    request<void>(`/publications/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  restorePublication: (id: string) =>
+    request<void>(`/publications/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+
+  /** Совсем: строки страницы стираются, надгробие в курсе теряет ссылку. */
+  erasePublication: (id: string) =>
+    request<void>(`/publications/${encodeURIComponent(id)}/forever`, { method: 'DELETE' }),
 
   /* ----------------------------------------------------------- oracle */
 
@@ -300,9 +373,13 @@ export const adminApi = {
    *
    * Тело JSON, а не multipart: .ipynb — это и есть JSON, и читать его в
    * браузере дешевле, чем поднимать разбор многочастного тела ради одного поля.
+   *
+   * Едут только ячейки — `cell_type` и `source`, — а не файл целиком. Предел на
+   * тело общий, 1 МБ, и сохранённая тетрадь с парой графиков его пробивала:
+   * выводы в ней — мегабайты base64, которые сервер всё равно выбрасывает.
    */
   importNotebook: (body: {
-    notebook: string
+    cells: unknown[]
     filename: string
     name?: string
     environment?: string | null

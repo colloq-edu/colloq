@@ -41,6 +41,15 @@
      * стоит того же, а работает и когда смотреть некому.
      */
     lead: Lead | null
+    /**
+     * Идём ли за ведущим прямо сейчас — наружу, в строку вкладок.
+     *
+     * Она пишет «Идём за …» и предлагает «догнать», а знала об этом только по
+     * номеру страницы: отставший на пол-листа читал в читалке «смотрите сами»,
+     * а строкой выше — «Идём за Анной». Два индикатора рядом, говорящие
+     * противоположное, — хуже одного.
+     */
+    following?: boolean
     /** Может ли этот человек начать по документу лекцию. */
     mayLead?: boolean
     /** Лекция по этому документу идёт, а он ушёл читать сам, — как вернуться. */
@@ -56,12 +65,25 @@
     backToLecture = null,
     page = $bindable(1),
     pages = $bindable(0),
+    following = $bindable(false),
   }: Props = $props()
   const session = getSessionState()
 
   let doc = $state<PDFDocumentProxy | null>(null)
   let failure = $state<string | null>(null)
   let scroller = $state<HTMLElement | null>(null)
+
+  /**
+   * Сколько места занимает лист, который ещё не нарисован.
+   *
+   * Место обязано быть верным ДО отрисовки: и `place`, и `goTo` меряют высоту
+   * листа — по ней идут за преподавателем и по ней же возвращаются на своё
+   * место после зума. Пропорция берётся с первой страницы (как в полосе
+   * миниатюр) и уточняется по каждой нарисованной: у приложения в конце колоды
+   * своя ориентация.
+   */
+  let aspect = $state('1 / 1.414')
+  const ratios = $state<Record<number, string>>({})
 
   /*
    * Масштаб считается ОТ ШИРИНЫ КОЛОНКИ, а не от размера страницы в пунктах.
@@ -116,24 +138,42 @@
     const next = direction === 1 ? STEPS[Math.min(STEPS.length - 1, at + 1)] : STEPS[Math.max(0, at - 1)]
     zoom(next ?? scale)
   }
-  /*
-   * Умолчание: документ, который поставила комната, смотрят вместе; документ,
-   * открытый самому из панели файлов, — сам по себе. Человек пришёл смотреть
-   * своё, и утаскивать его на чужую страницу было бы грубо.
-   */
-  // svelte-ignore state_referenced_locally
-  let following = $state(shared)
   /** Ставится, пока страницу двигает код, — чтобы не принять это за жест. */
   let programmatic = false
 
   onMount(() => {
     let cancelled = false
+    let opened: PDFDocumentProxy | null = null
+    /*
+     * Счётчик страниц в строке вкладок — от ЭТОГО документа с первой секунды.
+     *
+     * Читалка пересоздаётся на каждую вкладку (`{#key activePath}` в экране
+     * комнаты), а `page`/`pages` связаны с экраном и переживают пересоздание:
+     * без сброса над новым файлом висело «12 / 40» от прежнего, пока его не
+     * прокрутят.
+     */
+    page = 1
+    pages = 0
+    /*
+     * Умолчание следования: документ, который поставила комната, смотрят
+     * вместе; документ, открытый самому из панели файлов, — сам по себе.
+     * Человек пришёл смотреть своё, и утаскивать его на чужую страницу было бы
+     * грубо.
+     */
+    following = shared
     void loadPdf()
       .then((pdf) => pdf.open(api.fileRaw(session.session.id, file), session.token))
-      .then((opened) => {
+      .then(async (ready) => {
+        opened = ready
         if (cancelled) return
-        doc = opened
-        pages = opened.numPages
+        // Пропорция листа — до первой отрисовки: по высоте листов идут за
+        // преподавателем, и колода слайдов, разложенная столбиком A4, увела бы
+        // прыжок на страницу мимо.
+        const view = (await ready.getPage(1)).getViewport({ scale: 1 })
+        if (cancelled) return
+        aspect = `${Math.round(view.width)} / ${Math.round(view.height)}`
+        doc = ready
+        pages = ready.numPages
         /*
          * Сказать, где мы, сразу — не дожидаясь прокрутки.
          *
@@ -154,7 +194,10 @@
       // Закрыть документ целиком: `loadingTask.destroy()` останавливает и
       // воркер, и незавершённые запросы кусков. Одного `cleanup` мало — он
       // освобождает страницы, но оставляет транспорт живым.
-      void doc?.loadingTask.destroy()
+      //
+      // По своей переменной, а не по `doc`: документ, доехавший после ухода, в
+      // `doc` уже не попадёт — и без этого уносил бы с собой живой воркер.
+      void opened?.loadingTask.destroy()
     }
   })
 
@@ -166,79 +209,177 @@
    * operations». А масштаб переключают быстрее, чем считается страница A4, —
    * два нажатия на «плюс» подряд и есть тот самый второй раз.
    */
-  const rendering = new WeakMap<HTMLCanvasElement, { cancel(): void; promise: Promise<unknown> }>()
+  interface Job {
+    /** Просьба остановиться: до `render` — флагом, после — отменой задачи. */
+    cancel(): void
+    /** Разрешается, когда холст свободен. Не отклоняется никогда. */
+    free: Promise<void>
+  }
+  const rendering = new WeakMap<HTMLCanvasElement, Job>()
 
-  /** Показать страницу: холст на страницу, отрисовка в воркере. */
+  /**
+   * Показать страницу: холст на страницу, отрисовка в воркере.
+   *
+   * Место в карте занимается СРАЗУ, до первого `await`. Занималось после
+   * `getPage`, и в это окно вторая отрисовка проходила защиту как по пустой
+   * карте: она переставляла размеры холста под работающей первой — то есть
+   * стирала её и сбивала ей систему координат, — а исключение про «тот же
+   * холст» уходило в пустой catch. Страница оставалась пустой или наполовину
+   * нарисованной со сдвигом, молча, до следующей смены масштаба.
+   */
   async function draw(node: HTMLCanvasElement, index: number): Promise<void> {
+    const previous = rendering.get(node)
+    let stopped = false
+    let task: { cancel(): void } | null = null
+    let done!: () => void
+    const job: Job = {
+      cancel() {
+        stopped = true
+        task?.cancel()
+      },
+      free: new Promise<void>((resolve) => (done = resolve)),
+    }
+    rendering.set(node, job)
     /*
      * Прошлую отрисовку сначала отменить и ДОЖДАТЬСЯ: `cancel()` только просит
      * остановиться, а холст остаётся занятым до тех пор, пока обещание не
      * разрешится. Отказ здесь — обычное дело, это и есть отмена.
      */
-    const previous = rendering.get(node)
-    if (previous) {
-      previous.cancel()
-      await previous.promise.catch(() => {})
-    }
-    if (!doc) return
-    const source = await doc.getPage(index)
-    // Плотность экрана: без неё страница на retina выглядит размытой, как скан.
-    const ratio = Math.min(window.devicePixelRatio || 1, 2)
-    const width = node.parentElement?.clientWidth ?? 800
-    const base = source.getViewport({ scale: 1 })
-    const viewport = source.getViewport({ scale: (width / base.width) * ratio })
-    node.width = viewport.width
-    node.height = viewport.height
-    node.style.width = '100%'
-    node.style.height = 'auto'
-    const context = node.getContext('2d')
-    if (!context) return
-    const task = source.render({ canvas: node, canvasContext: context, viewport })
-    rendering.set(node, task)
+    previous?.cancel()
     try {
-      await task.promise
+      await previous?.free
+      if (stopped || !doc) return
+      const source = await doc.getPage(index)
+      if (stopped) return
+      // Плотность экрана: без неё страница на retina выглядит размытой, как скан.
+      const ratio = Math.min(window.devicePixelRatio || 1, 2)
+      const width = node.parentElement?.clientWidth ?? 800
+      const base = source.getViewport({ scale: 1 })
+      const viewport = source.getViewport({ scale: (width / base.width) * ratio })
+      // Место под лист держит CSS, а не размер буфера: буфер меняется на каждый
+      // зум и отдаётся, когда страница уходит с экрана, а высота листа от этого
+      // меняться не должна — по ней идут за преподавателем.
+      ratios[index] = `${Math.round(base.width)} / ${Math.round(base.height)}`
+      node.width = viewport.width
+      node.height = viewport.height
+      const context = node.getContext('2d')
+      if (!context) return
+      const started = source.render({ canvas: node, canvasContext: context, viewport })
+      task = started
+      await started.promise
     } catch {
       // Отменили ради нового масштаба или закрыли документ — не поломка.
     } finally {
-      if (rendering.get(node) === task) rendering.delete(node)
+      if (rendering.get(node) === job) rendering.delete(node)
+      done()
     }
   }
 
   /**
-   * Холст страницы: рисуется при появлении и ПЕРЕРИСОВЫВАЕТСЯ при смене
-   * масштаба.
+   * Холст страницы: рисуется, когда до неё доскроллили, и ПЕРЕРИСОВЫВАЕТСЯ при
+   * смене масштаба или ширины колонки.
+   *
+   * Рисовались все сразу, по холсту на страницу, в момент открытия. Колода на
+   * сорок слайдов — это сорок буферов по паре мегапикселей (сотни мегабайт) и
+   * сорок разборов в одной очереди: вкладка не отвечает секунды, а страница, на
+   * которую человек смотрит, приходит последней — «плюс» выглядит сломанным.
+   * Масштаб при этом множит буфер квадратично, и на iPad, где бюджет холстов
+   * один на процесс, это ровно то переполнение, из-за которого WebKit начинает
+   * гасить произвольные холсты (см. `release`). Полоса миниатюр рядом рисует
+   * лениво по той же причине, и `disableAutoFetch` в pdf.svelte.ts обещает то
+   * же самое: первый кадр сразу, остальное — по мере надобности.
    *
    * `update` действия — единственное место, где Svelte сообщает, что параметр
    * изменился, не пересоздавая узел. Пересоздать холст значило бы на мгновение
    * схлопнуть страницу в ноль высоты — то есть увести прокрутку у всех, кто в
    * этот момент читает.
    */
-  function canvas(node: HTMLCanvasElement, args: { index: number; scale: number }) {
+  interface Sheet {
+    index: number
+    scale: number
+    /** Ширина колонки: холст рисуется по ней, а меняют её не только кнопки. */
+    column: number
+  }
+
+  function canvas(node: HTMLCanvasElement, args: Sheet) {
     let at = args
-    void draw(node, at.index)
-    return {
-      update(next: { index: number; scale: number }) {
-        if (next.index === at.index && next.scale === at.scale) return
-        at = next
-        void draw(node, at.index)
+    let near = false
+    /*
+     * Запас в экран с лишним: страница успевает нарисоваться до того, как её
+     * видно, и документ не мигает белыми листами под пальцем. Прокрутка берётся
+     * с разметки, а не из `scroller`: привязка может ещё не доехать к моменту,
+     * когда монтируется холст.
+     */
+    const watcher = new IntersectionObserver(
+      (entries) => {
+        const shown = entries.some((entry) => entry.isIntersecting)
+        if (shown === near) return
+        near = shown
+        if (shown) void draw(node, at.index)
+        else release(node)
       },
-      /*
-       * Уходя, холст отдаёт свой буфер.
-       *
-       * `width = height = 1` — единственное, что заставляет WebKit его
-       * отпустить: сборщик мусора отдаёт эти буферы когда угодно, только не
-       * вовремя. Бюджет памяти холстов на iPad один НА ПРОЦЕСС, и колода в
-       * шестьдесят страниц выбирает его целиком; переполнив его, WebKit
-       * начинает рисовать холсты прозрачными — причём произвольные, не
-       * обязательно те, что его переполнили. Обнулиться может лист идущей
-       * лекции в соседней вкладке, и эта строка защищает не читалку, а его.
-       */
+      { root: node.closest('[data-sheets]'), rootMargin: '1200px 0px' },
+    )
+    watcher.observe(node)
+    return {
+      update(next: Sheet) {
+        if (next.index === at.index && next.scale === at.scale && next.column === at.column) return
+        at = next
+        if (near) void draw(node, at.index)
+      },
       destroy() {
-        node.width = 1
-        node.height = 1
+        watcher.disconnect()
+        release(node)
       },
     }
   }
+
+  /**
+   * Холст отдаёт свой буфер — уходя со страницы или уходя за край экрана.
+   *
+   * `width = height = 1` — единственное, что заставляет WebKit его отпустить:
+   * сборщик мусора отдаёт эти буферы когда угодно, только не вовремя. Бюджет
+   * памяти холстов на iPad один НА ПРОЦЕСС, и колода в шестьдесят страниц
+   * выбирает его целиком; переполнив его, WebKit начинает рисовать холсты
+   * прозрачными — причём произвольные, не обязательно те, что его переполнили.
+   * Обнулиться может лист идущей лекции в соседней вкладке, и эта строка
+   * защищает не читалку, а его.
+   *
+   * Высота листа при этом не меняется: её держит `aspect-ratio`, а не буфер.
+   */
+  function release(node: HTMLCanvasElement): void {
+    rendering.get(node)?.cancel()
+    node.width = 1
+    node.height = 1
+  }
+
+  /**
+   * Ширина колонки — тот же масштаб, что и кнопки «плюс».
+   *
+   * Буфер холста считается от фактической ширины листа, а её меняют не только
+   * они: полоса страниц забирает 148 пикселей, панель оракула — треть экрана,
+   * окно разворачивают. Без наблюдателя страницы оставались нарисованными под
+   * прежнюю ширину и растягивались средствами CSS — на проекторе, где плотность
+   * экрана единица, текст мутнеет до конца пары, хотя комментарий `toggleRail`
+   * обещает перерисовку. С задержкой: тянуть окно мышью — это сотня событий
+   * подряд, и платить стоит за последнее.
+   */
+  let column = $state(0)
+  $effect(() => {
+    const root = scroller
+    if (!root) return
+    let later = 0
+    const watcher = new ResizeObserver(() => {
+      clearTimeout(later)
+      later = window.setTimeout(() => (column = root.clientWidth), 150)
+    })
+    column = root.clientWidth
+    watcher.observe(root)
+    return () => {
+      clearTimeout(later)
+      watcher.disconnect()
+    }
+  })
 
   /**
    * Где лежит лист ВНУТРИ прокрутки.
@@ -327,9 +468,10 @@
    * Открыть или закрыть полосу страниц.
    *
    * Полоса — колонка, а ширина колонки и есть масштаб: страница рисуется по
-   * ней. Значит, открытие и закрытие стоят перерисовки — и требуют того же, что
-   * и масштаб: снять место в документе до и вернуть после, иначе читающий
-   * двадцать четвёртую страницу уезжает в начало от нажатия на «страницы».
+   * ней. Значит, открытие и закрытие стоят перерисовки (её делает наблюдатель
+   * ширины выше) — и требуют того же, что и масштаб: снять место в документе до
+   * и вернуть после, иначе читающий двадцать четвёртую страницу уезжает в
+   * начало от нажатия на «страницы».
    */
   function toggleRail(): void {
     const was = place()
@@ -499,6 +641,7 @@
     {/if}
     <div
       bind:this={scroller}
+      data-sheets
       class="min-h-0 min-w-0 flex-1 overflow-auto px-3 py-3"
       onscroll={onScroll}
       role="document"
@@ -520,7 +663,14 @@
           class="mx-auto mb-3 bg-white shadow-sm"
           style={`width:${scale * 100}%`}
         >
-          <canvas use:canvas={{ index, scale }} class="block w-full"></canvas>
+          <!-- Пропорция на холсте, а не размер буфера: у ненарисованного листа
+               высота обязана быть настоящей, иначе прыжок на страницу и место
+               после зума считаются по пустоте. -->
+          <canvas
+            use:canvas={{ index, scale, column }}
+            class="block w-full"
+            style={`aspect-ratio: ${ratios[index] ?? aspect}`}
+          ></canvas>
         </div>
       {/each}
     {/if}

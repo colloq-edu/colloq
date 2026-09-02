@@ -21,7 +21,12 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { adminApi } from '@/lib/adminApi'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
-  import { LIMITS, type AdminEnvironment, type ImportPreview } from '@shared/admin'
+  import {
+    LIMITS,
+    type AdminEnvironment,
+    type EnvironmentsState,
+    type ImportPreview,
+  } from '@shared/admin'
   import { OPEN_ROOM, type RoomRules } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
@@ -44,8 +49,11 @@
   const fromGithub = $derived(source === 'github')
   let githubUrl = $state('')
 
-  /** Выбранная тетрадь: имя для заголовка, текст для сервера. */
-  let notebook = $state<{ filename: string; text: string; cells: number } | null>(null)
+  /** Выбранная тетрадь: имя для заголовка, ячейки для сервера — без выводов. */
+  let notebook = $state<{
+    filename: string
+    cells: { cell_type: unknown; source: unknown }[]
+  } | null>(null)
   let notebookError = $state<string | null>(null)
   let picker = $state<HTMLInputElement | null>(null)
   let dragging = $state(false)
@@ -80,14 +88,28 @@
       return
     }
     try {
-      const text = await file.text()
-      const doc = JSON.parse(text) as { cells?: unknown[] }
-      const cells = Array.isArray(doc.cells) ? doc.cells.length : 0
-      if (cells === 0) {
+      const doc = JSON.parse(await file.text()) as { cells?: unknown[] }
+      const cells = Array.isArray(doc.cells) ? doc.cells : []
+      if (cells.length === 0) {
         notebookError = 'That notebook has no cells in it.'
         return
       }
-      notebook = { filename: file.name, text, cells }
+      /*
+       * Тип и текст — и ничего больше.
+       *
+       * Выводы сервер выбрасывает всё равно, но тело запроса ограничено 1 МБ, а
+       * прогнанная тетрадь с парой графиков — это мегабайты base64: она не
+       * доезжала вовсе, и дверь отвечала «internal error» на файл, про который
+       * карточка тут же обещала «outputs are dropped». Настоящий разбор
+       * по-прежнему на сервере, тем же кодом, что и импорт с GitHub.
+       */
+      notebook = {
+        filename: file.name,
+        cells: cells.map((cell) => {
+          const one = (cell ?? {}) as { cell_type?: unknown; source?: unknown }
+          return { cell_type: one.cell_type, source: one.source }
+        }),
+      }
       source = 'file'
       if (!name.trim()) name = tidyName(file.name)
     } catch {
@@ -149,6 +171,12 @@
   }
   let environment = $state('')
   let environments = $state<AdminEnvironment[] | null>(null)
+  /**
+   * Своего контейнера у комнаты не будет: сервер не видит docker или изоляцию
+   * выключили, и все семинары сидят в одном ядре compose. Тогда выбор ниже —
+   * не выбор, и сказать об этом надо здесь, а не в журнале ядра посреди пары.
+   */
+  let sharedKernel = $state(false)
 
   /* The room's rules, starting as the open room the product has always been. */
   let rules = $state<RoomRules>({ ...OPEN_ROOM })
@@ -162,8 +190,9 @@
   onMount(() => {
     void adminApi
       .listEnvironments()
-      .then((r: { environments: AdminEnvironment[] }) => {
+      .then((r: EnvironmentsState) => {
         environments = r.environments
+        sharedKernel = r.shared
         if (!environment) environment = r.environments.find((e: AdminEnvironment) => e.active)?.name ?? ''
       })
       .catch(() => (environments = []))
@@ -204,8 +233,19 @@
     }
   })
 
+  /**
+   * Комната, которая уже есть.
+   *
+   * Материалы уезжают после её создания, и когда один файл не доехал, экран
+   * оставался прежним: те же поля, активная кнопка «Create seminar» — и
+   * естественное второе нажатие заводило второй такой же семинар, с тем же
+   * именем и той же тетрадью. Ссылка в чат уходила от дубликата.
+   */
+  let created = $state<string | null>(null)
+
   const canCreate = $derived(
     !busy &&
+      created === null &&
       (source === 'github'
         ? Boolean(preview)
         : source === 'file'
@@ -228,7 +268,7 @@
             })
           : source === 'file' && notebook
             ? await adminApi.importNotebook({
-                notebook: notebook.text,
+                cells: notebook.cells,
                 filename: notebook.filename,
                 name: name.trim() || undefined,
                 environment: environment || null,
@@ -249,6 +289,7 @@
        * есть, и об этом говорят вслух вместо того, чтобы делать вид, что
        * ничего не создано.
        */
+      created = seminar.id
       if (materials.length > 0) {
         const failed = await uploadMaterials(seminar.id)
         if (failed.length > 0) {
@@ -303,24 +344,42 @@
     },
     {
       what: 'Files are only as locked as the kernel is.',
-      why:
-        'The container mounts this room’s folder, so os.listdir() is the listing, open(...) is the ' +
-        'download and os.remove(...) is the delete — for anyone who may run a cell.',
+      // Про соседние комнаты — только там, где ядро общее: под своим
+      // контейнером в него смонтирована одна папка, и пугать нечем.
+      get why(): string {
+        return (
+          (sharedKernel
+            ? 'The shared container mounts this room’s folder — and every other room’s, '
+            : 'The container mounts this room’s folder, ') +
+          'so os.listdir() is the listing, open(...) is the download and os.remove(...) is the ' +
+          'delete — for anyone who may run a cell.'
+        )
+      },
       when: (r) => r.files !== 'room' && r.run !== 'host',
     },
   ]
 </script>
 
 {#snippet actions()}
-  <button type="button" class="btn-ghost" onclick={() => ondone()}>Cancel</button>
-  <button type="button" class="btn-primary" disabled={!canCreate} onclick={create}>
-    {#if busy}
-      <Icon name="spinner" size={15} class="animate-spin" />
-      Creating…
-    {:else}
-      Create seminar
-    {/if}
+  <button type="button" class="btn-ghost" onclick={() => ondone(created ?? undefined)}>
+    {created ? 'Close' : 'Cancel'}
   </button>
+  <!-- Комната уже создана — предлагать «создать» ещё раз значит предлагать
+       дубликат. Кнопка ведёт туда, где эта комната уже лежит, со ссылкой. -->
+  {#if created}
+    <button type="button" class="btn-primary" onclick={() => ondone(created ?? undefined)}>
+      Go to the seminar
+    </button>
+  {:else}
+    <button type="button" class="btn-primary" disabled={!canCreate} onclick={create}>
+      {#if busy}
+        <Icon name="spinner" size={15} class="animate-spin" />
+        Creating…
+      {:else}
+        Create seminar
+      {/if}
+    </button>
+  {/if}
 {/snippet}
 
 <AdminPage
@@ -402,7 +461,7 @@
           </span>
           <span class="text-2xs leading-tight text-muted">
             {#if notebook}
-              {notebook.cells} cells · outputs are dropped
+              {notebook.cells.length} cells · outputs are dropped
             {:else}
               Drop a .ipynb here. Outputs are dropped.
             {/if}
@@ -480,8 +539,22 @@
 
   <Section
     title="Environment"
-    description="The container every cell runs in. Chosen once, and then it is this room's Python for good."
+    description={sharedKernel
+      ? 'One container for every seminar on this server — what is picked here does not reach it.'
+      : "The container every cell runs in. Chosen once, and then it is this room's Python for good."}
   >
+    {#if sharedKernel}
+      <!-- Не украшение к списку, а условие, при котором список ничего не
+           решает: сказать это до создания комнаты дешевле, чем после. -->
+      <p class="mb-2.5 flex items-start gap-2 border border-line bg-warning/[0.08] px-3 py-2.5 text-2xs leading-relaxed text-muted">
+        <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
+        <span>
+          This server runs every seminar in one shared Python container, so this room will run the
+          instance’s default environment rather than the one picked here. Cells in it also see the
+          files of every other seminar on this machine, and share one memory limit.
+        </span>
+      </p>
+    {/if}
     <!--
       Не строка со списком, а карточка с содержимым.
 
@@ -617,7 +690,7 @@
           <Icon name="file" size={13} class="shrink-0 text-accent-text" />
           <span class="flex min-w-0 flex-1 flex-col gap-0.5">
             <span class="truncate font-mono text-2xs font-medium text-ink">{notebook.filename}</span>
-            <span class="text-micro text-muted">{notebook.cells} cells · outputs dropped</span>
+            <span class="text-micro text-muted">{notebook.cells.length} cells · outputs dropped</span>
           </span>
           <span class="w-24 shrink-0">
             <span class="inline-flex h-[18px] items-center gap-1.5 bg-accent px-2 text-micro font-bold uppercase tracking-label text-white">

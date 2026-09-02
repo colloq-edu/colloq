@@ -44,6 +44,7 @@
   import { untrack } from 'svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { api } from '@/lib/api'
+  import { OFFLINE_REASON } from '@/lib/controls'
   import { fullscreenNow, fullscreenPossible, goFullscreen, leaveFullscreen } from '@/lib/fullscreen'
   import { loadPdf } from '@/lib/pdf.svelte'
   import { getSessionState } from '@/lib/session.svelte'
@@ -320,9 +321,10 @@
    *
    * Нулевой страницы не бывает: между последним чистым листом и слайдами
    * граница, и переходить её надо в ту сторону, откуда пришли, — «вперёд» с
-   * листа возвращает к слайду, на котором его завели, а не в пустоту. Назад за
-   * самый старый лист не пускаем вовсе: там нет ничего, а выглядело бы это как
-   * потерянная разметка.
+   * ПОСЛЕДНЕГО листа возвращает к слайду, на котором его завели, а не в
+   * пустоту. Назад с самого старого листа — туда же: в ленте страниц слайды
+   * стоят ДО листов, и шаг против ленты обязан приводить в то же место, куда
+   * приводит сама лента.
    */
   function step(dir: -1 | 1): void {
     /*
@@ -352,8 +354,14 @@
     goTo(next)
   }
 
-  /** Вперёд с последнего листа возвращает в колоду, и клавиша об этом говорит. */
-  const forwardReturns = $derived(onBoard && wanted === -1)
+  /**
+   * Вперёд с последнего листа возвращает в колоду, и клавиша об этом говорит.
+   *
+   * По ПОРЯДКУ ЗАВЕДЕНИЯ, как ходит `step`, а не по номеру: подпись осталась
+   * от старой нумерации (`wanted === -1`) и при двух и более листах врала
+   * вслух — на Листе 1 обещала «К слайду 5», а нажатие выводило залу Лист 2.
+   */
+  const forwardReturns = $derived(onBoard && -wanted === boards)
 
   function blank(on: boolean): void {
     if (!leading || offline) return
@@ -839,12 +847,23 @@
   let wipeAsked = $state(false)
   /** Подтверждение «закончить лекцию» — там же, последней строкой. */
   let stopAsked = $state(false)
+  /**
+   * Документ, на который просят сменить идущую лекцию, — до подтверждения.
+   *
+   * Смена документа на сервере — это НОВАЯ лекция: страница первая, чернила
+   * все до одного, часы заново, и восстановить их нечем. Строка файла в листе
+   * — кнопка 88 px, и одно касание мимо, сделанное «посмотреть, какой файл
+   * идёт», уносило сорок минут разметки у всего зала. Соседние разрушающие
+   * действия («Стереть страницу», «Закончить лекцию») спрашивают, это — нет.
+   */
+  let switchTo = $state<string | null>(null)
 
   function openPane(next: typeof pane): void {
     pane = next
     palette = null
     wipeAsked = false
     stopAsked = false
+    switchTo = null
   }
 
   /* ----------------------------------------------------- перо и ладонь */
@@ -1192,13 +1211,22 @@
    * ладонью. Но молчать об отказе нельзя — «Взять пульт у ведущего может
    * преподаватель» это ответ на нажатие, и без него нажатие выглядит
    * сломанным. Забираем сообщение себе и гасим его в комнате.
+   *
+   * Два исключения, и оба про то, что тост — ответ на нажатие, а не диагноз.
+   * Конец работы (комнаты нет, ключ протух) говорит экраном: шесть секунд
+   * по-английски, после которых остаётся мёртвый пульт без объяснения, — хуже
+   * молчания. А `OFFLINE_REASON` — общая фраза комнаты про Run и ядро, и на
+   * пульте она вспыхивала на КАЖДОЕ перелистывание без связи, хотя об обрыве
+   * уже говорит красный шов рейла.
    */
+  const OFF_LINE = 'Нет связи — нажатие не ушло'
   $effect(() => {
     const trouble = session.lastError
     if (!trouble) return
     untrack(() => {
-      say(trouble, 'refusal')
       session.dismissError()
+      if (session.gone || session.expired) return
+      say(trouble === OFFLINE_REASON ? OFF_LINE : trouble, 'refusal')
     })
   })
 
@@ -1404,7 +1432,8 @@
    * ширине и займёт 456, а не 537, и остаток сообщит `onfit`. Сжав коробку до
    * листа плюс поля, получаем то же вписывание (по ширине — ничего не
    * меняется, по высоте — остаётся ровно та высота, что и была), то есть
-   * схема сходится за один шаг и не качается.
+   * схема сходится за один шаг и не качается — пока лист ограничен ШИРИНОЙ.
+   * Для книжной страницы это не так, и петлю держит потолок ниже.
    */
   /**
    * ПОДЛОКОТНИК в портрете: 96 px колодца под листом, принадлежащих коробке
@@ -1416,9 +1445,29 @@
    * нём — ничто.
    */
   const PALM_REST = 96
-  const portraitSheetH = $derived(
-    fitHeight > 0 ? fitHeight + 24 + PALM_REST : Math.round(box.h * 0.45) + PALM_REST,
-  )
+  /**
+   * ПОТОЛОК КОРОБКИ — иначе схема сходится не всегда, а только на слайдах.
+   *
+   * Доказательство сходимости выше верно ровно для листа, ограниченного
+   * ШИРИНОЙ: 16:9 на 834 даёт 456 и стоит. Страница выше, чем шире (A4,
+   * Letter, 3:4 — любая методичка), упирается в ВЫСОТУ: `fitHeight` тогда
+   * равен всей высоте коробки, коробка получает +96, лист растёт вместе с ней
+   * — и так восемь кругов подряд, пока лист не станет ограничен шириной. Для
+   * A4 на 11″ это коробка 1266 px при экране 1194: нижний рейл целиком уезжает
+   * под кромку (корень `overflow-hidden`), заметки сжимаются в ноль, и в
+   * портрете не остаётся ни «Вперёд», ни инструментов, ни выхода.
+   *
+   * Потолок делает петлю невозможной: упершись в него, коробка перестаёт расти,
+   * лист вписывается в неё по высоте, и следующий круг ничего не меняет.
+   */
+  const RAIL_H = 64
+  /** Меньше этого заметки — обрезанная строка: шапка 40 и три строки речи. */
+  const NOTES_MIN = 132
+  const portraitSheetH = $derived.by(() => {
+    const want = fitHeight > 0 ? fitHeight + 24 + PALM_REST : Math.round(box.h * 0.45) + PALM_REST
+    const top = box.h - RAIL_H - NOTES_MIN
+    return top > 0 ? Math.min(want, top) : want
+  })
 
   /**
    * Размер коробки листа — для слоя ввода чернил.
@@ -1436,8 +1485,27 @@
     return { top: SHEET_PAD, right: side, bottom: Math.max(0, sheetH - SHEET_PAD - size.h), left: side }
   }
 
+  /**
+   * Заметки спрашивает САМ ПУЛЬТ, а не только лист заметок.
+   *
+   * `openNotes` звал один NotesPad, а в ландшафте он монтируется лишь при
+   * открытом листе — умолчание же «свёрнут», и оно живёт в localStorage. Пока
+   * лист ни разу не открывали, `notesFile` оставался null, и полоса-подглядка
+   * на КАЖДОЙ странице рисовала «Что сказать на этой странице…» без маркера —
+   * ровно вопреки обещанию про подглядку (см. `notesOpen`) и ровно там, где
+   * преподаватель ждёт увидеть вчерашние двадцать строк. Защёлка по имени
+   * файла внутри `openNotes` делает повторный вызов бесплатным.
+   */
+  $effect(() => {
+    const path = file
+    if (!host || path === null) return
+    untrack(() => session.openNotes(path))
+  })
+
+  /** Заметки к этому документу уже приехали: пусто и «не спрашивали» — разное. */
+  const notesHere = $derived(session.notesFile === file)
   /** Заметка к этой странице, для подглядки: только когда они уже приехали. */
-  const peekNote = $derived(session.notesFile === file ? (session.notes[wanted] ?? '') : '')
+  const peekNote = $derived(notesHere ? (session.notes[wanted] ?? '') : '')
   /** Полоса-подглядка живёт, когда под листом есть хотя бы 110 px. */
   const peekShown = $derived(!portrait && !notesOpen && fitRest >= 110 && file !== null)
 
@@ -1566,7 +1634,22 @@
   class="pult-root relative flex h-full w-full flex-col overflow-hidden bg-canvas text-ink"
   style="padding-top: env(safe-area-inset-top); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); padding-bottom: env(safe-area-inset-bottom)"
 >
-  {#if !host}
+  {#if session.gone}
+    <!--
+      КОМНАТЫ БОЛЬШЕ НЕТ — и сказать об этом обязан сам пульт.
+      Полноэкранная плашка комнаты (SessionScreen) лежит на z-50, а обёртка
+      пульта — z-[95] с непрозрачным грунтом: на планшете её не видно вовсе.
+      Оставался английский тост на шесть секунд, а после него лекция с красным
+      швом рейла и клавиши, которые молчат, — то есть пульт без объяснения.
+    -->
+    <div class="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
+      <p class="text-ui-lg text-ink">Этот семинар удалён</p>
+      <p class="max-w-[440px] text-answer text-muted">
+        Комнаты больше нет: ни ядра, ни файлов, ни истории. Лекция закончилась
+        вместе с ней, и чернила сохранить уже негде.
+      </p>
+    </div>
+  {:else if !host}
     <!--
       Ссылка-ключ может уехать студенту, и он окажется здесь. Пульт об этом
       говорит и предлагает единственное, что ему тут нужно.
@@ -2047,10 +2130,17 @@
     <span class="h-4 shrink-0" aria-hidden="true"></span>
 
     {#if mayTurn}
+      <!--
+        На листах «Назад» жива всегда: с листа N она ведёт на N−1, с первого —
+        к слайдам. Гасла она по `-wanted >= boards` — правилу от старой
+        нумерации, из-за которого на последнем листе (то есть на том, где чаще
+        всего и стоят) клавиша была серой, а вернуться к предыдущему листу
+        можно было только лентой страниц.
+      -->
       <button
         type="button"
         class="{KEY} h-14 w-full text-muted disabled:text-faint/70"
-        disabled={onBoard ? -wanted >= boards : wanted <= 1}
+        disabled={!onBoard && wanted <= 1}
         aria-label="Предыдущая страница"
         onclick={() => step(-1)}
       >
@@ -2158,7 +2248,7 @@
       <button
         type="button"
         class="{KEY} h-full w-16 text-muted disabled:text-faint/70"
-        disabled={onBoard ? -wanted >= boards : wanted <= 1}
+        disabled={!onBoard && wanted <= 1}
         aria-label="Предыдущая страница"
         onclick={() => step(-1)}
       >
@@ -2485,8 +2575,13 @@
           {preparing ? '' : stopwatch(runningFor)}
         </span>
       </span>
+      <!--
+        «Ещё не приехали» и «пусто» — разные вещи, и разница здесь той же цены,
+        что и в самом листе заметок: приглашение вместо вчерашней речи читается
+        как потерянная работа.
+      -->
       <span class="mt-1 line-clamp-3 whitespace-pre-line text-prompt-sm text-ink">
-        {peekNote.trim() || 'Что сказать на этой странице…'}
+        {notesHere ? peekNote.trim() || 'Что сказать на этой странице…' : 'Заметки загружаются'}
       </span>
     </div>
     {#if doc && !onBoard && pages > wanted && !tiny}
@@ -2788,14 +2883,50 @@
             </div>
           </div>
         {:else if pane === 'files'}
-          <div class="flex h-10 items-center px-6">
-            <span class="{SECTION} text-muted">Документ</span>
-          </div>
-          <!-- Пиксели, а не `vh`: единица высоты окна на iPad живёт своей
-               жизнью между панелями Safari и Split View. -->
-          <div class="max-h-[360px] overflow-y-auto border-t border-line-soft px-6">
-            {@render fileList(start, false)}
-          </div>
+          {#if switchTo !== null}
+            <!-- Вопрос вместо списка, а не поверх него: список — это шесть
+                 целей по 88 px, и «Отмена» рядом с ними была бы седьмой. -->
+            <div class="p-6">
+              <p class="text-answer text-ink">
+                Начать лекцию по {baseOf(switchTo)}? Чернила текущей сотрутся, страница станет
+                первой, часы пойдут заново.
+              </p>
+              <div class="mt-4 flex gap-2">
+                <button
+                  type="button"
+                  class="{PRESS} h-12 flex-1 border border-danger/40 {CAP} text-danger"
+                  onclick={() => {
+                    const path = switchTo
+                    switchTo = null
+                    if (path !== null) start(path)
+                  }}
+                >
+                  Начать заново
+                </button>
+                <button
+                  type="button"
+                  class="btn-outline h-12 flex-1"
+                  onclick={() => (switchTo = null)}
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
+          {:else}
+            <div class="flex h-10 items-center px-6">
+              <span class="{SECTION} text-muted">Документ</span>
+            </div>
+            <!-- Пиксели, а не `vh`: единица высоты окна на iPad живёт своей
+                 жизнью между панелями Safari и Split View. -->
+            <div class="max-h-[360px] overflow-y-auto border-t border-line-soft px-6">
+              <!-- Лекция идёт — сначала вопрос: см. `switchTo`. Подготовка
+                   ничего не рушит, и её «Вести» проходит сразу. -->
+              {@render fileList(
+                lecture === null ? start : (path) => (switchTo = path),
+                false,
+              )}
+            </div>
+          {/if}
         {:else if pane === 'more'}
           <!--
             ЛИСТ «ЕЩЁ» — единственный вход ко всему, что делают раз за пару или

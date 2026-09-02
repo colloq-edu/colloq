@@ -9,6 +9,7 @@
   import { cn } from '@/lib/utils'
   import { LIMITS, type AdminEnvironment, type AdminSeminar, type ImportPreview } from '@shared/admin'
   import { copyText } from '@/lib/clipboard'
+  import { plural } from '@/lib/plural'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
   import type { RoomRules } from '@shared/rules'
 
@@ -35,11 +36,19 @@
      * has always given.
      */
     arrived?: string | null
+    /**
+     * Приземление состоялось — можно забыть про него.
+     *
+     * Без этого `arrived` живёт до перезагрузки страницы: возврат на вкладку
+     * семинаров через месяц снова сбрасывал поиск и подсвечивал ту комнату как
+     * только что созданную.
+     */
+    onarrived?: () => void
     /** Уводит на экран публикации: это решение, а не пункт меню с эффектом. */
     onpublish?: (sessionId: string) => void
   }
 
-  let { onfull, arrived = null, onpublish }: Props = $props()
+  let { onfull, arrived = null, onarrived, onpublish }: Props = $props()
 
   /**
    * Снять или вернуть публичную страницу.
@@ -53,15 +62,18 @@
       if (hide) await adminApi.withdraw(seminar.id)
       else await adminApi.republish(seminar.id)
       // Перечитываем список: у строки поменялось состояние публикации.
-      seminars = await adminApi.listSeminars()
+      local(await adminApi.listSeminars())
     } catch (cause: unknown) {
       rowError = { id: seminar.id, message: `Не получилось — ${explain(cause)}` }
     }
   }
 
+  /** Адрес, который диктуют вслух: имя, если его дали, иначе идентификатор. */
+  const addressOf = (item: { id: string; slug: string | null }): string => item.slug ?? item.id
+
   async function copyPublished(seminar: AdminSeminar): Promise<void> {
     if (!seminar.publication) return
-    await copyText(`${location.origin}/p/${seminar.publication.id}`)
+    await copyText(`${location.origin}/p/${addressOf(seminar.publication)}`)
     copiedId = seminar.id
     setTimeout(() => (copiedId = copiedId === seminar.id ? null : copiedId), 1600)
   }
@@ -78,6 +90,7 @@
     query = ''
     justCreatedId = arrived
     void load()
+    onarrived?.()
   })
 
   let creating = $state(false)
@@ -139,8 +152,7 @@
         name: newName.trim() || undefined,
         environment: newEnvironment || null,
       })
-      const list = await adminApi.listSeminars()
-      seminars = list
+      local(await adminApi.listSeminars())
       query = ''
       justCreatedId = done.id
       creating = false
@@ -310,12 +322,29 @@
 
   /* ---------------------------------------------------------------- data */
 
+  /**
+   * Список, за который отвечаем мы, а не отставший опрос.
+   *
+   * Ответ, ушедший до правки, приезжает после неё и возвращает на экран старое
+   * имя или архивированную строку — до следующего тика, то есть на двадцать
+   * секунд, за которые преподаватель успевает нажать «Архивировать» второй раз.
+   * Каждая местная правка двигает счётчик, и ответ, начатый раньше, молча
+   * отбрасывается: сервер её уже принял, и показывать вместо неё вчерашнюю
+   * правду незачем.
+   */
+  let generation = 0
+
+  function local(next: AdminSeminar[]): void {
+    seminars = next
+    generation += 1
+  }
+
   function patch(id: string, fields: Partial<AdminSeminar>): void {
-    seminars = seminars.map((s) => (s.id === id ? { ...s, ...fields } : s))
+    local(seminars.map((s) => (s.id === id ? { ...s, ...fields } : s)))
   }
 
   function replace(updated: AdminSeminar): void {
-    seminars = seminars.map((s) => (s.id === updated.id ? updated : s))
+    local(seminars.map((s) => (s.id === updated.id ? updated : s)))
   }
 
   /*
@@ -329,8 +358,12 @@
 
   async function load(silent = false): Promise<void> {
     if (!silent) loading = true
+    const started = generation
     try {
-      seminars = await adminApi.listSeminars()
+      const list = await adminApi.listSeminars()
+      // Пока ответ ехал, на экране что-то изменили. Их правка новее.
+      if (started !== generation) return
+      seminars = list
       loadError = null
     } catch (cause: unknown) {
       // A poll that fails leaves the list it already has: the screen was right a
@@ -367,7 +400,15 @@
     // Меню стоит в координатах окна, поэтому при прокрутке оно уехало бы от
     // своей кнопки. Закрыть — честнее, чем тащить его следом: прокрутка это и
     // есть «я передумал».
-    const onScroll = () => {
+    //
+    // Кроме прокрутки внутри самого меню: в коротком окне оно обрезано по
+    // свободному месту, и колёсико над ним — единственный способ дойти до
+    // «Delete…». Слушатель стоит в фазе захвата, поэтому такие события сюда
+    // тоже приходят, и первый же тик закрывал меню, до которого только что
+    // добрались.
+    const onScroll = (event: Event) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[role=menu]')) return
       openMenuId = null
       menuStyle = ''
     }
@@ -433,23 +474,39 @@
   })
 
   /**
+   * Строка, на Copy которой курсор уже ставили. Не $state: это память эффекта о
+   * самом себе, и перерисовывать из-за неё нечего.
+   */
+  let focused: string | null = null
+
+  /**
    * The row exists before this runs, so the button is really there. Queried
    * rather than bound: the binding would have to live on one row out of many,
    * and every row would carry the branch for the one that was just made.
    */
   $effect(() => {
     const id = justCreatedId
-      /*
-       * `seminars` is read on purpose, not by accident. A seminar made on the
-       * other screen sets this id and then reloads the list, so at the moment
-       * the id changes the row does not exist yet, the query finds nothing, and
-       * the cursor is left on the body — the teacher then goes hunting for the
-       * link this was meant to hand them. Depending on the list as well runs
-       * this again once the rows land.
-       */
-      void seminars.length
-      if (!id) return
-    document.querySelector<HTMLButtonElement>(`[data-copy="${id}"]`)?.focus()
+    /*
+     * `seminars` is read on purpose, not by accident. A seminar made on the
+     * other screen sets this id and then reloads the list, so at the moment
+     * the id changes the row does not exist yet, the query finds nothing, and
+     * the cursor is left on the body — the teacher then goes hunting for the
+     * link this was meant to hand them. Depending on the list as well runs
+     * this again once the rows land.
+     */
+    void seminars.length
+    if (!id || id === focused) return
+    const button = document.querySelector<HTMLButtonElement>(`[data-copy="${id}"]`)
+    if (!button) return
+    /*
+     * И ровно один раз. Опрос списка присваивает `seminars` каждые двадцать
+     * секунд, а `justCreatedId` не гаснет — фокус возвращался на Copy снова и
+     * снова: из поля поиска, из открытого переименования, которое коммитится по
+     * blur и уносило в шапку всем в комнате полслова. Отмечаем строку только
+     * когда кнопка нашлась: до этого приземляться некуда.
+     */
+    focused = id
+    button.focus()
   })
 
   async function create(event: SubmitEvent): Promise<void> {
@@ -464,7 +521,7 @@
       // A filter that hides the row you just made would send the teacher
       // hunting for a seminar they are looking straight at.
       query = ''
-      seminars = [seminar, ...seminars.filter((s) => s.id !== seminar.id)]
+      local([seminar, ...seminars.filter((s) => s.id !== seminar.id)])
       justCreatedId = seminar.id
       creating = false
       newName = ''
@@ -554,15 +611,24 @@
    */
   let ruling = $state<AdminSeminar | null>(null)
   let rulesBusy = $state(false)
+  /**
+   * Отказ — в самом диалоге, а не в строке таблицы под затемнением.
+   *
+   * Переключатель не красится наперёд, так что при отказе на экране не меняется
+   * ничего: истёкшее печенье выглядело как «щелчок не сработал», и щёлкали ещё
+   * и ещё, а сообщение ждало в строке, закрытой веялью.
+   */
+  let rulesError = $state<string | null>(null)
 
   async function setRule(seminar: AdminSeminar, patchRules: Partial<RoomRules>): Promise<void> {
     rulesBusy = true
+    rulesError = null
     try {
       const updated = await adminApi.updateSeminar(seminar.id, { rules: patchRules })
       replace(updated)
       ruling = updated
     } catch (cause: unknown) {
-      rowError = { id: seminar.id, message: `Правило не сохранилось — ${explain(cause)}` }
+      rulesError = `Правило не сохранилось — ${explain(cause)}`
     } finally {
       rulesBusy = false
     }
@@ -581,9 +647,22 @@
 
   /* -------------------------------------------------------------- delete */
 
+  /**
+   * Судьба публичной страницы, если она у комнаты есть.
+   *
+   * Умолчание сервера — оставить: розданную классу ссылку не отозвать, и 404
+   * там, где вчера был семинар, хуже страницы без комнаты. Но вопрос сервер
+   * объявляет отдельным, а панель его никогда не задавала — и «удалить, чтобы
+   * убрать выложенное», ровно тот случай, ради которого сюда и приходят,
+   * оставлял копию тетради открытой всем. Снять её потом можно на вкладке
+   * курсов, в списке страниц без комнаты.
+   */
+  let dropReading = $state(false)
+
   function confirmDelete(seminar: AdminSeminar): void {
     doomed = seminar
     deleteError = null
+    dropReading = false
   }
 
   $effect(() => {
@@ -598,14 +677,14 @@
     deleteBusy = true
     deleteError = null
     try {
-      await adminApi.deleteSeminar(target.id)
-      seminars = seminars.filter((s) => s.id !== target.id)
+      await adminApi.deleteSeminar(target.id, dropReading)
+      local(seminars.filter((s) => s.id !== target.id))
       doomed = null
     } catch (cause: unknown) {
       // Already gone: the list is the thing that is wrong, so correct the list
       // rather than asking the owner to delete something that does not exist.
       if (cause instanceof AdminApiError && cause.status === 404) {
-        seminars = seminars.filter((s) => s.id !== target.id)
+        local(seminars.filter((s) => s.id !== target.id))
         doomed = null
       } else {
         deleteError = explain(cause)
@@ -1018,12 +1097,12 @@
               {#if seminar.publication?.state === 'published'}
                 <a
                   class="whitespace-nowrap text-2xs text-muted underline decoration-line underline-offset-2"
-                  href={`/p/${seminar.publication.id}`}
+                  href={`/p/${addressOf(seminar.publication)}`}
                   target="_blank"
                   rel="noreferrer"
                 >
                   · опубликован · {seminar.publication.steps}
-                  {seminar.publication.steps === 1 ? 'шаг' : 'шага'}
+                  {plural(seminar.publication.steps, 'шаг', 'шага', 'шагов')}
                 </a>
               {:else if seminar.publication}
                 <span class="whitespace-nowrap text-2xs text-muted">· страница снята</span>
@@ -1261,10 +1340,17 @@
         />
       </div>
       <div class="flex items-center gap-3 border-t border-line px-5 py-3">
-        <p class="min-w-0 flex-1 text-2xs text-muted">
-          Открытая комната узнаёт сразу — перезаходить никому не нужно.
+        <p class={cn('min-w-0 flex-1 text-2xs', rulesError ? 'text-danger' : 'text-muted')}>
+          {rulesError ?? 'Открытая комната узнаёт сразу — перезаходить никому не нужно.'}
         </p>
-        <button type="button" class="btn-primary shrink-0" onclick={() => (ruling = null)}>
+        <button
+          type="button"
+          class="btn-primary shrink-0"
+          onclick={() => {
+            ruling = null
+            rulesError = null
+          }}
+        >
           Готово
         </button>
       </div>
@@ -1289,8 +1375,38 @@
         Deleting it takes the notebook ({count(doomed.cellCount, 'cell')}) and {count(
           doomed.fileCount,
           'file',
-        )} in its workspace with it. Colloq keeps no second copy of either.
+        )} in its workspace with it.
+        {#if !doomed.publication}
+          Colloq keeps no second copy of either.
+        {/if}
       </p>
+
+      <!--
+        Публикация — это и есть вторая копия тетради: ячейки и выводы, отданные
+        всем по прямой ссылке. Обещать рядом с ней «второй копии нет» — врать в
+        том самом случае, ради которого чаще всего и удаляют: убрать выложенное.
+      -->
+      {#if doomed.publication}
+        <label class="mt-3 flex cursor-pointer items-start gap-2.5 border border-line p-3">
+          <input
+            type="checkbox"
+            bind:checked={dropReading}
+            disabled={deleteBusy}
+            class="mt-0.5 accent-accent"
+          />
+          <span class="text-ui leading-relaxed text-muted">
+            Delete the public page as well —
+            <span class="font-mono text-code text-ink">/p/{addressOf(doomed.publication)}</span>, a
+            second copy of the notebook in {count(doomed.publication.steps, 'step')}, outputs
+            included.
+            {#if dropReading}
+              The link the class was given stops opening.
+            {:else}
+              Left alone, it stays readable by everyone who has the link.
+            {/if}
+          </span>
+        </label>
+      {/if}
       {#if doomed.liveCount > 0}
         <p class="mt-2 text-ui font-medium text-warning">
           {doomed.liveCount === 1

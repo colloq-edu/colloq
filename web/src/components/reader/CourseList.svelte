@@ -6,6 +6,7 @@
   на неё двенадцать раз за семестр, и каждый раз ищут одну строку.
 -->
 <script lang="ts">
+  import { plural } from '@/lib/plural'
   import type { PublicCourseView } from '@shared/publish'
 
   interface Props {
@@ -18,9 +19,30 @@
   const shortDate = (at: number): string =>
     new Date(at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
 
+  /* «Одна страница» словом — так же, как в окне публикации; дальше числом.
+     Правило множественного числа общее: своё врало на 11 и на 21. */
   const steps = (n: number): string =>
-    n === 1 ? 'одна страница' : `${n} ${n < 5 ? 'шага' : 'шагов'}`
+    n === 1 ? 'одна страница' : `${n} ${plural(n, 'шаг', 'шага', 'шагов')}`
+
+  /* Тот же адрес, что и на выгруженной странице курса: имя, если его выбрали. */
+  const href = (pub: { id: string; slug: string | null }): string => `/p/${pub.slug ?? pub.id}`
 </script>
+
+<!-- Стрелка строки, по которой можно пройти. Один раз, потому что таких строк
+     две: живой семинар и закрытая комната с оставшимся чтением. -->
+{#snippet chevron()}
+  <span class="w-4 shrink-0 text-accent" aria-hidden="true">
+    <svg width="7" height="12" viewBox="0 0 7 12" fill="none">
+      <path
+        d="M1 1L6 6L1 11"
+        stroke="currentColor"
+        stroke-width="1.6"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+  </span>
+{/snippet}
 
 <div class="min-h-screen bg-canvas px-6 pb-16 pt-16 sm:pt-24">
   <div class="mx-auto w-full max-w-[760px]">
@@ -37,7 +59,27 @@
     <ol class="mt-11 border-t border-line">
       {#each course.items as item, index (index)}
         {@const ordinal = String(index + 1).padStart(2, '0')}
-        {#if item.kind === 'gone'}
+        {#if item.kind === 'gone' && item.publication}
+          <!--
+            Надгробие, за которым осталось чтение: удаление семинара по
+            умолчанию сохраняет опубликованную страницу — ссылку у студентов не
+            отозвать. Без этой строки-ссылки страница жива и открывается по
+            прямому адресу, а с курса — единственного адреса, который классу
+            вообще дают, — до неё не дойти.
+          -->
+          {@const closed = item.publication}
+          <li class="border-b border-line">
+            <button
+              class="flex w-full items-baseline gap-6 py-5 text-left transition-colors duration-100 hover:bg-surface/70"
+              onclick={() => onnavigate(href(closed))}
+            >
+              <span class="w-[34px] shrink-0 font-mono text-ui text-faint">{ordinal}</span>
+              <span class="min-w-0 flex-1 text-title text-muted">{item.name}</span>
+              <span class="shrink-0 text-ui text-muted">комната закрыта, страница осталась</span>
+              {@render chevron()}
+            </button>
+          </li>
+        {:else if item.kind === 'gone'}
           <!-- Надгробие. Строка остаётся: курс, из которого молча пропала
                четвёртая неделя, сломан для того, кто на ней сидел, а номера
                остальных уезжают и перестают совпадать с расписанием. -->
@@ -52,24 +94,14 @@
           <li class="border-b border-line">
             <button
               class="flex w-full items-baseline gap-6 py-5 text-left transition-colors duration-100 hover:bg-surface/70"
-              onclick={() => onnavigate(`/p/${publication.id}`)}
+              onclick={() => onnavigate(href(publication))}
             >
               <span class="w-[34px] shrink-0 font-mono text-ui text-muted">{ordinal}</span>
               <span class="min-w-0 flex-1 text-title font-semibold text-ink">{item.name}</span>
               <span class="shrink-0 text-ui text-muted">
                 {shortDate(publication.publishedAt)} · {steps(publication.steps)}
               </span>
-              <span class="w-4 shrink-0 text-accent" aria-hidden="true">
-                <svg width="7" height="12" viewBox="0 0 7 12" fill="none">
-                  <path
-                    d="M1 1L6 6L1 11"
-                    stroke="currentColor"
-                    stroke-width="1.6"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-              </span>
+              {@render chevron()}
             </button>
           </li>
         {:else if item.kind === 'planned'}

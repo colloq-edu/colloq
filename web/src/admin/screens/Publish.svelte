@@ -26,9 +26,11 @@
 
   let title = $state('')
   let candidates = $state<PublishCandidate[]>([])
-  let already = $state<{ id: string; steps: { seq: number; label: string; at: number }[] } | null>(
-    null,
-  )
+  let already = $state<{
+    id: string
+    slug: string | null
+    steps: { seq: number; label: string; at: number }[]
+  } | null>(null)
   /** Отмеченные шаги и их имена — по номеру версии. */
   let labels = $state<Record<number, string>>({})
   let picked = $state<Record<number, boolean>>({})
@@ -43,6 +45,16 @@
         title = body.title
         candidates = body.candidates
         already = body.publication
+        /*
+         * Действующий адрес — с сервера, а не придуманный заново.
+         *
+         * Экран его не знал вовсе: после повторной публикации он подставлял
+         * предложение из названия и держал кнопку «Дать имя адресу» активной,
+         * так что одно нажатие меняло адрес, продиктованный классу неделю
+         * назад, — а старое имя после этого не находил никто.
+         */
+        slug = body.publication?.slug ?? ''
+        slugDraft = slug
         /*
          * Названные моменты отмечены сразу — их для того и называли. Безымянные
          * не отмечены и отмечены быть не могут, пока в поле не напишут слова:
@@ -76,6 +88,8 @@
         chosen.map((c) => ({ seq: c.seq, label: labels[c.seq].trim(), at: c.at })),
       )
       done = body.publication.id
+      // Повторная публикация адрес сохраняет — показываем тот, что есть.
+      slug = body.publication.slug ?? slug
     } catch (cause) {
       error = cause instanceof AdminApiError ? cause.message : 'не удалось опубликовать'
     } finally {
@@ -96,6 +110,17 @@
     if (next && !slugOk(next)) {
       error = 'Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.'
       return
+    }
+    /*
+     * Имя у адреса одно: прежнее сервер не помнит, и после смены `/p/week-01`
+     * не найдёт никто. Спрашиваем — потому что этот адрес уже написали на доске.
+     */
+    if (slug && next !== slug) {
+      const ok = window.confirm(
+        `Адрес /p/${slug} перестанет открываться — его уже могли раздать классу. ` +
+          `Сменить на /p/${next || done}?`,
+      )
+      if (!ok) return
     }
     busy = true
     error = null
@@ -127,7 +152,7 @@
   subtitle={done
     ? 'Ссылка постоянная: публикуя снова, вы оставляете её той же.'
     : already
-      ? `Опубликован ранее. Публикуя снова, вы оставляете ту же ссылку.`
+      ? `Опубликован ранее — /p/${already.slug ?? already.id}. Публикуя снова, вы оставляете ту же ссылку.`
       : 'Пока вы не нажали «Опубликовать», публичного ничего нет.'}
 >
   {#snippet actions()}
@@ -180,8 +205,11 @@
             disabled={busy || slugDraft.trim() === slug}
             onclick={() => void saveSlug()}
           >
-            Дать имя адресу
+            {slug ? 'Сменить имя адреса' : 'Дать имя адресу'}
           </button>
+          {#if slug}
+            <span class="text-2xs text-muted">старый адрес /p/{done} тоже работает</span>
+          {/if}
         </div>
       </div>
     {:else}

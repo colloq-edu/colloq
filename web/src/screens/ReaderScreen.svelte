@@ -13,6 +13,7 @@
   import Icon from '@/components/ui/Icon.svelte'
   import PublicNotebook from '@/components/reader/PublicNotebook.svelte'
   import CourseList from '@/components/reader/CourseList.svelte'
+  import { plural } from '@/lib/plural'
   import type { PublicCourseView, PublicSeminar, PublicStep } from '@shared/publish'
 
   interface Props {
@@ -27,6 +28,19 @@
   let seminar = $state<PublicSeminar | null>(null)
   let step = $state<PublicStep | null>(null)
   let missing = $state(false)
+  /** Шаг, которого больше нет: семинар переопубликовали без этой отметки. */
+  let gone = $state(false)
+  /**
+   * Не «страницы нет», а «не дошли»: 500, обрыв, таймаут.
+   *
+   * Пока их не отличали от 404, всё это давало `missing === false` и пустой
+   * белый экран — ни слова, ни кнопки, ни намёка на то, что помогает
+   * перезагрузка; человек в метро читал это как «курс удалили». Фразу для
+   * человека api.ts готовит сам, здесь её достаточно показать.
+   */
+  let failure = $state<string | null>(null)
+  /** «Ещё раз»: счётчик в зависимостях эффектов, а не второй способ загрузки. */
+  let attempt = $state(0)
   let loading = $state(true)
 
   /*
@@ -41,18 +55,32 @@
     return () => document.documentElement.classList.remove('reader')
   })
 
+  /**
+   * Отказ: 404 — это «такой страницы нет», всё остальное — «не дошли».
+   *
+   * Разные ответы, потому что разные действия: первое окончательно, второе
+   * лечится кнопкой.
+   */
+  function refused(err: unknown): void {
+    if (err instanceof ApiError && err.status === 404) missing = true
+    else failure = err instanceof Error ? err.message : 'Страница не открылась.'
+  }
+
   $effect(() => {
     const id = course
+    void attempt
     if (!id) return
     let cancelled = false
     loading = true
+    missing = false
+    failure = null
     void api
       .course(id)
       .then((body) => {
         if (!cancelled) courseView = body.course
       })
       .catch((err) => {
-        if (!cancelled) missing = err instanceof ApiError && err.status === 404
+        if (!cancelled) refused(err)
       })
       .finally(() => {
         if (!cancelled) loading = false
@@ -64,15 +92,18 @@
 
   $effect(() => {
     const id = publication?.id
+    void attempt
     if (!id) return
     let cancelled = false
+    missing = false
+    failure = null
     void api
       .publication(id)
       .then((body) => {
         if (!cancelled) seminar = body.seminar
       })
       .catch((err) => {
-        if (!cancelled) missing = err instanceof ApiError && err.status === 404
+        if (!cancelled) refused(err)
       })
     return () => {
       cancelled = true
@@ -82,16 +113,28 @@
   $effect(() => {
     const id = publication?.id
     const seq = wanted
+    void attempt
     if (!id) return
     let cancelled = false
     loading = true
+    /*
+     * Прежний шаг гасится ДО загрузки нового.
+     *
+     * Оставался — и при переходе на шаг, которого больше нет (семинар
+     * переопубликовали без этой отметки), читатель молча видел предыдущую
+     * тетрадь под новым адресом. Врущая страница хуже пустой.
+     */
+    step = null
+    gone = false
     void api
       .step(id, seq)
       .then((body) => {
         if (!cancelled) step = body.step
       })
-      .catch(() => {
-        /* шага нет — страница покажет то, что уже есть */
+      .catch((err) => {
+        if (cancelled) return
+        if (err instanceof ApiError && err.status === 404) gone = true
+        else refused(err)
       })
       .finally(() => {
         if (!cancelled) loading = false
@@ -101,7 +144,13 @@
     }
   })
 
-  const current = $derived(step?.seq ?? seminar?.steps[0]?.seq ?? null)
+  /*
+   * Отмечен только тот шаг, который действительно открыт. Падало на первый —
+   * и рельса жирным показывала шаг 01, хотя на экране было пусто или другое.
+   */
+  const current = $derived(step?.seq ?? null)
+  /** Куда уводить с исчезнувшего шага: первый — он есть у любой публикации. */
+  const first = $derived(seminar?.steps[0]?.seq ?? null)
   /* Рельса из одного шага — мебель. В первом семестре это обычный случай. */
   const railed = $derived((seminar?.steps.length ?? 0) > 1)
 
@@ -158,10 +207,13 @@
             {seminar.course.name}
           </button>
         {/if}
+        <!-- «Страница» в единственном числе — не описка: один отмеченный
+             момент и есть одна страница (так же говорит и окно публикации).
+             Описка была во множественном: «5 шага», «11 шага». -->
         <span>
           · опубликован {dateLong(seminar.publishedAt)} ·
           {seminar.steps.length}
-          {seminar.steps.length === 1 ? 'страница' : 'шага'}
+          {plural(seminar.steps.length, 'страница', 'шага', 'шагов')}
         </span>
       </p>
     </header>
@@ -220,6 +272,28 @@
           </div>
         {:else if loading}
           <p class="mt-8 text-ui text-muted">Загружается…</p>
+        {:else if gone}
+          <!--
+            Ссылка на шаг, которого больше нет: семинар опубликовали заново, и
+            прежние отметки стёрлись вместе со своими номерами. Дорога отсюда
+            обязана быть на странице: у публикации из одного шага рельсы нет
+            вовсе, и выбраться было нечем.
+          -->
+          <p class="mt-8 text-ui text-muted">
+            Этой страницы семинара больше нет — его опубликовали заново.
+            {#if first !== null}
+              <button class="font-semibold text-accent-text" onclick={() => go(first)}>
+                Открыть первую
+              </button>
+            {/if}
+          </p>
+        {:else if failure}
+          <p class="mt-8 text-ui text-muted">
+            {failure}
+            <button class="font-semibold text-accent-text" onclick={() => (attempt += 1)}>
+              Ещё раз
+            </button>
+          </p>
         {/if}
 
         <p class="mt-10 flex items-center gap-2 border-t border-line pt-5 text-ui text-muted">
@@ -232,5 +306,26 @@
     </div>
   </div>
 {:else}
-  <div class="min-h-screen bg-canvas"></div>
+  <!--
+    Пусто здесь бывает по двум причинам, и они разные: страница ещё едет — или
+    не доехала. Пустой белый экран стоял на обе, и на второй читался как «этого
+    курса больше нет»: ни слова, ни кнопки, а единственный выход — перезагрузка,
+    о которой на странице не сказано ничего.
+  -->
+  <div class="flex min-h-screen items-center justify-center bg-canvas px-6">
+    {#if failure}
+      <div class="max-w-md text-center">
+        <p class="text-title font-semibold text-ink">Страница не открылась</p>
+        <p class="mt-2 text-ui text-muted">{failure}</p>
+        <button
+          class="mt-3 text-ui font-semibold text-accent-text"
+          onclick={() => (attempt += 1)}
+        >
+          Ещё раз
+        </button>
+      </div>
+    {:else}
+      <p class="text-ui text-muted">Загружается…</p>
+    {/if}
+  </div>
 {/if}

@@ -75,24 +75,64 @@
    */
   const file = $derived(lecture.file)
 
+  /** Счётчик попыток открыть: «Попробовать снова» и повтор на проекции. */
+  let attempt = $state(0)
+
   $effect(() => {
     const path = file
-    let dropped = false
+    void attempt
+    /*
+     * Сбрасываем ВСЁ, а не один `doc`.
+     *
+     * `failure` не снимался нигде и ни от чего: одна неудачная загрузка
+     * прибивала экран к ветке ошибки навсегда — даже смена документа лекции не
+     * возвращала картинку, потому что новый PDF приезжал в `doc`, а разметка
+     * всё равно показывала ошибку. Больнее всего на проекции: там кнопок нет
+     * намеренно, и зал до конца пары читает «Не удалось открыть документ
+     * лекции» вместо слайдов. `pages` от прошлой колоды к тому же держал
+     * неверную верхнюю границу шага.
+     */
     doc = null
+    pages = 0
+    failure = null
+    let dropped = false
+    let opened: PDFDocumentProxy | null = null
     void loadPdf()
       .then((pdf) => pdf.open(api.fileRaw(session.session.id, path), session.token))
-      .then((opened) => {
-        if (dropped) return
-        doc = opened
-        pages = opened.numPages
+      .then((ready) => {
+        opened = ready
+        // Документ, доехавший после ухода, уносит с собой воркер pdf.js и его
+        // буферы: без `destroy` каждый уход посреди загрузки — живой воркер до
+        // конца пары.
+        if (dropped) {
+          void ready.loadingTask.destroy()
+          return
+        }
+        doc = ready
+        pages = ready.numPages
       })
       .catch(() => {
         if (!dropped) failure = 'Не удалось открыть документ лекции.'
       })
     return () => {
       dropped = true
-      void doc?.loadingTask.destroy()
+      void opened?.loadingTask.destroy()
     }
+  })
+
+  /**
+   * Проекция пробует снова сама.
+   *
+   * У неё нет ни одной кнопки — и это решение, а не упущение: кнопку на
+   * проекции видит зал. Значит и повторять за неё некому: ноутбук у проектора
+   * стоит открытым до пары, сеть моргает в момент старта, и без этого таймера
+   * лекция идёт с пульта, а зал сорок минут смотрит на строку ошибки.
+   */
+  const RETRY_MS = 5000
+  $effect(() => {
+    if (failure === null || role !== 'projection') return
+    const again = window.setTimeout(() => (attempt += 1), RETRY_MS)
+    return () => window.clearTimeout(again)
   })
 
   /* ------------------------------------------------------------ пульт */
@@ -110,6 +150,20 @@
 
   const presenting = $derived(role === 'presenter')
   const page = $derived(lecture.page)
+  /** Хостовое здесь только заметки и ссылка-ключ: лекцию может вести и студент. */
+  const host = $derived(session.me.role === 'host')
+
+  /**
+   * «Стереть» спросила и ждёт второго нажатия.
+   *
+   * Снимается сменой страницы: вопрос, оставшийся висеть на следующем слайде,
+   * превращает первое же нажатие в стирание без вопроса.
+   */
+  let wipeAsked = $state(false)
+  $effect(() => {
+    void page
+    untrack(() => (wipeAsked = false))
+  })
 
   /**
    * Куда мы уже попросили уйти.
@@ -168,10 +222,55 @@
     })
   })
 
+  /**
+   * Слайд, на который возвращаемся с чистого листа: последний, что видел зал.
+   *
+   * Своего счёта листам здесь нет (его ведёт пульт), поэтому «куда вернуться»
+   * помнится по самой лекции: единица — на случай, когда этот экран открыли
+   * уже на листе.
+   */
+  let lastSlide = $state(1)
+  $effect(() => {
+    const at = lecture.page
+    untrack(() => {
+      if (at > 0) lastSlide = at
+    })
+  })
+
+  /**
+   * Шаг вперёд-назад. Знает про чистые листы — страницы с ОТРИЦАТЕЛЬНЫМ
+   * номером (см. shared/lecture.ts).
+   *
+   * Арифметика «±1» на них мертва в обе стороны: с листа −1 «вперёд» даёт 0,
+   * «назад» даёт −2, и то и другое отбрасывалось молча — вместе со стрелками,
+   * пробелом и презентационной кликалкой, воткнутой в компьютер у проектора.
+   * Вернуть зал на слайды из комнаты было нечем вовсе.
+   *
+   * Порядок листов — по заведению (−1 первый), как в ленте пульта. «Вперёд» с
+   * любого листа возвращает к слайду: сколько листов заведено, знает только
+   * пульт, а заводить новый молча — это белое поле у зала посреди фразы.
+   */
   function turn(step: -1 | 1): void {
     const from = wanted ?? page
+    if (from < 0) {
+      go(step === -1 && from < -1 ? from + 1 : lastSlide)
+      return
+    }
     const next = from + step
-    if (next < 1 || (pages > 0 && next > pages)) return
+    /*
+     * Верхняя граница, когда своя копия не открылась (`pages === 0`): на одну
+     * страницу дальше той, что зал УЖЕ показывает. Без неё зажатая стрелка
+     * гнала залу номера за конец колоды — сервер принимает любой
+     * положительный, — и обратно возвращались шестьюдесятью нажатиями. Та же
+     * граница и по той же причине стоит в пульте (ConsoleView.goTo).
+     */
+    const top = pages > 0 ? pages : Math.max(page, 1) + 1
+    if (next < 1 || next > top) return
+    go(next)
+  }
+
+  function go(next: number): void {
+    if (next === (wanted ?? page)) return
     wanted = next
     asked.add(next)
     session.send({ t: 'lecture:page', page: next })
@@ -321,7 +420,7 @@
         <button
           type="button"
           class="{TOOL} w-10 justify-center text-muted hover:text-ink disabled:opacity-30"
-          disabled={page <= 1}
+          disabled={page > 0 && page <= 1}
           aria-label="Предыдущая страница"
           onclick={() => turn(-1)}
         >
@@ -333,7 +432,7 @@
         <button
           type="button"
           class="{TOOL} w-10 justify-center text-muted hover:text-ink disabled:opacity-30"
-          disabled={pages > 0 && page >= pages}
+          disabled={page > 0 && pages > 0 && page >= pages}
           aria-label="Следующая страница"
           onclick={() => turn(1)}
         >
@@ -392,11 +491,36 @@
         <button
           type="button"
           class="{TOOL} text-muted hover:text-ink"
+          title="Убрать последний штрих — Z на пульте"
+          aria-label="Отменить последний штрих"
+          onclick={() => session.send({ t: 'ink:undo', page })}
+        >
+          <Icon name="undo" size={12} />
+          Отменить
+        </button>
+        <!--
+          «Стереть» спрашивает, и это не вежливость: она стоит в одном ряду с
+          «Пауза», а промах мышью на одну кнопку влево уносил всю разметку
+          слайда у зала и на проекторе мгновенно и безвозвратно — чернила лекции
+          живут только в памяти сервера, истории у них нет. На пульте ту же
+          операцию защищают удержанием ластика и отдельным вопросом.
+        -->
+        <button
+          type="button"
+          class="{TOOL} {wipeAsked ? 'bg-danger/10 text-danger' : 'text-muted hover:text-ink'}"
           title="Стереть чернила с этой страницы"
-          onclick={() => session.send({ t: 'ink:clear', page })}
+          onclick={() => {
+            if (!wipeAsked) {
+              wipeAsked = true
+              return
+            }
+            wipeAsked = false
+            session.send({ t: 'ink:clear', page })
+          }}
+          onblur={() => (wipeAsked = false)}
         >
           <Icon name="eraser" size={12} />
-          Стереть
+          {wipeAsked ? 'Стереть всё?' : 'Стереть'}
         </button>
         <button
           type="button"
@@ -410,7 +534,14 @@
 
         <span class="flex-1"></span>
 
-        <ConsoleLink class="{TOOL} text-muted hover:text-ink" />
+        <!--
+          Пульт передаёт ПРЕПОДАВАТЕЛЬ. Вести лекцию может и студент — правило
+          `board: 'room'` это разрешает, — но `/handoff` ему отвечает 403, и
+          кнопка, у которой один исход и тот отказ, здесь не стоит.
+        -->
+        {#if host}
+          <ConsoleLink class="{TOOL} text-muted hover:text-ink" />
+        {/if}
         {@render projectButton()}
         <button
           type="button"
@@ -461,8 +592,15 @@
         из-за собственной неудачи — худшее, что этот экран может сделать.
       -->
       <div class="flex min-h-0 flex-1 gap-3 p-3">
-        <p class="min-w-0 flex-1 text-ui text-muted">{failure}</p>
-        {#if presenting}
+        <div class="flex min-w-0 flex-1 flex-col items-start gap-3">
+          <p class="text-ui text-muted">{failure}</p>
+          <!-- Повтор руками: сеть, моргнувшая в момент старта, не повод
+               доводить пару без слайдов у себя на экране. -->
+          <button type="button" class="btn-outline h-8 px-3 text-2xs" onclick={() => (attempt += 1)}>
+            Попробовать снова
+          </button>
+        </div>
+        {#if presenting && host}
           <aside class="hidden w-[28%] shrink-0 flex-col lg:flex">
             <NotesPad file={lecture.file} {page} compact />
           </aside>
@@ -484,7 +622,7 @@
           {/snippet}
         </LecturePage>
 
-        {#if presenting}
+        {#if presenting && (host || (page > 0 && pages > page))}
           <!--
             Колонка ведущего — и есть Speaker View: что будет дальше и что про
             это сказать. Знать это, не заглядывая вперёд на проекторе.
@@ -500,7 +638,7 @@
             непустым, и увидит это вся аудитория.
           -->
           <aside class="hidden w-[28%] shrink-0 flex-col gap-2 lg:flex">
-            {#if pages > page}
+            {#if page > 0 && pages > page}
               <span class="text-micro font-bold uppercase tracking-section text-muted">
                 дальше
               </span>

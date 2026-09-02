@@ -28,7 +28,25 @@
   /** The seminar just made on the New seminar screen, handed to the list. */
   let arrived = $state<string | null>(null)
 
-  const exchanging = $derived(readEntryCredential(path) !== null)
+  /*
+   * Обмен идёт прямо сейчас.
+   *
+   * Состояние, а не «в адресе ещё ключ»: не доехавший ключ намеренно не
+   * тратится (ниже), адрес остаётся прежним — и экран, ждавший исчезновения
+   * ключа из адреса, оставался пустым навсегда. Пустая страница без слов —
+   * ровно то, ради чего у экрана входа есть ветка «Could not reach the panel».
+   */
+  let exchanging = $state(readEntryCredential(location.pathname) !== null)
+  /**
+   * Ключ, который не доехал.
+   *
+   * Сервер его не видел, поэтому он цел и всё ещё в адресе. «Try again» на
+   * экране входа перечитывает состояние инстанса — и, если сервер вернулся,
+   * попытку надо повторить: иначе преподавателя с рабочей ссылкой встречает
+   * форма, просящая токен установки, которого у него нет.
+   */
+  let pendingKey = $state<string | null>(null)
+  let retriedKey = false
   const tab = $derived<AdminTab>(
     path.startsWith('/admin/oracle')
       ? 'oracle'
@@ -50,58 +68,93 @@
   /* Публикация — тоже адрес: это экран, на котором принимают решение. */
   const publishing = $derived(/^\/admin\/publish\/([A-Za-z0-9_-]{1,64})/.exec(path)?.[1] ?? null)
 
+  // replaceState, never push: a spent credential must not sit in the address
+  // bar, and must not be one Back press away either.
+  function spend(): void {
+    history.replaceState({}, '', SPENT_PATH)
+    path = SPENT_PATH
+  }
+
+  /*
+   * Ключ тратится, только если сервер его увидел.
+   *
+   * Раньше здесь стоял безусловный `.finally(spend)`: адресная строка
+   * переписывалась и при обычном обрыве связи — вайфай моргнул, поезд въехал в
+   * туннель, — и ссылка, которая была единственной дорогой в панель, исчезала
+   * навсегда за один неудачный запрос. Отозванный ключ тратить правильно (он
+   * всё равно мёртв), а не доехавший — нет.
+   */
+  async function useKey(key: string): Promise<void> {
+    exchanging = true
+    pendingKey = null
+    try {
+      const signedIn = await adminAuth.signInWithKey(key)
+      if (signedIn || adminAuth.state) spend()
+      // Сервера не было слышно вовсе: ключ цел, и попробовать его стоит ещё раз.
+      else pendingKey = key
+    } finally {
+      exchanging = false
+    }
+  }
+
+  $effect(() => {
+    const reachable = adminAuth.state !== null
+    const signedIn = adminAuth.me !== null
+    if (!pendingKey || retriedKey || exchanging || !reachable || signedIn) return
+    // Один раз: вторая неудача — это уже не «сервер не поднялся», и крутить
+    // запросы под экраном с кнопкой «Try again» незачем.
+    retriedKey = true
+    void useKey(pendingKey)
+  })
+
   onMount(() => {
     const onPop = () => (path = location.pathname)
     window.addEventListener('popstate', onPop)
 
-    // replaceState, never push: a spent credential must not sit in the address
-    // bar, and must not be one Back press away either.
-    const spend = () => {
-      history.replaceState({}, '', SPENT_PATH)
-      path = SPENT_PATH
-    }
-
     const credential = readEntryCredential(location.pathname)
     if (credential?.kind === 'key') {
-      /*
-       * Ключ тратится, только если сервер его увидел.
-       *
-       * Раньше здесь стоял безусловный `.finally(spend)`: адресная строка
-       * переписывалась и при обычном обрыве связи — вайфай моргнул, поезд
-       * въехал в туннель, — и ссылка, которая была единственной дорогой в
-       * панель, исчезала навсегда за один неудачный запрос. Отозванный ключ
-       * тратить правильно (он всё равно мёртв), а не доехавший — нет.
-       */
-      void adminAuth
-        .signInWithKey(credential.value)
-        .then((signedIn) => {
-          if (signedIn || adminAuth.state) spend()
-        })
-        .catch(() => {})
+      void useKey(credential.value)
     } else if (credential?.kind === 'token') {
       const setupToken = credential.value
       void adminAuth
         .signInWithToken(setupToken)
         .then(async (signedIn) => {
           if (signedIn) return
-          // A token cannot sign anyone in until the instance has an owner, and
-          // claiming needs a name and an email this link does not carry. So the
-          // token is carried into the form rather than spent on a request that
-          // was always going to fail — the person types two fields instead of
-          // also transcribing thirty-two characters.
+          // 409 here means "not claimed yet", which is exactly the state the
+          // card below is for. Leaving it as an error would tell a person
+          // following the printed link that they did something wrong.
           //
+          // Всё остальное — отозванный токен, опечатка в ссылке — надо сказать
+          // словами. Раньше гасилась любая ошибка, и мёртвый токен молча
+          // подставлялся в форму, где выяснялся только после нажатия «Sign in».
+          const unclaimed = adminAuth.errorReason === 'unclaimed'
+          const said = adminAuth.error
+          const reason = adminAuth.errorReason
+
           // The reload is not optional: the sign-in screen draws nothing until
           // it knows whether the instance is claimed, and a failed exchange
           // leaves that unknown. Without this the first-run link opened an
           // empty page — measured, not guessed.
-          adminAuth.offerSetupToken(setupToken)
           await adminAuth.refresh()
-          // 409 here means "not claimed yet", which is exactly the state the
-          // card below is for. Leaving it as an error would tell a person
-          // following the printed link that they did something wrong.
-          adminAuth.error = null
+
+          if (unclaimed) {
+            // A token cannot sign anyone in until the instance has an owner,
+            // and claiming needs a name and an email this link does not carry.
+            // So the token is carried into the form rather than spent on a
+            // request that was always going to fail — the person types two
+            // fields instead of also transcribing thirty-two characters.
+            adminAuth.offerSetupToken(setupToken)
+          } else if (adminAuth.error === null) {
+            // Успешный refresh гасит ошибку внутри себя, поэтому её возвращают
+            // сюда руками. Своя жалоба у refresh новее — она и остаётся.
+            adminAuth.error = said
+            adminAuth.errorReason = reason
+          }
         })
-        .finally(spend)
+        .finally(() => {
+          spend()
+          exchanging = false
+        })
     } else {
       void adminAuth.load()
     }
@@ -149,9 +202,13 @@
           }}
         />
     {:else}
+      <!-- Приземление одноразовое: `arrived`, оставшийся висеть, снова сбрасывал
+           поиск и подсвечивал ту же комнату как новую при каждом возврате на
+           вкладку — и каждые двадцать секунд отбирал фокус в её пользу. -->
       <Seminars
         onfull={() => (makingSeminar = true)}
         {arrived}
+        onarrived={() => (arrived = null)}
         onpublish={(id) => navigate(`/admin/publish/${id}`)}
       />
     {/if}

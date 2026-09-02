@@ -124,6 +124,13 @@
    * всегда открыто: там его никто не задевает рукой.
    */
   let armed = $state(false)
+  /**
+   * Чистый лист — страница с отрицательным номером (см. shared/lecture.ts), и
+   * заметки к ней НЕ БЫВАЕТ: сервер отвечает «Заметка пишется к странице
+   * документа» и текст пропадает на первом же перелистывании. Поле здесь
+   * рисовалось как ни в чём не бывало — с подписью «Заметки к странице −1».
+   */
+  const onBoard = $derived(page < 1)
   const reading = $derived(readonly || (docked && !armed))
 
   /*
@@ -315,6 +322,12 @@
       timer = undefined
     }
     if (!pending) return
+    // Заметку к чистому листу сервер отвергает — молчим здесь, чтобы отказ не
+    // прилетал плашкой из cleanup'а на ровном месте.
+    if (heldPage < 1) {
+      pending = false
+      return
+    }
     pending = false
     sentAt = performance.now()
     /*
@@ -657,7 +670,7 @@
             (`.pult-root { user-select: none }`) лежит там же, и разрешение
             обязано стоять рядом с запретом, а не в другом файле.
           -->
-          {#if readonly}
+          {#if readonly || onBoard}
             <!--
               Прибитая заметка. Не кнопка: нажимать нечего, а кнопка, которая
               ничего не делает, — это обещание, которое пульт не сдержит.
@@ -669,7 +682,9 @@
                      overscroll-contain whitespace-pre-line pb-6 text-ink
                      min-[1300px]:max-w-[900px] {draft.trim() ? '' : 'text-muted'}"
             >
-              {draft.trim() || 'Заметок к этой странице нет.'}
+              {onBoard
+                ? 'У чистого листа заметок нет.'
+                : draft.trim() || 'Заметок к этой странице нет.'}
             </div>
           {:else if reading}
             <button

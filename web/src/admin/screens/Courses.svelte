@@ -9,9 +9,11 @@
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
+  import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import { AdminApiError, adminApi } from '@/lib/adminApi'
+  import { AdminApiError, adminApi, type AdminPublication } from '@/lib/adminApi'
   import { copyText } from '@/lib/clipboard'
+  import { plural } from '@/lib/plural'
   import {
     MAX_COURSE_NAME,
     slugOk,
@@ -38,22 +40,42 @@
   let draftName = $state('')
   let copied = $state<string | null>(null)
   let adding = $state(false)
+  /** Курс запрошен, ответа ещё нет: пустая область — не ответ. */
+  let loadingOne = $state(false)
 
   const explain = (cause: unknown): string =>
     cause instanceof AdminApiError ? cause.message : 'что-то пошло не так'
+
+  /** Адрес, который диктуют вслух: имя, если его дали, иначе идентификатор. */
+  const addressOf = (item: { id: string; slug: string | null }): string => item.slug ?? item.id
 
   async function loadList(): Promise<void> {
     try {
       courses = await adminApi.listCourses()
       navCounts.courses = courses.length
+      await loadOrphans()
     } catch (cause) {
       error = explain(cause)
     }
   }
 
   async function loadOne(id: string): Promise<void> {
+    loadingOne = true
     try {
       course = await adminApi.course(id)
+      error = null
+    } catch (cause) {
+      // Курса по этому адресу нет — ветка внизу скажет это словами, а раньше на
+      // его месте была пустая область.
+      course = null
+      error = explain(cause)
+      return
+    } finally {
+      loadingOne = false
+    }
+    try {
+      // Список семинаров нужен только кнопке «Добавить семинар»: без него экран
+      // курса остаётся целым, и объявлять курс ненайденным из-за него нельзя.
       seminars = await adminApi.listSeminars()
     } catch (cause) {
       error = explain(cause)
@@ -76,7 +98,10 @@
 
   async function create(): Promise<void> {
     const name = draftName.trim()
-    if (!name) return
+    // busy проверяется, а не только выставляется: кнопка по нему гаснет, а Enter
+    // с автоповтором — нет, и полсекунды удержания заводили пять одинаковых
+    // курсов, каждый со своим адресом.
+    if (!name || busy) return
     busy = true
     try {
       const made = await adminApi.createCourse({ name })
@@ -153,19 +178,37 @@
   }
 
   /**
-   * Черновик адреса.
+   * Черновики полей курса.
    *
    * Предложение из названия — только когда имени ещё нет: подставлять его
    * поверх выбранного человеком значило бы переписывать чужое решение при
    * каждом открытии экрана.
+   *
+   * Ключ — идентификатор курса, а не сам объект: `course` переприсваивается
+   * ответом сервера после каждой перестановки строк, и эффект, зависевший от
+   * объекта, стирал набранный, но не сохранённый адрес — вместе с кнопкой
+   * «Сохранить адрес», которой его собирались сохранить.
    */
   let slugDraft = $state('')
+  let nameDraft = $state('')
+  let blurbDraft = $state('')
+  let drafted: string | null = null
+
   $effect(() => {
-    slugDraft = course?.slug ?? (course ? suggestSlug(course.name) : '')
+    const open = course
+    if (!open) {
+      drafted = null
+      return
+    }
+    if (drafted === open.id) return
+    drafted = open.id
+    slugDraft = open.slug ?? suggestSlug(open.name)
+    nameDraft = open.name
+    blurbDraft = open.blurb ?? ''
   })
 
   async function saveSlug(): Promise<void> {
-    if (!course) return
+    if (!course || busy) return
     const next = slugDraft.trim().toLowerCase()
     if (next && !slugOk(next)) {
       error = 'Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.'
@@ -182,6 +225,93 @@
       busy = false
     }
   }
+  /**
+   * Название и подпись курса.
+   *
+   * Их не было нигде: курс, заведённый с опечаткой в названии, оставался с ней
+   * навсегда, и опечатку видел весь класс на публичной странице.
+   */
+  const detailsChanged = $derived(
+    Boolean(course) &&
+      (nameDraft.trim() !== course?.name || blurbDraft.trim() !== (course?.blurb ?? '')),
+  )
+
+  async function saveDetails(): Promise<void> {
+    const open = course
+    if (!open || busy) return
+    const name = nameDraft.trim()
+    if (!name) {
+      error = 'У курса должно быть название — его видят студенты.'
+      return
+    }
+    busy = true
+    error = null
+    try {
+      course = await adminApi.updateCourse(open.id, { name, blurb: blurbDraft.trim() || null })
+    } catch (cause) {
+      error = explain(cause)
+    } finally {
+      busy = false
+    }
+  }
+
+  /**
+   * Удаление курса — здесь же, и оно называет ссылку, которую ломает.
+   *
+   * Сами семинары и их страницы остаются: курс — это порядок и адрес, а не
+   * хранилище. Ломается ровно то, что классу продиктовали в первую неделю.
+   */
+  let doomed = $state(false)
+
+  async function destroy(): Promise<void> {
+    const open = course
+    if (!open || busy) return
+    busy = true
+    error = null
+    try {
+      await adminApi.deleteCourse(open.id)
+      doomed = false
+      navigate('/admin/courses')
+    } catch (cause) {
+      error = explain(cause)
+    } finally {
+      busy = false
+    }
+  }
+
+  /**
+   * Страницы, у которых больше нет комнаты.
+   *
+   * Удаление семинара по умолчанию оставляет чтение: розданную ссылку не
+   * отозвать. Но дальше страница пропадала из панели совсем — все остальные
+   * маршруты публикации спрашивают её по семинару, — и снять её можно было
+   * только правкой базы. Здесь она видна и снимается.
+   */
+  let orphans = $state<AdminPublication[]>([])
+  let orphanBusy = $state<string | null>(null)
+
+  async function loadOrphans(): Promise<void> {
+    try {
+      orphans = (await adminApi.listPublications()).filter((p) => p.orphaned)
+    } catch {
+      // Не беда: это приписка к списку курсов, а не сам список.
+      orphans = []
+    }
+  }
+
+  async function actOnOrphan(id: string, what: () => Promise<void>): Promise<void> {
+    orphanBusy = id
+    error = null
+    try {
+      await what()
+      await loadOrphans()
+    } catch (cause) {
+      error = explain(cause)
+    } finally {
+      orphanBusy = null
+    }
+  }
+
   const ROW = 'flex items-center gap-4 border-t border-line py-2.5'
   const ARROW =
     'flex h-6 w-6 items-center justify-center border border-line text-muted transition-colors ' +
@@ -248,27 +378,96 @@
             onclick={() => navigate(`/admin/courses/${item.id}`)}
           >
             <p class="text-ui-lg font-semibold text-ink">{item.name}</p>
-            <p class="mt-0.5 font-mono text-2xs text-muted">/c/{item.id}</p>
+            <!-- Адрес печатается тот же, что диктуют классу: смысл имени в том,
+                 что оно и есть ссылка, а не второй адрес рядом с ней. -->
+            <p class="mt-0.5 font-mono text-2xs text-muted">/c/{addressOf(item)}</p>
           </button>
           <p class="shrink-0 text-ui text-muted">
             {published} опубликовано · {waiting} ещё нет
           </p>
         </div>
       {/each}
+
+      <!--
+        Страницы без комнаты. Сервер их отдаёт и `make site` выкладывает, а в
+        панели их не было видно нигде — снять оставшуюся после удалённого
+        семинара страницу можно было только правкой базы.
+      -->
+      {#if orphans.length > 0}
+        <div class="mt-8 border-t border-line pt-5">
+          <p class="text-ui font-semibold text-ink">Страницы без комнаты</p>
+          <p class="mt-1 max-w-xl text-2xs leading-relaxed text-muted">
+            Семинар удалён, а его публичная страница осталась — так и задумано: розданную ссылку не
+            отозвать. Отсюда её можно снять (адрес скажет, что страницу убрали) или вернуть.
+          </p>
+          {#each orphans as page (page.id)}
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line py-3">
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-ui text-ink">{page.title}</p>
+                <p class="mt-0.5 font-mono text-2xs text-muted">
+                  /p/{addressOf(page)} · {page.steps}
+                  {plural(page.steps, 'шаг', 'шага', 'шагов')}
+                  {page.state === 'withdrawn' ? ' · снята' : ''}
+                </p>
+              </div>
+              <a class="shrink-0 text-ui text-accent-text" href={`/p/${addressOf(page)}`} target="_blank" rel="noreferrer">
+                Открыть
+              </a>
+              {#if page.state === 'published'}
+                <button
+                  type="button"
+                  class="shrink-0 text-ui font-semibold text-muted hover:text-ink"
+                  disabled={orphanBusy === page.id}
+                  onclick={() => void actOnOrphan(page.id, () => adminApi.withdrawPublication(page.id))}
+                >
+                  Снять страницу
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="shrink-0 text-ui font-semibold text-muted hover:text-ink"
+                  disabled={orphanBusy === page.id}
+                  onclick={() => void actOnOrphan(page.id, () => adminApi.restorePublication(page.id))}
+                >
+                  Вернуть страницу
+                </button>
+                <!-- Стереть — только владельцу и только у снятой: снятую можно
+                     вернуть, стёртую нельзя, и надгробие в курсе теряет ссылку. -->
+                {#if adminAuth.isOwner}
+                  <button
+                    type="button"
+                    class="shrink-0 text-ui font-semibold text-danger"
+                    disabled={orphanBusy === page.id}
+                    onclick={() => {
+                      if (!window.confirm(`Стереть страницу /p/${addressOf(page)} совсем? Вернуть её будет нечем.`)) return
+                      void actOnOrphan(page.id, () => adminApi.erasePublication(page.id))
+                    }}
+                  >
+                    Стереть совсем
+                  </button>
+                {/if}
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
   </AdminPage>
 {:else if course}
   {@const shown = course}
   <AdminPage title={shown.name}>
     {#snippet actions()}
+      <!-- Копируется тот же адрес, что диктуют вслух: /c/<имя>, если имя дали.
+           Иначе в чат уходил идентификатор, и у класса оказывалось два разных
+           адреса одного курса. -->
       <button
         type="button"
         class="btn-ghost"
-        onclick={() => void copy(`${location.origin}/c/${shown.id}`, 'link')}
+        onclick={() => void copy(`${location.origin}/c/${addressOf(shown)}`, 'link')}
       >
         {copied === 'link' ? 'Скопировано' : 'Копировать ссылку'}
       </button>
-      <a class="btn-ghost" href={`/c/${shown.id}`} target="_blank" rel="noreferrer">
+      <a class="btn-ghost" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
         Глазами студента
       </a>
       <button type="button" class="btn-primary" onclick={() => (adding = !adding)}>
@@ -284,6 +483,44 @@
       >
         ← Все курсы
       </button>
+
+      <!--
+        Название и подпись — там же, где адрес: курс с опечаткой в названии
+        нельзя было поправить нигде, а видит её весь класс.
+      -->
+      <div class="flex flex-wrap items-center gap-2 pb-4">
+        <input
+          class="h-9 w-[280px] max-w-full border border-line bg-canvas px-3 text-ui text-ink
+                 focus:outline-none focus:ring-2 focus:ring-accent/40"
+          maxlength={MAX_COURSE_NAME}
+          aria-label="Название курса"
+          bind:value={nameDraft}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') void saveDetails()
+          }}
+        />
+        <input
+          class="h-9 min-w-[220px] flex-1 border border-line bg-canvas px-3 text-ui text-ink
+                 placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+          placeholder="Подпись под названием — одна строка, необязательно"
+          maxlength={200}
+          aria-label="Подпись курса"
+          bind:value={blurbDraft}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') void saveDetails()
+          }}
+        />
+        {#if detailsChanged}
+          <button
+            type="button"
+            class="btn-primary h-9 shrink-0 px-3 text-2xs"
+            disabled={busy}
+            onclick={() => void saveDetails()}
+          >
+            Сохранить название
+          </button>
+        {/if}
+      </div>
 
       <!--
         Адрес курса — то, что диктуют классу вслух и пишут на доске. Поэтому он
@@ -391,7 +628,21 @@
               </p>
             </div>
             <div class="flex w-[290px] shrink-0 items-baseline gap-3">
-              <span class="text-ui text-muted">публиковать нечего</span>
+              <!-- «Публиковать нечего» — правда только когда страницы нет.
+                   Комнату удалили, а чтение осталось: с курса до него иначе не
+                   дойти, хотя курс — единственный адрес, который дают классу. -->
+              {#if item.publication}
+                <a
+                  class="text-ui text-accent-text"
+                  href={`/p/${addressOf(item.publication)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  комната закрыта, страница осталась
+                </a>
+              {:else}
+                <span class="text-ui text-muted">публиковать нечего</span>
+              {/if}
               <button type="button" class="text-ui font-semibold text-muted hover:text-ink" onclick={() => drop(index)}>
                 Убрать строку
               </button>
@@ -405,12 +656,12 @@
               {#if item.publication}
                 <a
                   class="text-ui text-accent-text"
-                  href={`/p/${item.publication.id}`}
+                  href={`/p/${addressOf(item.publication)}`}
                   target="_blank"
                   rel="noreferrer"
                 >
                   опубликован · {item.publication.steps}
-                  {item.publication.steps === 1 ? 'шаг' : 'шага'}
+                  {plural(item.publication.steps, 'шаг', 'шага', 'шагов')}
                 </a>
               {:else}
                 <span class="text-ui text-muted">ещё не опубликован</span>
@@ -456,6 +707,82 @@
       <p class="border-t border-line pt-4 text-2xs text-muted">
         Порядок на странице курса — этот. Стрелки двигают строку; студенты видят изменение сразу.
       </p>
+
+      <!-- Удаление живёт внутри самого курса и называет ссылку, которую ломает:
+           семинары и их страницы остаются, ломается адрес, который классу
+           продиктовали в первую неделю. -->
+      <div class="mt-8 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+        <p class="min-w-0 flex-1 text-2xs text-muted">
+          Удалить курс — значит убрать порядок и адрес
+          <span class="font-mono">/c/{addressOf(shown)}</span>. Семинары и опубликованные страницы
+          остаются на месте.
+        </p>
+        <button
+          type="button"
+          class="shrink-0 text-ui font-semibold text-danger hover:brightness-110"
+          onclick={() => (doomed = true)}
+        >
+          Удалить курс…
+        </button>
+      </div>
     </div>
   </AdminPage>
+{:else}
+  <!--
+    Курс по этому адресу не открылся. Адрес курса дают классу и им делятся с
+    коллегой, так что по устаревшему сюда придут — а раньше здесь была пустая
+    область без единого слова и без пути назад.
+  -->
+  <AdminPage title="Курс">
+    <div class="px-8 py-16 text-center">
+      {#if loadingOne}
+        <p class="text-ui text-muted">Открываем курс…</p>
+      {:else}
+        <p class="text-title font-semibold text-ink">Такого курса здесь нет</p>
+        <p class="mx-auto mt-2 max-w-sm text-ui text-muted">
+          {error ?? 'Возможно, его удалили — или в адресе опечатка.'}
+        </p>
+        <button type="button" class="btn-primary mt-4" onclick={() => navigate('/admin/courses')}>
+          ← Все курсы
+        </button>
+      {/if}
+    </div>
+  </AdminPage>
+{/if}
+
+{#if doomed && course}
+  {@const going = course}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="delete-course-title"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 id="delete-course-title" class="text-title font-semibold text-ink">
+        Удалить курс «{going.name}»?
+      </h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">
+        Ссылка <span class="font-mono text-ink">/c/{addressOf(going)}</span> перестанет открываться
+        — у тех, кому её дали, останется адрес в никуда. Сами семинары и их опубликованные страницы
+        не трогаются: пропадает список и его порядок.
+      </p>
+      {#if error}
+        <p class="mt-3 text-ui text-danger">{error}</p>
+      {/if}
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" class="btn-outline" disabled={busy} onclick={() => (doomed = false)}>
+          Отмена
+        </button>
+        <button
+          type="button"
+          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          disabled={busy}
+          onclick={() => void destroy()}
+        >
+          {busy ? 'Удаляем…' : 'Удалить курс'}
+        </button>
+      </div>
+    </div>
+  </div>
 {/if}
