@@ -49,7 +49,21 @@ fi
 # Если запись уже есть и указывает не туда, Cloudflare откажет — это защита от
 # того, чтобы туннель молча перехватил чужой поддомен.
 say "${BOLD}3/3${OFF} адрес ${HOSTNAME_ARG}"
-if cloudflared tunnel route dns "$TUNNEL" "$HOSTNAME_ARG" 2>&1 | tee /dev/stderr | grep -qi "already exists"; then
+#
+# Отказ здесь — это отказ, а не «Готово».
+#
+# Раньше статус брался у grep в конце конвейера: любая ошибка cloudflared —
+# зона не в аккаунте, cert.pem от другой зоны, нет прав, сеть — не совпадала со
+# словами «already exists», ветка пропускалась, и скрипт печатал «Готово. Теперь
+# семинар поднимается так: make host HOST=…». Записи при этом не было, и
+# узнавали об этом на паре: `make host` минуту ждёт и говорит про DNS сети.
+#
+if out="$(cloudflared tunnel route dns "$TUNNEL" "$HOSTNAME_ARG" 2>&1)"; then
+  printf '%s\n' "$out"
+else
+  printf '%s\n' "$out" >&2
+  printf '%s' "$out" | grep -qi 'already exists' \
+    || die "не удалось завести DNS-запись для ${HOSTNAME_ARG} — см. ошибку выше."
   say "${DIM}    запись уже была — оставляю как есть${OFF}"
 fi
 

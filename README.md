@@ -21,8 +21,15 @@ signup, no email, no course management — the link *is* the seminar.
 ## Run it
 
 ```bash
-make up                   # or: cp .env.example .env && docker compose up --build
+make up
+# without make: cp .env.example .env && mkdir -p data workspace && docker compose up --build
 ```
+
+The `mkdir` is not decoration. `./data` and `./workspace` are bind-mounted, and a bind mount
+whose source does not exist yet is created by the Docker daemon as `root` — while the server
+runs as `node` and cannot then write its own session key. `make up` does it for you, and it also
+works out the group that owns `/var/run/docker.sock` and writes it to `.env` as `DOCKER_GID`,
+which is what lets each seminar get a kernel container of its own (see *Isolation*).
 
 The first boot prints a setup token. Open <http://localhost:3000/admin>, paste it in with your
 name and email, and the instance is yours — then create a seminar and share the link it gives you.
@@ -121,30 +128,69 @@ says so without claiming the seminar is broken — measured on a corporate netwo
 to public resolvers were dropped intermittently while the tunnel itself answered in 250 ms,
 so a failed check is usually the network you are checking *from*.
 
-## Environments
+### Reaching a room from Russia
 
-Every seminar on an instance shares one kernel, and that kernel has one set of packages.
-`kernel/requirements.txt` is the base — jupyter, numpy, pandas, matplotlib, scikit-learn —
-and it is always installed. An *environment* is a list of packages on top of it, one file
-per environment in `kernel/environments/`.
+A Cloudflare tunnel always comes out on Cloudflare's edge addresses, and the proxying
+cannot be turned off for them — a `*.cfargotunnel.com` record only means anything behind
+their proxy. Those addresses do not open from Russia. So a seminar published through
+Cloudflare is unreachable to exactly the room it was published for, and you find that out
+when thirty people have the link and none of them can open it.
+
+The way out is your own relay: one machine with a public address, `caddy` for TLS and
+`frps` for the tunnels. The instance still dials *out* to it, so nothing changes on the
+teacher's side — no public IP, no port forwarding, and every cell is still executed on the
+teacher's machine.
 
 ```bash
-make env-list              # what exists, and which one is running
-make env-new NAME=nlp      # creates kernel/environments/nlp.txt
-$EDITOR kernel/environments/nlp.txt
-make env-use NAME=nlp      # builds it and switches the kernel over
+make relay-setup WHERE=root@203.0.113.11   # once, on the relay
+#   → prints the four lines to paste into .env of every instance
+make host HOST=hse.colloq.ru                 # every time after that
 ```
 
-Each environment is baked into its own image tag (`colloq-kernel:nlp`), so switching back
-to one you have built before is instant rather than another pip install. The base layer is
+The four lines are `RELAY_DOMAIN`, `RELAY_ADDR`, `RELAY_PORT` and `RELAY_TOKEN`; they are
+in `.env.example`, commented out. `make host` picks the transport from the name you ask
+for: a name under `RELAY_DOMAIN` goes through the relay, anything else through Cloudflare.
+With `RELAY_DOMAIN` empty there is no relay and everything goes to Cloudflare, which is the
+right default for anyone the edge addresses do open for.
+
+The relay is the one part of Colloq that is not on your own machine, and it is a single
+point of failure for the addresses under it. Subdomains are handed out by `frps` against
+the shared token, so one relay serves every instance without a DNS record per university:
+`*.colloq.ru` points at it once (`scripts/dns.sh`).
+
+## Environments
+
+A seminar's Python is one set of packages. `kernel/requirements.txt` is the base — jupyter,
+numpy, pandas, matplotlib, scikit-learn — and it is always installed. An *environment* is a
+list of packages on top of it, one file per environment in `kernel/environments/`.
+
+```bash
+make env-list              # what exists, and which one is the default
+make env-new NAME=nlp      # creates kernel/environments/nlp.txt
+$EDITOR kernel/environments/nlp.txt
+make env-use NAME=nlp      # builds it and makes it the default for new seminars
+```
+
+Each environment is baked into its own image tag (`colloq-kernel:nlp`), so an environment
+you have built before starts a container rather than another pip install. The base layer is
 shared between them, which is why an environment costs only the packages the base does not
 already have.
 
-Two things this deliberately does not do. It is **instance-wide**: switching changes the
-kernel for every seminar on this install, not per-room — per-seminar environments need a
-container per seminar, which is a different product. And `make env-use` **restarts the
-kernel**, so every variable in every open seminar is gone; the notebooks and files are
-untouched, the cells just need running again. Both are printed when you run it.
+**A seminar's environment is chosen when the seminar is created, and then fixed.** The room
+runs its own container from that image; `make env-use` and *Make default* in the panel set
+what the **next** seminar gets, and leave the ones that exist alone. A room that needs a
+different set of packages is a new seminar — which is also why the choice sits in the form
+that creates one. The reason it works that way: packages changing under a class mid-seminar
+is worse than a class not having the newest ones.
+
+There is one arrangement where it is still instance-wide, and it is the old one: when the server
+cannot start a container per room, every seminar shares the kernel `docker compose` runs. That
+happens with `KERNEL_ISOLATION=off`, and it happens when the server is itself in a container
+(`make up`) and something in the chain below is missing — no `/var/run/docker.sock`, no
+permission on it, no `KERNEL_NETWORK`. Then switching really does restart that one kernel and
+every variable in every open seminar is gone — the notebooks and files untouched, the cells just
+needing to be run again. Nothing about this is silent: the server log says it, the room's kernel
+log says it, and the Environments screen says it. `make env-use` says which of the two happened.
 
 To see what is actually installed rather than what was requested: `make env-freeze`.
 
@@ -189,9 +235,13 @@ Everything lives in `.env` — see `.env.example` for the full list.
 | `JUPYTER_TOKEN` | Fallback secret for the shared compose kernel. Each seminar's own container gets its own token, derived from `SESSION_SECRET` |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Any OpenAI-compatible endpoint |
 | `AI_REASONING` | Ask the model for its reasoning trace as well (default off — on a reasoning model the trace costs about as much as the answer) |
-| `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling per seminar — each room runs its own container |
-| `KERNEL_ISOLATION` | `auto` (default) gives every seminar its own container, with only its own folder mounted. `off` shares one kernel, and then any room can read every other room's files on that machine |
+| `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling: per seminar where each room runs its own container, otherwise on the one shared kernel |
+| `KERNEL_ISOLATION` | `auto` (default) gives every seminar its own container, with only its own folder mounted. `off` shares one kernel, and then any room can read every other room's files on that machine. Both `make up` and `make run` can do the per-room thing; when the pieces for it are missing the server falls back to the shared kernel and says so |
+| `DOCKER_GID` / `WORKSPACE_HOST_DIR` / `KERNEL_NETWORK` | What a server inside a container needs to give rooms their own kernels: the group of `/var/run/docker.sock`, where `./workspace` lives on the host, and the network to find the room's container on. `make up` fills them in; see *Isolation* |
+| `TZ` | One time zone for the whole instance — the log, the kernel and the dates on published pages (default `Europe/Moscow`) |
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | One file, and everything one seminar holds (default 50 and 1024) |
+| `KERNEL_ENV` | The environment new seminars are created with, and the one baked into the shared kernel. `make env-use` writes it |
+| `RELAY_DOMAIN` / `RELAY_ADDR` / `RELAY_PORT` / `RELAY_TOKEN` | Your own relay instead of Cloudflare — see *Reaching a room from Russia*. Empty means Cloudflare |
 
 The AI layer talks plain OpenAI-compatible HTTP, so pointing `OPENAI_BASE_URL` at Ollama, vLLM,
 LM Studio or OpenRouter works without touching code. Leaving `OPENAI_API_KEY` empty simply
@@ -210,7 +260,7 @@ Browser ── WS /collab  ── Yjs sync (notebook + presence)
                       ── kernel/   one shared kernel per session, FIFO run queue
                       ── ai/       context assembled from the server's own Y.Doc
                 │
-        Jupyter Server container ── isolated, resource-capped, shared /workspace volume
+        Jupyter Server container ── one per seminar, resource-capped, only that room's folder
 ```
 
 Six decisions worth knowing about:
@@ -253,7 +303,7 @@ into the room.
 
 ### Surviving a restart
 
-The server can be killed mid-seminar — a crash, a deploy, `docker compose restart` — and the room
+The server can be killed mid-seminar — a crash, a deploy, `make restart` — and the room
 comes back without anybody reloading a page. Three things make that true, and each of them was
 false at some point:
 
@@ -268,6 +318,15 @@ false at some point:
   are put back to rest and the room is told, because nothing is running in a process that has just
   started. Outputs are kept: a cell that printed three lines before the crash really did print them.
 
+A stopped server (`make restart`, `make stop`, a deploy) flushes its snapshot on the way out, so
+what comes back is what was on screen. A server that is *killed* — SIGKILL, the OOM killer, the
+power going — cannot, and neither can a `colloq.db` restored from a backup: the snapshot is
+seconds behind, while each open tab still holds outputs and kernel state written by the previous
+server. The server no longer takes those on faith. It refuses that first frame and says so in the
+room — "Сервер не знает части того, что осталось в кэше этой вкладки, — она собирается заново" —
+and the tab rebuilds itself from the server's copy, once, without a reload. The few seconds
+between the last snapshot and the kill are the part that is genuinely gone.
+
 A room stays in memory once it has been opened, and is released only when the seminar is deleted.
 That is deliberate — the document is what everyone is editing and what a latecomer syncs from — and
 it is measured rather than assumed: eighty rooms opened, worked in and left cost about five
@@ -281,6 +340,12 @@ so the server re-attaches to the *same* kernel with every variable still in it. 
 cannot survive is a cell that was executing: its output has nowhere to go, and until it is stopped
 every Run anybody presses queues silently behind it. It is stopped on re-attach and the room is told.
 
+All of that is about restarting the *server*. Restarting the **kernel** is the opposite thing:
+the container the variables live in goes away, Jupyter hands the server a new empty one, and
+nothing on screen disagrees — the old `Out[n]` are still in the notebook and the news arrives as
+the first `NameError`. So `make restart` restarts `app` alone, and a bare `docker compose restart`
+(no service named) is the command not to run mid-seminar, because it takes the kernel with it.
+
 And when the kernel itself dies — OOM-killed by `mem_limit`, culled, or restarted underneath — the
 socket does not say so. Jupyter leaves it open. So the server asks: after ten seconds of silence
 with a cell outstanding, it checks whether the kernel still exists, and a kernel that has gone is
@@ -288,9 +353,22 @@ announced, not waited on. A Run afterwards brings a fresh one up rather than fai
 
 ### Isolation
 
-Student code runs as a non-root user inside the `kernel` container, in a separate process from the
-Node server, capped by `mem_limit`, `cpus` and `pids_limit`. Files live on a shared volume, so a
-CSV dropped in the Files panel is readable as `pd.read_csv('data.csv')` from a cell.
+Student code runs as a non-root user in a container of its own — one per seminar, started on
+demand from that seminar's environment image, capped by `KERNEL_MEM`, `KERNEL_CPUS` and a pid
+limit, in a separate process from the Node server. Only that room's folder is mounted into it, and
+its Jupyter token is derived from `SESSION_SECRET` rather than shared, so a cell in one seminar can
+neither read another seminar's files nor talk to its kernel. Inside the room nothing changes: a CSV
+dropped in the Files panel is still `pd.read_csv('data.csv')` from a cell.
+
+The server starts those containers by talking to Docker, which is why the app container is given
+`/var/run/docker.sock`, the group that owns it (`DOCKER_GID`, which `make up` works out and writes
+to `.env`), the host path of `./workspace` (`WORKSPACE_HOST_DIR` — the daemon resolves `-v` paths
+its own way) and the name of the compose network the rooms join (`KERNEL_NETWORK`, how the server
+addresses a room's Jupyter, which is therefore not published on the host at all). That socket is
+root on the host for the server process — the same power it already has under `make run`, and the
+price of a container per room. Take it away and everything still works: the rooms fall back to the
+one shared kernel, where any of them can read the others' files, and the server says so in its log,
+in the room's kernel log and on the Environments screen rather than letting the promise stand.
 
 This is sandboxing appropriate to a classroom of people you know, not to hostile untrusted input.
 Anyone with the link can execute Python inside that container.
@@ -320,8 +398,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up kernel -d
 npm run dev                     # server on :3000, Vite on :5173 with proxying
 ```
 
-The dev override bind-mounts `./workspace` into the kernel container so the host server and the
-containerised kernel see the same files; production uses a named volume instead.
+The dev override publishes the kernel's 8888 on the loopback so the host server can reach it;
+`./workspace` is bind-mounted in both arrangements, which is what makes `make up` and `make run`
+the same instance.
 
 `shared/` holds the Y.Doc schema and wire protocol used by both sides — it is the contract to change
 first when adding a feature.
@@ -337,6 +416,12 @@ npm run perf    # budgets: bundle, API latency, CRDT round-trip
 Both `e2e` and `perf` create seminars and both delete them again on the way out. They point at
 `http://localhost:3000` unless told otherwise — `E2E_BASE_URL` and `PERF_BASE_URL` — which matters
 if an instance somebody is teaching in happens to be on that port.
+
+Both sign in with the setup token from `<DATA_DIR>/setup-token`, and neither *claims* an instance
+nobody has claimed yet: a harness that made itself the owner would leave a stranger's name on the
+install it was pointed at. So on a fresh one `e2e` stops with "nobody has claimed this instance
+yet" and `perf` skips the API and CRDT sections, measuring only the bundle and the network. Open
+`/admin`, claim it once, and both run in full.
 
 `npm test` covers what fails *quietly* — a token that verifies when it should not, an instance left
 with no owner, a context window that drops the traceback the student asked about, a filename that

@@ -824,13 +824,21 @@ const hover = (p: { x: number; y: number }) =>
     pointerType: 'pen',
   })
 
-/** Клавиша с клавиатуры пульта — для листания во время письма (ладонь клавиши не жмёт). */
-async function key(name: string, code: number): Promise<void> {
+/**
+ * Клавиша с клавиатуры пульта — для листания во время письма (ладонь клавиши не жмёт).
+ *
+ * `dom` — имя по стандарту, и оно НЕ всегда равно `key`: у стрелок и Escape
+ * поля совпадают, а у буквы `z` код клавиши — `KeyZ`. Пульт разбирает буквы
+ * именно по `code` (русская раскладка даёт в `key` «я», «и», «д»), так что
+ * `code: 'z'` — клавиша, которую пульт не услышит никогда, то есть немой
+ * запасной путь в проверке.
+ */
+async function key(name: string, code: number, dom = name): Promise<void> {
   for (const type of ['keyDown', 'keyUp'] as const) {
     await pult.send('Input.dispatchKeyEvent', {
       type,
       key: name,
-      code: name,
+      code: dom,
       windowsVirtualKeyCode: code,
       nativeVirtualKeyCode: code,
     })
@@ -1301,6 +1309,48 @@ if (RAZBOR) {
     await wait(900)
     const m = await measure()
     check(m.hall === pageBefore && m.wet.all <= 0 && m.student.dry.all <= 0 && m.shift === 0, 'R13. палец выключен — свайп по листу ничего не делает', `зал ${pageBefore}→${m.hall} · мокрых ${m.wet.all} · у студента ${m.student.dry.all}`)
+  }
+
+  /* R13б. палец выключен + указка: луч ИДЁТ за пальцем, а не застывает */
+  {
+    /*
+     * R11 водит указку ПЕРОМ, R13 водит палец с ПЕРОМ-инструментом, и обе
+     * зелёные — а между ними жил самый частый случай на паре: перо в чехле,
+     * палец давно выключен первым же касанием Pencil'а, и показывают пальцем.
+     * Луч вспыхивал в точке касания и стоял там всё время движения: зал видел
+     * неподвижное пятно не там, куда показывают, и ни одного признака поломки.
+     */
+    await pult.js(press(PULT.laser))
+    await wait(250)
+    const g = await geometry()
+    const path = Array.from({ length: 11 }, (_, i) => onCanvas(g, 0.75 - 0.45 * (i / 10), 0.5))
+    const headX = `const h=window.__inkLat&&window.__inkLat.head;return h?Math.round(h.x):-1`
+    const touch = (type: string, at: { x: number; y: number } | null) =>
+      pult.send('Input.dispatchTouchEvent', {
+        type,
+        touchPoints: at ? [{ x: at.x, y: at.y, id: 952, radiusX: 12, radiusY: 12 }] : [],
+      })
+    await touch('touchStart', path[0])
+    await wait(150)
+    const lit = Number(await pult.js(headX))
+    for (let i = 1; i < path.length; i += 1) {
+      await wait(40)
+      await touch('touchMove', path[i])
+    }
+    // Голова идёт за целью пружиной — даём ей доехать до подъёма пальца.
+    await wait(400)
+    const moved = Number(await pult.js(headX))
+    await touch('touchEnd', null)
+    await wait(400)
+    const shift = lit >= 0 && moved >= 0 ? Math.abs(moved - lit) : 0
+    // Следа указка не оставляет — это уже мера R11; здесь мерим только ход.
+    check(
+      lit >= 0 && shift > g.canvas.width * 0.2,
+      'R13б. палец выключен: указка идёт за пальцем',
+      `голова ${lit < 0 ? 'не зажглась' : lit} → ${moved < 0 ? 'погасла' : moved} · сдвиг ${Math.round(shift)} px при ходе ${Math.round(g.canvas.width * 0.45)}`,
+    )
+    await penTool()
+    await clean()
   }
 
   /* R14. выделение: долгие касания рейла, прибора, подглядки */
@@ -2242,7 +2292,7 @@ for (const [index, [W, H]] of (RAZBOR ? [] : SIZES).entries()) {
     let toast = await toastAfter()
     let via = 'тап'
     if (!/нет связи/i.test(toast)) {
-      await key('z', 90)
+      await key('z', 90, 'KeyZ')
       await wait(150)
       toast = await toastAfter()
       via = 'Z'

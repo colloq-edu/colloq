@@ -1,3 +1,16 @@
+# Имя проекта — здесь, а не по имени папки. И имя сети — своей строкой.
+#
+# Имя сети сервер получает строкой (`KERNEL_NETWORK`): в ней он ищет ядро
+# комнаты по имени контейнера. Складывать его из имени проекта нельзя: то
+# меняется вместе с папкой клона и перебивается COMPOSE_PROJECT_NAME, — а не
+# найдя сети, сервер откатится на общее ядро, и изоляция выключится молча.
+# Поэтому сеть названа прямо, и `KERNEL_NETWORK` по умолчанию — то же имя.
+name: colloq
+
+networks:
+  default:
+    name: colloq
+
 services:
   app:
     build:
@@ -8,9 +21,10 @@ services:
     environment:
       PORT: 3000
       # PORT publishes the container's 3000 on the host; PUBLIC_URL is what goes
-      # into the link students receive. Compose cannot derive one from the other
-      # (it has no nested defaults), so change them together — .env.example
-      # keeps them side by side for exactly this reason.
+      # into the link students receive. Deliberately not derived from each
+      # other: behind a tunnel or a relay the students' address is an https name
+      # with no port in it at all. Change them together — .env.example keeps
+      # them side by side for exactly this reason.
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
       # Empty on purpose. A literal default here would ship every install the
       # same signing key, and that key is what says who the host is. Left unset
@@ -26,11 +40,50 @@ services:
       AI_PROVIDER: ${AI_PROVIDER:-openai}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
       # Compose reads .env for substitution only; a variable that is not named
-      # here never reaches the container. Both of these are documented in
-      # .env.example and in the README table, so both have to be forwarded or
-      # the documentation is a lie.
+      # here never reaches the container. All of these are documented in
+      # .env.example and in the README table, so all of them have to be
+      # forwarded or the documentation is a lie. MAX_SESSION_MB и AI_REASONING
+      # приехали позже остальных и этой строчки не получили: комната принимала
+      # загрузки до умолчания в 1 ГБ при `MAX_SESSION_MB=200` в .env, а
+      # `make run` те же строки применял — два режима одного инстанса вели себя
+      # по-разному.
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       OPEN_SEMINAR_CREATION: ${OPEN_SEMINAR_CREATION:-false}
+      MAX_SESSION_MB: ${MAX_SESSION_MB:-1024}
+      AI_REASONING: ${AI_REASONING:-false}
+      # Не для запуска ядра — его поднимает служба ниже, — а для ответа на
+      # вопрос «какое окружение здесь по умолчанию»: файла .env в контейнере
+      # нет, и без этой строки новый семинар записывался на base при собранном
+      # ядре cv.
+      KERNEL_ENV: ${KERNEL_ENV:-base}
+      # Свой контейнер на комнату — и здесь тоже. Нужны все три разом.
+      #
+      # `KERNEL_ISOLATION` — сам выключатель. `WORKSPACE_HOST_DIR` — путь к
+      # ./workspace ГЛАЗАМИ ДЕМОНА: `-v` разбирает он, и внутренний
+      # `/workspace/<id>` понял бы как путь на хосте, создав там пустую папку.
+      # `KERNEL_NETWORK` — сеть, в которой сервер зовёт ядро комнаты по имени
+      # контейнера: порт, опубликованный на петле хоста, для сервера, который
+      # сам в контейнере, не адрес. Чего-то из трёх нет — комнаты делят одно
+      # ядро, как раньше, и сервер говорит об этом в журнал и в саму комнату.
+      KERNEL_ISOLATION: ${KERNEL_ISOLATION:-auto}
+      WORKSPACE_HOST_DIR: ${WORKSPACE_HOST_DIR:-${PWD}/workspace}
+      KERNEL_NETWORK: ${KERNEL_NETWORK:-colloq}
+      # Те же потолки, что у службы kernel ниже: теперь их ставит сервер
+      # каждому контейнеру семинара, и читает он их отсюда.
+      KERNEL_MEM: ${KERNEL_MEM:-2g}
+      KERNEL_CPUS: ${KERNEL_CPUS:-2}
+      # Один пояс на весь инстанс: журнал, ядро и даты на выложенных страницах.
+      # Иначе страница семинара считает время по UTC, а расписание — по Москве.
+      TZ: ${TZ:-Europe/Moscow}
+    # Сокет docker принадлежит root:docker, а сервер работает от `node`.
+    #
+    # gid этой группы у каждой машины свой, и важен не хостовый, а тот, каким
+    # сокет видит демон: под colima и Docker Desktop на хосте файла может не
+    # быть вовсе. `make up` определяет его и записывает в .env. Не угадали —
+    # клиент получит «permission denied», изоляции не будет, и об этом будет
+    # сказано вслух, а не молчанием.
+    group_add:
+      - "${DOCKER_GID:-0}"
     volumes:
       # Bind-монты, а не именованные тома, и это существенно.
       #
@@ -45,6 +98,20 @@ services:
       # менеджере, и скопировать их — это скопировать папку.
       - ./workspace:/workspace
       - ./data:/data
+      # Списки пакетов правятся из панели, и правка должна остаться на хосте:
+      # иначе она живёт до первой пересборки образа, а `make env-*` и панель
+      # перестают быть двумя лицами одного каталога.
+      - ./kernel/environments:/app/kernel/environments
+      # Сокет docker: им сервер поднимает комнате её собственное ядро.
+      #
+      # Плата названа вслух: у процесса с этим сокетом есть всё, что может
+      # docker на хосте, — то есть root на хосте. Это ровно та власть, с
+      # которой сервер работает при `make run`, и это цена контейнера на
+      # комнату: без него из любой комнаты видны файлы всех остальных
+      # семинаров на машине, а токен Jupyter у них общий. Убрать строку —
+      # вернуться к прежнему устройству; сервер скажет об этом в журнал и в
+      # комнату, а не сделает вид, что изоляция есть.
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       kernel:
         condition: service_healthy
@@ -62,6 +129,9 @@ services:
     image: colloq-kernel:${KERNEL_ENV:-base}
     environment:
       JUPYTER_TOKEN: ${JUPYTER_TOKEN:-colloq-dev-token}
+      # Тот же пояс, что у сервера: `datetime.now()` в ячейке и время в журнале
+      # сервера — про одни и те же часы, иначе разбор «когда это упало» врёт.
+      TZ: ${TZ:-Europe/Moscow}
     volumes:
       - ./workspace:/workspace
     # Student code is arbitrary. Keep a runaway cell from taking down the host.

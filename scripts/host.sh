@@ -86,6 +86,14 @@ cleanup() {
   # прикасались.
   if [ -n "$TOUCHED_ENV" ] && [ -f .env ] && grep -qE '^PUBLIC_URL=https://' .env 2>/dev/null; then
     restore_public_url
+    # Контейнеру одного .env мало: файла внутри нет, PUBLIC_URL запечён в
+    # окружение на `docker compose up -d app` шагом 3/4. Без пересоздания app
+    # так и раздаёт в панели ссылки на туннель, которого больше нет, — и это
+    # видно только тому, кому её отправили. Сервер на хосте перечитывает .env
+    # сам, там достаточно вернуть строку.
+    if [ "${WHO:-}" = container ]; then
+      PUBLIC_URL="$LOCAL" docker compose up -d app >/dev/null 2>&1 || true
+    fi
     say "${DIM}PUBLIC_URL возвращён на ${LOCAL}${OFF}"
   fi
   rm -f "$LOG"
@@ -232,6 +240,12 @@ CONF
 elif [ -n "${COLLOQ_HOSTNAME:-}" ]; then
   # Именованный туннель: постоянный адрес, но его нужно один раз завести
   # (make tunnel-setup). Без этого cloudflared не знает, куда маршрутизировать.
+  #
+  # И говорим вслух, через что пошли: имя под своей зоной без RELAY_DOMAIN в
+  # .env молча уезжало в Cloudflare, а его адреса из России не открываются —
+  # выяснялось это уже в аудитории, где ссылка не открылась ни у кого.
+  say "${DIM}    через Cloudflare. Свой ретранслятор (адреса Cloudflare не${OFF}"
+  say "${DIM}    открываются из России) — RELAY_* в .env, см. make relay-setup${OFF}"
   cloudflared tunnel --no-autoupdate run --url "$LOCAL" colloq >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC="https://${COLLOQ_HOSTNAME}"

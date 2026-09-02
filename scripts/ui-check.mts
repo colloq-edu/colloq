@@ -116,7 +116,53 @@ issueStaffCookie({ cookie: (_n: string, v: string) => (cookieValue = v) } as nev
 
 /* ---------------------------------------------------------------- браузер */
 
-const chrome = spawn(
+const cdp = `http://127.0.0.1:${CDP_PORT}`
+
+/*
+ * Убирать за собой надо и на падении.
+ *
+ * Скрипт бросает из десятков мест («кнопки нет», «поля вопроса нет»), а Chrome
+ * запущен обычным spawn и выход node переживает — вместе со своим профилем во
+ * временном каталоге. Следующий прогон открывал вкладки в этой сироте: токен
+ * участника — HMAC над постоянными SESSION_SECRET и ROOM, поэтому сохранённый
+ * localStorage проходил проверку и на свежем сервере. Вкладка входила молча,
+ * экрана входа не видела, и половина проверок обвиняла продукт.
+ */
+let browser: ReturnType<typeof spawn> | null = null
+let cleaned = false
+const cleanUp = () => {
+  if (cleaned) return
+  cleaned = true
+  /* SIGKILL, а не SIGTERM: по «вежливому» сигналу Chrome прибирается сам и
+     дописывает профиль уже ПОСЛЕ нашего rm — от каталога оставалась папка
+     chrome/, и так их накопилось больше сотни. Профиль всё равно выбрасывается. */
+  browser?.kill('SIGKILL')
+  spawnSync('rm', ['-rf', root])
+}
+process.on('exit', cleanUp)
+/* Без своего обработчика Ctrl-C не доходит до 'exit' вовсе. */
+process.on('SIGINT', () => process.exit(130))
+process.on('SIGTERM', () => process.exit(143))
+
+/*
+ * И если сирота всё-таки осталась (убили прогон -9, чужой Chrome на том же
+ * порту) — сказать об этом, а не подключиться. Цикл ожидания ниже достучится
+ * до кого угодно, кто отвечает на этом порту, и разницы не заметит.
+ */
+try {
+  const busy = await fetch(`${cdp}/json/version`, { signal: AbortSignal.timeout(600) })
+  if (busy.ok) {
+    console.error(
+      `На порту отладки ${CDP_PORT} уже кто-то отвечает — скорее всего Chrome от прошлого прогона.\n` +
+        'Закройте его или задайте другой порт: UI_CHECK_CDP=9335 npx tsx scripts/ui-check.mts',
+    )
+    process.exit(1)
+  }
+} catch {
+  /* порт свободен — так и надо */
+}
+
+browser = spawn(
   CHROME,
   [
     ...(HEADED ? [] : ['--headless=new']),
@@ -129,7 +175,6 @@ const chrome = spawn(
   { stdio: 'ignore' },
 )
 
-const cdp = `http://127.0.0.1:${CDP_PORT}`
 /*
  * Ждём, пока браузер откроет порт отладки. Одной попытки мало и «подождать
  * секунду» тоже: холодный запуск Chrome на занятой машине занимает несколько.
@@ -152,7 +197,6 @@ if (!up) {
     `Chrome не открыл порт отладки. Он вообще есть по пути?\n  ${CHROME}\n` +
       'Другой путь задаётся переменной CHROME.',
   )
-  chrome.kill()
   process.exit(1)
 }
 
@@ -1913,11 +1957,14 @@ await host.send('Page.bringToFront')
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
 )
-await until(beam, `(document.body.textContent||'').includes('пауза')`, 'проекция погасла')
+/* Оба утверждения проверяются, а не одно: непогасший зал раньше проходил эту
+   строку с бодрым «да», потому что результат ожидания никуда не брался. */
+const dimmed = await until(beam, `(document.body.textContent||'').includes('пауза')`, 'проекция погасла')
+const hostKept = (await host.js(`return document.querySelectorAll('canvas').length > 0`)) === true
 check(
-  (await host.js(`return document.querySelectorAll('canvas').length > 0`)) === true,
+  dimmed && hostKept,
   'пауза гасит зал, а у ведущего страница остаётся',
-  'да',
+  dimmed ? (hostKept ? 'да' : 'зал погас, но и у ведущего страницы нет') : 'зал не погас',
 )
 await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
@@ -2197,6 +2244,32 @@ for (const [who, page] of [
   for (const line of page.trouble.slice(0, 4)) console.log(`  (${who}) ${line}`)
 }
 
+/*
+ * И то же самое — проверкой, а не строчкой в выводе.
+ *
+ * Исключения собираются с самого начала «затем, что проверка, молчащая о том,
+ * что на странице что-то упало, отправляет искать причину в код, который ни при
+ * чём», — но в итог не попадали: страница, роняющая TypeError на каждом кадре,
+ * давала «интерфейс отвечает» и код выхода 0, а три строки про неё тонули среди
+ * двух сотен. Молчания не было, отказа не было тоже.
+ */
+const pages = [
+  ['преподаватель', host],
+  ['студент', student],
+  ['планшет', pad],
+  ['проекция', beam],
+  ['пульт', pult],
+  ['вторая вкладка', again],
+] as const
+const broke = pages.filter(([, page]) => page.trouble.length > 0)
+check(
+  broke.length === 0,
+  'страницы не роняют исключений',
+  broke.length === 0
+    ? 'ни одного'
+    : broke.map(([who, page]) => `${who}: ${page.trouble.length} — ${page.trouble[0]}`).join(' · '),
+)
+
 let failed = 0
 for (const r of results) {
   if (!r.ok) failed += 1
@@ -2204,6 +2277,6 @@ for (const r of results) {
 }
 console.log(failed === 0 ? '\n  интерфейс отвечает' : `\n  провалов: ${failed}`)
 
-chrome.kill()
-spawnSync('rm', ['-rf', root])
+/* Браузер и временный каталог убирает cleanUp на 'exit' — и на этом пути, и на
+   любом падении посередине. */
 process.exit(failed === 0 ? 0 : 1)

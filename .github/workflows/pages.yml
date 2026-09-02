@@ -41,10 +41,17 @@ jobs:
         # Страницы семинаров собираются `make site` и проверяются на своей
         # стороне; здесь — последняя застава: в site/ не должно оказаться ни
         # базы, ни рабочих папок комнат, ни ключей.
+        #
+        # Без -maxdepth, и это не мелочь: публикация пишет глубже, чем застава
+        # смотрела. `site/p/<handle>/index.html`, `site/p/<handle>/<seq>/` и
+        # картинки — это глубина 3–4, а проверка доходила до 2, то есть
+        # осматривала ровно тот уровень, куда публикация ничего не кладёт.
+        # Каталог маленький, полный обход бесплатный.
         run: |
           set -e
-          bad=$(find site -maxdepth 2 \( -name '*.db' -o -name '*.sqlite*' -o -name '.env*' \
-                -o -name 'setup-token' -o -name 'id_*' \) -print)
+          bad=$(find site \( -name '*.db' -o -name '*.sqlite*' -o -name '.env*' \
+                -o -name 'setup-token' -o -name 'id_*' -o -name '*.pem' \
+                -o -name '.ipynb_checkpoints' \) -print)
           if [ -n "$bad" ]; then
             echo "в site/ попало то, чего там быть не должно:"; echo "$bad"; exit 1
           fi

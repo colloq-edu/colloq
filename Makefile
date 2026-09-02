@@ -4,9 +4,11 @@
 #
 #   make run               собрать и запустить
 #   make host              поднять семинар и получить ссылку для аудитории
-#   make env-use NAME=cv   переключить ядро на другое окружение Python
+#   make env-use NAME=cv   окружение Python для новых семинаров
 #
-# Всё считается на этой машине. Ни VPS, ни белого IP, ни проброса портов.
+# Всё считается на этой машине: ни белого IP, ни проброса портов на роутере.
+# Отдельная машина нужна ровно в одном случае — под свой адрес *.colloq.ru
+# вместо Cloudflare, которого не видно из России: make relay-setup, см. README.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -16,6 +18,12 @@ ENV_DIR := kernel/environments
 # Какое окружение сейчас запечено в образ ядра. Пишется в .env, читается compose.
 CURRENT_ENV = $(shell grep -E '^KERNEL_ENV=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ')
 CURRENT_ENV := $(if $(CURRENT_ENV),$(CURRENT_ENV),base)
+# Порт читается из .env, а не из оболочки. Задают его именно там — так говорят
+# и README, и .env.example, — а `$$PORT` в рецепте это переменная окружения
+# человека, обычно пустая. При PORT=4000 в .env сервер слушал 4000, `make run`
+# ждал готовности на 3000 и объявлял здоровый инстанс не поднявшимся.
+PORT = $(shell grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ')
+PORT := $(if $(PORT),$(PORT),3000)
 
 BOLD := \033[1m
 DIM  := \033[2m
@@ -23,8 +31,11 @@ CYAN := \033[36m
 RED  := \033[31m
 OFF  := \033[0m
 
-.PHONY: help up dev run stop logs-run down restart logs status ps shell \
-        host relay-setup tunnel-setup \
+# Все цели — .PHONY, и это не формальность: рядом лежит каталог `site/`, из-за
+# которого `make site` печатал «site is up to date» и не делал ничего — ни
+# страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
+.PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell \
+        host relay-setup tunnel-setup site ui sync course \
         env-list env-show env-new env-use env-build env-freeze \
         backup test check
 
@@ -32,12 +43,42 @@ OFF  := \033[0m
 
 DEV := -f docker-compose.yml -f docker-compose.dev.yml
 
-up: .env ## Поднять colloq целиком в docker на http://localhost:3000
+up: .env dirs docker-gid ## Поднять colloq целиком в docker на http://localhost:3000
 	docker compose up -d --build
-	@printf '$(BOLD)colloq на$(OFF) $(CYAN)http://localhost:$${PORT:-3000}$(OFF)\n'
+	@printf '$(BOLD)colloq на$(OFF) $(CYAN)http://localhost:$(PORT)$(OFF)\n'
 	@printf '$(DIM)окружение ядра: $(CURRENT_ENV) · наружу — make host$(OFF)\n'
 
-dev: .env ## Ядро в docker, сервер на хосте (npm run dev рядом)
+dirs:
+	@# Каталоги под базу и файлы семинаров заводим сами, до docker.
+	@#
+	@# Bind-монт с несуществующим источником Docker на Linux создаёт от root, а
+	@# app работает от node: первая же запись data/session-secret падала с
+	@# EACCES, `restart: unless-stopped` крутил контейнер в цикле, setup-token
+	@# не печатался — то есть `make up` на свежем клоне не поднимался вовсе. На
+	@# macOS этого не видно, поэтому строка выглядит лишней ровно до Ubuntu.
+	@mkdir -p data workspace
+
+docker-gid:
+	@# Группа сокета docker — без неё у комнаты нет своего ядра.
+	@#
+	@# Сервер в контейнере работает от `node`, а сокет принадлежит root:docker.
+	@# Нужен тот gid, каким сокет видит ДЕМОН, а не хост: под colima и Docker
+	@# Desktop файла на хосте может не быть вовсе, поэтому когда его не видно —
+	@# спрашиваем у самого демона одним крошечным контейнером. Пишем в .env, а
+	@# не в окружение make: `docker compose` зовут ещё и host.sh, и руки, и все
+	@# они читают .env. Не определилось — не беда: сервер не достучится до
+	@# docker, скажет об этом в журнал, и комнаты поделят одно ядро, как раньше.
+	@grep -qE '^DOCKER_GID=' .env 2>/dev/null || { \
+	  gid=$$(stat -c %g /var/run/docker.sock 2>/dev/null \
+	    || stat -f %g /var/run/docker.sock 2>/dev/null \
+	    || docker run --rm -v /var/run/docker.sock:/var/run/docker.sock busybox stat -c %g /var/run/docker.sock 2>/dev/null); \
+	  if [ -n "$$gid" ]; then \
+	    printf '\n# Группа сокета docker: с ней сервер поднимает семинару своё ядро.\nDOCKER_GID=%s\n' "$$gid" >> .env; \
+	    printf '$(DIM)группа сокета docker: %s — записана в .env, у каждого семинара будет своё ядро$(OFF)\n' "$$gid"; \
+	  fi; \
+	}
+
+dev: .env dirs ## Ядро в docker, сервер на хосте (npm run dev рядом)
 	@# Только ядро и только с override: он публикует 8888 на хост и монтирует
 	@# ./workspace, иначе сервер с хоста ядра не видит, а файлы расходятся.
 	docker compose $(DEV) up kernel -d
@@ -55,7 +96,7 @@ dev: .env ## Ядро в docker, сервер на хосте (npm run dev ря�
 PID := .colloq.pid
 LOG := .colloq.log
 
-run: .env ## Собрать и запустить. Это то, что нужно после любой правки кода
+run: .env dirs ## Собрать и запустить. Это то, что нужно после любой правки кода
 	@$(MAKE) --no-print-directory stop
 	@# Контейнерный app и хостовой сервер — это два Colloq на одном порту.
 	@# Раньше второй просто падал с EADDRINUSE, а после `make down` вставал на
@@ -72,9 +113,9 @@ run: .env ## Собрать и запустить. Это то, что нужн�
 	@# угодно, хоть скрипт туннеля. Два Yjs-авторитета на одну комнату дают
 	@# полупустую тетрадь с задвоенными ячейками и вечное переподключение, и
 	@# понять это по экрану невозможно. Проверка стоит одну команду.
-	@if lsof -ti :$${PORT:-3000} >/dev/null 2>&1; then \
-	  printf '$(RED)порт $${PORT:-3000} уже занят:$(OFF)\n'; \
-	  lsof -i :$${PORT:-3000} -sTCP:LISTEN | tail -n +2 | awk '{printf "  %s (pid %s)\n", $$1, $$2}'; \
+	@if lsof -ti :$(PORT) >/dev/null 2>&1; then \
+	  printf '$(RED)порт $(PORT) уже занят:$(OFF)\n'; \
+	  lsof -i :$(PORT) -sTCP:LISTEN | tail -n +2 | awk '{printf "  %s (pid %s)\n", $$1, $$2}'; \
 	  printf '$(DIM)это второй Colloq — остановите его и повторите: make stop · make down$(OFF)\n'; \
 	  exit 1; \
 	fi
@@ -95,7 +136,7 @@ run: .env ## Собрать и запустить. Это то, что нужн�
 	@# когда и база читается, и Jupyter отзывается.
 	@ok=; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
 	  if ! kill -0 "$$(cat $(PID) 2>/dev/null)" 2>/dev/null; then break; fi; \
-	  if curl -fsS -m 2 "http://localhost:$${PORT:-3000}/api/health" >/dev/null 2>&1; then ok=1; break; fi; \
+	  if curl -fsS -m 2 "http://localhost:$(PORT)/api/health" >/dev/null 2>&1; then ok=1; break; fi; \
 	  sleep 1; \
 	done; \
 	if [ -n "$$ok" ]; then \
@@ -143,18 +184,35 @@ backup: ## Снять копию базы в backups/ (можно на ходу,
 	    || { printf '$(RED)не вышло. Нужен sqlite3 — brew install sqlite$(OFF)\n'; exit 1; }
 
 down: ## Остановить всё (данные и файлы семинаров остаются)
-	docker compose down
-	@# И контейнеры семинаров: у каждой комнаты свой, compose про них не знает —
-	@# их поднимает сервер по ходу занятия. Без этой строки «остановить всё»
-	@# оставляло бы работать по контейнеру на каждую комнату, открытую сегодня.
+	@# Сначала контейнеры семинаров: у каждой комнаты свой, compose про них не
+	@# знает — их поднимает сервер по ходу занятия. Без этой строки «остановить
+	@# всё» оставляло бы работать по контейнеру на каждую комнату, открытую
+	@# сегодня. И именно в этом порядке: под `make up` они стоят в сети compose,
+	@# а сеть с чужими контейнерами внутри не удаляется — `docker compose down`
+	@# сказал бы «Resource is still in use» и оставил её висеть.
 	@ids="$$(docker ps -aq --filter 'label=colloq.kind=room-kernel' 2>/dev/null)"; \
 	if [ -n "$$ids" ]; then \
 	  docker rm -f $$ids >/dev/null && \
 	  printf '$(DIM)убрано контейнеров семинаров: %s$(OFF)\n' "$$(echo $$ids | wc -w | tr -d ' ')"; \
 	fi
+	docker compose down
 
-restart: ## Перезапустить, не пересобирая
-	docker compose restart
+restart: ## Перезапустить сервер в docker, не пересобирая (ядро не трогаем)
+	@# Только app, и это важнее, чем кажется.
+	@#
+	@# Голый `docker compose restart` перезапускал и службу kernel, а это то
+	@# ядро, на котором сидят комнаты, когда своего контейнера им не досталось:
+	@# Jupyter поднимался пустым, сокеты переподключались как ни в чём не
+	@# бывало, в тетради стояли
+	@# прежние Out[n], и о пропаже model и df класс узнавал первым NameError
+	@# минут через десять. README обещает, что перезапуск сервер переживает, —
+	@# обещание про сервер, а не про ядро.
+	@if docker compose ps --status running --services 2>/dev/null | grep -qx app; then \
+	  docker compose restart app; \
+	else \
+	  printf '$(DIM)в docker app не запущен — перезапускать нечего.$(OFF)\n'; \
+	  printf '$(DIM)сервер на хосте (make run) перезапускается так: make stop · make run$(OFF)\n'; \
+	fi
 
 logs: ## Смотреть логи (Ctrl+C — выйти)
 	docker compose logs -f --tail=80
@@ -221,7 +279,7 @@ env-list: ## Какие окружения заведены
 	  mark=' '; [ "$$name" = "$(CURRENT_ENV)" ] && mark='*'; \
 	  printf '  %s %-14s $(DIM)%s пакетов сверх базы$(OFF)\n' "$$mark" "$$name" "$$n"; \
 	done
-	@printf '\n$(DIM)* — то, что стоит сейчас. Переключить: make env-use NAME=<имя>$(OFF)\n'
+	@printf '\n$(DIM)* — умолчание для новых семинаров. Сменить: make env-use NAME=<имя>$(OFF)\n'
 
 env-show: ## Что за окружение стоит сейчас и что в нём
 	@printf '$(BOLD)$(CURRENT_ENV)$(OFF) $(DIM)— $(ENV_DIR)/$(CURRENT_ENV).txt$(OFF)\n\n'
@@ -246,7 +304,7 @@ env-build: ## Собрать образ окружения, не переклю�
 	@test -f $(ENV_DIR)/$(NAME).txt || { printf '$(RED)Нет $(ENV_DIR)/$(NAME).txt — сначала make env-new NAME=$(NAME)$(OFF)\n'; exit 1; }
 	KERNEL_ENV=$(NAME) docker compose build kernel
 
-env-use: ## Переключить ядро на окружение. NAME=cv
+env-use: ## Окружение по умолчанию для новых семинаров. NAME=cv
 	@test -n "$(NAME)" || { printf '$(RED)Укажите имя: make env-use NAME=cv$(OFF)\n'; exit 1; }
 	@test -f $(ENV_DIR)/$(NAME).txt || { printf '$(RED)Нет $(ENV_DIR)/$(NAME).txt — сначала make env-new NAME=$(NAME)$(OFF)\n'; exit 1; }
 	@printf '$(BOLD)собираю $(NAME)$(OFF) $(DIM)(первый раз может быть долго)$(OFF)\n'
@@ -262,9 +320,23 @@ env-use: ## Переключить ядро на окружение. NAME=cv
 	else \
 	  KERNEL_ENV=$(NAME) docker compose up -d kernel; \
 	fi
-	@printf '\n$(BOLD)ядро работает на окружении $(CYAN)$(NAME)$(OFF)\n'
-	@printf '$(RED)Переменные в открытых семинарах потеряны:$(OFF) $(DIM)ядро перезапущено.$(OFF)\n'
-	@printf '$(DIM)Ячейки и файлы на месте — нужно просто прогнать заново.$(OFF)\n'
+	@# Что здесь правда, а что было правдой раньше.
+	@#
+	@# Окружение выбирается семинару при создании и дальше не меняется: у
+	@# комнаты свой контейнер из образа `colloq-kernel:<её окружение>`. Значит
+	@# эта команда задаёт умолчание для НОВЫХ семинаров, а открытые не трогает —
+	@# прежний текст «переменные потеряны» звал прогонять ячейки заново там, где
+	@# ничего не происходило, и обещал новые пакеты там, где их не будет.
+	@# Общее ядро compose, которое здесь перезапускается, комнаты делят только
+	@# при KERNEL_ISOLATION=off или когда сервер не может поднять контейнер
+	@# комнаты вовсе — тогда переменные действительно теряются, и об этом
+	@# сказано отдельной строкой.
+	@printf '\n$(BOLD)новые семинары будут создаваться на окружении $(CYAN)$(NAME)$(OFF)\n'
+	@printf '$(DIM)Уже созданные остаются на своём: окружение выбирается один раз,$(OFF)\n'
+	@printf '$(DIM)при создании семинара. Нужен другой набор пакетов — новый семинар.$(OFF)\n'
+	@printf '$(DIM)Если комнаты делят одно ядро (KERNEL_ISOLATION=off или сервер не$(OFF)\n'
+	@printf '$(DIM)может поднять контейнер комнаты) — оно только что перезапущено,$(OFF)\n'
+	@printf '$(DIM)и переменные в нём потеряны.$(OFF)\n'
 
 env-freeze: ## Показать реальные версии из работающего ядра
 	@docker compose exec -T kernel pip freeze

@@ -4,8 +4,9 @@
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up kernel -d
 #   npm run dev
 #
-# The bind mount (instead of the named volume prod uses) is what lets the host
-# server and the containerised kernel see the same files.
+# Публикация 8888 на петлю — это и есть весь override: без неё сервер с хоста
+# ядра не видит. ./workspace монтируется в обоих составах, поэтому файлы у
+# `make up` и `make run` одни и те же.
 services:
   kernel:
     ports:

@@ -54,6 +54,21 @@ const MAX_BLOCKING_GZIP_KB = 250
  *  name field and a button. Baseline: all four. */
 const MAX_BLOCKING_DEAD_LIBS = 0
 
+/** What a *seminar link* pulls: the blocking graph plus everything the inline
+ *  head script modulepreloads on /s/:id (the editor and renderer chunks). A
+ *  student never opens '/', so this — not the blocking number — is what the
+ *  click on the link costs. Measured 328.2 KB gzip ≈ 1.7s on lecture-hall wifi;
+ *  400 KB ≈ 2.1s is where "working a few seconds after the click" stops being
+ *  true. This is the budget that goes red when codemirror or render grows. */
+const MAX_SEMINAR_FIRST_FETCH_GZIP_KB = 400
+
+/** The biggest file the room downloads that no import edge leads to: the pdf.js
+ *  worker, copied from public/ rather than bundled. Measured 363.6 KB gzip, and
+ *  it arrives while somebody watches a blank page waiting for page one — about
+ *  1.9s of it on lecture-hall wifi. 450 KB ≈ 2.4s is the ceiling; a pdfjs
+ *  upgrade that doubles the worker has to be a decision, not a surprise. */
+const MAX_ONDEMAND_ASSET_GZIP_KB = 450
+
 /** The shell in index.html must survive slow-start: ~16 KB is the first burst
  *  of packets after the handshake, so an inlined app shell that fits here costs
  *  no extra round trip. Baseline 1.1 KB, leaving room to inline critical CSS. */
@@ -162,8 +177,10 @@ const ENTRY_ALLOWED_LIBS = new Set(['svelte', 'yjs'])
  *            chunk improves caching and parallelism, but the module graph still
  *            has to be downloaded and executed before the app boots, so it is
  *            counted here however many files it arrives in.
- * preload   — modulepreloaded but outside that static graph: a genuine warming
- *             hint for a route the student has not reached yet.
+ * preload   — modulepreloaded but outside that static graph. On '/' that is a
+ *             warming hint for a route nobody has reached yet; on /s/:id the
+ *             inline script in <head> asks for these immediately, so on a
+ *             seminar link they are part of the first fetch, not a saving.
  * lazy      — reachable only through a dynamic import(): fetched on demand.
  */
 type Load = 'blocking' | 'preload' | 'lazy'
@@ -172,6 +189,10 @@ interface Chunk { file: string; raw: number; gzip: number; load: Load; libs: str
 interface BundleReport {
   dir: string
   chunks: Chunk[]
+  /** Files vite copied rather than bundled — public/ passes straight through.
+   *  No import edge leads to them, so the module graph above cannot see them,
+   *  and the pdf.js worker alone is bigger than any chunk in it. */
+  extras: Array<{ file: string; raw: number; gzip: number }>
   totalRaw: number
   totalGzip: number
   blockingRaw: number
@@ -225,9 +246,34 @@ function htmlRefs(html: string): HtmlRefs {
     const rel = attrOf(tag, 'rel').toLowerCase()
     const media = attrOf(tag, 'media').toLowerCase()
     const deferred = media !== '' && media !== 'all' && media !== 'screen'
-    if (rel.includes('stylesheet') && !deferred) refs.blockingSheets.push(url)
+    /*
+     * The app stylesheet is the exception media="print" usually rules out:
+     * vite parks it off the critical path, but main.ts holds the loading slab
+     * up until that exact sheet has applied (it finds it by this attribute),
+     * so the join screen does not exist until it lands. Calling it a hint made
+     * the harness blind to the only file the first frame really waits on.
+     */
+    const heldForFirstPaint = /\bdata-colloq-css\b/i.test(tag)
+    if (rel.includes('stylesheet') && (!deferred || heldForFirstPaint)) refs.blockingSheets.push(url)
     else refs.hints.push(url)
   }
+  /*
+   * Preloads written by a script, not by a tag.
+   *
+   * The first-paint plugin appends an inline <script> that modulepreloads the
+   * editor and renderer chunks when the path starts with /s/ — that is, on
+   * every seminar link a student ever opens. Read by tag alone those chunks
+   * looked lazy, and the harness printed "only on dynamic import()" about a
+   * quarter-megabyte that goes out on the wire at once. The literals are plain
+   * "/assets/*.js" strings in a JSON array, so lift them out of the script.
+   */
+  const inline = html.replace(/<noscript>[\s\S]*?<\/noscript>/gi, '')
+  for (const block of inline.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
+    for (const ref of block[1].matchAll(/["'](\/assets\/[^"']+\.(?:js|mjs|css))["']/g)) {
+      refs.hints.push(ref[1])
+    }
+  }
+  refs.hints = [...new Set(refs.hints)]
   return refs
 }
 
@@ -307,14 +353,34 @@ function bundle(): BundleReport | null {
   for (const c of chunks) c.load = critical.has(c.file) ? 'blocking' : hinted.has(c.file) ? 'preload' : 'lazy'
   chunks.sort((a, b) => b.gzip - a.gzip)
 
+  /*
+   * Everything else in dist/: the pdf.js worker (bigger than any chunk above)
+   * and the fonts. Counting only assets/ made "total on disk" understate the
+   * build by 1.6x and left the largest single file the room downloads outside
+   * every budget. Kept apart from `chunks` on purpose — these have no import
+   * edges, so blocking/preload/lazy would be three wrong answers.
+   */
+  const extras = walk(DIST)
+    .filter((full) => !full.startsWith(assetsDir + '/') && !/\.html?$/i.test(full))
+    .map((full) => {
+      const buf = readFileSync(full)
+      return {
+        file: '/' + relative(DIST, full).split(/[\\/]/).join('/'),
+        raw: buf.length,
+        gzip: gzipSync(buf, { level: 9 }).length,
+      }
+    })
+    .sort((a, b) => b.gzip - a.gzip)
+
   const blocking = chunks.filter((c) => c.load === 'blocking')
   const preload = chunks.filter((c) => c.load === 'preload')
   const uniq = (cs: Chunk[]) => [...new Set(cs.flatMap((c) => c.libs))].sort()
   return {
     dir: DIST_LABEL,
     chunks,
-    totalRaw: chunks.reduce((n, c) => n + c.raw, 0),
-    totalGzip: chunks.reduce((n, c) => n + c.gzip, 0),
+    extras,
+    totalRaw: chunks.reduce((n, c) => n + c.raw, 0) + extras.reduce((n, e) => n + e.raw, 0),
+    totalGzip: chunks.reduce((n, c) => n + c.gzip, 0) + extras.reduce((n, e) => n + e.gzip, 0),
     blockingRaw: blocking.reduce((n, c) => n + c.raw, 0),
     blockingGzip: blocking.reduce((n, c) => n + c.gzip, 0),
     preloadGzip: preload.reduce((n, c) => n + c.gzip, 0),
@@ -341,7 +407,7 @@ function printBundle(b: BundleReport | null): void {
     return
   }
 
-  say(dim(`   ${b.dir}/assets · gzip level 9 · index.html ${kb(b.htmlBytes)}`))
+  say(dim(`   ${b.dir} · gzip level 9 · index.html ${kb(b.htmlBytes)}`))
   say(dim('   chunk'.padEnd(42) + 'raw'.padStart(9) + 'gzip'.padStart(9) + '  load'))
   for (const c of b.chunks) {
     const over = c.gzip > MAX_CHUNK_GZIP_KB * 1024
@@ -351,14 +417,24 @@ function printBundle(b: BundleReport | null): void {
       '  ' + (c.load === 'blocking' ? c.load : dim(c.load))
     say(over ? red(row + `  ! over ${MAX_CHUNK_GZIP_KB}K gzip`) : row)
   }
-  const lazyGzip = b.totalGzip - b.blockingGzip - b.preloadGzip
+  for (const e of b.extras) {
+    say(dim('   ' + e.file.replace(/^\//, '').padEnd(39) +
+        kb(e.raw).padStart(9) + kb(e.gzip).padStart(9) + '  on demand, outside the graph'))
+  }
+  const lazyGzip = b.chunks.reduce((n, c) => (c.load === 'lazy' ? n + c.gzip : n), 0)
+  const extrasGzip = b.extras.reduce((n, e) => n + e.gzip, 0)
   const blockingCount = b.chunks.filter((c) => c.load === 'blocking').length
+  const seminarGzip = b.blockingGzip + b.preloadGzip
   say('   ' + 'total on disk'.padEnd(39) + kb(b.totalRaw).padStart(9) + kb(b.totalGzip).padStart(9))
   say('   ' + bold('before the app can boot'.padEnd(39)) + kb(b.blockingRaw).padStart(9) + bold(kb(b.blockingGzip).padStart(9)) +
       dim(`  ${blockingCount} file(s), entry + static imports`))
-  say(dim('   ' + '+ preloaded for a later route'.padEnd(39) + ''.padStart(9) + kb(b.preloadGzip).padStart(9)))
+  say('   ' + bold('a seminar link fetches at once'.padEnd(39)) + ''.padStart(9) + bold(kb(seminarGzip).padStart(9)) +
+      dim('  + what /s/:id modulepreloads: the address a student actually opens'))
   say(dim('   ' + '+ lazy, only on dynamic import()'.padEnd(39) + ''.padStart(9) + kb(lazyGzip).padStart(9) +
       (lazyGzip === 0 ? '  nothing is deferred' : '')))
+  if (extrasGzip > 0) {
+    say(dim('   ' + '+ on demand, outside the graph'.padEnd(39) + ''.padStart(9) + kb(extrasGzip).padStart(9)))
+  }
   if (b.preloadedCritical > 0) {
     say(dim(`   ${b.preloadedCritical} modulepreload hint(s) point at chunks the entry statically imports:` +
         ' the fetches go out in parallel instead of in a waterfall, but none of those bytes are deferred'))
@@ -367,7 +443,9 @@ function printBundle(b: BundleReport | null): void {
   // The checkable version of "the join screen does not load CodeMirror".
   const verdict = Object.keys(LIB_MARKERS).map((lib) => {
     if (b.blockingLibs.includes(lib)) return ENTRY_ALLOWED_LIBS.has(lib) ? green(`${lib} ✓`) : red(`${lib} SHIPPED`)
-    if (b.preloadLibs.includes(lib)) return dim(`${lib} preloaded`)
+    // Not executed before boot, but on /s/:id it is on the wire immediately —
+    // saying only "—" here was the harness claiming an absence it did not have.
+    if (b.preloadLibs.includes(lib)) return dim(`${lib} preloaded on /s/`)
     return dim(`${lib} —`)
   })
   say('   join screen carries: ' + verdict.join('  '))
@@ -382,17 +460,24 @@ function printBundle(b: BundleReport | null): void {
 
   const biggest = b.chunks[0]
   check('largest chunk gzip', biggest ? biggest.gzip / 1024 : 0, MAX_CHUNK_GZIP_KB, 'KB',
-    'one chunk over this blocks paint for >1.3s on lecture-hall wifi and defeats caching')
+    'a ceiling on any one chunk, blocking or not: 1.3s of wifi whenever it is fetched, and one line re-fetches all of it')
   check('blocking payload gzip', b.blockingGzip / 1024, MAX_BLOCKING_GZIP_KB, 'KB',
     'fetched and parsed before the join screen can exist at all')
+  check('seminar link first fetch gzip', seminarGzip / 1024, MAX_SEMINAR_FIRST_FETCH_GZIP_KB, 'KB',
+    'blocking plus what /s/:id preloads: the bytes the student, not the teacher, waits for')
   check('dead libs on join screen', dead.length, MAX_BLOCKING_DEAD_LIBS, '',
     'notebook-only code in the render-blocking graph: bytes the join screen cannot use')
+  const biggestExtra = b.extras[0]
+  if (biggestExtra) {
+    check('largest file outside the graph', biggestExtra.gzip / 1024, MAX_ONDEMAND_ASSET_GZIP_KB, 'KB',
+      `${biggestExtra.file} — no import leads to it, so no budget above ever sees it`)
+  }
   say()
 }
 
 /* ---------------------------------------------------------------- 2. api */
 
-interface ApiRow { label: string; n: number; p50: number; p95: number; worst: number }
+interface ApiRow { label: string; n: number; p50: number; p95: number; worst: number; refused: number }
 
 async function timedJson(url: string, init?: RequestInit): Promise<{ ms: number; body: any; status: number }> {
   const t0 = performance.now()
@@ -416,16 +501,29 @@ const madeHere: string[][] = []
 
 async function cleanUpSeminars(): Promise<void> {
   const ids = madeHere.flat()
-  if (ids.length === 0 || !staffCookie) return
-  let gone = 0
+  if (ids.length === 0) return
+  /*
+   * DELETE /api/admin/seminars/:id is owner-only. On an instance with
+   * OPEN_SEMINAR_CREATION=true this run can make twenty-one seminars without a
+   * cookie and then have nothing to remove them with — and it used to return
+   * here in silence, leaving them in somebody's panel unannounced. Say it
+   * loudly and name them: a mess somebody has to clean by hand beats a mess
+   * nobody knows about.
+   */
+  if (!staffCookie) {
+    console.log(`\ncould not clean up ${ids.length} seminar(s) this run created — not signed in as staff, and deleting one is owner-only:\n  ${ids.join('\n  ')}`)
+    return
+  }
+  const left: string[] = []
   for (const id of ids) {
     const res = await fetch(`${BASE}/api/admin/seminars/${id}`, {
       method: 'DELETE',
       headers: { cookie: staffCookie },
-    })
-    if (res.ok) gone++
+    }).catch(() => null)
+    if (!res?.ok) left.push(id)
   }
-  console.log(`\ncleaned up ${gone}/${ids.length} seminars this run created`)
+  console.log(`\ncleaned up ${ids.length - left.length}/${ids.length} seminars this run created`)
+  if (left.length > 0) console.log(`  still there:\n  ${left.join('\n  ')}`)
 }
 
 const post = (body: unknown): RequestInit => ({
@@ -435,11 +533,15 @@ const post = (body: unknown): RequestInit => ({
 })
 
 /**
- * The same door a human uses on a fresh instance: read <DATA_DIR>/setup-token
- * off the disk, claim the instance if nobody has, otherwise spend the token on
- * its second job and sign in as the founding owner. Returns the reason it could
- * not, so a missing token reads as "perf could not sign in" rather than as a
- * mysteriously broken sync path.
+ * The same door a human uses: read <DATA_DIR>/setup-token off the disk and
+ * spend it on its second job — signing in as the founding owner. Returns the
+ * reason it could not, so a missing token reads as "perf could not sign in"
+ * rather than as a mysteriously broken sync path.
+ *
+ * An unclaimed instance is refused rather than claimed. Claiming it would make
+ * the harness its owner — "Perf Harness <perf@colloq.test>" in the panel — and
+ * would take the first-run screen away from the teacher the instance is for,
+ * which is a lot to do to somebody for the sake of a timing table.
  */
 async function signInAsStaff(): Promise<string | null> {
   const tokenFile = resolve(process.env.DATA_DIR ?? join(ROOT, 'data'), 'setup-token')
@@ -451,9 +553,8 @@ async function signInAsStaff(): Promise<string | null> {
   }
   try {
     const state = await (await fetch(`${BASE}/api/admin/state`)).json() as { claimed?: boolean }
-    const res = state?.claimed
-      ? await fetch(`${BASE}/api/admin/signin/token`, post({ token }))
-      : await fetch(`${BASE}/api/admin/claim`, post({ token, name: 'Perf Harness', email: 'perf@colloq.test' }))
+    if (!state?.claimed) return 'nobody has claimed this instance yet — claim it in /admin and run again'
+    const res = await fetch(`${BASE}/api/admin/signin/token`, post({ token }))
     if (!res.ok) return `sign-in refused (${res.status})`
     staffCookie = (res.headers.get('set-cookie') ?? '').split(';')[0]
     return staffCookie.startsWith('colloq_staff=') ? null : 'no staff cookie was issued'
@@ -464,20 +565,35 @@ async function signInAsStaff(): Promise<string | null> {
 
 async function api(): Promise<ApiRow[]> {
   const rows: ApiRow[] = []
-  const run = async (label: string, fn: (i: number) => Promise<number>) => {
+  /*
+   * Every row carries how many of its twenty calls were refused. Timing a 403
+   * is timing nothing: a refusal is the *fastest* response an endpoint has, so
+   * without this the table printed 1.2 ms for POST /api/sessions and both
+   * latency budgets went green on a request the server never did. Section 4
+   * has said the same thing about a non-200 since it was written.
+   */
+  const run = async (label: string, fn: (i: number) => Promise<{ ms: number; status: number }>) => {
     const samples: number[] = []
-    for (let i = 0; i < API_N; i++) samples.push(await fn(i))
-    rows.push({ label, n: API_N, p50: pct(samples, 50), p95: pct(samples, 95), worst: Math.max(...samples) })
+    let refused = 0
+    for (let i = 0; i < API_N; i++) {
+      const r = await fn(i)
+      samples.push(r.ms)
+      if (r.status < 200 || r.status >= 300) refused++
+    }
+    rows.push({
+      label, n: API_N, refused,
+      p50: pct(samples, 50), p95: pct(samples, 95), worst: Math.max(...samples),
+    })
   }
 
-  await run('GET  /api/health', async () => (await timedJson(`${BASE}/api/health`)).ms)
+  await run('GET  /api/health', () => timedJson(`${BASE}/api/health`))
 
   const created: string[] = []
   madeHere.push(created)
   await run('POST /api/sessions', async (i) => {
     const r = await timedJson(`${BASE}/api/sessions`, post({ name: `perf ${Date.now()}-${i}` }))
     if (r.body?.session?.id) created.push(r.body.session.id)
-    return r.ms
+    return r
   })
 
   // Everything below hangs off one session, the way a real seminar does.
@@ -490,9 +606,9 @@ async function api(): Promise<ApiRow[]> {
     // (page reload), and it keeps the run from spraying rows into the DB.
     const r = await timedJson(`${BASE}/api/sessions/${sid}/join`, post({ name: 'perf', participantId }))
     participantId ??= r.body?.participant?.id
-    return r.ms
+    return r
   })
-  await run('GET  /api/sessions/:id', async () => (await timedJson(`${BASE}/api/sessions/${sid}`)).ms)
+  await run('GET  /api/sessions/:id', () => timedJson(`${BASE}/api/sessions/${sid}`))
 
   return rows
 }
@@ -501,13 +617,16 @@ function printApi(rows: ApiRow[]): void {
   say(bold('2. API') + dim(`  — REST on the path from link click to notebook (n=${API_N} each)`))
   say(dim('   endpoint'.padEnd(42) + 'p50'.padStart(9) + 'p95'.padStart(9) + 'worst'.padStart(10)))
   for (const r of rows) {
-    say('   ' + r.label.padEnd(39) + ms(r.p50).padStart(9) + ms(r.p95).padStart(9) + ms(r.worst).padStart(10))
+    const row = '   ' + r.label.padEnd(39) + ms(r.p50).padStart(9) + ms(r.p95).padStart(9) + ms(r.worst).padStart(10)
+    say(r.refused > 0 ? red(row + `  ! ${r.refused}/${r.n} refused, so these are not timings of the work`) : row)
   }
   const worstP50 = Math.max(...rows.map((r) => r.p50))
   const worstAll = Math.max(...rows.map((r) => r.worst))
   check('api p50 (slowest endpoint)', worstP50, MAX_API_P50_MS, 'ms',
     'a blocking call added to the join path shows up here first')
   check('api worst of 20', worstAll, MAX_API_WORST_MS, 'ms', 'catches a cold-start stall on the first request')
+  check('api calls refused', rows.reduce((n, r) => n + r.refused, 0), 0, '',
+    'a refusal is the fastest answer an endpoint has: scoring one is scoring nothing')
   say()
 }
 
@@ -752,15 +871,24 @@ if (!up) {
   say()
 } else {
   const signInProblem = await signInAsStaff()
+  /*
+   * Skipped, not faked — the same rule as a server that does not answer. The
+   * sections used to run anyway: POST /api/sessions came back 403 in 1.2 ms,
+   * the table printed it as a timing, and both latency budgets went green on a
+   * request nobody served.
+   */
   if (signInProblem) {
-    say(bold('   staff sign-in') + red(` — ${signInProblem}`))
-    say(dim('   POST /api/sessions is staff-only, so the API and SYNC sections below cannot run.'))
+    say(bold('2-3. API / SYNC') + dim(' — skipped'))
+    say(red(`   staff sign-in: ${signInProblem}`))
+    say(dim('   POST /api/sessions is staff-only, so neither section has anything real to measure.'))
+    say(dim('   The NETWORK section below needs no cookie and still runs.'))
     say()
+  } else {
+    apiRows = await api()
+    printApi(apiRows)
+    syncReport = await sync()
+    printSync(syncReport)
   }
-  apiRows = await api()
-  printApi(apiRows)
-  syncReport = await sync()
-  printSync(syncReport)
   netRows = await network(b?.entryFiles.find((f) => f.endsWith('.js')))
   printNetwork(netRows, b)
 }
@@ -798,6 +926,7 @@ if (JSON_MODE) {
       thirdParty: b.thirdParty,
       preloadedCritical: b.preloadedCritical,
       chunks: b.chunks,
+      extras: b.extras,
     },
     api: apiRows,
     sync: syncReport,

@@ -232,6 +232,19 @@ echo "== слушают"
 ss -lntp | awk 'NR==1 || /:(80|443|7000|8080|9180|7500)\b/{print "  "$4"  "$6}'
 
 echo
-echo "секрет для инстансов (он же лежит в /etc/colloq-relay/token):"
-echo "  $TOKEN"
+echo "секрет для инстансов лежит в /etc/colloq-relay/token"
 REMOTE
+
+# Готовые строки для .env инстанса.
+#
+# Раньше здесь печатался только секрет — а в какие переменные его класть и где
+# они вообще описаны, узнать было неоткуда: RELAY_* нет ни в .env.example, ни в
+# README, и host.sh про них молчит, пока не выберет ретранслятор. Человек
+# доходил до аудитории с адресом Cloudflare, который у группы не открывается.
+TOKEN="$("${SSH[@]}" "$HOST" 'cat /etc/colloq-relay/token' 2>/dev/null || true)"
+echo
+say "впишите это в .env инстанса — без отступов, как есть:"
+printf 'RELAY_DOMAIN=%s\nRELAY_ADDR=%s\nRELAY_PORT=7000\nRELAY_TOKEN=%s\n' \
+  "$DOMAIN" "${HOST#*@}" "${TOKEN:-<из /etc/colloq-relay/token на ретрансляторе>}"
+echo
+say "потом семинар наружу: make host HOST=hse.${DOMAIN}"

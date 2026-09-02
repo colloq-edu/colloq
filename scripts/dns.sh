@@ -26,8 +26,14 @@ RELAY=${RELAY_ADDR:-203.0.113.11}
 # Чья страница на GitHub Pages — цель CNAME для www.
 PAGES_HOST=${PAGES_HOST:-sleep3r.github.io}
 
-if [[ -z "${CF_TOKEN_COLLOQ:-}" && -f ../colloq/.env ]]; then
-  CF_TOKEN_COLLOQ=$(grep -E '^CF_TOKEN=' ../colloq/.env | tail -1 | cut -d= -f2- | tr -d ' \r')
+# ../.env, а не ../colloq/.env: скрипт приехал из соседнего репозитория, где
+# основной клон лежал рядом. Здесь он лежит выше, и прежний путь не существовал
+# ни в одном клоне — вместо «нет файла» человек читал «нужен токен с Zone:Read»
+# и шёл проверять права токена, который всё это время лежал в .env.
+if [[ -z "${CF_TOKEN_COLLOQ:-}" && -f ../.env ]]; then
+  # `|| true`: файл есть, а строки в нём нет — это «нужен токен», а не молчаливый
+  # выход по set -e без единого слова на экране.
+  CF_TOKEN_COLLOQ=$(grep -E '^CF_TOKEN=' ../.env | tail -1 | cut -d= -f2- | tr -d ' \r' || true)
 fi
 : "${CF_TOKEN_COLLOQ:?нужен токен с Zone:Read и DNS:Edit на ${DOMAIN}}"
 
