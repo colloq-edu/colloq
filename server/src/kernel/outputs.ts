@@ -18,8 +18,61 @@ const ORIGIN = 'kernel'
 /** Roughly a novel of text. Past this the browser is the bottleneck, not Python. */
 const MAX_CELL_OUTPUT_CHARS = 400 * 1024
 
+/**
+ * У картинок свой бюджет, и он больше.
+ *
+ * Один `plt.imshow` при dpi=200 — это мегабайт-другой base64, то есть больше
+ * всего текстового потолка сразу. Считать их из одного кошелька значило
+ * отвечать на семинаре по зрению «output stopped after 400 KB — write to a
+ * file instead of printing» вместо картинки, ради которой ячейку и запускали,
+ * и заодно глушить весь дальнейший print этой ячейки. Цена известна: столько
+ * же уедет каждому в комнате, в снимок и в ключевой кадр истории, — поэтому
+ * бюджет на ячейку, а не на кадр, и не «сколько дадут».
+ */
+const MAX_CELL_DATA_CHARS = 6 * 1024 * 1024
+
 /** RecursionError tracebacks run to thousands of identical frames. */
 const MAX_TRACEBACK_LINES = 80
+/**
+ * Длина одной строки ошибки: и `evalue`, и каждого кадра трейсбека.
+ *
+ * Ошибка идёт мимо потолка ячейки, потому что она и есть причина запуска, — но
+ * это не значит «сколько угодно». `assert len(rows) == 0, rows` на списке из
+ * миллиона элементов кладёт мегабайты в `evalue` и в последнюю строку
+ * трейсбека, а оттуда — во все тридцать браузеров, в снимок и в каждый
+ * ключевой кадр истории. Восемьдесят кадров по четыре килобайта плюс
+ * сообщение — это меньше потолка ячейки, так что запись ограничена и целиком.
+ */
+const MAX_ERROR_LINE_CHARS = 4 * 1024
+
+/** Обрезать строку, сказав в ней самой, что она обрезана. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, max)}… [colloq] ${text.length - max} more characters cut here`
+}
+
+/**
+ * Свернуть кадры одной строки: `\r` значит «пиши эту строку заново».
+ *
+ * tqdm, pip и keras рисуют прогресс возвратом каретки — за десять минут
+ * обучения это тысячи кадров одной и той же строки. Панель их сворачивает при
+ * показе (`collapseCarriage` в web/src/lib/utils.ts, тот же алгоритм), но по
+ * проводу они всё равно ехали и до последнего символа тратили потолок вывода
+ * ячейки: настоящий результат обучения обрезался прогресс-баром, который его
+ * набрал. В документ уходит последний кадр каждой строки — то, что и видно.
+ */
+function collapseCarriage(text: string): string {
+  if (!text.includes('\r')) return text
+  return text
+    .split('\n')
+    .map((line) => {
+      if (!line.includes('\r')) return line
+      let last = ''
+      for (const frame of line.split('\r')) if (frame !== '') last = frame
+      return last
+    })
+    .join('\n')
+}
 
 export class OutputWriter {
   private pending: Array<{ name: StreamName; text: string }> = []
@@ -27,6 +80,20 @@ export class OutputWriter {
   private used = 0
   private truncated = false
   private noticed = false
+  /** Бюджет картинок и прочих mimebundle: считается отдельно от текста. */
+  private usedData = 0
+  private dataTruncated = false
+  private dataNoticed = false
+  /**
+   * Незакрытая строка в конце документа — та, которую ещё может переписать `\r`.
+   *
+   * Свернуть кадры внутри одного окна склейки мало: tqdm шлёт кадр в окно, и
+   * между окнами строка обязана оставаться той же самой строкой. Поэтому хвост
+   * помнится ровно так, как он лежит в Y.Text, и следующий кадр не дописывается
+   * за ним, а заменяет его.
+   */
+  private tailText = ''
+  private tailName: StreamName | null = null
   private disposed = false
   /**
    * Обещание: следующая запись не добавляет, а заменяет.
@@ -100,14 +167,16 @@ export class OutputWriter {
     if (this.disposed) return
     // Ordering matters more than latency: a print() before a plot must stay before it.
     this.flush()
+    // Строка потока закрыта картинкой: дописывать в неё уже некуда.
+    this.forgetTail()
     const json = JSON.stringify({ data: mimebundle, execCount })
     this.write((outputs) => {
-      if (this.truncated || this.used + json.length > MAX_CELL_OUTPUT_CHARS) {
-        this.truncated = true
-        this.notice(outputs)
+      if (this.dataTruncated || this.usedData + json.length > MAX_CELL_DATA_CHARS) {
+        this.dataTruncated = true
+        this.dataNotice(outputs)
         return
       }
-      this.used += json.length
+      this.usedData += json.length
       const output = new Y.Map<any>()
       output.set('kind', 'data')
       output.set('json', json)
@@ -118,15 +187,17 @@ export class OutputWriter {
   error(ename: string, evalue: string, traceback: string[]): void {
     if (this.disposed) return
     this.flush()
+    this.forgetTail()
+    const lines = traceback.map((line) => clip(line, MAX_ERROR_LINE_CHARS))
     const clipped =
-      traceback.length > MAX_TRACEBACK_LINES
-        ? [
-            ...traceback.slice(0, 20),
-            `... ${traceback.length - 60} more frames ...`,
-            ...traceback.slice(-40),
-          ]
-        : traceback
-    const json = JSON.stringify({ ename, evalue, traceback: clipped })
+      lines.length > MAX_TRACEBACK_LINES
+        ? [...lines.slice(0, 20), `... ${lines.length - 60} more frames ...`, ...lines.slice(-40)]
+        : lines
+    const json = JSON.stringify({
+      ename: clip(ename, MAX_ERROR_LINE_CHARS),
+      evalue: clip(evalue, MAX_ERROR_LINE_CHARS),
+      traceback: clipped,
+    })
     // A traceback is the reason the cell was run; it goes in even past the cap.
     this.write((outputs) => {
       this.used += json.length
@@ -146,6 +217,10 @@ export class OutputWriter {
     this.used = 0
     this.truncated = false
     this.noticed = false
+    this.usedData = 0
+    this.dataTruncated = false
+    this.dataNoticed = false
+    this.forgetTail()
     // Немедленное стирание отвечает на тот же вопрос, что и отложенное, — и
     // отвечает раньше. Обещание больше не нужно.
     this.superseded = false
@@ -164,8 +239,7 @@ export class OutputWriter {
     this.pending = []
     this.write((outputs) => {
       for (const chunk of chunks) {
-        const text = this.budgeted(chunk.text)
-        if (text) this.append(outputs, chunk.name, text)
+        this.put(outputs, chunk.name, chunk.text)
         if (this.truncated) {
           this.notice(outputs)
           break
@@ -224,10 +298,62 @@ export class OutputWriter {
         this.used = 0
         this.truncated = false
         this.noticed = false
+        this.usedData = 0
+        this.dataTruncated = false
+        this.dataNoticed = false
+        this.forgetTail()
         if (outputs.length > 0) outputs.delete(0, outputs.length)
       }
       mutate(outputs)
     }, ORIGIN)
+  }
+
+  /**
+   * Написать кусок потока, свернув кадры возврата каретки вместе с хвостом.
+   *
+   * Сворачивать надо не кусок, а строку целиком: `abc\r\n` после уже
+   * написанного `xy` — это «xyabc» и перевод строки, а не «abc». Поэтому кадры
+   * считаются от того, что лежит в документе, и если строка переписана, старая
+   * стирается ровно на свою длину.
+   */
+  private put(outputs: Y.Array<YOutput>, name: StreamName, chunk: string): void {
+    let tail = this.tailName === name ? this.tailText : ''
+    let text = chunk
+    if (chunk.includes('\r')) {
+      const folded = collapseCarriage(tail + chunk)
+      if (folded.startsWith(tail)) {
+        text = folded.slice(tail.length)
+      } else if (this.rewind(outputs, name, tail.length)) {
+        text = folded
+        tail = ''
+      } else {
+        // Хвоста в документе уже нет — сворачиваем хотя бы то, что пришло.
+        text = collapseCarriage(chunk)
+      }
+    }
+    const body = this.budgeted(text)
+    if (body) this.append(outputs, name, body)
+    const nl = body.lastIndexOf('\n')
+    this.tailName = name
+    this.tailText = nl < 0 ? tail + body : body.slice(nl + 1)
+  }
+
+  /** Хвоста больше нет: за ним в документе легло что-то другое. */
+  private forgetTail(): void {
+    this.tailText = ''
+    this.tailName = null
+  }
+
+  /** Стереть незакрытую строку: следующий кадр напишет её заново. */
+  private rewind(outputs: Y.Array<YOutput>, name: StreamName, count: number): boolean {
+    if (count <= 0) return true
+    const last = outputs.length > 0 ? outputs.get(outputs.length - 1) : null
+    if (!last || last.get('kind') !== 'stream' || last.get('name') !== name) return false
+    const existing = last.get('text')
+    if (!(existing instanceof Y.Text) || existing.length < count) return false
+    existing.delete(existing.length - count, count)
+    this.used -= count
+    return true
   }
 
   private budgeted(text: string): string {
@@ -267,6 +393,7 @@ export class OutputWriter {
   private notice(outputs: Y.Array<YOutput>): void {
     if (this.noticed) return
     this.noticed = true
+    this.forgetTail()
     const output = new Y.Map<any>()
     output.set('kind', 'stream')
     output.set('name', 'stderr' as StreamName)
@@ -274,6 +401,26 @@ export class OutputWriter {
     body.insert(
       0,
       `\n[colloq] output stopped after ${Math.round(MAX_CELL_OUTPUT_CHARS / 1024)} KB — write to a file instead of printing.\n`,
+    )
+    output.set('text', body)
+    outputs.push([output])
+  }
+
+  /** Про картинки — своими словами: совет «печатайте в файл» тут ни при чём. */
+  private dataNotice(outputs: Y.Array<YOutput>): void {
+    if (this.dataNoticed) return
+    this.dataNoticed = true
+    this.forgetTail()
+    const output = new Y.Map<any>()
+    output.set('kind', 'stream')
+    output.set('name', 'stderr' as StreamName)
+    const body = new Y.Text()
+    const mb = Math.round(MAX_CELL_DATA_CHARS / (1024 * 1024))
+    body.insert(
+      0,
+      `\n[colloq] this cell has already shown ${mb} MB of images — the rest is not shown, ` +
+        'because everybody in the room has to load it. Save the figure to a file, or draw ' +
+        'it smaller (figsize/dpi).\n',
     )
     output.set('text', body)
     outputs.push([output])

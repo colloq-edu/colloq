@@ -35,13 +35,15 @@ import {
   type AgentStep,
   type ChatState,
   type UndoState,
+  type YChatEntry,
 } from '@shared/notebook'
-import { baseOf, normalizePath, runnerFor } from '@shared/paths'
-import { getSessionDoc } from '../collab/index.js'
-import { currentText, putText } from '../collab/files.js'
-import { bookText, isBookFile } from '../collab/books.js'
-import { listFiles, makeFile, statPath } from '../workspace.js'
-import { openTerminal, runCommand } from '../kernel/terminal.js'
+import { baseOf, normalizePath, parentOf, runnerFor } from '@shared/paths'
+import { getSessionDoc, peekSessionDoc } from '../collab/index.js'
+import { currentText, flushSessionFiles, putText } from '../collab/files.js'
+import { bookText, isBookFile, projectBooks } from '../collab/books.js'
+import { MAX_TEXT_BYTES, listFiles, makeFile, readText, statPath } from '../workspace.js'
+import { interruptTerminal, openTerminal, runCommand, terminalPhase } from '../kernel/terminal.js'
+import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
 import { completeWithTools, type ChatTurn, type ToolSpec } from './provider.js'
 import { buildContext } from './context.js'
@@ -68,7 +70,33 @@ const MAX_READ = 60_000
 /** Сколько хвоста вывода кладём в ленту шагов и отдаём модели. */
 const MAX_OUTPUT = 4_000
 
+/**
+ * Сколько строк дерева файлов уезжает модели.
+ *
+ * `listFiles` держит две тысячи строк — это потолок для панели, которая рисует
+ * дерево один раз. Здесь список ложится в переписку и повторяется в КАЖДОМ
+ * следующем шаге хода, до двенадцати раз: распакованный датасет стоил бы
+ * дороже всей остальной работы и переполнил бы окно небольшой модели на
+ * третьем шаге. Из каждой папки едет начало, про остальное сказано числом.
+ */
+const MAX_TREE_LINES = 200
+const MAX_PER_DIR = 20
+
 /* ----------------------------------------------------------------- отмена */
+
+/** Каким файл был до хода и каким его оставил ход. */
+interface Snapshot {
+  /** Текст до хода. `null` — файла не было вовсе: отмена его опустошит. */
+  was: string | null
+  /**
+   * Текст, которым ход закончил.
+   *
+   * Ради этого поля отмена перестала быть слепой: если сейчас в файле лежит не
+   * он, значит после хода файл правил человек — и «вернуть как было» стёрло бы
+   * его работу. `null` — записать не удалось, возвращать нечего.
+   */
+  left: string | null
+}
 
 /**
  * Что было в файлах до хода — чтобы было куда вернуться.
@@ -77,10 +105,8 @@ const MAX_OUTPUT = 4_000
  * уносит отменяемость вместе с очередью запуска и общим экраном. Ход, который
  * уже посмотрели и оставили, от этого не страдает; страдает тот, кто ушёл
  * пить чай ровно в момент перезапуска.
- *
- * `null` в значении — файла не было вовсе: отмена его уберёт.
  */
-const before = new Map<string, Map<string, string | null>>()
+const before = new Map<string, Map<string, Snapshot>>()
 
 /** Ходов на комнату, дальше самые старые забываются. */
 const MAX_REMEMBERED_TURNS = 20
@@ -96,7 +122,13 @@ function remember(sessionId: string, entryId: string, path: string, text: string
   }
   // Только первый раз: отменять надо к тому, что было ДО хода, а не до
   // последней из его правок.
-  if (!files.has(path)) files.set(path, text)
+  if (!files.has(path)) files.set(path, { was: text, left: null })
+}
+
+/** Чем ход закончил этот файл — с этим отмена и сверяется. */
+function leftBehind(sessionId: string, entryId: string, path: string, text: string): void {
+  const seen = before.get(`${sessionId}\u0000${entryId}`)?.get(path)
+  if (seen) seen.left = text
 }
 
 /**
@@ -104,39 +136,71 @@ function remember(sessionId: string, entryId: string, path: string, text: string
  *
  * Возвращает число тронутых файлов, или `null`, если возвращать нечего —
  * например, сервер перезапускали.
+ *
+ * Возвращаются только те файлы, которых после хода никто не касался. Кнопка
+ * живёт в треде до конца пары, и ход часовой давности иначе переписывал бы
+ * поверх всего, что человек написал после него, — молча и безвозвратно:
+ * истории версий у файлов рабочей папки нет. Рядом, у предложения для ячейки,
+ * ровно такая проверка есть и называется тем же словом: с тех пор изменилось.
  */
 export function undoTurn(sessionId: string, entryId: string, by: string): number | null {
   const key = `${sessionId}\u0000${entryId}`
   const files = before.get(key)
-  const doc = getSessionDoc(sessionId).doc
-  const entry = findChatEntry(doc, entryId)
-  if (!files || !entry) return null
+  const doc = peekSessionDoc(sessionId)?.doc
+  const entry = doc ? findChatEntry(doc, entryId) : null
+  if (!files || !doc || !entry) return null
   if ((entry.get('undo') as UndoState) !== 'available') return null
   let touched = 0
-  for (const [path, text] of files) {
-    if (text === null) {
-      // Файла до хода не было: оракул его завёл. Убирать его целиком — не наше
-      // право (удаление в этой комнате преподавательское и проходит через
-      // дерево), поэтому он остаётся пустым — и это видно.
-      putText(sessionId, path, '')
-    } else {
-      putText(sessionId, path, text)
+  const skipped: string[] = []
+  for (const [path, snapshot] of files) {
+    /*
+     * `null` — файла на этом пути больше нет: его переименовали или убрали.
+     * Тогда возвращать нечего и незачем: запись завела бы призрак рядом с
+     * настоящим файлом, а если на старое имя успели завести новый — стёрла бы
+     * его. Чужой текст на месте нашего значит то же самое: файл правили после
+     * хода, и отмена стёрла бы эту правку.
+     */
+    const now = currentText(sessionId, path)
+    if (now === null || snapshot.left === null || now !== snapshot.left) {
+      skipped.push(path)
+      continue
     }
+    // Файла до хода не было: оракул его завёл. Убирать его целиком — не наше
+    // право (удаление в этой комнате преподавательское и проходит через
+    // дерево), поэтому он остаётся пустым — и это видно.
+    putText(sessionId, path, snapshot.was ?? '')
     touched += 1
   }
   before.delete(key)
   doc.transact(() => {
+    if (skipped.length > 0) {
+      // Тред пишет «файлы вернулись к тому, что было»; про те, что не
+      // вернулись, надо сказать здесь, иначе подпись под ходом соврёт.
+      const answer = chatAnswer(entry)
+      answer.insert(
+        answer.length,
+        `${answer.length > 0 ? '\n\n' : ''}Не тронул: ${skipped.join(', ')} — ` +
+          'после этого хода файл меняли или убрали, и возврат стёр бы чужую работу.',
+      )
+    }
     entry.set('undo', 'done' as UndoState)
     entry.set('undoBy', by)
   }, ORIGIN)
   return touched
 }
 
-/** Комнату удалили — помнить нечего. */
+/**
+ * Комнату удалили — помнить нечего и работать не для кого.
+ *
+ * Зовётся из `dropSessionDoc`, где всё про то, чтобы удаление стало
+ * окончательным. Идущий ход обрывается здесь же: без этого он ещё десяток
+ * шагов писал бы файлы и поднимал контейнер комнаты, которой больше нет.
+ */
 export function forgetUndo(sessionId: string): void {
   for (const key of [...before.keys()]) {
     if (key.startsWith(`${sessionId}\u0000`)) before.delete(key)
   }
+  stopAll(sessionId)
 }
 
 /* ------------------------------------------------------------ инструменты */
@@ -216,8 +280,16 @@ export interface Hands {
  * Экспортируется ради теста: здесь живут все границы режима «сделать» — что
  * можно, чего нельзя и что сказать, когда нельзя, — и проверять их через живую
  * модель значило бы проверять модель.
+ *
+ * `signal` нужен одному инструменту: запуск идёт минутами, и «Стоп» посреди
+ * него должен останавливать скрипт, а не только цикл шагов.
  */
-export async function useTool(hands: Hands, name: string, rawArgs: string): Promise<Ran> {
+export async function useTool(
+  hands: Hands,
+  name: string,
+  rawArgs: string,
+  signal?: AbortSignal,
+): Promise<Ran> {
   let args: Record<string, unknown> = {}
   try {
     args = JSON.parse(rawArgs || '{}') as Record<string, unknown>
@@ -230,12 +302,9 @@ export async function useTool(hands: Hands, name: string, rawArgs: string): Prom
   const wanted = typeof args.path === 'string' ? normalizePath(args.path) : null
 
   if (name === 'list_files') {
-    const tree = listFiles(hands.sessionId)
-      .map((entry) => (entry.dir ? `${entry.path}/` : `${entry.path}  ${entry.size} B`))
-      .join('\n')
     return {
       step: { kind: 'read', target: 'папка семинара', added: 0, removed: 0, exit: null, note: '' },
-      said: tree || 'Папка пуста.',
+      said: describeTree(hands.sessionId),
     }
   }
 
@@ -250,6 +319,34 @@ export async function useTool(hands: Hands, name: string, rawArgs: string): Prom
     // У тетради правда в комнате, а файл отстаёт на секунду: читаем комнату.
     const text = bookText(hands.sessionId, wanted) ?? currentText(hands.sessionId, wanted)
     if (text === null) {
+      /*
+       * `currentText` молчит одинаково про три разных случая, а модели они
+       * говорят разное. «Файла нет» на месте шестимегабайтного датасета —
+       * приглашение завести его заново, то есть ровно та потеря хвоста, ради
+       * которой потолок и поставлен. Поэтому про большой файл говорится
+       * отдельно — и начало его всё-таки показывается: по нему видно, что это
+       * за файл, а править его всё равно нельзя.
+       */
+      const disk = readText(hands.sessionId, wanted)
+      if (disk?.binary) {
+        return {
+          step: note('это не текстовый файл', wanted),
+          said: `${wanted} — не текстовый файл, прочитать его нельзя.`,
+        }
+      }
+      if (disk?.truncated) {
+        return {
+          step: {
+            kind: 'read',
+            target: wanted,
+            added: 0,
+            removed: 0,
+            exit: null,
+            note: 'только начало',
+          },
+          said: `${disk.text.slice(0, MAX_READ)}\n…(дальше не читал)\n\n${tooBig(wanted)}`,
+        }
+      }
       return { step: note('нечего читать', wanted), said: `Файла ${wanted} нет или он не текст.` }
     }
     const lines = text.split('\n').length
@@ -281,8 +378,41 @@ export async function useTool(hands: Hands, name: string, rawArgs: string): Prom
           'Скажите словами, что в ней поменять.',
       }
     }
-    const was = currentText(hands.sessionId, wanted)
     const existed = statPath(hands.sessionId, wanted) !== null
+    /*
+     * Файл, которого не берёт редактор, не берёт и оракул.
+     *
+     * `currentText` отдаёт первые полтора мегабайта большого файла как весь его
+     * текст, а запись обрезка поверх целого — это потерянный хвост, о котором
+     * никто не узнает: ни кода выхода, ни строки в ленте, ни возврата (отмена
+     * вернула бы тот же обрезок). Ровно этот потолок стоит и у человека —
+     * `isEditable`, и над `MAX_TEXT_BYTES` про него сказано теми же словами.
+     * Двоичный файл — та же история: `write_file` перетёр бы его текстом.
+     */
+    const disk = existed ? readText(hands.sessionId, wanted) : null
+    if (existed && (!disk || disk.binary || disk.truncated)) {
+      return {
+        step: note(disk?.truncated ? 'файл слишком большой' : 'это не текстовый файл', wanted),
+        said: disk?.truncated
+          ? tooBig(wanted)
+          : `${wanted} — не текстовый файл, править его нельзя.`,
+      }
+    }
+    const was = currentText(hands.sessionId, wanted)
+    /*
+     * Файл на месте, а текста нет: между двумя чтениями он перестал быть
+     * правимым — ядро дописало в него лог, сверху лёг pickle. Записать в снимок
+     * `null` значит сказать отмене, что файла до хода не было, и она опустошила
+     * бы чужой файл вместо возврата.
+     */
+    if (existed && was === null) {
+      return {
+        step: note('файл изменился под руками', wanted),
+        said:
+          `${wanted} только что перестал читаться целиком — похоже, в него пишет кто-то ещё. ` +
+          'Посмотрите его заново или скажите словами, что в нём поменять.',
+      }
+    }
     let next: string
     if (name === 'write_file') {
       if (typeof args.content !== 'string') {
@@ -319,6 +449,21 @@ export async function useTool(hands: Hands, name: string, rawArgs: string): Prom
       next = was.slice(0, first) + replace + was.slice(first + find.length)
     }
 
+    /*
+     * Того, что не открывается, оракул не пишет и сам. Файл сверх потолка не
+     * возьмут ни редактор, ни следующий шаг этого же хода, а сохранение
+     * открытого документа откажет молча — уже после того, как в ленте будет
+     * написано «готово».
+     */
+    if (next.length > MAX_TEXT_BYTES) {
+      return {
+        step: note('столько не сохранится', wanted),
+        said:
+          `В ${wanted} нельзя записать больше полутора мегабайт: такой файл ни открыть, ни ` +
+          'поправить. Оставьте в нём меньше — или пусть его пишет скрипт.',
+      }
+    }
+
     remember(hands.sessionId, hands.entryId, wanted, was)
     if (!existed) {
       const made = makeFile(hands.sessionId, wanted, '')
@@ -330,11 +475,20 @@ export async function useTool(hands: Hands, name: string, rawArgs: string): Prom
       }
     }
     if (!putText(hands.sessionId, wanted, next)) {
+      /*
+       * Отказ бывает двух родов. Файл, перешагнувший потолок, пока мы его
+       * читали, править нельзя вовсе — и повторять попытку незачем; всё
+       * остальное («файла не стало», «диск не дал») стоит того, чтобы модель
+       * попробовала иначе.
+       */
+      const now = statPath(hands.sessionId, wanted)
+      const over = now !== null && !now.dir && now.size > MAX_TEXT_BYTES
       return {
-        step: note('не удалось записать', wanted),
-        said: `Не получилось записать ${wanted}.`,
+        step: note(over ? 'файл слишком большой' : 'не удалось записать', wanted),
+        said: over ? tooBig(wanted) : `Не получилось записать ${wanted}.`,
       }
     }
+    leftBehind(hands.sessionId, hands.entryId, wanted, next)
     const counts = countChanges(was ?? '', next)
     return {
       step: {
@@ -360,9 +514,45 @@ export async function useTool(hands: Hands, name: string, rawArgs: string): Prom
     if (!statPath(hands.sessionId, wanted)) {
       return { step: note('нет такого файла', wanted), said: `Файла ${wanted} нет.` }
     }
+    /*
+     * Оболочка в комнате одна, и очередь к ней людская: команда, поставленная
+     * в неё сейчас, начнётся неизвестно когда, а ждать её агенту нечем —
+     * очередь колбэков не хранит. Честнее сказать, что запустить не вышло, чем
+     * простоять полторы минуты и объявить оболочку мёртвой, пока чужой
+     * `pip install` идёт своим чередом.
+     */
+    if (terminalPhase(hands.sessionId) === 'busy') {
+      return {
+        step: note('терминал занят', wanted),
+        said:
+          'В терминале комнаты сейчас идёт другая команда — свой запуск я в очередь не ставлю. ' +
+          'Скажите об этом в ответе или попробуйте ещё раз позже.',
+      }
+    }
+    /*
+     * Сначала — на диск всё, что там ещё не лежит.
+     *
+     * У открытого файла правда живёт в документе комнаты, а на диск он уезжает
+     * через 700 мс после последнего нажатия. Скрипт же читает диск: и сам
+     * `train.py`, и `open('data.csv')` внутри него достались бы запуску без
+     * последней секунды набора — оракул объяснял бы комнате ошибку, которой в
+     * файле уже нет. То же самое делает ядро перед выполнением ячейки
+     * (`flushToDisk` в kernel/index.ts), и по той же причине.
+     *
+     * Сбрасывается только эта комната: запуск здесь ничего не знает о чужих
+     * открытых файлах, а они уедут на диск сами теми же семьюстами
+     * миллисекундами позже.
+     */
+    try {
+      projectBooks(hands.sessionId)
+      flushSessionFiles(hands.sessionId)
+    } catch (err) {
+      // Запуск всё равно состоится — просто по тому, что уже лежит на диске.
+      console.error(`[session ${hands.sessionId}] не дописал файлы перед запуском:`, err)
+    }
     const quoted = `'${wanted.replace(/'/g, `'\\''`)}'`
     const command = `${runner === 'python' ? 'python -u' : 'bash'} ${quoted}; echo "[код выхода $?]"`
-    const result = await runInRoom(hands, command)
+    const result = await runInRoom(hands, command, signal)
     const shown = tail(result.output)
     return {
       step: {
@@ -371,11 +561,10 @@ export async function useTool(hands: Hands, name: string, rawArgs: string): Prom
         added: 0,
         removed: 0,
         exit: result.exit,
-        note: shown,
+        note:
+          result.cut === 'timeout' ? `не уложился в ${RUN_TIMEOUT_MS / 1000} с; ${shown}` : shown,
       },
-      said: result.finished
-        ? `Код выхода ${result.exit ?? '?'}. Вывод:\n${shown || '(пусто)'}`
-        : 'Команда не доработала — терминал закрыли или оболочка умерла.',
+      said: sayRun(result, shown),
     }
   }
 
@@ -384,6 +573,83 @@ export async function useTool(hands: Hands, name: string, rawArgs: string): Prom
 
 function note(what: string, target: string): AgentStep {
   return { kind: 'note', target, added: 0, removed: 0, exit: null, note: what }
+}
+
+/**
+ * Что сказать про файл, который целиком не читается.
+ *
+ * Полтора мегабайта — тот же потолок, что у редактора (`MAX_TEXT_BYTES`), и
+ * называть его надо своими словами. «Файла нет или он не текст» отправляет
+ * модель заводить файл заново поверх датасета, а «не получилось записать» —
+ * пробовать снова и снова: оба ответа правдивы по букве и врут по делу.
+ */
+function tooBig(path: string): string {
+  return (
+    `${path} больше полутора мегабайт: целиком он не читается, и переписывать его началом ` +
+    'нельзя — хвост пропал бы молча. Скажите словами, что с ним сделать, или обработайте его ' +
+    'скриптом через run_file.'
+  )
+}
+
+/**
+ * Что сказать модели про запуск.
+ *
+ * Прерванный запуск — не «оболочка умерла»: скрипт был жив, его остановили, и
+ * вывод до этого момента у нас есть. Модель, поверившая в мёртвую оболочку,
+ * чинит несуществующую поломку и запускает снова.
+ */
+function sayRun(result: RunResult, shown: string): string {
+  if (result.cut === 'stop') return 'Запуск прерван: ход остановили.'
+  if (result.cut === 'timeout') {
+    return (
+      `Не уложился в ${RUN_TIMEOUT_MS / 1000} с — я прервал запуск (Ctrl+C). ` +
+      `Вывод до этого момента:\n${shown || '(пусто)'}`
+    )
+  }
+  return result.finished
+    ? `Код выхода ${result.exit ?? '?'}. Вывод:\n${shown || '(пусто)'}`
+    : 'Команда не доработала — терминал закрыли или оболочка умерла.'
+}
+
+/**
+ * Папка семинара для модели — с потолком на строки.
+ *
+ * Из каждой папки едет начало, про остальное сказано числом: за подробностями
+ * модель сходит в конкретную папку сама, а список, который повторяется в каждом
+ * следующем запросе хода, не должен стоить дороже самой работы.
+ */
+function describeTree(sessionId: string): string {
+  const lines: string[] = []
+  const shown = new Map<string, number>()
+  const hidden = new Map<string, number>()
+  /** Куда потом вписать «… ещё N»: строка занимает место сразу, в порядке обхода. */
+  const placeholder = new Map<string, number>()
+  let over = 0
+  for (const entry of listFiles(sessionId)) {
+    const dir = parentOf(entry.path)
+    if (lines.length >= MAX_TREE_LINES) {
+      over += 1
+      continue
+    }
+    const seen = shown.get(dir) ?? 0
+    if (seen >= MAX_PER_DIR) {
+      hidden.set(dir, (hidden.get(dir) ?? 0) + 1)
+      if (!placeholder.has(dir)) {
+        placeholder.set(dir, lines.length)
+        lines.push('')
+      }
+      continue
+    }
+    shown.set(dir, seen + 1)
+    lines.push(entry.dir ? `${entry.path}/` : `${entry.path}  ${entry.size} B`)
+  }
+  for (const [dir, at] of placeholder) {
+    lines[at] =
+      `… ещё ${hidden.get(dir) ?? 0} в ${dir ? `${dir}/` : 'корне'} — скажите путь, если нужно`
+  }
+  if (over > 0)
+    lines.push(`… и ещё ${over} записей ниже: папка слишком велика, чтобы показать её целиком`)
+  return lines.join('\n') || 'Папка пуста.'
 }
 
 /** Сколько строк прибавилось и убавилось. Достаточно для строки «+9 −2». */
@@ -414,10 +680,24 @@ function firstAdded(was: string, next: string): string {
 }
 
 function tail(output: string): string {
-  const clean = output.replace(/\[[0-9;?]*[a-zA-Z]/g, '').trimEnd()
+  // ESC записан escape-последовательностью, а не самим байтом: байт в
+  // исходнике невидим, и выражение читается как «вырезать всё в квадратных
+  // скобках» — то есть как порча трейсбека, которой на самом деле нет.
+  const clean = output.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trimEnd()
   if (clean.length <= MAX_OUTPUT) return clean
   return '…\n' + clean.slice(clean.length - MAX_OUTPUT)
 }
+
+interface RunResult {
+  output: string
+  exit: number | null
+  finished: boolean
+  /** Запуск оборвали: истёк срок или нажали «Стоп». `null` — дошёл сам. */
+  cut: 'timeout' | 'stop' | null
+}
+
+/** Сколько ждать вывод после Ctrl+C: оболочка возвращается к строке за миг. */
+const INTERRUPT_GRACE_MS = 5_000
 
 /**
  * Запустить в терминале комнаты и дождаться конца.
@@ -428,26 +708,45 @@ function tail(output: string): string {
  * другим о нём не сообщает, а знать его надо, чтобы отличить «посчиталось» от
  * «упало».
  */
-async function runInRoom(
-  hands: Hands,
-  command: string,
-): Promise<{ output: string; exit: number | null; finished: boolean }> {
+async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): Promise<RunResult> {
   await openTerminal(hands.sessionId)
-  const result = await new Promise<{ output: string; finished: boolean }>((resolve) => {
-    let settled = false
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      resolve({ output: '', finished: false })
-    }, RUN_TIMEOUT_MS)
-    timer.unref?.()
-    runCommand(hands.sessionId, command, hands.by, (done) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(done)
-    })
-  })
+  const result = await new Promise<{ output: string; finished: boolean; cut: RunResult['cut'] }>(
+    (resolve) => {
+      let settled = false
+      let cut: RunResult['cut'] = null
+      let grace: NodeJS.Timeout | null = null
+      const done = (result: { output: string; finished: boolean }) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (grace) clearTimeout(grace)
+        signal?.removeEventListener('abort', onStop)
+        resolve({ ...result, cut })
+      }
+      /*
+       * Прервать, а не бросить.
+       *
+       * Раньше по сроку промис просто резолвился, скрипт оставался в общей
+       * оболочке, а модели говорили, что оболочка умерла: она правила
+       * несуществующую ошибку и запускала снова — в очередь за той же живой
+       * командой. Ctrl+C идёт от того, кто попросил ход, то есть по тому же
+       * правилу, что и кнопка «Стоп» у человека.
+       */
+      const stopRun = (why: 'timeout' | 'stop') => {
+        if (settled || cut) return
+        cut = why
+        interruptTerminal(hands.sessionId, 'оракул', hands.by.participantId)
+        grace = setTimeout(() => done({ output: '', finished: false }), INTERRUPT_GRACE_MS)
+        grace.unref?.()
+      }
+      const onStop = () => stopRun('stop')
+      const timer = setTimeout(() => stopRun('timeout'), RUN_TIMEOUT_MS)
+      timer.unref?.()
+      runCommand(hands.sessionId, command, hands.by, done)
+      if (signal?.aborted) onStop()
+      else signal?.addEventListener('abort', onStop, { once: true })
+    },
+  )
   const marker = /\[код выхода (\d+)\]/g
   let exit: number | null = null
   for (const found of result.output.matchAll(marker)) exit = Number(found[1])
@@ -455,6 +754,7 @@ async function runInRoom(
     output: result.output.replace(marker, '').trimEnd(),
     exit,
     finished: result.finished,
+    cut: result.cut,
   }
 }
 
@@ -476,6 +776,21 @@ export function stopWork(sessionId: string, entryId: string): boolean {
   if (!controller) return false
   controller.abort()
   return true
+}
+
+/**
+ * Остановить всё, что оракул делает в этой комнате.
+ *
+ * Стирание треда и удаление семинара — оба про «прекратить», и оба оставляли
+ * ход идти дальше: лента исчезала, а файлы ещё десяток шагов менялись сами, без
+ * записи в треде и, значит, без кнопки отмены. Для потока такой случай был
+ * предусмотрен с самого начала (см. `generate` в index.ts), для хода — нет.
+ */
+export function stopAll(sessionId: string): void {
+  const prefix = `${sessionId} `
+  for (const [key, controller] of running) {
+    if (key.startsWith(prefix)) controller.abort()
+  }
 }
 
 export interface WorkOptions {
@@ -547,6 +862,13 @@ async function steps(
     { role: 'user', content: options.message.trim() },
   ]
 
+  // Строка расхода одна на весь ход, а шагов до двенадцати: каждый отчитывается
+  // за себя, а складывает их `noteTokens` — иначе в панели оставался бы
+  // последний шаг вместо цены всего хода.
+  const bill = (tokens: number) => {
+    if (options.usageId !== undefined) noteTokens(options.usageId, tokens)
+  }
+
   let taken = 0
   let spoke = ''
   let stopped = false
@@ -555,9 +877,13 @@ async function steps(
       stopped = true
       break
     }
-    const answer = await completeWithTools(messages, TOOLS, signal, (tokens) => {
-      if (options.usageId !== undefined) noteTokens(options.usageId, tokens)
-    })
+    const answer = await completeWithTools(messages, TOOLS, signal, bill)
+    // Прерванный запрос возвращается пустым ответом без вызовов, и без этой
+    // проверки ход заканчивался бы пустотой: ни текста, ни «Остановлено».
+    if (signal.aborted) {
+      stopped = true
+      break
+    }
     if (answer.calls.length === 0) {
       spoke = answer.text
       break
@@ -571,7 +897,7 @@ async function steps(
         break
       }
       taken += 1
-      const ran = await useTool(hands, call.name, call.args)
+      const ran = await useTool(hands, call.name, call.args, signal)
       push(options.sessionId, entryId, ran.step)
       messages.push({ role: 'assistant', content: ran.said, callId: call.id })
       if (taken >= MAX_STEPS) break
@@ -590,16 +916,37 @@ async function steps(
 }
 
 function push(sessionId: string, entryId: string, step: AgentStep): void {
-  const doc = getSessionDoc(sessionId).doc
-  const entry = findChatEntry(doc, entryId)
-  if (!entry) return
-  doc.transact(() => addStep(entry, step), ORIGIN)
+  const found = liveEntry(sessionId, entryId)
+  if (!found) {
+    /*
+     * Записи больше нет: тред стёрли или комнату удалили. Показать шаг некому,
+     * а следующий шаг правил бы файлы вслепую и без кнопки отмены — значит,
+     * работать больше не для кого.
+     */
+    stopWork(sessionId, entryId)
+    return
+  }
+  found.doc.transact(() => addStep(found.entry, step), ORIGIN)
+}
+
+/**
+ * Запись хода в живой комнате — или `null`.
+ *
+ * `peekSessionDoc`, а не `getSessionDoc`: ход, доехавший до удалённой комнаты,
+ * заводил её заново — с таймерами, строкой в истории и папкой на диске. Правило
+ * записано над самим `peekSessionDoc`: документ заводит только то, что делает
+ * человек.
+ */
+function liveEntry(sessionId: string, entryId: string): { doc: Y.Doc; entry: YChatEntry } | null {
+  const doc = peekSessionDoc(sessionId)?.doc
+  const entry = doc ? findChatEntry(doc, entryId) : null
+  return doc && entry ? { doc, entry } : null
 }
 
 function finish(sessionId: string, entryId: string, text: string): void {
-  const doc = getSessionDoc(sessionId).doc
-  const entry = findChatEntry(doc, entryId)
-  if (!entry) return
+  const found = liveEntry(sessionId, entryId)
+  if (!found) return
+  const { doc, entry } = found
   const touched = before.get(`${sessionId}\u0000${entryId}`)?.size ?? 0
   doc.transact(() => {
     if (text) {
@@ -614,9 +961,9 @@ function finish(sessionId: string, entryId: string, text: string): void {
 }
 
 function settle(sessionId: string, entryId: string, state: ChatState, note: string): void {
-  const doc = getSessionDoc(sessionId).doc
-  const entry = findChatEntry(doc, entryId)
-  if (!entry) return
+  const found = liveEntry(sessionId, entryId)
+  if (!found) return
+  const { doc, entry } = found
   const touched = before.get(`${sessionId}\u0000${entryId}`)?.size ?? 0
   doc.transact(() => {
     const answer = chatAnswer(entry)
@@ -629,6 +976,15 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
 }
 
 function systemPrompt(sessionId: string, askedBy: string): string {
+  /*
+   * Правила преподавателя — и здесь тоже.
+   *
+   * Панель обещает «Appended to the system prompt» безусловно, а выполнялось
+   * это только в режиме вопроса. «Pandas ещё не проходили» — забор
+   * педагогический, и в режиме «сделать» он дороже: там нарушение не читается,
+   * а ложится в файл комнаты и запускается.
+   */
+  const houseRules = getOracleSettings().houseRules
   return [
     'Вы — оракул Colloq, помощник на техническом семинаре. Сейчас вас попросили не объяснить, а СДЕЛАТЬ.',
     '',
@@ -641,6 +997,12 @@ function systemPrompt(sessionId: string, askedBy: string): string {
     '— Удалять файлы и папки нельзя. Совсем. Если файл лишний, скажите об этом.',
     '— Запускать можно только .py и .sh из папки семинара. Оболочки у вас нет.',
     '— Всё, что вы делаете, видит вся комната, и любой ход отменяется одной кнопкой.',
+    ...(houseRules
+      ? [
+          '',
+          `Правила этого семинара от преподавателя; они важнее всего сказанного выше: ${houseRules}`,
+        ]
+      : []),
     '',
     'В конце — короткий ответ по-русски: что сделано и что из этого следует. Без пересказа шагов:',
     'они и так на экране. Три-четыре предложения.',

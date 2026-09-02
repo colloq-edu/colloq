@@ -20,7 +20,7 @@ import {
   windowResetAt,
 } from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
-import { stopWork, work } from '../ai/agent.js'
+import { stopAll, stopWork, work } from '../ai/agent.js'
 import { allows, allowsAgent, oracleModeIn } from '@shared/rules'
 import { getParticipant, getRules, getSession } from '../db.js'
 import { sessionAuth } from './sessions.js'
@@ -242,7 +242,16 @@ export function aiRoutes(): Router {
     const usageId = recordQuestion({
       sessionId,
       participantId: auth.participantId,
-      action: action ?? 'ask',
+      /*
+       * У режима «сделать» своё действие в учёте.
+       *
+       * Под 'ask' он был неотличим от обычного вопроса, а это самая дорогая
+       * строка в таблице: один ход ходит к модели до двенадцати раз и тащит с
+       * собой файлы. Разбивка в панели — единственное место, где владелец
+       * ключа видит, на что ушёл семестр, и слить туда «спросили» и «сделали»
+       * значит спрятать от него главную статью расхода.
+       */
+      action: doing ? 'work' : (action ?? 'ask'),
     })
 
     const entryId = doing
@@ -290,10 +299,15 @@ export function aiRoutes(): Router {
     }
     // Open to anyone present: a runaway answer is on every screen in the room,
     // and stopping it destroys nothing — the text that arrived stays put.
-    // Ход оракула — не поток, и обрывается он иначе: см. agent.stopWork. Обе
-    // остановки зовутся здесь, потому что кнопка на записи одна.
-    stopWork(req.params.id, entryId)
-    cancel(req.params.id, entryId)
+    /*
+     * Ход оракула — не поток, и обрывается он иначе: см. agent.stopWork. Обе
+     * остановки зовутся здесь, потому что кнопка на записи одна, но через
+     * запятую их звать нельзя: `cancel` тут же помечает запись законченной, а
+     * ход после «Стоп» ещё дописывает начатый шаг — запись выглядела бы
+     * готовой, и под ней появлялись бы новые строки ленты. Состояние хода
+     * ставит он сам, когда правда закончил.
+     */
+    if (!stopWork(req.params.id, entryId)) cancel(req.params.id, entryId)
     res.json({ ok: true })
   })
 
@@ -311,6 +325,15 @@ export function aiRoutes(): Router {
         error: 'Only the host can clear the oracle thread — those questions belong to the room.',
       })
     }
+    /*
+     * Стереть ленту — это и «остановить».
+     *
+     * Поток оракула clearThread обрывает сам; ход агента жил дальше и ещё
+     * десяток шагов правил файлы и запускал скрипты — без строки в треде,
+     * которая бы это объяснила, и без кнопки отмены, потому что выставить её
+     * стало некуда. Здесь же, где рядом стоит та же пара для «Стоп».
+     */
+    stopAll(req.params.id)
     clearThread(req.params.id)
     res.json({ ok: true })
   })

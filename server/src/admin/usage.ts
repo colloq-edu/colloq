@@ -55,7 +55,11 @@ const byActionRows = db.prepare(
 export interface QuestionRecord {
   sessionId: string
   participantId: string
-  /** The AiAction that was actually run, or 'ask' for a free-form question. */
+  /**
+   * The AiAction that was actually run, or 'ask' for a free-form question.
+   * 'work' — не AiAction: это ход режима «сделать», поручение агенту, и самая
+   * дорогая строка в таблице.
+   */
   action: string
   /** Only when the endpoint reported it; most do not on a stream. */
   tokens?: number | null
@@ -73,7 +77,7 @@ export function recordQuestion(question: QuestionRecord): number {
   return Number(res.lastInsertRowid)
 }
 
-const setTokens = db.prepare('UPDATE ai_usage SET tokens = ? WHERE id = ?')
+const addTokens = db.prepare('UPDATE ai_usage SET tokens = COALESCE(tokens, 0) + ? WHERE id = ?')
 
 /**
  * Сколько на самом деле стоил вопрос.
@@ -83,10 +87,16 @@ const setTokens = db.prepare('UPDATE ai_usage SET tokens = ? WHERE id = ?')
  * просил, столбец оставался пустым, а плитка в панели писала «tokens — not
  * reported by this endpoint». На инстансе с чужим ключом это единственное
  * место, где видно, во что обошёлся семестр.
+ *
+ * Прибавляется, а не записывается. Перезапись была верна ровно для одного
+ * потока на вопрос; режим «сделать» ходит к модели до двенадцати раз, каждый
+ * ход отчитывается только за себя, и в строке оставался последний — самый
+ * большой, потому что контекст растёт, но всё же доля. Самый дорогой режим
+ * учитывался в разы дешевле, чем стоил.
  */
 export function noteTokens(id: number, tokens: number): void {
   if (!Number.isFinite(tokens) || tokens <= 0) return
-  setTokens.run(Math.round(tokens), id)
+  addTokens.run(Math.round(tokens), id)
 }
 
 /** Questions from one student in one seminar inside the trailing `windowMs`. */

@@ -196,6 +196,8 @@ export class JupyterKernel {
   private reconnectTimer: NodeJS.Timeout | null = null
   private disposed = false
   private _phase: KernelPhase = 'starting'
+  /** Просили ли мы сами о последней смене фазы; см. `phaseExpected`. */
+  private _phaseExpected = false
   /** When the kernel last said anything at all. See confirmAlive(). */
   private lastHeard = Date.now()
   /** msg_id of the execution currently blocked on input(), if any. */
@@ -213,6 +215,18 @@ export class JupyterKernel {
 
   get phase(): KernelPhase {
     return this._phase
+  }
+
+  /**
+   * Пришла ли текущая фаза по нашей просьбе.
+   *
+   * Различает две одинаковые снаружи вещи: `restarting` после нажатия Restart —
+   * и `restarting`, которым Jupyter сообщает, что процесс убили (память). В
+   * первом случае прерванная ячейка просто не доработала, во втором её убило
+   * ядро, и сказать об этом должна она сама.
+   */
+  get phaseExpected(): boolean {
+    return this._phaseExpected
   }
 
   /**
@@ -630,6 +644,7 @@ export class JupyterKernel {
   private setPhase(phase: KernelPhase, expected = false): void {
     if (this._phase === phase) return
     this._phase = phase
+    this._phaseExpected = expected
     for (const cb of [...this.listeners]) {
       try {
         cb(phase, expected)

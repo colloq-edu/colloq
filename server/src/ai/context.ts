@@ -123,24 +123,37 @@ export function buildContext(
   const pinned = new Set<number>(focused)
   if (errorIndex >= 0) pinned.add(errorIndex)
 
-  const header = [
-    `SESSION: ${sessionName}`,
-    `KERNEL: ${kernel}`,
-    `FILES IN WORKSPACE: ${describeFiles(sessionId)}`,
-    ...openFileBlock(sessionId, askedBy ?? null),
-    /*
-     * «Смотри сюда в первую очередь», а не «вот всё, что есть».
-     *
-     * Формулировка важна: тетради в кадре целиком, и модель, прочитавшая
-     * «SELECTED CELL: none», раньше вела себя так, будто ей ничего не дали.
-     */
-    focused.length > 0
-      ? `THE STUDENT IS ASKING ABOUT: ${focused
-          .map((i) => `cell ${pad(entries[i].no)} of ${entries[i].book}`)
-          .join(', ')} — answer about these first; everything else below is context.`
-      : 'THE STUDENT IS ASKING ABOUT: nothing in particular — they have selected no cells.',
-    `NOTEBOOKS (${entries.length} cell${entries.length === 1 ? '' : 's'} across ${bookCount(doc)}; trimmed regions are marked "… truncated …"):`,
-  ].join('\n')
+  /*
+   * Заголовок собирается дважды: с открытым файлом и без него.
+   *
+   * Блок открытого файла — единственная часть заголовка, которая может быть
+   * длиной с весь бюджет, а режут все три ступени экономии только ячейки. При
+   * маленьком contextChars (модель на машине преподавателя) он вытеснял и
+   * выбранную ячейку, и строку «ASKING ABOUT» — то есть сам вопрос. Теперь он
+   * и урезан по бюджету, и уходит первым, когда закреплённым блокам тесно.
+   */
+  const headerWith = (open: readonly string[]): string =>
+    [
+      `SESSION: ${sessionName}`,
+      `KERNEL: ${kernel}`,
+      `FILES IN WORKSPACE: ${describeFiles(sessionId)}`,
+      ...open,
+      /*
+       * «Смотри сюда в первую очередь», а не «вот всё, что есть».
+       *
+       * Формулировка важна: тетради в кадре целиком, и модель, прочитавшая
+       * «SELECTED CELL: none», раньше вела себя так, будто ей ничего не дали.
+       */
+      focused.length > 0
+        ? `THE STUDENT IS ASKING ABOUT: ${focused
+            .map((i) => `cell ${pad(entries[i].no)} of ${entries[i].book}`)
+            .join(', ')} — answer about these first; everything else below is context.`
+        : 'THE STUDENT IS ASKING ABOUT: nothing in particular — they have selected no cells.',
+      `NOTEBOOKS (${entries.length} cell${entries.length === 1 ? '' : 's'} across ${bookCount(doc)}; trimmed regions are marked "… truncated …"):`,
+    ].join('\n')
+
+  const openFile = openFileBlock(sessionId, askedBy ?? null, maxTotal)
+  const header = headerWith(openFile)
 
   const blocks = entries.map(
     (entry, i) => bookHead(entry) + renderCell(entry, pinned.has(i), wanted.has(entry.cell.id)),
@@ -202,14 +215,18 @@ export function buildContext(
    */
   const kept = blocks.filter((_, i) => pinned.has(i))
   if (kept.length > 0) {
-    const room = Math.max(200, Math.floor((maxTotal - header.length - 40) / kept.length))
-    const trimmed = kept.map((block) => (block.length > room ? clip(block, room) : block))
-    const focusedText = [
-      header,
-      '[the rest of the notebook was too long to include]',
-      ...trimmed,
-    ].join('\n\n')
-    if (focusedText.length <= maxTotal) return focusedText
+    // Со вторым заходом — уже без открытого файла: он контекст, а закреплённая
+    // ячейка — сам вопрос, и уступать место должен он.
+    for (const head of openFile.length > 0 ? [header, headerWith([])] : [header]) {
+      const room = Math.max(200, Math.floor((maxTotal - head.length - 40) / kept.length))
+      const trimmed = kept.map((block) => (block.length > room ? clip(block, room) : block))
+      const focusedText = [
+        head,
+        '[the rest of the notebook was too long to include]',
+        ...trimmed,
+      ].join('\n\n')
+      if (focusedText.length <= maxTotal) return focusedText
+    }
   }
   return clip(text, maxTotal)
 }
@@ -399,7 +416,7 @@ function clipLine(text: string, limit: number): string {
  * Пустой массив, если файл не открыт: заголовок «OPEN FILE: none» стоил бы
  * места на каждом вопросе ради строки, которая ничего не говорит.
  */
-function openFileBlock(sessionId: string, askedBy: string | null): string[] {
+function openFileBlock(sessionId: string, askedBy: string | null, maxTotal: number): string[] {
   if (!askedBy) return []
   const path = editingPath(sessionId, askedBy)
   if (!path) return []
@@ -414,8 +431,16 @@ function openFileBlock(sessionId: string, askedBy: string | null): string[] {
   if (kindOf(path) === 'notebook') return []
   const text = currentText(sessionId, path)
   if (text === null) return []
-  const shown = text.length > MAX_OPEN_FILE ? text.slice(0, MAX_OPEN_FILE) : text
-  const cut = text.length > MAX_OPEN_FILE ? '\n… truncated …' : ''
+  /*
+   * Четверть бюджета — потолок для файла.
+   *
+   * Восемь тысяч знаков — это про большое окно. При маленьком contextChars файл
+   * съедал заголовок целиком, а вместе с ним и ячейку, о которой спросили:
+   * ступени экономии режут только ячейки, до заголовка они не доходят.
+   */
+  const room = Math.min(MAX_OPEN_FILE, Math.floor(maxTotal / 4))
+  const shown = text.length > room ? text.slice(0, room) : text
+  const cut = text.length > room ? '\n… truncated …' : ''
   return [`OPEN FILE (${path}), what they are looking at right now:`, shown + cut]
 }
 

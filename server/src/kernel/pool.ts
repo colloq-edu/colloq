@@ -22,10 +22,17 @@
  * `colloq-room-<id>`, чтобы человек, глядящий в `docker ps` посреди пары, понял,
  * что он видит.
  *
- * Если docker недоступен — сервер поднят внутри контейнера без сокета, как при
- * `make up`, — комната откатывается на общее ядро compose. Это ровно прежнее
+ * Если своего контейнера комнате дать нельзя — docker не виден (сервер поднят
+ * внутри контейнера без сокета) или до контейнера комнаты не будет дороги (см.
+ * `roomNetwork`), — комната откатывается на общее ядро compose. Это ровно прежнее
  * поведение, включая прежнюю дыру, поэтому об этом говорится вслух: один раз в
- * журнал и постоянно в панели.
+ * журнал сервера и один раз в журнал ядра самой комнаты, где сидят люди (см.
+ * `isolationLost` здесь и `noteSharedKernel` в kernel/index.ts).
+ * `isolationAvailable()` — та же правда для панели.
+ *
+ * Путь монтирования берётся глазами docker-демона, а не наших: см. `hostMount`.
+ * Адрес ядра — наоборот, нашими: под `make up` сервер сам в контейнере, и порт,
+ * опубликованный на петле хоста, для него не адрес — см. `roomNetwork`.
  */
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
@@ -88,10 +95,21 @@ async function publishedPort(container: string): Promise<number | null> {
   return Number.isFinite(port) ? port : null
 }
 
-async function stateOf(container: string): Promise<'running' | 'stopped' | 'missing'> {
+/**
+ * Состояние контейнера комнаты — тремя ответами, а не двумя.
+ *
+ * «Не running» — это ещё не «остановлен»: `dead` (docker не смог его добить,
+ * обычно из-за места на диске), `paused` и `restarting` командой `docker start`
+ * не поднимаются. Считая их остановленными, сервер звал `start`, не смотрел на
+ * результат, не находил порт — и отвечал «could not read the published port» на
+ * каждый Run до конца пары. Такой контейнер надо пересоздавать, а не будить.
+ */
+async function stateOf(container: string): Promise<'running' | 'stopped' | 'broken' | 'missing'> {
   const res = await run(['inspect', container, '--format', '{{.State.Status}}'])
   if (res.code !== 0) return 'missing'
-  return res.out.trim() === 'running' ? 'running' : 'stopped'
+  const status = res.out.trim()
+  if (status === 'running') return 'running'
+  return status === 'created' || status === 'exited' ? 'stopped' : 'broken'
 }
 
 async function imageExists(image: string): Promise<boolean> {
@@ -107,6 +125,22 @@ async function sameImage(container: string, image: string): Promise<boolean> {
   ])
   if (running.code !== 0 || current.code !== 0) return true
   return running.out.trim() === current.out.trim()
+}
+
+/**
+ * В той ли сети контейнер, в которой мы теперь его ищем.
+ *
+ * Инстанс, переехавший с `make run` на `make up` (или обратно), находит по
+ * имени контейнер прошлого режима: с опубликованным портом и без нашей сети —
+ * или наоборот. Дороги до него в новом режиме нет, и комната ждала бы ответа
+ * девяносто секунд на каждый Run; пересоздать дешевле.
+ */
+async function sameNetwork(container: string, network: string): Promise<boolean> {
+  const res = await run(['inspect', container, '--format', '{{.HostConfig.NetworkMode}}'])
+  if (res.code !== 0) return true
+  // Без `--network` docker пишет сюда `default` — сравнение симметрично, эти
+  // контейнеры создаём только мы.
+  return res.out.trim() === (network || 'default')
 }
 
 /**
@@ -137,7 +171,8 @@ function haveDocker(): Promise<boolean> {
       console.warn(
         '[kernel] docker недоступен — семинары делят одно ядро compose, и из любой комнаты ' +
           'видны файлы всех остальных на этой машине. Так работал Colloq раньше; чтобы у ' +
-          'каждой комнаты был свой контейнер, сервер должен видеть docker (make run).',
+          'каждой комнаты был свой контейнер, сервер должен видеть docker: сокет внутрь ' +
+          'контейнера или запуск на хосте (make run).',
       )
     }
     return ok
@@ -145,16 +180,170 @@ function haveDocker(): Promise<boolean> {
   return dockerReady
 }
 
-/** Правда ли у этой комнаты свой контейнер — панели, чтобы не обещать лишнего. */
-export function isolationAvailable(): Promise<boolean> {
-  return haveDocker()
+/** Сказано один раз: повторять это на каждый Run незачем. */
+let networkWarned = false
+
+function warnOnce(text: string): void {
+  if (networkWarned) return
+  networkWarned = true
+  console.warn(text)
 }
 
-async function startContainer(sessionId: string, env: string): Promise<KernelEndpoint> {
+/** Есть ли названная сеть; спрашивается один раз, за пару она не появляется. */
+let networkReady: Promise<boolean> | null = null
+
+function networkExists(network: string): Promise<boolean> {
+  networkReady ??= run(['network', 'inspect', network, '--format', '{{.Id}}'], 5_000).then(
+    (res) => res.code === 0,
+  )
+  return networkReady
+}
+
+/**
+ * Можно ли вообще дать комнате свой контейнер — а не только «виден ли docker».
+ *
+ * Сервер в контейнере без работающей `KERNEL_NETWORK` поднял бы комнате
+ * контейнер, до которого сам не достучится (см. `roomNetwork`), — или не поднял
+ * бы вовсе, если такой сети нет, — и в обоих случаях каждый Run кончался бы
+ * ошибкой. Откат на общее ядро честнее: он хотя бы работает и сказан вслух — и
+ * в журнал сервера, и в журнал ядра самой комнаты.
+ */
+async function canIsolate(): Promise<boolean> {
+  if (!(await haveDocker())) return false
+  if (!hostRoot()) return true
+
+  const network = roomNetwork()
+  if (!network) {
+    warnOnce(
+      '[kernel] сервер работает в контейнере (задан WORKSPACE_HOST_DIR), а KERNEL_NETWORK ' +
+        'не назван: до ядра комнаты не будет дороги, поэтому семинары делят одно ядро ' +
+        'compose и из любой комнаты видны файлы всех остальных. Назовите здесь сеть ' +
+        'compose, в которой стоит сам сервер.',
+    )
+    return false
+  }
+  if (!(await networkExists(network))) {
+    warnOnce(
+      `[kernel] сети «${network}» из KERNEL_NETWORK на этой машине нет — контейнер комнаты ` +
+        'в неё не встанет, поэтому семинары делят одно ядро compose и из любой комнаты ' +
+        'видны файлы всех остальных. Настоящее имя сети покажет docker network ls.',
+    )
+    return false
+  }
+  return true
+}
+
+/** Правда ли у этой комнаты свой контейнер — панели, чтобы не обещать лишнего. */
+export function isolationAvailable(): Promise<boolean> {
+  return canIsolate()
+}
+
+/**
+ * Изоляцию просили, но её нет: комнаты делят одно ядро и видят файлы друг друга.
+ *
+ * Отличается от `!isolationAvailable()` ровно одним, и это существенно:
+ * `KERNEL_ISOLATION=off` — осознанный выбор оператора, про него говорить нечего,
+ * а вот умолчание `auto`, споткнувшееся о недоступный docker, — невыполненное
+ * обещание, и комната должна услышать про него словами.
+ */
+export async function isolationLost(): Promise<boolean> {
+  if ((process.env.KERNEL_ISOLATION ?? 'auto').toLowerCase() === 'off') return false
+  return !(await canIsolate())
+}
+
+/**
+ * Комнаты, чьи контейнеры сейчас живут на этой машине, — по метке docker.
+ *
+ * Не то же самое, что `runningRoomKernels()`: та карта заполняется только
+ * подъёмами ЭТОГО процесса, так что после перезапуска сервера контейнеры
+ * вчерашних семинаров переставали существовать для уборки простоя и жили до
+ * `make down`. Метку ставит `docker run` ниже, и она переживает нас.
+ */
+export async function listRoomKernels(): Promise<string[]> {
+  if (!(await canIsolate())) return []
+  const res = await run([
+    'ps',
+    '--filter',
+    'label=colloq.kind=room-kernel',
+    '--format',
+    '{{.Label "colloq.session"}}',
+  ])
+  if (res.code !== 0) return []
+  return res.out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+}
+
+/**
+ * Путь к папке комнаты ГЛАЗАМИ docker-демона.
+ *
+ * `-v` разбирает демон на хосте, а не мы, и путь он понимает по-своему. Под
+ * `make run` (сервер на хосте) это тот же путь, и переменная не нужна. Под
+ * `make up` сервер живёт в контейнере, где папка комнаты лежит по
+ * `/app/workspace/<id>`, — демон создал бы на хосте пустую папку с этим именем и
+ * смонтировал её: ядро видит пустоту, а файлы комнаты остаются там, где их
+ * пишет сервер и показывает панель. `WORKSPACE_HOST_DIR` называет ту же папку
+ * так, как её видит хост, и только это делает изоляцию под `make up` возможной.
+ */
+function hostMount(sessionId: string): string {
+  const inside = sessionDir(sessionId)
+  const root = hostRoot()
+  if (!root) return inside
+  return path.join(root, path.relative(config.workspaceDir, inside))
+}
+
+/** Корень воркспейса глазами хоста; пусто — сервер на хосте, и пути совпадают. */
+function hostRoot(): string {
+  return (process.env.WORKSPACE_HOST_DIR ?? '').trim()
+}
+
+/**
+ * Сеть, в которую ставить контейнер комнаты, — и она же признак того, как его
+ * потом звать.
+ *
+ * Под `make run` сервер на хосте, порт публикуется на хостовой петле, и
+ * `127.0.0.1:<порт>` — верный адрес. Под `make up` сервер сам в контейнере, и
+ * та же строка указывает на него самого: до петли хоста ему хода нет, а
+ * host-gateway не спасает — порт привязан к 127.0.0.1, а не к мосту. Дорога
+ * там одна: общая сеть compose и обращение по имени контейнера. Тогда порт не
+ * публикуется вовсе — и Jupyter комнаты не виден с хоста никому, что строго
+ * лучше прежнего. Имя сети знает только тот, кто нас запустил: `KERNEL_NETWORK`.
+ *
+ * Признак «сервер в контейнере» — тот же, по которому берётся путь монтирования.
+ */
+function roomNetwork(): string {
+  return hostRoot() ? (process.env.KERNEL_NETWORK ?? '').trim() : ''
+}
+
+async function startContainer(
+  sessionId: string,
+  env: string,
+  retried = false,
+): Promise<KernelEndpoint> {
   const container = containerFor(sessionId)
   const image = `${IMAGE_PREFIX}:${env}`
+  const network = roomNetwork()
   const state = await stateOf(container)
 
+  /*
+   * Пересоздать контейнер и попробовать ещё раз — ровно один раз.
+   *
+   * Второй попытки нет намеренно: если и свежесозданный контейнер не отвечает,
+   * дело не в нём, и бесконечный круг `rm` + `run` посреди пары хуже честной
+   * ошибки на ячейке.
+   */
+  const recreate = async (why: string): Promise<KernelEndpoint> => {
+    if (retried) throw new Error(`контейнер комнаты не удалось поднять: ${why}`)
+    await run(['rm', '-f', container], 60_000)
+    endpoints.delete(sessionId)
+    return startContainer(sessionId, env, true)
+  }
+
+  if (state === 'broken') {
+    // `dead`, `paused`, `restarting`: `docker start` такому не поможет.
+    return recreate('контейнер в состоянии, из которого docker start его не поднимает')
+  }
   if (state === 'stopped' || state === 'running') {
     /*
      * Контейнер, собранный из старого образа, — уже не это окружение. Он
@@ -162,16 +351,20 @@ async function startContainer(sessionId: string, env: string): Promise<KernelEnd
      * оставляла комнату на прежнем образе, а панель показывала новый: у
      * студента падал `import transformers`, и ничто на экране с ним не спорило.
      */
-    if (!(await sameImage(container, image))) {
-      await run(['rm', '-f', container], 60_000)
-      endpoints.delete(sessionId)
-      return startContainer(sessionId, env)
+    if (!(await sameImage(container, image))) return recreate('образ окружения пересобран')
+    // Контейнер прошлого режима: адреса, по которому мы теперь его зовём, у
+    // него нет — ни имени в нашей сети, ни опубликованного порта.
+    if (!(await sameNetwork(container, network))) return recreate('сервер сменил сеть')
+    if (state === 'stopped') {
+      const started = await run(['start', container], 60_000)
+      // Результат читается: не поднявшийся контейнер дальше отвечал бы «could
+      // not read the published port» на каждый Run, и так до ручного docker rm.
+      if (started.code !== 0) return recreate(`docker start: ${started.out.slice(-200)}`)
     }
-    if (state === 'stopped') await run(['start', container], 60_000)
   } else if (state === 'missing') {
     if (!(await imageExists(image))) {
       throw new Error(
-        `Окружение «${env}» ни разу не собиралось. Соберите его в панели, в разделе Environments, и откройте семинар заново.`,
+        `Окружение «${env}» ни разу не собиралось. Соберите его: в панели, в разделе Environments, или \`make env-build NAME=${env}\` на хосте — и откройте семинар заново.`,
       )
     }
     /*
@@ -180,18 +373,20 @@ async function startContainer(sessionId: string, env: string): Promise<KernelEnd
      * так что `/workspace/<id>` обязано существовать внутри — а всё остальное
      * содержимое `/workspace` внутрь больше не попадает вовсе.
      */
-    const mount = sessionDir(sessionId)
+    const mount = hostMount(sessionId)
     const created = await run(
       [
         'run',
         '-d',
         '--name',
         container,
-        // Docker picks the host port, and the loopback address is not
-        // optional: without it the room's Jupyter is on every interface, and
-        // the seminar's Wi-Fi is one of them.
-        '-p',
-        '127.0.0.1:0:8888',
+        /*
+         * Либо общая сеть compose и адрес по имени контейнера (сервер сам в
+         * контейнере), либо порт на петле хоста. Петля тут не украшение: без
+         * неё Jupyter комнаты открыт на всех интерфейсах, а Wi-Fi семинара —
+         * один из них. В сетевом режиме порт не публикуется вовсе.
+         */
+        ...(network ? ['--network', network] : ['-p', '127.0.0.1:0:8888']),
         '-e',
         `JUPYTER_TOKEN=${roomToken(sessionId)}`,
         '-v',
@@ -221,13 +416,17 @@ async function startContainer(sessionId: string, env: string): Promise<KernelEnd
     if (created.code !== 0) throw new Error(`docker run failed: ${created.out.slice(-300)}`)
   }
 
-  const port = await publishedPort(container)
-  if (port === null) throw new Error(`could not read the published port of ${container}`)
-
-  const endpoint: KernelEndpoint = {
-    url: `http://127.0.0.1:${port}`,
-    token: roomToken(sessionId),
+  let url: string
+  if (network) {
+    // Внутри сети слушают тот же 8888, публиковать нечего.
+    url = `http://${container}:8888`
+  } else {
+    const port = await publishedPort(container)
+    if (port === null) throw new Error(`could not read the published port of ${container}`)
+    url = `http://127.0.0.1:${port}`
   }
+
+  const endpoint: KernelEndpoint = { url, token: roomToken(sessionId) }
 
   // Wait for Jupyter inside it to answer. `docker run` returns as soon as the
   // process is spawned, and connecting a second later fails with a bare
@@ -240,6 +439,18 @@ async function startContainer(sessionId: string, env: string): Promise<KernelEnd
         signal: AbortSignal.timeout(4000),
       })
       if (res.ok) return endpoint
+      /*
+       * 401/403 — это не «ещё не поднялся», а «токен другой».
+       *
+       * Токен контейнера зафиксирован при `docker run` и выведен из секрета
+       * инстанса: после ротации SESSION_SECRET (README прямо её советует) все
+       * старые контейнеры отвечают 403, и комната ждала девяносто секунд на
+       * каждый Run, читая про таймаут. Токен детерминированный — пересозданный
+       * контейнер получит правильный.
+       */
+      if (res.status === 401 || res.status === 403) {
+        return recreate(`ядро комнаты не приняло токен (HTTP ${res.status})`)
+      }
       lastError = `HTTP ${res.status}`
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)
@@ -253,6 +464,16 @@ async function startContainer(sessionId: string, env: string): Promise<KernelEnd
 const endpoints = new Map<string, KernelEndpoint>()
 /** Один запуск за раз на комнату, общий для одновременных вызовов. */
 const starting = new Map<string, Promise<KernelEndpoint>>()
+/**
+ * Комнаты, которые закрыли, пока их контейнер ещё поднимался.
+ *
+ * `docker rm -f` посреди `docker run` не догоняет: подъём доработает и оставит
+ * контейнер удалённого семинара жить с его лимитом памяти — уборка простоя его
+ * не найдёт (комнаты в картах уже нет), и он доживёт до `make down`. Ждать
+ * подъёма в `dropRoomKernel` нельзя, это до полутора минут на запросе удаления,
+ * — поэтому помечаем, а убирает за собой сам подъём.
+ */
+const abandoned = new Set<string>()
 
 /**
  * Адрес Python, с которым должна разговаривать эта комната.
@@ -264,7 +485,7 @@ export async function endpointForSession(
   sessionId: string,
   env: string | null,
 ): Promise<KernelEndpoint> {
-  if (!(await haveDocker())) return defaultEndpoint()
+  if (!(await canIsolate())) return defaultEndpoint()
 
   const cached = endpoints.get(sessionId)
   if (cached) return cached
@@ -278,9 +499,23 @@ export async function endpointForSession(
       endpoints.set(sessionId, endpoint)
       return endpoint
     })
-    .finally(() => starting.delete(sessionId))
+    .finally(() => {
+      starting.delete(sessionId)
+      // Комнату закрыли, пока это поднималось: контейнер (успешный или
+      // недоделанный) убираем сами — за него больше некому.
+      if (abandoned.delete(sessionId)) void discardRoom(sessionId)
+    })
   starting.set(sessionId, attempt)
   return attempt
+}
+
+async function discardRoom(sessionId: string): Promise<void> {
+  endpoints.delete(sessionId)
+  try {
+    await run(['rm', '-f', containerFor(sessionId)], 60_000)
+  } catch (err) {
+    console.error(`[kernel] не удалось убрать контейнер ${containerFor(sessionId)}:`, err)
+  }
 }
 
 /**
@@ -291,7 +526,10 @@ export async function endpointForSession(
  */
 export async function dropRoomKernel(sessionId: string): Promise<void> {
   endpoints.delete(sessionId)
-  if (!(await haveDocker())) return
+  if (!(await canIsolate())) return
+  // Подъём, идущий прямо сейчас, положил бы контейнер обратно секундой позже:
+  // помечаем комнату, и подъём, закончившись, снесёт его сам.
+  if (starting.has(sessionId)) abandoned.add(sessionId)
   await run(['rm', '-f', containerFor(sessionId)], 60_000)
 }
 

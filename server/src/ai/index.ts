@@ -29,7 +29,7 @@ import {
 } from '@shared/notebook'
 import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
-import { getSessionDoc } from '../collab/index.js'
+import { getSessionDoc, peekSessionDoc } from '../collab/index.js'
 import { buildContext } from './context.js'
 import { providerModel, providerReady, streamChat, type ChatTurn } from './provider.js'
 import type { AiAction } from '@shared/protocol'
@@ -145,12 +145,31 @@ export function cancel(sessionId: string, entryId: string): void {
   }
 }
 
-/** Wipes the room's transcript. Callers must enforce that this is a host action. */
-export function clearThread(sessionId: string): void {
+/**
+ * Оборвать все идущие ответы комнаты, ничего не стирая.
+ *
+ * Отдельно от `clearThread`, потому что поводов два и они разные. Стирание
+ * ленты — действие преподавателя внутри живой комнаты. А это — снос семинара:
+ * документ уже удаляют, и поток, который пишет в него на каждом кадре, заводил
+ * бы комнату заново по имени, которого в списке больше нет. Ход агента
+ * обрывается там же, в `forgetUndo` (ai/agent.ts).
+ */
+export function abortSession(sessionId: string): void {
   const prefix = `${sessionId}:`
   for (const [key, controller] of inflight) {
     if (key.startsWith(prefix)) controller.abort()
   }
+}
+
+/**
+ * Wipes the room's transcript. Callers must enforce that this is a host action.
+ *
+ * Ход агента обрывается не здесь, а рядом, в маршруте: см. routes/ai.ts, где
+ * зовутся обе остановки. Стереть ленту и оставить оракула писать файлы —
+ * значит забрать у комнаты и объяснение происходящего, и кнопку отмены.
+ */
+export function clearThread(sessionId: string): void {
+  abortSession(sessionId)
   const doc = docOf(sessionId)
   const chat = getChat(doc)
   if (chat.length === 0) return
@@ -316,9 +335,9 @@ async function generate(
  * counting up under text that had already arrived.
  */
 function recordThought(sessionId: string, entryId: string, ms: number): void {
-  const doc = docOf(sessionId)
-  const entry = findChatEntry(doc, entryId)
-  if (!entry) return
+  const doc = livingDoc(sessionId)
+  const entry = doc ? findChatEntry(doc, entryId) : null
+  if (!doc || !entry) return
   doc.transact(() => entry.set('thoughtMs', ms), ORIGIN)
 }
 
@@ -362,9 +381,9 @@ class StreamBuffer {
     const text = this.pending
     this.pending = ''
 
-    const doc = docOf(this.sessionId)
-    const entry = findChatEntry(doc, this.entryId)
-    if (!entry) {
+    const doc = livingDoc(this.sessionId)
+    const entry = doc ? findChatEntry(doc, this.entryId) : null
+    if (!doc || !entry) {
       this.gone = true
       this.onGone()
       return
@@ -377,9 +396,9 @@ class StreamBuffer {
 }
 
 function settle(sessionId: string, entryId: string, state: ChatState, note: string | null): void {
-  const doc = docOf(sessionId)
-  const entry = findChatEntry(doc, entryId)
-  if (!entry) return
+  const doc = livingDoc(sessionId)
+  const entry = doc ? findChatEntry(doc, entryId) : null
+  if (!doc || !entry) return
   doc.transact(() => {
     if (note) {
       const answer = chatAnswer(entry)
@@ -428,6 +447,20 @@ function sourceOfCell(doc: Y.Doc, cellId: string | null): string | null {
 
 function docOf(sessionId: string): Y.Doc {
   return getSessionDoc(sessionId).doc
+}
+
+/**
+ * The room's document, only if it is still open.
+ *
+ * Everything deferred goes through this rather than `docOf`: a flush 60 ms
+ * after the seminar was deleted used to build the room again — timers, an
+ * "opened" row in its history, its folder back on disk — for a seminar that no
+ * longer exists. The rule is written over `peekSessionDoc` itself: only what a
+ * person does may create a document. A vanished room reads as a vanished
+ * entry, which is already how this file stops a generation.
+ */
+function livingDoc(sessionId: string): Y.Doc | null {
+  return peekSessionDoc(sessionId)?.doc ?? null
 }
 
 /* ------------------------------------------------------------- transcript */

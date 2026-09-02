@@ -44,12 +44,16 @@ import {
   dropRoomKernel,
   endpointForSession,
   forgetSessionKernel,
+  isolationLost,
+  listRoomKernels,
   runningRoomKernels,
 } from './pool.js'
 import { getSessionDoc, onlineCount } from '../collab/index.js'
+import { projectBooks } from '../collab/books.js'
+import { flushSessionFiles } from '../collab/files.js'
 import { JupyterKernel, type ExecuteStatus, type KernelPhase } from './jupyter.js'
 import { OutputWriter } from './outputs.js'
-import { closeTerminal } from './terminal.js'
+import { closeTerminal, terminalPhase } from './terminal.js'
 
 /**
  * The per-session Python runtime.
@@ -122,6 +126,15 @@ interface Runtime {
   started: { cellId: string; at: number } | null
   /** Who asked for the running cell — the server's own record, not the document's. */
   currentRunById: string | null
+  /**
+   * Ячейка, которая только что закончилась, и её пачка.
+   *
+   * Нужна ровно для одного: «стоп», нажатый на ячейке в тот момент, когда она
+   * успела кончиться, а ядро уже взяло следующую. Без этой записи о цели
+   * нажатия не остаётся ничего, и снималась пачка того, что выполняется
+   * сейчас, — то есть чужая.
+   */
+  lastFinished: { cellId: string; batch: number } | null
   writer: OutputWriter | null
   /**
    * Which environment this room's kernel actually came up on.
@@ -132,6 +145,17 @@ interface Runtime {
    * in the footnote; this is what makes the column able to say it too.
    */
   environment: string | null
+  /**
+   * Семинар закрыт (удалён или убран по простою) — эта среда больше не его.
+   *
+   * `shutdownSession` снимает среду с карты, но подъём ядра, начатый до этого,
+   * доживает свою минуту на захваченном объекте — и всё, что он пишет, идёт
+   * через `getSessionDoc`, который заводит документ заново. Удалённая комната
+   * возвращалась в память, а с ней папка с новым session.ipynb и строка в
+   * истории. Правило то же, что в collab: заводить документ имеет право только
+   * то, что делает человек.
+   */
+  retired: boolean
 }
 
 const runtimes = new Map<string, Runtime>()
@@ -153,8 +177,10 @@ function getRuntime(sessionId: string): Runtime {
       currentBatch: null,
       started: null,
       currentRunById: null,
+      lastFinished: null,
       writer: null,
       environment: null,
+      retired: false,
     }
     runtimes.set(sessionId, runtime)
   }
@@ -164,6 +190,7 @@ function getRuntime(sessionId: string): Runtime {
 /* --------------------------------------------------------- document mirror */
 
 function setStatus(runtime: Runtime, status: KernelStatus): void {
+  if (runtime.retired) return
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
   if (meta.get('kernelStatus') === status) return
@@ -421,6 +448,15 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
     dropQueue(runtime)
     setStatus(runtime, 'restarting')
+    /*
+     * И номера выполнений — со всей тетради, как это делает ручной Restart.
+     *
+     * Процесс новый, переменных нет, а `Out [12]` над каждым прошлым выводом
+     * остаётся и утверждает обратное; по нему же клиент решает, показывать ли
+     * «From an earlier run — the kernel restarted». Без этой строки врала не
+     * одна убитая ячейка, а вся тетрадь.
+     */
+    resetAllCells(runtime.sessionId, runtime.currentCell)
     const known = churnReason()
     kernelNote(
       runtime.sessionId,
@@ -433,13 +469,25 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     return
   }
   if (phase === 'dead') {
+    /*
+     * Found by asking, before the cell was sent: the run is about to be retried
+     * on a fresh kernel and will say so itself. Two notices, one of them about a
+     * cell that then runs perfectly well, is worse than one.
+     *
+     * И очередь при этом не трогаем — она стояла ЗА этой ячейкой и поедет на
+     * том же свежем ядре. Раньше `dropQueue` стоял выше проверки, и Run All на
+     * ядре, умершем на перемене, выполнял ровно одну ячейку: остальные молча
+     * возвращались в покой (заметки о них нет — `return` стоит раньше), причём
+     * вместе с чужими пачками, вопреки обещанию «сбой останавливает только
+     * свою». Сбоя тут и нет: ядро подменяют до отправки.
+     */
+    if (expected) {
+      setStatus(runtime, 'dead')
+      return
+    }
     const hadWork = runtime.currentCell !== null || runtime.queue.length > 0
     dropQueue(runtime)
     setStatus(runtime, 'dead')
-    // Found by asking, before the cell was sent: the run is about to be retried
-    // on a fresh kernel and will say so itself. Two notices, one of them about a
-    // cell that then runs perfectly well, is worse than one.
-    if (expected) return
     // A kernel usually dies because a cell asked for more memory than the
     // container has. Saying so beats a room staring at a notebook that stopped.
     const known = churnReason()
@@ -490,6 +538,7 @@ export function ensureKernel(sessionId: string): Promise<void> {
      * объяснение в загадку — идти чинить kernel:8888, который в этот момент
      * жив и совершенно ни при чём.
      */
+    if (runtime.retired) return
     kernelNote(
       sessionId,
       envName
@@ -517,18 +566,26 @@ export function ensureKernel(sessionId: string): Promise<void> {
       // окружение выбирает только образ, из которого он поднят.
       const endpoint = await endpointForSession(sessionId, wanted)
       const kernel = await JupyterKernel.connect(sessionId, endpoint)
+      if (runtime.retired) {
+        // Семинар закрыли, пока ядро поднималось. Подключаться теперь не к
+        // чему: без этой ветки сокет и сторож живого ядра остались бы висеть
+        // на среде, которой уже нет в карте, до перезапуска сервера.
+        await kernel.dispose().catch(() => {})
+        return
+      }
       runtime.kernel = kernel
       kernel.onPhaseChange((phase, expected) => onPhase(runtime, phase, expected))
       // Before anything of ours is sent: a kernel that is already busy is
       // finishing a cell for a server that no longer exists, and it would make
       // every Run in this room wait behind output nobody will ever see.
-      if (await kernel.releaseOrphanedWork()) {
+      if ((await kernel.releaseOrphanedWork()) && !runtime.retired) {
         kernelNote(
           sessionId,
           'The kernel kept running while the server was away, so every variable is still here. The one cell it was in the middle of was stopped — its output had nowhere left to go.',
         )
       }
       setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
+      await noteSharedKernel(runtime)
     } catch (err) {
       setStatus(runtime, 'dead')
       /*
@@ -542,7 +599,8 @@ export function ensureKernel(sessionId: string): Promise<void> {
       forgetSessionKernel(sessionId)
       // Into the shared record too: the person who presses Run sees the message
       // on their cell, and everyone else sees a notebook that stopped.
-      kernelNote(sessionId, errText(err))
+      // Закрытой комнате — молча: заметка завела бы её документ заново.
+      if (!runtime.retired) kernelNote(sessionId, errText(err))
       throw err
     } finally {
       clearTimeout(slow)
@@ -551,6 +609,34 @@ export function ensureKernel(sessionId: string): Promise<void> {
   })()
 
   return runtime.starting
+}
+
+/** Про общее ядро комната слышит один раз, а не на каждый Run. */
+const toldSharedKernel = new Set<string>()
+
+/**
+ * Сказать комнате, что своего контейнера у неё нет.
+ *
+ * `KERNEL_ISOLATION=auto` — умолчание, и оно обещает семинару свой контейнер, в
+ * который смонтирована только его папка. Под `make up` сервер живёт в
+ * контейнере, который не видит docker, и обещание тихо не выполняется: все
+ * комнаты инстанса сидят в одном ядре compose, видят файлы друг друга, делят
+ * один предел памяти, а выбранное окружение не значит ничего. До сих пор об
+ * этом говорилось только в журнале контейнера — там, куда преподаватель не
+ * смотрит; теперь и в комнате, где это касается людей.
+ */
+async function noteSharedKernel(runtime: Runtime): Promise<void> {
+  if (toldSharedKernel.has(runtime.sessionId)) return
+  if (!(await isolationLost())) return
+  if (runtime.retired) return
+  toldSharedKernel.add(runtime.sessionId)
+  kernelNote(
+    runtime.sessionId,
+    'This server cannot reach Docker, so every seminar on it shares one Python container: ' +
+      "cells here can read and delete other seminars' files, the memory limit is shared, and " +
+      'the environment picked for this seminar is not the one actually running. Run the server ' +
+      'where it can see Docker (make run) to give every room its own container.',
+  )
 }
 
 /**
@@ -656,8 +742,22 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
    * ячейки, которая сейчас выполняется, — поэтому остановить текущую работу
    * можно и промахнувшимся нажатием, а вот разбирать очередь по промаху нельзя.
    */
-  if (running) stopBatchOf(runtime, running)
-  else if (cellId === undefined) dropQueue(runtime)
+  if (running) {
+    /*
+     * SIGINT всё равно достаётся тому, что считается: ядро одно, и выбирать
+     * ему не из чего. А вот очередь по промаху разбираем только свою.
+     *
+     * Промах между двумя ячейками бывает и межвладельческим: преподаватель
+     * жмёт «стоп» на своей ячейке ровно когда она кончилась, а ядро уже взяло
+     * первую ячейку из Run All студента. Снять с неё пачку значило погасить
+     * двенадцать чужих ячеек без объяснения — и именно это раньше и
+     * происходило, потому что `stopBatchOf` по текущей ячейке падал на
+     * `currentBatch`. Цель, о которой мы вообще ничего не знаем (ячейку успели
+     * удалить), считается своей, как и прежде.
+     */
+    const batch = cellId === undefined ? runtime.currentBatch : batchOf(runtime, cellId)
+    if (batch === null || batch === runtime.currentBatch) stopBatchOf(runtime, running)
+  } else if (cellId === undefined) dropQueue(runtime)
   if (!runtime.kernel || runtime.kernel.phase === 'dead') return
   try {
     await runtime.kernel.interrupt()
@@ -677,6 +777,10 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
 export async function shutdownSession(sessionId: string): Promise<void> {
   const runtime = runtimes.get(sessionId)
   if (runtime) {
+    // Первым делом, до всякого await: подъём ядра, идущий прямо сейчас, увидит
+    // этот признак и не станет ни писать в документ, ни оставлять за собой
+    // подключённое ядро.
+    runtime.retired = true
     runtimes.delete(sessionId)
     runtime.queue.length = 0
     runtime.writer?.dispose()
@@ -692,6 +796,9 @@ export async function shutdownSession(sessionId: string): Promise<void> {
   } catch (err) {
     console.error(`[kernel] could not stop the terminal for ${sessionId}:`, errText(err))
   }
+  // Комната кончилась: если её откроют снова, про общее ядро надо сказать
+  // заново — это уже другое занятие.
+  toldSharedKernel.delete(sessionId)
   /*
    * И сам контейнер комнаты.
    *
@@ -726,12 +833,27 @@ const lastOccupied = new Map<string, number>()
 
 async function sweepIdleKernels(): Promise<void> {
   const now = Date.now()
-  for (const sessionId of runningRoomKernels()) {
+  /*
+   * Не только те, что поднял этот процесс.
+   *
+   * `runningRoomKernels()` — карта в памяти, и после перезапуска сервера она
+   * пуста, а вчерашние контейнеры работают: уборка о них не знала, пока кто-то
+   * не откроет комнату, и они жили до `make down`. Метка docker переживает нас,
+   * поэтому спрашиваем и её.
+   */
+  const rooms = new Set<string>(runningRoomKernels())
+  for (const sessionId of await listRoomKernels()) rooms.add(sessionId)
+  for (const sessionId of rooms) {
     const runtime = runtimes.get(sessionId)
     // Считающая комната занята, даже если все закрыли вкладки: у ячейки есть
-    // хозяин, который вернётся за результатом.
+    // хозяин, который вернётся за результатом. То же и у команды в оболочке:
+    // трёхчасовое обучение, запущенное в терминале, — работа с хозяином, и
+    // снести контейнер под ней значит убить её строкой «terminal closed».
     const busy =
-      onlineCount(sessionId) > 0 || !!runtime?.currentCell || (runtime?.queue.length ?? 0) > 0
+      onlineCount(sessionId) > 0 ||
+      !!runtime?.currentCell ||
+      (runtime?.queue.length ?? 0) > 0 ||
+      terminalPhase(sessionId) === 'busy'
     if (busy) {
       lastOccupied.set(sessionId, now)
       continue
@@ -914,6 +1036,20 @@ function failed(runtime: Runtime, cellId: string): boolean {
 }
 
 /**
+ * Из какой пачки ячейка, названная нажатием, — насколько сервер это ещё помнит.
+ *
+ * `null` значит «не знаем»: ячейка не в очереди, не выполняется и кончилась не
+ * последней. Тогда судить о пачке нечем, и решает вызывающий.
+ */
+function batchOf(runtime: Runtime, cellId: string): number | null {
+  const queued = runtime.queue.find((item) => item.cellId === cellId)
+  if (queued) return queued.batch
+  if (runtime.currentCell === cellId) return runtime.currentBatch
+  if (runtime.lastFinished?.cellId === cellId) return runtime.lastFinished.batch
+  return null
+}
+
+/**
  * A cell failed, so the rest of the same Run All is not worth running.
  *
  * Thirty cells that each need the one before produce thirty tracebacks, and the
@@ -1085,12 +1221,26 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   if (source.trim().length === 0) {
     runtime.currentCell = null
     runtime.currentBatch = null
+    runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
     runtime.writer = null
     writer.dispose()
     setCellState(runtime.sessionId, item.cellId, 'ok')
     return
   }
 
+  /*
+   * Всё набранное — на диск, прежде чем ячейка пойдёт это читать.
+   *
+   * `%run solve.py`, `open('data.csv')`, `import helpers` читают файл, а не
+   * документ, а документ доезжает до диска с задержкой: редактор — через
+   * 700 мс после последнего нажатия, тетради — через полторы секунды. Ячейка,
+   * запущенная сразу после правки, читала прошлую версию файла и падала на
+   * строке, которую только что исправили при всех, — и объяснить это было
+   * нечем.
+   */
+  flushToDisk(runtime.sessionId)
+
+  const unwatch = stopIfDeleted(runtime, doc, item.cellId)
   let state: CellState = 'idle'
   try {
     /*
@@ -1126,18 +1276,35 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
       },
     })
     state = status === 'ok' ? 'ok' : status === 'error' ? 'error' : 'idle'
-    if (status === 'abort' && runtime.kernel?.phase === 'dead') {
-      writer.error('KernelDied', deadMessage(), [])
-      state = 'error'
+    if (status === 'abort') {
+      const phase = runtime.kernel?.phase
+      if (phase === 'dead') {
+        writer.error('KernelDied', deadMessage(), [])
+        state = 'error'
+      } else if (phase === 'restarting' && runtime.kernel?.phaseExpected === false) {
+        /*
+         * Ядро перезапустил не человек, а сам Jupyter: процесс убили — почти
+         * всегда за память, — и убила его эта ячейка. Фаза в этот момент
+         * `restarting`, а не `dead`, поэтому раньше сюда не попадали вовсе:
+         * ячейка садилась в `idle` с номером «Out [7]», на экране неотличимая
+         * от успешной, а связь с NameError в следующей никто уже не видел.
+         */
+        writer.error('KernelDied', killedMessage(), [])
+        state = 'error'
+      }
     }
   } catch (err) {
     writer.error('KernelError', errText(err), [])
     state = 'error'
   } finally {
+    unwatch()
     writer.dispose()
     runtime.writer = null
     runtime.currentCell = null
     runtime.currentBatch = null
+    // Чья это была пачка — помним ещё круг: «стоп» по этой ячейке может
+    // доехать уже после того, как ядро взяло следующую.
+    runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
     // The prompt belongs to a running cell. Whatever ended the run — an answer,
     // an interrupt, a dead kernel — it must not be left on screen asking.
     const target = findCell(doc, item.cellId)
@@ -1194,6 +1361,57 @@ function deadMessage(): string {
   return 'The Python kernel stopped responding — restart it to keep going. (A cell that allocates all the memory will do this.)'
 }
 
+/**
+ * Ячейку, которая считается прямо сейчас, удалили — остановить ядро.
+ *
+ * Удаление ничем не связано с выполнением: ячейка исчезает из документа, а
+ * цикл в ядре крутится дальше, `meta.runningCell` называет id, которого больше
+ * нет, и остановить это нечем — кнопка нарисована на ячейке, а ячейки нет.
+ * Прерывание здесь — ровно то, что нажал бы человек, будь кнопке к чему
+ * привязаться.
+ *
+ * Наблюдатель живёт только пока ячейка считается, и своих же записей не видит:
+ * вывод и состояния идут под `ORIGIN`.
+ */
+function stopIfDeleted(runtime: Runtime, doc: Y.Doc, cellId: string): () => void {
+  let fired = false
+  const onUpdate = (_update: Uint8Array, origin: unknown) => {
+    if (fired || origin === ORIGIN) return
+    if (runtime.currentCell !== cellId || findCell(doc, cellId)) return
+    fired = true
+    kernelNote(
+      runtime.sessionId,
+      'The cell that was running was deleted, so the kernel was interrupted — whatever it had already changed is still in memory.',
+    )
+    void runtime.kernel?.interrupt().catch(() => {})
+  }
+  doc.on('update', onUpdate)
+  return () => doc.off('update', onUpdate)
+}
+
+/**
+ * Дописать на диск то, что комната набрала, но ещё не сохранила.
+ *
+ * Только по своей комнате: ячейка читает диск здесь, а чужие несохранённые
+ * файлы уедут туда сами теми же семьюстами миллисекундами позже.
+ */
+function flushToDisk(sessionId: string): void {
+  try {
+    projectBooks(sessionId)
+    flushSessionFiles(sessionId)
+  } catch (err) {
+    console.error(`[kernel] не удалось дописать файлы ${sessionId}:`, errText(err))
+  }
+}
+
+/** Ядро вернулось само, а ячейка — нет: процесс, в котором она шла, убили. */
+function killedMessage(): string {
+  const known = churnReason()
+  return known
+    ? `${known} The cell running at the time was killed with it, and every variable is gone.`
+    : 'The kernel was restarted while this cell was running — the process was killed, almost always because it ran out of memory. Every variable is gone; the kernel itself is back.'
+}
+
 /* ------------------------------------------------------------------ outputs */
 
 /**
@@ -1209,13 +1427,14 @@ export async function formatSession(sessionId: string, book?: string): Promise<F
   try {
     await ensureKernel(sessionId)
   } catch (err) {
-    return { changed: 0, skipped: 0, unchanged: 0, error: errText(err) }
+    return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: errText(err) }
   }
   const kernel = runtime.kernel
   if (!kernel) {
     return {
       changed: 0,
       skipped: 0,
+      edited: 0,
       unchanged: 0,
       error: 'The kernel is not running.',
     }
@@ -1274,6 +1493,15 @@ export function clearOutputs(sessionId: string, cellId?: string, book?: string):
    * не называет никого, потому что уносит переменные всей комнаты сразу.
    */
   const named = book ? cellsAt(doc, book) : null
+  /*
+   * Названная, но не найденная тетрадь — это не «тетрадь не названа».
+   *
+   * `null` здесь читался как «во всей комнате», и промах именем — кадр от
+   * вкладки, чью тетрадь только что закрыли или переименовали, — стирал выводы
+   * ВСЕХ тетрадей сразу. Кадры с неизвестным именем control.ts теперь отвергает
+   * раньше; это вторая линия.
+   */
+  if (book && !named) return
   const cells = named
     ? named.toArray()
     : allCellArrays(doc).flatMap((array: Y.Array<YCell>) => array.toArray())

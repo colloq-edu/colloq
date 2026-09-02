@@ -303,8 +303,14 @@ export async function completeWithTools(
      * а свойство того, куда указали. Отдельная фраза, потому что «сделать» на
      * такой модели не заработает никогда, сколько ни повторяй, а «спросить»
      * работает прекрасно.
+     *
+     * Но 400 у агента бывает и по другой причине: переписка растёт на каждый
+     * прочитанный файл, и небольшое окно переполняется на третьем шаге. Тогда
+     * эта фраза — враньё: инструментами только что пользовались. Отличаем по
+     * самой переписке (в ней уже есть ответы инструментов) и по словам
+     * эндпоинта, а в остальных случаях 400 показывается как есть, с деталью.
      */
-    if (isBadRequest(err) && tools.length > 0) {
+    if (isBadRequest(err) && tools.length > 0 && !usedTools(messages) && !aboutSize(err)) {
       throw new Error(
         'Эта модель не умеет пользоваться инструментами — режим «сделать» ей недоступен. ' +
           'Спросить её по-прежнему можно.',
@@ -325,6 +331,16 @@ export async function completeWithTools(
     })
   }
   return { text: typeof choice?.content === 'string' ? choice.content : '', calls }
+}
+
+/** Инструментами в этом ходе уже пользовались — значит, эндпоинт их умеет. */
+function usedTools(messages: ChatTurn[]): boolean {
+  return messages.some((turn) => turn.callId !== undefined || (turn.calls?.length ?? 0) > 0)
+}
+
+/** Похоже ли, что эндпоинт жалуется на размер запроса, а не на его форму. */
+function aboutSize(err: unknown): boolean {
+  return /context|too long|maximum|token/i.test(detailOf(err))
 }
 
 /** Сообщение, как его правда присылают: `tool_calls` нет в типах SDK для этой формы. */

@@ -38,6 +38,14 @@ export interface FormatOutcome {
   changed: number
   /** Cells black refused — a magic, a shell line, or code mid-sentence. */
   skipped: number
+  /**
+   * Ячейки, которые правили, пока работал black; они входят и в `skipped`.
+   *
+   * Отдельным числом, потому что причина у них другая, и сказать про них надо
+   * другое: их не «оставили как были», их не тронули, чтобы не стереть
+   * набранное.
+   */
+  edited: number
   /** Cells that were already in shape. */
   unchanged: number
   error: string | null
@@ -118,7 +126,7 @@ export async function formatNotebook(
     targets.push({ cell, text })
   }
   if (targets.length === 0) {
-    return { changed: 0, skipped: 0, unchanged: 0, error: null }
+    return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: null }
   }
 
   let out = ''
@@ -134,7 +142,13 @@ export async function formatNotebook(
     { silent: true },
   )
   if (status !== 'ok') {
-    return { changed: 0, skipped: 0, unchanged: 0, error: 'The kernel could not run the formatter.' }
+    return {
+      changed: 0,
+      skipped: 0,
+      edited: 0,
+      unchanged: 0,
+      error: 'The kernel could not run the formatter.',
+    }
   }
 
   let parsed: { formatted?: (string | null)[]; error?: string }
@@ -143,13 +157,15 @@ export async function formatNotebook(
     const line = out.split('\n').reverse().find((l) => l.trim().startsWith('{')) ?? ''
     parsed = JSON.parse(line) as { formatted?: (string | null)[]; error?: string }
   } catch {
-    return { changed: 0, skipped: 0, unchanged: 0, error: 'The formatter did not answer.' }
+    const error = 'The formatter did not answer.'
+    return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error }
   }
-  if (parsed.error) return { changed: 0, skipped: 0, unchanged: 0, error: parsed.error }
+  if (parsed.error) return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: parsed.error }
   const formatted = parsed.formatted ?? []
 
   let changed = 0
   let skipped = 0
+  let edited = 0
   let unchanged = 0
 
   doc.transact(() => {
@@ -166,6 +182,21 @@ export async function formatNotebook(
       const source = target.cell.get('source') as Y.Text | undefined
       if (!source) return
       /*
+       * Текст перечитывается здесь, внутри той же транзакции, что и замена.
+       *
+       * Между снимком и этой строкой — круг до ядра: если оно занято ячейкой,
+       * запрос стоит в его очереди до конца этой ячейки. Всё, что за это время
+       * напечатали в форматируемые ячейки, лежит уже здесь, а замена целиком
+       * стёрла бы его без следа — чужой origin `format` под Ctrl+Z у автора не
+       * отменяется. Ячейку, которая разошлась со снимком, не трогаем: пусть
+       * останется неотформатированной, но написанной.
+       */
+      if (source.toString() !== target.text) {
+        skipped += 1
+        edited += 1
+        return
+      }
+      /*
        * Replace wholesale rather than diff. A character-level diff would keep
        * other people's cursors in place, which sounds better — but black moves
        * whole lines, so the "smart" result is a cursor that has quietly landed
@@ -178,5 +209,5 @@ export async function formatNotebook(
     })
   }, ORIGIN)
 
-  return { changed, skipped, unchanged, error: null }
+  return { changed, skipped, edited, unchanged, error: null }
 }

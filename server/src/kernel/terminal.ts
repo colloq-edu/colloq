@@ -59,6 +59,20 @@ const MAX_TRANSCRIPT_CHARS = 200 * 1024
 const MAX_ENTRY_CHARS = 32 * 1024
 /** An unbroken line has to end somewhere; minified JSON is the usual culprit. */
 const MAX_PARTIAL_CHARS = 4096
+/**
+ * Сколько вывода уезжает в документ за одно окно склейки.
+ *
+ * У ячейки ядра потолок на выполнение есть, у терминала не было ничего: `cat`
+ * стомегабайтного файла вливал в CRDT по мегабайту-другому каждые 60 мс, и это
+ * рассылалось всем тридцати вкладкам — вместе с тетрадью, которая живёт в том
+ * же документе. Оставляем хвост окна: транскрипт и так хвост, а нужное почти
+ * всегда в последних строках — «successfully installed» приходит после
+ * километра прогресса.
+ */
+const MAX_FLUSH_CHARS = 64 * 1024
+const FLOOD_NOTICE =
+  '[colloq] output is coming faster than a shared transcript can carry — only the most recent ' +
+  'lines of each moment are kept. Redirect it to a file if you need all of it.'
 /** Never trim away the command that is producing output right now. */
 const MIN_KEPT_ENTRIES = 2
 const MAX_COMMAND_BYTES = 4096
@@ -173,6 +187,8 @@ interface Term {
   skipEcho: string | null
   screenApp: boolean
   clearNoticed: boolean
+  /** Сказали ли уже про потоп в этой команде; см. MAX_FLUSH_CHARS. */
+  flooded: boolean
   commandLine: YTerminalLine | null
   commandLineId: string | null
   outputLine: YTerminalLine | null
@@ -219,6 +235,7 @@ function getTerm(sessionId: string): Term {
       skipEcho: null,
       screenApp: false,
       clearNoticed: false,
+      flooded: false,
       commandLine: null,
       commandLineId: null,
       outputLine: null,
@@ -274,22 +291,35 @@ function lineId(line: YTerminalLine): string {
  * Adopt whatever the persisted document already holds. A server restart brings
  * back the transcript but not the shell, so a command still marked `running` is
  * a claim we can no longer stand behind.
+ *
+ * Своя живая команда — исключение, и это не мелочь.
+ *
+ * Пересчёт запускает не только открытие терминала: в тот же массив пишет
+ * заметки ядра (kernel/index.ts), и любая из них сбивает выравнивание, после
+ * чего `ensureAligned` зовёт нас посреди работающей команды. Обнуляя здесь
+ * `commandLine`, мы объявляли `python train.py` законченным — точка и счётчик
+ * гасли, охрана «одна команда за раз» переставала держать, и следующая команда
+ * уходила прямо в занятую оболочку. Тем же путём ломалась первая команда в
+ * ещё не открытый терминал: `openTerminal` усыновлял транскрипт сразу после
+ * того, как строка команды в него легла.
+ *
+ * Поэтому живые строки ищутся по id и остаются собой: их учёт (`tailLen`,
+ * `outChars`) продолжает описывать те же самые записи в документе.
  */
 function adoptTranscript(term: Term): void {
   const doc = docOf(term)
   const array = getTerminal(doc)
+  const liveCommandId = term.commandLineId
+  const liveOutputId = term.outputLineId
   term.ledger = []
   term.chars = 0
   term.lines = 0
-  term.outputLine = null
-  term.outputLineId = null
-  term.outChars = 0
-  term.outLines = 0
-  term.tailLen = 0
-  term.commandLine = null
-  term.commandLineId = null
+  let command: YTerminalLine | null = null
+  let output: YTerminalLine | null = null
+  let outputChars = 0
+  let outputLines = 0
   doc.transact(() => {
-    array.forEach((line: YTerminalLine) => {
+    for (const line of array.toArray()) {
       const text = terminalText(line).toString()
       const entry: LedgerEntry = {
         id: lineId(line),
@@ -299,9 +329,26 @@ function adoptTranscript(term: Term): void {
       term.ledger.push(entry)
       term.chars += entry.chars
       term.lines += entry.lines
+      if (liveCommandId !== null && entry.id === liveCommandId) {
+        command = line
+        continue
+      }
+      if (liveOutputId !== null && entry.id === liveOutputId) {
+        output = line
+        outputChars = entry.chars
+        outputLines = entry.lines
+        continue
+      }
       if (line.get('running') === true) line.set('running', false)
-    })
+    }
   }, ORIGIN)
+  term.commandLine = command
+  term.commandLineId = command === null ? null : liveCommandId
+  term.outputLine = output
+  term.outputLineId = output === null ? null : liveOutputId
+  term.outChars = output === null ? 0 : outputChars
+  term.outLines = output === null ? 0 : outputLines
+  if (output === null) term.tailLen = 0
 }
 
 function syncLedger(term: Term, id: string, chars: number, lines: number): void {
@@ -684,7 +731,23 @@ function flush(term: Term): void {
     detachOutput(term)
     systemLine(term, CLEAR_NOTICE)
   }
-  writeOut(term, res.committed)
+  writeOut(term, budgeted(term, res.committed))
+}
+
+/** Оставить от окна только его хвост, сказав об этом один раз за команду. */
+function budgeted(term: Term, committed: string): string {
+  if (committed.length <= MAX_FLUSH_CHARS) return committed
+  // По границе строки, если она рядом: обрубок посреди строки читается как
+  // испорченный вывод, а не как срезанный.
+  const cut = committed.indexOf('\n', committed.length - MAX_FLUSH_CHARS)
+  const from = cut < 0 || cut + 1 >= committed.length ? committed.length - MAX_FLUSH_CHARS : cut + 1
+  const tail = committed.slice(from)
+  if (!term.flooded) {
+    term.flooded = true
+    detachOutput(term)
+    systemLine(term, FLOOD_NOTICE)
+  }
+  return tail
 }
 
 /**
@@ -741,6 +804,7 @@ function finishCommand(term: Term): void {
   term.skipEcho = null
   term.screenApp = false
   term.clearNoticed = false
+  term.flooded = false
   clearRunning(term)
   setPhase(term, 'idle')
   startNextPending(term)
@@ -769,6 +833,40 @@ function settleRun(term: Term, finished: boolean): void {
     done({ output, finished })
   } catch (err) {
     console.error('[terminal] ожидающий команды упал:', errText(err))
+  }
+}
+
+/**
+ * Ожидающие команды, которые уже не побегут.
+ *
+ * Три места роняли очередь молча: смерть оболочки, отказ терминала и его
+ * закрытие. `onShellExit` и `fail` при этом чистили только байты в полёте, а
+ * `pending` оставляли — и первая же команда в заново открытом терминале
+ * вытаскивала за собой `pip install`, поставленный в очередь десять минут и
+ * одну оболочку назад. Здесь очередь и гаснет: тому, кто её ждал, отвечают
+ * сразу, а комната узнаёт, чьи команды пропали.
+ */
+function dropPending(term: Term, why: string): void {
+  if (term.pending.length === 0) return
+  const dropped = term.pending.splice(0, term.pending.length)
+  settlePending(dropped)
+  systemLine(
+    term,
+    dropped.length === 1
+      ? `[colloq] ${dropped[0].by.name}'s waiting command was dropped — ${why}.`
+      : `[colloq] ${dropped.length} waiting commands were dropped — ${why}.`,
+  )
+}
+
+/** Сказать тем, кто ждал снятые команды, что они не побегут. */
+function settlePending(items: Array<{ done?: Done }>): void {
+  for (const item of items) {
+    if (!item.done) continue
+    try {
+      item.done({ output: '', finished: false })
+    } catch (err) {
+      console.error('[terminal] ожидающий команды упал:', errText(err))
+    }
   }
 }
 
@@ -895,11 +993,28 @@ function connect(term: Term): Promise<void> {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      /*
+       * Прежний сокет к тому же pty закрывается здесь, а не «когда-нибудь».
+       *
+       * Раньше `term.socket = socket` просто затирал предыдущий, а тот оставался
+       * с живым обработчиком: терминадо шлёт вывод в оба, и каждая строка
+       * работающей команды писалась в общий транскрипт дважды — до конца пары.
+       */
+      const previous = term.socket
+      if (previous && previous !== socket) {
+        try {
+          previous.close()
+        } catch {
+          /* already gone */
+        }
+      }
       term.socket = socket
       resolve()
     })
 
     socket.on('message', (data: RawData) => {
+      // Кадры осиротевшего сокета — не наш вывод: его команда давно у другого.
+      if (term.socket !== socket) return
       const text = frameText(data)
       if (text === null) return
       let parsed: unknown
@@ -927,12 +1042,16 @@ function connect(term: Term): Promise<void> {
 
     socket.on('close', () => {
       clearTimeout(timer)
-      if (term.socket === socket) term.socket = null
+      const ours = term.socket === socket
+      if (ours) term.socket = null
       if (!settled) {
         settled = true
         reject(new Error('the terminal channel closed before it opened'))
         return
       }
+      // Закрылся не тот сокет, которым терминал пользуется сейчас: это уборка
+      // за собой, а не обрыв. Переподключаться на неё — плодить третий.
+      if (!ours) return
       if (term.closing || term.phase === 'closed' || term.phase === 'dead') return
       term.primed = false
       scheduleReconnect(term)
@@ -968,6 +1087,7 @@ function onShellExit(term: Term): void {
   rejectWaiters(term, new Error('the shell exited'))
   setPhase(term, 'closed')
   systemLine(term, '[colloq] the shell exited — open the terminal again to start a new one.')
+  dropPending(term, 'the shell exited')
 }
 
 /* -------------------------------------------------------------- lifecycle */
@@ -998,6 +1118,7 @@ function fail(term: Term, message: string): void {
   closeSocket(term)
   setPhase(term, 'dead')
   systemLine(term, `[colloq] ${message}`)
+  dropPending(term, 'the terminal is gone')
   rejectWaiters(term, new Error(message))
 }
 
@@ -1054,16 +1175,33 @@ function scheduleReconnect(term: Term): void {
  * the same cwd. Terminado replays its scrollback on attach, which the transcript
  * already has — hence the prime, which throws that replay away.
  */
-async function reconnect(term: Term): Promise<void> {
-  if (term.closing || term.phase === 'closed' || !term.name) return
-  try {
-    await connect(term)
-    sendSize(term)
-    startPrime(term, false)
-  } catch (err) {
-    console.error(`[terminal] reconnect failed for ${term.sessionId}:`, errText(err))
-    scheduleReconnect(term)
-  }
+function reconnect(term: Term): Promise<void> {
+  if (term.closing || term.phase === 'closed' || !term.name) return Promise.resolve()
+  if (term.opening) return term.opening
+  /*
+   * Переподключение держится тем же полем, что и открытие, и это чинит окно.
+   *
+   * Пока `connect` в полёте, `term.socket` уже null, таймер переподключения уже
+   * снят, а `opening` до сих пор не выставлялся — то есть все три сторожа
+   * `openTerminal` были пустыми, и второй вход (руки оракула, команда,
+   * прилетевшая в это мгновение) открывал ВТОРОЙ сокет к той же оболочке:
+   * `cd … && clear` в stdin работающего `pip`, вывод в транскрипте дважды,
+   * фаза `idle` при живой команде.
+   */
+  const run = (async () => {
+    try {
+      await connect(term)
+      sendSize(term)
+      startPrime(term, false)
+    } catch (err) {
+      console.error(`[terminal] reconnect failed for ${term.sessionId}:`, errText(err))
+      scheduleReconnect(term)
+    } finally {
+      term.opening = null
+    }
+  })()
+  term.opening = run
+  return run
 }
 
 /**
@@ -1169,7 +1307,10 @@ export function runCommand(
 ): void {
   const term = getTerm(sessionId)
   const text = command.replace(/\r/g, '').replace(/\n+$/, '')
-  if (text.trim().length === 0) return
+  if (text.trim().length === 0) {
+    done?.({ output: '', finished: false })
+    return
+  }
   if (Buffer.byteLength(text, 'utf8') > MAX_COMMAND_BYTES) {
     systemLine(term, '[colloq] that command is too long to send to the terminal.')
     done?.({ output: '', finished: false })
@@ -1185,13 +1326,25 @@ export function runCommand(
    *
    * The line is not written here either. It goes in when the command actually
    * starts, so the order in the transcript is the order things ran.
+   *
+   * Занятость меряется живой строкой команды, а не фазой. Фаза врёт в двух
+   * обычных случаях: обрыв сокета к Jupyter ставит `starting`, хотя pty внутри
+   * контейнера продолжает считать, — и `Clear` посреди чужой команды. В обоих
+   * условие с `phase === 'busy'` переставало держать, и команда уходила в stdin
+   * работающей: её байты доставались `train.py`, а остаток чужого вывода
+   * печатался под строкой того, кто просто набрал `ls`. Строка команды живёт
+   * ровно столько, сколько команда: её гасят `clearRunning` в конце, при смерти
+   * оболочки и при закрытии терминала.
    */
-  if (term.phase === 'busy' && term.commandLine) {
+  if (term.commandLine) {
     if (term.pending.length >= MAX_PENDING_COMMANDS) {
       systemLine(term, '[colloq] too many commands are already waiting; try again once the shell is free.')
+      // Тот, кто ждёт ответа (оракул), должен узнать об отказе сейчас, а не
+      // через полторы минуты по таймауту.
+      done?.({ output: '', finished: false })
       return
     }
-    term.pending.push({ text, by })
+    term.pending.push({ text, by, done })
     systemLine(term, `[colloq] ${by.name}'s command is waiting for the shell.`)
     return
   }
@@ -1218,6 +1371,7 @@ function dispatch(term: Term, text: string, by: Sender, done?: Done): void {
   term.col = 0
   term.screenApp = false
   term.clearNoticed = false
+  term.flooded = false
   term.skipEcho = text.split('\n')[0]
 
   const line = createTerminalLine({
@@ -1283,6 +1437,8 @@ export function interruptTerminal(sessionId: string, by?: string, byId?: string)
     const keep = byId ? term.pending.filter((item) => item.by.participantId !== byId) : []
     const dropped = mine.length
     term.pending = keep
+    // Ждущему (оракулу) отвечаем сразу: его команда снята, а не «идёт».
+    settlePending(mine)
     if (dropped > 0) {
       systemLine(
         term,
@@ -1302,6 +1458,24 @@ export function clearTerminal(sessionId: string): void {
   const term = getTerm(sessionId)
   const doc = docOf(term)
   const array = getTerminal(doc)
+  /*
+   * Идущая команда переживает уборку — новой строкой.
+   *
+   * Стереть транскрипт можно, а команду из оболочки — нет: `pip install` внутри
+   * продолжает работать. Раньше вместе с записями терялась и строка команды, а с
+   * ней и вся охрана «одна команда за раз»: следующий набравший `ls` отправлял
+   * его в занятый шелл, и его вывод печатался под чужой строкой. Заводим для
+   * идущей команды свежую строку — комната видит, что именно всё ещё работает.
+   */
+  const running = term.commandLine
+  const carried = running
+    ? {
+        text: terminalText(running).toString(),
+        name: (running.get('name') as string | null) ?? null,
+        color: (running.get('color') as string | null) ?? null,
+        participantId: (running.get('participantId') as string | null) ?? null,
+      }
+    : null
   if (array.length > 0) doc.transact(() => array.delete(0, array.length), ORIGIN)
   term.ledger = []
   term.chars = 0
@@ -1317,6 +1491,17 @@ export function clearTerminal(sessionId: string): void {
   // the next entry a moment later.
   term.partial = ''
   term.col = 0
+  if (!carried) return
+  const line = createTerminalLine({
+    kind: 'command',
+    text: carried.text,
+    name: carried.name,
+    color: carried.color,
+    participantId: carried.participantId,
+  })
+  appendEntry(term, line, carried.text.length, countLines(carried.text) + 1)
+  term.commandLine = line
+  term.commandLineId = lineId(line)
 }
 
 export async function closeTerminal(sessionId: string): Promise<void> {
@@ -1330,7 +1515,6 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   term.col = 0
   term.raw = ''
   term.queued = []
-  term.pending = []
   term.primed = false
   closeSocket(term)
   const name = term.name
@@ -1339,6 +1523,7 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   rejectWaiters(term, new Error('the terminal was closed'))
   setPhase(term, 'closed')
   systemLine(term, '[colloq] terminal closed.')
+  dropPending(term, 'the terminal was closed')
   if (!name) return
   try {
     await deleteJupyterTerminal(term.endpoint, name)
