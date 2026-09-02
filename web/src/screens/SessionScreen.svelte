@@ -1346,28 +1346,6 @@
         </div>
       {/if}
 
-      <!--
-        Занятие закончено — всем, а не одним участникам.
-
-        Спокойный чип, не тревога: комната жива, и это решение преподавателя, а
-        не поломка. Преподавателю он тоже нужен — он же и объясняет, почему у
-        него одного всё работает. Время рядом, потому что «закончено» без часа
-        — это факт, который нечем проверить, когда вернулся через день.
-      -->
-      {#if session.finished}
-        <div
-          class="flex h-7 shrink-0 items-center gap-2 bg-white/10 px-2.5"
-          role="status"
-          title={finishedLong}
-          transition:fade={{ duration: 120 }}
-        >
-          <span class="text-2xs font-bold uppercase tracking-label text-white">
-            Занятие закончено
-          </span>
-          <span class="hidden font-mono text-2xs text-white/60 sm:inline">{finishedStamp}</span>
-        </div>
-      {/if}
-
       <span class="min-w-0 flex-1"></span>
 
       <!-- Panels are not on the artboard, which draws both columns open; they
@@ -1482,6 +1460,57 @@
       </div>
     </div>
   </header>
+
+  <!--
+    Занятие закончено — полосой, а не значком.
+
+    Это состояние всей комнаты, и держится оно днями: значок в шапке такое
+    говорит шёпотом, и человек, у которого не нажимается ничего, ищет поломку.
+    Полоса стоит там, где начинается работа, не перекрывает её и никуда не
+    уезжает при прокрутке — а тёплый тон отличает «так решили» от красного
+    «сломалось».
+
+    Всем, а не одним участникам: преподавателю она объясняет, почему у него
+    одного всё живо, и держит кнопку возврата под рукой — чтобы не искать её в
+    пульте правил посреди пары.
+  -->
+  {#if session.finished}
+    <div
+      class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line
+             bg-warning/[0.08] px-4 py-2"
+      role="status"
+      transition:fade={{ duration: 140 }}
+    >
+      <Icon name="lock" size={14} class="shrink-0 text-warning" />
+      <p class="text-ui font-semibold text-ink">
+        Занятие закончено
+        <span class="ml-1 font-mono text-2xs font-normal text-muted" title={finishedLong}>
+          {finishedStamp}
+        </span>
+      </p>
+      <!-- Что осталось, а не что отняли: сюда приходят перечитывать разбор, и
+           первое, что человек должен узнать, — что всё на месте. -->
+      <p class="min-w-0 flex-1 text-2xs leading-snug text-muted">
+        {isHost
+          ? 'Участники только читают: ни запуска, ни правки, ни терминала. У вас всё как было.'
+          : 'Тетрадь, файлы, лента терминала и ответы оракула на месте — их можно читать.'}
+      </p>
+      {#if isHost}
+        <button
+          type="button"
+          class="btn-outline h-[26px] shrink-0 text-2xs font-semibold"
+          disabled={controlDisabled(session.connected)}
+          title={controlTitle(
+            session.connected,
+            'Открыть занятие обратно — участники снова смогут считать и печатать',
+          )}
+          onclick={() => setClassOver(false)}
+        >
+          Продолжить занятие
+        </button>
+      {/if}
+    </div>
+  {/if}
 
   <!-- Positioned, so the panel drawers below cover the workspace and stop at
        the masthead without anyone hard-coding how tall the masthead is. -->

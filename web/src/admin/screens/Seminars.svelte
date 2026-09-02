@@ -1105,6 +1105,24 @@
                 <span class="whitespace-nowrap text-2xs text-muted">archived</span>
               {/if}
               <!--
+                Решение преподавателя, а не подсчёт подключённых, — и потому не
+                в столбце Status: `status` отвечает на «есть ли кто-то в комнате
+                сейчас» (семинар без единого человека может идти, а законченный
+                — стоять с полным залом), а в те 116 пикселей эта строка и не
+                влезала: с `whitespace-nowrap` она выезжала влево на число
+                зашедших. Здесь она стоит среди других фактов о семинаре, рядом
+                с «archived» и «опубликован», и переносится вместе с ними.
+              -->
+              {#if seminar.finishedAt}
+                {@const over = new Date(seminar.finishedAt).toLocaleString()}
+                <span
+                  class="whitespace-nowrap text-2xs text-muted"
+                  title="Закончено {over} — в комнате теперь только читают"
+                >
+                  занятие закончено
+                </span>
+              {/if}
+              <!--
                 Кто завёл комнату. Хранилось с самого начала и не показывалось
                 нигде: на общем инстансе кафедры список — это чужие семинары
                 вперемешку со своими, и «удалить» стоит рядом с каждым. Правит
@@ -1178,22 +1196,6 @@
 
           <td class="py-2 align-middle">
             <div class="flex items-center justify-end gap-2">
-              <!--
-                Решение преподавателя, а не подсчёт подключённых — и потому
-                рядом со статусом, а не вместо него. `status` отвечает на «есть
-                ли кто-то в комнате сейчас»: семинар без единого человека может
-                идти, а законченный — стоять с полным залом, который
-                перечитывает разбор.
-              -->
-              {#if seminar.finishedAt}
-                {@const over = new Date(seminar.finishedAt).toLocaleString()}
-                <span
-                  class="whitespace-nowrap text-2xs text-muted"
-                  title="Закончено {over} — в комнате теперь только читают"
-                >
-                  занятие закончено
-                </span>
-              {/if}
               {#if seminar.status === 'live'}
                 <span
                   class="chip h-[22px] gap-1.5 bg-accent/15 px-2 text-micro font-bold uppercase tracking-caps text-accent-text"

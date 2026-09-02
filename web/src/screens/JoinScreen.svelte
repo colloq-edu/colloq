@@ -360,30 +360,6 @@
         </p>
       {/if}
 
-      {#if session.published}
-        <!--
-          Указатель, а не запрет.
-
-          Это чинит единственный адрес, который у студента правда есть: ссылка
-          в чате ведёт в комнату. Без этой строки человек через неделю вводит
-          имя в закончившееся занятие, заводит ещё одну строку участника, будит
-          ядро и остаётся один в живой тетради, где ничто не говорит, что есть
-          опубликованная версия. Форма ниже остаётся рабочей: комната открыта, и
-          преподаватель, вернувшийся поправить ячейку, — живой человек.
-        -->
-        <div class="flex flex-col gap-1.5 border border-line bg-surface px-4 py-3">
-          <p class="text-ui font-semibold text-ink">Этот семинар опубликован.</p>
-          <a class="text-ui text-accent-text" href={`/p/${session.published.id}`}>
-            Прочитать его — со всем, что напечатали ячейки →
-          </a>
-          {#if session.course}
-            <a class="text-ui text-accent-text" href={`/c/${session.course.id}`}>
-              Весь курс «{session.course.name}» →
-            </a>
-          {/if}
-        </div>
-      {/if}
-
       <div class="flex flex-col gap-2.5">
         <label
           for="join-name"
