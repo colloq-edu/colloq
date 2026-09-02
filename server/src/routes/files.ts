@@ -1,20 +1,20 @@
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
+import { basename } from 'node:path'
 import busboy from 'busboy'
 import { Router } from 'express'
 import { config } from '../config.js'
 import { getSession } from '../db.js'
-import { baseOf, joinPath, normalizePath } from '@shared/paths'
+import { baseOf, joinPath, normalizePath, safeSegment, whySegmentRefused } from '@shared/paths'
 import { forgetFile } from '../collab/files.js'
 import { dropBook, isBookFile } from '../collab/books.js'
 import {
   deleteFile,
-  listFiles,
-  safeName,
+  listTree,
   resolveInSession,
   sessionBytes,
+  statPath,
   sweepStaleUploads,
-  whyRefused,
 } from '../workspace.js'
 import { broadcastFiles } from '../control.js'
 import { signDownloadToken, verifyDownloadToken } from '../auth.js'
@@ -47,7 +47,9 @@ export function fileRoutes(): Router {
   router.get('/api/sessions/:id/files', (req, res) => {
     if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
     if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
-    res.json({ files: listFiles(req.params.id) })
+    // Вместе с признаком обрезки: список, упёршийся в потолок, — это не «в
+    // комнате столько файлов», и решать по нему, что чего-то не стало, нельзя.
+    res.json(listTree(req.params.id))
   })
 
   router.post('/api/sessions/:id/files', (req, res) => {
@@ -171,23 +173,62 @@ export function fileRoutes(): Router {
       // запроса не даёт сработать ни одному из путей выше.
       for (const tmp of temps) fs.rmSync(tmp, { force: true })
       if (failure)
-        return res
-          .status(failure.code)
-          .json({ error: failure.message, files: listFiles(sessionId) })
-      res.json({ files: listFiles(sessionId), replaced })
+        return res.status(failure.code).json({ error: failure.message, ...listTree(sessionId) })
+      res.json({ ...listTree(sessionId), replaced })
     }
 
     bb.on('file', (_field, stream, info) => {
-      const dropped = safeName(info.filename ?? '')
-      const target = dropped ? resolveInSession(sessionId, joinPath(intoDir, dropped)) : null
-      if (!target || !dropped) {
-        failure ??= { code: 400, message: whyRefused(info.filename ?? '') }
+      /*
+       * Имя меряется той же меркой, что и всё остальное в дереве.
+       *
+       * Раньше загрузка спрашивала свою мерку (двести символов, пробел с краю
+       * можно), а `resolveInSession` следом — `safeSegment` (сто двадцать,
+       * нельзя): имя в сто пятьдесят символов, каких полно в выгрузках из LMS,
+       * отвергалось фразой «cannot be used as a file name here», не называвшей
+       * ни причины, ни потолка. Папку из `filename` браузера по-прежнему
+       * срезаем: путь приходит полем `dir`, а не именем файла.
+       */
+      const name = basename(info.filename ?? '')
+      if (!safeSegment(name)) {
+        failure ??= { code: 400, message: whySegmentRefused(name) }
         stream.resume()
         return
       }
-      const name = dropped
-      /* Папка могла не существовать — панель умеет перетащить файл на новую. */
-      fs.mkdirSync(target.slice(0, target.lastIndexOf('/')), { recursive: true })
+      const rel = joinPath(intoDir, name)
+      const target = resolveInSession(sessionId, rel)
+      if (!target) {
+        failure ??= {
+          code: 400,
+          message: `${name} некуда положить: «${rel}» слишком длинный путь.`,
+        }
+        stream.resume()
+        return
+      }
+      const folder = target.slice(0, target.lastIndexOf('/'))
+      /*
+       * Папка могла не существовать — панель умеет перетащить файл на новую. А
+       * могла быть занята файлом: `dir=data.csv` при лежащем `data.csv` — это
+       * EEXIST (а `data.csv/sub` — ENOTDIR) прямо из обработчика потока, мимо
+       * express, то есть `uncaughtException` и `process.exit(1)` на весь
+       * инстанс со всеми его семинарами. Любой отказ файловой системы здесь —
+       * это `failure` с кодом, а не исключение.
+       */
+      const at = intoDir ? statPath(sessionId, intoDir) : null
+      if (at && !at.dir) {
+        failure ??= {
+          code: 400,
+          message: `«${intoDir}» — файл, а не папка: положить в него ${name} нельзя.`,
+        }
+        stream.resume()
+        return
+      }
+      try {
+        fs.mkdirSync(folder, { recursive: true })
+      } catch {
+        failure ??= { code: 400, message: `Не удалось завести папку «${intoDir}» под ${name}.` }
+        stream.resume()
+        return
+      }
       // Заметить, что имя занято, до того как его займут: после rename не отличить.
       const existed = fs.existsSync(target)
       /*
@@ -205,7 +246,7 @@ export function fileRoutes(): Router {
        * The temp name starts with a dot, so a half-finished upload never shows
        * up in the room's file list.
        */
-      const tmp = `${target.slice(0, target.lastIndexOf('/'))}/.${name}.uploading-${randomBytes(6).toString('hex')}`
+      const tmp = `${folder}/.${name}.uploading-${randomBytes(6).toString('hex')}`
       temps.add(tmp)
       const out = fs.createWriteStream(tmp)
       writes.push(
@@ -281,7 +322,7 @@ export function fileRoutes(): Router {
              * показать «загружено» и молча вернуть прежнее содержимое — худший
              * вид отказа. Внести тетрадь заново можно, убрав её из комнаты.
              */
-            if (isBookFile(sessionId, joinPath(intoDir, name))) {
+            if (isBookFile(sessionId, rel)) {
               fs.rmSync(tmp, { force: true })
               failure ??= {
                 code: 409,
@@ -411,7 +452,7 @@ export function fileRoutes(): Router {
     forgetFile(sessionId, wanted)
     dropBook(sessionId, wanted)
     broadcastFiles(sessionId)
-    res.json({ files: listFiles(sessionId) })
+    res.json(listTree(sessionId))
   })
 
   return router

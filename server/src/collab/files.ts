@@ -37,6 +37,7 @@ import type { Awareness } from 'y-protocols/awareness'
 import { WebSocket, type RawData } from 'ws'
 import type { ParticipantRole } from '@shared/protocol'
 import { allows } from '@shared/rules'
+import { isInside } from '@shared/paths'
 import { getRules } from '../db.js'
 import { MAX_TEXT_BYTES, readText, statPath, writeText } from '../workspace.js'
 import { ownAwareness } from './index.js'
@@ -80,6 +81,16 @@ const LINGER_MS = 5_000
 const PING_INTERVAL_MS = 25_000
 const MAX_MISSED_PONGS = 2
 
+/**
+ * «Файл больше потолка» — отдельный код закрытия.
+ *
+ * 4404 клиент читает как «файла нет» и закрывает вкладку молча: нажатие по
+ * трёхмегабайтному CSV выглядело вкладкой, которая мигнула и исчезла, ничего не
+ * сказав. По этому коду вкладка остаётся и говорит правду — файл есть, править
+ * его в редакторе нельзя, скачать и прочитать из ячейки можно.
+ */
+const TOO_BIG = 4413
+
 interface ConnState {
   participantId: string | null
   clientIds: Set<number>
@@ -102,7 +113,11 @@ interface FileDoc {
   saveTimer: NodeJS.Timeout | null
   watchTimer: NodeJS.Timeout | null
   lingerTimer: NodeJS.Timeout | null
-  /** Файл исчез с диска — писать больше некуда, и заводить его заново нельзя. */
+  /**
+   * Запись похоронена: файла не стало, он уехал мимо дерева или перестал быть
+   * правимым текстом. Писать больше некуда, и оживлять её нельзя — следующее
+   * открытие заводит документ с диска заново.
+   */
   gone: boolean
 }
 
@@ -116,6 +131,9 @@ function stampOf(sessionId: string, path: string): string {
   const stat = statPath(sessionId, path)
   return stat ? `${stat.modifiedAt}:${stat.size}` : ''
 }
+
+const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff
+const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff
 
 /**
  * Заменить текст документа так, чтобы уцелело всё, что не менялось.
@@ -135,6 +153,16 @@ export function spliceText(text: Y.Text, next: string): boolean {
   while (head < max && now[head] === next[head]) head++
   let tail = 0
   while (tail < max - head && now[now.length - 1 - tail] === next[next.length - 1 - tail]) tail++
+  /*
+   * Граница не имеет права встать посреди суррогатной пары. У соседних эмодзи
+   * старшая половина общая, и голова останавливается ровно между половинками:
+   * Yjs подменяет разорванную на U+FFFD, lib0 при передаче кодирует одиночный
+   * суррогат ещё одним — и документ сервера расходится с документами браузеров
+   * до конца сессии, а порча уходит на диск. Границы отодвигаются наружу,
+   * и счёт становится посимвольным, каким он выше и объявлен.
+   */
+  if (head > 0 && isHighSurrogate(now.charCodeAt(head - 1))) head -= 1
+  if (tail > 0 && isLowSurrogate(now.charCodeAt(now.length - tail))) tail -= 1
   const removed = now.length - head - tail
   const added = next.slice(head, next.length - tail)
   if (removed > 0) text.delete(head, removed)
@@ -145,8 +173,9 @@ export function spliceText(text: Y.Text, next: string): boolean {
 /**
  * Открыть документ файла, заведя его из диска, если он ещё не открыт.
  *
- * `null` — файла нет, он не текст или он слишком большой. Все три случая
- * означают одно: править нечего, и сокет открывать незачем.
+ * `null` — файла нет, он не текст или он слишком большой. Для документа все три
+ * случая означают одно: править нечего, и сокет открывать незачем. Для человека
+ * — нет, поэтому `handleFileSocket` различает последний отдельным кодом.
  */
 export function getFileDoc(sessionId: string, path: string): FileDoc | null {
   const existing = open.get(keyOf(sessionId, path))
@@ -223,21 +252,47 @@ export function openFileDoc(sessionId: string, path: string): FileDoc | null {
  * документ и оттуда на диск обычным сохранением; если нет — прямо на диск.
  * Двух путей быть не должно: они разошлись бы ровно в тот момент, когда
  * кто-нибудь смотрит на файл.
+ *
+ * «Сохранить сейчас, не меняя текста» — не сюда, для этого есть `flushFile`. До
+ * него запуск файла и переименование ходили этой дверью: брали текст документа
+ * и клали его в тот же документ, только чтобы дойти до записи на диск.
  */
 export function putText(sessionId: string, path: string, text: string): boolean {
+  /*
+   * Потолок — до всего остального и одинаково для обоих путей. Открытому файлу
+   * по нему откажет сохранение, и в документе остался бы текст, которого
+   * никогда не будет на диске, а в ответе «готово»; закрытому не откажет никто,
+   * и на диске завёлся бы файл, который потом не открыть ни редактором, ни
+   * следующим шагом того же оракула.
+   */
+  if (text.length > MAX_TEXT_BYTES) return false
   const entry = openFileDoc(sessionId, path)
-  if (!entry) return writeText(sessionId, path, text)
+  if (!entry) {
+    /*
+     * Файл крупнее потолка целиком не читал никто: и оракул, и отмена хода
+     * собирают текст из его начала. Положить такой текст на место файла значит
+     * молча срезать хвост — три мегабайта метрик становятся полутора, а
+     * следующая ячейка честно считает по половине набора.
+     */
+    const at = statPath(sessionId, path)
+    if (at && !at.dir && at.size > MAX_TEXT_BYTES) return false
+    return writeText(sessionId, path, text)
+  }
   entry.doc.transact(() => spliceText(entry.doc.getText(TEXT_KEY), text), SERVER)
-  saveNow(entry)
-  return true
+  return saveNow(entry)
 }
 
-/** Текст файла — из документа, если он открыт, иначе с диска. */
+/**
+ * Текст файла — из документа, если он открыт, иначе с диска.
+ *
+ * `null` и для файла крупнее потолка: с диска он читается началом, и отдать
+ * это начало как «текст файла» значит дать записать его обратно вместо целого.
+ */
 export function currentText(sessionId: string, path: string): string | null {
   const entry = openFileDoc(sessionId, path)
   if (entry) return entry.doc.getText(TEXT_KEY).toString()
   const read = readText(sessionId, path)
-  if (!read || read.binary) return null
+  if (!read || read.binary || read.truncated) return null
   return read.text
 }
 
@@ -250,26 +305,48 @@ function scheduleSave(entry: FileDoc): void {
   entry.saveTimer.unref?.()
 }
 
-function saveNow(entry: FileDoc): void {
+/** Записать документ на диск. `false` — не записали, и файл остался прежним. */
+function saveNow(entry: FileDoc): boolean {
   if (entry.saveTimer) {
     clearTimeout(entry.saveTimer)
     entry.saveTimer = null
   }
-  if (entry.gone) return
+  if (entry.gone) return false
   const text = entry.doc.getText(TEXT_KEY).toString()
-  if (text === entry.onDisk) return
+  if (text === entry.onDisk) return true
   /*
    * Потолок проверяется здесь, а не только при открытии: файл открылся
-   * маленьким, а стал большим — вставили мегабайт из буфера. Отказ молчаливый и
-   * это худшее место в модуле; лучше него было бы только не иметь потолка, а
-   * его иметь надо: `readText` за него не пускает, и файл, перешагнувший
-   * потолок, в следующий раз просто не открылся бы.
+   * маленьким, а стал большим — вставили мегабайт из буфера. Раньше отказ был
+   * молчаливым, и это было худшее место в модуле: правка не сохранялась
+   * никогда, а редактор показывал её как ни в чём не бывало и отдавал `true`
+   * оракулу. Теперь вкладки узнают тем же 4403, что и о непринятой правке, —
+   * «дальше только чтение» здесь буквальная правда, и набранное остаётся на
+   * экране, откуда его можно забрать.
    */
-  if (text.length > MAX_TEXT_BYTES) return
-  if (!writeText(entry.sessionId, entry.path, text)) return
+  if (text.length > MAX_TEXT_BYTES) {
+    entry.gone = true
+    closeAll(entry, 4403, 'файл больше потолка')
+    dispose(entry)
+    return false
+  }
+  /*
+   * Файл мог уехать мимо дерева: `mv` в терминале, `os.rename` в ячейке.
+   * Наблюдатель заметит это не раньше двух секунд, а отложенное сохранение
+   * успевает первым — и `writeText` заводит файл заново по старому пути, то
+   * есть молча отменяет чужое переименование и разводит в комнате две копии.
+   */
+  const at = statPath(entry.sessionId, entry.path)
+  if (!at || at.dir) {
+    entry.gone = true
+    closeAll(entry, 4404, 'файла больше нет')
+    dispose(entry)
+    return false
+  }
+  if (!writeText(entry.sessionId, entry.path, text)) return false
   entry.onDisk = text
   entry.stamp = stampOf(entry.sessionId, entry.path)
   fileSaved?.(entry.sessionId, entry.path)
+  return true
 }
 
 let fileSaved: ((sessionId: string, path: string) => void) | null = null
@@ -298,7 +375,24 @@ function watchDisk(entry: FileDoc): void {
     return
   }
   const read = readText(entry.sessionId, entry.path)
-  if (!read || read.binary || read.truncated) return
+  if (!read || read.binary || read.truncated) {
+    /*
+     * Файл перестал быть тем, что можно править: перерос потолок (ядро пишет
+     * в него лог), стал двоичным (сверху лёг pickle) или не читается вовсе.
+     * Раньше здесь был тихий выход, и документ навсегда оставался с текстом на
+     * момент открытия — первое же нажатие клало этот короткий старый текст
+     * поверх выросшего файла. У файлов нет ни снимка, ни истории версий, так
+     * что дописанное ядром возвращать было бы нечем.
+     *
+     * Переросшему потолок — свой код: файл на месте, и вкладке есть что сказать
+     * человеку, кроме молчаливого исчезновения.
+     */
+    entry.gone = true
+    if (read?.truncated) closeAll(entry, TOO_BIG, 'файл больше потолка')
+    else closeAll(entry, 4404, 'файл больше не открывается')
+    dispose(entry)
+    return
+  }
   entry.stamp = stamp
   if (read.text === entry.onDisk) return
   entry.onDisk = read.text
@@ -306,18 +400,38 @@ function watchDisk(entry: FileDoc): void {
 }
 
 function dispose(entry: FileDoc): void {
+  /*
+   * Только своя запись. Под этим ключом может лежать уже ДРУГАЯ — файл
+   * вернулся и его открыли, пока эта доживала свои пять секунд, — или эту уже
+   * хоронили. Удалить чужую значит оставить комнату с двумя документами на
+   * один файл: две вкладки печатают в разные копии и по очереди пишут друг
+   * поверх друга.
+   */
+  if (open.get(entry.key) !== entry) return
+  open.delete(entry.key)
   if (entry.watchTimer) clearInterval(entry.watchTimer)
   if (entry.saveTimer) clearTimeout(entry.saveTimer)
   if (entry.lingerTimer) clearTimeout(entry.lingerTimer)
   entry.watchTimer = null
   entry.saveTimer = null
   entry.lingerTimer = null
-  open.delete(entry.key)
   entry.doc.destroy()
 }
 
+/**
+ * Закрыть все сокеты записи — и забыть их здесь же, не дожидаясь события
+ * `close`.
+ *
+ * Событие приходит следующим тиком, и до него запись жила бы с полным списком
+ * соединений: закрытие последнего из них заводило бы отложенную смерть уже
+ * похороненной записи, а та через пять секунд выкидывала из карты НОВЫЙ
+ * документ того же файла. Каждый, кто зовёт это, следом зовёт `dispose`, так
+ * что присутствие уходит вместе с документом.
+ */
 function closeAll(entry: FileDoc, code: number, reason: string): void {
-  for (const conn of [...entry.conns.keys()]) {
+  for (const [conn, state] of [...entry.conns]) {
+    entry.conns.delete(conn)
+    clearInterval(state.pingTimer)
     try {
       conn.close(code, reason)
     } catch {
@@ -394,6 +508,10 @@ function closeConn(entry: FileDoc, conn: WebSocket): void {
    * нуля значило бы терять отменяемость на ровном месте.
    */
   saveNow(entry)
+  // Записи могло уже не стать: сохранение обнаружило, что файла на диске нет.
+  // Ставить ей отложенную смерть значит через пять секунд убрать из карты
+  // документ, заведённый взамен, — и получить два документа на один файл.
+  if (entry.gone) return
   entry.lingerTimer = setTimeout(() => {
     if (entry.conns.size === 0) dispose(entry)
   }, LINGER_MS)
@@ -417,6 +535,28 @@ function refuse(entry: FileDoc, conn: WebSocket): void {
   closeConn(entry, conn)
 }
 
+/**
+ * Несёт ли кадр правку.
+ *
+ * y-websocket отвечает на серверный шаг 1 всегда — в том числе пустым кадром,
+ * в котором нет ни одной структуры. Отказывать по подтипу значит рвать
+ * рукопожатие каждому, кому файлы править нельзя: он ещё ничего не написал, а
+ * ему уже «правку не приняли» и навсегда замерший файл. Комнатный сокет
+ * разбирает содержимое ровно по этой причине.
+ */
+function carriesEdit(payload: Uint8Array): boolean {
+  try {
+    const update = Y.decodeUpdate(payload)
+    if (update.structs.length > 0) return true
+    for (const ranges of update.ds.clients.values()) if (ranges.length > 0) return true
+    return false
+  } catch {
+    // Кадр не разбирается — считаем его правкой: пропустить непрочитанное
+    // значит применить его после того, как проверка перестала смотреть.
+    return true
+  }
+}
+
 function handleMessage(entry: FileDoc, conn: WebSocket, data: Uint8Array): void {
   try {
     const decoder = decoding.createDecoder(data)
@@ -433,7 +573,12 @@ function handleMessage(entry: FileDoc, conn: WebSocket, data: Uint8Array): void 
            * меняются посреди пары, и сокет, открытый до ужесточения, жил бы по
            * старым правилам до самого переподключения.
            */
-          if (!allows(getRules(entry.sessionId).files, role)) return refuse(entry, conn)
+          if (
+            !allows(getRules(entry.sessionId).files, role) &&
+            carriesEdit(decoding.readVarUint8Array(peek))
+          ) {
+            return refuse(entry, conn)
+          }
         }
         encoding.writeVarUint(encoder, MESSAGE_SYNC)
         syncProtocol.readSyncMessage(decoder, encoder, entry.doc, conn)
@@ -462,8 +607,17 @@ export function handleFileSocket(
 ): void {
   const entry = getFileDoc(sessionId, path)
   if (!entry) {
+    /*
+     * Почему не открылся — разные ответы. Файла нет (или он не текст) — вкладку
+     * надо закрыть; файл больше потолка — сказать, что он есть, и не закрывать
+     * ничего. Мерка та же, что у `readText`, и стоит она одного `lstat`: читать
+     * полтора мегабайта второй раз ради кода закрытия незачем.
+     */
+    const at = statPath(sessionId, path)
+    const tooBig = at !== null && !at.dir && at.size > MAX_TEXT_BYTES
     try {
-      ws.close(4404, 'файл не открывается')
+      if (tooBig) ws.close(TOO_BIG, 'файл больше потолка')
+      else ws.close(4404, 'файл не открывается')
     } catch {
       /* уже закрыт */
     }
@@ -519,24 +673,63 @@ export function handleFileSocket(
 
 /** Дописать всё несохранённое — при остановке процесса и в тестах. */
 export function flushAllFiles(): void {
-  for (const entry of open.values()) saveNow(entry)
+  for (const entry of [...open.values()]) saveNow(entry)
 }
 
 /**
- * Забыть один файл: его переименовали или убрали.
+ * То же самое, но одной комнатой: перед запуском, который читает диск.
+ *
+ * Ячейка и `run_file` оракула читают файл через ядро, то есть с диска, а запись
+ * отложена на паузу в наборе. Ждать её они не вправе — но и дописывать за всех
+ * тоже: карта здесь общая на инстанс, и без этой границы каждый запуск в одной
+ * комнате трогал бы открытые файлы всех остальных.
+ */
+export function flushSessionFiles(sessionId: string): void {
+  for (const entry of [...open.values()]) {
+    if (entry.sessionId === sessionId) saveNow(entry)
+  }
+}
+
+/**
+ * Дописать один открытый файл на диск прямо сейчас.
+ *
+ * Запись отложена на паузу в наборе (`SAVE_AFTER_MS`), а два места ждать её не
+ * вправе. Запуск: `python` читает диск, и без этого он читает текст без
+ * последних набранных строк — ошибка приходит про строку, которая на экране
+ * выглядит верной. Переименование: `forgetFile` уносит документ вместе с
+ * отложенной записью, а после переезда писать уже некуда.
+ *
+ * Файл, который никто не открывал, и так на диске — тогда делать нечего.
+ */
+export function flushFile(sessionId: string, path: string): void {
+  const entry = openFileDoc(sessionId, path)
+  if (entry) saveNow(entry)
+}
+
+/**
+ * Забыть файл — или папку со всем, что в ней: их переименовали или убрали.
  *
  * Без этого документ пережил бы собственный файл и записал бы его обратно на
  * прежнее место следующим сохранением — переименование отменилось бы само
  * секунду спустя, и объяснить это было бы нечем. Наблюдатель за диском заметил
  * бы то же самое, но только через две секунды, а окно между ними — ровно то,
  * в которое успевает сработать отложенное сохранение.
+ *
+ * Путь целиком, а не точное совпадение: переименовать и убрать можно ПАПКУ, а
+ * документы лежат под путями файлов внутри неё. Забыв один точный путь, мы
+ * оставляли их живыми — и ближайшее сохранение заводило старую папку заново с
+ * одним файлом в ней, тогда как правки последних секунд оставались в этом
+ * призрачном пути, а не в новом.
  */
 export function forgetFile(sessionId: string, path: string): void {
-  const entry = open.get(keyOf(sessionId, path))
-  if (!entry) return
-  entry.gone = true
-  closeAll(entry, 4404, 'файла больше нет')
-  dispose(entry)
+  if (!path) return
+  for (const entry of [...open.values()]) {
+    if (entry.sessionId !== sessionId) continue
+    if (!isInside(entry.path, path)) continue
+    entry.gone = true
+    closeAll(entry, 4404, 'файла больше нет')
+    dispose(entry)
+  }
 }
 
 /** Закрыть всё: комнату удалили, процесс останавливается. */

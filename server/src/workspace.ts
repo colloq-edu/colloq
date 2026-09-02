@@ -20,37 +20,6 @@ export function kernelCwd(sessionId: string): string {
   return `/workspace/${sessionId}`
 }
 
-/** Reject anything that could escape the session directory. */
-/*
- * A control character in a filename is legal on POSIX and a menace everywhere
- * else: a newline breaks the file list into two rows, a carriage return hides
- * the rest of the name in the terminal, and neither survives being read back
- * out of `pd.read_csv`. Participant names are already stripped of them for the
- * same reason. Refused rather than stripped — silently renaming somebody's
- * upload is worse than telling them the name will not do.
- */
-// eslint-disable-next-line no-control-regex -- control characters are the subject
-const CONTROL = /[\u0000-\u001f\u007f]/
-
-export function safeName(name: string): string | null {
-  const base = path.basename(name)
-  if (!base || base === '.' || base === '..') return null
-  if (base.includes('/') || base.includes('\\')) return null
-  if (CONTROL.test(base)) return null
-  if (base.length > 200) return null
-  // A leading dot is filtered out of the listing — that is how the kernel's own
-  // `.ipynb_checkpoints` stays out of the room's way. Accepting an upload and
-  // then never showing it is worse than refusing it, so it is refused here.
-  if (base.startsWith('.')) return null
-  return base
-}
-
-/**
- * Why a name was refused, in a sentence the person who dropped the file can act
- * on. `safeName` answers yes or no, which is all the server needs and nothing a
- * student can use: "unusable file name" told them neither which file nor what
- * about it, in the middle of a class, with the seminar waiting.
- */
 /**
  * Clear away temp files an interrupted upload left behind.
  *
@@ -93,23 +62,6 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
     }
   }
   walk('', 0)
-}
-
-export function whyRefused(name: string): string {
-  const base = path.basename(name ?? '')
-  const shown = base.slice(0, 60) || '(no name)'
-  if (!base || base === '.' || base === '..') return 'That upload arrived without a usable file name.'
-  if (base.includes('/') || base.includes('\\')) {
-    return `“${shown}” has a folder path in its name — upload the file itself rather than the folder.`
-  }
-  if (CONTROL.test(base)) return `“${shown}” has characters in its name that a file system will not take.`
-  if (base.length > 200) {
-    return `“${shown.slice(0, 40)}…” has a name of ${base.length} characters — shorten it to 200 or fewer.`
-  }
-  if (base.startsWith('.')) {
-    return `“${shown}” starts with a dot, which hides it from the room's file list. Rename it and drop it again.`
-  }
-  return `“${shown}” cannot be used as a file name here.`
 }
 
 export function resolveInSession(sessionId: string, name: string): string | null {
@@ -171,6 +123,20 @@ function contained(full: string, realDir: string): boolean {
  */
 const MAX_ENTRIES = 2000
 
+/** Дерево комнаты — и признак того, что оно упёрлось в потолок. */
+export interface FileTree {
+  files: FileEntry[]
+  /**
+   * Список неполон: часть папок в потолок не поместилась и осталась
+   * нераскрытой.
+   *
+   * Признак, а не молчание: обрезанный список — это не «в комнате столько
+   * файлов», и всё, что считает по нему пропажу (тетради, доска, вкладки),
+   * обязано знать разницу, иначе оно удалит живое.
+   */
+  truncated: boolean
+}
+
 /**
  * Папка семинара деревом — в том порядке, в каком её рисуют.
  *
@@ -178,17 +144,27 @@ const MAX_ENTRIES = 2000
  * панели, и пройти его целиком на сервере, и он влезает в то же сообщение
  * `files`, которое комната уже получает. Порядок — обход в глубину, папки перед
  * файлами на каждом уровне; клиенту остаётся отрисовать его как есть.
+ *
+ * Читается при этом не в глубину, а уровень за уровнем, и это не мелочь.
+ * Раньше первая же разросшаяся подпапка (`!unzip` датасета, `pip install -t .`)
+ * выедала потолок целиком, и файлы КОРНЯ — вместе с тетрадью комнаты — в
+ * список не попадали вовсе; тетрадь, которой нет в списке, считалась удалённой
+ * и стиралась у всех со всеми ячейками. Обрезаться должно самое глубокое, а не
+ * самое верхнее, и об обрезке надо сказать вслух.
  */
-export function listFiles(sessionId: string): FileEntry[] {
+export function listTree(sessionId: string): FileTree {
   const root = sessionDir(sessionId)
-  const out: FileEntry[] = []
+  /** Содержимое каждой прочитанной папки — в порядке отрисовки. */
+  const children = new Map<string, FileEntry[]>()
+  let total = 0
+  let truncated = false
 
-  const walk = (rel: string, depth: number): void => {
+  const read = (rel: string): FileEntry[] => {
     let names: string[]
     try {
       names = fs.readdirSync(path.join(root, rel))
     } catch {
-      return
+      return []
     }
     const dirs: FileEntry[] = []
     const files: FileEntry[] = []
@@ -205,25 +181,53 @@ export function listFiles(sessionId: string): FileEntry[] {
       } catch {
         continue /* vanished between readdir and stat; skip */
       }
-      if (stat.isDirectory()) dirs.push({ name, path: here, dir: true, size: 0, modifiedAt: stat.mtimeMs })
-      else if (stat.isFile()) files.push({ name, path: here, dir: false, size: stat.size, modifiedAt: stat.mtimeMs })
+      if (stat.isDirectory())
+        dirs.push({ name, path: here, dir: true, size: 0, modifiedAt: stat.mtimeMs })
+      else if (stat.isFile())
+        files.push({ name, path: here, dir: false, size: stat.size, modifiedAt: stat.mtimeMs })
     }
     const byName = (a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name)
     dirs.sort(byName)
     files.sort(byName)
-    for (const entry of dirs) {
-      if (out.length >= MAX_ENTRIES) return
-      out.push(entry)
-      if (depth + 1 < MAX_DEPTH) walk(entry.path, depth + 1)
-    }
-    for (const entry of files) {
-      if (out.length >= MAX_ENTRIES) return
-      out.push(entry)
-    }
+    return [...dirs, ...files]
   }
 
-  walk('', 0)
-  return out
+  let level = ['']
+  for (let depth = 0; depth < MAX_DEPTH && level.length > 0; depth++) {
+    const next: string[] = []
+    for (const dir of level) {
+      if (total >= MAX_ENTRIES) {
+        truncated = true
+        break
+      }
+      const here = read(dir)
+      if (here.length > MAX_ENTRIES - total) {
+        here.length = MAX_ENTRIES - total
+        truncated = true
+      }
+      total += here.length
+      children.set(dir, here)
+      for (const entry of here) if (entry.dir) next.push(entry.path)
+    }
+    level = next
+  }
+
+  // Порядок отрисовки собирается уже из прочитанного: папка, следом её
+  // содержимое, и так до самого низа.
+  const out: FileEntry[] = []
+  const emit = (dir: string): void => {
+    for (const entry of children.get(dir) ?? []) {
+      out.push(entry)
+      if (entry.dir) emit(entry.path)
+    }
+  }
+  emit('')
+  return { files: out, truncated }
+}
+
+/** То же дерево тем, кому нужен только список. */
+export function listFiles(sessionId: string): FileEntry[] {
+  return listTree(sessionId).files
 }
 
 /**
@@ -359,15 +363,22 @@ export function deleteFile(sessionId: string, name: string): boolean {
  *
  * Полтора мегабайта — это примерно тридцать тысяч строк: больше, чем бывает у
  * файла, который правят на семинаре, и меньше, чем то, на чём CodeMirror
- * начинает думать над каждым нажатием. Файл крупнее не режется на куски: он
- * показывается началом и не даёт себя править, потому что сохранить обрезок
- * поверх целого — это потерять хвост молча.
+ * начинает думать над каждым нажатием. Файл крупнее в редакторе не открывается
+ * вовсе — ни целиком, ни началом: сохранить обрезок поверх целого значит
+ * потерять хвост молча, а показать начало, которое нельзя ни править, ни
+ * сохранить, значит обещать редактор там, где его нет. Скачать такой файл и
+ * прочитать его из ячейки можно по-прежнему.
+ *
+ * Цена названа вслух — и сказана вслух же: по нажатию на трёхмегабайтный CSV
+ * вкладка не закрывается молча, а объясняет, что файл велик для редактора.
+ * Для этого у сокета файла есть третий код закрытия, 4413, рядом с «правку не
+ * приняли» и «файла нет» (см. `TOO_BIG` в collab/files.ts).
  */
 export const MAX_TEXT_BYTES = 1_500_000
 
 export interface TextFile {
   text: string
-  /** Файл больше потолка: показан началом, править нельзя. */
+  /** Файл больше потолка: в `text` только его начало, целиком он не прочитан. */
   truncated: boolean
   /** Не текст вовсе — в нём нулевые байты. */
   binary: boolean

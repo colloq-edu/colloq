@@ -39,13 +39,7 @@ import {
   replaceText,
   type YCell,
 } from '@shared/notebook'
-import {
-  appendVersion,
-  hasHistoryBase,
-  newestWholeDocument,
-  updatesUpTo,
-  versionCount,
-} from '../db.js'
+import { appendVersion, hasHistoryBase, updatesUpTo, versionCount } from '../db.js'
 
 /** Marks writes this module makes into a live doc, so they are not re-recorded twice. */
 export const RESTORE_ORIGIN = 'history-restore'
@@ -53,7 +47,8 @@ export const RESTORE_ORIGIN = 'history-restore'
 interface Burst {
   sessionId: string
   /**
-   * Кто печатал. Множество, а не один: см. `record`.
+   * Кто печатал. Множество, а не один: см. `record`. Только люди — сервер
+   * (ядро, оракул) во всплеск пишет, но автором не становится.
    *
    * Пока это был один человек, смена автора закрывала всплеск — и два студента,
    * печатающие в одной комнате одновременно, давали по версии на каждое
@@ -61,7 +56,7 @@ interface Burst {
    * чекпоинт «до упражнения» вылетал из окна на четыреста строк за десятки
    * секунд. Всплеск, в который писали двое, так и записывается — «the room».
    */
-  authors: Set<string | null>
+  authors: Set<string>
   updates: Uint8Array[]
   /** State of the document when the burst opened, for the summary and the counts. */
   before: Uint8Array
@@ -114,6 +109,15 @@ const shapes = new Map<string, string>()
 const digests = new Map<string, Map<string, string>>()
 
 /**
+ * Комнаты, у которых в цепочке истории не хватает строки.
+ *
+ * В памяти, потому что и лечение в памяти: следующее удачное закрытие всплеска
+ * пишет полный снимок. Перезапуск сервера снимает пометку сам — `beginHistory`
+ * сверяет живой документ с историей и пишет тот же снимок.
+ */
+const gaps = new Set<string>()
+
+/**
  * Start recording a room, measuring from the state it currently holds.
  *
  * Called once the document is hydrated and before it is seeded, so a brand-new
@@ -141,7 +145,7 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
    * now costs one row and makes everything from this moment on readable.
    */
   if (hasHistoryBase(sessionId)) {
-    repairBrokenBase(sessionId, doc)
+    repairHistory(sessionId, doc)
     return
   }
   appendVersion({
@@ -158,40 +162,53 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
   })
 }
 
+/** «Всё, что записано»: адрес у `updatesUpTo` — потолок, а не точная строка. */
+const LATEST = Number.MAX_SAFE_INTEGER
+
 /**
- * Починить историю, из которой нельзя собрать ни одной версии.
+ * Починить историю, которая разошлась с тетрадью комнаты.
  *
- * Комнаты, записанные до того, как порядок «сначала засев, потом история» был
- * исправлен, имеют базовую строку, снятую с ПУСТОГО документа. Строка есть,
- * `hasHistoryBase` довольна, а разворачивается всё в ноль ячеек — и так
- * навсегда: следующие дельты ссылаются на структуры, которых в истории нет.
+ * Разойтись она может двумя способами, и оба кончаются одинаково молча.
+ *
+ * Первый: комнаты, записанные до того, как порядок «сначала засев, потом
+ * история» был исправлен, имеют базовую строку, снятую с ПУСТОГО документа.
+ * Строка есть, `hasHistoryBase` довольна, а разворачивается всё в ноль ячеек.
+ *
+ * Второй: жёсткий конец процесса — kill -9, OOM, обесточивание. Снимок
+ * документа пишется через 4–15 секунд, а строка истории — по закрытию всплеска
+ * (до девяноста секунд); штатный выход дописывает открытый всплеск сам
+ * (flushAllHistory), внезапный не успевает. На диске остаётся текст, которого
+ * в истории нет, и все последующие дельты ссылаются на такты, которых в
+ * цепочке не будет: Yjs кладёт их в pending и молча не применяет. Лента
+ * замирает на предкрахном состоянии, а «Restore» пишет его поверх живой
+ * тетради — всей комнате и без возврата.
  *
  * Прошлое этим не восстановить: тех байтов не существует нигде. Но будущее
  * спасается одной строкой — снимком того, что в комнате есть сейчас. С неё
- * начнутся все последующие проигрывания, и вкладка «История» перестанет
- * показывать пустую тетрадь.
+ * начнутся все последующие проигрывания.
  *
- * Проверка дешёвая: разворачивается сама свежайшая цельнодокументная строка, а
- * не вся история. Комната, где хоть раз ставили чекпоинт, такую строку уже
- * имеет, и чинить нечего.
+ * Цена: одна сборка последней версии на открытие комнаты — та же работа, что
+ * и один клик по ленте, потому что повтор идёт от свежайшего снимка, а не от
+ * начала семинара.
  */
-function repairBrokenBase(sessionId: string, doc: Y.Doc): void {
+function repairHistory(sessionId: string, doc: Y.Doc): void {
   // Живой документ пуст — сравнивать не с чем, и починка была бы записью
   // пустоты поверх пустоты.
   if (cellsOf(doc).length === 0) return
-  const base = newestWholeDocument(sessionId)
-  if (base === null) return
 
-  const probe = new Y.Doc()
-  let cells = 0
+  const replay = new Y.Doc()
+  let damage: 'unreadable' | 'behind' | null = null
   try {
-    Y.applyUpdate(probe, base)
-    cells = probe.getArray(CELLS_KEY).length
+    replay.transact(() => {
+      for (const update of updatesUpTo(sessionId, LATEST)) Y.applyUpdate(replay, update, 'history')
+    })
+    if (replay.getArray(CELLS_KEY).length === 0) damage = 'unreadable'
+    else if (behind(replay, doc)) damage = 'behind'
   } catch {
-    cells = 0
+    damage = 'unreadable'
   }
-  probe.destroy()
-  if (cells > 0) return
+  replay.destroy()
+  if (damage === null) return
 
   appendVersion({
     sessionId,
@@ -207,9 +224,35 @@ function repairBrokenBase(sessionId: string, doc: Y.Doc): void {
   })
   forgetCache(sessionId)
   console.warn(
-    `[history] ${sessionId}: база истории была снята с пустого документа — ` +
-      `ни одна версия не разворачивалась. Записан снимок текущей тетради; ` +
-      `версии до него остаются нечитаемыми.`,
+    damage === 'unreadable'
+      ? `[history] ${sessionId}: база истории была снята с пустого документа — ` +
+          `ни одна версия не разворачивалась. Записан снимок текущей тетради; ` +
+          `версии до него остаются нечитаемыми.`
+      : `[history] ${sessionId}: история отстала от тетради на диске — процесс ` +
+          `оборвался с незакрытым всплеском. Записан снимок текущей тетради; ` +
+          `правки, не попавшие в историю, восстановить неоткуда.`,
+  )
+}
+
+/**
+ * Есть ли в живом документе то, чего в истории нет.
+ *
+ * Два вопроса, потому что Yjs отвечает «что изменилось» в двух местах.
+ * Написанное поднимает счётчик своего клиента, так что счётчик выше — это
+ * байты, до которых история не дошла. Удаление тактов не двигает — оно живёт в
+ * множестве удалений, — поэтому состав тетради сверяется отдельно.
+ */
+function behind(replay: Y.Doc, doc: Y.Doc): boolean {
+  const known = Y.decodeStateVector(Y.encodeStateVector(replay))
+  for (const [client, clock] of Y.decodeStateVector(Y.encodeStateVector(doc))) {
+    if ((known.get(client) ?? 0) < clock) return true
+  }
+  const live = cellsOf(doc)
+  const stored = cellsOf(replay)
+  if (live.length !== stored.length) return true
+  return live.some(
+    (cell, i) =>
+      cell.id !== stored[i].id || cell.type !== stored[i].type || cell.source !== stored[i].source,
   )
 }
 
@@ -396,28 +439,48 @@ function close(key: string): void {
    */
   const quiet = facts.cells.length === 0
 
+  let wrote = false
   try {
     appendVersion({
       sessionId: burst.sessionId,
       update: merged,
       kind: quiet ? 'quiet' : 'edit',
       // Один автор — его имя; двое и больше — «the room», что и есть правда.
+      // Пустое множество — писал только сервер, и это тоже комната.
       authorId: burst.authors.size === 1 ? [...burst.authors][0] : null,
       createdAt: burst.lastAt,
       label: null,
       ...facts,
     })
-    // The next version is measured from here, not from wherever the document
-    // happens to be when somebody next presses a key.
-    baselines.set(burst.sessionId, Y.encodeStateAsUpdate(after))
-    shapes.set(burst.sessionId, shapeOf(after))
-    digests.set(burst.sessionId, now)
-    // Quiet rows count toward the keyframe interval too: they are replayed
-    // like any other, so they are exactly what the interval is bounding.
-    maybeKeyframe(burst.sessionId, after, merged.byteLength)
+    wrote = true
   } catch (err) {
     // A history that cannot be written must not stop the seminar being taught.
     console.error(`[history] could not record a version for ${burst.sessionId}`, err)
+    gaps.add(burst.sessionId)
+  }
+  // The next version is measured from here, not from wherever the document
+  // happens to be when somebody next presses a key. Двигается и после
+  // неудачи: байтов всплеска всё равно больше нет, а следующая версия обязана
+  // описывать разницу с тем, что в комнате на самом деле.
+  baselines.set(burst.sessionId, Y.encodeStateAsUpdate(after))
+  shapes.set(burst.sessionId, shapeOf(after))
+  digests.set(burst.sessionId, now)
+  if (gaps.has(burst.sessionId)) {
+    /*
+     * Незаписанная строка — дыра в цепочке.
+     *
+     * Её байты уже не существуют, а следующая дельта сошлётся на такты,
+     * которых в истории нет: повтор молча положит её в pending, лента замрёт
+     * на состоянии до сбоя, и «Restore» любой строки после дыры запишет это
+     * состояние поверх живой тетради. Закрывает дыру только целый документ,
+     * поэтому комната помечена до первого удачного снимка — обычный keyframe
+     * сюда не годится, он приходит по счёту байтов и может не прийти вовсе.
+     */
+    if (writeKeyframe(burst.sessionId, after)) gaps.delete(burst.sessionId)
+  } else if (wrote) {
+    // Quiet rows count toward the keyframe interval too: they are replayed
+    // like any other, so they are exactly what the interval is bounding.
+    maybeKeyframe(burst.sessionId, after, merged.byteLength)
   }
   after.destroy()
 }
@@ -454,19 +517,30 @@ function maybeKeyframe(sessionId: string, doc: Y.Doc, wrote: number): void {
   const byRows = versionCount(sessionId) % KEYFRAME_EVERY === 0
   if (!byBytes && !byRows) return
 
-  appendVersion({
-    sessionId,
-    update: Y.encodeStateAsUpdate(doc),
-    kind: 'keyframe',
-    authorId: null,
-    createdAt: Date.now(),
-    label: null,
-    summary: '',
-    added: 0,
-    removed: 0,
-    cells: [],
-  })
+  writeKeyframe(sessionId, doc)
+}
+
+/** Полный снимок документа отдельной строкой. Говорит, удалось ли записать. */
+function writeKeyframe(sessionId: string, doc: Y.Doc): boolean {
+  try {
+    appendVersion({
+      sessionId,
+      update: Y.encodeStateAsUpdate(doc),
+      kind: 'keyframe',
+      authorId: null,
+      createdAt: Date.now(),
+      label: null,
+      summary: '',
+      added: 0,
+      removed: 0,
+      cells: [],
+    })
+  } catch (err) {
+    console.error(`[history] could not write a keyframe for ${sessionId}`, err)
+    return false
+  }
   sinceKeyframe.set(sessionId, 0)
+  return true
 }
 
 /**
@@ -496,14 +570,20 @@ export function record(
    * Всплеск, в который писали двое, записывается без автора и читается как
    * «the room» — это честнее, чем приписать его тому, кто нажал последним, и
    * ровно так же честно, как строка, которую пишет сам сервер.
+   *
+   * Сервер в этот счёт не входит. Ядро пишет outputs, состояние и номер
+   * запуска, оракул стримит ответ — всё это приходит сюда без автора, и всплеск
+   * с ними становился двухавторным: студентка правит ячейку, рядом крутится
+   * чужой цикл, и в ленте «the room · edited cell 03» без имени и цвета. Двоих
+   * не было. Комната — это когда людей двое, а не когда рядом работала ячейка.
    */
-  if (existing) existing.authors.add(authorId)
+  if (existing && authorId !== null) existing.authors.add(authorId)
 
   let burst = bursts.get(key)
   if (!burst) {
     burst = {
       sessionId,
-      authors: new Set([authorId]),
+      authors: authorId === null ? new Set() : new Set([authorId]),
       updates: [],
       before: baselines.get(key) ?? Y.encodeStateAsUpdate(new Y.Doc()),
       openedAt: now,
@@ -517,7 +597,10 @@ export function record(
 
   burst.updates.push(update)
   burst.lastAt = now
-  burst.chars += update.byteLength
+  // Байты сервера всплеск не растят: поток вывода резал чужой набор на строки
+  // по четыре килобайта, а «человек написал много» — это про то, что написал
+  // человек. Сверху всё равно стоит BURST_MAX_MS.
+  if (authorId !== null) burst.chars += update.byteLength
 
   /*
    * Adding, deleting or moving a cell closes the burst at once.
@@ -560,6 +643,7 @@ export function discardBurst(sessionId: string): void {
   shapes.delete(sessionId)
   digests.delete(sessionId)
   sinceKeyframe.delete(sessionId)
+  gaps.delete(sessionId)
   const burst = bursts.get(sessionId)
   if (!burst) return
   bursts.delete(sessionId)
@@ -623,6 +707,7 @@ export function mark(
   authorId: string | null,
   label: string | null,
   summary: string,
+  targetSeq: number | null = null,
 ): number {
   flushHistory(sessionId)
   /*
@@ -649,13 +734,17 @@ export function mark(
     authorId,
     createdAt: Date.now(),
     label,
-    // Слова возврата — свои («restored the version from …»), а не те, что
+    // Слова возврата — свои («restored the version»), а не те, что
     // сочинил describe: важно, что это возврат, а не что «отредактировали 3».
     summary,
     added: facts.added,
     removed: facts.removed,
     cells: facts.cells,
+    targetSeq,
   })
+  // Строка с целым документом закрывает дыру не хуже снимка: с неё повтор
+  // начинается заново.
+  gaps.delete(sessionId)
   baselines.set(sessionId, Y.encodeStateAsUpdate(doc))
   shapes.set(sessionId, shapeOf(doc))
   digests.set(sessionId, now)
@@ -684,7 +773,7 @@ export function mark(
  * Returns how many cells actually moved, so a restore that only reorders is
  * still recorded as having changed something.
  */
-function reorder(cells: Y.Array<YCell>, order: string[]): number {
+function reorder(cells: Y.Array<YCell>, order: string[], busy: ReadonlySet<string>): number {
   const wanted = new Map(order.map((id, i) => [id, i]))
   const current = cells.toArray()
   const target = [...current].sort((a, b) => {
@@ -698,12 +787,69 @@ function reorder(cells: Y.Array<YCell>, order: string[]): number {
   const same = target.every((cell, i) => cell === current[i])
   if (same) return 0
 
-  // Y.Array has no move, so the sheet is rebuilt from clones. It is one
-  // transaction and one restore, not something a person does while typing.
-  const rebuilt = target.map((cell) => cloneCell(cell))
-  cells.delete(0, cells.length)
-  cells.insert(0, rebuilt)
-  return 1
+  /*
+   * Клон уносит с собой чужие нажатия.
+   *
+   * У `Y.Array` нет перемещения, поэтому переставить ячейку можно только
+   * пересоздав её клоном, — а нажатия, ушедшие в старый `Y.Text` за круг до
+   * сервера, адресованы удалённой структуре: гейт их пропускает (запись в
+   * надгробие никому не видна), и символы пропадают у печатающего молча,
+   * Ctrl+Z их не вернёт. Пересобирать клонами ВЕСЬ лист значило обокрасть на
+   * это всех, кто печатал в ту секунду, — хотя возврат версии обычно двигает
+   * одну-две ячейки.
+   *
+   * Поэтому на месте остаётся самая длинная цепочка ячеек, уже стоящих в
+   * нужном порядке друг относительно друга (наибольшая возрастающая
+   * подпоследовательность по целевому месту), а клонами пересоздаются только
+   * остальные. Ячейка с чьим-то курсором весит больше всего листа: где выбор
+   * есть — как при перестановке двух соседок местами, — остаётся та, в которой
+   * сейчас печатают. Лист короткий (десятки ячеек), так что квадратичный
+   * перебор здесь дешевле одного лишнего клона.
+   */
+  const place = new Map(target.map((cell, i) => [cell, i]))
+  const weigh = (cell: YCell) => (busy.has(cell.get('id') as string) ? current.length + 1 : 1)
+  const best = current.map((cell) => weigh(cell))
+  const prev = current.map(() => -1)
+  let tail = 0
+  for (let i = 0; i < current.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (place.get(current[j])! > place.get(current[i])!) continue
+      if (best[j] + weigh(current[i]) <= best[i]) continue
+      best[i] = best[j] + weigh(current[i])
+      prev[i] = j
+    }
+    if (best[i] > best[tail]) tail = i
+  }
+  const keep = new Set<YCell>()
+  for (let i = tail; i >= 0; i = prev[i]) keep.add(current[i])
+
+  // Клоны — до удаления: у вычеркнутой ячейки читать уже нечего.
+  const moving = target.filter((cell) => !keep.has(cell))
+  const clones = new Map(moving.map((cell) => [cell, cloneCell(cell)]))
+  for (let i = current.length - 1; i >= 0; i--) if (!keep.has(current[i])) cells.delete(i, 1)
+  // Сверху вниз: к своему целевому месту ячейка приезжает, когда все, кому
+  // стоять левее, уже стоят, — значит место и есть индекс вставки.
+  for (const cell of moving) cells.insert(place.get(cell)!, [clones.get(cell)!])
+  return moving.length
+}
+
+/**
+ * Куда вернуть ячейку, которой в тетради больше нет.
+ *
+ * По соседям из версии: сразу за ближайшей предшествующей, которая ещё жива, а
+ * если таких нет — перед ближайшей следующей. Не нашлось ни одной — в конец.
+ */
+function placeFor(wanted: HistoricCell[], id: string, live: Map<string, number>): number {
+  const at = wanted.findIndex((cell) => cell.id === id)
+  for (let i = at - 1; i >= 0; i--) {
+    const index = live.get(wanted[i].id)
+    if (index !== undefined) return index + 1
+  }
+  for (let i = at + 1; i < wanted.length; i++) {
+    const index = live.get(wanted[i].id)
+    if (index !== undefined) return index
+  }
+  return live.size
 }
 
 export function restoreInto(
@@ -712,7 +858,13 @@ export function restoreInto(
   seq: number,
   authorId: string | null,
   onlyCell: string | null,
-  at: string,
+  /*
+   * В каких ячейках сейчас стоят курсоры — чтобы перестановка (`reorder`)
+   * оставила на месте те, в которых печатают. Параметром, а не импортом из
+   * `collab/index.ts`: присутствие живёт в сокетах, а этот модуль зовут и тесты,
+   * и маршрут; не сказали — считаем, что курсоров нет, и выбор решает длина.
+   */
+  busy: ReadonlySet<string> = new Set(),
 ): number {
   const wanted = cellsAt(sessionId, seq)
   let changed = 0
@@ -745,35 +897,55 @@ export function restoreInto(
          * unrepeatable: press it twice and the notebook had two copies,
          * because the second pass could not find what the first had put back.
          *
-         * Position is decided below, once every cell exists.
+         * Место при полном откате решает reorder ниже, когда все ячейки уже
+         * есть. Одну ячейку reorder намеренно не трогает, поэтому её место
+         * считается здесь: «Restore this cell» на третьей из двадцати клала её
+         * двадцатой, под все остальные, и поднимать её приходилось руками.
          */
-        cells.push([createCell(want.type, want.source, want.id)])
+        const revived = createCell(want.type, want.source, want.id)
+        if (onlyCell) cells.insert(placeFor(wanted, want.id, live), [revived])
+        else cells.push([revived])
         changed++
         continue
       }
       const cell = cells.get(index) as YCell
       const source = cell.get('source') as Y.Text | undefined
-      if (!source || source.toString() === want.source) continue
-      // Не «весь текст исчез, появился другой»: у всех, кто стоит в этой
-      // ячейке, курсор уехал бы в начало. Меняется только то, что отличается.
-      replaceText(source, want.source)
+      let touched = false
       /*
-       * Возврат версии снимает с результата его номер.
+       * Тип ячейки — тоже часть версии.
        *
-       * Это самое несогласованное место, какое было: запуск, который вполне
-       * может дать тот же самый результат, стирал вывод целиком, а возврат
-       * версии — событие, которое результат недвусмысленно обесценивает, —
-       * не трогал ничего. Теперь оба говорят одно: вывод остаётся как
-       * свидетельство того, что ячейка показывала, и перестаёт числиться за
-       * кодом, которого в ней больше нет.
-       *
-       * `state` тоже: «ok», записанное про исчезнувший код, — не исход этой
-       * ячейки.
+       * Ячейку с рабочим кодом переключили в markdown, откат возвращал текст —
+       * и оставлял markdown: Run по ней не работает, «Run All» её пропускает.
+       * А если менялся ровно тип, откат выходил отсюда, не сделав ничего и не
+       * оставив строки, — кнопка «вернуть» молчала.
        */
-      cell.set('execCount', null)
-      cell.set('ranMs', null)
-      cell.set('state', 'idle')
-      changed++
+      if (cell.get('type') !== want.type) {
+        cell.set('type', want.type)
+        touched = true
+      }
+      if (source && source.toString() !== want.source) {
+        // Не «весь текст исчез, появился другой»: у всех, кто стоит в этой
+        // ячейке, курсор уехал бы в начало. Меняется только то, что отличается.
+        replaceText(source, want.source)
+        /*
+         * Возврат версии снимает с результата его номер.
+         *
+         * Это самое несогласованное место, какое было: запуск, который вполне
+         * может дать тот же самый результат, стирал вывод целиком, а возврат
+         * версии — событие, которое результат недвусмысленно обесценивает, —
+         * не трогал ничего. Теперь оба говорят одно: вывод остаётся как
+         * свидетельство того, что ячейка показывала, и перестаёт числиться за
+         * кодом, которого в ней больше нет.
+         *
+         * `state` тоже: «ok», записанное про исчезнувший код, — не исход этой
+         * ячейки.
+         */
+        cell.set('execCount', null)
+        cell.set('ranMs', null)
+        cell.set('state', 'idle')
+        touched = true
+      }
+      if (touched) changed++
     }
 
     /*
@@ -789,17 +961,26 @@ export function restoreInto(
       changed += reorder(
         cells,
         wanted.map((w) => w.id),
+        busy,
       )
   }, RESTORE_ORIGIN)
 
   if (changed > 0) {
+    /*
+     * Без времени в словах: его собирал сервер по своему часовому поясу (в
+     * контейнере это UTC), а строки ленты рисует браузер по своему — подпись
+     * «restored the version from 15:04» указывала на строку, которой в списке
+     * нет. Что именно вернули, говорит `targetSeq`; часы рисует тот, кто
+     * смотрит.
+     */
     mark(
       sessionId,
       doc,
       'restore',
       authorId,
       null,
-      onlyCell ? `restored one cell from ${at}` : `restored the version from ${at}`,
+      onlyCell ? 'restored one cell' : 'restored the version',
+      seq,
     )
   }
   return changed

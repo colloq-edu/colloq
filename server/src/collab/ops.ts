@@ -17,7 +17,6 @@
  */
 import * as Y from 'yjs'
 import {
-  CELLS_KEY,
   cellId,
   cloneCell,
   readCell,
@@ -26,6 +25,35 @@ import {
   type YCell,
   findCell,
 } from '@shared/notebook'
+
+const EMPTY: ReadonlySet<string> = new Set()
+
+/**
+ * В каких ячейках сейчас стоят курсоры. Источник регистрирует `collab/index.ts`.
+ *
+ * Через регистрацию, а не импортом: присутствие живёт в сокетах, а этот модуль
+ * — тот, куда ходит тест, и тащить за собой базу и сокеты ему незачем. Никто не
+ * зарегистрировался — считаем, что курсоров нет.
+ */
+let carets: ((doc: Y.Doc) => ReadonlySet<string>) | null = null
+
+export function onCarets(source: (doc: Y.Doc) => ReadonlySet<string>): void {
+  carets = source
+}
+
+/**
+ * Записать ключ ячейки, только если он и правда меняется.
+ *
+ * `Y.Map.set` заводит новый элемент даже под тем же значением: это такт в
+ * документе, лишний элемент в снимке и серверный update — а серверный update
+ * открывает всплеск истории без автора, и правка человека, попавшая в тот же
+ * всплеск, подписывалась «the room». Шесть таких записей уходило на каждую
+ * добавленную ячейку, которой и менять-то было нечего.
+ */
+function put(cell: YCell, key: string, value: unknown): void {
+  if (cell.get(key) === value) return
+  cell.set(key, value)
+}
 
 /**
  * Поменять ячейку местами с соседом.
@@ -51,7 +79,22 @@ export function moveInCells(doc: Y.Doc, id: string, direction: -1 | 1): boolean 
    * Переезжает сосед, а не та ячейка, которую двигают: пересоздание убивает
    * редактор вместе с курсором, а курсор стоит в той ячейке, на кнопку которой
    * нажали. Результат перестановки от выбора не зависит.
+   *
+   * Но у клона цена дороже курсора, и платит её не нажавший. Нажатия, ушедшие
+   * в старый `Y.Text` за круг до сервера, адресованы удалённой структуре: гейт
+   * их пропускает (запись в надгробие никому не видна), и символы пропадают у
+   * печатающего молча — Ctrl+Z их не вернёт, они лежат в надгробии. Поэтому
+   * если в соседке стоит чей-то курсор, пересоздаётся та, которую двигают: у
+   * неё курсор нажавшего, а нажавший в этот момент нажимает, а не печатает.
    */
+  const busy = carets?.(doc) ?? EMPTY
+  if (busy.has(cellId(cells.get(to)))) {
+    const moved = cloneCell(cells.get(from))
+    cells.delete(from, 1)
+    cells.insert(to, [moved])
+    return true
+  }
+
   const neighbour = cloneCell(cells.get(to))
   cells.delete(to, 1)
   cells.insert(from, [neighbour])
@@ -69,16 +112,15 @@ export function moveInCells(doc: Y.Doc, id: string, direction: -1 | 1): boolean 
  * исключение — то есть не было правилом.
  */
 export function resetRetyped(doc: Y.Doc, cellIds: string[]): void {
-  const cells = doc.getArray<YCell>(CELLS_KEY)
-  const wanted = new Set(cellIds)
-  for (let i = 0; i < cells.length; i += 1) {
-    const cell = cells.get(i)
-    if (!wanted.has(cellId(cell))) continue
+  for (const id of cellIds) {
+    const found = findCell(doc, id)
+    if (!found) continue
+    const cell = found.cell
     if (cell.get('type') !== 'markdown') continue
-    cell.set('state', 'idle')
-    cell.set('execCount', null)
-    cell.set('startedAt', null)
-    cell.set('ranMs', null)
+    put(cell, 'state', 'idle')
+    put(cell, 'execCount', null)
+    put(cell, 'startedAt', null)
+    put(cell, 'ranMs', null)
     const outputs = cell.get('outputs')
     if (outputs instanceof Y.Array && outputs.length > 0) outputs.delete(0, outputs.length)
   }
@@ -118,16 +160,17 @@ const GRAVE_MAX = 30
 /** Запомнить ячейку перед тем, как принять её удаление. */
 export function rememberDeleted(sessionId: string, doc: Y.Doc, cellIds: string[]): void {
   if (cellIds.length === 0) return
-  const cells = doc.getArray<YCell>(CELLS_KEY)
   let room = graves.get(sessionId)
   if (!room) graves.set(sessionId, (room = new Map()))
   const now = Date.now()
-  const wanted = new Set(cellIds)
-  for (let i = 0; i < cells.length; i += 1) {
-    const cell = cells.get(i)
-    const id = cellId(cell)
-    if (!wanted.has(id)) continue
-    const snapshot = readCell(cell)
+  for (const id of cellIds) {
+    // По имени, во всех тетрадях комнаты, — как ищет гейт, который эти имена и
+    // назвал. Пока здесь стоял корень `cells`, во второй тетради сервер не
+    // помнил ни одного удаления, и Ctrl+Z по посчитавшей ячейке упирался в
+    // отказ «новая ячейка объявляет себя выполнявшейся».
+    const found = findCell(doc, id)
+    if (!found) continue
+    const snapshot = readCell(found.cell)
     // Пустую ячейку помнить незачем — возвращать нечего.
     if (snapshot.outputs.length === 0 && snapshot.execCount === null) continue
     room.set(id, { at: now, cell: snapshot })
@@ -142,18 +185,6 @@ export function forgetSession(sessionId: string): void {
   graves.delete(sessionId)
 }
 
-/** Какие удаления семинар ещё помнит — классификатору, чтобы узнать отмену. */
-export function rememberedIn(sessionId: string): ReadonlySet<string> {
-  const room = graves.get(sessionId)
-  if (!room || room.size === 0) return EMPTY
-  const now = Date.now()
-  const live = new Set<string>()
-  for (const [id, grave] of room) if (now - grave.at <= GRAVE_TTL_MS) live.add(id)
-  return live
-}
-
-const EMPTY: ReadonlySet<string> = new Set()
-
 /**
  * Привести только что созданные ячейки в согласие с тем, что знает сервер.
  *
@@ -166,13 +197,11 @@ const EMPTY: ReadonlySet<string> = new Set()
 export function settleFresh(sessionId: string, doc: Y.Doc, cellIds: string[]): void {
   if (cellIds.length === 0) return
   const room = graves.get(sessionId)
-  const cells = doc.getArray<YCell>(CELLS_KEY)
-  const wanted = new Set(cellIds)
   const now = Date.now()
-  for (let i = 0; i < cells.length; i += 1) {
-    const cell = cells.get(i)
-    const id = cellId(cell)
-    if (!wanted.has(id)) continue
+  for (const id of cellIds) {
+    const found = findCell(doc, id)
+    if (!found) continue
+    const cell = found.cell
     const grave = room?.get(id)
     const remembered = grave && now - grave.at <= GRAVE_TTL_MS ? grave.cell : null
 
@@ -181,17 +210,18 @@ export function settleFresh(sessionId: string, doc: Y.Doc, cellIds: string[]): v
       if (outputs.length > 0) outputs.delete(0, outputs.length)
       if (remembered) for (const out of remembered.outputs) outputs.push([writeOutput(out)])
     }
-    cell.set(
+    put(
+      cell,
       'state',
       remembered?.state === 'ok' || remembered?.state === 'error' ? remembered.state : 'idle',
     )
-    cell.set('execCount', remembered?.execCount ?? null)
-    cell.set('runBy', remembered?.runBy ?? null)
-    cell.set('runById', remembered?.runById ?? null)
-    cell.set('ranMs', remembered?.ranMs ?? null)
+    put(cell, 'execCount', remembered?.execCount ?? null)
+    put(cell, 'runBy', remembered?.runBy ?? null)
+    put(cell, 'runById', remembered?.runById ?? null)
+    put(cell, 'ranMs', remembered?.ranMs ?? null)
     // Секундомер и приглашение ко вводу не возвращаются никогда: ядро не
     // считает эту ячейку и ничего у неё не спрашивает.
-    cell.set('startedAt', null)
+    put(cell, 'startedAt', null)
     if (cell.get('stdin') != null) cell.set('stdin', null)
     if (remembered) room?.delete(id)
   }

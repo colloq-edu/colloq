@@ -37,8 +37,12 @@ for (const suffix of ['', '-wal', '-shm']) {
  * в `-wal` рядом. Скопировать «базу» в этот момент — значит скопировать
  * вчерашний день, и именно так делают все, кто копирует один файл.
  *
- * TRUNCATE, а не PASSIVE: он ждёт читателей и оставляет журнал пустым, так что
- * после него `colloq.db` — это действительно вся база.
+ * По таймеру — PASSIVE: он сводит всё, что может, и не ждёт никого. TRUNCATE
+ * ждёт читателей через busy-handler, а better-sqlite3 синхронный: `make
+ * backup` (это `VACUUM INTO` в соседнем процессе, читающий базу секунды)
+ * останавливал цикл событий вместе со всеми сокетами всех комнат — до пяти
+ * секунд посреди пары, при том что README обещает бэкап на ходу. Пустой журнал
+ * нужен ровно один раз — на выходе, где читателей уже нет; там и TRUNCATE.
  */
 const CHECKPOINT_EVERY_MS = 5 * 60 * 1000
 
@@ -61,9 +65,9 @@ function quote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`
 }
 
-export function checkpoint(): void {
+export function checkpoint(mode: 'PASSIVE' | 'TRUNCATE' = 'PASSIVE'): void {
   try {
-    db.pragma('wal_checkpoint(TRUNCATE)')
+    db.pragma(`wal_checkpoint(${mode})`)
   } catch (err) {
     // Занят читателем — не беда: следующий заход через пять минут.
     console.error('[db] checkpoint failed:', err instanceof Error ? err.message : err)
@@ -84,7 +88,9 @@ checkpointTimer.unref?.()
  */
 export function closeDatabase(): void {
   clearInterval(checkpointTimer)
-  checkpoint()
+  // Здесь TRUNCATE: комнат больше нет, ждать некого, а журнал должен уйти
+  // пустым — остановленный инстанс копируют одним файлом.
+  checkpoint('TRUNCATE')
   db.close()
 }
 
@@ -242,6 +248,16 @@ function ensureColumn(table: string, column: string, definition: string): void {
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`)
 }
 ensureColumn('sessions', 'environment', 'environment TEXT')
+/*
+ * Какую версию вернул откат.
+ *
+ * Раньше в `summary` лежало «restored the version from 15:04», и время это
+ * сервер форматировал по своему поясу: в контейнере это UTC, а строки ленты
+ * рисует браузер по своему — в аудитории UTC+3 подпись указывала на строку,
+ * которой в списке нет. Время на сервере больше не собирается; здесь лежит
+ * адрес версии, а часы рисует тот, кто смотрит.
+ */
+ensureColumn('doc_history', 'target_seq', 'target_seq INTEGER')
 
 /**
  * Проведён ли этот участник в ведущие хост-токеном.
@@ -533,8 +549,9 @@ export function setRules(sessionId: string, rules: RoomRules): RoomRules {
 
 const insertVersion = db.prepare(`
   INSERT INTO doc_history
-    (session_id, update_blob, kind, author_id, created_at, label, summary, added, removed, cells)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (session_id, update_blob, kind, author_id, created_at, label, summary, added, removed, cells,
+     target_seq)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 
 export interface VersionRow {
@@ -547,6 +564,8 @@ export interface VersionRow {
   added: number
   removed: number
   cells: string
+  /** Только у отката: версия, которую он вернул. */
+  target_seq: number | null
 }
 
 export function appendVersion(input: {
@@ -560,6 +579,7 @@ export function appendVersion(input: {
   added: number
   removed: number
   cells: string[]
+  targetSeq?: number | null
 }): number {
   const result = insertVersion.run(
     input.sessionId,
@@ -572,12 +592,15 @@ export function appendVersion(input: {
     input.added,
     input.removed,
     JSON.stringify(input.cells),
+    input.targetSeq ?? null,
   )
   return Number(result.lastInsertRowid)
 }
 
+const COLUMNS = `seq, kind, author_id, created_at, label, summary, added, removed, cells, target_seq`
+
 const selectVersions = db.prepare(`
-  SELECT seq, kind, author_id, created_at, label, summary, added, removed, cells
+  SELECT ${COLUMNS}
   FROM doc_history WHERE session_id = ? ORDER BY seq DESC LIMIT ?
 `)
 
@@ -585,8 +608,50 @@ export function listVersions(sessionId: string, limit: number): VersionRow[] {
   return selectVersions.all(sessionId, limit) as VersionRow[]
 }
 
+/*
+ * Лента — это то, что кто-то сделал, и отбирать её надо здесь, а не после
+ * LIMIT.
+ *
+ * `keyframe` и `quiet` — бухгалтерия повтора, и их в семинаре с работающими
+ * ячейками больше, чем правок: каждые четыре килобайта вывода или девяносто
+ * секунд дают тихую строку. Когда окно в четыреста строк резалось до фильтра,
+ * они его и съедали — панель показывала горстку правок или «Nothing has been
+ * written in this room yet» при сотне правок и чекпоинте «до упражнения» в
+ * базе.
+ */
+const selectStory = db.prepare(`
+  SELECT ${COLUMNS}
+  FROM doc_history WHERE session_id = ? AND kind NOT IN ('keyframe', 'quiet')
+  ORDER BY seq DESC LIMIT ?
+`)
+
+/*
+ * Названные моменты — своим окном, а не в общей очереди с правками.
+ *
+ * Отсева служебных строк мало. Всплеск правок закрывается каждые четыре
+ * килобайта обновлений, на любую смену состава тетради и по двенадцати
+ * секундам тишины — комната на тридцать человек выдаёт их сотнями за пару, и
+ * чекпоинт «до упражнения», поставленный на пятнадцатой минуте, из окна на
+ * четыреста строк вылетал вместе с ними. Строка при этом жива в базе:
+ * терялась ровно та функция, ради которой чекпоинт ставили. Тот же приём — у
+ * шагов публикации (publish/candidates.ts).
+ */
+const selectNamed = db.prepare(`
+  SELECT ${COLUMNS}
+  FROM doc_history WHERE session_id = ? AND kind IN ('opened', 'checkpoint', 'restore')
+  ORDER BY seq DESC LIMIT ?
+`)
+
+/** Свежие строки ленты плюс все названные моменты, новые сверху. */
+export function listStoryVersions(sessionId: string, limit: number): VersionRow[] {
+  const rows = new Map<number, VersionRow>()
+  for (const row of selectStory.all(sessionId, limit) as VersionRow[]) rows.set(row.seq, row)
+  for (const row of selectNamed.all(sessionId, limit) as VersionRow[]) rows.set(row.seq, row)
+  return [...rows.values()].sort((a, b) => b.seq - a.seq)
+}
+
 const selectOneVersion = db.prepare(`
-  SELECT seq, kind, author_id, created_at, label, summary, added, removed, cells
+  SELECT ${COLUMNS}
   FROM doc_history WHERE session_id = ? AND seq = ?
 `)
 
@@ -610,23 +675,6 @@ const selectRange = db.prepare(`
   SELECT update_blob FROM doc_history
   WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq ASC
 `)
-
-/**
- * Байты самой свежей строки, которая сама по себе является целым документом.
- *
- * Ими проверяется, что историю комнаты вообще можно развернуть: дельта без
- * основания под ней разворачивается в пустую тетрадь и делает это молча.
- */
-const selectNewestWhole = db.prepare(`
-  SELECT update_blob FROM doc_history
-  WHERE session_id = ? AND kind IN ('opened', 'keyframe', 'restore', 'checkpoint')
-  ORDER BY seq DESC LIMIT 1
-`)
-
-export function newestWholeDocument(sessionId: string): Uint8Array | null {
-  const row = selectNewestWhole.get(sessionId) as { update_blob: Buffer } | undefined
-  return row ? new Uint8Array(row.update_blob) : null
-}
 
 export function updatesUpTo(sessionId: string, seq: number): Uint8Array[] {
   const keyframe = selectKeyframeAt.get(sessionId, seq) as { seq: number } | undefined
@@ -676,9 +724,7 @@ const dropNote = db.prepare(
   'DELETE FROM lecture_notes WHERE session_id = ? AND file = ? AND page = ?',
 )
 const dropNotesOf = db.prepare('DELETE FROM lecture_notes WHERE session_id = ?')
-const moveNotes = db.prepare(
-  'UPDATE lecture_notes SET file = ? WHERE session_id = ? AND file = ?',
-)
+const moveNotes = db.prepare('UPDATE lecture_notes SET file = ? WHERE session_id = ? AND file = ?')
 
 /** Все заметки к одному документу: страница → текст. */
 export function notesOf(sessionId: string, file: string): Record<number, string> {
@@ -714,9 +760,7 @@ export function discardNotes(sessionId: string): void {
   dropNotesOf.run(sessionId)
 }
 
-const countVersions = db.prepare(
-  `SELECT COUNT(*) AS n FROM doc_history WHERE session_id = ?`,
-)
+const countVersions = db.prepare(`SELECT COUNT(*) AS n FROM doc_history WHERE session_id = ?`)
 
 export function versionCount(sessionId: string): number {
   return (countVersions.get(sessionId) as { n: number }).n

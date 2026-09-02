@@ -64,14 +64,18 @@ export type Judgement =
        *
        * Сервер приводит их в согласие с собой сразу после применения: чужой
        * вывод стирает, свой — если это отмена удаления — возвращает по
-       * собственной записи.
+       * собственной записи. Ячейка, чьё имя уже занято живой, сюда не попадает:
+       * приведение ищет по имени и досталось бы не ей, а той, что уже в
+       * тетради. Пришедшую копию снимает наблюдатель за двойниками.
        */
       created: string[]
       /**
        * Ячейки, которые кадр удаляет.
        *
        * Сервер запоминает их ДО применения: после применения читать уже нечего,
-       * а без этого Ctrl+Z вернул бы ячейку без вывода.
+       * а без этого Ctrl+Z вернул бы ячейку без вывода. И говорит о них ядру
+       * ПОСЛЕ применения (`collab/index.ts · onCellsRemoved`): убрать можно и
+       * ту ячейку, которую оно сейчас считает.
        */
       removed: string[]
     }
@@ -175,15 +179,11 @@ function segment(sub: string | null): string {
 class Frame {
   private readonly byId = new Map<string, Y.Item>()
   private readonly placeMemo = new Map<Y.Item, Place>()
-  /** Новые ячейки, к которым кадр приложил вывод. */
-  private readonly carriesOutput = new Set<Y.Item>()
   private walked = 0
 
   constructor(
     private readonly doc: Y.Doc,
     private readonly dec: { structs: Struct[]; ds: DeleteSet },
-    /** Имена ячеек, удаление которых сервер помнит: см. checkFresh. */
-    private readonly remembered: ReadonlySet<string>,
   ) {
     // Каждая структура покрывает столько тактов, сколько в ней длины: запись в
     // ячейку, созданную этим же кадром, ищется именно так.
@@ -431,15 +431,17 @@ class Frame {
   /**
    * Значения новой ячейки, а не только путь.
    *
-   * Иначе разрешение «создавать ячейки» открывало бы две дыры разом: свежая
-   * ячейка с уже готовым `text/html` в выводе гасит экран всему семинару, а
-   * свежая ячейка с поддельным `stdin` рисует преподавателю приглашение
-   * ввести пароль и складывает нажатия в чужую переменную.
+   * Иначе разрешение «создавать ячейки» открывало бы дыру: свежая ячейка с
+   * поддельным `stdin` рисует преподавателю приглашение ввести пароль и
+   * складывает нажатия в чужую переменную. Поле, которого нет в `FRESH_KEYS`,
+   * — отказ; всё, что ячейка вправе принести, но не вправе объявлять о себе
+   * сама (вывод, «In [7]»), сервер гасит после применения, а не отказом: см.
+   * ниже, где это разобрано целиком.
    */
   private checkFresh(fresh: Map<Y.Item, Map<string, Y.Item>>): string[] {
     const namesHere = new Set<string>()
     const created: string[] = []
-    for (const [cell, keys] of fresh) {
+    for (const keys of fresh.values()) {
       const path = `${CELLS_KEY}/[]`
       for (const key of keys.keys()) {
         if (!FRESH_KEYS.has(key)) throw new Refusal(`новая ячейка несёт лишнее поле «${key}»`, path)
@@ -459,14 +461,12 @@ class Frame {
        * Во ВСЕХ тетрадях комнаты, а не в одной: ячейку ищут по имени, не зная,
        * в какой она тетради (см. `findCell`), и совпадение имён в двух разных
        * тетрадях означало бы, что «Запустить» иногда запускает не ту.
+       *
+       * Но совпадение — не отказ, см. ниже.
        */
-      if (
-        allCellArrays(this.doc).some((cells) =>
-          cells.toArray().some((c) => c instanceof Y.Map && c.get('id') === id),
-        )
-      ) {
-        throw new Refusal('ячейка с таким именем уже есть', path)
-      }
+      const taken = allCellArrays(this.doc).some((cells) =>
+        cells.toArray().some((c) => c instanceof Y.Map && c.get('id') === id),
+      )
 
       const type = valueOf(keys.get('type'))
       if (type !== 'code' && type !== 'markdown') throw new Refusal('у новой ячейки нет вида', path)
@@ -477,27 +477,29 @@ class Frame {
         throw new Refusal('вывод новой ячейки не Y.Array', path)
 
       /*
-       * Новая ячейка приходит с выводом ровно в одном законном случае: Yjs
-       * отменяет удаление КОПИЕЙ, так что Ctrl+Z после удаления посчитавшей
-       * ячейки — это новая ячейка с готовым выводом. Отказать значило бы
-       * заставить человека пересобрать документ за обычное Ctrl+Z, а разрешить
-       * всем — вернуть ячейку с готовым `text/html`, гасящую экран семинару.
+       * Ни готовый вывод, ни «In [7]», ни занятое имя отказом не судятся, и
+       * это одно решение с двумя половинами.
        *
-       * Разводит их память сервера: он помнит, что у него удалили. И вывод
-       * всё равно возвращает свой (`ops.ts · settleFresh`), а не присланный, —
-       * так что пол цел: вывода, которого сервер не производил, в документе не
-       * появляется.
+       * Обе — Ctrl+Z. Yjs отменяет удаление КОПИЕЙ, так что отмена удаления
+       * посчитавшей ячейки приходит новой ячейкой с готовым выводом; а если
+       * кто-то успел вернуть ту же ячейку из истории (возврат воссоздаёт её с
+       * ПРЕЖНИМ именем), то ещё и с занятым именем. Судилось это памятью
+       * сервера об удалениях — десять минут и тридцать штук, — и за этими
+       * границами обычный жест стоил человеку закрытого сокета, стёртого кэша
+       * и перезагрузки страницы посреди пары: ровно того, чего память и должна
+       * была не допустить.
+       *
+       * Отличать незачем: `ops.ts · settleFresh` и так приводит КАЖДУЮ новую
+       * ячейку к чистой и возвращает вывод из записи СЕРВЕРА, а не из кадра, —
+       * пол цел и без отказа. А занятое имя разводит наблюдатель за двойниками
+       * (collab/index.ts): он снимает именно пришедшую копию, так что подменить
+       * чужую ячейку своей по имени по-прежнему нельзя.
+       *
+       * В `created` занятое имя не попадает: `settleFresh` ищет по имени и
+       * привёл бы к чистой ту ячейку, что уже живёт в тетради, — то есть стёр
+       * бы комнате чужой вывод по одному совпадению.
        */
-      const claimsRun =
-        this.carriesOutput.has(cell) ||
-        ['state', 'execCount', 'runBy', 'runById', 'ranMs'].some((key) => {
-          const value = keys.get(key)
-          return value !== undefined && valueOf(value) !== null && valueOf(value) !== 'idle'
-        })
-      if (claimsRun && !this.remembered.has(id)) {
-        throw new Refusal('новая ячейка объявляет себя выполнявшейся', path)
-      }
-      created.push(id)
+      if (!taken) created.push(id)
     }
     return created
   }
@@ -549,12 +551,12 @@ class Frame {
         // Ключи ячейки лежат на глубине 3; глубже — уже содержимое.
         if (slot.length === 3 && slot[2].startsWith('::')) keys.set(slot[2].slice(2), struct)
         else if (slot.length > 3 && slot[2] !== '::source') {
-          // Готовый вывод у новой ячейки — законен только как отмена удаления;
-          // судит об этом checkFresh, которому нужно её имя.
+          // Готовый вывод у новой ячейки в документе не остаётся: сервер
+          // приводит всякую новую ячейку к чистой сразу после применения
+          // (ops.ts · settleFresh). Всё прочее содержимое — отказ.
           if (slot[2] !== '::outputs') {
             throw new Refusal('новая ячейка несёт готовое содержимое', slot.join('/'))
           }
-          this.carriesOutput.add(cell)
         }
       } else if (verdict?.rule === 'edit' && slot.length === 3 && slot[2] === '::type') {
         const value = valueOf(struct)
@@ -661,11 +663,7 @@ function isType(struct: Y.Item | undefined, kind: unknown): boolean {
 /**
  * Разобрать кадр. Не применяет ничего и не трогает документ.
  */
-export function classify(
-  doc: Y.Doc,
-  payload: Uint8Array,
-  remembered: ReadonlySet<string> = new Set(),
-): Judgement {
+export function classify(doc: Y.Doc, payload: Uint8Array): Judgement {
   if (payload.byteLength > MAX_SYNC_FRAME_BYTES) {
     return { ok: false, why: 'слишком большой кадр', path: '' }
   }
@@ -674,7 +672,7 @@ export function classify(
       structs: Struct[]
       ds: DeleteSet
     }
-    const { verdicts, retyped, created, removed } = new Frame(doc, dec, remembered).judge()
+    const { verdicts, retyped, created, removed } = new Frame(doc, dec).judge()
     return { ok: true, verdicts, retyped, created, removed }
   } catch (err) {
     if (err instanceof Refusal) return { ok: false, why: err.why, path: err.path }

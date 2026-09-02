@@ -18,14 +18,39 @@ import { getSession, loadDocSnapshot, saveDocSnapshot } from '../db.js'
  * never whether the promise holds.
  */
 
-/** Hard ceiling on how old the oldest unsaved edit may get. */
-const MAX_DEFER_MS = 15_000
+/**
+ * Hard ceiling on how old the oldest unsaved edit may get.
+ *
+ * Пять секунд, а не пятнадцать: это и есть окно потери при `kill -9`, OOM или
+ * обесточивании — штатные выходы (SIGINT/SIGTERM/uncaughtException) флашат сами.
+ * Пятнадцать секунд молчаливой потери — это абзац, набранный при всей комнате,
+ * и вернувшийся сервер, который заставляет перезагрузить вкладки, чтобы его
+ * стереть.
+ *
+ * Цена названа замером (encode + запись в SQLite, better-sqlite3): тетрадь на
+ * 22 КБ — 0.5 мс, на 292 КБ — 2.4 мс, на 2.3 МБ — 6.8 мс. Потолок бьёт только
+ * по большим тетрадям (маленькие пишутся по snapshotIntervalMs), так что
+ * втрое чаще платит именно тот, у кого мегабайт: 6.8 мс раз в пять секунд —
+ * 0.14% цикла событий. Дороже другое, и это осознанно: пока в такой тетради
+ * печатают не переставая, в WAL уходит втрое больше байтов (2.3 МБ каждые пять
+ * секунд), а сводится он раз в пять минут.
+ */
+const MAX_DEFER_MS = 5_000
 
 /** Marks our own writes back into the doc so they don't schedule a re-save. */
 const ORIGIN = 'persistence'
 
 /** Below this the encode is too cheap to be worth deferring. */
 const BACKOFF_FROM_BYTES = 128 * 1024
+
+/**
+ * Пауза перед повтором неудачной записи.
+ *
+ * Диск не освободится за миллисекунду, а спешить некуда: правки в памяти целы,
+ * и повторять их можно сколько угодно. Без паузы повтор пошёл бы сразу —
+ * дедлайн-то давно прошёл, — и переполненный диск дал бы горячий цикл.
+ */
+const RETRY_MS = 5_000
 
 /** Snapshot timings, for the seminar that has quietly grown a 4 MB notebook. */
 const DEBUG =
@@ -70,13 +95,15 @@ function write(binding: Binding): void {
     binding.timer = null
   }
   if (binding.dirtySince === 0) return
-  binding.dirtySince = 0
 
   // The last word on a deleted seminar. Anything still holding this document —
   // a kernel shutting down, a socket that has not noticed yet — would otherwise
   // put the room back on disk seconds after the owner destroyed it, and a
   // snapshot with no session row is a file nobody can reach or remove.
-  if (!getSession(binding.sessionId)) return
+  if (!getSession(binding.sessionId)) {
+    binding.dirtySince = 0
+    return
+  }
 
   // Two questions, because Yjs answers "what changed?" in two places: inserts
   // advance a client's clock and show up in the state vector, deletions never
@@ -88,6 +115,7 @@ function write(binding: Binding): void {
     binding.deletions === binding.savedDeletions &&
     sameBytes(vector, binding.savedVector)
   ) {
+    binding.dirtySince = 0
     return
   }
 
@@ -95,6 +123,16 @@ function write(binding: Binding): void {
     const began = process.hrtime.bigint()
     const update = Y.encodeStateAsUpdate(binding.doc)
     saveDocSnapshot(binding.sessionId, update)
+    /*
+     * Чистым документ делает удачная запись, а не попытка.
+     *
+     * Стояло выше, до записи, — и ошибка sqlite (диск полон, ввод-вывод,
+     * занятая база) молча оставляла комнату «сохранённой»: ни таймер, ни flush
+     * на выходе к ней больше не возвращались, потому что все они выходят на
+     * `dirtySince === 0`. Класс, в котором после сбоя никто больше не
+     * напечатал ни символа, доезжал до `make down` без последних правок.
+     */
+    binding.dirtySince = 0
     binding.savedVector = vector
     binding.savedDeletions = binding.deletions
     binding.savedBytes = update.byteLength
@@ -107,6 +145,13 @@ function write(binding: Binding): void {
   } catch (err) {
     // Losing a snapshot must not take the live session down with it.
     console.error(`[persistence] snapshot failed for ${binding.sessionId}`, err)
+    // Документ остался грязным — значит, будет и повтор. Только пока привязка
+    // жива: у отпущенной (комнату закрыли и открыли заново) документ уже не
+    // тот, и запись поверх свежего снимка была бы откатом.
+    binding.timer = setTimeout(() => {
+      if (bindings.get(binding.sessionId) === binding) write(binding)
+    }, RETRY_MS)
+    binding.timer.unref?.()
   }
 }
 

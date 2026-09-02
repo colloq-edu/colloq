@@ -53,6 +53,16 @@ export interface Version {
   label: string | null
   /** What it touched, already in words: "edited cell 04", "added 3 cells". */
   summary: string
+  /**
+   * Только у отката: версия, которую он вернул.
+   *
+   * Адрес, а не время. Подпись «restored the version from 15:04» сервер
+   * собирал по своему часовому поясу — в контейнере это UTC, — а строки ленты
+   * рисует браузер по своему: в аудитории UTC+3 подпись указывала на строку,
+   * которой в списке нет. Часы рисует тот, кто смотрит, по `createdAt` этой
+   * версии.
+   */
+  targetSeq: number | null
   /** Characters written and removed, for the two numbers at the end of the row. */
   added: number
   removed: number

@@ -125,8 +125,20 @@ export interface AdminSeminar {
    * существующего семинара, а не только задать их при создании.
    */
   rules: RoomRules
-  /** Публичная страница этого семинара, если она есть. */
-  publication: { id: string; state: 'published' | 'withdrawn'; steps: number } | null
+  /**
+   * Публичная страница этого семинара, если она есть.
+   *
+   * `slug` — заданное имя в адресе; `null` значит, что адресом остаётся
+   * идентификатор. Список печатает и копирует `/p/<slug ?? id>`: заданное имя
+   * и есть тот адрес, который дали классу, а идентификатор рядом с ним читался
+   * бы как второй, чужой.
+   */
+  publication: {
+    id: string
+    slug: string | null
+    state: 'published' | 'withdrawn'
+    steps: number
+  } | null
   /** Курсы, в которых он состоит. Обычно один, но запрета на два нет. */
   courses: { id: string; name: string }[]
 }
@@ -297,6 +309,8 @@ export type AdminErrorReason =
   /** The environment is the one the room is running, or is `base`. */
   | 'in_use'
   | 'protected'
+  /** Создать под именем, которое уже занято: правка — это другой запрос. */
+  | 'exists'
   /** This install cannot reach Docker, so it cannot build or switch. */
   | 'no_docker'
   | 'building'
@@ -342,7 +356,13 @@ export interface AdminEnvironment {
   imageBytes: number | null
   /** When the image was built; null when there is nothing built. */
   builtAt: number | null
-  /** True for the one every seminar on this instance is running right now. */
+  /**
+   * True for the one a seminar created from here on will run.
+   *
+   * Не «на чём работает весь инстанс»: уже созданный семинар держит своё
+   * окружение и переживает переключение — иначе смена активного окружения
+   * пересоздавала бы ядро под идущей парой (см. AdminSeminar.environment).
+   */
   active: boolean
   /** Last build's error, kept so a failure is readable after the log scrolls. */
   error: string | null
@@ -361,6 +381,18 @@ export interface EnvironmentsState {
   canBuild: boolean
   /** Why not, when `canBuild` is false — shown instead of dead buttons. */
   cannotBuildReason: string | null
+  /**
+   * Whether every room here shares one kernel instead of getting its own.
+   *
+   * The panel used to promise a container per seminar unconditionally, and on
+   * an install where the server cannot start one — no Docker socket, no room
+   * network, `KERNEL_ISOLATION=off` — that promise was false in the two places
+   * it matters: rooms read each other's files, and *Make default* really does
+   * empty every open seminar's variables. The server knows which arrangement it
+   * is in, so it says so rather than making the screens describe the condition
+   * in words.
+   */
+  shared: boolean
 }
 
 export interface SaveEnvironmentRequest {

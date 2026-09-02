@@ -25,6 +25,7 @@ import {
   allBooks,
   bookAt,
   bookCells,
+  CELLS_KEY,
   createCell,
   readCell,
   removeBook,
@@ -33,9 +34,9 @@ import {
   type Book,
 } from '@shared/notebook'
 import { parseIpynb, writeIpynb } from '@shared/ipynb'
-import { baseOf, kindOf } from '@shared/paths'
+import { baseOf, isInside, kindOf } from '@shared/paths'
 import { getSessionDoc, peekSessionDoc } from './index.js'
-import { listFiles, makeFile, readText, statPath, writeText } from '../workspace.js'
+import { makeFile, readText, statPath, writeText } from '../workspace.js'
 
 const ORIGIN = 'server'
 
@@ -176,9 +177,18 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
 
   let made: Book | null = null
   doc.transact(() => {
-    const root = rootForNewBook(doc, path)
-    made = addBook(doc, path, root)
-    const cells = bookCells(doc, root)
+    /*
+     * Корень у новой тетради свой, и из пути он больше не выводится: путь
+     * освобождается — переименовали разбор, положили под тем же именем новый, —
+     * и на освободившемся корне сидела чужая тетрадь.
+     *
+     * Проверка на пустоту осталась и осталась нужной: на занятый корень ячейки
+     * файла не дописываются. Иначе одна тетрадь в комнате перестаёт быть одним
+     * файлом на диске, а это единственное, на чём держится проекция.
+     */
+    const book = addBook(doc, path, rootForNewBook(doc))
+    made = book
+    const cells = bookCells(doc, book.root)
     if (cells.length === 0) {
       cells.push(
         flat.length > 0
@@ -200,21 +210,41 @@ export function createBook(sessionId: string, path: string): OpenBookResult {
   return openBook(sessionId, path)
 }
 
-/** Тетрадь переехала вместе с файлом. */
+/**
+ * Что переехало вместе с этим путём: сам файл и всё, что лежало под ним.
+ *
+ * Переименовывают и убирают не только файлы, но и ПАПКИ, а тетрадь внутри
+ * папки сверялась по точному пути и оставалась в комнате со старым: проекция
+ * через полторы секунды писала её обратно — вместе с папкой, которую только что
+ * убрали, — а вкладка правила призрак по адресу, которого на диске нет.
+ */
+function booksUnder(doc: Y.Doc, path: string): string[] {
+  return allBooks(doc)
+    .map(({ book }) => book.path)
+    .filter((known) => isInside(known, path))
+}
+
+/** Тетрадь переехала вместе с файлом — или с папкой, в которой лежала. */
 export function moveBook(sessionId: string, from: string, to: string): void {
   const doc = peekSessionDoc(sessionId)?.doc
   if (!doc) return
-  if (!bookAt(doc, from)) return
-  doc.transact(() => renameBook(doc, from, to), ORIGIN)
+  const moved = booksUnder(doc, from)
+  if (moved.length === 0) return
+  doc.transact(() => {
+    for (const path of moved) renameBook(doc, path, to + path.slice(from.length))
+  }, ORIGIN)
   schedule(sessionId)
 }
 
-/** Файла больше нет — и тетради тоже. */
+/** Файла больше нет — и тетради тоже. Папки — со всеми тетрадями внутри. */
 export function dropBook(sessionId: string, path: string): void {
   const doc = peekSessionDoc(sessionId)?.doc
   if (!doc) return
-  if (!bookAt(doc, path)) return
-  doc.transact(() => removeBook(doc, path), ORIGIN)
+  const gone = booksUnder(doc, path)
+  if (gone.length === 0) return
+  doc.transact(() => {
+    for (const known of gone) removeBook(doc, known)
+  }, ORIGIN)
 }
 
 /**
@@ -237,18 +267,38 @@ export function isBookFile(sessionId: string, path: string): boolean {
 export function forgetMissingBooks(sessionId: string): string[] {
   const doc = peekSessionDoc(sessionId)?.doc
   if (!doc) return []
-  const alive = new Set(
-    listFiles(sessionId)
-      .filter((entry) => !entry.dir)
-      .map((e) => e.path),
-  )
-  const gone = allBooks(doc)
-    .map(({ book }) => book.path)
-    .filter((path) => !alive.has(path))
-  if (gone.length === 0) return []
-  doc.transact(() => {
-    for (const path of gone) removeBook(doc, path)
-  }, ORIGIN)
+  /*
+   * Каждый путь проверяется отдельно, а не ищется в дереве.
+   *
+   * `listFiles` — это то, что рисует панель: обход в глубину с потолком в две
+   * тысячи записей и ограничением по глубине. Тетрадь, не влезшая в потолок,
+   * из списка выпадает, а файл на диске лежит — и комната убирала бы живую
+   * тетрадь у всех. Один `lstat` на тетрадь, а их в комнате единицы.
+   */
+  const missing = allBooks(doc)
+    .map(({ book }) => book)
+    .filter((book) => statPath(sessionId, book.path)?.dir !== false)
+  if (missing.length === 0) return []
+
+  /*
+   * Тетрадь КОМНАТЫ из списка не убирается — её файл пишется заново.
+   *
+   * Эта проверка идёт после каждого прогона ячейки, а убрать тетрадь комнаты
+   * значит стереть её ячейки (`removeBook` делает это только у её корня —
+   * единственного, который умеет вернуть история). `os.remove('Тетрадь.ipynb')`
+   * в чьей-нибудь ячейке — не согласие комнаты расстаться с тем, что она весь
+   * час пишет: файл здесь проекция, и проекция восстанавливается.
+   *
+   * Убрать тетрадь комнаты по-прежнему можно — щелчком по файлу в дереве, и
+   * это `dropBook`, то есть сказанное вслух.
+   */
+  const gone = missing.filter((book) => book.root !== CELLS_KEY).map((book) => book.path)
+  if (gone.length > 0) {
+    doc.transact(() => {
+      for (const path of gone) removeBook(doc, path)
+    }, ORIGIN)
+  }
+  if (gone.length < missing.length) schedule(sessionId)
   return gone
 }
 

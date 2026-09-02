@@ -171,7 +171,7 @@ export const config = {
   maxSessionBytes: Number(env('MAX_SESSION_MB', '1024')) * 1024 * 1024,
 
   /** How often an idle-but-dirty document is written to disk. */
-  snapshotIntervalMs: 4000,
+  snapshotIntervalMs: 1500,
   /** Coalescing window for kernel stdout/stderr before it hits the CRDT. */
   outputFlushMs: 50,
 

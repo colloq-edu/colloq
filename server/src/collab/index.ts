@@ -18,7 +18,7 @@ import {
 import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
 import { getRules, getSession, renameSession } from '../db.js'
 import { classify, permits } from './gate.js'
-import { forgetSession, rememberDeleted, rememberedIn, resetRetyped, settleFresh } from './ops.js'
+import { forgetSession, onCarets, rememberDeleted, resetRetyped, settleFresh } from './ops.js'
 import {
   bindPersistence,
   flushPersistence,
@@ -29,6 +29,7 @@ import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } f
 import { flushAllFiles, forgetFiles } from './files.js'
 import { watchBooks } from './books.js'
 import { forgetUndo } from '../ai/agent.js'
+import { abortSession } from '../ai/index.js'
 
 /**
  * Происхождение для записи, которую сервер делает от чьего-то имени.
@@ -83,6 +84,44 @@ export interface SessionDoc {
 
 /** Marks a write as the server's own, so its observers do not chase themselves. */
 const ORIGIN = 'server'
+
+/**
+ * Эту ячейку завела вот эта транзакция?
+ *
+ * Так спрашивает и сам Yjs: у структуры, появившейся в транзакции, такт не ниже
+ * того, на котором её клиент стоял до начала. Нужно там, где из двух одинаковых
+ * имён надо выбрать пришедшее, а не то, что уже жило в тетради.
+ */
+function madeIn(transaction: Y.Transaction, cell: YCell): boolean {
+  const item = cell._item
+  if (!item) return false
+  return item.id.clock >= (transaction.beforeState.get(item.id.client) ?? 0)
+}
+
+/**
+ * Ячейки, в которых прямо сейчас стоят курсоры, — по присутствию.
+ *
+ * Нужно перестановке ячеек: клон уносит с собой нажатия, ушедшие в старый
+ * `Y.Text` за круг до сервера, и выбирать, кого пересоздавать, лучше зная, где
+ * кто стоит. В `ops.ts` попадает регистрацией, а не импортом, чтобы тот остался
+ * модулем без сокетов и базы; возврат версии (`history.ts · reorder`) пересобирает
+ * клонами весь лист и вправе спросить о том же.
+ */
+export function cellsWithCarets(doc: Y.Doc): ReadonlySet<string> {
+  const busy = new Set<string>()
+  for (const entry of docs.values()) {
+    if (entry.doc !== doc) continue
+    for (const state of entry.awareness.getStates().values()) {
+      const user = (state as { user?: AwarenessUser } | null)?.user
+      const id = user?.activeCellId
+      if (typeof id === 'string' && id) busy.add(id)
+    }
+    break
+  }
+  return busy
+}
+
+onCarets(cellsWithCarets)
 
 interface ConnState {
   /**
@@ -250,23 +289,6 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   }
 
   /*
-   * История начинается ПОСЛЕ засева, и это не мелочь порядка.
-   *
-   * Стояло раньше — с комментарием, обещавшим ровно обратное: «новая комната
-   * записывает свои стартовые ячейки первой версией». Не записывала. Слепок
-   * снимался с пустого документа (две байты), засев происходил следом и в
-   * историю не попадал вовсе — наблюдатель `doc.on('update')` вешается ещё
-   * ниже. Дальше каждая строка была дельтой к документу, которого история
-   * никогда не видела: Yjs складывал их в pending, и ЛЮБАЯ версия
-   * разворачивалась в пустую тетрадь. Молча — вкладка «История» показывала
-   * ноль ячеек и не жаловалась.
-   *
-   * Проверено на живой базе: у семинара с двадцатью одной строкой все
-   * двадцать одна давали ноль ячеек.
-   */
-  beginHistory(sessionId, doc)
-
-  /*
    * Whatever the snapshot says was running, was not running by the time this
    * process existed. Cleared here rather than by the kernel, because a room can
    * be reopened without a kernel ever being asked for one — the notebook has to
@@ -284,6 +306,33 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   }
 
   /*
+   * История начинается ПОСЛЕ засева, и это не мелочь порядка.
+   *
+   * Стояло раньше — с комментарием, обещавшим ровно обратное: «новая комната
+   * записывает свои стартовые ячейки первой версией». Не записывала. Слепок
+   * снимался с пустого документа (две байты), засев происходил следом и в
+   * историю не попадал вовсе — наблюдатель `doc.on('update')` вешается ещё
+   * ниже. Дальше каждая строка была дельтой к документу, которого история
+   * никогда не видела: Yjs складывал их в pending, и ЛЮБАЯ версия
+   * разворачивалась в пустую тетрадь. Молча — вкладка «История» показывала
+   * ноль ячеек и не жаловалась.
+   *
+   * Проверено на живой базе: у семинара с двадцатью одной строкой все
+   * двадцать одна давали ноль ячеек.
+   *
+   * И ПОСЛЕ уборки протухшего запуска — по той же причине, с другого конца.
+   * Между базовой точкой и подпиской `record()` строкой ниже документ обязан
+   * стоять: `clearStaleExecution` пишет в него своими тактами (очередь,
+   * `runningCell`, `startedAt`, `stdin` — и пишет даже когда сбрасывать нечего),
+   * а эти такты не попадали ни в базу, ни в дельты. Дальше любая серверная
+   * запись — принятый патч оракула, перестановка ячейки — ссылалась при разборе
+   * версии на такт, которого в истории нет, и навсегда уходила в pending:
+   * принятие патча не показывалось в ленте, а «вернуть версию» обнуляло текст
+   * ячейки у всей комнаты.
+   */
+  beginHistory(sessionId, doc)
+
+  /*
    * A cell id appears once.
    *
    * Y.Array has no move, so the editor moves a cell by cloning it and deleting
@@ -294,9 +343,14 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * oracle about it — so a duplicate is not a cosmetic problem.
    *
    * Repaired here rather than in the editor for the reason the title is: there
-   * is exactly one server, and it cannot be a stale client racing another. The
-   * first copy stays, later ones go; they are copies of each other, so which
-   * one survives does not matter, only that the choice is the same everywhere.
+   * is exactly one server, and it cannot be a stale client racing another.
+   *
+   * Кто из двух остаётся — не безразлично, и раньше было. Совпадение имён
+   * бывает законным: кто-то вернул удалённую ячейку из истории — возврат
+   * воссоздаёт её с ПРЕЖНИМ именем, — а тот, кто её удалял, нажал Ctrl+Z, и
+   * Yjs отменил удаление копией. Остаётся живая ячейка, уходит копия, которую
+   * принесла эта транзакция; среди копий, приехавших разом (две слитые
+   * перестановки), остаётся первая.
    */
   /*
    * Наблюдатель на весь документ, а не на один массив ячеек: тетрадей в комнате
@@ -311,21 +365,52 @@ function getEntry(sessionId: string, title?: string): DocEntry {
       if (type instanceof Y.Array) touched = true
     })
     if (!touched) return
+
+    /*
+     * Уходит та копия, которую завела ЭТА транзакция, а не та, что стоит дальше
+     * по списку. Разница видна там, где совпадение имён законно: кто-то вернул
+     * удалённую ячейку из истории — возврат воссоздаёт её с ПРЕЖНИМ именем, — а
+     * тот, кто её удалял, нажал Ctrl+Z, и Yjs отменил удаление копией. Выкинуть
+     * надо копию: иначе новая, встав выше по списку, вытесняла бы живую ячейку
+     * вместе с её выводом, и подменить чужую ячейку своей можно было бы одним
+     * совпадением имени.
+     *
+     * Имена сверяются по ВСЕМ тетрадям сразу, а не внутри каждой: ячейку ищут
+     * по имени, не зная тетради (см. `findCell`), и два одинаковых имени в
+     * разных тетрадях значат, что «Запустить» иногда запускает не ту.
+     */
+    const seen = new Map<string, { cells: Y.Array<YCell>; index: number; fresh: boolean }>()
+    const doomed = new Map<Y.Array<YCell>, number[]>()
+    const drop = (cells: Y.Array<YCell>, index: number): void => {
+      const list = doomed.get(cells)
+      if (list) list.push(index)
+      else doomed.set(cells, [index])
+    }
     for (const cells of allCellArrays(doc)) {
-      const seen = new Set<string>()
-      const doomed: number[] = []
       cells.forEach((cell: YCell, index: number) => {
         const id = cell.get('id')
         if (typeof id !== 'string') return
-        if (seen.has(id)) doomed.push(index)
-        else seen.add(id)
+        const fresh = madeIn(transaction, cell)
+        const first = seen.get(id)
+        if (!first) {
+          seen.set(id, { cells, index, fresh })
+          return
+        }
+        if (first.fresh && !fresh) {
+          drop(first.cells, first.index)
+          seen.set(id, { cells, index, fresh })
+        } else {
+          drop(cells, index)
+        }
       })
-      if (doomed.length === 0) continue
-      doc.transact(() => {
-        // Back to front, so the earlier indices stay valid as they go.
-        for (const index of doomed.reverse()) cells.delete(index, 1)
-      }, ORIGIN)
     }
+    if (doomed.size === 0) return
+    doc.transact(() => {
+      // Back to front, so the earlier indices stay valid as they go.
+      for (const [cells, indices] of doomed) {
+        for (const index of indices.sort((a, b) => b - a)) cells.delete(index, 1)
+      }
+    }, ORIGIN)
   })
 
   /*
@@ -481,6 +566,26 @@ export function onRefusal(listener: RefusalListener): void {
   refusalListener = listener
 }
 
+type RemovedListener = (sessionId: string, cellIds: string[]) => void
+
+let removedListener: RemovedListener | null = null
+
+/**
+ * Каких ячеек в комнате больше нет. Регистрирует `control.ts`.
+ *
+ * Удалить можно и ту ячейку, которую ядро прямо сейчас считает или держит в
+ * очереди: документ этого не запрещает, и запрещать не следует — человек видит
+ * ячейку и вправе её убрать. Расходится другое: ядро продолжает крутить цикл
+ * ради ячейки, которой нет, а `meta.runningCell` называет исчезнувшее имя.
+ *
+ * Через регистрацию, как и `onRefusal`: снимает с выполнения ядро, а импорт
+ * ядра отсюда замкнул бы модули друг на друга — ядро само берёт документ через
+ * `getSessionDoc`.
+ */
+export function onCellsRemoved(listener: RemovedListener): void {
+  removedListener = listener
+}
+
 /**
  * Сколько лиц одно соединение может завести в комнате.
  *
@@ -490,6 +595,28 @@ export function onRefusal(listener: RefusalListener): void {
  * цвет и курсор в чужой ячейке.
  */
 const MAX_AWARENESS_CLIENTS = 4
+
+/**
+ * Лица, которые комната уже видела, — включая ушедшие вместе со своим сокетом.
+ *
+ * `y-websocket` пересылает в сокет КАЖДОЕ обновление присутствия, которое
+ * применил, — в том числе приехавшее по BroadcastChannel из соседней вкладки
+ * того же семинара. Пока сосед на связи, эхо отбивается тем, что его лицо уже
+ * стоит в комнате. Но стоит соседу оборваться, `closeConn` его лицо снимает — и
+ * эхо проходит: вкладка А присваивает себе clientID вкладки Б, кадры
+ * переподключившегося Б молча отбрасываются, а уход А уносит Б из панели людей.
+ *
+ * Поэтому имя, которое комната уже слышала, достаётся только сокету, который
+ * ещё никого не привёл: переподключившийся Б заходит со своим прежним clientID
+ * первым же кадром, а у А своё лицо уже есть.
+ *
+ * По документу присутствия, а не по записи комнаты: этой же проверкой живут
+ * сокеты редактора файлов (collab/files.ts), у которых своя.
+ */
+const introduced = new WeakMap<Awareness, Set<number>>()
+
+/** Сколько имён комната помнит. Столько вкладок за пару не открывают. */
+const MAX_REMEMBERED_CLIENTS = 256
 
 /**
  * Кадр присутствия — только про себя.
@@ -520,7 +647,13 @@ export function ownAwareness(
     // Новое лицо этого сокета — можно, пока их не слишком много.
     if (state.clientIds.size + 1 > MAX_AWARENESS_CLIENTS) return false
     if (entry.awareness.getStates().has(clientId)) return false
+    let known = introduced.get(entry.awareness)
+    if (!known) introduced.set(entry.awareness, (known = new Set()))
+    // Чужое лицо, уже уходившее из комнаты, — эхо соседней вкладки.
+    if (known.has(clientId) && state.clientIds.size > 0) return false
     state.clientIds.add(clientId)
+    known.add(clientId)
+    if (known.size > MAX_REMEMBERED_CLIENTS) known.delete(known.values().next().value as number)
   }
   return true
 }
@@ -539,19 +672,15 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
          */
         const peek = decoding.clone(decoder)
         const subtype = decoding.readVarUint(peek)
-        let accepted: { retyped: string[]; created: string[] } | null = null
+        let accepted: { retyped: string[]; created: string[]; removed: string[] } | null = null
         if (subtype === SYNC_STEP2 || subtype === SYNC_UPDATE) {
           const state = entry.conns.get(conn)
-          const judgement = classify(
-            entry.doc,
-            decoding.readVarUint8Array(peek),
-            rememberedIn(entry.sessionId),
-          )
+          const judgement = classify(entry.doc, decoding.readVarUint8Array(peek))
           if (!judgement.ok) {
             // Пол комнаты: это не право, а то, что сервер пишет сам.
             return refuse(entry, conn, {
               rule: 'edit',
-              message: floorMessage(judgement.why),
+              message: subtype === SYNC_STEP2 ? STALE_SYNC : floorMessage(judgement.why),
             })
           }
           const verdict = permits(
@@ -571,13 +700,15 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
         encoding.writeVarUint(encoder, MESSAGE_SYNC)
         syncProtocol.readSyncMessage(decoder, encoder, entry.doc, conn)
         if (accepted) {
-          const { retyped, created } = accepted
+          const { retyped, created, removed } = accepted
           if (retyped.length > 0 || created.length > 0) {
             entry.doc.transact(() => {
               resetRetyped(entry.doc, retyped)
               settleFresh(entry.sessionId, entry.doc, created)
             }, ORIGIN)
           }
+          // После применения: ядру говорят про ячейки, которых в тетради уже нет.
+          if (removed.length > 0) removedListener?.(entry.sessionId, removed)
         }
         // A bare message type and nothing after it means there is nothing to say.
         if (encoding.length(encoder) > 1) send(entry, conn, encoding.toUint8Array(encoder))
@@ -615,6 +746,20 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
 function floorMessage(why: string): string {
   return `Эта правка не принята: ${why}.`
 }
+
+/**
+ * Отдельные слова для отказа кадру ПЕРВОЙ синхронизации.
+ *
+ * `step2` — это не чья-то правка, а весь кэш вкладки, который браузер
+ * предлагает серверу при каждом подключении. Причина отказа тут обычно не в
+ * человеке: сервер убили жёстко (OOM, питание) или базу вернули из копии, его
+ * снимок отстал на несколько секунд, и в кэше вкладки лежат выводы и состояние
+ * ядра, написанные ПРОШЛЫМ сервером. Сказать на это «это поле пишет сервер, а
+ * не браузер» значит обвинить человека в чужой беде — а вкладка всё равно
+ * пересоберётся, потому что убрать у неё эти структуры протоколу нечем.
+ */
+const STALE_SYNC =
+  'Сервер не знает части того, что осталось в кэше этой вкладки, — она собирается заново.'
 
 /**
  * Force this connection's awareness role back to what the socket was opened
@@ -744,6 +889,9 @@ export function dropSessionDoc(sessionId: string): void {
   forgetFiles(sessionId)
   // И то, что оракул помнил о ней ради отмены: возвращать больше некуда.
   forgetUndo(sessionId)
+  // И идущие ответы оракула: писать их больше некуда, а сам поток заметил бы
+  // это только на ближайшем кадре — незачем платить за ответ снесённой комнате.
+  abortSession(sessionId)
   const entry = docs.get(sessionId)
   if (!entry) return
   docs.delete(sessionId)
