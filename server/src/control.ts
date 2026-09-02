@@ -12,14 +12,21 @@
  * without leaving the room. Interrupt and restart are host-only, because those
  * are destructive to everyone else's kernel state.
  *
- * The terminal splits the same way. Opening it and typing into it are open to
- * everyone — it is the room's shell, and a student who needs a library should be
- * able to install it. Clearing and closing are host-only, because both destroy
- * something the whole room can see: shared history, and the shell itself.
+ * The terminal splits the same way. Opening it is open to everyone — it is the
+ * room's shell, and a student who needs a library should be able to install it.
+ * Clearing and closing are host-only, because both destroy something the whole
+ * room can see: shared history, and the shell itself.
+ *
+ * А набранная в нём команда идёт под тем же правилом, что и ячейка: `python
+ * train.py` в оболочке — это тот же контейнер и то же процессорное время, что и
+ * Run над файлом, и комната, где кнопка «Запустить» погашена словами «Запускает
+ * преподаватель», не может разрешать то же самое строкой ниже. При умолчании
+ * (`run: 'room'`) это по-прежнему открыто всем.
  */
 import { WebSocket, type RawData } from 'ws'
 import {
   acceptPatch,
+  bookList,
   cellId,
   cellsAt,
   cellType,
@@ -33,15 +40,27 @@ import { colorForId } from '@shared/protocol'
 import type {
   ControlClientMessage,
   ControlServerMessage,
-  FileEntry,
   Participant,
   ParticipantRole,
 } from '@shared/protocol'
 import type { TokenPayload } from './auth.js'
-import { applyOnBehalf, getSessionDoc, onRefusal } from './collab/index.js'
+import {
+  applyOnBehalf,
+  getSessionDoc,
+  peekSessionDoc,
+  onCellsRemoved,
+  onRefusal,
+} from './collab/index.js'
 import { moveInCells } from './collab/ops.js'
 import { LINE_LENGTH } from './kernel/format.js'
-import { allows, allowsAgent, allowsRun, allowsStructure, runQueueCap, type Who } from '@shared/rules'
+import {
+  allows,
+  allowsAgent,
+  allowsRun,
+  allowsStructure,
+  runQueueCap,
+  type Who,
+} from '@shared/rules'
 import { getParticipant, getRules, moveNotesTo, notesOf, setNote } from './db.js'
 import {
   answerInput,
@@ -70,21 +89,24 @@ import {
 import {
   deleteFile,
   listFiles,
+  listTree,
   makeDir,
   makeFile,
   movePath,
   statPath,
+  type FileTree,
   type TreeResult,
 } from './workspace.js'
 import {
   MAX_DEPTH,
   baseOf,
+  isInside,
   kindOf,
   normalizePath,
   runnerFor,
   whySegmentRefused,
 } from '@shared/paths'
-import { forgetFile, onFileSaved } from './collab/files.js'
+import { flushFile, forgetFile, onFileSaved } from './collab/files.js'
 import {
   addInk,
   clearInk,
@@ -174,12 +196,23 @@ export function broadcast(sessionId: string, message: ControlServerMessage): voi
  * getSessionDoc(), which would build the deleted room again from nothing.
  */
 export function closeControlRoom(sessionId: string): void {
+  /*
+   * Доска и лекция — до всякой проверки на сокеты, и это не порядок ради
+   * порядка: `rooms` чистится, как только уходит последний человек, а доска и
+   * чернила намеренно переживают его уход. Преподаватель закрыл ноутбук, не
+   * нажав «Закончить», а вечером удалил семинар — ниже возвращаться уже нечему,
+   * и двести исписанных страниц остались бы в памяти процесса до перезапуска.
+   */
+  boards.delete(sessionId)
+  forgetLecture(sessionId)
+  const waiting = filesPending.get(sessionId)
+  if (waiting) {
+    clearTimeout(waiting)
+    filesPending.delete(sessionId)
+  }
   const room = rooms.get(sessionId)
   if (!room) return
   rooms.delete(sessionId)
-  // И доску: комнаты больше нет, показывать нечего и некому.
-  boards.delete(sessionId)
-  forgetLecture(sessionId)
   room.unwatch()
   for (const ws of room.sockets) {
     try {
@@ -194,13 +227,46 @@ export function closeControlRoom(sessionId: string): void {
 export function broadcastFiles(sessionId: string): void {
   const room = rooms.get(sessionId)
   if (!room || room.sockets.size === 0) return
-  let files: FileEntry[]
+  /*
+   * Дерево едет вместе с признаком обрезки: список, упёршийся в потолок обхода,
+   * — это не «в комнате столько файлов». Панель говорит это вслух, иначе
+   * человек ищет глазами файл, который на диске лежит. Признак шлётся всегда, и
+   * `false` в нём такой же ответ, как `true`: иначе комната, один раз увидевшая
+   * обрезку, так и осталась бы с предупреждением после уборки папки.
+   */
+  let tree: FileTree
   try {
-    files = listFiles(sessionId)
+    tree = listTree(sessionId)
   } catch {
     return
   }
-  broadcast(sessionId, { t: 'files', files })
+  broadcast(sessionId, { t: 'files', files: tree.files, truncated: tree.truncated })
+}
+
+/**
+ * Столько ждём, прежде чем пересчитывать дерево само по себе.
+ *
+ * Один список стоит обхода всей папки (readdir и lstat на каждую запись) и
+ * кадра каждому сокету. Двадцать человек, правящих по файлу, сохраняются
+ * каждые семьсот миллисекунд НЕ ВМЕСТЕ — это до тридцати обходов в секунду и
+ * панель файлов, перерисовывающаяся всю пару.
+ *
+ * Задержка видна только тому, кто ждёт своего же нажатия, — поэтому прямые
+ * правки дерева (завели, убрали, переименовали, загрузили) рассылаются сразу,
+ * а откладывается лишь то, что случается само: автосохранение, проекция
+ * тетради, запись из ячейки.
+ */
+const FILES_EVERY_MS = 400
+const filesPending = new Map<string, NodeJS.Timeout>()
+
+function scheduleFiles(sessionId: string): void {
+  if (filesPending.has(sessionId)) return
+  const timer = setTimeout(() => {
+    filesPending.delete(sessionId)
+    broadcastFiles(sessionId)
+  }, FILES_EVERY_MS)
+  timer.unref?.()
+  filesPending.set(sessionId, timer)
 }
 
 /* ------------------------------------------------------- общий экран */
@@ -225,6 +291,21 @@ export function boardOf(sessionId: string): string | null {
   return boards.get(sessionId) ?? null
 }
 
+/**
+ * Погасить указку у всей комнаты.
+ *
+ * Указка нигде не хранится: где она была секунду назад — не факт о лекции, а
+ * положение руки, и держится она ровно тем, что кадры идут. Поэтому всякий раз,
+ * когда рука пропала, не сказав «off», — лекцию закончили, пульт передали,
+ * планшет выгрузили из памяти, — гасить приходится за неё. Иначе красное пятно
+ * висит на слайде до конца лекции и показывает туда, где ведущий был минуту
+ * назад. Таймаутом это не лечится: неподвижная указка кадров не шлёт вовсе, и
+ * таймаут погасил бы штатный показ.
+ */
+function laserOff(sessionId: string): void {
+  broadcast(sessionId, { t: 'laser', at: null })
+}
+
 function setBoard(sessionId: string, name: string | null): void {
   if (name === null) boards.delete(sessionId)
   else boards.set(sessionId, name)
@@ -238,6 +319,7 @@ function setBoard(sessionId: string, name: string | null): void {
   if (lecture && lecture.file !== name) {
     stopLecture(sessionId)
     broadcast(sessionId, { t: 'lecture', state: null })
+    laserOff(sessionId)
   }
 }
 
@@ -251,13 +333,14 @@ function setBoard(sessionId: string, name: string | null): void {
 function forgetMissingBoard(sessionId: string): void {
   const open = boards.get(sessionId)
   if (!open) return
-  try {
-    if (!listFiles(sessionId).some((file) => !file.dir && file.path === open)) {
-      setBoard(sessionId, null)
-    }
-  } catch {
-    /* папку не прочитать — доску не трогаем, это не повод её закрывать */
-  }
+  /*
+   * Один `lstat` по самому пути, а не поиск в дереве: у обхода есть потолок
+   * (см. `truncated` в workspace.ts), и документ, не влезший в список, никуда
+   * не пропал. По обрезанному списку доска гасла бы посреди лекции — ровно там,
+   * где студент распаковал датасет на две тысячи файлов.
+   */
+  if (statPath(sessionId, open)?.dir === false) return
+  setBoard(sessionId, null)
 }
 
 /*
@@ -267,7 +350,7 @@ function forgetMissingBoard(sessionId: string): void {
  * файлов показывала бы размер, каким он был при открытии вкладки: «0 B» у
  * файла, в котором уже сорок строк.
  */
-onFileSaved((sessionId) => broadcastFiles(sessionId))
+onFileSaved((sessionId) => scheduleFiles(sessionId))
 
 /*
  * Тетрадь легла на диск — комната узнаёт про файл.
@@ -275,7 +358,7 @@ onFileSaved((sessionId) => broadcastFiles(sessionId))
  * Без этого файл тетради появлялся бы в дереве только после чьей-нибудь
  * загрузки: проекция пишется сама, а сказать об этом некому.
  */
-onBooksWritten((sessionId) => broadcastFiles(sessionId))
+onBooksWritten((sessionId) => scheduleFiles(sessionId))
 
 // Registered once, at import: the kernel runtime has no idea who is listening.
 onWorkspaceChanged((sessionId) => {
@@ -283,7 +366,7 @@ onWorkspaceChanged((sessionId) => {
   // файла — это вкладка, которую нечем закрыть и незачем показывать.
   forgetMissingBooks(sessionId)
   forgetMissingBoard(sessionId)
-  broadcastFiles(sessionId)
+  scheduleFiles(sessionId)
 })
 
 /**
@@ -353,6 +436,25 @@ function toHosts(sessionId: string, file: string, message: ControlServerMessage)
  */
 const notesOpen = new WeakMap<WebSocket, string>()
 
+/*
+ * Ячеек больше нет — снять их с выполнения.
+ *
+ * Убрать можно и ту ячейку, что стоит в очереди: документ этого не запрещает, и
+ * запрещать не следует — человек видит ячейку и вправе её убрать. Но очередь
+ * живёт именами, и ядро потом честно берёт из неё id, которому не соответствует
+ * ничего: Run All обрывается на пустом месте, а `meta.queue` называет ячейки,
+ * которых в тетради не найти.
+ *
+ * `isHost` здесь не про право и не про человека: очередь разбирает сервер,
+ * потому что запускать больше нечего, — своё и чужое одинаково. Ячейку, которая
+ * СЧИТАЕТСЯ прямо сейчас, прерывает само ядро (`stopIfDeleted` в
+ * kernel/index.ts): оно видит ту же правку документа и знает, что у него в
+ * работе, а отсюда это было бы вторым SIGINT в ту же секунду.
+ */
+onCellsRemoved((sessionId, cellIds) => {
+  cancelRun(sessionId, cellIds, '', true)
+})
+
 onRefusal((sessionId, participantId, refusal) => {
   tell(sessionId, participantId, {
     t: 'refused',
@@ -398,12 +500,22 @@ function watchKernelStatus(sessionId: string): () => void {
  * Code cell ids in document order. With `upToCellId`, stops after that cell —
  * and returns nothing if the id is unknown, so a stale "run above" from a tab
  * that missed a deletion cannot silently turn into "run the whole notebook".
+ *
+ * `null` — «тетрадь названа, а такой в комнате нет». Это не то же самое, что
+ * «путь не задан»: без пути подразумевается тетрадь комнаты (так читаются
+ * сообщения вкладок, открытых до того, как тетрадей стало несколько), а вот
+ * вкладка убранной тетради, не успевшая узнать об этом, нажатием Run All
+ * поставила бы в очередь ЧУЖОЙ лист целиком.
  */
-function codeCellIds(sessionId: string, book: string | undefined, upToCellId?: string): string[] {
+function codeCellIds(
+  sessionId: string,
+  book: string | undefined,
+  upToCellId?: string,
+): string[] | null {
   const doc = getSessionDoc(sessionId).doc
-  // Без пути — тетрадь комнаты: так читаются сообщения вкладок, открытых до
-  // появления нескольких тетрадей.
-  const cells = (book ? cellsAt(doc, book) : null) ?? getCells(doc)
+  const named = book ? cellsAt(doc, book) : null
+  if (book && !named) return null
+  const cells = named ?? getCells(doc)
   const ids: string[] = []
   for (let i = 0; i < cells.length; i++) {
     const cell = cells.get(i)
@@ -478,12 +590,14 @@ function parse(data: RawData): ControlClientMessage | null {
  * The refusal is spoken rather than silent. A button that does nothing is a bug
  * report; a button that says why is a rule.
  */
-function mayRun(sessionId: string, payload: TokenPayload, ws: WebSocket): boolean {
+function mayRun(
+  sessionId: string,
+  payload: TokenPayload,
+  ws: WebSocket,
+  message = 'Only the teacher runs cells in this seminar.',
+): boolean {
   if (allowsRun(getRules(sessionId).run, payload.role, 'one')) return true
-  send(ws, {
-    t: 'error',
-    message: 'Only the teacher runs cells in this seminar.',
-  })
+  send(ws, { t: 'error', message })
   return false
 }
 
@@ -508,6 +622,36 @@ function may(rule: Who, payload: TokenPayload, ws: WebSocket, message: string): 
   if (allows(rule, payload.role)) return true
   send(ws, { t: 'error', message })
   return false
+}
+
+/**
+ * Не оборвёт ли это идущую лекцию — и вправе ли этот человек её обрывать.
+ *
+ * Общий экран и лекция — один и тот же документ (см. `setBoard`), поэтому
+ * «поставить другой файл» и «убрать файл» заканчивают лекцию. Само по себе это
+ * намеренно, а вот вход в него был открыт настежь: щелчок по `homework.pdf` в
+ * панели файлов выглядит как «открыть файл себе» и ничем не отличается от
+ * щелчка по любому другому — а стоит сорока минут разметки на проекторе, при
+ * всех и без возврата (чернила живут только в памяти). Крестик на вкладке
+ * документа лекции — то же самое: он шлёт `board:close`.
+ *
+ * Поэтому пока лекция идёт, обрывают её только двумя руками: руками ведущего
+ * (он и меняет документ, и заканчивает) или явным «Закончить». Всё остальное —
+ * отказ словами, и слова называют документ, чтобы человек понял, во что упёрся.
+ */
+function lectureInTheWay(
+  sessionId: string,
+  payload: TokenPayload,
+  ws: WebSocket,
+  wanted: string | null,
+): boolean {
+  const going = lectureOf(sessionId)
+  if (!going || going.file === wanted || going.by === payload.participantId) return false
+  send(ws, {
+    t: 'error',
+    message: `Идёт лекция по «${baseOf(going.file)}» — сначала закончите её.`,
+  })
+  return true
 }
 
 /**
@@ -550,6 +694,36 @@ function refusedPath(raw: unknown): string {
   return whySegmentRefused(last)
 }
 
+/**
+ * Всё, что лежит внутри этого пути, — считая его самого.
+ *
+ * Переименовать и убрать можно не только файл: `movePath` переносит каталог
+ * целиком, `deleteFile` сносит его со всем содержимым, а правка имени в панели
+ * заводится двойным щелчком по любой строке дерева, включая папку. При этом
+ * всё, что помнит путь, — открытый в редакторе документ, тетрадь, заметки
+ * спикера, лекция и общий экран — знает только точное имя, и без этого списка
+ * папку переименовывали бы, а её содержимое оставалось бы жить по старому
+ * адресу: тетрадь воскрешала бы папку проекцией, а проектор показывал бы файл,
+ * которого нет.
+ *
+ * Считается ДО правки дерева: после неё спрашивать уже некого.
+ */
+function pathsInside(sessionId: string, dir: string): string[] {
+  const found = new Set<string>([dir])
+  try {
+    for (const entry of listFiles(sessionId)) {
+      if (!entry.dir && isInside(entry.path, dir)) found.add(entry.path)
+    }
+  } catch {
+    /* папку не прочитать — обойдёмся самим путём */
+  }
+  // И тетради по списку комнаты: у обхода папки есть потолок, а тетрадь,
+  // не попавшая в список файлов, — как раз та, чью запись важнее всего увести.
+  const doc = peekSessionDoc(sessionId)?.doc
+  if (doc) for (const book of bookList(doc)) if (isInside(book.path, dir)) found.add(book.path)
+  return [...found]
+}
+
 /** Что сказать, когда путь годится, а сделать всё равно не вышло. */
 function treeTrouble(outcome: TreeResult, path: string): string {
   const base = baseOf(path)
@@ -569,6 +743,16 @@ function treeTrouble(outcome: TreeResult, path: string): string {
 function bookOf(message: { book?: unknown }): string | undefined {
   return typeof message.book === 'string' && message.book ? message.book : undefined
 }
+
+/**
+ * Одна фраза на все сообщения, называющие тетрадь, которой в комнате нет.
+ *
+ * Тетрадь убирают из комнаты, а вкладка у соседа живёт до прихода списка
+ * файлов — и нажатие в ней не должно молча попадать в тетрадь комнаты. Вслух,
+ * а не молчанием: «Run All ничего не сделал» человек объясняет себе сам, и
+ * объясняет неверно.
+ */
+const NO_SUCH_BOOK = 'Этой тетради в комнате больше нет.'
 
 function optionalId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : undefined
@@ -620,7 +804,12 @@ export function dispatch(
     case 'runAll': {
       if (!mayRun(sessionId, payload, ws)) return
       if (!mayBulkRun(sessionId, payload, ws)) return
-      queue(ws, sessionId, payload, codeCellIds(sessionId, bookOf(message)))
+      const ids = codeCellIds(sessionId, bookOf(message))
+      if (ids === null) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK })
+        return
+      }
+      queue(ws, sessionId, payload, ids)
       return
     }
 
@@ -629,7 +818,12 @@ export function dispatch(
       if (!id) return
       if (!mayRun(sessionId, payload, ws)) return
       if (!mayBulkRun(sessionId, payload, ws)) return
-      queue(ws, sessionId, payload, codeCellIds(sessionId, bookOf(message), id))
+      const ids = codeCellIds(sessionId, bookOf(message), id)
+      if (ids === null) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK })
+        return
+      }
+      queue(ws, sessionId, payload, ids)
       return
     }
 
@@ -712,7 +906,17 @@ export function dispatch(
         ? may(rules.edit, payload, ws, 'В этом семинаре тетрадь принадлежит преподавателю.')
         : may(rules.wipe, payload, ws, 'Стирать всю доску здесь может преподаватель.')
       if (!allowed) return
-      clearOutputs(sessionId, one, bookOf(message))
+      const book = bookOf(message)
+      /*
+       * Названная тетрадь обязана существовать: ниже неизвестный путь означает
+       * «тетрадь не названа», а это стёртые выводы ВСЕХ тетрадей комнаты —
+       * полтора часа счёта, снятые нажатием в закрывающейся вкладке.
+       */
+      if (book && !cellsAt(getSessionDoc(sessionId).doc, book)) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK })
+        return
+      }
+      clearOutputs(sessionId, one, book)
       return
     }
 
@@ -733,10 +937,15 @@ export function dispatch(
       ) {
         return
       }
-      const name = typeof message.name === 'string' ? message.name : ''
-      // Существование проверяется здесь, а не у смотрящего: иначе комната
-      // получит имя, которого нет, и двадцать человек увидят пустую область.
-      if (!name || !listFiles(sessionId).some((file) => !file.dir && file.path === name)) {
+      const name = normalizePath(typeof message.name === 'string' ? message.name : '') ?? ''
+      if (lectureInTheWay(sessionId, payload, ws, name)) return
+      /*
+       * Существование проверяется здесь, а не у смотрящего: иначе комната
+       * получит имя, которого нет, и двадцать человек увидят пустую область.
+       * Спрашивается сам путь: в дереве его может не быть просто потому, что
+       * список упёрся в потолок, а документ на диске лежит.
+       */
+      if (!name || statPath(sessionId, name)?.dir !== false) {
         send(ws, { t: 'error', message: 'Такого файла в комнате нет.' })
         return
       }
@@ -755,6 +964,7 @@ export function dispatch(
       ) {
         return
       }
+      if (lectureInTheWay(sessionId, payload, ws, null)) return
       setBoard(sessionId, null)
       return
     }
@@ -839,9 +1049,20 @@ export function dispatch(
         )
         if (taken) {
           broadcast(sessionId, { t: 'lecture', state: taken })
+          // Рука сменилась: пятно прежнего ведущего залу больше ничего не
+          // показывает, а само оно не погаснет — он уже не шлёт кадров.
+          laserOff(sessionId)
           return
         }
       }
+      /*
+       * Дальше — начать НОВУЮ лекцию по другому документу, а идущая при этом
+       * кончается. Менять документ залу вправе только тот, кто ведёт: для всех
+       * остальных, включая второго преподавателя, это стёртые чернила чужой
+       * лекции без предупреждения и без возврата. Им — «Закончить» и потом
+       * «Лекция»: два нажатия, второе из которых делают осознанно.
+       */
+      if (lectureInTheWay(sessionId, payload, ws, wanted)) return
       /*
        * Лекция ставит документ и на общий экран — до того, как начаться.
        *
@@ -863,13 +1084,23 @@ export function dispatch(
     }
 
     case 'lecture:stop': {
-      if (
-        !may(getRules(sessionId).board, payload, ws, 'Закончить лекцию может преподаватель.')
-      ) {
+      if (!may(getRules(sessionId).board, payload, ws, 'Закончить лекцию может преподаватель.')) {
+        return
+      }
+      /*
+       * И это второе право, а не то же самое: правило `board` решает, кому
+       * ставить документ залу, а закончить ЧУЖУЮ лекцию — поступок другого
+       * рода. В открытой комнате, где доску ставит любой, иначе получалось бы,
+       * что студент одним нажатием гасит проекцию преподавателя вместе со всей
+       * разметкой.
+       */
+      if (payload.role !== 'host' && !isPresenter(sessionId, payload.participantId)) {
+        send(ws, { t: 'error', message: 'Закончить чужую лекцию может преподаватель.' })
         return
       }
       stopLecture(sessionId)
       broadcast(sessionId, { t: 'lecture', state: null })
+      laserOff(sessionId)
       return
     }
 
@@ -968,7 +1199,9 @@ export function dispatch(
         id: optionalId(message.id) ?? '',
         page: Number(message.page),
         color: typeof message.color === 'string' ? message.color.slice(0, 32) : '#000000',
-        width: Number.isFinite(message.width) ? Math.min(0.05, Math.max(0.0005, message.width)) : 0.004,
+        width: Number.isFinite(message.width)
+          ? Math.min(0.05, Math.max(0.0005, message.width))
+          : 0.004,
         points: Array.isArray(message.points) ? (message.points as number[]) : [],
       })
       if (stroke) broadcast(sessionId, { t: 'ink:add', stroke })
@@ -1016,9 +1249,13 @@ export function dispatch(
       if (!lecture || lecture.by !== payload.participantId) return
       const x = Number(message.x)
       const y = Number(message.y)
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return
+      // И страница — так же, как x и y: без проверки NaN уезжает в кадр как
+      // `null` (так его пишет JSON), и зал рисует указку на своей текущей
+      // странице, а ведущий в это время говорит про другую.
+      const page = Number(message.page)
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(page)) return
       const shape = message.shape === 'dot' ? 'dot' : 'line'
-      broadcast(sessionId, { t: 'laser', at: { page: Number(message.page), x, y, shape } })
+      broadcast(sessionId, { t: 'laser', at: { page, x, y, shape } })
       return
     }
 
@@ -1128,31 +1365,43 @@ export function dispatch(
         send(ws, { t: 'error', message: refusedPath(from ? message.to : message.from) })
         return
       }
+      // Переименовать могли и папку — тогда переезжает всё, что в ней.
+      const inside = pathsInside(sessionId, from)
+      // Несохранённый хвост — на диск ДО переезда: `movePath` переносит то, что
+      // уже лежит на диске, а `forgetFile` ниже уносит документ вместе с
+      // отложенным сохранением. Иначе последние полсекунды набора пропадают, и
+      // сказать об этом некому.
+      for (const path of inside) flushFile(sessionId, path)
       const outcome = movePath(sessionId, from, to)
       if (outcome !== 'ok') {
         send(ws, { t: 'error', message: treeTrouble(outcome, to) })
         return
       }
-      // Документ старого пути больше ни на что не смотрит: у него на диске
-      // ничего нет, и следующее сохранение воскресило бы файл под прежним
-      // именем. Наблюдатель заметит это сам, но не раньше двух секунд — а
-      // вкладки, открытые на нём, должны узнать сразу.
-      forgetFile(sessionId, from)
-      // Тетрадь переезжает вместе со своим файлом: корень тот же, путь новый.
-      moveBook(sessionId, from, to)
-      /*
-       * И заметки спикера — они привязаны к пути документа, а не к лекции.
-       *
-       * Переименовать файл посреди пары — обычное дело: преподаватель правит
-       * «лекция3.pdf» на «Лекция 3. Поток и дивергенция.pdf». Без этой строки
-       * вечер, потраченный на речь к двадцати четырём страницам, превращается в
-       * строки, к которым больше нет ключа: старого пути на диске уже нет, а
-       * восстановить их из интерфейса нечем.
-       */
-      moveNotesTo(sessionId, from, to)
-      const moved = moveLecture(sessionId, from, to)
-      if (moved) broadcast(sessionId, { t: 'lecture', state: moved })
-      if (boardOf(sessionId) === from) setBoard(sessionId, to)
+      for (const was of inside) {
+        const now = to + was.slice(from.length)
+        // Документ старого пути больше ни на что не смотрит: у него на диске
+        // ничего нет, и следующее сохранение воскресило бы файл под прежним
+        // именем. Наблюдатель заметит это сам, но не раньше двух секунд — а
+        // вкладки, открытые на нём, должны узнать сразу.
+        forgetFile(sessionId, was)
+        // Тетрадь переезжает вместе со своим файлом: корень тот же, путь новый.
+        moveBook(sessionId, was, now)
+        /*
+         * И заметки спикера — они привязаны к пути документа, а не к лекции.
+         *
+         * Переименовать файл посреди пары — обычное дело: преподаватель правит
+         * «лекция3.pdf» на «Лекция 3. Поток и дивергенция.pdf». Без этой строки
+         * вечер, потраченный на речь к двадцати четырём страницам, превращается
+         * в строки, к которым больше нет ключа: старого пути на диске уже нет, а
+         * восстановить их из интерфейса нечем.
+         */
+        moveNotesTo(sessionId, was, now)
+        const moved = moveLecture(sessionId, was, now)
+        if (moved) broadcast(sessionId, { t: 'lecture', state: moved })
+        // Лекция уезжает раньше доски намеренно: `setBoard` заканчивает лекцию,
+        // если документ на экране разошёлся с её файлом.
+        if (boardOf(sessionId) === was) setBoard(sessionId, now)
+      }
       broadcastFiles(sessionId)
       return
     }
@@ -1170,12 +1419,20 @@ export function dispatch(
         send(ws, { t: 'error', message: refusedPath(message.path) })
         return
       }
+      // Панель обещает «убрать папку со всем, что в ней», и обещание держится
+      // здесь: список считается до удаления, потому что после него спрашивать
+      // дерево уже не о чем.
+      const inside = pathsInside(sessionId, wanted)
       if (!deleteFile(sessionId, wanted)) {
         send(ws, { t: 'error', message: 'Этого файла в комнате уже нет.' })
         return
       }
-      forgetFile(sessionId, wanted)
-      dropBook(sessionId, wanted)
+      for (const path of inside) {
+        forgetFile(sessionId, path)
+        // Иначе тетрадь, лежавшая внутри папки, осталась бы в комнате — и
+        // проекция через полторы секунды завела бы папку и файл заново.
+        dropBook(sessionId, path)
+      }
       forgetMissingBoard(sessionId)
       broadcastFiles(sessionId)
       return
@@ -1199,6 +1456,14 @@ export function dispatch(
         return
       }
       /*
+       * Сначала на диск, потом запускать: Cmd+Enter приходит из самого
+       * редактора и обгоняет отложенное сохранение, а `python` читает диск.
+       * Иначе запускается текст без последних набранных строк — и это худший
+       * вид ошибки: она про строку, которая на экране выглядит правильной, а со
+       * второго нажатия всё «само» работает.
+       */
+      flushFile(sessionId, wanted)
+      /*
        * Кавычки одинарные с экранированием: имя файла набирает человек, и в нём
        * бывает пробел, скобка и апостроф. Строка уходит в ту же оболочку, что и
        * всё, что люди набирают в терминале руками, — и разница в том, что эту
@@ -1221,12 +1486,17 @@ export function dispatch(
     /*
      * Отменить ход оракула: вернуть файлы к тому, что было до него.
      *
-     * Право то же, что и у самого режима «сделать»: кто мог его запустить, тот
-     * может и отменить. Отдельного правила здесь не заводится — «разрешено
-     * начинать, но не разрешено откатывать» было бы худшей из возможных пар.
+     * Право почти то же, что и у самого режима «сделать»: кто мог его
+     * запустить, тот может и отменить, — «разрешено начинать, но не разрешено
+     * откатывать» было бы худшей из возможных пар. Разница одна, и она про
+     * `off`: правила меняются на живой комнате, и естественный ход
+     * «оракул натворил → выключаю оракула → откатываю» упирался в отказ,
+     * который вдобавок говорил «может преподаватель» тому самому
+     * преподавателю. Выключенный режим — это запрет НАЧИНАТЬ; убрать за уже
+     * начатым преподаватель вправе всегда.
      */
     case 'ai:undo': {
-      if (!allowsAgent(getRules(sessionId).agent, payload.role)) {
+      if (payload.role !== 'host' && !allowsAgent(getRules(sessionId).agent, payload.role)) {
         send(ws, { t: 'error', message: 'Отменять ход оракула здесь может преподаватель.' })
         return
       }
@@ -1367,9 +1637,21 @@ export function dispatch(
           const parts = [
             `${outcome.changed} ${outcome.changed === 1 ? 'cell' : 'cells'} reformatted`,
           ]
-          if (outcome.skipped > 0) {
+          /*
+           * Два разных «не тронули», и сваливать их в одно число нельзя: про
+           * ячейку, которую правили, пока работал black, сказано ровно
+           * обратное тому, что про ячейку, которую он не смог прочитать.
+           * `edited` входит в `skipped`, поэтому вычитается.
+           */
+          const unread = outcome.skipped - outcome.edited
+          if (unread > 0) {
             parts.push(
-              `${outcome.skipped} left alone (a magic, a shell line, or code mid-sentence — black could not read them)`,
+              `${unread} left alone (a magic, a shell line, or code mid-sentence — black could not read them)`,
+            )
+          }
+          if (outcome.edited > 0) {
+            parts.push(
+              `${outcome.edited} left as typed (somebody was editing them while black ran)`,
             )
           }
           kernelNote(
@@ -1397,6 +1679,24 @@ export function dispatch(
     }
 
     case 'term:run': {
+      /*
+       * То же право, что у ячейки, и по той же причине: `python train.py` в
+       * оболочке — тот же контейнер и то же процессорное время, что и Run.
+       * Без этой строки правило `run` оставалось честным только для тетради:
+       * кнопка над файлом гаснет со словами «Запускает преподаватель», а
+       * строкой ниже тот же скрипт запускается кем угодно. Открыть ящик и
+       * читать чужой вывод по-прежнему может вся комната — оболочка общая.
+       */
+      if (
+        !mayRun(
+          sessionId,
+          payload,
+          ws,
+          'В этом семинаре запускает преподаватель — и ячейки, и команды оболочки.',
+        )
+      ) {
+        return
+      }
       const command = typeof message.command === 'string' ? message.command : ''
       if (command.trim().length === 0) return
       if (Buffer.byteLength(command, 'utf8') > MAX_COMMAND_BYTES) {
@@ -1539,6 +1839,21 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     const current = rooms.get(sessionId)
     if (!current) return
     current.sockets.delete(ws)
+    /*
+     * Ведущий ушёл молча — гасим его указку сами.
+     *
+     * Пульт на iPad выгружают из памяти, не сказав «off»: вкладка не успевает
+     * ничего послать, а лекция продолжается — стёртой она от этого не
+     * считается. И только если у ведущего в комнате не осталось ни одного
+     * сокета: у него их обычно два (планшет и кафедральный ноутбук), и уход
+     * второго не должен гасить пятно, которое первый держит неподвижно.
+     */
+    const who = owner.get(ws)
+    if (who && isPresenter(sessionId, who)) {
+      let elsewhere = false
+      for (const other of current.sockets) if (owner.get(other) === who) elsewhere = true
+      if (!elsewhere) laserOff(sessionId)
+    }
     if (current.sockets.size === 0) {
       current.unwatch()
       rooms.delete(sessionId)
@@ -1570,11 +1885,11 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   sweepOrphanRuns(sessionId)
   send(ws, { t: 'ready', kernel: kernelStatus(sessionId) })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
-  let files: FileEntry[]
+  let tree: FileTree
   try {
-    files = listFiles(sessionId)
+    tree = listTree(sessionId)
   } catch {
-    files = []
+    tree = { files: [], truncated: false }
   }
-  send(ws, { t: 'files', files })
+  send(ws, { t: 'files', files: tree.files, truncated: tree.truncated })
 }

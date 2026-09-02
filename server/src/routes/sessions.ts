@@ -1,5 +1,6 @@
 import { Router, type Request } from 'express'
 import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
+import { getTeacher } from '../admin/store.js'
 import {
   HANDOFF_TTL_MS,
   newParticipantId,
@@ -7,8 +8,8 @@ import {
   signHandoffToken,
   signHostToken,
   signToken,
+  spendHandoffToken,
   type TokenPayload,
-  verifyHandoffToken,
   verifyHostToken,
   verifyToken,
 } from '../auth.js'
@@ -25,7 +26,7 @@ import {
 } from '../db.js'
 import { onlineParticipantIds } from '../collab/index.js'
 import { ensureKernel } from '../kernel/index.js'
-import { listCourses, publicationOf, stepHeadings } from '../publish/store.js'
+import { listCourses, publicationOf, stepCount } from '../publish/store.js'
 import { broadcast } from '../control.js'
 import { readRules } from '@shared/rules'
 import { setSeminarCreator } from './admin-instance.js'
@@ -55,6 +56,76 @@ function normalize(value: unknown): string {
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * Аватар — знак, а не адрес.
+ *
+ * Проверялась одна длина, а рисуется эта строка как `<img src>`, если
+ * начинается с http или data: (web/src/components/ui/Avatar.svelte). То есть
+ * один запрос заставлял браузер КАЖДОГО в комнате сходить на чужой сервер — и
+ * в ростере, и в подписи каждой его ячейки, включая опоздавших. Схему
+ * отвергаем здесь; в комнате аватар приезжает ещё и через awareness, и это
+ * закрывается не тут, а на отрисовке.
+ */
+function readAvatar(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const avatar = value.replace(/[\u0000-\u001f\u007f]/g, '').trim()
+  if (!avatar || avatar.length > MAX_AVATAR) return null
+  // Любая схема, а не только http и data: эмодзи двоеточием не начинается, а
+  // список поддерживаемых картинок у браузера длиннее нашей памяти.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(avatar)) return null
+  return avatar
+}
+
+/**
+ * Сколько НОВЫХ участников комната принимает за минуту.
+ *
+ * Вход не требует ничего, кроме ссылки, и без доказанной пары
+ * participantId+token заводит новую строку. Скрипт в цикле раздувал этим
+ * ростер и базу семинара до десятков тысяч «людей», которых никто никогда не
+ * видел, — и список приезжал каждому настоящему участнику целиком.
+ * Возвращающийся со своим токеном сюда не попадает вовсе, и штат тоже: сто
+ * двадцать новых имён в минуту — это больше, чем даёт любая настоящая пара,
+ * входящая разом, и на порядки меньше, чем даёт цикл.
+ */
+const ARRIVAL_WINDOW_MS = 60_000
+const MAX_NEW_PARTICIPANTS = 120
+const arrivals = new Map<string, number[]>()
+
+function tooManyArrivals(sessionId: string): boolean {
+  const now = Date.now()
+  const recent = (arrivals.get(sessionId) ?? []).filter((at) => now - at < ARRIVAL_WINDOW_MS)
+  if (recent.length >= MAX_NEW_PARTICIPANTS) {
+    arrivals.set(sessionId, recent)
+    return true
+  }
+  recent.push(now)
+  arrivals.set(sessionId, recent)
+  return false
+}
+
+/**
+ * Провал прогрева — одной строкой на комнату, а не на каждого вошедшего.
+ *
+ * `ensureKernel` отдаёт одно общее обещание всем, кто позвал его в ту же
+ * миллисекунду, а `.catch` вешает каждый: в журнале лежало по шестнадцать
+ * одинаковых строк на комнату за одну миллисекунду, и настоящая причина в них
+ * тонула. Комната узнаёт о провале своим путём — записью в журнал ядра внутри
+ * `ensureKernel`; журналу процесса довольно одной строки в минуту.
+ */
+const WARMUP_QUIET_MS = 60_000
+const warmupWarnedAt = new Map<string, number>()
+
+function noteWarmupFailure(sessionId: string, err: unknown): void {
+  const now = Date.now()
+  if (now - (warmupWarnedAt.get(sessionId) ?? 0) < WARMUP_QUIET_MS) return
+  for (const [id, at] of warmupWarnedAt) if (now - at >= WARMUP_QUIET_MS) warmupWarnedAt.delete(id)
+  warmupWarnedAt.set(sessionId, now)
+  console.warn(
+    `[session ${sessionId}] kernel warmup failed:`,
+    err instanceof Error ? err.message : err,
+  )
 }
 
 /**
@@ -110,10 +181,17 @@ export function sessionAuth(req: Request): TokenPayload | null {
  */
 export function roleFor(
   cookieHeader: string | undefined,
-  payload: Pick<TokenPayload, 'sessionId' | 'participantId'>,
+  payload: Pick<TokenPayload, 'sessionId' | 'participantId'> & { staff?: string },
 ): TokenPayload['role'] {
   // Кука сильнее и проверяется первой: её можно отобрать, и в этом смысл.
   if (staffFromCookieHeader(cookieHeader)) return 'host'
+  /*
+   * Пульт, уехавший на планшет: куки там нет, но и вечного права быть не
+   * должно. Токен называет преподавателя, чьей кукой это право держится, и
+   * спрашивается оно здесь — убранный из штата теряет пульт вместе со всем
+   * остальным, ровно как если бы он сидел за ноутбуком.
+   */
+  if (payload.staff && getTeacher(payload.staff)) return 'host'
   return isTokenHost(payload.sessionId, payload.participantId) ? 'host' : 'participant'
 }
 
@@ -176,7 +254,7 @@ export function sessionRoutes(): Router {
       ...session,
       published:
         pub && pub.state === 'published'
-          ? { id: pub.id, steps: stepHeadings(pub.id).length }
+          ? { id: pub.id, steps: stepCount(pub.id) }
           : null,
       course: course ? { id: course.id, name: course.name } : null,
     })
@@ -190,11 +268,7 @@ export function sessionRoutes(): Router {
     const name = normalize(req.body?.name).slice(0, MAX_PARTICIPANT_NAME)
     if (!name) return res.status(400).json({ error: 'a name is required' })
 
-    const rawAvatar = req.body?.avatar
-    const avatar =
-      typeof rawAvatar === 'string' && rawAvatar.length > 0 && rawAvatar.length <= MAX_AVATAR
-        ? rawAvatar
-        : null
+    const avatar = readAvatar(req.body?.avatar)
 
     /*
      * Role never comes from the client's stored identity — anyone could paste in
@@ -236,6 +310,13 @@ export function sessionRoutes(): Router {
       proof.sessionId === sessionId &&
       proof.participantId === claimed
     const known = proved ? getParticipant(sessionId, claimed) : null
+    // Незнакомец заводит строку — и это единственное место, где комната растёт
+    // от чужого запроса. Штат и вернувшиеся со своим токеном проходят мимо.
+    if (!known && !staff && tooManyArrivals(sessionId)) {
+      return res.status(429).json({
+        error: 'too many people are joining this seminar at once — try again in a minute',
+      })
+    }
     const participantId = known ? known.id : newParticipantId()
 
     // Хост-токен — единственное, что записывается насовсем: куку перечитывают
@@ -252,12 +333,7 @@ export function sessionRoutes(): Router {
 
     // Warm the kernel while the student is still reading the page; a failure
     // here is not fatal, the control socket reports kernel health on its own.
-    void ensureKernel(sessionId).catch((err: unknown) => {
-      console.warn(
-        `[session ${sessionId}] kernel warmup failed:`,
-        err instanceof Error ? err.message : err,
-      )
-    })
+    void ensureKernel(sessionId).catch((err: unknown) => noteWarmupFailure(sessionId, err))
 
     const body: JoinResponse = { session, participant, token }
     res.json(body)
@@ -272,14 +348,15 @@ export function sessionRoutes(): Router {
    * а прав у преподавателя ровно два источника, и оба на другой машине: кука
    * панели и токен в её localStorage.
    *
-   * Эта дверь выдаёт ключ на обмен (см. signHandoffToken): десять минут, одна
-   * задача. Заодно за участником записывается `tokenHost` — иначе на планшете,
-   * где куки нет, тот же самый человек оказался бы студентом, а лекцию по
-   * правилу `board` вёл бы не он.
+   * Эта дверь выдаёт ключ на обмен (см. signHandoffToken): десять минут, один
+   * обмен. Права едут в самом ключе — либо это ведущий по своему хост-токену,
+   * и тогда везти нечего, либо ведущий по куке, и тогда ключ называет его: на
+   * планшете, где куки нет, тот же самый человек иначе оказался бы студентом,
+   * а лекцию по правилу `board` вёл бы не он.
    *
-   * Названо вслух: ключ пускает в комнату ВАМИ. Кто откроет ссылку, тот и
-   * преподаватель — поэтому она живёт десять минут и поэтому экран, который её
-   * показывает, говорит об этом прямо.
+   * Названо вслух: ключ пускает в комнату ВАМИ. Кто откроет ссылку первым, тот
+   * и преподаватель — поэтому она живёт десять минут, гасится первым же
+   * обменом и поэтому экран, который её показывает, говорит об этом прямо.
    */
   router.post('/api/sessions/:id/handoff', (req, res) => {
     const sessionId = req.params.id
@@ -291,19 +368,37 @@ export function sessionRoutes(): Router {
     }
     const known = getParticipant(sessionId, payload.participantId)
     if (!known) return res.status(404).json({ error: 'participant not found' })
-    // Право переезжает вместе с человеком: на планшете куки нет, и без этой
-    // строки он вошёл бы собой, но студентом.
-    upsertParticipant({
-      id: known.id,
-      sessionId,
-      name: known.name,
-      avatar: known.avatar,
-      role: 'host',
-      tokenHost: true,
-    })
+    /*
+     * Право переезжает вместе с человеком, но остаётся отзываемым.
+     *
+     * Здесь стояло `tokenHost: true` — и это ломало главный инвариант ролей:
+     * семинар, заведённый в панели, хост-токена не имеет вовсе, преподаватель
+     * в нём ведущий только по куке, и одно нажатие «Пульт» записывало ему
+     * `token_host` навсегда. Снятый из штата сохранял Restart, Clear и Restore
+     * в каждой комнате, где хоть раз открывал пульт, — ровно та дыра, ради
+     * которой роль сделали невечной.
+     *
+     * Поэтому в ключ едет не флаг в базе, а имя преподавателя: планшет получит
+     * токен с ним, а `roleFor` на каждом запросе спросит, есть ли такой в
+     * штате. Ведущему по собственному хост-токену вписывать нечего — у него
+     * `token_host` и так стоит, и отбирать его никто не собирался.
+     */
+    const staff = currentStaff(req)
+    const grantedBy = staff?.id ?? payload.staff ?? null
+    /*
+     * Адрес отдаём мы, а не браузер преподавателя.
+     *
+     * Ссылку на пульт строили от `location.origin`, а комнату преподаватель
+     * чаще всего открывает на `http://localhost:3000` — такая ссылка на
+     * планшете не откроется вовсе, хотя семинар выставлен наружу. `PUBLIC_URL`
+     * в комнате взять неоткуда, поэтому он едет в ответе; выбирает из двух
+     * адресов уже клиент тем же правилом, что и панель (seminar-link.ts):
+     * верить настройке, когда она называет адрес, который можно открыть.
+     */
     const body: HandoffResponse = {
-      key: signHandoffToken(sessionId, known.id),
+      key: signHandoffToken(sessionId, known.id, grantedBy),
       livesMs: HANDOFF_TTL_MS,
+      origin: config.publicUrl,
     }
     res.json(body)
   })
@@ -320,24 +415,32 @@ export function sessionRoutes(): Router {
     const sessionId = req.params.id
     const session = getSession(sessionId)
     if (!session) return res.status(404).json({ error: 'session not found' })
-    const who = verifyHandoffToken(sessionId, req.body?.key)
+    // Гасится здесь же: ключ обещан на один обмен, и это обещание держится
+    // только тем, что второй обмен того же ключа получает отказ.
+    const who = spendHandoffToken(sessionId, req.body?.key)
     if (!who) {
       return res.status(401).json({ error: 'Ссылка на пульт устарела — попросите новую.' })
     }
-    const known = getParticipant(sessionId, who)
+    const known = getParticipant(sessionId, who.participantId)
     if (!known) return res.status(404).json({ error: 'participant not found' })
+    // Роль в строке — для значка в списке; `token_host` не трогаем: у ведущего
+    // по своему ключу он уже стоит, а ведущему по куке его ставить нельзя.
     const participant = upsertParticipant({
       id: known.id,
       sessionId,
       name: known.name,
       avatar: known.avatar,
       role: 'host',
-      tokenHost: true,
     })
     const body: JoinResponse = {
       session,
       participant,
-      token: signToken({ sessionId, participantId: known.id, role: 'host' }),
+      token: signToken({
+        sessionId,
+        participantId: known.id,
+        role: 'host',
+        ...(who.staff ? { staff: who.staff } : {}),
+      }),
     }
     res.json(body)
   })
