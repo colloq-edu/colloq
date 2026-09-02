@@ -8,15 +8,27 @@
  * `<style>@import "http://…"</style>` made every browser in the room fetch a
  * stranger's URL.
  *
- * These tests pin the decisions. Whether DOMPurify honours the list is a
- * browser fact and is checked in a browser; what belongs here is that the list
- * says what we decided it says, and that the headers do not quietly acquire a
- * directive that would break the app shell.
+ * These tests pin the decisions: that the list says what we decided it says,
+ * and that the headers do not quietly acquire a directive that would break the
+ * app shell.
+ *
+ * Whether DOMPurify itself honours the list is a browser fact, and it was
+ * measured by hand in the reading above — there is no headless browser in this
+ * repository to re-measure it in. What CAN be checked here without one is the
+ * wiring: that the one place which renders a note still hands the list to the
+ * sanitizer. That is the half that regressed once already, when three
+ * components each carried their own copy of the policy.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { CONTENT_SECURITY_POLICY, SECURITY_HEADERS } from '../server/src/headers.js'
 import { MARKDOWN_FORBIDDEN_TAGS } from '../web/src/lib/sanitize.js'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const read = (rel: string): string => fs.readFileSync(path.join(root, rel), 'utf8')
 
 /* --------------------------------------------------------- what we forbid */
 
@@ -30,6 +42,47 @@ test('a text cell may not put a form in the notebook', () => {
   // It survives with its action intact — a button that posts wherever its
   // author chose, in the middle of everybody else's notebook.
   assert.ok(MARKDOWN_FORBIDDEN_TAGS.includes('form'))
+})
+
+/*
+ * По исходнику, а не по поведению, и это осознанно: markdown() зовёт
+ * document.createElement и грузит dompurify динамическим импортом, то есть
+ * нужен браузер, которого в этой сюите нет. А потеря списка — это одна строка
+ * в одном месте, и такую строку видно чтением.
+ */
+test('the one place that renders a note still hands the sanitizer the list', () => {
+  const source = read('web/src/lib/render.svelte.ts')
+  const from = source.indexOf('markdown(source)')
+  const to = source.indexOf('ansi(text)')
+  // Читается кусок между двумя рендерерами — если их переименуют, тест обязан
+  // сказать об этом словами, а не молча проверить пустую строку.
+  assert.ok(from >= 0 && to > from, 'markdown() больше не там, где её ищет этот тест')
+  const markdown = source.slice(from, to)
+  assert.ok(markdown.includes('DOMPurify.sanitize('), 'заметка больше не санируется вовсе')
+  assert.ok(
+    markdown.includes('FORBID_TAGS: MARKDOWN_FORBIDDEN_TAGS'),
+    'markdown() рисует заметку без общего списка запрещённых тегов',
+  )
+})
+
+test('there is exactly one policy, in one file', () => {
+  // Второй путь рендера — это как список и терялся: три компонента несли по
+  // своей копии политики, и одна из них отставала.
+  const users = ['web/src/lib/render.svelte.ts']
+  const roots = ['web/src/lib', 'web/src/components', 'web/src/admin']
+  const offenders: string[] = []
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`
+      if (entry.isDirectory()) walk(rel)
+      else if (/\.(ts|svelte)$/.test(entry.name) && read(rel).includes('DOMPurify.sanitize(')) {
+        if (!users.includes(rel)) offenders.push(rel)
+      }
+    }
+  }
+  for (const dir of roots) walk(dir)
+  const named = offenders.join('\n  ')
+  assert.deepEqual(offenders, [], `санитайзер зовут мимо общей политики:\n  ${named}`)
 })
 
 test('nothing a note legitimately uses is on the list', () => {

@@ -10,7 +10,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MARKS, freeMark, markName } from '../web/src/lib/marks.js'
+import { MARKS, freeMark, isMark, markName } from '../web/src/lib/marks.js'
 
 const all = MARKS.map((m) => m.mark)
 const takenBy = (marks: string[]): Map<string, string> =>
@@ -77,4 +77,25 @@ test('the card can name every mark, and has a word for none', () => {
   }
   assert.equal(markName(null), 'mark')
   assert.equal(markName('🦄'), 'mark')
+})
+
+test('an address is never a mark', () => {
+  /*
+   * Метка доезжает в чужой браузер присутствием, а не ответом сервера, то есть
+   * от как угодно правленного клиента. Avatar рисует по этому ответу — и «нет»
+   * здесь означает «никакого <img src> у тридцати человек в комнате».
+   */
+  for (const { mark } of MARKS) assert.ok(isMark(mark), `${mark} перестала быть меткой`)
+  for (const value of [
+    'https://tracker.example/px.png?who=1',
+    'http://tracker.example/px.png',
+    'data:image/svg+xml,<svg onload=1>',
+    '/api/p/x9tb4kwm/blob/6f1c',
+    '🦄',
+    '',
+  ]) {
+    assert.ok(!isMark(value), `«${value}» принята за метку`)
+  }
+  assert.ok(!isMark(null))
+  assert.ok(!isMark(undefined))
 })

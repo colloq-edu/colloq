@@ -9,6 +9,8 @@
 import './_env.mts'
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import * as Y from 'yjs'
 import {
   bookCells,
@@ -23,6 +25,12 @@ import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { createBook } from '../server/src/collab/books.js'
 import { buildContext } from '../server/src/ai/context.js'
 import { updateOracleSettings } from '../server/src/admin/settings.js'
+import { sessionDir } from '../server/src/workspace.js'
+
+/** Сказать присутствием комнаты, какой файл у человека открыт. */
+function editing(sessionId: string, participantId: string, path: string): void {
+  getSessionDoc(sessionId).awareness.setLocalState({ user: { id: participantId, editing: path } })
+}
 
 /*
  * Binding a document starts a snapshot timer per seminar. Without this the
@@ -214,7 +222,7 @@ test('one seminar never sees another one', () => {
   const cell = getCells(b.doc).get(1)
   cellSource(cell).insert(0, 'SECRET_FROM_THE_OTHER_ROOM = 1\n')
 
-  const text = buildContext(a.id, a.ids[0])
+  const text = buildContext(a.id, [a.ids[0]])
   assert.ok(
     !text.includes('SECRET_FROM_THE_OTHER_ROOM'),
     "another seminar's notebook was in the context",
@@ -321,8 +329,54 @@ test('открытая тетрадь не едет вторым голосом 
    * ячейки, потому что заголовок бюджет не режет.
    */
   const { id } = seminar(2)
-  const { awareness } = getSessionDoc(id)
-  awareness.setLocalStateField('user', { id: 'p_ada', editing: 'Тетрадь.ipynb' })
+  /*
+   * Тетрадь кладётся на диск и объявляется открытой — оба шага ради того,
+   * чтобы тест вообще мог упасть.
+   *
+   * `setLocalStateField` на серверном awareness — пустая операция: состояние
+   * там `null` (collab/index.ts), а y-protocols обновляет поле только у
+   * непустого. Участник не находился, и OPEN FILE не появился бы ни при какой
+   * логике; без файла на диске — тоже, просто потому что читать нечего.
+   */
+  fs.writeFileSync(path.join(sessionDir(id), 'Тетрадь.ipynb'), '{"cells": [], "metadata": {}}')
+  editing(id, 'p_ada', 'Тетрадь.ipynb')
   const text = buildContext(id, [], 'p_ada')
   assert.ok(!text.includes('OPEN FILE'), 'тетрадь уехала ещё и файлом')
+})
+
+test('открытый .py, наоборот, едет — иначе предыдущий тест ничего не проверяет', () => {
+  const { id } = seminar(2)
+  fs.writeFileSync(path.join(sessionDir(id), 'train.py'), 'РОВНО_ЭТОТ_ФАЙЛ = 1\n')
+  editing(id, 'p_ada', 'train.py')
+  const text = buildContext(id, [], 'p_ada')
+  assert.match(text, /OPEN FILE \(train\.py\)/)
+  assert.match(text, /РОВНО_ЭТОТ_ФАЙЛ/)
+})
+
+test('открытый файл не вытесняет из кадра ячейку, о которой спросили', () => {
+  /*
+   * Блок открытого файла лежит в заголовке, а все три ступени экономии режут
+   * только ячейки. При маленьком бюджете — местная модель на машине
+   * преподавателя — файл выедал и выбранную ячейку, и строку «ASKING ABOUT»,
+   * то есть сам вопрос; панель при этом честно писала «Особенно: ячейка 06».
+   */
+  const { id, doc, ids } = seminar(30, true)
+  const source = cellSource(getCells(doc).get(5))
+  source.delete(0, source.length)
+  source.insert(0, `ВЫБРАННАЯ_ЯЧЕЙКА = "${'q'.repeat(400)}"\n`.repeat(6))
+  failAt(doc, 25, 'ValueError')
+  // Триста строк — столько человек и держит открытым, когда спрашивает.
+  fs.writeFileSync(path.join(sessionDir(id), 'train.py'), 'import torch\n'.repeat(300))
+  editing(id, 'p_ada', 'train.py')
+
+  updateOracleSettings({ contextChars: 4_000 })
+  try {
+    const text = buildContext(id, [ids[5]], 'p_ada')
+    assert.ok(text.length <= 4_000, `в кадре ${text.length} знаков`)
+    assert.match(text, /ASKING ABOUT: cell 06/, 'строка «о чём спрашивают» не доехала')
+    assert.ok(text.includes('ВЫБРАННАЯ_ЯЧЕЙКА'), 'выбранная ячейка не доехала')
+    assert.match(text, /OPEN FILE \(train\.py\)/, 'открытый файл выбросили целиком')
+  } finally {
+    updateOracleSettings({ contextChars: 20_000 })
+  }
 })

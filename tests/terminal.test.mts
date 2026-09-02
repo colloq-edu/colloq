@@ -30,6 +30,11 @@ let wss: WebSocketServer
 let typed: string[] = []
 let live: WebSocket | null = null
 let minted = 0
+/** Открытые сокеты по имени pty: второй к той же оболочке — дефект. */
+const socketsByName = new Map<string, Set<WebSocket>>()
+const socketsTo = (name: string) => socketsByName.get(name)?.size ?? 0
+/** Задержка рукопожатия: ею открывается окно «переподключение в полёте». */
+let upgradeDelayMs = 0
 
 before(async () => {
   http = createServer((req, res) => {
@@ -48,17 +53,25 @@ before(async () => {
   wss = new WebSocketServer({ noServer: true })
   http.on('upgrade', (req, socket, head) => {
     if (!/\/terminals\/websocket\//.test(req.url ?? '')) return socket.destroy()
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      live = ws
-      ws.send(JSON.stringify(['setup', {}]))
-      // A prompt, so the server's priming sees a settled shell.
-      ws.send(JSON.stringify(['stdout', '$ ']))
-      ws.on('message', (raw) => {
-        const frame = JSON.parse(String(raw)) as [string, string]
-        if (frame[0] !== 'stdin') return
-        typed.push(frame[1])
+    const name = /\/terminals\/websocket\/([^/?]+)/.exec(req.url ?? '')?.[1] ?? ''
+    const accept = () =>
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        live = ws
+        const open = socketsByName.get(name) ?? new Set<WebSocket>()
+        open.add(ws)
+        socketsByName.set(name, open)
+        ws.on('close', () => open.delete(ws))
+        ws.send(JSON.stringify(['setup', {}]))
+        // A prompt, so the server's priming sees a settled shell.
+        ws.send(JSON.stringify(['stdout', '$ ']))
+        ws.on('message', (raw) => {
+          const frame = JSON.parse(String(raw)) as [string, string]
+          if (frame[0] !== 'stdin') return
+          typed.push(frame[1])
+        })
       })
-    })
+    if (upgradeDelayMs > 0) setTimeout(accept, upgradeDelayMs)
+    else accept()
   })
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
   const { port } = http.address() as { port: number }
@@ -197,6 +210,234 @@ test('interrupting drops what was waiting, and says so', async () => {
     lines().some((l) => l.kind === 'system' && /dropped/.test(l.text)),
     'the room was not told its command had gone',
   )
+})
+
+test('заметка ядра в транскрипте не отпускает очередь терминала', async () => {
+  /*
+   * `kernelNote` пишет в тот же Y.Array мимо учёта терминала, поэтому ближайшая
+   * запись видит рассинхрон длин и пересобирает учёт. Раньше пересборка гасила
+   * `running` у живой команды и обнуляла `commandLine` — охрана «одна команда за
+   * раз» переставала держать, и следующая команда уходила в занятую оболочку,
+   * а её вывод печатался под чужой строкой.
+   */
+  const { id, doc, lines } = await shell()
+  const { runCommand } = await import('../server/src/kernel/terminal.js')
+  const { kernelNote } = await import('../server/src/kernel/index.js')
+  runCommand(id, 'python train.py', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('python train.py'))))
+  typed = []
+
+  kernelNote(id, 'A cell failed, so the 3 cells queued behind it were not run.')
+  runCommand(id, 'echo ivan', who('Ivan'))
+  runCommand(id, 'echo ana', who('Ana'))
+  await wait(300)
+
+  assert.deepEqual(typed, [], 'команда ушла в оболочку, занятую чужой')
+  const running = getTerminal(doc)
+    .toArray()
+    .filter((line) => line.get('kind') === 'command' && line.get('running') === true)
+  assert.equal(running.length, 1, 'живую команду объявили законченной')
+  assert.deepEqual(
+    lines().filter((l) => l.kind === 'command').map((l) => l.text.trim()),
+    ['python train.py'],
+    'очередь всё-таки прорвало',
+  )
+})
+
+test('первая команда в неоткрытый терминал держит оболочку занятой', async () => {
+  /*
+   * Путь «Run file» с ни разу не открытым ящиком: `dispatch` пишет строку
+   * команды, а `openTerminal` тут же усыновляет транскрипт и гасит её. Фаза
+   * становилась `idle` при работающем скрипте, и следующая команда уходила в
+   * занятую оболочку без всякой очереди.
+   */
+  const { getSessionDoc } = await import('../server/src/collab/index.js')
+  const { createSession } = await import('../server/src/db.js')
+  const { runCommand, terminalPhase } = await import('../server/src/kernel/terminal.js')
+  const id = `term${seq++}`
+  createSession(id, `Terminal ${id}`)
+  const { doc } = getSessionDoc(id)
+  typed = []
+
+  runCommand(id, "python -u 'train.py'", who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('train.py'))), 'скрипт не запустили')
+  await wait(200)
+
+  assert.equal(terminalPhase(id), 'busy', 'оболочку объявили свободной при работающем скрипте')
+  const running = getTerminal(doc)
+    .toArray()
+    .filter((line) => line.get('kind') === 'command' && line.get('running') === true)
+  assert.equal(running.length, 1, 'строка команды перестала считаться работающей')
+
+  typed = []
+  runCommand(id, 'ls', who('Ivan'))
+  await wait(300)
+  assert.deepEqual(typed, [], 'вторая команда ушла в занятую оболочку')
+})
+
+test('Clear посреди чужой команды не отпускает оболочку', async () => {
+  /*
+   * `Clear` стирает транскрипт, но не оболочку: `pip install` внутри
+   * продолжает работать. Раньше вместе с записями терялась строка команды, и
+   * следующий набравший `ls` отправлял его прямо в stdin работающей.
+   */
+  const { id, lines } = await shell()
+  const { runCommand, clearTerminal } = await import('../server/src/kernel/terminal.js')
+  runCommand(id, 'python train.py', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('python train.py'))))
+  clearTerminal(id)
+  typed = []
+
+  runCommand(id, 'ls', who('Ivan'))
+  await wait(300)
+  assert.deepEqual(typed, [], 'команда ушла в stdin работающей')
+  const commands = lines().filter((l) => l.kind === 'command')
+  assert.equal(commands.length, 1, `в чистом транскрипте ${commands.length} команд`)
+  assert.match(commands[0].text, /train\.py/, 'комната не видит, что именно ещё работает')
+})
+
+test('команда, вставшая в очередь, отвечает тому, кто её ждёт', async () => {
+  /*
+   * Колбэк `done` ждёт оракул в режиме «сделать». Раньше `runCommand` клал в
+   * очередь `{ text, by }` без него: оракул девяносто секунд ждал, потом
+   * сообщал, что команда не доработала, а она выполнялась сама по себе минутой
+   * позже, и её вывод он не видел никогда.
+   */
+  const { id } = await shell()
+  const { runCommand } = await import('../server/src/kernel/terminal.js')
+  const seen: Array<{ output: string; finished: boolean }> = []
+  runCommand(id, 'sleep 30', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('sleep 30'))))
+  runCommand(id, 'echo oracle', who('Oracle'), (result) => seen.push(result))
+  await wait(200)
+  assert.equal(seen.length, 0, 'ответили раньше, чем команда пошла')
+
+  shellSays('done\r\n$ ')
+  assert.ok(await until(() => typed.some((t) => t.includes('echo oracle'))), 'очередь не двинулась')
+  shellSays('oracle\r\n$ ')
+
+  assert.ok(await until(() => seen.length === 1), 'ожидающий так и не дождался ответа')
+  assert.equal(seen[0].finished, true)
+  assert.match(seen[0].output, /oracle/)
+})
+
+test('очередь не переживает смерть оболочки и не всплывает в следующей', async () => {
+  const { id, lines } = await shell()
+  const { runCommand, openTerminal } = await import('../server/src/kernel/terminal.js')
+  const seen: Array<{ output: string; finished: boolean }> = []
+  runCommand(id, 'python server.py', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('python server.py'))))
+  runCommand(id, 'pip install x', who('Ivan'), (result) => seen.push(result))
+  await wait(200)
+
+  // Оболочка умерла: `docker restart`, `exit`, Ctrl-D — снаружи это одно и то же.
+  live?.send(JSON.stringify(['disconnect', 1]))
+  assert.ok(await until(() => seen.length === 1), 'ожидающий остался висеть на мёртвой оболочке')
+  assert.equal(seen[0].finished, false)
+  assert.ok(
+    lines().some((l) => l.kind === 'system' && /dropped/.test(l.text)),
+    `комнате не сказали, чья команда пропала: ${JSON.stringify(lines())}`,
+  )
+
+  typed = []
+  await openTerminal(id)
+  await wait(500)
+  runCommand(id, 'echo now', who('Ana'))
+  assert.ok(await until(() => typed.some((t) => t.includes('echo now'))))
+  shellSays('now\r\n$ ')
+  await wait(400)
+  assert.ok(
+    !typed.some((t) => t.includes('pip install x')),
+    'команда из прошлой оболочки выполнилась сама по себе',
+  )
+})
+
+test('студент снимает из очереди только свои команды', async () => {
+  /*
+   * Ветка `byId` — та самая, которой закрыли находку про «студент уносит
+   * очередь преподавателя». Проверять её надо отдельно: перепутать фильтры
+   * `mine`/`keep` можно, и хостовый тест выше этого не заметит.
+   */
+  const { id, lines } = await shell()
+  const { runCommand, interruptTerminal } = await import('../server/src/kernel/terminal.js')
+  runCommand(id, 'sleep 30', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('sleep 30'))))
+  runCommand(id, 'echo ivan', who('Ivan'))
+  runCommand(id, 'echo ana', who('Ana'))
+  typed = []
+
+  interruptTerminal(id, 'Ivan', 'p_Ivan')
+  await wait(200)
+  shellSays('^C\r\n$ ')
+
+  assert.ok(
+    await until(() => typed.some((t) => t.includes('echo ana'))),
+    'команда Аны исчезла вместе с чужой',
+  )
+  assert.ok(!typed.some((t) => t.includes('echo ivan')), 'снятая команда всё-таки побежала')
+  assert.ok(
+    lines().some((l) => l.kind === 'system' && /Ivan's waiting command was dropped/.test(l.text)),
+    `в транскрипте не сказано, чья команда снята: ${JSON.stringify(lines())}`,
+  )
+})
+
+test('поток вывода не уезжает в документ мегабайтами за одно окно', async () => {
+  /*
+   * `cat` большого файла отдаёт мегабайты за одно окно склейки, и каждый из них
+   * уходит всем тридцати вкладкам — вместе с тетрадью, которая живёт в том же
+   * документе. Оставляем хвост окна: нужное почти всегда в последних строках.
+   */
+  const { id, lines } = await shell()
+  const { runCommand } = await import('../server/src/kernel/terminal.js')
+  runCommand(id, 'cat big.csv', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('cat big.csv'))))
+
+  const flood = Array.from({ length: 3000 }, (_, i) => `строка ${i} ${'x'.repeat(900)}`)
+  shellSays(flood.join('\r\n') + '\r\n')
+  await wait(600)
+
+  const text = lines().map((l) => l.text).join('\n')
+  assert.ok(text.length < 300_000, `в документ уехало ${text.length} символов`)
+  assert.match(text, /строка 2999/, 'хвост вывода потеряли — а он и есть результат')
+  assert.doesNotMatch(text, /строка 0 /, 'начало потока оставили вместо хвоста')
+  assert.ok(
+    lines().some((l) => l.kind === 'system' && /faster than a shared transcript/.test(l.text)),
+    'про потерянный вывод ничего не сказали',
+  )
+})
+
+test('открытие терминала во время переподключения не заводит второй сокет', async () => {
+  /*
+   * Пока `connect` в полёте, `term.socket` уже null, таймер переподключения снят,
+   * а `opening` не выставлялся — все сторожа `openTerminal` пустые. Второй вход
+   * (руки оракула, команда, прилетевшая ровно в это мгновение) открывал второй
+   * сокет к той же оболочке: `cd … && clear` в stdin работающего `pip`, вывод в
+   * транскрипте дважды и фаза `idle` при живой команде.
+   */
+  const { id } = await shell()
+  const { runCommand, openTerminal, terminalPhase } = await import(
+    '../server/src/kernel/terminal.js'
+  )
+  // Имя pty этой комнаты: подделка выдаёт их по порядку, последнее — её.
+  const name = String(minted)
+  runCommand(id, 'pip install torch', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('pip install torch'))))
+  assert.equal(socketsTo(name), 1, 'подделка начала не с одного сокета')
+
+  try {
+    // Рукопожатие тянется — это и есть окно, в котором ломалось.
+    upgradeDelayMs = 600
+    live?.terminate()
+    // 500 мс до попытки переподключения плюс запаздывающее рукопожатие.
+    await wait(700)
+    await openTerminal(id)
+    await wait(900)
+  } finally {
+    upgradeDelayMs = 0
+  }
+
+  assert.equal(socketsTo(name), 1, `к одной оболочке открыто сокетов: ${socketsTo(name)}`)
+  assert.equal(terminalPhase(id), 'busy', 'работающую команду объявили законченной')
 })
 
 test('a room cannot stack commands without limit', async () => {

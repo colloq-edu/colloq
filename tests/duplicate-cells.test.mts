@@ -7,9 +7,16 @@
  * notebook ends up holding the same cell twice under one id. Running it,
  * attributing it and asking the oracle about it are all keyed by that id.
  *
- * The server keeps the first copy and drops the rest, for the reason it also
- * owns the seminar's title: there is one of it, and it cannot be a stale client
- * racing another.
+ * The server drops the copy THIS transaction brought and keeps the cell that
+ * was already in the notebook; among copies that all arrived at once, the first
+ * one stays. It decides, for the reason it also owns the seminar's title: there
+ * is one of it, and it cannot be a stale client racing another.
+ *
+ * Порядок предпочтения — не вкусовщина. Совпавшее имя бывает законным: кто-то
+ * вернул удалённую ячейку из истории — возврат воссоздаёт её с ПРЕЖНИМ именем,
+ * — а тот, кто её удалял, нажал Ctrl+Z, и Yjs отменил удаление копией. Выкинуть
+ * надо копию: оставь её вместо живой ячейки, и подменить чужую работу своей
+ * можно было бы одним совпадением имени.
  */
 import './_env.mts'
 import { after, test } from 'node:test'
@@ -50,33 +57,37 @@ function cloneOf(cell: Y.Map<unknown>): Y.Map<unknown> {
   return copy
 }
 
-test('a second copy of a cell is removed as soon as it arrives', async () => {
+test('a copy that arrives beside a living cell is the one that goes', async () => {
   const { doc, cells } = room(['one', 'two', 'three'])
-  // Exactly what two merged moves leave behind: the clone at its new position,
-  // the original still at the old one.
-  doc.transact(() => cells.insert(1, [cloneOf(cells.get(2))]))
+  // Ctrl+Z после чужого возврата версии выглядит ровно так: ячейка на месте, и
+  // рядом встаёт её копия — с текстом на момент удаления.
+  const copy = cloneOf(cells.get(2))
+  copy.set('source', new Y.Text('другое'))
+  doc.transact(() => cells.insert(1, [copy]))
   await new Promise((r) => setTimeout(r, 10))
 
   assert.equal(new Set(ids(cells)).size, cells.length, `ids are not unique: ${ids(cells)}`)
   assert.equal(cells.length, 3, 'the notebook grew or shrank')
-  // The survivor is the one at the position the move was aiming for, so the
-  // move happens once rather than being undone.
+  // Живая ячейка осталась на месте со своим текстом: подменить её по имени
+  // нельзя, и Ctrl+Z у соседа не стоил ему закрытого сокета.
   assert.deepEqual(
     cells.toArray().map((c) => cellSource(c as never).toString()),
-    ['one', 'three', 'two'],
+    ['one', 'two', 'three'],
   )
 })
 
-test('the first copy is the one that stays, everywhere', async () => {
+test('the first copy is the one that stays, when the original is gone', async () => {
+  // Что оставляют две слитые перестановки: удаление у обеих одно и то же и
+  // применяется однажды, а вставок две — и обе новые.
   const { doc, cells } = room(['one', 'two'])
-  const target = cells.get(1)
+  // Клоны снимаются до удаления: у удалённой Y.Map ключей уже не прочитать.
+  const copies = [cloneOf(cells.get(1)), cloneOf(cells.get(1))]
   doc.transact(() => {
-    cells.insert(0, [cloneOf(target)])
-    cells.insert(0, [cloneOf(target)])
+    cells.delete(1, 1)
+    for (const copy of copies) cells.insert(0, [copy])
   })
   await new Promise((r) => setTimeout(r, 10))
   assert.equal(cells.length, 2)
-  // The copy at index 0 was first in the array, so it is the survivor.
   assert.deepEqual(ids(cells).length, new Set(ids(cells)).size)
   assert.equal(cellSource(cells.get(0) as never).toString(), 'two')
 })

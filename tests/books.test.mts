@@ -33,6 +33,7 @@ import {
   cellSource,
   createCell,
   ensureInitialNotebook,
+  findCell,
   getCells,
 } from '../shared/notebook.js'
 
@@ -173,9 +174,13 @@ test('убранная тетрадь не возвращается сама', (
   assert.equal(bookAt(doc, 'прошлая.ipynb'), null)
 })
 
-test('ячейки убранной тетради не остаются висеть в документе', () => {
-  // Иначе брошенный корень читался бы как «ячейки комнаты» всем, что помнит
-  // старое имя: публикацией, контекстом оракула, историей.
+test('убранная тетрадь перестаёт быть видна комнате, но её ячейки не стираются', () => {
+  /*
+   * Из списка — и этого довольно: и `allBooks`, и `findCell` ходят по списку,
+   * так что брошенный корень не читается больше ничем. А стирать нечем вернуть:
+   * история версий есть только у тетради комнаты, и один щелчок по файлу в
+   * дереве — в том числе случайный — уносил бы час работы пары навсегда.
+   */
   const { doc } = getSessionDoc(ROOM)
   const flat = writeIpynb([{ type: 'code', source: 'останется_ли = True\n' }])
   fs.writeFileSync(path.join(sessionDir(ROOM), 'на-выброс.ipynb'), flat)
@@ -183,8 +188,131 @@ test('ячейки убранной тетради не остаются вис�
   assert.ok(opened.ok)
   const root = opened.book.root
   assert.equal(bookCells(doc, root).length, 1)
+  const id = bookCells(doc, root).get(0).get('id') as string
+
   dropBook(ROOM, 'на-выброс.ipynb')
-  assert.equal(bookCells(doc, root).length, 0)
+  assert.equal(bookAt(doc, 'на-выброс.ipynb'), null, 'тетрадь осталась в списке')
+  assert.equal(findCell(doc, id), null, 'ячейки убранной тетради всё ещё видны комнате')
+  assert.equal(bookCells(doc, root).length, 1, 'ячейки стёрты, а вернуть их нечем')
+})
+
+test('новая тетрадь на освободившемся пути не садится на чужой корень', () => {
+  /*
+   * Корень выводился из пути. Переименовать разбор в архивный и положить на
+   * прежнее имя новый файл — обычная привычка, и корень у обеих выходил один:
+   * загруженный файл не читался вовсе, правки шли в обе вкладки, а убрать
+   * «лишнюю» значило опустошить обе.
+   */
+  const id = 'books-roots'
+  createSession(id, 'Корни', null)
+  const { doc } = getSessionDoc(id)
+  ensureInitialNotebook(doc, 'Корни')
+
+  createBook(id, 'разбор.ipynb')
+  const first = bookAt(doc, 'разбор.ipynb')!
+  doc.transact(() => bookCells(doc, first.root).push([createCell('code', 'ПРОШЛОЕ = 1')]))
+  moveBook(id, 'разбор.ipynb', 'разбор-v1.ipynb')
+
+  fs.writeFileSync(
+    path.join(sessionDir(id), 'разбор.ipynb'),
+    writeIpynb([{ type: 'code', source: 'НОВОЕ = 2\n' }]),
+  )
+  const opened = openBook(id, 'разбор.ipynb')
+  assert.ok(opened.ok && opened.imported)
+  assert.notEqual(opened.book.root, first.root, 'две тетради сели на один корень')
+  const sources = bookCells(doc, opened.book.root)
+    .toArray()
+    .map((cell) => cellSource(cell).toString())
+  assert.deepEqual(sources, ['НОВОЕ = 2\n'], 'загруженный файл не прочитан')
+
+  // И убрать одну — не значит опустошить другую.
+  dropBook(id, 'разбор.ipynb')
+  assert.ok(
+    bookCells(doc, first.root)
+      .toArray()
+      .some((cell) => cellSource(cell).toString() === 'ПРОШЛОЕ = 1'),
+    'архивная тетрадь опустела вместе с той, что убрали',
+  )
+})
+
+test('папка переезжает вместе с тетрадями внутри', () => {
+  /*
+   * `tree:move` работает и с папками, а тетрадь внутри сверялась по точному
+   * пути и оставалась со старым: проекция через полторы секунды писала её
+   * обратно вместе с папкой, которую только что убрали.
+   */
+  const id = 'books-folder'
+  createSession(id, 'Папки', null)
+  const { doc } = getSessionDoc(id)
+  ensureInitialNotebook(doc, 'Папки')
+  createBook(id, 'семинары/разбор.ipynb')
+  const root = bookAt(doc, 'семинары/разбор.ipynb')!.root
+
+  moveBook(id, 'семинары', 'архив')
+  assert.equal(bookAt(doc, 'семинары/разбор.ipynb'), null, 'тетрадь осталась на старом пути')
+  assert.equal(bookAt(doc, 'архив/разбор.ipynb')?.root, root, 'тетрадь не переехала с папкой')
+
+  dropBook(id, 'архив')
+  assert.equal(bookAt(doc, 'архив/разбор.ipynb'), null, 'убранная папка оставила тетрадь в комнате')
+})
+
+test('тетрадь, не влезшую в дерево, комната не забывает', () => {
+  /*
+   * `listFiles` — это то, что рисует панель: у неё потолок в две тысячи
+   * записей. Тетрадь, не попавшая в список, с диска никуда не делась, а
+   * комната убирала её у всех. Проверяется каждый путь отдельно.
+   */
+  const id = 'books-crowded'
+  createSession(id, 'Толпа', null)
+  const { doc } = getSessionDoc(id)
+  ensureInitialNotebook(doc, 'Толпа')
+  projectBooks(id)
+  assert.ok(bookAt(doc, 'Тетрадь.ipynb'), 'тетради комнаты нет')
+
+  const dir = sessionDir(id)
+  for (let i = 0; i < 2100; i += 1) {
+    fs.writeFileSync(path.join(dir, `f${String(i).padStart(5, '0')}.txt`), 'x')
+  }
+  assert.equal(listFiles(id).length, 2000, 'потолок дерева изменился — тест больше ни о чём')
+
+  assert.deepEqual(forgetMissingBooks(id), [], 'живую тетрадь убрали из комнаты')
+  assert.ok(bookAt(doc, 'Тетрадь.ipynb'), 'тетрадь комнаты исчезла')
+
+  // А ту, чей файл и правда убрали мимо дерева, — забывает.
+  fs.writeFileSync(
+    path.join(dir, 'разбор.ipynb'),
+    writeIpynb([{ type: 'code', source: 'x = 1\n' }]),
+  )
+  openBook(id, 'разбор.ipynb')
+  fs.rmSync(path.join(dir, 'разбор.ipynb'))
+  assert.deepEqual(forgetMissingBooks(id), ['разбор.ipynb'])
+  assert.equal(bookAt(doc, 'разбор.ipynb'), null)
+})
+
+test('тетрадь комнаты не убирает из неё os.remove в ячейке', () => {
+  /*
+   * Проверка на пропавшие файлы идёт после КАЖДОГО прогона ячейки, а убрать
+   * тетрадь комнаты — значит стереть её ячейки. `os.remove('Тетрадь.ipynb')`
+   * в чьей-нибудь ячейке — не согласие комнаты расстаться с тем, что она весь
+   * час пишет: файл здесь проекция, и проекция возвращается.
+   */
+  const id = 'books-selfremove'
+  createSession(id, 'Уборка', null)
+  const { doc } = getSessionDoc(id)
+  ensureInitialNotebook(doc, 'Уборка')
+  projectBooks(id)
+  const file = path.join(sessionDir(id), 'Тетрадь.ipynb')
+  assert.ok(fs.existsSync(file))
+  const cells = bookCells(doc, 'cells').length
+  assert.ok(cells > 0)
+
+  fs.rmSync(file)
+  assert.deepEqual(forgetMissingBooks(id), [], 'тетрадь комнаты убрали из комнаты')
+  assert.ok(bookAt(doc, 'Тетрадь.ipynb'), 'тетрадь комнаты исчезла из списка')
+  assert.equal(bookCells(doc, 'cells').length, cells, 'ячейки комнаты стёрты')
+
+  projectBooks(id)
+  assert.ok(fs.existsSync(file), 'файл тетради не вернулся на диск')
 })
 
 test('возврат версии не вписывает историю в чужую тетрадь', () => {
@@ -209,7 +337,7 @@ test('возврат версии не вписывает историю в чу
 
   // Возврат к версии, где у комнаты была своя тетрадь: ячейки обязаны лечь в
   // неё же, а не в ту, что оказалась первой.
-  restoreInto(id, doc, 1, null, null, 'тест')
+  restoreInto(id, doc, 1, null, null)
   const restored = allBooks(doc).find((entry) => entry.book.root === 'cells')
   assert.ok(restored, 'тетрадь комнаты не вернулась')
   const inSecond = bookCells(doc, second.root)

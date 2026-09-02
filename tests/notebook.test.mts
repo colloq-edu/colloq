@@ -154,6 +154,21 @@ test('seeding a notebook is safe to repeat', () => {
   assert.equal(getMeta(doc).get('title'), 'Computer Vision Seminar')
 })
 
+test('пустой заголовок — не «документ пуст», и участник его не вписывает', () => {
+  /*
+   * Хост выделил имя семинара в шапке и стёр — в документе осталось ''. Эту
+   * функцию зовёт КАЖДЫЙ браузер на каждом sync, и по значению условие снова
+   * истинно: заголовок писал бы студент, а гейт заголовок не-хосту отказывает —
+   * закрытый сокет, стёртый кэш, перезагрузка, снова sync, снова запись. Круг,
+   * из которого вкладка выходила только когда хост допечатает имя.
+   */
+  const doc = blank()
+  ensureInitialNotebook(doc, 'Семинар')
+  getMeta(doc).set('title', '')
+  ensureInitialNotebook(doc, 'Семинар')
+  assert.equal(getMeta(doc).get('title'), '', 'участник вписал заголовок обратно')
+})
+
 test('seeding never overwrites a notebook that has content', () => {
   const doc = blank()
   getCells(doc).push([createCell('code', 'the students work')])

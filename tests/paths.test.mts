@@ -25,6 +25,7 @@ import {
 import { createSession } from '../server/src/db.js'
 import {
   listFiles,
+  listTree,
   makeDir,
   makeFile,
   movePath,
@@ -130,6 +131,31 @@ test('дерево читается в том порядке, в каком ег
 
   const listed = listFiles(ROOM).map((entry) => `${entry.dir ? 'd ' : 'f '}${entry.path}`)
   assert.deepEqual(listed, ['d data', 'f data/train.csv', 'd src', 'f src/model.py', 'f README.md'])
+  assert.equal(listTree(ROOM).truncated, false, 'обычная папка объявлена обрезанной')
+})
+
+test('потолок дерева режет глубину, а не корень, и говорит об этом', () => {
+  /*
+   * `!unzip data.zip` в ячейке — две с лишним тысячи картинок за один заход.
+   * Обход в глубину выедал ими весь потолок ещё до файлов корня, и тетрадь
+   * комнаты пропадала из списка; всё, что считает пропажу по этому списку,
+   * удаляло её у всех вместе с ячейками.
+   */
+  const id = 'tree-cap'
+  createSession(id, 'Потолок', null)
+  const root = sessionDir(id)
+  fs.mkdirSync(path.join(root, 'images'), { recursive: true })
+  for (let i = 0; i < 2100; i++) fs.writeFileSync(path.join(root, 'images', `p${i}.png`), '')
+  fs.writeFileSync(path.join(root, 'Тетрадь.ipynb'), '{}')
+  fs.writeFileSync(path.join(root, 'train.py'), 'x = 1\n')
+
+  const tree = listTree(id)
+  const listed = tree.files.map((entry) => entry.path)
+  assert.ok(listed.includes('Тетрадь.ipynb'), 'тетрадь комнаты выпала из списка')
+  assert.ok(listed.includes('train.py'), 'файлы корня выпали из списка')
+  assert.ok(listed.includes('images'))
+  assert.ok(tree.files.length <= 2000, `${tree.files.length} строк — потолок не сработал`)
+  assert.equal(tree.truncated, true, 'список обрезали молча')
 })
 
 test('имя файла и его путь — разные поля, и в корне они совпадают', () => {

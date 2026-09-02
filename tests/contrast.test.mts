@@ -44,9 +44,10 @@ test('the ink actually chosen is the better of the two, not merely adequate', ()
 
 test('a colour assigned to a real id is always one of the palette', () => {
   // inkOn is only guaranteed for the palette; colorForId must not invent one.
+  const palette: readonly string[] = PARTICIPANT_COLORS
   for (let i = 0; i < 200; i++) {
     const colour = colorForId(`p_${i}`)
-    assert.ok(PARTICIPANT_COLORS.includes(colour), colour)
+    assert.ok(palette.includes(colour), colour)
     assert.ok(contrastRatio(inkOn(colour), colour) >= 4.5)
   }
 })

@@ -11,7 +11,12 @@ import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
-import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
+import {
+  Awareness,
+  applyAwarenessUpdate,
+  encodeAwarenessUpdate,
+  removeAwarenessStates,
+} from 'y-protocols/awareness'
 import type { WebSocket } from 'ws'
 import { ownAwareness } from '../server/src/collab/index.js'
 import { classify, permits } from '../server/src/collab/gate.js'
@@ -130,8 +135,9 @@ test('пол комнаты не поднимается никакими пра�
     edit: 'room',
     run: 'room',
     structure: 'room',
-    terminal: 'room',
+    board: 'room',
     files: 'room',
+    agent: 'room',
     wipe: 'room',
     restart: 'room',
     history: 'room',
@@ -225,6 +231,62 @@ test('кадр присутствия про чужого человека не 
   room.destroy()
 })
 
+test('эхо соседней вкладки не достаётся сокету, который своё лицо уже привёл', () => {
+  /*
+   * `y-websocket` пересылает в сокет КАЖДОЕ обновление присутствия, которое
+   * применил, — в том числе приехавшее по BroadcastChannel из соседней вкладки
+   * того же семинара. Пока сосед на связи, эхо отбивается тем, что его лицо
+   * уже стоит в комнате. Но стоит соседу оборваться, его лицо снимают — и эхо
+   * проходило: вкладка А присваивала себе clientID вкладки Б, кадры
+   * переподключившегося Б молча отбрасывались, а уход А уносил Б из панели
+   * людей.
+   */
+  const room = new Awareness(new Y.Doc())
+  const a = new Awareness(new Y.Doc())
+  a.setLocalStateField('user', { name: 'Вкладка А' })
+  const b = new Awareness(new Y.Doc())
+  b.setLocalStateField('user', { name: 'Вкладка Б' })
+
+  const socketA = {} as WebSocket
+  const socketB = {} as WebSocket
+  const stateA = { clientIds: new Set<number>() }
+  const stateB = { clientIds: new Set<number>() }
+  const entry = {
+    awareness: room,
+    conns: new Map([
+      [socketA, stateA as never],
+      [socketB, stateB as never],
+    ]),
+  }
+
+  assert.equal(ownAwareness(entry, socketA, encodeAwarenessUpdate(a, [a.clientID])), true)
+  assert.equal(ownAwareness(entry, socketB, encodeAwarenessUpdate(b, [b.clientID])), true)
+  applyAwarenessUpdate(room, encodeAwarenessUpdate(b, [b.clientID]), 'b')
+
+  // У Б моргнул Wi-Fi: сокет закрыт, лицо из комнаты снято.
+  entry.conns.delete(socketB)
+  removeAwarenessStates(room, [b.clientID], null)
+
+  assert.equal(
+    ownAwareness(entry, socketA, encodeAwarenessUpdate(b, [b.clientID])),
+    false,
+    'сокет А присвоил себе лицо соседней вкладки',
+  )
+
+  // А сам Б, переподключившись, заходит со своим прежним clientID первым кадром.
+  const back = {} as WebSocket
+  entry.conns.set(back, { clientIds: new Set<number>() } as never)
+  assert.equal(
+    ownAwareness(entry, back, encodeAwarenessUpdate(b, [b.clientID])),
+    true,
+    'переподключившаяся вкладка не смогла вернуть себе своё лицо',
+  )
+
+  a.destroy()
+  b.destroy()
+  room.destroy()
+})
+
 test('один сокет не наполняет комнату выдуманными людьми', () => {
   // Без потолка панель людей заполняется участниками, у каждого из которых имя,
   // цвет и курсор в чужой ячейке.
@@ -259,7 +321,10 @@ test('перезагрузка после отказа не превращает
   assert.equal(mayReload(), true)
   assert.equal(mayReload(), false, 'третья перезагрузка подряд — это круг')
 
-  // Соединение ожило — следующий отказ снова первый.
+  // А ожившее соединение серию НЕ обрывает: серверный sync приходит раньше,
+  // чем сервер разберёт наш кадр и откажет, так что обнулять счёт по нему
+  // значило бы не сработать ни разу. Рвёт серию прожитое время — см.
+  // web/src/lib/refusal.ts и tests/panels.test.mts.
   refusalHealed()
-  assert.equal(mayReload(), true)
+  assert.equal(mayReload(), false, 'sync посреди круга обнулил счёт попыток')
 })

@@ -16,8 +16,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import { classify, MAX_SYNC_FRAME_BYTES } from '../server/src/collab/gate.js'
-import { rememberDeleted, rememberedIn, settleFresh } from '../server/src/collab/ops.js'
-import { CELLS_KEY, CHAT_KEY, META_KEY, TERMINAL_KEY } from '../shared/notebook.js'
+import { rememberDeleted, resetRetyped, settleFresh } from '../server/src/collab/ops.js'
+import {
+  addBook,
+  bookAt,
+  bookCells,
+  CELLS_KEY,
+  CHAT_KEY,
+  META_KEY,
+  TERMINAL_KEY,
+} from '../shared/notebook.js'
 
 /** Сервер и браузер: два документа, синхронные на старте. */
 /** Имя комнаты — сервер помнит удаления по семинарам. */
@@ -72,7 +80,12 @@ function cellAt(doc: Y.Doc, i: number): Y.Map<unknown> {
   return doc.getArray(CELLS_KEY).get(i) as Y.Map<unknown>
 }
 
-function ok(judgement: ReturnType<typeof classify>): { verdicts: { rule: string; verb?: string; cellId: string | null }[]; retyped: string[] } {
+function ok(judgement: ReturnType<typeof classify>): {
+  verdicts: { rule: string; verb?: string; cellId: string | null }[]
+  retyped: string[]
+  created: string[]
+  removed: string[]
+} {
   assert.equal(judgement.ok, true, judgement.ok ? '' : `отказ: ${judgement.why} (${judgement.path})`)
   if (!judgement.ok) throw new Error('unreachable')
   return judgement
@@ -212,10 +225,14 @@ test('раздел, которого у документа нет, отказы�
 
 /* -------------------------------------------- значения новой ячейки, не путь */
 
-test('новая ячейка с готовым выводом не проходит', () => {
+test('новая ячейка с готовым выводом проходит, но вывод в документе не остаётся', () => {
+  /*
+   * Ячейка и её вывод в одной транзакции — то есть в одном кадре, где ячейки
+   * ещё нет у сервера. Отказом это не судится: ровно так же выглядит Ctrl+Z
+   * после удаления посчитавшей ячейки, а отказ стоит человеку закрытого сокета
+   * и перезагрузки. Вывод стирает сервер сразу после применения.
+   */
   const { server, client, frame } = pair()
-  // Ячейка и её вывод в одной транзакции — то есть в одном кадре, где ячейки
-  // ещё нет у сервера. Именно это разрешение «создавать ячейки» и открыло бы.
   const bytes = frame(() => {
     client.getArray(CELLS_KEY).push([cell('c3', 'x')])
     const out = new Y.Map<unknown>()
@@ -223,7 +240,11 @@ test('новая ячейка с готовым выводом не проход
     out.set('json', JSON.stringify({ 'text/html': '<script>…' }))
     ;(cellAt(client, 2).get('outputs') as Y.Array<unknown>).push([out])
   })
-  assert.ok(refused(classify(server, bytes)))
+  const judged = ok(classify(server, bytes))
+  assert.deepEqual(judged.created, ['c3'])
+  Y.applyUpdate(server, bytes)
+  server.transact(() => settleFresh(ROOM, server, judged.created), 'server')
+  assert.equal((cellAt(server, 2).get('outputs') as Y.Array<unknown>).length, 0)
 })
 
 test('новая ячейка с поддельным stdin не проходит', () => {
@@ -236,10 +257,19 @@ test('новая ячейка с поддельным stdin не проходи�
   assert.match(refused(classify(server, bytes)), /лишнее поле/)
 })
 
-test('новая ячейка с чужим именем не проходит', () => {
+test('ячейка с именем живой не отказывается, но и не считается созданной', () => {
+  /*
+   * Так выглядит Ctrl+Z после того, как кто-то вернул удалённую ячейку из
+   * истории: возврат воссоздаёт её с прежним именем, отмена вставляет копию.
+   * Отказать значило бы за обычный жест перезагрузить человеку страницу.
+   * Копию снимает наблюдатель за двойниками; в `created` она не попадает —
+   * иначе `settleFresh` привёл бы к чистой ту ячейку, что уже живёт в тетради,
+   * то есть стёр бы комнате чужой вывод по совпадению имени.
+   */
   const { server, client, frame } = pair()
   const bytes = frame(() => client.getArray(CELLS_KEY).push([cell('c1', 'x')]))
-  assert.match(refused(classify(server, bytes)), /уже есть/)
+  const judged = ok(classify(server, bytes))
+  assert.deepEqual(judged.created, [])
 })
 
 test('две новые ячейки с одним именем в одном кадре не проходят', () => {
@@ -248,7 +278,7 @@ test('две новые ячейки с одним именем в одном к
   assert.match(refused(classify(server, bytes)), /одним именем/)
 })
 
-test('новая ячейка, объявляющая себя выполненной, не проходит', () => {
+test('новая ячейка, объявившая себя выполненной, приводится к чистой, а не отказывается', () => {
   const { server, client, frame } = pair()
   const bytes = frame(() => {
     const map = cell('c3', 'x')
@@ -256,7 +286,12 @@ test('новая ячейка, объявляющая себя выполнен�
     map.set('execCount', 41)
     client.getArray(CELLS_KEY).push([map])
   })
-  assert.ok(refused(classify(server, bytes)))
+  const judged = ok(classify(server, bytes))
+  Y.applyUpdate(server, bytes)
+  server.transact(() => settleFresh(ROOM, server, judged.created), 'server')
+  const made = cellAt(server, 2)
+  assert.equal(made.get('state'), 'idle', 'поддельное «выполнена» осталось в документе')
+  assert.equal(made.get('execCount'), null)
 })
 
 test('текст новой ячейки обязан быть Y.Text', () => {
@@ -401,7 +436,7 @@ test('Ctrl+Z после удаления посчитавшей ячейки п�
   client.off('update', grab)
   assert.ok(back)
 
-  const restored = ok(classify(server, back!, rememberedIn(ROOM)))
+  const restored = ok(classify(server, back!))
   assert.deepEqual(restored.created, ['c1'], 'отмена не опознана как создание ячейки')
   Y.applyUpdate(server, back!)
   server.transact(() => settleFresh(ROOM, server, restored.created), 'server')
@@ -416,7 +451,12 @@ test('Ctrl+Z после удаления посчитавшей ячейки п�
   assert.equal(cell.get('startedAt'), null, 'секундомер вернулся на ячейке, которую никто не считает')
 })
 
-test('подделанный вывод не проходит, а совпавшее имя его не отмывает', () => {
+test('вывод кладёт сервер из своей записи, а не браузер из кадра', () => {
+  /*
+   * Кадр с готовым выводом проходит — иначе просроченный Ctrl+Z стоил бы
+   * перезагрузки, — но в документ вывод попадает только из записи сервера.
+   * Здесь его записи нет, поэтому не попадает ничего.
+   */
   const { server, client, frame } = pair()
   const bytes = frame(() => {
     client.getArray(CELLS_KEY).push([cell('c7', 'x')])
@@ -426,17 +466,7 @@ test('подделанный вывод не проходит, а совпавш
     ;(cellAt(client, 2).get('outputs') as Y.Array<unknown>).push([out])
   })
 
-  // Сервер такого удаления не помнит — «новая ячейка с готовым выводом»
-  // остаётся тем, чем была.
-  assert.ok(refused(classify(server, bytes)))
-
-  /*
-   * А если бы помнил — кадр проходит, но вывод в документ всё равно кладёт
-   * сервер, из своей записи. Здесь его записи нет, поэтому не кладёт ничего:
-   * вывода, которого сервер не производил, в документе не появляется даже
-   * тогда, когда имя ячейки совпало с удалённой.
-   */
-  assert.equal(classify(server, bytes, new Set(['c7'])).ok, true)
+  assert.equal(classify(server, bytes).ok, true)
   Y.applyUpdate(server, bytes)
   server.transact(() => settleFresh(ROOM, server, ['c7']), 'server')
   const made = server
@@ -444,6 +474,152 @@ test('подделанный вывод не проходит, а совпавш
     .toArray()
     .find((c) => (c as Y.Map<unknown>).get('id') === 'c7') as Y.Map<unknown>
   assert.equal((made.get('outputs') as Y.Array<unknown>).length, 0, 'подделанный вывод остался в документе')
+})
+
+test('отмена, которой сервер уже не помнит, возвращает ячейку чистой, а не отказом', () => {
+  /*
+   * Память об удалениях живёт десять минут и тридцать ячеек. За этими
+   * границами отмена приходила как «новая ячейка объявляет себя
+   * выполнявшейся»: сокет закрыт, кэш стёрт, страница перезагружена посреди
+   * пары — за обычное Ctrl+Z. Ячейка возвращается, вывода у неё нет: его
+   * сервер уже не помнит, а из кадра не берёт.
+   */
+  const { server, client, frame } = pair()
+  server.transact(() => {
+    const map = cellAt(server, 0)
+    const out = new Y.Map<unknown>()
+    out.set('kind', 'stream')
+    out.set('name', 'stdout')
+    out.set('text', new Y.Text('42\n'))
+    ;(map.get('outputs') as Y.Array<unknown>).push([out])
+    map.set('state', 'ok')
+    map.set('execCount', 7)
+  }, 'server')
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+
+  const undo = new Y.UndoManager(client.getArray(CELLS_KEY), {
+    trackedOrigins: new Set([null, 'local']),
+    captureTimeout: 400,
+  })
+  const removal = frame(() => client.transact(() => client.getArray(CELLS_KEY).delete(0, 1)))
+  ok(classify(server, removal))
+  // Сервер НЕ запоминает: прошло десять минут, или тридцать удалений подряд.
+  Y.applyUpdate(server, removal)
+
+  let back: Uint8Array | null = null
+  const grab = (u: Uint8Array): void => {
+    back = back ? Y.mergeUpdates([back, u]) : u
+  }
+  client.on('update', grab)
+  undo.undo()
+  client.off('update', grab)
+  assert.ok(back)
+
+  const forgotten = 'gate-test-forgotten'
+  const restored = ok(classify(server, back!))
+  assert.deepEqual(restored.created, ['c1'])
+  Y.applyUpdate(server, back!)
+  server.transact(() => settleFresh(forgotten, server, restored.created), 'server')
+  const cell = cellAt(server, 0)
+  assert.equal(cell.get('id'), 'c1', 'ячейка не вернулась')
+  assert.equal((cell.get('outputs') as Y.Array<unknown>).length, 0)
+  assert.equal(cell.get('state'), 'idle')
+  assert.equal(cell.get('execCount'), null)
+})
+
+/* ---------------------------------------------------------- вторая тетрадь */
+
+/**
+ * Комната с двумя тетрадями: у первой корень `cells`, у второй свой.
+ *
+ * Всё, что ниже, ломалось молча ровно во второй: гейт судит правки во всех
+ * тетрадях (`isBookRoot`), а серверные операции ходили по корню `cells` — то
+ * есть по первой. Ctrl+Z во второй заканчивался отказом кадра и перезагрузкой
+ * страницы, а ставшая текстом ячейка сохраняла вывод и «In [7]».
+ */
+function twoBooks(): { server: Y.Doc; client: Y.Doc; frame: (write: () => void) => Uint8Array; root: string } {
+  const { server, client, frame } = pair()
+  server.transact(() => {
+    addBook(server, 'Тетрадь.ipynb', CELLS_KEY)
+    const second = addBook(server, 'разбор.ipynb')
+    bookCells(server, second.root).push([cell('b1', 'print(3)')])
+  }, 'server')
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+  const root = bookAt(server, 'разбор.ipynb')!.root
+  assert.notEqual(root, CELLS_KEY, 'вторая тетрадь села на корень первой')
+  return { server, client, frame, root }
+}
+
+function ran(doc: Y.Doc, root: string, id: string): Y.Map<unknown> {
+  const map = bookCells(doc, root)
+    .toArray()
+    .find((c) => (c as unknown as Y.Map<unknown>).get('id') === id) as unknown as Y.Map<unknown>
+  doc.transact(() => {
+    const out = new Y.Map<unknown>()
+    out.set('kind', 'stream')
+    out.set('name', 'stdout')
+    out.set('text', new Y.Text('3\n'))
+    ;(map.get('outputs') as Y.Array<unknown>).push([out])
+    map.set('state', 'ok')
+    map.set('execCount', 7)
+    map.set('runBy', 'Мария')
+  }, 'server')
+  return map
+}
+
+test('Ctrl+Z во второй тетради возвращает ячейку с выводом, а не отказ', () => {
+  const room = 'gate-test-second'
+  const { server, client, frame, root } = twoBooks()
+  ran(server, root, 'b1')
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+
+  const undo = new Y.UndoManager(client.getArray(root), {
+    trackedOrigins: new Set([null, 'local']),
+    captureTimeout: 400,
+  })
+  const removal = frame(() => client.transact(() => client.getArray(root).delete(0, 1)))
+  const gone = ok(classify(server, removal))
+  assert.deepEqual(gone.removed, ['b1'], 'удаление во второй тетради не опознано')
+  rememberDeleted(room, server, gone.removed)
+  Y.applyUpdate(server, removal)
+
+  let back: Uint8Array | null = null
+  const grab = (u: Uint8Array): void => {
+    back = back ? Y.mergeUpdates([back, u]) : u
+  }
+  client.on('update', grab)
+  undo.undo()
+  client.off('update', grab)
+  assert.ok(back)
+
+  const restored = ok(classify(server, back!))
+  assert.deepEqual(restored.created, ['b1'])
+  Y.applyUpdate(server, back!)
+  server.transact(() => settleFresh(room, server, restored.created), 'server')
+
+  const cell = bookCells(server, root).get(0) as unknown as Y.Map<unknown>
+  assert.equal(cell.get('id'), 'b1')
+  assert.equal((cell.get('outputs') as Y.Array<unknown>).length, 1, 'вывод во второй тетради не вернулся')
+  assert.equal(cell.get('execCount'), 7)
+  assert.equal(cell.get('runBy'), 'Мария')
+})
+
+test('смена вида во второй тетради гасит вывод и состояние', () => {
+  const { server, client, frame, root } = twoBooks()
+  ran(server, root, 'b1')
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+
+  const bytes = frame(() => (client.getArray(root).get(0) as Y.Map<unknown>).set('type', 'markdown'))
+  const judged = ok(classify(server, bytes))
+  assert.deepEqual(judged.retyped, ['b1'])
+  Y.applyUpdate(server, bytes)
+  server.transact(() => resetRetyped(server, judged.retyped), 'server')
+
+  const cell = bookCells(server, root).get(0) as unknown as Y.Map<unknown>
+  assert.equal(cell.get('state'), 'idle', 'ячейка-заметка осталась «выполненной»')
+  assert.equal(cell.get('execCount'), null)
+  assert.equal(cell.get('startedAt'), null)
+  assert.equal((cell.get('outputs') as Y.Array<unknown>).length, 0)
 })
 
 test('новая ячейка всегда чиста, даже если браузер прислал её грязной', () => {

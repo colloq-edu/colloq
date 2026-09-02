@@ -355,3 +355,118 @@ test('пульт у ведущего забирает преподаватель
   assert.equal(lectureOf(id)?.page, 9)
   stopLecture(id)
 })
+
+/* ------------------------------------------------- лекция идёт, руки чужие */
+
+test('пока идёт лекция, чужая рука не меняет документ и не убирает его', () => {
+  /*
+   * У семинара бывает двое ведущих. Второй на ноутбуке щёлкает `homework.pdf` в
+   * панели файлов — это `board:open`, и раньше оно молча заканчивало лекцию
+   * первого: проектор гас, сорок минут разметки исчезали, вернуть их нечем
+   * (чернила живут только в памяти). Крестик на вкладке документа лекции — тот
+   * же случай: он шлёт `board:close`.
+   */
+  const id = room({})
+  makeFile(id, 'l3.pdf', '%PDF-1.4')
+  makeFile(id, 'homework.pdf', '%PDF-1.4')
+  startLecture(id, { file: 'l3.pdf', by: 'p_first', byName: 'Ада', color: '#d4162f' })
+  turnTo(id, 14)
+  addInk(id, { id: 's1', page: 14, color: '#d4162f', width: 0.005, points: [0.1, 0.1, 0.2, 0.2] })
+
+  for (const message of [
+    { t: 'board:open', name: 'homework.pdf' },
+    { t: 'board:close' },
+    { t: 'lecture:start', file: 'homework.pdf' },
+  ] as ControlClientMessage[]) {
+    assert.match(say(id, 'host', message) ?? '', /Идёт лекция/, `${message.t} прошло молча`)
+  }
+  assert.equal(lectureOf(id)?.file, 'l3.pdf', 'лекция закончилась чужой рукой')
+  assert.equal(lectureOf(id)?.page, 14)
+  assert.equal(inkOf(id).length, 1, 'разметка стёрлась')
+  stopLecture(id)
+})
+
+test('свою лекцию ведущий переводит на другой документ сам', () => {
+  // Ровно то, что делает «Ещё → сменить документ» на пульте: это его лекция, и
+  // начинается она начисто.
+  const id = room({})
+  makeFile(id, 'l3.pdf', '%PDF-1.4')
+  makeFile(id, 'l4.pdf', '%PDF-1.4')
+  startLecture(id, { file: 'l3.pdf', by: 'p_host', byName: 'Ада', color: '#d4162f' })
+  turnTo(id, 14)
+
+  assert.equal(say(id, 'host', { t: 'lecture:start', file: 'l4.pdf' }), null)
+  assert.equal(lectureOf(id)?.file, 'l4.pdf')
+  assert.equal(lectureOf(id)?.page, 1, 'другой документ — другая лекция, и она начинается сначала')
+  stopLecture(id)
+})
+
+test('в комнате, где доску ставит любой, лекцию преподавателя студент не гасит', () => {
+  /*
+   * Правило `board` решает, кому ставить документ залу; закончить чужую лекцию
+   * — другой поступок, и обходных путей к нему быть не должно: ни крестиком на
+   * вкладке, ни другим PDF, ни кнопкой «Закончить».
+   */
+  const id = room({ board: 'room' })
+  makeFile(id, 'l4.pdf', '%PDF-1.4')
+  makeFile(id, 'seminar.pdf', '%PDF-1.4')
+  startLecture(id, { file: 'l4.pdf', by: 'p_host', byName: 'Ада', color: '#d4162f' })
+
+  for (const message of [
+    { t: 'board:close' },
+    { t: 'board:open', name: 'seminar.pdf' },
+    { t: 'lecture:start', file: 'seminar.pdf' },
+  ] as ControlClientMessage[]) {
+    assert.match(say(id, 'participant', message) ?? '', /Идёт лекция/, `${message.t} прошло молча`)
+  }
+  assert.match(say(id, 'participant', { t: 'lecture:stop' }) ?? '', /преподаватель/)
+  assert.equal(lectureOf(id)?.file, 'l4.pdf', 'лекция кончилась не своей рукой')
+  stopLecture(id)
+})
+
+/* ------------------------------------------------------- оболочка и ядро */
+
+test('команда в оболочке — под тем же правилом, что и ячейка', () => {
+  /*
+   * Тот же контейнер и то же процессорное время: комната, где кнопка
+   * «Запустить» над файлом погашена словами «Запускает преподаватель», не может
+   * разрешать тот же скрипт строкой ниже. Открыть ящик и читать общий вывод
+   * по-прежнему может любой — оболочка комнаты остаётся общей.
+   */
+  const id = room({ run: 'host' })
+  assert.equal(say(id, 'participant', { t: 'term:open' }), null)
+  assert.match(
+    say(id, 'participant', { t: 'term:run', command: 'python train.py' }) ?? '',
+    /преподавател/i,
+  )
+  assert.equal(say(id, 'host', { t: 'term:run', command: 'ls' }), null)
+})
+
+test('вкладка убранной тетради не запускает и не стирает чужой лист', () => {
+  /*
+   * Тетрадь убрали из комнаты, а вкладка у соседа живёт до прихода списка
+   * файлов. Нажатие в ней попадало в тетрадь комнаты: Run All ставил в очередь
+   * ЧУЖОЙ лист целиком, а «Clear» стирал выводы всех тетрадей сразу.
+   */
+  const id = room({})
+  for (const message of [
+    { t: 'runAll', book: 'hw.ipynb' },
+    { t: 'runAbove', cellId: 'c_nope', book: 'hw.ipynb' },
+    { t: 'clearOutputs', book: 'hw.ipynb' },
+  ] as ControlClientMessage[]) {
+    assert.match(say(id, 'host', message) ?? '', /тетради в комнате больше нет/, message.t)
+  }
+})
+
+test('выключенный оракул не запирает отмену собственного хода', () => {
+  /*
+   * Правила меняются на живой комнате, и ход тут естественный: оракул натворил
+   * → выключаю оракула → откатываю. Отказ на последнем шаге вдобавок говорил
+   * «может преподаватель» тому самому преподавателю.
+   */
+  const id = room({ agent: 'off' })
+  const host = say(id, 'host', { t: 'ai:undo', entryId: 'e_nope' })
+  assert.doesNotMatch(String(host ?? ''), /может преподаватель/)
+  assert.match(String(host ?? ''), /уже нельзя отменить/)
+  assert.match(say(id, 'participant', { t: 'ai:undo', entryId: 'e_nope' }) ?? '', /преподавател/i)
+})

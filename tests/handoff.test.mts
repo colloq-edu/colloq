@@ -18,8 +18,13 @@ import {
   verifyHandoffToken,
   verifyToken,
 } from '../server/src/auth.js'
-import { createSession, upsertParticipant } from '../server/src/db.js'
-import { sessionRoutes } from '../server/src/routes/sessions.js'
+import { config } from '../server/src/config.js'
+import { createSession, isTokenHost, upsertParticipant } from '../server/src/db.js'
+import { roleFor, sessionRoutes } from '../server/src/routes/sessions.js'
+import { issueStaffCookie } from '../server/src/admin/auth.js'
+import { createTeacher, deleteTeacher, rotateLinkKey } from '../server/src/admin/store.js'
+import { STAFF_COOKIE } from '../shared/admin.js'
+import type { Response as ExpressResponse } from 'express'
 import type { HandoffResponse, JoinResponse } from '../shared/protocol.js'
 
 const ROOM = 'handoff-test'
@@ -62,15 +67,24 @@ const asHost = () => signToken({ sessionId: ROOM, participantId: 'p_teacher', ro
 const asStudent = () =>
   signToken({ sessionId: ROOM, participantId: 'p_student', role: 'participant' })
 
-function handoff(token: string | null, room = ROOM): Promise<Response> {
+function handoff(token: string | null, room = ROOM, cookie?: string): Promise<Response> {
   return fetch(`${base}/api/sessions/${room}/handoff`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(cookie ? { cookie } : {}),
     },
     body: '{}',
   })
+}
+
+/** issueStaffCookie writes onto express's Response; this is the smallest thing that shape. */
+function mintCookie(teacher: Parameters<typeof issueStaffCookie>[1]): string {
+  let value = ''
+  const res = { cookie: (_n: string, v: string) => (value = v) } as unknown as ExpressResponse
+  issueStaffCookie(res, teacher)
+  return `${STAFF_COOKIE}=${value}`
 }
 
 function claim(key: unknown, room = ROOM): Promise<Response> {
@@ -84,8 +98,11 @@ function claim(key: unknown, room = ROOM): Promise<Response> {
 test('ведущий получает ключ, планшет меняет его на тот же вход', async () => {
   const made = await handoff(asHost())
   assert.equal(made.status, 200)
-  const { key, livesMs } = (await made.json()) as HandoffResponse
+  const { key, livesMs, origin } = (await made.json()) as HandoffResponse
   assert.ok(livesMs > 0 && livesMs <= 30 * 60_000, 'ключ живёт минуты, а не сутки')
+  // Адрес, по которому комнату видно снаружи, знает сервер, а не вкладка
+  // преподавателя: ссылку, построенную от `localhost`, планшет не откроет.
+  assert.equal(origin, config.publicUrl)
 
   const claimed = await claim(key)
   assert.equal(claimed.status, 200)
@@ -141,7 +158,56 @@ test('подпись покрывает и имя, и срок', () => {
   assert.equal(verifyHandoffToken(ROOM, `${someoneElse}.${until}.${sig}`), null)
   const later = (Date.now() + 60 * 60_000).toString(36)
   assert.equal(verifyHandoffToken(ROOM, `${who}.${later}.${sig}`), null)
-  assert.equal(verifyHandoffToken(ROOM, key), 'p_teacher')
+  assert.equal(verifyHandoffToken(ROOM, key)?.participantId, 'p_teacher')
+})
+
+test('ключ годится ровно на один обмен', async () => {
+  /*
+   * «Десять минут, один раз» стоит в комментариях трёх файлов, а гасить ключ
+   * было нечем: ссылка, уехавшая не в то окно AirDrop, все десять минут
+   * пускала в комнату преподавателем сколько угодно устройств.
+   */
+  const { key } = (await (await handoff(asHost())).json()) as HandoffResponse
+  assert.equal((await claim(key)).status, 200)
+  assert.equal((await claim(key)).status, 401, 'тот же ключ обменялся дважды')
+})
+
+test('пульт, выданный по куке, отбирается вместе с ней', async () => {
+  /*
+   * Инвариант из identity.test.mts: «ведущий по куке» никогда не пишется в
+   * строку участника, иначе отобрать права нечем. Пульт его обходил — писал
+   * token_host, и снятый из штата преподаватель оставался ведущим навсегда в
+   * каждой комнате, где хоть раз нажал «Пульт».
+   */
+  const teacher = createTeacher({ name: 'Нина', email: 'nina.handoff@hse.ru', role: 'teacher' })
+  assert.ok(teacher)
+  rotateLinkKey(teacher.id)
+  const cookie = mintCookie(teacher)
+
+  upsertParticipant({
+    id: 'p_cookie',
+    sessionId: ROOM,
+    name: 'Нина',
+    avatar: null,
+    role: 'host',
+  })
+  const laptop = signToken({ sessionId: ROOM, participantId: 'p_cookie', role: 'participant' })
+
+  const made = await handoff(laptop, ROOM, cookie)
+  assert.equal(made.status, 200)
+  const { key } = (await made.json()) as HandoffResponse
+  const claimed = (await (await claim(key)).json()) as JoinResponse
+  const tablet = verifyToken(claimed.token)
+  assert.ok(tablet)
+
+  // Планшет ведёт: куки на нём нет и не будет.
+  assert.equal(roleFor(undefined, tablet), 'host')
+  // Но записи «ведущий навсегда» не появилось — иначе отбирать нечем.
+  assert.equal(isTokenHost(ROOM, 'p_cookie'), false, 'кука записалась в token_host')
+
+  // Снят из штата — пульт перестаёт быть пультом, как и ноутбук.
+  assert.equal(deleteTeacher(teacher.id), true)
+  assert.equal(roleFor(undefined, tablet), 'participant')
 })
 
 test('мусор вместо ключа не роняет обмен', async () => {

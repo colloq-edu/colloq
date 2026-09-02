@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ansi256ToBasic, foldAnsiColours } from '../web/src/lib/ansi.js'
+import { ansi256ToBasic, foldAnsiColours, pendingEscape } from '../web/src/lib/ansi.js'
 
 const ESC = '\u001b'
 
@@ -90,4 +90,40 @@ test('malformed input is returned rather than mangled', () => {
   for (const raw of [`${ESC}[38;5m`, `${ESC}[38;2;1m`, `${ESC}[m`, `${ESC}[;;m`]) {
     assert.doesNotThrow(() => foldAnsiColours(raw))
   }
+})
+
+/*
+ * Хвост растущего вывода дорисовывается отдельно (см. `ansi` в
+ * render.svelte.ts), и вся его безопасность держится на одном: не разрезать
+ * escape-последовательность пополам. Половина кода уехала бы в разбор как
+ * мусор, а вторая покрасила бы остаток лога наугад.
+ */
+test('a finished buffer may be cut anywhere', () => {
+  for (const text of [
+    '',
+    'plain text',
+    `${ESC}[31mred${ESC}[0m`,
+    `${ESC}[31mred${ESC}[0m and more text after it`,
+    `${ESC}]8;;http://example.com${ESC}\\link`,
+    'a line ending in a newline\n',
+  ]) {
+    assert.equal(pendingEscape(text), 0, JSON.stringify(text))
+  }
+})
+
+test('an escape the flush cut in half is left for the next one', () => {
+  const started = `${ESC}[38;5;1`
+  assert.equal(pendingEscape(`green text${started}`), started.length)
+  assert.equal(pendingEscape(`${ESC}[31mred${ESC}`), 1, 'a lone escape byte')
+  // Незакрытый OSC: терминатор ещё не приехал.
+  const osc = `${ESC}]8;;http://example.com`
+  assert.equal(pendingEscape(osc), osc.length)
+})
+
+test('cutting at the pending escape leaves the visible text whole', () => {
+  const text = `${ESC}[31mred${ESC}[38;5;2`
+  const body = text.slice(0, text.length - pendingEscape(text))
+  assert.equal(body, `${ESC}[31mred`)
+  // Хвост дописывается следующим флешем и складывается обратно без потерь.
+  assert.equal(body + text.slice(body.length) + '8mgreen', `${text}8mgreen`)
 })

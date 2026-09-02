@@ -9,7 +9,8 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import { createSession } from '../server/src/db.js'
-import { listFiles, resolveInSession, safeName, sessionDir } from '../server/src/workspace.js'
+import { MAX_SEGMENT } from '../shared/paths.js'
+import { listFiles, resolveInSession, sessionDir } from '../server/src/workspace.js'
 
 const SID = 'seminar1'
 
@@ -50,20 +51,18 @@ test('one seminar cannot name another seminar file', () => {
   if (resolved !== null) assert.equal(path.dirname(resolved), sessionDir(SID))
 })
 
-test('a separator or a control character never survives into a name', () => {
-  const nasty = ['a/b.csv', 'a\\b.csv', 'a b.csv', 'a\nb.csv', 'a\u0000b.csv', 'a\u001fb.csv']
-  for (const name of nasty) {
-    const safe = safeName(name)
-    if (safe === null) continue
-    assert.ok(!/[/\\]/.test(safe), `${JSON.stringify(name)} -> ${safe}`)
-    // eslint-disable-next-line no-control-regex -- control characters are the subject
-    assert.ok(!/[\u0000-\u001f]/.test(safe), `${JSON.stringify(name)} -> ${safe}`)
+test('a control character in a name is refused, not stripped', () => {
+  // Мерка одна на всех и живёт в shared/paths (её саму проверяет paths.test.mts);
+  // здесь — что дверь в папку семинара спрашивает именно её. Разделитель теперь
+  // законен: `src/model.py` — путь, а не имя с косой чертой внутри.
+  for (const name of ['a\\b.csv', 'a\nb.csv', 'a\u0000b.csv', 'a\u001fb.csv']) {
+    assert.equal(resolveInSession(SID, name), null, JSON.stringify(name))
   }
 })
 
 test('a name that is only dots or slashes is refused outright', () => {
   for (const name of ['..', '.', '/', '//', '../..']) {
-    assert.equal(safeName(name), null, name)
+    assert.equal(resolveInSession(SID, name), null, name)
   }
 })
 
@@ -72,31 +71,36 @@ test('a dot file is refused rather than accepted and then hidden', () => {
   // own .ipynb_checkpoints stays out of the room's way. Accepting an upload and
   // then never showing it is the worst of both.
   for (const name of ['.hidden', '.env', '.ipynb_checkpoints', '.DS_Store']) {
-    assert.equal(safeName(name), null, name)
     assert.equal(resolveInSession(SID, name), null, name)
   }
 })
 
-test('a name in another alphabet survives intact', () => {
+test('a name is kept as typed — alphabet, case and spaces included', () => {
   // A student at a Russian university uploads данные.csv and then writes
   // pd.read_csv('данные.csv'). The two have to be the same string.
-  for (const name of ['данные.csv', 'пример данных.csv', '结果.csv', 'übung.md']) {
-    assert.equal(safeName(name), name, name)
+  const kept = [
+    'данные.csv',
+    'пример данных.csv',
+    '结果.csv',
+    'übung.md',
+    'UPPER.CSV',
+    'spaces in name.txt',
+    'Mixed Case File.md',
+  ]
+  for (const name of kept) {
     const resolved = resolveInSession(SID, name)
     assert.ok(resolved?.endsWith(name), `${name} -> ${resolved}`)
   }
 })
 
-test('a name is kept as typed, case and spaces included', () => {
-  for (const name of ['UPPER.CSV', 'spaces in name.txt', 'Mixed Case File.md']) {
-    assert.equal(safeName(name), name, name)
-  }
-})
-
 test('a name at the length limit is kept and one past it is not', () => {
-  const at = 'a'.repeat(196) + '.csv'
-  assert.equal(safeName(at), at)
-  assert.equal(safeName('a'.repeat(201)), null)
+  // Потолок один на весь путь — `safeSegment` из shared/paths, сто двадцать
+  // символов. Своей мерки у загрузки больше нет: пока она была (двести
+  // символов), имя из середины щели проходило её, чтобы строкой ниже получить
+  // отказ, не назвавший ни причины, ни потолка.
+  const at = 'a'.repeat(MAX_SEGMENT - 4) + '.csv'
+  assert.ok(resolveInSession(SID, at)?.endsWith(at))
+  assert.equal(resolveInSession(SID, 'a'.repeat(MAX_SEGMENT + 1)), null)
 })
 
 /* ------------------------------------------------ a symlink is not a file of the room */

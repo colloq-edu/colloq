@@ -15,6 +15,7 @@ import { createServer, type Server } from 'node:http'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocketServer, type WebSocket } from 'ws'
+import type * as Y from 'yjs'
 
 /* ------------------------------------------------------------ fake Jupyter */
 
@@ -142,6 +143,18 @@ before(async () => {
          * молча оставался null и любая проверка про номер была бессмысленной.
          */
         reply(ws, msg.header, 'execute_input', { code: msg.content.code, execution_count: ++executions })
+        /*
+         * Ячейка, которая убивает ядро по памяти.
+         *
+         * Настоящий Jupyter в этом случае не отвечает на запрос вовсе: он
+         * присылает `status: restarting` — тот же id ядра, тот же сокет, новый
+         * процесс за ними. Подделка этого не умела, и весь путь автоперезапуска
+         * не был покрыт ничем.
+         */
+        if (/OOM/.test(msg.content.code)) {
+          reply(ws, msg.header, 'status', { execution_state: 'restarting' })
+          return
+        }
         // A cell whose source says so fails, so a suite can build a notebook
         // that breaks in the middle without needing a real Python.
         if (/RAISE/.test(msg.content.code)) {
@@ -367,6 +380,67 @@ test('work left over from a dead server is let go of, not waited on', async () =
   )
 })
 
+test('Run All на тихо умершем ядре доводит до конца всю пачку', async () => {
+  /*
+   * Ядро умирает на перемене: сокет остаётся открытым, и узнаётся это только
+   * опросом перед отправкой ячейки. Раньше в этот момент `dropQueue` выносил
+   * очередь ЦЕЛИКОМ — до проверки «смерть ожидаемая», — так что Run All на
+   * тридцати ячейках выполнял первую, а остальные молча возвращались в покой,
+   * без единого слова о том, почему. И заодно уносил чужие пачки, вопреки
+   * обещанию «сбой останавливает только свою».
+   */
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { getCells, createCell } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const cells = getCells(room.doc)
+  const tail = [createCell('code', 'print("two")'), createCell('code', 'print("three")')]
+  room.doc.transact(() => cells.push(tail))
+  room.type('print("one")')
+
+  requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+  assert.ok(await until(() => room.state() === 'ok'), 'первый запуск не прошёл')
+
+  for (const kernel of kernels.values()) kernel.alive = false
+  // Дольше KERNEL_QUIET_MS: следующая отправка сначала спросит, живо ли ядро.
+  await wait(250)
+
+  const ids = [room.cellId, tail[0].get('id') as string, tail[1].get('id') as string]
+  requestRun(room.id, ids, 'Maria', 'p_maria')
+
+  const states = () => [room.state(), ...tail.map((c) => c.get('state'))]
+  assert.ok(
+    await until(() => states().every((state) => state === 'ok')),
+    `пачка кончилась как ${JSON.stringify(states())}`,
+  )
+})
+
+test('ячейка, убившая ядро по памяти, кончается ошибкой, а не тихим «Out [n]»', async () => {
+  /*
+   * При автоперезапуске фаза ядра — `restarting`, а не `dead`, и проверка в
+   * runOne мимо неё промахивалась: выполнение завершалось `abort`, ячейка
+   * садилась в `idle` с номером выполнения и частичным выводом — на экране
+   * неотличимо от успешной. Следующая ячейка падала с NameError, и связи с
+   * этой не видел никто.
+   */
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { readNotebook } = await import('../shared/notebook.js')
+  const room = await seminar()
+  room.type('OOM: x = np.zeros((10**6, 10**4))')
+  requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+
+  assert.ok(
+    await until(() => room.state() === 'error'),
+    `ячейка кончилась как ${String(room.state())}`,
+  )
+  const outputs = readNotebook(room.doc)[1].outputs
+  assert.match(JSON.stringify(outputs), /KernelDied/, 'ячейка ничего не сказала про смерть ядра')
+  assert.equal(room.cell.get('execCount'), null, 'номер выполнения остался от убитого процесса')
+  assert.ok(
+    room.notes().some((note) => /memory|restart/i.test(note)),
+    `комнате не сказали про перезапуск: ${JSON.stringify(room.notes())}`,
+  )
+})
+
 /* ------------------------------------------------- who may stop the kernel */
 
 /**
@@ -442,6 +516,79 @@ test('interrupting stops the tail as well as the cell', async () => {
     'a cell the room had cancelled ran anyway',
   )
   assert.ok(cellSource(extra[0]).toString().length > 0)
+})
+
+test('промах по чужой ячейке не разбирает чужую очередь', async () => {
+  /*
+   * Кнопка нарисована по документу, а документ отстаёт на круг: «стоп» по своей
+   * ячейке доезжает в тот момент, когда она уже кончилась, а ядро взяло первую
+   * ячейку из чужого Run All. `stopBatchOf` по текущей ячейке падал на
+   * `currentBatch` — то есть на ЧУЖУЮ пачку, и двенадцать ячеек студента гасли
+   * от нажатия преподавателя, с примечанием, объясняющим не то.
+   */
+  const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
+  const { getCells, createCell } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const cells = getCells(room.doc)
+  const theirs = [createCell('code', 'while True: pass'), createCell('code', 'print("theirs")')]
+  room.doc.transact(() => cells.push(theirs))
+
+  // Ячейка преподавателя своё отработала.
+  room.type('print("mine")')
+  requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+  assert.ok(await until(() => room.state() === 'ok'), 'ячейка преподавателя не прошла')
+
+  // Run All студента: первая считает, вторая ждёт.
+  swallowExecutes = true
+  requestRun(
+    room.id,
+    theirs.map((c) => c.get('id') as string),
+    'Ivan',
+    'p_ivan',
+  )
+  assert.ok(await until(() => theirs[0].get('state') === 'running'), 'чужая ячейка не пошла')
+  assert.ok(await until(() => theirs[1].get('state') === 'queued'), 'чужой хвост не встал')
+
+  // Преподаватель жмёт «стоп» на своей — уже закончившейся.
+  await interruptSession(room.id, room.cellId)
+  swallowExecutes = false
+
+  /*
+   * SIGINT достаётся тому, что считается: ядро одно, и выбирать ему не из чего,
+   * — так что чужая ячейка всё равно упадёт, а её собственный хвост снимет уже
+   * её собственный провал. Проверяется здесь другое: чужую пачку не разбирает
+   * само нажатие, и комнате не рассказывают, будто её сняли «прерыванием».
+   */
+  assert.ok(
+    !room.notes().some((note) => /interrupt also dropped/i.test(note)),
+    `нажатие отчиталось о чужой очереди: ${JSON.stringify(room.notes())}`,
+  )
+})
+
+test('семинар, закрытый во время подъёма ядра, не возвращается в память', async () => {
+  /*
+   * `shutdownSession` снимает среду исполнения, но подъём ядра доживает свою
+   * минуту на захваченном объекте — и всё, что он пишет, идёт через
+   * `getSessionDoc`, который заводит документ заново. Удалённая комната
+   * возвращалась в память вместе с папкой и строкой в истории.
+   */
+  const { createSession } = await import('../server/src/db.js')
+  const { ensureKernel, shutdownSession } = await import('../server/src/kernel/index.js')
+  const { dropSessionDoc, getSessionDoc, peekSessionDoc } = await import(
+    '../server/src/collab/index.js'
+  )
+  const id = `gone${seq++}`
+  createSession(id, 'Gone')
+  getSessionDoc(id)
+
+  const starting = ensureKernel(id)
+  // Ровно в это окно владелец удаляет семинар.
+  await shutdownSession(id)
+  dropSessionDoc(id)
+  await starting.catch(() => {})
+  await wait(400)
+
+  assert.equal(peekSessionDoc(id), null, 'комната воскресла из подъёма собственного ядра')
 })
 
 /* ---------------------------------------------------- taking a run back */
@@ -687,6 +834,39 @@ test('deleting a cell mid-run does not stall the queue behind it', async () => {
   assert.ok(
     await until(() => next.get('state') === 'ok', 8000),
     `the queue stalled: the next cell is ${String(next.get('state'))}`,
+  )
+})
+
+test('удалённая ячейка не оставляет ядро крутить свой цикл', async () => {
+  /*
+   * Удаление ничем не связано с выполнением: ячейка исчезала из документа, а
+   * `while True` крутился до конца пары. Остановить это было нечем — кнопка
+   * «стоп» нарисована на ячейке, а ячейки нет, — и `meta.runningCell` при этом
+   * продолжал называть её id, то есть комната считала, что работа идёт.
+   */
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { getCells, getMeta } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const cells = getCells(room.doc)
+
+  room.type('while True: pass')
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+
+  room.doc.transact(() => {
+    const index = cells.toArray().findIndex((c) => (c.get('id') as string) === room.cellId)
+    if (index >= 0) cells.delete(index, 1)
+  })
+  swallowExecutes = false
+
+  assert.ok(
+    await until(() => getMeta(room.doc).get('runningCell') == null),
+    'комната всё ещё считает, что удалённая ячейка выполняется',
+  )
+  assert.ok(
+    room.notes().some((note) => /deleted/i.test(note)),
+    `про остановку ничего не сказали: ${JSON.stringify(room.notes())}`,
   )
 })
 

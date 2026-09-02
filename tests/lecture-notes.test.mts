@@ -48,7 +48,7 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
   return { ws, heard }
 }
 
-function who(sessionId: string, role: 'host' | 'participant', tag = role): TokenPayload {
+function who(sessionId: string, role: 'host' | 'participant', tag: string = role): TokenPayload {
   return { sessionId, participantId: `p_${tag}`, role }
 }
 

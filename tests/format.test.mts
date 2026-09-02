@@ -131,7 +131,7 @@ test('a notebook with nothing to format asks the kernel nothing', async () => {
     async execute() { called = true; return 'ok' as const },
   } as never)
   assert.equal(called, false)
-  assert.deepEqual(out, { changed: 0, skipped: 0, unchanged: 0, error: null })
+  assert.deepEqual(out, { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: null })
 })
 
 test('code with quotes and backslashes survives the trip', async () => {
@@ -160,6 +160,42 @@ test('a kernel that answers with nothing readable is reported, not guessed at', 
   } as never)
   assert.ok(out.error)
   assert.equal(text()[0], 'x=1', 'the cell was touched despite the failure')
+})
+
+test('ячейку, которую правили, пока работал black, не перезаписывают', async () => {
+  /*
+   * Между снимком текстов и записью — круг до ядра, а если оно занято ячейкой,
+   * то и вся эта ячейка: до минут. Всё, что за это время напечатали, замена
+   * целиком стирала без следа — origin `format` чужой, Ctrl+Z до него не
+   * достаёт. Тут это и проверяется: студент дописывает ячейку, пока black
+   * «думает».
+   */
+  const { id, text } = room([
+    { type: 'code', source: 'x=1' },
+    { type: 'code', source: 'y=2' },
+  ])
+  const { getSessionDoc } = await import('../server/src/collab/index.js')
+  const { getCells } = await import('../shared/notebook.js')
+  const cells = getCells(getSessionDoc(id).doc)
+
+  const out = await formatNotebook(id, {
+    async execute(code: string, handlers: { onStream(n: 'stdout', t: string): void }) {
+      const payload = /b64decode\("([^"]+)"\)/.exec(code)?.[1] ?? ''
+      const sources = JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as string[]
+      // Пока ядро занято, вторую ячейку правит другой человек.
+      const live = cells.get(1).get('source') as Y.Text
+      live.insert(live.length, ' + 40')
+      const formatted = sources.map((s) => `f:${s}`)
+      handlers.onStream('stdout', JSON.stringify({ formatted }) + '\n')
+      return 'ok' as const
+    },
+  } as never)
+
+  assert.equal(text()[0], 'f:x=1', 'нетронутую ячейку не отформатировали')
+  assert.equal(text()[1], 'y=2 + 40', 'набранное во время форматирования стёрли')
+  assert.equal(out.changed, 1)
+  assert.equal(out.edited, 1, 'про пропущенную ячейку не сказали')
+  assert.equal(out.skipped, 1, 'пропущенная ячейка не попала в счёт оставленных')
 })
 
 test('the width is the one a lecture hall can read, not black default', () => {

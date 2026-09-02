@@ -223,6 +223,73 @@ test('токен без отметки времени читается: комн
   assert.equal(verifyToken(`${body}.${sig}`)?.participantId, 'p_ageless')
 })
 
+/* --------------------------------------------------- что комната принимает */
+
+test('аватар — знак, а не чужой адрес', async () => {
+  /*
+   * Строка, начинающаяся с http или data:, рисуется в комнате как <img src>:
+   * один запрос — и браузер КАЖДОГО участника, включая опоздавших, идёт на
+   * чужой сервер, потому что аватар стоит и в ростере, и в подписи ячеек.
+   */
+  for (const bad of [
+    'https://attacker.example/pixel.gif',
+    'http://attacker.example/p.gif',
+    'data:image/gif;base64,R0lGOD',
+    'javascript:alert(1)',
+  ]) {
+    const joined = await join({ name: 'Pixel', avatar: bad })
+    assert.equal(joined.participant.avatar, null, bad)
+  }
+  // Эмодзи — то, ради чего поле есть, и оно доезжает целиком.
+  const flag = await join({ name: 'Ada', avatar: '\u{1F469}\u200D\u{1F4BB}' })
+  assert.equal(flag.participant.avatar, '\u{1F469}\u200D\u{1F4BB}')
+})
+
+test('поток новых участников ограничен: цикл не раздувает комнату', async () => {
+  /*
+   * Вход не требует ничего, кроме ссылки, и без доказанной пары
+   * participantId+token заводит строку. Скрипт в цикле писал десятки тысяч
+   * «людей», которых никто не видел, — и список приезжал каждому настоящему
+   * участнику целиком.
+   */
+  const room = 'identity-flood'
+  createSession(room, 'Поток', null)
+  const knock = (body: JoinRequest, cookie?: string) =>
+    fetch(`${base}/api/sessions/${room}/join`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(cookie ? { cookie } : {}),
+      },
+      body: JSON.stringify(body),
+    })
+
+  let refusedAt = 0
+  let mine: JoinResponse | null = null
+  for (let i = 1; i <= 200 && refusedAt === 0; i += 1) {
+    const res = await knock({ name: `Гость ${i}` })
+    if (res.status === 429) refusedAt = i
+    else if (i === 1) mine = (await res.json()) as JoinResponse
+  }
+  assert.ok(refusedAt > 0, 'цикл не встретил ни одного отказа')
+
+  // Уже вошедший возвращается по своему токену — его отказ не касается.
+  assert.ok(mine)
+  const back = await knock({
+    name: 'Гость 1',
+    participantId: mine.participant.id,
+    token: mine.token,
+  })
+  assert.equal(back.status, 200, 'вернувшегося не пустили в собственную комнату')
+
+  // И преподавателя тоже: комнату под потоком ведёт кто-то живой.
+  const teacher = createTeacher({ name: 'Vera', email: 'vera.flood@hse.ru', role: 'teacher' })
+  assert.ok(teacher)
+  rotateLinkKey(teacher.id)
+  const staff = await knock({ name: 'Vera' }, mintCookie(teacher))
+  assert.equal(staff.status, 200, 'штат не смог войти в собственную комнату')
+})
+
 /* ------------------------------------------------ удалённый семинар уносит своё */
 
 test('история удалённого семинара не читается и не воскрешает комнату', async () => {

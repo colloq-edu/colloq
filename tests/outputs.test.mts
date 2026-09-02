@@ -130,6 +130,120 @@ test('a runaway cell is capped, and says so instead of going quiet', async () =>
   assert.match(said, /truncat|cut|limit|too much|stopped/i)
 })
 
+test('большая картинка доходит, и печать после неё не глохнет', async () => {
+  /*
+   * Раньше картинки считались из того же кошелька, что и текст: один
+   * `plt.imshow` при dpi=200 не влезал в 400 КБ целиком, вместо графика в
+   * ячейке появлялся совет «write to a file instead of printing», а весь
+   * дальнейший вывод этой ячейки глох до конца выполнения. На семинаре по
+   * зрению это ровно та ячейка, ради которой всё и запускали.
+   */
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  const png = 'i'.repeat(1_200_000)
+  writer.data({ 'image/png': png }, 1)
+  writer.stream('stdout', 'после картинки\n')
+  await settle()
+  writer.dispose?.()
+
+  const outs = outputsOf(doc, id)
+  const image = outs.find((o) => o.kind === 'data')
+  assert.ok(image, `картинку не показали: ${JSON.stringify(outs.map((o) => o.kind))}`)
+  const said = outs.map((o) => (o.kind === 'stream' ? o.text : '')).join('\n')
+  assert.match(said, /после картинки/, 'печать после картинки пропала')
+  assert.doesNotMatch(said, /instead of printing/, 'про картинку сказали не то')
+})
+
+test('картинки всё же не безграничны, и отказ говорит про них, а не про print', async () => {
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  // Двадцать кадров по мегабайту — это анимация, а не результат: столько
+  // уедет каждому в комнате, в снимок и в историю.
+  for (let i = 0; i < 20; i++) writer.data({ 'image/png': 'i'.repeat(1_000_000) }, i + 1)
+  await settle()
+  writer.dispose?.()
+
+  const outs = outputsOf(doc, id)
+  const images = outs.filter((o) => o.kind === 'data').length
+  assert.ok(images > 0, 'не показали ни одной картинки')
+  assert.ok(images < 20, 'бюджета на картинки нет вовсе')
+  const said = outs.map((o) => (o.kind === 'stream' ? o.text : '')).join('\n')
+  assert.match(said, /MB of images/, 'про предел картинок не сказали')
+})
+
+test('прогресс-бар остаётся одной строкой и между окнами склейки', async () => {
+  /*
+   * tqdm и pip рисуют прогресс возвратом каретки, по кадру в окно склейки.
+   * Раньше каждый кадр уезжал в документ отдельной строкой: тысячи кадров за
+   * десять минут обучения — это и трафик всей комнате, и потолок вывода
+   * ячейки, набранный прогресс-баром, из-за которого обрезался настоящий
+   * результат.
+   */
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  writer.stream('stdout', 'Training\n')
+  for (let i = 0; i <= 100; i += 10) {
+    writer.stream('stdout', `\r${i}% [${'#'.repeat(i / 10)}]`)
+    await settle()
+  }
+  writer.stream('stdout', '\ndone\n')
+  await settle()
+  writer.dispose?.()
+
+  const outs = outputsOf(doc, id)
+  assert.ok(outs[0].kind === 'stream')
+  const lines = outs[0].text.split('\n')
+  assert.deepEqual(
+    lines.slice(0, 3),
+    ['Training', '100% [##########]', 'done'],
+    `в документ уехало ${JSON.stringify(lines)}`,
+  )
+})
+
+test('CRLF — это перевод строки, а не новый кадр', async () => {
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  // Строку могут прислать двумя кусками, и второй закрывает её по-windows'ски.
+  writer.stream('stdout', 'Collecting')
+  await settle()
+  writer.stream('stdout', ' torch\r\nDone\r\n')
+  await settle()
+  writer.dispose?.()
+
+  const outs = outputsOf(doc, id)
+  assert.ok(outs[0].kind === 'stream')
+  assert.equal(outs[0].text, 'Collecting torch\nDone\n')
+})
+
+test('огромное сообщение об ошибке обрезается, а не уезжает в документ целиком', async () => {
+  /*
+   * `assert len(rows) == 0, rows` на списке из миллиона элементов кладёт
+   * мегабайты и в `evalue`, и в последнюю строку трейсбека. Запись идёт мимо
+   * потолка ячейки (трейсбек — причина запуска), но «мимо потолка» не значит
+   * «сколько угодно»: это уходит всем тридцати браузерам, в снимок и в каждый
+   * ключевой кадр истории.
+   */
+  const doc = new Y.Doc()
+  const id = cellIn(doc)
+  const writer = new OutputWriter(doc, id)
+  const huge = 'r'.repeat(7_000_000)
+  writer.error('AssertionError', huge, ['Traceback:', `  assert rows == [], ${huge}`])
+  await settle()
+  writer.dispose?.()
+
+  const outs = outputsOf(doc, id)
+  assert.ok(outs[0].kind === 'error')
+  const size = JSON.stringify(outs[0]).length
+  assert.ok(size < 400 * 1024, `ошибка заняла ${size} символов`)
+  // Начало сообщения всё же на месте: по нему и понимают, что упало.
+  assert.match(outs[0].evalue, /^rrrr/)
+  assert.match(outs[0].evalue + outs[0].traceback.join(''), /more characters cut/)
+})
+
 test('writing to a disposed writer is a no-op, not a crash', async () => {
   const doc = new Y.Doc()
   const id = cellIn(doc)
@@ -220,6 +334,7 @@ test('немедленное стирание снимает отложенно�
 
   const outs = outputsOf(doc, id)
   assert.equal(outs.length, 1)
+  assert.equal(outs[0].kind, 'stream')
   assert.equal(outs[0].text, 'a', 'отложенное стирание съело то, что уже написали')
 })
 
@@ -243,6 +358,7 @@ test('упёршаяся в потолок ячейка всё же приним
 
   const outs = outputsOf(doc, id)
   assert.equal(outs.length, 1, `записей ${outs.length}`)
+  assert.equal(outs[0].kind, 'stream')
   assert.equal(outs[0].text, 'после переполнения\n')
 })
 
@@ -262,5 +378,6 @@ test('первый вывод не ждёт окна склейки', async () =
   await settle()
   const outs = outputsOf(doc, id)
   assert.equal(outs.length, 1)
-  assert.match(outs[0].text ?? '', /первая строка\nвторая\nтретья/)
+  assert.equal(outs[0].kind, 'stream')
+  assert.match(outs[0].text, /первая строка\nвторая\nтретья/)
 })

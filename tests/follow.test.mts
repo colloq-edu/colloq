@@ -1,5 +1,5 @@
 /**
- * За кем идти по документу и когда предлагать вернуться.
+ * За кем идти по документу и тот ли это ведущий.
  *
  * Всё здесь ломается тихо: экран просто ведёт себя странно, а объяснения нет.
  * Две вкладки одного преподавателя, двое преподавателей на разных страницах,
@@ -9,7 +9,7 @@
 import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { adrift, leaderFor } from '../web/src/lib/follow.js'
+import { leaderFor, sameLead } from '../web/src/lib/follow.js'
 import type { Peer } from '../web/src/lib/session.svelte.js'
 
 let clientId = 0
@@ -100,21 +100,33 @@ test('доска закрыта — вести некому', () => {
   assert.equal(leaderFor([peer('host', HERE)], null, null), null)
 })
 
-/* ------------------------------------------------------- отставание */
+/* --------------------------------------------------- тот же ли ведущий */
 
 const lead = { clientId: 1, name: 'Ада', color: '#000', page: 5, y: 0.4 }
 
-test('другая страница — всегда отставание', () => {
-  assert.equal(adrift({ page: 4, y: 0.4 }, lead), true)
-  assert.equal(adrift({ page: 6, y: 0.4 }, lead), true)
+test('тот же ведущий на том же месте — не повод переписывать свойство', () => {
+  /*
+   * `leaderFor` каждый раз собирает НОВЫЙ объект, и без этой сверки эффект,
+   * пишущий его в связанное свойство, подписывается на то, что сам же и
+   * вызывает: родитель перерисовывается, свойство приезжает обратно, эффект
+   * считает заново — effect_update_depth_exceeded.
+   */
+  assert.equal(sameLead(lead, { ...lead }), true)
+  // Дрожание прокрутки на пиксель — то же место: доля высоты страницы, и
+  // сотая её часть на 1080 px это десять пикселей.
+  assert.equal(sameLead(lead, { ...lead, y: 0.405 }), true)
 })
 
-test('дрожание на пиксель отставанием не считается', () => {
-  // Иначе плашка «вернуться» мигает всё занятие и её перестают читать.
-  assert.equal(adrift({ page: 5, y: 0.42 }, lead), false)
-  assert.equal(adrift({ page: 5, y: 0.2 }, lead), false)
+test('сдвинулся сам или сменился — другой ведущий', () => {
+  assert.equal(sameLead(lead, { ...lead, page: 6 }), false)
+  assert.equal(sameLead(lead, { ...lead, y: 0.9 }), false)
+  assert.equal(sameLead(lead, { ...lead, clientId: 2 }), false)
 })
 
-test('уехал по странице заметно — отставание', () => {
-  assert.equal(adrift({ page: 5, y: 0.9 }, lead), true)
+test('«идти не за кем» сравнивается само с собой', () => {
+  // На самом преподавателе ведущий всегда `null`, и без этой ветки эффект
+  // считал бы каждый его кадр сменой ведущего.
+  assert.equal(sameLead(null, null), true)
+  assert.equal(sameLead(null, lead), false)
+  assert.equal(sameLead(lead, null), false)
 })

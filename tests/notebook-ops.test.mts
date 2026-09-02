@@ -13,6 +13,7 @@ import { CELLS_KEY, cellOutputs, cellSource, createCell, getCells } from '../sha
 import {
   deleteCell,
   duplicateCell,
+  hasPendingRun,
   insertCellAfter,
   setCellType,
 } from '../web/src/lib/notebook-ops.js'
@@ -202,4 +203,34 @@ test('перестановка соседа не сбивает секундом
   const still = cells.toArray().find((c) => (c.get('id') as string) === ids[1])!
   assert.equal(still.get('state'), 'running')
   assert.equal(still.get('startedAt'), 1_700_000_000_000, 'секундомер потерялся при перестановке')
+})
+
+/*
+ * Потолок «по одной» живёт на сервере, а шаг Shift+Enter — в браузере, и до
+ * сих пор они друг о друге не знали: отказанный запуск всё равно шагал вниз и
+ * дописывал пустую ячейку в общую тетрадь класса. Клиент считает свои ячейки
+ * тем же способом, что и `requestRun`: очередь плюс та, что уже считается.
+ */
+test('своя ячейка в очереди или в работе видна клиенту', () => {
+  const { doc, made } = notebook(['a = 1', 'b = 2', 'c = 3'])
+  assert.equal(hasPendingRun(doc, 'anna'), false)
+
+  doc.transact(() => {
+    made[0].set('state', 'queued')
+    made[0].set('runById', 'petya')
+  })
+  // Чужая очередь потолка не занимает — иначе своя ячейка не запустилась бы
+  // ни разу, пока преподаватель держит ядро.
+  assert.equal(hasPendingRun(doc, 'anna'), false)
+  assert.equal(hasPendingRun(doc, 'petya'), true)
+
+  doc.transact(() => {
+    made[1].set('state', 'running')
+    made[1].set('runById', 'anna')
+  })
+  assert.equal(hasPendingRun(doc, 'anna'), true)
+
+  // Досчитала — потолок снова свободен.
+  doc.transact(() => made[1].set('state', 'ok'))
+  assert.equal(hasPendingRun(doc, 'anna'), false)
 })

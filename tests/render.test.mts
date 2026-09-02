@@ -10,7 +10,7 @@
 import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { renderCourse, renderStep } from '../server/src/publish/render.js'
+import { renderCourse, renderRedirect, renderStep } from '../server/src/publish/render.js'
 import { BLOB_PREFIX, type PublicCell, type PublicCourseView } from '../shared/publish.js'
 
 const cellWithImage: PublicCell = {
@@ -150,4 +150,152 @@ test('разметка заметки не пропускает чужой HTML'
   assert.ok(!/<img/i.test(html), 'сырой тег доехал до страницы')
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/)
   assert.match(html, /<h2>Заголовок<\/h2>/)
+})
+
+test('цвет ядра не доезжает до страницы мусором', () => {
+  /*
+   * Ядро печатает escape-последовательности как есть, комната красит их на
+   * лету, а здесь скриптов нет вовсе: сам escape невидим, и студент читает
+   * «[0;31m» посреди трейсбека. Трейсбеки IPython красит всегда.
+   */
+  const html = renderStep({
+    title: 'x',
+    publishedAt: 1,
+    course: null,
+    steps: [{ seq: 0, label: 'один', at: 1, cellCount: 1 }],
+    step: {
+      seq: 0,
+      label: 'один',
+      at: 1,
+      cells: [
+        {
+          id: 'c',
+          type: 'code',
+          source: '1 / 0',
+          outputs: [
+            { kind: 'stream', name: 'stdout', text: '\x1b[1;32mсобрано\x1b[0m\n' },
+            {
+              kind: 'error',
+              ename: 'ZeroDivisionError',
+              evalue: 'division by zero',
+              traceback: [
+                '\x1b[0;31m---------------------------------\x1b[0m',
+                '\x1b[0;31mZeroDivisionError\x1b[0m       Traceback (most recent call last)',
+                '\x1b[0;32mCell In[1]\x1b[0m, line 1',
+                '\x1b[0;31mZeroDivisionError\x1b[0m: division by zero',
+              ],
+            },
+          ],
+          execCount: 1,
+          ranMs: null,
+        },
+      ],
+    },
+    depth: 1,
+    base: 'https://colloq.ru',
+  })
+  assert.ok(!html.includes('[0;31m'), 'escape-коды доехали до страницы')
+  assert.ok(!html.includes('\x1b'), 'сам escape остался в тексте')
+  assert.match(html, /собрано/)
+  assert.match(html, /Cell In\[1\], line 1/)
+  // Заголовок ошибки стоит один раз, а не трижды: рамку, баннер и эхо снимает
+  // и комната (web/src/lib/traceback.ts).
+  assert.equal(html.split('ZeroDivisionError').length - 1, 1)
+})
+
+test('SVG-вывод рисуется, а не превращается в пустую рамку', () => {
+  // Ядро отдаёт SVG XML-текстом: `data:…;base64,<xml>` — битая картинка.
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="2" height="2"/></svg>'
+  const html = renderStep({
+    title: 'x',
+    publishedAt: 1,
+    course: null,
+    steps: [{ seq: 0, label: 'один', at: 1, cellCount: 1 }],
+    step: {
+      seq: 0,
+      label: 'один',
+      at: 1,
+      cells: [
+        {
+          id: 'g',
+          type: 'code',
+          source: 'graph',
+          outputs: [{ kind: 'data', data: { 'image/svg+xml': svg }, execCount: 1 }],
+          execCount: 1,
+          ranMs: null,
+        },
+      ],
+    },
+    depth: 1,
+    base: 'https://colloq.ru',
+  })
+  assert.match(html, /src="data:image\/svg\+xml;charset=utf-8,/)
+  assert.ok(!html.includes(';base64,'), 'XML отдали как base64')
+  // Картинкой, а не разметкой: скрипт из чужого вывода в `<img>` не исполнится.
+  assert.ok(!/<svg/i.test(html), 'разметка вывода попала в страницу')
+})
+
+test('надгробие с оставшимся чтением — ссылка, а не тупик', () => {
+  /*
+   * «Удалить семинар, чтение оставить» — умолчание. Страница жива, а курс —
+   * единственный адрес, который дают классу.
+   */
+  const course: PublicCourseView = {
+    id: 'abcd1234',
+    slug: null,
+    name: 'Курс',
+    blurb: null,
+    items: [
+      { kind: 'gone', name: 'Четвёртая неделя', at: 1, publication: { id: 'p7', slug: 'nedelya' } },
+      { kind: 'gone', name: 'Пятая неделя', at: 2 },
+    ],
+  }
+  const html = renderCourse(course, 'https://colloq.ru')
+  assert.match(html, /href="https:\/\/colloq\.ru\/p\/nedelya\/"/)
+  assert.match(html, /комната закрыта, страница осталась/)
+  // А там, где страницы не осталось, строка остаётся строкой.
+  assert.match(html, /семинар удалён/)
+})
+
+test('время на странице — в поясе инстанса, а не в поясе процесса', () => {
+  /*
+   * Выгрузку запускают на сервере, где пояс обычно UTC, а занятие шло в
+   * аудитории: без явного пояса страница подписывала пару на три часа назад, и
+   * проверить подпись на статике нечем — браузера, который считает время сам,
+   * здесь нет.
+   */
+  const noon = Date.UTC(2026, 8, 2, 12, 0)
+  const at = (zone: string): string => {
+    process.env.TZ = zone
+    return renderStep({
+      title: 'Деревья и леса',
+      publishedAt: noon,
+      course: null,
+      steps: [
+        { seq: 3, label: 'перед упражнением', at: noon, cellCount: 1 },
+        { seq: 5, label: 'решение', at: noon, cellCount: 1 },
+      ],
+      step: { seq: 3, label: 'шаг', at: noon, cells: [cellWithImage] },
+      depth: 1,
+      base: 'https://colloq.ru',
+    })
+  }
+  const was = process.env.TZ
+  try {
+    assert.match(at('UTC'), /12:00/)
+    assert.match(at('Europe/Moscow'), /15:00/)
+    // Опечатка в TZ не роняет выгрузку целиком — страница собирается по Москве.
+    assert.match(at('МСК'), /15:00/)
+  } finally {
+    if (was === undefined) delete process.env.TZ
+    else process.env.TZ = was
+  }
+})
+
+test('старый адрес перекладывает на нынешний', () => {
+  // На живом сервере это `WHERE id = ? OR slug = ?`; на Pages маршрутизации нет.
+  const html = renderRedirect('https://colloq.ru/c/ml-strong/', 'Прикладной ML')
+  assert.match(html, /http-equiv="refresh" content="0; url=https:\/\/colloq\.ru\/c\/ml-strong\/"/)
+  assert.match(html, /href="https:\/\/colloq\.ru\/c\/ml-strong\/"/)
+  assert.ok(!/<script/i.test(html), 'на странице появился скрипт')
 })

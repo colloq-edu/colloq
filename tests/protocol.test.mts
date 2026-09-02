@@ -38,5 +38,6 @@ test('a participant colour is stable for an id and spread over the palette', () 
   // Not a distribution test — just that it is not collapsing onto one colour,
   // which is what a broken hash looks like from the outside.
   assert.ok(seen.size >= PARTICIPANT_COLORS.length - 1, `only ${seen.size} colours used`)
-  for (const colour of seen) assert.ok(PARTICIPANT_COLORS.includes(colour), colour)
+  const palette: readonly string[] = PARTICIPANT_COLORS
+  for (const colour of seen) assert.ok(palette.includes(colour), colour)
 })

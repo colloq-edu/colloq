@@ -14,6 +14,16 @@ that nobody can read, an online list that is empty for every real browser.
 Anything needing a live server, a browser or a real kernel belongs in the e2e
 harness instead.
 
+`site.test.mts` is the odd one out in the other direction: it imports no module
+at all. The landing page has no build step, no types and no other check —
+`site/index.html` ships to Pages exactly as written — and three of its promises
+had quietly drifted from what the file does: a cache-busting marker that had not
+moved through five edits of the stylesheet, a seat count parsed with `parseInt`
+out of a Russian sentence (`NaN`, so the door said "1 person inside" the moment
+somebody walked in), and a decorative cursor layer inside the `<h1>` that a
+screen reader read out along with the headline. Nothing in the repository would
+have said so. What can be read out of that file is now read out of it here.
+
 Two files are exceptions, and both earn it by covering a failure a real
 component will not perform on request.
 

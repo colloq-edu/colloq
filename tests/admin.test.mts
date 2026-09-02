@@ -3,7 +3,12 @@
  * real holes here, so the invariants that survived are pinned down.
  */
 import './_env.mts'
-import { test } from 'node:test'
+import fs from 'node:fs'
+import http from 'node:http'
+import path from 'node:path'
+import { createHmac } from 'node:crypto'
+import express from 'express'
+import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Response } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
@@ -16,11 +21,24 @@ import {
   linkKeyOf,
   listTeachers,
   normalizeEmail,
+  oldestOwner,
   rotateLinkKey,
   updateTeacherIdentity,
   updateTeacherRole,
 } from '../server/src/admin/store.js'
-import { issueStaffCookie, staffFromCookieHeader, verifySetupToken } from '../server/src/admin/auth.js'
+import {
+  issueStaffCookie,
+  readSetupToken,
+  sameOrigin,
+  staffFromCookieHeader,
+  verifySetupToken,
+} from '../server/src/admin/auth.js'
+import { parseOraclePatch } from '../server/src/admin/settings.js'
+import { adminAuthRoutes } from '../server/src/routes/admin-auth.js'
+import { adminInstanceRoutes } from '../server/src/routes/admin-instance.js'
+import { createSession } from '../server/src/db.js'
+import { setPublicationSlug, writePublication } from '../server/src/publish/store.js'
+import { sessionDir } from '../server/src/workspace.js'
 
 /** issueStaffCookie writes onto express's Response; this is the smallest thing that shape. */
 function mintCookie(teacher: Parameters<typeof issueStaffCookie>[1]): string {
@@ -112,6 +130,15 @@ test('a wrong setup token is refused and a right one is not', () => {
   assert.equal(verifySetupToken(''), false)
   assert.equal(verifySetupToken(null), false)
   assert.equal(verifySetupToken(12345), false)
+  /*
+   * Положительная половина, без которой имя теста было неправдой: сломанный
+   * verifySetupToken, возвращающий false всегда, проходил все четыре проверки
+   * выше — а по этому токену идёт первый вход владельца на инстанс и обратная
+   * дорога, когда владелец потерял свою ссылку.
+   */
+  assert.equal(verifySetupToken(readSetupToken()), true)
+  // Пробелы и перевод строки — часть договора: токен копируют из терминала.
+  assert.equal(verifySetupToken(` ${readSetupToken()}\n`), true)
 })
 
 test('a teacher can be renamed without losing their link', () => {
@@ -135,4 +162,218 @@ test('a rename onto somebody else’s address is refused, not merged', () => {
   assert.equal(updateTeacherIdentity(one.id, { name: 'Sergey', email: 'olga@hse.ru' }), null)
   // Отказ не должен переименовать наполовину.
   assert.equal(getTeacherByEmail('sergey@hse.ru')?.id, one.id)
+})
+
+/* ------------------------------------------------------- the routes themselves */
+
+/**
+ * Правила панели живут в маршрутах, а не в хранилище, и проверялись до сих пор
+ * только глазами. Опечатка `< 1` вместо `<= 1` в одной строке оставляет
+ * инстанс без владельца — добавить в штат станет некому, и обратная дорога
+ * только через шелл на сервере.
+ */
+let base = ''
+let server: http.Server
+
+before(async () => {
+  const app = express()
+  app.use(express.json())
+  // Тот же порядок, что в index.ts: своё происхождение проверяется до всего,
+  // что пишет, и не проверяется на чтении.
+  app.use('/api/admin', (req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next()
+    sameOrigin(req, res, next)
+  })
+  app.use(adminAuthRoutes())
+  app.use(adminInstanceRoutes())
+  server = http.createServer(app)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  base = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`
+})
+
+after(() => server?.close())
+
+function call(
+  method: string,
+  path: string,
+  init: { cookie?: string; origin?: string; body?: unknown } = {},
+): Promise<globalThis.Response> {
+  return fetch(`${base}${path}`, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      ...(init.cookie ? { cookie: init.cookie } : {}),
+      ...(init.origin ? { origin: init.origin } : {}),
+    },
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  })
+}
+
+test('the last owner cannot be demoted or removed', async () => {
+  const owner = oldestOwner()
+  assert.ok(owner)
+  assert.equal(countOwners(), 1, 'этот тест имеет смысл только при одном владельце')
+  const cookie = mintCookie(owner)
+
+  const demoted = await call('PATCH', `/api/admin/teachers/${owner.id}`, {
+    cookie,
+    body: { role: 'teacher' },
+  })
+  assert.equal(demoted.status, 409)
+  const removed = await call('DELETE', `/api/admin/teachers/${owner.id}`, { cookie })
+  assert.equal(removed.status, 409)
+  // И инстанс всё ещё кому-то принадлежит — ради этого всё и затевалось.
+  assert.equal(countOwners(), 1)
+})
+
+test('a teacher is refused the owner-only doors, and told which one', async () => {
+  const teacher = fresh('Anna', 'anna.routes@hse.ru')
+  const refused = await call('POST', '/api/admin/teachers', {
+    cookie: mintCookie(teacher),
+    body: { name: 'Someone', email: 'someone.routes@hse.ru' },
+  })
+  assert.equal(refused.status, 403)
+  const body = (await refused.json()) as { error: string; reason: string }
+  assert.equal(body.reason, 'forbidden')
+  // Отказ называет то, что отказано: «only an owner can …» про список штата.
+  assert.match(body.error, /staff list/)
+  assert.equal(getTeacherByEmail('someone.routes@hse.ru'), null)
+})
+
+test('a write from somebody else’s page is refused before it is read', async () => {
+  const owner = oldestOwner()
+  assert.ok(owner)
+  const cookie = mintCookie(owner)
+
+  const foreign = await call('POST', '/api/admin/teachers', {
+    cookie,
+    origin: 'https://evil.example',
+    body: { name: 'Mallory', email: 'mallory.routes@hse.ru' },
+  })
+  assert.equal(foreign.status, 403)
+  assert.equal(getTeacherByEmail('mallory.routes@hse.ru'), null)
+
+  // Со своего происхождения тот же запрос проходит — иначе проверка запрещает всё.
+  const own = await call('POST', '/api/admin/teachers', {
+    cookie,
+    origin: base,
+    body: { name: 'Mallory', email: 'mallory.routes@hse.ru' },
+  })
+  assert.equal(own.status, 201)
+})
+
+test('the dev server on its own port is not somebody else', async () => {
+  /*
+   * `npm run dev` отдаёт страницу с :5173, а прокси переписывает Host на адрес
+   * сервера — Origin и Host расходятся всегда, и панель отвечала 403 на каждую
+   * запись, включая вход. Для браузера это один сайт (SameSite не смотрит на
+   * порт), так что уступки здесь нет.
+   */
+  const owner = oldestOwner()
+  assert.ok(owner)
+  const dev = await call('POST', '/api/admin/teachers', {
+    cookie: mintCookie(owner),
+    origin: 'http://localhost:5173',
+    body: { name: 'Dev', email: 'dev.routes@hse.ru' },
+  })
+  assert.equal(dev.status, 201)
+})
+
+test('the number of files on a card follows the folder', async () => {
+  /*
+   * Число на карточке считается с кешем — иначе список обходил дерево каждой
+   * комнаты на каждую строку, при каждой смене вкладки и раз в двадцать
+   * секунд, синхронно и в том же цикле событий, что обслуживает живые комнаты.
+   * Цена кеша — ровно одна: он обязан замечать изменение папки.
+   */
+  const owner = oldestOwner()
+  assert.ok(owner)
+  const cookie = mintCookie(owner)
+  const room = 'admin-files'
+  createSession(room, 'Файлы', null)
+
+  const shown = async (): Promise<number> => {
+    const res = await call('GET', '/api/admin/seminars', { cookie })
+    const rows = (await res.json()) as { id: string; fileCount: number }[]
+    return rows.find((row) => row.id === room)?.fileCount ?? -1
+  }
+
+  assert.equal(await shown(), 0)
+  fs.writeFileSync(path.join(sessionDir(room), 'data.csv'), 'a,b\n')
+  assert.equal(await shown(), 1, 'карточка показывает вчерашнее число файлов')
+})
+
+test('карточка семинара называет адрес страницы, а не её идентификатор', async () => {
+  /*
+   * Заданное имя в адресе — это и есть тот адрес, который дали классу; список
+   * панели был единственным местом, печатавшим вместо него идентификатор.
+   * Печатает и копирует его клиент, но взять `slug` ему неоткуда, пока строка
+   * списка его не несёт.
+   */
+  const owner = oldestOwner()
+  assert.ok(owner)
+  const room = 'admin-slug'
+  createSession(room, 'Публикация', null)
+  const pub = writePublication({
+    sessionId: room,
+    title: 'Неделя первая',
+    by: null,
+    steps: [],
+    blobs: [],
+  })
+  assert.equal(setPublicationSlug(pub.id, 'week-one'), 'ok')
+
+  const res = await call('GET', '/api/admin/seminars', { cookie: mintCookie(owner) })
+  const rows = (await res.json()) as { id: string; publication: { slug: string | null } | null }[]
+  assert.equal(rows.find((row) => row.id === room)?.publication?.slug, 'week-one')
+})
+
+test('a cookie older than its month is nobody', () => {
+  const boris = fresh('Boris', 'boris.routes@hse.ru')
+  const key = linkKeyOf(boris.id)
+  assert.ok(key)
+  const stale = (ageMs: number): string => {
+    const body = Buffer.from(JSON.stringify({ tid: boris.id, iat: Date.now() - ageMs })).toString(
+      'base64url',
+    )
+    const sig = createHmac('sha256', process.env.SESSION_SECRET as string)
+      .update(`${body}.${key}`)
+      .digest('base64url')
+    return `${STAFF_COOKIE}=${body}.${sig}`
+  }
+  // Max-Age — обещание браузера; сервер стареет печенье сам, иначе снятая
+  // копия живёт вечно.
+  assert.equal(staffFromCookieHeader(stale(31 * 24 * 3_600_000)), null)
+  assert.equal(staffFromCookieHeader(stale(60_000))?.id, boris.id)
+})
+
+test('a malformed cookie is nobody, not a crash', () => {
+  /*
+   * `decodeURIComponent('%')` бросает URIError, а ту же функцию зовёт разбор
+   * роли на рукопожатии сокета — где исключение уходило в uncaughtException и
+   * клало процесс со всеми комнатами. Стоила эта строка одного участника с
+   * ссылкой и одной строчки в консоли браузера.
+   */
+  for (const bad of ['%', '%E0%A4%A', '%%%', 'a%zz']) {
+    assert.equal(staffFromCookieHeader(`${STAFF_COOKIE}=${bad}`), null, bad)
+  }
+  assert.equal(staffFromCookieHeader(`other=1; ${STAFF_COOKIE}=%; third=2`), null)
+})
+
+test('a patch of the oracle settings is refused by shape, not by luck', () => {
+  assert.ok('error' in parseOraclePatch(null))
+  assert.ok('error' in parseOraclePatch('everything'))
+  assert.ok('error' in parseOraclePatch({ provider: 'nobody-ships-this' }))
+  assert.ok('error' in parseOraclePatch({ model: 42 }))
+  assert.ok('error' in parseOraclePatch({ questionsPerHour: 'many' }))
+  assert.ok('error' in parseOraclePatch({ defaultMode: 'shout' }))
+  // Адрес, на который уедет ключ инстанса, обязан быть адресом.
+  assert.ok('error' in parseOraclePatch({ baseUrl: 'evil.example' }))
+
+  const good = parseOraclePatch({ model: 'gpt-4o-mini', questionsPerHour: 5, baseUrl: '' })
+  assert.ok('patch' in good)
+  assert.equal(good.patch.model, 'gpt-4o-mini')
+  // Пустая строка — это «перестань переопределять», а не отказ.
+  assert.equal(good.patch.baseUrl, '')
 })

@@ -187,3 +187,20 @@ test('a seminar imported from GitHub signs its work like any other', () => {
     | undefined
   assert.equal(row?.created_by, 'Alexander K.')
 })
+
+test('a link with broken percent-encoding is refused, not thrown at', () => {
+  /*
+   * The WHATWG parser lets a lone `%` through the path — `95%_CI.ipynb`, copied
+   * out of a chat rather than the address bar — and decodeURIComponent throws
+   * URIError on it. Thrown from the async import handler under Express 4, that
+   * is not an error page but a request that never answers: the preview spinner
+   * turns until the browser gives up.
+   */
+  assert.equal(parseGithubUrl('https://github.com/o/r/blob/main/95%_CI.ipynb'), null)
+  assert.equal(parseGithubUrl('https://github.com/o/r/tree/main/week%'), null)
+  // A properly encoded one still decodes.
+  assert.equal(
+    parseGithubUrl('https://github.com/o/r/blob/main/week%2002.ipynb')?.path,
+    'week 02.ipynb',
+  )
+})

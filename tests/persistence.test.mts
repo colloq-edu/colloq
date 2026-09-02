@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import { cellSource, createCell, getCells, readNotebook } from '../shared/notebook.js'
 import { createSession, db, loadDocSnapshot } from '../server/src/db.js'
+import { flushPersistence } from '../server/src/collab/persistence.js'
 import { dropSessionDoc, getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 
 after(() => shutdownCollab())
@@ -88,4 +89,38 @@ test('a browser standing in a deleted room cannot write it back', () => {
   shutdownCollab()
 
   assert.equal(loadDocSnapshot(id), null, 'a deleted seminar wrote itself back to disk')
+})
+
+test('снимок, который не записался, не считается записанным', () => {
+  /*
+   * `dirtySince` обнулялся до попытки записи, и ошибка sqlite (полный диск,
+   * ошибка ввода-вывода, занятая база) молча делала комнату «сохранённой»: ни
+   * таймер, ни flush на выходе к ней больше не возвращались. Класс, в котором
+   * после сбоя никто не напечатал ни символа, доезжал до `make down` без
+   * последних правок.
+   */
+  const id = room()
+  const { doc } = getSessionDoc(id)
+  const cells = getCells(doc)
+  cells.delete(0, cells.length)
+  const cell = createCell('code', '')
+  cells.push([cell])
+  cellSource(cell).insert(0, 'последняя строка перед сбоем')
+
+  db.pragma('query_only = ON')
+  flushPersistence(id)
+  db.pragma('query_only = OFF')
+
+  // Больше никто не печатает: сохранить это может только повтор.
+  flushPersistence(id)
+
+  const bytes = loadDocSnapshot(id)
+  assert.ok(bytes, 'снимка нет вовсе')
+  const restored = new Y.Doc()
+  Y.applyUpdate(restored, bytes)
+  assert.deepEqual(
+    readNotebook(restored).map((c) => c.source),
+    ['последняя строка перед сбоем'],
+    'правки после неудачной записи не попали на диск',
+  )
 })
