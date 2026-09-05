@@ -177,6 +177,20 @@
    * не выбор, и сказать об этом надо здесь, а не в журнале ядра посреди пары.
    */
   let sharedKernel = $state(false)
+  /**
+   * Срезы видеокарты: сколько их всего и сколько свободно прямо сейчас.
+   *
+   * Нужны здесь, а не только на экране окружений: комната на GPU-окружении
+   * берёт срез на всё время жизни своего контейнера, и когда свободных нет,
+   * сказать об этом надо ДО создания — иначе преподаватель узнает это первым
+   * запуском ячейки посреди пары.
+   */
+  let gpus = $state<{ total: number; free: number }>({ total: 0, free: 0 })
+
+  /** Просит ли выбранное окружение срез видеокарты — по его файлу, не по имени. */
+  const chosenGpu = $derived(
+    environments?.find((e: AdminEnvironment) => e.name === environment)?.gpu ?? false,
+  )
 
   /* The room's rules, starting as the open room the product has always been. */
   let rules = $state<RoomRules>({ ...OPEN_ROOM })
@@ -193,6 +207,7 @@
       .then((r: EnvironmentsState) => {
         environments = r.environments
         sharedKernel = r.shared
+        gpus = r.gpus
         if (!environment) environment = r.environments.find((e: AdminEnvironment) => e.active)?.name ?? ''
       })
       .catch(() => (environments = []))
@@ -580,6 +595,11 @@
                   built
                 </span>
               {/if}
+              {#if chosen.gpu}
+                <span class="inline-flex h-[18px] items-center bg-accent/15 px-1.5 text-micro font-bold uppercase tracking-label text-accent-text">
+                  GPU
+                </span>
+              {/if}
               <span class="ml-auto text-2xs text-muted">
                 {[
                   chosen.imageBytes ? imageSize(chosen.imageBytes) : null,
@@ -645,6 +665,31 @@
       </div>
     {:else}
       <p class="text-2xs text-muted">Whatever this instance runs.</p>
+    {/if}
+
+    <!--
+      Сцепка того же рода, что и в «The room», и с тем же правилом честности:
+      предупредить, но не запрещать. Срез может освободиться к паре — чужую
+      комнату закроют, её контейнер уберут, — а вот молчать нельзя: без
+      свободного среза ядро этой комнаты откажется подняться, и услышать это
+      первым Run посреди занятия хуже всего. Под общим ядром выбор окружения
+      и так ни на что не влияет, и пугать картами там нечем.
+    -->
+    {#if chosenGpu && !sharedKernel && gpus.free === 0}
+      <div class="mt-2.5 flex items-start gap-2.5 border-l-2 border-warning bg-warning/[0.07] px-3.5 py-2.5">
+        <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
+        <p class="min-w-0 text-2xs leading-snug text-muted">
+          {#if gpus.total === 0}
+            <span class="font-semibold text-ink">Видеокарт здесь нет.</span>
+            Это окружение просит срез, а KERNEL_GPUS не задана: ядро такой комнаты не поднимется,
+            а на процессоре её пакеты не поедут.
+          {:else}
+            <span class="font-semibold text-ink">Свободных срезов нет.</span>
+            Все срезы заняты другими комнатами, и остановленная держит свой тоже. Завести семинар
+            можно — ядро поднимется, когда чей-то контейнер уберут.
+          {/if}
+        </p>
+      </div>
     {/if}
   </Section>
 

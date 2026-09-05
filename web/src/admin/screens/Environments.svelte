@@ -22,6 +22,7 @@
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
+  import { plural } from '@/lib/plural'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
   import { ENVIRONMENT_NAME, type AdminEnvironment, type EnvironmentsState } from '@shared/admin'
 
@@ -44,6 +45,17 @@
    * панель до сих пор обещала обратное безусловно.
    */
   const sharedKernel = $derived(envs?.shared ?? false)
+  /*
+   * Срезы видеокарты и те, кто их просит.
+   *
+   * Считает сервер: свободен тот срез, которого нет ни на одном контейнере
+   * комнаты, и знать это может только он. Здесь — чтобы строка над списком и
+   * пометка в строке говорили одно и то же число.
+   */
+  const gpus = $derived(envs?.gpus ?? { total: 0, free: 0 })
+  const someoneWantsGpu = $derived(
+    envs?.environments.some((e: AdminEnvironment) => e.gpu) ?? false,
+  )
 
   /* ------------------------------------------------------------- loading */
 
@@ -427,6 +439,32 @@
       </div>
     {/if}
 
+    <!--
+      Про карты — там, где карты есть или где их просят. Установка без
+      видеокарт и без GPU-окружений не должна читать абзац про железо, которого
+      никто не звал; а вот окружение с пометкой на машине без карт — это
+      будущий отказ на подъёме ядра, и узнать о нём лучше здесь.
+    -->
+    {#if gpus.total > 0}
+      <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
+        <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
+        <p class="text-2xs leading-relaxed text-muted">
+          Видеокарта: {gpus.total}
+          {plural(gpus.total, 'срез', 'среза', 'срезов')}, свободно {gpus.free}. Срез достаётся
+          комнате на GPU-окружении на всё время жизни её контейнера — остановленный семинар держит
+          его тоже.
+        </p>
+      </div>
+    {:else if someoneWantsGpu}
+      <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
+        <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
+        <p class="text-2xs leading-relaxed text-muted">
+          Срезов видеокарты нет: KERNEL_GPUS не задана. Комната на окружении с пометкой GPU здесь
+          не откроет ядро — выдать ей нечего, а на процессоре такое окружение не поедет.
+        </p>
+      </div>
+    {/if}
+
     <div class="flex flex-col gap-2.5">
       {#each envs.environments as env (env.name)}
         <section class="border border-line">
@@ -440,6 +478,17 @@
             <div class="flex min-w-0 flex-1 flex-col gap-0.5">
               <div class="flex items-center gap-2">
                 <span class="truncate font-mono text-ui-lg font-semibold text-ink">{env.name}</span>
+                <!-- У имени, а не среди состояний справа: это про то, чем
+                     окружение является, а не про то, что с ним сейчас
+                     происходит, — и потому видно и во время сборки. -->
+                {#if env.gpu}
+                  <span
+                    class="inline-flex h-[18px] shrink-0 items-center bg-accent/15 px-1.5 text-micro font-bold uppercase tracking-label text-accent-text"
+                    title="Комната на этом окружении занимает срез видеокарты, пока жив её контейнер"
+                  >
+                    GPU
+                  </span>
+                {/if}
               </div>
               <!--
                 Only the facts that exist. The row used to print size and build

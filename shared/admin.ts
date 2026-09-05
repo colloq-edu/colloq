@@ -398,6 +398,15 @@ export interface AdminEnvironment {
   active: boolean
   /** Last build's error, kept so a failure is readable after the log scrolls. */
   error: string | null
+  /**
+   * Окружение просит видеокарту — строкой `# colloq: gpu` в шапке своего файла.
+   *
+   * Свойство окружения, а не комнаты: колёса torch в нём собраны под CUDA, и на
+   * процессоре такая комната не поедет вовсе. Поэтому срез выдаётся ей на всё
+   * время жизни контейнера, а комната на обычном окружении не занимает его
+   * никогда.
+   */
+  gpu: boolean
 }
 
 export interface EnvironmentsState {
@@ -425,6 +434,15 @@ export interface EnvironmentsState {
    * in words.
    */
   shared: boolean
+  /**
+   * Срезы видеокарты: сколько перечислено в KERNEL_GPUS и сколько сейчас
+   * свободно.
+   *
+   * Свободен тот срез, которого нет ни на одном контейнере комнаты, — считает
+   * сервер, потому что знает об этом только он. `total: 0` — обычная установка
+   * без карт, а не поломка: панель говорит это словами и не пугает.
+   */
+  gpus: { total: number; free: number }
 }
 
 export interface SaveEnvironmentRequest {

@@ -27,7 +27,7 @@ import {
 } from '../environments.js'
 import { sessionsOnEnvironment } from '../db.js'
 import { expectKernelChurn } from '../kernel/index.js'
-import { isolationAvailable } from '../kernel/pool.js'
+import { gpuBusy, gpuDevices, isolationAvailable } from '../kernel/pool.js'
 import {
   ENVIRONMENT_NAME,
   type AdminErrorBody,
@@ -44,12 +44,33 @@ function fail(res: Response, status: number, reason: AdminErrorReason, message: 
 /** A requirements file is text somebody types; this is a sanity bound, not a rule. */
 const MAX_SOURCE = 16 * 1024
 
+/**
+ * Сколько срезов видеокарты названо в KERNEL_GPUS и сколько из них свободно.
+ *
+ * Занят тот срез, который стоит меткой на контейнере комнаты, — остановленной
+ * тоже: её поднимут обратно тем же устройством. Занятость, которой больше нет в
+ * списке (оператор переписал KERNEL_GPUS), свободных не прибавляет и не
+ * убавляет: считаем по настроенным.
+ *
+ * На машине без карт docker не спрашиваем вовсе — `docker ps -a` на каждое
+ * открытие экрана ради заведомо пустого списка платить не за что.
+ */
+async function gpuState(): Promise<{ total: number; free: number }> {
+  const devices = gpuDevices()
+  if (devices.length === 0) return { total: 0, free: 0 }
+  const busy = new Set(await gpuBusy())
+  return { total: devices.length, free: devices.filter((device) => !busy.has(device)).length }
+}
+
 export function adminEnvironmentRoutes(): Router {
   const router = Router()
 
   router.get('/api/admin/environments', requireStaff, async (_req: Request, res: Response) => {
     const docker = await dockerAvailable()
     const body: EnvironmentsState = {
+      // `gpu` у каждой строки — оттуда же, откуда packages: директива читается
+      // тем же чтением файла, что и список пакетов, и тем же разбором, по
+      // которому подъём ядра потом решает, просить ли срез.
       environments: await listEnvironments(),
       canBuild: docker.ok,
       cannotBuildReason: docker.reason,
@@ -64,6 +85,13 @@ export function adminEnvironmentRoutes(): Router {
        * вместе со списком, потому что показывают его там же.
        */
       shared: !(await isolationAvailable()),
+      /*
+       * Срезы — рядом со списком по той же причине, что и `shared`: смотрят на
+       * них там же. Без этого числа преподаватель заводит семинар на
+       * GPU-окружении на машине, где карт нет вовсе, и узнаёт об этом отказом
+       * ядра посреди пары.
+       */
+      gpus: await gpuState(),
     }
     res.json(body)
   })
