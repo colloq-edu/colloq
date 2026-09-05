@@ -30,6 +30,13 @@
  * `isolationLost` здесь и `noteSharedKernel` в kernel/index.ts).
  * `isolationAvailable()` — та же правда для панели.
  *
+ * Срез GPU — тоже свойство контейнера, а не комнаты: окружение объявляет
+ * `# colloq: gpu`, комната получает устройство на всё время жизни своего
+ * контейнера, и держит его метка `colloq.gpu` — единственное, что переживает
+ * перезапуск сервера. Не хватило срезов — отказ, а не тихий откат на процессор:
+ * колёса torch собраны под CUDA, и «то же самое, только медленнее» здесь не
+ * существует. См. `pickGpu`.
+ *
  * Путь монтирования берётся глазами docker-демона, а не наших: см. `hostMount`.
  * Адрес ядра — наоборот, нашими: под `make up` сервер сам в контейнере, и порт,
  * опубликованный на петле хоста, для него не адрес — см. `roomNetwork`.
@@ -38,7 +45,7 @@ import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
 import path from 'node:path'
 import { config } from '../config.js'
-import { activeName } from '../environments.js'
+import { activeName, needsGpu } from '../environments.js'
 import { sessionDir } from '../workspace.js'
 import { defaultEndpoint, type KernelEndpoint } from './jupyter.js'
 
@@ -260,19 +267,43 @@ export async function isolationLost(): Promise<boolean> {
  * `make down`. Метку ставит `docker run` ниже, и она переживает нас.
  */
 export async function listRoomKernels(): Promise<string[]> {
+  const rooms = await roomContainers(false)
+  return rooms.map((room) => room.session).filter((session) => session.length > 0)
+}
+
+/** Комната и срез, который держит её контейнер; срез пустой — комната без GPU. */
+interface RoomContainer {
+  session: string
+  gpu: string
+}
+
+/**
+ * Контейнеры комнат вместе с их метками.
+ *
+ * `all` — это `docker ps -a`, и для раздачи срезов только так и правильно:
+ * остановленный контейнер свой срез держит, его поднимут обратно `docker start`
+ * с теми же переменными и тем же устройством. Уборке простоя, наоборот, нужны
+ * живые — она и спрашивает без `-a`.
+ */
+async function roomContainers(all: boolean): Promise<RoomContainer[]> {
   if (!(await canIsolate())) return []
   const res = await run([
     'ps',
+    ...(all ? ['-a'] : []),
     '--filter',
     'label=colloq.kind=room-kernel',
     '--format',
-    '{{.Label "colloq.session"}}',
+    '{{.Label "colloq.session"}}\t{{.Label "colloq.gpu"}}',
   ])
   if (res.code !== 0) return []
   return res.out
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
+    .map((line) => {
+      const [session, gpu] = line.split('\t')
+      return { session: (session ?? '').trim(), gpu: (gpu ?? '').trim() }
+    })
 }
 
 /**
@@ -316,6 +347,202 @@ function roomNetwork(): string {
   return hostRoot() ? (process.env.KERNEL_NETWORK ?? '').trim() : ''
 }
 
+/* --------------------------------------------------------------- срезы GPU */
+
+/**
+ * Устройства, отданные Colloq: `KERNEL_GPUS`, через запятую, в том виде, в
+ * каком их понимает docker (`MIG-GPU-…`, `0`, `1`).
+ *
+ * Пусто или переменной нет — GPU не просит никто, и всё работает ровно как
+ * раньше: на машине без карты ни одна комната не должна споткнуться о срез.
+ */
+export function gpuDevices(): string[] {
+  return (process.env.KERNEL_GPUS ?? '')
+    .split(',')
+    .map((device) => device.trim())
+    .filter((device) => device.length > 0)
+}
+
+/**
+ * Срезы, выданные в этом процессе, но ещё не ставшие меткой на контейнере.
+ *
+ * Между «прочитали занятые» и «docker run поставил метку» проходит секунда, и
+ * две комнаты, открытые разом, успевали выбрать один и тот же срез: docker на
+ * это не жалуется, память MIG-среза делится пополам, и первое же обучение
+ * падает по нехватке видеопамяти у обоих. Источник правды — по-прежнему метка,
+ * это только окно между.
+ */
+const reserved = new Map<string, string>()
+
+/**
+ * Какой срез отдать комнате: тот же, если он у неё уже есть, иначе первый
+ * свободный, иначе никакой.
+ *
+ * «Тот же» — не вежливость: срез привязан к контейнеру, и другой срез означает
+ * пересоздание контейнера, то есть потерю всех переменных семинара на пустом
+ * месте. А вот срез, которого больше нет в `KERNEL_GPUS` (оператор переписал
+ * список), своим не считается: устройства может уже не быть на машине.
+ *
+ * Чистая функция, потому что доказывать надо именно это правило, а настоящего
+ * docker в тестах нет.
+ */
+export function pickGpu(
+  devices: string[],
+  taken: RoomContainer[],
+  sessionId: string,
+): string | null {
+  const mine = taken.find((held) => held.session === sessionId && devices.includes(held.gpu))
+  if (mine) return mine.gpu
+  const busy = new Set(taken.map((held) => held.gpu).filter((gpu) => gpu.length > 0))
+  return devices.find((device) => !busy.has(device)) ?? null
+}
+
+/**
+ * Срезов не хватило — теми же словами, что и отказ «окружение ни разу не
+ * собиралось»: что случилось и что человеку в комнате делать дальше.
+ *
+ * Отказ, а не молчаливый запуск на процессоре: колёса torch в таком окружении
+ * собраны под CUDA, `import torch` пройдёт, а первый `.cuda()` посреди пары
+ * скажет что-то про драйвер — и никто не свяжет это с тем, что срез был занят.
+ */
+export function gpuRefusal(env: string, devices: string[]): string {
+  if (devices.length === 0) {
+    return `Окружению «${env}» нужен GPU, а этой машине он не выделен. Назовите срезы в KERNEL_GPUS в .env (\`KERNEL_GPUS=0\` или \`KERNEL_GPUS=MIG-…\`, как их зовёт docker) и перезапустите сервер — или откройте семинар на окружении без GPU: на процессоре это окружение не поедет.`
+  }
+  return `Окружению «${env}» нужен GPU, а свободных срезов нет: их ${devices.length}, и все заняты другими семинарами. Подождите, пока освободится — срез уходит вместе с ядром комнаты, — или откройте семинар на окружении без GPU: на процессоре это окружение не поедет.`
+}
+
+/**
+ * Кто какой срез держит прямо сейчас — по меткам живых И остановленных
+ * контейнеров, плюс брони этого процесса. Нужно панели и раздаче.
+ */
+export async function gpuAssignments(): Promise<RoomContainer[]> {
+  const held = (await roomContainers(true)).filter((room) => room.gpu.length > 0)
+  const known = new Set(held.map((room) => room.session))
+  for (const [session, gpu] of reserved) if (!known.has(session)) held.push({ session, gpu })
+  return held
+}
+
+/** Занятые срезы — панели, чтобы она не обещала свободных. */
+export async function gpuBusy(): Promise<string[]> {
+  return [...new Set((await gpuAssignments()).map((room) => room.gpu))]
+}
+
+/** Срез для комнаты или отказ. Бронь ставится сразу — см. `reserved`. */
+async function takeGpu(sessionId: string, env: string): Promise<string> {
+  const devices = gpuDevices()
+  const gpu = pickGpu(devices, await gpuAssignments(), sessionId)
+  if (!gpu) throw new Error(gpuRefusal(env, devices))
+  reserved.set(sessionId, gpu)
+  return gpu
+}
+
+/**
+ * Тот ли срез у уже существующего контейнера — третья проверка рядом с
+ * `sameImage` и `sameNetwork`.
+ *
+ * Контейнер, поднятый до того, как окружению понадобился GPU, метки не несёт
+ * вовсе, и устройства внутри у него нет: переиспользовать такой — значит
+ * отдать комнате ядро, которое узнает о своей беде только на первом `.cuda()`.
+ */
+async function sameGpu(container: string, gpu: string | null): Promise<boolean> {
+  const res = await run(['inspect', container, '--format', '{{index .Config.Labels "colloq.gpu"}}'])
+  if (res.code !== 0) return true
+  // Метки нет: docker печатает пустую строку, а версии постарше — `<no value>`.
+  const label = res.out.trim() === '<no value>' ? '' : res.out.trim()
+  return label === (gpu ?? '')
+}
+
+/**
+ * Сколько потоков разрешить численным библиотекам.
+ *
+ * `os.cpu_count()` внутри контейнера показывает ядра ХОСТА, а не выданные
+ * `--cpus`: numpy и torch поднимают по тридцать потоков на два выделенных ядра
+ * и дерутся за них, считая медленнее, чем в один. Дробные `--cpus` docker
+ * понимает, а число потоков — целое, и вниз, а не вверх: просить больше
+ * потоков, чем есть ядер, — ровно та беда, от которой это ставится.
+ */
+function threadLimit(): string {
+  const cpus = Number(process.env.KERNEL_CPUS ?? '2')
+  if (!Number.isFinite(cpus) || cpus <= 0) return '2'
+  return String(Math.max(1, Math.floor(cpus)))
+}
+
+/**
+ * Аргументы `docker run` для контейнера комнаты.
+ *
+ * Отдельной функцией, потому что настоящего docker в тестах нет, а собрать эту
+ * строку правильно важнее, чем её позвать: лишний пробел или потерянный флаг
+ * здесь — это семинар без GPU или без изоляции, и заметить это можно только на
+ * паре. Кавычек нет намеренно: `run()` зовёт spawn массивом, без шелла.
+ */
+export function runArgs(opts: {
+  sessionId: string
+  env: string
+  mount: string
+  network: string
+  gpu: string | null
+}): string[] {
+  const { sessionId, env, mount, network, gpu } = opts
+  const threads = threadLimit()
+  return [
+    'run',
+    '-d',
+    '--name',
+    containerFor(sessionId),
+    /*
+     * Либо общая сеть compose и адрес по имени контейнера (сервер сам в
+     * контейнере), либо порт на петле хоста. Петля тут не украшение: без
+     * неё Jupyter комнаты открыт на всех интерфейсах, а Wi-Fi семинара —
+     * один из них. В сетевом режиме порт не публикуется вовсе.
+     */
+    ...(network ? ['--network', network] : ['-p', '127.0.0.1:0:8888']),
+    // Один срез, названный так, как его зовёт docker. Комната на обычном
+    // окружении сюда не попадает и устройства не занимает.
+    ...(gpu ? ['--gpus', `device=${gpu}`] : []),
+    '-e',
+    `JUPYTER_TOKEN=${roomToken(sessionId)}`,
+    // Ядер у комнаты столько, сколько ей выдали, — и потоков столько же.
+    '-e',
+    `OMP_NUM_THREADS=${threads}`,
+    '-e',
+    `MKL_NUM_THREADS=${threads}`,
+    '-e',
+    `OPENBLAS_NUM_THREADS=${threads}`,
+    '-v',
+    `${mount}:/workspace/${sessionId}`,
+    // Student code is arbitrary, exactly as in compose. A runaway cell in
+    // one room must not be able to take the host down either.
+    `--memory=${process.env.KERNEL_MEM ?? '2g'}`,
+    `--cpus=${process.env.KERNEL_CPUS ?? '2'}`,
+    '--pids-limit=512',
+    /*
+     * Разделяемая память нужна только там, где есть GPU: умолчание docker —
+     * 64 МБ, и `DataLoader(num_workers=4)` падает на нём «bus error», не
+     * назвав причины. Обычным комнатам этого не надо, и лишняя память,
+     * отданная всем, — это память, отнятая у соседних семинаров.
+     */
+    ...(gpu ? [`--shm-size=${process.env.KERNEL_SHM ?? '1g'}`] : []),
+    /*
+     * `no`, а не `unless-stopped`: контейнеров теперь по одному на семинар,
+     * и перезагрузка машины поднимала бы разом весь прошлый семестр. Пока
+     * сервер жив, упавший контейнер он поднимет сам при следующем открытии
+     * комнаты.
+     */
+    '--restart=no',
+    '--label',
+    'colloq.kind=room-kernel',
+    '--label',
+    `colloq.session=${sessionId}`,
+    '--label',
+    `colloq.environment=${env}`,
+    // Метка — источник правды о том, кто держит срез: она переживает
+    // перезапуск сервера, а карта в памяти нет.
+    ...(gpu ? ['--label', `colloq.gpu=${gpu}`] : []),
+    `${IMAGE_PREFIX}:${env}`,
+  ]
+}
+
 async function startContainer(
   sessionId: string,
   env: string,
@@ -324,6 +551,13 @@ async function startContainer(
   const container = containerFor(sessionId)
   const image = `${IMAGE_PREFIX}:${env}`
   const network = roomNetwork()
+  /*
+   * Срез спрашивается до того, как мы решим переиспользовать контейнер: у
+   * комнаты со своим контейнером это тот же срез, что и был, а у новой — либо
+   * свободный, либо отказ, и отказать надо раньше, чем `docker start` поднимет
+   * ядро без устройства.
+   */
+  const gpu = needsGpu(env) ? await takeGpu(sessionId, env) : null
   const state = await stateOf(container)
 
   /*
@@ -355,6 +589,9 @@ async function startContainer(
     // Контейнер прошлого режима: адреса, по которому мы теперь его зовём, у
     // него нет — ни имени в нашей сети, ни опубликованного порта.
     if (!(await sameNetwork(container, network))) return recreate('сервер сменил сеть')
+    // Контейнер без среза (или с чужим) для GPU-окружения не годится: устройства
+    // внутрь него не пробросить иначе как заново.
+    if (!(await sameGpu(container, gpu))) return recreate('контейнер поднят не с тем срезом GPU')
     if (state === 'stopped') {
       const started = await run(['start', container], 60_000)
       // Результат читается: не поднявшийся контейнер дальше отвечал бы «could
@@ -374,46 +611,20 @@ async function startContainer(
      * содержимое `/workspace` внутрь больше не попадает вовсе.
      */
     const mount = hostMount(sessionId)
-    const created = await run(
-      [
-        'run',
-        '-d',
-        '--name',
-        container,
-        /*
-         * Либо общая сеть compose и адрес по имени контейнера (сервер сам в
-         * контейнере), либо порт на петле хоста. Петля тут не украшение: без
-         * неё Jupyter комнаты открыт на всех интерфейсах, а Wi-Fi семинара —
-         * один из них. В сетевом режиме порт не публикуется вовсе.
-         */
-        ...(network ? ['--network', network] : ['-p', '127.0.0.1:0:8888']),
-        '-e',
-        `JUPYTER_TOKEN=${roomToken(sessionId)}`,
-        '-v',
-        `${mount}:/workspace/${sessionId}`,
-        // Student code is arbitrary, exactly as in compose. A runaway cell in
-        // one room must not be able to take the host down either.
-        `--memory=${process.env.KERNEL_MEM ?? '2g'}`,
-        `--cpus=${process.env.KERNEL_CPUS ?? '2'}`,
-        '--pids-limit=512',
-        /*
-         * `no`, а не `unless-stopped`: контейнеров теперь по одному на семинар,
-         * и перезагрузка машины поднимала бы разом весь прошлый семестр. Пока
-         * сервер жив, упавший контейнер он поднимет сам при следующем открытии
-         * комнаты.
-         */
-        '--restart=no',
-        '--label',
-        'colloq.kind=room-kernel',
-        '--label',
-        `colloq.session=${sessionId}`,
-        '--label',
-        `colloq.environment=${env}`,
-        image,
-      ],
-      120_000,
-    )
-    if (created.code !== 0) throw new Error(`docker run failed: ${created.out.slice(-300)}`)
+    const created = await run(runArgs({ sessionId, env, mount, network, gpu }), 120_000)
+    if (created.code !== 0) {
+      /*
+       * Самая частая беда GPU-комнаты — не в нас: на хосте не поставлен
+       * nvidia-container-toolkit, и docker отвечает «could not select device
+       * driver», из чего человеку в комнате не следует ничего. Подсказка
+       * добавляется, только если docker сказал именно это.
+       */
+      const noDriver = gpu !== null && /device driver|nvidia/i.test(created.out)
+      const hint = noDriver
+        ? ' Похоже, на хосте нет nvidia-container-toolkit: проверьте `docker run --rm --gpus all ubuntu nvidia-smi`.'
+        : ''
+      throw new Error(`docker run failed: ${created.out.slice(-300)}${hint}`)
+    }
   }
 
   let url: string
@@ -501,6 +712,11 @@ export async function endpointForSession(
     })
     .finally(() => {
       starting.delete(sessionId)
+      // Бронь свою работу сделала: либо контейнер уже несёт метку со срезом,
+      // либо контейнера нет и срез свободен. Пережить подъём она не должна —
+      // иначе неудачная сборка окружения забирает срез у следующего семинара
+      // насовсем.
+      reserved.delete(sessionId)
       // Комнату закрыли, пока это поднималось: контейнер (успешный или
       // недоделанный) убираем сами — за него больше некому.
       if (abandoned.delete(sessionId)) void discardRoom(sessionId)

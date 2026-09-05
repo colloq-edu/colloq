@@ -137,6 +137,30 @@ export function parsePackages(source: string): string[] {
     .filter((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith('-'))
 }
 
+/**
+ * Нужен ли этому окружению срез GPU — по директиве `# colloq: gpu` в шапке.
+ *
+ * Признак живёт в самом списке пакетов, а не рядом с комнатой, потому что это
+ * свойство окружения: колёса torch собраны под CUDA, и «то же самое, только на
+ * процессоре» здесь не существует. Комната на таком окружении либо получает
+ * срез на всё время жизни своего контейнера, либо честно не едет.
+ *
+ * Для pip это комментарий, поэтому директива ничего не ставит, не меняет
+ * `listChanged` и не зажигает «Needs rebuild» на собранном образе.
+ *
+ * Ищется среди всех комментариев, а не только до первой строки с пакетом:
+ * директива, дописанная человеком в конец файла, должна сработать, а не
+ * промолчать. Строка сравнивается целиком — фраза «# colloq: gpu не нужен»
+ * директивой не считается.
+ */
+export function declaresGpu(source: string): boolean {
+  return source.split('\n').some((line) => /^#\s*colloq:\s*gpu$/i.test(line.trim()))
+}
+
+export function needsGpu(name: string): boolean {
+  return declaresGpu(readSource(name))
+}
+
 export function writeSource(name: string, source: string): void {
   fs.mkdirSync(ENV_DIR, { recursive: true })
   const text = source.endsWith('\n') ? source : `${source}\n`
@@ -567,14 +591,18 @@ export async function listEnvironments(): Promise<AdminEnvironment[]> {
   return Promise.all(
     names.map(async (name) => {
       const built = await imageFacts(name)
+      const source = readSource(name)
       return {
         name,
         state: stateOf(name, built),
-        packages: parsePackages(readSource(name)),
+        packages: parsePackages(source),
         imageBytes: built?.bytes ?? null,
         builtAt: built?.builtAt ?? null,
         active: name === active,
         error: failures.get(name) ?? null,
+        // Директива из шапки файла, а не отдельный реестр: панель показывает то
+        // же самое, по чему потом решает подъём ядра.
+        gpu: declaresGpu(source),
       }
     }),
   )

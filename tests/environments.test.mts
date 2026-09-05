@@ -17,7 +17,9 @@ import type { Response } from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  declaresGpu,
   listChanged,
+  needsGpu,
   parsePackages,
   pickActiveName,
   readSource,
@@ -60,6 +62,46 @@ test('a package with a marker or an extra survives whole', () => {
     'uvicorn[standard]>=0.30',
     "numpy>=1.26; python_version < '3.13'",
   ])
+})
+
+/* ------------------------------------------- окружению нужен срез GPU */
+
+/*
+ * GPU — свойство окружения, а не комнаты: колёса torch собраны под CUDA, и «то
+ * же самое, только на процессоре» здесь не существует. Объявляется строкой в
+ * шапке файла, потому что список пакетов и есть окружение, а отдельный реестр
+ * рядом с ним разъезжается на первой же правке руками.
+ */
+test('директива в шапке объявляет GPU, а pip её не видит', () => {
+  const source = '# нейросети\n# colloq: gpu\ntorch>=2.4\n'
+  assert.equal(declaresGpu(source), true)
+  // Для pip это комментарий: ни лишнего пакета в счёте, ни «Needs rebuild» на
+  // собранном образе из-за одной строки.
+  assert.deepEqual(parsePackages(source), ['torch>=2.4'])
+  assert.equal(listChanged('torch>=2.4\n', source), false)
+})
+
+test('пробелы и регистр директиву не ломают', () => {
+  assert.equal(declaresGpu('  #   colloq:  gpu  \n'), true)
+  assert.equal(declaresGpu('# Colloq: GPU\n'), true)
+})
+
+test('обычное окружение среза не просит', () => {
+  assert.equal(declaresGpu(''), false)
+  assert.equal(declaresGpu('# зрение на процессоре\ntorch>=2.4\n'), false)
+  // Слово в предложении — не директива: иначе фраза про GPU внутри пояснения
+  // забирала бы срез у семинара, которому он действительно нужен.
+  assert.equal(declaresGpu('# colloq: gpu тут не нужен\n'), false)
+})
+
+test('образцовое окружение gpu действительно объявляет срез, а базовое — нет', () => {
+  // Единственный пример этой директивы в репозитории. Выпадет она из файла —
+  // комната поедет на процессоре и упадёт на первом `.cuda()`.
+  assert.equal(needsGpu('gpu'), true)
+  assert.equal(needsGpu('base'), false)
+  // Несуществующее имя — это пустой файл, а не исключение: спрашивают об этом
+  // на подъёме ядра, и падать там незачем.
+  assert.equal(needsGpu('нет-такого'), false)
 })
 
 /* ------------------------------------------------------------ the name */
