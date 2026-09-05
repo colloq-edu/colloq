@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+#
+# Развернуть снятую копию — пара к `make backup`.
+#
+#   scripts/restore.sh                     самую свежую пару из backups/
+#   scripts/restore.sh backups/colloq-20260905-120000.db
+#
+# Зачем это отдельной командой. `make backup` снимает базу и архив с файлами
+# семинаров, а обратная дорога до сих пор описывалась словами «положите два
+# файла на место». Мест на самом деле три, и одно из них умеет тихо испортить
+# базу: рядом с colloq.db в режиме WAL лежат colloq.db-wal и colloq.db-shm, и
+# если подложить базу из копии, оставив старый журнал, sqlite накатит на неё
+# чужие страницы. Поэтому журнал уезжает вместе с той базой, которую он
+# описывает, а не выбрасывается и не остаётся.
+#
+# Что переживает пересоздание машины и лежит в копии:
+#
+#   colloq.db          семинары, преподаватели, история версий, настройки оракула
+#   workspace/         файлы семинаров — то, что загрузили и создали ячейки
+#   data/session-secret  ключ подписи: без него все выданные ссылки и куки мертвы
+#   data/setup-token     токен установки — вход в панель, когда ссылка потеряна
+#
+# Чего в копии нет и почему: собранные образы окружений (их дешевле пересобрать
+# одной командой, чем возить десятки гигабайт: make env-build NAME=…) и .env
+# (он едет на новую машину сам, вместе с репозиторием, — см. scripts/vast.sh).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; OFF=$'\033[0m'
+say() { printf '%s\n' "$*"; }
+die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
+
+DB=""
+FILES=""
+for arg in "$@"; do
+  case "$arg" in
+    *.db) DB="$arg" ;;
+    *.tar.gz) FILES="$arg" ;;
+    *) die "не понимаю «${arg}». Ожидаю backups/colloq-<дата>.db и/или backups/colloq-<дата>-files.tar.gz" ;;
+  esac
+done
+
+if [ -z "$DB" ] && [ -z "$FILES" ]; then
+  DB="$(ls -1t backups/colloq-*.db 2>/dev/null | head -1 || true)"
+  [ -n "$DB" ] || die "в backups/ нет ни одной копии.
+  Снять её на работающем инстансе: make backup"
+fi
+# Архив ищется по имени базы, а не по «самому свежему»: пара из базы одного дня
+# и файлов другого — это семинар, у которого в тетради есть ссылка на файл,
+# которого нет.
+if [ -z "$FILES" ] && [ -n "$DB" ] && [ -f "${DB%.db}-files.tar.gz" ]; then
+  FILES="${DB%.db}-files.tar.gz"
+fi
+
+[ -z "$DB" ] || [ -f "$DB" ] || die "нет файла $DB"
+[ -z "$FILES" ] || [ -f "$FILES" ] || die "нет файла $FILES"
+
+say "${BOLD}1/3${OFF} проверяю, что восстанавливать есть куда"
+
+# Под работающим сервером базу не подменяют. sqlite держит открытым тот файл,
+# который открыл: старый inode останется живым до последнего закрытия, семинар
+# продолжит писать в файл, которого уже нет на диске, а после перезапуска эта
+# работа просто исчезнет. Причём на экране до самого перезапуска всё выглядит
+# исправно — поэтому проверка здесь, а не в напутствии внизу.
+PORT="$(grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ' || true)"
+PORT="${PORT:-3000}"
+if docker compose ps --status running --services 2>/dev/null | grep -qx app; then
+  die "в docker работает app — сначала остановите его: make down"
+fi
+if [ -f .colloq.pid ] && kill -0 "$(cat .colloq.pid 2>/dev/null)" 2>/dev/null; then
+  die "на хосте работает сервер (make run) — сначала: make stop"
+fi
+if curl -sf -o /dev/null --max-time 3 "http://localhost:$PORT/api/health" 2>/dev/null; then
+  die "на localhost:$PORT кто-то отвечает — это второй Colloq.
+  Остановите его (make down · make stop) и повторите."
+fi
+
+mkdir -p data workspace
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+say "${BOLD}2/3${OFF} база"
+if [ -n "$DB" ]; then
+  # Дешёвая проверка вместо доверия расширению: первые шестнадцать байт файла
+  # sqlite — это «SQLite format 3». Восстановить пустой файл, скачавшийся до
+  # половины, значит потерять и то, что было.
+  head -c 16 "$DB" | LC_ALL=C grep -qa 'SQLite format 3' \
+    || die "$DB не похож на базу sqlite — копия битая или скачалась не целиком."
+  if command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 "$DB" 'pragma quick_check' >/dev/null \
+      || die "$DB не проходит проверку sqlite. Возьмите другую копию."
+  fi
+  if [ -f data/colloq.db ]; then
+    # Прежняя база уезжает целиком со своим журналом. Не удаляется — «я нажал
+    # restore не той копией» должно быть поправимо; и не остаётся на месте —
+    # старый -wal, накаченный на новую базу, портит её молча.
+    mv data/colloq.db "data/colloq.db.replaced-$STAMP"
+    for j in wal shm; do
+      if [ -f "data/colloq.db-$j" ]; then
+        mv "data/colloq.db-$j" "data/colloq.db.replaced-$STAMP-$j"
+      fi
+    done
+    say "${DIM}    прежняя база отложена в data/colloq.db.replaced-$STAMP${OFF}"
+  fi
+  cp "$DB" data/colloq.db
+  chmod 600 data/colloq.db
+  say "    $DB → data/colloq.db"
+else
+  say "${DIM}    базу не трогаю — её в аргументах не было${OFF}"
+fi
+
+say "${BOLD}3/3${OFF} файлы семинаров и ключи"
+if [ -n "$FILES" ]; then
+  # Разворачивается поверх, а не вместо: комнаты, которых в копии нет, остаются
+  # на месте. Забрать лишнее всегда можно, а вернуть стёртое — нет.
+  #
+  # -p обязателен: у data/session-secret права 0600, и без сохранения режима
+  # ключ подписи стал бы читаемым для всех, кто есть на машине.
+  tar -xzpf "$FILES"
+  say "    $FILES → workspace/, data/"
+  if [ -f data/session-secret ]; then
+    chmod 600 data/session-secret
+    say "${DIM}    ключ подписи на месте — выданные ссылки и куки переживут переезд${OFF}"
+  fi
+  if [ -f data/setup-token ]; then
+    chmod 600 data/setup-token
+  fi
+else
+  say "${DIM}    архива файлов нет — восстановлена только база.${OFF}"
+  say "${DIM}    Тетради и настройки на месте, загруженные файлы — нет.${OFF}"
+fi
+
+printf '\n'
+say "${BOLD}готово${OFF}"
+say "${DIM}Поднять: make up (или make run). Окружения ядра здесь не восстанавливаются —${OFF}"
+say "${DIM}их собирают заново: make env-build NAME=…${OFF}"
+say "${DIM}Ключ оракула, RELAY_* и PUBLIC_URL живут в .env, а не в копии.${OFF}"

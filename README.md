@@ -39,18 +39,34 @@ name and email, and the instance is yours — then create a seminar and share th
 
 ### Backing it up
 
-The database holds the seminars, the staff list, the version history and the oracle
-settings; `./workspace` holds the files a room uploaded. Copy both:
-
 ```bash
-make backup                       # → backups/colloq-<date>.db
-cp -r workspace workspace-backup
+make backup     # → backups/colloq-<date>.db
+                #   backups/colloq-<date>-files.tar.gz
+make restore    # puts the newest pair back
 ```
 
-`make backup` is safe to run mid-seminar. Copying `data/colloq.db` by hand is not —
-SQLite runs in WAL mode, so part of the day sits in `colloq.db-wal` beside it and a
-copy of the one file alone can be hours behind. `make backup` writes a single
-consistent file instead. Restoring is putting the two back.
+The `.db` is the database — the seminars, the staff list, the version history, the
+oracle settings. The archive beside it is everything the database does not hold:
+`./workspace` (what the rooms uploaded), the setup token, and the signing key when the
+server generated one rather than reading `SESSION_SECRET` from `.env`. Both files are
+mode 0600, and the archive is not "the seminar's files" to forward to a colleague: it
+carries the keys to the instance.
+
+Both are written in one pass so that they belong to the same minute, and the pass is
+safe to run mid-seminar. Copying `data/colloq.db` by hand is not — SQLite runs in WAL
+mode, so part of the day sits in `colloq.db-wal` beside it and a copy of the one file
+alone can be hours behind. `make backup` writes a single consistent file instead.
+
+Restoring used to be described as putting the two back, and the two are three: the WAL
+journal beside the database is the third, and a restored database with the previous
+journal still next to it is corrupted quietly. `make restore` is the other half of
+`make backup` — it refuses to run while a server is up, moves the old database aside
+*with* its journal instead of deleting it, and unpacks the archive over `./workspace`
+rather than replacing it. `DB=` and `FILES=` name specific files when the newest pair is
+not the one you want.
+
+What it deliberately does not restore is the environment images: rebuilding them
+(`make env-build NAME=…`) is cheaper than carrying tens of gigabytes around.
 
 ### One instance, two ways to start it
 
@@ -158,6 +174,73 @@ point of failure for the addresses under it. Subdomains are handed out by `frps`
 the shared token, so one relay serves every instance without a DNS record per university:
 `*.colloq.ru` points at it once (`scripts/dns.sh`).
 
+## Renting a machine
+
+A seminar with neural networks needs a GPU, and the university's A100 is either busy or
+not there at all. `make vast-up` rents one by the hour on vast.ai, puts Colloq on it and
+hands it the data from your latest backup:
+
+```bash
+make vast-up       # find a VM, rent it, deploy, restore the data
+make vast-status   # what is rented, whether it answers, what it has cost so far
+make vast-sync     # pull the data back here
+make vast-down     # destroy the machine, and everything on it with it
+```
+
+`VAST_TOKEN` in `.env` is the key (made once at <https://cloud.vast.ai/manage-keys/>). It
+is never printed, never passed on a command line — `ps` shows those to everyone on the
+machine — and never copied to the rented box: that box is already paid for.
+
+Three prices, and they are the point of this section rather than footnotes to it.
+
+**Only VMs, which is the expensive half.** vast rents two different things: a Docker
+instance, which is a container on somebody's machine, and a virtual machine —
+`vms_enabled=true`, booted from a `docker.io/vastai/kvm` image. Colloq starts a container
+per room itself, through the Docker socket, and inside a Docker instance vast forbids
+exactly that: "Docker-in-Docker is disabled for security", their own FAQ. The rooms would
+fall back to one shared kernel, where any room reads every other room's files — and the
+fallback is quiet enough to be noticed after the class rather than during it. So a VM it
+is, and VMs are a smaller market: fewer machines, fewer cheap ones, and minutes rather
+than seconds to boot.
+
+**Only on-demand.** Interruptible offers cost about half and are taken away the moment
+somebody bids higher, without warning. That moment lands in the middle of a class, and
+the saving buys nothing.
+
+**The data on it is temporary.** Destroy the instance and the disk goes with it; let the
+balance reach zero and vast destroys it for you. There is no snapshot and no trash. That
+is why `make vast-sync` is half of this work rather than a convenience, why
+`make vast-down` prints when the last backup was taken and asks you to type
+`уничтожить`, and why the machine is deployed *from* a backup instead of starting empty.
+
+What survives a machine being recreated is what `make backup` writes: the database,
+`./workspace`, the signing key and the setup token — plus `.env`, which travels with the
+repository, minus the keys that buy things (`VAST_TOKEN`, `CF_*`). What does not survive
+is the environment images; they are rebuilt there with `make env-build NAME=cv`. What the
+rented machine does gain is its cards: `vast-up` writes them into `KERNEL_GPUS` in the `.env`
+it leaves there, so an environment that declares `# colloq: gpu` gets a slice — see
+*Environments* and the `KERNEL_GPUS` row in *Configuration*.
+
+The room is published *from* the rented machine, with the same `make host` and the same
+relay, because that is where the kernel is:
+
+```bash
+ssh -p <port> root@<host>
+cd /opt/colloq && make host HOST=hse.colloq.ru
+```
+
+That command holds its terminal for as long as the tunnel lives, so run it under `tmux`
+if the laptop is going to close. `vast-up` installs `frpc` on the machine for it —
+Cloudflare's addresses do not open from Russia, see *Reaching a room from Russia*.
+
+Two things to know before the first run. The SSH key must be registered in the vast
+account *before* renting: a VM's keys cannot be changed once it is running, so a machine
+rented without one is money spent on a box you cannot enter. `vast-up` checks that and
+refuses early rather than late. And renting, deploying, syncing and destroying have never
+been run against a live account here — searching for offers has, read-only — because they
+cost real money; the script says so in its header instead of implying otherwise. Make the
+first real run on a cheap offer, and not on the day of a class.
+
 ## Environments
 
 A seminar's Python is one set of packages. `kernel/requirements.txt` is the base — jupyter,
@@ -245,13 +328,16 @@ Everything lives in `.env` — see `.env.example` for the full list.
 | `JUPYTER_TOKEN` | Fallback secret for the shared compose kernel. Each seminar's own container gets its own token, derived from `SESSION_SECRET` |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Any OpenAI-compatible endpoint |
 | `AI_REASONING` | Ask the model for its reasoning trace as well (default off — on a reasoning model the trace costs about as much as the answer) |
-| `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling: per seminar where each room runs its own container, otherwise on the one shared kernel |
+| `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling: per seminar where each room runs its own container, otherwise on the one shared kernel. `KERNEL_CPUS` also caps the thread pools inside it (`OMP_NUM_THREADS` and its siblings), because `os.cpu_count()` in a container reports the host's cores and numpy would start thirty threads on two |
+| `KERNEL_GPUS` | Devices the server may hand out to rooms, written the way Docker names them (`MIG-GPU-…`, `0,1`). Empty — the default — is today's behaviour: nobody asks for a GPU. A slice goes to one room for the life of its container and is recorded on it as the label `colloq.gpu=<device>`, which is what survives a server restart. Only an environment that declares `# colloq: gpu` asks for one |
+| `KERNEL_SHM` | `/dev/shm` for a room that got a GPU (default `1g`). Docker's own 64 MB is what breaks a DataLoader with several workers |
 | `KERNEL_ISOLATION` | `auto` (default) gives every seminar its own container, with only its own folder mounted. `off` shares one kernel, and then any room can read every other room's files on that machine. Both `make up` and `make run` can do the per-room thing; when the pieces for it are missing the server falls back to the shared kernel and says so |
 | `DOCKER_GID` / `WORKSPACE_HOST_DIR` / `KERNEL_NETWORK` | What a server inside a container needs to give rooms their own kernels: the group of `/var/run/docker.sock`, where `./workspace` lives on the host, and the network to find the room's container on. `make up` fills them in; see *Isolation* |
 | `TZ` | One time zone for the whole instance — the log, the kernel and the dates on published pages (default `Europe/Moscow`) |
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | One file, and everything one seminar holds (default 50 and 1024) |
 | `KERNEL_ENV` | The environment new seminars are created with, and the one baked into the shared kernel. `make env-use` writes it |
 | `RELAY_DOMAIN` / `RELAY_ADDR` / `RELAY_PORT` / `RELAY_TOKEN` | Your own relay instead of Cloudflare — see *Reaching a room from Russia*. Empty means Cloudflare |
+| `VAST_TOKEN` | Key to the vast.ai account for `make vast-up` and friends — see *Renting a machine*. Empty means nothing is rented; the rest of the `VAST_*` settings are defaults documented in `.env.example` |
 
 The AI layer talks plain OpenAI-compatible HTTP, so pointing `OPENAI_BASE_URL` at Ollama, vLLM,
 LM Studio or OpenRouter works without touching code. Leaving `OPENAI_API_KEY` empty simply
@@ -463,6 +549,11 @@ panel — and a collapsing admin nav is deliberately not built.
 ## Not in this MVP
 
 Courses, assignments, grading, submissions, progress tracking, analytics, permissions,
-SSO, GPU scheduling, multiple languages, package management, Kubernetes, video. All deliberately
+SSO, multiple languages, package management, Kubernetes, video. All deliberately
 out of scope: the MVP exists to answer whether one link and one shared workspace is enough to run a
 real seminar.
+
+GPU scheduling is out of scope in the same way, and `KERNEL_GPUS` is not it: a room holds one
+slice for as long as its container lives, handed out first-come. Nothing queues, shares or
+preempts, and when the slices run out the kernel refuses to start and says so — a seminar whose
+wheels are built for CUDA cannot be quietly given a CPU instead.
