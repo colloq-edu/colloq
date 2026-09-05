@@ -64,7 +64,12 @@
 
 <div class="flex h-full">
   <!-- The poster does not depend on anything the server has to say, so it
-       paints on the first frame while the cards wait for the instance state. -->
+       paints on the first frame while the cards wait for the instance state.
+       И организацию оно поэтому не подписывает: строка приезжает в карточке
+       семинара, а на этом экране семинара нет — пришлось бы спрашивать её
+       отдельным запросом и надписывать постер второй раз, уже нарисованный.
+       Цена мала: сюда приходят свои — надпись «кто мы» говорит тем, кого
+       позвали по ссылке, а не тем, кто здесь работает. -->
   <Poster title="Teaching workspace" headline="banner" width="hidden w-5/12 xl:flex">
     Seminars and the oracle are configured here — so that the classroom itself stays a link and
     nothing else.

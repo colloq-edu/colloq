@@ -381,6 +381,7 @@ Everything lives in `.env` — see `.env.example` for the full list.
 | `PORT` | Port on the host. Change `PUBLIC_URL` with it — neither derives the other |
 | `PUBLIC_URL` | Origin students open; the link they receive is built from this |
 | `SESSION_SECRET` | Signs participant tokens and staff cookies. Leave empty — generated on first boot and kept in `DATA_DIR`. Set it to rotate |
+| `INSTITUTION` | Who deployed this instance — the line beside the logo on every screen that draws it. Empty by default, and then there is no line at all. Cut at 80 characters: it shares one line with the mark |
 | `ADMIN_EMAIL` | Prefills the address on the first-run claim screen |
 | `OPEN_SEMINAR_CREATION` | Let anyone with the URL create a seminar (default off: staff only) |
 | `JUPYTER_TOKEN` | Fallback secret for the shared compose kernel. Each seminar's own container gets its own token, derived from `SESSION_SECRET` |

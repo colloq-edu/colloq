@@ -48,6 +48,7 @@ services:
       # `make run` те же строки применял — два режима одного инстанса вели себя
       # по-разному.
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      INSTITUTION: ${INSTITUTION:-}
       OPEN_SEMINAR_CREATION: ${OPEN_SEMINAR_CREATION:-false}
       MAX_SESSION_MB: ${MAX_SESSION_MB:-1024}
       AI_REASONING: ${AI_REASONING:-false}

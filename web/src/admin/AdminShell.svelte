@@ -194,6 +194,9 @@
       class="flex h-16 shrink-0 items-center justify-center border-b border-white/10
              md:justify-start md:px-5"
     >
+      <!-- Без строки организации, и не по забывчивости: рельс шириной 236px,
+           его единственную строку уже делят логотип и версия, а надпись «кто
+           мы» адресована пришедшим по ссылке, а не тем, кто здесь работает. -->
       <div class="hidden w-full md:block">
         <Wordmark version="v0.1" />
       </div>

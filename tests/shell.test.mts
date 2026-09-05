@@ -163,6 +163,7 @@ const ROOM = {
   finishedAt: null,
   published: null,
   course: null,
+  institution: 'HSE University · Faculty of Computer Science',
 }
 
 test('карточка комнаты переживает заход и обновляется с переименованием', () => {
@@ -194,6 +195,20 @@ test('правила и публикация обновляются в карт�
 
   rememberSessionInfo({ ...locked, published: { id: 'x9tb4kwm', steps: 12 } })
   assert.equal(recallSessionInfo('kf3n8q2p')?.published?.id, 'x9tb4kwm')
+})
+
+test('карточка, записанная до строки организации, читается без неё', () => {
+  /*
+   * Строка появилась позже карточек, уже лежащих в браузерах, и в старой её
+   * просто нет. `undefined` доехал бы до вёрстки, где рядом с логотипом висела
+   * бы разделительная линейка ни с чем, — то же место, где `finishedAt` рядом
+   * гасил живую комнату. Незнание здесь означает «организация не задана».
+   */
+  storage.clear()
+  const old: Record<string, unknown> = { ...ROOM }
+  delete old.institution
+  storage.setItem('colloq.room.v1', JSON.stringify({ kf3n8q2p: old }))
+  assert.equal(recallSessionInfo('kf3n8q2p')?.institution, '')
 })
 
 test('испорченное хранилище — комната просто неизвестна', () => {

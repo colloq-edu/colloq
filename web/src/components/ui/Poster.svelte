@@ -14,6 +14,14 @@
     /** Tailwind width class — join runs wider than sign-in. */
     width?: string
     /**
+     * Организация инстанса, рядом с логотипом. Пусто — её нет.
+     *
+     * Не читается здесь из чего-нибудь глобального нарочно: у постера входа в
+     * семинар строка приезжает вместе с карточкой комнаты, а у постера входа в
+     * панель карточки комнаты нет вовсе — и не должно быть.
+     */
+    institution?: string
+    /**
      * Which step the headline is set at. `masthead` is the join poster, where
      * the seminar name is the whole screen; `banner` is sign-in, where the
      * title shares its column with a lede and a footnote.
@@ -29,6 +37,7 @@
     footer,
     width = 'w-1/2',
     headline = 'masthead',
+    institution = '',
   }: Props = $props()
 </script>
 
@@ -42,7 +51,7 @@
   there is a footer, and collapse first when a long seminar name needs the room.
 -->
 <aside class="flex shrink-0 flex-col bg-brand px-14 py-11 {width}">
-  <Wordmark faculty tone="onDark" />
+  <Wordmark {institution} tone="onDark" />
 
   <div class="min-h-0 flex-1"></div>
 

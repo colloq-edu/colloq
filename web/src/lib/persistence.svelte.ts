@@ -160,7 +160,13 @@ export function recallSessionInfo(sessionId: string): SessionInfo | null {
    * ячейки, который на самом деле разрешён, всё равно уйдёт на сервер и там
    * решится, а погашенная кнопка не спрашивает никого.
    */
-  return { ...room, finishedAt: room.finishedAt ?? null }
+  /*
+   * Название организации нормализуется тем же приёмом и по той же причине:
+   * карточка могла лечь сюда до того, как строка вообще появилась. Разница
+   * только в том, что здесь незнание безобидно — `undefined` вместо строки
+   * убрал бы линейку на один кадр, а не зажёг бы чужое имя.
+   */
+  return { ...room, finishedAt: room.finishedAt ?? null, institution: room.institution ?? '' }
 }
 
 export function rememberSessionInfo(session: SessionInfo): void {

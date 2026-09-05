@@ -355,6 +355,10 @@ export function createSession(id: string, name: string, environment?: string | n
     finishedAt: null,
     published: null,
     course: null,
+    // Свойство инстанса, читается из конфига на каждой сборке карточки, а не
+    // пишется в строку семинара: сменив INSTITUTION, оператор меняет надпись
+    // сразу во всех комнатах, включая прошлогодние.
+    institution: config.institution,
   }
 }
 
@@ -425,6 +429,8 @@ export function getSession(id: string): SessionInfo | null {
         finishedAt: row.finished_at ?? null,
         published: null,
         course: null,
+        // Из конфига, а не из строки таблицы — см. createSession().
+        institution: config.institution,
       }
     : null
 }

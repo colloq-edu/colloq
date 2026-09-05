@@ -295,6 +295,7 @@
     {meta}
     footer={inside}
     width="hidden w-3/5 lg:flex"
+    institution={session.institution}
   />
 
   <!-- main, not a div: the form is what this page is for, and a screen reader

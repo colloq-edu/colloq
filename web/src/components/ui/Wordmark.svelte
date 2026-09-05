@@ -5,13 +5,21 @@
     /** sm is the lockup as every artboard draws it; md is the step up. */
     size?: 'sm' | 'md'
     tone?: 'onDark' | 'onLight'
-    /** Appends the em-dashed institution line. */
-    faculty?: boolean
+    /**
+     * Кто развернул этот инстанс — строка за разделительной линейкой.
+     *
+     * Здесь стояло булево `faculty` и зашитая под ним строка про один
+     * университет. Продукт разворачивают разные организации, и на чужом адресе
+     * это была не настройка по умолчанию, а чужое имя в шапке. Пусто или не
+     * передано — линейки и строки нет вовсе, логотип остаётся одним словом; это
+     * и есть умолчание.
+     */
+    institution?: string
     /** A quiet trailing tag such as "v0.1", pushed to the far edge. */
     version?: string
   }
 
-  let { size = 'sm', tone = 'onDark', faculty = false, version }: Props = $props()
+  let { size = 'sm', tone = 'onDark', institution = '', version }: Props = $props()
 
   /*
    * The artboards draw one lockup everywhere it appears — join poster, sign-in
@@ -24,6 +32,10 @@
   const WORD = { sm: 'text-2xs', md: 'text-ui' } as const
 
   const onDark = $derived(tone === 'onDark')
+
+  // Строка из одних пробелов — это отсутствие строки, а не строка: линейка,
+  // повисшая рядом с пустотой, читается как недогрузившаяся вёрстка.
+  const line = $derived(institution.trim())
 </script>
 
 <div
@@ -38,7 +50,7 @@
 
   <span class="{WORD[size]} shrink-0 font-bold uppercase tracking-wordmark">Colloq</span>
 
-  {#if faculty}
+  {#if line}
     <!-- The em dash is a rule, not a character: at 0.22em tracking a real dash
          sits too close to the Q and reads as part of the word. -->
     <span
@@ -50,7 +62,7 @@
         ? 'text-white/60'
         : 'text-muted'}"
     >
-      HSE University · Faculty of Computer Science
+      {line}
     </span>
   {/if}
 

@@ -1254,7 +1254,7 @@
         class="block max-w-full transition-opacity duration-100 hover:opacity-85
                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
       >
-        <Wordmark faculty tone="onDark" />
+        <Wordmark institution={session.session.institution} tone="onDark" />
       </a>
     </div>
 
