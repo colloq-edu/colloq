@@ -25,8 +25,25 @@
 #          поддомены. Инстансу не нужен ни публичный адрес, ни открытый порт —
 #          он звонит сюда сам.
 #
+# И один файл рядом с ними — страница ожидания. Пока преподаватель не поднял
+# комнату, живого клиента для её имени нет, и frps отвечал бы своей встроенной
+# страницей: «The page you requested was not found… powered by frp». Студенту,
+# пришедшему за десять минут до пары, по ней не понять ни что случилось, ни
+# что делать. Вместо неё отдаётся /etc/colloq-relay/offline.html — она же
+# показывается, если не отвечает сам frps, и она сама перезагружается, так что
+# ждущий попадает в комнату без единого нажатия.
+#
 # Запускать: scripts/relay-setup.sh root@203.0.113.11
+# Только страница: scripts/relay-setup.sh --page root@203.0.113.11
 set -euo pipefail
+
+# Режим. Полная установка идёт минуты и трогает пакеты, службы и конфиги — ради
+# правки одного абзаца в тексте для студента гонять её незачем, поэтому у
+# скрипта есть второй вход, который пишет только страницу. Флаг разбирается
+# до адреса: иначе `--page` уехал бы в HOST и скрипт полез бы ставить каддю на
+# машину с таким именем.
+PAGE_ONLY=0
+if [ "${1:-}" = "--page" ]; then PAGE_ONLY=1; shift; fi
 
 HOST=${1:?укажите куда ставить: scripts/relay-setup.sh root@203.0.113.11}
 DOMAIN=${DOMAIN:-colloq.ru}
@@ -36,11 +53,275 @@ FRP_VERSION=${FRP_VERSION:-0.71.0}
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_ed25519}
 SSH=(ssh -o IdentitiesOnly=yes -i "$SSH_KEY")
 
+RED=$'\033[31m'; OFF=$'\033[0m'
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
+die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
+
+# --------------------------------------------------------------- страница
+#
+# Кусок удалённого скрипта, который кладёт страницу на место. Отдельной
+# функцией, потому что нужен в двух местах: в полной установке и в `--page`.
+# Функция печатает текст на stdout, а вызывающий вливает его в общий поток для
+# `bash -s` — так текст страницы существует в одном экземпляре и не может
+# разъехаться между двумя режимами.
+relay_page() {
+  cat <<'SNIPPET'
+echo "== страница ожидания"
+[ -d /etc/colloq-relay ] || { echo "нет /etc/colloq-relay — сначала полная установка"; exit 1; }
+[ -d /etc/caddy ]        || { echo "нет /etc/caddy — сначала полная установка"; exit 1; }
+
+# Две копии одного файла, и это не небрежность. Страницу отдаёт то frps (когда
+# для имени нет клиента), то caddy (когда не отвечает сам frps), а демоны
+# работают от разных пользователей и заперты в свои каталоги. Один общий файл
+# означал бы либо caddy в группе frps — то есть право читать /etc/colloq-relay
+# целиком, вместе с общим секретом, — либо страницу, открытую всей машине.
+# Дешевле положить один и тот же текст дважды: пишется он всё равно отсюда.
+page_tmp=$(mktemp)
+cat > "$page_tmp" <<'PAGE_EOF'
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Комната ещё не открыта — Colloq</title>
+
+    <!--
+      Страница ждёт вместо студента: раз в 20 секунд браузер просит тот же
+      адрес заново, и то обновление, которое случится после поднятия комнаты,
+      приведёт прямо в неё. Нажимать ничего не нужно, помнить про F5 — тоже.
+
+      Перезагрузка сделана метой, а не скриптом, намеренно: скрипт может не
+      выполниться, а http-equiv="refresh" понимает всё, что вообще открывает
+      страницы. 20 секунд — компромисс между «попасть в комнату сразу» и
+      «не долбить адрес»: это один запрос на студента в двадцать секунд.
+    -->
+    <meta http-equiv="refresh" content="20" />
+
+    <!--
+      Ни одного внешнего запроса: ни шрифтов, ни картинок, ни библиотек. Эту
+      страницу отдаёт ретранслятор в тот момент, когда у него и так что-то не
+      так, а открывают её с телефона по сотовой связи в аудитории, где может
+      не грузиться вообще ничего. Всё, что ей нужно, — в этом файле.
+    -->
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+
+    <style>
+      /*
+       * Палитра ВШЭ, та же, что у продукта и у лендинга (web/src/index.css,
+       * site/styles.css). Светлый набор стоит на голом :root, тёмный приходит
+       * из системной настройки: выбирать тему тут негде и незачем — человек
+       * пробудет на странице минуту.
+       */
+      :root {
+        --canvas: #ffffff;
+        --surface: #f3f6fb;
+        --line: #dce3ef;
+        --ink: #101a33;
+        --muted: #5d6b8a;
+        /* Яркий голубой не проходит по контрасту как текст на белом — для
+           набора берётся его тёмный вариант, для точки и меток сам голубой. */
+        --accent: #0fa0d7;
+        --accent-text: #0a6e96;
+        --mark: #0f2d69;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --canvas: #060c1c;
+          --surface: #0e1b3d;
+          --line: #16244b;
+          --ink: #e6e7e8;
+          --muted: #9ba6be;
+          /* На тёмной земле голубой даёт 6.5:1 — здесь он и есть текст. */
+          --accent-text: #0fa0d7;
+          /* Синь бренда на почти чёрном не видна; знак берёт светлый её тон. */
+          --mark: #7b93c9;
+        }
+      }
+
+      * { box-sizing: border-box; }
+
+      /*
+       * Шрифт только тот, что уже есть у читателя. HSE Sans стоит первым — у
+       * половины ФКН он установлен, и тогда страница набрана тем же, чем весь
+       * продукт; у остальных её наберёт системный, и это ровно то, что нужно:
+       * ни одного байта из сети.
+       */
+      body {
+        margin: 0;
+        min-height: 100vh;
+        min-height: 100svh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: clamp(24px, 7vw, 64px);
+        background: var(--canvas);
+        color: var(--ink);
+        font-family: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system,
+          'Segoe UI', Roboto, sans-serif;
+        font-size: 17px;
+        line-height: 28px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      main { max-width: 34rem; }
+
+      .mark { display: block; width: 26px; height: 26px; }
+      .mark rect { fill: var(--mark); }
+      .mark rect:nth-child(2n) { fill: var(--accent); }
+
+      .label {
+        margin: 14px 0 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.16em;
+        line-height: 18px;
+        text-transform: uppercase;
+        color: var(--accent-text);
+      }
+
+      h1 {
+        margin: 12px 0 0;
+        font-size: clamp(26px, 5.5vw, 34px);
+        line-height: 1.2;
+        letter-spacing: -0.01em;
+        font-weight: 700;
+        /* Заголовок в две строки не должен ронять одно слово на вторую. */
+        text-wrap: balance;
+      }
+
+      p { margin: 20px 0 0; }
+
+      .note { font-size: 15px; line-height: 24px; color: var(--muted); }
+
+      /* Что делать — единственный блок с землёй под ним: это и есть ответ. */
+      .wait {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        margin-top: 28px;
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+
+      .dot {
+        flex: none;
+        width: 9px;
+        height: 9px;
+        margin-top: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: breathe 2.6s ease-in-out infinite;
+      }
+
+      /* Точка дышит, а не мигает: мигание торопит, а тут именно ждут. */
+      @keyframes breathe {
+        0%, 100% { opacity: 0.35; transform: scale(0.85); }
+        50%      { opacity: 1;    transform: scale(1); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .dot { animation: none; opacity: 0.9; }
+      }
+    </style>
+  </head>
+
+  <body>
+    <main>
+      <!-- Знак Colloq: та же сетка, что и в фавиконе продукта. -->
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="2" y="2" width="6" height="6" rx="1.6" />
+        <rect x="9" y="2" width="6" height="6" rx="1.6" />
+        <rect x="16" y="2" width="6" height="6" rx="1.6" />
+        <rect x="2" y="9" width="6" height="6" rx="1.6" />
+        <rect x="9" y="9" width="6" height="6" rx="1.6" />
+        <rect x="16" y="9" width="6" height="6" rx="1.6" />
+        <rect x="2" y="16" width="6" height="6" rx="1.6" />
+        <rect x="9" y="16" width="6" height="6" rx="1.6" />
+        <rect x="16" y="16" width="6" height="6" rx="1.6" />
+      </svg>
+
+      <p class="label">Colloq</p>
+
+      <h1>Комната ещё не открыта</h1>
+
+      <p>
+        По этому адресу занятие сейчас не идёт. Комнату открывает
+        преподаватель — обычно незадолго до начала, и до этой минуты её здесь
+        просто нет.
+      </p>
+
+      <p class="wait">
+        <span class="dot"></span>
+        <span>
+          Ждать можно прямо здесь: страница сама обновляется каждые двадцать
+          секунд и откроет комнату, как только та появится. Оставьте вкладку
+          открытой — нажимать ничего не нужно.
+        </span>
+      </p>
+
+      <p class="note">
+        Если ждёте давно, стоит сверить адрес с тем, который вам дали: одна
+        буква в имени уводит на пустую страницу вроде этой.
+      </p>
+    </main>
+  </body>
+</html>
+PAGE_EOF
+
+# Права как у соседей по каталогу: владелец root, группа демона, чтение
+# группе. Демон читает файл, но переписать его не может — это делает только
+# этот скрипт, из-под root.
+install -o root -g frps  -m 0640 "$page_tmp" /etc/colloq-relay/offline.html
+install -o root -g caddy -m 0640 "$page_tmp" /etc/caddy/offline.html
+rm -f "$page_tmp"
+SNIPPET
+}
+
+# ------------------------------------------------------------ только страница
+#
+# Быстрый путь: страница и ничего больше.
+if [ "$PAGE_ONLY" = 1 ]; then
+  say "обновляю страницу ожидания на $HOST"
+  {
+    echo 'set -euo pipefail'
+    relay_page
+    cat <<'CHECK'
+
+# Перезапускать нечего, и это не везение, а свойство обоих читателей файла:
+# frps открывает его на каждый ответ 404 (getNotFoundPageContent делает
+# os.ReadFile), file_server у caddy — на каждый запрос. Новый текст виден со
+# следующего же обращения.
+#
+# А вот на ретрансляторе, поставленном до появления страницы, файл лёг бы на
+# место, и показывать его было бы некому: в конфигах нет ни строки про него.
+# Молчать об этом нельзя — снаружи это выглядит как «страница не обновилась».
+if ! grep -q 'custom404Page' /etc/colloq-relay/frps.toml 2>/dev/null ||
+   ! grep -q 'offline.html' /etc/caddy/Caddyfile 2>/dev/null; then
+  echo
+  echo "ВНИМАНИЕ: конфиги ещё не знают про эту страницу."
+  echo "Прогоните полную установку один раз: make relay-setup WHERE=..."
+fi
+CHECK
+  } | "${SSH[@]}" "$HOST" 'bash -s' || die "не получилось обновить страницу на $HOST"
+  say "готово — новый текст виден со следующего обращения, перезапускать нечего"
+  exit 0
+fi
+
+# ---------------------------------------------------------- полная установка
 
 say "ставлю ретранслятор на $HOST для *.${DOMAIN}"
 
-"${SSH[@]}" "$HOST" DOMAIN="$DOMAIN" FRP_VERSION="$FRP_VERSION" 'bash -s' <<'REMOTE'
+# Удалённый скрипт склеивается из трёх кусков: до страницы, сама страница и
+# всё после. Это один и тот же `bash -s` на той стороне, поэтому переменные
+# (тот же TOKEN) переживают склейку — куски не отдельные сеансы, а части
+# одного текста.
+{
+cat <<'REMOTE_HEAD'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -106,6 +387,19 @@ proxyBindAddr = "127.0.0.1"
 # hse.${DOMAIN} и не может попросить ничего за пределами зоны.
 subDomainHost = "${DOMAIN}"
 
+# Что видит студент, когда для имени нет живого клиента: инстанс выключен,
+# ноутбук закрыт, туннель не поднят. Без этой строки frps отдаёт свою
+# встроенную страницу — «not found… powered by frp», — по которой не понять
+# ни что случилось, ни что делать.
+#
+# Имя поля выверено по исходникам той версии, которую ставит скрипт
+# (ServerConfig.Custom404Page в pkg/config/v1/server.go, json-тег
+# custom404Page), а не по памяти. Проверять пришлось не из вежливости: конфиг
+# читается в строгом режиме (--strict_config по умолчанию включён), поэтому
+# промах в имени — не «настройка не применилась», а frps, который не встаёт.
+# Путь абсолютный: у службы нет WorkingDirectory, её рабочий каталог — /.
+custom404Page = "/etc/colloq-relay/offline.html"
+
 auth.method = "token"
 auth.token = "${TOKEN}"
 
@@ -159,6 +453,28 @@ http://127.0.0.1:9180 {
 		header_up X-Forwarded-Host {host}
 		header_up X-Forwarded-Proto https
 	}
+
+	# Тот же экран, когда падает не комната, а сам frps: перезапуск, обновление,
+	# кончившаяся память. Раньше сюда приезжала голая ошибка шлюза от caddy, а
+	# она для студента неотличима от «интернет сломался».
+	#
+	# handle_errors ловит только ошибки самого caddy — то есть случай, когда до
+	# frps не достучаться. Ответ 404, который живой frps отдаёт для имени без
+	# клиента, это для caddy обычный ответ сверху, он идёт через reverse_proxy
+	# насквозь и сюда не попадает: две ветки не спорят за один и тот же случай.
+	# Выдачу сертификатов это не трогает вовсе — она живёт до HTTP, в
+	# рукопожатии TLS, и в этот маршрут не заходит.
+	handle_errors {
+		root * /etc/caddy
+		rewrite * /offline.html
+		# Код ответа остаётся тем, что случилось на самом деле. Со стандартным
+		# для file_server 200 страница выглядела бы как успех, и любая проверка
+		# снаружи — та же, что ждёт адрес в make host, — считала бы мёртвый
+		# ретранслятор живым семинаром.
+		file_server {
+			status {err.status_code}
+		}
+	}
 }
 
 # Голый http нужен для проверки Let's Encrypt; caddy делает её сам, а всё
@@ -169,6 +485,13 @@ http://127.0.0.1:9180 {
 CONF
 caddy fmt --overwrite /etc/caddy/Caddyfile >/dev/null 2>&1 || true
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+REMOTE_HEAD
+
+# Страница кладётся до запуска служб: обе на неё уже сослались, и первый же
+# запрос после перезапуска должен получить текст, а не пустое место.
+relay_page
+
+cat <<'REMOTE_TAIL'
 
 echo "== службы"
 cat > /etc/systemd/system/frps.service <<'UNIT'
@@ -233,7 +556,8 @@ ss -lntp | awk 'NR==1 || /:(80|443|7000|8080|9180|7500)\b/{print "  "$4"  "$6}'
 
 echo
 echo "секрет для инстансов лежит в /etc/colloq-relay/token"
-REMOTE
+REMOTE_TAIL
+} | "${SSH[@]}" "$HOST" DOMAIN="$DOMAIN" FRP_VERSION="$FRP_VERSION" 'bash -s'
 
 # Готовые строки для .env инстанса.
 #
@@ -248,3 +572,6 @@ printf 'RELAY_DOMAIN=%s\nRELAY_ADDR=%s\nRELAY_PORT=7000\nRELAY_TOKEN=%s\n' \
   "$DOMAIN" "${HOST#*@}" "${TOKEN:-<из /etc/colloq-relay/token на ретрансляторе>}"
 echo
 say "потом семинар наружу: make host HOST=hse.${DOMAIN}"
+echo
+say "текст страницы «комната ещё не открыта» правится отдельно:"
+printf '  make relay-page WHERE=%s\n' "$HOST"

@@ -35,7 +35,7 @@ OFF  := \033[0m
 # которого `make site` печатал «site is up to date» и не делал ничего — ни
 # страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell \
-        host relay-setup tunnel-setup site ui sync course \
+        host relay-setup relay-page tunnel-setup site ui sync course \
         vast-up vast-status vast-sync vast-down \
         env-list env-show env-new env-use env-build env-freeze \
         backup restore test check
@@ -305,6 +305,14 @@ course: ## Курс из расписания в таблице. SHEET=<id> GID=
 relay-setup: ## Поставить ретранслятор для *.colloq.ru. WHERE=root@адрес
 	@test -n "$(WHERE)" || { printf '$(RED)Укажите машину: make relay-setup WHERE=root@203.0.113.11$(OFF)\n'; exit 1; }
 	@./scripts/relay-setup.sh "$(WHERE)"
+
+relay-page: ## Обновить страницу «комната ещё не открыта». WHERE=root@адрес
+	@# Её видит студент, пришедший раньше преподавателя. Текст живёт в
+	@# scripts/relay-setup.sh, а полная установка ради одного абзаца — это
+	@# пакеты, бинарники и перезапуск обеих служб на боевой машине, где висят
+	@# живые адреса. Здесь только файл: ни одна служба не перезапускается.
+	@test -n "$(WHERE)" || { printf '$(RED)Укажите машину: make relay-page WHERE=root@203.0.113.11$(OFF)\n'; exit 1; }
+	@./scripts/relay-setup.sh --page "$(WHERE)"
 
 tunnel-setup: ## Один раз завести постоянный адрес. HOST=seminar.example.ru
 	@test -n "$(HOST)" || { printf '$(RED)Укажите адрес: make tunnel-setup HOST=seminar.example.ru$(OFF)\n'; exit 1; }

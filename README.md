@@ -174,6 +174,24 @@ point of failure for the addresses under it. Subdomains are handed out by `frps`
 the shared token, so one relay serves every instance without a DNS record per university:
 `*.colloq.ru` points at it once (`scripts/dns.sh`).
 
+Most of the time a student opens the link before anyone has dialled in — the instance is
+off, the laptop is shut, the tunnel is not up. The relay answers that with a page of its
+own instead of frp's default ("the page you requested was not found… faithfully yours,
+frp"), which tells a student neither what happened nor what to do. Ours says, in Russian
+and without blaming anyone, that the room has not been opened yet, and that the page
+reloads itself every twenty seconds — so whoever came early ends up in the room without
+pressing anything. It is one file with no external requests at all, because it is read on
+a phone over cellular in a lecture hall. The same page covers the neighbouring failure:
+`handle_errors` in the Caddyfile serves it when `frps` itself is down, where a bare gateway
+error would read as "the internet is broken".
+
+The text lives in `scripts/relay-setup.sh`, and editing it does not need the whole setup
+again — nothing is restarted, both daemons read the file per request:
+
+```bash
+make relay-page WHERE=root@203.0.113.11
+```
+
 ## Renting a machine
 
 A seminar with neural networks needs a GPU, and the university's A100 is either busy or
