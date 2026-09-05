@@ -63,7 +63,9 @@ journal still next to it is corrupted quietly. `make restore` is the other half 
 `make backup` — it refuses to run while a server is up, moves the old database aside
 *with* its journal instead of deleting it, and unpacks the archive over `./workspace`
 rather than replacing it. `DB=` and `FILES=` name specific files when the newest pair is
-not the one you want.
+not the one you want, and `NAME=` names a rented environment: its copies live in
+`backups/<name>/` rather than in the root, which belongs to this machine's own instance
+(see *Several environments at once*).
 
 What it deliberately does not restore is the environment images: rebuilding them
 (`make env-build NAME=…`) is cheaper than carrying tens of gigabytes around.
@@ -209,8 +211,8 @@ make vast-down     # destroy the machine, and everything on it with it
 is never printed, never passed on a command line — `ps` shows those to everyone on the
 machine — and never copied to the rented box: that box is already paid for.
 
-One command covers a whole class — rent a machine with a named card, deploy, restore
-whatever backup is lying in `backups/`, and put the room on its address:
+One command covers a whole class — rent a machine with a named card, deploy, restore the
+newest backup this environment has here, and put the room on its address:
 
 ```bash
 make vast-up GPU="RTX 5070" HOST=demo.colloq.ru
@@ -240,6 +242,55 @@ and debugged for the rest of the hour. If it never answers, the script prints th
 that tmux session and names the three things to look at: the session's log, `RELAY_*` in
 the `.env` on the machine, and whether the name resolves. `make vast-status` asks the same
 two questions later — is `colloq-host` still alive, and does the address answer.
+
+### Several environments at once
+
+One rented machine is one environment. `hse.colloq.ru` and `demo.colloq.ru` are two
+machines, two bills and two databases; all they share is this repository and the relay.
+An environment is named by one word, and it is the same word three times over: the first
+label of the address, the instance's label on vast (`colloq-demo`), and the directory
+its backups live in (`backups/demo/`).
+
+```bash
+make vast-up NAME=demo HOST=demo.colloq.ru
+make vast-status                 # every environment: card, price, spent, address
+make vast-status NAME=demo      # the details of one, as before
+make vast-sync NAME=demo        # into backups/demo/
+make vast-down NAME=demo
+```
+
+`NAME` can be left out when `HOST` is there — the name *is* the first label of the
+address, and asking for the same word twice buys nothing — and it can be left out while
+only one environment is rented: that one is taken, and the script says which. The moment
+there are two, `vast-sync` and `vast-down` refuse without a name and print the list
+instead. Destroying the wrong machine cannot be undone, and deploying one seminar's
+database onto another's address is the same loss with a delay; either costs more than the
+convenience of a word not typed.
+
+Backups are split for that second reason. `make vast-sync NAME=demo` writes into
+`backups/demo/`, and the deploy onto a rented machine takes the newest copy *from that
+directory only*: nothing there means an honestly empty machine, not the neighbour's
+database. The root of `backups/` stays with this machine's own instance — that is where
+`make backup` writes, and what `make restore` reads unless an environment is named.
+Copies already lying there keep working exactly as before; they are simply the unnamed
+environment's.
+
+The machine rented before any of this carries the plain `colloq` label, and it counts as
+that unnamed environment rather than being orphaned. `make vast-up HOST=demo.colloq.ru`
+still reaches it: with no `colloq-demo` around, the script asks that machine which
+address it is serving — `PUBLIC_URL` in its own `.env` — and if the answer is
+`demo.colloq.ru`, renames the label in place (`PUT instances/<id>/`, field `label`, the
+same call that starts a stopped instance) and carries on. Nothing is recreated, the
+tunnel does not blink, and the question is asked once. If the answer is some other
+address, that machine is left alone and a new one is rented for the new environment. If
+it cannot be asked at all — stopped, or SSH silent — nothing is adopted and nothing is
+assumed; `make vast-adopt NAME=demo` does the rename by hand, after showing what it
+knows.
+
+An environment is another machine: another bill by the hour and another set of data. Two
+seminars on one machine would be one database and one address again, which is what the
+split is there to prevent; the relay and this repository are all they are meant to have
+in common.
 
 Three prices, and they are the point of this section rather than footnotes to it.
 

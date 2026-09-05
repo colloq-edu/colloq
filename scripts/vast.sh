@@ -11,10 +11,32 @@
 #
 #   make vast-up GPU="RTX 5070" HOST=demo.colloq.ru
 #
-# — арендовать машину с этой картой, развернуть Colloq, развернуть снятую копию,
-# если она лежит в backups/, и открыть адрес наружу. HOST и GPU приезжают
-# переменными окружения, а не аргументами: так их передаёт Makefile, и так они
-# не мешают старому вызову без них.
+# — арендовать машину с этой картой, развернуть Colloq, развернуть снятую копию
+# этой среды, если она лежит в backups/, и открыть адрес наружу. HOST и GPU
+# приезжают переменными окружения, а не аргументами: так их передаёт Makefile,
+# и так они не мешают старому вызову без них.
+#
+# СРЕД БЫВАЕТ НЕСКОЛЬКО, и это несколько машин: hse.colloq.ru и demo.colloq.ru
+# — две аренды, два счёта, две базы. Общего у них только этот репозиторий и
+# ретранслятор. Среда называется одним словом, и это же слово — первая часть
+# адреса, метка на vast («colloq-hse») и подкаталог копий (backups/hse/):
+#
+#   make vast-up NAME=demo HOST=demo.colloq.ru
+#   make vast-sync NAME=demo   ·   make vast-down NAME=demo
+#   make vast-status            без имени — список всех арендованных сред
+#
+# Имя можно не называть, когда назван адрес: оно берётся из первой части HOST.
+# Имя можно не называть и когда среда всего одна: берётся она, и об этом
+# говорится вслух. Как только сред две, `sync` и `down` без имени отказывают со
+# списком — уничтожить не ту машину или увезти на неё чужую базу стоит дороже
+# любого удобства.
+#
+# Голая метка «colloq», без имени, осталась от времён единственной машины и
+# считается здесь безымянной средой: та машина не должна осиротеть. Назвать её,
+# не пересоздавая и не теряя ни секунды семинара, — make vast-adopt NAME=<имя>:
+# у vast метка меняется вызовом PUT instances/<id>/ с полем label, тем же, каким
+# ниже меняется state. `up` делает это и сам, но только доказав, что машина
+# своя, — см. adopt_legacy.
 #
 # АДРЕС ПОДНИМАЕТСЯ ТАМ, А НЕ ЗДЕСЬ: семинар считается на арендованной машине,
 # значит и туннель наружу открывать ей. `make host` — это окно, живущее ровно
@@ -51,6 +73,14 @@
 # разу: за них платят настоящими деньгами. Первый настоящий прогон стоит
 # сделать на дешёвом предложении и не в день занятия.
 #
+# Со сменой метки та же история. Что у vast это PUT instances/<id>/ с полем
+# label — сказано в их документации (api-reference/instances/manage-instance) и
+# видно по соседнему вызову ниже, которым поднимают остановленную машину; на
+# живом инстансе не проверялось, потому что в день правки на аккаунте не было
+# арендовано ни одной машины (спрошено чтением). Разбор ответа и вся развилка
+# усыновления прогнаны на выдуманном ответе vast — включая случаи «адрес чужой»
+# и «спросить некого».
+#
 # Ключ VAST_TOKEN читается из .env. Он не печатается, не уходит в аргументы
 # командной строки (их видно всей машине через `ps`) и не едет на арендованную
 # машину: ею уже расплатились, второй раз ключ там не нужен.
@@ -68,6 +98,9 @@ py() { python3 -c "$1"; }
 
 read_env() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \r' || true; }
 
+# Разделитель полей в таблице инстансов — см. instances_tsv.
+SEP=$'\037'
+
 API=https://console.vast.ai/api/v0
 CMD="${1:-}"
 
@@ -75,8 +108,46 @@ CMD="${1:-}"
 
 # Метка на инстансе. Ею — и только ею — скрипт потом находит арендованную
 # машину: переменная в памяти не переживает ни закрытый терминал, ни второй
-# ноутбук, а метка живёт на стороне vast.
-LABEL="$(read_env VAST_LABEL)";         LABEL="${LABEL:-colloq}"
+# ноутбук, а метка живёт на стороне vast. К ней приписывается имя среды:
+# «colloq-hse» и «colloq-demo» — две разные машины, и спутать их нельзя даже
+# случайно. Голая «colloq» — безымянная среда, та самая первая машина.
+LABEL_BASE="$(read_env VAST_LABEL)";    LABEL_BASE="${LABEL_BASE:-colloq}"
+
+# Имя среды. Называют его тремя способами, и все три — одно и то же слово:
+# NAME=demo, вторым аргументом (scripts/vast.sh sync demo) или первой частью
+# адреса (HOST=demo.colloq.ru). Требовать NAME там, где уже назван HOST, было
+# бы лишним словом: адрес и среда — одно имя, и ниже это проверяется.
+ENV_NAME="${NAME:-${2:-}}"
+if [ -z "$ENV_NAME" ] && [ -n "${HOST:-}" ]; then ENV_NAME="${HOST%%.*}"; fi
+# Имя уходит и в метку на vast, и в путь каталога, и в адрес. Всё, что не буква,
+# цифра и дефис в середине, было бы там уже не именем: «../» увело бы копии из
+# backups/ куда угодно, а точка — в чужой поддомен.
+case "$ENV_NAME" in
+  '') : ;;
+  *[!A-Za-z0-9-]*|-*|*-)
+    die "имя среды «${ENV_NAME}» не годится.
+  Оно же поддомен адреса и хвост метки на vast, поэтому годятся буквы, цифры и
+  дефис в середине: NAME=demo, NAME=hse-2026." ;;
+esac
+
+# Метка и каталог копий — производные от имени, поэтому считаются вместе с ним:
+# среду могли не назвать вовсе, и тогда её выберет resolve_env, уже спросив vast.
+#
+# Копии разложены по средам: backups/hse/ и backups/demo/. Раньше всё
+# сваливалось в backups/ вперемешку, а разворачивалось «последнее» — при двух
+# средах это прямая дорога положить базу одного семинара в комнату другого.
+# Корень backups/ остаётся за безымянной средой: туда же пишет локальный
+# `make backup`, и именованная среда этих файлов не видит вовсе.
+use_env() {
+  LABEL="$LABEL_BASE${ENV_NAME:+-$ENV_NAME}"
+  BACKUP_DIR="backups${ENV_NAME:+/$ENV_NAME}"
+  # Хвост для подсказок в сообщениях. У безымянной среды его нет вовсе: советуя
+  # «NAME=» пустым, мы советовали бы опечатку. А у названной он обязан быть в
+  # каждой подсказке — «повторите make vast-up» без имени при двух средах это
+  # совет, который уводит не туда.
+  NAME_ARG="${ENV_NAME:+ NAME=$ENV_NAME}"
+}
+use_env
 # Образ виртуалки. Теги в vastai/kvm датированные, `latest` там нет вовсе;
 # список — hub.docker.com/r/vastai/kvm/tags.
 IMAGE="$(read_env VAST_IMAGE)";         IMAGE="${IMAGE:-docker.io/vastai/kvm:ubuntu_cli_22.04-2025-11-21}"
@@ -221,48 +292,162 @@ rssh() { ssh $(ssh_opts) -i "$SSH_KEY" -p "$INST_SSH_PORT" "root@$INST_SSH_HOST"
 
 # ---------------------------------------------------------------- инстанс
 
-INST_ID=""; INST_STATUS=""; INST_SSH_HOST=""; INST_SSH_PORT=""
+INST_NAME=""; INST_ID=""; INST_STATUS=""; INST_SSH_HOST=""; INST_SSH_PORT=""
 INST_DPH=""; INST_GPU=""; INST_NGPU=""; INST_START=""; INST_MSG=""
 
-# Находит наш инстанс по метке; возвращает 1, если такого нет.
+# Наши инстансы, по строке на каждый: имя среды, id, состояние, ssh-хост,
+# ssh-порт, $/час, карта, сколько карт, старт, сообщение. С аргументом — только
+# инстансы с этой меткой, без аргумента — все наши среды разом, и безымянная
+# среди них (у неё пустое первое поле).
 #
-# Отказ самого vast и «инстанса нет» — разные вещи, и путать их здесь нельзя:
+# Поля разделены \037 (символ «разделитель полей»), а не табуляцией, и это не
+# педантизм. Табуляция — пробельный символ, а `read` с пробельным IFS съедает
+# ведущие разделители и склеивает подряд идущие: строка безымянной среды
+# начинается ровно с пустого поля, и её первой же попыткой разобрать имя
+# оказывалось id, состоянием — адрес, ценой — карта. Проверено на выдуманном
+# ответе vast: с табуляцией таблица сред разъезжается на первой же строке.
+#
+# Отказ самого vast и «инстансов нет» — разные вещи, и путать их здесь нельзя:
 # из «нет» команда up делает вывод «надо арендовать», и молчаливая ошибка сети
 # обернулась бы второй арендованной машиной рядом с первой. Поэтому каждый шаг
 # проверяется явно, а не оставляется на set -e: load_instance зовут в условии
 # `if`, где set -e не действует.
-load_instance() {
-  local raw line
+instances_tsv() {
+  local raw out
   raw="$(api GET "instances/")" || die "не смог спросить vast про инстансы."
-  line="$(printf '%s' "$raw" | LABEL="$LABEL" py '
+  out="$(printf '%s' "$raw" | WANT="${1:-}" BASE="$LABEL_BASE" py '
 import json, os, sys
-want = os.environ["LABEL"]
-mine = [i for i in (json.load(sys.stdin).get("instances") or [])
-        if (i.get("label") or "") == want]
-if not mine:
-    raise SystemExit
-if len(mine) > 1:
-    print("машин с меткой «%s» больше одной — беру первую" % want, file=sys.stderr)
-i = mine[0]
-# Куда стучаться ssh. У виртуалки два ответа, и первый — ложный: поля
-# ssh_host/ssh_port называют прокси vast (ssh5.vast.ai:31430), а он поднят
-# только у обычных docker-инстансов, и на виртуалке отвечает «connection
-# refused» все десять минут ожидания. Правда лежит в ports: докерная карта
-# портов машины, где 22/tcp смотрит на публичный адрес и свой номер.
-host, port = i.get("ssh_host") or "", i.get("ssh_port") or ""
-mapped = ((i.get("ports") or {}).get("22/tcp") or [])
-direct = next((m.get("HostPort") for m in mapped if m.get("HostPort")), None)
-if direct and i.get("public_ipaddr"):
-    host, port = str(i["public_ipaddr"]).strip(), str(direct)
-cols = ("id", "actual_status", "dph_total",
-        "gpu_name", "num_gpus", "start_date", "status_msg")
-print("\t".join([str(i.get("id") or ""), str(i.get("actual_status") or ""),
-                 host, str(port)]
-                + [str(i.get(c) if i.get(c) is not None else "") for c in cols[2:]]))
+base = os.environ["BASE"]
+want = os.environ.get("WANT") or ""
+rows = []
+for i in (json.load(sys.stdin).get("instances") or []):
+    label = i.get("label") or ""
+    # Чужие инстансы этого аккаунта нас не касаются вовсе, а свои различаются
+    # хвостом метки: «colloq» — безымянная среда, «colloq-hse» — среда hse.
+    if label == base:
+        name = ""
+    elif label.startswith(base + "-"):
+        name = label[len(base) + 1:]
+    else:
+        continue
+    if want and label != want:
+        continue
+    # Куда стучаться ssh. У виртуалки два ответа, и первый — ложный: поля
+    # ssh_host/ssh_port называют прокси vast (ssh5.vast.ai:31430), а он поднят
+    # только у обычных docker-инстансов, и на виртуалке отвечает «connection
+    # refused» все десять минут ожидания. Правда лежит в ports: докерная карта
+    # портов машины, где 22/tcp смотрит на публичный адрес и свой номер.
+    host, port = i.get("ssh_host") or "", i.get("ssh_port") or ""
+    mapped = ((i.get("ports") or {}).get("22/tcp") or [])
+    direct = next((m.get("HostPort") for m in mapped if m.get("HostPort")), None)
+    if direct and i.get("public_ipaddr"):
+        host, port = str(i["public_ipaddr"]).strip(), str(direct)
+    cols = ("dph_total", "gpu_name", "num_gpus", "start_date", "status_msg")
+    cells = [name, str(i.get("id") or ""), str(i.get("actual_status") or ""),
+             host, str(port)]
+    cells += [str(i.get(c) if i.get(c) is not None else "") for c in cols]
+    # Строка разбирается на той стороне через IFS и read: перевод строки в
+    # status_msg (а он там бывает многострочный) обрубил бы всё, что за ним.
+    rows.append("\x1f".join(
+        c.replace("\x1f", " ").replace("\t", " ").replace("\n", " ") for c in cells))
+print("\n".join(sorted(rows)))
 ')" || die "не понял ответ vast про инстансы."
-  [ -n "$line" ] || return 1
-  IFS=$'\t' read -r INST_ID INST_STATUS INST_SSH_HOST INST_SSH_PORT \
+  printf '%s' "$out"
+}
+
+# Сколько строк в таблице сред. Пустая строка — это ноль, а не одна.
+env_count() { printf '%s\n' "$1" | grep -c . || true; }
+
+# Находит инстанс текущей среды по метке; возвращает 1, если такого нет.
+load_instance() {
+  local lines line
+  lines="$(instances_tsv "$LABEL")"
+  [ -n "$lines" ] || { clear_instance; return 1; }
+  if [ "$(env_count "$lines")" -gt 1 ]; then
+    say "${DIM}машин с меткой «${LABEL}» больше одной — беру первую${OFF}" >&2
+  fi
+  line="$(printf '%s\n' "$lines" | head -1)"
+  IFS=$'\037' read -r INST_NAME INST_ID INST_STATUS INST_SSH_HOST INST_SSH_PORT \
     INST_DPH INST_GPU INST_NGPU INST_START INST_MSG <<<"$line"
+  return 0
+}
+
+# «Не нашлось» обязано стирать за собой: INST_ID от прошлого, чужого поиска —
+# это ssh и rsync в чужую машину, самая дорогая из возможных опечаток.
+clear_instance() {
+  INST_NAME=""; INST_ID=""; INST_STATUS=""; INST_SSH_HOST=""; INST_SSH_PORT=""
+  INST_DPH=""; INST_GPU=""; INST_NGPU=""; INST_START=""; INST_MSG=""
+}
+
+# Как среда называется вслух. Безымянная — та самая первая машина с меткой
+# «colloq»: у неё имени нет, и врать, что есть, нельзя.
+env_title() { printf '%s' "${1:-без имени}"; }
+
+# Список сред. Им отвечает `status` без имени, и им же заканчивается отказ
+# опасной команды: «назовите среду», не показав, какие есть, — это предложение
+# угадать.
+print_envs() {
+  local lines="$1" name id st host port dph gpu ngpu start msg s db dir title
+  # Свои WANT_HOST и HOST_IP: host_health читает их из глобальных, а таблицу
+  # печатают в том числе посреди `up`, где глобальный WANT_HOST — это адрес,
+  # ради которого всё и затевалось. Затереть его здесь значило бы выставить
+  # наружу не то имя.
+  local WANT_HOST HOST_IP
+  while IFS=$'\037' read -r name id st host port dph gpu ngpu start msg; do
+    [ -n "$id" ] || continue
+    s="$(spent "$start" "$dph")"
+    title="$(env_title "$name")"
+    # Пробелы досыпаем сами: printf считает ширину в БАЙТАХ, а «без имени» — это
+    # девять знаков и семнадцать байт, и %-12s не выравнивает её вовсе.
+    printf '  %s%s%s%*s %s%s · %s x %s · $%s/час%s%s\n' \
+      "$BOLD" "$title" "$OFF" "$(( 12 > ${#title} ? 12 - ${#title} : 0 ))" "" \
+      "$DIM" "$st" "$ngpu" "$gpu" "$dph" "${s:+ · $s}" "$OFF"
+    if [ -n "$name" ] && [ -n "$RELAY_DOMAIN" ]; then
+      # Адрес спрашивается снаружи, у самого имени, а не у машины по ssh: студенту
+      # видно именно это, и «инстанс работает» про это ничего не говорит.
+      WANT_HOST="$name.$RELAY_DOMAIN"; HOST_IP=""
+      if command -v dig >/dev/null 2>&1; then HOST_IP="$(resolve_host "$WANT_HOST" || true)"; fi
+      if host_health; then
+        printf '               %shttps://%s%s %s— отвечает%s\n' "$CYAN" "$WANT_HOST" "$OFF" "$DIM" "$OFF"
+      else
+        printf '               %shttps://%s — не отвечает%s\n' "$RED" "$WANT_HOST" "$OFF"
+      fi
+    elif [ -z "$name" ]; then
+      printf '               %sбез имени — назвать: make vast-adopt NAME=<имя>%s\n' "$DIM" "$OFF"
+    fi
+    dir="backups${name:+/$name}"
+    db="$(ls -1t "$dir"/colloq-*.db 2>/dev/null | head -1 || true)"
+    if [ -n "$db" ]; then
+      printf '               %sкопия здесь: %s%s\n' "$DIM" "$(backup_age "$db")" "$OFF"
+    else
+      printf '               %sкопий здесь нет%s %s(make vast-sync%s)%s\n' \
+        "$RED" "$OFF" "$DIM" "${name:+ NAME=$name}" "$OFF"
+    fi
+  done <<<"$lines"
+}
+
+# Имя не назвали. Пока среда одна, это не двусмысленность, а лишнее слово:
+# берём ту, что есть, и говорим вслух, какую. Как только их две, «первая
+# попавшаяся» превращается в «не та» — и вот тогда отказ, со списком: снять
+# данные одной среды и развернуть их в другую нельзя ни при каких
+# обстоятельствах, а уничтожить чужую машину — тем более.
+resolve_env() {
+  local what="$1" lines n picked
+  [ -z "$ENV_NAME" ] || return 0
+  lines="$(instances_tsv)"
+  n="$(env_count "$lines")"
+  # Ничего не арендовано — среда безымянная, как и было до появления имён.
+  [ "$n" -gt 0 ] || return 0
+  if [ "$n" -gt 1 ]; then
+    say "${RED}сред арендовано несколько — назовите, какую $what${OFF}" >&2
+    print_envs "$lines" >&2
+    die "например: make vast-${CMD} NAME=<имя>"
+  fi
+  picked="$(printf '%s' "$lines" | cut -d "$SEP" -f1)"
+  if [ -n "$picked" ]; then
+    ENV_NAME="$picked"; use_env
+    say "${DIM}среда одна — беру «${ENV_NAME}»${OFF}"
+  fi
   return 0
 }
 
@@ -286,20 +471,25 @@ print(((json.load(sys.stdin).get("instances") or {}).get("status_msg") or "").st
         say "${RED}    машина встала в «${st}» — в running это уже не перейдёт${OFF}"
         if [ -n "$msg" ]; then say "${DIM}    $msg${OFF}"; fi
         die "деньги идут, пока инстанс существует. Уничтожьте его и повторите:
-  make vast-down · потом make vast-up" ;;
+  make vast-down$NAME_ARG · потом make vast-up$NAME_ARG" ;;
     esac
     sleep 10; waited=$((waited + 10))
   done
   die "машина не дошла до running за 15 минут.
-  Посмотреть: make vast-status · уничтожить: make vast-down"
+  Посмотреть: make vast-status$NAME_ARG · уничтожить: make vast-down$NAME_ARG"
 }
 
 # Сколько уже натикало. Не счёт, а порядок величины: vast считает по секундам и
 # берёт ещё за диск, поэтому цифра нужна для решения «пора выключать», а не для
 # бухгалтерии.
 spent() {
-  [ -n "$INST_START" ] && [ -n "$INST_DPH" ] || return 0
-  START="$INST_START" DPH="$INST_DPH" NOW="$(date +%s)" py '
+  # Без аргументов — про загруженный инстанс, с ними — про строку из таблицы
+  # сред: считается одинаково, а данные приезжают из двух разных мест.
+  # Именно «-», а не «:-»: пустая строка из таблицы сред означает «старта нет»,
+  # и подставлять вместо неё старт другого, ранее загруженного инстанса нельзя.
+  local start="${1-$INST_START}" dph="${2-$INST_DPH}"
+  [ -n "$start" ] && [ -n "$dph" ] || return 0
+  START="$start" DPH="$dph" NOW="$(date +%s)" py '
 import os
 try:
     h = (float(os.environ["NOW"]) - float(os.environ["START"])) / 3600
@@ -309,9 +499,11 @@ except Exception:
 ' 2>/dev/null || true
 }
 
-# Самая свежая копия данных, снятая сюда. Её дату показывают и `status`, и
-# `down`: «уничтожить» без этой строки — решение вслепую.
-last_backup() { ls -1t backups/colloq-*.db 2>/dev/null | head -1 || true; }
+# Самая свежая копия данных ЭТОЙ среды, снятая сюда. Её дату показывают и
+# `status`, и `down`: «уничтожить» без этой строки — решение вслепую. Смотрим
+# только в свой подкаталог: соседская копия здесь хуже, чем никакой, — её
+# развернули бы под видом своей.
+last_backup() { ls -1t "$BACKUP_DIR"/colloq-*.db 2>/dev/null | head -1 || true; }
 
 backup_age() {
   local f="$1" when
@@ -340,6 +532,16 @@ esac
 case "$WANT_HOST" in
   *[!A-Za-z0-9.-]*) die "в имени «${WANT_HOST}» есть посторонние знаки. Ожидаю имя вида demo.colloq.ru." ;;
 esac
+# Среда и адрес — одно имя, и разойтись им нельзя. По имени среды ищется метка
+# на vast, каталог копий и адрес, который потом проверяют снаружи; среда «hse»,
+# живущая на demo.colloq.ru, — это ровно та путаница, ради которой среды и
+# разделяли. Отказ здесь дешёвый: он до аренды и до единого байта данных.
+if [ -n "$WANT_HOST" ] && [ -n "$ENV_NAME" ] && [ "${WANT_HOST%%.*}" != "$ENV_NAME" ]; then
+  die "среда «${ENV_NAME}» и адрес «${WANT_HOST}» — разные имена.
+  Имя среды и первая часть адреса — одно слово. Или так:
+      make vast-up NAME=${WANT_HOST%%.*} HOST=${WANT_HOST}
+  или адрес под именем среды: HOST=${ENV_NAME}.${RELAY_DOMAIN:-colloq.ru}"
+fi
 
 # Шагов шесть, а с адресом семь. Считаем заранее: «6/7», после которого седьмого
 # не будет, хуже честных «6/6».
@@ -415,13 +617,124 @@ check_host_ready() {
   fi
 }
 
+# --------------------------------------------------------------- метка
+
+# Сменить метку живому инстансу. У vast это PUT instances/<id>/ с полем label —
+# тот же вызов, которым выше поднимают остановленную машину, и это важно:
+# инстанс не пересоздаётся, диск на месте, семинар не прерывается ни на секунду.
+relabel() {
+  local id="$1" to="$2"
+  api PUT "instances/$id/" "$(TO="$to" py '
+import json, os
+print(json.dumps({"label": os.environ["TO"]}))')" >/dev/null
+}
+
+# Какой адрес обслуживает машина — по её собственному .env. Это единственный
+# честный ответ на вопрос «чья она»: метка могла остаться от прошлой жизни, а
+# PUBLIC_URL туда вписал `make host` в тот момент, когда туннель поднялся.
+remote_host_name() {
+  local url
+  [ "$INST_STATUS" = running ] && [ -n "$INST_SSH_HOST" ] && [ -f "$SSH_KEY" ] || return 1
+  url="$(rssh "grep -E '^PUBLIC_URL=' $REMOTE_DIR/.env 2>/dev/null | tail -1 | cut -d= -f2-" \
+    </dev/null 2>/dev/null | tr -d ' \r' || true)"
+  case "$url" in
+    https://*) printf '%s' "${url#https://}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Безымянная машина под именованную среду. Метка «colloq» осталась от времён
+# единственной аренды, и на такой машине сейчас работает боевая среда: осиротеть
+# она не должна, а `make vast-up HOST=demo.colloq.ru` обязан вести к ней же, а
+# не арендовать вторую рядом.
+#
+# Но принять её за свою можно только доказав, что она своя, и доказательство
+# здесь одно: имя среды — это первая часть адреса, а адрес машина знает сама.
+# Совпало — меняем метку и дальше работаем по имени. Не совпало — оставляем её в
+# покое: развернуть на чужой машине свою базу значит потерять чужую.
+adopt_legacy() {
+  local mine="$LABEL" addr
+  [ -n "$ENV_NAME" ] || return 1
+  LABEL="$LABEL_BASE"
+  if ! load_instance; then LABEL="$mine"; return 1; fi
+  say "${DIM}    рядом безымянная машина $INST_ID (метка «${LABEL_BASE}») — выясняю, чья она${OFF}"
+  if addr="$(remote_host_name)" && [ "${addr%%.*}" = "$ENV_NAME" ]; then
+    say "${DIM}    она обслуживает https://$addr — это и есть среда «${ENV_NAME}»${OFF}"
+    relabel "$INST_ID" "$mine"
+    say "${DIM}    метка «${LABEL_BASE}» → «${mine}»: дальше эта машина находится по имени${OFF}"
+    LABEL="$mine"
+    load_instance || die "метку сменил, но инстанс по ней не находится.
+  Загляните на https://cloud.vast.ai/instances/"
+    return 0
+  fi
+  if [ -n "${addr:-}" ]; then
+    say "${DIM}    она обслуживает https://$addr — это не среда «${ENV_NAME}», не трогаю её${OFF}"
+  else
+    say "${RED}    не смог спросить её, какой адрес она обслуживает${OFF}"
+    say "${DIM}    (машина «${INST_STATUS}» или ssh не отвечает). Если это и есть среда${OFF}"
+    say "${DIM}    «${ENV_NAME}» — назовите её, а не арендуйте вторую: make vast-adopt NAME=${ENV_NAME}${OFF}"
+  fi
+  LABEL="$mine"
+  clear_instance
+  return 1
+}
+
+# ---------------------------------------------------------------- adopt
+
+cmd_adopt() {
+  need_tools
+  auth
+  [ -n "$ENV_NAME" ] || die "назовите среду: make vast-adopt NAME=demo
+  Так называется машина с меткой «${LABEL_BASE}» — та, что арендована ещё до
+  того, как сред стало несколько."
+  if load_instance; then
+    die "среда «${ENV_NAME}» уже есть — инстанс $INST_ID с меткой «${LABEL}».
+  Переименовывать нечего: две машины под одним именем — это и есть путаница."
+  fi
+  local mine="$LABEL" addr answer
+  LABEL="$LABEL_BASE"
+  load_instance || die "безымянной машины (метка «${LABEL_BASE}») на vast.ai нет.
+  Смотреть, что арендовано: make vast-status"
+
+  printf '\n'
+  say "${BOLD}назвать инстанс $INST_ID средой «${ENV_NAME}»${OFF} ${DIM}($INST_NGPU x $INST_GPU, \$$INST_DPH/час)${OFF}"
+  say "${DIM}метка «${LABEL_BASE}» → «${mine}». Машина не пересоздаётся: диск, база и${OFF}"
+  say "${DIM}открытый туннель остаются как есть — меняется только имя на стороне vast.${OFF}"
+  if addr="$(remote_host_name)"; then
+    say "${DIM}она обслуживает ${OFF}${BOLD}https://$addr${OFF}"
+    if [ "${addr%%.*}" != "$ENV_NAME" ]; then
+      say "${RED}а это не «${ENV_NAME}».${OFF} ${DIM}Имя среды — первая часть адреса; назвав её иначе,${OFF}"
+      say "${DIM}вы получите среду, чьи копии лежат под одним именем, а адрес — под другим.${OFF}"
+    fi
+  else
+    say "${DIM}какой адрес она обслуживает, спросить не вышло — машина «${INST_STATUS}»${OFF}"
+    say "${DIM}или ssh молчит. Имя тогда только на вашей памяти.${OFF}"
+  fi
+  if [ "${FORCE:-}" != 1 ]; then
+    [ -t 0 ] || die "не вижу терминала, чтобы спросить. FORCE=1 — переименовать без вопроса."
+    printf '%sпереименовать? [y/N] %s' "$BOLD" "$OFF"
+    read -r answer
+    case "$answer" in y|Y|д|да) : ;; *) die "не переименовываю." ;; esac
+  fi
+  relabel "$INST_ID" "$mine"
+  printf '\n'
+  say "${BOLD}готово${OFF} ${DIM}— теперь: make vast-status NAME=${ENV_NAME}${OFF}"
+  say "${DIM}Копии этой среды отныне снимаются в backups/${ENV_NAME}/. Те, что уже${OFF}"
+  say "${DIM}лежат россыпью в backups/, считаются копиями безымянной среды и этой${OFF}"
+  say "${DIM}машине больше не поедут. Если они её — перенесите руками:${OFF}"
+  say "${DIM}    mkdir -p backups/${ENV_NAME} && mv backups/colloq-<дата>* backups/${ENV_NAME}/${OFF}"
+}
+
 # ------------------------------------------------------------------- up
 
 cmd_up() {
   need_tools
   auth
+  # Арендовать вслепую дороже всего: без имени и при нескольких средах `up`
+  # завёл бы рядом ещё одну машину, а узнали бы об этом по счёту.
+  resolve_env "разворачивать"
 
-  say "${BOLD}1/$STEPS${OFF} проверяю, что всё готово"
+  say "${BOLD}1/$STEPS${OFF} проверяю, что всё готово${ENV_NAME:+ для среды «${ENV_NAME}»}"
   # Адрес проверяется первым делом, до ключей и до счёта: он единственный, чью
   # негодность видно, не потратив ни секунды аренды.
   check_host_ready
@@ -468,9 +781,12 @@ print("%.2f" % float(b) if b is not None else "")
 ')"
   if [ -n "$balance" ]; then say "${DIM}    на счету \$$balance${OFF}"; fi
 
-  if load_instance; then
-    say "${BOLD}2/$STEPS${OFF} искать нечего: инстанс $INST_ID с меткой «${LABEL}» уже арендован"
-    say "${BOLD}3/$STEPS${OFF} разворачиваюсь поверх него"
+  say "${BOLD}2/$STEPS${OFF} ищу машину среды${ENV_NAME:+ «${ENV_NAME}»} — метка «${LABEL}»"
+  # Сначала по своей метке, потом — та самая безымянная, но только если она
+  # докажет, что она этой среды и есть.
+  if load_instance || adopt_legacy; then
+    say "${DIM}    уже арендована: инстанс $INST_ID${OFF}"
+    say "${BOLD}3/$STEPS${OFF} разворачиваюсь поверх неё"
     if [ "$INST_STATUS" != running ]; then
       say "${DIM}    он сейчас «${INST_STATUS}» — поднимаю${OFF}"
       api PUT "instances/$INST_ID/" '{"state":"running"}' >/dev/null
@@ -478,7 +794,7 @@ print("%.2f" % float(b) if b is not None else "")
       load_instance || die "инстанс $INST_ID поднялся, но по метке не находится."
     fi
   else
-    say "${BOLD}2/$STEPS${OFF} ищу предложение: ${GPU_NAME:-любая карта}${GPU_RAM:+, от $GPU_RAM ГБ}, виртуалка, on-demand, до \$$MAX_PRICE/час"
+    say "${DIM}    не арендована — ищу предложение: ${GPU_NAME:-любая карта}${GPU_RAM:+, от $GPU_RAM ГБ}, виртуалка, on-demand, до \$$MAX_PRICE/час${OFF}"
     local query offers pick
     query="$(GPU_RAM="$GPU_RAM" MAX_PRICE="$MAX_PRICE" DISK="$DISK" GPU_NAME="$GPU_NAME" py '
 import json, os
@@ -585,7 +901,7 @@ import json, sys
 print(json.load(sys.stdin).get("new_contract") or "")')"
     [ -n "$new_id" ] || die "vast не сказал, что арендовал.
   Загляните на https://cloud.vast.ai/instances/ — если машина всё же появилась,
-  повторите make vast-up: он развернётся поверх неё."
+  повторите make vast-up$NAME_ARG: он развернётся поверх неё."
     say "${DIM}    инстанс $new_id${OFF}"
     wait_running "$new_id"
     load_instance || die "инстанс $new_id арендован, но по метке не находится.
@@ -594,7 +910,7 @@ print(json.load(sys.stdin).get("new_contract") or "")')"
 
   say "${BOLD}4/$STEPS${OFF} жду ssh"
   [ -n "$INST_SSH_HOST" ] && [ -n "$INST_SSH_PORT" ] \
-    || die "vast ещё не назвал адрес ssh. Повторите через минуту: make vast-up"
+    || die "vast ещё не назвал адрес ssh. Повторите через минуту: make vast-up$NAME_ARG"
   say "${DIM}    ssh root@$INST_SSH_HOST -p $INST_SSH_PORT${OFF}"
   local waited=0
   until rssh true </dev/null 2>/dev/null; do
@@ -701,10 +1017,15 @@ EXCL
   # оракула и ключ подписи, и на той стороне они должны лежать так же.
   rsync -a -e "$(ssh_cmd)" "$tmpenv" "root@$INST_SSH_HOST:$REMOTE_DIR/.env"
 
-  local db files
+  # Копия едет ТОЛЬКО своя. Каталог у каждой среды свой (backups/hse/), и берётся
+  # из него самая свежая; нет её — машина поднимется пустой, и это честный ответ.
+  # Прежнее «последняя копия в backups/» при двух средах означало бы базу чужого
+  # семинара в этой комнате: чужие тетради, чужие ссылки, чужие преподаватели.
+  local db files want_db=""
   db="$(last_backup)"
   if [ -n "$db" ]; then
-    say "${DIM}    везу копию: $(basename "$db")${OFF}"
+    say "${DIM}    везу копию среды${ENV_NAME:+ «${ENV_NAME}»}: $db${OFF}"
+    want_db="$(basename "$db")"
     rssh "mkdir -p $REMOTE_DIR/backups" </dev/null
     rsync -a -e "$(ssh_cmd)" "$db" "root@$INST_SSH_HOST:$REMOTE_DIR/backups/"
     files="${db%.db}-files.tar.gz"
@@ -714,12 +1035,13 @@ EXCL
       say "${DIM}    архива файлов рядом нет — приедет только база${OFF}"
     fi
   else
-    say "${DIM}    копии в backups/ нет — машина поднимется пустой${OFF}"
+    say "${DIM}    копии в $BACKUP_DIR/ нет — машина поднимется пустой${OFF}"
   fi
 
   say "${BOLD}6/$STEPS${OFF} восстанавливаю данные и поднимаю Colloq"
-  rssh "cd $REMOTE_DIR && bash -s" <<'REMOTE'
+  rssh "REMOTE_DIR='$REMOTE_DIR' WANT_DB='$want_db' bash -s" <<'REMOTE'
 set -euo pipefail
+cd "$REMOTE_DIR"
 
 # Восстановление ДО подъёма: sqlite держит открытым тот файл, который открыл, и
 # подменить базу под работающим сервером значит писать в удалённый файл, а на
@@ -737,8 +1059,11 @@ set -euo pipefail
 port_here="$(grep -E '^PORT=' .env 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '0-9')"
 if curl -sf -o /dev/null --max-time 3 "http://localhost:${port_here:-3000}/api/health" 2>/dev/null; then
   echo "colloq здесь уже работает — копию не разворачиваю, это не пустая машина"
-elif ls backups/colloq-*.db >/dev/null 2>&1; then
-  bash scripts/restore.sh
+elif [ -n "${WANT_DB:-}" ] && [ -f "backups/$WANT_DB" ]; then
+  # Разворачивается ровно тот файл, который сюда только что привезли, а не
+  # «самый свежий из backups/». Разница видна на второй жизни машины: там могла
+  # остаться копия прошлой аренды, и «самая свежая» — это иногда она.
+  bash scripts/restore.sh "backups/$WANT_DB"
 else
   echo "восстанавливать нечего — начинаем с пустой базы"
 fi
@@ -833,7 +1158,7 @@ REMOTE
   fi
 
   printf '\n'
-  say "${BOLD}Colloq поднят на арендованной машине${OFF}"
+  say "${BOLD}Colloq поднят на арендованной машине${ENV_NAME:+ — среда «${ENV_NAME}»}${OFF}"
   say "  ${CYAN}ssh -i $SSH_KEY -p $INST_SSH_PORT root@$INST_SSH_HOST${OFF}"
   printf '\n'
   if [ -n "$hosted" ]; then
@@ -867,7 +1192,7 @@ REMOTE
   fi
   printf '\n'
   say "${DIM}Окружение с картой собирается там же: make env-build NAME=gpu${OFF}"
-  say "${DIM}Данные оттуда: make vast-sync · уничтожить машину: make vast-down${OFF}"
+  say "${DIM}Данные оттуда: make vast-sync$NAME_ARG · уничтожить машину: make vast-down$NAME_ARG${OFF}"
   say "${RED}Всё, что на этой машине, живёт ровно до её уничтожения.${OFF}"
 }
 
@@ -876,16 +1201,36 @@ REMOTE
 cmd_status() {
   need_tools
   auth
-  local db s
+  local db s lines n
+  # Имени не назвали — показываем всё, что арендовано. Сред может быть
+  # несколько, и «первая попавшаяся» здесь врала бы не по мелочи: цена, копия и
+  # адрес принадлежали бы разным машинам. Ровно одна среда — сразу подробности:
+  # выбирать не из чего, и лишний шаг был бы лишним.
+  if [ -z "$ENV_NAME" ]; then
+    lines="$(instances_tsv)"
+    n="$(env_count "$lines")"
+    if [ "$n" -gt 1 ]; then
+      say "${BOLD}арендовано сред: $n${OFF}"
+      print_envs "$lines"
+      printf '\n'
+      say "${DIM}подробности одной: make vast-status NAME=<имя>${OFF}"
+      say "${DIM}у каждой среды свои машина, счёт и данные — общего только код и ретранслятор${OFF}"
+      return 0
+    fi
+    if [ "$n" -eq 1 ]; then
+      ENV_NAME="$(printf '%s' "$lines" | cut -d "$SEP" -f1)"; use_env
+    fi
+  fi
   db="$(last_backup)"
   if ! load_instance; then
     say "${DIM}на vast.ai ничего не арендовано${OFF} ${DIM}(метка «${LABEL}»)${OFF}"
-    say "${DIM}арендовать: make vast-up${OFF}"
+    say "${DIM}арендовать: make vast-up$NAME_ARG${OFF}"
     if [ -n "$db" ]; then say "${DIM}последняя копия здесь: $(backup_age "$db")${OFF}"; fi
     return 0
   fi
-  printf '%sинстанс %s%s %s· %s · %s x %s · $%s/час%s\n' \
-    "$BOLD" "$INST_ID" "$OFF" "$DIM" "$INST_STATUS" "$INST_NGPU" "$INST_GPU" "$INST_DPH" "$OFF"
+  printf '%sсреда %s%s %s· инстанс %s · %s · %s x %s · $%s/час%s\n' \
+    "$BOLD" "$(env_title "$ENV_NAME")" "$OFF" "$DIM" "$INST_ID" "$INST_STATUS" \
+    "$INST_NGPU" "$INST_GPU" "$INST_DPH" "$OFF"
   if [ -n "$INST_MSG" ]; then say "${DIM}  $INST_MSG${OFF}"; fi
   s="$(spent)"
   if [ -n "$s" ]; then say "${DIM}  работает $s${OFF}"; fi
@@ -923,6 +1268,14 @@ cmd_status() {
           else
             say "  ${RED}$public снаружи не отвечает${OFF}"
           fi
+          # Среда и адрес — одно имя, и здесь это уже не пожелание, а проверка
+          # факта: машина сама сказала, что обслуживает. Разошлись — значит
+          # копии этой среды снимаются под одним именем, а семинар идёт под
+          # другим, и однажды они встретятся не тем концом.
+          if [ -n "$ENV_NAME" ] && [ "${name%%.*}" != "$ENV_NAME" ]; then
+            say "  ${RED}но среда называется «${ENV_NAME}», а адрес — «${name%%.*}»${OFF}"
+            say "  ${DIM}копии этой среды лежат в $BACKUP_DIR/ — под именем среды, не адреса${OFF}"
+          fi
         fi
         if [ "$alive" != alive ]; then
           say "  ${DIM}tmux-сессии «${TMUX_SESSION}» на машине нет — держать туннель некому${OFF}"
@@ -939,7 +1292,7 @@ cmd_status() {
   if [ -n "$db" ]; then
     say "${DIM}последняя копия здесь: $(backup_age "$db")${OFF}"
   else
-    say "${RED}копий здесь нет вовсе${OFF} ${DIM}— снять: make vast-sync${OFF}"
+    say "${RED}копий здесь нет вовсе${OFF} ${DIM}— снять: make vast-sync$NAME_ARG${OFF}"
   fi
 }
 
@@ -948,9 +1301,13 @@ cmd_status() {
 cmd_sync() {
   need_tools
   auth
+  # Снять данные не той среды — это половина беды; вторая половина в том, что
+  # они лягут в чужой каталог и однажды уедут в чужую комнату. Поэтому при
+  # нескольких средах имя обязательно.
+  resolve_env "снимать"
   load_instance || die "с меткой «${LABEL}» на vast.ai ничего не арендовано — снимать не с чего."
   [ "$INST_STATUS" = running ] || die "инстанс $INST_ID сейчас «${INST_STATUS}».
-  Снять данные можно только с работающей машины: поднимите её (make vast-up)
+  Снять данные можно только с работающей машины: поднимите её (make vast-up$NAME_ARG)
   и повторите."
 
   say "${BOLD}1/2${OFF} снимаю копию на арендованной машине"
@@ -960,29 +1317,31 @@ cmd_sync() {
   # останавливать семинар.
   rssh "cd $REMOTE_DIR && make backup" </dev/null
 
-  say "${BOLD}2/2${OFF} забираю сюда"
-  mkdir -p backups
+  say "${BOLD}2/2${OFF} забираю сюда, в $BACKUP_DIR/"
+  # Каталог у каждой среды свой, и заводится он здесь же: копия, положенная в
+  # общую кучу, отличима от соседской только по дате — то есть никак.
+  mkdir -p "$BACKUP_DIR"
   local newest
   newest="$(rssh "ls -1t $REMOTE_DIR/backups/colloq-*.db 2>/dev/null | head -1" </dev/null || true)"
   [ -n "$newest" ] || die "на той машине копия не появилась.
   Посмотрите руками: ssh … 'cd $REMOTE_DIR && make backup'"
-  rsync -a -e "$(ssh_cmd)" "root@$INST_SSH_HOST:$newest" backups/ \
+  rsync -a -e "$(ssh_cmd)" "root@$INST_SSH_HOST:$newest" "$BACKUP_DIR/" \
     || die "база не приехала — не считайте данные снятыми."
   # Отдельным вызовом, а не вторым источником в предыдущем: там, где архива
   # файлов нет, rsync с двумя источниками уронил бы и уже приехавшую базу в
   # общий отказ, и «что именно не снялось» пришлось бы выяснять руками.
-  rsync -a -e "$(ssh_cmd)" "root@$INST_SSH_HOST:${newest%.db}-files.tar.gz" backups/ \
+  rsync -a -e "$(ssh_cmd)" "root@$INST_SSH_HOST:${newest%.db}-files.tar.gz" "$BACKUP_DIR/" \
     || die "база приехала, а файлы семинаров — нет.
   Это половина копии: тетради и настройки на месте, загруженные файлы остались
-  только на арендованной машине. Повторите make vast-sync до make vast-down."
+  только на арендованной машине. Повторите make vast-sync$NAME_ARG до make vast-down$NAME_ARG."
 
   printf '\n'
   say "${BOLD}приехало${OFF}"
-  say "  $(basename "$newest") ${DIM}— база: семинары, преподаватели, история версий, оракул${OFF}"
-  say "  $(basename "${newest%.db}-files.tar.gz") ${DIM}— файлы семинаров, ключ подписи, токен установки${OFF}"
+  say "  $BACKUP_DIR/$(basename "$newest") ${DIM}— база: семинары, преподаватели, история версий, оракул${OFF}"
+  say "  $BACKUP_DIR/$(basename "${newest%.db}-files.tar.gz") ${DIM}— файлы семинаров, ключ подписи, токен установки${OFF}"
   say "${DIM}Не приехали собранные образы окружений: их дешевле пересобрать${OFF}"
   say "${DIM}(make env-build NAME=…), чем возить десятки гигабайт.${OFF}"
-  say "${DIM}Развернуть это на пустой машине: make restore${OFF}"
+  say "${DIM}Развернуть это на пустой машине: make restore$NAME_ARG${OFF}"
 }
 
 # ----------------------------------------------------------------- down
@@ -990,18 +1349,21 @@ cmd_sync() {
 cmd_down() {
   need_tools
   auth
+  # Самая дорогая команда здесь. Без имени и при нескольких средах она
+  # уничтожила бы «первую попавшуюся» — и восстановить её будет уже не из чего.
+  resolve_env "уничтожать"
   load_instance || { say "${DIM}с меткой «${LABEL}» на vast.ai ничего не арендовано${OFF}"; return 0; }
 
   local s db answer
   s="$(spent)"; db="$(last_backup)"
   printf '\n'
-  say "${BOLD}уничтожить инстанс $INST_ID${OFF} ${DIM}($INST_NGPU x $INST_GPU, \$$INST_DPH/час${s:+, $s})${OFF}"
+  say "${BOLD}уничтожить инстанс $INST_ID${OFF} ${DIM}— среда $(env_title "$ENV_NAME"), $INST_NGPU x $INST_GPU, \$$INST_DPH/час${s:+, $s}${OFF}"
   say "${RED}Исчезнет всё, что на этой машине:${OFF} база с семинарами, файлы семинаров,"
   say "собранные образы окружений. У vast нет ни корзины, ни снимков."
   if [ -n "$db" ]; then
     say "${DIM}последняя копия здесь: $(backup_age "$db")${OFF}"
   else
-    say "${RED}копий здесь нет вовсе.${OFF} ${DIM}Снять: make vast-sync${OFF}"
+    say "${RED}копий здесь нет вовсе.${OFF} ${DIM}Снять: make vast-sync$NAME_ARG${OFF}"
   fi
 
   if [ "${FORCE:-}" != 1 ]; then
@@ -1013,7 +1375,7 @@ cmd_down() {
 
   api DELETE "instances/$INST_ID/" >/dev/null
   say "${DIM}инстанс $INST_ID уничтожен — счётчик остановлен${OFF}"
-  say "${DIM}развернуть эти данные заново, здесь или на новой машине: make restore${OFF}"
+  say "${DIM}развернуть эти данные заново: make vast-up$NAME_ARG${ENV_NAME:+ HOST=$ENV_NAME.${RELAY_DOMAIN:-colloq.ru}} — или здесь: make restore$NAME_ARG${OFF}"
 }
 
 case "$CMD" in
@@ -1021,16 +1383,21 @@ case "$CMD" in
   status) cmd_status ;;
   sync)   cmd_sync ;;
   down)   cmd_down ;;
+  adopt)  cmd_adopt ;;
   *)
     say "${BOLD}Colloq на арендованной машине${OFF}"
     say "  scripts/vast.sh up      ${DIM}найти виртуалку, арендовать, развернуть Colloq${OFF}"
+    say "  ${DIM}NAME=demo             ... среда: своя машина, свои копии, свой счёт${OFF}"
     say "  ${DIM}HOST=demo.colloq.ru    ... и сразу выставить наружу на этом адресе${OFF}"
+    say "  ${DIM}                        (имя среды тогда можно не называть — оно тут)${OFF}"
     say "  ${DIM}GPU=\"RTX 5070\"         ... на карте, названной вслух${OFF}"
-    say "  scripts/vast.sh status  ${DIM}что арендовано, живо ли оно и сколько натикало${OFF}"
-    say "  scripts/vast.sh sync    ${DIM}снять данные оттуда сюда${OFF}"
+    say "  scripts/vast.sh status  ${DIM}без имени — все среды; с именем — подробности одной${OFF}"
+    say "  scripts/vast.sh sync    ${DIM}снять данные оттуда сюда, в backups/<среда>/${OFF}"
     say "  scripts/vast.sh down    ${DIM}уничтожить машину вместе со всем, что на ней${OFF}"
+    say "  scripts/vast.sh adopt   ${DIM}назвать средой машину со старой меткой «${LABEL_BASE}»${OFF}"
     say ""
-    say "${DIM}то же через make: make vast-up · vast-status · vast-sync · vast-down${OFF}"
+    say "${DIM}то же через make: make vast-up · vast-status · vast-sync · vast-down · vast-adopt${OFF}"
+    say "${DIM}Среда — это отдельная машина: отдельные деньги и отдельные данные.${OFF}"
     if [ -n "$CMD" ]; then die "не знаю команды «${CMD}»."; fi
     ;;
 esac
