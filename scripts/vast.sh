@@ -144,7 +144,7 @@ auth() {
   # Секрет уходит в файл, а не в аргументы curl: командная строка видна всей
   # машине через `ps`, а этим ключом снимают деньги. mktemp создаёт файл сразу
   # с правами 0600, поэтому нет и мгновения, когда он читаем всеми и уже полон.
-  CURLRC="$(mktemp -t colloq-vast)"
+  CURLRC="$(mktemp -t colloq-vast.XXXXXX)"
   printf 'header = "Authorization: Bearer %s"\n' "$token" > "$CURLRC"
   unset token
 }
@@ -152,7 +152,7 @@ auth() {
 # api МЕТОД ПУТЬ [ТЕЛО] — печатает тело ответа, падает на любом отказе.
 api() {
   local method="$1" path="$2" body="${3:-}" out code text err
-  out="$(mktemp -t colloq-vast-out)"
+  out="$(mktemp -t colloq-vast-out.XXXXXX)"
   if [ -n "$body" ]; then
     code="$(curl -s -o "$out" -w '%{http_code}' --max-time 90 -K "$CURLRC" \
       -X "$method" -H 'content-type: application/json' -d "$body" "$API/$path" || true)"
@@ -244,9 +244,21 @@ if not mine:
 if len(mine) > 1:
     print("машин с меткой «%s» больше одной — беру первую" % want, file=sys.stderr)
 i = mine[0]
-cols = ("id", "actual_status", "ssh_host", "ssh_port", "dph_total",
+# Куда стучаться ssh. У виртуалки два ответа, и первый — ложный: поля
+# ssh_host/ssh_port называют прокси vast (ssh5.vast.ai:31430), а он поднят
+# только у обычных docker-инстансов, и на виртуалке отвечает «connection
+# refused» все десять минут ожидания. Правда лежит в ports: докерная карта
+# портов машины, где 22/tcp смотрит на публичный адрес и свой номер.
+host, port = i.get("ssh_host") or "", i.get("ssh_port") or ""
+mapped = ((i.get("ports") or {}).get("22/tcp") or [])
+direct = next((m.get("HostPort") for m in mapped if m.get("HostPort")), None)
+if direct and i.get("public_ipaddr"):
+    host, port = str(i["public_ipaddr"]).strip(), str(direct)
+cols = ("id", "actual_status", "dph_total",
         "gpu_name", "num_gpus", "start_date", "status_msg")
-print("\t".join(str(i.get(c) if i.get(c) is not None else "") for c in cols))
+print("\t".join([str(i.get("id") or ""), str(i.get("actual_status") or ""),
+                 host, str(port)]
+                + [str(i.get(c) if i.get(c) is not None else "") for c in cols[2:]]))
 ')" || die "не понял ответ vast про инстансы."
   [ -n "$line" ] || return 1
   IFS=$'\t' read -r INST_ID INST_STATUS INST_SSH_HOST INST_SSH_PORT \
@@ -654,7 +666,7 @@ REMOTE
   # Что едет на машину, а что остаётся здесь. Список тот же, что в
   # .dockerignore, и по той же причине: node_modules и .git — это сотни
   # мегабайт пересылки, а data/ и workspace/ приезжают отдельно, снятой копией.
-  local excl; excl="$(mktemp -t colloq-vast-excl)"; TMPS+=("$excl")
+  local excl; excl="$(mktemp -t colloq-vast-excl.XXXXXX)"; TMPS+=("$excl")
   cat > "$excl" <<'EXCL'
 node_modules/
 .git/
@@ -679,7 +691,7 @@ EXCL
   # машина чужая. Всё остальное — RELAY_*, ключ оракула, SESSION_SECRET — едет
   # как есть: секреты здесь не перевыпускаются, иначе разосланные ссылки на
   # семинары и вход в панель после переезда перестанут работать.
-  local tmpenv; tmpenv="$(mktemp -t colloq-vast-env)"; TMPS+=("$tmpenv")
+  local tmpenv; tmpenv="$(mktemp -t colloq-vast-env.XXXXXX)"; TMPS+=("$tmpenv")
   grep -vE '^(VAST_[A-Z_]+|CF_[A-Z_]+|PUBLIC_URL)=' .env > "$tmpenv"
   # PUBLIC_URL там свой: его поставит `make host`, когда откроет туннель.
   # Уехавший отсюда адрес чужого туннеля раздал бы аудитории ссылку на ноутбук,
@@ -712,7 +724,20 @@ set -euo pipefail
 # Восстановление ДО подъёма: sqlite держит открытым тот файл, который открыл, и
 # подменить базу под работающим сервером значит писать в удалённый файл, а на
 # экране видеть вчерашнее.
-if ls backups/colloq-*.db >/dev/null 2>&1; then
+#
+# И только на пустой машине. Повторный заход на уже развёрнутую — это обычное
+# дело (упал туннель, сменилось имя, доехала правка кода), и разворачивать
+# поверх работающей комнаты вчерашнюю копию нельзя: она моложе того, что в
+# комнате уже напечатали. Раньше здесь падал весь заход — restore.sh честно
+# отказывался работать под живым сервером, и до выставления наружу дело не
+# доходило.
+# Порт спрашивается у .env этой машины, а не подставляется отсюда: heredoc
+# уехал в кавычках, здешние переменные в нём не раскрываются, а инстанс с
+# PORT=4000 проверялся бы по чужому порту и «не отвечает» говорил бы про живой.
+port_here="$(grep -E '^PORT=' .env 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '0-9')"
+if curl -sf -o /dev/null --max-time 3 "http://localhost:${port_here:-3000}/api/health" 2>/dev/null; then
+  echo "colloq здесь уже работает — копию не разворачиваю, это не пустая машина"
+elif ls backups/colloq-*.db >/dev/null 2>&1; then
   bash scripts/restore.sh
 else
   echo "восстанавливать нечего — начинаем с пустой базы"
@@ -841,7 +866,7 @@ REMOTE
     say "  ${DIM}Закрываете ноутбук — запускайте её в tmux: tmux new -s $TMUX_SESSION${OFF}"
   fi
   printf '\n'
-  say "${DIM}Окружение с GPU собирается там же: make env-build NAME=cv${OFF}"
+  say "${DIM}Окружение с картой собирается там же: make env-build NAME=gpu${OFF}"
   say "${DIM}Данные оттуда: make vast-sync · уничтожить машину: make vast-down${OFF}"
   say "${RED}Всё, что на этой машине, живёт ровно до её уничтожения.${OFF}"
 }

@@ -70,7 +70,11 @@ PORT="$(grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ' |
 PORT="${PORT:-3000}"
 LOCAL="http://localhost:${PORT}"
 
-LOG="$(mktemp -t colloq-tunnel)"
+# Шаблон с иксами, а не просто имя: BSD mktemp дописывает случайный хвост
+# сам, а GNU требует «XXXXXX» в шаблоне и без них падает с «too few X's».
+# Скрипт живёт на обеих системах — на ноутбуке преподавателя и на арендованной
+# машине, — и там, где он падал, семинар оставался без адреса.
+LOG="$(mktemp -t colloq-tunnel.XXXXXX)"
 TUNNEL_PID=""
 # Ставили ли мы PUBLIC_URL сами — см. cleanup.
 TOUCHED_ENV=""
@@ -183,7 +187,7 @@ if [ "$VIA" = relay ]; then
   # Поддомен — это всё, что инстанс просит у ретранслятора: frps выдаёт имена
   # только под своей зоной, поэтому попросить чужое имя нельзя даже с секретом.
   SUB="${COLLOQ_HOSTNAME%".$RELAY_DOMAIN"}"
-  CONF="$(mktemp -t colloq-frpc)"
+  CONF="$(mktemp -t colloq-frpc.XXXXXX)"
   # Секрет уходит в файл, а не в аргументы: командная строка видна всей машине
   # через ps, и общий ключ ретранслятора там светиться не должен.
   cat > "$CONF" <<CONF
@@ -395,7 +399,11 @@ else
 fi
 
 printf '\n'
-say "${DIM}Всё считается здесь: браузеры студентов ходят в Cloudflare, а он — в${OFF}"
+if [ "$VIA" = relay ]; then
+  say "${DIM}Всё считается здесь: браузеры студентов ходят на ретранслятор, а он — в${OFF}"
+else
+  say "${DIM}Всё считается здесь: браузеры студентов ходят в Cloudflare, а он — в${OFF}"
+fi
 say "${DIM}это окно. Закроете его (Ctrl+C) — ссылка перестанет работать, а colloq${OFF}"
 say "${DIM}продолжит крутиться локально на ${LOCAL}.${OFF}"
 printf '\n'
