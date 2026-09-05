@@ -7,6 +7,23 @@
 #   scripts/vast.sh sync    снять данные с арендованной машины сюда
 #   scripts/vast.sh down    уничтожить машину — вместе со всем, что на ней
 #
+# Занятие целиком одной командой:
+#
+#   make vast-up GPU="RTX 5070" HOST=demo.colloq.ru
+#
+# — арендовать машину с этой картой, развернуть Colloq, развернуть снятую копию,
+# если она лежит в backups/, и открыть адрес наружу. HOST и GPU приезжают
+# переменными окружения, а не аргументами: так их передаёт Makefile, и так они
+# не мешают старому вызову без них.
+#
+# АДРЕС ПОДНИМАЕТСЯ ТАМ, А НЕ ЗДЕСЬ: семинар считается на арендованной машине,
+# значит и туннель наружу открывать ей. `make host` — это окно, живущее ровно
+# столько, сколько живёт туннель, поэтому запускается оно в tmux-сессии
+# «colloq-host»: иначе семинар обрывался бы в ту секунду, когда закрыли ноутбук
+# и ssh-сессия умерла. Дождаться при этом надо не «tmux запустился», а ответа
+# самого адреса снаружи: ссылку, которая ещё не отвечает, раздают аудитории
+# один раз и потом полпары выясняют, почему её никто не открыл.
+#
 # ТОЛЬКО ВИРТУАЛКИ, и это не вкус. vast сдаёт два разных товара: docker-инстанс
 # (контейнер на чужой машине) и виртуалку — предложение с vms_enabled=true,
 # запускаемое образом из docker.io/vastai/kvm. Colloq поднимает КОНТЕЙНЕР НА
@@ -66,12 +83,21 @@ IMAGE="$(read_env VAST_IMAGE)";         IMAGE="${IMAGE:-docker.io/vastai/kvm:ubu
 # Диск в гигабайтах. 60 — это образ ядра с torch под CUDA (десятки гигабайт),
 # база и файлы семинаров.
 DISK="$(read_env VAST_DISK)";           DISK="${DISK:-60}"
-# Память карты, ГБ. Ниже переводится в мегабайты не через 1024: карта «на
-# 24 ГБ» рапортует 24564 МБ, и порог 24*1024=24576 отсекает все 4090 разом.
-GPU_RAM="$(read_env VAST_GPU_RAM)";     GPU_RAM="${GPU_RAM:-24}"
 MAX_PRICE="$(read_env VAST_MAX_PRICE)"; MAX_PRICE="${MAX_PRICE:-1.0}"
 # Пусто — любая карта. Имена в API пишутся с пробелом: «RTX 4090».
-GPU_NAME="$(read_env VAST_GPU)"
+# GPU= из командной строки сильнее .env: карту выбирают под занятие («сегодня
+# нужна 5070»), а не раз и навсегда.
+GPU_NAME="${GPU:-$(read_env VAST_GPU)}"
+# Память карты, ГБ. Ниже переводится в мегабайты не через 1024: карта «на
+# 24 ГБ» рапортует 24564 МБ, и порог 24*1024=24576 отсекает все 4090 разом.
+#
+# Умолчание в 24 ГБ достаётся только тем, кто карту не назвал вовсе. Названная
+# карта — это уже сделанный выбор памяти: у RTX 5070 её 12 ГБ, и умолчание
+# превращало бы внятное «хочу 5070» в «предложений нет», не сказав, кто именно
+# их отсёк.
+GPU_RAM="$(read_env VAST_GPU_RAM)"
+if [ -z "$GPU_RAM" ] && [ -z "$GPU_NAME" ]; then GPU_RAM=24; fi
+GPU_RAM_TEXT="${GPU_RAM:+от $GPU_RAM ГБ}"; GPU_RAM_TEXT="${GPU_RAM_TEXT:-любая}"
 # Ключ называется явно: в ~/.ssh их обычно с десяток, sshd обрывает попытку
 # после пятой, и до нужного дело не доходит.
 SSH_KEY="$(read_env VAST_SSH_KEY)";     SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
@@ -82,6 +108,11 @@ SSH_KEY="$(read_env VAST_SSH_KEY)";     SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed2551
 # shellcheck disable=SC2088
 case "$SSH_KEY" in "~/"*) SSH_KEY="$HOME/${SSH_KEY#\~/}" ;; esac
 RELAY_DOMAIN="$(read_env RELAY_DOMAIN)"
+RELAY_ADDR="$(read_env RELAY_ADDR)"
+# Сам секрет ретранслятора здесь не нужен — его читает host.sh уже на машине.
+# Проверяем только, что строка в .env не пуста: пустая означает туннель, который
+# не поднимется, и узнать об этом лучше до аренды.
+RELAY_TOKEN="$(read_env RELAY_TOKEN)"
 # Тот же порт, что и здесь: .env уезжает на машину целиком, и PORT в нём тот
 # самый. Прибитая тройка врала бы про здоровье инстанса при PORT=4000.
 PORT="$(read_env PORT)";               PORT="${PORT:-3000}"
@@ -276,13 +307,112 @@ backup_age() {
   printf '%s%s' "$f" "${when:+ ($when)}"
 }
 
+# ---------------------------------------------------------------- адрес
+
+# Имя, под которым семинар видно из аудитории. Пусто — наружу не выставляем
+# вовсе: это и есть прежнее поведение `vast.sh up`, и ломать его нельзя.
+WANT_HOST="${HOST:-}"
+# Имя без точки — поддомен нашей зоны: «demo» значит demo.colloq.ru. С точкой
+# — полное имя, ровно как его понимает host.sh: транспорт он выбирает по тому,
+# кончается ли имя на RELAY_DOMAIN, а не по отдельному флагу.
+case "$WANT_HOST" in
+  ''|*.*) : ;;
+  *)
+    [ -n "$RELAY_DOMAIN" ] || die "«${WANT_HOST}» без точки — это поддомен, а RELAY_DOMAIN в .env пуст.
+  Напишите имя целиком (HOST=demo.example.ru) или заполните RELAY_*: make relay-setup."
+    WANT_HOST="$WANT_HOST.$RELAY_DOMAIN" ;;
+esac
+# Имя уезжает на арендованную машину внутрь строки, которую там разбирает
+# оболочка. Всё, что не буква, цифра, точка и дефис, было бы там уже не именем,
+# а второй командой.
+case "$WANT_HOST" in
+  *[!A-Za-z0-9.-]*) die "в имени «${WANT_HOST}» есть посторонние знаки. Ожидаю имя вида demo.colloq.ru." ;;
+esac
+
+# Шагов шесть, а с адресом семь. Считаем заранее: «6/7», после которого седьмого
+# не будет, хуже честных «6/6».
+STEPS=6
+if [ -n "$WANT_HOST" ]; then STEPS=7; fi
+
+TMUX_SESSION=colloq-host
+HOST_IP=""
+
+# Адрес спрашивается у публичных резолверов, а не у системного. Это измерено в
+# host.sh: getaddrinfo держит отрицательный ответ и объявляет живое имя
+# несуществующим. Здесь та же ошибка стоит дороже — по ней отказывают ДО аренды.
+resolve_host() {
+  local r ip
+  for r in 1.1.1.1 8.8.8.8 9.9.9.9; do
+    ip="$(dig +short +time=2 +tries=1 "$1" "@$r" 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
+    if [ -n "$ip" ]; then printf '%s' "$ip"; return 0; fi
+  done
+  return 1
+}
+
+# Здоровье проверяется СНАРУЖИ, с этой машины: «localhost отвечает» на
+# арендованной верно и при наглухо мёртвом туннеле, то есть ровно в том случае,
+# ради которого проверка и заводится. Резолвер подставляется свой — причина та
+# же, что абзацем выше.
+host_health() {
+  local code
+  if [ -n "$HOST_IP" ]; then
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+      --resolve "$WANT_HOST:443:$HOST_IP" "https://$WANT_HOST/api/health" || true)"
+    [ "$code" = 200 ] && return 0
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$WANT_HOST/api/health" || true)"
+  [ "$code" = 200 ]
+}
+
+# Всё, что можно узнать про адрес, узнаётся до аренды. Машина тарифицируется с
+# первой секунды, а «RELAY_TOKEN не вписан» и «имя не резолвится» выясняются
+# одинаково быстро и до неё, и после — только во втором случае за деньги.
+check_host_ready() {
+  [ -n "$WANT_HOST" ] || return 0
+  # Наружу арендованная машина умеет выходить только через ретранслятор: frpc
+  # на неё ставится, cloudflared нет, да и адреса Cloudflare из России не
+  # открываются. Имя не под нашей зоной host.sh увёл бы в Cloudflare, и туннель
+  # не поднялся бы вовсе — уже на арендованной машине.
+  if [ -z "$RELAY_DOMAIN" ] || [ "${WANT_HOST%".$RELAY_DOMAIN"}" = "$WANT_HOST" ]; then
+    die "«${WANT_HOST}» не под зоной ретранслятора${RELAY_DOMAIN:+ («${RELAY_DOMAIN}»)}.
+  Арендованная машина выходит наружу только через него: cloudflared туда не
+  ставится, а адреса Cloudflare всё равно не открываются из России.
+  Возьмите имя вида <что-нибудь>.${RELAY_DOMAIN:-colloq.ru} — или поднимите
+  ретранслятор: make relay-setup."
+  fi
+  [ -n "$RELAY_ADDR" ]  || die "в .env нет RELAY_ADDR — адреса ретранслятора.
+  Его печатает make relay-setup, четырьмя строками; они же есть в .env.example."
+  [ -n "$RELAY_TOKEN" ] || die "в .env нет RELAY_TOKEN — общего секрета ретранслятора.
+  Без него frps на той стороне не пустит туннель, и адрес останется мёртвым."
+
+  if ! command -v dig >/dev/null 2>&1; then
+    say "${DIM}    dig не нашёлся — резолв имени не проверяю${OFF}"
+  elif HOST_IP="$(resolve_host "$WANT_HOST")"; then
+    say "${DIM}    $WANT_HOST → $HOST_IP${OFF}"
+    # Не отказ: перед ретранслятором может стоять что угодно. Но имя, ведущее
+    # мимо него, — это туннель, который поднимется, и адрес, который молчит.
+    if [ -n "$RELAY_ADDR" ] && [ "$HOST_IP" != "$RELAY_ADDR" ]; then
+      say "${DIM}    (RELAY_ADDR в .env — $RELAY_ADDR; имя ведёт не туда)${OFF}"
+    fi
+  else
+    die "имя $WANT_HOST не резолвится ни через 1.1.1.1, ни через 8.8.8.8, ни через 9.9.9.9.
+  Под ретранслятор заводится запись «*.${RELAY_DOMAIN}» — её ставит scripts/dns.sh.
+  Проверить руками: dig +short $WANT_HOST @1.1.1.1
+  Отказываюсь до аренды: машина тарифицируется с первой секунды, а имени, которого
+  нет, не поможет никакой туннель."
+  fi
+}
+
 # ------------------------------------------------------------------- up
 
 cmd_up() {
   need_tools
   auth
 
-  say "${BOLD}1/6${OFF} проверяю, что всё готово"
+  say "${BOLD}1/$STEPS${OFF} проверяю, что всё готово"
+  # Адрес проверяется первым делом, до ключей и до счёта: он единственный, чью
+  # негодность видно, не потратив ни секунды аренды.
+  check_host_ready
   [ -f "$SSH_KEY" ] || die "нет ключа $SSH_KEY.
   Заведите: ssh-keygen -t ed25519 — или укажите свой строкой VAST_SSH_KEY в .env"
   [ -f "$SSH_KEY.pub" ] || die "рядом с $SSH_KEY нет $SSH_KEY.pub — публичной половины."
@@ -327,8 +457,8 @@ print("%.2f" % float(b) if b is not None else "")
   if [ -n "$balance" ]; then say "${DIM}    на счету \$$balance${OFF}"; fi
 
   if load_instance; then
-    say "${BOLD}2/6${OFF} искать нечего: инстанс $INST_ID с меткой «${LABEL}» уже арендован"
-    say "${BOLD}3/6${OFF} разворачиваюсь поверх него"
+    say "${BOLD}2/$STEPS${OFF} искать нечего: инстанс $INST_ID с меткой «${LABEL}» уже арендован"
+    say "${BOLD}3/$STEPS${OFF} разворачиваюсь поверх него"
     if [ "$INST_STATUS" != running ]; then
       say "${DIM}    он сейчас «${INST_STATUS}» — поднимаю${OFF}"
       api PUT "instances/$INST_ID/" '{"state":"running"}' >/dev/null
@@ -336,7 +466,7 @@ print("%.2f" % float(b) if b is not None else "")
       load_instance || die "инстанс $INST_ID поднялся, но по метке не находится."
     fi
   else
-    say "${BOLD}2/6${OFF} ищу предложение: виртуалка, on-demand, до \$$MAX_PRICE/час"
+    say "${BOLD}2/$STEPS${OFF} ищу предложение: ${GPU_NAME:-любая карта}${GPU_RAM:+, от $GPU_RAM ГБ}, виртуалка, on-demand, до \$$MAX_PRICE/час"
     local query offers pick
     query="$(GPU_RAM="$GPU_RAM" MAX_PRICE="$MAX_PRICE" DISK="$DISK" GPU_NAME="$GPU_NAME" py '
 import json, os
@@ -352,16 +482,18 @@ q = {
     "verified": {"eq": True},
     "reliability": {"gte": 0.98},
     "num_gpus": {"gte": 1},
-    # Мегабайты, и порог намеренно не 24*1024: карта «на 24 ГБ» рапортует
-    # 24564 МБ, и круглая степень двойки отсекла бы все 4090 разом.
-    "gpu_ram": {"gte": int(float(os.environ["GPU_RAM"]) * 1000)},
-    # Колёса torch собраны под CUDA 12.x и на драйвере 11.8 не поедут.
-    "cuda_max_good": {"gte": 12.1},
     "disk_space": {"gte": float(os.environ["DISK"]) + 10},
     "dph_total": {"lte": float(os.environ["MAX_PRICE"])},
     "order": [["dph_total", "asc"]],
-    "limit": 20,
+    # Берём с запасом, потому что драйвер отсеивается уже здесь, у нас: из
+    # двадцати предложений после отсева могло не остаться ни одного.
+    "limit": 60,
 }
+ram = os.environ.get("GPU_RAM", "").strip()
+if ram:
+    # Мегабайты, и порог намеренно не 24*1024: карта «на 24 ГБ» рапортует
+    # 24564 МБ, и круглая степень двойки отсекла бы все 4090 разом.
+    q["gpu_ram"] = {"gte": int(float(ram) * 1000)}
 name = os.environ.get("GPU_NAME", "").strip()
 if name:
     q["gpu_name"] = {"in": [name]}
@@ -373,6 +505,14 @@ print(json.dumps(q))
     pick="$(printf '%s' "$offers" | py '
 import json, sys
 offers = json.load(sys.stdin).get("offers") or []
+# Драйвер проверяется здесь, а не фильтром vast, — и это не вкус. Колёса torch
+# собраны под CUDA 12.x и на 11.8 не поедут, но серверное условие
+# cuda_max_good >= 12.1 измеримо врёт: у предложений с RTX 5070 и RTX 5090 в
+# ответе стоит cuda_max_good = 13.0, а с этим условием в запросе не находится ни
+# одного из них (проверено чтением, дважды подряд, 5 сентября 2026). То есть
+# фильтр выбрасывал ровно те карты, ради которых машину и арендуют. Поле в
+# ответе при этом верное — условие то же, применяется к ответу.
+offers = [o for o in offers if float(o.get("cuda_max_good") or 0) >= 12.1]
 for o in offers[:5]:
     print("    %-10s %s x %-10s %4.0f ГБ  $%.3f/час  %s" % (
         o.get("id"), o.get("num_gpus"), o.get("gpu_name"),
@@ -385,9 +525,11 @@ if offers:
                                  o.get("num_gpus"), o.get("gpu_name")))
 ')"
     [ -n "$pick" ] || die "под эти условия ничего не нашлось.
-  Ослабьте их в .env: VAST_MAX_PRICE (сейчас $MAX_PRICE), VAST_GPU_RAM (сейчас
-  $GPU_RAM), VAST_GPU (сейчас «${GPU_NAME:-любая}»). Виртуалок на рынке заметно
-  меньше, чем обычных инстансов, — это цена решения арендовать именно их."
+  Искалось: карта «${GPU_NAME:-любая}», память $GPU_RAM_TEXT, до \$$MAX_PRICE/час,
+  диск от $DISK ГБ.
+  Ослабить разово: make vast-up GPU=\"RTX 4090\" — или насовсем, в .env:
+  VAST_GPU, VAST_GPU_RAM, VAST_MAX_PRICE. Виртуалок на рынке заметно меньше, чем
+  обычных инстансов, — это цена решения арендовать именно их."
 
     local offer_id price what
     IFS=$'\t' read -r offer_id price what <<<"$pick"
@@ -404,7 +546,7 @@ import os; print("%.2f" % (float(os.environ["PRICE"]) * 2))')${OFF}"
       case "$answer" in y|Y|д|да) : ;; *) die "не арендую." ;; esac
     fi
 
-    say "${BOLD}3/6${OFF} арендую"
+    say "${BOLD}3/$STEPS${OFF} арендую"
     local create new_id
     create="$(IMAGE="$IMAGE" DISK="$DISK" LABEL="$LABEL" py '
 import json, os
@@ -438,7 +580,7 @@ print(json.load(sys.stdin).get("new_contract") or "")')"
   Загляните на https://cloud.vast.ai/instances/"
   fi
 
-  say "${BOLD}4/6${OFF} жду ssh"
+  say "${BOLD}4/$STEPS${OFF} жду ssh"
   [ -n "$INST_SSH_HOST" ] && [ -n "$INST_SSH_PORT" ] \
     || die "vast ещё не назвал адрес ssh. Повторите через минуту: make vast-up"
   say "${DIM}    ssh root@$INST_SSH_HOST -p $INST_SSH_PORT${OFF}"
@@ -451,7 +593,7 @@ print(json.load(sys.stdin).get("new_contract") or "")')"
     sleep 5
   done
 
-  say "${BOLD}5/6${OFF} ставлю docker и переношу Colloq"
+  say "${BOLD}5/$STEPS${OFF} ставлю docker и переношу Colloq"
   rssh "FRP_VERSION='$FRP_VERSION' REMOTE_DIR='$REMOTE_DIR' bash -s" <<'REMOTE'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -461,7 +603,9 @@ apt-get update -qq
 # rsync ставится здесь, а не позже: им же копируется репозиторий, и без него на
 # той стороне копирование падает на первом же вызове. sqlite3 — для восстановления
 # базы, tmux — чтобы туннель пережил закрытый ноутбук.
-apt-get install -y -qq rsync make git curl tar tmux sqlite3 ca-certificates gnupg >/dev/null
+# dnsutils — ради host.sh: он проверяет поднятый адрес через dig и без него
+# откатывается на системный резолвер, который в этой самой проверке и врёт.
+apt-get install -y -qq rsync make git curl tar tmux sqlite3 dnsutils ca-certificates gnupg >/dev/null
 
 echo "== docker"
 if ! command -v docker >/dev/null; then
@@ -561,7 +705,7 @@ EXCL
     say "${DIM}    копии в backups/ нет — машина поднимется пустой${OFF}"
   fi
 
-  say "${BOLD}6/6${OFF} восстанавливаю данные и поднимаю Colloq"
+  say "${BOLD}6/$STEPS${OFF} восстанавливаю данные и поднимаю Colloq"
   rssh "cd $REMOTE_DIR && bash -s" <<'REMOTE'
 set -euo pipefail
 
@@ -588,20 +732,114 @@ fi
 make up
 REMOTE
 
+  local hosted=""
+  if [ -n "$WANT_HOST" ]; then
+    say "${BOLD}7/$STEPS${OFF} выставляю наружу на $WANT_HOST"
+    # Отказ этого шага не отменяет предыдущих: машина арендована, Colloq на ней
+    # работает. Поэтому ветка, а не die, — иначе человек, уже заплативший за
+    # машину, не увидел бы даже строчки ssh, по которой на неё войти.
+    if rssh "REMOTE_DIR='$REMOTE_DIR' WANT_HOST='$WANT_HOST' TMUX_SESSION='$TMUX_SESSION' PORT='$PORT' bash -s" <<'REMOTE'
+set -euo pipefail
+cd "$REMOTE_DIR"
+
+# host.sh отказывается открывать туннель поверх нездорового инстанса — и
+# правильно делает. Но `make up` возвращается, как только compose принял
+# команду, а ядро поднимается ещё с полминуты: без этого ожидания «одна команда
+# на всё занятие» разваливалась бы гонкой, причём через раз.
+ok=""
+for _ in $(seq 1 40); do
+  if curl -sf -o /dev/null --max-time 5 "http://localhost:$PORT/api/health"; then ok=1; break; fi
+  sleep 3
+done
+[ -n "$ok" ] || {
+  echo "colloq на этой машине не отвечает на localhost:$PORT — туннель открывать не на что" >&2
+  exit 1
+}
+
+# Прежняя сессия убирается до новой. Ретранслятор не пускает второй frpc с тем
+# же поддоменом («already exists»), и повторный vast-up получал бы отказ от
+# собственного, ещё живого туннеля — самый обидный вид «занято».
+tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+# Туннель живёт ровно столько, сколько живёт `make host`. Запущенный прямо в
+# ssh-сессии, он умер бы вместе с ней — то есть в ту секунду, когда закрыли
+# ноутбук. Журнал пишется рядом: когда адрес не отвечает, смотреть будут его.
+tmux new-session -d -s "$TMUX_SESSION" \
+  "cd '$REMOTE_DIR' && make host HOST='$WANT_HOST' 2>&1 | tee -a host.log"
+sleep 2
+tmux has-session -t "$TMUX_SESSION" 2>/dev/null || {
+  echo "tmux-сессия $TMUX_SESSION не завелась" >&2
+  tail -20 host.log 2>/dev/null >&2 || true
+  exit 1
+}
+REMOTE
+    then
+      # Ждём не «tmux запустился», а ответа самого адреса: между ними frpc,
+      # ретранслятор и перезапуск приложения с новым PUBLIC_URL. Потолок — три
+      # минуты: дольше это уже не «поднимается», а «не поднялось».
+      say "${DIM}    жду ответа с $WANT_HOST${OFF}"
+      waited=0
+      while [ "$waited" -lt 180 ]; do
+        if host_health; then hosted=1; break; fi
+        sleep 5; waited=$((waited + 5))
+      done
+      if [ -z "$hosted" ]; then
+        say "${RED}    $WANT_HOST не ответил за три минуты — ссылку не печатаю${OFF}"
+      fi
+    fi
+
+    if [ -z "$hosted" ]; then
+      local pane
+      # Сессии может уже и не быть: при отказе ретранслятора `make host` умирает
+      # сразу, а с ним кончается и окно. Ради этого случая он и пишет в host.log
+      # — журнал переживает сессию, и смотреть тогда надо в него.
+      pane="$(rssh "if tmux has-session -t $TMUX_SESSION 2>/dev/null; then tmux capture-pane -pt $TMUX_SESSION -S -60; else tail -30 $REMOTE_DIR/host.log 2>/dev/null; fi | grep -v '^\$' | tail -12" </dev/null 2>/dev/null || true)"
+      if [ -n "$pane" ]; then
+        say "${DIM}    последнее оттуда:${OFF}"
+        printf '%s\n' "$pane" | sed 's/^/      /'
+      fi
+      say "${DIM}    смотреть дальше:${OFF}"
+      say "${DIM}      журнал сессии     ssh -i $SSH_KEY -p $INST_SSH_PORT root@$INST_SSH_HOST 'tmux capture-pane -pt $TMUX_SESSION -S -200'${OFF}"
+      say "${DIM}      он же на диске    ssh … 'tail -40 $REMOTE_DIR/host.log'${OFF}"
+      say "${DIM}      RELAY_* на машине ssh … 'grep RELAY_ $REMOTE_DIR/.env'${OFF}"
+      say "${DIM}      резолвится ли имя dig +short $WANT_HOST @1.1.1.1${OFF}"
+      say "${DIM}    Colloq при этом работает — не отвечает именно адрес наружу.${OFF}"
+    fi
+  fi
+
   printf '\n'
   say "${BOLD}Colloq поднят на арендованной машине${OFF}"
   say "  ${CYAN}ssh -i $SSH_KEY -p $INST_SSH_PORT root@$INST_SSH_HOST${OFF}"
   printf '\n'
-  say "${BOLD}Наружу — оттуда, а не отсюда${OFF} ${DIM}(семинар считается там, где стоит ядро)${OFF}"
-  if [ -n "$RELAY_DOMAIN" ]; then
-    say "  ${CYAN}cd $REMOTE_DIR && make host HOST=hse.$RELAY_DOMAIN${OFF}"
+  if [ -n "$hosted" ]; then
+    say "${BOLD}Ссылка для аудитории${OFF}"
+    say "  ${CYAN}${BOLD}https://$WANT_HOST${OFF}"
+    say "  ${DIM}Туннель держит tmux-сессия «${TMUX_SESSION}» на той машине: он${OFF}"
+    say "  ${DIM}переживёт закрытый ноутбук, но не уничтожение машины.${OFF}"
+    # Ссылку с токеном не забираем сюда и не печатаем: это ключ от инстанса, и
+    # чем меньше экранов и журналов он прошёл, тем лучше. Показываем, где взять.
+    say "  ${DIM}Вход в панель — ссылка с токеном напечатана в самой сессии:${OFF}"
+    say "  ${DIM}  ssh … 'tmux capture-pane -pt $TMUX_SESSION -S -200' | grep /admin/t/${OFF}"
+  elif [ -n "$WANT_HOST" ]; then
+    # Отдельная ветка, а не общая подсказка: человеку, у которого адрес только
+    # что не поднялся, объяснять «наружу — оттуда» поздно. Ему нужно одно —
+    # чем повторить. Повтор безопасен: машина уже арендована, и vast-up
+    # развернётся поверх неё, а не возьмёт вторую.
+    say "${BOLD}Адрес не подтверждён${OFF} ${DIM}— куда смотреть, сказано выше${OFF}"
+    say "  ${DIM}повторить, не арендуя ничего заново: make vast-up HOST=$WANT_HOST${OFF}"
   else
-    say "  ${CYAN}cd $REMOTE_DIR && make host${OFF}"
-    say "  ${DIM}без RELAY_* в .env это Cloudflare, а его адреса из России не${OFF}"
-    say "  ${DIM}открываются — см. make relay-setup и раздел README про ретранслятор${OFF}"
+    say "${BOLD}Наружу — оттуда, а не отсюда${OFF} ${DIM}(семинар считается там, где стоит ядро)${OFF}"
+    if [ -n "$RELAY_DOMAIN" ]; then
+      say "  ${CYAN}make vast-up HOST=<имя>.$RELAY_DOMAIN${OFF} ${DIM}— отсюда, одной командой${OFF}"
+      say "  ${DIM}или руками на машине: cd $REMOTE_DIR && make host HOST=<имя>.$RELAY_DOMAIN${OFF}"
+    else
+      say "  ${CYAN}cd $REMOTE_DIR && make host${OFF}"
+      say "  ${DIM}без RELAY_* в .env это Cloudflare, а его адреса из России не${OFF}"
+      say "  ${DIM}открываются — см. make relay-setup и раздел README про ретранслятор${OFF}"
+    fi
+    say "  ${DIM}Руками команда держит окно: туннель живёт, пока она работает.${OFF}"
+    say "  ${DIM}Закрываете ноутбук — запускайте её в tmux: tmux new -s $TMUX_SESSION${OFF}"
   fi
-  say "  ${DIM}Команда держит окно: туннель живёт, пока она работает. Закрываете${OFF}"
-  say "  ${DIM}ноутбук — запускайте её в tmux: tmux new -s colloq${OFF}"
   printf '\n'
   say "${DIM}Окружение с GPU собирается там же: make env-build NAME=cv${OFF}"
   say "${DIM}Данные оттуда: make vast-sync · уничтожить машину: make vast-down${OFF}"
@@ -637,6 +875,41 @@ cmd_status() {
     else
       say "  ${RED}colloq на той машине не отвечает${OFF} ${DIM}(cd $REMOTE_DIR && make logs)${OFF}"
     fi
+
+    # Адрес наружу — отдельный вопрос, и спрашивать его надо отдельно: «colloq
+    # отвечает» верно и тогда, когда туннель давно умер, а видно это только
+    # снаружи. Спрашиваем машину о двух вещах разом (жива ли сессия и какой
+    # адрес она успела вписать в .env) и проверяем этот адрес отсюда.
+    local info alive public name
+    info="$(rssh "cd $REMOTE_DIR 2>/dev/null && { tmux has-session -t $TMUX_SESSION >/dev/null 2>&1 && echo alive || echo dead; grep -E '^PUBLIC_URL=' .env 2>/dev/null | tail -1 | cut -d= -f2-; }" </dev/null 2>/dev/null || true)"
+    alive="$(printf '%s\n' "$info" | sed -n 1p | tr -d ' \r')"
+    public="$(printf '%s\n' "$info" | sed -n 2p | tr -d ' \r')"
+    name="${public#https://}"
+    case "$public" in
+      https://*)
+        # Имя приехало с арендованной машины, а не от человека, поэтому в curl
+        # оно идёт только после той же проверки на посторонние знаки.
+        case "$name" in *[!A-Za-z0-9.-]*) name="" ;; esac
+        if [ -n "$name" ]; then
+          WANT_HOST="$name"
+          if command -v dig >/dev/null 2>&1; then HOST_IP="$(resolve_host "$name" || true)"; fi
+          if host_health; then
+            say "  ${CYAN}снаружи отвечает${OFF} ${BOLD}$public${OFF}"
+          else
+            say "  ${RED}$public снаружи не отвечает${OFF}"
+          fi
+        fi
+        if [ "$alive" != alive ]; then
+          say "  ${DIM}tmux-сессии «${TMUX_SESSION}» на машине нет — держать туннель некому${OFF}"
+          say "  ${DIM}поднять снова: make vast-up HOST=${name:-<имя>}${OFF}"
+        fi ;;
+      *)
+        if [ "$alive" = alive ]; then
+          say "  ${DIM}туннель «${TMUX_SESSION}» поднимается — адреса в .env ещё нет${OFF}"
+        else
+          say "  ${DIM}наружу не выставлен${OFF} ${DIM}(make vast-up HOST=<имя>${RELAY_DOMAIN:+.$RELAY_DOMAIN})${OFF}"
+        fi ;;
+    esac
   fi
   if [ -n "$db" ]; then
     say "${DIM}последняя копия здесь: $(backup_age "$db")${OFF}"
@@ -726,6 +999,8 @@ case "$CMD" in
   *)
     say "${BOLD}Colloq на арендованной машине${OFF}"
     say "  scripts/vast.sh up      ${DIM}найти виртуалку, арендовать, развернуть Colloq${OFF}"
+    say "  ${DIM}HOST=demo.colloq.ru    ... и сразу выставить наружу на этом адресе${OFF}"
+    say "  ${DIM}GPU=\"RTX 5070\"         ... на карте, названной вслух${OFF}"
     say "  scripts/vast.sh status  ${DIM}что арендовано, живо ли оно и сколько натикало${OFF}"
     say "  scripts/vast.sh sync    ${DIM}снять данные оттуда сюда${OFF}"
     say "  scripts/vast.sh down    ${DIM}уничтожить машину вместе со всем, что на ней${OFF}"

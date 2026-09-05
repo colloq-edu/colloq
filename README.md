@@ -182,7 +182,7 @@ hands it the data from your latest backup:
 
 ```bash
 make vast-up       # find a VM, rent it, deploy, restore the data
-make vast-status   # what is rented, whether it answers, what it has cost so far
+make vast-status   # what is rented, whether it and its address answer, what it has cost
 make vast-sync     # pull the data back here
 make vast-down     # destroy the machine, and everything on it with it
 ```
@@ -190,6 +190,38 @@ make vast-down     # destroy the machine, and everything on it with it
 `VAST_TOKEN` in `.env` is the key (made once at <https://cloud.vast.ai/manage-keys/>). It
 is never printed, never passed on a command line — `ps` shows those to everyone on the
 machine — and never copied to the rented box: that box is already paid for.
+
+One command covers a whole class — rent a machine with a named card, deploy, restore
+whatever backup is lying in `backups/`, and put the room on its address:
+
+```bash
+make vast-up GPU="RTX 5070" HOST=demo.colloq.ru
+```
+
+`GPU=` is the card for today and outranks `VAST_GPU` in `.env`. Naming a card also drops
+the default 24 GB memory floor, because a named card *is* the memory decision: an RTX 5070
+has 12 GB, and the floor turned "I want a 5070" into "no offers" without a word about
+which condition threw them out. A `VAST_GPU_RAM` line you write into `.env` yourself still
+applies — and still hides the 5070.
+
+`HOST=` is the address the room opens on, and `vast-up` raises it on the rented machine
+instead of telling you to. A name without a dot is a subdomain of `RELAY_DOMAIN`
+(`demo` → `demo.colloq.ru`); a name with a dot is taken as written, exactly the way
+`make host` reads it. The name and the `RELAY_*` lines are checked *before* renting: a
+machine is billed from its first second, and "that name does not resolve" costs the same
+to find out on either side of that. Cloudflare is not an option from the rented box —
+`cloudflared` is not installed there, and its addresses do not open from Russia anyway —
+so the name has to sit under `RELAY_DOMAIN`.
+
+On the machine the address is the same `make host`, which holds its terminal for as long
+as the tunnel lives, so `vast-up` starts it in a `tmux` session called `colloq-host`: the
+tunnel then outlives the ssh session, and the closed laptop with it. Then it waits — not
+for tmux to start, but for `https://<name>/api/health` to answer from here, with a
+three-minute ceiling, because a link printed before it answers is handed to the room once
+and debugged for the rest of the hour. If it never answers, the script prints the tail of
+that tmux session and names the three things to look at: the session's log, `RELAY_*` in
+the `.env` on the machine, and whether the name resolves. `make vast-status` asks the same
+two questions later — is `colloq-host` still alive, and does the address answer.
 
 Three prices, and they are the point of this section rather than footnotes to it.
 
@@ -222,24 +254,32 @@ it leaves there, so an environment that declares `# colloq: gpu` gets a slice �
 *Environments* and the `KERNEL_GPUS` row in *Configuration*.
 
 The room is published *from* the rented machine, with the same `make host` and the same
-relay, because that is where the kernel is:
+relay, because that is where the kernel is. `HOST=` above does this for you; by hand it is:
 
 ```bash
 ssh -p <port> root@<host>
 cd /opt/colloq && make host HOST=hse.colloq.ru
 ```
 
-That command holds its terminal for as long as the tunnel lives, so run it under `tmux`
-if the laptop is going to close. `vast-up` installs `frpc` on the machine for it —
-Cloudflare's addresses do not open from Russia, see *Reaching a room from Russia*.
+`vast-up` installs `frpc` on the machine for it — Cloudflare's addresses do not open from
+Russia, see *Reaching a room from Russia*.
 
 Two things to know before the first run. The SSH key must be registered in the vast
 account *before* renting: a VM's keys cannot be changed once it is running, so a machine
 rented without one is money spent on a box you cannot enter. `vast-up` checks that and
-refuses early rather than late. And renting, deploying, syncing and destroying have never
-been run against a live account here — searching for offers has, read-only — because they
-cost real money; the script says so in its header instead of implying otherwise. Make the
-first real run on a cheap offer, and not on the day of a class.
+refuses early rather than late. And renting, deploying, syncing, destroying, and now
+raising the address on the rented machine have never been run against a live account here
+— only the offer search has, read-only — because they cost real money; the script says so
+in its header instead of implying otherwise. Make the first real run on a cheap offer, and
+not on the day of a class.
+
+That read-only search did turn up one thing worth writing down. vast's own
+`cuda_max_good >= 12.1` filter drops every Blackwell offer, including the RTX 5070 and
+5090, even though those same offers report `cuda_max_good: 13.0` in the response body —
+measured twice in a row against the live account. The condition has not gone away, since
+torch wheels are built for CUDA 12.x and will not run on 11.8; it is applied to the
+response instead of asked of the server, where the answer is truthful. Otherwise the
+filter would have thrown out exactly the cards the machine is being rented for.
 
 ## Environments
 
