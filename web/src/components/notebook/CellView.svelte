@@ -1047,12 +1047,20 @@
 
       Теперь нажатие слушает колонка тела — код, вывод, форма ввода, тулбар над
       ними, — а поле с номером и просветы остаются нейтральными: там не
-      выделяют. Снимает выделение по-прежнему щелчок мимо ЯЧЕЙКИ (SessionScreen,
-      по `data-cell-id`), и 24 пикселя полей тетради по обе стороны от ячеек —
-      как раз он.
+      выделяют.
+
+      И снимают выделение они тоже. Половины дела было мало: колонка с номером
+      перестала выделять, но для снятия по-прежнему считалась ячейкой (проверка
+      шла по `data-cell-id`, а он на корне), и щелчок в белое место под номером
+      не делал ничего — приходилось целиться в поля тетради. Поэтому у тела
+      свой признак: он и говорит, где кончается ячейка на ощупь.
     -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="relative min-w-0 flex-1" onpointerdown={(event) => onselect(event)}>
+    <div
+      class="relative min-w-0 flex-1"
+      data-cell-body
+      onpointerdown={(event) => onselect(event)}
+    >
       <!-- Out of flow and above the body: a toolbar that appeared in flow would
            push the cell down the moment the pointer arrived. -->
       <div

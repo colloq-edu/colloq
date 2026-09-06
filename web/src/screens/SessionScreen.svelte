@@ -1567,7 +1567,9 @@
             class:hidden={activePath !== path}
             aria-hidden={activePath !== path}
             onclick={(event) => {
-              if ((event.target as HTMLElement | null)?.closest('[data-cell-id]')) return
+              // По телу ячейки, а не по её корню: колонка с номером и пустое
+              // место под ним — это уже мимо, там и снимают.
+              if ((event.target as HTMLElement | null)?.closest('[data-cell-body]')) return
               if (session.selection.length > 0) session.selectCell(null)
             }}
           >
