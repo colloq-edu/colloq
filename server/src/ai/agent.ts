@@ -5,15 +5,23 @@
  * человека. Здесь модель сама читает папку семинара, правит файлы и запускает
  * скрипты, а комната смотрит на ленту шагов, пока это происходит.
  *
- * Три решения, на которых всё держится.
+ * Четыре решения, на которых всё держится.
  *
- * **Правки применяются сразу, а не предлагаются.** Ячейкам оракул по-прежнему
- * предлагает — там есть кнопка «принять», — а файлам нет, и это не
+ * **Правки применяются сразу, а не предлагаются.** В режиме «спросить» оракул
+ * предлагает — у патча есть кнопка «принять»; здесь нет, и это не
  * непоследовательность. Агент обязан посмотреть на собственную ошибку: написал,
  * запустил, увидел трейсбек, починил. Режим, где каждая правка ждёт нажатия,
- * этого не умеет — он не агент, а тот же ответ в другой обёртке. Взамен весь ход
- * отменяется одной кнопкой: перед первой записью в файл его прежний текст
- * запоминается целиком.
+ * этого не умеет — он не агент, а тот же ответ в другой обёртке. Взамен есть
+ * возврат, и у файла с тетрадью он разный: файлам — снимок до хода и кнопка
+ * отмены под ходом, тетради — отметка в истории версий, которую ход ставит
+ * перед первой своей правкой ячейки.
+ *
+ * **Тетрадь правится ячейками, а не файлом.** Файл .ipynb — проекция: запись в
+ * него вернулась бы обратно через полторы секунды и пропала бы молча. Поэтому у
+ * тетради свои инструменты, и пишут они в документ комнаты — тем же путём,
+ * каким пишет человек, и от имени того, кто попросил ход: по его правам (`edit`,
+ * `structure`, замок на ячейке) и с его именем у версии в истории. Оракул здесь
+ * руки человека, а не отдельное лицо со своими правами.
  *
  * **Без потока.** Аргументы инструмента приезжают в потоке кусками
  * незавершённого JSON, и собирать их обратно приходится по-разному у разных
@@ -21,26 +29,57 @@
  * продукт избегает. Прогресс показывает лента шагов, и «прочитал src/model.py»
  * полезнее половины предложения.
  *
- * **Удалять нельзя.** Ни файл, ни папку, ни ячейку. Удаление в этом продукте —
- * право преподавателя при любых правилах, и отдать его модели значило бы отдать
- * ей то, чего нет и у комнаты. Опустошить файл она может — и это отменяется.
+ * **Удалять нельзя.** Ни файл, ни папку. Удаление в этом продукте — право
+ * преподавателя при любых правилах, и отдать его модели значило бы отдать ей
+ * то, чего нет и у комнаты. Опустошить файл она может — и это отменяется.
+ *
+ * Ячейка — исключение, и оно оплачено: `remove_cell` спрашивает то же правило
+ * `structure`, что и рука человека, а тетрадь до хода лежит в истории версий.
+ * У файла истории нет, у тетради есть — вся разница в этом.
  */
 import type * as Y from 'yjs'
 import {
   addStep,
+  allCellArrays,
+  bookAt,
+  bookCells,
+  bookList,
+  cellId,
+  cellOutputs,
+  cellSource,
+  cellType,
+  CELLS_KEY,
   chatAnswer,
+  createCell,
   createChatEntry,
+  findCell,
   findChatEntry,
   getChat,
+  isCellOpen,
+  replaceText,
   type AgentStep,
+  type Book,
+  type CellState,
+  type CellType,
   type ChatState,
   type UndoState,
+  type YCell,
   type YChatEntry,
 } from '@shared/notebook'
 import { baseOf, normalizePath, parentOf, runnerFor } from '@shared/paths'
-import { getSessionDoc, peekSessionDoc } from '../collab/index.js'
+import {
+  actsAfterClass,
+  allowsStructure,
+  mayEditCell,
+  CLASS_IS_OVER,
+  type RoomRules,
+} from '@shared/rules'
+import { applyOnBehalf, getSessionDoc, peekSessionDoc } from '../collab/index.js'
 import { currentText, flushSessionFiles, putText } from '../collab/files.js'
 import { bookText, isBookFile, projectBooks } from '../collab/books.js'
+import { mark } from '../collab/history.js'
+import { rememberDeleted } from '../collab/ops.js'
+import { getRules, isFinished } from '../db.js'
 import { MAX_TEXT_BYTES, listFiles, makeFile, readText, statPath } from '../workspace.js'
 import { interruptTerminal, openTerminal, runCommand, terminalPhase } from '../kernel/terminal.js'
 import { getOracleSettings } from '../admin/settings.js'
@@ -200,6 +239,9 @@ export function forgetUndo(sessionId: string): void {
   for (const key of [...before.keys()]) {
     if (key.startsWith(`${sessionId}\u0000`)) before.delete(key)
   }
+  for (const key of [...inBook.keys()]) {
+    if (key.startsWith(`${sessionId}\u0000`)) inBook.delete(key)
+  }
   stopAll(sessionId)
 }
 
@@ -261,6 +303,86 @@ const TOOLS: ToolSpec[] = [
   },
 ]
 
+/**
+ * Инструменты по ячейкам — те, что правят тетрадь.
+ *
+ * Отдельным списком, потому что достаются не всем: их получает тот, кому в этой
+ * комнате можно править тетрадь своими руками. Участнику в лекции их не видно
+ * вовсе — предложить инструмент, который ответит отказом, значит потратить шаг
+ * хода на то, чтобы узнать правило, известное заранее.
+ */
+const CELL_TOOLS: ToolSpec[] = [
+  {
+    name: 'edit_cell',
+    description:
+      'Заменить исходник ячейки целиком. Имя ячейки — из read_notebook. ' +
+      'Вывод остаётся прежним и становится устаревшим: назовите такие ячейки в ответе.',
+    parameters: {
+      type: 'object',
+      properties: {
+        cellId: { type: 'string', description: 'имя ячейки, например c_8f21ab3c' },
+        source: { type: 'string', description: 'весь новый исходник ячейки' },
+      },
+      required: ['cellId', 'source'],
+    },
+  },
+  {
+    name: 'add_cell',
+    description: 'Добавить ячейку после указанной. Без `after` — в конец тетради комнаты.',
+    parameters: {
+      type: 'object',
+      properties: {
+        after: { type: 'string', description: 'имя ячейки, после которой встать' },
+        type: { type: 'string', enum: ['code', 'markdown'] },
+        source: { type: 'string' },
+      },
+      required: ['type', 'source'],
+    },
+  },
+  {
+    name: 'remove_cell',
+    description: 'Убрать ячейку из тетради.',
+    parameters: {
+      type: 'object',
+      properties: { cellId: { type: 'string' } },
+      required: ['cellId'],
+    },
+  },
+]
+
+/** Чтение тетради — всем, кому вообще дали ход: тетрадь и так у комнаты перед глазами. */
+const READ_NOTEBOOK: ToolSpec = {
+  name: 'read_notebook',
+  description:
+    'Показать ячейки живой тетради: имя ячейки, вид, исходник, есть ли вывод. ' +
+    'Правят тетрадь по этим именам, а не через файл .ipynb. ' +
+    'Путь нужен, только если тетрадей в комнате несколько.',
+  parameters: {
+    type: 'object',
+    properties: { path: { type: 'string', description: 'например Разбор.ipynb' } },
+    required: [],
+  },
+}
+
+/**
+ * Чем этот человек работает в этом ходе.
+ *
+ * Считается один раз на ход, а не на шаг: правила могут поменяться посреди
+ * работы, и на этот случай каждый инструмент спрашивает их ещё раз у себя —
+ * список нужен модели, а не для проверки.
+ *
+ * Экспортируется ради теста: «участнику в лекции инструментов не видно» — это
+ * про список, и проверить его иначе, чем спросив, нечем.
+ */
+export function toolsFor(hands: Hands): ToolSpec[] {
+  const doc = peekSessionDoc(hands.sessionId)?.doc
+  const rights = doc ? rightsFor(hands, doc) : { edit: false, add: false, remove: false }
+  const cells = CELL_TOOLS.filter((tool) =>
+    tool.name === 'edit_cell' ? rights.edit : tool.name === 'add_cell' ? rights.add : rights.remove,
+  )
+  return [...TOOLS, READ_NOTEBOOK, ...cells]
+}
+
 export interface Ran {
   /** Что показать в ленте шагов. */
   step: AgentStep
@@ -272,6 +394,16 @@ export interface Hands {
   sessionId: string
   entryId: string
   by: { name: string; color: string; participantId: string }
+  /**
+   * Роль того, кто попросил ход, — та же, с которой он сам нажимает кнопки.
+   *
+   * Приезжает от маршрута, а не спрашивается у базы: в таблице лежит роль, с
+   * которой человек вошёл в комнату, а действует он с ЭФФЕКТИВНОЙ (см.
+   * `roleFor` в routes/sessions.ts). Преподаватель, открывший свою же лекцию по
+   * ссылке из чата, в таблице участник — и его собственная тетрадь оказалась бы
+   * для его же оракула чужой.
+   */
+  role: 'host' | 'participant'
 }
 
 /**
@@ -306,6 +438,17 @@ export async function useTool(
       step: { kind: 'read', target: 'папка семинара', added: 0, removed: 0, exit: null, note: '' },
       said: describeTree(hands.sessionId),
     }
+  }
+
+  // Раньше файловой проверки пути: у тетради адресуют ячейку по имени, а путь
+  // если и есть, то необязательный.
+  if (
+    name === 'read_notebook' ||
+    name === 'edit_cell' ||
+    name === 'add_cell' ||
+    name === 'remove_cell'
+  ) {
+    return useCellTool(hands, name, args)
   }
 
   if (!wanted) {
@@ -366,16 +509,22 @@ export async function useTool(
   if (name === 'write_file' || name === 'edit_file') {
     /*
      * Тетрадь — не текстовый файл, что бы ни говорило её расширение. Её файл
-     * переписывается из комнаты через секунду после любой правки, так что
-     * запись сюда была бы принята и молча потеряна. Ячейки оракул предлагает,
-     * а не переписывает, — и об этом сказано ему в правилах.
+     * переписывается из комнаты через полторы секунды после любой правки, так
+     * что запись сюда была бы принята и молча потеряна. Отказ поэтому остаётся
+     * — но ведёт он теперь к ячейкам, а не в тупик: тетрадь правится ими.
      */
     if (isBookFile(hands.sessionId, wanted)) {
+      const doc = peekSessionDoc(hands.sessionId)?.doc
+      const rights = doc ? rightsFor(hands, doc) : null
       return {
         step: note('это тетрадь комнаты', wanted),
         said:
-          `${wanted} — тетрадь комнаты, её ячейки правит человек. ` +
-          'Скажите словами, что в ней поменять.',
+          `${wanted} — тетрадь комнаты: её ячейки живут в комнате, а файл только их отпечаток, ` +
+          'и запись поверх него пропала бы через полторы секунды. ' +
+          (rights && (rights.edit || rights.add || rights.remove)
+            ? 'Правьте ячейки: read_notebook, дальше edit_cell, add_cell, remove_cell.'
+            : 'Посмотреть её можно через read_notebook; править ячейки в этой комнате ' +
+              'вам нельзя — скажите словами, что в ней поменять.'),
       }
     }
     const existed = statPath(hands.sessionId, wanted) !== null
@@ -573,6 +722,491 @@ export async function useTool(
 
 function note(what: string, target: string): AgentStep {
   return { kind: 'note', target, added: 0, removed: 0, exit: null, note: what }
+}
+
+/* ---------------------------------------------------------- ячейки тетради */
+
+/** Сколько исходника одной ячейки уезжает в список. */
+const MAX_CELL_SOURCE = 4_000
+
+/** Имя отметки, которую ход ставит перед первой своей правкой тетради. */
+const CHECKPOINT_LABEL = 'до правки оракула'
+
+/** Что ход уже сделал с тетрадью. */
+interface BookWork {
+  /**
+   * Отметка в истории уже стоит.
+   *
+   * Один раз на ход, а не на ячейку: «убери решения из пяти ячеек» — это одно
+   * решение человека, и возвращаться из него надо в одну точку. Пять отметок
+   * подряд вытолкнули бы из окна панели то, ради чего в историю и лезут.
+   */
+  marked: boolean
+  /** Имя ячейки → что с ней сделали. Порядок — тот, в котором делали. */
+  touched: Map<string, 'правил' | 'добавил' | 'убрал'>
+}
+
+/**
+ * Что ход сделал с тетрадью — до конца хода, а дальше не нужно.
+ *
+ * Отсюда берётся строка «поправил 03 и 05» в ответе; конец хода — удачный или
+ * упавший — её составляет и запись убирает. Возврат живёт не здесь, а в истории версий: тетрадь, в
+ * отличие от файлов рабочей папки, переживает перезапуск сервера вместе со
+ * своей точкой возврата.
+ */
+const inBook = new Map<string, BookWork>()
+
+function bookWork(hands: Hands): BookWork {
+  const key = `${hands.sessionId}\u0000${hands.entryId}`
+  let work = inBook.get(key)
+  if (!work) {
+    work = { marked: false, touched: new Map() }
+    inBook.set(key, work)
+    const mine = [...inBook.keys()].filter((other) => other.startsWith(`${hands.sessionId}\u0000`))
+    while (mine.length > MAX_REMEMBERED_TURNS) inBook.delete(mine.shift()!)
+  }
+  return work
+}
+
+/** Права этого человека на ячейки — те же вопросы, что задают гейт и браузер. */
+interface CellRights {
+  edit: boolean
+  add: boolean
+  remove: boolean
+}
+
+/**
+ * Что этому человеку можно делать с тетрадью своими руками.
+ *
+ * Оракул в режиме «сделать» не получает прав сверх его собственных: правило
+ * `agent` говорит, можно ли ему вообще запустить ход, а что этот ход сделает с
+ * тетрадью, решают те же `edit` и `structure`, что и для его пальцев. Правила
+ * приезжают действующими (`db.ts · getRules`), то есть после звонка
+ * преподавательскими, — конец занятия здесь добавляет только слова отказа.
+ *
+ * Замок считается открытым, если открыта ХОТЬ ОДНА ячейка: это ответ на вопрос
+ * «есть ли ему что править вообще», по которому собирается список инструментов.
+ * На вопрос «эту ли ячейку» отвечает `mayEditCell` у самой ячейки, перед
+ * записью.
+ */
+function rightsFor(hands: Hands, doc: Y.Doc): CellRights {
+  const rules: RoomRules = getRules(hands.sessionId)
+  const finished = isFinished(hands.sessionId)
+  return {
+    edit: mayEditCell(rules, hands.role, hasOpenCell(doc), finished),
+    add: allowsStructure(rules.structure, hands.role, 'add'),
+    remove: allowsStructure(rules.structure, hands.role, 'remove'),
+  }
+}
+
+function hasOpenCell(doc: Y.Doc): boolean {
+  for (const cells of allCellArrays(doc)) {
+    for (const cell of cells.toArray()) if (isCellOpen(cell)) return true
+  }
+  return false
+}
+
+/**
+ * Слова отказа — свои, пока занятие идёт, и общие, когда оно кончилось.
+ *
+ * Ровно как в гейте: по одним правилам «преподаватель закрыл тетрадь» и
+ * «занятие кончилось» неотличимы, а человеку надо сказать второе — иначе он
+ * пойдёт искать преподавателя, который ничего не менял.
+ */
+function refuseCells(hands: Hands, own: string): string {
+  return actsAfterClass(isFinished(hands.sessionId), hands.role) ? own : CLASS_IS_OVER
+}
+
+/**
+ * Тетрадь комнаты — единственная, которую ход правит.
+ *
+ * У остальных тетрадей нет истории версий: возврат пишет прибито в корень
+ * `cells` (collab/history.ts · restoreInto), и отметка «до правки оракула» их
+ * не вернёт. Право менять то, откуда нельзя вернуться, этому режиму не дают —
+ * прочитать чужую тетрадь он по-прежнему может, и этого хватает, чтобы сказать
+ * словами, что в ней поменять.
+ */
+function roomBook(doc: Y.Doc): Book | null {
+  return bookList(doc).find((book) => book.root === CELLS_KEY) ?? null
+}
+
+/** Тетрадь, в которой лежит этот лист ячеек. Один корень — один `Y.Array`. */
+function bookOfCells(doc: Y.Doc, cells: Y.Array<YCell>): Book | null {
+  return bookList(doc).find((book) => bookCells(doc, book.root) === cells) ?? null
+}
+
+/** 01, 02, 03 — тот же номер, который нарисован у ячейки в поле слева. */
+function pad(no: number): string {
+  return String(no).padStart(2, '0')
+}
+
+/** «1 ячейка», «3 ячейки», «5 ячеек»: счёт, который не режет глаз. */
+function cellsWord(n: number): string {
+  const teen = n % 100
+  const last = n % 10
+  if (teen >= 11 && teen <= 14) return 'ячеек'
+  if (last === 1) return 'ячейка'
+  if (last >= 2 && last <= 4) return 'ячейки'
+  return 'ячеек'
+}
+
+function useCellTool(hands: Hands, name: string, args: Record<string, unknown>): Ran {
+  /*
+   * Заглянуть, а не завести: ход, доехавший до удалённой комнаты, поднимал бы
+   * её заново — с таймерами, строкой в истории и папкой на диске.
+   */
+  const doc = peekSessionDoc(hands.sessionId)?.doc
+  if (!doc) {
+    return { step: note('комнаты больше нет', 'тетрадь'), said: 'Этой комнаты больше нет.' }
+  }
+  if (name === 'read_notebook') return listCells(doc, args)
+  if (name === 'edit_cell') return editCell(hands, doc, args)
+  if (name === 'add_cell') return addCell(hands, doc, args)
+  return removeCell(hands, doc, args)
+}
+
+/**
+ * Ячейки живой тетради — то, чего нет в файле.
+ *
+ * Имя ячейки не хранится в .ipynb и не показывается человеку: адресовать
+ * ячейку в комнате можно только им, и взять его больше неоткуда. Вывод не
+ * приводится целиком — он уже уехал в контекст вопроса, а списку хватает
+ * знать, что он есть: по нему видно, что перезапускать.
+ */
+function listCells(doc: Y.Doc, args: Record<string, unknown>): Ran {
+  const asked = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : null
+  const path = asked ? normalizePath(asked) : null
+  if (asked && !path) {
+    return {
+      step: note('путь не годится', asked),
+      said: 'Такой путь в этой комнате невозможен. Пути идут от корня папки семинара, без «..».',
+    }
+  }
+  const book = path ? bookAt(doc, path) : (roomBook(doc) ?? bookList(doc)[0] ?? null)
+  if (!book) {
+    const known = bookList(doc).map((one) => one.path)
+    return {
+      step: note('тетради с таким именем нет', path ?? 'тетрадь комнаты'),
+      said: path
+        ? `${path} — не тетрадь этой комнаты.` +
+          (known.length > 0
+            ? ` Открыты: ${known.join(', ')}.`
+            : ' Открытых тетрадей в ней нет вовсе.')
+        : 'В этой комнате нет открытой тетради.',
+    }
+  }
+
+  const cells = bookCells(doc, book.root)
+  const lines: string[] = [
+    `${book.path} — ${cells.length} ${cellsWord(cells.length)}. ` +
+      'Ячейку правят по её имени, а не по номеру: номер меняется, имя нет.',
+  ]
+  cells.forEach((cell: YCell, at: number) => {
+    const head = [`[${pad(at + 1)}]`, cellId(cell), cellType(cell)]
+    if (cellOutputs(cell).length > 0) head.push('вывод есть')
+    if (isCellOpen(cell)) head.push('открыта комнате')
+    const source = cellSource(cell).toString()
+    lines.push('')
+    lines.push(head.join(' · '))
+    if (!source.trim()) {
+      lines.push('(пусто)')
+      return
+    }
+    lines.push('```' + (cellType(cell) === 'code' ? 'python' : 'markdown'))
+    lines.push(
+      source.length > MAX_CELL_SOURCE ? source.slice(0, MAX_CELL_SOURCE) + '\n…(обрезано)' : source,
+    )
+    lines.push('```')
+  })
+  const said = lines.join('\n')
+  return {
+    step: {
+      kind: 'read',
+      target: book.path,
+      added: 0,
+      removed: 0,
+      exit: null,
+      note: `${cells.length} ${cellsWord(cells.length)}`,
+    },
+    said: said.length > MAX_READ ? said.slice(0, MAX_READ) + '\n…(обрезано)' : said,
+  }
+}
+
+function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
+  const id = typeof args.cellId === 'string' ? args.cellId : ''
+  if (typeof args.source !== 'string') {
+    return {
+      step: note('нечего записывать', id || 'ячейка'),
+      said: '`source` должен быть строкой.',
+    }
+  }
+  const found = findCell(doc, id)
+  if (!found) return missingCell(id)
+  const home = bookOfCells(doc, found.cells)
+  if (!home || home.root !== CELLS_KEY) return notRoomBook(doc, home?.path ?? id)
+
+  if (
+    !mayEditCell(
+      getRules(hands.sessionId),
+      hands.role,
+      isCellOpen(found.cell),
+      isFinished(hands.sessionId),
+    )
+  ) {
+    return {
+      step: note('ячейки правит преподаватель', id),
+      said: refuseCells(
+        hands,
+        'В этом семинаре тетрадь принадлежит преподавателю — ячейки правит он. ' +
+          'Скажите в ответе, что в ней поменять.',
+      ),
+    }
+  }
+
+  const text = cellSource(found.cell)
+  const was = text.toString()
+  const label = `${home.path} · ячейка ${pad(found.index + 1)}`
+  if (was === args.source) {
+    return { step: note('и так уже так', label), said: `В ${label} уже ровно этот текст.` }
+  }
+  const stop = checkpoint(hands, doc)
+  if (stop) return stop
+
+  const next = args.source
+  // От имени того, кто попросил ход: у версии в истории должен быть автор, а не
+  // «комната», — тот же путь, каким сервер применяет принятый патч оракула.
+  applyOnBehalf(hands.sessionId, hands.by.participantId, () => replaceText(text, next))
+  bookWork(hands).touched.set(id, 'правил')
+
+  const counts = countChanges(was, next)
+  /*
+   * Вывод остаётся. Правка исходника рукой его тоже не стирает: вывод —
+   * свидетельство того, что ячейка показывала, и он честно становится
+   * устаревшим. Сказать об этом надо, иначе преподаватель не узнает, что
+   * перезапускать.
+   */
+  const stale =
+    cellOutputs(found.cell).length > 0 ? ' Вывод у неё прежний — теперь устаревший.' : ''
+  return {
+    step: {
+      kind: 'write',
+      target: label,
+      added: counts.added,
+      removed: counts.removed,
+      exit: null,
+      note: firstAdded(was, next),
+    },
+    said: `Готово: ${label}, +${counts.added} −${counts.removed}.${stale}`,
+  }
+}
+
+function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
+  const type: CellType | null =
+    args.type === 'code' ? 'code' : args.type === 'markdown' ? 'markdown' : null
+  if (!type) {
+    return { step: note('какой вид ячейки', 'тетрадь'), said: '`type` — «code» или «markdown».' }
+  }
+  const source = typeof args.source === 'string' ? args.source : ''
+  const after = typeof args.after === 'string' && args.after.trim() ? args.after.trim() : null
+
+  const room = roomBook(doc)
+  if (!room) {
+    return {
+      step: note('тетради комнаты нет', 'тетрадь'),
+      said: 'В этой комнате нет тетради — добавлять ячейку некуда.',
+    }
+  }
+  let cells = bookCells(doc, room.root)
+  let at = cells.length
+  if (after) {
+    const found = findCell(doc, after)
+    if (!found) return missingCell(after)
+    const home = bookOfCells(doc, found.cells)
+    if (!home || home.root !== CELLS_KEY) return notRoomBook(doc, home?.path ?? after)
+    cells = found.cells
+    at = found.index + 1
+  }
+
+  if (!rightsFor(hands, doc).add) {
+    return {
+      step: note('ячейки добавляет преподаватель', room.path),
+      said: refuseCells(
+        hands,
+        'В этом семинаре ячейки добавляет преподаватель. Скажите в ответе, что дописать.',
+      ),
+    }
+  }
+  const stop = checkpoint(hands, doc)
+  if (stop) return stop
+
+  const cell = createCell(type, source)
+  applyOnBehalf(hands.sessionId, hands.by.participantId, () => cells.insert(at, [cell]))
+  const id = cellId(cell)
+  bookWork(hands).touched.set(id, 'добавил')
+
+  const label = `${room.path} · ячейка ${pad(at + 1)}`
+  return {
+    step: {
+      kind: 'new',
+      target: label,
+      added: source ? source.split('\n').length : 0,
+      removed: 0,
+      exit: null,
+      note: firstAdded('', source),
+    },
+    said: `Готово: ${label}, имя ${id}.`,
+  }
+}
+
+function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
+  const id = typeof args.cellId === 'string' ? args.cellId : ''
+  const found = findCell(doc, id)
+  if (!found) return missingCell(id)
+  const home = bookOfCells(doc, found.cells)
+  if (!home || home.root !== CELLS_KEY) return notRoomBook(doc, home?.path ?? id)
+
+  if (!rightsFor(hands, doc).remove) {
+    return {
+      step: note('ячейки убирает преподаватель', id),
+      said: refuseCells(
+        hands,
+        'В этом семинаре ячейки убирает преподаватель. Скажите в ответе, какая лишняя.',
+      ),
+    }
+  }
+  const label = `${home.path} · ячейка ${pad(found.index + 1)}`
+  /*
+   * Ячейку, стоящую в очереди на ядро, ход не убирает.
+   *
+   * Когда её убирает человек, сервер тут же снимает её с очереди
+   * (`onCellsRemoved` в control.ts) — этой дороги у хода нет, и убранная на
+   * ходу ячейка ловила бы свой вывод в пустоту, а очередь считала бы её живой.
+   * Ждать конца счёта ход не умеет тоже, поэтому честнее отказать.
+   */
+  const state = (found.cell.get('state') as CellState) ?? 'idle'
+  if (state === 'running' || state === 'queued') {
+    return {
+      step: note('ячейка сейчас считается', id),
+      said: `${label} сейчас в очереди на ядро — на ходу я её не убираю. Скажите об этом в ответе.`,
+    }
+  }
+  const stop = checkpoint(hands, doc)
+  if (stop) return stop
+
+  /*
+   * Запомнить ДО удаления: после него читать уже нечего, а Ctrl+Z в комнате
+   * возвращает ячейку копией — вывод к ней достаётся из этой записи сервера.
+   * Тот же порядок, что у удаления рукой (collab/index.ts · rememberDeleted).
+   */
+  rememberDeleted(hands.sessionId, doc, [id])
+  const cells = found.cells
+  const index = found.index
+  applyOnBehalf(hands.sessionId, hands.by.participantId, () => cells.delete(index, 1))
+  bookWork(hands).touched.set(id, 'убрал')
+
+  return {
+    step: { kind: 'write', target: label, added: 0, removed: 1, exit: null, note: 'ячейка убрана' },
+    said: `Убрал ${label}. Номера ячеек ниже сдвинулись — имена нет.`,
+  }
+}
+
+function missingCell(id: string): Ran {
+  return {
+    step: note('нет такой ячейки', id || '—'),
+    said:
+      `Ячейки ${id || '—'} в комнате нет. Имена ячеек показывает read_notebook — ` +
+      'возьмите оттуда, номер на экране именем не является.',
+  }
+}
+
+function notRoomBook(doc: Y.Doc, where: string): Ran {
+  const room = roomBook(doc)
+  return {
+    step: note('это не тетрадь комнаты', where),
+    said:
+      `Правлю я только тетрадь комнаты${room ? ` (${room.path})` : ''}: у остальных тетрадей нет ` +
+      'истории версий, и вернуть их одной кнопкой нечем. Прочитать эту я могу — скажите в ответе, ' +
+      'что в ней поменять.',
+  }
+}
+
+/**
+ * Отметить тетрадь в истории — один раз за ход и до первой правки.
+ *
+ * Это и есть то, на чём держится право оракула трогать ячейки: одна кнопка в
+ * панели истории возвращает тетрадь ровно к тому, что было до хода. Ставится
+ * тем же вызовом, что и чекпоинт от руки (routes/history.ts), и от имени того,
+ * кто попросил ход, — строка в ленте не должна быть ничьей.
+ *
+ * Не вышло отметить — не правим вовсе: правка без точки возврата это ровно то,
+ * чего этому режиму не отдают.
+ */
+function checkpoint(hands: Hands, doc: Y.Doc): Ran | null {
+  const work = bookWork(hands)
+  if (work.marked) return null
+  try {
+    mark(
+      hands.sessionId,
+      doc,
+      'checkpoint',
+      hands.by.participantId,
+      CHECKPOINT_LABEL,
+      CHECKPOINT_LABEL,
+    )
+  } catch (err) {
+    console.error(`[session ${hands.sessionId}] не отметил тетрадь перед правкой:`, err)
+    return {
+      step: note('не отметил историю', 'тетрадь'),
+      said:
+        'Не удалось отметить тетрадь в истории версий, а без точки возврата я её не правлю. ' +
+        'Скажите словами, что в ней поменять.',
+    }
+  }
+  work.marked = true
+  return null
+}
+
+/**
+ * Что сказать про тронутые ячейки — в самом ответе, а не только в ленте.
+ *
+ * Лента шагов рассказывает, как шла работа; преподавателю после неё нужно одно:
+ * что перезапустить и куда вернуться, если не понравилось. Номера считаются
+ * сейчас, а не в момент правки: человек читает ответ, глядя на тетрадь, какой
+ * она стала.
+ *
+ * Экспортируется ради теста — по тому же доводу, что и `useTool`: проверять
+ * эту строку через живую модель значило бы проверять модель.
+ */
+export function saidAboutCells(sessionId: string, entryId: string): string {
+  const work = inBook.get(`${sessionId}\u0000${entryId}`)
+  if (!work || work.touched.size === 0) return ''
+  const doc = peekSessionDoc(sessionId)?.doc
+  const numbers = new Map<string, string>()
+  if (doc) {
+    const cells = bookCells(doc, CELLS_KEY)
+    cells.forEach((cell: YCell, at: number) => numbers.set(cellId(cell), pad(at + 1)))
+  }
+  const edited: string[] = []
+  const added: string[] = []
+  let gone = 0
+  for (const [id, what] of work.touched) {
+    const no = numbers.get(id)
+    if (what === 'убрал') gone += 1
+    else if (no && what === 'правил') edited.push(no)
+    else if (no) added.push(no)
+  }
+  const parts: string[] = []
+  if (edited.length > 0) parts.push(`поправил ${edited.join(', ')}`)
+  if (added.length > 0) parts.push(`добавил ${added.join(', ')}`)
+  if (gone > 0) parts.push(`убрал ${gone} ${cellsWord(gone)}`)
+  if (parts.length === 0) return ''
+  return (
+    `Тетрадь: ${parts.join('; ')}. ` +
+    (edited.length > 0
+      ? 'Вывод у поправленных прежний и теперь устарел — перезапустите их. '
+      : '') +
+    `Как было до хода — в истории версий, отметка «${CHECKPOINT_LABEL}».`
+  )
 }
 
 /**
@@ -798,6 +1432,8 @@ export interface WorkOptions {
   participantId: string
   participantName: string
   participantColor: string
+  /** Роль просящего — с ней ход и работает с тетрадью. См. `Hands.role`. */
+  role: 'host' | 'participant'
   message: string
   usageId?: number
 }
@@ -854,10 +1490,12 @@ async function steps(
       color: options.participantColor,
       participantId: options.participantId,
     },
+    role: options.role,
   }
+  const tools = toolsFor(hands)
 
   const messages: ChatTurn[] = [
-    { role: 'system', content: systemPrompt(options.sessionId, options.participantId) },
+    { role: 'system', content: systemPrompt(hands, tools) },
     ...history,
     { role: 'user', content: options.message.trim() },
   ]
@@ -877,7 +1515,7 @@ async function steps(
       stopped = true
       break
     }
-    const answer = await completeWithTools(messages, TOOLS, signal, bill)
+    const answer = await completeWithTools(messages, tools, signal, bill)
     // Прерванный запрос возвращается пустым ответом без вызовов, и без этой
     // проверки ход заканчивался бы пустотой: ни текста, ни «Остановлено».
     if (signal.aborted) {
@@ -948,10 +1586,20 @@ function finish(sessionId: string, entryId: string, text: string): void {
   if (!found) return
   const { doc, entry } = found
   const touched = before.get(`${sessionId}\u0000${entryId}`)?.size ?? 0
+  /*
+   * Про ячейки говорит сервер, а не модель.
+   *
+   * Что перезапустить и куда вернуться — это факт хода, а не его пересказ, и
+   * зависеть от того, вспомнит ли модель перечислить ячейки, он не должен:
+   * устаревший вывод под свежим кодом выглядит как настоящий.
+   */
+  const cells = saidAboutCells(sessionId, entryId)
+  inBook.delete(`${sessionId}\u0000${entryId}`)
   doc.transact(() => {
-    if (text) {
+    const say = [text, cells].filter(Boolean).join('\n\n')
+    if (say) {
       const answer = chatAnswer(entry)
-      answer.insert(answer.length, text)
+      answer.insert(answer.length, say)
     }
     entry.set('state', 'done' as ChatState)
     // Отменять можно только то, что меняли: у хода, который ничего не тронул,
@@ -965,9 +1613,13 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
   if (!found) return
   const { doc, entry } = found
   const touched = before.get(`${sessionId}\u0000${entryId}`)?.size ?? 0
+  // И у упавшего хода: тетрадь он мог успеть поправить до того, как упасть.
+  const cells = saidAboutCells(sessionId, entryId)
+  inBook.delete(`${sessionId}\u0000${entryId}`)
   doc.transact(() => {
     const answer = chatAnswer(entry)
-    answer.insert(answer.length, answer.length > 0 ? `\n\n${note}` : note)
+    const say = [note, cells].filter(Boolean).join('\n\n')
+    answer.insert(answer.length, answer.length > 0 ? `\n\n${say}` : say)
     entry.set('state', state)
     // Даже у упавшего хода: он мог успеть поправить два файла из трёх, и это
     // ровно то состояние, из которого хочется вернуться назад.
@@ -975,7 +1627,7 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
   }, ORIGIN)
 }
 
-function systemPrompt(sessionId: string, askedBy: string): string {
+function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
   /*
    * Правила преподавателя — и здесь тоже.
    *
@@ -985,6 +1637,16 @@ function systemPrompt(sessionId: string, askedBy: string): string {
    * а ложится в файл комнаты и запускается.
    */
   const houseRules = getOracleSettings().houseRules
+  /*
+   * Про ячейки промпт говорит ровно то, что этому человеку дали.
+   *
+   * Список инструментов и слова о них считаются из одного места: обещание
+   * «поправлю ячейку», за которым инструмента нет, стоит шага хода и кончается
+   * отказом на глазах у комнаты — а в лекции ещё и звучит как чужое право.
+   */
+  const cellTools = tools
+    .map((tool) => tool.name)
+    .filter((name) => name === 'edit_cell' || name === 'add_cell' || name === 'remove_cell')
   return [
     'Вы — оракул Colloq, помощник на техническом семинаре. Сейчас вас попросили не объяснить, а СДЕЛАТЬ.',
     '',
@@ -992,11 +1654,24 @@ function systemPrompt(sessionId: string, askedBy: string): string {
     'прочитайте то, что собираетесь менять, поменяйте, запустите и убедитесь, что работает.',
     '',
     'Границы, которые не обойти:',
-    '— Тетрадь комнаты вам не принадлежит. Ячейки правит человек; если нужно поменять ячейку,',
-    '  скажите об этом словами в конце.',
+    '— Тетрадь комнаты — не файл: её ячейки живут в комнате, а .ipynb рядом лишь их отпечаток,',
+    '  и запись поверх него пропала бы молча. Смотреть тетрадь — read_notebook: там имена ячеек,',
+    '  и адресуются они только именем, номер на экране меняется.',
+    ...(cellTools.length > 0
+      ? [
+          `— Править тетрадь можно только этим: ${cellTools.join(', ')}. Правки идут от имени того,`,
+          '  кто попросил ход, и по его правам; перед первой из них ход отмечает историю версий,',
+          '  так что тетрадь возвращается одной кнопкой.',
+          '— Вывод ячейки правка не стирает: он остаётся прежним и становится устаревшим. Назовите',
+          '  в ответе ячейки, которые поменяли, чтобы их перезапустили.',
+        ]
+      : [
+          '— Ячейки в этой комнате правит человек: тому, кто попросил ход, менять тетрадь нельзя,',
+          '  и вам тем более. Если нужно поменять ячейку, скажите об этом словами в конце.',
+        ]),
     '— Удалять файлы и папки нельзя. Совсем. Если файл лишний, скажите об этом.',
     '— Запускать можно только .py и .sh из папки семинара. Оболочки у вас нет.',
-    '— Всё, что вы делаете, видит вся комната, и любой ход отменяется одной кнопкой.',
+    '— Всё, что вы делаете, видит вся комната; правки в файлах отменяются одной кнопкой под ходом.',
     ...(houseRules
       ? [
           '',
@@ -1011,7 +1686,7 @@ function systemPrompt(sessionId: string, askedBy: string): string {
     '',
     // Агент не «сосредоточен» ни на чём: он получает поручение, а не вопрос
     // про ячейку.
-    buildContext(sessionId, [], askedBy),
+    buildContext(hands.sessionId, [], hands.by.participantId),
   ].join('\n')
 }
 

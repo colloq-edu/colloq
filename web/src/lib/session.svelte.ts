@@ -28,6 +28,8 @@ import { enqueueControl, OFFLINE_REASON } from './controls'
 import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
 import { forgetIdentity, type StoredIdentity } from './identity'
+import { permitsIn } from './may'
+import { cellToAnnounce, ownChanges, type AwarenessChanges } from './presence'
 import { bindLocalStore, forgetSessionInfo, type LocalStore } from './persistence.svelte'
 import { mayReload, REFUSED_CLOSE, refusalHealed, stashRefusal } from './refusal'
 
@@ -333,6 +335,30 @@ export class SessionState {
       connect: true,
     })
     this.awareness = this.provider.awareness
+    /*
+     * Серверу — только своё присутствие.
+     *
+     * Провайдер в `_awarenessUpdateHandler` отсылает ВСЕ изменившиеся clientID
+     * подряд: чужое состояние он применяет сам (`applyAwarenessUpdate` с собой
+     * в origin), awareness сообщает об изменении — и тот же обработчик
+     * отправляет его обратно в сокет, из которого оно приехало. Сервер это эхо
+     * отвергает (`ownAwareness`), но чтобы отвергнуть, разбирает: на стенде с
+     * 500 вкладками им была ровно половина из шестнадцати тысяч кадров
+     * присутствия в секунду.
+     *
+     * Обработчик провайдера снимается, свой встаёт на его место и зовёт
+     * снятый — но с кадром, где остался только наш clientID (см.
+     * lib/presence.ts). Кодирование, сокет и BroadcastChannel остаются
+     * провайдерскими: фильтр не повод переписывать протокол.
+     *
+     * Соседним вкладкам это ничего не стоит — у каждой свой сокет и своё
+     * присутствие от сервера, а ретрансляция чужих состояний между вкладками
+     * одного браузера только дублировала то, что и так придёт. Заодно перестал
+     * рассылаться уход соседей на обрыве: `removeAwarenessStates` внутри
+     * провайдера — это местная уборка, а не новость о комнате.
+     */
+    this.awareness.off('update', this.provider._awarenessUpdateHandler)
+    this.awareness.on('update', this.#announceSelf)
     this.undoManager = new Y.UndoManager(getCells(this.doc), {
       // Only undo what this person typed; never yank a peer's work away.
       trackedOrigins: new Set([null, 'local']),
@@ -437,6 +463,17 @@ export class SessionState {
     if (open) this.terminalUnread = 0
   }
 
+  /**
+   * Кадр присутствия наружу — только про себя. Разбор в конструкторе.
+   *
+   * Обёртка вокруг провайдерского обработчика, а не замена ему: всё, что
+   * дальше кодирования, остаётся протоколом `y-websocket`.
+   */
+  #announceSelf = (changes: AwarenessChanges, origin: unknown) => {
+    const own = ownChanges(changes, this.doc.clientID)
+    if (own) this.provider._awarenessUpdateHandler(own, origin)
+  }
+
   #readPeers = () => {
     const next: Peer[] = []
     this.awareness.getStates().forEach((state, clientId) => {
@@ -526,6 +563,10 @@ export class SessionState {
          * об этом надо.
          */
         if (!first && changed) this.rulesChangedAt = Date.now()
+        // Вместе с правилами меняется и то, что человек вправе делать в ячейке,
+        // где он стоит: метка «правит эту» уходит из присутствия сразу, а не
+        // ждёт, пока он щёлкнет куда-нибудь ещё.
+        if (changed) this.#announceAnchor()
         return
       }
       if (message.t === 'class') {
@@ -556,6 +597,8 @@ export class SessionState {
         this.session = { ...this.session, finishedAt: message.finishedAt }
         const changed = wasFinished !== this.finished
         if (!first && changed) this.classChangedAt = Date.now()
+        // И то же самое про звонок: после него не правит никто, а метка — про правку.
+        if (changed) this.#announceAnchor()
         /*
          * А файлы оживают и на первом кадре: метка выше — про слова, которые
          * говорят один раз, а это починка, и молчать ей незачем. Вкладка файла,
@@ -925,7 +968,54 @@ export class SessionState {
   #setAnchor(id: string | null) {
     if (this.selectedCellId === id) return
     this.selectedCellId = id
-    this.#patchUser({ activeCellId: id })
+    this.#watchAnchor()
+    this.#announceAnchor()
+  }
+
+  /** Отписка от ячейки, в которой человек стоит сейчас. */
+  #anchorWatch: (() => void) | null = null
+
+  /**
+   * Следить за замком той ячейки, в которой стоят.
+   *
+   * Мелко (`observe`, а не `observeDeep`) и ровно за одной: буквы живут во
+   * вложенном Y.Text, и глубокий наблюдатель на тетради просыпался бы на каждое
+   * нажатие в комнате. Здесь же события считанные — состояние выполнения да
+   * замок, — а нужен из них один: `open`.
+   */
+  #watchAnchor() {
+    this.#anchorWatch?.()
+    this.#anchorWatch = null
+    const id = this.selectedCellId
+    const found = id ? findCell(this.doc, id) : null
+    if (!found) return
+    const cell = found.cell
+    cell.observe(this.#announceAnchor)
+    this.#anchorWatch = () => cell.unobserve(this.#announceAnchor)
+  }
+
+  /**
+   * Сказать комнате, в какой ячейке стоит человек, — если он в ней правит.
+   *
+   * Выделение и правка разошлись в тот день, когда появился замок: щелчок по
+   * закрытой ячейке — это чтение, а комната узнавала из него, что человек её
+   * печатает. Что можно, спрашивают там же, где и все остальные кнопки, —
+   * `mayEditThisCell` поверх правил сервера; сам выбор при этом остаётся, он
+   * местный и в присутствие не едет (см. lib/presence.ts).
+   *
+   * Зовётся не только на смену якоря: право на ту же самую ячейку меняется под
+   * человеком, когда преподаватель щёлкает замком или кончается занятие, — и
+   * метка обязана уйти вместе с ним, а не дожидаться следующего щелчка.
+   */
+  #announceAnchor = () => {
+    const may = permitsIn(this.session.rules, this.me.role, this.finished)
+    const next = cellToAnnounce(this.doc, this.selectedCellId, may)
+    // Кадр не шлётся, если ничего не изменилось: так же делают соседние
+    // `setViewing` и `setEditing`, и здесь это ещё важнее — зовут отсюда и
+    // наблюдатели, которым до присутствия дела нет.
+    const user = this.awareness.getLocalState()?.user as AwarenessUser | undefined
+    if ((user?.activeCellId ?? null) === next) return
+    this.#patchUser({ activeCellId: next })
   }
 
   /** Drives the "Sofia is typing a question…" line in the shared thread. */
@@ -1077,6 +1167,8 @@ export class SessionState {
     this.provider.off('sync', this.#onSync)
     this.provider.off('connection-close', this.#onCollabClose)
     this.awareness.off('change', this.#readPeers)
+    this.awareness.off('update', this.#announceSelf)
+    this.#anchorWatch?.()
     getTerminal(this.doc).unobserve(this.#onTerminalLines)
     this.undoManager.destroy()
     this.provider.destroy()

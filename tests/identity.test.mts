@@ -29,6 +29,8 @@ import { createSession, db, getParticipant, isTokenHost } from '../server/src/db
 import { roleFor, sessionAuth, sessionRoutes } from '../server/src/routes/sessions.js'
 import { historyRoutes } from '../server/src/routes/history.js'
 import type { JoinRequest, JoinResponse } from '../shared/protocol.js'
+import { ApiError } from '../web/src/lib/api.js'
+import { CROWD_WAIT_MS, retryJoinIn } from '../web/src/lib/crowd.js'
 
 const ROOM = 'identity-test'
 let base = ''
@@ -266,7 +268,10 @@ test('поток новых участников ограничен: цикл н
 
   let refusedAt = 0
   let mine: JoinResponse | null = null
-  for (let i = 1; i <= 200 && refusedAt === 0; i += 1) {
+  // Потолок цикла обязан быть выше `MAX_NEW_PARTICIPANTS` (routes/sessions.ts):
+  // предел подняли до шестисот, и цикл на двухстах перестал доходить до отказа
+  // — то есть проверял, что поток НЕ ограничен, и был при этом зелёным.
+  for (let i = 1; i <= 800 && refusedAt === 0; i += 1) {
     const res = await knock({ name: `Гость ${i}` })
     if (res.status === 429) refusedAt = i
     else if (i === 1) mine = (await res.json()) as JoinResponse
@@ -288,6 +293,24 @@ test('поток новых участников ограничен: цикл н
   rotateLinkKey(teacher.id)
   const staff = await knock({ name: 'Vera' }, mintCookie(teacher))
   assert.equal(staff.status, 200, 'штат не смог войти в собственную комнату')
+})
+
+test('на переполненный вход вкладка стучится ещё раз — и ровно один раз', () => {
+  /*
+   * Отказ выше — не про этого человека: он пришёл вовремя, просто вместе со
+   * всей группой. Нажать за него второй раз должна вкладка (lib/crowd.ts), но
+   * ровно один: повтор без конца превращает переполненную комнату в ту, куда
+   * «не пускает совсем», и делает это молча.
+   */
+  const crowded = new ApiError('too many people are joining this seminar at once', 429)
+  assert.equal(retryJoinIn(crowded, 1), CROWD_WAIT_MS, 'первый отказ не дождался повтора')
+  assert.equal(retryJoinIn(crowded, 2), null, 'повтор пошёл по кругу')
+
+  // Всё остальное — отказ человеку, и ждать тут нечего: занятое имя, комнаты
+  // нет, связи нет. Повтор молча съел бы объяснение.
+  assert.equal(retryJoinIn(new ApiError('Not found (404)', 404), 1), null)
+  assert.equal(retryJoinIn(new ApiError('Could not reach the server', 0), 1), null)
+  assert.equal(retryJoinIn(new TypeError('Failed to fetch'), 1), null)
 })
 
 /* ------------------------------------------------ удалённый семинар уносит своё */

@@ -12,12 +12,13 @@
    * table remembers every name that ever joined, and a poster announcing "148
    * people are already inside" a room holding one is worse than saying nothing.
    */
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import MarkPicker from '@/components/join/MarkPicker.svelte'
   import AvatarStack from '@/components/ui/AvatarStack.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import Poster from '@/components/ui/Poster.svelte'
   import { api } from '@/lib/api'
+  import { CROWD_NOTICE, retryJoinIn } from '@/lib/crowd'
   import { MARKS, freeMark, markName } from '@/lib/marks'
   import {
     clearStaffMark,
@@ -68,6 +69,13 @@
   let onlineIds = $state<ReadonlySet<string>>(new Set())
   const present = $derived(roster.filter((person) => onlineIds.has(person.id)))
   let busy = $state(false)
+  /**
+   * Вкладка ждёт и войдёт ещё раз сама.
+   *
+   * Отдельно от `error`, потому что это не отказ: отказ — это то, с чем человек
+   * остаётся, а здесь ему остаётся только подождать несколько секунд.
+   */
+  let retrying = $state(false)
   let error = $state<string | null>(null)
   let nameInput = $state<HTMLInputElement | null>(null)
 
@@ -167,6 +175,40 @@
     picked = true
   }
 
+  /**
+   * Экран ушёл, а ожидание осталось.
+   *
+   * Между отказом и повтором проходят секунды, и за них человек успевает
+   * закрыть вкладку или уйти по ссылке в другую комнату. Впустить его туда,
+   * откуда он ушёл, — худший вид опоздавшего ответа: он не виден, он меняет
+   * маршрут.
+   */
+  let alive = true
+  onDestroy(() => (alive = false))
+
+  /** Одна попытка войти: если она удалась, человек уже в комнате. */
+  async function knock(who: string): Promise<void> {
+    const result = await api.join(session.id, {
+      name: who,
+      avatar: mark,
+      // What keeps a refresh from turning one person into two — and the
+      // token beside it is what proves the claim is ours to make.
+      participantId: mine?.participantId ?? null,
+      token: mine?.token ?? null,
+    })
+    const identity: StoredIdentity = {
+      sessionId: session.id,
+      participantId: result.participant.id,
+      token: result.token,
+      name: result.participant.name,
+      avatar: result.participant.avatar,
+      color: result.participant.color,
+      role: result.participant.role,
+    }
+    saveIdentity(identity)
+    onjoined(identity)
+  }
+
   async function join(event?: SubmitEvent): Promise<void> {
     event?.preventDefault()
     const who = name.trim()
@@ -179,30 +221,32 @@
 
     busy = true
     error = null
-    try {
-      const result = await api.join(session.id, {
-        name: who,
-        avatar: mark,
-        // What keeps a refresh from turning one person into two — and the
-        // token beside it is what proves the claim is ours to make.
-        participantId: mine?.participantId ?? null,
-        token: mine?.token ?? null,
-      })
-      const identity: StoredIdentity = {
-        sessionId: session.id,
-        participantId: result.participant.id,
-        token: result.token,
-        name: result.participant.name,
-        avatar: result.participant.avatar,
-        color: result.participant.color,
-        role: result.participant.role,
+    /*
+     * Толпа на входе — не отказ, а очередь: вкладка стучится ещё раз сама.
+     *
+     * Сколько раз и через сколько, решает lib/crowd.ts, и решение там ровно
+     * одно на весь продукт. Здесь — то, что человек в это время видит: кнопка
+     * так и говорит «Joining…», а строка под именем объясняет, чего ждут.
+     * Прежний отказ с кнопкой никуда не делся, он просто наступает позже — и
+     * только когда ждать уже нечего.
+     */
+    for (let tried = 1; alive; tried += 1) {
+      try {
+        await knock(who)
+        retrying = false
+        return
+      } catch (cause: unknown) {
+        const wait = retryJoinIn(cause, tried)
+        if (wait === null) {
+          error = cause instanceof Error ? cause.message : 'Could not join the seminar'
+          retrying = false
+          busy = false
+          signingIn = false
+          return
+        }
+        retrying = true
+        await new Promise((done) => window.setTimeout(done, wait))
       }
-      saveIdentity(identity)
-      onjoined(identity)
-    } catch (cause: unknown) {
-      error = cause instanceof Error ? cause.message : 'Could not join the seminar'
-      busy = false
-      signingIn = false
     }
   }
 </script>
@@ -384,6 +428,11 @@
         />
         {#if error}
           <p class="text-ui text-danger" role="alert">{error}</p>
+        {:else if retrying}
+          <!-- Спокойной строкой, не красной, и на том же месте, где стоял бы
+               отказ: человек ничего не сделал неправильно, а знать, чего он
+               ждёт, всё равно должен. -->
+          <p class="text-ui text-muted" role="status">{CROWD_NOTICE}</p>
         {/if}
       </div>
 

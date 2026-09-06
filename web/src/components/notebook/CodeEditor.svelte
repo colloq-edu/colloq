@@ -271,6 +271,13 @@
   let setWritable = $state.raw<((editable: boolean) => void) | null>(null)
   /** Что стоит в живом редакторе сейчас — чтобы не переконфигурировать впустую. */
   let writableNow = true
+  /**
+   * Живой редактор — не для перерисовки, а чтобы спросить про фокус.
+   *
+   * Обычный `let`, не `$state`: читают его только обработчики, и реактивным он
+   * бы означал пересборку эффекта на каждую сборку редактора.
+   */
+  let live: EditorView | null = null
 
   $effect(() => {
     const parent = host
@@ -314,6 +321,7 @@
       if (focusOnReady || holdingFocus) view.focus()
       ready = true
       const built = view
+      live = built
       writableNow = editable
       setWritable = (next) =>
         built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
@@ -323,6 +331,7 @@
     return () => {
       disposed = true
       setWritable = null
+      if (live === view) live = null
       view?.destroy()
       view = null
       ready = false
@@ -340,6 +349,21 @@
     const editable = !readOnly
     if (!apply || editable === writableNow) return
     writableNow = editable
+    /*
+     * Право печатать отняли из-под курсора — забрать и курсор.
+     *
+     * `yCollab` объявляет положение курсора всей комнате, пока редактор в
+     * фокусе, и это правильно ровно до того мгновения, когда преподаватель
+     * закрывает ячейку. Дальше поле `cursor` в присутствии остаётся стоять в
+     * ней: у соседей до конца пары висит каретка с именем человека там, где
+     * он уже ничего не печатает. Само оно не уйдёт — `yCollab` чистит поле
+     * только у редактора В ФОКУСЕ, а закрытый фокуса не берёт вовсе
+     * (`contenteditable=false`).
+     *
+     * Спрашиваем ДО переконфигурации, пока фокус ещё здесь: это и есть
+     * доказательство, что в присутствии стоит наш курсор, а не чужой ячейки.
+     */
+    if (!editable && live?.hasFocus) awareness.setLocalStateField('cursor', null)
     apply(editable)
   })
 </script>

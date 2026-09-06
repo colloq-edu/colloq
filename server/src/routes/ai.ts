@@ -290,6 +290,9 @@ export function aiRoutes(): Router {
           participantId: auth.participantId,
           participantName: participant?.name ?? 'Someone',
           participantColor: participant?.color ?? colorForId(auth.participantId),
+          // Роль — та, с которой человек действует прямо сейчас, а не та, с
+          // которой он входил: ход правит тетрадь его руками и по его правам.
+          role: auth.role,
           message,
           usageId,
         })

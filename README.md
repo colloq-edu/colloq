@@ -741,17 +741,19 @@ first when adding a feature.
 npm test        # unit: ~220 tests, under ten seconds, no server and no browser
 npm run e2e     # end-to-end: needs the server and the kernel running
 npm run perf    # budgets: bundle, API latency, CRDT round-trip
+make load       # load: 500 students into one room, sockets and event loop
 ```
 
-Both `e2e` and `perf` create seminars and both delete them again on the way out. They point at
-`http://localhost:3000` unless told otherwise — `E2E_BASE_URL` and `PERF_BASE_URL` — which matters
-if an instance somebody is teaching in happens to be on that port.
+`e2e`, `perf` and `load` all create seminars and all delete them again on the way out. They point at
+`http://localhost:3000` unless told otherwise — `E2E_BASE_URL`, `PERF_BASE_URL` and `LOAD_BASE_URL` —
+which matters if an instance somebody is teaching in happens to be on that port.
 
-Both sign in with the setup token from `<DATA_DIR>/setup-token`, and neither *claims* an instance
-nobody has claimed yet: a harness that made itself the owner would leave a stranger's name on the
+All three sign in with the setup token from `<DATA_DIR>/setup-token`, and none of them *claims* an
+instance nobody has claimed yet: a harness that made itself the owner would leave a stranger's name on the
 install it was pointed at. So on a fresh one `e2e` stops with "nobody has claimed this instance
-yet" and `perf` skips the API and CRDT sections, measuring only the bundle and the network. Open
-`/admin`, claim it once, and both run in full.
+yet", `perf` skips the API and CRDT sections, measuring only the bundle and the network, and `load`
+refuses to start at all — without a seminar of its own there is nothing it is allowed to load. Open
+`/admin`, claim it once, and all three run in full.
 
 `npm test` covers what fails *quietly* — a token that verifies when it should not, an instance left
 with no owner, a context window that drops the traceback the student asked about, a filename that
@@ -766,6 +768,45 @@ The end-to-end pass signs in as staff with the setup token from `<DATA_DIR>/setu
 clients against a fresh seminar, types a cell on one, presses Run on the other, and asserts that the
 output, the execution attribution and a file written by the cell all reach the *second* client — the
 whole realtime + execution + CRDT chain in one pass.
+
+### Load
+
+`make load` answers the question `npm run perf` cannot: what one process does when a whole lecture
+arrives at once. It creates *its own* seminar, joins N students (500 by default) at a given pace,
+and for each one that gets in opens both sockets — `/collab/:id` and `/control/:id` — completes the
+Yjs initial sync and publishes presence with a name and a colour. That last part is the difference
+between a load test and a pile of TCP connections: presence is what the server fans out to everyone
+else, and a silent socket would miss the traffic the room actually generates. The table at the end
+holds how many got in and how many were refused *by code*, join latency, frames per second and
+bytes per client at rest and under a typing storm (k students typing m keystrokes a second, each in
+their own cell), how long an edit takes to reach another client, `/api/health` latency and the
+`loopLagMs` it returns, and — if you name the server's pid — its CPU over the window and RSS. The
+last line says where it hit a wall.
+
+```bash
+make load                                  # 500 students, 60s ramp, 20 typists at 5/s
+make load N=200 RAMP=120 K=40 M=8 SPID=$(cat .colloq.pid)
+```
+
+`N` `RAMP` `IDLE` `K` `M` `STORM` `SPID` all map to `LOAD_*` environment variables the script reads
+directly; `SPID` is the server's pid and is never guessed — `systemctl show -p MainPID colloq` under
+the service, `cat .colloq.pid` under `make run`. At the default pace the first wall is the room's
+own door: a seminar accepts 120 new participants a minute (`MAX_NEW_PARTICIPANTS` in
+`server/src/routes/sessions.ts`), so 500 students arriving inside a minute produce a few hundred
+429s. That is an answer, not a defect in the harness — stretch `RAMP`, or pass `STAFF=1` to join
+with the staff cookie, which the limit does not apply to, and measure the sockets instead. On a
+laptop, 500 connected clients cost about 4.5 KB/s each and 2.2 MB/s out of the server while
+*nobody is typing*: that is presence alone, and it grows as the square of the room.
+
+What it does not measure: it never renders a page, never lays out a cell and never runs the kernel.
+This is load on the websockets and on the event loop, and a real tab costs more on top of these
+numbers. It is also one Node process holding N Y.Docs, so on the same machine it competes with the
+server for the same cores — it watches its own event loop and says so when the harness is the
+bottleneck, but the honest arrangement is to run it from somewhere else.
+
+Never point it at a seminar somebody is teaching in — and you cannot: it works only in the room it
+made itself and removes it in a `finally`, Ctrl+C included. Five hundred rows of participants left
+in a real seminar's database never go away.
 
 ### Widths
 

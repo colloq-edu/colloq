@@ -36,7 +36,7 @@ OFF  := \033[0m
 # страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell \
         service-install service-restart service-stop service-status service-logs \
-        host relay-setup relay-page tunnel-setup site ui sync course \
+        host relay-setup relay-page tunnel-setup site ui sync load course \
         vast-up vast-status vast-sync vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
         backup restore test check
@@ -369,6 +369,22 @@ sync: ## Проверить, что проектор идёт за пульто�
 	@# пять или не догоняет вообще». Меряет очередь нажатий, а не одно: именно
 	@# ожидание ответа после каждого и прятало всю болезнь.
 	@npm run build >/dev/null && npx tsx scripts/lecture-sync-check.mts $(if $(HEADED),--headed,)
+
+load: ## Нагрузочный стенд: 500 студентов в одну комнату. N=500 RAMP=60 SPID=<pid>
+	@# Появился после вопроса, на который нечем было ответить: «выдержит ли
+	@# инстанс поток». perf.mts открывает двоих; здесь — свой семинар, N входов
+	@# темпом RAMP, оба сокета на каждого, шторм набора и уборка за собой.
+	@#
+	@# По ЧУЖОЙ комнате не гонять и нечем: стенд заводит свою и удаляет её.
+	@# SPID — pid серверного процесса, ради CPU и RSS; его не угадывают:
+	@# служба — systemctl show -p MainPID colloq, make run — cat $(PID).
+	@# ulimit: пятьсот студентов это тысяча сокетов, и на macOS по умолчанию их
+	@# меньше, чем нужно, — стенд упирался бы в свою же машину.
+	@ulimit -n 8192 2>/dev/null || true; \
+	 LOAD_STUDENTS="$${N:-500}" LOAD_RAMP_SEC="$${RAMP:-60}" LOAD_IDLE_SEC="$${IDLE:-15}" \
+	 LOAD_TYPISTS="$${K:-20}" LOAD_KEYS="$${M:-5}" LOAD_STORM_SEC="$${STORM:-20}" \
+	 $(if $(SPID),LOAD_SERVER_PID="$(SPID)",) $(if $(STAFF),LOAD_STAFF_JOIN=1,) \
+	 npx tsx scripts/load.mts
 
 site: ## Выложить сайт colloq.ru — лендинг и опубликованные семинары. DRY=1 — только собрать
 	@# Сайт лежит в site/ этого же репозитория; выкладывает его workflow Pages

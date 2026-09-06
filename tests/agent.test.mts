@@ -20,8 +20,8 @@ import { getSessionDoc } from '../server/src/collab/index.js'
 const ROOM = 'agent-room'
 const BY = { name: 'Оракул', color: '#0FA0D7', participantId: 'p_oracle' }
 
-function hands(entryId: string): Hands {
-  return { sessionId: ROOM, entryId, by: BY }
+function hands(entryId: string, role: 'host' | 'participant' = 'host'): Hands {
+  return { sessionId: ROOM, entryId, by: BY, role }
 }
 
 /** Путь к файлу в папке семинара — тесты ниже ходят туда мимо оракула. */
