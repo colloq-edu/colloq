@@ -17,7 +17,10 @@ import type { Response } from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  MAX_INHERITANCE,
+  buildChain,
   declaresGpu,
+  declaresParent,
   listChanged,
   needsGpu,
   parsePackages,
@@ -95,13 +98,122 @@ test('обычное окружение среза не просит', () => {
 })
 
 test('образцовое окружение gpu действительно объявляет срез, а базовое — нет', () => {
-  // Единственный пример этой директивы в репозитории. Выпадет она из файла —
-  // комната поедет на процессоре и упадёт на первом `.cuda()`.
+  // Единственные два примера этой директивы в репозитории: base-gpu объявляет
+  // её сам, gpu получает по наследству. Выпадет она — комната поедет на
+  // процессоре и упадёт на первом `.cuda()`.
+  assert.equal(needsGpu('base-gpu'), true)
   assert.equal(needsGpu('gpu'), true)
   assert.equal(needsGpu('base'), false)
+  assert.equal(needsGpu('cv'), false)
   // Несуществующее имя — это пустой файл, а не исключение: спрашивают об этом
   // на подъёме ядра, и падать там незачем.
   assert.equal(needsGpu('нет-такого'), false)
+})
+
+/* ------------------------------------------- поверх чего это собирается */
+
+/*
+ * Слой окружения один, и любая правка списка ставит его целиком заново: для
+ * окружения с torch это три гигабайта колёс и девять минут за добавленный timm.
+ * `# colloq: from base-gpu` переносит тяжёлое в общий слой — родитель
+ * собирается один раз, дети за секунды. Пишется в том же виде, что и
+ * `# colloq: gpu`, и так же остаётся для pip комментарием.
+ */
+test('директива в шапке называет родителя, а pip её не видит', () => {
+  const source = '# нейросети\n# colloq: from base-gpu\ntransformers>=4.44\n'
+  assert.equal(declaresParent(source), 'base-gpu')
+  assert.deepEqual(parsePackages(source), ['transformers>=4.44'])
+  // Ни лишнего пакета в счёте, ни «Needs rebuild» на собранном образе.
+  assert.equal(listChanged('transformers>=4.44\n', source), false)
+})
+
+test('пробелы и регистр директиву не ломают, а фраза о ней — не директива', () => {
+  assert.equal(declaresParent('  #   colloq:  from   base-gpu  \n'), 'base-gpu')
+  assert.equal(declaresParent('# Colloq: FROM base-gpu\n'), 'base-gpu')
+  assert.equal(declaresParent('# colloq: from base-gpu и дальше своё\n'), null)
+  assert.equal(declaresParent('# строится from base-gpu\n'), null)
+})
+
+test('родитель не назван — строимся поверх обычной базы, как раньше', () => {
+  assert.equal(declaresParent(''), null)
+  assert.equal(declaresParent('# зрение\ntorch>=2.4\n'), null)
+  assert.equal(declaresParent(readSource('cv')), null)
+})
+
+test('образцовые окружения репозитория сцеплены именно так', () => {
+  // Выпадет строка из gpu.txt — и «правка списка» снова станет девятью
+  // минутами, молча.
+  assert.equal(declaresParent(readSource('gpu')), 'base-gpu')
+  assert.deepEqual(buildChain('gpu'), ['base-gpu', 'gpu'])
+  assert.deepEqual(buildChain('cv'), ['cv'])
+})
+
+/* --------------------------------------------------- порядок и отказы */
+
+/** Окружения, каких на диске нет: разбор цепочки от диска не зависит. */
+function reader(files: Record<string, string>) {
+  return (name: string): string | null => files[name] ?? null
+}
+
+test('цепочка собирается от корня к листу', () => {
+  const read = reader({
+    'base-gpu': '# colloq: gpu\ntorch>=2.4\n',
+    gpu: '# colloq: from base-gpu\ntransformers>=4.44\n',
+    vlm: '# colloq: from gpu\nqwen-vl\n',
+  })
+  assert.deepEqual(buildChain('vlm', read), ['base-gpu', 'gpu', 'vlm'])
+  assert.deepEqual(buildChain('base-gpu', read), ['base-gpu'])
+})
+
+test('петля — отказ, а не бесконечная сборка', () => {
+  const read = reader({ a: '# colloq: from b\n', b: '# colloq: from a\n' })
+  assert.throws(() => buildChain('a', read), /по кругу/)
+  // И самый короткий круг тоже: файл, назвавший родителем себя.
+  assert.throws(() => buildChain('s', reader({ s: '# colloq: from s\n' })), /по кругу/)
+})
+
+test('слишком длинная цепочка — отказ, а не сборка на девять слоёв', () => {
+  const files: Record<string, string> = {}
+  const last = MAX_INHERITANCE + 1
+  for (let i = 0; i <= last; i += 1) files[`e${i}`] = i === 0 ? '' : `# colloq: from e${i - 1}\n`
+  assert.equal(buildChain(`e${MAX_INHERITANCE - 1}`, reader(files)).length, MAX_INHERITANCE)
+  assert.throws(() => buildChain(`e${last}`, reader(files)), /длиннее/)
+})
+
+test('неизвестный родитель назван вслух, и до docker', () => {
+  const read = reader({ gpu: '# colloq: from base-gpu\n' })
+  // Девять минут, чтобы упасть на `COPY environments/base-gpu.txt`, — та же
+  // ошибка, только дороже.
+  assert.throws(() => buildChain('gpu', read), /«base-gpu»/)
+  assert.throws(() => buildChain('missing', read), /нет окружения/)
+  // Имя уходит и в путь, и в тег образа: не имя — не родитель.
+  assert.throws(() => buildChain('x', reader({ x: '# colloq: from ../etc\n' })), /не может быть/)
+})
+
+test('признак gpu наследуется вместе с колёсами под CUDA', () => {
+  const read = reader({
+    'base-gpu': '# colloq: gpu\ntorch>=2.4\n',
+    gpu: '# colloq: from base-gpu\ntransformers>=4.44\n',
+    vlm: '# colloq: from gpu\nqwen-vl\n',
+    cpu: '# colloq: from base\npillow\n',
+    base: '',
+  })
+  // Иначе комната получит образ с CUDA-колёсами и без устройства — то есть
+  // упадёт на первом `.cuda()`, а панель будет молчать.
+  assert.equal(needsGpu('gpu', read), true)
+  assert.equal(needsGpu('vlm', read), true)
+  assert.equal(needsGpu('cpu', read), false)
+})
+
+test('своя директива у ребёнка тоже считается', () => {
+  const read = reader({ base: '', own: '# colloq: from base\n# colloq: gpu\n' })
+  assert.equal(needsGpu('own', read), true)
+})
+
+test('сломанная цепочка не отнимает срез у того, кто его просит', () => {
+  // Об этом скажет сборка. Промолчать здесь — значит поднять комнату без
+  // устройства и узнать об этом посреди пары.
+  assert.equal(needsGpu('gpu', reader({ gpu: '# colloq: gpu\n# colloq: from нет\n' })), true)
 })
 
 /* ------------------------------------------------------------ the name */

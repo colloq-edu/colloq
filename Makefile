@@ -406,13 +406,45 @@ env-new: ## Завести окружение. NAME=cv
 env-build: ## Собрать образ окружения, не переключаясь. NAME=cv
 	@test -n "$(NAME)" || { printf '$(RED)Укажите имя: make env-build NAME=cv$(OFF)\n'; exit 1; }
 	@test -f $(ENV_DIR)/$(NAME).txt || { printf '$(RED)Нет $(ENV_DIR)/$(NAME).txt — сначала make env-new NAME=$(NAME)$(OFF)\n'; exit 1; }
-	KERNEL_ENV=$(NAME) docker compose build kernel
+	@# Цепочка наследования. `# colloq: from base-gpu` в шапке — это «строить
+	@# поверх образа того окружения»: родитель идёт первым и только если его
+	@# образа ещё нет. Ради этого всё и заведено — правка листа не должна
+	@# ставить torch заново. Петля и слишком длинная цепочка — отказ здесь, а
+	@# не девять минут сборки, которая всё равно упадёт.
+	@set -e; \
+	chain=; name=$(NAME); \
+	while [ -n "$$name" ]; do \
+	  case " $$chain " in *" $$name "*) \
+	    printf '$(RED)Окружения ссылаются друг на друга по кругу: %s$(OFF)\n' "$$name"; exit 1;; \
+	  esac; \
+	  test -f $(ENV_DIR)/$$name.txt || { \
+	    printf '$(RED)Нет %s.txt: окружение «%s» названо родителем, а его нет$(OFF)\n' \
+	      "$(ENV_DIR)/$$name" "$$name"; exit 1; }; \
+	  chain="$$name $$chain"; \
+	  [ $$(printf '%s' "$$chain" | wc -w) -le 8 ] || { \
+	    printf '$(RED)Цепочка окружений длиннее восьми звеньев$(OFF)\n'; exit 1; }; \
+	  name=$$(sed -nE 's/^[[:space:]]*#[[:space:]]*colloq:[[:space:]]*from[[:space:]]+([^[:space:]]+)[[:space:]]*$$/\1/p' $(ENV_DIR)/$$name.txt | head -1); \
+	  case "$$name" in '') ;; *[!a-z0-9-]*|-*|*-) \
+	    printf '$(RED)«%s» не может быть именем окружения — ни файлом, ни тегом образа$(OFF)\n' "$$name"; \
+	    exit 1;; esac; \
+	done; \
+	parent=; \
+	for step in $$chain; do \
+	  if [ "$$step" = "$(NAME)" ] || ! docker image inspect colloq-kernel:$$step >/dev/null 2>&1; then \
+	    printf '$(BOLD)собираю %s$(OFF)$(DIM)%s$(OFF)\n' "$$step" "$${parent:+ поверх $$parent}"; \
+	    KERNEL_ENV=$$step KERNEL_PARENT=$$parent docker compose build kernel; \
+	  fi; \
+	  parent=colloq-kernel:$$step; \
+	done
 
 env-use: ## Окружение по умолчанию для новых семинаров. NAME=cv
 	@test -n "$(NAME)" || { printf '$(RED)Укажите имя: make env-use NAME=cv$(OFF)\n'; exit 1; }
 	@test -f $(ENV_DIR)/$(NAME).txt || { printf '$(RED)Нет $(ENV_DIR)/$(NAME).txt — сначала make env-new NAME=$(NAME)$(OFF)\n'; exit 1; }
-	@printf '$(BOLD)собираю $(NAME)$(OFF) $(DIM)(первый раз может быть долго)$(OFF)\n'
-	KERNEL_ENV=$(NAME) docker compose build kernel
+	@printf '$(DIM)первый раз может быть долго$(OFF)\n'
+	@# Через env-build, а не своим `docker compose build`: сборка цепочки
+	@# наследования живёт там, и два её списывания разъехались бы на первой же
+	@# правке.
+	@$(MAKE) --no-print-directory env-build NAME=$(NAME)
 	@# Записывается в .env, потому что compose читает KERNEL_ENV оттуда: иначе
 	@# следующий `make up` без переменной молча вернул бы старое окружение.
 	@tmp=$$(mktemp); grep -vE '^KERNEL_ENV=' .env > "$$tmp" 2>/dev/null || true; \

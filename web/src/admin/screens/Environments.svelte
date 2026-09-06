@@ -497,13 +497,18 @@
                 there is simply nothing to say — and one that WAS built but
                 edited since read "216 MB · built 5 days ago" beside a pill
                 saying "Not built". Both halves were true of different things.
+
+                Поверх чего собрано — здесь же, на месте слова «the base»: это
+                и есть ответ на «сверх чего эти пакеты», а строка «4 packages
+                over base-gpu» объясняет заодно, почему torch в списке нет, а в
+                комнате он есть.
               -->
               <p class="truncate text-2xs text-muted">
                 {[
                   'Python 3.11',
                   env.imageBytes === null ? null : imageSize(env.imageBytes),
                   env.builtAt === null ? null : builtAgo(env.builtAt),
-                  `${env.packages.length} packages over the base`,
+                  `${env.packages.length} packages over ${env.parent ?? 'the base'}`,
                 ]
                   .filter((part) => part !== null)
                   .join(' · ')}
@@ -547,8 +552,20 @@
                   built" beside "216 MB · built 5 days ago" is how the panel
                   contradicts itself in one line, and the reader is left unable
                   to tell whether anything is there at all.
+
+                  Устареть можно и не своей правкой: у окружения поверх чужого
+                  образа родителя могли пересобрать позже. Значок тот же — дело
+                  одно и то же, — а вот причину подсказка называет, иначе
+                  «Needs rebuild» появляется на файле, которого никто не трогал.
                 -->
-                <span class={cn(PILL, 'text-warning')}>Needs rebuild</span>
+                <span
+                  class={cn(PILL, 'text-warning')}
+                  title={env.parent
+                    ? `Список правился после сборки — или ${env.parent}, поверх которого это собрано, пересобрали позже`
+                    : 'Список пакетов правился после сборки'}
+                >
+                  Needs rebuild
+                </span>
               {:else}
                 <span class={cn(PILL, 'text-muted')}>Not built</span>
               {/if}

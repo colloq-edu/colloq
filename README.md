@@ -368,6 +368,20 @@ you have built before starts a container rather than another pip install. The ba
 shared between them, which is why an environment costs only the packages the base does not
 already have.
 
+**An environment can be built on top of another one.** A line `# colloq: from base-gpu` in
+the header of the file means "build this on top of that environment's image" — pip reads it
+as a comment, and the build reads it as the parent. Without such a line an environment is
+built on the plain base, which is what almost all of them do. It exists for one reason: the
+environment layer is a single layer, so any edit to the list reinstalls all of it, and for a
+list with CUDA torch in it that is three gigabytes of wheels and nine minutes to add `timm`.
+Put the heavy half in a parent — `base-gpu` here carries torch, `gpu` carries transformers on
+top of it — and editing the child costs seconds. The parent is built first when its image is
+missing, both from the panel and from `make env-build`; a loop or a parent that does not
+exist is refused before Docker is started rather than nine minutes into a build. A `# colloq:
+gpu` declaration is inherited too, because its reason is: an image built on top of CUDA
+wheels needs a device whoever asked for it. The Environments screen shows what each one is
+built over, and offers a rebuild when the parent was rebuilt later than the child.
+
 **A seminar's environment is chosen when the seminar is created, and then fixed.** The room
 runs its own container from that image; `make env-use` and *Make default* in the panel set
 what the **next** seminar gets, and leave the ones that exist alone. A room that needs a

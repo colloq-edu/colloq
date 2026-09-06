@@ -130,6 +130,12 @@ services:
         # Какое окружение запечено в образ. Списки лежат в kernel/environments/;
         # `make env-use NAME=cv` переписывает KERNEL_ENV в .env и пересобирает.
         KERNEL_ENV: ${KERNEL_ENV:-base}
+        # Поверх чего собирать. Умолчание — python-slim, то есть ровно прежняя
+        # сборка; окружение с `# colloq: from base-gpu` в шапке передаёт сюда
+        # colloq-kernel:base-gpu, и torch с CUDA не ставится заново. Переменная
+        # с приставкой KERNEL_, как и соседняя: аргумент Dockerfile зовётся
+        # PARENT, но `PARENT` в окружении человека — слишком общее имя.
+        PARENT: ${KERNEL_PARENT:-python:3.11-slim-bookworm}
     # Тег по имени окружения, чтобы переключение назад не пересобирало заново:
     # каждое окружение — свой образ, они лежат рядом и достаются из кеша.
     image: colloq-kernel:${KERNEL_ENV:-base}

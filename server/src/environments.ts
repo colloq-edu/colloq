@@ -157,8 +157,100 @@ export function declaresGpu(source: string): boolean {
   return source.split('\n').some((line) => /^#\s*colloq:\s*gpu$/i.test(line.trim()))
 }
 
-export function needsGpu(name: string): boolean {
-  return declaresGpu(readSource(name))
+/**
+ * Поверх чего строится это окружение — по директиве `# colloq: from <имя>` в
+ * шапке, в том же виде, что и `# colloq: gpu`.
+ *
+ * Слой окружения один, и любая правка списка ставит его целиком заново. Для
+ * окружения с torch это три гигабайта колёс и девять минут за добавленный timm.
+ * Директива переносит тяжёлое в общий слой: родитель собирается один раз, а
+ * дети — за секунды.
+ *
+ * Имя проверяется тем же выражением, что и всюду: оно становится и путём к
+ * файлу, и тегом образа. Не имя — не директива; а несуществующее окружение
+ * назвать родителем можно, и тогда откажет сборка, назвав его вслух.
+ */
+export function declaresParent(source: string): string | null {
+  for (const line of source.split('\n')) {
+    const found = /^#\s*colloq:\s*from\s+(\S+)\s*$/i.exec(line.trim())
+    if (found) return found[1] ?? null
+  }
+  return null
+}
+
+/** Чем читается список: имя → текст, или null, когда такого окружения нет. */
+export type ReadEnvironment = (name: string) => string | null
+
+/**
+ * Отличает «пусто» от «нет такого»: readSource возвращает '' на оба, а сборке
+ * надо отказать на неизвестном родителе, а не молча собрать поверх базы.
+ */
+const fromDisk: ReadEnvironment = (name) => {
+  try {
+    return fs.readFileSync(fileFor(name), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/** Длиннее этого цепочка не бывает: дальше это опечатка, а не устройство. */
+export const MAX_INHERITANCE = 8
+
+/**
+ * Порядок сборки: от корня к листу, `['base-gpu', 'gpu']`.
+ *
+ * Три отказа вместо бесконечной сборки, и все три — до docker: петля (a → b →
+ * a), цепочка длиннее MAX_INHERITANCE и родитель, которого нет. Девять минут,
+ * потраченных на то, чтобы упасть на `COPY environments/нет-такого.txt`, — это
+ * та же ошибка, только дороже.
+ */
+export function buildChain(name: string, read: ReadEnvironment = fromDisk): string[] {
+  const chain: string[] = []
+  const seen = new Set<string>()
+  let current: string | null = name
+  while (current !== null) {
+    if (seen.has(current)) {
+      throw new Error(
+        `окружения ссылаются друг на друга по кругу: ${[...chain, current].join(' → ')}`,
+      )
+    }
+    if (!ENVIRONMENT_NAME.test(current)) {
+      throw new Error(`«${current}» не может быть именем окружения — ни файлом, ни тегом образа`)
+    }
+    const source = read(current)
+    if (source === null) {
+      throw new Error(
+        chain.length === 0
+          ? `нет окружения «${current}»`
+          : `окружение «${chain[0]}» строится поверх «${current}», а такого нет`,
+      )
+    }
+    if (chain.length >= MAX_INHERITANCE) {
+      throw new Error(`цепочка окружений длиннее ${MAX_INHERITANCE} звеньев: ${chain.join(' → ')}`)
+    }
+    seen.add(current)
+    chain.unshift(current)
+    current = declaresParent(source)
+  }
+  return chain
+}
+
+/**
+ * Просит ли окружение срез видеокарты — своей директивой или родительской.
+ *
+ * Признак наследуется, потому что наследуется его причина: образ поверх base-gpu
+ * несёт колёса под CUDA, и без устройства комната на нём упадёт на первом
+ * `.cuda()`. Сломанная цепочка здесь не исключение: об этом скажет сборка, а
+ * отнимать срез у окружения, которое его просит, — худший из двух ответов.
+ */
+export function needsGpu(name: string, read: ReadEnvironment = fromDisk): boolean {
+  let chain: string[]
+  try {
+    chain = buildChain(name, read)
+  } catch {
+    chain = [name]
+  }
+  return chain.some((step) => declaresGpu(read(step) ?? ''))
 }
 
 export function writeSource(name: string, source: string): void {
@@ -387,7 +479,80 @@ function push(build: Build, chunk: string): void {
 }
 
 /**
- * Build an environment's image, in the background.
+ * Одно звено цепочки: `docker compose build kernel` над одним окружением.
+ *
+ * Родитель приезжает аргументом PARENT — тем же Dockerfile собирается и база
+ * (поверх python-slim), и слой поверх готового colloq-образа. Возвращает,
+ * продолжать ли: упавшее звено делает следующие бессмысленными.
+ */
+function runStage(
+  build: Build,
+  files: string[],
+  step: string,
+  parentImage: string | null,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const vars: Record<string, string> = {
+      KERNEL_ENV: step,
+      DOCKER_BUILDKIT: '1',
+      BUILDKIT_PROGRESS: 'plain',
+    }
+    if (parentImage) vars.KERNEL_PARENT = parentImage
+    const child = spawn('docker', ['compose', ...files, 'build', 'kernel'], {
+      cwd: ROOT,
+      env: { ...process.env, ...vars },
+    })
+    build.child = child
+    const shown = parentImage ? `KERNEL_PARENT=${parentImage} ` : ''
+    push(build, `$ ${shown}KERNEL_ENV=${step} docker compose build kernel`)
+
+    child.stdout.on('data', (d: Buffer) => push(build, d.toString()))
+    child.stderr.on('data', (d: Buffer) => push(build, d.toString()))
+    // Отменённой сборке ошибку не переписываем: «cancelled» — это ответ, а
+    // «build exited null» на его месте — загадка.
+    child.on('error', (err) => {
+      push(build, String(err))
+      if (!build.done) {
+        build.failed = true
+        failures.set(build.name, String(err))
+      }
+      resolve(false)
+    })
+    child.on('close', (code) => {
+      if (code === 0) {
+        // Remember WHAT was built, so the next comparison is about content.
+        try {
+          fs.writeFileSync(stampFor(step), readSource(step))
+        } catch {
+          // No stamp is not a failure: staleness falls back to mtime, as before.
+        }
+        resolve(true)
+        return
+      }
+      if (!build.done) {
+        build.failed = true
+        // The last non-empty line is what a person reads first; keeping the whole
+        // log for the panel and one line for the row is the difference between
+        // "it failed" and "tensorflow==1.15 does not exist".
+        failures.set(
+          build.name,
+          build.lines.filter((l) => /error|ERROR/.test(l)).pop() ?? `build exited ${code}`,
+        )
+      }
+      push(build, `— build failed (${code})`)
+      resolve(false)
+    })
+  })
+}
+
+/**
+ * Build an environment's image, in the background — вместе с цепочкой, на
+ * которой оно стоит.
+ *
+ * Родитель собирается первым и только если его образа ещё нет: ради этого
+ * наследование и заведено — правка листа не должна ставить torch заново. Пока
+ * идёт цепочка, «Building» стоит на каждом её звене: журнал у них общий, и
+ * второй Build на родителя посреди этой сборки не начнётся.
  *
  * Uses the dev override when the kernel is currently published on the host —
  * the same reasoning as the Makefile: rebuilding without it silently drops the
@@ -418,46 +583,58 @@ export async function startBuild(name: string): Promise<void> {
   }
   builds.set(name, build)
 
+  let chain: string[]
+  try {
+    chain = buildChain(name)
+  } catch (err) {
+    // Петля, слишком длинная цепочка, несуществующий родитель — отказ до
+    // docker. Собирать девять минут, чтобы упасть на COPY, — та же ошибка,
+    // только дороже.
+    const message = err instanceof Error ? err.message : String(err)
+    push(build, message)
+    build.failed = true
+    build.done = true
+    failures.set(name, message)
+    return
+  }
+
   const files = (await usesDevOverride())
     ? ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
     : []
   // Cancel мог прийти, пока мы спрашивали docker: тогда начинать нечего.
   if (build.done) return
 
-  const child = spawn('docker', ['compose', ...files, 'build', 'kernel'], {
-    cwd: ROOT,
-    env: { ...process.env, KERNEL_ENV: name, DOCKER_BUILDKIT: '1', BUILDKIT_PROGRESS: 'plain' },
-  })
-  build.child = child
-  push(build, `$ KERNEL_ENV=${name} docker compose build kernel`)
+  /*
+   * Начинаем с того места, где кончились готовые образы.
+   *
+   * Родитель нужен ровно затем, чтобы поверх него встал следующий слой: есть
+   * его образ — прабабку трогать незачем. А устаревший родитель (список
+   * правился) — отдельная кнопка в его собственной строке: пересобирать три
+   * гигабайта за человека, который нажал Build на ребёнке, мы не вправе.
+   */
+  let from = 0
+  for (let i = chain.length - 2; i >= 0; i -= 1) {
+    const step = chain[i]
+    if (step !== undefined && (await imageFacts(step)) !== null) {
+      from = i + 1
+      break
+    }
+  }
+  const stages = chain.slice(from)
+  if (build.done) return
+  for (const step of stages) if (step !== name) builds.set(step, build)
 
-  child.stdout.on('data', (d: Buffer) => push(build, d.toString()))
-  child.stderr.on('data', (d: Buffer) => push(build, d.toString()))
-  child.on('error', (err) => {
-    push(build, String(err))
-    build.failed = true
-    build.done = true
-    failures.set(name, String(err))
-  })
-  child.on('close', (code) => {
-    build.done = true
-    build.failed = code !== 0
-    if (build.failed) {
-      // The last non-empty line is what a person reads first; keeping the whole
-      // log for the panel and one line for the row is the difference between
-      // "it failed" and "tensorflow==1.15 does not exist".
-      failures.set(name, build.lines.filter((l) => /error|ERROR/.test(l)).pop() ?? `build exited ${code}`)
-    }
-    if (!build.failed) {
-      // Remember WHAT was built, so the next comparison is about content.
-      try {
-        fs.writeFileSync(stampFor(name), readSource(name))
-      } catch {
-        // No stamp is not a failure: staleness falls back to mtime, as before.
-      }
-    }
-    push(build, build.failed ? `— build failed (${code})` : '— build finished')
-  })
+  for (const step of stages) {
+    if (build.done) break
+    const before = chain[chain.indexOf(step) - 1]
+    if (!(await runStage(build, files, step, before ? `colloq-kernel:${before}` : null))) break
+  }
+
+  build.done = true
+  if (!build.failed) push(build, '— build finished')
+  // Дальше каждое звено отвечает за себя: чужой журнал в своей строке — это
+  // «build failed» на образе, который собрался.
+  for (const step of stages) if (step !== name) builds.delete(step)
 }
 
 export function cancelBuild(name: string): boolean {
@@ -547,7 +724,11 @@ async function switchTo(
 
 /* ------------------------------------------------------------- assembly */
 
-function stateOf(name: string, built: ImageFacts | null): EnvironmentState {
+function stateOf(
+  name: string,
+  built: ImageFacts | null,
+  parentBuilt: ImageFacts | null,
+): EnvironmentState {
   if (isBuilding(name)) return 'building'
   /*
    * A built image outranks a remembered failure.
@@ -565,7 +746,17 @@ function stateOf(name: string, built: ImageFacts | null): EnvironmentState {
    * "Ready · built 3 days ago" is how a room ends up on the old image with
    * nothing on screen disagreeing.
    */
-  return editedSinceBuild(name, built) ? 'unbuilt' : 'ready'
+  if (editedSinceBuild(name, built)) return 'unbuilt'
+  /*
+   * Родителя пересобрали позже — значит, этот образ стоит на прежнем слое.
+   *
+   * Список ребёнка не менялся, и по нему всё готово; но torch в нём тот, что
+   * был до пересборки base-gpu, а панель говорила бы «Ready». Тот же
+   * «Needs rebuild», что и на правку списка: образ есть, комнаты на нём идут,
+   * пересобрать стоит секунды.
+   */
+  if (parentBuilt && parentBuilt.builtAt > built.builtAt) return 'unbuilt'
+  return 'ready'
 }
 
 /** Whether the package list was written after the image was built. */
@@ -588,22 +779,28 @@ function editedSinceBuild(name: string, built: ImageFacts): boolean {
 export async function listEnvironments(): Promise<AdminEnvironment[]> {
   const active = activeName()
   const names = listNames()
-  return Promise.all(
-    names.map(async (name) => {
-      const built = await imageFacts(name)
-      const source = readSource(name)
-      return {
-        name,
-        state: stateOf(name, built),
-        packages: parsePackages(source),
-        imageBytes: built?.bytes ?? null,
-        builtAt: built?.builtAt ?? null,
-        active: name === active,
-        error: failures.get(name) ?? null,
-        // Директива из шапки файла, а не отдельный реестр: панель показывает то
-        // же самое, по чему потом решает подъём ядра.
-        gpu: declaresGpu(source),
-      }
-    }),
+  // Образы всех окружений разом: строке нужен не только свой, но и родительский
+  // — иначе «пересобрали родителя» видно только по датам, глазами.
+  const facts = new Map<string, ImageFacts | null>(
+    await Promise.all(names.map(async (name) => [name, await imageFacts(name)] as const)),
   )
+  return names.map((name) => {
+    const built = facts.get(name) ?? null
+    const source = readSource(name)
+    const parent = declaresParent(source)
+    return {
+      name,
+      state: stateOf(name, built, parent === null ? null : (facts.get(parent) ?? null)),
+      packages: parsePackages(source),
+      imageBytes: built?.bytes ?? null,
+      builtAt: built?.builtAt ?? null,
+      active: name === active,
+      error: failures.get(name) ?? null,
+      parent,
+      // Директива из шапки файла, а не отдельный реестр: панель показывает то
+      // же самое, по чему потом решает подъём ядра, — включая унаследованное от
+      // родителя.
+      gpu: needsGpu(name),
+    }
+  })
 }
