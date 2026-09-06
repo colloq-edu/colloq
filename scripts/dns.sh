@@ -17,8 +17,30 @@
 #
 # Токен берётся из .env основного репозитория; нужны Zone:Read и DNS:Edit на
 # зону colloq.ru.
+#
+# Входа два:
+#
+#   scripts/dns.sh                       привести всю зону к нужному виду:
+#                                        лендинг, www и *.colloq.ru на ретранслятор
+#   scripts/dns.sh point <имя> <адрес>   одна A-запись: имя → адрес машины
+#
+# Второй появился не ради удобства. Его зовёт прямой режим `make host-direct`:
+# машина с белым адресом принимает пару сама, и её имя должно смотреть на неё,
+# а не на ретранслятор. Своей копии этой логики у host.sh нет намеренно —
+# «удалить лишнее, создать недостающее, никогда не оставлять проксирование»
+# написано здесь один раз и здесь же чинится.
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# Режим разбирается до всего остального: в режиме point ни лендинг, ни www, ни
+# звёздочка не трогаются вовсе — иначе `make host-direct` посреди пары
+# переписывал бы записи, о которых его не просили.
+MODE=zone
+if [[ "${1:-}" == point ]]; then
+  MODE=point
+  POINT_NAME=${2:?scripts/dns.sh point <имя> <адрес>}
+  POINT_ADDR=${3:?scripts/dns.sh point <имя> <адрес>}
+fi
 
 DOMAIN=${DOMAIN:-colloq.ru}
 # Куда смотрят семинары. Тот же адрес, что в RELAY_ADDR у инстансов.
@@ -37,17 +59,56 @@ if [[ -z "${CF_TOKEN_COLLOQ:-}" && -f ../.env ]]; then
 fi
 : "${CF_TOKEN_COLLOQ:?нужен токен с Zone:Read и DNS:Edit на ${DOMAIN}}"
 
+# Идентификатор зоны лежит в том же .env соседней строкой с токеном, а читался
+# только из окружения. Из-за этого он не использовался никогда: зона искалась
+# запросом, и токену без права листать зоны скрипт отвечал «зона этому токену
+# не видна» — при том что её id был у него под рукой.
+if [[ -z "${CF_ZONE_COLLOQ:-}" && -f ../.env ]]; then
+  CF_ZONE_COLLOQ=$(grep -E '^CF_ZONE=' ../.env | tail -1 | cut -d= -f2- | tr -d ' \r' || true)
+fi
+
 API=https://api.cloudflare.com/client/v4
 AUTH=(-H "Authorization: Bearer $CF_TOKEN_COLLOQ" -H "content-type: application/json")
 
-# Поиск зоны по имени — без параметра status. Его допустимые значения это
-# active, pending и подобные; «all» не из их числа, и Cloudflare на него не
-# ругается, а молча отдаёт пустой список. На этом можно потерять час, решив,
-# что у токена нет доступа.
-zone=${CF_ZONE_COLLOQ:-$(curl -s "${AUTH[@]}" "$API/zones?name=${DOMAIN}" |
-  python3 -c 'import json,sys; r=(json.load(sys.stdin).get("result") or []); print(r[0]["id"] if r else "")')}
-[[ -n "$zone" ]] || { echo "зона ${DOMAIN} этому токену не видна" >&2; exit 1; }
-echo "зона ${DOMAIN}: $zone"
+RED=$'\033[31m'; OFF=$'\033[0m'
+die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
+
+# zone_id_for ИМЯ — в какой зоне живёт это имя.
+#
+# Спрашивать `?name=hse.colloq.ru` бесполезно: такой зоны нет, а Cloudflare
+# отвечает на это не ошибкой, а пустым списком. Поэтому берётся список зон
+# токена и из них самая длинная, которой запрошенное имя заканчивается:
+# для hse.colloq.ru это colloq.ru, и то же правило работает для чужой зоны,
+# если однажды инстанс встанет не под colloq.ru.
+#
+# И — без параметра status. Его допустимые значения это active, pending и
+# подобные; «all» не из их числа, и Cloudflare на него опять же не ругается,
+# а молча отдаёт пустой список. На этом можно потерять час, решив, что у
+# токена нет доступа.
+zone_id_for() {
+  local want=$1 id=""
+  # Явно названная зона сильнее поиска — но только если речь о ней же:
+  # CF_ZONE от colloq.ru для имени в чужой зоне это не подсказка, а ошибка,
+  # которая пишет запись не туда.
+  if [[ -n "${CF_ZONE_COLLOQ:-}" && ( "$want" == "$DOMAIN" || "$want" == *".$DOMAIN" ) ]]; then
+    printf '%s' "$CF_ZONE_COLLOQ"
+    return 0
+  fi
+  id=$(curl -s "${AUTH[@]}" "$API/zones?per_page=200" | WANT="$want" python3 -c '
+import json, os, sys
+want = os.environ["WANT"]
+best = best_id = ""
+try:
+    zones = json.load(sys.stdin).get("result") or []
+except Exception:
+    zones = []
+for z in zones:
+    name = z.get("name") or ""
+    if (want == name or want.endswith("." + name)) and len(name) > len(best):
+        best, best_id = name, z.get("id") or ""
+print(best_id)' 2>/dev/null || true)
+  printf '%s' "$id"
+}
 
 fetch() { curl -s "${AUTH[@]}" "$API/zones/$zone/dns_records?per_page=200"; }
 
@@ -90,17 +151,53 @@ import json,sys
 print(' '.join(r['content'] for r in json.load(sys.stdin)['result']
       if r['type']=='$type' and r['name']=='$name' and not r.get('proxied')))")
 
+  local resp
   for w in "${want[@]}"; do
     if [[ " $have " == *" $w "* ]]; then
       printf '  на месте  %-5s %-16s -> %s\n' "$type" "$name" "$w"
       continue
     fi
-    curl -s -X POST "${AUTH[@]}" "$API/zones/$zone/dns_records" \
+    resp=$(curl -s -X POST "${AUTH[@]}" "$API/zones/$zone/dns_records" \
       --data "$(printf '{"type":"%s","name":"%s","content":"%s","ttl":300,"proxied":false}' \
-                "$type" "$name" "$w")" >/dev/null
-    printf '  создано   %-5s %-16s -> %s\n' "$type" "$name" "$w"
+                "$type" "$name" "$w")")
+    # Ответ проверяется, а не выбрасывается. Раньше он уходил в /dev/null, и
+    # строка «создано» печаталась в том числе тогда, когда Cloudflare отказал —
+    # обычно из-за CNAME на том же имени или токена без DNS:Edit. Для зоны это
+    # означало «сайт почему-то не открылся», а для прямого режима — машину,
+    # которая ждёт сертификат на имя, никуда не указывающее.
+    if [[ "$resp" == *'"success":true'* || "$resp" == *'"success": true'* ]]; then
+      printf '  создано   %-5s %-16s -> %s\n' "$type" "$name" "$w"
+    else
+      printf '%s\n' "$resp" | head -c 400 >&2; printf '\n' >&2
+      die "Cloudflare не создал ${type} ${name} -> ${w}"
+    fi
   done
 }
+
+# ------------------------------------------------------------- что делаем
+
+# Одна запись: имя → адрес машины. Больше в зоне не трогается ничего.
+if [[ "$MODE" == point ]]; then
+  zone=$(zone_id_for "$POINT_NAME")
+  [[ -n "$zone" ]] || die "зона для ${POINT_NAME} этому токену не видна (CF_TOKEN, CF_ZONE в .env)"
+  # Сначала снять CNAME с этого имени, потом ставить A — ровно та же причина,
+  # что у www ниже: Cloudflare не даёт держать их рядом. Случай не выдуманный:
+  # имя, которое когда-то заводил `make tunnel-setup`, держит CNAME на
+  # <id>.cfargotunnel.com, и без этой строки прямой режим на нём отказывал бы
+  # со ссылкой на конфликт записей.
+  reconcile CNAME "$POINT_NAME"
+  # Без проксирования — это здесь главное и единственное. Оранжевое облако
+  # увело бы студентов на пограничные адреса Cloudflare, а они из России не
+  # открываются: семинар стал бы недоступен ровно той аудитории, ради которой
+  # его и выставляют. Прямой режим тем и ценен, что между машиной и залом нет
+  # никого; проксирование вернуло бы посредника, да ещё и закрытого.
+  reconcile A "$POINT_NAME" "$POINT_ADDR"
+  exit 0
+fi
+
+zone=$(zone_id_for "$DOMAIN")
+[[ -n "$zone" ]] || die "зона ${DOMAIN} этому токену не видна"
+echo "зона ${DOMAIN}: $zone"
 
 echo "лендинг на GitHub Pages:"
 reconcile A "$DOMAIN" 185.199.108.153 185.199.109.153 185.199.110.153 185.199.111.153

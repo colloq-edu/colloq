@@ -12,6 +12,7 @@
  */
 import OpenAI from 'openai'
 import { config } from '../config.js'
+import { tally } from '../log.js'
 import { isKeylessProvider, resolveAiConfig } from '../admin/settings.js'
 import type { OracleTestResult } from '@shared/admin'
 
@@ -430,6 +431,18 @@ async function diagnose(err: unknown, model: string, baseUrl: string): Promise<O
   if (status !== null) {
     return fail(`${baseUrl} refused the request (${status}). ${detail}`.trim())
   }
+  /*
+   * Отказ фильтра бывает и здесь — и лечится он не адресом.
+   *
+   * Пробная просьба короткая («ping»), так что до этой ветки доходит редко; но
+   * если дошло, «не смог достучаться до <адрес>» — это ровно та ложь, из-за
+   * которой преподаватель идёт чинить сеть при исправной сети.
+   */
+  if (isRefusal(err)) {
+    return fail(
+      `${baseUrl} answered, and the model refused the request by its own safety filter. The address and key are fine — the model is.`,
+    )
+  }
   // No status at all: nothing answered, so this is the address or the network.
   const code = causeCode(err)
   if (isTimeout(err)) {
@@ -525,6 +538,79 @@ function isBadRequest(err: unknown): boolean {
   return (err as { status?: number } | null)?.status === 400
 }
 
+/**
+ * Модель отказалась отвечать — сработал её фильтр, а не сеть и не ключ.
+ *
+ * Так это приезжает на самом деле. Отказ по безопасности у Gemini через
+ * OpenAI-совместимый шлюз приходит НЕ статусом: кадр потока несёт поле `error`,
+ * и SDK на нём бросает `new APIError(undefined, data.error, …)` (openai
+ * streaming.mjs) — то есть ошибку БЕЗ status, с одним лишь текстом. В журнале
+ * это выглядело как `no response — SAFETY`, а `friendly` не находил ни одной
+ * подходящей ветки и отвечал последней, про адрес и ключ.
+ *
+ * Смотрим на всё, чем разные шлюзы это называют: собственный класс SDK
+ * (`ContentFilterFinishReasonError`), `code`/`type` ответа, причина остановки в
+ * теле и, последним, слова в самом сообщении — «SAFETY» приезжает именно так.
+ */
+function isRefusal(err: unknown): boolean {
+  const failed = err as
+    | {
+        code?: unknown
+        type?: unknown
+        error?: { code?: unknown; type?: unknown; status?: unknown; finish_reason?: unknown }
+      }
+    | null
+    | undefined
+  // По классу, а не по `name`: у ошибок этого SDK `name` всегда «Error» —
+  // проверено на openai@4.104, — и `isTimeout` рядом ловит свой случай только
+  // вторым условием, про код причины.
+  if (className(err) === 'ContentFilterFinishReasonError') return true
+  const words = [
+    failed?.code,
+    failed?.type,
+    failed?.error?.code,
+    failed?.error?.type,
+    failed?.error?.status,
+    failed?.error?.finish_reason,
+  ]
+  for (const word of words) {
+    if (typeof word !== 'string') continue
+    if (/^(safety|blocked|content[_-]?filter|prohibited|recitation)/i.test(word)) return true
+  }
+  // Слова эндпоинта — последними: у 400 «bad request» их тоже хватает, и
+  // выхватывать «safety» из середины чужого предложения было бы гаданием.
+  return REFUSAL_WORDS.test(detailOf(err))
+}
+
+/**
+ * Слова, которыми это называют вслух. Границы слова обязательны: «safety» —
+ * отказ, а «safety_settings» в жалобе на параметр запроса — не он.
+ */
+const REFUSAL_WORDS =
+  /\b(safety|content[ _-]?filter|content[ _-]?policy|blocked by|recitation|prohibited[ _-]?content)\b/i
+
+/**
+ * Эндпоинт ответил, а потом оборвался — но это не «до него не достучались».
+ *
+ * У ошибки, родившейся ВНУТРИ потока, статуса нет: SDK строит её напрямую,
+ * минуя `APIError.generate`, — и по одному отсутствию статуса такая ошибка
+ * неотличима от `APIConnectionError`, которую тот же SDK выдаёт, когда до хоста
+ * не доехал ни один байт. Различает их имя класса: соединение, которое не
+ * состоялось, зовётся APIConnection*, всё остальное — уже разговор.
+ */
+function answeredThenBroke(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false
+  // APIConnectionError наследует APIError, и вот она-то и есть «не достучались».
+  if (err instanceof OpenAI.APIConnectionError) return false
+  return typeof err.status !== 'number'
+}
+
+/** Класс ошибки по имени конструктора: `name` у этого SDK не отличает ничего. */
+function className(err: unknown): string {
+  const ctor = (err as { constructor?: { name?: unknown } } | null)?.constructor
+  return typeof ctor?.name === 'string' ? ctor.name : ''
+}
+
 /** Raw SDK errors carry request internals; hand back something readable instead. */
 function friendly(err: unknown): Error {
   const status = (err as { status?: number } | null)?.status
@@ -534,11 +620,28 @@ function friendly(err: unknown): Error {
    * internals, and the sentence a student reads is written below — but without
    * this line a failing oracle left the operator nothing at all to look at.
    */
+  const refused = isRefusal(err)
+  tally('oracle')
   console.warn(
     '[ai] request failed',
-    status ? `status ${status}` : 'no response',
+    status ? `status ${status}` : refused ? 'refused by the model' : 'no response',
     err instanceof Error ? `— ${err.message}` : '',
   )
+
+  /*
+   * Отказ фильтра — первым, потому что он приходит и со статусом, и без.
+   *
+   * Это тот случай, который стоил живой паре получаса: шлюз с Gemini пять раз
+   * подряд ответил «SAFETY» без HTTP-статуса, а комната прочитала «не удалось
+   * достучаться, проверьте адрес и ключ» — и преподаватель пошёл чинить сеть и
+   * ключ, оба совершенно здоровые. Адрес и ключ здесь не называются вовсе: они
+   * ни при чём, а человеку в комнате их всё равно не видно.
+   */
+  if (refused) {
+    return new Error(
+      'The model refused to answer this one — its own safety filter, not the address or the key. Try asking it a different way.',
+    )
+  }
 
   /*
    * A timeout is not "could not reach". With one retry in the SDK the real
@@ -576,6 +679,22 @@ function friendly(err: unknown): Error {
   }
   if (status !== undefined && status >= 500) {
     return new Error('The AI endpoint returned a server error.')
+  }
+  /*
+   * Ответил и оборвался — тоже не «не достучались».
+   *
+   * Статуса у такой ошибки нет, и до этой правки она попадала в последнюю
+   * ветку, то есть отправляла человека проверять адрес и ключ, к которым
+   * только что успешно сходили. Слова эндпоинта здесь показываются: это
+   * единственное, что вообще известно о происшедшем.
+   */
+  if (answeredThenBroke(err)) {
+    const detail = detailOf(err)
+    return new Error(
+      detail
+        ? `The AI endpoint broke off mid-answer: ${detail}`
+        : 'The AI endpoint broke off mid-answer without saying why. Try asking again.',
+    )
   }
   /*
    * The address is not shown. It is the operator's configuration, sometimes an

@@ -27,3 +27,145 @@ for (const level of wrapped) {
     original(new Date().toISOString(), ...args)
   }
 }
+
+/* ------------------------------------------------------------- журнал пары */
+
+/**
+ * Что происходило на паре — скупо, но так, чтобы это можно было прочитать.
+ *
+ * За целый день журнала службы набиралось девяносто строк, и по ним нельзя
+ * было сказать ни сколько комнат жило, ни когда умерло ядро: писались только
+ * поломки. Строка на каждое событие тоже не годится — на потоке в пятьсот
+ * человек кадров синхронизации десятки тысяч в минуту, и настоящее в них
+ * тонет так же надёжно, как в пустоте.
+ *
+ * Поэтому две разные вещи. Частое считается и раз в минуту выходит одной
+ * строкой сводки. Редкое и настоящее — открылась комната, умерло ядро, отказал
+ * гейт — печатается как есть, тем же `console`, что и всё остальное здесь:
+ * второго механизма журналирования в проекте нет и заводить его незачем.
+ *
+ * Ничего личного: в сводку и в события едут числа и идентификаторы комнат.
+ * Имена участников и текст ячеек в журнал не попадают вовсе.
+ */
+
+/** Частое, что считается за минуту, а не пишется строкой. */
+export type Tally =
+  /** Принятые кадры синхронизации — мера того, что в комнате вообще работают. */
+  | 'frames'
+  /** Кадры, отвергнутые гейтом. */
+  | 'gate'
+  /** Запросы, оборванные клиентом: студент ушёл со страницы. */
+  | 'aborted'
+  /** Входы, отвергнутые пределом на новых участников. */
+  | 'joins'
+  /** Отказы оракула — любые, включая фильтр безопасности. */
+  | 'oracle'
+
+const minute: Record<Tally, number> = { frames: 0, gate: 0, aborted: 0, joins: 0, oracle: 0 }
+
+export function tally(what: Tally, n = 1): void {
+  minute[what] += n
+}
+
+/**
+ * Одно и то же событие — не чаще раза в минуту на ключ.
+ *
+ * Отказ гейта и упёршийся в предел вход бывают редкими, а бывают лавиной:
+ * нагрузочный стенд на пятистах студентах дал 378 отказов входа подряд. Строка
+ * на каждый — это тот же поток, от которого журнал и лечим, поэтому первый
+ * такой отказ говорится словами, а остальные за ту же минуту идут в счётчик.
+ */
+const said = new Map<string, number>()
+
+export function seldom(key: string, quiet = 60_000): boolean {
+  const now = Date.now()
+  const last = said.get(key)
+  if (last !== undefined && now - last < quiet) return false
+  // Карта живёт столько же, сколько процесс, а ключей в ней — по комнате на
+  // каждую причину. Просроченное выметается здесь же, чтобы семестр открытых
+  // комнат не остался в памяти навсегда.
+  for (const [old, at] of said) if (now - at >= quiet) said.delete(old)
+  said.set(key, now)
+  return true
+}
+
+/** Состояние инстанса на сейчас — его спрашивают раз в минуту. */
+export interface Census {
+  /** Комнат, в которых кто-то есть. */
+  rooms: number
+  /** Людей в них — по участникам, а не по сокетам: вкладка рядом не человек. */
+  people: number
+  /** Ядра комнат: живые, из них занятые, и мёртвые. */
+  kernels: { live: number; busy: number; dead: number }
+}
+
+const SUMMARY_MS = 60_000
+
+let census: (() => Census) | null = null
+let ticker: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Включить сводку. Зовёт `index.ts`, уже подняв сервер: перепись комнат и ядер
+ * живёт в `collab` и `kernel`, а тянуть их импортом сюда нельзя — этот модуль
+ * грузится первым в процессе, до всего остального.
+ */
+export function startJournal(read: () => Census): void {
+  census = read
+  if (ticker) return
+  ticker = setInterval(journalMinute, SUMMARY_MS)
+  // Сводка не повод не дать процессу закончиться: тесты и `make backup`
+  // поднимают сервер на секунды, и незакрытый таймер держал бы их до упора.
+  ticker.unref?.()
+}
+
+/** Остановить сводку — при выключении, чтобы последняя строка не легла в шум. */
+export function stopJournal(): void {
+  if (!ticker) return
+  clearInterval(ticker)
+  ticker = null
+}
+
+/**
+ * Свести минуту и обнулить счётчики. Зовёт таймер — и зовут тесты: формат этой
+ * строки читает человек, и проверить его можно только прочитав её целиком.
+ */
+export function journalMinute(): void {
+  let now: Census | null = null
+  try {
+    now = census?.() ?? null
+  } catch {
+    // Пара важнее сводки: перепись, которая упала, молчит и не роняет процесс.
+  }
+  // Снимок ДО обнуления: минута кончается здесь независимо от того, будет
+  // строка или нет, иначе тихая минута уносила бы с собой счёт следующей.
+  const was = { ...minute }
+  reset()
+  const counted = was.frames + was.gate + was.aborted + was.joins + was.oracle
+  // Ночью на машине не происходит ничего, и 1440 строк об этом — то же самое
+  // враньё, что и пустой журнал: настоящее в них так же не найти.
+  if (!now || (now.rooms === 0 && now.kernels.live === 0 && counted === 0)) return
+
+  const parts = [`rooms ${now.rooms}`, `people ${now.people}`]
+  const { live, busy, dead } = now.kernels
+  if (live > 0 || dead > 0) {
+    const working = busy > 0 ? ` (${busy} busy)` : ''
+    const gone = dead > 0 ? `, ${dead} dead` : ''
+    parts.push(`kernels ${live} live${working}${gone}`)
+  }
+  // Нули не печатаются: на спокойной минуте строка коротка, а всё, что в ней
+  // появилось, — это то, ради чего в журнал и лезут.
+  if (was.frames > 0) parts.push(`frames ${was.frames}`)
+  if (was.gate > 0) parts.push(`gate refused ${was.gate}`)
+  if (was.joins > 0) parts.push(`joins refused ${was.joins}`)
+  if (was.oracle > 0) parts.push(`oracle failed ${was.oracle}`)
+  if (was.aborted > 0) parts.push(`aborted ${was.aborted}`)
+  console.log(`[minute] ${parts.join(' · ')}`)
+}
+
+function reset(): void {
+  minute.frames = 0
+  minute.gate = 0
+  minute.aborted = 0
+  minute.joins = 0
+  minute.oracle = 0
+}

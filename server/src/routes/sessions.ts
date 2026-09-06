@@ -25,6 +25,7 @@ import {
   upsertParticipant,
 } from '../db.js'
 import { onlineParticipantIds } from '../collab/index.js'
+import { seldom, tally } from '../log.js'
 import { ensureKernel } from '../kernel/index.js'
 import { listCourses, publicationOf, stepCount } from '../publish/store.js'
 import { broadcast } from '../control.js'
@@ -109,6 +110,47 @@ function tooManyArrivals(sessionId: string): boolean {
   recent.push(now)
   arrivals.set(sessionId, recent)
   return false
+}
+
+/**
+ * Почему вошедший оказался НОВЫМ человеком, а не собой прежним.
+ *
+ * На боевой машине в одном семинаре набралось пятьсот строк участника с одним
+ * и тем же именем, и по коду причина не видна: браузер шлёт и participantId, и
+ * токен, а строка всё равно заводится новая. Условие возврата — конъюнкция из
+ * четырёх частей, и в журнале нужна та её часть, которая не выполнилась,
+ * иначе выяснять это можно только гаданием.
+ *
+ * Ни имени, ни аватара, ни содержимого токена: только то, какая проверка
+ * не прошла.
+ */
+type JoinedAs =
+  | 'back'
+  | 'no id'
+  | 'no token'
+  | 'bad token'
+  | 'other room'
+  | 'other person'
+  | 'row gone'
+
+function joinedAs(
+  sessionId: string,
+  claimed: string | null,
+  sent: unknown,
+  proof: TokenPayload | null,
+  returning: boolean,
+): JoinedAs {
+  if (returning) return 'back'
+  if (claimed === null) return 'no id'
+  if (typeof sent !== 'string' || !sent) return 'no token'
+  // Разбор проваливается двумя способами сразу — кривая подпись и возраст
+  // старше TOKEN_MAX_AGE_MS, — и различить их снаружи `verifyToken` нельзя.
+  // Для расследования этого хватает: и то и другое означает «предъявить нечего».
+  if (proof === null) return 'bad token'
+  if (proof.sessionId !== sessionId) return 'other room'
+  if (proof.participantId !== claimed) return 'other person'
+  // Всё сошлось, а строки нет: семинар чистили или базу разворачивали заново.
+  return 'row gone'
 }
 
 /**
@@ -289,8 +331,10 @@ export function sessionRoutes(): Router {
      *    cookie is a stronger credential than the token.
      */
     const staff = currentStaff(req)
-    const role: ParticipantRole =
-      staff || verifyHostToken(sessionId, req.body?.hostToken) ? 'host' : 'participant'
+    // Два источника роли различаются в журнале, поэтому и считаются порознь.
+    // `!staff &&` сохраняет прежний порядок: куке хост-токен не нужен.
+    const byHostToken = !staff && verifyHostToken(sessionId, req.body?.hostToken)
+    const role: ParticipantRole = staff || byHostToken ? 'host' : 'participant'
 
     /*
      * Coming back as yourself has to be proved.
@@ -319,11 +363,32 @@ export function sessionRoutes(): Router {
     // Незнакомец заводит строку — и это единственное место, где комната растёт
     // от чужого запроса. Штат и вернувшиеся со своим токеном проходят мимо.
     if (!known && !staff && tooManyArrivals(sessionId)) {
+      tally('joins')
+      // Первый отказ за минуту — словами, остальные числом в сводке: стенд на
+      // пятистах студентах дал 378 таких подряд, и это ровно тот поток, от
+      // которого журнал и лечим.
+      if (seldom(`arrivals:${sessionId}`)) {
+        console.warn(`[join ${sessionId}] refused — more than ${MAX_NEW_PARTICIPANTS} new/min`)
+      }
       return res.status(429).json({
         error: 'too many people are joining this seminar at once — try again in a minute',
       })
     }
     const participantId = known ? known.id : newParticipantId()
+    /*
+     * По строке на каждый вход — и это сознательно не считается в сводку.
+     *
+     * Пятьсот входов за пару — пятьсот строк, столько журнал выносит; а вот
+     * понять по нему, почему один и тот же человек заводится заново, без такой
+     * строки нельзя вовсе. Ни имени, ни аватара, ни токена здесь нет: только
+     * комната, участник, роль и то, какая проверка возврата не прошла.
+     */
+    const how = joinedAs(sessionId, claimed, req.body?.token, proof, known !== null)
+    const why = staff ? 'staff' : byHostToken ? 'host-token' : 'link'
+    console.log(
+      `[join ${sessionId}] ${how === 'back' ? 'back' : 'new'} ${participantId} · ` +
+        `${role} by ${why}${how === 'back' ? '' : ` · ${how}`}`,
+    )
 
     // Хост-токен — единственное, что записывается насовсем: куку перечитывают
     // на каждом запросе, и «ведущий по куке» в строке был бы навсегда.

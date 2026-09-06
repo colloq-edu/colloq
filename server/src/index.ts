@@ -12,8 +12,9 @@
  * do both itself.
  */
 // Первым: он правит console, а импорты поднимаются наверх — всё, что модули
-// печатают при загрузке, должно застать уже исправленную.
-import './log.js'
+// печатают при загрузке, должно застать уже исправленную. Имена из него берутся
+// здесь же — это тот самый модуль, а не второй: журнал у процесса один.
+import { startJournal, stopJournal, tally } from './log.js'
 import http from 'node:http'
 import path from 'node:path'
 import zlib from 'node:zlib'
@@ -24,13 +25,13 @@ import { isClaimed, readSetupToken, sameOrigin, setupTokenPath } from './admin/a
 import { verifyToken, type TokenPayload } from './auth.js'
 import { aiEnabled, config } from './config.js'
 import { SECURITY_HEADERS } from './headers.js'
-import { handleCollabSocket, shutdownCollab } from './collab/index.js'
+import { handleCollabSocket, roomCensus, shutdownCollab } from './collab/index.js'
 import { handleFileSocket } from './collab/files.js'
 import { normalizePath } from '@shared/paths'
 
 import { handleControlSocket } from './control.js'
 import { closeDatabase, db, getSession, touchLastSeen } from './db.js'
-import { shutdownKernels } from './kernel/index.js'
+import { kernelCensus, shutdownKernels } from './kernel/index.js'
 import { jupyterReachable } from './kernel/jupyter.js'
 import { isolationAvailable } from './kernel/pool.js'
 import { activeName, listEnvironments } from './environments.js'
@@ -434,8 +435,50 @@ if (config.staticDir) {
   })
 }
 
+/**
+ * Клиент ушёл, не дослушав.
+ *
+ * `res.sendFile` на оборванном запросе отдаёт Error('Request aborted') с
+ * `code: 'ECONNABORTED'` и без статуса (express, response.js: sendfile), а
+ * body-parser на оборванном теле — ошибку с `type: 'request.aborted'`. Обе
+ * доезжали до ветки «internal error» ниже и печатали стек на четыре строки.
+ * Это студент, закрывший вкладку до конца загрузки: на потоке в пятьсот
+ * человек таких строк сотни, и настоящая поломка тонет между ними.
+ */
+function clientLeft(err: unknown, res: Response): boolean {
+  const failed = err as { code?: unknown; type?: unknown } | null
+  // Эти два кода рождаются ровно там и только там: `ECONNABORTED` — в sendfile
+  // самого express, `request.aborted` — в body-parser. Спутать их не с чем.
+  if (failed?.code === 'ECONNABORTED' || failed?.type === 'request.aborted') return true
+  /*
+   * А вот ECONNRESET и EPIPE сами по себе ничего не значат: тем же кодом
+   * отвечает оборвавшееся ИСХОДЯЩЕЕ соединение — к ядру, к оракулу, — и
+   * молчаливо проглотить такую значило бы спрятать настоящую поломку сервера
+   * за словами про ушедшего студента. Поэтому у них спрашивают ещё и сокет:
+   * если писать уже некуда, ушёл действительно клиент.
+   */
+  if (failed?.code === 'ECONNRESET' || failed?.code === 'EPIPE') return !res.writable
+  return false
+}
+
 app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
   if (res.headersSent) return next(err)
+  /*
+   * Оборванный запрос не пишется в журнал вовсе — только в счётчик минуты.
+   *
+   * Из двух разрешённых вариантов («одна спокойная строка» или «молча») выбран
+   * второй: сервер тут ничего не делал и делать не может, а число ушедших
+   * посреди загрузки всё равно видно в сводке строкой `aborted N` — там оно
+   * даже полезнее, потому что рядом стоит, сколько в эту минуту было людей.
+   * Отвечать тоже некому: сокета уже нет, и `res.status(500)` уходил в пустоту.
+   */
+  if (clientLeft(err, res)) {
+    tally('aborted')
+    // Своя сторона всё равно закрывается: на живом сокете это пустой ответ, на
+    // мёртвом — ничего, а висящий без ответа запрос express не разбирает сам.
+    res.end()
+    return
+  }
   // express.json rejects malformed bodies with an HTML error page by default,
   // which the browser's JSON-only client cannot read.
   if (err instanceof SyntaxError && 'body' in err) {
@@ -630,6 +673,12 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
   const ai = aiEnabled() ? `on (${config.ai.model})` : 'off'
   console.log(`colloq ready — open ${config.publicUrl} · ai ${ai} · jupyter ${config.jupyter.url}`)
   announceSetupToken()
+  /*
+   * Перепись собирается здесь, а не внутри `log.ts`: тот модуль грузится первым
+   * в процессе — раньше collab и kernel, — и импорт их оттуда переставил бы
+   * правку console за всё, что модули печатают при загрузке.
+   */
+  startJournal(() => ({ ...roomCensus(), kernels: kernelCensus() }))
 })
 
 /**
@@ -669,6 +718,9 @@ async function shutdown(signal: string): Promise<void> {
   if (stopping) return
   stopping = true
   console.log(`\ncolloq shutting down (${signal})`)
+  // Сводка за оборванную минуту ничего не значит, а строка про ноль комнат
+  // между строк выключения — просто шум.
+  stopJournal()
 
   const force = setTimeout(() => {
     console.warn('colloq: shutdown timed out, exiting anyway')

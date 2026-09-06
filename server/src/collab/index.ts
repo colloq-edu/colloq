@@ -17,6 +17,7 @@ import {
 } from '@shared/notebook'
 import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
 import { getRules, getSession, isFinished, renameSession } from '../db.js'
+import { seldom, tally } from '../log.js'
 import { classify, permits } from './gate.js'
 import { forgetSession, onCarets, rememberDeleted, resetRetyped, settleFresh } from './ops.js'
 import {
@@ -543,6 +544,20 @@ function refuse(
   if (state?.participantId && refusalListener) {
     refusalListener(entry.sessionId, state.participantId, refusal)
   }
+  tally('gate')
+  /*
+   * Причина — словами, но не на каждый отказ.
+   *
+   * Отказ гейта в журнале нужен: по нему видно, что комната упёрлась в правило,
+   * а не сломалась. Но отказывают целому кадру, и браузер после 4403
+   * пересобирает документ и пробует снова — на потоке это лавина одинаковых
+   * строк. Первая за минуту на комнату и правило говорится, остальные видны
+   * числом в сводке. Ни имени участника, ни текста правки: только правило и
+   * причина, которую сформулировал сам гейт.
+   */
+  if (seldom(`gate:${entry.sessionId}:${refusal.rule}`)) {
+    console.warn(`[gate ${entry.sessionId}] ${refusal.rule} refused — ${refusal.message}`)
+  }
   try {
     conn.close(4403, refusal.rule)
   } catch {
@@ -704,6 +719,9 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
            */
           rememberDeleted(entry.sessionId, entry.doc, judgement.removed)
           accepted = judgement
+          // Принятый кадр — единственная мера того, что в комнате правда
+          // работают. Только число, раз в минуту: их десятки тысяч.
+          tally('frames')
         }
         encoding.writeVarUint(encoder, MESSAGE_SYNC)
         syncProtocol.readSyncMessage(decoder, encoder, entry.doc, conn)
@@ -797,6 +815,14 @@ export function handleCollabSocket(
   participantId: string | null = null,
 ): void {
   const entry = getEntry(sessionId)
+  /*
+   * Комната открылась — по первому сокету, а не по строке в базе.
+   *
+   * Семинар заводят заранее и иногда за неделю; пара начинается, когда в
+   * комнату кто-то вошёл. Та же строка повторится после перезапуска сервера, и
+   * это правильно: с точки зрения журнала комната тогда открывается заново.
+   */
+  const wasEmpty = entry.conns.size === 0
   ws.binaryType = 'arraybuffer'
 
   const state: ConnState = {
@@ -820,6 +846,7 @@ export function handleCollabSocket(
     }, PING_INTERVAL_MS),
   }
   entry.conns.set(ws, state)
+  if (wasEmpty) console.log(`[room ${sessionId}] opened`)
 
   ws.on('pong', () => {
     state.missedPongs = 0
@@ -848,6 +875,26 @@ export function handleCollabSocket(
 /** Open sockets, not distinct people — a second tab counts twice. */
 export function onlineCount(sessionId: string): number {
   return docs.get(sessionId)?.conns.size ?? 0
+}
+
+/**
+ * Сколько комнат сейчас живо и сколько в них людей — для минутной сводки.
+ *
+ * Живая комната — та, в которой есть хоть один сокет: документ переживает уход
+ * последнего (его ещё дописывают на диск), а пара нет, и считать такую комнату
+ * идущей значило бы врать в каждой строке до перезапуска. Люди считаются по
+ * участникам, а не по сокетам, — то же число, что комната видит у себя в
+ * панели людей.
+ */
+export function roomCensus(): { rooms: number; people: number } {
+  let rooms = 0
+  let people = 0
+  for (const [sessionId, entry] of docs) {
+    if (entry.conns.size === 0) continue
+    rooms += 1
+    people += onlineParticipantIds(sessionId).length
+  }
+  return { rooms, people }
 }
 
 /**

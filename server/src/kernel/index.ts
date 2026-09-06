@@ -49,6 +49,7 @@ import {
   runningRoomKernels,
 } from './pool.js'
 import { getSessionDoc, onlineCount } from '../collab/index.js'
+import { seldom } from '../log.js'
 import { projectBooks } from '../collab/books.js'
 import { flushSessionFiles } from '../collab/files.js'
 import { JupyterKernel, type ExecuteStatus, type KernelPhase } from './jupyter.js'
@@ -458,6 +459,18 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
      */
     resetAllCells(runtime.sessionId, runtime.currentCell)
     const known = churnReason()
+    /*
+     * В журнал — отдельной строкой, и словом «oom».
+     *
+     * Комнате об этом говорят её же словами (kernelNote ниже), но те слова
+     * живут в тетради и умирают вместе с ней. Тому, кто через день выясняет,
+     * почему у семинара пропали переменные, нужна строка с идентификатором
+     * комнаты и временем — а по `oom` её ещё и найдут одним grep. Слово это
+     * ставится только там, где причина неизвестна: пересборку окружения из
+     * панели ядро переживает так же, и объявить её нехваткой памяти значило бы
+     * отправить искать несуществующую прожорливую ячейку.
+     */
+    console.warn(`[kernel ${runtime.sessionId}] restarted itself — ${known ? 'churn' : 'oom'}`)
     kernelNote(
       runtime.sessionId,
       known
@@ -491,6 +504,11 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     // A kernel usually dies because a cell asked for more memory than the
     // container has. Saying so beats a room staring at a notebook that stopped.
     const known = churnReason()
+    // Смерть ядра — то, из-за чего пара останавливается; в журнале это обязано
+    // быть строкой, а не только заметкой в тетради, которая уедет вместе с ней.
+    console.warn(
+      `[kernel ${runtime.sessionId}] died${hadWork ? ' mid-run' : ''}${known ? ' — churn' : ''}`,
+    )
     kernelNote(
       runtime.sessionId,
       known
@@ -585,9 +603,18 @@ export function ensureKernel(sessionId: string): Promise<void> {
         )
       }
       setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
+      // Подъём ядра — настоящее событие: до полутора минут холодного старта, и
+      // именно между этой строкой и следующей комната смотрит в пустоту.
+      console.log(`[kernel ${sessionId}] up (${envName ?? 'shared'})`)
       await noteSharedKernel(runtime)
     } catch (err) {
       setStatus(runtime, 'dead')
+      // Не чаще раза в минуту на комнату: `ensureKernel` зовёт и вход каждого
+      // студента, и каждый Run, а обещание у них одно на всех — тридцать
+      // одинаковых строк в ту же миллисекунду мы уже видели.
+      if (seldom(`kernel-down:${sessionId}`)) {
+        console.warn(`[kernel ${sessionId}] did not start: ${errText(err)}`)
+      }
       /*
        * Забыть запомненный адрес контейнера.
        *
@@ -899,6 +926,32 @@ export async function shutdownKernels(): Promise<void> {
     runtime.writer = null
     runtime.kernel?.detach()
   }
+}
+
+/**
+ * Состояние ядер для минутной сводки: живые, из них занятые, и мёртвые.
+ *
+ * Комнаты, которым ядро ещё ни разу не поднимали, здесь не считаются вовсе:
+ * у них нет ядра, а не мёртвое — и записывать всю тетрадную комнату в потери
+ * значило бы каждую минуту пугать того, кто читает журнал.
+ */
+export function kernelCensus(): { live: number; busy: number; dead: number } {
+  let live = 0
+  let busy = 0
+  let dead = 0
+  for (const runtime of runtimes.values()) {
+    const phase = runtime.kernel?.phase
+    if (!phase) continue
+    if (phase === 'dead') {
+      dead += 1
+      continue
+    }
+    live += 1
+    // Занято — это когда в комнате правда идёт ячейка: фаза 'busy' приходит от
+    // Jupyter с задержкой, а `currentCell` знает об этом с самого execute.
+    if (phase === 'busy' || runtime.currentCell !== null) busy += 1
+  }
+  return { live, busy, dead }
 }
 
 /**

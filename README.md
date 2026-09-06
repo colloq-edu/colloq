@@ -125,7 +125,9 @@ make service-status                       # alive? and ready to teach?
 make service-logs                         # journalctl -u colloq -f
 make service-restart                      # after editing .env by hand
 make service-stop                         # the room kernels keep running
-make host HOST=hse.colloq.ru              # the address the room opens
+make host HOST=hse.colloq.ru              # the address the room opens (via the relay)
+sudo make host-direct HOST=hse.colloq.ru  # …or straight off this machine, if it has
+                                          # a public address and real 80/443
 ```
 
 **Why not `make up` here.** It broke twice on dedicated machines, and both times the
@@ -179,8 +181,24 @@ leaves the rooms with no Python at all rather than with one they share.
 
 ## Giving the room a link
 
-A seminar on `localhost` is a seminar for one person. `make host` opens a Cloudflare
-tunnel and hands you a URL the whole room can open:
+A seminar on `localhost` is a seminar for one person. There are four ways to give the room
+an address, and choosing between them is really one question: does this machine have a
+public address of its own?
+
+| Transport | Command | Good for | The price |
+| --- | --- | --- | --- |
+| Quick Cloudflare tunnel | `make host` | trying it out, a one-off demo | random URL, dies with the terminal window, and not reachable from Russia |
+| Named Cloudflare tunnel | `make tunnel-setup` once, then `make host HOST=seminar.example.ru` | a fixed address for a room outside Russia | same edge addresses, so still not reachable from Russia |
+| Your own relay | `make host HOST=hse.colloq.ru` | a laptop, a room behind NAT, a rented box — anything without a public address | one shared machine on the path, and it is a single point of failure for every name under it. Sizing matters, see below |
+| Straight off this machine | `sudo make host-direct HOST=hse.colloq.ru` | a dedicated machine with a public address and real ports 80 and 443 | it must actually have those ports open, plus root and a Cloudflare DNS token. `caddy` runs here as a service |
+
+The rule of thumb: **your own machine with a white address — direct; a laptop or a rented
+machine — a tunnel.** Two hundred students should not be routed through a relay when the
+machine holding the class can answer for itself; see *Straight off this machine* for the
+measurement that made this a rule rather than a preference.
+
+With nothing else said, `make host` opens a Cloudflare tunnel and hands you a URL the
+whole room can open:
 
 ```bash
 make host
@@ -261,6 +279,15 @@ point of failure for the addresses under it. Subdomains are handed out by `frps`
 the shared token, so one relay serves every instance without a DNS record per university:
 `*.colloq.ru` points at it once (`scripts/dns.sh`).
 
+**Size it for the room, and this is measured, not guessed.** During a live class, two
+hundred students went into reconnect loops every few minutes. The logs said why: the relay
+was a 951 MB VPS with no swap, and the kernel OOM-killer had fired 36 times that day,
+taking down `frps` (209 MB resident) and `caddy` (186 MB across two hundred sockets) in
+turns. Every kill drops every tunnel on that machine at once, so a single undersized relay
+takes out every seminar under the domain, not just the busy one. For a real audience the
+relay needs 2–4 GB — or the class should not be going through it at all, which is what the
+next section is for.
+
 Most of the time a student opens the link before anyone has dialled in — the instance is
 off, the laptop is shut, the tunnel is not up. The relay answers that with a page of its
 own instead of frp's default ("the page you requested was not found… faithfully yours,
@@ -279,6 +306,65 @@ again — nothing is restarted, both daemons read the file per request:
 make relay-page WHERE=root@203.0.113.11
 ```
 
+### Straight off this machine
+
+When the machine that holds the class has a public address of its own, the relay is a
+detour: the class leaves the machine, crosses a rented VPS somebody has to keep alive, and
+comes back. Two hundred sockets on a 951 MB relay is exactly how that detour fails, and it
+fails for every seminar under the domain at once. So a machine with a white address serves
+the room itself:
+
+```bash
+sudo make host-direct HOST=hse.colloq.ru
+```
+
+Three things happen, in this order, and the order is the point.
+
+1. **The ports are checked from outside, before anything is changed.** The script finds
+   the address the outside world sees, briefly binds 80 and 443 itself, and asks
+   check-host.net to connect to them from Germany and Finland. Both open — it goes on;
+   either one closed — it refuses, says which port and why, and points at the tunnel
+   instead. This is not a theoretical failure: on a rented vast.ai box only the forwarded
+   ssh port is reachable. The offers advertise `direct_port_count`, but real 80 and 443 are
+   not handed out at all, so the direct mode is impossible there and the script says so in
+   words instead of hanging on a certificate that will never be issued. If the checking
+   service itself is unreachable, that is said out loud rather than treated as a pass:
+   the run continues only when the address is on this machine's own interface, and
+   `COLLOQ_DIRECT_FORCE=1` is the way to overrule the verdict knowingly.
+2. **The name is pointed here** — an `A` record for that one name, through the Cloudflare
+   API, **never proxied**. The grey cloud is the whole point: an orange one would send
+   students to Cloudflare's edge addresses, which is the thing this project keeps working
+   around. The record is written by `scripts/dns.sh point <name> <address>` — the same
+   reconcile logic that keeps the zone in order, so "delete the stale, create the missing,
+   never leave proxying on" lives in one place. It also removes a leftover `CNAME` on that
+   name (one that `make tunnel-setup` may have created), because Cloudflare will not hold
+   a `CNAME` and an `A` on the same name.
+3. **`caddy` is installed here** — one binary, the same way `relay-setup.sh` does it — with
+   a config of exactly one site: `<name> { reverse_proxy 127.0.0.1:<PORT> }`. The
+   certificate is issued automatically over HTTP-01, which is what ports 80 and 443 were
+   checked for. Websockets need no extra configuration; `X-Forwarded-Proto` is set because
+   the staff cookie's `Secure` flag is decided by it.
+
+Then `PUBLIC_URL` is rewritten and the app restarted, exactly as the tunnel transports do
+(systemd service, container, or `make run` — whichever is holding the port).
+
+**The window is not what holds the address.** `caddy` is a systemd service; it survives the
+closed terminal, the dropped ssh and the reboot, and Ctrl+C does not take the seminar down.
+The script says so instead of pretending otherwise, and `PUBLIC_URL` stays pointed at the
+public name rather than being rolled back to `localhost` on exit. To take the address down:
+`systemctl stop caddy`. To see why a certificate has not arrived: `journalctl -u caddy -f`.
+
+Two more things worth knowing. It needs `CF_TOKEN` (and optionally `CF_ZONE`) in `.env` —
+a Cloudflare token with `Zone:Read` and `DNS:Edit`. And an `A` record on a specific name
+beats the `*.colloq.ru` wildcard, so while that record exists the name leads here and not
+to the relay; the script says this at the end, and `scripts/dns.sh` with no arguments puts
+the wildcard back in charge.
+
+Everything is idempotent: run it again after changing the name or the port and the config,
+the record and the service are simply brought to match. It refuses to touch an
+`/etc/caddy/Caddyfile` it did not write, so a machine already serving somebody else's site
+is left alone.
+
 ## Renting a machine
 
 A seminar with neural networks needs a GPU, and the university's A100 is either busy or
@@ -289,6 +375,7 @@ hands it the data from your latest backup:
 make vast-up       # find a VM, rent it, deploy, restore the data
 make vast-status   # what is rented, whether it and its address answer, what it has cost
 make vast-sync     # pull the data back here
+make vast-logs     # pull the logs back here, to find out what happened in class
 make vast-down     # destroy the machine, and everything on it with it
 ```
 
@@ -302,9 +389,76 @@ and `frpc` for the tunnel, then `make service-install` — Node, the build, the 
 image and the systemd service. The repository lives in `/opt/colloq` there, the `.env`
 travels with it minus the keys that pay for things, and the server runs on the host
 rather than in a container, which is what makes the panel able to build environments on
-the machine that has the GPU. Looking at it afterwards is
-`ssh … 'journalctl -u colloq -f'`; a code change is another `make vast-up`, which rsyncs
-the repository and re-runs the same idempotent install.
+the machine that has the GPU. Watching it live is `ssh … 'journalctl -u colloq -f'`; a code
+change is another `make vast-up`, which rsyncs the repository and re-runs the same
+idempotent install.
+
+### What happened in class
+
+Afterwards is a different question from live, and it needs more than one log: the server
+writes to the systemd journal, and every room's kernel writes to its own container. One
+command brings all of it here:
+
+```bash
+make vast-logs NAME=hse              # today, into logs/hse/<date>/
+make vast-logs NAME=hse SINCE=-2h    # the last two hours
+make vast-logs NAME=hse SINCE=yesterday
+```
+
+`SINCE` is said in `journalctl`'s own words and defaults to `today`. What lands is
+`colloq.log` — the service journal — next to one file per room kernel, named after its
+container, **including the stopped ones**: a container that was stopped on the break
+still holds the log that says why.
+
+**Secrets are cut out on the way, not afterwards.** The journal carries request lines
+with their query strings, and one-time file tokens ride in those; it also carries the
+setup-token link the server prints on every boot while nobody owns the instance, and that
+link *is* the key to the whole instance. So the filter sits on the pipe — nothing
+unredacted ever touches the disk here. It replaces the value of `token`/`key`/`sig` and
+their relatives in query strings, `Authorization` and `Cookie` headers, participant
+tokens (`body.signature`, recognisable by shape), provider keys (`sk-…`) and
+`SOMETHING_SECRET=…` lines with `<вырезано>`. It is `scrub` in `scripts/vast.sh`, and it
+is deliberately a shape-matcher rather than a list of known names: missing one is worth
+more than over-cutting. Names and cell contents are not a concern — the server never
+writes those to the log at all, only numbers and room ids.
+
+`logs/` is git-ignored, like `backups/`.
+
+**What is in the service journal.** A whole day of it used to be ninety lines, all of
+them failures — you could not tell from it how many rooms had been live, or when a kernel
+died. It now writes two different kinds of thing, both through the same `console` every
+other line here goes through; there is no second logger.
+
+Once a minute, one summary line, and only when something is going on:
+
+```
+[minute] rooms 2 · people 41 · kernels 2 live (1 busy) · frames 1204 · gate refused 3
+```
+
+Zero counters are left out, and an instance with no live room and nothing counted writes
+nothing at all — 1440 lines a night saying "nothing happened" hide the real thing exactly
+as well as an empty journal does. `frames` is accepted CRDT sync frames, which is the one
+honest measure of a room being *worked in*; the rest are refusals.
+
+And one line per thing that actually happened: `[room <id>] opened`, `[kernel <id>] up`,
+`[kernel <id>] died`, `[kernel <id>] oom`, `[gate <id>] edit refused — <why>`,
+`[join <id>] refused`, and `[ai] request failed …`. The ones that can arrive as an
+avalanche — a gate refusal, a room hitting the join limit, a kernel that will not
+start — are said once a minute per room and counted the rest of the time.
+
+`[join …]` is the exception that is deliberately per-request: one short line for every
+person who joins, saying whether they came back as themselves or got a new row, and if
+new, which check failed (`no id`, `no token`, `bad token`, `other room`, `other person`,
+`row gone`), plus the role and where it came from (`staff`, `host-token`, `link`). Five
+hundred students is five hundred lines, which a journal carries fine — and without them a
+room accumulating five hundred rows of the same person cannot be explained at all.
+
+Nothing personal goes in: no participant names, no avatars, no cell contents, no token
+material. Numbers, room ids and participant ids only.
+
+An aborted request — a student who closed the tab mid-load — is not logged at all, only
+counted as `aborted N` in the summary. On a lecture of five hundred those were hundreds
+of four-line stack traces about the server having done nothing wrong.
 
 One command covers a whole class — rent a machine with a named card, deploy, restore the
 newest backup this environment has here, and put the room on its address:
@@ -326,7 +480,10 @@ instead of telling you to. A name without a dot is a subdomain of `RELAY_DOMAIN`
 machine is billed from its first second, and "that name does not resolve" costs the same
 to find out on either side of that. Cloudflare is not an option from the rented box —
 `cloudflared` is not installed there, and its addresses do not open from Russia anyway —
-so the name has to sit under `RELAY_DOMAIN`.
+so the name has to sit under `RELAY_DOMAIN`. Neither is the direct mode: vast gives a
+rented box only its forwarded ssh port, and real 80 and 443 are not handed out at all
+(the advertised `direct_port_count` is not them), so `make host-direct` there would refuse
+on its own port check. A rented machine reaches the room through the relay, full stop.
 
 On the machine the address is the same `make host`, which holds its terminal for as long
 as the tunnel lives, so `vast-up` starts it in a `tmux` session called `colloq-host`: the
@@ -557,7 +714,8 @@ Everything lives in `.env` — see `.env.example` for the full list.
 | `TZ` | One time zone for the whole instance — the log, the kernel and the dates on published pages (default `Europe/Moscow`) |
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | One file, and everything one seminar holds (default 50 and 1024) |
 | `KERNEL_ENV` | The environment new seminars are created with, and the one baked into the shared kernel. `make env-use` writes it |
-| `RELAY_DOMAIN` / `RELAY_ADDR` / `RELAY_PORT` / `RELAY_TOKEN` | Your own relay instead of Cloudflare — see *Reaching a room from Russia*. Empty means Cloudflare |
+| `RELAY_DOMAIN` / `RELAY_ADDR` / `RELAY_PORT` / `RELAY_TOKEN` | Your own relay instead of Cloudflare — see *Reaching a room from Russia*. Empty means Cloudflare. `make host` reads them to pick the transport by name |
+| `CF_TOKEN` / `CF_ZONE` | Cloudflare token with `Zone:Read` and `DNS:Edit`, and optionally the zone id. `scripts/dns.sh` writes records with it: the whole zone with no arguments, one name for `make host-direct`. Records are always created unproxied — see *Straight off this machine*. Empty means neither works; the tunnels do not need it |
 | `VAST_TOKEN` | Key to the vast.ai account for `make vast-up` and friends — see *Renting a machine*. Empty means nothing is rented; the rest of the `VAST_*` settings are defaults documented in `.env.example` |
 
 The AI layer talks plain OpenAI-compatible HTTP, so pointing `OPENAI_BASE_URL` at Ollama, vLLM,
