@@ -18,7 +18,9 @@ import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   MAX_INHERITANCE,
+  abilities,
   buildChain,
+  buildCommand,
   declaresGpu,
   declaresParent,
   listChanged,
@@ -214,6 +216,123 @@ test('сломанная цепочка не отнимает срез у тог
   // Об этом скажет сборка. Промолчать здесь — значит поднять комнату без
   // устройства и узнать об этом посреди пары.
   assert.equal(needsGpu('gpu', reader({ gpu: '# colloq: gpu\n# colloq: from нет\n' })), true)
+})
+
+/* --------------------------------------------------- чем это собирается */
+
+/*
+ * Настоящего docker в сюите нет (см. `_env.mts`), поэтому проверяется то, что
+ * от него не зависит: команда, которую мы для него собираем, — как в gpu.test.
+ *
+ * Путей два, и это не украшение. На машине с репозиторием собирает compose: он
+ * подхватывает dev-override, без которого пересобранное общее ядро возвращается
+ * без проброшенного 8888. В контейнере app compose нет вовсе — есть каталог
+ * kernel и сокет, и этого достаточно.
+ */
+
+/** Путь к каталогу kernel в этих проверках: сам он существовать не обязан. */
+const KERNEL = '/srv/colloq/kernel'
+
+test('прямая сборка обходится каталогом kernel — ни compose, ни репозитория', () => {
+  const { args, env } = buildCommand({ via: 'direct' }, 'cv', null, KERNEL)
+  assert.deepEqual(args, [
+    'build',
+    '-f',
+    '/srv/colloq/kernel/Dockerfile',
+    '--build-arg',
+    'KERNEL_ENV=cv',
+    '-t',
+    'colloq-kernel:cv',
+    '/srv/colloq/kernel',
+  ])
+  // Контекст читает клиент и отдаёт демону, поэтому демон на хосте — не помеха.
+  // А `docker compose` отсюда падал бы «no configuration file provided», и
+  // ровно из-за этого панель гасила Build под `make up`.
+  assert.ok(!args.includes('compose'))
+  assert.equal(env.KERNEL_ENV, undefined)
+})
+
+test('без родителя аргумент PARENT не передаётся вовсе', () => {
+  // Умолчание — в самом Dockerfile: назови базовый образ ещё и здесь, и
+  // однажды его поднимут там, а тут забудут.
+  const { args } = buildCommand({ via: 'direct' }, 'base', null, KERNEL)
+  assert.ok(!args.some((arg) => arg.startsWith('PARENT=')))
+})
+
+test('через compose переменные, а не флаги: аргументы подставляет он сам', () => {
+  const files = ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
+  const { args, env } = buildCommand({ via: 'compose', files }, 'gpu', 'colloq-kernel:base-gpu')
+  assert.deepEqual(args, ['compose', ...files, 'build', 'kernel'])
+  assert.equal(env.KERNEL_ENV, 'gpu')
+  assert.equal(env.KERNEL_PARENT, 'colloq-kernel:base-gpu')
+})
+
+test('в прямом пути каждый слой встаёт поверх образа предыдущего', () => {
+  const read = reader({
+    'base-gpu': '# colloq: gpu\ntorch>=2.4\n',
+    gpu: '# colloq: from base-gpu\ntransformers>=4.44\n',
+  })
+  const chain = buildChain('gpu', read)
+  const commands = chain.map((step, i) => {
+    const before = chain[i - 1]
+    return buildCommand(
+      { via: 'direct' },
+      step,
+      before === undefined ? null : `colloq-kernel:${before}`,
+      KERNEL,
+    ).args.join(' ')
+  })
+  assert.ok(commands[0]?.includes('--build-arg KERNEL_ENV=base-gpu'))
+  assert.ok(commands[0]?.includes('-t colloq-kernel:base-gpu'))
+  assert.ok(!commands[0]?.includes('PARENT='))
+  // Ради этого наследование и заведено: torch остаётся в родителе, и правка
+  // листа стоит секунды, а не девять минут.
+  assert.ok(commands[1]?.includes('--build-arg PARENT=colloq-kernel:base-gpu'))
+  assert.ok(commands[1]?.includes('-t colloq-kernel:gpu'))
+})
+
+/* ----------------------------------------- что здесь вообще можно сделать */
+
+/*
+ * Собрать и назначить умолчанием — два разных вопроса, и одна причина на двоих
+ * гасила обе кнопки: под `make up` окружение нельзя было собрать вовсе, только
+ * зайти по ssh.
+ */
+
+test('репозиторий рядом — можно и собрать, и назначить умолчанием', () => {
+  const can = abilities({ docker: true, context: true, repository: true })
+  assert.deepEqual(
+    [can.canBuild, can.cannotBuildReason, can.canSetDefault, can.cannotSetDefaultReason],
+    [true, null, true, null],
+  )
+})
+
+test('в контейнере только kernel: собрать можно, умолчание — на хосте', () => {
+  // Ровно `make up`: примонтированы kernel и сокет, а docker-compose.yml и .env
+  // остались снаружи. Писать .env внутрь контейнера — врать: правка доживёт до
+  // первой пересборки, пока compose читает файл на хосте.
+  const can = abilities({ docker: true, context: true, repository: false })
+  assert.equal(can.canBuild, true)
+  assert.equal(can.cannotBuildReason, null)
+  assert.equal(can.canSetDefault, false)
+  // Отказ называет выполнимое действие, а не «всё сломано».
+  assert.match(can.cannotSetDefaultReason ?? '', /make env-use/)
+})
+
+test('нет и каталога kernel — отказ в сборке называет монт', () => {
+  const can = abilities({ docker: true, context: false, repository: false })
+  assert.equal(can.canBuild, false)
+  assert.match(can.cannotBuildReason ?? '', /kernel/)
+  // И умолчание не обещает сборку, которой здесь тоже нет.
+  assert.ok(!/works from here/.test(can.cannotSetDefaultReason ?? ''))
+})
+
+test('docker не виден — нельзя ничего, и причина у обеих кнопок одна', () => {
+  const can = abilities({ docker: false, context: true, repository: true })
+  assert.equal(can.canBuild, false)
+  assert.equal(can.canSetDefault, false)
+  assert.equal(can.cannotBuildReason, can.cannotSetDefaultReason)
+  assert.match(can.cannotBuildReason ?? '', /docker\.sock/)
 })
 
 /* ------------------------------------------------------------ the name */

@@ -15,7 +15,7 @@ import {
   activeName,
   buildLog,
   cancelBuild,
-  dockerAvailable,
+  environmentAbilities,
   exists,
   isBuilding,
   listEnvironments,
@@ -66,14 +66,17 @@ export function adminEnvironmentRoutes(): Router {
   const router = Router()
 
   router.get('/api/admin/environments', requireStaff, async (_req: Request, res: Response) => {
-    const docker = await dockerAvailable()
     const body: EnvironmentsState = {
       // `gpu` у каждой строки — оттуда же, откуда packages: директива читается
       // тем же чтением файла, что и список пакетов, и тем же разбором, по
       // которому подъём ядра потом решает, просить ли срез.
       environments: await listEnvironments(),
-      canBuild: docker.ok,
-      cannotBuildReason: docker.reason,
+      /*
+       * Собрать и назначить умолчанием — два разных «можно ли», и панель гасит
+       * ровно ту кнопку, которой нельзя: в контейнере сборка работает (каталог
+       * kernel примонтирован), а запись KERNEL_ENV — это .env хоста.
+       */
+      ...(await environmentAbilities()),
       /*
        * Делят ли комнаты одно ядро — правда, которую знает только сервер.
        *
@@ -216,8 +219,10 @@ export function adminEnvironmentRoutes(): Router {
     if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
       return fail(res, 404, 'not_found', 'no such environment')
     }
-    const docker = await dockerAvailable()
-    if (!docker.ok) return fail(res, 409, 'no_docker', docker.reason ?? 'docker is unavailable')
+    const can = await environmentAbilities()
+    if (!can.canBuild) {
+      return fail(res, 409, 'no_docker', can.cannotBuildReason ?? 'docker is unavailable')
+    }
     await startBuild(name)
     res.status(202).json({ name })
   })
@@ -233,8 +238,12 @@ export function adminEnvironmentRoutes(): Router {
       return fail(res, 404, 'not_found', 'no such environment')
     }
     if (isBuilding(name)) return fail(res, 409, 'building', 'That environment is still building.')
-    const docker = await dockerAvailable()
-    if (!docker.ok) return fail(res, 409, 'no_docker', docker.reason ?? 'docker is unavailable')
+    // Не «виден ли docker»: умолчание — это строка в .env рядом с
+    // docker-compose.yml, и в контейнере писать её некуда.
+    const can = await environmentAbilities()
+    if (!can.canSetDefault) {
+      return fail(res, 409, 'no_docker', can.cannotSetDefaultReason ?? 'docker is unavailable')
+    }
     /*
      * Ядро compose трогаем только когда комнаты в нём и живут.
      *

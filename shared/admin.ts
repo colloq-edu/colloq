@@ -343,7 +343,10 @@ export type AdminErrorReason =
   | 'protected'
   /** Создать под именем, которое уже занято: правка — это другой запрос. */
   | 'exists'
-  /** This install cannot reach Docker, so it cannot build or switch. */
+  /**
+   * This install cannot do that here: no Docker, no build context, or — for the
+   * default — no .env, which stays on the host. The message says which.
+   */
   | 'no_docker'
   | 'building'
   | 'failed'
@@ -420,19 +423,29 @@ export interface AdminEnvironment {
   gpu: boolean
 }
 
-export interface EnvironmentsState {
-  environments: AdminEnvironment[]
-  /**
-   * Whether this install can build and switch environments at all.
-   *
-   * The server does it by talking to Docker. An app running on the host has a
-   * socket; one in a container only does if the operator mounted it. Without
-   * it the panel still lists and edits environments, and says plainly that
-   * switching is a `make env-use` away.
-   */
+/**
+ * Что эта установка может сделать с окружениями — двумя вопросами, а не одним.
+ *
+ * Одна причина на всё гасила обе кнопки разом: под `make up` сервер сидит в
+ * контейнере, репозитория рядом с ним нет, и панель отказывала и в сборке, и в
+ * смене умолчания — то есть собрать окружение на арендованной машине можно было
+ * только по ssh. Но сборке нужен клиент docker и каталог kernel (контекст
+ * читает клиент), а умолчанию — .env, который остаётся на хосте. Разные
+ * условия, разные кнопки, разные объяснения.
+ */
+export interface EnvironmentAbilities {
+  /** Собрать образ окружения отсюда. */
   canBuild: boolean
   /** Why not, when `canBuild` is false — shown instead of dead buttons. */
   cannotBuildReason: string | null
+  /** Записать `KERNEL_ENV` — то есть решить, на чём поедут новые семинары. */
+  canSetDefault: boolean
+  /** Почему нет: обычно «это делается на хосте», а не «всё сломано». */
+  cannotSetDefaultReason: string | null
+}
+
+export interface EnvironmentsState extends EnvironmentAbilities {
+  environments: AdminEnvironment[]
   /**
    * Whether every room here shares one kernel instead of getting its own.
    *

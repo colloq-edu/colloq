@@ -26,7 +26,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AdminEnvironment, EnvironmentState } from '@shared/admin'
+import type { AdminEnvironment, EnvironmentAbilities, EnvironmentState } from '@shared/admin'
 import { ENVIRONMENT_NAME } from '@shared/admin'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -49,8 +49,17 @@ function findRepoRoot(): string {
 }
 
 const ROOT = findRepoRoot()
-export const ENV_DIR = path.join(ROOT, 'kernel', 'environments')
+/**
+ * Контекст сборки: Dockerfile, requirements.txt и списки окружений.
+ *
+ * Каталог, а не файл: `docker build` читает его КЛИЕНТОМ и отдаёт демону, так
+ * что для сборки достаточно этой папки — демон может быть и на хосте.
+ */
+const KERNEL_DIR = path.join(ROOT, 'kernel')
+export const ENV_DIR = path.join(KERNEL_DIR, 'environments')
 const ENV_FILE = path.join(ROOT, '.env')
+/** Репозиторий целиком: compose и .env рядом с ним — файлы хоста, не образа. */
+const COMPOSE_FILE = path.join(ROOT, 'docker-compose.yml')
 
 /* ------------------------------------------------------------- the files */
 
@@ -361,46 +370,65 @@ function run(
 }
 
 /**
- * Whether this install can build at all.
+ * Что этот сервер умеет делать с окружениями — по отдельности.
  *
- * The server builds by shelling out to Docker. On the host that just works; in
- * a container it needs `/var/run/docker.sock` — `docker-compose.yml` mounts it,
- * but reading it also takes the group that owns it (`DOCKER_GID`, which
- * `make up` works out). Rather than offer buttons that fail, the panel asks
- * first and says what is missing.
+ * Раньше это был один вопрос на двоих («лежит ли рядом docker-compose.yml»), и
+ * под `make up` он гасил обе кнопки разом: на арендованной машине окружение
+ * нельзя было собрать вовсе, только по ssh. Но нужно им РАЗНОЕ.
+ *
+ * Сборке хватает клиента docker и каталога kernel: контекст читает клиент и
+ * отдаёт демону, поэтому то, что демон на хосте, роли не играет, а compose для
+ * `docker build` не нужен вовсе.
+ *
+ * Умолчание — это строка `KERNEL_ENV` в .env рядом с docker-compose.yml, то
+ * есть файл ХОСТА. Записать его внутрь контейнера значит соврать человеку:
+ * правка доживёт до первой пересборки, пока compose всё это время читает файл
+ * на хосте. Поэтому «Make default» остаётся командой на хосте, и панель
+ * говорит об этом ровно про ту кнопку, которой это касается.
  */
-export async function dockerAvailable(): Promise<{ ok: boolean; reason: string | null }> {
+export function abilities(found: {
+  docker: boolean
+  /** kernel/Dockerfile: контекст сборки виден отсюда. */
+  context: boolean
+  /** docker-compose.yml: репозиторий целиком, а с ним и .env. */
+  repository: boolean
+}): EnvironmentAbilities {
+  if (!found.docker) {
+    const reason =
+      'Docker is not reachable from the server. Running in a container? It needs /var/run/docker.sock ' +
+      'and DOCKER_GID, the group that owns it — `make up` sets both. ' +
+      'Environments still list and edit here; switching is `make env-use NAME=<name>`.'
+    return {
+      canBuild: false,
+      cannotBuildReason: reason,
+      canSetDefault: false,
+      cannotSetDefaultReason: reason,
+    }
+  }
+  return {
+    canBuild: found.context,
+    cannotBuildReason: found.context
+      ? null
+      : 'The kernel directory is not in this container, and a build needs it as its context: ' +
+        'kernel/Dockerfile and the package lists beside it. docker-compose.yml mounts ./kernel — ' +
+        'update it and restart, or build on the host with `make env-build NAME=<name>`.',
+    canSetDefault: found.repository,
+    cannotSetDefaultReason: found.repository
+      ? null
+      : 'Making an environment the default writes KERNEL_ENV to the .env beside docker-compose.yml, ' +
+        'and that file is the host’s: run `make env-use NAME=<name>` there.' +
+        (found.context ? ' Building an image needs neither, and works from here.' : ''),
+  }
+}
+
+/** То же самое, но спросив docker и посмотрев, что вообще лежит рядом. */
+export async function environmentAbilities(): Promise<EnvironmentAbilities> {
   const version = await run('docker', ['version', '--format', '{{.Server.Version}}'], 8000)
-  if (version.code !== 0) {
-    return {
-      ok: false,
-      reason:
-        'Docker is not reachable from the server. Running in a container? It needs /var/run/docker.sock ' +
-        'and DOCKER_GID, the group that owns it — `make up` sets both. ' +
-        'Environments still list and edit here; switching is `make env-use NAME=<name>`.',
-    }
-  }
-  /*
-   * Собирать и переключать — это `docker compose` над ЭТИМ репозиторием, а не
-   * просто «виден ли docker».
-   *
-   * В образе app лежат dist, статика и списки пакетов — ни docker-compose.yml,
-   * ни kernel/Dockerfile, ни .env хоста. Клиент docker там теперь есть, он
-   * нужен для контейнера комнаты, и без этой проверки панель предлагала бы
-   * Build, падающий «no configuration file provided», и «Make default»,
-   * который записал бы умолчание в .env ВНУТРИ контейнера — то есть до первой
-   * же пересборки, пока compose всё это время читает файл на хосте.
-   */
-  if (!fs.existsSync(path.join(ROOT, 'docker-compose.yml'))) {
-    return {
-      ok: false,
-      reason:
-        'The server runs in a container and the repository is not in it: building an environment, ' +
-        'and making one the default, need docker-compose.yml and the .env next to it. ' +
-        'Environments still list and edit here; both are `make env-build` / `make env-use NAME=<name>` on the host.',
-    }
-  }
-  return { ok: true, reason: null }
+  return abilities({
+    docker: version.code === 0,
+    context: fs.existsSync(path.join(KERNEL_DIR, 'Dockerfile')),
+    repository: fs.existsSync(COMPOSE_FILE),
+  })
 }
 
 interface ImageFacts {
@@ -479,32 +507,80 @@ function push(build: Build, chunk: string): void {
 }
 
 /**
- * Одно звено цепочки: `docker compose build kernel` над одним окружением.
+ * Чем собирать: прямым `docker build` или через compose поверх репозитория.
  *
- * Родитель приезжает аргументом PARENT — тем же Dockerfile собирается и база
- * (поверх python-slim), и слой поверх готового colloq-образа. Возвращает,
- * продолжать ли: упавшее звено делает следующие бессмысленными.
+ * Compose нужен ровно там, где он есть, — на машине с репозиторием: он
+ * подхватывает dev-override, без которого пересобранное общее ядро теряет
+ * проброшенный 8888. В контейнере app его нет и не будет (это файл хоста), а
+ * каталог kernel есть, и его достаточно.
+ */
+export type BuildPlan = { via: 'direct' } | { via: 'compose'; files: string[] }
+
+/**
+ * Команда одного звена цепочки. Оба пути дают один и тот же образ
+ * `colloq-kernel:<имя>` из одного и того же Dockerfile — расходятся они только
+ * в том, кто подставляет аргументы: compose из своего файла или мы сами.
+ *
+ * Родитель — аргумент PARENT: тем же Dockerfile собирается и база (поверх
+ * python-slim), и тонкий слой поверх готового colloq-образа. Когда родителя
+ * нет, аргумент не передаётся вовсе — действует умолчание самого Dockerfile, и
+ * имя базового образа остаётся в одном месте, а не в двух расходящихся.
+ */
+export function buildCommand(
+  plan: BuildPlan,
+  step: string,
+  parentImage: string | null,
+  kernel: string = KERNEL_DIR,
+): { args: string[]; env: Record<string, string> } {
+  // Журнал читают построчно в панели, а «красивый» прогресс BuildKit
+  // перерисовывает себя каретками и в текстовом окне превращается в кашу.
+  const env: Record<string, string> = { DOCKER_BUILDKIT: '1', BUILDKIT_PROGRESS: 'plain' }
+  if (plan.via === 'compose') {
+    env.KERNEL_ENV = step
+    if (parentImage) env.KERNEL_PARENT = parentImage
+    return { args: ['compose', ...plan.files, 'build', 'kernel'], env }
+  }
+  return {
+    args: [
+      'build',
+      '-f',
+      path.join(kernel, 'Dockerfile'),
+      '--build-arg',
+      `KERNEL_ENV=${step}`,
+      ...(parentImage ? ['--build-arg', `PARENT=${parentImage}`] : []),
+      '-t',
+      `colloq-kernel:${step}`,
+      kernel,
+    ],
+    env,
+  }
+}
+
+/**
+ * Одно звено цепочки: одна сборка одного окружения.
+ *
+ * Возвращает, продолжать ли: упавшее звено делает следующие бессмысленными.
  */
 function runStage(
   build: Build,
-  files: string[],
+  plan: BuildPlan,
   step: string,
   parentImage: string | null,
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    const vars: Record<string, string> = {
-      KERNEL_ENV: step,
-      DOCKER_BUILDKIT: '1',
-      BUILDKIT_PROGRESS: 'plain',
-    }
-    if (parentImage) vars.KERNEL_PARENT = parentImage
-    const child = spawn('docker', ['compose', ...files, 'build', 'kernel'], {
+    const { args, env: vars } = buildCommand(plan, step, parentImage)
+    const child = spawn('docker', args, {
       cwd: ROOT,
       env: { ...process.env, ...vars },
     })
     build.child = child
-    const shown = parentImage ? `KERNEL_PARENT=${parentImage} ` : ''
-    push(build, `$ ${shown}KERNEL_ENV=${step} docker compose build kernel`)
+    // Строка журнала — то, что человек может повторить руками: переменные,
+    // которые сборка правда читает, и сама команда целиком.
+    const shown = Object.entries(vars)
+      .filter(([name]) => name.startsWith('KERNEL_'))
+      .map(([name, value]) => `${name}=${value} `)
+      .join('')
+    push(build, `$ ${shown}docker ${args.join(' ')}`)
 
     child.stdout.on('data', (d: Buffer) => push(build, d.toString()))
     child.stderr.on('data', (d: Buffer) => push(build, d.toString()))
@@ -598,9 +674,25 @@ export async function startBuild(name: string): Promise<void> {
     return
   }
 
-  const files = (await usesDevOverride())
-    ? ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
-    : []
+  /*
+   * Через compose — только там, где он лежит.
+   *
+   * В контейнере app примонтирован каталог kernel, а docker-compose.yml и .env
+   * остались на хосте: `docker compose build` там падал бы «no configuration
+   * file provided», и панель поэтому гасила Build вовсе. Прямая сборка этого не
+   * требует — контекст читает клиент, — а путь через compose остаётся на машине
+   * с репозиторием ради dev-override: без него пересобранное общее ядро
+   * возвращается без проброшенного 8888, и комната теряет Python при всех
+   * здоровых контейнерах.
+   */
+  const plan: BuildPlan = fs.existsSync(COMPOSE_FILE)
+    ? {
+        via: 'compose',
+        files: (await usesDevOverride())
+          ? ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
+          : [],
+      }
+    : { via: 'direct' }
   // Cancel мог прийти, пока мы спрашивали docker: тогда начинать нечего.
   if (build.done) return
 
@@ -627,7 +719,7 @@ export async function startBuild(name: string): Promise<void> {
   for (const step of stages) {
     if (build.done) break
     const before = chain[chain.indexOf(step) - 1]
-    if (!(await runStage(build, files, step, before ? `colloq-kernel:${before}` : null))) break
+    if (!(await runStage(build, plan, step, before ? `colloq-kernel:${before}` : null))) break
   }
 
   build.done = true

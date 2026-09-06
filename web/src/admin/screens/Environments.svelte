@@ -35,7 +35,23 @@
   let rowError = $state<{ name: string; message: string } | null>(null)
 
   const isOwner = $derived(adminAuth.isOwner)
+  /*
+   * Собрать и назначить умолчанием — разные «можно ли», и гаснет ровно та
+   * кнопка, которой нельзя.
+   *
+   * Одна причина на всё выключала обе разом: под `make up` сервер сидит в
+   * контейнере, и панель отказывала в сборке тоже — то есть завести окружение
+   * на арендованной машине можно было только по ssh. Сборке хватает docker и
+   * каталога kernel; умолчание — это .env хоста, и там оно и остаётся.
+   */
   const canBuild = $derived(envs?.canBuild ?? false)
+  const canSetDefault = $derived(envs?.canSetDefault ?? false)
+  /** Причины отказа без повторов: когда docker не виден, она у обеих одна. */
+  const blocked = $derived(
+    [envs?.cannotBuildReason ?? null, envs?.cannotSetDefaultReason ?? null].filter(
+      (reason, i, all): reason is string => reason !== null && all.indexOf(reason) === i,
+    ),
+  )
   /*
    * Комнаты делят одно ядро, и своего контейнера у них нет.
    *
@@ -415,15 +431,17 @@
     <p class="border-l-2 border-danger px-3 py-2 text-ui text-danger">{error}</p>
   {:else if envs}
     <div class="pt-5">
-    {#if !canBuild}
+    {#each blocked as reason (reason)}
       <!-- Not a warning about something broken: an install that never mounted
-           the Docker socket is a normal way to run this, and the panel is still
-           the right place to read and edit the lists. -->
+           the Docker socket is a normal way to run this, and so is a server in
+           a container whose .env lives on the host. The panel is still the
+           right place to read and edit the lists — and, in that second case,
+           to build them. -->
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
-        <p class="text-2xs leading-relaxed text-muted">{envs.cannotBuildReason}</p>
+        <p class="text-2xs leading-relaxed text-muted">{reason}</p>
       </div>
-    {/if}
+    {/each}
 
     {#if sharedKernel}
       <!-- А это как раз про сломанное обещание, а не про способ установки:
@@ -589,8 +607,9 @@
                 <button
                   class="inline-flex h-8 shrink-0 items-center bg-primary px-3 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
                   onclick={() => (switching = env.name)}
-                  disabled={!isOwner || !canBuild || busy === env.name}
-                  title="New seminars will be created on this environment"
+                  disabled={!isOwner || !canSetDefault || busy === env.name}
+                  title={envs.cannotSetDefaultReason ??
+                    'New seminars will be created on this environment'}
                 >
                   Make default
                 </button>

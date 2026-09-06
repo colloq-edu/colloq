@@ -56,6 +56,21 @@ COPY kernel/environments ./kernel/environments
 # откатывается на общее ядро, как раньше.
 COPY --from=docker:28-cli /usr/local/bin/docker /usr/local/bin/docker
 
+# И buildx рядом с ним: без плагина `docker build` не работает вовсе.
+#
+# Окружение из панели собирается прямым `docker build` над примонтированным
+# каталогом kernel (docker-compose.yml остаётся на хосте, и compose отсюда
+# падал бы «no configuration file provided»). Но клиент, начиная с 23-го,
+# строит через BuildKit, а BuildKit — это отдельный плагин: без него ответ
+# «BuildKit is enabled but the buildx component is missing», и кнопка Build
+# снова мертва. Классический сборщик подхватился бы сам (DOCKER_BUILDKIT=0), но
+# он объявлен устаревшим и однажды исчезнет из демона — молча унеся с собой ту
+# же кнопку. Шестьдесят мегабайт против гигабайтов образов ядра, которые она
+# собирает.
+COPY --from=docker:28-cli \
+  /usr/local/libexec/docker/cli-plugins/docker-buildx \
+  /usr/local/libexec/docker/cli-plugins/docker-buildx
+
 RUN mkdir -p /data /workspace && chown -R node:node /data /workspace /app
 USER node
 
