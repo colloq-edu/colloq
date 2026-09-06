@@ -24,6 +24,7 @@ import {
   cellSource,
   cellType,
   getMeta,
+  isCellOpen,
   readOutput,
   type CellOutput,
   type CellState,
@@ -440,6 +441,14 @@ export interface CellMeta {
   startedAt: number | null
   /** Сколько длилось последнее ЗАВЕРШЁННОЕ выполнение. У прерванного — null. */
   ranMs: number | null
+  /**
+   * Ячейку открыли комнате — в тетради, которая иначе преподавательская.
+   *
+   * Поле ячейки, а не свойство комнаты: в лекции открытых ячеек бывает
+   * сколько угодно, и каждая — своё решение. Пишет его сервер (`cell:open`), а
+   * сюда оно приезжает обычным кадром CRDT, как состояние и номер выполнения.
+   */
+  open: boolean
 }
 
 const EMPTY_META: CellMeta = {
@@ -451,6 +460,7 @@ const EMPTY_META: CellMeta = {
   stdin: null,
   startedAt: null,
   ranMs: null,
+  open: false,
 }
 /*
  * Ключи, изменение которых будит читателей ячейки.
@@ -463,6 +473,9 @@ const EMPTY_META: CellMeta = {
  * добавлять нельзя. Оно будило бы каждый кадр каждого читателя ячейки — а
  * весь этот модуль существует ровно затем, чтобы сорок ячеек не просыпались
  * по восемьдесят раз на один Run All.
+ *
+ * `open` этой мерке отвечает: его пишет преподаватель нажатием, то есть
+ * считаные разы за пару, и будит оно ровно ту ячейку, которую открыли.
  */
 const META_KEYS = [
   'type',
@@ -473,6 +486,7 @@ const META_KEYS = [
   'stdin',
   'startedAt',
   'ranMs',
+  'open',
 ] as const
 
 function readMeta(cell: YCell): CellMeta {
@@ -485,6 +499,7 @@ function readMeta(cell: YCell): CellMeta {
     stdin: (cell.get('stdin') as CellMeta['stdin']) ?? null,
     startedAt: (cell.get('startedAt') as number | null) ?? null,
     ranMs: (cell.get('ranMs') as number | null) ?? null,
+    open: isCellOpen(cell),
   }
 }
 
@@ -503,7 +518,8 @@ function sameMeta(a: CellMeta, b: CellMeta): boolean {
     // Поле, забытое здесь, означает, что руна отдаст равный объект и часы на
     // ячейке не пойдут вовсе: сравнение поимённое, и молчит оно тихо.
     a.startedAt === b.startedAt &&
-    a.ranMs === b.ranMs
+    a.ranMs === b.ranMs &&
+    a.open === b.open
   )
 }
 

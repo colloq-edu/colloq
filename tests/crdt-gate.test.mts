@@ -86,7 +86,11 @@ function ok(judgement: ReturnType<typeof classify>): {
   created: string[]
   removed: string[]
 } {
-  assert.equal(judgement.ok, true, judgement.ok ? '' : `отказ: ${judgement.why} (${judgement.path})`)
+  assert.equal(
+    judgement.ok,
+    true,
+    judgement.ok ? '' : `отказ: ${judgement.why} (${judgement.path})`,
+  )
   if (!judgement.ok) throw new Error('unreachable')
   return judgement
 }
@@ -113,7 +117,10 @@ test('новая ячейка — это один приговор о соста
   const { server, client, frame } = pair()
   const bytes = frame(() => client.getArray(CELLS_KEY).push([cell('c3', 'x = 1')]))
   const { verdicts } = ok(classify(server, bytes))
-  assert.deepEqual(new Set(verdicts.map((v) => `${v.rule}/${v.verb ?? ''}`)), new Set(['structure/add']))
+  assert.deepEqual(
+    new Set(verdicts.map((v) => `${v.rule}/${v.verb ?? ''}`)),
+    new Set(['structure/add']),
+  )
 })
 
 test('удаление ячейки, которая считалась, — тоже один приговор', () => {
@@ -155,7 +162,10 @@ test('смена вида ячейки — правка, и сервер узн�
   const { server, client, frame } = pair()
   const bytes = frame(() => cellAt(client, 0).set('type', 'markdown'))
   const { verdicts, retyped } = ok(classify(server, bytes))
-  assert.deepEqual(verdicts.map((v) => v.rule), ['edit'])
+  assert.deepEqual(
+    verdicts.map((v) => v.rule),
+    ['edit'],
+  )
   assert.deepEqual(retyped, ['c1'], 'сервер не узнает, чьё состояние выполнения сбрасывать')
 })
 
@@ -163,7 +173,10 @@ test('заголовок семинара — отдельное правило'
   const { server, client, frame } = pair()
   const bytes = frame(() => client.getMap(META_KEY).set('title', 'Другое имя'))
   const { verdicts } = ok(classify(server, bytes))
-  assert.deepEqual(verdicts.map((v) => v.rule), ['title'])
+  assert.deepEqual(
+    verdicts.map((v) => v.rule),
+    ['title'],
+  )
 })
 
 /* ------------------------------------------------------------ то, ради чего */
@@ -186,6 +199,39 @@ test('поддельное приглашение ввести пароль не
   assert.match(refused(classify(server, bytes)), /сервер/)
 })
 
+test('открыть себе ячейку кадром нельзя', () => {
+  /*
+   * `open` — не показания, а право: в лекции открытая ячейка принимает набор
+   * при закрытой тетради. Ячейка, открывшая себя сама, — это участник,
+   * разрешивший себе печатать, поэтому поле серверное, а фраза отказа своя:
+   * «это поле пишет сервер» тому, кто открывает ячейку себе, не объясняет
+   * ничего.
+   */
+  const { server, client, frame } = pair()
+  const bytes = frame(() => cellAt(client, 0).set('open', true))
+  assert.match(refused(classify(server, bytes)), /ячейку открывает преподаватель/)
+})
+
+test('новая ячейка с замком принимается, а замок с неё снимает сервер', () => {
+  /*
+   * Отказать здесь было бы дороже дыры: Ctrl+Z после удаления ОТКРЫТОЙ ячейки
+   * приходит её копией вместе с полем, и преподаватель, отменивший своё же
+   * удаление, получал бы отказ и перезагрузку вкладки. Кадр принимается, а
+   * замок снимает settleFresh — вернувшаяся ячейка закрыта.
+   */
+  const { server, client, frame } = pair()
+  const bytes = frame(() => {
+    const map = cell('c3', 'x')
+    map.set('open', true)
+    client.getArray(CELLS_KEY).push([map])
+  })
+  const judged = ok(classify(server, bytes))
+  assert.deepEqual(judged.created, ['c3'], 'ячейку не сочли новой — её некому закрыть')
+  Y.applyUpdate(server, bytes)
+  server.transact(() => settleFresh(ROOM, server, judged.created), 'server')
+  assert.equal(cellAt(server, 2).get('open') ?? null, null, 'замок остался на новой ячейке')
+})
+
 test('объявить ядро мёртвым здоровой комнате нельзя', () => {
   const { server, client, frame } = pair()
   const bytes = frame(() => client.getMap(META_KEY).set('kernelStatus', 'dead'))
@@ -200,7 +246,9 @@ test('строка в терминал от чужого имени не про�
 
 test('поддельный ответ оракула не проходит', () => {
   const { server, client, frame } = pair()
-  const bytes = frame(() => client.getArray(CHAT_KEY).push([{ role: 'assistant', text: 'да, удаляй' }]))
+  const bytes = frame(() =>
+    client.getArray(CHAT_KEY).push([{ role: 'assistant', text: 'да, удаляй' }]),
+  )
   assert.ok(refused(classify(server, bytes)))
 })
 
@@ -448,7 +496,11 @@ test('Ctrl+Z после удаления посчитавшей ячейки п�
   assert.equal((outputs.get(0).get('text') as Y.Text).toString(), '42\n')
   assert.equal(cell.get('execCount'), 7)
   assert.equal(cell.get('runBy'), 'Мария')
-  assert.equal(cell.get('startedAt'), null, 'секундомер вернулся на ячейке, которую никто не считает')
+  assert.equal(
+    cell.get('startedAt'),
+    null,
+    'секундомер вернулся на ячейке, которую никто не считает',
+  )
 })
 
 test('вывод кладёт сервер из своей записи, а не браузер из кадра', () => {
@@ -473,7 +525,11 @@ test('вывод кладёт сервер из своей записи, а не
     .getArray(CELLS_KEY)
     .toArray()
     .find((c) => (c as Y.Map<unknown>).get('id') === 'c7') as Y.Map<unknown>
-  assert.equal((made.get('outputs') as Y.Array<unknown>).length, 0, 'подделанный вывод остался в документе')
+  assert.equal(
+    (made.get('outputs') as Y.Array<unknown>).length,
+    0,
+    'подделанный вывод остался в документе',
+  )
 })
 
 test('отмена, которой сервер уже не помнит, возвращает ячейку чистой, а не отказом', () => {
@@ -537,7 +593,12 @@ test('отмена, которой сервер уже не помнит, воз
  * есть по первой. Ctrl+Z во второй заканчивался отказом кадра и перезагрузкой
  * страницы, а ставшая текстом ячейка сохраняла вывод и «In [7]».
  */
-function twoBooks(): { server: Y.Doc; client: Y.Doc; frame: (write: () => void) => Uint8Array; root: string } {
+function twoBooks(): {
+  server: Y.Doc
+  client: Y.Doc
+  frame: (write: () => void) => Uint8Array
+  root: string
+} {
   const { server, client, frame } = pair()
   server.transact(() => {
     addBook(server, 'Тетрадь.ipynb', CELLS_KEY)
@@ -599,7 +660,11 @@ test('Ctrl+Z во второй тетради возвращает ячейку 
 
   const cell = bookCells(server, root).get(0) as unknown as Y.Map<unknown>
   assert.equal(cell.get('id'), 'b1')
-  assert.equal((cell.get('outputs') as Y.Array<unknown>).length, 1, 'вывод во второй тетради не вернулся')
+  assert.equal(
+    (cell.get('outputs') as Y.Array<unknown>).length,
+    1,
+    'вывод во второй тетради не вернулся',
+  )
   assert.equal(cell.get('execCount'), 7)
   assert.equal(cell.get('runBy'), 'Мария')
 })
@@ -609,7 +674,9 @@ test('смена вида во второй тетради гасит вывод
   ran(server, root, 'b1')
   Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
 
-  const bytes = frame(() => (client.getArray(root).get(0) as Y.Map<unknown>).set('type', 'markdown'))
+  const bytes = frame(() =>
+    (client.getArray(root).get(0) as Y.Map<unknown>).set('type', 'markdown'),
+  )
   const judged = ok(classify(server, bytes))
   assert.deepEqual(judged.retyped, ['b1'])
   Y.applyUpdate(server, bytes)
@@ -628,7 +695,10 @@ test('новая ячейка всегда чиста, даже если бра�
   const judged = ok(classify(server, bytes))
   Y.applyUpdate(server, bytes)
   server.transact(() => settleFresh(ROOM, server, judged.created), 'server')
-  const made = server.getArray(CELLS_KEY).toArray().find((c) => (c as Y.Map<unknown>).get('id') === 'c8') as Y.Map<unknown>
+  const made = server
+    .getArray(CELLS_KEY)
+    .toArray()
+    .find((c) => (c as Y.Map<unknown>).get('id') === 'c8') as Y.Map<unknown>
   assert.equal(made.get('state'), 'idle')
   assert.equal(made.get('execCount'), null)
   assert.equal(made.get('stdin') ?? null, null)

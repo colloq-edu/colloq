@@ -13,9 +13,14 @@ import {
   allowsRun,
   allowsAgent,
   allowsStructure,
+  isLectureRoom,
   isOpenRoom,
+  LECTURE_ROOM,
+  mayEditCell,
+  mayRunCell,
   OPEN_ROOM,
   readRules,
+  rulesAfterClass,
   runQueueCap,
 } from '../shared/rules.js'
 
@@ -109,4 +114,68 @@ test('режим «сделать» по умолчанию преподават
 test('старая строка правил читается без режима «сделать», а не ломается об него', () => {
   const old = readRules(JSON.stringify({ run: 'room', edit: 'room' }))
   assert.equal(old.agent, 'host', 'семинар, созданный до режима, вдруг разрешил бы его всем')
+})
+
+/* ------------------------------------------------------------------ лекция */
+
+test('лекция закрывает всё, что делают руками, и не трогает то, чем смотрят', () => {
+  for (const key of ['run', 'edit', 'structure', 'board', 'files', 'wipe', 'restart'] as const) {
+    assert.equal(LECTURE_ROOM[key], 'host', `в лекции открыто правило ${key}`)
+  }
+  assert.equal(LECTURE_ROOM.agent, 'host')
+  // Читать историю и спрашивать оракула лекция не запрещает: она про то, кто
+  // печатает и запускает, а не про то, кому смотреть.
+  assert.equal(LECTURE_ROOM.history, OPEN_ROOM.history)
+  assert.equal(LECTURE_ROOM.oracle, OPEN_ROOM.oracle)
+  assert.equal(LECTURE_ROOM.model, OPEN_ROOM.model)
+  // И записанная в базу лекция читается лекцией, а не падает на умолчания.
+  assert.equal(isLectureRoom(readRules(JSON.stringify(LECTURE_ROOM))), true)
+})
+
+test('лекция и открытая комната — не одно и то же, а конец занятия читается лекцией', () => {
+  assert.equal(isLectureRoom(LECTURE_ROOM), true)
+  assert.equal(isLectureRoom(OPEN_ROOM), false)
+  assert.equal(isOpenRoom(LECTURE_ROOM), false)
+  // Одно значение мимо — и это уже не пресет: иначе панель показывала бы
+  // «лекция» комнате, в которой преподаватель что-то приоткрыл.
+  assert.equal(isLectureRoom({ ...LECTURE_ROOM, edit: 'room' }), false)
+  /*
+   * А это стоит знать в лицо: `rulesAfterClass` любой комнаты даёт ровно
+   * лекционные значения. По сути верно — печатает и запускает один
+   * преподаватель, — но спрашивать этим «занятие идёт по-лекционному» нельзя.
+   */
+  assert.equal(isLectureRoom(rulesAfterClass(OPEN_ROOM)), true)
+})
+
+test('открытая ячейка даёт набор и запуск там, где правило их закрыло', () => {
+  const closed = false
+  const open = true
+  // Лекция: тетрадь преподавательская, и единственная дверь — открытая ячейка.
+  assert.equal(mayEditCell(LECTURE_ROOM, 'participant', closed, false), false)
+  assert.equal(mayEditCell(LECTURE_ROOM, 'participant', open, false), true)
+  assert.equal(mayRunCell(LECTURE_ROOM, 'participant', closed, false), false)
+  assert.equal(mayRunCell(LECTURE_ROOM, 'participant', open, false), true)
+  // Преподавателю замок ничего не меняет: он пишет и запускает везде.
+  assert.equal(mayEditCell(LECTURE_ROOM, 'host', closed, false), true)
+  assert.equal(mayRunCell(LECTURE_ROOM, 'host', closed, false), true)
+  // В открытой комнате замок тоже ничего не меняет — там и так всё можно.
+  assert.equal(mayEditCell(OPEN_ROOM, 'participant', closed, false), true)
+  assert.equal(mayRunCell(OPEN_ROOM, 'participant', closed, false), true)
+  // «По одной» и без замка пускает нажатие на ячейке — замок его не ужесточает.
+  assert.equal(mayRunCell({ ...OPEN_ROOM, run: 'single' }, 'participant', closed, false), true)
+})
+
+test('конец занятия сильнее замка', () => {
+  /*
+   * Иначе «Закончить занятие» оставляло бы комнате столько дверей, сколько
+   * преподаватель успел открыть за пару, и закрывать их пришлось бы по одной.
+   */
+  assert.equal(mayEditCell(LECTURE_ROOM, 'participant', true, true), false)
+  assert.equal(mayRunCell(LECTURE_ROOM, 'participant', true, true), false)
+  // Даже в комнате, где правила разрешают всё: занятие кончилось у всей комнаты.
+  assert.equal(mayEditCell(OPEN_ROOM, 'participant', true, true), false)
+  assert.equal(mayRunCell(OPEN_ROOM, 'participant', true, true), false)
+  // А преподаватель после пары действует: комната остаётся живой.
+  assert.equal(mayEditCell(LECTURE_ROOM, 'host', false, true), true)
+  assert.equal(mayRunCell(LECTURE_ROOM, 'host', false, true), true)
 })

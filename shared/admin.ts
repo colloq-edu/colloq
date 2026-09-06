@@ -174,12 +174,30 @@ export interface CreateSeminarRequest {
    */
   environment?: string | null
   /**
+   * Какое это занятие: лаборатория, где работают все, или лекция, где тетрадь
+   * преподавательская целиком.
+   *
+   * Режим — это ПРЕСЕТ правил, а не отдельное состояние комнаты: 'lecture'
+   * записывает `LECTURE_ROOM`, 'lab' — `OPEN_ROOM`, и дальше комната живёт
+   * одними правилами. Иначе в продукте появилось бы два источника правды о
+   * том, что в комнате можно, и они разъехались бы на первом же переключателе
+   * в настройках: правило говорит одно, режим — другое, а сервер спрашивает
+   * только одного из них.
+   *
+   * Нет поля — 'lab', то есть ровно сегодняшнее поведение: семинар, созданный
+   * скриптом или сборкой постарше, открывается тем же, чем открывался.
+   */
+  mode?: 'lab' | 'lecture'
+  /**
    * How the room will run: who may do what, and what its oracle does.
    *
    * Optional, and absent means the open room the product has always been —
    * `OPEN_ROOM` in shared/rules.ts. Only the fields the server can actually
    * keep have any effect; the rest are stored so that the day they become
    * enforceable, the seminars created today already say what they wanted.
+   *
+   * Приехав вместе с `mode`, ложится ПОВЕРХ его пресета: человек выбрал режим
+   * и подкрутил в нём одну строку, и подкрученное сильнее выбранного.
    */
   rules?: Partial<RoomRules>
 }

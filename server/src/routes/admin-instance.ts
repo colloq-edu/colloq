@@ -20,7 +20,7 @@ import { newSessionId } from '../auth.js'
 import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
 import { config } from '../config.js'
 import { broadcast, closeControlRoom } from '../control.js'
-import { readRules } from '@shared/rules'
+import { LECTURE_ROOM, OPEN_ROOM, readRules } from '@shared/rules'
 import {
   createSession,
   db,
@@ -335,9 +335,23 @@ export function adminInstanceRoutes(): Router {
      * anything the form did not send, so a caller that knows nothing about
      * rules — a script, an older client — still produces the open room the
      * product has always been.
+     *
+     * Режим — это ПРЕСЕТ правил, и записывается он ими же. Отдельным состоянием
+     * комнаты («эта — лекционная») он завёл бы второй источник правды о том,
+     * что в ней можно: сервер спрашивает права у правил, а настройки показывают
+     * их же, и первый переключатель в настройках развёл бы слово и дело.
+     * Поэтому 'lecture' — это `LECTURE_ROOM`, 'lab' и отсутствие поля — это
+     * `OPEN_ROOM`, и дальше комната живёт одними правилами.
+     *
+     * Присланные правила ложатся ПОВЕРХ пресета: человек выбрал режим и
+     * подкрутил в нём одну строку, и подкрученное должно быть сильнее
+     * выбранного, а не наоборот.
      */
-    if (req.body?.rules && typeof req.body.rules === 'object') {
-      setRules(id, readRules(req.body.rules))
+    const lecture = req.body?.mode === 'lecture'
+    const asked =
+      req.body?.rules && typeof req.body.rules === 'object' ? (req.body.rules as object) : null
+    if (lecture || asked) {
+      setRules(id, readRules({ ...(lecture ? LECTURE_ROOM : OPEN_ROOM), ...asked }))
     }
     const staff = currentStaff(req)
     if (staff) setSeminarCreator(id, staff.name)

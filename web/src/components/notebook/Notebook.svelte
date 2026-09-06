@@ -1,9 +1,10 @@
 <script lang="ts">
   import { tick } from 'svelte'
   import { findCell, type CellType } from '@shared/notebook'
+  import { isLectureRoom } from '@shared/rules'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
-  import { permitsIn } from '@/lib/may'
+  import { cellLockMatters, permitsIn } from '@/lib/may'
   import {
     deleteCell,
     hasPendingRun,
@@ -494,6 +495,26 @@
 
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
   const rules = $derived(may.rules)
+  /*
+   * Комната идёт по лекционному пресету.
+   *
+   * Не «мне тут ничего нельзя», а свойство комнаты: полоса нужна и
+   * преподавателю — она объясняет, почему у него одного всё живо, и почему
+   * двадцать человек рядом смотрят на серую тетрадь.
+   *
+   * `may.rules` — уже с наложенным концом занятия, и закончившееся занятие
+   * читается отсюда как лекция (об этом сказано у самой `isLectureRoom`). Это
+   * не ошибка, но и не то, о чём стоит говорить дважды: после звонка о комнате
+   * рассказывает свой признак, поэтому полоса уступает ему место.
+   */
+  const lecture = $derived(!may.finished && isLectureRoom(rules))
+  /*
+   * В комнате с замком поле слева от ячейки шире — там стоит сам замок, — и на
+   * ту же величину съезжают две вещи, подводимые под ячейки: черта, по которой
+   * вставляют, и нижний ряд «Code / Text». Свойство комнаты, а не ячейки, так
+   * что считается здесь один раз на тетрадь; ширину держит CellView.svelte.
+   */
+  const gutter = $derived(cellLockMatters(may) ? '4.5rem' : '3rem')
   const mayRun = $derived(may.run)
   /* Run All и Run Above — отдельное право: при «по одной» ядро одно, и разница
      между «двадцать человек считают» и «двадцать человек забили очередь на
@@ -753,7 +774,8 @@
 {#snippet adder(index: number)}
   <div class="group/add relative flex h-6 items-center justify-center">
     <div
-      class="pointer-events-none absolute left-12 right-0 top-1/2 h-px bg-line-soft opacity-0
+      style:left={gutter}
+      class="pointer-events-none absolute right-0 top-1/2 h-px bg-line-soft opacity-0
              transition-opacity duration-[var(--speed-quick)] group-hover/add:opacity-100"
     ></div>
     <div
@@ -785,6 +807,30 @@
   are what bound the measure; this element should not bound it a second time.
 -->
 <div class="w-full pb-40">
+  <!--
+    Полоса режима — над тетрадью и НЕ липкая, в отличие от ряда кнопок под ней.
+
+    Это не состояние, за которым следят, а условие, в котором работают: его
+    читают один раз, входя в комнату. Прибитая к верху, она отняла бы строку
+    экрана у каждой ячейки до конца пары; уехавшая вверх — оставляет вместо себя
+    замки на самих ячейках, которые говорят то же самое там, где нажимают.
+
+    Тёплая, а не тревожная: в лекции ничего не сломалось. Тем и отличается от
+    жёлтых предупреждений в этом продукте, что у неё нет ни значка «внимание»,
+    ни кнопки, — только замок, слово и объяснение.
+  -->
+  {#if lecture}
+    <div
+      class="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-line
+             bg-warning/[0.07] px-4 py-2"
+    >
+      <Icon name="lock" size={13} class="shrink-0 text-warning" />
+      <span class="text-ui font-semibold text-ink">Лекция</span>
+      <span class="text-ui text-muted">
+        — считает и печатает преподаватель. Открытые ячейки помечены.
+      </span>
+    </div>
+  {/if}
   <div
     bind:this={runBar}
     onscroll={scheduleRunBarMeasure}
@@ -983,7 +1029,10 @@
 
   {@render adder(ids.current.length)}
 
-  <div class={cn('mt-1 flex items-center gap-3 pl-12', ids.current.length === 0 && 'mt-8')}>
+  <div
+    style:padding-left={gutter}
+    class={cn('mt-1 flex items-center gap-3', ids.current.length === 0 && 'mt-8')}
+  >
     <button
       type="button"
       class={ADD_FOOT}

@@ -46,7 +46,13 @@
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
   import { actsAfterClass, CLASS_IS_OVER, oracleModeIn, readRules } from '@shared/rules'
-  import { permitsIn } from '@/lib/may'
+  import {
+    cellLockMatters,
+    LECTURE_CELL,
+    mayEditThisCell,
+    mayRunThisCell,
+    permitsIn,
+  } from '@/lib/may'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
@@ -123,7 +129,30 @@
    * ничего не делающая, читается как поломка и приходит обратно баг-репортом.
    */
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
-  const mayRun = $derived(may.run)
+  /*
+   * Замок на этой ячейке — и три производных, которыми живёт весь компонент.
+   *
+   * Права считает shared/rules.ts теми же функциями, что и сервер: компонент
+   * не складывает правило комнаты с полем ячейки сам. Иначе в продукте было бы
+   * два ответа на вопрос «можно ли здесь печатать», и расходиться они начали бы
+   * не с кнопкой, а с гейтом, который правку молча отвергает.
+   *
+   * `lock` — стоит ли рисовать замок вообще. В комнате, где участник и так
+   * печатает и запускает, открывать нечего, и значок там был бы украшением;
+   * после звонка — тем более, там своя причина и свои слова.
+   */
+  const cellOpen = $derived(meta.current.open)
+  const lock = $derived(cellLockMatters(may))
+  const mayEdit = $derived(mayEditThisCell(may, cellOpen))
+  const mayRun = $derived(mayRunThisCell(may, cellOpen))
+  /** Закрыта для ТЕБЯ: у преподавателя замок висит, но ничего не запирает. */
+  const shut = $derived(lock && !mayEdit && !mayRun)
+  /*
+   * Одна фраза вместо правила комнаты — по тому же доводу, что и `CLASS_IS_OVER`
+   * в may.ts: услышать «тетрадь принадлежит преподавателю» там, где ячейку
+   * открывают одним нажатием, значит пойти искать не то.
+   */
+  const editWhy = $derived(shut ? LECTURE_CELL : may.editWhy)
   /*
    * Действует ли этот человек после звонка — для того, у чего правила нет:
    * ответить на `input()`, отклонить предложение оракула. Та же
@@ -234,6 +263,13 @@
    * edge of the body. Running and error outrank selection deliberately — a cell
    * you have clicked on is still, first, a cell that failed.
    */
+  /*
+   * Открытая ячейка стоит ВЫШЕ выделенной по той же причине, по какой выше неё
+   * стоят работающая и упавшая: это факт о комнате, а не о твоём курсоре. Ради
+   * него полосу и красят — «открыта» должно читаться из середины аудитории, а
+   * не при разглядывании; выделение при этом остаётся помеченным номером, как и
+   * на работающей ячейке.
+   */
   const tone = $derived(
     shownRunning
       ? 'running'
@@ -241,9 +277,11 @@
         ? 'error'
         : shownState === 'queued'
           ? 'queued'
-          : selected
-            ? 'selected'
-            : 'idle',
+          : lock && cellOpen
+            ? 'open'
+            : selected
+              ? 'selected'
+              : 'idle',
   )
 
   /*
@@ -257,6 +295,7 @@
     running: 'text-accent-text',
     error: 'text-danger',
     queued: 'text-accent-text/80',
+    open: 'text-accent-text',
     selected: 'text-ink',
     idle: 'text-muted',
   } as const
@@ -285,6 +324,12 @@
     running: 'border-accent/40',
     error: 'border-danger',
     queued: 'border-accent/50',
+    /*
+     * Открытая — полным акцентом и без дышащей полосы поверх: она не работает,
+     * она разрешена. Это единственное спокойное состояние, которому дан цвет, и
+     * дан он ровно затем, чтобы в закрытой тетради нашлась глазом одна ячейка.
+     */
+    open: 'border-accent',
     selected: 'border-ink',
     idle: 'border-line',
   } as const
@@ -587,7 +632,7 @@
     if (!mayRun) {
       // Словами сервера, дословно. Кнопка, которая молчит, — это сообщение об
       // ошибке; кнопка, которая объясняет, — это правило.
-      session.showError('Only the teacher runs cells in this seminar.')
+      session.showError(shut ? LECTURE_CELL + '.' : 'Only the teacher runs cells in this seminar.')
       return false
     }
     // Молча: ячейка сама показывает, что она делает, — и полосой, и строкой
@@ -740,8 +785,8 @@
   function accept(): void {
     const id = proposal?.get('id')
     if (typeof id !== 'string') return
-    if (!may.edit) {
-      session.showError(may.editWhy + '.')
+    if (!mayEdit) {
+      session.showError(editWhy + '.')
       return
     }
     session.send({ t: 'ai:decide', entryId: id, accept: true })
@@ -770,8 +815,8 @@
   })
 
   function convert() {
-    if (!may.edit) {
-      session.showError(may.editWhy + '.')
+    if (!mayEdit) {
+      session.showError(editWhy + '.')
       return
     }
     setCellType(session.doc, id, isCode ? 'markdown' : 'code')
@@ -809,6 +854,18 @@
   const CAPS = 'text-2xs font-bold uppercase tracking-label'
 </script>
 
+{#snippet openMark()}
+  <!--
+    «Открыта для всех» — метка, а не второй орган управления: закрывают ту же
+    ячейку тем же замком слева. Стоит она внутри тела, над первой строкой: это
+    свойство КОДА, который ниже, и читаться должно вместе с ним, а не отдельной
+    плашкой над ячейкой.
+  -->
+  {#if lock && cellOpen}
+    <p class={cn(CAPS, 'pb-1 pt-0.5 text-accent-text')}>Открыта для всех</p>
+  {/if}
+{/snippet}
+
 {#if cell.current && ytext}
   <div
     bind:this={root}
@@ -829,7 +886,76 @@
     <!-- Номер прижат вправо флексом, а не `text-align` на блоке во всю ширину:
          залитая метка выделения обязана обнимать две цифры, а не красить всё
          поле от края до края. -->
-    <div class="flex h-7 w-8 shrink-0 select-none justify-end">
+    <!--
+      Замок стоит в поле слева, рядом с номером, — и только там, где он что-то
+      решает (см. `lock`). Поле в этой комнате шире у ВСЕХ ячеек, а не у
+      запертых: замок то появлялся бы, то исчезал вместе с открытием одной
+      ячейки, и вся тетрадь ездила бы вбок на каждое нажатие преподавателя.
+    -->
+    <div
+      class={cn(
+        'flex h-7 shrink-0 select-none items-start justify-end gap-1.5',
+        // 3.5rem вместе с `gap-4` соседа даёт 4.5rem до тела ячейки — то же
+        // число, которым Notebook.svelte отодвигает свою черту и нижний ряд
+        // кнопок. Меняя одно, менять и там: иначе линия вставки повиснет левее
+        // ячеек, под которые она подводится.
+        lock ? 'w-14' : 'w-8',
+      )}
+    >
+      {#if lock}
+        <!--
+          Нажимается он у преподавателя, и только у него: `cell:open` сервер
+          принимает от ведущего. Проверка тут по роли, а не по правам на эту
+          ячейку, — иначе участник, которому ячейку ТОЛЬКО ЧТО открыли, получил
+          бы живую кнопку «закрыть» и отказ в ответ на нажатие.
+        -->
+        {#if may.role === 'host'}
+          <!--
+            У преподавателя замок нажимается, и второе нажатие возвращает всё
+            назад. Диалога нет намеренно: ячейку открывают посреди фразы, не
+            отводя глаз от аудитории, и подтверждение здесь стоило бы дороже
+            любой ошибки — ошибка чинится тем же нажатием.
+
+            Поле выставляет сервер, обратно оно приезжает обычным кадром CRDT;
+            здесь ничего не предугадывается, поэтому значок меняется тогда же,
+            когда меняется у всей комнаты.
+          -->
+          <button
+            type="button"
+            class={cn(
+              'mt-1 inline-flex h-5 w-5 items-center justify-center',
+              'transition-colors duration-[var(--speed-quick)]',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+              'disabled:pointer-events-none disabled:opacity-40',
+              cellOpen ? 'bg-accent/15 text-accent-text' : 'text-faint hover:bg-line hover:text-ink',
+            )}
+            disabled={controlDisabled(session.connected)}
+            aria-pressed={cellOpen}
+            aria-label={cellOpen ? 'Закрыть эту ячейку' : 'Открыть эту ячейку комнате'}
+            title={controlTitle(
+              session.connected,
+              cellOpen ? 'Закрыть её' : 'Открыть эту ячейку комнате',
+            )}
+            onclick={() => session.send({ t: 'cell:open', cellId: id, open: !cellOpen })}
+          >
+            <Icon name={cellOpen ? 'unlock' : 'lock'} size={13} />
+          </button>
+        {:else}
+          <!-- Тому, кто открыть не может, замок только показывает. Он всё
+               равно нужен: иначе непонятно, почему ячейка не берёт набор. -->
+          <span
+            class={cn(
+              'mt-1 inline-flex h-5 w-5 items-center justify-center',
+              cellOpen ? 'text-accent-text' : 'text-faint',
+            )}
+            title={cellOpen
+              ? 'Эта ячейка открыта комнате'
+              : 'Закрыта — открыть её может преподаватель'}
+          >
+            <Icon name={cellOpen ? 'unlock' : 'lock'} size={13} />
+          </span>
+        {/if}
+      {/if}
       <!--
         Цвет номера меняется мгновенно, и это не экономия, а правило: `tone`
         переключается стрелкой, Enter и j/k, то есть сотни раз за пару. Метка
@@ -894,7 +1020,14 @@
           selected && 'opacity-100',
         )}
       >
-        {#if isCode}
+        <!--
+          У запертой ячейки первого слота нет вовсе — ни «запустить», ни
+          погашенного «запустить». Обычно здесь гасят, а не прячут (довод ниже
+          про раскладку), но в лекции у участника гаснет ВЕСЬ ряд: переставлять,
+          дублировать, править и стирать ему тоже нельзя, и двигать под курсором
+          нечего. Обещать кнопкой действие, которого в этой комнате нет, дороже.
+        -->
+        {#if isCode && !shut}
           <!--
             Одно место, три лица: запустить, убрать из очереди, остановить.
 
@@ -926,12 +1059,13 @@
           >
             <Icon name={slot.icon} size={slot.size} class={slot.tint} />
           </button>
-        {:else if !editing}
+        {:else if !isCode && !editing}
           <button
             type="button"
             class={TOOL}
-            title="Edit this text cell"
+            title={mayEdit ? 'Edit this text cell' : editWhy}
             aria-label="Edit text cell"
+            disabled={!mayEdit}
             onclick={() => enter()}
           >
             <Icon name="text" size={13} />
@@ -970,9 +1104,9 @@
         <button
           type="button"
           class={TOOL}
-          title={may.edit ? (isCode ? 'Convert to text — M' : 'Convert to code — Y') : may.editWhy}
+          title={mayEdit ? (isCode ? 'Convert to text — M' : 'Convert to code — Y') : editWhy}
           aria-label={isCode ? 'Convert to markdown' : 'Convert to code'}
-          disabled={!may.edit}
+          disabled={!mayEdit}
           onclick={convert}
         >
           <Icon name={isCode ? 'text' : 'code'} size={13} />
@@ -1004,9 +1138,9 @@
           <button
             type="button"
             class={TOOL}
-            title={controlTitle(session.connected, may.edit ? 'Clear this cell’s output' : may.editWhy)}
+            title={controlTitle(session.connected, mayEdit ? 'Clear this cell’s output' : editWhy)}
             aria-label="Clear cell output"
-            disabled={!may.edit || controlDisabled(session.connected)}
+            disabled={!mayEdit || controlDisabled(session.connected)}
             onclick={() => session.send({ t: 'clearOutputs', cellId: id })}
           >
             <Icon name="eraser" size={13} />
@@ -1048,11 +1182,25 @@
                 // клавиатура.
                 'border-l-4 px-3 py-1',
                 RULE[tone],
-                isCode ? 'bg-surface' : 'bg-surface/70',
-                // Выбранная ячейка отличается ещё и подложкой: одна кромка на
-                // широком экране теряется у левого поля, а глаз ищет ячейку в
-                // тексте, а не на границе.
-                selected && !shownRunning && !hasError && 'bg-raised',
+                /*
+                 * Одна подложка из трёх, а не три класса стопкой: `cn` — это
+                 * clsx, он ничего не разрешает, и два `bg-*` рядом решает
+                 * порядок в собранном CSS, а не порядок здесь.
+                 *
+                 * Запертая холоднее обычной — подмешанный brand, а не другой
+                 * уровень поверхности: она не «глубже» и не «выше» соседних,
+                 * она просто не твоя. И только холоднее: гасить её целиком
+                 * нельзя, за выводами на лекцию и приходят.
+                 */
+                selected && !shownRunning && !hasError
+                  ? 'bg-raised'
+                  : shut
+                    ? isCode
+                      ? 'bg-brand/[0.05]'
+                      : 'bg-brand/[0.035]'
+                    : isCode
+                      ? 'bg-surface'
+                      : 'bg-surface/70',
               )}
               onfocusout={(event) => {
                 // Blurring a note puts it back to rendered form; code cells stay open.
@@ -1061,13 +1209,14 @@
                 if (!next || !event.currentTarget.contains(next)) commitMarkdown()
               }}
             >
+              {@render openMark()}
               <CodeEditor
                 text={ytext}
                 awareness={session.awareness}
                 undoManager={session.undoManager}
                 language={isCode ? 'python' : 'markdown'}
                 label={`${isCode ? 'Code' : 'Text'} cell ${ordinal}`}
-                readOnly={!may.edit}
+                readOnly={!mayEdit}
                 autoFocus={!isCode && focusOnEdit}
                 placeholder={isCode ? '' : 'Write in markdown…'}
                 onfocus={() => onselect()}
@@ -1081,6 +1230,22 @@
                 ondeleteempty={() => removeSelf(true)}
                 onarrowout={(direction) => step(direction)}
               />
+              <!--
+                Одна строка под кодом — вместо погашенной ячейки.
+
+                Редактор молча не берёт набор, и молчание читается как поломка:
+                человек жмёт клавиши, ничего не появляется, и он идёт проверять
+                клавиатуру. Слова стоят там, где он смотрит, — под самой
+                ячейкой, а не в тосте у края экрана, — и говорят про занятие, а
+                не про правило: открыть эту ячейку может преподаватель, и он
+                рядом.
+              -->
+              {#if shut}
+                <p class="flex items-center gap-2 pb-1 pt-1.5 text-2xs text-muted">
+                  <span aria-hidden="true" class="h-px w-3.5 shrink-0 bg-line"></span>
+                  {LECTURE_CELL}
+                </p>
+              {/if}
             </div>
           {:else}
             <!-- A note at rest carries no chrome at all: it is the seminar's
@@ -1104,6 +1269,7 @@
               )}
               ondblclick={() => enter()}
             >
+              {@render openMark()}
               {#if source.current.trim()}
                 <Markdown source={source.current} class="text-prose text-muted" />
               {:else}

@@ -20,7 +20,7 @@ import {
 import type { WebSocket } from 'ws'
 import { ownAwareness } from '../server/src/collab/index.js'
 import { classify, permits } from '../server/src/collab/gate.js'
-import { OPEN_ROOM, type RoomRules } from '../shared/rules.js'
+import { LECTURE_ROOM, OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import { CELLS_KEY, META_KEY, createCell } from '../shared/notebook.js'
 import { mayReload, refusalHealed, stashRefusal, takeRefusal } from '../web/src/lib/refusal.js'
 
@@ -84,6 +84,35 @@ test('в лекционной комнате студент не пишет, а 
   assert.match(passes(server, bytes, { edit: 'host' }, 'participant') ?? '', /преподавател/i)
   assert.equal(passes(server, bytes, { edit: 'host' }, 'host'), null)
   assert.equal(passes(server, bytes, {}, 'participant'), null, 'умолчание закрыло тетрадь')
+})
+
+test('в лекции студент печатает в открытой ячейке — и только в ней', () => {
+  /*
+   * Замок — единственное право, которое живёт не в правилах комнаты, а в
+   * документе, и стык здесь тот же: разбор говорит, что кадр правит текст ЭТОЙ
+   * ячейки, правила — что тетрадь преподавательская, а открытая ячейка
+   * разводит эти два ответа. Ошибка стоит либо запертого класса, либо тетради,
+   * открытой целиком по одной ячейке.
+   */
+  const { server, client, frame } = pair()
+  // Открывает сервер: `open` из браузера гейт не принимает вовсе.
+  server.transact(() => (server.getArray(CELLS_KEY).get(0) as Y.Map<unknown>).set('open', true), 'server')
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+
+  const lecture: Partial<RoomRules> = { ...LECTURE_ROOM }
+  const inside = frame(() => typing(client))
+  assert.equal(passes(server, inside, lecture, 'participant'), null, 'открытая ячейка не пустила')
+  Y.applyUpdate(server, inside)
+
+  const outside = frame(() => {
+    const cell = client.getArray(CELLS_KEY).get(1) as Y.Map<unknown>
+    ;(cell.get('source') as Y.Text).insert(0, 'ы')
+  })
+  assert.match(
+    passes(server, outside, lecture, 'participant') ?? '',
+    /преподавател/i,
+    'открытая ячейка открыла всю тетрадь',
+  )
 })
 
 /* ------------------------------------------------------------ состав листа */

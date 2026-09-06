@@ -27,7 +27,7 @@
     type EnvironmentsState,
     type ImportPreview,
   } from '@shared/admin'
-  import { OPEN_ROOM, type RoomRules } from '@shared/rules'
+  import { LECTURE_ROOM, OPEN_ROOM, type RoomRules } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
   interface Props {
@@ -195,6 +195,55 @@
   /* The room's rules, starting as the open room the product has always been. */
   let rules = $state<RoomRules>({ ...OPEN_ROOM })
 
+  /*
+   * Какое это занятие — и почему рядом с правилами живут ДВА значения.
+   *
+   * `mode` — то, что выбрал человек; `rules` — то, что он потом подкрутил.
+   * Выбор режима переписывает правила его пресетом, так что таблица ниже сразу
+   * показывает правду, а не обещание; дальше любую строку можно поменять
+   * руками, и режим при этом остаётся выбранным. В теле запроса едет и то и
+   * другое, и сервер кладёт правила ПОВЕРХ пресета — то есть получается ровно
+   * то, что нарисовано на экране, каким бы путём туда ни пришли.
+   *
+   * Одним `isLectureRoom(rules)` это не выражается: лекция, у которой отпустили
+   * одну строку, перестала бы совпадать с пресетом, и карточка гасла бы, хотя
+   * комната лекционная.
+   */
+  let mode = $state<'lab' | 'lecture'>('lab')
+
+  function pickMode(next: 'lab' | 'lecture'): void {
+    mode = next
+    rules = { ...(next === 'lecture' ? LECTURE_ROOM : OPEN_ROOM) }
+  }
+
+  /*
+   * Две двери в комнату. Слова — с макета: карточка обязана сказать, что
+   * человек получит, а не как это называется внутри.
+   */
+  const MODES: {
+    value: 'lab' | 'lecture'
+    label: string
+    what: string
+    lines: [string, string]
+  }[] = [
+    {
+      value: 'lab',
+      label: 'Обычный',
+      what:
+        'Лаборатория. Все печатают в тетради, запускают ячейки, кладут файлы и спрашивают ' +
+        'оракула. Так Colloq работал всегда.',
+      lines: ['правит — комната · запускает — комната', 'файлы — комната · оракул — по настройке'],
+    },
+    {
+      value: 'lecture',
+      label: 'Лекция',
+      what:
+        'Комната преподавателя. Студент читает, листает и смотрит: ни правки, ни запуска, ни ' +
+        'терминала, ни файлов. Оракул — по настройке семинара.',
+      lines: ['всё — преподаватель', 'кроме ячеек, которые он откроет сам'],
+    },
+  ]
+
   let preview = $state<ImportPreview | null>(null)
   let previewing = $state(false)
   let previewError = $state<string | null>(null)
@@ -279,6 +328,7 @@
               url: githubUrl.trim(),
               name: name.trim() || undefined,
               environment: environment || null,
+              mode,
               rules,
             })
           : source === 'file' && notebook
@@ -287,11 +337,13 @@
                 filename: notebook.filename,
                 name: name.trim() || undefined,
                 environment: environment || null,
+                mode,
                 rules,
               })
             : await adminApi.createSeminar({
                 name: name.trim(),
                 environment: environment || null,
+                mode,
                 rules,
               })
 
@@ -338,7 +390,6 @@
   const NOT_YET: { what: string; why: string }[] = [
     { what: 'Read the cells', why: 'every browser holds the whole notebook' },
     { what: 'Read the terminal transcript', why: 'it is in the shared document too' },
-    { what: 'Lock one prepared cell, leave the answer cells open', why: 'a cell has no lock to read' },
     { what: "Edit your own answer but not your neighbour's", why: 'a cell has no owner' },
     { what: 'Keep one student’s oracle question private', why: 'one thread, one document root' },
     { what: 'Remove somebody from the room', why: 'a token can expire, not be withdrawn' },
@@ -829,6 +880,37 @@
     description="A lecture and a lab are not the same room. Set here before anyone joins — and changeable from inside the seminar at any point, without anybody rejoining."
   >
     <div class="flex flex-col gap-4">
+      <!--
+        Режим стоит ПЕРЕД таблицей правил, а не в ней: это набор правил разом, и
+        читать его надо до того, как разглядывать восемь строк по одной. Выбор
+        переписывает таблицу под собой — карточка ничего не обещает, она ставит.
+      -->
+      <div class="flex flex-col gap-2.5">
+        <div class="flex flex-wrap gap-2.5">
+          {#each MODES as option (option.value)}
+            <button
+              type="button"
+              class="mode-card {mode === option.value ? 'mode-on' : ''}"
+              aria-pressed={mode === option.value}
+              onclick={() => pickMode(option.value)}
+            >
+              <span class="flex items-center gap-2.5">
+                <span class="mode-dot"></span>
+                <span class="mode-title text-title font-bold">{option.label}</span>
+                {#if option.value === 'lecture'}
+                  <Icon name="lock" size={14} class="ml-auto shrink-0 opacity-80" />
+                {/if}
+              </span>
+              <span class="mode-what text-ui leading-relaxed">{option.what}</span>
+              <span class="mode-facts flex flex-col gap-1.5 pt-0.5 font-mono text-2xs">
+                {#each option.lines as line (line)}<span>{line}</span>{/each}
+              </span>
+            </button>
+          {/each}
+        </div>
+        <p class="text-2xs text-muted">Режим меняется и потом — со страницы семинара.</p>
+      </div>
+
       <RoomRulesRows {rules} onchange={(patch) => (rules = { ...rules, ...patch })} />
 
       <!--
@@ -939,6 +1021,90 @@
     font-weight: 700;
   }
 
+  /*
+   * Карточка режима — тот же орган, что и `.oracle-card`: радиокнопка ростом с
+   * абзац. Отдельным классом, а не вариантом оракульской, по одной причине: у
+   * неё внутри три этажа с разным весом, и `min-width: 170px` оракульской
+   * схлопнул бы их в колонку на первом же ноутбуке.
+   */
+  .mode-card {
+    display: flex;
+    flex: 1 1 260px;
+    flex-direction: column;
+    gap: 14px;
+    padding: 22px 24px 24px;
+    text-align: left;
+    color: rgb(var(--muted));
+    background: rgb(var(--canvas));
+    border: 1px solid rgb(var(--line));
+    cursor: pointer;
+    transition:
+      background-color var(--speed-quick) var(--ease-out),
+      border-color var(--speed-quick) var(--ease-out),
+      transform var(--speed-press) var(--ease-out);
+  }
+
+  .mode-card:hover {
+    border-color: rgb(var(--faint));
+  }
+
+  .mode-card:active {
+    transform: scale(0.99);
+  }
+
+  .mode-title {
+    color: rgb(var(--ink));
+  }
+
+  /* Кружок радиокнопки: пустой обод, залитый белым у выбранной. */
+  .mode-dot {
+    flex-shrink: 0;
+    width: 9px;
+    height: 9px;
+    border: 2px solid rgb(var(--faint));
+    border-radius: 9px;
+  }
+
+  .mode-on {
+    color: #fff;
+    background: rgb(var(--brand));
+    border-color: rgb(var(--brand));
+  }
+
+  .mode-on .mode-title {
+    color: #fff;
+  }
+
+  .mode-on .mode-dot {
+    background: #fff;
+    border-color: #fff;
+  }
+
+  /*
+   * Три этажа карточки — три голоса, и на залитой они не белые все разом:
+   * сплошной белый на брендовом синем превращает абзац в заголовок. Цифры
+   * взяты с макета и держат контраст на этом фоне (8:1 и 6.6:1); прозрачностью
+   * этого не добиться — она гасит и светлую карточку, где muted и faint уже
+   * стоят на своём пределе.
+   */
+  .mode-facts {
+    color: rgb(var(--faint));
+  }
+
+  .mode-on .mode-what {
+    color: #c8d3ee;
+  }
+
+  .mode-on .mode-facts {
+    color: #a8b8e4;
+  }
+
+  /* Последняя строка лекции — про ячейки, которые она всё-таки открывает. Ради
+     неё замок и написан, поэтому она одна и звучит в полный голос. */
+  .mode-on .mode-facts span:last-child {
+    color: #fff;
+  }
+
   .oracle-card {
     display: flex;
     flex-direction: column;
@@ -972,12 +1138,14 @@
   }
 
   .tab-btn:focus-visible,
+  .mode-card:focus-visible,
   .oracle-card:focus-visible {
     outline: 2px solid rgb(var(--accent));
     outline-offset: 2px;
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .mode-card,
     .oracle-card {
       transition-property: background-color, border-color, color;
     }

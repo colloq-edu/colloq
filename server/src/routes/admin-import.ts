@@ -20,7 +20,7 @@ import { newSessionId } from '../auth.js'
 import { getSessionDoc } from '../collab/index.js'
 import { flushPersistence } from '../collab/persistence.js'
 import { config } from '../config.js'
-import { readRules } from '@shared/rules'
+import { LECTURE_ROOM, readRules } from '@shared/rules'
 import { createSession, setRules } from '../db.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import {
@@ -39,7 +39,12 @@ import { safeSegment } from '@shared/paths'
 import { resolveInSession } from '../workspace.js'
 import { ENVIRONMENT_NAME, LIMITS, type AdminErrorBody } from '@shared/admin'
 
-function fail(res: Response, status: number, reason: AdminErrorBody['reason'], message: string): void {
+function fail(
+  res: Response,
+  status: number,
+  reason: AdminErrorBody['reason'],
+  message: string,
+): void {
   res.status(status).json({ error: message, reason } satisfies AdminErrorBody)
 }
 
@@ -79,7 +84,7 @@ export function adminImportRoutes(): Router {
           res,
           400,
           'invalid',
-          'That is not a GitHub link. Paste the address of a notebook or of the week\'s folder.',
+          "That is not a GitHub link. Paste the address of a notebook or of the week's folder.",
         )
       }
       try {
@@ -97,91 +102,104 @@ export function adminImportRoutes(): Router {
     }),
   )
 
-  router.post('/api/admin/import', requireStaff, wrap(async (req: Request, res: Response) => {
-    const target = parseGithubUrl(String(req.body?.url ?? ''))
-    if (!target) {
-      return fail(res, 400, 'invalid', 'That is not a GitHub link.')
-    }
-
-    const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
-    if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
-      return fail(res, 400, 'invalid', `there is no environment called "${wanted}"`)
-    }
-
-    let plan: Plan
-    try {
-      plan = await planFor(target)
-    } catch (err) {
-      return fail(res, 400, 'invalid', err instanceof Error ? err.message : 'Could not read that link.')
-    }
-    if (plan.cells.length === 0) {
-      return fail(res, 400, 'invalid', 'There is no notebook with any cells at that link.')
-    }
-
-    const asked = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
-    const name = (asked || seminarNameFor(plan.notebookTarget ?? target)).slice(0, LIMITS.seminarName)
-
-    const staff = currentStaff(req)
-    /*
-     * Одна общая функция на все двери — см. seedSeminar.
-     *
-     * Здесь когда-то стоял свой список: создать сессию, записать правила,
-     * подписать автора, положить ячейки. Правила из него однажды выпали, и
-     * «из GitHub» с «только преподаватель» и выключенным оракулом делало
-     * комнату, где запускать мог каждый. Правила пишутся при создании, так что
-     * чинить это было уже негде.
-     *
-     * Документ раньше файлов: комната с пустой тетрадью выглядит сломанной, а
-     * комната, куда ещё не доехали данные, — просто медленной.
-     */
-    const id = seedSeminar({
-      name,
-      environment: wanted || activeName(),
-      rules: req.body?.rules,
-      cells: plan.cells,
-      author: staff?.name ?? null,
-    })
-
-    const written: string[] = []
-    const skipped: string[] = []
-    for (const file of plan.files) {
-      /*
-       * Имя меряется той же меркой, что и всё остальное в дереве комнаты.
-       *
-       * Здесь спрашивали `safeName` — двести символов, пробел с краю можно, — а
-       * панель, загрузка и переименование спрашивают `safeSegment`: сто двадцать
-       * и нельзя. Имя из середины этой щели ложилось на диск и было видно в
-       * дереве, но открыть, скачать или переименовать его было уже нечем:
-       * `normalizePath` такой путь не пропускает. Файл, до которого не
-       * дотянуться, хуже непривезённого — такие уезжают в `skipped`, где
-       * преподаватель их видит списком.
-       */
-      const target = safeSegment(file.name) ? resolveInSession(id, file.name) : null
-      if (!target || !file.downloadUrl) {
-        skipped.push(file.name)
-        continue
+  router.post(
+    '/api/admin/import',
+    requireStaff,
+    wrap(async (req: Request, res: Response) => {
+      const target = parseGithubUrl(String(req.body?.url ?? ''))
+      if (!target) {
+        return fail(res, 400, 'invalid', 'That is not a GitHub link.')
       }
+
+      const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
+      if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
+        return fail(res, 400, 'invalid', `there is no environment called "${wanted}"`)
+      }
+
+      let plan: Plan
       try {
-        const buf = await fetchRaw(file.downloadUrl, config.maxUploadBytes)
-        fs.writeFileSync(target, buf)
-        written.push(file.name)
-      } catch {
-        // One unreadable file must not cost the whole import: the notebook is
-        // already in the room and the teacher can drag the rest in by hand.
-        skipped.push(file.name)
+        plan = await planFor(target)
+      } catch (err) {
+        return fail(
+          res,
+          400,
+          'invalid',
+          err instanceof Error ? err.message : 'Could not read that link.',
+        )
       }
-    }
+      if (plan.cells.length === 0) {
+        return fail(res, 400, 'invalid', 'There is no notebook with any cells at that link.')
+      }
 
-    res.status(201).json({
-      id,
-      name,
-      url: `${config.publicUrl}/s/${id}`,
-      cells: plan.cells.length,
-      files: written,
-      skipped,
-      createdBy: staff?.name ?? null,
-    })
-  }))
+      const asked = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
+      const name = (asked || seminarNameFor(plan.notebookTarget ?? target)).slice(
+        0,
+        LIMITS.seminarName,
+      )
+
+      const staff = currentStaff(req)
+      /*
+       * Одна общая функция на все двери — см. seedSeminar.
+       *
+       * Здесь когда-то стоял свой список: создать сессию, записать правила,
+       * подписать автора, положить ячейки. Правила из него однажды выпали, и
+       * «из GitHub» с «только преподаватель» и выключенным оракулом делало
+       * комнату, где запускать мог каждый. Правила пишутся при создании, так что
+       * чинить это было уже негде.
+       *
+       * Документ раньше файлов: комната с пустой тетрадью выглядит сломанной, а
+       * комната, куда ещё не доехали данные, — просто медленной.
+       */
+      const id = seedSeminar({
+        name,
+        environment: wanted || activeName(),
+        rules: req.body?.rules,
+        mode: req.body?.mode,
+        cells: plan.cells,
+        author: staff?.name ?? null,
+      })
+
+      const written: string[] = []
+      const skipped: string[] = []
+      for (const file of plan.files) {
+        /*
+         * Имя меряется той же меркой, что и всё остальное в дереве комнаты.
+         *
+         * Здесь спрашивали `safeName` — двести символов, пробел с краю можно, — а
+         * панель, загрузка и переименование спрашивают `safeSegment`: сто двадцать
+         * и нельзя. Имя из середины этой щели ложилось на диск и было видно в
+         * дереве, но открыть, скачать или переименовать его было уже нечем:
+         * `normalizePath` такой путь не пропускает. Файл, до которого не
+         * дотянуться, хуже непривезённого — такие уезжают в `skipped`, где
+         * преподаватель их видит списком.
+         */
+        const target = safeSegment(file.name) ? resolveInSession(id, file.name) : null
+        if (!target || !file.downloadUrl) {
+          skipped.push(file.name)
+          continue
+        }
+        try {
+          const buf = await fetchRaw(file.downloadUrl, config.maxUploadBytes)
+          fs.writeFileSync(target, buf)
+          written.push(file.name)
+        } catch {
+          // One unreadable file must not cost the whole import: the notebook is
+          // already in the room and the teacher can drag the rest in by hand.
+          skipped.push(file.name)
+        }
+      }
+
+      res.status(201).json({
+        id,
+        name,
+        url: `${config.publicUrl}/s/${id}`,
+        cells: plan.cells.length,
+        files: written,
+        skipped,
+        createdBy: staff?.name ?? null,
+      })
+    }),
+  )
 
   /*
    * Третья дверь: тетрадь с диска.
@@ -216,7 +234,12 @@ export function adminImportRoutes(): Router {
       try {
         parsed = JSON.parse(raw)
       } catch {
-        return fail(res, 400, 'invalid', 'That file is not a notebook — .ipynb is JSON, and this would not parse.')
+        return fail(
+          res,
+          400,
+          'invalid',
+          'That file is not a notebook — .ipynb is JSON, and this would not parse.',
+        )
       }
     }
 
@@ -232,13 +255,17 @@ export function adminImportRoutes(): Router {
 
     const asked = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
     const fallback = typeof req.body?.filename === 'string' ? req.body.filename : ''
-    const name = (asked || tidyNotebookName(fallback) || 'Untitled seminar').slice(0, LIMITS.seminarName)
+    const name = (asked || tidyNotebookName(fallback) || 'Untitled seminar').slice(
+      0,
+      LIMITS.seminarName,
+    )
 
     const staff = currentStaff(req)
     const id = seedSeminar({
       name,
       environment: wanted || activeName(),
       rules: req.body?.rules,
+      mode: req.body?.mode,
       cells,
       author: staff?.name ?? null,
     })
@@ -268,12 +295,23 @@ function seedSeminar(input: {
   name: string
   environment: string | null
   rules: unknown
+  mode: unknown
   cells: ReturnType<typeof notebookCells>
   author: string | null
 }): string {
   const id = newSessionId()
   createSession(id, input.name, input.environment)
-  if (input.rules && typeof input.rules === 'object') setRules(id, readRules(input.rules))
+  /*
+   * Режим — это пресет правил, и он обязан работать у всех трёх дверей.
+   *
+   * Иначе выходило бы ровно то, о чём предупреждает абзац выше: семинар,
+   * заведённый импортом с выбранной лекцией, открывался бы комнатой, где
+   * печатают все. Присланные правила ложатся поверх пресета: человек выбрал
+   * режим, а потом подкрутил одну строку.
+   */
+  const preset = input.mode === 'lecture' ? LECTURE_ROOM : null
+  const asked = input.rules && typeof input.rules === 'object' ? input.rules : null
+  if (preset || asked) setRules(id, readRules({ ...(preset ?? {}), ...(asked ?? {}) }))
   if (input.author) setSeminarCreator(id, input.author)
 
   const { doc } = getSessionDoc(id)

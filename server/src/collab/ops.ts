@@ -219,6 +219,14 @@ export function settleFresh(sessionId: string, doc: Y.Doc, cellIds: string[]): v
     put(cell, 'runBy', remembered?.runBy ?? null)
     put(cell, 'runById', remembered?.runById ?? null)
     put(cell, 'ranMs', remembered?.ranMs ?? null)
+    /*
+     * И замок снимается. Новая ячейка закрыта всегда — кто бы её ни завёл и
+     * какой бы кадр её ни принёс: право открывать ячейку выдаёт сервер по
+     * управляющему сообщению (control.ts · cell:open), и приехать оно может
+     * только оттуда. Отмена удаления открытой ячейки возвращает её закрытой,
+     * и это честнее отказа: документ цел, а замок ставится нажатием.
+     */
+    if (cell.get('open') != null) cell.set('open', null)
     // Секундомер и приглашение ко вводу не возвращаются никогда: ядро не
     // считает эту ячейку и ничего у неё не спрашивает.
     put(cell, 'startedAt', null)

@@ -30,12 +30,22 @@
  *   ranMs     number | null           how long the last SETTLED run took. Also
  *                                     the kernel's; an interrupted run leaves
  *                                     it null, because it has no finish time
+ *   open      boolean | undefined     замок лекции: ячейка, открытая
+ *                                     преподавателем. Нет поля или false —
+ *                                     обычная, закрытая
  *
- * The last three are written only by the server and are display-only: nothing
- * in this product may gate a control on them. The list above was short by one
- * for months — `stdin` was written by the kernel and documented nowhere, which
- * is exactly how it came to be missing from cloneCell and to vanish whenever a
- * neighbouring cell moved.
+ * `stdin`, `startedAt` and `ranMs` are written only by the server and are
+ * display-only: nothing in this product may gate a control on them. The list
+ * above was short by one for months — `stdin` was written by the kernel and
+ * documented nowhere, which is exactly how it came to be missing from cloneCell
+ * and to vanish whenever a neighbouring cell moved.
+ *
+ * `open` тоже пишет только сервер — по управляющему сообщению преподавателя, —
+ * но, в отличие от трёх верхних, на нём как раз ДЕРЖИТСЯ право: в лекции
+ * комната печатает и запускает ровно в открытых ячейках (shared/rules.ts ·
+ * mayEditCell). Поэтому кадр из браузера, приносящий это поле, гейт отвергает
+ * так же, как отвергает поддельный вывод: замок, который можно принести с
+ * собой, — не замок.
  *
  * An output Y.Map holds:
  *   kind      'stream' | 'data' | 'error'
@@ -309,6 +319,16 @@ export interface CellSnapshot {
    * can see it.
    */
   stdin: { prompt: string; password: boolean } | null
+  /**
+   * Ячейку открыл преподаватель: в закрытой тетради лекции она одна принимает
+   * набор и запуск.
+   *
+   * Необязательное поле, потому что необязателен и ключ в документе: у ячейки,
+   * которой замок не касался, его нет вовсе, и снимок девятинедельной давности
+   * читается без него. `readCell` всё равно кладёт сюда boolean — читать его
+   * через `!== false` нельзя, читать надо через истину.
+   */
+  open?: boolean
 }
 
 export type YCell = Y.Map<any>
@@ -884,6 +904,21 @@ export function cellType(cell: YCell): CellType {
   return (cell.get('type') as CellType) ?? 'code'
 }
 
+/**
+ * Открыта ли ячейка — то есть печатает и запускает в ней вся комната.
+ *
+ * Строго по истине: нет ключа, `false`, `null`, строка «нет» — всё это
+ * закрытая ячейка. Замок обязан быть выключен по умолчанию, потому что по
+ * умолчанию его в документе просто нет: тетрадь, написанная до лекций, и
+ * ячейка, которой преподаватель не касался, — один и тот же случай.
+ *
+ * Право из этого поля выводит не оно само, а `mayEditCell`/`mayRunCell`
+ * (shared/rules.ts): открытая ячейка даёт текст и запуск, и ничего сверх.
+ */
+export function isCellOpen(cell: YCell): boolean {
+  return cell.get('open') === true
+}
+
 export function cellSource(cell: YCell): Y.Text {
   let text = cell.get('source') as Y.Text | undefined
   if (!text) {
@@ -942,6 +977,14 @@ export function cloneCell(cell: YCell): YCell {
   copy.set('stdin', cell.get('stdin') ?? null)
   copy.set('startedAt', cell.get('startedAt') ?? null)
   copy.set('ranMs', cell.get('ranMs') ?? null)
+  /*
+   * Замок переезжает вместе с ячейкой — и это тот же довод, что абзацем выше,
+   * но с ценой подороже секундомера: перестановка соседа захлопывала бы ячейку,
+   * в которой комната печатает, посреди набора. Ключ пишется только когда он
+   * есть: у закрытой ячейки его в документе нет, и заводить его на каждой
+   * перестановке незачем.
+   */
+  if (cell.get('open') != null) copy.set('open', cell.get('open'))
   return copy
 }
 
@@ -1052,6 +1095,7 @@ export function readCell(cell: YCell): CellSnapshot {
     // returns undefined, and the view compares against null.
     startedAt: (cell.get('startedAt') as number | null) ?? null,
     ranMs: (cell.get('ranMs') as number | null) ?? null,
+    open: isCellOpen(cell),
   }
 }
 

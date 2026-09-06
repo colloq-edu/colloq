@@ -17,6 +17,8 @@ import {
   allowsRun,
   allowsStructure,
   CLASS_IS_OVER,
+  mayEditCell,
+  mayRunCell,
   readRules,
   rulesAfterClass,
   type RoomRules,
@@ -33,6 +35,14 @@ export interface Permits {
   rules: RoomRules
   /** Занятие закончено: участник читает, действует преподаватель. */
   finished: boolean
+  /**
+   * Кто это спрашивает.
+   *
+   * Все поля ниже — уже готовые ответы, и роль в них вплавлена. Она остаётся
+   * здесь ради прав, которые нельзя посчитать заранее, потому что они зависят
+   * ещё и от ячейки: см. `mayEditThisCell` в конце файла.
+   */
+  role: ParticipantRole
   /** Печатать в ячейках. */
   edit: boolean
   editWhy: string
@@ -96,6 +106,7 @@ export function permitsIn(rules: unknown, role: ParticipantRole, finished: boole
   return {
     rules: read,
     finished,
+    role,
     edit: allows(read.edit, role),
     editWhy: why('Тетрадь в этом семинаре принадлежит преподавателю'),
     run: allowsRun(read.run, role, 'one'),
@@ -138,6 +149,60 @@ export function permitsIn(rules: unknown, role: ParticipantRole, finished: boole
     ask: acts,
     askWhy: CLASS_IS_OVER,
   }
+}
+
+/* ------------------------------------------------------- замок на ячейке */
+
+/**
+ * Одна фраза на всё, что говорит закрытая ячейка: строка под кодом, подсказка
+ * на погашенной кнопке, отказ на Cmd+Enter.
+ *
+ * Написана про занятие, а не про право: человеку, который только что нажал,
+ * важно не какое поле в правилах его остановило, а что тетрадь сейчас ведут.
+ * Тот же довод, что у `CLASS_IS_OVER`.
+ */
+export const LECTURE_CELL = 'Идёт лекция — эту ячейку печатает преподаватель'
+
+/**
+ * Права, которые нельзя посчитать без ячейки.
+ *
+ * Тонкие обёртки над `mayEditCell`/`mayRunCell` из shared/rules.ts — теми
+ * самыми, которыми отвечает сервер (gate.ts и control.ts). Компонент не
+ * складывает правило с замком сам: сложенное дважды рано или поздно сложится
+ * по-разному, и разойдутся не кнопки, а кнопка с сервером.
+ *
+ * `may.rules` здесь — уже с наложенным концом занятия, и `finished` передаётся
+ * ещё раз намеренно: помощник накладывает то же самое повторно, что ничего не
+ * меняет, зато вызов читается одинаково и здесь, и на сервере.
+ */
+export function mayEditThisCell(may: Permits, open: boolean): boolean {
+  return mayEditCell(may.rules, may.role, open, may.finished)
+}
+
+/** То же для запуска: закрытую ячейку в лекции считает преподаватель. */
+export function mayRunThisCell(may: Permits, open: boolean): boolean {
+  return mayRunCell(may.rules, may.role, open, may.finished)
+}
+
+/**
+ * Значит ли замок в этой комнате хоть что-нибудь.
+ *
+ * Вопрос задаётся про УЧАСТНИКА, а не про того, кто смотрит: преподавателю
+ * можно всё при любом замке, и «мне это ничего не меняет» — неверный ответ на
+ * «стоит ли рисовать замок», ведь открывает ячейку как раз он.
+ *
+ * Комната, где участник и так печатает и запускает, замка не показывает вовсе:
+ * значок, который ничего не решает, — украшение, а украшение рядом с правилом
+ * читается как правило. По той же причине замок исчезает после звонка: там уже
+ * ничего не открыть, и говорить об этом должен `CLASS_IS_OVER`.
+ */
+export function cellLockMatters(may: Permits): boolean {
+  const swings = (
+    ask: (rules: RoomRules, role: ParticipantRole, open: boolean, finished: boolean) => boolean,
+  ): boolean =>
+    ask(may.rules, 'participant', true, may.finished) !==
+    ask(may.rules, 'participant', false, may.finished)
+  return swings(mayEditCell) || swings(mayRunCell)
 }
 
 export { HOSTS }

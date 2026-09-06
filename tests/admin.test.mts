@@ -37,7 +37,7 @@ import { parseOraclePatch } from '../server/src/admin/settings.js'
 import { adminAuthRoutes } from '../server/src/routes/admin-auth.js'
 import { adminInstanceRoutes } from '../server/src/routes/admin-instance.js'
 import { createSession, getRules, isFinished, setRules, storedRules } from '../server/src/db.js'
-import { OPEN_ROOM } from '../shared/rules.js'
+import { isLectureRoom, LECTURE_ROOM, OPEN_ROOM } from '../shared/rules.js'
 import { setPublicationSlug, writePublication } from '../server/src/publish/store.js'
 import { sessionDir } from '../server/src/workspace.js'
 
@@ -337,6 +337,39 @@ test('карточка семинара называет адрес страни
   const res = await call('GET', '/api/admin/seminars', { cookie: mintCookie(owner) })
   const rows = (await res.json()) as { id: string; publication: { slug: string | null } | null }[]
   assert.equal(rows.find((row) => row.id === room)?.publication?.slug, 'week-one')
+})
+
+test('режим при создании — это пресет правил, а присланное ложится поверх', async () => {
+  /*
+   * Режим не заводит в комнате второго состояния рядом с правилами: 'lecture' —
+   * это `LECTURE_ROOM`, записанный в ту же строку, и дальше о том, что в комнате
+   * можно, спрашивают одни правила. Два источника правды разъехались бы на
+   * первом переключателе в настройках.
+   */
+  const owner = oldestOwner()
+  assert.ok(owner)
+  const cookie = mintCookie(owner)
+  const made = async (body: unknown): Promise<string> => {
+    const res = await call('POST', '/api/admin/seminars', { cookie, body })
+    assert.equal(res.status, 201)
+    return ((await res.json()) as { id: string }).id
+  }
+
+  const lecture = await made({ name: 'Лекция', mode: 'lecture' })
+  assert.deepEqual(storedRules(lecture), LECTURE_ROOM)
+  assert.equal(isLectureRoom(storedRules(lecture)), true)
+
+  // Нет поля — 'lab', то есть ровно то, чем семинар был всегда.
+  const lab = await made({ name: 'Лаборатория' })
+  assert.deepEqual(storedRules(lab), OPEN_ROOM)
+
+  // Человек выбрал режим и подкрутил одну строку: подкрученное сильнее пресета.
+  const mixed = await made({
+    name: 'Лекция, где спрашивают',
+    mode: 'lecture',
+    rules: { run: 'single', oracle: 'hints' },
+  })
+  assert.deepEqual(storedRules(mixed), { ...LECTURE_ROOM, run: 'single', oracle: 'hints' })
 })
 
 test('панель заканчивает занятие и открывает его обратно', async () => {

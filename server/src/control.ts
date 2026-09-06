@@ -30,9 +30,11 @@ import {
   cellId,
   cellsAt,
   cellType,
+  findCell,
   findChatEntry,
   getCells,
   getMeta,
+  isCellOpen,
   rejectPatch,
   type KernelStatus,
 } from '@shared/notebook'
@@ -60,6 +62,7 @@ import {
   allowsRun,
   allowsStructure,
   CLASS_IS_OVER,
+  mayRunCell,
   runQueueCap,
   type Who,
 } from '@shared/rules'
@@ -163,6 +166,16 @@ const MAX_COMMAND_BYTES = 4096
  * провод может сделать, поэтому потолок назван вслух и отказ на нём говорящий.
  */
 const MAX_NOTE_CHARS = 3000
+
+/**
+ * Происхождение записи, которую сервер делает от своего имени.
+ *
+ * Та же строка, что в collab/index.ts, и это не совпадение: наблюдатели за
+ * документом пропускают собственные записи сервера по ней. Серверные поля
+ * ячейки (`state`, `outputs`, а теперь и `open`) пишутся так же — у них нет
+ * автора, потому что их никто не набирал.
+ */
+const ORIGIN = 'server'
 
 interface Room {
   sockets: Set<WebSocket>
@@ -611,6 +624,15 @@ function refuse(ws: WebSocket, sessionId: string, payload: TokenPayload, message
 }
 
 /**
+ * Одна фраза на отказ по правилу `run` — и потому она константа.
+ *
+ * Запуск ячейки теперь спрашивает право, уже зная про замок, и потому называет
+ * фразу сам; без общего имени в коде оказалось бы два одинаковых предложения,
+ * из которых однажды поправят одно.
+ */
+const RUN_IS_THE_TEACHERS = 'Only the teacher runs cells in this seminar.'
+
+/**
  * May this person start the kernel on something?
  *
  * The first of the room's rules to be enforced, and the reason it is first: one
@@ -621,16 +643,36 @@ function refuse(ws: WebSocket, sessionId: string, payload: TokenPayload, message
  *
  * The refusal is spoken rather than silent. A button that does nothing is a bug
  * report; a button that says why is a rule.
+ *
+ * `cellOpen` — замок на ячейке: преподаватель открыл вот эту одну, и в ней
+ * комната считает даже там, где вообще запускает он. Умолчание `false`, и это
+ * важнее, чем кажется: тем же helper'ом спрашивают Run All, запуск файла и
+ * команду оболочки, а открытая ячейка ни листа, ни терминала не открывает —
+ * она открыта одна и ровно одна.
  */
 function mayRun(
   sessionId: string,
   payload: TokenPayload,
   ws: WebSocket,
-  message = 'Only the teacher runs cells in this seminar.',
+  message = RUN_IS_THE_TEACHERS,
+  cellOpen = false,
 ): boolean {
-  if (allowsRun(getRules(sessionId).run, payload.role, 'one')) return true
+  if (mayRunCell(getRules(sessionId), payload.role, cellOpen, isFinished(sessionId))) return true
   refuse(ws, sessionId, payload, message)
   return false
+}
+
+/**
+ * Открыта ли эта ячейка комнате.
+ *
+ * Спрашивается у документа, а не у сообщения: поле пишет сервер (см.
+ * `cell:open`), и читать его надо там же, где оно записано. Ячейки нет в
+ * комнате — значит и замка нет: право тогда решают обычные правила, и отказ
+ * говорит про них, а не про ячейку, которой не существует.
+ */
+function cellIsOpen(sessionId: string, id: string): boolean {
+  const found = findCell(getSessionDoc(sessionId).doc, id)
+  return found ? isCellOpen(found.cell) : false
 }
 
 /**
@@ -849,7 +891,13 @@ export function dispatch(
     case 'run': {
       const id = optionalId(message.cellId)
       if (!id) return
-      if (!mayRun(sessionId, payload, ws)) return
+      /*
+       * Про ячейку спрашиваем РАНЬШЕ, чем про право: открытый замок и есть то,
+       * что делает этот запуск разрешённым, а узнать о нём можно только в
+       * документе. Проверка стояла до всякого знания о ячейке и потому не
+       * могла его учесть. Отказ при этом остался одной фразой — той же самой.
+       */
+      if (!mayRun(sessionId, payload, ws, RUN_IS_THE_TEACHERS, cellIsOpen(sessionId, id))) return
       queue(ws, sessionId, payload, [id])
       return
     }
@@ -1668,6 +1716,49 @@ export function dispatch(
       applyOnBehalf(sessionId, payload.participantId, () => {
         moveInCells(doc, id, direction)
       })
+      return
+    }
+
+    /*
+     * Замок на ячейке: преподаватель открывает одну, и в ней комната печатает и
+     * запускает — в лекционной тетради, где всё остальное его.
+     *
+     * Право простое и не выражается правилом комнаты: открывает тот, чья
+     * тетрадь, то есть преподаватель. Правило здесь было бы правилом о том, кто
+     * раздаёт права, — а такого в RoomRules нет и заводить его не за чем.
+     */
+    case 'cell:open': {
+      if (payload.role !== 'host') {
+        refuse(ws, sessionId, payload, 'Открывает ячейки преподаватель.')
+        return
+      }
+      /*
+       * И не в законченном занятии. Открытая ячейка — это обещание комнате, что
+       * здесь ей можно; после звонка нельзя нигде (shared/rules.ts ·
+       * rulesAfterClass), и обещание оказалось бы пустым: замок открыт, а Run
+       * отвечает «занятие закончено». Пустое обещание хуже отказа — по нему
+       * идут и упираются.
+       */
+      if (isFinished(sessionId)) {
+        send(ws, { t: 'error', message: OVER })
+        return
+      }
+      const id = optionalId(message.cellId)
+      if (!id || typeof message.open !== 'boolean') return
+      const { doc } = getSessionDoc(sessionId)
+      const found = findCell(doc, id)
+      if (!found) {
+        send(ws, { t: 'error', message: 'Этой ячейки в комнате уже нет.' })
+        return
+      }
+      // Повторное нажатие — не событие: лишняя версия в истории на каждый
+      // щелчок по уже открытой ячейке ничего не рассказывает.
+      if (isCellOpen(found.cell) === message.open) return
+      /*
+       * От имени сервера, как `state` и `outputs` у той же ячейки: `open` —
+       * право, а не чей-то набор, и автора у него нет.
+       */
+      doc.transact(() => found.cell.set('open', message.open), ORIGIN)
       return
     }
 
