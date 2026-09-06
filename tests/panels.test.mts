@@ -13,7 +13,7 @@
  */
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { mayReload, refusalHealed } from '../web/src/lib/refusal.js'
+import { beginVisit, mayReload, refusalHealed } from '../web/src/lib/refusal.js'
 import { restore, Tabs, type Room } from '../web/src/lib/tabs.svelte.js'
 
 /*
@@ -257,4 +257,26 @@ test('запись прошлой версии читается, а мусор �
   assert.deepEqual(junk.mine, [])
   junk.settle(room([BOOK]))
   assert.equal(junk.active, BOOK)
+})
+
+test('перезагрузка рукой начинает счёт заново, перезагрузка по отказу — нет', () => {
+  store.clear()
+  mock.timers.enable({ apis: ['Date'], now: 0 })
+  try {
+    // Серия исчерпана: две перезагрузки по отказу подряд.
+    assert.equal(mayReload(), true)
+    assert.equal(mayReload(), true)
+    assert.equal(mayReload(), false)
+
+    // Страница загрузилась по отказу — метка стоит, счёт держится.
+    store.set('colloq.refused.auto', '1')
+    beginVisit()
+    assert.equal(mayReload(), false, 'перезагрузка по отказу обнулила счёт')
+
+    // Страница загрузилась без метки — человек нажал «обновить» сам.
+    beginVisit()
+    assert.equal(mayReload(), true, 'перезагрузка рукой не начала счёт заново')
+  } finally {
+    mock.timers.reset()
+  }
 })

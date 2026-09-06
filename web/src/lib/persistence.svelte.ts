@@ -95,8 +95,55 @@ export function bindLocalStore(sessionId: string, doc: Y.Doc): LocalStore {
     },
     clear() {
       closed = true
-      return store.clearData().catch(() => {})
+      return deadline(wipe(store, dbName(sessionId)), REPLAY_DEADLINE)
     },
+  }
+}
+
+/**
+ * Стереть кэш комнаты так, чтобы следующая загрузка ничего не переиграла.
+ *
+ * Не `clearData()` библиотеки. Та удаляет базу целиком, а удаление базы ждёт,
+ * пока её закроет КАЖДАЯ вкладка: соседняя вкладка того же семинара держит её
+ * открытой, и обещание не исполняется никогда — кэш переигрывается, сервер
+ * отказывает снова, и на второй перезагрузке вкладка сдаётся. Вдобавок
+ * библиотека не ждёт и своего удаления: страница перезагружалась, пока запрос
+ * ещё стоял в очереди. Очистка хранилищ ВНУТРИ базы не ждёт никого и
+ * заканчивается до того, как отсюда вернутся.
+ */
+async function wipe(store: IndexeddbPersistence, name: string): Promise<void> {
+  await store.destroy().catch(() => {})
+  const db = await new Promise<IDBDatabase | null>((resolve) => {
+    let request: IDBOpenDBRequest
+    try {
+      request = indexedDB.open(name)
+    } catch {
+      resolve(null)
+      return
+    }
+    request.onupgradeneeded = () => {
+      // Базы не было — заводить пустую нельзя: библиотека открывает без версии
+      // и хранилищ в такой не создаст, а без них не сможет ни читать, ни писать.
+      request.transaction?.abort()
+      resolve(null)
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => resolve(null)
+    request.onblocked = () => resolve(null)
+  })
+  if (!db) return
+  try {
+    const names = Array.from(db.objectStoreNames)
+    if (names.length === 0) return
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(names, 'readwrite')
+      for (const store of names) tx.objectStore(store).clear()
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => resolve()
+      tx.onabort = () => resolve()
+    })
+  } finally {
+    db.close()
   }
 }
 

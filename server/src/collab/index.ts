@@ -18,13 +18,14 @@ import {
 import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
 import { getRules, getSession, isFinished, renameSession } from '../db.js'
 import { seldom, tally } from '../log.js'
-import { classify, permits } from './gate.js'
+import { classify, MAX_SYNC_STEP2_BYTES, permits } from './gate.js'
 import { forgetSession, onCarets, rememberDeleted, resetRetyped, settleFresh } from './ops.js'
 import {
   bindPersistence,
   flushPersistence,
   discardPersistence,
   flushAllPersistence,
+  invalidateSnapshot,
 } from './persistence.js'
 import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } from './history.js'
 import { flushAllFiles, forgetFiles } from './files.js'
@@ -262,6 +263,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     dispose: bindPersistence(sessionId, doc),
   }
   docs.set(sessionId, entry)
+  if (dropPending(sessionId, doc)) invalidateSnapshot(sessionId)
   /*
    * Файлы тетрадей — сразу после того, как документ попал в реестр, и до
    * засева: наблюдатель должен увидеть засев обычной правкой, а `watchBooks`
@@ -538,7 +540,23 @@ const SYNC_UPDATE = 2
 function refuse(
   entry: DocEntry,
   conn: WebSocket,
-  refusal: { rule: 'structure' | 'edit' | 'title'; message: string },
+  refusal: {
+    rule: 'structure' | 'edit' | 'title'
+    message: string
+    /**
+     * Что именно не разобралось — словами гейта, с путём. В журнал, не
+     * человеку: по одной общей фразе про кэш два вечера искали причину,
+     * которая называлась «кадр слишком велик для разбора (cells#…)».
+     */
+    detail?: string
+    /**
+     * Отказ первой синхронизации, а не правке. Вкладка по этому слову в кадре
+     * закрытия отличает «ваш кэш старше сервера» от «эту правку не приняли»:
+     * управляющий сокет с текстом отказа идёт другим проводом и может прийти
+     * позже закрытия.
+     */
+    stale?: boolean
+  },
 ): void {
   const state = entry.conns.get(conn)
   if (state?.participantId && refusalListener) {
@@ -556,13 +574,43 @@ function refuse(
    * причина, которую сформулировал сам гейт.
    */
   if (seldom(`gate:${entry.sessionId}:${refusal.rule}`)) {
-    console.warn(`[gate ${entry.sessionId}] ${refusal.rule} refused — ${refusal.message}`)
+    const detail = refusal.detail ? ` · ${refusal.detail}` : ''
+    console.warn(`[gate ${entry.sessionId}] ${refusal.rule} refused — ${refusal.message}${detail}`)
   }
   try {
-    conn.close(4403, refusal.rule)
+    conn.close(4403, refusal.stale ? 'stale' : refusal.rule)
   } catch {
     /* сокет уже закрыт — отказ всё равно состоялся: кадр не применён */
   }
+}
+
+/**
+ * Выбросить из документа то, что в него так и не встало.
+ *
+ * `pendingStructs` — нажатия, для которых Yjs ждёт предыдущего такта их же
+ * клиента. Ждать нечего: тот кадр гейт отказал, и такт не придёт никогда. А
+ * подвисшее не лежит тихо — `encodeStateAsUpdate` кладёт его в снимок и в
+ * каждый step2 каждой вкладке, вкладка возвращает его в своём step2, и гейт
+ * судит те же нажатия при каждом входе — в закрытой комнате отказом. Измерено
+ * на живой комнате: 140 КБ подвисших нажатий шести клиентов после одного утра.
+ *
+ * Сейчас гейт такой кадр не пропускает (gate.ts · checkContiguity), так что
+ * это уборка за прошлым: снимки, записанные до неё. Вкладки, у которых мусор
+ * остался в кэше, получат отказ на первом же входе и пересоберутся начисто.
+ *
+ * Возвращает, было ли что выбрасывать.
+ */
+function dropPending(sessionId: string, doc: Y.Doc): boolean {
+  const store = doc.store as unknown as {
+    pendingStructs: { update: Uint8Array } | null
+    pendingDs: Uint8Array | null
+  }
+  if (!store.pendingStructs && !store.pendingDs) return false
+  const bytes = (store.pendingStructs?.update.byteLength ?? 0) + (store.pendingDs?.byteLength ?? 0)
+  console.warn(`[room ${sessionId}] dropped ${bytes} bytes of pending structs that could never integrate`)
+  store.pendingStructs = null
+  store.pendingDs = null
+  return true
 }
 
 type RefusalListener = (
@@ -690,12 +738,19 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
         let accepted: { retyped: string[]; created: string[]; removed: string[] } | null = null
         if (subtype === SYNC_STEP2 || subtype === SYNC_UPDATE) {
           const state = entry.conns.get(conn)
-          const judgement = classify(entry.doc, decoding.readVarUint8Array(peek))
+          const stale = subtype === SYNC_STEP2
+          const judgement = classify(
+            entry.doc,
+            decoding.readVarUint8Array(peek),
+            stale ? MAX_SYNC_STEP2_BYTES : undefined,
+          )
           if (!judgement.ok) {
             // Пол комнаты: это не право, а то, что сервер пишет сам.
             return refuse(entry, conn, {
               rule: 'edit',
-              message: subtype === SYNC_STEP2 ? STALE_SYNC : floorMessage(judgement.why),
+              message: stale ? STALE_SYNC : floorMessage(judgement.why),
+              detail: `${judgement.why} (${judgement.path})`,
+              stale,
             })
           }
           /*
@@ -725,6 +780,15 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
         }
         encoding.writeVarUint(encoder, MESSAGE_SYNC)
         syncProtocol.readSyncMessage(decoder, encoder, entry.doc, conn)
+        /*
+         * Принятый кадр обязан встать целиком: дыры отказывает гейт. Если
+         * подвисло всё же — это ошибка в гейте, и молчать о ней нельзя, но и
+         * оставлять мусор в документе тоже: см. dropPending.
+         */
+        if (accepted && dropPending(entry.sessionId, entry.doc)) {
+          console.error(`[collab] accepted frame left pending structs in ${entry.sessionId}`)
+          invalidateSnapshot(entry.sessionId)
+        }
         if (accepted) {
           const { retyped, created, removed } = accepted
           if (retyped.length > 0 || created.length > 0) {

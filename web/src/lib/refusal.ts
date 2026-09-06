@@ -29,6 +29,8 @@ export const REFUSED_CLOSE = 4403
 
 const KEY = 'colloq.refused'
 const TRIES = 'colloq.refused.tries'
+/** Стоит ровно между `reload()` по отказу и следующей загрузкой страницы. */
+const AUTO = 'colloq.refused.auto'
 
 /**
  * Сколько раз подряд одна вкладка соглашается перезагрузиться из-за отказа.
@@ -90,8 +92,58 @@ export function refusalHealed(): void {
   if (aliveSince === null) aliveSince = Date.now()
 }
 
+/** Перезагрузка по отказу — с меткой, чтобы следующая загрузка узнала её. */
+export function reloadAfterRefusal(): void {
+  try {
+    sessionStorage.setItem(AUTO, '1')
+  } catch {
+    /* хранилища нет — и серии нет */
+  }
+  window.location.reload()
+}
+
+/**
+ * Страница загрузилась. Если не по отказу — человек перезагрузил её сам, и
+ * серия начинается заново.
+ *
+ * Серия живёт в sessionStorage, то есть переживает перезагрузки той же
+ * вкладки — так и задумано, иначе круг не заметить. Но по той же причине
+ * вкладка, однажды исчерпавшая перезагрузки, оставалась без них насовсем:
+ * человек нажимал «обновить», отказ повторялся, и вкладка вместо перезагрузки
+ * снова стояла на месте, потому что счёт так и висел на двух. Перезагрузка
+ * рукой — это решение человека, и оно старше счётчика.
+ */
+export function beginVisit(): void {
+  try {
+    const auto = sessionStorage.getItem(AUTO)
+    sessionStorage.removeItem(AUTO)
+    if (!auto) sessionStorage.removeItem(TRIES)
+  } catch {
+    /* хранилища нет — считать нечего */
+  }
+}
+
+/** Человек решил перезагрузиться сам — со счётом, начатым заново. */
+export function reloadByHand(): void {
+  try {
+    sessionStorage.removeItem(TRIES)
+  } catch {
+    /* хранилища нет */
+  }
+  window.location.reload()
+}
+
 export interface RefusalNote {
   sessionId: string
+  /**
+   * Отказали правке — или кэшу вкладки при входе.
+   *
+   * Сервер называет второе словом `stale` в кадре закрытия: у него не было
+   * чьей-то правки, у него был весь кэш вкладки, и виноват в этом обычно не
+   * человек. После перезагрузки это не окно «эту правку не приняли», а
+   * строка внизу — если только вместе с кэшем не пропал набранный текст.
+   */
+  kind: 'edit' | 'stale'
   /** Фраза сервера — почему не приняли. */
   message: string
   /** Что человек написал в ячейке, которую правил, если это была правка. */
@@ -129,7 +181,11 @@ export function takeRefusal(sessionId: string): RefusalNote | null {
     // Старая записка — из прошлого захода в ту же вкладку; показывать её сейчас
     // значит объяснять человеку то, чего он уже не помнит.
     if (typeof note.at !== 'number' || Date.now() - note.at > 60_000) return null
-    return { ...note, text: typeof note.text === 'string' ? note.text : '' }
+    return {
+      ...note,
+      kind: note.kind === 'stale' ? 'stale' : 'edit',
+      text: typeof note.text === 'string' ? note.text : '',
+    }
   } catch {
     return null
   }

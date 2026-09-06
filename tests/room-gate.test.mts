@@ -200,6 +200,7 @@ test('записка об отказе переживает перезагруз
    * лучше молчаливо онемевшего браузера.
    */
   const note = {
+    kind: 'edit' as const,
     sessionId: 'gate-room',
     message: 'Тетрадь принадлежит преподавателю.',
     text: 'df.head()',
@@ -215,10 +216,10 @@ test('записка об отказе переживает перезагруз
 })
 
 test('записка из другой комнаты и записка позавчерашняя не показываются', () => {
-  stashRefusal({ sessionId: 'другая', message: 'нет', text: 'x', at: Date.now() })
+  stashRefusal({ kind: 'edit', sessionId: 'другая', message: 'нет', text: 'x', at: Date.now() })
   assert.equal(takeRefusal('gate-room'), null, 'чужая комната показала записку')
 
-  stashRefusal({ sessionId: 'gate-room', message: 'нет', text: 'x', at: Date.now() - 300_000 })
+  stashRefusal({ kind: 'edit', sessionId: 'gate-room', message: 'нет', text: 'x', at: Date.now() - 300_000 })
   assert.equal(takeRefusal('gate-room'), null, 'старая записка пережила свой смысл')
 })
 

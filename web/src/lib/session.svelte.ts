@@ -31,7 +31,13 @@ import { forgetIdentity, type StoredIdentity } from './identity'
 import { permitsIn } from './may'
 import { cellToAnnounce, ownChanges, type AwarenessChanges } from './presence'
 import { bindLocalStore, forgetSessionInfo, type LocalStore } from './persistence.svelte'
-import { mayReload, REFUSED_CLOSE, refusalHealed, stashRefusal } from './refusal'
+import {
+  mayReload,
+  REFUSED_CLOSE,
+  refusalHealed,
+  reloadAfterRefusal,
+  stashRefusal,
+} from './refusal'
 
 export interface Peer {
   clientId: number
@@ -92,6 +98,17 @@ export class SessionState {
   }
   /** True once the server has said the seminar is gone; stops the reconnect loop. */
   gone = $state(false)
+  /**
+   * Вкладка разошлась с сервером и больше не пробует сама: словами — почему.
+   *
+   * Отказ лечится перезагрузкой с очисткой кэша, и перезагрузок даётся две (см.
+   * lib/refusal.ts). Дальше вкладка стоит на месте и молчит — раньше она
+   * стояла на месте и стучалась: провайдер переподключался сам по своему
+   * отступу и предлагал серверу тот же документ каждые три секунды, до
+   * закрытия вкладки. Измерено на живой комнате: одна вкладка, двенадцать
+   * отказов в минуту, десять минут, а в шапке всё это время — «Reconnecting».
+   */
+  stuck = $state<string | null>(null)
   /**
    * Комната есть, а ключ этого браузера она больше не признаёт.
    *
@@ -343,6 +360,16 @@ export class SessionState {
     this.provider = new WebsocketProvider(`${wsBase()}/collab`, session.id, this.doc, {
       params: { token: identity.token },
       connect: true,
+      /*
+       * Без BroadcastChannel: соседние вкладки одного семинара сходятся через
+       * сервер, как и любые два браузера. Прямой канал между вкладками — это
+       * второй путь, по которому в документ попадает то, что сервер не
+       * принимал: вкладка, только что пересобранная начисто после отказа,
+       * спрашивала соседку и получала от неё обратно ровно те структуры, из-за
+       * которых пересобиралась. Заодно исчезает эхо присутствия, от которого
+       * сервер защищался отдельно (collab/index.ts · ownAwareness).
+       */
+      disableBc: true,
     })
     this.awareness = this.provider.awareness
     /*
@@ -1158,22 +1185,35 @@ export class SessionState {
   #onCollabClose = (event: CloseEvent | null): void => {
     if (this.#disposed || event?.code !== REFUSED_CLOSE) return
     this.#disposed = true
+    /*
+     * Первым делом — замолчать. Провайдер после закрытия переподключается сам,
+     * и каждое переподключение предлагает серверу тот же документ с тем же
+     * отказом; пока стирается кэш, это два-три лишних отказа, а если
+     * перезагрузок больше нет — отказ каждые три секунды до закрытия вкладки.
+     * Сюда же не приходит: закрытие по собственной воле приходит без кода.
+     */
+    this.provider.disconnect()
+    // Слово в кадре закрытия — сервера, и оно надёжнее текста по второму
+    // проводу: тот может приехать позже закрытия. См. RefusalNote.kind.
+    const stale = event.reason === 'stale'
     const cell = this.selectedCellId ? findCell(this.doc, this.selectedCellId) : null
+    const fresh = this.#refusal && Date.now() - this.#refusal.at < 15_000
     stashRefusal({
       sessionId: this.session.id,
+      kind: stale ? 'stale' : 'edit',
       // Свежий отказ — тот, что и закрыл соединение; всё, что старше нескольких
       // секунд, пришло по другому поводу и объясняло бы не то.
-      message:
-        this.#refusal && Date.now() - this.#refusal.at < 15_000
-          ? this.#refusal.message
+      message: fresh
+        ? this.#refusal!.message
+        : stale
+          ? 'Кэш этой вкладки разошёлся с сервером — она собрана заново.'
           : 'Эту правку не приняли.',
       text: cell ? cellSource(cell.cell).toString() : '',
       at: Date.now(),
     })
     /*
-     * Кэш стирается до перезагрузки: иначе `y-indexeddb` переиграет отказанную
-     * правку при следующем открытии, а BroadcastChannel уже отдал её соседним
-     * вкладкам — и всё начнётся заново.
+     * Кэш стирается до перезагрузки: иначе `y-indexeddb` переиграет отказанное
+     * при следующем открытии, и всё начнётся заново.
      */
     void this.localStore
       .clear()
@@ -1183,12 +1223,18 @@ export class SessionState {
       .then(() => {
         /*
          * И только если это не превращается в круг. Перезагрузка лечит вместе с
-         * очисткой кэша; если очистка не удалась, отказанная правка переиграется
-         * и всё начнётся заново. Немой браузер плох, вечно перезагружающийся —
-         * хуже, поэтому после двух попыток остаёмся на месте с сообщением.
+         * очисткой кэша; если очистка не удалась, отказанное переиграется и всё
+         * начнётся заново. Немой браузер плох, вечно перезагружающийся — хуже,
+         * поэтому после двух попыток остаёмся на месте, отключёнными, и
+         * говорим об этом словами. Дальше — рукой человека: `reloadByHand`.
          */
-        if (mayReload()) window.location.reload()
-        else this.#disposed = false
+        if (mayReload()) {
+          reloadAfterRefusal()
+          return
+        }
+        this.stuck = stale
+          ? 'Кэш этой вкладки разошёлся с сервером, и собрать её заново дважды не вышло. Закройте другие вкладки этой комнаты и перезагрузите страницу.'
+          : 'Сервер дважды подряд не принял то, что лежит в этой вкладке. Закройте другие вкладки этой комнаты и перезагрузите страницу.'
       })
   }
 

@@ -239,6 +239,24 @@ export function discardPersistence(sessionId: string): void {
 }
 
 /**
+ * Забыть, что снимок на диске совпадает с документом, — и переписать его.
+ *
+ * `write()` не пишет, пока вектор состояния и число удалений те же, что у
+ * записанного: это правильно для правок, у которых нет ни того ни другого не
+ * бывает. Но сброс подвисших структур (collab/index.ts · getEntry) не меняет ни
+ * вектора, ни удалений — он меняет только то, что `encodeStateAsUpdate` кладёт
+ * в байты, — и без этой ручки чистый документ ложился бы на диск лишь со
+ * следующим нажатием в комнате, а до него каждый перезапуск поднимал бы мусор
+ * заново.
+ */
+export function invalidateSnapshot(sessionId: string): void {
+  const binding = bindings.get(sessionId)
+  if (!binding) return
+  binding.savedVector = null
+  schedule(binding)
+}
+
+/**
  * Write one document's snapshot now, without waiting for the debounce.
  *
  * The debounce exists for typing, where a snapshot per keystroke would be

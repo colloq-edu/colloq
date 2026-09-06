@@ -110,6 +110,18 @@ export type Judgement =
 export const MAX_SYNC_FRAME_BYTES = 256 * 1024
 
 /**
+ * Потолок для кадра ПЕРВОЙ синхронизации — отдельный и выше.
+ *
+ * Step2 — не правка, а разница между вкладкой и сервером, и в неё входит ВЕСЬ
+ * набор удалений документа: каждое стёртое слово за жизнь комнаты, навсегда.
+ * У комнаты, прожившей семестр, он один занимает сотни килобайт при нуле новых
+ * структур — и потолок правки отказывал бы ей в каждом переподключении, то
+ * есть навсегда. Восемь мегабайт — половина `MAX_WS_PAYLOAD`; цена разбора
+ * ограничена не байтами, а `MAX_WALK` ниже.
+ */
+export const MAX_SYNC_STEP2_BYTES = 8 * 1024 * 1024
+
+/**
  * Сколько элементов классификатор согласен обойти в одном кадре.
  *
  * Задел от вырожденного набора удалений: диапазон длиной в миллиард стоит
@@ -197,7 +209,10 @@ interface DeleteSet {
 type Struct = Y.Item | { id: Y.ID; length: number }
 
 /** Куда разрешилась ссылка: в надгробие, в свежую структуру или в живой элемент. */
-type Target = { kind: 'gc' } | { kind: 'fresh'; struct: Y.Item } | { kind: 'item'; item: Y.Item }
+type Target =
+  | { kind: 'gc'; struct: Y.GC }
+  | { kind: 'fresh'; struct: Y.Item }
+  | { kind: 'item'; item: Y.Item }
 
 /** Место: контейнер, в котором вещь лежит, и ключ, если контейнер — Y.Map. */
 interface Place {
@@ -277,8 +292,9 @@ class Frame {
       if (!fresh) throw new Refusal('ссылка на содержимое, которого у семинара нет', path)
       return { kind: 'fresh', struct: fresh }
     }
-    const found = Y.getItem(this.doc.store, id)
-    if (!(found instanceof Y.Item)) return { kind: 'gc' }
+    // Тип у `getItem` врёт: на месте собранного мусора он отдаёт GC.
+    const found = Y.getItem(this.doc.store, id) as Y.Item | Y.GC
+    if (!(found instanceof Y.Item)) return { kind: 'gc', struct: found }
     return { kind: 'item', item: found }
   }
 
@@ -608,6 +624,8 @@ class Frame {
       verdicts.push(verdict)
     }
 
+    this.checkContiguity()
+
     for (const struct of this.dec.structs) {
       if (!isItem(struct)) continue
       /*
@@ -659,13 +677,18 @@ class Frame {
         while (clock < end) {
           this.step(`${CELLS_KEY}#${client}`)
           const target = this.resolve(Y.createID(client, clock), `${CELLS_KEY}#${client}`)
-          if (target.kind === 'gc') {
-            clock += 1
-            continue
-          }
           const struct = target.kind === 'item' ? target.item : target.struct
           const step = Math.max(1, struct.id.clock + struct.length - clock)
           clock += step
+          /*
+           * Надгробие — целиком, а не по такту. Стояло `clock += 1`, и это
+           * измерено на живой комнате: девять вычищенных лент оракула дали
+           * 122 тысячи тактов собранного мусора, обход упирался в MAX_WALK, и
+           * каждое переподключение каждой вкладки отказывалось «кадр слишком
+           * велик» — навсегда, потому что набор удалений не убывает. Сейчас
+           * тот же набор стоит около шести тысяч шагов.
+           */
+          if (target.kind === 'gc') continue
           // Уже удалённое ничего не меняет — и это тот же кэш из IndexedDB.
           if (target.kind === 'item' && target.item.deleted) continue
           keep(this.verdictFor(...this.outermost(target)))
@@ -677,6 +700,52 @@ class Frame {
       .filter((v) => v.rule === 'structure' && v.verb === 'remove' && v.cellId)
       .map((v) => v.cellId as string)
     return { verdicts, retyped, created, removed }
+  }
+
+  /**
+   * Нажатия одного клиента идут подряд, и кадр обязан продолжать ровно с того
+   * такта, на котором сервер этого клиента видел.
+   *
+   * Иначе Yjs принимает структуру с дырой перед ней и кладёт в `pendingStructs`
+   * — навсегда, потому что недостающий такт уже не придёт: тот кадр гейт
+   * отказал. Отказанное не исчезает: подвисшее едет в снимок, в каждый step2
+   * серверу и обратно каждой вкладке, и гейт судит его заново на каждом
+   * переподключении. В закрытой комнате это отказ каждому студенту при каждом
+   * входе. Измерено на живой комнате: 140 КБ подвисших нажатий в снимке после
+   * одного утра.
+   *
+   * И вторая половина той же дыры — обход правил: структуру с дырой гейт судил
+   * бы, а применить её нельзя, так что она ждала бы в pending и встала бы в
+   * документ вместе с недостающим тактом — уже без суда. Поэтому дыра — отказ,
+   * а не пропуск. `Skip` — та же дыра, записанная явно.
+   */
+  private checkContiguity(): void {
+    const byClient = new Map<number, Struct[]>()
+    for (const struct of this.dec.structs) {
+      if (struct instanceof Y.Skip) {
+        throw new Refusal('кадр с пропуском в нажатиях', `${CELLS_KEY}#${struct.id.client}`)
+      }
+      const list = byClient.get(struct.id.client)
+      if (list) list.push(struct)
+      else byClient.set(struct.id.client, [struct])
+    }
+    for (const [client, structs] of byClient) {
+      structs.sort((a, b) => a.id.clock - b.id.clock)
+      let expected = Y.getState(this.doc.store, client)
+      for (const struct of structs) {
+        this.step(`${CELLS_KEY}#${client}`)
+        const end = struct.id.clock + struct.length
+        // Уже известное — тот же кэш из IndexedDB, что и в разборе структур.
+        if (end <= expected) continue
+        if (struct.id.clock > expected) {
+          throw new Refusal(
+            'кадр продолжает нажатия, которых сервер не видел',
+            `${CELLS_KEY}#${client}`,
+          )
+        }
+        expected = end
+      }
+    }
   }
 
   /**
@@ -746,8 +815,12 @@ function isType(struct: Y.Item | undefined, kind: unknown): boolean {
 /**
  * Разобрать кадр. Не применяет ничего и не трогает документ.
  */
-export function classify(doc: Y.Doc, payload: Uint8Array): Judgement {
-  if (payload.byteLength > MAX_SYNC_FRAME_BYTES) {
+export function classify(
+  doc: Y.Doc,
+  payload: Uint8Array,
+  maxBytes: number = MAX_SYNC_FRAME_BYTES,
+): Judgement {
+  if (payload.byteLength > maxBytes) {
     return { ok: false, why: 'слишком большой кадр', path: '' }
   }
   try {

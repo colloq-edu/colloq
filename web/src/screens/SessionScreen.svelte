@@ -43,7 +43,7 @@
   import { getMeta, rootOfCell, type KernelStatus } from '@shared/notebook'
   import type { SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
-  import { takeRefusal } from '@/lib/refusal'
+  import { beginVisit, reloadByHand, takeRefusal } from '@/lib/refusal'
   import { permitsIn } from '@/lib/may'
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import TabStrip from '@/components/reader/TabStrip.svelte'
@@ -120,8 +120,17 @@
   // который только что закончился отказом, и роутер пересоздаёт этот компонент,
   // когда комната действительно меняется.
   // svelte-ignore state_referenced_locally
+  beginVisit()
+  // svelte-ignore state_referenced_locally
   const refusal = takeRefusal(info.id)
-  let refusalShown = $state(refusal !== null)
+  /*
+   * Окно — про потерянный текст. Отказ кэшу при входе, после которого текста не
+   * пропало, — это строка внизу на несколько секунд: вкладка уже собралась
+   * заново, и всё, что человеку тут делать, — знать, почему она моргнула.
+   */
+  let refusalShown = $state(refusal !== null && (refusal.kind !== 'stale' || refusal.text !== ''))
+  let staleNotice = $state(refusal?.kind === 'stale' && refusal.text === '')
+  if (staleNotice) setTimeout(() => (staleNotice = false), 9000)
   let refusalCopied = $state(false)
 
   async function copyRefused(): Promise<void> {
@@ -1359,7 +1368,13 @@
         {/if}
       </div>
 
-      {#if !session.connected}
+      {#if session.stuck}
+        <!-- Не «Reconnecting»: вкладка больше не пробует, и крутилка врала бы. -->
+        <div class="flex shrink-0 items-center gap-2 text-white" role="status">
+          <Icon name="alert" size={12} />
+          <span class="text-2xs font-bold uppercase tracking-label">Разошлись с сервером</span>
+        </div>
+      {:else if !session.connected}
         <div
           class="flex shrink-0 items-center gap-2 text-white"
           role="status"
@@ -2127,6 +2142,54 @@
   своей строкой и своими словами, а на проекции в аудитории любая всплывшая
   плашка — это плашка, которую читает весь зал.
 -->
+<!--
+  Вкладка разошлась с сервером и больше не пробует сама — см. SessionState.stuck.
+  Полоса, а не тост: тост закрывают крестиком и остаются с мёртвой тетрадью,
+  которая выглядит живой. Единственное действие — перезагрузка рукой, и она
+  начинает счёт перезагрузок заново.
+-->
+{#if session.stuck && !session.gone}
+  <div
+    class="fixed inset-x-0 bottom-0 z-50 flex justify-center border-t border-line bg-raised px-4 py-3
+           pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+    role="alert"
+  >
+    <div class="flex w-full max-w-2xl items-center gap-3">
+      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
+      <p class="min-w-0 flex-1 text-ui leading-snug text-ink">{session.stuck}</p>
+      <button type="button" class="btn-primary shrink-0" onclick={() => reloadByHand()}>
+        Перезагрузить
+      </button>
+    </div>
+  </div>
+{/if}
+
+<!-- Кэш был старше сервера, вкладка собралась заново, текста не пропало. -->
+{#if staleNotice && !session.gone && !pult && !projection}
+  <div
+    class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4
+           pb-[env(safe-area-inset-bottom)]"
+  >
+    <div
+      role="status"
+      class="pointer-events-auto flex max-w-lg items-start gap-2 border border-line bg-raised py-2 pl-3 pr-1.5 shadow-pop"
+      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
+    >
+      <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-faint"></span>
+      <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">
+        Кэш этой вкладки был старше сервера — тетрадь перечитана заново, всё на месте.
+      </p>
+      <button
+        class="btn-ghost h-6 w-6 shrink-0 px-0"
+        onclick={() => (staleNotice = false)}
+        aria-label="Dismiss"
+      >
+        <Icon name="x" size={14} />
+      </button>
+    </div>
+  </div>
+{/if}
+
 {#if session.lastError && !session.gone && !pult && !projection}
   <div
     class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4
