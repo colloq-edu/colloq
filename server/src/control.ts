@@ -62,6 +62,7 @@ import {
   allowsRun,
   allowsStructure,
   CLASS_IS_OVER,
+  mayEditCell,
   mayRunCell,
   runQueueCap,
   type Who,
@@ -1780,18 +1781,29 @@ export function dispatch(
       const { doc } = getSessionDoc(sessionId)
       const entry = findChatEntry(doc, entryId)
       if (!entry) return
+      /*
+       * Право на принятие спрашивается у ЯЧЕЙКИ, а не только у правила.
+       *
+       * Иначе замок читался бы как поломка: ячейку студенту открыли, он в ней
+       * печатает и запускает, спрашивает оракула — и не может нажать
+       * «принять» на предложение, сделанное для этой самой ячейки. Правило
+       * `edit` при этом никуда не делось: в закрытой ячейке принимает
+       * преподаватель, как и было.
+       */
+      const target = entry.get('cellId')
+      const targetOpen = typeof target === 'string' ? cellIsOpen(sessionId, target) : false
       if (
         message.accept &&
-        !may(
-          sessionId,
-          getRules(sessionId).edit,
-          payload,
-          ws,
-          'Применить правку оракула здесь может преподаватель — спросить его можно по-прежнему.',
-        )
+        !mayEditCell(getRules(sessionId), payload.role, targetOpen, isFinished(sessionId))
       ) {
         // Отклонить может кто угодно: снятая плашка ничего не разрушает — пока
         // занятие идёт и оракула можно спросить заново.
+        refuse(
+          ws,
+          sessionId,
+          payload,
+          'Применить правку оракула здесь может преподаватель — спросить его можно по-прежнему.',
+        )
         return
       }
       /*

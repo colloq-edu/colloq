@@ -17,7 +17,16 @@ import { WebSocket } from 'ws'
 import { createSession, setFinished, setRules } from '../server/src/db.js'
 import { dispatch } from '../server/src/control.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
-import { cellId, createCell, findCell, getCells, isCellOpen } from '../shared/notebook.js'
+import {
+  cellId,
+  cellSource,
+  createCell,
+  createChatEntry,
+  findCell,
+  getCells,
+  getChat,
+  isCellOpen,
+} from '../shared/notebook.js'
 import { LECTURE_ROOM, OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import type { ControlClientMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
@@ -71,6 +80,29 @@ function cell(sessionId: string, source: string): string {
 function opened(sessionId: string, id: string): boolean {
   const found = findCell(getSessionDoc(sessionId).doc, id)
   return found ? isCellOpen(found.cell) : false
+}
+
+/** Предложение оракула на эту ячейку — и его имя. */
+function propose(sessionId: string, id: string, text: string): string {
+  const { doc } = getSessionDoc(sessionId)
+  const entry = createChatEntry({
+    participantId: 'p_participant',
+    name: 'Аня',
+    color: '#c273e6',
+    question: 'перепиши',
+    cellId: id,
+  })
+  doc.transact(() => {
+    entry.set('patch', text)
+    entry.set('state', 'done')
+    getChat(doc).push([entry])
+  })
+  return entry.get('id') as string
+}
+
+function sourceOf(sessionId: string, id: string): string {
+  const found = findCell(getSessionDoc(sessionId).doc, id)
+  return found ? cellSource(found.cell).toString() : 'нет такой'
 }
 
 function stateOf(sessionId: string, id: string): string {
@@ -209,4 +241,36 @@ test('в открытой комнате замок ничего не меняе
   const c = cell(id, 'x = 1')
   assert.equal(say(id, 'participant', { t: 'run', cellId: c }), null)
   assert.equal(stateOf(id, c), 'queued')
+})
+
+/* --------------------------------------------- предложение оракула в ячейке */
+
+test('в открытой ячейке принять предложение может тот, кому её открыли', () => {
+  /*
+   * Замок иначе читался бы как поломка: ячейку студенту открыли, он в ней
+   * печатает и запускает, спрашивает оракула — и не может нажать «принять» на
+   * предложение, сделанное для этой самой ячейки. В закрытой всё как было:
+   * принимает преподаватель.
+   */
+  const id = room()
+  const open = cell(id, 'x = 1')
+  const shut = cell(id, 'y = 2')
+  assert.equal(say(id, 'host', { t: 'cell:open', cellId: open, open: true }), null)
+
+  assert.equal(
+    say(id, 'participant', { t: 'ai:decide', entryId: propose(id, open, 'x = 42'), accept: true }),
+    null,
+    'принять в открытой ячейке не дали',
+  )
+  assert.equal(sourceOf(id, open), 'x = 42')
+
+  assert.match(
+    say(id, 'participant', {
+      t: 'ai:decide',
+      entryId: propose(id, shut, 'y = 42'),
+      accept: true,
+    }) ?? '',
+    /преподавател/i,
+  )
+  assert.equal(sourceOf(id, shut), 'y = 2', 'предложение приняли в закрытую ячейку')
 })
