@@ -246,7 +246,13 @@ test('вход пишет одну строку, и по ней видно — �
     token: signToken({ sessionId: id, participantId: me!, role: 'participant' }),
   })
   assert.equal(back.length, 1)
-  assert.match(back[0], new RegExp(`back ${me}\\b`))
+  /*
+   * Не `\b`: имя участника кончается любым знаком своей азбуки, в том числе
+   * дефисом, а после дефиса границы слова нет — и тест краснел на каждом
+   * шестидесятом прогоне, когда такое имя выпадало. Здесь нужно ровно одно:
+   * что имя целое, а не начало другого.
+   */
+  assert.match(back[0], new RegExp(`back ${me}(?![A-Za-z0-9_-])`))
   assert.doesNotMatch(back[0], /\bnew\b/)
 })
 

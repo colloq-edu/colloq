@@ -220,6 +220,45 @@ test('преподавателя слоу-мод не касается', async (
   assert.equal((await askAs(room, 'p_kid')).status, 429)
 })
 
+test('преподавателя не держат ни личный потолок, ни комнатный', async () => {
+  /*
+   * Оба счёта держат инстанс от комнаты, а ведущий — не комната. Личный
+   * потолок остановил бы его посреди разбора, а комнатный остановил бы за
+   * чужой расход: класс выбрал час, и замолчал бы как раз тот, кто эту пару
+   * ведёт. Оба случая здесь и стоят рядом.
+   */
+  const room = 'caps-host'
+  createSession(room, 'Потолки и ведущий', null)
+  updateOracleSettings({ questionsPerHour: 1, slowModeSeconds: 0 })
+  upsertParticipant({
+    id: 'p_ada_caps',
+    sessionId: room,
+    name: 'Ада',
+    avatar: null,
+    role: 'host',
+    tokenHost: true,
+  })
+
+  // Комната выбрала свой час: тридцать личных пределов, по вопросу со вкладки.
+  for (let i = 0; i < 30; i++) {
+    recordQuestion({ sessionId: room, participantId: `p_tab_${i}`, action: 'ask' })
+  }
+  // И у самого ведущего личный счёт тоже выбран — предел здесь единица.
+  recordQuestion({ sessionId: room, participantId: 'p_ada_caps', action: 'ask' })
+
+  const before = countRoomQuestions(room, HOUR)
+  assert.equal((await askAs(room, 'p_ada_caps')).status, 202, 'ведущего развернул потолок')
+  assert.equal((await askAs(room, 'p_ada_caps')).status, 202, 'и развернул на втором вопросе')
+
+  // Вопросы ведущего из счёта не вычитаются: расход инстанса — это расход.
+  assert.equal(countRoomQuestions(room, HOUR), before + 2)
+
+  // А в той же комнате участник упирается в комнатный потолок, как и должен.
+  const denied = await askAs(room, 'p_kid')
+  assert.equal(denied.status, 429)
+  assert.match(((await denied.json()) as { error: string }).error, /seminar has used all 30/)
+})
+
 test('ноль — слоу-мода нет вовсе, и это умолчание', async () => {
   const room = 'slow-off'
   createSession(room, 'Выключено', null)

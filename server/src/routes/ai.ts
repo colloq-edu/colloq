@@ -333,41 +333,57 @@ export function aiRoutes(): Router {
     const limit = limits.questionsPerHour
 
     /*
-     * Потолок на комнату, а не только на человека.
+     * Потолки — про класс, а не про ведущего.
      *
-     * Личный предел обходится перезаходом: имя в этой комнате ничем не
-     * подтверждено — в этом весь смысл «одна ссылка, и всё», — так что новая
-     * вкладка инкогнито даёт нового участника и свежие N вопросов. Настоящей
-     * границы у счёта не было вовсе, а панель обещала защиту.
+     * Оба счёта ниже держат инстанс от комнаты: от человека, спросившего
+     * лишнего, и от вкладок, открываемых в цикле. Преподаватель — не тот, от
+     * кого это стоит держать: он ведёт занятие, и вопросы у него идут подряд
+     * потому, что подряд идёт разбор. Упереться посреди пары в собственный
+     * потолок он не должен, а в общий по комнате — тем более: туда его привёл
+     * бы не он, а класс, и молчал бы тогда как раз тот, кто эту пару ведёт.
      *
-     * Тридцать личных пределов на всю комнату: класс из двадцати человек, где
-     * каждый спросил вдвое больше положенного, в него ещё укладывается, а
-     * один человек, который открывает вкладки в цикле, — уже нет.
+     * Роль здесь та же, по которой маршрут уже пропускает ведущего мимо
+     * слоу-мода ниже. Из счёта его вопросы не вычитаются: расход инстанса —
+     * это расход, и в панели он виден как есть.
      */
-    const roomLimit = limit * ROOM_MULTIPLIER
-    const roomUsed = countRoomQuestions(sessionId, HOUR_MS)
-    if (roomUsed >= roomLimit) {
-      res.setHeader('Retry-After', '600')
-      return res.status(429).json({
-        error: `This seminar has used all ${roomLimit} of its oracle questions for the hour. Ask your teacher — they can raise the limit in the panel.`,
-      })
-    }
+    if (auth.role !== 'host') {
+      /*
+       * Потолок на комнату, а не только на человека.
+       *
+       * Личный предел обходится перезаходом: имя в этой комнате ничем не
+       * подтверждено — в этом весь смысл «одна ссылка, и всё», — так что новая
+       * вкладка инкогнито даёт нового участника и свежие N вопросов. Настоящей
+       * границы у счёта не было вовсе, а панель обещала защиту.
+       *
+       * Тридцать личных пределов на всю комнату: класс из двадцати человек, где
+       * каждый спросил вдвое больше положенного, в него ещё укладывается, а
+       * один человек, который открывает вкладки в цикле, — уже нет.
+       */
+      const roomLimit = limit * ROOM_MULTIPLIER
+      const roomUsed = countRoomQuestions(sessionId, HOUR_MS)
+      if (roomUsed >= roomLimit) {
+        res.setHeader('Retry-After', '600')
+        return res.status(429).json({
+          error: `This seminar has used all ${roomLimit} of its oracle questions for the hour. Ask your teacher — they can raise the limit in the panel.`,
+        })
+      }
 
-    const used = countRecentQuestions(sessionId, auth.participantId, HOUR_MS)
-    if (used >= limit) {
-      const resetAt = windowResetAt(sessionId, auth.participantId, HOUR_MS, limit)
-      const minutes = resetAt ? Math.max(1, Math.ceil((resetAt - Date.now()) / 60_000)) : 60
-      if (resetAt)
-        res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))))
-      // "all 1 oracle question" is not a sentence. A cap of one is the one
-      // case a teacher is most likely to set deliberately, so it gets its own.
-      const spent =
-        limit === 1
-          ? 'You have used your one oracle question for this hour in this seminar'
-          : `You have used all ${limit} of your oracle questions for this hour in this seminar`
-      return res.status(429).json({
-        error: `${spent}. You can ask again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
-      })
+      const used = countRecentQuestions(sessionId, auth.participantId, HOUR_MS)
+      if (used >= limit) {
+        const resetAt = windowResetAt(sessionId, auth.participantId, HOUR_MS, limit)
+        const minutes = resetAt ? Math.max(1, Math.ceil((resetAt - Date.now()) / 60_000)) : 60
+        if (resetAt)
+          res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))))
+        // "all 1 oracle question" is not a sentence. A cap of one is the one
+        // case a teacher is most likely to set deliberately, so it gets its own.
+        const spent =
+          limit === 1
+            ? 'You have used your one oracle question for this hour in this seminar'
+            : `You have used all ${limit} of your oracle questions for this hour in this seminar`
+        return res.status(429).json({
+          error: `${spent}. You can ask again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+        })
+      }
     }
 
     /*
