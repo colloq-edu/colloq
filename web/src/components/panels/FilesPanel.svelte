@@ -21,6 +21,7 @@
   import { copyText } from '@/lib/clipboard'
   import { iconFor } from '@/lib/file-icons'
   import { permitsIn } from '@/lib/may'
+  import { dropFolder, movedPaths, planMove, readsInside, type Row } from '@/lib/tree-move'
   import { watchBooks } from '@/lib/yreactive.svelte'
   import { baseOf, joinPath, kindOf, parentOf, safeSegment, whySegmentRefused } from '@shared/paths'
 
@@ -46,8 +47,26 @@
   const session = getSessionState()
 
   let dragDepth = $state(0)
-  /** Папка, на которую сейчас несут файл. Пустая строка — корень. */
+  /** Папка, в которую сейчас ляжет то, что несут. Пустая строка — корень. */
   let dragInto = $state<string | null>(null)
+  /** Папка, которая отказала бы: подсветка «сюда нельзя». */
+  let dragDeny = $state<string | null>(null)
+  /**
+   * Несут файлы с диска, а не строку дерева.
+   *
+   * Рамка «уроните файлы сюда» принадлежит только первому случаю: своя строка,
+   * пронесённая над панелью, зажигала бы приглашение к загрузке, которого никто
+   * не звал.
+   */
+  let dragFiles = $state(false)
+  /**
+   * Строка, которую держат в руке.
+   *
+   * Помнить её приходится здесь: на весу браузер отдаёт только ТИПЫ буфера, а
+   * содержимое — не раньше отпускания. Без этого подсветка не могла бы ответить
+   * ни на один вопрос о том, что именно несут.
+   */
+  let carried = $state<Row | null>(null)
   let uploads = $state<Upload[]>([])
   /** Не ошибка, а предупреждение: загрузка прошла, но что-то заменила собой. */
   let note = $state<string | null>(null)
@@ -57,6 +76,15 @@
   let confirming = $state<string | null>(null)
   const isHost = $derived(session.me.role === 'host')
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
+  /**
+   * Кто может таскать строки по дереву.
+   *
+   * Правило комнаты — `may.files`, как у всего остального в этой панели. Роль
+   * рядом с ним не лишняя: `tree:move` на сервере преподавательский, и строка,
+   * которую дали взять в руку, а потом молча не перенесли, — обещание, которое
+   * не сдержат. Отказ к тому же ушёл бы не сюда, а в общую полосу ошибок.
+   */
+  const mayDrag = $derived(may.files && isHost)
   /** Тетради комнаты: `.ipynb`, который уже открыт как тетрадь, — не файл. */
   const books = watchBooks(session.doc)
   const isBook = (path: string): boolean => books.current.some((book) => book.path === path)
@@ -65,6 +93,15 @@
   let collapsed = $state<Set<string>>(new Set())
   /** Куда лягут «новый файл» и «новая папка». Пустая строка — корень. */
   let target = $state('')
+  /**
+   * Та же папка строкой дерева — для броска на пунктирную кнопку внизу.
+   *
+   * Своего обработчика у кнопки не было, и событие всплывало в секцию, а та
+   * целится в корень: надпись читалась «Файлы — в папку data», а файл ложился
+   * рядом с ней. Нажатие на ту же кнопку при этом клало в `target` — один
+   * элемент двумя жестами в две разные папки, и подпись врала про один из них.
+   */
+  const targetRow: Row | null = $derived(target ? { path: target, dir: true } : null)
   /** Строка ввода: заводим новое или переименовываем существующее. */
   let draft = $state<{ kind: 'file' | 'dir' | 'book' | 'rename'; dir: string; from?: string } | null>(
     null,
@@ -80,6 +117,30 @@
       return true
     }),
   )
+
+  /**
+   * Папки, внутри которых хоть что-то лежит.
+   *
+   * Список приходит плоским, и родитель читается из пути: собирать дерево ради
+   * одного вопроса «пусто ли здесь» значило бы завести второй порядок обхода
+   * рядом с первым — ровно то, чего сервер избегает, отдавая плоский список.
+   */
+  const filled = $derived(new Set(session.files.map((entry) => parentOf(entry.path))))
+
+  /**
+   * Что написать под раскрытой папкой, в которой ничего не видно, — и писать ли.
+   *
+   * Случая три, и «пусто» верно только в первом. Обрезанный список — не пусто:
+   * обход до содержимого просто не дошёл, и об этом говорит строка внизу. Папка
+   * на самом дне — тем более: туда обход не дойдёт никогда, строки внизу при
+   * этом не будет (`truncated` считает только строки списка), а файлы в ней
+   * лежат и место занимают — видно их одной ячейке.
+   */
+  function emptyWord(path: string): string | null {
+    if (filled.has(path)) return null
+    if (!readsInside(path)) return 'глубже не видно'
+    return truncated ? null : 'пусто'
+  }
 
   const fileCount = $derived(session.files.filter((entry) => !entry.dir).length)
   const listed = $derived(session.files.length > 0 || uploads.length > 0)
@@ -246,7 +307,11 @@
           return
         }
         session.send({ t: 'tree:move', from: current.from, to: path })
-        onrename?.(current.from, path)
+        // Переименовать могли и папку — тогда переезжает всё, что в ней, и
+        // вкладки на содержимое обязаны уехать вместе с ним.
+        for (const moved of movedPaths(current.from, path, session.files)) {
+          onrename?.(moved.from, moved.to)
+        }
       }
     } else if (current.kind === 'dir') {
       session.send({ t: 'tree:mkdir', path })
@@ -314,7 +379,11 @@
   let copyTimer: number | undefined
   let nextUploadId = 0
 
-  $effect(() => () => window.clearTimeout(copyTimer))
+  $effect(() => () => {
+    window.clearTimeout(copyTimer)
+    // Иначе таймер развернёт папку в панели, которой на экране уже нет.
+    window.clearTimeout(hoverTimer)
+  })
 
   /** The line a student would actually type to open this file from a cell. */
   function snippetFor(name: string): string {
@@ -484,43 +553,248 @@
     }
   }
 
-  function onDragEnter(event: DragEvent) {
-    if (!event.dataTransfer?.types.includes('Files')) return
-    dragDepth += 1
+  /* ------------------------------------------------------- перетаскивание */
+
+  /**
+   * Свой тип в буфере — и путь в нём.
+   *
+   * `text/plain` кладётся рядом, но решает не он: текст в буфере есть у любого
+   * выделения на странице, и панель, доверяющая ему, приняла бы за строку
+   * дерева кусок вывода ячейки. Тип свой, потому что вопрос «своё ли это»
+   * задаётся на весу, когда содержимое буфера ещё не читается.
+   */
+  const PATH_TYPE = 'application/x-colloq-path'
+
+  /** Что несут: свою строку, файлы с диска — или ничего, что нам подходит. */
+  function carriedKind(event: DragEvent): 'row' | 'files' | null {
+    const types = event.dataTransfer?.types
+    if (!types) return null
+    if (types.includes(PATH_TYPE)) return 'row'
+    if (types.includes('Files')) return 'files'
+    return null
   }
 
-  function onDragOver(event: DragEvent) {
-    if (!event.dataTransfer?.types.includes('Files')) return
-    // Without preventDefault the browser navigates to the dropped file.
+  /**
+   * Отказ, сказанный, пока запись ещё в руке.
+   *
+   * Цель, помеченную `dropEffect: 'none'`, браузер не отдаёт: события `drop` на
+   * ней не будет вовсе, и сказать по отпусканию было бы негде. Значит, слова
+   * появляются на весу — и снимаются сами, как только целятся туда, куда можно.
+   * Флаг нужен, чтобы снять только СВОЁ: рядом в той же строке живут отказы
+   * загрузки, и гасить их движением мыши нельзя.
+   */
+  let saidOnDrag = false
+
+  function sayRefusal(why: string | null): void {
+    if (why) {
+      error = why
+      saidOnDrag = true
+      return
+    }
+    if (!saidOnDrag) return
+    saidOnDrag = false
+    error = null
+  }
+
+  function onDragStart(event: DragEvent, entry: FileEntry): void {
+    const data = event.dataTransfer
+    if (!data || !mayDrag) return
+    // Прошлый отказ был про прошлый жест.
+    sayRefusal(null)
+    data.setData(PATH_TYPE, entry.path)
+    // Рядом — обычным текстом: то же самое видно всему, что умеет принимать
+    // текст, включая ячейку и терминал.
+    data.setData('text/plain', entry.path)
+    data.effectAllowed = 'move'
+    carried = { path: entry.path, dir: entry.dir }
+  }
+
+  function onDragEnd(): void {
+    carried = null
+    endDrag()
+  }
+
+  /** Конец жеста: гаснет всё, что он зажёг, — и таймер тоже, обязательно. */
+  function endDrag(): void {
+    dragDepth = 0
+    dragFiles = false
+    dragInto = null
+    dragDeny = null
+    // И слова тоже: отказ был про этот жест, а жест кончился. Иначе отменённое
+    // перетаскивание — Escape, указатель мимо панели — оставляло красную полосу
+    // про отказ, которого уже нет, до следующего жеста или загрузки.
+    sayRefusal(null)
+    hoverOver(null)
+  }
+
+  /**
+   * Свёрнутая папка под указателем разворачивается сама — но не сразу.
+   *
+   * Полсекунды: за меньшее дерево раскрывалось бы под рукой у всякого, кто
+   * просто проносит запись мимо, и цель уезжала бы из-под указателя. Таймер
+   * снимается на каждом уходе и на отпускании — иначе он развернёт папку, над
+   * которой уже никого нет.
+   *
+   * Обычные переменные, а не `$state`: их никто не рисует, а состояние, которое
+   * пишет таймер и читает разметка, — верный способ получить эффект, который
+   * будит сам себя.
+   */
+  let hoverDir = ''
+  let hoverTimer: number | undefined
+
+  function hoverOver(dir: string | null): void {
+    const wanted = dir !== null && collapsed.has(dir) ? dir : ''
+    if (wanted === hoverDir) return
+    hoverDir = wanted
+    window.clearTimeout(hoverTimer)
+    if (!wanted) return
+    hoverTimer = window.setTimeout(() => {
+      // Только разворачивает: свернуть папку под указателем — фокус, а не
+      // помощь, и цель исчезла бы вместе со своими строками.
+      const next = new Set(collapsed)
+      next.delete(wanted)
+      collapsed = next
+    }, 500)
+  }
+
+  /**
+   * Куда сейчас целится жест.
+   *
+   * Зовётся из `dragover` — того самого события, которое обязано звать
+   * `preventDefault`: без него браузер броска не примет вовсе, а файл с диска
+   * просто откроет вместо страницы. Из него же, а не из `dragenter`, ставится
+   * подсветка: `dragenter` на потомке строки приходит раньше, чем `dragleave`
+   * на ней самой, и рамка гасла ровно над именем папки, в которую целятся.
+   *
+   * `stopPropagation` на строке — чтобы она перебивала секцию: то же событие
+   * всплывает к ней, а секция целится в корень.
+   */
+  function aim(event: DragEvent, onto: Row | null): void {
+    const kind = carriedKind(event)
+    if (!kind) return
     event.preventDefault()
-    event.dataTransfer.dropEffect = 'copy'
+    if (onto) event.stopPropagation()
+    const data = event.dataTransfer
+    if (!data) return
+    const into = dropFolder(onto)
+    if (kind === 'files') {
+      /*
+       * Право известно уже сейчас — ждать отпускания незачем. Папка, светящаяся
+       * акцентом тому, кому класть нельзя, обещает копию, которой не будет, и
+       * панель в эту же секунду говорит обратное: пунктирная кнопка внизу
+       * отключена и названа правилом. Слова — на весу, как и у строк дерева:
+       * цель с `dropEffect: 'none'` события `drop` не отдаёт вовсе.
+       */
+      if (!may.files) {
+        data.dropEffect = 'none'
+        dragInto = null
+        dragDeny = into
+        // В пустой комнате то же самое написано во весь оверлей — повторять
+        // одну фразу дважды на одном экране незачем.
+        sayRefusal(listed ? may.filesWhy + '.' : null)
+        return
+      }
+      data.dropEffect = 'copy'
+      dragInto = into
+      dragDeny = null
+      sayRefusal(null)
+      hoverOver(into)
+      return
+    }
+    // Строка из другого окна: путь в буфере есть, а сверить его с этим деревом
+    // нечем — на весу буфер не читается. Обещать переезд в таком случае нельзя.
+    const plan = carried ? planMove(carried, onto, session.files) : null
+    const goes = plan?.do === 'move'
+    data.dropEffect = goes ? 'move' : 'none'
+    dragInto = goes ? into : null
+    dragDeny = plan?.do === 'refuse' ? into : null
+    sayRefusal(plan?.do === 'refuse' ? plan.why : null)
+    hoverOver(into)
   }
 
-  function onDrop(event: DragEvent, dir: string | null) {
+  function onDragEnter(event: DragEvent) {
+    const kind = carriedKind(event)
+    if (!kind) return
+    dragDepth += 1
+    if (dragDepth === 1) dragFiles = kind === 'files'
+  }
+
+  function onDragLeave() {
+    dragDepth = Math.max(0, dragDepth - 1)
+    // Ушли из панели совсем: подсветка, оставшаяся на строке, над которой уже
+    // никого нет, обещает переезд, которого не будет.
+    if (dragDepth === 0) endDrag()
+  }
+
+  function onDrop(event: DragEvent, onto: Row | null) {
     event.preventDefault()
     event.stopPropagation()
-    const into = dir ?? ''
-    dragDepth = 0
-    dragInto = null
+    const kind = carriedKind(event)
+    // Путь берётся из буфера, а не из `carried`: буфер переживает и смену
+    // вкладки, и второе окно этой же комнаты.
+    const path = kind === 'row' ? (event.dataTransfer?.getData(PATH_TYPE) ?? '') : ''
+    endDrag()
+    if (kind === 'row') {
+      carried = null
+      if (!path) return
+      // Право спрашивают и здесь, а не только у `draggable`: строка могла
+      // приехать из окна, открытого до того, как правила комнаты сменились.
+      if (!mayDrag) {
+        error = may.filesWhy + '.'
+        saidOnDrag = false
+        return
+      }
+      // Папка это или файл, знает список комнаты, а не буфер: `planMove` всё
+      // равно первым делом сверяется с ним.
+      const known = session.files.find((entry) => entry.path === path)
+      const plan = planMove({ path, dir: known?.dir ?? false }, onto, session.files)
+      // Три исхода, а не два: жест, кончившийся там же, где начался, — это
+      // промах пальцем, и отказ на него был бы неправдой.
+      if (plan.do === 'refuse') {
+        error = plan.why
+        saidOnDrag = false
+        return
+      }
+      if (plan.do !== 'move') return
+      error = null
+      saidOnDrag = false
+      session.send({ t: 'tree:move', from: plan.from, to: plan.to })
+      // Вкладки едут следом сразу и обязаны: список файлов придёт позже и
+      // закрыл бы их как вкладки на исчезнувший путь — вместе с историей отмен.
+      // Вместе с СОДЕРЖИМЫМ: вкладка знает точный путь, и переезд папки,
+      // сказанный одним её именем, не двигает ни одной из тех, ради которых
+      // папку и таскают.
+      for (const moved of movedPaths(plan.from, plan.to, session.files)) {
+        onrename?.(moved.from, moved.to)
+      }
+      return
+    }
     // Сказать до броска нельзя — но и молча съесть файл нельзя тем более:
     // отпущенный файл, о котором ничего не произошло, читается как поломка.
     if (!may.files) {
       error = may.filesWhy + '.'
       return
     }
-    void upload(event.dataTransfer?.files ?? null, into)
+    void upload(event.dataTransfer?.files ?? null, dropFolder(onto))
   }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
+<!-- Рамка вокруг всей панели — это «в корень»: у корня нет своей строки,
+     которую можно было бы подсветить. Для файлов с диска её не рисуют: там про
+     то же самое говорит пунктирная кнопка внизу. -->
 <section
-  class="relative flex shrink-0 flex-col gap-0 px-3 pb-1 pt-5"
+  class="relative flex shrink-0 flex-col gap-0 px-3 pb-1 pt-5 {!dragFiles && dragInto === ''
+    ? 'ring-1 ring-inset ring-accent'
+    : !dragFiles && dragDeny === ''
+      ? 'ring-1 ring-inset ring-danger/50'
+      : ''}"
   aria-label="Файлы семинара"
   ondragenter={onDragEnter}
-  ondragover={onDragOver}
-  ondragleave={() => (dragDepth = Math.max(0, dragDepth - 1))}
-  ondrop={(event) => onDrop(event, '')}
+  ondragover={(event) => aim(event, null)}
+  ondragleave={onDragLeave}
+  ondrop={(event) => onDrop(event, null)}
 >
   <!-- Полоса уводит заголовок к действиям, так что кнопки читаются как тихий
        конец заголовка, а не как значки, повешенные на него. -->
@@ -609,20 +883,22 @@
 
   {#each visible as entry (entry.path)}
     {@const depth = depthOf(entry.path)}
+    {@const empty = entry.dir && !collapsed.has(entry.path) ? emptyWord(entry.path) : null}
     {@const here = peersIn(entry.path)}
     <div
       class="group relative flex h-[26px] items-center transition-colors duration-100
              {active === entry.path ? 'bg-raised' : 'hover:bg-raised focus-within:bg-raised'}
-             {dragInto === entry.path ? 'ring-1 ring-inset ring-accent' : ''}"
+             {dragInto === entry.path
+        ? 'ring-1 ring-inset ring-accent'
+        : dragDeny === entry.path
+          ? 'ring-1 ring-inset ring-danger/50'
+          : ''}"
       style={`padding-left:${4 + depth * 14}px`}
-      ondragenter={(event) => {
-        if (!entry.dir || !event.dataTransfer?.types.includes('Files')) return
-        dragInto = entry.path
-      }}
-      ondragleave={() => {
-        if (dragInto === entry.path) dragInto = null
-      }}
-      ondrop={(event) => onDrop(event, entry.dir ? entry.path : parentOf(entry.path))}
+      draggable={mayDrag}
+      ondragstart={(event) => onDragStart(event, entry)}
+      ondragend={onDragEnd}
+      ondragover={(event) => aim(event, entry)}
+      ondrop={(event) => onDrop(event, entry)}
       role="presentation"
     >
       <!-- Открытый файл отмечен полосой у самого края: она не занимает места в
@@ -631,15 +907,23 @@
         <span class="absolute inset-y-0 left-0 w-0.5 bg-accent" aria-hidden="true"></span>
       {/if}
 
-      <span class="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-        {#if entry.dir}
-          <Icon
-            name="chevron-down"
-            size={9}
-            class={collapsed.has(entry.path) ? '-rotate-90 text-muted' : 'text-muted'}
-          />
-        {/if}
-      </span>
+      <!-- Стрелка — кнопка, а не картинка: нажатие на неё не делало ровно
+           ничего, потому что ловить его было некому, и папка «не открывалась».
+           Рисунок девять пикселей, а нажимают пальцем и пером: отрицательные
+           поля растят цель до 22, не сдвигая колонку имён ни на пиксель. -->
+      {#if entry.dir}
+        <button
+          type="button"
+          class="-m-1 flex h-[22px] w-[22px] shrink-0 items-center justify-center p-1 text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+          aria-expanded={!collapsed.has(entry.path)}
+          aria-label={`${collapsed.has(entry.path) ? 'Раскрыть' : 'Свернуть'} ${entry.name}`}
+          onclick={() => toggle(entry.path)}
+        >
+          <Icon name="chevron-down" size={9} class={collapsed.has(entry.path) ? '-rotate-90' : ''} />
+        </button>
+      {:else}
+        <span class="h-3.5 w-3.5 shrink-0"></span>
+      {/if}
       <span class="flex h-3.5 w-[18px] shrink-0 items-center justify-center">
         <Icon
           name={entry.dir ? 'folder' : iconFor(entry.path)}
@@ -651,8 +935,12 @@
       {#if draft?.kind === 'rename' && draft.from === entry.path}
         {@render nameField()}
       {:else}
+        <!-- `draggable` и на имени: строку тянут за него, а часть браузеров
+             жеста, начатого на кнопке, родителю не отдаёт. Обработчик один —
+             событие всплывает в строку. -->
         <button
           type="button"
+          draggable={mayDrag}
           class="flex min-w-0 flex-1 items-center self-stretch text-left font-mono text-code
                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset
                  focus-visible:ring-accent/40
@@ -778,6 +1066,32 @@
         </button>
       </div>
     {/if}
+
+    <!--
+      Раскрытая пустая папка ничем не отличалась от свёрнутой: человек нажимал
+      на стрелку, дерево не менялось ни на строку, и он читал это как «стрелка
+      не работает». Строка стоит на уровень глубже — там, где появится первое,
+      что в папку положат, — и принимает бросок сама.
+
+      Слова выбирает `emptyWord`: «пусто» — не единственный ответ, и там, где
+      панель просто не видит содержимого, оно было бы прямой неправдой.
+    -->
+    {#if empty}
+      <div
+        class="flex h-[22px] items-center text-2xs text-faint {dragInto === entry.path
+          ? 'bg-accent/10'
+          : ''}"
+        style={`padding-left:${4 + (depth + 1) * 14 + 32}px`}
+        title={readsInside(entry.path)
+          ? undefined
+          : 'Глубже комната не смотрит: такому пути уже нет имени. Что в ней лежит, видно из ячейки — os.listdir().'}
+        ondragover={(event) => aim(event, entry)}
+        ondrop={(event) => onDrop(event, entry)}
+        role="presentation"
+      >
+        {empty}
+      </div>
+    {/if}
   {/each}
 
   {#if draft && draft.kind !== 'rename'}
@@ -854,11 +1168,13 @@
   <button
     type="button"
     class="mx-1 mt-2 flex h-9 shrink-0 items-center justify-center border border-dashed text-2xs transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed {dragDepth >
-    0 && may.files
+      0 && dragFiles && may.files
       ? 'border-accent bg-accent/10 text-accent-text'
       : 'border-line text-muted'} {may.files ? 'hover:border-faint hover:text-ink' : ''}"
     disabled={!may.files}
     onclick={() => picker?.click()}
+    ondragover={(event) => aim(event, targetRow)}
+    ondrop={(event) => onDrop(event, targetRow)}
   >
     {#if !may.files}
       {may.filesWhy}
@@ -867,9 +1183,15 @@
     {/if}
   </button>
 
+  <!-- Полоса прибита к нижнему краю видимого: панель лежит в одной
+       прокручиваемой полосе с остальными, и в комнате, где список длиннее
+       экрана, слова отказа дописывались ниже пунктирной кнопки — то есть за
+       экраном. Оставались красная рамка и курсор «нельзя» без единого слова о
+       причине, а сказать по отпусканию негде: цель с `dropEffect: 'none'`
+       события `drop` не отдаёт. -->
   {#if error}
     <div
-      class="mt-1.5 flex items-start gap-2 border-l-2 border-danger px-2 py-1 text-2xs text-danger"
+      class="sticky bottom-0 z-10 mt-1.5 flex items-start gap-2 border-l-2 border-danger bg-surface px-2 py-1 text-2xs text-danger"
     >
       <span class="min-w-0 flex-1 break-words">{error}</span>
       <button
@@ -899,7 +1221,7 @@
     </div>
   {/if}
 
-  {#if dragDepth > 0 && !listed}
+  {#if dragDepth > 0 && dragFiles && !listed}
     <!-- Без списка светиться нечему, и панель становится целью сама. Комната,
          где файлы кладёт преподаватель, говорит это прямо здесь: узнать об
          отказе, уже отпустив файл, — то же самое, что не узнать. -->
