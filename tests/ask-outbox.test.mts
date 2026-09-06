@@ -93,3 +93,18 @@ test('два одинаковых вопроса подряд разбирают
 test('пустая очередь — пустая работа', () => {
   assert.deepEqual(settleOutbox([], [real('q1', 'что угодно')]), [])
 })
+
+test('снимать нечего — возвращается тот же массив, а не копия', () => {
+  /*
+   * Не придирка к аллокации, а причина настоящей поломки: вызывающий сравнивает
+   * по ссылке и на новом массиве пишет состояние. Один такой `filter` внутри
+   * эффекта, который сам же читает это состояние, положил комнату целиком —
+   * `effect_update_depth_exceeded` вместо тетради.
+   */
+  const pending = [mine('почему nan?')]
+  assert.equal(settleOutbox(pending, []), pending)
+  assert.equal(settleOutbox(pending, [real('q1', 'чужой вопрос', 'p_petya')]), pending)
+  assert.equal(settleOutbox([], []).length, 0)
+  // А когда снимать есть что — массив, конечно, новый.
+  assert.notEqual(settleOutbox(pending, [real('q1', 'почему nan?')]), pending)
+})

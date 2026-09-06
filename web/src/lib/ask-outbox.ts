@@ -82,7 +82,7 @@ export function settleOutbox(
 ): Outgoing[] {
   if (pending.length === 0) return pending as Outgoing[]
   const taken = new Set<string>()
-  return pending.filter((mine) => {
+  const left = pending.filter((mine) => {
     const landed = fresh.find(
       (entry) =>
         !taken.has(entry.id) &&
@@ -94,4 +94,12 @@ export function settleOutbox(
     taken.add(landed.id)
     return false
   })
+  /*
+   * Ничего не сняли — отдаём ТОТ ЖЕ массив, а не его копию.
+   *
+   * `filter` всегда выделяет новый, и вызывающий, сравнивая по ссылке, писал
+   * бы новое значение на каждый кадр ленты. Один раз это уже стоило комнате
+   * бесконечного цикла эффектов, и подпорка стоит одной строки.
+   */
+  return left.length === pending.length ? (pending as Outgoing[]) : left
 }

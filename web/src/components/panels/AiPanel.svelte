@@ -9,6 +9,7 @@
    * nothing, so every question is attributed and lands on all screens at once.
    */
   import type * as Y from 'yjs'
+  import { untrack } from 'svelte'
   import { allCellArrays, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
   import { outgoingRow, settleOutbox, type Outgoing } from '@/lib/ask-outbox'
   import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
@@ -148,9 +149,24 @@
   }
 
   $effect(() => {
+    /*
+     * Читает документ и пишет `entries` — и НИЧЕГО не читает из состояния.
+     *
+     * Стоило прочитать здесь `entries` или `outbox` (а подстановка исходящих
+     * читала оба), как эффект стал зависеть от того, что сам же переписывает:
+     * `chat.map` отдаёт новый массив на каждый проход, Svelte видит новое
+     * значение, гоняет эффект заново — и комната встречала не тетрадь, а
+     * `effect_update_depth_exceeded`. Свежий список идёт дальше переменной, а
+     * очередь исходящих берётся `untrack`.
+     */
     const read = () => {
-      entries = chat.map(readChatEntry)
-      outbox = settleOutbox(outbox, entries)
+      const fresh = chat.map(readChatEntry)
+      entries = fresh
+      const pending = untrack(() => outbox)
+      const left = settleOutbox(pending, fresh)
+      // Тот же массив — значит снимать нечего; лишняя запись здесь и есть
+      // второй виток того же цикла.
+      if (left !== pending) outbox = left
     }
     read()
     // Deep: an answer streams into a Y.Text *inside* an entry. The array itself
