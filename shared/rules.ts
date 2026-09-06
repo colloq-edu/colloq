@@ -21,6 +21,14 @@
  * who never opened the settings, behaves exactly as it always has.
  */
 
+/*
+ * Единственный импорт этого файла — линейка потолков оракула, и она та же, что
+ * у настроек инстанса: два числа, которые комната ужесточает, обязаны мериться
+ * тем же, чем их мерит инстанс, иначе комната сможет попросить то, чего инстанс
+ * не умеет. Обратной стрелки нет: shared/admin.ts берёт отсюда только тип.
+ */
+import { LIMITS } from './admin.js'
+
 /** Who a rule lets act. `room` is everyone in it, `host` is whoever is teaching. */
 export type Who = "room" | "host";
 
@@ -213,6 +221,33 @@ export interface RoomRules {
   agent: 'off' | 'host' | 'room'
 
   /**
+   * Сколько вопросов в час на человека — или null, «как на инстансе».
+   *
+   * Инстанс задаёт умолчание, комната опускается ниже него и не поднимается
+   * выше: `oracleLimitsIn` берёт меньшее из двух. Ужесточить, наоборот, нужно
+   * часто и на одну пару — контрольная, где оракул один вопрос на человека, —
+   * и ходить ради неё в настройки всего инстанса значит менять их всем
+   * остальным комнатам заодно.
+   *
+   * Enforced in server/src/routes/ai.ts. От этого же числа считается потолок на
+   * всю комнату, так что комната, опустившая личный предел, опускает и его.
+   */
+  questionsPerHour: number | null
+
+  /**
+   * Промежуток между вопросами одного человека, в секундах — или null.
+   *
+   * Строже здесь — это БОЛЬШЕ, поэтому `oracleLimitsIn` берёт большее из двух:
+   * потолок в час ловит расход, а промежуток — выкрики подряд, и семинар,
+   * которому нужен второй, обычно знает об этом за минуту до начала.
+   *
+   * Enforced in server/src/routes/ai.ts, и там же, что и на инстансе,
+   * преподавателя не касается: его вопросы идут подряд потому, что подряд идёт
+   * разбор.
+   */
+  slowModeSeconds: number | null
+
+  /**
    * A model for this room only, or null to use the instance's.
    *
    * NOT ENFORCED YET. Worth having because a seminar that will ask two hundred
@@ -245,6 +280,12 @@ export const OPEN_ROOM: RoomRules = {
   agent: "host",
   history: "room",
   oracle: "inherit",
+  /*
+   * Потолки оракула — «как на инстансе», и это ровно сегодняшнее поведение
+   * каждой комнаты: до сих пор их не было где взять, кроме настроек инстанса.
+   */
+  questionsPerHour: null,
+  slowModeSeconds: null,
   model: null,
 };
 
@@ -256,8 +297,9 @@ export const OPEN_ROOM: RoomRules = {
  * что «лекция» — это девять согласованных значений, и выставлять их по одному,
  * ничего не забыв, преподаватель перед парой не станет.
  *
- * `history`, `oracle` и `model` берутся у открытой комнаты: лекция — про то,
- * кто печатает и запускает, а не про то, кому смотреть и спрашивать.
+ * `history`, `oracle`, потолки оракула и `model` берутся у открытой комнаты:
+ * лекция — про то, кто печатает и запускает, а не про то, кому смотреть и
+ * спрашивать.
  *
  * Одна лекция без замка на ячейках была бы просто тетрадью на экране. Работает
  * это в паре: преподаватель открывает отдельные ячейки, и в них комната
@@ -278,6 +320,8 @@ export const LECTURE_ROOM: RoomRules = {
   agent: 'host',
   history: OPEN_ROOM.history,
   oracle: OPEN_ROOM.oracle,
+  questionsPerHour: OPEN_ROOM.questionsPerHour,
+  slowModeSeconds: OPEN_ROOM.slowModeSeconds,
   model: OPEN_ROOM.model,
 }
 
@@ -309,6 +353,17 @@ export function readRules(raw: unknown): RoomRules {
     WHO.has(value as Who) ? (value as Who) : fallback;
   const one = <T>(set: Set<T>, value: unknown, fallback: T): T =>
     set.has(value as T) ? (value as T) : fallback;
+  /*
+   * Потолок оракула читается так же тотально, как `model` ниже: не число — это
+   * null, «как на инстансе», то есть сегодняшнее поведение любой комнаты. Число
+   * зажимается той же линейкой, что и настройка инстанса (shared/admin.ts ·
+   * LIMITS): комната, которой разрешили бы больше, чем умеет сам инстанс,
+   * обещала бы то, чего нет, — а `oracleLimitsIn` всё равно вернёт инстансовое.
+   */
+  const cap = (value: unknown, min: number, max: number): number | null =>
+    typeof value === 'number' && Number.isFinite(value)
+      ? Math.min(Math.max(Math.round(value), min), max)
+      : null
   return {
     /*
      * Каждое поле падает на своё умолчание отдельно от других — это и есть
@@ -329,6 +384,18 @@ export function readRules(raw: unknown): RoomRules {
     oracle: ORACLE.has(source.oracle as RoomRules["oracle"])
       ? (source.oracle as RoomRules["oracle"])
       : OPEN_ROOM.oracle,
+    /*
+     * Пол — один вопрос, а не ноль, хотя на инстансе ноль есть. Ноль значит
+     * «оракул выключен», и у комнаты для этого уже есть `oracle: 'off'`, у
+     * которого отказ говорит об этом словами; ноль здесь развернул бы класс
+     * фразой «использовано все 0 вопросов».
+     */
+    questionsPerHour: cap(source.questionsPerHour, 1, LIMITS.questionsPerHour.max),
+    slowModeSeconds: cap(
+      source.slowModeSeconds,
+      LIMITS.slowModeSeconds.min,
+      LIMITS.slowModeSeconds.max,
+    ),
     model:
       typeof source.model === "string" && source.model.trim()
         ? source.model.trim().slice(0, 80)
@@ -514,6 +581,40 @@ export function oracleModeIn(
   return wanted;
 }
 
+/** Два потолка оракула: сколько вопросов в час на человека и промежуток между ними. */
+export interface OracleLimits {
+  questionsPerHour: number
+  slowModeSeconds: number
+}
+
+/**
+ * Потолки, под которыми комната работает на самом деле.
+ *
+ * То же правило, что у `oracleModeIn` выше, и по той же причине: комната
+ * ужесточает и никогда не ослабляет. Ослаблять нельзя потому, что за модель
+ * платит тот, кто держит инстанс, — его число это его счёт, и семинар, который
+ * умел бы поднять себе предел, превращал бы настройку инстанса из потолка в
+ * совет. Опуститься, наоборот, полезно: контрольная на одну пару не должна
+ * стоить похода в настройки, общие для всех остальных комнат.
+ *
+ * Строже — в разные стороны, поэтому не один `Math.min` на оба поля: вопросов
+ * должно быть МЕНЬШЕ, а промежуток между ними — БОЛЬШЕ.
+ *
+ * `null` — «как на инстансе»: комната ничего не сказала, и отвечает инстанс.
+ */
+export function oracleLimitsIn(rules: RoomRules, instance: OracleLimits): OracleLimits {
+  return {
+    questionsPerHour:
+      rules.questionsPerHour === null
+        ? instance.questionsPerHour
+        : Math.min(instance.questionsPerHour, rules.questionsPerHour),
+    slowModeSeconds:
+      rules.slowModeSeconds === null
+        ? instance.slowModeSeconds
+        : Math.max(instance.slowModeSeconds, rules.slowModeSeconds),
+  }
+}
+
 /**
  * Занятие закончено.
  *
@@ -553,6 +654,12 @@ export function rulesAfterClass(rules: RoomRules): RoomRules {
      */
     history: rules.history,
     oracle: rules.oracle,
+    /*
+     * Потолки оракула — оттуда же: они про расход, а не про право. После звонка
+     * спрашивает один преподаватель, которого промежуток и так не касается.
+     */
+    questionsPerHour: rules.questionsPerHour,
+    slowModeSeconds: rules.slowModeSeconds,
     model: rules.model,
   };
 }

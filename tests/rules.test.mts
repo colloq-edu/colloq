@@ -19,10 +19,12 @@ import {
   mayEditCell,
   mayRunCell,
   OPEN_ROOM,
+  oracleLimitsIn,
   readRules,
   rulesAfterClass,
   runQueueCap,
 } from '../shared/rules.js'
+import { LIMITS } from '../shared/admin.js'
 
 test('семинар, записанный до новых полей, открывается прежним', () => {
   // Ровно то, что лежит в базе у семинаров, заведённых раньше.
@@ -178,4 +180,79 @@ test('конец занятия сильнее замка', () => {
   // А преподаватель после пары действует: комната остаётся живой.
   assert.equal(mayEditCell(LECTURE_ROOM, 'host', false, true), true)
   assert.equal(mayRunCell(LECTURE_ROOM, 'host', false, true), true)
+})
+
+/* ------------------------------------------------------ потолки оракула */
+
+test('потолки оракула читаются тотально: мусор и отсутствие — «как на инстансе»', () => {
+  // Ни одного из этих значений комната не должна принять за число: правило,
+  // собранное из мусора, тише всего ломает именно расход.
+  const junk = readRules({
+    questionsPerHour: 'много',
+    slowModeSeconds: {},
+  })
+  assert.equal(junk.questionsPerHour, null)
+  assert.equal(junk.slowModeSeconds, null)
+  assert.equal(readRules({ slowModeSeconds: Number.NaN }).slowModeSeconds, null)
+  assert.equal(readRules({ questionsPerHour: Number.POSITIVE_INFINITY }).questionsPerHour, null)
+
+  // Старая строка не знала этих полей вовсе — и открывается как была.
+  const old = readRules(JSON.stringify({ run: 'room', edit: 'room' }))
+  assert.equal(old.questionsPerHour, null)
+  assert.equal(old.slowModeSeconds, null)
+  assert.equal(isOpenRoom(old), true, 'комната без потолков перестала быть открытой')
+})
+
+test('число зажимается той же линейкой, что и настройка инстанса', () => {
+  assert.equal(
+    readRules({ questionsPerHour: 99_999 }).questionsPerHour,
+    LIMITS.questionsPerHour.max,
+  )
+  assert.equal(readRules({ slowModeSeconds: 9_999 }).slowModeSeconds, LIMITS.slowModeSeconds.max)
+  assert.equal(readRules({ slowModeSeconds: -5 }).slowModeSeconds, LIMITS.slowModeSeconds.min)
+  assert.equal(readRules({ questionsPerHour: 4.6 }).questionsPerHour, 5)
+  /*
+   * Пол — один вопрос, а не ноль: «оракула сегодня нет» — это `oracle: 'off'`,
+   * у которого отказ говорит об этом словами, а ноль здесь развернул бы класс
+   * фразой «использовано все 0 вопросов».
+   */
+  assert.equal(readRules({ questionsPerHour: 0 }).questionsPerHour, 1)
+})
+
+test('комната ужесточает потолки оракула и не ослабляет их', () => {
+  const instance = { questionsPerHour: 20, slowModeSeconds: 10 }
+
+  // Ничего не сказала — отвечает инстанс, и это умолчание любой комнаты.
+  assert.deepEqual(oracleLimitsIn(OPEN_ROOM, instance), instance)
+
+  // Строже — в разные стороны: вопросов меньше, промежуток длиннее.
+  assert.deepEqual(
+    oracleLimitsIn({ ...OPEN_ROOM, questionsPerHour: 5, slowModeSeconds: 60 }, instance),
+    { questionsPerHour: 5, slowModeSeconds: 60 },
+  )
+
+  // А мягче нельзя ни тем, ни другим концом: за модель платит инстанс.
+  assert.deepEqual(
+    oracleLimitsIn({ ...OPEN_ROOM, questionsPerHour: 500, slowModeSeconds: 0 }, instance),
+    instance,
+  )
+
+  // Выключенный оракул комнатным числом обратно не включается.
+  assert.equal(
+    oracleLimitsIn(
+      { ...OPEN_ROOM, questionsPerHour: 50 },
+      {
+        questionsPerHour: 0,
+        slowModeSeconds: 0,
+      },
+    ).questionsPerHour,
+    0,
+  )
+})
+
+test('конец занятия потолков оракула не трогает', () => {
+  // Они про расход, а не про право: закрывать их звонком нечему.
+  const after = rulesAfterClass({ ...OPEN_ROOM, questionsPerHour: 3, slowModeSeconds: 45 })
+  assert.equal(after.questionsPerHour, 3)
+  assert.equal(after.slowModeSeconds, 45)
 })

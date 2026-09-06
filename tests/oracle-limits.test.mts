@@ -233,6 +233,83 @@ test('ноль — слоу-мода нет вовсе, и это умолчан
   }
 })
 
+/* --------------------------------------------- потолки, поставленные комнатой */
+
+/**
+ * Инстанс задаёт умолчание, комната ужесточает его для себя.
+ *
+ * Ослабить нельзя ни тем, ни другим концом: за модель платит тот, кто держит
+ * инстанс, и семинар, умеющий поднять себе предел, превращал бы настройку
+ * инстанса из потолка в совет. Правило одно на сервер и на пульт —
+ * shared/rules.ts · oracleLimitsIn.
+ */
+test('комната опускает потолок в час под инстансовый, и отказ идёт по её числу', async () => {
+  const room = 'limits-room-rule'
+  createSession(room, 'Контрольная', null)
+  updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 0 })
+  setRules(room, { ...getRules(room), questionsPerHour: 1 })
+
+  assert.equal((await askAs(room, 'p_kid')).status, 202)
+  const denied = await askAs(room, 'p_kid')
+  assert.equal(denied.status, 429, 'комнатный потолок в час не сработал')
+  const body = (await denied.json()) as { error: string }
+  // Текст отказа тот же, что и у инстансового потолка: студенту важно число,
+  // а не то, в каком из двух мест его поставили.
+  assert.match(body.error, /used your one oracle question/)
+})
+
+test('комната не поднимает потолок инстанса', async () => {
+  const room = 'limits-room-loose'
+  createSession(room, 'Мягче нельзя', null)
+  updateOracleSettings({ questionsPerHour: 1, slowModeSeconds: 0 })
+  setRules(room, { ...getRules(room), questionsPerHour: 500 })
+
+  assert.equal((await askAs(room, 'p_kid')).status, 202)
+  assert.equal((await askAs(room, 'p_kid')).status, 429, 'комната переписала потолок инстанса')
+})
+
+test('комнатный слоу-мод длиннее инстансового — и преподавателя всё так же не касается', async () => {
+  const room = 'slow-room-rule'
+  createSession(room, 'Комнатный промежуток', null)
+  // На инстансе промежутка нет вовсе: весь он приходит из правил комнаты.
+  updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 0 })
+  setRules(room, { ...getRules(room), slowModeSeconds: 30 })
+
+  assert.equal((await askAs(room, 'p_kid')).status, 202)
+  const denied = await askAs(room, 'p_kid')
+  assert.equal(denied.status, 429, 'комнатный слоу-мод пропустил второй вопрос подряд')
+  const body = (await denied.json()) as { error: string; retryAfter: number }
+  assert.match(body.error, /не чаще раза в 30 секунд/)
+  assert.ok(body.retryAfter > 0 && body.retryAfter <= 30)
+
+  // Ведущего промежуток не касается — ни инстансовый, ни комнатный: его
+  // вопросы идут подряд потому, что подряд идёт разбор.
+  upsertParticipant({
+    id: 'p_slow_host',
+    sessionId: room,
+    name: 'Ада',
+    avatar: null,
+    role: 'host',
+    tokenHost: true,
+  })
+  assert.equal((await askAs(room, 'p_slow_host')).status, 202)
+  assert.equal((await askAs(room, 'p_slow_host')).status, 202, 'ведущего развернули на его же паре')
+})
+
+test('комната не укорачивает промежуток, поставленный инстансом', async () => {
+  const room = 'slow-room-loose'
+  createSession(room, 'Короче нельзя', null)
+  updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 30 })
+  setRules(room, { ...getRules(room), slowModeSeconds: 0 })
+
+  assert.equal((await askAs(room, 'p_kid')).status, 202)
+  assert.equal((await askAs(room, 'p_kid')).status, 429, 'комната отменила слоу-мод инстанса')
+
+  // Настройки инстанса одни на весь файл: оставленный включённым слоу-мод
+  // разворачивал бы второй вопрос в тестах ниже, которые про другое.
+  updateOracleSettings({ slowModeSeconds: 0 })
+})
+
 /**
  * Вопрос и поручение — разные строки в разбивке панели.
  *

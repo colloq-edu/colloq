@@ -24,7 +24,14 @@ import { stopAll, stopWork, work } from '../ai/agent.js'
 import { applyOnBehalf, getSessionDoc, peekSessionDoc } from '../collab/index.js'
 import { mark } from '../collab/history.js'
 import { findChatEntry, getChat } from '@shared/notebook'
-import { actsAfterClass, allows, allowsAgent, CLASS_IS_OVER, oracleModeIn } from '@shared/rules'
+import {
+  actsAfterClass,
+  allows,
+  allowsAgent,
+  CLASS_IS_OVER,
+  oracleLimitsIn,
+  oracleModeIn,
+} from '@shared/rules'
 import { getParticipant, getRules, getSession, isFinished } from '../db.js'
 import { sessionAuth } from './sessions.js'
 import {
@@ -181,7 +188,19 @@ export function aiRoutes(): Router {
     // A student's panel asks one question — "is there an oracle here?" — and
     // a mode of 'off' or a limit of zero is the same answer as no API key.
     const enabled = aiReady() && settings.defaultMode !== 'off' && settings.questionsPerHour > 0
-    res.json({ enabled, model: aiModel(), mode: settings.defaultMode })
+    res.json({
+      enabled,
+      model: aiModel(),
+      mode: settings.defaultMode,
+      /*
+       * Потолки инстанса — чтобы «как на инстансе» в пульте правил называло
+       * число, а не оставалось обещанием: строка «не ниже инстансового», под
+       * которой не написано какого, не говорит преподавателю ничего. Не тайна:
+       * то же число студент читает в отказе, когда в него упирается.
+       */
+      questionsPerHour: settings.questionsPerHour,
+      slowModeSeconds: settings.slowModeSeconds,
+    })
   })
 
   router.post('/api/sessions/:id/ai/ask', (req, res) => {
@@ -305,7 +324,13 @@ export function aiRoutes(): Router {
       }
     }
 
-    const limit = settings.questionsPerHour
+    /*
+     * Потолки — настройка инстанса, ужесточённая правилами комнаты: одна
+     * функция на сервер и на пульт, и она же держит границу «комната
+     * ужесточает, но не ослабляет» (shared/rules.ts · oracleLimitsIn).
+     */
+    const limits = oracleLimitsIn(getRules(sessionId), settings)
+    const limit = limits.questionsPerHour
 
     /*
      * Потолок на комнату, а не только на человека.
@@ -365,7 +390,7 @@ export function aiRoutes(): Router {
      * «когда окно отпустит» и означает «когда пройдёт промежуток после
      * последнего». Второго счётчика заводить не за что.
      */
-    const gap = settings.slowModeSeconds
+    const gap = limits.slowModeSeconds
     if (gap > 0 && auth.role !== 'host') {
       const freeAt = windowResetAt(sessionId, auth.participantId, gap * 1000, 1)
       const left = freeAt === null ? 0 : Math.ceil((freeAt - Date.now()) / 1000)

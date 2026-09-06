@@ -426,6 +426,17 @@ if (config.staticDir) {
       },
     }),
   )
+  /*
+   * Свой robots.txt — на случай, когда ретранслятора перед нами нет.
+   *
+   * За ретранслятором такой же отдаёт он сам, до туннеля; в прямом режиме
+   * (`make host-direct`) его некому отдать, кроме нас. Запрещаем то же самое:
+   * комнаты и панель, оставляя опубликованные страницы открытыми.
+   */
+  app.get('/robots.txt', (_req, res) => {
+    res.type('text/plain').send('User-agent: *\nDisallow: /s/\nDisallow: /admin\n')
+  })
+
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/')) return next()
     /*
@@ -437,6 +448,19 @@ if (config.staticDir) {
      * не инкогнито — и большего от неё не ждут (server/src/bans.ts).
      */
     markDevice(req, res)
+    /*
+     * Комнату и панель в поиск не пускаем.
+     *
+     * Комната открывается по персональной ссылке и живёт часы, а страница входа
+     * в панель — это форма с почтой на молодом домене: для робота поисковика
+     * ровно то, чем торгуют фишеры. Google однажды пометил colloq.ru целиком
+     * как опасный, и красный экран увидели бы студенты на каждом семинарском
+     * адресе. Опубликованные страницы (/p/, /c/) и лендинг индексируются как
+     * раньше: их для того и публикуют.
+     */
+    if (/^\/(s|admin)(\/|$)/.test(req.path)) {
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow')
+    }
     // no-cache, not no-store: the browser still holds the file and an ETag, so
     // an unchanged deploy costs one 304 and a changed one is picked up at once.
     res.sendFile(

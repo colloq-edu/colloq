@@ -55,7 +55,13 @@
   import { holdFile, releaseFile, type FileDoc } from '@/lib/filedoc.svelte'
   import { baseOf, kindOf, runnerFor } from '@shared/paths'
   import { api } from '@/lib/api'
-  import { actsAfterClass, CLASS_IS_OVER, readRules, type RoomRules } from '@shared/rules'
+  import {
+    actsAfterClass,
+    CLASS_IS_OVER,
+    readRules,
+    type OracleLimits,
+    type RoomRules,
+  } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
   interface Props {
@@ -130,6 +136,37 @@
   let rulesOpen = $state(false)
   let rulesBusy = $state(false)
   const roomRules = $derived(readRules(session.session.rules))
+
+  /**
+   * Потолки оракула, действующие на инстансе.
+   *
+   * Две строки пульта ставят СВОИ потолки под инстансовые, и без числа рядом
+   * «как на инстансе» не говорит человеку ничего: он не знает, ужесточает он
+   * сейчас или пишет то же самое. Спрашивается один раз и только когда пульт
+   * открыли: строка нужна преподавателю на десять секунд, а комната без неё
+   * живёт как жила.
+   */
+  let oracleLimits = $state<OracleLimits | null>(null)
+  $effect(() => {
+    if (!rulesOpen || !isHost || oracleLimits) return
+    let alive = true
+    api
+      .aiStatus()
+      .then((status) => {
+        if (alive) {
+          oracleLimits = {
+            questionsPerHour: status.questionsPerHour,
+            slowModeSeconds: status.slowModeSeconds,
+          }
+        }
+      })
+      // Молча: пульт и без подсказки настраивается, а красная строка поверх
+      // правил объясняла бы не то, что сломалось.
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  })
 
   /**
    * Один переключатель — один запрос.
@@ -1930,7 +1967,12 @@
       </button>
     </div>
     <div class="max-h-[min(60vh,32rem)] overflow-y-auto px-4">
-      <RoomRulesRows rules={roomRules} busy={rulesBusy} onchange={setRule} />
+      <RoomRulesRows
+        rules={roomRules}
+        busy={rulesBusy}
+        instance={oracleLimits}
+        onchange={setRule}
+      />
     </div>
     <!--
       Конец занятия — здесь, под правилами, а не восьмой строкой среди них.

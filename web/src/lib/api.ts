@@ -271,9 +271,20 @@ export const api = {
   fileRaw: (id: string, path: string) =>
     `/api/sessions/${id}/file?path=${encodeURIComponent(path)}`,
 
-  /** `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`. */
+  /**
+   * `mode` is what the server actually enforces; `enabled` is `mode !== 'off'`.
+   *
+   * Два потолка — инстансовые, до правил комнаты: пульт правил показывает их
+   * рядом со своими полями, иначе «как на инстансе» не называет числа.
+   */
   aiStatus: () =>
-    request<{ enabled: boolean; model: string; mode: 'full' | 'hints' | 'off' }>('/api/ai/status'),
+    request<{
+      enabled: boolean
+      model: string
+      mode: 'full' | 'hints' | 'off'
+      questionsPerHour: number
+      slowModeSeconds: number
+    }>('/api/ai/status'),
 
   /**
    * Fire-and-forget. The server appends the question to the shared document and
