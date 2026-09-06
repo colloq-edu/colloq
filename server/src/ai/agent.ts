@@ -12,9 +12,9 @@
  * непоследовательность. Агент обязан посмотреть на собственную ошибку: написал,
  * запустил, увидел трейсбек, починил. Режим, где каждая правка ждёт нажатия,
  * этого не умеет — он не агент, а тот же ответ в другой обёртке. Взамен есть
- * возврат, и у файла с тетрадью он разный: файлам — снимок до хода и кнопка
- * отмены под ходом, тетради — отметка в истории версий, которую ход ставит
- * перед первой своей правкой ячейки.
+ * возврат, и он у всех разный: файлам — снимок до хода и кнопка отмены под
+ * ходом, тетради комнаты — отметка в истории версий, остальным тетрадям —
+ * копия файла рядом, потому что истории у них нет вовсе (см. `safety`).
  *
  * **Тетрадь правится ячейками, а не файлом.** Файл .ipynb — проекция: запись в
  * него вернулась бы обратно через полторы секунды и пропала бы молча. Поэтому у
@@ -22,6 +22,14 @@
  * каким пишет человек, и от имени того, кто попросил ход: по его правам (`edit`,
  * `structure`, замок на ячейке) и с его именем у версии в истории. Оракул здесь
  * руки человека, а не отдельное лицо со своими правами.
+ *
+ * **Обход не запрещаем, а называем вслух.** `write_file` по тетради откажет, а
+ * `run_file` с питоновским скриптом — нет: запускать скрипты этому режиму
+ * разрешено, и отнять это значило бы отнять половину работы. Значит, ловим не
+ * запретом: отпечаток файла каждой тетради снимается до шага и после, и файл,
+ * переписанный мимо комнаты, называется на том же шаге — модели и в ответе
+ * хода. Иначе получается то, ради чего это и написано: «в тетради очищены
+ * ячейки», а в тетради не изменилось ничего.
  *
  * **Без потока.** Аргументы инструмента приезжают в потоке кусками
  * незавершённого JSON, и собирать их обратно приходится по-разному у разных
@@ -34,12 +42,15 @@
  * то, чего нет и у комнаты. Опустошить файл она может — и это отменяется.
  *
  * Ячейка — исключение, и оно оплачено: `remove_cell` спрашивает то же правило
- * `structure`, что и рука человека, а тетрадь до хода лежит в истории версий.
- * У файла истории нет, у тетради есть — вся разница в этом.
+ * `structure`, что и рука человека, а то, что было до хода, лежит либо в
+ * истории версий, либо копией файла рядом. Возврат есть у всякой ячейки — вся
+ * разница в том, одна это кнопка или руки.
  */
+import { createHash } from 'node:crypto'
 import type * as Y from 'yjs'
 import {
   addStep,
+  allBooks,
   allCellArrays,
   bookAt,
   bookCells,
@@ -52,6 +63,7 @@ import {
   chatAnswer,
   createCell,
   createChatEntry,
+  DEFAULT_BOOK,
   findCell,
   findChatEntry,
   getChat,
@@ -80,7 +92,7 @@ import { bookText, isBookFile, projectBooks } from '../collab/books.js'
 import { mark } from '../collab/history.js'
 import { rememberDeleted } from '../collab/ops.js'
 import { getRules, isFinished } from '../db.js'
-import { MAX_TEXT_BYTES, listFiles, makeFile, readText, statPath } from '../workspace.js'
+import { MAX_TEXT_BYTES, freeName, listFiles, makeFile, readText, statPath } from '../workspace.js'
 import { interruptTerminal, openTerminal, runCommand, terminalPhase } from '../kernel/terminal.js'
 import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
@@ -315,7 +327,7 @@ const CELL_TOOLS: ToolSpec[] = [
   {
     name: 'edit_cell',
     description:
-      'Заменить исходник ячейки целиком. Имя ячейки — из read_notebook. ' +
+      'Заменить исходник ячейки целиком — в любой тетради комнаты. Имя ячейки — из read_notebook. ' +
       'Вывод остаётся прежним и становится устаревшим: назовите такие ячейки в ответе.',
     parameters: {
       type: 'object',
@@ -328,11 +340,14 @@ const CELL_TOOLS: ToolSpec[] = [
   },
   {
     name: 'add_cell',
-    description: 'Добавить ячейку после указанной. Без `after` — в конец тетради комнаты.',
+    description:
+      'Добавить ячейку после указанной. Без `after` — в конец тетради по `path`, ' +
+      'а без пути — в конец тетради комнаты.',
     parameters: {
       type: 'object',
       properties: {
         after: { type: 'string', description: 'имя ячейки, после которой встать' },
+        path: { type: 'string', description: 'в какую тетрадь, если `after` не указан' },
         type: { type: 'string', enum: ['code', 'markdown'] },
         source: { type: 'string' },
       },
@@ -341,7 +356,7 @@ const CELL_TOOLS: ToolSpec[] = [
   },
   {
     name: 'remove_cell',
-    description: 'Убрать ячейку из тетради.',
+    description: 'Убрать ячейку из тетради — из любой тетради комнаты.',
     parameters: {
       type: 'object',
       properties: { cellId: { type: 'string' } },
@@ -356,7 +371,7 @@ const READ_NOTEBOOK: ToolSpec = {
   description:
     'Показать ячейки живой тетради: имя ячейки, вид, исходник, есть ли вывод. ' +
     'Правят тетрадь по этим именам, а не через файл .ipynb. ' +
-    'Путь нужен, только если тетрадей в комнате несколько.',
+    'Без пути — тетрадь комнаты; остальные её тетради названы в конце списка.',
   parameters: {
     type: 'object',
     properties: { path: { type: 'string', description: 'например Разбор.ipynb' } },
@@ -407,7 +422,8 @@ export interface Hands {
 }
 
 /**
- * Выполнить один инструмент.
+ * Выполнить один инструмент — и посмотреть, не переписал ли он тетрадь мимо
+ * комнаты.
  *
  * Экспортируется ради теста: здесь живут все границы режима «сделать» — что
  * можно, чего нельзя и что сказать, когда нельзя, — и проверять их через живую
@@ -417,6 +433,23 @@ export interface Hands {
  * него должен останавливать скрипт, а не только цикл шагов.
  */
 export async function useTool(
+  hands: Hands,
+  name: string,
+  rawArgs: string,
+  signal?: AbortSignal,
+): Promise<Ran> {
+  const prints = bookPrints(hands.sessionId)
+  const ran = await runTool(hands, name, rawArgs, signal)
+  const faked = rewrittenBooks(hands.sessionId, prints)
+  if (faked.length === 0) return ran
+  const work = bookWork(hands)
+  for (const path of faked) work.faked.add(path)
+  // К тому, что инструмент уже сказал, а не вместо: скрипт мог и посчитать
+  // что-то полезное, и его вывод модели нужен — неправда только про тетрадь.
+  return { step: ran.step, said: `${ran.said}\n\n${sayFaked(faked)}` }
+}
+
+async function runTool(
   hands: Hands,
   name: string,
   rawArgs: string,
@@ -520,7 +553,8 @@ export async function useTool(
         step: note('это тетрадь комнаты', wanted),
         said:
           `${wanted} — тетрадь комнаты: её ячейки живут в комнате, а файл только их отпечаток, ` +
-          'и запись поверх него пропала бы через полторы секунды. ' +
+          'и запись поверх него пропала бы через полторы секунды. Скриптом — ровно то же самое: ' +
+          'комната файлы тетрадей не читает. ' +
           (rights && (rights.edit || rights.add || rights.remove)
             ? 'Правьте ячейки: read_notebook, дальше edit_cell, add_cell, remove_cell.'
             : 'Посмотреть её можно через read_notebook; править ячейки в этой комнате ' +
@@ -732,7 +766,7 @@ const MAX_CELL_SOURCE = 4_000
 /** Имя отметки, которую ход ставит перед первой своей правкой тетради. */
 const CHECKPOINT_LABEL = 'до правки оракула'
 
-/** Что ход уже сделал с тетрадью. */
+/** Что ход уже сделал с тетрадями. */
 interface BookWork {
   /**
    * Отметка в истории уже стоит.
@@ -740,10 +774,18 @@ interface BookWork {
    * Один раз на ход, а не на ячейку: «убери решения из пяти ячеек» — это одно
    * решение человека, и возвращаться из него надо в одну точку. Пять отметок
    * подряд вытолкнули бы из окна панели то, ради чего в историю и лезут.
+   *
+   * Одна на ход, а не на тетрадь: история версий пишет в корень `cells`
+   * прибито (collab/history.ts · restoreInto), то есть отмечает ровно одну
+   * тетрадь комнаты. Остальным — `copies`.
    */
   marked: boolean
-  /** Имя ячейки → что с ней сделали. Порядок — тот, в котором делали. */
-  touched: Map<string, 'правил' | 'добавил' | 'убрал'>
+  /** Путь тетради без истории → куда легла копия её файла перед первой правкой. */
+  copies: Map<string, string>
+  /** Имя ячейки → что с ней сделали и где. Порядок — тот, в котором делали. */
+  touched: Map<string, { book: string; what: 'правил' | 'добавил' | 'убрал' }>
+  /** Тетради, чей файл на ходу переписали мимо комнаты. */
+  faked: Set<string>
 }
 
 /**
@@ -760,7 +802,7 @@ function bookWork(hands: Hands): BookWork {
   const key = `${hands.sessionId}\u0000${hands.entryId}`
   let work = inBook.get(key)
   if (!work) {
-    work = { marked: false, touched: new Map() }
+    work = { marked: false, copies: new Map(), touched: new Map(), faked: new Set() }
     inBook.set(key, work)
     const mine = [...inBook.keys()].filter((other) => other.startsWith(`${hands.sessionId}\u0000`))
     while (mine.length > MAX_REMEMBERED_TURNS) inBook.delete(mine.shift()!)
@@ -817,22 +859,53 @@ function refuseCells(hands: Hands, own: string): string {
   return actsAfterClass(isFinished(hands.sessionId), hands.role) ? own : CLASS_IS_OVER
 }
 
-/**
- * Тетрадь комнаты — единственная, которую ход правит.
- *
- * У остальных тетрадей нет истории версий: возврат пишет прибито в корень
- * `cells` (collab/history.ts · restoreInto), и отметка «до правки оракула» их
- * не вернёт. Право менять то, откуда нельзя вернуться, этому режиму не дают —
- * прочитать чужую тетрадь он по-прежнему может, и этого хватает, чтобы сказать
- * словами, что в ней поменять.
- */
+/** Тетрадь комнаты — та, что сидит на корне `cells` и умеет в историю версий. */
 function roomBook(doc: Y.Doc): Book | null {
   return bookList(doc).find((book) => book.root === CELLS_KEY) ?? null
 }
 
-/** Тетрадь, в которой лежит этот лист ячеек. Один корень — один `Y.Array`. */
+/**
+ * Тетрадь, в которой лежит этот лист ячеек. Один корень — один `Y.Array`.
+ *
+ * `null` у документа без списка тетрадей — того самого, где `allCellArrays`
+ * отдаёт голый корень `cells`. Такой документ бывает у комнаты, открытой
+ * впервые после появления нескольких тетрадей: список ей припишут через
+ * мгновение, а до тех пор лист ровно один и он — тетрадь комнаты.
+ */
 function bookOfCells(doc: Y.Doc, cells: Y.Array<YCell>): Book | null {
-  return bookList(doc).find((book) => bookCells(doc, book.root) === cells) ?? null
+  const found = bookList(doc).find((book) => bookCells(doc, book.root) === cells)
+  if (found) return found
+  return bookList(doc).length === 0 ? { path: DEFAULT_BOOK, root: CELLS_KEY } : null
+}
+
+/**
+ * Тетрадь, о которой речь: названная путём или, если не назвали, тетрадь комнаты.
+ *
+ * Одно место на все инструменты: отказ «такой тетради нет» должен звучать
+ * одинаково, откуда бы в него ни пришли, и перечислять то, что есть, — иначе
+ * модель второй раз промахнётся тем же именем.
+ */
+function bookAsked(doc: Y.Doc, raw: unknown): Book | Ran {
+  const asked = typeof raw === 'string' && raw.trim() ? raw.trim() : null
+  const path = asked ? normalizePath(asked) : null
+  if (asked && !path) {
+    return {
+      step: note('путь не годится', asked),
+      said: 'Такой путь в этой комнате невозможен. Пути идут от корня папки семинара, без «..».',
+    }
+  }
+  const book = path ? bookAt(doc, path) : (roomBook(doc) ?? bookList(doc)[0] ?? null)
+  if (book) return book
+  const known = bookList(doc).map((one) => one.path)
+  return {
+    step: note('тетради с таким именем нет', path ?? 'тетрадь комнаты'),
+    said: path
+      ? `${path} — не тетрадь этой комнаты.` +
+        (known.length > 0
+          ? ` Открыты: ${known.join(', ')}.`
+          : ' Открытых тетрадей в ней нет вовсе.')
+      : 'В этой комнате нет открытой тетради.',
+  }
 }
 
 /** 01, 02, 03 — тот же номер, который нарисован у ячейки в поле слева. */
@@ -874,27 +947,8 @@ function useCellTool(hands: Hands, name: string, args: Record<string, unknown>):
  * знать, что он есть: по нему видно, что перезапускать.
  */
 function listCells(doc: Y.Doc, args: Record<string, unknown>): Ran {
-  const asked = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : null
-  const path = asked ? normalizePath(asked) : null
-  if (asked && !path) {
-    return {
-      step: note('путь не годится', asked),
-      said: 'Такой путь в этой комнате невозможен. Пути идут от корня папки семинара, без «..».',
-    }
-  }
-  const book = path ? bookAt(doc, path) : (roomBook(doc) ?? bookList(doc)[0] ?? null)
-  if (!book) {
-    const known = bookList(doc).map((one) => one.path)
-    return {
-      step: note('тетради с таким именем нет', path ?? 'тетрадь комнаты'),
-      said: path
-        ? `${path} — не тетрадь этой комнаты.` +
-          (known.length > 0
-            ? ` Открыты: ${known.join(', ')}.`
-            : ' Открытых тетрадей в ней нет вовсе.')
-        : 'В этой комнате нет открытой тетради.',
-    }
-  }
+  const book = bookAsked(doc, args.path)
+  if ('step' in book) return book
 
   const cells = bookCells(doc, book.root)
   const lines: string[] = [
@@ -918,6 +972,20 @@ function listCells(doc: Y.Doc, args: Record<string, unknown>): Ran {
     )
     lines.push('```')
   })
+  /*
+   * Про соседние тетради — здесь же.
+   *
+   * Тетрадей в комнате несколько, а инструмент без пути показывает одну: не
+   * назвав остальные, мы оставляем модель уверенной, что она видела всё, — и
+   * «убери решения» проходит мимо той тетради, ради которой ход и затевали.
+   */
+  const others = bookList(doc)
+    .map((one) => one.path)
+    .filter((path) => path !== book.path)
+  if (others.length > 0) {
+    lines.push('')
+    lines.push(`Ещё тетради в комнате: ${others.join(', ')} — тот же инструмент, с путём.`)
+  }
   const said = lines.join('\n')
   return {
     step: {
@@ -943,7 +1011,7 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
   const found = findCell(doc, id)
   if (!found) return missingCell(id)
   const home = bookOfCells(doc, found.cells)
-  if (!home || home.root !== CELLS_KEY) return notRoomBook(doc, home?.path ?? id)
+  if (!home) return missingCell(id)
 
   if (
     !mayEditCell(
@@ -969,14 +1037,14 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
   if (was === args.source) {
     return { step: note('и так уже так', label), said: `В ${label} уже ровно этот текст.` }
   }
-  const stop = checkpoint(hands, doc)
+  const stop = safety(hands, doc, home)
   if (stop) return stop
 
   const next = args.source
   // От имени того, кто попросил ход: у версии в истории должен быть автор, а не
   // «комната», — тот же путь, каким сервер применяет принятый патч оракула.
   applyOnBehalf(hands.sessionId, hands.by.participantId, () => replaceText(text, next))
-  bookWork(hands).touched.set(id, 'правил')
+  bookWork(hands).touched.set(id, { book: home.path, what: 'правил' })
 
   const counts = countChanges(was, next)
   /*
@@ -1009,42 +1077,50 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
   const source = typeof args.source === 'string' ? args.source : ''
   const after = typeof args.after === 'string' && args.after.trim() ? args.after.trim() : null
 
-  const room = roomBook(doc)
-  if (!room) {
-    return {
-      step: note('тетради комнаты нет', 'тетрадь'),
-      said: 'В этой комнате нет тетради — добавлять ячейку некуда.',
-    }
-  }
-  let cells = bookCells(doc, room.root)
-  let at = cells.length
+  /*
+   * Соседка решает, куда встать, — путь только когда соседки не назвали.
+   *
+   * `after` точнее: он показывает место, а не тетрадь, и спорить ему с `path`
+   * не о чем. Разбирать несогласие двух аргументов значило бы заводить третье
+   * правило там, где хватает порядка.
+   */
+  let home: Book
+  let cells: Y.Array<YCell>
+  let at: number
   if (after) {
     const found = findCell(doc, after)
     if (!found) return missingCell(after)
-    const home = bookOfCells(doc, found.cells)
-    if (!home || home.root !== CELLS_KEY) return notRoomBook(doc, home?.path ?? after)
+    const of = bookOfCells(doc, found.cells)
+    if (!of) return missingCell(after)
+    home = of
     cells = found.cells
     at = found.index + 1
+  } else {
+    const asked = bookAsked(doc, args.path)
+    if ('step' in asked) return asked
+    home = asked
+    cells = bookCells(doc, home.root)
+    at = cells.length
   }
 
   if (!rightsFor(hands, doc).add) {
     return {
-      step: note('ячейки добавляет преподаватель', room.path),
+      step: note('ячейки добавляет преподаватель', home.path),
       said: refuseCells(
         hands,
         'В этом семинаре ячейки добавляет преподаватель. Скажите в ответе, что дописать.',
       ),
     }
   }
-  const stop = checkpoint(hands, doc)
+  const stop = safety(hands, doc, home)
   if (stop) return stop
 
   const cell = createCell(type, source)
   applyOnBehalf(hands.sessionId, hands.by.participantId, () => cells.insert(at, [cell]))
   const id = cellId(cell)
-  bookWork(hands).touched.set(id, 'добавил')
+  bookWork(hands).touched.set(id, { book: home.path, what: 'добавил' })
 
-  const label = `${room.path} · ячейка ${pad(at + 1)}`
+  const label = `${home.path} · ячейка ${pad(at + 1)}`
   return {
     step: {
       kind: 'new',
@@ -1063,7 +1139,7 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
   const found = findCell(doc, id)
   if (!found) return missingCell(id)
   const home = bookOfCells(doc, found.cells)
-  if (!home || home.root !== CELLS_KEY) return notRoomBook(doc, home?.path ?? id)
+  if (!home) return missingCell(id)
 
   if (!rightsFor(hands, doc).remove) {
     return {
@@ -1090,7 +1166,7 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
       said: `${label} сейчас в очереди на ядро — на ходу я её не убираю. Скажите об этом в ответе.`,
     }
   }
-  const stop = checkpoint(hands, doc)
+  const stop = safety(hands, doc, home)
   if (stop) return stop
 
   /*
@@ -1102,7 +1178,7 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
   const cells = found.cells
   const index = found.index
   applyOnBehalf(hands.sessionId, hands.by.participantId, () => cells.delete(index, 1))
-  bookWork(hands).touched.set(id, 'убрал')
+  bookWork(hands).touched.set(id, { book: home.path, what: 'убрал' })
 
   return {
     step: { kind: 'write', target: label, added: 0, removed: 1, exit: null, note: 'ячейка убрана' },
@@ -1119,15 +1195,64 @@ function missingCell(id: string): Ran {
   }
 }
 
-function notRoomBook(doc: Y.Doc, where: string): Ran {
-  const room = roomBook(doc)
-  return {
-    step: note('это не тетрадь комнаты', where),
-    said:
-      `Правлю я только тетрадь комнаты${room ? ` (${room.path})` : ''}: у остальных тетрадей нет ` +
-      'истории версий, и вернуть их одной кнопкой нечем. Прочитать эту я могу — скажите в ответе, ' +
-      'что в ней поменять.',
+/**
+ * Куда возвращаться, если правка не понравится, — и до того, как её сделать.
+ *
+ * У тетради комнаты это отметка в истории версий: одна кнопка, и тетрадь
+ * такая, какой была до хода. У остальных тетрадей истории нет вовсе — возврат
+ * пишет в корень `cells` прибито (collab/history.ts · restoreInto), — и раньше
+ * им поэтому просто отказывали. Отказ оказался хуже дыры: модель, получив его,
+ * обошла инструменты и переписала .ipynb скриптом, а комната этого не увидела.
+ *
+ * Поэтому — копия файла рядом. Она честнее обещания «одна кнопка вернёт как
+ * было», которого для этих тетрадей нет: вернуть из копии — значит открыть её
+ * в комнате и перенести руками, то есть дольше и внимательнее, чем нажать. Эта
+ * цена названа в ответе хода, а не оставлена на потом.
+ *
+ * Не вышло положить копию — не правим вовсе: правка без точки возврата это
+ * ровно то, чего этому режиму не отдают.
+ */
+function safety(hands: Hands, doc: Y.Doc, book: Book): Ran | null {
+  if (book.root === CELLS_KEY) return checkpoint(hands, doc)
+  const work = bookWork(hands)
+  if (work.copies.has(book.path)) return null
+  /*
+   * Копия снимается с ячеек, а не с файла: файл отстаёт на полторы секунды, и
+   * в нём не хватало бы как раз того, что человек дописал перед тем, как
+   * попросить ход.
+   */
+  const text = bookText(hands.sessionId, book.path)
+  if (text === null) {
+    return {
+      step: note('нечего отложить', book.path),
+      said:
+        `${book.path} не читается как тетрадь — отложить копию до правки не с чего, ` +
+        'а без точки возврата я её не трогаю.',
+    }
   }
+  // Рядом и с числом, а не поверх: две попытки подряд — это два разных «как
+  // было», и второе не должно затирать первое.
+  const where = freeName(hands.sessionId, copyName(book.path))
+  if (makeFile(hands.sessionId, where, text) !== 'ok') {
+    return {
+      step: note('не отложил копию', book.path),
+      said:
+        `Не удалось положить рядом копию ${book.path}, а историей версий эта тетрадь не ` +
+        'возвращается — без точки возврата я её не правлю. Скажите словами, что в ней поменять.',
+    }
+  }
+  work.copies.set(book.path, where)
+  return null
+}
+
+/** `разбор/Семинар.ipynb` → `разбор/Семинар.before-oracle.ipynb`. */
+function copyName(path: string): string {
+  const dir = parentOf(path)
+  const base = baseOf(path)
+  const dot = base.lastIndexOf('.')
+  const named =
+    dot > 0 ? `${base.slice(0, dot)}.before-oracle${base.slice(dot)}` : `${base}.before-oracle`
+  return dir ? `${dir}/${named}` : named
 }
 
 /**
@@ -1166,6 +1291,77 @@ function checkpoint(hands: Hands, doc: Y.Doc): Ran | null {
   return null
 }
 
+/* ------------------------------------------------- запись мимо комнаты */
+
+/**
+ * Отпечаток файла каждой тетради комнаты — до шага и после него.
+ *
+ * Два чтения на тетрадь на шаг, и это вся цена: тетрадей в комнате единицы, а в
+ * файл уходит один исходник, без выводов. Дешевле, чем разбирать, что именно
+ * сделал чужой скрипт, и надёжнее, чем верить его словам.
+ */
+function bookPrints(sessionId: string): Map<string, string> {
+  const doc = peekSessionDoc(sessionId)?.doc
+  const prints = new Map<string, string>()
+  if (!doc) return prints
+  for (const book of bookList(doc)) prints.set(book.path, printOf(sessionId, book.path))
+  return prints
+}
+
+function printOf(sessionId: string, path: string): string {
+  const read = readText(sessionId, path)
+  // Файла нет, он двоичный или не дочитан — все три случая один: сравнивать
+  // нечего, и «не изменился» тут значит «так же нечего».
+  if (!read || read.binary) return '—'
+  return digest(read.text)
+}
+
+function digest(text: string): string {
+  return createHash('sha1').update(text).digest('hex')
+}
+
+/**
+ * Тетради, чей файл на диске переписали мимо комнаты.
+ *
+ * Скрипты запускать можно — это заявленная возможность режима, и запретить их
+ * значило бы отнять у оракула половину работы. Значит, обход ловится не
+ * запретом, а именем: `nbformat` переписал .ipynb, комната этого не прочитала,
+ * и сказать об этом надо на том же шаге — иначе ход отчитывается «в тетради
+ * очищены ячейки», а в тетради не изменилось ничего.
+ *
+ * Своя же проекция сюда не попадает: файл, ставший ровно тем, что комната в
+ * него и пишет, никого не обманул — а пишет она его в том числе посреди шага,
+ * через полторы секунды после чужой правки ячейки.
+ */
+function rewrittenBooks(sessionId: string, was: Map<string, string>): string[] {
+  const doc = peekSessionDoc(sessionId)?.doc
+  if (!doc) return []
+  const out: string[] = []
+  for (const book of bookList(doc)) {
+    const before = was.get(book.path)
+    // Тетради до шага не было: её внесли в комнату им же, и «переписали» про
+    // неё неправда.
+    if (before === undefined) continue
+    const now = printOf(sessionId, book.path)
+    if (now === before) continue
+    const mine = bookText(sessionId, book.path)
+    if (mine !== null && digest(mine) === now) continue
+    out.push(book.path)
+  }
+  return out
+}
+
+/** Что сказать модели про переписанный файл — прямо на том шаге, где это вышло. */
+function sayFaked(paths: string[]): string {
+  return (
+    `Файл ${paths.join(', ')} переписан мимо комнаты, и комната его не читает: ячейки живут в ` +
+    'ней, а .ipynb — только их проекция, которую она перепишет своим через полторы секунды. ' +
+    'Ничего из записанного в файл не применилось. Применяется это единственным способом — ' +
+    'edit_cell, add_cell, remove_cell; если ими нельзя, скажите в ответе, что тетрадь осталась ' +
+    'прежней.'
+  )
+}
+
 /**
  * Что сказать про тронутые ячейки — в самом ответе, а не только в ленте.
  *
@@ -1174,39 +1370,66 @@ function checkpoint(hands: Hands, doc: Y.Doc): Ran | null {
  * сейчас, а не в момент правки: человек читает ответ, глядя на тетрадь, какой
  * она стала.
  *
+ * По тетрадям, а не одной строкой: у каждой свой счёт ячеек и свой возврат —
+ * кнопка в истории у тетради комнаты и копия файла у остальных. Строка, где
+ * «поправил 02» относится сразу к трём тетрадям, не значит ничего.
+ *
  * Экспортируется ради теста — по тому же доводу, что и `useTool`: проверять
  * эту строку через живую модель значило бы проверять модель.
  */
 export function saidAboutCells(sessionId: string, entryId: string): string {
   const work = inBook.get(`${sessionId}\u0000${entryId}`)
-  if (!work || work.touched.size === 0) return ''
+  if (!work) return ''
   const doc = peekSessionDoc(sessionId)?.doc
+  // Имена ячеек в комнате одни на все тетради, поэтому карта одна: номер у
+  // ячейки тот, что нарисован в её собственной тетради.
   const numbers = new Map<string, string>()
   if (doc) {
-    const cells = bookCells(doc, CELLS_KEY)
-    cells.forEach((cell: YCell, at: number) => numbers.set(cellId(cell), pad(at + 1)))
+    for (const { cells } of allBooks(doc)) {
+      cells.forEach((cell: YCell, at: number) => numbers.set(cellId(cell), pad(at + 1)))
+    }
   }
-  const edited: string[] = []
-  const added: string[] = []
-  let gone = 0
-  for (const [id, what] of work.touched) {
+  const byBook = new Map<string, { edited: string[]; added: string[]; gone: number }>()
+  for (const [id, done] of work.touched) {
+    let row = byBook.get(done.book)
+    if (!row) byBook.set(done.book, (row = { edited: [], added: [], gone: 0 }))
     const no = numbers.get(id)
-    if (what === 'убрал') gone += 1
-    else if (no && what === 'правил') edited.push(no)
-    else if (no) added.push(no)
+    if (done.what === 'убрал') row.gone += 1
+    else if (no && done.what === 'правил') row.edited.push(no)
+    else if (no) row.added.push(no)
   }
-  const parts: string[] = []
-  if (edited.length > 0) parts.push(`поправил ${edited.join(', ')}`)
-  if (added.length > 0) parts.push(`добавил ${added.join(', ')}`)
-  if (gone > 0) parts.push(`убрал ${gone} ${cellsWord(gone)}`)
-  if (parts.length === 0) return ''
-  return (
-    `Тетрадь: ${parts.join('; ')}. ` +
-    (edited.length > 0
-      ? 'Вывод у поправленных прежний и теперь устарел — перезапустите их. '
-      : '') +
-    `Как было до хода — в истории версий, отметка «${CHECKPOINT_LABEL}».`
-  )
+
+  const lines: string[] = []
+  for (const [path, row] of byBook) {
+    const parts: string[] = []
+    if (row.edited.length > 0) parts.push(`поправил ${row.edited.join(', ')}`)
+    if (row.added.length > 0) parts.push(`добавил ${row.added.join(', ')}`)
+    if (row.gone > 0) parts.push(`убрал ${row.gone} ${cellsWord(row.gone)}`)
+    if (parts.length === 0) continue
+    const copy = work.copies.get(path)
+    lines.push(
+      `${path}: ${parts.join('; ')}. ` +
+        (row.edited.length > 0
+          ? 'Вывод у поправленных прежний и теперь устарел — перезапустите их. '
+          : '') +
+        (copy
+          ? `Историей версий эта тетрадь не возвращается — как было до хода, лежит рядом: ${copy}.`
+          : `Как было до хода — в истории версий, отметка «${CHECKPOINT_LABEL}».`),
+    )
+  }
+  /*
+   * Про переписанный файл говорится и тогда, когда ячеек ход не тронул вовсе, —
+   * это и есть тот случай, ради которого проверка написана: скрипт «почистил
+   * тетрадь», ход отчитался «готово», а в комнате не изменилось ничего.
+   */
+  for (const path of work.faked) {
+    lines.push(
+      `Файл ${path} на ходу переписали мимо комнаты — скриптом. Комната файлы тетрадей не ` +
+        'читает, и в ячейках от этой записи не изменилось ничего: тетрадь меняется только ' +
+        'правкой ячеек.',
+    )
+  }
+  return lines.join('\n\n')
 }
 
 /**
@@ -1654,14 +1877,17 @@ function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
     'прочитайте то, что собираетесь менять, поменяйте, запустите и убедитесь, что работает.',
     '',
     'Границы, которые не обойти:',
-    '— Тетрадь комнаты — не файл: её ячейки живут в комнате, а .ipynb рядом лишь их отпечаток,',
-    '  и запись поверх него пропала бы молча. Смотреть тетрадь — read_notebook: там имена ячеек,',
-    '  и адресуются они только именем, номер на экране меняется.',
+    '— Файл .ipynb — проекция тетради, а не тетрадь: запись в него НИЧЕГО не меняет в комнате.',
+    '  Это верно и для скрипта: json.dump, nbformat, open(...,"w") в run_file перепишут файл,',
+    '  комната его не прочитает и через полторы секунды перепишет своим. Смотреть тетрадь —',
+    '  read_notebook: там имена ячеек, и адресуются они только именем, номер на экране меняется.',
     ...(cellTools.length > 0
       ? [
-          `— Править тетрадь можно только этим: ${cellTools.join(', ')}. Правки идут от имени того,`,
-          '  кто попросил ход, и по его правам; перед первой из них ход отмечает историю версий,',
-          '  так что тетрадь возвращается одной кнопкой.',
+          `— Править тетрадь можно только этим: ${cellTools.join(', ')} — и любую тетрадь комнаты,`,
+          '  не только первую: путь у read_notebook, остальные её тетради названы в конце списка.',
+          '  Правки идут от имени того, кто попросил ход, и по его правам. Перед первой правкой',
+          '  тетради комнаты ход отмечает историю версий; у остальных тетрадей истории нет, и им',
+          '  ход кладёт рядом копию файла — в ответе сказано, где она.',
           '— Вывод ячейки правка не стирает: он остаётся прежним и становится устаревшим. Назовите',
           '  в ответе ячейки, которые поменяли, чтобы их перезапустили.',
         ]

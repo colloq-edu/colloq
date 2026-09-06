@@ -17,40 +17,100 @@
  * может тот, кому это разрешает правило; остальные могут только уйти от него,
  * и вкладка остаётся стоять.
  *
- * **Свои вкладки переживают перезагрузку.** Список путей лежит в localStorage
- * рядом с состоянием панелей. Файла может уже не быть — тогда вкладка тихо
- * исчезает при первом же списке файлов; это ровно то, что должно случиться, и
- * поэтому проверяется не при чтении из хранилища, а от списка.
+ * **Свои вкладки переживают перезагрузку — вместе с той, что была открыта.**
+ * Список путей И показанная вкладка лежат в localStorage рядом с состоянием
+ * панелей. Помнить один список было ровно половиной дела: строка вкладок после
+ * F5 рисовалась целиком, а центр экрана — пустым, и человек посреди пары шёл
+ * искать свою тетрадь в панели файлов заново. Файла может уже не быть — тогда
+ * вкладка тихо исчезает при первом же списке файлов; это ровно то, что должно
+ * случиться, и поэтому проверяется не при чтении из хранилища, а от списка
+ * (`settle`).
  */
 
 /** Ключ вкладки: путь файла, или `null` — не открыто ничего. */
 export type TabKey = string | null
 
+/** Что человек оставил в комнате в прошлый раз. */
+export interface Remembered {
+  /** Свои вкладки, в порядке открытия. */
+  open: string[]
+  /** Которая из них была показана. */
+  active: TabKey
+}
+
+/** Комната глазами вкладок: что в ней есть и на что она смотрит. */
+export interface Room {
+  /** Пути, которые в комнате правда есть: файлы плюс тетради. */
+  alive: ReadonlySet<string>
+  /** Тетрадь комнаты: её открывают тому, кто здесь впервые. */
+  firstBook: string | null
+  /**
+   * Документ на общем экране — `null`, если комната ни на что не смотрит.
+   *
+   * Лекция — это он же: `lecture:start` на сервере ставит документ доской
+   * ПЕРЕД тем, как начаться (правило «доска ушла — лекция кончилась» держится
+   * ровно на том, что файл один и тот же).
+   */
+  board: string | null
+}
+
 const STORE_PREFIX = 'colloq.tabs.'
 /** Сколько своих вкладок помним между заходами. Больше — это уже не вкладки. */
 const MAX_REMEMBERED = 12
 
+/**
+ * Где человек оказывается, вернувшись в комнату.
+ *
+ * Вынесено из класса и не трогает ни хранилище, ни руны: здесь три правила,
+ * которые ломаются молча и по-разному, и проверить их надо все — без браузера.
+ *
+ *   • Помним — возвращаем туда же. Это и есть смысл всей записи.
+ *   • Комната смотрит документ — это сильнее памяти. Опоздавший на лекцию
+ *     попадает на лекцию, а не в свою тетрадь: зал уже смотрит слайд, и
+ *     показать ему ячейки значило бы оставить его без того, о чём говорят.
+ *   • Файла больше нет — вкладки нет. Тетрадь могли убрать, пока человека не
+ *     было, и воскрешать её пустой областью без объяснения незачем; уходим на
+ *     самую левую из выживших, а не в пустой центр.
+ *
+ * `saved === null` — человек здесь впервые: ему открывают тетрадь комнаты. От
+ * «закрыл всё» это отличается пустым списком в хранилище, и открывать тетрадь
+ * ему заново значило бы отменять его же решение каждым заходом.
+ */
+export function restore(saved: Remembered | null, room: Room): Remembered {
+  const open = saved
+    ? [...new Set(saved.open)].filter((path) => room.alive.has(path)).slice(0, MAX_REMEMBERED)
+    : room.firstBook
+      ? [room.firstBook]
+      : []
+  // Доска приходит с сервера и стоит в ряду приколоченной — своей вкладкой она
+  // не становится и в память не попадает.
+  if (room.board) return { open, active: room.board }
+  const wanted = saved ? saved.active : room.firstBook
+  return { open, active: wanted && open.includes(wanted) ? wanted : (open[0] ?? null) }
+}
+
 export class Tabs {
   /** Пути, которые открыл этот человек, в порядке открытия. */
   mine = $state<string[]>([])
-  /** Что показано сейчас. `null` — тетрадь. */
+  /** Что показано сейчас. `null` — не открыто ничего. */
   active = $state<TabKey>(null)
 
-  /**
-   * Человек в этой комнате впервые — ему открывают тетрадь.
-   *
-   * Отличается от «закрыл всё»: у второго в хранилище лежит пустой список, и
-   * открывать ему тетрадь заново значило бы отменять его же решение каждым
-   * заходом.
-   */
-  readonly firstVisit: boolean
-
   readonly #key: string
+  /** Что лежало в хранилище на входе. `null` — человек в этой комнате впервые. */
+  readonly #saved: Remembered | null
+  /** Решение о том, где человек оказался, уже принято. */
+  #settled = false
 
   constructor(sessionId: string) {
     this.#key = STORE_PREFIX + sessionId
-    this.firstVisit = readRaw(this.#key) === null
-    this.mine = read(this.#key)
+    this.#saved = read(this.#key)
+    /*
+     * Вкладки встают первым же кадром, не дожидаясь ответа сервера: список
+     * файлов идёт круг сети, а строка вкладок и центр экрана нужны сразу — ради
+     * этого запись и заведена. Всё, чего в комнате уже нет, уберёт `settle`.
+     */
+    this.mine = this.#saved?.open ?? []
+    this.active = this.#saved?.active ?? null
   }
 
   /**
@@ -72,16 +132,13 @@ export class Tabs {
 
   /** Открыть файл и перейти на него. Уже открытый просто становится текущим. */
   open(path: string): void {
-    if (!this.mine.includes(path)) {
-      this.mine = [...this.mine, path]
-      this.#remember()
-    }
-    this.active = path
+    if (!this.mine.includes(path)) this.mine = [...this.mine, path]
+    this.#goto(path)
   }
 
   /** Показать вкладку, не открывая ничего нового. */
   show(key: TabKey): void {
-    this.active = key
+    this.#goto(key)
   }
 
   /**
@@ -102,36 +159,64 @@ export class Tabs {
      * четырёх файлов, человек оказывался в первом.
      */
     const at = this.row(board, lecture).indexOf(path)
-    if (this.mine.includes(path)) {
-      this.mine = this.mine.filter((open) => open !== path)
-      this.#remember()
-    }
+    if (this.mine.includes(path)) this.mine = this.mine.filter((open) => open !== path)
     const stays = board === path
-    if (wasActive) this.active = stays ? null : this.#neighbour(at, board, lecture)
+    if (wasActive) this.#goto(stays ? null : this.#neighbour(at, board, lecture))
+    else this.#remember()
     return stays
   }
 
   /**
-   * Файлы, которых больше нет, уходят вместе со своими вкладками.
+   * Комната ответила: подогнать вкладки под то, что в ней правда есть.
    *
-   * Зовётся от списка файлов комнаты: файл мог убрать преподаватель, а мог
-   * переписать `os.remove` в ячейке. Вкладка на исчезнувший файл — это пустая
-   * область без объяснения.
+   * Первый вызов — возвращение после перезагрузки (или первый заход сюда
+   * вообще), дальше — прополка: файл мог убрать преподаватель, а мог переписать
+   * `os.remove` в ячейке, и вкладка на исчезнувший файл — это пустая область без
+   * объяснения.
+   *
+   * Первый заход ждёт тетрадь комнаты и до неё не решает ничего: тетради
+   * приезжают из документа, а список файлов — с управляющего сокета, и записать
+   * в этом промежутке «человек всё закрыл» значило бы отменить решение, которого
+   * он не принимал, — навсегда, потому что «впервые» бывает один раз.
    */
-  keepOnly(paths: Set<string>): void {
-    const kept = this.mine.filter((path) => paths.has(path))
-    if (kept.length === this.mine.length) return
-    this.mine = kept
+  settle(room: Room): void {
+    if (this.#settled) {
+      this.#keepOnly(room)
+      return
+    }
+    if (this.#saved === null && room.firstBook === null) return
+    this.#settled = true
+    const next = restore(this.#saved, room)
+    this.mine = next.open
+    this.active = next.active
     this.#remember()
-    if (typeof this.active === 'string' && !paths.has(this.active)) this.active = null
   }
 
   /** Переименованный файл остаётся открытым — под новым именем. */
   rename(from: string, to: string): void {
     if (!this.mine.includes(from)) return
     this.mine = this.mine.map((path) => (path === from ? to : path))
-    this.#remember()
-    if (this.active === from) this.active = to
+    if (this.active === from) this.#goto(to)
+    else this.#remember()
+  }
+
+  /**
+   * Файлы, которых больше нет, уходят вместе со своими вкладками.
+   *
+   * Кроме общего экрана: его ставит сервер, и он вправе опередить список
+   * файлов на круг — доска, только что показанная залу, в чуть устаревшем
+   * списке выглядит как удалённый файл. Гасить из-за этого лекцию нельзя;
+   * пропадёт документ по-настоящему — комната узнает об этом сообщением
+   * `board`, а не отсутствием строки в списке.
+   */
+  #keepOnly(room: Room): void {
+    const kept = this.mine.filter((path) => room.alive.has(path))
+    if (kept.length === this.mine.length) return
+    this.mine = kept
+    const gone =
+      typeof this.active === 'string' && !room.alive.has(this.active) && this.active !== room.board
+    if (gone) this.#goto(null)
+    else this.#remember()
   }
 
   /**
@@ -151,33 +236,57 @@ export class Tabs {
     return row[Math.max(0, at - 1)] ?? null
   }
 
+  /** Перейти на вкладку и запомнить это: возвращаются туда же, откуда ушли. */
+  #goto(key: TabKey): void {
+    this.active = key
+    this.#remember()
+  }
+
   #remember(): void {
+    const box: Remembered = { open: this.mine.slice(0, MAX_REMEMBERED), active: this.active }
     try {
-      localStorage.setItem(this.#key, JSON.stringify(this.mine.slice(0, MAX_REMEMBERED)))
+      localStorage.setItem(this.#key, JSON.stringify(box))
     } catch {
       /* приватный режим или полный диск — вкладки просто не переживут заход */
     }
   }
 }
 
-function readRaw(key: string): string | null {
+/**
+ * Что записано про эту комнату. `null` — не записано ничего.
+ *
+ * Мусор в хранилище читается как «ничего не помним», а не как «человек всё
+ * закрыл»: разница видна сразу — первому открывают тетрадь комнаты, второму
+ * оставляют пустой центр, и испорченная запись не должна высаживать человека в
+ * пустую комнату.
+ */
+function read(key: string): Remembered | null {
+  let raw: string | null = null
   try {
-    return localStorage.getItem(key)
+    raw = localStorage.getItem(key)
+  } catch {
+    /* хранилища нет вовсе — помнить нечем */
+  }
+  if (!raw) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    /*
+     * Голый массив — запись прошлой версии, когда помнили один список вкладок.
+     * Она уже лежит в браузерах идущих курсов: читается как «вкладки те же,
+     * показана самая левая» — то же, что получит вернувшийся, у которого
+     * открытую вкладку успели удалить.
+     */
+    const box: unknown = Array.isArray(parsed) ? { open: parsed, active: null } : parsed
+    if (typeof box !== 'object' || box === null) return null
+    const { open, active } = box as { open?: unknown; active?: unknown }
+    if (!Array.isArray(open)) return null
+    return {
+      open: open
+        .filter((path): path is string => typeof path === 'string' && path !== '')
+        .slice(0, MAX_REMEMBERED),
+      active: typeof active === 'string' && active !== '' ? active : null,
+    }
   } catch {
     return null
-  }
-}
-
-function read(key: string): string[] {
-  try {
-    const raw = readRaw(key)
-    if (!raw) return []
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed
-      .filter((item): item is string => typeof item === 'string')
-      .slice(0, MAX_REMEMBERED)
-  } catch {
-    return []
   }
 }

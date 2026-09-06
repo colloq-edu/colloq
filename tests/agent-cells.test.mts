@@ -25,9 +25,9 @@ import { LECTURE_ROOM } from '@shared/rules'
 import { createSession, listVersions, setFinished, setRules } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { flushHistory, restoreInto } from '../server/src/collab/history.js'
-import { createBook } from '../server/src/collab/books.js'
+import { bookText, createBook, projectBooks } from '../server/src/collab/books.js'
 import { flushAllFiles } from '../server/src/collab/files.js'
-import { readText } from '../server/src/workspace.js'
+import { readText, writeText } from '../server/src/workspace.js'
 import { saidAboutCells, toolsFor, undoTurn, useTool, type Hands } from '../server/src/ai/agent.js'
 
 after(() => shutdownCollab())
@@ -104,22 +104,91 @@ test('тетради с таким именем нет — человеческ�
   assert.match(tried.said, /Тетрадь\.ipynb/, 'не сказано, какие тетради есть')
 })
 
-test('вторая тетрадь читается, но не правится: возвращать её нечем', async () => {
+test('read_notebook называет остальные тетради комнаты', async () => {
   const id = room()
   assert.equal(createBook(id, 'Разбор.ipynb').ok, true)
-  const other = cellsAt(getSessionDoc(id).doc, 'Разбор.ipynb')
+
+  const listed = await call(hands(id, turn(id)), 'read_notebook', {})
+  assert.equal(listed.step.target, 'Тетрадь.ipynb', 'без пути читается не тетрадь комнаты')
+  assert.match(listed.said, /Ещё тетради в комнате: Разбор\.ipynb/, 'вторая тетрадь не названа')
+})
+
+test('вторая тетрадь правится, а копия до правки ложится рядом', async () => {
+  const id = room()
+  const entry = turn(id)
+  assert.equal(createBook(id, 'Разбор.ipynb').ok, true)
+  const doc = getSessionDoc(id).doc
+  const other = cellsAt(doc, 'Разбор.ipynb')
   assert.ok(other && other.length > 0, 'вторая тетрадь завелась без ячеек')
+  doc.transact(() => cellSource(other.get(0)).insert(0, 'решение = 42'))
 
-  const listed = await call(hands(id, turn(id)), 'read_notebook', { path: 'Разбор.ipynb' })
+  // Имя ячейки берётся из read_notebook и годится для edit_cell: иначе модель
+  // промахнётся по тетради, которую только что прочитала.
+  const name = cellId(other.get(0))
+  const listed = await call(hands(id, entry), 'read_notebook', { path: 'Разбор.ipynb' })
   assert.equal(listed.step.target, 'Разбор.ipynb')
+  assert.match(listed.said, new RegExp(name), 'имени ячейки второй тетради в списке нет')
 
-  const tried = await call(hands(id, turn(id)), 'edit_cell', {
-    cellId: cellId(other.get(0)),
-    source: 'x = 1',
+  const wrote = await call(hands(id, entry), 'edit_cell', { cellId: name, source: 'x = 1' })
+  assert.equal(wrote.step.kind, 'write')
+  assert.equal(cellSource(other.get(0)).toString(), 'x = 1', 'вторую тетрадь так и не поправили')
+
+  // Возврат у неё не кнопка, а копия рядом, — и в ней то, что было ДО правки.
+  const copy = readText(id, 'Разбор.before-oracle.ipynb')
+  assert.ok(copy && !copy.binary, 'копии до правки рядом не оказалось')
+  assert.match(copy.text, /решение = 42/, 'в копию попало уже поправленное')
+
+  const said = saidAboutCells(id, entry)
+  assert.match(said, /Разбор\.before-oracle\.ipynb/, 'не сказано, где копия')
+  assert.match(said, /не возвращается/, 'про историю версий соврали умолчанием')
+  assert.ok(!/до правки оракула/.test(said), 'второй тетради пообещали кнопку в истории')
+  assert.equal(
+    listVersions(id, 50).filter((row) => row.kind === 'checkpoint').length,
+    0,
+    'отметка в истории у тетради, которую история не вернёт',
+  )
+})
+
+test('копия не затирает предыдущую: следующий ход кладёт свою', async () => {
+  const id = room()
+  assert.equal(createBook(id, 'Разбор.ipynb').ok, true)
+  const other = cellsAt(getSessionDoc(id).doc, 'Разбор.ipynb')!
+  const name = cellId(other.get(0))
+
+  await call(hands(id, turn(id)), 'edit_cell', { cellId: name, source: 'первое' })
+  const second = turn(id)
+  await call(hands(id, second), 'edit_cell', { cellId: name, source: 'второе' })
+
+  assert.match(readText(id, 'Разбор.before-oracle.ipynb')?.text ?? '', /"cells"/)
+  const next = readText(id, 'Разбор.before-oracle 2.ipynb')
+  assert.ok(next, 'второй ход затёр копию первого')
+  assert.match(next.text, /первое/, 'во второй копии не то, что было до второго хода')
+  assert.match(saidAboutCells(id, second), /Разбор\.before-oracle 2\.ipynb/)
+})
+
+test('add_cell кладёт ячейку в названную тетрадь, а не в тетрадь комнаты', async () => {
+  const id = room()
+  const entry = turn(id)
+  assert.equal(createBook(id, 'Разбор.ipynb').ok, true)
+  const other = cellsAt(getSessionDoc(id).doc, 'Разбор.ipynb')!
+  const was = other.length
+
+  const added = await call(hands(id, entry), 'add_cell', {
+    path: 'Разбор.ipynb',
+    type: 'code',
+    source: 'print(1)',
   })
-  assert.equal(tried.step.kind, 'note')
-  assert.match(tried.said, /только тетрадь комнаты/)
-  assert.equal(cellSource(other.get(0)).toString(), '', 'чужую тетрадь всё-таки поправили')
+  assert.equal(added.step.kind, 'new')
+  assert.match(added.step.target, /^Разбор\.ipynb/)
+  assert.equal(other.length, was + 1)
+  assert.equal(cells(id).length, 2, 'ячейка ушла в тетрадь комнаты')
+
+  const gone = await call(hands(id, entry), 'remove_cell', { cellId: cellId(other.get(0)) })
+  assert.equal(gone.step.removed, 1)
+  assert.equal(other.length, was)
+  const said = saidAboutCells(id, entry)
+  assert.match(said, /^Разбор\.ipynb: добавил \d\d; убрал 1 ячейка\./, said)
+  assert.ok(!/Тетрадь\.ipynb/.test(said), 'ответ приписал правку тетради комнаты')
 })
 
 /* ---------------------------------------------------------------- правит */
@@ -209,6 +278,51 @@ test('несуществующая ячейка — человеческий о�
     assert.match(tried.said, /read_notebook/, name)
   }
   assert.equal(cells(id).length, 2)
+})
+
+/* --------------------------------------------------------- мимо комнаты */
+
+test('файл тетради, переписанный мимо комнаты, ход называет вслух', async () => {
+  const id = room()
+  const entry = turn(id)
+  projectBooks(id)
+  const was = source(id, 1)
+
+  /*
+   * Порядок тот же, что вышел на живой паре: ход берёт отпечаток файла, идёт
+   * шаг, и во время него скрипт переписывает .ipynb. Скрипта здесь нет — ядра
+   * у сюиты нет вовсе, — а запись ложится ровно туда же, между отпечатками:
+   * `useTool` снимает первый до того, как отдать управление шагу.
+   */
+  const step = call(hands(id, entry), 'list_files', {})
+  writeText(id, 'Тетрадь.ipynb', '{"cells": [], "nbformat": 4, "nbformat_minor": 5}')
+  const ran = await step
+
+  assert.match(ran.said, /мимо комнаты/, 'модели не сказали, что запись не применилась')
+  assert.match(ran.said, /edit_cell/, 'не сказано, чем применить на самом деле')
+  assert.equal(source(id, 1), was, 'запись в файл всё-таки добралась до ячеек')
+
+  const said = saidAboutCells(id, entry)
+  assert.match(said, /Тетрадь\.ipynb/, 'комнате про переписанный файл не сказали')
+  assert.match(said, /не изменилось ничего/)
+})
+
+test('своя же проекция обманом не считается', async () => {
+  const id = room()
+  const entry = turn(id)
+  projectBooks(id)
+  const doc = getSessionDoc(id).doc
+  doc.transact(() => cellSource(cells(id)[1]).insert(0, '# правка руками\n'))
+
+  // Проекция пишет файл через полторы секунды после правки ячейки — то есть
+  // посреди чужого шага. Файл при этом меняется, но становится ровно тем, что
+  // комната в него и пишет: обмана здесь нет, и говорить о нём нечего.
+  const step = call(hands(id, entry), 'list_files', {})
+  writeText(id, 'Тетрадь.ipynb', bookText(id, 'Тетрадь.ipynb')!)
+  const ran = await step
+
+  assert.ok(!/мимо комнаты/.test(ran.said), 'проекцию приняли за подделку')
+  assert.equal(saidAboutCells(id, entry), '')
 })
 
 /* ------------------------------------------------------------ чем платим */
