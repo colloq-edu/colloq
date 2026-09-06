@@ -10,6 +10,7 @@
    */
   import type * as Y from 'yjs'
   import { allCellArrays, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
+  import { outgoingRow, settleOutbox, type Outgoing } from '@/lib/ask-outbox'
   import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
   import { oracleModeIn, readRules } from '@shared/rules'
   import { kindOf } from '@shared/paths'
@@ -110,8 +111,47 @@
    */
   const offline = $derived(mode === 'off' || (status !== null && !status.enabled))
 
+  /**
+   * Вопросы, отправленные и ещё не вернувшиеся из документа, — см. lib/ask-outbox.
+   *
+   * Не «показать и забыть»: откажет сервер — слоу-мод, потолок, оборванная
+   * связь — строка снимается вместе с обещанием, а текст возвращается в поле.
+   */
+  let outbox = $state.raw<Outgoing[]>([])
+  let outgoing = 0
+
+  /** Поставить вопрос в ленту до ответа сервера. Возвращает имя строки. */
+  function openOutbox(body: AiAskRequest): string {
+    const id = `outgoing:${++outgoing}`
+    outbox = [
+      ...outbox,
+      {
+        row: outgoingRow({
+          id,
+          me: session.me,
+          question: body.message,
+          action: body.action ?? null,
+          cellId: body.cellId ?? null,
+          cellIds: body.cellIds ?? [],
+          mode: body.mode,
+          at: Date.now(),
+        }),
+        before: new Set(entries.map((entry) => entry.id)),
+      },
+    ]
+    return id
+  }
+
+  /** Снять строку: её заменила настоящая запись — или отказ. */
+  function closeOutbox(id: string): void {
+    outbox = outbox.filter((row) => row.row.id !== id)
+  }
+
   $effect(() => {
-    const read = () => (entries = chat.map(readChatEntry))
+    const read = () => {
+      entries = chat.map(readChatEntry)
+      outbox = settleOutbox(outbox, entries)
+    }
     read()
     // Deep: an answer streams into a Y.Text *inside* an entry. The array itself
     // only changes when somebody asks something new.
@@ -459,11 +499,18 @@
     stopComposing()
     sendError = null
     pinned = true
+    // Строка встаёт в ленту здесь, а не в `submit`: спрашивают ещё из тетради
+    // («Спросить оракула», «Починить») и повтором хода, и ждут они ровно
+    // столько же.
+    const outgoingId = openOutbox(body)
     try {
       await api.aiAsk(session.session.id, session.token, body)
       slowNotice = null
       waitUntil = 0
     } catch (err) {
+      // Вопрос не принят — значит и в ленте ему не место: строка, оставшаяся
+      // висеть с вертушкой, обещает ответ, которого не будет.
+      closeOutbox(outgoingId)
       // Verbatim: a 403 ("hints mode…", "switched off…") and a 429 with the
       // minutes until the next question are the server explaining an
       // instance's rules, and paraphrasing them would leave the student
@@ -648,7 +695,7 @@
       <!-- Обёртка нужна наблюдателю размера: он смотрит за высотой СОДЕРЖИМОГО,
            а у самого окна прокрутки она не меняется, сколько бы туда ни дописали. -->
       <div bind:this={thread}>
-      {#if entries.length === 0}
+      {#if entries.length === 0 && outbox.length === 0}
         <!--
           The first thing a student reads on this panel, so it is not "nothing
           here yet" — it is the one rule about this thread worth knowing before
@@ -673,9 +720,10 @@
         </div>
       {/if}
 
-      {#each entries as entry (entry.id)}
+      {#each [...entries, ...outbox.map((row) => row.row)] as entry (entry.id)}
         <ChatTurn
           {entry}
+          pending={entry.id.startsWith('outgoing:')}
           avatar={avatars.get(entry.participantId) ?? null}
           cellNumber={cellNumber(entry.cellId)}
           askedAbout={(entry.cellIds.length > 0 ? entry.cellIds : entry.cellId ? [entry.cellId] : [])

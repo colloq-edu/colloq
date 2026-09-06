@@ -78,7 +78,15 @@
     watchText,
   } from '@/lib/yreactive.svelte'
   import { runSlot } from '@/lib/run-slot'
-  import { nextHeld, NO_HELD, outputSeat, unnumberedResult, type Held } from '@/lib/output-seat'
+  import {
+    neverRan as neverRanIn,
+    nextHeld,
+    NO_HELD,
+    outputSeat,
+    ranQuietly as ranQuietlyIn,
+    unnumberedResult,
+    type Held,
+  } from '@/lib/output-seat'
   import CellOutputs from './CellOutputs.svelte'
   import CodeEditor from './CodeEditor.svelte'
   import Markdown from './Markdown.svelte'
@@ -465,6 +473,27 @@
       canInterrupt,
     }),
   )
+  /** Ещё не считалась и отработала молча — обе см. lib/output-seat. */
+  const neverRan = $derived(
+    neverRanIn({
+      type: meta.current.type,
+      state: shownState,
+      execCount: meta.current.execCount,
+      outputs: outputs.current.length,
+      running: shownRunning,
+    }),
+  )
+  const ranQuietly = $derived(
+    ranQuietlyIn({
+      type: meta.current.type,
+      state: shownState,
+      execCount: meta.current.execCount,
+      outputs: outputs.current.length,
+      floor: outputFloor,
+      running: shownRunning,
+    }),
+  )
+
   const ranByOther = $derived(
     runBy && runBy !== session.me.name && (cellState === 'ok' || cellState === 'error')
       ? `Ran by ${runBy}`
@@ -1007,6 +1036,7 @@
       -->
       <span
         title={[
+          neverRan ? 'Ещё не запускалась' : null,
           meta.current.execCount === null ? null : `Run ${meta.current.execCount}`,
           meta.current.ranMs !== null && meta.current.ranMs >= NOTICED_MS
             ? spell(meta.current.ranMs)
@@ -1031,6 +1061,22 @@
            * тёмный прямоугольник вместо номера.
            */
           selected ? 'bg-ink px-1 text-canvas' : ORDINAL[tone],
+          /*
+           * Пунктир под номером — «ещё не считалась».
+           *
+           * Помечается именно НЕзапущенная, а не запущенная: к середине пары
+           * посчитано почти всё, и метка на каждой второй ячейке перестаёт
+           * читаться. Метки нет — ячейка работала; это же правило у Jupyter,
+           * только там пусто внутри скобок, а здесь под цифрой.
+           *
+           * Двумя ветками, а не `border-current`: у выделенной ячейки номер
+           * лежит на чернильной плашке, и линия по ней должна быть цвета
+           * листа, иначе её попросту не видно.
+           */
+          neverRan &&
+            (selected
+              ? 'border-b-2 border-dotted border-canvas/60'
+              : 'border-b-2 border-dotted border-faint'),
         )}
       >
         {ordinal}
@@ -1519,6 +1565,31 @@
                   {/if}
                 {/if}
               </div>
+            </div>
+          {:else if ranQuietly}
+            <!--
+              Ячейка отработала молча — и об этом надо сказать, потому что
+              иначе про неё нельзя сказать вообще ничего.
+              
+              Та же метка, что и под настоящим выводом (`Out [n] · время`), на
+              том же месте у правого края: глаз учится одному знаку, а не двум.
+              Отличается тремя словами и приглушённостью — «место, где вывода
+              не оказалось», а не «вот ваш вывод».
+              
+              Без подложки и без высоты сверх строки: у половины тетради это
+              `import` и присваивание, и полоса в полтора сантиметра под каждым
+              превратила бы лист в лесенку.
+            -->
+            <div class={cn('flex items-center gap-3 border-l-4 px-4 py-1', RULE[tone])}>
+              {#if ranByOther}
+                <span class="font-mono text-2xs text-muted">{ranByOther}</span>
+              {/if}
+              <span class={cn('ml-auto', CAPS, 'text-faint')}>
+                Out [{meta.current.execCount}]{meta.current.ranMs !== null &&
+                meta.current.ranMs >= NOTICED_MS
+                  ? ` · ${spell(meta.current.ranMs)}`
+                  : ''} · без вывода
+              </span>
             </div>
           {/if}
         </div>

@@ -16,6 +16,8 @@ import {
   outputKey,
   outputSeat,
   unnumberedResult,
+  neverRan,
+  ranQuietly,
 } from "../web/src/lib/output-seat.js";
 
 test("ячейка, которая не считает, не резервирует ничего", () => {
@@ -220,4 +222,80 @@ test("упавший вывод места не держит", () => {
     outputSeat({ running: true, outputs: 0, pendingImages: 0, held: afterOk }),
     444,
   );
+});
+
+/* ------------------------------------------------- запускалась ли она вообще */
+
+/**
+ * Ячейка без вывода после запуска выглядела ровно как та, которой никто не
+ * касался: номер в поле — порядковый, он у обеих одинаков. Отсюда два знака —
+ * пунктир под номером у незапущенной и строка «без вывода» у отработавшей
+ * молча, — и оба обязаны быть взаимоисключающими: два знака сразу на одной
+ * ячейке говорят противоположное.
+ */
+const CELL = {
+  type: "code",
+  state: "idle",
+  execCount: null,
+  outputs: 0,
+  floor: 0,
+  running: false,
+} as const;
+
+test("свежая ячейка кода — не запускалась; заметка не помечается никогда", () => {
+  assert.equal(neverRan(CELL), true);
+  // У заметки нет ни запуска, ни номера выполнения: пунктир под её номером
+  // обещал бы кнопку, которой у неё не бывает.
+  assert.equal(neverRan({ ...CELL, type: "markdown" }), false);
+});
+
+test("посчитанная ячейка теряет пунктир — по номеру или по выводу", () => {
+  assert.equal(neverRan({ ...CELL, execCount: 3 }), false);
+  /*
+   * Вывод без номера — это «считалась». Номер теряется при перезапуске ядра и
+   * возврате версии (см. unnumberedResult выше), а факт выполнения нет, и
+   * пунктир на ячейке с настоящим выводом на экране был бы прямой неправдой.
+   */
+  assert.equal(neverRan({ ...CELL, outputs: 2 }), false);
+  assert.equal(unnumberedResult({ state: "idle", execCount: null, outputs: 2 }), true);
+});
+
+test("пока считает и пока стоит в очереди — молчим", () => {
+  // Про эти две и так сказано: полосой у края, строкой Running и чипом очереди.
+  assert.equal(neverRan({ ...CELL, running: true }), false);
+  assert.equal(neverRan({ ...CELL, state: "queued" }), false);
+  assert.equal(ranQuietly({ ...CELL, execCount: 3, running: true }), false);
+  assert.equal(ranQuietly({ ...CELL, execCount: 3, state: "queued" }), false);
+});
+
+test("отработала молча — это номер выполнения без единой записи вывода", () => {
+  assert.equal(ranQuietly({ ...CELL, execCount: 3 }), true);
+  // С выводом говорит сам вывод, и под ним стоит та же метка Out [n].
+  assert.equal(ranQuietly({ ...CELL, execCount: 3, outputs: 1 }), false);
+  // Без номера сказать «Out [n]» нечем.
+  assert.equal(ranQuietly(CELL), false);
+});
+
+test("зарезервированное место молчит: вывод вот-вот появится", () => {
+  /*
+   * Между стартом и первым байтом ячейка держит высоту прошлого вывода
+   * (outputSeat выше). Сказать в этот промежуток «без вывода» значит соврать
+   * на полкадра — и соврать заметно, потому что строка встанет ровно там, где
+   * через мгновение будет вывод.
+   */
+  assert.equal(ranQuietly({ ...CELL, execCount: 3, floor: 420 }), false);
+});
+
+test("два знака не встречаются на одной ячейке", () => {
+  for (const execCount of [null, 7]) {
+    for (const outputs of [0, 3]) {
+      for (const floor of [0, 420]) {
+        const cell = { ...CELL, execCount, outputs, floor };
+        assert.ok(
+          !(neverRan(cell) && ranQuietly(cell)),
+          `и пунктир, и «без вывода»: ${JSON.stringify({ execCount, outputs, floor })}`,
+        );
+      }
+    }
+  }
 });

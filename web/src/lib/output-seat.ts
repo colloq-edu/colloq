@@ -114,6 +114,57 @@ export function unnumberedResult(input: {
 }
 
 /**
+ * Ячейка ни разу не считалась в этом ядре — и об этом надо сказать.
+ *
+ * Вопрос «а она вообще запускалась?» задают на каждом семинаре вслух, и
+ * ответить на него по экрану было нельзя: у Jupyter на это есть `In [ ]`
+ * против `In [3]`, а в этой тетради в поле стоит НОМЕР ПО ПОРЯДКУ — он у обеих
+ * одинаков, и ячейка без вывода после запуска выглядит ровно как та, которой
+ * никто не касался.
+ *
+ * Вывод без номера — это «считалась»: номер теряется при перезапуске ядра и
+ * возврате версии (см. `unnumberedResult`), а факт выполнения нет. Работающая
+ * и стоящая в очереди сюда не попадают: про них и так сказано, и пунктир под
+ * номером спорил бы с полосой у края.
+ *
+ * Считается по документу, а не по этой вкладке: `execCount` — общая правда
+ * комнаты, так что вошедший к середине пары видит то же, что и все.
+ */
+export function neverRan(input: {
+  type: 'code' | 'markdown'
+  state: CellState
+  execCount: number | null
+  outputs: number
+  running: boolean
+}): boolean {
+  if (input.type !== 'code' || input.running || input.state === 'queued') return false
+  return input.execCount === null && input.outputs === 0
+}
+
+/**
+ * Отработала и ничего не напечатала.
+ *
+ * `import pandas as pd`, чтение файла, определение функции — это половина
+ * тетради, и до сих пор такая ячейка после запуска не менялась ничем, кроме
+ * цвета номера, который тут же возвращался к покою: строка `Out [n]`
+ * рисуется только под выводом, а вывода нет.
+ *
+ * Зарезервированное место (`floor`) значит, что вывод вот-вот появится, —
+ * говорить «без вывода» в этот момент значило бы сказать неправду на полкадра.
+ */
+export function ranQuietly(input: {
+  type: 'code' | 'markdown'
+  state: CellState
+  execCount: number | null
+  outputs: number
+  floor: number
+  running: boolean
+}): boolean {
+  if (input.type !== 'code' || input.running || input.state === 'queued') return false
+  return input.execCount !== null && input.outputs === 0 && input.floor === 0
+}
+
+/**
  * Ключ вывода для `{#each}`.
  *
  * По номеру места мало: `clear_output(wait=True)` заменяет N записей на M в

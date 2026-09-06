@@ -118,6 +118,35 @@ explain_unhealthy() {
   journalctl -u "$SERVICE" -n 20 --no-pager 2>/dev/null | sed 's/^/    /' || true
 }
 
+# Рецепт ядра изменился после того, как собрали образ?
+#
+# «Образ есть — значит готово» верно ровно до правки самого рецепта, и цена
+# ошибки тут молчаливая: комнаты идут на прежнем образе, панель говорит
+# «Ready», а правка не работает. Так уехала правка matplotlib: `MPLBACKEND=Agg`
+# в Dockerfile убирал у ядра всякую врисованную картинку, а после раскатки
+# образ остался прежним, потому что он «уже собран».
+#
+# Список пакетов окружения сюда не входит: за ним следит сам сервер, по своей
+# отметке о сборке (server/src/environments.ts · editedSinceBuild), и он умеет
+# сравнивать содержимое, а не время. Здесь — только общая для всех окружений
+# основа, у которой отметки нет.
+kernel_recipe_newer() {
+  local image="colloq-kernel:$1" created built file
+  created="$(docker image inspect -f '{{.Created}}' "$image" 2>/dev/null || true)"
+  [ -n "$created" ] || return 0
+  built="$(date -d "$created" +%s 2>/dev/null || true)"
+  # Дату не разобрали — пересобирать наугад дороже, чем довериться образу:
+  # сборка базы это минуты простоя на каждой раскатке.
+  [ -n "$built" ] || return 1
+  # Через `if`, а не `[ … ] && return 0`: при `set -e` неудачная проверка на
+  # последнем файле уронила бы весь скрипт вместо «нет, не новее».
+  for file in kernel/Dockerfile kernel/requirements.txt; do
+    [ -f "$file" ] || continue
+    if [ "$(stat -c %Y "$file" 2>/dev/null || echo 0)" -gt "$built" ]; then return 0; fi
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------- install
 
 cmd_install() {
@@ -260,7 +289,7 @@ cmd_install() {
   # делал `make up` заодно со сборкой всего стека; здесь стека нет, и шаг стал
   # виден. Уже собранный образ не пересобирается — это и есть идемпотентность.
   local env_name; env_name="$(read_env KERNEL_ENV)"; env_name="${env_name:-base}"
-  if docker image inspect "colloq-kernel:$env_name" >/dev/null 2>&1; then
+  if docker image inspect "colloq-kernel:$env_name" >/dev/null 2>&1 && ! kernel_recipe_newer "$env_name"; then
     say "${DIM}    colloq-kernel:$env_name уже собран${OFF}"
   else
     say "${DIM}    собираю colloq-kernel:$env_name — это долго, минуты${OFF}"

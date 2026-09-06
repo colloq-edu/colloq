@@ -54,13 +54,32 @@
      * режим оракула. Считает панель — режим инстанса знает только она.
      */
     canDo: boolean
+    /**
+     * Вопрос ещё уходит на сервер: записи в документе пока нет.
+     *
+     * Строка нарисована этой вкладкой, чтобы вопрос появился в ленте сразу
+     * после Enter (см. `outbox` в AiPanel). Выглядит она как настоящая — на то
+     * и расчёт, — но остановить нечего: у сервера этого хода ещё нет, и «Стоп»
+     * стучался бы по имени, которого никто не знает.
+     */
+    pending?: boolean
     onretry: () => void
     onstop: () => void
     /** Отменить ход целиком: файлы вернутся к тому, что было до него. */
     onundo: () => void
   }
 
-  let { entry, avatar, cellNumber, askedAbout, canDo, onretry, onstop, onundo }: Props = $props()
+  let {
+    entry,
+    avatar,
+    cellNumber,
+    askedAbout,
+    canDo,
+    pending = false,
+    onretry,
+    onstop,
+    onundo,
+  }: Props = $props()
 
   /** Что говорит строка шага: глагол, цель и итог. */
   const VERB: Record<string, string> = {
@@ -216,7 +235,7 @@
    * висит на проекторе у всей комнаты. Ровно так это читает сервер
    * (routes/ai.ts, /ai/cancel) — второго свода правил здесь заводить нельзя.
    */
-  const mayStop = $derived(mine || session.me.role === 'host')
+  const mayStop = $derived(!pending && (mine || session.me.role === 'host'))
 
   function decide(accept: boolean) {
     if (!findChatEntry(session.doc, entry.id)) return
@@ -483,7 +502,11 @@
         type="button"
         class={cn(GHOST, 'self-start disabled:cursor-not-allowed disabled:opacity-40')}
         disabled={!mayStop}
-        title={mayStop ? '' : 'Остановить чужой вопрос может преподаватель'}
+        title={mayStop
+          ? ''
+          : pending
+            ? 'Вопрос ещё уходит'
+            : 'Остановить чужой вопрос может преподаватель'}
         onclick={onstop}
       >
         <Icon name="stop" size={10} />
