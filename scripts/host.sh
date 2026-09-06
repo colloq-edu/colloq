@@ -90,14 +90,21 @@ cleanup() {
   # прикасались.
   if [ -n "$TOUCHED_ENV" ] && [ -f .env ] && grep -qE '^PUBLIC_URL=https://' .env 2>/dev/null; then
     restore_public_url
-    # Контейнеру одного .env мало: файла внутри нет, PUBLIC_URL запечён в
-    # окружение на `docker compose up -d app` шагом 3/4. Без пересоздания app
-    # так и раздаёт в панели ссылки на туннель, которого больше нет, — и это
-    # видно только тому, кому её отправили. Сервер на хосте перечитывает .env
-    # сам, там достаточно вернуть строку.
-    if [ "${WHO:-}" = container ]; then
-      PUBLIC_URL="$LOCAL" docker compose up -d app >/dev/null 2>&1 || true
-    fi
+    # Вернуть строку в .env мало тому, кто читает её один раз, при запуске.
+    #
+    # Контейнеру: файла внутри нет вовсе, PUBLIC_URL запечён в окружение на
+    # `docker compose up -d app` шагом 3/4. Службе: EnvironmentFile тоже
+    # читается на старте. Без пересоздания (перезапуска) в панели так и
+    # раздаются ссылки на туннель, которого больше нет, — и видно это только
+    # тому, кому её отправили.
+    #
+    # Сервер, запущенный через `make run`, здесь не трогаем: его подняли руками,
+    # и снимать его молча, за спиной, нельзя. Он перечитает адрес при
+    # следующем `make stop && make run`.
+    case "${WHO:-}" in
+      container) PUBLIC_URL="$LOCAL" docker compose up -d app >/dev/null 2>&1 || true ;;
+      service)   systemctl restart colloq >/dev/null 2>&1 || true ;;
+    esac
     say "${DIM}PUBLIC_URL возвращён на ${LOCAL}${OFF}"
   fi
   rm -f "$LOG"
@@ -136,14 +143,17 @@ say "${BOLD}1/4${OFF} проверяю colloq на ${LOCAL}"
 #
 if curl -sf -o /dev/null --max-time 5 "$LOCAL/api/health" 2>/dev/null; then
   say "${DIM}    уже работает — ничего не трогаю${OFF}"
-elif [ -f "${PIDFILE:-.colloq.pid}" ] && kill -0 "$(cat "${PIDFILE:-.colloq.pid}" 2>/dev/null)" 2>/dev/null; then
+elif { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; } \
+     || { [ -f "${PIDFILE:-.colloq.pid}" ] && kill -0 "$(cat "${PIDFILE:-.colloq.pid}" 2>/dev/null)" 2>/dev/null; }; then
   #
-  # Хостовой сервер жив, но здоровым себя не считает — почти всегда потому, что
-  # выключен Docker и ядра нет. Поднимать здесь `docker compose up` нельзя: он
-  # поднимет и app, и на порту окажется второй Colloq с другой базой поверх
-  # первого. Это и был «третий переход»: три разных инстанса за одно утро.
+  # Сервер на хосте жив — службой или руками, — но здоровым себя не считает.
+  # Почти всегда это выключенный Docker или ни разу не собранное окружение
+  # ядра. Поднимать здесь `docker compose up` нельзя: он поднимет и app, и на
+  # порту окажется второй Colloq с другой базой поверх первого. Это и был
+  # «третий переход»: три разных инстанса за одно утро.
   #
-  die "colloq на ${LOCAL} работает, но не готов вести семинар — обычно это выключенный Docker.
+  die "colloq на ${LOCAL} работает, но не готов вести семинар — обычно это выключенный
+  Docker или несобранное окружение ядра (make env-build NAME=<окружение>).
   Проверьте: curl -s ${LOCAL}/api/health"
 else
   #
@@ -161,22 +171,35 @@ else
   # за человека, какой из двух способов запуска ему нужен, он не должен.
   #
   say "${RED}    на ${LOCAL} никто не отвечает${OFF}"
-  die "сначала поднимите colloq — «make up» (всё в docker) или «make run» (сервер на хосте), — потом повторите."
+  die "сначала поднимите colloq — «make up» (всё в docker), «make run» (сервер на хосте)
+  или «make service-install» (выделенная машина: служба systemd), — потом повторите."
 fi
 
-# Кто именно держит порт. Три случая, и все три настоящие:
+# Кто именно держит порт. Случаев четыре, и все четыре настоящие:
 #
+#   служба      — systemd на выделенной машине: сервер на хосте, в docker
+#                 только ядра комнат. Так стоит арендованная машина и любая,
+#                 где идут занятия;
 #   контейнер   — `make up`, приложение целиком в docker;
-#   хост        — `make run`, сервер на машине, ядро в docker. Так проект и
-#                 запускают каждый день, и .colloq.pid — его расписка;
+#   хост        — `make run`, сервер на машине, ядро в docker. Так проект
+#                 запускают, когда правят код, и .colloq.pid — его расписка;
 #   чужой       — что-то другое. Туннель встанет и на него, но PUBLIC_URL ему
 #                 никто не поправит, и об этом придётся сказать вслух.
+#
+# Порядок разбора — не алфавитный, а по надёжности признака. Служба спрашивается
+# первой: на машине под службой рядом валяется и .colloq.pid от давнего `make
+# run`, и остановленный контейнер app, — а перезапускать надо ту форму, которая
+# сейчас держит порт. Расписка `make run` идёт последней ровно поэтому: pid-файл
+# переживает и перезагрузку, и смену формы, и говорит о прошлом, а не о
+# настоящем.
 #
 # Различать обязательно: ссылки на семинары строятся из PUBLIC_URL, и семинар,
 # розданный со ссылкой на localhost, — это семинар, на который никто не зашёл.
 PIDFILE="${PIDFILE:-.colloq.pid}"
 WHO="other"
-if docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running; then
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; then
+  WHO="service"
+elif docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running; then
   WHO="container"
 elif [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
   WHO="host"
@@ -272,6 +295,26 @@ say "${BOLD}3/4${OFF} перезапускаю приложение с внеш�
 set_public_url "$PUBLIC"
 TOUCHED_ENV=1
 case "$WHO" in
+  service)
+    # Служба читает .env при запуске (EnvironmentFile), поэтому новый адрес
+    # доезжает до неё только перезапуском — и делать это надо systemctl, а не
+    # kill по pid-файлу: pid-файла у неё нет вовсе, а убитый мимо systemd
+    # процесс тут же поднимется обратно со старым окружением (Restart=always),
+    # и туннель окажется открыт на инстанс, раздающий прежние ссылки.
+    systemctl restart colloq
+    # Ждём готовности, а не «systemctl вернул управление»: дальше идёт проверка
+    # снаружи, и она бы застала инстанс на середине подъёма.
+    ok=""
+    for _ in $(seq 1 60); do
+      if curl -sf -o /dev/null --max-time 2 "$LOCAL/api/health" 2>/dev/null; then ok=1; break; fi
+      sleep 1
+    done
+    [ -n "$ok" ] || {
+      journalctl -u colloq -n 20 --no-pager 2>/dev/null >&2 || true
+      die "служба перезапущена, но готовности не дождался. Журнал: make service-logs"
+    }
+    say "${DIM}    служба перезапущена с ${PUBLIC}${OFF}"
+    ;;
   container)
     PUBLIC_URL="$PUBLIC" docker compose up -d app >/dev/null
     ;;

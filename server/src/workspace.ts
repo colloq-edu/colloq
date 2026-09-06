@@ -11,7 +11,29 @@ import { MAX_DEPTH, baseOf, kindOf, normalizePath, parentOf } from '@shared/path
  */
 export function sessionDir(sessionId: string): string {
   const dir = path.join(config.workspaceDir, sessionId)
+  const made = !fs.existsSync(dir)
   fs.mkdirSync(dir, { recursive: true })
+  /*
+   * Права выставляются явно, а не оставляются на umask процесса.
+   *
+   * В папку пишут двое: сервер и ядро комнаты — а это разные пользователи,
+   * когда сервер работает на хосте от root, а ядро внутри контейнера от
+   * runner. При umask 0022 папка выходит 0755, и первая же `open('a.txt','w')`
+   * в ячейке падает PermissionError — на зелёном экране, без единого слова о
+   * причине. 2775: пишут оба, а setgid держит группу на всём, что заведут
+   * внутри, чтобы право не терялось на первой же вложенной папке.
+   *
+   * Только на своём создании: чужие права у уже существующей папки не наши,
+   * а на Windows режим всё равно ничего не значит.
+   */
+  if (made && process.platform !== 'win32') {
+    try {
+      fs.chmodSync(dir, 0o2775)
+    } catch {
+      // Не наша папка — значит и права не наши. Работа комнаты от этого не
+      // зависит: если писать нельзя, об этом скажет первая же запись.
+    }
+  }
   return dir
 }
 
@@ -442,7 +464,10 @@ export function readText(sessionId: string, rel: string): TextFile | null {
 export function writeText(sessionId: string, rel: string, text: string): boolean {
   const full = resolveInSession(sessionId, rel)
   if (!full) return false
-  const tmp = path.join(path.dirname(full), `.${baseOf(rel)}.saving-${process.pid}-${Date.now().toString(36)}`)
+  const tmp = path.join(
+    path.dirname(full),
+    `.${baseOf(rel)}.saving-${process.pid}-${Date.now().toString(36)}`,
+  )
   try {
     fs.mkdirSync(path.dirname(full), { recursive: true })
     fs.writeFileSync(tmp, text)
@@ -455,7 +480,10 @@ export function writeText(sessionId: string, rel: string, text: string): boolean
 }
 
 /** Существует ли путь, и что это. `null` — ничего нет. */
-export function statPath(sessionId: string, rel: string): { dir: boolean; size: number; modifiedAt: number } | null {
+export function statPath(
+  sessionId: string,
+  rel: string,
+): { dir: boolean; size: number; modifiedAt: number } | null {
   const full = resolveInSession(sessionId, rel)
   if (!full) return null
   try {

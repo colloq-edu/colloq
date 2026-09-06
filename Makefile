@@ -35,6 +35,7 @@ OFF  := \033[0m
 # которого `make site` печатал «site is up to date» и не делал ничего — ни
 # страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell \
+        service-install service-restart service-stop service-status service-logs \
         host relay-setup relay-page tunnel-setup site ui sync course \
         vast-up vast-status vast-sync vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
@@ -256,6 +257,13 @@ down: ## Остановить всё (данные и файлы семинар�
 	  printf '$(DIM)убрано контейнеров семинаров: %s$(OFF)\n' "$$(echo $$ids | wc -w | tr -d ' ')"; \
 	fi
 	docker compose down
+	@# «Всё» — это всё, что в docker. Сервер под службой стоит на хосте, и
+	@# `docker compose down` его не касается: он останется работать над пустым
+	@# местом, поднимая комнатам ядра заново. Сказать об этом дешевле, чем
+	@# останавливать службу за спиной у того, кто просил убрать контейнеры.
+	@if systemctl is-active --quiet colloq 2>/dev/null; then \
+	  printf '$(DIM)сервер при этом работает службой — остановить его: make service-stop$(OFF)\n'; \
+	fi
 
 restart: ## Перезапустить сервер в docker, не пересобирая (ядро не трогаем)
 	@# Только app, и это важнее, чем кажется.
@@ -269,6 +277,9 @@ restart: ## Перезапустить сервер в docker, не пересо
 	@# обещание про сервер, а не про ядро.
 	@if docker compose ps --status running --services 2>/dev/null | grep -qx app; then \
 	  docker compose restart app; \
+	elif [ -f /etc/systemd/system/colloq.service ]; then \
+	  printf '$(DIM)в docker app не запущен, зато стоит служба — перезапускать надо её:$(OFF)\n'; \
+	  printf '$(DIM)make service-restart$(OFF)\n'; \
 	else \
 	  printf '$(DIM)в docker app не запущен — перезапускать нечего.$(OFF)\n'; \
 	  printf '$(DIM)сервер на хосте (make run) перезапускается так: make stop · make run$(OFF)\n'; \
@@ -279,6 +290,13 @@ logs: ## Смотреть логи (Ctrl+C — выйти)
 
 status: ## Что запущено и в каком состоянии
 	@docker compose ps
+	@# На выделенной машине сервер стоит службой, и в выводе compose его нет
+	@# вовсе: там только ядра. Без этой строки `make status` показывал бы пустой
+	@# список над работающим инстансом.
+	@if [ -f /etc/systemd/system/colloq.service ]; then \
+	  printf '\n$(DIM)сервер: служба systemd — $(OFF)%s\n' "$$(systemctl is-active colloq 2>/dev/null || echo неизвестно)"; \
+	  printf '$(DIM)подробности: make service-status$(OFF)\n'; \
+	fi
 	@# Контейнеры семинаров стоят отдельно от compose: по одному на комнату,
 	@# поднимаются по ходу занятия и убираются, когда комната два часа пуста.
 	@rooms="$$(docker ps --filter 'label=colloq.kind=room-kernel' --format '{{.Label "colloq.session"}} {{.Status}}' 2>/dev/null)"; \
@@ -291,7 +309,50 @@ status: ## Что запущено и в каком состоянии
 ps: status
 
 shell: ## Оболочка внутри ядра — посмотреть, что там на самом деле стоит
-	docker compose exec kernel bash
+	@# Общее ядро compose есть не всегда. На выделенной машине (сервер службой)
+	@# его не поднимает никто: у каждой комнаты своё, а образ окружения лежит
+	@# рядом собранным. Тогда открываем одноразовый контейнер из того же образа —
+	@# это ответ на вопрос «что стоит в окружении», а не «что доставили руками в
+	@# работающую комнату»; второе смотрят в самой комнате, терминалом.
+	@if docker compose ps --status running --services 2>/dev/null | grep -qx kernel; then \
+	  docker compose exec kernel bash; \
+	else \
+	  printf '$(DIM)общего ядра нет — открываю одноразовый контейнер colloq-kernel:$(CURRENT_ENV)$(OFF)\n'; \
+	  docker run --rm -it colloq-kernel:$(CURRENT_ENV) bash; \
+	fi
+
+## ------------------------------------------------------- выделенная машина
+
+## Третий способ запуска, и он не заменяет два предыдущих.
+##
+##   make up   весь стек в docker — ноутбук, показать, попробовать
+##   make run  сервер руками, ядро в docker — разработка
+##   служба    сервер на хосте под systemd, в docker только ядра комнат —
+##             машина, на которой идут занятия (своя или арендованная)
+##
+## На выделенной машине сервер вынесен из контейнера не ради скорости. В
+## контейнере он не видит того, что вокруг: каталоги данных заводились от root,
+## а он внутри работает от uid 1000, — и панель не могла собрать окружение,
+## потому что рядом с ней нет ни docker-compose.yml, ни kernel/Dockerfile, ни
+## .env. На хосте всё это лежит рядом. Цена названа вслух: служба работает от
+## root (ей всё равно нужен docker.sock, а это root-эквивалент), и на машине
+## появляется Node. Подробности — в шапке deploy/colloq.service и в README.
+
+service-install: ## Поставить службу systemd на этой машине (Ubuntu/Debian, нужен root)
+	@# Он же обновляет: git pull && make service-install — сборка и рестарт внутри.
+	@./scripts/service.sh install
+
+service-restart: ## Перезапустить службу и дождаться готовности
+	@./scripts/service.sh restart
+
+service-stop: ## Остановить службу (ядра комнат остаются жить)
+	@./scripts/service.sh stop
+
+service-status: ## Жива ли служба и готова ли вести семинар
+	@./scripts/service.sh status
+
+service-logs: ## Журнал службы (Ctrl+C — выйти)
+	@./scripts/service.sh logs
 
 ## ----------------------------------------------------------------- наружу
 
@@ -484,8 +545,15 @@ env-use: ## Окружение по умолчанию для новых сем�
 	@printf '$(DIM)может поднять контейнер комнаты) — оно только что перезапущено,$(OFF)\n'
 	@printf '$(DIM)и переменные в нём потеряны.$(OFF)\n'
 
-env-freeze: ## Показать реальные версии из работающего ядра
-	@docker compose exec -T kernel pip freeze
+env-freeze: ## Показать реальные версии из ядра
+	@# То же, что и у `make shell`: общего ядра compose на выделенной машине не
+	@# существует, и прежняя строка отвечала там «no such service». Спрашиваем
+	@# тогда сам образ окружения — из него и поднимаются ядра комнат.
+	@if docker compose ps --status running --services 2>/dev/null | grep -qx kernel; then \
+	  docker compose exec -T kernel pip freeze; \
+	else \
+	  docker run --rm colloq-kernel:$(CURRENT_ENV) pip freeze; \
+	fi
 
 ## ------------------------------------------------------------------ прочее
 
@@ -518,4 +586,5 @@ help: ## Показать этот список
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-16s$(OFF) %s\n", $$1, $$2}'
 	@printf '\n$(DIM)Каждый день:  make run · make host · раздать ссылку$(OFF)\n'
 	@printf '$(DIM)Всё в docker: make up$(OFF)\n'
+	@printf '$(DIM)Выделенная машина: make service-install — сервер службой, в docker только ядра$(OFF)\n'
 	@printf '$(DIM)Окружение ядра сейчас: $(BOLD)$(CURRENT_ENV)$(OFF)\n'

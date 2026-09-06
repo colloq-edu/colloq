@@ -37,6 +37,11 @@ name and email, and the instance is yours — then create a seminar and share th
 `make` with no target lists everything. The two that matter are `make host` and
 `make env-use`; both have a section below.
 
+That is the laptop shape, and it is the right one for trying Colloq out or running a class
+off your own machine. A machine whose *job* is hosting seminars — including a rented one —
+runs the server on the host under systemd instead, with only the room kernels in Docker:
+`make service-install`, described in *On a dedicated machine*.
+
 ### Backing it up
 
 ```bash
@@ -70,17 +75,21 @@ not the one you want, and `NAME=` names a rented environment: its copies live in
 What it deliberately does not restore is the environment images: rebuilding them
 (`make env-build NAME=…`) is cheaper than carrying tens of gigabytes around.
 
-### One instance, two ways to start it
+### One instance, three ways to start it
 
 `make up` runs everything in Docker. `make run` builds and runs the server on your
 machine with only the kernel in Docker — faster after a code change, which is why it
-exists. **They are the same instance:** both keep the database in `./data` and the
-seminars' files in `./workspace`, next to this README, so a seminar created one way
-opens the other way and a backup is a copy of two folders.
+exists. `make service-install` puts the server on the machine itself under systemd and
+leaves only the room kernels in Docker; that is the shape for a machine that hosts
+classes, and it has a section of its own below. **They are the same instance:** all
+three keep the database in `./data` and the seminars' files in `./workspace`, next to
+this README, so a seminar created one way opens the other way and a backup is a copy of
+two folders.
 
-They cannot run at the same time — both want port 3000 — and `make run` says so
-rather than failing halfway. `make up` is the one to use unless you are changing
-code; `make down` stops the Docker one, `make stop` the host one.
+They cannot run at the same time — all three want port 3000 — and each of them says so
+rather than failing halfway. `make up` is the one to use on a laptop unless you are
+changing code; `make down` stops the Docker one, `make stop` the host one,
+`make service-stop` the service.
 
 Before this they were two instances: `make up` kept its data in Docker named volumes
 (`colloq_data`, `colloq_workspace`) and `make run` in `./data` and `./workspace`. If
@@ -91,6 +100,82 @@ docker run --rm -v colloq_data:/from -v "$PWD/data":/to alpine cp -a /from/. /to
 docker run --rm -v colloq_workspace:/from -v "$PWD/workspace":/to alpine cp -a /from/. /to/
 docker volume rm colloq_data colloq_workspace
 ```
+
+### On a dedicated machine
+
+A machine whose job is to host seminars — a box under a desk, a university VM, or one
+rented by the hour — runs the server *on the host* under systemd, with only the room
+kernels in Docker:
+
+```bash
+git clone <this repo> /opt/colloq && cd /opt/colloq
+sudo make service-install     # Ubuntu/Debian
+```
+
+That one command checks that nothing else is holding the port, writes `.env` if it is
+missing, installs Docker when it is absent, installs Node 20 from nodesource, runs
+`npm ci` and the build, builds the kernel image of the active environment, gives
+`./workspace` the ownership that image needs, writes `/etc/systemd/system/colloq.service`
+out of `deploy/colloq.service`, enables it, and waits until `/api/health` says the
+instance can actually hold a class. Every step is idempotent, so it is also the update command:
+
+```bash
+git pull && sudo make service-install     # rebuild and restart
+make service-status                       # alive? and ready to teach?
+make service-logs                         # journalctl -u colloq -f
+make service-restart                      # after editing .env by hand
+make service-stop                         # the room kernels keep running
+make host HOST=hse.colloq.ru              # the address the room opens
+```
+
+**Why not `make up` here.** It broke twice on dedicated machines, and both times the
+cause was the same: a server inside a container cannot see what is around it. The data
+directories were created by the Docker daemon as `root` while the server inside runs as
+uid 1000, so the database would not open at all and the container looped on restarts.
+And the panel could not build an environment, because building one *is*
+`docker-compose.yml`, `kernel/Dockerfile` and `.env` — none of which exist inside the
+image. On the host all three lie next to the server, the panel is fully powered, and
+there is no second user to disagree with.
+
+**The price, said out loud.**
+
+- **The service runs as root.** It is stated in `deploy/colloq.service` along with the
+  reason: the server needs `/var/run/docker.sock` to give each room a kernel of its own,
+  and access to that socket *is* root on the host — "a normal user in the `docker`
+  group" is the same power under a politer name. The other half is ownership: the
+  kernel container writes the seminars' files as uid 1000, and root is the only user
+  that reads and edits both its own files and those without a single `chown`. It is the
+  same power the server already had under `make up` (the socket is mounted into the
+  container) and under `make run`; what is new is only that it is now said in a unit
+  file. Nothing has to be opened inbound for any of it — the instance reaches the room
+  through an outbound tunnel, see below — and the machine is dedicated to this.
+- **Node lives on the machine.** Node 20 from nodesource — the distributions' own
+  packages are older than the project builds against, and `nvm` installs into a shell
+  that systemd never sees. The build happens on the machine too: `npm ci` and Vite take
+  a few minutes on the first install.
+- **Updating is `git pull`, a build and a restart** — that is, `sudo make
+  service-install`. There is no image to pull, and the seminar is down for the couple of
+  seconds the restart takes. Rooms come back without anybody reloading (see *Surviving a
+  restart*).
+
+**One subtlety worth knowing, because it is invisible.** Under the other two ways of
+starting, the server and the kernel happen to run as the same uid 1000 — `node` inside
+the app container, or you on your own machine — and they share `./workspace` without
+anyone having to arrange it. As a service the server is root and the kernel is still uid
+1000, so the share has to be built: the unit sets `UMask=0002` and the installer gives
+`./workspace` the kernel's group and the setgid bit. New room folders then come out
+group-writable and inherit that group, and both sides write the same bytes. Without the
+pair, the first `open('out.csv', 'w')` in a cell fails with `PermissionError` on a screen
+where everything looks green. The group number is asked of the built kernel image rather
+than assumed to be 1000, because an environment built on top of somebody else's CUDA base
+can end up with a different one.
+
+Two `.env` lines matter here and only here. `WORKSPACE_HOST_DIR` must be empty: the
+server reads it as "I am inside a container" and would then put the room's kernel on the
+compose network and address it by container name, which does not exist from the host —
+`make service-install` refuses to install over it. And `KERNEL_ISOLATION=off` means
+something different on this shape: there is no shared compose kernel running here, so it
+leaves the rooms with no Python at all rather than with one they share.
 
 ## Giving the room a link
 
@@ -211,6 +296,16 @@ make vast-down     # destroy the machine, and everything on it with it
 is never printed, never passed on a command line — `ps` shows those to everyone on the
 machine — and never copied to the rented box: that box is already paid for.
 
+The rented box is a dedicated machine like any other, and it is set up the way the
+section above describes: Docker (plus the NVIDIA container toolkit when there is a card)
+and `frpc` for the tunnel, then `make service-install` — Node, the build, the kernel
+image and the systemd service. The repository lives in `/opt/colloq` there, the `.env`
+travels with it minus the keys that pay for things, and the server runs on the host
+rather than in a container, which is what makes the panel able to build environments on
+the machine that has the GPU. Looking at it afterwards is
+`ssh … 'journalctl -u colloq -f'`; a code change is another `make vast-up`, which rsyncs
+the repository and re-runs the same idempotent install.
+
 One command covers a whole class — rent a machine with a named card, deploy, restore the
 newest backup this environment has here, and put the room on its address:
 
@@ -317,7 +412,9 @@ is why `make vast-sync` is half of this work rather than a convenience, why
 What survives a machine being recreated is what `make backup` writes: the database,
 `./workspace`, the signing key and the setup token — plus `.env`, which travels with the
 repository, minus the keys that buy things (`VAST_TOKEN`, `CF_*`). What does not survive
-is the environment images; they are rebuilt there with `make env-build NAME=cv`. What the
+is the environment images; they are rebuilt there with `make env-build NAME=cv`, or from
+*Build* in the panel — the server builds through the Docker socket, so that works on a rented
+machine too, while making one the default still writes `.env` and stays `make env-use`. What the
 rented machine does gain is its cards: `vast-up` writes them into `KERNEL_GPUS` in the `.env`
 it leaves there, so an environment that declares `# colloq: gpu` gets a slice — see
 *Environments* and the `KERNEL_GPUS` row in *Configuration*.
@@ -455,8 +552,8 @@ Everything lives in `.env` — see `.env.example` for the full list.
 | `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling: per seminar where each room runs its own container, otherwise on the one shared kernel. `KERNEL_CPUS` also caps the thread pools inside it (`OMP_NUM_THREADS` and its siblings), because `os.cpu_count()` in a container reports the host's cores and numpy would start thirty threads on two |
 | `KERNEL_GPUS` | Devices the server may hand out to rooms, written the way Docker names them (`MIG-GPU-…`, `0,1`). Empty — the default — is today's behaviour: nobody asks for a GPU. A slice goes to one room for the life of its container and is recorded on it as the label `colloq.gpu=<device>`, which is what survives a server restart. Only an environment that declares `# colloq: gpu` asks for one |
 | `KERNEL_SHM` | `/dev/shm` for a room that got a GPU (default `1g`). Docker's own 64 MB is what breaks a DataLoader with several workers |
-| `KERNEL_ISOLATION` | `auto` (default) gives every seminar its own container, with only its own folder mounted. `off` shares one kernel, and then any room can read every other room's files on that machine. Both `make up` and `make run` can do the per-room thing; when the pieces for it are missing the server falls back to the shared kernel and says so |
-| `DOCKER_GID` / `WORKSPACE_HOST_DIR` / `KERNEL_NETWORK` | What a server inside a container needs to give rooms their own kernels: the group of `/var/run/docker.sock`, where `./workspace` lives on the host, and the network to find the room's container on. `make up` fills them in; see *Isolation* |
+| `KERNEL_ISOLATION` | `auto` (default) gives every seminar its own container, with only its own folder mounted. `off` shares one kernel, and then any room can read every other room's files on that machine. All three ways of starting can do the per-room thing; when the pieces for it are missing the server falls back to the shared kernel and says so — except under the systemd service, where there is no shared kernel running to fall back to |
+| `DOCKER_GID` / `WORKSPACE_HOST_DIR` / `KERNEL_NETWORK` | What a server inside a container needs to give rooms their own kernels: the group of `/var/run/docker.sock`, where `./workspace` lives on the host, and the network to find the room's container on. `make up` fills them in; see *Isolation*. A server on the host (`make run`, the service) needs none of them, and `WORKSPACE_HOST_DIR` in particular has to stay empty there — the server reads it as "I am in a container" |
 | `TZ` | One time zone for the whole instance — the log, the kernel and the dates on published pages (default `Europe/Moscow`) |
 | `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | One file, and everything one seminar holds (default 50 and 1024) |
 | `KERNEL_ENV` | The environment new seminars are created with, and the one baked into the shared kernel. `make env-use` writes it |
@@ -523,8 +620,8 @@ into the room.
 
 ### Surviving a restart
 
-The server can be killed mid-seminar — a crash, a deploy, `make restart` — and the room
-comes back without anybody reloading a page. Three things make that true, and each of them was
+The server can be killed mid-seminar — a crash, a deploy, `make restart`, `make
+service-restart` — and the room comes back without anybody reloading a page. Three things make that true, and each of them was
 false at some point:
 
 - **The signing key outlives the process.** It is generated once and kept in `DATA_DIR`, so tokens
@@ -538,8 +635,10 @@ false at some point:
   are put back to rest and the room is told, because nothing is running in a process that has just
   started. Outputs are kept: a cell that printed three lines before the crash really did print them.
 
-A stopped server (`make restart`, `make stop`, a deploy) flushes its snapshot on the way out, so
-what comes back is what was on screen. A server that is *killed* — SIGKILL, the OOM killer, the
+A stopped server (`make restart`, `make stop`, `make service-stop`, a deploy) flushes its snapshot
+on the way out, so what comes back is what was on screen. That is what SIGTERM buys, and it is why
+the unit gives the service twenty seconds to stop rather than the default: the last thing the
+server does is close the database properly, which is also what folds `colloq.db-wal` back in. A server that is *killed* — SIGKILL, the OOM killer, the
 power going — cannot, and neither can a `colloq.db` restored from a backup: the snapshot is
 seconds behind, while each open tab still holds outputs and kernel state written by the previous
 server. The server no longer takes those on faith. It refuses that first frame and says so in the
@@ -586,9 +685,20 @@ to `.env`), the host path of `./workspace` (`WORKSPACE_HOST_DIR` — the daemon 
 its own way) and the name of the compose network the rooms join (`KERNEL_NETWORK`, how the server
 addresses a room's Jupyter, which is therefore not published on the host at all). That socket is
 root on the host for the server process — the same power it already has under `make run`, and the
-price of a container per room. Take it away and everything still works: the rooms fall back to the
+price of a container per room.
+
+A server running *on* the host — `make run`, or the systemd service on a dedicated machine — needs
+none of those three: it talks to the daemon directly, `./workspace` is already the path the daemon
+means, and a room's Jupyter is published on `127.0.0.1` with a port the kernel picks, which is an
+address the server can actually reach. `WORKSPACE_HOST_DIR` must be *empty* in that arrangement,
+because the server takes it as the sign that it is itself in a container and would then look for
+the room by container name on a network it is not on.
+
+Take the socket away and everything still works: the rooms fall back to the
 one shared kernel, where any of them can read the others' files, and the server says so in its log,
-in the room's kernel log and on the Environments screen rather than letting the promise stand.
+in the room's kernel log and on the Environments screen rather than letting the promise stand. The
+one place where that safety net is not there is the dedicated machine: nobody starts the compose
+kernel on it, so the fallback has nothing to fall back to and the log line is all there is.
 
 This is sandboxing appropriate to a classroom of people you know, not to hostile untrusted input.
 Anyone with the link can execute Python inside that container.

@@ -43,6 +43,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
 import { activeName, needsGpu } from '../environments.js'
@@ -217,12 +218,12 @@ function networkExists(network: string): Promise<boolean> {
  */
 async function canIsolate(): Promise<boolean> {
   if (!(await haveDocker())) return false
-  if (!hostRoot()) return true
+  if (!inContainer()) return true
 
   const network = roomNetwork()
   if (!network) {
     warnOnce(
-      '[kernel] сервер работает в контейнере (задан WORKSPACE_HOST_DIR), а KERNEL_NETWORK ' +
+      '[kernel] сервер работает в контейнере, а KERNEL_NETWORK ' +
         'не назван: до ядра комнаты не будет дороги, поэтому семинары делят одно ядро ' +
         'compose и из любой комнаты видны файлы всех остальных. Назовите здесь сеть ' +
         'compose, в которой стоит сам сервер.',
@@ -330,6 +331,20 @@ function hostRoot(): string {
 }
 
 /**
+ * Сам ли сервер сидит в контейнере — вопрос, от которого зависит и путь
+ * монтирования, и адрес ядра.
+ *
+ * Спрашивается у системы, а не выводится из непустого WORKSPACE_HOST_DIR, как
+ * было: переменная, забытая в .env от прошлой формы запуска, молча уводила
+ * ядро в сеть compose, и на машине, где сервер работает от systemd, ломался
+ * КАЖДЫЙ запуск ячейки. Признак docker — файл `/.dockerenv`, он есть в любом
+ * контейнере и не зависит от того, что кто-то положил в окружение.
+ */
+function inContainer(): boolean {
+  return fs.existsSync('/.dockerenv')
+}
+
+/**
  * Сеть, в которую ставить контейнер комнаты, — и она же признак того, как его
  * потом звать.
  *
@@ -344,7 +359,7 @@ function hostRoot(): string {
  * Признак «сервер в контейнере» — тот же, по которому берётся путь монтирования.
  */
 function roomNetwork(): string {
-  return hostRoot() ? (process.env.KERNEL_NETWORK ?? '').trim() : ''
+  return inContainer() ? (process.env.KERNEL_NETWORK ?? '').trim() : ''
 }
 
 /* --------------------------------------------------------------- срезы GPU */

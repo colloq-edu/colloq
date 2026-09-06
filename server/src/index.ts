@@ -342,7 +342,10 @@ app.get('/api/health', (_req, res) => {
         db.prepare('SELECT 1').get()
       } catch (err) {
         dbOk = false
-        reason = err instanceof Error ? `The database is unreadable: ${err.message}` : 'The database is unreadable'
+        reason =
+          err instanceof Error
+            ? `The database is unreadable: ${err.message}`
+            : 'The database is unreadable'
       }
       const kernel = await kernelHealth()
       if (dbOk && !kernel.ok) reason = kernel.reason
@@ -506,7 +509,10 @@ function reject(socket: Duplex): void {
  * так что выход из панели снимает права за секунды. Считает `roleFor` —
  * та же самая, что и на HTTP-стороне, чтобы двум входам было негде разойтись.
  */
-function effectiveRole(req: { headers: { cookie?: string } }, payload: TokenPayload): TokenPayload['role'] {
+function effectiveRole(
+  req: { headers: { cookie?: string } },
+  payload: TokenPayload,
+): TokenPayload['role'] {
   return roleFor(req.headers.cookie, payload)
 }
 
@@ -610,11 +616,19 @@ server.on('upgrade', (req, socket, head) => {
 
 /* --------------------------------------------------------------- lifecycle */
 
-server.listen(config.port, () => {
+/*
+ * Кого слушаем. Умолчание прежнее — все интерфейсы: под `make up` порт
+ * публикует compose, и до сервера в контейнере иначе не достучаться.
+ *
+ * На выделенной машине это не нужно и вредно: наружу Colloq выходит исходящим
+ * туннелем, а открытый порт на публичном адресе — это вторая, никем не
+ * названная дверь в ту же комнату. Служба systemd ставит здесь 127.0.0.1.
+ */
+const bindAddr = (process.env.BIND_ADDR ?? '').trim()
+
+server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const)), () => {
   const ai = aiEnabled() ? `on (${config.ai.model})` : 'off'
-  console.log(
-    `colloq ready — open ${config.publicUrl} · ai ${ai} · jupyter ${config.jupyter.url}`,
-  )
+  console.log(`colloq ready — open ${config.publicUrl} · ai ${ai} · jupyter ${config.jupyter.url}`)
   announceSetupToken()
 })
 
@@ -705,7 +719,10 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'))
 
 // A stray rejection from a kernel or model call must not end the class.
 process.on('unhandledRejection', (err: unknown) => {
-  console.error('colloq: unhandled rejection:', err instanceof Error ? (err.stack ?? err.message) : err)
+  console.error(
+    'colloq: unhandled rejection:',
+    err instanceof Error ? (err.stack ?? err.message) : err,
+  )
 })
 
 /*
@@ -719,7 +736,10 @@ process.on('unhandledRejection', (err: unknown) => {
  * работает ли он.
  */
 process.on('uncaughtException', (err: unknown) => {
-  console.error('colloq: uncaught exception:', err instanceof Error ? (err.stack ?? err.message) : err)
+  console.error(
+    'colloq: uncaught exception:',
+    err instanceof Error ? (err.stack ?? err.message) : err,
+  )
   try {
     shutdownCollab()
   } catch {
