@@ -14,7 +14,7 @@
   import { oracleModeIn, readRules } from '@shared/rules'
   import { kindOf } from '@shared/paths'
   import type { OracleMode } from '@shared/admin'
-  import { api } from '@/lib/api'
+  import { api, ApiError } from '@/lib/api'
   import { oracleDraft } from '@/lib/drafts.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { permitsIn } from '@/lib/may'
@@ -42,6 +42,18 @@
    */
   const composing = oracleDraft
   let sendError = $state<string | null>(null)
+  /*
+   * Слоу-мод — не авария, и красная плашка ему не идёт.
+   *
+   * «Не частите» стоит рядом с «оракул выключен для семинара»: это правило
+   * инстанса, а не поломка, и человек с ним ничего не делает — он ждёт.
+   * Поэтому спокойная строка того же вида, что и остальные правила ниже.
+   */
+  let slowNotice = $state<string | null>(null)
+  /** Момент, до которого сервер просил подождать, или 0. Мс, как Date.now. */
+  let waitUntil = $state(0)
+  /** Секунды на кнопке. Показ, не право: судья — сервер, см. `ask`. */
+  let waitLeft = $state(0)
   let armed = $state(false)
   let pinned = $state(true)
   /** Does any cell in the notebook currently hold a traceback? See the effect. */
@@ -415,6 +427,33 @@
 
   /* ---------------------------------------------------------------- asking */
 
+  /*
+   * Обратный отсчёт слоу-мода — только показ.
+   *
+   * Своего счёта времени у вкладки нет и быть не должно: промежуток
+   * считает сервер по своей таблице расхода, а здесь тикает число, которое он
+   * назвал в отказе. Вкладка с отстающими часами просто получит отказ ещё раз —
+   * гашеная кнопка избавляет от лишнего круга, а не решает за сервер.
+   */
+  $effect(() => {
+    if (waitUntil === 0) return
+    let timer = 0
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((waitUntil - Date.now()) / 1000))
+      waitLeft = left
+      if (left === 0) {
+        // Строка уходит вместе с ожиданием: «ещё десять секунд», висящее
+        // после того как они прошли, — уже неправда.
+        slowNotice = null
+        waitUntil = 0
+        return
+      }
+      timer = window.setTimeout(tick, 250)
+    }
+    tick()
+    return () => window.clearTimeout(timer)
+  })
+
   async function ask(body: AiAskRequest) {
     if (offline) return
     stopComposing()
@@ -422,11 +461,29 @@
     pinned = true
     try {
       await api.aiAsk(session.session.id, session.token, body)
+      slowNotice = null
+      waitUntil = 0
     } catch (err) {
       // Verbatim: a 403 ("hints mode…", "switched off…") and a 429 with the
       // minutes until the next question are the server explaining an
       // instance's rules, and paraphrasing them would leave the student
       // guessing at a limit only the server knows.
+      //
+      // Срок в теле — это ожидание, а не поломка: слоу-мод говорит спокойной
+      // строкой и гасит кнопку, а не красной плашкой, похожей на аварию.
+      if (err instanceof ApiError && err.retryAfter !== null && err.retryAfter > 0) {
+        slowNotice = err.message
+        waitUntil = Date.now() + err.retryAfter * 1000
+        /*
+         * И вопрос — обратно в поле. Слоу-мод говорит «подождите», а не «не
+         * спрашивайте»: `submit` очищает поле до ответа сервера, и без этой
+         * строки человек ждал бы двадцать секунд с пустым полем, чтобы затем
+         * перепечатать то, что уже написал. Только если он не начал печатать
+         * заново — тогда его текст важнее нашего.
+         */
+        if (composing.question.trim() === '') composing.question = body.message
+        return
+      }
       sendError = err instanceof Error ? err.message : 'Could not reach the oracle.'
     }
   }
@@ -470,7 +527,7 @@
 
   function submit() {
     const message = composing.question.trim()
-    if (!message) return
+    if (!message || waitLeft > 0) return
     composing.question = ''
     if (composer) {
       composer.style.height = 'auto'
@@ -694,6 +751,16 @@
       </div>
     {/if}
 
+    {#if slowNotice}
+      <!--
+        Ожидание, а не ошибка: тот же спокойный вид, что у правил ниже.
+        Сама строка — серверная, слово в слово: промежуток знает только он.
+      -->
+      <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted" role="status">
+        {slowNotice}
+      </p>
+    {/if}
+
     {#if hintsOnly}
       <!--
         «Просят подсказку», а не «решения не будет».
@@ -857,14 +924,25 @@
             if (!composing.question.trim()) stopComposing()
           }}
         ></textarea>
+        <!--
+          Пока идёт промежуток, кнопка показывает секунды вместо самолётика.
+          Число тикает у отправки, а не в строке над полем: там стоит правило,
+          и переписывать его каждую секунду значит мигать текстом, который
+          человек в это время читает.
+        -->
         <button
           type="button"
           class="btn-primary h-7 w-7 shrink-0 px-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          aria-label="Send"
-          disabled={!composing.question.trim()}
+          aria-label={waitLeft > 0 ? `Ещё ${waitLeft} с` : 'Send'}
+          title={waitLeft > 0 ? (slowNotice ?? '') : ''}
+          disabled={!composing.question.trim() || waitLeft > 0}
           onclick={submit}
         >
-          <Icon name="send" size={14} />
+          {#if waitLeft > 0}
+            <span class="font-mono text-2xs font-bold tabular-nums">{waitLeft}</span>
+          {:else}
+            <Icon name="send" size={14} />
+          {/if}
         </button>
         </div>
       </div>

@@ -107,6 +107,7 @@
   let defaultMode = $state<OracleMode>('full')
   let houseRules = $state('')
   let questionsText = $state('')
+  let slowText = $state('')
   let contextText = $state('')
 
   let replacingKey = $state(false)
@@ -151,6 +152,9 @@
   const questions = $derived(
     whole(questionsText, LIMITS.questionsPerHour, loaded?.questionsPerHour ?? LIMITS.questionsPerHour.default),
   )
+  const slow = $derived(
+    whole(slowText, LIMITS.slowModeSeconds, loaded?.slowModeSeconds ?? LIMITS.slowModeSeconds.default),
+  )
   const context = $derived(
     whole(contextText, LIMITS.contextChars, loaded?.contextChars ?? LIMITS.contextChars.default),
   )
@@ -165,6 +169,7 @@
       defaultMode !== saved.defaultMode ||
       houseRules.trim() !== saved.houseRules ||
       questions !== saved.questionsPerHour ||
+      slow !== saved.slowModeSeconds ||
       context !== saved.contextChars ||
       newKey.length > 0 ||
       clearKey
@@ -295,6 +300,7 @@
     defaultMode = settings.defaultMode
     houseRules = settings.houseRules
     questionsText = String(settings.questionsPerHour)
+    slowText = String(settings.slowModeSeconds)
     contextText = grouped(settings.contextChars)
     replacingKey = false
     newKey = ''
@@ -385,6 +391,7 @@
     if (defaultMode !== saved.defaultMode) patch.defaultMode = defaultMode
     if (houseRules.trim() !== saved.houseRules) patch.houseRules = houseRules.trim()
     if (questions !== saved.questionsPerHour) patch.questionsPerHour = questions
+    if (slow !== saved.slowModeSeconds) patch.slowModeSeconds = slow
     if (context !== saved.contextChars) patch.contextChars = context
     if (clearKey) patch.apiKey = ''
     else if (newKey.length > 0) patch.apiKey = newKey
@@ -773,7 +780,7 @@
       title="Guardrails"
       description="Thirty students hammering a paid endpoint at once is a real bill. These caps are per person, per seminar."
     >
-      <div class="grid gap-4 sm:grid-cols-3">
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="min-w-0">
           {@render fieldLabel('Questions per student', 'ai-questions')}
           <div
@@ -794,6 +801,36 @@
               Zero switches the oracle off in every seminar.
             {:else}
               {LIMITS.questionsPerHour.min}–{LIMITS.questionsPerHour.max}. Zero switches it off.
+            {/if}
+          </p>
+        </div>
+
+        <div class="min-w-0">
+          {@render fieldLabel('Between questions', 'ai-slow-mode')}
+          <div
+            class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25"
+          >
+            <input
+              id="ai-slow-mode"
+              bind:value={slowText}
+              onblur={() => (slowText = String(slow))}
+              class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none"
+              inputmode="numeric"
+              autocomplete="off"
+            />
+            <span class="shrink-0 text-2xs text-muted">seconds</span>
+          </div>
+          <!--
+            Чем это не потолок в час: двадцать вопросов можно выкрикнуть за
+            двадцать секунд, и потолок накажет не выкрик, а следующий настоящий
+            вопрос — через час. Строка одна, но она здесь обязательна: два поля
+            с числом рядом иначе читаются как одно и то же дважды.
+          -->
+          <p class="mt-1.5 text-2xs text-muted">
+            {#if slow === 0}
+              Off: questions may follow each other as fast as they are typed.
+            {:else}
+              A student waits this long between questions. The teacher does not.
             {/if}
           </p>
         </div>

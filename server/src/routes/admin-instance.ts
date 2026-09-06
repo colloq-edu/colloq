@@ -14,6 +14,7 @@ import { getCells, getMeta } from '@shared/notebook'
 import { currentStaff, ownerOnly, requireStaff } from '../admin/auth.js'
 import { getOracleSettings, parseOraclePatch, updateOracleSettings } from '../admin/settings.js'
 import { summariseUsage } from '../admin/usage.js'
+import { discardBans } from '../bans.js'
 import { stopAll } from '../ai/agent.js'
 import { testConnection } from '../ai/provider.js'
 import { newSessionId } from '../auth.js'
@@ -476,6 +477,9 @@ export function adminInstanceRoutes(): Router {
           // И заметки лекции: это единственное, что преподаватель писал себе
           // сам, и оставлять их в базе удалённой комнаты не за чем.
           discardNotes(id)
+          // И баны: в строке бана лежит адрес человека, и переживать комнату,
+          // которой больше нет, он не должен.
+          discardBans(id)
           deleteSeminarRow.run(id)
         })
         purge(row.id)

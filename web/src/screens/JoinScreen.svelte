@@ -13,11 +13,12 @@
    * people are already inside" a room holding one is worse than saying nothing.
    */
   import { onDestroy, onMount } from 'svelte'
+  import BannedScreen from '@/components/BannedScreen.svelte'
   import MarkPicker from '@/components/join/MarkPicker.svelte'
   import AvatarStack from '@/components/ui/AvatarStack.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import Poster from '@/components/ui/Poster.svelte'
-  import { api } from '@/lib/api'
+  import { api, ApiError } from '@/lib/api'
   import { CROWD_NOTICE, retryJoinIn } from '@/lib/crowd'
   import { MARKS, freeMark, markName } from '@/lib/marks'
   import {
@@ -77,6 +78,15 @@
    */
   let retrying = $state(false)
   let error = $state<string | null>(null)
+  /**
+   * Нас не пустили: момент конца бана.
+   *
+   * Отдельно от `error` по той же причине, по какой отдельно `retrying`: это не
+   * поломка, которую человек может обойти, попробовав ещё раз. Форма после
+   * этого не нужна вовсе — назваться иначе и войти было бы ровно тем, чего бан
+   * не позволяет, — поэтому экран заменяется целиком.
+   */
+  let bannedUntil = $state<number | null>(null)
   let nameInput = $state<HTMLInputElement | null>(null)
 
   /*
@@ -236,6 +246,15 @@
         retrying = false
         return
       } catch (cause: unknown) {
+        // Бан приезжает сроком в теле отказа: спорить с ним нечем, и повторять
+        // нечего — экран меняется на объяснение.
+        if (cause instanceof ApiError && cause.status === 403 && cause.until !== null) {
+          bannedUntil = cause.until
+          retrying = false
+          busy = false
+          signingIn = false
+          return
+        }
         const wait = retryJoinIn(cause, tried)
         if (wait === null) {
           error = cause instanceof Error ? cause.message : 'Could not join the seminar'
@@ -322,6 +341,12 @@
   </div>
 {/snippet}
 
+{#if bannedUntil !== null}
+  <!-- Ни афиши, ни формы: обе обещали бы вход, которого сейчас нет. -->
+  <div class="flex h-full items-center justify-center px-6">
+    <BannedScreen until={bannedUntil} />
+  </div>
+{:else}
 <div class="flex h-full">
   <!--
     The poster is the seminar; the column beside it is the paperwork. It leaves
@@ -559,3 +584,4 @@
     {/if}
   </main>
 </div>
+{/if}

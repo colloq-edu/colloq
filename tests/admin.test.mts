@@ -465,6 +465,7 @@ test('a patch of the oracle settings is refused by shape, not by luck', () => {
   assert.ok('error' in parseOraclePatch({ provider: 'nobody-ships-this' }))
   assert.ok('error' in parseOraclePatch({ model: 42 }))
   assert.ok('error' in parseOraclePatch({ questionsPerHour: 'many' }))
+  assert.ok('error' in parseOraclePatch({ slowModeSeconds: 'поменьше' }))
   assert.ok('error' in parseOraclePatch({ defaultMode: 'shout' }))
   // Адрес, на который уедет ключ инстанса, обязан быть адресом.
   assert.ok('error' in parseOraclePatch({ baseUrl: 'evil.example' }))

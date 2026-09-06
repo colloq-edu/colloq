@@ -23,6 +23,7 @@ import { WebSocketServer } from 'ws'
 import type { Duplex } from 'node:stream'
 import { isClaimed, readSetupToken, sameOrigin, setupTokenPath } from './admin/auth.js'
 import { verifyToken, type TokenPayload } from './auth.js'
+import { banFor, banRefusal, markDevice, type BanInForce } from './bans.js'
 import { aiEnabled, config } from './config.js'
 import { SECURITY_HEADERS } from './headers.js'
 import { handleCollabSocket, roomCensus, shutdownCollab } from './collab/index.js'
@@ -42,6 +43,7 @@ import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { courseRoutes } from './routes/courses.js'
 import { aiRoutes } from './routes/ai.js'
 import { fileRoutes } from './routes/files.js'
+import { banRoutes } from './routes/bans.js'
 import { roleFor, sessionRoutes } from './routes/sessions.js'
 import { historyRoutes } from './routes/history.js'
 
@@ -388,6 +390,9 @@ app.use(courseRoutes())
 app.use(adminEnvironmentRoutes())
 app.use(adminImportRoutes())
 app.use(sessionRoutes())
+// Двери бана — сразу за входом: они про тех же людей и живут по тому же праву
+// (routes/bans.ts), а проверку, которую они заводят, делает bans.ts на входе.
+app.use(banRoutes())
 app.use(historyRoutes())
 app.use(fileRoutes())
 app.use(aiRoutes())
@@ -423,6 +428,15 @@ if (config.staticDir) {
   )
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/')) return next()
+    /*
+     * Метка устройства ставится здесь — на отдаче самой страницы.
+     *
+     * Это единственный ответ, который наверняка едет в браузер, а не в fetch:
+     * ставить куку на API-запрос значило бы не поставить её тем, кому страницу
+     * отдал не этот процесс. Метка переживает чистку хранилища и перезаход, но
+     * не инкогнито — и большего от неё не ждут (server/src/bans.ts).
+     */
+    markDevice(req, res)
     // no-cache, not no-store: the browser still holds the file and an ETag, so
     // an unchanged deploy costs one 304 and a changed one is picked up at once.
     res.sendFile(
@@ -544,6 +558,25 @@ function reject(socket: Duplex): void {
 }
 
 /**
+ * Забаненному — отказ до апгрейда, теми же словами, что и на входе.
+ *
+ * С телом, хотя браузер его и не покажет: WebSocket не отдаёт странице ни
+ * кода, ни ответа — только «не открылось». Читать эти строки будет тот, кто
+ * полезет разбираться (вкладка «Сеть», curl, журнал прокси), и «403 и почему»
+ * там стоит ровно столько, сколько стоит вечер догадок.
+ */
+function refuseBanned(socket: Duplex, ban: BanInForce): void {
+  const body = Buffer.from(JSON.stringify(banRefusal(ban)), 'utf8')
+  socket.write(
+    'HTTP/1.1 403 Forbidden\r\nConnection: close\r\n' +
+      'Content-Type: application/json; charset=utf-8\r\n' +
+      `Content-Length: ${body.length}\r\n\r\n`,
+  )
+  socket.write(body)
+  socket.destroy()
+}
+
+/**
  * Роль этого соединения — решается сейчас, а не читается из токена.
  *
  * Роль, зашитая в токен при входе, — это роль, которую нельзя отобрать:
@@ -594,6 +627,16 @@ server.on('upgrade', (req, socket, head) => {
   // on a deleted seminar reconnects, gets a freshly seeded document and writes
   // a snapshot row for a seminar the owner already destroyed.
   if (!getSession(sessionId)) return reject(socket)
+  /*
+   * Бан закрывает все три двери сразу — тетрадь, пульт и файл.
+   *
+   * Здесь, до апгрейда: сокет, открытый забаненному «просто чтобы посмотреть»,
+   * — это его курсор в чужой тетради и его строки в общем терминале, то есть
+   * ровно то, ради чего банили. Проверка та же, что и на входе (bans.ts ·
+   * banFor), поэтому разойтись двум ответам негде.
+   */
+  const ban = banFor(sessionId, payload.participantId, req.headers.cookie)
+  if (ban) return refuseBanned(socket, ban)
 
   wss.handleUpgrade(req, socket, head, (ws) => {
     /*

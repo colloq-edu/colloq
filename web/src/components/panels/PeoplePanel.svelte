@@ -1,9 +1,28 @@
 <script lang="ts">
-  import type { AwarenessUser } from '@shared/protocol'
+  /**
+   * Кто в комнате — и, у преподавателя, кого в неё не пускают.
+   *
+   * Два списка в одной панели, потому что это один и тот же вопрос, заданный с
+   * двух сторон: удаляют человека отсюда же, правой кнопкой по его строке, и
+   * возвращают строкой ниже. Разносить их по разным местам значило бы прятать
+   * снятие бана от того, кто его поставил, — а ошибиться строкой в списке имён
+   * легко, лиц там нет.
+   */
+  import type { Ban } from '@shared/protocol'
   import { getSessionState } from '@/lib/session.svelte'
   import { peopleInRoom, whereabouts, type Person } from '@/lib/room'
   import { reveal, revealCell, type RevealTarget } from '@/lib/reveal'
   import { watchCell, watchCellNumbers, watchCellMeta, watchNotebookMeta } from '@/lib/yreactive.svelte'
+  import {
+    activeBans,
+    askToBan,
+    BANS_CHANGED_EVENT,
+    mayBan,
+    personNotes,
+    untilWords,
+    type PersonMark,
+  } from '@/lib/bans'
+  import { api } from '@/lib/api'
   import Avatar from '@/components/ui/Avatar.svelte'
   import { cn } from '@/lib/utils'
 
@@ -26,6 +45,92 @@
 
   const shown = $derived(expanded ? people : people.slice(0, CAP))
   const rest = $derived(people.length - shown.length)
+
+  /* ------------------------------------------------------------------ баны */
+
+  const isHost = $derived(session.me.role === 'host')
+
+  let bans = $state.raw<Ban[]>([])
+  /**
+   * Пометки про браузеры — только те, что прислал сервер.
+   *
+   * Пусто у всех, пока он о них не знает: список людей от этого выглядит ровно
+   * так, как выглядел, — пометка по догадке хуже отсутствующей.
+   */
+  let marks = $state.raw<Record<string, PersonMark>>({})
+  /**
+   * Час, по которому считаются сроки и свежесть пометок.
+   *
+   * Переставляется вместе с перечитыванием списка: «впервые, только что»
+   * перестаёт быть правдой через пять минут, а бан кончается сам — и строка
+   * «до 18:40», висящая в семь вечера, предлагает снять снятое.
+   */
+  let now = $state(Date.now())
+  let lifting = $state<string | null>(null)
+
+  const live = $derived(activeBans(bans, now))
+
+  async function refresh(): Promise<void> {
+    try {
+      const body = await api.bans(session.session.id, session.token)
+      bans = body.bans
+      marks = body.marks ?? {}
+    } catch {
+      /* сеть моргнула; следующий круг перечитает — на списке людей это не сказывается */
+    }
+    now = Date.now()
+  }
+
+  /*
+   * Раз в минуту, и только у преподавателя. Запрос дешёвый — десяток строк на
+   * комнату, — а платит за него один человек в комнате; студенту эта панель не
+   * задаёт ни одного вопроса, которого не задавала раньше.
+   */
+  $effect(() => {
+    if (!isHost) return
+    void refresh()
+    const again = () => void refresh()
+    const timer = window.setInterval(again, 60_000)
+    window.addEventListener(BANS_CHANGED_EVENT, again)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener(BANS_CHANGED_EVENT, again)
+    }
+  })
+
+  /**
+   * Правая кнопка по строке — единственный вход в меню отсюда.
+   *
+   * Не значок в строке: удаление с занятия нажимают раз в семестр, а строку
+   * списка людей — по десять раз за пару, чтобы дойти до чужой ячейки. Кнопка
+   * рядом с этим маршрутом попадала бы под палец у того, кто целился в имя.
+   */
+  function offerBan(event: MouseEvent, person: Person): void {
+    if (!mayBan(session.me.role, person.user.role)) return
+    event.preventDefault()
+    askToBan({
+      id: person.user.id,
+      name: person.user.name,
+      color: person.user.color,
+      avatar: person.user.avatar,
+      x: event.clientX,
+      y: event.clientY,
+    })
+  }
+
+  async function lift(ban: Ban): Promise<void> {
+    lifting = ban.id
+    try {
+      await api.liftBan(session.session.id, session.token, ban.id)
+      // Строка уходит сразу: сервер ответил, и ждать следующего круга опроса
+      // значит держать под нажатой кнопкой того, кого уже вернули.
+      bans = bans.filter((other) => other.id !== ban.id)
+    } catch (cause) {
+      session.showError(cause instanceof Error ? cause.message : 'Бан не снялся.')
+    } finally {
+      lifting = null
+    }
+  }
 
   /** Ячейки, запуск и кто его нажал — всё, из чего считается «где кто». */
   const view = $derived({
@@ -78,6 +183,9 @@
     {@const activity = seen.line}
     {@const badge = badgeFor(person)}
     {@const place = seen.place}
+    {@const notes = isHost
+      ? personNotes(marks[person.user.id], { bansActive: live.length > 0, now })
+      : []}
     <!--
       Строка становится кнопкой ровно тогда, когда ей есть куда вести. Про
       человека, о котором нечего сказать, и показать нечего: он в комнате, но
@@ -94,6 +202,7 @@
       type={place ? 'button' : undefined}
       title={place ? hintFor(person, place) : undefined}
       onclick={place ? () => go(place) : undefined}
+      oncontextmenu={(event: MouseEvent) => offerBan(event, person)}
       class={cn(
         'flex min-h-[34px] w-full items-center gap-2.5 px-2 text-left',
         place &&
@@ -120,6 +229,20 @@
           </span>
         {:else if activity}
           <span class="truncate text-2xs tracking-caps text-muted">{activity}</span>
+        {/if}
+        <!--
+          Пометки — третьей строкой и тем же тихим цветом, что и всё
+          остальное здесь. Они ничего не запрещают и могут ошибаться, поэтому
+          не спорят за внимание ни с именем, ни с тем, что человек делает: за
+          что именно комната зацепилась, написано под курсором.
+        -->
+        {#if notes.length > 0}
+          <span class="flex flex-wrap items-center gap-x-1 text-micro leading-snug text-muted">
+            {#each notes as note, index (note.text)}
+              {#if index > 0}<span aria-hidden="true">·</span>{/if}
+              <span title={note.why} class="cursor-help">{note.text}</span>
+            {/each}
+          </span>
         {/if}
       </div>
 
@@ -148,3 +271,46 @@
     </button>
   {/if}
 </section>
+
+<!--
+  Кого не пускают — и одна кнопка, которая это отменяет.
+
+  Списка нет вовсе, пока никого не удаляли: пустой раздел «Удалены» в каждой
+  комнате рассказывал бы про наказание всем преподавателям, включая тех, кому
+  оно никогда не понадобится.
+-->
+{#if isHost && live.length > 0}
+  <section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5" aria-label="Удалённые с занятия">
+    <div class="flex items-center gap-2 pb-2">
+      <h2 class="text-2xs font-bold uppercase tracking-section text-muted">Удалены</h2>
+      <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
+      <span class="font-mono text-micro tabular-nums text-muted">{live.length}</span>
+    </div>
+
+    {#each live as ban (ban.id)}
+      <div
+        class="flex min-h-[34px] items-center gap-2.5 px-2"
+        title={ban.byTeacher ? `Удалил ${ban.byTeacher}` : undefined}
+      >
+        <div class="flex min-w-0 flex-1 flex-col">
+          <span class="truncate text-ui text-ink">{ban.name}</span>
+          <span class="truncate text-2xs tracking-caps text-muted">
+            до {untilWords(ban.until, now)}{ban.mine ? ' · это ваш браузер' : ''}
+          </span>
+        </div>
+        <button
+          type="button"
+          class="btn-ghost h-6 shrink-0 px-2 text-2xs font-bold uppercase tracking-label"
+          disabled={lifting === ban.id}
+          onclick={() => void lift(ban)}
+        >
+          {lifting === ban.id ? 'Снимаем…' : 'Вернуть'}
+        </button>
+      </div>
+    {/each}
+
+    <p class="px-2 pt-1.5 text-micro leading-snug text-muted">
+      Вопросы к оракулу этим не возвращаются — их возвращает восстановление версии в истории.
+    </p>
+  </section>
+{/if}

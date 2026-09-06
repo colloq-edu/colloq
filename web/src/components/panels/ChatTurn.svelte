@@ -21,6 +21,7 @@
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
   import { actsAfterClass, CLASS_IS_OVER } from '@shared/rules'
+  import { askToBan, mayBan } from '@/lib/bans'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchText } from '@/lib/yreactive.svelte'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
@@ -79,6 +80,19 @@
 
   const session = getSessionState()
   const mine = $derived(entry.participantId === session.me.id)
+
+  /**
+   * Можно ли отсюда удалить автора записи с занятия.
+   *
+   * Роль автора в записи не хранится — её спрашивают у присутствия. Ушедшего из
+   * комнаты там нет, и он считается участником: банить того, кто уже вышел, —
+   * обычное дело (лента переживает уход), а штат сервер не забанит в любом
+   * случае, и его отказ приедет словами в то же окно.
+   */
+  const authorRole = $derived(
+    session.peers.find((peer) => peer.user.id === entry.participantId)?.user.role ?? 'participant',
+  )
+  const banHere = $derived(!mine && mayBan(session.me.role, authorRole))
 
   /*
    * The cell this turn is about, watched live.
@@ -187,19 +201,22 @@
   /*
    * Действует ли этот человек после звонка.
    *
-   * Для того, у чего правила нет вовсе: спросить снова, оборвать запись,
-   * отклонить предложение. Та же `actsAfterClass`, которой отвечает сервер, —
-   * второго механизма прав здесь заводить нельзя.
+   * Для того, у чего правила нет вовсе: спросить снова, отклонить
+   * предложение. Та же `actsAfterClass`, которой отвечает сервер, — второго
+   * механизма прав здесь заводить нельзя. «Стоп» отсюда ушёл: у него правило
+   * своё, и звонок в нём ничего не меняет — см. ниже.
    */
   const acts = $derived(actsAfterClass(may.finished, session.me.role))
   /*
-   * «Стоп» после звонка — только своей записи.
+   * «Стоп» — своей записи, всегда; чужой — только преподавателю.
    *
-   * Оборвать чужой ответ — это разрушение чужой работы, и переспросить после
-   * конца занятия участнику уже нечем. Свою — ту, что он сам и попросил до
-   * звонка, — он останавливает всегда: это его вопрос и его ответ.
+   * Не после звонка, а вообще: оборвать чужой ответ — это стереть работу,
+   * которую человек ждёт, а оборвать чужой ход агента — бросить правку файлов
+   * на середине. Преподавателю чужая нужна по-настоящему: разогнавшийся ответ
+   * висит на проекторе у всей комнаты. Ровно так это читает сервер
+   * (routes/ai.ts, /ai/cancel) — второго свода правил здесь заводить нельзя.
    */
-  const mayStop = $derived(acts || mine)
+  const mayStop = $derived(mine || session.me.role === 'host')
 
   function decide(accept: boolean) {
     if (!findChatEntry(session.doc, entry.id)) return
@@ -219,10 +236,42 @@
 
   <div class="flex min-w-0 flex-1 flex-col items-stretch gap-3 py-3.5 pl-3.5 pr-4">
     <header class="flex items-center gap-1.5">
-      <Avatar size="xs" name={entry.name} color={entry.color} {avatar} />
-      <span class="min-w-0 shrink truncate text-2xs font-bold leading-tight text-ink">
-        {entry.name}
-      </span>
+      <!--
+        Значок и имя — вход в то же меню, что и правая кнопка в списке людей.
+        Здесь его ищут раньше: спам виден в ленте, а не в рельсе, и человека,
+        которого удаляют, преподаватель в этот момент читает.
+
+        svelte:element, а не две ветки разметки: значок и имя стоят вплотную и
+        разошлись бы на первой же правке отступа.
+      -->
+      <svelte:element
+        this={banHere ? 'button' : 'span'}
+        role={banHere ? 'button' : undefined}
+        type={banHere ? 'button' : undefined}
+        title={banHere ? `Что сделать с участником: ${entry.name}` : undefined}
+        onclick={banHere
+          ? (event: MouseEvent) =>
+              askToBan({
+                id: entry.participantId,
+                name: entry.name,
+                color: entry.color,
+                avatar,
+                x: event.clientX,
+                y: event.clientY,
+              })
+          : undefined}
+        class={cn(
+          'flex min-w-0 shrink items-center gap-1.5',
+          banHere &&
+            'transition-colors duration-[var(--speed-quick)] hover:text-accent-text ' +
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        )}
+      >
+        <Avatar size="xs" name={entry.name} color={entry.color} {avatar} />
+        <span class="min-w-0 shrink truncate text-2xs font-bold leading-tight text-ink">
+          {entry.name}
+        </span>
+      </svelte:element>
       {#if mine}
         <span class="shrink-0 text-2xs text-faint">you</span>
       {/if}
@@ -427,14 +476,14 @@
     {/if}
 
     {#if streaming}
-      <!-- Кнопка остаётся стоять и после звонка: запись идёт, и молча
+      <!-- Кнопка остаётся стоять и на чужой записи: она идёт, и молча
            исчезнувший «Стоп» читался бы как «оракула уже не остановить». Она
-           гаснет и говорит, почему, — но только на чужой записи. -->
+           гаснет и говорит, почему. -->
       <button
         type="button"
         class={cn(GHOST, 'self-start disabled:cursor-not-allowed disabled:opacity-40')}
         disabled={!mayStop}
-        title={mayStop ? '' : CLASS_IS_OVER}
+        title={mayStop ? '' : 'Остановить чужой вопрос может преподаватель'}
         onclick={onstop}
       >
         <Icon name="stop" size={10} />

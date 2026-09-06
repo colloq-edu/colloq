@@ -23,6 +23,8 @@
   import Icon from '@/components/ui/Icon.svelte'
   import Notebook from '@/components/notebook/Notebook.svelte'
   import AiPanel from '@/components/panels/AiPanel.svelte'
+  import BanMenu from '@/components/panels/BanMenu.svelte'
+  import BannedScreen from '@/components/BannedScreen.svelte'
   import FilesPanel from '@/components/panels/FilesPanel.svelte'
   import PeoplePanel from '@/components/panels/PeoplePanel.svelte'
   import TerminalDrawer from '@/components/panels/TerminalDrawer.svelte'
@@ -1811,6 +1813,26 @@
       </p>
     </div>
   </div>
+{/if}
+
+<!--
+  Вас удалили с занятия — посреди занятия.
+
+  Поверх комнаты и во весь экран, как «семинар удалён»: работать здесь больше
+  нельзя, и полоска внизу, под живой на вид тетрадью, обещала бы обратное.
+  Комната при этом цела — этим случай и отличается от удалённой, — но говорить
+  об этом на экране незачем: человеку нужно знать, до какого часа и к кому идти.
+-->
+{#if session.banned !== null}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-canvas/95 px-6">
+    <BannedScreen until={session.banned} />
+  </div>
+{/if}
+
+<!-- Одно меню на оба места, откуда банят, — см. BanMenu.svelte. Только
+     ведущему: студенту оно ничего не откроет, а нарисованное — соврёт. -->
+{#if isHost && !session.gone && session.banned === null}
+  <BanMenu />
 {/if}
 
 {#if refusal && refusalShown}

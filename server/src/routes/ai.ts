@@ -21,8 +21,9 @@ import {
 } from '../admin/usage.js'
 import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
 import { stopAll, stopWork, work } from '../ai/agent.js'
-import { peekSessionDoc } from '../collab/index.js'
-import { findChatEntry } from '@shared/notebook'
+import { applyOnBehalf, getSessionDoc, peekSessionDoc } from '../collab/index.js'
+import { mark } from '../collab/history.js'
+import { findChatEntry, getChat } from '@shared/notebook'
 import { actsAfterClass, allows, allowsAgent, CLASS_IS_OVER, oracleModeIn } from '@shared/rules'
 import { getParticipant, getRules, getSession, isFinished } from '../db.js'
 import { sessionAuth } from './sessions.js'
@@ -61,6 +62,23 @@ const HOUR_MS = 3_600_000
 const ROOM_MULTIPLIER = 30
 
 /**
+ * «одну секунду, две секунды, пять секунд» — в отказе, который читает студент.
+ *
+ * Правило то же, что в web/src/lib/plural.ts, и повторено здесь потому, что
+ * тот файл живёт во вкладке: серверу его не достать, а тернарник «=== 1 ? то :
+ * это» врёт на каждом втором числе — «ещё 22 секунд». Цена — шесть строк,
+ * которые придётся править дважды, если правило когда-нибудь изменится; оно не
+ * менялось с Кирилла и Мефодия.
+ */
+function seconds(n: number): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return `${n} секунду`
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} секунды`
+  return `${n} секунд`
+}
+
+/**
  * The mode this seminar actually runs in.
  *
  * `inherit` is what every room is until somebody says otherwise. A room may
@@ -89,6 +107,70 @@ function askedBy(sessionId: string, entryId: string, participantId: string): boo
   const doc = peekSessionDoc(sessionId)?.doc
   const entry = doc ? findChatEntry(doc, entryId) : null
   return entry ? (entry.get('participantId') as string) === participantId : false
+}
+
+/**
+ * Убрать из ленты вопросы одного человека — и остановить то, что ему пишется.
+ *
+ * Живёт здесь, рядом с двумя другими ластиками ленты: тред стирают в этом
+ * файле, и третий способ стереть его же в другом месте разошёлся бы с ними на
+ * первой правке. Зовёт это бан (routes/bans.ts): спам в общей ленте — обычно
+ * ровно то, за что банят, и оставить его висеть перед всей комнатой значит
+ * наказать всех, кроме автора.
+ *
+ * Отметка в истории — ПЕРЕД удалением, и не для порядка. Лента живёт в
+ * документе комнаты, а стёртое из документа возвращается только версией:
+ * названный момент — единственное, чем преподаватель вернёт вычищенное, если
+ * промахнулся человеком. Имя в отметке — забаненного, автор — того, кто банил.
+ *
+ * Идущий ответ обрывается той же парой, что и кнопка «Стоп» ниже: у хода агента
+ * свой способ, у потока свой. Иначе модель ещё минуту дописывает ответ в
+ * запись, которой в ленте уже нет.
+ *
+ * Возвращает, сколько записей убрали.
+ */
+export function purgeQuestions(
+  sessionId: string,
+  banned: { participantId: string; name: string },
+  byTeacher: string,
+): number {
+  /*
+   * `getSessionDoc`, а не `peekSessionDoc`: вычистка — это правка, и правка
+   * должна лечь в документ комнаты, а не мимо неё. Комнату, которую никто не
+   * открывал с перезапуска, поднять придётся — иначе стёртое вернулось бы к
+   * первому вошедшему с диска. Ровно так же и по той же причине поступает
+   * лента версий (routes/history.ts).
+   */
+  const { doc } = getSessionDoc(sessionId)
+  const chat = getChat(doc)
+  const at: number[] = []
+  const ids: string[] = []
+  for (let i = 0; i < chat.length; i++) {
+    const entry = chat.get(i)
+    if (entry.get('participantId') !== banned.participantId) continue
+    at.push(i)
+    const id: unknown = entry.get('id')
+    if (typeof id === 'string') ids.push(id)
+  }
+  if (at.length === 0) return 0
+
+  const label = `до бана ${banned.name}`
+  mark(sessionId, doc, 'checkpoint', byTeacher, label, label)
+
+  for (const id of ids) if (!stopWork(sessionId, id)) cancel(sessionId, id)
+
+  /*
+   * От имени преподавателя, а не «комнаты»: в ленте версий у этой строки должно
+   * стоять имя того, кто банил, — иначе рядом с названным моментом «до бана
+   * Пети» стоит ничья правка на двенадцать записей.
+   *
+   * С конца: индексы посчитаны до удаления, и снятие первого сдвинуло бы все
+   * следующие.
+   */
+  applyOnBehalf(sessionId, byTeacher, () => {
+    for (let i = at.length - 1; i >= 0; i--) chat.delete(at[i], 1)
+  })
+  return at.length
 }
 
 export function aiRoutes(): Router {
@@ -165,7 +247,9 @@ export function aiRoutes(): Router {
       })
     }
     const message = raw.trim()
-    const requested = ACTIONS.includes(body?.action as AiAction) ? (body?.action as AiAction) : undefined
+    const requested = ACTIONS.includes(body?.action as AiAction)
+      ? (body?.action as AiAction)
+      : undefined
     const cellId = typeof body?.cellId === 'string' ? body.cellId : null
     /*
      * Выделение спрашивающего. Потолок — не про безопасность, а про смысл:
@@ -173,7 +257,9 @@ export function aiRoutes(): Router {
      * они займут за счёт остальной тетради.
      */
     const cellIds = Array.isArray(body?.cellIds)
-      ? body.cellIds.filter((id): id is string => typeof id === 'string' && id.length > 0).slice(0, 20)
+      ? body.cellIds
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          .slice(0, 20)
       : []
     if (!message && !requested) return res.status(400).json({ error: 'nothing to ask' })
 
@@ -185,7 +271,8 @@ export function aiRoutes(): Router {
     if (mode === 'hints') {
       if (action && !actionAllowedIn('hints', action)) {
         return res.status(403).json({
-          error: 'This oracle is in hints mode: it can point you at the problem, but it will not write the answer for you. Ask for a hint instead.',
+          error:
+            'This oracle is in hints mode: it can point you at the problem, but it will not write the answer for you. Ask for a hint instead.',
         })
       }
       action = 'hint'
@@ -245,7 +332,8 @@ export function aiRoutes(): Router {
     if (used >= limit) {
       const resetAt = windowResetAt(sessionId, auth.participantId, HOUR_MS, limit)
       const minutes = resetAt ? Math.max(1, Math.ceil((resetAt - Date.now()) / 60_000)) : 60
-      if (resetAt) res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))))
+      if (resetAt)
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))))
       // "all 1 oracle question" is not a sentence. A cap of one is the one
       // case a teacher is most likely to set deliberately, so it gets its own.
       const spent =
@@ -255,6 +343,46 @@ export function aiRoutes(): Router {
       return res.status(429).json({
         error: `${spent}. You can ask again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
       })
+    }
+
+    /*
+     * Слоу-мод: не сколько вопросов, а как часто.
+     *
+     * Потолок в час ловит расход, а не спам: двадцать вопросов можно выкрикнуть
+     * за двадцать секунд, и наказан будет не выкрик, а следующий настоящий
+     * вопрос — через час без оракула. Промежуток стоит ровно там, где спам, и
+     * стоит секунды.
+     *
+     * Стоит ПОСЛЕ потолков, а не перед ними: у кого вопросы на час кончились,
+     * тот должен услышать про час, а не про десять секунд, после которых его
+     * всё равно развернут.
+     *
+     * Преподавателя не касается. Он не спамит — он ведёт занятие, и его вопросы
+     * идут подряд потому, что подряд идёт разбор; роль здесь та же, по которой
+     * этот маршрут уже различает ведущего выше.
+     *
+     * Тот же `windowResetAt`, что и у потолка в час: с пределом в один вопрос
+     * «когда окно отпустит» и означает «когда пройдёт промежуток после
+     * последнего». Второго счётчика заводить не за что.
+     */
+    const gap = settings.slowModeSeconds
+    if (gap > 0 && auth.role !== 'host') {
+      const freeAt = windowResetAt(sessionId, auth.participantId, gap * 1000, 1)
+      const left = freeAt === null ? 0 : Math.ceil((freeAt - Date.now()) / 1000)
+      if (left > 0) {
+        res.setHeader('Retry-After', String(left))
+        return res.status(429).json({
+          error: `Оракул отвечает не чаще раза в ${seconds(gap)} — ещё ${seconds(left)}.`,
+          /*
+           * Число, а не только заголовок. Retry-After — для машины, а панели
+           * этим числом ещё и решать, как показать отказ: ожидание — спокойная
+           * строка с обратным отсчётом, а не красная ошибка, которой она
+           * встречает всё остальное. Отличить одно от другого по тексту 429
+           * она не может.
+           */
+          retryAfter: left,
+        })
+      }
     }
 
     // Name and colour are resolved server-side: the bubble in everyone's panel
@@ -330,22 +458,29 @@ export function aiRoutes(): Router {
     if (!entryId || entryId.length > MAX_ENTRY_ID) {
       return res.status(400).json({ error: 'entryId is required' })
     }
-    // Open to anyone present: a runaway answer is on every screen in the room,
-    // and stopping it destroys nothing — the text that arrived stays put.
     /*
-     * После звонка — только СВОЮ запись, ту, что человек сам и спросил.
+     * Свою запись — автор, чужую — преподаватель. Больше никто.
      *
-     * «Ничего не разрушает» верно, пока запись твоя. Оборвать чужой ход — это
-     * остановить агента преподавателя посреди правки файлов: половина комнаты
-     * переписана, половина нет, и такого состояния никто не просил. А свою
-     * запись — спрошенную до звонка и всё ещё пишущуюся — он останавливает
-     * всегда: она его, и остановить её как раз можно без потерь.
+     * Здесь стояло «останавливать может кто угодно: ничего не разрушает» — и
+     * это неправда ровно для чужой записи. Оборвать чужой ответ — это стереть
+     * работу, которую человек ждёт, а оборвать чужой ход агента — остановить
+     * его посреди правки файлов: половина тетради переписана, половина нет, и
+     * такого состояния никто не просил. Своя запись — другое дело: она твоя, и
+     * пришедший текст остаётся на месте, так что автор останавливает её всегда.
+     *
+     * Преподавателю чужая нужна по-настоящему: разогнавшийся ответ висит на
+     * проекторе у всей комнаты, а спросил его кто-то из зала. Роль — та же, по
+     * которой этот же файл выше решает, кому чинить оракул.
+     *
+     * Звонок отдельной проверки больше не требует: `actsAfterClass` разрешала
+     * ровно то же — преподавателя всегда, участника до конца пары, — а участник
+     * и до звонка теперь ходит только за своей записью.
      */
-    if (
-      !actsAfterClass(isFinished(req.params.id), auth.role) &&
-      !askedBy(req.params.id, entryId, auth.participantId)
-    ) {
-      return res.status(403).json({ error: CLASS_IS_OVER })
+    if (auth.role !== 'host' && !askedBy(req.params.id, entryId, auth.participantId)) {
+      return res.status(403).json({
+        error:
+          'Остановить можно свой вопрос — чужой останавливает тот, кто его задал, или преподаватель.',
+      })
     }
     /*
      * Ход оракула — не поток, и обрывается он иначе: см. agent.stopWork. Обе

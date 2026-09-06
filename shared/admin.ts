@@ -246,6 +246,15 @@ export interface OracleSettings {
   houseRules: string
   /** Per student, per seminar, per hour. 0 disables the oracle outright. */
   questionsPerHour: number
+  /**
+   * Сколько секунд между двумя вопросами одного человека. 0 — выключено.
+   *
+   * Не то же самое, что потолок в час, и заводится рядом именно поэтому:
+   * двадцать вопросов можно выкрикнуть за двадцать секунд, и потолок накажет
+   * не спам, а следующий настоящий вопрос — через час. Промежуток стоит там,
+   * где спам, и стоит секунды.
+   */
+  slowModeSeconds: number
   /** Ceiling on the notebook text sent as context. */
   contextChars: number
   /** Whether the environment supplied a key, in which case the UI must not
@@ -262,6 +271,7 @@ export interface UpdateOracleRequest {
   defaultMode?: OracleMode
   houseRules?: string
   questionsPerHour?: number
+  slowModeSeconds?: number
   contextChars?: number
 }
 
@@ -301,6 +311,15 @@ export const LIMITS = {
   model: 120,
   /** Per student, per seminar, per hour. */
   questionsPerHour: { min: 0, max: 500, default: 20 },
+  /**
+   * Промежуток между вопросами одного человека, в секундах.
+   *
+   * По умолчанию ноль: слоу-мод — это ответ на конкретный класс, а не общее
+   * правило, и включать его молча всем значит замедлить те комнаты, где никто
+   * не спамил. Потолок в пять минут — уже не «не частите», а «сегодня без
+   * оракула»; дальше этого настройка не даёт зайти по ошибке.
+   */
+  slowModeSeconds: { min: 0, max: 300, default: 0 },
   contextChars: { min: 2_000, max: 100_000, default: 20_000 },
 } as const
 

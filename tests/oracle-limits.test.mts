@@ -17,7 +17,7 @@ import {
   recordQuestion,
 } from '../server/src/admin/usage.js'
 import { signToken } from '../server/src/auth.js'
-import { createSession, db, getRules, setRules } from '../server/src/db.js'
+import { createSession, db, getRules, setRules, upsertParticipant } from '../server/src/db.js'
 import { updateOracleSettings } from '../server/src/admin/settings.js'
 import { aiRoutes } from '../server/src/routes/ai.js'
 
@@ -90,7 +90,7 @@ before(async () => {
 
 after(() => {
   server?.close()
-  updateOracleSettings({ questionsPerHour: 20 })
+  updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 0 })
 })
 
 function askAs(
@@ -138,6 +138,99 @@ test('личный потолок говорит, через сколько мо
   // Окно скользит: срок берётся из windowResetAt, а не из «начала следующего часа».
   assert.match(body.error, /again in 60 minutes/)
   assert.ok(Number(res.headers.get('retry-after')) > 0)
+})
+
+/* ------------------------------------------------------------- слоу-мод */
+
+/**
+ * Промежуток между вопросами — про частоту, а не про расход.
+ *
+ * Потолок в час двадцать вопросов подряд пропускает: их можно выкрикнуть за
+ * двадцать секунд, и наказан будет не выкрик, а следующий настоящий вопрос —
+ * через час без оракула. Слоу-мод стоит ровно там, где спам, и стоит секунды.
+ */
+test('слоу-мод пускает первый вопрос и разворачивает второй — со сроком', async () => {
+  const room = 'slow-first'
+  createSession(room, 'Слоу-мод', null)
+  updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 30 })
+
+  assert.equal((await askAs(room, 'p_kid')).status, 202)
+
+  const denied = await askAs(room, 'p_kid')
+  // Тот же код, каким отвечает потолок в час: второго способа сказать
+  // «не сейчас» у этого маршрута нет.
+  assert.equal(denied.status, 429, 'второй вопрос прошёл сразу за первым')
+  const body = (await denied.json()) as { error: string; retryAfter: number }
+  assert.match(
+    body.error,
+    /не чаще раза в 30 секунд/,
+    `отказ не называет промежуток: ${body.error}`,
+  )
+  assert.match(body.error, /ещё \d+ секунд/, `отказ не говорит, сколько ждать: ${body.error}`)
+  /*
+   * Срок приходит и числом. По нему панель гасит кнопку и показывает ожидание
+   * спокойной строкой, а не красной ошибкой; отличить ожидание от аварии по
+   * тексту 429 она не может.
+   */
+  assert.ok(body.retryAfter > 0 && body.retryAfter <= 30, `странный срок: ${body.retryAfter}`)
+  assert.equal(denied.headers.get('retry-after'), String(body.retryAfter))
+})
+
+test('промежуток прошёл — и оракул снова отвечает', async () => {
+  const room = 'slow-expiry'
+  createSession(room, 'Промежуток', null)
+  updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 30 })
+
+  assert.equal((await askAs(room, 'p_kid')).status, 202)
+  assert.equal((await askAs(room, 'p_kid')).status, 429)
+
+  // Часы вперёд не перевести, поэтому назад переводится вопрос: слоу-мод
+  // считает по той же строке расхода, что и потолок в час.
+  db.prepare('UPDATE ai_usage SET created_at = ? WHERE session_id = ?').run(
+    Date.now() - 31_000,
+    room,
+  )
+  assert.equal((await askAs(room, 'p_kid')).status, 202, 'промежуток прошёл, а оракула нет')
+})
+
+test('преподавателя слоу-мод не касается', async () => {
+  const room = 'slow-host'
+  createSession(room, 'Ведущий', null)
+  updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 300 })
+  /*
+   * Роль решается по строке участника, а не по тому, что написано в токене
+   * (routes/sessions.ts · roleFor), — поэтому ведущего приходится завести
+   * по-настоящему.
+   */
+  upsertParticipant({
+    id: 'p_ada_host',
+    sessionId: room,
+    name: 'Ада',
+    avatar: null,
+    role: 'host',
+    tokenHost: true,
+  })
+
+  // Он ведёт занятие: его вопросы идут подряд потому, что подряд идёт разбор.
+  assert.equal((await askAs(room, 'p_ada_host')).status, 202)
+  assert.equal((await askAs(room, 'p_ada_host')).status, 202, 'ведущего развернули на его же паре')
+
+  // А в той же комнате участнику — тот же промежуток, что и всем.
+  assert.equal((await askAs(room, 'p_kid')).status, 202)
+  assert.equal((await askAs(room, 'p_kid')).status, 429)
+})
+
+test('ноль — слоу-мода нет вовсе, и это умолчание', async () => {
+  const room = 'slow-off'
+  createSession(room, 'Выключено', null)
+  // Больше пяти минут не поставить: это уже не «не частите», а «сегодня без
+  // оракула», и настройка не даёт зайти туда по ошибке.
+  assert.equal(updateOracleSettings({ slowModeSeconds: 9_999 }).slowModeSeconds, 300)
+
+  updateOracleSettings({ questionsPerHour: 20, slowModeSeconds: 0 })
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await askAs(room, 'p_kid')).status, 202, 'выключенный слоу-мод развернул вопрос')
+  }
 })
 
 /**

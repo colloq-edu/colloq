@@ -929,6 +929,29 @@ export function onlineParticipantIds(sessionId: string): string[] {
 }
 
 /**
+ * Убрать из документа комнаты одного человека, не трогая комнату.
+ *
+ * Сосед `dropSessionDoc` сносит документ целиком, потому что сносят семинар.
+ * Здесь всё наоборот: пара идёт дальше, и уйти должен ровно тот, кого забанили,
+ * — остальные девятнадцать не должны заметить ничего.
+ *
+ * Через тот же `closeConn`, что и обычный уход: он снимает присутствие, и
+ * курсор ушедшего исчезает у всех сразу, а не висит в чужой ячейке до
+ * тайм-аута. Вернуться этот сокет не сможет — рукопожатие спрашивает бан до
+ * апгрейда; чистый браузер по-прежнему сможет, и это сказано вслух везде, где
+ * про бан вообще говорится.
+ */
+export function dropParticipant(sessionId: string, participantId: string): void {
+  const entry = docs.get(sessionId)
+  if (!entry) return
+  // Копия: closeConn правит ту же карту, по которой идёт обход.
+  for (const [conn, state] of [...entry.conns]) {
+    if (state.participantId !== participantId) continue
+    closeConn(entry, conn)
+  }
+}
+
+/**
  * Evict a session's document for good: used when the seminar itself is deleted.
  *
  * Everything here is about making the deletion stick. The binding is discarded

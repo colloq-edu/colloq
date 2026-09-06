@@ -13,6 +13,7 @@ import {
   verifyHostToken,
   verifyToken,
 } from '../auth.js'
+import { banFor, banRefusal, deviceOf } from '../bans.js'
 import { config } from '../config.js'
 import {
   createSession,
@@ -360,6 +361,27 @@ export function sessionRoutes(): Router {
       proof.sessionId === sessionId &&
       proof.participantId === claimed
     const known = proved ? getParticipant(sessionId, claimed) : null
+
+    /*
+     * Забаненный узнаёт об этом здесь, до всего остального.
+     *
+     * Проверяется доказанный идентификатор, а не присланный: «я p_xyz» —
+     * фраза, которую про любого может сказать любой (см. выше), и по ней можно
+     * было бы примерить чужой бан на себя. Второй метки, устройства, это не
+     * касается: её присылает браузер и только свою.
+     *
+     * До счётчика новых участников: наплыв — это про комнату, а бан — про
+     * одного человека, и получить в ответ «слишком много входов» вместо
+     * «преподаватель закрыл вам доступ» значит не понять ничего.
+     */
+    const ban = banFor(sessionId, known?.id ?? null, req.headers.cookie)
+    if (ban) {
+      console.log(
+        `[join ${sessionId}] banned ${known ? known.id : 'by device'} · until ${ban.until}`,
+      )
+      return res.status(403).json(banRefusal(ban))
+    }
+
     // Незнакомец заводит строку — и это единственное место, где комната растёт
     // от чужого запроса. Штат и вернувшиеся со своим токеном проходят мимо.
     if (!known && !staff && tooManyArrivals(sessionId)) {
@@ -399,6 +421,9 @@ export function sessionRoutes(): Router {
       avatar,
       role,
       tokenHost: role === 'host' && !staff,
+      // Метка браузера — чтобы бан по одному идентификатору закрывал и то
+      // окно, из которого он через минуту придёт «новым человеком».
+      device: deviceOf(req.headers.cookie),
     })
     const token = signToken({ sessionId, participantId, role })
 

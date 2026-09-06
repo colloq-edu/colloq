@@ -1,6 +1,7 @@
 import type {
   AiAskRequest,
   AiAskResponse,
+  Ban,
   CreateSessionResponse,
   FileEntry,
   HandoffResponse,
@@ -11,11 +12,31 @@ import type {
 } from '@shared/protocol'
 import type { RoomRules } from '@shared/rules'
 import type { PublicCourseView, PublicSeminar, PublicStep } from '@shared/publish'
+import type { PersonMark } from './bans'
 
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * Сколько секунд ждать, если сервер назвал срок.
+     *
+     * Только там, где отказ — это ожидание, а не поломка: слоу-мод оракула
+     * присылает его в теле, и по нему экран решает показать спокойную строку с
+     * обратным отсчётом вместо красной ошибки. Отличить ожидание от аварии по
+     * тексту 429 нельзя, а гадать по нему — заводить второй свод правил рядом
+     * с серверным.
+     */
+    readonly retryAfter: number | null = null,
+    /**
+     * До какого момента человека не пустят, если отказ — это бан.
+     *
+     * Рядом с `retryAfter` и по тому же поводу: 403 бывает и «правило комнаты»,
+     * и «вас удалили с занятия», а различить их по тексту — завести второй свод
+     * правил рядом с серверным. Момент, а не остаток: часы рисует тот, кто
+     * смотрит (см. `untilWords` в lib/bans.ts).
+     */
+    readonly until: number | null = null,
   ) {
     super(message)
   }
@@ -67,13 +88,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let message = statusMessage(res)
+    let retryAfter: number | null = null
+    let until: number | null = null
     try {
-      const body = (await res.json()) as { error?: string }
+      const body = (await res.json()) as { error?: string; retryAfter?: number; until?: number }
       if (body?.error) message = body.error
+      if (typeof body?.retryAfter === 'number' && Number.isFinite(body.retryAfter)) {
+        retryAfter = body.retryAfter
+      }
+      if (typeof body?.until === 'number' && Number.isFinite(body.until)) until = body.until
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(message, res.status)
+    throw new ApiError(message, res.status, retryAfter, until)
   }
   return (await res.json()) as T
 }
@@ -116,6 +143,43 @@ export const api = {
   /** Everyone who has ever joined, newest activity first. */
   listParticipants: (id: string) =>
     request<{ participants: Participant[]; online: string[] }>(`/api/sessions/${id}/participants`),
+
+  /* --------------------------------------------------------------- баны */
+
+  /**
+   * Удалить человека с занятия на сутки.
+   *
+   * Сутки называет сервер, а не эта строка: срок один на продукт, и второе
+   * место, где он написан, разошлось бы с первым на первой же правке. Отсюда
+   * уезжает только «кого».
+   */
+  ban: (id: string, token: string, participantId: string) =>
+    request<{ ban: Ban }>(`/api/sessions/${id}/bans`, {
+      method: 'POST',
+      body: JSON.stringify({ participantId }),
+      headers: { authorization: `Bearer ${token}` },
+    }),
+
+  /**
+   * Действующие баны — и пометки про тех, кто в комнате сейчас.
+   *
+   * Одним запросом, потому что это один и тот же разговор и одно и то же
+   * право: метка устройства, адрес и «первый раз здесь» — то, чего вкладка про
+   * соседа не знает и знать не должна, а преподавателю без них не отличить
+   * вернувшегося от однофамильца. `marks` не обязателен: сервер, который про
+   * пометки ещё не знает, оставляет список людей таким, каким он был.
+   */
+  bans: (id: string, token: string) =>
+    request<{ bans: Ban[]; marks?: Record<string, PersonMark> }>(`/api/sessions/${id}/bans`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+
+  /** Снять бан. Вопросы к оракулу этим не возвращаются — их возвращает история. */
+  liftBan: (id: string, token: string, banId: string) =>
+    request<{ ok: true }>(`/api/sessions/${id}/bans/${banId}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    }),
 
   /**
    * Правила комнаты — из самой комнаты.
@@ -223,7 +287,13 @@ export const api = {
       headers: { authorization: `Bearer ${token}` },
     }),
 
-  /** Open to anyone present: a runaway answer is on every screen in the room. */
+  /**
+   * Свою запись останавливает автор, чужую — преподаватель.
+   *
+   * Не «кто угодно»: оборвать чужой ход агента значит бросить правку файлов на
+   * середине. Сервер отказывает словами (routes/ai.ts), кнопка гаснет заранее
+   * (ChatTurn.svelte) — правило одно, мест два.
+   */
   aiCancel: (id: string, token: string, entryId: string) =>
     request<{ ok: true }>(`/api/sessions/${id}/ai/cancel`, {
       method: 'POST',

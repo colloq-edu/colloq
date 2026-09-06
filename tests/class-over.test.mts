@@ -654,34 +654,65 @@ function cancelEntry(sessionId: string, role: 'host' | 'participant', entryId: s
   })
 }
 
-test('после звонка участник обрывает только свою запись', async () => {
+/**
+ * Кто останавливает — и это уже не про звонок.
+ *
+ * Тест живёт здесь, потому что здесь стоит единственная в сюите связка
+ * «маршруты оракула + настоящий преподаватель», а правило одно на обе стороны
+ * звонка, и проверять его врозь значило бы делать вид, что их две.
+ */
+test('свою запись останавливает автор, чужую — только преподаватель', async () => {
   /*
-   * «Остановить может кто угодно» верно, пока запись твоя: оборвать чужой ход
-   * после звонка значит остановить агента преподавателя посреди правки файлов —
-   * половина комнаты переписана, половина нет. А свою запись, спрошенную до
-   * звонка, человек останавливает всегда.
+   * «Остановить может кто угодно, это ничего не разрушает» верно ровно для
+   * своей записи. Оборвать чужой ответ — стереть работу, которую человек ждёт;
+   * оборвать чужой ход агента — бросить правку файлов на середине.
    */
-  const id = 'class-cancel'
-  createSession(id, 'Обрыв', null)
+  const id = 'class-cancel-own'
+  createSession(id, 'Чей вопрос', null)
   const mine = propose(id, `p_${id}_participant`)
   const theirs = propose(id, `p_${id}_host`)
 
-  // До звонка — и чужую: ответ, идущий вразнос, виден всей комнате.
-  assert.equal((await cancelEntry(id, 'participant', theirs)).status, 200)
-
-  setFinished(id, Date.now())
   const denied = await cancelEntry(id, 'participant', theirs)
-  assert.equal(denied.status, 403, 'участник оборвал чужую работу после звонка')
+  assert.equal(denied.status, 403, 'участник оборвал чужую работу посреди пары')
   const body = (await denied.json()) as { error: string }
-  assert.ok(body.error.includes(CLASS_IS_OVER), `отказ говорит не про звонок: ${body.error}`)
+  assert.match(body.error, /свой вопрос/, `отказ не назвал правило: ${body.error}`)
+  assert.ok(!body.error.includes(CLASS_IS_OVER), 'отказ сослался на звонок, которого не было')
 
   assert.equal(
     (await cancelEntry(id, 'participant', mine)).status,
     200,
     'свою запись не остановить',
   )
+  // Преподавателю чужая нужна по-настоящему: разогнавшийся ответ висит на
+  // проекторе у всей комнаты, а спросил его кто-то из зала.
+  assert.equal((await cancelEntry(id, 'host', theirs)).status, 200, 'преподавателю отказали')
+})
+
+test('после звонка правило то же самое', async () => {
+  // Звонок здесь ничего не добавляет и ничего не отнимает — и это проверяется,
+  // потому что отдельная проверка на него из маршрута ушла как лишняя.
+  const id = 'class-cancel'
+  createSession(id, 'Обрыв', null)
+  const mine = propose(id, `p_${id}_participant`)
+  const theirs = propose(id, `p_${id}_host`)
+
+  setFinished(id, Date.now())
+  assert.equal(
+    (await cancelEntry(id, 'participant', theirs)).status,
+    403,
+    'участник оборвал чужую работу после звонка',
+  )
+  assert.equal(
+    (await cancelEntry(id, 'participant', mine)).status,
+    200,
+    'свою запись, спрошенную до звонка, не остановить',
+  )
   assert.equal((await cancelEntry(id, 'host', theirs)).status, 200, 'преподавателю отказали')
 
   setFinished(id, null)
-  assert.equal((await cancelEntry(id, 'participant', theirs)).status, 200, 'право не вернулось')
+  assert.equal(
+    (await cancelEntry(id, 'participant', theirs)).status,
+    403,
+    'открытое обратно занятие вернуло право на чужую запись',
+  )
 })

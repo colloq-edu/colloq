@@ -48,6 +48,7 @@ import type {
 import type { TokenPayload } from './auth.js'
 import {
   applyOnBehalf,
+  dropParticipant,
   getSessionDoc,
   peekSessionDoc,
   onCellsRemoved,
@@ -248,6 +249,39 @@ export function closeControlRoom(sessionId: string): void {
     }
   }
   room.sockets.clear()
+}
+
+/**
+ * Выставить забаненного — сейчас, а не при следующем заходе.
+ *
+ * Проверка на рукопожатии закрывает дверь тому, кто стучится; забанили обычно
+ * того, кто уже сидит внутри, и без этой строки он спокойно дописывает в
+ * тетради до конца пары — его сокеты открылись раньше бана и ничего о нём не
+ * знают.
+ *
+ * Кадр уходит ДО закрытия. Иначе вкладка видит обрыв связи и молча уходит
+ * переподключаться, показывая «нет соединения» там, где надо показать причину
+ * и срок; после кадра она знает, что произошло, и не стучится обратно.
+ *
+ * Точечно, а не `closeControlRoom`: комната продолжает занятие. И оба провода
+ * сразу — управляющий держит нажатия, общий документ держит текст, и закрыть
+ * один, оставив другой, значит выгнать наполовину.
+ */
+export function evictBanned(sessionId: string, participantId: string, until: number): void {
+  tell(sessionId, participantId, { t: 'banned', until })
+  const room = rooms.get(sessionId)
+  if (room) {
+    // Копия набора: обработчик закрытия правит его же.
+    for (const ws of [...room.sockets]) {
+      if (owner.get(ws) !== participantId) continue
+      try {
+        ws.close(1008, 'banned from this seminar')
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  dropParticipant(sessionId, participantId)
 }
 
 export function broadcastFiles(sessionId: string): void {

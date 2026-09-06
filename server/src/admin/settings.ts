@@ -44,6 +44,7 @@ const KEY = {
   defaultMode: 'ai.defaultMode',
   houseRules: 'ai.houseRules',
   questionsPerHour: 'ai.questionsPerHour',
+  slowModeSeconds: 'ai.slowModeSeconds',
   contextChars: 'ai.contextChars',
 } as const
 
@@ -143,6 +144,12 @@ export function getOracleSettings(): OracleSettings {
       LIMITS.questionsPerHour.min,
       LIMITS.questionsPerHour.max,
     ),
+    slowModeSeconds: asInt(
+      rows.get(KEY.slowModeSeconds),
+      LIMITS.slowModeSeconds.default,
+      LIMITS.slowModeSeconds.min,
+      LIMITS.slowModeSeconds.max,
+    ),
     contextChars: asInt(
       rows.get(KEY.contextChars),
       LIMITS.contextChars.default,
@@ -189,7 +196,17 @@ export function updateOracleSettings(patch: UpdateOracleRequest): OracleSettings
     }
     if (changes.questionsPerHour !== undefined) {
       const { min, max } = LIMITS.questionsPerHour
-      upsertSetting.run(KEY.questionsPerHour, String(clamp(Math.round(changes.questionsPerHour), min, max)))
+      upsertSetting.run(
+        KEY.questionsPerHour,
+        String(clamp(Math.round(changes.questionsPerHour), min, max)),
+      )
+    }
+    if (changes.slowModeSeconds !== undefined) {
+      const { min, max } = LIMITS.slowModeSeconds
+      upsertSetting.run(
+        KEY.slowModeSeconds,
+        String(clamp(Math.round(changes.slowModeSeconds), min, max)),
+      )
     }
     if (changes.contextChars !== undefined) {
       const { min, max } = LIMITS.contextChars
@@ -235,7 +252,7 @@ export function parseOraclePatch(body: unknown): PatchResult {
     if (!MODES.includes(input.defaultMode as OracleMode)) return { error: 'unknown oracle mode' }
     patch.defaultMode = input.defaultMode as OracleMode
   }
-  for (const field of ['questionsPerHour', 'contextChars'] as const) {
+  for (const field of ['questionsPerHour', 'slowModeSeconds', 'contextChars'] as const) {
     if (input[field] === undefined) continue
     const value = input[field]
     if (typeof value !== 'number' || !Number.isFinite(value)) return { error: `${field} must be a number` }

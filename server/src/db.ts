@@ -112,6 +112,39 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS participants_session ON participants(session_id);
 
+  /*
+   * Кого преподаватель закрыл из комнаты и до какого времени.
+   *
+   * Аккаунтов в продукте нет, поэтому бан опирается на те две метки, которые
+   * есть: идентификатор участника (он в localStorage браузера) и метку
+   * устройства в куке. Совпадение по ЛЮБОЙ из них — бан; герметичности это не
+   * даёт и не обещает, инкогнито даёт чистый браузер.
+   *
+   * «ip» не участвует в проверке НИКОГДА: за одним NAT сидит вся аудитория, и
+   * бан по адресу закрыл бы комнату всему потоку. Он лежит здесь только как
+   * подсказка преподавателю «кажется, этот вернулся».
+   *
+   * «name» своей копией: человек возвращается под другим именем, а строку
+   * бана преподаватель обязан узнать — она называет того, кого он банил.
+   *
+   * Схема — здесь, рядом с прочими таблицами комнаты, которые вместе читают и
+   * вместе удаляют. Запросы, кука и правило про просроченные строки — в
+   * server/src/bans.ts.
+   */
+  CREATE TABLE IF NOT EXISTS bans (
+    id             TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    participant_id TEXT,
+    device         TEXT,
+    ip             TEXT,
+    name           TEXT NOT NULL,
+    until          INTEGER NOT NULL,
+    by_teacher     TEXT,
+    created_at     INTEGER NOT NULL
+  );
+  /* Каждое чтение — «эта комната, действующие сейчас», и это ровно индекс. */
+  CREATE INDEX IF NOT EXISTS bans_session ON bans(session_id, until);
+
   CREATE TABLE IF NOT EXISTS doc_snapshots (
     session_id  TEXT PRIMARY KEY,
     data        BLOB NOT NULL,
@@ -273,6 +306,22 @@ ensureColumn('doc_history', 'target_seq', 'target_seq INTEGER')
  * автор комнаты приходил в неё гостем, без объяснений.
  */
 ensureColumn('participants', 'token_host', 'token_host INTEGER NOT NULL DEFAULT 0')
+
+/**
+ * С какого браузера этот человек заходил в последний раз.
+ *
+ * Метка из куки `colloq_device` (server/src/bans.ts). Лежит в строке участника
+ * потому, что бан заводят по одному идентификатору — а закрыть надо и
+ * браузер, который через минуту придёт «новым человеком» с чистым
+ * localStorage. Взять метку в тот момент неоткуда: запрос присылает
+ * преподаватель, и кука в нём его собственная.
+ *
+ * NULL — обычное дело: в разработке страницу отдаёт Vite, куку ставить некому,
+ * и такой человек банится по одному идентификатору. В Participant это поле не
+ * попадает: тот уезжает всей комнате, а метка браузера — не то, что комната
+ * должна знать друг о друге.
+ */
+ensureColumn('participants', 'device', 'device TEXT')
 
 /**
  * The room's rules, as JSON.
@@ -438,13 +487,17 @@ export function getSession(id: string): SessionInfo | null {
 /* --------------------------------------------------------- participants */
 
 const upsertParticipantStmt = db.prepare(`
-  INSERT INTO participants (id, session_id, name, avatar, color, role, token_host, last_seen)
-  VALUES (@id, @session_id, @name, @avatar, @color, @role, @token_host, @last_seen)
+  INSERT INTO participants (id, session_id, name, avatar, color, role, token_host, device, last_seen)
+  VALUES (@id, @session_id, @name, @avatar, @color, @role, @token_host, @device, @last_seen)
   ON CONFLICT(id) DO UPDATE SET
     name = excluded.name,
     avatar = excluded.avatar,
     role = excluded.role,
     token_host = excluded.token_host,
+    -- Метку не стирает вход, который её не принёс: пультом с планшета человек
+    -- входит по ключу обмена, и куки там может не быть вовсе. Забыть браузер,
+    -- за которым человек сидит на паре, из-за этого нельзя.
+    device = COALESCE(excluded.device, participants.device),
     last_seen = excluded.last_seen
 `)
 const selectParticipant = db.prepare('SELECT * FROM participants WHERE id = ? AND session_id = ?')
@@ -461,6 +514,8 @@ interface ParticipantRow {
   color: string
   role: string
   token_host?: number
+  /** Метка браузера — см. столбец device. Наружу не отдаётся. */
+  device?: string | null
   last_seen: number
 }
 
@@ -482,6 +537,8 @@ export function upsertParticipant(p: {
   role: Participant['role']
   /** Ведущий по токену — см. столбец token_host. Куку сюда передавать нельзя. */
   tokenHost?: boolean
+  /** Метка браузера из куки, если она есть, — см. столбец device. */
+  device?: string | null
 }): Participant {
   const existing = selectParticipant.get(p.id, p.sessionId) as ParticipantRow | undefined
   const color = existing?.color ?? colorForId(p.id)
@@ -496,9 +553,22 @@ export function upsertParticipant(p: {
     color,
     role: p.role,
     token_host: tokenHost ? 1 : 0,
+    device: p.device ?? null,
     last_seen: Date.now(),
   })
   return { id: p.id, name: p.name, avatar: p.avatar, color, role: p.role }
+}
+
+/**
+ * Метка браузера, с которого этот человек заходил последним, — или null.
+ *
+ * Спрашивает её бан: закрывать надо не только идентификатор, но и браузер, из
+ * которого он приехал. Отдельной функцией, а не полем Participant: тот уезжает
+ * всей комнате.
+ */
+export function deviceOfParticipant(sessionId: string, participantId: string): string | null {
+  const row = selectParticipant.get(participantId, sessionId) as ParticipantRow | undefined
+  return row?.device ?? null
 }
 
 /**
