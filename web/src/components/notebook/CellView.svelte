@@ -79,11 +79,10 @@
   } from '@/lib/yreactive.svelte'
   import { runSlot } from '@/lib/run-slot'
   import {
-    neverRan as neverRanIn,
     nextHeld,
     NO_HELD,
     outputSeat,
-    ranQuietly as ranQuietlyIn,
+    runMark,
     unnumberedResult,
     type Held,
   } from '@/lib/output-seat'
@@ -473,9 +472,14 @@
       canInterrupt,
     }),
   )
-  /** Ещё не считалась и отработала молча — обе см. lib/output-seat. */
-  const neverRan = $derived(
-    neverRanIn({
+  /**
+   * Метка выполнения в поле — `[ ]`, `[7]`, `[*]`, `[—]`. См. lib/output-seat.
+   *
+   * Одна колонка под номером отвечает на «запускалась ли она», и отвечает у
+   * всякой ячейки, а не только у той, что что-то напечатала.
+   */
+  const mark = $derived(
+    runMark({
       type: meta.current.type,
       state: shownState,
       execCount: meta.current.execCount,
@@ -483,16 +487,18 @@
       running: shownRunning,
     }),
   )
-  const ranQuietly = $derived(
-    ranQuietlyIn({
-      type: meta.current.type,
-      state: shownState,
-      execCount: meta.current.execCount,
-      outputs: outputs.current.length,
-      floor: outputFloor,
-      running: shownRunning,
-    }),
-  )
+  /*
+   * Цвет метки — тот же язык, что у полосы и номера: акцент у идущей, красный
+   * у упавшей, охра у той, чей номер потеряли. Спокойная метка приглушена и не
+   * спорит с номером ячейки, который на полтора размера крупнее.
+   */
+  const MARK = {
+    idle: 'text-faint',
+    busy: 'text-accent-text',
+    done: 'text-muted',
+    error: 'text-danger',
+    lost: 'text-warning',
+  } as const
 
   const ranByOther = $derived(
     runBy && runBy !== session.me.name && (cellState === 'ok' || cellState === 'error')
@@ -1034,16 +1040,20 @@
         ячейка без вывода: строка «Out [n]» рисуется только под выводом, а у
         текстовой ячейки её нет вовсе.
       -->
-      <span
+      <div
+        class="flex flex-col items-end gap-[3px]"
         title={[
-          neverRan ? 'Ещё не запускалась' : null,
-          meta.current.execCount === null ? null : `Run ${meta.current.execCount}`,
+          mark?.tone === 'idle' ? 'Ещё не запускалась' : null,
+          mark?.tone === 'lost' ? 'Считалась, но номер потерян: ядро перезапускали' : null,
+          meta.current.execCount === null ? null : `Запуск ${meta.current.execCount}`,
           meta.current.ranMs !== null && meta.current.ranMs >= NOTICED_MS
             ? spell(meta.current.ranMs)
             : null,
         ]
           .filter(Boolean)
           .join(' · ') || undefined}
+      >
+      <span
         class={cn(
           'text-head font-black tabular-nums tracking-tight',
           /*
@@ -1061,26 +1071,30 @@
            * тёмный прямоугольник вместо номера.
            */
           selected ? 'bg-ink px-1 text-canvas' : ORDINAL[tone],
-          /*
-           * Пунктир под номером — «ещё не считалась».
-           *
-           * Помечается именно НЕзапущенная, а не запущенная: к середине пары
-           * посчитано почти всё, и метка на каждой второй ячейке перестаёт
-           * читаться. Метки нет — ячейка работала; это же правило у Jupyter,
-           * только там пусто внутри скобок, а здесь под цифрой.
-           *
-           * Двумя ветками, а не `border-current`: у выделенной ячейки номер
-           * лежит на чернильной плашке, и линия по ней должна быть цвета
-           * листа, иначе её попросту не видно.
-           */
-          neverRan &&
-            (selected
-              ? 'border-b-2 border-dotted border-canvas/60'
-              : 'border-b-2 border-dotted border-faint'),
         )}
       >
         {ordinal}
       </span>
+      <!--
+        Метка выполнения — под номером, моноширинным, ровно три знака.
+        
+        Три знака — это вертикаль: `[ ]`, `[7]` и `[*]` встают друг под другом,
+        и лист читается одной колонкой сверху вниз. Ради неё же метка стоит в
+        поле, а не под выводом: под выводом её нет у тех ячеек, у которых нет
+        вывода, — а это половина тетради.
+      -->
+      {#if mark}
+        <span class={cn('font-mono text-2xs leading-none', MARK[mark.tone])}>{mark.label}</span>
+      {/if}
+      <!--
+        Сколько это заняло — здесь же, и только когда заняло сколько-нибудь
+        заметное время. Под две секунды цифра сообщает, что компьютер справился
+        быстро, а таких ячеек в тетради к концу пары сорок.
+      -->
+      {#if meta.current.ranMs !== null && meta.current.ranMs >= NOTICED_MS && !shownRunning}
+        <span class="font-mono text-micro leading-none text-faint">{spell(meta.current.ranMs)}</span>
+      {/if}
+      </div>
     </div>
 
     <!--
@@ -1524,17 +1538,25 @@
                   <div class="px-2 py-1.5">
                     <CellOutputs outputs={outputs.current} bind:pending={outputsPending} />
                   </div>
-                  {#if meta.current.execCount !== null || ranByOther || unnumbered}
-                    <div class="flex items-center gap-3 border-t border-line-soft px-4 py-1">
+                  <!--
+                    Строка под выводом — только там, где ей есть что СКАЗАТЬ.
+                    
+                    Стояли здесь черта во всю ширину и «Out [2] · 1.4 s» в
+                    дальнем углу: линия делила экран пополам ради одного числа,
+                    а само число читалось раз в час и не рисовалось вовсе у
+                    ячеек без вывода. Число уехало в поле, к номеру ячейки
+                    (см. `mark`), черта ушла совсем — вывод кончается там, где
+                    кончается вывод. Остались слова: кто запускал и что номер
+                    потерян, — их в поле не уместить, а сказать надо.
+                  -->
+                  {#if ranByOther || unnumbered}
+                    <div class="flex items-center gap-3 px-4 pb-1.5 pt-0.5">
                       {#if unnumbered}
                         <!--
-                          Результат, у которого отняли номер выполнения.
-                          
                           Словами, а не оттенком: язык переживает и проектор, и
                           скриншот в чате, и дальтонизм. Это состояние, а не
                           промелькнувший переход, — оно висит ровно столько,
-                          сколько остаётся правдой. Цвет — тот же, каким этажом
-                          выше помечено «предложение устарело».
+                          сколько остаётся правдой.
                         -->
                         <span class="text-2xs text-warning">
                           From an earlier run — the kernel restarted or the cell was restored.
@@ -1543,53 +1565,10 @@
                       {#if ranByOther}
                         <span class="font-mono text-2xs text-muted">{ranByOther}</span>
                       {/if}
-                      {#if meta.current.execCount !== null || unnumbered}
-                        <span class={cn('ml-auto', CAPS, 'text-muted')}>
-                          <!--
-                            Сколько это заняло — рядом с номером выполнения, и
-                            только если заняло сколько-нибудь заметное время. Под
-                            две секунды цифра сообщает, что компьютер справился
-                            быстро, а таких ячеек в тетради к концу пары сорок.
-                          -->
-                          {#if meta.current.execCount === null}
-                            Out [—]
-                          {:else}
-                            Out [{meta.current.execCount}]{meta.current.ranMs !== null &&
-                            meta.current.ranMs >= NOTICED_MS
-                              ? ` · ${spell(meta.current.ranMs)}`
-                              : ''}
-                          {/if}
-                        </span>
-                      {/if}
                     </div>
                   {/if}
                 {/if}
               </div>
-            </div>
-          {:else if ranQuietly}
-            <!--
-              Ячейка отработала молча — и об этом надо сказать, потому что
-              иначе про неё нельзя сказать вообще ничего.
-              
-              Та же метка, что и под настоящим выводом (`Out [n] · время`), на
-              том же месте у правого края: глаз учится одному знаку, а не двум.
-              Отличается тремя словами и приглушённостью — «место, где вывода
-              не оказалось», а не «вот ваш вывод».
-              
-              Без подложки и без высоты сверх строки: у половины тетради это
-              `import` и присваивание, и полоса в полтора сантиметра под каждым
-              превратила бы лист в лесенку.
-            -->
-            <div class={cn('flex items-center gap-3 border-l-4 px-4 py-1', RULE[tone])}>
-              {#if ranByOther}
-                <span class="font-mono text-2xs text-muted">{ranByOther}</span>
-              {/if}
-              <span class={cn('ml-auto', CAPS, 'text-faint')}>
-                Out [{meta.current.execCount}]{meta.current.ranMs !== null &&
-                meta.current.ranMs >= NOTICED_MS
-                  ? ` · ${spell(meta.current.ranMs)}`
-                  : ''} · без вывода
-              </span>
             </div>
           {/if}
         </div>

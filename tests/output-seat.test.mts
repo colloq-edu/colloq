@@ -16,8 +16,7 @@ import {
   outputKey,
   outputSeat,
   unnumberedResult,
-  neverRan,
-  ranQuietly,
+  runMark,
 } from "../web/src/lib/output-seat.js";
 
 test("ячейка, которая не считает, не резервирует ничего", () => {
@@ -228,74 +227,81 @@ test("упавший вывод места не держит", () => {
 
 /**
  * Ячейка без вывода после запуска выглядела ровно как та, которой никто не
- * касался: номер в поле — порядковый, он у обеих одинаков. Отсюда два знака —
- * пунктир под номером у незапущенной и строка «без вывода» у отработавшей
- * молча, — и оба обязаны быть взаимоисключающими: два знака сразу на одной
- * ячейке говорят противоположное.
+ * касался: номер в поле — порядковый, он у обеих одинаков, а строка `Out [n]`
+ * рисовалась только под выводом. Метка отвечает на это у ВСЯКОЙ ячейки кода —
+ * и ошибиться здесь легко в обе стороны: сказать «не запускалась» над живым
+ * выводом или, наоборот, не сказать этого над пустой ячейкой.
  */
 const CELL = {
   type: "code",
   state: "idle",
   execCount: null,
   outputs: 0,
-  floor: 0,
   running: false,
 } as const;
 
-test("свежая ячейка кода — не запускалась; заметка не помечается никогда", () => {
-  assert.equal(neverRan(CELL), true);
-  // У заметки нет ни запуска, ни номера выполнения: пунктир под её номером
-  // обещал бы кнопку, которой у неё не бывает.
-  assert.equal(neverRan({ ...CELL, type: "markdown" }), false);
+test("свежая ячейка — пустые скобки; у заметки метки нет вовсе", () => {
+  assert.deepEqual(runMark(CELL), { label: "[ ]", tone: "idle" });
+  // У заметки не бывает запуска: пустые скобки под её номером обещали бы
+  // кнопку, которой у неё нет.
+  assert.equal(runMark({ ...CELL, type: "markdown" }), null);
 });
 
-test("посчитанная ячейка теряет пунктир — по номеру или по выводу", () => {
-  assert.equal(neverRan({ ...CELL, execCount: 3 }), false);
+test("посчитанная показывает свой номер, упавшая — свой, и красным", () => {
+  assert.deepEqual(runMark({ ...CELL, execCount: 7, state: "ok" }), {
+    label: "[7]",
+    tone: "done",
+  });
+  assert.deepEqual(runMark({ ...CELL, execCount: 8, state: "error", outputs: 1 }), {
+    label: "[8]",
+    tone: "error",
+  });
+});
+
+test("считает и стоит в очереди — звёздочка: номер даст ядро", () => {
+  assert.deepEqual(runMark({ ...CELL, running: true }), { label: "[*]", tone: "busy" });
+  assert.deepEqual(runMark({ ...CELL, state: "queued" }), { label: "[*]", tone: "busy" });
+  // Звёздочка старше номера: перезапуск посчитанной ячейки показывает её ход,
+  // а не число с прошлого раза.
+  assert.deepEqual(runMark({ ...CELL, execCount: 3, running: true }), {
+    label: "[*]",
+    tone: "busy",
+  });
+});
+
+test("считалась, а номера нет — прочерк, а не пустые скобки", () => {
   /*
-   * Вывод без номера — это «считалась». Номер теряется при перезапуске ядра и
-   * возврате версии (см. unnumberedResult выше), а факт выполнения нет, и
-   * пунктир на ячейке с настоящим выводом на экране был бы прямой неправдой.
+   * Три разных случая, и во всех «не запускалась» было бы прямой неправдой:
+   * пустая ячейка (Jupyter номера не выдаёт вовсе), перезапуск ядра и возврат
+   * версии — у последних двух на экране настоящий вывод.
    */
-  assert.equal(neverRan({ ...CELL, outputs: 2 }), false);
+  assert.deepEqual(runMark({ ...CELL, state: "ok" }), { label: "[—]", tone: "lost" });
+  assert.deepEqual(runMark({ ...CELL, outputs: 2 }), { label: "[—]", tone: "lost" });
   assert.equal(unnumberedResult({ state: "idle", execCount: null, outputs: 2 }), true);
+  // Упала без номера — прочерк, но красный: сначала важно, что упала.
+  assert.deepEqual(runMark({ ...CELL, state: "error" }), { label: "[—]", tone: "error" });
 });
 
-test("пока считает и пока стоит в очереди — молчим", () => {
-  // Про эти две и так сказано: полосой у края, строкой Running и чипом очереди.
-  assert.equal(neverRan({ ...CELL, running: true }), false);
-  assert.equal(neverRan({ ...CELL, state: "queued" }), false);
-  assert.equal(ranQuietly({ ...CELL, execCount: 3, running: true }), false);
-  assert.equal(ranQuietly({ ...CELL, execCount: 3, state: "queued" }), false);
-});
-
-test("отработала молча — это номер выполнения без единой записи вывода", () => {
-  assert.equal(ranQuietly({ ...CELL, execCount: 3 }), true);
-  // С выводом говорит сам вывод, и под ним стоит та же метка Out [n].
-  assert.equal(ranQuietly({ ...CELL, execCount: 3, outputs: 1 }), false);
-  // Без номера сказать «Out [n]» нечем.
-  assert.equal(ranQuietly(CELL), false);
-});
-
-test("зарезервированное место молчит: вывод вот-вот появится", () => {
+test("метка всегда ровно три знака — на ней держится вертикаль", () => {
   /*
-   * Между стартом и первым байтом ячейка держит высоту прошлого вывода
-   * (outputSeat выше). Сказать в этот промежуток «без вывода» значит соврать
-   * на полкадра — и соврать заметно, потому что строка встанет ровно там, где
-   * через мгновение будет вывод.
+   * Скобки стоят колонкой на всю тетрадь, и лист читается сверху вниз одним
+   * взглядом. Четвёртый знак у любой из них — и колонка разъезжается.
    */
-  assert.equal(ranQuietly({ ...CELL, execCount: 3, floor: 420 }), false);
-});
-
-test("два знака не встречаются на одной ячейке", () => {
-  for (const execCount of [null, 7]) {
-    for (const outputs of [0, 3]) {
-      for (const floor of [0, 420]) {
-        const cell = { ...CELL, execCount, outputs, floor };
-        assert.ok(
-          !(neverRan(cell) && ranQuietly(cell)),
-          `и пунктир, и «без вывода»: ${JSON.stringify({ execCount, outputs, floor })}`,
-        );
-      }
-    }
+  const cells = [
+    CELL,
+    { ...CELL, running: true },
+    { ...CELL, state: "queued" as const },
+    { ...CELL, state: "ok" as const },
+    { ...CELL, execCount: 1 },
+    { ...CELL, execCount: 9, state: "error" as const },
+  ];
+  for (const cell of cells) {
+    const mark = runMark(cell);
+    assert.ok(mark, "метки нет");
+    assert.equal(mark!.label.length, 3, `«${mark!.label}» не в три знака`);
+    assert.ok(mark!.label.startsWith("[") && mark!.label.endsWith("]"));
   }
+  // Двузначный номер шире — и это правильно: число важнее вертикали, а
+  // тетрадей с сотней запусков не бывает.
+  assert.equal(runMark({ ...CELL, execCount: 12 })!.label, "[12]");
 });
