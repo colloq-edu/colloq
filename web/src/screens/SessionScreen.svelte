@@ -40,7 +40,8 @@
   import { SessionState, setSessionState } from '@/lib/session.svelte'
   import { cn, prefersReducedMotion } from '@/lib/utils'
   import { watchBooks, watchCellNumbers, watchNotebookMeta } from '@/lib/yreactive.svelte'
-  import { getMeta, rootOfCell, type KernelStatus } from '@shared/notebook'
+  import { cellLock, findCell, getMeta, rootOfCell, type KernelStatus } from '@shared/notebook'
+  import { countLine, type CouncilCount } from '@/lib/council.svelte'
   import type { SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
   import { beginVisit, reloadByHand, takeRefusal } from '@/lib/refusal'
@@ -749,6 +750,34 @@
    * одно на человека, а тетрадей несколько.
    */
   const everyCell = watchCellNumbers(session.doc)
+
+  /**
+   * Консилиумы, идущие сейчас, — для проектора: номер ячейки и «N сдали из M».
+   *
+   * Без текстов и без имён намеренно: проектор смотрят все, а попытки видит
+   * один преподаватель. Ручка «имена на проекторе» относится к тому, что
+   * показывают классом, — здесь показывать нечего, кроме счёта.
+   *
+   * Замок читается из документа на каждый пересчёт, а пересчёт заказывают
+   * счётчики (сокет) и нумерация ячеек (документ): консилиум, который закрыли,
+   * сходит с полосы вместе с ближайшим кадром счётчика. Своего наблюдателя на
+   * каждую ячейку проектор не заводит — ему это и не по чину, и не по цене.
+   */
+  const councilsOnAir = $derived.by(() => {
+    const out: { cellId: string; ordinal: string; count: CouncilCount }[] = []
+    const numbers = everyCell.current
+    for (const [cellId, count] of Object.entries(session.council.counts)) {
+      const found = findCell(session.doc, cellId)
+      if (!found || cellLock(found.cell) !== 'council') continue
+      const number = numbers.get(cellId)
+      out.push({
+        cellId,
+        ordinal: number === undefined ? '' : String(number).padStart(2, '0'),
+        count,
+      })
+    }
+    return out
+  })
   $effect(() => {
     const alive = everyCell.current
     untrack(() => {
@@ -1250,6 +1279,40 @@
             Вернуться в комнату
           </button>
         </div>
+      </div>
+    {/if}
+    <!--
+      Консилиум на проекторе — счётчик и полоса, ничего больше.
+
+      Класс работает у себя, и зал должен видеть, что работа идёт: сколько
+      сдали из скольких. Ни текстов, ни имён: попытки видит преподаватель, а
+      что показать — он решает сам, и показанное ляжет в общую ячейку. Поверх
+      лекции, а не в потоке: страница документа не должна ёрзать от того, что
+      сдал ещё один человек.
+    -->
+    {#if councilsOnAir.length > 0}
+      <div
+        class="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-2 bg-black/70 px-8 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-4"
+        aria-live="polite"
+      >
+        {#each councilsOnAir as council (council.cellId)}
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-baseline gap-4">
+              <span class="text-2xs font-bold uppercase tracking-institution text-white/50">
+                Консилиум{council.ordinal ? ` · ячейка ${council.ordinal}` : ''}
+              </span>
+              <span class="font-mono text-ui-lg tabular-nums text-white">
+                {countLine(council.count)}
+              </span>
+            </div>
+            <div class="h-1 w-full bg-white/15">
+              <div
+                class="h-full bg-white transition-[width] duration-300"
+                style:width={`${council.count.total > 0 ? Math.round((council.count.submitted / council.count.total) * 100) : 0}%`}
+              ></div>
+            </div>
+          </div>
+        {/each}
       </div>
     {/if}
   </div>

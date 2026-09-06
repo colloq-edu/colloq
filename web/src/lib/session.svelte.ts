@@ -25,6 +25,7 @@ import type { InkStroke, LectureState } from '@shared/lecture'
 import { readRules, type RoomRules } from '@shared/rules'
 import { api, ApiError } from './api'
 import { enqueueControl, OFFLINE_REASON } from './controls'
+import { CouncilState } from './council.svelte'
 import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
 import { forgetIdentity, type StoredIdentity } from './identity'
@@ -308,6 +309,16 @@ export class SessionState {
    */
   notesFile = $state<string | null>(null)
 
+  /**
+   * Консилиум: своя попытка, стопка преподавателя, счётчики — по ячейкам.
+   *
+   * Отдельным объектом, а не полями здесь: сообщений у консилиума столько же,
+   * сколько у всей лекции, и разбирать их в одном `onmessage` с чернилами
+   * значило бы вырастить его ещё вдвое. Шлёт он через тот же `send`, что и
+   * кнопки, — с той же очередью и теми же словами про отсутствие связи.
+   */
+  readonly council: CouncilState
+
   #control: WebSocket | null = null
   #controlQueue: ControlClientMessage[] = []
   /**
@@ -339,6 +350,7 @@ export class SessionState {
     }
 
     this.doc = new Y.Doc()
+    this.council = new CouncilState((message) => this.send(message))
 
     // Declare every root before a single update can land — the local replay is
     // queued one task from here. An update that reaches an undeclared root
@@ -644,6 +656,18 @@ export class SessionState {
          * перезагрузки страницы.
          */
         if (changed && !this.finished) reopenRefusedFiles(this.session.id)
+        return
+      }
+      if (
+        message.t === 'council:mine' ||
+        message.t === 'council:board' ||
+        message.t === 'council:patch' ||
+        message.t === 'council:oracle' ||
+        message.t === 'council:count'
+      ) {
+        // Пять кадров консилиума — одному разборщику: он знает, кому какой
+        // адресован, и хранит их по ячейкам.
+        this.council.receive(message)
         return
       }
       if (message.t === 'banned') {
@@ -1251,6 +1275,9 @@ export class SessionState {
     this.#disposed = true
     window.clearInterval(this.#heartbeat)
     window.clearTimeout(this.#reconnectTimer)
+    // Придержанный черновик не досылается: сокет закрывается следующей строкой,
+    // а текст остаётся в редакторе автора — он же черновик и есть.
+    this.council.destroy()
     this.#control?.close()
     this.provider.off('status', this.#onStatus)
     this.provider.off('sync', this.#onSync)

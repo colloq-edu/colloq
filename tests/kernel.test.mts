@@ -30,6 +30,8 @@ let port = 0
 let swallowExecutes = false
 /** Счётчик выполнений подделки — то же, что In [n] у настоящего ядра. */
 let executions = 0
+/** Что просили выполнить и как: `store_history` — кладёт ли IPython исходник в In/_ih. */
+const requests: { code: string; store_history: boolean; silent: boolean }[] = []
 /**
  * Requests the fake is sitting on. A real kernel answers an interrupted request
  * with an aborted reply and an idle status; without that the caller waits for
@@ -80,7 +82,9 @@ before(async () => {
         return
       }
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ id: kernelMatch[1], execution_state: kernel.busy ? 'busy' : 'idle' }))
+      res.end(
+        JSON.stringify({ id: kernelMatch[1], execution_state: kernel.busy ? 'busy' : 'idle' }),
+      )
       return
     }
     if (req.method === 'POST' && /\/restart$/.test(url.pathname)) {
@@ -129,8 +133,16 @@ before(async () => {
     wss.handleUpgrade(req, socket, head, (ws) => {
       sockets.push(ws)
       ws.on('message', (raw) => {
-        const msg = JSON.parse(String(raw)) as { header: { msg_type: string }; content: { code: string } }
+        const msg = JSON.parse(String(raw)) as {
+          header: { msg_type: string }
+          content: { code: string; store_history: boolean; silent: boolean }
+        }
         if (msg.header.msg_type !== 'execute_request') return
+        requests.push({
+          code: msg.content.code,
+          store_history: msg.content.store_history,
+          silent: msg.content.silent,
+        })
         if (swallowExecutes) {
           reply(ws, msg.header, 'status', { execution_state: 'busy' })
           held.push({ socket: ws, parent: msg.header })
@@ -142,7 +154,10 @@ before(async () => {
          * его всегда — а подделка не слала никогда, так что execCount в тестах
          * молча оставался null и любая проверка про номер была бессмысленной.
          */
-        reply(ws, msg.header, 'execute_input', { code: msg.content.code, execution_count: ++executions })
+        reply(ws, msg.header, 'execute_input', {
+          code: msg.content.code,
+          execution_count: ++executions,
+        })
         /*
          * Ячейка, которая убивает ядро по памяти.
          *
@@ -296,6 +311,42 @@ test('a cell runs and the room sees its output', async () => {
   assert.ok(await until(() => room.state() === 'ok'), `cell ended as ${String(room.state())}`)
   const outputs = readNotebook(room.doc)[1].outputs
   assert.match(JSON.stringify(outputs), /print\(1\)/)
+})
+
+test('попытка консилиума считается без истории ядра — In/_ih чужих попыток не выдаёт', async () => {
+  const { requestRun, requestCouncilRun } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  room.type('print("cell")')
+  requestRun(room.id, [room.cellId], 'Ада', 'p_t')
+  assert.ok(await until(() => room.state() === 'ok'), 'ячейка не досчиталась')
+
+  let last: { state: string } | null = null
+  requestCouncilRun(
+    room.id,
+    {
+      cellId: room.cellId,
+      participantId: 'p_student',
+      source: 'print("attempt")',
+      by: 'host',
+      onChange: (run) => {
+        last = run
+      },
+    },
+    'Ада',
+    'p_t',
+  )
+  assert.ok(
+    await until(() => last !== null && (last as { state: string }).state === 'ok'),
+    'попытка не досчиталась',
+  )
+  const cell = requests.find((r) => r.code === 'print("cell")')
+  const attempt = requests.find((r) => r.code === 'print("attempt")')
+  assert.ok(cell && attempt, 'подделка не увидела запросов')
+  assert.equal(cell.store_history, true, 'ячейка — обычная, In[n] у неё есть')
+  // Ядро общее: с историей текст попытки читал бы любой, кому потом откроют ячейку.
+  assert.equal(attempt.store_history, false)
+  // Но не silent: вывод выражения (execute_result) попытке нужен.
+  assert.equal(attempt.silent, false)
 })
 
 test('a kernel that dies mid-run stops the room within seconds, and says why', async () => {
@@ -498,9 +549,17 @@ test('interrupting stops the tail as well as the cell', async () => {
   room.type('while True: pass')
 
   swallowExecutes = true
-  requestRun(room.id, [room.cellId, extra[0].get('id') as string, extra[1].get('id') as string], 'Maria', 'p_maria')
+  requestRun(
+    room.id,
+    [room.cellId, extra[0].get('id') as string, extra[1].get('id') as string],
+    'Maria',
+    'p_maria',
+  )
   assert.ok(await until(() => room.state() === 'running'), 'the first cell never started')
-  assert.ok(await until(() => extra.every((c) => c.get('state') === 'queued')), 'the tail was never queued')
+  assert.ok(
+    await until(() => extra.every((c) => c.get('state') === 'queued')),
+    'the tail was never queued',
+  )
 
   // Interrupting cell 1 of 3 must not start cell 2.
   await interruptSession(room.id)
@@ -914,7 +973,6 @@ test('two clears in the same moment are one clear', async () => {
   assert.equal(getCells(room.doc).length, 2, 'clearing removed a cell')
 })
 
-
 /* ------------------------------------------------------- the run's clock */
 
 test('секундомер заводится при старте и гаснет в конце', async () => {
@@ -924,14 +982,20 @@ test('секундомер заводится при старте и гасне�
 
   const before = Date.now()
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
-  assert.ok(await until(() => room.state() === 'running' || room.state() === 'ok'), 'ячейка не пошла')
+  assert.ok(
+    await until(() => room.state() === 'running' || room.state() === 'ok'),
+    'ячейка не пошла',
+  )
   if (room.state() === 'running') {
     const at = room.startedAt()
     assert.ok(at !== null, 'работающая ячейка без отметки начала')
     assert.ok(at >= before - 1000 && at <= Date.now() + 1000, `отметка не похожа на сейчас: ${at}`)
   }
 
-  assert.ok(await until(() => room.state() === 'ok'), `ячейка кончилась как ${String(room.state())}`)
+  assert.ok(
+    await until(() => room.state() === 'ok'),
+    `ячейка кончилась как ${String(room.state())}`,
+  )
   // Погашен — иначе полоса дышала бы и часы шли бы на успокоившейся ячейке.
   assert.equal(room.startedAt(), null, 'секундомер остался идти после завершения')
   const took = room.ranMs()
@@ -1017,7 +1081,10 @@ test('промахнувшийся «стоп» останавливает ра�
     'p_maria',
   )
   assert.ok(await until(() => room.state() === 'running'), 'первая не пошла')
-  assert.ok(await until(() => tail.every((c) => c.get('state') === 'queued')), 'хвост не встал в очередь')
+  assert.ok(
+    await until(() => tail.every((c) => c.get('state') === 'queued')),
+    'хвост не встал в очередь',
+  )
 
   // Целимся в ячейку, которой в комнате нет вовсе — крайний случай промаха.
   await interruptSession(room.id, 'no-such-cell')
@@ -1063,7 +1130,6 @@ test('призрачная работающая ячейка убирается 
   swallowExecutes = false
 })
 
-
 test('справка по вопросительному знаку доезжает до ячейки', async () => {
   /*
    * `print?` печатал пустоту. Ответ на такой вопрос IPython кладёт в payload
@@ -1078,7 +1144,10 @@ test('справка по вопросительному знаку доезжа
   const room = await seminar()
   room.type('print?')
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
-  assert.ok(await until(() => room.state() === 'ok'), `ячейка кончилась как ${String(room.state())}`)
+  assert.ok(
+    await until(() => room.state() === 'ok'),
+    `ячейка кончилась как ${String(room.state())}`,
+  )
 
   const outputs = readNotebook(room.doc)[1].outputs
   assert.equal(outputs.length, 1, `выводов ${outputs.length}, а справка должна быть одна`)
@@ -1096,7 +1165,6 @@ test('обычная ячейка от этого ничего не теряет
   assert.ok(await until(() => room.state() === 'ok'))
   assert.match(JSON.stringify(readNotebook(room.doc)[1].outputs), /print\(1\)/)
 })
-
 
 test('проход чистит и зеркало в meta, а не только ячейки', async () => {
   /*
@@ -1144,7 +1212,10 @@ test('длительность считается по записи сервер
   await until(() => room.state() === 'running' || room.state() === 'ok')
   room.doc.transact(() => room.cell.set('startedAt', Date.now() - 3 * 60 * 60 * 1000))
 
-  assert.ok(await until(() => room.state() === 'ok'), `ячейка кончилась как ${String(room.state())}`)
+  assert.ok(
+    await until(() => room.state() === 'ok'),
+    `ячейка кончилась как ${String(room.state())}`,
+  )
   const took = room.ranMs()
   assert.ok(typeof took === 'number', 'длительность не записана')
   assert.ok(took < 60_000, `подделка попала в длительность: ${took} мс`)
@@ -1194,7 +1265,10 @@ test('выполнение, которое ничего не печатает, �
   room.type('print(1)')
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
   assert.ok(await until(() => room.state() === 'ok'))
-  assert.ok((room.cell.get('outputs') as { length: number }).length > 0, 'первый запуск ничего не напечатал')
+  assert.ok(
+    (room.cell.get('outputs') as { length: number }).length > 0,
+    'первый запуск ничего не напечатал',
+  )
 
   // Подделка Jupyter отвечает потоком на любой код, кроме этого маркера.
   room.type('SILENT')
@@ -1208,7 +1282,6 @@ test('выполнение, которое ничего не печатает, �
   )
   assert.notEqual(room.cell.get('execCount'), null, 'у прошедшего выполнения нет номера')
 })
-
 
 test('перезапуск снимает номер выполнения со всех результатов', async () => {
   /*
@@ -1231,7 +1304,10 @@ test('перезапуск снимает номер выполнения со �
 
   room.type('print(1)')
   requestRun(room.id, [room.cellId, second.get('id') as string], 'Alexander', 'p_1')
-  assert.ok(await until(() => room.state() === 'ok'), `ячейка кончилась как ${String(room.state())}`)
+  assert.ok(
+    await until(() => room.state() === 'ok'),
+    `ячейка кончилась как ${String(room.state())}`,
+  )
   assert.ok(await until(() => second.get('state') === 'ok'), 'вторая не отработала')
   assert.notEqual(room.cell.get('execCount'), null, 'номера не было и до перезапуска')
 

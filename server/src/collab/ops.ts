@@ -227,6 +227,9 @@ export function settleFresh(sessionId: string, doc: Y.Doc, cellIds: string[]): v
      * и это честнее отказа: документ цел, а замок ставится нажатием.
      */
     if (cell.get('open') != null) cell.set('open', null)
+    // И ручки консилиума с ним: у закрытой ячейки их нет, а «запуск
+    // студентам», приехавший в кадре, — то же самое право, что и замок.
+    if (cell.get('council') != null) cell.set('council', null)
     // Секундомер и приглашение ко вводу не возвращаются никогда: ядро не
     // считает эту ячейку и ничего у неё не спрашивает.
     put(cell, 'startedAt', null)

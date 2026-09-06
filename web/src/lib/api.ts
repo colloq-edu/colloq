@@ -2,6 +2,7 @@ import type {
   AiAskRequest,
   AiAskResponse,
   Ban,
+  CouncilOracle,
   CreateSessionResponse,
   FileEntry,
   HandoffResponse,
@@ -315,6 +316,31 @@ export const api = {
   /** Host only — the transcript belongs to the room. Rejected with 403 otherwise. */
   aiClearThread: (id: string, token: string) =>
     request<{ ok: true }>(`/api/sessions/${id}/ai/thread`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    }),
+
+  /* ----------------------------------------------------------- консилиум */
+
+  /**
+   * Спросить оракула о решениях в ячейке консилиума — один вопрос из лимита
+   * комнаты, только преподаватель.
+   *
+   * Ответ здесь — состояние «читает»; готовая сводка приедет по управляющему
+   * сокету (`council:oracle`), как и всё остальное про стопку. По HTTP, а не
+   * сообщением сокета, потому что у отказа есть цена и срок: 429 со словами и
+   * `retryAfter`, которые сокет не умеет сказать так же (см. `ApiError`).
+   */
+  councilAsk: (id: string, token: string, cellId: string) =>
+    request<CouncilOracle>(`/api/sessions/${id}/council/${encodeURIComponent(cellId)}/oracle`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      headers: { authorization: `Bearer ${token}` },
+    }),
+
+  /** Стоп: оборвать чтение оракула о решениях. Вопрос из лимита не возвращается. */
+  councilStopOracle: (id: string, token: string, cellId: string) =>
+    request<CouncilOracle>(`/api/sessions/${id}/council/${encodeURIComponent(cellId)}/oracle`, {
       method: 'DELETE',
       headers: { authorization: `Bearer ${token}` },
     }),

@@ -133,7 +133,8 @@ function toStringBundle(data: unknown): Record<string, string> {
   if (!data || typeof data !== 'object') return out
   for (const [mime, value] of Object.entries(data as Record<string, unknown>)) {
     if (typeof value === 'string') out[mime] = value
-    else if (Array.isArray(value)) out[mime] = value.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join('')
+    else if (Array.isArray(value))
+      out[mime] = value.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join('')
     else if (value === null || value === undefined) continue
     else out[mime] = JSON.stringify(value)
   }
@@ -182,7 +183,8 @@ export async function jupyterReachable(): Promise<{ ok: boolean; reason: string 
     ok = res.ok
     if (!ok) reason = `Jupyter answered ${res.status}`
   } catch (err) {
-    reason = err instanceof Error ? `Jupyter is unreachable: ${err.message}` : 'Jupyter is unreachable'
+    reason =
+      err instanceof Error ? `Jupyter is unreachable: ${err.message}` : 'Jupyter is unreachable'
   }
   lastProbe = { at: now, ok, reason }
   return { ok, reason }
@@ -311,11 +313,16 @@ export class JupyterKernel {
    * neither increments the execution count nor broadcasts the result to other
    * clients. Used by Format, which has to run Python to do its job but must not
    * leave a footprint in a notebook thirty people are looking at.
+   * @param opts.storeHistory whether IPython keeps the source in `In`/`_ih` and
+   * the result in `Out`/`_`. Defaults to «not silent». Off for a council
+   * attempt: the kernel is shared by the room, and anyone who can run a line
+   * in it could otherwise read every attempt the teacher has run with
+   * `In[-5:]` or `%history` — the one thing the council promises never happens.
    */
   async execute(
     code: string,
     handlers: ExecuteHandlers,
-    opts?: { silent?: boolean },
+    opts?: { silent?: boolean; storeHistory?: boolean },
   ): Promise<ExecuteStatus> {
     // A kernel that has been quiet since before the break may not be there any
     // more, and the socket will not say so. Between two cells run back to back
@@ -332,7 +339,7 @@ export class JupyterKernel {
       content: {
         code,
         silent: opts?.silent === true,
-        store_history: opts?.silent !== true,
+        store_history: opts?.storeHistory ?? opts?.silent !== true,
         user_expressions: {},
         /*
          * input() has to work. A seminar called "Intro to Python" reaches for
@@ -533,7 +540,9 @@ export class JupyterKernel {
   }
 
   async interrupt(): Promise<void> {
-    const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}/interrupt`, { method: 'POST' })
+    const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}/interrupt`, {
+      method: 'POST',
+    })
     if (!res.ok) throw new Error(`Jupyter refused the interrupt (HTTP ${res.status}).`)
   }
 
@@ -544,7 +553,12 @@ export class JupyterKernel {
     this.setPhase('restarting', true)
     // The kernel process is about to be replaced; nothing in flight can finish.
     this.abortPending()
-    const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}/restart`, { method: 'POST' }, 60_000)
+    const res = await jupyterRequest(
+      this.endpoint,
+      `/api/kernels/${this.kernelId}/restart`,
+      { method: 'POST' },
+      60_000,
+    )
     if (!res.ok) {
       this.setPhase('dead')
       throw new Error(`Jupyter refused the restart (HTTP ${res.status}).`)
@@ -611,9 +625,17 @@ export class JupyterKernel {
       /* already gone */
     }
     try {
-      await jupyterRequest(this.endpoint, `/api/sessions/${this.jupyterSessionId}`, { method: 'DELETE' }, 5000)
+      await jupyterRequest(
+        this.endpoint,
+        `/api/sessions/${this.jupyterSessionId}`,
+        { method: 'DELETE' },
+        5000,
+      )
     } catch (err) {
-      console.error(`[kernel] could not delete jupyter session for ${this.sessionId}:`, errText(err))
+      console.error(
+        `[kernel] could not delete jupyter session for ${this.sessionId}:`,
+        errText(err),
+      )
     }
   }
 
@@ -810,10 +832,7 @@ export class JupyterKernel {
      */
     if (msgType === 'input_request') {
       this.awaitingInput = parentId ?? null
-      pending?.handlers.onInputRequest?.(
-        String(content.prompt ?? ''),
-        content.password === true,
-      )
+      pending?.handlers.onInputRequest?.(String(content.prompt ?? ''), content.password === true)
       return
     }
 
@@ -856,10 +875,14 @@ export class JupyterKernel {
     try {
       switch (msgType) {
         case 'stream':
-          handlers.onStream(content.name === 'stderr' ? 'stderr' : 'stdout', String(content.text ?? ''))
+          handlers.onStream(
+            content.name === 'stderr' ? 'stderr' : 'stdout',
+            String(content.text ?? ''),
+          )
           break
         case 'execute_input':
-          if (typeof content.execution_count === 'number') handlers.onExecuteInput(content.execution_count)
+          if (typeof content.execution_count === 'number')
+            handlers.onExecuteInput(content.execution_count)
           break
         case 'execute_result':
         case 'display_data':

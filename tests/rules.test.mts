@@ -17,7 +17,10 @@ import {
   isOpenRoom,
   LECTURE_ROOM,
   mayEditCell,
+  mayLeadCouncil,
   mayRunCell,
+  mayRunCouncil,
+  mayWriteCouncil,
   OPEN_ROOM,
   oracleLimitsIn,
   readRules,
@@ -255,4 +258,28 @@ test('конец занятия потолков оракула не трога�
   const after = rulesAfterClass({ ...OPEN_ROOM, questionsPerHour: 3, slowModeSeconds: 45 })
   assert.equal(after.questionsPerHour, 3)
   assert.equal(after.slowModeSeconds, 45)
+})
+
+test('консилиум: свой лист пишет любой, пока идёт занятие, — правила ни при чём', () => {
+  /*
+   * Консилиум и открывают там, где `edit` преподавательский: каждый пишет
+   * СВОЙ лист, не касаясь общего. Поэтому у права нет аргумента «правила», а
+   * `mayEditCell` про консилиум не знает: общий текст для него закрыт.
+   */
+  assert.equal(mayWriteCouncil('participant', false, false), true)
+  assert.equal(mayWriteCouncil('participant', true, false), false, 'после звонка сдают')
+  assert.equal(mayWriteCouncil('participant', false, true), false, 'закрытый консилиум принимает')
+  assert.equal(mayWriteCouncil('host', true, false), true)
+  assert.equal(mayEditCell(LECTURE_ROOM, 'participant', false, false), false)
+})
+
+test('консилиум: запускает тот, кто ведёт; студент — только при ручке', () => {
+  assert.equal(mayRunCouncil('host', false, false), true)
+  assert.equal(mayRunCouncil('participant', false, false), false, 'ручка выключена, а запуск есть')
+  assert.equal(mayRunCouncil('participant', true, false), true)
+  assert.equal(mayRunCouncil('participant', true, true), false, 'после звонка')
+  assert.equal(mayRunCouncil('host', false, true), true)
+  // Ведёт преподаватель — и после звонка тоже: сданное остаётся на просмотр.
+  assert.equal(mayLeadCouncil('host'), true)
+  assert.equal(mayLeadCouncil('participant'), false)
 })

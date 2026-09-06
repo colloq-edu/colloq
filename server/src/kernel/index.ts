@@ -54,6 +54,8 @@ import { projectBooks } from '../collab/books.js'
 import { flushSessionFiles } from '../collab/files.js'
 import { JupyterKernel, type ExecuteStatus, type KernelPhase } from './jupyter.js'
 import { OutputWriter } from './outputs.js'
+import { CouncilOutputBuffer, type CouncilJob } from './council.js'
+import type { CouncilRun } from '@shared/protocol'
 import { closeTerminal, terminalPhase } from './terminal.js'
 
 /**
@@ -87,6 +89,32 @@ interface QueueItem {
    * work has nothing to do with this failure.
    */
   batch: number
+  /**
+   * Попытка консилиума, а не ячейка.
+   *
+   * Тот же насос и та же очередь — ядро одно, и «запустить попытку» стоит в
+   * ней рядом с ячейками, в порядке нажатий. Но `cellId` у такой записи
+   * синтетический (`councilQueueId`): в документе такой ячейки нет, и всё, что
+   * пишет в документ по имени ячейки — состояние, вывод, зеркало очереди, —
+   * находит пустоту и молчит. Вывод идёт в буфер (kernel/council.ts), а не в
+   * общую ячейку: показывать его залу решает преподаватель, а не ядро.
+   */
+  council?: CouncilJob
+}
+
+/** Попытка консилиума, которую ядро считает прямо сейчас. */
+interface ActiveJob {
+  item: QueueItem
+  job: CouncilJob
+  buffer: CouncilOutputBuffer
+  run: CouncilRun
+  /** Отложенный кадр вывода — см. `touchJob`. */
+  timer: NodeJS.Timeout | null
+}
+
+/** Синтетическое имя записи очереди для попытки: никогда не совпадает с ячейкой. */
+function councilQueueId(cellId: string, participantId: string): string {
+  return `council:${cellId}:${participantId}`
 }
 
 interface Runtime {
@@ -137,6 +165,8 @@ interface Runtime {
    */
   lastFinished: { cellId: string; batch: number } | null
   writer: OutputWriter | null
+  /** Считается попытка консилиума, а не ячейка; `currentCell` при этом — её синтетическое имя. */
+  job: ActiveJob | null
   /**
    * Which environment this room's kernel actually came up on.
    *
@@ -180,6 +210,7 @@ function getRuntime(sessionId: string): Runtime {
       currentRunById: null,
       lastFinished: null,
       writer: null,
+      job: null,
       environment: null,
       retired: false,
     }
@@ -201,8 +232,10 @@ function setStatus(runtime: Runtime, status: KernelStatus): void {
 function syncQueue(runtime: Runtime): void {
   const { doc } = getSessionDoc(runtime.sessionId)
   const meta = getMeta(doc)
-  const ids = runtime.queue.map((item) => item.cellId)
-  const running = runtime.currentCell ?? null
+  // Попытки консилиума в зеркало не попадают: у них нет ячейки, которую
+  // комната могла бы подсветить, а чип «2 queued» и так честен — он про лист.
+  const ids = runtime.queue.filter((item) => !item.council).map((item) => item.cellId)
+  const running = runtime.job ? null : (runtime.currentCell ?? null)
 
   const existing = meta.get('queue')
   const current = existing instanceof Y.Array ? (existing.toArray() as string[]) : null
@@ -231,9 +264,10 @@ async function runOnKernel(
   runtime: Runtime,
   source: string,
   handlers: Parameters<JupyterKernel['execute']>[1],
+  opts?: Parameters<JupyterKernel['execute']>[2],
 ): Promise<ExecuteStatus> {
   try {
-    return await runtime.kernel!.execute(source, handlers)
+    return await runtime.kernel!.execute(source, handlers, opts)
   } catch (err) {
     if (runtime.kernel && runtime.kernel.phase !== 'dead') throw err
     kernelNote(
@@ -249,7 +283,7 @@ async function runOnKernel(
      * миллисекунды. Ждали при этом не его.
      */
     restamp(runtime)
-    return await runtime.kernel!.execute(source, handlers)
+    return await runtime.kernel!.execute(source, handlers, opts)
   }
 }
 
@@ -404,7 +438,28 @@ function dropQueue(runtime: Runtime): void {
         found.cell.set('state', 'idle' as CellState)
     }
   }, ORIGIN)
+  releaseCouncil(dropped)
   syncQueue(runtime)
+}
+
+/**
+ * Попытки, снятые с очереди без запуска, — об этом надо сказать их авторам.
+ *
+ * У ячейки та же новость ложится в документ (`state: 'idle'`), и комната видит
+ * её сама. У попытки документа нет: не позвать — значит оставить на карточке
+ * «в очереди» до конца пары. `null` — «запуска не было», см. CouncilJob.
+ */
+function releaseCouncil(dropped: QueueItem[]): void {
+  for (const item of dropped) if (item.council) tellJob(item.council, null)
+}
+
+/** Обратный вызов чужого модуля не должен уметь уронить насос. */
+function tellJob(job: CouncilJob, run: CouncilRun | null): void {
+  try {
+    job.onChange(run)
+  } catch (err) {
+    console.error(`[kernel] council listener failed for ${job.cellId}:`, errText(err))
+  }
 }
 
 /**
@@ -1133,6 +1188,7 @@ function stopBatchOf(runtime: Runtime, cellId: string): void {
       found.cell.set('runById', null)
     }
   }, ORIGIN)
+  releaseCouncil(dropped)
   syncQueue(runtime)
   // Said out loud, because a queue that empties without a word reads as a
   // product that ignored the button.
@@ -1159,6 +1215,7 @@ function stopBatch(runtime: Runtime, failedItem: QueueItem): void {
       found.cell.set('runById', null)
     }
   }, ORIGIN)
+  releaseCouncil(dropped)
   syncQueue(runtime)
   kernelNote(
     runtime.sessionId,
@@ -1188,7 +1245,8 @@ async function pump(runtime: Runtime): Promise<void> {
       }
       const item = runtime.queue.shift()
       if (!item) break
-      await runOne(runtime, item)
+      if (item.council) await runCouncilOne(runtime, item, item.council)
+      else await runOne(runtime, item)
       if (runtime.kernel && runtime.kernel.phase === 'dead') {
         dropQueue(runtime)
         return
@@ -1372,8 +1430,255 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   notifyWorkspaceChanged(runtime.sessionId)
 }
 
+/* --------------------------------------------------------- консилиум */
+
+/** Не чаще этого кадр вывода попытки едет хосту и автору, пока она считается. */
+const COUNCIL_REPORT_MS = 400
+
+/**
+ * Поставить попытку консилиума в очередь ядра.
+ *
+ * Одна и та же попытка — одна запись: второе нажатие, пока первая ждёт или
+ * считается, ничего не ставит и возвращает её место, чтобы отказ мог сказать
+ * «вы 37-й». `position` — номер в очереди, считая ту, что выполняется; `0` —
+ * выполняется сейчас. `runById` — кто нажал: преподаватель, запускающий чужую
+ * попытку, остаётся хозяином запуска (прервать, ответить на input) — как и у
+ * ячейки.
+ */
+export function requestCouncilRun(
+  sessionId: string,
+  job: CouncilJob,
+  runBy: string,
+  runById: string,
+): { queued: boolean; position: number } {
+  const runtime = getRuntime(sessionId)
+  sweepOrphanRuns(sessionId)
+  const already = councilQueuePosition(sessionId, job.cellId, job.participantId)
+  if (already !== null) return { queued: false, position: already }
+  runtime.queue.push({
+    cellId: councilQueueId(job.cellId, job.participantId),
+    runBy,
+    runById,
+    batch: ++batchCounter,
+    council: job,
+  })
+  const position = councilQueuePosition(sessionId, job.cellId, job.participantId) ?? 1
+  tellJob(job, {
+    state: 'queued',
+    outputs: [],
+    execCount: null,
+    ranMs: null,
+    startedAt: Date.now(),
+    by: job.by,
+  })
+  syncQueue(runtime)
+  void pump(runtime)
+  return { queued: true, position }
+}
+
+/**
+ * Где попытка в очереди: `0` — считается сейчас, `null` — её там нет.
+ * Считает и ячейки перед ней: очередь одна, и ждать студенту придётся их всех.
+ */
+export function councilQueuePosition(
+  sessionId: string,
+  cellId: string,
+  participantId: string,
+): number | null {
+  const runtime = runtimes.get(sessionId)
+  if (!runtime) return null
+  const id = councilQueueId(cellId, participantId)
+  if (runtime.currentCell === id) return 0
+  const index = runtime.queue.findIndex((item) => item.cellId === id)
+  if (index < 0) return null
+  return index + 1 + (runtime.currentCell ? 1 : 0)
+}
+
+/** Чьи попытки ждут в очереди — чтобы после каждого сдвига сказать им новый номер. */
+export function councilQueued(sessionId: string): { cellId: string; participantId: string }[] {
+  const runtime = runtimes.get(sessionId)
+  if (!runtime) return []
+  const out: { cellId: string; participantId: string }[] = []
+  for (const item of runtime.queue) {
+    if (item.council)
+      out.push({ cellId: item.council.cellId, participantId: item.council.participantId })
+  }
+  return out
+}
+
+/** Кадр вывода — не на каждую строку print, а раз в окно: стопка едет хосту целиком. */
+function touchJob(runtime: Runtime, active: ActiveJob): void {
+  if (active.timer) return
+  active.timer = setTimeout(() => {
+    active.timer = null
+    if (runtime.job !== active) return
+    tellJob(active.job, { ...active.run, outputs: active.buffer.snapshot() })
+  }, COUNCIL_REPORT_MS)
+  active.timer.unref?.()
+}
+
+/**
+ * Единственная дверь из «считается» для попытки — как `setCellState` у ячейки.
+ * Сюда приходят обычный конец, бросок из execute и `reportDeadKernel`.
+ */
+function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error'): void {
+  if (active.timer) {
+    clearTimeout(active.timer)
+    active.timer = null
+  }
+  // По записи среды, а не по своей: `restamp` переставляет начало, когда ядро
+  // пришлось поднимать заново, и полторы минуты его подъёма — не время попытки.
+  const startedAt =
+    runtime.started?.cellId === active.item.cellId ? runtime.started.at : active.run.startedAt
+  active.run = {
+    ...active.run,
+    state,
+    outputs: active.buffer.snapshot(),
+    ranMs: Math.max(0, Date.now() - startedAt),
+  }
+  if (runtime.started?.cellId === active.item.cellId) runtime.started = null
+  runtime.job = null
+  runtime.currentCell = null
+  runtime.currentBatch = null
+  runtime.lastFinished = { cellId: active.item.cellId, batch: active.item.batch }
+  tellJob(active.job, active.run)
+  syncQueue(runtime)
+}
+
+/**
+ * Посчитать попытку — тем же ядром и теми же обработчиками, что ячейку, но с
+ * выводом в буфер. Отличия от `runOne` названы по месту; всё остальное —
+ * нарочно то же самое, чтобы попытка вела себя как ячейка, которую нажали.
+ */
+async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob): Promise<void> {
+  const { doc } = getSessionDoc(runtime.sessionId)
+  const startedAt = Date.now()
+  const active: ActiveJob = {
+    item,
+    job,
+    buffer: new CouncilOutputBuffer(),
+    run: { state: 'running', outputs: [], execCount: null, ranMs: null, startedAt, by: job.by },
+    timer: null,
+  }
+  runtime.currentCell = item.cellId
+  runtime.currentBatch = item.batch
+  runtime.currentRunById = item.runById
+  runtime.started = { cellId: item.cellId, at: startedAt }
+  runtime.job = active
+  syncQueue(runtime)
+  setStatus(runtime, 'busy')
+  tellJob(job, { ...active.run })
+
+  if (job.source.trim().length === 0) {
+    finishCouncil(runtime, active, 'ok')
+    return
+  }
+
+  flushToDisk(runtime.sessionId)
+  const unwatch = stopIfDeleted(runtime, doc, item.cellId, job.cellId)
+  const { buffer } = active
+  let state: 'ok' | 'error' = 'ok'
+  try {
+    /*
+     * Без истории ядра — единственное отличие от ячейки в самом запросе.
+     *
+     * Ядро в комнате одно, и IPython кладёт исходник каждой выполненной ячейки
+     * в `In`/`_ih`: попытки, которые преподаватель запускал, читал бы любой,
+     * кому потом откроют ячейку «всем» (`print(In[-5:])`, `%history`). Вывод
+     * попытки едет двоим честно, а её текст в памяти ядра лежал бы для всех —
+     * вопреки правилу «чужих попыток студент не видит никогда».
+     */
+    const status = await runOnKernel(
+      runtime,
+      job.source,
+      {
+        onExecuteInput: (execCount) => {
+          active.run.execCount = execCount
+          touchJob(runtime, active)
+        },
+        onStream: (name, text) => {
+          buffer.stream(name, text)
+          touchJob(runtime, active)
+        },
+        onData: (mimebundle, execCount) => {
+          buffer.data(mimebundle, execCount)
+          touchJob(runtime, active)
+        },
+        onError: (ename, evalue, traceback) => {
+          buffer.error(ename, evalue, traceback)
+          touchJob(runtime, active)
+        },
+        onClear: (wait) => {
+          if (wait) buffer.supersede()
+          else buffer.clear()
+          touchJob(runtime, active)
+        },
+        /*
+         * `input()` в попытке некому показать: приглашение ячейки живёт в общем
+         * документе, а у попытки документа нет, и зал её не видит. Ядро при этом
+         * стоит, пока не ответят, — и стояло бы до конца пары. Отвечаем пустой
+         * строкой сами и говорим об этом в выводе: `int('')` упадёт честно и
+         * объяснимо, а очередь пойдёт дальше.
+         */
+        onInputRequest: () => {
+          buffer.stream(
+            'stderr',
+            '[colloq] input() в попытке консилиума не спрашивает зал — подставлена пустая строка.\n',
+          )
+          touchJob(runtime, active)
+          void runtime.kernel?.answerInput('').catch(() => {})
+        },
+      },
+      { storeHistory: false },
+    )
+    state = status === 'ok' ? 'ok' : 'error'
+    if (status === 'abort' && !buffer.hasError) {
+      const phase = runtime.kernel?.phase
+      if (phase === 'dead') buffer.error('KernelDied', deadMessage(), [])
+      else if (phase === 'restarting' && runtime.kernel?.phaseExpected === false) {
+        buffer.error('KernelDied', killedMessage(), [])
+      } else buffer.error('Interrupted', 'Запуск попытки прервали.', [])
+    }
+  } catch (err) {
+    buffer.error('KernelError', errText(err), [])
+    state = 'error'
+  } finally {
+    unwatch()
+  }
+  finishCouncil(runtime, active, state)
+  // Попытка могла записать файл — панели файлов это так же интересно.
+  notifyWorkspaceChanged(runtime.sessionId)
+}
+
 /** A kernel that will not come up is an output on the cell, never a crash. */
 function reportDeadKernel(runtime: Runtime, message: string): void {
+  /*
+   * Попытка консилиума — тем же словом, но к попытке, а не в ячейку: у неё
+   * нет ячейки, и OutputWriter ниже написал бы в пустоту, оставив карточку
+   * «считается» навсегда.
+   */
+  if (runtime.job) {
+    runtime.job.buffer.error('KernelError', message, [])
+    finishCouncil(runtime, runtime.job, 'error')
+    dropQueue(runtime)
+    setStatus(runtime, 'dead')
+    return
+  }
+  const head = runtime.queue[0]
+  if (!runtime.currentCell && head?.council) {
+    runtime.queue.shift()
+    tellJob(head.council, {
+      state: 'error',
+      outputs: [{ kind: 'error', ename: 'KernelError', evalue: message, traceback: [] }],
+      execCount: null,
+      ranMs: null,
+      startedAt: Date.now(),
+      by: head.council.by,
+    })
+    dropQueue(runtime)
+    setStatus(runtime, 'dead')
+    return
+  }
   const { doc } = getSessionDoc(runtime.sessionId)
   const stuck = runtime.currentCell ?? runtime.queue[0]?.cellId ?? null
   if (stuck) {
@@ -1426,11 +1731,21 @@ function deadMessage(): string {
  * Наблюдатель живёт только пока ячейка считается, и своих же записей не видит:
  * вывод и состояния идут под `ORIGIN`.
  */
-function stopIfDeleted(runtime: Runtime, doc: Y.Doc, cellId: string): () => void {
+function stopIfDeleted(
+  runtime: Runtime,
+  doc: Y.Doc,
+  cellId: string,
+  /*
+   * За чем следить. У ячейки — она сама; у попытки консилиума запись очереди
+   * синтетическая, а исчезнуть из документа может ячейка консилиума — и вместе
+   * с ней смысл считать чью-то попытку к ней.
+   */
+  watched = cellId,
+): () => void {
   let fired = false
   const onUpdate = (_update: Uint8Array, origin: unknown) => {
     if (fired || origin === ORIGIN) return
-    if (runtime.currentCell !== cellId || findCell(doc, cellId)) return
+    if (runtime.currentCell !== cellId || findCell(doc, watched)) return
     fired = true
     kernelNote(
       runtime.sessionId,

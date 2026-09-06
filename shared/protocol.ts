@@ -8,7 +8,15 @@ import type { RoomRules } from './rules.js'
  * channel carries intent ("run this cell") and side-band state (kernel health,
  * file listing) only.
  */
-import type { CellSnapshot, KernelStatus } from './notebook'
+import type {
+  CellLock,
+  CellOutput,
+  CellSnapshot,
+  CellState,
+  CouncilSettings,
+  KernelStatus,
+} from './notebook'
+export type { CellLock, CouncilSettings } from './notebook'
 import type { InkStroke, LectureState } from './lecture'
 
 export type ParticipantRole = 'host' | 'participant'
@@ -284,6 +292,73 @@ export type ControlClientMessage =
    */
   | { t: 'cell:open'; cellId: string; open: boolean }
   /**
+   * Замок ячейки в одно из трёх положений: закрыта / открыта всем / консилиум.
+   *
+   * Одно сообщение на все три положения, и `cell:open` над ним — его частный
+   * случай на два положения, оставленный ради тех, кто его уже шлёт: сервер
+   * читает оба одинаково (control.ts). Только преподаватель, только пока
+   * занятие идёт — по тем же доводам, что у `cell:open`.
+   *
+   * `settings` — ручки консилиума; имеют смысл только при `state: 'council'`.
+   * Не приложены — остаются как были, а у ячейки, которая консилиумом ещё не
+   * была, ставятся умолчания (notebook.ts · DEFAULT_COUNCIL). Повторное
+   * `cell:lock` с тем же `state` и новыми `settings` — это и есть «переключить
+   * ручку»: отдельного сообщения для ручек нет.
+   *
+   * Замок → не консилиум: попытки остаются в базе на просмотр до конца
+   * занятия, студенту уходит `council:mine` с `closed: true`, его текст
+   * остаётся у него черновиком.
+   */
+  | { t: 'cell:lock'; cellId: string; state: CellLock; settings?: Partial<CouncilSettings> }
+  /**
+   * Консилиум: свой лист студента.
+   *
+   * `council:draft` — снимок текста при паузе в наборе (~1 с). Целиком, не
+   * дельтой: попытка не живёт в CRDT, и одному человеку на одну ячейку хватает
+   * последнего снимка. Сервер принимает его от любого, кто действует в комнате
+   * (rules.ts · mayWriteCouncil), только в ячейку, где сейчас консилиум, и
+   * рассылает ТОЛЬКО преподавателю (`council:board`) и самому автору
+   * (`council:mine`). Снимок сданной попытки её не «рассдаёт»: для этого есть
+   * `council:withdraw` — иначе автоснимок при случайном нажатии снимал бы
+   * «сдано» молча.
+   *
+   * `council:submit` — «Сдать»: ставит submittedAt; `council:withdraw` —
+   * «Изменить»: снимает его, текст остаётся.
+   */
+  | { t: 'council:draft'; cellId: string; text: string }
+  | { t: 'council:submit'; cellId: string }
+  | { t: 'council:withdraw'; cellId: string }
+  /**
+   * Консилиум: то, что делает ведущий (rules.ts · mayLeadCouncil — только host).
+   *
+   * `council:show` — «Показать классу»: текст попытки ложится в общую ячейку
+   * обычной правкой от имени преподавателя (collab · applyOnBehalf), попытке
+   * ставится `shown`, автору уходит `council:mine`. Снять с экрана нечем
+   * намеренно: показанное — уже текст общей ячейки, и правится оно как текст.
+   *
+   * `council:run` — запустить попытку в ядре комнаты; вывод ложится к попытке,
+   * не в общую ячейку. Без `participantId` — своя попытка: так запускает
+   * студент, и это проходит только при включённой ручке `studentRun`
+   * (rules.ts · mayRunCouncil); отказ — `error` словами, с номером в очереди,
+   * если очередь есть.
+   *
+   * `council:reply` — ответ автору или всей группе одинаковых решений: у
+   * каждого адресата в `council:mine.reply` появляется строка с подписью
+   * преподавателя. Черновик оракула (CouncilOracle.drafts) сюда попадает уже
+   * правленым текстом — модель на этих проводах не говорит.
+   *
+   * `council:mark` — ✓ Верно / снять отметку: `correct: true | false | null`.
+   */
+  | { t: 'council:show'; cellId: string; participantId: string }
+  | { t: 'council:run'; cellId: string; participantId?: string }
+  | {
+      t: 'council:reply'
+      cellId: string
+      to: { participantId: string } | { groupKey: string }
+      text: string
+    }
+  | { t: 'council:mark'; cellId: string; participantId: string; correct: boolean | null }
+  /**
    * Поставить документ комнаты на общий экран — или убрать его.
    *
    * Через сервер, а не через присутствие: присутствие исчезает вместе с
@@ -518,6 +593,58 @@ export type ControlServerMessage =
    * преподавателя указка оказывалась синей — то есть неотличимой от чернил.
    */
   | { t: 'laser'; at: { page: number; x: number; y: number; shape: 'dot' | 'line' } | null }
+  /**
+   * Консилиум: своя попытка — одному человеку.
+   *
+   * Приходит автору при подключении (по каждой ячейке, где у него есть
+   * попытка или где консилиум открыт) и после каждого своего действия и
+   * каждого действия преподавателя над его попыткой: сдал, показали, ответили,
+   * запустили, отметили, закрыли консилиум. Чужих попыток в нём нет никогда.
+   */
+  | { t: 'council:mine'; cellId: string; state: CouncilMine }
+  /**
+   * Консилиум: вся стопка — ТОЛЬКО преподавателю.
+   *
+   * Целиком — в приветственной пачке хоста по каждой ячейке, где консилиум
+   * открыт или где есть попытки, и на смену замка или ручек; перемены между
+   * ними едут `council:patch`. Группы и порядок стопки клиент считает сам по
+   * полному списку. Сервер вправе слить частые пересылки в одну (дребезг).
+   */
+  | { t: 'council:board'; cellId: string; board: CouncilBoard }
+  /**
+   * Консилиум: перемена в стопке — ТОЛЬКО преподавателю, и только то, что
+   * сменилось.
+   *
+   * Стопка целиком едет в приветственной пачке и на смену замка; всё
+   * остальное — снимок при паузе в наборе, запуск, ответ, отметка, бан — едет
+   * попытками, которых это коснулось. Иначе каждый кадр вёз хосту вывод
+   * каждой попытки (до мегабайт на карточку) из-за одной буквы у одного
+   * студента — по три раза в секунду, пока класс печатает. `attempts` —
+   * попытки целиком (заменить по participantId), `removed` — кого в стопке
+   * больше нет (бан); `counts`, `lock` и `settings` — свежие, как в стопке.
+   * Группы и порядок клиент считает сам по полному списку, как и раньше.
+   * Кадр по ячейке, стопки которой у клиента нет, — пропускается: полная
+   * стопка по ней уже в пути или уже была.
+   */
+  | {
+      t: 'council:patch'
+      cellId: string
+      attempts: CouncilAttempt[]
+      removed: string[]
+      counts: CouncilBoard['counts']
+      lock: CellLock
+      settings: CouncilSettings
+    }
+  /** Консилиум: оракул о решениях сменил состояние — тоже только преподавателю. */
+  | { t: 'council:oracle'; cellId: string; oracle: CouncilOracle }
+  /**
+   * Консилиум: «N сдали из M» — всей комнате, без текстов.
+   *
+   * Это для проектора и для чипа над ячейкой у студентов. Живой стены здесь
+   * нет намеренно: счётчик говорит, что класс работает, и ничего о том, что он
+   * написал. `total` — сколько людей завели попытку (сдали или пишут).
+   */
+  | { t: 'council:count'; cellId: string; submitted: number; total: number }
   | { t: 'refused'; rule: 'structure' | 'edit' | 'title' | 'files'; message: string }
   | { t: 'error'; message: string }
   /**
@@ -532,6 +659,171 @@ export type ControlServerMessage =
   | { t: 'pong'; now: number }
 
 import type { OracleMode } from './admin.js'
+
+/* ---------------------------------------------------------------- консилиум */
+
+/**
+ * Что известно о попытке после запуска.
+ *
+ * Отдельная запись, а не поля общей ячейки: вывод попытки ложится К ПОПЫТКЕ, а
+ * общая ячейка остаётся тем, что показал преподаватель. `by` — кто нажал:
+ * преподаватель (обычный путь) или сам автор (при включённой ручке).
+ */
+export interface CouncilRun {
+  state: Extract<CellState, 'queued' | 'running' | 'ok' | 'error'>
+  outputs: CellOutput[]
+  execCount: number | null
+  /** Сколько шёл настоящий запуск; `null`, пока идёт или если прервали. */
+  ranMs: number | null
+  /** Серверные часы начала — для строки «запускал преподаватель · 14:36». */
+  startedAt: number
+  by: 'host' | 'author'
+}
+
+/** Ответ преподавателя автору или группе. Подпись — всегда преподавателя. */
+export interface CouncilReply {
+  text: string
+  at: number
+  /** Имя того, кто отвечал: в комнате может быть два преподавателя. */
+  by: string
+}
+
+/**
+ * Состояние попытки одним словом — чип на карточке и цвет черты под сегментом.
+ *
+ *   unrun   — не запускали и не отмечали (серая черта, «не запускали»)
+ *   ran     — запуск прошёл без исключения, отметки нет
+ *   failed  — запуск упал (красная черта; в чипе — имя исключения)
+ *   correct — преподаватель отметил «верно» (зелёная)
+ *   wrong   — преподаватель отметил «неверно» (охра)
+ *
+ * Отметка преподавателя сильнее запуска: `correct`/`wrong` стоят и над упавшим
+ * запуском, потому что решение о верности — его, а не ядра.
+ */
+export type CouncilStatus = 'unrun' | 'ran' | 'failed' | 'correct' | 'wrong'
+
+/**
+ * Состояние группы по состояниям её членов — одно место на пульт, сервер и
+ * оракула. По одному представителю нельзя: преподаватель стрелкой попадает на
+ * любого члена группы, и «Верно» или TypeError на его карточке иначе не
+ * доходили бы ни до черты под сегментом, ни до чипа в сводке, а оракул считал
+ * бы группу иначе, чем пульт.
+ *
+ * Отметка преподавателя сильнее запуска (correct, потом wrong); из запусков
+ * громче падение: у одного и того же текста в общем ядре исход зависит от
+ * состояния, и красная черта честнее серой.
+ */
+export function groupStatus(statuses: readonly CouncilStatus[]): CouncilStatus {
+  for (const wanted of ['correct', 'wrong', 'failed', 'ran'] as const) {
+    if (statuses.includes(wanted)) return wanted
+  }
+  return 'unrun'
+}
+
+/** Своя попытка — то, что видит студент. */
+export interface CouncilMine {
+  text: string
+  /** Когда нажал «Сдать»; `null` — ещё пишет (или нажал «Изменить»). */
+  submittedAt: number | null
+  updatedAt: number
+  /** Преподаватель показал этот вариант классу. */
+  shown: boolean
+  correct: boolean | null
+  reply: CouncilReply | null
+  run: CouncilRun | null
+  /**
+   * Место в очереди на запуск, если запуск студентам включён и запуск ждёт:
+   * «вы 37-й». `null` — не в очереди.
+   */
+  queue: number | null
+  /** Консилиум на этой ячейке закрыт: текст остаётся черновиком, на сервер не идёт. */
+  closed: boolean
+}
+
+/** Одна попытка глазами преподавателя. */
+export interface CouncilAttempt {
+  participantId: string
+  name: string
+  color: string
+  avatar: string | null
+  text: string
+  submittedAt: number | null
+  updatedAt: number
+  status: CouncilStatus
+  run: CouncilRun | null
+  reply: CouncilReply | null
+  correct: boolean | null
+  shown: boolean
+  /** Ключ группы одинаковых решений (council-board.ts · groupAttempts). */
+  groupKey: string
+}
+
+/**
+ * Группа одинаковых решений: тот же текст после нормализации (без пробелов,
+ * пустых строк и комментариев). Считает клиент по полному списку попыток
+ * (web/src/lib/council-board.ts) и сервер — для оракула, той же функцией.
+ */
+export interface CouncilGroup {
+  key: string
+  count: number
+  /** Имя группы одной строкой — от оракула; пока его нет, `null` (рисуют первую строку кода). */
+  label: string | null
+  /** Код представителя — то, что показывают в сводке. */
+  sample: string
+  /** По всем членам, не по представителю — `groupStatus`. */
+  status: CouncilStatus
+  /** Кто-то из группы сейчас на экране: этот текст уже лежит в общей ячейке. */
+  shown: boolean
+  /** Представитель: самый ранний сдавший в группе. */
+  representative: string
+  members: string[]
+}
+
+/**
+ * Оракул о решениях — состояние, которое хранит сервер и рисует сводка.
+ *
+ * Обновляется ТОЛЬКО рукой: `stale` — с момента `askedAt` сдали ещё
+ * `staleBy` человек, кнопка «Обновить». Модель видела тексты по группам с
+ * числами, задание и эталон, имён не видела: `groupLabels`/`drafts` идут по
+ * ключу группы, а к людям их привязывает клиент.
+ */
+export interface CouncilOracle {
+  state: 'idle' | 'reading' | 'ready' | 'stale'
+  askedAt: number | null
+  /** Сколько попыток модель читала. */
+  basedOn: number
+  /** Сколько сдали с тех пор — для «с тех пор сдали ещё N». */
+  staleBy: number
+  /** Три абзаца: что верно, типичная ошибка, что показать. Пусто, пока не готов. */
+  summary: string[]
+  groupLabels: Record<string, string>
+  /** Черновики ответов группам с ошибкой — правятся и отправляются преподавателем. */
+  drafts: Record<string, string>
+  notable: { participantId: string; why: string }[]
+  /** Почему не получилось, если `state` вернулся в `idle` после ошибки. */
+  error: string | null
+}
+
+/** Стопка целиком — то, что приезжает преподавателю. */
+export interface CouncilBoard {
+  lock: CellLock
+  settings: CouncilSettings
+  counts: {
+    /** Завели попытку: сдали или пишут. */
+    attempts: number
+    submitted: number
+    writing: number
+    groups: number
+  }
+  attempts: CouncilAttempt[]
+  /**
+   * Группы на момент полного кадра — для теста и для взгляда снаружи; пульт
+   * считает их сам по `attempts` (council-board.ts · groupAttempts), поэтому
+   * `council:patch` их не везёт и после дельты это поле устаревает.
+   */
+  groups: CouncilGroup[]
+  oracle: CouncilOracle | null
+}
 
 /* ------------------------------------------------------------------- AI */
 

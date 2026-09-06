@@ -30,9 +30,15 @@
  *   ranMs     number | null           how long the last SETTLED run took. Also
  *                                     the kernel's; an interrupted run leaves
  *                                     it null, because it has no finish time
- *   open      boolean | undefined     замок лекции: ячейка, открытая
- *                                     преподавателем. Нет поля или false —
- *                                     обычная, закрытая
+ *   open      true | 'council' | null  замок лекции, три положения: нет поля,
+ *                                     false или null — закрытая; true —
+ *                                     открытая всем; 'council' — консилиум:
+ *                                     у каждого свой лист, общий текст закрыт
+ *                                     как в закрытой (см. cellLock)
+ *   council   CouncilSettings | null  ручки консилиума: запуск студентам и
+ *                                     имена на проекторе. Имеют смысл только
+ *                                     при open === 'council'; нет поля —
+ *                                     умолчания (DEFAULT_COUNCIL)
  *
  * `stdin`, `startedAt` and `ranMs` are written only by the server and are
  * display-only: nothing in this product may gate a control on them. The list
@@ -46,6 +52,14 @@
  * mayEditCell). Поэтому кадр из браузера, приносящий это поле, гейт отвергает
  * так же, как отвергает поддельный вывод: замок, который можно принести с
  * собой, — не замок.
+ *
+ * Третье положение замка — `'council'` — нарочно живёт в ТОМ ЖЕ ключе, а не
+ * рядом: у замка одно положение, и двум полям пришлось бы договариваться,
+ * какое из них главнее, когда оба выставлены. Для гейта консилиум — закрытая
+ * ячейка: `isCellOpen` отвечает строго `=== true`, так что общий Y.Text в
+ * консилиуме студент не трогает, а свою попытку шлёт снимком по управляющему
+ * сокету (protocol.ts · council:draft). `council` — ручки того же положения, и
+ * они серверные по той же причине: «запуск студентам» — право, а не показания.
  *
  * An output Y.Map holds:
  *   kind      'stream' | 'data' | 'error'
@@ -329,7 +343,47 @@ export interface CellSnapshot {
    * через `!== false` нельзя, читать надо через истину.
    */
   open?: boolean
+  /**
+   * Положение замка целиком — то, что рисует полоса режима и чип ячейки.
+   *
+   * `open` выше остаётся булевым ради всех, кто читает снимок как «можно ли
+   * печатать»: консилиум для них закрытая ячейка, и это правда. Здесь же
+   * различаются все три положения. Необязательное по тому же доводу, что и
+   * `open`: старые снимки его не знают.
+   */
+  lock?: CellLock
+  /** Ручки консилиума — с подставленными умолчаниями; `null` вне консилиума. */
+  council?: CouncilSettings | null
 }
+
+/**
+ * Три положения замка ячейки.
+ *
+ *   closed  — обычная ячейка лекции: печатает и запускает преподаватель
+ *   open    — открыта всем: комната печатает в общий текст
+ *   council — консилиум: у каждого свой лист, общий текст закрыт, а попытки
+ *             живут на сервере и видны преподавателю (protocol.ts · council:*)
+ *
+ * В документе хранится не это имя, а ключ `open` (true | 'council' | null);
+ * имя — для проводов и интерфейса, где «false» ничего не объясняет.
+ */
+export type CellLock = 'closed' | 'open' | 'council'
+
+/**
+ * Ручки консилиума на одной ячейке.
+ *
+ *   studentRun       — студент может запустить свою попытку сам (в очередь, по
+ *                      одному). По умолчанию ВЫКЛ: ядро в комнате одно, и
+ *                      пятьсот запусков — это пятьсот мест в одной очереди.
+ *   namesOnProjector — имена авторов видны на проекторе, когда преподаватель
+ *                      показывает попытку классу. По умолчанию ВКЛ.
+ */
+export interface CouncilSettings {
+  studentRun: boolean
+  namesOnProjector: boolean
+}
+
+export const DEFAULT_COUNCIL: CouncilSettings = { studentRun: false, namesOnProjector: true }
 
 export type YCell = Y.Map<any>
 export type YOutput = Y.Map<any>
@@ -584,10 +638,7 @@ export function replaceText(text: Y.Text, next: string): void {
   while (head < max && before[head] === next[head]) head++
 
   let tail = 0
-  while (
-    tail < max - head &&
-    before[before.length - 1 - tail] === next[next.length - 1 - tail]
-  ) {
+  while (tail < max - head && before[before.length - 1 - tail] === next[next.length - 1 - tail]) {
     tail++
   }
 
@@ -869,10 +920,7 @@ export function getMeta(doc: Y.Doc): Y.Map<any> {
 /** Non-cryptographic id, good enough to distinguish cells. */
 export function newId(prefix = 'c'): string {
   return (
-    prefix +
-    '_' +
-    Math.random().toString(36).slice(2, 10) +
-    Math.random().toString(36).slice(2, 6)
+    prefix + '_' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6)
   )
 }
 
@@ -917,6 +965,84 @@ export function cellType(cell: YCell): CellType {
  */
 export function isCellOpen(cell: YCell): boolean {
   return cell.get('open') === true
+}
+
+/**
+ * Консилиум ли на ячейке — то есть у каждого свой лист, а общий текст закрыт.
+ *
+ * Отдельно от `isCellOpen` и не через него: для гейта и `mayEditCell`
+ * консилиум — закрытая ячейка, и они про него знать не должны. Спрашивают
+ * этим только те, кто рисует консилиум и кто принимает попытки (control.ts ·
+ * council:draft): попытка в ячейку без консилиума — отказ.
+ */
+export function isCellCouncil(cell: YCell): boolean {
+  return cell.get('open') === 'council'
+}
+
+/** Положение замка одним словом — для полосы режима, чипа и проводов. */
+export function cellLock(cell: YCell): CellLock {
+  const raw: unknown = cell.get('open')
+  if (raw === true) return 'open'
+  if (raw === 'council') return 'council'
+  return 'closed'
+}
+
+/** Значение ключа `open` для положения замка — то, что пишет сервер. */
+export function openValueFor(lock: CellLock): true | 'council' | null {
+  if (lock === 'open') return true
+  if (lock === 'council') return 'council'
+  return null
+}
+
+/**
+ * Ручки консилиума из чего угодно — с умолчаниями на каждое поле отдельно.
+ *
+ * Как `readRules`: ручка, добавленная завтра, у вчерашней ячейки отсутствует,
+ * и отсутствовать она должна своим умолчанием, а не ломать чтение соседней.
+ */
+export function readCouncilSettings(raw: unknown): CouncilSettings {
+  const from = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    studentRun: from.studentRun === true,
+    namesOnProjector: from.namesOnProjector !== false,
+  }
+}
+
+/** Ручки консилиума на ячейке. Вне консилиума — `null`: ручек у закрытой двери нет. */
+export function councilSettingsOf(cell: YCell): CouncilSettings | null {
+  return isCellCouncil(cell) ? readCouncilSettings(cell.get('council')) : null
+}
+
+/**
+ * Ключ группы одинаковых решений: текст попытки без пробелов, пустых строк и
+ * комментариев.
+ *
+ * Здесь, а не на сервере и не в пульте: группы считает сервер (для оракула и
+ * `CouncilAttempt.groupKey`), а пульт по ним рисует стопку и полосу — и два
+ * разных «одинаково» дали бы стопку, в которой «так же ещё 311» не сходится с
+ * шириной сегмента. Нарочно грубо: `#` внутри строки считается началом
+ * комментария только вне кавычек, и на этом точность кончается — цель не
+ * разобрать Python, а склеить `x=1` с `x = 1  # ответ`.
+ */
+export function normalizeAttempt(text: string): string {
+  const lines: string[] = []
+  for (const raw of text.split('\n')) {
+    let quote: string | null = null
+    let kept = ''
+    for (const ch of raw) {
+      if (quote) {
+        if (ch === quote) quote = null
+      } else if (ch === '"' || ch === "'") {
+        quote = ch
+      } else if (ch === '#') {
+        break
+      }
+      if (ch === ' ' || ch === '\t' || ch === '\r') continue
+      kept += ch
+    }
+    if (kept) lines.push(kept)
+  }
+  return lines.join('\n')
 }
 
 export function cellSource(cell: YCell): Y.Text {
@@ -985,6 +1111,9 @@ export function cloneCell(cell: YCell): YCell {
    * перестановке незачем.
    */
   if (cell.get('open') != null) copy.set('open', cell.get('open'))
+  // И ручки консилиума — ровно по тому же доводу: ячейка, у которой при
+  // перестановке соседа включился бы запуск студентам, хуже захлопнувшейся.
+  if (cell.get('council') != null) copy.set('council', cell.get('council'))
   return copy
 }
 
@@ -1096,6 +1225,8 @@ export function readCell(cell: YCell): CellSnapshot {
     startedAt: (cell.get('startedAt') as number | null) ?? null,
     ranMs: (cell.get('ranMs') as number | null) ?? null,
     open: isCellOpen(cell),
+    lock: cellLock(cell),
+    council: councilSettingsOf(cell),
   }
 }
 
@@ -1135,7 +1266,8 @@ export function clearStaleExecution(doc: Y.Doc): number {
     if (meta.get('runningCell') != null) meta.set('runningCell', null)
 
     const status = meta.get('kernelStatus')
-    if (status === 'busy' || status === 'restarting') meta.set('kernelStatus', 'idle' as KernelStatus)
+    if (status === 'busy' || status === 'restarting')
+      meta.set('kernelStatus', 'idle' as KernelStatus)
 
     for (const cell of cells) {
       const state = cell.get('state')

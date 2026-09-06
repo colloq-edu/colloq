@@ -42,19 +42,35 @@
 
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte'
-  import { cellSource, patchIsStale } from '@shared/notebook'
+  import * as Y from 'yjs'
+  import { Awareness } from 'y-protocols/awareness'
+  import {
+    cellSource,
+    DEFAULT_COUNCIL,
+    patchIsStale,
+    replaceText,
+    type CellLock,
+    type CouncilSettings,
+  } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
   import { actsAfterClass, CLASS_IS_OVER, oracleModeIn, readRules } from '@shared/rules'
   import {
     cellLockMatters,
+    COUNCIL_CLOSED,
     LECTURE_CELL,
     mayEditThisCell,
     mayRunThisCell,
+    mayRunThisCouncil,
+    mayWriteThisCouncil,
     permitsIn,
   } from '@/lib/may'
+  import { countLine, queueWords, ranByLine, sheetSeed, watchCellLock } from '@/lib/council.svelte'
+  import { clock } from '@/lib/history'
+  import CouncilStack from '@/components/council/CouncilStack.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
-  import Icon from '@/components/ui/Icon.svelte'
+  import Icon, { type IconName } from '@/components/ui/Icon.svelte'
+  import Code from '@/components/ui/Code.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
   import {
     deleteCell,
@@ -166,6 +182,314 @@
    * `actsAfterClass`, которой отвечает сервер.
    */
   const acts = $derived(actsAfterClass(may.finished, session.me.role))
+
+  /* ------------------------------------------------------------ консилиум */
+
+  /*
+   * Третье положение замка — консилиум: у каждого свой лист.
+   *
+   * `meta.current.open` про него не знает намеренно (для гейта и `mayEditCell`
+   * консилиум — закрытая ячейка), поэтому положение целиком читает свой
+   * наблюдатель. Дальше три роли в одной ячейке: студент пишет СВОЙ лист
+   * (`ownSheet`), преподаватель видит общий текст как эталон и под ним пульт
+   * (`leads`), а всё остальное — как у закрытой.
+   */
+  const lockView = watchCellLock(() => cell.current)
+  const lockState = $derived(lockView.current.lock)
+  const inCouncil = $derived(lockState === 'council')
+  const councilSettings = $derived(lockView.current.settings ?? DEFAULT_COUNCIL)
+  /** Ведёт консилиум — преподаватель, и после звонка тоже (may.ts · council). */
+  const leads = $derived(may.council)
+  /** Тело ячейки — свой редактор, а не общий: студент в открытом консилиуме. */
+  const ownSheet = $derived(inCouncil && !leads)
+  const mine = $derived(session.council.mine[id] ?? null)
+  const count = $derived(session.council.counts[id] ?? null)
+  const board = $derived(session.council.boards[id] ?? null)
+  /*
+   * Консилиум на этой ячейке закрыт — по замку или по слову сервера. Замок
+   * приезжает кадром CRDT, `mine.closed` — сокетом; какой из двух дойдёт
+   * первым, неизвестно, и закрывает любой.
+   */
+  const councilClosed = $derived(!inCouncil || (mine?.closed ?? false))
+  const mayAttempt = $derived(mayWriteThisCouncil(may, councilClosed))
+  const mayRunAttempt = $derived(mayRunThisCouncil(may, councilSettings.studentRun))
+  const submittedAt = $derived(mine?.submittedAt ?? null)
+  const attemptWhy = $derived(inCouncil ? may.attemptWhy : COUNCIL_CLOSED)
+
+  /**
+   * Свой лист: локальный документ Yjs, ни к чему не подключённый.
+   *
+   * Тот же CodeEditor, что у ячейки, — он умеет только Y.Text с присутствием и
+   * отменой, — поэтому вместо второго редактора здесь второй документ: свой
+   * Y.Doc, своё присутствие (никуда не уходит), своя отмена. Ни одной правки в
+   * общий Y.Text отсюда нет и быть не может — общего текста в этом документе
+   * нет.
+   *
+   * Живёт до размонтирования, а не до закрытия консилиума: закрытый консилиум
+   * оставляет текст человеку черновиком, и черновик — это он.
+   */
+  interface Sheet {
+    doc: Y.Doc
+    text: Y.Text
+    awareness: Awareness
+    undo: Y.UndoManager
+  }
+  /** Происхождение правок, которые пришли с сервера, а не с клавиатуры. */
+  const SEED = 'council:seed'
+
+  function openSheet(seed: string): Sheet {
+    const doc = new Y.Doc()
+    const text = doc.getText('attempt')
+    if (seed) doc.transact(() => text.insert(0, seed), SEED)
+    return {
+      doc,
+      text,
+      awareness: new Awareness(doc),
+      undo: new Y.UndoManager(text, { trackedOrigins: new Set([null]), captureTimeout: 400 }),
+    }
+  }
+
+  let sheet = $state.raw<Sheet | null>(null)
+  /**
+   * Печатал ли человек в своём листе хоть раз.
+   *
+   * Обычный `let`, не `$state`: читают его эффекты, которые пишут в Y.Text, и
+   * сигнал здесь означал бы эффект, зависящий от собственного следствия.
+   */
+  let typed = false
+
+  $effect(() => {
+    if (!ownSheet) return
+    if (untrack(() => sheet)) return
+    /*
+     * Исходный текст — своя попытка, если сервер её уже прислал, иначе общий
+     * текст ячейки на момент открытия: задание обычно лежит в нём (sheetSeed:
+     * пустая строка от сервера — не попытка). Читается без отслеживания — лист
+     * заводят один раз, а не на каждую букву эталона.
+     */
+    const seed = untrack(() => sheetSeed(mine?.text, liveText.current))
+    sheet = openSheet(seed)
+  })
+
+  /*
+   * Попытка приехала после того, как лист уже завели с общего текста, — и
+   * человек ещё ничего не печатал: заменить. Печатал — его текст главнее
+   * любого снимка, включая эхо его же снимка.
+   *
+   * Пустой текст с сервера — не попытка, а «попытки ещё нет» (приветственная
+   * пачка по ячейке с открытым консилиумом): стирать им задание из листа
+   * нельзя.
+   */
+  $effect(() => {
+    const current = sheet
+    const text = mine?.text
+    if (!current || !text || typed) return
+    if (current.text.toString() === text) return
+    current.doc.transact(() => replaceText(current.text, text), SEED)
+  })
+
+  /*
+   * Снимок при паузе в наборе. Наблюдатель на Y.Text, а не на нажатиях: так
+   * ловится и вставка, и отмена, и автодополнение. Правки с происхождением SEED
+   * — не набор и не уезжают: иначе эхо снимка порождало бы следующий снимок.
+   */
+  $effect(() => {
+    const current = sheet
+    if (!current) return
+    const onChange = (_event: Y.YTextEvent, transaction: Y.Transaction) => {
+      if (transaction.origin === SEED) return
+      typed = true
+      if (!mayAttempt) return
+      session.council.draft(id, current.text.toString())
+    }
+    current.text.observe(onChange)
+    return () => current.text.unobserve(onChange)
+  })
+
+  // Присутствие держит таймер, документ — память; оба уходят с ячейкой.
+  $effect(() => () => {
+    const current = untrack(() => sheet)
+    if (!current) return
+    current.undo.destroy()
+    current.awareness.destroy()
+    current.doc.destroy()
+  })
+
+  /** «Сдать». Возвращает, дошло ли до отправки, — для клавиш. */
+  function submitAttempt(): boolean {
+    if (!mayAttempt) {
+      session.showError(attemptWhy + '.')
+      return false
+    }
+    onselect()
+    session.council.submit(id)
+    return true
+  }
+
+  function withdrawAttempt(): void {
+    if (!mayAttempt) {
+      session.showError(attemptWhy + '.')
+      return
+    }
+    session.council.withdraw(id)
+  }
+
+  /** Запустить свою попытку — только при включённой ручке; отказ словами. */
+  function runAttempt(): void {
+    if (!mayRunAttempt) {
+      session.showError(
+        may.finished
+          ? CLASS_IS_OVER + '.'
+          : 'Здесь попытки запускает преподаватель: сдайте — и он запустит вашу сам.',
+      )
+      return
+    }
+    session.council.run(id)
+  }
+
+  /* ---- пульт преподавателя: колбэки для стопки и сводки */
+
+  function showToClass(participantId: string): void {
+    const who = board?.attempts.find((attempt) => attempt.participantId === participantId)
+    // Подтверждение — потому что это единственное действие консилиума, которое
+    // меняет общую ячейку у всей комнаты, и назад его не отматывают.
+    if (
+      !window.confirm(
+        `Показать классу ${who ? `вариант ${who.name}` : 'этот вариант'}? Текст ляжет в общую ячейку от вашего имени.`,
+      )
+    ) {
+      return
+    }
+    session.council.show(id, participantId)
+  }
+
+  function runAttemptOf(participantId: string): void {
+    session.council.run(id, participantId)
+  }
+
+  function replyTo(to: { participantId: string } | { groupKey: string }, text: string): void {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    session.council.reply(id, to, trimmed)
+  }
+
+  function markAttempt(participantId: string, correct: boolean | null): void {
+    session.council.mark(id, participantId, correct)
+  }
+
+  /**
+   * Спросить оракула о решениях — или остановить чтение.
+   *
+   * По HTTP, а не сокетом: у отказа есть цена (вопрос из лимита комнаты) и
+   * срок (429 с `retryAfter`), и говорить о них умеет `ApiError`. Готовая
+   * сводка приедет сокетом (`council:oracle`) вместе со стопкой.
+   */
+  async function askOracle(stop: boolean): Promise<void> {
+    try {
+      if (stop) await api.councilStopOracle(session.session.id, session.token, id)
+      else await api.councilAsk(session.session.id, session.token, id)
+    } catch (cause) {
+      session.showError(cause instanceof Error ? cause.message : 'Оракул недоступен.')
+    }
+  }
+
+  /**
+   * Какая попытка на карточке стопки. Состояние экрана, не комнаты: два
+   * преподавателя листают одну стопку каждый со своего места, и второй
+   * планшет не должен перелистывать первый.
+   */
+  let stackPosition = $state<{ participantId: string | null }>({ participantId: null })
+
+  /* ---- замок в три положения */
+
+  /**
+   * Меню замка: три положения и две ручки консилиума.
+   *
+   * Щелчок остаётся щелчком — закрыта ↔ открыта всем, без меню и без диалога,
+   * по доводу из разметки замка. Меню открывают удержанием, правой кнопкой или
+   * щелчком по замку в положении «консилиум»: там одно нажатие не знает, куда
+   * вернуть, — закрыть или открыть всем.
+   */
+  let lockMenu = $state(false)
+  let holdTimer: number | undefined
+  /**
+   * Когда удержание открыло меню: щелчок, который приходит вслед за отпусканием,
+   * не в счёт. Метка времени, а не флаг: на сенсорном экране щелчка после
+   * долгого нажатия может и не быть, и флаг съел бы следующее честное нажатие.
+   */
+  let heldAt = 0
+  const HOLD_MS = 450
+
+  const LOCKS: { state: CellLock; icon: IconName; label: string; hint: string }[] = [
+    { state: 'closed', icon: 'lock', label: 'Закрыта', hint: 'печатает и запускает преподаватель' },
+    { state: 'open', icon: 'unlock', label: 'Открыта всем', hint: 'комната печатает в общий текст' },
+    { state: 'council', icon: 'users', label: 'Консилиум', hint: 'у каждого свой лист, видит преподаватель' },
+  ]
+  const lockIcon = $derived<IconName>(inCouncil ? 'users' : cellOpen ? 'unlock' : 'lock')
+
+  function pressLock(): void {
+    if (Date.now() - heldAt < HOLD_MS * 2) return
+    if (inCouncil) {
+      lockMenu = !lockMenu
+      return
+    }
+    // Два положения — прежним сообщением: сервер читает его как cell:lock.
+    session.send({ t: 'cell:open', cellId: id, open: !cellOpen })
+  }
+
+  function startHold(): void {
+    window.clearTimeout(holdTimer)
+    holdTimer = window.setTimeout(() => {
+      heldAt = Date.now()
+      lockMenu = true
+    }, HOLD_MS)
+  }
+
+  function endHold(): void {
+    window.clearTimeout(holdTimer)
+  }
+
+  function setLock(state: CellLock): void {
+    lockMenu = false
+    if (state === lockState) return
+    session.council.lock(id, state)
+  }
+
+  function toggleKnob(key: keyof CouncilSettings): void {
+    session.council.lock(id, 'council', { [key]: !councilSettings[key] })
+  }
+
+  // Меню закрывается снаружи: щелчок мимо, Escape, потеря замка.
+  $effect(() => {
+    if (!lockMenu) return
+    const away = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && root?.querySelector('[data-lock-menu]')?.contains(target)) return
+      if (target && root?.querySelector('[data-lock-button]')?.contains(target)) return
+      lockMenu = false
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') lockMenu = false
+    }
+    window.addEventListener('pointerdown', away, true)
+    window.addEventListener('keydown', escape, true)
+    return () => {
+      window.removeEventListener('pointerdown', away, true)
+      window.removeEventListener('keydown', escape, true)
+      window.clearTimeout(holdTimer)
+    }
+  })
+
+  /*
+   * Ячейка спрятала замок (правила сменились, звонок) — меню ей ни к чему.
+   * `lock` здесь читается, `lockMenu` пишется: круга нет.
+   */
+  $effect(() => {
+    if (!lock || may.role !== 'host') lockMenu = false
+  })
+
+  /** Показать черновик закрытого консилиума — свёрнут по умолчанию. */
+  let showDraft = $state(false)
 
   /*
    * Ячейка остановилась внутри input().
@@ -284,7 +608,7 @@
         ? 'error'
         : shownState === 'queued'
           ? 'queued'
-          : lock && cellOpen
+          : lock && (cellOpen || inCouncil)
             ? 'open'
             : selected
               ? 'selected'
@@ -938,6 +1262,18 @@
   -->
   {#if lock && cellOpen}
     <p class={cn(CAPS, 'pb-1 pt-0.5 text-accent-text')}>Открыта для всех</p>
+  {:else if inCouncil && leads}
+    <!--
+      У преподавателя в консилиуме общий текст — эталон: то, что он покажет,
+      ляжет сюда. Подпись говорит, что это за текст, потому что под ним стоит
+      пульт с чужими попытками, и без слов их легко перепутать.
+    -->
+    <p class={cn(CAPS, 'flex flex-wrap items-center gap-x-2 pb-1 pt-0.5 text-accent-text')}>
+      <span>Консилиум</span>
+      <span class="font-normal normal-case tracking-normal text-muted">
+        общий текст — ваш эталон; класс видит то, что вы покажете
+      </span>
+    </p>
   {/if}
 {/snippet}
 
@@ -994,39 +1330,148 @@
             здесь ничего не предугадывается, поэтому значок меняется тогда же,
             когда меняется у всей комнаты.
           -->
-          <button
-            type="button"
-            class={cn(
-              'mt-1 inline-flex h-5 w-5 items-center justify-center',
-              'transition-colors duration-[var(--speed-quick)]',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-              'disabled:pointer-events-none disabled:opacity-40',
-              cellOpen ? 'bg-accent/15 text-accent-text' : 'text-faint hover:bg-line hover:text-ink',
-            )}
-            disabled={controlDisabled(session.connected)}
-            aria-pressed={cellOpen}
-            aria-label={cellOpen ? 'Закрыть эту ячейку' : 'Открыть эту ячейку комнате'}
-            title={controlTitle(
-              session.connected,
-              cellOpen ? 'Закрыть её' : 'Открыть эту ячейку комнате',
-            )}
-            onclick={() => session.send({ t: 'cell:open', cellId: id, open: !cellOpen })}
-          >
-            <Icon name={cellOpen ? 'unlock' : 'lock'} size={13} />
-          </button>
+          <!--
+            Третье положение — консилиум — за меню: удержание, правая кнопка
+            или щелчок по замку, который уже в консилиуме. Щелчок по закрытой и
+            открытой остался прежним нажатием: положений у него два, и оба
+            чинятся тем же нажатием, а меню на каждый щелчок стоило бы секунды
+            молчания посреди фразы.
+          -->
+          <div class="relative">
+            <button
+              type="button"
+              data-lock-button
+              class={cn(
+                'mt-1 inline-flex h-5 w-5 items-center justify-center',
+                'transition-colors duration-[var(--speed-quick)]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                'disabled:pointer-events-none disabled:opacity-40',
+                cellOpen || inCouncil
+                  ? 'bg-accent/15 text-accent-text'
+                  : 'text-faint hover:bg-line hover:text-ink',
+              )}
+              disabled={controlDisabled(session.connected)}
+              aria-pressed={cellOpen || inCouncil}
+              aria-haspopup="menu"
+              aria-expanded={lockMenu}
+              aria-label={inCouncil
+                ? 'Консилиум — положение замка'
+                : cellOpen
+                  ? 'Закрыть эту ячейку'
+                  : 'Открыть эту ячейку комнате'}
+              title={controlTitle(
+                session.connected,
+                inCouncil
+                  ? 'Консилиум · щелчок — положения замка'
+                  : cellOpen
+                    ? 'Закрыть её · удержать — консилиум'
+                    : 'Открыть эту ячейку комнате · удержать — консилиум',
+              )}
+              onclick={pressLock}
+              onpointerdown={startHold}
+              onpointerup={endHold}
+              onpointerleave={endHold}
+              onpointercancel={endHold}
+              oncontextmenu={(event) => {
+                event.preventDefault()
+                endHold()
+                lockMenu = true
+              }}
+            >
+              <Icon name={lockIcon} size={13} />
+            </button>
+            {#if lockMenu}
+              <!--
+                Слева от тетради места нет — меню раскрывается вправо, поверх
+                тела ячейки. Ручки консилиума стоят и вне консилиума, но
+                погашены: чтобы было видно, что они есть и где они, до того как
+                положение выбрано.
+              -->
+              <div
+                role="menu"
+                tabindex="-1"
+                data-lock-menu
+                class="absolute left-0 top-full z-30 mt-1 w-64 border border-line bg-canvas p-1 shadow-pop"
+              >
+                {#each LOCKS as item (item.state)}
+                  {@const current = lockState === item.state}
+                  <button
+                    role="menuitemradio"
+                    type="button"
+                    aria-checked={current}
+                    class={cn(
+                      'flex w-full items-start gap-2 px-2.5 py-1.5 text-left text-ui',
+                      'transition-colors duration-100',
+                      current ? 'bg-raised text-ink' : 'text-ink hover:bg-raised',
+                    )}
+                    onclick={() => setLock(item.state)}
+                  >
+                    <Icon
+                      name={item.icon}
+                      size={13}
+                      class={cn('mt-0.5 shrink-0', current ? 'text-accent-text' : 'text-muted')}
+                    />
+                    <span class="flex min-w-0 flex-1 flex-col">
+                      <span>{item.label}</span>
+                      <span class="text-2xs text-muted">{item.hint}</span>
+                    </span>
+                    {#if current}
+                      <Icon name="check" size={12} class="mt-1 shrink-0 text-accent-text" />
+                    {/if}
+                  </button>
+                {/each}
+                <div class="my-1 h-px bg-line-soft"></div>
+                <label
+                  class={cn(
+                    'flex items-center gap-2 px-2.5 py-1.5 text-ui',
+                    inCouncil ? 'text-ink' : 'text-muted',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    class="accent-[rgb(var(--accent))]"
+                    checked={councilSettings.studentRun}
+                    disabled={!inCouncil}
+                    onchange={() => toggleKnob('studentRun')}
+                  />
+                  <span class="flex-1">Запуск студентам</span>
+                </label>
+                <label
+                  class={cn(
+                    'flex items-center gap-2 px-2.5 py-1.5 text-ui',
+                    inCouncil ? 'text-ink' : 'text-muted',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    class="accent-[rgb(var(--accent))]"
+                    checked={councilSettings.namesOnProjector}
+                    disabled={!inCouncil}
+                    onchange={() => toggleKnob('namesOnProjector')}
+                  />
+                  <span class="flex-1">Имена на проекторе</span>
+                </label>
+                {#if !inCouncil}
+                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">Ручки действуют в консилиуме.</p>
+                {/if}
+              </div>
+            {/if}
+          </div>
         {:else}
           <!-- Тому, кто открыть не может, замок только показывает. Он всё
                равно нужен: иначе непонятно, почему ячейка не берёт набор. -->
           <span
             class={cn(
               'mt-1 inline-flex h-5 w-5 items-center justify-center',
-              cellOpen ? 'text-accent-text' : 'text-faint',
+              cellOpen || inCouncil ? 'text-accent-text' : 'text-faint',
             )}
-            title={cellOpen
-              ? 'Эта ячейка открыта комнате'
-              : 'Закрыта — открыть её может преподаватель'}
+            title={inCouncil
+              ? 'Консилиум — у каждого свой лист, видит только преподаватель'
+              : cellOpen
+                ? 'Эта ячейка открыта комнате'
+                : 'Закрыта — открыть её может преподаватель'}
           >
-            <Icon name={cellOpen ? 'unlock' : 'lock'} size={13} />
+            <Icon name={lockIcon} size={13} />
           </span>
         {/if}
       {/if}
@@ -1293,7 +1738,171 @@
       <div class="relative">
       {#if mounted}
         <div bind:clientHeight={contentHeight}>
-          {#if showEditor}
+          {#if ownSheet && sheet}
+            <!--
+              Свой лист студента в консилиуме — вместо общего редактора.
+
+              Тот же CodeMirror, но привязан к локальному документу (см.
+              `openSheet`): в общий Y.Text отсюда не уходит ни буквы. Снимок
+              уезжает сам при паузе в наборе и на уходе фокуса; «Сдать» — кнопка
+              и Shift+Enter, потому что запуска у студента здесь нет и пальцы,
+              привыкшие к «выполнить и дальше», должны попадать в «сдать», а не
+              в отказ.
+            -->
+            <!--
+              Общая ячейка — над своим листом, только чтение.
+
+              Третье правило консилиума: класс видит то, что показал
+              преподаватель. «Показать классу» кладёт текст попытки в общий
+              Y.Text ячейки — а тело ячейки у студента в это время занято его
+              листом, и общий текст не рисовался нигде: показанное видел один
+              преподаватель, автору приходил чип «На экране», а соседи не
+              видели ничего. Проектор на лекции показывает страницы, не
+              тетрадь. Поэтому общий текст стоит здесь, и вместе с ним —
+              задание, пока преподаватель ничего не показал. Пустой — не
+              рисуется: пустая рамка над листом ничего не говорит.
+            -->
+            {#if liveText.current.trim()}
+              <div class={cn('border-l-4 px-3 py-1', RULE[tone], 'bg-brand/[0.035]')}>
+                <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
+                  <span class={cn(CAPS, 'text-muted')}>Общая ячейка</span>
+                  <span class="text-2xs text-muted">
+                    видит весь класс · сюда преподаватель кладёт то, что показывает
+                  </span>
+                </div>
+                {#if isCode}
+                  <Code code={liveText.current} />
+                {:else}
+                  <Markdown source={liveText.current} class="text-prose text-muted" />
+                {/if}
+              </div>
+            {/if}
+            <div
+              class={cn('border-l-4 px-3 py-1', RULE[tone], 'bg-surface')}
+              onfocusout={(event) => {
+                const next = event.relatedTarget as Node | null
+                if (!next || !event.currentTarget.contains(next)) session.council.flush(id)
+              }}
+            >
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
+                <span class={cn(CAPS, mine?.shown ? 'text-positive' : 'text-accent-text')}>
+                  {mine?.shown ? 'На экране' : 'Консилиум'}
+                </span>
+                <span class="text-2xs text-muted">
+                  {#if mine?.shown}
+                    преподаватель показал ваш вариант классу
+                  {:else if councilClosed}
+                    {COUNCIL_CLOSED}
+                  {:else if submittedAt !== null}
+                    сдано {clock(submittedAt)} · видит только преподаватель
+                  {:else}
+                    пишете свою версию · видит только преподаватель
+                  {/if}
+                </span>
+                {#if count}
+                  <span class="ml-auto font-mono text-2xs tabular-nums text-muted">
+                    {countLine(count)}
+                  </span>
+                {/if}
+              </div>
+              <!-- Сданное приглушено: текст на месте, но это уже не черновик, а
+                   лист, который смотрят. «Изменить» возвращает всё как было. -->
+              <div class={cn(submittedAt !== null && 'opacity-60')}>
+                <CodeEditor
+                  text={sheet.text}
+                  awareness={sheet.awareness}
+                  undoManager={sheet.undo}
+                  language={isCode ? 'python' : 'markdown'}
+                  label={`Своя попытка, ячейка ${ordinal}`}
+                  readOnly={!mayAttempt || submittedAt !== null}
+                  placeholder="Ваша версия…"
+                  onfocus={() => onselect()}
+                  onrun={runAttempt}
+                  onrunstep={() => void submitAttempt()}
+                  onrunandadd={() => void submitAttempt()}
+                  onescape={() => root?.querySelector<HTMLElement>('.cm-content')?.blur()}
+                  onarrowout={(direction) => step(direction)}
+                />
+              </div>
+              {#if mine?.reply}
+                <!-- Ответ преподавателя — строкой под попыткой, видна двоим.
+                     Подпись — того, кто отвечал: в комнате может быть два
+                     преподавателя, а черновик оракула сюда приходит уже его
+                     словами. -->
+                <p class="flex flex-wrap items-baseline gap-x-2 border-t border-line-soft pb-1 pt-1.5 text-ui">
+                  <span class="font-bold text-ink">{mine.reply.by}</span>
+                  <span class="font-mono text-2xs text-muted">{clock(mine.reply.at)}</span>
+                  <span class="text-ink">{mine.reply.text}</span>
+                </p>
+              {/if}
+              <div class="flex flex-wrap items-center gap-2.5 pb-1 pt-1.5">
+                {#if submittedAt === null}
+                  <button
+                    type="button"
+                    class="btn-primary h-7"
+                    disabled={!mayAttempt || controlDisabled(session.connected)}
+                    title={controlTitle(session.connected, mayAttempt ? 'Сдать — ⇧↵' : attemptWhy)}
+                    onclick={() => void submitAttempt()}
+                  >
+                    Сдать
+                  </button>
+                  {#if mayAttempt}
+                    <span class="text-2xs text-muted">⇧↵ — сдать · черновик уходит сам при паузе</span>
+                  {:else}
+                    <span class="text-2xs text-muted">{attemptWhy}</span>
+                  {/if}
+                {:else}
+                  <button
+                    type="button"
+                    class="btn-outline h-7"
+                    disabled={!mayAttempt || controlDisabled(session.connected)}
+                    title={controlTitle(
+                      session.connected,
+                      mayAttempt ? 'Вернуть в набор — «сдано» снимется' : attemptWhy,
+                    )}
+                    onclick={withdrawAttempt}
+                  >
+                    Изменить
+                  </button>
+                  {#if !mayAttempt}
+                    <span class="text-2xs text-muted">{attemptWhy}</span>
+                  {/if}
+                {/if}
+                <!-- Ручка «запуск студентам» выключена по умолчанию: без неё
+                     кнопки нет вовсе, запускает тот, кто ведёт. -->
+                {#if mayRunAttempt && !councilClosed}
+                  <button
+                    type="button"
+                    class="btn-ghost h-7"
+                    disabled={controlDisabled(session.connected)}
+                    title={controlTitle(session.connected, 'Запустить свою попытку — в очередь, по одному')}
+                    onclick={runAttempt}
+                  >
+                    Запустить
+                  </button>
+                  {#if mine?.queue != null}
+                    <span class="inline-flex h-5 items-center bg-raised px-2 font-mono text-2xs text-muted">
+                      {queueWords(mine.queue)}
+                    </span>
+                  {/if}
+                {/if}
+              </div>
+            </div>
+            <!-- Вывод запуска — к попытке, не к общей ячейке: приезжает автору
+                 вместе с попыткой и лежит под ней. -->
+            {#if mine?.run}
+              <div class={cn('border-l-4', RULE[tone], mine.run.state === 'error' ? 'bg-danger/5' : 'bg-surface/50')}>
+                {#if mine.run.outputs.length > 0}
+                  <div class="px-2 py-1.5">
+                    <CellOutputs outputs={mine.run.outputs} />
+                  </div>
+                {/if}
+                <div class="px-4 pb-1.5 pt-0.5 text-2xs text-muted">
+                  {ranByLine(mine.run, spell)}
+                </div>
+              </div>
+            {/if}
+          {:else if showEditor}
             <!-- The focus ring lands at once: box-shadow cannot be animated
                  on the compositor, and a focus cue that arrives late is worse
                  than one that arrives hard. -->
@@ -1396,6 +2005,85 @@
                 <Markdown source={source.current} class="text-prose text-muted" />
               {:else}
                 <p class="text-prose text-muted">Empty — double-click to write.</p>
+              {/if}
+            </div>
+          {/if}
+
+          <!--
+            Пульт преподавателя — под эталоном.
+
+            Полоса режима, стопка и сводка живут в CouncilStack (components/
+            council): один вход на оба вида. Здесь — монтаж и провода к сокету:
+            показать, запустить, ответить, отметить, спросить оракула. Положение
+            в стопке — состояние этого экрана, не комнаты, и живёт в этой ячейке;
+            вид (стопка/сводка) — общий на все ячейки, в CouncilState.
+          -->
+          {#if leads && (inCouncil || (board?.counts.attempts ?? 0) > 0)}
+            <!--
+              И после закрытия консилиума, пока есть попытки: сданное остаётся
+              на просмотр до конца занятия, а закрытие стопка объявляет сама.
+            -->
+            <div class="border-l-4 border-accent bg-accent/[0.04] px-3 py-2">
+              {#if board}
+                <CouncilStack
+                  {board}
+                  cellId={id}
+                  cellIndex={index + 1}
+                  position={stackPosition}
+                  view={session.council.view}
+                  askWhy={may.ask ? null : may.askWhy}
+                  onshow={showToClass}
+                  onrun={runAttemptOf}
+                  onreply={replyTo}
+                  onmark={markAttempt}
+                  onask={() => void askOracle(false)}
+                  onstop={() => void askOracle(true)}
+                  onposition={(participantId) => (stackPosition = { participantId })}
+                  ontoggle={(view) => (session.council.view = view)}
+                />
+              {:else}
+                <p class={cn(CAPS, 'text-accent-text')}>Консилиум — ячейка {ordinal}</p>
+                <p class="pt-1 text-2xs text-muted">
+                  Стопка появится с первой попыткой: студенты пишут у себя, и сюда приезжают
+                  снимки при паузе в наборе.
+                </p>
+              {/if}
+            </div>
+          {/if}
+
+          <!--
+            Консилиум закрыли, а лист остался.
+
+            Замок ушёл в другое положение — тело ячейки снова общее, а то, что
+            человек написал, никуда не пропало: оно здесь, черновиком, свёрнуто.
+            Строка обязана это сказать — иначе пропавший из-под рук редактор
+            читается как «вашу работу стёрли».
+          -->
+          {#if !inCouncil && !leads && sheet}
+            <div class={cn('border-l-4 px-3 py-1.5', RULE[tone], 'bg-surface/70')}>
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span class={cn(CAPS, 'text-muted')}>Консилиум закрыт</span>
+                <span class="text-2xs text-muted">{COUNCIL_CLOSED}</span>
+                <button
+                  type="button"
+                  class="ml-auto text-2xs text-accent-text hover:underline"
+                  aria-expanded={showDraft}
+                  onclick={() => (showDraft = !showDraft)}
+                >
+                  {showDraft ? 'Свернуть черновик' : 'Показать черновик'}
+                </button>
+              </div>
+              {#if showDraft}
+                <div class="pt-1 opacity-70">
+                  <CodeEditor
+                    text={sheet.text}
+                    awareness={sheet.awareness}
+                    undoManager={sheet.undo}
+                    language={isCode ? 'python' : 'markdown'}
+                    label={`Черновик попытки, ячейка ${ordinal}`}
+                    readOnly={true}
+                  />
+                </div>
               {/if}
             </div>
           {/if}

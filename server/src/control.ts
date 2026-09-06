@@ -26,22 +26,34 @@
 import { WebSocket, type RawData } from 'ws'
 import {
   acceptPatch,
+  allCellArrays,
   bookList,
   cellId,
+  cellLock,
   cellsAt,
+  cellSource,
   cellType,
+  councilSettingsOf,
+  DEFAULT_COUNCIL,
   findCell,
   findChatEntry,
   getCells,
   getMeta,
   isCellOpen,
+  openValueFor,
+  readCouncilSettings,
   rejectPatch,
+  replaceText,
+  type CellLock,
+  type CouncilSettings,
   type KernelStatus,
 } from '@shared/notebook'
 import { colorForId } from '@shared/protocol'
 import type {
   ControlClientMessage,
   ControlServerMessage,
+  CouncilAttempt,
+  CouncilRun,
   Participant,
   ParticipantRole,
 } from '@shared/protocol'
@@ -64,7 +76,10 @@ import {
   allowsStructure,
   CLASS_IS_OVER,
   mayEditCell,
+  mayLeadCouncil,
   mayRunCell,
+  mayRunCouncil,
+  mayWriteCouncil,
   runQueueCap,
   type Who,
 } from '@shared/rules'
@@ -90,9 +105,32 @@ import {
   restartSession,
   sweepOrphanRuns,
   cancelRun,
+  councilQueued,
+  councilQueuePosition,
   queueIsOnly,
+  requestCouncilRun,
   startedTheRunningCell,
 } from './kernel/index.js'
+import {
+  attemptFor,
+  attemptOf,
+  attemptsOf,
+  boardFor,
+  cellsOfParticipant,
+  cellsWithAttempts,
+  countFor,
+  countsFor,
+  discardCouncil,
+  mineFor,
+  purgeAttempts,
+  recordRun,
+  saveDraft,
+  setMark,
+  setReply,
+  setShown,
+  submitAttempt,
+  withdrawAttempt,
+} from './council.js'
 import {
   clearTerminal,
   closeTerminal,
@@ -151,13 +189,28 @@ import {
   openBook,
 } from './collab/books.js'
 import { stopAll, undoTurn } from './ai/agent.js'
+import { onCouncilOracle } from './ai/council.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
 /** A socket that ignores this many consecutive pings is a closed laptop lid. */
 const MAX_MISSED_PONGS = 2
-/** Control frames are tiny by construction; anything larger is not ours. */
-const MAX_FRAME_BYTES = 8192
+/**
+ * Кадры управляющего сокета маленькие по устройству — кроме одного.
+ *
+ * Снимок попытки консилиума (`council:draft`) везёт код целиком, и восьми
+ * килобайт ему мало: сотня строк с комментариями по-русски — это уже два
+ * байта на букву. Потолок кадра поднят до того, что вмещает `MAX_ATTEMPT_CHARS`
+ * кириллицей вместе с обвязкой; всё прочее по-прежнему в разы меньше.
+ */
+const MAX_FRAME_BYTES = 32 * 1024
+/**
+ * Попытка — это ячейка, а не файл: сотни строк в ней не бывает. Отказ вслух,
+ * как у заметки: обрезанный молча код на экране выглядит целым.
+ */
+const MAX_ATTEMPT_CHARS = 8000
+/** Ответ студенту — абзац, как заметка к странице. */
+const MAX_REPLY_CHARS = 3000
 /** A shell command, not a shell script: anything longer is a paste accident. */
 const MAX_COMMAND_BYTES = 4096
 /**
@@ -234,6 +287,10 @@ export function closeControlRoom(sessionId: string): void {
    */
   boards.delete(sessionId)
   forgetLecture(sessionId)
+  // И попытки консилиума: они в базе, а не в документе, и снос документа их
+  // не заденет — а лежать под ключом снесённой комнаты им незачем.
+  discardCouncil(sessionId)
+  forgetBoards(sessionId)
   const waiting = filesPending.get(sessionId)
   if (waiting) {
     clearTimeout(waiting)
@@ -498,6 +555,313 @@ function toHosts(sessionId: string, file: string, message: ControlServerMessage)
  */
 const notesOpen = new WeakMap<WebSocket, string>()
 
+/* ------------------------------------------------------------- консилиум */
+
+/**
+ * Та же фраза, что у клиента (web/src/lib/may.ts · COUNCIL_CLOSED): отказ
+ * сервера и серая кнопка должны говорить одно и то же.
+ */
+const COUNCIL_CLOSED = 'Консилиум закрыт — текст остался у вас черновиком'
+
+/**
+ * Сказать всем преподавателям комнаты — и никому больше.
+ *
+ * Не `toHosts`: тот отбирает ещё и по документу заметок. Стопка консилиума —
+ * речь к пульту преподавателя, какой бы файл он ни открыл, и второй
+ * преподаватель на планшете обязан видеть ту же стопку. Проекция на
+ * кафедральном ноутбуке тоже хост и тоже получит стопку — не рисовать её на
+ * экране решает клиент (протокол · council:count для проектора).
+ */
+function toTeachers(sessionId: string, message: ControlServerMessage): void {
+  const room = rooms.get(sessionId)
+  if (!room) return
+  let frame: string | null = null
+  for (const ws of room.sockets) {
+    if (ws.readyState !== WebSocket.OPEN || rank.get(ws) !== 'host') continue
+    frame ??= JSON.stringify(message)
+    try {
+      ws.send(frame)
+    } catch {
+      /* dropped; the close handler will clean it up */
+    }
+  }
+}
+
+/** Есть ли в комнате хоть один пульт преподавателя — иначе стопку собирать незачем. */
+function teachersOnline(sessionId: string): boolean {
+  const room = rooms.get(sessionId)
+  if (!room) return false
+  for (const ws of room.sockets)
+    if (rank.get(ws) === 'host' && ws.readyState === WebSocket.OPEN) return true
+  return false
+}
+
+/**
+ * Положение замка и ручки — из документа, где их записал сервер.
+ *
+ * Ячейки нет — замок закрыт: попытку в неё не принять, а стопка по ней всё ещё
+ * собирается (попытки остаются на просмотр), только с закрытым замком.
+ */
+function councilCellOf(
+  sessionId: string,
+  id: string,
+): { lock: CellLock; settings: CouncilSettings } {
+  const found = findCell(getSessionDoc(sessionId).doc, id)
+  if (!found) return { lock: 'closed', settings: DEFAULT_COUNCIL }
+  return { lock: cellLock(found.cell), settings: councilSettingsOf(found.cell) ?? DEFAULT_COUNCIL }
+}
+
+/**
+ * Стопка — не чаще, чем раз в это окно на ячейку, и не целиком.
+ *
+ * Снимки приходят на каждую паузу в наборе от каждого из сотен человек. Дребезг
+ * держит частоту: первая перемена уходит сразу (пульт не должен ждать окна на
+ * одном нажатии), остальные в окне сливаются в один хвостовой кадр. Размер
+ * держит дельта: у каждой попытки в стопке лежит её вывод — до 64 КБ текста и
+ * до 2 МБ картинок, — и кадр со всей стопкой из-за одной буквы у одного
+ * студента весил бы десятки мегабайт по три раза в секунду. Поэтому перемена
+ * везёт только тех, кого коснулась (`council:patch`); вся стопка едет лишь
+ * там, где сменилось общее — замок, ручки, оракул — или где стопки у пульта
+ * ещё нет (приветственная пачка). Окно копит, кого трогали; «всех» в окне
+ * побеждает любой список.
+ */
+const BOARD_EVERY_MS = 300
+interface BoardPending {
+  timer: NodeJS.Timeout | null
+  last: number
+  /** Кого трогали с прошлого кадра; `'all'` — стопку целиком. */
+  dirty: Set<string> | 'all'
+}
+const boardsPending = new Map<string, BoardPending>()
+
+function boardNow(sessionId: string, cellId: string, dirty: Set<string> | 'all'): void {
+  if (!teachersOnline(sessionId)) return
+  const cell = councilCellOf(sessionId, cellId)
+  if (dirty === 'all') {
+    toTeachers(sessionId, {
+      t: 'council:board',
+      cellId,
+      board: boardFor(sessionId, cellId, cell),
+    })
+    return
+  }
+  if (dirty.size === 0) return
+  const attempts: CouncilAttempt[] = []
+  const removed: string[] = []
+  for (const participantId of dirty) {
+    const attempt = attemptFor(sessionId, cellId, participantId)
+    if (attempt) attempts.push(attempt)
+    else removed.push(participantId)
+  }
+  toTeachers(sessionId, {
+    t: 'council:patch',
+    cellId,
+    attempts,
+    removed,
+    counts: countsFor(sessionId, cellId),
+    lock: cell.lock,
+    settings: cell.settings,
+  })
+}
+
+/**
+ * Стопку — хосту: без `touched` целиком, с ним — только этих людей (тех, кого
+ * в стопке уже нет, кадр назовёт в `removed`).
+ */
+function boardOut(sessionId: string, cellId: string, touched?: readonly string[]): void {
+  const key = `${sessionId}\n${cellId}`
+  let state = boardsPending.get(key)
+  if (!state) {
+    state = { timer: null, last: 0, dirty: new Set() }
+    boardsPending.set(key, state)
+  }
+  if (touched === undefined) state.dirty = 'all'
+  else if (state.dirty !== 'all') for (const id of touched) state.dirty.add(id)
+  // Хвостовой кадр уже назначен — он увезёт и эту перемену.
+  if (state.timer) return
+  const since = Date.now() - state.last
+  if (since >= BOARD_EVERY_MS) {
+    flushBoard(sessionId, cellId, state)
+    return
+  }
+  const pending = state
+  state.timer = setTimeout(() => {
+    pending.timer = null
+    flushBoard(sessionId, cellId, pending)
+  }, BOARD_EVERY_MS - since)
+  state.timer.unref?.()
+}
+
+/** Отдать накопленное за окно одним кадром и начать копить заново. */
+function flushBoard(sessionId: string, cellId: string, state: BoardPending): void {
+  const dirty = state.dirty
+  state.dirty = new Set()
+  state.last = Date.now()
+  boardNow(sessionId, cellId, dirty)
+}
+
+/**
+ * Стопка хосту — снаружи, для оракула о решениях (routes/council.ts).
+ *
+ * Имена групп и черновики лежат в `CouncilBoard.oracle`, и после `setOracle`
+ * сводка на пульте обновится только со стопкой; сам кадр `council:oracle`
+ * маршрут шлёт отдельно.
+ */
+export function announceCouncilBoard(sessionId: string, cellId: string): void {
+  boardOut(sessionId, cellId)
+}
+
+/** Отправить отложенные стопки сейчас — ради теста, которому нечего ждать. */
+export function flushCouncilBoards(sessionId: string): void {
+  for (const [key, state] of boardsPending) {
+    if (!key.startsWith(`${sessionId}\n`) || !state.timer) continue
+    clearTimeout(state.timer)
+    state.timer = null
+    flushBoard(sessionId, key.slice(sessionId.length + 1), state)
+  }
+}
+
+function forgetBoards(sessionId: string): void {
+  for (const [key, state] of boardsPending) {
+    if (!key.startsWith(`${sessionId}\n`)) continue
+    if (state.timer) clearTimeout(state.timer)
+    boardsPending.delete(key)
+  }
+}
+
+/** Свой лист — одному человеку, на все его сокеты. */
+function mineOut(sessionId: string, cellId: string, participantId: string): void {
+  const message = mineMessage(sessionId, cellId, participantId)
+  if (message) tell(sessionId, participantId, message)
+}
+
+function mineMessage(
+  sessionId: string,
+  cellId: string,
+  participantId: string,
+): ControlServerMessage | null {
+  const { lock } = councilCellOf(sessionId, cellId)
+  const position = councilQueuePosition(sessionId, cellId, participantId)
+  const state = mineFor(
+    sessionId,
+    cellId,
+    participantId,
+    lock !== 'council',
+    // Ноль — «считается сейчас», и об этом говорит сам `run.state`.
+    position !== null && position > 0 ? position : null,
+  )
+  return state ? { t: 'council:mine', cellId, state } : null
+}
+
+/** «N сдали из M» — всей комнате, без текстов. */
+function countOut(sessionId: string, cellId: string): void {
+  const { submitted, total } = countFor(sessionId, cellId)
+  broadcast(sessionId, { t: 'council:count', cellId, submitted, total })
+}
+
+/**
+ * Очередь сдвинулась — каждому, кто в ней ждёт, новый номер.
+ *
+ * «Вы 37-й» без этого показывал бы номер на момент нажатия до конца пары.
+ */
+function tellQueued(sessionId: string): void {
+  for (const { cellId, participantId } of councilQueued(sessionId)) {
+    mineOut(sessionId, cellId, participantId)
+  }
+}
+
+/** Все, кому положен свой лист по этой ячейке: онлайн и те, у кого есть попытка. */
+function councilAudience(sessionId: string, cellId: string): Set<string> {
+  const people = new Set<string>()
+  const room = rooms.get(sessionId)
+  if (room)
+    for (const ws of room.sockets) {
+      const who = owner.get(ws)
+      if (who) people.add(who)
+    }
+  for (const attempt of attemptsOf(sessionId, cellId)) people.add(attempt.participantId)
+  return people
+}
+
+/** Замок сменился — хосту стопка, каждому его лист, комнате счётчик. */
+function councilChanged(sessionId: string, cellId: string): void {
+  boardOut(sessionId, cellId)
+  for (const participantId of councilAudience(sessionId, cellId))
+    mineOut(sessionId, cellId, participantId)
+  countOut(sessionId, cellId)
+}
+
+/** Ячейки, где консилиум идёт сейчас, — по всем тетрадям комнаты. */
+function councilCells(sessionId: string): string[] {
+  const doc = peekSessionDoc(sessionId)?.doc
+  if (!doc) return []
+  const out: string[] = []
+  for (const cells of allCellArrays(doc)) {
+    for (const cell of cells.toArray()) if (cellLock(cell) === 'council') out.push(cellId(cell))
+  }
+  return out
+}
+
+/**
+ * Приветственная пачка консилиума — тому, кто только что подключился.
+ *
+ * Хосту — стопки по всем ячейкам, где консилиум идёт или где остались попытки
+ * (после закрытия они на просмотр). Каждому — его листы там же, и счётчики.
+ * Прямо в этот сокет, не через `tell`: второй вкладке того же человека пачка
+ * уже приезжала при её собственном подключении.
+ */
+function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload): void {
+  const cells = new Set<string>([...councilCells(sessionId), ...cellsWithAttempts(sessionId)])
+  if (payload.role === 'host') {
+    for (const id of cells) {
+      send(ws, {
+        t: 'council:board',
+        cellId: id,
+        board: boardFor(sessionId, id, councilCellOf(sessionId, id)),
+      })
+    }
+  }
+  const mine = new Set<string>([
+    ...councilCells(sessionId),
+    ...cellsOfParticipant(sessionId, payload.participantId),
+  ])
+  for (const id of mine) {
+    const message = mineMessage(sessionId, id, payload.participantId)
+    if (message) send(ws, message)
+  }
+  for (const id of cells) {
+    const { submitted, total } = countFor(sessionId, id)
+    send(ws, { t: 'council:count', cellId: id, submitted, total })
+  }
+}
+
+/**
+ * Убрать попытки забаненного из всех ячеек — и показать хосту стопки без него.
+ *
+ * Зовётся из routes/bans.ts рядом с purgeQuestions: за спам в общей ленте банят,
+ * а попытка в консилиуме — тот же текст перед глазами преподавателя.
+ */
+export function purgeCouncilOf(sessionId: string, participantId: string): number {
+  const cells = cellsOfParticipant(sessionId, participantId)
+  const gone = purgeAttempts(sessionId, participantId)
+  for (const id of cells) {
+    // Попытки уже нет — кадр назовёт человека в `removed`.
+    boardOut(sessionId, id, [participantId])
+    countOut(sessionId, id)
+  }
+  return gone
+}
+
+/** Ручки консилиума из сообщения — только известные и только булевы. */
+function pickSettings(raw: unknown): Partial<CouncilSettings> {
+  const out: Partial<CouncilSettings> = {}
+  if (!raw || typeof raw !== 'object') return out
+  const from = raw as Record<string, unknown>
+  if (typeof from.studentRun === 'boolean') out.studentRun = from.studentRun
+  if (typeof from.namesOnProjector === 'boolean') out.namesOnProjector = from.namesOnProjector
+  return out
+}
+
 /*
  * Ячеек больше нет — снять их с выполнения.
  *
@@ -523,6 +887,21 @@ onRefusal((sessionId, participantId, refusal) => {
     rule: refusal.rule,
     message: refusal.message,
   })
+})
+
+/**
+ * Оракул о решениях сменил состояние — сказать пультам.
+ *
+ * Сам кадр — только преподавателям (сводка читала тексты студентов, на проектор
+ * и в зал ей нельзя), а следом стопка: имена групп и черновики ответов лежат в
+ * `CouncilBoard.oracle`, и без свежей стопки чипы в сводке остались бы без
+ * подписей. Регистрация здесь, а не в routes/council.ts: сокеты преподавателей
+ * знает только этот модуль, а импорт control.ts из ai/council.ts замкнул бы
+ * модули друг на друга — как и у onRefusal.
+ */
+onCouncilOracle((sessionId, cellId, oracle) => {
+  toTeachers(sessionId, { t: 'council:oracle', cellId, oracle })
+  boardOut(sessionId, cellId)
 })
 
 // The transcript is in the document; the terminal's health is not, so it comes
@@ -1858,7 +2237,8 @@ export function dispatch(
      * тетрадь, то есть преподаватель. Правило здесь было бы правилом о том, кто
      * раздаёт права, — а такого в RoomRules нет и заводить его не за чем.
      */
-    case 'cell:open': {
+    case 'cell:open':
+    case 'cell:lock': {
       if (payload.role !== 'host') {
         refuse(ws, sessionId, payload, 'Открывает ячейки преподаватель.')
         return
@@ -1875,21 +2255,263 @@ export function dispatch(
         return
       }
       const id = optionalId(message.cellId)
-      if (!id || typeof message.open !== 'boolean') return
+      if (!id) return
+      /*
+       * `cell:open` — частный случай на два положения, и читается он тем же
+       * кодом: два обработчика одного замка разъехались бы на первой правке.
+       */
+      let state: CellLock
+      let settings: Partial<CouncilSettings> = {}
+      if (message.t === 'cell:open') {
+        if (typeof message.open !== 'boolean') return
+        state = message.open ? 'open' : 'closed'
+      } else {
+        if (message.state !== 'closed' && message.state !== 'open' && message.state !== 'council') {
+          return
+        }
+        state = message.state
+        settings = pickSettings(message.settings)
+      }
       const { doc } = getSessionDoc(sessionId)
       const found = findCell(doc, id)
       if (!found) {
         send(ws, { t: 'error', message: 'Этой ячейки в комнате уже нет.' })
         return
       }
+      const was = cellLock(found.cell)
+      /*
+       * Ручки: не приложены — как были; ячейка впервые в консилиуме — умолчания
+       * (readCouncilSettings отдаёт их на пустом месте). Повторный `cell:lock`
+       * с тем же положением и новыми ручками — это и есть «переключить ручку».
+       */
+      const prior = readCouncilSettings(found.cell.get('council'))
+      const next: CouncilSettings | null = state === 'council' ? { ...prior, ...settings } : null
       // Повторное нажатие — не событие: лишняя версия в истории на каждый
       // щелчок по уже открытой ячейке ничего не рассказывает.
-      if (isCellOpen(found.cell) === message.open) return
+      const sameKnobs =
+        next === null ||
+        (next.studentRun === prior.studentRun && next.namesOnProjector === prior.namesOnProjector)
+      if (was === state && sameKnobs) return
       /*
        * От имени сервера, как `state` и `outputs` у той же ячейки: `open` —
-       * право, а не чей-то набор, и автора у него нет.
+       * право, а не чей-то набор, и автора у него нет. Ключ `council` пишется
+       * только там, где он есть или нужен: ячейке, которая консилиумом не была,
+       * `null` в нём ничего не рассказывает.
        */
-      doc.transact(() => found.cell.set('open', message.open), ORIGIN)
+      doc.transact(() => {
+        found.cell.set('open', openValueFor(state))
+        if (next !== null || found.cell.get('council') != null) found.cell.set('council', next)
+      }, ORIGIN)
+      /*
+       * Консилиум открыли, переключили или закрыли — комнате об этом надо
+       * сказать по управляющему проводу: попытки не в документе, и студент
+       * иначе узнал бы о закрытии только по отказу на следующий снимок. Закрытие
+       * не стирает попыток — они остаются на просмотр (боард с lock: 'closed'),
+       * а автору уходит `closed: true`, и текст остаётся у него черновиком.
+       */
+      if (was === 'council' || state === 'council') councilChanged(sessionId, id)
+      return
+    }
+
+    /*
+     * Консилиум: свой лист студента.
+     *
+     * Право — `mayWriteCouncil`: правила комнаты ни при чём (свой лист и
+     * заводят там, где общий текст преподавательский), останавливают только
+     * закрытый замок и конец занятия. Снимок в ячейку без консилиума — отказ
+     * теми же словами, что у серой кнопки на клиенте.
+     */
+    case 'council:draft':
+    case 'council:submit':
+    case 'council:withdraw': {
+      const id = optionalId(message.cellId)
+      if (!id) return
+      const { lock } = councilCellOf(sessionId, id)
+      if (!mayWriteCouncil(payload.role, isFinished(sessionId), lock !== 'council')) {
+        if (lock !== 'council') send(ws, { t: 'error', message: `${COUNCIL_CLOSED}.` })
+        else refuse(ws, sessionId, payload, COUNCIL_CLOSED)
+        return
+      }
+      const before = countFor(sessionId, id)
+      const now = Date.now()
+      if (message.t === 'council:draft') {
+        if (typeof message.text !== 'string') return
+        if (message.text.length > MAX_ATTEMPT_CHARS) {
+          // Вслух, а не обрезать: обрезанный молча код на экране выглядит целым.
+          send(ws, {
+            t: 'error',
+            message: `Попытка — не длиннее ${MAX_ATTEMPT_CHARS} знаков; остальное вынесите в файл.`,
+          })
+          return
+        }
+        saveDraft(sessionId, id, payload.participantId, message.text, now)
+      } else if (message.t === 'council:submit') {
+        if (!submitAttempt(sessionId, id, payload.participantId, now)) {
+          send(ws, { t: 'error', message: 'Сдавать пока нечего — напишите что-нибудь.' })
+          return
+        }
+      } else if (!withdrawAttempt(sessionId, id, payload.participantId)) {
+        return
+      }
+      mineOut(sessionId, id, payload.participantId)
+      boardOut(sessionId, id, [payload.participantId])
+      // Счётчик — комнате, и только когда он сменился: снимок при паузе в
+      // наборе счётчика не двигает, а кадр на каждый — двадцать браузеров ради ничего.
+      const after = countFor(sessionId, id)
+      if (after.total !== before.total || after.submitted !== before.submitted) {
+        countOut(sessionId, id)
+      }
+      return
+    }
+
+    /*
+     * Консилиум: то, что делает ведущий. Право одно на всё — `mayLeadCouncil`,
+     * и после звонка тоже: сданное остаётся на просмотр, разобрать его после
+     * пары — дело преподавателя.
+     */
+    case 'council:show': {
+      if (!mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, 'Консилиум ведёт преподаватель.')
+        return
+      }
+      const id = optionalId(message.cellId)
+      const target = optionalId(message.participantId)
+      if (!id || !target) return
+      const attempt = attemptOf(sessionId, id, target)
+      if (!attempt) {
+        send(ws, { t: 'error', message: 'Этой попытки уже нет.' })
+        return
+      }
+      const found = findCell(getSessionDoc(sessionId).doc, id)
+      if (!found) {
+        send(ws, { t: 'error', message: 'Этой ячейки в комнате уже нет.' })
+        return
+      }
+      /*
+       * Обычной правкой от имени преподавателя, а не от имени сервера: это
+       * текст, который теперь читает класс, и в истории у него должен быть
+       * автор — тот, кто решил показать, а не тот, кто написал.
+       */
+      applyOnBehalf(sessionId, payload.participantId, () => {
+        replaceText(cellSource(found.cell), attempt.text)
+      })
+      const changed = setShown(sessionId, id, target)
+      for (const participantId of changed) mineOut(sessionId, id, participantId)
+      boardOut(sessionId, id, [target, ...changed])
+      return
+    }
+
+    case 'council:run': {
+      const id = optionalId(message.cellId)
+      if (!id) return
+      const target = optionalId(message.participantId) ?? payload.participantId
+      const own = target === payload.participantId
+      if (!own && !mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, 'Чужую попытку запускает преподаватель.')
+        return
+      }
+      const { lock, settings } = councilCellOf(sessionId, id)
+      if (!mayRunCouncil(payload.role, settings.studentRun, isFinished(sessionId))) {
+        refuse(ws, sessionId, payload, 'В этом консилиуме попытки запускает преподаватель.')
+        return
+      }
+      // Студент — только пока консилиум идёт; преподаватель считает и на просмотре.
+      if (payload.role !== 'host' && lock !== 'council') {
+        send(ws, { t: 'error', message: `${COUNCIL_CLOSED}.` })
+        return
+      }
+      const attempt = attemptOf(sessionId, id, target)
+      if (!attempt) {
+        send(ws, {
+          t: 'error',
+          message: own ? 'Сначала напишите попытку.' : 'Этой попытки уже нет.',
+        })
+        return
+      }
+      const outcome = requestCouncilRun(
+        sessionId,
+        {
+          cellId: id,
+          participantId: target,
+          source: attempt.text,
+          by: payload.role === 'host' ? 'host' : 'author',
+          /*
+           * Каждый кадр ядра — к попытке и двоим, кому она видна. Очередь после
+           * конца запуска сдвинулась — ждущим новый номер.
+           */
+          onChange: (run: CouncilRun | null) => {
+            recordRun(sessionId, id, target, run)
+            mineOut(sessionId, id, target)
+            boardOut(sessionId, id, [target])
+            if (run === null || run.state === 'ok' || run.state === 'error') tellQueued(sessionId)
+          },
+        },
+        displayName(sessionId, payload.participantId),
+        payload.participantId,
+      )
+      if (!outcome.queued) {
+        send(ws, {
+          t: 'error',
+          message:
+            outcome.position === 0
+              ? 'Эта попытка уже считается.'
+              : `Эта попытка уже в очереди — ${outcome.position}-я.`,
+        })
+      }
+      return
+    }
+
+    case 'council:reply': {
+      if (!mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, 'Консилиум ведёт преподаватель.')
+        return
+      }
+      const id = optionalId(message.cellId)
+      if (!id) return
+      const text = typeof message.text === 'string' ? message.text.trim() : ''
+      if (!text) return
+      if (text.length > MAX_REPLY_CHARS) {
+        send(ws, { t: 'error', message: `Ответ — не длиннее ${MAX_REPLY_CHARS} знаков.` })
+        return
+      }
+      const to = message.to as { participantId?: unknown; groupKey?: unknown } | undefined
+      const participantId = optionalId(to?.participantId)
+      const address =
+        participantId !== undefined
+          ? { participantId }
+          : typeof to?.groupKey === 'string'
+            ? { groupKey: to.groupKey }
+            : null
+      if (!address) return
+      // Подпись преподавателя, не оракула: черновик модели сюда попадает уже
+      // правленым текстом, и в ленте студента отвечает человек.
+      const reply = { text, at: Date.now(), by: displayName(sessionId, payload.participantId) }
+      const told = setReply(sessionId, id, address, reply)
+      if (told.length === 0) {
+        send(ws, { t: 'error', message: 'Отвечать некому: этой попытки уже нет.' })
+        return
+      }
+      for (const who of told) mineOut(sessionId, id, who)
+      boardOut(sessionId, id, told)
+      return
+    }
+
+    case 'council:mark': {
+      if (!mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, 'Консилиум ведёт преподаватель.')
+        return
+      }
+      const id = optionalId(message.cellId)
+      const target = optionalId(message.participantId)
+      if (!id || !target) return
+      const correct =
+        message.correct === null || typeof message.correct === 'boolean'
+          ? message.correct
+          : undefined
+      if (correct === undefined) return
+      setMark(sessionId, id, target, correct)
+      mineOut(sessionId, id, target)
+      boardOut(sessionId, id, [target])
       return
     }
 
@@ -2248,6 +2870,12 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   const lecture = lectureOf(sessionId)
   send(ws, { t: 'lecture', state: lecture })
   if (lecture) send(ws, { t: 'ink', strokes: inkOf(sessionId) })
+  /*
+   * И консилиум: попытки живут не в документе, и опоздавший иначе не узнал бы
+   * ни о своём листе, ни о стопке (хост), ни о счётчике — до первого чужого
+   * нажатия.
+   */
+  councilWelcome(ws, sessionId, payload)
 
   let missedPongs = 0
   const pingTimer = setInterval(() => {

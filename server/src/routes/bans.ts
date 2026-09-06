@@ -13,7 +13,7 @@
  */
 import { Router } from 'express'
 import { addressOf, banParticipant, deviceOf, liftBan, listBans } from '../bans.js'
-import { evictBanned } from '../control.js'
+import { evictBanned, purgeCouncilOf } from '../control.js'
 import { getParticipant, getSession } from '../db.js'
 import { purgeQuestions } from './ai.js'
 import { sessionAuth } from './sessions.js'
@@ -94,6 +94,9 @@ export function banRoutes(): Router {
      * ничего не увидит.
      */
     purgeQuestions(sessionId, { participantId, name: ban.name }, auth.participantId)
+    // И его попытки в консилиуме — тот же текст перед глазами преподавателя,
+    // только не в ленте, а в стопке. Стопки без него уезжают хосту отсюда же.
+    purgeCouncilOf(sessionId, participantId)
     evictBanned(sessionId, participantId, ban.until)
 
     res.status(201).json({ ban })

@@ -18,7 +18,10 @@ import {
   allowsStructure,
   CLASS_IS_OVER,
   mayEditCell,
+  mayLeadCouncil,
   mayRunCell,
+  mayRunCouncil,
+  mayWriteCouncil,
   readRules,
   rulesAfterClass,
   type RoomRules,
@@ -85,6 +88,24 @@ export interface Permits {
    */
   ask: boolean
   askWhy: string
+  /**
+   * Вести консилиум: переключать замок и ручки, листать стопку, показывать
+   * классу, отвечать, отмечать, убирать, спрашивать оракула о решениях.
+   *
+   * Правила такого поля не знают: консилиум и есть способ дать классу писать
+   * там, где `edit` преподавательский. Ведёт его преподаватель — и после
+   * звонка тоже: сданное остаётся на просмотр (shared/rules.ts · mayLeadCouncil).
+   */
+  council: boolean
+  councilWhy: string
+  /**
+   * Писать свою попытку в консилиуме — своя, а не общая тетрадь, поэтому
+   * `edit` здесь ни при чём. Отнимает только конец занятия; «консилиум на этой
+   * ячейке закрыт» — второй множитель, и он зависит от ячейки: см.
+   * `mayWriteThisCouncil` внизу.
+   */
+  attempt: boolean
+  attemptWhy: string
 }
 
 const HOSTS = 'В этом семинаре это делает преподаватель'
@@ -148,6 +169,10 @@ export function permitsIn(rules: unknown, role: ParticipantRole, finished: boole
     boardWhy: why('Показывать документ всей комнате здесь может преподаватель'),
     ask: acts,
     askWhy: CLASS_IS_OVER,
+    council: mayLeadCouncil(role),
+    councilWhy: 'Консилиум ведёт преподаватель',
+    attempt: mayWriteCouncil(role, finished, false),
+    attemptWhy: CLASS_IS_OVER,
   }
 }
 
@@ -196,6 +221,28 @@ export function mayRunThisCell(may: Permits, open: boolean): boolean {
  * читается как правило. По той же причине замок исчезает после звонка: там уже
  * ничего не открыть, и говорить об этом должен `CLASS_IS_OVER`.
  */
+/**
+ * Одна фраза на закрытый консилиум: строка под попыткой и подсказка на
+ * погашенной «Сдать». Текст у студента остаётся черновиком, и фраза обязана
+ * это сказать — иначе она читается как «ваша работа пропала».
+ */
+export const COUNCIL_CLOSED = 'Консилиум закрыт — текст остался у вас черновиком'
+
+/**
+ * Права консилиума, которые нельзя посчитать без ячейки, — тонкие обёртки над
+ * shared/rules.ts, теми же, которыми отвечает сервер (control.ts · council:*).
+ *
+ * `closed` — консилиум на ЭТОЙ ячейке не идёт (`cellLock(cell) !== 'council'`).
+ */
+export function mayWriteThisCouncil(may: Permits, closed: boolean): boolean {
+  return mayWriteCouncil(may.role, may.finished, closed)
+}
+
+/** Запустить попытку: преподаватель — любую, студент — свою и только при ручке. */
+export function mayRunThisCouncil(may: Permits, studentRun: boolean): boolean {
+  return mayRunCouncil(may.role, studentRun, may.finished)
+}
+
 export function cellLockMatters(may: Permits): boolean {
   const swings = (
     ask: (rules: RoomRules, role: ParticipantRole, open: boolean, finished: boolean) => boolean,

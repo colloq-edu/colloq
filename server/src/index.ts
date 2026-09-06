@@ -42,6 +42,7 @@ import { adminImportRoutes } from './routes/admin-import.js'
 import { adminInstanceRoutes } from './routes/admin-instance.js'
 import { courseRoutes } from './routes/courses.js'
 import { aiRoutes } from './routes/ai.js'
+import { councilRoutes } from './routes/council.js'
 import { fileRoutes } from './routes/files.js'
 import { banRoutes } from './routes/bans.js'
 import { roleFor, sessionRoutes } from './routes/sessions.js'
@@ -396,6 +397,9 @@ app.use(banRoutes())
 app.use(historyRoutes())
 app.use(fileRoutes())
 app.use(aiRoutes())
+// Консилиум — за оракулом: его единственная REST-дверь спрашивает ту же модель
+// и тратит тот же лимит вопросов комнаты (routes/council.ts).
+app.use(councilRoutes())
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'not found' }))
 

@@ -1,0 +1,203 @@
+/**
+ * Единственная REST-дверь консилиума: спросить оракула о решениях.
+ *
+ * Всё остальное в консилиуме ходит по управляющему сокету (control.ts ·
+ * council:*): попытки, показ, ответы, отметки. Оракул — здесь, потому что он
+ * ходит к той же модели и тратит тот же лимит вопросов комнаты, что и
+ * `/api/sessions/:id/ai/ask` (routes/ai.ts · countRoomQuestions/recordQuestion),
+ * и право у него то же: только преподаватель (`sessionAuth`, роль по куке
+ * штата, а не из токена).
+ *
+ *   POST   /api/sessions/:id/council/:cellId/oracle  — «Спросить»/«Обновить»:
+ *          один вопрос из лимита; ответ уходит сокетом (`council:oracle`),
+ *          здесь — 202 с текущим `CouncilOracle` (state: 'reading') или отказ
+ *          словами: 403 выключен / 503 нет ключа / 429 лимит / 409 уже читает
+ *   DELETE /api/sessions/:id/council/:cellId/oracle  — «Стоп»
+ *
+ * Модель видит тексты по группам с числами, задание (текст общей ячейки) и
+ * эталон, если есть; имён не видит — их подставляет пульт по ключам групп.
+ * Сборка кадра, разбор ответа и состояние — ai/council.ts; здесь только
+ * право, лимит и ячейка.
+ *
+ * Хранение — council.ts, но через `deps`, а не напрямую: тесты подменяют его
+ * списком в памяти, и маршрут проверяется без таблицы попыток — она живёт у
+ * другого модуля и меняется отдельно от этого.
+ */
+import { Router, type Request, type Response } from 'express'
+import { cellSource, findCell } from '@shared/notebook'
+import { mayLeadCouncil, oracleLimitsIn, oracleModeIn } from '@shared/rules'
+import type { CouncilOracle } from '@shared/protocol'
+import { getOracleSettings } from '../admin/settings.js'
+import { countRoomQuestions, recordQuestion } from '../admin/usage.js'
+import {
+  askCouncilOracle,
+  idleOracle,
+  isOracleReading,
+  stopCouncilOracle,
+  type OracleAttempt,
+  type OracleStore,
+} from '../ai/council.js'
+import { aiReady } from '../ai/index.js'
+import { getSessionDoc } from '../collab/index.js'
+import { attemptsOf, oracleOf, setOracle } from '../council.js'
+import { getRules, getSession } from '../db.js'
+import { sessionAuth } from './sessions.js'
+
+const HOUR_MS = 3_600_000
+
+/*
+ * Тридцать личных пределов на комнату — то же число, что в routes/ai.ts
+ * (ROOM_MULTIPLIER, не экспортируется). Потолок один и тот же: оракул сводки
+ * и оракул вопросов тратят один ключ и считаются в одну таблицу.
+ */
+const ROOM_MULTIPLIER = 30
+
+/** Откуда маршрут берёт попытки и куда кладёт оракула. По умолчанию — council.ts. */
+export interface CouncilOracleDeps extends OracleStore {
+  attemptsOf(sessionId: string, cellId: string): OracleAttempt[]
+}
+
+const live: CouncilOracleDeps = { attemptsOf, oracleOf, setOracle }
+
+export function councilRoutes(deps: CouncilOracleDeps = live): Router {
+  const router = Router()
+
+  /**
+   * Кто и о какой ячейке. Три отказа, общие обоим маршрутам: не вошёл, нет
+   * комнаты, не преподаватель. Слова отказа — те же, что у признака в пульте
+   * (web/src/lib/may.ts · councilWhy), чтобы кнопка и сервер говорили одно.
+   */
+  const lead = (
+    req: Request,
+    res: Response,
+  ): { sessionId: string; cellId: string; participantId: string } | null => {
+    const sessionId = req.params.id
+    const auth = sessionAuth(req)
+    if (!auth) {
+      res.status(401).json({ error: 'join the session first' })
+      return null
+    }
+    if (!getSession(sessionId)) {
+      res.status(404).json({ error: 'session not found' })
+      return null
+    }
+    if (!mayLeadCouncil(auth.role)) {
+      res.status(403).json({ error: 'Консилиум ведёт преподаватель' })
+      return null
+    }
+    return { sessionId, cellId: req.params.cellId, participantId: auth.participantId }
+  }
+
+  router.post('/api/sessions/:id/council/:cellId/oracle', (req, res) => {
+    const who = lead(req, res)
+    if (!who) return
+    const { sessionId, cellId } = who
+
+    /*
+     * Выключен, нет ключа, нет вопросов — те же три двери, что у /ai/ask, и
+     * в том же порядке; слова по-русски, потому что читает их преподаватель с
+     * пульта, а не студент из панели. Режим подсказок сюда пускает: сводка —
+     * для ведущего, и решений за студентов она не пишет.
+     */
+    const settings = getOracleSettings()
+    const mode = oracleModeIn(getRules(sessionId), settings.defaultMode)
+    if (mode === 'off') {
+      return res.status(403).json({
+        error:
+          settings.defaultMode === 'off'
+            ? 'Оракул выключен на этом Colloq — сводки не будет.'
+            : 'Оракул выключен в этом семинаре — включите его в правилах комнаты.',
+      })
+    }
+    if (settings.questionsPerHour === 0) {
+      return res
+        .status(403)
+        .json({ error: 'Оракул выключен на этом Colloq: вопросов в час — ноль.' })
+    }
+    if (!aiReady()) {
+      return res.status(503).json({
+        error: 'На этом Colloq не настроена модель — добавьте ключ в разделе «Оракул» панели.',
+      })
+    }
+
+    /*
+     * Ячейка — из документа комнаты, а не из тела запроса: задание для модели
+     * — это текст общей ячейки, каким он сейчас есть у всех, и предыдущая
+     * ячейка над ним как условие. `getSessionDoc` поднимает комнату, если её
+     * нет в памяти — консилиум идёт, комната есть.
+     */
+    const { doc } = getSessionDoc(sessionId)
+    const found = findCell(doc, cellId)
+    if (!found) return res.status(404).json({ error: 'Такой ячейки в комнате нет' })
+
+    if (isOracleReading(sessionId, cellId)) {
+      return res.status(409).json({
+        error: 'Оракул ещё читает — дождитесь ответа или остановите его.',
+        oracle: deps.oracleOf(sessionId, cellId) ?? idleOracle(),
+      })
+    }
+
+    /*
+     * Потолок комнаты — и для преподавателя.
+     *
+     * У /ai/ask ведущего потолки не держат: его вопросы — это разбор, а в
+     * комнатный предел его привёл бы класс. Здесь иначе: сводка — самый
+     * дорогой вопрос в комнате, она везёт модели все решения разом, и
+     * «Обновить» на каждую сдачу — ровно тот расход, от которого потолок
+     * держит инстанс. Личный предел и слоу-мод ведущего не касаются и тут.
+     */
+    const limit = oracleLimitsIn(getRules(sessionId), settings).questionsPerHour
+    const roomLimit = limit * ROOM_MULTIPLIER
+    const roomUsed = countRoomQuestions(sessionId, HOUR_MS)
+    if (roomUsed >= roomLimit) {
+      res.setHeader('Retry-After', '600')
+      return res.status(429).json({
+        error: `В этом семинаре за час выбраны все ${roomLimit} вопросов к оракулу — сводка подождёт.`,
+      })
+    }
+
+    const attempts = deps.attemptsOf(sessionId, cellId)
+    if (!attempts.some((a) => a.submittedAt !== null)) {
+      return res.status(400).json({ error: 'Сдавших пока нет — оракулу нечего читать.' })
+    }
+
+    /*
+     * Строка расхода — при приёме, как у /ai/ask: запрос к провайдеру уйдёт,
+     * чем бы он ни кончился. Своё действие в учёте: сводка в разбивке панели
+     * не должна прятаться среди «спросили».
+     */
+    const usageId = recordQuestion({
+      sessionId,
+      participantId: who.participantId,
+      action: 'council',
+    })
+
+    const before = found.index > 0 ? found.cells.get(found.index - 1) : null
+    const oracle = askCouncilOracle({
+      sessionId,
+      cellId,
+      task: {
+        source: cellSource(found.cell).toString(),
+        before: before ? cellSource(before).toString() : null,
+        // Эталона в тетради пока нет: когда появится поле у ячейки — сюда.
+        reference: null,
+      },
+      attempts,
+      store: deps,
+      usageId,
+    })
+    // 202: вопрос ушёл, ответ приедет сокетом (`council:oracle`) — как у /ai/ask.
+    res.status(202).json(oracle satisfies CouncilOracle)
+  })
+
+  router.delete('/api/sessions/:id/council/:cellId/oracle', (req, res) => {
+    const who = lead(req, res)
+    if (!who) return
+    // Остановить нечего — тоже не ошибка: кнопка «Стоп» и опоздавший ответ
+    // встречаются постоянно, и красить это красным незачем.
+    stopCouncilOracle(who.sessionId, who.cellId)
+    res.json({ ok: true })
+  })
+
+  return router
+}

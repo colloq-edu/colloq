@@ -18,10 +18,15 @@ import { classify, permits } from '../server/src/collab/gate.js'
 import {
   CELLS_KEY,
   META_KEY,
+  cellLock,
   cloneCell,
+  councilSettingsOf,
   createCell,
   findCell,
+  isCellCouncil,
   isCellOpen,
+  normalizeAttempt,
+  openValueFor,
   readCell,
 } from '../shared/notebook.js'
 import { settleFresh } from '../server/src/collab/ops.js'
@@ -65,6 +70,15 @@ function cellAt(doc: Y.Doc, i: number): Y.Map<any> {
 /** Преподаватель открыл ячейку. Пишет сервер — иначе это и не замок. */
 function unlock(server: Y.Doc, client: Y.Doc, i: number): void {
   server.transact(() => cellAt(server, i).set('open', true), 'server')
+  Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
+}
+
+/** Преподаватель открыл консилиум: у каждого свой лист, общий текст закрыт. */
+function council(server: Y.Doc, client: Y.Doc, i: number): void {
+  server.transact(() => {
+    cellAt(server, i).set('open', 'council')
+    cellAt(server, i).set('council', { studentRun: true })
+  }, 'server')
   Y.applyUpdate(client, Y.encodeStateAsUpdate(server))
 }
 
@@ -120,6 +134,61 @@ test('перестановка соседа не захлопывает откр
   assert.equal(cellAt(server, 3).get('open') ?? null, null)
 })
 
+test('консилиум — третье положение того же ключа, и для набора он закрыт', () => {
+  /*
+   * Одно поле на три положения: двум полям пришлось бы договариваться, какое
+   * главнее, когда выставлены оба. А `isCellOpen` отвечает строго на `true` —
+   * иначе консилиум открыл бы общий текст тем самым пятистам человекам, ради
+   * которых его и завели.
+   */
+  const { server } = pair()
+  const cell = cellAt(server, 0)
+  assert.equal(cellLock(cell), 'closed')
+  cell.set('open', 'council')
+  assert.equal(isCellOpen(cell), false, 'консилиум открыл общий текст')
+  assert.equal(isCellCouncil(cell), true)
+  assert.equal(cellLock(cell), 'council')
+  // Ручки с умолчаниями на каждое поле отдельно: ключа нет — запуск студентам
+  // выключен, имена на проекторе включены.
+  assert.deepEqual(councilSettingsOf(cell), { studentRun: false, namesOnProjector: true })
+  cell.set('council', { studentRun: true })
+  assert.deepEqual(councilSettingsOf(cell), { studentRun: true, namesOnProjector: true })
+  const snap = readCell(cell)
+  assert.equal(snap.open, false, 'снимок сказал «печатать можно»')
+  assert.equal(snap.lock, 'council')
+  assert.deepEqual(snap.council, { studentRun: true, namesOnProjector: true })
+  // А вне консилиума ручек нет, какой бы мусор ни остался в ключе.
+  cell.set('open', true)
+  assert.equal(cellLock(cell), 'open')
+  assert.equal(councilSettingsOf(cell), null)
+  // И туда-обратно через имя положения — то, что пишет control.ts.
+  assert.equal(openValueFor('council'), 'council')
+  assert.equal(openValueFor('open'), true)
+  assert.equal(openValueFor('closed'), null)
+})
+
+test('перестановка соседа не теряет консилиум и его ручки', () => {
+  const { server } = pair()
+  server.transact(() => {
+    cellAt(server, 0).set('open', 'council')
+    cellAt(server, 0).set('council', { studentRun: true, namesOnProjector: false })
+    server.getArray(CELLS_KEY).push([cloneCell(cellAt(server, 0))])
+  }, 'server')
+  assert.equal(cellLock(cellAt(server, 2)), 'council')
+  assert.deepEqual(councilSettingsOf(cellAt(server, 2)), {
+    studentRun: true,
+    namesOnProjector: false,
+  })
+})
+
+test('ключ группы: одно решение, записанное по-разному', () => {
+  // Пробелы, пустые строки и комментарии — не решение; кавычки — решение.
+  assert.equal(normalizeAttempt('x = 1  # ответ\n\nprint( x )\n'), 'x=1\nprint(x)')
+  assert.equal(normalizeAttempt('x=1\nprint(x)'), normalizeAttempt('x = 1\n# всё\nprint (x)'))
+  assert.notEqual(normalizeAttempt('print("# нет")'), normalizeAttempt('print("")'))
+  assert.equal(normalizeAttempt('   \n# только комментарий\n'), '')
+})
+
 /* -------------------------------------------------------------------- гейт */
 
 test('набор в открытой ячейке — правка, у которой замок снят', () => {
@@ -164,6 +233,56 @@ test('открыть ячейку кадром нельзя — ни участ�
   const bytes = frame(() => cellAt(client, 0).set('open', true))
   assert.match(passes(server, bytes, LECTURE_ROOM, 'participant') ?? '', /ячейку открывает/)
   assert.match(passes(server, bytes, OPEN_ROOM, 'host') ?? '', /ячейку открывает/)
+})
+
+test('консилиум кадром не открыть — и ручки его не повернуть', () => {
+  // «Запуск студентам» — право, а не показания: ячейка, включившая его себе,
+  // есть класс, разрешивший себе очередь к ядру.
+  const first = pair()
+  const lock = first.frame(() => cellAt(first.client, 0).set('open', 'council'))
+  assert.match(passes(first.server, lock, LECTURE_ROOM, 'participant') ?? '', /ячейку открывает/)
+  // Отвергнутый кадр сервер не видел, и следующий за ним продолжал бы нажатия,
+  // которых у сервера нет, — поэтому вторая пара документов.
+  const second = pair()
+  const knob = second.frame(() => cellAt(second.client, 1).set('council', { studentRun: true }))
+  assert.match(passes(second.server, knob, OPEN_ROOM, 'host') ?? '', /ячейку открывает/)
+})
+
+test('в консилиуме общий текст закрыт, как в закрытой ячейке', () => {
+  /*
+   * Это и есть правило первое: у каждого свой лист. Попытка едет снимком по
+   * управляющему сокету, а кадр в общий Y.Text от участника — отказ той же
+   * фразой, что и у закрытой: для гейта консилиум ничем от неё не отличается.
+   */
+  const { server, client, frame } = pair()
+  council(server, client, 0)
+  const bytes = frame(() => typing(client, 0))
+  const judged = classify(server, bytes)
+  assert.ok(judged.ok)
+  assert.deepEqual(
+    judged.verdicts.map((v) => `${v.rule}:${v.open === true}`),
+    ['edit:false'],
+  )
+  assert.match(passes(server, bytes, LECTURE_ROOM, 'participant') ?? '', /преподавател/i)
+  // Преподаватель печатает в общий текст: «Показать классу» — это его правка.
+  assert.equal(passes(server, bytes, LECTURE_ROOM, 'host'), null)
+})
+
+test('ячейка, принесённая с консилиумом, приезжает закрытой и без ручек', () => {
+  const { server, client, frame } = pair()
+  const bytes = frame(() => {
+    const made = createCell('code', 'моё', 'c8')
+    made.set('open', 'council')
+    made.set('council', { studentRun: true })
+    client.getArray(CELLS_KEY).push([made])
+  })
+  assert.equal(passes(server, bytes, OPEN_ROOM, 'participant'), null, 'кадр не приняли')
+  Y.applyUpdate(server, bytes)
+  server.transact(() => settleFresh('lock-room', server, ['c8']), 'server')
+  const landed = findCell(server, 'c8')
+  assert.ok(landed, 'ячейка не доехала')
+  assert.equal(cellLock(landed.cell), 'closed', 'консилиум пережил приведение к чистой')
+  assert.equal(landed.cell.get('council') ?? null, null, 'ручки пережили приведение к чистой')
 })
 
 test('снять замок кадром тоже нельзя', () => {
