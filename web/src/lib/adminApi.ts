@@ -178,7 +178,7 @@ export const adminApi = {
      * CreateSeminarRequest.mode). Он есть у всех трёх дверей, потому что
      * лекцию заводят как раз из готовой тетради чаще, чем с чистого листа.
      */
-    mode?: 'lab' | 'lecture'
+    mode?: 'lab' | 'lecture' | 'council'
     rules?: Partial<RoomRules>
   }) => request<ImportResult>('/import', { method: 'POST', ...json(body) }),
 
@@ -389,7 +389,7 @@ export const adminApi = {
     filename: string
     name?: string
     environment?: string | null
-    mode?: 'lab' | 'lecture'
+    mode?: 'lab' | 'lecture' | 'council'
     rules?: unknown
   }) => request<ImportResult>('/import/notebook', { method: 'POST', ...json(body) }),
 

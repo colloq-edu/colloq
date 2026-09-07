@@ -26,6 +26,8 @@ import {
   readRules,
   rulesAfterClass,
   runQueueCap,
+  COUNCIL_ROOM,
+  isCouncilRoom,
 } from '../shared/rules.js'
 import { LIMITS } from '../shared/admin.js'
 
@@ -282,4 +284,29 @@ test('консилиум: запускает тот, кто ведёт; студ
   // Ведёт преподаватель — и после звонка тоже: сданное остаётся на просмотр.
   assert.equal(mayLeadCouncil('host'), true)
   assert.equal(mayLeadCouncil('participant'), false)
+})
+
+/* ------------------------------------------------------------- консилиум */
+
+test('консилиум — третья дверь: лекция по правам, но замок открывает каждому свой лист', () => {
+  // Права те же, что у лекции: печатает, запускает и открывает преподаватель.
+  for (const key of ['run', 'edit', 'structure', 'files'] as const) {
+    assert.equal(COUNCIL_ROOM[key], LECTURE_ROOM[key])
+  }
+  assert.equal(COUNCIL_ROOM.opens, 'council')
+  assert.equal(LECTURE_ROOM.opens, 'shared')
+  assert.equal(OPEN_ROOM.opens, 'shared')
+  // Три пресета различимы: карточка при создании горит у одного.
+  assert.equal(isCouncilRoom(COUNCIL_ROOM), true)
+  assert.equal(isLectureRoom(COUNCIL_ROOM), false, 'консилиум сошёл за лекцию')
+  assert.equal(isCouncilRoom(LECTURE_ROOM), false, 'лекция сошла за консилиум')
+})
+
+test('«как открывается ячейка» читается тотально и переживает звонок', () => {
+  // Комната, записанная до появления поля, — обычная: замок открывает всем.
+  assert.equal(readRules({ run: 'host' }).opens, 'shared')
+  assert.equal(readRules({ opens: 'мусор' }).opens, 'shared')
+  assert.equal(readRules({ opens: 'council' }).opens, 'council')
+  // После звонка ячеек не открывают, но утро после пары должно помнить режим.
+  assert.equal(rulesAfterClass(COUNCIL_ROOM).opens, 'council')
 })

@@ -21,7 +21,7 @@ import { newSessionId } from '../auth.js'
 import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
 import { config } from '../config.js'
 import { broadcast, closeControlRoom } from '../control.js'
-import { LECTURE_ROOM, OPEN_ROOM, readRules } from '@shared/rules'
+import { COUNCIL_ROOM, LECTURE_ROOM, OPEN_ROOM, readRules } from '@shared/rules'
 import {
   createSession,
   db,
@@ -348,11 +348,13 @@ export function adminInstanceRoutes(): Router {
      * подкрутил в нём одну строку, и подкрученное должно быть сильнее
      * выбранного, а не наоборот.
      */
-    const lecture = req.body?.mode === 'lecture'
+    const mode = req.body?.mode
+    // Консилиум — та же лекция, у которой замок открывает каждому свой лист.
+    const preset = mode === 'council' ? COUNCIL_ROOM : mode === 'lecture' ? LECTURE_ROOM : null
     const asked =
       req.body?.rules && typeof req.body.rules === 'object' ? (req.body.rules as object) : null
-    if (lecture || asked) {
-      setRules(id, readRules({ ...(lecture ? LECTURE_ROOM : OPEN_ROOM), ...asked }))
+    if (preset || asked) {
+      setRules(id, readRules({ ...(preset ?? OPEN_ROOM), ...asked }))
     }
     const staff = currentStaff(req)
     if (staff) setSeminarCreator(id, staff.name)

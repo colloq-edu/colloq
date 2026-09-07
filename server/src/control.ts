@@ -2264,7 +2264,14 @@ export function dispatch(
       let settings: Partial<CouncilSettings> = {}
       if (message.t === 'cell:open') {
         if (typeof message.open !== 'boolean') return
-        state = message.open ? 'open' : 'closed'
+        /*
+         * Один щелчок по замку открывает так, как заведено в комнате: в лекции —
+         * общий текст, в консилиуме — каждому свой лист (shared/rules.ts ·
+         * opens). Меню замка шлёт `cell:lock` с явным положением и это правило
+         * не спрашивает.
+         */
+        const opens = getRules(sessionId).opens
+        state = message.open ? (opens === 'council' ? 'council' : 'open') : 'closed'
       } else {
         if (message.state !== 'closed' && message.state !== 'open' && message.state !== 'council') {
           return

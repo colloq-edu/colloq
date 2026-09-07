@@ -26,7 +26,18 @@ export interface RuleOption {
 export interface ChoiceRow {
   kind: 'choice'
   key: keyof RoomRules &
-    ('run' | 'edit' | 'structure' | 'board' | 'files' | 'agent' | 'wipe' | 'restart' | 'history')
+    (
+      | 'run'
+      | 'edit'
+      | 'structure'
+      | 'board'
+      | 'files'
+      | 'agent'
+      | 'wipe'
+      | 'restart'
+      | 'history'
+      | 'opens'
+    )
   title: string
   note: string
   options: RuleOption[]
@@ -63,6 +74,18 @@ const EVERYONE = { value: 'room', label: 'Все' }
 const TEACHER = { value: 'host', label: 'Преподаватель' }
 
 export const RULE_ROWS: RuleRow[] = [
+  {
+    kind: 'choice',
+    key: 'opens',
+    title: 'Открытая ячейка',
+    // Это и есть вся разница между лекцией и консилиумом как режимами: права
+    // у них одни, а «открыть ячейку» значит разное.
+    note: 'Что делает щелчок по замку: открывает общий текст всей комнате или заводит консилиум — каждому свой лист, преподаватель листает попытки.',
+    options: [
+      { value: 'shared', label: 'Всем вместе' },
+      { value: 'council', label: 'Каждому свой лист' },
+    ],
+  },
   {
     kind: 'choice',
     key: 'edit',

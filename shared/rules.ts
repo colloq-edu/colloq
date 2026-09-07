@@ -255,6 +255,19 @@ export interface RoomRules {
    * teacher knows which is which before the class starts.
    */
   model: string | null
+  /**
+   * Что значит «открыть ячейку» в этой комнате.
+   *
+   * `shared` — как всегда: щелчок по замку открывает общий текст, и в него
+   * печатает вся комната. `council` — щелчок открывает консилиум: у каждого
+   * свой лист, преподаватель листает попытки и показывает классу. Это и есть
+   * вся разница между лекцией и консилиумом как режимами при создании; меню
+   * замка на самой ячейке по-прежнему даёт выбрать любое из трёх положений.
+   *
+   * Читает сервер в control.ts (`cell:open`); правом не является — открывает
+   * ячейку в любом случае преподаватель.
+   */
+  opens: 'shared' | 'council'
 }
 
 /**
@@ -280,6 +293,7 @@ export const OPEN_ROOM: RoomRules = {
   agent: 'host',
   history: 'room',
   oracle: 'inherit',
+  opens: 'shared',
   /*
    * Потолки оракула — «как на инстансе», и это ровно сегодняшнее поведение
    * каждой комнаты: до сих пор их не было где взять, кроме настроек инстанса.
@@ -323,8 +337,27 @@ export const LECTURE_ROOM: RoomRules = {
   questionsPerHour: OPEN_ROOM.questionsPerHour,
   slowModeSeconds: OPEN_ROOM.slowModeSeconds,
   model: OPEN_ROOM.model,
+  opens: 'shared',
 }
 
+/**
+ * Консилиум — третья дверь в комнату, и при создании она стоит рядом с двумя
+ * первыми своей карточкой.
+ *
+ * По правам это та же лекция: печатает, запускает и открывает ячейки
+ * преподаватель. Разница ровно в одном — что значит «открыть ячейку». В лекции
+ * открытая ячейка — общий текст, в который печатает вся комната; в консилиуме
+ * у каждого свой лист, а преподаватель листает попытки и показывает классу
+ * (см. `opens`). Пресетом, а не отдельным состоянием комнаты: режим — это набор
+ * правил разом, и второго источника правды о том, что можно, здесь не заведено
+ * намеренно (routes/admin-instance.ts объясняет почему).
+ */
+export const COUNCIL_ROOM: RoomRules = {
+  ...LECTURE_ROOM,
+  opens: 'council',
+}
+
+const OPENS = new Set<RoomRules['opens']>(['shared', 'council'])
 const WHO = new Set<Who>(['room', 'host'])
 const RUN = new Set<RunWho>(['room', 'single', 'host'])
 const STRUCTURE = new Set<StructureWho>(['room', 'add', 'host'])
@@ -393,6 +426,7 @@ export function readRules(raw: unknown): RoomRules {
       typeof source.model === 'string' && source.model.trim()
         ? source.model.trim().slice(0, 80)
         : null,
+    opens: one(OPENS, source.opens, OPEN_ROOM.opens),
   }
 }
 
@@ -425,6 +459,13 @@ export function isOpenRoom(rules: RoomRules): boolean {
 export function isLectureRoom(rules: RoomRules): boolean {
   return (Object.keys(LECTURE_ROOM) as (keyof RoomRules)[]).every(
     (key) => rules[key] === LECTURE_ROOM[key],
+  )
+}
+
+/** Комната консилиума: лекция, где замок открывает каждому свой лист. */
+export function isCouncilRoom(rules: RoomRules): boolean {
+  return (Object.keys(COUNCIL_ROOM) as (keyof RoomRules)[]).every(
+    (key) => rules[key] === COUNCIL_ROOM[key],
   )
 }
 
@@ -694,6 +735,9 @@ export function rulesAfterClass(rules: RoomRules): RoomRules {
      */
     history: rules.history,
     oracle: rules.oracle,
+    // Что значит «открыть ячейку» — свойство комнаты, а после звонка ячеек не
+    // открывают вовсе; поле едет как было, чтобы утро после пары помнило режим.
+    opens: rules.opens,
     /*
      * Потолки оракула — оттуда же: они про расход, а не про право. После звонка
      * спрашивает один преподаватель, которого промежуток и так не касается.

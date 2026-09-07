@@ -27,7 +27,7 @@
     type EnvironmentsState,
     type ImportPreview,
   } from '@shared/admin'
-  import { LECTURE_ROOM, OPEN_ROOM, type RoomRules } from '@shared/rules'
+  import { LECTURE_ROOM, OPEN_ROOM, type RoomRules, COUNCIL_ROOM } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
 
   interface Props {
@@ -209,11 +209,11 @@
    * одну строку, перестала бы совпадать с пресетом, и карточка гасла бы, хотя
    * комната лекционная.
    */
-  let mode = $state<'lab' | 'lecture'>('lab')
+  let mode = $state<'lab' | 'lecture' | 'council'>('lab')
 
-  function pickMode(next: 'lab' | 'lecture'): void {
+  function pickMode(next: 'lab' | 'lecture' | 'council'): void {
     mode = next
-    rules = { ...(next === 'lecture' ? LECTURE_ROOM : OPEN_ROOM) }
+    rules = { ...(next === 'council' ? COUNCIL_ROOM : next === 'lecture' ? LECTURE_ROOM : OPEN_ROOM) }
   }
 
   /*
@@ -221,7 +221,7 @@
    * человек получит, а не как это называется внутри.
    */
   const MODES: {
-    value: 'lab' | 'lecture'
+    value: 'lab' | 'lecture' | 'council'
     label: string
     what: string
     lines: [string, string]
@@ -241,6 +241,14 @@
         'Комната преподавателя. Студент читает, листает и смотрит: ни правки, ни запуска, ни ' +
         'терминала, ни файлов. Оракул — по настройке семинара.',
       lines: ['всё — преподаватель', 'кроме ячеек, которые он откроет сам'],
+    },
+    {
+      value: 'council',
+      label: 'Консилиум',
+      what:
+        'Лекция для большой аудитории. Открытая ячейка — у каждого свой лист: пишут все, ' +
+        'видит преподаватель, листает попытки, показывает классу и спрашивает оракула о решениях.',
+      lines: ['всё — преподаватель', 'открытая ячейка — каждому свой лист'],
     },
   ]
 
@@ -899,6 +907,8 @@
                 <span class="mode-title text-title font-bold">{option.label}</span>
                 {#if option.value === 'lecture'}
                   <Icon name="lock" size={14} class="ml-auto shrink-0 opacity-80" />
+                {:else if option.value === 'council'}
+                  <Icon name="users" size={14} class="ml-auto shrink-0 opacity-80" />
                 {/if}
               </span>
               <span class="mode-what text-ui leading-relaxed">{option.what}</span>

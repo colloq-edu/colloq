@@ -19,6 +19,7 @@ import { dispatch } from '../server/src/control.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
 import {
   cellId,
+  cellLock,
   cellSource,
   createCell,
   createChatEntry,
@@ -27,7 +28,7 @@ import {
   getChat,
   isCellOpen,
 } from '../shared/notebook.js'
-import { LECTURE_ROOM, OPEN_ROOM, type RoomRules } from '../shared/rules.js'
+import { COUNCIL_ROOM, LECTURE_ROOM, OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import type { ControlClientMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 
@@ -273,4 +274,39 @@ test('в открытой ячейке принять предложение м�
     /преподавател/i,
   )
   assert.equal(sourceOf(id, shut), 'y = 2', 'предложение приняли в закрытую ячейку')
+})
+
+/* -------------------------------------------------- режим консилиума */
+
+test('в комнате консилиума щелчок по замку открывает каждому свой лист', () => {
+  /*
+   * Вся разница между лекцией и консилиумом как режимами: права одни, а
+   * «открыть ячейку» значит разное. Один щелчок — `cell:open`, и он обязан
+   * читать правило комнаты; иначе преподаватель, выбравший консилиум при
+   * создании, открывал бы общий текст пятистам людям первым же нажатием.
+   */
+  const id = room(COUNCIL_ROOM)
+  const c = cell(id, 'x = 1')
+  assert.equal(say(id, 'host', { t: 'cell:open', cellId: c, open: true }), null)
+  const found = findCell(getSessionDoc(id).doc, c)
+  assert.equal(found && cellLock(found.cell), 'council')
+  // Общий текст при этом закрыт: консилиум — не открытая ячейка.
+  assert.equal(found && isCellOpen(found.cell), false)
+  // Тот же щелчок закрывает обратно.
+  assert.equal(say(id, 'host', { t: 'cell:open', cellId: c, open: false }), null)
+  assert.equal(found && cellLock(found.cell), 'closed')
+})
+
+test('меню замка правило комнаты не спрашивает: явное положение сильнее', () => {
+  const id = room(COUNCIL_ROOM)
+  const c = cell(id, 'x = 1')
+  assert.equal(say(id, 'host', { t: 'cell:lock', cellId: c, state: 'open' }), null)
+  const found = findCell(getSessionDoc(id).doc, c)
+  assert.equal(found && cellLock(found.cell), 'open')
+  // А в лекции щелчок открывает всем, как и раньше.
+  const lecture = room(LECTURE_ROOM)
+  const d = cell(lecture, 'y = 2')
+  assert.equal(say(lecture, 'host', { t: 'cell:open', cellId: d, open: true }), null)
+  const other = findCell(getSessionDoc(lecture).doc, d)
+  assert.equal(other && cellLock(other.cell), 'open')
 })

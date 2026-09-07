@@ -187,7 +187,7 @@ export interface CreateSeminarRequest {
    * Нет поля — 'lab', то есть ровно сегодняшнее поведение: семинар, созданный
    * скриптом или сборкой постарше, открывается тем же, чем открывался.
    */
-  mode?: 'lab' | 'lecture'
+  mode?: 'lab' | 'lecture' | 'council'
   /**
    * How the room will run: who may do what, and what its oracle does.
    *
