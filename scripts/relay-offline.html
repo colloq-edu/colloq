@@ -956,6 +956,7 @@
           duckHeld: false,
           run: 0,
           everSent: false,
+          sentAs: null,
         };
 
         function seedScenery() {
@@ -1000,6 +1001,7 @@
           state.duck = false;
           state.duckHeld = false;
           state.run += 1;
+          state.sentAs = null;
           seedScenery();
         }
 
@@ -1279,6 +1281,7 @@
         const boardLine = document.getElementById('board-line');
         const topEl = document.getElementById('top');
         const NOTE = 'Имя увидят все, кто ждёт на этом адресе. В таблице — лучшая попытка каждого.';
+        const RENAME = 'Другое имя — впишите в поле и нажмите «Записать».';
 
         function start() {
           reset();
@@ -1344,7 +1347,8 @@
               sendBtn.disabled = true;
               sendBtn.dataset.done = '1';
               sendBtn.textContent = 'Ниже рекорда';
-              statusEl.textContent = 'Ваш рекорд ' + prevBest + ' уже в таблице — эта попытка ниже.';
+              state.sentAs = known;
+              statusEl.textContent = 'Ваш рекорд ' + prevBest + ' уже в таблице как «' + known + '» — эта попытка ниже. ' + RENAME;
             } else submitScore(known, true);
           }
           showOverHint();
@@ -1379,7 +1383,7 @@
           const tag = e.target && e.target.tagName;
           // Курсор в пустом поле имени: пробел или ↑ — «играть без записи»,
           // как и обещает подсказка. Имя с пробела не начинается.
-          if (e.target === nameInput && (e.code === 'Space' || e.code === 'ArrowUp') && state.mode === 'over' && (!nameInput.value.trim() || state.armed)) {
+          if (e.target === nameInput && (e.code === 'Space' || e.code === 'ArrowUp') && state.mode === 'over' && !nameInput.value.trim()) {
             e.preventDefault();
             nameInput.blur();
             start();
@@ -1502,6 +1506,26 @@
           submitScore(nameInput.value, false);
         });
 
+        // Имя записано, а в поле теперь другое — значит, хотят переписать под
+        // ним: кнопка оживает и говорит, что именно сделает. Вернули прежнее —
+        // снова «Записано».
+        nameInput.addEventListener('input', () => {
+          if (state.mode !== 'over' || state.sentAs == null || state.sending) return;
+          const v = nameInput.value.trim().slice(0, 16);
+          if (v !== state.sentAs) {
+            state.sent = false;
+            sendBtn.disabled = false;
+            delete sendBtn.dataset.done;
+            sendBtn.textContent = 'Записать как «' + (v || 'Аноним') + '»';
+          } else {
+            state.sent = true;
+            sendBtn.disabled = true;
+            sendBtn.dataset.done = '1';
+            sendBtn.textContent = 'Записано';
+          }
+          showOverHint();
+        });
+
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         async function submitScore(raw, auto) {
           if (state.sent || state.sending) return;
@@ -1528,12 +1552,13 @@
             if (state.run !== run) return;
             state.sent = true;
             state.everSent = true;
+            state.sentAs = name;
             sendBtn.textContent = 'Записано';
             sendBtn.dataset.done = '1';
             nameInput.blur();
             showOverHint();
             const shown = d.name || name || 'Аноним';
-            const who = auto ? 'Записано как «' + shown + '». ' : '';
+            const who = 'Записано как «' + shown + '». ';
             if (d.rank == null) {
               statusEl.textContent = who + 'Очков не хватило, чтобы попасть в таблицу.';
               recordChip.hidden = true;
@@ -1543,10 +1568,10 @@
             // Чип про рекорд считался по этому устройству; таблица знает лучше.
             if (d.improved === false) recordChip.hidden = true;
             statusEl.textContent = who + (d.rank === 1
-              ? 'Первое место. Капибара гордится.'
+              ? 'Первое место. Капибара гордится. '
               : d.improved
-                ? 'Вы на ' + d.rank + '-м месте из ' + d.names + '.'
-                : 'Ваш лучший результат ' + d.best + ' держит ' + d.rank + '-е место из ' + d.names + ' — эта попытка ниже.');
+                ? 'Вы на ' + d.rank + '-м месте из ' + d.names + '. '
+                : 'Ваш лучший результат ' + d.best + ' держит ' + d.rank + '-е место из ' + d.names + ' — эта попытка ниже. ') + RENAME;
             renderBoard(d, { id: d.id, rank: d.rank, name: shown, best: d.best });
           } catch (err) {
             if (state.run !== run) return;
