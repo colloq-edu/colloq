@@ -4,44 +4,58 @@
 Страница «комната ещё не открыта» (scripts/relay-offline.html) занимает
 студента пиксельной капибарой, пока преподаватель не открыл комнату, и
 предлагает вписать очки в общую таблицу. Таблица — это и есть весь сервис:
-одна JSON-коллекция на диске и два запроса.
+одна JSON-коллекция на диске и три запроса.
 
+    GET  /.relay/capy/start    → {"run": жетон}   — выдаётся в начале забега
     GET  /.relay/capy/scores   → {"top": [{"id", "name", "score"}...],
                                   "total": попыток, "names": разных имён}
-    POST /.relay/capy/scores   ← {"name": "...", "score": 123}
+    POST /.relay/capy/scores   ← {"name", "score", "run": жетон, "owner": ключ}
                                → {"id", "name", "rank", "best", "improved",
-                                  "total", "names", "top": [...]}
+                                  "renamed", "total", "names", "top": [...]}
                                  id, name и best — строки этого имени в таблице
                                  (лучшей попытки); rank: null — очков не
                                  хватило даже на хвост хранилища.
+                                 409 — имя закреплено за другим владельцем.
 
 Живёт на петле (127.0.0.1:9181) за caddy: тот отдаёт ему путь /.relay/capy/*
 для любого имени под *.colloq.ru — путь начинается с точки, чтобы не пересечься
 ни с одним адресом инстанса. Ставится и обновляется scripts/relay-setup.sh как
 systemd-служба colloq-capy от отдельного пользователя; данные в
-/var/lib/colloq-capy/scores.json.
+/var/lib/colloq-capy/ — scores.json и secret.
 
 Почему стандартная библиотека, а не что-то удобнее: на ретрансляторе нет ни
 node, ни pip, ни желания их туда тащить — это машина с двумя демонами и
 секретом, и каждая лишняя зависимость на ней лишняя. python3 в Ubuntu есть
 всегда.
 
-Таблица — одна строка на имя: лучший результат человека, а не все его попытки
-подряд (иначе первые десять мест занимает один упорный студент). Имена
-сравниваются без учёта регистра. Исключение — «Аноним»: безымянные попытки
-живут каждая своей строкой, иначе все студенты без имени делили бы один
-результат и один ответ «ваш лучший». Попытки считаются все — это число над
-таблицей.
+Кто чей. Браузер один раз заводит себе случайный ключ владельца и шлёт его с
+каждой записью; сервис хранит только его хэш. Имя — подпись владельца, а не
+сама личность: вписал другое — все строки этого владельца переезжают под
+новое имя вместе с рекордом (так «test» становится «sleep3r», а не вторым
+игроком). Имя, за которым уже стоит другой владелец, занять нельзя — 409;
+ничьи строки (записанные до этого правила) забирает первый, кто под ними
+запишется со своим ключом. Оборотная сторона: тот же человек с другого
+устройства — другой владелец, и своё имя он там не получит; это цена того,
+что никто не впишет 99 999 под чужим именем.
 
-Что здесь проверяется: имя — до 16 знаков, без управляющих и невидимых
-символов, хотя бы с одним видимым, пустое становится «Аноним»; очки — целое от
-0 до 99 999 (игра честно набирает около десяти в секунду, больше — не игра).
-Лимит на адрес — корзина: пять записей сразу, дальше по одной в три секунды.
-Это не защита от умельца с curl, а защита от нажатого и забытого F5 — и при
-этом целый класс за одним NAT в неё помещается. Адрес берётся из ПОСЛЕДНЕГО
-элемента X-Forwarded-For: его дописывает caddy, первый присылает клиент, и
-верить ему нельзя. Таблица хранит пятьсот лучших; остальное отсеивается при
-записи, и ответ считается по тому, что сохранено, а не по тому, что пришло.
+Честность очков. В начале забега страница берёт жетон — подписанное время
+старта. Запись без жетона или с чужим не принимается; очки сверяются со
+временем, прошедшим по часам сервиса: игра честно набирает до ~37 в секунду,
+принимается до 40·с + 50. Жетон одноразовый на имя (переименование той же
+попытки — законно, повтор под тем же именем — нет). Это не защита от того,
+кто перепишет игру, а защита от curl за минуту до звонка.
+
+Таблица — одна строка на имя: лучший результат человека, а не все его попытки
+подряд. Имена сравниваются без учёта регистра. Исключение — «Аноним»:
+безымянные попытки живут каждая своей строкой и никому не принадлежат.
+Попытки считаются все — это число над таблицей.
+
+Что ещё проверяется: имя — до 16 знаков, без управляющих и невидимых
+символов, хотя бы с одним видимым, пустое становится «Аноним»; очки — целое
+от 0 до 99 999. Лимит на адрес — корзина: пять записей сразу, дальше по одной
+в три секунды (класс за одним NAT помещается, поток curl — нет). Адрес берётся
+из ПОСЛЕДНЕГО элемента X-Forwarded-For: его дописывает caddy, первый присылает
+клиент. Таблица хранит пятьсот лучших; ответ считается по сохранённому.
 
 Проверка руками, без ретранслятора:
     CAPY_STATE=/tmp/capy CAPY_PORT=9181 CAPY_PAGE=scripts/relay-offline.html \
@@ -50,6 +64,8 @@ node, ни pip, ни желания их туда тащить — это маш
 путь, чтобы игру и таблицу можно было погонять с одного адреса.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -62,10 +78,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATE_DIR = os.environ.get("CAPY_STATE", "/var/lib/colloq-capy")
 STORE = os.path.join(STATE_DIR, "scores.json")
+SECRET_FILE = os.path.join(STATE_DIR, "secret")
 PORT = int(os.environ.get("CAPY_PORT", "9181"))
 PAGE = os.environ.get("CAPY_PAGE")  # только для проверки руками
 
 PATH = "/.relay/capy/scores"
+START = "/.relay/capy/start"
 KEEP = 500
 TOP = 10
 NAME_MAX = 16
@@ -75,9 +93,60 @@ ANON = "Аноним"
 # Корзина на адрес: BURST записей сразу, дальше одна в REFILL_SECONDS.
 BURST = 5
 REFILL_SECONDS = 3.0
+# Честность: очков в секунду сверх которых игра не набирает, и запас.
+POINTS_PER_SECOND = 40
+POINTS_SLACK = 50
+RUN_MAX_AGE = 6 * 3600  # жетон старше — просрочен
 
 _lock = threading.Lock()
 _buckets = {}  # адрес → (токенов, когда считали)
+_used = {}  # (жетон, ключ имени) → когда использован
+
+
+def load_secret():
+    try:
+        with open(SECRET_FILE, "rb") as f:
+            s = f.read()
+        if len(s) >= 32:
+            return s
+    except OSError:
+        pass
+    os.makedirs(STATE_DIR, exist_ok=True)
+    s = os.urandom(32)
+    fd = os.open(SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(s)
+    return s
+
+
+SECRET = load_secret()
+
+
+def make_run(now):
+    start = "%x" % int(now * 1000)
+    nonce = os.urandom(6).hex()
+    sig = hmac.new(SECRET, ("%s.%s" % (start, nonce)).encode(), hashlib.sha256).hexdigest()[:20]
+    return "%s.%s.%s" % (start, nonce, sig)
+
+
+def run_started(token):
+    # Возвращает время старта (с) или None, если жетон не наш.
+    if not isinstance(token, str) or token.count(".") != 2 or len(token) > 80:
+        return None
+    start, nonce, sig = token.split(".")
+    want = hmac.new(SECRET, ("%s.%s" % (start, nonce)).encode(), hashlib.sha256).hexdigest()[:20]
+    if not hmac.compare_digest(want, sig):
+        return None
+    try:
+        return int(start, 16) / 1000
+    except ValueError:
+        return None
+
+
+def owner_hash(value):
+    if not isinstance(value, str) or not (16 <= len(value) <= 64) or not re.fullmatch(r"[0-9a-f]+", value):
+        return None
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
 
 
 def load():
@@ -98,6 +167,7 @@ def load():
         and isinstance(r.get("name"), str)
         and isinstance(r.get("score"), int) and not isinstance(r.get("score"), bool)
         and isinstance(r.get("at"), (int, float)) and not isinstance(r.get("at"), bool)
+        and (r.get("owner") is None or isinstance(r.get("owner"), str))
     ]
 
 
@@ -155,8 +225,8 @@ def summary(rows):
 # соединители, филлеры хангыля, BOM — всё, чем можно сделать имя пустым на
 # вид или перевернуть соседей в таблице.
 _CONTROL = re.compile(
-    "[\x00-\x1f\x7f-\x9f­؜᠎​-‏ -‮"
-    "⁠-⁤⁪-⁯ㅤ︀-️﻿ᅟᅠ]"
+    "[\\x00-\\x1f\\x7f-\\x9f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u2028-\\u202e"
+    "\\u2060-\\u2064\\u206a-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\u115f\\u1160]"
 )
 
 
@@ -197,8 +267,14 @@ def allow(ip, now):
     return True
 
 
+def prune_used(now):
+    if len(_used) > 20_000:
+        for k in [k for k, t in _used.items() if now - t > RUN_MAX_AGE]:
+            del _used[k]
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "colloq-capy/2"
+    server_version = "colloq-capy/3"
     protocol_version = "HTTP/1.1"
     # Недосказанное тело не должно держать поток вечно.
     timeout = 15
@@ -244,6 +320,8 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 rows = load()
             return self.reply(200, {"top": [public(r) for r in board(rows)[:TOP]], **summary(rows)})
+        if path == START:
+            return self.reply(200, {"run": make_run(time.time())})
         if PAGE and self.command == "GET":
             try:
                 with open(PAGE, "rb") as f:
@@ -280,8 +358,18 @@ class Handler(BaseHTTPRequestHandler):
         if score is None:
             return self.reply(400, {"error": "bad score"})
         name = clean_name(body.get("name"))
-        ip = self.client_ip()
+        owner = owner_hash(body.get("owner"))
         now = time.time()
+
+        # Жетон начала забега: без него, с чужим или просроченным — не запись.
+        started = run_started(body.get("run"))
+        if started is None or started > now + 60 or now - started > RUN_MAX_AGE:
+            return self.reply(400, {"error": "run"})
+        # Столько очков за столько секунд игра не набирает.
+        if score > POINTS_PER_SECOND * max(0.0, now - started) + POINTS_SLACK:
+            return self.reply(400, {"error": "implausible"})
+
+        ip = self.client_ip()
         with _lock:
             if not allow(ip, now):
                 return self.reply(429, {"error": "too fast"})
@@ -294,23 +382,44 @@ class Handler(BaseHTTPRequestHandler):
                 "at": now,
                 "host": (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(":")[0],
             }
-            rows = ordered(load() + [row])[:KEEP]
+            key = key_of(row)
+            used_key = (body.get("run"), key)
+            if used_key in _used:
+                return self.reply(400, {"error": "run"})
+            rows = load()
+            renamed = False
+            if name != ANON and owner:
+                row["owner"] = owner
+                # Имя за другим владельцем — занято.
+                if any(key_of(r) == key and r.get("owner") not in (None, owner) for r in rows):
+                    return self.reply(409, {"error": "name taken"})
+                # Свои строки под прежним именем переезжают под новое.
+                for r in rows:
+                    if r.get("owner") == owner and key_of(r) != key and r["name"] != ANON:
+                        r["name"] = name
+                        renamed = True
+                # Ничьи строки под этим именем становятся своими.
+                for r in rows:
+                    if key_of(r) == key and r.get("owner") is None:
+                        r["owner"] = owner
+            _used[used_key] = now
+            prune_used(now)
+            rows = ordered(rows + [row])[:KEEP]
             save(rows)
             table = board(rows)
             # Место считается среди имён, и отвечает за него лучшая попытка этого
             # имени — возможно, не та, что пришла сейчас. Клиент подсвечивает её.
-            k = key_of(row)
-            mine = next((r for r in table if key_of(r) == k), None)
+            mine = next((r for r in table if key_of(r) == key), None)
             top = [public(r) for r in table[:TOP]]
             counts = summary(rows)
         if mine is None:
             # Хранилище полно, и попытка хуже всех пятисот: ничего не сохранено.
             return self.reply(200, {"id": row["id"], "name": name, "rank": None, "best": None,
-                                    "improved": False, "top": top, **counts})
+                                    "improved": False, "renamed": renamed, "top": top, **counts})
         self.reply(200, {
             "id": mine["id"], "name": mine["name"], "rank": table.index(mine) + 1,
             "best": mine["score"], "improved": row["score"] >= mine["score"],
-            "top": top, **counts,
+            "renamed": renamed, "top": top, **counts,
         })
 
 

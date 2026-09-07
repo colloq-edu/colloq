@@ -1282,9 +1282,36 @@
         const topEl = document.getElementById('top');
         const NOTE = 'Имя увидят все, кто ждёт на этом адресе. В таблице — лучшая попытка каждого.';
         const RENAME = 'Другое имя — впишите в поле и нажмите «Записать».';
+        // Ключ владельца: браузер один раз придумывает случайную строку и дальше
+        // подписывает ею записи. Сервис по нему знает, чьи строки, — так имя
+        // можно сменить, не потеряв рекорд, а под чужое имя записаться нельзя.
+        function ownerKey() {
+          let k = store.get('capy.owner');
+          if (!k || !/^[0-9a-f]{32}$/.test(k)) {
+            const b = new Uint8Array(16);
+            (window.crypto || {}).getRandomValues ? crypto.getRandomValues(b) : b.forEach((_, i) => { b[i] = Math.floor(Math.random() * 256); });
+            k = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+            store.set('capy.owner', k);
+          }
+          return k;
+        }
+        const OWNER = ownerKey();
+        // Жетон забега: подписанное сервисом время старта. С ним очки сверяются с
+        // часами, и curl за минуту до звонка не впишет 99 999.
+        let runToken = null;
+        async function fetchRun(run) {
+          try {
+            const r = await fetch('/.relay/capy/start', { cache: 'no-store' });
+            if (!r.ok) return;
+            const d = await r.json();
+            if (state.run === run && typeof d.run === 'string') runToken = d.run;
+          } catch (_) { /* таблица недоступна — запись потом честно об этом скажет */ }
+        }
 
         function start() {
           reset();
+          runToken = null;
+          fetchRun(state.run);
           state.mode = 'run';
           canvas.style.touchAction = 'none';
           hint.hidden = true;
@@ -1540,13 +1567,20 @@
           const post = () => fetch(API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, score }),
+            body: JSON.stringify({ name, score, run: runToken, owner: OWNER }),
           });
           try {
+            if (!runToken) await fetchRun(run);
             let r = await post();
             if (r.status === 429) { await sleep(1500); if (state.run !== run) return; r = await post(); }
             if (state.run !== run) return;
             if (r.status === 429) throw new Error('rate');
+            if (r.status === 409) throw new Error('taken');
+            if (r.status === 400) {
+              let why = '';
+              try { why = (await r.json()).error || ''; } catch (_) {}
+              throw new Error(why === 'implausible' ? 'implausible' : why === 'run' ? 'run' : '400');
+            }
             if (!r.ok) throw new Error(String(r.status));
             const d = await r.json();
             if (state.run !== run) return;
@@ -1557,8 +1591,15 @@
             sendBtn.dataset.done = '1';
             nameInput.blur();
             showOverHint();
+            // Рекорд этого имени в таблице может быть выше местного — с другого
+            // устройства или после переезда строк; HI подтягивается к нему.
+            if (typeof d.best === 'number' && d.best > state.best) {
+              state.best = d.best;
+              store.set('capy.best', String(state.best));
+              render();
+            }
             const shown = d.name || name || 'Аноним';
-            const who = 'Записано как «' + shown + '». ';
+            const who = (d.renamed ? 'Теперь вы «' + shown + '», рекорд переехал. ' : 'Записано как «' + shown + '». ');
             if (d.rank == null) {
               statusEl.textContent = who + 'Очков не хватило, чтобы попасть в таблицу.';
               recordChip.hidden = true;
@@ -1578,9 +1619,17 @@
             sendBtn.disabled = false;
             sendBtn.textContent = 'В таблицу';
             showOverHint();
-            statusEl.textContent = err && err.message === 'rate'
+            const why = err && err.message;
+            statusEl.textContent = why === 'rate'
               ? 'Слишком часто — подождите пару секунд и попробуйте снова.'
-              : 'Таблица сейчас недоступна — очки остались только здесь.';
+              : why === 'taken'
+                ? 'Имя «' + (name || 'Аноним') + '» уже занято другим игроком — впишите другое.'
+                : why === 'implausible'
+                  ? 'Очки не приняты: столько за это время не набрать.'
+                  : why === 'run'
+                    ? 'Запись не принята: забег не был начат через таблицу. Сыграйте ещё раз.'
+                    : 'Таблица сейчас недоступна — очки остались только здесь.';
+            if (why === 'taken') { sendBtn.textContent = 'Записать как «' + (name || 'Аноним') + '»'; nameInput.focus(); }
           } finally {
             if (state.run === run) state.sending = false;
           }
