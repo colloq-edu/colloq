@@ -33,6 +33,7 @@ import {
   TERMINAL_KEY,
   type YCell,
 } from '@shared/notebook'
+import type { GateRule } from '@shared/protocol'
 import {
   actsAfterClass,
   allowsStructure,
@@ -41,8 +42,15 @@ import {
   type RoomRules,
 } from '@shared/rules'
 
-/** Что кадр делает — в терминах правил комнаты, а не байтов. */
-export type GateRule = 'structure' | 'edit' | 'title'
+/*
+ * Что кадр делает — в терминах правил комнаты, а не байтов.
+ *
+ * Перечисление одно на обе стороны и живёт в протоколе: им судит гейт, его же
+ * называет кадр `refused`, который уезжает в браузер. Копий было две, и они
+ * успели разойтись — в протоколе висело значение `'files'`, которого здесь
+ * никогда не было и которое сервер не слал.
+ */
+export type { GateRule }
 
 export interface Verdict {
   rule: GateRule

@@ -19,8 +19,14 @@
 import { createHash } from 'node:crypto'
 import * as Y from 'yjs'
 import { readNotebook, type CellOutput, type CellSnapshot } from '@shared/notebook'
-import { BLOB_MIMES, BLOB_MIN_BYTES, BLOB_PREFIX, type PublicCell } from '@shared/publish'
-import { updatesUpTo } from '../db.js'
+import {
+  BLOB_MIMES,
+  BLOB_MIN_BYTES,
+  BLOB_PREFIX,
+  type PublicCell,
+  type SkipReason,
+} from '@shared/publish'
+import { openReplay } from './replay.js'
 
 /** Крупные куски выводов, вынесенные по хэшу. Наполняется по ходу сборки. */
 export interface BlobBag {
@@ -58,7 +64,15 @@ export function newBlobBag(): BlobBag {
  * раскодированные байты, а `image/svg+xml` — это XML-текст, а не base64.
  */
 function projectOutput(output: CellOutput, blobs: BlobBag): CellOutput {
-  if (output.kind !== 'data') return output
+  if (output.kind === 'stream') return { kind: 'stream', name: output.name, text: output.text }
+  if (output.kind === 'error') {
+    return {
+      kind: 'error',
+      ename: output.ename,
+      evalue: output.evalue,
+      traceback: output.traceback,
+    }
+  }
   const data: Record<string, string> = {}
   for (const [mime, value] of Object.entries(output.data)) {
     data[mime] =
@@ -66,7 +80,13 @@ function projectOutput(output: CellOutput, blobs: BlobBag): CellOutput {
         ? blobs.put(mime, value)
         : value
   }
-  return { ...output, data }
+  /*
+   * Перечислением, а не спредом: у вывода поля тоже добавляются со временем —
+   * кто его получил, из какой попытки консилиума он пришёл, — и `{ ...output }`
+   * увёз бы на публичную страницу каждое из них молча, ровно вопреки шапке
+   * файла. Список здесь написан буквами по той же причине, что и у ячейки.
+   */
+  return { kind: 'data', data, execCount: output.execCount }
 }
 
 /** Ячейка на публичной странице. Белый список — см. шапку файла. */
@@ -88,21 +108,96 @@ function projectCell(cell: CellSnapshot, blobs: BlobBag): PublicCell {
   }
 }
 
-/** Тетрадь на момент версии `seq`, спроецированная для публикации. */
-export function pageAt(sessionId: string, seq: number, blobs: BlobBag): PublicCell[] | null {
-  const doc = new Y.Doc()
+/**
+ * Тетрадь на момент версии `seq` — или причина, по которой её нет.
+ *
+ * Причин две, и они разные. «Пусто» — это факт о занятии: в тетради на тот
+ * момент не было ни одной ячейки, шага из этого не выйдет. «Не читается» — это
+ * поломка: строка истории есть, а развернуть её нечем. Раньше обе давали `null`,
+ * маршрут молча пропускал шаг, и преподаватель, отметивший семь моментов,
+ * получал страницу с шестью — без слова о том, какой пропал и почему, и без
+ * следа в журнале сервера.
+ */
+export type BuiltPage = { ok: true; cells: PublicCell[] } | { ok: false; reason: SkipReason }
+
+function* walkPages(
+  sessionId: string,
+  seqs: number[],
+  blobs: BlobBag,
+): Generator<[number, BuiltPage]> {
+  const replay = openReplay(sessionId)
   try {
-    doc.transact(() => {
-      for (const update of updatesUpTo(sessionId, seq)) Y.applyUpdate(doc, update, 'publish')
-    })
-    const cells = readNotebook(doc)
-    if (cells.length === 0) return null
-    return cells.map((c) => projectCell(c, blobs))
-  } catch {
-    return null
+    // По возрастанию: только так проход идёт одним документом. Порядок рельсы
+    // выбирает преподаватель, и складывает её обратно тот, кто просил.
+    for (const seq of [...new Set(seqs)].sort((a, b) => a - b)) {
+      let page: BuiltPage
+      try {
+        const cells = readNotebook(replay.at(seq))
+        page =
+          cells.length === 0
+            ? { ok: false, reason: 'empty' }
+            : { ok: true, cells: cells.map((c) => projectCell(c, blobs)) }
+      } catch (err) {
+        // В журнал, а не в тишину: испорченная строка истории неотличима от
+        // пустой тетради только до тех пор, пока о ней никто не сказал вслух.
+        console.error(`publish: шаг ${sessionId}#${seq} не собрался`, err)
+        page = { ok: false, reason: 'broken' }
+      }
+      yield [seq, page]
+    }
   } finally {
-    doc.destroy()
+    replay.close()
   }
+}
+
+/**
+ * Страницы нескольких версий разом — одним документом на всю публикацию.
+ *
+ * Публикация — до сорока шагов (`MAX_STEPS`), и каждый разворачивался своим
+ * `Y.Doc` от ближайшего кейфрейма: тетрадь с картинками — мегабайты на шаг, то
+ * есть до сорока полных повторов истории подряд. Синхронно и в том же
+ * процессе, где у коллеги в эту минуту идёт пара: её нажатия ждали.
+ *
+ * Здесь история проигрывается один раз (`replay.ts`), а к состоянию
+ * предыдущего шага доприменяются только строки между ним и следующим. Ответ —
+ * страница на каждый спрошенный `seq`, включая те, что шагом не станут:
+ * причину пропуска называет `BuiltPage`, а не молчание.
+ */
+export function pagesAt(sessionId: string, seqs: number[], blobs: BlobBag): Map<number, BuiltPage> {
+  return new Map(walkPages(sessionId, seqs, blobs))
+}
+
+/**
+ * То же, с уступкой цикла событий между шагами.
+ *
+ * Повтор истории после этой правки один, но проекция страниц осталась своя на
+ * каждый шаг: хэш каждой картинки, base64 в байты, обход всех выводов. На
+ * сорока шагах это само по себе держит цикл секундами — а рядом идёт занятие.
+ * База при этом читается ровно так же: проход спрашивает её сам, по строке за
+ * шаг, и подрезанную на ходу историю замечает по кейфрейму (см. `replay.ts`).
+ */
+export async function pagesAtAsync(
+  sessionId: string,
+  seqs: number[],
+  blobs: BlobBag,
+): Promise<Map<number, BuiltPage>> {
+  const pages = new Map<number, BuiltPage>()
+  for (const [seq, page] of walkPages(sessionId, seqs, blobs)) {
+    pages.set(seq, page)
+    await new Promise<void>((resume) => setImmediate(resume))
+  }
+  return pages
+}
+
+/** Одна страница. Тот же проход, что и у публикации, длиной в один шаг. */
+export function buildPageAt(sessionId: string, seq: number, blobs: BlobBag): BuiltPage {
+  return pagesAt(sessionId, [seq], blobs).get(seq) ?? { ok: false, reason: 'broken' }
+}
+
+/** То же, коротко: страница или ничего. */
+export function pageAt(sessionId: string, seq: number, blobs: BlobBag): PublicCell[] | null {
+  const built = buildPageAt(sessionId, seq, blobs)
+  return built.ok ? built.cells : null
 }
 
 /** Тетрадь как она есть прямо сейчас — последняя страница публикации. */

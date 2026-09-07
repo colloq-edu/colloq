@@ -39,6 +39,7 @@ import {
   updateTeacherRole,
 } from '../admin/store.js'
 import { config } from '../config.js'
+import { normalizeLabel } from '@shared/text'
 import {
   LIMITS,
   SIGN_IN_PATH,
@@ -57,11 +58,11 @@ function fail(res: Response, status: number, reason: AdminErrorBody['reason'], e
   res.status(status).json(body)
 }
 
-/** Collapse whitespace and drop control characters so a name cannot break the staff list. */
-function normalizeName(value: unknown): string {
-  if (typeof value !== 'string') return ''
-  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
-}
+/**
+ * Collapse whitespace and drop control characters so a name cannot break the
+ * staff list. Мерка общая — shared/text.ts.
+ */
+const normalizeName = normalizeLabel
 
 /**
  * Deliberately loose: it rejects what cannot be an address, not what is
@@ -100,6 +101,18 @@ export function adminAuthRoutes(): Router {
       // sends you a link", that is a phishing target.
       suggestedEmail: claimed ? '' : config.adminEmail,
       openSeminarCreation: config.openSeminarCreation,
+      /*
+       * Предел загрузки — числом, а не догадкой панели.
+       *
+       * Форма создания семинара печатает его («Up to 50 MB each») и по нему же
+       * отказывает слишком большому файлу ДО того, как комната появится; до
+       * этого поля она держала свою копию умолчания, и оператор, поднявший
+       * MAX_UPLOAD_MB до 200, читал на экране чужое число.
+       *
+       * Секрета здесь нет: то же число сервер называет в отказе всякому
+       * загружающему (routes/files.ts).
+       */
+      maxUploadBytes: config.maxUploadBytes,
     }
     // Claiming is a race against whoever else can read the disk; a cached
     // "unclaimed" would be a lie the moment it mattered.
@@ -274,12 +287,25 @@ export function adminAuthRoutes(): Router {
 
     const wantsIdentity = req.body?.name !== undefined || req.body?.email !== undefined
     if (wantsIdentity) {
-      const name = normalizeName(req.body?.name)
+      /*
+       * Поля правда необязательные — по одному тоже.
+       *
+       * `wantsIdentity` требовал имя и адрес ВМЕСТЕ: `{name:'Иванов'}` без
+       * адреса отвечал «a valid email address is required», то есть просил
+       * прислать то, что менять не собирались. Панель шлёт оба поля и этого не
+       * видела; видел тот, кто читал комментарий выше и поверил ему.
+       * Неприсланное берётся из записи — это и значит «необязательное».
+       */
+      const name =
+        req.body?.name === undefined ? target.name : normalizeName(req.body.name)
       if (!name) return fail(res, 400, 'invalid', 'a name is required')
       if (name.length > LIMITS.teacherName) {
         return fail(res, 400, 'invalid', `name must be ${LIMITS.teacherName} characters or fewer`)
       }
-      const email = normalizeEmail(typeof req.body?.email === 'string' ? req.body.email : '')
+      const email =
+        req.body?.email === undefined
+          ? target.email
+          : normalizeEmail(typeof req.body.email === 'string' ? req.body.email : '')
       if (!email || email.length > LIMITS.email || !looksLikeEmail(email)) {
         return fail(res, 400, 'invalid', 'a valid email address is required')
       }

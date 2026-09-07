@@ -1,11 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
-import { config } from './config.js'
+import { config, ensureDataDir } from './config.js'
 import { colorForId, type Participant, type SessionInfo } from '@shared/protocol'
 import { OPEN_ROOM, readRules, rulesAfterClass, type RoomRules } from '@shared/rules'
 
-fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
+// 0700 — одним правилом на всех, см. config.ensureDataDir: mkdirSync с mode на
+// уже заведённом каталоге режим не меняет, и обещание ниже держалось не всегда.
+ensureDataDir()
 
 const dbPath = path.join(config.dataDir, 'colloq.db')
 export const db = new Database(dbPath)
@@ -171,6 +173,13 @@ db.exec(`
    * Курс — постоянная публичная страница, собирающая семестр семинаров в том
    * порядке, в каком их вели. Единственный адрес в Colloq, который человек
    * стал бы сохранить в закладки.
+   *
+   * СХЕМА этих таблиц (courses, publications, publication_steps, blobs) —
+   * здесь, вместе с миграциями ниже; ЗАПРОСЫ к ним — в publish/store.ts, и
+   * там же заводится своя publish_addresses. Владелец схемы один, и это
+   * важно помнить в обе стороны: шапка store.ts когда-то обещала «здесь свои
+   * таблицы и никто больше в них не пишет» — про таблицы, которых он не
+   * создаёт.
    *
    * Состав и порядок — одним фактом, JSON-массивом: и то и другое читается
    * только целиком, «в каких курсах состоит этот семинар» никто не спрашивает,
@@ -380,6 +389,8 @@ const selectEnvironment = db.prepare('SELECT environment FROM sessions WHERE id 
 const selectSession = db.prepare(
   'SELECT id, name, created_at, rules, finished_at FROM sessions WHERE id = ?',
 )
+/** Мимо кэша, нарочно — см. `sessionRowExists`. */
+const selectSessionRow = db.prepare('SELECT 1 FROM sessions WHERE id = ?')
 
 interface SessionRow {
   id: string
@@ -394,6 +405,9 @@ interface SessionRow {
 export function createSession(id: string, name: string, environment?: string | null): SessionInfo {
   const createdAt = Date.now()
   insertSession.run(id, name, createdAt, environment ?? null)
+  // Про этот id могли спросить до того, как он появился: «нет такой комнаты»
+  // лежит в кэше рядом с найденными и пережило бы её рождение.
+  forgetRoom(id)
   // A brand-new room is the open room: nothing has been decided about it yet,
   // and the default is what Colloq has always been.
   return {
@@ -454,34 +468,119 @@ const renameSessionStmt = db.prepare('UPDATE sessions SET name = ? WHERE id = ?'
  */
 export function renameSession(id: string, name: string): void {
   renameSessionStmt.run(name, id)
+  // Имя комнаты лежит в кэше строки — единственное её поле, которое вообще
+  // меняется. Забыть здесь, иначе панель переименовала бы семинар, а комната
+  // отвечала бы прежним именем до перезапуска.
+  forgetRoom(id)
+}
+
+/**
+ * Строка комнаты в памяти: есть ли она вообще и то из неё, что не меняется на
+ * каждом кадре.
+ *
+ * Кэш на комнату, как `rulesCache` ниже и `liveBans` в bans.ts, и заведён он
+ * ради того же шторма: «жив ли ещё семинар, который назвал токен» —
+ * единственное, что спрашивает рукопожатие сокета (index.ts), а сокетов у
+ * вкладки два, и после перезапуска сервера или моргания ретранслятора пятьсот
+ * вкладок возвращаются за одну-две секунды. Тысяча SELECT по первичному ключу
+ * стоит микросекунды каждый и платится ровно там, где цикл событий занят
+ * целиком и все ждут возврата комнаты.
+ *
+ * `null` кэшируется наравне с найденным: браузер, забытый на удалённом
+ * семинаре, стучится в эту дверь до истечения токена, и «нет такой комнаты» —
+ * такой же ответ, как остальные.
+ *
+ * Правил и конца занятия здесь нет намеренно: они лежат в `rulesCache`, и
+ * второй их копии в этом же процессе быть не должно — разошлись бы. Первое
+ * чтение строки кладёт их туда же, чтобы за той же строкой не ходить дважды.
+ *
+ * Забывается кэш там же, где комната меняется: `createSession`,
+ * `renameSession`, `forgetRoom` (её зовёт удаление семинара). Срока жизни нет
+ * — он прятал бы забытую инвалидацию до перезапуска. Строку, написанную мимо
+ * этого модуля (руками в sqlite3, чужим prepare), кэш не увидит: у продукта
+ * одна дверь на запись, и она здесь.
+ */
+interface RoomIdentity {
+  name: string
+  createdAt: number
+}
+
+const roomCache = new Map<string, RoomIdentity | null>()
+
+function identityOf(id: string): RoomIdentity | null {
+  const known = roomCache.get(id)
+  if (known !== undefined) return known
+  const row = selectSession.get(id) as SessionRow | undefined
+  const identity = row ? { name: row.name, createdAt: row.created_at } : null
+  roomCache.set(id, identity)
+  // Та же строка несёт правила и конец занятия — положить их в свой кэш здесь
+  // дешевле, чем прочитать её второй раз первым же вопросом о правах.
+  if (row) rememberRoom(id, row.rules ?? null, row.finished_at ?? null)
+  return identity
 }
 
 export function getSession(id: string): SessionInfo | null {
-  const row = selectSession.get(id) as SessionRow | undefined
+  const identity = identityOf(id)
+  if (!identity) return null
+  const room = roomOf(id)
   /*
    * `published` и `course` здесь всегда пусты, и это не забывчивость: они
    * живут в таблицах публикаций, а те импортируют этот модуль. Заполняет их
    * маршрут `/api/sessions/:id` — единственное место, где они нужны.
    */
-  return row
-    ? {
-        id: row.id,
-        name: row.name,
-        createdAt: row.created_at,
-        rules: readRules(row.rules ?? null),
-        /*
-         * Хранимые правила и конец занятия едут порознь, и порознь же читаются
-         * клиентом: он накладывает одно на другое сам (shared/rules.ts ·
-         * rulesAfterClass), чтобы в настройках комнаты преподаватель видел то,
-         * что выбрал, а не то, во что это превратил конец пары.
-         */
-        finishedAt: row.finished_at ?? null,
-        published: null,
-        course: null,
-        // Из конфига, а не из строки таблицы — см. createSession().
-        institution: config.institution,
-      }
-    : null
+  return {
+    id,
+    name: identity.name,
+    createdAt: identity.createdAt,
+    // Своей копией: правила уезжают наружу, а в кэше лежит одна на всю
+    // комнату, и правка в чужих руках стала бы правкой для всех сразу.
+    rules: { ...room.rules },
+    /*
+     * Хранимые правила и конец занятия едут порознь, и порознь же читаются
+     * клиентом: он накладывает одно на другое сам (shared/rules.ts ·
+     * rulesAfterClass), чтобы в настройках комнаты преподаватель видел то,
+     * что выбрал, а не то, во что это превратил конец пары.
+     */
+    finishedAt: room.finishedAt,
+    published: null,
+    course: null,
+    // Из конфига, а не из строки таблицы — см. createSession().
+    institution: config.institution,
+  }
+}
+
+/**
+ * Забыть о комнате всё, что этот модуль помнит: строку, правила и права её
+ * людей по токену.
+ *
+ * Зовут её удаление семинара (через `forgetRules`) и создание комнаты: id
+ * могли спросить до того, как она появилась, и «нет такой» пережило бы её
+ * рождение.
+ */
+export function forgetRoom(sessionId: string): void {
+  roomCache.delete(sessionId)
+  hostCache.delete(sessionId)
+  rulesCache.delete(sessionId)
+}
+
+/**
+ * Жива ли строка комнаты — вопрос базе, мимо кэша.
+ *
+ * Ровно для тех мест, где ошибиться дороже, чем сходить в базу: последняя линия
+ * обороны против воскресшего семинара — сброс снимка документа
+ * (`collab/persistence.ts`), который не пишет тетрадь комнаты, если строки
+ * комнаты уже нет. `getSession` там ответил бы из памяти, и защита держалась бы
+ * не на базе, а на том, что КАЖДЫЙ путь удаления помнит про `forgetRoom`; цена
+ * одной забытой инвалидации — тетрадь класса, вернувшаяся на диск через
+ * несколько секунд после того, как семинар удалили, и снимок без строки
+ * семинара, до которого больше не дотянуться.
+ *
+ * Кэш здесь ничего не экономит: спрашивают это раз в несколько секунд на
+ * комнату, при сбросе снимка, а не на каждом рукопожатии — там, где кэш и
+ * заведён.
+ */
+export function sessionRowExists(id: string): boolean {
+  return selectSessionRow.get(id) !== undefined
 }
 
 /* --------------------------------------------------------- participants */
@@ -556,6 +655,9 @@ export function upsertParticipant(p: {
     device: p.device ?? null,
     last_seen: Date.now(),
   })
+  // Не забыть, а записать: право по токену только что решено здесь, и первое
+  // же рукопожатие спросит именно его.
+  rememberTokenHost(p.sessionId, p.id, tokenHost)
   return { id: p.id, name: p.name, avatar: p.avatar, color, role: p.role }
 }
 
@@ -572,12 +674,48 @@ export function deviceOfParticipant(sessionId: string, participantId: string): s
 }
 
 /**
+ * Права по токену в памяти: комната → участник → был ли у него хост-токен.
+ *
+ * Спрашивает это `roleFor` (routes/sessions.ts) на КАЖДОМ рукопожатии — по два
+ * сокета на вкладку, — а меняет ровно один писатель, `upsertParticipant`, и он
+ * же кладёт сюда новое значение. Уходит запись вместе с комнатой
+ * (`forgetRoom`); больше строку `participants` не трогает никто, кроме
+ * удаления семинара, которое сносит её целиком.
+ *
+ * Карта на комнату, а не общий ключ «комната:участник»: так удаление семинара
+ * — один `delete`, а не обход всех, кто когда-либо заходил.
+ */
+const hostCache = new Map<string, Map<string, boolean>>()
+
+/**
+ * Сколько человек комната помнит. Кэш — ускоритель, а не реестр: комната, через
+ * которую за семестр прошли тысячи идентификаторов, начинает считать заново,
+ * вместо того чтобы расти до перезапуска. Лекционный зал (500) не приближается
+ * к этой границе.
+ */
+const HOST_CACHE_MAX = 2048
+
+function rememberTokenHost(sessionId: string, participantId: string, host: boolean): void {
+  let room = hostCache.get(sessionId)
+  if (!room) {
+    room = new Map()
+    hostCache.set(sessionId, room)
+  }
+  if (room.size >= HOST_CACHE_MAX && !room.has(participantId)) room.clear()
+  room.set(participantId, host)
+}
+
+/**
  * Проводил ли этот участник хост-токен — единственное, что переживает
  * перезапуск и не отбирается кукой. См. столбец token_host.
  */
 export function isTokenHost(sessionId: string, participantId: string): boolean {
+  const known = hostCache.get(sessionId)?.get(participantId)
+  if (known !== undefined) return known
   const row = selectParticipant.get(participantId, sessionId) as ParticipantRow | undefined
-  return row?.token_host === 1
+  const host = row?.token_host === 1
+  rememberTokenHost(sessionId, participantId, host)
+  return host
 }
 
 export function getParticipant(sessionId: string, participantId: string): Participant | null {
@@ -591,6 +729,27 @@ export function listParticipants(sessionId: string): Participant[] {
 
 export function touchLastSeen(participantId: string): void {
   touchParticipant.run(Date.now(), participantId)
+}
+
+/**
+ * «Был здесь» пачкой — одной транзакцией на всех.
+ *
+ * Отметка ставится на каждом рукопожатии сокета, а сокетов у вкладки два, и
+ * после перезапуска сервера или моргания ретранслятора пятьсот вкладок
+ * возвращаются в одну секунду: тысяча отдельных UPDATE, каждый со своей
+ * транзакцией и своим fsync по журналу. Точность отметки при этом никому не
+ * нужна ближе нескольких секунд — её читает список людей, а не право доступа.
+ *
+ * Время — одно на всю пачку и приходит снаружи: это момент, когда люди пришли,
+ * а не момент, когда до них дошла запись.
+ */
+const touchAll = db.transaction((ids: readonly string[], at: number) => {
+  for (const id of ids) touchParticipant.run(at, id)
+})
+
+export function touchLastSeenAll(participantIds: readonly string[], at = Date.now()): void {
+  if (participantIds.length === 0) return
+  touchAll(participantIds, at)
 }
 
 /* ------------------------------------------------------- doc snapshots */
@@ -640,6 +799,17 @@ function roomOf(sessionId: string): { rules: RoomRules; finishedAt: number | nul
 }
 
 /**
+ * Запомнить правила комнаты по уже прочитанной строке.
+ *
+ * Зовёт это `identityOf`: строка `sessions` несёт и правила, и конец занятия,
+ * так что читать её второй раз ради `roomOf` — платить дважды за одно и то же.
+ * Разбор здесь один и тот же, `readRules`, поэтому разойтись двум путям негде.
+ */
+function rememberRoom(sessionId: string, rules: string | null, finishedAt: number | null): void {
+  rulesCache.set(sessionId, { rules: readRules(rules), finishedAt })
+}
+
+/**
  * Правила, по которым комната живёт СЕЙЧАС.
  *
  * Отсюда их берут все проверки прав, и поэтому конец занятия наложен здесь, в
@@ -686,9 +856,16 @@ export function setFinished(sessionId: string, at: number | null): void {
   rulesCache.set(sessionId, { rules: roomOf(sessionId).rules, finishedAt: at })
 }
 
-/** Забыть правила комнаты: они изменились или комнаты больше нет. */
+/**
+ * Забыть правила комнаты: они изменились или комнаты больше нет.
+ *
+ * Зовут её из одного места — удаления семинара, — и там забыть надо не только
+ * правила: кэш строки пережил бы комнату, и старый токен ещё сутки открывал бы
+ * сокет в дверь, которой уже нет. Поэтому здесь `forgetRoom` целиком; новым
+ * местам звать лучше сразу его.
+ */
 export function forgetRules(sessionId: string): void {
-  rulesCache.delete(sessionId)
+  forgetRoom(sessionId)
 }
 
 /**
@@ -884,7 +1061,25 @@ const dropNote = db.prepare(
   'DELETE FROM lecture_notes WHERE session_id = ? AND file = ? AND page = ?',
 )
 const dropNotesOf = db.prepare('DELETE FROM lecture_notes WHERE session_id = ?')
-const moveNotes = db.prepare('UPDATE lecture_notes SET file = ? WHERE session_id = ? AND file = ?')
+const dropNotesFile = db.prepare('DELETE FROM lecture_notes WHERE session_id = ? AND file = ?')
+/*
+ * `OR REPLACE`, а не голый UPDATE, и это разница между «переехало» и «пропало».
+ *
+ * Ключ здесь (комната, файл, страница), а заметки не удаляются при удалении
+ * файла — намеренно: перезалить исправленный PDF под тем же именем накануне
+ * пары обычнее, чем начать речь с нуля. Значит у пути легко остаётся хвост от
+ * прошлого документа, и переезд на такой путь бьётся о занятый ключ. В SQLite
+ * это откатывает ВЕСЬ оператор: не переезжает ни одна страница, а вызывающий
+ * ловит исключение и молчит — вечер, потраченный на речь к двадцати четырём
+ * страницам, остаётся под путём, которого на диске больше нет.
+ *
+ * REPLACE решает спор в пользу того, что переезжает: заметки к живому файлу
+ * старше заметок к пути, с которого файл давно убрали. Обратный выбор — тихо
+ * потерять свежую речь ради чужой прошлогодней.
+ */
+const moveNotes = db.prepare(
+  'UPDATE OR REPLACE lecture_notes SET file = ? WHERE session_id = ? AND file = ?',
+)
 
 /** Все заметки к одному документу: страница → текст. */
 export function notesOf(sessionId: string, file: string): Record<number, string> {
@@ -910,9 +1105,21 @@ export function setNote(sessionId: string, file: string, page: number, text: str
   })
 }
 
-/** Файл переименовали — заметки переезжают за ним. */
+/**
+ * Файл переименовали — заметки переезжают за ним, вытесняя хвост на новом пути.
+ *
+ * Переезд «на себя» отдельным случаем: `WHERE file = to` и `SET file = to` —
+ * это конфликт строки с самой собой, и REPLACE его не считает конфликтом, но
+ * полагаться на такую тонкость в операторе, который умеет удалять, не стоит.
+ */
 export function moveNotesTo(sessionId: string, from: string, to: string): void {
+  if (from === to) return
   moveNotes.run(to, sessionId, from)
+}
+
+/** Речь к одному документу — под нож (файл заменили целиком, не переименовали). */
+export function discardNotesOf(sessionId: string, file: string): void {
+  dropNotesFile.run(sessionId, file)
 }
 
 /** Семинар удалили — заметки уходят с ним. */
@@ -947,4 +1154,109 @@ const dropHistory = db.prepare(`DELETE FROM doc_history WHERE session_id = ?`)
 /** A deleted seminar takes its history with it. */
 export function discardHistory(sessionId: string): void {
   dropHistory.run(sessionId)
+}
+
+/**
+ * Сколько байт истории держится на один семинар.
+ *
+ * Раньше — сколько накопится: единственный DELETE во всём файле стоял в
+ * `discardHistory`, то есть история росла до удаления семинара. Считать легко:
+ * на оживлённой паре всплеск закрывается несколько раз в секунду, строка — это
+ * килобайты дельты, а keyframe размером с тетрадь приходит всякий раз, когда
+ * дельты догоняют её объём. Семестровая комната с тремя мегабайтами тетради
+ * пишет сотни мегабайт в базу, лежащую на том же диске, что и файлы всех
+ * комнат, и кончается он молча и сразу для всех.
+ *
+ * Шестьдесят четыре мегабайта — это два десятка полных снимков трёхмегабайтной
+ * тетради с дельтами между ними, то есть вся пара и запас. Обычная комната
+ * сюда не упирается вовсе.
+ */
+const HISTORY_MAX_BYTES = 64 * 1024 * 1024
+
+const historyWeights = db.prepare(`
+  SELECT seq, kind, LENGTH(update_blob) AS bytes
+  FROM doc_history WHERE session_id = ? ORDER BY seq DESC
+`)
+
+const trimBefore = db.prepare(`DELETE FROM doc_history WHERE session_id = ? AND seq < ?`)
+
+/**
+ * Обрезать историю семинара сверху по возрасту, до потолка байтов.
+ *
+ * Режется ЦЕЛЫМИ отрезками — всё, что старше некоторого keyframe, — и это не
+ * придирка к аккуратности. Повтор любой версии начинается с ближайшего
+ * keyframe НЕ ПОЗЖЕ неё и накатывает все строки между ними (`updatesUpTo`), так
+ * что выброшенная строка ломает возврат не себя, а всех, кто стоит за ней до
+ * следующего снимка. Выбросить «тихие» строки старше последнего keyframe, как
+ * просилось на первый взгляд, значило бы разорвать цепочку под каждой видимой
+ * версией предыдущего отрезка: кнопка «Вернуть» осталась бы на месте и
+ * записала бы поверх живой тетради не то, что обещала.
+ *
+ * Поэтому граница ставится ровно на keyframe: всё, что осталось, replay'ится
+ * без единой недостающей строки, а то, что ушло, ушло целиком и из ленты тоже
+ * — история семинара начинается позже, и это видно, а не подстроено.
+ *
+ * Последний отрезок не режется никогда, даже если он один больше потолка:
+ * комнате нужна хотя бы одна точка, с которой вообще можно повторить
+ * (`hasHistoryBase`).
+ *
+ * Возвращает, сколько строк убрано. Зовёт не база, а `collab/history.ts` сразу
+ * после удачного keyframe — единственный момент, когда впереди гарантированно
+ * есть целый снимок.
+ */
+export function trimHistory(sessionId: string, keepBytes = HISTORY_MAX_BYTES): number {
+  const rows = historyWeights.all(sessionId) as { seq: number; kind: string; bytes: number }[]
+  if (rows.length === 0) return 0
+  let bytes = 0
+  /** Самый старый снимок, до которого история ещё влезает в потолок. */
+  let cut: number | null = null
+  let over = false
+  for (const row of rows) {
+    bytes += row.bytes
+    // Потолок мерится по всем строкам, а граница ставится только на снимке:
+    // между двумя снимками может лежать сколько угодно дельт, и «упёрлись» они
+    // тоже считают.
+    if (bytes > keepBytes) over = true
+    if (row.kind !== 'keyframe') continue
+    if (!over) {
+      cut = row.seq
+      continue
+    }
+    // Дальше не влезает. Самый свежий снимок держится всегда, даже если он
+    // один больше потолка: без него повторить нельзя вообще ничего.
+    cut ??= row.seq
+    break
+  }
+  // В потолок не упёрлись — значит и резать нечего: обрезка по возрасту тут не
+  // цель, а плата за место. Так же и когда снимка нет вовсе или он и есть самая
+  // старая строка.
+  if (!over || cut === null || cut <= rows[rows.length - 1].seq) return 0
+  return trimBefore.run(sessionId, cut).changes
+}
+
+const oldestVersion = db.prepare(
+  `SELECT kind FROM doc_history WHERE session_id = ? ORDER BY seq ASC LIMIT 1`,
+)
+
+/**
+ * Начинается ли лента позже, чем началась комната.
+ *
+ * `trimHistory` выше режет начало целыми отрезками, и панель истории без этого
+ * признака показывает остаток так, будто ранних правок и не было: список
+ * просто начинается с середины пары, и по нему нельзя отличить «тут ничего не
+ * писали» от «до этого места не сохранилось».
+ *
+ * Меряется состоянием, а не памятью о событии: обрезка ставит границу ровно на
+ * keyframe, а самой первой строкой комнаты всегда пишется `opened`
+ * (collab/history.ts · beginHistory), и второй раз она не появится — после
+ * обрезки `hasHistoryBase` уже истинно из-за оставшегося снимка. Значит «самая
+ * старая строка не `opened`» и есть «начало не сохранилось», причём ответ
+ * переживает перезапуск сервера и не требует лишнего столбца.
+ *
+ * Пустая история — не обрезанная: комнате, где ещё ничего не записано, панель
+ * говорит своими словами.
+ */
+export function historyTrimmed(sessionId: string): boolean {
+  const row = oldestVersion.get(sessionId) as { kind: string } | undefined
+  return row !== undefined && row.kind !== 'opened'
 }

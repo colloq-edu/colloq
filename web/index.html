@@ -146,30 +146,30 @@
     <link rel="preload" href="/fonts/hse-sans-900.woff2" as="font" type="font/woff2" crossorigin />
 
     <!--
-      The mono is still Google's: JetBrains Mono is what the notebook, the
-      terminal and every label are set in, and it is not ours to subset out of a
-      local install. Fetched at print priority and promoted once it lands, so it
-      never blocks the first frame.
+      И моноширинный — тоже наш, с этого же сервера.
 
-      Inter is gone from this request. It was the stand-in for a font we now
-      ship; downloading a second text face to stand in for one that always
-      arrives is paying for nothing. It stays in the stack below as the name to
-      fall back to if the files ever fail.
+      JetBrains Mono — лицо тетради, терминала и каждого вывода, и до сих пор
+      оно приезжало с fonts.googleapis.com: единственная внешняя зависимость во
+      всём продукте, стоящая на пути к первому кадру пары. В университетской
+      сети без выхода наружу и при недоступности Google (а Cloudflare и внешние
+      CDN из РФ уже блокировались) тетрадь рисовалась в Menlo, и это ещё не
+      худшее: font-display заменяет шрифт на лету, метрики у Menlo другие, и
+      переносы в ячейках перескакивают под чтение.
+
+      Довод «не наш, чтобы сабсетить» был просто неверен: JetBrains Mono лежит
+      под SIL OFL 1.1 (текст рядом, JetBrainsMono-OFL.txt), и хостить и резать
+      его можно. Один файл на подмножество, вариативный по начертанию: 400, 500
+      и 700 берутся из одного и того же woff2, потому что у него ось веса.
+      Латиница предзагружается — на ней набран весь код; кириллица и остальное
+      подтягиваются по unicode-range, только если такие буквы правда рисуют.
     -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap"
-      media="print"
-      onload="this.media='all'"
+      rel="preload"
+      href="/fonts/jetbrains-mono-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
     />
-    <noscript>
-      <link
-        rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap"
-      />
-    </noscript>
 
     <!--
       The app shell. Everything needed to paint the right ground colour and a
@@ -253,6 +253,103 @@
         font-weight: 900;
         font-style: normal;
         font-display: swap;
+      }
+
+      /*
+       * JetBrains Mono, вариативная: одна и та же гарнитура на 400, 500 и 700.
+       *
+       * Подмножества — те же, что режет Google, и по той же причине: браузер
+       * скачивает файл, только если на странице правда есть буквы из его
+       * unicode-range. Кириллица в моноширинном нужна не в коде, а в тексте
+       * ячеек и выводов, и ждать её на входе незачем.
+       */
+      @font-face {
+        font-family: 'JetBrains Mono';
+        src: url('/fonts/jetbrains-mono-latin.woff2') format('woff2');
+        font-weight: 400 800;
+        font-style: normal;
+        font-display: swap;
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+          U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+          U+FEFF, U+FFFD;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        src: url('/fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+        font-weight: 400 800;
+        font-style: normal;
+        font-display: swap;
+        unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+          U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+          U+2113, U+2C60-2C7F, U+A720-A7FF;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        src: url('/fonts/jetbrains-mono-cyrillic.woff2') format('woff2');
+        font-weight: 400 800;
+        font-style: normal;
+        font-display: swap;
+        unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono';
+        src: url('/fonts/jetbrains-mono-cyrillic-ext.woff2') format('woff2');
+        font-weight: 400 800;
+        font-style: normal;
+        font-display: swap;
+        unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+      }
+
+      /*
+       * Подменный моноширинный — тот, что стоит, пока настоящий в пути.
+       *
+       * `font-display: swap` меняет шрифт на лету, и без этой пары строки
+       * подпрыгивали: у JetBrains Mono строка занимает 1.32em и знак 0.6em, у
+       * Menlo — 1.164em и 0.602em, у Consolas — 0.55em. Правки метрик приводят
+       * системный шрифт к нашему: строка встаёт на то же место, колонка кода —
+       * на ту же ширину, и подмена перестаёт быть видимой.
+       *
+       * Семейств два, и имена у них РАЗНЫЕ. Правка ширины у Consolas своя, и
+       * одной цифрой их не накрыть, — а два правила под одним именем держались
+       * бы на том, чего спецификация не обещает: что делает браузер, когда у
+       * выбранного лица не нашлось ни одного local(), — переберёт ли остальные
+       * лица той же семьи или бросит семью целиком — его дело. Проиграй эта
+       * лотерея на Windows, и подмены там не было бы вовсе — ровно на той
+       * машине, ради которой писано первое правило.
+       *
+       * Разные имена — обычный перебор семейств, который обещан: Consolas не
+       * нашёлся (мак, Linux) — берём следующее; не нашлось ни одного —
+       * остаётся ровно то, что было до этой правки. Порядок и полный стек — в
+       * web/src/index.css, --font-mono; здесь только сами лица.
+       *
+       * `local()` берёт ЛИЦО, а не семью, и по имени лица — полному или
+       * постскриптовому. Замерено в Chrome на маке (ширина строки из 80 «M»):
+       * 'Menlo' не находится вообще — у семьи Menlo нет лица с таким именем,
+       * есть «Menlo Regular» и «Menlo-Regular»; 'Monaco' и 'Courier New'
+       * находятся, потому что там имя семьи и имя регулярного лица совпали.
+       * Пока здесь стояло одно 'Menlo', на маке подмены не было вовсе — ровно
+       * та поломка, ради которой эти правила и заводили. Поэтому у каждого
+       * шрифта перечислены все написания: лишнее local() ничего не стоит,
+       * ненайденное просто пропускается.
+       */
+      @font-face {
+        font-family: 'JetBrains Mono Fallback Consolas';
+        src: local('Consolas'), local('Consolas Regular');
+        size-adjust: 109.13%;
+        ascent-override: 93.47%;
+        descent-override: 27.49%;
+        line-gap-override: 0%;
+      }
+      @font-face {
+        font-family: 'JetBrains Mono Fallback Menlo';
+        src:
+          local('Menlo-Regular'), local('Menlo Regular'), local('Menlo'),
+          local('DejaVu Sans Mono'), local('DejaVuSansMono'), local('DejaVu Sans Mono Book'),
+          local('Liberation Mono'), local('LiberationMono'), local('Liberation Mono Regular');
+        size-adjust: 99.66%;
+        ascent-override: 102.35%;
+        descent-override: 30.1%;
+        line-gap-override: 0%;
       }
 
       html,

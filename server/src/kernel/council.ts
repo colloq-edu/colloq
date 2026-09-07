@@ -60,7 +60,11 @@ export class CouncilOutputBuffer {
     if (this.truncated) return
     const room = MAX_ATTEMPT_OUTPUT_CHARS - this.used
     let body = text
-    if (text.length >= room) {
+    // Строго больше: текст, ровно уложившийся в бюджет, не срезан ни на символ,
+    // и объявлять его обрезанным — значит соврать и выбросить всё, что придёт
+    // следом. Ровно заполненный бюджет упрётся в потолок на следующем куске,
+    // где обрезка и правда случится.
+    if (text.length > room) {
       body = text.slice(0, Math.max(0, room))
       this.truncated = true
     }

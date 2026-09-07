@@ -42,9 +42,15 @@ and a real shell will not reliably hand you the race that caused the problem.
 `--test-concurrency=1` is deliberate, and it is not about speed. Without it the
 run silently *under-reports*: measured over repeated runs of the same unchanged
 suite, the count came back 232, 232, 230, 232 — always the tail of one file,
-never a failure. A suite that quietly drops its last two tests is worse than a
-slow one, because nothing about the output says anything is missing. Serial runs
-cost about twelve extra seconds and always report every test.
+never a failure. The serial run cost about twelve extra seconds and reported
+every test. Both numbers are that one measurement and nothing more: the suite
+was 232 tests then and is several times that now, and it has not been run
+concurrently since, so read the twelve seconds as history rather than as
+today's price of the flag. The real cost is printed at the end of every run, on
+the `duration_ms` line, and the real count on the `ℹ tests` line beside it.
+What outlived the numbers is the reason for the flag: a suite that quietly
+drops its last two tests is worse than a slow one, because nothing about the
+output says anything is missing.
 
 `--test-force-exit` is deliberate. Importing a server module means importing
 things that are built to keep running — a document binding schedules its next
@@ -77,3 +83,37 @@ browser in the room fetch a stranger's URL.
 What can be decided without a DOM is decided in a plain module and tested here;
 what needs pixels or a real DOMPurify is measured in a browser, and these files
 carry the finding so it cannot be quietly undone.
+
+## Клиентские модули: что проверяется здесь, а что только вживую
+
+Всё, что можно решить без DOM, вынесено из компонентов в обычные модули
+`web/src/lib/*` и проверяется отсюда. Пять файлов `weblib-*.test.mts` — про
+то, что ломается молча в браузере, а не на экране:
+
+`weblib-presence.test.mts` — кадр присутствия, в котором не изменилось ничего из
+нарисованного, не должен доходить ни до кого. Интерфейс при этом остаётся
+правильным; неправильной становится только скорость, и заметить это можно лишь
+в зале на пятьсот человек.
+
+`weblib-evidence.test.mts` — обрезанный список файлов и голый код состояния не
+доказывают того, по чему делается необратимое: погашенная у всей комнаты
+лекция, стёртая личность забаненного, стёртый офлайн-набор.
+
+`weblib-refusal-cells.test.mts` — что человек прочитает после того, как вкладку
+пересобрали отказом гейта: там решается, покажут ему потерянный текст или он
+исчезнет молча.
+
+`weblib-rule-rows.test.mts` — подписи правил комнаты: правило без строки
+исчезает из панели, а значение, которого не знает `readRules`, рисуется
+кнопкой, тихо возвращающейся на умолчание.
+
+`weblib-one-copy.test.mts` — места, где одно правило успело обзавестись второй
+копией и копии разошлись.
+
+Два самых больших модуля клиента проверяются ТОЛЬКО вживую, и это осознанно:
+`web/src/lib/yreactive.svelte.ts` и `web/src/lib/filedoc.svelte.ts` — мост
+между Yjs и рунами Svelte. Их поведение — это подписки, эффекты и порядок
+пробуждения компонентов; без компилятора Svelte и без документа в браузере
+проверять там нечего, а подделка того и другого проверяла бы подделку. Что от
+них зависит — считанные снимки и правила диффа — вынесено в модули без рун
+(`lib/peers.ts`, `lib/room.ts`, `lib/board.ts`) и проверяется здесь.

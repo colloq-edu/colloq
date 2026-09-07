@@ -1,5 +1,13 @@
+import { createHash } from 'node:crypto'
 import { WebSocket, type RawData } from 'ws'
-import { createTerminalLine, getTerminal, terminalText, type YTerminalLine } from '@shared/notebook'
+import {
+  createTerminalLine,
+  getMeta,
+  getTerminal,
+  terminalText,
+  type YTerminalLine,
+} from '@shared/notebook'
+import { plural } from '@shared/plural'
 import { getSessionDoc } from '../collab/index.js'
 import { sessionEnvironment } from '../db.js'
 import { kernelCwd, sessionDir } from '../workspace.js'
@@ -70,9 +78,25 @@ const MAX_PARTIAL_CHARS = 4096
  * километра прогресса.
  */
 const MAX_FLUSH_CHARS = 64 * 1024
+/*
+ * Строки расшифровки — на языке комнаты.
+ *
+ * Их печатает сервер, а читают их в том же ящике, где вкладки «Терминал /
+ * Журнал ядра / История», приглашение «оболочка запускается…» и кнопки
+ * «Очистить» и «Завести оболочку заново». Английская половина стояла вплотную к
+ * русской, в одной строке с ней, и звала кнопки чужими именами — «Press Stop»,
+ * «with Clear». Кнопку называем так, как она подписана в ящике; там, где кнопки
+ * нет (остановить команду можно только Ctrl+C), называем клавишу, а не
+ * выдуманную кнопку.
+ *
+ * Имя человека ставится отдельным подлежащим — «Мария — команда снята», а не
+ * «Мария сняла»: имена приходят любые, в том числе «оракул» (ai/agent.ts ·
+ * runInRoom), рода их мы не знаем, а «нажал(а)» в общей расшифровке читается
+ * как черновик.
+ */
 const FLOOD_NOTICE =
-  '[colloq] output is coming faster than a shared transcript can carry — only the most recent ' +
-  'lines of each moment are kept. Redirect it to a file if you need all of it.'
+  '[colloq] вывод идёт быстрее, чем его вывозит общая расшифровка, — от каждого мгновения ' +
+  'остаются только последние строки. Нужен весь — перенаправьте его в файл.'
 /** Never trim away the command that is producing output right now. */
 const MIN_KEPT_ENTRIES = 2
 const MAX_COMMAND_BYTES = 4096
@@ -91,9 +115,9 @@ const TERM_ROWS = 40
 const TERM_COLS = 120
 
 const SCREEN_NOTICE =
-  '[colloq] that program draws a full screen (vim/top style) — a shared transcript can only carry line output, so the rest is hidden. Press Stop to end it.'
+  '[colloq] эта программа рисует весь экран (vim, top и подобные), а общая расшифровка везёт только строки — остального не видно. Остановить её — Ctrl+C.'
 const CLEAR_NOTICE =
-  '[colloq] clearing the screen does nothing here — this transcript is shared. The host can wipe it with Clear.'
+  '[colloq] очистка экрана здесь ничего не меняет: расшифровка общая. Стереть её может преподаватель — кнопкой «Очистить».'
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
@@ -189,6 +213,18 @@ interface Term {
   clearNoticed: boolean
   /** Сказали ли уже про потоп в этой команде; см. MAX_FLUSH_CHARS. */
   flooded: boolean
+  /** id строки, которая в документе помечена «идёт», а живой у нас нет; см. resumeCommand. */
+  resumable: string | null
+  /**
+   * Спросить оболочку, свободна ли она, как только кончится прайм.
+   *
+   * Ставится ровно в одном случае: мы вернулись к pty, пережившему перезапуск
+   * сервера, и подняли из транскрипта команду, помеченную «идёт». Идёт она или
+   * кончилась, пока сервера не было, знает только сама оболочка — и отвечает
+   * единственным доступным ей способом: свободная печатает приглашение, занятая
+   * молчит. См. `probeShell`.
+   */
+  probe: boolean
   commandLine: YTerminalLine | null
   commandLineId: string | null
   outputLine: YTerminalLine | null
@@ -236,6 +272,8 @@ function getTerm(sessionId: string): Term {
       screenApp: false,
       clearNoticed: false,
       flooded: false,
+      resumable: null,
+      probe: false,
       commandLine: null,
       commandLineId: null,
       outputLine: null,
@@ -252,6 +290,44 @@ function getTerm(sessionId: string): Term {
 }
 
 const docOf = (term: Term) => getSessionDoc(term.sessionId).doc
+
+/**
+ * Имя pty, пережившее перезапуск сервера, — в документе комнаты.
+ *
+ * `shutdownKernels` намеренно отпускает ядро, чтобы `make run` после правки не
+ * стоил семинару состояния; терминал в том же сценарии удалял pty, и
+ * трёхчасовое обучение, запущенное в оболочке, погибало вместе с ним — без
+ * единой строки в транскрипте. Контейнер теперь на комнату и живёт дальше, так
+ * что pty переживает нас так же, как ядро, — нужно только помнить, как его
+ * звали. Адрес рядом с именем не для красоты: pty с именем «1» есть в каждом
+ * контейнере, и вернуться по нему не в тот — значит привести комнату в чужую
+ * оболочку.
+ */
+const PTY_KEY = 'terminalPty'
+
+/**
+ * Адрес — отпечатком, а не строкой: документ читает вся комната, а внутренний
+ * адрес контейнера ей знать незачем. Сравнивать отпечатки для «тот же ли это
+ * контейнер» достаточно.
+ */
+const ptyHome = (url: string) => createHash('sha256').update(url).digest('hex').slice(0, 12)
+
+function rememberPty(term: Term): void {
+  const doc = docOf(term)
+  const value = term.name ? `${ptyHome(term.endpoint.url)}\n${term.name}` : null
+  const meta = getMeta(doc)
+  if ((meta.get(PTY_KEY) ?? null) === value) return
+  doc.transact(() => meta.set(PTY_KEY, value), ORIGIN)
+}
+
+/** Имя pty, если оно от того же адреса, к которому мы идём сейчас. */
+function rememberedPty(term: Term, url: string): string | null {
+  const saved = getMeta(docOf(term)).get(PTY_KEY)
+  if (typeof saved !== 'string') return null
+  const at = saved.indexOf('\n')
+  if (at < 0) return null
+  return saved.slice(0, at) === ptyHome(url) ? saved.slice(at + 1) || null : null
+}
 
 /* ------------------------------------------------------------------ phase */
 
@@ -318,6 +394,9 @@ function adoptTranscript(term: Term): void {
   let output: YTerminalLine | null = null
   let outputChars = 0
   let outputLines = 0
+  // Массив, а не переменная: присваивание идёт из замыкания транзакции, и
+  // сузить тип обратно компилятор оттуда уже не может.
+  const resumable: Array<{ id: string; kind: string }> = []
   doc.transact(() => {
     for (const line of array.toArray()) {
       const text = terminalText(line).toString()
@@ -339,7 +418,18 @@ function adoptTranscript(term: Term): void {
         outputLines = entry.lines
         continue
       }
-      if (line.get('running') === true) line.set('running', false)
+      if (line.get('running') === true) {
+        /*
+         * Кто ПОСЛЕДНИМ утверждал, что он идёт, — на случай, что это правда.
+         *
+         * Флаг мы гасим: без оболочки за ним стоять некому. Но если через
+         * секунду выяснится, что pty пережил перезапуск сервера, эта строка —
+         * единственный след команды, которая всё ещё работает внутри, и
+         * `resumeCommand` поднимет её обратно. Живой она станет только тогда.
+         */
+        resumable.push({ id: entry.id, kind: String(line.get('kind') ?? '') })
+        line.set('running', false)
+      }
     }
   }, ORIGIN)
   term.commandLine = command
@@ -349,6 +439,41 @@ function adoptTranscript(term: Term): void {
   term.outChars = output === null ? 0 : outputChars
   term.outLines = output === null ? 0 : outputLines
   if (output === null) term.tailLen = 0
+  /*
+   * Найденное запоминается, ненайденное — не стирает найденного раньше.
+   *
+   * Усыновление бывает не одно: любая заметка ядра сбивает выравнивание, и
+   * `ensureAligned` зовёт нас снова — уже по транскрипту, где флаги «идёт» мы
+   * сами и погасили. Обнуляя здесь, мы теряли бы след живой команды из-за
+   * одной системной строки между открытием терминала и подключением к нему.
+   */
+  const last = resumable[resumable.length - 1]
+  if (command !== null) term.resumable = null
+  else if (last?.kind === 'command') term.resumable = last.id
+}
+
+/**
+ * Поднять обратно команду, которая, судя по транскрипту, всё ещё идёт.
+ *
+ * Зовётся ровно в одном месте — когда мы вернулись к pty, пережившему
+ * перезапуск сервера. Без этого охрана «одна команда за раз» после перезапуска
+ * не держит вовсе: `commandLine` пуст, фаза `idle`, и первый же набравший `ls`
+ * отправляет его в оболочку, где идёт чужое обучение.
+ */
+function resumeCommand(term: Term): boolean {
+  const id = term.resumable
+  term.resumable = null
+  if (!id) return false
+  const doc = docOf(term)
+  const line = getTerminal(doc)
+    .toArray()
+    .find((entry) => lineId(entry) === id)
+  if (!line) return false
+  doc.transact(() => line.set('running', true), ORIGIN)
+  term.commandLine = line
+  term.commandLineId = id
+  term.runningBy = (line.get('participantId') as string | null) ?? null
+  return true
 }
 
 function syncLedger(term: Term, id: string, chars: number, lines: number): void {
@@ -382,24 +507,48 @@ function forgetEntry(term: Term, id: string): void {
   }
 }
 
-/** Oldest-first eviction: a seminar terminal is a tail, not an archive. */
+/**
+ * Oldest-first eviction: a seminar terminal is a tail, not an archive.
+ *
+ * Строка ИДУЩЕЙ команды не выбрасывается никогда — и это не украшение
+ * транскрипта, а вся охрана «одна команда за раз».
+ *
+ * Она самая старая запись из живых, потому что вывод перекатывается в новые
+ * записи каждые 32 КБ, — и вылетала первой. `forgetEntry` обнулял вместе с ней
+ * `commandLine`, а именно по нему `runCommand` меряет занятость: следующий
+ * набравший `ls` отправлял его прямо в stdin занятой оболочки — его байты
+ * доставались `train.py`, чужой вывод печатался под его строкой, эхо двоилось,
+ * и никакого «X's command is waiting for the shell» никто не видел. Хватало
+ * восьмисот строк вывода, то есть одной `find /`. `MIN_KEPT_ENTRIES` обещал
+ * ровно это и не выполнял: он считает записи, а не смотрит, что это за запись.
+ *
+ * Поэтому теперь выбрасывается не «первые N», а первые N, КРОМЕ этой одной, —
+ * ценой удаления по индексам вместо одного среза с головы.
+ */
 function trim(term: Term): void {
   if (term.chars <= MAX_TRANSCRIPT_CHARS && term.lines <= MAX_TRANSCRIPT_LINES) return
   ensureAligned(term)
-  let drop = 0
-  while (
-    term.ledger.length - drop > MIN_KEPT_ENTRIES &&
-    (term.chars > MAX_TRANSCRIPT_CHARS || term.lines > MAX_TRANSCRIPT_LINES)
-  ) {
-    const entry = term.ledger[drop]
+  const drop: number[] = []
+  let kept = term.ledger.length
+  for (let i = 0; i < term.ledger.length; i++) {
+    if (kept <= MIN_KEPT_ENTRIES) break
+    if (term.chars <= MAX_TRANSCRIPT_CHARS && term.lines <= MAX_TRANSCRIPT_LINES) break
+    const entry = term.ledger[i]
+    if (entry.id === term.commandLineId) continue
     term.chars -= entry.chars
     term.lines -= entry.lines
-    drop++
+    drop.push(i)
+    kept--
   }
-  if (drop === 0) return
-  const removed = term.ledger.splice(0, drop)
+  if (drop.length === 0) return
+  const removed = drop.map((index) => term.ledger[index])
   const doc = docOf(term)
-  doc.transact(() => getTerminal(doc).delete(0, drop), ORIGIN)
+  const array = getTerminal(doc)
+  // С конца — иначе каждое удаление сдвигало бы индексы следующих.
+  doc.transact(() => {
+    for (let i = drop.length - 1; i >= 0; i--) array.delete(drop[i], 1)
+  }, ORIGIN)
+  for (let i = drop.length - 1; i >= 0; i--) term.ledger.splice(drop[i], 1)
   for (const entry of removed) forgetEntry(term, entry.id)
 }
 
@@ -429,6 +578,9 @@ function removeEntry(term: Term, id: string): void {
 function systemLine(term: Term, text: string): void {
   appendEntry(term, createTerminalLine({ kind: 'system', text }), text.length, countLines(text) + 1)
 }
+
+/** «снято 2 команды», «снято 5 команд» — числительное общее, из shared. */
+const commandWord = (n: number) => plural(n, 'команда', 'команды', 'команд')
 
 /**
  * Stop appending to the current output entry, taking the in-progress tail back
@@ -853,8 +1005,8 @@ function dropPending(term: Term, why: string): void {
   systemLine(
     term,
     dropped.length === 1
-      ? `[colloq] ${dropped[0].by.name}'s waiting command was dropped — ${why}.`
-      : `[colloq] ${dropped.length} waiting commands were dropped — ${why}.`,
+      ? `[colloq] ${dropped[0].by.name} — команда снята из очереди: ${why}.`
+      : `[colloq] из очереди снято ${dropped.length} ${commandWord(dropped.length)}: ${why}.`,
   )
 }
 
@@ -913,15 +1065,15 @@ async function createJupyterTerminal(endpoint: KernelEndpoint): Promise<string> 
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
       throw new Error(
-        `Jupyter refused this server's credentials (HTTP ${res.status}). JUPYTER_TOKEN must match the token the kernel container was started with.`,
+        `Jupyter отверг учётные данные сервера (HTTP ${res.status}). JUPYTER_TOKEN должен совпадать с токеном, с которым поднят контейнер ядра.`,
       )
     }
-    throw new Error(`Jupyter would not start a terminal (HTTP ${res.status}).`)
+    throw new Error(`Jupyter не завёл оболочку (HTTP ${res.status}).`)
   }
   const parsed = (await res.json()) as { name?: unknown }
   const name = parsed?.name
   if (typeof name !== 'string' && typeof name !== 'number') {
-    throw new Error('Jupyter created a terminal without a name.')
+    throw new Error('Jupyter завёл оболочку без имени.')
   }
   return String(name)
 }
@@ -930,7 +1082,7 @@ async function deleteJupyterTerminal(endpoint: KernelEndpoint, name: string): Pr
   const res = await jupyterRequest(endpoint, `/api/terminals/${encodeURIComponent(name)}`, 'DELETE')
   // 404 means somebody beat us to it, which is the outcome we wanted anyway.
   if (!res.ok && res.status !== 404) {
-    throw new Error(`Jupyter would not close the terminal (HTTP ${res.status}).`)
+    throw new Error(`Jupyter не закрыл оболочку (HTTP ${res.status}).`)
   }
 }
 
@@ -960,7 +1112,7 @@ const sendSize = (term: Term) =>
 
 function connect(term: Term): Promise<void> {
   const name = term.name
-  if (!name) return Promise.reject(new Error('there is no terminal to connect to'))
+  if (!name) return Promise.reject(new Error('подключаться не к чему — у оболочки нет имени'))
 
   return new Promise<void>((resolve, reject) => {
     let socket: WebSocket
@@ -985,7 +1137,7 @@ function connect(term: Term): Promise<void> {
         /* nothing to terminate */
       }
       reject(
-        new Error(`the terminal channel did not open in ${Math.round(CONNECT_TIMEOUT_MS / 1000)}s`),
+        new Error(`канал оболочки не открылся за ${Math.round(CONNECT_TIMEOUT_MS / 1000)} с`),
       )
     }, CONNECT_TIMEOUT_MS)
 
@@ -1046,7 +1198,7 @@ function connect(term: Term): Promise<void> {
       if (ours) term.socket = null
       if (!settled) {
         settled = true
-        reject(new Error('the terminal channel closed before it opened'))
+        reject(new Error('канал оболочки закрылся, не открывшись'))
         return
       }
       // Закрылся не тот сокет, которым терминал пользуется сейчас: это уборка
@@ -1084,10 +1236,10 @@ function onShellExit(term: Term): void {
   term.name = null
   closeSocket(term)
   settleRun(term, false)
-  rejectWaiters(term, new Error('the shell exited'))
+  rejectWaiters(term, new Error('оболочка вышла'))
   setPhase(term, 'closed')
-  systemLine(term, '[colloq] the shell exited — open the terminal again to start a new one.')
-  dropPending(term, 'the shell exited')
+  systemLine(term, '[colloq] оболочка вышла — новую заводят кнопкой «Завести оболочку заново».')
+  dropPending(term, 'оболочка вышла')
 }
 
 /* -------------------------------------------------------------- lifecycle */
@@ -1118,7 +1270,7 @@ function fail(term: Term, message: string): void {
   closeSocket(term)
   setPhase(term, 'dead')
   systemLine(term, `[colloq] ${message}`)
-  dropPending(term, 'the terminal is gone')
+  dropPending(term, 'терминала больше нет')
   rejectWaiters(term, new Error(message))
 }
 
@@ -1145,19 +1297,47 @@ function finishPrime(term: Term): void {
   if (term.primed) return
   term.primed = true
   term.raw = ''
+  /*
+   * Незакрытая строка закрывается здесь, а не забывается.
+   *
+   * Раньше стояло `term.tailLen = 0` — то есть учёт хвоста обнулялся, а сам
+   * хвост (кадр tqdm, половина строки) оставался лежать в конце записи в
+   * документе. Следующий `writeOut` видел `tail === 0`, ничего не стирал и
+   * дописывал новый кадр за старым: в транскрипте два кадра одной строки
+   * подряд. `detachOutput` снимает хвост из документа и закрывает запись —
+   * дальше пишем с чистого места.
+   */
+  detachOutput(term)
   term.partial = ''
   term.col = 0
-  term.tailLen = 0
   term.reconnectAttempts = 0
   setPhase(term, term.commandLine ? 'busy' : 'idle')
   resolveWaiters(term)
   drainQueued(term)
+  probeShell(term)
+}
+
+/**
+ * Спросить оболочку, свободна ли она, — пустой строкой.
+ *
+ * После перезапуска сервера транскрипт говорит, что команда идёт, а правду
+ * знает только pty. Свободная оболочка на `\n` печатает новое приглашение —
+ * `onQuiet` увидит его и закроет строку по обычному пути (`finishCommand`),
+ * вместе с ней снимется и охрана. Занятая молчит, и строка остаётся «идёт»,
+ * что и есть правда. Перевод строки в stdin работающей программы — та же
+ * цена, что у приветственного `cd … && clear`, который мы и так шлём при
+ * каждом открытии.
+ */
+function probeShell(term: Term): void {
+  if (!term.probe) return
+  term.probe = false
+  sendStdin(term, '\n')
 }
 
 function scheduleReconnect(term: Term): void {
   if (term.reconnectTimer || term.closing) return
   if (term.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    fail(term, 'lost the connection to the shared terminal — open it again to keep going.')
+    fail(term, 'связь с общей оболочкой потеряна — новую заводят кнопкой «Завести оболочку заново».')
     return
   }
   const wait = Math.min(500 * 2 ** term.reconnectAttempts, 5000)
@@ -1237,8 +1417,21 @@ export function openTerminal(sessionId: string): Promise<void> {
       if (endpoint.url !== term.endpoint.url) term.name = null
       term.endpoint = endpoint
 
+      /*
+       * Имя pty ищется и за пределами этого процесса.
+       *
+       * Оболочка живёт в контейнере комнаты и переживает перезапуск сервера —
+       * ровно как ядро. Карта `terms` его не переживает, поэтому имя лежит в
+       * документе комнаты (см. PTY_KEY): без него `make run` после правки
+       * заводил новую оболочку, а `python train.py`, запущенный в старой,
+       * оставался считать в никуда.
+       */
+      const restored = term.name === null ? rememberedPty(term, endpoint.url) : null
+      if (restored) term.name = restored
+
       const remembered = term.name !== null
       if (!term.name) term.name = await createJupyterTerminal(endpoint)
+      let fresh = !remembered
       try {
         await connect(term)
       } catch (err) {
@@ -1247,17 +1440,31 @@ export function openTerminal(sessionId: string): Promise<void> {
         // someone click Open twice to find that out.
         if (!remembered) throw err
         term.name = await createJupyterTerminal(endpoint)
+        fresh = true
         await connect(term)
       }
+      rememberPty(term)
+      // Вернулись в ту же оболочку — значит, команда, помеченная «идёт», может
+      // и правда идти. Поднимаем её и спрашиваем оболочку (см. probeShell).
+      const resumed = !fresh && restored !== null && resumeCommand(term)
+      if (resumed) term.probe = true
       sendSize(term)
-      startPrime(term, true)
+      /*
+       * Приветствие — только в свободную оболочку.
+       *
+       * `cd … && clear` в оболочку, где идёт `python train.py`, — это строка
+       * текста в stdin чужой программы. Пока мы не знаем, свободна ли она,
+       * спрашиваем самым тихим, что есть: пустой строкой (см. probeShell). Её
+       * же цена и её же ответ, но без команды, которая может выполниться.
+       */
+      startPrime(term, !resumed)
     } catch (err) {
       term.name = null
       // Порт контейнера комнаты случайный и запоминается пулом; после
       // `docker restart` он другой. Забыть — иначе следующая попытка пойдёт по
       // тому же мёртвому адресу, и так до перезапуска всего сервера.
       forgetSessionKernel(sessionId)
-      const message = `could not open the shared terminal — ${errText(err)}`
+      const message = `не удалось открыть общую оболочку — ${errText(err)}`
       fail(term, message)
       throw new Error(message)
     } finally {
@@ -1291,7 +1498,7 @@ function drainQueued(term: Term): void {
   const pending = term.queued.splice(0, term.queued.length)
   for (const payload of pending) {
     if (!sendStdin(term, payload)) {
-      fail(term, 'could not reach the shared terminal — open it again to keep going.')
+      fail(term, 'до общей оболочки не достучаться — новую заводят кнопкой «Завести оболочку заново».')
       return
     }
   }
@@ -1312,7 +1519,7 @@ export function runCommand(
     return
   }
   if (Buffer.byteLength(text, 'utf8') > MAX_COMMAND_BYTES) {
-    systemLine(term, '[colloq] that command is too long to send to the terminal.')
+    systemLine(term, '[colloq] команда слишком длинная — положите её в файл и запустите файл.')
     done?.({ output: '', finished: false })
     return
   }
@@ -1338,14 +1545,14 @@ export function runCommand(
    */
   if (term.commandLine) {
     if (term.pending.length >= MAX_PENDING_COMMANDS) {
-      systemLine(term, '[colloq] too many commands are already waiting; try again once the shell is free.')
+      systemLine(term, '[colloq] в очереди уже слишком много команд — повторите, когда оболочка освободится.')
       // Тот, кто ждёт ответа (оракул), должен узнать об отказе сейчас, а не
       // через полторы минуты по таймауту.
       done?.({ output: '', finished: false })
       return
     }
     term.pending.push({ text, by, done })
-    systemLine(term, `[colloq] ${by.name}'s command is waiting for the shell.`)
+    systemLine(term, `[colloq] ${by.name} — команда ждёт свободной оболочки.`)
     return
   }
 
@@ -1410,16 +1617,72 @@ export function typedRunningCommand(sessionId: string, participantId: string): b
 }
 
 /**
+ * Занята ли оболочка прямо сейчас — тем же мерилом, что и `runCommand`.
+ *
+ * Живой строкой команды, а не фазой. Фаза врёт в двух обычных случаях,
+ * перечисленных над `runCommand`: обрыв сокета к Jupyter ставит `starting`,
+ * хотя pty внутри контейнера продолжает считать, и `Clear` посреди чужой
+ * команды. Спрашивающему (оракул в режиме «сделать») цена ошибки высока: он по
+ * этому ответу решает, ставить ли свой запуск в общую очередь, — а команда,
+ * начавшаяся уже после конца хода, идёт в комнате сама по себе.
+ */
+export function terminalBusy(sessionId: string): boolean {
+  return terms.get(sessionId)?.commandLine != null
+}
+
+/**
+ * Снять из очереди команды этого человека, не трогая идущую.
+ *
+ * `interruptTerminal` делает то же самое, но вместе с Ctrl+C; здесь нужен
+ * только первый шаг: ход оракула кончился, а его команда, поставленная в
+ * очередь за чужой, начнётся через минуту — без зрителей, без ожидающего и
+ * посреди совсем другого занятия. Возвращает, сколько сняли.
+ */
+export function dropPendingOf(sessionId: string, participantId: string): number {
+  const term = terms.get(sessionId)
+  if (!term || term.pending.length === 0) return 0
+  const mine = term.pending.filter((item) => item.by.participantId === participantId)
+  if (mine.length === 0) return 0
+  term.pending = term.pending.filter((item) => item.by.participantId !== participantId)
+  // Ждущему отвечают сразу: его команда снята, а не «идёт».
+  settlePending(mine)
+  systemLine(
+    term,
+    mine.length === 1
+      ? `[colloq] ${mine[0].by.name} — команда снята из очереди.`
+      : `[colloq] из очереди снято ${mine.length} ${commandWord(mine.length)}.`,
+  )
+  return mine.length
+}
+
+/**
+ * Ctrl+C в общую оболочку: снять своё из очереди и остановить свою команду.
+ *
  * @param by       Кто нажал — для строки в транскрипте.
  * @param byId     Его participantId. Хост не передаёт: он останавливает всё.
  */
 export function interruptTerminal(sessionId: string, by?: string, byId?: string): void {
   const term = terms.get(sessionId)
   if (!term) return
+  /*
+   * Ctrl+C — в свою команду, а не в ту, что подвернулась.
+   *
+   * Хост приходит без `byId`: у него кнопка означает «прекратить в этой
+   * комнате всё», и это тоже осмысленно. У остальных прерывать нечего, если
+   * идёт чужое, — а приходят они сюда не только кнопкой: срок ожидания у
+   * оракула (`ai/agent.ts` · stopRun) наступал ровно тогда, когда его
+   * собственный запуск ещё стоял в очереди, и девяностая секунда чужого
+   * `pip install` заканчивалась Ctrl+C в него. `term:interrupt` из пульта то
+   * же самое уже проверяет своим `typedRunningCommand`; здесь — второй замок,
+   * потому что сюда ведёт не одна дверь.
+   */
+  const mayStop = !byId || term.runningBy === byId
   // Commands still waiting to be sent would run *after* the interrupt, which is
   // the opposite of what the button means. That goes for both queues: the bytes
   // on their way to the pty, and whole commands still waiting their turn.
-  term.queued = []
+  // Байты в полёте — байты ИДУЩЕЙ команды: чужую строку на полпути в pty рвать
+  // нельзя, оболочка выполнит её обрубок.
+  if (mayStop) term.queued = []
   if (term.pending.length > 0) {
     /*
      * Из очереди выпадает своё, а не всё подряд.
@@ -1443,15 +1706,43 @@ export function interruptTerminal(sessionId: string, by?: string, byId?: string)
       systemLine(
         term,
         dropped === 1
-          ? `[colloq] ${mine[0].by.name}'s waiting command was dropped.`
-          : `[colloq] ${dropped} waiting commands were dropped.`,
+          ? `[colloq] ${mine[0].by.name} — команда снята из очереди.`
+          : `[colloq] из очереди снято ${dropped} ${commandWord(dropped)}.`,
       )
     }
   }
+  /*
+   * Прерывать нечего — и говорить нечего.
+   *
+   * Строка «X pressed Ctrl+C» над чужой командой, которая продолжает идти, —
+   * это ложь в общем транскрипте: комната читает её как «команду остановили».
+   * Своё из очереди при этом снято, и об этом сказано выше своими словами.
+   */
+  if (!mayStop) return
   // Named, because a shared shell that goes quiet without saying who did it is
   // a room where everybody assumes it was somebody else.
-  if (by) systemLine(term, `[colloq] ${by} pressed Ctrl+C.`)
-  sendStdin(term, ETX)
+  if (by) systemLine(term, `[colloq] Ctrl+C — команду останавливает ${by}.`)
+  /*
+   * Результат отправки читается, и это не мелочь.
+   *
+   * `sendStdin` возвращает false, когда открытого сокета нет — обрыв канала к
+   * Jupyter, переподключение. Строку «X pressed Ctrl+C» комната при этом видела,
+   * а команда в pty продолжала работать: очередь уже сброшена, объяснения нет,
+   * и человек жмёт «стоп» второй и третий раз в пустоту. ETX встаёт в `queued`
+   * первым и уйдёт, как только канал вернётся, — тем же путём, что и команды,
+   * набранные до готовности оболочки.
+   */
+  if (!sendStdin(term, ETX)) {
+    // Закрытому терминалу прерывать нечего, а ETX, оставленный в его очереди,
+    // достался бы следующей — уже другой — оболочке.
+    if (term.phase === 'closed') return
+    term.queued.unshift(ETX)
+    systemLine(
+      term,
+      '[colloq] связи с оболочкой сейчас нет, и Ctrl+C до неё ещё не дошёл — ' +
+        'он уйдёт, как только терминал переподключится.',
+    )
+  }
 }
 
 export function clearTerminal(sessionId: string): void {
@@ -1519,11 +1810,13 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   closeSocket(term)
   const name = term.name
   term.name = null
+  // Эту оболочку мы сейчас удалим — возвращаться будет некуда.
+  rememberPty(term)
   settleRun(term, false)
-  rejectWaiters(term, new Error('the terminal was closed'))
+  rejectWaiters(term, new Error('терминал закрыли'))
   setPhase(term, 'closed')
-  systemLine(term, '[colloq] terminal closed.')
-  dropPending(term, 'the terminal was closed')
+  systemLine(term, '[colloq] терминал закрыт.')
+  dropPending(term, 'терминал закрыли')
   if (!name) return
   try {
     await deleteJupyterTerminal(term.endpoint, name)
@@ -1533,19 +1826,25 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * Останавливается сервер, а не семинары, — то же правило, что у `shutdownKernels`.
+ *
+ * Раньше здесь стоял `DELETE /api/terminals/<name>`, и оболочка умирала вместе
+ * с `python train.py` внутри: `make run` — то, что Makefile советует делать
+ * после любой правки, — стоил семинару трёхчасового обучения, а транскрипт об
+ * этом не говорил ни слова. Обоснование («иначе pty переживёт процесс и займёт
+ * память контейнера») перестало держаться, когда контейнер стал одним на
+ * комнату: он живёт дальше в любом случае, а уберёт его уборка простоя вместе
+ * со всем остальным. Имя pty лежит в документе комнаты, так что следующий
+ * запуск вернётся в ту же оболочку — см. PTY_KEY и `resumeCommand`.
+ */
 export async function shutdownTerminals(): Promise<void> {
   const all = [...terms.values()]
   terms.clear()
-  await Promise.allSettled(
-    all.map(async (term) => {
-      term.closing = true
-      clearTimers(term)
-      closeSocket(term)
-      rejectWaiters(term, new Error('the server is shutting down'))
-      const name = term.name
-      term.name = null
-      // Left behind, these ptys would outlive the process and hold the container's memory.
-      if (name) await deleteJupyterTerminal(term.endpoint, name)
-    }),
-  )
+  for (const term of all) {
+    term.closing = true
+    clearTimers(term)
+    closeSocket(term)
+    rejectWaiters(term, new Error('сервер останавливается'))
+  }
 }

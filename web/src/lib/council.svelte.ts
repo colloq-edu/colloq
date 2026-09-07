@@ -24,6 +24,7 @@ import type * as Y from 'yjs'
 import {
   cellLock,
   councilSettingsOf,
+  MAX_ATTEMPT_CHARS,
   type CellLock,
   type CouncilSettings,
   type YCell,
@@ -166,18 +167,21 @@ export function sheetSeed(mineText: string | null | undefined, shared: string): 
  * Полоса режима преподавателя: «487 попыток · 446 сдали · 41 ещё пишут ·
  * 6 разных ответов». Куски без чего сказать — опускаются: «0 ещё пишут» в
  * конце работы — это шум рядом с числом, ради которого смотрят.
+ *
+ * `groups` — сколько разных ответов НА ЭКРАНЕ. Отдельным доводом, а не полем
+ * `counts`, потому что это разные числа: сервер считает группы по всей комнате,
+ * а стопка группирует то, что ей доехало, и в полосе должно стоять то, что
+ * человек может пересчитать глазами. Не назвали — берётся серверное.
  */
-export function councilStripText(counts: CouncilBoard['counts']): string {
+export function councilStripText(counts: CouncilBoard['counts'], groups = counts.groups): string {
   const parts: string[] = []
   parts.push(`${counts.attempts} ${plural(counts.attempts, 'попытка', 'попытки', 'попыток')}`)
   parts.push(`${counts.submitted} ${plural(counts.submitted, 'сдал', 'сдали', 'сдали')}`)
   if (counts.writing > 0) {
     parts.push(`${counts.writing} ещё ${plural(counts.writing, 'пишет', 'пишут', 'пишут')}`)
   }
-  if (counts.groups > 0) {
-    parts.push(
-      `${counts.groups} ${plural(counts.groups, 'разный ответ', 'разных ответа', 'разных ответов')}`,
-    )
+  if (groups > 0) {
+    parts.push(`${groups} ${plural(groups, 'разный ответ', 'разных ответа', 'разных ответов')}`)
   }
   return parts.join(' · ')
 }
@@ -213,6 +217,51 @@ export function queueWords(place: number): string {
   return `вы ${place}-й в очереди`
 }
 
+/* ------------------------------------------------------- потолок попытки */
+
+/**
+ * Сколько знаков в попытке — словами под листом, и только когда это важно.
+ *
+ * Потолок один на обе стороны (`MAX_ATTEMPT_CHARS` в shared/notebook.ts): выше
+ * него сервер снимок не принимает и говорит об этом словами. Пока клиент числа
+ * не знал, он слал снимок на каждую паузу в наборе и получал отказ на каждую —
+ * тост раз в секунду поверх набора, из которого не следует ни сколько уже
+ * набрано, ни сколько можно.
+ *
+ * `null`, пока до потолка далеко: счётчик, висящий над каждым листом с первой
+ * буквы, — это шум. Девять десятых — то место, где он ещё успевает быть
+ * предупреждением, а не приговором набранному.
+ */
+export function attemptCounter(chars: number): string | null {
+  if (chars < MAX_ATTEMPT_CHARS * 0.9) return null
+  return `${countOf(chars)} из ${countOf(MAX_ATTEMPT_CHARS)}`
+}
+
+/** Разряды по-русски: «9 012», а не «9012». */
+const counter = new Intl.NumberFormat('ru-RU')
+function countOf(n: number): string {
+  return counter.format(n)
+}
+
+/** Не влезает: снимок такого текста сервер отвергнет, а вставку надо не пустить. */
+export function attemptTooLong(text: string): boolean {
+  return text.length > MAX_ATTEMPT_CHARS
+}
+
+/**
+ * То ли лежит у сервера, что человек видит на листе.
+ *
+ * Спрашивается ради «сдано»: снимок сверх потолка не уезжает, а «Сдать»
+ * отправляет ТО, ЧТО ЛЕЖИТ У СЕРВЕРА. Без этой сверки у студента длинный текст
+ * помечен сданным, а у преподавателя в стопке — короткий, прошлый; узнаётся
+ * это на разборе, когда переписывать поздно.
+ *
+ * `undefined` — попытки на сервере ещё нет вовсе, и пустой лист ей равен.
+ */
+export function attemptInSync(mine: CouncilMine | null | undefined, sheet: string): boolean {
+  return (mine?.text ?? '') === sheet
+}
+
 /* ------------------------------------------------------------------ руны */
 
 /**
@@ -244,6 +293,16 @@ export class CouncilState {
    * было бы обидно — он стоил вопроса из лимита комнаты.
    */
   readonly #earlyOracles = new Map<string, CouncilOracle>()
+  /**
+   * По каким запускам вывод уже просили — `cellId:participantId:startedAt`.
+   *
+   * Ключ с моментом старта, а не один participantId: попытку запускают
+   * повторно, и у нового запуска вывод снова может не влезть в бюджет кадра.
+   * Память живёт здесь, а не в карточке: карточку размонтируют — свернули
+   * ячейку, переключили вид, пролистали тетрадь, — и своё множество она
+   * заводит заново, то есть спрашивала бы то же самое ещё раз.
+   */
+  readonly #askedOutputs = new Set<string>()
 
   constructor(send: (message: ControlClientMessage) => void) {
     this.#send = send
@@ -261,6 +320,16 @@ export class CouncilState {
       return
     }
     if (message.t === 'council:board') {
+      /*
+       * Полная стопка приезжает заново — и режется по бюджету заново.
+       *
+       * После переподключения пульта или щелчка замка вывод той же попытки
+       * может снова не поехать, а спрашивали про неё в прошлой жизни кадра.
+       * Без этой уборки карточка осталась бы с «просим отдельно…» навсегда.
+       */
+      for (const key of this.#askedOutputs) {
+        if (key.startsWith(`${message.cellId}:`)) this.#askedOutputs.delete(key)
+      }
       const early = this.#earlyOracles.get(message.cellId)
       const board =
         early && message.board.oracle === null ? withOracle(message.board, early) : message.board
@@ -292,8 +361,16 @@ export class CouncilState {
 
   /* ------------------------------------------------------------ свой лист */
 
-  /** Придержать снимок текста: уедет через паузу в наборе. */
+  /**
+   * Придержать снимок текста: уедет через паузу в наборе.
+   *
+   * Сверх потолка снимок не держим и не шлём: сервер его всё равно отвергнет, а
+   * отвергает он словами — то есть тостом на каждую паузу в наборе, пока
+   * человек дописывает длинную попытку. Про потолок говорит счётчик под листом
+   * (`attemptCounter`), и говорит один раз, а не двадцать.
+   */
   draft(cellId: string, text: string): void {
+    if (attemptTooLong(text)) return
     this.#outbox.hold(cellId, text)
   }
 
@@ -314,6 +391,31 @@ export class CouncilState {
   /** «Изменить»: снять «сдано», текст остаётся. */
   withdraw(cellId: string): void {
     this.#send({ t: 'council:withdraw', cellId })
+  }
+
+  /**
+   * Попросить вывод одной попытки — тот, что не поехал со стопкой.
+   *
+   * Полный кадр `council:board` режется сервером по бюджету вывода: у попыток
+   * сверх него `run.outputs` пуст и стоит `run.outputsOmitted` (shared/protocol
+   * · CouncilRun). Спрашивает карточка, когда её развернули, — по одной
+   * попытке за раз, и ответ приезжает обычной дельтой `council:patch` уже с
+   * выводом.
+   *
+   * Молча ничего не делает в двух случаях, и оба нормальные: попытки в стопке
+   * нет (её автора забанили, пока карточку смотрели) и вывод в кадре
+   * настоящий. Второе — то, ради чего проверка здесь, а не у зовущего: пока
+   * карточка открыта, эффект перезапускается на каждую дельту, а просьба
+   * должна уйти один раз на запуск.
+   */
+  wantOutputs(cellId: string, participantId: string): void {
+    const attempt = this.boards[cellId]?.attempts.find((a) => a.participantId === participantId)
+    const run = attempt?.run
+    if (!run?.outputsOmitted) return
+    const key = `${cellId}:${participantId}:${run.startedAt}`
+    if (this.#askedOutputs.has(key)) return
+    this.#askedOutputs.add(key)
+    this.#send({ t: 'council:attempt', cellId, participantId })
   }
 
   /** Запустить: свою попытку (без participantId) или чью-то — преподаватель. */

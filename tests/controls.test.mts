@@ -37,9 +37,10 @@ test('disconnected, the connection is the reason — not who you are', () => {
 })
 
 test('the offline sentence says what to expect, not just what is wrong', () => {
-  assert.match(OFFLINE_REASON, /connection/i)
-  // "back" — it is a wait, not a failure. The header is already spinning.
-  assert.match(OFFLINE_REASON, /back/i)
+  // По-русски, как и вся поверхность, куда она приезжает.
+  assert.match(OFFLINE_REASON, /связ/i)
+  // «возвращения» — это ожидание, а не отказ. Шапка уже крутит спиннер.
+  assert.match(OFFLINE_REASON, /возвращ/i)
 })
 
 /* --------------------------------------------- whether it can be pressed */

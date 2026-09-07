@@ -91,6 +91,14 @@ rather than failing halfway. `make up` is the one to use on a laptop unless you 
 changing code; `make down` stops the Docker one, `make stop` the host one,
 `make service-stop` the service.
 
+Two of the three open that port on **every interface of the machine**: under `make run` the
+server binds them all, and under `make up` Compose publishes there. In a lecture hall that
+means the room also answers at `http://<the laptop's ip>:3000` — past the link you handed
+out, past the tunnel, and with nothing on screen to say so; the server prints one line about
+it in the log at startup. `BIND_ADDR=127.0.0.1` in `.env` is the loopback-only shape, and it
+means the same thing both ways (the server binds the loopback; Compose publishes on it), with
+`make host` as the way in for the class. The systemd service sets it already.
+
 Before this they were two instances: `make up` kept its data in Docker named volumes
 (`colloq_data`, `colloq_workspace`) and `make run` in `./data` and `./workspace`. If
 you have seminars in the old volumes, move them over once before starting:
@@ -590,10 +598,13 @@ Russia, see *Reaching a room from Russia*.
 Two things to know before the first run. The SSH key must be registered in the vast
 account *before* renting: a VM's keys cannot be changed once it is running, so a machine
 rented without one is money spent on a box you cannot enter. `vast-up` checks that and
-refuses early rather than late. And renting, deploying, syncing, destroying, and now
-raising the address on the rented machine have never been run against a live account here
-— only the offer search has, read-only — because they cost real money; the script says so
-in its header instead of implying otherwise. Make the first real run on a cheap offer, and
+refuses early rather than late. And what has actually been run against a live account is
+worth knowing exactly: renting, deploying and raising the address were done once, on a
+machine with an RTX 5070 published at `demo.colloq.ru`, and that single run is where four
+of the things this script now handles came from — the SSH proxy a VM does not have, a
+`mktemp` that only works on macOS, the owner of a restored copy, and a second `vast-up`
+onto a machine that is already live. Syncing, destroying and adopting have not been run
+for real at all. They cost real money, so make the first run of them on a cheap offer, and
 not on the day of a class.
 
 That read-only search did turn up one thing worth writing down. vast's own
@@ -650,7 +661,9 @@ happens with `KERNEL_ISOLATION=off`, and it happens when the server is itself in
 permission on it, no `KERNEL_NETWORK`. Then switching really does restart that one kernel and
 every variable in every open seminar is gone — the notebooks and files untouched, the cells just
 needing to be run again. Nothing about this is silent: the server log says it, the room's kernel
-log says it, and the Environments screen says it. `make env-use` says which of the two happened.
+log says it, and the Environments screen says it. `make env-use` says which of the two happened —
+it looks at `KERNEL_ISOLATION` and at whether any room containers are running, and when neither
+answers (no rooms open, isolation on `auto`) it says that instead of guessing.
 
 To see what is actually installed rather than what was requested: `make env-freeze`.
 
@@ -681,6 +694,64 @@ there is no interface for it, since `/` goes to the panel, so it is a switch for
 than a page. On an instance with an API key in it, whoever can reach that endpoint is spending your
 money.
 
+**A seminar has a shape, and it is picked when the seminar is created.** Three cards on the
+form, and each one is a set of room rules rather than a mode the server keeps separately:
+
+* **Обычный** — the lab Colloq has always been. Everyone types in the notebook, runs cells, drops
+  files in and asks the oracle.
+* **Лекция** — the notebook is the teacher's: nobody else edits, runs, rearranges, uploads, opens
+  the terminal or puts a document on the room's screen. Reading, history and the oracle stay with
+  the room, because a lecture is about who types, not about who may look.
+* **Консилиум** — a lecture in every rule but one: what *opening a cell* means. See the lock below.
+
+Whatever the card sets, the rules underneath it stay editable — before the class and during it,
+from the room's settings — and a rule is kept by the server, not greyed out in the client. In the
+order the settings show them, they are: what *opening a cell* does (the room types into one shared
+text, or everyone gets a sheet of their own — this single rule is the whole difference between
+`Лекция` and `Консилиум`), who edits a cell's text, who runs code (the room, one cell each, or the
+teacher — cells, Run over a file and the terminal are all this one rule), who changes the structure
+(the middle value lets people add cells and not delete or reorder), who may put a document on the
+room's screen, who may create and edit files, whether the oracle may *act* on the room's files, two
+ceilings on it — questions per hour and seconds between questions — who may read the history, who
+may restart the kernel, and who may wipe shared work (outputs, the terminal transcript, the oracle's
+thread). There is one list, `web/src/lib/rule-rows.ts`, and both surfaces that ask — the panel and
+the room's own settings — draw their rows from it; its count is deliberately not written down here
+or there, because it has already drifted twice.
+
+Whether the oracle answers in this room **at all** — off, hints or full — is not one of those rows.
+It is picked once, on the creation form, and neither the panel nor the room has a switch to turn it
+back on afterwards, so an exam that wants no oracle is created that way rather than switched over
+between classes. A room may tighten the instance's oracle settings and never loosen them.
+
+Two of those have a sharp edge worth saying out loud. `run: host` without `edit: host` is not a
+boundary: the kernel reads a cell's source when the queue reaches it, so a student who may not run
+still writes the Python the teacher's Run executes. And `files: host` is only as strong as `run`,
+because the kernel mounts the same folder: `open(...)` from a cell is a download either way. The
+Files panel itself is a tree with folders — drag a file into one, or drop one in from the desktop.
+
+**The lock on a cell** is how a lecture stops being a notebook on a screen. Each cell has three
+positions, set by the teacher from the lock on its left:
+
+* **closed** — the lecture's default: the teacher types and runs.
+* **open** — the room types into that cell's shared text, under the room's own rules.
+* **council** — everyone gets their own sheet of that cell. Attempts live on the server rather than
+  in the shared document, the teacher pages through them and can put one on the projector, and the
+  room sees only its own until then. `Консилиум` at creation makes this what a click on the lock
+  does; the menu on any cell still offers all three in any room.
+  Attempts are counted **in the room's one kernel, one after another** — which is the point: an
+  attempt sees the `df` and the `np` the teacher prepared in a shared cell above it. The names an
+  attempt defines itself the server takes away when it ends, so one student's `secret = 42` no
+  longer answers the next one's `print(secret)`; what an attempt *changed* — `df.drop(...)`, a line
+  written to a file — stays shared, exactly as it would from an ordinary cell. Do not check with
+  this something that has to be independent (the same sentence, in the room and in the
+  `studentRun` hint: `COUNCIL_SHARED_KERNEL_NOTE` in `shared/notebook.ts`).
+
+**Banning someone** is the teacher's tool against a class being wrecked, and it is honest about
+what it is. It lasts twenty-four hours — long enough for the rest of the class and the evening
+after it, short enough not to reach next week's seminar — and it is enforced against a mark kept in
+the browser, so a private window is a way around it. It is a way to end a disruption in the room,
+not an identity check.
+
 **A class ends with one press**, and the room stays open. *Закончить занятие* — in the room itself,
 or on the seminar's row here — leaves the notebook, the files, the terminal transcript and the
 oracle's answers exactly where they are, because that is what the week after a seminar is for. What
@@ -688,8 +759,10 @@ it takes away is acting: running a cell, editing, the shell, asking the oracle, 
 restarting the kernel become the teacher's, and every refusal says that the class is over rather
 than naming a rule nobody changed. It is laid over the seminar's settings instead of rewriting them,
 so *Продолжить занятие* — the same one press — puts the room back in exactly the settings it was
-closed from. It is not the *Ended* label on the list: that one counts who is connected right now,
-and a finished seminar can be full of people re-reading the discussion.
+closed from. In the seminar list this is the *Finished* chip, and it is the bell rather than an
+empty room: a finished seminar can be full of people re-reading the discussion, and the chip carries
+a dot when somebody is in there. A room nobody is in is a different word — *Empty* — and it says
+nothing about whether the class was ended.
 
 ## Configuration
 
@@ -699,10 +772,11 @@ Everything lives in `.env` — see `.env.example` for the full list.
 | --- | --- |
 | `PORT` | Port on the host. Change `PUBLIC_URL` with it — neither derives the other |
 | `PUBLIC_URL` | Origin students open; the link they receive is built from this |
+| `BIND_ADDR` | Which address of this machine answers on that port. Empty — the default — is every interface, so on classroom Wi-Fi the room also opens at `http://<ip of this machine>:3000`, past the link you handed out; the server says so in the log on every start until the line is there. `127.0.0.1` is the shape for a laptop and for a dedicated machine, where the way out is an outgoing tunnel (`make host`) — the systemd unit sets it. Under `make up` the server inside the container has to keep listening on all of them, so Compose does not pass the line in: there it limits what Compose publishes on the host instead |
 | `SESSION_SECRET` | Signs participant tokens and staff cookies. Leave empty — generated on first boot and kept in `DATA_DIR`. Set it to rotate |
 | `INSTITUTION` | Who deployed this instance — the line beside the logo on every screen that draws it. Empty by default, and then there is no line at all. Cut at 80 characters: it shares one line with the mark |
 | `ADMIN_EMAIL` | Prefills the address on the first-run claim screen |
-| `OPEN_SEMINAR_CREATION` | Let anyone with the URL create a seminar (default off: staff only) |
+| `OPEN_SEMINAR_CREATION` | Let anyone create a seminar through the API — `POST /api/sessions` with no staff cookie. There is no screen for it: `/` goes to the panel. Default off: staff only |
 | `JUPYTER_TOKEN` | Fallback secret for the shared compose kernel. Each seminar's own container gets its own token, derived from `SESSION_SECRET` |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Any OpenAI-compatible endpoint |
 | `AI_REASONING` | Ask the model for its reasoning trace as well (default off — on a reasoning model the trace costs about as much as the answer) |
@@ -817,6 +891,14 @@ so the server re-attaches to the *same* kernel with every variable still in it. 
 cannot survive is a cell that was executing: its output has nowhere to go, and until it is stopped
 every Run anybody presses queues silently behind it. It is stopped on re-attach and the room is told.
 
+What the container does not survive is being left alone. A room's container is removed after two
+hours in which nobody was in the room and nothing was running (`IDLE_KERNEL_MS` in
+`server/src/kernel/index.ts`, swept every ten minutes; a cell still computing or a command still
+running in the terminal holds it open). Files stay, the notebook stays, the variables do not: the
+first cell after a long gap answers `NameError`, and the next Run brings a fresh kernel up. Leaving
+a model training over lunch is fine; preparing variables in the morning for a class after lunch is
+not — re-run the cells, or keep the state in a file.
+
 All of that is about restarting the *server*. Restarting the **kernel** is the opposite thing:
 the container the variables live in goes away, Jupyter hands the server a new empty one, and
 nothing on screen disagrees — the old `Out[n]` are still in the notebook and the news arrives as
@@ -854,12 +936,18 @@ the room by container name on a network it is not on.
 
 Take the socket away and everything still works: the rooms fall back to the
 one shared kernel, where any of them can read the others' files, and the server says so in its log,
-in the room's kernel log and on the Environments screen rather than letting the promise stand. The
+in the room's kernel log and on the Environments screen rather than letting the promise stand. That
+shared kernel — the `kernel` service in `docker-compose.yml`, which mounts the whole of `./workspace`
+— sits on a Docker network of its own (`colloq-kernel`) that room containers are not on, so while
+isolation *is* working a cell cannot reach it at all. It used to share the rooms' network, where the
+only thing between a cell and every seminar's files was `JUPYTER_TOKEN`. The
 one place where that safety net is not there is the dedicated machine: nobody starts the compose
 kernel on it, so the fallback has nothing to fall back to and the log line is all there is.
 
 This is sandboxing appropriate to a classroom of people you know, not to hostile untrusted input.
-Anyone with the link can execute Python inside that container.
+By default anyone with the link can execute Python inside that container — that is what an open room
+is. A room created as a lecture, or one whose `run` rule is the teacher's, does not let them, and
+the refusal is the server's rather than the client's; the container is the same either way.
 
 The same is true of the document. A CRDT everyone edits is a CRDT everyone can write anything
 into, including in somebody else's name: with a console open, a student can add a question
@@ -896,11 +984,16 @@ first when adding a feature.
 ### Tests
 
 ```bash
-npm test        # unit: ~220 tests, under ten seconds, no server and no browser
+npm test        # unit: over 1,700 tests, a bit over two minutes, no server and no browser
 npm run e2e     # end-to-end: needs the server and the kernel running
 npm run perf    # budgets: bundle, API latency, CRDT round-trip
 make load       # load: 500 students into one room, sockets and event loop
 ```
+
+That count is the one line in this file that rots by itself — it has been wrong in both directions
+already (220 when there were a thousand, 1,100 when there were 1,700) — so read it as an order of
+magnitude and take the real one off the end of the run, the `ℹ tests` line. Without running
+anything: `grep -cE '^\s*(test|it)\(' tests/*.test.mts | awk -F: '{s+=$2} END {print s}'`.
 
 `e2e`, `perf` and `load` all create seminars and all delete them again on the way out. They point at
 `http://localhost:3000` unless told otherwise — `E2E_BASE_URL`, `PERF_BASE_URL` and `LOAD_BASE_URL` —
@@ -944,17 +1037,73 @@ last line says where it hit a wall.
 ```bash
 make load                                  # 500 students, 60s ramp, 20 typists at 5/s
 make load N=200 RAMP=120 K=40 M=8 SPID=$(cat .colloq.pid)
+make load TREE=4 COUNCIL=200 INK=25        # + the three optional sections below
 ```
 
-`N` `RAMP` `IDLE` `K` `M` `STORM` `SPID` all map to `LOAD_*` environment variables the script reads
-directly; `SPID` is the server's pid and is never guessed — `systemctl show -p MainPID colloq` under
-the service, `cat .colloq.pid` under `make run`. At the default pace the first wall is the room's
-own door: a seminar accepts 120 new participants a minute (`MAX_NEW_PARTICIPANTS` in
-`server/src/routes/sessions.ts`), so 500 students arriving inside a minute produce a few hundred
-429s. That is an answer, not a defect in the harness — stretch `RAMP`, or pass `STAFF=1` to join
-with the staff cookie, which the limit does not apply to, and measure the sockets instead. On a
+`N` `RAMP` `IDLE` `K` `M` `STORM` `SPID`, and `TREE` `COUNCIL` `EVERY` `INK` for the optional
+sections, all map to `LOAD_*` environment variables the script reads directly; `SPID` is the
+server's pid and is never guessed — `systemctl show -p MainPID colloq` under
+the service, `cat .colloq.pid` under `make run`. The room's own door is set for a full lecture:
+a seminar accepts 600 new participants a minute (`MAX_NEW_PARTICIPANTS` in
+`server/src/routes/sessions.ts`), so 500 students arriving inside one minute all get in. It used to
+be 120, and this harness is why it is not: a 500-student run came back 122 in and 378 refused, and
+a client does not retry a 429 by itself. Stretching `RAMP` or passing `STAFF=1` — the staff cookie
+skips the limit — is now a way to shape the arrival curve, not a way around a wall. On a
 laptop, 500 connected clients cost about 4.5 KB/s each and 2.2 MB/s out of the server while
 *nobody is typing*: that is presence alone, and it grows as the square of the room.
+
+What a storm costs is measured too, and it is the number the fan-out work was for. Two runs of
+`make load N=500 K=50 M=5` and two at `K=20`, harness and server on one laptop, defaults
+otherwise (60s ramp, 15s at rest, 20s of storm):
+
+| 500 in the room | at rest | 20 typing | 50 typing |
+| --- | --- | --- | --- |
+| server CPU (one core = 100%) | 28–31% | 47–52% | 41–42% |
+| `loopLagMs` p95 | 0.2–0.7 ms | 3.3–4.4 ms | 5.8–16.3 ms |
+| an edit reaching another client, p95 | — | 30–40 ms | 62–82 ms |
+| bytes in, per client | 4.7 KB/s | 6.2–6.5 KB/s | 6.2–6.4 KB/s |
+
+The at-rest column is the pair above, measured again after the server started merging a room's
+frames per tick of the event loop — 4.7 KB/s per client and 2.3 MB/s out, which is where they
+were. Idle cost is presence, and presence was already one frame per change; what the merging is
+for is the storm column.
+
+Read the last column with the harness in mind. With 500 sockets on it, one Node process got
+55–70 keystrokes a second into the room in every one of the four runs — 61 of the 100 asked for
+at `K=20`, 70 of the 250 at `K=50` — so `K=50` is not two and a half times the storm `K=20` is;
+it is the same storm spread over more typists. That is why the server's CPU barely moves between
+the two columns and only the tails grow, and it is why one of the two `K=50` runs printed
+*стенд ждал СВОЕГО цикла p95 60.9ms*: the generator is what gave out. What the runs do say is
+that a room of five hundred with fifty people typing costs this server about half of one core,
+and that its own loop stays inside 20 ms at p95 while a client waits under a tenth of a second
+for somebody else's letter. Whether the cost is linear in K needs the storm generated from a
+second machine; from one laptop the question cannot be asked.
+
+Three more sources of fan-out have sections of their own. All three are off by default — they are
+the only ones that leave more than sockets behind in the room — and each is a *different* shape of
+fan-out, which is the point of having them apart from the storm:
+
+```bash
+make load TREE=4 TREE_SEC=20          # 4: the room's whole file list, to everyone, per change
+make load COUNCIL=200 EVERY=2         # 5: 200 sheets against one host's remote
+make load INK=25 INK_SEC=20           # 6: one presenter's pen and pointer, to every viewer
+```
+
+Section 4 joins an extra teacher tab and has it create files while everybody else sits still: every
+file is a `broadcastFiles`, the room's whole file list to every control socket, so the per-client
+bytes there next to the same number in section 2 is the price of one file times the room — and it
+grows with the folder. Section 5 opens a council on a cell and has N students snapshot their sheet
+every `EVERY` seconds, then submit all at once; the stack is assembled per snapshot and goes to
+**one** socket, so it is read off the teacher's own remote rather than the per-client average, and
+the room-wide part — the counter moving on every submit — is the rush at the end. Section 6 starts a
+lecture on an empty `.pdf` and draws: `ink` goes to every viewer on every frame, `laser` the server
+coalesces to its own tick, and the two counts next to the bytes the room received are the
+difference. Nothing here renders a page, so what these measure is the fan-out, not the drawing.
+
+No run of these three at five hundred is written down yet, so the table above is still a table
+about *typing*: read a green run as "the sockets and the event loop held for what this run did",
+and if you want a number for a council or a lecture at that size, the way to get it is now in the
+harness rather than in an argument.
 
 What it does not measure: it never renders a page, never lays out a cell and never runs the kernel.
 This is load on the websockets and on the event loop, and a real tab costs more on top of these
@@ -981,10 +1130,14 @@ panel — and a collapsing admin nav is deliberately not built.
 
 ## Not in this MVP
 
-Courses, assignments, grading, submissions, progress tracking, analytics, permissions,
+Courses, assignments, grading, submissions, progress tracking, analytics,
 SSO, multiple languages, package management, Kubernetes, video. All deliberately
 out of scope: the MVP exists to answer whether one link and one shared workspace is enough to run a
 real seminar.
+
+Permissions used to be on that list and are not any more: a room has twelve rules, three shapes to
+start from and a lock per cell — see *The teaching side*. What is still absent is anything
+per-person: rules apply to the room, and the only thing aimed at one participant is a ban.
 
 GPU scheduling is out of scope in the same way, and `KERNEL_GPUS` is not it: a room holds one
 slice for as long as its container lives, handed out first-come. Nothing queues, shares or

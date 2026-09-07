@@ -34,10 +34,10 @@ import {
   type YOutput,
   type Book,
   getChat,
-  openPatchFor,
   type YChatEntry,
 } from '@shared/notebook'
 import type { AwarenessUser } from '@shared/protocol'
+import { PRESENCE_TICK_MS } from './peers'
 
 /**
  * Bridge from Yjs observers to Svelte runes.
@@ -719,13 +719,19 @@ class MetaRegistry {
     let scalars = false
     let queue = false
     for (const event of events) {
-      if (event.target !== this.#meta) {
-        // The run queue is the only nested type under meta.
-        queue = true
+      if (event.target === this.#meta) {
+        scalars = true
+        if ((event as Y.YMapEvent<any>).keysChanged.has('queue')) queue = true
         continue
       }
-      scalars = true
-      if ((event as Y.YMapEvent<any>).keysChanged.has('queue')) queue = true
+      /*
+       * Вложенных типов под meta ДВА, а не один: очередь запуска и список
+       * тетрадей (`meta.books`, куда дописывается каждая открытая). Пока
+       * считалось, что вложенная — только очередь, `#readQueue` дёргался на
+       * каждое открытие тетради: безвредно, но это ровно та неправда в
+       * комментарии, из-за которой следующая правка кладётся мимо.
+       */
+      if (event.target === this.#meta.get('queue')) queue = true
     }
     if (scalars) this.#readScalars()
     if (queue) this.#readQueue()
@@ -805,12 +811,32 @@ class PeerIndex {
   readonly #watchers = new Map<string, Set<(peers: CellPeer[]) => void>>()
   readonly #current = new Map<string, CellPeer[]>()
 
+  /** Пересчёт отложен до конца тика присутствия. См. `#onChange`. */
+  #timer: number | undefined
+
   constructor(awareness: Awareness) {
     this.#awareness = awareness
     awareness.on('change', this.#onChange)
   }
 
+  /**
+   * Кадр присутствия приехал — пересчитать, но не чаще раза в тик.
+   *
+   * Группировка обходит ВСЕ состояния, а кадры идут на каждое нажатие каждого
+   * из пятисот: без склейки этот обход шёл сотни раз в секунду в каждой вкладке,
+   * даже когда ни одна метка «правит здесь» не двигалась. Тик тот же, что у
+   * списка людей (lib/peers.ts · PRESENCE_TICK_MS), — чтобы аватары в ячейке и
+   * в панели людей обновлялись в один момент, а не по очереди.
+   */
   #onChange = () => {
+    if (this.#watchers.size === 0 || this.#timer !== undefined) return
+    this.#timer = window.setTimeout(() => {
+      this.#timer = undefined
+      this.#regroup()
+    }, PRESENCE_TICK_MS)
+  }
+
+  #regroup = () => {
     if (this.#watchers.size === 0) return
     const byCell = this.#group()
     for (const [id, watchers] of this.#watchers) {
@@ -897,6 +923,123 @@ export function watchCellPeers(awareness: Awareness, id: () => string): Reactive
   }
 }
 
+/* --------------------------------------------- предложения оракула к ячейкам */
+
+/**
+ * Поля хода, от которых зависит «есть ли открытое предложение к этой ячейке».
+ *
+ * Всё остальное в ходе меняется куда чаще и к делу не относится: ответ
+ * дописывается кусками двадцать раз в секунду, рассуждение — тоже, шаги агента
+ * складываются во вложенный массив. Ни одно из этих событий не может ни
+ * завести предложение, ни закрыть его.
+ */
+const PATCH_KEYS = ['patch', 'patchState', 'cellId'] as const
+
+/**
+ * Открытые предложения оракула — по ячейке, одним наблюдателем на документ.
+ *
+ * Правило 1 из шапки этого файла, которое здесь было нарушено громче всего:
+ * каждый CellView заводил свой `chat.observeDeep`, и каждый такой наблюдатель на
+ * КАЖДЫЙ кусок стрима шёл по всей ленте с конца, ища запись со своим cellId (а
+ * для ячейки без предложения — всю ленту до начала). Сорок смонтированных ячеек
+ * на ленте в триста ходов при двадцати кусках в секунду — это сотни тысяч
+ * сравнений в секунду на ровном месте, и вся эта работа делалась во время
+ * ответа оракула, то есть ровно тогда, когда комната смотрит на экран.
+ *
+ * Здесь наблюдатель один, кусок стрима отсеивается по ключам (`PATCH_KEYS`), а
+ * лента обходится один раз на событие — и будит только те ячейки, у которых
+ * предложение правда сменилось.
+ */
+class PatchRegistry {
+  readonly #chat: Y.Array<YChatEntry>
+  readonly #watchers = new Map<string, Set<(entry: YChatEntry | null) => void>>()
+  readonly #current = new Map<string, YChatEntry | null>()
+
+  constructor(doc: Y.Doc) {
+    this.#chat = getChat(doc)
+    this.#chat.observeDeep(this.#onEvents)
+  }
+
+  #onEvents = (events: Y.YEvent<any>[]) => {
+    if (this.#watchers.size === 0) return
+    let matters = false
+    for (const event of events) {
+      // Лента изменилась сама: ход добавили, убрали или ленту очистили.
+      if (event.target === this.#chat) {
+        matters = true
+        break
+      }
+      const keys = (event as Y.YMapEvent<any>).keysChanged
+      if (keys && PATCH_KEYS.some((key) => keys.has(key))) {
+        matters = true
+        break
+      }
+    }
+    if (!matters) return
+
+    const open = this.#open()
+    for (const [id, watchers] of this.#watchers) {
+      const next = open.get(id) ?? null
+      if (this.#current.get(id) === next) continue
+      this.#current.set(id, next)
+      for (const watcher of watchers) watcher(next)
+    }
+  }
+
+  /**
+   * Один проход по ленте: ячейка → её открытое предложение.
+   *
+   * С конца, потому что побеждает последнее, — то же правило, что у
+   * `openPatchFor`, из которого это и выросло. Проход один на все ячейки, а не
+   * по проходу на каждую.
+   */
+  #open(): Map<string, YChatEntry> {
+    const byCell = new Map<string, YChatEntry>()
+    for (let i = this.#chat.length - 1; i >= 0; i--) {
+      const entry = this.#chat.get(i)
+      const cell = entry.get('cellId')
+      if (typeof cell !== 'string' || !cell || byCell.has(cell)) continue
+      if (entry.get('patchState') !== 'open') continue
+      const patch = entry.get('patch')
+      if (typeof patch !== 'string' || patch.length === 0) continue
+      byCell.set(cell, entry)
+    }
+    return byCell
+  }
+
+  patch(id: string): YChatEntry | null {
+    const known = this.#current.get(id)
+    return known !== undefined ? known : (this.#open().get(id) ?? null)
+  }
+
+  watch(id: string, onChange: (entry: YChatEntry | null) => void): Unsubscribe {
+    let watchers = this.#watchers.get(id)
+    if (!watchers) {
+      watchers = new Set()
+      this.#watchers.set(id, watchers)
+      this.#current.set(id, this.#open().get(id) ?? null)
+    }
+    watchers.add(onChange)
+    return () => {
+      watchers.delete(onChange)
+      if (watchers.size > 0) return
+      this.#watchers.delete(id)
+      this.#current.delete(id)
+    }
+  }
+}
+
+const patchRegistries = new WeakMap<Y.Doc, PatchRegistry>()
+
+function patchRegistry(doc: Y.Doc): PatchRegistry {
+  let registry = patchRegistries.get(doc)
+  if (!registry) {
+    registry = new PatchRegistry(doc)
+    patchRegistries.set(doc, registry)
+  }
+  return registry
+}
+
 /**
  * The proposal standing against one cell, if any.
  *
@@ -908,19 +1051,24 @@ export function watchCellPeers(awareness: Awareness, id: () => string): Reactive
  * applied.
  */
 export function watchPatchFor(doc: Y.Doc, id: () => string): Reactive<YChatEntry | null> {
-  const chat = getChat(doc)
+  const registry = patchRegistry(doc)
   const value = box<YChatEntry | null>(null)
-  const read = () => (value.value = openPatchFor(doc, id()))
+  const bound = box<string | null>(null)
 
   $effect(() => {
-    void id()
-    read()
-    chat.observeDeep(read)
-    return () => chat.unobserveDeep(read)
+    const key = id()
+    const unwatch = registry.watch(key, (entry) => (value.value = entry))
+    value.value = registry.patch(key)
+    bound.value = key
+    return unwatch
   })
 
   return {
     get current() {
+      const key = id()
+      // Ячейка сменилась под наблюдателем, а эффект ещё не перепривязался:
+      // читаем сквозь реестр, иначе кадр показал бы предложение к прошлой.
+      if (key !== bound.value) return registry.patch(key)
       return value.value
     },
   }

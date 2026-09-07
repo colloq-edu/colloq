@@ -7,13 +7,22 @@
  * whoever is teaching.
  */
 import { Router, type Request, type Response } from 'express'
-import type { CellDiff, Version, VersionKind } from '@shared/history'
-import { sessionAuth } from './sessions.js'
+import type { CellDiff, Version, VersionKind, VersionList } from '@shared/history'
+import { SESSION_MISSING } from '@shared/protocol'
+import { banDoor, sessionAuth } from './sessions.js'
 import { allows } from '@shared/rules'
-import { cellsWithCarets, getSessionDoc } from '../collab/index.js'
+import { cellsWithCarets } from '../collab/index.js'
+import { visitSessionDoc } from './doc-visit.js'
 import { cellsAt, cellsOf, mark, restoreInto } from '../collab/history.js'
 import { diffLines } from '@shared/diff'
-import { getParticipant, getRules, getVersion, listStoryVersions, getSession } from '../db.js'
+import {
+  getRules,
+  getVersion,
+  historyTrimmed,
+  listParticipants,
+  listStoryVersions,
+  getSession,
+} from '../db.js'
 
 /**
  * Everyone in the room may read the history — the notebook is shared, so who
@@ -23,13 +32,13 @@ import { getParticipant, getRules, getVersion, listStoryVersions, getSession } f
 function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
   /*
    * The room has to still exist. Without this the history routes were the one
-   * door a deleted seminar was still open through: getSessionDoc() below
+   * door a deleted seminar was still open through: visitSessionDoc() below
    * builds a document for any id it is handed, so a stale token fetched the
-   * notebook of a room the panel had already reported gone — and, worse, put
-   * that room back in memory.
+   * notebook of a room the panel had already reported gone — rebuilding it in
+   * memory to do so.
    */
   if (!getSession(req.params.id)) {
-    res.status(404).json({ error: 'session not found' })
+    res.status(404).json({ error: SESSION_MISSING })
     return null
   }
   const payload = sessionAuth(req)
@@ -63,8 +72,26 @@ function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
  */
 const MAX_VERSIONS = 400
 
+/**
+ * Кто это написал — из одной карты на запрос, а не запросом на строку.
+ *
+ * `getParticipant` на каждую из четырёхсот строк — четыреста синхронных SELECT
+ * на один GET, и лента открывается у всей комнаты разом: преподаватель сказал
+ * «посмотрите историю», пятьсот человек нажали. Список участников комнаты —
+ * один запрос, и дальше это поиск по Map.
+ */
+type People = Map<string, { name: string; color: string }>
+
+function peopleOf(sessionId: string): People {
+  const people: People = new Map()
+  for (const person of listParticipants(sessionId)) {
+    people.set(person.id, { name: person.name, color: person.color })
+  }
+  return people
+}
+
 function toVersion(
-  sessionId: string,
+  people: People,
   row: {
     seq: number
     kind: string
@@ -78,7 +105,7 @@ function toVersion(
     target_seq: number | null
   },
 ): Version {
-  const person = row.author_id ? getParticipant(sessionId, row.author_id) : null
+  const person = row.author_id ? (people.get(row.author_id) ?? null) : null
   return {
     seq: row.seq,
     kind: row.kind as VersionKind,
@@ -97,6 +124,9 @@ function toVersion(
 
 export function historyRoutes(): Router {
   const router = Router()
+
+  // Лента — тоже комната: закрытый доступ закрывает и её (routes/sessions.ts · banDoor).
+  router.use('/api/sessions/:id', banDoor)
 
   /**
    * The timeline.
@@ -122,8 +152,12 @@ export function historyRoutes(): Router {
      * list for a room full of work, which is exactly the moment somebody is
      * looking for something they lost. Binding it is what the first person
      * through the door would have done anyway.
+     *
+     * И тем же движением отпускаем: чужую тетрадь, поднятую ради одного
+     * чтения, незачем держать в памяти до уборки простаивающих комнат
+     * (routes/doc-visit.ts).
      */
-    getSessionDoc(sessionId)
+    visitSessionDoc(sessionId, () => {})
     /*
      * Служебные строки отсеивает SQL, а не этот обработчик.
      *
@@ -138,9 +172,20 @@ export function historyRoutes(): Router {
      * четыреста строк на активной паре набираются за час, а чекпоинт ставят,
      * чтобы к нему вернуться в конце.
      */
-    const versions = listStoryVersions(sessionId, MAX_VERSIONS).map((r) => toVersion(sessionId, r))
+    const people = peopleOf(sessionId)
+    const versions = listStoryVersions(sessionId, MAX_VERSIONS).map((r) => toVersion(people, r))
 
-    res.json({ versions })
+    /*
+     * Признак неполноты едет вместе со строками, потому что по самим строкам
+     * его не видно: обрезка по объёму (db.ts · trimHistory) убирает начало
+     * ленты целиком, и остаток выглядит как полная история короткой пары.
+     *
+     * Он ровно про удалённое. Окно `MAX_VERSIONS` выше тоже отдаёт не всё, но
+     * те версии в базе есть и открываются по ссылке — смешивать эти два вида
+     * неполноты в одном слове нельзя.
+     */
+    const body: VersionList = { versions, trimmed: historyTrimmed(sessionId) }
+    res.json(body)
   })
 
   /** The notebook as it stood at one version, and what that version changed. */
@@ -171,7 +216,7 @@ export function historyRoutes(): Router {
       }
     })
 
-    res.json({ version: toVersion(sessionId, row), cells: after, diffs })
+    res.json({ version: toVersion(peopleOf(sessionId), row), cells: after, diffs })
   })
 
   /**
@@ -197,7 +242,6 @@ export function historyRoutes(): Router {
     if (!row) return res.status(404).json({ error: 'no such version' })
 
     const onlyCell = typeof req.body?.cellId === 'string' ? req.body.cellId : null
-    const { doc } = getSessionDoc(sessionId)
     /*
      * Время здесь не собирается. Сервер форматировал его по своему поясу — в
      * образе node это UTC, — а строки ленты рисует браузер по своему: в
@@ -205,16 +249,18 @@ export function historyRoutes(): Router {
      * строку, которой в списке нет. Версия называется адресом (`targetSeq`),
      * а часы рисует тот, кто смотрит.
      */
-    const changed = restoreInto(
-      sessionId,
-      doc,
-      seq,
-      identity.participantId,
-      onlyCell,
-      // Кто сейчас печатает — перестановке ячеек: подвинуть ячейку она может
-      // только пересоздав её клоном, а клон уносит нажатия, ушедшие в старый
-      // `Y.Text` за круг до сервера. Где выбор есть, останется та, где курсор.
-      cellsWithCarets(doc),
+    const changed = visitSessionDoc(sessionId, (doc) =>
+      restoreInto(
+        sessionId,
+        doc,
+        seq,
+        identity.participantId,
+        onlyCell,
+        // Кто сейчас печатает — перестановке ячеек: подвинуть ячейку она может
+        // только пересоздав её клоном, а клон уносит нажатия, ушедшие в старый
+        // `Y.Text` за круг до сервера. Где выбор есть, останется та, где курсор.
+        cellsWithCarets(doc),
+      ),
     )
 
     res.json({ restored: changed })
@@ -233,9 +279,11 @@ export function historyRoutes(): Router {
       .slice(0, 80)
     if (!label) return res.status(400).json({ error: 'a checkpoint needs a name' })
 
-    const { doc } = getSessionDoc(sessionId)
-    const seq = mark(sessionId, doc, 'checkpoint', identity.participantId, label, label)
-    res.status(201).json({ seq, cells: cellsOf(doc).length })
+    const marked = visitSessionDoc(sessionId, (doc) => ({
+      seq: mark(sessionId, doc, 'checkpoint', identity.participantId, label, label),
+      cells: cellsOf(doc).length,
+    }))
+    res.status(201).json(marked)
   })
 
   return router

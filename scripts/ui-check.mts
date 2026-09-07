@@ -681,11 +681,24 @@ check(
  */
 const selectedCount = `document.querySelectorAll('[aria-label$="selected"]').length`
 
-await host.js(
+/**
+ * Нажатие в ячейку — это нажатие в её ТЕЛО, и стенд обязан целиться туда же.
+ *
+ * Выделение слушает `[data-cell-body]` — колонку кода, вывода и тулбара над
+ * ними, — а поле с номером и просветы вокруг нарочно нейтральны: щелчок в
+ * пустоту слева ячейку не выбирает (см. комментарий у этого блока в
+ * CellView.svelte). События всплывают вверх, а не вниз, поэтому
+ * `pointerdown`, посланный в корень `[data-cell-id]`, до обработчика не
+ * доходил вовсе: стенд не выделял ничего и обвинял в этом продукт.
+ */
+const pressCell = (n: number, extra = ''): string =>
   `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
-    `if(cells.length < 2) throw new Error('в тетради меньше двух ячеек');` +
-    `cells[0].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
-)
+  `if(cells.length < ${n + 1}) throw new Error('в тетради меньше ${n + 1} ячеек');` +
+  `const body=cells[${n}].querySelector('[data-cell-body]');` +
+  `if(!body) throw new Error('у ячейки ${n + 1} нет тела — нажимать нечего');` +
+  `body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true${extra}})); return 1`
+
+await host.js(pressCell(0))
 await wait(300)
 check(
   (await host.js(`return ${selectedCount}`)) === 1,
@@ -694,10 +707,7 @@ check(
 )
 
 /* Cmd (Ctrl) добавляет вторую, не снимая первую. */
-await host.js(
-  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
-    `cells[1].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,metaKey:true})); return 1`,
-)
+await host.js(pressCell(1, ',metaKey:true'))
 await wait(300)
 check(
   (await host.js(`return ${selectedCount}`)) === 2,
@@ -706,10 +716,7 @@ check(
 )
 
 /* Тем же Cmd она снимается обратно. */
-await host.js(
-  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
-    `cells[1].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,metaKey:true})); return 1`,
-)
+await host.js(pressCell(1, ',metaKey:true'))
 await wait(300)
 check(
   (await host.js(`return ${selectedCount}`)) === 1,
@@ -748,10 +755,7 @@ check(
   'без выделения «особенно» не показывают',
   'нет строки',
 )
-await host.js(
-  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
-    `cells[1].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
-)
+await host.js(pressCell(1))
 await wait(400)
 check(
   (await host.js(`return (document.body.textContent||'').includes('Особенно')`)) === true,
@@ -1057,10 +1061,32 @@ await host.js(
   `const b=[...document.querySelectorAll('button')].find(x=>(x.title||'')==='Перо, красный');b&&b.click(); return 1`,
 )
 
+/**
+ * Двухтактную кнопку полосы нажимают дважды — и это не описка проверки.
+ *
+ * «Стереть» и «Закончить» необратимы: истории у чернил нет, а конец лекции
+ * стирает их сразу на всех страницах. Обе поэтому спрашивают вторым нажатием
+ * (LectureView · askWipe/askStop): первое меняет подпись, второе делает.
+ * Проверка, нажимавшая один раз, кнопку только вооружала и ждала стёртых
+ * чернил до самого таймаута — молча, потому что ждать ей было нечего.
+ *
+ * Ищем по обеим подписям: между нажатиями полоса успевает перерисоваться, и
+ * второй раз кнопка называется уже вопросом.
+ */
+const pressTwice = async (page: Tab, labels: [string, string]): Promise<void> => {
+  const find =
+    `[...document.querySelectorAll('button')]` +
+    `.find(b=>${JSON.stringify(labels)}.includes((b.textContent||'').trim()))`
+  await page.js(
+    `const b=${find}; if(!b) throw new Error('кнопки «${labels[0]}» в полосе нет'); b.click(); return 1`,
+  )
+  await page.js(
+    `const b=${find}; if(!b) throw new Error('«${labels[0]}» не переспросила'); b.click(); return 1`,
+  )
+}
+
 /* Стёрли — и стёрлось у всех, а не только у того, кто рисовал. */
-await host.js(
-  `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Стереть').click(); return 1`,
-)
+await pressTwice(host, ['Стереть', 'Стереть всё?'])
 await until(student, `(async()=>{const c=document.querySelector('canvas.ink-dry');if(!c)return true;` +
   `const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;` +
   `for(let i=3;i<d.length;i+=4) if(d[i]>16) return false; return true})()`, 'чернила стёрлись у студента')
@@ -1970,9 +1996,35 @@ await host.js(
   `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Пауза').click(); return 1`,
 )
 
-/* Конец лекции возвращает всех в обычную читалку. */
+/*
+ * Конец лекции возвращает всех в обычную читалку — со второго нажатия.
+ *
+ * Первое только спрашивает, и это проверяется отдельной строкой: «Закончить»
+ * стоит вплотную к «На проектор» — к той кнопке, которую ведущий нажимает в
+ * начале пары, — а промах на одну уносил разметку всей лекции безвозвратно.
+ * Без этой проверки кнопку однажды вернут в один клик, и стенд промолчит.
+ */
 await host.js(
-  `[...document.querySelectorAll('button')].find(b=>(b.textContent||'').trim()==='Закончить').click(); return 1`,
+  `const b=[...document.querySelectorAll('button')].find(x=>(x.textContent||'').trim()==='Закончить');` +
+    `if(!b) throw new Error('кнопки «Закончить» в полосе нет'); b.click(); return 1`,
+)
+await wait(300)
+const stopAsked =
+  (await host.js(
+    `return [...document.querySelectorAll('button')]` +
+      `.some(b=>(b.textContent||'').trim()==='Закончить лекцию?')`,
+  )) === true
+const stillLive =
+  (await student.js(`return (document.body.textContent||'').includes('Лекцию ведёт')`)) === true
+check(
+  stopAsked && stillLive,
+  'первое «Закончить» спрашивает, а не заканчивает',
+  stopAsked ? (stillLive ? 'спросила' : 'спросила, но лекция уже кончилась') : 'не спросила',
+)
+await host.js(
+  `const b=[...document.querySelectorAll('button')]` +
+    `.find(x=>['Закончить','Закончить лекцию?'].includes((x.textContent||'').trim()));` +
+    `if(!b) throw new Error('«Закончить» пропала между нажатиями'); b.click(); return 1`,
 )
 await until(
   student,
@@ -1996,10 +2048,7 @@ await wait(400)
  * оставались оба, и цифры выходили цвета собственного фона. На экране это
  * читалось как залитый квадрат вместо номера.
  */
-await host.js(
-  `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
-    `cells[0].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
-)
+await host.js(pressCell(0))
 await wait(300)
 const inkOnInk = await host.js(
   `const cell=document.querySelector('[aria-label$="selected"]');` +
@@ -2089,8 +2138,10 @@ if (process.argv.includes('--shot')) {
   // С выделенной ячейкой: залитый номер — самое мелкое, что стоит смотреть
   // глазами, и ровно то, что однажды оказалось тёмным квадратом.
   await host.js(
+    // В тело, а не в корень: выделение слушает `[data-cell-body]` (см. pressCell).
     `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
-      `cells[1]?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
+      `cells[1]?.querySelector('[data-cell-body]')` +
+      `?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
   )
   await wait(400)
   const shot = await host.send('Page.captureScreenshot', { format: 'png' })

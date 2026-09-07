@@ -10,9 +10,14 @@
    */
   import type * as Y from 'yjs'
   import { untrack } from 'svelte'
-  import { allCellArrays, getChat, readChatEntry, type ChatSnapshot } from '@shared/notebook'
+  import { getChat, readChatEntry, rereadRows, type ChatSnapshot } from '@shared/notebook'
   import { outgoingRow, settleOutbox, type Outgoing } from '@/lib/ask-outbox'
-  import { actionAllowedIn, type AiAction, type AiAskRequest, type AwarenessUser } from '@shared/protocol'
+  import type {
+    AiAction,
+    AiAskRequest,
+    AwarenessUser,
+    ParticipantRole,
+  } from '@shared/protocol'
   import { oracleModeIn, readRules } from '@shared/rules'
   import { kindOf } from '@shared/paths'
   import type { OracleMode } from '@shared/admin'
@@ -58,8 +63,6 @@
   let waitLeft = $state(0)
   let armed = $state(false)
   let pinned = $state(true)
-  /** Does any cell in the notebook currently hold a traceback? See the effect. */
-  let errored = $state(false)
 
   let scroller = $state<HTMLDivElement | null>(null)
   /** Содержимое треда: за его ростом следит наблюдатель размера, см. ниже. */
@@ -157,69 +160,121 @@
      * `chat.map` отдаёт новый массив на каждый проход, Svelte видит новое
      * значение, гоняет эффект заново — и комната встречала не тетрадь, а
      * `effect_update_depth_exceeded`. Свежий список идёт дальше переменной, а
-     * очередь исходящих берётся `untrack`.
+     * прежний снимок и очередь исходящих берутся `untrack`.
+     *
+     * Перечитывается ТОЛЬКО задетое кадром (`rereadRows`): ответ дописывается
+     * в Y.Text внутри одной записи, а прежний код на каждый кусочек собирал
+     * весь тред заново — `toString()` каждого ответа и каждого рассуждения, то
+     * есть работу по длине всего треда на каждый токен. Неизменившиеся снимки
+     * остаются ТЕМИ ЖЕ объектами, поэтому производные каждого хода (дифф
+     * патча, разбор markdown, роль автора) не пересчитываются.
      */
-    const read = () => {
-      const fresh = chat.map(readChatEntry)
-      entries = fresh
+    const read = (events: Y.YEvent<any>[] | null) => {
+      const previous = untrack(() => entries)
+      const fresh = rereadRows(previous, chat, readChatEntry, events)
+      if (fresh !== previous) entries = fresh
       const pending = untrack(() => outbox)
       const left = settleOutbox(pending, fresh)
       // Тот же массив — значит снимать нечего; лишняя запись здесь и есть
       // второй виток того же цикла.
-      if (left !== pending) outbox = left
+      if (left === pending) return
+      // Строку заменила настоящая запись — и появиться второй раз она не
+      // должна: см. `inherited`. Заодно отсюда уходят те, кого в ленте больше
+      // нет: тред чистят, и набор не должен расти до перезагрузки вкладки.
+      const landed = landedIds(pending, left, fresh)
+      if (landed.length > 0) {
+        const alive = new Set(fresh.map((entry) => entry.id))
+        const kept = [...untrack(() => inherited)].filter((id) => alive.has(id))
+        inherited = new Set([...kept, ...landed])
+      }
+      outbox = left
     }
-    read()
+    read(null)
     // Deep: an answer streams into a Y.Text *inside* an entry. The array itself
     // only changes when somebody asks something new.
-    chat.observeDeep(read)
-    return () => chat.unobserveDeep(read)
+    const onFrame = (events: Y.YEvent<any>[]) => read(events)
+    chat.observeDeep(onFrame)
+    return () => chat.unobserveDeep(onFrame)
   })
 
+  /*
+   * Записи, занявшие место строки-обещания: им НЕ играют появление.
+   *
+   * Строка-обещание и настоящая запись — один и тот же вопрос, но ключи у них
+   * разные (`outgoing:N` против серверного id), так что Svelte честно сносит
+   * один <article> и монтирует другой. С `animate-fade-up` на нём тот же
+   * вопрос на том же месте проявлялся из прозрачности второй раз — рывок
+   * ровно там, где ask-outbox обещал незаметную замену.
+   *
+   * Кто кого заменил, спрашивается у самого `settleOutbox`, а не считается
+   * здесь заново: правило совпадения живёт в одном месте, и вторая его копия
+   * разошлась бы с первой на первой же правке.
+   */
+  let inherited = $state.raw<ReadonlySet<string>>(new Set())
+
+  function landedIds(
+    before: readonly Outgoing[],
+    after: readonly Outgoing[],
+    fresh: readonly ChatSnapshot[],
+  ): string[] {
+    const gone = before.filter((row) => !after.includes(row))
+    const out: string[] = []
+    for (const row of gone) {
+      for (const entry of fresh) {
+        if (out.includes(entry.id)) continue
+        if (settleOutbox([row], [entry]).length > 0) continue
+        out.push(entry.id)
+        break
+      }
+    }
+    return out
+  }
+
+  /**
+   * Состояние оракула на инстансе — и «не знаю» отдельно от «выключен».
+   *
+   * Отвергнутая выборка (сеть моргнула, 5xx, ретранслятор) раньше ложилась
+   * как `{enabled:false, mode:'off'}`, и класс читал решение админа там, где
+   * была одна неудачная попытка: «оракул выключен для этого инстанса», поля
+   * ввода нет, повтора нет — поправиться могло только перемонтированием
+   * панели. Теперь `status` остаётся `null` (то есть «ещё проверяем», как и
+   * задумано выше), а внизу стоит строка с кнопкой повтора.
+   */
+  let statusFailed = $state(false)
+  let statusTry = $state(0)
+
   $effect(() => {
+    void statusTry
     let alive = true
     api
       .aiStatus()
       .then((res) => {
-        if (alive) status = res
+        if (!alive) return
+        status = res
+        statusFailed = false
       })
       .catch(() => {
-        if (alive) status = { enabled: false, model: '', mode: 'off' }
+        if (!alive) return
+        // Именно null: 'off' говорит только сервер.
+        status = null
+        statusFailed = true
       })
     return () => {
       alive = false
     }
   })
 
-  /**
-   * Whether a traceback would travel with the next question.
+  /*
+   * Здесь стоял наблюдатель `errored` — «где-то в комнате упала ячейка».
    *
-   * ai/context.ts pins the newest error cell into the prompt whether or not it
-   * is the one the student has selected, so this has to look at the whole
-   * notebook. It reads `state`, which the runner sets to 'error' exactly when a
-   * cell produces an error output, and subscribes per cell rather than
-   * observeDeep-ing the array: a Y.Text edit never reaches its parent map, so
-   * typing cannot wake this, and a run writes `state` two or three times.
+   * Его никто не рисовал: значение писалось и не читалось ни в скрипте, ни в
+   * разметке. Стоил он при этом дорого — на каждую вставку и удаление ячейки
+   * в ЛЮБОЙ тетради комнаты он снимал и заново вешал наблюдателя на все Y.Map
+   * всех тетрадей, в каждой из пятисот вкладок с открытой панелью. Работа без
+   * результата на экране — не оптимизация, а мусор, и убран он целиком: если
+   * красная точка «где-то упало» понадобится, считать её надо по реестру
+   * ячеек (`yreactive`), а не подпиской на каждую.
    */
-  $effect(() => {
-    // Named so the dependency on the cell sequence is deliberate: a cell added
-    // or removed means a different set of maps to listen to.
-    void cellNumbers.current
-    // Все тетради комнаты: красная точка «где-то упало» — про комнату, а не
-    // про тот лист, который сейчас открыт.
-    const cells = allCellArrays(session.doc).flatMap((array) => array.toArray())
-    const read = () => (errored = cells.some((cell) => cell.get('state') === 'error'))
-    const detach = cells.map((cell) => {
-      const onKeys = (event: Y.YMapEvent<any>) => {
-        if (event.keysChanged.has('state')) read()
-      }
-      cell.observe(onKeys)
-      return () => cell.unobserve(onKeys)
-    })
-    read()
-    return () => {
-      for (const off of detach) off()
-    }
-  })
 
   // The notebook asks on the student's behalf from "Ask AI" and "Fix with AI".
   $effect(() => {
@@ -252,6 +307,21 @@
     return map
   })
 
+  /**
+   * Роль автора по его id — один проход по присутствию на всю ленту.
+   *
+   * Каждый ход спрашивал её у `session.peers` поиском, а `#readPeers` отдаёт
+   * новый массив на КАЖДЫЙ чужой курсор: двести ходов на пятистах человек —
+   * сто тысяч сравнений на каждый переход студента между ячейками, и так в
+   * каждой вкладке с открытой панелью. Здесь это один проход, и просыпается
+   * он тогда же, когда меняется присутствие.
+   */
+  const roles = $derived.by(() => {
+    const map = new Map<string, ParticipantRole>()
+    for (const peer of session.peers) map.set(peer.user.id, peer.user.role)
+    return map
+  })
+
   /** One line per person, not per tab — two tabs are still one student. */
   const typing = $derived.by(() => {
     const seen = new Map<string, AwarenessUser>()
@@ -265,9 +335,9 @@
   const typingLine = $derived.by(() => {
     const names = typing.map((user) => user.name)
     if (names.length === 0) return null
-    if (names.length === 1) return `${names[0]} is typing a question…`
-    if (names.length === 2) return `${names[0]} and ${names[1]} are typing questions…`
-    return `${names.length} people are typing questions…`
+    if (names.length === 1) return `${names[0]} печатает вопрос…`
+    if (names.length === 2) return `${names[0]} и ${names[1]} печатают вопросы…`
+    return `${names.length} ${plural(names.length, 'человек', 'человека', 'человек')} печатают вопросы…`
   })
 
   /**
@@ -343,15 +413,6 @@
   /** Cells are named 01…04 in the gutter; the thread has to agree with it. */
   function pad(n: number): string {
     return String(n).padStart(2, '0')
-  }
-
-  function askedLabel(id: string | null): string {
-    const n = cellNumber(id)
-    return n === null ? 'asked' : `asked about cell ${pad(n)}`
-  }
-
-  function clock(ts: number): string {
-    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
 
   /* ------------------------------------------------------------- scrolling */
@@ -534,20 +595,24 @@
       //
       // Срок в теле — это ожидание, а не поломка: слоу-мод говорит спокойной
       // строкой и гасит кнопку, а не красной плашкой, похожей на аварию.
+      /*
+       * И вопрос — обратно в поле, ЛЮБЫМ отказом.
+       *
+       * `submit` очищает поле до ответа сервера, и это правильно: строка уже
+       * стоит в ленте. Но если сервер вопрос не принял — потолок в час (429 с
+       * заголовком Retry-After и без срока в теле), правило комнаты (403,
+       * звонок), обрыв через ретранслятор, любой 5xx, — то вместе с отказом
+       * пропадали и пять набранных строк, и вернуть их было нечем. Возврат
+       * стоит ДО разбора причины, потому что причина на это не влияет; только
+       * если человек уже начал печатать заново — его текст важнее нашего.
+       */
+      if (composing.question.trim() === '') composing.question = body.message
       if (err instanceof ApiError && err.retryAfter !== null && err.retryAfter > 0) {
         slowNotice = err.message
         waitUntil = Date.now() + err.retryAfter * 1000
-        /*
-         * И вопрос — обратно в поле. Слоу-мод говорит «подождите», а не «не
-         * спрашивайте»: `submit` очищает поле до ответа сервера, и без этой
-         * строки человек ждал бы двадцать секунд с пустым полем, чтобы затем
-         * перепечатать то, что уже написал. Только если он не начал печатать
-         * заново — тогда его текст важнее нашего.
-         */
-        if (composing.question.trim() === '') composing.question = body.message
         return
       }
-      sendError = err instanceof Error ? err.message : 'Could not reach the oracle.'
+      sendError = err instanceof Error ? err.message : 'Не удалось спросить оракула.'
     }
   }
 
@@ -621,10 +686,16 @@
       void ask({ message: entry.question, mode: 'agent' })
       return
     }
+    /*
+     * Все ячейки, о которых спрашивали, а не только первая: «объясни 02, 03 и
+     * 05», повторённый после обрыва, уходил вопросом про 02, и в шапке нового
+     * хода стояла одна ячейка из трёх.
+     */
     void ask({
       message: entry.question,
       action: (entry.action as AiAction | null) ?? undefined,
       cellId: entry.cellId,
+      cellIds: [...entry.cellIds],
     })
   }
 
@@ -632,7 +703,7 @@
     try {
       await api.aiCancel(session.session.id, session.token, entryId)
     } catch (err) {
-      sendError = err instanceof Error ? err.message : 'Could not stop the answer.'
+      sendError = err instanceof Error ? err.message : 'Не удалось остановить ответ.'
     }
   }
 
@@ -649,7 +720,7 @@
     try {
       await api.aiClearThread(session.session.id, session.token)
     } catch (err) {
-      sendError = err instanceof Error ? err.message : 'Could not clear the thread.'
+      sendError = err instanceof Error ? err.message : 'Не удалось очистить ленту.'
     }
   }
 
@@ -670,13 +741,13 @@
 <div class="panel h-full">
   <div class="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4">
     <Icon name="sparkles" size={14} class="shrink-0 text-accent-text" />
-    <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">Oracle</span>
+    <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">Оракул</span>
     <span
       class="inline-flex h-5 shrink-0 items-center bg-raised px-1.5 text-2xs font-bold uppercase
              tracking-caps text-ink"
-      title="Everyone in this session reads the same thread"
+      title="Ленту читает вся комната — вопросы и ответы у всех одни"
     >
-      shared · {entries.length} Q
+      общая · {entries.length}
     </span>
 
     <span class="ml-auto min-w-0 truncate font-mono text-2xs text-muted">
@@ -695,13 +766,13 @@
         class="btn-ghost h-7 shrink-0 gap-1 px-1.5 text-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {armed
           ? 'text-danger hover:text-danger'
           : ''}"
-        title="Clear the room's thread"
-        aria-label="Clear the room's thread"
+        title="Очистить ленту комнаты"
+        aria-label="Очистить ленту комнаты"
         disabled={entries.length === 0}
         onclick={clearThread}
       >
         <Icon name="eraser" size={14} />
-        {#if armed}<span>Clear?</span>{/if}
+        {#if armed}<span>Очистить?</span>{/if}
       </button>
     {/if}
   </div>
@@ -718,10 +789,10 @@
           you use it.
         -->
         <div class="flex flex-col items-start gap-2.5 px-4 pb-4 pt-4">
-          <p class="text-answer text-ink">No questions yet.</p>
+          <p class="text-answer text-ink">Вопросов пока нет.</p>
           <p class="text-ui text-muted">
-            Whatever you ask goes into the room's thread with your name on it, and the answer
-            arrives on everyone's screen at once.
+            Что ни спросите — вопрос встанет в ленту комнаты под вашим именем, а ответ придёт
+            на все экраны сразу.
           </p>
           <!--
             «Выделите ячейку, чтобы спросить о ней» было неправдой ровно
@@ -741,6 +812,8 @@
           {entry}
           pending={entry.id.startsWith('outgoing:')}
           avatar={avatars.get(entry.participantId) ?? null}
+          authorRole={roles.get(entry.participantId) ?? 'participant'}
+          enter={!inherited.has(entry.id)}
           cellNumber={cellNumber(entry.cellId)}
           askedAbout={(entry.cellIds.length > 0 ? entry.cellIds : entry.cellId ? [entry.cellId] : [])
             .map((id) => cellNumber(id))
@@ -790,7 +863,7 @@
             avatar={avatars.get(news.participantId) ?? null}
           />
           <span class="text-2xs font-semibold text-ink">
-            {news.participantId === session.me.id ? 'your answer' : `${news.name}'s answer`}
+            {news.participantId === session.me.id ? 'ваш ответ' : `ответ · ${news.name}`}
           </span>
           <Icon name="chevron-down" size={11} class="text-accent-text" />
         </button>
@@ -807,12 +880,33 @@
         <button
           type="button"
           class="shrink-0 p-0.5 transition-colors duration-100 hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
-          aria-label="Dismiss"
+          aria-label="Убрать"
           onclick={() => (sendError = null)}
         >
           <Icon name="x" size={12} />
         </button>
       </div>
+    {/if}
+
+    {#if statusFailed}
+      <!--
+        «Не знаю» — это не «выключен».
+
+        Одна отвергнутая выборка /api/ai/status раньше становилась плашкой
+        «оракул выключен для этого инстанса» и уносила с собой поле ввода:
+        решение админа на месте сетевого сбоя, и без повтора. Поле остаётся —
+        сервер решает всё равно сам, — а строка говорит ровно то, что есть.
+      -->
+      <p class="flex items-center gap-2 border border-line bg-raised px-3 py-2 text-2xs text-muted">
+        <span class="min-w-0 flex-1">Не удалось узнать, отвечает ли оракул на этом Colloq.</span>
+        <button
+          type="button"
+          class="btn-ghost press h-6 shrink-0 px-1.5 text-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          onclick={() => (statusTry += 1)}
+        >
+          Проверить ещё раз
+        </button>
+      </p>
     {/if}
 
     {#if slowNotice}
@@ -861,16 +955,16 @@
       <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted">
         {#if mode === 'off'}
           {#if status?.mode === 'off'}
-            The oracle is switched off for this instance.
+            Оракул выключен на этом Colloq.
           {:else}
-            The oracle is switched off for this seminar.
+            Оракул выключен на этом семинаре.
           {/if}
         {:else if isHost}
-          The oracle is not answering here — check
-          <span class="font-semibold text-ink">Oracle</span> in the teaching panel: either no model
-          is set up, or the hourly limit is set to zero.
+          Оракул здесь не отвечает — загляните в
+          <span class="font-semibold text-ink">Оракул</span> в панели преподавателя: либо модель не
+          настроена, либо потолок в час стоит на нуле.
         {:else}
-          The oracle is not answering on this Colloq, so there is nobody to ask here.
+          Оракул на этом Colloq не отвечает — спрашивать здесь некого.
         {/if}
       </p>
     {:else if !may.ask}
@@ -969,10 +1063,16 @@
           name={session.me.name}
           color={session.me.color}
           avatar={session.me.avatar}
-          title="asking as {session.me.name}"
+          title="спрашивает {session.me.name}"
         />
+        <!-- Метка для «Спросить оракула» с клавиатуры: ⌘/Ctrl+I и строка
+             палитры ставят фокус сюда (SessionScreen · focusOracle). На самом
+             поле, а не на панели: запасной путь `[data-oracle-panel] textarea`
+             держится на том, что поле ввода в панели ровно одно, и второе поле
+             здесь — правка вопроса, черновик ответа — увело бы фокус молча. -->
         <textarea
           bind:this={composer}
+          data-oracle-composer
           bind:value={composing.question}
           rows="1"
           placeholder={doing && canDo
@@ -980,7 +1080,7 @@
             : focusAsked
               ? `Спросить про ${focusAsked}…`
               : 'Спросить оракула комнаты…'}
-          title="Enter sends, Shift+Enter for a new line"
+          title="Enter — отправить, Shift+Enter — новая строка"
           class="max-h-40 flex-1 resize-none bg-transparent py-1 text-ui text-ink placeholder:text-muted focus:outline-none"
           oninput={onInput}
           onkeydown={onKeydown}
@@ -997,7 +1097,7 @@
         <button
           type="button"
           class="btn-primary h-7 w-7 shrink-0 px-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          aria-label={waitLeft > 0 ? `Ещё ${waitLeft} с` : 'Send'}
+          aria-label={waitLeft > 0 ? `Ещё ${waitLeft} с` : 'Отправить'}
           title={waitLeft > 0 ? (slowNotice ?? '') : ''}
           disabled={!composing.question.trim() || waitLeft > 0}
           onclick={submit}
@@ -1017,7 +1117,7 @@
       <span class="min-w-0">
         {doing && canDo
           ? 'Правит файлы семинара сам. Тетрадь не трогает — там по-прежнему предлагает.'
-          : 'The whole room sees your question and the answer.'}
+          : 'Вопрос и ответ видит вся комната.'}
       </span>
     </p>
   </div>

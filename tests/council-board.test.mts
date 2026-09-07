@@ -309,16 +309,14 @@ test('редкие — меньше одной двадцатой сдавших
   assert.equal(small.rare.length, 0)
 })
 
-test('оракул устаревает по числу сдавших, даже если сервер ещё не сказал', () => {
+test('оракул устаревает по числу сдавших — сервер об этом не говорит вовсе', () => {
   const oracle: CouncilOracle = {
     state: 'ready',
     askedAt: 1,
     basedOn: 100,
-    staleBy: 0,
     summary: ['a', 'b', 'c'],
     groupLabels: {},
     drafts: {},
-    notable: [],
     error: null,
   }
   assert.equal(oracleState(null, 5), 'idle')
@@ -326,9 +324,7 @@ test('оракул устаревает по числу сдавших, даже
   assert.equal(oracleState({ ...oracle, state: 'reading' }, 500), 'reading')
   assert.equal(oracleState(oracle, 100), 'ready')
   assert.equal(oracleState(oracle, 112), 'stale')
-  assert.equal(oracleState({ ...oracle, state: 'stale', staleBy: 3 }, 100), 'stale')
   assert.equal(staleBy(oracle, 112), 12)
-  assert.equal(staleBy({ ...oracle, staleBy: 20 }, 112), 20)
   // Сдавших стало меньше (бан) — не «минус три», а ноль.
   assert.equal(staleBy(oracle, 97), 0)
 })

@@ -98,8 +98,10 @@ test('курс и публикация — свои адреса, не выво�
   assert.equal(readCourseId('/s/kf3n8q2p'), null)
   assert.deepEqual(readPublicRoute('/p/x9tb4kwm'), { id: 'x9tb4kwm', step: null })
   assert.deepEqual(readPublicRoute('/p/x9tb4kwm/3'), { id: 'x9tb4kwm', step: 3 })
-  // Отрицательный шаг — это «с конца», и он тоже шаг, а не мусор.
-  assert.deepEqual(readPublicRoute('/p/x9tb4kwm/-1'), { id: 'x9tb4kwm', step: -1 })
+  // «Шаг с конца» не умеет ни `readStep`, ни рельса, ни выгрузка, и ссылок с
+  // минусом никто не порождает: такой адрес — не шаг, а мусор, и маршрутизатор
+  // больше не выдаёт его за шаг.
+  assert.equal(readPublicRoute('/p/x9tb4kwm/-1'), null)
   assert.equal(readPublicRoute('/c/ml-2026'), null)
 })
 

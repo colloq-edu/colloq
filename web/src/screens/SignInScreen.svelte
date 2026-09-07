@@ -223,44 +223,42 @@
           </span>
         </div>
 
-        {#if claimed}
-          <!-- Only once somebody owns the instance: before that the token is
-               how you claim it, one card up, and a second field for the same
-               string would be a trap rather than a recovery. -->
-          <form class="flex flex-col gap-3 border-t border-line pt-[18px]" onsubmit={recover}>
-            <div class="flex flex-wrap items-baseline gap-2">
-              <span class="text-ui font-semibold text-ink">Lost your link, or you are the owner?</span
-              >
-              <label for="recovery-token" class="text-ui text-muted">
-                Paste the setup token instead.
-              </label>
-            </div>
+        <!-- Эта карточка и есть «инстансом уже владеют»: она нарисована в
+             ветке `{:else}` от `{#if !claimed}` выше. До того токен — это то,
+             чем инстанс присваивают, карточкой выше, и второе поле под ту же
+             строку было бы ловушкой, а не восстановлением. -->
+        <form class="flex flex-col gap-3 border-t border-line pt-[18px]" onsubmit={recover}>
+          <div class="flex flex-wrap items-baseline gap-2">
+            <span class="text-ui font-semibold text-ink">Lost your link, or you are the owner?</span>
+            <label for="recovery-token" class="text-ui text-muted">
+              Paste the setup token instead.
+            </label>
+          </div>
 
-            <div class="flex flex-col gap-2.5 sm:flex-row">
-              <input
-                id="recovery-token"
-                bind:value={token}
-                class="field h-11 bg-canvas px-4 font-mono text-code-lg"
-                placeholder="setup token"
-                autocomplete="off"
-                spellcheck="false"
-              />
-              <!-- Outlined, so the primary action on this screen stays the link
-                   the person was told to use rather than the fallback. -->
-              <button
-                class="btn h-11 shrink-0 border border-primary bg-canvas px-6 text-2xs font-bold uppercase tracking-caps text-primary hover:bg-raised sm:w-[150px]"
-                type="submit"
-                disabled={!token.trim() || adminAuth.loading}
-              >
-                {adminAuth.loading ? 'Signing in…' : 'Sign in'}
-              </button>
-            </div>
+          <div class="flex flex-col gap-2.5 sm:flex-row">
+            <input
+              id="recovery-token"
+              bind:value={token}
+              class="field h-11 bg-canvas px-4 font-mono text-code-lg"
+              placeholder="setup token"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <!-- Outlined, so the primary action on this screen stays the link
+                 the person was told to use rather than the fallback. -->
+            <button
+              class="btn h-11 shrink-0 border border-primary bg-canvas px-6 text-2xs font-bold uppercase tracking-caps text-primary hover:bg-raised sm:w-[150px]"
+              type="submit"
+              disabled={!token.trim() || adminAuth.loading}
+            >
+              {adminAuth.loading ? 'Signing in…' : 'Sign in'}
+            </button>
+          </div>
 
-            {#if adminAuth.error}
-              <p class="text-ui text-danger">{adminAuth.error}</p>
-            {/if}
-          </form>
-        {/if}
+          {#if adminAuth.error}
+            <p class="text-ui text-danger">{adminAuth.error}</p>
+          {/if}
+        </form>
       </section>
       {/if}
     {:else}

@@ -5,37 +5,46 @@
  * вовсе, а выделить мышью через несколько ячеек нельзя — каждая из них
  * отдельный редактор CodeMirror.
  *
- * Отдаётся последний шаг, то есть тетрадь на момент публикации. Выводы в файл
- * не кладутся: notebook без них открывается везде и весит килобайты, с ними —
- * мегабайты base64 в файле, который студент несёт к себе, чтобы запустить
- * заново, и первым делом всё равно нажмёт «Run».
+ * Отдаётся названный шаг, а без номера — последний, то есть тетрадь на момент
+ * публикации. Выводы в файл не кладутся: notebook без них открывается везде и
+ * весит килобайты, с ними — мегабайты base64 в файле, который студент несёт к
+ * себе, чтобы запустить заново, и первым делом всё равно нажмёт «Run».
  */
+import { writeIpynb } from '@shared/ipynb'
+import type { PublicCell } from '@shared/publish'
 import { readStep, stepHeadings } from './store.js'
 
+/**
+ * Тетрадь из уже прочитанных ячеек — файлом .ipynb.
+ *
+ * Сам файл пишет общий `writeIpynb` (shared/ipynb.ts) — тот же, которым комната
+ * проецирует свои тетради на диск. Здесь оставалась вторая копия того же
+ * формата, и она уже разошлась с первой: `id` у ячейки был только у неё, при
+ * том что схему 4.5 объявляли обе. Разошлись бы и дальше — молча, потому что
+ * ошибку такого файла увидел бы не тот, кто его записал, а студент, открывший
+ * его у себя.
+ */
+export function notebookFrom(cells: PublicCell[]): string {
+  return writeIpynb(cells.map((cell) => ({ id: cell.id, type: cell.type, source: cell.source })))
+}
+
 export function notebookOf(pub: string): string {
+  return notebookOfStep(pub, null)
+}
+
+/**
+ * Тетрадь названного шага — или последнего, если шаг не назвали.
+ *
+ * Ссылка на странице была одна на все шаги, а читатель на ней стоит на своём:
+ * тот, кто сравнивал «до» и «после» на шаге 2 из 5, уносил состояние шага 5.
+ * Теперь страница шлёт свой номер в `?step=` (ReaderScreen.svelte, ссылка
+ * «Скачать тетрадь»). Незнакомый номер отвечает последним шагом, а не
+ * пустотой: скачивание — не место, где человеку объясняют про адреса, и
+ * `notebookOf` про это никогда и не спрашивал.
+ */
+export function notebookOfStep(pub: string, seq: number | null): string {
   const headings = stepHeadings(pub)
-  const last = headings.at(-1)
-  const step = last ? readStep(pub, last.seq) : null
-  const cells = step?.cells ?? []
-  const notebook = {
-    cells: cells.map((cell) => ({
-      cell_type: cell.type,
-      metadata: {},
-      // Массивом строк с сохранёнными переводами: так пишет сам Jupyter, и
-      // diff такого файла в git читается построчно.
-      source: cell.source.split(/(?<=\n)/),
-      ...(cell.type === 'code' ? { execution_count: null, outputs: [] } : {}),
-    })),
-    metadata: {
-      kernelspec: {
-        display_name: 'Python 3',
-        language: 'python',
-        name: 'python3',
-      },
-      language_info: { name: 'python' },
-    },
-    nbformat: 4,
-    nbformat_minor: 5,
-  }
-  return JSON.stringify(notebook, null, 1)
+  const wanted = seq !== null && headings.some((h) => h.seq === seq) ? seq : headings.at(-1)?.seq
+  const step = wanted === undefined ? null : readStep(pub, wanted)
+  return notebookFrom(step?.cells ?? [])
 }

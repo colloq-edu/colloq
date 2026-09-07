@@ -6,7 +6,10 @@
  * запись — в publish/notebook.ts (выгрузка опубликованного шага); обе половины
  * жили порознь и не знали друг о друге. Разошлись бы они молча: файл,
  * записанный одной и прочитанный другой, потерял бы ровно то, о чём они не
- * договорились.
+ * договорились. И разошлись: половина из публикации ставила ячейкам `id`, а
+ * половина из комнаты — нет, при том что обе объявляли одну и ту же схему 4.5,
+ * которая его требует. Пишет теперь одна, `writeIpynb`; выгрузка публикации
+ * зовёт её же (publish/notebook.ts · `notebookFrom`).
  *
  * Формат — nbformat 4.5, тот же, что пишет сам Jupyter. Расхождений с ним два,
  * и оба намеренные:
@@ -24,6 +27,15 @@ import type { CellType } from './notebook'
 export interface FlatCell {
   type: CellType
   source: string
+  /**
+   * Идентификатор ячейки, если он у пишущего есть.
+   *
+   * Необязателен, потому что разбор его не возвращает: чужую тетрадь комната
+   * заводит своими ячейками и своими идентификаторами. А вот при записи он
+   * нужен всегда (см. `cellIdFor`), и тот, у кого он есть, обязан его донести —
+   * иначе файл, переписанный после перестановки ячеек, поменяет им имена.
+   */
+  id?: string
 }
 
 interface RawCell {
@@ -48,18 +60,22 @@ function sourceText(value: unknown): string {
  * преподавателя хуже, чем показать его не тем шрифтом.
  *
  * Пустые ячейки в конце выбрасываются: это след редактора, который файл
- * сохранял, а не то, что кто-то написал.
+ * сохранял, а не то, что кто-то написал. Пустые ПОСРЕДИ остаются, и это
+ * важнее, чем кажется: заготовка «# Задание 1 → пустая ячейка для ответа →
+ * # Задание 2 → …» состоит из них наполовину. Выбрасывать их все — значит
+ * молча привезти в комнату одни условия без места под решение, а в лекции
+ * (structure: host) завести ячейку обратно студенту нечем.
  */
 export function readIpynb(json: unknown): FlatCell[] {
   const doc = json as { cells?: unknown } | null
   const cells = Array.isArray(doc?.cells) ? doc.cells : []
-  const out: FlatCell[] = []
-  for (const raw of cells as RawCell[]) {
-    const source = sourceText(raw?.source)
-    if (source.trim().length === 0) continue
-    out.push({ type: raw?.cell_type === 'code' ? 'code' : 'markdown', source })
-  }
-  return out
+  const all: FlatCell[] = (cells as RawCell[]).map((raw) => ({
+    type: raw?.cell_type === 'code' ? 'code' : 'markdown',
+    source: sourceText(raw?.source),
+  }))
+  let end = all.length
+  while (end > 0 && all[end - 1].source.trim().length === 0) end -= 1
+  return all.slice(0, end)
 }
 
 /** Разобрать текст файла. `null` — это не .ipynb, что бы ни говорило имя. */
@@ -76,9 +92,24 @@ export function parseIpynb(text: string): FlatCell[] | null {
   return readIpynb(json)
 }
 
+/**
+ * Идентификатор ячейки в том виде, в каком его принимает схема 4.5.
+ *
+ * `nbformat_minor: 5` требует `id` у каждой ячейки — без него `nbformat.read`
+ * ругается MissingIDFieldWarning и дописывает свой, а `nbformat.validate`
+ * (автопроверка, CI студента) просто падает. Схема разрешает
+ * `^[a-zA-Z0-9-_]{1,64}$`: наши укладываются, но приходят они из документа
+ * комнаты, то есть от кого угодно, — что не уложилось, заменяется на
+ * порядковый номер.
+ */
+const ID_OK = /^[a-zA-Z0-9-_]{1,64}$/
+const cellIdFor = (cell: FlatCell, index: number): string =>
+  cell.id !== undefined && ID_OK.test(cell.id) ? cell.id : `cell-${index + 1}`
+
 export function writeIpynb(cells: readonly FlatCell[]): string {
   const notebook = {
-    cells: cells.map((cell) => ({
+    cells: cells.map((cell, index) => ({
+      id: cellIdFor(cell, index),
       cell_type: cell.type,
       metadata: {},
       source: cell.source.split(/(?<=\n)/),

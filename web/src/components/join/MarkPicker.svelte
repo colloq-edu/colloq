@@ -162,6 +162,23 @@
     {#each shown as entry, i (entry.mark)}
       {@const held = taken.get(entry.mark)}
       {@const selected = entry.mark === value}
+      <!-- The same `press` the two buttons above wear, for the same reason: a
+           tile is the most-tapped thing on this screen and the only proof the
+           tap was heard — the border and the ring arrive from `value`, which
+           is a round trip away. These tiles carry no other transition utility,
+           so the helper class is enough; a `transition-*` utility would
+           rewrite transition-property and leave transform out of the list.
+
+           Not on a taken mark: `choose` returns without doing anything there
+           (the tile is the roster, not a thing to have), and a press is a
+           promise that something happened.
+
+           Своя метка остаётся своей, даже когда её успели занять: ростер
+           перечитывается при открытии подборщика (JoinScreen · `openPicker`),
+           и выбранный руками зверь может приехать сюда уже занятым. Серым он
+           тогда становиться не должен — «где мой» на сорока плитках без рамки
+           не читается, — но точка носителя остаётся: рядом с вами его носит
+           кто-то ещё, и это ровно то, что советует сделать карточка входа. -->
       <button
         bind:this={cells[i]}
         type="button"
@@ -174,15 +191,18 @@
         onclick={() => choose(entry.mark)}
         onkeydown={(event) => onGridKey(event, i)}
         class="relative flex aspect-square items-center justify-center border
-               {held
-          ? 'border-line-soft bg-surface'
-          : selected
-            ? 'border-accent bg-canvas ring-1 ring-inset ring-accent'
+               {held ? '' : 'press'}
+               {selected
+          ? 'border-accent bg-canvas ring-1 ring-inset ring-accent'
+          : held
+            ? 'border-line-soft bg-surface'
             : 'border-line bg-canvas hover:border-faint'}"
       >
         <!-- Faded rather than hidden: the grid is also the roster, and a
              student recognising "the wolf is already someone" is the point. -->
-        <span class="text-display leading-none {held ? 'opacity-25' : ''}">{entry.mark}</span>
+        <span class="text-display leading-none {held && !selected ? 'opacity-25' : ''}"
+          >{entry.mark}</span
+        >
         {#if held}
           <span
             class="absolute right-1 top-1 h-2.5 w-2.5 rounded-full"

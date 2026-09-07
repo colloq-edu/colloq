@@ -11,6 +11,7 @@
 import type { AdminMe, ClaimRequest, InstanceState } from '@shared/admin'
 import { clearStaffMark, markStaff } from '@/lib/identity'
 import { AdminApiError, adminApi, type AdminErrorReason } from '@/lib/adminApi'
+import { signedOutNotice, type SignedOutReason } from '@/admin/panel'
 
 function messageFor(cause: unknown): string {
   if (cause instanceof AdminApiError) return cause.message
@@ -44,6 +45,16 @@ class AdminAuth {
    * печенье не сохранилось: 401 у них один и тот же, а сказать им надо разное.
    */
   #signedIn = false
+  /**
+   * Что случилось прямо перед этим перечитыванием, если экран это знает.
+   *
+   * Экран, получивший 401 на действие, знает больше, чем `#read`: печенье
+   * доехало и его отвергли — ссылку ротировали или человека сняли из штата. Без
+   * этой подсказки все три исхода говорили одно и то же — «браузер не прислал
+   * сессию, разрешите печенья», — и снятый из штата преподаватель шёл в
+   * настройки браузера вместо того, чтобы попросить у владельца новую ссылку.
+   */
+  #reason: SignedOutReason | null = null
 
   get isOwner(): boolean {
     return this.me?.teacher.role === 'owner'
@@ -55,7 +66,10 @@ class AdminAuth {
     return this.refresh()
   }
 
-  refresh(): Promise<void> {
+  refresh(reason?: SignedOutReason): Promise<void> {
+    // Причина сильнее отсутствия причины: перечитывание, начатое рядовым
+    // экраном, не должно проглотить «вас только что отвергли».
+    if (reason) this.#reason = reason
     this.#inflight ??= this.#read().finally(() => {
       this.#inflight = null
     })
@@ -63,6 +77,8 @@ class AdminAuth {
   }
 
   async #read(): Promise<void> {
+    const reason = this.#reason
+    this.#reason = null
     this.loading = true
     try {
       const [state, me] = await Promise.all([adminApi.state(), this.#readMe()])
@@ -77,19 +93,24 @@ class AdminAuth {
       this.error = null
       this.errorReason = null
       /*
-       * Вход был — и не сохранился.
+       * Вход был — и его больше нет. Почему именно, зависит от того, кто
+       * спрашивал.
        *
        * `#readMe` глотает 401 намеренно: посетитель без печенья — обычное дело,
-       * а не отказ. Но если вход в этой вкладке уже удавался, тот же 401 значит
-       * ровно одно: печенье не доехало обратно. Молчать тут нельзя — ключ из
-       * адресной строки к этому моменту уже потрачен, и человек оставался перед
-       * формой входа без единого слова о том, что произошло.
+       * а не отказ. Но если вход в этой вкладке уже удавался или экран пришёл
+       * сюда с 401 на действие, тот же 401 значит, что человека надо
+       * предупредить. Молчать тут нельзя — ключ из адресной строки к этому
+       * моменту уже потрачен, и человек оставался перед формой входа без
+       * единого слова о том, что произошло.
+       *
+       * И три случая говорят разное: печенье не доехало (чинится настройками
+       * браузера), печенье отвергли (чинится новой ссылкой у владельца), сам
+       * удалил свой аккаунт (не чинится вовсе). Одно сообщение на всех отправляло
+       * снятого из штата разбираться с cookies.
        */
-      if (!me && this.#signedIn) {
+      if (!me && (this.#signedIn || reason !== null)) {
         this.#signedIn = false
-        this.error =
-          'The sign-in did not stick: this browser sent no session back. Allow cookies for this ' +
-          'address, or open the panel over the address the server publishes, and sign in again.'
+        this.error = signedOutNotice(reason ?? 'no-cookie')
         this.errorReason = 'unauthenticated'
       }
     } catch (cause: unknown) {
@@ -151,6 +172,9 @@ class AdminAuth {
     }
     this.me = null
     this.#signedIn = false
+    // Уход по своей воле — не отказ: причина, оставленная прошлым экраном, не
+    // должна дописаться к «вы вышли».
+    this.#reason = null
     clearStaffMark()
     this.error = null
     this.errorReason = null

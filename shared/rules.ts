@@ -3,9 +3,10 @@
  *
  * A seminar is not always the same shape. A lecture wants a notebook the class
  * can read and nobody can rearrange; a lab wants everyone typing at once; an
- * exam wants the oracle switched off and the notebook read-only. Today the product
- * has one shape — everybody can do everything — and the teacher's only recourse
- * is asking the room nicely.
+ * exam wants the oracle switched off and the notebook read-only. Three presets
+ * say those shapes in one word — `OPEN_ROOM`, `LECTURE_ROOM`, `COUNCIL_ROOM` —
+ * and the room stays adjustable one row at a time after a preset is applied,
+ * because a preset is a set of values here and not a mode kept somewhere else.
  *
  * Two things this file is careful about.
  *
@@ -250,9 +251,17 @@ export interface RoomRules {
   /**
    * A model for this room only, or null to use the instance's.
    *
-   * NOT ENFORCED YET. Worth having because a seminar that will ask two hundred
-   * questions and one that will ask five do not want the same model, and the
-   * teacher knows which is which before the class starts.
+   * NOT ENFORCED YET, and not drawn either: `routes/ai.ts` never reads it and
+   * `web/src/lib/rule-rows.ts` has no row for it, so today the field only
+   * survives a round trip through the database. It is kept rather than deleted
+   * because a seminar that will ask two hundred questions and one that will ask
+   * five do not want the same model, and the teacher knows which is which
+   * before the class starts.
+   *
+   * Мерится тем же `LIMITS.model`, что и модель инстанса. Своя цифра здесь
+   * была: имя резалось до 80 знаков против 120 на инстансе, и комната, которой
+   * это однажды включат, получила бы молча обрезанное имя модели — то есть
+   * запрос в никуда с ошибкой провайдера вместо ответа.
    */
   model: string | null
   /**
@@ -422,9 +431,11 @@ export function readRules(raw: unknown): RoomRules {
       LIMITS.slowModeSeconds.min,
       LIMITS.slowModeSeconds.max,
     ),
+    // Тем же потолком, что и модель инстанса: своё число здесь означало бы
+    // комнату, которая не может попросить модель, инстансу доступную.
     model:
       typeof source.model === 'string' && source.model.trim()
-        ? source.model.trim().slice(0, 80)
+        ? source.model.trim().slice(0, LIMITS.model)
         : null,
     opens: one(OPENS, source.opens, OPEN_ROOM.opens),
   }
@@ -446,26 +457,61 @@ export function isOpenRoom(rules: RoomRules): boolean {
 }
 
 /**
+ * Какое правило говорит «кто здесь печатает и запускает», а какое — про всё
+ * остальное.
+ *
+ * Запись по всем ключам сразу, а не список: правило, добавленное завтра,
+ * обязано сломать проверку типов здесь и потребовать решения — тот же довод,
+ * что у `LECTURE_ROOM` и `rulesAfterClass`, и единственная копия этой границы.
+ */
+const IS_A_RIGHT: Record<keyof RoomRules, boolean> = {
+  run: true,
+  edit: true,
+  structure: true,
+  board: true,
+  files: true,
+  wipe: true,
+  restart: true,
+  agent: true,
+  /* Смотреть и спрашивать — не «кто печатает»: лекция их не трогает. */
+  history: false,
+  oracle: false,
+  questionsPerHour: false,
+  slowModeSeconds: false,
+  model: false,
+  /* Что делает замок — не право: открывает ячейку в любом случае преподаватель. */
+  opens: false,
+}
+
+const RIGHTS = (Object.keys(IS_A_RIGHT) as (keyof RoomRules)[]).filter((key) => IS_A_RIGHT[key])
+
+/**
  * Комната идёт по лекционному пресету — по образцу `isOpenRoom`.
  *
  * Совпадение по значениям, а не флажок в базе: пресет — это набор правил, и
  * комната, собранная теми же значениями руками, ничем от лекции не отличается.
  *
- * `opens` не сравнивается: это не право, а то, что делает замок, и консилиум
- * по правам — та же лекция. Полоса «Лекция» над тетрадью (Notebook.svelte)
- * объясняет пятистам людям серую тетрадь, и в консилиуме она нужна ровно так
- * же; сравнивай здесь все ключи — и она гасла бы от одного переключателя
- * «Открытая ячейка», хотя ни одно право не изменилось.
+ * Сравниваются ТОЛЬКО права (`IS_A_RIGHT`), потому что полоса «Лекция» над
+ * тетрадью (Notebook.svelte) говорит пятистам людям ровно одно: печатает и
+ * запускает преподаватель. Сравнивать все ключи — значит гасить её от
+ * переключателя, который прав не менял: `opens` (консилиум по правам — та же
+ * лекция), выключенный на контрольной оракул, закрытая история, свой потолок
+ * вопросов, своя модель. Лекция от этого лекцией быть не перестаёт, а серая
+ * тетрадь без полосы остаётся без единого объяснения.
  *
- * Одно следствие стоит знать в лицо: `rulesAfterClass` любой комнаты даёт ровно
- * эти значения, так что ЗАКОНЧЕННОЕ занятие читается отсюда как лекция. По сути
- * это правда — печатает и запускает один преподаватель, — но спрашивать этим
+ * Образец, с которым сверяются права, — `rulesAfterClass(rules)`, а не
+ * `LECTURE_ROOM`: это та же самая «печатает один преподаватель», написанная
+ * один раз. Заодно она правильно читает `agent: 'off'` — выключенный агент
+ * строже лекционного, а не мягче, и комнату из лекций не выписывает.
+ *
+ * Одно следствие стоит знать в лицо: права `rulesAfterClass` — неподвижная
+ * точка, так что ЗАКОНЧЕННОЕ занятие читается отсюда как лекция. По сути это
+ * правда — печатает и запускает один преподаватель, — но спрашивать этим
  * «занятие идёт по-лекционному» нельзя: для конца пары есть свой признак.
  */
 export function isLectureRoom(rules: RoomRules): boolean {
-  return (Object.keys(LECTURE_ROOM) as (keyof RoomRules)[]).every(
-    (key) => key === 'opens' || rules[key] === LECTURE_ROOM[key],
-  )
+  const lecture = rulesAfterClass(rules)
+  return RIGHTS.every((key) => rules[key] === lecture[key])
 }
 
 /**
@@ -645,6 +691,23 @@ export function mayRunCouncil(
  * просмотр до конца занятия, и разобрать их после пары — его право.
  */
 export function mayLeadCouncil(role: 'host' | 'participant'): boolean {
+  return role === 'host'
+}
+
+/**
+ * За кем комната может пойти по документу.
+ *
+ * Только преподаватель: `leaderFor` (web/src/lib/follow.ts) берёт в ведущие
+ * ровно роль `host`, и позиция всех остальных не читается никем.
+ *
+ * Правило здесь, а не двумя копиями, потому что у него две стороны, и они
+ * обязаны совпадать: одна выбирает ведущего из присутствия, другая решает,
+ * публиковать ли своё место вообще. Пока публиковали все, один шаг
+ * преподавателя на лекции разворачивался в N кадров присутствия от N
+ * слушателей и N×N доставок — на пятистах это миллионы сообщений за одну
+ * прокрученную страницу.
+ */
+export function mayBeFollowed(role: 'host' | 'participant'): boolean {
   return role === 'host'
 }
 

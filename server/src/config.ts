@@ -25,6 +25,32 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const dataDir = path.resolve(env('DATA_DIR', path.join(repoRoot, 'data')))
 const workspaceDir = path.resolve(env('WORKSPACE_DIR', path.join(repoRoot, 'workspace')))
 
+/**
+ * Каталог данных — 0700, и это единственное место, где так сказано.
+ *
+ * Внутри лежат ключи входа преподавателей, ключ модели инстанса и токен
+ * установки. Заводили каталог трое — этот модуль, db.ts и admin/auth.ts, — и
+ * `mode` стоял только у одного из них; а `mkdirSync(mode)` на уже
+ * существующем каталоге не делает НИЧЕГО. Побеждал тот, кто позвал первым,
+ * и это всегда config.ts (он грузится раньше db.ts): каталог выходил 0755 при
+ * комментарии в db.ts, обещающем «0700, закрытый для всех». Сами файлы 0600,
+ * так что утечки не было, — но обещание в коде должно быть правдой, иначе
+ * следующий класть сюда что-то менее осторожное будет верить ему.
+ *
+ * chmod отдельно от mkdir: он-то и чинит каталог, заведённый прошлой версией
+ * (и `make dirs`, который заводит его до нас). В try — на общей папке, чужой
+ * по владельцу, chmod откажет, и это не повод не запуститься.
+ */
+export function ensureDataDir(): string {
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+  try {
+    fs.chmodSync(dataDir, 0o700)
+  } catch {
+    /* не наш каталог — работаем как есть, файлы всё равно 0600 */
+  }
+  return dataDir
+}
+
 /*
  * The signing key outlives the process.
  *
@@ -51,7 +77,7 @@ function persistedSecret(): string {
     /* first boot, or the file was removed to force a rotation */
   }
   const secret = crypto.randomBytes(32).toString('hex')
-  fs.mkdirSync(dataDir, { recursive: true })
+  ensureDataDir()
   fs.writeFileSync(file, secret + '\n', { mode: 0o600 })
   return secret
 }
@@ -105,6 +131,18 @@ function readPublicUrl(): string {
   return resolved
 }
 
+/**
+ * Токен Jupyter из .env.example — то есть известный всем, кто видел репозиторий.
+ *
+ * Умолчание нужно: без него `make run` на ноутбуке не поднялся бы вовсе. Но оно
+ * же — пароль к контейнеру с файлами всех семинаров: `make up` при создании
+ * .env выписывает случайный, а `cp .env.example .env` руками или .env, лежащий
+ * с прошлой весны, оставляют этот. Ради одной строки предупреждения при старте
+ * (`server/src/index.ts` · announceJupyterToken) значение названо здесь, а не
+ * повторено вторым литералом на другом конце процесса.
+ */
+export const DEV_JUPYTER_TOKEN = 'colloq-dev-token'
+
 export const config = {
   port: Number(env('PORT', '3000')),
   get publicUrl(): string {
@@ -123,7 +161,7 @@ export const config = {
 
   jupyter: {
     url: env('JUPYTER_URL', 'http://localhost:8888').replace(/\/+$/, ''),
-    token: env('JUPYTER_TOKEN', 'colloq-dev-token'),
+    token: env('JUPYTER_TOKEN', DEV_JUPYTER_TOKEN),
   },
 
   /**
@@ -152,9 +190,15 @@ export const config = {
   adminEmail: env('ADMIN_EMAIL', ''),
 
   /**
-   * Whether anyone with the URL may still create a seminar from the home
-   * screen. Off by default now that there is a staff list: an open instance
-   * means any visitor can spin up a room and spend the owner's API key.
+   * Whether anyone may create a seminar through the API — POST /api/sessions
+   * with no staff cookie. There is no screen for it: `/` goes to the panel, so
+   * this is a switch for scripting.
+   *
+   * Off by default now that there is a staff list: an open instance means any
+   * visitor can spin up a room and spend the owner's API key. The line above
+   * used to promise a home screen with a "create a seminar" button on it — the
+   * screen was taken out and the promise stayed, so the flag read as a way to
+   * bring an interface back rather than as what it is.
    */
   openSeminarCreation: env('OPEN_SEMINAR_CREATION', 'false') === 'true',
 

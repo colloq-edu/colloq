@@ -62,7 +62,19 @@ async function gpuState(): Promise<{ total: number; free: number }> {
   return { total: devices.length, free: devices.filter((device) => !busy.has(device)).length }
 }
 
-export function adminEnvironmentRoutes(): Router {
+/**
+ * Откуда маршрут берёт сборку и ответ «что здесь можно». По умолчанию — из
+ * environments.ts; подменяется в тестах, потому что настоящая сборка ходит в
+ * docker, а проверять надо не её, а то, что ответ уходит раньше неё.
+ */
+export interface BuildDeps {
+  startBuild: typeof startBuild
+  environmentAbilities: typeof environmentAbilities
+}
+
+const liveBuilds: BuildDeps = { startBuild, environmentAbilities }
+
+export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
   const router = Router()
 
   router.get('/api/admin/environments', requireStaff, async (_req: Request, res: Response) => {
@@ -76,7 +88,7 @@ export function adminEnvironmentRoutes(): Router {
        * ровно ту кнопку, которой нельзя: в контейнере сборка работает (каталог
        * kernel примонтирован), а запись KERNEL_ENV — это .env хоста.
        */
-      ...(await environmentAbilities()),
+      ...(await deps.environmentAbilities()),
       /*
        * Делят ли комнаты одно ядро — правда, которую знает только сервер.
        *
@@ -219,11 +231,32 @@ export function adminEnvironmentRoutes(): Router {
     if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
       return fail(res, 404, 'not_found', 'no such environment')
     }
-    const can = await environmentAbilities()
+    const can = await deps.environmentAbilities()
     if (!can.canBuild) {
       return fail(res, 409, 'no_docker', can.cannotBuildReason ?? 'docker is unavailable')
     }
-    await startBuild(name)
+    /*
+     * 202 — это «принято», и уходить оно обязано сейчас.
+     *
+     * Здесь стояло `await startBuild(name)`, а сборка — это минуты docker
+     * build: запрос висел всё это время, и «Accepted» приезжало ровно тогда,
+     * когда принимать было уже нечего. Вкладка, нажавшая Build, всё это время
+     * держала строку занятой — то есть не открывала живой журнал, ради
+     * которого сделан /log, и не давала нажать Cancel на своей же сборке; а
+     * ретранслятор, обрывающий десятиминутный запрос, показывал владельцу
+     * ошибку при прекрасно идущей сборке.
+     *
+     * Слот в `builds` занимается синхронно, до первого await (environments.ts ·
+     * startBuild), так что /log и Cancel находят сборку сразу после ответа.
+     * Провал сборки и так лежит в её журнале — сюда он приехать не может,
+     * незачем и ждать его.
+     */
+    void deps.startBuild(name).catch((err: unknown) => {
+      console.error(
+        `[environments] build ${name} failed:`,
+        err instanceof Error ? err.message : err,
+      )
+    })
     res.status(202).json({ name })
   })
 
@@ -240,7 +273,7 @@ export function adminEnvironmentRoutes(): Router {
     if (isBuilding(name)) return fail(res, 409, 'building', 'That environment is still building.')
     // Не «виден ли docker»: умолчание — это строка в .env рядом с
     // docker-compose.yml, и в контейнере писать её некуда.
-    const can = await environmentAbilities()
+    const can = await deps.environmentAbilities()
     if (!can.canSetDefault) {
       return fail(res, 409, 'no_docker', can.cannotSetDefaultReason ?? 'docker is unavailable')
     }

@@ -10,6 +10,17 @@
  * So the room keeps a history, and the history answers two questions — who
  * changed this, and what did it look like before.
  */
+import type { DiffLine } from './diff.js'
+
+/*
+ * Строка разницы — одна на весь продукт, и объявлена она там, где её считают.
+ *
+ * Здесь стояла вторая копия того же интерфейса, слово в слово. Копии
+ * разъезжаются на первом же добавленном поле: `CellDiff.lines` типизирован
+ * этим, а routes/history.ts кладёт в него результат `diffLines` из diff.ts —
+ * и расхождение вылезло бы не проверкой типов, а пустым местом на экране.
+ */
+export type { DiffLine }
 
 /** What kind of moment this is. Ordinary typing is an `edit`. */
 export type VersionKind =
@@ -82,12 +93,6 @@ export interface VersionContent {
   cells: HistoricCell[]
 }
 
-/** One line of a diff between two versions of a cell. */
-export interface DiffLine {
-  kind: 'same' | 'added' | 'removed'
-  text: string
-}
-
 export interface CellDiff {
   cellId: string
   /** Null when the cell did not exist yet — the whole thing is an addition. */
@@ -100,6 +105,26 @@ export interface CellDiff {
 export interface VersionDetail {
   version: Version
   diffs: CellDiff[]
+}
+
+/**
+ * Ответ ленты: строки — и целиком ли она.
+ *
+ * История комнаты ограничена по объёму, и у очень долгого семинара начало
+ * срезано целым отрезком (server/src/db.ts · trimHistory). Без этого поля
+ * панель показывает остаток ровно так же, как показала бы полную ленту, и по
+ * ней не отличить «тут ничего не писали» от «до этого места не сохранилось» —
+ * а смотрят историю обычно как раз тогда, когда что-то потеряли.
+ *
+ * Признак ровно об этом и ни о чём другом: список может быть неполон ещё и
+ * потому, что окно ленты — четыреста строк (routes/history.ts · MAX_VERSIONS),
+ * но те версии в базе есть, и говорить о них надо другими словами.
+ *
+ * Считает сервер, `db.ts · historyTrimmed`, по самой старой строке комнаты.
+ */
+export interface VersionList {
+  versions: Version[]
+  trimmed: boolean
 }
 
 /** How many characters a burst may accumulate before it is closed on size alone. */
@@ -119,17 +144,10 @@ export const BURST_MAX_MS = 90_000
 export const BURST_IDLE_MS = 12_000
 
 /**
- * Versions between full snapshots.
- *
- * Materialising version N means replaying updates onto the nearest keyframe at
- * or below it, so this number is the ceiling on that work — never the length of
- * the history. Twenty-five is chosen against the shape of a seminar rather than
- * a benchmark: a ninety-minute class produces a few dozen versions, so the
- * whole history is two or three keyframes and the deepest replay is a couple of
- * dozen small updates, which is milliseconds.
- */
-/**
  * Потолок по числу строк между полными снимками.
+ *
+ * Собрать версию N — это повторить обновления поверх ближайшего снимка не выше
+ * неё, и это число — потолок на такую работу, а не длина истории.
  *
  * Ограничивает длину повтора, а не место: место считается по байтам (см.
  * maybeKeyframe). Без потолка крошечная тетрадь с тысячей мелких правок

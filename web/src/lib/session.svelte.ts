@@ -3,6 +3,7 @@ import { WebsocketProvider } from 'y-websocket'
 import type { Awareness } from 'y-protocols/awareness'
 import { getContext, setContext } from 'svelte'
 import {
+  cellId,
   cellSource,
   allCellArrays,
   ensureInitialNotebook,
@@ -23,14 +24,23 @@ import type {
 } from '@shared/protocol'
 import type { InkStroke, LectureState } from '@shared/lecture'
 import { readRules, type RoomRules } from '@shared/rules'
-import { api, ApiError } from './api'
-import { enqueueControl, OFFLINE_REASON } from './controls'
+import { inkedPages, noteInkedPages, replaceInkPage } from '@/components/lecture/ink'
+import { api } from './api'
+import { boardGone } from './board'
+import { enqueueControl, OFFLINE_REASON, reconnectDelay } from './controls'
 import { CouncilState } from './council.svelte'
 import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
-import { forgetIdentity, type StoredIdentity } from './identity'
+import {
+  forgetIdentity,
+  verdictOf,
+  verdictOnFailure,
+  type EntryVerdict,
+  type StoredIdentity,
+} from './identity'
 import { permitsIn } from './may'
 import { cellToAnnounce, ownChanges, type AwarenessChanges } from './presence'
+import { nextPeers, peersById, PRESENCE_TICK_MS, type Peer } from './peers'
 import { bindLocalStore, forgetSessionInfo, type LocalStore } from './persistence.svelte'
 import {
   mayReload,
@@ -38,13 +48,10 @@ import {
   refusalHealed,
   reloadAfterRefusal,
   stashRefusal,
+  type RefusedCell,
 } from './refusal'
 
-export interface Peer {
-  clientId: number
-  user: AwarenessUser
-  isSelf: boolean
-}
+export type { Peer }
 
 function wsBase(): string {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -81,8 +88,18 @@ function sameRules(a: unknown, b: unknown): boolean {
  * а указка — это положение руки секунду назад, и досылать его некуда. Зато
  * пальцем их набирается по десятку в секунду: очередь переполнялась ими
  * досуха и выбрасывала настоящие нажатия, ради которых заведена.
+ *
+ * Вопрос про чернила страницы (`ink:page`) — туда же, и по той же причине:
+ * страницу спрашивают на каждую перерисовку, а ответ на вопрос, заданный из
+ * офлайна, не нужен никому — переподключение везёт свежую опись, и вопрос
+ * задаётся заново уже по ней (components/lecture/ink.ts · `askInkPage`).
  */
-const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>(['ping', 'ink', 'laser'])
+const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>([
+  'ping',
+  'ink',
+  'ink:page',
+  'laser',
+])
 
 export class SessionState {
   /** Not readonly: the room's rules can change while the seminar is running. */
@@ -192,7 +209,25 @@ export class SessionState {
    * не нашедший свой файл, ищет его заново, а про потолок не догадывается.
    */
   filesTruncated = $state(false)
-  peers = $state<Peer[]>([])
+  /**
+   * Кто в комнате — целиком заменяемым снимком, и только когда он изменился.
+   *
+   * `$state.raw`, а не глубокая руна: список пересобирается целиком, а
+   * оборачивать пятьсот объектов присутствия в прокси на каждом кадре значит
+   * платить за реактивность, которой никто не пользуется. Что считается
+   * изменением и почему кадр без изменений не должен доходить ни до кого —
+   * в lib/peers.ts.
+   */
+  peers = $state.raw<readonly Peer[]>([])
+  /**
+   * Лицо человека по его id участника — для тех, кто спрашивает «а это кто».
+   *
+   * Карта, а не поиск по списку: «кто запускал» спрашивает каждая ячейка с
+   * выводом, и перебор по пятистам вкладкам в двухстах ячейках — это работа,
+   * растущая произведением. Пересчитывается вместе с `peers`, то есть не чаще
+   * раза в тик присутствия.
+   */
+  readonly peersById = $derived(peersById(this.peers))
   files = $state<FileEntry[]>([])
   /**
    * Ячейка, с которой работают клавиатура и курсор, — якорь выделения.
@@ -439,7 +474,7 @@ export class SessionState {
     this.provider.on('status', this.#onStatus)
     this.provider.on('sync', this.#onSync)
     this.provider.on('connection-close', this.#onCollabClose)
-    this.awareness.on('change', this.#readPeers)
+    this.awareness.on('change', this.#schedulePeers)
     this.#readPeers()
 
     // The title is deliberately NOT seeded here. `session.name` is the name the
@@ -450,8 +485,18 @@ export class SessionState {
     // resolves it the wrong way: the seminar silently reverts to its old name
     // for everybody. The header falls back to `session.name` for display, and
     // #onSync seeds the document only once the server confirms it is empty.
+    /*
+     * И никакого второго запроса за деревом файлов.
+     *
+     * Здесь стоял `refreshFiles()` — HTTP-запрос за тем же списком, который
+     * управляющий сокет присылает сам сразу после подключения (control.ts ·
+     * приветственная пачка, теперь из кэша комнаты). На вход это давало два
+     * обхода папки вместо одного, а на пятистах вкладках после перезапуска
+     * сервера — пятьсот лишних обходов в те же две секунды, ровно когда все
+     * ждут возврата. Пустой список до первого кадра — не «файлов нет»: это
+     * говорит `filesArrived`.
+     */
     this.#connectControl()
-    this.refreshFiles()
   }
 
   #onStatus = ({ status }: { status: string }) => {
@@ -523,17 +568,32 @@ export class SessionState {
     if (own) this.provider._awarenessUpdateHandler(own, origin)
   }
 
+  /** Пересборка списка людей отложена до конца тика. См. `#schedulePeers`. */
+  #peersTimer: number | undefined
+
+  /**
+   * Кадр присутствия приехал — пересобрать людей, но не чаще раза в тик.
+   *
+   * Курсор публикуется на каждое нажатие у каждого из пятисот, и без склейки
+   * пересборка шла сотни раз в секунду: обход всех состояний, сортировка имён и
+   * новый массив, от которого просыпались все читатели `peers` — счётчик в
+   * шапке, панель людей, аватары оракула и поиск «кто запускал» в каждой
+   * смонтированной ячейке. Тик в сотую долю секунды оставляет от этого десять
+   * пересборок в секунду, а `nextPeers` из них пропускает дальше только те, где
+   * правда изменилось нарисованное.
+   */
+  #schedulePeers = () => {
+    if (this.#peersTimer !== undefined || this.#disposed) return
+    this.#peersTimer = window.setTimeout(() => {
+      this.#peersTimer = undefined
+      this.#readPeers()
+    }, PRESENCE_TICK_MS)
+  }
+
   #readPeers = () => {
-    const next: Peer[] = []
-    this.awareness.getStates().forEach((state, clientId) => {
-      const user = state?.user as AwarenessUser | undefined
-      if (!user?.id) return
-      next.push({ clientId, user, isSelf: clientId === this.awareness.clientID })
-    })
-    next.sort(
-      (a, b) => Number(b.isSelf) - Number(a.isSelf) || a.user.name.localeCompare(b.user.name),
-    )
-    this.peers = next
+    // `nextPeers` возвращает ПРЕЖНИЙ массив, если ничего из нарисованного не
+    // изменилось: присвоение того же значения руне не будит никого.
+    this.peers = nextPeers(this.awareness.getStates(), this.awareness.clientID, this.peers)
   }
 
   /* ------------------------------------------------------ control socket */
@@ -748,19 +808,32 @@ export class SessionState {
          * Файл могли удалить или переписать прямо на занятии: удаляет
          * преподаватель, а переписать может любая ячейка — `df.to_csv` идёт в
          * ту же папку. Читалка, оставшаяся на документе, которого нет, — это
-         * пустая область без объяснения.
+         * пустая область без объяснения. Что список файлов про это доказывает,
+         * а что нет, — в lib/board.ts: по обрезанному зал вылетал из лекции.
          */
-        if (this.board && !message.files.some((file) => !file.dir && file.path === this.board)) {
-          this.board = null
-        }
+        if (boardGone(this.board, message.files, this.filesTruncated)) this.board = null
       } else if (message.t === 'board') this.board = message.open
       else if (message.t === 'lecture') {
+        const before = this.lecture
         this.lecture = message.state
         // Лекция кончилась — чернила с ней: сервер их уже забыл.
         if (!message.state) {
           this.ink = []
           this.inkRevision += 1
           this.laser = null
+        }
+        /*
+         * И опись — тоже, вместе с чернилами и вместе с НОВОЙ лекцией.
+         *
+         * Опись живёт дольше кадра `ink`: она говорит про страницы, которых у
+         * вкладки на руках нет. Лекция кончилась или началась другая — про её
+         * страницы опись прошлой не знает ничего, а пульт считает по ней
+         * листы: два листа предыдущей лекции стояли бы в ленте новой пустыми,
+         * и стрелки водили бы по ним до переподключения. Признак новой —
+         * время начала: перезаход в ту же лекцию приходит с тем же.
+         */
+        if (!message.state || message.state.startedAt !== before?.startedAt) {
+          noteInkedPages(this, [])
         }
         /*
          * А заметки — не гасим. Они живут в базе и привязаны к ФАЙЛУ, а не к
@@ -795,7 +868,37 @@ export class SessionState {
           this.notes = next
         }
       } else if (message.t === 'ink') {
+        /*
+         * ПОЛНАЯ замена — сколько бы страниц в кадре ни ехало.
+         *
+         * Их число решает сервер: приветственная пачка возит текущую страницу,
+         * а остальные называет описью (`ink:pages`) и отдаёт по вопросу. Чем
+         * этот кадр отличается от описи, вкладка не гадает — считать «пришло
+         * всё» по одному ему нельзя, и именно поэтому опись едет отдельным.
+         */
         this.ink = message.strokes
+        this.inkRevision += 1
+      } else if (message.t === 'ink:page') {
+        /*
+         * Чернила ОДНОЙ страницы: замена штрихов этой страницы, и только её.
+         *
+         * Пустой список — законный ответ «страница чистая», а не потерянный
+         * кадр: без него вкладка, спросившая про чистый лист, ждала бы чернил
+         * до конца лекции. Само правило замены — одной копией, там же, где
+         * вопрос и опись (lecture/ink.ts · `replaceInkPage`).
+         */
+        this.ink = replaceInkPage(this.ink, message.page, message.strokes)
+        this.inkRevision += 1
+      } else if (message.t === 'ink:pages') {
+        /*
+         * ОПИСЬ исписанных страниц — то, чего в самих чернилах больше нет.
+         *
+         * Держит её lecture/ink.ts: там же и вопрос про недостающую страницу,
+         * и память о заданных. Счётчик правок двигается вместе с ней потому,
+         * что по нему перерисовываются лента эскизов и счёт чистых листов, а
+         * опись меняет ровно их.
+         */
+        noteInkedPages(this, message.pages)
         this.inkRevision += 1
       } else if (message.t === 'ink:add') {
         /*
@@ -813,11 +916,27 @@ export class SessionState {
         }
         this.inkRevision += 1
       } else if (message.t === 'ink:drop') {
+        const had = this.ink.some((stroke) => stroke.page === message.page)
         this.ink = this.ink.filter((stroke) => stroke.id !== message.id)
+        /*
+         * Стёрли последний штрих страницы — она больше не исписана.
+         *
+         * Только если её чернила у нас были: страница, которой на руках нет,
+         * после этого кадра всё равно неизвестна, и вычёркивать её из описи
+         * значило бы объявить чистой чужую разметку.
+         */
+        if (had && !this.ink.some((stroke) => stroke.page === message.page)) {
+          this.#forgetInkedPage(message.page)
+        }
         this.inkRevision += 1
       } else if (message.t === 'ink:clear') {
         const page = message.page
         this.ink = page === null ? [] : this.ink.filter((stroke) => stroke.page !== page)
+        // «Стереть» — про всех, а не про то, что у нас на руках: страница
+        // чиста у зала, и в описи ей места нет. Иначе пульт считал бы по ней
+        // листы до конца лекции, а лента рисовала бы пустой эскиз.
+        if (page === null) noteInkedPages(this, [])
+        else this.#forgetInkedPage(page)
         this.inkRevision += 1
       } else if (message.t === 'laser') this.laser = message.at
       else if (message.t === 'terminal') this.terminalStatus = message.status
@@ -875,7 +994,9 @@ export class SessionState {
        * дня. Каждая четвёртая — это проба примерно раз в полминуты.
        */
       if (this.#retries % 4 === 0) void this.#diagnose()
-      const delay = Math.min(500 * 2 ** Math.min(this.#retries, 5), 8000)
+      // Отступ с разбросом: почему без него пятьсот вкладок возвращаются в одни
+      // и те же миллисекунды — в lib/controls.ts · reconnectDelay.
+      const delay = reconnectDelay(this.#retries)
       this.#reconnectTimer = window.setTimeout(() => this.#connectControl(), delay)
     }
 
@@ -898,6 +1019,15 @@ export class SessionState {
     if (this.banned !== null) return
     this.banned = until
     this.provider.disconnect()
+    /*
+     * И отменить уже назначенную попытку управляющего сокета.
+     *
+     * Про бан мы узнаём двумя путями: кадром `banned` по живому сокету и
+     * ответом на `api.me` — а второй приходит уже ПОСЛЕ того, как onclose
+     * назначил следующий заход. Без этой строки вкладка ещё раз стучалась бы в
+     * дверь, которую ей только что закрыли, и получала бы 403 на рукопожатии.
+     */
+    window.clearTimeout(this.#reconnectTimer)
   }
 
   /**
@@ -922,18 +1052,39 @@ export class SessionState {
   /**
    * Почему нас не пускают — спросить по HTTP, раз сокет молчит.
    *
-   * Три случая, и все три надо разделить: комнаты нет (её удалили, пока мы
-   * отступали), ключ не годится (истёк или подписан другим секретом — сервер
-   * перезапустили с новым), сервер просто недоступен. Последнее — обычный
-   * обрыв, и переподключаться правильно; первые два не пройдут никогда.
+   * ЧЕТЫРЕ случая, и все четыре надо разделить: комнаты нет (её удалили, пока
+   * мы отступали), вход закрыл преподаватель, ключ не годится (истёк или
+   * подписан другим секретом — сервер перезапустили с новым), сервер просто
+   * недоступен. Последнее — обычный обрыв, и переподключаться правильно;
+   * первые три не пройдут сами.
+   *
+   * Спрашиваем КЛЮЧОМ (`api.me`), а не безымянным `getSession`. Безымянный
+   * ответ про ключ ничего не знает, и всё, что оставалось, — считать любой
+   * отказ в апгрейде при живом HTTP протухшим ключом. Забаненный после
+   * перезагрузки читал из-за этого «место истекло», его личность стиралась
+   * насовсем, а назавтра он входил в комнату новым участником: попытки
+   * консилиума, авторство в ленте оракула и строка в списке людей оставались за
+   * человеком, которого больше нет, а у преподавателя в списке — дубль имени.
    */
   async #diagnose(): Promise<void> {
+    let verdict: EntryVerdict
     try {
-      await api.getSession(this.session.id)
+      verdict = verdictOf(await api.me(this.session.id, this.token))
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) this.#roomIsGone()
-      // Всё остальное — сеть; молчим и продолжаем отступать.
-      return
+      verdict = verdictOnFailure(err)
+    }
+
+    // «Не знаю» — это обрыв: молчим и продолжаем отступать. Разбор всех
+    // четырёх исходов и цена путаницы — в lib/identity.ts · EntryVerdict.
+    if (verdict.why === 'unknown') return
+    if (verdict.why === 'gone') return this.#roomIsGone()
+    if (verdict.why === 'banned') {
+      /*
+       * Вход закрыт человеком. Экран для этого есть, и он ничего не стирает:
+       * семинар на месте, человека ждут завтра — и завтра он должен войти
+       * собой, а не новым участником.
+       */
+      return this.#youAreBanned(verdict.until)
     }
 
     /*
@@ -1001,6 +1152,18 @@ export class SessionState {
     if (file === null || this.#control?.readyState !== WebSocket.OPEN) return
     const ask: ControlClientMessage = { t: 'notes:open', file }
     this.#control.send(JSON.stringify(ask))
+  }
+
+  /**
+   * Вычеркнуть страницу из описи: чернил на ней больше нет.
+   *
+   * Через `inkedPages`, а не правкой списка: опись сервера и страницы на руках
+   * — два источника, и полного нет ни у одного (см. lecture/ink.ts). Берём их
+   * объединение без вычеркнутой страницы — это и есть всё, что вкладка про
+   * исписанное знает после «стереть».
+   */
+  #forgetInkedPage(page: number): void {
+    noteInkedPages(this, [...inkedPages(this)].filter((known) => known !== page))
   }
 
   /* --------------------------------------------------------------- state */
@@ -1163,17 +1326,6 @@ export class SessionState {
     if (user) this.awareness.setLocalStateField('user', { ...user, ...patch })
   }
 
-  async refreshFiles() {
-    try {
-      const res = await api.listFiles(this.session.id, this.token)
-      this.files = res.files
-      this.filesArrived = true
-      this.filesTruncated = res.truncated === true
-    } catch {
-      /* the control socket pushes the list too; a failed poll is not fatal */
-    }
-  }
-
   /**
    * Когда преподаватель в последний раз менял правила комнаты.
    *
@@ -1206,6 +1358,25 @@ export class SessionState {
    * бы возврат в согласованное состояние держался на его сообщении, один обрыв
    * оставил бы человека немым навсегда, а заметить это было бы некому.
    */
+  /**
+   * Снимок всех ячеек всех тетрадей — id и текст, как их видит эта вкладка.
+   *
+   * Только для записки об отказе: там это единственный способ не потерять
+   * набранное без связи молча. Дорого — обход тетради и склейка каждого Y.Text,
+   * — и зовётся ровно один раз, перед очисткой кэша.
+   */
+  #allCells(): RefusedCell[] {
+    const snapshot: RefusedCell[] = []
+    for (const cells of allCellArrays(this.doc)) {
+      for (const cell of cells) {
+        const id = cellId(cell)
+        if (typeof id !== 'string' || !id) continue
+        snapshot.push({ id, text: cellSource(cell).toString() })
+      }
+    }
+    return snapshot
+  }
+
   #onCollabClose = (event: CloseEvent | null): void => {
     if (this.#disposed || event?.code !== REFUSED_CLOSE) return
     this.#disposed = true
@@ -1233,6 +1404,17 @@ export class SessionState {
           ? 'Кэш этой вкладки разошёлся с сервером — она собрана заново.'
           : 'Эту правку не приняли.',
       text: cell ? cellSource(cell.cell).toString() : '',
+      /*
+       * И весь набранный текст рядом — всех тетрадей комнаты.
+       *
+       * Отказ гейта относится к КАДРУ, а кадр после обрыва — это всё, что
+       * человек напечатал без сети: печатать офлайн продукт разрешает
+       * намеренно. Пока в записке лежала одна ячейка (та, где стоял курсор),
+       * правки в остальных уходили вместе с кэшем строкой ниже — молча.
+       * Тетрадь — это килобайты, и сверить их с серверной копией после
+       * перезагрузки дешевле, чем гадать, что именно не доехало (`stillLost`).
+       */
+      cells: this.#allCells(),
       at: Date.now(),
     })
     /*
@@ -1282,7 +1464,8 @@ export class SessionState {
     this.provider.off('status', this.#onStatus)
     this.provider.off('sync', this.#onSync)
     this.provider.off('connection-close', this.#onCollabClose)
-    this.awareness.off('change', this.#readPeers)
+    this.awareness.off('change', this.#schedulePeers)
+    window.clearTimeout(this.#peersTimer)
     this.awareness.off('update', this.#announceSelf)
     this.#anchorWatch?.()
     getTerminal(this.doc).unobserve(this.#onTerminalLines)

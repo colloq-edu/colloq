@@ -60,7 +60,7 @@ test('a burst of typing is one version, not one per keystroke', () => {
   const versions = listVersions(id, 20).filter((v) => v.kind === 'edit')
   assert.equal(versions.length, before + 1, 'sixteen keystrokes made more than one version')
   assert.equal(versions[0].author_id, 'p_maria')
-  assert.match(versions[0].summary, /edited cell/)
+  assert.match(versions[0].summary, /правил ячейку/)
 })
 
 test('двое, печатающие одновременно, дают одну версию комнаты, а не по одной на нажатие', () => {
@@ -246,7 +246,7 @@ test('a restore puts the old text back, and is itself a version', () => {
   const rows = listVersions(id, 10)
   assert.equal(rows[0].kind, 'restore', 'the restore left no trace of itself')
   assert.equal(rows[0].author_id, 'p_alexander')
-  assert.match(rows[0].summary, /restored the version/)
+  assert.match(rows[0].summary, /вернул версию/)
   // Времени в подписи нет: его рисует тот, кто смотрит, по этому адресу.
   assert.equal(rows[0].target_seq, good, 'откат не назвал версию, которую вернул')
   assert.ok(!/\d\d:\d\d/.test(rows[0].summary), 'сервер снова вписал время в подпись')
@@ -309,7 +309,7 @@ test('deleting a cell lands in the history at once, not after the silence', () =
   doc.transact(() => getCells(doc).delete(1, 1))
   const afterDelete = listVersions(id, 20).filter((v) => v.kind === 'edit')
   assert.equal(afterDelete.length, 2, 'the deletion waited for the idle timer')
-  assert.match(afterDelete[0].summary, /deleted a cell/)
+  assert.match(afterDelete[0].summary, /удалил ячейку/)
 })
 
 /* ------------------------------------------- a quiet burst is still bytes */

@@ -7,7 +7,6 @@ import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import { createHmac } from 'node:crypto'
-import express from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Response } from 'express'
@@ -29,14 +28,11 @@ import {
 import {
   issueStaffCookie,
   readSetupToken,
-  sameOrigin,
   staffFromCookieHeader,
   verifySetupToken,
 } from '../server/src/admin/auth.js'
 import { parseOraclePatch } from '../server/src/admin/settings.js'
-import { adminAuthRoutes } from '../server/src/routes/admin-auth.js'
-import { adminInstanceRoutes } from '../server/src/routes/admin-instance.js'
-import { adminImportRoutes } from '../server/src/routes/admin-import.js'
+import { app } from '../server/src/app.js'
 import { createSession, getRules, isFinished, setRules, storedRules } from '../server/src/db.js'
 import { COUNCIL_ROOM, isLectureRoom, LECTURE_ROOM, OPEN_ROOM } from '../shared/rules.js'
 import { setPublicationSlug, writePublication } from '../server/src/publish/store.js'
@@ -187,17 +183,16 @@ let base = ''
 let server: http.Server
 
 before(async () => {
-  const app = express()
-  app.use(express.json())
-  // Тот же порядок, что в index.ts: своё происхождение проверяется до всего,
-  // что пишет, и не проверяется на чтении.
-  app.use('/api/admin', (req, res, next) => {
-    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next()
-    sameOrigin(req, res, next)
-  })
-  app.use(adminAuthRoutes())
-  app.use(adminInstanceRoutes())
-  app.use(adminImportRoutes())
+  /*
+   * Монтируется ПРИЛОЖЕНИЕ, а не его подобие.
+   *
+   * Здесь стояла своя сборка express с комментарием «тот же порядок, что в
+   * index.ts» — и копия порядка расхождений не ловит, она их повторяет:
+   * переставь проверку происхождения относительно роутеров в продукте, и эти
+   * тесты останутся зелёными. Порядок теперь один на всех (server/src/app.ts),
+   * и панельные двери проверяются за тем же, за чем стоят на паре: разбор
+   * json, происхождение записи, продление печенья штата.
+   */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()

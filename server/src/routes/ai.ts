@@ -19,9 +19,15 @@ import {
   recordQuestion,
   windowResetAt,
 } from '../admin/usage.js'
-import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
-import { stopAll, stopWork, work } from '../ai/agent.js'
-import { applyOnBehalf, getSessionDoc, peekSessionDoc } from '../collab/index.js'
+import { aiModel, aiReady, ask, cancel, clearThread, streamsInRoom } from '../ai/index.js'
+import { stopAll, stopWork, turnsInRoom, work } from '../ai/agent.js'
+import { seconds } from '../ai/text.js'
+import {
+  applyOnBehalf,
+  getSessionDoc,
+  onlineParticipantIds,
+  peekSessionDoc,
+} from '../collab/index.js'
 import { mark } from '../collab/history.js'
 import { findChatEntry, getChat } from '@shared/notebook'
 import {
@@ -33,10 +39,11 @@ import {
   oracleModeIn,
 } from '@shared/rules'
 import { getParticipant, getRules, getSession, isFinished } from '../db.js'
-import { sessionAuth } from './sessions.js'
+import { banDoor, sessionAuth } from './sessions.js'
 import {
   actionAllowedIn,
   colorForId,
+  SESSION_MISSING,
   type AiAction,
   type AiAskRequest,
   type AiAskResponse,
@@ -56,34 +63,72 @@ const ACTIONS: readonly AiAction[] = ['explain', 'fix', 'debug', 'improve', 'hin
  * already travelling with the question.
  */
 const MAX_MESSAGE = 8000
+/**
+ * Длина имени записи, ячейки и всего, что приезжает идентификатором.
+ *
+ * Сто двадцать восемь знаков — вчетверо больше самого длинного, какой этот
+ * продукт выдаёт (`c_` плюс восемь шестнадцатеричных). Потолок стоит не ради
+ * красоты: `cellId` и двадцать `cellIds` уходили в общий документ комнаты как
+ * есть, а тело запроса — до мегабайта, так что один вопрос мог унести мегабайт
+ * мусора в CRDT — с записью на диск, рассылкой всем пятистам сокетам и вечной
+ * жизнью в снимках истории. Слишком длинное не режется, а отбрасывается: имя
+ * ячейки — это ключ, и обрезанный ключ уже не тот, что просили.
+ */
 const MAX_ENTRY_ID = 128
 
 const HOUR_MS = 3_600_000
 
 /**
- * How many per-student allowances one room may spend in an hour.
+ * How many per-student allowances one room may spend in an hour, at minimum.
  *
- * Thirty is a full lecture hall: the ceiling only ever meets a room where the
- * same person keeps coming back under new names, or a script.
+ * Тридцать было написано как «полный лекционный зал» и держалось за это число
+ * намертво: при инстансовом пределе в 20 вопросов комната получала 600 на всех,
+ * то есть чуть больше одного на человека в зале на 500 — и с середины пары класс
+ * упирался в потолок, которого преподаватель не ставил и поднять не может.
+ * Теперь тридцать — это ПОЛ, а не потолок: маленькой комнате достаётся ровно
+ * столько же, сколько доставалось, а большая считает от своего размера.
  */
 const ROOM_MULTIPLIER = 30
 
 /**
- * «одну секунду, две секунды, пять секунд» — в отказе, который читает студент.
+ * Сколько вопросов комната может потратить за час.
  *
- * Правило то же, что в web/src/lib/plural.ts, и повторено здесь потому, что
- * тот файл живёт во вкладке: серверу его не достать, а тернарник «=== 1 ? то :
- * это» врёт на каждом втором числе — «ещё 22 секунд». Цена — шесть строк,
- * которые придётся править дважды, если правило когда-нибудь изменится; оно не
- * менялось с Кирилла и Мефодия.
+ * Считается от числа людей, которые сейчас в комнате, — по половине личного
+ * предела на человека. Половина, а не целое, потому что этот потолок держит не
+ * класс, а вкладки: личный предел обходится перезаходом (имя в комнате ничем не
+ * подтверждено — в этом весь смысл «одна ссылка, и всё»), и открывающий вкладки
+ * в цикле получает по новому пределу на каждую. Присутствие ему тоже приходится
+ * держать открытым, но выиграть он может только вдвое, а не без границы.
+ *
+ * Присутствие, а не таблица участников: та помнит всякого, кто входил в этот
+ * семинар за все его пары, и по ней комната из трёх человек выглядела бы на
+ * полторы сотни. Ровно этим числом join-экран однажды и врал.
+ *
+ * Одна функция на оба оракула: сводка консилиума (routes/council.ts) тратит тот
+ * же ключ и считается в ту же таблицу, значит и потолок у неё обязан быть тот
+ * же. Он и был — двумя литералами «30» в двух файлах.
  */
-function seconds(n: number): string {
-  const mod10 = n % 10
-  const mod100 = n % 100
-  if (mod10 === 1 && mod100 !== 11) return `${n} секунду`
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} секунды`
-  return `${n} секунд`
+export function roomQuestionCeiling(sessionId: string, limit: number): number {
+  const people = onlineParticipantIds(sessionId).length
+  return limit * Math.max(ROOM_MULTIPLIER, Math.ceil(people / 2))
 }
+
+/**
+ * Сколько ответов оракул пишет в одной комнате разом.
+ *
+ * Потолки в час считают расход, а этот — цикл событий. Каждый идущий ответ
+ * дописывается в общий документ несколько раз в секунду, и каждая такая правка
+ * уезжает всем сокетам комнаты; ход агента вдобавок держит запрос к провайдеру
+ * и правит файлы. Без границы слова преподавателя «спросите оракула» хватало,
+ * чтобы двести человек начали двести потоков разом — а это сотни тысяч кадров
+ * в секунду на пятистах сокетах, пропущенные пинги и разошедшаяся комната.
+ *
+ * Двенадцать — это «спросили и ждут» у дюжины человек одновременно; при ответе
+ * секунд на десять комната переваривает больше вопроса в секунду, то есть
+ * очередь рассасывается быстрее, чем класс успевает её создать. Отказ — не
+ * ошибка, а ожидание: панель показывает его обратным отсчётом, как слоу-мод.
+ */
+const MAX_ROOM_STREAMS = 12
 
 /**
  * The mode this seminar actually runs in.
@@ -92,9 +137,8 @@ function seconds(n: number): string {
  * tighten — full down to hints, hints down to off — and may not loosen: an
  * instance that is off cannot be talked back on by a seminar's own settings,
  * because that decision belongs to whoever pays for the model rather than to
- * whoever booked the room.
+ * whoever booked the room. The one rule, shared with the panel.
  */
-/** The room's mode, by the one rule shared with the panel. */
 function oracleModeFor(
   sessionId: string,
   instance: 'off' | 'hints' | 'full',
@@ -145,8 +189,16 @@ export function purgeQuestions(
    * `getSessionDoc`, а не `peekSessionDoc`: вычистка — это правка, и правка
    * должна лечь в документ комнаты, а не мимо неё. Комнату, которую никто не
    * открывал с перезапуска, поднять придётся — иначе стёртое вернулось бы к
-   * первому вошедшему с диска. Ровно так же и по той же причине поступает
-   * лента версий (routes/history.ts).
+   * первому вошедшему с диска.
+   *
+   * И не `visitSessionDoc`, которым поднимает документ лента версий: гость
+   * тетради тем же движением её отпускает (routes/doc-visit.ts), а здесь
+   * отпускать нечего и незачем. Банят в идущей комнате — её документ поднят
+   * теми, кто в ней сидит, — и сразу за вычисткой в том же запросе идут ещё два
+   * шага по той же комнате: стопки консилиума без забаненного и закрытие его
+   * сокетов (routes/bans.ts). А поднятую вхолостую — бан сразу после
+   * перезапуска, пока никто не переподключился, — отпустит уборка
+   * простаивающих комнат (collab/index.ts · sweepIdleRooms).
    */
   const { doc } = getSessionDoc(sessionId)
   const chat = getChat(doc)
@@ -183,6 +235,10 @@ export function purgeQuestions(
 export function aiRoutes(): Router {
   const router = Router()
 
+  // Забаненный не пишет в общий тред и не тратит ключ инстанса: purgeQuestions
+  // убирает написанное, а это — закрывает дверь (routes/sessions.ts · banDoor).
+  router.use('/api/sessions/:id', banDoor)
+
   router.get('/api/ai/status', (_req, res) => {
     const settings = getOracleSettings()
     // A student's panel asks one question — "is there an oracle here?" — and
@@ -207,7 +263,7 @@ export function aiRoutes(): Router {
     const sessionId = req.params.id
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
 
     /*
      * Занятие закончено — спрашивает один преподаватель.
@@ -269,15 +325,29 @@ export function aiRoutes(): Router {
     const requested = ACTIONS.includes(body?.action as AiAction)
       ? (body?.action as AiAction)
       : undefined
-    const cellId = typeof body?.cellId === 'string' ? body.cellId : null
     /*
-     * Выделение спрашивающего. Потолок — не про безопасность, а про смысл:
-     * «сосредоточься на сорока ячейках» значит «ни на чём», а место в кадре
-     * они займут за счёт остальной тетради.
+     * Имена ячеек — с потолком длины, и слишком длинное отбрасывается целиком.
+     *
+     * Оба поля ложатся в запись треда как есть, а запись — в общий документ
+     * комнаты: он персистится, уезжает всем сокетам и остаётся в снимках
+     * истории, откуда его достаёт только удаление треда преподавателем. Пока
+     * потолка не было, один вопрос мог унести туда почти мегабайт (тело
+     * запроса — express.json), а по часовому пределу — сотни мегабайт с одного
+     * участника. См. MAX_ENTRY_ID.
+     */
+    const asked = typeof body?.cellId === 'string' ? body.cellId : ''
+    const cellId = asked && asked.length <= MAX_ENTRY_ID ? asked : null
+    /*
+     * Выделение спрашивающего. Потолок на число — не про безопасность, а про
+     * смысл: «сосредоточься на сорока ячейках» значит «ни на чём», а место в
+     * кадре они займут за счёт остальной тетради.
      */
     const cellIds = Array.isArray(body?.cellIds)
       ? body.cellIds
-          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          .filter(
+            (id): id is string =>
+              typeof id === 'string' && id.length > 0 && id.length <= MAX_ENTRY_ID,
+          )
           .slice(0, 20)
       : []
     if (!message && !requested) return res.status(400).json({ error: 'nothing to ask' })
@@ -355,16 +425,29 @@ export function aiRoutes(): Router {
        * вкладка инкогнито даёт нового участника и свежие N вопросов. Настоящей
        * границы у счёта не было вовсе, а панель обещала защиту.
        *
-       * Тридцать личных пределов на всю комнату: класс из двадцати человек, где
-       * каждый спросил вдвое больше положенного, в него ещё укладывается, а
-       * один человек, который открывает вкладки в цикле, — уже нет.
+       * Тридцать личных пределов на всю комнату — или по половине на человека,
+       * если людей больше шестидесяти: класс из двадцати, где каждый спросил
+       * вдвое больше положенного, укладывается в первое, поток на пятьсот — во
+       * второе, а один человек, открывающий вкладки в цикле, не укладывается ни
+       * во что (roomQuestionCeiling).
        */
-      const roomLimit = limit * ROOM_MULTIPLIER
+      const roomLimit = roomQuestionCeiling(sessionId, limit)
       const roomUsed = countRoomQuestions(sessionId, HOUR_MS)
       if (roomUsed >= roomLimit) {
         res.setHeader('Retry-After', '600')
+        /*
+         * Куда идти — правда, а не вежливость.
+         *
+         * Здесь стояло «попросите преподавателя, он поднимет предел в панели».
+         * Поднять его преподаватель не может: правила комнаты потолок только
+         * ужесточают (shared/rules.ts · oracleLimitsIn), а ручка живёт в
+         * админке инстанса, куда преподаватель обычно и не вхож. Двадцать
+         * человек шли к нему, он шёл в пульт и не находил там ничего. Читает
+         * это только участник — ведущего потолки не держат, — так что сказать
+         * надо ровно то, что ему поможет: ждать или спрашивать сообща.
+         */
         return res.status(429).json({
-          error: `This seminar has used all ${roomLimit} of its oracle questions for the hour. Ask your teacher — they can raise the limit in the panel.`,
+          error: `This seminar has used all ${roomLimit} of its oracle questions for the hour. That ceiling belongs to the whole Colloq, not to this room, so nobody here can lift it — wait a while, or ask together.`,
         })
       }
 
@@ -422,6 +505,31 @@ export function aiRoutes(): Router {
            * она не может.
            */
           retryAfter: left,
+        })
+      }
+    }
+
+    /*
+     * Сколько ответов пишется в комнате прямо сейчас.
+     *
+     * Стоит последним из отказов и последним по смыслу: это не про расход и не
+     * про спам, а про то, что цикл событий у комнаты один. Считаются и потоки,
+     * и ходы агента — второй дороже, но нагружает то же место.
+     *
+     * Преподавателя не касается, как и потолки выше: он ведёт занятие, и его
+     * единственный вопрос среди дюжины студенческих ничего не решает — а вот
+     * молчащий посреди разбора оракул решает многое.
+     */
+    if (auth.role !== 'host') {
+      const busy = streamsInRoom(sessionId) + turnsInRoom(sessionId)
+      if (busy >= MAX_ROOM_STREAMS) {
+        const wait = 5
+        res.setHeader('Retry-After', String(wait))
+        return res.status(429).json({
+          error: `Оракул сейчас отвечает ${busy} людям в этой комнате — больше он разом не тянет. Спросите через ${seconds(wait)}.`,
+          // То же число, что у слоу-мода: панель рисует ожидание отсчётом, а не
+          // красной ошибкой. Отличить одно от другого по тексту она не может.
+          retryAfter: wait,
         })
       }
     }
@@ -493,7 +601,7 @@ export function aiRoutes(): Router {
      * пишет снимок. Для удалённого семинара это воскрешение — по старому
      * токену, из строки, которой в списке уже нет.
      */
-    if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(req.params.id)) return res.status(404).json({ error: SESSION_MISSING })
 
     const entryId = typeof req.body?.entryId === 'string' ? req.body.entryId : ''
     if (!entryId || entryId.length > MAX_ENTRY_ID) {
@@ -539,7 +647,7 @@ export function aiRoutes(): Router {
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
     // То же, что и в cancel: clearThread поднимает комнату, а поднимать нечего.
-    if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(req.params.id)) return res.status(404).json({ error: SESSION_MISSING })
     // The thread belongs to the room, so clearing it is the host's call — a
     // student must not be able to wipe what the class asked.
     // Стирать общее — то же право, что и стереть всю доску: лента вопросов

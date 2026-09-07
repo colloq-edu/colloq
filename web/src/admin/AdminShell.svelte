@@ -17,8 +17,18 @@
     environments = $state<number | null>(null)
 
     /**
-     * Только то, чего ещё никто не сказал — и независимо: список
-     * преподавателей, отвечающий 403, не должен стоить счётчика семинаров.
+     * Списки, которые уже отказали.
+     *
+     * 403 на «кто может учить» у обычного преподавателя — не разовая неудача, а
+     * ответ, и он не меняется от того, что его переспросят при каждом переходе
+     * по вкладкам. Отличать «не знаю» от «нет» приходится и здесь: `null` в
+     * счётчике значит «ещё не спрашивали», отметка тут — «спросили, и не дали».
+     */
+    #refused = new Set<AdminTab>()
+
+    /**
+     * Только то, чего ещё никто не сказал, — и не то, за чем прямо сейчас идёт
+     * открытый экран.
      *
      * Раньше здесь спрашивались все четыре списка на каждый переход по вкладкам,
      * а экран, на который переходили, тут же спрашивал то же самое второй раз.
@@ -26,22 +36,35 @@
      * в Y.Doc, `/environments` — это `docker version` плюс `docker image
      * inspect` на каждое окружение, и всё это в том же цикле событий, который
      * в эту секунду ведёт чужую пару. Экраны знают свои числа и кладут их сюда
-     * сами.
+     * сами — поэтому список активной вкладки пропускается целиком: он приедет
+     * от неё, и вторая копия того же запроса не приносит ничего, кроме docker.
      */
-    async load(): Promise<void> {
-      await Promise.allSettled([
-        this.seminars === null
-          ? adminApi.listSeminars().then((list) => (this.seminars = list.length))
-          : null,
-        this.courses === null
-          ? adminApi.listCourses().then((list) => (this.courses = list.length))
-          : null,
-        this.teachers === null
-          ? adminApi.listTeachers().then((list) => (this.teachers = list.length))
-          : null,
-        this.environments === null
-          ? adminApi.listEnvironments().then((r) => (this.environments = r.environments.length))
-          : null,
+    async load(active?: AdminTab): Promise<void> {
+      const ask = async (
+        tab: AdminTab,
+        known: number | null,
+        read: () => Promise<number>,
+      ): Promise<void> => {
+        if (tab === active || known !== null || this.#refused.has(tab)) return
+        try {
+          const n = await read()
+          if (tab === 'seminars') this.seminars = n
+          else if (tab === 'courses') this.courses = n
+          else if (tab === 'teachers') this.teachers = n
+          else if (tab === 'environments') this.environments = n
+        } catch {
+          // Число не приехало и не приедет само: строка остаётся без цифры, а
+          // не с выдуманной. Экран этой вкладки поставит её, когда его откроют.
+          this.#refused.add(tab)
+        }
+      }
+      await Promise.all([
+        ask('seminars', this.seminars, () => adminApi.listSeminars().then((l) => l.length)),
+        ask('courses', this.courses, () => adminApi.listCourses().then((l) => l.length)),
+        ask('teachers', this.teachers, () => adminApi.listTeachers().then((l) => l.length)),
+        ask('environments', this.environments, () =>
+          adminApi.listEnvironments().then((r) => r.environments.length),
+        ),
       ])
     }
   }
@@ -122,8 +145,7 @@
   // ещё неизвестное, а изменившееся число кладёт сюда сам экран, который его
   // изменил.
   $effect(() => {
-    void tab
-    void navCounts.load()
+    void navCounts.load(tab)
   })
 
   function open(event: MouseEvent, href: string): void {

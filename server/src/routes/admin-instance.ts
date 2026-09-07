@@ -18,18 +18,21 @@ import { discardBans } from '../bans.js'
 import { stopAll } from '../ai/agent.js'
 import { testConnection } from '../ai/provider.js'
 import { newSessionId } from '../auth.js'
-import { dropSessionDoc, getSessionDoc, onlineCount } from '../collab/index.js'
+import { dropSessionDoc, getSessionDoc, liveSince, onlineCount } from '../collab/index.js'
+import { visitSessionDoc } from './doc-visit.js'
 import { config } from '../config.js'
 import { broadcast, closeControlRoom } from '../control.js'
 import { COUNCIL_ROOM, LECTURE_ROOM, OPEN_ROOM, readRules } from '@shared/rules'
+import { normalizeLabel } from '@shared/text'
 import {
   createSession,
   db,
   discardHistory,
   discardNotes,
   finishedAt,
-  forgetRules,
+  forgetRoom,
   loadDocSnapshot,
+  renameSession,
   sessionEnvironment,
   setFinished,
   setRules,
@@ -46,7 +49,7 @@ import {
 } from '../publish/store.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
 import { activeName, exists as environmentExists } from '../environments.js'
-import { listFiles, sessionDir } from '../workspace.js'
+import { forgetTree, listFiles, sessionDir } from '../workspace.js'
 import type { Course } from '@shared/publish'
 import {
   ENVIRONMENT_NAME,
@@ -85,8 +88,8 @@ const selectSeminar = db.prepare(`
   WHERE s.id = ?
 `)
 const updateCreator = db.prepare('UPDATE sessions SET created_by = ? WHERE id = ?')
-const renameSeminar = db.prepare('UPDATE sessions SET name = ? WHERE id = ?')
 const setArchived = db.prepare('UPDATE sessions SET archived_at = ? WHERE id = ?')
+const selectArchived = db.prepare('SELECT archived_at FROM sessions WHERE id = ?')
 const deleteSeminarRow = db.prepare('DELETE FROM sessions WHERE id = ?')
 const deleteParticipants = db.prepare('DELETE FROM participants WHERE session_id = ?')
 const deleteSnapshot = db.prepare('DELETE FROM doc_snapshots WHERE session_id = ?')
@@ -106,6 +109,16 @@ interface SeminarRow {
  */
 export function setSeminarCreator(sessionId: string, createdBy: string): void {
   updateCreator.run(createdBy, sessionId)
+}
+
+/**
+ * Убран ли семинар из списка. Столбец заводится здесь, поэтому и спрашивается
+ * здесь; читает это `/join`, чтобы не греть ядро комнате, в которую заходят
+ * перечитать разбор.
+ */
+export function isArchived(sessionId: string): boolean {
+  const row = selectArchived.get(sessionId) as { archived_at: number | null } | undefined
+  return row?.archived_at != null
 }
 
 /* ----------------------------------------------------------------- counts */
@@ -161,6 +174,14 @@ function cellCount(sessionId: string, live: boolean): number {
  * рядом с тетрадью. Файл, записанный вглубь подпапки, оставит на карточке
  * прежнее число до следующего изменения корня — это число на карточке, а не
  * список файлов.
+ *
+ * Считать заново — значит и обойти заново: у самого `listFiles` своя короткая
+ * память (workspace.ts · TREE_MEMO_MS), и она бывает СТАРШЕ той отметки
+ * времени, на которую мы ключуемся. Тогда к новому mtime прибивалось число,
+ * посчитанное по прежнему дереву, и карточка показывала «0 файлов» не триста
+ * миллисекунд, а до следующего изменения папки: в комнату положили файл мимо
+ * workspace.ts (ядро, сохранение открытого), и на карточке этого не видно
+ * вовсе. Папка изменилась — обходим её, а не вспоминаем.
  */
 const fileCounts = new Map<string, { at: number; count: number }>()
 
@@ -169,6 +190,7 @@ function fileCount(sessionId: string): number {
     const at = fs.statSync(sessionDir(sessionId)).mtimeMs
     const cached = fileCounts.get(sessionId)
     if (cached && cached.at === at) return cached.count
+    forgetTree(sessionId)
     const count = listFiles(sessionId).filter((entry) => !entry.dir).length
     fileCounts.set(sessionId, { at, count })
     return count
@@ -207,6 +229,12 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
     createdAt: row.created_at,
     status: statusOf(liveCount, row.participants, finishedAt(row.id)),
     liveCount,
+    /*
+     * Часы занятия, а не часы комнаты: строка «Running now · started 25 min
+     * ago» про то, сколько идёт ЭТА пара. Комнату завели за неделю, и её
+     * `createdAt` отвечал на другой вопрос (collab/index.ts · liveSince).
+     */
+    liveSince: liveSince(row.id),
     totalParticipants: row.participants,
     cellCount: cellCount(row.id, liveCount > 0),
     fileCount: fileCount(row.id),
@@ -255,14 +283,11 @@ function coursesWith(sessionId: string, courses: Course[]): { id: string; name: 
 
 /* ------------------------------------------------------------------ input */
 
-/** Collapse whitespace and drop control characters so a name cannot break the list layout. */
-function normalize(value: unknown): string {
-  if (typeof value !== 'string') return ''
-  return value
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
+/**
+ * Collapse whitespace and drop control characters so a name cannot break the
+ * list layout. Одна мерка на все четыре двери — shared/text.ts.
+ */
+const normalize = normalizeLabel
 
 function invalid(res: Response, error: string): Response {
   const body: AdminErrorBody = { error, reason: 'invalid' }
@@ -376,11 +401,25 @@ export function adminInstanceRoutes(): Router {
       if (name.length > LIMITS.seminarName) {
         return invalid(res, `a seminar name must be ${LIMITS.seminarName} characters or fewer`)
       }
-      renameSeminar.run(name, row.id)
+      /*
+       * В строку — через `renameSession`, а не своим UPDATE.
+       *
+       * Здесь стоял второй такой же `UPDATE sessions SET name`, и с тех пор как
+       * имя комнаты легло в кэш строки (db.ts · roomCache), он писал мимо него:
+       * панель переименовывала семинар, а `getSession` до перезапуска отдавал
+       * прежнее имя — той же карточке комнаты, публикации и списку курса. У
+       * строки имени одна дверь, и она забывает кэш за собой.
+       */
+      renameSession(row.id, name)
       // ...and into the room, whose header reads the document rather than this
       // row. Without it a rename in the panel never reached the people inside,
       // and the seminar quietly had two names.
-      getMeta(getSessionDoc(row.id).doc).set('title', name)
+      //
+      // Через visitSessionDoc: переименование прошлогоднего семинара поднимает
+      // его тетрадь со всеми картинками, и без визита она лежала бы в памяти до
+      // ближайшей уборки простаивающих комнат — а переименовывают их пачкой,
+      // разбирая семестр (routes/doc-visit.ts).
+      visitSessionDoc(row.id, (doc) => getMeta(doc).set('title', name))
     }
     if (body?.archived !== undefined) {
       if (typeof body.archived !== 'boolean') return invalid(res, 'archived must be true or false')
@@ -448,24 +487,34 @@ export function adminInstanceRoutes(): Router {
    * the instance's key really spent, and deleting a room should not quietly
    * rewrite that history.
    *
-   * The live room is torn down before the rows go, in that order: the kernel
-   * stops writing output, the document is evicted without a final flush and the
-   * sockets are closed. Deleting the rows first would leave both of those
-   * writing into a seminar that no longer exists — the snapshot would simply
-   * come back.
+   * The live room is torn down before the rows go: the sockets are closed and
+   * the document is evicted without a final flush, so nothing writes a snapshot
+   * back for a seminar that no longer exists.
+   *
+   * И всё это — до первого await, одним куском.
+   *
+   * Здесь стояло `await shutdownSession()` между закрытием пульта и сносом
+   * документа, а гасить ядро — это DELETE сессии Jupyter (до 5 с) и `docker rm`
+   * (до 60 с). Всё это время строка семинара была жива: рукопожатие сокета
+   * пропускало по ней новых, collab-сокеты продолжали печатать, а управляющий
+   * сокет, переподключавшийся в эту самую минуту (у студента моргнул вайфай),
+   * заводил комнату заново — и после сноса строк оставался единственным её
+   * жильцом. Первое Run в его вкладке пересобирало документ из истории, писало
+   * строку в ленту удалённого семинара и поднимало ему контейнер.
+   *
+   * Ядро гасится последним, когда закрывать уже нечего, и в своём try: не
+   * остановленный контейнер — это бесхозный контейнер, а не полуудалённый
+   * семинар. За ним — второй проход по тому, что могло воскреснуть, пока он
+   * гас.
    */
   router.delete('/api/admin/seminars/:id', ownerOnly('delete a seminar'), (req, res) => {
     const row = seminarOr404(req, res)
     if (!row) return
     // `?reading=drop` — «удалить и то и другое». Умолчание сохраняет чтение.
     const keepReading = req.query.reading !== 'drop'
-    // Awaited in order, because every one of these writers gets at the document
-    // through getSessionDoc(), which creates one on demand: stopping them after
-    // the eviction would rebuild the room and save a snapshot of it.
     void (async () => {
       try {
         closeControlRoom(row.id)
-        await shutdownSession(row.id)
         dropSessionDoc(row.id)
 
         const purge = db.transaction((id: string) => {
@@ -486,8 +535,17 @@ export function adminInstanceRoutes(): Router {
         })
         purge(row.id)
         forgetCache(row.id)
-        // Правила той же комнаты лежат в памяти — забыть вместе с ней.
-        forgetRules(row.id)
+        /*
+         * И всё, что db.ts помнит о комнате: строку, правила и права её людей
+         * по токену.
+         *
+         * Здесь звалось `forgetRules`, и пока в памяти лежали одни правила,
+         * этого хватало. Теперь там же лежит и сама строка — то самое «жив ли
+         * ещё семинар», которым дверь сокета встречает забытый в браузере
+         * токен: не забыть её значило бы пускать в удалённую комнату до
+         * перезапуска сервера.
+         */
+        forgetRoom(row.id)
         cellCounts.delete(row.id)
         fileCounts.delete(row.id)
         /*
@@ -506,6 +564,33 @@ export function adminInstanceRoutes(): Router {
         // В курсах остаётся надгробие: пропавшая четвёртая неделя ломает курс
         // для того, кто на ней сидел, и сдвигает нумерацию остальных.
         entombSeminar(row.id, row.name)
+
+        /*
+         * И только теперь — ядро: строки уже нет, входить в комнату больше
+         * некому, и минута `docker rm` никому не открывает дверь. Отказ здесь —
+         * бесхозный контейнер, а не полуудалённый семинар, поэтому он в журнал,
+         * а не в ответ.
+         */
+        try {
+          await shutdownSession(row.id)
+        } catch (err) {
+          console.warn(
+            `[admin] could not stop the kernel for ${row.id}:`,
+            err instanceof Error ? err.message : err,
+          )
+        }
+        /*
+         * Второй проход — по тому, что могло воскреснуть, пока гасло ядро.
+         *
+         * Опоздавший вывод ячейки или пульт, дошедший до `getSessionDoc`
+         * миллисекундой раньше сноса строк, поднимают документ заново, а он
+         * пишет снимок и строку в ленту. Это дешёвые DELETE по ключу, и повтор
+         * их ничего не стоит; зато комната после удаления действительно
+         * удалена, а не возвращается на следующем перезапуске.
+         */
+        dropSessionDoc(row.id)
+        deleteSnapshot.run(row.id)
+        discardHistory(row.id)
 
         try {
           fs.rmSync(sessionDir(row.id), { recursive: true, force: true })

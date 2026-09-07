@@ -43,13 +43,32 @@ export function kernelCwd(sessionId: string): string {
 }
 
 /**
- * Clear away temp files an interrupted upload left behind.
+ * Все временные имена, какие в комнате бывают, — одним правилом.
  *
- * An upload writes beside its target and renames on success, and every failure
- * path removes its own temp — every path except the process dying mid-write.
- * What that leaves is a dotfile, so the room never sees it and nobody can
- * remove it from the panel either. Swept on the next upload into the same
- * seminar, which is the moment somebody is thinking about that folder anyway.
+ * Пишут рядом и переименовывают двое: загрузка (`routes/files.ts`,
+ * `.имя.uploading-<hex>`) и автосохранение редактора (`writeText` ниже,
+ * `.имя.saving-<pid>-<время>`). Уборщик знал только первое имя, хотя обещал
+ * убрать всё, что оставило падение посреди записи. Второе при этом копится
+ * само собой: редактор сохраняется каждые несколько секунд, и падение процесса
+ * оставляет полтора мегабайта, которых нет в дереве (имя с точки), нельзя
+ * удалить из панели — и которые считает `sessionBytes`, то есть они отъедают
+ * потолок комнаты до ручной чистки.
+ *
+ * Хвост после «что делаем» — неповторимая часть, шестнадцатеричная или
+ * `<pid>-<время>`; шесть знаков минимум, чтобы под правило не попал файл,
+ * который человек назвал `.заметки.saving-1`.
+ */
+const TEMP_FILE = /^\..+\.(?:uploading|saving)-[0-9a-z][0-9a-z-]{5,}$/i
+
+/**
+ * Clear away temp files an interrupted write left behind.
+ *
+ * An upload — and an editor autosave — writes beside its target and renames on
+ * success, and every failure path removes its own temp: every path except the
+ * process dying mid-write. What that leaves is a dotfile, so the room never
+ * sees it and nobody can remove it from the panel either. Swept on the next
+ * upload into the same seminar, which is the moment somebody is thinking about
+ * that folder anyway.
  */
 export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 1000): void {
   const root = sessionDir(sessionId)
@@ -64,9 +83,14 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
     for (const name of names) {
       const here = rel ? `${rel}/${name}` : name
       const full = path.join(root, here)
-      if (/^\..+\.uploading-[0-9a-f]{6,}$/.test(name)) {
+      if (TEMP_FILE.test(name)) {
         try {
-          if (fs.statSync(full).mtimeMs < cutoff) fs.rmSync(full, { force: true })
+          if (fs.statSync(full).mtimeMs < cutoff) {
+            fs.rmSync(full, { force: true })
+            // Временных имён в дереве и так нет, но обход их считал в потолок
+            // записей: убрали — значит, посчитанное устарело.
+            forgetTree(sessionId)
+          }
         } catch {
           /* somebody else got there first */
         }
@@ -84,6 +108,37 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
     }
   }
   walk('', 0)
+}
+
+/**
+ * То же самое по всем комнатам — один раз на запуске.
+ *
+ * Уборка висела на следующей загрузке файла в ту же комнату, и для загрузок
+ * этого хватало: недописанная появляется там, где кто-то как раз возится с
+ * папкой. Автосохранение редактора устроено иначе — оно идёт само, каждые
+ * несколько секунд, в комнате, куда могут вообще ничего не загружать. Хвост от
+ * упавшего процесса лежал бы там до ручной чистки, невидимый в дереве и
+ * посчитанный в потолке комнаты.
+ *
+ * Запуск — правильный момент: временный файл переживает ровно то падение,
+ * после которого мы и стартуем. Час выдержки остаётся: комнаты на общем
+ * томе — редкость, но недописанный файл соседа убирать не нам.
+ */
+export function sweepAllStaleUploads(olderThanMs?: number): void {
+  let rooms: string[]
+  try {
+    rooms = fs.readdirSync(config.workspaceDir)
+  } catch {
+    return // тома ещё нет — значит и мести нечего
+  }
+  for (const room of rooms) {
+    try {
+      if (!fs.lstatSync(path.join(config.workspaceDir, room)).isDirectory()) continue
+    } catch {
+      continue
+    }
+    sweepStaleUploads(room, olderThanMs)
+  }
 }
 
 export function resolveInSession(sessionId: string, name: string): string | null {
@@ -174,20 +229,119 @@ export interface FileTree {
  * и стиралась у всех со всеми ячейками. Обрезаться должно самое глубокое, а не
  * самое верхнее, и об обрезке надо сказать вслух.
  */
+/**
+ * Короткая память обхода — на комнату.
+ *
+ * Обход стоит `readdir` плюс `lstat` на каждую из двух тысяч записей и делается
+ * синхронно, в том же цикле, где сервер отвечает всем остальным. Дважды подряд
+ * одно и то же спрашивают постоянно: рассылка комнате и ответ тому, кто нажал,
+ * идут одним тиком (`routes/files.ts`), а после перезапуска сервера пятьсот
+ * вкладок возвращаются в одну-две секунды и каждая спрашивает дерево сама.
+ *
+ * Окно маленькое нарочно: это память на пачку вызовов подряд, а не кэш. Всё,
+ * что меняет дерево через этот модуль, память сбрасывает само (см. `forgetTree`
+ * ниже по файлу).
+ *
+ * Но «через этот модуль» проходит не всякая запись, и на слово этому полагаться
+ * нельзя. Загрузка кладёт файл `rename`'ом (`routes/files.ts`), ячейка пишет из
+ * контейнера, редактор сохраняет открытый файл, проекция тетради — сбросить
+ * память там некому, а спрашивают дерево сразу после записи и в том же тике.
+ * Так память отвечала списком БЕЗ только что загруженного файла — тому самому,
+ * кто его загрузил, и в ответе на его же запрос. Поэтому на попадании память
+ * не верят на слово, а сверяют с диском: у каждой прочитанной папки записано
+ * время её правки, и появление, исчезновение или переименование любой записи
+ * его двигает — по одному `lstat` на папку против `readdir` плюс `lstat` на
+ * каждую из двух тысяч записей.
+ *
+ * Что сверкой не ловится — правка СОДЕРЖИМОГО существующего файла: время
+ * папки от неё не двигается, и размер с датой в списке могут отстать на окно.
+ * Это и есть весь оставшийся предел опоздания: состав дерева всегда верен, а
+ * цифра рядом с именем — не старше трёхсот миллисекунд.
+ */
+const TREE_MEMO_MS = 300
+
+/** Время правки каждой папки, прочитанной обходом, — абсолютными путями. */
+type TreeStamp = { path: string; mtimeMs: number }[]
+
+const treeMemo = new Map<string, { at: number; tree: FileTree; stamp: TreeStamp }>()
+
+/** Не поменялась ли ни одна из папок с тех пор, как их обошли. */
+function stampHolds(stamp: TreeStamp): boolean {
+  for (const dir of stamp) {
+    let now: fs.Stats
+    try {
+      now = fs.lstatSync(dir.path)
+    } catch {
+      // Папку унесли — дерево точно не то. Пересчитать.
+      return false
+    }
+    if (now.mtimeMs !== dir.mtimeMs) return false
+  }
+  return true
+}
+
+/** Дерево этой комнаты (или всех) посчитать заново, не дожидаясь окна. */
+export function forgetTree(sessionId?: string): void {
+  if (sessionId === undefined) treeMemo.clear()
+  else treeMemo.delete(sessionId)
+}
+
 export function listTree(sessionId: string): FileTree {
+  const known = treeMemo.get(sessionId)
+  // Копия обёртки, а не самого списка: `files` читают, но не правят, и
+  // копировать две тысячи записей ради этого значило бы вернуть половину цены
+  // обхода обратно.
+  if (known && Date.now() - known.at < TREE_MEMO_MS && stampHolds(known.stamp)) {
+    return { files: known.tree.files, truncated: known.tree.truncated }
+  }
+  const { tree, stamp } = walkTree(sessionId)
+  const now = Date.now()
+  /*
+   * Просроченное убирается здесь же, на промахе.
+   *
+   * Иначе карта росла бы записью на каждую комнату, которую инстанс когда-либо
+   * показывал, — а в записи до двух тысяч строк дерева. Уборки по таймеру для
+   * этого заводить незачем: промах и есть тот момент, когда о комнатах вообще
+   * вспоминают, и стоит он рядом с обходом папки ничего.
+   */
+  for (const [id, entry] of treeMemo) if (now - entry.at >= TREE_MEMO_MS) treeMemo.delete(id)
+  treeMemo.set(sessionId, { at: now, tree, stamp })
+  return tree
+}
+
+function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
   const root = sessionDir(sessionId)
   /** Содержимое каждой прочитанной папки — в порядке отрисовки. */
   const children = new Map<string, FileEntry[]>()
+  const stamp: TreeStamp = []
   let total = 0
   let truncated = false
 
   const read = (rel: string): FileEntry[] => {
+    const dir = rel ? path.join(root, rel) : root
+    /*
+     * Время правки папки снимается ДО чтения, и порядок тут существенный.
+     *
+     * Запись, успевшая между `lstat` и `readdir`, попадёт в список с прежним
+     * отпечатком — сверка увидит расхождение и лишний раз пересчитает.
+     * Обратный порядок ошибается в другую сторону: список без новой записи с
+     * уже новым временем сверку проходит, то есть врёт всё окно целиком.
+     */
+    let mtimeMs: number | null = null
+    try {
+      mtimeMs = fs.lstatSync(dir).mtimeMs
+    } catch {
+      /* исчезла — ниже это увидит и readdir */
+    }
     let names: string[]
     try {
-      names = fs.readdirSync(path.join(root, rel))
+      names = fs.readdirSync(dir)
     } catch {
       return []
     }
+    // Только прочитанные папки: непрочитанную сверять не по чему, а её
+    // появление и пропажу видно по времени родителя.
+    if (mtimeMs !== null) stamp.push({ path: dir, mtimeMs })
     const dirs: FileEntry[] = []
     const files: FileEntry[] = []
     for (const name of names) {
@@ -244,7 +398,7 @@ export function listTree(sessionId: string): FileTree {
     }
   }
   emit('')
-  return { files: out, truncated }
+  return { tree: { files: out, truncated }, stamp }
 }
 
 /** То же дерево тем, кому нужен только список. */
@@ -339,6 +493,7 @@ export function makeDir(sessionId: string, rel: string): TreeResult {
   if (fs.existsSync(full)) return 'exists'
   try {
     fs.mkdirSync(full, { recursive: true })
+    forgetTree(sessionId)
     return 'ok'
   } catch (err) {
     return whyFailed(err)
@@ -358,6 +513,7 @@ export function makeFile(sessionId: string, rel: string, text = ''): TreeResult 
     // 'wx' — отказ, а не перезапись, если файл появился между проверкой и
     // записью. Две вкладки, нажавшие «новый файл» одновременно, — не выдумка.
     fs.writeFileSync(full, text, { flag: 'wx' })
+    forgetTree(sessionId)
     return 'ok'
   } catch (err) {
     // По коду ошибки, а не «раз не вышло, значит занято»: «„a.py“ уже есть» про
@@ -509,6 +665,7 @@ export function movePath(sessionId: string, from: string, to: string): TreeResul
      */
     if (same || fs.lstatSync(source).isDirectory()) fs.renameSync(source, target)
     else if (!linked(source, target)) fs.renameSync(source, target)
+    forgetTree(sessionId)
     return 'ok'
   } catch (err) {
     return whyFailed(err)
@@ -530,6 +687,7 @@ export function deleteFile(sessionId: string, name: string): boolean {
     const stat = fs.lstatSync(full)
     if (stat.isDirectory()) fs.rmSync(full, { recursive: true, force: true })
     else fs.unlinkSync(full)
+    forgetTree(sessionId)
     return true
   } catch {
     return false
@@ -630,6 +788,7 @@ export function writeText(sessionId: string, rel: string, text: string): boolean
     fs.mkdirSync(path.dirname(full), { recursive: true })
     fs.writeFileSync(tmp, text)
     fs.renameSync(tmp, full)
+    forgetTree(sessionId)
     return true
   } catch {
     fs.rmSync(tmp, { force: true })

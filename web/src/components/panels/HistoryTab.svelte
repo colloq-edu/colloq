@@ -7,10 +7,12 @@
    * what they changed. Clicking a row never leaves the notebook — the drawer is
    * over it, and the sheet above stays where the reader left it.
    *
-   * The list is loaded whole and once; a version's content is loaded when it is
-   * opened and kept, so walking back over rows already visited costs nothing.
-   * That is the whole performance story here, and it is enough: a seminar's
-   * history is dozens of rows, not thousands.
+   * Список перечитывается целиком — на открытии и потом на каждое затишье
+   * документа (эффект ниже): версия пишется на сервере после паузы, и лента,
+   * прочитанная один раз, показывала бы правку получасовой давности как
+   * последнюю. Содержимое версии загружается по нажатию и остаётся в памяти,
+   * так что возврат на уже открытую строку бесплатен. Этого хватает: история
+   * семинара — десятки строк, не тысячи.
    */
   import { BURST_IDLE_MS, type Version } from '@shared/history'
   import { CELLS_KEY } from '@shared/notebook'
@@ -42,10 +44,19 @@
    */
   const books = watchBooks(session.doc)
   const versioned = $derived(books.current.find((book) => book.root === CELLS_KEY) ?? null)
-  const versionedName = $derived(versioned ? baseOf(versioned.path) : 'the room notebook')
+  const versionedName = $derived(versioned ? baseOf(versioned.path) : 'тетрадь комнаты')
   const otherBooks = $derived(books.current.length - (versioned ? 1 : 0))
 
   let versions = $state<Version[]>([])
+  /**
+   * Начало ленты не сохранилось: комната переросла потолок объёма истории.
+   *
+   * Считает сервер (db.ts · `historyTrimmed`) и везёт вместе со строками —
+   * по самим строкам этого не видно, они выглядят как полная история короткой
+   * пары. Не путать с окном ленты: `MAX_VERSIONS` тоже отдаёт не всё, но те
+   * версии в базе есть, и говорить о них надо не этими словами.
+   */
+  let trimmed = $state(false)
   let loading = $state(true)
   let error = $state<string | null>(null)
   let openSeq = $state<number | null>(null)
@@ -63,6 +74,7 @@
     try {
       const body = await listVersions(session.session.id, session.token)
       versions = body.versions
+      trimmed = body.trimmed
       /*
        * Only auto-open when nothing is open. A refresh arriving while somebody
        * is reading an old version must not yank them to the newest row — the
@@ -71,7 +83,7 @@
        */
       if (openSeq === null && versions.length > 0) void open(versions[0].seq)
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not read the history'
+      error = cause instanceof Error ? cause.message : 'Не удалось прочитать историю'
     } finally {
       loading = false
     }
@@ -100,7 +112,7 @@
       // The reader may have clicked on down the list while this was in flight.
       if (openSeq === seq) detail = body
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not read that version'
+      error = cause instanceof Error ? cause.message : 'Не удалось прочитать эту версию'
     }
   }
 
@@ -114,7 +126,7 @@
       openSeq = null
       await load()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not restore'
+      error = cause instanceof Error ? cause.message : 'Не удалось вернуть'
     } finally {
       busy = false
     }
@@ -131,7 +143,7 @@
       seen.clear()
       await load()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not set a checkpoint'
+      error = cause instanceof Error ? cause.message : 'Не удалось поставить отметку'
     } finally {
       busy = false
     }
@@ -192,16 +204,19 @@
    *
    * Время возвращённой версии дописывает браузер, а не сервер: сервер шлёт
    * адрес (`targetSeq`), потому что часы у него свои — в контейнере UTC, — и
-   * собранное там «from 15:04» указывало бы в аудитории UTC+3 на строку,
-   * которой в списке нет. Здесь оно берётся из той же строки, теми же часами,
-   * что рисуют всю ленту. Строки может и не быть: список обрезан или версия
-   * приехала раньше — тогда подпись остаётся как есть.
+   * собранное там «вернул версию от 15:04» указывало бы в аудитории UTC+3 на
+   * строку, которой в списке нет. Здесь оно берётся из той же строки, теми же
+   * часами, что рисуют всю ленту. Строки может и не быть: список обрезан или
+   * версия приехала раньше — тогда подпись остаётся как есть.
+   *
+   * «от 15:04», а не «с 15:04»: версия — датированная вещь, как письмо, а «с»
+   * читается началом отрезка, которого у неё нет.
    */
   function saying(v: Version): string {
-    if (v.kind === 'checkpoint') return v.label ?? 'checkpoint'
+    if (v.kind === 'checkpoint') return v.label ?? 'отметка'
     if (v.kind === 'restore' && v.targetSeq !== null) {
       const target = versions.find((row) => row.seq === v.targetSeq)
-      if (target) return `${v.summary} from ${clock(target.createdAt)}`
+      if (target) return `${v.summary} от ${clock(target.createdAt)}`
     }
     return v.summary
   }
@@ -214,15 +229,15 @@
          читается как пропажа правок, а не как границы истории. -->
     {#if otherBooks > 0}
       <p class="hist-note hist-note--aside">
-        Only {versionedName} is kept here — edits in the room's other {otherBooks === 1
-          ? 'notebook'
-          : 'notebooks'} are not in this list, and a restore leaves them alone.
+        Здесь только {versionedName}: правки в {otherBooks === 1
+          ? 'другой тетради комнаты'
+          : 'других тетрадях комнаты'} в этот список не попадают, и возврат их не трогает.
       </p>
     {/if}
     {#if loading && versions.length === 0}
-      <p class="hist-note">Reading the history…</p>
+      <p class="hist-note">Читаем историю…</p>
     {:else if versions.length === 0}
-      <p class="hist-note">Nothing has been written in this room yet.</p>
+      <p class="hist-note">В этой комнате ещё ничего не записано.</p>
     {:else}
       {#each versions as v (v.seq)}
         <button
@@ -246,8 +261,8 @@
             <span class="hist-face hist-face--none" aria-hidden="true"></span>
           {/if}
           <span class="hist-what">
-            <b>{v.kind === 'checkpoint' ? (v.label ?? 'checkpoint') : (v.authorName ?? 'the room')}</b>
-            <em>{v.kind === 'checkpoint' ? `checkpoint by ${v.authorName ?? 'the room'}` : saying(v)}</em>
+            <b>{v.kind === 'checkpoint' ? (v.label ?? 'отметка') : (v.authorName ?? 'комната')}</b>
+            <em>{v.kind === 'checkpoint' ? `отметил ${v.authorName ?? 'кто-то'}` : saying(v)}</em>
           </span>
           <span class="hist-count">
             {#if v.added > 0}<i class="plus">+{v.added}</i>{/if}
@@ -255,6 +270,14 @@
           </span>
         </button>
       {/each}
+      <!-- Конец ленты — не обязательно начало комнаты. Строка стоит последней,
+           потому что список идёт от свежего к старому: под самой ранней
+           уцелевшей правкой и проходит граница того, что сохранилось. -->
+      {#if trimmed}
+        <p class="hist-note hist-note--aside hist-note--tail">
+          Более ранние версии не хранятся: история комнаты ограничена по объёму.
+        </p>
+      {/if}
     {/if}
   </div>
 
@@ -262,9 +285,9 @@
     {#if error}
       <p class="hist-note hist-note--bad" role="alert">{error}</p>
     {:else if openSeq === null}
-      <p class="hist-note">Pick a moment on the left.</p>
+      <p class="hist-note">Выберите момент слева.</p>
     {:else if !detail}
-      <p class="hist-note">Rebuilding that version…</p>
+      <p class="hist-note">Собираем эту версию…</p>
     {:else if detail.diffs.length === 0}
       <!--
         Чекпоинт и «opened» ничего не правят: список затронутых ячеек у них
@@ -275,13 +298,13 @@
       <div class="hist-diffs">
         <p class="hist-note">
           {detail.version.kind === 'opened'
-            ? 'The notebook the room opened with.'
-            : 'This moment was marked, not edited — the notebook is as it was just before it.'}
+            ? 'Тетрадь, с которой комната открылась.'
+            : 'Этот момент отметили, а не правили — тетрадь такая же, какой была прямо перед ним.'}
         </p>
         {#each detail.cells as c, at (c.id)}
           <div class="hist-diff">
             <div class="hist-diff-head">
-              <b>{c.type === 'markdown' ? 'text' : 'code'} {at + 1}</b>
+              <b>{c.type === 'markdown' ? 'текст' : 'код'} {at + 1}</b>
             </div>
             <pre class="hist-lines hist-source">{c.source}</pre>
           </div>
@@ -292,7 +315,7 @@
         {#each detail.diffs as d (d.cellId)}
           <div class="hist-diff">
             <div class="hist-diff-head">
-              <b>{d.before === null ? 'new cell' : d.after === null ? 'deleted cell' : 'cell'}</b>
+              <b>{d.before === null ? 'новая ячейка' : d.after === null ? 'удалённая ячейка' : 'ячейка'}</b>
               {#if isHost && d.after !== null}
                 <button
                   type="button"
@@ -300,7 +323,7 @@
                   disabled={busy}
                   onclick={() => restore(d.cellId)}
                 >
-                  Restore this cell
+                  Вернуть эту ячейку
                 </button>
               {/if}
             </div>
@@ -320,7 +343,7 @@
         <input
           class="hist-name"
           bind:value={label}
-          placeholder="before the exercise"
+          placeholder="перед задачей"
           maxlength="80"
           onkeydown={(e) => {
             if (e.key === 'Enter') void checkpoint()
@@ -335,7 +358,7 @@
           }}
         />
         <button type="button" class="hist-go" disabled={busy || !label.trim()} onclick={checkpoint}>
-          Mark it
+          Отметить
         </button>
       {:else}
         {#if isHost && openSeq !== null && detail}
@@ -343,21 +366,21 @@
             type="button"
             class="hist-go"
             disabled={busy}
-            title="A restore rewrites the room notebook and leaves the other ones alone"
+            title="Возврат переписывает тетрадь комнаты и не трогает остальные"
             onclick={() => restore()}
           >
             <Icon name="restart" size={12} />
-            Restore all of {versionedName}
+            Вернуть {versionedName} целиком
           </button>
         {/if}
         {#if isHost}
           <button type="button" class="hist-mini" onclick={() => (naming = true)}>
-            Checkpoint
+            Отметить момент
           </button>
         {/if}
       {/if}
       <span class="hist-foot">
-        {#if isHost}a restore is itself an edit{:else}only the host can restore{/if}
+        {#if isHost}возврат — это тоже правка{:else}возвращает только преподаватель{/if}
       </span>
     </div>
   </div>
@@ -365,14 +388,23 @@
 
 <style>
   /*
-   * The drawer paints from its own palette rather than the page tokens — see
-   * the note in TerminalDrawer — so these follow the same local values.
+   * Палитра ящика — ОДНА, и берётся она отсюда переменными, а не второй копией
+   * тех же чисел. Копия успела разойтись: подчёркивание вкладки History стояло
+   * на #2eb4e8, а выбранная строка под ней — на #4fc3f0, и тише всех был
+   * #5f6e92 — ровно тот оттенок, который терминалу однажды подняли за то, что
+   * он не проходит AA. `--tm-*` объявлены на `.term`, а история живёт внутри
+   * неё, так что переменные доезжают наследованием.
+   *
+   * Два фона строки (наведение и выбранная) своих переменных не имеют: это
+   * единственное, что здесь остаётся местным, и оно набрано от --tm-bg.
    */
   .hist {
+    --hist-hover: #0c1631;
+    --hist-on: #0e1a3d;
     display: flex;
     flex: 1 1 auto;
     min-height: 0;
-    color: #9aa8c9;
+    color: var(--tm-muted);
   }
 
   .hist-list {
@@ -381,7 +413,7 @@
     width: 318px;
     flex: none;
     overflow-y: auto;
-    border-right: 1px solid #1b2a52;
+    border-right: 1px solid var(--tm-edge);
     padding-block: 8px;
   }
 
@@ -402,25 +434,28 @@
   }
 
   .hist-row:hover {
-    background: #0c1631;
+    background: var(--hist-hover);
   }
 
   .hist-row.on {
-    background: #0e1a3d;
-    border-left-color: #4fc3f0;
+    background: var(--hist-on);
+    border-left-color: var(--tm-accent);
   }
 
   .hist-row:focus-visible {
-    outline: 2px solid #4fc3f0;
+    outline: 2px solid var(--tm-accent);
     outline-offset: -2px;
   }
 
   .hist-time {
     width: 32px;
     flex: none;
-    font-family: var(--font-mono, ui-monospace), monospace;
-    font-size: 10px;
-    color: #7c8aae;
+    /* Тот же моношрифт, что и у расшифровки над ней: `--font-mono` в проекте
+       не объявлен нигде, и время истории уезжало в системный SF Mono рядом с
+       JetBrains Mono терминала. 11px — здесь есть слова, которые читают. */
+    font-family: var(--tm-mono);
+    font-size: 11px;
+    color: var(--tm-faint);
   }
 
   .hist-rail {
@@ -434,15 +469,15 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #2a3c6b;
+    background: var(--tm-edge);
   }
 
   .hist-dot.accent {
-    background: #4fc3f0;
+    background: var(--tm-accent);
   }
 
   .hist-dot.keep {
-    background: #3ec9a7;
+    background: var(--tm-live);
   }
 
   .hist-face {
@@ -459,7 +494,7 @@
   }
 
   .hist-face--none {
-    background: #1b2a52;
+    background: var(--tm-edge);
   }
 
   .hist-what {
@@ -473,7 +508,7 @@
   .hist-what b {
     font-size: 11px;
     font-weight: 600;
-    color: #e6e7e8;
+    color: var(--tm-ink);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -482,7 +517,7 @@
   .hist-what em {
     font-size: 11px;
     font-style: normal;
-    color: #7c8aae;
+    color: var(--tm-faint);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -492,16 +527,18 @@
     display: flex;
     gap: 6px;
     flex: none;
-    font-family: var(--font-mono, ui-monospace), monospace;
-    font-size: 10px;
+    font-family: var(--tm-mono);
+    font-size: 11px;
   }
 
   .hist-count .plus {
-    color: #3ec9a7;
+    color: var(--tm-live);
     font-style: normal;
   }
 
   .hist-count .minus {
+    /* Розовый убранного: своей переменной у ящика нет — она нужна только
+       здесь и в двух строках диффа ниже. */
     color: #e8899a;
     font-style: normal;
   }
@@ -525,20 +562,20 @@
     align-items: center;
     gap: 10px;
     padding: 0 14px 6px;
-    font-size: 10px;
+    font-size: 11px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #5f6e92;
+    color: var(--tm-faint);
   }
 
   .hist-diff-head b {
     font-weight: 700;
-    color: #9aa8c9;
+    color: var(--tm-muted);
   }
 
   .hist-lines {
     margin: 0 0 12px;
-    font-family: var(--font-mono, ui-monospace), monospace;
+    font-family: var(--tm-mono);
     font-size: 13px;
     line-height: 19px;
     white-space: pre;
@@ -549,12 +586,12 @@
      под плюс и минус — менять здесь нечего. */
   .hist-source {
     padding-left: 26px;
-    color: #5f6e92;
+    color: var(--tm-faint);
   }
 
   .hist-line {
     display: block;
-    color: #5f6e92;
+    color: var(--tm-faint);
   }
 
   .hist-line i {
@@ -581,7 +618,7 @@
     flex: none;
     height: 44px;
     padding: 0 14px;
-    border-top: 1px solid #1b2a52;
+    border-top: 1px solid var(--tm-edge);
   }
 
   .hist-go,
@@ -592,27 +629,32 @@
     height: 26px;
     padding: 0 12px;
     font: inherit;
-    font-size: 10px;
+    /* 11px: это две кнопки, которыми возвращают тетрадь всей комнате, а 10 —
+       для того, что читают один раз и не нажимают. */
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     cursor: pointer;
     /* Bound to the finger, not to a state, so it cannot arrive late. */
     transition:
-      background-color 120ms var(--ease-out, ease-out),
-      transform 120ms var(--ease-out, ease-out);
+      background-color var(--speed-quick, 0.1s) ease,
+      transform var(--speed-press, 0.12s) var(--ease-out, ease-out);
   }
 
   .hist-go {
-    background: #0fa0d7;
-    color: #06233a;
+    /* Тот же голубой, что у подчёркивания вкладки: --tm-accent на тёмном
+       читается как «здесь», и второй его оттенок рядом читался как другой
+       элемент. Текст — сам фон ящика, самый тёмный, что у него есть. */
+    background: var(--tm-accent);
+    color: var(--tm-bg);
     border: 0;
   }
 
   .hist-mini {
     background: none;
-    color: #9aa8c9;
-    border: 1px solid #24365f;
+    color: var(--tm-muted);
+    border: 1px solid var(--tm-edge);
   }
 
   .hist-go:active,
@@ -630,7 +672,7 @@
   .hist-go:focus-visible,
   .hist-mini:focus-visible,
   .hist-name:focus-visible {
-    outline: 2px solid #4fc3f0;
+    outline: 2px solid var(--tm-accent);
     outline-offset: 2px;
   }
 
@@ -641,22 +683,22 @@
     padding: 0 10px;
     font: inherit;
     font-size: 12px;
-    color: #e6e7e8;
-    background: #0c1631;
-    border: 1px solid #24365f;
+    color: var(--tm-ink);
+    background: var(--hist-hover);
+    border: 1px solid var(--tm-edge);
   }
 
   .hist-foot {
     margin-left: auto;
     font-size: 11px;
-    color: #5f6e92;
+    color: var(--tm-faint);
   }
 
   .hist-note {
     margin: 0;
     padding: 14px;
     font-size: 12px;
-    color: #5f6e92;
+    color: var(--tm-faint);
   }
 
   .hist-note--bad {
@@ -668,7 +710,14 @@
     padding: 10px 14px;
     font-size: 11px;
     line-height: 1.45;
-    border-bottom: 1px solid #1b2a52;
+    border-bottom: 1px solid var(--tm-edge);
+  }
+
+  /* Та же оговорка, но снизу: черта отделяет её от последней строки, а не от
+     пустоты под ней. */
+  .hist-note--tail {
+    border-bottom: 0;
+    border-top: 1px solid var(--tm-edge);
   }
 
   /*
@@ -687,7 +736,7 @@
       flex: 0 0 auto;
       max-height: 45%;
       border-right: 0;
-      border-bottom: 1px solid #1b2a52;
+      border-bottom: 1px solid var(--tm-edge);
     }
 
     .hist-foot {
@@ -695,10 +744,13 @@
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .hist-go,
-    .hist-mini {
-      transition-property: background-color;
-    }
-  }
+  /*
+   * Блока `prefers-reduced-motion` здесь нет намеренно.
+   *
+   * Он снимал transform из списка переходов и оставлял сам scale(0.97): нажатие
+   * щёлкало туда и обратно без перехода — рывок вместо движения, то есть ровно
+   * то, от чего это правило защищает. Правило продукта (index.css) прямо
+   * оставляет прессу его 120 мс и 3%: он никуда не едет и он единственное
+   * доказательство, что нажатие услышали.
+   */
 </style>

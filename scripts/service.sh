@@ -57,7 +57,9 @@ NODE_MAJOR="${NODE_MAJOR:-20}"
 
 REPO="$PWD"
 
-read_env() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \r' || true; }
+# read_env — общий для всех скриптов, scripts/lib.sh: своя копия жила в трёх
+# файлах и всюду вырезала пробелы внутри значений.
+. ./scripts/lib.sh
 PORT="$(read_env PORT)"; PORT="${PORT:-3000}"
 
 CMD="${1:-}"
@@ -279,9 +281,30 @@ cmd_install() {
   # сборке нужны devDependencies (vite, tsc), а NODE_ENV=production в окружении
   # машины молча выбросил бы их.
   npm ci --no-audit --no-fund --include=dev
-  npm run build
+
+  # Клиент собирается РЯДОМ и переезжает на место переименованием.
+  #
+  # `vite build` первым делом опустошает свой outDir, а web/dist прямо сейчас
+  # отдаёт с диска работающая служба (express.static, server/src/index.ts).
+  # Пока шла сборка — на арендованной машине это минуты, — любая перезагрузка
+  # вкладки в идущей комнате получала 404 на /assets/*.js: белый экран посреди
+  # пары ровно потому, что кто-то обновляет код. Эта же команда — единственный
+  # штатный способ обновления («git pull && make service-install»), так что
+  # случай не редкий.
+  #
+  # Переименование каталога — одна операция файловой системы, и окна, в котором
+  # статики нет, не существует.
+  rm -rf web/dist.next web/dist.prev
+  npm run build -w @colloq/web -- --outDir dist.next --emptyOutDir
+  [ -f web/dist.next/index.html ] || die "сборка прошла, а web/dist.next/index.html нет — комната открылась бы пустой."
+  if [ -d web/dist ]; then mv web/dist web/dist.prev; fi
+  mv web/dist.next web/dist
+  rm -rf web/dist.prev
+
+  # Сервер — один файл, и подмена его работающему процессу не видна вовсе: node
+  # прочитал его при старте. Новый возьмётся перезапуском службы восьмым шагом.
+  npm run build -w @colloq/server
   [ -f server/dist/server.js ] || die "сборка прошла, а server/dist/server.js нет — смотрите вывод выше."
-  [ -f web/dist/index.html ] || die "сборка прошла, а web/dist/index.html нет — комната открылась бы пустой."
 
   say "${BOLD}6/$steps${OFF} образ ядра"
   # Без собранного образа окружения инстанс поднимется, но семинар вести не

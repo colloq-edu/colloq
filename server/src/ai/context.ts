@@ -13,12 +13,18 @@
 import type * as Y from 'yjs'
 import {
   allBooks,
+  cellId,
+  cellSource,
+  cellType,
   getMeta,
-  readCell,
+  readOutput,
   type CellOutput,
-  type CellSnapshot,
+  type CellState,
+  type CellType,
   type DataOutput,
   type KernelStatus,
+  type YCell,
+  type YOutput,
 } from '@shared/notebook'
 import { getOracleSettings } from '../admin/settings.js'
 import { getSessionDoc } from '../collab/index.js'
@@ -26,6 +32,7 @@ import { getSession } from '../db.js'
 import { listFiles } from '../workspace.js'
 import { currentText } from '../collab/files.js'
 import { kindOf } from '@shared/paths'
+import { clip, clipLine, pad } from './text.js'
 
 /*
  * How much of a cell travels, per cell.
@@ -58,14 +65,72 @@ const MAX_OPEN_FILE = 8_000
  * Тетрадей в комнате несколько, и номер у ячейки свой в каждой — тот самый,
  * который нарисован у неё в поле слева. Пока список был плоским и одним,
  * номером служил индекс в нём; с двумя тетрадями это разошлось бы молча.
+ *
+ * Выводы здесь НЕ лежат, и это главное различие с `readCell`. Разбор вывода —
+ * это `JSON.parse` каждой записи data/error, включая base64 картинки на сотни
+ * килобайт, и делался он для ВСЕХ ячеек всех тетрадей на каждый вопрос — при
+ * том, что до кадра доезжают единицы: остальные бюджет сворачивает в одну
+ * строку, где выводов нет вовсе. Здесь выводы читаются ровно у тех ячеек,
+ * которые правда поедут модели (`outputsOf`), а «есть ли тут падение» узнаётся
+ * по виду записи, без разбора её содержимого.
  */
 interface Entry {
-  cell: CellSnapshot
+  raw: YCell
+  id: string
+  type: CellType
+  source: string
+  state: CellState
+  execCount: number | null
+  runBy: string | null
+  /** Среди выводов есть ошибка — по виду записи, без разбора JSON. */
+  failed: boolean
   book: string
   /** 1-based, как в поле у края и как в панели. */
   no: number
   /** Первая ячейка своей тетради — над ней ставится её заголовок. */
   first: boolean
+}
+
+/** Список выводов ячейки, не заводя его, если его нет: чтение не правит документ. */
+function outputArray(cell: YCell): Y.Array<YOutput> | null {
+  const outputs = cell.get('outputs') as Y.Array<YOutput> | undefined
+  return outputs ?? null
+}
+
+/** Выводы ячейки — только когда она правда едет в кадре. */
+function outputsOf(entry: Entry): CellOutput[] {
+  const outputs = outputArray(entry.raw)
+  if (!outputs) return []
+  const out: CellOutput[] = []
+  outputs.forEach((one: YOutput) => {
+    const parsed = readOutput(one)
+    if (parsed) out.push(parsed)
+  })
+  return out
+}
+
+/** Шапка ячейки — всё, кроме выводов: строки, а не мегабайты. */
+function headOf(cell: YCell, book: string, no: number, first: boolean): Entry {
+  const outputs = outputArray(cell)
+  let failed = false
+  if (outputs) {
+    outputs.forEach((one: YOutput) => {
+      if (one.get('kind') === 'error') failed = true
+    })
+  }
+  return {
+    raw: cell,
+    id: cellId(cell),
+    type: cellType(cell),
+    source: cellSource(cell).toString(),
+    state: (cell.get('state') as CellState) ?? 'idle',
+    execCount: (cell.get('execCount') as number | null) ?? null,
+    runBy: (cell.get('runBy') as string | null) ?? null,
+    failed,
+    book,
+    no,
+    first,
+  }
 }
 
 export function buildContext(
@@ -103,12 +168,7 @@ export function buildContext(
    * показывала её номер, и ответ приходил уверенный и про чужой код.
    */
   const entries: Entry[] = allBooks(doc).flatMap(({ book, cells }) =>
-    cells.toArray().map((cell, at) => ({
-      cell: readCell(cell),
-      book: book.path,
-      no: at + 1,
-      first: at === 0,
-    })),
+    cells.toArray().map((cell, at) => headOf(cell, book.path, at + 1, at === 0)),
   )
 
   const sessionName =
@@ -116,10 +176,8 @@ export function buildContext(
   const kernel = (meta.get('kernelStatus') as KernelStatus | undefined) ?? 'idle'
 
   const wanted = new Set(focus)
-  const focused = entries
-    .map((entry, i) => (wanted.has(entry.cell.id) ? i : -1))
-    .filter((i) => i >= 0)
-  const errorIndex = newestErrorIndex(entries.map((entry) => entry.cell))
+  const focused = entries.map((entry, i) => (wanted.has(entry.id) ? i : -1)).filter((i) => i >= 0)
+  const errorIndex = newestErrorIndex(entries)
   const pinned = new Set<number>(focused)
   if (errorIndex >= 0) pinned.add(errorIndex)
 
@@ -155,11 +213,6 @@ export function buildContext(
   const openFile = openFileBlock(sessionId, askedBy ?? null, maxTotal)
   const header = headerWith(openFile)
 
-  const blocks = entries.map(
-    (entry, i) => bookHead(entry) + renderCell(entry, pinned.has(i), wanted.has(entry.cell.id)),
-  )
-  const assemble = () => [header, ...blocks].join('\n\n')
-
   /*
    * Что выбрасывать первым.
    *
@@ -171,17 +224,51 @@ export function buildContext(
   const homeBooks = new Set(focused.map((i) => entries[i].book))
   const strangeness = (i: number) =>
     (homeBooks.size > 0 && !homeBooks.has(entries[i].book) ? 1_000_000 : 0) + Math.abs(i - anchor)
-  const droppable = entries
+  /** Ближние — первыми: дальние отсюда и начнут сворачиваться. */
+  const nearest = entries
     .map((_, i) => i)
     .filter((i) => !pinned.has(i))
-    .sort((a, b) => strangeness(b) - strangeness(a))
+    .sort((a, b) => strangeness(a) - strangeness(b))
 
-  let text = assemble()
-  for (const i of droppable) {
-    if (text.length <= maxTotal) break
-    blocks[i] = bookHead(entries[i]) + elide(entries[i])
-    text = assemble()
+  /*
+   * Кто помещается — считается длинами, а не пересборкой всего текста.
+   *
+   * Прежний цикл на каждую выброшенную ячейку склеивал ВЕСЬ кадр заново: на
+   * тетради в двести ячеек это две сотни склеек текста в десятки килобайт,
+   * O(ячеек × длины) на каждый вопрос. Порядок решения тот же — сначала
+   * сворачивается самое далёкое, — но здесь он записан наоборот: закреплённое и
+   * ближние блоки берутся целиком, пока хватает бюджета, а как только очередной
+   * не поместился, всё, что за ним, сворачивается в строку. Разделители между
+   * блоками считаются отдельно: их число не меняется.
+   */
+  const gaps = 2 * entries.length
+  const stubs = entries.map((entry) => bookHead(entry) + elide(entry))
+  const full = new Map<number, string>()
+  const render = (i: number): string => {
+    const made = full.get(i)
+    if (made !== undefined) return made
+    const one =
+      bookHead(entries[i]) + renderCell(entries[i], pinned.has(i), wanted.has(entries[i].id))
+    full.set(i, one)
+    return one
   }
+
+  const blocks = [...stubs]
+  let used = header.length + gaps + stubs.reduce((n, one) => n + one.length, 0)
+  // Закреплённое едет целиком всегда, даже если бюджет уже перебран: ради него
+  // запрос и отправляли.
+  for (const i of pinned) {
+    blocks[i] = render(i)
+    used += blocks[i].length - stubs[i].length
+  }
+  for (const i of nearest) {
+    const one = render(i)
+    const cost = one.length - stubs[i].length
+    if (used + cost > maxTotal) break
+    blocks[i] = one
+    used += cost
+  }
+  let text = [header, ...blocks].join('\n\n')
 
   /*
    * Still over budget with every droppable cell already elided.
@@ -241,11 +328,6 @@ function bookCount(doc: Y.Doc): string {
   return `${n} notebook${n === 1 ? '' : 's'}`
 }
 
-/** 01, 02, 03 — тот же номер, который нарисован у ячейки в поле слева. */
-function pad(no: number): string {
-  return String(no).padStart(2, '0')
-}
-
 /**
  * Fold consecutive elided cells into one line each run.
  *
@@ -285,12 +367,12 @@ function collapse(blocks: string[], pinned: Set<number>, entries: Entry[]): stri
  * "Newest" means most recently executed, not lowest on the page: seminars run
  * cells out of order constantly.
  */
-function newestErrorIndex(cells: CellSnapshot[]): number {
+function newestErrorIndex(entries: Entry[]): number {
   let best = -1
   let bestCount = -1
-  for (let i = 0; i < cells.length; i++) {
-    if (!cells[i].outputs.some((o) => o.kind === 'error')) continue
-    const count = cells[i].execCount ?? 0
+  for (let i = 0; i < entries.length; i++) {
+    if (!entries[i].failed) continue
+    const count = entries[i].execCount ?? 0
     if (count >= bestCount) {
       best = i
       bestCount = count
@@ -300,7 +382,7 @@ function newestErrorIndex(cells: CellSnapshot[]): number {
 }
 
 function renderCell(entry: Entry, full: boolean, selected: boolean): string {
-  const cell = entry.cell
+  const cell = entry
   /*
    * Номер — тот же, что видит человек: 1-based, с ведущим нулём.
    *
@@ -321,7 +403,7 @@ function renderCell(entry: Entry, full: boolean, selected: boolean): string {
     lines.push('```')
   }
 
-  for (const output of cell.outputs) lines.push(renderOutput(output, full))
+  for (const output of outputsOf(entry)) lines.push(renderOutput(output, full))
   return lines.join('\n')
 }
 
@@ -360,7 +442,7 @@ function renderData(output: DataOutput, limit: number): string {
 }
 
 function elide(entry: Entry): string {
-  const cell = entry.cell
+  const cell = entry
   const source = cell.source.trim()
   const lineCount = source ? source.split('\n').length : 0
   const first = source.split('\n').find((line) => line.trim().length > 0) ?? ''
@@ -368,46 +450,6 @@ function elide(entry: Entry): string {
   if (cell.execCount !== null) head.push(`In[${cell.execCount}]`)
   const preview = first ? ` starting "${clipLine(first.trim(), 60)}"` : ''
   return `${head.join(' · ')} — … ${lineCount} line${lineCount === 1 ? '' : 's'} elided …${preview}`
-}
-
-/**
- * Keeps both ends of a long region: the head says what it is, and the tail of a
- * traceback is where the actual error lives.
- */
-/**
- * Keep the opening and the ending, say what went missing in between.
- *
- * The marker counts against the limit rather than being added on top of it: a
- * budget that the sentence explaining the budget pushes you over is not a
- * budget, and a teacher who sets contextChars to fit a small model's window
- * means the number they typed. Two passes because the marker's own length
- * depends on the figure it carries.
- *
- * The figure stays what was actually dropped. It was already right before —
- * the head and tail came to exactly `limit` — but it stops being right the
- * moment the marker is taken out of the budget, so it is now derived from the
- * lengths actually kept rather than from the limit.
- */
-function clip(text: string, limit: number): string {
-  if (text.length <= limit) return text
-  const mark = (dropped: number) => `\n… truncated ${dropped} chars …\n`
-
-  let room = Math.max(0, limit - mark(text.length).length)
-  let head = Math.ceil(room * 0.65)
-  let dropped = text.length - room
-  room = Math.max(0, limit - mark(dropped).length)
-  head = Math.ceil(room * 0.65)
-  const tail = room - head
-  dropped = text.length - head - tail
-
-  const out = `${text.slice(0, head).trimEnd()}${mark(dropped)}${text.slice(text.length - tail).trimStart()}`
-  // trimEnd/trimStart only ever shorten it; the guard is for a limit so small
-  // that the marker alone does not fit.
-  return out.length <= limit ? out : out.slice(0, limit)
-}
-
-function clipLine(text: string, limit: number): string {
-  return text.length <= limit ? text : text.slice(0, limit - 1) + '…'
 }
 
 /**

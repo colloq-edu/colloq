@@ -9,12 +9,16 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
-  import { AdminApiError, adminApi } from '@/lib/adminApi'
+  import { AdminApiError, addressHolderOf, adminApi } from '@/lib/adminApi'
+  import { skippedStepLine } from '@/admin/panel'
+  import { plural } from '@/lib/plural'
   import {
     MAX_STEP_LABEL,
     slugOk,
     suggestSlug,
+    type AddressHolder,
     type PublishCandidate,
+    type SkippedStep,
   } from '@shared/publish'
 
   interface Props {
@@ -22,21 +26,38 @@
     navigate: (path: string) => void
   }
 
+  /** Ответ `publishInfo` целиком — чтобы форму страницы не переписывать здесь второй раз. */
+  type PublishInfo = Awaited<ReturnType<typeof adminApi.publishInfo>>
+
   let { sessionId, navigate }: Props = $props()
 
   let title = $state('')
   let candidates = $state<PublishCandidate[]>([])
-  let already = $state<{
-    id: string
-    slug: string | null
-    steps: { seq: number; label: string; at: number }[]
-  } | null>(null)
+  /**
+   * Уже опубликованная страница — ровно та форма, что приезжает в ответе.
+   *
+   * Своего объявления у экрана больше нет. Оно завелось ради `former` (прежних
+   * имён в адресе): сервер их вёз, а тип вызова о них не знал, и экран описал
+   * страницу второй раз, чтобы отпустить прежнее имя было чем. Теперь поле
+   * стоит в `lib/adminApi.ts` (publishInfo · former), и копия здесь — только
+   * лишний шанс разойтись с сервером на следующем поле.
+   */
+  let already = $state<PublishInfo['publication']>(null)
   /** Отмеченные шаги и их имена — по номеру версии. */
   let labels = $state<Record<number, string>>({})
   let picked = $state<Record<number, boolean>>({})
   let error = $state<string | null>(null)
   let busy = $state(false)
   let done = $state<string | null>(null)
+  /**
+   * Отмеченные моменты, которые шагами не стали, — с сервера, поимённо.
+   *
+   * Ответ несёт их отдельным полем (shared/publish.ts · SkippedStep) как раз
+   * потому, что раньше их не было нигде: пустая или нечитаемая версия молча
+   * выпадала из публикации, и семь отмеченных превращались в шесть шагов без
+   * единого слова о том, какой пропал.
+   */
+  let skipped = $state<SkippedStep[]>([])
 
   onMount(() => {
     void adminApi
@@ -45,6 +66,13 @@
         title = body.title
         candidates = body.candidates
         already = body.publication
+        /*
+         * Прежние имена — с сервера, а не только те, что переименовали в этой
+         * вкладке. Страницу переименовывают в понедельник, а адрес освобождают
+         * в сентябре следующего года: до сих пор список был пуст у всех, кто
+         * просто открыл экран, и отпускать в нём было нечего.
+         */
+        former = already?.former ?? []
         /*
          * Действующий адрес — с сервера, а не придуманный заново.
          *
@@ -88,6 +116,7 @@
         chosen.map((c) => ({ seq: c.seq, label: labels[c.seq].trim(), at: c.at })),
       )
       done = body.publication.id
+      skipped = body.skipped ?? []
       // Повторная публикация адрес сохраняет — показываем тот, что есть.
       slug = body.publication.slug ?? slug
     } catch (cause) {
@@ -104,34 +133,124 @@
     if (done && !slugDraft) slugDraft = suggestSlug(title)
   })
 
+  /**
+   * Имена, под которыми эта страница уже жила.
+   *
+   * Сервер прежнее имя помнит: `setPublicationSlug` кладёт его в
+   * `publish_addresses`, и `findPublication` находит страницу по нему
+   * (server/src/publish/store.ts · moveAddress, findPublication). Раньше здесь
+   * стоял confirm, обещавший обратное — «адрес /p/week-01 перестанет
+   * открываться», — и преподаватель либо отказывался от переименования из-за
+   * несуществующей угрозы, либо шёл передиктовывать классу адрес, который и
+   * так работает.
+   *
+   * Список приходит с ответом о публикации и пополняется здешними
+   * переименованиями: экран, открытый год спустя, знает ровно то же, что и
+   * сервер, — иначе отпускать в нём было бы нечего.
+   */
+  let former = $state<string[]>([])
+
+  /**
+   * Страница, о которой идёт речь: только что опубликованная или уже жившая.
+   *
+   * Прежние имена принадлежат ЕЙ, а не сегодняшнему нажатию «Опубликовать»:
+   * отпускает их владелец, и идентификатор владельца — вот он.
+   */
+  const pageId = $derived(done ?? already?.id ?? null)
+
+  /**
+   * Имя, которого не дали, и кто его держит.
+   *
+   * Отказ «уже занят» бывает двух совсем разных сортов. Живой адрес чужой
+   * страницы — тупик: освободить его может только её владелец. А прежнее имя,
+   * оставленное ради розданной ссылки, отпускается — и отпустить его вправе тот,
+   * чьё оно (server/src/publish/store.ts · releaseFormerSlug). Пока сервер
+   * держателя не называет, здесь остаётся null и экран ведёт себя как раньше:
+   * повторяет фразу отказа и ничего не предлагает.
+   */
+  let held = $state<{ slug: string; holder: AddressHolder } | null>(null)
+  /** Второй шаг: отпустить прежний адрес — необратимо, и спрашивается вслух. */
+  let asking = $state(false)
+
   async function saveSlug(): Promise<void> {
-    if (!done) return
+    if (!done || busy) return
     const next = slugDraft.trim().toLowerCase()
     if (next && !slugOk(next)) {
       error = 'Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.'
       return
     }
-    /*
-     * Имя у адреса одно: прежнее сервер не помнит, и после смены `/p/week-01`
-     * не найдёт никто. Спрашиваем — потому что этот адрес уже написали на доске.
-     */
-    if (slug && next !== slug) {
-      const ok = window.confirm(
-        `Адрес /p/${slug} перестанет открываться — его уже могли раздать классу. ` +
-          `Сменить на /p/${next || done}?`,
-      )
-      if (!ok) return
-    }
     busy = true
     error = null
+    held = null
     try {
       await adminApi.setSlug('publication', done, next || null)
+      // Прежнее имя остаётся адресом, новое перестаёт быть чьим-то прежним —
+      // тем же движением, что и на сервере.
+      const was = slug
       slug = next
+      former = [...new Set([...former, was].filter((name) => name && name !== next))]
     } catch (cause) {
       error = cause instanceof AdminApiError ? cause.message : 'адрес не сохранился'
+      const holder = addressHolderOf(cause)
+      // Только прежнее: живой адрес отсюда не отпускают, его снимают именем.
+      if (holder?.former && next) held = { slug: next, holder }
     } finally {
       busy = false
     }
+  }
+
+  /**
+   * Отпустить прежний адрес и занять его — одним решением.
+   *
+   * Одним, потому что отпускают его ровно затем, чтобы дать это имя своей
+   * странице: два нажатия подряд оставили бы посередине состояние «имя ничьё»,
+   * в котором его может занять кто угодно другой.
+   */
+  async function release(): Promise<void> {
+    if (!held || busy) return
+    const { holder, slug: freed } = held
+    busy = true
+    error = null
+    try {
+      await adminApi.releaseFormerSlug(holder.kind, holder.id, freed)
+    } catch (cause) {
+      error = cause instanceof AdminApiError ? cause.message : 'прежний адрес не отпустился'
+      return
+    } finally {
+      busy = false
+    }
+    held = null
+    asking = false
+    slugDraft = freed
+    await saveSlug()
+  }
+
+  /**
+   * Отпустить своё прежнее имя.
+   *
+   * Другое действие, чем выше, хотя маршрут тот же: там имя забирают себе,
+   * здесь — просто отпускают. Единственное, что случится наверняка, — ссылка с
+   * этим адресом перестанет открываться, и вернуть её нечем; поэтому второй
+   * шаг, и цена названа и у кнопки, и в вопросе.
+   */
+  let dropping = $state<string | null>(null)
+
+  async function dropFormer(): Promise<void> {
+    const page = pageId
+    const name = dropping
+    if (!page || !name || busy) return
+    busy = true
+    error = null
+    try {
+      await adminApi.releaseFormerSlug('publication', page, name)
+    } catch (cause) {
+      error = cause instanceof AdminApiError ? cause.message : 'прежний адрес не отпустился'
+      return
+    } finally {
+      busy = false
+    }
+    former = former.filter((was) => was !== name)
+    dropping = null
   }
 
   const stamp = (at: number): string =>
@@ -142,10 +261,65 @@
       month: 'long',
     })
 
+  /** Чем назвать момент, которого нет на странице: временем из ленты версий. */
+  const momentOf = (seq: number): string | undefined => {
+    const candidate = candidates.find((c) => c.seq === seq)
+    return candidate ? stamp(candidate.at) : undefined
+  }
+
+  /** Escape закрывает вопрос — но не посреди ответа сервера. */
+  function onKey(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || busy) return
+    if (asking) asking = false
+    else if (dropping) dropping = null
+  }
+
   const YES = 'M1 5.2L4.6 8.8L12 1.4'
   const NO = 'M1.6 1.6L11.4 11.4M11.4 1.6L1.6 11.4'
   const FACT = 'flex items-center gap-3.5 border-b border-line-soft px-3.5 py-2 last:border-b-0'
 </script>
+
+<svelte:window onkeydown={onKey} />
+
+<!--
+  Прежние адреса страницы — списком, и с ними можно что-то сделать.
+
+  Переименование не отменяет розданную ссылку: старое имя остаётся адресом этой
+  страницы навсегда — и держит его для всех остальных тоже, так что странице
+  следующего года это имя уже не дать. Отпускает его владелец, по одному, и
+  цена названа прямо над кнопкой, а не только в вопросе после неё: ссылка,
+  записанная в чате прошлогодней группы, перестаёт открываться.
+
+  Один сниппет на оба места (страница только что опубликована — и страница,
+  которая была опубликована раньше): список прежних имён один и тот же, а два
+  куска разметки разошлись бы на первой же правке слов.
+-->
+{#snippet formerNames()}
+  {#if former.length > 0}
+    <div class="border-t border-line pt-3">
+      <p class="text-ui font-semibold text-ink">Прежние адреса</p>
+      <p class="mt-0.5 text-2xs leading-snug text-muted">
+        Ведут на эту страницу и держат имя за ней: другой странице его не дать. Отпущенное имя
+        освобождается для всех — а ссылка с ним перестаёт открываться, и вернуть её нечем.
+      </p>
+      <div class="mt-2 flex flex-col">
+        {#each former as name (name)}
+          <div class="flex items-center gap-3 border-b border-line-soft py-1.5 last:border-b-0">
+            <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink">/p/{name}</span>
+            <button
+              type="button"
+              class="btn-outline h-7 shrink-0 px-3 text-2xs"
+              disabled={busy}
+              onclick={() => (dropping = name)}
+            >
+              Отпустить
+            </button>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+{/snippet}
 
 <AdminPage
   title={done ? 'Опубликовано' : `Опубликовать — ${title}`}
@@ -207,11 +381,69 @@
           >
             {slug ? 'Сменить имя адреса' : 'Дать имя адресу'}
           </button>
+          <!-- Имя держит не живая страница, а память о розданной ссылке — и
+               это единственный вид «занято», который владелец может разрешить
+               сам. Кнопка стоит здесь же, у поля: искать её в другом месте
+               экрана значит не найти вовсе. -->
+          {#if held}
+            <button
+              type="button"
+              class="btn-outline h-7 px-3 text-2xs"
+              disabled={busy}
+              onclick={() => (asking = true)}
+            >
+              Отпустить прежний адрес
+            </button>
+          {/if}
+          <!-- Идентификатор ведёт сюда всегда: кто продиктовал классу /p/xxxx
+               до того, как у страницы появилось имя, переспрашивать не должен.
+               Прежние ИМЕНА — ниже, отдельным списком: с ними можно ещё и
+               что-то сделать. -->
           {#if slug}
             <span class="text-2xs text-muted">старый адрес /p/{done} тоже работает</span>
           {/if}
         </div>
+
+        {#if held}
+          <p class="text-2xs leading-snug text-muted">
+            <span class="font-mono text-ink">/p/{held.slug}</span> — прежнее имя страницы
+            {#if held.holder.name}«{held.holder.name}»{:else}, у которой теперь другое имя{/if}.
+            Оно держится ради ссылки, которую уже дали классу; отпустив его, вы забираете имя себе,
+            а старая ссылка перестаёт открываться.
+          </p>
+        {/if}
+
+        {@render formerNames()}
       </div>
+
+      <!--
+        Что отмечали, но чего на странице не будет.
+
+        Ниже ссылки и отдельным блоком: ссылка — это результат, а это оговорка
+        к нему, и молчать о ней нельзя. Раньше её не было вовсе — семь
+        отмеченных моментов превращались в шесть шагов, и преподаватель
+        пересчитывал рельсу глазами.
+      -->
+      {#if skipped.length > 0}
+        <div class="mt-4 max-w-[640px] border-l-[3px] border-warning bg-surface px-4 py-3">
+          <p class="text-ui font-semibold text-ink">
+            {skipped.length}
+            {plural(skipped.length, 'момент', 'момента', 'моментов')}
+            {plural(skipped.length, 'не стал шагом', 'не стали шагами', 'не стали шагами')}
+          </p>
+          <ul class="mt-1.5 flex flex-col gap-1">
+            {#each skipped as step (`${step.seq}:${step.reason}`)}
+              <li class="text-ui leading-relaxed text-muted">
+                {skippedStepLine(step, momentOf(step.seq))}
+              </li>
+            {/each}
+          </ul>
+          <p class="mt-2 text-2xs leading-snug text-faint">
+            Остальные шаги опубликованы. Ссылка постоянная: когда причина уйдёт, тот же семинар
+            публикуют снова — ссылка останется той же.
+          </p>
+        </div>
+      {/if}
     {:else}
       <!-- Шаги -->
       <div class="flex flex-wrap items-start gap-x-7 gap-y-3 border-b border-line pb-6">
@@ -354,7 +586,16 @@
         </div>
         <div class="flex min-w-0 max-w-[700px] flex-1 flex-col gap-3">
           {#if already}
-            <p class="font-mono text-ui-lg text-ink">{location.host}/p/{already.id}</p>
+            <!-- Тот же адрес, что и в подзаголовке: заданное имя И ЕСТЬ ссылка,
+                 которую дали классу, а идентификатор рядом с ним читается как
+                 второй адрес той же страницы. -->
+            <p class="font-mono text-ui-lg text-ink">
+              {location.host}/p/{already.slug ?? already.id}
+            </p>
+            <!-- И здесь тоже: страницу, опубликованную в прошлом семестре,
+                 сюда открывают как раз затем, чтобы разобраться с её адресами,
+                 а не затем, чтобы опубликовать её заново. -->
+            {@render formerNames()}
           {/if}
           <p class="text-ui leading-relaxed text-muted">
             Постоянная. Повторная публикация её не меняет; если снять страницу, ссылка остаётся и
@@ -373,3 +614,93 @@
     {/if}
   </div>
 </AdminPage>
+
+<!--
+  Отпустить прежний адрес — вопросом, а не нажатием.
+
+  Единственное необратимое действие на этом экране: ссылка, которую уже
+  продиктовали классу, после этого отвечает 404, и вернуть её нечем. Поэтому
+  второй шаг — и цена в нём названа тем же адресом, который стоит в чате
+  группы, а не словами «связанные данные».
+-->
+{#if asking && held}
+  {@const going = held}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="release-slug-title"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 id="release-slug-title" class="text-title font-semibold text-ink">
+        Отпустить адрес /p/{going.slug}?
+      </h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">
+        Сейчас он ведёт на страницу
+        {#if going.holder.name}«{going.holder.name}»{:else}, которую переименовали{/if} — и
+        перестанет открываться совсем: у того, кому эту ссылку дали, останется адрес в никуда.
+        Имя тем же движением достаётся этой странице.
+      </p>
+      {#if error}
+        <p class="mt-3 text-ui text-danger">{error}</p>
+      {/if}
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" class="btn-outline" disabled={busy} onclick={() => (asking = false)}>
+          Отмена
+        </button>
+        <button
+          type="button"
+          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          disabled={busy}
+          onclick={() => void release()}
+        >
+          {busy ? 'Отпускаем…' : 'Отпустить и занять'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!--
+  Отпустить своё прежнее имя — тот же вопрос, но имя никто не ждёт.
+
+  Здесь его отпускают не затем, чтобы занять: оно освобождается для всех, и
+  единственное, что случится наверняка, — ссылка с ним перестанет открываться.
+  Поэтому и слова другие, и глагол на кнопке другой.
+-->
+{#if dropping}
+  {@const going = dropping}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="drop-slug-title"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 id="drop-slug-title" class="text-title font-semibold text-ink">
+        Отпустить адрес /p/{going}?
+      </h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">
+        Сейчас он ведёт на эту страницу — и перестанет открываться совсем: у тех, кому эту ссылку
+        уже дали, останется адрес в никуда, и вернуть её нечем. Взамен имя освобождается — его
+        сможет занять другая страница.
+      </p>
+      {#if error}
+        <p class="mt-3 text-ui text-danger">{error}</p>
+      {/if}
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" class="btn-outline" disabled={busy} onclick={() => (dropping = null)}>
+          Отмена
+        </button>
+        <button
+          type="button"
+          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          disabled={busy}
+          onclick={() => void dropFormer()}
+        >
+          {busy ? 'Отпускаем…' : 'Отпустить адрес'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

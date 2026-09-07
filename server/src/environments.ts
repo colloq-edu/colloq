@@ -569,6 +569,22 @@ function runStage(
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const { args, env: vars } = buildCommand(plan, step, parentImage)
+    /*
+     * Список читается ДО спавна — это и уедет в штамп.
+     *
+     * Штамп заведён затем, чтобы «Needs rebuild» говорило о содержимом, а не о
+     * времени правки файла. Читая список на `close`, он говорил о содержимом
+     * НЕ ТОГО момента: сборка с torch идёт минуты, преподаватель за это время
+     * дописывает в тот же список `timm` и сохраняет, штамп получает новый
+     * список, `editedSinceBuild` сравнивает его с файлом — совпадает, — и
+     * строка показывает «Ready» над образом без timm. Обнаруживается это на
+     * `import timm` посреди пары: ровно та ложь, от которой штамп и заведён.
+     *
+     * Здесь возможна ошибка в одну сторону — сказать «пересобрать» там, где
+     * docker успел прочитать уже новый файл. Лишняя пересборка стоит минут,
+     * ложное «Ready» — пары.
+     */
+    const built = readSource(step)
     const child = spawn('docker', args, {
       cwd: ROOT,
       env: { ...process.env, ...vars },
@@ -598,7 +614,7 @@ function runStage(
       if (code === 0) {
         // Remember WHAT was built, so the next comparison is about content.
         try {
-          fs.writeFileSync(stampFor(step), readSource(step))
+          fs.writeFileSync(stampFor(step), built)
         } catch {
           // No stamp is not a failure: staleness falls back to mtime, as before.
         }
@@ -627,8 +643,10 @@ function runStage(
  *
  * Родитель собирается первым и только если его образа ещё нет: ради этого
  * наследование и заведено — правка листа не должна ставить torch заново. Пока
- * идёт цепочка, «Building» стоит на каждом её звене: журнал у них общий, и
- * второй Build на родителя посреди этой сборки не начнётся.
+ * идёт цепочка, «Building» стоит на каждом звене, которое она СОБИРАЕТ: журнал
+ * у них общий, и второй Build на родителя посреди этой сборки не начнётся.
+ * Звенья, чьи образы уже есть, отпускаются, как только это выяснится, — их
+ * кнопка не должна быть заперта чужой сборкой.
  *
  * Uses the dev override when the kernel is currently published on the host —
  * the same reasoning as the Makefile: rebuilding without it silently drops the
@@ -675,6 +693,35 @@ export async function startBuild(name: string): Promise<void> {
   }
 
   /*
+   * Занимается ВСЯ цепочка, и тоже до первого await.
+   *
+   * Слот на имя закрывал только половину двери: родители регистрировались
+   * строкой ниже, после `docker compose ps` и опроса образов — сотни
+   * миллисекунд, за которые Build на родителя из второго окна проходил
+   * `isBuilding`, запускал свой `docker build` с тем же `-t`, а затем
+   * вытеснялся записью ребёнка: лог и Cancel родителя пропадали, а конец
+   * цепочки удалял запись, пока его собственная сборка ещё шла. Обещание из
+   * шапки — «второй Build на родителя не начнётся» — держится здесь.
+   */
+  const busy = chain.find((step) => step !== name && isBuilding(step))
+  if (busy) {
+    // Не «упало», а «занято»: собирается тот самый слой, поверх которого мы бы
+    // встали, и ждать его — единственное разумное.
+    const message = `окружение «${busy}» из этой цепочки уже собирается — дождитесь конца`
+    push(build, message)
+    build.failed = true
+    build.done = true
+    failures.set(name, message)
+    return
+  }
+  const held = chain.filter((step) => step !== name)
+  for (const step of held) builds.set(step, build)
+  /** Отпустить звенья — но только те, что и правда держим мы. */
+  const release = (steps: readonly string[]): void => {
+    for (const step of steps) if (builds.get(step) === build) builds.delete(step)
+  }
+
+  /*
    * Через compose — только там, где он лежит.
    *
    * В контейнере app примонтирован каталог kernel, а docker-compose.yml и .env
@@ -694,7 +741,10 @@ export async function startBuild(name: string): Promise<void> {
       }
     : { via: 'direct' }
   // Cancel мог прийти, пока мы спрашивали docker: тогда начинать нечего.
-  if (build.done) return
+  if (build.done) {
+    release(held)
+    return
+  }
 
   /*
    * Начинаем с того места, где кончились готовые образы.
@@ -713,8 +763,13 @@ export async function startBuild(name: string): Promise<void> {
     }
   }
   const stages = chain.slice(from)
-  if (build.done) return
-  for (const step of stages) if (step !== name) builds.set(step, build)
+  if (build.done) {
+    release(held)
+    return
+  }
+  // Пропущенные звенья отпускаем: их образы уже есть, собирать их никто не
+  // собирается, и «Building» в их строке было бы враньём с запертой кнопкой.
+  release(chain.slice(0, from))
 
   for (const step of stages) {
     if (build.done) break
@@ -726,7 +781,7 @@ export async function startBuild(name: string): Promise<void> {
   if (!build.failed) push(build, '— build finished')
   // Дальше каждое звено отвечает за себя: чужой журнал в своей строке — это
   // «build failed» на образе, который собрался.
-  for (const step of stages) if (step !== name) builds.delete(step)
+  release(held)
 }
 
 export function cancelBuild(name: string): boolean {

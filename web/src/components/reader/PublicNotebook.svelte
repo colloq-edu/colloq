@@ -55,9 +55,27 @@
   }
 
   let copied = $state<string | null>(null)
+  /**
+   * Ячейка, у которой буфер обмена ОТКАЗАЛ.
+   *
+   * `copyText` бросает: асинхронного буфера нет вне защищённого контекста, а
+   * запасной `execCommand` браузер вправе не дать (строгие настройки сайта,
+   * свежий Firefox с выключенным `dom.events.testing.asyncClipboard`). Вызов
+   * стоял без `catch`, и отказ выглядел ничем: галочка не появлялась, ни слова
+   * не менялось, отклонение уходило в unhandledrejection. Человек с
+   * http-инстанса кафедры жал ещё раз и решал, что кнопка сломана, — а выход у
+   * него был, и о нём никто не сказал.
+   */
+  let refused = $state<string | null>(null)
 
   async function copy(cell: PublicCell): Promise<void> {
-    await copyText(cell.source)
+    try {
+      await copyText(cell.source)
+    } catch {
+      refused = cell.id
+      setTimeout(() => (refused = refused === cell.id ? null : refused), 1600)
+      return
+    }
     copied = cell.id
     setTimeout(() => (copied = copied === cell.id ? null : copied), 1600)
   }
@@ -80,6 +98,12 @@
         {/if}
       </div>
     {:else}
+      {@const said =
+        refused === cell.id
+          ? 'Не скопировалось — выделите код мышью'
+          : copied === cell.id
+            ? 'Скопировано'
+            : 'Скопировать ячейку'}
       <div class="border border-line bg-canvas">
         <div class="flex items-start gap-3 bg-surface/60 px-4 py-3">
           <Code code={cell.source} lang="python" class="min-w-0 flex-1 text-code-lg leading-relaxed" />
@@ -89,14 +113,24 @@
             комнате ячейки — отдельные редакторы CodeMirror, и выделить код
             мышью через несколько штук нельзя.
           -->
+          <!--
+            Отказ буфера обмена — тоже ответ. Крестик и подпись «выделите код
+            мышью» на те же 1.6 с: на http-инстансе кафедры и в строгом браузере
+            кнопка не работает, и человек должен узнать это от неё, а не решить,
+            что страница сломана.
+          -->
           <button
-            class="mt-0.5 flex h-[22px] w-[22px] shrink-0 items-center justify-center border border-line
-                   text-muted transition-colors duration-100 hover:border-faint hover:text-ink"
-            title={copied === cell.id ? 'Скопировано' : 'Скопировать ячейку'}
-            aria-label="Скопировать ячейку"
+            class="press mt-0.5 flex h-[24px] w-[24px] shrink-0 items-center justify-center border
+                   border-line transition-colors duration-100 hover:border-faint hover:text-ink
+                   {refused === cell.id ? 'border-warning text-warning' : 'text-muted'}"
+            title={said}
+            aria-label={said}
             onclick={() => void copy(cell)}
           >
-            <Icon name={copied === cell.id ? 'check' : 'copy'} size={11} />
+            <Icon
+              name={refused === cell.id ? 'x' : copied === cell.id ? 'check' : 'copy'}
+              size={11}
+            />
           </button>
         </div>
 

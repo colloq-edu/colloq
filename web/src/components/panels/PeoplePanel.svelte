@@ -142,16 +142,18 @@
   /**
    * Подпись на наведение: куда именно уведёт нажатие.
    *
-   * По-английски, как и весь остальной интерфейс: это единственные четыре
-   * строки во всём приложении, которые были написаны по-русски, и в списке
-   * рядом с «Files», «People» и «Run» они читались как чужая вставка.
+   * По-русски, как и всё вокруг: список удалённых под этой же панелью, окно
+   * бана, пульт правил и дерево файлов — русские, и английская подсказка среди
+   * них читалась бы как чужая вставка. (Здесь долго стоял обратный довод — он
+   * был верен, когда по-русски в приложении было четыре строки, и перестал
+   * быть верным, когда русской стала половина интерфейса.)
    */
   function hintFor(person: Person, place: RevealTarget): string {
-    const who = person.isSelf ? 'you' : person.user.name
-    if (place.where === 'terminal') return `Go to ${who} in the terminal`
-    if (place.where === 'oracle') return `Go to ${who}’s thread with the oracle`
+    const who = person.isSelf ? 'вам' : person.user.name
+    if (place.where === 'terminal') return `К ${who} в терминал`
+    if (place.where === 'oracle') return `К ${who} в ленту оракула`
     const number = view.numbers.get(place.cellId)
-    return number === undefined ? 'Go to the cell' : `Go to cell ${String(number).padStart(2, '0')}`
+    return number === undefined ? 'К ячейке' : `К ячейке ${String(number).padStart(2, '0')}`
   }
 
   function go(place: RevealTarget): void {
@@ -159,23 +161,23 @@
     else reveal(place)
   }
 
-  /** The identity line replaces the activity line for you, and marks a host. */
+  /** Кто человек — вместо строки о том, что он делает; и метка преподавателя. */
   function badgeFor(person: Person): string | null {
     const host = person.user.role === 'host'
-    if (person.isSelf) return host ? 'Host · You' : 'You'
-    return host ? 'Host' : null
+    if (person.isSelf) return host ? 'Преподаватель · вы' : 'вы'
+    return host ? 'Преподаватель' : null
   }
 </script>
 
-<section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5 pt-5" aria-label="People in the room">
+<section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5 pt-5" aria-label="Кто в комнате">
   <div class="flex items-center gap-2 pb-2">
-    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">People</h2>
+    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">Люди</h2>
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
     <span class="font-mono text-micro tabular-nums text-muted">{people.length}</span>
   </div>
 
   {#if people.length === 0}
-    <p class="px-2 text-2xs text-muted">Connecting to the room…</p>
+    <p class="px-2 text-2xs text-muted">Подключаемся к комнате…</p>
   {/if}
 
   {#each shown as person (person.user.id)}
@@ -267,7 +269,7 @@
       onclick={() => (expanded = !expanded)}
     >
       <span class="w-6 shrink-0" aria-hidden="true"></span>
-      <span>{expanded ? 'Show fewer' : `+${rest} more`}</span>
+      <span>{expanded ? 'Свернуть' : `ещё ${rest}`}</span>
     </button>
   {/if}
 </section>
@@ -309,8 +311,17 @@
       </div>
     {/each}
 
+    <!--
+      Здесь стояло «их возвращает восстановление версии в истории» — обещание,
+      которого продукт не выполняет: история хранит ячейки тетради (`cellsOf` в
+      collab/history.ts), и возврат версии ленту вопросов не трогает вовсе.
+      Преподаватель, прочитавший это, нажимал «Restore all» на чекпоинте «до
+      бана» и получал нетронутую тетрадь и ту же пустую ленту. Пока возврат не
+      умеет ленту, сказано то, что есть.
+    -->
     <p class="px-2 pt-1.5 text-micro leading-snug text-muted">
-      Вопросы к оракулу этим не возвращаются — их возвращает восстановление версии в истории.
+      Вопросы к оракулу этим не возвращаются — и восстановлением версии тоже: история хранит
+      ячейки тетради, а не ленту.
     </p>
   </section>
 {/if}

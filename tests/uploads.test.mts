@@ -19,14 +19,13 @@ import './_env.mts'
 import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
-import express from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { config } from '../server/src/config.js'
 import { createSession, upsertParticipant } from '../server/src/db.js'
-import { fileRoutes } from '../server/src/routes/files.js'
+import { app } from '../server/src/app.js'
 import { signToken } from '../server/src/auth.js'
-import { sessionDir, sweepStaleUploads } from '../server/src/workspace.js'
+import { sessionDir, sweepAllStaleUploads, sweepStaleUploads } from '../server/src/workspace.js'
 
 let seq = 0
 const rooms: string[] = []
@@ -74,6 +73,44 @@ test('the room\u2019s own files are never touched', () => {
   assert.deepEqual(listing(id), ['.gitkeep', 'data.csv', 'notes.uploading-nope.md'])
 })
 
+test('хвост автосохранения подметается так же, как хвост загрузки', () => {
+  /*
+   * Уборщик знал только `.имя.uploading-<hex>` — шаблон загрузки, — хотя
+   * обещал убрать всё, что оставило падение посреди записи. Редактор пишет по
+   * своему шаблону, `.имя.saving-<pid>-<время>`, и сохраняется сам каждые
+   * несколько секунд: после падения процесса такой файл лежал невидимо (имя с
+   * точки), удалить его из панели было нечем, а `sessionBytes` считал его в
+   * потолке комнаты.
+   */
+  const id = room()
+  write(id, `.train.py.saving-${process.pid}-m9x2k1`, 'половина', 2 * 60 * 60 * 1000)
+  write(id, 'train.py', 'x = 1\n', 2 * 60 * 60 * 1000)
+  sweepStaleUploads(id)
+  assert.deepEqual(listing(id), ['train.py'])
+})
+
+test('свежее автосохранение не подметают из-под живого редактора', () => {
+  const id = room()
+  write(id, `.train.py.saving-${process.pid}-m9x2k1`, 'ещё пишется')
+  sweepStaleUploads(id)
+  assert.equal(listing(id).length, 1)
+})
+
+test('уборка на запуске проходит по всем комнатам, а не по той, куда грузят', () => {
+  /*
+   * Уборка висела на следующей загрузке файла в ту же комнату. В комнате, куда
+   * ничего не загружают, хвост автосохранения лежал бы до ручной чистки —
+   * поэтому запуск обходит весь том.
+   */
+  const one = room()
+  const two = room()
+  write(one, '.a.csv.uploading-a1b2c3d4', 'половина', 2 * 60 * 60 * 1000)
+  write(two, `.b.py.saving-${process.pid}-m9x2k1`, 'половина', 2 * 60 * 60 * 1000)
+  sweepAllStaleUploads()
+  assert.deepEqual(listing(one), [])
+  assert.deepEqual(listing(two), [])
+})
+
 test('a seminar with no folder yet is not an error', () => {
   sweepStaleUploads('a-seminar-that-never-uploaded-anything')
 })
@@ -106,8 +143,10 @@ before(async () => {
     role: 'host',
     tokenHost: true,
   })
-  const app = express()
-  app.use(fileRoutes())
+  /*
+   * Приложение целиком (server/src/app.ts), а не свой express рядом: копия
+   * порядка middleware расхождений с продуктом не ловит, она их повторяет.
+   */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()

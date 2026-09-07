@@ -26,7 +26,7 @@
 import { Router, type Request, type Response } from 'express'
 import { cellSource, findCell } from '@shared/notebook'
 import { mayLeadCouncil, oracleLimitsIn, oracleModeIn } from '@shared/rules'
-import type { CouncilOracle } from '@shared/protocol'
+import { SESSION_MISSING, type CouncilOracle } from '@shared/protocol'
 import { getOracleSettings } from '../admin/settings.js'
 import { countRoomQuestions, recordQuestion } from '../admin/usage.js'
 import {
@@ -38,19 +38,22 @@ import {
   type OracleStore,
 } from '../ai/council.js'
 import { aiReady } from '../ai/index.js'
-import { getSessionDoc } from '../collab/index.js'
+import { visitSessionDoc } from './doc-visit.js'
 import { attemptsOf, oracleOf, setOracle } from '../council.js'
 import { getRules, getSession } from '../db.js'
-import { sessionAuth } from './sessions.js'
+/*
+ * Потолок комнаты — тот же самый, а не такое же число.
+ *
+ * Здесь стояло собственное `ROOM_MULTIPLIER = 30` с комментарием «то же число,
+ * что в routes/ai.ts», и это признание было единственным, что их связывало:
+ * правка одного тихо разводила лимиты, хотя оракул сводки и оракул вопросов
+ * тратят один ключ и считаются в одну таблицу. Теперь функция одна на обоих —
+ * и она же знает, что потолок считается от размера комнаты.
+ */
+import { roomQuestionCeiling } from './ai.js'
+import { banDoor, sessionAuth } from './sessions.js'
 
 const HOUR_MS = 3_600_000
-
-/*
- * Тридцать личных пределов на комнату — то же число, что в routes/ai.ts
- * (ROOM_MULTIPLIER, не экспортируется). Потолок один и тот же: оракул сводки
- * и оракул вопросов тратят один ключ и считаются в одну таблицу.
- */
-const ROOM_MULTIPLIER = 30
 
 /** Откуда маршрут берёт попытки и куда кладёт оракула. По умолчанию — council.ts. */
 export interface CouncilOracleDeps extends OracleStore {
@@ -61,6 +64,9 @@ const live: CouncilOracleDeps = { attemptsOf, oracleOf, setOracle }
 
 export function councilRoutes(deps: CouncilOracleDeps = live): Router {
   const router = Router()
+
+  // Та же дверь, что у остальных маршрутов комнаты (routes/sessions.ts · banDoor).
+  router.use('/api/sessions/:id', banDoor)
 
   /**
    * Кто и о какой ячейке. Три отказа, общие обоим маршрутам: не вошёл, нет
@@ -78,7 +84,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       return null
     }
     if (!getSession(sessionId)) {
-      res.status(404).json({ error: 'session not found' })
+      res.status(404).json({ error: SESSION_MISSING })
       return null
     }
     if (!mayLeadCouncil(auth.role)) {
@@ -123,12 +129,27 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     /*
      * Ячейка — из документа комнаты, а не из тела запроса: задание для модели
      * — это текст общей ячейки, каким он сейчас есть у всех, и предыдущая
-     * ячейка над ним как условие. `getSessionDoc` поднимает комнату, если её
-     * нет в памяти — консилиум идёт, комната есть.
+     * ячейка над ним как условие.
+     *
+     * Через `visitSessionDoc`: у идущего консилиума документ и так поднят, и
+     * тогда это просто чтение; а вот «Обновить» в комнате, из которой все
+     * вышли, поднимает её тетрадь, и без визита она лежала бы в памяти до
+     * уборки простаивающих комнат (routes/doc-visit.ts). Из документа берутся
+     * строки, а не ссылки на `Y.Text`: за границей визита документа может уже
+     * не быть.
      */
-    const { doc } = getSessionDoc(sessionId)
-    const found = findCell(doc, cellId)
-    if (!found) return res.status(404).json({ error: 'Такой ячейки в комнате нет' })
+    const task = visitSessionDoc(sessionId, (doc) => {
+      const found = findCell(doc, cellId)
+      if (!found) return null
+      const before = found.index > 0 ? found.cells.get(found.index - 1) : null
+      return {
+        source: cellSource(found.cell).toString(),
+        before: before ? cellSource(before).toString() : null,
+        // Эталона в тетради пока нет: когда появится поле у ячейки — сюда.
+        reference: null,
+      }
+    })
+    if (!task) return res.status(404).json({ error: 'Такой ячейки в комнате нет' })
 
     if (isOracleReading(sessionId, cellId)) {
       return res.status(409).json({
@@ -147,7 +168,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
      * держит инстанс. Личный предел и слоу-мод ведущего не касаются и тут.
      */
     const limit = oracleLimitsIn(getRules(sessionId), settings).questionsPerHour
-    const roomLimit = limit * ROOM_MULTIPLIER
+    const roomLimit = roomQuestionCeiling(sessionId, limit)
     const roomUsed = countRoomQuestions(sessionId, HOUR_MS)
     if (roomUsed >= roomLimit) {
       res.setHeader('Retry-After', '600')
@@ -172,16 +193,10 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       action: 'council',
     })
 
-    const before = found.index > 0 ? found.cells.get(found.index - 1) : null
     const oracle = askCouncilOracle({
       sessionId,
       cellId,
-      task: {
-        source: cellSource(found.cell).toString(),
-        before: before ? cellSource(before).toString() : null,
-        // Эталона в тетради пока нет: когда появится поле у ячейки — сюда.
-        reference: null,
-      },
+      task,
       attempts,
       store: deps,
       usageId,

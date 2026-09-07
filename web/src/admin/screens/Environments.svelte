@@ -22,7 +22,6 @@
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
-  import { plural } from '@/lib/plural'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
   import { ENVIRONMENT_NAME, type AdminEnvironment, type EnvironmentsState } from '@shared/admin'
 
@@ -95,10 +94,23 @@
      * A build changes the row from the outside — it is a container image being
      * made, not a form being submitted. Polling only while something is
      * building keeps an idle panel quiet.
+     *
+     * И не чаще, чем нужно, и не там, где ответ придёт сам. Каждый тик — это
+     * `docker version`, `docker image inspect` на КАЖДОЕ окружение, проверка
+     * изоляции и опрос срезов видеокарты, и всё это в том же цикле событий,
+     * который в эту секунду ведёт чужую пару; на двух открытых вкладках —
+     * вдвое. Пока лог открыт, конец сборки приезжает кадром `done`, и
+     * спрашивать про неё docker незачем: опрос остаётся только для сборки,
+     * запущенной из другой вкладки или из CLI.
      */
     const tick = window.setInterval(() => {
-      if (envs?.environments.some((e: AdminEnvironment) => e.state === 'building')) void refresh()
-    }, 3000)
+      const building = (envs?.environments ?? []).filter(
+        (e: AdminEnvironment) => e.state === 'building',
+      )
+      if (building.length === 0) return
+      if (stream && building.every((e: AdminEnvironment) => e.name === logFor)) return
+      void refresh()
+    }, 12_000)
     const close = () => (openMenu = null)
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') openMenu = null
@@ -132,8 +144,8 @@
    * the screen: without the flag, every ready environment would replay the
    * entrance each time the tab is opened, which is decoration, not information.
    * The boundary is deliberate — only a completion watched live is marked. One
-   * discovered by the 3s poll, in a tab reloaded or left behind, lands flat,
-   * because the entrance is for the person who was staring at the log.
+   * discovered by the background poll above, in a tab reloaded or left behind,
+   * lands flat, because the entrance is for the person who was staring at the log.
    */
   let justFinished = $state<string | null>(null)
   /** The finished row, once the refresh has actually brought its new state. */
@@ -157,9 +169,10 @@
       stopWatching()
       /*
        * Only a build that was actually running has just ended. The endpoint
-       * answers `done` immediately when there is no live build
-       * (server/src/routes/admin-environments.ts:158-161), so simply opening
-       * the Build log of something built last week arrives here too — and
+       * answers `done` immediately when there is no live build (the log route
+       * in server/src/routes/admin-environments.ts, right after the SSE
+       * headers: `if (!existing || existing.done) send('done', …)`), so simply
+       * opening the Build log of something built last week arrives here too — and
        * marking that as "just finished" would replay the entrance below for a
        * fact that is days old, every time the log is opened.
        */
@@ -170,8 +183,8 @@
          * mounts after refresh() has been to the server and back. A tidy-looking
          * short timer can therefore clear it first, and the entrance then
          * silently never plays. 1.5s is comfortably longer than that round trip
-         * and comfortably shorter than the 3s poll above, which is the only
-         * thing that could replay the entrance for a build that ended long ago.
+         * and comfortably shorter than the poll above, which is the only thing
+         * that could replay the entrance for a build that ended long ago.
          * The guard keeps a second build's flag from being cleared by the
          * first one's timer.
          */
@@ -181,7 +194,21 @@
       }
       void refresh()
     })
-    stream.onerror = () => stopWatching()
+    /*
+     * Поток оборвался — и это надо сказать.
+     *
+     * Перезапуск сервера, прокси, уснувший ноутбук: `done` уже не придёт,
+     * `justFinished` не выставится, а панель лога остаётся на экране с
+     * последними строками и без единого признака, что она мёртвая. Человек,
+     * который «смотрит на лог четыре минуты», смотрит на замерший вывод.
+     * Состояние строки всё равно догонит опросом — здесь нужно только слово.
+     */
+    stream.onerror = () => {
+      const lost = 'connection lost — the build goes on; reopen Build log to follow it'
+      if (logLines[logLines.length - 1] !== lost) logLines = [...logLines, lost]
+      stopWatching()
+      queueMicrotask(() => logBox?.scrollTo({ top: logBox.scrollHeight }))
+    }
   }
 
   function stopWatching(): void {
@@ -415,7 +442,7 @@
     and the premise of this screen is that they have been waiting four minutes
     and may well have looked away. This says the same thing to a reader who is
     not watching. It is one region outside the loop, written only while
-    `justFinished` is set: the 3s poll reassigns every row wholesale, and a live
+    `justFinished` is set: the background poll reassigns every row wholesale, and a live
     region per row would narrate all of that instead of announcing the one event
     that matters.
   -->
@@ -467,18 +494,17 @@
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">
-          Видеокарта: {gpus.total}
-          {plural(gpus.total, 'срез', 'среза', 'срезов')}, свободно {gpus.free}. Срез достаётся
-          комнате на GPU-окружении на всё время жизни её контейнера — остановленный семинар держит
-          его тоже.
+          GPU: {gpus.total} {gpus.total === 1 ? 'slice' : 'slices'}, {gpus.free} free. A room on a
+          GPU environment holds its slice for as long as its container lives — a seminar nobody is
+          in still holds one.
         </p>
       </div>
     {:else if someoneWantsGpu}
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">
-          Срезов видеокарты нет: KERNEL_GPUS не задана. Комната на окружении с пометкой GPU здесь
-          не откроет ядро — выдать ей нечего, а на процессоре такое окружение не поедет.
+          No GPU slices here: KERNEL_GPUS is unset. A room on an environment marked GPU will not
+          start a kernel — there is nothing to hand it, and that image does not run on the CPU.
         </p>
       </div>
     {/if}
@@ -502,7 +528,7 @@
                 {#if env.gpu}
                   <span
                     class="inline-flex h-[18px] shrink-0 items-center bg-accent/15 px-1.5 text-micro font-bold uppercase tracking-label text-accent-text"
-                    title="Комната на этом окружении занимает срез видеокарты, пока жив её контейнер"
+                    title="A room on this environment holds a GPU slice for as long as its container lives"
                   >
                     GPU
                   </span>
@@ -579,8 +605,8 @@
                 <span
                   class={cn(PILL, 'text-warning')}
                   title={env.parent
-                    ? `Список правился после сборки — или ${env.parent}, поверх которого это собрано, пересобрали позже`
-                    : 'Список пакетов правился после сборки'}
+                    ? `The package list changed after the build — or ${env.parent}, which this is built on, was rebuilt later`
+                    : 'The package list changed after the build'}
                 >
                   Needs rebuild
                 </span>

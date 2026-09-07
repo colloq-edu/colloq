@@ -73,8 +73,16 @@ test('a failed turn does not come back as something the model said', () => {
     [],
     'the error sentence was replayed as an oracle turn',
   )
-  // The question still happened, and is still worth the context.
-  assert.deepEqual(turns, [{ role: 'user', content: 'Maria asked: why is the loss nan?' }])
+  /*
+   * И вопрос уходит вместе со своим ответом.
+   *
+   * Раньше он оставался («он всё равно случился»), и после каждой осечки
+   * история выходила «user, user» — два хода подряд от одной роли. Строгие
+   * шаблоны чата (vLLM с Mistral или Llama-2) отвечают на такое 400, а
+   * повторная попытка шлёт ту же историю и получает то же 400. Вопрос без
+   * ответа модели ничего и не сообщает: тетрадь она видит и так.
+   */
+  assert.deepEqual(turns, [])
 })
 
 test('a cancelled answer is still left out', () => {
@@ -91,10 +99,11 @@ test('one failure does not cost the exchanges around it', () => {
   say(doc, { name: 'Ana', question: 'what is a stride?', answer: 'How far the kernel steps.' })
   say(doc, { name: 'John', question: 'and padding?', answer: 'The endpoint timed out.', state: 'error' })
   say(doc, { name: 'Ana', question: 'so which is it?', answer: 'Padding adds a border.' })
+  // Осечка Джона уходит целиком — и парой, а не половиной: см. выше про
+  // чередование ролей. Обмены вокруг неё остаются как были.
   assert.deepEqual(recentTurns(doc), [
     { role: 'user', content: 'Ana asked: what is a stride?' },
     { role: 'assistant', content: 'How far the kernel steps.' },
-    { role: 'user', content: 'John asked: and padding?' },
     { role: 'user', content: 'Ana asked: so which is it?' },
     { role: 'assistant', content: 'Padding adds a border.' },
   ])
@@ -107,8 +116,10 @@ test('an answer still streaming is carried, because it is real', () => {
   assert.equal(oracleTurns.length, 1)
 })
 
-test('a question nobody typed carries no user turn', () => {
+test('a question nobody typed carries no turn at all', () => {
   const doc = room()
   say(doc, { question: '', answer: 'What are you stuck on?' })
-  assert.deepEqual(recentTurns(doc), [{ role: 'assistant', content: 'What are you stuck on?' }])
+  // Ход без вопроса — это ответ без обращения: в чередовании ролей ему негде
+  // встать, а модели он не сообщает ничего, чего она не видит в тетради.
+  assert.deepEqual(recentTurns(doc), [])
 })

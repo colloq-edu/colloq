@@ -7,8 +7,9 @@
  * that arrives when somebody clicks a row, and stays in a map afterwards, so
  * walking back up the timeline over versions already opened costs nothing.
  */
-import type { CellDiff, HistoricCell, Version } from '@shared/history'
-import { ApiError, statusMessage } from './api'
+import type { CellDiff, HistoricCell, Version, VersionList } from '@shared/history'
+import { request } from './api'
+import { initials } from './utils'
 
 export interface VersionDetail {
   version: Version
@@ -16,40 +17,31 @@ export interface VersionDetail {
   diffs: CellDiff[]
 }
 
-async function get<T>(path: string, token: string, init?: RequestInit): Promise<T> {
-  let res: Response
-  try {
-    res = await fetch(path, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(init?.body ? { 'content-type': 'application/json' } : {}),
-        ...init?.headers,
-      },
-    })
-  } catch (cause: unknown) {
-    // То же, что и в api.ts: «Failed to fetch» — фраза из отладчика, а по
-    // HTTP/2 у отказа ещё и пустая строка состояния. Панель истории рисует
-    // ошибку через `{#if}`, и пустая строка не рисуется вовсе.
-    if (cause instanceof TypeError) {
-      throw new ApiError('Could not reach the server — check the connection and try again.', 0)
-    }
-    throw cause
-  }
-  if (!res.ok) {
-    let message = statusMessage(res)
-    try {
-      const body = (await res.json()) as { error?: string }
-      if (body?.error) message = body.error
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new ApiError(message, res.status)
-  }
-  return (await res.json()) as T
+/**
+ * То же, что `api.request`, только с ключом участника в заголовке.
+ *
+ * Здесь когда-то стоял свой `fetch` с собственным разбором отказа — второй
+ * экземпляр той же работы, отличавшийся ровно этим заголовком, который
+ * `request` и так принимает через `init.headers`. Копия успела отстать: поля
+ * `retryAfter` и `until`, по которым отличают ожидание и бан от поломки, до неё
+ * не доехали.
+ */
+function get<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+  return request<T>(path, {
+    ...init,
+    headers: { authorization: `Bearer ${token}`, ...init?.headers },
+  })
 }
 
-export function listVersions(sessionId: string, token: string): Promise<{ versions: Version[] }> {
+/**
+ * Лента комнаты — и признак того, что её начало не сохранилось.
+ *
+ * Форма ответа взята из `shared/history.ts` (`VersionList`), а не описана
+ * здесь заново: сервер уже везёт `trimmed` (routes/history.ts ·
+ * `historyTrimmed`), и третья копия той же формы разошлась бы с ним ровно так
+ * же, как разошлась вторая — поле молча терялось по дороге к панели.
+ */
+export function listVersions(sessionId: string, token: string): Promise<VersionList> {
   return get(`/api/sessions/${sessionId}/history`, token)
 }
 
@@ -89,16 +81,18 @@ export function clock(at: number): string {
 /**
  * The initials on the row's circle.
  *
- * Two letters from two words, one from a single word. A name nobody typed —
- * the server's own writes — has none, and the row shows a dot instead, which
- * is honest: nobody did it.
+ * Те же две буквы, что на аватаре и в списке людей, — `initials` из lib/utils
+ * и ничего своего. Здесь были свои правила: первая и ВТОРАЯ буквы против первой
+ * и ПОСЛЕДНЕЙ, так что «Иван Петрович Сидоров» получал в ленте версий «ИП», а
+ * на своём же аватаре рядом — «ИС». Один человек, один экран, две монограммы.
+ *
+ * Отличается только пустое имя: у ленты это не человек, а сама комната — её
+ * собственные записи, — и вместо вопросительного знака строка рисует точку.
+ * Честнее: не «кто-то неизвестный», а «никто».
  */
 export function initialsOf(name: string | null): string {
-  if (!name) return ''
-  const parts = name.trim().split(/\s+/).filter(Boolean)
-  if (parts.length === 0) return ''
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
-  return (parts[0][0] + parts[1][0]).toUpperCase()
+  if (!name?.trim()) return ''
+  return initials(name)
 }
 
 /** The word for a version that has no author: the room did it, not a person. */

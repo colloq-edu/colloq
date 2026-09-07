@@ -19,8 +19,14 @@
  * held back.
  */
 
-/** Said by every control that needs the server, so the room reads one sentence. */
-export const OFFLINE_REASON = 'Waiting for the connection — nothing can run until it is back'
+/**
+ * Said by every control that needs the server, so the room reads one sentence.
+ *
+ * По-русски: она приезжает в title «Очистить» в ящике терминала, в полосу
+ * запуска и на пульт лекции — всё это поверхности, переведённые целиком, и
+ * английская строка в них выглядит сбоем, а не сообщением.
+ */
+export const OFFLINE_REASON = 'Ждём связи — до её возвращения ничего не запустится'
 
 /**
  * The title a server-backed control should carry.
@@ -64,4 +70,31 @@ export function enqueueControl<T>(queue: T[], message: T): T[] {
   queue.push(message)
   if (queue.length > MAX_QUEUED_CONTROL) queue.splice(0, queue.length - MAX_QUEUED_CONTROL)
   return queue
+}
+
+/* ------------------------------------------------------- возвращение связи */
+
+/** Дольше этого не ждём: полминуты «Reconnecting» — это уже не связь, а стена. */
+export const RECONNECT_MAX_MS = 8000
+
+/**
+ * Через сколько стучаться снова — с разбросом, и разброс здесь несущий.
+ *
+ * Связь роняет обычно не одна вкладка, а провод: перезапуск сервера, упавший
+ * Wi-Fi в аудитории, ретранслятор. Тогда все пятьсот отсчитывают ОДИН И ТОТ ЖЕ
+ * отступ от одного и того же события и возвращаются в одни и те же
+ * миллисекунды: сервер поднимается ровно в этот момент, получает пятьсот
+ * рукопожатий разом, часть не успевает — эти вкладки отступают снова и снова
+ * приходят вместе. Пачка не рассасывается сама, она только уплотняется.
+ *
+ * Половина отступа случайна, вторая — та же лестница вдвое, что была: 250 мс
+ * после первой неудачи, дальше вдвое, потолок прежний. Дольше никого ждать не
+ * заставляем — верхняя граница не выросла.
+ *
+ * `random` — параметром, чтобы правило проверялось без броска монеты: у
+ * генератора нет ни одного значения, при котором две вкладки обязаны сойтись.
+ */
+export function reconnectDelay(retries: number, random = Math.random()): number {
+  const step = Math.min(500 * 2 ** Math.min(retries, 5), RECONNECT_MAX_MS)
+  return step * (0.5 + random * 0.5)
 }

@@ -75,7 +75,11 @@ const report = exportSite(site, base);
  * довезти до Pages. Выход здесь оставлял снятую страницу открытой по прямой
  * ссылке; дальше всё равно решает `git status`.
  */
-if (report.courses.length === 0 && report.seminars.length === 0) {
+if (
+  report.courses.length === 0 &&
+  report.seminars.length === 0 &&
+  report.withdrawn.length === 0
+) {
   console.log("публиковать нечего: ни курсов, ни опубликованных семинаров");
 }
 
@@ -89,6 +93,13 @@ for (const seminar of report.seminars) {
   console.log(
     `семинар ${base}/p/${seminar.handle}/  ${seminar.title} · ${seminar.steps} шагов${blobs}`,
   );
+}
+/*
+ * Снятая страница остаётся адресом с надгробием, а не исчезает: ссылка,
+ * розданная классу, обязана сказать «её сняли», а не ответить 404 GitHub.
+ */
+for (const stone of report.withdrawn) {
+  console.log(`снята   ${base}/p/${stone.handle}/  ${stone.title}`);
 }
 
 const status = git("status", "--porcelain", "--", inRepo("c"), inRepo("p"));
@@ -126,12 +137,35 @@ const dirs = ["c", "p"]
   )
   .map(inRepo);
 
+/*
+ * Ветка — только main: Pages слушает push именно в неё (.github/workflows/pages.yml).
+ * С фиче-ветки скрипт бодро печатал «выложено», push проходил, а на сайте не
+ * менялось ничего — и узнать об этом было неоткуда, кроме как открыть colloq.ru.
+ */
+const branch = git("rev-parse", "--abbrev-ref", "HEAD").out;
+if (branch !== "main") {
+  console.error(
+    `сейчас ветка ${branch || "неизвестна"}, а Pages выкладывает только main:\n` +
+      "перейдите на main (git switch main) и повторите — иначе «выложено» будет неправдой.",
+  );
+  process.exit(1);
+}
+
+/*
+ * Коммит по этим же путям (`-- c p`), а не всем индексом.
+ *
+ * `git commit -m …` без путей забирает и то, что автор застейджил до этого:
+ * чужая незакоммиченная правка уезжала в коммит «публикации: …» и дальше в
+ * main — вместе с сайтом и без всякого об этом слова.
+ */
 for (const step of [
   ["add", "--", ...dirs],
   [
     "commit",
     "-m",
     `публикации: ${report.courses.length} курсов, ${report.seminars.length} семинаров`,
+    "--",
+    ...dirs,
   ],
   ["push"],
 ]) {

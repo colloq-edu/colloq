@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import * as Y from 'yjs'
 import { createSession } from '../server/src/db.js'
 import { listFiles, readText, sessionDir } from '../server/src/workspace.js'
 import { dropSessionDoc, getSessionDoc, peekSessionDoc } from '../server/src/collab/index.js'
@@ -61,8 +62,46 @@ test('файл тетради — настоящий .ipynb, который чи
   assert.ok(flat, 'то, что записали, не разбирается как тетрадь')
   assert.equal(flat.length, 2, 'стартовые ячейки не доехали до файла')
   assert.equal(flat[0].type, 'markdown')
-  // Выводов в файле нет намеренно: он исходник тетради, а не её снимок.
-  assert.ok(!text.includes('"outputs": ['.replace(' ', '')) || !text.includes('image/png'))
+})
+
+test('в файл тетради не уезжают выводы, сколько бы их ни было в комнате', () => {
+  /*
+   * Файл — ИСХОДНИК тетради, а не её снимок (см. shared/ipynb.ts): с выводами
+   * он весит мегабайты base64, и эти мегабайты потом едут загрузкой, в контекст
+   * оракула и на GitHub.
+   *
+   * Проверка здесь была тавтологией: `!text.includes('"outputs":[') ||
+   * !text.includes('image/png')` — вторая половина истинна для стартовой
+   * тетради при любом содержимом файла, так что выражение не падало никогда.
+   * Теперь вывод в комнате есть, и его отсутствие в файле — настоящий факт.
+   */
+  const { doc } = getSessionDoc(ROOM)
+  const cell = getCells(doc).get(1)
+  const base64 = 'iVBORw0KGgo' + 'A'.repeat(4096)
+  doc.transact(() => {
+    const png = new Y.Map<unknown>()
+    png.set('kind', 'data')
+    png.set('json', JSON.stringify({ data: { 'image/png': base64 }, execCount: 3 }))
+    ;(cell.get('outputs') as Y.Array<unknown>).push([png])
+    cell.set('execCount', 3)
+  }, 'server')
+  assert.equal((cell.get('outputs') as Y.Array<unknown>).length, 1, 'вывод не лёг в документ')
+
+  projectBooks(ROOM)
+  const text = readText(ROOM, 'Тетрадь.ipynb')?.text ?? ''
+  const written = JSON.parse(text) as { cells: { outputs?: unknown[] }[] }
+  assert.ok(written.cells.length > 0, 'в файле не осталось ячеек')
+  for (const [i, inFile] of written.cells.entries()) {
+    assert.deepEqual(inFile.outputs ?? [], [], `в файл уехал вывод ячейки ${i}`)
+  }
+  // И то же самое строкой: набор ключей мог бы совпасть, а картинка приехать
+  // где-нибудь в метаданных.
+  assert.ok(!text.includes('image/png'), 'mime вывода уехал в файл')
+  assert.ok(!text.includes(base64.slice(0, 64)), 'base64 вывода уехал в файл')
+
+  // Тот же файл, взятый напрямую из комнаты (оракул и выгрузка ходят сюда).
+  const direct = bookText(ROOM, 'Тетрадь.ipynb') ?? ''
+  assert.ok(!direct.includes('image/png'), 'вывод уехал в текст тетради для оракула')
 })
 
 test('правка тетради доезжает до файла', () => {

@@ -33,12 +33,21 @@
   }
 </script>
 
+<!--
+  Рисунок — двенадцать пикселей, цель — двадцать четыре.
+
+  По сегментам преподаватель прыгает между группами решений, и на десятке групп
+  они сжимаются к своему минимуму: 8×12 — вдвое меньше пола 2.5.8, который
+  продукт сам цитирует в тетради, и пальцем в них не попасть. Кнопка выросла
+  вверх отрицательным полем и осталась на месте: полоса живёт внутри неё
+  отдельным span'ом, а лишняя высота уходит в прозрачное поле над ней.
+-->
 {#if segments.length > 0}
   <div class="flex h-3 items-stretch gap-px" role="group" aria-label="Группы решений">
     {#each segments as segment (segment.key)}
       {#if segment.writing}
         <span
-          class="min-w-[8px] border border-dashed border-faint"
+          class="min-w-[10px] border border-dashed border-faint"
           style="flex: {segment.count} 1 0"
           title={title(segment)}
         ></span>
@@ -46,17 +55,23 @@
         <button
           type="button"
           class={cn(
-            'min-w-[8px] border-b-2 transition-colors duration-[var(--speed-quick)]',
+            'group relative -my-1.5 flex h-6 min-w-[16px] items-center',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-            TONE[segment.tone],
-            segment.current ? 'bg-ink' : 'bg-line hover:bg-faint',
           )}
           style="flex: {segment.count} 1 0"
           title={title(segment)}
           aria-label={title(segment)}
           aria-current={segment.current ? 'true' : undefined}
           onclick={() => onpick(segment.key)}
-        ></button>
+        >
+          <span
+            class={cn(
+              'h-3 w-full border-b-2 transition-colors duration-[var(--speed-quick)]',
+              TONE[segment.tone],
+              segment.current ? 'bg-ink' : 'bg-line group-hover:bg-faint',
+            )}
+          ></span>
+        </button>
       {/if}
     {/each}
   </div>

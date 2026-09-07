@@ -5,7 +5,6 @@
   import JoinScreen from '@/screens/JoinScreen.svelte'
   import { api, ApiError } from '@/lib/api'
   import {
-    clearStaffMark,
     loadIdentity,
     mightBeStaff,
     saveIdentity,
@@ -17,7 +16,8 @@
     rememberSessionInfo,
   } from '@/lib/persistence.svelte'
   import { isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '@/lib/routes'
-  import type { SessionInfo } from '@shared/protocol'
+  import { upgradeIfStaff } from '@/screens/staff'
+  import { saysSessionMissing, type SessionInfo } from '@shared/protocol'
 
   /**
    * The whole router. Two routes — '/' and '/s/:id' — is not enough surface to
@@ -115,6 +115,19 @@
 
   function navigate(next: string): void {
     if (next !== location.pathname) history.pushState({}, '', next)
+    /*
+     * Публичные страницы — единственные во всём продукте, где прокручивается
+     * сам документ: комната закреплена по высоте окна. Переход внутри них —
+     * это новая страница, а не смена панели, и открываться она обязана сверху:
+     * студент, долиставший курс до пятнадцатой строки и нажавший семинар,
+     * попадал в середину чужой тетради, без шапки и без рельсы шагов, и решал,
+     * что промахнулся.
+     *
+     * Только для перехода вперёд. `popstate` сюда не заходит (у него свой
+     * слушатель), и это намеренно: место на странице, с которой ушли, — дело
+     * браузера, он его и восстанавливает.
+     */
+    if (next.startsWith('/c/') || next.startsWith('/p/')) window.scrollTo({ top: 0 })
     path = next
   }
 
@@ -205,7 +218,18 @@
       })
       .catch((error: unknown) => {
         if (cancelled) return
-        if (error instanceof ApiError && error.status === 404) {
+        /*
+         * НАШ 404, а не любой.
+         *
+         * Здесь стирают местную копию тетради — то есть всё, что человек успел
+         * напечатать без связи, — и по голому коду состояния этого делать
+         * нельзя: 404 отдаёт и ретранслятор, у которого отвалился frpc, и
+         * статика, раздающая index.html на всё подряд. Тогда перебой связи
+         * превращался в «этот семинар удалён» у всего класса разом. Признак —
+         * слова сервера в теле ответа (shared/protocol.ts · saysSessionMissing);
+         * чужой 404 ниже разбирается как обычный обрыв.
+         */
+        if (saysSessionMissing(error)) {
           // The one case where the cache is a liar. Tear the room down and drop
           // its local copy: nobody may be left working inside a room that the
           // server no longer has.
@@ -259,26 +283,11 @@
     if (!id || !me || me.role === 'host' || !mightBeStaff()) return
 
     let cancelled = false
-    void api
-      .join(id, { name: me.name, avatar: me.avatar, participantId: me.participantId, token: me.token })
-      .then((res) => {
-        if (cancelled) return
-        if (res.participant.role !== 'host') {
-          // Signed out since, or never staff in the first place. Stop asking.
-          clearStaffMark()
-          return
-        }
-        const next: StoredIdentity = {
-          sessionId: id,
-          participantId: res.participant.id,
-          token: res.token,
-          name: res.participant.name,
-          avatar: res.participant.avatar,
-          color: res.participant.color,
-          role: res.participant.role,
-        }
-        saveIdentity(next)
-        identity = next
+    // Один помощник на оба экрана — см. screens/staff.ts: снятие метки и
+    // разбор ответа «нет»/«не знаю» жили здесь и в JoinScreen по-разному.
+    void upgradeIfStaff(id, me)
+      .then((next) => {
+        if (!cancelled && next) identity = next
       })
       .catch(() => {
         // Offline, or the server blinked. Whoever is here keeps working as
@@ -338,16 +347,23 @@
       .catch((cause: unknown) => {
         /*
          * Ключ протух — это обычный ход дела, а не поломка: ссылку открыли
-         * через час. Показываем причину и оставляем экран входа: войти по
-         * имени по-прежнему можно, просто без чужих прав.
+         * через час. Поэтому причина едет запиской на экран входа, а не
+         * экраном поломки.
+         *
+         * Раньше здесь ставился `failure`, и ветка `failure` в разметке стоит
+         * раньше и комнаты, и формы: комментарий обещал «оставляем экран
+         * входа», а на деле человек видел «Could not open this seminar» —
+         * причём и тот, у кого личность для этой комнаты уже сохранена.
+         * Ноутбук преподавателя, открывший вчерашнюю ссылку на пульт,
+         * выкидывало из живой комнаты до нажатия «Try again».
+         *
+         * Записку рисует JoinScreen; у кого личность есть — тот просто входит
+         * в комнату, и говорить ему не о чем: пульт он откроет из «Ещё».
          */
-        failure = {
-          missing: false,
-          message:
-            cause instanceof ApiError
-              ? cause.message
-              : 'Ссылка на пульт не сработала — попросите новую.',
-        }
+        notice =
+          cause instanceof ApiError
+            ? cause.message
+            : 'Ссылка на пульт не сработала — попросите новую.'
         landing = `/s/${id}`
       })
       .finally(() => {
@@ -374,8 +390,15 @@
     Ключ без шага: `/p/:id/3` → `/p/:id/4` — это перелистывание внутри одной
     публикации, и пересобирать её ради него значило бы загружать семинар
     заново на каждый шаг.
+
+    И С ПРЕФИКСОМ ВИДА. Slug уникален внутри вида, а не глобально: адреса
+    курса и публикации проверяются разными таблицами (PK — пара вид+slug), так
+    что `/c/ml-2026` и `/p/ml-2026` существуют одновременно совершенно
+    законно. Голый handle давал им один и тот же ключ, экран не пересобирался,
+    загруженный курс никто не гасил — и нажатие на семинар в списке меняло
+    адрес, оставляя на экране тот же список.
   -->
-  {#key courseId ?? publicSeminar?.id}
+  {#key courseId ? `c:${courseId}` : `p:${publicSeminar?.id ?? ''}`}
     {#await reader() then Reader}
       <Reader
         course={courseId}
@@ -393,10 +416,15 @@
   {/await}
 {:else if sessionId === null}
   <!--
-    The root is not a screen any more. Students never arrive here — they open a
-    seminar link — so the only person who ever types the bare address is staff,
-    and what they want is the panel. AdminScreen shows the sign-in when there is
-    no session, which is the "or the sign-in" half of it.
+    The root is not a screen any more. A student has no reason to type the bare
+    address — they open a seminar link — so whoever lands here is staff, and
+    what they want is the panel. AdminScreen shows the sign-in when there is no
+    session, which is the "or the sign-in" half of it.
+
+    «Не имеет причины» — не то же самое, что «не может»: студента сюда приводил
+    каждый выход из комнаты, потому что и марка в шапке, и кнопка на экране
+    отказа вели на `/`. Обе теперь ведут туда только штат — см. выше и
+    SessionScreen.
   -->
   {#await adminScreen() then AdminScreen}
     <AdminScreen />
@@ -417,16 +445,29 @@
           ? 'The seminar may have ended, or the link was copied only halfway. Ask whoever shared it for a fresh one.'
           : failure.message}
       </p>
+      <!--
+        «Back to Colloq» — только тому, кому там есть куда прийти.
+
+        Корень — это панель преподавателя (ниже), а на ней — форма «paste the
+        setup token». Студент, ткнувший сюда с неверной ссылки на семинар,
+        оказывался на экране входа штата и терял последнее, что у него было, —
+        адрес комнаты в строке браузера. Метка `mightBeStaff` ничего не
+        разрешает и ничего не спрашивает у сервера: она говорит только, что
+        этот браузер когда-то подписывался в панели, — и этого ровно достаточно,
+        чтобы решить, показывать ли дорогу туда.
+      -->
       <div class="mt-5 flex items-center justify-center gap-2">
         {#if !failure.missing}
           <button class="btn-primary" onclick={() => (attempt += 1)}>Try again</button>
         {/if}
-        <button
-          class={failure.missing ? 'btn-outline' : 'btn-ghost'}
-          onclick={() => navigate('/')}
-        >
-          Back to Colloq
-        </button>
+        {#if mightBeStaff()}
+          <button
+            class={failure.missing ? 'btn-outline' : 'btn-ghost'}
+            onclick={() => navigate('/')}
+          >
+            Back to Colloq
+          </button>
+        {/if}
       </div>
     </div>
   </div>

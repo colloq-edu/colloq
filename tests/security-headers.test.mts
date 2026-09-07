@@ -104,10 +104,11 @@ test('the policy says no to the four things a seminar never does', () => {
 test('the policy does not police scripts or styles', () => {
   /*
    * The app shell runs an inline theme script before the first paint and paints
-   * itself with an inline stylesheet, and the webfonts come from Google's
-   * origin. A script-src or style-src here would need 'unsafe-inline' to keep
-   * the app working, which is a longer header buying nothing — and one written
-   * without it would blank the product on the first load.
+   * itself with an inline stylesheet. A script-src or style-src here would need
+   * 'unsafe-inline' to keep the app working, which is a longer header buying
+   * nothing — and one written without it would blank the product on the first
+   * load. (The webfonts used to be the third half of this argument; they are
+   * self-hosted now, and headers.ts says what that opens up.)
    */
   assert.ok(!/script-src/.test(CONTENT_SECURITY_POLICY))
   assert.ok(!/style-src/.test(CONTENT_SECURITY_POLICY))

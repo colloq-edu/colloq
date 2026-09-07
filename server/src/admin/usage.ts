@@ -32,6 +32,7 @@ db.exec(`
 const insertUsage = db.prepare(
   'INSERT INTO ai_usage (session_id, participant_id, action, tokens, created_at) VALUES (?, ?, ?, ?, ?)',
 )
+/** Questions from one student in one seminar inside the trailing `windowMs`. */
 const countWindow = db.prepare(
   'SELECT COUNT(*) AS n FROM ai_usage WHERE session_id = ? AND participant_id = ? AND created_at >= ?',
 )
@@ -99,7 +100,7 @@ export function noteTokens(id: number, tokens: number): void {
   addTokens.run(Math.round(tokens), id)
 }
 
-/** Questions from one student in one seminar inside the trailing `windowMs`. */
+/** Questions from EVERYONE in one seminar inside the trailing `windowMs`. */
 const countRoomWindow = db.prepare(
   'SELECT COUNT(*) AS n FROM ai_usage WHERE session_id = ? AND created_at >= ?',
 )

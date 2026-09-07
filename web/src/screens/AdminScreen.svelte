@@ -46,7 +46,18 @@
    * форма, просящая токен установки, которого у него нет.
    */
   let pendingKey = $state<string | null>(null)
-  let retriedKey = false
+  /**
+   * Токен установки, который не доехал, — по тому же поводу и с тем же правом.
+   *
+   * Ключ научили не тратиться на обрыве связи, а токен продолжал тратиться
+   * безусловно: `.finally(spend)`. Разницы для человека никакой — обе ссылки
+   * одноразовые на вид и обе исчезают из адресной строки, — а токен вдобавок
+   * подставляется в форму первого запуска только при явном `unclaimed`. То
+   * есть после «Try again» преподаватель с рабочей ссылкой получал пустое поле
+   * и тридцать два символа, которые надо было откуда-то переписать.
+   */
+  let pendingToken = $state<string | null>(null)
+  let retriedEntry = false
   const tab = $derived<AdminTab>(
     path.startsWith('/admin/oracle')
       ? 'oracle'
@@ -97,14 +108,79 @@
     }
   }
 
+  /**
+   * Токен установки — по правилу ключа выше.
+   *
+   * `adminAuth.state` здесь и есть «сервер ответил»: `#authenticate` дочитывает
+   * состояние инстанса даже на отказе (см. auth.svelte.ts), так что пусто оно
+   * ровно тогда, когда сервера не было слышно вовсе.
+   */
+  async function useToken(setupToken: string): Promise<void> {
+    exchanging = true
+    pendingToken = null
+    try {
+      const signedIn = await adminAuth.signInWithToken(setupToken)
+      if (signedIn) {
+        spend()
+        return
+      }
+      // 409 here means "not claimed yet", which is exactly the state the card
+      // below is for. Leaving it as an error would tell a person following the
+      // printed link that they did something wrong.
+      //
+      // Всё остальное — отозванный токен, опечатка в ссылке — надо сказать
+      // словами. Раньше гасилась любая ошибка, и мёртвый токен молча
+      // подставлялся в форму, где выяснялся только после нажатия «Sign in».
+      const unclaimed = adminAuth.errorReason === 'unclaimed'
+      const said = adminAuth.error
+      const reason = adminAuth.errorReason
+
+      // The reload is not optional: the sign-in screen draws nothing until it
+      // knows whether the instance is claimed, and a failed exchange leaves
+      // that unknown. Without this the first-run link opened an empty page —
+      // measured, not guessed.
+      await adminAuth.refresh()
+
+      if (unclaimed) {
+        // A token cannot sign anyone in until the instance has an owner, and
+        // claiming needs a name and an email this link does not carry. So the
+        // token is carried into the form rather than spent on a request that
+        // was always going to fail — the person types two fields instead of
+        // also transcribing thirty-two characters.
+        adminAuth.offerSetupToken(setupToken)
+      } else if (adminAuth.error === null) {
+        // Успешный refresh гасит ошибку внутри себя, поэтому её возвращают
+        // сюда руками. Своя жалоба у refresh новее — она и остаётся.
+        adminAuth.error = said
+        adminAuth.errorReason = reason
+      }
+
+      // Сервера не было слышно вовсе: токен цел и адрес не тратим.
+      if (!adminAuth.state) {
+        pendingToken = setupToken
+        return
+      }
+      spend()
+    } finally {
+      exchanging = false
+    }
+  }
+
   $effect(() => {
     const reachable = adminAuth.state !== null
     const signedIn = adminAuth.me !== null
-    if (!pendingKey || retriedKey || exchanging || !reachable || signedIn) return
+    if (retriedEntry || exchanging || !reachable || signedIn) return
     // Один раз: вторая неудача — это уже не «сервер не поднялся», и крутить
     // запросы под экраном с кнопкой «Try again» незачем.
-    retriedKey = true
-    void useKey(pendingKey)
+    if (pendingKey) {
+      retriedEntry = true
+      void useKey(pendingKey)
+      return
+    }
+    if (pendingToken) {
+      retriedEntry = true
+      void useToken(pendingToken)
+    }
   })
 
   onMount(() => {
@@ -115,46 +191,7 @@
     if (credential?.kind === 'key') {
       void useKey(credential.value)
     } else if (credential?.kind === 'token') {
-      const setupToken = credential.value
-      void adminAuth
-        .signInWithToken(setupToken)
-        .then(async (signedIn) => {
-          if (signedIn) return
-          // 409 here means "not claimed yet", which is exactly the state the
-          // card below is for. Leaving it as an error would tell a person
-          // following the printed link that they did something wrong.
-          //
-          // Всё остальное — отозванный токен, опечатка в ссылке — надо сказать
-          // словами. Раньше гасилась любая ошибка, и мёртвый токен молча
-          // подставлялся в форму, где выяснялся только после нажатия «Sign in».
-          const unclaimed = adminAuth.errorReason === 'unclaimed'
-          const said = adminAuth.error
-          const reason = adminAuth.errorReason
-
-          // The reload is not optional: the sign-in screen draws nothing until
-          // it knows whether the instance is claimed, and a failed exchange
-          // leaves that unknown. Without this the first-run link opened an
-          // empty page — measured, not guessed.
-          await adminAuth.refresh()
-
-          if (unclaimed) {
-            // A token cannot sign anyone in until the instance has an owner,
-            // and claiming needs a name and an email this link does not carry.
-            // So the token is carried into the form rather than spent on a
-            // request that was always going to fail — the person types two
-            // fields instead of also transcribing thirty-two characters.
-            adminAuth.offerSetupToken(setupToken)
-          } else if (adminAuth.error === null) {
-            // Успешный refresh гасит ошибку внутри себя, поэтому её возвращают
-            // сюда руками. Своя жалоба у refresh новее — она и остаётся.
-            adminAuth.error = said
-            adminAuth.errorReason = reason
-          }
-        })
-        .finally(() => {
-          spend()
-          exchanging = false
-        })
+      void useToken(credential.value)
     } else {
       void adminAuth.load()
     }

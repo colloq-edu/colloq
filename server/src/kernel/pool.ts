@@ -93,6 +93,32 @@ function roomToken(sessionId: string): string {
 
 const containerFor = (sessionId: string) => `${ROOM_PREFIX}-${sessionId}`
 
+/**
+ * Кому сказать, что контейнер комнаты пришлось пересоздать.
+ *
+ * Пересоздание — это новый Python: переменные семинара, открытый терминал и
+ * всё, что ядро успело посчитать, остаются в снесённом контейнере. Молча этого
+ * делать нельзя, а звать `kernelNote` отсюда некому: kernel/index.ts зависит от
+ * пула, не наоборот. Поэтому пул объявляет, а слушателя ставит тот, у кого есть
+ * документ комнаты.
+ */
+type RecreateListener = (sessionId: string, why: string) => void
+const recreateListeners: RecreateListener[] = []
+
+export function onRoomKernelRecreated(cb: RecreateListener): void {
+  recreateListeners.push(cb)
+}
+
+function announceRecreate(sessionId: string, why: string): void {
+  for (const cb of [...recreateListeners]) {
+    try {
+      cb(sessionId, why)
+    } catch (err) {
+      console.error(`[kernel] слушатель пересоздания упал для ${sessionId}:`, err)
+    }
+  }
+}
+
 /** The host port Docker gave a container, read back after it started. */
 async function publishedPort(container: string): Promise<number | null> {
   const res = await run(['port', container, '8888/tcp'])
@@ -136,19 +162,56 @@ async function sameImage(container: string, image: string): Promise<boolean> {
 }
 
 /**
+ * Имена, которыми docker зовёт «сеть по умолчанию», когда `--network` не давали.
+ *
+ * Их не одно. Docker 20 писал в `HostConfig.NetworkMode` слово `default`, а
+ * Docker 24+ пишет настоящее имя сети — `bridge`. Сравнение с одним только
+ * `default` на современном демоне не сходилось НИКОГДА: каждый первый Run
+ * после перезапуска сервера в хостовом режиме объявлял «сервер сменил сеть»,
+ * сносил контейнер комнаты со всеми её переменными и поднимал пустой — молча,
+ * посреди пары, ровно вопреки тому, ради чего написан `shutdownKernels`.
+ */
+const BARE_NETWORKS = new Set(['default', 'bridge'])
+
+/**
+ * Сходится ли строка режима сети с той, в которой мы теперь ищем контейнер.
+ *
+ * Чистая функция, потому что доказывать надо именно это правило, а настоящего
+ * docker в тестах нет.
+ */
+export function networkMatches(mode: string, network: string): boolean {
+  const actual = mode.trim()
+  if (!network) return BARE_NETWORKS.has(actual)
+  return actual === network
+}
+
+/**
  * В той ли сети контейнер, в которой мы теперь его ищем.
  *
  * Инстанс, переехавший с `make run` на `make up` (или обратно), находит по
  * имени контейнер прошлого режима: с опубликованным портом и без нашей сети —
  * или наоборот. Дороги до него в новом режиме нет, и комната ждала бы ответа
  * девяносто секунд на каждый Run; пересоздать дешевле.
+ *
+ * Строка режима — только первый, дешёвый вопрос. Не сошлась — спрашиваем то,
+ * что нас на самом деле волнует: есть ли до контейнера дорога в НАШЕМ режиме.
+ * В хостовом это опубликованный порт, в сетевом — членство в нашей сети. Так
+ * очередное имя, которое придумает следующая версия docker, будет стоить один
+ * лишний вызов, а не потерянные переменные семинара.
  */
 async function sameNetwork(container: string, network: string): Promise<boolean> {
   const res = await run(['inspect', container, '--format', '{{.HostConfig.NetworkMode}}'])
   if (res.code !== 0) return true
-  // Без `--network` docker пишет сюда `default` — сравнение симметрично, эти
-  // контейнеры создаём только мы.
-  return res.out.trim() === (network || 'default')
+  if (networkMatches(res.out.trim(), network)) return true
+  if (!network) return (await publishedPort(container)) !== null
+  const joined = await run([
+    'inspect',
+    container,
+    '--format',
+    '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}',
+  ])
+  if (joined.code !== 0) return false
+  return joined.out.trim().split(/\s+/).includes(network)
 }
 
 /**
@@ -267,34 +330,48 @@ export async function isolationLost(): Promise<boolean> {
  * вчерашних семинаров переставали существовать для уборки простоя и жили до
  * `make down`. Метку ставит `docker run` ниже, и она переживает нас.
  */
-export async function listRoomKernels(): Promise<string[]> {
-  const rooms = await roomContainers(false)
-  return rooms.map((room) => room.session).filter((session) => session.length > 0)
+export async function listRoomKernels(): Promise<Array<{ session: string; running: boolean }>> {
+  const rooms = await roomContainers()
+  return rooms
+    .filter((room) => room.session.length > 0)
+    .map((room) => ({ session: room.session, running: room.running }))
 }
 
 /** Комната и срез, который держит её контейнер; срез пустой — комната без GPU. */
 interface RoomContainer {
   session: string
   gpu: string
+  /**
+   * Живой ли контейнер прямо сейчас.
+   *
+   * Уборке простоя это нужно знать, а не только «есть ли он»: остановленный
+   * контейнер (`--restart=no` плюс перезагрузка машины — и таких все) для
+   * `docker ps` без `-a` не существует вовсе, так что до сих пор он не попадал
+   * в уборку никогда и держал свой срез GPU до `make down`.
+   */
+  running: boolean
 }
 
 /**
- * Контейнеры комнат вместе с их метками.
+ * Контейнеры комнат вместе с их метками — и живые, и остановленные.
  *
- * `all` — это `docker ps -a`, и для раздачи срезов только так и правильно:
+ * `docker ps -a`, всегда. Для раздачи срезов только так и правильно:
  * остановленный контейнер свой срез держит, его поднимут обратно `docker start`
- * с теми же переменными и тем же устройством. Уборке простоя, наоборот, нужны
- * живые — она и спрашивает без `-a`.
+ * с теми же переменными и тем же устройством. Уборка простоя раньше спрашивала
+ * без `-a` и ровно поэтому не видела ни одного остановленного контейнера: после
+ * перезагрузки машины (`--restart=no`) такими становятся ВСЕ, срезы GPU
+ * оставались за комнатами, которых больше никто не откроет, и новый семинар
+ * слышал «свободных срезов нет». Кто живой, а кто нет, сказано полем `running`.
  */
-async function roomContainers(all: boolean): Promise<RoomContainer[]> {
+async function roomContainers(): Promise<RoomContainer[]> {
   if (!(await canIsolate())) return []
   const res = await run([
     'ps',
-    ...(all ? ['-a'] : []),
+    '-a',
     '--filter',
     'label=colloq.kind=room-kernel',
     '--format',
-    '{{.Label "colloq.session"}}\t{{.Label "colloq.gpu"}}',
+    '{{.Label "colloq.session"}}\t{{.Label "colloq.gpu"}}\t{{.State}}',
   ])
   if (res.code !== 0) return []
   return res.out
@@ -302,8 +379,12 @@ async function roomContainers(all: boolean): Promise<RoomContainer[]> {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [session, gpu] = line.split('\t')
-      return { session: (session ?? '').trim(), gpu: (gpu ?? '').trim() }
+      const [session, gpu, state] = line.split('\t')
+      return {
+        session: (session ?? '').trim(),
+        gpu: (gpu ?? '').trim(),
+        running: (state ?? '').trim() === 'running',
+      }
     })
 }
 
@@ -403,7 +484,7 @@ const reserved = new Map<string, string>()
  */
 export function pickGpu(
   devices: string[],
-  taken: RoomContainer[],
+  taken: Array<Pick<RoomContainer, 'session' | 'gpu'>>,
   sessionId: string,
 ): string | null {
   const mine = taken.find((held) => held.session === sessionId && devices.includes(held.gpu))
@@ -431,8 +512,10 @@ export function gpuRefusal(env: string, devices: string[]): string {
  * Кто какой срез держит прямо сейчас — по меткам живых И остановленных
  * контейнеров, плюс брони этого процесса. Нужно панели и раздаче.
  */
-export async function gpuAssignments(): Promise<RoomContainer[]> {
-  const held = (await roomContainers(true)).filter((room) => room.gpu.length > 0)
+export async function gpuAssignments(): Promise<Array<Pick<RoomContainer, 'session' | 'gpu'>>> {
+  const held: Array<Pick<RoomContainer, 'session' | 'gpu'>> = (await roomContainers())
+    .filter((room) => room.gpu.length > 0)
+    .map((room) => ({ session: room.session, gpu: room.gpu }))
   const known = new Set(held.map((room) => room.session))
   for (const [session, gpu] of reserved) if (!known.has(session)) held.push({ session, gpu })
   return held
@@ -584,6 +667,16 @@ async function startContainer(
    */
   const recreate = async (why: string): Promise<KernelEndpoint> => {
     if (retried) throw new Error(`контейнер комнаты не удалось поднять: ${why}`)
+    /*
+     * Сказать вслух, если сносится живой (или замерший) контейнер.
+     *
+     * Пересоздание — это чистый Python: все переменные семинара, всё
+     * посчитанное и pty терминала уходят вместе с ним. Молчаливая потеря
+     * посреди пары выглядит как «ядро сошло с ума»: `x` был и вдруг NameError,
+     * и ни одной строки об этом нигде. `missing` не считается — там терять
+     * нечего, контейнера и не было.
+     */
+    if (state === 'running' || state === 'broken') announceRecreate(sessionId, why)
     await run(['rm', '-f', container], 60_000)
     endpoints.delete(sessionId)
     return startContainer(sessionId, env, true)

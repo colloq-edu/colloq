@@ -64,10 +64,22 @@
   import type { Awareness } from 'y-protocols/awareness'
   import type { Compartment } from '@codemirror/state'
   import type { EditorView } from '@codemirror/view'
+  import { backspaceRemovesCell } from './cell-keys'
+  import { changeFits } from './cell-paste'
+  import { cellAwareness, type CellAwareness } from './cell-awareness'
 
   interface Props {
     text: Y.Text
     awareness: Awareness
+    /**
+     * Чью каретку этот редактор рисует — имя ячейки, если он ячейкин.
+     *
+     * Без него в `yCollab` уходит присутствие комнаты целиком, и один чужой
+     * курсор стоит транзакции в КАЖДОМ смонтированном редакторе с обходом всех
+     * состояний (см. cell-awareness.ts). Свой лист консилиума и файл имени не
+     * дают: у первого присутствие своё и пустое, у второго — своё на документ.
+     */
+    cellId?: string | null
     undoManager: Y.UndoManager
     language: 'python' | 'markdown'
     readOnly?: boolean
@@ -80,6 +92,18 @@
     onescape?: () => void
     ondeleteempty?: () => void
     onarrowout?: (direction: -1 | 1) => void
+    /**
+     * Потолок знаков, выше которого редактор не принимает ВСТАВКУ, — или null.
+     *
+     * Стоит на своём листе консилиума: снимок сверх `MAX_ATTEMPT_CHARS` сервер
+     * не принимает, и вставка двенадцати тысяч знаков из IDE — одно движение,
+     * после которого лист перестаёт уезжать. Набор руками потолок не
+     * запрещает: про него говорит счётчик под листом, и человек сам решает,
+     * что резать.
+     */
+    maxChars?: number | null
+    /** Вставку не приняли: сколько знаков в ней было — для слов об отказе. */
+    onoverflow?: (chars: number) => void
     placeholder?: string
     /**
      * What a screen reader announces on arriving here.
@@ -95,6 +119,7 @@
   let {
     text,
     awareness,
+    cellId = null,
     undoManager,
     language,
     readOnly = false,
@@ -106,6 +131,8 @@
     onescape,
     ondeleteempty,
     onarrowout,
+    maxChars = null,
+    onoverflow,
     placeholder = '',
     label = '',
   }: Props = $props()
@@ -139,7 +166,14 @@
    */
   const handlers: Pick<
     Props,
-    'onfocus' | 'onrun' | 'onrunstep' | 'onrunandadd' | 'onescape' | 'ondeleteempty' | 'onarrowout'
+    | 'onfocus'
+    | 'onrun'
+    | 'onrunstep'
+    | 'onrunandadd'
+    | 'onescape'
+    | 'ondeleteempty'
+    | 'onarrowout'
+    | 'onoverflow'
   > = {}
 
   $effect(() => {
@@ -150,6 +184,7 @@
     handlers.onescape = onescape
     handlers.ondeleteempty = ondeleteempty
     handlers.onarrowout = onarrowout
+    handlers.onoverflow = onoverflow
   })
 
   function fire(callback: (() => void) | undefined): boolean {
@@ -158,14 +193,33 @@
     return true
   }
 
+  /**
+   * Автоповтор Backspace — и почему он тут отдельным флагом.
+   *
+   * Биндинг `Backspace` срабатывает на каждом keydown, включая повторы при
+   * удержании. Стоило документу опустеть — следующий повтор (через ~30 мс)
+   * звал `ondeleteempty`, ячейка уходила из общей тетради, фокус синхронно
+   * переезжал в предыдущую, и оставшиеся повторы принимались стирать ЕЁ хвост,
+   * а опустошив — удаляли и её. Человек, зажавший Backspace, чтобы стереть
+   * `print(x)`, терял одну-две чужие ячейки вместе с выводом и не понимал, что
+   * случилось.
+   *
+   * Слушатель в фазе перехвата на обёртке: он приходит раньше обработчиков
+   * CodeMirror на `.cm-content`, поэтому к моменту биндинга флаг уже верен, и
+   * при этом ничего не надо знать о порядке расширений редактора.
+   */
+  let repeating = false
+
   interface ViewOptions {
     parent: HTMLElement
     ytext: Y.Text
-    peers: Awareness
+    peers: Awareness | CellAwareness
     undo: Y.UndoManager
     lang: Props['language']
     editable: boolean
     hint: string
+    /** Потолок знаков для вставки — или null, если его тут нет. */
+    ceiling: number | null
     /** Отсек, через который правило edit меняют, не разбирая редактор. */
     writable: Compartment
   }
@@ -180,17 +234,41 @@
     const { bracketMatching, indentOnInput } = cm.language
     const { EditorState, Prec } = cm.state
     const { highlightActiveLine, keymap, placeholder: placeholderExt } = cm.view
-    const { parent, ytext, peers, undo, lang, editable, hint, writable } = options
+    const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling } = options
+
 
     /** Leave the cell only from its outer edge, and never out from under a popup. */
+    /*
+     * Край — ВИДИМЫЙ, а не логический.
+     *
+     * Считали по номеру строки (`line.number === 1`), а редактор переносит
+     * длинные строки: в заметке с абзацем на три экранные строки ArrowUp со
+     * второй из них выпрыгивал в предыдущую ячейку вместо подъёма на строку
+     * выше. Для markdown это почти каждый абзац.
+     *
+     * Спрашиваем координаты: каретка на верхней ЭКРАННОЙ строке — та, что стоит
+     * на одной высоте с началом документа. Пиксель допуска — на округление
+     * подпикселей при масштабе экрана. Пока редактор не измерен, координат нет
+     * вовсе, и тогда остаётся прежнее правило по номеру строки: одно нажатие в
+     * первую же миллисекунду важнее точности.
+     */
+    function atVisualEdge(view: EditorView, direction: -1 | 1): boolean {
+      const range = view.state.selection.main
+      const here = view.coordsAtPos(range.head)
+      const edge = view.coordsAtPos(direction === -1 ? 0 : view.state.doc.length)
+      if (!here || !edge) {
+        const line = view.state.doc.lineAt(range.head)
+        return direction === -1 ? line.number === 1 : line.number === view.state.doc.lines
+      }
+      return direction === -1 ? here.top <= edge.top + 1 : here.bottom >= edge.bottom - 1
+    }
+
     function arrowOut(view: EditorView, direction: -1 | 1): boolean {
       if (!handlers.onarrowout) return false
       if (completionStatus(view.state) === 'active') return false
       const range = view.state.selection.main
       if (!range.empty) return false
-      const line = view.state.doc.lineAt(range.head)
-      const atEdge = direction === -1 ? line.number === 1 : line.number === view.state.doc.lines
-      if (!atEdge) return false
+      if (!atVisualEdge(view, direction)) return false
       handlers.onarrowout(direction)
       return true
     }
@@ -209,8 +287,13 @@
           },
         },
         {
+          // Удерживаемый Backspace не удаляет ячейку: см. `repeating` выше и
+          // cell-keys.ts, где это правило проверяется тестом.
           key: 'Backspace',
-          run: (view) => (view.state.doc.length === 0 ? fire(handlers.ondeleteempty) : false),
+          run: (view) =>
+            backspaceRemovesCell({ empty: view.state.doc.length === 0, repeat: repeating })
+              ? fire(handlers.ondeleteempty)
+              : false,
         },
         { key: 'ArrowUp', run: (view) => arrowOut(view, -1) },
         { key: 'ArrowDown', run: (view) => arrowOut(view, 1) },
@@ -232,6 +315,26 @@
           hint ? placeholderExt(hint) : [],
           cm.theme.colloqTheme,
           cm.view.EditorView.contentAttributes.of({ 'aria-label': label }),
+          /*
+           * Потолок листа: вставка, которая не влезает, не принимается целиком
+           * и со словами; набор руками при этом не запрещён — правило и его
+           * доводы в cell-paste.ts.
+           *
+           * Вставкой считаются ровно два пользовательских события — ⌘V и
+           * перенос мышью. У транзакций, которыми y-codemirror применяет
+           * правки Y.Text (чужие и наши SEED), userEvent нет вовсе, так что
+           * `pasted` у них false и отказать им нечем: отказ развёл бы редактор
+           * с документом.
+           */
+          ceiling === null
+            ? []
+            : EditorState.changeFilter.of((tr) => {
+                if (!tr.docChanged) return true
+                const pasted = tr.isUserEvent('input.paste') || tr.isUserEvent('input.drop')
+                if (changeFits({ chars: tr.newDoc.length, ceiling, pasted })) return true
+                handlers.onoverflow?.(tr.newDoc.length)
+                return false
+              }),
           // Yjs is the single source of truth for the text; no local history
           // extension, because the shared UndoManager already owns Mod-Z.
           cm.collab.yCollab(ytext, peers, { undoManager: undo }),
@@ -282,13 +385,28 @@
   $effect(() => {
     const parent = host
     const ytext = text
-    const peers = awareness
+    const scope = cellId
+    /*
+     * Ячейкин редактор видит присутствие только своей ячейки — иначе один чужой
+     * курсор будит все смонтированные редакторы разом (см. cell-awareness.ts).
+     * Свой курсор при этом по-прежнему объявляется в настоящее присутствие:
+     * вид только читает.
+     */
+    const scoped = scope ? cellAwareness(awareness, scope) : null
+    const peers = scoped ?? awareness
     const undo = undoManager
     const lang = language
-    if (!parent) return
+    if (!parent) {
+      scoped?.destroy()
+      return
+    }
 
     const hint = untrack(() => placeholder)
     const focusOnReady = untrack(() => autoFocus)
+    // Потолок у своего листа один на всё время его жизни — как и подсказка:
+    // отслеживать его значило бы разбирать редактор под пальцами ради числа,
+    // которое не меняется.
+    const ceiling = untrack(() => maxChars)
     /*
      * `readOnly` здесь НЕ отслеживается, и это несущее решение.
      *
@@ -311,7 +429,7 @@
       // with focus, this is the one question that matters.
       const holdingFocus = parent.contains(document.activeElement)
       const writable = new cm.state.Compartment()
-      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable })
+      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling })
       /*
        * Order matters, and nothing paints between these three statements. The
        * editor goes in first so focus can move straight from the shim into it:
@@ -334,6 +452,8 @@
       if (live === view) live = null
       view?.destroy()
       view = null
+      // После редактора: `destroy` плагина ещё снимет с вида свой слушатель.
+      scoped?.destroy()
       ready = false
     }
   })
@@ -369,7 +489,11 @@
 </script>
 
 <!-- No height, no overflow: the editor is as tall as its content and the page scrolls. -->
-<div bind:this={host} class="cm-cell text-ink">
+<div
+  bind:this={host}
+  class="cm-cell text-ink"
+  onkeydowncapture={(event) => (repeating = event.repeat)}
+>
   {#if !ready}
     <!--
       Stands in for CodeMirror at CodeMirror's own metrics. It wears two of

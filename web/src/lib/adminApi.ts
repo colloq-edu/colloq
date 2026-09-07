@@ -27,7 +27,13 @@ import type {
   UpdateOracleRequest,
   UpdateSeminarRequest,
 } from '@shared/admin'
-import type { Course, CourseItem, PublishCandidate } from '@shared/publish'
+import type {
+  AddressHolder,
+  Course,
+  CourseItem,
+  PublishCandidate,
+  SkippedStep,
+} from '@shared/publish'
 
 export type AdminErrorReason = AdminErrorBody['reason']
 
@@ -40,8 +46,39 @@ export class AdminApiError extends Error {
     message: string,
     readonly status: number,
     readonly reason: AdminErrorReason,
+    /**
+     * Тело отказа целиком — не всё в отказе умещается в одну фразу.
+     *
+     * 409 на смену адреса называет держателя имени (`holder`), и без него
+     * панель может только повторить «уже занят»: назвать курс, который его
+     * держит, и тем более отпустить прежнее имя, ей уже нечем.
+     */
+    readonly body: unknown = null,
   ) {
     super(message)
+  }
+}
+
+/**
+ * Держатель адреса из отказа 409 — или null, если отказ не о том.
+ *
+ * Разбор здесь, а не в компоненте: это значение приехало по сети, и верить ему
+ * на слово нельзя. Пока сервер держателя не называет (или назвал невнятно),
+ * панель ведёт себя ровно как раньше — показывает фразу отказа и не предлагает
+ * ничего отпускать.
+ */
+export function addressHolderOf(error: unknown): AddressHolder | null {
+  if (!(error instanceof AdminApiError) || error.status !== 409) return null
+  const holder = (error.body as { holder?: unknown } | null)?.holder
+  if (!holder || typeof holder !== 'object') return null
+  const it = holder as Partial<AddressHolder>
+  if (it.kind !== 'course' && it.kind !== 'publication') return null
+  if (typeof it.id !== 'string' || !it.id) return null
+  return {
+    kind: it.kind,
+    id: it.id,
+    name: typeof it.name === 'string' ? it.name : '',
+    former: it.former === true,
   }
 }
 
@@ -121,14 +158,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // отказ доезжал до экрана пустой строкой, которую `{#if error}` не рисует.
     let message = res.statusText || `The request failed (${res.status})`
     let reason = reasonForStatus(res.status)
+    let said: unknown = null
     try {
       const body = (await res.json()) as Partial<AdminErrorBody>
+      said = body ?? null
       if (body?.error) message = body.error
       if (body?.reason) reason = body.reason
     } catch {
       /* non-JSON error body */
     }
-    throw new AdminApiError(message, res.status, reason)
+    throw new AdminApiError(message, res.status, reason, said)
   }
 
   // Deletes and sign-out answer with no body; asking json() for one throws.
@@ -279,6 +318,23 @@ export const adminApi = {
       ...json({ slug }),
     }),
 
+  /**
+   * Отпустить своё прежнее имя в адресе.
+   *
+   * Прежнее имя держится вечно и не зря: ссылку с ним записали в чате группы.
+   * Но курс «ml-2025», переименованный в «ml-2025-fall», держал «ml-2025» и для
+   * курса следующего года — навсегда, и освободить его было нечем, кроме
+   * удаления курса-владельца. `id` здесь — держателя, а не того, кому имя
+   * понадобилось: отпускает только владелец имени и только прежнее.
+   *
+   * Цена необратима и названа вслух на экране: старая ссылка станет 404.
+   */
+  releaseFormerSlug: (kind: AddressHolder['kind'], id: string, slug: string) =>
+    request<void>(
+      `/slug/${kind}/${encodeURIComponent(id)}/former/${encodeURIComponent(slug)}`,
+      { method: 'DELETE' },
+    ),
+
   deleteCourse: (id: string) =>
     request<void>(`/courses/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
@@ -297,12 +353,30 @@ export const adminApi = {
         id: string
         slug: string | null
         steps: { seq: number; label: string; at: number }[]
+        /**
+         * Прежние имена этой страницы в адресе (`Course.former` в shared).
+         *
+         * Сервер везёт их вместе с самой публикацией (routes/courses.ts ·
+         * `formerSlugs`), а тип их отбрасывал — и экран публикации держал
+         * своё объявление поля, чтобы отпустить прежнее имя было чем.
+         * Необязательное: сервер постарее его не присылает вовсе.
+         */
+        former?: string[]
       } | null
     }>(`/seminars/${encodeURIComponent(id)}/publish`),
 
+  /**
+   * `skipped` — моменты, которые шагами не стали, и почему.
+   *
+   * Молчание здесь стоило страницы: преподаватель отмечал семь моментов,
+   * получал шесть шагов и не знал, какой пропал. Сервер называет их поимённо
+   * (shared/publish.ts · SkippedStep), и экран обязан их показать — иначе поле
+   * снова уедет в никуда.
+   */
   publish: (id: string, steps: { seq: number; label: string; at: number }[], finalLabel?: string) =>
     request<{
       publication: { id: string; slug: string | null; steps: { seq: number; label: string }[] }
+      skipped: SkippedStep[]
     }>(`/seminars/${encodeURIComponent(id)}/publish`, {
       method: 'POST',
       ...json({ steps, finalLabel }),

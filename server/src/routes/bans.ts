@@ -16,13 +16,18 @@ import { addressOf, banParticipant, deviceOf, liftBan, listBans } from '../bans.
 import { evictBanned, purgeCouncilOf } from '../control.js'
 import { getParticipant, getSession } from '../db.js'
 import { purgeQuestions } from './ai.js'
-import { sessionAuth } from './sessions.js'
+import { banDoor, sessionAuth } from './sessions.js'
+import { SESSION_MISSING } from '@shared/protocol'
 
 /** Столько же, сколько у прочих идентификаторов на этих проводах. */
 const MAX_ID = 128
 
 export function banRoutes(): Router {
   const router = Router()
+
+  // И на своих дверях тоже: список банов — это комната, а право у неё одно
+  // (routes/sessions.ts · banDoor).
+  router.use('/api/sessions/:id', banDoor)
 
   /*
    * Право во всех трёх дверях одно и спрашивается там же, где его спрашивают
@@ -37,7 +42,7 @@ export function banRoutes(): Router {
 
   router.get('/api/sessions/:id/bans', (req, res) => {
     const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
     if (auth.role !== 'host') {
@@ -48,7 +53,7 @@ export function banRoutes(): Router {
 
   router.post('/api/sessions/:id/bans', (req, res) => {
     const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
     if (auth.role !== 'host') {
@@ -104,7 +109,7 @@ export function banRoutes(): Router {
 
   router.delete('/api/sessions/:id/bans/:banId', (req, res) => {
     const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
     if (auth.role !== 'host') {

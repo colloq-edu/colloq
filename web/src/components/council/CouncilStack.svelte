@@ -15,12 +15,14 @@
    * `askToBan` из lib/bans.ts ничего не знает о сессии, поэтому зовётся прямо
    * отсюда; `onban` — если родитель хочет иначе.
    */
-  import type { CouncilAttempt, CouncilBoard } from '@shared/protocol'
+  import { COUNCIL_SHARED_KERNEL_NOTE } from '@shared/notebook'
+  import { councilLetters, type CouncilAttempt, type CouncilBoard } from '@shared/protocol'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Code from '@/components/ui/Code.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import CellOutputs from '@/components/notebook/CellOutputs.svelte'
   import { askToBan } from '@/lib/bans'
+  import { councilStripText } from '@/lib/council.svelte'
   import {
     groupAttempts,
     neighbours,
@@ -55,6 +57,19 @@
     onrun: (participantId: string) => void
     onreply: (to: { participantId: string } | { groupKey: string }, text: string) => void
     onmark: (participantId: string, correct: boolean | null) => void
+    /**
+     * Попросить вывод этой попытки: в стопку он не поехал.
+     *
+     * Полный кадр стопки режется по бюджету вывода (сервер: control.ts), и у
+     * попыток сверх бюджета `run.outputs` пуст, а `run.outputsOmitted` стоит.
+     * Карточка — единственное место, где вывод показывают, поэтому повод даёт
+     * она и только про ту попытку, которую сейчас смотрят; зовётся на каждый
+     * показ, а «спрашивали ли уже» решает `CouncilState.wantOutputs` — там же,
+     * где живёт стопка. Ответ приезжает обычной дельтой `council:patch`. Без
+     * обработчика ничего не ломается: карточка говорит, что вывода в кадре
+     * нет, и не обещает его.
+     */
+    onneedoutputs?: (participantId: string) => void
     onban?: (participantId: string) => void
     onask: () => void
     onstop?: () => void
@@ -73,6 +88,7 @@
     onrun,
     onreply,
     onmark,
+    onneedoutputs,
     onban,
     onask,
     onstop = () => {},
@@ -122,6 +138,20 @@
   const running = $derived(
     current?.run !== null && (current?.run?.state === 'running' || current?.run?.state === 'queued'),
   )
+
+  /**
+   * Развернули карточку, а вывода в кадре нет — попросить его.
+   *
+   * Своей памяти о том, что уже спрашивали, здесь нет намеренно: она есть у
+   * `CouncilState.wantOutputs`, и там ей и место — стопку эта карточка не
+   * держит, а вторая копия правила разошлась бы с первой на первом же
+   * переподключении (полный кадр стопки просьбы обнуляет). Отсюда — только
+   * повод: вот эту попытку сейчас смотрят.
+   */
+  $effect(() => {
+    const attempt = current
+    if (attempt?.run?.outputsOmitted) onneedoutputs?.(attempt.participantId)
+  })
 
   function go(id: string | null): void {
     if (id) onposition(id)
@@ -192,13 +222,15 @@
   <!-- Полоса режима: счётчики и переключатель, общие для обоих видов. -->
   <div class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line pb-2">
     <span class="text-2xs font-bold uppercase tracking-label text-accent-text">Консилиум{cellLabel}</span>
+    <!--
+      Строка счётчиков — из `councilStripText`, а не собранная здесь руками:
+      это была третья копия одного правила, и она уже разошлась с остальными —
+      «· 0 разных ответов» в начале работы писала только она. Второй довод —
+      число групп НА ЭКРАНЕ: сервер считает их по всей комнате, а человек
+      пересчитывает глазами то, что доехало до стопки.
+    -->
     <span class="font-mono text-2xs tabular-nums text-muted">
-      {board.counts.attempts} {plural(board.counts.attempts, 'попытка', 'попытки', 'попыток')}
-      · {board.counts.submitted} {plural(board.counts.submitted, 'сдал', 'сдали', 'сдали')}
-      {#if board.counts.writing > 0}
-        · {board.counts.writing} ещё {plural(board.counts.writing, 'пишет', 'пишут', 'пишут')}
-      {/if}
-      · {groups.length} {plural(groups.length, 'разный ответ', 'разных ответа', 'разных ответов')}
+      {councilStripText(board.counts, groups.length)}
     </span>
     {#if board.lock !== 'council'}
       <span class="text-2xs text-warning">консилиум закрыт — попытки остались на просмотр</span>
@@ -221,6 +253,25 @@
         Сводка
       </button>
     </div>
+    <!--
+      Третье место, где говорится про общее ядро, — и последнее из трёх, что
+      обещает шапка COUNCIL_SHARED_KERNEL_NOTE (подсказка ручки studentRun,
+      эта полоса, README). Копия одна, в shared/notebook.ts: пересказ своими
+      словами разъехался бы с ручкой на первой же правке.
+
+      Строкой, а не подсказкой на метке «Консилиум»: пульт ведут с планшета,
+      где наведения нет вовсе, а отметку «верно» преподаватель ставит по
+      выводу — предупреждение, которое надо навести мышью, до него не доедет.
+      Место — под счётчиками: это про режим целиком, а не про попытку на
+      карточке, и сказать это довольно один раз сверху, а не у каждой кнопки.
+      `basis-full` переносит строку на свою — не `w-full`: на широком пульте
+      места справа от переключателя хватило бы, и она встала бы рядом с ним.
+      Мера — как у остального длинного текста в продукте: на всю ширину зала
+      строка в 10 px не читается.
+    -->
+    <p class="basis-full max-w-[660px] text-2xs leading-snug text-muted">
+      {COUNCIL_SHARED_KERNEL_NOTE}
+    </p>
   </div>
 
   {#if view === 'summary'}
@@ -323,17 +374,34 @@
           </div>
           {#if attempt.run.outputs.length > 0}
             <CellOutputs outputs={attempt.run.outputs} />
+          {:else if attempt.run.outputsOmitted}
+            <!-- Пустой вывод и «вывода в кадре нет» — разные вещи, и молчать
+                 здесь нельзя: преподаватель решил бы, что запуск ничего не
+                 напечатал. Запрос уже ушёл (см. `asked`), ответ приедет
+                 дельтой. -->
+            <p class="px-3 pb-2 pt-1 text-2xs italic text-muted">
+              вывод не поехал со стопкой{onneedoutputs ? ' — просим его отдельно…' : ''}
+            </p>
           {/if}
         </div>
       {/if}
 
-      {#if attempt.reply}
+      <!-- Письма преподавателя — строка на письмо, а не одним абзацем.
+           Их не больше двух (личное и групповое), и это разные письма: у
+           склейки через пустую строку переносы здесь схлопываются, и «Проверьте
+           знак» с рассылкой читались одной фразой. Черта сверху у каждого их и
+           разделяет; групповое помечено словом — иначе непонятно, кто ещё это
+           видел. -->
+      {#each councilLetters(attempt) as letter (letter.to ?? 'person')}
         <p class="flex flex-wrap gap-x-2 border-t border-line-soft px-3 py-1.5 text-2xs text-muted">
-          <span class="font-semibold text-ink">{attempt.reply.by}</span>
-          <span class="font-mono">{clock(attempt.reply.at)}</span>
-          <span class="min-w-0 flex-1 break-words">{attempt.reply.text}</span>
+          <span class="font-semibold text-ink">{letter.by}</span>
+          <span class="font-mono">{clock(letter.at)}</span>
+          {#if letter.to === 'group'}
+            <span>· всей группе</span>
+          {/if}
+          <span class="min-w-0 flex-1 break-words">{letter.text}</span>
         </p>
-      {/if}
+      {/each}
 
       <div class="flex flex-wrap items-center gap-2 border-t border-line-soft px-3 py-2">
         <button
@@ -379,6 +447,18 @@
             {/if}
           </button>
         {/if}
+        <!--
+          Две отметки, а не одна трёхтактная.
+
+          Статус `wrong` (protocol.ts · CouncilStatus) продукт знает всюду —
+          охряная черта под сегментом группы, чип «неверно», отметка сильнее
+          запуска у оракула, — и не возникал ни разу: пульт слал только
+          `true`/`null`. Трёхтактная кнопка (верно → неверно → снять) закрыла бы
+          дыру дешевле, но второе нажатие по «Верно» ставило бы «Неверно» —
+          и подпись под пальцем перестала бы отвечать за то, что случится.
+          Отметки две, каждая снимается повторным нажатием собой же.
+          Цвета — те же, что у чипа состояния (CHIP · toneOf).
+        -->
         <button
           type="button"
           class={cn('btn-ghost h-8', attempt.correct === true && 'text-positive hover:text-positive')}
@@ -387,6 +467,15 @@
         >
           <Icon name="check" size={13} />
           Верно
+        </button>
+        <button
+          type="button"
+          class={cn('btn-ghost h-8', attempt.correct === false && 'text-warning hover:text-warning')}
+          aria-pressed={attempt.correct === false}
+          onclick={() => onmark(attempt.participantId, attempt.correct === false ? null : false)}
+        >
+          <Icon name="x" size={13} />
+          Неверно
         </button>
         <button
           type="button"

@@ -1,6 +1,22 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,svelte}'],
+  /*
+   * `hover:*` — только там, где есть настоящий курсор: флаг заворачивает КАЖДУЮ
+   * такую утилиту в `@media (hover: hover) and (pointer: fine)`.
+   *
+   * Пульт и тетрадь открывают с iPad, а тап на сенсорном экране оставляет
+   * hover висеть до следующего касания в другом месте: подсветка залипала на
+   * Interrupt/Restart/Clear в полосе запуска, на тулбаре ячейки и на строках
+   * дерева файлов — палец убран, кнопка «под курсором». Флагом, а не проходом
+   * по файлам, потому что правило одно на весь проект и следующая написанная
+   * `hover:` утилита должна получить его сама.
+   *
+   * Цена флага: hover перестаёт быть входом на сенсорном экране, поэтому у
+   * всего, что открывается ТОЛЬКО по hover, обязан быть второй путь —
+   * `focus-within`, выбранная ячейка, открытое меню.
+   */
+  future: { hoverOnlyWhenSupported: true },
   // Mirrors the token cascade in index.css: an explicit [data-theme] wins over
   // the OS preference, so a `dark:` utility never disagrees with its palette.
   darkMode: [
@@ -62,7 +78,12 @@ export default {
         // hoping the machine has them. Inter stays as the name to fall back to
         // if those files ever fail to arrive; nothing downloads it any more.
         sans: ["'HSE Sans'", 'Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        // Стека здесь нет намеренно: он один на весь продукт и лежит в
+        // index.css (--font-mono) — вместе с подменными семействами, у которых
+        // правки метрик под JetBrains Mono (index.html), чтобы swap не двигал
+        // строки. Ящик терминала и html-вывод ядра набраны той же переменной;
+        // список в четырёх местах уже однажды разошёлся.
+        mono: ['var(--font-mono)'],
       },
       // A scale sized for a dense workspace. Tailwind's defaults start at 12px
       // and step in 2px, which is why every component was escaping into
@@ -199,7 +220,9 @@ export default {
         quick: 'var(--speed-quick)',   // hover, focus, a colour settling
         press: 'var(--speed-press)',   // the transform under the finger
         panel: 'var(--speed-panel)',   // a panel or popover arriving
-        drawer: 'var(--speed-drawer)', // a full-height surface from an edge
+        // No `drawer`: the two full-height surfaces travel on transition:fly,
+        // whose duration is a JS argument and cannot read a CSS variable. The
+        // step it named had no consumer at all — see the ladder in index.css.
       },
       keyframes: {
         // 4px, not 12: this is an element appearing, not an element arriving
@@ -211,19 +234,6 @@ export default {
           to: { opacity: '1', transform: 'translateY(0)' },
         },
         blink: { '0%, 100%': { opacity: '1' }, '50%': { opacity: '0.25' } },
-        /*
-         * Выдвижной лист пульта — заметки, «Ещё», страницы — выезжает СНИЗУ.
-         * Отсюда и на 100 % высоты: лист приходит из-под кромки планшета, как
-         * всякий лист на iPad, а не «появляется» — появление из ниоткуда на
-         * ночном экране читается как вспышка. Именованные кадры здесь, а не
-         * в scoped-стиле ConsoleView, потому что лист заметок в портрете
-         * пристыкован и не едет, а в ландшафте едет; кто его показывает, тот
-         * и решает, и решать должен одной утилитой.
-         */
-        'pult-slide': {
-          from: { transform: 'translateY(100%)' },
-          to: { transform: 'translateY(0)' },
-        },
       },
       animation: {
         // 160ms is the small-entrance tier (125-200ms), and the curve is the
@@ -238,10 +248,6 @@ export default {
         // own in-out curve is a snap-and-hold, which on a live dot reads as a
         // fault rather than a pulse.
         blink: 'blink 1.1s ease-in-out infinite',
-        // 220 мс — ярус панели, кривая — дверная: лист ПРИБЫВАЕТ, а не
-        // хлопает. `both`, чтобы на первом кадре лист уже стоял за кромкой, а
-        // не мигнул на месте до старта анимации.
-        'pult-slide': 'pult-slide var(--speed-panel) var(--ease-drawer) both',
       },
     },
   },

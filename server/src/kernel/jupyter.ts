@@ -196,6 +196,19 @@ export class JupyterKernel {
   private readonly listeners: Array<(phase: KernelPhase, expected: boolean) => void> = []
   private reconnectAttempts = 0
   private reconnectTimer: NodeJS.Timeout | null = null
+  /**
+   * Переподключение, которое идёт прямо сейчас.
+   *
+   * Пока `reconnect()` ждёт `openSocket` (до двадцати секунд), `this.socket`
+   * уже null, а таймер уже снят — то есть оба сторожа пусты, и `waitForSocket`,
+   * опрашивающий состояние каждые сто миллисекунд из каждого `execute`, заводил
+   * ВТОРОЕ переподключение, а за ним третье. Открывшиеся сокеты просто
+   * присваивались поверх, старые оставались с живым `on('message')`, и iopub
+   * приходил дважды: каждый `print` в комнате печатался по два раза до конца
+   * жизни ядра. В terminal.ts этот же класс бед закрыт полем `opening`; здесь
+   * он был открыт.
+   */
+  private reconnecting: Promise<void> | null = null
   private disposed = false
   private _phase: KernelPhase = 'starting'
   /** Просили ли мы сами о последней смене фазы; см. `phaseExpected`. */
@@ -385,8 +398,19 @@ export class JupyterKernel {
   async answerInput(value: string): Promise<boolean> {
     const parent = this.awaitingInput
     if (!parent) return false
-    this.awaitingInput = null
+    /*
+     * Ожидание снимается ПОСЛЕ отправки, а не до.
+     *
+     * `waitForSocket` — это до сорока пяти секунд ожидания канала, и он умеет
+     * бросить. Сброшенное заранее ожидание превращало такой бросок в тупик:
+     * ядро всё ещё стоит в `input()`, а `waitingForInput` уже false — значит
+     * каждое следующее «Send» молча получает `false`, приглашение висит у всей
+     * комнаты, очередь стоит, и выход один — «остановить».
+     */
     const socket = await this.waitForSocket()
+    // Пока мы ждали канал, на приглашение мог ответить кто-то другой — в
+    // семинаре это обычное дело, а не гонка.
+    if (this.awaitingInput !== parent) return false
     socket.send(
       JSON.stringify({
         header: this.makeHeader('input_reply'),
@@ -396,6 +420,7 @@ export class JupyterKernel {
         channel: 'stdin',
       }),
     )
+    this.awaitingInput = null
     return true
   }
 
@@ -589,6 +614,7 @@ export class JupyterKernel {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.reconnecting = null
     if (this.watchdog) {
       clearInterval(this.watchdog)
       this.watchdog = null
@@ -611,6 +637,7 @@ export class JupyterKernel {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.reconnecting = null
     if (this.watchdog) {
       clearInterval(this.watchdog)
       this.watchdog = null
@@ -706,11 +733,26 @@ export class JupyterKernel {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        // Предыдущий канал закрывается здесь и сейчас: два открытых сокета к
+        // одному ядру — это весь iopub дважды, в каждой ячейке комнаты.
+        const previous = this.socket
         this.socket = socket
         this.reconnectAttempts = 0
+        if (previous && previous !== socket) {
+          try {
+            previous.terminate()
+          } catch {
+            /* уже закрыт */
+          }
+        }
         resolve()
       })
-      socket.on('message', (data: RawData) => this.handleFrame(data))
+      socket.on('message', (data: RawData) => {
+        // Кадры сокета, который уже сменили, — эхо прошлого канала: те же
+        // сообщения уже пришли (или придут) по новому.
+        if (this.socket !== socket) return
+        this.handleFrame(data)
+      })
       socket.on('error', (err: Error) => {
         if (settled) return
         settled = true
@@ -719,13 +761,16 @@ export class JupyterKernel {
       })
       socket.on('close', () => {
         clearTimeout(timer)
-        if (this.socket === socket) this.socket = null
+        const ours = this.socket === socket
+        if (ours) this.socket = null
         if (!settled) {
           settled = true
           reject(new Error('channel closed before it opened'))
           return
         }
-        this.scheduleReconnect()
+        // Закрылся не наш канал — тот, что мы сами и сменили: переподключаться
+        // к нему незачем, живой уже есть.
+        if (ours) this.scheduleReconnect()
       })
     })
   }
@@ -736,7 +781,7 @@ export class JupyterKernel {
    * instead of costing the room a restart.
    */
   private scheduleReconnect(): void {
-    if (this.disposed || this._phase === 'dead' || this.reconnectTimer) return
+    if (this.disposed || this._phase === 'dead' || this.reconnectTimer || this.reconnecting) return
     const wait = Math.min(500 * 2 ** this.reconnectAttempts, 5000)
     this.reconnectAttempts++
     this.reconnectTimer = setTimeout(() => {
@@ -745,19 +790,31 @@ export class JupyterKernel {
     }, wait)
   }
 
-  private async reconnect(): Promise<void> {
-    if (this.disposed || this._phase === 'dead') return
-    try {
-      await this.openSocket(20_000)
-    } catch (err) {
+  private reconnect(): Promise<void> {
+    if (this.disposed || this._phase === 'dead') return Promise.resolve()
+    // Одно переподключение на всех, кто его ждёт, — как `opening` у терминала.
+    if (this.reconnecting) return this.reconnecting
+    const run = (async () => {
+      let failure: unknown = null
+      try {
+        await this.openSocket(20_000)
+      } catch (err) {
+        failure = err
+      }
+      // Снимается ДО следующего захода: иначе `scheduleReconnect` увидел бы
+      // самого себя и круг остановился бы на первой же неудаче.
+      this.reconnecting = null
+      if (failure === null) return
       if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-        console.error(`[kernel] giving up on ${this.sessionId}:`, errText(err))
+        console.error(`[kernel] giving up on ${this.sessionId}:`, errText(failure))
         this.setPhase('dead')
         this.abortPending()
         return
       }
       this.scheduleReconnect()
-    }
+    })()
+    this.reconnecting = run
+    return run
   }
 
   private async waitForSocket(timeoutMs = SOCKET_WAIT_MS): Promise<WebSocket> {
@@ -768,7 +825,7 @@ export class JupyterKernel {
       const socket = this.socket
       if (socket && socket.readyState === WebSocket.OPEN) return socket
       if (Date.now() >= deadline) throw new Error('lost the connection to the Python kernel')
-      if (!socket && !this.reconnectTimer) this.scheduleReconnect()
+      if (!socket && !this.reconnectTimer && !this.reconnecting) this.scheduleReconnect()
       await delay(SOCKET_POLL_MS)
     }
   }

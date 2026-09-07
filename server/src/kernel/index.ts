@@ -46,14 +46,15 @@ import {
   forgetSessionKernel,
   isolationLost,
   listRoomKernels,
+  onRoomKernelRecreated,
   runningRoomKernels,
 } from './pool.js'
-import { getSessionDoc, onlineCount } from '../collab/index.js'
+import { getSessionDoc, holdRoom, onlineCount } from '../collab/index.js'
 import { seldom } from '../log.js'
 import { projectBooks } from '../collab/books.js'
 import { flushSessionFiles } from '../collab/files.js'
 import { JupyterKernel, type ExecuteStatus, type KernelPhase } from './jupyter.js'
-import { OutputWriter } from './outputs.js'
+import { dataBudgetFor, OutputWriter } from './outputs.js'
 import { CouncilOutputBuffer, type CouncilJob } from './council.js'
 import type { CouncilRun } from '@shared/protocol'
 import { closeTerminal, terminalPhase } from './terminal.js'
@@ -165,6 +166,18 @@ interface Runtime {
    */
   lastFinished: { cellId: string; batch: number } | null
   writer: OutputWriter | null
+  /**
+   * «Не выселяй комнату»: писатель держит `Y.Doc` дольше одного вызова.
+   *
+   * Пустая комната выселяется из памяти через десять минут (collab · sweepIdleRooms),
+   * и выселение уничтожает документ. Писатель же взял его в конструкторе
+   * (outputs.ts · OutputWriter) и пишет в ЭТОТ объект до конца выполнения: в
+   * уничтоженный запись не видит никто и молча. Само окно счёта прикрыто со
+   * стороны collab (`atWork` не даёт выселить комнату, пока в документе стоит
+   * работающая ячейка, очередь или занятое ядро) — это страховка на щель между
+   * концом прогона и обнулением `writer`. Держит `dropWriter`, он же отпускает.
+   */
+  writerHold: (() => void) | null
   /** Считается попытка консилиума, а не ячейка; `currentCell` при этом — её синтетическое имя. */
   job: ActiveJob | null
   /**
@@ -210,6 +223,7 @@ function getRuntime(sessionId: string): Runtime {
       currentRunById: null,
       lastFinished: null,
       writer: null,
+      writerHold: null,
       job: null,
       environment: null,
       retired: false,
@@ -217,6 +231,22 @@ function getRuntime(sessionId: string): Runtime {
     runtimes.set(sessionId, runtime)
   }
   return runtime
+}
+
+/**
+ * Закончить с писателем вывода: дописать накопленное и отпустить комнату.
+ *
+ * Одно место на все концы выполнения — пустая ячейка, `finally` у `runOne`,
+ * мёртвое ядро, конец семинара, остановка сервера, — потому что забыть здесь
+ * можно ровно одно, и молча: `holdRoom` не отпущен, и комната, в которую никто
+ * не вернётся, остаётся в памяти навсегда. Повторный вызов безопасен: и
+ * `dispose`, и «отпустить» идемпотентны.
+ */
+function dropWriter(runtime: Runtime): void {
+  runtime.writer?.dispose()
+  runtime.writer = null
+  runtime.writerHold?.()
+  runtime.writerHold = null
 }
 
 /* --------------------------------------------------------- document mirror */
@@ -227,6 +257,42 @@ function setStatus(runtime: Runtime, status: KernelStatus): void {
   const meta = getMeta(doc)
   if (meta.get('kernelStatus') === status) return
   doc.transact(() => meta.set('kernelStatus', status), ORIGIN)
+}
+
+/**
+ * Самая узкая правка списка: что выкинуть и что вставить, чтобы `current` стал
+ * `next`.
+ *
+ * Очередь меняется двумя способами и обоими — по краям: ячейка ушла в работу
+ * (пропал первый элемент) или встала в хвост (появился последний). Полная
+ * перезапись превращала каждый из них в «удалить всё и положить всё»: при
+ * пятистах участниках и правиле «по одной» это сотни идентификаторов в
+ * обновлении Yjs — на КАЖДЫЙ старт и КАЖДЫЙ конец ячейки, всей комнате, плюс
+ * столько же тумбстоунов в документе и лишний обход `record()` в истории.
+ *
+ * Считается по общей голове и общему хвосту, а не по «умному» диффу: очередь —
+ * список без повторов, и этого достаточно, чтобы обычные два случая стоили
+ * одной операции. Чистая функция — её и надо доказывать.
+ */
+export function queueDelta(
+  current: string[],
+  next: string[],
+): { at: number; remove: number; insert: string[] } {
+  let head = 0
+  while (head < current.length && head < next.length && current[head] === next[head]) head++
+  let tail = 0
+  while (
+    tail < current.length - head &&
+    tail < next.length - head &&
+    current[current.length - 1 - tail] === next[next.length - 1 - tail]
+  ) {
+    tail++
+  }
+  return {
+    at: head,
+    remove: current.length - head - tail,
+    insert: next.slice(head, next.length - tail),
+  }
 }
 
 function syncQueue(runtime: Runtime): void {
@@ -249,8 +315,18 @@ function syncQueue(runtime: Runtime): void {
       list = new Y.Array<string>()
       meta.set('queue', list)
     }
-    if (list.length > 0) list.delete(0, list.length)
-    if (ids.length > 0) list.push(ids)
+    /*
+     * Список трогается ТОЛЬКО когда он правда изменился.
+     *
+     * Смена одной `runningCell` — самое частое, что здесь происходит (два раза
+     * на ячейку), и списка она не касается вовсе: раньше он всё равно
+     * переписывался целиком.
+     */
+    if (!queueUnchanged) {
+      const delta = queueDelta((list.toArray() as string[]) ?? [], ids)
+      if (delta.remove > 0) list.delete(delta.at, delta.remove)
+      if (delta.insert.length > 0) list.insert(delta.at, delta.insert)
+    }
     meta.set('runningCell', running)
   }, ORIGIN)
 }
@@ -340,6 +416,21 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
 }
 
 /**
+ * Как часто одной комнате имеет смысл проходить по призракам.
+ *
+ * Поводов три — пульс, нажатие, подключение управляющего сокета, — и все три
+ * приходят пачкой: после перезапуска сервера пятьсот вкладок возвращаются за
+ * две секунды, и это пятьсот транзакций по всем ячейкам всех тетрадей ОДНОЙ
+ * комнаты ровно в ту секунду, когда весь зал ждёт синхронизации. Чинит же этот
+ * проход то, что осталось от умершего процесса: оно уже лежит в документе и
+ * будет найдено первым же вызовом, а не пятисотым.
+ */
+const ORPHAN_SWEEP_EVERY_MS = 2000
+
+/** Когда по этой комнате проходили в последний раз, по часам сервера. */
+const orphanSweeps = new Map<string, number>()
+
+/**
  * Ячейки, которые документ считает работающими, а сервер о них не знает.
  *
  * `clearStaleExecution` проходит один раз, при подъёме комнаты, — и этого мало.
@@ -357,8 +448,17 @@ function setCellState(sessionId: string, cellId: string, state: CellState): void
  * collab. Это точный момент, и он же цикл: ядро берёт `getSessionDoc` у collab,
  * так что обратный импорт замкнул бы модули друг на друга. Три дешёвых повода
  * лучше одного красивого цикла.
+ *
+ * `now` — часы вызывающего: окно между проходами (ORPHAN_SWEEP_EVERY_MS) можно
+ * проверить из теста, не ожидая его вживую, — тот же приём, что у
+ * collab · sweepIdleRooms.
  */
-export function sweepOrphanRuns(sessionId: string): number {
+export function sweepOrphanRuns(sessionId: string, now: number = Date.now()): number {
+  // Прошли по этой комнате только что — второй раз незачем. Проверка стоит до
+  // `getSessionDoc`: обход документа и есть та цена, ради которой окно заведено.
+  const last = orphanSweeps.get(sessionId)
+  if (last !== undefined && now - last < ORPHAN_SWEEP_EVERY_MS) return 0
+  orphanSweeps.set(sessionId, now)
   const runtime = runtimes.get(sessionId)
   const { doc } = getSessionDoc(sessionId)
   // По всем тетрадям комнаты: ядро одно, очередь одна, и застрявшая ячейка
@@ -693,6 +793,25 @@ export function ensureKernel(sessionId: string): Promise<void> {
   return runtime.starting
 }
 
+/*
+ * Пересозданный контейнер — новость для комнаты, а не для журнала сервера.
+ *
+ * Пул сносит контейнер, когда тот собран из старого образа, стоит не в той
+ * сети, держит чужой срез GPU или не принимает наш токен. Каждый такой случай
+ * стоит семинару всех переменных сразу — и до сих пор проходил молча: `x` был и
+ * вдруг NameError, а на экране ни строки. Теперь строка есть, и в ней сказано
+ * почему.
+ */
+onRoomKernelRecreated((sessionId, why) => {
+  // Закрытой комнате — молча: заметка завела бы её документ заново.
+  if (runtimes.get(sessionId)?.retired) return
+  kernelNote(
+    sessionId,
+    `The room's Python container had to be rebuilt (${why}), so every variable is gone. ` +
+      'The files in the Files panel are untouched; run your cells again.',
+  )
+})
+
 /** Про общее ядро комната слышит один раз, а не на каждый Run. */
 const toldSharedKernel = new Set<string>()
 
@@ -865,8 +984,7 @@ export async function shutdownSession(sessionId: string): Promise<void> {
     runtime.retired = true
     runtimes.delete(sessionId)
     runtime.queue.length = 0
-    runtime.writer?.dispose()
-    runtime.writer = null
+    dropWriter(runtime)
     try {
       await runtime.kernel?.dispose()
     } catch (err) {
@@ -881,6 +999,8 @@ export async function shutdownSession(sessionId: string): Promise<void> {
   // Комната кончилась: если её откроют снова, про общее ядро надо сказать
   // заново — это уже другое занятие.
   toldSharedKernel.delete(sessionId)
+  // И отметка прохода по призракам: комната кончилась, помнить о ней нечего.
+  orphanSweeps.delete(sessionId)
   /*
    * И сам контейнер комнаты.
    *
@@ -908,24 +1028,61 @@ export async function shutdownSession(sessionId: string): Promise<void> {
  * проведённую пару.
  */
 const IDLE_KERNEL_MS = 2 * 60 * 60 * 1000
+/**
+ * Остановленному контейнеру столько ждать незачем.
+ *
+ * Два часа — это «преподаватель вышел за кофе, переменные семинара пусть
+ * подождут». У остановленного контейнера переменных нет вовсе: его Python убит
+ * вместе с ним, а держит он только слой на диске и — что дороже — свой срез
+ * GPU, из-за которого следующий семинар слышит «свободных срезов нет». После
+ * перезагрузки машины (`--restart=no`) такими становятся ВСЕ вчерашние
+ * контейнеры сразу, так что цена ожидания — целое утро без GPU.
+ */
+const IDLE_STOPPED_KERNEL_MS = 30 * 60 * 1000
 const SWEEP_EVERY_MS = 10 * 60 * 1000
 
 /** Когда в комнате в последний раз кто-то был. */
 const lastOccupied = new Map<string, number>()
 
+/**
+ * Что делать с контейнером комнаты прямо сейчас — одним правилом и без docker.
+ *
+ * `busy` — занята: кто-то в комнате, считается ячейка, стоит очередь или
+ * работает команда в оболочке. `watch` — пустая, отсчёт идёт. `drop` — пустая
+ * достаточно долго, контейнер убираем.
+ *
+ * Отдельной функцией, потому что ошибка была именно в правиле, а не в докере:
+ * остановленные контейнеры в уборку не попадали вовсе, и на GPU-машине после
+ * ночной перезагрузки все срезы оставались за комнатами, которых больше никто
+ * не откроет.
+ */
+export function idleVerdict(opts: {
+  running: boolean
+  busy: boolean
+  since: number | undefined
+  now: number
+}): 'busy' | 'watch' | 'drop' {
+  if (opts.busy) return 'busy'
+  if (opts.since === undefined) return 'watch'
+  const limit = opts.running ? IDLE_KERNEL_MS : IDLE_STOPPED_KERNEL_MS
+  return opts.now - opts.since < limit ? 'watch' : 'drop'
+}
+
 async function sweepIdleKernels(): Promise<void> {
   const now = Date.now()
   /*
-   * Не только те, что поднял этот процесс.
+   * Не только те, что поднял этот процесс, и не только живые.
    *
    * `runningRoomKernels()` — карта в памяти, и после перезапуска сервера она
    * пуста, а вчерашние контейнеры работают: уборка о них не знала, пока кто-то
    * не откроет комнату, и они жили до `make down`. Метка docker переживает нас,
-   * поэтому спрашиваем и её.
+   * поэтому спрашиваем и её — вместе с остановленными (`docker ps -a`), которые
+   * до сих пор не попадали в уборку НИКОГДА.
    */
-  const rooms = new Set<string>(runningRoomKernels())
-  for (const sessionId of await listRoomKernels()) rooms.add(sessionId)
-  for (const sessionId of rooms) {
+  const rooms = new Map<string, boolean>()
+  for (const sessionId of runningRoomKernels()) rooms.set(sessionId, true)
+  for (const room of await listRoomKernels()) rooms.set(room.session, room.running)
+  for (const [sessionId, running] of rooms) {
     const runtime = runtimes.get(sessionId)
     // Считающая комната занята, даже если все закрыли вкладки: у ячейки есть
     // хозяин, который вернётся за результатом. То же и у команды в оболочке:
@@ -936,17 +1093,13 @@ async function sweepIdleKernels(): Promise<void> {
       !!runtime?.currentCell ||
       (runtime?.queue.length ?? 0) > 0 ||
       terminalPhase(sessionId) === 'busy'
-    if (busy) {
-      lastOccupied.set(sessionId, now)
+    const verdict = idleVerdict({ running, busy, since: lastOccupied.get(sessionId), now })
+    if (verdict !== 'drop') {
+      // Занятую — отмечаем сейчас; пустую впервые — тоже сейчас: отсчёт
+      // начинается с первого взгляда, а не от нуля.
+      if (verdict === 'busy' || !lastOccupied.has(sessionId)) lastOccupied.set(sessionId, now)
       continue
     }
-    const since = lastOccupied.get(sessionId)
-    if (since === undefined) {
-      // Первый раз видим её пустой — отсчёт начинается сейчас, а не от нуля.
-      lastOccupied.set(sessionId, now)
-      continue
-    }
-    if (now - since < IDLE_KERNEL_MS) continue
     lastOccupied.delete(sessionId)
     try {
       await shutdownSession(sessionId)
@@ -975,10 +1128,12 @@ setInterval(() => void sweepIdleKernels(), SWEEP_EVERY_MS).unref()
 export async function shutdownKernels(): Promise<void> {
   const all = [...runtimes.values()]
   runtimes.clear()
+  // Отметки прохода — вместе со средами исполнения: следующий процесс начинает
+  // с чистого листа, и первый же его повод обязан пройти по призракам.
+  orphanSweeps.clear()
   for (const runtime of all) {
     runtime.queue.length = 0
-    runtime.writer?.dispose()
-    runtime.writer = null
+    dropWriter(runtime)
     runtime.kernel?.detach()
   }
 }
@@ -1018,7 +1173,19 @@ export function kernelCensus(): { live: number; busy: number; dead: number } {
  */
 export function startedTheRunningCell(sessionId: string, participantId: string): boolean {
   const runtime = runtimes.get(sessionId)
-  return runtime?.currentRunById === participantId
+  if (!runtime) return false
+  if (runtime.currentCell) return runtime.currentRunById === participantId
+  /*
+   * Между двумя ячейками хозяин работы — тот, чья ячейка стоит первой.
+   *
+   * `currentRunById` теперь гаснет вместе с `currentCell` (иначе потолок «по
+   * одной» отказывал прежнему автору, пока насос поднимает умершее ядро — а это
+   * до полутора минут). Читать его в это окно было бы неправдой; но и отвечать
+   * «нет» нельзя: ровно в этот промежуток человек, у которого идёт Run All,
+   * жмёт «стоп», и отказ оставил бы его с работающей тетрадью и молчащей
+   * кнопкой. Спрашиваем очередь — она про ту же работу и тоже наша.
+   */
+  return runtime.queue[0]?.runById === participantId
 }
 
 /**
@@ -1276,11 +1443,24 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
 
   const cell = found.cell
   const source = cellSource(cell).toString()
-  const writer = new OutputWriter(doc, item.cellId)
+  /*
+   * Потолок картинок — по числу тех, кому они поедут.
+   *
+   * Вывод ячейки уходит в общий документ, то есть КАЖДОМУ открытому сокету
+   * комнаты, каждому в своей копии и со своим deflate. Шесть мегабайт `imshow`
+   * на семинаре из тридцати — это сто восемьдесят мегабайт и никого не трогает;
+   * те же шесть на потоке из пятисот — это гигабайт исходящего, за которым у
+   * всех встаёт очередь из собственного набора текста. См. dataBudgetFor.
+   */
+  const writer = new OutputWriter(doc, item.cellId, dataBudgetFor(onlineCount(runtime.sessionId)))
   runtime.currentCell = item.cellId
   runtime.currentBatch = item.batch
   runtime.currentRunById = item.runById
+  // Писатель переживёт этот вызов, а значит и документ, который он взял:
+  // пока он пишет, комнату из памяти не выселяют. Отпустит `dropWriter`.
+  dropWriter(runtime)
   runtime.writer = writer
+  runtime.writerHold = holdRoom(runtime.sessionId)
   // Одно и то же число в двух местах: в документ — чтобы росли часы у всех, в
   // среду исполнения — чтобы длительность считалась по нашей записи.
   const startedAt = Date.now()
@@ -1332,9 +1512,9 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   if (source.trim().length === 0) {
     runtime.currentCell = null
     runtime.currentBatch = null
+    runtime.currentRunById = null
     runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
-    runtime.writer = null
-    writer.dispose()
+    dropWriter(runtime)
     setCellState(runtime.sessionId, item.cellId, 'ok')
     return
   }
@@ -1409,10 +1589,19 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     state = 'error'
   } finally {
     unwatch()
-    writer.dispose()
-    runtime.writer = null
+    dropWriter(runtime)
     runtime.currentCell = null
     runtime.currentBatch = null
+    /*
+     * И хозяин запуска — здесь же, вместе с ячейкой.
+     *
+     * Раньше `currentRunById` держался до опустошения очереди (`finally` у
+     * насоса), а между двумя ячейками насос успевает сходить в `ensureKernel`:
+     * умершее ядро — это до полутора минут. Всё это время `requestRun` считал
+     * прежнему автору лишнюю «выполняющуюся» ячейку и при правиле «по одной»
+     * отказывал ему в новом Run, хотя у него ничего не выполнялось.
+     */
+    runtime.currentRunById = null
     // Чья это была пачка — помним ещё круг: «стоп» по этой ячейке может
     // доехать уже после того, как ядро взяло следующую.
     runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
@@ -1436,14 +1625,91 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
 const COUNCIL_REPORT_MS = 400
 
 /**
+ * Имена, которые попытка завела в общем ядре, живут не дольше попытки.
+ *
+ * Ядро в комнате одно — это устройство продукта, а не недосмотр: попытка
+ * должна видеть `df`, `np` и всё, что преподаватель подготовил в общей ячейке.
+ * А вот в обратную сторону это была дыра, и притом молчаливая: `secret = 42` в
+ * попытке одного студента отвечал на `print(secret)` в попытке следующего.
+ * Попытка, забывшая объявить переменную, проходила за счёт чужой; два
+ * одинаковых текста давали разный результат в зависимости от порядка запуска;
+ * преподаватель ставил «верно» по выводу, который принадлежал не той работе.
+ *
+ * Чиним не изоляцией пространства имён (`exec` в свежем словаре ломает и эхо
+ * последнего выражения, и магии, и номера строк в трейсбеке — то есть всё, чем
+ * попытка похожа на ячейку), а уборкой ПОСЛЕ: снимок имён до запуска, снятие
+ * новых после. Два молчаливых запроса вокруг попытки, по миллисекунде каждый.
+ *
+ * Чего это не чинит и что поэтому сказано вслух (README, подсказка ручки
+ * studentRun): мутации того, что уже было. `df.drop(...)` в попытке меняет
+ * общий `df` — как и в обычной ячейке, и по той же причине.
+ */
+const COUNCIL_SNAPSHOT_NAMES = '_colloq_before = frozenset(globals())'
+const COUNCIL_RESTORE_NAMES = [
+  'try:',
+  '    _colloq_seen = _colloq_before',
+  'except NameError:',
+  '    _colloq_seen = None',
+  'if _colloq_seen is not None:',
+  '    for _colloq_n in [n for n in list(globals())',
+  "                      if n not in _colloq_seen and not n.startswith('_colloq_')]:",
+  '        globals().pop(_colloq_n, None)',
+  "globals().pop('_colloq_n', None)",
+  "globals().pop('_colloq_seen', None)",
+  "globals().pop('_colloq_before', None)",
+].join('\n')
+
+/** Обработчики для служебного запроса, у которого нет ни вывода, ни зрителей. */
+const SILENT_HANDLERS: Parameters<JupyterKernel['execute']>[1] = {
+  onExecuteInput: () => {},
+  onStream: () => {},
+  onData: () => {},
+  onError: () => {},
+  onClear: () => {},
+}
+
+/** Молча посчитать служебную строку в ядре комнаты; неудача — не беда попытки. */
+async function quietly(runtime: Runtime, source: string): Promise<void> {
+  try {
+    await runtime.kernel?.execute(source, SILENT_HANDLERS, { silent: true, storeHistory: false })
+  } catch {
+    /* ядро уже не отвечает — попытке об этом скажет её собственный запуск */
+  }
+}
+
+/** Первый кадр запуска: он же заявка, и текст под ним — тот, что в задании. */
+const queuedRun = (job: CouncilJob): CouncilRun => ({
+  state: 'queued',
+  outputs: [],
+  execCount: null,
+  ranMs: null,
+  startedAt: Date.now(),
+  by: job.by,
+})
+
+/**
  * Поставить попытку консилиума в очередь ядра.
  *
- * Одна и та же попытка — одна запись: второе нажатие, пока первая ждёт или
- * считается, ничего не ставит и возвращает её место, чтобы отказ мог сказать
- * «вы 37-й». `position` — номер в очереди, считая ту, что выполняется; `0` —
- * выполняется сейчас. `runById` — кто нажал: преподаватель, запускающий чужую
- * попытку, остаётся хозяином запуска (прервать, ответить на input) — как и у
- * ячейки.
+ * Одна и та же попытка — одна запись: второе нажатие по ТОМУ ЖЕ тексту, пока
+ * первая ждёт или считается, ничего не ставит и возвращает её место, чтобы
+ * отказ мог сказать «вы 37-й». `position` — номер в очереди, считая ту, что
+ * выполняется; `0` — выполняется сейчас. `runById` — кто нажал: преподаватель,
+ * запускающий чужую попытку, остаётся хозяином запуска (прервать, ответить на
+ * input) — как и у ячейки.
+ *
+ * Другой текст — не второе нажатие, а другой запуск.
+ *
+ * Очередь на потоке одна, ждать минуту — обычное дело, и правка за это время
+ * тоже обычна. Прежде ждущая запись была неприкасаемой: студент, поправивший
+ * лист, получал «эта попытка уже в очереди — 37-я» и не мог перезапустить
+ * НОВУЮ версию, пока ядро не досчитает старую — а её вывод к тому времени всё
+ * равно выбрасывался как опоздавший (council.ts · recordRun). Поэтому запись
+ * подменяется на месте: место в очереди остаётся прежним (за опечатку не
+ * наказывают), а считаться будет то, что человек видит на экране.
+ *
+ * Уже считающуюся подменить нечем: строка ушла в ядро. Ей по-прежнему отвечают
+ * «уже считается», и это честно — прервать её можно кнопкой, а её вывод под
+ * новый текст всё равно не ляжет.
  */
 export function requestCouncilRun(
   sessionId: string,
@@ -1454,7 +1720,19 @@ export function requestCouncilRun(
   const runtime = getRuntime(sessionId)
   sweepOrphanRuns(sessionId)
   const already = councilQueuePosition(sessionId, job.cellId, job.participantId)
-  if (already !== null) return { queued: false, position: already }
+  if (already !== null) {
+    const id = councilQueueId(job.cellId, job.participantId)
+    const index = runtime.queue.findIndex((item) => item.cellId === id)
+    const waiting = index < 0 ? null : runtime.queue[index]
+    if (!waiting || waiting.council?.source === job.source) {
+      return { queued: false, position: already }
+    }
+    // Кадр «в очереди» уходит по НОВОМУ заданию: он же переставляет отпечаток
+    // текста, по которому recordRun решает, чей вывод считать своим.
+    runtime.queue[index] = { ...waiting, runBy, runById, council: job }
+    tellJob(job, queuedRun(job))
+    return { queued: true, position: already }
+  }
   runtime.queue.push({
     cellId: councilQueueId(job.cellId, job.participantId),
     runBy,
@@ -1463,17 +1741,41 @@ export function requestCouncilRun(
     council: job,
   })
   const position = councilQueuePosition(sessionId, job.cellId, job.participantId) ?? 1
-  tellJob(job, {
-    state: 'queued',
-    outputs: [],
-    execCount: null,
-    ranMs: null,
-    startedAt: Date.now(),
-    by: job.by,
-  })
+  tellJob(job, queuedRun(job))
   syncQueue(runtime)
   void pump(runtime)
   return { queued: true, position }
+}
+
+/**
+ * Снять ждущую попытку с очереди — её больше некому считать.
+ *
+ * Два повода, и оба про то, что работа стала бессмысленной ещё до начала:
+ * автор сменил текст (control.ts · council:draft) и человека забанили
+ * (control.ts · purgeCouncilOf). Ядро на потоке одно, очередь к нему общая, и
+ * минута, потраченная на код, которого уже нет, — это минута, которую ждёт
+ * весь остальной класс.
+ *
+ * `null` в `tellJob` понимается как «запуска не было»: council.ts стирает и
+ * запуск с карточки, и отпечаток текста. Возвращает, сняли ли: `false` — либо
+ * попытка уже считается (строка ушла в ядро, отсюда её не достать), либо её в
+ * очереди и не было.
+ */
+export function cancelCouncilRun(
+  sessionId: string,
+  cellId: string,
+  participantId: string,
+): boolean {
+  const runtime = runtimes.get(sessionId)
+  if (!runtime) return false
+  const id = councilQueueId(cellId, participantId)
+  if (runtime.currentCell === id) return false
+  const index = runtime.queue.findIndex((item) => item.cellId === id)
+  if (index < 0) return false
+  const [dropped] = runtime.queue.splice(index, 1)
+  releaseCouncil([dropped])
+  syncQueue(runtime)
+  return true
 }
 
 /**
@@ -1492,6 +1794,32 @@ export function councilQueuePosition(
   const index = runtime.queue.findIndex((item) => item.cellId === id)
   if (index < 0) return null
   return index + 1 + (runtime.currentCell ? 1 : 0)
+}
+
+/**
+ * Все ждущие попытки с их номерами — одним проходом по очереди.
+ *
+ * То же, что `councilQueuePosition` для каждого ждущего, только без поиска по
+ * очереди на каждого: сдвиг очереди при пятистах попытках стоил четверти
+ * миллиона сравнений на ровном месте. Номер считается так же — вместе с той,
+ * что считается сейчас. Нуля здесь не бывает: считающаяся попытка уже не ждёт.
+ */
+export function councilQueuePositions(
+  sessionId: string,
+): { cellId: string; participantId: string; position: number }[] {
+  const runtime = runtimes.get(sessionId)
+  if (!runtime) return []
+  const ahead = runtime.currentCell ? 1 : 0
+  const out: { cellId: string; participantId: string; position: number }[] = []
+  runtime.queue.forEach((item, index) => {
+    if (!item.council) return
+    out.push({
+      cellId: item.council.cellId,
+      participantId: item.council.participantId,
+      position: index + 1 + ahead,
+    })
+  })
+  return out
 }
 
 /** Чьи попытки ждут в очереди — чтобы после каждого сдвига сказать им новый номер. */
@@ -1540,6 +1868,7 @@ function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error
   runtime.job = null
   runtime.currentCell = null
   runtime.currentBatch = null
+  runtime.currentRunById = null
   runtime.lastFinished = { cellId: active.item.cellId, batch: active.item.batch }
   tellJob(active.job, active.run)
   syncQueue(runtime)
@@ -1578,6 +1907,9 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   const unwatch = stopIfDeleted(runtime, doc, item.cellId, job.cellId)
   const { buffer } = active
   let state: 'ok' | 'error' = 'ok'
+  // Что было в ядре до попытки — чтобы после снять ровно то, что она завела.
+  // См. COUNCIL_SNAPSHOT_NAMES.
+  await quietly(runtime, COUNCIL_SNAPSHOT_NAMES)
   try {
     /*
      * Без истории ядра — единственное отличие от ячейки в самом запросе.
@@ -1644,6 +1976,9 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
     state = 'error'
   } finally {
     unwatch()
+    // Имена, заведённые попыткой, не переживают её: следующая попытка — и
+    // следующая общая ячейка — не должны их видеть.
+    await quietly(runtime, COUNCIL_RESTORE_NAMES)
   }
   finishCouncil(runtime, active, state)
   // Попытка могла записать файл — панели файлов это так же интересно.
@@ -1684,10 +2019,13 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
   if (stuck) {
     const writer = runtime.writer ?? new OutputWriter(doc, stuck)
     writer.error('KernelError', message, [])
+    // Свой, заведённый строкой выше, комнату не держит — его и отпускать
+    // нечего; тот, что стоял в среде исполнения, отпускается здесь.
     writer.dispose()
-    runtime.writer = null
+    dropWriter(runtime)
     runtime.currentCell = null
     runtime.currentBatch = null
+    runtime.currentRunById = null
     const waiting = runtime.queue[0]?.cellId === stuck
     if (waiting) runtime.queue.shift()
     /*
@@ -1792,24 +2130,69 @@ function killedMessage(): string {
  */
 export async function formatSession(sessionId: string, book?: string): Promise<FormatOutcome> {
   const runtime = getRuntime(sessionId)
+  /*
+   * Мимо очереди — но не в занятое ядро.
+   *
+   * Запрос форматирования идёт в ядро напрямую, минуя нашу очередь, а Jupyter
+   * исполняет строго по порядку: пока считается ячейка, `execute` черноты
+   * просто стоит за ней. Обычно это секунды и никого не касается. Но ячейка,
+   * остановившаяся в `input()`, не кончится, пока кто-нибудь не ответит, — и
+   * кнопка Format висит без единого слова до конца пары, а `stop_on_error`
+   * соседней ячейки может ещё и оборвать запрос словами «The kernel could not
+   * run the formatter», из которых не следует ничего.
+   *
+   * Поэтому отказ словами и сразу. Ждать своей очереди тут нечего: тетрадь всё
+   * равно нельзя переписывать под ячейкой, которая её в этот момент выполняет.
+   */
+  const busyWith = formatBlocker(runtime)
+  if (busyWith) return formatRefused(sessionId, busyWith)
   try {
     await ensureKernel(sessionId)
   } catch (err) {
+    // Единственный отказ без своей строки в журнале: `ensureKernel` уже положил
+    // туда `errText(err)` теми же словами, и повторять их второй раз всей
+    // комнате незачем. Нажавшему они всё равно уедут ответом.
     return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: errText(err) }
   }
   const kernel = runtime.kernel
-  if (!kernel) {
-    return {
-      changed: 0,
-      skipped: 0,
-      edited: 0,
-      unchanged: 0,
-      error: 'The kernel is not running.',
-    }
-  }
+  if (!kernel) return formatRefused(sessionId, 'The kernel is not running.')
+  // Ядро могло уйти в работу, пока оно поднималось: спрашиваем ещё раз, уже
+  // зная и про `input()`.
+  const nowBusy = formatBlocker(runtime)
+  if (nowBusy) return formatRefused(sessionId, nowBusy)
   const outcome = await formatNotebook(sessionId, kernel, book)
-  if (outcome.error) kernelNote(sessionId, `Formatting failed: ${outcome.error}`)
+  if (outcome.error) return formatRefused(sessionId, outcome.error)
   return outcome
+}
+
+/**
+ * Отказ форматирования — одной дорогой для всех причин.
+ *
+ * Строка «Formatting failed: …» уходила в журнал ядра только из `formatNotebook`,
+ * а ранние отказы (ждём `input()`, ядро занято, очередь) возвращались раньше
+ * неё — то есть комната, у которой Format ничего не сделал, не видела причины
+ * нигде, а комментарии рядом обещали обратное. Теперь причину пишет одно место:
+ * нажавшему она едет ответом (control.ts · `t:'error'`), комнате — этой же
+ * строкой в журнал. Считать тут нечего: `formatNotebook` при ошибке тоже
+ * возвращает одни нули.
+ */
+function formatRefused(sessionId: string, error: string): FormatOutcome {
+  kernelNote(sessionId, `Formatting failed: ${error}`)
+  return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error }
+}
+
+/** Почему сейчас не время форматировать — теми словами, что уедут в журнал ядра. */
+function formatBlocker(runtime: Runtime): string | null {
+  if (runtime.kernel?.waitingForInput) {
+    return 'a cell is waiting for input() — answer it (or stop it) and press Format again.'
+  }
+  if (runtime.currentCell) {
+    return 'the kernel is busy running a cell — press Format again when it finishes.'
+  }
+  if (runtime.queue.length > 0) {
+    return 'cells are queued to run — press Format again when the queue is empty.'
+  }
+  return null
 }
 
 /**
@@ -1834,15 +2217,29 @@ export async function answerInput(
 ): Promise<boolean> {
   const runtime = runtimes.get(sessionId)
   const kernel = runtime?.kernel
-  if (!kernel || !kernel.waitingForInput) return false
+  if (!kernel || !kernel.waitingForInput) {
+    /*
+     * Ядро ввода не ждёт — значит, и форма на ячейке не должна спрашивать.
+     *
+     * Приглашение живёт в общем документе, и висело оно у ВСЕЙ комнаты: каждое
+     * следующее «Send» тихо получало `false`, и выйти из этого можно было
+     * только «остановить». Гасим здесь, а не только на удачном ответе.
+     */
+    if (runtime && !runtime.retired) clearStdinOn(sessionId, cellId ?? runtime.currentCell)
+    return false
+  }
   if (cellId && runtime.currentCell !== cellId) return false
   const answered = await kernel.answerInput(value)
-  if (answered && runtime.currentCell) {
-    const { doc } = getSessionDoc(sessionId)
-    const target = findCell(doc, runtime.currentCell)
-    if (target) doc.transact(() => target.cell.set('stdin', null), ORIGIN)
-  }
+  if (answered) clearStdinOn(sessionId, runtime.currentCell)
   return answered
+}
+
+/** Погасить приглашение ко вводу на ячейке — там, где спрашивать уже нечему. */
+function clearStdinOn(sessionId: string, cellId: string | null): void {
+  if (!cellId) return
+  const { doc } = getSessionDoc(sessionId)
+  const target = findCell(doc, cellId)
+  if (target?.cell.get('stdin')) doc.transact(() => target.cell.set('stdin', null), ORIGIN)
 }
 
 /**

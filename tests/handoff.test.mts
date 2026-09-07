@@ -9,7 +9,6 @@
  */
 import './_env.mts'
 import http from 'node:http'
-import express from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -20,7 +19,8 @@ import {
 } from '../server/src/auth.js'
 import { config } from '../server/src/config.js'
 import { createSession, isTokenHost, upsertParticipant } from '../server/src/db.js'
-import { roleFor, sessionRoutes } from '../server/src/routes/sessions.js'
+import { roleFor } from '../server/src/routes/sessions.js'
+import { app } from '../server/src/app.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createTeacher, deleteTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { STAFF_COOKIE } from '../shared/admin.js'
@@ -51,9 +51,10 @@ before(async () => {
     role: 'participant',
   })
 
-  const app = express()
-  app.use(express.json())
-  app.use(sessionRoutes())
+  /*
+   * Приложение целиком (server/src/app.ts), а не свой express рядом: копия
+   * порядка middleware расхождений с продуктом не ловит, она их повторяет.
+   */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()

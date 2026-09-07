@@ -96,9 +96,9 @@
  * is a child of the veil, so it inherits the fade for free, the two halves
  * cannot drift out of sync, and neither node had to be restructured to get it.
  *
- * --speed-panel and not --speed-drawer: the drawer step is for a full-height
- * surface crossing the screen, and a centred card crosses nothing. 320ms on it
- * would read as the panel hesitating before it answers.
+ * --speed-panel, and nothing longer: a longer step belongs to a full-height
+ * surface crossing the screen, and a centred card crosses nothing. A third of
+ * a second on it would read as the panel hesitating before it answers.
  *
  * Entrance only, for the same reason as the menu: the delete dialog closes on
  * Escape, and a veil that lingers after the key is a veil that is in the way.

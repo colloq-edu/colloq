@@ -19,7 +19,6 @@ import './_env.mts'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import express from 'express'
 import type { Request, Response } from 'express'
 import { STAFF_COOKIE } from '../shared/admin.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
@@ -38,7 +37,7 @@ import {
   BAN_MS,
 } from '../server/src/bans.js'
 import { createSession, db, upsertParticipant } from '../server/src/db.js'
-import { sessionRoutes } from '../server/src/routes/sessions.js'
+import { app } from '../server/src/app.js'
 import type { JoinResponse } from '../shared/protocol.js'
 
 const ROOM = 'bans-room'
@@ -58,9 +57,10 @@ let server: http.Server
 before(async () => {
   createSession(ROOM, 'Семинар', null)
   createSession(OTHER, 'Соседняя', null)
-  const app = express()
-  app.use(express.json())
-  app.use(sessionRoutes())
+  /*
+   * Приложение целиком (server/src/app.ts), а не свой express рядом: копия
+   * порядка middleware расхождений с продуктом не ловит, она их повторяет.
+   */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()

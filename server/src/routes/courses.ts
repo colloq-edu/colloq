@@ -7,37 +7,45 @@
  * работа в том же процессе, который в эту минуту ведёт занятие, и без всякого
  * ограничения частоты.
  */
-import { Router, type Request, type Response } from 'express'
+import { Router, type NextFunction, type Request, type Response } from 'express'
 import { ownerOnly, requireStaff, currentStaff } from '../admin/auth.js'
 import { getSession, renameSession } from '../db.js'
-import { getSessionDoc } from '../collab/index.js'
+import { visitSessionDoc } from './doc-visit.js'
 import {
   BLOB_MIMES,
   MAX_COURSE_BLURB,
   MAX_COURSE_NAME,
   MAX_STEPS,
   MAX_STEP_LABEL,
+  PUBLICATION_NOT_FOUND,
+  STEP_NOT_FOUND,
   slugOk,
   type CourseItem,
-  type PublicCourseView,
+  type PublicCell,
   type PublicSeminar,
+  type SkippedStep,
 } from '@shared/publish'
-import { candidatesFor } from '../publish/candidates.js'
-import { newBlobBag, pageAt, pageOfDoc } from '../publish/build.js'
-import { notebookOf } from '../publish/notebook.js'
+import { courseOfPublication, freshCourseItems, publicCourseView } from './course-view.js'
+import { SESSION_MISSING } from '@shared/protocol'
+import { candidatesForAsync } from '../publish/candidates.js'
+import { newBlobBag, pageOfDoc, pagesAtAsync } from '../publish/build.js'
+import { notebookOfStep } from '../publish/notebook.js'
 import {
+  addressHolder,
   createCourse,
   deleteCourse,
   deletePublication,
   getCourse,
   findCourse,
   findPublication,
+  formerSlugs,
   getPublication,
   listCourses,
   listPublications,
   publicationOf,
   readBlob,
   readStep,
+  releaseFormerSlug,
   renameCourse,
   setCourseItems,
   setCourseSlug,
@@ -56,40 +64,55 @@ function bad(res: Response, message: string): void {
   res.status(400).json({ error: message })
 }
 
-/** Курс с живыми именами семинаров: имя могли поменять после добавления. */
-function freshItems(items: CourseItem[]): CourseItem[] {
-  return items.map((item): CourseItem => {
-    /*
-     * У надгробия ссылка на оставшееся чтение — но страницу могли снять уже
-     * после удаления комнаты, и тогда вести на неё некуда.
-     */
-    if (item.kind === 'gone') {
-      if (!item.publication) return item
-      const pub = getPublication(item.publication.id)
-      return pub && pub.state === 'published'
-        ? { ...item, publication: { id: pub.id, slug: pub.slug } }
-        : { kind: 'gone', name: item.name, at: item.at, publication: null }
-    }
-    if (item.kind !== 'seminar') return item
-    const session = getSession(item.sessionId)
-    if (!session) return item
-    const pub = publicationOf(item.sessionId)
-    return {
-      kind: 'seminar',
-      sessionId: item.sessionId,
-      name: session.name,
-      publication:
-        pub && pub.state === 'published'
-          ? {
-              id: pub.id,
-              slug: pub.slug,
-              publishedAt: pub.publishedAt,
-              steps: stepCount(pub.id),
-            }
-          : null,
-    }
-  })
+/**
+ * Публичный ответ, который не изменился, — 304 и ни одного чтения базы.
+ *
+ * Метку версии ставим сами, а не отдаём на откуп ETag'у Express: тот считает
+ * хэш ПО СОБРАННОМУ телу, то есть после того, как страница уже прочитана и
+ * разобрана, — экономится трафик и не экономится работа. Здесь наоборот:
+ * `revision` публикации известен по одной индексированной строке, и всё
+ * тяжёлое стоит после этой проверки.
+ *
+ * `max-age` небольшой и без `immutable`: адрес у страницы постоянный, а
+ * содержимое переиздают — вечный кэш означал бы разбор недельной давности у
+ * того, кто открыл ссылку до переиздания.
+ */
+const PUBLIC_MAX_AGE_S = 300
+
+function fresh(req: Request, res: Response, tag: string): boolean {
+  const etag = `W/"${tag}"`
+  res.setHeader('etag', etag)
+  res.setHeader('cache-control', `public, max-age=${PUBLIC_MAX_AGE_S}`)
+  // Заголовок может нести список меток и `W/` перед каждой — сравниваем по
+  // словам, а не строкой целиком.
+  const asked = req.headers['if-none-match']
+  if (typeof asked !== 'string') return false
+  const matched = asked
+    .split(',')
+    .some((one) => one.trim() === '*' || one.trim() === etag || one.trim() === `"${tag}"`)
+  if (!matched) return false
+  res.status(304).end()
+  return true
 }
+
+/**
+ * Отклонённое обещание — в обработчик ошибок, а не в пустоту.
+ *
+ * Express 4 не знает про async: брошенное после первого `await` не доходит до
+ * error-middleware вовсе, а запрос не отвечает никогда. Та же обёртка, что в
+ * routes/admin-import.ts, и по той же причине.
+ */
+const wrap =
+  (handler: (req: Request, res: Response) => Promise<void>) =>
+  (req: Request, res: Response, next: NextFunction): void => {
+    handler(req, res).catch(next)
+  }
+
+/**
+ * Курс с живыми именами семинаров — тот же, что уходит в выгрузку сайта.
+ * Одна функция на оба места: routes/course-view.ts.
+ */
+const freshItems = freshCourseItems
 
 export function courseRoutes(): Router {
   const router = Router()
@@ -101,6 +124,10 @@ export function courseRoutes(): Router {
       courses: listCourses().map((course) => ({
         ...course,
         items: freshItems(course.items),
+        // Прежние имена — вместе с курсом: отказ «этот адрес — прежнее имя
+        // такого-то курса» отсылает в его настройки, и там должно быть что
+        // показать и что отпустить.
+        former: formerSlugs('course', course.id),
       })),
     })
   })
@@ -121,7 +148,13 @@ export function courseRoutes(): Router {
   router.get('/api/admin/courses/:id', requireStaff, (req, res) => {
     const course = getCourse(req.params.id)
     if (!course) return res.status(404).json({ error: 'course not found' })
-    res.json({ course: { ...course, items: freshItems(course.items) } })
+    res.json({
+      course: {
+        ...course,
+        items: freshItems(course.items),
+        former: formerSlugs('course', course.id),
+      },
+    })
   })
 
   router.patch('/api/admin/courses/:id', requireStaff, (req, res) => {
@@ -202,7 +235,21 @@ export function courseRoutes(): Router {
     res.json({ course: { ...updated, items: freshItems(updated.items) } })
   })
 
-  router.delete('/api/admin/courses/:id', requireStaff, (req, res) => {
+  /**
+   * Стереть курс — владельцем, и только его.
+   *
+   * Курс — единственный адрес, который раздают потоку целиком (`/c/slug`), и
+   * после удаления он отвечает 404 всем, кому его называли: и тем, кто в
+   * запросе, и тем, кого в нём нет. Это ровно та черта, по которой удаление
+   * семинара и «стереть страницу» уже владельческие («takes work away from
+   * people who are not in the request»), а курс жил без неё — любой
+   * преподаватель, одним запросом, без подтверждения и без обратного хода.
+   *
+   * И отсутствующий курс — 404, а не бодрое `{ok:true}`: «удалил» про то, чего
+   * не было, — это неправда в ответе.
+   */
+  router.delete('/api/admin/courses/:id', ownerOnly('delete a course'), (req, res) => {
+    if (!getCourse(req.params.id)) return res.status(404).json({ error: 'course not found' })
     deleteCourse(req.params.id)
     res.json({ ok: true })
   })
@@ -226,74 +273,204 @@ export function courseRoutes(): Router {
 
     const outcome = course ? setCourseSlug(target.id, slug) : setPublicationSlug(target.id, slug)
     if (outcome === 'taken') {
-      return res.status(409).json({ error: `Адрес «${slug}» уже занят.` })
+      /*
+       * Отказ называет держателя, и это не вежливость.
+       *
+       * «Адрес «ml-2025» уже занят» — тупик: чаще всего его держит ПРЕЖНЕЕ имя
+       * другого курса (тот переименовали, а старое имя осталось адресом ради
+       * розданной ссылки), и в списке курсов такой строки не видно вовсе.
+       * Преподаватель ищет то, чего нет, и заканчивает адресом с цифрой на
+       * конце.
+       *
+       * Держатель едет отдельным полем, а не только внутри фразы: панель по
+       * нему решает, показывать ли «Отпустить прежний адрес» у того же поля
+       * (web/src/lib/adminApi.ts · addressHolderOf), а разбирать русский текст
+       * ей нечем. `null` значит «занято, а кем — сказать не могу»: экран тогда
+       * повторяет фразу и ничего не предлагает.
+       *
+       * И потому же во фразе больше нет совета идти в настройки чужого курса:
+       * отпускают прямо здесь, в двух сантиметрах от неё.
+       */
+      const holder = addressHolder(course ? 'course' : 'publication', slug!)
+      const what = course ? 'курсом' : 'страницей'
+      const whose = course ? 'курса' : 'страницы'
+      return res.status(409).json({
+        error: !holder
+          ? `Адрес «${slug}» уже занят.`
+          : holder.former
+            ? `Адрес «${slug}» — прежнее имя ${whose} «${holder.name}».`
+            : `Адрес «${slug}» занят ${what} «${holder.name}».`,
+        holder,
+      })
     }
     res.json({ slug })
   })
 
+  /**
+   * Отпустить своё прежнее имя.
+   *
+   * Прежний адрес держится вечно и не зря: ссылка с ним записана в чате группы.
+   * Но курс «ml-2025», переименованный в «ml-2025-fall», держал «ml-2025» и для
+   * курса следующего года — навсегда, и освободить его было нечем, кроме
+   * удаления курса-владельца.
+   *
+   * Отпускает только владелец и только прежнее: живое имя снимается сменой
+   * имени, чужое не трогается вовсе (publish/store.ts · releaseFormerSlug), и
+   * 404 здесь означает ровно это — такого прежнего имени у вас нет.
+   */
+  router.delete('/api/admin/slug/:kind/:id/former/:slug', requireStaff, (req, res) => {
+    const kind = req.params.kind === 'course' ? 'course' : 'publication'
+    if (!releaseFormerSlug(kind, req.params.id, req.params.slug.toLowerCase())) {
+      return res.status(404).json({ error: 'not found' })
+    }
+    res.json({ ok: true })
+  })
+
   /* -------------------------------------------------------- публикация */
 
-  /** Из чего можно собрать шаги — и что уже опубликовано. */
-  router.get('/api/admin/seminars/:id/publish', requireStaff, (req, res) => {
-    const session = getSession(req.params.id)
-    if (!session) return res.status(404).json({ error: 'session not found' })
-    const pub = publicationOf(session.id)
-    res.json({
-      title: session.name,
-      candidates: candidatesFor(session.id),
-      publication: pub ? { ...pub, steps: stepHeadings(pub.id) } : null,
-    })
-  })
+  /**
+   * Из чего можно собрать шаги — и что уже опубликовано.
+   *
+   * Кандидаты считаются с уступкой цикла событий (`candidatesForAsync`), а не
+   * одним синхронным проходом: на комнате с семестром истории это секунды в том
+   * самом процессе, который в эту минуту держит сокеты занятия. Результат тот
+   * же — уступка не меняет ни одного поля, — а пара рядом продолжает идти.
+   */
+  router.get(
+    '/api/admin/seminars/:id/publish',
+    requireStaff,
+    wrap(async (req: Request, res: Response) => {
+      const session = getSession(req.params.id)
+      if (!session) {
+        res.status(404).json({ error: SESSION_MISSING })
+        return
+      }
+      const pub = publicationOf(session.id)
+      res.json({
+        title: session.name,
+        candidates: await candidatesForAsync(session.id),
+        publication: pub
+          ? { ...pub, steps: stepHeadings(pub.id), former: formerSlugs('publication', pub.id) }
+          : null,
+      })
+    }),
+  )
 
-  router.post('/api/admin/seminars/:id/publish', requireStaff, (req, res) => {
-    const session = getSession(req.params.id)
-    if (!session) return res.status(404).json({ error: 'session not found' })
+  router.post(
+    '/api/admin/seminars/:id/publish',
+    requireStaff,
+    wrap(async (req: Request, res: Response) => {
+      const session = getSession(req.params.id)
+      if (!session) {
+        res.status(404).json({ error: SESSION_MISSING })
+        return
+      }
 
-    const asked: unknown = req.body?.steps
-    if (!Array.isArray(asked)) return bad(res, 'steps must be an array')
-    if (asked.length > MAX_STEPS) return bad(res, `не больше ${MAX_STEPS} шагов`)
+      const asked: unknown = req.body?.steps
+      if (!Array.isArray(asked)) return bad(res, 'steps must be an array')
+      if (asked.length > MAX_STEPS) return bad(res, `не больше ${MAX_STEPS} шагов`)
 
-    const blobs = newBlobBag()
-    const steps: BuiltStep[] = []
-    for (const raw of asked as Record<string, unknown>[]) {
-      const label = str(raw?.label, MAX_STEP_LABEL)
-      // Безымянный шаг не публикуется: рельса из «Снимок №14» — это не
-      // названные моменты, а признание, что назвать их забыли.
-      if (!label) continue
-      const seq = Number(raw?.seq)
-      if (!Number.isFinite(seq)) continue
-      const cells = pageAt(session.id, seq, blobs)
-      // Версия, которая не разворачивается в тетрадь, шагом быть не может.
-      if (!cells) continue
-      steps.push({ seq, label, at: Number(raw?.at) || Date.now(), cells })
-    }
+      /*
+       * Что просили — и что из этого шагом не станет.
+       *
+       * Выпавший момент раньше исчезал молча: преподаватель отмечал семь, а на
+       * странице оказывалось шесть. Причины по природе разные — про запрос
+       * («без имени», «уже есть в списке») и про занятие («в тетради пусто»,
+       * «запись не читается»), — и все они уезжают в ответ (shared/publish.ts ·
+       * SkippedStep), чтобы панель могла назвать пропавший момент.
+       */
+      const wanted: { seq: number; label: string; at: number }[] = []
+      const skipped: SkippedStep[] = []
+      const seen = new Set<number>()
+      for (const raw of asked as Record<string, unknown>[]) {
+        const label = str(raw?.label, MAX_STEP_LABEL)
+        const seq = Number(raw?.seq)
+        /*
+         * Адрес шага — номер версии из ленты: целое и больше нуля. Ноль занят
+         * последней страницей (ниже), дробное и отрицательное не адресуют
+         * ничего. Это не «выпавший момент», а неверный запрос, и отвечать на
+         * него надо словами, а не молчанием и не пятисоткой из транзакции.
+         */
+        if (!Number.isInteger(seq) || seq <= 0) {
+          return bad(res, 'шаг называется версией из ленты: целым числом больше нуля')
+        }
+        // Безымянный шаг не публикуется: рельса из «Снимок №14» — это не
+        // названные моменты, а признание, что назвать их забыли.
+        if (!label) {
+          skipped.push({ seq, label: '', reason: 'unnamed' })
+          continue
+        }
+        if (seen.has(seq)) {
+          skipped.push({ seq, label, reason: 'duplicate' })
+          continue
+        }
+        seen.add(seq)
+        wanted.push({ seq, label, at: Number(raw?.at) || Date.now() })
+      }
 
-    /*
-     * Последняя страница — тетрадь как она есть сейчас, и она есть всегда.
-     * Публикация без неё была бы рассказом о занятии, обрывающимся на середине;
-     * `seq: 0` — её постоянный адрес, свободный по построению (AUTOINCREMENT
-     * начинается с единицы).
-     */
-    const { doc } = getSessionDoc(session.id)
-    steps.push({
-      seq: 0,
-      label: str(req.body?.finalLabel, MAX_STEP_LABEL) || 'Тетрадь на момент публикации',
-      at: Date.now(),
-      cells: pageOfDoc(doc, blobs),
-    })
+      /*
+       * Все шаги — одним проходом истории, а не по проходу на шаг.
+       *
+       * Каждый шаг разворачивался своим Y.Doc от ближайшего кейфрейма
+       * (`buildPageAt`): тетрадь с картинками — мегабайты на шаг, а шагов до
+       * сорока, то есть до сорока полных повторов истории подряд. Теперь
+       * история проигрывается ОДИН раз на всю публикацию, а к состоянию
+       * предыдущего шага доприменяются только строки между ним и следующим
+       * (publish/replay.ts, `pagesAtAsync`).
+       *
+       * Уступка цикла событий никуда не делась — она внутри прохода, между
+       * шагами: проекция страницы (хэш каждой картинки, base64 в байты) осталась
+       * своя на каждый шаг, а в том же процессе у коллеги идёт пара. Проход сам
+       * идёт по возрастанию `seq` и сам отбрасывает повторы; в ответ шаги
+       * раскладываются в том порядке, в каком их назвали, потому что порядок
+       * рельсы выбирает преподаватель, а не арифметика.
+       */
+      const blobs = newBlobBag()
+      const built = new Map<number, PublicCell[]>()
+      for (const [seq, page] of await pagesAtAsync(session.id, [...seen], blobs)) {
+        if (page.ok) built.set(seq, page.cells)
+        else {
+          const named = wanted.find((step) => step.seq === seq)
+          skipped.push({ seq, label: named?.label ?? '', reason: page.reason })
+        }
+      }
 
-    const teacher = currentStaff(req)
-    const publication = writePublication({
-      sessionId: session.id,
-      title: session.name,
-      by: teacher?.name ?? null,
-      steps,
-      blobs: blobs.all(),
-    })
-    res.json({
-      publication: { ...publication, steps: stepHeadings(publication.id) },
-    })
-  })
+      const steps: BuiltStep[] = []
+      for (const step of wanted) {
+        const cells = built.get(step.seq)
+        if (cells) steps.push({ ...step, cells })
+      }
+
+      /*
+       * Последняя страница — тетрадь как она есть сейчас, и она есть всегда.
+       * Публикация без неё была бы рассказом о занятии, обрывающимся на середине;
+       * `seq: 0` — её постоянный адрес, свободный по построению (AUTOINCREMENT
+       * начинается с единицы).
+       *
+       * И документ архивной комнаты не остаётся после этого в памяти: публикуют
+       * вечером, комнату при этом никто не открывал (routes/doc-visit.ts).
+       */
+      steps.push({
+        seq: 0,
+        label: str(req.body?.finalLabel, MAX_STEP_LABEL) || 'Тетрадь на момент публикации',
+        at: Date.now(),
+        cells: visitSessionDoc(session.id, (doc) => pageOfDoc(doc, blobs)),
+      })
+
+      const teacher = currentStaff(req)
+      const publication = writePublication({
+        sessionId: session.id,
+        title: session.name,
+        by: teacher?.name ?? null,
+        steps,
+        blobs: blobs.all(),
+      })
+      res.json({
+        publication: { ...publication, steps: stepHeadings(publication.id) },
+        skipped,
+      })
+    }),
+  )
 
   /** Снять страницу. Ссылка остаётся и говорит, что её сняли. */
   router.delete('/api/admin/seminars/:id/publish', requireStaff, (req, res) => {
@@ -331,14 +508,14 @@ export function courseRoutes(): Router {
 
   router.delete('/api/admin/publications/:id', requireStaff, (req, res) => {
     const pub = getPublication(req.params.id)
-    if (!pub) return res.status(404).json({ error: 'publication not found' })
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     setPublicationState(pub.id, 'withdrawn')
     res.json({ ok: true })
   })
 
   router.post('/api/admin/publications/:id/restore', requireStaff, (req, res) => {
     const pub = getPublication(req.params.id)
-    if (!pub) return res.status(404).json({ error: 'publication not found' })
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     setPublicationState(pub.id, 'published')
     res.json({ ok: true })
   })
@@ -351,7 +528,7 @@ export function courseRoutes(): Router {
    */
   router.delete('/api/admin/publications/:id/forever', ownerOnly('delete a page'), (req, res) => {
     const pub = getPublication(req.params.id)
-    if (!pub) return res.status(404).json({ error: 'publication not found' })
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     deletePublication(pub.id)
     res.json({ ok: true })
   })
@@ -363,39 +540,30 @@ export function courseRoutes(): Router {
     // дали имя, обязана работать и после.
     const course = findCourse(req.params.id)
     if (!course) return res.status(404).json({ error: 'course not found' })
-    const view: PublicCourseView = {
-      id: course.id,
-      slug: course.slug,
-      name: course.name,
-      blurb: course.blurb,
-      items: freshItems(course.items).map((item) =>
-        item.kind === 'seminar'
-          ? {
-              kind: 'seminar',
-              // Идентификатор комнаты наружу не уходит: восемь его символов —
-              // это всё право писать в неё.
-              sessionId: '',
-              name: item.name,
-              publication: item.publication,
-            }
-          : item,
-      ),
-    }
-    res.json({ course: view })
+    res.json({ course: publicCourseView(course) })
   })
 
+  /**
+   * Страница семинара — с меткой версии, потому что её открывают потоком.
+   *
+   * Публикация неизменяема между переизданиями: `revision` растёт при каждой
+   * записи, а состояние (снятая/живая) меняется отдельным нажатием — вдвоём
+   * они и есть версия ответа. Пятьсот человек, открывающих ссылку на разборе
+   * в одну минуту, при совпавшей метке получают 304 и не стоят ни строки
+   * базы; пять минут `max-age` — про то, что читают эти страницы подряд,
+   * листая шаги, а меняются они раз в неделю.
+   *
+   * Заголовок ставится ДО чтения шагов, и в этом весь смысл: `stepHeadings`
+   * читает таблицу шагов, и отвечать 304 после неё значило бы не сэкономить
+   * ничего.
+   */
   router.get('/api/p/:id', (req, res) => {
     const pub = findPublication(req.params.id)
-    if (!pub) return res.status(404).json({ error: 'publication not found' })
+    if (!pub) return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
+    if (fresh(req, res, `${pub.id}.${pub.revision}.${pub.state}`)) return
     // У осиротевшей страницы комнаты нет, и по `sessionId` курс не найдётся:
     // обратно её держит надгробие. Путь наверх должен оставаться и у неё.
-    const course = listCourses().find((c) =>
-      c.items.some((i) =>
-        i.kind === 'seminar'
-          ? pub.sessionId !== null && i.sessionId === pub.sessionId
-          : i.kind === 'gone' && i.publication?.id === pub.id,
-      ),
-    )
+    const course = courseOfPublication(pub)
     const seminar: PublicSeminar = {
       id: pub.id,
       slug: pub.slug,
@@ -412,12 +580,18 @@ export function courseRoutes(): Router {
   router.get('/api/p/:id/step/:seq', (req, res) => {
     const pub = findPublication(req.params.id)
     if (!pub || pub.state !== 'published') {
-      return res.status(404).json({ error: 'publication not found' })
+      return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     }
     const asked = req.params.seq === 'first' ? null : Number(req.params.seq)
     if (asked !== null && !Number.isFinite(asked)) return bad(res, 'bad step')
+    /*
+     * Шаг — самое тяжёлое, что отдаёт публичная половина: страница целиком,
+     * со всеми текстовыми выводами. И самое неизменное: пока `revision` тот
+     * же, это байт в байт тот же шаг.
+     */
+    if (fresh(req, res, `${pub.id}.${pub.revision}.${req.params.seq}`)) return
     const step = readStep(pub.id, asked)
-    if (!step) return res.status(404).json({ error: 'step not found' })
+    if (!step) return res.status(404).json({ error: STEP_NOT_FOUND })
     res.json({ step })
   })
 
@@ -426,8 +600,8 @@ export function courseRoutes(): Router {
    *
    * Единственный способ унести код с собой целиком: в самой комнате экспорта
    * нет вовсе, а выделить мышью через несколько ячеек нельзя — каждая из них
-   * отдельный редактор. Отдаётся последний шаг, то есть тетрадь на момент
-   * публикации.
+   * отдельный редактор. Отдаётся тот шаг, который назвали в `?step=`; без
+   * номера — последний, то есть тетрадь на момент публикации.
    *
    * Выводы в файл не кладутся. Notebook без них открывается везде и весит
    * килобайты; с ними это мегабайты base64 в файле, который студент несёт к
@@ -436,7 +610,16 @@ export function courseRoutes(): Router {
   router.get('/api/p/:id/notebook.ipynb', (req, res) => {
     const pub = findPublication(req.params.id)
     if (!pub || pub.state !== 'published') return res.status(404).end()
-    const body = notebookOf(pub.id)
+    /*
+     * Шаг, на котором стоит читатель, — если он про него сказал.
+     *
+     * Без `?step=` отдаётся последний, то есть тетрадь на момент публикации:
+     * так эта ссылка работала всегда, и так подписана страница. Незнакомый
+     * номер — тоже последний шаг, а не 404: скачивание не то место, где
+     * человеку объясняют про адреса, и файл в руках лучше пустого отказа.
+     */
+    const wanted = Number(req.query.step)
+    const body = notebookOfStep(pub.id, Number.isInteger(wanted) ? wanted : null)
     if (body.length === 0) return res.status(404).end()
     const name = pub.title.replace(/[^\p{L}\p{N} _-]/gu, '').trim() || 'notebook'
     res.setHeader('content-type', 'application/x-ipynb+json; charset=utf-8')

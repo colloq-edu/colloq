@@ -431,7 +431,69 @@ test('ответ доходит автору и группе с подписью
     null,
   )
   assert.equal(lastMine(at.masha, at.cell)?.reply?.text, 'Всем: так и надо')
-  assert.equal(lastMine(at.petya, at.cell)?.reply?.text, 'Всем: так и надо')
+  assert.equal(lastMine(at.masha, at.cell)?.reply?.to, 'group')
+  /*
+   * У Пети письмо было личным — и групповое его не стирает: письма лежат рядом,
+   * каждое в своём месте.
+   *
+   * Здесь стояло «у Пети теперь только групповой ответ», то есть тест закреплял
+   * потерю: преподаватель ответил человеку лично, через минуту отправил группе
+   * черновик оракула — и личная строка исчезала, прочитал он её или нет.
+   * Вернуть её нечем: у попыток истории версий нет.
+   */
+  assert.deepEqual(
+    lastMine(at.petya, at.cell)?.replies?.map((one) => [one.to, one.text]),
+    [
+      ['person', 'Проверьте знак'],
+      ['group', 'Всем: так и надо'],
+    ],
+  )
+  // И старому клиенту, который читает одно поле, едут оба письма склейкой.
+  assert.equal(lastMine(at.petya, at.cell)?.reply?.text, 'Проверьте знак\n\nВсем: так и надо')
+
+  /*
+   * Второе групповое письмо переписывает рассылку — и только её.
+   *
+   * Поправка вслед рассылке — дело обычное, и раньше она уносила с собой
+   * личный ответ: письмо было одно на попытку, а склейка ложилась в то же поле
+   * и стиралась следующим же групповым. Теперь у Пети остаётся «Проверьте
+   * знак», у Маши — только рассылка.
+   */
+  assert.equal(
+    say(at, at.teacher, {
+      t: 'council:reply',
+      cellId: at.cell,
+      to: { groupKey: 'x=1' },
+      text: 'Всем: поправка',
+    }),
+    null,
+  )
+  assert.deepEqual(
+    lastMine(at.petya, at.cell)?.replies?.map((one) => one.text),
+    ['Проверьте знак', 'Всем: поправка'],
+  )
+  assert.equal(lastMine(at.petya, at.cell)?.reply?.text, 'Проверьте знак\n\nВсем: поправка')
+  assert.deepEqual(
+    lastMine(at.masha, at.cell)?.replies?.map((one) => one.text),
+    ['Всем: поправка'],
+  )
+  assert.equal(lastMine(at.masha, at.cell)?.reply?.text, 'Всем: поправка')
+
+  // Личное письмо переписывает личное — рассылка остаётся на месте: две
+  // ячейки, и в каждой не больше одного письма.
+  assert.equal(
+    say(at, at.teacher, {
+      t: 'council:reply',
+      cellId: at.cell,
+      to: { participantId: at.petya.payload.participantId },
+      text: 'И ещё: назовите переменную',
+    }),
+    null,
+  )
+  assert.deepEqual(
+    lastMine(at.petya, at.cell)?.replies?.map((one) => one.text),
+    ['Всем: поправка', 'И ещё: назовите переменную'],
+  )
 
   assert.equal(
     say(at, at.teacher, {
@@ -565,11 +627,9 @@ test('оракул, «читавший» в момент перезапуска,
     state: 'reading',
     askedAt: 5,
     basedOn: 3,
-    staleBy: 0,
     summary: [],
     groupLabels: {},
     drafts: {},
-    notable: [],
     error: null,
   }
   setOracle(at.id, at.cell, reading)
@@ -604,6 +664,43 @@ test('попытки переживают перезапуск: кэш пере�
   // И новому подключению хоста стопка приезжает пачкой — из базы.
   const late = join(at.id, at.teacher.payload.participantId, 'Ада', 'host')
   assert.equal(lastBoard(late, at.cell)?.attempts[0]?.text, 'x = 7')
+  closeControlRoom(at.id)
+})
+
+test('оба письма переживают перезапуск и едут в стопке', () => {
+  const at = room()
+  council(at)
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.teacher, {
+    t: 'council:reply',
+    cellId: at.cell,
+    to: { participantId: at.petya.payload.participantId },
+    text: 'Проверьте знак',
+  })
+  say(at, at.teacher, {
+    t: 'council:reply',
+    cellId: at.cell,
+    to: { groupKey: 'x=1' },
+    text: 'Всем: так и надо',
+  })
+
+  // Перезапуск без процесса: кэш забыт, правда — в базе. Письмо там одно поле,
+  // и список должен уехать в него целиком, а не последним письмом.
+  resetCouncilCache(at.id)
+  assert.deepEqual(
+    attemptsOf(at.id, at.cell)[0]?.replies.map((one) => [one.to, one.text]),
+    [
+      ['person', 'Проверьте знак'],
+      ['group', 'Всем: так и надо'],
+    ],
+  )
+
+  // И на пульте у карточки — те же два письма (и склейка старому клиенту).
+  const late = join(at.id, at.teacher.payload.participantId, 'Ада', 'host')
+  const card = lastBoard(late, at.cell)?.attempts[0]
+  assert.deepEqual(card?.replies?.map((one) => one.text), ['Проверьте знак', 'Всем: так и надо'])
+  assert.equal(card?.reply?.text, 'Проверьте знак\n\nВсем: так и надо')
   closeControlRoom(at.id)
 })
 
@@ -642,5 +739,41 @@ test('после звонка попытки не принимаются, а з�
   )
   // А просмотр стопки у преподавателя остаётся — сданное разбирают после пары.
   assert.equal(board(at).lock, 'council')
+  closeControlRoom(at.id)
+})
+
+/* -------------------------------------------------------------- задание */
+
+test('опоздавший сеется заданием, а не решением, которое показали классу', () => {
+  const at = room()
+  // Тот самый текст, что лежит в ячейке к моменту открытия консилиума.
+  const task = '# задание: посчитайте x'
+  council(at)
+
+  // Петя сдал, преподаватель показал: общий текст ячейки — уже чужое решение.
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.teacher, {
+    t: 'council:show',
+    cellId: at.cell,
+    participantId: at.petya.payload.participantId,
+  })
+  const found = findCell(getSessionDoc(at.id).doc, at.cell)
+  assert.ok(found)
+  assert.equal(cellSource(found.cell).toString(), 'x = 42', 'показ переписал общий текст')
+
+  /*
+   * Клава заходит по ссылке уже после показа. Раньше её лист сеялся общим
+   * текстом — то есть решением Пети, — и одно нажатие «Сдать» отправляло её в
+   * его группу. Теперь в приветственной пачке едет задание.
+   */
+  const late = join(at.id, `${at.id}_late`, 'Клава', 'participant')
+  const mine = lastMine(late, at.cell)
+  assert.equal(mine?.text, '', 'попытки у неё ещё нет')
+  assert.equal(mine?.seed, task)
+
+  // И тому, у кого попытка уже есть: лист мог не завестись, а страницу
+  // перезагружают посреди пары.
+  assert.equal(lastMine(at.petya, at.cell)?.seed, task)
   closeControlRoom(at.id)
 })

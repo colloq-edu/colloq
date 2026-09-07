@@ -91,6 +91,20 @@
 
   /** Свёрнутые папки. Всё, чего здесь нет, развёрнуто: дерево видно целиком. */
   let collapsed = $state<Set<string>>(new Set())
+  /**
+   * Строка, которой коснулись последней, — и единственный вход к её действиям
+   * с пальца.
+   *
+   * Полоса действий (строка для ячейки, скачать, убрать) появлялась по
+   * `hover`, а на планшете наведения нет: тап оставлял «наведённое» состояние
+   * висеть до следующего касания, а после `future.hoverOnlyWhenSupported` в
+   * tailwind.config.js не оставляет и его — с пальца до кнопок не добраться
+   * вовсе. Тот же ответ, что у тулбара ячейки (CellView · `selected &&
+   * opacity-100`): действия показывает ВЫДЕЛЕННАЯ строка, а выделяет её то же
+   * нажатие, которым файл открывают. Мышь при этом ничего не теряет: `hover`
+   * и `focus-within` остаются рядом.
+   */
+  let picked = $state<string | null>(null)
   /** Куда лягут «новый файл» и «новая папка». Пустая строка — корень. */
   let target = $state('')
   /**
@@ -162,20 +176,37 @@
   const depthOf = (path: string): number => path.split('/').length - 1
 
   /**
-   * Кто держит этот файл открытым — из присутствия комнаты.
+   * Кто держит файлы открытыми — из присутствия комнаты, одним проходом.
    *
    * Не курсоры: те живут в присутствии самого файла и до комнаты не доходят.
    * Здесь — только «кто здесь», и этого хватает, чтобы не начать править файл,
    * который в этот момент правит сосед, ничего об этом не зная.
+   *
+   * Карта по пути, а не поиск на каждую строку. `#readPeers` отдаёт новый
+   * массив на КАЖДЫЙ чужой курсор, а прежний код на каждый такой кадр обходил
+   * всех присутствующих для каждой видимой строки дерева: сто строк на
+   * пятистах человек — пятьдесят тысяч сравнений за переход соседа между
+   * ячейками. Теперь один проход по присутствию, и строки читают готовое.
    */
-  function peersIn(path: string): { id: string; color: string; name: string }[] {
-    const out: { id: string; color: string; name: string }[] = []
+  const NOBODY: { id: string; color: string; name: string }[] = []
+
+  const peersByPath = $derived.by(() => {
+    const map = new Map<string, { id: string; color: string; name: string }[]>()
     for (const peer of session.peers) {
-      if (peer.isSelf || peer.user.editing !== path) continue
-      if (out.some((seen) => seen.id === peer.user.id)) continue
-      out.push({ id: peer.user.id, color: peer.user.color, name: peer.user.name })
+      const path = peer.user.editing
+      if (peer.isSelf || !path) continue
+      let here = map.get(path)
+      if (!here) map.set(path, (here = []))
+      // Три лица на строку: дальше они не поместятся, а вторая вкладка того же
+      // человека — всё тот же человек.
+      if (here.length >= 3 || here.some((seen) => seen.id === peer.user.id)) continue
+      here.push({ id: peer.user.id, color: peer.user.color, name: peer.user.name })
     }
-    return out.slice(0, 3)
+    return map
+  })
+
+  function peersIn(path: string): { id: string; color: string; name: string }[] {
+    return peersByPath.get(path) ?? NOBODY
   }
 
   /** Кнопка 24 пикселя, зазор между ними два; сорок — место под размер файла. */
@@ -195,13 +226,30 @@
   )
 
   function toggle(path: string): void {
+    // Тап по стрелке — тоже прикосновение к строке: раскрыв папку пальцем,
+    // человек должен видеть и то, что с ней можно сделать.
+    picked = path
     const next = new Set(collapsed)
     if (next.has(path)) next.delete(path)
     else next.add(path)
     collapsed = next
   }
 
-  function pick(entry: FileEntry): void {
+  /**
+   * Открыть или скачать — по одинарному щелчку.
+   *
+   * На том же имени висит и переименование по двойному, и второй щелчок
+   * доезжал до `pick` вторым нажатием: двоичный файл заказывался и скачивался
+   * дважды (два билета, два `a.click()` — датасет на гигабайт в загрузках
+   * двумя копиями), папка схлопывалась и раскрывалась подряд, а студенту, у
+   * которого переименования нет вовсе, оставались одни побочные действия.
+   * `detail` браузер считает сам: 1 — первый щелчок, 2 — второй.
+   */
+  function pick(entry: FileEntry, detail = 1): void {
+    if (detail > 1) return
+    // Выделение — до любых отказов ниже: строка, по которой нажали, показывает
+    // свои действия, даже если открыть файл правило комнаты не дало.
+    picked = entry.path
     if (entry.dir) {
       target = entry.path
       toggle(entry.path)
@@ -280,7 +328,15 @@
     const current = draft
     if (!current) return
     const name = draftName.trim()
-    if (!name) return cancelDraft()
+    /*
+     * Черновик тетради начинается с подставленного `.ipynb`, и «ничего не
+     * набрали» выглядит здесь не как пустая строка, а как одно расширение.
+     * Без этой ветки уход из поля мимо давал отказ «имя начинается с точки», а
+     * поле не закрывалось: каждый следующий щелчок мимо повторял ту же ошибку,
+     * и выйти можно было только Escape. Пустое имя закрывает поле — так и у
+     * файла, и у папки.
+     */
+    if (!name || (current.kind === 'book' && name === '.ipynb')) return cancelDraft()
     if (!safeSegment(name)) {
       error = whySegmentRefused(name)
       return
@@ -887,7 +943,9 @@
     {@const here = peersIn(entry.path)}
     <div
       class="group relative flex h-[26px] items-center transition-colors duration-100
-             {active === entry.path ? 'bg-raised' : 'hover:bg-raised focus-within:bg-raised'}
+             {active === entry.path || picked === entry.path
+        ? 'bg-raised'
+        : 'hover:bg-raised focus-within:bg-raised'}
              {dragInto === entry.path
         ? 'ring-1 ring-inset ring-accent'
         : dragDeny === entry.path
@@ -950,7 +1008,7 @@
               ? 'font-semibold text-ink'
               : 'text-muted'}"
           title={entry.dir ? entry.path : `${entry.path} — открыть`}
-          onclick={() => pick(entry)}
+          onclick={(event) => pick(entry, event.detail)}
           ondblclick={() => startRename(entry)}
         >
           <span class="truncate">{splitFileName(entry.name).stem}</span>
@@ -986,13 +1044,24 @@
               </span>
             {:else if !entry.dir}
               <span
-                class="whitespace-nowrap font-mono text-micro tabular-nums text-muted transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0"
+                class="whitespace-nowrap font-mono text-micro tabular-nums text-muted transition-opacity
+                       duration-100 group-hover:opacity-0 group-focus-within:opacity-0
+                       {picked === entry.path ? 'opacity-0' : ''}"
               >
                 {formatBytes(entry.size)}
               </span>
             {/if}
+            <!--
+              Полоса действий: указателю — по наведению, пальцу — по выделенной
+              строке (см. `picked`). `pointer-events-none`, пока её не видно, —
+              не украшение: полоса лежит поверх размера, и невидимая «Убрать»
+              ловила тап по правому краю строки.
+            -->
             <span
-              class="absolute inset-y-0 right-0 flex items-center gap-0.5 bg-raised opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
+              class="absolute inset-y-0 right-0 flex items-center gap-0.5 bg-raised transition-opacity
+                     duration-100 group-hover:pointer-events-auto group-hover:opacity-100
+                     group-focus-within:pointer-events-auto group-focus-within:opacity-100
+                     {picked === entry.path ? 'opacity-100' : 'pointer-events-none opacity-0'}"
             >
               {#if !entry.dir}
                 <button

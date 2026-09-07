@@ -9,9 +9,9 @@
  * Три вещи, которые здесь держатся нарочно.
  *
  * Модель не видит имён. Ей едут тексты по группам с числами, задание и эталон,
- * если он есть; группы названы G1…GN, и к людям их привязывает сервер после
- * ответа (`notable` → представитель группы) и пульт (по ключу группы). Иначе
- * «примечательное решение Пети» лежало бы в промпте чужого провайдера.
+ * если он есть; группы названы G1…GN, и к людям их привязывает пульт — по ключу
+ * группы. Иначе «примечательное решение Пети» лежало бы в промпте чужого
+ * провайдера.
  *
  * Группы считает сервер, не модель: `normalizeAttempt` — та же функция, по
  * которой пульт рисует стопку и полосу, и два разных «одинаково» дали бы
@@ -27,11 +27,12 @@
  * красной ошибки посреди пары.
  */
 import type { CouncilGroup, CouncilOracle, CouncilRun, CouncilStatus } from '@shared/protocol'
-import { groupStatus } from '@shared/protocol'
+import { attemptStatus, groupAttempts } from '@shared/protocol'
 import { normalizeAttempt } from '@shared/notebook'
 import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
 import { streamChat, type ChatTurn } from './provider.js'
+import { clip as clipTo, clipLine as cutLine, flatten, groupsWord, people } from './text.js'
 
 /** То, что оракулу нужно от попытки: без имени, цвета и аватара — их он не видит. */
 export interface OracleAttempt {
@@ -40,6 +41,16 @@ export interface OracleAttempt {
   submittedAt: number | null
   run: CouncilRun | null
   correct: boolean | null
+  /**
+   * Когда попытку правили в последний раз — разрыв при равном времени сдачи.
+   *
+   * Не украшение: по этому разрыву выбирается представитель группы, и без него
+   * оракул мог назвать представителем не того, кого назвал пульт, — то есть
+   * положить черновик ответа на чужую карточку. Необязательное, потому что
+   * оракулу оно нужно ровно для сортировки: у попытки, пришедшей без него,
+   * ничью решает id.
+   */
+  updatedAt?: number
 }
 
 /** Задание, как его видит модель: текст общей ячейки и то, что вокруг. */
@@ -69,20 +80,18 @@ const MAX_GROUP_SOURCE = 1_500
 const MAX_TASK_SOURCE = 4_000
 /** Имя группы — одна строка чипа; длиннее не поместится и не прочитается. */
 const MAX_LABEL = 60
-const MAX_NOTABLE = 3
 
 /* ----------------------------------------------------------------- группы */
 
 /**
  * Состояние попытки одним словом — как в `CouncilStatus`: отметка
  * преподавателя сильнее запуска, потому что решение о верности — его.
+ *
+ * Тонкая обёртка над общей `attemptStatus` (protocol.ts): здесь лежала своя
+ * копия того же правила, третья по счёту.
  */
 export function statusOf(attempt: Pick<OracleAttempt, 'run' | 'correct'>): CouncilStatus {
-  if (attempt.correct === true) return 'correct'
-  if (attempt.correct === false) return 'wrong'
-  if (attempt.run?.state === 'error') return 'failed'
-  if (attempt.run?.state === 'ok') return 'ran'
-  return 'unrun'
+  return attemptStatus({ run: attempt.run ?? null, correct: attempt.correct ?? null })
 }
 
 /**
@@ -90,47 +99,28 @@ export function statusOf(attempt: Pick<OracleAttempt, 'run' | 'correct'>): Counc
  *
  * Только сданные: то, что человек ещё печатает, — не решение, а полуслово, и
  * группа «x=» из сорока недописанных попыток ничего не сказала бы ни модели,
- * ни преподавателю. Представитель — самый ранний сдавший. Статус группы — по
- * всем её членам той же `groupStatus`, что у пульта и council.ts: иначе
- * сводка считала бы группу «верно», а полоса под карточкой — «не смотрели».
+ * ни преподавателю.
+ *
+ * Складывает их общая `groupAttempts` (protocol.ts) — та же, что собирает
+ * стопку на сервере и полосу на пульте. Своя копия жила здесь и отличалась
+ * ничьей: `updatedAt` оракулу не возили вовсе, и в одну миллисекунду
+ * представитель группы у оракула мог оказаться не тем, что на карточке, — то
+ * есть черновик ответа лёг бы не на ту группу. Теперь `updatedAt` едет, и
+ * разрыв один на всех.
  */
 export function groupsOf(attempts: readonly OracleAttempt[]): CouncilGroup[] {
-  const byKey = new Map<string, OracleAttempt[]>()
-  for (const attempt of attempts) {
-    if (attempt.submittedAt === null) continue
-    const key = normalizeAttempt(attempt.text)
-    const list = byKey.get(key)
-    if (list) list.push(attempt)
-    else byKey.set(key, [attempt])
-  }
-  const groups: CouncilGroup[] = []
-  for (const [key, members] of byKey) {
-    // Разрыв по id — как у пульта; `updatedAt` оракулу не везут, и в одну
-    // миллисекунду представитель здесь может отличаться от карточки.
-    members.sort(
-      (a, b) =>
-        (a.submittedAt ?? 0) - (b.submittedAt ?? 0) ||
-        a.participantId.localeCompare(b.participantId),
-    )
-    const representative = members[0]
-    groups.push({
-      key,
-      count: members.length,
-      label: null,
-      sample: representative.text,
-      status: groupStatus(members.map(statusOf)),
+  return groupAttempts(
+    attempts.map((attempt) => ({
+      participantId: attempt.participantId,
+      text: attempt.text,
+      submittedAt: attempt.submittedAt,
+      updatedAt: attempt.updatedAt ?? 0,
+      status: statusOf(attempt),
       // Оракулу «на экране» не нужно, но форма группы одна на всех.
       shown: false,
-      representative: representative.participantId,
-      members: members.map((m) => m.participantId),
-    })
-  }
-  // При равном размере раньше та, которую сдали раньше, — так же стопка на
-  // пульте ставит представителей; и порядок не плавает между двумя вопросами
-  // при том же наборе попыток.
-  const sentAt = (g: CouncilGroup) => byKey.get(g.key)?.[0].submittedAt ?? 0
-  groups.sort((a, b) => b.count - a.count || sentAt(a) - sentAt(b) || a.key.localeCompare(b.key))
-  return groups
+      groupKey: normalizeAttempt(attempt.text),
+    })),
+  )
 }
 
 /* ----------------------------------------------------------------- промпт */
@@ -159,14 +149,6 @@ function statusLine(group: CouncilGroup, byId: Map<string, OracleAttempt>): stri
     : word
 }
 
-function people(n: number): string {
-  const mod10 = n % 10
-  const mod100 = n % 100
-  if (mod10 === 1 && mod100 !== 11) return `${n} человек`
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} человека`
-  return `${n} человек`
-}
-
 const SYSTEM = [
   'Ты помогаешь преподавателю разобрать решения студентов прямо на занятии.',
   'Тебе дано задание (текст ячейки тетради), контекст вокруг него и группы',
@@ -179,8 +161,7 @@ const SYSTEM = [
   '              и в каких группах она; 3) что показать классу и почему],',
   '  "groupLabels": {"G1": "имя группы одной короткой строкой, до 40 знаков", …} — для КАЖДОЙ группы,',
   '  "drafts": {"G2": "черновик ответа группе с ошибкой: 2–4 предложения, на «вы»,',
-  '             без имён, указать на ошибку, не решать за них"} — ТОЛЬКО для групп с ошибкой,',
-  '  "notable": [{"key": "G3", "why": "чем примечательно это решение"}] — до трёх, можно пусто',
+  '             без имён, указать на ошибку, не решать за них"} — ТОЛЬКО для групп с ошибкой',
   '}',
   'Пиши по-русски. Абзацы summary короткие: преподаватель читает их с пульта во время пары.',
 ].join('\n')
@@ -258,35 +239,40 @@ export function oraclePrompt(
   return { turns, keys }
 }
 
-function groupsWord(n: number): string {
-  const mod10 = n % 10
-  const mod100 = n % 100
-  if (mod10 === 1 && mod100 !== 11) return 'группа'
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'группы'
-  return 'групп'
-}
-
-/** Голова и хвост: в хвосте кода — возврат, в хвосте условия — вопрос. */
+/**
+ * Голова и хвост: в хвосте кода — возврат, в хвосте условия — вопрос.
+ *
+ * Общей обрезкой (text.ts · clip), только словами по-русски: кадр сводки
+ * написан по-русски, и английский маркер посреди него читался бы как чужой.
+ * Своя копия здесь резала 70/30 и клала маркер СВЕРХ потолка — то есть отдавала
+ * модели больше, чем ей отвели бюджетом.
+ */
 function clip(text: string, limit: number): string {
-  if (text.length <= limit) return text
-  const head = Math.ceil(limit * 0.7)
-  const tail = limit - head
-  return `${text.slice(0, head).trimEnd()}\n… пропущено ${text.length - limit} знаков …\n${text.slice(text.length - tail).trimStart()}`
+  return clipTo(text, limit, (dropped) => `\n… пропущено ${dropped} знаков …\n`)
 }
 
+/** Однострочно: трейсбек в чипе группы читается только так. */
 function clipLine(text: string, limit: number): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
-  return flat.length <= limit ? flat : flat.slice(0, limit - 1) + '…'
+  return cutLine(flatten(text), limit)
 }
 
 /* ----------------------------------------------------------------- разбор */
 
-/** Что удалось вычитать из ответа модели — уже по настоящим ключам групп. */
+/**
+ * Что удалось вычитать из ответа модели — уже по настоящим ключам групп.
+ *
+ * `notable` («до трёх примечательных решений») отсюда убран, и это не потеря.
+ * Модель тратила на него токены в самом дорогом запросе комнаты, сервер
+ * разбирал его и подставлял представителя группы — а нарисовать его было
+ * негде: ни стопка, ни сводка, ни карточка его не читали, и `CouncilOracle`
+ * возил его пустым грузом в каждом кадре. Обещание из шапки этого файла —
+ * «к людям их привязывает пульт» — пульт не выполнял. Поля нет и в протоколе:
+ * пустой груз в кадре — то же самое обещание, только молчаливое.
+ */
 export interface ParsedOracle {
   summary: string[]
   groupLabels: Record<string, string>
   drafts: Record<string, string>
-  notable: { key: string; why: string }[]
 }
 
 /**
@@ -301,7 +287,7 @@ export interface ParsedOracle {
  * в кадре не было, отбрасывается: модель их иногда досочиняет.
  */
 export function parseOracleAnswer(text: string, keys: readonly string[]): ParsedOracle {
-  const empty: ParsedOracle = { summary: [], groupLabels: {}, drafts: {}, notable: [] }
+  const empty: ParsedOracle = { summary: [], groupLabels: {}, drafts: {} }
   const raw = extractJson(text)
   if (!raw || typeof raw !== 'object') {
     return { ...empty, summary: paragraphsOf(text) }
@@ -318,29 +304,11 @@ export function parseOracleAnswer(text: string, keys: readonly string[]): Parsed
     const key = keyFor(no, keys)
     if (key !== null && draft) drafts[key] = draft.trim()
   }
-  const notable: { key: string; why: string }[] = []
-  if (Array.isArray(obj.notable)) {
-    for (const item of obj.notable) {
-      if (!item || typeof item !== 'object') continue
-      const entry = item as Record<string, unknown>
-      const no =
-        typeof entry.key === 'string'
-          ? entry.key
-          : typeof entry.group === 'string'
-            ? entry.group
-            : ''
-      const key = keyFor(no, keys)
-      const why = typeof entry.why === 'string' ? entry.why.trim() : ''
-      if (key !== null && why && !notable.some((n) => n.key === key)) notable.push({ key, why })
-      if (notable.length >= MAX_NOTABLE) break
-    }
-  }
   return {
     // JSON без сводки — редкость, но лучше проза целиком, чем пустые абзацы.
     summary: summary.length > 0 ? summary : paragraphsOf(text),
     groupLabels,
     drafts,
-    notable,
   }
 }
 
@@ -421,11 +389,9 @@ export function idleOracle(): CouncilOracle {
     state: 'idle',
     askedAt: null,
     basedOn: 0,
-    staleBy: 0,
     summary: [],
     groupLabels: {},
     drafts: {},
-    notable: [],
     error: null,
   }
 }
@@ -480,7 +446,6 @@ export function askCouncilOracle(input: AskCouncilOracle): CouncilOracle {
     state: 'reading',
     askedAt: now,
     basedOn: groups.reduce((n, g) => n + g.count, 0),
-    staleBy: 0,
     error: null,
   }
   store.setOracle(sessionId, cellId, started)
@@ -512,7 +477,7 @@ async function read(
    */
   const giveBack = (error: string | null) =>
     settle(
-      previous.state === 'ready' || previous.state === 'stale'
+      previous.state === 'ready'
         ? { ...previous, state: 'ready', error }
         : { ...idleOracle(), error },
     )
@@ -536,12 +501,10 @@ async function read(
       return
     }
     const parsed = parseOracleAnswer(text, keys)
-    const representative = new Map(groups.map((g) => [g.key, g.representative] as const))
     settle({
       state: 'ready',
       askedAt: Date.now(),
       basedOn: groups.reduce((n, g) => n + g.count, 0),
-      staleBy: 0,
       summary: parsed.summary,
       groupLabels: parsed.groupLabels,
       // Черновик группе, которую преподаватель уже отметил верной, — лишний.
@@ -550,9 +513,6 @@ async function read(
           ([key]) => groups.find((g) => g.key === key)?.status !== 'correct',
         ),
       ),
-      notable: parsed.notable
-        .map(({ key, why }) => ({ participantId: representative.get(key) ?? '', why }))
-        .filter((n) => n.participantId),
       error: null,
     })
   } catch (err) {
@@ -572,4 +532,23 @@ export function stopCouncilOracle(sessionId: string, cellId: string): boolean {
   if (!controller) return false
   controller.abort()
   return true
+}
+
+/**
+ * Оборвать все чтения комнаты — семинар сносят.
+ *
+ * Зовёт `discardCouncil` (server/src/council.ts). Без этого ответ, пришедший
+ * через минуту после удаления, шёл в `setOracle`, а тот заводил кэш комнаты
+ * заново и писал строку `council_oracle` для сессии, которой в списке уже нет.
+ * Возвращает, сколько чтений оборвали, — ради журнала и теста.
+ */
+export function stopRoomOracles(sessionId: string): number {
+  const prefix = `${sessionId}:`
+  let stopped = 0
+  for (const [key, controller] of reading) {
+    if (!key.startsWith(prefix)) continue
+    controller.abort()
+    stopped += 1
+  }
+  return stopped
 }

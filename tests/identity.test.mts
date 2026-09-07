@@ -15,7 +15,6 @@
  */
 import './_env.mts'
 import http from 'node:http'
-import express from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Request, Response } from 'express'
@@ -26,8 +25,8 @@ import { createTeacher, rotateLinkKey } from '../server/src/admin/store.js'
 import { createHmac } from 'node:crypto'
 import { signToken, verifyToken, TOKEN_MAX_AGE_MS } from '../server/src/auth.js'
 import { createSession, db, getParticipant, isTokenHost } from '../server/src/db.js'
-import { roleFor, sessionAuth, sessionRoutes } from '../server/src/routes/sessions.js'
-import { historyRoutes } from '../server/src/routes/history.js'
+import { roleFor, sessionAuth } from '../server/src/routes/sessions.js'
+import { app } from '../server/src/app.js'
 import type { JoinRequest, JoinResponse } from '../shared/protocol.js'
 import { ApiError } from '../web/src/lib/api.js'
 import { CROWD_WAIT_MS, retryJoinIn } from '../web/src/lib/crowd.js'
@@ -38,10 +37,12 @@ let server: http.Server
 
 before(async () => {
   createSession(ROOM, 'Identity', null)
-  const app = express()
-  app.use(express.json())
-  app.use(sessionRoutes())
-  app.use(historyRoutes())
+  /*
+   * Приложение целиком (server/src/app.ts), а не два роутера рядом: вход и
+   * история стоят в продукте за разбором json, проверкой происхождения и
+   * продлением печенья штата, и проверять их надо за тем же. Своя сборка
+   * express повторяла бы порядок index.ts, а не сверялась с ним.
+   */
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()

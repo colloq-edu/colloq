@@ -34,6 +34,23 @@ function packageOf(id: string): string | null {
   return first.startsWith('@') ? `${first}/${second}` : first
 }
 
+/**
+ * Имя куска комнаты — то, которым его называет Rollup: базовое имя модуля.
+ *
+ * Своего куска SessionScreen не просит и не должен: он и так уезжает в
+ * отдельный, потому что грузится динамическим `import()`. Просить его через
+ * `manualChunks` пробовали — и это ХУЖЕ: назначенный вручную кусок утаскивает
+ * за собой то, что нужно и входу тоже, и в собранном index.js появляется
+ * СТАТИЧЕСКИЙ импорт из него. То есть 457 КБ комнаты начинают качаться на
+ * экране входа — ровно то, ради чего экран и разделяли.
+ *
+ * Имя нужно здесь одному: `firstPaint` ниже кладёт этот кусок в modulepreload
+ * на /s/:id. Оно завязано на имя файла, поэтому переименование экрана обязано
+ * доехать и сюда — за этим следит проверка в самом `firstPaint`, которая роняет
+ * сборку, а не молчит.
+ */
+const ROOM_CHUNK = 'SessionScreen'
+
 function manualChunks(id: string): string | undefined {
   // The editor's palette is never wanted without the editor, and a second
   // request for 5 KB costs more than the bytes do.
@@ -55,11 +72,11 @@ function manualChunks(id: string): string | undefined {
  *  - the app stylesheet stops blocking render, so the inlined shell in
  *    index.html paints with zero network. main.ts holds the shell up until the
  *    sheet has applied, so the app itself is never seen undressed.
- *  - a seminar link goes straight into the notebook, so on /s/:id the editor
- *    and renderer chunks are requested alongside the entry rather than three
- *    round trips later, once the route has resolved and the first cell has
- *    mounted. On '/' neither is fetched at all — that is the whole point of
- *    splitting them out.
+ *  - a seminar link goes straight into the notebook, so on /s/:id the room
+ *    screen and the editor and renderer chunks are requested alongside the
+ *    entry rather than three round trips later, once the route has resolved and
+ *    the first cell has mounted. On '/' none of them is fetched at all — that is
+ *    the whole point of splitting them out.
  */
 function firstPaint(): Plugin {
   let base = '/'
@@ -73,7 +90,8 @@ function firstPaint(): Plugin {
       order: 'post',
       handler(html, ctx) {
         let out = html.replace(/<link[^>]+rel="stylesheet"[^>]*>/g, (tag) => {
-          // Leave anything cross-origin (fonts) and anything already deferred alone.
+          // Leave anything already deferred alone, and anything cross-origin:
+          // the fonts are ours and local now, but the rule outlives them.
           if (/\bmedia=/.test(tag) || /href="https?:/.test(tag)) return tag
           const deferred = tag.replace(
             /\/?>$/,
@@ -82,11 +100,35 @@ function firstPaint(): Plugin {
           return `${deferred}<noscript>${tag}</noscript>`
         })
 
-        const notebookOnly = new Set(['codemirror', 'render'])
+        /*
+         * Что просить сразу на /s/:id: сам экран комнаты и то, без чего он не
+         * рисует ни одной ячейки. Все три — уже собранные куски, так что это не
+         * лишние байты, а те же самые, запрошенные на круг раньше. Экран
+         * комнаты — самый крупный из них, и до сих пор он начинал качаться
+         * только после того, как index.js скачан, разобран и запущен: лишний
+         * круг сети на единственном пути, по которому в комнату идут все.
+         */
+        const notebookOnly = new Set([ROOM_CHUNK, 'codemirror', 'render'])
         const deferred = Object.values(ctx.bundle ?? {}).filter(
           (asset): asset is typeof asset & { fileName: string } =>
             asset.type === 'chunk' && notebookOnly.has(asset.name ?? ''),
         )
+        /*
+         * И вслух, если имя разошлось со сборкой.
+         *
+         * Имена кусков — это строки, а модули переименовывают: молча выпавший
+         * отсюда `SessionScreen` не сломал бы ничего заметного, просто вернул бы
+         * тот самый лишний круг сети, который здесь и убирают. Такое не
+         * замечают годами, поэтому сборка падает.
+         */
+        const found = new Set(deferred.map((chunk) => chunk.name))
+        const missing = [...notebookOnly].filter((name) => !found.has(name))
+        if (missing.length > 0) {
+          throw new Error(
+            `colloq-first-paint: в сборке нет кусков ${missing.join(', ')} — ` +
+              'их переименовали, а modulepreload на /s/:id остался со старым именем',
+          )
+        }
         if (deferred.length > 0) {
           const files = JSON.stringify(deferred.map((chunk) => base + chunk.fileName))
           out = out.replace(

@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { CellOutput } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
+  import ScopedOutput from './ScopedOutput.svelte'
+  // Что показывать картинкой, что разметкой, что текстом — в своём модуле:
+  // список растровых типов там связан с публикацией, а не переписан от руки.
+  import { asImage, imageSrc, isPicture, pickMime } from './output-mimes'
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
   import { withoutEcho } from '@/lib/traceback'
   import { cn, collapseCarriage } from '@/lib/utils'
@@ -70,82 +74,6 @@
 
   const render = $derived(renderers())
 
-  /**
-   * Растровые картинки — те, что показывает `<img>`.
-   *
-   * Набор тот же, что публикация выносит в отдельные записи (`BLOB_MIMES` в
-   * shared/publish.ts), и это не совпадение: вынесенное приезжает сюда не
-   * base64, а адресом, а показать адрес умеет только картинка. Список
-   * кончался на png и jpeg, так что гифка — единственное, чем показывают
-   * обучение по эпохам, — не рисовалась вовсе: `pickMime` её не выбирал.
-   */
-  const IMG_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
-
-  /*
-   * Preference order for a rich result. The second list is what we can show
-   * before the sanitizer exists: a data URI needs no sanitizing, and text/plain
-   * goes out as text — SVG and HTML wait, because rendering either of them
-   * unsanitized is not a trade worth one frame.
-   */
-  const MIME_ORDER = [...IMG_MIMES, 'image/svg+xml', 'text/html', 'text/plain']
-  const MIME_ORDER_PLAIN = [...IMG_MIMES, 'text/plain']
-
-  function pickMime(data: Record<string, string>, rich: boolean): string | null {
-    for (const mime of rich ? MIME_ORDER : MIME_ORDER_PLAIN) if (data[mime]) return mime
-    return Object.keys(data).find((mime) => mime.startsWith('text/')) ?? null
-  }
-
-  /**
-   * Не само содержимое, а адрес, по которому оно лежит.
-   *
-   * Третий случай после base64 и data-URI: на опубликованной странице крупные
-   * картинки вынесены в отдельные записи, и в наборе стоит
-   * `/api/p/<pub>/blob/<хэш>`.
-   *
-   * Узнаётся по `/api/`, а не по одной косой черте: base64 любого JPEG
-   * начинается с «/9j/» — так кодируется SOI FF D8 FF, — и по косой черте
-   * фотография с CV-семинара уходила в src сырым payload'ом, то есть битым
-   * значком у всей комнаты. PNG спасала только своя первая буква.
-   */
-  function isAddress(payload: string): boolean {
-    return payload.startsWith('/api/')
-  }
-
-  /**
-   * Показывать ли эту запись картинкой.
-   *
-   * Не только по mime. Соседние ветки отдают значение как разметку (SVG, HTML)
-   * или как текст, поэтому адрес, попавший в любую из них, напечатался бы
-   * строкой «/api/p/…/blob/…» на месте графика. Что именно публикация выносит
-   * в записи, решает сервер, и список там может вырасти — а картинкой, взятой
-   * по адресу, показывается что угодно из вынесенного.
-   */
-  function asImage(mime: string, payload: string): boolean {
-    return IMG_MIMES.includes(mime) || isAddress(payload)
-  }
-
-  /** Kernels send bare base64; a few libraries send a full data URI already. */
-  function imageSrc(mime: string, payload: string): string {
-    if (payload.startsWith('data:') || isAddress(payload)) return payload
-    return `data:${mime};base64,${payload.replace(/\s/g, '')}`
-  }
-
-  /**
-   * Картинку не режем.
-   *
-   * Порог считан по строкам текста, а картинка не строки: у обрезанного
-   * графика под кромкой остаются нижняя ось и подписи, и кнопка обещает «Show
-   * more» — как будто ниже ещё вывод, а не остаток той же картинки. Сетка из
-   * make_grid и retina-фигура выше 460 пикселей на семинаре — обычное дело.
-   * Таблица и текст схлопываются по-прежнему: у них ниже кромки правда лежит
-   * продолжение.
-   */
-  function isPicture(output: CellOutput, rich: boolean): boolean {
-    if (output.kind !== 'data') return false
-    const mime = pickMime(output.data, rich)
-    return mime !== null && (IMG_MIMES.includes(mime) || mime === 'image/svg+xml')
-  }
-
   function tall(index: number, output: CellOutput): boolean {
     if (isPicture(output, render !== null)) return false
     return (heights[index] ?? 0) > COLLAPSE_PX + 40
@@ -203,13 +131,17 @@
                 class="max-w-full bg-white/95 p-1"
               />
             {:else if mime === 'image/svg+xml' && render}
-              <div class="output-svg max-w-full overflow-x-auto bg-white/95 p-1">
-                {@html render.svg(payload)}
-              </div>
+              <ScopedOutput
+                kind="svg"
+                markup={render.svg(payload)}
+                class="max-w-full overflow-x-auto bg-white/95 p-1"
+              />
             {:else if mime === 'text/html' && render}
-              <div class="output-html overflow-x-auto px-2 py-1 text-code text-ink">
-                {@html render.html(payload)}
-              </div>
+              <ScopedOutput
+                kind="html"
+                markup={render.html(payload)}
+                class="overflow-x-auto px-2 py-1 text-code text-ink"
+              />
             {:else if mime}
               <div
                 class="output-stream px-2 py-1 text-ink/90"
@@ -237,48 +169,3 @@
     </div>
   {/each}
 </div>
-
-<style>
-  /*
-   * A pandas DataFrame arrives as its own light-theme HTML table. These rules
-   * take the borders and text back to the app palette; !important is here
-   * because the kernel ships an inline <style> block of its own.
-   */
-  .output-html :global(table) {
-    border-collapse: collapse;
-    margin: 2px 0;
-  }
-  .output-html :global(th),
-  .output-html :global(td) {
-    border: 1px solid rgb(var(--line)) !important;
-    padding: 3px 8px !important;
-    color: rgb(var(--ink)) !important;
-    text-align: right;
-    white-space: nowrap;
-  }
-  .output-html :global(thead th) {
-    background: rgb(var(--raised)) !important;
-    color: rgb(var(--muted)) !important;
-    font-weight: 600;
-  }
-  .output-html :global(tbody th) {
-    color: rgb(var(--muted)) !important;
-    text-align: left;
-  }
-  .output-html :global(tbody tr:hover td) {
-    background: rgb(var(--raised) / 0.55) !important;
-  }
-  .output-html :global(a) {
-    color: rgb(var(--accent));
-    text-decoration: underline;
-  }
-  .output-html :global(pre) {
-    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    white-space: pre-wrap;
-  }
-
-  .output-svg :global(svg) {
-    max-width: 100%;
-    height: auto;
-  }
-</style>

@@ -31,15 +31,19 @@ import {
 } from '@shared/history'
 import {
   addBook,
+  allCellArrays,
   bookList,
+  BOOKS_KEY,
   cloneCell,
   CELLS_KEY,
   createCell,
   DEFAULT_BOOK,
+  getMeta,
   replaceText,
   type YCell,
 } from '@shared/notebook'
-import { appendVersion, hasHistoryBase, updatesUpTo, versionCount } from '../db.js'
+import { plural } from '@shared/plural'
+import { appendVersion, hasHistoryBase, trimHistory, updatesUpTo, versionCount } from '../db.js'
 
 /** Marks writes this module makes into a live doc, so they are not re-recorded twice. */
 export const RESTORE_ORIGIN = 'history-restore'
@@ -155,7 +159,7 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
     authorId: null,
     createdAt: Date.now(),
     label: null,
-    summary: versionCount(sessionId) > 0 ? 'the notebook as it stood' : 'opened the seminar',
+    summary: versionCount(sessionId) > 0 ? 'тетрадь на этот момент' : 'открылась',
     added: 0,
     removed: 0,
     cells: [],
@@ -217,7 +221,7 @@ function repairHistory(sessionId: string, doc: Y.Doc): void {
     authorId: null,
     createdAt: Date.now(),
     label: null,
-    summary: 'the notebook as it stood',
+    summary: 'тетрадь на этот момент',
     added: 0,
     removed: 0,
     cells: [],
@@ -304,20 +308,32 @@ function describe(
   const order = [...now.keys()]
   const number = (id: string) => String(order.indexOf(id) + 1).padStart(2, '0')
 
+  /*
+   * Слова версии — по-русски, потому что их никто не разбирает: сервер сочиняет
+   * строку, лента (web/src/components/panels/HistoryTab.svelte · saying) её
+   * печатает как есть. Панель говорит с классом по-русски, и английская
+   * подпись стояла в ней рядом с русским именем автора.
+   *
+   * Число — через общее правило числительного, а не «N ячеек» подстановкой:
+   * «21 ячеек» и «2 ячеек» — ровно та ошибка, ради которой `plural` и лежит в
+   * shared.
+   */
+  const cells = (n: number): string => `${n} ${plural(n, 'ячейку', 'ячейки', 'ячеек')}`
+
   let summary: string
   if (created.length > 0 && changed.length === 0 && deleted.length === 0) {
-    summary = created.length === 1 ? 'added a cell' : `added ${created.length} cells`
+    summary = created.length === 1 ? 'добавил ячейку' : `добавил ${cells(created.length)}`
   } else if (deleted.length > 0 && created.length === 0 && changed.length === 0) {
-    summary = deleted.length === 1 ? 'deleted a cell' : `deleted ${deleted.length} cells`
+    summary = deleted.length === 1 ? 'удалил ячейку' : `удалил ${cells(deleted.length)}`
   } else if (changed.length === 1 && created.length === 0 && deleted.length === 0) {
-    summary = `edited cell ${number(changed[0])}`
+    summary = `правил ячейку ${number(changed[0])}`
   } else if (changed.length > 1 && created.length === 0 && deleted.length === 0) {
-    summary = `edited ${changed.length} cells`
+    summary = `правил ${cells(changed.length)}`
   } else if (created.length + changed.length + deleted.length === 0) {
     // Nothing anybody wrote changed. The caller drops these — see close().
     summary = ''
   } else {
-    summary = 'reworked the notebook'
+    summary = 'переработал тетрадь'
   }
 
   return { summary, added, removed, cells: [...new Set([...created, ...changed, ...deleted])] }
@@ -356,13 +372,40 @@ export function cellsOf(doc: Y.Doc): HistoricCell[] {
   return out
 }
 
-/** Which cells exist and in what order — the notebook's shape, not its text. */
+/**
+ * Which cells exist and in what order — the notebook's shape, not its text.
+ *
+ * По ВСЕМ тетрадям комнаты, а не по одной. Смотрело только в `CELLS_KEY`, и
+ * перестановка ячейки во второй тетради всплеск не закрывала: строка «двигали
+ * ячейку» приезжала в ленту через двенадцать секунд молчания или не приезжала
+ * вовсе, слитая с чужим набором.
+ *
+ * Разделитель между тетрадями обязателен: без него перенос ячейки из одной
+ * тетради в соседнюю давал ту же самую строку и выглядел как «ничего не
+ * менялось».
+ */
 function shapeOf(doc: Y.Doc): string {
-  return doc
-    .getArray<Y.Map<unknown>>(CELLS_KEY)
-    .toArray()
-    .map((cell) => String(cell.get('id') ?? ''))
-    .join(',')
+  const parts: string[] = []
+  for (const cells of allCellArrays(doc)) {
+    for (const cell of cells.toArray()) parts.push(String(cell.get('id') ?? ''))
+    parts.push('|')
+  }
+  return parts.join(',')
+}
+
+/**
+ * Массивы, из-за которых форму тетради надо пересчитывать.
+ *
+ * Сами листы ячеек и список тетрадей. Терминал и лента оракула — тоже `Y.Array`
+ * в том же документе, и по ним форма измениться не может: ячейки в них не
+ * лежат. Без этого различия поток вывода ядра пересобирал бы форму на каждый
+ * сброс буфера.
+ */
+function shapingArrays(doc: Y.Doc): Y.AbstractType<any>[] {
+  const arrays: Y.AbstractType<any>[] = [...allCellArrays(doc)]
+  const books = getMeta(doc).get(BOOKS_KEY)
+  if (books instanceof Y.Array) arrays.push(books)
+  return arrays
 }
 
 function docFrom(updates: Uint8Array[]): Y.Doc {
@@ -462,7 +505,16 @@ function close(key: string): void {
   // happens to be when somebody next presses a key. Двигается и после
   // неудачи: байтов всплеска всё равно больше нет, а следующая версия обязана
   // описывать разницу с тем, что в комнате на самом деле.
-  baselines.set(burst.sessionId, Y.encodeStateAsUpdate(after))
+  /*
+   * Один разворот документа в байты на закрытие, а не три.
+   *
+   * Те же самые байты нужны трижды — базовой точке, оценке «пора ли снимок» и
+   * самому снимку, — и каждый раз кодировались заново. На трёхмегабайтной
+   * тетради это по семь миллисекунд цикла событий за штуку, а закрытий на
+   * оживлённой паре десятки.
+   */
+  const snapshot = Y.encodeStateAsUpdate(after)
+  baselines.set(burst.sessionId, snapshot)
   shapes.set(burst.sessionId, shapeOf(after))
   digests.set(burst.sessionId, now)
   if (gaps.has(burst.sessionId)) {
@@ -476,11 +528,11 @@ function close(key: string): void {
      * поэтому комната помечена до первого удачного снимка — обычный keyframe
      * сюда не годится, он приходит по счёту байтов и может не прийти вовсе.
      */
-    if (writeKeyframe(burst.sessionId, after)) gaps.delete(burst.sessionId)
+    if (writeKeyframe(burst.sessionId, snapshot)) gaps.delete(burst.sessionId)
   } else if (wrote) {
     // Quiet rows count toward the keyframe interval too: they are replayed
     // like any other, so they are exactly what the interval is bounding.
-    maybeKeyframe(burst.sessionId, after, merged.byteLength)
+    maybeKeyframe(burst.sessionId, snapshot, merged.byteLength)
   }
   after.destroy()
 }
@@ -508,8 +560,8 @@ const sinceKeyframe = new Map<string, number>()
  * повтора, и без него крошечная тетрадь с тысячей мелких правок собиралась бы
  * из тысячи кусков.
  */
-function maybeKeyframe(sessionId: string, doc: Y.Doc, wrote: number): void {
-  const size = Y.encodeStateAsUpdate(doc).byteLength
+function maybeKeyframe(sessionId: string, snapshot: Uint8Array, wrote: number): void {
+  const size = snapshot.byteLength
   const grown = (sinceKeyframe.get(sessionId) ?? 0) + wrote
   sinceKeyframe.set(sessionId, grown)
 
@@ -517,15 +569,20 @@ function maybeKeyframe(sessionId: string, doc: Y.Doc, wrote: number): void {
   const byRows = versionCount(sessionId) % KEYFRAME_EVERY === 0
   if (!byBytes && !byRows) return
 
-  writeKeyframe(sessionId, doc)
+  writeKeyframe(sessionId, snapshot)
 }
 
-/** Полный снимок документа отдельной строкой. Говорит, удалось ли записать. */
-function writeKeyframe(sessionId: string, doc: Y.Doc): boolean {
+/**
+ * Полный снимок документа отдельной строкой. Говорит, удалось ли записать.
+ *
+ * Байтами, а не документом: их уже посчитал тот, кто зовёт, и второй
+ * `encodeStateAsUpdate` подряд — это ровно та же работа второй раз.
+ */
+function writeKeyframe(sessionId: string, snapshot: Uint8Array): boolean {
   try {
     appendVersion({
       sessionId,
-      update: Y.encodeStateAsUpdate(doc),
+      update: snapshot,
       kind: 'keyframe',
       authorId: null,
       createdAt: Date.now(),
@@ -540,7 +597,40 @@ function writeKeyframe(sessionId: string, doc: Y.Doc): boolean {
     return false
   }
   sinceKeyframe.set(sessionId, 0)
+  /*
+   * Потолок истории — здесь и только здесь.
+   *
+   * Единственный момент, когда обрезать безопасно: снимок только что лёг, и
+   * повтор всего, что после него, ни на одну выброшенную строку не смотрит.
+   * `trimHistory` режет целыми отрезками между снимками — почему именно так,
+   * подробно сказано у неё; сама база ничего не убирает, потому что «когда
+   * можно» знает эта сторона, а не она.
+   */
+  try {
+    const dropped = trimHistory(sessionId)
+    if (dropped > 0) {
+      console.log(`[history ${sessionId}] история упёрлась в потолок: убрано ${dropped} строк`)
+    }
+  } catch (err) {
+    // Не убралось — не беда семинара: место кончится позже, а версия записана.
+    console.error(`[history] could not trim history for ${sessionId}`, err)
+  }
   return true
+}
+
+/**
+ * Могло ли это обновление изменить состав или порядок ячеек.
+ *
+ * Без транзакции ответ «могло»: не знать — не то же самое, что «нет».
+ */
+function mayHaveReshaped(doc: Y.Doc, transaction: Y.Transaction | undefined): boolean {
+  if (!transaction) return true
+  let arrays = false
+  transaction.changed.forEach((_keys, type) => {
+    if (type instanceof Y.Array) arrays = true
+  })
+  if (!arrays) return false
+  return shapingArrays(doc).some((array) => transaction.changed.has(array))
 }
 
 /**
@@ -554,6 +644,20 @@ export function record(
   doc: Y.Doc,
   update: Uint8Array,
   authorId: string | null,
+  /*
+   * Транзакция, породившая обновление, — если её знает тот, кто зовёт.
+   *
+   * Нужна ровно для одного: понять, могла ли форма тетради измениться, не
+   * пересобирая её. Форма — это строка из имён всех ячеек, и раньше её
+   * склеивали на КАЖДОЕ обновление: на каждое нажатие любого из участников и
+   * на каждый сброс буфера вывода. На тетради в пятьсот ячеек это шесть
+   * килобайт мусора на кадр там, где кадров больше всего.
+   *
+   * Форму меняет только запись в лист ячеек или в список тетрадей; набор текста
+   * идёт в `Y.Text` внутри ячейки и трогать её не может. Не сказали, что
+   * менялось (так зовут тесты), — считаем, как раньше.
+   */
+  transaction?: Y.Transaction,
 ): void {
   const key = sessionId
   const existing = bursts.get(key)
@@ -611,18 +715,54 @@ export function record(
    * is missing exactly when it is being looked for — and the silence is not
    * even likely, because the person who deleted it usually keeps working.
    */
-  if (shapeOf(doc) !== burst.shape) {
+  if (mayHaveReshaped(doc, transaction) && shapeOf(doc) !== burst.shape) {
     close(key)
     return
   }
 
-  if (burst.chars >= BURST_MAX_CHARS || now - burst.openedAt >= BURST_MAX_MS) {
+  /*
+   * Потолок всплеска — на КАЖДОГО, кто в него пишет.
+   *
+   * Всплеск один на комнату, и порог в четыре килобайта человеческих байтов —
+   * это примерно сто тридцать нажатий. Один печатающий закрывает всплеск раз в
+   * полминуты; пятьсот печатающих одновременно набирают эти сто тридцать
+   * нажатий за долю секунды — и комната платила бы `mergeUpdates` + полный
+   * разворот документа + запись в SQLite по десятку раз в секунду, а лента
+   * версий заполнялась бы строками «the room» быстрее, чем её можно читать.
+   *
+   * Строка истории — это «одно дело одного человека»; когда людей в ней N,
+   * столько же и дел, поэтому порог растёт вместе с ними. Сверху по-прежнему
+   * стоит `BURST_MAX_MS`, так что дольше своей минуты всплеск не живёт при
+   * любом числе авторов.
+   */
+  const room = Math.max(1, burst.authors.size)
+  if (burst.chars >= BURST_MAX_CHARS * room || now - burst.openedAt >= BURST_MAX_MS) {
     close(key)
     return
   }
 
   if (burst.timer) clearTimeout(burst.timer)
-  burst.timer = setTimeout(() => close(key), BURST_IDLE_MS)
+  /*
+   * Хвост всплеска — под своим перехватом.
+   *
+   * Это единственный путь, по которому `close` вызывается из таймера: он
+   * склеивает обновления, разворачивает документ и пишет в SQLite, и всё это
+   * без вызывающего, который поймал бы бросок. Из колбэка `setTimeout` он
+   * уходит в `uncaughtException` (server/src/index.ts), а тот уводит процесс
+   * со ВСЕМИ комнатами инстанса — из-за одной ленты одной комнаты.
+   *
+   * Закрытым всплеск считается в любом случае: `close` снимает его с карты
+   * первой же строкой, до всякой работы, — иначе неудачная запись заперла бы
+   * ленту комнаты навсегда, и следующие правки копились бы в мёртвом всплеске
+   * до перезапуска.
+   */
+  burst.timer = setTimeout(() => {
+    try {
+      close(key)
+    } catch (err) {
+      console.error(`[history] could not close the burst for ${key}`, err)
+    }
+  }, BURST_IDLE_MS)
   // A pending burst must not be the reason the process stays alive; shutdown
   // flushes them all on the way out.
   burst.timer.unref?.()
@@ -635,6 +775,28 @@ export function flushHistory(sessionId: string): void {
 
 export function flushAllHistory(): void {
   for (const key of [...bursts.keys()]) close(key)
+}
+
+/**
+ * Отпустить память об истории комнаты, ничего не потеряв.
+ *
+ * Не то же, что `discardBurst`: тот выбрасывает начатую строку вместе с
+ * семинаром, а здесь семинар остаётся — уходит только комната из памяти
+ * процесса (collab/index.ts · выселение простаивающих). Поэтому открытый
+ * всплеск сперва дописывается строкой: это чья-то работа.
+ *
+ * Всё, что снимается, комната отстроит сама при следующем входе: `beginHistory`
+ * заново снимает базовую точку, форму и тексты с поднятого из снимка документа
+ * — ровно так же, как после перезапуска сервера.
+ */
+export function forgetHistory(sessionId: string): void {
+  close(sessionId)
+  baselines.delete(sessionId)
+  shapes.delete(sessionId)
+  digests.delete(sessionId)
+  sinceKeyframe.delete(sessionId)
+  gaps.delete(sessionId)
+  forgetCache(sessionId)
 }
 
 /** Drop a session's open burst without writing it. Used when a seminar is deleted. */
@@ -727,9 +889,10 @@ export function mark(
       ? describe(digests.get(sessionId) ?? new Map(), now)
       : { summary: '', added: 0, removed: 0, cells: [] as string[] }
 
+  const snapshot = Y.encodeStateAsUpdate(doc)
   const seq = appendVersion({
     sessionId,
-    update: Y.encodeStateAsUpdate(doc),
+    update: snapshot,
     kind,
     authorId,
     createdAt: Date.now(),
@@ -745,7 +908,7 @@ export function mark(
   // Строка с целым документом закрывает дыру не хуже снимка: с неё повтор
   // начинается заново.
   gaps.delete(sessionId)
-  baselines.set(sessionId, Y.encodeStateAsUpdate(doc))
+  baselines.set(sessionId, snapshot)
   shapes.set(sessionId, shapeOf(doc))
   digests.set(sessionId, now)
   forgetCache(sessionId)
@@ -979,7 +1142,7 @@ export function restoreInto(
       'restore',
       authorId,
       null,
-      onlyCell ? 'restored one cell' : 'restored the version',
+      onlyCell ? 'вернул ячейку' : 'вернул версию',
       seq,
     )
   }

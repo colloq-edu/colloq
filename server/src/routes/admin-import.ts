@@ -17,25 +17,26 @@ import { createCell, getCells, getMeta } from '@shared/notebook'
 import { currentStaff, requireStaff } from '../admin/auth.js'
 import { setSeminarCreator } from './admin-instance.js'
 import { newSessionId } from '../auth.js'
-import { getSessionDoc } from '../collab/index.js'
-import { flushPersistence } from '../collab/persistence.js'
+import { projectBooks } from '../collab/books.js'
+import { visitSessionDoc } from './doc-visit.js'
 import { config } from '../config.js'
 import { COUNCIL_ROOM, LECTURE_ROOM, readRules } from '@shared/rules'
 import { createSession, setRules } from '../db.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import {
+  fetchNotebook,
   fetchRaw,
   filesToTake,
   listDirectory,
-  notebookCells,
   parseGithubUrl,
   pickNotebook,
-  rawUrlFor,
   seminarNameFor,
   type GithubTarget,
   type RepoEntry,
 } from '../github.js'
+import { readIpynb, type FlatCell } from '@shared/ipynb'
 import { safeSegment } from '@shared/paths'
+import { normalizeLabel } from '@shared/text'
 import { resolveInSession } from '../workspace.js'
 import { ENVIRONMENT_NAME, LIMITS, type AdminErrorBody } from '@shared/admin'
 
@@ -94,6 +95,9 @@ export function adminImportRoutes(): Router {
           notebook: plan.notebookName,
           cells: plan.cells.length,
           files: plan.files.map((f) => ({ name: f.name, size: f.size })),
+          // То, что не поместится в комнату, названо здесь — до того, как её
+          // заведут: узнать об этом после импорта поздно.
+          skipped: plan.skipped,
           source: `${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}`,
         })
       } catch (err) {
@@ -131,8 +135,12 @@ export function adminImportRoutes(): Router {
         return fail(res, 400, 'invalid', 'There is no notebook with any cells at that link.')
       }
 
-      const asked = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
-      const name = (asked || seminarNameFor(plan.notebookTarget ?? target)).slice(
+      // Та же мерка, что у панели и у комнаты: имя приезжает из чужого
+      // репозитория и из тела запроса, а рисуется в тех же строках списка
+      // (shared/text.ts). Голого trim() здесь хватало, чтобы в заголовок уехал
+      // перевод строки.
+      const asked = normalizeLabel(req.body?.name)
+      const name = normalizeLabel(asked || seminarNameFor(plan.notebookTarget ?? target)).slice(
         0,
         LIMITS.seminarName,
       )
@@ -160,7 +168,8 @@ export function adminImportRoutes(): Router {
       })
 
       const written: string[] = []
-      const skipped: string[] = []
+      // То, чему не хватило потолка комнаты, уже названо планом.
+      const skipped: string[] = [...plan.skipped]
       for (const file of plan.files) {
         /*
          * Имя меряется той же меркой, что и всё остальное в дереве комнаты.
@@ -205,7 +214,7 @@ export function adminImportRoutes(): Router {
    * Третья дверь: тетрадь с диска.
    *
    * Ровно тот же путь, что и импорт с GitHub, минус сеть: файл уже у нас, и
-   * разбирает его тот же `notebookCells`. Отдельный маршрут, а не поле у
+   * разбирает его тот же `readIpynb`. Отдельный маршрут, а не поле у
    * общего создания, потому что здесь есть чему не получиться по-своему —
    * файл может оказаться не тетрадью, а тетрадь может оказаться пустой, и об
    * этом надо сказать разными словами.
@@ -214,12 +223,12 @@ export function adminImportRoutes(): Router {
    * и слать текстом дешевле, чем поднимать busboy ради одного поля.
    *
    * Приезжают только ячейки — `cell_type` и `source`, — а не файл целиком.
-   * Предел на тело общий, 1 МБ (см. express.json в index.ts), и сохранённая
+   * Предел на тело общий, 1 МБ (см. express.json в app.ts), и сохранённая
    * тетрадь с парой графиков его пробивает: выводы в ней — это мегабайты
    * base64, которые здесь всё равно выбрасываются. Разбирает их тот же
-   * `notebookCells`, что и импорт с GitHub: второй разбор, расходящийся во
-   * мнениях о том, что такое ячейка, однажды потерял бы половину чужой
-   * тетради. Поле `notebook` с текстом файла принимается по-прежнему — для
+   * `readIpynb` (shared/ipynb.ts), что и импорт с GitHub, и что комната: второй
+   * разбор, расходящийся во мнениях о том, что такое ячейка, однажды потерял бы
+   * половину чужой тетради. Поле `notebook` с текстом файла принимается по-прежнему — для
    * тетради, которая в предел укладывается.
    */
   router.post('/api/admin/import/notebook', requireStaff, (req: Request, res: Response) => {
@@ -243,7 +252,7 @@ export function adminImportRoutes(): Router {
       }
     }
 
-    const cells = notebookCells(parsed)
+    const cells = readIpynb(parsed)
     if (cells.length === 0) {
       return fail(res, 400, 'invalid', 'That notebook has no cells with anything in them.')
     }
@@ -253,9 +262,9 @@ export function adminImportRoutes(): Router {
       return fail(res, 400, 'invalid', `there is no environment called "${wanted}"`)
     }
 
-    const asked = typeof req.body?.name === 'string' ? req.body.name.trim() : ''
+    const asked = normalizeLabel(req.body?.name)
     const fallback = typeof req.body?.filename === 'string' ? req.body.filename : ''
-    const name = (asked || tidyNotebookName(fallback) || 'Untitled seminar').slice(
+    const name = normalizeLabel(asked || tidyNotebookName(fallback) || 'Untitled seminar').slice(
       0,
       LIMITS.seminarName,
     )
@@ -296,7 +305,7 @@ function seedSeminar(input: {
   environment: string | null
   rules: unknown
   mode: unknown
-  cells: ReturnType<typeof notebookCells>
+  cells: FlatCell[]
   author: string | null
 }): string {
   const id = newSessionId()
@@ -322,15 +331,34 @@ function seedSeminar(input: {
   if (preset || asked) setRules(id, readRules({ ...(preset ?? {}), ...(asked ?? {}) }))
   if (input.author) setSeminarCreator(id, input.author)
 
-  const { doc } = getSessionDoc(id)
-  doc.transact(() => {
-    const cells = getCells(doc)
-    // Стартовая тетрадь, которую сервер сеет свежей комнате, здесь только мешает.
-    if (cells.length > 0) cells.delete(0, cells.length)
-    cells.push(input.cells.map((c) => createCell(c.type, c.source)))
-    getMeta(doc).set('title', input.name)
-  }, 'import')
-  flushPersistence(id)
+  /*
+   * Документ заводится на время засева и уезжает на диск.
+   *
+   * Импорт двенадцати недель подряд оставлял в памяти двенадцать чужих
+   * тетрадей: `getSessionDoc` поднимает документ, а сам он оттуда не уходит —
+   * уборка простаивающих комнат отпустит его только через десять минут, и всё
+   * это время двенадцать тетрадей лежат разом (routes/doc-visit.ts). Снимок
+   * пишется тем же визитом, так что первый вошедший поднимет комнату ровно
+   * такой, какой её собрали здесь.
+   */
+  visitSessionDoc(id, (doc) => {
+    doc.transact(() => {
+      const cells = getCells(doc)
+      // Стартовая тетрадь, которую сервер сеет свежей комнате, здесь только мешает.
+      if (cells.length > 0) cells.delete(0, cells.length)
+      cells.push(input.cells.map((c) => createCell(c.type, c.source)))
+      getMeta(doc).set('title', input.name)
+    }, 'import')
+    /*
+     * Файл тетради — сейчас, а не через полторы секунды.
+     *
+     * `watchBooks` откладывает запись, а наблюдатель уедет вместе с документом:
+     * без этой строки `Тетрадь.ipynb` появилась бы в папке только когда комнату
+     * впервые откроют, и панель показала бы у свежего семинара нулевое число
+     * файлов.
+     */
+    projectBooks(id)
+  })
   return id
 }
 
@@ -347,10 +375,41 @@ function tidyNotebookName(filename: string): string {
 /* ------------------------------------------------------------------ plan */
 
 interface Plan {
-  cells: ReturnType<typeof notebookCells>
+  cells: FlatCell[]
   files: RepoEntry[]
+  /** Имена файлов, которые в комнату не поедут: им не хватило её потолка. */
+  skipped: string[]
   notebookName: string
   notebookTarget: GithubTarget | null
+}
+
+/**
+ * Потолок комнаты — и для импорта тоже.
+ *
+ * `filesToTake` отсекает по одному файлу за раз (`maxUploadBytes`), а суммы не
+ * знает никто: папка недели с тридцатью CSV по сорок мегабайт уезжала в комнату
+ * целиком, хотя та же гора через панель отказала бы на `maxSessionBytes`. Диск
+ * тут общий с базой и образами (см. комментарий к sessionBytes), так что
+ * потолок обязан быть один на все двери.
+ *
+ * Остаток не молчит: он уезжает в `skipped`, где преподаватель видит его
+ * списком — и в превью, до того как комната появится.
+ *
+ * Экспортируется ради теста: настоящий путь сюда идёт через сеть к GitHub.
+ */
+export function withinRoomBudget(files: RepoEntry[]): { files: RepoEntry[]; skipped: string[] } {
+  const fits: RepoEntry[] = []
+  const skipped: string[] = []
+  let total = 0
+  for (const file of files) {
+    if (total + file.size > config.maxSessionBytes) {
+      skipped.push(file.name)
+      continue
+    }
+    total += file.size
+    fits.push(file)
+  }
+  return { files: fits, skipped }
 }
 
 /**
@@ -365,10 +424,24 @@ async function planFor(target: GithubTarget): Promise<Plan> {
     if (!target.path.toLowerCase().endsWith('.ipynb')) {
       throw new Error('That link is not a notebook. Point it at an .ipynb file or at a folder.')
     }
-    const raw = await fetchRaw(rawUrlFor(target), MAX_NOTEBOOK)
+    /*
+     * `fetchNotebook`, а не голый `fetchRaw`: ветка со слэшем в имени
+     * (`students/2026-fall`) разбирается из ссылки неверно — где кончается имя
+     * ветки и начинается путь, знает только GitHub, — и raw отвечает на такую
+     * догадку 404. Ссылка на ПАПКУ чинилась сама (`listDirectory` переспрашивает
+     * внутри), а ссылка на файл шла мимо и получала «Could not download … (404)»
+     * про живой файл.
+     *
+     * Переспрашивает он только после 404, и это важнее, чем кажется: запрос
+     * веток — это ещё один поход в API GitHub, а ходим мы туда без токена, то
+     * есть шестьдесят раз в час на весь инстанс. Платить им за каждый импорт
+     * ради редкой ветки нельзя.
+     */
+    const raw = await fetchNotebook(target, MAX_NOTEBOOK)
     return {
-      cells: notebookCells(JSON.parse(raw.toString('utf8'))),
+      cells: readIpynb(JSON.parse(raw.toString('utf8'))),
       files: [],
+      skipped: [],
       notebookName: target.path.split('/').pop() ?? 'notebook.ipynb',
       notebookTarget: target,
     }
@@ -381,8 +454,8 @@ async function planFor(target: GithubTarget): Promise<Plan> {
   }
   const raw = await fetchRaw(book.downloadUrl, MAX_NOTEBOOK)
   return {
-    cells: notebookCells(JSON.parse(raw.toString('utf8'))),
-    files: filesToTake(entries, config.maxUploadBytes),
+    cells: readIpynb(JSON.parse(raw.toString('utf8'))),
+    ...withinRoomBudget(filesToTake(entries, config.maxUploadBytes)),
     notebookName: book.name,
     notebookTarget: { ...target, path: book.path, kind: 'file' },
   }

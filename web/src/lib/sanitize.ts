@@ -21,10 +21,22 @@
  * `audio` and `video` survive with `autoplay` and `loop`, which is sound in
  * everybody's room that its author does not have to be able to stop.
  *
- * Kernel output keeps all of them. `df.style` is a real pandas feature and it
- * emits a scoped <style>; and anybody who can make the kernel emit HTML can
- * already run whatever they like inside it, so there is nothing left there to
- * protect.
+ * Kernel output keeps all of them, and NOT because output is trusted. The old
+ * argument here — "anybody who can make the kernel emit HTML can already run
+ * whatever they like" — is about the kernel's container, not about the browsers
+ * of the other five hundred people: code in the container cannot blank a
+ * classmate's screen, and one `display(HTML(...))` with a hiding rule did
+ * exactly that, room-wide and on the projector, for as long as the output
+ * stayed in the document.
+ *
+ * `df.style` is a real pandas feature and it emits a scoped <style>, so the
+ * tag stays — the containment is done by construction instead of by a ban:
+ * kernel HTML and SVG are drawn inside a shadow root (components/notebook/
+ * ScopedOutput.svelte), where a stylesheet reaches only its own subtree,
+ * `contain: paint` on the host takes the page away from `position: fixed`, and
+ * `@import` is stripped in an inert <template> before the markup moves in.
+ * That is the whole reason the list above may be shorter for output than for a
+ * note: a note is rendered straight into the page, output never is.
  */
 export const MARKDOWN_FORBIDDEN_TAGS = ['style', 'form', 'audio', 'video']
 

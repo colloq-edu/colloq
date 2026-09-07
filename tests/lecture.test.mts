@@ -142,11 +142,11 @@ test('пауза переключается один раз', () => {
 test('штрих дописывается по имени, а рассылаются только новые точки', () => {
   const id = room()
   const first = addInk(id, { id: 's1', page: 2, color: '#111', width: 0.004, points: [0, 0, 0.1, 0.1] })
-  assert.deepEqual(first?.points, [0, 0, 0.1, 0.1])
+  assert.deepEqual(first?.stroke?.points, [0, 0, 0.1, 0.1])
 
   const more = addInk(id, { id: 's1', page: 2, color: '#111', width: 0.004, points: [0.2, 0.2] })
-  assert.deepEqual(more?.points, [0.2, 0.2], 'в рассылку идёт только продолжение')
-  assert.equal(more?.id, 's1')
+  assert.deepEqual(more?.stroke?.points, [0.2, 0.2], 'в рассылку идёт только продолжение')
+  assert.equal(more?.stroke?.id, 's1')
 
   // А в памяти — целый штрих: опоздавший получает его одним куском.
   assert.deepEqual(inkOf(id)[0].points, [0, 0, 0.1, 0.1, 0.2, 0.2])
@@ -176,17 +176,26 @@ test('потолки: точек в кадре, точек в штрихе, шт
 
   // Кадр обрезается, а не отбрасывается: лучше кусок линии, чем её отсутствие.
   const flood = Array.from({ length: 2_000 }, () => 0.5)
-  assert.equal(addInk(id, { id: 'big', page: 1, color: '#111', width: 0.004, points: flood })?.points.length, 512)
+  assert.equal(
+    addInk(id, { id: 'big', page: 1, color: '#111', width: 0.004, points: flood })?.stroke?.points
+      .length,
+    512,
+  )
 
   // Штрих: палец, забытый на экране, перестаёт расти.
   for (let i = 0; i < 20; i += 1) {
     addInk(id, { id: 'big', page: 1, color: '#111', width: 0.004, points: flood })
   }
   assert.ok(inkOf(id)[0].points.length <= 4_000 + 512)
-  assert.equal(
+  /*
+   * И это отказ ПО ИМЕНИ, а не молчание: `null` здесь означал бы «добавлять
+   * нечего», и пульт восемь раз досылал бы штрих целиком, прежде чем молча
+   * убрать его с листа. Три потолка — три разных слова человеку.
+   */
+  assert.deepEqual(
     addInk(id, { id: 'big', page: 1, color: '#111', width: 0.004, points: [0.1, 0.1] }),
-    null,
-    'дописать переполненный штрих нельзя',
+    { full: 'stroke-full' },
+    'дописать переполненный штрих нельзя, и об этом надо сказать',
   )
 
   // Штрихи на странице.

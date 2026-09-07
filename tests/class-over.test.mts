@@ -14,16 +14,22 @@
  * звонка, записал бы ужесточение в базу навсегда — открывать занятие было бы
  * уже не во что.
  *
- * Ни сети, ни ядра: сокет поддельный, комната настоящая. Каждый отказ обязан
- * прозвучать раньше действия, поэтому промах проверки упал бы не утверждением,
- * а попыткой сходить в несуществующий Jupyter.
+ * Ни сети, ни ядра: сокет поддельный, комната настоящая.
+ *
+ * Здесь стояло обещание, что промах проверки «упал бы попыткой сходить в
+ * несуществующий Jupyter». Это неправда: `JUPYTER_URL` смотрит в мёртвый порт,
+ * отказ соединения глотается, и до утверждения дело не доходит вовсе — а у
+ * преподавателя те же нажатия туда и уходят штатно. Промах ловит другое:
+ * `assert.ok(said)` — то, что отказ ПРОЗВУЧАЛ, — и отдельная проверка ниже, что
+ * от нажатия не осталось следа: ячейки не переставлены, вывод не стёрт, файла
+ * не завелось, документ на экран не встал.
  */
 import './_env.mts'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import express from 'express'
 import { WebSocket } from 'ws'
+import * as Y from 'yjs'
 import {
   createSession,
   finishedAt,
@@ -35,8 +41,8 @@ import {
   storedRules,
   upsertParticipant,
 } from '../server/src/db.js'
-import { makeFile } from '../server/src/workspace.js'
-import { closeControlRoom, dispatch, handleControlSocket } from '../server/src/control.js'
+import { listFiles, makeFile } from '../server/src/workspace.js'
+import { boardOf, closeControlRoom, dispatch, handleControlSocket } from '../server/src/control.js'
 import {
   addInk,
   inkOf,
@@ -47,9 +53,8 @@ import {
 } from '../server/src/lecture.js'
 import { terminalPhase } from '../server/src/kernel/terminal.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
-import { createChatEntry, findChatEntry, getChat } from '../shared/notebook.js'
-import { sessionRoutes } from '../server/src/routes/sessions.js'
-import { aiRoutes } from '../server/src/routes/ai.js'
+import { createChatEntry, findChatEntry, getCells, getChat } from '../shared/notebook.js'
+import { app } from '../server/src/app.js'
 import { updateOracleSettings } from '../server/src/admin/settings.js'
 import { signToken, type TokenPayload } from '../server/src/auth.js'
 import {
@@ -164,10 +169,10 @@ test('кэш правил узнаёт про звонок сразу, а не �
 
 /* ------------------------------------------------- маршруты: правила и вход */
 
-const app = express()
-app.use(express.json())
-app.use(sessionRoutes())
-app.use(aiRoutes())
+/*
+ * Двери комнаты и оракула — приложением (server/src/app.ts): звонок должен
+ * закрывать их там, где они стоят на паре, а не в собранной рядом копии.
+ */
 let base = ''
 let server: http.Server
 
@@ -373,6 +378,55 @@ test('после звонка участник упирается во всё, �
       `${message.t} отказал правилом, а не концом занятия: ${said}`,
     )
   }
+})
+
+test('отказ после звонка — это ещё и отсутствие следа, а не только слово', () => {
+  /*
+   * Слово легко: `assert.ok(said)` ловит промах проверки, но не ловит проверку,
+   * которая ОТКАЗАЛА ПОСЛЕ действия. Здесь нажимают по настоящей ячейке и по
+   * настоящему файлу, а потом смотрят на комнату: она обязана быть той же,
+   * какой была до нажатий.
+   */
+  const id = room()
+  const { doc } = getSessionDoc(id)
+  const cells = getCells(doc)
+  const before = cells.toArray().map((cell) => cell.get('id') as string)
+  assert.ok(before.length >= 2, 'в стартовой тетради нечего переставлять')
+  doc.transact(() => {
+    const out = new Y.Map<unknown>()
+    out.set('kind', 'stream')
+    out.set('json', JSON.stringify({ name: 'stdout', text: 'посчитано на паре\n' }))
+    ;(cells.get(0).get('outputs') as Y.Array<unknown>).push([out])
+  }, 'server')
+
+  setFinished(id, Date.now())
+  for (const message of [
+    { t: 'run', cellId: before[0] },
+    { t: 'cells:move', cellId: before[0], direction: 1 },
+    { t: 'tree:new', path: 'заметка.txt' },
+    { t: 'clearOutputs' },
+    { t: 'board:open', name: 'lecture.pdf' },
+  ] as ControlClientMessage[]) {
+    assert.ok(say(id, 'participant', message), `${message.t} прошло у участника`)
+  }
+
+  assert.deepEqual(
+    cells.toArray().map((cell) => cell.get('id') as string),
+    before,
+    'ячейки переставились, а отказ прозвучал',
+  )
+  assert.equal(cells.get(0).get('state'), 'idle', 'ячейка встала в очередь после отказа')
+  assert.equal(
+    (cells.get(0).get('outputs') as Y.Array<unknown>).length,
+    1,
+    'вывод пары стёрт после отказа',
+  )
+  assert.equal(
+    listFiles(id).some((entry) => entry.path === 'заметка.txt'),
+    false,
+    'файл завёлся после отказа',
+  )
+  assert.equal(boardOf(id), null, 'документ встал на общий экран после отказа')
 })
 
 test('а преподаватель в законченной комнате может всё то же, что и до звонка', () => {

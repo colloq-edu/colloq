@@ -12,10 +12,11 @@ import {
   createTerminalLine,
   ensureInitialNotebook,
   getCells,
+  getChat,
   getMeta,
   getTerminal,
 } from '@shared/notebook'
-import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
+import type { AwarenessUser, GateRule, ParticipantRole } from '@shared/protocol'
 import { getRules, getSession, isFinished, renameSession } from '../db.js'
 import { seldom, tally } from '../log.js'
 import { classify, MAX_SYNC_STEP2_BYTES, permits } from './gate.js'
@@ -27,7 +28,14 @@ import {
   flushAllPersistence,
   invalidateSnapshot,
 } from './persistence.js'
-import { RESTORE_ORIGIN, beginHistory, discardBurst, flushAllHistory, record } from './history.js'
+import {
+  RESTORE_ORIGIN,
+  beginHistory,
+  discardBurst,
+  flushAllHistory,
+  forgetHistory,
+  record,
+} from './history.js'
 import { flushAllFiles, forgetFiles } from './files.js'
 import { watchBooks } from './books.js'
 import { forgetUndo } from '../ai/agent.js'
@@ -146,11 +154,34 @@ interface ConnState {
    * the host's: the seminar's name.
    */
   role: ParticipantRole
+  /**
+   * Когда открылся этот сокет.
+   *
+   * Комната знает про себя «сколько людей сейчас», но не знает «с какого
+   * момента идёт то, что идёт»: строка семинара помнит только час создания, а
+   * заводят его за неделю до пары и переиспользуют на второй. Из-за этого
+   * панель писала «Running now · started 6 days ago» про занятие, начавшееся
+   * двадцать минут назад. Часы занятия — это самый старый из открытых сейчас
+   * сокетов (см. liveSince), и других у сервера нет.
+   */
+  openedAt: number
 }
 
 interface DocEntry extends SessionDoc {
   conns: Map<WebSocket, ConnState>
+  /** Снять наблюдение за тетрадями и отпустить запись на диск, дописав её. */
   dispose: () => void
+  /** Только снять наблюдение за тетрадями — для удаления семинара, где писать некуда. */
+  unwatch: () => void
+  /**
+   * Кадры, ещё не уехавшие в комнату, — см. `scheduleFlush`.
+   *
+   * Правки лежат вместе с сокетом, по которому пришли: свои же байты автору
+   * обратно не едут, и склейка обязана это сохранить.
+   */
+  outbox: { updates: { update: Uint8Array; from: unknown }[]; faces: Set<number>; queued: boolean }
+  /** С какого момента в комнате нет ни одного сокета; 0 — есть. */
+  emptySince: number
 }
 
 const docs = new Map<string, DocEntry>()
@@ -165,13 +196,73 @@ function toUint8Array(data: RawData): Uint8Array {
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
 }
 
-function send(entry: DocEntry, conn: WebSocket, message: Uint8Array): void {
+/**
+ * Сколько байт может ждать отправки на одном сокете, прежде чем ему перестают
+ * слать курсоры, — и сколько, прежде чем его считают безнадёжным.
+ *
+ * `ws.send` не спрашивает, успевает ли сеть: он складывает кадр в очередь
+ * сокета и возвращается. `plt.imshow` при dpi=200 — мегабайт-другой в одном
+ * обновлении, и на пятистах слушателях с аудиторным аплинком это гигабайт,
+ * который сервер держит в памяти по копии на сокет, пока картинка ползёт к
+ * телефону на краю сети. Каждое следующее нажатие в комнате встаёт в эту
+ * очередь ЗА картинкой — у всех.
+ *
+ * Поэтому две черты. За первой перестают ехать кадры присутствия: курсор —
+ * единственное, что можно не досылать без последствий (следующее движение
+ * объявит положение заново). За второй сокет закрывается: он всё равно
+ * получает вчерашнюю комнату, а браузер переподключится через секунду и
+ * соберёт состояние заново одним шагом синхронизации — дешевле, чем мегабайты
+ * в памяти сервера.
+ */
+const AWARENESS_STALL_BYTES = 1024 * 1024
+const HOPELESS_BYTES = 8 * 1024 * 1024
+
+/**
+ * Потолок кадра, выше которого сжатие не окупается.
+ *
+ * `perMessageDeflate` (server/src/index.ts) работает НА СОКЕТ: у ws свой
+ * `PerMessageDeflate` на соединение, поэтому один двухмегабайтный кадр вывода —
+ * это пятьсот независимых заданий zlib по два мегабайта через общий лимитер на
+ * десять потоков, то есть секунды процессорного времени и пятьсот сжатых копий
+ * в памяти на одну картинку.
+ *
+ * `threshold` в настройке сервера этого не лечит: он НИЖНЯЯ граница («мельче —
+ * не сжимать»), и поднять его значит перестать сжимать ровно то, ради чего
+ * сжатие заведено, — первые шаги синхронизации в десятки килобайт. Верхняя
+ * граница живёт здесь, где виден размер кадра.
+ *
+ * Четверть мегабайта: текстовый вывод и дерево такого размера жмутся в разы и
+ * стоят миллисекунды, а всё, что крупнее, — это data-вывод (картинка, PDF) в
+ * base64, то есть уже сжатые байты, из которых deflate вернёт четверть объёма
+ * за куда большую цену.
+ */
+const MAX_DEFLATE_BYTES = 256 * 1024
+
+function send(
+  entry: DocEntry,
+  conn: WebSocket,
+  message: Uint8Array,
+  /** Присутствие можно пропустить; правки — нет, они и есть документ. */
+  kind: 'sync' | 'awareness' = 'sync',
+): void {
   if (conn.readyState !== WebSocket.CONNECTING && conn.readyState !== WebSocket.OPEN) {
     closeConn(entry, conn)
     return
   }
+  const waiting = conn.bufferedAmount
+  if (waiting > HOPELESS_BYTES) {
+    if (seldom(`collab-backpressure-${entry.sessionId}`)) {
+      console.warn(
+        `[collab ${entry.sessionId}] сокет отстал на ${Math.round(waiting / 1024)} КБ — закрыт, ` +
+          'браузер соберёт документ заново',
+      )
+    }
+    closeConn(entry, conn)
+    return
+  }
+  if (kind === 'awareness' && waiting > AWARENESS_STALL_BYTES) return
   try {
-    conn.send(message, (err) => {
+    conn.send(message, { compress: message.byteLength <= MAX_DEFLATE_BYTES }, (err) => {
       if (err) closeConn(entry, conn)
     })
   } catch {
@@ -183,6 +274,9 @@ function closeConn(entry: DocEntry, conn: WebSocket): void {
   const state = entry.conns.get(conn)
   if (!state) return
   entry.conns.delete(conn)
+  // Ушёл последний — с этой секунды комната пустая, и отсчёт до выселения
+  // (см. `sweepIdleRooms`) идёт отсюда.
+  if (entry.conns.size === 0) entry.emptySince = Date.now()
   clearInterval(state.pingTimer)
   // Without this the People panel keeps showing whoever just walked out.
   awarenessProtocol.removeAwarenessStates(entry.awareness, Array.from(state.clientIds), null)
@@ -193,20 +287,120 @@ function closeConn(entry: DocEntry, conn: WebSocket): void {
   }
 }
 
-function broadcastDocUpdate(entry: DocEntry, update: Uint8Array, origin: unknown): void {
+function syncFrame(update: Uint8Array): Uint8Array {
   const encoder = encoding.createEncoder()
   encoding.writeVarUint(encoder, MESSAGE_SYNC)
   syncProtocol.writeUpdate(encoder, update)
-  const message = encoding.toUint8Array(encoder)
-  for (const conn of entry.conns.keys()) {
-    // Origin is a connection only for edits that arrived on it; server-side
-    // writes (kernel output, AI edits) carry another origin and go to everyone.
-    if (conn === origin) continue
-    send(entry, conn, message)
+  return encoding.toUint8Array(encoder)
+}
+
+/**
+ * Рассылка комнате — одним кадром за тик цикла событий, а не кадром на нажатие.
+ *
+ * Считать так. Одно нажатие — это одно обновление документа И один кадр
+ * присутствия (`yCollab` объявляет положение курсора на каждое движение
+ * выделения). Без склейки комната из пятисот человек получает на него две
+ * тысячи `ws.send`, каждый со своим `deflate`; двадцать печатающих по пять
+ * нажатий в секунду — двести тысяч отправок в секунду, и цикл событий занят
+ * только ими.
+ *
+ * `setImmediate` выбран не «на глазок»: он срабатывает после того, как Node
+ * разобрал ВСЕ кадры, пришедшие в текущем цикле опроса сокетов. То есть
+ * задержка ровно нулевая для одинокого нажатия (тик и так закончится сейчас) и
+ * тем больше склеивает, чем больше нагрузка, — а это и есть то, что нужно.
+ */
+function scheduleFlush(entry: DocEntry): void {
+  if (entry.outbox.queued) return
+  entry.outbox.queued = true
+  setImmediate(() => {
+    /*
+     * Своё исключение — только своей комнате.
+     *
+     * Это `setImmediate`, а не обработчик сокета: брошенное отсюда не ловит
+     * никто, и одна не собравшаяся рассылка унесла бы процесс вместе со всеми
+     * остальными комнатами.
+     */
+    try {
+      flushRoom(entry)
+    } catch (err) {
+      console.error(`[collab] could not deliver a frame to ${entry.sessionId}`, err)
+      entry.outbox.updates = []
+      entry.outbox.faces.clear()
+    }
+  })
+}
+
+function flushRoom(entry: DocEntry): void {
+  entry.outbox.queued = false
+  /*
+   * Некому — значит и кодировать нечего. Ядро дописывает вывод и в комнату, из
+   * которой все вышли (за результатом вернутся), и склейка кадра для нуля
+   * слушателей — это `mergeUpdates` целого всплеска впустую.
+   */
+  if (entry.conns.size === 0) {
+    entry.outbox.updates = []
+    entry.outbox.faces.clear()
+    return
+  }
+  const batch = entry.outbox.updates
+  if (batch.length > 0) {
+    entry.outbox.updates = []
+    sendUpdates(entry, batch)
+  }
+  const faces = entry.outbox.faces
+  if (faces.size > 0) {
+    entry.outbox.faces = new Set()
+    sendAwareness(entry, [...faces])
   }
 }
 
-function broadcastAwareness(entry: DocEntry, clients: number[]): void {
+const mergeOf = (batch: { update: Uint8Array }[]): Uint8Array =>
+  batch.length === 1 ? batch[0].update : Y.mergeUpdates(batch.map((it) => it.update))
+
+function sendUpdates(entry: DocEntry, batch: { update: Uint8Array; from: unknown }[]): void {
+  let merged: Uint8Array
+  try {
+    merged = mergeOf(batch)
+  } catch (err) {
+    /*
+     * Склейка — это ускорение, а не протокол. Если `mergeUpdates` почему-то не
+     * справился, комната обязана получить свои правки, пусть и по одной: иначе
+     * оптимизация превращается в молчание, которое никто не заметит.
+     */
+    console.error(`[collab] could not merge updates for ${entry.sessionId}`, err)
+    for (const item of batch) {
+      const frame = syncFrame(item.update)
+      for (const conn of entry.conns.keys()) if (conn !== item.from) send(entry, conn, frame)
+    }
+    return
+  }
+  const whole = syncFrame(merged)
+  /*
+   * Автору его собственные байты обратно не едут. Происхождение — сокет только
+   * у того, что сделал человек; серверные записи (вывод ядра, правка оракула)
+   * приходят с другим происхождением и уезжают всем.
+   *
+   * Поэтому кадров получается не один, а один плюс по одному на КАЖДЫЙ сокет,
+   * приславший что-то в этом тике, — обычно это ровно один человек.
+   */
+  const authors = new Set(batch.map((it) => it.from))
+  const spare = new Map<unknown, Uint8Array | null>()
+  for (const conn of entry.conns.keys()) {
+    if (!authors.has(conn)) {
+      send(entry, conn, whole)
+      continue
+    }
+    let frame = spare.get(conn)
+    if (frame === undefined) {
+      const rest = batch.filter((it) => it.from !== conn)
+      frame = rest.length === 0 ? null : syncFrame(mergeOf(rest))
+      spare.set(conn, frame)
+    }
+    if (frame) send(entry, conn, frame)
+  }
+}
+
+function sendAwareness(entry: DocEntry, clients: number[]): void {
   const encoder = encoding.createEncoder()
   encoding.writeVarUint(encoder, MESSAGE_AWARENESS)
   encoding.writeVarUint8Array(
@@ -214,7 +408,7 @@ function broadcastAwareness(entry: DocEntry, clients: number[]): void {
     awarenessProtocol.encodeAwarenessUpdate(entry.awareness, clients),
   )
   const message = encoding.toUint8Array(encoder)
-  for (const conn of entry.conns.keys()) send(entry, conn, message)
+  for (const conn of entry.conns.keys()) send(entry, conn, message, 'awareness')
 }
 
 /**
@@ -261,6 +455,11 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     awareness,
     conns: new Map(),
     dispose: bindPersistence(sessionId, doc),
+    unwatch: () => {},
+    outbox: { updates: [], faces: new Set(), queued: false },
+    // Комната заводится не только человеком (ядро, оракул, маршрут истории), и
+    // пустой она с этой секунды: отсчёт до выселения идёт от рождения.
+    emptySince: Date.now(),
   }
   docs.set(sessionId, entry)
   if (dropPending(sessionId, doc)) invalidateSnapshot(sessionId)
@@ -272,6 +471,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    */
   const unwatchBooks = watchBooks(sessionId, doc)
   const closeBinding = entry.dispose
+  entry.unwatch = unwatchBooks
   entry.dispose = () => {
     unwatchBooks()
     closeBinding()
@@ -455,8 +655,9 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     renameSession(sessionId, title)
   })
 
-  doc.on('update', (update: Uint8Array, origin: unknown) => {
-    broadcastDocUpdate(entry, update, origin)
+  doc.on('update', (update: Uint8Array, origin: unknown, _doc: Y.Doc, tr: Y.Transaction) => {
+    entry.outbox.updates.push({ update, from: origin })
+    scheduleFlush(entry)
     /*
      * The author comes from the origin, which for anything a person did is the
      * socket it arrived on. The server's own writes — seeding a new room,
@@ -487,7 +688,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
         : typeof origin === 'string' && origin.startsWith(BEHALF_PREFIX)
           ? origin.slice(BEHALF_PREFIX.length)
           : null
-    record(sessionId, doc, update, author)
+    record(sessionId, doc, update, author, tr)
   })
 
   awareness.on(
@@ -508,7 +709,10 @@ function getEntry(sessionId: string, title?: string): DocEntry {
          */
         pinRole(entry, state, changes.added.concat(changes.updated))
       }
-      broadcastAwareness(entry, changes.added.concat(changes.updated, changes.removed))
+      for (const id of changes.added) entry.outbox.faces.add(id)
+      for (const id of changes.updated) entry.outbox.faces.add(id)
+      for (const id of changes.removed) entry.outbox.faces.add(id)
+      scheduleFlush(entry)
     },
   )
 
@@ -541,7 +745,7 @@ function refuse(
   entry: DocEntry,
   conn: WebSocket,
   refusal: {
-    rule: 'structure' | 'edit' | 'title'
+    rule: GateRule
     message: string
     /**
      * Что именно не разобралось — словами гейта, с путём. В журнал, не
@@ -616,7 +820,7 @@ function dropPending(sessionId: string, doc: Y.Doc): boolean {
 type RefusalListener = (
   sessionId: string,
   participantId: string,
-  refusal: { rule: 'structure' | 'edit' | 'title'; message: string },
+  refusal: { rule: GateRule; message: string },
 ) => void
 
 let refusalListener: RefusalListener | null = null
@@ -676,10 +880,61 @@ const MAX_AWARENESS_CLIENTS = 4
  * По документу присутствия, а не по записи комнаты: этой же проверкой живут
  * сокеты редактора файлов (collab/files.ts), у которых своя.
  */
-const introduced = new WeakMap<Awareness, Set<number>>()
+const introduced = new WeakMap<Awareness, Map<number, number>>()
 
-/** Сколько имён комната помнит. Столько вкладок за пару не открывают. */
-const MAX_REMEMBERED_CLIENTS = 256
+/**
+ * Сколько комната помнит ушедшее лицо.
+ *
+ * По времени, а не по счёту. Стоял потолок в 256 имён с подписью «столько
+ * вкладок за пару не открывают» — неправда ровно на том масштабе, ради которого
+ * продукт сделан: в комнате на пятьсот человек живых clientID заведомо больше,
+ * а с переподключениями за пару их тысячи. Память переполнялась, забывала
+ * ушедшие имена по одному — и защита от эха переставала действовать там, где
+ * она и нужна: эхо соседней вкладки присваивало себе clientID ушедшего
+ * участника, тот пропадал из панели людей, а его кадры молча отбрасывались.
+ *
+ * Полчаса — заведомо дольше, чем живёт эхо в `BroadcastChannel` соседней
+ * вкладки (оно приезжает в ту же секунду), и заведомо короче пары. Цена памяти
+ * — одно число на лицо: комната на пятьсот человек с переподключениями помнит
+ * тысячи имён и стоит десятки килобайт.
+ */
+const REMEMBER_FACE_MS = 30 * 60 * 1000
+
+/**
+ * Сколько имён держим, пока не пришло время их забывать.
+ *
+ * Не мера комнаты, а предохранитель от бесконечного роста: сюда упирается
+ * только тот, кто открывает вкладки быстрее, чем истекает получас.
+ */
+const MAX_REMEMBERED_CLIENTS = 8192
+
+/** Забыть лица, которых комната не видела дольше `REMEMBER_FACE_MS`. */
+function forgetOldFaces(known: Map<number, number>, now: number): void {
+  for (const [clientId, at] of known) {
+    if (now - at < REMEMBER_FACE_MS) continue
+    known.delete(clientId)
+  }
+  // Не помогло — значит имена сыплются быстрее, чем истекают: уходят самые
+  // старые, вставка в Map держит их первыми.
+  while (known.size > MAX_REMEMBERED_CLIENTS) {
+    const oldest = known.keys().next()
+    if (oldest.done) break
+    known.delete(oldest.value)
+  }
+}
+
+/**
+ * Всё, что проверке ниже нужно от документа: свои сокеты и своё присутствие.
+ *
+ * Не `Pick<DocEntry, …>`: этот же разбор служит документам файлов, а их
+ * `ConnState` — свой (collab/files.ts) и совпадать с нашим не обязан. Пока
+ * поля у них случайно сходились, `Pick` работал; первое же поле, нужное только
+ * комнате, ломало сборку в чужом файле. Названо то, что правда требуется.
+ */
+export interface AwarenessOwner {
+  conns: Map<WebSocket, { clientIds: Set<number> }>
+  awareness: Awareness
+}
 
 /**
  * Кадр присутствия — только про себя.
@@ -693,30 +948,45 @@ const MAX_REMEMBERED_CLIENTS = 256
  * способа выкинуть из середины одну запись, и разбирать его на части значило бы
  * пересобирать его же протокол.
  */
-export function ownAwareness(
-  entry: Pick<DocEntry, 'conns' | 'awareness'>,
-  conn: WebSocket,
-  payload: Uint8Array,
-): boolean {
+export function ownAwareness(entry: AwarenessOwner, conn: WebSocket, payload: Uint8Array): boolean {
   const state = entry.conns.get(conn)
   if (!state) return false
   const decoder = decoding.createDecoder(payload)
   const count = decoding.readVarUint(decoder)
+  const now = Date.now()
   for (let i = 0; i < count; i += 1) {
     const clientId = decoding.readVarUint(decoder)
     decoding.readVarUint(decoder) // такт — не наше дело
-    decoding.readVarString(decoder) // само состояние тоже
+    /*
+     * Состояние ПРОПУСКАЕТСЯ, а не читается.
+     *
+     * `readVarString` — это разбор UTF-8 в новую строку, то есть копия всего
+     * JSON присутствия. А `y-websocket` возвращает серверу каждый кадр, который
+     * применил, — в том числе чужой, приехавший от сервера же (см. load.mts):
+     * в комнате на пятьсот вкладок это пятьсот копий чужого курсора на каждое
+     * нажатие, и все они заведомо отвергаются строкой ниже. На проводе строка
+     * лежит как длина плюс байты, так что пройти её мимо — это сложение.
+     *
+     * Длина — отдельной строкой, и это не вкусовщина. `decoder.pos +=
+     * readVarUint(decoder)` в JS сначала берёт СТАРЫЙ `pos`, и байты самого
+     * варинта длины пропадают: на кадре с одним лицом это незаметно (дальше
+     * никто не читает), а со второго лица декодер разъезжается и клиентом
+     * оказывается случайный байт чужого JSON — то есть проверка принадлежности
+     * начинает пропускать чужое присутствие вторым лицом в кадре.
+     */
+    const bytes = decoding.readVarUint(decoder)
+    decoder.pos += bytes
     if (state.clientIds.has(clientId)) continue
     // Новое лицо этого сокета — можно, пока их не слишком много.
     if (state.clientIds.size + 1 > MAX_AWARENESS_CLIENTS) return false
     if (entry.awareness.getStates().has(clientId)) return false
     let known = introduced.get(entry.awareness)
-    if (!known) introduced.set(entry.awareness, (known = new Set()))
+    if (!known) introduced.set(entry.awareness, (known = new Map()))
     // Чужое лицо, уже уходившее из комнаты, — эхо соседней вкладки.
     if (known.has(clientId) && state.clientIds.size > 0) return false
     state.clientIds.add(clientId)
-    known.add(clientId)
-    if (known.size > MAX_REMEMBERED_CLIENTS) known.delete(known.values().next().value as number)
+    known.set(clientId, now)
+    if (known.size > MAX_REMEMBERED_CLIENTS) forgetOldFaces(known, now)
   }
   return true
 }
@@ -736,6 +1006,25 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
         const peek = decoding.clone(decoder)
         const subtype = decoding.readVarUint(peek)
         let accepted: { retyped: string[]; created: string[]; removed: string[] } | null = null
+        /*
+         * Чего эта ветка стоит на возврате зала — числом, а не на глаз.
+         *
+         * step2 вернувшегося — не «дельта в пару десятков байт»: он несёт весь
+         * набор удалений комнаты, и ответ сервера синхронному клиенту,
+         * `encodeStateAsUpdate(doc, sv)`, — тот же набор обратно. Замер на
+         * семестровой комнате (400 ячеек, 160 тыс. набранных символов, 22.8 тыс.
+         * удалений, документ 750 КБ; tests/sync-storm-cost.test.mts):
+         *
+         *   step2 вернувшегося ......................... 87 КБ
+         *   `classify` этого кадра ..................... 5.6 мс
+         *   `encodeStateAsUpdate(doc, sv)` в ответ ..... 87 КБ, 1.3 мс
+         *
+         * Пятьсот вкладок возвращаются за одну-две секунды после перезапуска
+         * сервера или моргания ретранслятора — это ≈2.8 с занятого цикла
+         * событий на одном разборе и ≈44 МБ исходящего. До потолка кадра
+         * (`MAX_SYNC_STEP2_BYTES`, 8 МБ) при этом ещё ×90 запаса: упирается не
+         * он, а цикл событий.
+         */
         if (subtype === SYNC_STEP2 || subtype === SYNC_UPDATE) {
           const state = entry.conns.get(conn)
           const stale = subtype === SYNC_STEP2
@@ -887,11 +1176,13 @@ export function handleCollabSocket(
    * это правильно: с точки зрения журнала комната тогда открывается заново.
    */
   const wasEmpty = entry.conns.size === 0
+  entry.emptySince = 0
   ws.binaryType = 'arraybuffer'
 
   const state: ConnState = {
     role,
     participantId,
+    openedAt: Date.now(),
     clientIds: new Set<number>(),
     missedPongs: 0,
     pingTimer: setInterval(() => {
@@ -939,6 +1230,25 @@ export function handleCollabSocket(
 /** Open sockets, not distinct people — a second tab counts twice. */
 export function onlineCount(sessionId: string): number {
   return docs.get(sessionId)?.conns.size ?? 0
+}
+
+/**
+ * С какого момента в комнате кто-то есть — или null, если сейчас никого.
+ *
+ * Самый старый из открытых сокетов, а не первый за всю историю комнаты:
+ * занятие, которое идёт, — это те, кто в ней сейчас. Комната, опустевшая и
+ * наполнившаяся снова, начинает часы заново, и это правда о ней: перерыв между
+ * парами ничем другим от конца занятия не отличается.
+ *
+ * Перезапуск сервера обнуляет эти часы вместе с сокетами — ровно как обнуляет
+ * журнальное «[room …] opened», и по той же причине.
+ */
+export function liveSince(sessionId: string): number | null {
+  const entry = docs.get(sessionId)
+  if (!entry || entry.conns.size === 0) return null
+  let oldest = Infinity
+  for (const state of entry.conns.values()) oldest = Math.min(oldest, state.openedAt)
+  return Number.isFinite(oldest) ? oldest : null
 }
 
 /**
@@ -1015,6 +1325,163 @@ export function dropParticipant(sessionId: string, participantId: string): void 
   }
 }
 
+/* ------------------------------------------------- выселение простаивающих */
+
+/**
+ * Сколько пустая комната ещё живёт в памяти.
+ *
+ * Десять минут — это «преподаватель закрыл вкладку, чтобы открыть её с другого
+ * ноутбука», а не «пара кончилась». Меньше — и переменка стоила бы всем
+ * повторной сборки документа из снимка; больше — и семестровый инстанс копит
+ * комнаты быстрее, чем их отпускает.
+ *
+ * Держит комната не только `Y.Doc` (полный CRDT вместе с набором удалений — у
+ * долгой комнаты это сотни килобайт и только растёт), но и базовую точку
+ * истории (ВТОРАЯ полная копия документа), тексты всех ячеек, лица присутствия
+ * и привязку к снимку. На тетради с картинками это десяток мегабайт на
+ * брошенную комнату, а освобождалось это раньше только удалением семинара или
+ * перезапуском сервера: университетский инстанс за семестр накапливал сотни
+ * таких — до OOM, который роняет ВСЕ комнаты разом.
+ *
+ * Вернуться в выселенную комнату можно как всегда: она поднимется из снимка,
+ * ровно так же, как после перезапуска сервера.
+ */
+const IDLE_ROOM_MS = 10 * 60 * 1000
+
+/**
+ * А столько — при любых обстоятельствах.
+ *
+ * Обычное выселение ждёт, пока в комнате ничего не делается: ядро может считать
+ * ячейку, когда все закрыли ноутбуки, и снести из-под неё документ значило бы
+ * выбросить результат, за которым хозяин вернётся. Но признак «делается»
+ * читается из самого документа, а он способен застрять: ответ оракула, чей
+ * процесс убили посреди потока, остаётся `streaming` навсегда — и одна такая
+ * запись держала бы комнату в памяти до перезапуска, то есть ровно ту утечку,
+ * ради которой выселение и написано.
+ *
+ * Три часа — заведомо позже, чем ядро само сносит контейнер простаивающей
+ * комнаты (два часа, kernel/index.ts · IDLE_KERNEL_MS): писать в документ к
+ * этому времени уже некому.
+ */
+const MAX_IDLE_ROOM_MS = 3 * 60 * 60 * 1000
+
+/** Как часто смотрим. Обход карты комнат стоит меньше, чем один кадр правки. */
+const ROOM_SWEEP_MS = 60 * 1000
+
+/** Комнаты, которые кто-то держит в памяти намеренно, и сколько держателей. */
+const holds = new Map<string, number>()
+
+/**
+ * Не выселять эту комнату, пока держат.
+ *
+ * Для того, кто взял `Y.Doc` в руки и работает с ним дольше одного вызова:
+ * выселение уничтожает документ, и запись в уничтоженный не видит никто —
+ * молча. Всё, что берёт документ через `getSessionDoc` на каждое обращение,
+ * держать ничего не должно: такая запись поднимет комнату заново.
+ *
+ * Возвращает «отпустить». Вызывать его дважды безопасно.
+ */
+export function holdRoom(sessionId: string): () => void {
+  holds.set(sessionId, (holds.get(sessionId) ?? 0) + 1)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    const left = (holds.get(sessionId) ?? 1) - 1
+    if (left > 0) holds.set(sessionId, left)
+    else holds.delete(sessionId)
+  }
+}
+
+/**
+ * Делается ли в комнате что-то, чему нужен ЭТОТ документ.
+ *
+ * Спрашивается у самого документа, а не у ядра: импортировать ядро отсюда
+ * значило бы замкнуть модули друг на друга (ядро берёт документ здесь). Всё,
+ * что перечислено, ядро в документ и пишет — по этим же полям комната рисует,
+ * что она занята.
+ */
+function atWork(doc: Y.Doc): boolean {
+  const meta = getMeta(doc)
+  if (meta.get('runningCell') != null) return true
+  const status = meta.get('kernelStatus')
+  if (status === 'busy' || status === 'restarting') return true
+  const queue = meta.get('queue')
+  if (queue instanceof Y.Array && queue.length > 0) return true
+  // Идущий ответ оракула пишется в ленту чата теми же тактами.
+  return getChat(doc)
+    .toArray()
+    .some((turn) => turn.get('state') === 'streaming')
+}
+
+/**
+ * Отпустить пустые комнаты. Возвращает, кого выселили, — этим же зовут тесты.
+ */
+export function sweepIdleRooms(now: number = Date.now()): string[] {
+  const gone: string[] = []
+  for (const entry of [...docs.values()]) {
+    if (entry.conns.size > 0 || entry.emptySince === 0) continue
+    const empty = now - entry.emptySince
+    if (empty < IDLE_ROOM_MS) continue
+    if (empty < MAX_IDLE_ROOM_MS && (holds.has(entry.sessionId) || atWork(entry.doc))) continue
+    evictRoom(entry)
+    gone.push(entry.sessionId)
+  }
+  return gone
+}
+
+/**
+ * Убрать комнату из памяти, не потеряв ничего из написанного.
+ *
+ * Порядок здесь — весь смысл: сперва дописывается открытая строка истории
+ * (это чья-то работа), потом снимок документа на диск, и только после этого
+ * документ уничтожается вместе со своими наблюдателями и присутствием.
+ */
+function evictRoom(entry: DocEntry): void {
+  docs.delete(entry.sessionId)
+  forgetHistory(entry.sessionId)
+  entry.dispose()
+  // И то, что сервер помнил об удалённых в ней ячейках ради Ctrl+Z: отменять
+  // спустя десять минут пустой комнаты уже некому.
+  forgetSession(entry.sessionId)
+  // И то, что оракул помнил ради отмены: возвращать спустя десять минут пустой
+  // комнаты уже некому.
+  forgetUndo(entry.sessionId)
+  entry.doc.destroy()
+  console.log(`[room ${entry.sessionId}] released from memory`)
+}
+
+/*
+ * `unref`: уборка не должна держать процесс живым — этот модуль импортируют и
+ * тесты, и одноразовые скрипты.
+ */
+setInterval(() => sweepIdleRooms(), ROOM_SWEEP_MS).unref?.()
+
+/**
+ * Отпустить документ комнаты, ничего в ней не закрывая.
+ *
+ * Тот же выход, что у уборки простаивающих, только по требованию: им уходит
+ * гость тетради (routes/doc-visit.ts), поднявший документ пустой комнаты ради
+ * одной строки — переименования в панели, чтения ленты, публикации. Ждать за
+ * такую тетрадь десять минут пустоты незачем: она не была ничьей ни секунды.
+ *
+ * `dropSessionDoc` для этого шире, чем нужно: он написан для снесённого
+ * семинара и закрывает его сокеты и файлы. Файловые сокеты живут в своей карте
+ * (collab/files.ts) и документ комнаты не поднимают, так что открытый в
+ * редакторе `.py` переживает и уборку простаивающих, и визит, — а `forgetFiles`
+ * хлопнул бы ему кодом 1001 «комната закрыта» посреди живого семинара.
+ *
+ * Комнату, в которой кто-то сидит, не выселяет: её документ держат сокеты, и
+ * для них это тот же снос. Возвращает, отпустил ли: `false` — либо документа в
+ * памяти не было, либо в комнате есть люди.
+ */
+export function releaseSessionDoc(sessionId: string): boolean {
+  const entry = docs.get(sessionId)
+  if (!entry || entry.conns.size > 0) return false
+  evictRoom(entry)
+  return true
+}
+
 /**
  * Evict a session's document for good: used when the seminar itself is deleted.
  *
@@ -1024,6 +1491,10 @@ export function dropParticipant(sessionId: string, participantId: string): void 
  * closed so a browser still standing in the room cannot keep editing a document
  * nobody will ever load again; and the doc is destroyed so its observers go with
  * it. Called before the rows are dropped, so nothing can write between the two.
+ *
+ * Letting go of a room nobody is in is a different door: `releaseSessionDoc`
+ * above, which closes nothing. So every step added here may assume the seminar
+ * is going away — that assumption is what the two doors buy.
  */
 export function dropSessionDoc(sessionId: string): void {
   // Открытые файлы этой комнаты — тоже её: их надо дописать и закрыть до того,
@@ -1037,6 +1508,10 @@ export function dropSessionDoc(sessionId: string): void {
   const entry = docs.get(sessionId)
   if (!entry) return
   docs.delete(sessionId)
+  // Наблюдатель тетрадей — тоже привязка к этому документу, и его таймер
+  // проекции пережил бы удаление: `dispose` здесь не годится, он дописывает
+  // снимок комнаты, которой больше нет.
+  entry.unwatch()
   discardPersistence(sessionId)
   // The room is gone; an open burst describing it would be a version of nothing.
   discardBurst(sessionId)

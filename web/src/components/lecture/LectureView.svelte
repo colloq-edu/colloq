@@ -31,6 +31,7 @@
   import InkLayer from './InkLayer.svelte'
   import LecturePage from './LecturePage.svelte'
   import NotesPad from './NotesPad.svelte'
+  import { INKS } from './pult'
 
   interface Props {
     /*
@@ -138,14 +139,12 @@
 
   /* ------------------------------------------------------------ пульт */
 
-  /** Цвета пера: четыре, и все читаются на белом слайде и на проекторе. */
-  const INKS = [
-    { color: '#d4162f', name: 'красный' },
-    { color: '#0f2d69', name: 'синий' },
-    { color: '#0c7a64', name: 'зелёный' },
-    { color: '#101a33', name: 'чёрный' },
-  ]
-
+  /*
+   * Цвета пера — те же четыре, что и на пульте, и из одного места (`./pult`).
+   * Копия здесь уже разошлась с пультом однажды: там синее пера объясняли
+   * измеренными числами и убирали, здесь оно стояло вторым кружком. Зал при
+   * этом один и тот же, и проектор один и тот же.
+   */
   let tool = $state<'pen' | 'laser' | 'off'>('off')
   let ink = $state(INKS[0].color)
 
@@ -172,16 +171,84 @@
   const pult = $derived(presenting && acts)
 
   /**
-   * «Стереть» спросила и ждёт второго нажатия.
+   * «Стереть» и «Закончить» спросили и ждут второго нажатия.
    *
-   * Снимается сменой страницы: вопрос, оставшийся висеть на следующем слайде,
+   * Снимаются сменой страницы: вопрос, оставшийся висеть на следующем слайде,
    * превращает первое же нажатие в стирание без вопроса.
+   *
+   * Два вопроса разом не висят: горящих красным кнопки в полосе тогда две, и
+   * «да» уходит не в ту.
    */
   let wipeAsked = $state(false)
+  let stopAsked = $state(false)
   $effect(() => {
     void page
-    untrack(() => (wipeAsked = false))
+    untrack(() => {
+      wipeAsked = false
+      stopAsked = false
+    })
   })
+
+  /**
+   * РАЗРУШАЮЩЕЕ БЕЗ СВЯЗИ НЕ УХОДИТ В ОЧЕРЕДЬ.
+   *
+   * `session.send` на закрытом сокете кладёт кадр в очередь управления, и он
+   * доедет — через полминуты, когда вернётся вайфай. Для «Отменить», «Стереть»
+   * и «Закончить» это худший из исходов: на экране всё осталось на месте,
+   * человек пошёл дальше, а посреди следующего слайда чернила у зала пропали
+   * сами, без единого нажатия. Отложенное разрушение хуже отказа — тем же
+   * доводом от этого защищён пульт (см. `undoStroke` в ConsoleView).
+   */
+  function destructive(): boolean {
+    if (session.connected) return true
+    refuse('Нет связи — ничего не стёрлось')
+    return false
+  }
+
+  function askWipe(): void {
+    if (!destructive()) {
+      wipeAsked = false
+      return
+    }
+    if (!wipeAsked) {
+      stopAsked = false
+      wipeAsked = true
+      return
+    }
+    wipeAsked = false
+    session.send({ t: 'ink:clear', page })
+  }
+
+  function undoStroke(): void {
+    if (!destructive()) return
+    session.send({ t: 'ink:undo', page })
+  }
+
+  /**
+   * «Закончить» — второе нажатие, как у «Стереть», и по той же причине.
+   *
+   * Сервер на `lecture:stop` удаляет комнату лекции целиком: проекция гаснет,
+   * а чернила ВСЕХ страниц стираются у всех и безвозвратно — истории у них
+   * нет. Кнопка при этом стояла вплотную к «На проектор», то есть к той, что
+   * ведущий с ноутбука нажимает в начале пары: промах на одну кнопку уносил
+   * сорок минут разметки. На пульте тот же поступок спрашивает отдельной
+   * строкой в листе «Ещё».
+   */
+  function askStop(): void {
+    if (!session.connected) {
+      // Своими словами: «ничего не стёрлось» здесь сказало бы не о том.
+      stopAsked = false
+      refuse('Нет связи — лекция продолжается')
+      return
+    }
+    if (!stopAsked) {
+      wipeAsked = false
+      stopAsked = true
+      return
+    }
+    stopAsked = false
+    session.send({ t: 'lecture:stop' })
+  }
 
   /**
    * Куда мы уже попросили уйти.
@@ -241,6 +308,45 @@
   })
 
   /**
+   * НАМЕРЕНИЕ НЕ ВЕЧНО: повторяем просьбу и сдаёмся.
+   *
+   * Эффект выше снимает `wanted` только эхом сервера, а эхо может не прийти
+   * вовсе: сокет закрылся сразу после `send` (он проверяет лишь readyState),
+   * или сервер отверг кадр в окно между звонком и приходом «занятие
+   * закончено». Тогда намерение висит навсегда, `turn()` считает от него, и
+   * следующая стрелка просит `wanted + 1` — зал прыгает через слайд.
+   *
+   * Поэтому здесь то же, что у пульта (ConsoleView): раз в 600 мс повторяем
+   * просьбу — `lecture:page` идемпотентен, сервер, уже стоящий на этой
+   * странице, просто промолчит, — а после пяти безответных попыток намерение
+   * снимается и шаг снова считается от того, что видит зал. Без связи
+   * попытки не считаются и не уходят: тратить их на закрытый сокет значило бы
+   * сдаться ровно тогда, когда сдаваться не за что.
+   *
+   * `wanted` читается ЗДЕСЬ отслеживаемо (в отличие от эффекта выше): таймер
+   * обязан завестись на само намерение, а не только на ответ сервера.
+   */
+  const AGAIN_MS = 600
+  const AGAIN_MAX = 5
+  $effect(() => {
+    const at = lecture.page
+    const mine = wanted
+    if (mine === null || mine === at) return
+    let tries = 0
+    const again = window.setInterval(() => {
+      if (!session.connected) return
+      tries += 1
+      if (tries > AGAIN_MAX) {
+        wanted = null
+        asked.clear()
+        return
+      }
+      session.send({ t: 'lecture:page', page: mine })
+    }, AGAIN_MS)
+    return () => window.clearInterval(again)
+  })
+
+  /**
    * Слайд, на который возвращаемся с чистого листа: последний, что видел зал.
    *
    * Своего счёта листам здесь нет (его ведёт пульт), поэтому «куда вернуться»
@@ -295,9 +401,16 @@
   }
 
   /*
-   * Клавиатура пульта: стрелки и пробел листают, B гасит экран, E стирает.
-   * Ровно то, что нажимают, не глядя, — и то, что шлёт презентационная
-   * кликалка, если её воткнуть в компьютер у проектора.
+   * Клавиатура пульта: стрелки и пробел листают, B гасит экран, Z убирает
+   * последний штрих, E спрашивает про стирание страницы. Ровно то, что
+   * нажимают, не глядя, — и то, что шлёт презентационная кликалка, если её
+   * воткнуть в компьютер у проектора.
+   *
+   * Z и E — те же буквы, что на пульте (ConsoleView), и по `code`, а не по
+   * `key`: на русской раскладке `key` — это «я» и «у». Раньше их здесь не
+   * было вовсе, а комментарий и подпись кнопки про них говорили: человек с
+   * ноутбука читал «— Z на пульте», жал Z на этом же экране и не получал
+   * ничего.
    */
   /**
    * Свои ли это слайды. Проекция стоит на компьютере у проектора, и обычно это
@@ -324,6 +437,24 @@
     if (fullscreenPossible() && !fullscreenNow()) void goFullscreen(document.documentElement)
   }
 
+  /**
+   * Отказ слоя чернил — одной строкой на шесть секунд.
+   *
+   * Отказ бывает один: страница набрала свои шестьсот штрихов, и сервер
+   * следующий не примет. Раньше об этом не говорил никто: линия появлялась,
+   * четыре секунды жила на досылках и пропадала, а у зала её не было вовсе.
+   * Плашки комнаты сюда не годятся — они про сеть и ядро, а это ответ на
+   * штрих, и стоять он должен там, где штрих: у листа.
+   */
+  let refusal = $state<string | null>(null)
+  let refusalTimer: number | undefined
+  function refuse(says: string): void {
+    refusal = says
+    window.clearTimeout(refusalTimer)
+    refusalTimer = window.setTimeout(() => (refusal = null), 6000)
+  }
+  $effect(() => () => window.clearTimeout(refusalTimer))
+
   function onkeydown(event: KeyboardEvent): void {
     if (role === 'projection' && event.code === 'KeyF') {
       event.preventDefault()
@@ -336,6 +467,13 @@
     // Цель бывает и не элементом (документ, окно): у них нет `closest`.
     const target = event.target instanceof Element ? event.target : null
     if (target?.closest('input, textarea, [contenteditable]')) return
+    if (event.key === 'Escape' && (wipeAsked || stopAsked)) {
+      // Заданный вопрос снимается тем же, чем снимают любой вопрос.
+      event.preventDefault()
+      wipeAsked = false
+      stopAsked = false
+      return
+    }
     if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
       event.preventDefault()
       turn(1)
@@ -345,6 +483,22 @@
     } else if (event.code === 'KeyB') {
       event.preventDefault()
       session.send({ t: 'lecture:blank', on: !lecture.blank })
+    } else if (event.code === 'KeyZ' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      // Только с пульта: чернила рисует планшет, а клавиатура у проектора
+      // листает. Отменять чужой штрих оттуда незачем.
+      if (!pult) return
+      event.preventDefault()
+      undoStroke()
+    } else if (event.code === 'KeyE' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (!pult) return
+      event.preventDefault()
+      /*
+       * Автоповтор сюда приходит десятками, и без этой строки зажатая E
+       * задавала вопрос и сама же на него отвечала — то есть стирала страницу
+       * удержанием клавиши.
+       */
+      if (event.repeat) return
+      askWipe()
     }
   }
 
@@ -356,9 +510,20 @@
    * состоянии проекции, 0.2 на именах областей); различить их читатель не может,
    * а удержать согласованными не может никто, и через месяц они разъезжаются.
    */
+  /*
+   * Нажатие выписано свойствами, а не помощником `.press`: утилита
+   * `transition-*` переписывает `transition-property` целиком, и transform из
+   * помощника в этот список бы не попал — та же ловушка, что у замка ячейки и
+   * у клавиш пульта. Полоса лекции — единственный орган управления ведущего с
+   * ноутбука, «Дальше» на ней нажимают полсотни раз за пару, а страница
+   * приезжает не мгновенно: 3 % под пальцем — то самое подтверждение, что
+   * нажатие услышано, которого у неё не было, пока она держала один
+   * `transition-colors`.
+   */
   const TOOL =
     'flex h-8 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase tracking-label ' +
-    'transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 ' +
+    'transition-[color,background-color,border-color,transform] duration-press ease-out ' +
+    'enabled:active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 ' +
     'focus-visible:ring-inset focus-visible:ring-accent/40'
 </script>
 
@@ -467,18 +632,25 @@
         {#each INKS as choice (choice.color)}
           <button
             type="button"
-            class="flex w-8 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-            title={`Перо, ${choice.name}`}
-            aria-label={`Перо, ${choice.name}`}
+            class="press flex w-8 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+            title={`Перо, ${choice.short}`}
+            aria-label={`Перо, ${choice.short}`}
             aria-pressed={tool === 'pen' && ink === choice.color}
             onclick={() => {
               tool = 'pen'
               ink = choice.color
             }}
           >
+            <!--
+              Кружок растёт от СОСТОЯНИЯ, и растёт мгновенно: состояние
+              приходит само, и анимировать его — значит рисовать его позже, чем
+              оно случилось (та же причина, по которой не анимируется полоса
+              «включено» на клавише пульта). Transform отдан пальцу: `press` на
+              самой кнопке, взятый именем — других утилит перехода на ней нет,
+              и переписывать `transition-property` некому.
+            -->
             <span
-              class="h-4 w-4 rounded-full border-2 transition-transform duration-100 {tool ===
-                'pen' && ink === choice.color
+              class="h-4 w-4 rounded-full border-2 {tool === 'pen' && ink === choice.color
                 ? 'scale-110 border-ink'
                 : 'border-transparent'}"
               style={`background:${choice.color}`}
@@ -511,9 +683,9 @@
         <button
           type="button"
           class="{TOOL} text-muted hover:text-ink"
-          title="Убрать последний штрих — Z на пульте"
+          title="Убрать последний штрих — Z"
           aria-label="Отменить последний штрих"
-          onclick={() => session.send({ t: 'ink:undo', page })}
+          onclick={undoStroke}
         >
           <Icon name="undo" size={12} />
           Отменить
@@ -528,15 +700,8 @@
         <button
           type="button"
           class="{TOOL} {wipeAsked ? 'bg-danger/10 text-danger' : 'text-muted hover:text-ink'}"
-          title="Стереть чернила с этой страницы"
-          onclick={() => {
-            if (!wipeAsked) {
-              wipeAsked = true
-              return
-            }
-            wipeAsked = false
-            session.send({ t: 'ink:clear', page })
-          }}
+          title="Стереть чернила с этой страницы — E"
+          onclick={askWipe}
           onblur={() => (wipeAsked = false)}
         >
           <Icon name="eraser" size={12} />
@@ -563,13 +728,21 @@
           <ConsoleLink class="{TOOL} text-muted hover:text-ink" />
         {/if}
         {@render projectButton()}
+        <!--
+          Волосок между «На проектор» и «Закончить» — не украшение: это две
+          соседние кнопки, из которых первую нажимают в начале пары, а вторая
+          необратима. Вопрос вторым нажатием держит основную защиту, разрыв
+          держит палец.
+        -->
+        <span class="my-2 w-px bg-line" aria-hidden="true"></span>
         <button
           type="button"
-          class="{TOOL} text-danger hover:bg-danger/10"
+          class="{TOOL} {stopAsked ? 'bg-danger/10 text-danger' : 'text-danger hover:bg-danger/10'}"
           title="Закончить лекцию: проекция погаснет, чернила сотрутся"
-          onclick={() => session.send({ t: 'lecture:stop' })}
+          onclick={askStop}
+          onblur={() => (stopAsked = false)}
         >
-          Закончить
+          {stopAsked ? 'Закончить лекцию?' : 'Закончить'}
         </button>
       </div>
     {:else if presenting}
@@ -647,7 +820,7 @@
         {/if}
       </div>
     {:else}
-      <div class="flex min-h-0 flex-1 gap-3 p-3">
+      <div class="relative flex min-h-0 flex-1 gap-3 p-3">
         <LecturePage {doc} {page}>
           {#snippet over(size)}
             <InkLayer
@@ -658,9 +831,20 @@
               width={0.004}
               w={size.w}
               h={size.h}
+              onrefuse={refuse}
             />
           {/snippet}
         </LecturePage>
+        {#if refusal}
+          <!-- У нижней кромки слева: туда не смотрят, пока рисуют, и туда
+               смотрят, когда рисование не получилось. -->
+          <div
+            class="pointer-events-none absolute bottom-4 left-4 z-10 flex h-7 items-center bg-ink px-3"
+            aria-live="polite"
+          >
+            <span class="text-2xs font-bold uppercase tracking-label text-canvas">{refusal}</span>
+          </div>
+        {/if}
 
         {#if pult && (host || (page > 0 && pages > page))}
           <!--

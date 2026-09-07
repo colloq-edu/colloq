@@ -28,6 +28,7 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import type { Awareness } from 'y-protocols/awareness'
 import type { AwarenessUser } from '@shared/protocol'
+import { ownChanges, type AwarenessChanges } from './presence'
 
 /** Текст внутри документа файла. Он там один — как и в модуле на сервере. */
 const TEXT_KEY = 'text'
@@ -112,12 +113,15 @@ export class FileDoc {
     /*
      * Путь уезжает в ИМЯ КОМНАТЫ, а не в параметры, и это не косметика.
      *
-     * y-websocket заводит BroadcastChannel по формуле `serverUrl + '/' +
-     * roomname` — параметры в неё не входят. Оставь путь параметром, и два
-     * РАЗНЫХ файла одного семинара, открытых в двух вкладках браузера, попадают
-     * в один канал: правки `utils.py` применяются к документу `train.py` в
-     * соседней вкладке. Не отказ и не ошибка — просто чужой текст, приехавший в
-     * файл, и Yjs добросовестно сохранит его на диск.
+     * Имя комнаты — это и адрес сокета (`/file/<сессия>/<имя>`, по нему сервер
+     * и находит файл), и ключ BroadcastChannel: `serverUrl + '/' + roomname`,
+     * параметры в него не входят. Оставь путь параметром — и два РАЗНЫХ файла
+     * одного семинара, открытых в двух вкладках браузера, попадали в один
+     * канал: правки `utils.py` применялись к документу `train.py` в соседней
+     * вкладке. Не отказ и не ошибка — просто чужой текст, приехавший в файл, и
+     * Yjs добросовестно сохранял его на диск. Канал теперь выключен вовсе (см.
+     * `disableBc` ниже), но адрес сокета остался, и путать файлы в нём нельзя
+     * ровно так же.
      *
      * base64url, потому что имя комнаты едет в адресе сокета, а в пути бывают и
      * косые черты, и кириллица.
@@ -129,9 +133,31 @@ export class FileDoc {
       {
         params: { token },
         connect: true,
+        /*
+         * Без BroadcastChannel — тот же довод, что и у комнаты
+         * (lib/session.svelte.ts). Прямой канал между вкладками одного браузера
+         * — это второй путь, по которому в документ попадает то, что сервер не
+         * принимал: вкладка, замолчавшая после 4403, отдала бы отказанный текст
+         * соседке, и замолчала бы и та. Сходиться вкладкам есть через что —
+         * через сервер, как и любым двум браузерам.
+         */
+        disableBc: true,
       },
     )
     this.awareness = this.provider.awareness
+    /*
+     * И серверу — только своё присутствие, как в комнате.
+     *
+     * `y-websocket` в своём обработчике отсылает ВСЕ изменившиеся clientID
+     * подряд: чужое состояние он применяет сам, awareness сообщает об
+     * изменении — и тот же обработчик отправляет его обратно в сокет, из
+     * которого оно приехало. Сервер это эхо отвергает (`ownAwareness` в
+     * collab/files.ts), но чтобы отвергнуть, разбирает: на общем `utils.py`,
+     * открытом у аудитории, это тот же измеренный шум, что и в комнате, только
+     * на втором проводе.
+     */
+    this.awareness.off('update', this.provider._awarenessUpdateHandler)
+    this.awareness.on('update', this.#announceSelf)
     this.undoManager = new Y.UndoManager(this.text, {
       // Отменяется только своё: чужую работу Ctrl+Z не забирает.
       trackedOrigins: new Set([null, 'local']),
@@ -141,6 +167,17 @@ export class FileDoc {
     this.provider.on('status', this.#onStatus)
     this.provider.on('sync', this.#onSync)
     this.provider.on('connection-close', this.#onClose)
+  }
+
+  /**
+   * Кадр присутствия наружу — только про себя. Разбор в конструкторе.
+   *
+   * Обёртка вокруг провайдерского обработчика, а не замена ему: всё, что
+   * дальше кодирования, остаётся протоколом `y-websocket`.
+   */
+  #announceSelf = (changes: AwarenessChanges, origin: unknown) => {
+    const own = ownChanges(changes, this.doc.clientID)
+    if (own) this.provider._awarenessUpdateHandler(own, origin)
   }
 
   #onStatus = ({ status }: { status: string }) => {
@@ -216,6 +253,7 @@ export class FileDoc {
   destroy(): void {
     if (this.#closed) return
     this.#closed = true
+    this.awareness.off('update', this.#announceSelf)
     this.undoManager.destroy()
     this.provider.destroy()
     this.doc.destroy()

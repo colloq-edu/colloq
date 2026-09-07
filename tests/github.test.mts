@@ -56,6 +56,9 @@ test('a ref with a slash in it is the one shape this cannot know', () => {
   // GitHub's own URL is ambiguous for `feature/x`: the ref and the path are
   // separated by a slash and nothing says where one ends. Taking the first
   // segment is what the UI does too, and it is better than refusing the link.
+  // Догадка живёт не здесь, а в `resolveRef`: она спрашивает GitHub про ветки
+  // — но только после 404, чтобы не тратить запрос на живой ответ. См.
+  // tests/github-refs.test.mts.
   const t = parseGithubUrl('https://github.com/o/r/tree/main/week02')
   assert.equal(t?.ref, 'main')
 })
@@ -160,8 +163,18 @@ test('a file over the upload limit is left where it is', () => {
   assert.deepEqual(filesToTake([entry('huge.csv', 5e8), entry('small.csv', 10)], 1e6).map((f) => f.name), ['small.csv'])
 })
 
-test('code and licences are not data', () => {
-  assert.deepEqual(filesToTake([entry('README.md'), entry('LICENSE'), entry('train.py')], 1e6), [])
+test('прозу и лицензию не везём, а модуль рядом с тетрадью — везём', () => {
+  /*
+   * `utils.py` — не «код вообще», а часть тетради: первая ячейка учебной
+   * тетради обычно `from utils import show`, и без файла она не запускается.
+   * Отказ при этом молчит — в предпросмотре импорта файла просто нет, а на паре
+   * у всей комнаты разом выходит ModuleNotFoundError. README и LICENSE
+   * по-прежнему остаются в репозитории: они не про запуск.
+   */
+  assert.deepEqual(
+    filesToTake([entry('README.md'), entry('LICENSE'), entry('utils.py')], 1e6).map((f) => f.name),
+    ['utils.py'],
+  )
 })
 
 test('the folder is about its only notebook, or the first by name', () => {

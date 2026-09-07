@@ -91,7 +91,7 @@
   {#if view === 'reading'}
     <!-- Бегущая полоса без процентов: сколько читать, не знает никто. -->
     <div class="relative h-0.5 overflow-hidden bg-line" aria-hidden="true">
-      <div class="absolute inset-y-0 w-1/3 animate-pulse bg-accent"></div>
+      <div class="council-run absolute inset-y-0 w-1/3 bg-accent"></div>
     </div>
   {:else if view === 'idle'}
     <p class="text-2xs text-muted">
@@ -129,3 +129,24 @@
     <p class="text-2xs text-muted">читал тексты, без имён</p>
   {/if}
 </section>
+
+<style>
+  /*
+   * Полоса и правда бежит. `animate-pulse` двигал одну opacity — кусок стоял
+   * слева и мигал, а комментарий рядом обещал бегущую; остановившийся указатель
+   * читается как зависший (index.css). Только transform, ровный шаг и петля:
+   * ожидание без процентов не ускоряется и не замедляется.
+   */
+  .council-run {
+    animation: council-run 1.4s linear infinite;
+  }
+
+  @keyframes council-run {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
+</style>

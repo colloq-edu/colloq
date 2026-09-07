@@ -8,13 +8,17 @@
   изменить, и нечему давать сбой.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte'
   import { api, ApiError } from '@/lib/api'
   import Icon from '@/components/ui/Icon.svelte'
   import PublicNotebook from '@/components/reader/PublicNotebook.svelte'
   import CourseList from '@/components/reader/CourseList.svelte'
   import { plural } from '@/lib/plural'
-  import type { PublicCourseView, PublicSeminar, PublicStep } from '@shared/publish'
+  import {
+    refusedStep,
+    type PublicCourseView,
+    type PublicSeminar,
+    type PublicStep,
+  } from '@shared/publish'
 
   interface Props {
     course: string | null
@@ -28,8 +32,20 @@
   let seminar = $state<PublicSeminar | null>(null)
   let step = $state<PublicStep | null>(null)
   let missing = $state(false)
-  /** Шаг, которого больше нет: семинар переопубликовали без этой отметки. */
+  /** Страницы больше нет вовсе: её сняли или удалили, пока её читали. */
   let gone = $state(false)
+  /**
+   * Шага нет, а страница есть: устаревшая ссылка на отметку или промах в номере.
+   *
+   * Отдельно от `gone`, потому что это другая новость и другая дорога: семинар
+   * жив, открыт, и у него есть первая страница, на которую можно уйти. Оба
+   * случая приходят с кодом 404, и различает их только тело ответа
+   * (`refusedStep` в shared/publish.ts). Пока читалка смотрела на голый статус,
+   * `/p/<id>/999` печатал «этой страницы семинара больше нет — его
+   * опубликовали заново»: известие о непоправимом при живой, ничем не тронутой
+   * публикации.
+   */
+  let noSuchStep = $state(false)
   /**
    * Не «страницы нет», а «не дошли»: 500, обрыв, таймаут.
    *
@@ -50,9 +66,35 @@
    */
   const wanted = $derived(publication?.step ?? null)
 
-  onMount(() => {
-    document.documentElement.classList.add('reader')
-    return () => document.documentElement.classList.remove('reader')
+  /**
+   * Идентификатор публикации — строкой, а не через сам проп.
+   *
+   * `readPublicRoute` в роутере собирает НОВЫЙ объект на каждое изменение
+   * адреса, включая `/p/x/3` → `/p/x/4`. Эффекты ниже читали `publication?.id`,
+   * то есть зависели от объекта, и каждый шаг стоил лишнего GET /api/p/:id —
+   * ровно того, что обещал не делать ключ `{#key}` в App.svelte («не загружать
+   * семинар заново на каждый шаг»). Строковый `$derived` не будит зависимых,
+   * пока значение то же, — и обещание начинает выполняться.
+   */
+  const pubId = $derived(publication?.id ?? null)
+
+  /*
+   * Чего на экране НЕТ — гасится, а не остаётся с прошлого адреса.
+   *
+   * Роутер пересобирает этот экран по ключу вида (App.svelte), и после
+   * починки этого ключа сюда уже не должен приезжать курс под адресом
+   * публикации. Но ветка `{:else if courseView}` в разметке стоит раньше
+   * `{:else if seminar}`, и цена ошибки здесь — страница, показывающая не то,
+   * что в адресе. Экран отвечает за это сам: пропало из пропсов — погасили.
+   */
+  $effect(() => {
+    if (!course) courseView = null
+    if (pubId === null) {
+      seminar = null
+      step = null
+      gone = false
+      noSuchStep = false
+    }
   })
 
   /**
@@ -91,7 +133,7 @@
   })
 
   $effect(() => {
-    const id = publication?.id
+    const id = pubId
     void attempt
     if (!id) return
     let cancelled = false
@@ -111,7 +153,7 @@
   })
 
   $effect(() => {
-    const id = publication?.id
+    const id = pubId
     const seq = wanted
     void attempt
     if (!id) return
@@ -126,6 +168,7 @@
      */
     step = null
     gone = false
+    noSuchStep = false
     void api
       .step(id, seq)
       .then((body) => {
@@ -133,7 +176,19 @@
       })
       .catch((err) => {
         if (cancelled) return
-        if (err instanceof ApiError && err.status === 404) gone = true
+        if (!(err instanceof ApiError)) return refused(err)
+        /*
+         * Какой из двух 404 — решает тело, а не код.
+         *
+         * `gone` на любой 404 означал «его опубликовали заново» и промаху мимо
+         * номера тоже; страница при этом жива, и вести с неё надо не туда.
+         * Неизвестное тело (заглушка прокси, чужой ответ) — это «не знаю», а не
+         * «нет»: показываем отказ с кнопкой «Ещё раз», как при обрыве.
+         */
+        const what = refusedStep(err.status, err.message)
+        if (what === 'publication') gone = true
+        else if (what === 'step') noSuchStep = true
+        else if (err.status === 404) failure = 'Шаг не открылся.'
         else refused(err)
       })
       .finally(() => {
@@ -151,13 +206,58 @@
   const current = $derived(step?.seq ?? null)
   /** Куда уводить с исчезнувшего шага: первый — он есть у любой публикации. */
   const first = $derived(seminar?.steps[0]?.seq ?? null)
+  /**
+   * Стоит ли читатель на последнем шаге — от этого зависит подпись у скачивания.
+   *
+   * Пока шага нет (грузится, промах в номере, публикацию сняли), считаем, что
+   * на последнем: ссылка в этот момент идёт без `?step=`, а без него сервер
+   * отдаёт именно последний шаг. Подпись и файл говорят одно и то же в любую
+   * секунду жизни страницы.
+   */
+  const onLast = $derived(current === null || current === seminar?.steps.at(-1)?.seq)
   /* Рельса из одного шага — мебель. В первом семестре это обычный случай. */
   const railed = $derived((seminar?.steps.length ?? 0) > 1)
 
   function go(seq: number): void {
-    if (!publication) return
-    onnavigate(`/p/${publication.id}/${seq}`)
+    if (!pubId) return
+    onnavigate(`/p/${pubId}/${seq}`)
   }
+
+  /**
+   * Имя страницы в заголовке вкладки.
+   *
+   * Страницу курса кладут в закладки — это прямо написано под списком, и это
+   * единственный адрес Colloq, который человек сохраняет. В закладках, в
+   * истории и в переключателе вкладок все двенадцать курсов и все их семинары
+   * назывались одинаково: «Colloq». Выгруженная статикой страница `<title>`
+   * ставит (publish/render.ts), SPA не ставила — один и тот же адрес открывался
+   * по-разному.
+   */
+  const named = $derived(courseView?.name ?? seminar?.title ?? null)
+  $effect(() => {
+    document.title = named === null ? 'Colloq' : `${named} · Colloq`
+    return () => {
+      document.title = 'Colloq'
+    }
+  })
+
+  /**
+   * Полоса шагов на телефоне: отмеченный шаг подводится к глазам сам.
+   *
+   * Полоса прокручивается вбок, а шагов бывает одиннадцать: открыв ссылку на
+   * седьмой, человек видел бы первые три и ни одного признака, что он на
+   * седьмом. Мгновенно, без плавности: это не жест, а состояние страницы при
+   * её открытии.
+   */
+  let strip = $state<HTMLElement | null>(null)
+  $effect(() => {
+    const at = current
+    const root = strip
+    if (!root || at === null) return
+    root
+      .querySelector<HTMLElement>(`[data-step="${at}"]`)
+      ?.scrollIntoView({ block: 'nearest', inline: 'center' })
+  })
 
   const dateLong = (at: number): string =>
     new Date(at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -218,6 +318,48 @@
       </p>
     </header>
 
+    <!--
+      Рельса шагов на телефоне — полосой, а не колонкой.
+
+      Боковая рельса ниже объявлена `hidden … sm:flex`: на телефоне её нет
+      вовсе, а других переходов по шагам на странице не было — ни кнопок, ни
+      списка. Шапка при этом честно писала «6 шагов», и публикация из шести
+      сводилась к первому: остальные достижимы только правкой адреса. Между тем
+      публичные страницы — единственные адреса Colloq, которые открывают с
+      телефона, и статическая выгрузка той же публикации рельсу на узком экране
+      оставляет (render.ts, `@media(max-width:860px)`): SPA была хуже статики.
+
+      Полосой, а не стопкой: одиннадцать шагов колонкой — это экран, который
+      надо пролистать, чтобы дойти до тетради, и так на каждом шаге. Липкая:
+      уйдя вниз по тетради, к следующему шагу переходят оттуда, где дочитали.
+    -->
+    {#if railed}
+      <nav
+        bind:this={strip}
+        class="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-line bg-canvas
+               px-6 sm:hidden"
+        aria-label="Шаги семинара"
+      >
+        {#each seminar.steps as heading, index (heading.seq)}
+          {@const on = heading.seq === current}
+          <button
+            data-step={heading.seq}
+            class="press flex shrink-0 items-baseline gap-2 border-b-2 py-3 pr-3
+                   {on ? 'border-accent' : 'border-transparent'}"
+            aria-current={on ? 'step' : undefined}
+            onclick={() => go(heading.seq)}
+          >
+            <span class="font-mono text-2xs {on ? 'text-accent-text' : 'text-faint'}">
+              {String(index + 1).padStart(2, '0')}
+            </span>
+            <span class="whitespace-nowrap text-ui {on ? 'font-semibold text-ink' : 'text-muted'}">
+              {heading.label}
+            </span>
+          </button>
+        {/each}
+      </nav>
+    {/if}
+
     <div class="flex items-start">
       {#if railed}
         <nav
@@ -229,7 +371,7 @@
           {#each seminar.steps as heading (heading.seq)}
             {@const on = heading.seq === current}
             <button
-              class="flex gap-3 border-l-[3px] py-2 pl-3 pr-2 text-left transition-colors duration-100
+              class="press flex gap-3 border-l-[3px] py-2 pl-3 pr-2 text-left transition-colors duration-100
                      {on ? 'border-accent bg-surface' : 'border-transparent hover:bg-surface/60'}"
               aria-current={on ? 'step' : undefined}
               onclick={() => go(heading.seq)}
@@ -272,18 +414,46 @@
           </div>
         {:else if loading}
           <p class="mt-8 text-ui text-muted">Загружается…</p>
-        {:else if gone}
+        {:else if noSuchStep}
           <!--
-            Ссылка на шаг, которого больше нет: семинар опубликовали заново, и
-            прежние отметки стёрлись вместе со своими номерами. Дорога отсюда
-            обязана быть на странице: у публикации из одного шага рельсы нет
-            вовсе, и выбраться было нечем.
+            Семинар жив, а этой отметки в нём нет. Причин две, и сервер их не
+            различает: семинар опубликовали заново (адрес тот же, отметки
+            сменились) или в номере промах. Значит, и говорить надо о том, что
+            известно: страницы нет, ссылка старая или с опечаткой. Прежний текст
+            выбирал за читателя вторую половину правды — «его опубликовали
+            заново» — и говорил её даже тому, кто просто ошибся цифрой.
+
+            Дорога отсюда обязана быть на странице: у публикации из одного шага
+            рельсы нет вовсе, и выбраться было нечем.
           -->
           <p class="mt-8 text-ui text-muted">
-            Этой страницы семинара больше нет — его опубликовали заново.
+            {#if wanted === null}
+              В этом семинаре пока нет ни одной страницы.
+            {:else}
+              Такой страницы у этого семинара нет. Ссылка могла устареть или быть набрана с
+              опечаткой.
+            {/if}
             {#if first !== null}
-              <button class="font-semibold text-accent-text" onclick={() => go(first)}>
+              <button class="press font-semibold text-accent-text" onclick={() => go(first)}>
                 Открыть первую
+              </button>
+            {/if}
+          </p>
+        {:else if gone}
+          <!--
+            Публикации не стало, пока её читали: сняли с публикации или удалили
+            (`publication not found`). Слова — те же, что на снятой странице
+            выше, потому что событие для читателя то же самое; отсюда ведёт не
+            первый шаг — его тоже нет, — а курс.
+          -->
+          <p class="mt-8 text-ui text-muted">
+            Преподаватель снял эту страницу.
+            {#if seminar.course}
+              <button
+                class="press font-semibold text-accent-text"
+                onclick={() => onnavigate(`/c/${seminar!.course!.id}`)}
+              >
+                {seminar.course.name}
               </button>
             {/if}
           </p>
@@ -296,12 +466,38 @@
           </p>
         {/if}
 
-        <p class="mt-10 flex items-center gap-2 border-t border-line pt-5 text-ui text-muted">
-          <Icon name="download" size={13} />
-          <a class="font-semibold text-accent-text" href={`/api/p/${seminar.id}/notebook.ipynb`}>
-            Скачать тетрадь (.ipynb)
-          </a>
-        </p>
+        <!--
+          Ссылка отдаёт тот шаг, на котором стоят, и говорит, что именно в файле.
+
+          Ссылка была одна на все шаги, а сервер собирал по ней тетрадь
+          ПОСЛЕДНЕГО шага: читатель, сравнивающий «до» и «после» на шаге 2 из
+          5 — ровно тот, ради кого шаг живёт в адресе, — уносил состояние шага 5
+          и узнавал об этом, только открыв файл. Теперь шаг едет в `?step=`
+          (routes/courses.ts → notebookOfStep): незнакомый номер там отвечает
+          последним шагом, а не 404, так что ссылка не может сломаться.
+
+          Выводы сервер вычищает всегда: файл задуман как «код, чтобы запустить
+          у себя», и без выводов он открывается везде и весит килобайты. Это
+          обещание тоже написано рядом, а не выясняется после скачивания.
+        -->
+        <div class="mt-10 border-t border-line pt-5">
+          <p class="flex items-center gap-2 text-ui text-muted">
+            <Icon name="download" size={13} />
+            <a
+              class="font-semibold text-accent-text"
+              href={`/api/p/${seminar.id}/notebook.ipynb${current === null ? '' : `?step=${current}`}`}
+            >
+              Скачать тетрадь (.ipynb)
+            </a>
+          </p>
+          <p class="mt-1.5 text-ui text-muted">
+            {!railed
+              ? 'Код без выводов'
+              : onLast
+                ? 'Код последнего шага, без выводов'
+                : 'Код этого шага, без выводов'} — чтобы запустить у себя.
+          </p>
+        </div>
       </main>
     </div>
   </div>

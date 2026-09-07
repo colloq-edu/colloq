@@ -7,6 +7,8 @@
    */
   type Tab = 'terminal' | 'kernel' | 'history'
 
+  import type * as Y from 'yjs'
+  import { untrack } from 'svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
@@ -15,7 +17,13 @@
   import HistoryTab from '@/components/panels/HistoryTab.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { watchNotebookMeta } from '@/lib/yreactive.svelte'
-  import { getTerminal, readTerminalLine, type TerminalLineSnapshot } from '@shared/notebook'
+  import {
+    getTerminal,
+    readTerminalLine,
+    rereadRows,
+    type TerminalLineSnapshot,
+  } from '@shared/notebook'
+  import { KERNEL_WORD, SHELL_WORD } from '@shared/machine'
   import { actsAfterClass } from '@shared/rules'
   import { terminalDraft } from '@/lib/drafts.svelte'
   import { collapseCarriage, elapsed } from '@/lib/utils'
@@ -57,15 +65,38 @@
   /* ------------------------------------------------------------- transcript */
 
   const terminal = getTerminal(session.doc)
-  let lines = $state<TerminalLineSnapshot[]>(terminal.map(readTerminalLine))
+  /*
+   * Raw: массив снимков заменяется целиком, и оборачивать каждую строку в
+   * прокси значило бы платить за то, что через кадр будет выброшено.
+   */
+  let lines = $state.raw<TerminalLineSnapshot[]>(terminal.map(readTerminalLine))
 
   $effect(() => {
-    const read = () => (lines = terminal.map(readTerminalLine))
-    read()
+    /*
+     * Перечитывается ТОЛЬКО та строка, в которую пишут.
+     *
+     * Вывод дописывается в Y.Text внутри одной строки, а прежний код на каждый
+     * кусочек собирал всю расшифровку заново: до восьмисот строк и двухсот
+     * килобайт текста на каждый кадр `pip install torch`, в каждой из вкладок
+     * комнаты. Вдобавок объекты были новыми, поэтому `transcriptText` в
+     * разметке пересчитывался для КАЖДОЙ строки, а не для той, что выросла.
+     * Неизменившиеся снимки теперь те же самые — и {@const}, и разбор ANSI
+     * достаются из прошлого кадра.
+     */
+    const read = (events: Y.YEvent<any>[] | null) => {
+      // Прежний снимок берётся `untrack`: эффект, прочитавший то, что сам же
+      // пишет, зависел бы от собственной записи — один такой виток однажды
+      // встретил комнату `effect_update_depth_exceeded` вместо тетради.
+      const previous = untrack(() => lines)
+      const fresh = rereadRows(previous, terminal, readTerminalLine, events)
+      if (fresh !== previous) lines = fresh
+    }
+    read(null)
     // Deep: output streams into the Y.Text *inside* a line, which a shallow
     // observer on the array never hears about.
-    terminal.observeDeep(read)
-    return () => terminal.unobserveDeep(read)
+    const onFrame = (events: Y.YEvent<any>[]) => read(events)
+    terminal.observeDeep(onFrame)
+    return () => terminal.unobserveDeep(onFrame)
   })
 
 
@@ -212,6 +243,13 @@
 
   const status = $derived(session.terminalStatus)
   /*
+   * Те же состояния — словами комнаты, одними на продукт (shared/machine.ts).
+   * Русская строка с `idle` посреди неё — это половина панели на машинном
+   * языке; `$derived` ленив, и слово ядра считается только на его вкладке.
+   */
+  const kernelWord = $derived(KERNEL_WORD[notebook.current.kernelStatus])
+  const shellWord = $derived(SHELL_WORD[status])
+  /*
    * A command has to reach the server to be a command. Disconnected, the status
    * in hand is the last one the server sent, which says nothing about now.
    *
@@ -225,15 +263,15 @@
 
   const placeholder = $derived(
     !session.connected
-      ? 'waiting for the connection…'
+      ? 'ждём связи…'
       : !may.run
         ? may.runWhy
         : status === 'starting'
-          ? 'starting the shell…'
+          ? 'оболочка запускается…'
           : status === 'dead'
-            ? 'the shell stopped'
+            ? 'оболочка остановилась'
             : status === 'closed'
-              ? 'the shell is not running'
+              ? 'оболочка не запущена'
               : 'pip install seaborn',
   )
 
@@ -346,17 +384,17 @@
   purpose: the shell has to read as "the machine" in either theme, and a
   terminal that turns pale in light mode stops looking like one.
 -->
-<section class="term" style="height: {height}px" aria-label="Shared terminal">
+<section class="term" style="height: {height}px" aria-label="Общий терминал комнаты">
   <div
     class="term-grip"
     role="separator"
     aria-orientation="horizontal"
-    aria-label="Resize the terminal"
+    aria-label="Высота терминала"
     aria-valuenow={height}
     aria-valuemin={MIN_H}
     aria-valuemax={MAX_H}
     tabindex="0"
-    title="Drag to resize"
+    title="Потяните, чтобы изменить высоту"
     onpointerdown={startResize}
     onkeydown={gripKeys}
   >
@@ -371,7 +409,7 @@
       aria-pressed={shownTab === 'terminal'}
       onclick={() => (tab = 'terminal')}
     >
-      Terminal
+      Терминал
       {#if running}<span class="term-live-dot"></span>{/if}
     </button>
     <button
@@ -381,7 +419,7 @@
       aria-pressed={shownTab === 'kernel'}
       onclick={() => (tab = 'kernel')}
     >
-      Kernel log
+      Журнал ядра
     </button>
     {#if may.history}
       <button
@@ -391,12 +429,12 @@
         aria-pressed={shownTab === 'history'}
         onclick={() => (tab = 'history')}
       >
-        History
+        История
       </button>
     {/if}
 
-    <span class="term-badge" title="Everyone in the seminar sees this terminal">
-      Shared with the room
+    <span class="term-badge" title="Этот терминал видит весь семинар">
+      Общий на комнату
     </span>
 
     <span class="term-cwd" title={cwd}>{cwd}</span>
@@ -406,19 +444,19 @@
         type="button"
         class="term-act"
         disabled={controlDisabled(session.connected)}
-        title={controlTitle(session.connected, 'Clear the transcript for everyone')}
+        title={controlTitle(session.connected, 'Очистить расшифровку для всех')}
         onclick={() => session.send({ t: 'term:clear' })}
       >
         <Icon name="eraser" size={12} />
-        Clear
+        Очистить
       </button>
     {/if}
 
     <button
       type="button"
       class="term-act"
-      aria-label="Hide the terminal"
-      title="Hide the terminal — the shell keeps running (Ctrl+`)"
+      aria-label="Спрятать терминал"
+      title="Спрятать терминал — оболочка продолжит работать (Ctrl+`)"
       onclick={onclose}
     >
       <Icon name="x" size={14} />
@@ -433,19 +471,21 @@
   {:else}
   <div class="term-body" bind:this={scroller} onscroll={onScroll} role="log" aria-live="polite">
     {#if shownTab === 'kernel'}
+      <!-- Состояния — словами, а не именами протокола: 'starting' и 'idle'
+           посреди русской строки читаются как отладочный вывод. -->
       <div class="term-sys">
-        python kernel · {notebook.current.kernelStatus} — terminal · {status}
+        ядро python · {kernelWord} — оболочка · {shellWord}
       </div>
     {/if}
 
     {#if shown.length === 0}
       <p class="term-empty">
         {#if shownTab === 'terminal'}
-          This shell runs in the same container as the kernel, so
-          <code>pip install pandas</code> here changes the environment for every cell and everyone in
-          the room. <code>!pip install pandas</code> inside a cell does exactly the same thing.
+          Эта оболочка работает в том же контейнере, что и ядро: <code>pip install pandas</code>
+          здесь меняет окружение для каждой ячейки и для всей комнаты.
+          <code>!pip install pandas</code> внутри ячейки делает ровно то же самое.
         {:else}
-          Nothing logged yet. Kernel starts, restarts and crashes show up here.
+          Пока пусто. Сюда попадают запуски, перезапуски и падения ядра.
         {/if}
       </p>
     {/if}
@@ -455,11 +495,11 @@
         <div class="term-row">
           <span class="term-av">
             <Avatar
-              name={line.name ?? 'Someone'}
+              name={line.name ?? 'Кто-то'}
               color={line.color ?? 'var(--tm-muted)'}
               size="xs"
               class="!h-[14px] !w-[14px] !text-micro"
-              title="{line.name ?? 'Someone'} ran this"
+              title="запустил {line.name ?? 'кто-то'}"
             />
           </span>
           <span class="term-sigil">$</span>
@@ -495,7 +535,7 @@
         avatar={session.me.avatar}
         size="xs"
         class="!h-[14px] !w-[14px] !text-micro"
-        title="{session.me.name} (you)"
+        title="{session.me.name} — это вы"
       />
     </span>
     <span class="term-sigil">$</span>
@@ -508,7 +548,7 @@
       autocapitalize="off"
       autocomplete="off"
       autocorrect="off"
-      aria-label="Run a shell command for the whole room"
+      aria-label="Команда оболочки — на всю комнату"
       {placeholder}
       disabled={!canType}
       onkeydown={onPromptKey}
@@ -522,9 +562,9 @@
     <span class="term-hint">
       {#if status === 'busy'}
         <span class="term-live-dot"></span>
-        ctrl-c stops it
+        ctrl-c остановит
       {:else if canType}
-        ↑ history
+        ↑ история
       {:else if canRevive}
         <!--
           `exit` в общей оболочке — тупик.
@@ -535,7 +575,7 @@
           открыть заново. Один и тот же term:open, только теперь его видно.
         -->
         <button type="button" class="term-revive" onclick={revive}>
-          Start a new shell
+          Завести оболочку заново
         </button>
       {:else if !acts && (status === 'dead' || status === 'closed')}
         <!--
@@ -547,8 +587,20 @@
           чего не хватает на месте кнопки.
         -->
         оболочку заводит преподаватель
-      {:else}
-        {status}
+      {:else if session.connected && !may.run}
+        <!--
+          Здесь приглашение занято правилом («запускает преподаватель»), и место
+          под состояние машины свободно — значит, оно говорит словом, а не
+          именем протокола: `idle` под русской строкой был последним английским
+          диагнозом в ящике.
+
+          Остальные случаи молчат намеренно. Про `starting`, `dead` и `closed`
+          приглашение слева уже сказало теми же словами, и повторить их в той же
+          строке — не сведения, а эхо; а без связи состояние на руках вообще
+          ничего не говорит о «сейчас» (см. `canType` выше), и называть его —
+          выдавать последнее известное за настоящее.
+        -->
+        оболочка {shellWord}
       {/if}
     </span>
   </div>
@@ -578,8 +630,16 @@
     --tm-faint: #78849f;
     --tm-accent: #2eb4e8;
     --tm-live: #3ec9a7;
-    --tm-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-    --tm-sans: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    /* Стек кода — один на продукт (web/src/index.css · --font-mono). В своей
+       копии не было подменных семейств с правками метрик, и весь ящик до
+       прихода woff2 набирался неисправленным ui-monospace, а на swap терял 2px
+       на строке при 16px. Имя оставлено алиасом: по нему сюда ходит и вкладка
+       истории. */
+    --tm-mono: var(--font-mono);
+    /* Гарнитура продукта, а не Inter: ни одного @font-face для Inter в
+       index.html нет — а вкладки ящика молча падали в системный шрифт рядом с
+       той же надписью в панели. */
+    --tm-sans: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
     /* Output aligns under the command text, not under the avatar. */
     --tm-indent: 38px;
 
@@ -597,9 +657,13 @@
     box-shadow: 0 -20px 40px -30px rgb(0 0 0 / 0.85);
   }
 
+  /* Полоска остаётся двухпиксельной, а хватают за двенадцать: отрицательные
+     поля растят зону захвата, не сдвигая ни вкладки, ни расшифровку. Тонкую
+     черту ловили промахом — и попадали по вкладке под ней. */
   .term-grip {
     display: flex;
-    height: 7px;
+    height: 12px;
+    margin: -3px 0 -2px;
     flex: none;
     align-items: center;
     justify-content: center;
@@ -641,13 +705,15 @@
     gap: 5px;
     padding: 0 2px;
     font-family: var(--tm-sans);
-    font-size: 10px;
+    /* 11px, а не 10: десять — для того, что читают один раз и не нажимают
+       (tailwind.config.js), а это вкладки, по которым щёлкают всю пару. */
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--tm-faint);
     border-bottom: 1.5px solid transparent;
-    transition: color 100ms ease;
+    transition: color var(--speed-quick, 0.1s) ease;
   }
   .term-tab:hover {
     color: var(--tm-muted);
@@ -662,7 +728,9 @@
     border-radius: 4px;
     padding: 2px 6px;
     font-family: var(--tm-sans);
-    font-size: 9.5px;
+    /* Читают один раз и не нажимают — 10px здесь на своём месте, а 9.5
+       было ниже собственного пола продукта. */
+    font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -692,22 +760,31 @@
     }
   }
 
+  /* 24 px по высоте — тот же пол, что у кнопок тетради, и 11px вместо 10:
+     «Clear» и крестик нажимают пальцем и пером. */
   .term-act {
     display: inline-flex;
     flex: none;
     align-items: center;
+    justify-content: center;
     gap: 4px;
+    min-height: 24px;
     border-radius: 6px;
-    padding: 3px 6px;
+    padding: 0 6px;
     font-family: var(--tm-sans);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--tm-faint);
     transition:
-      color 100ms ease,
-      background-color 100ms ease;
+      color var(--speed-quick, 0.1s) ease,
+      background-color var(--speed-quick, 0.1s) ease,
+      transform var(--speed-press, 0.12s) var(--ease-out, ease-out);
+  }
+  /* Отклик на нажатие — тот же, что у .btn и .press на светлой стороне. */
+  .term-act:active:not(:disabled) {
+    transform: scale(0.97);
   }
   .term-act:hover:not(:disabled) {
     color: var(--tm-ink);
@@ -867,13 +944,23 @@
     animation: tmblink 1.1s ease-in-out infinite;
   }
 
+  /* Единственная кнопка в этой строке — и она же была самой мелкой подписью
+     ящика: 11px и 24 px высоты, как у всего, что нажимают. */
   .term-revive {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 0 2px;
     font-family: var(--tm-sans);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--tm-accent);
     text-decoration: underline;
     text-underline-offset: 2px;
     cursor: pointer;
+    transition: transform var(--speed-press, 0.12s) var(--ease-out, ease-out);
+  }
+  .term-revive:active {
+    transform: scale(0.97);
   }
 
   .term-revive:hover {

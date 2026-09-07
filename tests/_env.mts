@@ -4,11 +4,32 @@
  * server code, or the suite writes SQLite into the developer's real data
  * directory — which is how a test run once ate a working instance.
  */
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 const root = mkdtempSync(path.join(tmpdir(), 'colloq-test-'))
+
+/*
+ * За собой прибирает сам процесс, и делает это в самом конце.
+ *
+ * Каталог заводится на КАЖДЫЙ файл сюиты — своя SQLite, своя папка комнат, — и
+ * не убирался никогда: `npm test` оставлял девяносто шесть штук за прогон, а
+ * books/control-room/paths/tree-move пишут в свой по паре тысяч файлов. На
+ * машине, где эту сюиту гоняют месяцами, набралось семнадцать тысяч каталогов
+ * и пять с половиной гигабайт — и ни строки в выводе о том, откуда они.
+ *
+ * Именно `exit`, а не `after()` из node:test: сюда доходят и упавший файл, и
+ * брошенное исключение, и — проверено — дочерний процесс под
+ * `--test-force-exit`, который сам по себе выходить не собирался. К этому
+ * моменту не работает уже ничто, так что снос папки не может вырвать диск
+ * из-под фонового таймера, который ещё пишет снимок или проекцию тетради.
+ *
+ * Каталоги прошлых прогонов не трогаются: рядом может идти вторая сюита, а
+ * стереть чужой DATA_DIR посреди её работы — ровно та беда, от которой всё это
+ * заведено. Оставшееся от старых версий убирается руками.
+ */
+process.on('exit', () => rmSync(root, { recursive: true, force: true }))
 
 process.env.DATA_DIR = path.join(root, 'data')
 process.env.WORKSPACE_DIR = path.join(root, 'workspace')

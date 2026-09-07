@@ -8,40 +8,109 @@
  * ведут. Цена названа вслух: перезапуск сервера гасит проекцию и стирает
  * чернила, ровно как гасит общий экран и очередь.
  */
-import type { InkStroke, LectureState } from '@shared/lecture'
+import {
+  MAX_INKED_PAGES,
+  MAX_POINTS_PER_MESSAGE,
+  MAX_POINTS_PER_STROKE,
+  MAX_STROKES_PER_PAGE,
+  type InkFull,
+  type InkStroke,
+  type LectureState,
+} from '@shared/lecture'
 
 interface Room {
   state: LectureState
   /** Штрихи по страницам. Страница без чернил в карте не заводится. */
   ink: Map<number, InkStroke[]>
+  /**
+   * Номер последней перемены в чернилах — на весь процесс, а не на комнату.
+   *
+   * Приветственная пачка везёт опоздавшему показываемую страницу, и собирается
+   * она `inkPageOf` + `JSON.stringify`. Пока зал подключается по одному, цена
+   * незаметна; после сбоя сети пятьсот вкладок возвращаются в одну секунду —
+   * и смотрят все одну и ту же страницу, ту, что показывает ведущий, так что
+   * пятьсот одинаковых сборок ложатся в цикл событий там, где хватило бы
+   * одной. Кадр кэширует control.ts по паре «этот номер + страница»; сквозной
+   * счётчик (а не «версия комнаты») нужен затем, чтобы начатая заново лекция
+   * не совпала номером с прошлой.
+   */
+  rev: number
 }
 
 const rooms = new Map<string, Room>()
 
-/**
- * Потолки. Ни один из них не про злой умысел — все про палец, забытый на
- * экране, и про лекцию, которая идёт третий час.
- */
-const MAX_STROKES_PER_PAGE = 600
-const MAX_POINTS_PER_STROKE = 4_000
-const MAX_POINTS_PER_MESSAGE = 512
+let revisions = 0
+
 /*
- * Потолок на число исписанных страниц. Он тут не ради памяти — ради
- * приветственной пачки: `inkOf` отдаёт опоздавшему ВСЕ чернила лекции одним
- * кадром, и трёхсотстраничная методичка, размеченная от корки до корки, стала
- * бы мегабайтом, который каждый вошедший ждёт до первой страницы.
+ * Потолки чернил лежат в shared/lecture.ts — все четыре, теми же числами.
+ *
+ * Это не переезд ради порядка: знать их обязан и тот, кто рисует. Пока они
+ * стояли здесь единственной копией, пульт не мог отличить отказ от потерянного
+ * кадра — восемь раз досылал штрих целиком и через четыре секунды убирал его с
+ * листа молча, а у зала линии не было вовсе.
  */
-const MAX_INKED_PAGES = 200
 
 export function lectureOf(sessionId: string): LectureState | null {
   return rooms.get(sessionId)?.state ?? null
 }
 
-/** Все чернила комнаты — тому, кто только что подключился. */
+/** Все чернила комнаты — целиком, всеми страницами сразу. */
 export function inkOf(sessionId: string): InkStroke[] {
   const room = rooms.get(sessionId)
   if (!room) return []
   return [...room.ink.values()].flat()
+}
+
+/**
+ * Чернила ОДНОЙ страницы — тому, кто на неё смотрит.
+ *
+ * Мера приветственной пачки и ответа на вопрос вкладки (`ink:page`): страниц у
+ * лекции до двухсот, а смотрят в каждый момент одну, и возить все — это около
+ * мегабайта на сокет там, где нужны килобайты. Кто вошёл не на ту страницу или
+ * открыл ленту эскизов, спрашивает недостающие сам.
+ *
+ * Копия списка, а не сама память комнаты: он уезжает в кадр, и перо, дописавшее
+ * точку в тот же миг, не должно менять уже отданное.
+ */
+export function inkPageOf(sessionId: string, page: number): InkStroke[] {
+  const strokes = rooms.get(sessionId)?.ink.get(Math.trunc(page))
+  return strokes ? [...strokes] : []
+}
+
+/**
+ * ОПИСЬ исписанных страниц: их номера, без единого штриха.
+ *
+ * Едет рядом с каждым полным кадром чернил и стоит десятки байт там, где сами
+ * чернила стоят мегабайт. Без неё вкладка, получившая одну страницу, не
+ * отличает «на остальных пусто» от «остальные не приехали»: пульт считает по
+ * чернилам, сколько чистых листов заведено, и лента эскизов по ним же знает,
+ * что просить.
+ *
+ * Правило одно на оба конца — «есть хоть один штрих» (shared/lecture.ts ·
+ * `inkPagesOf`, оно же считает опись на вкладке). Ключи карты сами по себе
+ * мерой не годятся: страница заводится под первый штрих, а ластик, снявший
+ * последний, ключ оставляет — и такая страница, оставшись в описи, заставила
+ * бы пульт держать лишний лист и раз за разом спрашивать чернила, которых нет.
+ * Отсюда `strokes.length > 0`, а не `[...room.ink.keys()]`.
+ *
+ * По возрастанию: опись читается человеком в журнале, а порядок ключей карты —
+ * порядок первых штрихов, а не страниц.
+ */
+export function inkedPagesOf(sessionId: string): number[] {
+  const room = rooms.get(sessionId)
+  if (!room) return []
+  const pages: number[] = []
+  for (const [page, strokes] of room.ink) if (strokes.length > 0) pages.push(page)
+  return pages.sort((a, b) => a - b)
+}
+
+/**
+ * Номер последней перемены в чернилах. Меняется — прошлый кадр устарел.
+ *
+ * Ноль — чернил нет вовсе (лекции нет): кэшировать нечего.
+ */
+export function inkRevision(sessionId: string): number {
+  return rooms.get(sessionId)?.rev ?? 0
 }
 
 export function startLecture(
@@ -51,6 +120,7 @@ export function startLecture(
   const room: Room = {
     state: { ...state, page: 1, blank: false, startedAt: Date.now() },
     ink: new Map(),
+    rev: ++revisions,
   }
   rooms.set(sessionId, room)
   return room.state
@@ -142,11 +212,21 @@ export function setBlank(sessionId: string, blank: boolean): LectureState | null
  * Возвращает то, что надо разослать: только НОВЫЕ точки, а не весь штрих.
  * Штрих в тысячу точек, рассылаемый на каждую двадцатую, — это гигабайты
  * трафика на лекцию.
+ *
+ * И различает два «нет». `null` — добавлять нечего: лекции нет, страницы нет,
+ * точек меньше двух. `full` — упёрлись в потолок, и об этом надо СКАЗАТЬ:
+ * раньше оба случая возвращали `null`, сервер молчал, а пульт восемь раз
+ * досылал штрих целиком и через четыре секунды убирал его с листа без единого
+ * слова. Кто именно скажет — дело зовущего (control.ts · `case 'ink'`).
  */
+export type InkAdded =
+  | { stroke: InkStroke; full?: undefined }
+  | { stroke?: undefined; full: InkFull }
+
 export function addInk(
   sessionId: string,
   patch: { id: string; page: number; color: string; width: number; points: number[] },
-): InkStroke | null {
+): InkAdded | null {
   const room = rooms.get(sessionId)
   if (!room) return null
   // Чистый лист — такая же страница, только с отрицательным номером.
@@ -157,17 +237,18 @@ export function addInk(
 
   const strokes = room.ink.get(page) ?? []
   if (!room.ink.has(page)) {
-    if (room.ink.size >= MAX_INKED_PAGES) return null
+    if (room.ink.size >= MAX_INKED_PAGES) return { full: 'too-many-pages' }
     room.ink.set(page, strokes)
   }
 
   const existing = strokes.find((stroke) => stroke.id === patch.id)
   if (existing) {
-    if (existing.points.length >= MAX_POINTS_PER_STROKE) return null
+    if (existing.points.length >= MAX_POINTS_PER_STROKE) return { full: 'stroke-full' }
     existing.points.push(...points)
-    return { ...existing, points }
+    room.rev = ++revisions
+    return { stroke: { ...existing, points } }
   }
-  if (strokes.length >= MAX_STROKES_PER_PAGE) return null
+  if (strokes.length >= MAX_STROKES_PER_PAGE) return { full: 'page-full' }
   const made: InkStroke = {
     id: patch.id,
     page,
@@ -176,13 +257,16 @@ export function addInk(
     points: [...points],
   }
   strokes.push(made)
-  return made
+  room.rev = ++revisions
+  return { stroke: made }
 }
 
 /** Убрать последний штрих на этой странице. Возвращает его имя, если было что убирать. */
 export function undoInk(sessionId: string, page: number): string | null {
-  const strokes = rooms.get(sessionId)?.ink.get(page)
-  if (!strokes || strokes.length === 0) return null
+  const room = rooms.get(sessionId)
+  const strokes = room?.ink.get(page)
+  if (!room || !strokes || strokes.length === 0) return null
+  room.rev = ++revisions
   return strokes.pop()?.id ?? null
 }
 
@@ -195,11 +279,13 @@ export function undoInk(sessionId: string, page: number): string | null {
  * перерисовывать страницу на пустом месте.
  */
 export function eraseInk(sessionId: string, page: number, id: string): boolean {
-  const strokes = rooms.get(sessionId)?.ink.get(page)
-  if (!strokes) return false
+  const room = rooms.get(sessionId)
+  const strokes = room?.ink.get(page)
+  if (!room || !strokes) return false
   const at = strokes.findIndex((stroke) => stroke.id === id)
   if (at === -1) return false
   strokes.splice(at, 1)
+  room.rev = ++revisions
   return true
 }
 
@@ -209,6 +295,7 @@ export function clearInk(sessionId: string, page?: number): void {
   if (!room) return
   if (page === undefined) room.ink.clear()
   else room.ink.delete(page)
+  room.rev = ++revisions
 }
 
 /**

@@ -21,6 +21,7 @@
  * moment this asked for a token it would become a thing to administer.
  */
 import { LIMITS } from '@shared/admin'
+import { readIpynb, type FlatCell } from '@shared/ipynb'
 
 /* --------------------------------------------------------------- the URL */
 
@@ -109,43 +110,18 @@ export function seminarNameFor(target: GithubTarget): string {
 
 /* ------------------------------------------------------------ the notebook */
 
-export interface ImportedCell {
-  type: 'code' | 'markdown'
-  source: string
-}
-
-interface RawCell {
-  cell_type?: unknown
-  source?: unknown
-}
-
-/** Jupyter writes `source` as a string or as an array of lines, per its mood. */
-function sourceText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.map((line) => (typeof line === 'string' ? line : '')).join('')
-  return ''
-}
-
-/**
- * The cells of an .ipynb, as this product's notebook understands them.
+/*
+ * Разбор .ipynb здесь больше не живёт.
  *
- * Raw cells become markdown: they are prose in every course notebook that has
- * one, and a cell type this product cannot render would otherwise vanish
- * silently — losing a teacher's text without telling them is worse than showing
- * it in the wrong font.
+ * Он был написан тут первым, потом переехал в shared/ipynb.ts — и копия
+ * осталась строка в строку. Две функции, читающие один формат, расходятся
+ * молча: правка «не выбрасывать пустую ячейку из середины» попадала бы в одну
+ * из них, и тетрадь, открытая из комнаты, отличалась бы от той же тетради,
+ * привезённой импортом. Имена ниже — переходник для тех, кто звал старое;
+ * разбор один, и он в shared.
  */
-export function notebookCells(json: unknown): ImportedCell[] {
-  const doc = json as { cells?: unknown } | null
-  const cells = Array.isArray(doc?.cells) ? doc.cells : []
-  const out: ImportedCell[] = []
-  for (const raw of cells as RawCell[]) {
-    const source = sourceText(raw?.source)
-    // An empty trailing cell is an artefact of the editor that saved the file.
-    if (source.trim().length === 0) continue
-    out.push({ type: raw?.cell_type === 'code' ? 'code' : 'markdown', source })
-  }
-  return out
-}
+export type ImportedCell = FlatCell
+export const notebookCells = readIpynb
 
 /* ------------------------------------------------------------- what to take */
 
@@ -165,10 +141,18 @@ export interface RepoEntry {
  * data, and data is what gets copied. Subdirectories are skipped rather than
  * walked — a recursive import of somebody's course repository is a surprise,
  * not a feature.
+ *
+ * `py` в этом списке не по недосмотру: `utils.py`, `helpers.py`, `plotting.py`
+ * рядом с тетрадью — то же самое, что и данные. Первая ячейка учебной тетради
+ * — `from utils import show`, и без модуля она не запускается: без него импорт
+ * молчит (файла просто нет в предпросмотре), а на паре у всей комнаты разом
+ * выходит ModuleNotFoundError. Подкаталог `solutions/` при этом по-прежнему не
+ * едет — он подкаталог.
  */
 const DATA_EXTENSIONS = new Set([
   'csv', 'tsv', 'json', 'jsonl', 'txt', 'npy', 'npz', 'parquet', 'pkl',
   'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'zip', 'yaml', 'yml',
+  'py',
 ])
 
 export function filesToTake(entries: RepoEntry[], maxBytes: number): RepoEntry[] {
@@ -194,6 +178,15 @@ export function pickNotebook(entries: RepoEntry[]): RepoEntry | null {
 const API = 'https://api.github.com'
 
 /**
+ * «Нет такого» отдельным типом — по нему решают, стоит ли переспросить.
+ *
+ * 404 у GitHub — единственный ответ, за которым может стоять не отсутствие, а
+ * неверно разобранная ссылка (см. `resolveRef`). Все остальные отказы — лимит,
+ * пятисотка, оборванная сеть — переспрашивать бессмысленно.
+ */
+class GithubMissing extends Error {}
+
+/**
  * GitHub rate-limits anonymous callers by IP, at sixty requests an hour. An
  * import costs two or three, so a teacher will not notice — but the error when
  * it happens is a 403 with a JSON body, and saying "GitHub said no" without
@@ -214,7 +207,7 @@ async function ghJson(path: string): Promise<unknown> {
    * это неправда, и он идёт искать опечатку там, где её нет.
    */
   if (res.status === 404) {
-    throw new Error(
+    throw new GithubMissing(
       'GitHub has nothing at that address — or the repository is private. ' +
         'This server reads GitHub anonymously, so a private repository looks exactly like a missing one. ' +
         'Check the link, and if it is private, upload the files instead.',
@@ -229,7 +222,65 @@ async function ghJson(path: string): Promise<unknown> {
   return res.json()
 }
 
+/**
+ * Ветка со слэшем: `release/2024`, `feature/x`, `students/2026-fall`.
+ *
+ * Адрес такой ветки в браузере выглядит ровно как адрес обычной —
+ * `/o/r/tree/release/2024/week1`, — и по нему не видно, где кончается имя ветки
+ * и начинается путь. Разбор берёт первый сегмент, GitHub отвечает 404 на
+ * `week1?ref=release`, а `ghJson` переводит это в «нет такого или репозиторий
+ * приватный»: преподаватель идёт искать опечатку в ссылке, с которой всё в
+ * порядке, или делать публичным репозиторий, который и так публичный.
+ *
+ * Догадка стоит одного запроса и делается только после 404 — анонимных
+ * запросов к GitHub шестьдесят в час, тратить их на догадку при живом ответе
+ * незачем. Берётся самая длинная ветка, которой начинается «ref/path»:
+ * `release/2024` бьёт `release`, а `release/2024/hotfix` — обоих. Дальше сотни
+ * веток список не идёт: сотая ветка в курсовом репозитории — это уже не тот
+ * случай, ради которого стоит платить второй страницей.
+ *
+ * Возвращает исходную цель, когда догадываться не о чем, — тогда наверх уходит
+ * первоначальный отказ, а не выдуманный.
+ */
+export async function resolveRef(target: GithubTarget): Promise<GithubTarget> {
+  if (!target.ref || !target.path) return target
+  const whole = `${target.ref}/${target.path}`
+
+  let names: string[]
+  try {
+    const json = await ghJson(
+      `/repos/${target.owner}/${target.repo}/branches?per_page=100`,
+    )
+    if (!Array.isArray(json)) return target
+    names = (json as Record<string, unknown>[])
+      .map((b) => String(b.name ?? ''))
+      .filter((name) => name.includes('/'))
+  } catch {
+    // Догадка — не обязанность: приватный репозиторий, лимит, оборванная сеть.
+    return target
+  }
+
+  let best: string | null = null
+  for (const name of names) {
+    if (whole !== name && !whole.startsWith(`${name}/`)) continue
+    if (!best || name.length > best.length) best = name
+  }
+  if (!best) return target
+  return { ...target, ref: best, path: whole.slice(best.length + 1) }
+}
+
 export async function listDirectory(target: GithubTarget): Promise<RepoEntry[]> {
+  try {
+    return await listAt(target)
+  } catch (err) {
+    if (!(err instanceof GithubMissing)) throw err
+    const fixed = await resolveRef(target)
+    if (fixed.ref === target.ref) throw err
+    return listAt(fixed)
+  }
+}
+
+async function listAt(target: GithubTarget): Promise<RepoEntry[]> {
   const ref = target.ref ? `?ref=${encodeURIComponent(target.ref)}` : ''
   const json = await ghJson(
     `/repos/${target.owner}/${target.repo}/contents/${target.path}${ref}`,
@@ -244,12 +295,34 @@ export async function listDirectory(target: GithubTarget): Promise<RepoEntry[]> 
   }))
 }
 
+/**
+ * Тетрадь по ссылке на файл — с той же поправкой на ветку со слэшем.
+ *
+ * `raw.githubusercontent.com` разбирает `<ref>/<path>` своими правилами и на
+ * ветке со слэшем отвечает 404 так же, как API; разница только в том, что
+ * ошибка звучит «Could not download … (404)». Второй заход — после запроса
+ * веток, и только если ветка правда нашлась.
+ */
+export async function fetchNotebook(target: GithubTarget, maxBytes: number): Promise<Buffer> {
+  try {
+    return await fetchRaw(rawUrlFor(target), maxBytes)
+  } catch (err) {
+    if (!(err instanceof GithubMissing)) throw err
+    const fixed = await resolveRef(target)
+    if (fixed.ref === target.ref) throw err
+    return fetchRaw(rawUrlFor(fixed), maxBytes)
+  }
+}
+
 export async function fetchRaw(url: string, maxBytes: number): Promise<Buffer> {
   const res = await fetch(url, {
     headers: { 'User-Agent': 'colloq' },
     signal: AbortSignal.timeout(60_000),
   })
-  if (!res.ok) throw new Error(`Could not download ${url} (${res.status}).`)
+  if (!res.ok) {
+    const message = `Could not download ${url} (${res.status}).`
+    throw res.status === 404 ? new GithubMissing(message) : new Error(message)
+  }
   const buf = Buffer.from(await res.arrayBuffer())
   if (buf.byteLength > maxBytes) {
     throw new Error(`That file is larger than the ${Math.round(maxBytes / 1e6)} MB limit.`)

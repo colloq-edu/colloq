@@ -36,9 +36,10 @@ import type {
   CouncilRun,
   CouncilStatus,
 } from '@shared/protocol'
-import { groupStatus } from '@shared/protocol'
+import { attemptStatus, groupAttempts } from '@shared/protocol'
 import { normalizeAttempt } from '@shared/notebook'
-import { db, getParticipant } from './db.js'
+import { stopRoomOracles } from './ai/council.js'
+import { db, getParticipant, getSession } from './db.js'
 
 export { normalizeAttempt }
 
@@ -51,9 +52,27 @@ export interface StoredAttempt {
   submittedAt: number | null
   updatedAt: number
   run: CouncilRun | null
-  reply: CouncilReply | null
+  /**
+   * Письма преподавателя: личное и групповое — рядом, а не одно поверх другого.
+   *
+   * Их не больше двух (`keeping`), в порядке отправки. Одно поле на двоих было
+   * молчаливой потерей: рассылка группе ложилась поверх личного ответа, и
+   * вернуть его нечем — истории версий у попыток нет.
+   */
+  replies: CouncilReply[]
   correct: boolean | null
   shown: boolean
+  /**
+   * Ключ группы — `normalizeAttempt(text)`, посчитанный ОДИН РАЗ на смену текста.
+   *
+   * В столбце его нет и не надо: он выводится из текста, и хранить выведенное
+   * значит однажды разойтись с ним. А вот считать его заново на каждый кадр —
+   * дорого: числа полосы едут хосту на каждую паузу в наборе у каждого из
+   * пятисот, и `normalizeAttempt` — посимвольный цикл по всей попытке. Пятьсот
+   * попыток по восемь килобайт трижды в секунду — четыре мегабайта обхода в
+   * секунду ради двух чисел.
+   */
+  groupKey: string
 }
 
 /** CREATE TABLE IF NOT EXISTS — идемпотентно, при старте. */
@@ -67,6 +86,7 @@ export function ensureCouncilSchema(): void {
       submitted_at   INTEGER,
       updated_at     INTEGER NOT NULL,
       run_json       TEXT,
+      /* Письма преподавателя списком — личное и групповое (см. repliesFrom). */
       reply_json     TEXT,
       correct        INTEGER,
       shown          INTEGER NOT NULL DEFAULT 0,
@@ -80,6 +100,20 @@ export function ensureCouncilSchema(): void {
       session_id  TEXT NOT NULL,
       cell_id     TEXT NOT NULL,
       oracle_json TEXT NOT NULL,
+      PRIMARY KEY (session_id, cell_id)
+    );
+
+    /*
+     * Задание — общий текст ячейки на ту секунду, когда замок перевели в
+     * консилиум. Отдельной строкой, потому что в самой ячейке его к тому
+     * времени может уже не быть: «Показать классу» кладёт в общий текст чьё-то
+     * решение, и опоздавший засевал бы им свой лист (shared/protocol.ts ·
+     * CouncilMine.seed).
+     */
+    CREATE TABLE IF NOT EXISTS council_seed (
+      session_id TEXT NOT NULL,
+      cell_id    TEXT NOT NULL,
+      seed       TEXT NOT NULL,
       PRIMARY KEY (session_id, cell_id)
     );
   `)
@@ -130,6 +164,12 @@ const upsertOracle = db.prepare(`
   ON CONFLICT(session_id, cell_id) DO UPDATE SET oracle_json = excluded.oracle_json
 `)
 const deleteOraclesOfRoom = db.prepare('DELETE FROM council_oracle WHERE session_id = ?')
+const selectSeeds = db.prepare('SELECT cell_id, seed FROM council_seed WHERE session_id = ?')
+const upsertSeed = db.prepare(`
+  INSERT INTO council_seed (session_id, cell_id, seed) VALUES (?, ?, ?)
+  ON CONFLICT(session_id, cell_id) DO UPDATE SET seed = excluded.seed
+`)
+const deleteSeedsOfRoom = db.prepare('DELETE FROM council_seed WHERE session_id = ?')
 
 function parseJson<T>(raw: string | null): T | null {
   if (!raw) return null
@@ -187,7 +227,23 @@ function settleGhostOracle(oracle: CouncilOracle): CouncilOracle {
   if (oracle.state !== 'reading') return oracle
   return oracle.summary.length > 0
     ? { ...oracle, state: 'ready', error: ORACLE_RESTARTED }
-    : { ...oracle, state: 'idle', askedAt: null, basedOn: 0, staleBy: 0, error: ORACLE_RESTARTED }
+    : { ...oracle, state: 'idle', askedAt: null, basedOn: 0, error: ORACLE_RESTARTED }
+}
+
+/**
+ * Письма из `reply_json` — списком, каким бы ни была строка.
+ *
+ * В столбце лежит либо список (пишем так), либо одно письмо объектом — так
+ * писали, пока поле на попытке было одно. Отдельного столбца под список не
+ * завели нарочно: ALTER TABLE ради того же самого значения дал бы две колонки
+ * про одно письмо, и однажды они разошлись бы. Пустые письма выкидываются:
+ * строка без текста рисуется подписью в пустоте.
+ */
+function repliesFrom(raw: string | null): CouncilReply[] {
+  const parsed = parseJson<CouncilReply | CouncilReply[]>(raw)
+  if (!parsed) return []
+  const list = Array.isArray(parsed) ? parsed : [parsed]
+  return list.filter((one) => typeof one?.text === 'string' && one.text.trim() !== '')
 }
 
 function fromRow(row: AttemptRow): StoredAttempt {
@@ -196,10 +252,11 @@ function fromRow(row: AttemptRow): StoredAttempt {
     cellId: row.cell_id,
     participantId: row.participant_id,
     text: row.text,
+    groupKey: normalizeAttempt(row.text),
     submittedAt: row.submitted_at ?? null,
     updatedAt: row.updated_at,
     run: settleGhostRun(parseJson<CouncilRun>(row.run_json)),
-    reply: parseJson<CouncilReply>(row.reply_json),
+    replies: repliesFrom(row.reply_json),
     correct: row.correct === null ? null : row.correct === 1,
     shown: row.shown === 1,
   }
@@ -214,7 +271,8 @@ function persist(attempt: StoredAttempt): void {
     submitted_at: attempt.submittedAt,
     updated_at: attempt.updatedAt,
     run_json: attempt.run ? JSON.stringify(attempt.run) : null,
-    reply_json: attempt.reply ? JSON.stringify(attempt.reply) : null,
+    // Список, а не одно письмо: см. `repliesFrom`. Пусто — `null`, как и было.
+    reply_json: attempt.replies.length > 0 ? JSON.stringify(attempt.replies) : null,
     correct: attempt.correct === null ? null : attempt.correct ? 1 : 0,
     shown: attempt.shown ? 1 : 0,
   })
@@ -227,6 +285,8 @@ type CellMap = Map<string, StoredAttempt>
 interface RoomCache {
   cells: Map<string, CellMap>
   oracles: Map<string, CouncilOracle>
+  /** Ячейка → задание, с которого сеется пустой лист. */
+  seeds: Map<string, string>
 }
 
 const cache = new Map<string, RoomCache>()
@@ -234,7 +294,7 @@ const cache = new Map<string, RoomCache>()
 function roomOf(sessionId: string): RoomCache {
   const cached = cache.get(sessionId)
   if (cached) return cached
-  const room: RoomCache = { cells: new Map(), oracles: new Map() }
+  const room: RoomCache = { cells: new Map(), oracles: new Map(), seeds: new Map() }
   for (const row of selectRoom.all(sessionId) as AttemptRow[]) {
     const attempt = fromRow(row)
     cellOf(room, attempt.cellId).set(attempt.participantId, attempt)
@@ -242,6 +302,9 @@ function roomOf(sessionId: string): RoomCache {
   for (const row of selectOracles.all(sessionId) as { cell_id: string; oracle_json: string }[]) {
     const oracle = parseJson<CouncilOracle>(row.oracle_json)
     if (oracle) room.oracles.set(row.cell_id, settleGhostOracle(oracle))
+  }
+  for (const row of selectSeeds.all(sessionId) as { cell_id: string; seed: string }[]) {
+    room.seeds.set(row.cell_id, row.seed)
   }
   cache.set(sessionId, room)
   return room
@@ -295,15 +358,19 @@ export function saveDraft(
 ): StoredAttempt {
   const prior = attemptOf(sessionId, cellId, participantId)
   if (prior && prior.text === text) return prior
+  // Текст сменился — значит, запуск, который сейчас идёт или ждёт в очереди,
+  // считает уже НЕ ЭТО. Его будущие кадры сюда не лягут (см. recordRun).
+  runFor.delete(runKey(sessionId, cellId, participantId))
   return save({
     sessionId,
     cellId,
     participantId,
     text,
+    groupKey: normalizeAttempt(text),
     submittedAt: prior?.submittedAt ?? null,
     updatedAt: now,
     run: null,
-    reply: prior?.reply ?? null,
+    replies: prior?.replies ?? [],
     correct: null,
     shown: false,
   })
@@ -365,17 +432,65 @@ export function cellsOfParticipant(sessionId: string, participantId: string): st
 
 /* ------------------------------------------------------ действия ведущего */
 
-/** Вывод запуска — к попытке, не в общую ячейку. `null` — стереть. */
+/**
+ * Под каким текстом завели запуск, который сейчас в полёте.
+ *
+ * Ключ — комната, ячейка, человек; значение — текст попытки на момент нажатия
+ * «Запустить». В памяти, а не в базе, и этого достаточно: очередь ядра тоже
+ * живёт в памяти процесса, и запуск, переживший перезапуск, всё равно призрак
+ * (`settleGhostRun`).
+ */
+const runFor = new Map<string, string>()
+
+function runKey(sessionId: string, cellId: string, participantId: string): string {
+  return `${sessionId}\u0000${cellId}\u0000${participantId}`
+}
+
+/**
+ * Вывод запуска — к попытке, не в общую ячейку. `null` — стереть.
+ *
+ * Возвращает, лёг ли кадр. `false` — попытки уже нет ИЛИ кадр опоздал: пока он
+ * считался, автор сменил текст, и вывод относится к прежнему.
+ *
+ * Про опоздавший кадр стоит сказать отдельно, потому что цена у него высокая.
+ * Очередь на пятьсот человек одна, ждать минуту — обычное дело, и правка за
+ * это время тоже обычна. `saveDraft` честно снимает с попытки всё, что было
+ * сказано о ПРЕЖНЕМ тексте, — но ядро дочитывало старый исходник и клало его
+ * трейсбек под новый код: на карточке студента и в стопке преподавателя стоял
+ * вывод программы, которой на них нет, со статусом «упало» или «выполнена».
+ * Преподаватель ставил «верно» по чужому выводу.
+ *
+ * Отпечаток — сам текст, а не хеш: попытка и так лежит рядом в памяти, а хеш
+ * добавил бы к сверке ещё один способ ошибиться.
+ */
 export function recordRun(
   sessionId: string,
   cellId: string,
   participantId: string,
   run: CouncilRun | null,
-): void {
+): boolean {
   const prior = attemptOf(sessionId, cellId, participantId)
   // Попытку успели убрать (бан) — вывод её не воскрешает.
-  if (!prior) return
+  if (!prior) return false
+  const key = runKey(sessionId, cellId, participantId)
+  if (run === null) {
+    runFor.delete(key)
+    save({ ...prior, run: null })
+    return true
+  }
+  /*
+   * Первый кадр запуска — «в очереди»: он и есть заявка, и текст под ним тот,
+   * что был при нажатии. Всё остальное — кадры того же запуска, и они годятся,
+   * только пока текст не сменился.
+   */
+  if (run.state === 'queued') {
+    runFor.set(key, prior.text)
+    save({ ...prior, run })
+    return true
+  }
+  if (runFor.get(key) !== prior.text) return false
   save({ ...prior, run })
+  return true
 }
 
 /**
@@ -389,18 +504,60 @@ export function setReply(
   reply: CouncilReply,
 ): string[] {
   const targets: StoredAttempt[] = []
-  if ('participantId' in to) {
+  const personal = 'participantId' in to
+  if (personal) {
     const one = attemptOf(sessionId, cellId, to.participantId)
     if (one) targets.push(one)
   } else {
     for (const attempt of attemptsOf(sessionId, cellId)) {
-      if (attempt.submittedAt !== null && normalizeAttempt(attempt.text) === to.groupKey) {
-        targets.push(attempt)
-      }
+      if (attempt.submittedAt !== null && attempt.groupKey === to.groupKey) targets.push(attempt)
     }
   }
-  for (const attempt of targets) save({ ...attempt, reply })
+  const addressed: CouncilReply = { ...reply, to: personal ? 'person' : 'group' }
+  for (const attempt of targets) save({ ...attempt, replies: keeping(attempt.replies, addressed) })
   return targets.map((attempt) => attempt.participantId)
+}
+
+/** Личное или групповое — по этому письма и различаются в хранении. */
+function kindOf(reply: CouncilReply): 'person' | 'group' {
+  // Письмо, записанное до появления `to`, считается личным: сберечь лишнее
+  // дешевле, чем потерять нужное.
+  return reply.to === 'group' ? 'group' : 'person'
+}
+
+/**
+ * Новое письмо ложится в СВОЁ место: личное к личному, групповое к групповому.
+ *
+ * Поле `reply` на попытке было одно, и запись поверх была молчаливой потерей:
+ * ответил Пете «Проверьте знак», через минуту отправил всей группе черновик
+ * оракула — и личная строка исчезла, прочитал он её или нет. Ни на пульте, ни у
+ * студента её больше нет, и вернуть нечем: у попыток истории версий не бывает.
+ *
+ * Склейка текстов эту дыру не закрывала: следующее же письмо той же группе
+ * ложилось поверх склейки и уносило личное вместе с ней — а поправка вслед
+ * рассылке дело обычное. Поэтому писем два, каждое в своей ячейке: замена
+ * переписывает только однородное — личное поверх личного значит, что
+ * преподаватель переписал своё же письмо одному человеку, групповое поверх
+ * группового — что он переписал рассылку. Больше двух здесь не бывает, и
+ * порядок — по отправке: так их и читают.
+ */
+function keeping(prior: readonly CouncilReply[], next: CouncilReply): CouncilReply[] {
+  const kind = kindOf(next)
+  return [...prior.filter((one) => kindOf(one) !== kind), next]
+}
+
+/**
+ * Письма одной строкой — для клиентов, которые про `replies` ещё не знают.
+ *
+ * Подпись и время — у последнего письма: оно и есть то, что преподаватель
+ * сказал только что. Тексты идут в порядке отправки, пустой строкой между: в
+ * одном абзаце это хуже двух строк, но лучше, чем потерянный личный ответ.
+ */
+function mergeReplies(replies: readonly CouncilReply[]): CouncilReply | null {
+  const last = replies[replies.length - 1]
+  if (!last) return null
+  if (replies.length === 1) return last
+  return { ...last, text: replies.map((one) => one.text).join('\n\n') }
 }
 
 export function setMark(
@@ -440,30 +597,44 @@ export function setShown(sessionId: string, cellId: string, participantId: strin
 export function purgeAttempts(sessionId: string, participantId: string): number {
   const room = roomOf(sessionId)
   let gone = 0
-  for (const cell of room.cells.values()) if (cell.delete(participantId)) gone++
+  for (const [cellId, cell] of room.cells) {
+    if (cell.delete(participantId)) gone++
+    // Строки нет — значит, и кадру запуска ложиться некуда: отпечаток можно
+    // забыть вместе с ней. Саму запись в очереди ядра снимает control.ts.
+    runFor.delete(runKey(sessionId, cellId, participantId))
+  }
   deleteOfPerson.run(sessionId, participantId)
   return gone
 }
 
 /** Комнату снесли — вместе с попытками и сводками оракула. */
 export function discardCouncil(sessionId: string): void {
+  /*
+   * Идущее чтение обрывается ЗДЕСЬ, а не оставляется дочитывать.
+   *
+   * Оракул сводки живёт в памяти (ai/council.ts · reading), и ответ на вопрос,
+   * заданный за минуту до сноса семинара, приходил в `setOracle` — тот заводил
+   * кэш комнаты заново и делал INSERT в `council_oracle` для сессии, которой
+   * больше нет. Строка удалённого семинара воскресала из ниоткуда и лежала до
+   * следующего сноса.
+   */
+  stopRoomOracles(sessionId)
   cache.delete(sessionId)
+  const prefix = `${sessionId}\u0000`
+  for (const key of runFor.keys()) if (key.startsWith(prefix)) runFor.delete(key)
   deleteOfRoom.run(sessionId)
   deleteOraclesOfRoom.run(sessionId)
+  deleteSeedsOfRoom.run(sessionId)
 }
 
 /* -------------------------------------------------------------- снимки */
 
 /**
- * Состояние одним словом. Отметка преподавателя сильнее запуска: решение о
- * верности — его, а не ядра (protocol.ts · CouncilStatus).
+ * Состояние одним словом — общей функцией на пульт, сервер и оракула
+ * (protocol.ts · attemptStatus). Здесь стояла своя копия того же правила.
  */
 function statusOf(attempt: StoredAttempt): CouncilStatus {
-  if (attempt.correct === true) return 'correct'
-  if (attempt.correct === false) return 'wrong'
-  if (attempt.run?.state === 'error') return 'failed'
-  if (attempt.run?.state === 'ok') return 'ran'
-  return 'unrun'
+  return attemptStatus(attempt)
 }
 
 /**
@@ -473,6 +644,13 @@ function statusOf(attempt: StoredAttempt): CouncilStatus {
  *
  * `queue` — место в очереди на запуск, если попытка ждёт; его знает ядро, и
  * control.ts передаёт его сюда, чтобы снимок собирался в одном месте.
+ *
+ * `seed` — задание (`rememberSeed`), и едет оно в ОБЕИХ ветках. В первой ради
+ * него всё и написано: пустой лист засевается заданием, а не тем, что в ячейке
+ * лежит сейчас. Во второй — на случай, когда лист у человека ещё не заведён, а
+ * попытка уже есть (перезагрузил страницу, вошёл со второго устройства). Нет
+ * строки задания — поля нет вовсе: пустая строка значит «консилиум открыли на
+ * пустой ячейке», а отсутствие — «старый сервер», и клиент сеет по-старому.
  */
 export function mineFor(
   sessionId: string,
@@ -482,6 +660,8 @@ export function mineFor(
   queue: number | null = null,
 ): CouncilMine | null {
   const attempt = attemptOf(sessionId, cellId, participantId)
+  const seed = seedOf(sessionId, cellId)
+  const task = seed === null ? {} : { seed }
   if (!attempt) {
     if (closed) return null
     // Консилиум открыт, а попытки ещё нет: пустой лист, чтобы клиент знал,
@@ -493,9 +673,11 @@ export function mineFor(
       shown: false,
       correct: null,
       reply: null,
+      replies: [],
       run: null,
       queue: null,
       closed,
+      ...task,
     }
   }
   return {
@@ -504,10 +686,13 @@ export function mineFor(
     updatedAt: attempt.updatedAt,
     shown: attempt.shown,
     correct: attempt.correct,
-    reply: attempt.reply,
+    // Оба вида рядом: склейка старым клиентам, письма по отдельности — новым.
+    reply: mergeReplies(attempt.replies),
+    replies: attempt.replies,
     run: attempt.run,
     queue,
     closed,
+    ...task,
   }
 }
 
@@ -535,60 +720,23 @@ function toAttempt(attempt: StoredAttempt): CouncilAttempt {
     updatedAt: attempt.updatedAt,
     status: statusOf(attempt),
     run: attempt.run,
-    reply: attempt.reply,
+    reply: mergeReplies(attempt.replies),
+    replies: attempt.replies,
     correct: attempt.correct,
     shown: attempt.shown,
-    groupKey: normalizeAttempt(attempt.text),
+    groupKey: attempt.groupKey,
   }
 }
 
 /**
- * Группы одинаковых решений — только среди сданных, тем же ключом, что стоит на
- * попытке. Представитель — самый ранний сдавший; состояние и «на экране» — по
- * всем членам (protocol.ts · groupStatus); порядок групп — от большой к малой,
- * при равенстве раньше та, что раньше сдана.
+ * Группы одинаковых решений — общей функцией (protocol.ts · groupAttempts).
+ *
+ * Здесь лежала третья её копия: своя ничья, свой порядок и `attempts.find`
+ * внутри компаратора. Пульт и оракул считали то же самое чуть иначе, и однажды
+ * это дало бы им разных представителей одной группы.
  */
-function bySubmission(a: CouncilAttempt, b: CouncilAttempt): number {
-  return (
-    (a.submittedAt ?? 0) - (b.submittedAt ?? 0) ||
-    a.updatedAt - b.updatedAt ||
-    a.participantId.localeCompare(b.participantId)
-  )
-}
-
 function groupsOf(attempts: CouncilAttempt[], labels: Record<string, string>): CouncilGroup[] {
-  const byKey = new Map<string, CouncilAttempt[]>()
-  for (const attempt of attempts) {
-    if (attempt.submittedAt === null) continue
-    const list = byKey.get(attempt.groupKey)
-    if (list) list.push(attempt)
-    else byKey.set(attempt.groupKey, [attempt])
-  }
-  const groups: CouncilGroup[] = []
-  for (const [key, members] of byKey) {
-    // При равном времени сдачи — кто раньше написал, потом по id: тем же
-    // разрывом, что на пульте (council-board.ts · bySubmission), иначе у одной
-    // группы на сервере и на клиенте были бы два разных представителя.
-    members.sort(bySubmission)
-    const representative = members[0]
-    groups.push({
-      key,
-      count: members.length,
-      label: labels[key] ?? null,
-      sample: representative.text,
-      status: groupStatus(members.map((m) => m.status)),
-      shown: members.some((m) => m.shown),
-      representative: representative.participantId,
-      members: members.map((m) => m.participantId),
-    })
-  }
-  groups.sort((a, b) => {
-    if (b.count !== a.count) return b.count - a.count
-    const at = (g: CouncilGroup) =>
-      attempts.find((x) => x.participantId === g.representative)?.submittedAt ?? 0
-    return at(a) - at(b)
-  })
-  return groups
+  return groupAttempts(attempts, labels)
 }
 
 /** Одна попытка глазами преподавателя — для `council:patch`. `null` — её больше нет. */
@@ -606,10 +754,28 @@ function countsOf(attempts: CouncilAttempt[], groups: number): CouncilBoard['cou
   return { attempts: attempts.length, submitted, writing: attempts.length - submitted, groups }
 }
 
-/** Числа полосы режима без самой стопки — то, что едет с каждым `council:patch`. */
+/**
+ * Числа полосы режима без самой стопки — то, что едет с каждым `council:patch`.
+ *
+ * Считаются по строкам, а не по собранной стопке. Прежний код звал `toAttempt`
+ * на каждую попытку — то есть SELECT участника в SQLite и посимвольную
+ * нормализацию всего текста, — потом складывал группы с сортировкой; и всё это
+ * трижды в секунду на ячейку, пока класс печатает, ради четырёх чисел, в
+ * которых нет ни имён, ни цветов. На пятистах попытках это полторы тысячи
+ * запросов и мегабайты обхода в секунду в том же цикле событий, что и кадры
+ * синхронизации.
+ */
 export function countsFor(sessionId: string, cellId: string): CouncilBoard['counts'] {
-  const attempts = attemptsOf(sessionId, cellId).map(toAttempt)
-  return countsOf(attempts, groupsOf(attempts, {}).length)
+  let attempts = 0
+  let submitted = 0
+  const keys = new Set<string>()
+  for (const attempt of attemptsOf(sessionId, cellId)) {
+    attempts += 1
+    if (attempt.submittedAt === null) continue
+    submitted += 1
+    keys.add(attempt.groupKey)
+  }
+  return { attempts, submitted, writing: attempts - submitted, groups: keys.size }
 }
 
 /**
@@ -653,6 +819,41 @@ export function oracleOf(sessionId: string, cellId: string): CouncilOracle | nul
 }
 
 export function setOracle(sessionId: string, cellId: string, oracle: CouncilOracle): void {
+  /*
+   * Второй замок на ту же дверь, что и `stopRoomOracles` в `discardCouncil`.
+   *
+   * Обрыв чтения — про то, чтобы ответа не было; это — про то, что даже
+   * пришедший ответ не заводит комнату заново. Между двумя действиями всегда
+   * остаётся щель в один тик, а `roomOf` создаёт кэш комнаты по одному
+   * упоминанию имени. Семинара нет — писать некуда, и это не ошибка: просто
+   * ответ опоздал.
+   */
+  if (!getSession(sessionId)) return
   roomOf(sessionId).oracles.set(cellId, oracle)
   upsertOracle.run(sessionId, cellId, JSON.stringify(oracle))
+}
+
+/* ------------------------------------------------------------- задание */
+
+/**
+ * Задание ячейки — общий текст на ту секунду, когда замок перевели в консилиум.
+ *
+ * Зовётся из control.ts (`cell:lock`) РОВНО на переходе в консилиум, а не на
+ * каждом нажатии: повторный `cell:lock` в то же положение — это переключение
+ * ручки, и переписывать задание им нельзя. После «Показать классу» общий текст
+ * ячейки — уже чьё-то решение, и записанное поверх «задание» стало бы им же;
+ * опоздавший получал бы в свой лист чужой ответ и одним нажатием сдавал его
+ * как свой (shared/protocol.ts · CouncilMine.seed).
+ *
+ * Пустая строка — законное значение: консилиум открыли на пустой ячейке, и
+ * лист у всех пустой.
+ */
+export function rememberSeed(sessionId: string, cellId: string, text: string): void {
+  roomOf(sessionId).seeds.set(cellId, text)
+  upsertSeed.run(sessionId, cellId, text)
+}
+
+/** Задание ячейки, или `null` — консилиум открывали до того, как их стали помнить. */
+export function seedOf(sessionId: string, cellId: string): string | null {
+  return roomOf(sessionId).seeds.get(cellId) ?? null
 }

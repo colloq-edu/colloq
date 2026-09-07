@@ -16,7 +16,7 @@
    * там же сказано, чем их вернуть, и там же — что метка держится на браузере.
    * Обещать герметичность, которой нет, дороже, чем признать её отсутствие.
    */
-  import { cubicOut } from 'svelte/easing'
+  import { quintOut } from 'svelte/easing'
   import { fade, fly } from 'svelte/transition'
   import { api } from '@/lib/api'
   import { BAN_MENU_EVENT, banConsequences, bansChanged, type BanTarget } from '@/lib/bans'
@@ -66,9 +66,25 @@
     }
   })
 
-  function close(): void {
+  /**
+   * Закрыть — и только когда закрывать ещё есть что.
+   *
+   * Пока запрос в пути, «Отмена» погашена: отменить уже нечего, сервер бан
+   * поставит. Escape и щелчок по подложке при этом окно уносили — человек
+   * видел, что «передумал», а через мгновение участник оказывался удалён; а
+   * отказ сервера ложился текстом в окно, которого на экране больше нет.
+   * Тот же `busy` теперь держит и их: единственный выход из ожидания — его
+   * конец.
+   */
+  function dismiss(): void {
     target = null
     asked = false
+  }
+
+  /** То же, но по жесту человека: пока запрос в пути, жест не действует. */
+  function close(): void {
+    if (busy) return
+    dismiss()
   }
 
   async function ban(): Promise<void> {
@@ -81,7 +97,9 @@
       // Список у преподавателя перечитывается сам: он рисуется в другой панели,
       // и без этого свежий бан появился бы в нём только через минуту.
       bansChanged()
-      close()
+      // Не `close`: `busy` снимается только в finally, и жестовый выход из
+      // него как раз и не сработал бы.
+      dismiss()
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Не получилось удалить с занятия.'
     } finally {
@@ -99,12 +117,23 @@
 {#if target && !asked}
   <!-- Подложка ловит нажатие мимо меню — тем же способом, что и пульт правил. -->
   <div class="fixed inset-0 z-40" role="presentation" onclick={close}></div>
+  <!--
+    Только вход, и кривая — домашняя. Здесь и у окна ниже.
+
+    `transition:` двусторонняя, и уход по ней анимируется тоже: Escape (см.
+    `svelte:window` выше) уводил меню за 120 мс, хотя клавишу жмут ровно затем,
+    чтобы его УБРАТЬ. Анимировать действие с клавиатуры нельзя — то же решение
+    принято для ящиков и пульта правил в SessionScreen и записано словами в
+    admin/motion.css. `quintOut` = 1−(1−t)⁵ — ближайшая из svelte/easing к
+    `--ease-out` (index.css), которой в этом продукте движется всё; `cubicOut`
+    заметно мягче и читается как чужая.
+  -->
   <div
     class="fixed z-50 border border-line bg-raised py-1 shadow-pop"
     style="left: {at.x}px; top: {at.y}px; width: {MENU_W}px"
     role="menu"
     aria-label="Что сделать с участником"
-    transition:fly={{ y: prefersReducedMotion() ? 0 : -4, duration: 120, easing: cubicOut }}
+    in:fly={{ y: prefersReducedMotion() ? 0 : -4, duration: 120, easing: quintOut }}
   >
     <p class="truncate px-2.5 pb-1 pt-0.5 text-2xs font-bold uppercase tracking-label text-muted">
       {target.name}
@@ -131,14 +160,14 @@
     onclick={(event) => {
       if (event.target === event.currentTarget) close()
     }}
-    transition:fade={{ duration: 120 }}
+    in:fade={{ duration: 120 }}
   >
     <div
       role="dialog"
       aria-modal="true"
       aria-labelledby="ban-title"
       class="w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop"
-      transition:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: cubicOut }}
+      in:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: quintOut }}
     >
       <h2 id="ban-title" class="text-title font-semibold text-ink">Удалить с занятия</h2>
 

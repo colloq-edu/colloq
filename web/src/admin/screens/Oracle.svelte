@@ -35,6 +35,7 @@
   import Section from '@/admin/ui/Section.svelte'
   import Icon, { type IconName } from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
+  import { uploadMb } from '@/admin/panel'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { cn } from '@/lib/utils'
 
@@ -248,10 +249,25 @@
     return 'The server did not answer.'
   }
 
-  /** A dead cookie is the shell's business: re-reading `me` sends them to sign in. */
+  /**
+   * Предел загрузки — тот, что назвал сервер.
+   *
+   * Пока его нет в ответе (сборка постарше), на месте значения остаётся имя
+   * переменной: назвать наугад «50 MB» на инстансе, где стоит 200, — то же
+   * самое враньё, только с цифрой.
+   */
+  const maxUploadBytes = $derived(adminAuth.state?.maxUploadBytes ?? null)
+
+  /**
+   * A dead cookie is the shell's business: re-reading `me` sends them to sign in.
+   *
+   * С причиной: печенье до сервера доехало и было отвергнуто — ротированная
+   * ссылка или снятый аккаунт. Экран входа иначе объяснял это настройками
+   * печенья в браузере, где чинить нечего.
+   */
   function reauthenticate(cause: unknown): void {
     if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') {
-      void adminAuth.refresh()
+      void adminAuth.refresh('revoked')
     }
   }
 
@@ -861,14 +877,17 @@
             Never send files over
           </p>
           <!-- Dashed, because it is a reading of the environment and not a control:
-               a box that looks like a field and ignores you is worse than a label. -->
+               a box that looks like a field and ignores you is worse than a label.
+               И читается оно теперь по-настоящему: имя переменной на месте
+               значения — это не чтение, а обещание чтения. -->
           <div class="flex h-[38px] items-center border border-dashed border-line px-3">
-            <span class="truncate font-mono text-code text-muted">MAX_UPLOAD_MB</span>
+            <span class="truncate font-mono text-code text-muted">
+              {maxUploadBytes === null ? 'MAX_UPLOAD_MB' : `${uploadMb(maxUploadBytes)} MB`}
+            </span>
           </div>
           <p class="mt-1.5 text-2xs text-muted">
-            Set in the server environment and read at boot. Change it in <span
-              class="font-mono text-code">.env</span
-            > and restart.
+            <span class="font-mono text-code">MAX_UPLOAD_MB</span> in the server environment, read
+            at boot. Change it in <span class="font-mono text-code">.env</span> and restart.
           </p>
         </div>
       </div>

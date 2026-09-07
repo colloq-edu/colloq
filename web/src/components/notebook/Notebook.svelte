@@ -1,17 +1,18 @@
 <script lang="ts">
   import { tick } from 'svelte'
-  import { findCell, type CellType } from '@shared/notebook'
+  import { findCell, isCellOpen, type CellType } from '@shared/notebook'
   import { isLectureRoom } from '@shared/rules'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
-  import { cellLockMatters, permitsIn } from '@/lib/may'
   import {
-    deleteCell,
-    hasPendingRun,
-    insertCell,
-    ONE_AT_A_TIME,
-    setCellType,
-  } from '@/lib/notebook-ops'
+    cellLockMatters,
+    LECTURE_CELL,
+    mayEditThisCell,
+    mayRunThisCell,
+    permitsIn,
+  } from '@/lib/may'
+  import { selectionHere, stepPlan } from './command-mode'
+  import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
   import { watchBooks, watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
@@ -166,23 +167,59 @@
       ).detail
       if (!detail) return
       const list = ids.current
-      const from = list.indexOf(detail.cellId)
-      if (from === -1) return
-      const back = detail.fallback ? list[from - detail.direction] : undefined
-      const target = list[from + detail.direction] ?? back
-      if (!target) {
-        // Shift+Enter on the last cell has nowhere to go, so it makes somewhere:
-        // that is how a notebook grows while somebody types down the page, and
-        // it is what the same key does in the tool this room already knows.
-        if (detail.grow) void addAt(from + 1, 'code')
+      // Shift+Enter on the last cell has nowhere to go, so it makes somewhere:
+      // that is how a notebook grows while somebody types down the page, and
+      // it is what the same key does in the tool this room already knows. Без
+      // права добавлять — просто остаётся на месте: см. stepPlan.
+      const plan = stepPlan(list, detail.cellId, detail.direction, {
+        fallback: detail.fallback,
+        grow: detail.grow,
+        mayAdd: may.add,
+      })
+      if (plan.kind === 'stay') return
+      if (plan.kind === 'grow') {
+        void addAt(plan.at, 'code')
         return
       }
-      select(target)
-      if (detail.focus !== false) enter(target)
+      select(plan.cellId)
+      if (detail.focus !== false) enter(plan.cellId)
     }
     window.addEventListener('colloq:step-cell', onStep)
     return () => window.removeEventListener('colloq:step-cell', onStep)
   })
+
+  /* ------------------------------------------------------ холодный кадр */
+
+  /**
+   * Тетрадь ещё не прочитана — ни с диска, ни из сети.
+   *
+   * `hydrated` говорит только про переигранную копию из IndexedDB, а у
+   * студента, открывшего ссылку впервые, её нет вовсе: тетрадь рисовалась
+   * пустой, с живыми «+ Code / + Text» и счётчиком «0 cells», пока не придёт
+   * первый кадр по сокету. При пятистах одновременных заходах это секунды — и
+   * нажатие в эти секунды вставляло ячейку в пустой документ, которая после
+   * слияния появлялась у всей комнаты рядом с настоящими.
+   *
+   * «Не прочитано» и «пусто» — разные вещи, и различает их `synced` провайдера:
+   * сервер сказал, что документ у нас полный. Пустая тетрадь после `synced` —
+   * настоящая пустая тетрадь, и она рисуется как раньше.
+   */
+  let collabSynced = $state(session.provider.synced)
+  $effect(() => {
+    const onSync = (isSynced: boolean) => (collabSynced = isSynced)
+    session.provider.on('sync', onSync)
+    // Могло синхронизироваться до того, как эта тетрадь смонтировалась.
+    collabSynced = session.provider.synced
+    return () => session.provider.off('sync', onSync)
+  })
+  /*
+   * Пустая тетрадь без ответа сервера — но только пока ответа ЖДУТ. Оборванная
+   * связь — это уже всё, что мы узнаем: там человек работает офлайн, и скелет
+   * вместо тетради был бы вторым враньём вместо первого.
+   */
+  const cold = $derived(
+    ids.current.length === 0 && !collabSynced && (!session.hydrated || session.connected),
+  )
 
   /* ----------------------------------------------------------- viewport */
 
@@ -256,6 +293,33 @@
     return (key === 'Enter' || key === ' ') && element.closest('button, a, [role="button"]') !== null
   }
 
+  /**
+   * Запустить ячейку её собственными правилами.
+   *
+   * Ни одной проверки здесь нет намеренно: их все делает `CellView.run` — та же
+   * функция, что стоит за кнопкой на ячейке и за Cmd+Enter в редакторе, — и она
+   * же говорит слова отказа. Копия проверок в этом файле уже однажды разошлась
+   * с оригиналом и врала про открытую ячейку в лекции.
+   */
+  function runCell(cellId: string, step: boolean): void {
+    window.dispatchEvent(new CustomEvent('colloq:run-cell', { detail: { cellId, step } }))
+  }
+
+  /** Сменить вид ячейки — по правам НА НЕЁ, с замком, как у тулбара и сервера. */
+  function convertCell(cellId: string, to: CellType): void {
+    const found = findCell(session.doc, cellId)
+    if (!found) return
+    const open = isCellOpen(found.cell)
+    if (mayEditThisCell(may, open)) {
+      setCellType(session.doc, cellId, to)
+      return
+    }
+    // Те же слова, что у самой ячейки: запертая говорит про занятие, а не про
+    // поле в правилах (см. CellView · editWhy).
+    const shut = cellLockMatters(may) && !mayRunThisCell(may, open)
+    session.showError((shut ? LECTURE_CELL : may.editWhy) + '.')
+  }
+
   function onkeydown(event: KeyboardEvent) {
     if (!active) return
     if (event.defaultPrevented) return
@@ -280,60 +344,49 @@
       else session.undoManager.undo()
       return
     }
+    /*
+     * Запуск из командного режима — через саму ячейку, а не своими проверками.
+     *
+     * Здесь лежала копия проверок `CellView.run` — и она уже разошлась с
+     * оригиналом: тут спрашивали `may.run` (правило КОМНАТЫ), а ячейка и сервер
+     * — `mayRunThisCell` (правило ПЛЮС замок). На лекции преподаватель
+     * открывает ячейку: кнопка на ней живая, Cmd+Enter в редакторе работает, а
+     * Shift+Enter отсюда отвечал тостом про правило — про ячейку, которая
+     * открыта. И второе: на заметке отсюда уходил `run`, который сервер молча
+     * выбрасывает.
+     *
+     * Теперь решает ячейка: все проверки, все слова отказа и шаг — в одном
+     * месте (CellView · colloq:run-cell). Заодно отсюда работает и Cmd+Enter,
+     * который подвал тетради обещает в строке подсказки, а модификаторный
+     * гард ниже съедал целиком.
+     */
+    if (
+      event.key === 'Enter' &&
+      (event.metaKey || event.ctrlKey) &&
+      !event.altKey &&
+      !event.shiftKey
+    ) {
+      const { id: only } = selectionHere(session.selectedCellId, ids.current)
+      if (!only) return
+      event.preventDefault()
+      runCell(only, false)
+      return
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) return
 
     const list = ids.current
     if (list.length === 0) return
-    const current = session.selectedCellId
-    const at = current ? list.indexOf(current) : -1
+    /*
+     * Выделение общее на все тетради и при смене вкладки не сбрасывается:
+     * чужое считается пустым, иначе `d d` удаляла бы ячейку из другой
+     * тетради. См. command-mode.ts · selectionHere.
+     */
+    const { id: current, at } = selectionHere(session.selectedCellId, list)
 
     if (event.key === 'Enter' && event.shiftKey) {
       if (!current) return
       event.preventDefault()
-      /*
-       * In a room where only the teacher runs, this does nothing — and must
-       * therefore do nothing at all. It used to send the run, have it refused,
-       * and still step down the sheet and grow an empty cell at the end of the
-       * shared document: a keystroke that changed the notebook for everybody
-       * on behalf of a run that never happened.
-       */
-      // Вслух, а не молча: та же фраза, которой отвечает сервер. Отказ, о
-      // котором не сказали, читается как поломка, а не как решение
-      // преподавателя — и в тулбаре ячейки это уже исправлено.
-      //
-      // Из `may`, а не своими словами: здесь стоял литерал про правило, и
-      // после звонка он рассказывал про правило, которого никто не менял, —
-      // человек шёл искать преподавателя вместо того, чтобы узнать, что пара
-      // кончилась.
-      if (!mayRun) {
-        session.showError(may.runWhy + '.')
-        return
-      }
-      /*
-       * Те же две проверки, что делает CellView.run, и по той же причине: шаг
-       * и «дописать ячейку в конце листа» правят общий документ, поэтому им
-       * нельзя случаться от имени запуска, которого не было.
-       *
-       * Первая — про эту ячейку: сервер молча пропускает ту, что уже считается
-       * или стоит в очереди. Вторая — про очередь этого человека: при «по
-       * одной» вторая ячейка отвергается с этой самой фразой.
-       */
-      const state = findCell(session.doc, current)?.cell.get('state')
-      if (state === 'running' || state === 'queued') return
-      if (
-        rules.run === 'single' &&
-        !isHost &&
-        hasPendingRun(session.doc, session.me.id)
-      ) {
-        session.showError(ONE_AT_A_TIME)
-        return
-      }
-      session.send({ t: 'run', cellId: current })
-      // Run and move on, the same as inside the editor — but staying in command
-      // mode, because that is where the keystroke came from.
-      const next = list[at + 1]
-      if (next) select(next)
-      else void addAt(list.length, 'code')
+      runCell(current, true)
       return
     }
     /*
@@ -414,17 +467,22 @@
         event.preventDefault()
         void addAt(at < 0 ? list.length : at + 1, 'code')
         break
+      /*
+       * M и Y спрашивали `may.edit` — правило КОМНАТЫ, — а тулбар ячейки и
+       * сервер спрашивают `mayEditThisCell`, то есть правило плюс замок. На
+       * открытой ячейке лекции кнопка «Convert» была включена, а клавиша
+       * отвечала «Тетрадь принадлежит преподавателю». Слова отказа — оттуда же,
+       * откуда их берёт ячейка.
+       */
       case 'm':
         if (!current) return
         event.preventDefault()
-        if (!may.edit) session.showError(may.editWhy + '.')
-        else setCellType(session.doc, current, 'markdown')
+        convertCell(current, 'markdown')
         break
       case 'y':
         if (!current) return
         event.preventDefault()
-        if (!may.edit) session.showError(may.editWhy + '.')
-        else setCellType(session.doc, current, 'code')
+        convertCell(current, 'code')
         break
       case 'd': {
         if (!current) return
@@ -700,11 +758,11 @@
   }
   /*
    * One read per frame, not one per event. scrollWidth, clientWidth and
-   * scrollLeft each force a synchronous layout, and this bar is `sticky` with a
-   * `backdrop-blur` whose compositing the mask-image toggle changes — on the
-   * only device that ever sees the overflow state, a phone mid-touch-scroll,
-   * that was the frame budget being spent to answer the same question twenty
-   * times between two paints.
+   * scrollLeft each force a synchronous layout — on the only device that ever
+   * sees the overflow state, a phone mid-touch-scroll, that was the frame
+   * budget being spent to answer the same question twenty times between two
+   * paints. (The bar's ground is opaque, not blurred: see the note on its
+   * class list.)
    */
   let measureFrame = 0
   function scheduleRunBarMeasure(): void {
@@ -782,9 +840,22 @@
       class="pointer-events-none absolute right-0 top-1/2 h-px bg-line-soft opacity-0
              transition-opacity duration-[var(--speed-quick)] group-hover/add:opacity-100"
     ></div>
+    <!--
+      Прозрачное — значит не нажимается.
+
+      `opacity-0` убирает кнопки с глаз, но не из hit-testing: на планшете
+      наведения и нажатия приходят одним касанием, так что тап ровно по стыку
+      двух ячеек «проявлял» кнопку и тут же жал её — ячейка вставлялась всей
+      комнате (или, в лекции, прилетал тост-отказ) без единого видимого
+      предвестника. `pointer-events` снимается тем же условием, каким
+      возвращается видимость, так что нажать можно ровно то, что видно;
+      клавиатуре это не мешает — фокус ходит и по элементу без указателя, а
+      `focus-within` возвращает и то, и другое.
+    -->
     <div
-      class="relative flex items-center gap-1 opacity-0 transition-opacity
-             duration-[var(--speed-quick)] focus-within:opacity-100 group-hover/add:opacity-100"
+      class="pointer-events-none relative flex items-center gap-1 opacity-0 transition-opacity
+             duration-[var(--speed-quick)] focus-within:pointer-events-auto focus-within:opacity-100
+             group-hover/add:pointer-events-auto group-hover/add:opacity-100"
     >
       <button type="button" class={ADD} title="Insert code cell" onclick={() => addAt(index, 'code')}>
         <Icon name="plus" size={11} />
@@ -839,8 +910,18 @@
     bind:this={runBar}
     onscroll={scheduleRunBarMeasure}
     class={cn(
+      /*
+       * Непрозрачная подложка, а не размытая.
+       *
+       * Полоса липкая и висит над тетрадью на две сотни ячеек, а
+       * `backdrop-blur` заставляет браузер пересчитывать размытие подложки на
+       * КАЖДЫЙ кадр прокрутки — на встроенной графике студенческого ноутбука
+       * это дорогой слой на весь сеанс. Смотрят на полосу ради кнопок, а не
+       * ради того, что под ней; `contain: paint` рядом отрезает её рисование
+       * от остальной страницы.
+       */
       `sticky top-0 z-30 mb-4 flex h-10 items-center overflow-x-auto overflow-y-hidden
-       border-b border-line bg-canvas/95 backdrop-blur [scrollbar-width:none]
+       border-b border-line bg-canvas [contain:paint] [scrollbar-width:none]
        [&::-webkit-scrollbar]:hidden`,
       // A phone fits Run all, Interrupt, Restart and Clear and no more, and the
       // bar cut off flush with the screen edge: the terminal was still there,
@@ -1005,16 +1086,38 @@
       <!-- The least load-bearing thing in the strip, and the first to go when
            there is not room for all of it: how many cells there are is visible
            by scrolling the notebook. -->
-      <span class="hidden pl-0.5 pr-5 font-mono text-2xs text-muted xl:inline">
-        {ids.current.length}
-        {ids.current.length === 1 ? 'cell' : 'cells'}
-      </span>
+      <!-- Пока тетрадь не прочитана, счётчика нет вовсе: «0 cells» на холодном
+           кадре — это не число, это неправда. -->
+      {#if !cold}
+        <span class="hidden pl-0.5 pr-5 font-mono text-2xs text-muted xl:inline">
+          {ids.current.length}
+          {ids.current.length === 1 ? 'cell' : 'cells'}
+        </span>
+      {/if}
     </div>
   </div>
   <!-- 24px, the artboard's: its cells are 822 wide in an 868 column, while the
        run bar above them is the full 868 and touches both panels. -->
   <div class="px-6">
 
+  {#if cold}
+    <!--
+      Три серые ячейки вместо пустой тетради с живыми кнопками.
+
+      Не «загрузка…» и не крутилка: место, которое сейчас займут настоящие
+      ячейки, — тот же приём, что у резерва под вывод. Пульс общий на все три,
+      чтобы это читалось как одно ожидание, а не как три предмета.
+    -->
+    <div class="animate-pulse" aria-hidden="true">
+      {#each [180, 96, 132] as height, index (index)}
+        <div class="flex gap-4 pb-4">
+          <div class={cn('h-7 shrink-0', gutter === '4.5rem' ? 'w-14' : 'w-8')}></div>
+          <div class="min-w-0 flex-1 border-l-4 border-line bg-surface/50" style="height: {height}px"></div>
+        </div>
+      {/each}
+    </div>
+    <p class="pl-1 text-2xs text-muted" role="status">Тетрадь загружается…</p>
+  {:else}
   {#each ids.current as id, index (id)}
     {@render adder(index)}
     <div use:slot={id}>
@@ -1063,5 +1166,6 @@
       A / B to insert · ⇧↵ run &amp; next · {modKey}↵ run in place
     </span>
   </div>
+  {/if}
   </div>
 </div>

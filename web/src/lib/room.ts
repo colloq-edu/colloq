@@ -15,6 +15,7 @@
  * returns is a number people read off the screen and believe.
  */
 import type { AwarenessUser } from '@shared/protocol'
+import { plural } from './plural'
 
 export interface RoomPeer {
   clientId: number
@@ -98,6 +99,11 @@ function cellNumber(view: RoomView, id: string | null | undefined): string | nul
  * Порядок — по тому, что что перебивает. Запуск важнее места курсора: пока
  * ячейка считается, человек занят именно ею. «N вкладок» стоит говорить только
  * когда ни в одной из них ничего не происходит, и вести туда, понятно, некуда.
+ *
+ * Фразы по-русски, потому что рисуются они второй строкой человека в панели —
+ * рядом с «Преподаватель · вы» и подсказкой «К Нине в терминал». Панель
+ * переведена целиком, и одна английская строка посреди неё читается как чужая
+ * заплатка, а не как выбор.
  */
 export function whereabouts(person: Person, view: RoomView): Whereabouts {
   const runningNo = cellNumber(view, view.runningCellId)
@@ -112,20 +118,23 @@ export function whereabouts(person: Person, view: RoomView): Whereabouts {
     (view.runBy === person.user.name || person.user.activeCellId === view.runningCellId)
   if (runs && view.runningCellId) {
     return {
-      line: `running cell ${runningNo}`,
+      line: `запускает ячейку ${runningNo}`,
       place: { where: 'cell', cellId: view.runningCellId },
     }
   }
 
-  if (person.user.inTerminal) return { line: 'in the terminal', place: { where: 'terminal' } }
-  if (person.user.composing) return { line: 'asking the oracle', place: { where: 'oracle' } }
+  if (person.user.inTerminal) return { line: 'в терминале', place: { where: 'terminal' } }
+  if (person.user.composing) return { line: 'спрашивает оракула', place: { where: 'oracle' } }
 
   const at = person.user.activeCellId
   const atNo = cellNumber(view, at)
   // Ячейку могли удалить с тех пор, как человек в ней стоял: вести к тому,
   // чего нет, хуже, чем не вести никуда — и говорить про это тоже нечего.
-  if (at && atNo) return { line: `editing cell ${atNo}`, place: { where: 'cell', cellId: at } }
+  if (at && atNo) return { line: `правит ячейку ${atNo}`, place: { where: 'cell', cellId: at } }
 
-  if (person.tabs > 1) return { line: `${person.tabs} tabs open`, place: null }
+  if (person.tabs > 1) {
+    const word = plural(person.tabs, 'вкладка', 'вкладки', 'вкладок')
+    return { line: `${person.tabs} ${word}`, place: null }
+  }
   return { line: null, place: null }
 }

@@ -21,6 +21,7 @@
  * «идёт, но пока молчит»: в первом случае экран остаётся где стоял и говорит
  * почему.
  */
+import { mayBeFollowed } from '@shared/rules'
 import type { Peer } from './session.svelte'
 
 export interface Lead {
@@ -39,11 +40,19 @@ export interface Lead {
  * нельзя, даже если пришёл другой преподаватель с меньшим clientId. Иначе
  * экран у комнаты начнёт метаться между двумя.
  */
-export function leaderFor(peers: Peer[], file: string | null, sticky: number | null): Lead | null {
+export function leaderFor(
+  peers: readonly Peer[],
+  file: string | null,
+  sticky: number | null,
+): Lead | null {
   if (!file) return null
   const able = peers
     .filter((peer) => !peer.isSelf)
-    .filter((peer) => peer.user.role === 'host')
+    // Правило «за кем идут» — одно на обе стороны и лежит в shared: тот же
+    // предикат решает у читалки, публиковать ли своё место вообще. Своя копия
+    // здесь однажды разъехалась бы молча — послабление на той стороне оставило
+    // бы ведущего без публикуемой позиции.
+    .filter((peer) => mayBeFollowed(peer.user.role))
     .filter((peer) => peer.user.viewing?.file === file)
   if (able.length === 0) return null
 

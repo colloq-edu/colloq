@@ -375,15 +375,39 @@ export type CellLock = 'closed' | 'open' | 'council'
  *   studentRun       — студент может запустить свою попытку сам (в очередь, по
  *                      одному). По умолчанию ВЫКЛ: ядро в комнате одно, и
  *                      пятьсот запусков — это пятьсот мест в одной очереди.
- *   namesOnProjector — имена авторов видны на проекторе, когда преподаватель
- *                      показывает попытку классу. По умолчанию ВКЛ.
+ *   namesOnProjector — НИКЕМ НЕ ЧИТАЕТСЯ. Задумывалось как «имена авторов
+ *                      видны на проекторе», но автора не называет ни проекторная
+ *                      полоса, ни `council:show`, ни счётчик; ручка из меню
+ *                      замка убрана (CellView · комментарий на её месте), а поле
+ *                      осталось ради старых документов и просто хранится. По
+ *                      умолчанию ВКЛ. Вернуть ручку — только вместе с
+ *                      исполнением: сервером, который называет автора показанной
+ *                      попытки, и именем в проекторной полосе.
  */
 export interface CouncilSettings {
   studentRun: boolean
+  /** Хранится, но не читается — см. заметку выше. */
   namesOnProjector: boolean
 }
 
 export const DEFAULT_COUNCIL: CouncilSettings = { studentRun: false, namesOnProjector: true }
+
+/**
+ * Что консилиум обещает про изоляцию попыток — и чего не обещает.
+ *
+ * Ядро в комнате одно: попытка видит `df`, `np` и всё, что преподаватель
+ * подготовил в общей ячейке, — иначе консилиум был бы бесполезен. Имена,
+ * которые завела сама попытка, сервер снимает сразу после неё (kernel/index.ts ·
+ * COUNCIL_SNAPSHOT_NAMES), так что `secret = 42` у одного больше не отвечает на
+ * `print(secret)` у следующего. А вот изменения уже существующих объектов —
+ * `df.drop(...)`, запись в файл — общие, как и у обычной ячейки, и отменить их
+ * некому. Одна строка на всех местах, где об этом говорят: подсказка ручки
+ * studentRun, полоса консилиума, README.
+ */
+export const COUNCIL_SHARED_KERNEL_NOTE =
+  'Попытки считаются в общем ядре комнаты, по очереди. Переменные, заведённые ' +
+  'попыткой, после неё снимаются, а изменённые ею данные — общие: не проверяйте ' +
+  'этим то, что должно быть независимым.'
 
 export type YCell = Y.Map<any>
 export type YOutput = Y.Map<any>
@@ -810,6 +834,61 @@ function readSteps(value: unknown): AgentStep[] {
   return out
 }
 
+/* ------------------------------------------------- перечитывание по кадру */
+
+/**
+ * Какие строки массива задел этот кадр — или `null`, если задет сам массив.
+ *
+ * `observeDeep` приносит события с путём от корня наблюдения: у события самого
+ * массива путь пуст (вставили или удалили строку — порядок сменился, и номера
+ * поехали), у события карточки путь `[номер]`, у текста внутри неё —
+ * `[номер, 'answer']`. Первого элемента хватает, чтобы назвать строку.
+ */
+export function changedRows(events: readonly Y.YEvent<any>[]): Set<number> | null {
+  const rows = new Set<number>()
+  for (const event of events) {
+    const at = event.path[0]
+    if (typeof at !== 'number') return null
+    rows.add(at)
+  }
+  return rows
+}
+
+/**
+ * Перечитать только то, что изменилось, — и сохранить прежние снимки остальных.
+ *
+ * Лента оракула и расшифровка терминала растут дописыванием в Y.Text ВНУТРИ
+ * строки: на каждый кусочек ответа приходит кадр, а `array.map(read)` на нём
+ * читает весь тред целиком — `toString()` каждого ответа, каждого рассуждения
+ * и каждого шага. Это O(длины треда) на токен, у каждого, у кого открыта
+ * панель, и на длинном ответе в сотню ходов оно и есть главная работа вкладки.
+ *
+ * Здесь тот же приём, что у `settle` в yreactive: неизменившиеся снимки
+ * отдаются ТЕМИ ЖЕ объектами, поэтому производные значения строки (диффы,
+ * разбор markdown, роль автора) не пересчитываются, а `{#each}` не трогает их
+ * узлы. Когда трогать нечего — возвращается тот же массив, чтобы вызывающий,
+ * сравнивающий по ссылке, не писал новое значение на каждый кадр.
+ *
+ * `events === null` (первое чтение) и всякое сомнение — полный перечит:
+ * ошибиться в сторону лишней работы можно, в сторону устаревшего снимка нет.
+ */
+export function rereadRows<Row extends Y.Map<any>, Snapshot>(
+  previous: readonly Snapshot[],
+  array: Y.Array<Row>,
+  read: (row: Row) => Snapshot,
+  events: readonly Y.YEvent<any>[] | null,
+): Snapshot[] {
+  const rows = events === null ? null : changedRows(events)
+  if (rows === null || previous.length !== array.length) return array.map(read)
+  if (rows.size === 0) return previous as Snapshot[]
+  const next = previous.slice()
+  for (const at of rows) {
+    if (at < 0 || at >= array.length) return array.map(read)
+    next[at] = read(array.get(at))
+  }
+  return next
+}
+
 export function findChatEntry(doc: Y.Doc, id: string): YChatEntry | null {
   const chat = getChat(doc)
   for (let i = 0; i < chat.length; i++) {
@@ -1012,6 +1091,17 @@ export function readCouncilSettings(raw: unknown): CouncilSettings {
 export function councilSettingsOf(cell: YCell): CouncilSettings | null {
   return isCellCouncil(cell) ? readCouncilSettings(cell.get('council')) : null
 }
+
+/**
+ * Сколько знаков помещается в попытку консилиума.
+ *
+ * Попытка — это ячейка, а не файл: сотни строк в ней не бывает. Потолок здесь,
+ * а не только на сервере, ровно по доводу `allows`: отказ сервера и счётчик
+ * под листом должны говорить одно и то же. Клиент, не знающий числа, шлёт
+ * снимок на каждую паузу в наборе и получает отказ на каждую — тост раз в
+ * секунду вместо одной строки «9 012 из 8 000».
+ */
+export const MAX_ATTEMPT_CHARS = 8000
 
 /**
  * Ключ группы одинаковых решений: текст попытки без пробелов, пустых строк и
@@ -1234,6 +1324,14 @@ export function readNotebook(doc: Y.Doc): CellSnapshot[] {
   return getCells(doc).map(readCell)
 }
 
+/** Что пришлось вернуть в покой — по видам работы, а не одним числом. */
+export interface StaleWork {
+  /** Ячейки, снятые с «работает» и «в очереди». */
+  cells: number
+  /** Оборванные посреди ответа ходы оракула. */
+  turns: number
+}
+
 /**
  * Execution belonging to a process that is gone.
  *
@@ -1248,15 +1346,19 @@ export function readNotebook(doc: Y.Doc): CellSnapshot[] {
  * three lines before the crash really did print them, and deleting them would
  * hide the only evidence of how far it got.
  *
- * Returns how many cells had to be put back to rest, so the caller can decide
- * whether the room deserves an explanation.
+ * Считает ДВА числа, а не одно, и это не педантизм. Вызывающий пишет по нему в
+ * журнал ядра строку про ЯЧЕЙКИ («were put back to rest»), а под одним
+ * счётчиком туда попадал и оборванный ход оракула: перезапуск посреди ответа,
+ * ни одной считавшейся ячейки — и комната читает, что её работу отменили.
+ * Тот же вид лжи, от которого этот файл отдельно бережёт `startedAt` ниже.
  */
-export function clearStaleExecution(doc: Y.Doc): number {
+export function clearStaleWork(doc: Y.Doc): StaleWork {
   const meta = getMeta(doc)
   // По всем тетрадям, а не по одной: очередь у комнаты общая, и ячейка,
   // застрявшая в «работает», может стоять в любой из открытых.
   const cells = allCellArrays(doc).flatMap((array) => array.toArray())
   let cleared = 0
+  let turns = 0
 
   doc.transact(() => {
     // The queue is emptied but not counted: every id in it belongs to a cell
@@ -1303,6 +1405,9 @@ export function clearStaleExecution(doc: Y.Doc): number {
      * it. Without this the thread kept a "thinking" spinner turning for the
      * rest of the seminar — and, because the newest turn is the one the panel
      * follows, it turned at the bottom of everybody's screen.
+     *
+     * Считается отдельно от ячеек: ход оракула уже сказал о себе сам — прямо в
+     * треде, словами, — и приписывать его к строке про ячейки незачем.
      */
     for (const entry of getChat(doc)) {
       if (entry.get('state') !== 'streaming') continue
@@ -1313,11 +1418,22 @@ export function clearStaleExecution(doc: Y.Doc): number {
         text?.insert(text.length, 'The answer stopped when the server restarted.')
       }
       entry.set('state', 'error' as ChatState)
-      cleared++
+      turns++
     }
   }, 'init')
 
-  return cleared
+  return { cells: cleared, turns }
+}
+
+/**
+ * То же самое, одним числом — сколько ЯЧЕЕК вернулось в покой.
+ *
+ * Имя, под которым это звали всегда, и звать его дальше правильно там, где
+ * решают, объяснять ли комнате строкой про ячейки. Оборванные ходы оракула
+ * сюда не входят намеренно: за подробностями — `clearStaleWork`.
+ */
+export function clearStaleExecution(doc: Y.Doc): number {
+  return clearStaleWork(doc).cells
 }
 
 /**

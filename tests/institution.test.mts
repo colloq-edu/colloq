@@ -15,7 +15,6 @@ import './_env.mts'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import express from 'express'
 
 /**
  * Длиннее потолка — иначе обрезать нечего.
@@ -32,7 +31,9 @@ process.env.INSTITUTION = LONG
 
 const { config } = await import('../server/src/config.js')
 const { createSession, getSession } = await import('../server/src/db.js')
-const { sessionRoutes } = await import('../server/src/routes/sessions.js')
+// Приложение целиком (server/src/app.ts): порядок middleware у него тот же,
+// что на паре, а собранный рядом свой — только похожий.
+const { app } = await import('../server/src/app.js')
 
 /* ------------------------------------------------------------------ потолок */
 
@@ -61,9 +62,6 @@ test('и новая комната, и прочитанная из базы на
   assert.equal(getSession(id)?.institution, config.institution)
 })
 
-const app = express()
-app.use(express.json())
-app.use(sessionRoutes())
 let base = ''
 let server: http.Server
 

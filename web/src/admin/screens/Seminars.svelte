@@ -5,6 +5,7 @@
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
+  import { people, ruleRefusal, runningLine } from '@/admin/panel'
   import { seminarLink } from '@/lib/seminar-link'
   import { cn } from '@/lib/utils'
   import { LIMITS, type AdminEnvironment, type AdminSeminar, type ImportPreview } from '@shared/admin'
@@ -64,7 +65,7 @@
       // Перечитываем список: у строки поменялось состояние публикации.
       local(await adminApi.listSeminars())
     } catch (cause: unknown) {
-      rowError = { id: seminar.id, message: `Не получилось — ${explain(cause)}` }
+      rowError = { id: seminar.id, message: `That did not work — ${explain(cause)}` }
     }
   }
 
@@ -73,7 +74,17 @@
 
   async function copyPublished(seminar: AdminSeminar): Promise<void> {
     if (!seminar.publication) return
-    await copyText(`${location.origin}/p/${addressOf(seminar.publication)}`)
+    const link = `${location.origin}/p/${addressOf(seminar.publication)}`
+    try {
+      await copyText(link)
+    } catch {
+      // Как и у ссылки на комнату: буфер закрыт на незащищённом источнике —
+      // обычный способ держать инстанс кафедры. Ссылка и есть смысл нажатия,
+      // поэтому она уходит на экран, а не в необработанный промис.
+      rowError = { id: seminar.id, message: `The browser blocked the clipboard. The link is ${link}` }
+      return
+    }
+    if (rowError?.id === seminar.id) rowError = null
     copiedId = seminar.id
     setTimeout(() => (copiedId = copiedId === seminar.id ? null : copiedId), 1600)
   }
@@ -292,31 +303,28 @@
     return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}`
   }
 
+  const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
+
   /**
-   * How long the room has been going. createdAt is the only clock the contract
-   * carries — a live seminar is one somebody made for the class they are in, so
-   * "created" and "started" are the same minute in every case but a stale room.
+   * Nobody can act on a dead cookie. Hand it to the shell, which swaps the
+   * whole panel for the sign-in screen rather than arguing in a red line.
+   *
+   * И с причиной: печенье сюда доехало — его отвергли. Без неё экран входа
+   * рассказывал про настройки печенья тому, кому ротировали ссылку.
+   *
+   * Живёт отдельно от `explain()`, потому что зовут это оба перевода отказа —
+   * английский для строк таблицы и русский для окна правил, — а смена экрана
+   * от языка не зависит.
    */
-  function startedAgo(from: number, at: number): string {
-    const minutes = Math.max(0, Math.round((at - from) / 60_000))
-    if (minutes < 1) return 'just now'
-    if (minutes < 60) return `${minutes} min ago`
-    const hours = Math.floor(minutes / 60)
-    if (hours < 24) return `${hours} h ago`
-    const days = Math.floor(hours / 24)
-    return days === 1 ? 'yesterday' : `${days} days ago`
+  function noteDeadCookie(cause: unknown): void {
+    if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') {
+      void adminAuth.refresh('revoked')
+    }
   }
 
-  const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
-  const people = (n: number): string => (n === 1 ? '1 person' : `${n} people`)
-
   function explain(cause: unknown): string {
-    if (cause instanceof AdminApiError) {
-      // Nobody can act on a dead cookie. Hand it to the shell, which swaps the
-      // whole panel for the sign-in screen rather than arguing in a red line.
-      if (cause.reason === 'unauthenticated') void adminAuth.refresh()
-      return cause.message
-    }
+    noteDeadCookie(cause)
+    if (cause instanceof AdminApiError) return cause.message
     return cause instanceof Error ? cause.message : 'The server did not respond'
   }
 
@@ -558,28 +566,41 @@
     rowError = null
   }
 
+  /**
+   * Чужая комната, и в ней прямо сейчас люди.
+   *
+   * Один вопрос на три места: переименование, звонок и диалог правил меняют
+   * для одной и той же чужой аудитории то, что видно ей мгновенно. Спрашиваем
+   * только когда сходятся оба условия — правку своей опечатки это не трогает.
+   */
+  function othersLive(seminar: AdminSeminar): boolean {
+    const mine = !seminar.createdBy || seminar.createdBy === me?.name
+    return !mine && seminar.liveCount > 0
+  }
+
+  /** «There are 12 people in “ML week 3” right now, and Мария set it up». */
+  function crowdIn(seminar: AdminSeminar): string {
+    const crowd = seminar.liveCount === 1 ? 'is 1 person' : `are ${seminar.liveCount} people`
+    return `There ${crowd} in “${seminar.name}” right now, and ${seminar.createdBy} set it up`
+  }
+
   async function commitRename(seminar: AdminSeminar): Promise<void> {
     const name = renameValue.trim()
     renamingId = null
     if (!name || name === seminar.name) return
 
     /*
-     * Чужую живую комнату не переименовывают молча.
+     * Чужую живую комнату не трогают молча.
      *
      * Имя семинара стоит в шапке у всех, кто сейчас внутри, и меняется у них
      * мгновенно: посреди пары заголовок над тетрадью вдруг становится другим.
      * Для своей комнаты это ожидаемо — ты и переименовываешь. Для чужой, где
      * идёт занятие, стоит спросить.
-     *
-     * Спрашиваем только когда сходятся оба условия: в комнате есть люди и
-     * завёл её кто-то другой. Правку своей опечатки это не трогает.
      */
-    const mine = !seminar.createdBy || seminar.createdBy === me?.name
-    if (!mine && seminar.liveCount > 0) {
-      const crowd = seminar.liveCount === 1 ? 'is 1 person' : `are ${seminar.liveCount} people`
+    if (othersLive(seminar)) {
       const ok = window.confirm(
-        `There ${crowd} in “${seminar.name}” right now, and ${seminar.createdBy} set it up. ` +
-          `The new name appears in their header immediately. Rename it to “${name}”?`,
+        `${crowdIn(seminar)}. The new name appears in their header immediately. ` +
+          `Rename it to “${name}”?`,
       )
       if (!ok) return
     }
@@ -628,7 +649,17 @@
       replace(updated)
       ruling = updated
     } catch (cause: unknown) {
-      rulesError = `Правило не сохранилось — ${explain(cause)}`
+      /*
+       * Причина — по-русски и без хвоста сервера.
+       *
+       * Здесь стоял общий `explain()`, а он английский на всю панель: в русском
+       * подвале этого окна выходило «Правило не сохранилось — The server did
+       * not respond» — половина фразы на языке, которого в окне больше нигде
+       * нет (admin-17). Слова — в panel.ts, одним списком и без браузера;
+       * отвергнутое печенье при этом по-прежнему уводит на экран входа.
+       */
+      noteDeadCookie(cause)
+      rulesError = ruleRefusal(cause instanceof AdminApiError ? cause : null)
     } finally {
       rulesBusy = false
     }
@@ -647,6 +678,24 @@
    * стоит того же нажатия, которое человек и собирался сделать.
    */
   async function finish(seminar: AdminSeminar, finished: boolean): Promise<void> {
+    /*
+     * И звонок — тем более.
+     *
+     * Переименование чужой живой комнаты спрашивает, а конец занятия — один
+     * клик в том же меню, соседний с ним, — не спрашивал ничего, хотя меняет
+     * для тех же людей несравнимо больше: правила становятся преподавательскими
+     * у всех сразу, класс посреди пары теряет правку и запуск.
+     */
+    if (othersLive(seminar)) {
+      const ok = window.confirm(
+        finished
+          ? `${crowdIn(seminar)}. Ending the class takes editing and running away from all of ` +
+            `them at once. End it?`
+          : `${crowdIn(seminar)}. Reopening the class hands editing and running back to all of ` +
+            `them at once. Reopen it?`,
+      )
+      if (!ok) return
+    }
     const before = seminar.finishedAt
     // Прошлый отказ этой строки — про прошлое нажатие. Оставить его под
     // перекрашенной пометкой значит показать рядом две противоположные правды.
@@ -659,8 +708,8 @@
       rowError = {
         id: seminar.id,
         message: finished
-          ? `Занятие не закончилось — ${explain(cause)}`
-          : `Занятие не открылось обратно — ${explain(cause)}`,
+          ? `The class did not end — ${explain(cause)}`
+          : `The class did not reopen — ${explain(cause)}`,
       }
     }
   }
@@ -803,8 +852,18 @@
         this line is counting. The sentence is the honest version of the stack
         until the contract carries the people — see AvatarStack.
       -->
-      <p class="shrink-0 text-ui text-muted" title={new Date(seminar.createdAt).toLocaleString()}>
-        {people(seminar.liveCount)} in the room · started {startedAgo(seminar.createdAt, now)}
+      <!--
+        Двое часов, и называются они разными словами (admin/panel.ts ·
+        runningLine): «started» — только когда сервер сказал, с какого момента
+        в комнате кто-то есть. Комнату заводят за неделю до пары, и «started 6
+        days ago» под надписью «Running now» было неправдой в самом заметном
+        месте панели.
+      -->
+      <p
+        class="shrink-0 text-ui text-muted"
+        title="Created {new Date(seminar.createdAt).toLocaleString()}"
+      >
+        {runningLine(seminar, now)}
       </p>
 
       <div class="ml-auto flex shrink-0 items-center gap-2.5">
@@ -988,6 +1047,30 @@
                     <span>·</span>
                     <span>outputs not imported</span>
                   </div>
+                  <!--
+                    И то, что не приедет. Отдельной строкой, а не ещё одной
+                    плашкой в общем ряду: перечисленные рядом с привезёнными,
+                    эти имена читались бы как «тоже едут». Сумма ограничена так
+                    же, как у загрузки через панель (server/src/routes/admin-import.ts
+                    · withinRoomBudget), и узнать об остатке после импорта поздно
+                    — файлы к тому моменту уже не приехали в созданную комнату.
+                  -->
+                  {#if preview.skipped.length > 0}
+                    <div class="flex flex-wrap items-center gap-2 text-2xs text-warning">
+                      <span>
+                        {preview.skipped.length === 1
+                          ? '1 file will not fit the room and stays behind:'
+                          : `${preview.skipped.length} files will not fit the room and stay behind:`}
+                      </span>
+                      {#each preview.skipped as name (name)}
+                        <span
+                          class="bg-surface px-2 py-0.5 font-mono text-micro text-muted line-through"
+                        >
+                          {name}
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
               </form>
             {:else}
@@ -1087,6 +1170,19 @@
                 )}
               >
                 {pathOf(seminar)}
+                <!--
+                  Три входа, и ни один не лишний.
+
+                  `hover:` теперь действует только там, где есть настоящий
+                  курсор (tailwind.config.js · hoverOnlyWhenSupported), — а
+                  значок «скопировать» был у этой строки ЕДИНСТВЕННОЙ подсказкой
+                  о том, что она нажимается. На iPad, откуда панель и открывают
+                  чаще всего, он перестал появляться вовсе: тап копировал, но
+                  узнать об этом было неоткуда. Поэтому там, где наведения не
+                  бывает, значок стоит всегда; клавиатуре его показывает фокус
+                  внутри строки — тот же приём, что в дереве файлов
+                  (FilesPanel.svelte · group-focus-within).
+                -->
                 <Icon
                   name={copiedId === seminar.id ? 'check' : 'copy'}
                   size={12}
@@ -1094,7 +1190,8 @@
                     'transition-opacity duration-100',
                     copiedId === seminar.id || fresh
                       ? 'opacity-100'
-                      : 'opacity-0 group-hover:opacity-100',
+                      : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ' +
+                        '[@media(hover:none)]:opacity-100',
                   )}
                 />
               </button>
@@ -1132,11 +1229,10 @@
                   target="_blank"
                   rel="noreferrer"
                 >
-                  · опубликован · {seminar.publication.steps}
-                  {plural(seminar.publication.steps, 'шаг', 'шага', 'шагов')}
+                  · published · {count(seminar.publication.steps, 'step')}
                 </a>
               {:else if seminar.publication}
-                <span class="whitespace-nowrap text-2xs text-muted">· страница снята</span>
+                <span class="whitespace-nowrap text-2xs text-muted">· page taken down</span>
               {/if}
             </div>
 
@@ -1188,14 +1284,14 @@
                 -->
                 <span
                   class="chip h-[22px] gap-1.5 bg-warning/[0.14] px-2 text-micro font-bold uppercase tracking-caps text-warning"
-                  title="Занятие закончено {new Date(
+                  title="Class ended {new Date(
                     seminar.finishedAt ?? 0,
-                  ).toLocaleString()} — в комнате теперь только читают"
+                  ).toLocaleString()} — the room is read-only now"
                 >
                   {#if seminar.liveCount > 0}
                     <span
                       class="h-[5px] w-[5px] rounded-full bg-accent"
-                      title="{people(seminar.liveCount)} в комнате сейчас"
+                      title="{people(seminar.liveCount)} in the room right now"
                     ></span>
                   {/if}
                   Finished
@@ -1274,7 +1370,7 @@
                     class="{ITEM} text-ink hover:bg-raised"
                     onclick={() => void finish(seminar, !seminar.finishedAt)}
                   >
-                    {seminar.finishedAt ? 'Продолжить занятие' : 'Закончить занятие'}
+                    {seminar.finishedAt ? 'Reopen the class' : 'End the class'}
                   </button>
                   <div class="my-1 border-t border-line-soft"></div>
                   <button
@@ -1283,7 +1379,7 @@
                     class="{ITEM} text-ink hover:bg-raised"
                     onclick={() => onpublish?.(seminar.id)}
                   >
-                    {seminar.publication ? 'Опубликовать снова…' : 'Опубликовать…'}
+                    {seminar.publication ? 'Publish again…' : 'Publish…'}
                   </button>
                   {#if seminar.publication?.state === 'published'}
                     <button
@@ -1292,7 +1388,7 @@
                       class="{ITEM} text-ink hover:bg-raised"
                       onclick={() => void copyPublished(seminar)}
                     >
-                      Копировать публичную ссылку
+                      Copy public link
                     </button>
                     <button
                       role="menuitem"
@@ -1300,7 +1396,7 @@
                       class="{ITEM} text-ink hover:bg-raised"
                       onclick={() => void withdraw(seminar, true)}
                     >
-                      Снять страницу
+                      Take the page down
                     </button>
                   {:else if seminar.publication}
                     <button
@@ -1309,7 +1405,7 @@
                       class="{ITEM} text-ink hover:bg-raised"
                       onclick={() => void withdraw(seminar, false)}
                     >
-                      Вернуть страницу
+                      Put the page back
                     </button>
                   {/if}
                   <button
@@ -1379,8 +1475,20 @@
 </AdminPage>
 
 {#if ruling}
-  <!-- Тот же список и теми же словами, что в самой комнате: настройка, которую
-       в двух местах называют по-разному, — это две настройки. -->
+  <!--
+    Тот же список и теми же словами, что в самой комнате: настройка, которую в
+    двух местах называют по-разному, — это две настройки.
+
+    И потому это окно РУССКОЕ ЦЕЛИКОМ — заголовок, предупреждение, причина
+    отказа в подвале (panel.ts · ruleRefusal) и «Готово» вокруг строк, — хотя
+    меню, из которого его открывают, английское, как и весь экран. Решение
+    записано один раз, в шапке компонента этих строк
+    (components/RoomRulesRows.svelte): подписи правил живут в языке КОМНАТЫ,
+    потому что тот же компонент рисует пульт правил внутри неё, а комната
+    русская вся. Перевод одной рамки вокруг русских строк сделал бы двуязычным
+    само окно — ровно то, что находка admin-17 и называет дефектом в меню.
+    Двуязычие меню чинилось там, где оно было: в самом меню строки.
+  -->
   <div
     role="dialog"
     aria-modal="true"
@@ -1388,11 +1496,26 @@
     class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
   >
     <div class="dialog-card flex max-h-full w-full max-w-[560px] flex-col border border-line bg-canvas shadow-pop">
-      <div class="flex items-baseline gap-3 border-b border-line px-5 py-3.5">
-        <h2 id="seminar-rules-title" class="min-w-0 truncate text-title font-semibold text-ink">
-          {ruling.name}
-        </h2>
-        <span class="shrink-0 text-2xs text-muted">что можно делать в комнате</span>
+      <div class="flex flex-col gap-1.5 border-b border-line px-5 py-3.5">
+        <div class="flex items-baseline gap-3">
+          <h2 id="seminar-rules-title" class="min-w-0 truncate text-title font-semibold text-ink">
+            {ruling.name}
+          </h2>
+          <span class="shrink-0 text-2xs text-muted">что можно делать в комнате</span>
+        </div>
+        <!--
+          Чужая комната, и в ней идёт пара. Подтверждения здесь нет намеренно:
+          переключателей девять, и спрашивать на каждый — значит научить
+          прощёлкивать вопрос. Но знать, что каждое переключение прилетает
+          двумстам людям посреди чужого занятия, надо ДО первого щелчка.
+        -->
+        {#if othersLive(ruling)}
+          <p class="text-2xs leading-snug text-warning">
+            В комнате {ruling.liveCount}
+            {plural(ruling.liveCount, 'человек', 'человека', 'человек')}, завёл {ruling.createdBy}
+            — каждое переключение действует у них сразу.
+          </p>
+        {/if}
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5">
         <RoomRulesRows

@@ -1,6 +1,6 @@
 <script lang="ts" module>
   import { api } from '@/lib/api'
-  import { actionAllowedIn } from '@shared/protocol'
+  import { actionAllowedIn, councilLetters } from '@shared/protocol'
 
   /**
    * "Fix with AI" is drawn only where there is an oracle that will take a
@@ -46,7 +46,9 @@
   import { Awareness } from 'y-protocols/awareness'
   import {
     cellSource,
+    COUNCIL_SHARED_KERNEL_NOTE,
     DEFAULT_COUNCIL,
+    MAX_ATTEMPT_CHARS,
     patchIsStale,
     replaceText,
     type CellLock,
@@ -65,7 +67,16 @@
     mayWriteThisCouncil,
     permitsIn,
   } from '@/lib/may'
-  import { countLine, queueWords, ranByLine, sheetSeed, watchCellLock } from '@/lib/council.svelte'
+  import {
+    attemptCounter,
+    attemptInSync,
+    attemptTooLong,
+    countLine,
+    queueWords,
+    ranByLine,
+    sheetSeed,
+    watchCellLock,
+  } from '@/lib/council.svelte'
   import { clock } from '@/lib/history'
   import CouncilStack from '@/components/council/CouncilStack.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
@@ -103,6 +114,7 @@
     unnumberedResult,
     type Held,
   } from '@/lib/output-seat'
+  import { emptyCellIsRemovable } from './cell-keys'
   import CellOutputs from './CellOutputs.svelte'
   import CodeEditor from './CodeEditor.svelte'
   import Markdown from './Markdown.svelte'
@@ -204,6 +216,15 @@
   /** Тело ячейки — свой редактор, а не общий: студент в открытом консилиуме. */
   const ownSheet = $derived(inCouncil && !leads)
   const mine = $derived(session.council.mine[id] ?? null)
+  /**
+   * Письма преподавателя — по отдельности и в порядке отправки.
+   *
+   * Их не больше двух: личное и рассылка группе, и живут они рядом, не
+   * затирая друг друга (shared/protocol · councilLetters). Склейка в
+   * `mine.reply` осталась только для клиентов постарше — в одном абзаце два
+   * письма читаются одним: «Проверьте знак Всем: поправка».
+   */
+  const letters = $derived(councilLetters(mine))
   const count = $derived(session.council.counts[id] ?? null)
   const board = $derived(session.council.boards[id] ?? null)
   /*
@@ -258,17 +279,40 @@
    * сигнал здесь означал бы эффект, зависящий от собственного следствия.
    */
   let typed = false
+  /**
+   * Что сейчас на листе — строкой, ради двух вопросов о ней.
+   *
+   * Сигнал, в отличие от `typed`: по нему рисуется счётчик знаков под листом и
+   * сверяется «сдано». Строка тут не лишняя копия — `toString()` наблюдатель
+   * всё равно делает на каждую правку, чтобы отдать снимок в очередь.
+   */
+  let sheetText = $state('')
+  /** Сколько знаков в попытке — или null, пока до потолка далеко. */
+  const attemptCount = $derived(attemptCounter(sheetText.length))
+  /** Лист не влезает: снимок такого сервер не примет, и он никуда не уезжает. */
+  const attemptOver = $derived(attemptTooLong(sheetText))
+  /**
+   * У преподавателя лежит ровно то, что человек видит на листе.
+   *
+   * Сверяется только ради «сдано»: сдаётся ТО, ЧТО ЛЕЖИТ У СЕРВЕРА, и после
+   * снимка, который не уехал (лист сверх потолка, отказ, потерянный черновик),
+   * «сдано» под длинным текстом было бы неправдой в важном.
+   */
+  const attemptSynced = $derived(attemptInSync(mine, sheetText))
 
   $effect(() => {
     if (!ownSheet) return
     if (untrack(() => sheet)) return
     /*
-     * Исходный текст — своя попытка, если сервер её уже прислал, иначе общий
-     * текст ячейки на момент открытия: задание обычно лежит в нём (sheetSeed:
-     * пустая строка от сервера — не попытка). Читается без отслеживания — лист
-     * заводят один раз, а не на каждую букву эталона.
+     * Исходный текст — своя попытка, если сервер её уже прислал, иначе задание
+     * (sheetSeed: пустая строка от сервера — не попытка). Заданием считается
+     * `mine.seed` — текст ячейки на момент перевода замка в консилиум, — а не
+     * то, что в ячейке лежит сейчас: после «Показать классу» там уже чужое
+     * решение. Пока сервер seed не шлёт, остаётся прежнее поведение.
+     * Читается без отслеживания — лист заводят один раз, а не на каждую букву
+     * эталона.
      */
-    const seed = untrack(() => sheetSeed(mine?.text, liveText.current))
+    const seed = untrack(() => sheetSeed(mine?.text, mine?.seed ?? liveText.current))
     sheet = openSheet(seed)
   })
 
@@ -281,10 +325,19 @@
    * пачка по ячейке с открытым консилиумом): стирать им задание из листа
    * нельзя.
    */
+  /*
+   * И то же для задания: `mine.seed` может доехать после того, как лист уже
+   * завели с общего текста (приветственная пачка и кадр CRDT приходят в любом
+   * порядке). Пока человек не печатал, задание главнее снимка общей ячейки.
+   */
   $effect(() => {
     const current = sheet
-    const text = mine?.text
-    if (!current || !text || typed) return
+    // То же правило, что у `sheetSeed`: своя попытка старше задания. Разница с
+    // прежним кодом — в проверке: `undefined` значит «сервер ничего не сказал»
+    // (старый сервер, поля нет), а пустая строка — «задание пустое», и ею лист
+    // как раз надо очистить: иначе в нём останется показанное решение.
+    const text = mine?.text || mine?.seed
+    if (!current || text === undefined || typed) return
     if (current.text.toString() === text) return
     current.doc.transact(() => replaceText(current.text, text), SEED)
   })
@@ -298,11 +351,18 @@
     const current = sheet
     if (!current) return
     const onChange = (_event: Y.YTextEvent, transaction: Y.Transaction) => {
+      // Зеркало — раньше всех выходов: счётчик под листом обязан считать и то,
+      // что приехало заданием, и то, что снимком уже не уедет.
+      sheetText = current.text.toString()
       if (transaction.origin === SEED) return
       typed = true
       if (!mayAttempt) return
-      session.council.draft(id, current.text.toString())
+      // Сверх потолка `draft` снимок не берёт и не шлёт (council.svelte.ts):
+      // сервер отвергает его словами, то есть тостом на каждую паузу в наборе.
+      // Вместо тоста — счётчик под листом, один и молчащий, пока не важно.
+      session.council.draft(id, sheetText)
     }
+    sheetText = current.text.toString()
     current.text.observe(onChange)
     return () => current.text.unobserve(onChange)
   })
@@ -316,13 +376,71 @@
     current.doc.destroy()
   })
 
+  /*
+   * «Сдать» и «Изменить» ждут эха сервера — и до него кнопка это показывает.
+   *
+   * Вид попытки меняет только `council:mine` с сервера, а между нажатием и им
+   * не было ничего: ни погашенной кнопки, ни слова. При пятистах одновременных
+   * сдачах на нагруженной сети человек жмёт снова и снова, и каждое нажатие —
+   * ещё один `council:submit`. Признак местный и честный: он говорит
+   * «отправлено», а не «сдано», и снимается ЛИБО эхом, либо своим сроком —
+   * молчания на восемь секунд не бывает без причины, и о ней надо сказать
+   * словами.
+   */
+  let awaitingMine = $state<'submit' | 'withdraw' | null>(null)
+  let awaitTimer: number | undefined
+  const MINE_WAIT_MS = 8000
+
+  function awaitMine(what: 'submit' | 'withdraw'): void {
+    window.clearTimeout(awaitTimer)
+    awaitingMine = what
+    awaitTimer = window.setTimeout(() => {
+      awaitingMine = null
+      session.showError(
+        what === 'submit'
+          ? 'Сдача не подтвердилась — проверьте связь и нажмите ещё раз.'
+          : 'Ответ не пришёл — проверьте связь и нажмите ещё раз.',
+      )
+    }, MINE_WAIT_MS)
+  }
+
+  $effect(() => {
+    const now = submittedAt
+    const want = untrack(() => awaitingMine)
+    if (want === null) return
+    if (want === 'submit' ? now === null : now !== null) return
+    awaitingMine = null
+    window.clearTimeout(awaitTimer)
+  })
+
+  $effect(() => () => window.clearTimeout(awaitTimer))
+
   /** «Сдать». Возвращает, дошло ли до отправки, — для клавиш. */
   function submitAttempt(): boolean {
     if (!mayAttempt) {
       session.showError(attemptWhy + '.')
       return false
     }
+    // Второе нажатие, пока первое в пути, — это второй `council:submit`, и
+    // ровно его и жмут, когда «ничего не произошло».
+    if (awaitingMine !== null || submittedAt !== null) return false
+    /*
+     * Сдать то, чего у сервера нет, нельзя.
+     *
+     * Сверх потолка снимок не уезжает, а `council:submit` сдаёт ТО, ЧТО ЛЕЖИТ
+     * У СЕРВЕРА: нажатие пометило бы сданным прошлый, короткий текст — у
+     * студента на экране один лист, у преподавателя в стопке другой, и
+     * выясняется это на разборе, когда переписывать поздно. Отказ словами и с
+     * числом: из него видно, сколько резать.
+     */
+    if (attemptOver) {
+      session.showError(
+        `Сдать нельзя: в попытке ${attemptCount} знаков. Сократите лист — сверх потолка он до преподавателя не доезжает.`,
+      )
+      return false
+    }
     onselect()
+    awaitMine('submit')
     session.council.submit(id)
     return true
   }
@@ -332,6 +450,8 @@
       session.showError(attemptWhy + '.')
       return
     }
+    if (awaitingMine !== null || submittedAt === null) return
+    awaitMine('withdraw')
     session.council.withdraw(id)
   }
 
@@ -432,6 +552,42 @@
   // Правило комнаты, а не положение ячейки: что значит «открыть» здесь.
   const opens = $derived(may.rules.opens)
 
+  /*
+   * Нажатие услышано — местным признаком, пока не вернулся кадр.
+   *
+   * Замок ничего не предугадывает: значок меняется тогда же, когда меняется у
+   * всей комнаты, и это правильно. Но на ретрансляторе кадр идёт 100–300 мс, и
+   * в них преподаватель посреди фразы не видел РОВНО НИЧЕГО — жал второй раз и
+   * возвращал замок обратно. Признак не врёт о положении: он говорит только
+   * «отправлено», гаснет от любого пришедшего кадра и от собственного срока —
+   * сеть может и не ответить, а висеть до конца пары ему нельзя.
+   */
+  let lockSending = $state(false)
+  /** Обычные `let`: их читает только код, зависеть от них эффекту незачем. */
+  let sentFrom: CellLock | null = null
+  let sentTimer: number | undefined
+  const SENT_MS = 2000
+
+  function markSending(): void {
+    window.clearTimeout(sentTimer)
+    sentFrom = lockState
+    lockSending = true
+    sentTimer = window.setTimeout(() => {
+      sentFrom = null
+      lockSending = false
+    }, SENT_MS)
+  }
+
+  $effect(() => {
+    const now = lockState
+    if (sentFrom === null || now === sentFrom) return
+    sentFrom = null
+    window.clearTimeout(sentTimer)
+    lockSending = false
+  })
+
+  $effect(() => () => window.clearTimeout(sentTimer))
+
   function pressLock(): void {
     if (Date.now() - heldAt < HOLD_MS * 2) return
     const press = lockPress(lockState, opens)
@@ -441,6 +597,7 @@
     }
     // Два положения — прежним сообщением: сервер читает его как cell:lock и
     // сам решает по правилу комнаты, общий это текст или консилиум.
+    markSending()
     session.send({ t: 'cell:open', cellId: id, open: press.open })
   }
 
@@ -459,6 +616,7 @@
   function setLock(state: CellLock): void {
     lockMenu = false
     if (state === lockState) return
+    markSending()
     session.council.lock(id, state)
   }
 
@@ -516,9 +674,24 @@
   let answer = $state('')
   let answerField = $state<HTMLInputElement | null>(null)
 
+  /*
+   * Фокус — только тому, ЧЬЯ ячейка спрашивает.
+   *
+   * `canAnswer` у преподавателя истинно на ЛЮБОЙ ячейке, так что в
+   * лаборатории с `run: room` каждый `input()` любого студента вырывал у него
+   * курсор из ячейки, в которой он печатает, и — фокусом без `preventScroll` —
+   * уносил экран к чужой ячейке двумя сотнями строк ниже. Поле ему по-прежнему
+   * рисуют: ответить он вправе, — но приходит к нему он сам.
+   *
+   * `preventScroll` и отдельный `scrollIntoView` — не одно и то же с обычным
+   * `focus()`: браузер прокручивает к полю ЛЮБОЙ предок, в том числе
+   * горизонтально, а здесь нужно ровно «подвести ячейку, если её не видно».
+   */
   $effect(() => {
-    if (stdin && canAnswer) answerField?.focus()
-    else if (!stdin) answer = ''
+    if (stdin && canAnswer && mineIsRunning) {
+      answerField?.focus({ preventScroll: true })
+      root?.scrollIntoView({ block: 'nearest' })
+    } else if (!stdin) answer = ''
   })
 
   function sendAnswer(event: SubmitEvent): void {
@@ -580,10 +753,6 @@
   const showEditor = $derived(isCode || editing)
 
   const outputs = watchOutputs(() => cell.current)
-  // A code cell's text lives in CodeMirror and is never rendered from here, so
-  // asking for a copy would rebuild the whole string on every keystroke for
-  // nothing. Notes need it: that is what the rendered form is made of.
-  const source = watchText(() => (isCode ? null : cell.current))
   const peersHere = watchCellPeers(session.awareness, () => id)
   const notebook = watchNotebookMeta(session.doc)
 
@@ -837,16 +1006,37 @@
     lost: 'text-warning',
   } as const
 
+  /*
+   * «Чужая» и «чьё лицо» — по имени участника, а не по его имени собственному.
+   *
+   * Имена в комнате не уникальны, и сервер это знает: двое «Анна» — два
+   * человека. Пока сравнивали строкой, второй Анне под её же ячейкой не
+   * рисовали «Ran by Анна», а под бегущей висел аватар той Анны, которая
+   * раньше попала в `session.peers`. Имя остаётся тем, что ЧИТАЮТ; решает
+   * `runById`, который лежит в той же meta и рядом уже используется.
+   */
   const ranByOther = $derived(
-    runBy && runBy !== session.me.name && (cellState === 'ok' || cellState === 'error')
+    runBy &&
+      meta.current.runById !== session.me.id &&
+      (cellState === 'ok' || cellState === 'error')
       ? `Ran by ${runBy}`
       : null,
   )
 
-  /** The runner's face, when the person who pressed Run is still in the room. */
-  const runner = $derived(
-    runBy ? (session.peers.find((peer) => peer.user.name === runBy)?.user ?? null) : null,
-  )
+  /**
+   * The runner's face, when the person who pressed Run is still in the room.
+   *
+   * По карте, а не поиском по списку: этот вопрос задаёт каждая ячейка с
+   * выводом, и перебор по всем вкладкам комнаты в каждой из них — работа,
+   * растущая произведением (двести ячеек на пятьсот вкладок — сто тысяч
+   * сравнений на кадр присутствия). Карта считается один раз на тик, рядом со
+   * списком (lib/peers.ts · peersById).
+   */
+  const runner = $derived.by(() => {
+    const who = meta.current.runById
+    if (!who) return null
+    return session.peersById.get(who) ?? null
+  })
 
   /** 1st, 2nd, 3rd: the queue chip reads as a place in line, not as a count. */
   function place(n: number): string {
@@ -889,6 +1079,59 @@
     return () => {
       alive = false
     }
+  })
+
+  /*
+   * «Попросить оракула переписать ячейку» — и та же ловушка, что у «Fix with AI».
+   *
+   * Кнопка гасла только по `may.ask` (то есть по концу занятия). А `edit` —
+   * действие, которое режим `hints` не принимает вовсе (protocol.ts ·
+   * actionAllowedIn), и режим `off` тем более: студент открывал строку, писал
+   * фразу, жал «Ask for a rewrite» и получал 403 уже после работы. Шапка этого
+   * файла описывает ровно эту ловушку и закрывает её — но закрывала только для
+   * `fix`.
+   *
+   * Спрашиваем тем же общим на вкладку обещанием и той же парой функций, что и
+   * маршрут, который отказывает.
+   */
+  const REWRITE_OFF = 'Оракула в этом семинаре нет'
+  const REWRITE_HINTS = 'Здесь оракул подсказывает, но ячейку не переписывает'
+  let rewriteReady = $state(false)
+  let rewriteWhy = $state<string | null>(null)
+
+  $effect(() => {
+    // После звонка спрашивать всё равно нечем: `mayRewrite` уже false, и
+    // тревожить инстанс двумястами обещаний из-за одной погашенной кнопки незачем.
+    if (!may.ask) return
+    const rules = readRules(session.session.rules)
+    let alive = true
+    void oracleStatus().then(
+      ({ enabled, mode }) => {
+        if (!alive) return
+        const here = enabled ? oracleModeIn(rules, mode) : 'off'
+        rewriteReady = actionAllowedIn(here, 'edit')
+        rewriteWhy = rewriteReady ? null : here === 'hints' ? REWRITE_HINTS : REWRITE_OFF
+      },
+      // Спросим снова со следующей перерисовкой: отказ кеш не запомнил.
+      () => {
+        if (!alive) return
+        rewriteReady = false
+        rewriteWhy = 'Оракул сейчас недоступен'
+      },
+    )
+    return () => {
+      alive = false
+    }
+  })
+
+  /** Строка вопроса живая ровно тогда, когда её примут. */
+  const mayRewrite = $derived(may.ask && rewriteReady)
+  const rewriteRefusal = $derived(!may.ask ? may.askWhy : (rewriteWhy ?? 'Оракул сейчас недоступен'))
+
+  // Право пропало под руками — открытую строку закрыть, иначе она обещает то,
+  // чего уже нет (тот же довод, что у выхода из исходника заметки).
+  $effect(() => {
+    if (!mayRewrite) asking = false
   })
 
   let root = $state<HTMLDivElement | null>(null)
@@ -947,7 +1190,7 @@
     // И только если печатать в ней можно: пустая закрытая заметка — это тупик
     // из разбора выше, просто открытый не щелчком, а появлением ячейки.
     if (!mayEdit) return
-    if (meta.current.type === 'markdown' && source.current.trim() === '') {
+    if (meta.current.type === 'markdown' && liveText.current.trim() === '') {
       focusOnEdit = true
       editing = true
     }
@@ -1038,7 +1281,14 @@
     if (!mayRun) {
       // Словами сервера, дословно. Кнопка, которая молчит, — это сообщение об
       // ошибке; кнопка, которая объясняет, — это правило.
-      session.showError(shut ? LECTURE_CELL + '.' : 'Only the teacher runs cells in this seminar.')
+      /*
+       * Из `may`, а не литералом: здесь стояла английская фраза про правило
+       * комнаты, и после звонка она рассказывала про правило, которого никто не
+       * менял, — человек шёл искать преподавателя вместо того, чтобы узнать,
+       * что пара кончилась. То же самое уже починено в командном режиме
+       * (Notebook.svelte), в редакторе оставалось.
+       */
+      session.showError((shut ? LECTURE_CELL : may.runWhy) + '.')
       return false
     }
     // Молча: ячейка сама показывает, что она делает, — и полосой, и строкой
@@ -1099,6 +1349,23 @@
     )
   }
 
+  /**
+   * Backspace на опустевшей ячейке — но не на той, под которой лежит вывод.
+   *
+   * Текст стёрли, а вывод остался: график, таблица, трейсбек, ради которого
+   * ячейку и держат. Удаление уносит его у всей комнаты и без истории — а
+   * жест, которым сюда пришли, это стирание последней буквы, а не решение.
+   * Убрать её по-настоящему по-прежнему можно — корзиной в тулбаре и `d d`, —
+   * и оба места об этом говорят.
+   */
+  function deleteIfEmpty() {
+    if (!emptyCellIsRemovable(outputs.current.length)) {
+      session.showError('Текст пуст, но вывод остался. Уберите ячейку корзиной или клавишами d d.')
+      return
+    }
+    removeSelf(true)
+  }
+
   function removeSelf(focus: boolean) {
     if (!may.remove) {
       session.showError(may.structureWhy + '.')
@@ -1157,16 +1424,23 @@
    */
   const patch = watchPatchFor(session.doc, () => id)
   const proposal = $derived(patch.current)
-  /*
-   * The cell's own text, watched separately from `source`.
+  /**
+   * Текст ячейки — ОДИН наблюдатель, и только там, где текст правда читают.
    *
-   * `source` deliberately follows markdown cells only — rendering a note does
-   * not need the text of a code cell, and skipping it saves an observer per
-   * cell. The diff needs exactly the opposite, and reading the wrong one showed
-   * every proposal as pure addition: the old lines were never handed to the
-   * diff, so nothing could be marked as replaced.
+   * Их было два: `source` следил за заметками (из него рисуется прочитанный
+   * вид), а этот — за всеми ячейками подряд, ради диффа предложения, которого
+   * обычно нет. На заметке они дублировали друг друга, а на кодовой ячейке
+   * второй нарушал ровно то правило, о котором предупреждает шапка yreactive:
+   * `Y.Text.toString()` пересобирает всю строку на КАЖДОЕ нажатие — своё и
+   * чужое, у всех пятисот, — и перезапускает за собой `proposedLines`,
+   * `proposedCounts` и `proposedTokens`.
+   *
+   * Текст кодовой ячейки живёт в CodeMirror и отсюда не рисуется. Он нужен
+   * ровно в двух случаях: пока стоит открытое предложение оракула (дифф) и в
+   * консилиуме, где студенту показывают общую ячейку эталоном. Вне их
+   * подписки нет вовсе, и `current` отдаёт пустую строку — её никто не читает.
    */
-  const liveText = watchText(() => cell.current)
+  const liveText = watchText(() => (!isCode || proposal || ownSheet ? cell.current : null))
 
   const proposedLines = $derived.by(() => {
     const proposed = proposal?.get('patch')
@@ -1238,6 +1512,30 @@
     }
     window.addEventListener('colloq:enter-cell', onEnterCell)
     return () => window.removeEventListener('colloq:enter-cell', onEnterCell)
+  })
+
+  /*
+   * Запуск из командного режима — сюда, а не своими проверками в тетради.
+   *
+   * Notebook.svelte спрашивал `may.run` — правило КОМНАТЫ, — а здесь и на
+   * сервере правило складывается с замком (`mayRunThisCell`). На лекции
+   * преподаватель открывает ячейку: кнопка на ней живая, Cmd+Enter в редакторе
+   * работает, а Shift+Enter из командного режима отвечал тостом про правило —
+   * про ячейку, которая открыта. Заодно уходит вторая беда: командный
+   * Shift+Enter слал `run` и для заметки, которую сервер молча выбрасывает.
+   *
+   * `focus: false` у шага — потому что пришли с клавиатуры в командном режиме
+   * и в редактор не входим.
+   */
+  $effect(() => {
+    const onRunCell = (event: Event) => {
+      const detail = (event as CustomEvent<{ cellId: string; step?: boolean }>).detail
+      if (detail?.cellId !== id) return
+      if (!run()) return
+      if (detail.step) step(1, false, false, true)
+    }
+    window.addEventListener('colloq:run-cell', onRunCell)
+    return () => window.removeEventListener('colloq:run-cell', onRunCell)
   })
 
   const TOOL_BASE =
@@ -1351,8 +1649,22 @@
               type="button"
               data-lock-button
               class={cn(
-                'mt-1 inline-flex h-5 w-5 items-center justify-center',
-                'transition-colors duration-[var(--speed-quick)]',
+                /*
+                 * 24×24 — пол WCAG 2.5.8, тот самый, ради которого сделаны
+                 * 24-пиксельными все соседние кнопки тулбара (TOOL_BASE ниже).
+                 * Замок был 20×20 — при том что это самая частая кнопка
+                 * преподавателя в лекции и единственная с удержанием.
+                 * Отрицательные поля возвращают цели прежнее МЕСТО в раскладке
+                 * (20 px, центр там же), так что колонка с номером не едет.
+                 *
+                 * Переход перечислен свойствами, а не `transition-colors` плюс
+                 * `.press`: утилита Tailwind переписывает transition-property
+                 * целиком, и transform из помощника в список бы не попал —
+                 * ровно та ловушка, что описана у CAP в Notebook.svelte.
+                 */
+                'mt-0.5 -mx-0.5 inline-flex h-6 w-6 items-center justify-center',
+                'transition-[color,background-color,transform] duration-press ease-out',
+                'enabled:active:scale-[0.97]',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
                 'disabled:pointer-events-none disabled:opacity-40',
                 cellOpen || inCouncil
@@ -1376,7 +1688,13 @@
                 lockMenu = true
               }}
             >
-              <Icon name={lockIcon} size={13} />
+              <!-- Приглушённый значок = «нажатие ушло, кадра ещё нет». Не
+                   предугаданное положение, а признак отправки: см. markSending. -->
+              <Icon
+                name={lockIcon}
+                size={13}
+                class={cn('transition-opacity duration-press ease-out', lockSending && 'opacity-60')}
+              />
             </button>
             {#if lockMenu}
               <!--
@@ -1434,23 +1752,34 @@
                   />
                   <span class="flex-1">Запуск студентам</span>
                 </label>
-                <label
-                  class={cn(
-                    'flex items-center gap-2 px-2.5 py-1.5 text-ui',
-                    inCouncil ? 'text-ink' : 'text-muted',
-                  )}
-                >
-                  <input
-                    type="checkbox"
-                    class="accent-[rgb(var(--accent))]"
-                    checked={councilSettings.namesOnProjector}
-                    disabled={!inCouncil}
-                    onchange={() => toggleKnob('namesOnProjector')}
-                  />
-                  <span class="flex-1">Имена на проекторе</span>
-                </label>
+                <!--
+                  Про общее ядро говорится там, где ручку включают.
+
+                  Прежде здесь и в подсказке кнопки стояло только «в очередь, по
+                  одному» — это про очередь, а не про состояние: попытка видит
+                  `df` преподавателя (иначе консилиум был бы бесполезен), и её
+                  запись в этот `df` остаётся после неё. Имена, заведённые самой
+                  попыткой, сервер снимает (kernel/index.ts ·
+                  COUNCIL_SNAPSHOT_NAMES), и строка описывает ровно это. Копия
+                  одна на весь продукт — shared/notebook.ts, чтобы подсказка
+                  кнопки и эта строка не разъехались.
+                -->
+                {#if inCouncil}
+                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">{COUNCIL_SHARED_KERNEL_NOTE}</p>
+                {/if}
+                <!--
+                  «Имена на проекторе» отсюда убраны, и это не потеря.
+
+                  Ручка писалась в документ и сравнивалась на сервере — и на
+                  этом всё: ни проекторная полоса (SessionScreen), ни `council:
+                  show`, ни счётчик имён не показывают, а проектор в своём же
+                  комментарии объясняет, почему их там нет. Переключатель,
+                  который в обе стороны не меняет ничего, — обещание без
+                  исполнения; поле в `CouncilSettings` остаётся ради старых
+                  документов и вернётся сюда вместе с исполнением.
+                -->
                 {#if !inCouncil}
-                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">Ручки действуют в консилиуме.</p>
+                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">Ручка действует в консилиуме.</p>
                 {/if}
               </div>
             {/if}
@@ -1678,14 +2007,16 @@
         </button>
         <!-- Спросить — тоже действие: после конца занятия оракул отвечает
              одному преподавателю (may.ask), и строка, в которую человек успеет
-             написать фразу, — это отказ, полученный уже после работы. -->
+             написать фразу, — это отказ, полученный уже после работы. То же и с
+             режимом оракула: `hints` переписывать ячейку отказывается, и знать
+             об этом надо ДО набранной фразы (см. `rewriteReady`). -->
         <button
           type="button"
           class={TOOL}
-          title={may.ask ? 'Ask the oracle to change this cell' : may.askWhy}
+          title={mayRewrite ? 'Ask the oracle to change this cell' : rewriteRefusal}
           aria-label="Ask the oracle to change this cell"
           aria-pressed={asking}
-          disabled={!may.ask}
+          disabled={!mayRewrite}
           onclick={() => (asking = !asking)}
         >
           <Icon name="sparkles" size={13} class="text-accent-text" />
@@ -1791,6 +2122,13 @@
                     преподаватель показал ваш вариант классу
                   {:else if councilClosed}
                     {COUNCIL_CLOSED}
+                  {:else if submittedAt !== null && !attemptSynced}
+                    <!-- «Сдано» — про текст, а не про нажатие: у преподавателя
+                         лежит прошлый снимок, и назвать сданным этот значило бы
+                         соврать в том, ради чего консилиум и затевали. -->
+                    <span class="text-warning">
+                      сдан не этот текст — у преподавателя лежит прошлый: «Изменить» и сдайте заново
+                    </span>
                   {:else if submittedAt !== null}
                     сдано {clock(submittedAt)} · видит только преподаватель
                   {:else}
@@ -1820,29 +2158,64 @@
                   onrunandadd={() => void submitAttempt()}
                   onescape={() => root?.querySelector<HTMLElement>('.cm-content')?.blur()}
                   onarrowout={(direction) => step(direction)}
+                  maxChars={MAX_ATTEMPT_CHARS}
+                  onoverflow={(chars) =>
+                    session.showError(
+                      `Вставка не поместилась: в попытке не больше ${MAX_ATTEMPT_CHARS.toLocaleString('ru-RU')} знаков, а с ней вышло бы ${chars.toLocaleString('ru-RU')}.`,
+                    )}
                 />
               </div>
-              {#if mine?.reply}
-                <!-- Ответ преподавателя — строкой под попыткой, видна двоим.
-                     Подпись — того, кто отвечал: в комнате может быть два
-                     преподавателя, а черновик оракула сюда приходит уже его
-                     словами. -->
-                <p class="flex flex-wrap items-baseline gap-x-2 border-t border-line-soft pb-1 pt-1.5 text-ui">
-                  <span class="font-bold text-ink">{mine.reply.by}</span>
-                  <span class="font-mono text-2xs text-muted">{clock(mine.reply.at)}</span>
-                  <span class="text-ink">{mine.reply.text}</span>
+              <!--
+                Счётчик знаков — под листом и только к концу.
+
+                Раньше про потолок говорил сервер: отказ на каждую паузу в
+                наборе, то есть тост раз в секунду, из которого не следовало ни
+                сколько набрано, ни сколько можно. Счётчик появляется на
+                девяти десятых пути (council.svelte.ts · attemptCounter) и
+                говорит одно и то же число, что и отказ.
+              -->
+              {#if attemptCount}
+                <p
+                  class={cn(
+                    'flex flex-wrap items-baseline justify-end gap-x-2 pt-0.5 text-2xs',
+                    attemptOver ? 'text-warning' : 'text-muted',
+                  )}
+                >
+                  {#if attemptOver}
+                    <span>сверх потолка лист не уезжает — сократите</span>
+                  {/if}
+                  <span class="font-mono tabular-nums">{attemptCount}</span>
                 </p>
               {/if}
+              <!-- Ответ преподавателя — строкой под попыткой, видна двоим.
+                   Подпись — того, кто отвечал: в комнате может быть два
+                   преподавателя, а черновик оракула сюда приходит уже его
+                   словами.
+
+                   Письмо на строку, а не все в одном абзаце: личный ответ и
+                   рассылка группе написаны в разное время и разным людям, и
+                   слитно они читаются одним письмом. Групповое помечено
+                   словом — тогда молчание на личном значит «это вам». -->
+              {#each letters as letter}
+                <p class="flex flex-wrap items-baseline gap-x-2 border-t border-line-soft pb-1 pt-1.5 text-ui">
+                  <span class="font-bold text-ink">{letter.by}</span>
+                  <span class="font-mono text-2xs text-muted">{clock(letter.at)}</span>
+                  {#if letter.to === 'group'}
+                    <span class="text-2xs text-muted">· всей группе</span>
+                  {/if}
+                  <span class="text-ink">{letter.text}</span>
+                </p>
+              {/each}
               <div class="flex flex-wrap items-center gap-2.5 pb-1 pt-1.5">
                 {#if submittedAt === null}
                   <button
                     type="button"
                     class="btn-primary h-7"
-                    disabled={!mayAttempt || controlDisabled(session.connected)}
+                    disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
                     title={controlTitle(session.connected, mayAttempt ? 'Сдать — ⇧↵' : attemptWhy)}
                     onclick={() => void submitAttempt()}
                   >
-                    Сдать
+                    {awaitingMine === 'submit' ? 'Отправляю…' : 'Сдать'}
                   </button>
                   {#if mayAttempt}
                     <span class="text-2xs text-muted">⇧↵ — сдать · черновик уходит сам при паузе</span>
@@ -1853,14 +2226,14 @@
                   <button
                     type="button"
                     class="btn-outline h-7"
-                    disabled={!mayAttempt || controlDisabled(session.connected)}
+                    disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
                     title={controlTitle(
                       session.connected,
                       mayAttempt ? 'Вернуть в набор — «сдано» снимется' : attemptWhy,
                     )}
                     onclick={withdrawAttempt}
                   >
-                    Изменить
+                    {awaitingMine === 'withdraw' ? 'Отправляю…' : 'Изменить'}
                   </button>
                   {#if !mayAttempt}
                     <span class="text-2xs text-muted">{attemptWhy}</span>
@@ -1873,7 +2246,10 @@
                     type="button"
                     class="btn-ghost h-7"
                     disabled={controlDisabled(session.connected)}
-                    title={controlTitle(session.connected, 'Запустить свою попытку — в очередь, по одному')}
+                    title={controlTitle(
+                      session.connected,
+                      `Запустить свою попытку — в очередь, по одному. ${COUNCIL_SHARED_KERNEL_NOTE}`,
+                    )}
                     onclick={runAttempt}
                   >
                     Запустить
@@ -1942,6 +2318,7 @@
               <CodeEditor
                 text={ytext}
                 awareness={session.awareness}
+                cellId={id}
                 undoManager={session.undoManager}
                 language={isCode ? 'python' : 'markdown'}
                 label={`${isCode ? 'Code' : 'Text'} cell ${ordinal}`}
@@ -1956,7 +2333,7 @@
                   if (isCode) root?.querySelector<HTMLElement>('.cm-content')?.blur()
                   else commitMarkdown()
                 }}
-                ondeleteempty={() => removeSelf(true)}
+                ondeleteempty={deleteIfEmpty}
                 onarrowout={(direction) => step(direction)}
               />
               <!--
@@ -1999,10 +2376,17 @@
               ondblclick={() => enter()}
             >
               {@render openMark()}
-              {#if source.current.trim()}
-                <Markdown source={source.current} class="text-prose text-muted" />
+              {#if liveText.current.trim()}
+                <Markdown source={liveText.current} class="text-prose text-muted" />
               {:else}
-                <p class="text-prose text-muted">Empty — double-click to write.</p>
+                <!-- Приглашение — только тому, кого пустят: двойной щелчок по
+                     запертой заметке отвечает отказом, и звать к нему значит
+                     обещать действие, которого в этой комнате нет. Тот же
+                     довод, по которому у запертой ячейки убран первый слот
+                     тулбара. -->
+                <p class="text-prose text-muted">
+                  {mayEdit ? 'Empty — double-click to write.' : 'Empty.'}
+                </p>
               {/if}
             </div>
           {/if}
@@ -2012,8 +2396,9 @@
 
             Полоса режима, стопка и сводка живут в CouncilStack (components/
             council): один вход на оба вида. Здесь — монтаж и провода к сокету:
-            показать, запустить, ответить, отметить, спросить оракула. Положение
-            в стопке — состояние этого экрана, не комнаты, и живёт в этой ячейке;
+            показать, запустить, ответить, отметить, спросить оракула, попросить
+            вывод попытки, не поехавший со стопкой. Положение в стопке —
+            состояние этого экрана, не комнаты, и живёт в этой ячейке;
             вид (стопка/сводка) — общий на все ячейки, в CouncilState.
           -->
           {#if leads && (inCouncil || (board?.counts.attempts ?? 0) > 0)}
@@ -2034,6 +2419,7 @@
                   onrun={runAttemptOf}
                   onreply={replyTo}
                   onmark={markAttempt}
+                  onneedoutputs={(participantId) => session.council.wantOutputs(id, participantId)}
                   onask={() => void askOracle(false)}
                   onstop={() => void askOracle(true)}
                   onposition={(participantId) => (stackPosition = { participantId })}
@@ -2095,7 +2481,7 @@
             and the code — because the room is entitled to know why the notebook it is
             reading changed.
           -->
-          {#if asking && may.ask}
+          {#if asking && mayRewrite}
             <div class={cn('flex flex-col gap-2 border-l-4 px-3 py-2.5', RULE[tone], 'bg-surface')}>
               <textarea
                 bind:this={promptBox}
@@ -2301,12 +2687,17 @@
               spellcheck="false"
               aria-label={stdin.prompt || 'The cell is waiting for input'}
             />
+            <!-- Нажатие — здесь же: ответ уходит в ядро, и до него на экране
+                 не меняется ничего. Свойства перечислены, а не `.press`:
+                 утилита `transition-*` переписала бы transition-property и
+                 оставила transform за списком (см. CAP в Notebook.svelte). -->
             <button
               type="submit"
               class={cn(
                 'inline-flex h-8 shrink-0 items-center bg-primary px-3 text-primary-ink',
                 CAPS,
-                'transition-opacity duration-[var(--speed-quick)] hover:opacity-90',
+                'transition-[opacity,transform] duration-press ease-out',
+                'enabled:active:scale-[0.97] hover:opacity-90',
               )}
             >
               Send
@@ -2440,7 +2831,11 @@
             class={cn(
               'inline-flex h-6 items-center border border-line px-2 text-ink',
               CAPS,
-              'transition-colors duration-[var(--speed-quick)] hover:bg-raised',
+              // Кнопка паники: сервер отвечает не мгновенно, и нажатие — это
+              // единственное, что подтверждает, что его услышали. Тот же
+              // рецепт, что у «Cancel» ниже и у всей полосы Run.
+              'transition-[color,background-color,border-color,transform] duration-press ease-out',
+              'enabled:active:scale-[0.97] hover:bg-raised',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
               'disabled:pointer-events-none disabled:opacity-40',
             )}
@@ -2503,7 +2898,8 @@
               // The filled pair, like Run all: cyan cannot carry a fill in light.
               'inline-flex h-7 items-center gap-2 bg-primary px-3 text-primary-ink',
               CAPS,
-              'transition-opacity duration-[var(--speed-quick)] hover:opacity-90',
+              'transition-[opacity,transform] duration-press ease-out',
+              'enabled:active:scale-[0.97] hover:opacity-90',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset',
               'focus-visible:ring-primary-ink/60',
             )}

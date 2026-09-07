@@ -81,6 +81,8 @@ import {
 import { baseOf, normalizePath, parentOf, runnerFor } from '@shared/paths'
 import {
   actsAfterClass,
+  allows,
+  allowsRun,
   allowsStructure,
   mayEditCell,
   CLASS_IS_OVER,
@@ -93,14 +95,25 @@ import { mark } from '../collab/history.js'
 import { rememberDeleted } from '../collab/ops.js'
 import { getRules, isFinished } from '../db.js'
 import { MAX_TEXT_BYTES, freeName, listFiles, makeFile, readText, statPath } from '../workspace.js'
-import { interruptTerminal, openTerminal, runCommand, terminalPhase } from '../kernel/terminal.js'
+import {
+  interruptTerminal,
+  openTerminal,
+  runCommand,
+  dropPendingOf,
+  terminalBusy,
+  typedRunningCommand,
+} from '../kernel/terminal.js'
 import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
 import { completeWithTools, type ChatTurn, type ToolSpec } from './provider.js'
+import { cellsWord, describe as reason, pad } from './text.js'
 import { buildContext } from './context.js'
 import { recentTurns } from './index.js'
 
 const ORIGIN = 'server'
+
+/** Что сказать комнате про ошибку, у которой нет своих слов: читают её студенты. */
+const WENT_WRONG = 'Что-то пошло не так.'
 
 /**
  * Сколько ходов подряд оракул может сделать сам.
@@ -115,8 +128,68 @@ const MAX_STEPS = 12
 /** Сколько ждать один запуск. Дольше — это не «медленно», а «зависло». */
 const RUN_TIMEOUT_MS = 90_000
 
-/** Сколько текста файла отдаём модели за раз. */
-const MAX_READ = 60_000
+/**
+ * Сколько текста файла отдаём модели за раз — и почему это не одно число.
+ *
+ * Стояло шестьдесят тысяч знаков — потолок, взятый под большое окно. Беда в
+ * том, что прочитанное не уходит: оно остаётся в переписке и повторяется в
+ * КАЖДОМ следующем шаге хода, до двенадцати раз. Одного `read_file` хватало,
+ * чтобы окно на 8k токенов переполнилось на втором шаге, `completeWithTools`
+ * бросил 400 и ход оборвался, — а сделанные до этого правки уже лежали в
+ * файлах, и объяснить их было некому.
+ *
+ * Потому потолок считается от `contextChars`: четверть бюджета, который
+ * преподаватель поставил под свою модель. Четверть — чтобы в ту же переписку
+ * поместились ещё три таких чтения, а дальше их подчищает `budgetTools`. При
+ * потолке инстанса в 100 000 это до 25 000 знаков за раз, при умолчании в
+ * 20 000 — пять тысяч, то есть сто тридцать строк: столько и читают глазами,
+ * когда спрашивают «почему тут падает».
+ */
+const MIN_READ = 4_000
+
+function maxRead(): number {
+  return Math.max(MIN_READ, Math.floor(getOracleSettings().contextChars / 4))
+}
+
+/** Прочитанное — до потолка; про обрезку сказано вслух, чтобы модель не дописывала конец. */
+function clipRead(text: string): string {
+  const room = maxRead()
+  return text.length > room ? text.slice(0, room) + '\n…(обрезано)' : text
+}
+
+/**
+ * Уложить переписку хода в окно модели.
+ *
+ * Кадр (`buildContext`) в `contextChars` уложен, а ответы инструментов — нет:
+ * они копятся шаг за шагом и уезжают провайдеру целиком на каждом. Здесь
+ * старшие ответы заменяются одной строкой, когда суммарно они перевалили за тот
+ * же бюджет: свежие видны целиком, а до старого файла модель, если он ей ещё
+ * нужен, сходит `read_file` заново — это один шаг вместо оборванного хода.
+ *
+ * Последний ответ не трогается никогда: он и есть то, что модель только что
+ * попросила, и ход без него пошёл бы по кругу.
+ */
+const OMITTED =
+  '(содержимое опущено, чтобы ход помещался в окно модели — прочитайте заново, если нужно)'
+
+function budgetTools(messages: ChatTurn[], budget: number): void {
+  let used = 0
+  let newest = true
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const turn = messages[i]
+    if (turn.callId === undefined || turn.content === OMITTED) continue
+    if (newest) {
+      newest = false
+      used += turn.content.length
+      continue
+    }
+    if (used + turn.content.length <= budget) {
+      used += turn.content.length
+      continue
+    }
+    messages[i] = { ...turn, content: OMITTED }
+  }
+}
 
 /** Сколько хвоста вывода кладём в ленту шагов и отдаём модели. */
 const MAX_OUTPUT = 4_000
@@ -241,11 +314,16 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
 }
 
 /**
- * Комнату удалили — помнить нечего и работать не для кого.
+ * Комнаты в памяти больше нет — помнить нечего и работать не для кого.
  *
  * Зовётся из `dropSessionDoc`, где всё про то, чтобы удаление стало
  * окончательным. Идущий ход обрывается здесь же: без этого он ещё десяток
  * шагов писал бы файлы и поднимал контейнер комнаты, которой больше нет.
+ *
+ * Второй зовущий — `evictRoom` в `collab/index.ts`, и там комнату не удалили,
+ * а отпустили из памяти после десяти минут пустоты: снимок «как было до хода»
+ * уходит вместе с ней, поэтому кнопка в треде остаётся, а отменять уже нечего —
+ * отказ на неё написан словами в `ai:undo` (`control.ts`).
  */
 export function forgetUndo(sessionId: string): void {
   for (const key of [...before.keys()]) {
@@ -395,7 +473,25 @@ export function toolsFor(hands: Hands): ToolSpec[] {
   const cells = CELL_TOOLS.filter((tool) =>
     tool.name === 'edit_cell' ? rights.edit : tool.name === 'add_cell' ? rights.add : rights.remove,
   )
-  return [...TOOLS, READ_NOTEBOOK, ...cells]
+  /*
+   * Файлы и запуск — по тем же правилам комнаты, что и у пальцев просящего.
+   *
+   * Список режется по тому же доводу, что и у ячеек: инструмент, который
+   * ответит отказом, стоит шага хода на то, чтобы узнать правило, известное
+   * заранее. Смотреть можно всегда — `list_files` и `read_file` не правят
+   * ничего, а правило `files` в этом продукте про запись.
+   */
+  const rules: RoomRules = getRules(hands.sessionId)
+  const mayWrite = allows(rules.files, hands.role)
+  const mayRun = allowsRun(rules.run, hands.role, 'one')
+  const files = TOOLS.filter((tool) =>
+    tool.name === 'write_file' || tool.name === 'edit_file'
+      ? mayWrite
+      : tool.name === 'run_file'
+        ? mayRun
+        : true,
+  )
+  return [...files, READ_NOTEBOOK, ...cells]
 }
 
 export interface Ran {
@@ -520,7 +616,7 @@ async function runTool(
             exit: null,
             note: 'только начало',
           },
-          said: `${disk.text.slice(0, MAX_READ)}\n…(дальше не читал)\n\n${tooBig(wanted)}`,
+          said: `${disk.text.slice(0, maxRead())}\n…(дальше не читал)\n\n${tooBig(wanted)}`,
         }
       }
       return { step: note('нечего читать', wanted), said: `Файла ${wanted} нет или он не текст.` }
@@ -535,11 +631,30 @@ async function runTool(
         exit: null,
         note: `${lines} строк`,
       },
-      said: text.length > MAX_READ ? text.slice(0, MAX_READ) + '\n…(обрезано)' : text,
+      said: clipRead(text),
     }
   }
 
   if (name === 'write_file' || name === 'edit_file') {
+    /*
+     * Правило `files` — и здесь тоже.
+     *
+     * Шапка этого файла обещает, что ход правит «по правам того, кто попросил»,
+     * и для ячеек это выполнялось (`rightsFor`, `mayEditCell`), а для файлов —
+     * нет: вход в режим открывало одно `agent`, и участник в лекции с
+     * `files: 'host'` писал через оракула любой файл папки семинара. Правило
+     * комнаты, которое обходится одной кнопкой, — не правило.
+     */
+    if (!allows(getRules(hands.sessionId).files, hands.role)) {
+      return {
+        step: note('файлы здесь правит преподаватель', wanted),
+        said: refuseCells(
+          hands,
+          `В этом семинаре файлы правит преподаватель, а ход идёт вашими руками — записать ${wanted} я не могу. ` +
+            'Скажите словами, что в нём поменять.',
+        ),
+      }
+    }
     /*
      * Тетрадь — не текстовый файл, что бы ни говорило её расширение. Её файл
      * переписывается из комнаты через полторы секунды после любой правки, так
@@ -647,7 +762,6 @@ async function runTool(
       }
     }
 
-    remember(hands.sessionId, hands.entryId, wanted, was)
     if (!existed) {
       const made = makeFile(hands.sessionId, wanted, '')
       if (made !== 'ok' && made !== 'exists') {
@@ -657,7 +771,19 @@ async function runTool(
         }
       }
     }
-    if (!putText(hands.sessionId, wanted, next)) {
+    /*
+     * Запись может и БРОСИТЬ, а не вернуть `false`: под путём оказалась не
+     * папка, диск не дал, права сменились. Раньше такая ошибка вылетала из
+     * инструмента наружу и роняла весь ход — вместо шага «не удалось записать»,
+     * после которого модель может сказать об этом словами и продолжить.
+     */
+    let wrote = false
+    try {
+      wrote = putText(hands.sessionId, wanted, next)
+    } catch (err) {
+      console.error(`[session ${hands.sessionId}] не записал ${wanted}:`, reason(err, WENT_WRONG))
+    }
+    if (!wrote) {
       /*
        * Отказ бывает двух родов. Файл, перешагнувший потолок, пока мы его
        * читали, править нельзя вовсе — и повторять попытку незачем; всё
@@ -671,6 +797,17 @@ async function runTool(
         said: over ? tooBig(wanted) : `Не получилось записать ${wanted}.`,
       }
     }
+    /*
+     * Снимок — ПОСЛЕ удачной записи, а не до неё.
+     *
+     * `was` прочитан выше, до всякой записи, так что запомненное по-прежнему то,
+     * что было до хода. Порядок важен для другого: снимок, положенный до
+     * `putText`, оставался лежать и когда запись не прошла — диск не дал,
+     * потолок сдвинулся, — и ход, не тронувший ни одного файла, получал кнопку
+     * «отменить», а нажатие отвечало «не тронул: X — после этого хода файл
+     * меняли или убрали». Файл никто не трогал, и ход не менял ничего.
+     */
+    remember(hands.sessionId, hands.entryId, wanted, was)
     leftBehind(hands.sessionId, hands.entryId, wanted, next)
     const counts = countChanges(was ?? '', next)
     return {
@@ -687,6 +824,23 @@ async function runTool(
   }
 
   if (name === 'run_file') {
+    /*
+     * Правило `run` — по той же причине, что `files` выше.
+     *
+     * Мерка — одна ячейка (`'one'`), а не Run All: запуск скрипта по просьбе
+     * человека стоит ровно столько же, сколько запуск его ячейки, и правило
+     * `single` («по одному») запускать не запрещает.
+     */
+    if (!allowsRun(getRules(hands.sessionId).run, hands.role, 'one')) {
+      return {
+        step: note('запускает преподаватель', wanted),
+        said: refuseCells(
+          hands,
+          `В этом семинаре запускает преподаватель, а ход идёт вашими руками — ${wanted} я не запущу. ` +
+            'Скажите в ответе, что стоило бы проверить.',
+        ),
+      }
+    }
     const runner = runnerFor(wanted)
     if (!runner) {
       return {
@@ -703,8 +857,14 @@ async function runTool(
      * очередь колбэков не хранит. Честнее сказать, что запустить не вышло, чем
      * простоять полторы минуты и объявить оболочку мёртвой, пока чужой
      * `pip install` идёт своим чередом.
+     *
+     * Занятость — по живой строке команды (`terminalBusy`), а не по фазе.
+     * Фаза врёт в двух обычных случаях, перечисленных над `runCommand`: обрыв
+     * сокета к Jupyter ставит `starting`, хотя pty продолжает считать, и
+     * `Clear` посреди чужой команды. Ровно через эти две щели запуск агента и
+     * уезжал в очередь, которой он ждать не умеет.
      */
-    if (terminalPhase(hands.sessionId) === 'busy') {
+    if (terminalBusy(hands.sessionId)) {
       return {
         step: note('терминал занят', wanted),
         said:
@@ -745,7 +905,11 @@ async function runTool(
         removed: 0,
         exit: result.exit,
         note:
-          result.cut === 'timeout' ? `не уложился в ${RUN_TIMEOUT_MS / 1000} с; ${shown}` : shown,
+          result.cut === 'waiting'
+            ? 'не начался: оболочка занята чужой командой, команда снята из очереди'
+            : result.cut === 'timeout'
+              ? `не уложился в ${RUN_TIMEOUT_MS / 1000} с; ${shown}`
+              : shown,
       },
       said: sayRun(result, shown),
     }
@@ -908,21 +1072,6 @@ function bookAsked(doc: Y.Doc, raw: unknown): Book | Ran {
   }
 }
 
-/** 01, 02, 03 — тот же номер, который нарисован у ячейки в поле слева. */
-function pad(no: number): string {
-  return String(no).padStart(2, '0')
-}
-
-/** «1 ячейка», «3 ячейки», «5 ячеек»: счёт, который не режет глаз. */
-function cellsWord(n: number): string {
-  const teen = n % 100
-  const last = n % 10
-  if (teen >= 11 && teen <= 14) return 'ячеек'
-  if (last === 1) return 'ячейка'
-  if (last >= 2 && last <= 4) return 'ячейки'
-  return 'ячеек'
-}
-
 function useCellTool(hands: Hands, name: string, args: Record<string, unknown>): Ran {
   /*
    * Заглянуть, а не завести: ход, доехавший до удалённой комнаты, поднимал бы
@@ -996,7 +1145,7 @@ function listCells(doc: Y.Doc, args: Record<string, unknown>): Ran {
       exit: null,
       note: `${cells.length} ${cellsWord(cells.length)}`,
     },
-    said: said.length > MAX_READ ? said.slice(0, MAX_READ) + '\n…(обрезано)' : said,
+    said: clipRead(said),
   }
 }
 
@@ -1454,8 +1603,20 @@ function tooBig(path: string): string {
  * Прерванный запуск — не «оболочка умерла»: скрипт был жив, его остановили, и
  * вывод до этого момента у нас есть. Модель, поверившая в мёртвую оболочку,
  * чинит несуществующую поломку и запускает снова.
+ *
+ * И слово здесь равно делу: `stopRun` в ветке ожидания снимает свою команду из
+ * очереди (`dropPendingOf`), поэтому обещать «начнётся позже» нельзя — модель
+ * пересказала бы комнате запуск, которого уже не будет.
  */
 function sayRun(result: RunResult, shown: string): string {
+  if (result.cut === 'waiting') {
+    return (
+      'Запуск так и не начался: оболочка комнаты всё это время была занята чужой командой, ' +
+      'а прерывать её я не стану. Свою команду я снял из очереди — сама она не начнётся ни ' +
+      'сейчас, ни позже. Скажите об этом в ответе: запустить можно будет, когда оболочка ' +
+      'освободится.'
+    )
+  }
   if (result.cut === 'stop') return 'Запуск прерван: ход остановили.'
   if (result.cut === 'timeout') {
     return (
@@ -1549,8 +1710,12 @@ interface RunResult {
   output: string
   exit: number | null
   finished: boolean
-  /** Запуск оборвали: истёк срок или нажали «Стоп». `null` — дошёл сам. */
-  cut: 'timeout' | 'stop' | null
+  /**
+   * Запуск оборвали: истёк срок, нажали «Стоп» — или он так и не начался
+   * (`waiting`: наша команда всё ещё стояла в очереди к общей оболочке).
+   * `null` — дошёл сам.
+   */
+  cut: 'timeout' | 'stop' | 'waiting' | null
 }
 
 /** Сколько ждать вывод после Ctrl+C: оболочка возвращается к строке за миг. */
@@ -1591,6 +1756,30 @@ async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): P
        */
       const stopRun = (why: 'timeout' | 'stop') => {
         if (settled || cut) return
+        /*
+         * Ctrl+C — только в СВОЮ команду.
+         *
+         * Занятость оболочки спрашивается до запуска (`terminalBusy`), но
+         * между вопросом и `runCommand` в неё успевает встать чужая команда:
+         * очередь общая и людская. Прежний код всё равно слал ETX по сроку,
+         * не спросив, чья команда идёт, — девяностая секунда ожидания
+         * убивала идущий у преподавателя скрипт, а модели говорили «не уложился
+         * в 90 с — прервал запуск» про запуск, которого не было.
+         *
+         * Своя очередь при этом снимается (`dropPendingOf`), а не оставляется
+         * в оболочке: команда, начавшаяся через минуту после конца хода, — это
+         * чужой вывод посреди чужого занятия, которого никто не просил и
+         * который некому прочитать. Что запуска не было, названо вслух в
+         * ответе модели, чтобы она не «чинила» несуществующую ошибку.
+         */
+        if (!typedRunningCommand(hands.sessionId, hands.by.participantId)) {
+          // Метка — до снятия: `dropPendingOf` отвечает ждущему сам, то есть
+          // зовёт этот же `done`, и запись хода должна знать, чем всё кончилось.
+          cut = 'waiting'
+          dropPendingOf(hands.sessionId, hands.by.participantId)
+          done({ output: '', finished: false })
+          return
+        }
         cut = why
         interruptTerminal(hands.sessionId, 'оракул', hands.by.participantId)
         grace = setTimeout(() => done({ output: '', finished: false }), INTERRUPT_GRACE_MS)
@@ -1633,6 +1822,20 @@ export function stopWork(sessionId: string, entryId: string): boolean {
   if (!controller) return false
   controller.abort()
   return true
+}
+
+/**
+ * Сколько ходов идёт в этой комнате прямо сейчас.
+ *
+ * Спрашивает маршрут: у комнаты один потолок на всё, что оракул делает разом
+ * (routes/ai.ts · MAX_ROOM_STREAMS), и ход в нём считается наравне с потоком —
+ * он держит запрос к провайдеру до двенадцати раз подряд и правит файлы.
+ */
+export function turnsInRoom(sessionId: string): number {
+  const prefix = `${sessionId} `
+  let n = 0
+  for (const key of running.keys()) if (key.startsWith(prefix)) n += 1
+  return n
 }
 
 /**
@@ -1681,8 +1884,8 @@ export function work(options: WorkOptions): string {
   const entryId = entry.get('id') as string
 
   void loop(options, entryId, history).catch((err: unknown) => {
-    console.error(`[session ${options.sessionId}] агент упал:`, describe(err))
-    settle(options.sessionId, entryId, 'error', describe(err))
+    console.error(`[session ${options.sessionId}] агент упал:`, reason(err, WENT_WRONG))
+    settle(options.sessionId, entryId, 'error', reason(err, WENT_WRONG))
   })
 
   return entryId
@@ -1738,6 +1941,9 @@ async function steps(
       stopped = true
       break
     }
+    // Перед каждым запросом, а не после каждого шага: резать надо ровно то, что
+    // сейчас поедет провайдеру, и по бюджету, который мог смениться на ходу.
+    budgetTools(messages, getOracleSettings().contextChars)
     const answer = await completeWithTools(messages, tools, signal, bill)
     // Прерванный запрос возвращается пустым ответом без вызовов, и без этой
     // проверки ход заканчивался бы пустотой: ни текста, ни «Остановлено».
@@ -1804,11 +2010,26 @@ function liveEntry(sessionId: string, entryId: string): { doc: Y.Doc; entry: YCh
   return doc && entry ? { doc, entry } : null
 }
 
+/**
+ * Сколько файлов ход ПРАВДА оставил за собой.
+ *
+ * Не размер карты снимков: снимок без `left` — это тот, чья запись не прошла,
+ * и возвращать по нему нечего. Кнопка «отменить» под ходом, который ничего не
+ * изменил, — обещание, которое отмена не выполнит.
+ */
+function touchedFiles(sessionId: string, entryId: string): number {
+  const files = before.get(`${sessionId}\u0000${entryId}`)
+  if (!files) return 0
+  let n = 0
+  for (const snapshot of files.values()) if (snapshot.left !== null) n += 1
+  return n
+}
+
 function finish(sessionId: string, entryId: string, text: string): void {
   const found = liveEntry(sessionId, entryId)
   if (!found) return
   const { doc, entry } = found
-  const touched = before.get(`${sessionId}\u0000${entryId}`)?.size ?? 0
+  const touched = touchedFiles(sessionId, entryId)
   /*
    * Про ячейки говорит сервер, а не модель.
    *
@@ -1835,7 +2056,7 @@ function settle(sessionId: string, entryId: string, state: ChatState, note: stri
   const found = liveEntry(sessionId, entryId)
   if (!found) return
   const { doc, entry } = found
-  const touched = before.get(`${sessionId}\u0000${entryId}`)?.size ?? 0
+  const touched = touchedFiles(sessionId, entryId)
   // И у упавшего хода: тетрадь он мог успеть поправить до того, как упасть.
   const cells = saidAboutCells(sessionId, entryId)
   inBook.delete(`${sessionId}\u0000${entryId}`)
@@ -1870,11 +2091,28 @@ function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
   const cellTools = tools
     .map((tool) => tool.name)
     .filter((name) => name === 'edit_cell' || name === 'add_cell' || name === 'remove_cell')
+  // То же и про файлы: обещание «поправлю файл» там, где инструмента нет,
+  // кончается отказом на глазах у комнаты и звучит как чужое право.
+  const has = (name: string) => tools.some((tool) => tool.name === name)
+  const mayWrite = has('write_file')
+  const mayRun = has('run_file')
   return [
     'Вы — оракул Colloq, помощник на техническом семинаре. Сейчас вас попросили не объяснить, а СДЕЛАТЬ.',
     '',
-    'У вас есть папка семинара и инструменты к ней. Порядок работы обычный: посмотрите, что есть,',
-    'прочитайте то, что собираетесь менять, поменяйте, запустите и убедитесь, что работает.',
+    ...(mayWrite && mayRun
+      ? [
+          'У вас есть папка семинара и инструменты к ней. Порядок работы обычный: посмотрите, что есть,',
+          'прочитайте то, что собираетесь менять, поменяйте, запустите и убедитесь, что работает.',
+        ]
+      : mayWrite
+        ? [
+            'У вас есть папка семинара и инструменты к ней. Запускать в этой комнате вам нельзя —',
+            'запускает преподаватель, — так что проверить написанное можно только чтением.',
+          ]
+        : [
+            'Папку семинара вам видно, но править файлы в этой комнате вам нельзя: это делает',
+            'преподаватель. Читайте и говорите словами, что и где стоит поменять.',
+          ]),
     '',
     'Границы, которые не обойти:',
     '— Файл .ipynb — проекция тетради, а не тетрадь: запись в него НИЧЕГО не меняет в комнате.',
@@ -1896,7 +2134,9 @@ function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
           '  и вам тем более. Если нужно поменять ячейку, скажите об этом словами в конце.',
         ]),
     '— Удалять файлы и папки нельзя. Совсем. Если файл лишний, скажите об этом.',
-    '— Запускать можно только .py и .sh из папки семинара. Оболочки у вас нет.',
+    ...(mayRun
+      ? ['— Запускать можно только .py и .sh из папки семинара. Оболочки у вас нет.']
+      : []),
     '— Всё, что вы делаете, видит вся комната; правки в файлах отменяются одной кнопкой под ходом.',
     ...(houseRules
       ? [
@@ -1914,9 +2154,4 @@ function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
     // про ячейку.
     buildContext(hands.sessionId, [], hands.by.participantId),
   ].join('\n')
-}
-
-function describe(err: unknown): string {
-  if (err instanceof Error) return err.message
-  return 'Что-то пошло не так.'
 }

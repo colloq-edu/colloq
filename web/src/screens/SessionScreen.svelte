@@ -14,9 +14,11 @@
    * from awareness, so what it shows is what everybody else is looking at.
    */
   import { onDestroy, untrack } from 'svelte'
-  import { cubicOut } from 'svelte/easing'
+  import { quintOut } from 'svelte/easing'
   import { fade, fly } from 'svelte/transition'
   import { peopleInRoom } from '@/lib/room'
+  import { faceOf, namesLine, sameFaces, type Face } from '@/screens/roster'
+  import { ruleRefusal } from '@/lib/rule-refusal'
   import { REVEAL_EVENT, revealCell, type RevealTarget } from '@/lib/reveal'
   import { gridFaviconHref } from '@/lib/logo'
   import AvatarStack from '@/components/ui/AvatarStack.svelte'
@@ -30,7 +32,6 @@
   import TerminalDrawer from '@/components/panels/TerminalDrawer.svelte'
   import PdfReader from '@/components/reader/PdfReader.svelte'
   import LectureView from '@/components/lecture/LectureView.svelte'
-  import ConsoleView from '@/components/lecture/ConsoleView.svelte'
   import { fullscreenPossible, goFullscreen, leaveFullscreen } from '@/lib/fullscreen'
   import { keepAwake } from '@/lib/wakelock'
   import ImageView from '@/components/reader/ImageView.svelte'
@@ -38,13 +39,28 @@
   import Wordmark from '@/components/ui/Wordmark.svelte'
   import type { StoredIdentity } from '@/lib/identity'
   import { SessionState, setSessionState } from '@/lib/session.svelte'
-  import { cn, prefersReducedMotion } from '@/lib/utils'
+  import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
+  import type { PaletteItem } from '@/components/ui/palette'
   import { watchBooks, watchCellNumbers, watchNotebookMeta } from '@/lib/yreactive.svelte'
-  import { cellLock, findCell, getMeta, rootOfCell, type KernelStatus } from '@shared/notebook'
+  import {
+    cellLock,
+    cellSource,
+    findCell,
+    getMeta,
+    rootOfCell,
+    type KernelStatus,
+  } from '@shared/notebook'
   import { countLine, type CouncilCount } from '@/lib/council.svelte'
   import type { SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
-  import { beginVisit, reloadByHand, takeRefusal } from '@/lib/refusal'
+  import {
+    beginVisit,
+    refusalHasText,
+    reloadByHand,
+    stillLost,
+    takeRefusal,
+    type RefusedCell,
+  } from '@/lib/refusal'
   import { permitsIn } from '@/lib/may'
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import TabStrip from '@/components/reader/TabStrip.svelte'
@@ -97,6 +113,30 @@
   const projection = $derived(mode === 'screen')
   const pult = $derived(mode === 'pult')
 
+  /*
+   * Пульт приезжает по требованию — по тому же поводу, что и панель в App.
+   *
+   * ConsoleView со своими палитрами и заметками спикера — несколько тысяч
+   * строк, которые рисуются на одном планшете у одного человека. Статическим
+   * импортом они лежали в чанке комнаты, то есть их качал и разбирал КАЖДЫЙ
+   * студент на входе — включая тот, что смотрит проекцию. Динамический импорт
+   * — единственное, что правда откладывает байты: перенос статического импорта
+   * в другой файл просто переносит их вместе с ним.
+   *
+   * Запоминается, чтобы блок `{#await}` получал одно и то же обещание на
+   * каждую перерисовку и пульт не пересобирался под рукой преподавателя.
+   * InkLayer и LectureView остаются статическими: их рисует зал.
+   */
+  let pultChunk: Promise<typeof import('@/components/lecture/ConsoleView.svelte').default> | null =
+    null
+  const consoleView = () =>
+    (pultChunk ??= import('@/components/lecture/ConsoleView.svelte').then((m) => m.default))
+  // Начинаем качать, как только адрес пульта на экране, а не когда дошли до
+  // разметки: у планшета, открывшего ссылку-ключ, это выигрывает целый круг.
+  $effect(() => {
+    if (pult) void consoleView()
+  })
+
   // Context can only be written during initialisation, so the live session is
   // built here rather than in the router — by now both the room and the person
   // are known, and every panel below reads it with getSessionState().
@@ -128,15 +168,75 @@
    * Окно — про потерянный текст. Отказ кэшу при входе, после которого текста не
    * пропало, — это строка внизу на несколько секунд: вкладка уже собралась
    * заново, и всё, что человеку тут делать, — знать, почему она моргнула.
+   *
+   * Снимок ячеек сам по себе потери не доказывает: в нём вся тетрадь, включая
+   * нетронутое. Что из неё правда не доехало, видно только после того, как
+   * сервер отдал свою копию (`lostCells` ниже), — поэтому отказ КЭШУ со
+   * снимком начинается строкой и поднимается окном, если сверка что-нибудь
+   * найдёт. Без снимка (записка прошлой сборки или не влезшая в квоту) судим
+   * тем, что есть, — `refusalHasText`.
    */
-  let refusalShown = $state(refusal !== null && (refusal.kind !== 'stale' || refusal.text !== ''))
-  let staleNotice = $state(refusal?.kind === 'stale' && refusal.text === '')
+  const refusedSnapshot = refusal !== null && (refusal.cells?.length ?? 0) > 0
+  const refusedWindow =
+    refusal !== null && (refusal.kind !== 'stale' || (!refusedSnapshot && refusalHasText(refusal)))
+  let refusalShown = $state(refusedWindow)
+  let staleNotice = $state(refusal !== null && refusal.kind === 'stale' && !refusedWindow)
   if (staleNotice) setTimeout(() => (staleNotice = false), 9000)
   let refusalCopied = $state(false)
 
+  /**
+   * Что из записки правда не доехало — сверкой с копией, которую отдал сервер.
+   *
+   * `null`, пока сверять не с чем: до серверного sync документ пуст, а пустота
+   * значит «ещё не читали», а не «сервер этого не принял» — посчитать здесь
+   * рано значило бы объявить потерянной всю тетрадь. Считается один раз:
+   * дальше человек уже правит документ сам, и вторая сверка объявила бы
+   * потерей его же новую строку.
+   */
+  let lostCells = $state<RefusedCell[] | null>(null)
+  if (refusal) {
+    const settle = (isSynced: boolean): void => {
+      if (!isSynced || lostCells !== null) return
+      lostCells = stillLost(refusal, (id) => {
+        const found = findCell(session.doc, id)
+        return found ? cellSource(found.cell).toString() : null
+      })
+      // Нашлось потерянное — это уже не «вкладка моргнула», а «вот то, что вы
+      // написали»: строка внизу уступает место окну.
+      if (lostCells.length > 0 && !refusalShown) {
+        refusalShown = true
+        staleNotice = false
+      }
+      session.provider.off('sync', settle)
+    }
+    session.provider.on('sync', settle)
+    onDestroy(() => session.provider.off('sync', settle))
+    // Сокет мог успеть синхронизироваться до того, как экран смонтировался.
+    if (session.provider.synced) settle(true)
+  }
+
+  /**
+   * Что показать окном.
+   *
+   * Снимка может не быть вовсе — записка прошлой сборки или не влезшая в
+   * квоту вкладки (см. `stashRefusal`); тогда остаётся то единственное, что в
+   * ней есть, — ячейка под курсором, как было раньше.
+   */
+  const refusedCells = $derived.by((): RefusedCell[] => {
+    if (!refusal) return []
+    if (!refusedSnapshot) return refusal.text === '' ? [] : [{ id: '', text: refusal.text }]
+    return lostCells ?? []
+  })
+  /** Снимок есть, сервер ещё не ответил: сказать нечего, но и врать нечем. */
+  const refusedChecking = $derived(refusedSnapshot && lostCells === null)
+
   async function copyRefused(): Promise<void> {
-    if (!refusal) return
-    await copyText(refusal.text)
+    const list = refusedCells
+    if (list.length === 0) return
+    // Пустой строкой между ячейками: разделитель, который не притворяется ни
+    // комментарием Python, ни заголовком markdown — тетрадь бывает и той, и
+    // другой, а номера человек и так видит на экране.
+    await copyText(list.map((cell) => cell.text).join('\n\n'))
     refusalCopied = true
     setTimeout(() => (refusalCopied = false), 1600)
   }
@@ -186,6 +286,13 @@
    * умолчаниям. Ответ приходит и сюда, и всей комнате — рассылкой по
    * управляющему сокету, так что своё же изменение прилетит обратно тем же
    * путём, что и чужое.
+   *
+   * Причину отказа называет `ruleRefusal` (lib/rule-refusal.ts), а не
+   * `err.message`: у `ApiError` фраза английская с обеих сторон — и запасная
+   * («Could not reach the server…»), и тело маршрута («join the session
+   * first»), — а комната русская целиком. Своей копии правила здесь нет
+   * намеренно: слова живут одним куском рядом с `api.ts`, который их и
+   * порождает.
    */
   async function setRule(patch: Partial<RoomRules>) {
     rulesBusy = true
@@ -193,7 +300,7 @@
       const body = await api.setRoomRules(session.session.id, identity.token, patch)
       session.session = { ...session.session, rules: body.rules }
     } catch (err) {
-      session.showError(err instanceof Error ? err.message : 'Правило не сохранилось.')
+      session.showError(ruleRefusal(err))
     } finally {
       rulesBusy = false
     }
@@ -288,6 +395,17 @@
   const title = $derived(storedTitle || info.name)
   const isHost = $derived(session.me.role === 'host')
 
+  /**
+   * Куда ведёт марка в шапке — и ведёт ли вообще.
+   *
+   * `/` — панель преподавателя, и только ему туда и надо. Участнику наверх
+   * ведёт страница курса, если она есть: это единственный публичный адрес, где
+   * его семинар стоит среди других. Ни того ни другого — марка не ссылка.
+   */
+  const homeHref = $derived(
+    isHost ? '/' : session.session.course ? `/c/${session.session.course.id}` : null,
+  )
+
   $effect(() => {
     document.title = `${title} · Colloq`
     return () => {
@@ -338,18 +456,31 @@
   })
 
   const inRoom = $derived(peopleInRoom(session.peers))
-  const room = $derived(
-    inRoom.map((person) => ({
-      id: person.user.id,
-      name: person.user.name,
-      avatar: person.user.avatar,
-      color: person.user.color,
-      title: person.isSelf ? `${person.user.name} (you)` : person.user.name,
-    })),
-  )
-  const roomNames = $derived(
-    inRoom.map((person) => (person.isSelf ? `${person.user.name} (you)` : person.user.name)).join(', '),
-  )
+  /*
+   * Лица в полосе — тем же массивом, пока рисовать нечего нового.
+   *
+   * `yCollab` объявляет положение курсора через присутствие на каждое движение
+   * выделения: сто печатающих — сотни кадров в секунду, и каждый из них
+   * пересобирал здесь массив из всех, кто в комнате, склеивал их имена в
+   * `title` и будил стопку аватаров. От курсора не меняется ничего из того,
+   * что здесь нарисовано: имя, метка, цвет и «(you)».
+   *
+   * Сравнение — без единой аллокации (screens/roster.ts), и при совпадении
+   * возвращается ТОТ ЖЕ массив: Svelte сравнивает результат derived по
+   * ссылке, так что всё, что ниже, просто не просыпается. Кадр присутствия всё
+   * равно стоит одного прохода по списку — убрать это может только коалесинг
+   * в самом `#readPeers` (см. handoff).
+   */
+  let faces: Face[] = []
+  const room = $derived.by(() => {
+    const people = inRoom
+    return untrack(() => {
+      if (!sameFaces(faces, people)) faces = people.map(faceOf)
+      return faces
+    })
+  })
+  /** Подсказка над стопкой: считается от `room`, то есть только на смену состава. */
+  const roomNames = $derived(namesLine(room))
 
   /*
    * The live state of the machine, in the words the states sheet uses.
@@ -755,8 +886,15 @@
    * Консилиумы, идущие сейчас, — для проектора: номер ячейки и «N сдали из M».
    *
    * Без текстов и без имён намеренно: проектор смотрят все, а попытки видит
-   * один преподаватель. Ручка «имена на проекторе» относится к тому, что
-   * показывают классом, — здесь показывать нечего, кроме счёта.
+   * один преподаватель. Здесь и показывать нечего, кроме счёта: чья попытка
+   * лежит в общей ячейке, знает только преподаватель (кадр `council:board`), а
+   * на эту полосу приезжают одни счётчики.
+   *
+   * Ручки «имена на проекторе» в меню замка больше нет — она писалась в
+   * документ и не читалась ничем (CellView · комментарий на её месте). Поле
+   * `namesOnProjector` в shared/notebook.ts осталось ради старых документов;
+   * вернуть ручку можно только вместе со второй половиной — сервером, который
+   * называет автора показанной попытки всей комнате, и именем в этой полосе.
    *
    * Замок читается из документа на каждый пересчёт, а пересчёт заказывают
    * счётчики (сокет) и нумерация ячеек (документ): консилиум, который закрыли,
@@ -838,7 +976,18 @@
     // возвращение в свою тетрадь у неё экран не отнимает.
     const board = session.board
     const firstBook = books.current[0]?.path ?? null
-    untrack(() => tabs.settle({ alive, firstBook, board }))
+    /*
+     * И признак обрезки — вместе со списком.
+     *
+     * «Файла в списке нет» и «файл не влез в список» выглядят отсюда
+     * одинаково, а значат противоположное: обход папок упирается в потолок
+     * (server/src/workspace.ts · MAX_ENTRIES), и студент, распаковавший
+     * датасет на три тысячи файлов, закрывал бы вкладки всей комнате. Прополка
+     * идёт только по полному списку — решает это `Tabs`, здесь только
+     * передаётся то, из чего оно решает.
+     */
+    const truncated = session.filesTruncated
+    untrack(() => tabs.settle({ alive, firstBook, board, truncated }))
   })
 
   /*
@@ -1129,15 +1278,259 @@
     }
   }
 
+  /* ------------------------------------------------- палитра и клавиатура */
+
+  /**
+   * Строка оракула — под курсором, а не под мышью.
+   *
+   * Панель может быть закрыта или лежать ящиком; открыть её мало — спрашивать
+   * всё равно некуда, пока фокус не в поле. Поле помечено атрибутом в AiPanel
+   * (см. handoff): искать его по `aside textarea` значило бы завязаться на
+   * вёрстку чужой панели.
+   */
+  function focusOracle(): void {
+    if (rightIsDrawer) rightDrawer = true
+    else if (!rightOpen) {
+      rightOpen = true
+      persistPanels()
+    }
+    // Следующим кадром: панель ещё монтируется.
+    requestAnimationFrame(() => {
+      const line =
+        document.querySelector<HTMLTextAreaElement>('[data-oracle-composer]') ??
+        // Пока метки на самом поле нет — по колонке, которую этот экран и
+        // рисует: строка ввода в панели оракула ровно одна.
+        document.querySelector<HTMLTextAreaElement>('[data-oracle-panel] textarea')
+      line?.focus()
+    })
+  }
+
+  /**
+   * Палитра команд — по требованию и снимком.
+   *
+   * Чанк отдельный по той же причине, что и у пульта: список нужен тому, кто
+   * нажал ⌘K, а не каждому, кто вошёл в комнату. Список собирается в момент
+   * открытия и дальше не живёт: пока человек читает его, чужой Run не должен
+   * переставлять строки под курсором выбора.
+   */
+  let paletteOpen = $state(false)
+  // raw: список заменяется целиком и никогда не правится по месту, а глубокий
+  // $state завернул бы в прокси каждую из сотен строк ради этого.
+  let paletteList = $state.raw<PaletteItem[]>([])
+  let paletteChunk: Promise<
+    typeof import('@/components/ui/CommandPalette.svelte').default
+  > | null = null
+  const paletteView = () =>
+    (paletteChunk ??= import('@/components/ui/CommandPalette.svelte').then((m) => m.default))
+
+  /** Первая непустая строка ячейки — то, по чему её узнают в списке. */
+  function cellLine(cellId: string): string {
+    const found = findCell(session.doc, cellId)
+    if (!found) return ''
+    // `cell.get`, а не `cellSource`: тот заводит пустой Y.Text, если его нет, —
+    // то есть правит общий документ ради подписи в списке.
+    const source = found.cell.get('source') as { toString(): string } | undefined
+    const text = source ? source.toString() : ''
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed) return trimmed.length > 80 ? `${trimmed.slice(0, 79)}…` : trimmed
+    }
+    return ''
+  }
+
+  function paletteItems(): PaletteItem[] {
+    const out: PaletteItem[] = []
+    const live = session.connected
+    const book = activeKind === 'notebook' && activePath ? activePath : (books.current[0]?.path ?? null)
+
+    /* Действия — первыми: их ищут словом, а ячейки номером. */
+    const act = (
+      id: string,
+      label: string,
+      allowed: boolean,
+      run: () => void,
+      hint?: string,
+      keywords?: string,
+    ) => {
+      if (allowed) out.push({ id, group: 'Комната', label, hint, keywords, run })
+    }
+    act(
+      'run-all',
+      'Запустить всю тетрадь',
+      live && may.run && may.bulk && book !== null,
+      () => session.send({ t: 'runAll', book: book ?? undefined }),
+      undefined,
+      'run all выполнить',
+    )
+    act(
+      'interrupt',
+      'Остановить выполнение',
+      live && may.run,
+      () => session.send({ t: 'interrupt' }),
+      undefined,
+      'interrupt stop прервать',
+    )
+    act(
+      'clear',
+      'Стереть выводы',
+      live && may.wipe && book !== null,
+      () => session.send({ t: 'clearOutputs', book: book ?? undefined }),
+      undefined,
+      'clear outputs очистить',
+    )
+    act(
+      'format',
+      'Форматировать тетрадь',
+      live && may.bulk && may.edit && book !== null,
+      () => session.send({ t: 'format', book: book ?? undefined }),
+      undefined,
+      'format black',
+    )
+    /*
+     * Перезапуска ядра здесь нет намеренно. В тулбаре он сделан УДЕРЖАНИЕМ, и
+     * это решение: он теряет все переменные комнаты и не откатывается. Строка
+     * в списке, срабатывающая по Enter с первого нажатия, обошла бы ровно тот
+     * второй шаг, ради которого удержание и написано.
+     */
+    act('panel-files', 'Панель файлов и людей', true, toggleLeft, `${modKey}B`, 'files people')
+    act('panel-oracle', 'Спросить оракула', true, focusOracle, `${modKey}I`, 'ai oracle ии')
+    act('panel-terminal', 'Терминал', true, toggleTerminal, `${modKey}J`, 'terminal shell консоль')
+    act('copy-link', 'Скопировать ссылку на семинар', true, () => void copyLink(), undefined, 'link')
+    act('rules', 'Что можно делать в комнате', isHost, () => (rulesOpen = true), undefined, 'правила rules')
+    act('projection', 'На проектор', isHost, toProjection, undefined, 'screen проекция')
+    act('pult', 'Открыть пульт', isHost, toPult, undefined, 'пульт console лекция')
+    act(
+      'class',
+      session.finished ? 'Продолжить занятие' : 'Закончить занятие',
+      isHost && live,
+      () => setClassOver(!session.finished),
+      undefined,
+      'class занятие',
+    )
+
+    /* Вкладки, которые уже открыты, — и файлы, которые ещё нет. */
+    row.forEach((key, index) => {
+      if (typeof key !== 'string') return
+      out.push({
+        id: `tab:${key}`,
+        group: 'Вкладки',
+        label: baseOf(key),
+        hint: index < 9 ? `Ctrl${index + 1}` : undefined,
+        keywords: key,
+        run: () => tabs.show(key),
+      })
+    })
+    const open = new Set(row.filter((key): key is string => typeof key === 'string'))
+    for (const file of session.files) {
+      if (file.dir || open.has(file.path)) continue
+      out.push({
+        id: `file:${file.path}`,
+        group: 'Файлы',
+        label: file.path,
+        run: () => openFile(file.path),
+      })
+    }
+
+    /* Ячейки — всех тетрадей комнаты сразу: номер у каждой свой, а «покажи,
+       где она» умеет открыть ту тетрадь, в которой она лежит. */
+    for (const [cellId, number] of everyCell.current) {
+      const line = cellLine(cellId)
+      out.push({
+        id: `cell:${cellId}`,
+        group: 'Ячейки',
+        label: line || 'Пустая ячейка',
+        hint: String(number).padStart(2, '0'),
+        keywords: `ячейка cell ${number}`,
+        run: () => revealCell(session, cellId),
+      })
+    }
+    return out
+  }
+
+  function openPalette(): void {
+    paletteList = paletteItems()
+    paletteOpen = true
+    void paletteView()
+  }
+
   function onKeydown(event: KeyboardEvent): void {
+    /*
+     * Клавиатура комнаты — только в комнате.
+     *
+     * `<svelte:window>` стоит вне веток режима, и до сих пор эти клавиши
+     * доставали до состояния, которого на проекции и на пульте не нарисовано:
+     * Ctrl+` ставил `terminalOpen = true` под невидимым ящиком, обнулял
+     * непрочитанное этой вкладки и при спящем контейнере посылал `term:open` —
+     * то есть будил оболочку нажатием на ноутбуке у проектора. У пульта своя
+     * клавиатура (ConsoleView), у проекции нет никакой, кроме Escape, и он
+     * живёт в своём эффекте выше.
+     */
+    if (mode !== 'room') return
+    // Пока палитра открыта, клавиши разбирает она.
+    if (paletteOpen) return
+
+    const mod = (event.metaKey || event.ctrlKey) && !event.altKey
     // Ctrl+` reaches the terminal from anywhere, including a focused cell.
     if (event.ctrlKey && !event.metaKey && !event.altKey && event.code === 'Backquote') {
       event.preventDefault()
       toggleTerminal()
       return
     }
+    if (mod && !event.shiftKey) {
+      /*
+       * Четыре сочетания и один список. Всё, что они делают, есть и в палитре
+       * подписью с этим же сочетанием: клавиша, о которой негде прочитать, —
+       * это клавиша, которой пользуется один человек, её написавший.
+       */
+      if (event.code === 'KeyK') {
+        event.preventDefault()
+        openPalette()
+        return
+      }
+      if (event.code === 'KeyB') {
+        event.preventDefault()
+        toggleLeft()
+        return
+      }
+      if (event.code === 'KeyJ') {
+        event.preventDefault()
+        toggleTerminal()
+        return
+      }
+      if (event.code === 'KeyI') {
+        event.preventDefault()
+        focusOracle()
+        return
+      }
+    }
+    /*
+     * Ctrl+1…9 — вкладка по счёту, как в браузере и в редакторах. Ctrl, а не
+     * ⌘: ⌘1…9 на макбуке переключает вкладки САМОГО браузера, и отнять их у
+     * него — значит сломать то, чем человек пользуется чаще.
+     */
+    if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+      const digit = /^Digit([1-9])$/.exec(event.code)
+      if (digit) {
+        const key = row[Number(digit[1]) - 1]
+        if (typeof key === 'string') {
+          event.preventDefault()
+          tabs.show(key)
+        }
+        return
+      }
+    }
     if (event.key !== 'Escape') return
-    if (rightDrawer) {
+    /*
+     * Escape закрывает то, что открыто последним, — и пульт правил тоже.
+     *
+     * У него был свой `onkeydown` на фоновом `<div role="presentation">` без
+     * tabindex: такой элемент не получает клавиш никогда, то есть Escape там
+     * был написан и не работал ни разу.
+     */
+    if (rulesOpen) {
+      rulesOpen = false
+      event.preventDefault()
+    } else if (rightDrawer) {
       rightDrawer = false
       event.preventDefault()
     } else if (leftDrawer) {
@@ -1184,6 +1577,17 @@
   // No colour here on purpose: `text-white` and `text-brand` land in the same
   // Tailwind bucket, so a caller that inverts to the white ground has to be the
   // only one naming an ink.
+  /**
+   * Коробка одного уведомления в стеке внизу.
+   *
+   * Одна на все пять строк: они стоят в одной колонке друг под другом, и
+   * коробка, отличающаяся у соседей рамкой или грунтом, читалась бы как две
+   * разные вещи. Отступы у каждой свои — у одних внутри кнопка, у других
+   * крестик, у третьих ничего.
+   */
+  const TOAST =
+    'pointer-events-auto flex max-w-lg gap-2 border border-line bg-raised shadow-pop'
+
   const BAND_BTN =
     'flex shrink-0 items-center justify-center focus-visible:outline-none ' +
     'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white ' +
@@ -1210,12 +1614,22 @@
    * than to a state, so it cannot arrive late. index.css keeps it under reduced
    * motion for the same reason it keeps every other press: 3% that never
    * travels is feedback, not decoration.
+   *
+   * Три процента и есть три: здесь стояло 0.95, а на кнопке 28 px это читается
+   * как вздрагивание (index.css: «0.95 reads as a flinch at this size»), и
+   * продукт держит ровно один масштаб нажатия. Списки позиционные, как у `.btn`
+   * там же: цвет отвечает УКАЗАТЕЛЮ и берёт `ease` со скоростью щелчка,
+   * transform отвечает НАЖАТИЮ и берёт --ease-out со своей, 120 мс. Одной
+   * длительностью на три свойства transform ехал за 100 мс — не ту ступень
+   * лестницы.
    */
   const bandIcon = (on: boolean) =>
     cn(
       'flex h-7 w-7 shrink-0 items-center justify-center text-white',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white',
-      'transition-[background-color,opacity,transform] duration-quick ease-out active:scale-95',
+      'transition-[background-color,opacity,transform]',
+      'duration-[var(--speed-quick),var(--speed-quick),var(--speed-press)]',
+      'ease-[ease,ease,var(--ease-out)] enabled:active:scale-[0.97]',
       on
         ? 'bg-white/15 opacity-100 hover:bg-white/20'
         : 'opacity-60 hover:bg-white/10 hover:opacity-100',
@@ -1244,6 +1658,26 @@
            pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]
            pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]"
   >
+    <!--
+      Связь на проекции — своей строкой, потому что чужие сюда не доходят.
+
+      Полоса «Reconnecting» живёт в шапке комнаты, а комнаты здесь нет вовсе;
+      LectureView про соединение не знает. Балка при этом — самая опасная из
+      трёх поверхностей: последняя страница висит, преподаватель листает на
+      планшете, зал видит неподвижный слайд и ни слова о том, почему он
+      неподвижен. Угол, а не плашка: читает это один человек у проектора,
+      остальным двадцати она была бы просто мусором на экране.
+    -->
+    {#if !session.connected && !session.stuck && !session.gone}
+      <div
+        class="pointer-events-none absolute right-[max(1.5rem,env(safe-area-inset-right))]
+               top-[max(1.5rem,env(safe-area-inset-top))] z-10 flex items-center gap-2 text-white/60"
+        role="status"
+      >
+        <Icon name="spinner" size={12} class="animate-spin" />
+        <span class="text-2xs font-bold uppercase tracking-label">Связь восстанавливается</span>
+      </div>
+    {/if}
     {#if lecture}
       <LectureView {lecture} role="projection" onleave={fromProjection} />
     {:else}
@@ -1305,10 +1739,20 @@
                 {countLine(council.count)}
               </span>
             </div>
+            <!--
+              Полоса растёт масштабом, а не шириной.
+
+              Единственное место в комнате, где анимировалась геометрия: ширина
+              стоит layout на каждом кадре перехода, и делала она это на
+              проекторе, поверх страницы лекции, каждый раз, когда кто-то сдал.
+              `scaleX` от левого края даёт ту же картинку на композиторе — так
+              же сделана полоса загрузки в панели файлов. Ярус тот же, что у
+              панели (220 мс): 300 выше всего, что продукт себе позволяет.
+            -->
             <div class="h-1 w-full bg-white/15">
               <div
-                class="h-full bg-white transition-[width] duration-300"
-                style:width={`${council.count.total > 0 ? Math.round((council.count.submitted / council.count.total) * 100) : 0}%`}
+                class="h-full w-full origin-left bg-white transition-transform duration-panel ease-out"
+                style:transform={`scaleX(${council.count.total > 0 ? council.count.submitted / council.count.total : 0})`}
               ></div>
             </div>
           </div>
@@ -1330,8 +1774,12 @@
     внутри ConsoleView — там знают, какая кромка чем занята, и там же они
     кончаются, не задевая ни тетрадь, ни читалку.
   -->
+  <!-- Без ветки ожидания, как у панели в App: грунт уже нарисован, а спиннер
+       поверх него был бы вторым ожиданием на то же самое. -->
   <div class="fixed inset-0 z-[95] bg-canvas">
-    <ConsoleView onexit={leavePult} />
+    {#await consoleView() then Console}
+      <Console onexit={leavePult} />
+    {/await}
   </div>
 {:else}
 <div class="flex h-full min-h-0 flex-col overflow-hidden bg-canvas">
@@ -1343,15 +1791,31 @@
     them resolves to the same value on either side of the switch.
   -->
   <header class="shrink-0 bg-brand">
+    <!--
+      Марка ведёт туда, где человеку есть что делать, — или никуда.
+
+      Корень Colloq — это панель преподавателя (см. App), и ссылка на неё стояла
+      у ВСЕХ: студент, ткнувший в логотип посреди пары, полной навигацией уходил
+      из комнаты на форму «paste the setup token». Теперь дорога наверх есть у
+      того, у кого она есть: у ведущего — панель, у участника — страница курса,
+      если семинар в курсе состоит. Больше некуда — и тогда марка просто знак, а
+      не обещание.
+    -->
     <div class="px-4 pt-4 sm:px-7">
-      <a
-        href="/"
-        aria-label="Back to Colloq"
-        class="block max-w-full transition-opacity duration-100 hover:opacity-85
-               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
-      >
-        <Wordmark institution={session.session.institution} tone="onDark" />
-      </a>
+      {#if homeHref}
+        <a
+          href={homeHref}
+          aria-label={isHost ? 'Back to Colloq' : `Открыть курс «${session.session.course?.name}»`}
+          class="block max-w-full transition-opacity duration-100 hover:opacity-85
+                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+        >
+          <Wordmark institution={session.session.institution} tone="onDark" />
+        </a>
+      {:else}
+        <div class="block max-w-full">
+          <Wordmark institution={session.session.institution} tone="onDark" />
+        </div>
+      {/if}
     </div>
 
     <!-- The loudest thing on the screen. Black rather than bold: HSE Sans Black
@@ -1478,7 +1942,7 @@
           onclick={toggleLeft}
           aria-pressed={leftShown}
           aria-label="Toggle files and people"
-          title="Files and people"
+          title={`Files and people — ${modKey}B`}
         >
           <Icon name="file" size={16} />
         </button>
@@ -1494,7 +1958,7 @@
           onclick={toggleTerminal}
           aria-pressed={terminalOpen}
           aria-label="Терминал, журнал ядра и история"
-          title="Терминал, журнал ядра и история — Ctrl+`"
+          title={`Терминал, журнал ядра и история — ${modKey}J или Ctrl+\``}
         >
           <Icon name="prompt" size={16} />
           {#if session.terminalStatus === 'busy'}
@@ -1522,7 +1986,7 @@
           onclick={toggleRight}
           aria-pressed={rightShown}
           aria-label="Toggle the AI oracle"
-          title="AI oracle"
+          title={`AI oracle — ${modKey}I`}
         >
           <Icon name="sparkles" size={16} />
         </button>
@@ -1759,13 +2223,22 @@
               открытие файла перестало забирать экран у комнаты. Полоса под
               вкладкой, как у скрипта: у каждой вкладки свои действия, и они
               всегда под ней.
+
+              Переход — списком свойств, а не шорткатом `transition`: тот
+              переводит ВСЕ свойства, включая border-color и box-shadow
+              фокусного кольца, то есть кольцо приезжало бы вслед за клавишей.
+              Двигаются здесь ровно два — brightness под курсором и scale под
+              пальцем; полоса рисуется руками и в `.btn` не укладывается
+              (см. index.css · .btn, где такой же список стоит позиционно).
             -->
             <div class="flex h-[34px] shrink-0 items-stretch border-b border-line bg-canvas">
               <button
                 type="button"
                 class="flex shrink-0 items-center gap-2 bg-primary px-4 text-2xs font-bold
-                       uppercase tracking-label text-primary-ink transition duration-quick
-                       hover:brightness-110 active:brightness-95 focus-visible:outline-none
+                       uppercase tracking-label text-primary-ink
+                       transition-[filter,transform] duration-press ease-out
+                       enabled:active:scale-[0.97] hover:brightness-110 active:brightness-95
+                       focus-visible:outline-none
                        focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                 title="Показать этот документ всей комнате — вкладка откроется у каждого"
                 onclick={() => showToRoom(activePath)}
@@ -1855,7 +2328,10 @@
     </div>
 
     {#if rightShown && !rightIsDrawer}
-      <aside class="flex w-[380px] shrink-0 flex-col border-l border-line bg-surface">
+      <aside
+        class="flex w-[380px] shrink-0 flex-col border-l border-line bg-surface"
+        data-oracle-panel
+      >
         <AiPanel />
       </aside>
     {/if}
@@ -1867,6 +2343,19 @@
       these ±140px are the largest movement in the product. Reduced is a
       reduction, not a blackout: the panel still arrives over 140ms and still
       fades, it simply stops sliding.
+
+      `in:`, а не `transition:` — то же решение, что admin/motion.css принял для
+      меню панели, и по той же причине. Ящик закрывают Escape'ом (onKeydown
+      ниже), а анимировать действие с клавиатуры нельзя: клавишу жмут, чтобы
+      УБРАТЬ панель, и 140 мс отъезда — это 140 мс, в которые её ещё видно.
+      Уход мгновенный на всех трёх дорогах — Escape, щелчок мимо, та же кнопка,
+      — потому что панель, уезжающая по-разному в зависимости от того, чем её
+      закрыли, читается как разные панели.
+
+      quintOut, а не cubicOut: 1−(1−t)⁵ — ближайшая из svelte/easing к
+      --ease-out, которой index.css велит двигаться всему, что движется.
+      cubicOut заметно мягче, и панель приезжала не тем движением, что все
+      соседние поверхности.
     -->
     {#if leftIsDrawer && leftDrawer}
       <div class="absolute inset-0 z-40 flex">
@@ -1874,11 +2363,11 @@
           class="absolute inset-0 bg-canvas/70"
           aria-label="Close the files panel"
           onclick={() => (leftDrawer = false)}
-          transition:fade={{ duration: 120 }}
+          in:fade={{ duration: 120 }}
         ></button>
         <aside
           class="relative flex w-60 max-w-[85vw] flex-col border-r border-line bg-surface shadow-pop"
-          transition:fly={{ x: prefersReducedMotion() ? 0 : -140, duration: 140, easing: cubicOut }}
+          in:fly={{ x: prefersReducedMotion() ? 0 : -140, duration: 140, easing: quintOut }}
         >
           {@render leftPanels()}
         </aside>
@@ -1891,11 +2380,12 @@
           class="absolute inset-0 bg-canvas/70"
           aria-label="Close the AI panel"
           onclick={() => (rightDrawer = false)}
-          transition:fade={{ duration: 120 }}
+          in:fade={{ duration: 120 }}
         ></button>
         <aside
           class="relative flex w-[380px] max-w-[92vw] flex-col border-l border-line bg-surface shadow-pop"
-          transition:fly={{ x: prefersReducedMotion() ? 0 : 140, duration: 140, easing: cubicOut }}
+          data-oracle-panel
+          in:fly={{ x: prefersReducedMotion() ? 0 : 140, duration: 140, easing: quintOut }}
         >
           <AiPanel />
         </aside>
@@ -1913,8 +2403,17 @@
   конца дня перед человеком, чьего семинара уже не существует. Это не полоска
   внизу, а конец работы — поэтому во весь экран.
 -->
-{#if session.gone}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-canvas/95 px-6">
+<!--
+  Слой выше проекции (z-90) и пульта (z-95): под ними эта плашка была нарисована
+  и невидима, и обе поверхности продолжали выглядеть живыми — последняя страница
+  лекции на балке, лист с клавишами на планшете. «Мёртвая, но живая на вид»
+  поверхность — худший случай из всех, и здесь он был.
+
+  Не на пульте: там про удалённую комнату говорит сам ConsoleView, своими
+  словами и про чернила, которых уже некуда сохранить.
+-->
+{#if session.gone && !pult}
+  <div class="fixed inset-0 z-[100] flex items-center justify-center bg-canvas/95 px-6">
     <div class="w-full max-w-sm text-center">
       <span
         class="mx-auto flex h-10 w-10 items-center justify-center border border-line bg-surface text-faint"
@@ -1939,7 +2438,9 @@
   об этом на экране незачем: человеку нужно знать, до какого часа и к кому идти.
 -->
 {#if session.banned !== null}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-canvas/95 px-6">
+  <!-- Тем же ярусом, что и «семинар удалён» выше, и по той же причине: пульт и
+       проекция не должны переживать удаление своего человека молча. -->
+  <div class="fixed inset-0 z-[100] flex items-center justify-center bg-canvas/95 px-6">
     <BannedScreen until={session.banned} />
   </div>
 {/if}
@@ -1950,10 +2451,43 @@
   <BanMenu />
 {/if}
 
-{#if refusal && refusalShown}
+<!--
+  Палитра — вся клавиатура комнаты в одном списке.
+
+  Только в комнате: у пульта своя клавиатура, у проекции нет никакой. Без
+  ветки ожидания — чанк маленький и приезжает за один запрос, а мигание
+  спиннера на месте, куда сейчас будут печатать, стоит дороже.
+-->
+{#if paletteOpen && mode === 'room' && !session.gone && session.banned === null}
+  {#await paletteView() then Palette}
+    <Palette items={paletteList} onclose={() => (paletteOpen = false)} />
+  {/await}
+{/if}
+
+{#if refusal && refusalShown && !projection}
   <!--
     Модальное, а не строкой: человек только что потерял несколько секунд работы,
     и текст, который он не успеет прочитать, — это тот же потерянный текст.
+  -->
+  <!--
+    И на пульте тоже — но не на проекции.
+
+    Пульт: отказ лечится перезагрузкой, а перезагрузка с `/s/:id/pult`
+    возвращает на `/s/:id/pult` (lib/refusal.ts · reloadByHand). Пока окно
+    лежало на z-[60] под непрозрачной обёрткой пульта (z-[95] ниже),
+    преподаватель на планшете получал обратно свой лист и ни слова о том, что
+    правку не приняли и что именно из набранного не доехало. Свой текст
+    ConsoleView здесь не пишет намеренно: окно — это не объявление, а
+    единственная копия потерянного, и второй такой копии в продукте быть не
+    должно (у «удалён» и «разошлись» слов ровно на плашку, потому они и
+    сказаны там своими).
+
+    Проекция: на балку смотрит зал, и чужая тетрадь во весь экран посреди пары
+    — худшее, что там можно нарисовать. Печатать на проекции нечем, так что
+    сюда записка попадает только эхом (кэш той же вкладки, побывавшей в
+    комнате). Она не пропадает: `refusal` и `refusedCells` живут в этом же
+    компоненте, а смена режима его не пересоздаёт (App держит `{#key}` на
+    токене, не на режиме) — окно дождётся выхода с проекции в комнату.
   -->
   <!--
     Печатал в секунду звонка — и об этом надо сказать звонком, а не правкой.
@@ -1965,11 +2499,18 @@
     а потому, что пара кончилась ровно между двумя нажатиями клавиш.
   -->
   {@const overClass = refusal.message === CLASS_IS_OVER}
+  <!--
+    Свой ярус между пультом и терминальными плашками: выше обёртки пульта
+    (z-[95]) и проекции (z-[90]), но ниже «удалён» / «вас удалили» /
+    «разошлись» (z-[100]). Порядок тут важен в обе стороны: под пультом окно
+    было невидимо, а НАД плашкой удалённой комнаты оно предлагало бы
+    скопировать текст туда, куда его уже некуда вернуть.
+  -->
   <div
     role="dialog"
     aria-modal="true"
     aria-labelledby="refused-title"
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-brand/40 p-6"
+    class="fixed inset-0 z-[97] flex items-center justify-center bg-brand/40 p-6"
   >
     <div class="flex max-h-full w-full max-w-[520px] flex-col border border-line bg-canvas shadow-pop">
       <div class="border-b border-line px-5 py-3.5">
@@ -1985,23 +2526,66 @@
           {/if}
         </p>
       </div>
-      {#if refusal.text}
+      <!--
+        Все ячейки, а не одна.
+
+        Гейт отказывает КАДРУ ЦЕЛИКОМ, а кадр после обрыва связи — это всё, что
+        человек набрал без сети, во всех ячейках сразу. Пока здесь стояла одна
+        (та, где был курсор), остальные уходили вместе с кэшем молча.
+
+        Показывается только то, чего у сервера правда нет: перезагрузка
+        собирает вкладку из серверной копии, и сорок ячеек, из которых
+        тридцать девять на месте, прячут ту одну, ради которой всё затевалось
+        (lib/refusal.ts · stillLost).
+      -->
+      {#if refusedChecking}
+        <div class="border-b border-line bg-surface px-5 py-3">
+          <p class="text-ui text-muted">Сверяем набранное с тем, что принял сервер…</p>
+        </div>
+      {:else if refusedCells.length > 0}
         <div class="min-h-0 flex-1 overflow-y-auto border-b border-line bg-surface px-5 py-3">
           <p class="pb-1.5 text-2xs font-bold uppercase tracking-caps text-muted">
-            Вот что было в вашей ячейке
+            {refusedCells.length === 1 ? 'Вот что было в вашей ячейке' : 'Вот что вы написали'}
           </p>
-          <pre
-            class="whitespace-pre-wrap break-words font-mono text-code leading-relaxed text-ink">{refusal.text}</pre>
+          <div class="flex flex-col gap-3">
+            {#each refusedCells as cell (cell.id || 'cursor')}
+              {@const number = cell.id ? everyCell.current.get(cell.id) : undefined}
+              <div class="flex flex-col gap-1">
+                {#if number !== undefined}
+                  <p class="font-mono text-2xs text-faint">
+                    Ячейка {String(number).padStart(2, '0')}
+                  </p>
+                {/if}
+                <pre
+                  class="whitespace-pre-wrap break-words font-mono text-code leading-relaxed text-ink">{cell.text}</pre>
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
+      <!-- На пульте это читают с планшета и нажимают пальцем: те же кнопки в
+           той же строке, но ростом с остальные кнопки пульта (h-11, см.
+           ConsoleView) — 30 px под палец у нижней кромки мало. -->
       <div class="flex items-center gap-2 px-5 py-3">
-        {#if refusal.text}
-          <button type="button" class="btn-ghost" onclick={() => void copyRefused()}>
-            {refusalCopied ? 'Скопировано' : 'Скопировать'}
+        {#if refusedCells.length > 0}
+          <button
+            type="button"
+            class={cn('btn-ghost', pult && 'h-11 px-5')}
+            onclick={() => void copyRefused()}
+          >
+            {refusalCopied
+              ? 'Скопировано'
+              : refusedCells.length === 1
+                ? 'Скопировать'
+                : 'Скопировать всё'}
           </button>
         {/if}
         <span class="flex-1"></span>
-        <button type="button" class="btn-primary" onclick={() => (refusalShown = false)}>
+        <button
+          type="button"
+          class={cn('btn-primary', pult && 'h-11 px-6')}
+          onclick={() => (refusalShown = false)}
+        >
           Понятно
         </button>
       </div>
@@ -2016,20 +2600,26 @@
   инструмент, который берут посреди пары на десять секунд, а не экран, на
   который уходят.
 -->
-{#if rulesOpen && isHost && !session.gone}
-  <div
-    class="fixed inset-0 z-40"
-    role="presentation"
-    onclick={() => (rulesOpen = false)}
-    onkeydown={(event) => {
-      if (event.key === 'Escape') rulesOpen = false
-    }}
-  ></div>
+<!--
+  Только в комнате, как и палитра рядом. Открыть его можно лишь отсюда (полоса
+  состояния и палитра — обе в комнате), но `rulesOpen` переживает смену режима:
+  этот компонент один на все три (`mode` — свойство, App держит `{#key}` на
+  токене). Пульт правил, оставшийся открытым, ложился под проекцию (z-[90]) и
+  под пульт (z-[95]) — нарисованный, кликабельный и невидимый; Escape до него
+  там тоже не доходит (`onKeydown` уходит на первой же строке). Состояние
+  сохраняется: вернулись в комнату — панель на месте.
+-->
+{#if rulesOpen && isHost && mode === 'room' && !session.gone}
+  <!-- Только щелчок мимо. Escape разбирает оконный обработчик (`onKeydown`):
+       здесь он висел на нефокусируемом `div` и не срабатывал никогда. -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-40" role="presentation" onclick={() => (rulesOpen = false)}></div>
   <div
     class="fixed right-3 top-[104px] z-50 w-[min(30rem,calc(100vw-1.5rem))] border border-line bg-raised shadow-pop sm:right-6"
     role="dialog"
     aria-label="Что можно делать в комнате"
-    transition:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: cubicOut }}
+    in:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: quintOut }}
   >
     <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
       <h2 class="text-2xs font-bold uppercase tracking-section text-muted">
@@ -2110,110 +2700,23 @@
 {/if}
 
 <!--
-  Правила изменились — одна строка, и она уходит сама.
-
-  Двадцать человек, у которых редакторы вдруг стали «только чтение» без единой
-  фразы, решат, что сломались их ноутбуки. Строка спокойная, не как ошибка: это
-  не поломка, а решение преподавателя, и сказано оно ровно один раз.
--->
-<!--
-  Пульт закрыли, а лекция идёт.
-
-  Уход из пульта — это не конец пары, и объявить об этом надо ровно один раз:
-  без строки человек, промахнувшийся мимо кнопки, ищет пропавшую лекцию, а не
-  дорогу обратно. Кнопка рядом с фразой, потому что вернуться нужно ЗДЕСЬ и
-  СЕЙЧАС — на пульт из комнаты другого пути нет: адрес его никто не помнит, а
-  ссылку-ключ пришлось бы просить заново.
--->
-{#if pultNoticeUp && mode === 'room' && !session.gone}
-  <div
-    class="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4
-           pb-[env(safe-area-inset-bottom)]"
-  >
-    <div
-      role="status"
-      class="pointer-events-auto flex items-center gap-2 border border-line bg-raised py-1.5 pl-3 pr-1.5 shadow-pop"
-      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
-    >
-      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
-      <p class="text-ui leading-snug text-muted">Пульт закрыт, лекция идёт.</p>
-      <button
-        class="btn-ghost h-6 px-2 text-2xs font-bold uppercase tracking-label"
-        onclick={toPult}
-      >
-        Вернуться к пульту
-      </button>
-    </div>
-  </div>
-{/if}
-
-{#if rulesNoticeUp && !session.gone}
-  <div
-    class="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4
-           pb-[env(safe-area-inset-bottom)]"
-  >
-    <div
-      role="status"
-      class="pointer-events-none flex items-center gap-2 border border-line bg-raised px-3 py-1.5 shadow-pop"
-      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
-    >
-      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
-      <p class="text-ui leading-snug text-muted">
-        Преподаватель изменил, что можно делать в этой комнате.
-      </p>
-    </div>
-  </div>
-{/if}
-
-<!--
-  Занятие кончилось — или пошло снова. Теми же шестью секундами и тем же
-  спокойным тоном, что и строка про правила: это не поломка, а решение
-  преподавателя, и сказать его надо ровно один раз. Что было и осталось —
-  тетрадь, файлы, лента — стоит в самой фразе: гаснут кнопки, а не комната.
--->
-{#if classNoticeUp && !session.gone}
-  <div
-    class="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4
-           pb-[env(safe-area-inset-bottom)]"
-  >
-    <div
-      role="status"
-      class="pointer-events-none flex items-center gap-2 border border-line bg-raised px-3 py-1.5 shadow-pop"
-      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
-    >
-      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
-      <p class="text-ui leading-snug text-muted">
-        {#if session.finished}
-          Занятие закончено. Тетрадь, файлы и ответы оракула остаются — их можно читать.
-        {:else}
-          Занятие продолжается — можно снова считать и печатать.
-        {/if}
-      </p>
-    </div>
-  </div>
-{/if}
-
-<!-- Нижние отступы у всех трёх строк — с `viewport-fit=cover` (index.html)
-     четыре пикселя ниже домашнего индикатора значат, что кнопка «закрыть»
-     оказалась под системным свайпом. -->
-<!--
-  Полосу ошибки пульт и проекция рисуют сами и по-своему.
-
-  Эта — общая комнатная: она ложится поверх всего с `z-50`, говорит
-  по-английски («Waiting for the connection…») и приносит с собой крестик,
-  который на планшете нажимают ладонью. Пульт про обрыв связи уже сказал
-  своей строкой и своими словами, а на проекции в аудитории любая всплывшая
-  плашка — это плашка, которую читает весь зал.
--->
-<!--
   Вкладка разошлась с сервером и больше не пробует сама — см. SessionState.stuck.
   Полоса, а не тост: тост закрывают крестиком и остаются с мёртвой тетрадью,
   которая выглядит живой. Единственное действие — перезагрузка рукой, и она
   начинает счёт перезагрузок заново.
+
+  Не на пульте: там про расхождение говорит сам ConsoleView — своими словами,
+  своим размером под палец и с обещанием, что лекция не прервалась. Иначе об
+  одном и том же говорили бы дважды: его лист внутри обёртки пульта и эта
+  полоса поверх неё.
 -->
-{#if session.stuck && !session.gone}
+{#if session.stuck && !session.gone && !pult}
+  <!-- И тоже поверх проекции (z-90). До сих пор она лежала под ней: после
+       второго отказа кэшу балка оставалась с застывшей страницей и без
+       причины на экране. Полоса снизу, а не плашка во весь экран: комната под
+       ней всё ещё читается, а лекция на балке всё ещё видна залу. -->
   <div
-    class="fixed inset-x-0 bottom-0 z-50 flex justify-center border-t border-line bg-raised px-4 py-3
+    class="fixed inset-x-0 bottom-0 z-[100] flex justify-center border-t border-line bg-raised px-4 py-3
            pb-[max(0.75rem,env(safe-area-inset-bottom))]"
     role="alert"
   >
@@ -2227,54 +2730,148 @@
   </div>
 {/if}
 
-<!-- Кэш был старше сервера, вкладка собралась заново, текста не пропало. -->
-{#if staleNotice && !session.gone && !pult && !projection}
-  <div
-    class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4
-           pb-[env(safe-area-inset-bottom)]"
-  >
-    <div
-      role="status"
-      class="pointer-events-auto flex max-w-lg items-start gap-2 border border-line bg-raised py-2 pl-3 pr-1.5 shadow-pop"
-      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
-    >
-      <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-faint"></span>
-      <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">
-        Кэш этой вкладки был старше сервера — тетрадь перечитана заново, всё на месте.
-      </p>
-      <button
-        class="btn-ghost h-6 w-6 shrink-0 px-0"
-        onclick={() => (staleNotice = false)}
-        aria-label="Dismiss"
-      >
-        <Icon name="x" size={14} />
-      </button>
-    </div>
-  </div>
-{/if}
+<!--
+  ОДИН стек уведомлений на комнату.
 
-{#if session.lastError && !session.gone && !pult && !projection}
+  Здесь стояли пять независимых `{#if}` с одинаковыми координатами — bottom-4,
+  по центру, — и два одновременных накладывались буква на букву. Случай не
+  редкий и самый неудачный из возможных: преподаватель ужесточил правило
+  (строка живёт шесть секунд), студент в ту же секунду нажал Run и получил
+  красную строку отказа — ровно поверх объяснения, почему ему отказали.
+
+  Порядок в колонке — снизу вверх по важности: ошибка у самой кромки, там же,
+  где она была, когда стояла одна; спокойные объявления встают над ней. Каждая
+  строка приезжает и уходит своей анимацией, стек только держит их в ряд.
+
+  Ниже — те же нижние отступы: с `viewport-fit=cover` (index.html) четыре
+  пикселя под домашним индикатором значат, что крестик оказался под системным
+  свайпом. И тот же подъём над полосой «разошлись с сервером»: она занимает
+  кромку целиком, и садиться на неё стеку некуда.
+
+  Пульт и проекция рисуют свои строки сами и по-своему: у пульта своя,
+  по-русски и без крестика под ладонь, а на балке любая всплывшая плашка — это
+  плашка, которую читает весь зал.
+-->
+{#if !session.gone && !pult && !projection}
   <div
-    class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4
-           pb-[env(safe-area-inset-bottom)]"
+    class={cn(
+      'pointer-events-none fixed inset-x-0 z-50 flex flex-col items-center gap-2 px-4',
+      'pb-[env(safe-area-inset-bottom)]',
+      session.stuck ? 'bottom-[4.75rem]' : 'bottom-4',
+    )}
   >
-    <div
-      role="status"
-      class="pointer-events-auto flex max-w-lg items-start gap-2 border border-line bg-raised py-2 pl-3 pr-1.5 shadow-pop"
-      transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: cubicOut }}
-    >
-      <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
-      <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">
-        {session.lastError}
-      </p>
-      <button
-        class="btn-ghost h-6 w-6 shrink-0 px-0"
-        onclick={() => session.dismissError()}
-        aria-label="Dismiss"
+    <!--
+      Пульт закрыли, а лекция идёт.
+
+      Уход из пульта — это не конец пары, и объявить об этом надо ровно один
+      раз: без строки человек, промахнувшийся мимо кнопки, ищет пропавшую
+      лекцию, а не дорогу обратно. Кнопка рядом с фразой, потому что вернуться
+      нужно ЗДЕСЬ и СЕЙЧАС — на пульт из комнаты другого пути нет: адрес его
+      никто не помнит, а ссылку-ключ пришлось бы просить заново.
+    -->
+    {#if pultNoticeUp}
+      <div
+        role="status"
+        class={cn(TOAST, 'items-center py-1.5 pl-3 pr-1.5')}
+        transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
       >
-        <Icon name="x" size={14} />
-      </button>
-    </div>
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+        <p class="text-ui leading-snug text-muted">Пульт закрыт, лекция идёт.</p>
+        <button
+          class="btn-ghost h-6 px-2 text-2xs font-bold uppercase tracking-label"
+          onclick={toPult}
+        >
+          Вернуться к пульту
+        </button>
+      </div>
+    {/if}
+
+    <!--
+      Правила изменились — одна строка, и она уходит сама.
+
+      Двадцать человек, у которых редакторы вдруг стали «только чтение» без
+      единой фразы, решат, что сломались их ноутбуки. Строка спокойная, не как
+      ошибка: это не поломка, а решение преподавателя, и сказано оно ровно один
+      раз.
+    -->
+    {#if rulesNoticeUp}
+      <div
+        role="status"
+        class={cn(TOAST, 'items-center px-3 py-1.5')}
+        transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
+      >
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+        <p class="text-ui leading-snug text-muted">
+          Преподаватель изменил, что можно делать в этой комнате.
+        </p>
+      </div>
+    {/if}
+
+    <!--
+      Занятие кончилось — или пошло снова. Теми же шестью секундами и тем же
+      спокойным тоном, что и строка про правила: это не поломка, а решение
+      преподавателя, и сказать его надо ровно один раз. Что было и осталось —
+      тетрадь, файлы, лента — стоит в самой фразе: гаснут кнопки, а не комната.
+    -->
+    {#if classNoticeUp}
+      <div
+        role="status"
+        class={cn(TOAST, 'items-center px-3 py-1.5')}
+        transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
+      >
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+        <p class="text-ui leading-snug text-muted">
+          {#if session.finished}
+            Занятие закончено. Тетрадь, файлы и ответы оракула остаются — их можно читать.
+          {:else}
+            Занятие продолжается — можно снова считать и печатать.
+          {/if}
+        </p>
+      </div>
+    {/if}
+
+    <!-- Кэш был старше сервера, вкладка собралась заново, текста не пропало. -->
+    {#if staleNotice}
+      <div
+        role="status"
+        class={cn(TOAST, 'items-start py-2 pl-3 pr-1.5')}
+        transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
+      >
+        <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-faint"></span>
+        <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">
+          Кэш этой вкладки был старше сервера — тетрадь перечитана заново, всё на месте.
+        </p>
+        <button
+          class="btn-ghost h-6 w-6 shrink-0 px-0"
+          onclick={() => (staleNotice = false)}
+          aria-label="Dismiss"
+        >
+          <Icon name="x" size={14} />
+        </button>
+      </div>
+    {/if}
+
+    <!-- Ошибка — у самой кромки: это единственная строка, которая говорит, что
+         нажатие НЕ сработало, и читать её надо первой. -->
+    {#if session.lastError}
+      <div
+        role="status"
+        class={cn(TOAST, 'items-start py-2 pl-3 pr-1.5')}
+        transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
+      >
+        <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
+        <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">
+          {session.lastError}
+        </p>
+        <button
+          class="btn-ghost h-6 w-6 shrink-0 px-0"
+          onclick={() => session.dismissError()}
+          aria-label="Dismiss"
+        >
+          <Icon name="x" size={14} />
+        </button>
+      </div>
+    {/if}
   </div>
 {/if}
 

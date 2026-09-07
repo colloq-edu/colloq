@@ -53,24 +53,26 @@
       то, чем никто не воспользуется. В стеке он остался — на случай, если
       файлы не доедут, — но своей копии больше не требует.
 
-      Моноширинный по-прежнему от Google: он нужен меткам, командам и терминалу.
-      Грузится в print-приоритете и повышается, когда придёт, — первый кадр не
-      ждёт сети.
+      Моноширинный — тоже с этого домена, и это последняя внешняя зависимость,
+      которую страница потеряла. Он приезжал с fonts.googleapis.com, а
+      открывают лендинг ровно оттуда, где Google блокируется: университетская
+      сеть без выхода наружу, Россия, где внешние CDN уже перекрывали. Терминал
+      в герое рисовался тогда системным Menlo, у которого другие ширины, и
+      команда переставала попадать в свою строку. Довод «шрифт не наш, чтобы
+      его сабсетить» был неверен: JetBrains Mono под SIL OFL 1.1 (текст рядом,
+      fonts/JetBrainsMono-OFL.txt).
+
+      Предзагружается только латиница — на ней набраны все команды на странице;
+      кириллица и остальные подмножества подтянутся по unicode-range, если
+      такие буквы правда рисуют. Объявления — в styles.css, рядом с HSE Sans.
     -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
-      media="print"
-      onload="this.media='all'"
+      rel="preload"
+      href="fonts/jetbrains-mono-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
     />
-    <noscript>
-      <link
-        rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
-      />
-    </noscript>
 
     <!--
       Метка кэша — первые восемь знаков git-хеша самого styles.css, и это не
@@ -81,7 +83,7 @@
       сброса не было. Теперь её сверяет tests/site.test.mts: поправили
       styles.css — тест назовёт новое значение.
     -->
-    <link rel="stylesheet" href="styles.css?v=fc92e0cf" />
+    <link rel="stylesheet" href="styles.css?v=fe0b6c77" />
   </head>
 
   <body>
@@ -304,7 +306,6 @@
           height="900"
           alt="Рабочий экран Colloq: общий ноутбук, список файлов и людей в комнате, панель оракула справа"
           loading="lazy"
-          fetchpriority="high"
           decoding="async"
         />
       </div>

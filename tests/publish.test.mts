@@ -355,7 +355,7 @@ test('надгробие несёт ссылку на оставшееся чт�
 
 /* --------------------------------------------------------------- выгрузка */
 
-test('выгрузка кладёт страницу под обоими адресами и убирает снятую', () => {
+test('выгрузка кладёт страницу под обоими адресами, а снятую заменяет надгробием', (t) => {
   /*
    * Путь, которым страницы доходят до студента, целиком: каталоги, картинки,
    * тетрадь файлом — и адрес по идентификатору, розданный до того, как курсу
@@ -403,6 +403,9 @@ test('выгрузка кладёт страницу под обоими адр�
   assert.equal(setCourseSlug(course.id, 'kurs-vygruzki'), 'ok')
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-site-'))
+  // Убирается здесь, а не последней строкой теста: упавшее утверждение
+  // посередине оставляло каталог с целым сайтом лежать в /tmp навсегда.
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   exportSite(root, 'https://colloq.ru')
   const at = (...parts: string[]): string => path.join(root, ...parts)
   const read = (...parts: string[]): string => fs.readFileSync(at(...parts), 'utf8')
@@ -429,15 +432,25 @@ test('выгрузка кладёт страницу под обоими адр�
   assert.ok(notebook.cells.every((c) => (c.outputs ?? []).length === 0), 'в файл уехали выводы')
   assert.equal(notebookOf(pub.id).length > 0, true)
 
-  // Снятую страницу выгрузка обязана убрать — иначе она открывается по ссылке.
+  /*
+   * Снятая страница — надгробие, а не 404 GitHub. Обещание записано в store.ts
+   * буквами: «ссылка обязана сказать „её сняли“, а не „такой страницы здесь
+   * нет“». Содержимого при этом не остаётся: ни шагов, ни картинок.
+   */
   setPublicationState(pub.id, 'withdrawn')
   exportSite(root, 'https://colloq.ru')
-  assert.equal(fs.existsSync(at('p', 'vygruzka')), false, 'снятая страница осталась на сайте')
-  assert.equal(fs.existsSync(at('p', pub.id)), false, 'остался старый адрес снятой страницы')
-  fs.rmSync(root, { recursive: true, force: true })
+  assert.match(read('p', 'vygruzka', 'index.html'), /снял эту страницу/)
+  assert.match(read('p', pub.id, 'index.html'), /снял эту страницу/, 'прежний адрес снятой умер')
+  assert.equal(fs.existsSync(at('p', 'vygruzka', '0')), false, 'шаг снятой страницы читается')
+  assert.equal(fs.existsSync(at('p', 'vygruzka', 'blob')), false, 'картинки снятой остались')
+  assert.equal(
+    fs.existsSync(at('p', 'vygruzka', 'notebook.ipynb')),
+    false,
+    'тетрадь снятой скачивается',
+  )
 })
 
-test('прежнее имя в адресе ведёт туда же, куда вело', () => {
+test('прежнее имя в адресе ведёт туда же, куда вело', (t) => {
   /*
    * Имя курсу дают вслух и пишут на доске, а потом меняют — и ссылка, которую
    * класс уже сохранил, обязана работать. На живом сервере это запрос, на
@@ -472,6 +485,9 @@ test('прежнее имя в адресе ведёт туда же, куда �
   assert.equal(setCourseSlug(other.id, 'ml-osen'), 'taken')
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-site-'))
+  // Убирается здесь, а не последней строкой теста: упавшее утверждение
+  // посередине оставляло каталог с целым сайтом лежать в /tmp навсегда.
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   exportSite(root, 'https://colloq.ru')
   const at = (...parts: string[]): string => path.join(root, ...parts)
   const read = (...parts: string[]): string => fs.readFileSync(at(...parts), 'utf8')
@@ -485,7 +501,6 @@ test('прежнее имя в адресе ведёт туда же, куда �
   assert.equal(setCourseSlug(course.id, 'ml-osen'), 'ok')
   assert.deepEqual(formerSlugs('course', course.id), ['ml-strong'])
   doc.destroy()
-  fs.rmSync(root, { recursive: true, force: true })
 })
 
 /* --------------------------------------------------------------- маршруты */

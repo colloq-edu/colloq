@@ -130,6 +130,9 @@ async function shell() {
 
 const who = (name: string) => ({ name, color: '#7e82f0', participantId: `p_${name}` })
 
+/** Тот самый байт, который шлёт Ctrl+C. */
+const ETX = '\u0003'
+
 /* -------------------------------------------------------------------- tests */
 
 test('one person, one command, one line in the transcript', async () => {
@@ -154,7 +157,7 @@ test('a second command waits instead of being pushed at a busy shell', async () 
   assert.deepEqual(typed, [], "John's command was sent to a shell that was still busy")
 
   // The room is told, and told whose it is.
-  const notice = lines().find((l) => l.kind === 'system' && /waiting for the shell/.test(l.text))
+  const notice = lines().find((l) => l.kind === 'system' && /ждёт свободной оболочки/.test(l.text))
   assert.ok(notice, `no notice: ${JSON.stringify(lines())}`)
   assert.match(notice.text, /John/)
 
@@ -207,9 +210,87 @@ test('interrupting drops what was waiting, and says so', async () => {
     'a command the room had cancelled ran anyway',
   )
   assert.ok(
-    lines().some((l) => l.kind === 'system' && /dropped/.test(l.text)),
+    lines().some((l) => l.kind === 'system' && /снята из очереди|из очереди снято/.test(l.text)),
     'the room was not told its command had gone',
   )
+})
+
+test('Ctrl+C от того, чья команда не идёт, не трогает чужую', async () => {
+  /*
+   * Оболочка в комнате одна, и сюда приходят не только кнопкой. Срок ожидания
+   * у оракула в режиме «сделать» наступал ровно тогда, когда его собственная
+   * команда ещё стояла в очереди, — и девяностая секунда чужого `pip install`
+   * заканчивалась Ctrl+C в него, а модели говорили «не уложился в 90 с —
+   * прервал запуск» про запуск, которого не было.
+   *
+   * Своё из очереди при этом снимается: снимать нечего только в чужой команде.
+   */
+  const { id, lines } = await shell()
+  const { runCommand, interruptTerminal } = await import('../server/src/kernel/terminal.js')
+  runCommand(id, 'sleep 30', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('sleep 30'))))
+  runCommand(id, 'echo mine', who('John'))
+  typed = []
+
+  interruptTerminal(id, 'John', 'p_John')
+  await wait(300)
+
+  assert.ok(
+    !typed.some((t) => t.includes(ETX)),
+    'Ctrl+C ушёл в команду, которую этот человек не запускал',
+  )
+  assert.ok(
+    !lines().some((l) => l.kind === 'system' && /Ctrl\+C — команду останавливает/.test(l.text)),
+    'комната прочитала, что команду остановили, — а её не остановили',
+  )
+  assert.ok(
+    lines().some((l) => l.kind === 'system' && /снята из очереди|из очереди снято/.test(l.text)),
+    'своя ждущая команда осталась в очереди',
+  )
+})
+
+test('хост прерывает чужую команду: у него кнопка означает «прекратить всё»', async () => {
+  const { id } = await shell()
+  const { runCommand, interruptTerminal } = await import('../server/src/kernel/terminal.js')
+  runCommand(id, 'sleep 30', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('sleep 30'))))
+  typed = []
+
+  // Без participantId — так приходит преподаватель (control.ts · term:interrupt).
+  interruptTerminal(id, 'Ада')
+  assert.ok(await until(() => typed.some((t) => t.includes(ETX))), 'Ctrl+C не ушёл в оболочку')
+})
+
+test('ход оракула кончился — его ждущая команда не начнётся потом сама', async () => {
+  /*
+   * Команда, поставленная в очередь и оставленная там, начинается через
+   * минуту — без зрителей, без ожидающего и посреди совсем другого занятия.
+   * `dropPendingOf` снимает своё, не трогая идущую чужую.
+   */
+  const { id } = await shell()
+  const { runCommand, dropPendingOf, terminalBusy } = await import(
+    '../server/src/kernel/terminal.js'
+  )
+  runCommand(id, 'sleep 30', who('Maria'))
+  assert.ok(await until(() => typed.some((t) => t.includes('sleep 30'))))
+  assert.equal(terminalBusy(id), true, 'занятость меряется живой строкой команды')
+
+  const seen: { output: string; finished: boolean }[] = []
+  runCommand(id, 'python train.py', who('Oracle'), (result) => seen.push(result))
+  typed = []
+
+  assert.equal(dropPendingOf(id, 'p_Oracle'), 1)
+  // Ждущему отвечают сразу, а не оставляют его гадать.
+  assert.deepEqual(seen, [{ output: '', finished: false }])
+
+  // Чужая команда цела: ни Ctrl+C, ни снятия.
+  assert.ok(!typed.some((t) => t.includes(ETX)))
+  assert.equal(terminalBusy(id), true)
+
+  // И когда оболочка освободится, снятая команда не всплывёт.
+  shellSays('done\r\n$ ')
+  await wait(400)
+  assert.ok(!typed.some((t) => t.includes('train.py')), 'снятая команда всё-таки побежала')
 })
 
 test('заметка ядра в транскрипте не отпускает очередь терминала', async () => {
@@ -335,7 +416,7 @@ test('очередь не переживает смерть оболочки и 
   assert.ok(await until(() => seen.length === 1), 'ожидающий остался висеть на мёртвой оболочке')
   assert.equal(seen[0].finished, false)
   assert.ok(
-    lines().some((l) => l.kind === 'system' && /dropped/.test(l.text)),
+    lines().some((l) => l.kind === 'system' && /снята из очереди|из очереди снято/.test(l.text)),
     `комнате не сказали, чья команда пропала: ${JSON.stringify(lines())}`,
   )
 
@@ -376,7 +457,7 @@ test('студент снимает из очереди только свои к
   )
   assert.ok(!typed.some((t) => t.includes('echo ivan')), 'снятая команда всё-таки побежала')
   assert.ok(
-    lines().some((l) => l.kind === 'system' && /Ivan's waiting command was dropped/.test(l.text)),
+    lines().some((l) => l.kind === 'system' && /Ivan — команда снята из очереди/.test(l.text)),
     `в транскрипте не сказано, чья команда снята: ${JSON.stringify(lines())}`,
   )
 })
@@ -401,7 +482,7 @@ test('поток вывода не уезжает в документ мегаб
   assert.match(text, /строка 2999/, 'хвост вывода потеряли — а он и есть результат')
   assert.doesNotMatch(text, /строка 0 /, 'начало потока оставили вместо хвоста')
   assert.ok(
-    lines().some((l) => l.kind === 'system' && /faster than a shared transcript/.test(l.text)),
+    lines().some((l) => l.kind === 'system' && /быстрее, чем его вывозит общая расшифровка/.test(l.text)),
     'про потерянный вывод ничего не сказали',
   )
 })
@@ -448,10 +529,10 @@ test('a room cannot stack commands without limit', async () => {
   for (let i = 0; i < 12; i++) runCommand(id, `echo q${i}`, who('John'))
   await wait(300)
 
-  const waiting = lines().filter((l) => l.kind === 'system' && /waiting for the shell/.test(l.text))
+  const waiting = lines().filter((l) => l.kind === 'system' && /ждёт свободной оболочки/.test(l.text))
   assert.ok(waiting.length <= 8, `${waiting.length} commands were allowed to stack up`)
   assert.ok(
-    lines().some((l) => /too many commands/.test(l.text)),
+    lines().some((l) => /слишком много команд/.test(l.text)),
     'the room was not told the queue was full',
   )
 })

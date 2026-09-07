@@ -9,8 +9,9 @@
  * Running a cell is open to every participant. That is not an oversight: a
  * seminar where only the lecturer may press Run is a screen share, and the
  * whole point of Colloq is that a student can try the thing being discussed
- * without leaving the room. Interrupt and restart are host-only, because those
- * are destructive to everyone else's kernel state.
+ * without leaving the room. Interrupt is the host's, and also whoever started
+ * the cell that is running — see the case below. Restart is a room rule
+ * (`rules.restart`), host-only by default.
  *
  * The terminal splits the same way. Opening it is open to everyone — it is the
  * room's shell, and a student who needs a library should be able to install it.
@@ -40,6 +41,7 @@ import {
   getCells,
   getMeta,
   isCellOpen,
+  MAX_ATTEMPT_CHARS,
   openValueFor,
   readCouncilSettings,
   rejectPatch,
@@ -53,9 +55,9 @@ import type {
   ControlClientMessage,
   ControlServerMessage,
   CouncilAttempt,
+  CouncilBoard,
   CouncilRun,
   Participant,
-  ParticipantRole,
 } from '@shared/protocol'
 import type { TokenPayload } from './auth.js'
 import {
@@ -105,8 +107,9 @@ import {
   restartSession,
   sweepOrphanRuns,
   cancelRun,
-  councilQueued,
+  cancelCouncilRun,
   councilQueuePosition,
+  councilQueuePositions,
   queueIsOnly,
   requestCouncilRun,
   startedTheRunningCell,
@@ -124,6 +127,7 @@ import {
   mineFor,
   purgeAttempts,
   recordRun,
+  rememberSeed,
   saveDraft,
   setMark,
   setReply,
@@ -143,6 +147,7 @@ import {
 } from './kernel/terminal.js'
 import {
   deleteFile,
+  forgetTree,
   listFiles,
   listTree,
   makeDir,
@@ -163,6 +168,7 @@ import {
   runnerFor,
   whySegmentRefused,
 } from '@shared/paths'
+import { inkFullSays, LASER_EVERY_MS, MAX_NOTE_CHARS } from '@shared/lecture'
 import { flushFile, forgetFile, onFileSaved } from './collab/files.js'
 import {
   addInk,
@@ -170,7 +176,9 @@ import {
   eraseInk,
   forgetLecture,
   handOver,
-  inkOf,
+  inkPageOf,
+  inkRevision,
+  inkedPagesOf,
   isPresenter,
   lectureOf,
   moveLecture,
@@ -190,6 +198,7 @@ import {
 } from './collab/books.js'
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
+import { evicted } from './bans.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
@@ -204,25 +213,23 @@ const MAX_MISSED_PONGS = 2
  * кириллицей вместе с обвязкой; всё прочее по-прежнему в разы меньше.
  */
 const MAX_FRAME_BYTES = 32 * 1024
-/**
- * Попытка — это ячейка, а не файл: сотни строк в ней не бывает. Отказ вслух,
- * как у заметки: обрезанный молча код на экране выглядит целым.
+/*
+ * Потолок самой попытки (`MAX_ATTEMPT_CHARS`) лежит в shared/notebook.ts, и это
+ * не переезд ради порядка: клиент, не знающий числа, шлёт снимок на каждую
+ * паузу в наборе и получает отказ на каждую. Отказ вслух, как у заметки:
+ * обрезанный молча код на экране выглядит целым.
  */
-const MAX_ATTEMPT_CHARS = 8000
 /** Ответ студенту — абзац, как заметка к странице. */
 const MAX_REPLY_CHARS = 3000
 /** A shell command, not a shell script: anything longer is a paste accident. */
 const MAX_COMMAND_BYTES = 4096
-/**
- * Речь к одной странице — абзац, а не глава.
- *
- * Три тысячи знаков стоят не от вкуса, а от потолка кадра: кириллица в UTF-8 —
- * два байта, шесть тысяч байт текста плюс путь и обвязка укладываются в 8192, а
- * кадр толще `parse` выбрасывает МОЛЧА — ни ошибки, ни строки в журнале.
- * Страница речи, исчезнувшая без единого слова посреди пары, — худшее, что этот
- * провод может сделать, поэтому потолок назван вслух и отказ на нём говорящий.
+/*
+ * Потолок речи к странице (`MAX_NOTE_CHARS`) лежит в shared/lecture.ts рядом с
+ * потолками чернил — по той же причине, по какой там же лежат они: поле в
+ * пульте обязано резать ровно там, где режет сервер, иначе набранное пропадает
+ * молча. Копия здесь один раз уже разошлась с делом — комментарий выводил три
+ * тысячи знаков из кадра в 8192 байта, хотя `MAX_FRAME_BYTES` выше давно 32 КБ.
  */
-const MAX_NOTE_CHARS = 3000
 
 /**
  * Происхождение записи, которую сервер делает от своего имени.
@@ -236,6 +243,17 @@ const ORIGIN = 'server'
 
 interface Room {
   sockets: Set<WebSocket>
+  /**
+   * Сокеты по участнику и сокеты преподавателей — рядом с общим набором.
+   *
+   * `tell` и `toTeachers` адресуют одному человеку и пульту, а искали адресата
+   * обходом всех сокетов комнаты. На двадцати это никто не замечал; на пятистах
+   * `tellQueued` (по человеку на каждый сдвиг очереди) — это четверть миллиона
+   * итераций на одно нажатие, а стопка на каждый снимок в наборе перебирает те
+   * же пятьсот трижды в секунду. Наборы правятся ровно там же, где `sockets`.
+   */
+  byParticipant: Map<string, Set<WebSocket>>
+  hosts: Set<WebSocket>
   unwatch: () => void
 }
 
@@ -243,10 +261,47 @@ const rooms = new Map<string, Room>()
 
 /* ----------------------------------------------------------------- send */
 
+/**
+ * Кадр строкой — и ни одного исключения наружу.
+ *
+ * `JSON.stringify` не бесконечен: строка свыше ~512 МБ — это RangeError
+ * «Invalid string length», и бросается он ДО всякой отправки. Пока сборка
+ * кадра стояла голой, такой бросок из таймера (стопка консилиума, список
+ * файлов) уходил в `uncaughtException`, а тот уводит процесс со всеми
+ * комнатами инстанса. Один кадр не стоит семинара — тем более чужого:
+ * пишем причину и молчим в этот сокет.
+ */
+function frameOf(message: ControlServerMessage): string | null {
+  try {
+    return JSON.stringify(message)
+  } catch (err) {
+    console.error(`[control] кадр ${message.t} не собрался:`, reason(err, 'unknown error'))
+    return null
+  }
+}
+
 function send(ws: WebSocket, message: ControlServerMessage): void {
   if (ws.readyState !== WebSocket.OPEN) return
+  const frame = frameOf(message)
+  if (frame === null) return
+  sendFrame(ws, frame)
+}
+
+/**
+ * Уже собранный кадр — в один сокет.
+ *
+ * `Buffer`, а не только строка, и это не про удобство. `ws.send(строка)` каждый
+ * раз кодирует её в UTF-8 заново — около миллисекунды на мегабайт (замерено), —
+ * а кадры, которые едут ВСЕМ одинаковыми (дерево файлов, чернила лекции),
+ * отправляются пятистам сокетам подряд: полмегабайта чернил превращались в
+ * полсекунды блокировки цикла событий ровно на возврате зала. Кто собирает
+ * такой кадр раз на комнату, тот и кодирует его раз на комнату; `binary: false`
+ * держит кадр текстовым, каким его ждёт браузер.
+ */
+function sendFrame(ws: WebSocket, frame: string | Buffer): void {
+  if (ws.readyState !== WebSocket.OPEN) return
   try {
-    ws.send(JSON.stringify(message))
+    ws.send(frame, { binary: false })
   } catch {
     /* the socket died between the check and the write */
   }
@@ -255,15 +310,9 @@ function send(ws: WebSocket, message: ControlServerMessage): void {
 export function broadcast(sessionId: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
   if (!room) return
-  const frame = JSON.stringify(message)
-  for (const ws of room.sockets) {
-    if (ws.readyState !== WebSocket.OPEN) continue
-    try {
-      ws.send(frame)
-    } catch {
-      /* dropped; the close handler will clean it up */
-    }
-  }
+  const frame = frameOf(message)
+  if (frame === null) return
+  for (const ws of room.sockets) sendFrame(ws, frame)
 }
 
 /**
@@ -291,11 +340,13 @@ export function closeControlRoom(sessionId: string): void {
   // не заденет — а лежать под ключом снесённой комнаты им незачем.
   discardCouncil(sessionId)
   forgetBoards(sessionId)
-  const waiting = filesPending.get(sessionId)
-  if (waiting) {
-    clearTimeout(waiting)
-    filesPending.delete(sessionId)
-  }
+  forgetQueue(sessionId)
+  treeFrames.delete(sessionId)
+  treeSent.delete(sessionId)
+  inkFrames.delete(sessionId)
+  laserHeld.delete(sessionId)
+  // И все открытые окна склейки: их хвосты искали бы комнату, которой нет.
+  forgetTicks(sessionId)
   const room = rooms.get(sessionId)
   if (!room) return
   rooms.delete(sessionId)
@@ -322,17 +373,25 @@ export function closeControlRoom(sessionId: string): void {
  * переподключаться, показывая «нет соединения» там, где надо показать причину
  * и срок; после кадра она знает, что произошло, и не стучится обратно.
  *
- * Точечно, а не `closeControlRoom`: комната продолжает занятие. И оба провода
- * сразу — управляющий держит нажатия, общий документ держит текст, и закрыть
- * один, оставив другой, значит выгнать наполовину.
+ * Точечно, а не `closeControlRoom`: комната продолжает занятие. И все три
+ * провода сразу — управляющий держит нажатия, общий документ держит текст,
+ * файловый держит открытый в редакторе `.py`, — закрыть один, оставив
+ * остальные, значит выгнать наполовину: забаненный дописывает в общий файл
+ * комнаты до тех пор, пока сам не перезагрузит страницу.
+ *
+ * Третий провод закрывается через событие бана (bans.ts · onEviction). Позвать
+ * collab/files.ts отсюда напрямую было бы можно — этот модуль его и так
+ * импортирует, — но тогда список проводов жил бы здесь, в модуле нажатий, и
+ * каждый следующий провод пришлось бы вспоминать. Объявление живёт там, где
+ * живёт само понятие «этому человеку сюда больше нельзя», а держащий провод
+ * подписывается на него у себя.
  */
 export function evictBanned(sessionId: string, participantId: string, until: number): void {
   tell(sessionId, participantId, { t: 'banned', until })
   const room = rooms.get(sessionId)
   if (room) {
     // Копия набора: обработчик закрытия правит его же.
-    for (const ws of [...room.sockets]) {
-      if (owner.get(ws) !== participantId) continue
+    for (const ws of [...(room.byParticipant.get(participantId) ?? [])]) {
       try {
         ws.close(1008, 'banned from this seminar')
       } catch {
@@ -341,11 +400,50 @@ export function evictBanned(sessionId: string, participantId: string, until: num
     }
   }
   dropParticipant(sessionId, participantId)
+  evicted(sessionId, participantId)
 }
 
-export function broadcastFiles(sessionId: string): void {
-  const room = rooms.get(sessionId)
-  if (!room || room.sockets.size === 0) return
+/**
+ * Последний собранный кадр дерева — один на комнату, а не на сокет.
+ *
+ * Обход папки стоит readdir и lstat на каждую запись (до двух тысяч), а кадр —
+ * до сотни килобайт строки. Одному подключению это незаметно; после перезапуска
+ * сервера пятьсот вкладок возвращаются в одну-две секунды, и каждая получала
+ * СВОЙ обход и СВОЮ сборку одного и того же списка — секунды блокировки цикла
+ * ровно там, где все ждут возврата.
+ *
+ * Кэш недолгий и не заменяет рассылку: любая перемена в дереве и так проходит
+ * через `broadcastFiles`, который считает список заново и кладёт сюда свежий.
+ * Окно нужно только на пачку подключений подряд; за ним обход делается честно.
+ */
+const TREE_FRESH_MS = 1000
+const treeFrames = new Map<string, { at: number; frame: Buffer }>()
+
+/**
+ * Кадр, который комната уже получила, — чтобы не слать его второй раз.
+ *
+ * Тик рассылки взводится от всего, что ТРОГАЕТ папку: автосохранение
+ * редактора, проекция тетради, запись из ячейки. Дерево при этом чаще всего то
+ * же самое — текст файла поменялся, список файлов нет. Без этой карты каждый
+ * такой тик уезжал полным списком (до двух тысяч записей, под двести килобайт
+ * строки) в каждый из пятисот сокетов, и на паре, где считается ячейка с
+ * `print` в цикле, это происходило дважды в секунду при неподвижном диске.
+ *
+ * Сравнение по собранному кадру, а не по хэшу: кадр всё равно уже собран —
+ * его и надо отправить, — а хэш от него стоил бы отдельного прохода.
+ */
+const treeSent = new Map<string, Buffer>()
+
+/**
+ * Кадр списка файлов — из кэша, если он моложе окна, иначе обходом.
+ *
+ * `ready` — дерево, которое вызывающий уже построил (загрузка файлов строит его
+ * на ответ). Обход папки не дешевле подсчёта байтов, и делать его дважды на
+ * одну загрузку незачем.
+ */
+function filesFrame(sessionId: string, ready?: FileTree): Buffer | null {
+  const known = treeFrames.get(sessionId)
+  if (!ready && known && Date.now() - known.at < TREE_FRESH_MS) return known.frame
   /*
    * Дерево едет вместе с признаком обрезки: список, упёршийся в потолок обхода,
    * — это не «в комнате столько файлов». Панель говорит это вслух, иначе
@@ -354,12 +452,116 @@ export function broadcastFiles(sessionId: string): void {
    * обрезку, так и осталась бы с предупреждением после уборки папки.
    */
   let tree: FileTree
-  try {
-    tree = listTree(sessionId)
-  } catch {
-    return
+  if (ready) tree = ready
+  else {
+    try {
+      tree = listTree(sessionId)
+    } catch {
+      return null
+    }
   }
-  broadcast(sessionId, { t: 'files', files: tree.files, truncated: tree.truncated })
+  const text = frameOf({ t: 'files', files: tree.files, truncated: tree.truncated })
+  if (text === null) return null
+  // Байтами, а не строкой: этот кадр уходит всем сокетам комнаты подряд, и
+  // кодировать его на каждый из них — работа впустую (см. sendFrame).
+  const frame = Buffer.from(text, 'utf8')
+  treeFrames.set(sessionId, { at: Date.now(), frame })
+  return frame
+}
+
+export function broadcastFiles(sessionId: string, tree?: FileTree): void {
+  /*
+   * Обе памяти забываются ДО проверки на пустую комнату.
+   *
+   * Рассылка — всегда по свежему обходу: её зовут ровно потому, что дерево
+   * изменилось, и отдать на это вчерашний кадр значило бы не сказать ничего.
+   * Память кадра живёт здесь, короткая память самого обхода — в workspace.ts
+   * (`forgetTree`), и сбросить надо обе: в папку пишут и мимо workspace.ts
+   * (загрузка своими потоками, ядро изнутри контейнера), так что обход своей
+   * памяти сам не забудет.
+   *
+   * Выше возврата — потому что комната без единого сокета не значит «ничего не
+   * изменилось». Это ровно тот случай, когда файлы кладут до входа: рассылать
+   * некому, а тот же запрос следом отдаёт `listTree` в ответе, и по старой
+   * памяти он отдавал дерево БЕЗ только что положенного файла.
+   */
+  treeFrames.delete(sessionId)
+  forgetTree(sessionId)
+  const room = rooms.get(sessionId)
+  if (!room || room.sockets.size === 0) return
+  const frame = filesFrame(sessionId, tree)
+  if (frame === null) return
+  /*
+   * И только если оно ДЕЙСТВИТЕЛЬНО изменилось. Тот же кадр второй раз не
+   * рассказывает панели ничего — а стоит пятисот отправок и пятисот отдельных
+   * сжатий. Подключившемуся список приезжает своим путём (приветственная
+   * пачка), так что молчание здесь его не касается.
+   */
+  const sent = treeSent.get(sessionId)
+  if (sent && sent.equals(frame)) return
+  treeSent.set(sessionId, frame)
+  for (const ws of room.sockets) sendFrame(ws, frame)
+}
+
+/* ---------------------------------------------------------- тик склейки */
+
+/**
+ * Одно окно на все рассылки «всем на каждое событие».
+ *
+ * Список файлов, номера очереди и указка приходят пачками — от автосохранения,
+ * от каждого начала и конца работы ядра, от каждого движения руки, — а уходят
+ * циклом `ws.send` по всем сокетам комнаты. У каждой из трёх был свой таймер с
+ * тем же телом: карта ожидающих, `unref`, перехват броска. Три копии одного
+ * правила расходятся на первой правке, поэтому окно здесь одно, а разное у них
+ * только длина окна и то, что уезжает в конце.
+ *
+ * Первый вызов ЖДЁТ окно, а не проходит сразу: список файлов и номера очереди
+ * от этого только выигрывают (перемены идут пачкой, и первая из них ничем не
+ * важнее последней). Там, где ждать нельзя, ведущий кадр отправляется до
+ * `onTick` руками — так сделана указка ниже.
+ *
+ * Ключ — «что» и комната: окна разных рассылок не мешают друг другу, а уборка
+ * комнаты снимает все её окна разом (`forgetTicks`).
+ */
+const ticks = new Map<string, NodeJS.Timeout>()
+
+function tickKey(sessionId: string, what: string): string {
+  return `${what}\n${sessionId}`
+}
+
+function onTick(sessionId: string, what: string, everyMs: number, run: () => void): void {
+  const key = tickKey(sessionId, what)
+  if (ticks.has(key)) return
+  const timer = setTimeout(() => {
+    ticks.delete(key)
+    /*
+     * Под перехватом — как и всё, что делает таймер: бросок отсюда некому
+     * поймать, он уходит в `uncaughtException` и уводит процесс со всеми
+     * комнатами инстанса. Ни один из этих кадров не стоит чужого семинара.
+     */
+    try {
+      run()
+    } catch (err) {
+      console.error(`[control ${sessionId}] тик «${what}» не уехал:`, reason(err, 'unknown error'))
+    }
+  }, everyMs)
+  timer.unref?.()
+  ticks.set(key, timer)
+}
+
+/** Окно ещё открыто: перемена приедет его хвостом, слать сейчас не надо. */
+function ticking(sessionId: string, what: string): boolean {
+  return ticks.has(tickKey(sessionId, what))
+}
+
+/** Все окна комнаты — снять. Комната опустела или её больше нет. */
+function forgetTicks(sessionId: string): void {
+  const tail = `\n${sessionId}`
+  for (const [key, timer] of ticks) {
+    if (!key.endsWith(tail)) continue
+    clearTimeout(timer)
+    ticks.delete(key)
+  }
 }
 
 /**
@@ -376,16 +578,9 @@ export function broadcastFiles(sessionId: string): void {
  * тетради, запись из ячейки.
  */
 const FILES_EVERY_MS = 400
-const filesPending = new Map<string, NodeJS.Timeout>()
 
 function scheduleFiles(sessionId: string): void {
-  if (filesPending.has(sessionId)) return
-  const timer = setTimeout(() => {
-    filesPending.delete(sessionId)
-    broadcastFiles(sessionId)
-  }, FILES_EVERY_MS)
-  timer.unref?.()
-  filesPending.set(sessionId, timer)
+  onTick(sessionId, 'список файлов', FILES_EVERY_MS, () => broadcastFiles(sessionId))
 }
 
 /* ------------------------------------------------------- общий экран */
@@ -410,6 +605,10 @@ export function boardOf(sessionId: string): string | null {
   return boards.get(sessionId) ?? null
 }
 
+/** Куда указка приехала за окно склейки; уедет её последнее положение. */
+type LaserAt = { page: number; x: number; y: number; shape: 'dot' | 'line' }
+const laserHeld = new Map<string, LaserAt>()
+
 /**
  * Погасить указку у всей комнаты.
  *
@@ -422,7 +621,40 @@ export function boardOf(sessionId: string): string | null {
  * таймаут погасил бы штатный показ.
  */
 function laserOff(sessionId: string): void {
+  // Придержанная точка — вперёд гашения: иначе хвост окна зажёг бы пятно
+  // обратно через шестьдесят миллисекунд после того, как руку убрали.
+  laserHeld.delete(sessionId)
   broadcast(sessionId, { t: 'laser', at: null })
+}
+
+/**
+ * Указка — комнате, но не чаще такта: за окно побеждает последняя точка.
+ *
+ * Такт указки — общий, из `@shared/lecture`: тем же окном режет кадры пульт.
+ *
+ * Кадр указки — не событие, а положение руки, и промежуточные положения никому
+ * не нужны: зал всё равно ведёт её пружиной между редкими сэмплами. Сервер же
+ * платил за каждое полным кругом — `JSON.stringify` и цикл `ws.send` по всем
+ * сокетам комнаты; на пятистах слушателях рука ведущего стоила десятков тысяч
+ * отправок в секунду. Пульт свой такт уже сбавил, но верить на слово вкладке,
+ * которая может быть и старой, и чужой, нечего.
+ *
+ * Первый кадр уходит СРАЗУ, до окна: указка обязана появиться там, куда
+ * показали, а не через такт после этого.
+ */
+function laserTo(sessionId: string, at: LaserAt): void {
+  if (ticking(sessionId, 'указка')) {
+    laserHeld.set(sessionId, at)
+    return
+  }
+  broadcast(sessionId, { t: 'laser', at })
+  onTick(sessionId, 'указка', LASER_EVERY_MS, () => {
+    const held = laserHeld.get(sessionId)
+    if (!held) return
+    laserHeld.delete(sessionId)
+    // Рука ещё идёт — отправить и открыть следующее окно.
+    laserTo(sessionId, held)
+  })
 }
 
 function setBoard(sessionId: string, name: string | null): void {
@@ -448,8 +680,13 @@ function setBoard(sessionId: string, name: string | null): void {
  * Удалить файл может преподаватель, а переписать — любая ячейка: `df.to_csv`
  * идёт в ту же папку. Читалка, продолжающая показывать документ, которого нет,
  * — это пустая область без объяснения.
+ *
+ * Экспортируется ради второй двери удаления: файл убирают и сокетом
+ * (`tree:remove` ниже), и REST'ом (routes/files.ts), а гасить доску обязаны
+ * обе — иначе удалённый документ остаётся на общем экране всей комнаты до
+ * перезагрузки.
  */
-function forgetMissingBoard(sessionId: string): void {
+export function forgetMissingBoard(sessionId: string): void {
   const open = boards.get(sessionId)
   if (!open) return
   /*
@@ -499,12 +736,17 @@ const owner = new WeakMap<WebSocket, string>()
 
 function tell(sessionId: string, participantId: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
-  if (!room) return
-  for (const ws of room.sockets) if (owner.get(ws) === participantId) send(ws, message)
+  const mine = room?.byParticipant.get(participantId)
+  if (!mine || mine.size === 0) return
+  const frame = frameOf(message)
+  if (frame === null) return
+  for (const ws of mine) sendFrame(ws, frame)
 }
 
-/**
- * С какой ролью сокет подключился — рядом с `owner` и по той же причине.
+/*
+ * С какой ролью сокет подключился — набором `hosts` у комнаты, рядом с
+ * `byParticipant` и по той же причине: адресат известен, а искали его обходом
+ * всех сокетов.
  *
  * Не `getParticipant(...).role`: в таблице лежит роль, с которой человек вошёл
  * в комнату, а сокет живёт с ЭФФЕКТИВНОЙ (см. `effectiveRole` в index.ts).
@@ -512,7 +754,6 @@ function tell(sessionId: string, participantId: string, message: ControlServerMe
  * панель, в таблице до сих пор участник — спросить её значило бы отказать ему в
  * его собственных заметках на его собственной лекции.
  */
-const rank = new WeakMap<WebSocket, ParticipantRole>()
 
 /**
  * Сказать всем преподавателям комнаты — и никому больше.
@@ -530,17 +771,15 @@ const rank = new WeakMap<WebSocket, ParticipantRole>()
  */
 function toHosts(sessionId: string, file: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
-  if (!room) return
-  const frame = JSON.stringify(message)
-  for (const ws of room.sockets) {
-    if (ws.readyState !== WebSocket.OPEN || rank.get(ws) !== 'host') continue
+  if (!room || room.hosts.size === 0) return
+  let frame: string | null = null
+  for (const ws of room.hosts) {
+    if (ws.readyState !== WebSocket.OPEN) continue
     // И только тем, кто спрашивал про ЭТОТ документ.
     if (notesOpen.get(ws) !== file) continue
-    try {
-      ws.send(frame)
-    } catch {
-      /* dropped; the close handler will clean it up */
-    }
+    frame ??= frameOf(message)
+    if (frame === null) return
+    sendFrame(ws, frame)
   }
 }
 
@@ -574,16 +813,15 @@ const COUNCIL_CLOSED = 'Консилиум закрыт — текст оста�
  */
 function toTeachers(sessionId: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
-  if (!room) return
+  if (!room || room.hosts.size === 0) return
   let frame: string | null = null
-  for (const ws of room.sockets) {
-    if (ws.readyState !== WebSocket.OPEN || rank.get(ws) !== 'host') continue
-    frame ??= JSON.stringify(message)
-    try {
-      ws.send(frame)
-    } catch {
-      /* dropped; the close handler will clean it up */
-    }
+  for (const ws of room.hosts) {
+    if (ws.readyState !== WebSocket.OPEN) continue
+    frame ??= frameOf(message)
+    // Кадр не собрался (стопка выросла за предел строки) — молчим одинаково
+    // всем пультам, а не половине.
+    if (frame === null) return
+    sendFrame(ws, frame)
   }
 }
 
@@ -591,8 +829,7 @@ function toTeachers(sessionId: string, message: ControlServerMessage): void {
 function teachersOnline(sessionId: string): boolean {
   const room = rooms.get(sessionId)
   if (!room) return false
-  for (const ws of room.sockets)
-    if (rank.get(ws) === 'host' && ws.readyState === WebSocket.OPEN) return true
+  for (const ws of room.hosts) if (ws.readyState === WebSocket.OPEN) return true
   return false
 }
 
@@ -626,6 +863,69 @@ function councilCellOf(
  * побеждает любой список.
  */
 const BOARD_EVERY_MS = 300
+/**
+ * Сколько вывода попыток едет в ОДНОЙ полной стопке.
+ *
+ * У попытки в стопке лежит её вывод — до 64 КБ текста и до 2 МБ картинок
+ * (kernel/council.ts). Пока попыток тридцать, всё помещается и ничего не
+ * меняется. На пятистах прогнанных с графиком это десятки мегабайт в одном
+ * кадре: `JSON.stringify` синхронно в цикле событий, разбор на iPad — и всё
+ * это на каждый щелчок замка и каждое переподключение пульта. А свыше ~512 МБ
+ * строки `JSON.stringify` бросает RangeError, и раньше он уводил процесс.
+ *
+ * Поэтому у кадра бюджет: попытки едут с выводом, пока он не выбран, дальше —
+ * с пустым `outputs` и признаком `outputsOmitted`. Вывод одной карточки пульт
+ * просит `council:attempt` и получает дельтой. Дельты (`council:patch`) бюджету
+ * не подчиняются: там от одной до нескольких попыток, и вывод в них — то, ради
+ * чего их и шлют.
+ *
+ * Четыре мегабайта, а не сколько-нибудь красивее: столько весит семинар на
+ * тридцать человек, где КАЖДЫЙ нарисовал график, — то есть обычная пара
+ * проходит целиком и ничего не замечает, а режется ровно поток на пятьсот, где
+ * кадр иначе вырастает до десятков мегабайт. Когда пульт научится просить
+ * вывод по карточке, число можно опускать: сделка станет честной в обе
+ * стороны.
+ */
+const BOARD_OUTPUT_BUDGET = 4 * 1024 * 1024
+
+/** Во сколько знаков обходится вывод одной попытки — грубо и без сборки строки. */
+function outputWeight(run: CouncilRun): number {
+  let total = 0
+  for (const output of run.outputs) {
+    if (output.kind === 'stream') total += output.text.length
+    else if (output.kind === 'error') {
+      total += output.ename.length + output.evalue.length
+      for (const line of output.traceback) total += line.length
+    } else for (const value of Object.values(output.data)) total += value.length
+  }
+  return total
+}
+
+/**
+ * Стопка по бюджету вывода: что не поместилось — без выводов, но с признаком.
+ *
+ * Порядок стопки — по времени правки, и режется её хвост: свежее (то, что
+ * преподаватель только что запустил и смотрит) остаётся с выводом.
+ */
+function withinBudget(board: CouncilBoard): CouncilBoard {
+  let left = BOARD_OUTPUT_BUDGET
+  let cut = false
+  const attempts = board.attempts.map((attempt) => {
+    const run = attempt.run
+    if (!run || run.outputs.length === 0) return attempt
+    const weight = outputWeight(run)
+    if (!cut && weight <= left) {
+      left -= weight
+      return attempt
+    }
+    cut = true
+    // Копия, а не правка на месте: `run` здесь — тот самый объект из кэша
+    // попыток, и вычистить его значило бы стереть вывод у автора.
+    return { ...attempt, run: { ...run, outputs: [], outputsOmitted: true } }
+  })
+  return cut ? { ...board, attempts } : board
+}
+
 interface BoardPending {
   timer: NodeJS.Timeout | null
   last: number
@@ -641,7 +941,7 @@ function boardNow(sessionId: string, cellId: string, dirty: Set<string> | 'all')
     toTeachers(sessionId, {
       t: 'council:board',
       cellId,
-      board: boardFor(sessionId, cellId, cell),
+      board: withinBudget(boardFor(sessionId, cellId, cell)),
     })
     return
   }
@@ -692,23 +992,27 @@ function boardOut(sessionId: string, cellId: string, touched?: readonly string[]
   state.timer.unref?.()
 }
 
-/** Отдать накопленное за окно одним кадром и начать копить заново. */
+/**
+ * Отдать накопленное за окно одним кадром и начать копить заново.
+ *
+ * Под перехватом: половина вызовов сюда приходит из `setTimeout`, где бросок
+ * ловить некому, — он уходит в `uncaughtException`, а тот уводит процесс со
+ * всеми комнатами инстанса. Стопка одной ячейки не стоит чужого семинара, и
+ * копить заново надо в любом случае: иначе одна неудачная сборка запирает
+ * окно навсегда.
+ */
 function flushBoard(sessionId: string, cellId: string, state: BoardPending): void {
   const dirty = state.dirty
   state.dirty = new Set()
   state.last = Date.now()
-  boardNow(sessionId, cellId, dirty)
-}
-
-/**
- * Стопка хосту — снаружи, для оракула о решениях (routes/council.ts).
- *
- * Имена групп и черновики лежат в `CouncilBoard.oracle`, и после `setOracle`
- * сводка на пульте обновится только со стопкой; сам кадр `council:oracle`
- * маршрут шлёт отдельно.
- */
-export function announceCouncilBoard(sessionId: string, cellId: string): void {
-  boardOut(sessionId, cellId)
+  try {
+    boardNow(sessionId, cellId, dirty)
+  } catch (err) {
+    console.error(
+      `[control ${sessionId}] стопка ${cellId} не уехала:`,
+      reason(err, 'unknown error'),
+    )
+  }
 }
 
 /** Отправить отложенные стопки сейчас — ради теста, которому нечего ждать. */
@@ -729,9 +1033,26 @@ function forgetBoards(sessionId: string): void {
   }
 }
 
-/** Свой лист — одному человеку, на все его сокеты. */
-function mineOut(sessionId: string, cellId: string, participantId: string): void {
-  const message = mineMessage(sessionId, cellId, participantId)
+/**
+ * Свой лист — одному человеку, на все его сокеты.
+ *
+ * `lock` — если положение замка уже прочитано снаружи. Замок один на ячейку, а
+ * листы уходят пятистам: читать ради каждого одну и ту же ячейку (поиск по
+ * всем массивам документа) значит пятьсот одинаковых обходов на одно нажатие.
+ *
+ * `position` — то же самое про номер в очереди: когда листы рассылаются пачкой
+ * после сдвига очереди, номера всех ждущих уже посчитаны одним проходом
+ * (`councilQueuePositions`), и искать в очереди ещё раз на каждого — тот же
+ * квадрат, только с другой стороны.
+ */
+function mineOut(
+  sessionId: string,
+  cellId: string,
+  participantId: string,
+  lock?: CellLock,
+  position?: number | null,
+): void {
+  const message = mineMessage(sessionId, cellId, participantId, lock, position)
   if (message) tell(sessionId, participantId, message)
 }
 
@@ -739,9 +1060,14 @@ function mineMessage(
   sessionId: string,
   cellId: string,
   participantId: string,
+  known?: CellLock,
+  knownPosition?: number | null,
 ): ControlServerMessage | null {
-  const { lock } = councilCellOf(sessionId, cellId)
-  const position = councilQueuePosition(sessionId, cellId, participantId)
+  const lock = known ?? councilCellOf(sessionId, cellId).lock
+  const position =
+    knownPosition !== undefined
+      ? knownPosition
+      : councilQueuePosition(sessionId, cellId, participantId)
   const state = mineFor(
     sessionId,
     cellId,
@@ -760,25 +1086,80 @@ function countOut(sessionId: string, cellId: string): void {
 }
 
 /**
+ * Номер в очереди, который каждый ждущий видел последним, — по комнате.
+ *
+ * Нужен, чтобы не слать пятистам человекам кадр, в котором для них ничего не
+ * изменилось: очередь дёргается на каждое начало и каждый конец ЛЮБОЙ работы
+ * ядра, а номер меняется только у тех, кого сдвинуло.
+ */
+const queuePositions = new Map<string, Map<string, number | null>>()
+
+/**
  * Очередь сдвинулась — каждому, кто в ней ждёт, новый номер.
  *
  * «Вы 37-й» без этого показывал бы номер на момент нажатия до конца пары.
  */
 function tellQueued(sessionId: string): void {
-  for (const { cellId, participantId } of councilQueued(sessionId)) {
-    mineOut(sessionId, cellId, participantId)
+  /*
+   * Номера — одним проходом по очереди, а не поиском в ней на каждого ждущего.
+   *
+   * Очередь дёргается дважды на каждую работу ядра, а ждущих на паре бывает
+   * столько же, сколько людей: поштучный `councilQueuePosition` — это поиск по
+   * всей очереди на каждого её участника, то есть четверть миллиона сравнений
+   * на один сдвиг при пятистах попытках. Формула номера при этом одна и лежит
+   * в kernel/index.ts: здесь её нет и не должно быть.
+   */
+  const queued = councilQueuePositions(sessionId)
+  if (queued.length === 0) {
+    queuePositions.delete(sessionId)
+    return
   }
+  const was = queuePositions.get(sessionId)
+  const now = new Map<string, number | null>()
+  // Замок — один раз на ячейку, а не на каждого ждущего.
+  const locks = new Map<string, CellLock>()
+  for (const { cellId, participantId, position } of queued) {
+    let lock = locks.get(cellId)
+    if (lock === undefined) {
+      lock = councilCellOf(sessionId, cellId).lock
+      locks.set(cellId, lock)
+    }
+    const key = `${cellId}\n${participantId}`
+    now.set(key, position)
+    // Номер тот же — говорить нечего: свой лист по всем остальным поводам
+    // уезжает там, где этот повод случился.
+    if (was && was.get(key) === position) continue
+    mineOut(sessionId, cellId, participantId, lock, position)
+  }
+  queuePositions.set(sessionId, now)
+}
+
+/**
+ * Очередь дёрнулась — сказать ждущим новый номер, но не чаще окна.
+ *
+ * Раньше номера пересылались только на конце ЧУЖОЙ ПОПЫТКИ консилиума. Очередь
+ * же одна на всю комнату, и номер студенту считает и ячейки впереди: пять
+ * ячеек преподавательского Run All, досчитавшись, двигали его с шестого места
+ * на первое — и не говорили ему об этом ни слова до конца следующей попытки.
+ *
+ * Окно — потому что очередь дёргается дважды на каждую работу ядра, а кадр
+ * уходит каждому ждущему: на пятистах это заметная пачка, и склеить две
+ * перемены подряд в одну дешевле, чем послать её дважды.
+ */
+const QUEUE_EVERY_MS = 250
+
+function nudgeQueue(sessionId: string): void {
+  onTick(sessionId, 'номера очереди', QUEUE_EVERY_MS, () => tellQueued(sessionId))
+}
+
+/** Комната опустела: номера, которые в ней помнили, больше ничьи. */
+function forgetQueue(sessionId: string): void {
+  queuePositions.delete(sessionId)
 }
 
 /** Все, кому положен свой лист по этой ячейке: онлайн и те, у кого есть попытка. */
 function councilAudience(sessionId: string, cellId: string): Set<string> {
-  const people = new Set<string>()
-  const room = rooms.get(sessionId)
-  if (room)
-    for (const ws of room.sockets) {
-      const who = owner.get(ws)
-      if (who) people.add(who)
-    }
+  const people = new Set<string>(rooms.get(sessionId)?.byParticipant.keys())
   for (const attempt of attemptsOf(sessionId, cellId)) people.add(attempt.participantId)
   return people
 }
@@ -786,8 +1167,10 @@ function councilAudience(sessionId: string, cellId: string): Set<string> {
 /** Замок сменился — хосту стопка, каждому его лист, комнате счётчик. */
 function councilChanged(sessionId: string, cellId: string): void {
   boardOut(sessionId, cellId)
+  // Замок читается один раз на всех: он один на ячейку, а листов пятьсот.
+  const { lock } = councilCellOf(sessionId, cellId)
   for (const participantId of councilAudience(sessionId, cellId))
-    mineOut(sessionId, cellId, participantId)
+    mineOut(sessionId, cellId, participantId, lock)
   countOut(sessionId, cellId)
 }
 
@@ -811,20 +1194,23 @@ function councilCells(sessionId: string): string[] {
  * уже приезжала при её собственном подключении.
  */
 function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload): void {
-  const cells = new Set<string>([...councilCells(sessionId), ...cellsWithAttempts(sessionId)])
+  // Ячейки с консилиумом — один обход всех тетрадей комнаты, а не два: пачка
+  // собирается на каждое подключение, а после сбоя сети их пятьсот подряд.
+  const open = councilCells(sessionId)
+  const cells = new Set<string>([...open, ...cellsWithAttempts(sessionId)])
   if (payload.role === 'host') {
     for (const id of cells) {
       send(ws, {
         t: 'council:board',
         cellId: id,
-        board: boardFor(sessionId, id, councilCellOf(sessionId, id)),
+        // По бюджету вывода: у пульта, вернувшегося после обрыва, стопка на
+        // пятьсот прогнанных попыток иначе весит десятки мегабайт — и это
+        // первое, что он получает.
+        board: withinBudget(boardFor(sessionId, id, councilCellOf(sessionId, id))),
       })
     }
   }
-  const mine = new Set<string>([
-    ...councilCells(sessionId),
-    ...cellsOfParticipant(sessionId, payload.participantId),
-  ])
+  const mine = new Set<string>([...open, ...cellsOfParticipant(sessionId, payload.participantId)])
   for (const id of mine) {
     const message = mineMessage(sessionId, id, payload.participantId)
     if (message) send(ws, message)
@@ -845,6 +1231,14 @@ export function purgeCouncilOf(sessionId: string, participantId: string): number
   const cells = cellsOfParticipant(sessionId, participantId)
   const gone = purgeAttempts(sessionId, participantId)
   for (const id of cells) {
+    /*
+     * И очередь тоже: ядро на потоке одно, а его минута, потраченная на код
+     * человека, которого в комнате уже нет, — это минута, которую ждёт весь
+     * остальной класс. Вывод такого запуска всё равно выбрасывался
+     * (`recordRun` не воскрешает стёртую попытку), то есть работа была
+     * заведомо впустую.
+     */
+    cancelCouncilRun(sessionId, id, participantId)
     // Попытки уже нет — кадр назовёт человека в `removed`.
     boardOut(sessionId, id, [participantId])
     countOut(sessionId, id)
@@ -892,16 +1286,20 @@ onRefusal((sessionId, participantId, refusal) => {
 /**
  * Оракул о решениях сменил состояние — сказать пультам.
  *
- * Сам кадр — только преподавателям (сводка читала тексты студентов, на проектор
- * и в зал ей нельзя), а следом стопка: имена групп и черновики ответов лежат в
- * `CouncilBoard.oracle`, и без свежей стопки чипы в сводке остались бы без
- * подписей. Регистрация здесь, а не в routes/council.ts: сокеты преподавателей
+ * Только преподавателям: сводка читала тексты студентов, на проектор и в зал ей
+ * нельзя. Регистрация здесь, а не в routes/council.ts: сокеты преподавателей
  * знает только этот модуль, а импорт control.ts из ai/council.ts замкнул бы
  * модули друг на друга — как и у onRefusal.
+ *
+ * И БЕЗ стопки следом. Она уезжала здесь ради подписей на чипах сводки, но
+ * подписи и черновики едут в самом кадре (`oracle.groupLabels`), а пульт
+ * кладёт оракула в свою стопку сам (council.svelte.ts · withOracle). Стоила эта
+ * лишняя строка двух полных стопок на один вопрос — «читаю» и «готово», — то
+ * есть двух кадров со всеми попытками и их выводами на каждое нажатие
+ * «Спросить».
  */
 onCouncilOracle((sessionId, cellId, oracle) => {
   toTeachers(sessionId, { t: 'council:oracle', cellId, oracle })
-  boardOut(sessionId, cellId)
 })
 
 // The transcript is in the document; the terminal's health is not, so it comes
@@ -923,18 +1321,28 @@ function kernelStatus(sessionId: string): KernelStatus {
  * Kernel health lives in the document, so the browser already re-renders from
  * there. Mirroring it onto this socket costs one small frame and keeps clients
  * that are watching only the control channel honest.
+ *
+ * И заодно — очередь. Она в том же `meta` (kernel/index.ts · syncQueue), и её
+ * зеркало меняется на каждый сдвиг: ячейка встала, ячейка досчиталась, попытка
+ * пошла в работу. Отсюда ждущим уходит новый номер — единственное место, где
+ * он честен по любому поводу, а не только по концу чужой попытки консилиума.
+ *
+ * `observeDeep`, а не `observe`: список очереди — вложенный Y.Array, и его
+ * правку (а это самый частый сдвиг) карта наружу не показывает.
  */
-function watchKernelStatus(sessionId: string): () => void {
+function watchRoomMeta(sessionId: string): () => void {
   const meta = getMeta(getSessionDoc(sessionId).doc)
   let last = meta.get('kernelStatus') as KernelStatus | undefined
   const onChange = () => {
     const status = meta.get('kernelStatus') as KernelStatus | undefined
-    if (!status || status === last) return
-    last = status
-    broadcast(sessionId, { t: 'kernel', status })
+    if (status && status !== last) {
+      last = status
+      broadcast(sessionId, { t: 'kernel', status })
+    }
+    nudgeQueue(sessionId)
   }
-  meta.observe(onChange)
-  return () => meta.unobserve(onChange)
+  meta.observeDeep(onChange)
+  return () => meta.unobserveDeep(onChange)
 }
 
 /**
@@ -1005,9 +1413,21 @@ function frameText(data: RawData): string {
   return (data as Buffer).toString('utf8')
 }
 
-function parse(data: RawData): ControlClientMessage | null {
+/**
+ * Кадр толще потолка — это не мусор, и молчать про него нельзя.
+ *
+ * Раньше он выбрасывался здесь же, вместе с неразборчивым: ни ошибки, ни
+ * строки в журнале. Для попытки консилиума это худшее, что провод может
+ * сделать, — студент дописывает лист, снимки перестают доезжать МОЛЧА, и на
+ * «Сдать» преподаватель видит текст получасовой давности. Отдельный ответ, а
+ * не `null`.
+ */
+const TOO_BIG = 'too-big'
+
+function parse(data: RawData): ControlClientMessage | typeof TOO_BIG | null {
   const text = frameText(data)
-  if (text.length === 0 || text.length > MAX_FRAME_BYTES) return null
+  if (text.length === 0) return null
+  if (text.length > MAX_FRAME_BYTES) return TOO_BIG
   try {
     const parsed: unknown = JSON.parse(text)
     if (!parsed || typeof parsed !== 'object') return null
@@ -1089,6 +1509,27 @@ function mayRun(
 function cellIsOpen(sessionId: string, id: string): boolean {
   const found = findCell(getSessionDoc(sessionId).doc, id)
   return found ? isCellOpen(found.cell) : false
+}
+
+/**
+ * То же для правки ОДНОЙ ячейки — и тоже с замком.
+ *
+ * Ровно тот же вопрос, что задаёт гейт CRDT на набор в этой ячейке
+ * (collab/gate.ts) и клиент на серую кнопку (web/src/lib/may.ts). Открытая
+ * ячейка — право поверх правил: в лекционной тетради зал в ней печатает и
+ * запускает, и спрашивать про неё голое `rules.edit` значит отвечать «тетрадь
+ * принадлежит преподавателю» про ячейку, которую преподаватель открыл.
+ */
+function mayEditThis(
+  sessionId: string,
+  payload: TokenPayload,
+  ws: WebSocket,
+  cellId: string,
+): boolean {
+  const open = cellIsOpen(sessionId, cellId)
+  if (mayEditCell(getRules(sessionId), payload.role, open, isFinished(sessionId))) return true
+  refuse(ws, sessionId, payload, 'В этом семинаре тетрадь принадлежит преподавателю.')
+  return false
 }
 
 /**
@@ -1494,14 +1935,15 @@ export function dispatch(
        */
       const one = optionalId(message.cellId)
       const rules = getRules(sessionId)
+      /*
+       * У своей ячейки — то же право, что у набора в ней, ЗАМОК ВКЛЮЧАЯ.
+       * Открытая преподавателем ячейка — это «здесь комната работает»: зал в
+       * ней печатает и запускает, а на «стереть вывод» читал отказ про
+       * тетрадь, которую ему только что открыли, — про свой же трейсбек на
+       * пол-экрана.
+       */
       const allowed = one
-        ? may(
-            sessionId,
-            rules.edit,
-            payload,
-            ws,
-            'В этом семинаре тетрадь принадлежит преподавателю.',
-          )
+        ? mayEditThis(sessionId, payload, ws, one)
         : may(sessionId, rules.wipe, payload, ws, 'Стирать всю доску здесь может преподаватель.')
       if (!allowed) return
       const book = bookOf(message)
@@ -1735,7 +2177,16 @@ export function dispatch(
         color: colorForId(payload.participantId),
       })
       broadcast(sessionId, { t: 'lecture', state: started })
+      /*
+       * Чистый лист — и опись к нему, хотя она пустая.
+       *
+       * Опись едет рядом с КАЖДЫМ полным кадром `ink`, и здесь это важнее
+       * всего: она живёт у вкладки дольше самих чернил (по ней считаются
+       * листы в ленте), и опись прошлой лекции, не стёртая новой, заставила бы
+       * пульт держать её страницы пустыми листами.
+       */
       broadcast(sessionId, { t: 'ink', strokes: [] })
+      broadcast(sessionId, { t: 'ink:pages', pages: [] })
       return
     }
 
@@ -1837,6 +2288,30 @@ export function dispatch(
       return
     }
 
+    /**
+     * Чернила одной страницы — по вопросу вкладки.
+     *
+     * Не пультовое и правом не закрыто: спрашивает не ведущий, а тот, кто
+     * смотрит, — вкладка, отставшая от зала, и лента эскизов на пульте. Право
+     * здесь то же, что у приветственной пачки, которая эти же чернила и везёт:
+     * кто в комнате, тот видит лекцию.
+     *
+     * Пустой список — законный ответ и означает «страница чистая». По нему
+     * вкладка закрывает вопрос и второй раз про эту страницу не спрашивает;
+     * молчание оставило бы её ждать чернил до конца лекции — и спрашивать
+     * снова на каждое движение пера.
+     */
+    case 'ink:page': {
+      // Как у указки: `Number` от чужого поля даёт NaN, а `JSON.stringify`
+      // пишет его `null`, и вкладка приняла бы ответ про «страницу null» за
+      // ответ про свою.
+      const asked = Number(message.page)
+      if (!Number.isFinite(asked)) return
+      const page = Math.trunc(asked)
+      send(ws, { t: 'ink:page', page, strokes: inkPageOf(sessionId, page) })
+      return
+    }
+
     /*
      * Дальше — то, чем управляет ПУЛЬТ. Право здесь не спрашивается: страницу,
      * чернила и указку двигает тот, кто ведёт, и только он — пока идёт занятие
@@ -1847,7 +2322,28 @@ export function dispatch(
     case 'lecture:page': {
       if (!atTheRemote(sessionId, payload)) return
       const turned = turnTo(sessionId, Number(message.page))
-      if (turned) broadcast(sessionId, { t: 'lecture', state: turned })
+      if (!turned) return
+      broadcast(sessionId, { t: 'lecture', state: turned })
+      /*
+       * И разметка новой страницы — следом за состоянием, всем сразу.
+       *
+       * Это не оптимизация, а условие: после обрезки приветственной пачки
+       * чернил этой страницы у зала нет, и спросить её каждый умеет сам —
+       * пятьсот вопросов на каждое перелистывание, то есть ровно тот круг
+       * рассылки, ради которого пачку и обрезали. Вкладка поэтому ждёт
+       * досылку (InkLayer · INK_WAIT_MS) и спрашивает, только если её не
+       * дождалась.
+       *
+       * Один кадр на всех, не глядя, у кого что уже есть: страница — единица
+       * выдачи, и `ink:page` заменяет её целиком, так что второй раз получить
+       * то же самое безвредно. Чистый лист стоит при этом пустой список —
+       * десятки байт.
+       */
+      broadcast(sessionId, {
+        t: 'ink:page',
+        page: turned.page,
+        strokes: inkPageOf(sessionId, turned.page),
+      })
       return
     }
 
@@ -1860,7 +2356,7 @@ export function dispatch(
 
     case 'ink': {
       if (!atTheRemote(sessionId, payload)) return
-      const stroke = addInk(sessionId, {
+      const added = addInk(sessionId, {
         id: optionalId(message.id) ?? '',
         page: Number(message.page),
         color: typeof message.color === 'string' ? message.color.slice(0, 32) : '#000000',
@@ -1869,7 +2365,22 @@ export function dispatch(
           : 0.004,
         points: Array.isArray(message.points) ? (message.points as number[]) : [],
       })
-      if (stroke) broadcast(sessionId, { t: 'ink:add', stroke })
+      if (!added) return
+      /*
+       * Потолок — вслух, как переполненная заметка.
+       *
+       * Молчание здесь стоило четырёх секунд и восьми досылок штриха ЦЕЛИКОМ:
+       * пульт не отличал отказ от потерянного кадра. Свои два потолка он теперь
+       * считает сам и штрих на полной странице не открывает вовсе; сюда доезжает
+       * то, чего он посчитать не может, — точки, кончившиеся в середине штриха,
+       * и расхождение после переподключения. Слова — общие (shared/lecture.ts ·
+       * inkFullSays), чтобы один и тот же отказ не звучал двумя голосами.
+       */
+      if (added.full) {
+        send(ws, { t: 'error', message: inkFullSays(added.full) })
+        return
+      }
+      broadcast(sessionId, { t: 'ink:add', stroke: added.stroke })
       return
     }
 
@@ -1901,6 +2412,15 @@ export function dispatch(
       const page = Number.isFinite(message.page) ? Number(message.page) : undefined
       clearInk(sessionId, page)
       broadcast(sessionId, { t: 'ink:clear', page: page ?? null })
+      /*
+       * И свежая опись следом — «стереть» убавляет исписанные страницы.
+       *
+       * Опись говорит про страницы, которых у вкладки на руках нет, и сама
+       * себя по кадру `ink:clear` не поправит: стёртая страница осталась бы в
+       * ней лишним листом в ленте и вопросом про чернила, которых больше нет.
+       * Стоит это десятки байт — в отличие от чернил, которые она описывает.
+       */
+      broadcast(sessionId, { t: 'ink:pages', pages: inkedPagesOf(sessionId) })
       return
     }
 
@@ -1919,13 +2439,13 @@ export function dispatch(
       const page = Number(message.page)
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(page)) return
       const shape = message.shape === 'dot' ? 'dot' : 'line'
-      broadcast(sessionId, { t: 'laser', at: { page, x, y, shape } })
+      laserTo(sessionId, { page, x, y, shape })
       return
     }
 
     case 'laser:off': {
       if (!atTheRemote(sessionId, payload)) return
-      broadcast(sessionId, { t: 'laser', at: null })
+      laserOff(sessionId)
       return
     }
 
@@ -2069,9 +2589,12 @@ export function dispatch(
          * Файлы на диске уже переехали — все разом, одним `rename`, — и отказ
          * на середине списка оставляет комнату наполовину на старых путях:
          * тетрадь по новому адресу, проектор по старому, и ни одного слова о
-         * том, почему. Отказ здесь бывает настоящий: заметки ходят в базу, где
-         * у переезда есть свой конфликт ключа, — и потерять из-за него ещё и
-         * доску было бы вдвое хуже, чем потерять заметки к одному файлу.
+         * том, почему. Заметки — единственные здесь, кто ходит в базу, то есть
+         * единственные, кто умеет отказать по-настоящему; спор за занятый ключ
+         * они решают в пользу переезжающего файла (db.ts · moveNotes,
+         * `UPDATE OR REPLACE`), так что терять тут больше нечего, — но перехват
+         * полезен и сам по себе: доска и проектор не должны падать вместе с
+         * одной строкой SQL.
          */
         try {
           // Документ старого пути больше ни на что не смотрит: у него на диске
@@ -2300,6 +2823,24 @@ export function dispatch(
         (next.studentRun === prior.studentRun && next.namesOnProjector === prior.namesOnProjector)
       if (was === state && sameKnobs) return
       /*
+       * ЗАДАНИЕ — снимается здесь, на самом переходе в консилиум, и только на нём.
+       *
+       * Общий текст ячейки в эту секунду — то, что преподаватель дал классу;
+       * через минуту он им уже не будет: «Показать классу» кладёт в ячейку
+       * чьё-то решение (см. `council:show` ниже). Опоздавший или просто
+       * перезагрузивший страницу засевал свой лист тем, что лежит в ячейке
+       * СЕЙЧАС, — то есть чужим ответом, и одно нажатие «Сдать» отправляло его
+       * в группу автора.
+       *
+       * Не на каждом нажатии: `cell:lock` с тем же положением — это
+       * переключение ручки, и переписывать им задание значило бы вернуть ровно
+       * ту же подмену. Пустая строка — законное задание: консилиум открыли на
+       * пустой ячейке, «напишите сами».
+       */
+      if (was !== 'council' && state === 'council') {
+        rememberSeed(sessionId, id, cellSource(found.cell).toString())
+      }
+      /*
        * От имени сервера, как `state` и `outputs` у той же ячейки: `open` —
        * право, а не чей-то набор, и автора у него нет. Ключ `council` пишется
        * только там, где он есть или нужен: ячейке, которая консилиумом не была,
@@ -2350,6 +2891,20 @@ export function dispatch(
             message: `Попытка — не длиннее ${MAX_ATTEMPT_CHARS} знаков; остальное вынесите в файл.`,
           })
           return
+        }
+        /*
+         * Текст сменился — ждущий запуск снимается с очереди.
+         *
+         * `saveDraft` честно убирает с попытки всё, что было сказано о прежнем
+         * тексте, и `recordRun` выбрасывает опоздавший кадр, — но запись в
+         * очереди оставалась, и это стоило дважды. Ядру — минуту на код,
+         * которого уже нет, при общей очереди на весь поток. Автору — отказ
+         * «эта попытка уже в очереди» на попытку запустить НОВУЮ версию: пока
+         * старый исходник не досчитается, перезапустить нечего.
+         */
+        const priorText = attemptOf(sessionId, id, payload.participantId)?.text
+        if (priorText !== undefined && priorText !== message.text) {
+          cancelCouncilRun(sessionId, id, payload.participantId)
         }
         saveDraft(sessionId, id, payload.participantId, message.text, now)
       } else if (message.t === 'council:submit') {
@@ -2447,10 +3002,25 @@ export function dispatch(
            * конца запуска сдвинулась — ждущим новый номер.
            */
           onChange: (run: CouncilRun | null) => {
-            recordRun(sessionId, id, target, run)
+            /*
+             * Кадр, который не лёг, никому и не рассылается.
+             *
+             * `recordRun` отвечает `false` в двух случаях: попытки уже нет
+             * (бан) и кадр опоздал — пока запуск ждал очереди, автор сменил
+             * текст, и вывод относится к прежнему. Раньше за выброшенным
+             * кадром всё равно шли `mineOut`/`boardOut`: пустая дельта в
+             * каждый сокет комнаты, по три на попытку. Очередь при этом
+             * сдвинулась по-настоящему — про неё сказать надо.
+             */
+            const landed = recordRun(sessionId, id, target, run)
+            const over = run === null || run.state === 'ok' || run.state === 'error'
+            if (!landed) {
+              if (over) tellQueued(sessionId)
+              return
+            }
             mineOut(sessionId, id, target)
             boardOut(sessionId, id, [target])
-            if (run === null || run.state === 'ok' || run.state === 'error') tellQueued(sessionId)
+            if (over) tellQueued(sessionId)
           },
         },
         displayName(sessionId, payload.participantId),
@@ -2519,6 +3089,41 @@ export function dispatch(
       setMark(sessionId, id, target, correct)
       mineOut(sessionId, id, target)
       boardOut(sessionId, id, [target])
+      return
+    }
+
+    /*
+     * Попытка целиком — с выводом, которого не было в стопке.
+     *
+     * У полной стопки есть бюджет вывода (`withinBudget`): на пятистах
+     * прогнанных попытках кадр со всеми картинками весит десятки мегабайт, а
+     * пульт рисует их по одной, когда карточку развернули. Это вторая половина
+     * сделки — «покажи вот эту».
+     *
+     * Право то же, что у всей стопки: чужую попытку видит только ведущий.
+     * Ответ — обычная дельта, её пульт уже умеет класть в стопку. Попытки
+     * больше нет — молчим: её могли забанить, и `removed` уже уехал.
+     */
+    case 'council:attempt': {
+      if (!mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, 'Консилиум ведёт преподаватель.')
+        return
+      }
+      const id = optionalId(message.cellId)
+      const target = optionalId(message.participantId)
+      if (!id || !target) return
+      const attempt = attemptFor(sessionId, id, target)
+      if (!attempt) return
+      const cell = councilCellOf(sessionId, id)
+      send(ws, {
+        t: 'council:patch',
+        cellId: id,
+        attempts: [attempt],
+        removed: [],
+        counts: countsFor(sessionId, id),
+        lock: cell.lock,
+        settings: cell.settings,
+      })
       return
     }
 
@@ -2613,12 +3218,28 @@ export function dispatch(
         return
       }
       const value = typeof message.value === 'string' ? message.value : ''
-      void answerInput(sessionId, value, optionalId(message.cellId)).catch((err: unknown) => {
-        send(ws, {
-          t: 'error',
-          message: reason(err, 'Could not send that to the cell.'),
+      /*
+       * И `false` — тоже ответ, а не только бросок.
+       *
+       * `answerInput` возвращает его, когда ядро ввода уже не ждёт (или ждёт
+       * его в другой ячейке): строка никуда не ушла. Пока этот исход тихо
+       * выбрасывался, «Send» молчал — человек нажимал его ещё и ещё, а ядро
+       * стояло. Приглашение в документе гасит само ядро (kernel/index.ts ·
+       * clearStdinOn), но форма исчезает не мгновенно, и молчание в эту секунду
+       * читается как «отправлено».
+       */
+      void answerInput(sessionId, value, optionalId(message.cellId))
+        .then((answered) => {
+          if (!answered) {
+            send(ws, { t: 'error', message: 'Ядро уже не ждёт этого ввода — форма убрана.' })
+          }
         })
-      })
+        .catch((err: unknown) => {
+          send(ws, {
+            t: 'error',
+            message: reason(err, 'Could not send that to the cell.'),
+          })
+        })
       return
     }
 
@@ -2640,15 +3261,41 @@ export function dispatch(
       }
       if (!mayBulkRun(sessionId, payload, ws)) return
       /*
+       * Названная тетрадь обязана существовать — тот же довод, что у
+       * clearOutputs и Run All: ниже по дороге неизвестный путь означает
+       * «тетрадь не названа» (kernel/format.ts · `cellsAt(...) ?? getCells`), а
+       * это black, переписавший КАЖДУЮ кодовую ячейку тетради КОМНАТЫ по
+       * нажатию во вкладке убранной тетради — у всех и без имени в строке
+       * терминала.
+       */
+      const book = bookOf(message)
+      if (book && !cellsAt(getSessionDoc(sessionId).doc, book)) {
+        send(ws, { t: 'error', message: NO_SUCH_BOOK })
+        return
+      }
+      /*
        * The result goes to the terminal transcript rather than back down this
        * socket: everybody's notebook just changed under them, so everybody
        * deserves the sentence explaining it — not only whoever pressed the
        * button. It is also the one place that can say "three cells were left
        * alone", which is the part somebody will want to check.
        */
-      void formatSession(sessionId, bookOf(message))
+      void formatSession(sessionId, book)
         .then((outcome) => {
-          if (outcome.error) return
+          if (outcome.error) {
+            /*
+             * Отказ — нажавшему, а не только в журнал ядра.
+             *
+             * Причина у него теперь по делу: «ядро занято ячейкой», «ячейка
+             * ждёт input()», «в очереди стоят ячейки» (kernel/index.ts ·
+             * formatBlocker). Журнал эти слова получает тоже — их касается вся
+             * комната, — но тот, кто нажал, смотрит на кнопку, а не в ленту
+             * терминала, и без этой строки Format выглядел бы просто не
+             * сработавшим.
+             */
+            send(ws, { t: 'error', message: outcome.error })
+            return
+          }
           if (outcome.changed === 0 && outcome.skipped === 0) {
             kernelNote(sessionId, 'Formatted with black — everything was already in shape.')
             return
@@ -2709,7 +3356,7 @@ export function dispatch(
       void openTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
           t: 'error',
-          message: reason(err, 'Could not open the terminal.'),
+          message: reason(err, 'Не удалось открыть терминал.'),
         })
       })
       return
@@ -2739,7 +3386,9 @@ export function dispatch(
       if (Buffer.byteLength(command, 'utf8') > MAX_COMMAND_BYTES) {
         send(ws, {
           t: 'error',
-          message: `That command is over ${MAX_COMMAND_BYTES.toLocaleString('en-GB')} characters. Put it in a file and run the file.`,
+          message:
+            `Команда длиннее ${MAX_COMMAND_BYTES.toLocaleString('ru-RU')} байт — ` +
+            `положите её в файл и запустите файл.`,
         })
         return
       }
@@ -2759,7 +3408,7 @@ export function dispatch(
           ws,
           sessionId,
           payload,
-          'Only the host, or whoever typed the running command, can stop the terminal.',
+          'Прервать команду может преподаватель или тот, кто её набрал.',
         )
         return
       }
@@ -2786,7 +3435,7 @@ export function dispatch(
           getRules(sessionId).wipe,
           payload,
           ws,
-          'Only the host can clear the terminal — that history belongs to the room.',
+          'Очистить расшифровку может преподаватель: она общая на всю комнату.',
         )
       ) {
         return
@@ -2804,7 +3453,7 @@ export function dispatch(
           getRules(sessionId).wipe,
           payload,
           ws,
-          'Only the host can close the terminal.',
+          'Закрыть общую оболочку может преподаватель.',
         )
       ) {
         return
@@ -2812,7 +3461,7 @@ export function dispatch(
       void closeTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
           t: 'error',
-          message: reason(err, 'Could not close the terminal.'),
+          message: reason(err, 'Не удалось закрыть терминал.'),
         })
       })
       return
@@ -2824,22 +3473,67 @@ function reason(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
 }
 
+/**
+ * Чернила показываемой страницы — и один сбор на всех, кто пришёл между двумя
+ * штрихами.
+ *
+ * Опоздавший обязан увидеть ту же страницу, что и зал, вместе с тем, что на
+ * ней уже нарисовано. Раньше это собиралось из ВСЕХ страниц лекции (`inkOf` и
+ * `JSON.stringify` — под мегабайт на лекции с двадцатью минутами письма), и
+ * после сбоя сети зал возвращался весь сразу: мегабайт умножался на пятьсот.
+ * Теперь пачка везёт одну страницу, а про остальные говорит опись
+ * (`ink:pages`) — десятки байт вместо мегабайта; страницу, на которую ушли не
+ * спросясь, вкладка спрашивает сама (`case 'ink:page'`), а ту, на которую
+ * ведущий перевёл зал, сервер досылает (`case 'lecture:page'`).
+ *
+ * Кэш при этом остался и стал ключом на пару «перемена в чернилах + страница»:
+ * пятьсот вернувшихся вкладок смотрят ОДНУ страницу — ту, что показывает
+ * ведущий, — и собирать её пятьсот раз незачем. Номер перемены — сквозной
+ * (lecture.ts · inkRevision): пока никто не рисует, кадр тот же самый.
+ * Держится он байтами: иначе `ws.send` кодировал бы его в UTF-8 заново на
+ * каждый сокет (см. sendFrame).
+ *
+ * Одна запись на комнату, а не по записи на страницу: спрошенные страницы
+ * ответом и уходят, кэшировать их значило бы держать в памяти всю лекцию ради
+ * ленты эскизов, открытой раз за пару.
+ */
+const inkFrames = new Map<string, { rev: number; page: number; frame: Buffer }>()
+
+function inkFrame(sessionId: string, page: number): Buffer | null {
+  const rev = inkRevision(sessionId)
+  const known = inkFrames.get(sessionId)
+  if (known && known.rev === rev && known.page === page) return known.frame
+  const text = frameOf({ t: 'ink', strokes: inkPageOf(sessionId, page) })
+  if (text === null) return null
+  const frame = Buffer.from(text, 'utf8')
+  inkFrames.set(sessionId, { rev, page, frame })
+  return frame
+}
+
 /* --------------------------------------------------------------- socket */
 
 export function handleControlSocket(ws: WebSocket, sessionId: string, payload: TokenPayload): void {
   let room = rooms.get(sessionId)
   if (!room) {
-    room = { sockets: new Set<WebSocket>(), unwatch: () => {} }
+    room = {
+      sockets: new Set<WebSocket>(),
+      byParticipant: new Map<string, Set<WebSocket>>(),
+      hosts: new Set<WebSocket>(),
+      unwatch: () => {},
+    }
     rooms.set(sessionId, room)
     // Attach after the room exists, so the first status change has somewhere to go.
-    room.unwatch = watchKernelStatus(sessionId)
+    room.unwatch = watchRoomMeta(sessionId)
   }
   room.sockets.add(ws)
+  const mine = room.byParticipant.get(payload.participantId) ?? new Set<WebSocket>()
+  mine.add(ws)
+  room.byParticipant.set(payload.participantId, mine)
+  // Роль запоминается здесь и больше нигде: `toHosts` и стопка консилиума
+  // спрашивают только её, а сокет живёт с той ролью, с которой пришёл, —
+  // ровно с той, которую dispatch проверяет на каждом сообщении.
+  if (payload.role === 'host') room.hosts.add(ws)
   owner.set(ws, payload.participantId)
-  // Роль запоминается здесь и больше нигде: `toHosts` спрашивает только её, а
-  // сокет живёт с той ролью, с которой пришёл, — ровно с той, которую dispatch
-  // проверяет на каждом сообщении.
-  rank.set(ws, payload.role)
 
   // Before anything else: the browser gates its own interrupt/restart controls
   // on this, and the token it holds may say something staler than the truth.
@@ -2876,7 +3570,26 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    */
   const lecture = lectureOf(sessionId)
   send(ws, { t: 'lecture', state: lecture })
-  if (lecture) send(ws, { t: 'ink', strokes: inkOf(sessionId) })
+  if (lecture) {
+    /*
+     * Чернила — ТОЛЬКО показываемой страницы, а про остальные едет опись.
+     *
+     * Двадцать минут разметки — это около мегабайта, и весь он уезжал каждому
+     * вошедшему, хотя смотрит вошедший одну страницу; после сбоя Wi-Fi зал
+     * возвращается весь сразу, и мегабайт умножается на пятьсот. Опись стоит
+     * десятки байт и говорит ровно то, чего в обрезанном кадре больше нет:
+     * какие страницы исписаны. По ней пульт считает заведённые чистые листы и
+     * лента эскизов знает, что просить; недостающее вкладка спрашивает сама
+     * (`ink:page`), а страницу, на которую ведущий перевёл зал, сервер
+     * досылает.
+     *
+     * Порядок — кадр, потом опись: вкладка принимает `ink` как полную замену
+     * чернил, и опись, пришедшая перед ним, описывала бы прошлую лекцию.
+     */
+    const ink = inkFrame(sessionId, lecture.page)
+    if (ink !== null) sendFrame(ws, ink)
+    send(ws, { t: 'ink:pages', pages: inkedPagesOf(sessionId) })
+  }
   /*
    * И консилиум: попытки живут не в документе, и опоздавший иначе не узнал бы
    * ни о своём листе, ни о стопке (хост), ни о счётчике — до первого чужого
@@ -2903,6 +3616,13 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     const current = rooms.get(sessionId)
     if (!current) return
     current.sockets.delete(ws)
+    current.hosts.delete(ws)
+    const who = owner.get(ws)
+    const mine = who ? current.byParticipant.get(who) : undefined
+    if (who && mine) {
+      mine.delete(ws)
+      if (mine.size === 0) current.byParticipant.delete(who)
+    }
     /*
      * Ведущий ушёл молча — гасим его указку сами.
      *
@@ -2912,15 +3632,21 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
      * сокета: у него их обычно два (планшет и кафедральный ноутбук), и уход
      * второго не должен гасить пятно, которое первый держит неподвижно.
      */
-    const who = owner.get(ws)
-    if (who && isPresenter(sessionId, who)) {
-      let elsewhere = false
-      for (const other of current.sockets) if (owner.get(other) === who) elsewhere = true
-      if (!elsewhere) laserOff(sessionId)
-    }
+    if (who && isPresenter(sessionId, who) && !current.byParticipant.has(who)) laserOff(sessionId)
     if (current.sockets.size === 0) {
       current.unwatch()
       rooms.delete(sessionId)
+      // Ждать в этой комнате больше некому: номера, которые в ней помнили,
+      // ничьи.
+      forgetQueue(sessionId)
+      // И кэшам приветственной пачки незачем переживать последнего ушедшего:
+      // семестр пустых комнат — это семестр списков файлов в памяти процесса.
+      treeFrames.delete(sessionId)
+      treeSent.delete(sessionId)
+      inkFrames.delete(sessionId)
+      laserHeld.delete(sessionId)
+      // Хвосты склейки — туда же: слать их некому и некуда.
+      forgetTicks(sessionId)
     }
   }
 
@@ -2931,6 +3657,18 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   ws.on('message', (data: RawData, isBinary: boolean) => {
     if (isBinary) return
     const message = parse(data)
+    if (message === TOO_BIG) {
+      // Называем оба потолка, до которых это доходит на самом деле: снимок
+      // попытки и речь к странице. Всё прочее в этот провод в разы короче.
+      send(ws, {
+        t: 'error',
+        message:
+          `Сообщение слишком длинное — оно не отправлено. ` +
+          `Попытка — не длиннее ${MAX_ATTEMPT_CHARS.toLocaleString('ru-RU')} знаков, ` +
+          `речь к странице — ${MAX_NOTE_CHARS.toLocaleString('ru-RU')}.`,
+      })
+      return
+    }
     if (!message) return
     try {
       dispatch(ws, sessionId, payload, message)
@@ -2949,11 +3687,28 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   sweepOrphanRuns(sessionId)
   send(ws, { t: 'ready', kernel: kernelStatus(sessionId) })
   send(ws, { t: 'terminal', status: terminalPhase(sessionId) })
-  let tree: FileTree
-  try {
-    tree = listTree(sessionId)
-  } catch {
-    tree = { files: [], truncated: false }
-  }
-  send(ws, { t: 'files', files: tree.files, truncated: tree.truncated })
+  /*
+   * Дерево — из общего кэша комнаты: после перезапуска сервера сюда приходят
+   * пятьсот вкладок за две секунды, и обход папки на каждую — это секунды
+   * блокировки цикла событий ровно тогда, когда все ждут возврата. Обход не
+   * удался — молчим: пустой список здесь читался бы как «в комнате ничего
+   * нет», а это не то, что случилось.
+   *
+   * Остальная цена того же возврата замерена и записана числом, а не догадкой
+   * (tests/sync-storm-cost.test.mts): на семестровой комнате step2 каждого
+   * вернувшегося — 87 КБ и 5.6 мс разбора гейтом, ответ сервера ему — те же 87
+   * КБ. Это ×500 и лежит уже не здесь, а на общем документе.
+   */
+  const files = filesFrame(sessionId)
+  if (files !== null) sendFrame(ws, files)
+  /*
+   * И расписка о разосланном кадре снимается, если новичок получил НЕ ЕЁ.
+   *
+   * `treeSent` держит обещание «этот список видели все в комнате», и на нём
+   * стоит молчание рассылки. Вошедший это обещание рушит: пока комната стояла
+   * пустой, дерево могло измениться и вернуться обратно, и следующая рассылка
+   * приняла бы совпадение с распиской за «никому ничего не нужно». Один лишний
+   * кадр на вход дешевле панели, показывающей позавчерашнюю папку.
+   */
+  if (files === null || !treeSent.get(sessionId)?.equals(files)) treeSent.delete(sessionId)
 }

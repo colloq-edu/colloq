@@ -1,0 +1,180 @@
+/**
+ * Задание консилиума: чем сервер сеет пустой лист.
+ *
+ * Лист студента засевался общим текстом ячейки «на момент открытия листа». Пока
+ * консилиум только открыли, это и есть задание; после «Показать классу» общий
+ * текст — уже чьё-то решение, и опоздавший (или просто перезагрузивший
+ * страницу) получал его стартовым текстом СВОЕГО листа, а одно нажатие «Сдать»
+ * отправляло его в группу автора. Утечки в этом нет — решение и так на экране,
+ * — но задания у него в листе не оставалось.
+ *
+ * Поэтому текст ячейки снимается один раз, на самом переходе замка в консилиум
+ * (control.ts · `cell:lock`), и едет каждому в `CouncilMine.seed`. Проверяется
+ * здесь серверная половина: что снимок берётся вовремя, что показ решения его
+ * не подменяет и что переключение ручки не переписывает задание. Клиентская
+ * половина — tests/notebook-council-seed.test.mts.
+ *
+ * Ни сети, ни ядра: сокеты поддельные, комната настоящая, диспетчер тот же.
+ */
+import './_env.mts'
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { WebSocket } from 'ws'
+import { createSession, setRules, upsertParticipant } from '../server/src/db.js'
+import { closeControlRoom, dispatch, handleControlSocket } from '../server/src/control.js'
+import { getSessionDoc } from '../server/src/collab/index.js'
+import { cellId, cellSource, createCell, findCell, getCells } from '../shared/notebook.js'
+import { LECTURE_ROOM } from '../shared/rules.js'
+import type { ControlClientMessage, ControlServerMessage, CouncilMine } from '../shared/protocol.js'
+import type { TokenPayload } from '../server/src/auth.js'
+
+interface Fake {
+  ws: WebSocket
+  heard: ControlServerMessage[]
+}
+
+function socket(): Fake {
+  const heard: ControlServerMessage[] = []
+  const fake = {
+    readyState: WebSocket.OPEN as number,
+    send(frame: unknown) {
+      if (typeof frame === 'string') heard.push(JSON.parse(frame) as ControlServerMessage)
+    },
+    on() {
+      return this
+    },
+    ping() {},
+    terminate() {},
+    close() {
+      fake.readyState = WebSocket.CLOSED
+    },
+  }
+  return { ws: fake as unknown as WebSocket, heard }
+}
+
+interface Person {
+  payload: TokenPayload
+  sock: Fake
+}
+
+const TASK = '# задание: посчитайте среднее'
+
+let rooms = 0
+
+function join(sessionId: string, who: string, name: string, role: 'host' | 'participant'): Person {
+  upsertParticipant({ id: who, sessionId, name, avatar: null, role })
+  const payload: TokenPayload = { sessionId, participantId: who, role }
+  const sock = socket()
+  handleControlSocket(sock.ws, sessionId, payload)
+  return { payload, sock }
+}
+
+function room(): { id: string; cell: string; teacher: Person; petya: Person } {
+  const id = `seed-${++rooms}`
+  createSession(id, 'Консилиум', null)
+  setRules(id, { ...LECTURE_ROOM })
+  const { doc } = getSessionDoc(id)
+  const made = createCell('code', TASK)
+  doc.transact(() => getCells(doc).push([made]))
+  return {
+    id,
+    cell: cellId(made),
+    teacher: join(id, `${id}_teacher`, 'Ада', 'host'),
+    petya: join(id, `${id}_petya`, 'Петя', 'participant'),
+  }
+}
+
+function say(id: string, who: Person, message: ControlClientMessage): void {
+  dispatch(who.sock.ws, id, who.payload, message)
+}
+
+function lastMine(who: Person, cell: string): CouncilMine | null {
+  for (let i = who.sock.heard.length - 1; i >= 0; i--) {
+    const m = who.sock.heard[i]
+    if (m.t === 'council:mine' && m.cellId === cell) return m.state
+  }
+  return null
+}
+
+test('задание снимается на переходе в консилиум и едет каждому', () => {
+  const at = room()
+  say(at.id, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' })
+  assert.equal(lastMine(at.petya, at.cell)?.seed, TASK)
+  closeControlRoom(at.id)
+})
+
+test('«Показать классу» не подменяет задание решением', () => {
+  /*
+   * Тот самый случай, ради которого всё и написано: показ кладёт код Пети в
+   * общую ячейку, и опоздавшая Маша раньше получала его в свой лист.
+   */
+  const at = room()
+  say(at.id, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' })
+  say(at.id, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at.id, at.teacher, {
+    t: 'council:show',
+    cellId: at.cell,
+    participantId: at.petya.payload.participantId,
+  })
+
+  // Общий текст действительно подменился — иначе тест ничего не проверяет.
+  const found = findCell(getSessionDoc(at.id).doc, at.cell)
+  assert.equal(cellSource(found!.cell).toString(), 'x = 42')
+
+  // А задание — нет, и опоздавшая получает его, а не чужой ответ.
+  const masha = join(at.id, `${at.id}_masha`, 'Маша', 'participant')
+  assert.equal(lastMine(masha, at.cell)?.seed, TASK, 'опоздавшей уехало показанное решение')
+  closeControlRoom(at.id)
+})
+
+test('переключение ручки задание не переписывает', () => {
+  /*
+   * Повторный `cell:lock` в то же положение — это меню замка, а не новая
+   * задача. Переписывать им задание значило бы вернуть ту же подмену другой
+   * дорогой: после показа галочка «студенты запускают» стирала бы задание.
+   */
+  const at = room()
+  say(at.id, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council' })
+  say(at.id, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at.id, at.teacher, {
+    t: 'council:show',
+    cellId: at.cell,
+    participantId: at.petya.payload.participantId,
+  })
+  say(at.id, at.teacher, {
+    t: 'cell:lock',
+    cellId: at.cell,
+    state: 'council',
+    settings: { studentRun: true },
+  })
+
+  const masha = join(at.id, `${at.id}_masha`, 'Маша', 'participant')
+  assert.equal(lastMine(masha, at.cell)?.seed, TASK)
+  closeControlRoom(at.id)
+})
+
+test('пустая ячейка — пустое задание, а не отсутствие задания', () => {
+  /*
+   * «Напишите сами» — законный консилиум, и пустая строка здесь ЗНАНИЕ:
+   * отсутствие поля клиент читает как «старый сервер» и сеет общим текстом,
+   * то есть после показа — чужим решением.
+   */
+  const id = `seed-empty-${++rooms}`
+  createSession(id, 'Консилиум', null)
+  setRules(id, { ...LECTURE_ROOM })
+  const { doc } = getSessionDoc(id)
+  const made = createCell('code', '')
+  doc.transact(() => getCells(doc).push([made]))
+  const teacher = join(id, `${id}_teacher`, 'Ада', 'host')
+  const petya = join(id, `${id}_petya`, 'Петя', 'participant')
+
+  dispatch(teacher.sock.ws, id, teacher.payload, {
+    t: 'cell:lock',
+    cellId: cellId(made),
+    state: 'council',
+  })
+  const mine = lastMine(petya, cellId(made))
+  assert.equal(mine?.seed, '')
+  assert.ok(mine && 'seed' in mine, 'поле обязано присутствовать, а не отсутствовать')
+  closeControlRoom(id)
+})

@@ -107,11 +107,9 @@ const ORACLE: CouncilOracle = {
   state: 'ready',
   askedAt: 10,
   basedOn: 3,
-  staleBy: 0,
   summary: ['верно', 'ошибка', 'показать'],
   groupLabels: {},
   drafts: {},
-  notable: [],
   error: null,
 }
 
@@ -169,10 +167,10 @@ test('оракул, приехавший раньше стопки, ложитс
   council.receive({ t: 'council:board', cellId: 'c1', board: board() })
   assert.equal(council.boards.c1?.oracle?.state, 'ready')
   // Стопка со своим оракулом сильнее раннего: она свежее.
-  const later: CouncilBoard = { ...board(), oracle: { ...ORACLE, state: 'stale', staleBy: 4 } }
+  const later: CouncilBoard = { ...board(), oracle: { ...ORACLE, basedOn: 4 } }
   council.receive({ t: 'council:oracle', cellId: 'c2', oracle: ORACLE })
   council.receive({ t: 'council:board', cellId: 'c2', board: later })
-  assert.equal(council.boards.c2?.oracle?.staleBy, 4)
+  assert.equal(council.boards.c2?.oracle?.basedOn, 4)
 })
 
 test('оракул поверх стопки меняет только оракула; чужая стопка — та же ссылка', () => {

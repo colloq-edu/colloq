@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express'
+import { Router, type NextFunction, type Request, type Response } from 'express'
 import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
 import { getTeacher } from '../admin/store.js'
 import {
@@ -20,24 +20,31 @@ import {
   getParticipant,
   storedRules,
   getSession,
+  isFinished,
   isTokenHost,
   listParticipants,
   setRules,
   upsertParticipant,
 } from '../db.js'
 import { onlineParticipantIds } from '../collab/index.js'
+import { freeMark } from '@shared/marks'
 import { seldom, tally } from '../log.js'
 import { ensureKernel } from '../kernel/index.js'
-import { listCourses, publicationOf, stepCount } from '../publish/store.js'
+import { activeName, exists as environmentExists } from '../environments.js'
+import { publicationOf, stepCount } from '../publish/store.js'
 import { broadcast } from '../control.js'
 import { readRules } from '@shared/rules'
-import { setSeminarCreator } from './admin-instance.js'
-import type { AdminErrorBody } from '@shared/admin'
+import { normalizeLabel } from '@shared/text'
+import { courseOfSeminar } from './course-view.js'
+import { isArchived, setSeminarCreator } from './admin-instance.js'
+import { ENVIRONMENT_NAME, type AdminErrorBody } from '@shared/admin'
+import { SESSION_MISSING } from '@shared/protocol'
 import type {
   CreateSessionResponse,
   HandoffResponse,
   JoinResponse,
   ParticipantRole,
+  SessionMe,
 } from '@shared/protocol'
 
 /*
@@ -51,14 +58,15 @@ const MAX_SESSION_NAME = 80
 const MAX_PARTICIPANT_NAME = 40
 const MAX_AVATAR = 512
 
-/** Collapse whitespace and drop control characters so a name cannot break the roster layout. */
-function normalize(value: unknown): string {
-  if (typeof value !== 'string') return ''
-  return value
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
+/**
+ * Collapse whitespace and drop control characters so a name cannot break the
+ * roster layout.
+ *
+ * Правило одно на все двери и живёт в shared/text.ts: то же имя приезжает из
+ * панели, из списка штата и из импорта, и трёх дословных копий этой функции
+ * хватило, чтобы четвёртая дверь обошлась голым trim().
+ */
+const normalize = normalizeLabel
 
 /**
  * Аватар — знак, а не адрес.
@@ -111,6 +119,86 @@ function tooManyArrivals(sessionId: string): boolean {
   recent.push(now)
   arrivals.set(sessionId, recent)
   return false
+}
+
+/**
+ * Метка выдаётся на входе, и судья у неё один — сервер.
+ *
+ * Экран входа выбирает зверя по ростеру и обещает: «Picked from the ones
+ * nobody in this room has taken». Клиент это обещание сузил до круга сети
+ * (web/src/components/join/pick.ts перечитывает ростер прямо перед стуком), но
+ * закрыть не может: две вкладки, постучавшие в одну и ту же секунду, друг
+ * друга не видят. Сорок меток на класс из тридцати дают около одиннадцати пар
+ * с одним зверем — то есть с одинаковым курсором в тетради, а цвет их не
+ * различает (он минтуется из id). Замечают это на двадцатой минуте.
+ *
+ * Занятыми считаются двое: те, кто В КОМНАТЕ сейчас (тот же список, что отдаёт
+ * `/participants` полем `online`), и те, кому метку выдали здесь только что.
+ * Второе — не перестраховка, а весь смысл: между `/join` и первым кадром
+ * присутствия проходит секунда, и без короткой памяти класс, открывший ссылку
+ * разом, весь укладывается в эту секунду и расходится с одинаковыми зверями.
+ *
+ * Своё прошлое место не в счёт: вернувшийся занимает ровно ту метку, что была
+ * его, и подменять её нечем и незачем.
+ */
+const MARK_HOLD_MS = 60_000
+/** Комнат, после которых память чистится вся: иначе она растёт до перезапуска. */
+const MARK_ROOMS_KEPT = 200
+
+interface HandedMark {
+  id: string
+  mark: string
+  at: number
+}
+
+const handedOut = new Map<string, HandedMark[]>()
+
+function recentMarks(sessionId: string): HandedMark[] {
+  const now = Date.now()
+  const fresh = (handedOut.get(sessionId) ?? []).filter((row) => now - row.at < MARK_HOLD_MS)
+  if (fresh.length > 0) handedOut.set(sessionId, fresh)
+  else handedOut.delete(sessionId)
+  return fresh
+}
+
+function rememberMark(sessionId: string, id: string, mark: string): void {
+  // Свою прошлую метку человек не держит: вход второй вкладкой — это он же.
+  const fresh = recentMarks(sessionId).filter((row) => row.id !== id)
+  fresh.push({ id, mark, at: Date.now() })
+  handedOut.set(sessionId, fresh)
+  // Комнаты, из которых давно никто не входил, вычищаются оптом: минута
+  // жизни у строки, а сама карта иначе помнит каждую комнату инстанса.
+  if (handedOut.size > MARK_ROOMS_KEPT) for (const id of [...handedOut.keys()]) recentMarks(id)
+}
+
+/**
+ * Метка, с которой человек войдёт на самом деле.
+ *
+ * Подменяется занятая И невыбранная: человек мог ткнуть в конкретного зверя
+ * руками (`picked`), и менять выбранное просто потому, что нам так удобнее, —
+ * худшее из двух зол. Подборщик занятые метки нажать не даёт и перечитывает
+ * ростер при открытии (web/src/components/join/MarkPicker.svelte), так что
+ * выбранная руками совпадёт разве что в круге сети, — а два ежа в комнате
+ * дешевле экрана, который молча сделал вид, что не услышал.
+ *
+ * Пустую метку не выдумываем: вошедший без неё — это вход мимо экрана (пульт,
+ * скрипт), и раздавать ему зверя незачем.
+ */
+function markToHand(
+  sessionId: string,
+  asked: string | null,
+  mine: string | null,
+  picked: boolean,
+): string | null {
+  if (!asked || picked) return asked
+  const inside = new Set(onlineParticipantIds(sessionId))
+  const taken = new Set<string>()
+  for (const person of listParticipants(sessionId)) {
+    if (person.id === mine || !person.avatar || !inside.has(person.id)) continue
+    taken.add(person.avatar)
+  }
+  for (const row of recentMarks(sessionId)) if (row.id !== mine) taken.add(row.mark)
+  return taken.has(asked) ? freeMark(taken, null) : asked
 }
 
 /**
@@ -178,6 +266,47 @@ function noteWarmupFailure(sessionId: string, err: unknown): void {
 }
 
 /**
+ * Токен из заголовка, если он про ЭТУ комнату.
+ *
+ * Header only. The query string used to be accepted here as well, for the
+ * one route that needs it — a download is an `<a href download>` and an
+ * anchor cannot send a header — but accepting it everywhere meant the string
+ * that opens the control socket travelled in a URL a teacher could copy into
+ * a group chat. The download route has its own short-lived credential now
+ * (signDownloadToken); this one takes a header and nothing else.
+ */
+function bearerFor(req: Request): TokenPayload | null {
+  const header = req.headers.authorization ?? ''
+  const raw = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+  const payload = verifyToken(raw)
+  if (!payload || payload.sessionId !== req.params.id) return null
+  return payload
+}
+
+/**
+ * Бан на пороге всего, что живёт под /api/sessions/:id.
+ *
+ * Одна дверь на все REST-маршруты комнаты — файлы, история, оракул,
+ * консилиум, правила, — и висит она в каждом роутере отдельно, потому что
+ * порядок монтирования в app.ts — не то место, где такое можно помнить.
+ * `sessionAuth` про бан знает и сам; здесь смысл в словах: человек должен
+ * прочитать «преподаватель закрыл вам доступ», а не «войдите в семинар».
+ *
+ * Отказ — только тому, кто предъявил токен этой комнаты. Гость без токена
+ * проходит: по этому же пути идёт экран входа и `/join`, а у них про бан свой
+ * разговор — и отказать раньше значило бы показать пришедшему «семинар не
+ * найден» вместо объяснения. Метка устройства при этом считается: она у
+ * `banFor` вторая половина совпадения.
+ */
+export function banDoor(req: Request, res: Response, next: NextFunction): void {
+  const payload = bearerFor(req)
+  if (!payload) return next()
+  const ban = banFor(payload.sessionId, payload.participantId, req.headers.cookie)
+  if (!ban) return next()
+  res.status(403).json(banRefusal(ban))
+}
+
+/**
  * Bearer credential that must belong to the `:id` in the path. Lives here
  * because this module mints the tokens; the file and AI routes import it.
  *
@@ -193,18 +322,20 @@ function noteWarmupFailure(sessionId: string, err: unknown): void {
  * teaching side takes the powers with it on the next call.
  */
 export function sessionAuth(req: Request): TokenPayload | null {
-  const header = req.headers.authorization ?? ''
+  const payload = bearerFor(req)
+  if (!payload) return null
   /*
-   * Header only. The query string used to be accepted here as well, for the
-   * one route that needs it — a download is an `<a href download>` and an
-   * anchor cannot send a header — but accepting it everywhere meant the string
-   * that opens the control socket travelled in a URL a teacher could copy into
-   * a group chat. The download route has its own short-lived credential now
-   * (signDownloadToken); this one takes a header and nothing else.
+   * Забаненный не проходит и здесь.
+   *
+   * Проверка бана стояла на двух дверях из трёх — `/join` и рукопожатие
+   * сокета, — а токен участника подписан и живёт до тридцати суток, отобрать
+   * его нечем. То есть закрытый доступ закрывал комнату и не закрывал ничего
+   * по HTTP: раздатка, история, загрузка файлов (тот самый спам, за который и
+   * банят) и вопросы оракулу за ключ инстанса оставались открыты до истечения
+   * токена. Словами про бан отвечает `banDoor` ниже; здесь — чтобы маршрут,
+   * который его забыл повесить, всё равно не пустил.
    */
-  const raw = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
-  const payload = verifyToken(raw)
-  if (!payload || payload.sessionId !== req.params.id) return null
+  if (banFor(payload.sessionId, payload.participantId, req.headers.cookie)) return null
   /*
    * The role is decided here, on every request, and never read from the token.
    *
@@ -244,8 +375,81 @@ export function roleFor(
   return isTokenHost(payload.sessionId, payload.participantId) ? 'host' : 'participant'
 }
 
+/**
+ * Греть ли ядро на входе.
+ *
+ * `/join` звал `ensureKernel` безусловно, а при изоляции это старт контейнера
+ * комнаты — и он живёт два часа простоя. Вечером перед контрольной класс
+ * открывает десяток ЗАКОНЧЕННЫХ семинаров курса перечитать разбор, и каждый
+ * такой заход поднимал по контейнеру (порядка двух гигабайт) на той же машине,
+ * где в это время идёт живая пара. Запускать студенту там всё равно нельзя:
+ * конец занятия отдаёт `run` преподавателю (shared/rules.ts · rulesAfterClass).
+ *
+ * Преподаватель греет всегда: он приходит в законченную комнату как раз затем,
+ * чтобы что-то в ней пересчитать, и ждать подъёма ядра после нажатия Run ему
+ * незачем. Архивный семинар — то же самое: метка «убран из списка» и означает,
+ * что работать в нём больше не собираются.
+ */
+export function warmsKernel(sessionId: string, role: ParticipantRole): boolean {
+  if (role === 'host') return true
+  return !isFinished(sessionId) && !isArchived(sessionId)
+}
+
 export function sessionRoutes(): Router {
   const router = Router()
+
+  /**
+   * «А меня-то пускают» — единственная дверь, отвечающая забаненному.
+   *
+   * Стоит ДО `banDoor` намеренно, и это не оплошность порядка: вкладка, которой
+   * отказали в рукопожатии сокета, не знает, что с ней случилось. Сокет
+   * закрывается до апгрейда и без слов — браузер видит 1006, — и различить
+   * «комнаты нет», «ключ протух» и «преподаватель закрыл доступ» можно только
+   * спросив. Отказ на этот вопрос отказом («вам сюда нельзя») оставлял бы
+   * человека ровно там же, где он был: за 403 без объяснения. Поэтому здесь
+   * `banFor` спрашивается сам и его срок едет в ответе.
+   *
+   * И дёшево: зовёт её каждая отвалившаяся вкладка примерно раз в полминуты,
+   * то есть на большой лекции — сотнями в минуту. Ни дерева файлов, ни
+   * документа комнаты, ни ростера: строка семинара, разбор подписи и одна
+   * строка бана.
+   *
+   * Что значит каждое поле — у `SessionMe` в shared/protocol.ts.
+   */
+  router.get('/api/sessions/:id/me', (req, res) => {
+    const sessionId = req.params.id
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
+
+    const payload = bearerFor(req)
+    if (!payload) {
+      // Ключа нет или он про другую комнату — «предъявите ключ», а не «вас
+      // удалили»: про бан без доказанного идентификатора сказать нечего.
+      const nobody: SessionMe = {
+        tokenValid: false,
+        ban: null,
+        participantId: null,
+        role: null,
+      }
+      return res.json(nobody)
+    }
+
+    const ban = banFor(payload.sessionId, payload.participantId, req.headers.cookie)
+    const me: SessionMe = {
+      tokenValid: true,
+      ban: ban ? { until: ban.until } : null,
+      participantId: payload.participantId,
+      // Роль — та, которой сервер будет действовать на этом ключе прямо
+      // сейчас (кука сильнее токена, см. roleFor). У забаненного её нет: он
+      // ничего не может, и называть его ведущим было бы неправдой.
+      role: ban ? null : roleFor(req.headers.cookie, payload),
+    }
+    res.json(me)
+  })
+
+  // Бан закрывает и эту дверь: /rules, /participants, /handoff и всё, что
+  // авторизуется токеном комнаты. `/join` проходит мимо (токен у него в теле,
+  // а не в заголовке) и отказывает сам, своими словами.
+  router.use('/api/sessions/:id', banDoor)
 
   router.post('/api/sessions', (req, res) => {
     // Who may open a room. An instance with OPEN_SEMINAR_CREATION off is one
@@ -270,8 +474,26 @@ export function sessionRoutes(): Router {
       })
     }
 
+    /*
+     * Окружение записывается ИМЕНЕМ, и всегда.
+     *
+     * `createSession(id, name)` писал NULL, а NULL для ядра означает «следуй за
+     * инстансом»: следующее «Make default» уводило Python такой комнаты на
+     * другой образ, а панель показывала у неё пустую колонку и не считала её в
+     * тех, кто держит окружение от удаления. Панель это состояние отменила
+     * (routes/admin-instance.ts · «A concrete name is always recorded»), и
+     * скриптовая дверь обязана жить по тому же правилу — иначе их два.
+     *
+     * Имя можно и прислать: та же проверка, что в панели, чтобы в строку
+     * семинара не легло имя несуществующего образа.
+     */
+    const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
+    if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
+      return res.status(400).json({ error: `there is no environment called "${wanted}"` })
+    }
+
     const id = newSessionId()
-    const session = createSession(id, name)
+    const session = createSession(id, name, wanted || activeName())
     // A seminar created straight against this endpoint by a signed-in teacher
     // is still theirs. There is no page that does it — the panel has its own
     // route — so this is the scripted path, and on an open instance it produces
@@ -286,7 +508,7 @@ export function sessionRoutes(): Router {
 
   router.get('/api/sessions/:id', (req, res) => {
     const session = getSession(req.params.id)
-    if (!session) return res.status(404).json({ error: 'session not found' })
+    if (!session) return res.status(404).json({ error: SESSION_MISSING })
     /*
      * Указатель на опубликованную версию — здесь, потому что здесь его читает
      * экран входа. Это чинит единственный адрес, который у студента правда
@@ -294,16 +516,12 @@ export function sessionRoutes(): Router {
      * неделю вводит имя в закончившееся занятие и остаётся в нём один.
      */
     const pub = publicationOf(session.id)
-    const course = pub
-      ? (listCourses().find((c) =>
-          c.items.some((i) => i.kind === 'seminar' && i.sessionId === session.id),
-        ) ?? null)
-      : null
+    const course = pub ? courseOfSeminar(session.id) : null
     res.json({
       ...session,
       published:
         pub && pub.state === 'published'
-          ? { id: pub.id, steps: stepCount(pub.id) }
+          ? { id: pub.id, slug: pub.slug, steps: stepCount(pub.id) }
           : null,
       course: course ? { id: course.id, name: course.name } : null,
     })
@@ -312,12 +530,15 @@ export function sessionRoutes(): Router {
   router.post('/api/sessions/:id/join', (req, res) => {
     const sessionId = req.params.id
     const session = getSession(sessionId)
-    if (!session) return res.status(404).json({ error: 'session not found' })
+    if (!session) return res.status(404).json({ error: SESSION_MISSING })
 
     const name = normalize(req.body?.name).slice(0, MAX_PARTICIPANT_NAME)
     if (!name) return res.status(400).json({ error: 'a name is required' })
 
-    const avatar = readAvatar(req.body?.avatar)
+    const asked = readAvatar(req.body?.avatar)
+    // Строго `=== true`: поле приходит из браузера, и «истинное» вроде строки
+    // или единицы права молчаливо не подменять метку не даёт.
+    const picked = req.body?.picked === true
 
     /*
      * Role never comes from the client's stored identity — anyone could paste in
@@ -412,6 +633,14 @@ export function sessionRoutes(): Router {
         `${role} by ${why}${how === 'back' ? '' : ` · ${how}`}`,
     )
 
+    /*
+     * Метка — уже после того, как стало известно, кто вошёл: своё прошлое
+     * место занятым не считается (см. markToHand). Ответ несёт ту, что выдана
+     * на самом деле, — экран входа сохраняет её как есть и рисует ею курсор.
+     */
+    const avatar = markToHand(sessionId, asked, known?.id ?? null, picked)
+    if (avatar) rememberMark(sessionId, participantId, avatar)
+
     // Хост-токен — единственное, что записывается насовсем: куку перечитывают
     // на каждом запросе, и «ведущий по куке» в строке был бы навсегда.
     const participant = upsertParticipant({
@@ -429,7 +658,10 @@ export function sessionRoutes(): Router {
 
     // Warm the kernel while the student is still reading the page; a failure
     // here is not fatal, the control socket reports kernel health on its own.
-    void ensureKernel(sessionId).catch((err: unknown) => noteWarmupFailure(sessionId, err))
+    // Но только там, где на нём будут работать, — см. warmsKernel.
+    if (warmsKernel(sessionId, role)) {
+      void ensureKernel(sessionId).catch((err: unknown) => noteWarmupFailure(sessionId, err))
+    }
 
     const body: JoinResponse = { session, participant, token }
     res.json(body)
@@ -456,7 +688,7 @@ export function sessionRoutes(): Router {
    */
   router.post('/api/sessions/:id/handoff', (req, res) => {
     const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const payload = sessionAuth(req)
     if (!payload) return res.status(401).json({ error: 'join the session first' })
     if (payload.role !== 'host') {
@@ -510,7 +742,7 @@ export function sessionRoutes(): Router {
   router.post('/api/sessions/:id/handoff/claim', (req, res) => {
     const sessionId = req.params.id
     const session = getSession(sessionId)
-    if (!session) return res.status(404).json({ error: 'session not found' })
+    if (!session) return res.status(404).json({ error: SESSION_MISSING })
     // Гасится здесь же: ключ обещан на один обмен, и это обещание держится
     // только тем, что второй обмен того же ключа получает отказ.
     const who = spendHandoffToken(sessionId, req.body?.key)
@@ -560,7 +792,7 @@ export function sessionRoutes(): Router {
    */
   router.patch('/api/sessions/:id/rules', (req, res) => {
     const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const payload = sessionAuth(req)
     if (!payload) return res.status(401).json({ error: 'join the session first' })
     if (payload.role !== 'host') {
@@ -586,7 +818,7 @@ export function sessionRoutes(): Router {
 
   router.get('/api/sessions/:id/participants', (req, res) => {
     const sessionId = req.params.id
-    if (!getSession(sessionId)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     /*
      * `participants` — все, кто когда-либо заходил; `online` — кто в комнате
      * сейчас. Экрану входа нужно второе, чтобы сказать «трое уже внутри» и не
@@ -609,7 +841,7 @@ export function sessionRoutes(): Router {
   })
 
   router.get('/api/sessions/:id/link', (req, res) => {
-    if (!getSession(req.params.id)) return res.status(404).json({ error: 'session not found' })
+    if (!getSession(req.params.id)) return res.status(404).json({ error: SESSION_MISSING })
     res.json({ url: `${config.publicUrl}/s/${req.params.id}` })
   })
 

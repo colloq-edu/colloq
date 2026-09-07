@@ -13,8 +13,8 @@
 import OpenAI from 'openai'
 import { config } from '../config.js'
 import { tally } from '../log.js'
-import { isKeylessProvider, resolveAiConfig } from '../admin/settings.js'
-import type { OracleTestResult } from '@shared/admin'
+import { resolveAiConfig } from '../admin/settings.js'
+import { isKeylessProvider, providerConfigured, type OracleTestResult } from '@shared/admin'
 
 export interface ChatTurn {
   role: 'system' | 'user' | 'assistant'
@@ -42,6 +42,17 @@ export interface ToolSpec {
 
 /** A teacher pressed a button and is watching a spinner; the seminar timeout is far too long for that. */
 const TEST_TIMEOUT_MS = 20_000
+
+/**
+ * Проба идёт ровно один раз, и в этом весь смысл срока.
+ *
+ * Клиент заведён с `maxRetries: 1`, а SDK повторяет и таймауты соединения: под
+ * «чёрной дырой» проба ждала два раза по двадцать секунд и отвечала «did not
+ * answer within 20 seconds». Преподаватель смотрел на спиннер сорок секунд и
+ * читал про двадцать. Повтор здесь и не нужен: кнопку жмут руками, и повторить
+ * её — тоже.
+ */
+const ONE_TRY = { timeout: TEST_TIMEOUT_MS, maxRetries: 0 }
 
 /** Enough of the endpoint's own words to be useful, not enough to paste a stack trace into the UI. */
 const MAX_DETAIL = 200
@@ -77,7 +88,15 @@ export function providerReady(): boolean {
   // A key, or a runtime that has no concept of one: pointing Colloq at the
   // Ollama on the lecturer's own machine is a complete configuration, and
   // reporting it as unconfigured would be the panel's first lie.
-  return ai.apiKey.length > 0 || (isKeylessProvider(ai.provider) && ai.baseUrl.length > 0)
+  //
+  // Правило живёт в shared и только там: панель считает потолок комнаты той же
+  // функцией (web/src/admin/panel.ts), и когда у сервера была своя копия, они
+  // разошлись — на настроенной Ollama экран гасил режимы, а оракул отвечал.
+  return providerConfigured({
+    provider: ai.provider,
+    baseUrl: ai.baseUrl,
+    hasKey: ai.apiKey.length > 0,
+  })
 }
 
 export function providerModel(): string {
@@ -127,16 +146,24 @@ export async function streamChat(
   } catch (err) {
     if (isAbort(err, signal)) return ''
     /*
-     * Retry with nothing but the message list. Two different endpoints refuse
-     * two different extras — a reasoning-style model rejects any temperature
-     * but its default, and an endpoint that has never heard of `reasoning`
-     * rejects that — and a seminar does not care which of the two it hit. The
-     * bare call is the one every OpenAI-compatible endpoint honours, which is
-     * the whole premise of this module.
+     * Retry with nothing but the message list. Three different endpoints refuse
+     * three different extras — a reasoning-style model rejects any temperature
+     * but its default, an endpoint that has never heard of `reasoning` rejects
+     * that, and a gateway with a strict schema rejects `stream_options` — and a
+     * seminar does not care which of the three it hit. The bare call is the one
+     * every OpenAI-compatible endpoint honours, which is the whole premise of
+     * this module.
+     *
+     * «Голая» здесь значит голая. Она однажды не была: `stream_options` ехало в
+     * обе попытки, так что шлюз, отвергающий именно его, получал 400 дважды и
+     * оракул на нём не работал вовсе — при том, что комментарий над `usage`
+     * обещал ровно этот случай вылечить. Цена голой попытки — расход в токенах
+     * по ней не приедет; в панели такая строка останется без числа, и это лучше,
+     * чем красная ошибка вместо ответа.
      */
     if (isBadRequest(err)) {
       try {
-        stream = await openStream(payload, undefined, signal, false)
+        stream = await openStream(payload, undefined, signal, false, true)
       } catch (retryErr) {
         if (isAbort(retryErr, signal)) return ''
         throw friendly(retryErr)
@@ -230,6 +257,8 @@ function openStream(
   temperature: number | undefined,
   signal: AbortSignal | undefined,
   reasoning: boolean,
+  /** Голая повторная попытка: ничего сверх списка сообщений — см. streamChat. */
+  bare = false,
 ) {
   const model = resolveAiConfig().model
   // `reasoning` is OpenRouter's own field, so it is not in the SDK's params
@@ -241,10 +270,10 @@ function openStream(
    * Расход — отдельной просьбой.
    *
    * Поле из спецификации OpenAI, и его понимают все, кто ей следует; кто не
-   * понимает — ответит 400, и тогда сработает голая попытка ниже, ровно как с
-   * temperature и reasoning. Плата за попытку — один лишний кадр в потоке.
+   * понимает — ответит 400, и тогда сработает голая попытка (streamChat), в
+   * которой этого поля уже нет. Плата за попытку — один лишний кадр в потоке.
    */
-  const usage = { stream_options: { include_usage: true } }
+  const usage = bare ? {} : { stream_options: { include_usage: true } }
   return temperature === undefined
     ? getClient().chat.completions.create(
         { model, messages, stream: true, ...usage, ...extra },
@@ -396,7 +425,7 @@ export async function testConnection(): Promise<OracleTestResult> {
   try {
     const completion = await getClient().chat.completions.create(
       { model: ai.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 },
-      { timeout: TEST_TIMEOUT_MS },
+      ONE_TRY,
     )
     const ms = Date.now() - began
     const model = completion.model || ai.model
@@ -465,7 +494,7 @@ async function afterRejection(
   const began = Date.now()
   let models: string[]
   try {
-    const page = await getClient().models.list({ timeout: TEST_TIMEOUT_MS })
+    const page = await getClient().models.list(ONE_TRY)
     models = page.data.map((entry) => entry.id)
   } catch (listErr) {
     const listStatus = statusOf(listErr)

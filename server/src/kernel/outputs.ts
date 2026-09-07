@@ -31,6 +31,35 @@ const MAX_CELL_OUTPUT_CHARS = 400 * 1024
  */
 const MAX_CELL_DATA_CHARS = 6 * 1024 * 1024
 
+/**
+ * Комната, которой этот бюджет достаётся целиком.
+ *
+ * Цена картинки — не её размер, а размер, умноженный на число открытых вкладок:
+ * один `imshow` на два мегабайта в комнате из пятисот человек — это гигабайт
+ * исходящего и пятьсот независимых заданий deflate, за которыми встают в
+ * очередь ВСЕ остальные правки, включая набор текста. На семинаре из тридцати
+ * это шестьдесят мегабайт и никого не трогает, поэтому потолок общий не для
+ * всех: до этого числа зрителей он прежний.
+ */
+const FULL_DATA_BUDGET_VIEWERS = 40
+/**
+ * Ниже не опускаемся ни при каком зале: обычная картинка matplotlib (`figsize`
+ * по умолчанию, dpi 100) — это сотня-другая килобайт, и лекция, где её нельзя
+ * показать вовсе, не лучше лекции, которая тормозит.
+ */
+const MIN_CELL_DATA_CHARS = 768 * 1024
+
+/**
+ * Сколько картинок ячейке позволено показать — с оглядкой на то, скольким это
+ * поедет. Чистая функция: считать её нечем, кроме числа зрителей, и проверять
+ * надо именно правило.
+ */
+export function dataBudgetFor(viewers: number): number {
+  if (!Number.isFinite(viewers) || viewers <= FULL_DATA_BUDGET_VIEWERS) return MAX_CELL_DATA_CHARS
+  const scaled = Math.round((MAX_CELL_DATA_CHARS * FULL_DATA_BUDGET_VIEWERS) / viewers)
+  return Math.max(MIN_CELL_DATA_CHARS, scaled)
+}
+
 /** RecursionError tracebacks run to thousands of identical frames. */
 const MAX_TRACEBACK_LINES = 80
 /**
@@ -105,12 +134,25 @@ export class OutputWriter {
    * секунду. Само по себе обещание в документ не пишет ничего.
    */
   private superseded = false
-  /** Была ли в этом выполнении хоть одна запись; см. stream(). */
+  /**
+   * Лёг ли в документ хоть один кусок потока; см. stream().
+   *
+   * Ставится там, где текст правда дописан (`put`), а не в `write()`: `write()`
+   * зовёт и `clear()`, который `runOne` делает в стартовой транзакции ЕЩЁ ДО
+   * execute — и признак оказывался поднят раньше первого байта. Первый вывод
+   * после этого честно ждал окно склейки, то есть ровно те пятьдесят
+   * миллисекунд пустого места, ради которых исключение и заведено.
+   */
   private wrote = false
 
   constructor(
     private readonly doc: Y.Doc,
     private readonly cellId: string,
+    /**
+     * Потолок картинок этой ячейки — свой у каждого выполнения, потому что
+     * зависит от того, сколько человек сейчас в комнате (см. dataBudgetFor).
+     */
+    private readonly dataBudget: number = MAX_CELL_DATA_CHARS,
   ) {}
 
   stream(name: StreamName, text: string): void {
@@ -171,7 +213,7 @@ export class OutputWriter {
     this.forgetTail()
     const json = JSON.stringify({ data: mimebundle, execCount })
     this.write((outputs) => {
-      if (this.dataTruncated || this.usedData + json.length > MAX_CELL_DATA_CHARS) {
+      if (this.dataTruncated || this.usedData + json.length > this.dataBudget) {
         this.dataTruncated = true
         this.dataNotice(outputs)
         return
@@ -279,7 +321,6 @@ export class OutputWriter {
   private write(mutate: (outputs: Y.Array<YOutput>) => void): void {
     const found = findCell(this.doc, this.cellId)
     if (!found) return
-    this.wrote = true
     this.doc.transact(() => {
       const outputs = cellOutputs(found.cell)
       /*
@@ -317,6 +358,7 @@ export class OutputWriter {
    * стирается ровно на свою длину.
    */
   private put(outputs: Y.Array<YOutput>, name: StreamName, chunk: string): void {
+    this.wrote = true
     let tail = this.tailName === name ? this.tailText : ''
     let text = chunk
     if (chunk.includes('\r')) {
@@ -415,10 +457,13 @@ export class OutputWriter {
     output.set('kind', 'stream')
     output.set('name', 'stderr' as StreamName)
     const body = new Y.Text()
-    const mb = Math.round(MAX_CELL_DATA_CHARS / (1024 * 1024))
+    const shown =
+      this.dataBudget >= 1024 * 1024
+        ? `${Math.round(this.dataBudget / (1024 * 1024))} MB`
+        : `${Math.round(this.dataBudget / 1024)} KB`
     body.insert(
       0,
-      `\n[colloq] this cell has already shown ${mb} MB of images — the rest is not shown, ` +
+      `\n[colloq] this cell has already shown ${shown} of images — the rest is not shown, ` +
         'because everybody in the room has to load it. Save the figure to a file, or draw ' +
         'it smaller (figsize/dpi).\n',
     )

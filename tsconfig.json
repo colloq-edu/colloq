@@ -2,7 +2,9 @@
   // Not a build config — nothing at the root is compiled. This exists so the
   // tools that run from here (tsx, for tests/ and scripts/) can resolve the
   // @shared alias the two workspaces use. Without it a test that imports a
-  // server module dies on the first runtime import of @shared/admin.
+  // server module dies on the first runtime import of @shared/admin. The web
+  // alias is here for the same reason: tests reach into web/src helpers, and
+  // those import each other through @/ (web/tsconfig.json maps it to ./src).
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -14,7 +16,7 @@
     "verbatimModuleSyntax": true,
     "types": ["node"],
     "baseUrl": ".",
-    "paths": { "@shared/*": ["shared/*"] }
+    "paths": { "@shared/*": ["shared/*"], "@/*": ["web/src/*"] }
   },
   "include": ["tests/**/*.mts", "scripts/**/*.mts", "shared/**/*.ts"]
 }

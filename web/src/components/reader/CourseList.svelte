@@ -52,8 +52,17 @@
     {#if course.blurb}
       <p class="mt-3.5 max-w-[560px] text-ui-lg leading-relaxed text-muted">{course.blurb}</p>
     {/if}
+    <!--
+      Тот же адрес, что диктуют вслух и печатают на выгруженной странице.
+
+      Здесь стоял `course.id` — восемь случайных букв, — хотя имя курса у вида
+      есть, панель копирует и диктует именно его (admin/screens/Courses.svelte),
+      а статическая страница печатает `slug ?? id` (publish/render.ts). Работают
+      оба адреса, но «сохраните эту страницу» под строкой, которой не было на
+      доске, читается как чужая.
+    -->
     <p class="mt-4 font-mono text-2xs text-muted">
-      {location.host}/c/{course.id}
+      {location.host}/c/{course.slug ?? course.id}
     </p>
 
     <ol class="mt-11 border-t border-line">

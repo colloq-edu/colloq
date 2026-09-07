@@ -9,13 +9,20 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { NextFunction, Request, Response } from 'express'
-import { config } from '../config.js'
+import { config, ensureDataDir } from '../config.js'
 import { countStaff, getTeacher, linkKeyOf } from './store.js'
 import { STAFF_COOKIE, type AdminErrorBody, type Teacher } from '@shared/admin'
 
 const SETUP_TOKEN_FILE = path.join(config.dataDir, 'setup-token')
-/** Long enough to bookmark, short enough to paste into a terminal. */
+/**
+ * Месяц — но месяц БЕЗ РАБОТЫ, а не месяц от входа: см. `slideStaffCookie`.
+ *
+ * Столько живёт подпись, скопированная из браузера куда-нибудь ещё; активная
+ * вкладка продлевает себя сама.
+ */
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+/** Раз в сутки — шаг продления: чаще незачем, реже уже не спасает семестр. */
+const COOKIE_SLIDE_AFTER_MS = 24 * 60 * 60 * 1000
 
 /* ------------------------------------------------------------ setup token */
 
@@ -27,7 +34,7 @@ function loadSetupToken(): string {
     /* first boot, or someone deleted it to force a new one */
   }
   const token = crypto.randomBytes(24).toString('base64url')
-  fs.mkdirSync(config.dataDir, { recursive: true })
+  ensureDataDir()
   // 0600 up front rather than a chmod afterwards: there must be no instant at
   // which the file that owns this instance is world-readable.
   fs.writeFileSync(SETUP_TOKEN_FILE, token + '\n', { mode: 0o600 })
@@ -57,7 +64,7 @@ export function readSetupToken(): string {
 export function rotateSetupToken(): string {
   const token = crypto.randomBytes(24).toString('base64url')
   const tmp = `${SETUP_TOKEN_FILE}.new`
-  fs.mkdirSync(config.dataDir, { recursive: true })
+  ensureDataDir()
   fs.writeFileSync(tmp, token + '\n', { mode: 0o600 })
   fs.renameSync(tmp, SETUP_TOKEN_FILE)
   setupToken = token
@@ -192,6 +199,11 @@ export function currentStaff(req: Request): Teacher | null {
  * an express Request, and interrupt/restart have to be answerable there.
  */
 export function staffFromCookieHeader(header: string | undefined): Teacher | null {
+  return readStaffCookie(header)?.teacher ?? null
+}
+
+/** То же самое, но с датой выпуска: её читает продление. */
+function readStaffCookie(header: string | undefined): { teacher: Teacher; iat: number } | null {
   const raw = readCookieHeader(header, STAFF_COOKIE)
   if (!raw) return null
   const dot = raw.lastIndexOf('.')
@@ -213,7 +225,32 @@ export function staffFromCookieHeader(header: string | undefined): Teacher | nul
   const teacher = getTeacher(parsed.tid)
   if (!teacher) return null
   if (!constantTimeEqual(sig, sign(body, linkKeyOf(teacher.id) ?? ''))) return null
-  return teacher
+  return { teacher, iat: parsed.iat }
+}
+
+/**
+ * Печенье продлевается работой — иначе месяц отсчитывался от ВХОДА.
+ *
+ * `iat` ставился один раз и не двигался, а переиздания не было ни в одном
+ * маршруте. Для вошедшего первого сентября это значит первое октября: середина
+ * семестра, пара идёт, и на первом же переподключении сокета `roleFor` не
+ * находит подписи — преподаватель становится участником собственной комнаты.
+ * Замки, перезапуск ядра, пульт исчезают без единого слова, панель отвечает
+ * 401, а семинары, заведённые из панели, хост-токена никому не выдавали:
+ * запасного пути нет, нужна личная ссылка, которая у половины «где-то в чате».
+ *
+ * Продление — не удлинение: месяц остаётся месяцем, но месяцем без работы.
+ * Скопированное куда-то значение стареет ровно так же, потому что стареет оно
+ * там, где им не пользуются.
+ *
+ * Ставится один раз на весь `/api` (см. app.ts), а не в `requireStaff`:
+ * половина работы преподавателя идёт мимо панели — комната, файлы, ядро.
+ */
+export function slideStaffCookie(req: Request, res: Response): void {
+  const seen = readStaffCookie(req.headers.cookie)
+  if (!seen) return
+  if (Date.now() - seen.iat < COOKIE_SLIDE_AFTER_MS) return
+  issueStaffCookie(res, seen.teacher)
 }
 
 /* ------------------------------------------------------------- middleware */
@@ -237,6 +274,9 @@ function deny(res: Response, status: number, reason: AdminErrorBody['reason'], e
  *
  * Ставится на всё, что пишет, включая выход: выкинутый из панели посреди
  * семинара преподаватель — это не «всего лишь logout», а комната без хозяина.
+ * «Всё» здесь буквально — весь `/api`, а не одна панель (см. app.ts): тем же
+ * печеньем авторизуются загрузка файлов в комнату, перезапуск ядра и выдача
+ * пульта, и до этой строки их прикрывал только SameSite.
  */
 export function sameOrigin(req: Request, res: Response, next: NextFunction): void {
   const origin = req.get('origin')

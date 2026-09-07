@@ -36,6 +36,7 @@ import type { AiAction } from '@shared/protocol'
 // Re-exported because tests reach for it here, where the patch is actually
 // lifted out of an answer; the parser itself is shared with the panel.
 import { lastCodeBlock, type CellKind } from '@shared/answer'
+import { describe } from './text.js'
 export { lastCodeBlock }
 
 /** Marks our writes so persistence and peers can tell them from typing. */
@@ -45,6 +46,13 @@ const ORIGIN = 'ai'
  * A token is a few characters; a CRDT update is a frame to every browser in the
  * room. Coalescing on the same principle as kernel stdout keeps a long answer
  * to ~16 updates a second instead of hundreds.
+ *
+ * Тик — ОДИН НА КОМНАТУ, а не на поток. Своя тридцатимиллисекундная дорожка у
+ * каждого буфера значила, что комната, где десять человек спросили разом, шлёт
+ * не 16 обновлений в секунду, а 320: у одного ответа два буфера (ответ и след),
+ * у каждого своя транзакция, и каждая транзакция — рассылка по всем пятистам
+ * сокетам. Здесь все идущие ответы комнаты дописываются одной транзакцией на
+ * тик, так что цена кадра перестала зависеть от числа спрашивающих.
  */
 const ANSWER_FLUSH_MS = 60
 
@@ -56,6 +64,27 @@ const STOPPED = '(stopped)'
 
 /** Key is `${sessionId}:${entryId}`; an entry is in here only while generating. */
 const inflight = new Map<string, AbortController>()
+
+/**
+ * Сколько ответов пишется в этой комнате прямо сейчас.
+ *
+ * Спрашивает маршрут, чтобы не пустить в комнату двухсотый одновременный поток:
+ * счёт по ключам `inflight` был бы обходом всей карты на каждый вопрос, а число
+ * нужно на самом горячем месте. Ход агента считается отдельно (agent.ts ·
+ * turnsInRoom) и складывается там же, где спрашивают: он дороже потока, но
+ * природа у потолка одна.
+ */
+const streaming = new Map<string, number>()
+
+export function streamsInRoom(sessionId: string): number {
+  return streaming.get(sessionId) ?? 0
+}
+
+function enteredRoom(sessionId: string, by: 1 | -1): void {
+  const left = (streaming.get(sessionId) ?? 0) + by
+  if (left > 0) streaming.set(sessionId, left)
+  else streaming.delete(sessionId)
+}
 
 export function aiReady(): boolean {
   return providerReady()
@@ -187,6 +216,7 @@ async function generate(
   const key = `${sessionId}:${entryId}`
   const controller = new AbortController()
   inflight.set(key, controller)
+  enteredRoom(sessionId, 1)
 
   /*
    * Two buffers, because two streams. If the host clears the thread mid-answer
@@ -206,21 +236,46 @@ async function generate(
    *
    * Две минуты между кадрами — заведомо больше любой настоящей паузы: даже
    * рассуждающая модель отдаёт след порциями, а не одним куском в конце.
+   *
+   * Считает он с ПЕРВОГО кадра, а не с отправки запроса, и это не мелочь.
+   * Заведённый заранее, он с тем же сроком опережал таймаут SDK и на всякую
+   * долгую первую букву — Ollama на ноутбуке преподавателя, промпт на двадцать
+   * тысяч знаков, разбор которого на процессоре идёт дольше двух минут, — писал
+   * комнате «эндпоинт открыл ответ и замолчал» и советовал спросить ещё раз.
+   * Эндпоинт при этом ничего не открывал, спрашивать ещё раз бесполезно, а
+   * лечение — уменьшить contextChars, и говорит об этом как раз фраза SDK про
+   * «слишком долго» (provider.ts · friendly), до которой дело не доходило.
    */
   const SILENCE_MS = 120_000
+  /*
+   * До первого кадра срок другой — заведомо больше срока SDK.
+   *
+   * Совсем без сторожа до открытия нельзя: поток, у которого приехали
+   * заголовки и не приехало ни байта тела, для SDK уже состоялся, и висел бы он
+   * до конца пары. Но и равнять сроки нельзя — тогда сторож опережает SDK и
+   * подменяет его диагноз своим, неверным. Пять минут: SDK со своими двумя
+   * минутами успевает первым всегда, а это — последняя сетка.
+   */
+  const OPENING_MS = 300_000
   let silence: NodeJS.Timeout | null = null
   /** Отличает «замолчал провайдер» от «нажали Stop»: отмена одна, причины разные. */
   let wentQuiet = false
-  const heard = () => {
+  /** Был ли хоть один кадр: до него «замолчал» значит совсем другое. */
+  let spokeOnce = false
+  const watch = (ms: number) => {
     if (silence) clearTimeout(silence)
     silence = setTimeout(() => {
       silence = null
       wentQuiet = true
       controller.abort()
-    }, SILENCE_MS)
+    }, ms)
     silence.unref?.()
   }
-  heard()
+  const heard = () => {
+    spokeOnce = true
+    watch(SILENCE_MS)
+  }
+  watch(OPENING_MS)
 
   const answer = new StreamBuffer(sessionId, entryId, chatAnswer, stop)
   const thinking = new StreamBuffer(sessionId, entryId, chatReasoning, stop)
@@ -287,13 +342,21 @@ async function generate(
 
     if (controller.signal.aborted) {
       if (wentQuiet) {
+        /*
+         * Два разных отказа под одним таймером. «Открыл и замолчал» — правда
+         * только после первого кадра; до него эндпоинт не открывал ничего, и
+         * совет «спросите ещё раз» ведёт не туда: лечится это меньшим
+         * contextChars, о чём и говорит вторая фраза (та же, что у SDK).
+         */
         settle(
           sessionId,
           entryId,
           text.trim() ? 'done' : 'error',
           text.trim()
             ? null
-            : 'The AI endpoint opened a reply and then went quiet. Ask again.',
+            : spokeOnce
+              ? 'The AI endpoint opened a reply and then went quiet. Ask again.'
+              : 'The AI endpoint took too long to answer. It may be a slow model, or a very large notebook — try again, or ask about one cell.',
         )
         return
       }
@@ -303,8 +366,16 @@ async function generate(
     // streamChat resolves empty only when the endpoint answered but said
     // nothing, which is a configuration smell rather than a real reply.
     if (!text.trim()) {
+      /*
+       * The sentence lands in the shared thread, so it is addressed to the
+       * room. An environment variable is not something a student can look at —
+       * the model is set in the admin panel now — and naming that panel to
+       * everyone would point strangers at the staff door. Same split the key
+       * failure uses in routes/ai.ts.
+       */
       throw new Error(
-        `The AI endpoint returned an empty reply for model "${providerModel()}" — check OPENAI_MODEL.`,
+        `The AI endpoint answered with nothing at all for model "${providerModel()}". ` +
+          'Ask whoever runs this Colloq to check the model.',
       )
     }
     settle(sessionId, entryId, 'done', null)
@@ -323,6 +394,7 @@ async function generate(
   } finally {
     if (silence) clearTimeout(silence)
     inflight.delete(key)
+    enteredRoom(sessionId, -1)
   }
 }
 
@@ -352,7 +424,6 @@ function recordThought(sessionId: string, entryId: string, ms: number): void {
  */
 class StreamBuffer {
   private pending = ''
-  private timer: NodeJS.Timeout | null = null
   private gone = false
 
   constructor(
@@ -365,34 +436,104 @@ class StreamBuffer {
   push(text: string): void {
     if (this.gone || !text) return
     this.pending += text
-    if (this.timer) return
-    this.timer = setTimeout(() => {
-      this.timer = null
-      this.flush()
-    }, ANSWER_FLUSH_MS)
+    joinTick(this.sessionId, this)
   }
 
+  /**
+   * Дописать немедленно, своей транзакцией: конец ответа тика не ждёт.
+   *
+   * Своя транзакция здесь не стоит ничего — она одна на ответ, а не одна на
+   * шестьдесят миллисекунд, — зато последний кусок ложится в ту же секунду,
+   * когда модель замолчала, а не в следующую.
+   */
   flush(): void {
-    if (this.timer) {
-      clearTimeout(this.timer)
-      this.timer = null
-    }
+    leaveTick(this.sessionId, this)
     if (this.gone || !this.pending) return
-    const text = this.pending
-    this.pending = ''
-
     const doc = livingDoc(this.sessionId)
-    const entry = doc ? findChatEntry(doc, this.entryId) : null
-    if (!doc || !entry) {
-      this.gone = true
-      this.onGone()
+    if (!doc) {
+      this.vanish()
       return
     }
+    let lost = false
     doc.transact(() => {
-      const into = this.pick(entry)
-      into.insert(into.length, text)
+      lost = !this.write(doc)
     }, ORIGIN)
+    if (lost) this.vanish()
   }
+
+  /**
+   * Дописать внутри общей транзакции комнаты. `false` — записи больше нет.
+   *
+   * Про пропажу здесь только сообщается: `onGone` обрывает поток, а обрывать
+   * его посреди чужой транзакции значит будить наблюдателей документа изнутри
+   * записи в него. Зовёт `vanish` тот, кто транзакцию закрыл.
+   */
+  write(doc: Y.Doc): boolean {
+    if (this.gone || !this.pending) return true
+    const entry = findChatEntry(doc, this.entryId)
+    if (!entry) return false
+    const text = this.pending
+    this.pending = ''
+    const into = this.pick(entry)
+    into.insert(into.length, text)
+    return true
+  }
+
+  /** Записи больше нет: тред стёрли или комнату удалили — писать больше некуда. */
+  vanish(): void {
+    if (this.gone) return
+    this.gone = true
+    this.pending = ''
+    this.onGone()
+  }
+}
+
+/**
+ * Тик склейки: все идущие ответы одной комнаты — одной транзакцией.
+ *
+ * Ключ — комната, а не запись: транзакция и есть та единица, которая уезжает
+ * всем сокетам (collab/index.ts · broadcastDocUpdate), и склеивать надо именно
+ * её. Пока тик один на буфер, десять одновременных ответов стоили комнате
+ * десять рассылок за тик; теперь — одну.
+ */
+const ticks = new Map<string, { timer: NodeJS.Timeout; waiting: Set<StreamBuffer> }>()
+
+function joinTick(sessionId: string, buffer: StreamBuffer): void {
+  const tick = ticks.get(sessionId)
+  if (tick) {
+    tick.waiting.add(buffer)
+    return
+  }
+  const timer = setTimeout(() => flushRoom(sessionId), ANSWER_FLUSH_MS)
+  timer.unref?.()
+  ticks.set(sessionId, { timer, waiting: new Set([buffer]) })
+}
+
+function leaveTick(sessionId: string, buffer: StreamBuffer): void {
+  const tick = ticks.get(sessionId)
+  if (!tick) return
+  tick.waiting.delete(buffer)
+  if (tick.waiting.size > 0) return
+  clearTimeout(tick.timer)
+  ticks.delete(sessionId)
+}
+
+function flushRoom(sessionId: string): void {
+  const tick = ticks.get(sessionId)
+  if (!tick) return
+  ticks.delete(sessionId)
+  clearTimeout(tick.timer)
+  const buffers = [...tick.waiting]
+  const doc = livingDoc(sessionId)
+  if (!doc) {
+    for (const buffer of buffers) buffer.vanish()
+    return
+  }
+  const lost: StreamBuffer[] = []
+  doc.transact(() => {
+    for (const buffer of buffers) if (!buffer.write(doc)) lost.push(buffer)
+  }, ORIGIN)
+  for (const buffer of lost) buffer.vanish()
 }
 
 function settle(sessionId: string, entryId: string, state: ChatState, note: string | null): void {
@@ -476,12 +617,6 @@ export function recentTurns(doc: Y.Doc): ChatTurn[] {
   for (let i = Math.max(0, chat.length - MAX_HISTORY_ENTRIES); i < chat.length; i++) {
     const snapshot = readChatEntry(chat.get(i))
     const question = snapshot.question.trim()
-    if (question) {
-      turns.push({
-        role: 'user',
-        content: `${snapshot.name} asked: ${trimTail(question, MAX_HISTORY_CHARS)}`,
-      })
-    }
     const answer = snapshot.answer.trim()
     /*
      * A failed turn is not a turn the model took.
@@ -494,9 +629,25 @@ export function recentTurns(doc: Y.Doc): ChatTurn[] {
      * line about the server's own plumbing. A cancelled answer was already
      * excluded for the same reason; an errored one was not.
      */
-    if (answer && answer !== STOPPED && snapshot.state !== 'error') {
-      turns.push({ role: 'assistant', content: trimTail(answer, MAX_HISTORY_CHARS) })
-    }
+    const answered = answer.length > 0 && answer !== STOPPED && snapshot.state !== 'error'
+    /*
+     * И вопрос уходит вместе со своим ответом, а не отдельно от него.
+     *
+     * Вопрос клался всегда, ответ — только годный, так что после Stop, после
+     * любой ошибки и на всё время, пока первый ответ ещё пишется, история
+     * выходила «user, user»: два хода подряд от одной роли. Строгие шаблоны
+     * чата (vLLM с Mistral или Llama-2 — «Conversation roles must alternate»)
+     * отвечают на это 400, а голая повторная попытка шлёт ту же историю и
+     * получает то же 400; в большой комнате два вопроса в минуту — норма, то
+     * есть на таком эндпоинте падал бы каждый второй вопрос. Вопрос без ответа
+     * модели ничего и не сообщает: она видит тетрадь, а не чужую очередь.
+     */
+    if (!question || !answered) continue
+    turns.push({
+      role: 'user',
+      content: `${snapshot.name} asked: ${trimTail(question, MAX_HISTORY_CHARS)}`,
+    })
+    turns.push({ role: 'assistant', content: trimTail(answer, MAX_HISTORY_CHARS) })
   }
   return turns
 }
@@ -674,8 +825,4 @@ function actionLabel(action: AiAction | undefined): string {
 
 function trimTail(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, limit).trimEnd()}\n… (earlier turn trimmed) …`
-}
-
-function describe(err: unknown): string {
-  return err instanceof Error ? err.message.trim() : String(err)
 }

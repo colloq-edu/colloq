@@ -19,6 +19,8 @@
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Section from '@/admin/ui/Section.svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import { adminAuth } from '@/admin/auth.svelte'
+  import { oracleCeiling, oracleOverCeiling, splitBySize, uploadMb } from '@/admin/panel'
   import { adminApi } from '@/lib/adminApi'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
   import {
@@ -26,6 +28,7 @@
     type AdminEnvironment,
     type EnvironmentsState,
     type ImportPreview,
+    type OracleSettings,
   } from '@shared/admin'
   import { LECTURE_ROOM, OPEN_ROOM, type RoomRules, COUNCIL_ROOM } from '@shared/rules'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
@@ -57,8 +60,16 @@
   let notebookError = $state<string | null>(null)
   let picker = $state<HTMLInputElement | null>(null)
   let dragging = $state(false)
-  /** Тот же предел, что и на сервере; тянуть его сюда неоткуда, MAX_UPLOAD_MB в .env. */
-  const LIMITS_UPLOAD_MB = 50
+  /**
+   * Предел загрузки — тот, что у сервера, а не копия его умолчания.
+   *
+   * Здесь стояло собственное 50: оператор, поднявший `MAX_UPLOAD_MB` до 200 или
+   * опустивший до 20, читал на экране чужое число, а правду узнавал файлом,
+   * который не доехал — уже ПОСЛЕ того, как комната создана. `null` значит «не
+   * знаю»: сборка сервера постарше поля не присылает, и тогда экран о пределе
+   * молчит, а не выдумывает его.
+   */
+  const maxUploadBytes = $derived(adminAuth.state?.maxUploadBytes ?? null)
 
   /*
    * Три двери одной ширины: 568 на троих с зазором 10 — это 182 на карточку,
@@ -130,13 +141,32 @@
 
   const materialBytes = $derived(materials.reduce((sum, f) => sum + f.size, 0))
 
+  /** Что не влезло в предел сервера — словами, до нажатия Create. */
+  let oversized = $state<string | null>(null)
+
   function addMaterials(list: FileList | File[] | null): void {
     const picked = Array.from(list ?? [])
     if (picked.length === 0) return
     // По имени, а не по ссылке: один и тот же файл, выбранный дважды, — это
     // один файл, и вторая строка в списке была бы враньём.
     const have = new Set(materials.map((f) => f.name))
-    materials = [...materials, ...picked.filter((f) => !have.has(f.name))]
+    const fresh = picked.filter((f) => !have.has(f.name))
+    /*
+     * Слишком большой файл отсекается здесь, а не загрузкой после создания.
+     *
+     * Загрузка идёт, когда комната уже есть, и отказ там звучит как «семинар
+     * создан, но датасет не доехал»: комната без материала, и преподаватель
+     * идёт докладывать его руками из комнаты. Здесь его ещё можно заменить.
+     */
+    const { taken, refused } = splitBySize(fresh, maxUploadBytes ?? 0)
+    oversized =
+      refused.length === 0 || maxUploadBytes === null
+        ? null
+        : `${refused.map((f) => f.name).join(', ')} ` +
+          `${refused.length === 1 ? 'is' : 'are'} over the ${uploadMb(maxUploadBytes)} MB this ` +
+          'server accepts, so it was left out. Raise MAX_UPLOAD_MB, or put the file in the room ' +
+          'another way.'
+    materials = [...materials, ...taken]
   }
 
   /** Возвращает имена тех, кто не доехал. */
@@ -258,6 +288,34 @@
   let busy = $state(false)
   let error = $state<string | null>(null)
 
+  /**
+   * Настройки оракула на инстансе — потолок, выше которого комната не поднимется.
+   *
+   * Карточки ниже рисовались всегда, а сервер клампит (`oracleModeIn`): на
+   * инстансе в режиме hints выбранное здесь «Full answers» молча превращалось в
+   * hints, и на паре преподаватель обнаруживал, что оракул не пишет код. Это
+   * ровно то, что запрещает правило честности в шапке файла: контрол, который
+   * выглядит настройкой, обязан ею быть.
+   *
+   * `null` — «ещё не знаем» (чтение не доехало): тогда экран не гасит ничего.
+   * Выдуманный потолок хуже отсутствующего.
+   */
+  let instanceOracle = $state<OracleSettings | null>(null)
+  const ceiling = $derived(instanceOracle ? oracleCeiling(instanceOracle) : null)
+
+  /*
+   * Потолок приехал позже нажатия — опускаем выбор до него.
+   *
+   * Настройки читаются в onMount, а карточки нажимаются сразу: между тем и
+   * другим успевает пройти щелчок по «Full answers», и он остался бы выбранным
+   * на погашенной карточке, а в теле запроса уехал бы `oracle: 'full'` — то
+   * самое молчаливое расхождение, ради которого потолок и читается.
+   */
+  $effect(() => {
+    const cap = ceiling
+    if (cap && oracleOverCeiling(rules.oracle, cap.mode)) rules.oracle = cap.mode
+  })
+
   onMount(() => {
     void adminApi
       .listEnvironments()
@@ -268,6 +326,12 @@
         if (!environment) environment = r.environments.find((e: AdminEnvironment) => e.active)?.name ?? ''
       })
       .catch(() => (environments = []))
+    // Читается любым преподавателем (GET /api/admin/oracle · requireStaff);
+    // ключ приезжает замаскированным.
+    void adminApi
+      .oracle()
+      .then((settings: OracleSettings) => (instanceOracle = settings))
+      .catch(() => (instanceOracle = null))
   })
 
   /*
@@ -395,18 +459,41 @@
    * ничего, что можно спланировать, поэтому у каждой строки своя причина, и
    * список сокращается, но не пустеет.
    */
-  const NOT_YET: { what: string; why: string }[] = [
+  const NOT_YET: {
+    what: string
+    why: string
+    /** Не во всех режимах: в консилиуме своя строка у каждого уже есть. */
+    unless?: (mode: 'lab' | 'lecture' | 'council') => boolean
+  }[] = [
     { what: 'Read the cells', why: 'every browser holds the whole notebook' },
     { what: 'Read the terminal transcript', why: 'it is in the shared document too' },
-    { what: "Edit your own answer but not your neighbour's", why: 'a cell has no owner' },
+    {
+      what: "Edit your own answer but not your neighbour's",
+      why: 'a cell has no owner',
+      /*
+       * Кроме консилиума — там это и есть его смысл. Строка стояла на одном
+       * экране с карточкой «Консилиум: открытая ячейка — каждому свой лист» и
+       * говорила ей прямо противоположное.
+       */
+      unless: (m) => m === 'council',
+    },
     { what: 'Keep one student’s oracle question private', why: 'one thread, one document root' },
-    { what: 'Remove somebody from the room', why: 'a token can expire, not be withdrawn' },
+    /*
+     * «Remove somebody from the room — a token can expire, not be withdrawn»
+     * отсюда убрано: бан с выкидыванием из комнаты есть и работает
+     * (server/src/routes/bans.ts, panels/BanMenu.svelte, control.ts ·
+     * evictBanned). Он не настройка комнаты, а действие внутри неё, поэтому
+     * стоит в списке того, что принадлежит преподавателю, — ниже.
+     */
     { what: 'A model for this room only', why: 'not a permission, and read nowhere yet' },
   ]
 
+  const notYet = $derived(NOT_YET.filter((row) => !row.unless?.(mode)))
+
   /*
-   * И три сцепки — проверенные факты об этом коде, а не оговорки. Правило
-   * честности к ним относится ровно так же, как к переключателям.
+   * И сцепки — проверенные факты об этом коде, а не оговорки. Правило честности
+   * к ним относится ровно так же, как к переключателям. (Числом их здесь не
+   * называют: массив рос и убывал, а слово «три» оставалось.)
    */
   const COUPLINGS: { what: string; why: string; when: (r: RoomRules) => boolean }[] = [
     {
@@ -606,6 +693,22 @@
               <span class="font-mono">{f.name}</span>
             {/each}
           </div>
+          <!-- И то, что не приедет: сумма файлов ограничена потолком комнаты
+               (server/src/routes/admin-import.ts · withinRoomBudget), и остаток
+               отсекается ещё до её создания. Своей строкой, а не ещё одним
+               именем в ряду привезённых, где оно читалось бы как «тоже едет». -->
+          {#if preview.skipped.length > 0}
+            <div class="mt-1.5 flex flex-wrap items-center gap-2 text-2xs text-warning">
+              <span>
+                {preview.skipped.length === 1
+                  ? '1 file will not fit the room and stays behind:'
+                  : `${preview.skipped.length} files will not fit the room and stay behind:`}
+              </span>
+              {#each preview.skipped as name (name)}
+                <span class="font-mono text-muted line-through">{name}</span>
+              {/each}
+            </div>
+          {/if}
         {/if}
       {/if}
     </div>
@@ -860,7 +963,9 @@
         <Icon name="upload" size={15} class="shrink-0 text-faint" />
         <span class="text-2xs text-muted">
           Drop notebooks, data or slides — or <span class="text-accent-text underline decoration-line underline-offset-2">browse</span>.
-          Up to {Math.round(LIMITS_UPLOAD_MB)} MB each.
+          <!-- Число — с сервера. Пока его нет, предложение обрывается на точке:
+               предел, названный наугад, хуже неназванного. -->
+          {#if maxUploadBytes !== null}Up to {uploadMb(maxUploadBytes)} MB each.{/if}
         </span>
         <input
           type="file"
@@ -872,6 +977,10 @@
           }}
         />
       </label>
+
+      {#if oversized}
+        <p class="pt-2.5 text-2xs text-danger" role="alert">{oversized}</p>
+      {/if}
 
       {#if materials.length > 0}
         <p class="pt-2.5 text-2xs text-faint">
@@ -924,7 +1033,7 @@
       <RoomRulesRows {rules} onchange={(patch) => (rules = { ...rules, ...patch })} />
 
       <!--
-        Три сцепки, напечатанные здесь, а не спрятанные в коде. Каждая — про
+        Сцепки, напечатанные здесь, а не спрятанные в коде. Каждая — про
         то, где переключатель выше значит меньше, чем кажется; правило чести то
         же, что и у самих переключателей: не обещать того, чего продукт не
         держит. Показываются только когда относятся к делу — комната, которую
@@ -945,7 +1054,7 @@
           <span class="text-micro font-bold uppercase tracking-caps text-muted">Not yet settings</span>
           <span class="text-2xs text-faint">and the reason, which is not "coming soon"</span>
         </div>
-        {#each NOT_YET as row (row.what)}
+        {#each notYet as row (row.what)}
           <div
             class="flex items-center gap-3 border-b border-line-soft px-3.5 py-2 last:border-b-0"
           >
@@ -961,7 +1070,8 @@
           <p class="text-ui font-semibold text-ink">Yours alone, with no setting to lose</p>
           <p class="mt-1 text-2xs text-muted">
             Interrupting a cell somebody else started · renaming the seminar · restoring an old
-            version and marking a checkpoint · deleting somebody's file.
+            version and marking a checkpoint · deleting somebody's file · closing somebody's access
+            from the People panel, which also takes them out of the room.
           </p>
         </div>
       </div>
@@ -975,20 +1085,34 @@
     <div class="flex flex-col gap-3">
       <div class="flex flex-wrap gap-1.5">
         {#each ORACLE as option (option.value)}
+          <!-- Выше потолка инстанса — не выбор, а обещание. Такая карточка
+               гаснет и говорит, чем она станет на самом деле. -->
+          {@const over = ceiling ? oracleOverCeiling(option.value, ceiling.mode) : false}
           <button
             type="button"
             class="oracle-card {rules.oracle === option.value ? 'oracle-on' : ''}"
             aria-pressed={rules.oracle === option.value}
+            disabled={over}
+            title={over ? `This instance would answer as ${ceiling?.mode} anyway` : undefined}
             onclick={() => (rules.oracle = option.value)}
           >
             <span class="text-ui font-semibold">{option.label}</span>
-            <span class="text-2xs opacity-70">{option.note}</span>
+            <span class="text-2xs opacity-70">
+              {over ? `above what the instance allows (${ceiling?.mode})` : option.note}
+            </span>
           </button>
         {/each}
       </div>
       <p class="text-2xs text-muted">
         A room can be stricter than the instance, never looser: an instance in hints mode stays in
         hints mode here.
+        {#if ceiling?.why}
+          <span class="text-ink">
+            {ceiling.mode === 'off'
+              ? `This one has no oracle to hand out — ${ceiling.why} — so whatever this room asks for, its oracle stays off.`
+              : `This one is capped: ${ceiling.why}.`}
+          </span>
+        {/if}
       </p>
     </div>
   </Section>
@@ -996,41 +1120,15 @@
 
 <style>
   /*
-   * Three controls the admin does not have yet. They live here rather than in
-   * index.css because nothing else uses them: a tab strip inside a form, a
-   * two-way segmented answer, and a card that is a radio button. Promote them
-   * the day a second screen needs one.
+   * Two controls the admin does not have yet: a card that is a radio button for
+   * the room's mode, and a smaller one for the oracle. They live here rather
+   * than in index.css because nothing else uses them; promote them the day a
+   * second screen needs one.
+   *
+   * `.tab-btn`/`.tab-on` стояли здесь третьими и не были нужны ни одному
+   * элементу: полоса вкладок этого экрана давно нарисована классами Tailwind
+   * по месту. Компилятор выкидывал их с предупреждением на каждой сборке.
    */
-  .tab-btn {
-    height: 30px;
-    padding-inline: 12px;
-    font-size: 12px;
-    font-weight: 600;
-    color: rgb(var(--muted));
-    background: none;
-    border: 0;
-    cursor: pointer;
-    transition: background-color var(--speed-quick) var(--ease-out);
-  }
-
-  .tab-btn:hover {
-    color: rgb(var(--ink));
-    background: rgb(var(--raised));
-  }
-
-  /*
-   * A ground and a rule under it, not a tint. The first version differed by
-   * `bg-raised` alone, which on this near-white page is a shade nobody sees:
-   * both doors looked equally unchosen, and the one thing this control has to
-   * say is which door you are standing in.
-   */
-  .tab-on {
-    color: rgb(var(--ink));
-    background: rgb(var(--raised));
-    box-shadow: inset 0 -2px 0 rgb(var(--brand));
-    font-weight: 700;
-  }
-
   /*
    * Карточка режима — тот же орган, что и `.oracle-card`: радиокнопка ростом с
    * абзац. Отдельным классом, а не вариантом оракульской, по одной причине: у
@@ -1141,13 +1239,26 @@
     transform: scale(0.99);
   }
 
+  /*
+   * Выше потолка инстанса. Пунктир — тот же язык, что и у «чтения окружения» на
+   * экране оракула: рамка, которая выглядит полем и не отвечает, хуже подписи.
+   */
+  .oracle-card:disabled {
+    color: rgb(var(--faint));
+    border-style: dashed;
+    cursor: default;
+  }
+
+  .oracle-card:disabled:hover {
+    border-color: rgb(var(--line));
+  }
+
   .oracle-on {
     background: rgb(var(--brand));
     border-color: rgb(var(--brand));
     color: #fff;
   }
 
-  .tab-btn:focus-visible,
   .mode-card:focus-visible,
   .oracle-card:focus-visible {
     outline: 2px solid rgb(var(--accent));

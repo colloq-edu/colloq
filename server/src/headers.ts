@@ -17,10 +17,19 @@
  *
  * Deliberately absent: script-src and style-src. The app shell carries an
  * inline theme script that has to run before the first paint and an inline
- * stylesheet that paints it, and the webfonts come from Google's origin, so
- * policing those needs 'unsafe-inline' anyway — a longer header buying nothing.
- * What that would have covered is covered where it belongs, in the tags a text
- * cell may not carry (web/src/lib/sanitize.ts).
+ * stylesheet that paints it, so policing either needs 'unsafe-inline' anyway —
+ * a longer header buying nothing. What that would have covered is covered where
+ * it belongs, in the tags a text cell may not carry (web/src/lib/sanitize.ts).
+ *
+ * The webfonts used to be part of that argument and no longer are: JetBrains
+ * Mono and HSE Sans are served from /fonts and declared @font-face in
+ * web/index.html, so the room page has no external origin left at all. That
+ * makes font-src 'self' the one directive here that could be tightened without
+ * 'unsafe-inline' — say so out loud, because the next person to read this
+ * should not have to re-derive it. It is not added yet for one reason: a CSP
+ * that blocks a font fails silently and in the type, and this header is set on
+ * every response the process makes, including a web/dist built before the fonts
+ * moved. Add it together with a check that the served bundle self-hosts them.
  */
 export const CONTENT_SECURITY_POLICY = [
   "object-src 'none'",

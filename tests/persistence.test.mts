@@ -13,7 +13,7 @@ import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import { cellSource, createCell, getCells, readNotebook } from '../shared/notebook.js'
-import { createSession, db, loadDocSnapshot } from '../server/src/db.js'
+import { createSession, db, forgetRules, loadDocSnapshot } from '../server/src/db.js'
 import { flushPersistence } from '../server/src/collab/persistence.js'
 import { dropSessionDoc, getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 
@@ -80,6 +80,10 @@ test('a browser standing in a deleted room cannot write it back', () => {
   dropSessionDoc(id)
   db.prepare('DELETE FROM doc_snapshots WHERE session_id = ?').run(id)
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+  // ...and the last line of the route: the room row is answered from memory on
+  // every handshake, so a deletion that forgot to say so would leave the door
+  // open until the next restart.
+  forgetRules(id)
 
   // A tab left open reconnects a moment later and starts editing again. It must
   // not be able to recreate the room: the snapshot row is the thing that would

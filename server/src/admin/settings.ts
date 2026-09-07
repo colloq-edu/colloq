@@ -6,8 +6,18 @@
  * panel wins; where there is none, the corresponding `config.ai.*` env value
  * answers. An instance that was configured entirely through .env therefore
  * keeps working exactly as it did, and the panel is an override a teacher can
- * add and remove rather than a migration they are forced through. Clearing a
- * field deletes its row, which hands the question back to the environment.
+ * add and remove rather than a migration they are forced through.
+ *
+ * Обратно в окружение возвращаются ТРИ поля, и только они: baseUrl, model и
+ * apiKey. Пустая строка стирает их строку (`set` ниже), и дальше отвечает
+ * .env. Остальные так не умеют, и это не забывчивость, а разная природа
+ * полей: houseRules пусты по умолчанию (возвращаться некуда), provider и
+ * defaultMode — выбор из списка, где «ничего» не значение, а три числа
+ * (вопросы в час, пауза, размер контекста) в окружении не живут вовсе и
+ * падают на встроенные пределы из shared/admin. Написанное здесь однажды
+ * говорило «clearing a field hands the question back to the environment» про
+ * все девять, и человек, стерший «вопросы в час», ждал бы .env, а получал
+ * прежнее число.
  *
  * The API key is stored in this SQLite file in plain text. That is deliberate:
  * Colloq is single-tenant and self-hosted, the database sits in the same
@@ -74,12 +84,16 @@ function stored(): Map<string, string> {
 
 const MODES: readonly OracleMode[] = ['off', 'hints', 'full']
 
-/** Providers whose runtime ignores the key entirely; asking for one is asking for a secret that does not exist. */
-const KEYLESS: ReadonlySet<AiProviderId> = new Set<AiProviderId>(['ollama', 'vllm'])
-
-export function isKeylessProvider(provider: AiProviderId): boolean {
-  return KEYLESS.has(provider)
-}
+/**
+ * Providers whose runtime ignores the key entirely; asking for one is asking
+ * for a secret that does not exist.
+ *
+ * Реэкспорт, а не список: копия этого правила жила и здесь, и в панели
+ * (web/src/admin/panel.ts), и следующая строка в одной из них разошлась бы со
+ * второй молча — на настроенной Ollama сервер отвечает, а экран гасит выбор
+ * оракула. Список один, в shared/admin.ts · KEYLESS_PROVIDERS.
+ */
+export { isKeylessProvider } from '@shared/admin'
 
 function asProvider(value: string | undefined, fallback: AiProviderId): AiProviderId {
   return value && value in PROVIDER_PRESETS ? (value as AiProviderId) : fallback

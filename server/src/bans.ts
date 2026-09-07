@@ -186,6 +186,9 @@ const selectMatch = db.prepare(`
 `)
 const dropBan = db.prepare('DELETE FROM bans WHERE session_id = ? AND id = ?')
 const dropBansOf = db.prepare('DELETE FROM bans WHERE session_id = ?')
+const selectLatest = db.prepare(
+  'SELECT MAX(until) AS until FROM bans WHERE session_id = ? AND until > ?',
+)
 
 /**
  * Просроченные строки убирает тот, кто следующим пришёл читать.
@@ -196,9 +199,50 @@ const dropBansOf = db.prepare('DELETE FROM bans WHERE session_id = ?')
  * же бан и перестаёт действовать: ни секунды сверх срока строка не работает,
  * даже если её никто не убрал. А убирается она здесь, чтобы список у
  * преподавателя не копил вчерашнее.
+ *
+ * Зовут его только те, кто и правда читает базу: первое чтение комнаты
+ * (`untilOf`) и список у преподавателя (`listBans`). Комната, про которую уже
+ * известно, что ловить в ней некого, сюда не доходит вовсе — см. `untilOf`. У
+ * строки, чей срок вышел без единого нового чтения, это отбирает только уборку:
+ * действовать она перестала в свой `until`, а уберёт её список у преподавателя
+ * или первое чтение после перезапуска.
  */
 function sweep(sessionId: string): void {
   dropExpired.run(sessionId, Date.now())
+}
+
+/**
+ * До какого момента в комнате есть хоть один действующий бан. `0` — ни одного.
+ *
+ * Кэш на комнату, как `rulesCache` в db.ts, и заведён он ради шторма: `banFor`
+ * спрашивают на входе и на рукопожатии КАЖДОГО из трёх сокетов, а после
+ * перезапуска сервера пятьсот вкладок возвращаются за одну-две секунды — это
+ * тысяча DELETE плюс тысяча SELECT в ту самую секунду, когда все ждут возврата
+ * комнаты. Каждое обращение по индексу и стоит микросекунды, но платятся они
+ * там, где цикл событий занят целиком, и ни за что: в подавляющем большинстве
+ * комнат банов нет вообще.
+ *
+ * Число, а не флаг: время само по себе баны только СНИМАЕТ, и по сроку запись
+ * протухает без чьей-либо помощи — ровно тем же полем `until`, которым живёт
+ * сам бан. Появиться же бан может лишь через `banParticipant` в этом процессе,
+ * и там кэш и забывается; `liftBan` и `discardBans` — то же самое. Строку в
+ * таблице мимо этих функций (руками в sqlite3) кэш не увидит: у продукта одна
+ * дверь на запись, и она здесь.
+ *
+ * Цена по памяти — число на комнату, которую хоть раз спросили.
+ */
+const liveBans = new Map<string, number>()
+
+function untilOf(sessionId: string): number {
+  const known = liveBans.get(sessionId)
+  if (known !== undefined) return known
+  // Первое чтение комнаты — оно же и уборка: обещание «убирается первым же
+  // чтением» держится на нём.
+  sweep(sessionId)
+  const row = selectLatest.get(sessionId, Date.now()) as { until: number | null } | undefined
+  const until = row?.until ?? 0
+  liveBans.set(sessionId, until)
+  return until
 }
 
 /** Бан, действующий прямо сейчас: только то, что нужно сказать человеку. */
@@ -229,6 +273,9 @@ export function banFor(
   // Предъявить нечего — значит, и ловить нечего: это чистый браузер, и он
   // проходит. Дыра названа вслух в шапке файла.
   if (!participantId && !device) return null
+  // Комната, в которой некого ловить, до базы не доходит: на шторме
+  // переподключений это тысяча обращений, которых просто нет.
+  if (untilOf(sessionId) <= Date.now()) return null
   sweep(sessionId)
   const row = selectMatch.get(sessionId, Date.now(), participantId, device) as
     | BanInForce
@@ -274,6 +321,12 @@ function toBan(row: BanRow, viewerDevice: string | null): Ban {
 export function listBans(sessionId: string, viewerDevice: string | null): Ban[] {
   sweep(sessionId)
   const rows = selectActive.all(sessionId, Date.now()) as BanRow[]
+  // Список уже прочитал ровно то, что кэшу и нужно знать: до какого момента в
+  // комнате есть кого ловить. Отдельного запроса за этим не надо.
+  liveBans.set(
+    sessionId,
+    rows.reduce((latest, row) => Math.max(latest, row.until), 0),
+  )
   return rows.map((row) => toBan(row, viewerDevice))
 }
 
@@ -316,11 +369,14 @@ export function banParticipant(input: {
     created_at: now,
   }
   insertBan.run(row)
+  // В комнате появился кого ловить — а кэш об этом знать неоткуда.
+  liveBans.delete(input.sessionId)
   return toBan(row, input.viewerDevice ?? null)
 }
 
 /** Снять бан. `false` — такого бана в этой комнате нет (или он уже истёк). */
 export function liftBan(sessionId: string, banId: string): boolean {
+  liveBans.delete(sessionId)
   return dropBan.run(sessionId, banId).changes > 0
 }
 
@@ -331,5 +387,52 @@ export function liftBan(sessionId: string, banId: string): boolean {
  * пережить комнату он не должен.
  */
 export function discardBans(sessionId: string): void {
+  liveBans.delete(sessionId)
   dropBansOf.run(sessionId)
+}
+
+/* -------------------------------------------------------------- выселение */
+
+/**
+ * Кому сказать, что человека выселили прямо сейчас.
+ *
+ * Бан закрывает три двери: тетрадь, пульт и файл. Первые две закрывает
+ * `evictBanned` (control.ts) — сокеты обеих он держит сам. Третью — файловый
+ * сокет редактора — держит collab/files.ts, и позвать его оттуда напрямую было
+ * бы можно: control.ts этот модуль и так импортирует, а обратно files.ts на
+ * control.ts не смотрит — цикла нет. Но тогда список проводов жил бы в модуле
+ * нажатий, и каждый следующий провод пришлось бы вспоминать именно там.
+ * Поэтому событие объявляется здесь, в модуле бана, — там, где живёт само
+ * понятие «этому человеку сюда больше нельзя», — а тот, кто держит провод,
+ * подписывается на него у себя.
+ *
+ * Проверка на рукопожатии закрывает дверь тому, кто стучится; это — тому, кто
+ * уже сидит внутри с открытым файлом.
+ */
+type EvictionListener = (sessionId: string, participantId: string) => void
+
+const evictors = new Set<EvictionListener>()
+
+export function onEviction(listener: EvictionListener): void {
+  evictors.add(listener)
+}
+
+/**
+ * Человека выселили — закройте его провода.
+ *
+ * Каждый слушатель под своим перехватом: закрытая наполовину дверь лучше, чем
+ * маршрут бана, упавший на середине, — строка в базе уже стоит, и человек
+ * забанен независимо от того, чей сокет не закрылся.
+ */
+export function evicted(sessionId: string, participantId: string): void {
+  for (const listener of evictors) {
+    try {
+      listener(sessionId, participantId)
+    } catch (err) {
+      console.error(
+        `[bans ${sessionId}] выселение не доехало до одного из проводов:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
+  }
 }

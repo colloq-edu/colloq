@@ -1,6 +1,6 @@
 import * as Y from 'yjs'
 import { config } from '../config.js'
-import { getSession, loadDocSnapshot, saveDocSnapshot } from '../db.js'
+import { db, loadDocSnapshot, saveDocSnapshot } from '../db.js'
 
 /**
  * Durability for session documents.
@@ -89,6 +89,28 @@ function intervalFor(bytes: number): number {
   return Math.min(Math.round(config.snapshotIntervalMs * (bytes / BACKOFF_FROM_BYTES)), MAX_DEFER_MS)
 }
 
+/**
+ * Есть ли строка семинара — честным SELECT, мимо кэша комнат.
+ *
+ * `getSession` теперь отвечает из памяти (db.ts · roomCache), и на рукопожатии
+ * это правильно: пятьсот вкладок спрашивают одно и то же за секунду. Здесь тот
+ * же вопрос стоит иначе — это последняя преграда перед снимком удалённого
+ * семинара, и цена ошибки несимметрична. Промах кэша стоит один SELECT по
+ * первичному ключу раз в несколько секунд на комнату — ровно ничего; забытая
+ * инвалидация в новом пути удаления вернула бы тетрадь класса на диск, а до
+ * снимка без строки семинара не ведёт уже ни одна дверь: ни открыть, ни
+ * удалить. Пусть эта проверка держится сама, а не тем, что каждый писатель
+ * помнит про `forgetRoom`.
+ *
+ * Писать в `sessions` этот модуль по-прежнему не умеет: дверь на запись одна,
+ * и она в db.ts.
+ */
+const selectSessionRow = db.prepare('SELECT 1 FROM sessions WHERE id = ?')
+
+function sessionRowExists(sessionId: string): boolean {
+  return selectSessionRow.get(sessionId) !== undefined
+}
+
 function write(binding: Binding): void {
   if (binding.timer) {
     clearTimeout(binding.timer)
@@ -100,7 +122,7 @@ function write(binding: Binding): void {
   // a kernel shutting down, a socket that has not noticed yet — would otherwise
   // put the room back on disk seconds after the owner destroyed it, and a
   // snapshot with no session row is a file nobody can reach or remove.
-  if (!getSession(binding.sessionId)) {
+  if (!sessionRowExists(binding.sessionId)) {
     binding.dirtySince = 0
     return
   }

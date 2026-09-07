@@ -114,14 +114,14 @@ const who = (over: Partial<AwarenessUser> = {}, tabs = 1) => ({
 
 test('человек в ячейке — фраза и место про одну и ту же ячейку', () => {
   const seen = whereabouts(who({ activeCellId: 'c2' }), room())
-  assert.equal(seen.line, 'editing cell 02')
+  assert.equal(seen.line, 'правит ячейку 02')
   assert.deepEqual(seen.place, { where: 'cell', cellId: 'c2' })
 })
 
 test('запуск перебивает место курсора — и фраза, и переход', () => {
   // Пока ячейка считается, человек занят именно ею, где бы ни стоял курсор.
   const seen = whereabouts(who({ activeCellId: 'c1' }), room({ runningCellId: 'c3', runBy: 'Мария' }))
-  assert.equal(seen.line, 'running cell 03')
+  assert.equal(seen.line, 'запускает ячейку 03')
   assert.deepEqual(seen.place, { where: 'cell', cellId: 'c3' })
 })
 
@@ -133,7 +133,7 @@ test('терминал и оракул ведут в свои панели', () 
 test('терминал перебивает ячейку, а оракул уступает терминалу', () => {
   const both = who({ activeCellId: 'c1', inTerminal: true, composing: true })
   const seen = whereabouts(both, room())
-  assert.equal(seen.line, 'in the terminal')
+  assert.equal(seen.line, 'в терминале')
   assert.deepEqual(seen.place, { where: 'terminal' })
 })
 
@@ -149,7 +149,10 @@ test('удалённая ячейка не место: ни фразы, ни п�
 
 test('про вкладки сказать можно, а вести некуда', () => {
   const seen = whereabouts(who({}, 3), room())
-  assert.equal(seen.line, '3 tabs open')
+  // Числительное — по правилу, а не тернарником: «3 вкладки», но «5 вкладок».
+  assert.equal(seen.line, '3 вкладки')
+  assert.equal(whereabouts(who({}, 5), room()).line, '5 вкладок')
+  assert.equal(whereabouts(who({}, 21), room()).line, '21 вкладка')
   assert.equal(seen.place, null, 'вкладки — не место в комнате')
 })
 
@@ -180,9 +183,9 @@ test('фраза и место не расходятся ни в одном со
               assert.equal(place, null, 'молчит, но куда-то ведёт')
               continue
             }
-            if (line === 'in the terminal') assert.deepEqual(place, { where: 'terminal' })
-            else if (line === 'asking the oracle') assert.deepEqual(place, { where: 'oracle' })
-            else if (line.endsWith('tabs open')) assert.equal(place, null)
+            if (line === 'в терминале') assert.deepEqual(place, { where: 'terminal' })
+            else if (line === 'спрашивает оракула') assert.deepEqual(place, { where: 'oracle' })
+            else if (/вкладк/.test(line)) assert.equal(place, null)
             else {
               const no = line.slice(-2)
               assert.ok(place && place.where === 'cell', `«${line}» ведёт не в ячейку`)

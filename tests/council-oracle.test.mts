@@ -222,10 +222,9 @@ test('разбор: G-номера возвращаются ключами гр�
         summary: ['верно', 'ошибка', 'показать'],
         groupLabels: { G1: 'через sum', g2: 'цикл', G7: 'выдумано' },
         drafts: { G2: 'Посмотрите на накопитель.' },
-        notable: [
-          { key: 'G2', why: 'вручную' },
-          { key: 'G9', why: 'нет такой' },
-        ],
+        // Модель может прислать что угодно сверх спрошенного — лишнее просто
+        // не разбирается (см. ParsedOracle: «примечательное» больше не просят).
+        notable: [{ key: 'G2', why: 'вручную' }],
       }) +
       '\n```',
     keys,
@@ -233,7 +232,6 @@ test('разбор: G-номера возвращаются ключами гр�
   assert.deepEqual(parsed.summary, ['верно', 'ошибка', 'показать'])
   assert.deepEqual(parsed.groupLabels, { k1: 'через sum', k2: 'цикл' })
   assert.deepEqual(parsed.drafts, { k2: 'Посмотрите на накопитель.' })
-  assert.deepEqual(parsed.notable, [{ key: 'k2', why: 'вручную' }])
 })
 
 test('разбор: проза вместо JSON — сводка абзацами, имена и черновики пусты', () => {
@@ -245,19 +243,17 @@ test('разбор: проза вместо JSON — сводка абзацам
   assert.match(parsed.summary[1], /len/)
   assert.deepEqual(parsed.groupLabels, {})
   assert.deepEqual(parsed.drafts, {})
-  assert.deepEqual(parsed.notable, [])
 })
 
 /* ------------------------------------------------------------- маршрут */
 
-test('JSON от модели → оракул готов: три абзаца, имена по ключам групп, примечательное — человеком', async () => {
+test('JSON от модели → оракул готов: три абзаца и имена по ключам групп', async () => {
   const r = await room()
   try {
     const answer = JSON.stringify({
       summary: ['Все три группы поняли, что нужна сумма.', 'G3 вернула длину.', 'Показать G2.'],
       groupLabels: { G1: 'через sum()', G2: 'цикл с накопителем', G3: 'len вместо суммы' },
       drafts: { G3: 'Вы вернули длину списка, а не сумму его элементов.' },
-      notable: [{ key: 'G2', why: 'единственные, кто написал цикл руками' }],
     })
     await withEndpoint(answer, async () => {
       const res = await ask(r, r.teacher)
@@ -284,10 +280,9 @@ test('JSON от модели → оракул готов: три абзаца, �
         [lenKey]: 'len вместо суммы',
       })
       assert.deepEqual(Object.keys(ready.drafts), [lenKey])
-      // Имени модель не видела — представителя группе подставил сервер.
-      assert.deepEqual(ready.notable, [
-        { participantId: 'p_c', why: 'единственные, кто написал цикл руками' },
-      ])
+      // «Примечательное» с кадра снято целиком — ни промпта, ни разбора, ни
+      // поля: нарисовать его было негде, а токены в самом дорогом запросе
+      // комнаты оно стоило. Поэтому здесь его больше и не проверяют.
       // Хранилище и рассылка говорят одно и то же.
       assert.deepEqual(r.deps.oracleOf(r.id, r.cellId), ready)
     })
@@ -389,7 +384,6 @@ test('«Стоп» возвращает прежнее состояние, а н
       summary: ['а', 'б', 'в'],
       groupLabels: { G1: 'sum' },
       drafts: {},
-      notable: [],
     })
     await withEndpoint(answer, async () => {
       assert.equal((await ask(r, r.teacher)).status, 202)

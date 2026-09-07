@@ -3,10 +3,17 @@
    * The thirty seconds before a student is in the room.
    *
    * Everything on it is one question — what should the room call you — and one
-   * answer it makes for you: a mark nobody else in this room is wearing, so
-   * your cursor is yours for the next ninety minutes. There is no account to
-   * make and nothing to confirm; the link is the seminar, which is why the
-   * poster beside the form names the seminar the link opened.
+   * answer it makes for you: a mark nobody in this room was wearing when you
+   * knocked. There is no account to make and nothing to confirm; the link is
+   * the seminar, which is why the poster beside the form names the seminar the
+   * link opened.
+   *
+   * «Когда постучали» — не «никогда»: сорок меток на класс из тридцати, и две
+   * вкладки, постучавшие в одну секунду, друг друга не видят. Ростер читается
+   * перед входом и при открытии подборщика, а последнее слово — за сервером:
+   * выданную нами метку он подменит свободной, если её успели занять, а
+   * выбранную руками оставит как есть (`picked` в теле /join). Обещать на
+   * экране больше этого нельзя.
    *
    * Who is "in the room" here is presence, not the participants table: that
    * table remembers every name that ever joined, and a poster announcing "148
@@ -20,9 +27,12 @@
   import Poster from '@/components/ui/Poster.svelte'
   import { api, ApiError } from '@/lib/api'
   import { CROWD_NOTICE, retryJoinIn } from '@/lib/crowd'
+  import { plural } from '@/lib/plural'
+  import { publicationAddress } from '@shared/publish'
   import { MARKS, freeMark, markName } from '@/lib/marks'
+  import { markToClaim, takenMarks } from '@/components/join/pick'
+  import { staffName } from '@/screens/staff'
   import {
-    clearStaffMark,
     loadIdentity,
     loadProfile,
     mightBeStaff,
@@ -95,13 +105,7 @@
    * in our way; App only routes a browser with no identity here, so this is the
    * guard on that pair agreeing rather than a path a student walks every day.
    */
-  const taken = $derived(
-    new Map(
-      present
-        .filter((person) => person.avatar && person.id !== mine?.participantId)
-        .map((person) => [person.avatar as string, person.color]),
-    ),
-  )
+  const taken = $derived(takenMarks(roster, onlineIds, mine?.participantId ?? null))
   const host = $derived(roster.find((person) => person.role === 'host') ?? null)
 
   /*
@@ -136,17 +140,9 @@
      * form is complete before this lands and stays usable if it never does: a
      * room you cannot count is still a room you can walk into.
      */
-    void api
-      .listParticipants(session.id)
-      .then((body) => {
-        roster = body.participants
-        onlineIds = new Set(body.online)
-        // Correct the provisional mark, never the student's own choice.
-        if (!picked && taken.has(mark)) mark = freeMark(taken, profile.avatar)
-      })
-      .catch(() => {
-        /* offline or slow; the poster simply says nothing about the room */
-      })
+    void readRoom().catch(() => {
+      /* offline or slow; the poster simply says nothing about the room */
+    })
   })
 
   /*
@@ -163,20 +159,17 @@
   onMount(() => {
     if (!signingIn) return
     void (async () => {
-      try {
-        const res = await fetch('/api/admin/me', { credentials: 'same-origin' })
-        if (!res.ok) throw new Error('not staff')
-        const body = (await res.json()) as { teacher?: { name?: string } }
-        const staffName = body.teacher?.name?.trim()
-        if (!staffName) throw new Error('no name')
-        name = staffName
-        await join()
-      } catch {
-        // The cookie expired, or this browser was never staff after all. Drop
-        // the hint and hand them the ordinary form rather than a dead end.
-        clearStaffMark()
+      // Один помощник на оба экрана — см. screens/staff.ts. Он же решает
+      // судьбу местной метки: снимает её отказ сервера, а не оборванный вайфай.
+      const staff = await staffName()
+      if (!staff) {
+        // Печенье протухло, этот браузер никогда не был штатом — или сервера
+        // не слышно. В любом случае человеку нужна обычная форма, а не тупик.
         signingIn = false
+        return
       }
+      name = staff
+      await join()
     })()
   })
 
@@ -196,11 +189,83 @@
   let alive = true
   onDestroy(() => (alive = false))
 
+  /**
+   * Кто в комнате прямо сейчас — и метка по этому ответу.
+   *
+   * Одно чтение на три места: при монтировании (карточка и постер), при
+   * открытии подборщика (занятые метки должны быть сегодняшними, иначе плитка
+   * зовёт нажать на зверя, которого уже носят) и перед стуком. Правило выбора
+   * при этом одно — `markToClaim`: выданную нами метку пересчитываем по свежей
+   * занятости, выбранную руками не трогаем.
+   */
+  async function readRoom(): Promise<void> {
+    const body = await api.listParticipants(session.id)
+    if (!alive) return
+    roster = body.participants
+    onlineIds = new Set(body.online)
+    mark = markToClaim(mark, picked, taken, profile.avatar)
+  }
+
+  /**
+   * Подборщик открывают — комнату перечитывают.
+   *
+   * Ростер, прочитанный при монтировании, к этой минуте уже старый: студент
+   * читал постер, печатал имя, а класс всё это время входил. Подборщик рисует
+   * занятые метки занятыми и нажать на них не даёт — но только по тому
+   * списку, который у него есть, и без этого чтения список был минутной
+   * давности: человек жал на свободного с виду ежа и входил вторым ежом.
+   *
+   * Открывается он сразу, не дожидаясь ответа: сетка нужна сейчас, а серые
+   * плитки доедут через круг сети. Неудача чтения ничего не меняет — выбирают
+   * из того, что известно.
+   */
+  function openPicker(): void {
+    picking = true
+    void readRoom().catch(() => {
+      /* offline or slow; the grid greys out only whom we already know about */
+    })
+  }
+
+  /**
+   * Ростер — ещё раз, прямо перед входом, и метка по нему.
+   *
+   * Читать его один раз при монтировании было ровно бесполезно в единственном
+   * случае, ради которого он и читается: класс открывает ссылку в одну минуту,
+   * у всех тридцати комната пуста, и каждый выбирает из полного списка
+   * независимо. Сорок меток на тридцать человек дают около одиннадцати пар с
+   * одним и тем же зверем — то есть с одним и тем же курсором в тетради, а
+   * цвет их тоже не различает (он минтуется из id).
+   *
+   * Своя метка, выбранная руками, не трогается никогда (см. `markToClaim`) —
+   * ни здесь, ни на сервере, который узнаёт об этом по `picked`, — и поэтому
+   * запрос для неё не нужен вовсе. Неудача запроса ничего не меняет: входим с
+   * тем, что есть, — закрытая дверь хуже двух ежей.
+   */
+  async function freshenMark(): Promise<void> {
+    if (picked) return
+    try {
+      await readRoom()
+    } catch {
+      /* offline or slow; the mark we already have is the one we knock with */
+    }
+  }
+
   /** Одна попытка войти: если она удалась, человек уже в комнате. */
   async function knock(who: string): Promise<void> {
     const result = await api.join(session.id, {
       name: who,
       avatar: mark,
+      /*
+       * Выбрана руками — сервер её не подменит.
+       *
+       * Судья уникальности он: занятую метку он меняет на свободную, и без
+       * этого поля отличить выданную экраном от ткнутой пальцем ему нечем —
+       * подменялись обе. Человек жал на ежа и оказывался выдрой, а объяснения
+       * этому нет ни на одном экране: карточка к тому моменту уже уехала.
+       * Плитки занятых зверей нажать нельзя, так что совпасть выбранная может
+       * только в круге сети, и два ежа там дешевле молчаливой подмены.
+       */
+      picked,
       // What keeps a refresh from turning one person into two — and the
       // token beside it is what proves the claim is ours to make.
       participantId: mine?.participantId ?? null,
@@ -231,6 +296,10 @@
 
     busy = true
     error = null
+    // Один раз на весь вход, а не на каждую попытку: в толпе, где повторов
+    // четыре, это были бы четыре лишних запроса с каждой из пятисот вкладок.
+    await freshenMark()
+    if (!alive) return
     /*
      * Толпа на входе — не отказ, а очередь: вкладка стучится ещё раз сама.
      *
@@ -381,8 +450,21 @@
     {#if signingIn}
       <div class="mx-auto flex min-h-full w-full max-w-md flex-col justify-center gap-3 py-12">
         <p class="text-2xs font-bold uppercase tracking-label text-muted">Signing you in</p>
+        <!--
+          «Straight away» — пока это правда.
+
+          Вход штата идёт через тот же `join`, что и у всех, а он в толпе
+          получает 429 и стучится ещё раз сам (lib/crowd.ts). Строка про
+          очередь стояла ВНУТРИ формы, а формы в этой ветке нет — и экран
+          четыре с лишним секунды обещал мгновенный вход и молчал. Теперь
+          обещание уступает место объяснению на том же месте.
+        -->
         <p class="text-ui-lg text-muted">
-          You are already signed in to the teaching side, so this seminar opens straight away.
+          {#if retrying}
+            {CROWD_NOTICE}
+          {:else}
+            You are already signed in to the teaching side, so this seminar opens straight away.
+          {/if}
         </p>
       </div>
     {:else}
@@ -424,10 +506,43 @@
           комната. Форма остаётся рабочей: комната открыта на чтение, и войти в
           неё за разбором — обычное дело.
         -->
-        <p class="border border-line bg-surface px-4 py-3 text-ui text-muted" role="status">
-          Занятие закончено {finishedStamp}. Войти можно — тетрадь, файлы и ответы оракула на
-          месте, но здесь теперь только читают.
-        </p>
+        <div
+          class="flex flex-col gap-2 border border-line bg-surface px-4 py-3 text-ui text-muted"
+          role="status"
+        >
+          <p>
+            Занятие закончено {finishedStamp}. Войти можно — тетрадь, файлы и ответы оракула на
+            месте, но здесь теперь только читают.
+          </p>
+          {#if session.published}
+            <!--
+              И куда идти вместо комнаты.
+
+              Ссылка в чате ведёт сюда, и это единственный адрес, который у
+              студента есть: без этой строки он через неделю называет имя,
+              заводит ещё одну строку участника, будит ядро и оказывается один
+              в живой тетради, где ничто не говорит, что разбор давно
+              опубликован.
+
+              Адрес — через `publicationAddress`: страницы живут по имени,
+              которое дали классу, а `/p/<id>` — запасной вход для тех, у кого
+              имени нет.
+            -->
+            <p>
+              Есть <a
+                class="font-semibold text-accent-text hover:underline"
+                href="/p/{publicationAddress(session.published)}"
+                >опубликованная версия</a
+              >
+              — {session.published.steps}
+              {plural(session.published.steps, 'шаг', 'шага', 'шагов')}{#if session.course}, в
+                курсе <a
+                  class="font-semibold text-accent-text hover:underline"
+                  href="/c/{session.course.id}">{session.course.name}</a
+                >{/if}.
+            </p>
+          {/if}
+        </div>
       {/if}
 
       <div class="flex flex-col gap-2.5">
@@ -438,13 +553,19 @@
           Your name
         </label>
         <!-- A ruled box on the page's own ground, not a filled surface: on this
-             screen the field is the only thing the student has to fill in. -->
+             screen the field is the only thing the student has to fill in.
+             Через `.field`, а не своей рамкой: фокусный язык на продукт один —
+             акцентная рамка и кольцо 4px вместо системного контура, — и это
+             первое поле, которое видит каждый студент. Своим набором классов
+             оно давало рамку И глобальный `:focus-visible` outline разом, то
+             есть выглядело иначе, чем все остальные поля Colloq. Размеры и
+             грунт переопределены утилитами: `.field` лежит в слое компонентов,
+             утилиты — выше. -->
         <input
           id="join-name"
           bind:this={nameInput}
           bind:value={name}
-          class="w-full border border-line bg-canvas px-4 py-3 text-head font-semibold
-                 text-ink placeholder:font-normal placeholder:text-faint focus:border-accent"
+          class="field bg-canvas px-4 py-3 text-head font-semibold placeholder:font-normal"
           placeholder="Alex"
           maxlength={40}
           autocomplete="name"
@@ -497,9 +618,14 @@
             </span>
             <div class="flex min-w-[11rem] flex-1 flex-col gap-0.5">
               <p class="text-ui-lg font-semibold text-ink">The {markName(mark)} is yours</p>
+              <!-- Обещание ровно на то, что делается: ростер читается перед
+                   входом, а не при монтировании, — но сорок меток на класс и
+                   две вкладки, постучавшие в одну секунду, всё ещё могут
+                   сойтись. «Always yours» было обещанием сервера, которого
+                   сервер не даёт. -->
               <p class="text-2xs text-muted">
-                Picked from the ones nobody in this room has taken, so your cursor is always
-                yours.
+                Picked from the ones nobody in this room is wearing right now. Change it if you
+                spot a twin.
               </p>
             </div>
             <!-- `press` is the house helper for a control that does not route
@@ -512,7 +638,7 @@
               class="press flex h-9 shrink-0 flex-1 items-center justify-center gap-2 border
                      border-line bg-canvas px-3 text-ui font-semibold text-ink hover:border-faint
                      sm:flex-none sm:justify-start"
-              onclick={() => (picking = true)}
+              onclick={openPicker}
             >
               <Icon name="restart" size={13} />
               Change

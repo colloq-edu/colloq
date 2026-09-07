@@ -1,17 +1,27 @@
 /**
- * Курсы и публикации в базе.
+ * Курсы и публикации: запросы к ним.
  *
- * Держится отдельно от `db.ts` не по вкусу, а потому что `sessions` уже правят
- * два файла — `db.ts` добавляет столбцы окружения и правил, `admin-instance.ts`
- * автора и архивацию. Третий владелец — это то, как схема расползается. Здесь
- * свои таблицы и никто больше в них не пишет.
+ * СХЕМА этих таблиц — `courses`, `publications`, `publication_steps`,
+ * `publication_blobs` — не здесь, а в `db.ts`, вместе с миграциями, и владелец
+ * у неё один: `sessions` уже правят два файла (`db.ts` добавляет столбцы
+ * окружения и правил, `admin-instance.ts` — автора и архивацию), и третий
+ * владелец ровно так схему и расползает. Встречная запись стоит там же, рядом
+ * с `CREATE TABLE`.
+ *
+ * Здесь — запросы к этим таблицам и одна собственная, `publish_addresses`:
+ * прежние имена в адресах, о которых больше не знает никто. Шапка обещала
+ * «здесь свои таблицы и никто больше в них не пишет» — про таблицы, которых
+ * этот модуль не создаёт; читать её так значило считать, что столбец можно
+ * добавить отсюда.
  */
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { db } from '../db.js'
 import {
   MAX_COURSE_BLURB,
   MAX_COURSE_NAME,
   MAX_STEP_LABEL,
+  type AddressHolder,
+  type AddressKind,
   type Course,
   type CourseItem,
   type PublicCell,
@@ -56,9 +66,10 @@ const clip = (value: unknown, max: number): string =>
  * «такой страницы здесь нет». Адреса забываются вместе со строкой — в
  * `deleteCourse` и `deletePublication`, когда указывать больше некуда.
  *
- * Таблица заводится здесь, а не в `db.ts`: остальные таблицы публикаций пишет
- * только этот модуль, и третий владелец схемы — ровно то расползание, о
- * котором сказано в шапке файла.
+ * Единственная таблица публикаций, заведённая здесь, а не в `db.ts`: про неё
+ * не знает больше ни один модуль — ни столбца наружу, ни запроса со стороны,
+ * — и держать её схему отдельно от единственных запросов к ней было бы дальше
+ * от кода, чем от порядка. Всё остальное — в `db.ts`, см. шапку файла.
  */
 db.exec(`
   CREATE TABLE IF NOT EXISTS publish_addresses (
@@ -69,8 +80,6 @@ db.exec(`
     PRIMARY KEY (kind, slug)
   )
 `)
-
-type AddressKind = 'course' | 'publication'
 
 const rememberAddress = db.prepare(
   'INSERT OR REPLACE INTO publish_addresses (kind, slug, owner, at) VALUES (?, ?, ?, ?)',
@@ -105,6 +114,45 @@ function addressOwner(kind: AddressKind, slug: string): string | null {
 /** Прежние имена — по ним выгрузка кладёт указатели на нынешний адрес. */
 export function formerSlugs(kind: AddressKind, id: string): string[] {
   return (selectAddresses.all(kind, id) as { slug: string }[]).map((row) => row.slug)
+}
+
+/**
+ * Кто держит этот адрес — чтобы отказ назвал держателя по имени.
+ *
+ * «Адрес «ml-2025» уже занят» — это тупик: курса с таким адресом в списке нет
+ * (его переименовали в «ml-2025-fall»), и преподаватель ищет то, чего не видно.
+ * Здесь видно и кем, и как: `former` значит, что имя держит не живой адрес, а
+ * память о розданной ссылке — и такое имя владелец может отпустить сам.
+ *
+ * Сама запись — `AddressHolder` из `@shared/publish`, и копии у неё здесь нет
+ * намеренно: ровно это уезжает в теле отказа 409, и панель по нему решает,
+ * показывать ли «Отпустить прежний адрес». Второе объявление разъехалось бы с
+ * первой же правкой поля.
+ */
+export function addressHolder(kind: AddressKind, slug: string): AddressHolder | null {
+  const found = kind === 'course' ? findCourse(slug) : findPublication(slug)
+  if (!found) return null
+  const live = found.slug === slug
+  const name = kind === 'course' ? (found as Course).name : (found as Publication).title
+  return { kind, id: found.id, name, former: !live }
+}
+
+/**
+ * Отпустить своё прежнее имя.
+ *
+ * Прежний адрес держится вечно и не зря: ссылка с ним записана в чате группы.
+ * Но курс «ml-2025», переименованный в «ml-2025-fall», держал «ml-2025» и для
+ * курса следующего года — навсегда, и освободить его было нечем, кроме удаления
+ * курса-владельца. Отпускает только владелец и только прежнее имя: живое
+ * снимается сменой имени, чужое не трогается вовсе.
+ *
+ * Цена названа вслух: указатель по этому адресу с выгрузки исчезнет, и старая
+ * ссылка станет 404. Это решение владельца, а не побочный эффект.
+ */
+export function releaseFormerSlug(kind: AddressKind, id: string, slug: string): boolean {
+  if (addressOwner(kind, slug) !== id) return false
+  forgetAddress.run(kind, slug)
+  return true
 }
 
 /* ------------------------------------------------------------------ курсы */
@@ -448,6 +496,15 @@ export function writePublication(input: {
   const existing = publicationOf(input.sessionId)
   const id = existing?.id ?? newId()
   const now = Date.now()
+  /*
+   * Один момент — одна строка: `publication_steps` ключуется парой (pub, seq),
+   * и два шага с одним `seq` роняли всю транзакцию SQLITE_CONSTRAINT'ом, то
+   * есть пятисоткой без единого слова о причине. Побеждает последний: `seq: 0`
+   * — постоянный адрес последней страницы, и её маршрут дописывает в конец,
+   * поверх всего, что могло прийти под тем же номером снаружи.
+   */
+  const lastAt = new Map(input.steps.map((step, index) => [step.seq, index]))
+  const steps = input.steps.filter((step, index) => lastAt.get(step.seq) === index)
 
   db.transaction(() => {
     if (existing) bumpPub.run(input.title, now, input.by, id)
@@ -461,7 +518,7 @@ export function writePublication(input: {
       })
     clearSteps.run(id)
     clearBlobs.run(id)
-    input.steps.forEach((step, index) => {
+    steps.forEach((step, index) => {
       insertStep.run({
         pub: id,
         seq: step.seq,
@@ -473,6 +530,17 @@ export function writePublication(input: {
     })
     for (const blob of input.blobs) insertBlob.run(id, blob.hash, blob.mime, blob.body)
   })()
+  // Рельса этой страницы известна прямо здесь: шаги только что собраны, и их
+  // ячейки посчитаны. Порядок тот же, что у `ORDER BY ord` — порядок записи.
+  keepRail(
+    id,
+    steps.map((step) => ({
+      seq: step.seq,
+      label: clip(step.label, MAX_STEP_LABEL),
+      at: step.at,
+      cellCount: step.cells.length,
+    })),
+  )
 
   return getPublication(id)!
 }
@@ -521,6 +589,7 @@ export function deletePublication(id: string): void {
     deletePubRow.run(id)
     forgetAddressesOf.run('publication', id)
   })()
+  forgetRail(id)
   // Надгробие в курсе обещало «страница осталась» — теперь не осталась.
   forgetPublicationInCourses(id)
 }
@@ -548,13 +617,58 @@ function parsePage(row: StepRow): PublicCell[] {
   }
 }
 
+/**
+ * Рельса шагов — из памяти, а не разбором страниц на каждый публичный запрос.
+ *
+ * Числа ячеек считает SQLite (`json_array_length` в `selectHeadings`), и стоит
+ * это разбора ПОЛНОГО текста каждой страницы: страница — это все текстовые
+ * выводы шага, лог обучения на мегабайты. Спрашивают рельсу на каждом открытии
+ * публичной страницы, то есть до пятисот раз в первую минуту разбора, — и
+ * каждый раз заново, ради сорока маленьких чисел.
+ *
+ * Кэш здесь надёжнее любого времени жизни: шаги публикации меняются ровно
+ * двумя способами, и оба в этом файле — переиздание (`writePublication`) и
+ * стирание (`deletePublication`). Снятие страницы шагов не трогает.
+ *
+ * Переиздание рельсу не сбрасывает, а КЛАДЁТ: шаги в этот момент собраны и
+ * лежат в памяти, считать их ячейки второй раз, да ещё разбором текста, не за
+ * чем. Так разбор остаётся ровно один — первое чтение страницы, изданной до
+ * запуска процесса.
+ *
+ * Столбцом `cell_count` он не стоил бы и того и переживал бы перезапуск, но
+ * схему публикаций держит db.ts («владелец схемы один»), и заводить второго
+ * владельца ради одного числа — та самая цена, о которой там сказано.
+ */
+const RAILS_KEPT = 200
+const rails = new Map<string, StepHeading[]>()
+
+function forgetRail(pub: string): void {
+  rails.delete(pub)
+}
+
+function keepRail(pub: string, rail: StepHeading[]): void {
+  // Страниц за семестр — десятки; потолок здесь на случай инстанса, живущего
+  // годами, и выселяет он самую давнюю запись, а не всю память разом.
+  if (!rails.has(pub) && rails.size >= RAILS_KEPT) {
+    const oldest = rails.keys().next()
+    if (!oldest.done) rails.delete(oldest.value)
+  }
+  rails.set(pub, rail)
+}
+
 export function stepHeadings(pub: string): StepHeading[] {
-  return (selectHeadings.all(pub) as HeadingRow[]).map((row) => ({
+  const known = rails.get(pub)
+  // Копией: массив общий, а уезжает он в тела ответов, где его никто не обязан
+  // считать чужим.
+  if (known) return [...known]
+  const built = (selectHeadings.all(pub) as HeadingRow[]).map((row) => ({
     seq: row.seq,
     label: row.label,
     at: row.at,
     cellCount: row.cell_count,
   }))
+  keepRail(pub, built)
+  return [...built]
 }
 
 /** Сколько шагов — там, где нужно только число. */
@@ -573,9 +687,4 @@ export function readStep(pub: string, seq: number | null): BuiltStep | null {
 export function readBlob(pub: string, hash: string): { mime: string; body: Buffer } | null {
   const row = selectBlob.get(pub, hash) as { mime: string; body: Buffer } | undefined
   return row ? { mime: row.mime, body: row.body } : null
-}
-
-/** Отпечаток содержимого — для ETag страницы. */
-export function pageTag(cells: PublicCell[]): string {
-  return createHash('sha256').update(JSON.stringify(cells)).digest('hex').slice(0, 16)
 }

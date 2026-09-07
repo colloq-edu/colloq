@@ -7,9 +7,16 @@
  * поддельных вкладок — вход через `/join`, оба сокета, начальная синхронизация
  * Yjs, присутствие с именем и цветом, — держит их и меряет:
  *
- *   1 ВХОД     сколько прошло и сколько отказано, по кодам, и за сколько
- *   2 ПОКОЙ    кадров в секунду и байт на клиента, /api/health и loopLag оттуда
- *   3 ШТОРМ    k печатают по m нажатий в секунду: за сколько правка доезжает
+ *   1 ВХОД      сколько прошло и сколько отказано, по кодам, и за сколько
+ *   2 ПОКОЙ     кадров в секунду и байт на клиента, /api/health и loopLag оттуда
+ *   3 ШТОРМ     k печатают по m нажатий в секунду: за сколько правка доезжает
+ *   4 ДЕРЕВО    преподаватель заводит файлы: сколько это стоит всем остальным
+ *   5 КОНСИЛИУМ N студентов пишут в свой лист при одном пульте: цена стопки
+ *   6 ЛЕКЦИЯ    ведущий ведёт пером и указкой: цена кадра всему залу
+ *
+ * Разделы 4–6 добровольные (по умолчанию их нет) и меряют три РАЗНЫЕ формы
+ * рассылки, которых в шторме нет вовсе: дерево — всем на каждое изменение,
+ * консилиум — одному пульту от каждого из N, лекция — от одного всем N.
  *
  * В каждом окне рядом стоят CPU и RSS серверного процесса — если стенд запущен
  * на той же машине и его pid назван параметром.
@@ -30,6 +37,13 @@
  *   LOAD_TYPISTS      k — сколько печатают     default 20
  *   LOAD_KEYS         m — нажатий в секунду    default 5
  *   LOAD_STORM_SEC    сколько длится шторм     default 20
+ *   LOAD_TREE         файлов в секунду в разделе 4 (0 — не гонять) default 0
+ *   LOAD_TREE_SEC     сколько длится раздел 4  default 10
+ *   LOAD_COUNCIL      сколько студентов пишут в свой лист (0 — не гонять) default 0
+ *   LOAD_COUNCIL_EVERY  секунд между снимками одного студента default 2
+ *   LOAD_COUNCIL_SEC  сколько длится раздел 5  default 10
+ *   LOAD_INK          кадров пера в секунду в разделе 6 (0 — не гонять) default 0
+ *   LOAD_INK_SEC      сколько длится раздел 6  default 10
  *   LOAD_SERVER_PID   pid серверного процесса (systemctl show -p MainPID colloq)
  *   LOAD_SETUP_TOKEN  ключ установки, если файла рядом нет (удалённый инстанс)
  *   LOAD_STAFF_COOKIE готовая кука `colloq_staff=...`, если ключа нет вовсе
@@ -48,6 +62,12 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import WS, { type RawData } from 'ws'
 import type { AwarenessUser, ParticipantRole } from '@shared/protocol'
+// Потолок попытки — общий с сервером и с клиентом: снимок длиннее возвращается
+// отказом, и стенд, который мерил бы такими, мерил бы отказы, а не стопку.
+import { MAX_ATTEMPT_CHARS } from '@shared/notebook'
+// И числительное — оттуда же: «1 штрихов» в отчёте стенда читается как опечатка
+// в самом стенде, а копия правила тернарником уже однажды разошлась (shared/plural.ts).
+import { plural } from '@shared/plural'
 
 /* --------------------------------------------------------------- настройки */
 
@@ -66,6 +86,36 @@ const IDLE_SEC = num('LOAD_IDLE_SEC', 15)
 const TYPISTS = Math.max(1, Math.round(num('LOAD_TYPISTS', 20)))
 const KEYS = Math.max(1, num('LOAD_KEYS', 5))
 const STORM_SEC = num('LOAD_STORM_SEC', 20)
+/*
+ * Дерево файлов — вторая по величине рассылка после присутствия, и до сих пор
+ * стенд её не трогал вовсе: он мерил комнату, в которой никто не кладёт
+ * файлов. Один `tree:new` — это `broadcastFiles`, то есть ВЕСЬ список файлов
+ * комнаты каждому пульту, и стоит он тем дороже, чем больше в комнате файлов.
+ * По умолчанию 0: раздел добровольный, потому что он оставляет в комнате
+ * файлы, а не только сокеты.
+ */
+const TREE_PER_SEC = num('LOAD_TREE', 0)
+const TREE_SEC = num('LOAD_TREE_SEC', 10)
+/*
+ * Консилиум — единственная рассылка комнаты, которая идёт не всем, а ОДНОМУ.
+ *
+ * Снимок каждого пишущего ложится в стопку преподавателя, и платит за неё один
+ * сокет: при пятистах пишущих «байт на клиента» останется покойным, а пульт
+ * ведущего захлебнётся. Поэтому раздел меряет отдельно входящее пульта, а не
+ * среднее по залу. По умолчанию 0 — он, как и дерево, оставляет в комнате
+ * ячейку и попытки, а не только сокеты.
+ */
+const COUNCIL = Math.round(num('LOAD_COUNCIL', 0))
+const COUNCIL_EVERY = Math.max(0.1, num('LOAD_COUNCIL_EVERY', 2))
+const COUNCIL_SEC = num('LOAD_COUNCIL_SEC', 10)
+/*
+ * Лекция — та же рассылка наоборот: один ведущий, и каждый кадр пера уходит
+ * всему залу целиком. Указка при этом склеивается сервером по такту
+ * (@shared/lecture · LASER_EVERY_MS), а перо — нет, и раздел показывает
+ * разницу: сколько кадров ушло с пульта и сколько байт из-за них получил зал.
+ */
+const INK_PER_SEC = num('LOAD_INK', 0)
+const INK_SEC = num('LOAD_INK_SEC', 10)
 const SERVER_PID = (process.env.LOAD_SERVER_PID ?? '').trim()
 const STAFF_JOIN = process.env.LOAD_STAFF_JOIN === '1'
 /*
@@ -190,6 +240,15 @@ interface Student {
 }
 
 const students: Student[] = []
+/**
+ * Вкладка преподавателя — одна на все добровольные разделы и НЕ в `students`.
+ *
+ * Не в списке потому, что окна считают байты на клиента по нему, а вкладка,
+ * которая сама же создаёт нагрузку, портила бы среднее; одна потому, что
+ * второй вход тем же штатом — это второй ведущий, а лекцию ведёт один
+ * (control.ts · handOver), и разделы отбирали бы пульт друг у друга.
+ */
+let teacher: Student | null = null
 let socketErrors = 0
 let badFrames = 0
 let stopping = false
@@ -334,9 +393,20 @@ function onCollabFrame(s: Student, data: RawData): void {
   }
 }
 
-/** Оба сокета — как у вкладки: тетрадь и пульт. Присутствие объявляется на open. */
-function connect(s: Student, sessionId: string): void {
-  const collab = new WS(`${WSB}/collab/${sessionId}?token=${encodeURIComponent(s.token)}`)
+/**
+ * Оба сокета — как у вкладки: тетрадь и пульт. Присутствие объявляется на open.
+ *
+ * `cookie` — только для преподавателя, и без него его пульт бесправен.
+ * Роль решается НА КАЖДОМ запросе (`roleFor`, routes/sessions.ts), а токен,
+ * выданный под кукой штата, ведущим намеренно не записан (`tokenHost: role ===
+ * 'host' && !staff`): право держится кукой, чтобы уход из штата снимал его
+ * тут же. Вкладка эту куку несёт и в upgrade — стенд, который её не нёс,
+ * получал по проводу `participant` при `host` в ответе на `/join` и молча
+ * упирался в «Открывает ячейки преподаватель».
+ */
+function connect(s: Student, sessionId: string, cookie?: string): void {
+  const opts = cookie ? { headers: { cookie } } : undefined
+  const collab = new WS(`${WSB}/collab/${sessionId}?token=${encodeURIComponent(s.token)}`, opts)
   collab.binaryType = 'arraybuffer'
   s.collab = collab
   collab.on('message', (data: RawData) => onCollabFrame(s, data))
@@ -367,7 +437,7 @@ function connect(s: Student, sessionId: string): void {
     s.aw.setLocalStateField('user', user)
   })
 
-  const control = new WS(`${WSB}/control/${sessionId}?token=${encodeURIComponent(s.token)}`)
+  const control = new WS(`${WSB}/control/${sessionId}?token=${encodeURIComponent(s.token)}`, opts)
   s.control = control
   control.on('message', (data: RawData) => {
     s.frames++
@@ -562,7 +632,9 @@ async function cleanup(): Promise<void> {
   if (cleaned) return
   cleaned = true
   stopping = true
-  for (const s of students) {
+  // Вкладка преподавателя — вместе со всеми: она не в `students`, и без этой
+  // строки её два сокета уходили бы только вместе с процессом.
+  for (const s of teacher ? [...students, teacher] : students) {
     try {
       s.aw.destroy()
       s.collab?.terminate()
@@ -758,6 +830,326 @@ async function runStorm(armed: Armed, seconds: number): Promise<Storm> {
   return { typists: typists.length, keysSent: seq, seconds: (performance.now() - at) / 1000 }
 }
 
+/* ------------------------------------------------------------- дерево файлов */
+
+interface Tree {
+  made: number
+  refused: number
+  seconds: number
+}
+
+/**
+ * Что пульт преподавателя услышал в ответ.
+ *
+ * Слушатель ОДИН на все разделы и вешается при входе. Вешать его в каждом
+ * разделе значило бы складывать обработчики на одном сокете: третий раздел
+ * считал бы каждый кадр трижды, а `ws` на одиннадцатом ругался бы утечкой.
+ * Отказы копятся числом, а типы кадров — множеством: по нему разделы узнают,
+ * что сервер принял лекцию или собрал стопку, не разбирая поток целиком.
+ */
+let teacherRefusals = 0
+const teacherHeard = new Set<string>()
+
+/**
+ * Вход преподавателя: обычный `/join`, но кукой штата и с ролью на проводе.
+ *
+ * Заводить файлы, открывать консилиум и вести лекцию может только ведущий
+ * (control.ts), а студенты стенда входят по ссылке. Почему эта вкладка не в
+ * `students` — у самого объявления `teacher`.
+ */
+async function joinTeacher(): Promise<Student | null> {
+  if (!staffCookie) return null
+  let body: { participant: { id: string; name: string; color: string; role: ParticipantRole }; token: string }
+  try {
+    const res = await fetch(`${BASE}/api/sessions/${SID}/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: staffCookie },
+      body: JSON.stringify({ name: 'Преподаватель' }),
+    })
+    if (!res.ok) return null
+    body = (await res.json()) as typeof body
+  } catch {
+    return null
+  }
+  const p = body.participant
+  if (p.role !== 'host') return null
+  const host = makeStudent(0, p.id, p.name, p.color, p.role, body.token)
+  // С кукой: роль на проводе спрашивают у неё, а не у токена (см. `connect`).
+  connect(host, SID, staffCookie)
+  host.control?.on('message', (data: RawData) => {
+    try {
+      const msg = JSON.parse(String(data)) as { t?: string }
+      if (typeof msg.t !== 'string') return
+      teacherHeard.add(msg.t)
+      if (msg.t === 'error' || msg.t === 'refused') teacherRefusals++
+    } catch {
+      /* пульт шлёт только JSON; всё прочее нас тут не касается */
+    }
+  })
+  const ready = await until(
+    'пульт преподавателя открылся',
+    // И тетрадь: раздел консилиума заводит ячейку в документе, а до step2
+    // отправлять её некуда — сервер такого документа ещё не видел.
+    () => host.control?.readyState === WS.OPEN && host.synced,
+    15_000,
+  )
+  return ready ? host : null
+}
+
+/** Один вход на все добровольные разделы: второй отобрал бы пульт у первого. */
+async function theTeacher(): Promise<Student | null> {
+  teacher ??= await joinTeacher()
+  return teacher
+}
+
+/** Что сказал пульт за время работы: столько-то отказов. */
+const refusalsSince = (was: number) => teacherRefusals - was
+
+/**
+ * Преподаватель заводит файлы, а комната получает дерево целиком — на каждый.
+ *
+ * Меряется не время создания (оно на диске и никого не ждёт), а цена рассылки:
+ * байты и кадры в окне считаются по студентам, которые в это время не делают
+ * ничего. Список растёт по ходу раздела нарочно — так видно, что рассылка
+ * дорожает вместе с папкой.
+ */
+async function runTree(host: Student, seconds: number): Promise<Tree> {
+  let made = 0
+  const was = teacherRefusals
+  const every = 1000 / Math.max(TREE_PER_SEC, 0.001)
+  const at = performance.now()
+  const making = setInterval(() => {
+    // Плоская папка нарочно: дерево комнаты рассылается целиком, и стоимость
+    // растёт от числа записей, а не от глубины.
+    host.control?.send(JSON.stringify({ t: 'tree:new', path: `load-tree/f${++made}.txt` }))
+  }, every)
+  await sleep(seconds * 1000)
+  clearInterval(making)
+  // Папку за собой убираем сразу: семинар удаляется в finally, но раздел
+  // могут гонять и по нескольку раз за прогон.
+  host.control?.send(JSON.stringify({ t: 'tree:remove', path: 'load-tree' }))
+  return { made, refused: refusalsSince(was), seconds: (performance.now() - at) / 1000 }
+}
+
+/* ---------------------------------------------------------------- консилиум */
+
+interface Council {
+  writers: number
+  drafts: number
+  submits: number
+  seconds: number
+  /** Входящее ОДНОГО пульта: стопка идёт ему, а не залу. */
+  hostFrames: number
+  hostBytes: number
+  refused: number
+}
+
+/**
+ * Преподаватель заводит ячейку и открывает в ней консилиум.
+ *
+ * Порядок важен и проверяется ожиданием, а не паузой: ячейка едет документом
+ * (CRDT), замок — управляющим проводом, и снимок в ячейку, которой сервер ещё
+ * не видел, вернулся бы отказом «ячейка закрыта» — стенд намерил бы отказы
+ * вместо стопки.
+ */
+async function openCouncilCell(host: Student, writers: Student[]): Promise<string | null> {
+  const { cell, id } = newCell('# решение\n')
+  host.doc.transact(() => cellsOf(host.doc).push([cell]))
+  const arrived = await until(
+    'ячейка консилиума доехала до пишущих',
+    () => writers.every((s) => Boolean(findCell(s.doc, id))),
+    30_000,
+  )
+  if (!arrived) return null
+  host.control?.send(JSON.stringify({ t: 'cell:lock', cellId: id, state: 'council' }))
+  // Замок сервер пишет в саму ячейку (`open: 'council'`), и ждать надо именно
+  // его: пульт подтверждения не шлёт, а без замка права на свой лист нет.
+  const open = await until(
+    'замок консилиума открылся у пишущих',
+    () => writers.every((s) => findCell(s.doc, id)?.get('open') === 'council'),
+    15_000,
+  )
+  return open ? id : null
+}
+
+/** Попытка примерно того размера, что пишут на паре: снимок едет ЦЕЛИКОМ. */
+function attemptText(s: Student, round: number): string {
+  const body =
+    `import numpy as np\n\n# ${s.name}\ndef solve(df):\n` +
+    '    x = df["value"].to_numpy()\n    x = x[x > 0]\n'.repeat(4) +
+    `    return x.mean()  # правка ${round}\n`
+  return body.length > MAX_ATTEMPT_CHARS ? body.slice(0, MAX_ATTEMPT_CHARS) : body
+}
+
+/**
+ * N студентов пишут в свой лист, один пульт собирает стопку.
+ *
+ * Снимок уходит на паузу в наборе (~1 с у настоящей вкладки), и цена его не в
+ * зале, а у преподавателя: `council:mine` автору и стопка — ведущему. Комната
+ * при этом молчит: счётчик сданных едет всем, только когда он СМЕНИЛСЯ, — и
+ * ровно поэтому раздел кончается сдачей разом, той самой минутой, когда
+ * преподаватель говорит «сдавайте» и счётчик двигается N раз подряд.
+ */
+async function runCouncil(
+  host: Student,
+  writers: Student[],
+  cellId: string,
+  seconds: number,
+): Promise<Council> {
+  const was = teacherRefusals
+  host.frames = 0
+  host.bytesIn = 0
+  let drafts = 0
+  const rounds = new Map<number, number>()
+  const perSecond = writers.length / COUNCIL_EVERY
+  // Один таймер по кругу — как в шторме: пятьсот таймеров стенду ни к чему, а
+  // залпом раз в две секунды настоящая аудитория не печатает.
+  const batch = Math.max(1, Math.ceil(perSecond / 200))
+  const every = (1000 * batch) / perSecond
+  let cursor = 0
+  const at = performance.now()
+  const writing = setInterval(() => {
+    for (let i = 0; i < batch; i++) {
+      const s = writers[cursor++ % writers.length]
+      const round = (rounds.get(s.n) ?? 0) + 1
+      rounds.set(s.n, round)
+      drafts++
+      s.control?.send(
+        JSON.stringify({ t: 'council:draft', cellId, text: attemptText(s, round) }),
+      )
+    }
+  }, every)
+  await sleep(seconds * 1000)
+  clearInterval(writing)
+  return {
+    writers: writers.length,
+    drafts,
+    submits: 0,
+    seconds: (performance.now() - at) / 1000,
+    hostFrames: host.frames,
+    hostBytes: host.bytesIn,
+    refused: refusalsSince(was),
+  }
+}
+
+/**
+ * «Сдавайте» — и класс сдаёт разом.
+ *
+ * Отдельным замером, а не хвостом снимков: сдача двигает счётчик, а счётчик
+ * идёт ВСЕЙ комнате, то есть это единственный кадр консилиума, за который
+ * платят все пятьсот. Растянуто на пару секунд — столько занимает нажатие у
+ * класса, которому только что сказали.
+ */
+async function runCouncilRush(host: Student, writers: Student[], cellId: string): Promise<Council> {
+  const was = teacherRefusals
+  host.frames = 0
+  host.bytesIn = 0
+  const at = performance.now()
+  let sent = 0
+  const every = Math.max(1, 2000 / Math.max(writers.length, 1))
+  await new Promise<void>((done) => {
+    const rushing = setInterval(() => {
+      // Индекс проверяется ДО счётчика: иначе последний тик, на котором сдавать
+      // уже некому, всё равно прибавлял бы себя, и раздел печатал бы на одно
+      // нажатие больше, чем сделал.
+      const s = writers[sent]
+      if (!s) {
+        clearInterval(rushing)
+        done()
+        return
+      }
+      sent++
+      s.control?.send(JSON.stringify({ t: 'council:submit', cellId }))
+    }, every)
+  })
+  // Хвост: счётчики и стопка идут дребезгом (BOARD_EVERY_MS), и окно, закрытое
+  // на последнем нажатии, не увидело бы того, за что комната и платит.
+  await sleep(1_500)
+  return {
+    writers: writers.length,
+    drafts: 0,
+    submits: sent,
+    seconds: (performance.now() - at) / 1000,
+    hostFrames: host.frames,
+    hostBytes: host.bytesIn,
+    refused: refusalsSince(was),
+  }
+}
+
+/* ------------------------------------------------------------------- лекция */
+
+interface Lecture {
+  ink: number
+  laser: number
+  strokes: number
+  seconds: number
+  refused: number
+}
+
+/**
+ * Лекция на N зрителей: перо и указка с одного пульта.
+ *
+ * Документ заводится пустым файлом с расширением .pdf и не открывается никем:
+ * страницу здесь никто не рисует, а серверу для лекции нужен файл, а не его
+ * содержимое (control.ts · lecture:start смотрит только `kindOf` и `statPath`).
+ * То, что меряется, — цена КАДРА: `ink` уходит залу на каждый, `laser` сервер
+ * склеивает по такту, и разница между «послано» и «получено» и есть ответ.
+ */
+async function runLecture(host: Student, seconds: number): Promise<Lecture | null> {
+  const was = teacherRefusals
+  const file = 'load-lecture.pdf'
+  teacherHeard.delete('lecture')
+  host.control?.send(JSON.stringify({ t: 'tree:new', path: file }))
+  host.control?.send(JSON.stringify({ t: 'lecture:start', file }))
+  const started = await until('лекция началась', () => teacherHeard.has('lecture'), 15_000)
+  if (!started) return null
+
+  let ink = 0
+  let laser = 0
+  let strokes = 1
+  let points = 0
+  let id = 'load_ink_1'
+  const every = 1000 / Math.max(INK_PER_SEC, 0.001)
+  const at = performance.now()
+  const drawing = setInterval(() => {
+    /*
+     * Один штрих ведётся точками, а не отправляется целиком: так пишет пульт
+     * (InkLayer · SEND_EVERY_MS) и так его видит зал — линией, пока её ведут.
+     * Штрих меняется, не дойдя до потолка точек (shared/lecture.ts), чтобы
+     * раздел мерил рассылку, а не отказ «штрих полон».
+     */
+    if (points >= 200) {
+      id = `load_ink_${++strokes}`
+      points = 0
+    }
+    const phase = (ink % 100) / 100
+    const x = 0.1 + phase * 0.8
+    const y = 0.5 + Math.sin(phase * Math.PI * 4) * 0.2
+    host.control?.send(
+      JSON.stringify({
+        t: 'ink',
+        page: 1,
+        id,
+        color: '#ef6ba8',
+        width: 0.004,
+        points: [x, y, x + 0.008, y],
+      }),
+    )
+    ink++
+    points += 2
+    // Указка идёт тем же движением руки — и тем же тактом с пульта; склеивает
+    // её сервер, и разницу видно в «получено залом».
+    host.control?.send(JSON.stringify({ t: 'laser', page: 1, x, y, shape: 'line' }))
+    laser++
+  }, every)
+  await sleep(seconds * 1000)
+  clearInterval(drawing)
+  host.control?.send(JSON.stringify({ t: 'laser:off' }))
+  host.control?.send(JSON.stringify({ t: 'lecture:stop' }))
+  host.control?.send(JSON.stringify({ t: 'tree:remove', path: file }))
+  return { ink, laser, strokes, seconds: (performance.now() - at) / 1000, refused: refusalsSince(was) }
+}
+
 /** Сколько меток не доехало — после паузы, иначе последние сочтутся потерями. */
 async function drain(armed: Armed): Promise<number> {
   await sleep(2_000)
@@ -773,6 +1165,9 @@ say(bold('  colloq load') + dim(`  ${new Date().toISOString()}  ·  ${BASE}  · 
 say(
   dim(
     `  ${STUDENTS} студентов за ${RAMP_SEC}с · покой ${IDLE_SEC}с · шторм ${STORM_SEC}с (${TYPISTS}×${KEYS}/с)` +
+      (TREE_PER_SEC > 0 ? ` · дерево ${TREE_PER_SEC}/с` : '') +
+      (COUNCIL > 0 ? ` · консилиум ${COUNCIL} раз в ${COUNCIL_EVERY}с` : '') +
+      (INK_PER_SEC > 0 ? ` · лекция ${INK_PER_SEC} кадров/с` : '') +
       (STAFF_JOIN ? ' · вход кукой штата' : '') +
       (ECHO ? '' : ' · без эха присутствия'),
   ),
@@ -782,6 +1177,12 @@ say()
 let idleWin: Window | null = null
 let stormWin: Window | null = null
 let stormOut: Storm | null = null
+let treeWin: Window | null = null
+let treeOut: Tree | null = null
+let councilWin: Window | null = null
+let councilOut: Council | null = null
+let lectureWin: Window | null = null
+let lectureOut: Lecture | null = null
 let hopSamples: number[] = []
 let synced = 0
 let exitCode = 0
@@ -857,6 +1258,141 @@ try {
       printWindow(stormWin)
     }
     say()
+
+    /* 4. ДЕРЕВО ФАЙЛОВ */
+    if (TREE_PER_SEC > 0) {
+      say(
+        bold('  4. ДЕРЕВО') +
+          dim(`  — преподаватель заводит ${TREE_PER_SEC} файлов в секунду, ${TREE_SEC}с`),
+      )
+      const host = await theTeacher()
+      if (!host) {
+        say(red('    не состоялся: войти в комнату ведущим не вышло (нужна кука штата)'))
+      } else {
+        const win = beginWindow()
+        const tree = await runTree(host, TREE_SEC)
+        treeWin = endWindow(win)
+        treeOut = tree
+        row(
+          'заведено файлов',
+          `${tree.made}`,
+          `${(tree.made / tree.seconds).toFixed(1)}/с · столько же рассылок дерева всей комнате` +
+            (tree.refused > 0 ? red(` · ${tree.refused} отказов от пульта`) : ''),
+        )
+        printWindow(treeWin)
+        say(
+          dim(
+            '    сравните «входящий» с покоем: это цена одного файла, помноженная на комнату',
+          ),
+        )
+      }
+      say()
+    }
+
+    /* 5. КОНСИЛИУМ */
+    if (COUNCIL > 0) {
+      say(
+        bold('  5. КОНСИЛИУМ') +
+          dim(
+            `  — ${COUNCIL} пишут в свой лист раз в ${COUNCIL_EVERY}с, ${COUNCIL_SEC}с, ` +
+              'потом сдают разом',
+          ),
+      )
+      const host = await theTeacher()
+      const writers = students
+        .filter((s) => s.control?.readyState === WS.OPEN && s.synced)
+        .slice(0, COUNCIL)
+      if (!host) {
+        say(red('    не состоялся: войти в комнату ведущим не вышло (нужна кука штата)'))
+      } else if (writers.length === 0) {
+        say(red('    не состоялся: некому писать — ни одного синхронизированного студента'))
+      } else {
+        const cellId = await openCouncilCell(host, writers)
+        if (!cellId) {
+          say(red('    не состоялся: консилиум в ячейке не открылся'))
+        } else {
+          const win = beginWindow()
+          const council = await runCouncil(host, writers, cellId, COUNCIL_SEC)
+          councilWin = endWindow(win)
+          councilOut = council
+          row(
+            'снимков',
+            `${council.drafts}`,
+            `${(council.drafts / council.seconds).toFixed(1)}/с от ${council.writers} ` +
+              `${plural(council.writers, 'пишущего', 'пишущих', 'пишущих')}` +
+              (council.refused > 0 ? red(` · ${council.refused} отказов пульту`) : ''),
+          )
+          row(
+            'пульту ведущего',
+            `${size(council.hostBytes / council.seconds)}/с · ` +
+              `${(council.hostFrames / council.seconds).toFixed(1)} кадров/с`,
+            `${size(council.hostBytes / Math.max(council.drafts, 1))} на снимок: стопка идёт ему одному`,
+          )
+          printWindow(councilWin)
+          say(dim('    зал в это время молчит: счётчик едет всем, только когда он сменился'))
+
+          const rushWin = beginWindow()
+          const rush = await runCouncilRush(host, writers, cellId)
+          const closed = endWindow(rushWin)
+          say()
+          say(
+            bold('     сдача разом') +
+              dim(
+                `  — ${rush.submits} ${plural(rush.submits, 'нажатие', 'нажатия', 'нажатий')} ` +
+                  '«Сдать» подряд',
+              ),
+          )
+          row(
+            'пульту ведущего',
+            `${size(rush.hostBytes)} за ${rush.seconds.toFixed(1)}с`,
+            `${rush.hostFrames} ${plural(rush.hostFrames, 'кадр', 'кадра', 'кадров')}` +
+              (rush.refused > 0 ? red(` · ${rush.refused} отказов`) : ''),
+          )
+          row(
+            'залу',
+            `${size(closed.bytesIn / Math.max(closed.clients, 1))} на клиента`,
+            'счётчик сданных двигается на каждое нажатие — и едет всем',
+          )
+        }
+      }
+      say()
+    }
+
+    /* 6. ЛЕКЦИЯ */
+    if (INK_PER_SEC > 0) {
+      say(
+        bold('  6. ЛЕКЦИЯ') +
+          dim(`  — ведущий ведёт пером ${INK_PER_SEC} кадров/с и указкой, ${INK_SEC}с`),
+      )
+      const host = await theTeacher()
+      if (!host) {
+        say(red('    не состоялся: войти в комнату ведущим не вышло (нужна кука штата)'))
+      } else {
+        const win = beginWindow()
+        const lecture = await runLecture(host, INK_SEC)
+        const closed = endWindow(win)
+        if (!lecture) {
+          say(red('    не состоялся: лекция не началась (документ или право `board`)'))
+        } else {
+          lectureWin = closed
+          lectureOut = lecture
+          row(
+            'кадров с пульта',
+            `${lecture.ink} пером · ${lecture.laser} указкой`,
+            `${lecture.strokes} ${plural(lecture.strokes, 'штрих', 'штриха', 'штрихов')}` +
+              (lecture.refused > 0 ? red(` · ${lecture.refused} отказов пульту`) : ''),
+          )
+          row(
+            'цена кадра залу',
+            `${size(closed.bytesIn / Math.max(lecture.ink + lecture.laser, 1))} на кадр`,
+            `${closed.clients} ${plural(closed.clients, 'зритель', 'зрителя', 'зрителей')} · ` +
+              'перо уходит каждому, указка склеена тактом сервера',
+          )
+          printWindow(closed)
+        }
+      }
+      say()
+    }
   }
 
   /* ------------------------------------------------------- где упёрлось */
@@ -916,6 +1452,44 @@ try {
     [
       hops.length > 0 && pct(hops, 95) > 250,
       `доставка правки — p95 ${ms(pct(hops, 95))}: набор перестал ощущаться местным.`,
+    ],
+    [
+      /*
+       * Один файл — один список файлов каждому пульту, и список этот растёт.
+       * Мегабайт на один заведённый файл означает, что папка комнаты уже
+       * дороже, чем всё присутствие вместе взятое.
+       */
+      treeWin !== null && treeOut !== null && treeOut.made > 0 &&
+        treeWin.bytesIn / treeOut.made > 1024 * 1024,
+      `дерево файлов — один заведённый файл стоил комнате ` +
+        `${size((treeWin?.bytesIn ?? 0) / Math.max(treeOut?.made ?? 1, 1))} рассылки: ` +
+        `список уходит целиком и каждому (broadcastFiles, server/src/control.ts).`,
+    ],
+    [
+      /*
+       * Стопка идёт ОДНОМУ сокету, и упирается в него не канал комнаты, а
+       * пульт преподавателя: мегабит на снимок при сотне пишущих — это уже
+       * десятки мегабит в один провод, и первым перестанет листать тот, кто
+       * ведёт занятие.
+       */
+      councilOut !== null && councilOut.drafts > 0 &&
+        councilOut.hostBytes / councilOut.seconds > 1.5 * 1024 * 1024,
+      `стопка консилиума — пульту ведущего шло ` +
+        `${size((councilOut?.hostBytes ?? 0) / Math.max(councilOut?.seconds ?? 1, 0.001))}/с ` +
+        `от ${councilOut?.writers ?? 0} пишущих: она собирается на каждый снимок и едет ему одному ` +
+        `(boardOut, server/src/control.ts).`,
+    ],
+    [
+      /*
+       * Кадр пера — самый частый кадр лекции, и он уходит всем: перо на
+       * двадцати пяти кадрах в секунду при пятистах зрителях — это
+       * двенадцать с половиной тысяч отправок в секунду из одного цикла.
+       */
+      lectureWin !== null && lectureOut !== null && lectureOut.ink > 0 &&
+        lectureWin.bytesIn / lectureWin.seconds > 12 * 1024 * 1024,
+      `лекция — ${size((lectureWin?.bytesIn ?? 0) / Math.max(lectureWin?.seconds ?? 1, 0.001))}/с ` +
+        `в зал при ${lectureOut?.ink ?? 0} кадрах пера: чернила рассылаются на каждый кадр, ` +
+        `без такта (control.ts · case 'ink').`,
     ],
   ]
   const wall = walls.find(([hit]) => hit)

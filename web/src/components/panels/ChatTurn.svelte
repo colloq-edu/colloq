@@ -17,13 +17,13 @@
    * differently is a log you have to read rather than scan.
    */
   import type { ChatSnapshot } from '@shared/notebook'
-  import { findChatEntry, findCell } from '@shared/notebook'
+  import { findChatEntry } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
-  import type { AiAction } from '@shared/protocol'
+  import type { AiAction, ParticipantRole } from '@shared/protocol'
   import { actsAfterClass, CLASS_IS_OVER } from '@shared/rules'
   import { askToBan, mayBan } from '@/lib/bans'
   import { getSessionState } from '@/lib/session.svelte'
-  import { watchText } from '@/lib/yreactive.svelte'
+  import { watchCell, watchText } from '@/lib/yreactive.svelte'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import { revealCell } from '@/lib/reveal'
   import { permitsIn } from '@/lib/may'
@@ -55,6 +55,24 @@
      */
     canDo: boolean
     /**
+     * Роль автора записи — из присутствия комнаты, посчитанная панелью.
+     *
+     * Не поиском по `session.peers` здесь: массив присутствия пересобирается
+     * на каждый чужой курсор, и поиск в каждом ходе превращал переход соседа
+     * между ячейками в проход по всей ленте. Ушедшего из комнаты в присутствии
+     * нет — он считается участником, и это то же, что было раньше.
+     */
+    authorRole: ParticipantRole
+    /**
+     * Играть ли появление.
+     *
+     * Ложь ровно у одной записи — той, что заняла место строки-обещания из
+     * ask-outbox: ключи у них разные, Svelte сносит один узел и монтирует
+     * другой, и без этого тот же вопрос на том же месте проявлялся второй раз.
+     * Появление — для нового, а не для того, что уже стояло на экране.
+     */
+    enter?: boolean
+    /**
      * Вопрос ещё уходит на сервер: записи в документе пока нет.
      *
      * Строка нарисована этой вкладкой, чтобы вопрос появился в ленте сразу
@@ -72,6 +90,8 @@
   let {
     entry,
     avatar,
+    authorRole,
+    enter = true,
     cellNumber,
     askedAbout,
     canDo,
@@ -103,14 +123,12 @@
   /**
    * Можно ли отсюда удалить автора записи с занятия.
    *
-   * Роль автора в записи не хранится — её спрашивают у присутствия. Ушедшего из
-   * комнаты там нет, и он считается участником: банить того, кто уже вышел, —
+   * Роль автора в записи не хранится — её приносит панель, посчитав один раз
+   * на всю ленту (см. `authorRole` в пропсах). Ушедшего из комнаты в
+   * присутствии нет, и он считается участником: банить того, кто уже вышел, —
    * обычное дело (лента переживает уход), а штат сервер не забанит в любом
    * случае, и его отказ приедет словами в то же окно.
    */
-  const authorRole = $derived(
-    session.peers.find((peer) => peer.user.id === entry.participantId)?.user.role ?? 'participant',
-  )
   const banHere = $derived(!mine && mayBan(session.me.role, authorRole))
 
   /*
@@ -121,7 +139,19 @@
    * model was given — after accepting, the cell and the patch are the same
    * string and a live diff would show that nothing had happened.
    */
-  const cell = $derived(entry.cellId ? (findCell(session.doc, entry.cellId)?.cell ?? null) : null)
+  /*
+   * Через реестр ячеек, а не поиском в `$derived`.
+   *
+   * `findCell` в производном зависел только от `entry`, и документ его не
+   * будил. Перестановка ячейки на сервере пересоздаёт её клоном (Y.Array не
+   * умеет move), старая Y.Map удаляется — и `watchText` продолжал смотреть на
+   * труп, отдавая пустую строку: открытое предложение начинало диффиться
+   * против пустоты, перекрашивалось в предупреждение и врало «somebody edited
+   * it», хотя никто ничего не правил. `watchCell` следит ровно за
+   * пересозданием и отдаёт живую карту.
+   */
+  const watched = watchCell(session.doc, () => entry.cellId ?? '')
+  const cell = $derived(entry.cellId ? watched.current : null)
   const live = watchText(() => cell)
 
   const against = $derived(entry.patchState === 'open' ? live.current : (entry.patchBase ?? ''))
@@ -188,12 +218,12 @@
    * "edit" is the name of the request, "rewrite" is the name of the result.
    */
   const BADGE: Partial<Record<AiAction, string>> = {
-    explain: 'Explain',
-    fix: 'Fix',
-    debug: 'Debug',
-    improve: 'Improve',
-    hint: 'Hint',
-    edit: 'Rewrite',
+    explain: 'Объяснить',
+    fix: 'Починить',
+    debug: 'Разобрать',
+    improve: 'Улучшить',
+    hint: 'Подсказка',
+    edit: 'Переписать',
   }
   const badge = $derived(BADGE[(entry.action ?? '') as AiAction] ?? null)
 
@@ -249,7 +279,7 @@
     'hover:border-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40'
 </script>
 
-<article class="flex animate-fade-up items-stretch border-b border-line-soft">
+<article class={cn('flex items-stretch border-b border-line-soft', enter && 'animate-fade-up')}>
   <!-- The asker's colour, running the whole height of the turn. -->
   <div class="w-0.5 shrink-0" style="background: {entry.color}" aria-hidden="true"></div>
 
@@ -292,7 +322,7 @@
         </span>
       </svelte:element>
       {#if mine}
-        <span class="shrink-0 text-2xs text-faint">you</span>
+        <span class="shrink-0 text-2xs text-faint">вы</span>
       {/if}
       {#if badge}
         <span class={cn(CHIP, 'bg-raised text-muted')}>{badge}</span>
@@ -376,9 +406,9 @@
           >
             <Icon name={open ? 'chevron-down' : 'chevron-right'} size={10} class="shrink-0" />
             {#if streaming && !entry.answer}
-              <span class="font-semibold text-accent-text">thinking</span>
+              <span class="font-semibold text-accent-text">думает</span>
             {:else}
-              <span>thought for {spell(entry.thoughtMs)}</span>
+              <span>думал {spell(entry.thoughtMs)}</span>
             {/if}
           </button>
         {:else}
@@ -389,9 +419,9 @@
           -->
           <span class="self-start text-2xs text-muted">
             {#if streaming && !entry.answer}
-              <span class="font-semibold text-accent-text">thinking…</span>
+              <span class="font-semibold text-accent-text">думает…</span>
             {:else}
-              thought for {spell(entry.thoughtMs)}
+              думал {spell(entry.thoughtMs)}
             {/if}
           </span>
         {/if}
@@ -465,7 +495,7 @@
         <!-- Verbatim: a limit and the minutes until the next question are known
              only to the server, and a paraphrase leaves the student guessing. -->
         <p class="break-words text-code text-danger">
-          {entry.answer || 'The oracle did not answer.'}
+          {entry.answer || 'Оракул не ответил.'}
         </p>
         <!-- Повтор хода «сделать» — это тот же ход: там, где его нельзя
              завести, нечего и повторять. После звонка нечего повторять вовсе:
@@ -481,7 +511,7 @@
             onclick={onretry}
           >
             <Icon name="restart" size={11} />
-            Retry
+            Повторить
           </button>
         {/if}
       </div>
@@ -490,7 +520,7 @@
     {:else if streaming && !thinking}
       <div class="flex items-center gap-1.5 text-2xs text-muted">
         <Icon name="spinner" size={13} class="animate-spin" />
-        thinking
+        думает
       </div>
     {/if}
 
@@ -510,7 +540,7 @@
         onclick={onstop}
       >
         <Icon name="stop" size={10} />
-        Stop
+        Стоп
       </button>
     {/if}
 
@@ -572,11 +602,11 @@
               !applied && (stale ? 'text-warning' : 'text-accent-text'),
             )}
           >
-            {applied ? 'Applied' : 'Proposed'}{cellNumber === null ? '' : ` for ${pad(cellNumber)}`}
+            {applied ? 'Применено' : 'Предложено'}{cellNumber === null ? '' : ` · ${pad(cellNumber)}`}
           </span>
           {#if stale}
             <div class="flex-1"></div>
-            <span class="shrink-0 text-2xs text-warning">the cell moved</span>
+            <span class="shrink-0 text-2xs text-warning">ячейку с тех пор поменяли</span>
           {:else}
             {#if patchCounts.added > 0}
               <span class="shrink-0 font-mono text-2xs text-positive">+{patchCounts.added}</span>
@@ -629,7 +659,7 @@
           >
             <Icon name="check" size={12} class="shrink-0 text-positive" />
             <span class="min-w-0 truncate text-muted">
-              accepted by {entry.patchBy ?? 'someone'}
+              применил {entry.patchBy ?? 'кто-то'}
             </span>
           </div>
         {:else}
@@ -641,8 +671,7 @@
           >
             {#if stale}
               <p class="text-2xs text-warning">
-                Written against text the cell no longer holds — somebody edited it while the oracle
-                was answering.
+                Написано по тексту, которого в ячейке уже нет: её правили, пока оракул отвечал.
               </p>
             {/if}
             <div class="flex flex-wrap items-center gap-2">
@@ -659,7 +688,7 @@
                   title={acts ? '' : CLASS_IS_OVER}
                   onclick={() => decide(false)}
                 >
-                  Discard
+                  Отклонить
                 </button>
                 <!-- Применить — правка тетради, и правило комнаты про неё же.
                      Отклонить остаётся всем, пока идёт занятие: снятая плашка
@@ -673,7 +702,7 @@
                   title={may.edit ? '' : may.editWhy}
                   onclick={() => decide(true)}
                 >
-                  Apply anyway
+                  Всё равно применить
                 </button>
               {:else}
                 <button
@@ -683,7 +712,7 @@
                   title={may.edit ? '' : may.editWhy}
                   onclick={() => decide(true)}
                 >
-                  Accept
+                  Применить
                 </button>
                 <button
                   type="button"
@@ -692,10 +721,10 @@
                   title={acts ? '' : CLASS_IS_OVER}
                   onclick={() => decide(false)}
                 >
-                  Discard
+                  Отклонить
                 </button>
                 <div class="flex-1"></div>
-                <span class="shrink-0 text-2xs text-muted">for everyone, as you</span>
+                <span class="shrink-0 text-2xs text-muted">за всю комнату, от вашего имени</span>
               {/if}
             </div>
           </div>
@@ -714,7 +743,7 @@
           onclick={() => (showRejected = !showRejected)}
         >
           <Icon name={showRejected ? 'chevron-down' : 'chevron-right'} size={10} class="shrink-0" />
-          <span class="min-w-0 truncate">discarded by {entry.patchBy ?? 'someone'}</span>
+          <span class="min-w-0 truncate">отклонил {entry.patchBy ?? 'кто-то'}</span>
           <span class="shrink-0 font-mono text-2xs text-faint">
             +{patchCounts.added} −{patchCounts.removed}
           </span>

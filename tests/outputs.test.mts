@@ -369,6 +369,9 @@ test('первый вывод не ждёт окна склейки', async () =
   const doc = new Y.Doc()
   const id = cellIn(doc)
   const writer = new OutputWriter(doc, id)
+  // Как в бою: runOne гасит прошлый вывод в стартовой транзакции, ещё до
+  // execute. Без этой строки тест проверял путь, которого в продукте нет.
+  writer.clear()
   writer.stream('stdout', 'первая строка\n')
   assert.equal(outputsOf(doc, id).length, 1, 'первый вывод придержали')
 

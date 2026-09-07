@@ -53,8 +53,58 @@
   }: Props = $props()
 
   const session = getSessionState()
+
+  /**
+   * Пока ответ пишется — не чаще, чем раз в кадр глазом.
+   *
+   * Каждый кусочек ответа приходит отдельным кадром документа, и на каждом
+   * весь накопленный текст заново резался на части, прогонялся через marked и
+   * DOMPurify и заменялся в DOM через {@html}: работа по длине ВСЕГО ответа на
+   * каждый токен, то есть квадратично по нему, у каждого, у кого открыт тред.
+   * Для stdout такой «хвост» давно инкрементальный (render.svelte.ts), для
+   * markdown разметки хвоста нет — но и не нужно: восемь обновлений в секунду
+   * человек читает как непрерывный набор, а не как рывки.
+   *
+   * Готовый ответ показывается тем же кадром, что и пришёл: как только
+   * `streaming` снимается, таймер снимается вместе с ним и текст ставится
+   * целиком. Ждать 120 мс на последнем слове было бы видно.
+   */
+  const STREAM_TICK = 120
+  /**
+   * Показанный срез стриминга — или null, когда ждать нечего.
+   *
+   * Через null, а не копией `source`: пока `streamed` пуст, `shown` читает сам
+   * `source` и остаётся точным (первый кадр, готовый ответ, отмена). Как только
+   * срез есть, `source` из зависимостей уходит — и приход кусочка сам по себе
+   * ничего не пересчитывает.
+   */
+  let streamed = $state<string | null>(null)
+  let tick: number | undefined
+
+  const shown = $derived(streaming ? (streamed ?? source) : source)
+
+  $effect(() => {
+    const text = source
+    if (!streaming) {
+      window.clearTimeout(tick)
+      tick = undefined
+      streamed = null
+      return
+    }
+    // Первый кусочек — сразу: пузырь, ждущий свой первый кадр, читается как
+    // незаданный вопрос.
+    if (tick !== undefined) return
+    streamed = text
+    tick = window.setTimeout(() => {
+      tick = undefined
+      streamed = source
+    }, STREAM_TICK)
+  })
+
+  $effect(() => () => window.clearTimeout(tick))
+
   const parts = $derived.by(() => {
-    const all = splitAnswer(source)
+    const all = splitAnswer(shown)
     if (omit === null) return all
     // The LAST matching block only: an answer that shows the broken line first
     // and the fix second has two blocks, and the first one is an illustration
@@ -163,16 +213,16 @@
           {#if part.closed}
             <button type="button" class={STRIP} onclick={() => void copy(index, part.code)}>
               <Icon name={copied === index ? 'check' : 'copy'} size={10} />
-              {copied === index ? 'Copied' : 'Copy'}
+              {copied === index ? 'Скопировано' : 'Копировать'}
             </button>
             <button
               type="button"
               class={STRIP}
-              title="Put this into the notebook as a new cell"
+              title="Положить в тетрадь новой ячейкой"
               onclick={() => toCell(part.code)}
             >
               <Icon name="plus" size={10} />
-              New cell
+              В ячейку
             </button>
           {/if}
         </div>

@@ -71,14 +71,23 @@
     <!--
       Запуск — тот же, что у ячейки: тот же контейнер, тот же Python, та же
       кнопка «прервать» в терминале. Отличается только тем, куда идёт вывод.
+
+      Переход — списком свойств, а не шорткатом `transition`: тот переводит ВСЕ
+      свойства, включая border-color и box-shadow фокусного кольца, и кольцо
+      приезжало бы вслед за клавишей вместо того, чтобы появиться сразу.
+      Двигаются здесь ровно два — brightness под курсором и scale под пальцем;
+      полоса рисуется руками и в `.btn` не укладывается (см. index.css · .btn,
+      где такой же список стоит позиционно, и близнеца этой кнопки — «На общий
+      экран» в SessionScreen).
     -->
     <button
       type="button"
       class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
-             transition duration-quick focus-visible:outline-none focus-visible:ring-2
+             transition-[filter,transform] duration-press ease-out
+             focus-visible:outline-none focus-visible:ring-2
              focus-visible:ring-inset focus-visible:ring-accent/40
              {mayRun
-        ? 'bg-primary text-primary-ink hover:brightness-110 active:brightness-95'
+        ? 'bg-primary text-primary-ink enabled:active:scale-[0.97] hover:brightness-110 active:brightness-95'
         : 'cursor-not-allowed bg-surface text-faint'}"
       disabled={!mayRun}
       title={mayRun

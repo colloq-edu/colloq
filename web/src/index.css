@@ -82,6 +82,29 @@
   --shadow-pop: 0.18;
 
   /*
+   * ГАРНИТУРА КОДА — одна строка на весь продукт.
+   *
+   * Стек живёт здесь, а не в tailwind.config.js и не в scoped-стилях: у
+   * тетради, терминала и выводов ядра он обязан совпадать до последнего имени.
+   * Каждая своя копия однажды отстала — так и вышло, что подменные лица с
+   * правками метрик (index.html) доезжали только до утилиты `font-mono`, а
+   * ящик терминала и html-вывод продолжали прыгать строками на swap.
+   *
+   * Порядок обязателен. Настоящий шрифт первым; за ним два подменных семейства
+   * — тот же системный, но с метриками JetBrains Mono, — и лишь потом обычный
+   * системный моноширинный на случай, когда не нашлось ни одного из них.
+   * Порядок между двумя подменными не решает ничего: обе правки приводят свой
+   * шрифт к одним и тем же метрикам, так что победи хоть Consolas на маке с
+   * установленным Office — строка и колонка встанут туда же.
+   *
+   * `font-mono` из tailwind.config.js — это var(--font-mono) и ничего больше;
+   * scoped-стили берут отсюда же (переменная наследуется и в теневой корень).
+   */
+  --font-mono:
+    'JetBrains Mono', 'JetBrains Mono Fallback Consolas', 'JetBrains Mono Fallback Menlo',
+    ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /*
    * MOTION — SPEED. One step per tier of the budget this product is reviewed
    * against, and no synonyms. --speed-regular (0.25s) is gone rather than
    * kept beside --speed-panel: it named a size instead of a job, it sat 30ms
@@ -93,12 +116,16 @@
    *                 it gets more than a colour change; 120ms is the middle of
    *                 the 100-160ms press tier and still lands within one blink.
    * --speed-panel   0.22s — a panel, dropdown or popover arriving (150-250ms).
-   * --speed-drawer  0.32s — a full-height surface travelling in from an edge.
-   *                 The longest distance anything here covers, so the longest
-   *                 step; still well inside the 200-500ms drawer tier and
-   *                 under the 300ms ceiling for UI that is not a drawer.
    *
-   * All four are theme-independent, so they live here and nowhere else.
+   * There is deliberately no drawer step. --speed-drawer (0.32s) used to stand
+   * here as the fourth tier and had not one consumer: the two full-height
+   * surfaces in the product — the terminal and the oracle — travel on Svelte's
+   * `transition:fly`, whose duration is a JavaScript argument at the call site
+   * and cannot read a CSS custom property at all. A named step nothing can
+   * reach is not a system, it is a claim about one; the next person tuning the
+   * drawers would have edited it and watched nothing move.
+   *
+   * All three are theme-independent, so they live here and nowhere else.
    * Only transform and opacity are allowed to travel between two values —
    * anything that animates geometry or a shadow costs layout or a full repaint
    * on every frame, which is a fraction of the frame budget spent on nothing.
@@ -106,7 +133,6 @@
   --speed-quick: 0.1s;
   --speed-press: 0.12s;
   --speed-panel: 0.22s;
-  --speed-drawer: 0.32s;
 
   /*
    * MOTION — CURVE. The browser keywords are too weak to read as deliberate,
@@ -199,16 +225,6 @@
   .enter,
   .animate-fade-up {
     animation-name: colloq-fade;
-  }
-
-  /*
-   * Лист заметок на пульте выезжает снизу на всю свою высоту — это travel, и
-   * travel уходит. Заменить его на fade нельзя: лист полупрозрачен и лежит
-   * на бумаге, и полусекундное проявление поверх слайда читалось бы как сбой
-   * проектора. Так что просто сразу на месте.
-   */
-  .animate-pult-slide {
-    animation-duration: 1ms;
   }
 }
 

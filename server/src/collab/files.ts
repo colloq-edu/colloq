@@ -38,6 +38,7 @@ import { WebSocket, type RawData } from 'ws'
 import type { ParticipantRole } from '@shared/protocol'
 import { actsAfterClass, allows, CLASS_IS_OVER } from '@shared/rules'
 import { isInside } from '@shared/paths'
+import { onEviction } from '../bans.js'
 import { getRules, isFinished } from '../db.js'
 import { MAX_TEXT_BYTES, readText, statPath, writeText } from '../workspace.js'
 import { ownAwareness } from './index.js'
@@ -265,7 +266,7 @@ export function putText(sessionId: string, path: string, text: string): boolean 
    * и на диске завёлся бы файл, который потом не открыть ни редактором, ни
    * следующим шагом того же оракула.
    */
-  if (text.length > MAX_TEXT_BYTES) return false
+  if (tooBig(text)) return false
   const entry = openFileDoc(sessionId, path)
   if (!entry) {
     /*
@@ -296,6 +297,25 @@ export function currentText(sessionId: string, path: string): string | null {
   return read.text
 }
 
+/**
+ * Больше ли этот текст потолка — в БАЙТАХ, той же мерой, что и обрезка чтения.
+ *
+ * `MAX_TEXT_BYTES` — байты (`workspace.ts` сравнивает с ним `stat.size`), а
+ * здесь сравнивали `text.length`, то есть единицы UTF-16. На кириллице это
+ * вдвое, на эмодзи вчетверо: файл на 1.4 млн русских символов проходил проверку
+ * записи и ложился на диск целиком на 2.8 МБ, а при следующем открытии читался
+ * обрезанным и закрывался кодом «файл больше потолка». Один и тот же файл,
+ * который только что правили, вдруг переставал открываться — и объяснить это
+ * человеку было нечем.
+ */
+function tooBig(text: string): boolean {
+  // Отсечки по краям: в UTF-8 на единицу UTF-16 уходит от одного байта до трёх,
+  // так что по-настоящему считать приходится только между ними.
+  if (text.length > MAX_TEXT_BYTES) return true
+  if (text.length * 3 <= MAX_TEXT_BYTES) return false
+  return Buffer.byteLength(text, 'utf8') > MAX_TEXT_BYTES
+}
+
 function scheduleSave(entry: FileDoc): void {
   if (entry.saveTimer) return
   entry.saveTimer = setTimeout(() => {
@@ -323,7 +343,7 @@ function saveNow(entry: FileDoc): boolean {
    * «дальше только чтение» здесь буквальная правда, и набранное остаётся на
    * экране, откуда его можно забрать.
    */
-  if (text.length > MAX_TEXT_BYTES) {
+  if (tooBig(text)) {
     entry.gone = true
     closeAll(entry, 4403, 'Файл больше потолка — дальше только чтение.')
     dispose(entry)
@@ -686,6 +706,72 @@ export function handleFileSocket(
       awarenessProtocol.encodeAwarenessUpdate(entry.awareness, [...states.keys()]),
     )
     send(entry, ws, encoding.toUint8Array(hello))
+  }
+}
+
+/**
+ * Третья дверь бана: открытый в редакторе файл.
+ *
+ * Первые две — тетрадь и пульт — закрывает `evictBanned` (control.ts): их
+ * сокеты он держит сам. Файловые лежат здесь, в своей карте, и каждый несёт
+ * `participantId` с рукопожатия — по нему и находятся.
+ *
+ * Без этого бан выгонял человека наполовину: вкладка с открытым `utils.py`
+ * продолжала принимать и рассылать его правки всей комнате до тех пор, пока он
+ * сам не перезагрузит страницу. Ровно тот спам, за который банят, — по общему
+ * файлу, а не по тетради.
+ *
+ * Тем же путём, что и обычный уход (`closeConn`): он снимает пинг и присутствие,
+ * так что курсор выселенного исчезает у соседей сразу, а не висит до тайм-аута.
+ * Кодом 1008, как у пульта, — вкладка по нему отличает «вас выселили» от обрыва
+ * связи и обратно не стучится: рукопожатие спрашивает бан до апгрейда.
+ */
+export function dropFileParticipant(sessionId: string, participantId: string): void {
+  for (const entry of [...open.values()]) {
+    if (entry.sessionId !== sessionId) continue
+    // Копия: closeConn правит ту же карту, по которой идёт обход.
+    for (const [conn, state] of [...entry.conns]) {
+      if (state.participantId !== participantId) continue
+      try {
+        conn.close(1008, 'banned from this seminar')
+      } catch {
+        /* уже закрыт */
+      }
+      closeConn(entry, conn)
+    }
+  }
+}
+
+/*
+ * Подписка, а не вызов из `evictBanned`. Позвать этот модуль оттуда было бы
+ * можно — `control.ts` его и так импортирует, а обратно files.ts на control.ts
+ * не смотрит вовсе, цикла нет. Но тогда список проводов жил бы в модуле
+ * нажатий, и каждый следующий провод пришлось бы вспоминать именно там.
+ * Объявление события живёт в модуле бана (bans.ts · onEviction) — там, где
+ * живёт само понятие «этому человеку сюда больше нельзя», — а тот, кто держит
+ * провод, подписывается на него у себя.
+ */
+onEviction(dropFileParticipant)
+
+/**
+ * Пройти опрос диска сейчас — для теста, которому нечего ждать.
+ *
+ * За диском смотрит `setInterval` в две секунды (WATCH_EVERY_MS), и попросить
+ * его сработать было нечем: проверка «чужая запись доехала до открытого
+ * документа» спала дольше интервала — пять секунд чистого сна на файл, и
+ * красный тест при малейшем сдвиге таймера под нагрузкой. Здесь тот же обход,
+ * что делает таймер, но по требованию: сон исчезает, а проверяется ровно то,
+ * что и раньше, — сам `watchDisk`.
+ *
+ * Одной комнатой или всеми: карта общая на инстанс, и без границы проверка
+ * одной комнаты трогала бы открытые файлы всех остальных.
+ */
+export function pollFilesNow(sessionId?: string): void {
+  // Копия: `watchDisk` хоронит запись, у которой файл пропал или перерос
+  // потолок, — то есть правит ту же карту, по которой идёт обход.
+  for (const entry of [...open.values()]) {
+    if (sessionId !== undefined && entry.sessionId !== sessionId) continue
+    watchDisk(entry)
   }
 }
 

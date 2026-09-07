@@ -27,6 +27,7 @@ import {
   getFileDoc,
   handleFileSocket,
   openFileDoc,
+  pollFilesNow,
   putText,
   spliceText,
 } from '../server/src/collab/files.js'
@@ -196,7 +197,7 @@ test('забытый файл больше не пишется на диск', (
   assert.equal(fs.existsSync(path.join(sessionDir(ROOM), 'doomed.py')), false)
 })
 
-test('чужая запись на диск доезжает до открытого документа', async () => {
+test('чужая запись на диск доезжает до открытого документа', () => {
   seed('watched.py', 'первая строка\n')
   const entry = getFileDoc(ROOM, 'watched.py')
   assert.ok(entry)
@@ -204,8 +205,22 @@ test('чужая запись на диск доезжает до открыто
   // Время изменения на некоторых файловых системах округляется до секунды, так
   // что отпечаток должен ловить и размер тоже — здесь меняются оба.
   writeText(ROOM, 'watched.py', 'первая строка\nвторая строка\n')
-  await new Promise((resolve) => setTimeout(resolve, 2_400))
-  assert.equal(entry.doc.getText(TEXT_KEY).toString(), 'первая строка\nвторая строка\n')
+  /*
+   * Опрос диска — по требованию, а не сном чуть дольше опроса.
+   *
+   * За диском смотрит `setInterval` в две секунды (collab/files.ts ·
+   * WATCH_EVERY_MS), и здесь стоял `setTimeout(2400)`: четыреста миллисекунд
+   * запаса и пять секунд чистого сна на два таких случая. Под нагрузкой (сюита
+   * гонится вся, рядом считает kernel.test) таймер сдвигается, и тест краснеет,
+   * не сказав ни слова о продукте. `pollFilesNow` делает тот же обход, что и
+   * таймер, но сейчас: ждать нечего, а проверяется ровно тот же `watchDisk`.
+   */
+  pollFilesNow(ROOM)
+  assert.equal(
+    entry.doc.getText(TEXT_KEY).toString(),
+    'первая строка\nвторая строка\n',
+    'дописанная строка не доехала до открытого документа',
+  )
 })
 
 test('склейка не режет суррогатную пару пополам', () => {
@@ -269,7 +284,7 @@ test('putText отвечает «нет», когда текст в потоло
   assert.equal(fs.existsSync(path.join(sessionDir(ROOM), 'huge-new.py')), false)
 })
 
-test('файл, выросший за потолок под открытым редактором, не переписывается старым текстом', async () => {
+test('файл, выросший за потолок под открытым редактором, не переписывается старым текстом', () => {
   seed('train.log', 'первая строка\n')
   const entry = getFileDoc(ROOM, 'train.log')
   assert.ok(entry)
@@ -280,7 +295,8 @@ test('файл, выросший за потолок под открытым р�
     path.join(sessionDir(ROOM), 'train.log'),
     'первая строка\n' + 'x'.repeat(MAX_TEXT_BYTES),
   )
-  await new Promise((resolve) => setTimeout(resolve, 2_400))
+  pollFilesNow(ROOM)
+  assert.ok(socket.closed !== null, 'вкладку не закрыли, файл рос молча')
   assert.equal(
     openFileDoc(ROOM, 'train.log'),
     null,

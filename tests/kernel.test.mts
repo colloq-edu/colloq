@@ -12,7 +12,7 @@
  */
 import './_env.mts'
 import { createServer, type Server } from 'node:http'
-import { after, before, test } from 'node:test'
+import { after, afterEach, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type * as Y from 'yjs'
@@ -46,7 +46,22 @@ function reply(socket: WebSocket, parent: unknown, msgType: string, content: unk
       parent_header: parent,
       metadata: {},
       content,
-      channel: msgType === 'status' ? 'iopub' : 'iopub',
+      /*
+       * Канал — настоящий, а не «iopub, что бы ни было».
+       *
+       * Здесь стоял `msgType === 'status' ? 'iopub' : 'iopub'` — мёртвый
+       * тернарник, обе ветки одинаковы. Сервер поле `channel` сегодня не
+       * читает, так что подделка оставалась зелёной при любом значении; но
+       * настоящий Jupyter шлёт `execute_reply` по shell, а `input_request` по
+       * stdin, и первая же маршрутизация входящих по каналу разошлась бы с
+       * подделкой молча — тесты зелёные, живое ядро сломано.
+       */
+      channel:
+        msgType === 'execute_reply'
+          ? 'shell'
+          : msgType === 'input_request'
+            ? 'stdin'
+            : 'iopub',
     }),
   )
 }
@@ -228,6 +243,21 @@ before(async () => {
   // Reacting in milliseconds rather than the ten seconds a real room can afford.
   process.env.KERNEL_QUIET_MS = '150'
   process.env.KERNEL_WATCHDOG_MS = '50'
+})
+
+/*
+ * Подделка перестаёт глотать выполнения после КАЖДОГО теста, что бы в нём ни
+ * случилось.
+ *
+ * Флаг выставлялся в начале теста и снимался его последней строкой — то есть
+ * упавшее посередине утверждение оставляло подделку глотающей, и весь хвост
+ * файла падал с «the cell never started»: настоящий сбой тонул в двух десятках
+ * ложных, и найти его в выводе было нечем. Задержанные запросы уходят вместе с
+ * флагом — комната у каждого теста своя, и досиживать их некому.
+ */
+afterEach(() => {
+  swallowExecutes = false
+  held = []
 })
 
 after(async () => {
@@ -980,18 +1010,26 @@ test('секундомер заводится при старте и гасне�
   const room = await seminar()
   room.type('print(1)')
 
+  /*
+   * Ячейку держат нарочно, и это половина смысла теста.
+   *
+   * Подделка отвечает в тот же тик, так что `running` почти никогда не
+   * попадалось на глаза, а проверка «заводится при старте» стояла под
+   * `if (state === 'running')` — то есть не выполнялась почти никогда: снять
+   * запись `startedAt` в kernel/index.ts можно было, не уронив ни одного
+   * утверждения. Теперь ядро молчит, пока секундомер не проверят.
+   */
   const before = Date.now()
+  swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Alexander', 'p_1')
-  assert.ok(
-    await until(() => room.state() === 'running' || room.state() === 'ok'),
-    'ячейка не пошла',
-  )
-  if (room.state() === 'running') {
-    const at = room.startedAt()
-    assert.ok(at !== null, 'работающая ячейка без отметки начала')
-    assert.ok(at >= before - 1000 && at <= Date.now() + 1000, `отметка не похожа на сейчас: ${at}`)
-  }
+  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+  const at = room.startedAt()
+  assert.ok(at !== null, 'работающая ячейка без отметки начала')
+  assert.ok(at >= before - 1000 && at <= Date.now() + 1000, `отметка не похожа на сейчас: ${at}`)
+  assert.equal(room.ranMs(), null, 'длительность объявлена у ячейки, которая ещё считает')
 
+  swallowExecutes = false
+  shellFinish()
   assert.ok(
     await until(() => room.state() === 'ok'),
     `ячейка кончилась как ${String(room.state())}`,
@@ -1021,7 +1059,16 @@ test('стоящая в очереди ячейка секундомера не 
   swallowExecutes = false
 })
 
-test('прерванное выполнение не получает времени завершения', async () => {
+test('прерванная ячейка кончается ошибкой, и время у неё есть', async () => {
+  /*
+   * Правило: длительность получают только те исходы, которые чем-то кончились.
+   *
+   * Живое ядро отвечает на SIGINT так же, как на всякое исключение:
+   * KeyboardInterrupt в ячейке, `execute_reply` со статусом error. Это конец,
+   * пусть и плохой, — и время у него есть. Исход здесь один и проверяется без
+   * `if`: прежняя развилка «idle или error» принимала оба, так что регрессия
+   * любой из веток была невидима.
+   */
   const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
   const room = await seminar()
   room.type('while True: pass')
@@ -1033,23 +1080,38 @@ test('прерванное выполнение не получает време
   swallowExecutes = false
 
   assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+  assert.equal(room.state(), 'error', `исход прерывания: ${String(room.state())}`)
   assert.equal(room.startedAt(), null, 'секундомер остался идти после остановки')
+  assert.ok(
+    typeof room.ranMs() === 'number',
+    `прерванная ячейка осталась без длительности: ${String(room.ranMs())}`,
+  )
+})
 
+test('снятая с очереди ячейка времени завершения не получает', async () => {
   /*
-   * Правило: длительность получают только те исходы, которые чем-то кончились.
-   *
-   * Прерывание при живом ядре кладёт ячейку в 'idle' — выполнения не было, и
-   * времени завершения у него нет: напечатать его рядом с Out [n] значило бы
-   * объявить результат, которого не появилось. Если же ядро при этом умерло,
-   * ячейка кончается 'error' — это настоящий конец, пусть и плохой, и время у
-   * него есть.
+   * Вторая половина того же правила, и вот исход, у которого времени быть не
+   * должно: ячейка, которую прерывание вынесло из очереди, не выполнялась ни
+   * миллисекунды. Напечатать ей длительность рядом с пустым `Out [ ]` значило
+   * бы объявить результат, которого не появилось.
    */
-  if (room.state() === 'idle') {
-    assert.equal(room.ranMs(), null, 'прерванная ячейка обзавелась длительностью')
-  } else {
-    assert.equal(room.state(), 'error', `неожиданный исход прерывания: ${String(room.state())}`)
-    assert.ok(typeof room.ranMs() === 'number', 'упавшая ячейка осталась без длительности')
-  }
+  const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
+  const { getCells, createCell } = await import('../shared/notebook.js')
+  const room = await seminar()
+  const cells = getCells(room.doc)
+  const second = createCell('code', 'print("two")')
+  room.doc.transact(() => cells.push([second]))
+  room.type('while True: pass')
+
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId, second.get('id') as string], 'Maria', 'p_maria')
+  assert.ok(await until(() => second.get('state') === 'queued'), 'вторая не встала в очередь')
+  await interruptSession(room.id)
+  swallowExecutes = false
+
+  assert.ok(await until(() => second.get('state') === 'idle'), 'вторая осталась в очереди')
+  assert.equal(second.get('startedAt'), null, 'у не начинавшейся ячейки завёлся секундомер')
+  assert.equal(second.get('ranMs'), null, 'не выполнявшаяся ячейка обзавелась длительностью')
 })
 
 test('промахнувшийся «стоп» останавливает работу, но не разбирает очередь', async () => {
@@ -1122,7 +1184,10 @@ test('призрачная работающая ячейка убирается 
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
-  assert.equal(sweepOrphanRuns(room.id), 0, 'проход снял работающую ячейку')
+  // Часы вызывающего — на окно вперёд: иначе проход отказал бы по окну
+  // (ORPHAN_SWEEP_EVERY_MS), а не потому, что ячейка работает по-настоящему, и
+  // утверждение стало бы тавтологией.
+  assert.equal(sweepOrphanRuns(room.id, Date.now() + 3000), 0, 'проход снял работающую ячейку')
   assert.equal(room.state(), 'running')
 
   const { interruptSession } = await import('../server/src/kernel/index.js')
@@ -1318,4 +1383,197 @@ test('перезапуск снимает номер выполнения со �
     assert.equal(cell.get('state'), 'idle')
     assert.equal(cell.get('startedAt'), null)
   }
+})
+
+test('проход по призракам не повторяется чаще окна', async () => {
+  /*
+   * Поводов пройти три — пульс, нажатие, подключение управляющего сокета, — и
+   * после перезапуска сервера они приходят пачкой: пятьсот вкладок за две
+   * секунды, то есть пятьсот транзакций по всем ячейкам всех тетрадей одной
+   * комнаты ровно тогда, когда весь зал ждёт синхронизации. Чинить проходу
+   * нужно то, что осталось от умершего процесса, — оно никуда не денется за
+   * две секунды.
+   */
+  const { sweepOrphanRuns } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  const ghost = () =>
+    room.doc.transact(() => {
+      room.cell.set('state', 'running')
+      room.cell.set('startedAt', Date.now() - 60_000)
+    })
+
+  const at = Date.now()
+  ghost()
+  assert.equal(sweepOrphanRuns(room.id, at), 1)
+  assert.equal(room.state(), 'idle')
+
+  // Второй сокет той же секунды документ не читает вовсе.
+  ghost()
+  assert.equal(sweepOrphanRuns(room.id, at + 1_999), 0, 'проход пошёл по документу второй раз')
+  assert.equal(room.state(), 'running', 'а раз не пошёл — призрак ещё стоит')
+
+  // Окно кончилось — призрака снимают.
+  assert.equal(sweepOrphanRuns(room.id, at + 2_001), 1)
+  assert.equal(room.state(), 'idle')
+})
+
+test('правка листа перезапускает попытку, а не упирается в «уже в очереди»', async () => {
+  /*
+   * Очередь на потоке одна, ждать минуту — обычное дело, и правка за это время
+   * тоже обычна. Прежде ждущая запись была неприкасаемой: студент, поправивший
+   * лист, получал «эта попытка уже в очереди — 37-я» и не мог запустить НОВУЮ
+   * версию, пока ядро не досчитает старую, — а её вывод к тому времени всё
+   * равно выбрасывался как опоздавший (council.ts · recordRun). Считаться
+   * должно то, что человек видит на экране.
+   *
+   * Место в очереди при этом остаётся прежним: за исправленную опечатку не
+   * отправляют в хвост.
+   */
+  const { requestRun, requestCouncilRun, councilQueuePositions, cancelCouncilRun, interruptSession } =
+    await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  room.type('while True: pass')
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId], 'Ада', 'p_t')
+  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+
+  const first: (string | null)[] = []
+  const second: (string | null)[] = []
+  const press = (source: string, seen: (string | null)[]) =>
+    requestCouncilRun(
+      room.id,
+      {
+        cellId: room.cellId,
+        participantId: 'p_1',
+        source,
+        by: 'author',
+        onChange: (run) => seen.push(run?.state ?? null),
+      },
+      'Ада',
+      'p_1',
+    )
+
+  assert.deepEqual(press('print(1)', first), { queued: true, position: 2 })
+  assert.deepEqual(first, ['queued'])
+
+  // То же самое второй раз — это второе нажатие, а не другой запуск.
+  assert.deepEqual(press('print(1)', second), { queued: false, position: 2 })
+  assert.deepEqual(second, [], 'по второму нажатию кадр всё-таки уехал')
+
+  // Другой текст — другой запуск: запись подменяется на месте.
+  assert.deepEqual(press('print(2)', second), { queued: true, position: 2 })
+  assert.deepEqual(second, ['queued'], 'новому тексту не сказали, что он в очереди')
+  assert.deepEqual(first, ['queued'], 'прежнему заданию досталось лишнее слово')
+  assert.deepEqual(
+    councilQueuePositions(room.id),
+    [{ cellId: room.cellId, participantId: 'p_1', position: 2 }],
+    'подмена завела вторую запись вместо замены',
+  )
+
+  // Снятая попытка говорит своему заданию «запуска не было» — и только ему.
+  assert.ok(cancelCouncilRun(room.id, room.cellId, 'p_1'))
+  assert.deepEqual(second, ['queued', null])
+  assert.deepEqual(first, ['queued'])
+  assert.deepEqual(councilQueuePositions(room.id), [])
+
+  swallowExecutes = false
+  await interruptSession(room.id)
+  assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+})
+
+test('номера очереди консилиума считаются одним проходом и совпадают с поштучным счётом', async () => {
+  /*
+   * `tellQueued` шлёт новый номер каждому ждущему на каждый сдвиг очереди, а
+   * номер считался поиском по всей очереди — на пятистах попытках это
+   * четверть миллиона сравнений на одно завершение. Массовый счёт обязан
+   * давать ровно то же, что поштучный, иначе студент увидит один номер, а его
+   * сосед — другой.
+   */
+  const {
+    requestRun,
+    requestCouncilRun,
+    councilQueuePosition,
+    councilQueuePositions,
+    cancelCouncilRun,
+    interruptSession,
+  } = await import('../server/src/kernel/index.js')
+  const room = await seminar()
+  room.type('while True: pass')
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId], 'Ада', 'p_t')
+  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+
+  const attempt = (participantId: string) =>
+    requestCouncilRun(
+      room.id,
+      {
+        cellId: room.cellId,
+        participantId,
+        source: `print("${participantId}")`,
+        by: 'host',
+        onChange: () => {},
+      },
+      'Ада',
+      'p_t',
+    )
+
+  // Считая ту, что занимает ядро прямо сейчас.
+  assert.equal(attempt('p_1').position, 2)
+  assert.equal(attempt('p_2').position, 3)
+
+  const bulk = councilQueuePositions(room.id)
+  assert.deepEqual(bulk, [
+    { cellId: room.cellId, participantId: 'p_1', position: 2 },
+    { cellId: room.cellId, participantId: 'p_2', position: 3 },
+  ])
+  for (const one of bulk) {
+    assert.equal(
+      councilQueuePosition(room.id, one.cellId, one.participantId),
+      one.position,
+      `массовый счёт разошёлся с поштучным у ${one.participantId}`,
+    )
+  }
+
+  // Ушедшая из середины очереди попытка двигает тех, кто за ней.
+  assert.ok(cancelCouncilRun(room.id, room.cellId, 'p_1'), 'попытка не снялась')
+  assert.deepEqual(
+    councilQueuePositions(room.id),
+    [{ cellId: room.cellId, participantId: 'p_2', position: 2 }],
+    'номер соседа не сдвинулся',
+  )
+
+  cancelCouncilRun(room.id, room.cellId, 'p_2')
+  swallowExecutes = false
+  await interruptSession(room.id)
+  assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+})
+
+test('пока ячейка пишет вывод, комнату из памяти не выселяют', async () => {
+  /*
+   * Пустая комната выселяется через десять минут, и выселение уничтожает
+   * `Y.Doc`. `OutputWriter` берёт документ в конструкторе и пишет в ЭТОТ объект
+   * до конца выполнения — запись в уничтоженный не видит никто и молча. Пока
+   * писатель жив, комната держится (kernel/index.ts · dropWriter → holdRoom).
+   *
+   * Последним в файле: проход выселяет ВСЕ пустые комнаты, в том числе те, что
+   * завели тесты выше.
+   */
+  const { requestRun, interruptSession } = await import('../server/src/kernel/index.js')
+  const { sweepIdleRooms } = await import('../server/src/collab/index.js')
+  const room = await seminar()
+  room.type('while True: pass')
+  swallowExecutes = true
+  requestRun(room.id, [room.cellId], 'Maria', 'p_2')
+  assert.ok(await until(() => room.state() === 'running'), 'ячейка не пошла')
+
+  // Все закрыли ноутбуки час назад, а ячейка всё считает.
+  const hour = Date.now() + 60 * 60 * 1000
+  assert.ok(!sweepIdleRooms(hour).includes(room.id), 'комнату выселили из-под писателя')
+
+  swallowExecutes = false
+  await interruptSession(room.id)
+  assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+
+  // Писатель отпустил — и комната стала обычной пустой комнатой.
+  assert.ok(sweepIdleRooms(hour).includes(room.id), 'комната осталась удержанной навсегда')
 })

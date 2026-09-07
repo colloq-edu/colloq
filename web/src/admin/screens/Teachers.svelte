@@ -151,7 +151,9 @@
    */
   function report(cause: unknown): string {
     if (cause instanceof AdminApiError) {
-      if (cause.reason === 'unauthenticated') void adminAuth.refresh()
+      // С причиной: печенье сюда доехало и его отвергли — ссылку ротировали или
+      // из штата сняли. Экран входа скажет именно это, а не про cookies.
+      if (cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       return cause.message
     }
     if (cause instanceof Error) return cause.message
@@ -347,8 +349,9 @@
       confirming = null
       if (reveal?.teacherId === t.id) reveal = null
       // They removed themselves: the server has already cleared the cookie in
-      // this browser, so the panel must stop pretending otherwise.
-      if (t.id === me?.id) void adminAuth.refresh()
+      // this browser, so the panel must stop pretending otherwise. И сказать об
+      // этом надо тем же, чем это было, — своим решением, а не сбоем печенья.
+      if (t.id === me?.id) void adminAuth.refresh('removed-self')
     } catch (cause: unknown) {
       confirmError = report(cause)
     } finally {

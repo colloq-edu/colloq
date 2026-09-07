@@ -19,24 +19,28 @@
  * — открыть .ipynb, который положили в папку, — значит ВНЕСТИ его в комнату:
  *   ячейки переезжают в документ, и дальше правда там.
  */
+import fs from 'node:fs'
 import * as Y from 'yjs'
 import {
   addBook,
   allBooks,
+  allCellArrays,
   bookAt,
   bookCells,
+  BOOKS_KEY,
   CELLS_KEY,
   createCell,
+  getMeta,
   readCell,
   removeBook,
   renameBook,
   rootForNewBook,
   type Book,
 } from '@shared/notebook'
-import { parseIpynb, writeIpynb } from '@shared/ipynb'
+import { parseIpynb, writeIpynb, type FlatCell } from '@shared/ipynb'
 import { baseOf, isInside, kindOf } from '@shared/paths'
 import { getSessionDoc, peekSessionDoc } from './index.js'
-import { makeFile, readText, statPath, writeText } from '../workspace.js'
+import { makeFile, readText, resolveInSession, statPath, writeText } from '../workspace.js'
 
 const ORIGIN = 'server'
 
@@ -53,13 +57,36 @@ const WRITE_AFTER_MS = 1_500
 /** Ячеек в тетради, которую соглашаемся внести в комнату. */
 const MAX_IMPORT_CELLS = 500
 
+/**
+ * Байтов в файле тетради, который соглашаемся разобрать.
+ *
+ * Своя мера, крупнее редакторской (`MAX_TEXT_BYTES`, полтора мегабайта). Та
+ * стоит там, где файл правят посимвольно, и полтора мегабайта — это уже предел
+ * для CodeMirror. Тетрадь никто посимвольно не правит: её разбирают ОДИН раз,
+ * из неё берут только тип и текст ячеек, а выводы — то есть почти весь её вес —
+ * при внесении отбрасываются. Тетрадь с десятком картинок matplotlib весит
+ * несколько мегабайт и является совершенно обычной преподавательской тетрадью;
+ * потолок редактора отказывал ей словами «не похоже на .ipynb».
+ *
+ * Цена названа: тридцать два мегабайта — это около полусекунды `JSON.parse`,
+ * заблокировавшего цикл событий один раз на нажатие в дереве. Больше — уже не
+ * тетрадь для занятия, и об этом говорится вслух.
+ */
+const MAX_BOOK_BYTES = 32 * 1024 * 1024
+
 const pending = new Map<string, NodeJS.Timeout>()
 
-/** Плоские ячейки тетради — то, что уходит в файл. */
-function flatten(cells: Y.Array<any>): { type: 'code' | 'markdown'; source: string }[] {
+/**
+ * Плоские ячейки тетради — то, что уходит в файл.
+ *
+ * Идентификатор несётся вместе с ними: схема 4.5 требует его у каждой ячейки, а
+ * без него `writeIpynb` подставляет порядковый номер — и файл, переписанный
+ * после перестановки двух ячеек, поменял бы имена всем, кто стоит ниже.
+ */
+function flatten(cells: Y.Array<any>): FlatCell[] {
   return cells.map((cell) => {
     const read = readCell(cell)
-    return { type: read.type, source: read.source }
+    return { id: read.id, type: read.type, source: read.source }
   })
 }
 
@@ -71,18 +98,20 @@ function flatten(cells: Y.Array<any>): { type: 'code' | 'markdown'; source: stri
  * переписывается — иначе время изменения дёргалось бы на каждое нажатие и
  * панель файлов моргала бы всю пару.
  */
-export function projectBooks(sessionId: string): void {
+export function projectBooks(sessionId: string): boolean {
   // Заглянуть, а не завести: комнату могли закрыть, пока таймер ждал, и
   // строить её заново ради записи файла — значит воскрешать удалённое.
   const open = peekSessionDoc(sessionId)
-  if (!open) return
+  if (!open) return false
   const { doc } = open
+  let wrote = false
   for (const { book, cells } of allBooks(doc)) {
     const text = writeIpynb(flatten(cells))
     const now = readText(sessionId, book.path)
     if (now && !now.binary && now.text === text) continue
-    writeText(sessionId, book.path, text)
+    if (writeText(sessionId, book.path, text)) wrote = true
   }
+  return wrote
 }
 
 function schedule(sessionId: string): void {
@@ -90,8 +119,16 @@ function schedule(sessionId: string): void {
   const timer = setTimeout(() => {
     pending.delete(sessionId)
     try {
-      projectBooks(sessionId)
-      filesChanged?.(sessionId)
+      /*
+       * Комнате говорят только о том, что правда легло на диск.
+       *
+       * `filesChanged` — это обход всей папки (readdir + lstat на каждую
+       * запись) и полное дерево файлов в КАЖДЫЙ сокет комнаты. Слать его после
+       * проекции, которая сравнила текст и ничего не переписала, значит платить
+       * этим за каждое нажатие в тетради: на паре из пятисот человек дерево
+       * уезжало всем каждые полторы секунды при неизменном диске.
+       */
+      if (projectBooks(sessionId)) filesChanged?.(sessionId)
     } catch (err) {
       console.error(`[books] не удалось записать тетрадь ${sessionId}:`, err)
     }
@@ -116,11 +153,13 @@ export function onBooksWritten(listener: (sessionId: string) => void): void {
  * забыть отписаться.
  */
 export function watchBooks(sessionId: string, doc: Y.Doc): () => void {
-  const onUpdate = (_update: Uint8Array, origin: unknown) => {
-    // Своя же проекция сюда не возвращается: она пишет на диск, а не в
-    // документ. Origin проверяется ради другого — записи ядра (вывод ячейки) в
-    // файл не идут вовсе, потому что выводов в файле нет.
-    if (origin === PROJECTION) return
+  const onUpdate = (
+    _update: Uint8Array,
+    _origin: unknown,
+    _doc: Y.Doc,
+    transaction: Y.Transaction,
+  ) => {
+    if (!touchesBooks(doc, transaction)) return
     schedule(sessionId)
   }
   doc.on('update', onUpdate)
@@ -135,7 +174,40 @@ export function watchBooks(sessionId: string, doc: Y.Doc): () => void {
   }
 }
 
-const PROJECTION = 'projection'
+/**
+ * Изменилось ли этим обновлением то, ЧТО ЛЕЖИТ В ФАЙЛЕ тетради.
+ *
+ * В файле — только состав тетрадей, тип ячейки и её текст (`writeIpynb`).
+ * Всё остальное, что живёт в том же документе, туда не попадает: вывод ячейки,
+ * состояние запуска, номер `In[]`, строки терминала, ответ оракула, присутствие.
+ *
+ * Раньше вместо этого стояло `if (origin === PROJECTION) return` с обещанием
+ * «своя проекция себя не будит» — ветка недостижимая (проекция пишет на диск, а
+ * не в документ, и транзакций с этим происхождением не заводит никто), так что
+ * не отсекалось НИЧЕГО. Ячейка, печатающая в цикле, взводила запись тетради
+ * каждые полторы секунды, а с ней — обход папки и дерево файлов всей комнате,
+ * хотя на диске от вывода не меняется ни байта.
+ *
+ * Проверка структурная, а не по происхождению: список чужих origin'ов
+ * разошёлся бы с кодом при первой же новой записи в документ, и разошёлся бы
+ * молча — в сторону «файл не обновился».
+ */
+function touchesBooks(doc: Y.Doc, transaction: Y.Transaction): boolean {
+  const meta: unknown = getMeta(doc)
+  const books = getMeta(doc).get(BOOKS_KEY)
+  const sheets = new Set<unknown>(allCellArrays(doc))
+  let hit = false
+  transaction.changed.forEach((keys, type) => {
+    if (hit) return
+    // Ячейку добавили, убрали или переставили; тетрадь открыли или закрыли.
+    if (sheets.has(type) || type === books) hit = true
+    else if (type === meta) hit = keys.has(BOOKS_KEY)
+    // Тип ячейки — ключ в её же карте; текст — `Y.Text` внутри неё.
+    else if (type instanceof Y.Map) hit = sheets.has(type.parent) && keys.has('type')
+    else if (type instanceof Y.Text) hit = sheets.has(type.parent?.parent)
+  })
+  return hit
+}
 
 /* ------------------------------------------------------- внести в комнату */
 
@@ -157,8 +229,8 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
   if (known) return { ok: true, book: known, imported: false }
   if (kindOf(path) !== 'notebook') return { ok: false, why: `${baseOf(path)} — не тетрадь.` }
 
-  const file = readText(sessionId, path)
-  if (!file || file.binary) return { ok: false, why: `${baseOf(path)} не читается как тетрадь.` }
+  const source = readBookText(sessionId, path)
+  if ('why' in source) return { ok: false, why: source.why }
   /*
    * Пустой файл — это НОВАЯ тетрадь, а не сломанная.
    *
@@ -166,7 +238,7 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
    * просит тетрадь. Разбирать пустоту как JSON и отказывать было бы формально
    * верно и практически бесполезно.
    */
-  const flat = file.text.trim().length === 0 ? [] : parseIpynb(file.text)
+  const flat = source.text.trim().length === 0 ? [] : parseIpynb(source.text)
   if (flat === null) return { ok: false, why: `${baseOf(path)} — не похоже на .ipynb.` }
   if (flat.length > MAX_IMPORT_CELLS) {
     return {
@@ -200,6 +272,40 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
   if (!made) return { ok: false, why: 'Не удалось открыть тетрадь.' }
   schedule(sessionId)
   return { ok: true, book: made, imported: true }
+}
+
+/**
+ * Прочитать файл тетради ЦЕЛИКОМ — или сказать, почему нельзя.
+ *
+ * `readText` бережёт редактор: файл больше полутора мегабайт он отдаёт началом
+ * и ставит `truncated`. Здесь этот признак смотрели мимо, и обрезанный посреди
+ * base64 JSON уходил в `parseIpynb`, тот честно возвращал `null`, а комната
+ * получала «<имя> — не похоже на .ipynb» — про совершенно нормальную тетрадь с
+ * картинками. Экран называл не ту причину, и обойти это изнутри комнаты было
+ * нечем.
+ *
+ * Поэтому тетрадь читается своей мерой (`MAX_BOOK_BYTES`), а отказ по размеру
+ * говорит про размер.
+ */
+function readBookText(sessionId: string, path: string): { text: string } | { why: string } {
+  const file = readText(sessionId, path)
+  if (!file || file.binary) return { why: `${baseOf(path)} не читается как тетрадь.` }
+  if (!file.truncated) return { text: file.text }
+  if (file.size > MAX_BOOK_BYTES) {
+    const mb = (file.size / (1024 * 1024)).toFixed(0)
+    return {
+      why:
+        `${baseOf(path)} — ${mb} МБ, это больше, чем комната открывает ` +
+        `(${MAX_BOOK_BYTES / (1024 * 1024)} МБ). Сохраните тетрадь без выводов.`,
+    }
+  }
+  const full = resolveInSession(sessionId, path)
+  if (!full) return { why: `${baseOf(path)} не читается как тетрадь.` }
+  try {
+    return { text: fs.readFileSync(full, 'utf8') }
+  } catch {
+    return { why: `${baseOf(path)} не читается как тетрадь.` }
+  }
 }
 
 /** Завести пустую тетрадь по этому пути: файл и запись в комнате. */

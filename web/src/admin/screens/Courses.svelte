@@ -6,18 +6,19 @@
   самого курса и называет ссылку, которую ломает.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import Icon from '@/components/ui/Icon.svelte'
-  import { AdminApiError, adminApi, type AdminPublication } from '@/lib/adminApi'
+  import { AdminApiError, addressHolderOf, adminApi, type AdminPublication } from '@/lib/adminApi'
   import { copyText } from '@/lib/clipboard'
   import { plural } from '@/lib/plural'
   import {
+    MAX_COURSE_BLURB,
     MAX_COURSE_NAME,
     slugOk,
     suggestSlug,
+    type AddressHolder,
     type Course,
     type CourseItem,
   } from '@shared/publish'
@@ -43,8 +44,15 @@
   /** Курс запрошен, ответа ещё нет: пустая область — не ответ. */
   let loadingOne = $state(false)
 
-  const explain = (cause: unknown): string =>
-    cause instanceof AdminApiError ? cause.message : 'что-то пошло не так'
+  const explain = (cause: unknown): string => {
+    // Мёртвым печеньем этот экран распорядиться не может: оболочка меняет всю
+    // панель на экран входа. С причиной — печенье доехало и его отвергли.
+    if (cause instanceof AdminApiError) {
+      if (cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      return cause.message
+    }
+    return 'что-то пошло не так'
+  }
 
   /** Адрес, который диктуют вслух: имя, если его дали, иначе идентификатор. */
   const addressOf = (item: { id: string; slug: string | null }): string => item.slug ?? item.id
@@ -82,11 +90,15 @@
     }
   }
 
-  onMount(() => {
-    if (open) void loadOne(open)
-    else void loadList()
-  })
-
+  /*
+   * Одна загрузка на открытие, а не две.
+   *
+   * Рядом стоял `onMount` с теми же двумя вызовами: эффект выполняется сразу
+   * после монтирования, так что каждый экран уходил за списком дважды — два
+   * `listCourses` и два `listPublications`, а курс — два `course` и два
+   * `listSeminars`, тот самый, что разбирает снимок тетради каждой не-живой
+   * комнаты. Два ответа на один `course` вдобавок гонялись наперегонки.
+   */
   $effect(() => {
     const id = open
     if (id) void loadOne(id)
@@ -122,7 +134,11 @@
    * пока экран держал его старым. Ответ несёт список таким, какой он сейчас.
    */
   async function writeItems(items: CourseItem[]): Promise<void> {
-    if (!course) return
+    // busy проверяется, а не только выставляется: «Убрать строку» и «Добавить
+    // семинар» гаснут по нему, но два быстрых нажатия успевают уйти с одним и
+    // тем же `rev`, и второе возвращалось как «этот курс успел изменить кто-то
+    // ещё» — про собственный двойной клик.
+    if (!course || busy) return
     busy = true
     error = null
     try {
@@ -171,8 +187,21 @@
     ),
   )
 
+  /**
+   * Скопировать — или показать ссылку словами.
+   *
+   * `copyText` бросает там, где буфер закрыт (панель по http на чужом хосте —
+   * обычный способ держать инстанс кафедры). Раньше этот отказ уходил
+   * необработанным промисом: «Скопировано» не появлялось, ссылки на экране не
+   * было, и нажатие выглядело как ничего.
+   */
   async function copy(text: string, key: string): Promise<void> {
-    await copyText(text)
+    try {
+      await copyText(text)
+    } catch {
+      error = `Браузер не отдал буфер обмена. Ссылка: ${text}`
+      return
+    }
     copied = key
     setTimeout(() => (copied = copied === key ? null : copied), 1600)
   }
@@ -207,6 +236,20 @@
     blurbDraft = open.blurb ?? ''
   })
 
+  /**
+   * Имя, которого не дали, и кто его держит.
+   *
+   * «Адрес «ml-2025» уже занят» — тупик, если держателя не назвать: курса с
+   * таким адресом в списке нет, его переименовали в «ml-2025-fall», и прежнее
+   * имя он держит ради ссылки, записанной в чате прошлогодней группы. Такое имя
+   * владелец отпускает сам (server/src/publish/store.ts · releaseFormerSlug);
+   * живой чужой адрес — не отпускает, и кнопки для него не будет. Пока сервер о
+   * держателе молчит, экран ведёт себя как раньше: повторяет фразу отказа.
+   */
+  let held = $state<{ slug: string; holder: AddressHolder } | null>(null)
+  /** Второй шаг: отпустить прежний адрес необратимо, и спрашивается это вслух. */
+  let askingSlug = $state(false)
+
   async function saveSlug(): Promise<void> {
     if (!course || busy) return
     const next = slugDraft.trim().toLowerCase()
@@ -216,14 +259,78 @@
     }
     busy = true
     error = null
+    held = null
     try {
       await adminApi.setSlug('course', course.id, next || null)
       await loadOne(course.id)
     } catch (cause) {
       error = explain(cause)
+      const holder = addressHolderOf(cause)
+      if (holder?.former && next) held = { slug: next, holder }
     } finally {
       busy = false
     }
+  }
+
+  /**
+   * Отпустить прежний адрес и занять его — одним решением.
+   *
+   * Одним, потому что отпускают его ровно затем, чтобы дать это имя своему
+   * курсу: два нажатия подряд оставили бы посередине состояние «имя ничьё», в
+   * котором его занимает кто угодно другой.
+   */
+  async function releaseSlug(): Promise<void> {
+    if (!held || busy) return
+    const { holder, slug: freed } = held
+    busy = true
+    error = null
+    try {
+      await adminApi.releaseFormerSlug(holder.kind, holder.id, freed)
+    } catch (cause) {
+      error = explain(cause)
+      return
+    } finally {
+      busy = false
+    }
+    held = null
+    askingSlug = false
+    slugDraft = freed
+    await saveSlug()
+  }
+
+  /**
+   * Своё прежнее имя — то, которое держит этот курс.
+   *
+   * Второй путь к тому же действию, и нужен он не тому, кому имя отказали, а
+   * владельцу: курс «ML 2025», переименованный в «ml-2025-fall», держит
+   * «ml-2025» за собой навсегда — ссылка с ним записана в чате прошлогодней
+   * группы, — и курсу следующего года это имя не дать. Увидеть, что держит его
+   * именно этот курс, было негде: строки с таким адресом в списке нет вовсе.
+   * Список приезжает вместе с курсом (server/src/routes/courses.ts · former).
+   */
+  let dropping = $state<string | null>(null)
+  /** Прежние имена этого курса — с сервера, вместе с самим курсом. */
+  const former = $derived(course?.former ?? [])
+
+  async function dropFormer(): Promise<void> {
+    const open = course
+    const name = dropping
+    if (!open || !name || busy) return
+    busy = true
+    error = null
+    try {
+      await adminApi.releaseFormerSlug('course', open.id, name)
+    } catch (cause) {
+      error = explain(cause)
+      return
+    } finally {
+      busy = false
+    }
+    dropping = null
+    // Перечитываем курс, а не вычитаем имя из списка на месте: прежние имена
+    // считает сервер, и вторая копия этого ответа разошлась бы с ним на первом
+    // же отказе.
+    await loadOne(open.id)
   }
   /**
    * Название и подпись курса.
@@ -247,7 +354,18 @@
     busy = true
     error = null
     try {
-      course = await adminApi.updateCourse(open.id, { name, blurb: blurbDraft.trim() || null })
+      const saved = await adminApi.updateCourse(open.id, { name, blurb: blurbDraft.trim() || null })
+      course = saved
+      /*
+       * Черновики — с ответа сервера, а не с того, что набрали.
+       *
+       * Сервер режет подпись по `MAX_COURSE_BLURB`, и после сохранения
+       * сохранённое короче набранного: `detailsChanged` оставался истинным,
+       * кнопка «Сохранить название» не гасла, и её жали снова и снова. Эффект
+       * выше их не трогает — он ключом по `open.id`, а курс тот же.
+       */
+      nameDraft = saved.name
+      blurbDraft = saved.blurb ?? ''
     } catch (cause) {
       error = explain(cause)
     } finally {
@@ -503,7 +621,7 @@
           class="h-9 min-w-[220px] flex-1 border border-line bg-canvas px-3 text-ui text-ink
                  placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
           placeholder="Подпись под названием — одна строка, необязательно"
-          maxlength={200}
+          maxlength={MAX_COURSE_BLURB}
           aria-label="Подпись курса"
           bind:value={blurbDraft}
           onkeydown={(event) => {
@@ -544,10 +662,70 @@
             Сохранить адрес
           </button>
         {/if}
+        <!-- Имя держит не живой адрес, а память о розданной ссылке — и это
+             единственный вид «занято», который владелец разрешает сам. Кнопка
+             стоит у самого поля: искать её в другом месте экрана значит не
+             найти вовсе. -->
+        {#if held}
+          <button
+            type="button"
+            class="btn-outline h-7 px-3 text-2xs"
+            disabled={busy}
+            onclick={() => (askingSlug = true)}
+          >
+            Отпустить прежний адрес
+          </button>
+        {/if}
         {#if shown.slug}
           <span class="text-2xs text-muted">старый адрес /c/{shown.id} тоже работает</span>
         {/if}
       </div>
+
+      {#if held}
+        <p class="max-w-[640px] pb-5 text-2xs leading-snug text-muted">
+          <span class="font-mono text-ink">/c/{held.slug}</span> — прежнее имя
+          {held.holder.kind === 'course' ? 'курса' : 'страницы'}
+          {#if held.holder.name}«{held.holder.name}»{:else}, у которого теперь другое имя{/if}. Оно
+          держится ради ссылки, которую уже дали классу; отпустив его, вы забираете имя себе, а
+          старая ссылка перестаёт открываться.
+        </p>
+      {/if}
+
+      <!--
+        Прежние имена — под тем же полем, где их и меняли.
+
+        Переименование не отменяет розданную ссылку: старое имя остаётся
+        адресом этого курса навсегда — и держит его для всех остальных тоже.
+        Курс следующего года получал «Адрес «ml-2025» — прежнее имя курса «ML
+        2025»», а увидеть, что имя держится ЗДЕСЬ, было негде: строки с таким
+        адресом в списке курсов нет. Цена отпускания названа рядом с кнопкой, а
+        не только в вопросе после неё.
+      -->
+      {#if former.length > 0}
+        <div class="mb-5 max-w-[640px] border border-line bg-surface">
+          <div class="border-b border-line px-4 py-2.5">
+            <p class="text-ui font-semibold text-ink">Прежние адреса</p>
+            <p class="mt-0.5 text-2xs leading-snug text-muted">
+              Ведут на этот курс и держат имя за ним: другому курсу его не дать. Отпущенное имя
+              освобождается для всех — а ссылка с ним перестаёт вести куда-либо, и вернуть её
+              нечем.
+            </p>
+          </div>
+          {#each former as name (name)}
+            <div class="flex items-center gap-3 border-b border-line-soft px-4 py-2 last:border-b-0">
+              <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink">/c/{name}</span>
+              <button
+                type="button"
+                class="btn-outline h-7 shrink-0 px-3 text-2xs"
+                disabled={busy}
+                onclick={() => (dropping = name)}
+              >
+                Отпустить
+              </button>
+            </div>
+          {/each}
+        </div>
+      {/if}
 
       {#if error}
         <p class="pb-4 text-ui text-danger">{error}</p>
@@ -580,7 +758,9 @@
               {#each addable as session (session.id)}
                 <button
                   type="button"
-                  class="border border-line bg-canvas px-3 py-1.5 text-ui text-ink transition-colors hover:border-faint"
+                  class="border border-line bg-canvas px-3 py-1.5 text-ui text-ink transition-colors
+                         hover:border-faint disabled:text-faint"
+                  disabled={busy}
                   onclick={() => add(session.id)}
                 >
                   {session.name}
@@ -614,7 +794,8 @@
               <span class="text-ui text-muted">комнаты ещё нет</span>
               <button
                 type="button"
-                class="text-ui font-semibold text-muted hover:text-ink"
+                class="text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
+                disabled={busy}
                 onclick={() => drop(index)}
               >
                 Убрать строку
@@ -643,7 +824,12 @@
               {:else}
                 <span class="text-ui text-muted">публиковать нечего</span>
               {/if}
-              <button type="button" class="text-ui font-semibold text-muted hover:text-ink" onclick={() => drop(index)}>
+              <button
+                type="button"
+                class="text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
+                disabled={busy}
+                onclick={() => drop(index)}
+              >
                 Убрать строку
               </button>
             </div>
@@ -781,6 +967,96 @@
           onclick={() => void destroy()}
         >
           {busy ? 'Удаляем…' : 'Удалить курс'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!--
+  Отпустить прежний адрес — вопросом, а не нажатием.
+
+  Единственное необратимое здесь, кроме удаления курса: ссылка, записанная в
+  чате прошлогодней группы, после этого отвечает 404, и вернуть её нечем.
+  Поэтому второй шаг, и цена в нём названа тем самым адресом.
+-->
+{#if askingSlug && held}
+  {@const going = held}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="release-slug-title"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 id="release-slug-title" class="text-title font-semibold text-ink">
+        Отпустить адрес /c/{going.slug}?
+      </h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">
+        Сейчас он ведёт на
+        {going.holder.kind === 'course' ? 'курс' : 'страницу'}
+        {#if going.holder.name}«{going.holder.name}»{:else}, который переименовали{/if} — и
+        перестанет открываться совсем: у того, кому эту ссылку дали, останется адрес в никуда. Имя
+        тем же движением достаётся этому курсу.
+      </p>
+      {#if error}
+        <p class="mt-3 text-ui text-danger">{error}</p>
+      {/if}
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" class="btn-outline" disabled={busy} onclick={() => (askingSlug = false)}>
+          Отмена
+        </button>
+        <button
+          type="button"
+          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          disabled={busy}
+          onclick={() => void releaseSlug()}
+        >
+          {busy ? 'Отпускаем…' : 'Отпустить и занять'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!--
+  Отпустить своё прежнее имя — тот же вопрос, но никто его имени не ждёт.
+
+  Здесь отпускают не затем, чтобы тут же занять: имя освобождается для всех, и
+  единственное, что происходит наверняка, — ссылка с ним перестаёт открываться.
+  Поэтому и вопрос другой, и кнопка называется другим глаголом.
+-->
+{#if dropping}
+  {@const going = dropping}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="drop-slug-title"
+    class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-brand/40 p-6"
+  >
+    <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
+      <h2 id="drop-slug-title" class="text-title font-semibold text-ink">
+        Отпустить адрес /c/{going}?
+      </h2>
+      <p class="mt-2 text-ui leading-relaxed text-muted">
+        Сейчас он ведёт на этот курс — и перестанет вести куда-либо: у тех, кому эту ссылку уже
+        дали, останется адрес в никуда, и вернуть её нечем. Взамен имя освобождается — его сможет
+        занять другой курс.
+      </p>
+      {#if error}
+        <p class="mt-3 text-ui text-danger">{error}</p>
+      {/if}
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" class="btn-outline" disabled={busy} onclick={() => (dropping = null)}>
+          Отмена
+        </button>
+        <button
+          type="button"
+          class="btn bg-danger text-white hover:brightness-110 disabled:opacity-40"
+          disabled={busy}
+          onclick={() => void dropFormer()}
+        >
+          {busy ? 'Отпускаем…' : 'Отпустить адрес'}
         </button>
       </div>
     </div>

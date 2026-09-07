@@ -18,7 +18,8 @@
  * никогда. Для замороженного предмета отдельный простой отрисовщик — верный
  * размен; за ним следит `tests/render.test.mts`.
  */
-import { BLOB_PREFIX, type PublicCell, type PublicCourseView } from '@shared/publish'
+import { BLOB_PREFIX, ROBOTS_TAG, type PublicCell, type PublicCourseView } from '@shared/publish'
+import { plural } from '@shared/plural'
 import type { CellOutput } from '@shared/notebook'
 
 /**
@@ -46,11 +47,17 @@ function esc(value: string): string {
 /**
  * Разметка ячейки-заметки.
  *
- * Нарочно крошечное подмножество markdown: заголовки, курсив, жирный, код,
- * ссылки, абзацы. Тащить сюда полноценный markdown с санитайзером — это тот
- * же вес, что и в приложении, ради страницы без единого скрипта. Всё, что
- * подмножество не знает, остаётся текстом: непонятый синтаксис виден, но
- * безвреден.
+ * Нарочно крошечное подмножество markdown: заголовки, огороженный код, списки
+ * обоих видов, курсив, жирный, код в строке, ссылки, абзацы. Тащить сюда
+ * полноценный markdown с санитайзером — это тот же вес, что и в приложении,
+ * ради страницы без единого скрипта. Всё, что подмножество не знает, остаётся
+ * текстом: непонятый синтаксис виден, но безвреден.
+ *
+ * Огороженный код разбирается первым и не по желанию оформления: внутри
+ * учебного примера строка `# считаем среднее` — комментарий, а не заголовок, а
+ * `- x` — вычитание, а не пункт списка. Пока фенса здесь не было, самая частая
+ * конструкция учебной тетради читалась на странице как каша: крупный заголовок
+ * посреди примера и код, разорванный на абзацы по пустым строкам.
  */
 function markdown(source: string): string {
   const inline = (text: string): string =>
@@ -58,24 +65,70 @@ function markdown(source: string): string {
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+      /*
+       * Картинка — ссылкой, а не `<img src="https://…">`: страница обязана
+       * открываться из архива и с флешки, а внешний адрес однажды не доедет и
+       * оставит на её месте битую рамку. Без этого правила `![схема](url)`
+       * доезжал до студента как «!» со ссылкой.
+       */
+      .replace(
+        /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g,
+        (_all, alt: string, href: string) =>
+          `<a href="${href}" rel="noreferrer">${alt.trim() || 'картинка'}</a>`,
+      )
       .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>')
 
   const out: string[] = []
-  let list: string[] = []
+  let bullets: string[] = []
+  let numbers: string[] = []
+  /** Строки внутри ```-ограды. `null` — ограды сейчас нет. */
+  let fenced: string[] | null = null
+
   const flush = (): void => {
-    if (list.length === 0) return
-    out.push(`<ul>${list.map((li) => `<li>${inline(li)}</li>`).join('')}</ul>`)
-    list = []
+    if (bullets.length > 0) {
+      out.push(`<ul>${bullets.map((li) => `<li>${inline(li)}</li>`).join('')}</ul>`)
+      bullets = []
+    }
+    if (numbers.length > 0) {
+      out.push(`<ol>${numbers.map((li) => `<li>${inline(li)}</li>`).join('')}</ol>`)
+      numbers = []
+    }
   }
+  const closeFence = (): void => {
+    if (fenced === null) return
+    out.push(`<pre class="code">${esc(fenced.join('\n'))}</pre>`)
+    fenced = null
+  }
+
   for (const line of source.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      if (fenced === null) {
+        flush()
+        // Язык после ограды («```python») — подсказка подсветке, которой здесь
+        // нет; текстом на странице ей делать нечего.
+        fenced = []
+      } else {
+        closeFence()
+      }
+      continue
+    }
+    if (fenced !== null) {
+      fenced.push(line)
+      continue
+    }
     const heading = /^(#{1,4})\s+(.*)$/.exec(line)
     const bullet = /^\s*[-*]\s+(.*)$/.exec(line)
+    const number = /^\s*\d{1,3}[.)]\s+(.*)$/.exec(line)
     if (heading) {
       flush()
       const level = Math.min(heading[1].length + 1, 5)
       out.push(`<h${level}>${inline(heading[2])}</h${level}>`)
     } else if (bullet) {
-      list.push(bullet[1])
+      if (numbers.length > 0) flush()
+      bullets.push(bullet[1])
+    } else if (number) {
+      if (bullets.length > 0) flush()
+      numbers.push(number[1])
     } else if (line.trim() === '') {
       flush()
     } else {
@@ -84,6 +137,9 @@ function markdown(source: string): string {
     }
   }
   flush()
+  // Ограда, которую забыли закрыть: остаток заметки — всё равно код, и
+  // потерять его молча хуже, чем показать лишний блок.
+  closeFence()
   return out.join('\n')
 }
 
@@ -121,6 +177,125 @@ function tracebackBody(lines: string[], ename: string, evalue: string): string {
   return kept.join('\n')
 }
 
+/**
+ * Вывод, у которого есть только text/html: таблица pandas, `display(HTML(...))`.
+ *
+ * Такой вывод раньше исчезал со страницы без следа — под кодом пусто, а в
+ * подвале «Out [7]», и студент читал это как «код ничего не напечатал».
+ * `df.style`, `IPython.display.HTML`, plotly, ipywidgets — всё это отдаёт
+ * text/html, и в комнате оно показывается.
+ *
+ * Показывается ПОДМНОЖЕСТВО, собранное белым списком, а не чужая разметка как
+ * есть. Здесь она из вывода ячейки, то есть от кого угодно, кто в комнате
+ * запускал код, и лежит она в файле, который откроют без всякого сервера:
+ * `<script>` и `<style>` выбрасываются вместе с содержимым (стиль из вывода
+ * перекрасил бы страницу целиком), остальные незнакомые теги снимаются, а текст
+ * внутри них остаётся. Незакрытые теги закрываются здесь же — иначе один
+ * `<div>` из вывода утащил бы за собой вёрстку всей страницы.
+ */
+const HTML_TAGS: ReadonlySet<string> = new Set(
+  `table thead tbody tfoot tr td th caption colgroup col
+   p div span br hr blockquote pre code
+   b strong i em u s sub sup small
+   ul ol li dl dt dd h1 h2 h3 h4 h5 h6 a`
+    .trim()
+    .split(/\s+/),
+)
+
+/** Теги без содержимого: закрывать их нечем и не надо. */
+const HTML_VOID: ReadonlySet<string> = new Set(['br', 'hr', 'col'])
+
+/** Что разрешено при теге. Всё остальное — включая on*, style и class — снимается. */
+const HTML_ATTRS: Record<string, ReadonlySet<string>> = {
+  td: new Set(['colspan', 'rowspan']),
+  th: new Set(['colspan', 'rowspan', 'scope']),
+  col: new Set(['span']),
+  colgroup: new Set(['span']),
+  a: new Set(['href']),
+}
+
+function keepAttrs(tag: string, raw: string): string {
+  const allowed = HTML_ATTRS[tag]
+  if (!allowed) return ''
+  let out = ''
+  const pairs = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g
+  let found: RegExpExecArray | null
+  while ((found = pairs.exec(raw)) !== null) {
+    const name = found[1].toLowerCase()
+    if (!allowed.has(name)) continue
+    const value = found[2] ?? found[3] ?? found[4] ?? ''
+    // Адрес — только http(s): `javascript:` в ссылке из вывода ячейки
+    // исполнился бы у того, кто открыл страницу.
+    if (name === 'href' && !/^https?:\/\//i.test(value)) continue
+    if (name !== 'href' && !/^\d{1,3}$|^(row|col|rowgroup|colgroup)$/.test(value)) continue
+    out += ` ${name}="${esc(value)}"`
+  }
+  return out
+}
+
+/** Тег с его атрибутами: кавычки могут прятать внутри себя и «<», и «>». */
+const TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y
+
+function htmlSubset(source: string): string {
+  const stripped = source
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+    .replace(/<(script|style)\b[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+  const out: string[] = []
+  const open: string[] = []
+  let i = 0
+  while (i < stripped.length) {
+    const lt = stripped.indexOf('<', i)
+    if (lt === -1) {
+      out.push(stripped.slice(i))
+      break
+    }
+    out.push(stripped.slice(i, lt))
+    // Липкий разбор с позиции, а не по куску строки: `slice` на каждый тег
+    // превращал бы таблицу на мегабайт в квадрат от её длины.
+    TAG.lastIndex = lt
+    const tag = TAG.exec(stripped)
+    if (!tag) {
+      // Одинокая «<» — это текст, а не начало тега.
+      out.push('&lt;')
+      i = lt + 1
+      continue
+    }
+    i = TAG.lastIndex
+    const name = tag[2].toLowerCase()
+    if (!HTML_TAGS.has(name)) continue
+    if (tag[1]) {
+      const at = open.lastIndexOf(name)
+      if (at === -1) continue
+      while (open.length > at) out.push(`</${open.pop()!}>`)
+      continue
+    }
+    out.push(`<${name}${keepAttrs(name, tag[3])}>`)
+    if (!HTML_VOID.has(name) && !/\/\s*$/.test(tag[3])) open.push(name)
+  }
+  while (open.length > 0) out.push(`</${open.pop()!}>`)
+  return out.join('')
+}
+
+/**
+ * Есть ли в разметке что показывать.
+ *
+ * Длина строки об этом не говорит, и это не мелочь: plotly, bokeh и ipywidgets
+ * кладут в text/html пустой `<div id=…>` рядом со `<script>`, который рисует
+ * его уже в браузере. Скрипт из чужого вывода в страницу не уезжает (см.
+ * `htmlSubset`), и остаётся `<div></div>` — разметка непустая, а под ячейкой
+ * пусто. Поверить непустой строке значит вернуть ровно то, ради чего всё это
+ * писалось: пустое место с подписью «Out [1]» вместо честной пометки о
+ * формате, которого страница не знает.
+ *
+ * Видимое — это текст вне тегов (`&nbsp;` за него не считается) и линейка,
+ * которую видно саму по себе. Пустая таблица за содержимое не идёт: сетка
+ * рамок без единой цифры читается как сломанная страница, а пометка — нет.
+ */
+function hasVisible(html: string): boolean {
+  const text = html.replace(/<[^>]*>/g, '').replace(/&nbsp;|&#0*160;|&#x0*a0;/gi, ' ')
+  return /\S/.test(text) || /<hr\b/i.test(html)
+}
+
 function outputHtml(output: CellOutput, depth: number): string {
   /*
    * Картинки лежат в корне публикации, рядом с первым шагом. Первый шаг — сам
@@ -154,8 +329,27 @@ function outputHtml(output: CellOutput, depth: number): string {
         : `data:${mime};base64,${value.replace(/\s/g, '')}`
     return `<p class="img"><img src="${esc(src)}" alt="вывод ячейки"></p>`
   }
+  /*
+   * text/html — раньше, чем text/plain, и это не вкус: у `df.style` в
+   * text/plain лежит «<pandas.io.formats.style.Styler object at 0x…>», то есть
+   * ровно то, вместо чего студент должен видеть таблицу.
+   */
+  const rich = output.data['text/html']
+  if (rich) {
+    const safe = htmlSubset(rich).trim()
+    if (hasVisible(safe)) return `<div class="rich">${safe}</div>`
+  }
   const text = output.data['text/plain']
-  return text ? `<pre class="out">${esc(plain(text))}</pre>` : ''
+  if (text) return `<pre class="out">${esc(plain(text))}</pre>`
+  /*
+   * Показать нечем — но сказать об этом надо. Пустое место под ячейкой с
+   * подписью «Out [7]» читается как «код ничего не напечатал», и это враньё:
+   * вывод был, просто он в формате, которого статическая страница не знает.
+   */
+  const kinds = Object.keys(output.data)
+  return kinds.length > 0
+    ? `<p class="quiet">вывод в формате ${esc(kinds.join(', '))} на странице не показывается</p>`
+    : ''
 }
 
 function cellHtml(cell: PublicCell, depth: number): string {
@@ -229,21 +423,35 @@ header.top h1{font-size:32px;margin:0 0 8px}
 .outs{border-top:1px solid var(--line);padding:11px 15px}
 .out{margin:0;overflow-x:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
 .out.err{color:var(--err)}
+.rich{overflow-x:auto;font-size:14px}
+.rich table{border-collapse:collapse;font-size:13px;margin:0}
+.rich th,.rich td{border:1px solid var(--line);padding:5px 9px;text-align:right;white-space:nowrap}
+.rich th{color:var(--muted);font-weight:600}
+.rich p{margin:0 0 6px}.rich p:last-child{margin:0}
+.quiet{color:var(--faint);margin:0}
 .img{margin:0}.img img{max-width:100%;height:auto;display:block}
 .foot{border-top:1px solid var(--line);background:#FBFCFE;padding:6px 15px;text-align:right;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
 .foot .warn{color:var(--warn)}.foot .quiet{color:var(--faint)}
 .take{border-top:1px solid var(--line);margin-top:34px;padding-top:18px;font-size:14px}
+.take p{margin:0}
+.take .why{color:var(--muted);margin-top:5px}
 @media(max-width:860px){.body{display:block}.rail{width:auto;border-right:0;border-bottom:1px solid var(--line);position:static;padding:20px 0}.rail a{margin-right:0}}
 @media(prefers-color-scheme:dark){:root{--ink:#E8EDF7;--muted:#9AA7C0;--faint:#6B7897;--line:#26304A;--surface:#161E33;--accent:#4FC3F0;--warn:#E0B44A;--err:#F0868E;--bg:#0D1526}.code,.foot{background:#111A2E}}
 `
 
-/** Голова документа. `noindex` — страницу дают классу, а не поисковику. */
-function head(title: string, depth: number): string {
+/**
+ * Голова документа.
+ *
+ * `robots` — из общего решения (shared/publish.ts), а не из своего мнения:
+ * инстанс отдаёт те же страницы по своим адресам, и пока правило стояло
+ * комментарием по обе стороны, стороны успели разойтись.
+ */
+function head(title: string): string {
   return [
     '<!doctype html><html lang="ru"><head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
-    '<meta name="robots" content="noindex">',
+    `<meta name="robots" content="${ROBOTS_TAG}">`,
     `<title>${esc(title)}</title>`,
     `<style>${STYLE}</style>`,
     '</head><body>',
@@ -335,7 +543,7 @@ export function renderCourse(course: PublicCourseView, base: string): string {
       const steps =
         item.publication.steps === 1
           ? 'одна страница'
-          : `${item.publication.steps} ${item.publication.steps < 5 ? 'шага' : 'шагов'}`
+          : `${item.publication.steps} ${plural(item.publication.steps, 'шаг', 'шага', 'шагов')}`
       return [
         '<li class="row">',
         `<a href="${esc(href)}">`,
@@ -348,7 +556,7 @@ export function renderCourse(course: PublicCourseView, base: string): string {
     .join('\n')
 
   return [
-    head(course.name, 1),
+    head(course.name),
     '<div class="wrap">',
     `<h1>${esc(course.name)}</h1>`,
     course.blurb ? `<p class="blurb">${esc(course.blurb)}</p>` : '',
@@ -374,7 +582,7 @@ export function renderRedirect(to: string, title: string): string {
     '<!doctype html><html lang="ru"><head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
-    '<meta name="robots" content="noindex">',
+    `<meta name="robots" content="${ROBOTS_TAG}">`,
     `<meta http-equiv="refresh" content="0; url=${esc(to)}">`,
     `<link rel="canonical" href="${esc(to)}">`,
     `<title>${esc(title)}</title>`,
@@ -385,6 +593,39 @@ export function renderRedirect(to: string, title: string): string {
     '</div>',
     FOOT,
   ].join('\n')
+}
+
+/**
+ * Надгробие снятой страницы.
+ *
+ * Обещание записано в store.ts буквами: «снятие страницы адрес не отменяет:
+ * ссылка обязана сказать „её сняли“, а не „такой страницы здесь нет“». На живом
+ * сервере так и было, а на Pages — том самом носителе «на среду вечером» —
+ * каталог просто стирался, и ссылка из чата группы отвечала стандартным 404
+ * GitHub. Студент по нему не отличает снятую страницу от опечатки в адресе и
+ * идёт спрашивать, «а точно та ссылка?».
+ *
+ * Ни шагов, ни картинок здесь нет: снятая страница не должна читаться в обход
+ * решения преподавателя — она должна о себе сказать.
+ */
+export function renderWithdrawn(
+  title: string,
+  course: { name: string; handle: string } | null,
+  base: string,
+): string {
+  return [
+    head(title),
+    '<div class="wrap">',
+    `<h1>${esc(title)}</h1>`,
+    '<p class="blurb">Преподаватель снял эту страницу. Адрес остался прежним: если её вернут, ссылка снова заработает.</p>',
+    course
+      ? `<p class="foot-note">Остальные занятия курса: <a href="${esc(base)}/c/${esc(course.handle)}/">${esc(course.name)}</a></p>`
+      : '',
+    '</div>',
+    FOOT,
+  ]
+    .filter(Boolean)
+    .join('\n')
 }
 
 export interface SeminarPage {
@@ -402,6 +643,29 @@ export interface SeminarPage {
 export function renderStep(page: SeminarPage): string {
   const many = page.steps.length > 1
   const up = page.depth === 1 ? '' : '../'
+  /*
+   * Тетрадь — своя у каждого шага, и лежит она в каталоге шага (export.ts).
+   * Ссылка была одна на все шаги и отдавала последний: читатель, сравнивающий
+   * «до» и «после» на шаге 2 из 5 — ровно тот, ради кого шаг живёт в адресе, —
+   * уносил состояние шага 5 и узнавал об этом, только открыв файл. В комнате
+   * это уже исправлено (`?step=`), а статика оставалась на прежнем обещании.
+   *
+   * `p/<handle>/notebook.ipynb` при этом остаётся тетрадью последнего шага: на
+   * неё скопированы ссылки, розданные раньше, и менять то, что по ним
+   * скачивается, нельзя. Поэтому и первый шаг, чья страница поднята в корень
+   * публикации, ссылается вниз — в свой каталог.
+   */
+  const notebook = page.depth === 1 ? `${page.step.seq}/notebook.ipynb` : 'notebook.ipynb'
+  /*
+   * Подпись — слово в слово та же, что в читалке (ReaderScreen.svelte): файл
+   * задуман как «код, чтобы запустить у себя», и то, чего в нём нет, сказано
+   * рядом со ссылкой, а не выясняется после скачивания.
+   */
+  const about = !many
+    ? 'Код без выводов'
+    : page.steps.at(-1)?.seq === page.step.seq
+      ? 'Код последнего шага, без выводов'
+      : 'Код этого шага, без выводов'
   const rail = many
     ? [
         '<nav class="rail"><h2>Шаги семинара</h2>',
@@ -417,7 +681,7 @@ export function renderStep(page: SeminarPage): string {
     : ''
 
   return [
-    head(page.title, page.depth),
+    head(page.title),
     '<header class="top"><div class="in">',
     `<h1>${esc(page.title)}</h1>`,
     '<p class="meta">',
@@ -425,7 +689,7 @@ export function renderStep(page: SeminarPage): string {
       ? `<a href="${esc(page.base)}/c/${esc(page.course.handle)}/">${esc(page.course.name)}</a> · `
       : '',
     `опубликован ${esc(when(page.publishedAt))}`,
-    many ? ` · ${page.steps.length} шага` : '',
+    many ? ` · ${page.steps.length} ${plural(page.steps.length, 'шаг', 'шага', 'шагов')}` : '',
     '</p></div></header>',
     '<div class="body">',
     rail,
@@ -438,7 +702,10 @@ export function renderStep(page: SeminarPage): string {
     '<p>Ничьих имён на этой странице нет.</p>',
     '</div>',
     page.step.cells.map((cell) => cellHtml(cell, page.depth)).join('\n'),
-    `<p class="take"><a href="${up}notebook.ipynb" download>Скачать тетрадь (.ipynb)</a></p>`,
+    '<div class="take">',
+    `<p><a href="${esc(notebook)}" download>Скачать тетрадь (.ipynb)</a></p>`,
+    `<p class="why">${about} — чтобы запустить у себя.</p>`,
+    '</div>',
     '</main></div>',
     FOOT,
   ]

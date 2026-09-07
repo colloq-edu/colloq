@@ -11,7 +11,7 @@
  * реэкспортирована отсюда: пульт по нему только группирует, не пересчитывает.
  */
 import type { CouncilAttempt, CouncilGroup, CouncilOracle, CouncilStatus } from '@shared/protocol'
-import { groupStatus } from '@shared/protocol'
+import { bySubmission, groupAttempts } from '@shared/protocol'
 export { normalizeAttempt } from '@shared/notebook'
 
 /** Цвет черты под сегментом: верно / ошибка / падает / не смотрели. */
@@ -40,63 +40,18 @@ export const WRITING_KEY = 'ещё пишут'
 const submitted = (attempt: CouncilAttempt): attempt is CouncilAttempt & { submittedAt: number } =>
   attempt.submittedAt !== null
 
-/**
- * Раньше сдал — раньше в списке; в одну миллисекунду — кто раньше написал,
- * потом по id: порядок не плавает между пересылками и совпадает с серверным
- * (council.ts · bySubmission), чтобы представитель группы был один и тот же.
- */
-function bySubmission(a: CouncilAttempt, b: CouncilAttempt): number {
-  return (
-    (a.submittedAt ?? 0) - (b.submittedAt ?? 0) ||
-    a.updatedAt - b.updatedAt ||
-    a.participantId.localeCompare(b.participantId)
-  )
-}
-
-/**
- * Группы одинаковых решений из полного списка попыток — по `attempt.groupKey`.
+/*
+ * Группировка — общая, из shared/protocol.ts.
  *
- * Только сданные: пишущие в группы не попадают, они — пунктирный хвост полосы.
- * Представитель — самый ранний сдавший; `status` и `shown` группы — по всем её
- * членам (protocol.ts · groupStatus): преподаватель стрелкой попадает на
- * любого, и отметка на его карточке должна дойти до черты и сводки;
- * `label` — из `board.oracle.groupLabels[key]`, иначе `null`.
- *
- * Порядок — от большой группы к малой; при равном размере раньше та, чей
- * представитель сдал раньше. Это и есть порядок стопки и сводки.
+ * Здесь лежали свои `bySubmission` и `groupAttempts`, третья копия одного и
+ * того же правила: своя была у серверной стопки, своя у оракула, своя у
+ * пульта, — и они уже разошлись разрывом при равенстве. Разрыв решает, кто
+ * представитель группы, то есть чей код стоит на карточке и на чью карточку
+ * ложится черновик ответа; при расхождении «так же ещё 311» и ширина сегмента
+ * считались от разных наборов. `CouncilAttempt` подходит под `GroupMember` как
+ * есть — `groupKey` ему ставит сервер той же `normalizeAttempt`.
  */
-export function groupAttempts(
-  attempts: CouncilAttempt[],
-  labels: Record<string, string> = {},
-): CouncilGroup[] {
-  const byKey = new Map<string, CouncilAttempt[]>()
-  for (const attempt of attempts) {
-    if (!submitted(attempt)) continue
-    const bucket = byKey.get(attempt.groupKey)
-    if (bucket) bucket.push(attempt)
-    else byKey.set(attempt.groupKey, [attempt])
-  }
-  const groups: CouncilGroup[] = []
-  for (const [key, members] of byKey) {
-    members.sort(bySubmission)
-    const head = members[0]
-    groups.push({
-      key,
-      count: members.length,
-      label: labels[key] ?? null,
-      sample: head.text,
-      status: groupStatus(members.map((m) => m.status)),
-      shown: members.some((m) => m.shown),
-      representative: head.participantId,
-      members: members.map((m) => m.participantId),
-    })
-  }
-  const first = (group: CouncilGroup): number =>
-    attempts.find((a) => a.participantId === group.representative)?.submittedAt ?? 0
-  return groups.sort(
-    (a, b) => b.count - a.count || first(a) - first(b) || a.key.localeCompare(b.key),
-  )
-}
+export { groupAttempts }
 
 /**
  * Порядок стопки: представители групп от большой к малой, потом остальные по
@@ -314,17 +269,19 @@ export function splitRare(
 export type OracleView = 'idle' | 'reading' | 'ready' | 'stale'
 
 /**
- * В каком состоянии рисовать блок оракула. Серверное `stale` — подсказка, но
- * считается и здесь, по числу сдавших против `basedOn`: сводка обновляется
- * только рукой, а пересылка `council:oracle` может опоздать к очередной сдаче.
+ * В каком состоянии рисовать блок оракула. «Отстала» — счёт на месте, по числу
+ * сдавших против `basedOn`: сводка обновляется только рукой, и о чужой сдаче
+ * сервер ей ничего не говорит — `council:oracle` на «Сдать» не ходит намеренно.
+ * Своего `stale` у сервера нет и не было: в кадре приезжают только три
+ * остальных состояния.
  */
 export function oracleState(oracle: CouncilOracle | null, submitted: number): OracleView {
   if (!oracle) return 'idle'
   if (oracle.state === 'idle' || oracle.state === 'reading') return oracle.state
-  return oracle.state === 'stale' || submitted > oracle.basedOn ? 'stale' : 'ready'
+  return submitted > oracle.basedOn ? 'stale' : 'ready'
 }
 
-/** «С тех пор сдали ещё N» — большее из серверного счётчика и разницы на месте. */
+/** «С тех пор сдали ещё N» — разница с тем, сколько попыток модель читала. */
 export function staleBy(oracle: CouncilOracle, submitted: number): number {
-  return Math.max(oracle.staleBy, submitted - oracle.basedOn, 0)
+  return Math.max(submitted - oracle.basedOn, 0)
 }

@@ -11,25 +11,34 @@
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { BLOB_PREFIX, type CourseItem, type PublicCourseView } from '@shared/publish'
-import { blobHref, renderCourse, renderRedirect, renderStep } from './render.js'
+import { BLOB_PREFIX } from '@shared/publish'
+import { blobHref, renderCourse, renderRedirect, renderStep, renderWithdrawn } from './render.js'
 import {
   formerSlugs,
-  getPublication,
   listCourses,
-  publicationOf,
+  listPublications,
   readBlob,
   readStep,
-  stepCount,
   stepHeadings,
   type Publication,
 } from './store.js'
-import { db, getSession } from '../db.js'
-import { notebookOf } from './notebook.js'
+/*
+ * Курс, каким его видят снаружи, собирается в одном месте — и зовётся отсюда, а
+ * не переписывается заново. Пока копий было две, сервер и сайт показывали
+ * РАЗНЫЕ курсы: выгрузка брала живое имя комнаты, маршрут оставлял записанное
+ * вместе с устаревшей ссылкой на чтение. Направление импорта непривычное —
+ * обычно маршруты зовут публикацию, а не наоборот, — но модуль там ни одного
+ * маршрута не тянет: только `db.js` и `publish/store.js`, а вторая копия
+ * правила стоит дороже направления стрелки.
+ */
+import { courseOfPublication, publicCourseView } from '../routes/course-view.js'
+import { notebookFrom } from './notebook.js'
 
 export interface ExportReport {
   courses: { handle: string; name: string; rows: number }[]
   seminars: { handle: string; title: string; steps: number; blobs: number }[]
+  /** Страницы, на месте которых лежит надгробие: их сняли, а адрес остался. */
+  withdrawn: { handle: string; title: string }[]
   root: string
 }
 
@@ -49,7 +58,7 @@ function write(file: string, body: string | Buffer): void {
  * ними читаются хуже, чем один явный корень.
  */
 export function exportSite(root: string, base: string): ExportReport {
-  const report: ExportReport = { courses: [], seminars: [], root }
+  const report: ExportReport = { courses: [], seminars: [], withdrawn: [], root }
 
   /*
    * Свои подкаталоги стираются целиком перед записью: снятая публикация должна
@@ -62,43 +71,9 @@ export function exportSite(root: string, base: string): ExportReport {
 
   const courses = listCourses()
   for (const course of courses) {
-    const items = course.items.map((item): CourseItem => {
-      /*
-       * Надгробие с чтением: страницу могли снять уже после удаления комнаты, и
-       * тогда ссылки на неё быть не должно — выгружаться она перестала.
-       */
-      if (item.kind === 'gone') {
-        if (!item.publication) return item
-        const pub = getPublication(item.publication.id)
-        return pub && pub.state === 'published'
-          ? { ...item, publication: { id: pub.id, slug: pub.slug } }
-          : { kind: 'gone', name: item.name, at: item.at, publication: null }
-      }
-      if (item.kind !== 'seminar') return item
-      const session = getSession(item.sessionId)
-      const pub = publicationOf(item.sessionId)
-      return {
-        kind: 'seminar' as const,
-        sessionId: '',
-        name: session?.name ?? item.name,
-        publication:
-          pub && pub.state === 'published'
-            ? {
-                id: pub.id,
-                slug: pub.slug,
-                publishedAt: pub.publishedAt,
-                steps: stepCount(pub.id),
-              }
-            : null,
-      }
-    })
-    const view: PublicCourseView = {
-      id: course.id,
-      slug: course.slug,
-      name: course.name,
-      blurb: course.blurb,
-      items,
-    }
+    // Имена комнат, ссылки на чтение и надгробия спрашиваются заново — тем же
+    // кодом, которым отвечает живой сервер (routes/course-view.ts).
+    const view = publicCourseView(course)
     const handle = handleOf(course)
     write(path.join(root, 'c', handle, 'index.html'), renderCourse(view, base))
     /*
@@ -115,53 +90,64 @@ export function exportSite(root: string, base: string): ExportReport {
         renderRedirect(`${base}/c/${handle}/`, course.name),
       )
     }
-    report.courses.push({ handle, name: course.name, rows: items.length })
+    report.courses.push({ handle, name: course.name, rows: view.items.length })
   }
 
-  /** Курс, в котором состоит семинар, — для пути наверх со страницы шага. */
+  /**
+   * Курс, в котором состоит семинар, — для пути наверх со страницы шага.
+   *
+   * Список курсов уже на руках, и он передаётся: выгрузка идёт одним проходом,
+   * а без него тот же поиск шёл бы через индекс с временем жизни, заново читая
+   * базу (routes/course-view.ts · courseOfPublication).
+   */
   const courseOf = (pub: Publication): { name: string; handle: string } | null => {
-    const found = courses.find((c) =>
-      c.items.some((i) =>
-        i.kind === 'seminar'
-          ? pub.sessionId !== null && i.sessionId === pub.sessionId
-          : // У осиротевшей страницы комнаты нет: её держит надгробие курса, и
-            // только оно связывает её с курсом обратно.
-            i.kind === 'gone' && i.publication?.id === pub.id,
-      ),
-    )
+    const found = courseOfPublication(pub, courses)
     return found ? { name: found.name, handle: handleOf(found) } : null
   }
 
-  const published = new Set<string>()
-  for (const course of courses) {
-    for (const item of course.items) {
-      if (item.kind !== 'seminar') continue
-      const pub = publicationOf(item.sessionId)
-      if (pub && pub.state === 'published') published.add(pub.id)
-    }
-  }
   /*
-   * Семинары вне курсов выгружаются тоже: публикация — самостоятельный
-   * предмет, и ссылку на неё могли дать до того, как завели курс.
+   * Все страницы разом, а не только те, что нашлись в курсах: публикация —
+   * самостоятельный предмет, и ссылку на неё могли дать до того, как завели
+   * курс. Отдельный обход курсов, который здесь стоял, собирал ровно то же
+   * подмножество, что и этот список, двумя строками выше него.
    */
-  const loose = db.prepare("SELECT id FROM publications WHERE state = 'published'").all() as {
-    id: string
-  }[]
-  for (const row of loose) published.add(row.id)
-
-  for (const id of published) {
-    const pub = getPublication(id)
-    if (!pub || pub.state !== 'published') continue
+  for (const pub of listPublications()) {
     const handle = handleOf(pub)
     const dir = path.join(root, 'p', handle)
-    const headings = stepHeadings(pub.id)
-    if (headings.length === 0) continue
     /** Адреса, по которым эту страницу уже давали: идентификатор и прежние имена. */
     const also = [pub.id, ...formerSlugs('publication', pub.id)].filter((a) => a !== handle)
 
-    headings.forEach((heading, index) => {
-      const step = readStep(pub.id, heading.seq)
+    /*
+     * Снятая страница — надгробие, а не отсутствие файла.
+     *
+     * Обещание записано в store.ts: снятие адрес не отменяет, ссылка обязана
+     * сказать «её сняли». Живой сервер так и отвечает, а здесь каталог просто
+     * стирался — и та же ссылка на Pages давала стандартный 404 GitHub, по
+     * которому студент не отличает снятую страницу от опечатки в адресе.
+     * Шагов и картинок в надгробии нет: читать снятое в обход решения
+     * преподавателя нельзя.
+     */
+    if (pub.state !== 'published') {
+      const stone = renderWithdrawn(pub.title, courseOf(pub), base)
+      write(path.join(dir, 'index.html'), stone)
+      for (const was of also) write(path.join(root, 'p', was, 'index.html'), stone)
+      report.withdrawn.push({ handle, title: pub.title })
+      continue
+    }
+
+    const headings = stepHeadings(pub.id)
+    if (headings.length === 0) continue
+    /*
+     * Шаги читаются ОДИН раз на всю выгрузку. `page` — это все текстовые выводы
+     * шага целиком: лог обучения, трейсбеки, таблицы; при сорока шагах по
+     * мегабайту три прохода (страницы, картинки, тетрадь) стоили лишних
+     * восьмидесяти мегабайт JSON.parse на каждую выкладку.
+     */
+    const steps = headings.map((heading) => readStep(pub.id, heading.seq))
+
+    steps.forEach((step, index) => {
       if (!step) return
+      const heading = headings[index]
       const html = renderStep({
         title: pub.title,
         publishedAt: pub.publishedAt,
@@ -178,6 +164,18 @@ export function exportSite(root: string, base: string): ExportReport {
           : path.join(dir, String(heading.seq), 'index.html'),
         html,
       )
+      /*
+       * Тетрадь шага — рядом с его страницей, и ссылка на странице ведёт
+       * именно в неё (render.ts). Пока файл был один на публикацию, страница
+       * шага 2 из 5 отдавала состояние шага 5 и молчала об этом: в комнате это
+       * уже чинил `?step=`, а здесь маршрутов нет — значит, файл.
+       *
+       * Первый шаг тоже пишется в каталог, хотя страница у него в корне:
+       * корневой `notebook.ipynb` занят последним шагом, на него скопированы
+       * розданные раньше ссылки. Без выводов тетрадь весит килобайты, так что
+       * копия на шаг ничего не стоит.
+       */
+      write(path.join(dir, String(heading.seq), 'notebook.ipynb'), notebookFrom(step.cells))
       // Тот же долг, что и у курса: и идентификатор, и прежнее имя переживают новое.
       for (const was of also) {
         const to = index === 0 ? `${base}/p/${handle}/` : `${base}/p/${handle}/${heading.seq}/`
@@ -190,10 +188,20 @@ export function exportSite(root: string, base: string): ExportReport {
       }
     })
 
-    // Картинки — один раз на публикацию, по хэшу: он же и есть их версия.
+    /*
+     * Картинки — один раз на публикацию, по хэшу: он же и есть их версия.
+     *
+     * Под прежними адресами их нет, и это решение, а не забывчивость: там
+     * лежит страница-указатель (`renderRedirect`), а в ней нет ни одного
+     * `<img>` — читателя перекладывает на нынешний адрес, где картинки уже
+     * свежие. Копия стоила бы сотни килобайт на публикацию × число прежних
+     * имён, и стояла бы ради ссылки, которую никто не раздаёт: адрес картинки
+     * студент видит, только вытащив его из разметки. Тетрадь ниже — другой
+     * случай, и потому дублируется: её адрес открывают напрямую, ссылкой из
+     * чата, минуя страницу целиком.
+     */
     let blobs = 0
-    for (const heading of headings) {
-      const step = readStep(pub.id, heading.seq)
+    for (const step of steps) {
       for (const cell of step?.cells ?? []) {
         for (const output of cell.outputs) {
           if (output.kind !== 'data') continue
@@ -208,7 +216,18 @@ export function exportSite(root: string, base: string): ExportReport {
       }
     }
 
-    write(path.join(dir, 'notebook.ipynb'), notebookOf(pub.id))
+    /*
+     * Тетрадь публикации — последний шаг, и под прежними адресами тоже.
+     * Страница-указатель перекладывает только HTML, а «Скачать тетрадь»
+     * студент копирует ссылкой: после переименования публикации она вела в
+     * 404, хотя сама страница по тому же старому адресу открывалась. Страницы
+     * шагов ссылаются каждая на свою тетрадь выше; этот адрес остаётся ради
+     * ссылок, розданных до того, как тетради развели по шагам.
+     */
+    const notebook = notebookFrom(steps.at(-1)?.cells ?? [])
+    write(path.join(dir, 'notebook.ipynb'), notebook)
+    for (const was of also) write(path.join(root, 'p', was, 'notebook.ipynb'), notebook)
+
     report.seminars.push({
       handle,
       title: pub.title,

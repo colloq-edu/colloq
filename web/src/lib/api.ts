@@ -10,6 +10,7 @@ import type {
   JoinResponse,
   Participant,
   SessionInfo,
+  SessionMe,
 } from '@shared/protocol'
 import type { RoomRules } from '@shared/rules'
 import type { PublicCourseView, PublicSeminar, PublicStep } from '@shared/publish'
@@ -63,7 +64,16 @@ export function statusMessage(res: Response): string {
   return `The request failed (${res.status})`
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * Один запрос к нашему API: те же заголовки, тот же разбор отказа, те же слова.
+ *
+ * Экспортируется ради ленты версий (lib/history.ts): у неё был свой почти
+ * такой же `get`, отличавшийся ровно заголовком Authorization — который сюда и
+ * так передаётся через `init.headers`. Две копии разбора ошибок расходятся на
+ * первой же правке: `retryAfter` и `until` в теле отказа появились здесь и в
+ * копию не доехали.
+ */
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
     res = await fetch(path, {
@@ -114,6 +124,20 @@ export const api = {
     }),
 
   getSession: (id: string) => request<SessionInfo>(`/api/sessions/${id}`),
+
+  /**
+   * «А меня-то пускают» — вопрос от вкладки, которой отказали в рукопожатии.
+   *
+   * Единственный запрос в продукте, который спрашивают ключом и ждут ответа про
+   * сам ключ. Сокет отказывает ДО апгрейда и без слов, и без этой двери клиент
+   * различал два случая из трёх наугад: забаненный после перезагрузки читал
+   * «место истекло» и терял свою личность в комнате. Что именно отвечает
+   * сервер — у `SessionMe` в shared/protocol.ts.
+   */
+  me: (id: string, token: string) =>
+    request<SessionMe>(`/api/sessions/${id}/me`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
 
   join: (id: string, body: JoinRequest) =>
     request<JoinResponse>(`/api/sessions/${id}/join`, {
@@ -188,6 +212,13 @@ export const api = {
    * Накладывается на текущее на сервере: экран, трогающий одну строку, не
    * должен уметь молча вернуть остальные к умолчаниям.
    */
+  setRoomRules: (id: string, token: string, rules: Partial<RoomRules>) =>
+    request<{ rules: RoomRules }>(`/api/sessions/${id}/rules`, {
+      method: 'PATCH',
+      body: JSON.stringify({ rules }),
+      headers: { authorization: `Bearer ${token}` },
+    }),
+
   /* --------------------------------------------------- публичное чтение */
 
   /**
@@ -203,13 +234,6 @@ export const api = {
 
   step: (id: string, seq: number | null) =>
     request<{ step: PublicStep }>(`/api/p/${id}/step/${seq === null ? 'first' : seq}`),
-
-  setRoomRules: (id: string, token: string, rules: Partial<RoomRules>) =>
-    request<{ rules: RoomRules }>(`/api/sessions/${id}/rules`, {
-      method: 'PATCH',
-      body: JSON.stringify({ rules }),
-      headers: { authorization: `Bearer ${token}` },
-    }),
 
   // `truncated` — дерево показано не целиком: обход упёрся в потолок. Тот же
   // признак едет в сообщении `files` по сокету, и комната хранит один флаг.

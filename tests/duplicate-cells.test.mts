@@ -43,6 +43,18 @@ function room(sources: string[]) {
 
 const ids = (cells: Y.Array<Y.Map<unknown>>) => cells.toArray().map((c) => c.get('id') as string)
 
+/*
+ * Ничего не ждём, и это утверждение о починке, а не экономия.
+ *
+ * Наблюдатель — `afterTransaction`, то есть копия исчезает ВНУТРИ той же
+ * транзакции, что её принесла: тетрадь не бывает с двойником ни одного тика.
+ * Здесь стояли `await setTimeout(10)`, которые не ждали ничего (транзакция уже
+ * кончилась) и заодно прятали бы задуманное: отложи починку хоть на кадр — и
+ * ячейка успела бы уехать в ядро, оракулу и на проектор под чужим именем. Тест
+ * проверяет состояние сразу после `transact`, так что отложенная починка
+ * упадёт здесь, а не станет флаки.
+ */
+
 /** What a clone-based move produces, without going through the editor. */
 function cloneOf(cell: Y.Map<unknown>): Y.Map<unknown> {
   const copy = new Y.Map<unknown>()
@@ -57,14 +69,13 @@ function cloneOf(cell: Y.Map<unknown>): Y.Map<unknown> {
   return copy
 }
 
-test('a copy that arrives beside a living cell is the one that goes', async () => {
+test('a copy that arrives beside a living cell is the one that goes', () => {
   const { doc, cells } = room(['one', 'two', 'three'])
   // Ctrl+Z после чужого возврата версии выглядит ровно так: ячейка на месте, и
   // рядом встаёт её копия — с текстом на момент удаления.
   const copy = cloneOf(cells.get(2))
   copy.set('source', new Y.Text('другое'))
   doc.transact(() => cells.insert(1, [copy]))
-  await new Promise((r) => setTimeout(r, 10))
 
   assert.equal(new Set(ids(cells)).size, cells.length, `ids are not unique: ${ids(cells)}`)
   assert.equal(cells.length, 3, 'the notebook grew or shrank')
@@ -76,7 +87,7 @@ test('a copy that arrives beside a living cell is the one that goes', async () =
   )
 })
 
-test('the first copy is the one that stays, when the original is gone', async () => {
+test('the first copy is the one that stays, when the original is gone', () => {
   // Что оставляют две слитые перестановки: удаление у обеих одно и то же и
   // применяется однажды, а вставок две — и обе новые.
   const { doc, cells } = room(['one', 'two'])
@@ -86,32 +97,29 @@ test('the first copy is the one that stays, when the original is gone', async ()
     cells.delete(1, 1)
     for (const copy of copies) cells.insert(0, [copy])
   })
-  await new Promise((r) => setTimeout(r, 10))
   assert.equal(cells.length, 2)
   assert.deepEqual(ids(cells).length, new Set(ids(cells)).size)
   assert.equal(cellSource(cells.get(0) as never).toString(), 'two')
 })
 
-test('cells that merely look alike are left alone', async () => {
+test('cells that merely look alike are left alone', () => {
   // Same source, same everything except the id: two people typing the same
   // line is not a duplicate.
   const { doc, cells } = room(['import torch'])
   doc.transact(() => cells.push([createCell('code', 'import torch')]))
-  await new Promise((r) => setTimeout(r, 10))
   assert.equal(cells.length, 2, 'a legitimate second cell was eaten')
 })
 
-test('deleting cells never triggers the repair', async () => {
+test('deleting cells never triggers the repair', () => {
   const { doc, cells } = room(['one', 'two', 'three'])
   doc.transact(() => cells.delete(1, 1))
-  await new Promise((r) => setTimeout(r, 10))
   assert.deepEqual(
     cells.toArray().map((c) => cellSource(c as never).toString()),
     ['one', 'three'],
   )
 })
 
-test('a cell with no id at all does not take the others down with it', async () => {
+test('a cell with no id at all does not take the others down with it', () => {
   const { doc, cells } = room(['one'])
   doc.transact(() => {
     const odd = new Y.Map<unknown>()
@@ -119,6 +127,5 @@ test('a cell with no id at all does not take the others down with it', async () 
     odd.set('source', new Y.Text())
     cells.push([odd])
   })
-  await new Promise((r) => setTimeout(r, 10))
   assert.equal(cells.length, 2, 'the repair ate a cell it could not identify')
 })

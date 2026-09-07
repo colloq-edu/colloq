@@ -81,6 +81,19 @@ export interface InstanceState {
   suggestedEmail: string
   /** Whether POST /api/sessions accepts a caller who is not staff. No page uses it. */
   openSeminarCreation: boolean
+  /**
+   * Сколько байт принимает загрузка файла — `MAX_UPLOAD_MB` сервера.
+   *
+   * Число здесь, потому что его печатает форма создания семинара («Up to 50 MB
+   * each») и по нему же она отказывает файлу ДО того, как комната создана. До
+   * этого поля панель держала собственную копию умолчания, и оператор,
+   * поднявший предел до 200 или опустивший до 20, читал на экране чужое число,
+   * а узнавал правду загрузкой, которая не доехала.
+   *
+   * Необязательное: сборка постарше его не присылает, и тогда экран о пределе
+   * молчит, а не выдумывает его.
+   */
+  maxUploadBytes?: number
 }
 
 export interface ClaimRequest {
@@ -118,6 +131,18 @@ export interface AdminSeminar {
   status: SeminarStatus
   /** People currently connected, not people who ever joined. */
   liveCount: number
+  /**
+   * Когда открылся самый старый из сокетов, которые сейчас в комнате, — то
+   * есть с какого момента идёт то занятие, что идёт прямо сейчас. `null`, если
+   * в комнате никого.
+   *
+   * Отдельные часы от `createdAt`, и именно потому, что это разные часы:
+   * комнату заводят за неделю до пары и переиспользуют на второй, а баннер
+   * «Running now · started 6 days ago» читается как длительность занятия.
+   * Необязательное: сборка постарше поля не присылает, и панель тогда называет
+   * своими именами те часы, которые у неё есть.
+   */
+  liveSince?: number | null
   /** Everyone who has ever joined, which is what "24 people" means on a card. */
   totalParticipants: number
   cellCount: number
@@ -344,6 +369,44 @@ export const PROVIDER_PRESETS: Record<
   custom: { label: 'Custom', baseUrl: '', model: '' },
 }
 
+/**
+ * Провайдеры, чей рантайм ключа не знает вовсе.
+ *
+ * Ollama и vLLM поднимают у себя OpenAI-совместимый эндпойнт и на заголовок
+ * авторизации не смотрят: спрашивать у преподавателя ключ к его собственной
+ * машине — значит просить секрет, которого не существует.
+ */
+export const KEYLESS_PROVIDERS: readonly AiProviderId[] = ['ollama', 'vllm']
+
+export function isKeylessProvider(provider: AiProviderId): boolean {
+  return KEYLESS_PROVIDERS.includes(provider)
+}
+
+/**
+ * Есть ли на этом инстансе, кого спрашивать: ключ ЛИБО локальный рантайм с
+ * адресом.
+ *
+ * Единственная копия правила. Раньше их было две, и они разошлись: сервер
+ * пускает вопрос по `providerReady()` (ai/provider.ts — «ключ, или рантайм, у
+ * которого понятия ключа нет»), а панель считала потолок комнаты по одному
+ * ключу и на настроенной Ollama гасила «Hints only» и «Full answers» с
+ * подписью «на инстансе нет ключа». Оракул при этом отвечал — экран отбирал у
+ * преподавателя настройку, которая работала.
+ *
+ * `hasKey` отдельным полем потому, что сам ключ на клиент не уезжает: сервер
+ * знает строку, панель — только маску и «ключ пришёл из окружения».
+ */
+export function providerConfigured(cfg: {
+  provider: AiProviderId
+  baseUrl: string
+  hasKey: boolean
+}): boolean {
+  if (cfg.hasKey) return true
+  // Хвостовой слеш сервер срезает при чтении настроек (resolveAiConfig), так
+  // что '/' — это не адрес; здесь то же самое, иначе две стороны разойдутся.
+  return isKeylessProvider(cfg.provider) && cfg.baseUrl.trim().replace(/\/+$/, '').length > 0
+}
+
 /* --------------------------------------------------------------- transport */
 
 /**
@@ -530,6 +593,15 @@ export interface ImportPreview {
   notebook: string
   cells: number
   files: { name: string; size: number }[]
+  /**
+   * Файлы, которым не хватило потолка комнаты, — по именам.
+   *
+   * Сумма размеров ограничена так же, как у загрузки через панель
+   * (`server/src/routes/admin-import.ts` · withinRoomBudget), и остаток
+   * отсекается ещё до того, как комнату заведут. Сказать об этом надо здесь:
+   * узнать, что половина датасета не приехала, после импорта — поздно.
+   */
+  skipped: string[]
   /** owner/repo/path — чтобы было видно, откуда это взялось. */
   source: string
 }
