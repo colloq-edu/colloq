@@ -36,8 +36,9 @@ import {
 import { parseOraclePatch } from '../server/src/admin/settings.js'
 import { adminAuthRoutes } from '../server/src/routes/admin-auth.js'
 import { adminInstanceRoutes } from '../server/src/routes/admin-instance.js'
+import { adminImportRoutes } from '../server/src/routes/admin-import.js'
 import { createSession, getRules, isFinished, setRules, storedRules } from '../server/src/db.js'
-import { isLectureRoom, LECTURE_ROOM, OPEN_ROOM } from '../shared/rules.js'
+import { COUNCIL_ROOM, isLectureRoom, LECTURE_ROOM, OPEN_ROOM } from '../shared/rules.js'
 import { setPublicationSlug, writePublication } from '../server/src/publish/store.js'
 import { sessionDir } from '../server/src/workspace.js'
 
@@ -196,6 +197,7 @@ before(async () => {
   })
   app.use(adminAuthRoutes())
   app.use(adminInstanceRoutes())
+  app.use(adminImportRoutes())
   server = http.createServer(app)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
@@ -370,6 +372,54 @@ test('режим при создании — это пресет правил, �
     rules: { run: 'single', oracle: 'hints' },
   })
   assert.deepEqual(storedRules(mixed), { ...LECTURE_ROOM, run: 'single', oracle: 'hints' })
+
+  // Третий режим — тем же путём: консилиум записывается своим пресетом.
+  const council = await made({ name: 'Консилиум', mode: 'council' })
+  assert.deepEqual(storedRules(council), COUNCIL_ROOM)
+})
+
+test('режим работает у всех дверей: импорт тетради с диска знает консилиум', async () => {
+  /*
+   * Панель прячет эту дыру: она всегда шлёт полный `rules` рядом с `mode`, и
+   * пресет на сервере не спрашивается. Скрипт или клиент постарше шлёт один
+   * `mode` — и тогда сервер обязан знать все три, иначе консилиум без правил
+   * заводился бы открытой комнатой, где печатают все.
+   */
+  const owner = oldestOwner()
+  assert.ok(owner)
+  const cookie = mintCookie(owner)
+  const imported = async (mode: string | undefined): Promise<string> => {
+    const res = await call('POST', '/api/admin/import/notebook', {
+      cookie,
+      body: {
+        name: `Импорт ${mode ?? 'без режима'}`,
+        filename: 'lecture.ipynb',
+        cells: [{ cell_type: 'code', source: 'x = 1' }],
+        ...(mode ? { mode } : {}),
+      },
+    })
+    assert.equal(res.status, 201)
+    return ((await res.json()) as { id: string }).id
+  }
+
+  assert.deepEqual(storedRules(await imported('council')), COUNCIL_ROOM)
+  assert.deepEqual(storedRules(await imported('lecture')), LECTURE_ROOM)
+  // Без режима — лаборатория, как и у общего создания.
+  assert.deepEqual(storedRules(await imported(undefined)), OPEN_ROOM)
+  // Подкрученная строка сильнее пресета и здесь.
+  const res = await call('POST', '/api/admin/import/notebook', {
+    cookie,
+    body: {
+      name: 'Консилиум с подсказками',
+      filename: 'x.ipynb',
+      cells: [{ cell_type: 'code', source: 'x = 1' }],
+      mode: 'council',
+      rules: { oracle: 'hints' },
+    },
+  })
+  assert.equal(res.status, 201)
+  const id = ((await res.json()) as { id: string }).id
+  assert.deepEqual(storedRules(id), { ...COUNCIL_ROOM, oracle: 'hints' })
 })
 
 test('панель заканчивает занятие и открывает его обратно', async () => {

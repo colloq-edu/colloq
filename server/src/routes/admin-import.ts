@@ -20,7 +20,7 @@ import { newSessionId } from '../auth.js'
 import { getSessionDoc } from '../collab/index.js'
 import { flushPersistence } from '../collab/persistence.js'
 import { config } from '../config.js'
-import { LECTURE_ROOM, readRules } from '@shared/rules'
+import { COUNCIL_ROOM, LECTURE_ROOM, readRules } from '@shared/rules'
 import { createSession, setRules } from '../db.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import {
@@ -308,8 +308,16 @@ function seedSeminar(input: {
    * заведённый импортом с выбранной лекцией, открывался бы комнатой, где
    * печатают все. Присланные правила ложатся поверх пресета: человек выбрал
    * режим, а потом подкрутил одну строку.
+   *
+   * Режимов три, и здесь их обязано быть столько же, сколько в
+   * routes/admin-instance.ts: консилиум, которого эта строка не знала,
+   * проваливался в «нет пресета», и импорт с mode:'council' без правил заводил
+   * открытую комнату — ровно противоположное карточке «всё — преподаватель».
+   * Панель этого не показывала, потому что всегда шлёт полный `rules` рядом с
+   * `mode`; ломался скрипт или старый клиент, шлющий один режим.
    */
-  const preset = input.mode === 'lecture' ? LECTURE_ROOM : null
+  const preset =
+    input.mode === 'council' ? COUNCIL_ROOM : input.mode === 'lecture' ? LECTURE_ROOM : null
   const asked = input.rules && typeof input.rules === 'object' ? input.rules : null
   if (preset || asked) setRules(id, readRules({ ...(preset ?? {}), ...(asked ?? {}) }))
   if (input.author) setSeminarCreator(id, input.author)

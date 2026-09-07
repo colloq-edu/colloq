@@ -81,6 +81,7 @@
     setCellType,
   } from '@/lib/notebook-ops'
   import { controlDisabled, controlTitle } from '@/lib/controls'
+  import { lockHint, lockLabel, lockPress } from '@/lib/lock-button'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, elapsed, NOTICED_MS, spell } from '@/lib/utils'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
@@ -405,10 +406,12 @@
   /**
    * Меню замка: три положения и две ручки консилиума.
    *
-   * Щелчок остаётся щелчком — закрыта ↔ открыта всем, без меню и без диалога,
-   * по доводу из разметки замка. Меню открывают удержанием, правой кнопкой или
-   * щелчком по замку в положении «консилиум»: там одно нажатие не знает, куда
-   * вернуть, — закрыть или открыть всем.
+   * Щелчок остаётся щелчком — закрыта ↔ открыта, без меню и без диалога, по
+   * доводу из разметки замка. Куда именно открывает щелчок, решает правило
+   * комнаты `opens` — общий текст или каждому свой лист, — и то же правило
+   * читают подсказки и второе нажатие (lib/lock-button.ts). Меню открывают
+   * удержанием, правой кнопкой или щелчком по замку в положении, куда щелчком
+   * не попадали: там одно нажатие не знает, куда вернуть.
    */
   let lockMenu = $state(false)
   let holdTimer: number | undefined
@@ -426,15 +429,19 @@
     { state: 'council', icon: 'users', label: 'Консилиум', hint: 'у каждого свой лист, видит преподаватель' },
   ]
   const lockIcon = $derived<IconName>(inCouncil ? 'users' : cellOpen ? 'unlock' : 'lock')
+  // Правило комнаты, а не положение ячейки: что значит «открыть» здесь.
+  const opens = $derived(may.rules.opens)
 
   function pressLock(): void {
     if (Date.now() - heldAt < HOLD_MS * 2) return
-    if (inCouncil) {
+    const press = lockPress(lockState, opens)
+    if (press.kind === 'menu') {
       lockMenu = !lockMenu
       return
     }
-    // Два положения — прежним сообщением: сервер читает его как cell:lock.
-    session.send({ t: 'cell:open', cellId: id, open: !cellOpen })
+    // Два положения — прежним сообщением: сервер читает его как cell:lock и
+    // сам решает по правилу комнаты, общий это текст или консилиум.
+    session.send({ t: 'cell:open', cellId: id, open: press.open })
   }
 
   function startHold(): void {
@@ -1331,11 +1338,13 @@
             когда меняется у всей комнаты.
           -->
           <!--
-            Третье положение — консилиум — за меню: удержание, правая кнопка
-            или щелчок по замку, который уже в консилиуме. Щелчок по закрытой и
-            открытой остался прежним нажатием: положений у него два, и оба
-            чинятся тем же нажатием, а меню на каждый щелчок стоило бы секунды
-            молчания посреди фразы.
+            Третье положение — за меню: удержание, правая кнопка или щелчок по
+            замку в положении, куда щелчком не попадали. Куда попадают щелчком,
+            решает правило комнаты `opens`: в лекции — общий текст, в консилиуме
+            — каждому свой лист, и тогда именно консилиум чинится вторым
+            нажатием, а меню на каждый щелчок стоило бы секунды молчания посреди
+            фразы. Подсказка обязана обещать ровно то, что случится, — слова
+            считает lib/lock-button.ts по тому же правилу.
           -->
           <div class="relative">
             <button
@@ -1354,19 +1363,8 @@
               aria-pressed={cellOpen || inCouncil}
               aria-haspopup="menu"
               aria-expanded={lockMenu}
-              aria-label={inCouncil
-                ? 'Консилиум — положение замка'
-                : cellOpen
-                  ? 'Закрыть эту ячейку'
-                  : 'Открыть эту ячейку комнате'}
-              title={controlTitle(
-                session.connected,
-                inCouncil
-                  ? 'Консилиум · щелчок — положения замка'
-                  : cellOpen
-                    ? 'Закрыть её · удержать — консилиум'
-                    : 'Открыть эту ячейку комнате · удержать — консилиум',
-              )}
+              aria-label={lockLabel(lockState, opens)}
+              title={controlTitle(session.connected, lockHint(lockState, opens))}
               onclick={pressLock}
               onpointerdown={startHold}
               onpointerup={endHold}

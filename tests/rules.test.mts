@@ -296,10 +296,27 @@ test('консилиум — третья дверь: лекция по прав
   assert.equal(COUNCIL_ROOM.opens, 'council')
   assert.equal(LECTURE_ROOM.opens, 'shared')
   assert.equal(OPEN_ROOM.opens, 'shared')
-  // Три пресета различимы: карточка при создании горит у одного.
+  // Консилиум — лекция по правам, и читается лекцией: полоса «Лекция» над
+  // тетрадью нужна пятистам людям в консилиуме ровно так же.
   assert.equal(isCouncilRoom(COUNCIL_ROOM), true)
-  assert.equal(isLectureRoom(COUNCIL_ROOM), false, 'консилиум сошёл за лекцию')
+  assert.equal(isLectureRoom(COUNCIL_ROOM), true, 'консилиум не сошёл за лекцию')
   assert.equal(isCouncilRoom(LECTURE_ROOM), false, 'лекция сошла за консилиум')
+  // Права отпущены — уже не лекция и, значит, не консилиум.
+  assert.equal(isCouncilRoom({ ...COUNCIL_ROOM, edit: 'room' }), false)
+})
+
+test('«как открывается ячейка» — не право: переключатель не гасит полосу «Лекция»', () => {
+  /*
+   * В таблице правил лекционной комнаты переключили «Открытая ячейка» на
+   * «Каждому свой лист» — ни одно право не изменилось, и комната обязана
+   * читаться лекцией по-прежнему. Иначе единственный признак, объясняющий
+   * серую тетрадь, пропадал бы от строки, которая про замок, а не про права.
+   */
+  assert.equal(isLectureRoom({ ...LECTURE_ROOM, opens: 'council' }), true)
+  assert.equal(isLectureRoom({ ...COUNCIL_ROOM, opens: 'shared' }), true)
+  // Открытая комната консилиумом не становится: право печатать у всех.
+  assert.equal(isLectureRoom({ ...OPEN_ROOM, opens: 'council' }), false)
+  assert.equal(isCouncilRoom({ ...OPEN_ROOM, opens: 'council' }), false)
 })
 
 test('«как открывается ячейка» читается тотально и переживает звонок', () => {

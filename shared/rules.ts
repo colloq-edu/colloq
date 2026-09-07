@@ -451,6 +451,12 @@ export function isOpenRoom(rules: RoomRules): boolean {
  * Совпадение по значениям, а не флажок в базе: пресет — это набор правил, и
  * комната, собранная теми же значениями руками, ничем от лекции не отличается.
  *
+ * `opens` не сравнивается: это не право, а то, что делает замок, и консилиум
+ * по правам — та же лекция. Полоса «Лекция» над тетрадью (Notebook.svelte)
+ * объясняет пятистам людям серую тетрадь, и в консилиуме она нужна ровно так
+ * же; сравнивай здесь все ключи — и она гасла бы от одного переключателя
+ * «Открытая ячейка», хотя ни одно право не изменилось.
+ *
  * Одно следствие стоит знать в лицо: `rulesAfterClass` любой комнаты даёт ровно
  * эти значения, так что ЗАКОНЧЕННОЕ занятие читается отсюда как лекция. По сути
  * это правда — печатает и запускает один преподаватель, — но спрашивать этим
@@ -458,15 +464,19 @@ export function isOpenRoom(rules: RoomRules): boolean {
  */
 export function isLectureRoom(rules: RoomRules): boolean {
   return (Object.keys(LECTURE_ROOM) as (keyof RoomRules)[]).every(
-    (key) => rules[key] === LECTURE_ROOM[key],
+    (key) => key === 'opens' || rules[key] === LECTURE_ROOM[key],
   )
 }
 
-/** Комната консилиума: лекция, где замок открывает каждому свой лист. */
+/**
+ * Комната консилиума: лекция, где замок открывает каждому свой лист.
+ *
+ * Не третий пресет рядом с двумя, а уточнение лекции — так же, как сам
+ * COUNCIL_ROOM собран из LECTURE_ROOM одной строкой. Спрашивать «лекция ли это»
+ * про консилиум можно и нужно; спрашивать «консилиум ли» про лекцию — нет.
+ */
 export function isCouncilRoom(rules: RoomRules): boolean {
-  return (Object.keys(COUNCIL_ROOM) as (keyof RoomRules)[]).every(
-    (key) => rules[key] === COUNCIL_ROOM[key],
-  )
+  return isLectureRoom(rules) && rules.opens === 'council'
 }
 
 /**
