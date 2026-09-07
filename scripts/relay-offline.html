@@ -1,0 +1,1573 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Комната ещё не открыта — Colloq</title>
+
+    <!--
+      Страница ожидания ретранслятора (*.colloq.ru). Её отдаёт frps, когда для
+      имени нет живого туннеля, и caddy, когда не отвечает сам frps. Ставится
+      на машину скриптом scripts/relay-setup.sh (или make relay-page — только
+      она, без перезапуска служб). Макет — Paper, страница «06 · Страница
+      ожидания».
+
+      Метка ниже — то, по чему скрипт на этой же странице отличает «всё ещё
+      ждём» от «комната открылась»: раз в двадцать секунд он запрашивает свой
+      адрес заново и, не найдя метки в ответе, перезагружает вкладку прямо в
+      комнату. Раньше это делала <meta http-equiv="refresh">, но она убивала
+      бы игру ниже на самом интересном месте; без JS она остаётся запасным
+      ходом внутри <noscript>.
+    -->
+    <meta name="colloq-page" content="offline" />
+    <noscript><meta http-equiv="refresh" content="20" /><style>.game { display: none; }</style></noscript>
+
+    <!--
+      Ни одного внешнего запроса: ни шрифтов, ни картинок, ни библиотек. Эту
+      страницу отдаёт ретранслятор в тот момент, когда у него и так что-то не
+      так, а открывают её с телефона по сотовой связи в аудитории, где может
+      не грузиться вообще ничего. Всё, что ей нужно, — в этом файле. Единственный
+      запрос наружу — очки в таблицу рекордов, и без него страница живёт.
+    -->
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+
+    <style>
+      /*
+       * Палитра ВШЭ, та же, что у продукта и у лендинга (web/src/index.css,
+       * site/styles.css). Светлый набор стоит на голом :root, тёмный приходит
+       * из системной настройки: выбирать тему тут негде и незачем.
+       */
+      :root {
+        --canvas: #ffffff;
+        --surface: #f3f6fb;
+        --raised: #e7eef9;
+        --line: #dce3ef;
+        --ink: #101a33;
+        --muted: #5d6b8a;
+        /* Яркий голубой не проходит по контрасту как текст на белом — для
+           набора берётся его тёмный вариант, для точки и меток сам голубой. */
+        --accent: #0fa0d7;
+        --accent-text: #0a6e96;
+        --mark: #0f2d69;
+        --warm-bg: #fde7cf;
+        --warm-text: #9b5a08;
+        /* Мир игры: берег реки днём. Ночь — в JS, она приходит с очками. */
+        --sky: #f3f6fb;
+        --hill: #e7eef9;
+        --hill-far: #eef2f9;
+        --water: #bfe0f0;
+        --ripple: #8fc6e0;
+        --reed: #6f8f5a;
+        --cloud: #dce3ef;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --canvas: #060c1c;
+          --surface: #0e1b3d;
+          --raised: #16244b;
+          --line: #16244b;
+          --ink: #e6e7e8;
+          --muted: #9ba6be;
+          /* На тёмной земле голубой даёт 6.5:1 — здесь он и есть текст. */
+          --accent-text: #0fa0d7;
+          /* Синь бренда на почти чёрном не видна; знак берёт светлый её тон. */
+          --mark: #7b93c9;
+          --warm-bg: #3a2a12;
+          --warm-text: #f2a33c;
+          --sky: #0e1b3d;
+          --hill: #16244b;
+          --hill-far: #12203f;
+          --water: #123a5c;
+          --ripple: #2b6a91;
+          --reed: #4f7a46;
+          --cloud: #1d2d57;
+        }
+      }
+
+      * { box-sizing: border-box; }
+      /* Свои display: flex у панелей иначе перебивают атрибут hidden. */
+      [hidden] { display: none !important; }
+
+      /*
+       * Шрифт только тот, что уже есть у читателя. HSE Sans стоит первым — у
+       * половины ФКН он установлен, и тогда страница набрана тем же, чем весь
+       * продукт; у остальных её наберёт системный: ни одного байта из сети.
+       */
+      body {
+        margin: 0;
+        min-height: 100vh;
+        min-height: 100svh;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: clamp(28px, 6vw, 72px) clamp(16px, 5vw, 64px) clamp(40px, 8vw, 96px);
+        background: var(--canvas);
+        color: var(--ink);
+        font-family: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system,
+          'Segoe UI', Roboto, sans-serif;
+        font-size: 17px;
+        line-height: 28px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      main {
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
+        width: 100%;
+        max-width: 40rem;
+      }
+
+      .top {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .mark { display: block; width: 26px; height: 26px; flex: none; }
+      .mark rect { fill: var(--mark); }
+      .mark rect:nth-child(2n) { fill: var(--accent); }
+
+      .label {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.16em;
+        line-height: 18px;
+        text-transform: uppercase;
+        color: var(--accent-text);
+      }
+
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        line-height: 18px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+
+      h1 {
+        margin: 22px 0 0;
+        font-size: clamp(28px, 5.5vw, 36px);
+        line-height: 1.17;
+        letter-spacing: -0.015em;
+        font-weight: 700;
+        text-wrap: balance;
+      }
+
+      .lede { margin: 16px 0 0; }
+
+      .note { font-size: 15px; line-height: 24px; color: var(--muted); }
+
+      /* Что делать — единственный блок с землёй под ним: это и есть ответ. */
+      .wait {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+
+      .wait .text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+      .dot {
+        flex: none;
+        width: 9px;
+        height: 9px;
+        margin-top: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: breathe 2.6s ease-in-out infinite;
+      }
+
+      @keyframes breathe {
+        0%, 100% { opacity: 0.35; transform: scale(0.85); }
+        50%      { opacity: 1;    transform: scale(1); }
+      }
+
+      /* ------------------------------------------------------------ игра */
+
+      /*
+       * Игра живёт ниже ответа, а не вместо него: сначала человек узнаёт, что
+       * происходит и что делать, и только потом — чем занять минуты до пары.
+       * Экран — тот же контейнер, что и блок «ждать здесь»: та же линия, тот
+       * же радиус; ничего кричащего.
+       */
+      .game { display: flex; flex-direction: column; gap: 12px; }
+
+      .game-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .game-head .label { white-space: nowrap; }
+
+      .screen {
+        position: relative;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--sky);
+        overflow: hidden;
+      }
+
+      /*
+       * Холст рисуется в три раза крупнее своей сетки (960×384 при поле
+       * 320×128) и растягивается на ширину колонки без сглаживания — так пиксель
+       * остаётся квадратным пикселем и на ретине, и на телефоне.
+       */
+      canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        /* Пока игра не идёт, палец листает страницу; на время забега экран
+           забирает касания себе (JS ставит none). */
+        touch-action: pan-y;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      /* Подсказка — кнопка, чтобы игра запускалась и с клавиатуры. */
+      .hint {
+        position: absolute;
+        left: 50%;
+        bottom: 10px;
+        transform: translateX(-50%);
+        max-width: calc(100% - 24px);
+        padding: 5px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--canvas);
+        color: var(--muted);
+        font: inherit;
+        font-size: 13px;
+        line-height: 20px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: pointer;
+      }
+
+      .sound {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--canvas) 70%, transparent);
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .sound svg { display: block; width: 15px; height: 15px; }
+      .sound[aria-pressed="true"] { color: var(--accent-text); }
+      .sound .off { display: none; }
+      .sound[aria-pressed="false"] .on { display: none; }
+      .sound[aria-pressed="false"] .off { display: block; }
+
+      .over {
+        display: flex;
+        flex-direction: column;
+        padding: 18px 20px 20px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+
+      .over-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+      .over-title {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 600;
+        line-height: 24px;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 8px;
+        border-radius: 999px;
+        background: var(--warm-bg);
+        color: var(--warm-text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        line-height: 18px;
+        text-transform: uppercase;
+      }
+
+      .numbers {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 22px;
+        margin-top: 6px;
+        font-variant-numeric: tabular-nums;
+      }
+      .numbers > span { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+      .numbers b { font-size: 17px; font-weight: 600; line-height: 24px; }
+      .numbers .big b { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 36px; }
+      .numbers small { font-size: 15px; line-height: 24px; color: var(--muted); }
+
+      .submit {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .submit input {
+        flex: 1 1 10rem;
+        min-width: 0;
+        height: 38px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--canvas);
+        color: var(--ink);
+        font: inherit;
+        font-size: 15px;
+      }
+
+      .submit button {
+        height: 38px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--canvas);
+        color: var(--ink);
+        font: inherit;
+        font-size: 15px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+
+      /* Основное действие одно — записать очки; «ещё раз» стоит рядом тише. */
+      .submit .primary {
+        padding: 0 16px;
+        border-color: transparent;
+        background: var(--accent-text);
+        color: var(--canvas);
+        font-weight: 600;
+      }
+
+      .submit button[disabled] { cursor: default; }
+      .submit button[disabled]:not([data-done]) { opacity: 0.55; }
+      /* «Записано» — не выцветшая кнопка, а спокойное подтверждение. */
+      .submit .primary[data-done] {
+        border-color: var(--line);
+        background: transparent;
+        color: var(--accent-text);
+      }
+
+      /* Отклик на нажатие и наведение — только там, где есть мышь. */
+      button { transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1), background-color 160ms ease, border-color 160ms ease, color 160ms ease; }
+      button:not([disabled]):active { transform: scale(0.97); }
+      @media (hover: hover) and (pointer: fine) {
+        .hint:hover, .sound:hover, .submit button:not([disabled]):hover { border-color: var(--muted); }
+        .submit .primary:not([disabled]):hover { filter: brightness(1.08); }
+      }
+      .over, .board {
+        transition: opacity 200ms ease-out, transform 200ms ease-out;
+        @starting-style { opacity: 0; transform: translateY(6px); }
+      }
+
+      .status { margin: 10px 0 0; min-height: 24px; }
+
+      .board { display: flex; flex-direction: column; }
+      .board-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        padding-bottom: 8px;
+      }
+
+      .board ol {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        font-size: 15px;
+        line-height: 22px;
+      }
+
+      .board li {
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: baseline;
+        padding: 7px 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .board .rank,
+      .board .pts {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 14px;
+        font-variant-numeric: tabular-nums;
+      }
+      .board .rank { color: var(--muted); }
+      .board .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .board .gap .who { color: var(--muted); }
+      .board .me { color: var(--accent-text); font-weight: 600; }
+      .board .me .rank { color: var(--accent-text); font-weight: 600; }
+      .board .empty { display: block; }
+
+      button:focus-visible,
+      input:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .dot { animation: none; opacity: 0.9; }
+        button { transition: none; }
+        button:not([disabled]):active { transform: none; }
+        .over, .board { transition: opacity 200ms ease-out; @starting-style { transform: none; } }
+      }
+
+      @media (max-width: 480px) {
+        body { font-size: 16px; line-height: 26px; }
+        h1 { margin-top: 18px; }
+        .lede { margin-top: 12px; }
+        .wait { padding: 14px 16px; }
+        .over { padding: 14px 16px 16px; }
+        .numbers { gap: 16px; }
+        .numbers .big b { font-size: 26px; line-height: 32px; }
+        .submit input { flex-basis: 100%; }
+        .game-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+        .submit .primary { flex: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="top">
+          <!-- Знак Colloq: та же сетка, что и в фавиконе продукта. -->
+          <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="2" y="2" width="6" height="6" rx="1.6" />
+            <rect x="9" y="2" width="6" height="6" rx="1.6" />
+            <rect x="16" y="2" width="6" height="6" rx="1.6" />
+            <rect x="2" y="9" width="6" height="6" rx="1.6" />
+            <rect x="9" y="9" width="6" height="6" rx="1.6" />
+            <rect x="16" y="9" width="6" height="6" rx="1.6" />
+            <rect x="2" y="16" width="6" height="6" rx="1.6" />
+            <rect x="9" y="16" width="6" height="6" rx="1.6" />
+            <rect x="16" y="16" width="6" height="6" rx="1.6" />
+          </svg>
+          <p class="label" id="where">Colloq</p>
+        </div>
+        <h1>Комната ещё не открыта</h1>
+        <p class="lede">
+          По этому адресу занятие сейчас не идёт. Комнату открывает
+          преподаватель — обычно незадолго до начала, и до этой минуты её здесь
+          просто нет.
+        </p>
+      </header>
+
+      <section class="wait" aria-label="Ожидание комнаты">
+        <span class="dot"></span>
+        <div class="text">
+          <span id="wait-text">
+            Ждать можно прямо здесь: страница сама заглядывает в комнату и
+            откроет её, как только та появится. Оставьте вкладку открытой —
+            нажимать ничего не нужно.
+          </span>
+          <span class="mono" id="wait-line">первая проверка через 20 с</span>
+        </div>
+      </section>
+
+      <section class="game" aria-labelledby="game-label">
+        <div class="game-head">
+          <p class="label" id="game-label">Пока ждём</p>
+          <span class="mono" id="controls">↑ или пробел — прыжок · ↓ — присесть</span>
+        </div>
+        <div class="screen" id="screen">
+          <canvas
+            id="field"
+            width="960"
+            height="384"
+            aria-label="Игра: капибара бежит по берегу реки, прыгает через камни и брёвна, пригибается под цаплями и собирает мандарины"
+          ></canvas>
+          <button class="sound" id="sound" type="button" aria-pressed="false" aria-label="Звук">
+            <svg class="on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+            <svg class="off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M16 9l5 6M21 9l-5 6"/></svg>
+          </button>
+          <button class="hint" id="hint" type="button">Пробел, ↑ или тап — начать</button>
+        </div>
+
+        <div class="over" id="over" hidden>
+          <div class="over-head">
+            <p class="over-title" id="over-title">Капибара споткнулась</p>
+            <span class="chip" id="record" hidden>личный рекорд</span>
+          </div>
+          <div class="numbers">
+            <span class="big"><b id="final">0</b><small id="final-word">очков</small></span>
+            <span><b id="tang">0</b><small id="tang-word">мандаринов</small></span>
+            <span><b id="time">0 с</b><small>в пути</small></span>
+          </div>
+          <form class="submit" id="submit" autocomplete="off">
+            <input
+              id="name"
+              name="name"
+              maxlength="16"
+              placeholder="Имя для таблицы"
+              autocomplete="nickname"
+              aria-label="Имя для таблицы рекордов"
+            />
+            <button class="primary" type="submit" id="send">В таблицу</button>
+            <button type="button" id="again">Ещё раз</button>
+          </form>
+          <p class="note status" id="status" aria-live="polite">Имя увидят все, кто ждёт на этом адресе. В таблице — лучшая попытка каждого.</p>
+        </div>
+
+        <div class="board" id="board" hidden>
+          <div class="board-head">
+            <p class="label">Рекорды</p>
+            <span class="mono" id="board-line"></span>
+          </div>
+          <ol id="top"></ol>
+        </div>
+      </section>
+
+      <p class="note">
+        Если ждёте давно, стоит сверить адрес с тем, который вам дали: одна
+        буква в имени уводит на пустую страницу вроде этой.
+      </p>
+    </main>
+
+    <script>
+      (() => {
+        'use strict';
+
+        // 1 очко, 2 очка, 5 очков, 21 очко, 111 очков.
+        function plural(n, forms) {
+          const a = Math.abs(n) % 100;
+          const b = a % 10;
+          if (a > 10 && a < 20) return forms[2];
+          if (b > 1 && b < 5) return forms[1];
+          if (b === 1) return forms[0];
+          return forms[2];
+        }
+        const store = {
+          get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+          set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} },
+        };
+
+        /* ------------------------------------------------ где мы */
+        if (location.hostname && location.hostname !== 'localhost') {
+          document.getElementById('where').textContent = 'Colloq · ' + location.hostname;
+        }
+        const coarse = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+        if (coarse) {
+          document.getElementById('controls').textContent = 'тап — прыжок · свайп вниз — присесть';
+          document.getElementById('hint').textContent = 'Тап — начать';
+        }
+
+        /* ------------------------------------------------ ждём комнату
+         *
+         * Раз в двадцать секунд — тот же адрес заново, без кэша. Пока в ответе
+         * есть метка этой страницы (или ответ не 200 — frps отдаёт её как
+         * 404, caddy как 502), ждём дальше. Как только пришло что-то другое,
+         * это и есть комната: перезагружаемся в неё. Строка под текстом честно
+         * показывает, когда следующая проверка и сколько их уже было.
+         */
+        const MARK = 'name="colloq-page" content="offline"';
+        const EVERY = 20;
+        const waitLine = document.getElementById('wait-line');
+        // Срок — по часам, а не по тикам: в фоновой вкладке таймеры душатся до
+        // раза в минуту и замирают вовсе, а обещание «раз в двадцать секунд»
+        // должно держаться и там.
+        let nextAt = Date.now() + EVERY * 1000;
+        let checks = 0;
+        let opening = false;
+        function due() {
+          if (opening || Date.now() < nextAt) return;
+          nextAt = Date.now() + EVERY * 1000;
+          checkRoom();
+          if (state.mode !== 'run') loadBoard();
+        }
+        function tick() {
+          if (opening) return;
+          due();
+          const left = Math.max(0, Math.ceil((nextAt - Date.now()) / 1000));
+          waitLine.textContent = (checks ? 'следующая проверка через ' : 'первая проверка через ')
+            + left + ' с' + (checks ? ' · проверено ' + checks + ' ' + plural(checks, ['раз', 'раза', 'раз']) : '');
+        }
+        setInterval(tick, 1000);
+        async function checkRoom() {
+          checks += 1;
+          try {
+            const r = await fetch(location.href, { cache: 'no-store' });
+            if (r.ok) {
+              const text = await r.text();
+              if (!text.includes(MARK)) {
+                opening = true;
+                document.getElementById('wait-text').textContent = 'Комната открылась — переходим…';
+                waitLine.textContent = '';
+                setTimeout(() => location.reload(), 700);
+              }
+            }
+          } catch (_) {
+            /* сеть моргнула — просто попробуем ещё раз */
+          }
+        }
+
+        /* -------------------------------------------------------- игра
+         *
+         * Поле 320×128 игровых пикселей, земля на 100, ниже — река. Всё
+         * рисуется прямоугольниками по сетке: спрайты — строки символов, каждый
+         * символ — цвет из палитры или «.» (пусто). «k» — цвет текста страницы,
+         * так цапли и земля сами перекрашиваются под тему и под ночь.
+         */
+        const S = 3;
+        const W = 320;
+        const H = 128;
+        const GROUND = 100;
+
+        const canvas = document.getElementById('field');
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.scale(S, S);
+
+        // Цвета страницы читаются из CSS, чтобы тема была одна на всё.
+        const theme = {};
+        function readTheme() {
+          const c = getComputedStyle(document.documentElement);
+          for (const k of ['ink', 'muted', 'sky', 'hill', 'hill-far', 'water', 'ripple', 'reed', 'cloud', 'accent', 'mark']) {
+            theme[k] = c.getPropertyValue('--' + k).trim();
+          }
+        }
+        readTheme();
+        const darkMedia = matchMedia('(prefers-color-scheme: dark)');
+        darkMedia.addEventListener('change', readTheme);
+
+        // Ночь: небо уходит в синь бренда, земля и цапли светлеют, появляются
+        // звёзды. Приходит с очками и уходит с ними же — как у динозавра.
+        const NIGHT = { sky: '#0f2d69', hill: '#16346f', 'hill-far': '#123070', water: '#0d2a5a', ripple: '#2b5a9a', reed: '#2c4a3a', cloud: '#2a4a86', ink: '#e6e7e8', muted: '#9ba6be' };
+        function hex(c) {
+          const m = /^#([0-9a-f]{6})$/i.exec(c);
+          if (!m) return null;
+          const n = parseInt(m[1], 16);
+          return [n >> 16, (n >> 8) & 255, n & 255];
+        }
+        function mix(a, b, t) {
+          const x = hex(a), y = hex(b);
+          if (!x || !y) return t < 0.5 ? a : b;
+          const c = x.map((v, i) => Math.round(v + (y[i] - v) * t));
+          return '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
+        }
+        // Закат — тёплая середина между днём и ночью (только в светлой теме:
+        // в тёмной день и так тёмный, и вспышка оранжевого была бы странной).
+        const DUSK = { sky: '#e6b58c', hill: '#d7a37e', 'hill-far': '#e0b090', water: '#9fb7c9', ripple: '#c9d9e6', reed: '#5c6f45', cloud: '#f0cfae' };
+        function luma(c) {
+          const x = hex(c);
+          return x ? (0.2126 * x[0] + 0.7152 * x[1] + 0.0722 * x[2]) / 255 : 0.5;
+        }
+        // Текущая палитра мира с учётом ночи (0 — день, 1 — ночь).
+        function world(night) {
+          const out = {};
+          const dusk = darkMedia.matches ? null : DUSK;
+          for (const k in theme) {
+            if (!NIGHT[k]) { out[k] = theme[k]; continue; }
+            const mid = (dusk && dusk[k]) || mix(theme[k], NIGHT[k], 0.5);
+            out[k] = night < 0.5 ? mix(theme[k], mid, night * 2) : mix(mid, NIGHT[k], (night - 0.5) * 2);
+          }
+          // Текст, земля и цапли не размазываются между тёмным и светлым (на
+          // полпути они сливались бы с небом), а переключаются по его яркости.
+          const dark = luma(out.sky) < 0.45;
+          out.ink = dark ? NIGHT.ink : theme.ink;
+          out.muted = dark ? NIGHT.muted : theme.muted;
+          return out;
+        }
+
+        const PAL = {
+          b: '#8b5a2b', // шерсть
+          d: '#4a2c12', // уши, нос, копытца
+          n: '#a8703a', // морда светлее шерсти
+          o: '#f28c28', // мандарин на голове — без него это просто бобёр
+          g: '#3f9142', // листик мандарина
+          w: '#ffffff', // белок глаза
+          s: '#8a94a8', // камень
+          t: '#5d6b8a', // тень камня
+          l: '#b8c0d0', // блик камня
+          r: '#6b4a2a', // бревно
+          q: '#4a3018', // кора
+          c: '#4d7c5a', // кайман
+          e: '#2f5a3c', // спина каймана
+          y: '#f0c419', // глаз каймана
+        };
+
+        const CAPY_RUN_A = [
+          '........gg................',
+          '.......oooo...............',
+          '.......oooo.......dd..dd..',
+          '......bbbbbbbbbbbbbbbbbbb.',
+          '.....bbbbbbbbbbbbbbbbbbbbb',
+          '....bbbbbbbbbbbbbbbbbwdbbb',
+          '...bbbbbbbbbbbbbbbbbbddbnn',
+          '...bbbbbbbbbbbbbbbbbbbbnnd',
+          '...bbbbbbbbbbbbbbbbbbbbnnn',
+          '...bbbbbbbbbbbbbbbbbbbbbn.',
+          '....bbbbbbbbbbbbbbbbbbbb..',
+          '.....bbbb.......bbbb......',
+          '.....bbbb.......bbbb......',
+          '.....dddd.......dddd......',
+        ];
+        const CAPY_RUN_B = CAPY_RUN_A.slice(0, 11).concat([
+          '......bbbb....bbbb........',
+          '.......bbbb....bbbb.......',
+          '.......dddd....dddd.......',
+        ]);
+        const CAPY_JUMP = CAPY_RUN_A.slice(0, 11).concat([
+          '......bbbb.....bbbb.......',
+          '.......dd.......dd........',
+          '..........................',
+        ]);
+        // Присела: та же капибара, сложенная вдвое; мандарин держится.
+        const CAPY_DUCK = [
+          '.......gg.................',
+          '......oooo........dd..dd..',
+          '...bbbbbbbbbbbbbbbbbbbbbb.',
+          '..bbbbbbbbbbbbbbbbbbbwdbbb',
+          '..bbbbbbbbbbbbbbbbbbbddbnn',
+          '..bbbbbbbbbbbbbbbbbbbbbnnd',
+          '...bbbbbbbbbbbbbbbbbbbbnn.',
+          '....dddd.........dddd.....',
+        ];
+        // Споткнулась: глаз закрыт, мандарин слетел.
+        const CAPY_DOWN = [
+          '..........................',
+          '..........................',
+          '..................dd..dd..',
+          '......bbbbbbbbbbbbbbbbbbb.',
+          '.....bbbbbbbbbbbbbbbbbbbbb',
+          '....bbbbbbbbbbbbbbbbbbbbbb',
+          '...bbbbbbbbbbbbbbbbbbdddnn',
+          '...bbbbbbbbbbbbbbbbbbbbnnd',
+          '...bbbbbbbbbbbbbbbbbbbbnnn',
+          '...bbbbbbbbbbbbbbbbbbbbbn.',
+          '....bbbbbbbbbbbbbbbbbbbb..',
+          '.....bbbb.......bbbb......',
+          '....bbbb.........bbbb.....',
+          '....dddd.........dddd.....',
+        ];
+        const CAPY_W = 26;
+        const CAPY_H = 14;
+        const DUCK_H = 8;
+
+        const ROCK_S = [
+          '....ssss....',
+          '..sslsssss..',
+          '.sslssssssss',
+          'ssssssssssss',
+          'tsssssssssst',
+          '.tttttttttt.',
+        ];
+        const ROCK_L = [
+          '......sssss.....',
+          '....ssslsssss...',
+          '...sssllssssss..',
+          '..sssslsssssssss',
+          '.sssssssssssssss',
+          'ssssssssssssssss',
+          'ssssssssssssssst',
+          'tssssssssssssstt',
+          'ttsssssssssssttt',
+          '.tttttttttttttt.',
+        ];
+        const LOG = [
+          'qrrrrrrrrrrrrrrrrrrrrrrq',
+          'rrrqrrrrrrrrqrrrrrrrqrrr',
+          'rrrrrrrqrrrrrrrrqrrrrrrr',
+          'qrrrrrrrrrrrrrrrrrrrrrrq',
+          '.qqqqqqqqqqqqqqqqqqqqqq.',
+        ];
+        const CAIMAN_A = [
+          '.......................ee...',
+          'ee...eeeeeeeeeeeeeeeeeeeey..',
+          '.eecccccccccccccccccccccccce',
+          '..cccccccccccccccccccccccccc',
+          '...ccc.....ccc.....ccc......',
+        ];
+        const CAIMAN_B = [
+          '.......................ee...',
+          'ee...eeeeeeeeeeeeeeeeeeeey..',
+          '.eecccccccccccccccccccccccce',
+          '..cccccccccccccccccccccccccc',
+          '.....ccc.....ccc.....ccc....',
+        ];
+        // Цапля: две позы крыльев. Силуэт цветом текста, чтобы читаться на
+        // любом небе — дневном, ночном и тёмной темы.
+        const HERON_A = [
+          '......kk........',
+          '.....kkkk.......',
+          '....kkkkkk......',
+          '.kkkkkkkkkkkk...',
+          'kkkkkkkkkkkkkkkk',
+          '..kkkkkkkkkk..k.',
+          '.....kkkk.......',
+          '......kk........',
+        ];
+        const HERON_B = [
+          '................',
+          '................',
+          '....kk..........',
+          '.kkkkkkkkkkkk...',
+          'kkkkkkkkkkkkkkkk',
+          '..kkkkkkkkkk..k.',
+          '.....kkkkk......',
+          '.......kkk......',
+        ];
+        const TANGERINE = ['.g..', 'oooo', 'oooo', '.oo.'];
+        const CLOUD_A = ['.....CCCC.......', '...CCCCCCCC.....', '.CCCCCCCCCCCCCC.', 'CCCCCCCCCCCCCCCC'];
+        const CLOUD_B = ['....CCC....', '.CCCCCCCCC.', 'CCCCCCCCCCC'];
+
+        const FONT = {
+          0: ['111', '101', '101', '101', '111'],
+          1: ['010', '110', '010', '010', '111'],
+          2: ['111', '001', '111', '100', '111'],
+          3: ['111', '001', '111', '001', '111'],
+          4: ['101', '101', '111', '001', '001'],
+          5: ['111', '100', '111', '001', '111'],
+          6: ['111', '100', '111', '101', '111'],
+          7: ['111', '001', '001', '001', '001'],
+          8: ['111', '101', '111', '101', '111'],
+          9: ['111', '101', '111', '001', '111'],
+          H: ['101', '101', '111', '101', '101'],
+          I: ['111', '010', '010', '010', '111'],
+          '+': ['000', '010', '111', '010', '000'],
+          ' ': ['000', '000', '000', '000', '000'],
+        };
+
+        // Цвет символа с учётом мира: k — текст, C — облако, остальное — палитра.
+        function drawSprite(rows, x, y, w) {
+          x = Math.round(x);
+          y = Math.round(y);
+          for (let j = 0; j < rows.length; j++) {
+            const row = rows[j];
+            let i = 0;
+            while (i < row.length) {
+              const ch = row[i];
+              if (ch === '.') { i++; continue; }
+              let k = i;
+              while (k < row.length && row[k] === ch) k++;
+              ctx.fillStyle = ch === 'k' ? w.ink : ch === 'C' ? w.cloud : PAL[ch];
+              ctx.fillRect(x + i, y + j, k - i, 1);
+              i = k;
+            }
+          }
+        }
+
+        function drawText(text, x, y, px, color) {
+          ctx.fillStyle = color;
+          for (const ch of text) {
+            const glyph = FONT[ch] || FONT[' '];
+            for (let j = 0; j < 5; j++) {
+              for (let i = 0; i < 3; i++) {
+                if (glyph[j][i] === '1') ctx.fillRect(x + i * px, y + j * px, px, px);
+              }
+            }
+            x += 4 * px;
+          }
+        }
+        const textWidth = (text, px) => text.length * 4 * px - px;
+
+        /* Физика в пикселях и миллисекундах: прыжок на 34 пикселя за ~0,55 с,
+         * скорость от 0,11 до 0,30 пикселя за миллисекунду. */
+        const GRAVITY = 0.0009;
+        const JUMP_V = -0.2475;
+        const SPEED0 = 0.11;
+        const SPEED_MAX = 0.3;
+        const ACCEL = 0.0000045;
+        const NIGHT_EVERY = 500; // очков на полный круг день–ночь
+        const TANGERINE_POINTS = 5;
+
+        // Препятствия. from — со скорости какой появляются; y — верх спрайта.
+        // Цапли трёх высот: низкую перепрыгнуть, под высокой пробежать, среднюю
+        // — присесть (или перепрыгнуть с точным моментом).
+        const KINDS = [
+          { name: 'rock', rows: ROCK_S, w: 12, h: 6, y: GROUND - 6, weight: 4, from: 0, hit: 'споткнулась о камень' },
+          { name: 'rock', rows: ROCK_L, w: 16, h: 10, y: GROUND - 10, weight: 3, from: 0, hit: 'споткнулась о камень' },
+          { name: 'log', rows: LOG, w: 24, h: 5, y: GROUND - 5, weight: 3, from: 0.13, hit: 'запнулась о бревно' },
+          { name: 'caiman', rows: CAIMAN_A, alt: CAIMAN_B, w: 28, h: 5, y: GROUND - 5, weight: 2, from: 0.15, hit: 'не заметила каймана', walk: true },
+          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 10, weight: 2, from: 0.12, hit: 'столкнулась с цаплей' },
+          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 17, weight: 2, from: 0.16, hit: 'столкнулась с цаплей' },
+          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 26, weight: 1, from: 0.14, hit: 'столкнулась с цаплей' },
+        ];
+        function pickKind(speed) {
+          const pool = KINDS.filter((k) => speed >= k.from);
+          const sum = pool.reduce((n, k) => n + k.weight, 0);
+          let r = Math.random() * sum;
+          for (const k of pool) if ((r -= k.weight) < 0) return k;
+          return pool[0];
+        }
+
+        const state = {
+          mode: 'idle', // idle | run | pause | over
+          speed: SPEED0,
+          dist: 0,
+          score: 0,
+          best: Number(store.get('capy.best')) || 0,
+          tangerines: 0,
+          started: 0,
+          elapsed: 0,
+          capyY: GROUND - CAPY_H,
+          vy: 0,
+          air: false,
+          duck: false,
+          frame: 0,
+          frameT: 0,
+          animT: 0,
+          obs: [],
+          items: [],
+          pops: [],
+          nextObsAt: 0,
+          nextItemAt: 0,
+          milestoneT: 0,
+          pebbles: [],
+          ripples: [],
+          clouds: [],
+          hills: [],
+          stars: [],
+          reeds: [],
+          dust: [],
+          hit: '',
+          sent: false,
+          sending: false,
+          armed: false,
+          recordNow: false,
+          duckHeld: false,
+          run: 0,
+          everSent: false,
+        };
+
+        function seedScenery() {
+          state.pebbles = [];
+          for (let i = 0; i < 14; i++) state.pebbles.push({ x: Math.random() * W, y: 1 + Math.floor(Math.random() * 3), w: 1 + Math.floor(Math.random() * 2) });
+          state.ripples = [];
+          for (let i = 0; i < 8; i++) state.ripples.push({ x: Math.random() * W, y: GROUND + 8 + Math.floor(Math.random() * 16), w: 6 + Math.floor(Math.random() * 10) });
+          state.clouds = [];
+          for (let i = 0; i < 3; i++) state.clouds.push({ x: 30 + i * 110 + Math.random() * 40, y: 10 + Math.random() * 28, rows: i % 2 ? CLOUD_B : CLOUD_A });
+          state.hills = [];
+          for (let i = 0; i < 5; i++) state.hills.push({ x: i * 90 + Math.random() * 30, w: 60 + Math.random() * 70, h: 8 + Math.random() * 12, far: i % 2 === 0 });
+          state.stars = [];
+          for (let i = 0; i < 26; i++) state.stars.push({ x: Math.random() * W, y: Math.random() * 60, b: Math.random() < 0.3 });
+          state.reeds = [];
+          for (let i = 0; i < 6; i++) state.reeds.push({ x: Math.random() * W, h: 6 + Math.floor(Math.random() * 8) });
+        }
+
+        function reset() {
+          state.speed = SPEED0;
+          state.dist = 0;
+          state.score = 0;
+          state.tangerines = 0;
+          state.elapsed = 0;
+          state.capyY = GROUND - CAPY_H;
+          state.vy = 0;
+          state.air = false;
+          state.duck = false;
+          state.frame = 0;
+          state.frameT = 0;
+          state.obs = [];
+          state.items = [];
+          state.pops = [];
+          state.dust = [];
+          state.nextObsAt = 170;
+          state.nextItemAt = 90;
+          state.milestoneT = 0;
+          state.hit = '';
+          state.sent = false;
+          state.sending = false;
+          state.armed = false;
+          state.recordNow = false;
+          state.duck = false;
+          state.duckHeld = false;
+          state.run += 1;
+          seedScenery();
+        }
+
+        function jump() {
+          if (state.air) return;
+          state.duck = false;
+          state.air = true;
+          state.vy = JUMP_V;
+          sound.play('jump');
+        }
+        function duck(on) {
+          // Намерение помнится и в воздухе: ↓, зажатая над камнем, присаживает
+          // капибару сразу после приземления — под среднюю цаплю.
+          state.duckHeld = on;
+          if (state.air) {
+            // В воздухе ↓ прижимает к земле — как у динозавра.
+            if (on) state.vy = Math.max(state.vy, 0.18);
+            return;
+          }
+          state.duck = on;
+        }
+
+        function spawnObstacle() {
+          const kind = pickKind(state.speed);
+          state.obs.push({ kind, x: W + 8 });
+          // Парные камни — на скорости: два маленьких через шаг капибары.
+          if (kind.rows === ROCK_S && state.speed > 0.17 && Math.random() < 0.4) {
+            state.obs.push({ kind, x: W + 8 + 22 });
+          }
+          // Минимальный разбег растёт со скоростью: прыжок занимает время, и
+          // при быстром беге препятствия должны стоять реже.
+          const minGap = 95 + state.speed * 720;
+          state.nextObsAt = state.dist + minGap + Math.random() * 110;
+        }
+
+        function spawnItem() {
+          // Мандарин висит там, куда достаёт прыжок; не над самым препятствием.
+          const lastObs = state.obs[state.obs.length - 1];
+          const x = W + 8;
+          if (lastObs && Math.abs(lastObs.x - x) < 40) {
+            state.nextItemAt = state.dist + 40;
+            return;
+          }
+          const high = Math.random() < 0.4;
+          state.items.push({ x, y: high ? GROUND - 40 : GROUND - 26, t: 0 });
+          state.nextItemAt = state.dist + 220 + Math.random() * 260;
+        }
+
+        function capyBox() {
+          const h = state.duck && !state.air ? DUCK_H : CAPY_H;
+          const y = state.air ? state.capyY : GROUND - h;
+          return { x: 24 + 3, y: y + 2, w: CAPY_W - 7, h: h - 2 };
+        }
+        function overlaps(a, bx, by, bw, bh) {
+          return a.x < bx + bw && a.x + a.w > bx && a.y < by + bh && a.y + a.h > by;
+        }
+
+        function update(dt) {
+          state.elapsed += dt;
+          state.speed = Math.min(SPEED_MAX, state.speed + ACCEL * dt);
+          const dx = state.speed * dt;
+          state.dist += dx;
+          const prev = state.score;
+          state.score = Math.floor(state.dist / 10) + state.tangerines * TANGERINE_POINTS;
+          if (Math.floor(state.score / 100) > Math.floor(prev / 100)) {
+            state.milestoneT = 900;
+            sound.play('tick');
+          }
+          state.milestoneT = Math.max(0, state.milestoneT - dt);
+
+          if (state.air) {
+            state.vy += GRAVITY * dt;
+            state.capyY += state.vy * dt;
+            if (state.capyY >= GROUND - CAPY_H) {
+              state.capyY = GROUND - CAPY_H;
+              state.vy = 0;
+              state.air = false;
+              state.duck = state.duckHeld;
+            }
+          } else {
+            state.capyY = GROUND - CAPY_H;
+            state.frameT += dt;
+            if (state.frameT > 90) { state.frameT = 0; state.frame ^= 1; }
+          }
+          state.animT += dt;
+
+          for (const p of state.pebbles) { p.x -= dx; if (p.x < -2) p.x = W + Math.random() * 20; }
+          for (const r of state.ripples) { r.x -= dx * 0.6; if (r.x + r.w < 0) { r.x = W + Math.random() * 30; r.y = GROUND + 8 + Math.floor(Math.random() * 16); } }
+          for (const c of state.clouds) { c.x -= dx * 0.22; if (c.x < -16) { c.x = W + Math.random() * 60; c.y = 10 + Math.random() * 28; } }
+          for (const h of state.hills) { h.x -= dx * (h.far ? 0.12 : 0.3); if (h.x + h.w < 0) { h.x = W + Math.random() * 40; h.w = 60 + Math.random() * 70; h.h = 8 + Math.random() * 12; } }
+          for (const r of state.reeds) { r.x -= dx; if (r.x < -2) { r.x = W + Math.random() * 40; r.h = 6 + Math.floor(Math.random() * 8); } }
+          for (const d of state.dust) { d.t += dt; d.x -= dx * 0.5; d.y -= dt * 0.01; }
+          state.dust = state.dust.filter((d) => d.t < 400);
+
+          for (const o of state.obs) o.x -= dx * (o.kind.walk ? 1.08 : 1);
+          state.obs = state.obs.filter((o) => o.x + o.kind.w > -4);
+          if (state.dist >= state.nextObsAt) spawnObstacle();
+
+          for (const it of state.items) { it.x -= dx; it.t += dt; }
+          state.items = state.items.filter((it) => it.x > -6);
+          if (state.dist >= state.nextItemAt) spawnItem();
+
+          for (const p of state.pops) { p.t += dt; p.x -= dx; }
+          state.pops = state.pops.filter((p) => p.t < 600);
+
+          const box = capyBox();
+          for (let i = state.items.length - 1; i >= 0; i--) {
+            const it = state.items[i];
+            const bob = Math.round(Math.sin(it.t / 220) * 1.5);
+            if (overlaps(box, it.x, it.y + bob, 4, 4)) {
+              state.items.splice(i, 1);
+              state.tangerines += 1;
+              state.pops.push({ x: it.x, y: it.y - 4, t: 0, text: '+' + TANGERINE_POINTS });
+              sound.play('coin');
+            }
+          }
+          for (const o of state.obs) {
+            if (overlaps(box, o.x + 1, o.kind.y + 1, o.kind.w - 2, o.kind.h - 2)) {
+              gameOver(o.kind.hit);
+              return;
+            }
+          }
+        }
+
+        function render() {
+          const cycle = (state.score % NIGHT_EVERY) / NIGHT_EVERY;
+          // Ночь занимает вторую половину круга, с мягкими краями.
+          const night = cycle < 0.5 ? 0 : cycle < 0.6 ? (cycle - 0.5) * 10 : cycle < 0.9 ? 1 : 1 - (cycle - 0.9) * 10;
+          const w = world(night);
+
+          ctx.fillStyle = w.sky;
+          ctx.fillRect(0, 0, W, H);
+
+          if (night > 0) {
+            for (const s of state.stars) {
+              ctx.fillStyle = 'rgba(230,231,232,' + (night * (s.b ? 0.9 : 0.5)).toFixed(2) + ')';
+              ctx.fillRect(Math.round(s.x), Math.round(s.y), 1, 1);
+            }
+            ctx.fillStyle = 'rgba(230,231,232,' + (night * 0.9).toFixed(2) + ')';
+            ctx.fillRect(W - 46, 14, 6, 6);
+            ctx.fillStyle = w.sky;
+            ctx.fillRect(W - 44, 12, 5, 5);
+          }
+
+          for (const c of state.clouds) drawSprite(c.rows, c.x, c.y, w);
+
+          // Холмы — два ряда мягких горбов, дальние светлее и медленнее.
+          for (const far of [true, false]) {
+            ctx.fillStyle = far ? w['hill-far'] : w.hill;
+            for (const h of state.hills) {
+              if (h.far !== far) continue;
+              const top = GROUND - (far ? 26 : 18) - h.h;
+              const x = Math.round(h.x), width = Math.round(h.w);
+              const steps = 5;
+              for (let i = 0; i < steps; i++) {
+                const inset = Math.round((width / 2) * (1 - Math.sqrt(1 - Math.pow(1 - i / steps, 2))));
+                ctx.fillRect(x + inset, top + Math.round((h.h * i) / steps), width - inset * 2, Math.ceil(h.h / steps) + 1);
+              }
+            }
+            ctx.fillRect(0, GROUND - (far ? 26 : 18), W, far ? 8 : 18);
+          }
+
+          // Берег и река.
+          ctx.fillStyle = w.water;
+          ctx.fillRect(0, GROUND + 5, W, H - GROUND - 5);
+          ctx.fillStyle = w.ripple;
+          for (const r of state.ripples) ctx.fillRect(Math.round(r.x), r.y, r.w, 1);
+          ctx.fillStyle = w.ink;
+          ctx.fillRect(0, GROUND, W, 1);
+          ctx.fillStyle = w.muted;
+          for (const p of state.pebbles) ctx.fillRect(Math.round(p.x), GROUND + p.y, p.w, 1);
+          ctx.fillStyle = w.reed;
+          for (const r of state.reeds) ctx.fillRect(Math.round(r.x), GROUND - r.h, 1, r.h);
+
+          for (const it of state.items) drawSprite(TANGERINE, it.x, it.y + Math.round(Math.sin(it.t / 220) * 1.5), w);
+
+          const alt = Math.floor(state.animT / 160) % 2;
+          for (const o of state.obs) drawSprite(o.kind.alt && alt ? o.kind.alt : o.kind.rows, o.x, o.kind.y, w);
+
+          ctx.fillStyle = w.muted;
+          for (const d of state.dust) ctx.fillRect(Math.round(d.x), Math.round(d.y), 1, 1);
+
+          let capy;
+          let cy = state.capyY;
+          if (state.mode === 'over') capy = CAPY_DOWN;
+          else if (state.air) capy = CAPY_JUMP;
+          else if (state.duck) { capy = CAPY_DUCK; cy = GROUND - DUCK_H; }
+          else capy = state.frame ? CAPY_RUN_B : CAPY_RUN_A;
+          drawSprite(capy, 24, cy, w);
+
+          for (const p of state.pops) drawText(p.text, p.x, p.y - Math.round(p.t / 60), 1, w.ink);
+
+          const score = String(state.score).padStart(5, '0');
+          const hud = (state.best ? 'HI ' + String(state.best).padStart(5, '0') + '  ' : '') + score;
+          const blink = state.milestoneT > 0 && Math.floor(state.milestoneT / 150) % 2 === 0;
+          drawText(hud, W - 8 - textWidth(hud, 2), 8, 2, state.mode === 'run' ? (blink ? w.accent : w.ink) : w.muted);
+          if (state.tangerines) {
+            const t = String(state.tangerines);
+            drawSprite(TANGERINE, W - 8 - textWidth(t, 2) - 7, 21, w);
+            drawText(t, W - 8 - textWidth(t, 2), 20, 2, w.muted);
+          }
+        }
+
+        let last = 0;
+        function frame(t) {
+          if (state.mode !== 'run') return;
+          const dt = Math.min(40, last ? t - last : 16);
+          last = t;
+          update(dt);
+          render();
+          if (state.mode === 'run') requestAnimationFrame(frame);
+        }
+
+        /* ------------------------------------------------------ звук
+         *
+         * Пищалки на WebAudio, выключены по умолчанию: страницу открывают в
+         * аудитории. Включение — кнопкой в углу экрана, выбор запоминается.
+         */
+        const soundBtn = document.getElementById('sound');
+        const sound = {
+          on: store.get('capy.sound') === '1',
+          ctx: null,
+          play(kind) {
+            if (!this.on) return;
+            try {
+              this.ctx = this.ctx || new (window.AudioContext || window.webkitAudioContext)();
+              const c = this.ctx;
+              // После сна телефона или ухода из вкладки контекст засыпает;
+              // вызов идёт из жеста, так что разбудить его можно.
+              if (c.state !== 'running') c.resume();
+              const now = c.currentTime;
+              const beep = (freq, at, len, type, gain) => {
+                const o = c.createOscillator();
+                const g = c.createGain();
+                o.type = type || 'square';
+                o.frequency.setValueAtTime(freq, now + at);
+                g.gain.setValueAtTime(gain || 0.04, now + at);
+                g.gain.exponentialRampToValueAtTime(0.0005, now + at + len);
+                o.connect(g).connect(c.destination);
+                o.start(now + at);
+                o.stop(now + at + len + 0.02);
+              };
+              if (kind === 'jump') { beep(440, 0, 0.09); beep(660, 0.05, 0.08); }
+              else if (kind === 'coin') { beep(880, 0, 0.07); beep(1320, 0.07, 0.1); }
+              else if (kind === 'tick') { beep(1200, 0, 0.05, 'square', 0.03); }
+              else if (kind === 'hit') { beep(160, 0, 0.25, 'sawtooth', 0.05); beep(110, 0.08, 0.3, 'sawtooth', 0.05); }
+            } catch (_) { /* без звука — не беда */ }
+          },
+        };
+        function showSound() { soundBtn.setAttribute('aria-pressed', sound.on ? 'true' : 'false'); soundBtn.setAttribute('aria-label', sound.on ? 'Звук включён' : 'Звук выключен'); }
+        showSound();
+        soundBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          sound.on = !sound.on;
+          store.set('capy.sound', sound.on ? '1' : '0');
+          showSound();
+          if (sound.on) sound.play('coin');
+          // Клик мышью оставил бы фокус на кнопке, и пробел дальше щёлкал бы
+          // звуком вместо прыжка. С клавиатуры (Tab) фокус остаётся.
+          if (e.detail) soundBtn.blur();
+        });
+        soundBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+        /* ------------------------------------------------ экран и панели */
+        const hint = document.getElementById('hint');
+        const over = document.getElementById('over');
+        const overTitle = document.getElementById('over-title');
+        const recordChip = document.getElementById('record');
+        const finalEl = document.getElementById('final');
+        const tangEl = document.getElementById('tang');
+        const timeEl = document.getElementById('time');
+        const form = document.getElementById('submit');
+        const nameInput = document.getElementById('name');
+        const sendBtn = document.getElementById('send');
+        const statusEl = document.getElementById('status');
+        const board = document.getElementById('board');
+        const boardLine = document.getElementById('board-line');
+        const topEl = document.getElementById('top');
+        const NOTE = 'Имя увидят все, кто ждёт на этом адресе. В таблице — лучшая попытка каждого.';
+
+        function start() {
+          reset();
+          state.mode = 'run';
+          canvas.style.touchAction = 'none';
+          hint.hidden = true;
+          over.hidden = true;
+          last = 0;
+          requestAnimationFrame(frame);
+        }
+
+        function resume() {
+          state.mode = 'run';
+          canvas.style.touchAction = 'none';
+          hint.hidden = true;
+          last = 0;
+          requestAnimationFrame(frame);
+        }
+
+        function pause() {
+          if (state.mode !== 'run') return;
+          state.mode = 'pause';
+          canvas.style.touchAction = '';
+          hint.textContent = coarse ? 'Пауза — тап, чтобы продолжить' : 'Пауза — пробел, чтобы продолжить';
+          hint.hidden = false;
+        }
+
+        function gameOver(why) {
+          state.mode = 'over';
+          canvas.style.touchAction = '';
+          state.hit = why;
+          const prevBest = state.best;
+          state.recordNow = state.score > state.best && state.best > 0;
+          if (state.score > state.best) {
+            state.best = state.score;
+            store.set('capy.best', String(state.best));
+          }
+          for (let i = 0; i < 6; i++) state.dust.push({ x: 26 + Math.random() * 20, y: GROUND - 2 - Math.random() * 6, t: Math.random() * 100 });
+          render();
+          sound.play('hit');
+          overTitle.textContent = 'Капибара ' + why;
+          recordChip.hidden = !state.recordNow;
+          finalEl.textContent = String(state.score);
+          document.getElementById('final-word').textContent = plural(state.score, ['очко', 'очка', 'очков']);
+          tangEl.textContent = String(state.tangerines);
+          document.getElementById('tang-word').textContent = plural(state.tangerines, ['мандарин', 'мандарина', 'мандаринов']);
+          const sec = Math.round(state.elapsed / 1000);
+          timeEl.textContent = sec < 60 ? sec + ' с' : Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+          statusEl.textContent = NOTE;
+          sendBtn.disabled = false;
+          sendBtn.textContent = 'В таблицу';
+          delete sendBtn.dataset.done;
+          const known = store.get('capy.name') || '';
+          nameInput.value = known;
+          over.hidden = false;
+          // Имя уже вписывали — очки уходят в таблицу сами, и ничего не
+          // потеряется, если тут же нажать пробел. Без имени пробел сначала
+          // ставит курсор в поле: рекорд без записи — обидно. Результат ниже
+          // уже записанного рекорда таблицу не изменит — его и не шлём.
+          if (known && state.score > 0) {
+            if (state.everSent && state.score <= prevBest) {
+              state.sent = true;
+              sendBtn.disabled = true;
+              sendBtn.dataset.done = '1';
+              sendBtn.textContent = 'Ниже рекорда';
+              statusEl.textContent = 'Ваш рекорд ' + prevBest + ' уже в таблице — эта попытка ниже.';
+            } else submitScore(known, true);
+          }
+          showOverHint();
+          // Карточка разворачивается ниже экрана; на телефоне она за сгибом.
+          over.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+        }
+
+        function showOverHint() {
+          if (state.mode !== 'over') return;
+          if (state.sent || state.score === 0) hint.textContent = coarse ? 'Ещё раз — тап' : 'Ещё раз — пробел или ↑';
+          else if (state.armed) hint.textContent = coarse ? 'Тап — играть без записи' : 'Пробел — играть без записи';
+          else hint.textContent = coarse ? 'Впишите имя — или тап дважды' : 'Впишите имя — или пробел дважды';
+          hint.hidden = false;
+        }
+
+        // Одно нажатие на всё: из покоя — старт и прыжок, в игре — прыжок,
+        // на паузе — продолжить, после падения — новая игра.
+        function press() {
+          if (state.mode === 'run') jump();
+          else if (state.mode === 'pause') resume();
+          else if (state.mode === 'over' && !state.sent && state.score > 0 && !state.armed) {
+            state.armed = true;
+            // Имя в поле уже есть (таблица могла молчать при автозаписи) —
+            // одно нажатие отправляет; пустое поле получает курсор.
+            if (nameInput.value.trim()) submitScore(nameInput.value, true);
+            else nameInput.focus();
+            showOverHint();
+          } else { start(); jump(); }
+        }
+
+        window.addEventListener('keydown', (e) => {
+          const tag = e.target && e.target.tagName;
+          // Курсор в пустом поле имени: пробел или ↑ — «играть без записи»,
+          // как и обещает подсказка. Имя с пробела не начинается.
+          if (e.target === nameInput && (e.code === 'Space' || e.code === 'ArrowUp') && state.mode === 'over' && (!nameInput.value.trim() || state.armed)) {
+            e.preventDefault();
+            nameInput.blur();
+            start();
+            jump();
+            return;
+          }
+          if (tag === 'INPUT' || (tag === 'BUTTON' && e.target !== hint)) return;
+          // Пока игра не идёт, клавиши — страницы: пробел листает, стрелки
+          // крутят. Экран забирает их себе, только когда он на виду.
+          const active = state.mode === 'run' || state.mode === 'pause';
+          if (e.code === 'Space' || e.code === 'ArrowUp') {
+            if (!active && !screenInView()) return;
+            e.preventDefault();
+            if (!e.repeat) press();
+          } else if (e.code === 'ArrowDown') {
+            if (state.mode !== 'run') return;
+            e.preventDefault();
+            duck(true);
+          } else if (e.code === 'Escape' || e.key === 'p' || e.key === 'з') {
+            if (state.mode === 'run') pause();
+            else if (state.mode === 'pause') resume();
+          }
+        });
+        window.addEventListener('keyup', (e) => {
+          if (e.code === 'ArrowDown') duck(false);
+        });
+
+        // Палец: тап — прыжок, палец вниз на два десятка пикселей — присесть,
+        // пока держите. Мышь — просто клик.
+        const screen = document.getElementById('screen');
+        function screenInView() {
+          const r = screen.getBoundingClientRect();
+          return r.bottom > 0 && r.top < innerHeight;
+        }
+        let touch = null;
+        screen.addEventListener('pointerdown', (e) => {
+          touch = { x: e.clientX, y: e.clientY, ducked: false, jumped: false, moved: false, t: performance.now() };
+          if (state.mode !== 'run') return; // старт — на отрыве пальца, если это был тап, а не свайп
+          e.preventDefault();
+          // Прыжок откладывается на мгновение: вдруг это свайп вниз.
+          setTimeout(() => { if (touch && !touch.ducked && !touch.moved && state.mode === 'run') { jump(); touch.jumped = true; } }, 70);
+        });
+        screen.addEventListener('pointermove', (e) => {
+          if (!touch) return;
+          const dy = e.clientY - touch.y;
+          if (state.mode === 'run') {
+            if (!touch.ducked && !touch.jumped && dy > 18) { touch.ducked = true; duck(true); }
+          } else if (Math.abs(dy) > 10 || Math.abs(e.clientX - touch.x) > 10) touch.moved = true;
+        });
+        const release = () => { if (touch && touch.ducked) duck(false); touch = null; };
+        screen.addEventListener('pointerup', (e) => {
+          if (touch && state.mode !== 'run' && !touch.moved && e.target !== soundBtn) press();
+          release();
+        });
+        screen.addEventListener('pointercancel', release);
+        screen.addEventListener('pointerleave', release);
+        // Тап уже пойман на экране; кнопке остаётся клавиатура — и она не
+        // должна удерживать фокус после клика мышью.
+        hint.addEventListener('click', (e) => { if (e.detail === 0) press(); else hint.blur(); });
+        document.getElementById('again').addEventListener('click', () => { start(); jump(); });
+
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) pause();
+          else due(); // вернулись во вкладку — заглянуть в комнату сразу, не через двадцать секунд
+        });
+
+        /* ------------------------------------------------ таблица рекордов
+         *
+         * Очки ходят в крошечный сервис на самом ретрансляторе за путём
+         * /.relay/capy/scores (scripts/relay-capy.py). Если его нет или он
+         * молчит — таблицы просто не видно, игра от этого не зависит. Таблица
+         * держит одну строку на имя — лучшую попытку.
+         */
+        const API = '/.relay/capy/scores';
+
+        function row(cls, rank, who, pts) {
+          const li = document.createElement('li');
+          if (cls) li.className = cls;
+          const a = document.createElement('span'); a.className = 'rank'; a.textContent = rank;
+          const b = document.createElement('span'); b.className = 'who'; b.textContent = who;
+          const c = document.createElement('span'); c.className = 'pts'; c.textContent = pts;
+          li.append(a, b, c);
+          return li;
+        }
+
+        function renderBoard(d, mine) {
+          topEl.textContent = '';
+          const top = d.top || [];
+          boardLine.textContent = d.total
+            ? d.total + ' ' + plural(d.total, ['попытка', 'попытки', 'попыток']) + ' · ' + d.names + ' ' + plural(d.names, ['имя', 'имени', 'имён'])
+            : '';
+          if (!top.length) {
+            const li = document.createElement('li');
+            li.className = 'note empty';
+            li.textContent = 'Пока пусто — первое место свободно.';
+            topEl.appendChild(li);
+          }
+          top.forEach((r, i) => topEl.appendChild(row(mine && r.id === mine.id ? 'me' : '', String(i + 1), r.name, String(r.score))));
+          if (mine && mine.rank > top.length) {
+            const skipped = mine.rank - top.length - 1;
+            if (skipped > 0) topEl.appendChild(row('gap', '…', 'ещё ' + skipped + ' ' + plural(skipped, ['имя', 'имени', 'имён']), ''));
+            topEl.appendChild(row('me', String(mine.rank), mine.name, String(mine.best)));
+          }
+          board.hidden = false;
+        }
+
+        async function loadBoard() {
+          try {
+            const r = await fetch(API, { cache: 'no-store' });
+            if (!r.ok) throw new Error(String(r.status));
+            renderBoard(await r.json(), null);
+          } catch (_) {
+            board.hidden = true;
+          }
+        }
+        loadBoard();
+
+        form.addEventListener('submit', (e) => {
+          e.preventDefault();
+          submitScore(nameInput.value, false);
+        });
+
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        async function submitScore(raw, auto) {
+          if (state.sent || state.sending) return;
+          // Ответ может догнать уже следующий забег — тогда он ничей.
+          const run = state.run;
+          const score = state.score;
+          const name = raw.trim().slice(0, 16);
+          store.set('capy.name', name);
+          state.sending = true;
+          sendBtn.disabled = true;
+          sendBtn.textContent = 'Отправляем…';
+          const post = () => fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, score }),
+          });
+          try {
+            let r = await post();
+            if (r.status === 429) { await sleep(1500); if (state.run !== run) return; r = await post(); }
+            if (state.run !== run) return;
+            if (r.status === 429) throw new Error('rate');
+            if (!r.ok) throw new Error(String(r.status));
+            const d = await r.json();
+            if (state.run !== run) return;
+            state.sent = true;
+            state.everSent = true;
+            sendBtn.textContent = 'Записано';
+            sendBtn.dataset.done = '1';
+            nameInput.blur();
+            showOverHint();
+            const shown = d.name || name || 'Аноним';
+            const who = auto ? 'Записано как «' + shown + '». ' : '';
+            if (d.rank == null) {
+              statusEl.textContent = who + 'Очков не хватило, чтобы попасть в таблицу.';
+              recordChip.hidden = true;
+              renderBoard(d, null);
+              return;
+            }
+            // Чип про рекорд считался по этому устройству; таблица знает лучше.
+            if (d.improved === false) recordChip.hidden = true;
+            statusEl.textContent = who + (d.rank === 1
+              ? 'Первое место. Капибара гордится.'
+              : d.improved
+                ? 'Вы на ' + d.rank + '-м месте из ' + d.names + '.'
+                : 'Ваш лучший результат ' + d.best + ' держит ' + d.rank + '-е место из ' + d.names + ' — эта попытка ниже.');
+            renderBoard(d, { id: d.id, rank: d.rank, name: shown, best: d.best });
+          } catch (err) {
+            if (state.run !== run) return;
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'В таблицу';
+            showOverHint();
+            statusEl.textContent = err && err.message === 'rate'
+              ? 'Слишком часто — подождите пару секунд и попробуйте снова.'
+              : 'Таблица сейчас недоступна — очки остались только здесь.';
+          } finally {
+            if (state.run === run) state.sending = false;
+          }
+        }
+
+        /* ------------------------------------------------------- первый кадр */
+        reset();
+        render();
+
+        // Для проверок вживую (headless Chrome), не для игры.
+        window.capy = { state, press, jump, duck, gameOver, start, pause, resume, render };
+      })();
+    </script>
+  </body>
+</html>

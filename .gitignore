@@ -33,3 +33,6 @@ ui-pult.png
 ui-pult-129.png
 ui-pult-portrait.png
 pencil-check-*.png
+
+# Байт-код Python рядом со скриптами ретранслятора (scripts/relay-capy.py).
+__pycache__/

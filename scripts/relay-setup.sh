@@ -25,7 +25,7 @@
 #          поддомены. Инстансу не нужен ни публичный адрес, ни открытый порт —
 #          он звонит сюда сам.
 #
-# И один файл рядом с ними — страница ожидания. Пока преподаватель не поднял
+# И один файл рядом с ними — страница ожидания (scripts/relay-offline.html). Пока преподаватель не поднял
 # комнату, живого клиента для её имени нет, и frps отвечал бы своей встроенной
 # страницей: «The page you requested was not found… powered by frp». Студенту,
 # пришедшему за десять минут до пары, по ней не понять ни что случилось, ни
@@ -33,8 +33,21 @@
 # показывается, если не отвечает сам frps, и она сама перезагружается, так что
 # ждущий попадает в комнату без единого нажатия.
 #
-# Запускать: scripts/relay-setup.sh root@203.0.113.11
-# Только страница: scripts/relay-setup.sh --page root@203.0.113.11
+# На странице ожидания живёт пиксельная капибара (игра в духе динозавра из
+# Chrome) с общей таблицей рекордов. Таблицу ведёт третий, крошечный демон —
+# colloq-capy (scripts/relay-capy.py, python3 из коробки): caddy отдаёт ему
+# путь /.relay/capy/* на любом имени. Игра без него работает, таблица — нет.
+#
+# И ещё один каталог — /etc/caddy/names, память имён. Сертификат выпускается
+# только имени, у которого есть туннель, а список туннелей frps держит в
+# памяти: после его перезапуска или переезда на другую машину список пуст, и
+# студент, открывший привычный event.example.org до начала пары, получал бы не
+# страницу ожидания, а отказ TLS. Поэтому таймер раз в минуту переписывает
+# имена из frps в файлы этого каталога, и имя, поднятое хоть раз, помнится
+# вечно. Вписать имя заранее: touch /etc/caddy/names/<имя>.colloq.ru.
+#
+# Запускать: scripts/relay-setup.sh root@203.0.113.12
+# Только страница: scripts/relay-setup.sh --page root@203.0.113.12
 set -euo pipefail
 
 # Режим. Полная установка идёт минуты и трогает пакеты, службы и конфиги — ради
@@ -52,6 +65,15 @@ FRP_VERSION=${FRP_VERSION:-0.71.0}
 # после пятой, и до нужного дело не доходит.
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/id_ed25519}
 SSH=(ssh -o IdentitiesOnly=yes -i "$SSH_KEY")
+# Страница и сервис очков лежат рядом со скриптом и вкладываются в удалённый
+# поток как base64: так их текст — JS с долларами и обратными кавычками —
+# не проходит ни через одну подстановку bash ни здесь, ни на машине.
+HERE=$(cd "$(dirname "$0")" && pwd)
+PAGE_FILE=$HERE/relay-offline.html
+CAPY_FILE=$HERE/relay-capy.py
+[ -f "$PAGE_FILE" ] || { printf '\033[31mнет %s\033[0m\n' "$PAGE_FILE" >&2; exit 1; }
+[ -f "$CAPY_FILE" ] || { printf '\033[31mнет %s\033[0m\n' "$CAPY_FILE" >&2; exit 1; }
+embed() { base64 < "$1" | fold -w 76; }
 
 RED=$'\033[31m'; OFF=$'\033[0m'
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -62,8 +84,8 @@ die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 # Кусок удалённого скрипта, который кладёт страницу на место. Отдельной
 # функцией, потому что нужен в двух местах: в полной установке и в `--page`.
 # Функция печатает текст на stdout, а вызывающий вливает его в общий поток для
-# `bash -s` — так текст страницы существует в одном экземпляре и не может
-# разъехаться между двумя режимами.
+# `bash -s`. Сама страница — scripts/relay-offline.html, один файл на оба
+# режима, так что разъехаться им негде.
 relay_page() {
   cat <<'SNIPPET'
 echo "== страница ожидания"
@@ -77,201 +99,11 @@ echo "== страница ожидания"
 # целиком, вместе с общим секретом, — либо страницу, открытую всей машине.
 # Дешевле положить один и тот же текст дважды: пишется он всё равно отсюда.
 page_tmp=$(mktemp)
-cat > "$page_tmp" <<'PAGE_EOF'
-<!doctype html>
-<html lang="ru">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Комната ещё не открыта — Colloq</title>
-
-    <!--
-      Страница ждёт вместо студента: раз в 20 секунд браузер просит тот же
-      адрес заново, и то обновление, которое случится после поднятия комнаты,
-      приведёт прямо в неё. Нажимать ничего не нужно, помнить про F5 — тоже.
-
-      Перезагрузка сделана метой, а не скриптом, намеренно: скрипт может не
-      выполниться, а http-equiv="refresh" понимает всё, что вообще открывает
-      страницы. 20 секунд — компромисс между «попасть в комнату сразу» и
-      «не долбить адрес»: это один запрос на студента в двадцать секунд.
-    -->
-    <meta http-equiv="refresh" content="20" />
-
-    <!--
-      Ни одного внешнего запроса: ни шрифтов, ни картинок, ни библиотек. Эту
-      страницу отдаёт ретранслятор в тот момент, когда у него и так что-то не
-      так, а открывают её с телефона по сотовой связи в аудитории, где может
-      не грузиться вообще ничего. Всё, что ей нужно, — в этом файле.
-    -->
-    <meta name="color-scheme" content="light dark" />
-    <meta name="robots" content="noindex" />
-
-    <style>
-      /*
-       * Палитра ВШЭ, та же, что у продукта и у лендинга (web/src/index.css,
-       * site/styles.css). Светлый набор стоит на голом :root, тёмный приходит
-       * из системной настройки: выбирать тему тут негде и незачем — человек
-       * пробудет на странице минуту.
-       */
-      :root {
-        --canvas: #ffffff;
-        --surface: #f3f6fb;
-        --line: #dce3ef;
-        --ink: #101a33;
-        --muted: #5d6b8a;
-        /* Яркий голубой не проходит по контрасту как текст на белом — для
-           набора берётся его тёмный вариант, для точки и меток сам голубой. */
-        --accent: #0fa0d7;
-        --accent-text: #0a6e96;
-        --mark: #0f2d69;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --canvas: #060c1c;
-          --surface: #0e1b3d;
-          --line: #16244b;
-          --ink: #e6e7e8;
-          --muted: #9ba6be;
-          /* На тёмной земле голубой даёт 6.5:1 — здесь он и есть текст. */
-          --accent-text: #0fa0d7;
-          /* Синь бренда на почти чёрном не видна; знак берёт светлый её тон. */
-          --mark: #7b93c9;
-        }
-      }
-
-      * { box-sizing: border-box; }
-
-      /*
-       * Шрифт только тот, что уже есть у читателя. HSE Sans стоит первым — у
-       * половины ФКН он установлен, и тогда страница набрана тем же, чем весь
-       * продукт; у остальных её наберёт системный, и это ровно то, что нужно:
-       * ни одного байта из сети.
-       */
-      body {
-        margin: 0;
-        min-height: 100vh;
-        min-height: 100svh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: clamp(24px, 7vw, 64px);
-        background: var(--canvas);
-        color: var(--ink);
-        font-family: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system,
-          'Segoe UI', Roboto, sans-serif;
-        font-size: 17px;
-        line-height: 28px;
-        -webkit-font-smoothing: antialiased;
-      }
-
-      main { max-width: 34rem; }
-
-      .mark { display: block; width: 26px; height: 26px; }
-      .mark rect { fill: var(--mark); }
-      .mark rect:nth-child(2n) { fill: var(--accent); }
-
-      .label {
-        margin: 14px 0 0;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 12px;
-        font-weight: 500;
-        letter-spacing: 0.16em;
-        line-height: 18px;
-        text-transform: uppercase;
-        color: var(--accent-text);
-      }
-
-      h1 {
-        margin: 12px 0 0;
-        font-size: clamp(26px, 5.5vw, 34px);
-        line-height: 1.2;
-        letter-spacing: -0.01em;
-        font-weight: 700;
-        /* Заголовок в две строки не должен ронять одно слово на вторую. */
-        text-wrap: balance;
-      }
-
-      p { margin: 20px 0 0; }
-
-      .note { font-size: 15px; line-height: 24px; color: var(--muted); }
-
-      /* Что делать — единственный блок с землёй под ним: это и есть ответ. */
-      .wait {
-        display: flex;
-        gap: 14px;
-        align-items: flex-start;
-        margin-top: 28px;
-        padding: 18px 20px;
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: var(--surface);
-      }
-
-      .dot {
-        flex: none;
-        width: 9px;
-        height: 9px;
-        margin-top: 10px;
-        border-radius: 50%;
-        background: var(--accent);
-        animation: breathe 2.6s ease-in-out infinite;
-      }
-
-      /* Точка дышит, а не мигает: мигание торопит, а тут именно ждут. */
-      @keyframes breathe {
-        0%, 100% { opacity: 0.35; transform: scale(0.85); }
-        50%      { opacity: 1;    transform: scale(1); }
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        .dot { animation: none; opacity: 0.9; }
-      }
-    </style>
-  </head>
-
-  <body>
-    <main>
-      <!-- Знак Colloq: та же сетка, что и в фавиконе продукта. -->
-      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="2" y="2" width="6" height="6" rx="1.6" />
-        <rect x="9" y="2" width="6" height="6" rx="1.6" />
-        <rect x="16" y="2" width="6" height="6" rx="1.6" />
-        <rect x="2" y="9" width="6" height="6" rx="1.6" />
-        <rect x="9" y="9" width="6" height="6" rx="1.6" />
-        <rect x="16" y="9" width="6" height="6" rx="1.6" />
-        <rect x="2" y="16" width="6" height="6" rx="1.6" />
-        <rect x="9" y="16" width="6" height="6" rx="1.6" />
-        <rect x="16" y="16" width="6" height="6" rx="1.6" />
-      </svg>
-
-      <p class="label">Colloq</p>
-
-      <h1>Комната ещё не открыта</h1>
-
-      <p>
-        По этому адресу занятие сейчас не идёт. Комнату открывает
-        преподаватель — обычно незадолго до начала, и до этой минуты её здесь
-        просто нет.
-      </p>
-
-      <p class="wait">
-        <span class="dot"></span>
-        <span>
-          Ждать можно прямо здесь: страница сама обновляется каждые двадцать
-          секунд и откроет комнату, как только та появится. Оставьте вкладку
-          открытой — нажимать ничего не нужно.
-        </span>
-      </p>
-
-      <p class="note">
-        Если ждёте давно, стоит сверить адрес с тем, который вам дали: одна
-        буква в имени уводит на пустую страницу вроде этой.
-      </p>
-    </main>
-  </body>
-</html>
-PAGE_EOF
+base64 -d > "$page_tmp" <<'PAGE_B64'
+SNIPPET
+  embed "$PAGE_FILE"
+  cat <<'SNIPPET'
+PAGE_B64
 
 # Права как у соседей по каталогу: владелец root, группа демона, чтение
 # группе. Демон читает файл, но переписать его не может — это делает только
@@ -301,7 +133,8 @@ if [ "$PAGE_ONLY" = 1 ]; then
 # место, и показывать его было бы некому: в конфигах нет ни строки про него.
 # Молчать об этом нельзя — снаружи это выглядит как «страница не обновилась».
 if ! grep -q 'custom404Page' /etc/colloq-relay/frps.toml 2>/dev/null ||
-   ! grep -q 'offline.html' /etc/caddy/Caddyfile 2>/dev/null; then
+   ! grep -q 'offline.html' /etc/caddy/Caddyfile 2>/dev/null ||
+   ! grep -q '/.relay/capy/' /etc/caddy/Caddyfile 2>/dev/null; then
   echo
   echo "ВНИМАНИЕ: конфиги ещё не знают про эту страницу."
   echo "Прогоните полную установку один раз: make relay-setup WHERE=..."
@@ -353,7 +186,8 @@ frps --version
 echo "== пользователи и каталоги"
 id -u caddy >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy
 id -u frps  >/dev/null 2>&1 || useradd --system --home /var/lib/frps  --shell /usr/sbin/nologin frps
-install -d -o caddy -g caddy -m 0750 /var/lib/caddy /etc/caddy
+id -u capy  >/dev/null 2>&1 || useradd --system --home /var/lib/colloq-capy --shell /usr/sbin/nologin capy
+install -d -o caddy -g caddy -m 0750 /var/lib/caddy /etc/caddy /etc/caddy/names
 install -d -o frps  -g frps  -m 0750 /var/lib/frps
 # Группа frps, а не только root: демон работает не от рута, и одного chown на
 # файл мало — каталог тоже нужно уметь пройти.
@@ -433,7 +267,7 @@ http://127.0.0.1:9180 {
 	bind 127.0.0.1
 	# Имя приезжает в запросе как ?domain=hse.colloq.ru. Матчер query умеет
 	# сравнивать значение целиком и не понимает звёздочку внутри него — с
-	# `query domain=*.${DOMAIN}` спрашивалка отвечала 403 в том числе на свои
+	# «query domain=*.${DOMAIN}» спрашивалка отвечала 403 в том числе на свои
 	# собственные имена, и сертификат не выпускался вообще ни для кого.
 	# Поэтому имя переносится в путь, где есть настоящее регулярное выражение.
 	rewrite * /{query.domain}
@@ -449,8 +283,20 @@ http://127.0.0.1:9180 {
 	# посреди пары. Имя, туннель которого когда-то был, остаётся разрешённым:
 	# оно и должно продлеваться, пока комнату открывают снова.
 	handle @ours {
-		rewrite * /api/proxy/http/{re.ours.1}
-		reverse_proxy 127.0.0.1:7500
+		# Память имён (см. шапку): файл /etc/caddy/names/<имя>.${DOMAIN} есть —
+		# сертификат выдаётся, жив туннель сейчас или нет. Матчер стоит внутри
+		# @ours, а не рядом: снаружи путь «/» совпал бы с самим каталогом.
+		@known file {
+			root /etc/caddy/names
+			try_files {path}
+		}
+		handle @known {
+			respond 200
+		}
+		handle {
+			rewrite * /api/proxy/http/{re.ours.1}
+			reverse_proxy 127.0.0.1:7500
+		}
 	}
 	handle {
 		respond 403
@@ -479,6 +325,20 @@ Disallow: /
 " 200
 	}
 
+	# Очки игры со страницы ожидания — сервису colloq-capy (см. шапку). Путь
+	# начинается с точки: ни один адрес инстанса так не выглядит, и маршрут
+	# ничего у комнаты не отнимает даже когда она открыта.
+	handle /.relay/capy/* {
+		# Тело больше 4 КБ до python не доезжает; адрес клиента — тот, что
+		# видит caddy, а не то, что клиент написал в заголовке сам.
+		request_body {
+			max_size 4KB
+		}
+		reverse_proxy 127.0.0.1:9181 {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Host {host}
+		}
+	}
 	reverse_proxy 127.0.0.1:8080 {
 		header_up X-Forwarded-Host {host}
 		header_up X-Forwarded-Proto https
@@ -573,13 +433,89 @@ ReadWritePaths=/var/lib/caddy /etc/caddy
 WantedBy=multi-user.target
 UNIT
 
+echo "== очки капибары"
+base64 -d > /usr/local/bin/colloq-capy <<'CAPY_B64'
+REMOTE_TAIL
+embed "$CAPY_FILE"
+cat <<'REMOTE_TAIL'
+CAPY_B64
+chmod 0755 /usr/local/bin/colloq-capy
+cat > /etc/systemd/system/colloq-capy.service <<'UNIT'
+[Unit]
+Description=capybara leaderboard for the colloq relay waiting page
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=capy
+Group=capy
+Environment=CAPY_STATE=/var/lib/colloq-capy
+Environment=CAPY_PORT=9181
+StateDirectory=colloq-capy
+ExecStart=/usr/bin/python3 /usr/local/bin/colloq-capy
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target
+UNIT
+echo "== память имён"
+cat > /usr/local/bin/colloq-relay-names <<NAMES
+#!/usr/bin/env bash
+# Переписывает /etc/caddy/names по списку туннелей frps: каждое имя, которое
+# frps видел с последнего запуска, становится пустым файлом <имя>.${DOMAIN}.
+# Файлы никогда не удаляются — ради этого каталог и существует: список frps
+# пуст после каждого его перезапуска, а имя должно помниться дальше.
+# Зовётся таймером colloq-relay-names.timer от пользователя caddy.
+set -euo pipefail
+python3 - "${DOMAIN}" <<'PY'
+import json, re, sys, urllib.request
+dom = sys.argv[1]
+try:
+    d = json.load(urllib.request.urlopen('http://127.0.0.1:7500/api/proxy/http', timeout=5))
+except Exception:
+    sys.exit(0)
+for p in d.get('proxies', []):
+    n = (p.get('conf') or {}).get('subdomain') or p.get('name') or ''
+    if re.fullmatch(r'[a-z0-9-]+', n):
+        open(f'/etc/caddy/names/{n}.{dom}', 'a').close()
+PY
+NAMES
+chmod 0755 /usr/local/bin/colloq-relay-names
+cat > /etc/systemd/system/colloq-relay-names.service <<'UNIT'
+[Unit]
+Description=remember colloq relay names for on-demand TLS
+After=frps.service
+[Service]
+Type=oneshot
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/colloq-relay-names
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/caddy/names
+UNIT
+cat > /etc/systemd/system/colloq-relay-names.timer <<'UNIT'
+[Unit]
+Description=remember colloq relay names every minute
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+UNIT
 systemctl daemon-reload
-systemctl enable --now frps caddy
+systemctl enable --now frps caddy colloq-capy colloq-relay-names.timer
 # enable --now не трогает уже запущенное, а скрипт задуман повторяемым:
 # без явного перезапуска второй прогон оставил бы обе службы на старом конфиге.
-systemctl restart frps caddy
+systemctl restart frps caddy colloq-capy
 sleep 3
-systemctl is-active frps caddy | tr '\n' ' '; echo
+systemctl is-active frps caddy colloq-capy | tr '\n' ' '; echo
 
 echo "== слушают"
 ss -lntp | awk 'NR==1 || /:(80|443|7000|8080|9180|7500)\b/{print "  "$4"  "$6}'
