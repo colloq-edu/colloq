@@ -197,7 +197,7 @@ schema-compatible rollback.
 | [Single-node deployment](deploy/k3s/README.md) | Releases, installation, environments, storage, updates, rollback and GPU prerequisites. |
 | [Vast VM deployment](docs/deployment-vast.md) | Renting a VM, registry credentials, named backups and recovery. Rental and disk destruction require confirmation. |
 | [Runtime boundary](runtime/README.md) | Broker API, credentials, room lifecycle and isolation limits. |
-| [Deployment verification](docs/deployment-proof-2026-09-09.md) | Recorded execution checks, tested versions and the scope of deployment evidence. |
+| [Deployment verification](docs/deployment-proof-2026-09-09.md) · [Vast GPU results](docs/deployment-vast-gpu-2026-09-09.md) | Recorded execution checks, tested versions and the scope of deployment evidence. |
 
 Isolation is **between seminars**. Participants inside a seminar share Python,
 files and a terminal. Containers share the host Linux kernel; standard Kubernetes
