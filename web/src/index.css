@@ -587,9 +587,26 @@
   margin-left: -1px;
   box-sizing: border-box;
 }
-.cm-ySelectionInfo {
-  position: absolute;
-  top: -1.2em;
+/*
+ * Плашка с именем соседа — и почему у селектора три класса.
+ *
+ * y-codemirror.next объявляет её своей БАЗОВОЙ темой, а базовая тема — это
+ * `.ͼ1 .cm-ySelectionInfo`, два класса. Правило в один класс проигрывало ей по
+ * старшинству молча и наполовину: высота плашки, капитель и разрядка приезжали
+ * отсюда, а шрифт, кегль, начертание, интерлиньяж и подъём оставались чужими —
+ * на экране получалась плашка 14 px с засечным текстом 9.75 px обычного
+ * начертания, прижатым к её верхнему краю. Здесь три класса, и они выигрывают
+ * без `!important`.
+ *
+ * Не перечислено — и держится на базовой теме — ровно то, что менять незачем:
+ * `position`, фон (наследует цвет каретки) и появление по наведению.
+ *
+ * Подъём в пикселях, а не в `em`: `em` здесь считается от кегля САМОЙ плашки
+ * (8.5 px), и «−1.2em» поднимало её на 10 px вместо её же высоты — низ плашки
+ * налезал на строку с кодом. −14 px ставит её ровно на строку.
+ */
+.cm-editor .cm-ySelectionCaret > .cm-ySelectionInfo {
+  top: -14px;
   left: -2px;
   /* Off the artboard: a 14px plate of 8.5px caps. Raw px because this is not a
      Tailwind utility and 8.5 is below the smallest step on the type scale — it
@@ -598,6 +615,7 @@
   padding: 0 5px;
   font-size: 8.5px;
   font-family: theme('fontFamily.sans');
+  font-style: normal;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
