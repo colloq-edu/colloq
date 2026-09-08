@@ -78,8 +78,9 @@
   font-weight: 400 800;
   font-style: normal;
   font-display: swap;
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
-    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 @font-face {
@@ -88,9 +89,10 @@
   font-weight: 400 800;
   font-style: normal;
   font-display: swap;
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
-    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
-    U+2C60-2C7F, U+A720-A7FF;
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
 }
 
 @font-face {
@@ -205,7 +207,8 @@
    * случай, если файлы не доедут.
    */
   --sans: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --mono: 'JetBrains Mono', 'JetBrains Mono Fallback Consolas', 'JetBrains Mono Fallback Menlo',
+  --mono:
+    'JetBrains Mono', 'JetBrains Mono Fallback Consolas', 'JetBrains Mono Fallback Menlo',
     ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* Поле страницы: 96px на макете, ужимается до 20px на телефоне. */
@@ -436,699 +439,6 @@ a.wordmark {
   }
 }
 
-/* Ссылки, которых пока нет: они не кликаются и не притворяются кликабельными. */
-.nav-links .dead {
-  font-family: var(--mono);
-  font-size: 13px;
-  color: rgba(255, 255, 255, 0.32);
-  cursor: default;
-}
-
-/* --------------------------------------------------------------- герой */
-
-.hero {
-  padding-bottom: clamp(64px, 7.5vw, 88px);
-}
-
-/* Точка отсчёта для треда оракула: он висит справа сверху, см. .oracle. */
-.hero .inner {
-  position: relative;
-}
-
-/*
- * ГЕРОЙ. Заголовок и лид одной колонкой, комната строкой, диптих во всю ширину.
- *
- * Было: заголовок и правая рейка в 292 px рядом, лид и кнопки — ниже. Рейка
- * повторяла то, что страница показывает дальше (экран входа, «Развернуть»), и
- * при 1100 px исчезала совсем — то есть половина обещания героя жила только на
- * широком мониторе. Диптих на её месте говорит то, чего страница не говорила
- * вовсе: занятие бывает двух родов, и оба здесь.
- */
-.hero-head {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  padding-top: clamp(24px, 3.2vw, 48px);
-}
-
-.hero h1 {
-  /*
-   * Самое громкое на странице. Black, а не Bold: артборды нарисованы в
-   * HSE Sans Black, и Inter на 700 здесь читается тонко.
-   *
-   * Кегль снижен с 86 до 72: над заголовком больше нет надзага, и он стоит
-   * первым — а первым 86 px читаются как крик. Мера в em, а не в px: она
-   * должна ужиматься вместе с кеглем, иначе на планшете заголовок разъезжается
-   * на лишнюю строку.
-   */
-  font-size: clamp(36px, 5.2vw, 72px);
-  font-weight: 900;
-  line-height: 1;
-  letter-spacing: -0.04em;
-  /*
-   * Мера в em, а не в px: она обязана ужиматься вместе с кеглем. 9.6em ломает
-   * строку после «делают,» — по запятой, а не по «а не», которое иначе висит
-   * в конце первой строки хвостом.
-   */
-  max-width: 9.6em;
-}
-
-.hero .lead {
-  max-width: 620px;
-}
-
-/*
- * Пока тред оракула висит справа абсолютом, лид обязан кончаться раньше его
- * рамки. Внутренняя колонка — 86.6% окна (гаттер 6.7vw с каждой стороны), тред
- * занимает правые 352px, поэтому полная мера в 620px дотягивалась до него на
- * участке 1101–1122px: у `.oracle-thread` есть рамка и нет фона, и линия
- * прочерчивалась прямо по буквам. Ниже 1101px тред встаёт в поток под лидом —
- * там ограничивать нечего, и мера остаётся полной.
- */
-@media (min-width: 1101px) {
-  .hero .lead {
-    max-width: min(620px, calc(100% - 380px));
-  }
-}
-
-/*
- * Живая комната — строкой, а не колонкой.
- *
- * Сцена в скрипте не переписывалась: те же `#room`, `#room-n`, `#room-say`,
- * тот же FLIP на переездах. Изменилось только место: сорок пикселей под лидом
- * вместо трёхсот справа, и счёт стоит рядом с кругами, а не абзацем под ними.
- */
-.room-count {
-  font-size: 15px;
-  line-height: 24px;
-  color: rgba(255, 255, 255, 0.72);
-  flex: none;
-}
-
-/*
- * ОРАКУЛ В ГЕРОЕ. Абсолютом, а не колонкой грида.
- *
- * Заголовок держит меру в em и обязан ломаться сам; если положить его и тред в
- * общий грид, мера станет зависеть от ширины треда, и строка «а не смотрят»
- * поедет от правки в чужом блоке. Поэтому тред висит справа сверху, а на узком
- * экране просто встаёт в поток под лидом.
- */
-.oracle {
-  position: absolute;
-  top: clamp(120px, 12vw, 168px);
-  right: 0;
-  width: 352px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.oracle-thread {
-  border: 1px solid var(--brand-2);
-  padding: 18px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.oracle-ask {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  font-size: 15px;
-  line-height: 23px;
-  color: #fff;
-}
-
-.oracle-face {
-  flex: none;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 700;
-  color: #fff;
-}
-
-/* Ответ отбит линейкой, как ветка треда в самой панели оракула. */
-.oracle-answer {
-  margin-left: 11px;
-  padding-left: 23px;
-  border-left: 1px solid var(--brand-2);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 14px;
-  line-height: 22px;
-  color: rgba(255, 255, 255, 0.72);
-}
-
-.oracle-answer code {
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--accent);
-}
-
-.oracle-scope {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.4);
-}
-
-.oracle-note {
-  font-size: 14px;
-  line-height: 22px;
-  color: rgba(255, 255, 255, 0.62);
-}
-
-/*
- * ДИПТИХ. Две ипостаси занятия, одинакового веса.
- *
- * `minmax(0, 1fr)` вместо `1fr`: колонка грида по умолчанию не уже своего
- * содержимого, а внутри лежит `pre` с длинной строкой кода — без этого правая
- * половина уезжала бы за край страницы.
- */
-.duo {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 24px;
-  padding-top: clamp(40px, 4.5vw, 56px);
-}
-
-.duo-item {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
-
-.duo-frame {
-  height: clamp(240px, 21vw, 300px);
-  overflow: hidden;
-}
-
-.duo-frame--light {
-  background: #fff;
-  padding: 22px 26px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* Чёрный, а не --ink: это проекция в тёмном зале, а не поверхность продукта. */
-.duo-frame--dark {
-  background: #000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.duo-cell-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.duo-num {
-  color: var(--faint);
-}
-
-.duo-state {
-  letter-spacing: 0.14em;
-  color: var(--accent-text);
-}
-
-.duo-code {
-  background: var(--surface);
-  border-left: 2px solid var(--accent);
-  padding: 12px 16px;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 20px;
-  color: #374b9b;
-  white-space: pre;
-  overflow: hidden;
-}
-
-.duo-code span {
-  display: block;
-}
-
-.duo-out {
-  padding-left: 16px;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--ink);
-}
-
-.duo-who {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: 4px;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.duo-dots {
-  display: inline-flex;
-  flex: none;
-}
-
-.duo-dots i {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-}
-
-.duo-dots i + i {
-  margin-left: -8px;
-  box-shadow: 0 0 0 2px #fff;
-}
-
-/* Лист внутри проекции: та же пропорция 16:9, что и на настоящем проекторе. */
-.duo-slide {
-  position: relative;
-  width: 76%;
-  aspect-ratio: 460 / 258;
-  background: #fff;
-  padding: 24px 30px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
-.duo-slide-h {
-  font-size: clamp(15px, 1.4vw, 20px);
-  font-weight: 900;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-  margin-bottom: 3px;
-}
-
-.duo-line {
-  height: 5px;
-  background: var(--line);
-}
-
-.duo-ink {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-/*
- * ------------------------------------------------- чужие каретки в тексте ---
- *
- * Слой лежит поверх текста и ничего в нём не двигает: он абсолютный, пустой и
- * непрокликиваемый. Текст под ним остаётся обычным текстом — его можно
- * выделить мышью, его читает скринридер, он переносится как переносился.
- * Сам слой скринридеру не виден: `aria-hidden` ставит скрипт при заводе — из
- * CSS этого не сделать, а подписи кареток иначе въезжают в заголовок.
- *
- * Координаты приходят из скрипта в пикселях, потому что вычислить их может
- * только браузер: где кончается пятый символ третьей строки, знает он один, и
- * знает после каждого перетекания.
- */
-.live {
-  /* Единственное, что разметка отдаёт слою: точку отсчёта. */
-  position: relative;
-}
-
-.cursors {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.cur {
-  position: absolute;
-  inset: 0;
-}
-
-/*
- * Каретка. Ездит трансформом, а не координатами: left и top пересчитывают
- * раскладку абзаца каждый кадр, трансформ двигает готовый слой.
- *
- * 420ms — против 220ms в первой редакции. Такт сцены длинный, человек за
- * каретку дёргается редко, и на этой скорости видно, что курсор именно едет
- * через строку, а не переставлен через неё.
- */
-.cur-bar {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 2px;
-  background: var(--tint);
-  transform: translate(-40px, -40px);
-  opacity: 0;
-  transition:
-    transform 420ms var(--ease-out),
-    opacity var(--t-out) var(--ease-out);
-}
-
-/* Каретки не мигают. Мигание — про твой собственный курсор: оно говорит
-   «сюда попадёт следующая буква». Чужая каретка так не говорит, а четыре
-   мигалки на первом экране складываются в гирлянду. */
-.cur.is-on .cur-bar {
-  opacity: 1;
-}
-
-/*
- * Подпись. Показывается, когда человек тронулся, и гаснет через полторы
- * секунды: постоянные ярлыки превращают абзац в подписанный чертёж.
- * Чернила выбирает скрипт по светлоте плашки — белым по жёлтому имя не
- * прочитать.
- */
-.cur-tag {
-  position: absolute;
-  left: -1px;
-  bottom: 100%;
-  margin-bottom: 5px;
-  padding: 2px 6px;
-  background: var(--tint);
-  color: var(--cur-ink, #fff);
-  font-family: var(--mono);
-  font-size: 10px;
-  line-height: 14px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  border-radius: 2px;
-  opacity: 0;
-  transition: opacity var(--t-out) var(--ease-out);
-}
-
-.cur.is-say .cur-tag {
-  opacity: 1;
-}
-
-/*
- * Выделение. Прямоугольник на каждую строку — перенос режет выделение, и
- * одной коробкой его не описать. Появляется без переезда: выделение это
- * событие, а не предмет, который куда-то едет.
- */
-/* 0.18, а не 0.24: на заголовке выделение занимает пол-экрана, и на такой
-   площади даже четверть плотности перекрашивает белые буквы в цвет плашки. */
-.cur-sel u {
-  position: absolute;
-  background: var(--tint);
-  opacity: 0.18;
-  text-decoration: none;
-  border-radius: 1px;
-  animation: sel-in 200ms var(--ease-out) both;
-}
-
-@keyframes sel-in {
-  from {
-    opacity: 0;
-  }
-}
-
-/* Строка комнаты: круги и, когда есть что сказать, имя вошедшего. */
-.room-line {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.avatars {
-  display: flex;
-  align-items: center;
-  /* Уходящий круг встаёт абсолютом на своё же место и гаснет поверх полосы —
-     координаты ему нужно от чего-то считать. */
-  position: relative;
-  flex: none;
-}
-
-/*
- * Имя того, кто только что пришёл или ушёл. Приходит и уходит только
- * прозрачностью: строка стоит последней, ничего собой не двигает, и лишнее
- * движение рядом с едущими кругами читалось бы как второй источник шума.
- */
-.room-say {
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 16px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent-soft);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* Без min-width флекс-элемент не сжимается ниже своего текста, и вместо
-     многоточия строка вылезала бы за рейку. */
-  min-width: 0;
-  opacity: 0;
-  transition: opacity var(--t-out) var(--ease-out);
-}
-
-.room-say.is-on {
-  opacity: 1;
-}
-
-/* Ушёл — тем же кеглем, но не сигнальным цветом: приход это событие, уход
-   это просто факт, и красить их одинаково значит соврать про важность. */
-.room-say.is-gone {
-  color: rgba(255, 255, 255, 0.5);
-}
-
-.avatars span {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 2px solid var(--brand);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 700;
-  color: #fff;
-  flex: none;
-}
-
-.avatars span + span {
-  /* Нахлёст. Он же — стартовая точка входной анимации ниже: правка одного
-     числа обязана править и второе, иначе круг поедет не из-под соседа. */
-  margin-left: -10px;
-}
-
-/*
- * Смещение соседей. Скрипт ставит сдвинутым кругам их прежнюю координату
- * трансформом и тут же её снимает — едет вот этот переход.
- *
- * 260ms и только transform: 260ms — верх «сменного» яруса, и на такте в
- * две-пять секунд это ровно та скорость, на которой видно, что круг именно
- * едет, а не переставлен. Трансформ выбран не за красоту: left и margin
- * пересчитывают раскладку всей полосы каждый кадр, трансформ двигает
- * готовый слой.
- */
-.avatars span {
-  transition: transform var(--t-out) var(--ease-out);
-}
-
-/*
- * Уходящий. Он уже вне потока, поэтому может позволить себе уменьшиться:
- * соседи в этот момент едут своим ходом и его размер их не касается.
- * 0.72, а не 0 — в ничто ничто и не уходит, круг просто отдаляется.
- */
-.avatars span.is-out {
-  animation: av-out var(--t-out) var(--ease-out) both;
-  pointer-events: none;
-}
-
-@keyframes av-out {
-  to {
-    opacity: 0;
-    transform: scale(0.72);
-  }
-}
-
-/*
- * Пять кругов собираются в полосу один раз при загрузке. Это единственная
- * картинка «людей» в герое, и движение здесь объясняет слово «комната»:
- * люди приходят по одному, а не рисуются разом. Шаг 60ms — на пределе, где
- * каскад ещё читается как последовательность, а не как задержка.
- * translateX(-10px) равен нахлёсту выше: круг выезжает ровно из-под соседа.
- * Из ничего ничто не растёт: старт 0.94, а не 0.
- *
- * Класс вешает и через 1.2s снимает скрипт. Поэтому: без JS аватары просто
- * есть (базовое состояние видимое), и сцена не может проиграть второй раз
- * посреди чтения — например, когда узкое окно растянули до широкого и рейка
- * героя (styles.css: диптих в @media max-width:1100px) снова включилась.
- */
-/*
- * Приходящий человек. Класс вешает скрипт ровно на один круг и ровно на один
- * такт — это не состояние, а событие, поэтому оно и живёт в анимации, а не в
- * переходе. Уход не анимируется намеренно: круг, который выцветает перед тем
- * как исчезнуть, задерживает соседей, и полоса дёргается дважды вместо раза.
- */
-.avatars span.is-new {
-  animation: av-in 280ms var(--ease-out) both;
-}
-
-.avatars.is-in span {
-  animation: av-in 280ms var(--ease-out) both;
-}
-
-.avatars.is-in span:nth-child(1) {
-  animation-delay: 80ms;
-}
-
-.avatars.is-in span:nth-child(2) {
-  animation-delay: 140ms;
-}
-
-.avatars.is-in span:nth-child(3) {
-  animation-delay: 200ms;
-}
-
-.avatars.is-in span:nth-child(4) {
-  animation-delay: 260ms;
-}
-
-.avatars.is-in span:nth-child(5) {
-  animation-delay: 320ms;
-}
-
-@keyframes av-in {
-  from {
-    opacity: 0;
-    transform: translateX(-10px) scale(0.94);
-  }
-}
-
-/* --------------------------------------------------------------- кнопки */
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-/*
- * Ни одна кнопка на этой странице пока никуда не ведёт: исходники не открыты,
- * демо-комнаты нет. Поэтому это не ссылки, а объявления — рамка вместо заливки,
- * приглушённый текст и метка «скоро». Ничего, что притворяется нажимаемым.
- */
-.btn-dead {
-  display: inline-flex;
-  align-items: center;
-  gap: 14px;
-  height: 56px;
-  padding: 0 24px;
-  border: 1px solid var(--line);
-  color: var(--faint);
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  cursor: default;
-  user-select: none;
-}
-
-.on-brand .btn-dead {
-  border-color: rgba(255, 255, 255, 0.22);
-  color: rgba(255, 255, 255, 0.42);
-}
-
-.soon {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 8px;
-  background: var(--raised);
-  color: var(--accent-text);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  flex: none;
-}
-
-.on-brand .soon {
-  background: rgba(15, 160, 215, 0.16);
-  color: var(--accent-soft);
-}
-
-.actions-note {
-  font-size: 15px;
-  line-height: 24px;
-  color: var(--muted);
-  max-width: 600px;
-}
-
-.on-brand .actions-note {
-  color: rgba(255, 255, 255, 0.5);
-}
-
-/* ----------------------------------------------------------- боль (why) */
-
-/*
- * Шапка секции — по левой кромке содержимого, как у всех остальных.
- *
- * Метка стояла колонкой в 180 px, и заголовок «Зачем» начинался на 266 px
- * правее, чем заголовок любой другой секции страницы. Внутри секции это было
- * оправдано — под шапкой идут строки с колонкой номеров, — но читатель
- * сравнивает не с соседней строкой, а с соседним экраном, и одна съехавшая
- * вправо шапка выглядит как промах вёрстки. Правило теперь одно на страницу:
- * метка над заголовком, оба от кромки.
- */
-.why-head {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding-bottom: clamp(48px, 5.5vw, 80px);
-  border-bottom: 1px solid var(--line);
-}
-
-.why-row {
-  display: flex;
-  align-items: flex-start;
-  gap: clamp(24px, 6vw, 96px);
-  padding: 44px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.why-row .num {
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--faint);
-  flex: none;
-  width: 180px;
-}
-
-.why-row h3 {
-  font-size: clamp(20px, 2vw, 26px);
-  font-weight: 700;
-  line-height: 1.32;
-  letter-spacing: -0.01em;
-  flex: none;
-  width: 520px;
-  max-width: 100%;
-}
-
-.why-row p {
-  font-size: 17px;
-  line-height: 28px;
-  color: var(--muted);
-  flex: 1 1 0;
-  min-width: 0;
-}
-
 /* --------------------------------------------------------- снимки экрана */
 
 .shot-head {
@@ -1328,11 +638,21 @@ a.wordmark {
   margin-left: 0;
 }
 
-.door-stack span:nth-child(1) { z-index: 5; }
-.door-stack span:nth-child(2) { z-index: 4; }
-.door-stack span:nth-child(3) { z-index: 3; }
-.door-stack span:nth-child(4) { z-index: 2; }
-.door-stack span:nth-child(5) { z-index: 1; }
+.door-stack span:nth-child(1) {
+  z-index: 5;
+}
+.door-stack span:nth-child(2) {
+  z-index: 4;
+}
+.door-stack span:nth-child(3) {
+  z-index: 3;
+}
+.door-stack span:nth-child(4) {
+  z-index: 2;
+}
+.door-stack span:nth-child(5) {
+  z-index: 1;
+}
 
 /* Свой круг носит эмодзи, а не инициалы: 10px, на которых читаются «МР»,
    для рисунка животного — точка. */
@@ -1728,220 +1048,6 @@ a.wordmark {
   color: var(--muted);
 }
 
-/* -------------------------------------------------- девяносто минут (пара) */
-
-/*
- * Печатное расписание: узкая колонка времени слева, линейки между строками.
- * Намеренно не форма «Трёх шагов» (точка + линейка + три равные колонки в
- * ряд) — иначе читатель второй раз прочитает одну и ту же фигуру и решит,
- * что это тот же блок другими словами.
- */
-.tline-head {
-  display: flex;
-  align-items: flex-end;
-  gap: clamp(24px, 6vw, 96px);
-  padding-bottom: clamp(32px, 3.6vw, 48px);
-}
-
-.tline-head > div {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  max-width: 660px;
-}
-
-.tline-head .prose {
-  max-width: 428px;
-  font-size: 17px;
-  line-height: 28px;
-}
-
-/*
- * Переключатель кресел. Нативная радиогруппа: Tab заводит внутрь один раз,
- * стрелки меняют перспективу, Home/End уводят к краям — ровно то поведение,
- * которого ждут от сегментного контрола, и ноль строк JS на него.
- * Бордер один, на контейнере: две рамки встык дали бы 2px шов посередине.
- */
-.roles {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  width: min(360px, 100%);
-  margin: 0 0 clamp(28px, 3vw, 40px);
-  padding: 0;
-  border: 1px solid var(--brand-2);
-  min-inline-size: 0;
-}
-
-.roles label {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* Не фиксированная высота: моноширинный uppercase с трекингом .14em при
-     40px рискует обрезаться, а 44px — минимальная цель для пальца. */
-  min-height: 44px;
-  padding: 0 12px;
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.62);
-  text-align: center;
-  cursor: pointer;
-  user-select: none;
-  transition:
-    color var(--t-color) ease,
-    transform var(--t-press) var(--ease-out);
-}
-
-.roles label:last-of-type {
-  border-left: 1px solid var(--brand-2);
-}
-
-.roles input:checked + label {
-  color: #fff;
-}
-
-/* Нажатие обязано быть слышно рукой раньше, чем глазом. */
-.roles label:active {
-  transform: scale(0.97);
-}
-
-.roles input:focus-visible + label {
-  outline: 2px solid var(--accent-soft);
-  outline-offset: 2px;
-}
-
-/*
- * Бегущая метка — единственная яркая точка секции и единственное, что
- * показывает состояние. --t-swap (200ms) и ease-in-out: она не входит и не
- * уходит, она едет из точки в точку, а такому движению нужна и разгонка, и
- * торможение. 200ms — верх бюджета сегментного контрола; на 260ms кривая
- * cubic-bezier(0.77, 0, 0.175, 1) первую треть почти не двигается, и метка
- * воспринимается медленнее собственного числа.
- */
-.roles-ind {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 50%;
-  height: 2px;
-  background: var(--accent);
-  transition-property: transform;
-  transition-duration: var(--t-swap);
-  transition-timing-function: var(--ease-in-out);
-}
-
-/*
- * Класс-дубль ко всем :has ниже. Он не про изящество: Firefox ESR 115 всё ещё
- * стоит на институтских машинах и :has не знает, а страница у нас как раз
- * университетская. Скрипт синхронизирует класс с радиокнопкой; правила
- * одинаковые, поэтому в современном браузере дубль просто ничего не меняет.
- */
-.roles:has(#role-s:checked) .roles-ind,
-#para.seat-s .roles-ind {
-  transform: translateX(100%);
-}
-
-.tline {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.tline-row {
-  display: flex;
-  align-items: flex-start;
-  gap: clamp(20px, 4vw, 64px);
-  padding: 26px 0;
-  border-top: 1px solid var(--brand-2);
-}
-
-.tline-row:last-child {
-  border-bottom: 1px solid var(--brand-2);
-}
-
-.tline-time {
-  flex: none;
-  width: 88px;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 30px;
-  color: rgba(255, 255, 255, 0.5);
-  font-variant-numeric: tabular-nums;
-}
-
-/*
- * Обе версии строки лежат в одной ячейке грида: контейнер держит высоту по
- * длинной, поэтому при переключении ни строка ниже, ни секция под ней не
- * прыгают. Это и есть назначение движения здесь — не украсить смену текста,
- * а не дать ей дёрнуть страницу.
- */
-.swhat {
-  display: grid;
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-.swhat > div {
-  grid-area: 1 / 1;
-  display: flex;
-  gap: clamp(20px, 4vw, 64px);
-  transition:
-    opacity 160ms var(--ease-out) 100ms,
-    visibility 0s;
-}
-
-/*
- * Уход и приход разведены во времени: при одновременном кроссфейде две
- * кириллические строки видно как две наложенные, а не как одну сменившуюся.
- * Уходит быстрее (120ms), приходит с задержкой в 100ms — глаз успевает
- * увидеть чистое поле между состояниями.
- * Базовое состояние — версия преподавателя: если :has не поддержан,
- * страница остаётся читаемой, просто без второго кресла.
- */
-.swhat [data-seat='s'] {
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    opacity 120ms var(--ease-out),
-    visibility 0s linear 120ms;
-}
-
-#para:has(#role-s:checked) .swhat [data-seat='s'],
-#para.seat-s .swhat [data-seat='s'] {
-  opacity: 1;
-  visibility: visible;
-  transition:
-    opacity 160ms var(--ease-out) 100ms,
-    visibility 0s;
-}
-
-#para:has(#role-s:checked) .swhat [data-seat='t'],
-#para.seat-s .swhat [data-seat='t'] {
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    opacity 120ms var(--ease-out),
-    visibility 0s linear 120ms;
-}
-
-.swhat h3 {
-  flex: none;
-  width: 340px;
-  font-size: clamp(19px, 1.8vw, 22px);
-  font-weight: 700;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
-}
-
-.swhat p {
-  flex: 1 1 0;
-  min-width: 0;
-  font-size: 16px;
-  line-height: 26px;
-}
-
 /* ------------------------------------------------------------- свойства */
 
 .feat-head {
@@ -2224,422 +1330,6 @@ a.wordmark {
   color: var(--muted);
 }
 
-/* -------------------------------------------------------------- границы */
-
-.limits {
-  display: flex;
-  gap: clamp(32px, 6vw, 96px);
-}
-
-.limits > div:first-child {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.limits h2 {
-  max-width: 660px;
-}
-
-.limits > div:first-child p {
-  max-width: 560px;
-  color: var(--muted);
-}
-
-/* Прямой потомок: внутри секции появился второй ярус со своими списками. */
-.limits > ul {
-  flex: none;
-  width: 492px;
-  max-width: 100%;
-  padding-top: 6px;
-}
-
-.limits > ul li {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 16px 0;
-  border-bottom: 1px solid var(--line);
-  font-size: 18px;
-  color: var(--muted);
-}
-
-.limits > ul li svg {
-  flex: none;
-}
-
-.limits .label {
-  color: var(--faint);
-  padding-bottom: 18px;
-  display: block;
-}
-
-/*
- * Второй ярус той же секции. .limits — flex-строка, поэтому третий ребёнок
- * без переноса встал бы третьей колонкой рядом со списком: перенос включается
- * здесь, а не в разметке. Отступ сверху даёт row-gap самой .limits, своего
- * margin-top у яруса нет — иначе он сложился бы вдвое.
- */
-.limits {
-  flex-wrap: wrap;
-}
-
-.leak {
-  flex: 0 0 100%;
-  width: 100%;
-  display: flex;
-  gap: clamp(32px, 6vw, 96px);
-  padding-top: clamp(28px, 3vw, 40px);
-  border-top: 1px solid var(--line);
-}
-
-/* 180px — та же колонка, на которой стоят метки «Зачем» и номера строк:
-   ярус читается как продолжение секции, а не как новая сетка. */
-.leak h3 {
-  flex: none;
-  width: 180px;
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1.28;
-  letter-spacing: -0.015em;
-}
-
-.leak-col {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.leak .label {
-  padding-bottom: 0;
-}
-
-.leak-col li {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 0;
-  border-bottom: none;
-  font-size: 17px;
-  line-height: 28px;
-  color: var(--muted);
-}
-
-.leak-col li + li {
-  margin-top: 10px;
-}
-
-/*
- * Маркер приглушённый, а не акцентный: ярко подсвеченной оказалась бы именно
- * колонка утечки. Отступ детерминированный (11px при строке 28px), а не
- * baseline: базовая линия пустого флекс-элемента считается по нижнему краю и
- * разъезжается между браузерами.
- */
-.leak-col--out li::before {
-  content: '';
-  flex: none;
-  width: 5px;
-  height: 5px;
-  margin-top: 11px;
-  border-radius: 50%;
-  background: var(--faint);
-}
-
-.leak-note {
-  font-size: 15px;
-  line-height: 24px;
-  color: var(--muted);
-  max-width: 460px;
-  padding-top: 4px;
-}
-
-/* ---------------------------------------------------------------- «а если» */
-
-/*
- * Две колонки, разделённые вертикальной линейкой. Вертикальный разделитель на
- * светлом фоне на странице не использован ни разу (border-left есть только у
- * рейки героя, и та на синем), поэтому блок не путается ни с «болью», ни со
- * свойствами. Движения здесь нет вовсе — это текст, который сканируют, чтобы
- * найти своё возражение, и любая задержка тут работает против него.
- */
-.ifs-head {
-  display: flex;
-  align-items: flex-start;
-  gap: clamp(24px, 6vw, 96px);
-  padding-bottom: clamp(32px, 3.6vw, 48px);
-}
-
-.ifs-head > div {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-  max-width: 660px;
-}
-
-.ifs-head > p {
-  max-width: 428px;
-  font-size: 17px;
-  line-height: 28px;
-  color: var(--muted);
-  padding-top: 8px;
-}
-
-.ifs {
-  display: flex;
-  gap: 0;
-}
-
-.ifs-col {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.ifs-col:first-child {
-  padding-right: clamp(24px, 4vw, 56px);
-}
-
-.ifs-col + .ifs-col {
-  border-left: 1px solid var(--line);
-  padding-left: clamp(24px, 4vw, 56px);
-}
-
-.ifs-item {
-  padding: 28px 0;
-  border-top: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.ifs-item:first-child {
-  border-top: none;
-  padding-top: 0;
-}
-
-/* Вопрос в кавычках-ёлочках и без знака вопроса: он уже задан кавычками и
-   заголовком секции. */
-.ifs-item h3 {
-  font-size: clamp(19px, 1.7vw, 22px);
-  font-weight: 700;
-  line-height: 1.3;
-  letter-spacing: -0.015em;
-}
-
-.ifs-item p {
-  font-size: 16px;
-  line-height: 26px;
-  color: var(--muted);
-}
-
-/* ------------------------------------------------------------- терминал */
-
-.deploy {
-  display: flex;
-  gap: clamp(32px, 6vw, 96px);
-}
-
-.deploy > div:first-child {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 600px;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.term {
-  flex: none;
-  width: 552px;
-  max-width: 100%;
-  background: var(--term-bg);
-  border: 1px solid var(--term-line);
-}
-
-.term-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--term-line);
-}
-
-.term-bar i {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-}
-
-.term-bar span {
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  color: var(--term-faint);
-}
-
-.term pre {
-  margin: 0;
-  padding: 20px 16px;
-  font-family: var(--mono);
-  font-size: 14px;
-  line-height: 26px;
-  color: var(--term-ink);
-  /* Команду должно быть видно целиком; на узком экране полоса прокрутки.
-     white-space задан явно: набор по clip-path читается как печать только
-     пока строка — один непереносящийся ряд. */
-  white-space: pre;
-  overflow-x: auto;
-}
-
-.term-out {
-  padding: 18px 16px;
-  border-top: 1px solid var(--term-line);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.term-out b {
-  font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--term-ok);
-}
-
-.term-out span {
-  font-size: 14px;
-  line-height: 22px;
-  color: var(--term-faint);
-}
-
-/*
- * Сцена ниже печатает команду и показывает удачный ответ — а поставить эту
- * команду сегодня некуда: репозиторий закрыт. Оговорка стоит на земле самого
- * терминала и вне .term-out, чтобы не проявляться вместе с «ответом системы».
- * --term-ink, а не --term-faint: оговорка не может быть слабее того, что она
- * оговаривает (--term-faint на этом фоне даёт 3.6:1, --term-ink — 8:1).
- */
-.term-note {
-  padding: 14px 16px 16px;
-  border-top: 1px solid var(--term-line);
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 20px;
-  color: var(--term-ink);
-}
-
-/*
- * Терминал печатает последнюю строку и только потом отвечает «готов».
- * Секция называется «Ставится одной командой» — печатается ровно одна
- * команда, та самая: показывать, как машина набирает git clone, значит
- * потратить внимание не на то, что продаётся. Объяснение здесь — пауза между
- * командой и ответом: контейнер действительно поднимается не мгновенно, и
- * эта пауза и есть содержание секции.
- *
- * Арифметика такта (её же считает скрипт по длине самой строки):
- *   160ms задержка → набор 17 символов x 18ms = 306ms → каретка 2 x 520ms
- *   = 1040ms ожидания → ответ системы 280ms. Вся сцена около 1.8s, один раз.
- * Число шагов steps() берётся из длины текста, а не вписано руками: правка
- * команды физически не может рассинхронизировать набор.
- * Класс .term--live вешает скрипт, поэтому без JS блок выглядит как раньше.
- */
-.term--live .term-cmd {
-  display: inline-block;
-  clip-path: inset(0 100% 0 0);
-}
-
-.term--live.is-run .term-cmd {
-  animation-name: term-type;
-  animation-duration: var(--type-dur, 306ms);
-  animation-timing-function: steps(var(--type-n, 17), end);
-  animation-delay: 160ms;
-  animation-fill-mode: forwards;
-}
-
-@keyframes term-type {
-  from {
-    clip-path: inset(0 100% 0 0);
-  }
-  to {
-    clip-path: inset(0 0 0 0);
-  }
-}
-
-/*
- * Каретка в относительных единицах: правка line-height у pre не должна
- * ломать её размер. Мигает ровно два раза, пока ждём контейнер, и гаснет
- * в тот момент, когда приходит ответ, — на статичной странице ничто не
- * должно мигать бесконечно, пока рядом читают текст.
- */
-.term-caret {
-  display: inline-block;
-  width: 1ch;
-  height: 1em;
-  margin-left: 2px;
-  background: var(--term-ink);
-  vertical-align: text-bottom;
-  opacity: 0;
-}
-
-.term--live.is-run .term-caret {
-  animation-name: term-caret;
-  animation-duration: 520ms;
-  animation-timing-function: step-end;
-  animation-delay: var(--caret-delay, 466ms);
-  animation-iteration-count: 2;
-  animation-fill-mode: forwards;
-}
-
-@keyframes term-caret {
-  0%,
-  49.9% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
-
-.term--live .term-out {
-  opacity: 0;
-  transform: translateY(6px);
-}
-
-/* Ответ системы приходит снизу и с ease-out: он входит в кадр, а входящему
-   нужен быстрый старт, иначе система кажется медленнее, чем она есть. */
-.term--live.is-run .term-out {
-  animation-name: term-out;
-  animation-duration: 280ms;
-  animation-timing-function: var(--ease-out);
-  animation-delay: var(--out-delay, 1506ms);
-  animation-fill-mode: forwards;
-}
-
-@keyframes term-out {
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* Мягкий вариант того же для reduced-motion: без набора и без сдвига. */
-@keyframes term-soft {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
 /* ---------------------------------------------------------------- финал */
 
 .finale {
@@ -2658,20 +1348,12 @@ a.wordmark {
   max-width: 900px;
 }
 
-.finale .actions {
-  justify-content: center;
-}
-
 /* Кнопки и сноска под ними — одна связка: сноска объясняет, почему кнопки мертвы. */
 .finale-call {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 20px;
-}
-
-.finale .actions-note {
-  max-width: 560px;
 }
 
 /* --------------------------------------------------------------- подвал */
@@ -2795,42 +1477,6 @@ a.wordmark {
 }
 
 @media (max-width: 1100px) {
-  /*
-   * Диптих в столбик, второй кадр остаётся: он и есть половина обещания
-   * страницы. Прежняя рейка героя на этой ширине пряталась совсем — и вместе с
-   * ней пропадала живая комната.
-   */
-  .duo {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  /*
-   * Тред встаёт в поток под лидом: на узком экране справа от заголовка нет
-   * места, а прятать его совсем значило бы снова потерять треть рассказа —
-   * ровно то, чем была плоха прежняя рейка.
-   */
-  .oracle {
-    position: static;
-    width: auto;
-    max-width: 520px;
-    padding-top: 8px;
-  }
-
-  /* Шапка «Зачем» уже колонкой на любой ширине — здесь только строки. */
-  .why-row {
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .why-row .num {
-    width: auto;
-    padding-top: 0;
-  }
-
-  .why-row h3 {
-    width: auto;
-  }
-
   .steps,
   .feat-row {
     flex-direction: column;
@@ -2861,18 +1507,10 @@ a.wordmark {
 
   .feat-head,
   .shot-head,
-  .limits,
-  .deploy,
-  .tline-head,
-  .ifs-head {
+  .deploy {
     flex-direction: column;
     gap: 32px;
     align-items: flex-start;
-  }
-
-  .limits ul,
-  .term {
-    width: 100%;
   }
 
   /*
@@ -2891,47 +1529,6 @@ a.wordmark {
     height: auto;
     border-left: none;
     border-right: none;
-  }
-
-  /* Полоса цифр обязана пережить этот брейкпойнт: здесь выключается рейка
-     героя, и без полосы у героя не остаётся ничего, кроме заголовка,
-     абзаца и двух мёртвых кнопок — самое пустое состояние страницы. */
-  .swhat > div {
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .swhat h3 {
-    width: auto;
-  }
-
-  /* В колонке flex-basis считается по высоте — 100% здесь дал бы не ширину. */
-  .leak {
-    flex: 0 0 auto;
-    flex-direction: column;
-    gap: 24px;
-  }
-
-  .leak h3 {
-    width: auto;
-  }
-
-  .ifs {
-    flex-direction: column;
-  }
-
-  .ifs-col:first-child {
-    padding-right: 0;
-  }
-
-  .ifs-col + .ifs-col {
-    border-left: none;
-    padding-left: 0;
-  }
-
-  .ifs-col + .ifs-col .ifs-item:first-child {
-    border-top: 1px solid var(--line);
-    padding-top: 28px;
   }
 }
 
@@ -2952,19 +1549,6 @@ a.wordmark {
     display: none;
   }
 
-  .nav-links a:not(.dead) {
-    display: none;
-  }
-
-  .duo-frame {
-    height: clamp(200px, 52vw, 260px);
-  }
-
-  .btn-dead {
-    width: 100%;
-    justify-content: space-between;
-  }
-
   /*
    * На телефоне полоса показывает не весь экран входа, а его правую панель.
    * Целый кадр 1440x900 в коробке 390px ужимал интерфейсный текст до 3-4px:
@@ -2982,23 +1566,6 @@ a.wordmark {
 
   .door-bill--small .door-title {
     font-size: 32px;
-  }
-
-  /* 28px, а не 34: h1 на телефоне упирается в нижнюю границу clamp (38px),
-     и близкие кегли начинают спорить друг с другом. */
-  .roles {
-    width: 100%;
-  }
-
-  .tline-row {
-    flex-direction: column;
-    gap: 8px;
-    padding: 22px 0;
-  }
-
-  .tline-time {
-    width: auto;
-    line-height: 20px;
   }
 
   /* Кнопка уходит под ячейку и получает полноценную цель для пальца.
@@ -3038,16 +1605,6 @@ a.wordmark {
     scroll-behavior: auto !important;
   }
 
-  /* Селектор повторяет .avatars.is-in span со styles.css: сцена объявлена
-     именно там, и гард по .avatars span (0,1,1) проигрывал ей по
-     специфичности — то есть не применялся никогда. Тройкой, а не одним
-     animation:none: иначе остался бы opacity:0 из кейфрейма. */
-  .avatars.is-in span {
-    animation: none;
-    opacity: 1;
-    transform: none;
-  }
-
   /* На двери имя не набирается само: поле сразу стоит заполненным, метка
      не перебирается. Гард в скрипте — первый рубеж, здесь снимается всё, что
      всё-таки могло бы поехать. */
@@ -3057,27 +1614,8 @@ a.wordmark {
     animation: none;
   }
 
-  /* Команда стоит напечатанной, каретки нет — но ответ системы по-прежнему
-     проявляется: это не украшение, а граница между «я ввёл» и «оно
-     ответило». Движения в нём не остаётся, только прозрачность. */
-  .term--live .term-cmd {
-    clip-path: none !important;
-  }
-
-  .term--live .term-caret {
-    display: none;
-  }
-
-  /* Гейт на .is-run тот же, что у полной сцены: ответ проявляется, когда
-     терминал попал в кадр, а не молча на загрузке страницы. */
-  .term--live.is-run .term-out {
-    transform: none !important;
-    animation: term-soft 200ms var(--ease-out) both !important;
-  }
-
   /* Всё, что ездит по экрану, снимается поимённо. */
-  .cell-run:active,
-  .roles label:active {
+  .cell-run:active {
     transform: none;
   }
 
@@ -3096,10 +1634,6 @@ a.wordmark {
   .cell-out p {
     transform: none !important;
     transition: opacity 120ms linear !important;
-  }
-
-  .roles-ind {
-    transition-duration: 1ms !important;
   }
 }
 
@@ -3161,5 +1695,852 @@ a.wordmark {
   .lec-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
 
+/* Landing, September 2026: three teaching modes, fewer repeated sections. */
+.skip-link {
+  position: fixed;
+  left: 20px;
+  top: -100px;
+  z-index: 100;
+  padding: 12px 20px;
+  background: white;
+  color: var(--brand);
+}
+.skip-link:focus {
+  top: 12px;
+}
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 5px;
+}
+.on-brand a:focus-visible {
+  outline-color: white;
+}
+.hero h1 {
+  font-weight: 900;
+  letter-spacing: -0.04em;
+}
+.hero-head {
+  display: flex;
+  flex-direction: column;
+}
+.hero {
+  padding-top: 32px;
+  padding-bottom: 0;
+}
+.hero .nav {
+  padding-bottom: 0;
+  min-height: 48px;
+}
+.hero-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(40px, 6vw, 88px);
+  padding: 88px 0 76px;
+}
+.hero-head {
+  padding: 0;
+  gap: 26px;
+}
+.hero h1 {
+  max-width: none;
+  font-size: clamp(44px, 5.3vw, 76px);
+  line-height: 1.04;
+}
+.hero .lead {
+  max-width: 580px;
+  color: #d8e1f2;
+  font-size: 21px;
+  line-height: 1.5;
+}
+.label--on-brand {
+  color: #80d6f5;
+}
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px 26px;
+  padding-top: 6px;
+}
+.action-primary {
+  display: inline-flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  min-height: 52px;
+  padding: 13px 20px;
+  background: white;
+  color: var(--brand);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 120ms;
+}
+.action-primary span {
+  font-size: 23px;
+  font-weight: 400;
+}
+.action-primary:hover {
+  background: var(--raised);
+}
+.action-primary--dark {
+  background: var(--brand);
+  color: white;
+}
+.action-primary--dark:hover {
+  background: var(--brand-2);
+}
+.action-text {
+  display: inline-flex;
+  gap: 14px;
+  align-items: center;
+  min-height: 44px;
+  color: white;
+  text-decoration: none;
+  font-size: 15px;
+}
+.action-text:hover {
+  text-decoration: underline;
+  text-underline-offset: 5px;
+}
+.release-note {
+  color: #b4c5e4;
+  font-size: 14px;
+  line-height: 22px;
+}
+.lesson-index {
+  background: var(--canvas);
+  color: var(--ink);
+  align-self: center;
+}
+.lesson-index-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 28px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.lesson-mark {
+  font: 14px var(--mono);
+  color: var(--muted);
+}
+.lesson-index > a {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 20px;
+  gap: 12px;
+  align-items: start;
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+  padding: 24px 28px;
+  transition: background 120ms;
+}
+.lesson-index > a:hover {
+  background: var(--surface);
+}
+.lesson-number {
+  font: 13px/28px var(--mono);
+  color: var(--accent-text);
+}
+.lesson-index strong {
+  display: block;
+  font-size: 25px;
+  line-height: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.lesson-index small {
+  display: block;
+  margin-top: 6px;
+  font-size: 15px;
+  line-height: 22px;
+  color: var(--muted);
+}
+.lesson-arrow {
+  color: var(--brand);
+  font-size: 23px;
+}
+.lesson-index-foot {
+  padding: 20px 28px;
+  font-size: 13px;
+  line-height: 21px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.hero-bottom {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+  padding: 23px 0;
+  border-top: 1px solid #385386;
+  color: #d8e1f2;
+  font-size: 14px;
+}
+.hero-bottom span::before {
+  content: '+';
+  color: #80d6f5;
+  margin-right: 12px;
+  font-family: var(--mono);
+}
+.nav-links a {
+  color: #d8e1f2;
+}
+.seminar-section {
+  padding-top: 88px;
+  padding-bottom: 64px;
+}
+.seminar-section .shot-head {
+  padding-bottom: 40px;
+}
+.seminar-section .shot-frame {
+  max-width: 1248px;
+  margin: 0 auto;
+  border: 1px solid var(--line);
+  max-height: 680px;
+  overflow: hidden;
+}
+.seminar-section .shot-frame img {
+  width: 100%;
+}
+#lekciya {
+  background: white;
+}
+#lekciya .sec-head {
+  align-items: start;
+}
+#lekciya .sec-lead {
+  max-width: 750px;
+}
+.lec-card {
+  border-top-color: var(--line);
+}
+.lec-note {
+  color: var(--muted);
+}
+.council-section {
+  background: var(--surface);
+}
+.council-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 44px 64px;
+  align-items: start;
+}
+.council-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.new-tag {
+  margin-left: 8px;
+  padding: 4px 7px;
+  background: var(--brand);
+  color: white;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+.council-points {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.council-points li {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  font-size: 16px;
+  line-height: 25px;
+}
+.council-points li > span {
+  font: 12px/25px var(--mono);
+  color: var(--accent-text);
+}
+.council-ai {
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--muted);
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.council-example {
+  margin: 0;
+  min-width: 0;
+  background: white;
+  border: 1px solid var(--line);
+}
+.council-example > figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.council-example > figcaption .label {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+}
+.example-dot {
+  height: 7px;
+  width: 7px;
+  background: #0c7a64;
+  border-radius: 50%;
+  flex: none;
+}
+.council-task {
+  padding: 28px 24px;
+}
+.council-task .label {
+  font-size: 11px;
+}
+.council-task h3 {
+  font-size: 24px;
+  line-height: 30px;
+  margin: 10px 0;
+  letter-spacing: -0.02em;
+}
+.council-task p {
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 24px;
+}
+.council-example code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+.council-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  padding: 16px 24px;
+  background: var(--surface);
+  border-block: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--muted);
+}
+.council-stats b {
+  font: 23px/30px var(--mono);
+  color: var(--brand);
+  margin-right: 4px;
+}
+.solution-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 65px;
+  gap: 10px;
+  padding: 22px 24px;
+  border-bottom: 1px solid var(--line);
+  align-items: start;
+}
+.solution-count {
+  font: 19px/26px var(--mono);
+  color: var(--brand);
+}
+.solution-row strong {
+  display: block;
+  font-size: 15px;
+  line-height: 26px;
+  font-weight: 600;
+}
+.solution-row code {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.solution-status {
+  font-size: 11px;
+  line-height: 26px;
+  color: #0c7a64;
+  text-align: right;
+}
+.solution-status--error {
+  color: #a93f20;
+}
+.solution-detail {
+  margin: 0 24px;
+}
+.solution-detail summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0;
+  cursor: pointer;
+  color: var(--brand);
+  font-size: 14px;
+  line-height: 22px;
+  list-style: none;
+}
+.solution-detail summary::-webkit-details-marker {
+  display: none;
+}
+.solution-detail summary span {
+  font: 22px var(--mono);
+}
+.solution-detail[open] summary span {
+  transform: rotate(45deg);
+}
+.solution-detail > p {
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--muted);
+  padding-bottom: 20px;
+}
+.example-note {
+  padding: 14px 24px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 20px;
+}
+.council-kernel {
+  grid-column: 1 / -1;
+  max-width: 950px;
+  padding-left: 20px;
+  border-left: 2px solid var(--accent-text);
+  font-size: 15px;
+  line-height: 25px;
+  color: var(--muted);
+}
+.council-kernel strong {
+  color: var(--ink);
+}
+#kak {
+  padding-bottom: 56px;
+}
+#kak .steps-head .meta {
+  font-size: 12px;
+}
+#chto .feat-head h2 {
+  max-width: 650px;
+}
+#chto .feat-row .feat p {
+  font-size: 16px;
+  line-height: 26px;
+}
+.faq-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 64px;
+}
+.faq-layout .h2 {
+  margin-top: 24px;
+}
+.faq-intro {
+  margin-top: 24px;
+  max-width: 310px;
+}
+.faq-list {
+  border-top: 1px solid var(--line);
+}
+.faq-list details {
+  border-bottom: 1px solid var(--line);
+}
+.faq-list summary {
+  position: relative;
+  padding: 23px 36px 23px 0;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 28px;
+  cursor: pointer;
+  list-style: none;
+}
+.faq-list summary::-webkit-details-marker {
+  display: none;
+}
+.faq-list summary::after {
+  content: '+';
+  position: absolute;
+  right: 0;
+  top: 23px;
+  color: var(--accent-text);
+  font: 23px/28px var(--mono);
+}
+.faq-list details[open] summary::after {
+  content: '−';
+}
+.faq-list details > p {
+  padding: 0 28px 22px 0;
+  font-size: 16px;
+  line-height: 27px;
+  color: var(--muted);
+}
+.deploy {
+  align-items: start;
+}
+.deploy .h2 {
+  margin: 24px 0;
+}
+.deploy-release {
+  margin-top: 28px;
+  font-size: 15px;
+  line-height: 25px;
+  color: #b4c5e4;
+}
+.setup-sheet {
+  border-top: 1px solid #385386;
+  padding-top: 24px;
+}
+.setup-sheet ol {
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 0;
+}
+.setup-sheet li {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 16px;
+  padding: 22px 0;
+  border-bottom: 1px solid #385386;
+}
+.setup-sheet li > span {
+  font: 13px/26px var(--mono);
+  color: #80d6f5;
+}
+.setup-sheet strong {
+  font-size: 19px;
+  font-weight: 600;
+}
+.setup-sheet p:not(.label) {
+  font-size: 15px;
+  color: #c5d3ed;
+  margin-top: 5px;
+  line-height: 24px;
+}
+.finale {
+  flex-direction: row;
+  text-align: left;
+  align-items: start;
+  gap: 64px;
+}
+.finale > div {
+  flex: 1;
+  min-width: 0;
+}
+.finale h2 {
+  margin-top: 24px;
+  font-size: clamp(32px, 3.6vw, 52px);
+  line-height: 1.12;
+}
+.finale-call {
+  padding-top: 42px;
+  align-items: start;
+  gap: 0;
+}
+.finale-call .action-primary {
+  margin-top: 24px;
+}
+.contact-email {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.foot-col a {
+  color: #d8e1f2;
+  text-decoration: none;
+}
+.foot-col a:hover {
+  text-decoration: underline;
+}
+@media (max-width: 1100px) {
+  .hero-layout {
+    gap: 36px;
+    padding: 64px 0;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+  .hero h1 {
+    font-size: clamp(40px, 5.3vw, 64px);
+  }
+  .hero .lead {
+    font-size: 18px;
+  }
+  .lesson-index > a,
+  .lesson-index-head {
+    padding-inline: 20px;
+  }
+  .lesson-index strong {
+    font-size: 22px;
+  }
+  .council-layout {
+    gap: 32px;
+  }
+  .solution-row {
+    padding: 18px 16px;
+    grid-template-columns: 26px minmax(0, 1fr);
+  }
+  .solution-status {
+    grid-column: 2;
+    text-align: left;
+    line-height: 18px;
+  }
+  .faq-layout {
+    gap: 40px;
+  }
+}
+@media (max-width: 760px) {
+  .hero-layout,
+  .council-layout,
+  .faq-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hero-layout {
+    padding-top: 52px;
+    gap: 40px;
+  }
+  .hero h1 {
+    font-size: clamp(40px, 8.5vw, 62px);
+  }
+  .hero-head {
+    gap: 22px;
+  }
+  .hero .lead {
+    max-width: 550px;
+  }
+  .hero .nav {
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+  .hero .nav-links {
+    display: flex;
+    flex-wrap: wrap;
+    flex: auto;
+    width: 100%;
+    margin: 0;
+    gap: 8px 22px;
+  }
+  .hero .nav-links a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    font-size: 13px;
+  }
+  .hero-bottom {
+    display: grid;
+    gap: 6px;
+  }
+  .lesson-index > a {
+    padding-block: 20px;
+  }
+  .lesson-index small {
+    margin-top: 3px;
+  }
+  .lesson-index-foot {
+    padding: 16px 20px;
+  }
+  .hero-actions {
+    gap: 8px 20px;
+  }
+  .action-primary {
+    font-size: 14px;
+    gap: 16px;
+    padding-inline: 16px;
+  }
+  .seminar-section {
+    padding-top: 64px;
+    padding-bottom: 40px;
+  }
+  .seminar-section .shot-frame {
+    margin-inline: var(--gutter);
+  }
+  .council-copy h2 br:last-child {
+    display: none;
+  }
+  .council-example {
+    margin-top: 6px;
+  }
+  .solution-row {
+    grid-template-columns: 26px minmax(0, 1fr) 62px;
+  }
+  .solution-status {
+    grid-column: auto;
+    text-align: right;
+    line-height: 26px;
+  }
+  .solution-row code {
+    font-size: 10px;
+  }
+  .council-task,
+  .council-example > figcaption {
+    padding-inline: 18px;
+  }
+  .council-stats {
+    gap: 14px;
+    padding-inline: 18px;
+  }
+  .council-stats b {
+    font-size: 21px;
+  }
+  .faq-intro {
+    max-width: 440px;
+  }
+  .faq-layout {
+    gap: 32px;
+  }
+  .finale {
+    flex-direction: column;
+    gap: 24px;
+  }
+  .finale-call {
+    padding-top: 0;
+    max-width: none;
+    width: 100%;
+  }
+  .finale h2 {
+    max-width: none;
+  }
+  .setup-sheet {
+    margin-top: 12px;
+  }
+}
+
+@keyframes av-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px) scale(0.94);
+  }
+}
+
+/* Lecture: explanation beside a slide with ink annotations. */
+.lecture-explain {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: 56px;
+  align-items: center;
+  margin-top: 48px;
+}
+.lecture-explain .lec-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  margin: 0;
+}
+.lecture-explain .lec-card {
+  padding-top: 18px;
+  gap: 10px;
+}
+.lecture-preview {
+  margin: 0;
+  min-width: 0;
+}
+.lecture-screen {
+  background: #060c1c;
+  padding: 24px;
+}
+.lecture-paper {
+  position: relative;
+  background: white;
+  aspect-ratio: 16 / 10;
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+}
+.lecture-paper > .label {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+.lecture-paper h3 {
+  font-size: clamp(20px, 2.2vw, 30px);
+  line-height: 1.2;
+  margin-top: 12px;
+  font-weight: 900;
+}
+.lecture-formula {
+  font-family: var(--mono);
+  font-size: clamp(18px, 2vw, 28px);
+  color: var(--ink);
+  margin-top: 36px;
+  white-space: nowrap;
+  letter-spacing: -0.05em;
+}
+.lecture-formula sub {
+  font-size: 0.6em;
+}
+.lecture-formula > span {
+  background: #fff0ad;
+}
+.lecture-annotation {
+  width: 100%;
+  height: auto;
+  margin-top: -4px;
+}
+.lecture-slide-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: 12px;
+  font: 10px/16px var(--mono);
+  color: var(--muted);
+}
+.lecture-preview figcaption {
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--muted);
+  padding-top: 14px;
+}
+.deploy {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 64px;
+}
+@media (max-width: 1100px) {
+  .lecture-explain {
+    gap: 32px;
+  }
+  .lecture-screen {
+    padding: 16px;
+  }
+  .lecture-paper {
+    padding: 20px;
+  }
+  .lecture-formula {
+    margin-top: 24px;
+  }
+}
+@media (max-width: 760px) {
+  .lecture-explain,
+  .deploy {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+  .lecture-formula {
+    font-size: clamp(16px, 4.5vw, 28px);
+    margin-top: 24px;
+  }
+  .lecture-paper {
+    padding: 18px;
+  }
+  .lecture-paper h3 {
+    font-size: clamp(18px, 5vw, 28px);
+  }
+}
+
+/* Captions and execution labels stay readable on white surfaces. */
+.shot-caption,
+.cell-who,
+.cell-prompt {
+  color: var(--muted);
+}
+.shot-caption {
+  font-size: 14px;
+  line-height: 24px;
+  max-width: 950px;
+}
+.cell-who {
+  font-size: 12px;
+}
+.door-hint,
+.door-form input[type='text']::placeholder {
+  color: var(--muted);
+}
+.door-stack > span {
+  color: var(--term-bg);
 }

@@ -1,11 +1,6 @@
 /**
- * Лендинг — единственная часть репозитория без сборки, без типов и без единого
- * теста: site/index.html выкладывается на Pages как есть. Три места в нём
- * обещали одно, а делали другое, и заметить это можно было только глазами.
- *
- * Здесь проверяется ровно то, что проверяется без браузера: разметка и текст
- * файла. Всё, что требует раскладки или дерева доступности, живёт в
- * scripts/ui-check.mts и в браузере.
+ * Static landing checks: stylesheet cache version and the entry demo counter.
+ * Layout, keyboard access and demo interactions are checked in a browser.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -50,16 +45,5 @@ test('счёт на афише двери берётся из data-n, а не и
     html,
     /parseInt\(\s*count\.textContent/,
     'счёт снова читается из строки, которая начинается со слова: это NaN, то есть ноль мест',
-  )
-})
-
-test('слой декоративных кареток закрыт от диктора', () => {
-  const at = html.indexOf("layer.className = 'cursors'")
-  assert.ok(at > 0, 'слоя .cursors в скрипте героя нет')
-  assert.match(
-    html.slice(at, at + 800),
-    /layer\.setAttribute\('aria-hidden', 'true'\)/,
-    'слой лежит внутри h1, и без aria-hidden подписи кареток въезжают в его ' +
-      'доступное имя: «Занятия, где делают, а не смотрят НИКИТА ТИМУР»',
   )
 })

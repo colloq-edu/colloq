@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Colloq — занятия, где делают, а не смотрят</title>
+    <title>Colloq — одна ссылка на всё занятие</title>
     <meta
       name="description"
-      content="Одна ссылка на всю аудиторию: студент вводит имя и открывает тот же ноутбук, что и преподаватель, с тем же живым Python-ядром. Лекция с планшета на проектор, семинар в общей тетради — на своём железе."
+      content="Общий Python-ноутбук, лекции с рукописными заметками и отдельные ответы студентов в режиме «Консилиум». Colloq работает на вашем сервере; студенты входят по ссылке."
     />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#0f2d69" />
@@ -15,57 +15,22 @@
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="ru_RU" />
     <meta property="og:site_name" content="Colloq" />
-    <meta property="og:title" content="Colloq — занятия, где делают, а не смотрят" />
+    <meta property="og:title" content="Colloq — одна ссылка на всё занятие" />
     <meta
       property="og:description"
-      content="Одна ссылка, общий ноутбук и одно Python-ядро на всю аудиторию. Ничего не нужно ставить, и ни у кого ничего не может не импортироваться."
+      content="Проводите лекции, пишите код вместе и разбирайте решения студентов. Ноутбук, слайды и задания — по одной ссылке, без регистрации для студентов."
     />
     <meta property="og:url" content="https://colloq.ru/" />
     <meta property="og:image" content="https://colloq.ru/img/workspace.webp" />
     <meta name="twitter:card" content="summary_large_image" />
 
-    <!-- Сетка бренда, та же, что и фавикон продукта. -->
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2232%22%20height%3D%2232%22%20viewBox%3D%220%200%2024%2024%22%3E%3Crect%20width%3D%2224%22%20height%3D%2224%22%20fill%3D%22%230F2D69%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3C%2Fsvg%3E"
     />
 
-    <!--
-      Заголовок первого экрана набран Black, и он же первое, что читатель видит.
-      Начертание грузится с самым высоким приоритетом, остальные три подтянет
-      таблица стилей по мере надобности: preload только на то, что нужно в
-      первом кадре, иначе он перестаёт что-либо значить.
+    <link rel="preload" href="fonts/hse-sans-900.woff2" as="font" type="font/woff2" crossorigin />
 
-      crossorigin обязателен даже для своего же домена: шрифт запрашивается в
-      режиме CORS, и preload без этого слова скачает файл второй раз.
-    -->
-    <link
-      rel="preload"
-      href="fonts/hse-sans-900.woff2"
-      as="font"
-      type="font/woff2"
-      crossorigin
-    />
-
-    <!--
-      Inter из этого запроса убран: HSE Sans теперь приезжает со страницей и
-      набирает её всю, так что качать второй наборный шрифт было бы платой за
-      то, чем никто не воспользуется. В стеке он остался — на случай, если
-      файлы не доедут, — но своей копии больше не требует.
-
-      Моноширинный — тоже с этого домена, и это последняя внешняя зависимость,
-      которую страница потеряла. Он приезжал с fonts.googleapis.com, а
-      открывают лендинг ровно оттуда, где Google блокируется: университетская
-      сеть без выхода наружу, Россия, где внешние CDN уже перекрывали. Терминал
-      в герое рисовался тогда системным Menlo, у которого другие ширины, и
-      команда переставала попадать в свою строку. Довод «шрифт не наш, чтобы
-      его сабсетить» был неверен: JetBrains Mono под SIL OFL 1.1 (текст рядом,
-      fonts/JetBrainsMono-OFL.txt).
-
-      Предзагружается только латиница — на ней набраны все команды на странице;
-      кириллица и остальные подмножества подтянутся по unicode-range, если
-      такие буквы правда рисуют. Объявления — в styles.css, рядом с HSE Sans.
-    -->
     <link
       rel="preload"
       href="fonts/jetbrains-mono-latin.woff2"
@@ -74,23 +39,15 @@
       crossorigin
     />
 
-    <!--
-      Метка кэша — первые восемь знаков git-хеша самого styles.css, и это не
-      украшение: Pages отдаёт статику с собственным TTL, так что читатель,
-      открывший страницу минуту назад, получает новый HTML и старую таблицу
-      стилей по тому же адресу — новый блок ложится неоформленной колонкой.
-      Метка стояла одна и та же пять правок подряд, то есть механизм был, а
-      сброса не было. Теперь её сверяет tests/site.test.mts: поправили
-      styles.css — тест назовёт новое значение.
-    -->
-    <link rel="stylesheet" href="styles.css?v=fe0b6c77" />
+    <link rel="stylesheet" href="styles.css?v=6659ad35" />
   </head>
 
   <body>
-    <!-- ------------------------------------------------------------ герой -->
-    <header class="section section--brand on-brand hero">
+    <a class="skip-link" href="#main">К содержанию</a>
+
+    <header class="section section--brand on-brand hero" aria-labelledby="hero-h">
       <div class="inner">
-        <nav class="nav">
+        <nav class="nav" aria-label="Основная навигация">
           <a class="wordmark" href="/">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
               <rect x="2" y="2" width="6" height="6" rx="1.6" />
@@ -106,1037 +63,878 @@
             <span>COLLOQ</span>
           </a>
           <div class="nav-links">
-            <a href="#kak">Как это работает</a>
-            <a href="#lekciya">Лекция</a>
-            <a href="#chto">Что внутри</a>
-            <a href="#razvernut">Развернуть</a>
-            <!-- Исходники ещё не открыты, поэтому это не ссылка. -->
-            <span class="dead" aria-disabled="true">GitHub — скоро</span>
+            <a href="#seminar">Возможности</a>
+            <a href="#konsilium">Консилиум</a>
+            <a href="#voprosy">Вопросы</a>
+            <a href="#razvernut">Как попробовать <span aria-hidden="true">↗</span></a>
           </div>
         </nav>
 
-        <!--
-          Герой: заголовок, лид, живая комната, диптих.
-
-          Надзаг с институцией убран совсем — Colloq не принадлежит ни одному
-          факультету, и первое, что читают на странице, не должно сужать его до
-          одного курса. Правая рейка в 292 px тоже ушла: она повторяла то, что
-          есть ниже (экран входа, «Развернуть»), и первой пропадала на узком
-          экране. Живая комната из неё осталась — но строкой под лидом, где она
-          стоит сорок пикселей вместо трёхсот.
-        -->
-        <div class="hero-head">
-          <h1 id="live-h">Занятия, где делают, а&nbsp;не смотрят</h1>
-          <p class="lead prose" id="live-p">
-            Студент открывает ссылку, вводит имя — и он на занятии. На семинаре это общая тетрадь с
-            одним Python-ядром на всех. На лекции — документ на проекторе и чернила преподавателя с
-            планшета у каждого на экране. Ничего не нужно ставить.
-          </p>
-
-          <!--
-            Комната не картинка: люди приходят и уходят, пока страница открыта.
-            Разметка ниже — то, что видно без JS: пять кругов и счёт, то есть
-            осмысленная статичная сцена. Скрипт заменяет её живой, и только если
-            движение разрешено. Идентификаторы те же, что были в рейке, — сцена
-            в скрипте не переписывалась, она просто переехала.
-          -->
-          <div class="room-line" aria-hidden="true">
-            <div class="avatars" id="room">
-              <span style="background: #e8734a">АК</span>
-              <span style="background: #8b6bd9">МР</span>
-              <span style="background: #2fa36b">ДК</span>
-              <span style="background: #e3a72f">СП</span>
-              <span style="background: #374b9b">+8</span>
-            </div>
-            <p class="room-count">В комнате <span id="room-n">двенадцать</span> человек</p>
-            <!--
-              Кто именно пришёл. Строка живёт полторы секунды и гаснет: без неё
-              смена кругов читается как перекраска, а не как человек. Стоит
-              последней в строке и потому ничего собой не двигает.
-            -->
-            <span class="room-say" id="room-say"></span>
-          </div>
-
-          <p class="actions-note">
-            Обкатывается на живых занятиях — лекциях и семинарах; исходники откроются после семестра.
-          </p>
-        </div>
-
-        <!--
-          Оракул — справа от заголовка, а не отдельной секцией внизу.
-
-          Место освободила снятая рейка, и это правильный жилец: тетрадь и
-          лекция показаны диптихом ниже, а третья опора продукта — вопрос,
-          который задают при всех, — до сих пор жила только в тексте. Тред тут
-          не украшение: он показывает то, чего не видно на снимке комнаты, —
-          что ответ приходит всей аудитории, а не в личку.
-        -->
-        <aside class="oracle" aria-label="Пример вопроса оракулу">
-          <p class="label label--on-brand">Оракул · спрашивают при всех</p>
-          <div class="oracle-thread">
-            <p class="oracle-ask">
-              <span class="oracle-face" style="background: #2fa36b" aria-hidden="true">ДК</span>
-              Почему у меня дерево переобучилось, а у соседа нет?
+        <div class="hero-layout">
+          <div class="hero-head">
+            <p class="label label--on-brand">Для лекций и практических занятий</p>
+            <h1 id="hero-h">Одна ссылка<br />на всё занятие.</h1>
+            <p class="lead prose" id="hero-p">
+              Общий Python-ноутбук, слайды с рукописными заметками и задания с отдельным ответом для
+              каждого. Студенту нужны только браузер и имя.
             </p>
-            <div class="oracle-answer">
-              <p>
-                У вас <code>max_depth=None</code> — дерево запомнило выборку целиком. В ячейке 04
-                глубина ограничена тройкой.
-              </p>
-              <p class="oracle-scope">Видит ячейки 01–07 и data.csv</p>
+            <div class="hero-actions">
+              <a class="action-primary" href="#kak"
+                >Посмотреть, как это работает <span aria-hidden="true">↗</span></a
+              >
+              <a class="action-text" href="#konsilium"
+                >Новое: Консилиум <span aria-hidden="true">↓</span></a
+              >
             </div>
+            <p class="release-note">Используем на своих занятиях. Готовим открытый выпуск.</p>
           </div>
-          <p class="oracle-note">
-            Вопрос и ответ остаются в комнате: их видит вся группа, включая тех, кто не стал
-            спрашивать вслух.
-          </p>
-        </aside>
-
-        <!--
-          Диптих: две ипостаси занятия рядом, одинакового веса.
-
-          Не коллаж и не карусель: продукт правда двойной, и показать это надо
-          одним взглядом. Слева — то, ради чего он затевался (общая тетрадь и
-          одно ядро), справа — то, что появилось позже (документ на проекторе и
-          чернила с планшета). Оба кадра — своя вёрстка, а не снимки: снимок
-          комнаты на 612 px нечитаем, а нарисованный кадр держит ровно те три
-          детали, ради которых он здесь.
-        -->
-        <div class="duo">
-          <figure class="duo-item">
-            <figcaption class="label label--on-brand">Семинар · общая тетрадь и ядро</figcaption>
-            <div class="duo-frame duo-frame--light">
-              <div class="duo-cell-head">
-                <span class="duo-num">04</span>
-                <span class="duo-state">RUNNING</span>
-              </div>
-              <pre class="duo-code"><span>clf = DecisionTreeClassifier(max_depth=3)</span>
-<span>clf.fit(X_train, y_train)</span>
-<span>print(clf.score(X_test, y_test))</span></pre>
-              <p class="duo-out">0.912</p>
-              <p class="duo-who">
-                <span class="duo-dots" aria-hidden="true">
-                  <i style="background: #e8734a"></i><i style="background: #8b6bd9"></i><i
-                    style="background: #2fa36b"
-                  ></i>
-                </span>
-                Нина и Ада правят эту ячейку
-              </p>
+          <aside class="lesson-index" aria-label="Три режима занятия">
+            <div class="lesson-index-head">
+              <span class="label">В одной комнате</span
+              ><span class="lesson-mark" aria-hidden="true">[ 3 ]</span>
             </div>
-          </figure>
-
-          <figure class="duo-item">
-            <figcaption class="label label--on-brand">Лекция · проектор и планшет</figcaption>
-            <div class="duo-frame duo-frame--dark">
-              <div class="duo-slide">
-                <p class="duo-slide-h">Решающие деревья</p>
-                <span class="duo-line" style="width: 56%"></span>
-                <span class="duo-line" style="width: 68%"></span>
-                <span class="duo-line" style="width: 43%"></span>
-                <svg class="duo-ink" viewBox="0 0 460 258" fill="none" aria-hidden="true">
-                  <path d="M30 126 C 96 118, 166 124, 236 116" stroke="#d4162f" stroke-width="3.3" stroke-linecap="round" />
-                  <path d="M270 160 C 312 126, 360 134, 402 168 M402 168 L 386 163 M402 168 L 390 180" stroke="#0c7a64" stroke-width="3" stroke-linecap="round" />
-                  <path d="M56 200 C 122 196, 190 201, 256 195" stroke="#ffd60a" stroke-opacity="0.5" stroke-width="13" stroke-linecap="round" />
-                  <path d="M300 222 C 330 214, 360 204, 388 194" stroke="#f2495f" stroke-opacity="0.35" stroke-width="6" stroke-linecap="round" />
-                  <circle cx="392" cy="192" r="12" fill="#f2495f" fill-opacity="0.2" />
-                  <circle cx="392" cy="192" r="4.5" fill="#f2495f" />
-                </svg>
-              </div>
-            </div>
-          </figure>
+            <a href="#seminar"
+              ><span class="lesson-number">01</span
+              ><span><strong>Семинар</strong><small>Пишем и запускаем код вместе</small></span
+              ><span class="lesson-arrow" aria-hidden="true">↗</span></a
+            >
+            <a href="#lekciya"
+              ><span class="lesson-number">02</span
+              ><span><strong>Лекция</strong><small>Объясняем на слайдах и от руки</small></span
+              ><span class="lesson-arrow" aria-hidden="true">↗</span></a
+            >
+            <a href="#konsilium"
+              ><span class="lesson-number">03</span
+              ><span><strong>Консилиум</strong><small>Каждый решает, обсуждаем вместе</small></span
+              ><span class="lesson-arrow" aria-hidden="true">↗</span></a
+            >
+            <p class="lesson-index-foot">
+              Режим выбирается при создании занятия.<br />Правила можно менять по ходу.
+            </p>
+          </aside>
+        </div>
+        <div class="hero-bottom">
+          <span>На вашем сервере</span><span>Вход без регистрации</span
+          ><span>Материалы остаются по ссылке</span>
         </div>
       </div>
     </header>
 
-    <!-- ------------------------------------------------------------- боль -->
-    <section class="section">
-      <div class="inner">
-        <div class="why-head">
-          <p class="label">Зачем</p>
-          <h2 class="h2">Кто-то конспектирует, кто-то фотографирует экран. Но не делает.</h2>
-        </div>
-
-        <div class="why-row">
-          <p class="num">01</p>
-          <h3>Colab называется collaborative, но вдвоём в одном ноутбуке не поработать</h3>
-          <p>
-            Каждый открывает свою копию. Через двадцать минут в аудитории тридцать разных ноутбуков,
-            и ни один не совпадает с тем, что на проекторе.
+    <main id="main">
+      <section
+        class="section section--surface bleed seminar-section"
+        id="seminar"
+        aria-labelledby="seminar-h"
+      >
+        <div class="shot-head">
+          <div>
+            <p class="label">01 / Семинар</p>
+            <h2 class="h2" id="seminar-h">Код на проекторе.<br />Курсоры всей группы.</h2>
+          </div>
+          <p class="prose">
+            Открываете ноутбук, и группа работает в нём вместе с вами. Правки и результаты запуска
+            видны всем. Данные, которые вы загрузили в Python, доступны в следующих ячейках — в том
+            числе студентам.
           </p>
         </div>
+        <div class="shot-frame">
+          <img
+            src="img/workspace.webp"
+            srcset="img/workspace@1x.webp 1440w, img/workspace.webp 2160w"
+            sizes="(max-width: 1100px) 100vw, 1440px"
+            width="1440"
+            height="900"
+            alt="Рабочий экран Colloq: общий ноутбук, список файлов и людей в комнате, панель оракула справа"
+            loading="lazy"
+            decoding="async"
+          />
+        </div>
+      </section>
 
-        <div class="why-row">
-          <p class="num">02</p>
-          <h3>На каждом занятии найдётся студент, у которого что-то не импортируется</h3>
-          <p>
-            Другая ОС, другая версия torch, чужой CUDA. Десять минут занятия уходят на чужое
-            окружение, а остальные ждут.
+      <section class="section section--surface" id="lekciya" aria-labelledby="lec-h">
+        <div class="inner">
+          <div class="sec-head">
+            <p class="label">02 / Лекция</p>
+            <h2 class="h2" id="lec-h">Пишите на слайде.<br />Видно даже с последнего ряда.</h2>
+          </div>
+          <p class="prose sec-lead">
+            Загрузите PDF, откройте проекцию на большом экране и подключите планшет как пульт.
+            Студенты видят слайды и ваши рукописные заметки в своих браузерах.
           </p>
-        </div>
 
-        <div class="why-row">
-          <p class="num">03</p>
-          <h3>Тот, кто пытается повторить, теряет нить рассказа</h3>
-          <p>
-            Пока он разбирается со своей ошибкой, вы ушли на две ячейки вперёд. Вернуться в общий
-            темп уже не получится.
-          </p>
-        </div>
-      </div>
-    </section>
+          <div class="lecture-explain">
+            <div class="lec-grid">
+              <article class="lec-card">
+                <p class="label">Проектор</p>
+                <p>
+                  Слайд на весь экран в отдельном окне. Можно листать стрелками или презентационным
+                  пультом и показывать код из ноутбука во время объяснения.
+                </p>
+              </article>
 
-    <!-- --------------------------------------------------------- продукт -->
-    <section class="section section--brand on-brand bleed">
-      <div class="shot-head">
-        <div>
-          <p class="label label--on-brand">Одна комната</p>
-          <h2 class="h2">Все правят один документ и запускают одно ядро</h2>
-        </div>
-        <p class="prose">
-          Курсор соседа виден в тексте. Вывод ячейки появляется у всех сразу — потому что он и правда
-          один. Переменная, созданная студентом, доступна вам в следующей ячейке.
-        </p>
-      </div>
-      <div class="shot-frame">
-        <img
-          src="img/workspace.webp"
-          srcset="img/workspace@1x.webp 1440w, img/workspace.webp 2160w"
-          sizes="(max-width: 1100px) 100vw, 1440px"
-          width="1440"
-          height="900"
-          alt="Рабочий экран Colloq: общий ноутбук, список файлов и людей в комнате, панель оракула справа"
-          loading="lazy"
-          decoding="async"
-        />
-      </div>
-    </section>
+              <article class="lec-card">
+                <p class="label">Планшет</p>
+                <p>
+                  Перо, маркер, ластик и указка. Добавьте чистый лист для вывода формулы; заметки
+                  спикера останутся только у вас.
+                </p>
+              </article>
 
-    <!-- ------------------------------------------------------------ шаги -->
-    <!-- ---------------------------------------------------------- лекция -->
-    <!--
-      Вторая ипостась занятия — и единственная его часть, которую видно из
-      последнего ряда. Стоит сразу после снимка комнаты: читатель уже понял,
-      что такое общая тетрадь, и получает второе, чем это же занятие бывает.
-    -->
-    <section class="section section--surface" id="lekciya" aria-labelledby="lec-h">
-      <div class="inner">
-        <div class="sec-head">
-          <p class="label">Лекция</p>
-          <h2 class="h2" id="lec-h">Слайды на проекторе, разметка — у каждого на экране</h2>
-        </div>
-        <p class="prose sec-lead">
-          Документ загружается в занятие, проекция открывается отдельным окном — на второй монитор
-          или в демонстрацию экрана, — а страницы листаются с планшета. Передаётся не изображение, а
-          номер страницы и координаты штриха, поэтому разметка появляется у аудитории одновременно с
-          проектором и не зависит от скорости сети.
-        </p>
-
-        <div class="lec-grid">
-          <article class="lec-card">
-            <p class="label">Проектор</p>
-            <p>
-              Страница на весь экран, чёрный фон, никаких элементов управления. Отдельное окно:
-              комната на том же компьютере остаётся рабочей, и показать ячейку посреди лекции можно,
-              не сворачивая проекцию. Листается стрелками, пробелом и презентационным пультом.
-            </p>
-          </article>
-
-          <article class="lec-card">
-            <p class="label">Планшет</p>
-            <p>
-              Отдельный интерфейс, а не комната на маленьком экране: страница, следующий слайд, время
-              занятия и четыре инструмента — перо, маркер, ластик, указка. Рукописный ввод с
-              отсечением ладони. Чистый лист поверх слайда — для вывода, которого нет в презентации.
-              Заметки спикера готовятся заранее и видны только ведущему.
-            </p>
-          </article>
-
-          <article class="lec-card">
-            <p class="label">Зал</p>
-            <p>
-              Та же страница и та же разметка у каждого на своём экране, с возможностью отлистать
-              назад и вернуться к текущему слайду одним нажатием. Переход к практике не требует
-              ничего открывать: тетрадь и ядро — те же, в соседней вкладке.
-            </p>
-          </article>
-        </div>
-
-        <p class="lec-note">
-          Пульт рассчитан на iPad с Apple Pencil: рукописный ввод с отсечением ладони, работа в
-          Split View, презентационные пульты.
-        </p>
-      </div>
-    </section>
-
-    <section class="section" id="kak">
-      <div class="inner">
-        <div class="steps-head">
-          <h2 class="h2">Три шага, и все внутри</h2>
-          <span class="rule"></span>
-          <span class="meta">≈ 40 секунд</span>
-        </div>
-
-        <div class="steps">
-          <article class="step">
-            <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
-            <p class="label">Шаг 01 · Преподаватель</p>
-            <h3>Создаёте занятие и копируете ссылку</h3>
-            <p>
-              В панели — название. Ни списка группы, ни расписания, ни приглашений на почту; дату
-              студент видит на афише сам — это время, когда открыли комнату. Там же выбирается
-              остальное: пустой ноутбук или ссылка на GitHub, PDF лекции, окружение, кто запускает ячейки.
-            </p>
-          </article>
-
-          <article class="step">
-            <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
-            <p class="label">Шаг 02 · Студент</p>
-            <h3>Открывает ссылку, пишет своё имя</h3>
-            <p>
-              Ни регистрации, ни почты, ни пароля. Ссылка и есть занятие: закрыл вкладку — та же
-              ссылка вернёт обратно.
-            </p>
-          </article>
-
-          <article class="step">
-            <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
-            <p class="label">Шаг 03 · Аудитория</p>
-            <h3>Дальше вся аудитория работает вместе</h3>
-            <p>
-              Общий ноутбук, общее ядро, общая папка с файлами и общий терминал. Вопрос к оракулу
-              видит вся комната.
-            </p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- ------------------------------------------------------ экран входа -->
-    <!--
-      Здесь стоял снимок экрана входа с декоративным слоем, который делал вид,
-      что имя набирается. Теперь это сам экран, свёрстанный заново: те же слова,
-      та же сетка, тот же тёмный левый борт — но поле настоящее, метка
-      выбирается, а кнопка нажимается. Шаг 02 — единственный шаг, который
-      студент проходит руками, и единственный, который страница может дать
-      потрогать вместо того, чтобы показать картинку.
-
-      Что здесь честно, а что нет: разметка и поведение — продуктовые, комната
-      за кнопкой — нет. Об этом сказано подписью под полосой, а не мелким
-      шрифтом: страница трижды говорит, что демо-комнаты нет, и здесь она не
-      начинает говорить обратное.
-
-      Язык. Раньше внутри рамки стоял английский — тот же, что в продукте, — и
-      объяснялось это тем, что макет не должен показывать не тот интерфейс,
-      который поставится. Довод верный ровно наполовину: страница читается
-      по-русски, и единственный блок на ней, к которому можно притронуться,
-      выпадал из неё как непереведённый.
-
-      Теперь по-русски и он. Расхождение с продуктом остаётся и записано здесь,
-      чтобы никто не «чинил» это обратно вслепую: настоящий экран входа пока
-      английский. Правильный конец этой истории — перевести его в продукте,
-      а не откатывать страницу.
-    -->
-    <section class="section bleed" style="padding-top: 0; padding-bottom: clamp(64px, 7.8vw, 104px)">
-      <div class="door-band">
-        <div class="door" id="door">
-          <!-- Афиша. На узком окне уходит целиком — так же, как в продукте:
-               половина афиши и половина формы не дают ни того, ни другого. -->
-          <aside class="door-poster">
-            <p class="door-brand">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
-                <rect x="2" y="2" width="6" height="6" rx="1.6" />
-                <rect x="9" y="2" width="6" height="6" rx="1.6" fill="#374B9B" />
-                <rect x="16" y="2" width="6" height="6" rx="1.6" />
-                <rect x="2" y="9" width="6" height="6" rx="1.6" fill="#374B9B" />
-                <rect x="9" y="9" width="6" height="6" rx="1.6" />
-                <rect x="16" y="9" width="6" height="6" rx="1.6" fill="#374B9B" />
-                <rect x="2" y="16" width="6" height="6" rx="1.6" />
-                <rect x="9" y="16" width="6" height="6" rx="1.6" fill="#374B9B" />
-                <rect x="16" y="16" width="6" height="6" rx="1.6" />
-              </svg>
-              <span>COLLOQ</span>
-            </p>
-
-            <div class="door-bill">
-              <p class="door-eyebrow">Вы заходите на</p>
-              <h3 class="door-title">Лекция 4. Свёрточные сети</h3>
-              <p class="door-when">
-                <span>25.08 · 18:10</span>
-                <i aria-hidden="true"></i>
-                Александр Калашников
-              </p>
+              <article class="lec-card">
+                <p class="label">Студент</p>
+                <p>
+                  Может вернуться к предыдущей странице, дочитать и одним нажатием догнать лекцию.
+                  Ноутбук с практикой уже открыт в той же комнате.
+                </p>
+              </article>
             </div>
 
-            <!--
-              Строка стоит на месте всегда, даже пока в ней ничего нет: в
-              продукте она появляется, когда придёт ответ сервера, и афиша
-              из-за этого подпрыгивала. Здесь резерв держит высоту сразу.
-            -->
-            <p class="door-inside">
-              <span class="door-stack" id="door-stack" aria-hidden="true">
-                <span style="background: #8b6bd9">МР</span>
-                <span style="background: #2fa36b">ДК</span>
-                <span style="background: #e3a72f">СП</span>
-                <span style="background: #4fc3ee">РН</span>
-              </span>
-              <span id="door-count" data-n="7">внутри уже 7 человек</span>
-            </p>
-          </aside>
-
-          <form class="door-form" id="door-form" novalidate>
-            <!-- Афиши на телефоне нет, а занятие назвать всё равно надо. -->
-            <div class="door-bill door-bill--small">
-              <p class="door-eyebrow">Вы заходите на</p>
-              <h3 class="door-title">Семинар по компьютерному зрению</h3>
-            </div>
-
-            <div class="door-field">
-              <label for="door-name">Как вас зовут</label>
-              <!--
-                Поле настоящее и обычное. Имя в нём набирается само, пока к нему
-                не притронулись: как только читатель ставит курсор или жмёт
-                клавишу, набор прекращается навсегда, поле очищается, и дальше
-                в нём только то, что он напечатал сам.
-              -->
-              <input
-                id="door-name"
-                name="door-name"
-                type="text"
-                maxlength="40"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="Александр"
-              />
-            </div>
-
-            <div class="door-field">
-              <p class="door-legend">
-                <label for="door-change" id="door-mark-label">Ваша метка</label>
-                <span class="door-hint" id="door-hint" hidden>40 меток</span>
-              </p>
-
-              <div class="door-mark" id="door-card">
-                <span class="door-glyph" id="door-glyph" aria-hidden="true">🦊</span>
-                <span class="door-said">
-                  <b id="door-said">Теперь вы — лиса</b>
-                  Выбрана из тех, что в этой комнате ещё никто не занял, — чтобы курсор всегда
-                  был узнаваемо ваш.
-                </span>
-                <button type="button" id="door-change" class="door-change" aria-expanded="false"
-                        aria-controls="door-grid">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                       stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
-                    <path d="M20 11a8 8 0 1 0-2.3 5.7" />
-                    <path d="M20 4v7h-7" />
+            <figure class="lecture-preview">
+              <div
+                class="lecture-screen"
+                role="img"
+                aria-label="Пример слайда: формула градиентного спуска с рукописной пометкой о размере шага"
+              >
+                <div class="lecture-paper">
+                  <p class="label">Методы оптимизации</p>
+                  <h3>Градиентный спуск</h3>
+                  <p class="lecture-formula">
+                    w<sub>t+1</sub> = w<sub>t</sub> − <span>η</span> ∇L(w<sub>t</sub>)
+                  </p>
+                  <svg
+                    class="lecture-annotation"
+                    viewBox="0 0 480 120"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M274 5C291 12 304 21 316 42M307 38L318 44L318 30"
+                      stroke="#0c7a64"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      d="M162 8Q188 13 218 8"
+                      stroke="#d4162f"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                    />
+                    <text
+                      x="281"
+                      y="76"
+                      fill="#0c7a64"
+                      font-family="HSE Sans, sans-serif"
+                      font-size="20"
+                    >
+                      размер шага
+                    </text>
                   </svg>
-                  Другую
-                </button>
+                  <div class="lecture-slide-foot"><span>Лекция 04</span><span>07 / 24</span></div>
+                </div>
               </div>
-
-              <!-- Сетка меток. Пустая в разметке: её собирает скрипт, и без
-                   скрипта карточка выше остаётся единственным состоянием. -->
-              <div class="door-grid" id="door-grid" role="group" aria-labelledby="door-mark-label"
-                   hidden></div>
-            </div>
-
-            <button type="submit" class="door-go" id="door-go">
-              <span class="door-go-mark" id="door-go-mark" aria-hidden="true" hidden></span>
-              <span id="door-go-text">Войти</span>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
-                   aria-hidden="true" id="door-go-arrow">
-                <path d="M5 12h13M12 5l7 7-7 7" />
-              </svg>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"
-                   aria-hidden="true" id="door-go-check" hidden>
-                <path d="M4 12.5l5.5 5.5L20 7" />
-              </svg>
-            </button>
-
-            <p class="door-foot" id="door-foot">
-              Ни аккаунта, ни почты. Ссылка и есть занятие: закройте вкладку — та же ссылка
-              вернёт вас обратно.
-            </p>
-          </form>
-        </div>
-      </div>
-
-      <p class="shot-caption">
-        Шаг 02, свёрстанный целиком: имя набирается само, но стоит тронуть поле — набор
-        прекращается и дальше печатаете вы; метку можно выбрать свою. Комната за кнопкой не
-        откроется — она откроется на вашем сервере.
-      </p>
-    </section>
-
-    <!-- ------------------------------------------------- девяносто минут -->
-    <!--
-      Секция стоит между полосой с экраном входа и «Общим»: она разрывает
-      единственное место страницы, где белое встык переходит в серое, и
-      возвращает синюю плоскость в середину — до неё между блоками 171 и 404
-      шли четыре подряд светлые секции.
-    -->
-    <section class="section section--brand on-brand" id="para" aria-labelledby="para-h">
-      <div class="inner">
-        <div class="tline-head">
-          <div>
-            <p class="label label--on-brand">Девяносто минут</p>
-            <h2 class="h2" id="para-h">Как проходит пара</h2>
+              <figcaption>
+                Пример слайда с пометками преподавателя. Разметка видна на проекторе и у студентов.
+              </figcaption>
+            </figure>
           </div>
-          <p class="prose">
-            Пять моментов одного занятия: сначала лекция, потом руки. Время условное — важен
-            порядок и то, чего в нём нет: ни установок, ни рассылок, ни «у меня не запускается».
-            Переключатель меняет кресло: та же пара с места преподавателя и с места студента.
+          <p class="lec-note">
+            Пульт рассчитан на iPad с Apple Pencil. Поддерживает отсечение ладони и Split View.
           </p>
         </div>
+      </section>
 
-        <!--
-          Нативная радиогруппа: стрелки и Home/End работают сами, скринридер
-          объявляет «2 из 2, выбрано». Ни строчки JS на переключение — только
-          сиблинговые селекторы и :has. Без :has страница остаётся читаемой:
-          видна версия преподавателя.
-        -->
-        <fieldset class="roles">
-          <legend class="vh">Чьими глазами смотреть на пару</legend>
-          <input class="vh" type="radio" name="role" id="role-t" checked />
-          <label for="role-t">Вы ведёте</label>
-          <input class="vh" type="radio" name="role" id="role-s" />
-          <label for="role-s">Студент</label>
-          <span class="roles-ind" aria-hidden="true"></span>
-        </fieldset>
-
-        <ol class="tline">
-          <li class="tline-row">
-            <time class="tline-time" datetime="PT0S">00:00</time>
-            <div class="swhat">
-              <div data-seat="t">
-                <h3>Аудитория входит</h3>
-                <p class="prose">
-                  Ссылка уходит в чат группы, проекция — на второй монитор, планшет в руке.
-                  Открываете первую страницу, не дожидаясь последнего: кто вошёл позже, увидит её у
-                  себя сразу.
-                </p>
-              </div>
-              <div data-seat="s">
-                <h3>Аудитория входит</h3>
-                <p class="prose">
-                  Открывает ссылку, пишет имя — и попадает не в пустой шаблон, а туда, где занятие
-                  уже идёт: та же страница, что на проекторе, у него в руках. Фотографировать экран
-                  не нужно.
-                </p>
-              </div>
-            </div>
-          </li>
-
-          <li class="tline-row">
-            <time class="tline-time" datetime="PT10M">00:10</time>
-            <div class="swhat">
-              <div data-seat="t">
-                <h3>Слайд, на котором вы пишете</h3>
-                <p class="prose">
-                  Вывод формулы не помещается на слайд — заводите чистый лист прямо поверх лекции и
-                  дописываете пером. Указка показывает на строку, которую вы называете вслух, а не
-                  «вот здесь, в правом верхнем углу».
-                </p>
-              </div>
-              <div data-seat="s">
-                <h3>Слайд, на котором вы пишете</h3>
-                <p class="prose">
-                  Видит страницу и чернила у себя на экране — не блик с шестого ряда. Можно
-                  отлистать на две страницы назад, перечитать и вернуться одним нажатием: лекция
-                  идёт дальше без него.
-                </p>
-              </div>
-            </div>
-          </li>
-
-          <li class="tline-row">
-            <time class="tline-time" datetime="PT25M">00:25</time>
-            <div class="swhat">
-              <div data-seat="t">
-                <h3>Слайды в сторону, ячейка на проектор</h3>
-                <p class="prose">
-                  Заканчиваете лекцию, и на экране остаётся тетрадь. Вы отдаёте ячейку, и чужой
-                  курсор едет по проектору на глазах у аудитории. Ошибка тоже общая: её видят
-                  тридцать человек, и разбираем мы её один раз, а не тридцать.
-                </p>
-              </div>
-              <div data-seat="s">
-                <h3>Слайды в сторону, ячейка на проектор</h3>
-                <p class="prose">
-                  Печатает в том же файле, что на проекторе: его строка появляется на большом экране
-                  раньше, чем он успевает поднять руку. Ctrl+Z отменяет только его собственные
-                  правки — чужую работу так не отменить.
-                </p>
-              </div>
-            </div>
-          </li>
-
-          <li class="tline-row">
-            <time class="tline-time" datetime="PT50M">00:50</time>
-            <div class="swhat">
-              <div data-seat="t">
-                <h3>Комната расходится по своим ячейкам</h3>
-                <p class="prose">
-                  Задание на пятнадцать минут, каждый пишет ниже своего имени. Ядро одно, поэтому
-                  имена переменных разводим суффиксом — зато чужой датафрейм не нужно грузить
-                  заново. Вы листаете ноутбук сверху вниз и видите, кто застрял, не спрашивая «у
-                  всех получилось».
-                </p>
-              </div>
-              <div data-seat="s">
-                <h3>Комната расходится по своим ячейкам</h3>
-                <p class="prose">
-                  Пишет ниже своего имени и берёт датафрейм, загруженный в начале пары, — заново он
-                  не грузится. Подсмотреть у соседа здесь означает прокрутить вверх: чужие ячейки
-                  видно целиком, вместе с их ошибками.
-                </p>
-              </div>
-            </div>
-          </li>
-
-          <li class="tline-row">
-            <span class="tline-time">после</span>
-            <div class="swhat">
-              <div data-seat="t">
-                <h3>Ядро гаснет, файл остаётся</h3>
-                <p class="prose">
-                  Ноутбук — обычный .ipynb: в репозиторий курса, в чат, куда угодно. Ссылка
-                  продолжает открываться, и следующая пара начинается с того же файла.
-                </p>
-              </div>
-              <div data-seat="s">
-                <h3>Ядро гаснет, файл остаётся</h3>
-                <p class="prose">
-                  Кто не дописал — дописывает вечером по той же ссылке. Ядро погасло и переменных
-                  больше нет, но файл и его правки на месте.
-                </p>
-              </div>
-            </div>
-          </li>
-        </ol>
-      </div>
-    </section>
-
-    <!-- -------------------------------------------------------- свойства -->
-    <section class="section section--surface" id="chto">
-      <div class="inner">
-        <div class="feat-head">
-          <h2 class="h2">Общее — это буквально общее</h2>
-          <p>
-            Не «синхронизация раз в секунду», а один документ и один процесс Python на всю комнату.
-            Отсюда всё остальное.
-          </p>
-        </div>
-
-        <!--
-          Единственное место страницы, которое можно потрогать рукой. Порядок
-          нажатий выбирает читатель: запустите свою ячейку первой — и получите
-          NameError, потому что переменную создаёт не тот, кто её читает.
-          Кнопки говорят ровно то, что делают, и ни одна из них не притворяется
-          входом в продукт: мёртвые кнопки со «СКОРО» на этой странице значат
-          именно то, что значат.
-        -->
-        <div class="kernel">
-          <div class="kernel-head">
-            <p class="label">Одно ядро</p>
-            <p class="kernel-hint" aria-live="polite">
-              Две ячейки одного документа. Порядок запуска выбираете вы.
+      <section class="section council-section" id="konsilium" aria-labelledby="council-h">
+        <div class="inner council-layout">
+          <div class="council-copy">
+            <p class="label">03 / Консилиум <span class="new-tag">Новое</span></p>
+            <h2 class="h2" id="council-h">Одно задание.<br />У каждого — <br />своё решение.</h2>
+            <p class="prose">
+              Откройте ячейку в режиме «Консилиум». Студенты пишут каждый в своей версии: чужие
+              ответы им не видны, пока вы не выберете один для общего разбора.
             </p>
-          </div>
-
-          <div class="cell" data-owner="maria" data-run="idle">
-            <p class="cell-who">Мария, студентка · ячейка 3</p>
-            <span class="cell-prompt" aria-hidden="true">In [ ]</span>
-            <pre class="cell-src">df = pd.read_csv("data.csv")
-df.shape</pre>
-            <button class="cell-run" type="button" aria-keyshortcuts="Shift+Enter">
-              Запустить ячейку Марии
-            </button>
-            <div class="cell-out" role="status"><p></p></div>
-          </div>
-
-          <div class="cell" data-owner="you" data-run="idle">
-            <p class="cell-who">Вы · ячейка 4</p>
-            <span class="cell-prompt" aria-hidden="true">In [ ]</span>
-            <pre class="cell-src">df["target"].mean()</pre>
-            <button class="cell-run" type="button" aria-keyshortcuts="Shift+Enter">
-              Запустить вашу ячейку
-            </button>
-            <div class="cell-out" role="status"><p></p></div>
-          </div>
-
-          <p class="kernel-note">Постановочный прогон на этой странице, не живая комната.</p>
-        </div>
-
-        <div class="feat-row">
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-                <path d="M4 5h16M4 12h10M4 19h13" />
-                <circle cx="19" cy="12" r="2.2" fill="#0FA0D7" stroke="none" />
-              </svg>
-              <h3>Один документ на всех</h3>
-            </div>
-            <p>
-              CRDT под капотом: двое правят одну ячейку и никто ничего не затирает. Курсор соседа
-              виден там, где он печатает.
-            </p>
-          </article>
-
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-                <rect x="6" y="6" width="12" height="12" rx="1.5" />
-                <path d="M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3" />
-                <circle cx="12" cy="12" r="2.2" fill="#0FA0D7" stroke="none" />
-              </svg>
-              <h3>Одно ядро на комнату</h3>
-            </div>
-            <p>
-              Переменная, созданная в третьей ячейке, жива в четвёртой — кто бы её ни запустил.
-              Очередь запусков видна всем.
-            </p>
-          </article>
-
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="2.5" y="4.5" width="19" height="15" rx="1.5" />
-                <path d="M6.5 9.5l3 2.5-3 2.5" stroke="#0FA0D7" />
-                <path d="M12.5 15h5" stroke="#0FA0D7" />
-              </svg>
-              <h3>Общий терминал</h3>
-            </div>
-            <p>
-              Один pip install — и пакет появился у всей аудитории. Команды двоих не перемешиваются:
-              они встают в очередь, и Stop сбрасывает её целиком.
-            </p>
-          </article>
-        </div>
-
-        <div class="feat-row">
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-                <path d="M12 3l1.9 4.6L18.5 9l-4.6 1.4L12 15l-1.9-4.6L5.5 9l4.6-1.4L12 3z" fill="#0FA0D7" stroke="none" />
-                <path d="M6 17.5l.9 2.1 2.1.9-2.1.9L6 23.5l-.9-2.1L3 20.5l2.1-.9L6 17.5z" fill="#0A6E96" stroke="none" />
-                <path d="M15.5 17h5.5M15.5 20.5h3.5" />
-              </svg>
-              <h3>Оракул в комнате</h3>
-            </div>
-            <p>
-              Вопрос и ответ попадают в общий тред, а не в чью-то личную вкладку. Спросил один —
-              прочитали все.
-            </p>
-          </article>
-
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M13.5 3H6.5a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8.5L13.5 3z" />
-                <path d="M13.5 3v5.5H19" stroke="#0FA0D7" />
-                <path d="M8.5 13.5h7M8.5 17h4.5" stroke="#0FA0D7" />
-              </svg>
-              <h3>Общие файлы</h3>
-            </div>
-            <p>
-              Перетащили data.csv — он у всех, и Python читает его по имени: без путей, дисков и
-              монтирований.
-            </p>
-          </article>
-
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" aria-hidden="true">
-                <rect x="2.5" y="4" width="19" height="6" rx="1.4" />
-                <rect x="2.5" y="14" width="19" height="6" rx="1.4" />
-                <circle cx="6.5" cy="7" r="1.3" fill="#0FA0D7" stroke="none" />
-                <circle cx="6.5" cy="17" r="1.3" fill="#0FA0D7" stroke="none" />
-              </svg>
-              <h3>Своё железо</h3>
-            </div>
-            <p>
-              Один docker compose up на вашей машине или VPS. Ни тарифов, ни лимитов, ни чужого
-              облака.
-            </p>
-          </article>
-        </div>
-
-        <div class="feat-row">
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1" />
-                <path d="M3 3.5v4h4" stroke="#0FA0D7" />
-                <path d="M12 7.5V12l3 1.8" stroke="#0FA0D7" />
-              </svg>
-              <h3>История комнаты</h3>
-            </div>
-            <p>
-              Кто что менял и как было до. Преподаватель откатывает ячейку или весь ноутбук — откат
-              приезжает всем сразу.
-            </p>
-          </article>
-
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 6h9M4 12h6M4 18h9" />
-                <path d="M17 4.5v7M13.5 8h7" stroke="#0FA0D7" />
-                <path d="M14.5 17.5l2 2 4-4.5" stroke="#0FA0D7" />
-              </svg>
-              <h3>Оракул правит ячейку</h3>
-            </div>
-            <p>
-              Просите переписать — он показывает диффом, что предлагает. Принять или отклонить решает
-              комната, и решение видно в треде.
-            </p>
-          </article>
-
-          <article class="feat">
-            <div class="feat-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0A6E96" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 3l7.5 3v6c0 4.4-3.1 7.9-7.5 9-4.4-1.1-7.5-4.6-7.5-9V6L12 3z" />
-                <path d="M9 12.2l2.1 2.1L15.2 10" stroke="#0FA0D7" />
-              </svg>
-              <h3>Правила комнаты</h3>
-            </div>
-            <p>
-              На лекции запуск ячеек можно оставить преподавателю, а оракула перевести в подсказки
-              или выключить. Выбирается при создании занятия.
-            </p>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- -------------------------------------------------------- границы -->
-    <section class="section">
-      <div class="inner limits">
-        <div>
-          <p class="label">Границы</p>
-          <h2 class="h2">Это не LMS и не хочет ею стать</h2>
-          <p>
-            Colloq делает ровно одно: девяносто минут занятия, в течение которых аудитория работает
-            в одном месте. Всё, что происходит до и после пары, остаётся там, где уже живёт.
-          </p>
-        </div>
-
-        <ul>
-          <li class="label" style="border: none; padding: 0">Здесь нет</li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9BA6BE" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-            Оценок и ведомостей
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9BA6BE" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-            Личных кабинетов и профилей
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9BA6BE" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-            Сбора домашних заданий
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9BA6BE" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-            Антиплагиата и прокторинга
-          </li>
-          <li>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9BA6BE" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-            Видеозвонка — вы уже в аудитории
-          </li>
-        </ul>
-
-        <!--
-          Страница дважды обещает, что данные никуда не уезжают, и тут же
-          обещает оракула. Значит, куда-то уезжает — и лучше сказать это
-          самим, чем оставить первым вопросом учебного отдела. Всё ниже сверено
-          с кодом сборщика контекста, а не написано по памяти.
-        -->
-        <div class="leak">
-          <h3>Что уходит наружу</h3>
-
-          <div class="leak-col">
-            <p class="label">Остаётся на вашей машине</p>
-            <ul>
-              <li>Содержимое файлов, которые никто не открыл: наружу идут только их имена</li>
-              <li>Общий терминал: что в нём набрали и что он ответил</li>
-              <li>Пиксели графиков: вместо картинки уходит только пометка о её размере</li>
-            </ul>
-          </div>
-
-          <div class="leak-col leak-col--out">
-            <p class="label">Уходит — и только при обращении к оракулу</p>
-            <ul>
+            <ul class="council-points">
+              <li><span>01</span>Видно, кто ещё пишет и кто уже сдал.</li>
+              <li><span>02</span>Одинаковые решения собраны в группы.</li>
               <li>
-                Ноутбук целиком: код всех ячеек и их вывод, урезанные до бюджета, заданного на весь
-                Colloq
-              </li>
-              <li>
-                Файл, открытый в редакторе у того, кто спрашивает: до восьми тысяч знаков, около
-                двухсот строк. Тетрадь сюда не попадает — она уже в кадре ячейками
-              </li>
-              <li>Имена файлов в комнате и название занятия</li>
-              <li>Имена: кто задал вопрос и кто запускал ячейку</li>
-              <li>Хвост общего треда: несколько последних вопросов комнаты и ответов на них</li>
-              <li>
-                В режиме «сделать» — ещё и любой файл комнаты, который модель попросит прочитать, и
-                вывод запущенного ею скрипта. Режим включает преподаватель, и по умолчанию он есть
-                только у него
+                <span>03</span>Можно ответить одному студенту или всей группе с одинаковым решением.
               </li>
             </ul>
-            <p class="leak-note">
-              Кнопки у ячейки — объяснить, починить, подсказать, переписать — это тоже обращение:
-              ноутбук уходит и без набранного вопроса. И только туда, чей адрес и ключ вы вписали —
-              в .env или в панели администратора. Без ключа оракула в комнате просто нет, и комната
-              работает без него. А если модель поднята рядом, своей Ollama или vLLM, наружу не
-              уходит вообще ничего: две строки в .env — и всё остаётся на вашей машине. Проверить
-              каждую строку выше можно будет по коду сборщика контекста — когда исходники
-              откроются.
+            <p class="council-ai">
+              Оракул может подготовить сводку и черновики ответов. Вы решаете, что отправить
+              студентам.
             </p>
           </div>
+          <figure class="council-example">
+            <figcaption>
+              <span class="label">Пример · экран преподавателя</span
+              ><span class="example-dot" aria-hidden="true"></span>
+            </figcaption>
+            <div class="council-task">
+              <span class="label">Ячейка 07</span>
+              <h3>Средняя оценка по группам</h3>
+              <p>
+                В таблице <code>df</code> найдите среднее значение <code>score</code> для каждой
+                <code>group</code>.
+              </p>
+            </div>
+            <div class="council-stats">
+              <span><b>18</b> сдали</span><span><b>6</b> пишут</span><span><b>3</b> варианта</span>
+            </div>
+            <div class="solution-row">
+              <span class="solution-count">12</span>
+              <div>
+                <strong>С группировкой</strong><code>df.groupby("group")["score"].mean()</code>
+              </div>
+              <span class="solution-status">Запущено</span>
+            </div>
+            <div class="solution-row">
+              <span class="solution-count">4</span>
+              <div><strong>Среднее по всей таблице</strong><code>df["score"].mean()</code></div>
+              <span class="solution-status">Запущено</span>
+            </div>
+            <div class="solution-row">
+              <span class="solution-count">2</span>
+              <div><strong>Не найден столбец</strong><code>KeyError: 'scores'</code></div>
+              <span class="solution-status solution-status--error">Ошибка</span>
+            </div>
+            <details class="solution-detail">
+              <summary>
+                Посмотреть пример ответа преподавателя <span aria-hidden="true">+</span>
+              </summary>
+              <p>
+                Сейчас получилось одно число для всей таблицы. Сгруппируйте строки по
+                <code>group</code>, а затем посчитайте среднее в каждой группе.
+              </p>
+            </details>
+            <p class="example-note">Пример сводки с условными ответами, не живая комната.</p>
+          </figure>
+          <p class="council-kernel">
+            <strong>Ответы отдельные, Python-ядро общее.</strong> Студенты используют подготовленные
+            вами данные. Запуски идут по очереди; изменения общих объектов и файлов могут влиять на
+            следующие решения.
+          </p>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ---------------------------------------------------------- а если -->
-    <!--
-      Читатель, узнавший, что ядро одно и документ один, немедленно думает:
-      значит, один человек ломает всё сразу. Блок стоит ровно перед командой
-      установки — сначала снимаются возражения, потом предлагается развернуть.
-      Три ответа из шести — проигрышные, и это не оговорка.
-    -->
-    <section class="section section--surface" aria-labelledby="ifs-h">
-      <div class="inner">
-        <div class="ifs-head">
+      <section class="section" id="kak">
+        <div class="inner">
+          <div class="steps-head">
+            <h2 class="h2">Как начать занятие</h2>
+            <span class="rule"></span>
+            <span class="meta">Преподаватель → группа</span>
+          </div>
+
+          <div class="steps">
+            <article class="step">
+              <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
+              <p class="label">Шаг 01 · Преподаватель</p>
+              <h3>Подготовьте комнату</h3>
+              <p>
+                Выберите режим, окружение и правила доступа. Загрузите PDF, начните с пустого
+                ноутбука или импортируйте материалы с GitHub.
+              </p>
+            </article>
+
+            <article class="step">
+              <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
+              <p class="label">Шаг 02 · Студент</p>
+              <h3>Студенты входят по ссылке</h3>
+              <p>
+                Студент вводит имя и выбирает метку. Почта, пароль и установка Python на его
+                компьютере не нужны.
+              </p>
+            </article>
+
+            <article class="step">
+              <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
+              <p class="label">Шаг 03 · Занятие</p>
+              <h3>Проводите занятие</h3>
+              <p>
+                Показывайте слайды, пишите код вместе или предложите каждому своё решение. После
+                занятия материалы можно перечитать по той же ссылке.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section
+        class="section bleed"
+        style="padding-top: 0; padding-bottom: clamp(64px, 7.8vw, 104px)"
+      >
+        <div class="door-band">
+          <div class="door" id="door">
+            <aside class="door-poster">
+              <p class="door-brand">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
+                  <rect x="2" y="2" width="6" height="6" rx="1.6" />
+                  <rect x="9" y="2" width="6" height="6" rx="1.6" fill="#374B9B" />
+                  <rect x="16" y="2" width="6" height="6" rx="1.6" />
+                  <rect x="2" y="9" width="6" height="6" rx="1.6" fill="#374B9B" />
+                  <rect x="9" y="9" width="6" height="6" rx="1.6" />
+                  <rect x="16" y="9" width="6" height="6" rx="1.6" fill="#374B9B" />
+                  <rect x="2" y="16" width="6" height="6" rx="1.6" />
+                  <rect x="9" y="16" width="6" height="6" rx="1.6" fill="#374B9B" />
+                  <rect x="16" y="16" width="6" height="6" rx="1.6" />
+                </svg>
+                <span>COLLOQ</span>
+              </p>
+
+              <div class="door-bill">
+                <p class="door-eyebrow">Вы заходите на</p>
+                <h3 class="door-title">Лекция 4. Свёрточные сети</h3>
+                <p class="door-when">
+                  <span>25.08 · 18:10</span>
+                  <i aria-hidden="true"></i>
+                  Александр Калашников
+                </p>
+              </div>
+
+              <p class="door-inside">
+                <span class="door-stack" id="door-stack" aria-hidden="true">
+                  <span style="background: #8b6bd9">МР</span>
+                  <span style="background: #2fa36b">ДК</span>
+                  <span style="background: #e3a72f">СП</span>
+                  <span style="background: #4fc3ee">РН</span>
+                </span>
+                <span id="door-count" data-n="7">внутри уже 7 человек</span>
+              </p>
+            </aside>
+
+            <form class="door-form" id="door-form" novalidate>
+              <div class="door-bill door-bill--small">
+                <p class="door-eyebrow">Вы заходите на</p>
+                <h3 class="door-title">Лекция 4. Свёрточные сети</h3>
+              </div>
+
+              <div class="door-field">
+                <label for="door-name">Как вас зовут</label>
+
+                <input
+                  id="door-name"
+                  name="door-name"
+                  type="text"
+                  maxlength="40"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Александр"
+                />
+              </div>
+
+              <div class="door-field">
+                <p class="door-legend">
+                  <label for="door-change" id="door-mark-label">Ваша метка</label>
+                  <span class="door-hint" id="door-hint" hidden>40 меток</span>
+                </p>
+
+                <div class="door-mark" id="door-card">
+                  <span class="door-glyph" id="door-glyph" aria-hidden="true">🦊</span>
+                  <span class="door-said">
+                    <b id="door-said">Теперь вы — лиса</b>
+                    Выбрана из тех, что в этой комнате ещё никто не занял, — чтобы курсор всегда был
+                    узнаваемо ваш.
+                  </span>
+                  <button
+                    type="button"
+                    id="door-change"
+                    class="door-change"
+                    aria-expanded="false"
+                    aria-controls="door-grid"
+                  >
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.2"
+                      stroke-linecap="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+                      <path d="M20 4v7h-7" />
+                    </svg>
+                    Другую
+                  </button>
+                </div>
+
+                <div
+                  class="door-grid"
+                  id="door-grid"
+                  role="group"
+                  aria-labelledby="door-mark-label"
+                  hidden
+                ></div>
+              </div>
+
+              <button type="submit" class="door-go" id="door-go">
+                <span class="door-go-mark" id="door-go-mark" aria-hidden="true" hidden></span>
+                <span id="door-go-text">Войти</span>
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  id="door-go-arrow"
+                >
+                  <path d="M5 12h13M12 5l7 7-7 7" />
+                </svg>
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  id="door-go-check"
+                  hidden
+                >
+                  <path d="M4 12.5l5.5 5.5L20 7" />
+                </svg>
+              </button>
+
+              <p class="door-foot" id="door-foot">
+                Ни аккаунта, ни почты. Ссылка и есть занятие: закройте вкладку — та же ссылка вернёт
+                вас обратно.
+              </p>
+            </form>
+          </div>
+        </div>
+
+        <p class="shot-caption">
+          Попробуйте экран входа: введите имя и выберите метку. Это пример на странице — подключение
+          к занятию здесь не происходит.
+        </p>
+      </section>
+
+      <section class="section section--surface" id="chto">
+        <div class="inner">
+          <div class="feat-head">
+            <h2 class="h2">Всё, что нужно по ходу пары</h2>
+            <p>
+              Ноутбук, файлы, терминал и ИИ-помощник доступны в одной комнате. Кто может ими
+              пользоваться, определяет преподаватель.
+            </p>
+          </div>
+
+          <div class="kernel">
+            <div class="kernel-head">
+              <p class="label">Одно ядро</p>
+              <p class="kernel-hint" aria-live="polite">
+                Две ячейки одного документа. Порядок запуска выбираете вы.
+              </p>
+            </div>
+
+            <div class="cell" data-owner="maria" data-run="idle">
+              <p class="cell-who">Мария, студентка · ячейка 3</p>
+              <span class="cell-prompt" aria-hidden="true">In [ ]</span>
+              <pre class="cell-src">
+df = pd.read_csv("data.csv")
+df.shape</pre
+              >
+              <button class="cell-run" type="button" aria-keyshortcuts="Shift+Enter">
+                Запустить ячейку Марии
+              </button>
+              <div class="cell-out" role="status"><p></p></div>
+            </div>
+
+            <div class="cell" data-owner="you" data-run="idle">
+              <p class="cell-who">Вы · ячейка 4</p>
+              <span class="cell-prompt" aria-hidden="true">In [ ]</span>
+              <pre class="cell-src">df["target"].mean()</pre>
+              <button class="cell-run" type="button" aria-keyshortcuts="Shift+Enter">
+                Запустить вашу ячейку
+              </button>
+              <div class="cell-out" role="status"><p></p></div>
+            </div>
+
+            <p class="kernel-note">
+              Интерактивный пример: сначала запустите ячейку Марии, затем свою. Python здесь не
+              выполняется.
+            </p>
+          </div>
+
+          <div class="feat-row">
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M4 5h16M4 12h10M4 19h13" />
+                  <circle cx="19" cy="12" r="2.2" fill="#0FA0D7" stroke="none" />
+                </svg>
+                <h3>Один документ на всех</h3>
+              </div>
+              <p>
+                Можно редактировать одну ячейку одновременно. Курсоры подписаны именами, правки
+                появляются у всей группы.
+              </p>
+            </article>
+
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <rect x="6" y="6" width="12" height="12" rx="1.5" />
+                  <path d="M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3" />
+                  <circle cx="12" cy="12" r="2.2" fill="#0FA0D7" stroke="none" />
+                </svg>
+                <h3>Одно ядро на комнату</h3>
+              </div>
+              <p>
+                Переменная из третьей ячейки доступна в четвёртой независимо от того, кто её
+                запускает. Вывод и очередь запусков общие.
+              </p>
+            </article>
+
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="2.5" y="4.5" width="19" height="15" rx="1.5" />
+                  <path d="M6.5 9.5l3 2.5-3 2.5" stroke="#0FA0D7" />
+                  <path d="M12.5 15h5" stroke="#0FA0D7" />
+                </svg>
+                <h3>Общий терминал</h3>
+              </div>
+              <p>
+                Установили пакет один раз — он доступен группе. Команды выполняются в окружении
+                занятия.
+              </p>
+            </article>
+          </div>
+
+          <div class="feat-row">
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M12 3l1.9 4.6L18.5 9l-4.6 1.4L12 15l-1.9-4.6L5.5 9l4.6-1.4L12 3z"
+                    fill="#0FA0D7"
+                    stroke="none"
+                  />
+                  <path
+                    d="M6 17.5l.9 2.1 2.1.9-2.1.9L6 23.5l-.9-2.1L3 20.5l2.1-.9L6 17.5z"
+                    fill="#0A6E96"
+                    stroke="none"
+                  />
+                  <path d="M15.5 17h5.5M15.5 20.5h3.5" />
+                </svg>
+                <h3>Оракул в комнате</h3>
+              </div>
+              <p>
+                ИИ-помощник отвечает с учётом кода и вывода ячеек. Вопросы и ответы видит вся
+                группа. При создании занятия можно выбрать подсказки или отключить помощника.
+              </p>
+            </article>
+
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M13.5 3H6.5a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8.5L13.5 3z"
+                  />
+                  <path d="M13.5 3v5.5H19" stroke="#0FA0D7" />
+                  <path d="M8.5 13.5h7M8.5 17h4.5" stroke="#0FA0D7" />
+                </svg>
+                <h3>Общие файлы</h3>
+              </div>
+              <p>
+                Загрузите данные перетаскиванием, разложите файлы по папкам. Они доступны из
+                ноутбука и терминала занятия.
+              </p>
+            </article>
+
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  aria-hidden="true"
+                >
+                  <rect x="2.5" y="4" width="19" height="6" rx="1.4" />
+                  <rect x="2.5" y="14" width="19" height="6" rx="1.4" />
+                  <circle cx="6.5" cy="7" r="1.3" fill="#0FA0D7" stroke="none" />
+                  <circle cx="6.5" cy="17" r="1.3" fill="#0FA0D7" stroke="none" />
+                </svg>
+                <h3>Своё железо</h3>
+              </div>
+              <p>
+                Запускайте Colloq на своём компьютере или сервере. Для разных курсов можно
+                подготовить отдельные окружения с нужными пакетами.
+              </p>
+            </article>
+          </div>
+
+          <div class="feat-row">
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1" />
+                  <path d="M3 3.5v4h4" stroke="#0FA0D7" />
+                  <path d="M12 7.5V12l3 1.8" stroke="#0FA0D7" />
+                </svg>
+                <h3>История комнаты</h3>
+              </div>
+              <p>
+                Посмотрите, кто изменил код. Преподаватель может восстановить ячейку или весь
+                ноутбук; Ctrl+Z отменяет собственные правки.
+              </p>
+            </article>
+
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M4 6h9M4 12h6M4 18h9" />
+                  <path d="M17 4.5v7M13.5 8h7" stroke="#0FA0D7" />
+                  <path d="M14.5 17.5l2 2 4-4.5" stroke="#0FA0D7" />
+                </svg>
+                <h3>Оракул правит ячейку</h3>
+              </div>
+              <p>
+                Попросите объяснить ошибку или предложить правку. Изменения кода видны до принятия;
+                их можно отклонить.
+              </p>
+            </article>
+
+            <article class="feat">
+              <div class="feat-title">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#0A6E96"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3l7.5 3v6c0 4.4-3.1 7.9-7.5 9-4.4-1.1-7.5-4.6-7.5-9V6L12 3z" />
+                  <path d="M9 12.2l2.1 2.1L15.2 10" stroke="#0FA0D7" />
+                </svg>
+                <h3>Правила комнаты</h3>
+              </div>
+              <p>
+                Настраивайте, кто редактирует, запускает код и загружает файлы. После завершения
+                занятия студентам остаётся доступ для чтения.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section faq-section" id="voprosy" aria-labelledby="faq-h">
+        <div class="inner faq-layout">
           <div>
-            <p class="label">А если</p>
-            <h2 class="h2" id="ifs-h">Что ломается и что тогда</h2>
+            <p class="label">До первой пары</p>
+            <h2 class="h2" id="faq-h">Практические<br />вопросы</h2>
+            <p class="prose faq-intro">
+              Что общее, что сохраняется и где проходят границы инструмента.
+            </p>
           </div>
-          <p>
-            Одно ядро и один документ на тридцать человек — это и есть главный вопрос к Colloq. Ниже
-            шесть ответов, включая те, где ответ неприятный.
-          </p>
-        </div>
-
-        <div class="ifs">
-          <div class="ifs-col">
-            <div class="ifs-item">
-              <h3>«Студент закрыл вкладку»</h3>
+          <div class="faq-list">
+            <details open>
+              <summary>Что остаётся после занятия?</summary>
               <p>
-                Та же ссылка вернёт его в ту же комнату и тот же файл: имя лежит у него в браузере,
-                и спрашивать его заново никто не будет. Комната живёт не на его машине — терять ему
-                нечего.
+                Ноутбук, файлы и ответы оракула доступны по прежней ссылке. Кнопка «Закончить
+                занятие» оставляет студентам чтение, а редактирование и запуски — преподавателю.
+                Занятие можно продолжить; ноутбук можно скачать в формате .ipynb.
               </p>
-            </div>
-            <div class="ifs-item">
-              <h3>«Кто-то запустил бесконечный цикл»</h3>
+            </details>
+            <details>
+              <summary>Что, если кто-то удалит код или запустит бесконечный цикл?</summary>
               <p>
-                Ядро одно, поэтому оно и правда займётся. Оборвать может преподаватель — и тот,
-                чья ячейка выполняется: занятие, на котором преподавателя нет в комнате, тоже обязано
-                уметь оборвать цикл. Вместе с ней снимается вся очередь — что ждало, придётся
-                запустить заново. Перезапуск ядра — только у преподавателя: ноутбук и вывод
-                остаются на месте, а переменные создаются заново.
+                Преподаватель может остановить выполнение, восстановить ячейку из истории или
+                ограничить редактирование и запуск. Перезапуск ядра сбросит переменные, но сохранит
+                текст ноутбука и файлы.
               </p>
-            </div>
-            <div class="ifs-item">
-              <h3>«Кто-то стёр половину ячеек»</h3>
+            </details>
+            <details>
+              <summary>А если студент потеряет соединение?</summary>
               <p>
-                Стереть может любой — запрета тут нет. Но комната пишет историю: видно, кто и что
-                менял и как было до. Преподаватель откатывает одну ячейку или весь ноутбук; откат
-                приезжает всем сразу и сам становится строкой в истории, так что отменить можно и
-                его. Ctrl+Z при этом остаётся вашим личным: он возвращает только ваши правки.
+                Занятие у остальных продолжается. Сохранённые в браузере правки синхронизируются
+                после восстановления связи. По той же ссылке студент может вернуться в комнату.
               </p>
-            </div>
+            </details>
+            <details>
+              <summary>Кто видит решения в «Консилиуме»?</summary>
+              <p>
+                Студент видит свой ответ, преподаватель — ответы группы. Для обсуждения
+                преподаватель может показать выбранное решение всем. Вычисления проходят в общем
+                ядре: этот режим предназначен для учебного разбора, а не для изолированной проверки
+                экзаменационных работ.
+              </p>
+            </details>
+            <details>
+              <summary>Куда отправляются данные при работе с ИИ?</summary>
+              <p>
+                К настроенному вами провайдеру: вопрос, контекст ноутбука и диалога, а также
+                открытого файла. При разборе «Консилиума» — задание и сданные решения; в режиме
+                работы с файлами помощник может читать дополнительные файлы комнаты. Вы выбираете
+                провайдера и задаёте лимиты.
+              </p>
+              <p>
+                Можно подключить локальную модель через Ollama или vLLM. Без настроенного провайдера
+                занятие работает без оракула.
+              </p>
+            </details>
+            <details>
+              <summary>Подойдёт для дистанционного занятия?</summary>
+              <p>
+                Да, если сервер доступен группе по сети. Голос и видео остаются в привычном сервисе
+                звонков, а код, слайды и задания открываются в Colloq.
+              </p>
+            </details>
+            <details>
+              <summary>Можно вести здесь весь курс?</summary>
+              <p>
+                Colloq отвечает за само занятие и его материалы. Расписание, домашние задания,
+                оценки и ведомости остаются в вашей системе управления курсом.
+              </p>
+            </details>
           </div>
-
-          <div class="ifs-col">
-            <div class="ifs-item">
-              <h3>«У студента упал интернет»</h3>
-              <p>
-                Отваливается он один, пара продолжается. Его правки лежат у него в браузере и
-                доезжают, когда сеть вернётся, — даже если он успел закрыть ноутбук.
-              </p>
-            </div>
-            <div class="ifs-item">
-              <h3>«Пара идёт дистанционно»</h3>
-              <p>
-                Ссылка работает откуда угодно, но Colloq не заменяет звонок. Голос и лицо остаются
-                там, где уже есть; общими становятся только ноутбук и ядро.
-              </p>
-            </div>
-            <div class="ifs-item">
-              <h3>«Студент не хочет, чтобы его код видели»</h3>
-              <p>
-                Тогда это не тот инструмент. Что написано в комнате — видит комната, как доска в
-                аудитории. Домашняя работа живёт вне Colloq.
-              </p>
-            </div>
+        </div>
+      </section>
+      <section class="section section--brand on-brand" id="razvernut" aria-labelledby="deploy-h">
+        <div class="inner deploy">
+          <div>
+            <p class="label label--on-brand">На своей машине</p>
+            <h2 class="h2" id="deploy-h">Окружение курса<br />под вашим контролем.</h2>
+            <p class="prose">
+              Colloq можно развернуть на ноутбуке преподавателя, кафедральном сервере или VPS.
+              Python работает на этой машине; студенты подключаются из браузера.
+            </p>
+            <p class="deploy-release">
+              Сейчас проект используется на наших занятиях. Публичный репозиторий готовится к
+              открытию под MIT.
+            </p>
+          </div>
+          <div class="setup-sheet">
+            <p class="label label--on-brand">Что потребуется</p>
+            <ol>
+              <li>
+                <span>01</span>
+                <div>
+                  <strong>Компьютер или сервер</strong>
+                  <p>С Docker и ресурсами под задачи курса.</p>
+                </div>
+              </li>
+              <li>
+                <span>02</span>
+                <div>
+                  <strong>Адрес, доступный группе</strong>
+                  <p>Локальная сеть, свой домен или туннель.</p>
+                </div>
+              </li>
+              <li>
+                <span>03</span>
+                <div>
+                  <strong>Модель для оракула — по желанию</strong>
+                  <p>API выбранного провайдера или локальная модель.</p>
+                </div>
+              </li>
+            </ol>
           </div>
         </div>
-      </div>
-    </section>
-
-    <!-- ------------------------------------------------------ развернуть -->
-    <section class="section section--brand on-brand" id="razvernut">
-      <div class="inner deploy">
-        <div>
-          <p class="label label--on-brand">Развернуть</p>
-          <h2 class="h2">Ставится одной командой</h2>
-          <p class="prose">
-            Код откроется под MIT. Работает на ноутбуке преподавателя, на кафедральной машине или
-            на VPS — ядру по умолчанию отдаётся два гигабайта. Данные занятия никуда не уезжают.
-          </p>
-        </div>
-
-        <div class="term">
-          <div class="term-bar"><i></i><span>bash — colloq</span></div>
-          <!--
-            Печатается только третья строка: заголовок обещает одну команду,
-            и внимание должно уйти на неё, а не на то, как машина набирает
-            git clone. Число символов скрипт берёт отсюда же.
-          -->
-          <pre>git clone &lt;репозиторий&gt;
-cd colloq &amp;&amp; cp .env.example .env
-<span class="term-cmd">docker compose up</span><b class="term-caret" aria-hidden="true"></b></pre>
-          <div class="term-out">
-            <b>✓ colloq готов на http://localhost:3000</b>
-            <span>
-              Рядом поднимаются двое: сам Colloq и ядро — Python 3.11 с ноутбучным стеком. Пакеты
-              курса кладутся отдельным файлом окружения: у семинара по CV своё, у NLP своё.
-            </span>
-            <span>
-              Но это localhost, и аудитория по такому адресу не зайдёт. Наружу выводит вторая
-              команда, make host: она поднимает туннель и сама подставляет адрес в ссылку.
-            </span>
+      </section>
+      <section class="section contact-section" id="contact">
+        <div class="inner finale">
+          <div>
+            <p class="label">Связаться с автором</p>
+            <h2>Хотите провести<br />свою пару в Colloq?</h2>
           </div>
-          <p class="term-note">Макет установки, а не прогон: репозиторий ещё закрыт.</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ----------------------------------------------------------- финал -->
-    <section class="section">
-      <div class="inner finale">
-        <h2>Следующее занятие можно провести иначе</h2>
-        <div class="finale-call">
-          <div class="actions">
-            <span class="btn-dead" aria-disabled="true"
-              >Развернуть у себя<i class="soon">СКОРО</i></span
+          <div class="finale-call">
+            <p class="prose">
+              Напишите, что преподаёте и как устроено занятие. Обсудим, подойдёт ли Colloq вашему
+              курсу и как его попробовать.
+            </p>
+            <a
+              class="action-primary action-primary--dark"
+              href="mailto:sleep3r@icloud.com?subject=Colloq%20для%20моего%20курса"
+              >Написать Александру <span aria-hidden="true">↗</span></a
             >
-            <span class="btn-dead" aria-disabled="true"
-              >Читать статью<i class="soon">СКОРО</i></span
-            >
+            <p class="contact-email">sleep3r@icloud.com</p>
           </div>
-          <p class="actions-note">
-            Страница пока только рассказывает. Ссылки появятся здесь же, когда проект выйдет из
-            обкатки.
-          </p>
         </div>
-      </div>
-    </section>
-
-    <!-- ---------------------------------------------------------- подвал -->
+      </section>
+    </main>
     <footer class="foot">
       <div class="foot-inner">
         <div class="foot-about">
@@ -1154,17 +952,14 @@ cd colloq &amp;&amp; cp .env.example .env
             </svg>
             <span>COLLOQ</span>
           </div>
-          <p>
-            Сделано преподавателем для своих занятий: лекций с планшета и семинаров, где вся
-            группа пишет код в одном ноутбуке.
-          </p>
+          <p>Инструмент для занятий, который мы делаем и используем сами.</p>
         </div>
 
         <div class="foot-col">
           <p class="label label--on-brand">Проект</p>
-          <span class="dim">Исходники — скоро</span>
-          <span class="dim">Статья — скоро</span>
-          <span class="dim">Лицензия при открытии — MIT</span>
+          <a href="#seminar">Возможности</a>
+          <a href="#konsilium">Консилиум</a>
+          <a href="#razvernut">Как попробовать</a>
         </div>
 
         <div class="foot-col">
@@ -1176,879 +971,34 @@ cd colloq &amp;&amp; cp .env.example .env
       </div>
     </footer>
 
-    <!--
-      Вся моторика страницы: ванильный JS, ноль зависимостей, ноль сетевых
-      запросов. Скрипт синхронный и стоит в конце body — аватары в первом
-      экране успевают получить класс до первой отрисовки, а терминал и снимок
-      входа лежат далеко ниже сгиба: к моменту, когда до них доскроллят, класс
-      давно на месте и «вспышки» готового кадра не бывает.
-      Каждый блок в своём try/catch: упавший наблюдатель не должен уносить с
-      собой живую ячейку.
-    -->
     <script>
-      (function () {
-        'use strict';
+      ;(function () {
+        'use strict'
 
-        var reduce = false;
+        var reduce = false
         try {
-          reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
         } catch (e) {}
 
-        /* Сцена проигрывается один раз и отписывается. Без IntersectionObserver
-           (очень старый браузер) просто играем сразу: пусть лучше читатель не
-           увидит такт, чем увидит блок в незапущенном состоянии. */
-        function once(el, ratio, run) {
-          if (!('IntersectionObserver' in window)) {
-            run();
-            return;
-          }
-          var io = new IntersectionObserver(
-            function (entries) {
-              for (var i = 0; i < entries.length; i++) {
-                if (entries[i].isIntersecting) {
-                  io.disconnect();
-                  run();
-                  return;
-                }
-              }
-            },
-            { threshold: ratio }
-          );
-          io.observe(el);
-        }
-
-        /*
-         * Имя, инициалы, цвет, род.
-         *
-         * Род нужен строке «вошла / вошёл»: написать «Рита вошёл» хуже,
-         * чем не писать ничего.
-         *
-         * Цвета — только те пять, что были в рейке с самого начала, плюс
-         * два из палитры продукта. Сигнальный красный сюда не берётся: на
-         * синем он читается как тревога, а пришедший человек — не она.
-         * Повторы цветов намеренны: в самом продукте цвет чеканится из id
-         * участника и точно так же совпадает у разных людей.
-         */
-        var ROSTER = [
-          ['АК', '#e8734a', 'Алиса', 1], ['МР', '#8b6bd9', 'Марат', 0],
-          ['ДК', '#2fa36b', 'Дина', 1], ['СП', '#e3a72f', 'Соня', 1],
-          ['РН', '#3ec9a7', 'Рита', 1], ['ИЛ', '#4fc3ee', 'Игорь', 0],
-          ['ТБ', '#4fc3ee', 'Тимур', 0], ['ЮК', '#8b6bd9', 'Юля', 1],
-          ['ВГ', '#2fa36b', 'Вера', 1], ['ЛС', '#e8734a', 'Лёша', 0],
-          ['ОП', '#e3a72f', 'Оля', 1], ['НЖ', '#4fc3ee', 'Никита', 0],
-          ['ЕС', '#8b6bd9', 'Егор', 0], ['КМ', '#3ec9a7', 'Катя', 1],
-          ['ДБ', '#e8734a', 'Даня', 0], ['ПЛ', '#e8734a', 'Полина', 1]
-        ];
-
-        /* ---------------------------------------------- комната в герое --- */
-        /*
-         * Комната наполняется и пустеет, пока страница открыта.
-         *
-         * Назначение — explanation: слово «комната» ничего не значит на
-         * статичной картинке, а приходящий и уходящий человек показывает ровно
-         * то, чем продукт является.
-         *
-         * Первая версия перерисовывала полосу целиком, и смена читалась как
-         * перекраска: круги мигали на местах, никто никуда не шёл. Теперь у
-         * каждого человека свой элемент, который живёт ровно столько, сколько
-         * человек в комнате. Уходящий круг выводится из потока в тот же кадр —
-         * поэтому соседи трогаются сразу, а не после того, как он догорит, — и
-         * гаснет уже поверх полосы. Оставшиеся едут приёмом FLIP: старые
-         * координаты меряются до правки, новые после, разница ставится
-         * трансформом и снимается переходом. Браузер двигает композиторский
-         * слой, а не пересчитывает раскладку тридцать раз в секунду.
-         *
-         * Такт длинный — от пяти до девяти секунд, — и потому движение внутри
-         * него может быть неторопливым: 420ms на переезд, 340ms на уход.
-         * Обратное — короткий такт и быстрые переезды — уже было, и полоса
-         * читалась как индикатор загрузки, а не как комната.
-         *
-         * При prefers-reduced-motion скрипт не трогает разметку вовсе: в HTML
-         * лежит осмысленная статичная сцена, и она остаётся.
-         */
-        /*
-         * Сцена живёт в своей области видимости. Все блоки этого скрипта до
-         * сих пор делили одну — и это работало ровно до тех пор, пока имена
-         * в них не пересекались: `var` не знает границ блока, поэтому `count`
-         * из ячейки ниже по странице молча затирал `count` двери, и афиша
-         * переставала считать людей. Собственная функция стоит две строки и
-         * снимает ловушку для всех, кто будет дописывать сюда следующую сцену.
-         */
         try {
-          (function () {
-            var room = document.getElementById('room');
-            var roomN = document.getElementById('room-n');
-            var sayBox = document.getElementById('room-say');
-            if (!room || reduce) return;
-
-            var PEOPLE = ROSTER;
-            var WORDS = ['ноль', 'один', 'двое', 'трое', 'четверо', 'пятеро', 'шестеро',
-              'семеро', 'восемь', 'девять', 'десять', 'одиннадцать', 'двенадцать',
-              'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать'];
-            /* Сколько кругов помещается в рейку. Остальные живут только в
-               счётчике и в кружке «+N» — иначе полоса поехала бы по ширине. */
-            var SEATS = 4;
-            var inside = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-            /* Четверо снаружи с самого начала. Пустой запас означал, что
-               первым вернувшимся неизбежно оказывается тот, кто только что
-               вышел, — и комната пересказывала одну и ту же пару имён. */
-            var pool = [12, 13, 14, 15];
-            var nodes = {};
-            var chip = null;
-
-            var circle = function (text, tint) {
-              var el = document.createElement('span');
-              el.textContent = text;
-              el.style.background = tint;
-              return el;
-            };
-
-            /*
-             * Уходящий круг покидает поток немедленно и гаснет уже поверх
-             * полосы. Пока он занимает место, соседям некуда ехать, и полоса
-             * дёргается дважды: сначала на выцветание, потом на схлопывание.
-             */
-            var fadeOut = function (el) {
-              var r = el.getBoundingClientRect();
-              var box = room.getBoundingClientRect();
-              el.style.position = 'absolute';
-              el.style.left = r.left - box.left + 'px';
-              el.style.top = r.top - box.top + 'px';
-              el.style.margin = '0';
-              el.classList.remove('is-new');
-              el.classList.add('is-out');
-              /* В конец списка детей: он уже вне потока и стоит по своим
-                 координатам, зато перестаёт сбивать расстановку ниже, которая
-                 считает места по индексу ребёнка. */
-              room.appendChild(el);
-              window.setTimeout(function () {
-                el.remove();
-              }, 380);
-            };
-
-            var render = function () {
-              var want = inside.slice(0, SEATS);
-
-              /* First: где всё стоит до правки. */
-              var before = new Map();
-              Array.prototype.forEach.call(room.children, function (el) {
-                before.set(el, el.getBoundingClientRect().left);
-              });
-
-              Object.keys(nodes).forEach(function (key) {
-                if (want.indexOf(Number(key)) === -1) {
-                  fadeOut(nodes[key]);
-                  delete nodes[key];
-                }
-              });
-
-              var order = [];
-              want.forEach(function (who) {
-                if (!nodes[who]) {
-                  nodes[who] = circle(PEOPLE[who][0], PEOPLE[who][1]);
-                  nodes[who].className = 'is-new';
-                  /* Класс входа снимается, когда вход доиграл. Оставить его
-                     навсегда нельзя: перестановка узла внутри родителя — это
-                     для браузера изъятие и вставка, то есть анимация
-                     запускается заново, и на каждом такте вся полоса заново
-                     выцветала из ничего. */
-                  window.setTimeout(
-                    (function (el) {
-                      return function () {
-                        el.classList.remove('is-new');
-                      };
-                    })(nodes[who]),
-                    460
-                  );
-                }
-                order.push(nodes[who]);
-              });
-
-              var rest = inside.length - want.length;
-              if (rest > 0) {
-                if (!chip) chip = circle('', '#374b9b');
-                chip.textContent = '+' + rest;
-                order.push(chip);
-              } else if (chip) {
-                chip.remove();
-                chip = null;
-              }
-
-              /* Расстановка трогает только тех, кто стоит не на своём месте:
-                 лишняя перевставка стоит перезапуска анимаций и лишнего
-                 пересчёта раскладки. */
-              order.forEach(function (el, i) {
-                var at = room.children[i];
-                if (at !== el) room.insertBefore(el, at || null);
-              });
-
-              /* Last и Invert: разница ставится трансформом без перехода... */
-              var moved = [];
-              Array.prototype.forEach.call(room.children, function (el) {
-                var was = before.get(el);
-                if (was === undefined) return;
-                var dx = was - el.getBoundingClientRect().left;
-                if (!dx) return;
-                el.style.transition = 'none';
-                el.style.transform = 'translateX(' + dx + 'px)';
-                moved.push(el);
-              });
-              if (moved.length > 0) {
-                /* ...браузер обязан это применить до того, как мы снимем... */
-                void room.offsetWidth;
-                /* ...и дальше едет уже переход, объявленный в CSS. */
-                moved.forEach(function (el) {
-                  el.style.transition = '';
-                  el.style.transform = '';
-                });
-              }
-
-              if (roomN) roomN.textContent = WORDS[inside.length] || String(inside.length);
-            };
-
-            var sayTimer = null;
-            var say = function (who, arriving) {
-              if (!sayBox) return;
-              var one = PEOPLE[who];
-              sayBox.textContent =
-                one[2] +
-                ' ' +
-                (one[3] ? (arriving ? 'вошла' : 'вышла') : arriving ? 'вошёл' : 'вышел');
-              sayBox.className = 'room-say is-on' + (arriving ? '' : ' is-gone');
-              window.clearTimeout(sayTimer);
-              sayTimer = window.setTimeout(function () {
-                sayBox.classList.remove('is-on');
-              }, 2600);
-            };
-
-            var tick = function () {
-              /*
-               * Такт обязан что-то менять. Первая версия бросала монету и,
-               * если выпадал приход при пустом запасе ушедших, не делала
-               * ничего — то есть каждый второй такт комната замирала.
-               *
-               * Берега: меньше девяти — комната перестаёт быть комнатой,
-               * больше пятнадцати — всё уходит в «+N» и не читается. У берега
-               * монета не бросается, направление задаёт берег.
-               */
-              var canLeave = inside.length > 8;
-              var canJoin = pool.length > 0 && inside.length < 15;
-              var leaving;
-              if (canLeave && canJoin) leaving = Math.random() < 0.45;
-              else if (canLeave) leaving = true;
-              else if (canJoin) leaving = false;
-              else return;
-
-              if (leaving) {
-                /* Уходят чаще с полосы, чем из хвоста: уход, видный только
-                   сменой цифры в «+N», ничего не рассказывает. */
-                var seat = Math.random() < 0.7
-                  ? Math.floor(Math.random() * Math.min(SEATS, inside.length))
-                  : Math.floor(Math.random() * inside.length);
-                var out = inside.splice(seat, 1)[0];
-                pool.push(out);
-                render();
-                say(out, false);
-              } else {
-                /* Кто вышел только что, тот сразу не возвращается: ушедшие
-                   лежат в конце запаса, и последний из них в выборку не
-                   попадает. «Соня вышла — Соня вошла» подряд читается как
-                   сбой, а не как комната. */
-                var span = pool.length > 1 ? pool.length - 1 : pool.length;
-                var back = pool.splice(Math.floor(Math.random() * span), 1)[0];
-                var arrived = back;
-                /* Новый садится в первое кресло: приход должно быть видно, а
-                   в хвосте за «+N» его бы никто не заметил. */
-                inside.unshift(back);
-                render();
-                say(arrived, true);
-              }
-            };
-
-            /* Первая сборка. До неё в полосе стоит тот же состав, набранный
-               руками, — это то, что видно без скрипта, и подмена не мигает. */
-            room.textContent = '';
-            render();
-            room.classList.add('is-in');
-            window.setTimeout(function () {
-              /* Каскад снимается, когда доиграл: иначе он проиграет второй раз
-                 в тот момент, когда узкое окно растянут до широкого и рейка
-                 героя снова включится, — то есть посреди чтения. */
-              room.classList.remove('is-in');
-            }, 1200);
-
-            var timer = null;
-            /*
-             * Первый такт — короткий, дальше такт обычный.
-             *
-             * Раньше первый приход ждал столько же, сколько все следующие, то
-             * есть до девяти секунд. Всё это время комната была неотличима от
-             * картинки: читатель успевал прочитать врезку, решить, что рейка
-             * статична, и уйти глазами вниз — ровно до того, как она начнёт
-             * рассказывать, зачем она здесь. Полторы секунды — после того как
-             * доиграл каскад входа (600ms), но до того, как взгляд ушёл.
-             */
-            var FIRST = 1400;
-            var first = true;
-            var schedule = function () {
-              /*
-               * Пять-девять секунд. Быстрее было мельтешение: круги менялись
-               * чаще, чем читатель успевал заметить, что именно изменилось, и
-               * полоса читалась как индикатор загрузки. На этом такте приход
-               * одного человека — отдельное событие, и у него есть время быть
-               * замеченным.
-               */
-              var wait = first ? FIRST : 5000 + Math.random() * 4500;
-              first = false;
-              timer = window.setTimeout(function () {
-                tick();
-                schedule();
-              }, wait);
-            };
-
-            var rail = room.closest('.room-line') || room;
-            if ('IntersectionObserver' in window) {
-              new IntersectionObserver(function (entries) {
-                if (entries[0] && entries[0].isIntersecting) {
-                  if (!timer) schedule();
-                } else if (timer) {
-                  window.clearTimeout(timer);
-                  timer = null;
-                }
-              }, { threshold: 0 }).observe(rail);
-            } else {
-              schedule();
-            }
-          })();
-        } catch (e) {}
-
-        /* ------------------------------- переключатель кресел (страховка) - */
-        try {
-          var para = document.getElementById('para');
-          var seatS = document.getElementById('role-s');
-          if (para && seatS) {
-            /* Само переключение делает CSS. Класс нужен только там, где нет
-               :has — Firefox ESR 115 ещё живёт на институтских машинах. */
-            var syncSeat = function () {
-              para.classList.toggle('seat-s', seatS.checked);
-            };
-            para.addEventListener('change', syncSeat);
-            syncSeat();
-          }
-        } catch (e) {}
-
-        /* ------------------------------------- терминал печатает команду --- */
-        try {
-          var term = document.querySelector('.term');
-          var cmd = term && term.querySelector('.term-cmd');
-          if (term && cmd) {
-            /* Шаг набора считается по самой строке: правка команды не может
-               рассинхронизировать steps() с числом символов. Сам шаг живёт в
-               словаре длительностей (--t-type), а не литералом здесь: такт,
-               объявленный в CSS, не должен расходиться со скриптом. */
-            var step = 18;
-            try {
-              var declared = parseFloat(
-                getComputedStyle(document.documentElement).getPropertyValue('--t-type')
-              );
-              if (declared > 0) step = declared;
-            } catch (e2) {}
-            var n = cmd.textContent.length;
-            var typeDur = n * step;
-            var caretAt = 160 + typeDur;
-            term.style.setProperty('--type-n', String(n));
-            term.style.setProperty('--type-dur', typeDur + 'ms');
-            term.style.setProperty('--caret-delay', caretAt + 'ms');
-            /* 1040ms ожидания = две вспышки каретки по 520ms. Это и есть та
-               пауза, ради которой сцена существует: команда одна, а ответ
-               приходит не мгновенно. */
-            term.style.setProperty('--out-delay', caretAt + 1040 + 'ms');
-            term.classList.add('term--live');
-            once(term, 0.4, function () {
-              term.classList.add('is-run');
-            });
-          }
-        } catch (e) {}
-
-        /* --------------------------------------- чужие курсоры в тексте --- */
-        /*
-         * По заголовку и по врезке героя ходят чужие каретки.
-         *
-         * Это не украшение и не заимствованный приём: ровно это видит человек
-         * в семинаре, когда в одном файле сидит группа. Страница говорит
-         * «совместный» словами трижды; здесь она говорит это единственным
-         * способом, которым такое вообще показывается, — чужим курсором в
-         * твоём тексте. Заголовок для этого и выбран: он про то, что делают
-         * вместе, и по нему в этот момент кто-то ведёт выделение.
-         *
-         * Каретки не мигают. Мигание — это про твой собственный курсор, оно
-         * говорит «сюда попадёт следующая буква»; чужая каретка так не
-         * говорит, и четыре мигалки на первом экране складывались бы в
-         * гирлянду. Так же ведут себя каретки в самом продукте.
-         *
-         * Имя показывается только когда человек тронулся с места, и гаснет
-         * через полторы секунды: постоянные подписи превращают абзац в
-         * подписанный чертёж.
-         *
-         * Позиция считается по Range: браузер сам знает, где кончается пятый
-         * символ третьей строки, и знает это после любого переноса. Поэтому же
-         * всё пересчитывается по ResizeObserver — при смене ширины текст
-         * перетекает, и координаты, снятые до неё, показывают в пустоту.
-         *
-         * При prefers-reduced-motion сцены нет вовсе: текст остаётся текстом.
-         */
-        try {
-          (function () {
-            if (reduce) return;
-
-            var fields = [
-              { el: document.getElementById('live-h'), crew: 2 },
-              { el: document.getElementById('live-p'), crew: 2 }
-            ].filter(function (f) {
-              return f.el;
-            });
-            if (fields.length === 0) return;
-
-            /* Текстовые узлы поля, кроме тех, что лежат в самом слое кареток:
-               иначе подписи попадут в текст, по которому мы же и считаем
-               смещения, и всё поедет. */
-            var textNodes = function (el) {
-              var out = [];
-              var walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
-                acceptNode: function (node) {
-                  return node.parentElement && node.parentElement.closest('.cursors')
-                    ? NodeFilter.FILTER_REJECT
-                    : NodeFilter.FILTER_ACCEPT;
-                }
-              });
-              var node;
-              while ((node = walk.nextNode())) out.push(node);
-              return out;
-            };
-
-            /* Сквозной номер символа → узел и смещение внутри него. */
-            var locate = function (nodes, i) {
-              for (var k = 0; k < nodes.length; k += 1) {
-                var len = nodes[k].nodeValue.length;
-                if (i < len || (i === len && k === nodes.length - 1)) return [nodes[k], i];
-                i -= len;
-              }
-              return null;
-            };
-
-            var rangeFor = function (el, a, b) {
-              var nodes = textNodes(el);
-              var s = locate(nodes, a);
-              var e = locate(nodes, b);
-              if (!s || !e) return null;
-              var r = document.createRange();
-              r.setStart(s[0], s[1]);
-              r.setEnd(e[0], e[1]);
-              return r;
-            };
-
-            /*
-             * Схлопнутый Range в разных движках отдаёт то нулевую коробку, то
-             * пустую — поэтому меряется соседний символ, и берётся его левый
-             * край (или правый, если каретка стоит в самом конце).
-             */
-            /*
-             * Коробка строки выше самих букв: браузер меряет её по метрикам
-             * шрифта, а не по рисунку знаков, и на заголовке в 86px это дало
-             * каретку в 116 — колонну, а не курсор. Поэтому высота режется по
-             * кеглю и центрируется в строке: 1.16em — примерно от верха
-             * выносного элемента до низа, то есть ровно то, что курсор в
-             * текстовом редакторе и занимает.
-             */
-            var fit = function (box, size) {
-              var h = Math.min(box.height, size * 1.16);
-              return { y: box.top + (box.height - h) / 2, h: h };
-            };
-
-            var caretAt = function (el, i, total, size) {
-              var r = i < total ? rangeFor(el, i, i + 1) : rangeFor(el, Math.max(0, i - 1), i);
-              if (!r) return null;
-              var box = r.getBoundingClientRect();
-              if (!box.height) return null;
-              var v = fit(box, size);
-              return { x: i < total ? box.left : box.right, y: v.y, h: v.h };
-            };
-
-            /* Слова, а не символы: человек ходит по тексту словами, и каретка,
-               встающая посреди «смо|трят», выглядит поломкой, а не человеком. */
-            var wordsOf = function (el) {
-              var text = textNodes(el)
-                .map(function (n) {
-                  return n.nodeValue;
-                })
-                .join('');
-              var words = [];
-              var re = /[^\s]+/g;
-              var m;
-              while ((m = re.exec(text))) words.push([m.index, m.index + m[0].length]);
-              return { total: text.length, words: words };
-            };
-
-            /* Чернила подписи выбираются по светлоте плашки: белым по жёлтому
-               имя не прочитать, а тёмным по фиолетовому — тем более. */
-            var inkFor = function (hex) {
-              var n = parseInt(hex.slice(1), 16);
-              var r = (n >> 16) & 255;
-              var g = (n >> 8) & 255;
-              var b = n & 255;
-              return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#101a33' : '#ffffff';
-            };
-
-            var pick = function (n) {
-              return Math.floor(Math.random() * n);
-            };
-
-            var actors = [];
-
-            var Actor = function (field, who) {
-              var el = field.el;
-              var wrap = document.createElement('span');
-              wrap.className = 'cur';
-              wrap.style.setProperty('--tint', who[1]);
-              wrap.style.setProperty('--cur-ink', inkFor(who[1]));
-
-              var sel = document.createElement('i');
-              sel.className = 'cur-sel';
-              var bar = document.createElement('i');
-              bar.className = 'cur-bar';
-              var tag = document.createElement('b');
-              tag.className = 'cur-tag';
-              tag.textContent = who[2];
-              bar.appendChild(tag);
-              wrap.appendChild(sel);
-              wrap.appendChild(bar);
-              field.layer.appendChild(wrap);
-
-              var mark = { lo: 0, hi: 0, on: false };
-              field.busy.push(mark);
-
-              var at = 0;
-              var to = 0;
-              var here = false;
-              var timer = null;
-              var tagTimer = null;
-
-              /* Ставит каретку и выделение по нынешнему состоянию. `animate`
-                 снимается на пересчёте после перетекания текста: там каретка
-                 обязана оказаться на новом месте, а не доехать до него. */
-              var place = function (animate) {
-                var w = wordsOf(el);
-                var base = el.getBoundingClientRect();
-                var size = parseFloat(window.getComputedStyle(el).fontSize) || 16;
-                var head = caretAt(el, to, w.total, size);
-                if (!head) return;
-
-                /* Толщина каретки идёт за кеглем: два пикселя, честные на
-                   врезке в 20px, на заголовке в 86px — волосок. */
-                bar.style.width = Math.max(2, Math.round(size / 22)) + 'px';
-                if (!animate) bar.style.transition = 'none';
-                bar.style.transform =
-                  'translate(' + (head.x - base.left) + 'px,' + (head.y - base.top) + 'px)';
-                bar.style.height = head.h + 'px';
-                if (!animate) {
-                  void bar.offsetWidth;
-                  bar.style.transition = '';
-                }
-
-                sel.textContent = '';
-                if (at !== to) {
-                  var r = rangeFor(el, Math.min(at, to), Math.max(at, to));
-                  if (r) {
-                    var rects = r.getClientRects();
-                    for (var i = 0; i < rects.length; i += 1) {
-                      var one = rects[i];
-                      if (!one.width || !one.height) continue;
-                      /* Прямоугольник на каждую строку выделения: перенос
-                         режет выделение, и одной коробкой его не описать. */
-                      var v = fit(one, size);
-                      var u = document.createElement('u');
-                      u.style.left = one.left - base.left + 'px';
-                      u.style.top = v.y - base.top + 'px';
-                      u.style.width = one.width + 'px';
-                      u.style.height = v.h + 'px';
-                      sel.appendChild(u);
-                    }
-                  }
-                }
-              };
-
-              var name = function () {
-                wrap.classList.add('is-say');
-                window.clearTimeout(tagTimer);
-                tagTimer = window.setTimeout(function () {
-                  wrap.classList.remove('is-say');
-                }, 1500);
-              };
-
-              var show = function () {
-                here = true;
-                mark.on = true;
-                wrap.classList.add('is-on');
-              };
-              var hide = function () {
-                here = false;
-                mark.on = false;
-                wrap.classList.remove('is-on', 'is-say');
-              };
-
-              var goTo = function (a, b) {
-                at = a;
-                to = b;
-                mark.lo = Math.min(a, b);
-                mark.hi = Math.max(a, b);
-                place(true);
-              };
-
-              /* Свободно ли место: с зазором в два символа, чтобы соседние
-                 каретки не слипались в одну черту. */
-              var free = function (a, b) {
-                var lo = Math.min(a, b);
-                var hi = Math.max(a, b);
-                for (var i = 0; i < field.busy.length; i += 1) {
-                  var o = field.busy[i];
-                  if (o === mark || !o.on) continue;
-                  if (Math.min(hi, o.hi) >= Math.max(lo, o.lo) - 2) return false;
-                }
-                return true;
-              };
-
-              /* Пять попыток найти свободное место. Не нашлось — человек
-                 просто не двинулся: остаться на месте честнее, чем встать
-                 поверх соседа. */
-              var choose = function (make) {
-                for (var i = 0; i < 5; i += 1) {
-                  var pair = make();
-                  if (pair && free(pair[0], pair[1])) return pair;
-                }
-                return null;
-              };
-
-              /*
-               * Ход по одному символу. Так человек не прыгает, а идёт — и это
-               * единственное место сцены, где такт быстрее самой анимации:
-               * 110ms между шагами при 220ms на переезд означает, что каретка
-               * не успевает встать и едет непрерывно. Ровно так и выглядит
-               * зажатая стрелка.
-               */
-              var crawl = function (left, w) {
-                if (left <= 0) {
-                  plan();
-                  return;
-                }
-                var next = Math.max(0, Math.min(w.total, to + (crawl.dir || 1)));
-                goTo(next, next);
-                timer = window.setTimeout(function () {
-                  crawl(left - 1, w);
-                }, 110);
-              };
-
-              var act = function () {
-                var w = wordsOf(el);
-                if (w.words.length === 0) return;
-
-                if (!here) {
-                  /* Пришёл: встаёт сразу на место, без переезда через весь
-                     абзац из точки, где его никто не видел. */
-                  var spot = choose(function () {
-                    var word = w.words[pick(w.words.length)];
-                    return [word[0], word[0]];
-                  });
-                  if (!spot) {
-                    plan();
-                    return;
-                  }
-                  at = to = spot[0];
-                  mark.lo = mark.hi = spot[0];
-                  place(false);
-                  show();
-                  name();
-                  plan();
-                  return;
-                }
-
-                var roll = Math.random();
-                if (roll < 0.14) {
-                  hide();
-                  plan();
-                  return;
-                }
-                if (roll < 0.4) {
-                  var one = choose(function () {
-                    var word = w.words[pick(w.words.length)];
-                    return [word[0], word[1]];
-                  });
-                  if (one) {
-                    goTo(one[0], one[1]);
-                    name();
-                  }
-                  plan();
-                  return;
-                }
-                if (roll < 0.58) {
-                  var many = choose(function () {
-                    var from = pick(w.words.length);
-                    var span = Math.min(from + 1 + pick(3), w.words.length - 1);
-                    return [w.words[from][0], w.words[span][1]];
-                  });
-                  if (many) {
-                    goTo(many[0], many[1]);
-                    name();
-                  }
-                  plan();
-                  return;
-                }
-                if (roll < 0.78) {
-                  crawl.dir = Math.random() < 0.5 ? -1 : 1;
-                  name();
-                  crawl(3 + pick(4), w);
-                  return;
-                }
-                var solo = choose(function () {
-                  var word = w.words[pick(w.words.length)];
-                  return [word[0], word[0]];
-                });
-                if (solo) {
-                  goTo(solo[0], solo[0]);
-                  name();
-                }
-                plan();
-              };
-
-              var plan = function () {
-                window.clearTimeout(timer);
-                timer = window.setTimeout(act, 1600 + Math.random() * 3400);
-              };
-
-              return {
-                start: function () {
-                  if (!timer) timer = window.setTimeout(act, 400 + Math.random() * 2600);
-                },
-                stop: function () {
-                  window.clearTimeout(timer);
-                  timer = null;
-                },
-                remeasure: function () {
-                  if (here) place(false);
-                }
-              };
-            };
-
-            /* Раздаём людей по полям, не повторяя имён: две «Алисы» в одном
-               абзаце — это не комната, а сбой. */
-            var bag = ROSTER.slice();
-            fields.forEach(function (field) {
-              field.el.classList.add('live');
-              var layer = document.createElement('span');
-              layer.className = 'cursors';
-              /* Слой лежит ВНУТРИ заголовка, а подписи кареток — это текст:
-                 без этого доступное имя h1 читалось как «Занятия, где делают,
-                 а не смотрят НИКИТА ТИМУР». Прозрачность из дерева доступности
-                 не убирает, а живая комната по соседству закрыта от диктора
-                 ровно так же. */
-              layer.setAttribute('aria-hidden', 'true');
-              field.el.appendChild(layer);
-              field.layer = layer;
-              /* Кто где стоит в этом поле. Двое на одном слове — это не двое,
-                 а один жирный курсор; два выделения на одном слове — плашка
-                 двойной плотности, из-под которой текст перестаёт читаться. */
-              field.busy = [];
-              for (var i = 0; i < field.crew; i += 1) {
-                if (bag.length === 0) break;
-                actors.push(Actor(field, bag.splice(pick(bag.length), 1)[0]));
-              }
-            });
-
-            var running = false;
-            var run = function (on) {
-              if (on === running) return;
-              running = on;
-              actors.forEach(function (a) {
-                if (on) a.start();
-                else a.stop();
-              });
-            };
-
-            if ('ResizeObserver' in window) {
-              var settle = null;
-              var ro = new ResizeObserver(function () {
-                /* Перетекание текста приходит пачкой событий; считать
-                   координаты на каждом — это считать их зря. */
-                window.clearTimeout(settle);
-                settle = window.setTimeout(function () {
-                  actors.forEach(function (a) {
-                    a.remeasure();
-                  });
-                }, 120);
-              });
-              fields.forEach(function (f) {
-                ro.observe(f.el);
-              });
-            }
-
-            var hero = fields[0].el.closest('.hero') || fields[0].el;
-            if ('IntersectionObserver' in window) {
-              new IntersectionObserver(
-                function (entries) {
-                  run(!!(entries[0] && entries[0].isIntersecting));
-                },
-                { threshold: 0 }
-              ).observe(hero);
-            } else {
-              run(true);
-            }
-          })();
-        } catch (e) {}
-
-        /* ------------------------------------------ экран входа ------------ */
-        /*
-         * Дверь. Три вещи, которые здесь делает читатель, и одна, которую
-         * страница делает за него.
-         *
-         * Страница набирает имя — но только пока к полю не притронулись.
-         * Первое же касание (фокус, клавиша, палец) выключает набор навсегда
-         * и очищает поле: продолжать печатать поверх человека — это отнимать
-         * у него клавиатуру, а предложение было ровно обратным.
-         *
-         * Читатель может выбрать метку, и тогда перебор меток тоже
-         * прекращается — своё всегда старше машинного.
-         *
-         * И он может нажать кнопку. За ней ничего не открывается, и подпись
-         * под полосой говорит об этом прямо; кнопка честно показывает то
-         * единственное, что произошло бы, — в комнате стало на человека
-         * больше, и этот человек он.
-         */
-        /*
-         * Сцена живёт в своей области видимости. Все блоки этого скрипта до
-         * сих пор делили одну — и это работало ровно до тех пор, пока имена
-         * в них не пересекались: `var` не знает границ блока, поэтому `count`
-         * из ячейки ниже по странице молча затирал `count` двери, и афиша
-         * переставала считать людей. Собственная функция стоит две строки и
-         * снимает ловушку для всех, кто будет дописывать сюда следующую сцену.
-         */
-        try {
-          (function () {
-            var door = document.getElementById('door');
-            var nameBox = document.getElementById('door-name');
-            var glyph = document.getElementById('door-glyph');
-            var said = document.getElementById('door-said');
-            var grid = document.getElementById('door-grid');
-            var card = document.getElementById('door-card');
-            var change = document.getElementById('door-change');
-            var hint = document.getElementById('door-hint');
-            var go = document.getElementById('door-go');
-            var goText = document.getElementById('door-go-text');
-            var goMark = document.getElementById('door-go-mark');
-            var goArrow = document.getElementById('door-go-arrow');
-            var goCheck = document.getElementById('door-go-check');
-            var foot = document.getElementById('door-foot');
-            var stack = document.getElementById('door-stack');
-            var count = document.getElementById('door-count');
-            var form = document.getElementById('door-form');
+          ;(function () {
+            var door = document.getElementById('door')
+            var nameBox = document.getElementById('door-name')
+            var glyph = document.getElementById('door-glyph')
+            var said = document.getElementById('door-said')
+            var grid = document.getElementById('door-grid')
+            var card = document.getElementById('door-card')
+            var change = document.getElementById('door-change')
+            var hint = document.getElementById('door-hint')
+            var go = document.getElementById('door-go')
+            var goText = document.getElementById('door-go-text')
+            var goMark = document.getElementById('door-go-mark')
+            var goArrow = document.getElementById('door-go-arrow')
+            var goCheck = document.getElementById('door-go-check')
+            var foot = document.getElementById('door-foot')
+            var stack = document.getElementById('door-stack')
+            var count = document.getElementById('door-count')
+            var form = document.getElementById('door-form')
 
             if (door && nameBox && glyph && said && grid && go) {
               /* Метки — подмножество продуктового словаря: то же правило (одно
@@ -2059,83 +1009,116 @@ cd colloq &amp;&amp; cp .env.example .env
                  из них — иначе первый же посетитель, который их пересчитает,
                  поймает страницу на округлении. */
               var MARKS = [
-                ['🦊', 'лиса'], ['🐢', 'черепаха'], ['🐙', 'осьминог'], ['🦉', 'сова'],
-                ['🐝', 'пчела'], ['🐬', 'дельфин'], ['🦋', 'бабочка'], ['🐧', 'пингвин'],
-                ['🦩', 'фламинго'], ['🐨', 'коала'], ['🦔', 'ёж'], ['🐳', 'кит'],
-                ['🦜', 'попугай'], ['🐞', 'божья коровка'], ['🦈', 'акула'], ['🐸', 'лягушка'],
-                ['🦌', 'олень'], ['🐿️', 'белка'], ['🦇', 'летучая мышь'], ['🐺', 'волк'],
-                ['🦅', 'орёл'], ['🐡', 'рыба-шар'], ['🦂', 'скорпион'], ['🐌', 'улитка'],
-                ['🦕', 'динозавр'], ['🦖', 'тираннозавр'], ['🐊', 'крокодил'], ['🦚', 'павлин'],
-                ['🦡', 'барсук'], ['🐫', 'верблюд'], ['🦥', 'ленивец'], ['🦦', 'выдра'],
-                ['🦫', 'бобр'], ['🐆', 'леопард'], ['🦓', 'зебра'], ['🦒', 'жираф'],
-                ['🦘', 'кенгуру'], ['🐘', 'слон'], ['🦏', 'носорог'], ['🦛', 'бегемот']
-              ];
+                ['🦊', 'лиса'],
+                ['🐢', 'черепаха'],
+                ['🐙', 'осьминог'],
+                ['🦉', 'сова'],
+                ['🐝', 'пчела'],
+                ['🐬', 'дельфин'],
+                ['🦋', 'бабочка'],
+                ['🐧', 'пингвин'],
+                ['🦩', 'фламинго'],
+                ['🐨', 'коала'],
+                ['🦔', 'ёж'],
+                ['🐳', 'кит'],
+                ['🦜', 'попугай'],
+                ['🐞', 'божья коровка'],
+                ['🦈', 'акула'],
+                ['🐸', 'лягушка'],
+                ['🦌', 'олень'],
+                ['🐿️', 'белка'],
+                ['🦇', 'летучая мышь'],
+                ['🐺', 'волк'],
+                ['🦅', 'орёл'],
+                ['🐡', 'рыба-шар'],
+                ['🦂', 'скорпион'],
+                ['🐌', 'улитка'],
+                ['🦕', 'динозавр'],
+                ['🦖', 'тираннозавр'],
+                ['🐊', 'крокодил'],
+                ['🦚', 'павлин'],
+                ['🦡', 'барсук'],
+                ['🐫', 'верблюд'],
+                ['🦥', 'ленивец'],
+                ['🦦', 'выдра'],
+                ['🦫', 'бобр'],
+                ['🐆', 'леопард'],
+                ['🦓', 'зебра'],
+                ['🦒', 'жираф'],
+                ['🦘', 'кенгуру'],
+                ['🐘', 'слон'],
+                ['🦏', 'носорог'],
+                ['🦛', 'бегемот'],
+              ]
               /* Цвет круга в продукте чеканится из id участника; здесь его
                  неоткуда взять, поэтому берётся ровно та палитра, которой
                  подписаны люди в рейке героя. */
-              var TINTS = ['#e8734a', '#8b6bd9', '#2fa36b', '#e3a72f', '#0fa0d7', '#3ec9a7'];
+              var TINTS = ['#e8734a', '#8b6bd9', '#2fa36b', '#e3a72f', '#0fa0d7', '#3ec9a7']
               /* «1 человек», «22 человека», «7 человек». Правило русского счёта
                  короткое, но забывают о нём ровно до первого «7 человека» на
                  экране, и тогда страница выглядит машинным переводом самой себя.
                  Одиннадцать-четырнадцать — исключение, они всегда «человек». */
               var inside = function (n) {
-                var tail = n % 10;
-                var teen = n % 100;
+                var tail = n % 10
+                var teen = n % 100
                 var word =
-                  teen >= 11 && teen <= 14 ? 'человек'
-                  : tail === 1 ? 'человек'
-                  : tail >= 2 && tail <= 4 ? 'человека'
-                  : 'человек';
-                return n + ' ' + word;
-              };
+                  teen >= 11 && teen <= 14
+                    ? 'человек'
+                    : tail === 1
+                      ? 'человек'
+                      : tail >= 2 && tail <= 4
+                        ? 'человека'
+                        : 'человек'
+                return n + ' ' + word
+              }
               /* Имена в поле — те же, что у людей в рейке героя: в этой строке
                  на семинаре стоит русское имя. */
-              var NAMES = ['Алиса', 'Марат', 'Дина', 'Тимур', 'Соня', 'Артём', 'Рита', 'Гоша'];
+              var NAMES = ['Алиса', 'Марат', 'Дина', 'Тимур', 'Соня', 'Артём', 'Рита', 'Гоша']
 
-              var markAt = 0;
-              var mine = null; /* метка, выбранная читателем */
-              var typing = !reduce; /* набирает ли страница */
-              var joined = false;
-              var timer = null;
-              var wake = null;
+              var markAt = 0
+              var mine = null /* метка, выбранная читателем */
+              var typing = !reduce /* набирает ли страница */
+              var joined = false
+              var timer = null
+              var wake = null
 
               var setMark = function (i, animate) {
-                markAt = i;
-                glyph.textContent = MARKS[i][0];
-                glyph.style.background = TINTS[i % TINTS.length];
+                markAt = i
+                glyph.textContent = MARKS[i][0]
+                glyph.style.background = TINTS[i % TINTS.length]
                 /* «Теперь вы — X», а не «вам досталась X»: сорок меток разного
                    рода, и любая фраза с согласованием требует таблицы родов
                    ради одной строки. Здесь род не нужен ни одной из них. */
-                said.textContent = 'Теперь вы — ' + MARKS[i][1];
+                said.textContent = 'Теперь вы — ' + MARKS[i][1]
                 if (animate && !reduce) {
-                  glyph.classList.remove('is-swap');
+                  glyph.classList.remove('is-swap')
                   /* Перезапуск анимации: без чтения offsetWidth браузер
                      склеивает снятие и возврат класса в один кадр. */
-                  void glyph.offsetWidth;
-                  glyph.classList.add('is-swap');
+                  void glyph.offsetWidth
+                  glyph.classList.add('is-swap')
                 }
-                var buttons = grid.children;
+                var buttons = grid.children
                 for (var k = 0; k < buttons.length; k += 1) {
-                  buttons[k].setAttribute('aria-pressed', k === i ? 'true' : 'false');
+                  buttons[k].setAttribute('aria-pressed', k === i ? 'true' : 'false')
                 }
-              };
+              }
 
               /* -------------------------------------------------- сетка меток */
               for (var i = 0; i < MARKS.length; i += 1) {
-                (function (idx) {
-                  var b = document.createElement('button');
-                  b.type = 'button';
-                  b.textContent = MARKS[idx][0];
-                  b.title = MARKS[idx][1];
-                  b.setAttribute('aria-label', MARKS[idx][1]);
-                  b.setAttribute('aria-pressed', 'false');
+                ;(function (idx) {
+                  var b = document.createElement('button')
+                  b.type = 'button'
+                  b.textContent = MARKS[idx][0]
+                  b.title = MARKS[idx][1]
+                  b.setAttribute('aria-label', MARKS[idx][1])
+                  b.setAttribute('aria-pressed', 'false')
                   b.addEventListener('click', function () {
-                    mine = idx;
-                    setMark(idx, true);
-                    closeGrid(true);
-                  });
-                  grid.appendChild(b);
-                })(i);
+                    mine = idx
+                    setMark(idx, true)
+                    closeGrid(true)
+                  })
+                  grid.appendChild(b)
+                })(i)
               }
 
               /*
@@ -2146,24 +1129,24 @@ cd colloq &amp;&amp; cp .env.example .env
                * страницы без места, откуда продолжать.
                */
               var openGrid = function () {
-                if (card) card.hidden = true;
-                grid.hidden = false;
-                if (change) change.setAttribute('aria-expanded', 'true');
+                if (card) card.hidden = true
+                grid.hidden = false
+                if (change) change.setAttribute('aria-expanded', 'true')
                 if (hint) {
-                  hint.hidden = false;
-                  hint.textContent = MARKS.length + ' меток';
+                  hint.hidden = false
+                  hint.textContent = MARKS.length + ' меток'
                 }
-                var here = grid.children[mine === null ? markAt : mine];
-                if (here) here.focus();
-              };
+                var here = grid.children[mine === null ? markAt : mine]
+                if (here) here.focus()
+              }
               var closeGrid = function (back) {
-                grid.hidden = true;
-                if (card) card.hidden = false;
-                if (change) change.setAttribute('aria-expanded', 'false');
-                if (hint) hint.hidden = true;
-                if (back && change) change.focus();
-              };
-              if (change) change.addEventListener('click', openGrid);
+                grid.hidden = true
+                if (card) card.hidden = false
+                if (change) change.setAttribute('aria-expanded', 'false')
+                if (hint) hint.hidden = true
+                if (back && change) change.focus()
+              }
+              if (change) change.addEventListener('click', openGrid)
               /*
                * Escape слушает форма, а не сетка. Мышью «Change» нажимают без
                * фокуса, и обработчик на сетке в этом случае не получает
@@ -2172,19 +1155,19 @@ cd colloq &amp;&amp; cp .env.example .env
                */
               form.addEventListener('keydown', function (e) {
                 if (e.key === 'Escape' && !grid.hidden) {
-                  e.preventDefault();
-                  closeGrid(true);
+                  e.preventDefault()
+                  closeGrid(true)
                 }
-              });
+              })
 
               /* ------------------------------------------------- набор имени */
               var stop = function () {
-                typing = false;
+                typing = false
                 if (timer) {
-                  window.clearTimeout(timer);
-                  timer = null;
+                  window.clearTimeout(timer)
+                  timer = null
                 }
-              };
+              }
 
               /*
                * Первое касание поля. `once: true` — не оптимизация: обработчик
@@ -2192,66 +1175,66 @@ cd colloq &amp;&amp; cp .env.example .env
                * каждом возврате фокуса.
                */
               var mineNow = function () {
-                if (!typing) return;
-                stop();
-                nameBox.value = '';
-                enable();
-              };
-              ['focus', 'keydown', 'pointerdown'].forEach(function (ev) {
-                nameBox.addEventListener(ev, mineNow, { once: true });
-              });
+                if (!typing) return
+                stop()
+                nameBox.value = ''
+                enable()
+              }
+              ;['focus', 'keydown', 'pointerdown'].forEach(function (ev) {
+                nameBox.addEventListener(ev, mineNow, { once: true })
+              })
               /* Набор мог быть выключен заранее (reduced motion) — тогда поле
                  уже пустое и обычное, и трогать нечего. */
 
               var enable = function () {
-                go.disabled = !nameBox.value.trim() && !joined;
-              };
+                go.disabled = !nameBox.value.trim() && !joined
+              }
               nameBox.addEventListener('input', function () {
                 /* Печатать в поле после входа — это и есть «войти другим»:
                    форма возвращается, но набранная буква остаётся, иначе
                    клавиша просто пропала бы. */
-                if (joined) reset(true);
-                enable();
-              });
+                if (joined) reset(true)
+                enable()
+              })
 
-              var word = 0;
-              var pos = 0;
-              var erasing = false;
+              var word = 0
+              var pos = 0
+              var erasing = false
               var step = function () {
-                if (!typing) return;
-                var text = NAMES[word];
+                if (!typing) return
+                var text = NAMES[word]
                 if (!erasing) {
-                  pos += 1;
-                  nameBox.value = text.slice(0, pos);
-                  enable();
+                  pos += 1
+                  nameBox.value = text.slice(0, pos)
+                  enable()
                   if (pos >= text.length) {
-                    erasing = true;
+                    erasing = true
                     /* Имя дописано — столько оно и стоит: меньше секунды с
                        половиной читатель не успевает понять, что это имя, а не
                        набор букв. */
-                    timer = window.setTimeout(step, 1900);
-                    return;
+                    timer = window.setTimeout(step, 1900)
+                    return
                   }
                   /* 105ms на букву — это человек, печатающий своё имя.
                      Терминал ниже по странице печатает по 18ms, потому что там
                      печатает не человек. */
-                  timer = window.setTimeout(step, 105);
-                  return;
+                  timer = window.setTimeout(step, 105)
+                  return
                 }
-                pos -= 1;
-                nameBox.value = text.slice(0, pos);
-                enable();
+                pos -= 1
+                nameBox.value = text.slice(0, pos)
+                enable()
                 if (pos <= 0) {
-                  erasing = false;
-                  word = (word + 1) % NAMES.length;
+                  erasing = false
+                  word = (word + 1) % NAMES.length
                   /* Ушёл один человек — ушла и его метка. Свою читатель уже
                      выбрал, и её перебор не трогает. */
-                  if (mine === null) setMark((markAt + 1) % MARKS.length, true);
-                  timer = window.setTimeout(step, 520);
-                  return;
+                  if (mine === null) setMark((markAt + 1) % MARKS.length, true)
+                  timer = window.setTimeout(step, 520)
+                  return
                 }
-                timer = window.setTimeout(step, 42);
-              };
+                timer = window.setTimeout(step, 42)
+              }
 
               /* ---------------------------------------------------- нажатие */
               /*
@@ -2263,230 +1246,233 @@ cd colloq &amp;&amp; cp .env.example .env
                * то есть ноль мест — вошедший читатель видел «внутри уже 1
                * человек» при пяти кругах, а вышедший «внутри уже 0».
                */
-              var seats = count ? parseInt(count.getAttribute('data-n'), 10) || 0 : 0;
-              var seated = null;
+              var seats = count ? parseInt(count.getAttribute('data-n'), 10) || 0 : 0
+              var seated = null
               form.addEventListener('submit', function (e) {
-                e.preventDefault();
-                var who = nameBox.value.trim();
-                if (!who || joined) return;
-                stop();
-                joined = true;
+                e.preventDefault()
+                var who = nameBox.value.trim()
+                if (!who || joined) return
+                stop()
+                joined = true
 
                 if (stack && !seated) {
-                  seated = document.createElement('span');
-                  seated.className = 'is-new is-me';
-                  seated.style.background = TINTS[markAt % TINTS.length];
-                  seated.textContent = MARKS[markAt][0];
+                  seated = document.createElement('span')
+                  seated.className = 'is-new is-me'
+                  seated.style.background = TINTS[markAt % TINTS.length]
+                  seated.textContent = MARKS[markAt][0]
                   /* Первым, а не последним: в хвосте круг ложится под соседей
                      и от него остаётся серп без метки — то есть человек,
                      который вошёл и которого не видно. */
-                  stack.insertBefore(seated, stack.firstChild);
+                  stack.insertBefore(seated, stack.firstChild)
                 }
                 if (count) {
-                  count.textContent = 'внутри уже ' + inside(seats + 1);
+                  count.textContent = 'внутри уже ' + inside(seats + 1)
                 }
                 if (goMark) {
-                  goMark.hidden = false;
-                  goMark.textContent = MARKS[markAt][0];
+                  goMark.hidden = false
+                  goMark.textContent = MARKS[markAt][0]
                 }
-                if (goArrow) goArrow.style.display = 'none';
-                if (goCheck) goCheck.hidden = false;
-                if (goText) goText.textContent = who + ' в комнате';
+                if (goArrow) goArrow.style.display = 'none'
+                if (goCheck) goCheck.hidden = false
+                if (goText) goText.textContent = who + ' в комнате'
                 if (foot) {
-                  foot.textContent = '';
-                  var again = document.createElement('button');
-                  again.type = 'button';
-                  again.className = 'door-again';
-                  again.textContent = 'войти ещё раз';
+                  foot.textContent = ''
+                  var again = document.createElement('button')
+                  again.type = 'button'
+                  again.className = 'door-again'
+                  again.textContent = 'войти ещё раз'
                   again.addEventListener('click', function () {
-                    reset();
-                    nameBox.focus();
-                  });
+                    reset()
+                    nameBox.focus()
+                  })
                   /* Единственная русская строка внутри рамки — и она не
                      продуктовая: продукт этого не говорит, это говорит
                      страница о себе. */
-                  foot.appendChild(document.createTextNode('Это макет двери, а не комната — '));
-                  foot.appendChild(again);
+                  foot.appendChild(document.createTextNode('Это пример входа. Можно '))
+                  foot.appendChild(again)
                 }
-              });
+              })
 
               var reset = function (keepName) {
-                if (!joined) return;
-                joined = false;
+                if (!joined) return
+                joined = false
                 if (seated) {
-                  seated.remove();
-                  seated = null;
+                  seated.remove()
+                  seated = null
                 }
-                if (count) count.textContent = 'внутри уже ' + inside(seats);
-                if (goMark) goMark.hidden = true;
-                if (goCheck) goCheck.hidden = true;
-                if (goArrow) goArrow.style.display = '';
-                if (goText) goText.textContent = 'Войти';
+                if (count) count.textContent = 'внутри уже ' + inside(seats)
+                if (goMark) goMark.hidden = true
+                if (goCheck) goCheck.hidden = true
+                if (goArrow) goArrow.style.display = ''
+                if (goText) goText.textContent = 'Войти'
                 if (foot) {
                   foot.textContent =
                     'Ни аккаунта, ни почты. Ссылка и есть занятие: закройте вкладку — та же' +
-                    ' ссылка вернёт вас обратно.';
+                    ' ссылка вернёт вас обратно.'
                 }
-                if (!keepName) nameBox.value = '';
-                enable();
-              };
+                if (!keepName) nameBox.value = ''
+                enable()
+              }
 
               /* --------------------------------------------------- завод */
-              setMark(0, false);
+              setMark(0, false)
               if (!typing) {
                 /* Движение запрещено: поле стоит заполненным — это конечный
                    кадр той же сцены, и он осмысленный сам по себе. */
-                nameBox.value = NAMES[0];
+                nameBox.value = NAMES[0]
               }
-              enable();
+              enable()
 
               /* Набор идёт, только пока дверь на экране. Ставится и снимается,
                  а не запускается однажды: страница длинная, и печатать в поле,
                  которого никто не видит, — это греть процессор. */
               if (typing && 'IntersectionObserver' in window) {
-                wake = new IntersectionObserver(function (entries) {
-                  if (!typing) return;
-                  if (entries[0] && entries[0].isIntersecting) {
-                    if (!timer) timer = window.setTimeout(step, 400);
-                  } else if (timer) {
-                    window.clearTimeout(timer);
-                    timer = null;
-                  }
-                }, { threshold: 0.25 });
-                wake.observe(door);
+                wake = new IntersectionObserver(
+                  function (entries) {
+                    if (!typing) return
+                    if (entries[0] && entries[0].isIntersecting) {
+                      if (!timer) timer = window.setTimeout(step, 400)
+                    } else if (timer) {
+                      window.clearTimeout(timer)
+                      timer = null
+                    }
+                  },
+                  { threshold: 0.25 },
+                )
+                wake.observe(door)
               } else if (typing) {
-                timer = window.setTimeout(step, 400);
+                timer = window.setTimeout(step, 400)
               }
             }
-          })();
+          })()
         } catch (e) {}
 
         /* --------------------------------------------- живая ячейка -------- */
         try {
-          var kernel = document.querySelector('.kernel');
+          var kernel = document.querySelector('.kernel')
           if (kernel) {
-            var cells = Array.prototype.slice.call(kernel.querySelectorAll('.cell'));
-            var hint = kernel.querySelector('.kernel-hint');
+            var cells = Array.prototype.slice.call(kernel.querySelectorAll('.cell'))
+            var hint = kernel.querySelector('.kernel-hint')
             /* 380ms: это не длительность анимации, а выдуманная задержка, и
                читатель уже нажал и ждёт. In [*] успевает прочитаться, а
                ощущение медленного продукта ещё не появляется. */
-            var RUN_MS = 380;
-            var busy = null;
-            var queued = null;
-            var hasDf = false;
-            var count = 0;
+            var RUN_MS = 380
+            var busy = null
+            var queued = null
+            var hasDf = false
+            var count = 0
 
             /* Подмена реплики разведена во времени, как в .swhat: старая уходит
                за 120ms, новая приходит за 160ms с задержкой в 100ms. Коробка под
                две строки зарезервирована в CSS, поэтому шапка ядра больше не
                толкает ячейки вниз в момент смены текста. */
-            var hintTimer = 0;
+            var hintTimer = 0
             function say(text) {
-              if (!hint) return;
-              hint.classList.add('is-out');
-              window.clearTimeout(hintTimer);
+              if (!hint) return
+              hint.classList.add('is-out')
+              window.clearTimeout(hintTimer)
               hintTimer = window.setTimeout(function () {
-                hint.textContent = text;
-                hint.classList.remove('is-out');
-              }, 120);
+                hint.textContent = text
+                hint.classList.remove('is-out')
+              }, 120)
             }
             function out(cell, text) {
-              cell.querySelector('.cell-out p').textContent = text;
+              cell.querySelector('.cell-out p').textContent = text
             }
             function prompt(cell, text) {
-              cell.querySelector('.cell-prompt').textContent = text;
+              cell.querySelector('.cell-prompt').textContent = text
             }
 
             function finish(cell) {
-              count += 1;
-              prompt(cell, 'In [' + count + ']');
+              count += 1
+              prompt(cell, 'In [' + count + ']')
 
               if (cell.getAttribute('data-owner') === 'maria') {
-                hasDf = true;
-                cell.setAttribute('data-run', 'done');
-                out(cell, '(1000, 14)');
-                var you = cells[1];
+                hasDf = true
+                cell.setAttribute('data-run', 'done')
+                out(cell, '(1000, 14)')
+                var you = cells[1]
                 if (you && you.getAttribute('data-run') === 'error') {
                   /* Ошибка снимается сама: переменная появилась в том же
                      ядре, и держать чужой NameError на экране больше незачем. */
-                  you.setAttribute('data-run', 'idle');
-                  prompt(you, 'In [ ]');
+                  you.setAttribute('data-run', 'idle')
+                  prompt(you, 'In [ ]')
                   window.setTimeout(function () {
-                    if (you.getAttribute('data-run') === 'idle') out(you, '');
-                  }, 160);
-                  say('Ошибки больше нет: переменную создала ячейка Марии. Запустите свою.');
+                    if (you.getAttribute('data-run') === 'idle') out(you, '')
+                  }, 160)
+                  say('Ошибки больше нет: переменную создала ячейка Марии. Запустите свою.')
                 } else {
-                  say('df создан в ядре комнаты — и он же лежит в вашей ячейке ниже.');
+                  say('Ячейка Марии загрузила df. Теперь он доступен вашей ячейке.')
                 }
-                return;
+                return
               }
 
               if (hasDf) {
-                cell.setAttribute('data-run', 'done');
-                out(cell, '0.3187');
-                say('Переменную создал не тот, кто её прочитал. Это и есть одно ядро на комнату.');
+                cell.setAttribute('data-run', 'done')
+                out(cell, '0.3187')
+                say('df доступен обеим ячейкам. Так группа работает с одними данными.')
               } else {
-                cell.setAttribute('data-run', 'error');
-                out(cell, "NameError: name 'df' is not defined");
-                say('Переменной ещё нет: её создаёт ячейка Марии.');
+                cell.setAttribute('data-run', 'error')
+                out(cell, "NameError: name 'df' is not defined")
+                say('Переменной ещё нет: её создаёт ячейка Марии.')
               }
             }
 
             function start(cell) {
-              busy = cell;
-              cell.setAttribute('data-run', 'running');
-              prompt(cell, 'In [*]');
+              busy = cell
+              cell.setAttribute('data-run', 'running')
+              prompt(cell, 'In [*]')
               /* Прошлый вывод стирается после того, как строка выцвела, а не в
                  тот же кадр: уход .cell-out p занимает 160ms. Гард на состояние —
                  чтобы не стереть результат, если он уже пришёл. */
               window.setTimeout(function () {
-                if (cell.getAttribute('data-run') === 'running') out(cell, '');
-              }, 160);
-              var btn = cell.querySelector('.cell-run');
-              btn.setAttribute('aria-busy', 'true');
+                if (cell.getAttribute('data-run') === 'running') out(cell, '')
+              }, 160)
+              var btn = cell.querySelector('.cell-run')
+              btn.setAttribute('aria-busy', 'true')
               window.setTimeout(function () {
-                btn.removeAttribute('aria-busy');
-                busy = null;
-                finish(cell);
-                var next = queued;
-                queued = null;
-                if (next) start(next);
-              }, RUN_MS);
+                btn.removeAttribute('aria-busy')
+                busy = null
+                finish(cell)
+                var next = queued
+                queued = null
+                if (next) start(next)
+              }, RUN_MS)
             }
 
             function press(cell) {
-              if (busy === cell || queued === cell) return;
+              if (busy === cell || queued === cell) return
               if (busy) {
                 /* Очередь возникает естественным жестом: нажали вторую ячейку,
                    пока идёт первая. Ровно то, что написано в соседней плитке
                    про общий терминал, — команды двоих встают в очередь. */
-                queued = cell;
-                cell.setAttribute('data-run', 'queued');
-                out(cell, '… ждёт очереди: ядро занято');
-                say('Ядро одно, поэтому второй запуск встал в очередь, а не пошёл рядом.');
-                return;
+                queued = cell
+                cell.setAttribute('data-run', 'queued')
+                out(cell, '… ждёт очереди: ядро занято')
+                say('Ядро занято. Следующая ячейка запустится после текущей.')
+                return
               }
-              start(cell);
+              start(cell)
             }
 
             cells.forEach(function (cell) {
-              var btn = cell.querySelector('.cell-run');
-              if (!btn) return;
+              var btn = cell.querySelector('.cell-run')
+              if (!btn) return
               btn.addEventListener('click', function () {
-                press(cell);
-              });
+                press(cell)
+              })
               /* Shift+Enter — идиома Jupyter, и она сама по себе объясняет,
                  что перед вами ноутбук, а не картинка ноутбука. */
               cell.addEventListener('keydown', function (e) {
                 if (e.key === 'Enter' && e.shiftKey) {
-                  e.preventDefault();
-                  press(cell);
+                  e.preventDefault()
+                  press(cell)
                 }
-              });
-            });
+              })
+            })
           }
         } catch (e) {}
-      })();
+      })()
     </script>
   </body>
 </html>
