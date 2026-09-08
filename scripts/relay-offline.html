@@ -1543,7 +1543,7 @@
             state.sent = false;
             sendBtn.disabled = false;
             delete sendBtn.dataset.done;
-            sendBtn.textContent = 'Записать как «' + (v || 'Аноним') + '»';
+            sendBtn.textContent = v ? 'Записать как «' + v + '»' : 'Впишите имя';
           } else {
             state.sent = true;
             sendBtn.disabled = true;
@@ -1560,6 +1560,23 @@
           const run = state.run;
           const score = state.score;
           const name = raw.trim().slice(0, 16);
+          /*
+           * Без имени записи нет.
+           *
+           * Раньше пустое поле уходило на сервис и становилось «Анонимом» —
+           * своей вечной строкой на каждую попытку, и таблица про людей
+           * превращалась в ленту безымянных заездов (пять строк из восьми).
+           * Играть без имени по-прежнему можно сколько угодно: не пишется
+           * только строка в таблице.
+           */
+          if (!name) {
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Впишите имя';
+            statusEl.textContent = 'В таблицу пишут с именем — впишите его в поле. Или играйте дальше: очки останутся здесь.';
+            nameInput.focus();
+            showOverHint();
+            return;
+          }
           store.set('capy.name', name);
           state.sending = true;
           sendBtn.disabled = true;
@@ -1579,7 +1596,7 @@
             if (r.status === 400) {
               let why = '';
               try { why = (await r.json()).error || ''; } catch (_) {}
-              throw new Error(why === 'implausible' ? 'implausible' : why === 'run' ? 'run' : '400');
+              throw new Error(['implausible', 'run', 'name', 'owner'].indexOf(why) >= 0 ? why : '400');
             }
             if (!r.ok) throw new Error(String(r.status));
             const d = await r.json();
@@ -1598,7 +1615,7 @@
               store.set('capy.best', String(state.best));
               render();
             }
-            const shown = d.name || name || 'Аноним';
+            const shown = d.name || name;
             const who = (d.renamed ? 'Теперь вы «' + shown + '», рекорд переехал. ' : 'Записано как «' + shown + '». ');
             if (d.rank == null) {
               statusEl.textContent = who + 'Очков не хватило, чтобы попасть в таблицу.';
@@ -1623,13 +1640,19 @@
             statusEl.textContent = why === 'rate'
               ? 'Слишком часто — подождите пару секунд и попробуйте снова.'
               : why === 'taken'
-                ? 'Имя «' + (name || 'Аноним') + '» уже занято другим игроком — впишите другое.'
+                ? 'Имя «' + name + '» уже занято другим игроком — впишите другое.'
                 : why === 'implausible'
                   ? 'Очки не приняты: столько за это время не набрать.'
                   : why === 'run'
                     ? 'Запись не принята: забег не был начат через таблицу. Сыграйте ещё раз.'
-                    : 'Таблица сейчас недоступна — очки остались только здесь.';
-            if (why === 'taken') { sendBtn.textContent = 'Записать как «' + (name || 'Аноним') + '»'; nameInput.focus(); }
+                    : why === 'name'
+                      ? 'Такое имя в таблицу не пишется — впишите другое.'
+                      : why === 'owner'
+                        // Ключ владельца заводит сама страница; сюда попадают
+                        // только запросы мимо неё.
+                        ? 'Запись не принята: браузер не назвал владельца имени.'
+                        : 'Таблица сейчас недоступна — очки остались только здесь.';
+            if (why === 'taken' || why === 'name') { sendBtn.textContent = 'Записать как «' + name + '»'; nameInput.focus(); }
           } finally {
             if (state.run === run) state.sending = false;
           }
