@@ -67,3 +67,53 @@ gpu_toolkit
   assert.match(result.stderr, /nvidia-container-toolkit.*1\.20\.1-1.*newer.*1\.20\.0-1/)
   assert.match(result.stderr, /downgrade.*explicit|explicit.*downgrade/i)
 })
+
+function waitForNode(mode: 'ready' | 'missing' | 'multiple') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-node-poll-'))
+  try {
+    const node = (name: string, ready: string) => ({ metadata: { labels: { 'kubernetes.io/hostname': name } },
+      status: { conditions: [{ type: 'Ready', status: ready }] } })
+    const snapshots = [null, { items: [] }, { items: [node('test-node', 'False')] },
+      { items: mode === 'multiple' ? [node('one', 'True'), node('two', 'True')] : [node('test-node', 'True')] }]
+    snapshots.forEach((value, index) => fs.writeFileSync(path.join(dir, String(index + 1)), JSON.stringify(value)))
+    const result = spawnSync('bash', ['-c', `set -euo pipefail
+die() { echo "$*" >&2; exit 1; }
+k() {
+  case " $* " in *' --request-timeout=5s '*) ;; *) echo 'missing API timeout' >&2; exit 90 ;; esac
+  local count=0
+  [ ! -f "$POLL_DIR/count" ] || read -r count < "$POLL_DIR/count"
+  count=$((count + 1)); echo "$count" > "$POLL_DIR/count"
+  if [ "$count" -eq 1 ]; then echo 'connection refused' >&2; return 1; fi
+  if [ "$MODE" = missing ]; then echo '{"items":[]}'; return; fi
+  if [ "$count" -gt 4 ]; then count=4; fi
+  cat "$POLL_DIR/$count"
+}
+sleep() { SECONDS=$((SECONDS + $1)); }
+${shellFunction('wait_for_node')}
+wait_for_node
+`], { encoding: 'utf8', timeout: 20000, env: { ...process.env, POLL_DIR: dir, MODE: mode } })
+    assert.equal(result.error, undefined)
+    return { ...result, polls: Number(fs.readFileSync(path.join(dir, 'count'), 'utf8')) }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('node wait tolerates an unavailable API, missing node, and pending readiness', () => {
+  const result = waitForNode('ready')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout.trim(), 'test-node')
+  assert.equal(result.polls, 4)
+})
+
+test('node wait fails within its deadline when registration never happens', () => {
+  const result = waitForNode('missing')
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /node.*180|180.*node/i)
+  assert.ok(result.polls > 1 && result.polls <= 91, `bounded polling: ${result.polls}`)
+})
+
+test('node wait rejects multiple ready nodes instead of deploying on an arbitrary node', () => {
+  const result = waitForNode('multiple')
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /exactly one node/)
+  assert.equal(result.stdout, '')
+})

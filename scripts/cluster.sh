@@ -267,6 +267,33 @@ gpu_preflight() {
   k delete pod colloq-gpu-check --wait=true >/dev/null
 }
 
+wait_for_node() {
+  local nodes state deadline=$((SECONDS + 180))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    # The API can be reachable before the kubelet creates its first Node.
+    if nodes="$(k get nodes --request-timeout=5s -o json 2>/dev/null)"; then
+      state="$(printf '%s' "$nodes" | python3 -c '
+import json,sys
+nodes=json.load(sys.stdin)["items"]
+if len(nodes)>1:
+    print("multiple")
+elif len(nodes)==1:
+    node=nodes[0]
+    hostname=node.get("metadata",{}).get("labels",{}).get("kubernetes.io/hostname")
+    ready=any(c.get("type")=="Ready" and c.get("status")=="True" for c in node.get("status",{}).get("conditions",[]))
+    if ready and hostname:
+        print("ready " + hostname)
+')" || die 'cannot parse Kubernetes node status'
+      case "$state" in
+        multiple) die 'this deployment supports exactly one node' ;;
+        ready\ *) printf '%s\n' "${state#ready }"; return 0 ;;
+      esac
+    fi
+    sleep 2
+  done
+  die 'no single ready Kubernetes node registered within 180 seconds; check k3s and kubelet logs'
+}
+
 prepare() {
   local effective node current policy_version data extras=()
   guard_restore
@@ -286,9 +313,7 @@ prepare() {
   fi
   RELEASE="$effective" bootstrap
   need_cluster
-  k wait --for=condition=Ready node --all --timeout=180s
-  [ "$(k get nodes -o name | wc -l)" -eq 1 ] || die 'this deployment supports exactly one node'
-  node="$(k get nodes -o 'jsonpath={.items[0].metadata.labels.kubernetes\.io/hostname}')"
+  node="$(wait_for_node)"
   k create namespace "$NS" --dry-run=client -o json | k apply -f - >/dev/null
   policy_version="$(release field --release "$effective" --field policyVersion)"
   k label namespace "$NS" pod-security.kubernetes.io/enforce=restricted \
