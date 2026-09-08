@@ -22,15 +22,21 @@
             completionStatus,
           }),
         ),
-        import('@codemirror/commands').then(({ defaultKeymap }) => ({ defaultKeymap })),
+        import('@codemirror/commands').then(({ defaultKeymap, indentLess, indentMore }) => ({
+          defaultKeymap,
+          indentLess,
+          indentMore,
+        })),
         import('@codemirror/lang-markdown').then(({ markdown }) => ({ markdown })),
         import('@codemirror/lang-python').then(({ python }) => ({ python })),
-        import('@codemirror/language').then(({ bracketMatching, indentOnInput }) => ({
+        import('@codemirror/language').then(({ bracketMatching, indentOnInput, indentUnit }) => ({
           bracketMatching,
           indentOnInput,
+          indentUnit,
         })),
-        import('@codemirror/state').then(({ Compartment, EditorState, Prec }) => ({
+        import('@codemirror/state').then(({ Compartment, EditorSelection, EditorState, Prec }) => ({
           Compartment,
+          EditorSelection,
           EditorState,
           Prec,
         })),
@@ -64,6 +70,7 @@
   import type { Awareness } from 'y-protocols/awareness'
   import type { Compartment } from '@codemirror/state'
   import type { EditorView } from '@codemirror/view'
+  import { INDENT, tabKey } from '@/lib/indent'
   import { backspaceRemovesCell } from './cell-keys'
   import { changeFits } from './cell-paste'
   import { cellAwareness, type CellAwareness } from './cell-awareness'
@@ -231,7 +238,7 @@
 
   function createView(cm: CodeMirror, options: ViewOptions): EditorView {
     const { autocompletion, closeBrackets, closeBracketsKeymap, completionStatus } = cm.autocomplete
-    const { bracketMatching, indentOnInput } = cm.language
+    const { bracketMatching, indentOnInput, indentUnit } = cm.language
     const { EditorState, Prec } = cm.state
     const { highlightActiveLine, keymap, placeholder: placeholderExt } = cm.view
     const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling } = options
@@ -309,6 +316,17 @@
           closeBrackets(),
           autocompletion({ activateOnTyping: true, icons: false }),
           indentOnInput(),
+          /*
+           * Четыре пробела — размер отступа в ячейке.
+           *
+           * Без этой строки CodeMirror берёт свои два, и Python в тетради
+           * набирается не так, как везде: Enter после `def f():` отбивал два
+           * пробела, а вставленный из файла или из чужого ответа код приходил
+           * на четырёх — в одной функции получалось два разных отступа, и
+           * ядро отвечало IndentationError на месте, которое глазами не
+           * отличить. Столько же ставит редактор файлов (FileEditor).
+           */
+          indentUnit.of(INDENT),
           highlightActiveLine(),
           cm.view.EditorView.lineWrapping,
           writable.of(writableExtensions(cm, editable)),
@@ -340,6 +358,34 @@
           cm.collab.yCollab(ytext, peers, { undoManager: undo }),
           cellKeymap,
           keymap.of([...closeBracketsKeymap, ...cm.commands.defaultKeymap]),
+          /*
+           * Tab — отступ, а не переход по фокусу.
+           *
+           * Своего Tab у CodeMirror нет: нажатие уходит браузеру, и фокус
+           * уезжает из ячейки — в тетради, где пишут Python, это значит, что
+           * отступ набрать нечем, кроме пробелов вручную.
+           *
+           * Мягкий, а не сдвиг строки: пробелы встают В КУРСОР, до следующей
+           * отметки. Готовый `indentWithTab` двигает строку целиком, и Tab
+           * посреди набранного уносил вправо всё, что уже написано, — правило
+           * и его доводы в lib/indent.ts.
+           *
+           * Стоит последним и потому проигрывает всем, кто уже занял Tab.
+           * Ценой ловушки для клавиатуры: выйти из ячейки Tab'ом нельзя — для
+           * этого Escape, он же увод в командный режим, и он же выше по
+           * старшинству. У ячейки, которую не дают править (чужая под замком,
+           * закончившееся занятие), Tab по-прежнему уводит фокус: правило
+           * отказывает на readOnly, и нажатие достаётся браузеру.
+           *
+           * Тот же размен и та же строка — в редакторе файлов (FileEditor).
+           */
+          keymap.of([
+            tabKey({
+              EditorSelection: cm.state.EditorSelection,
+              indentMore: cm.commands.indentMore,
+              indentLess: cm.commands.indentLess,
+            }),
+          ]),
           cm.view.EditorView.updateListener.of((update) => {
             if (update.focusChanged && update.view.hasFocus) handlers.onfocus?.()
           }),

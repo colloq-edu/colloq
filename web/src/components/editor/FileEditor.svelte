@@ -23,9 +23,10 @@
             closeBracketsKeymap,
           }),
         ),
-        import('@codemirror/commands').then(({ defaultKeymap, indentWithTab }) => ({
+        import('@codemirror/commands').then(({ defaultKeymap, indentLess, indentMore }) => ({
           defaultKeymap,
-          indentWithTab,
+          indentLess,
+          indentMore,
         })),
         import('@codemirror/language').then(
           ({ bracketMatching, foldGutter, indentOnInput, indentUnit }) => ({
@@ -40,8 +41,9 @@
           search,
           searchKeymap,
         })),
-        import('@codemirror/state').then(({ Compartment, EditorState, Prec }) => ({
+        import('@codemirror/state').then(({ Compartment, EditorSelection, EditorState, Prec }) => ({
           Compartment,
+          EditorSelection,
           EditorState,
           Prec,
         })),
@@ -105,6 +107,7 @@
   import type { EditorView } from '@codemirror/view'
   import type { FileDoc } from '@/lib/filedoc.svelte'
   import { baseOf, highlightFor } from '@shared/paths'
+  import { INDENT, tabKey } from '@/lib/indent'
   import { getSessionState } from '@/lib/session.svelte'
 
   interface Props {
@@ -227,8 +230,8 @@
             closeBrackets(),
             indentOnInput(),
             // Четыре пробела: файлы на семинаре — это Python, а Python в этом
-            // продукте пишут в ячейках, где отступ уже такой.
-            indentUnit.of('    '),
+            // продукте пишут в ячейках, где отступ уже такой (lib/indent.ts).
+            indentUnit.of(INDENT),
             autocompletion({ activateOnTyping: true, icons: false }),
             highlightSelectionMatches(),
             search({ top: true }),
@@ -244,13 +247,22 @@
             /*
              * Tab — отступ, а не переход по фокусу.
              *
+             * Мягкий: пробелы встают В КУРСОР, до следующей отметки, а строки
+             * целиком двигают выделение и Shift-Tab. Правило общее с ячейкой —
+             * lib/indent.ts, там же доводы.
+             *
              * Стоит последним и потому проигрывает всем, кто уже занял Tab, —
              * подсказчику в первую очередь. Ценой ловушки для клавиатуры: выйти
              * из редактора Tab'ом нельзя, для этого есть Escape. Для поля, в
-             * котором пишут отступами, это правильный размен, и он же сделан в
-             * ячейках.
+             * котором пишут отступами, это правильный размен.
              */
-            keymap.of([cm.commands.indentWithTab]),
+            keymap.of([
+              tabKey({
+                EditorSelection: cm.state.EditorSelection,
+                indentMore: cm.commands.indentMore,
+                indentLess: cm.commands.indentLess,
+              }),
+            ]),
           ],
         }),
         parent,
