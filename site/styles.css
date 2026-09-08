@@ -463,21 +463,19 @@ a.wordmark {
   line-height: 28px;
 }
 
-/*
- * Кадр, а не иллюстрация: снимок держит натуральный масштаб и уезжает за
- * правый край, вместо того чтобы ужаться до нечитаемого. Слева поле страницы.
- */
+/* Preserve the screenshot's natural proportions at every viewport width. */
 .shot-frame {
-  overflow: hidden;
-  height: 640px;
-  padding-left: var(--gutter);
+  width: calc(100% - 2 * var(--gutter));
+  max-width: 1248px;
+  margin: 0 auto;
+  border: 1px solid var(--line);
 }
-
 .shot-frame img {
-  width: 1440px;
-  max-width: none;
-  height: 900px;
-  border: 1px solid var(--term-line);
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border: 0;
 }
 
 /*
@@ -1898,16 +1896,7 @@ summary:focus-visible {
 .seminar-section .shot-head {
   padding-bottom: 40px;
 }
-.seminar-section .shot-frame {
-  max-width: 1248px;
-  margin: 0 auto;
-  border: 1px solid var(--line);
-  max-height: 680px;
-  overflow: hidden;
-}
-.seminar-section .shot-frame img {
-  width: 100%;
-}
+
 #lekciya {
   background: white;
 }
@@ -2348,9 +2337,7 @@ summary:focus-visible {
     padding-top: 64px;
     padding-bottom: 40px;
   }
-  .seminar-section .shot-frame {
-    margin-inline: var(--gutter);
-  }
+
   .council-copy h2 br:last-child {
     display: none;
   }
@@ -2543,4 +2530,213 @@ summary:focus-visible {
 }
 .door-stack > span {
   color: var(--term-bg);
+}
+
+/* Restored collaborative cursors and animated room presence. */
+.live {
+  position: relative;
+}
+
+.cursors {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cur {
+  position: absolute;
+  inset: 0;
+}
+
+.cur-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  background: var(--tint);
+  transform: translate(-40px, -40px);
+  opacity: 0;
+  transition:
+    transform 420ms var(--ease-out),
+    opacity var(--t-out) var(--ease-out);
+}
+
+.cur.is-on .cur-bar {
+  opacity: 1;
+}
+
+.cur-tag {
+  position: absolute;
+  left: -1px;
+  bottom: 100%;
+  margin-bottom: 5px;
+  padding: 2px 6px;
+  background: var(--tint);
+  color: var(--cur-ink, #fff);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity var(--t-out) var(--ease-out);
+}
+
+.cur.is-say .cur-tag {
+  opacity: 1;
+}
+
+.cur-sel u {
+  position: absolute;
+  background: var(--tint);
+  opacity: 0.18;
+  text-decoration: none;
+  border-radius: 1px;
+  animation: sel-in 200ms var(--ease-out) both;
+}
+
+@keyframes sel-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.room-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.avatars {
+  display: flex;
+  align-items: center;
+
+  position: relative;
+  flex: none;
+}
+
+.room-say {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  min-width: 0;
+  opacity: 0;
+  transition: opacity var(--t-out) var(--ease-out);
+}
+
+.room-say.is-on {
+  opacity: 1;
+}
+
+.room-say.is-gone {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.avatars span {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid var(--brand);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex: none;
+}
+
+.avatars span + span {
+  margin-left: -10px;
+}
+
+.avatars span {
+  transition: transform var(--t-out) var(--ease-out);
+}
+
+.avatars span.is-out {
+  animation: av-out var(--t-out) var(--ease-out) both;
+  pointer-events: none;
+}
+
+@keyframes av-out {
+  to {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+}
+
+.avatars span.is-new {
+  animation: av-in 280ms var(--ease-out) both;
+}
+
+.avatars.is-in span {
+  animation: av-in 280ms var(--ease-out) both;
+}
+
+.avatars.is-in span:nth-child(1) {
+  animation-delay: 80ms;
+}
+
+.avatars.is-in span:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.avatars.is-in span:nth-child(3) {
+  animation-delay: 200ms;
+}
+
+.avatars.is-in span:nth-child(4) {
+  animation-delay: 260ms;
+}
+
+.avatars.is-in span:nth-child(5) {
+  animation-delay: 320ms;
+}
+
+.room-count {
+  font-size: 15px;
+  line-height: 24px;
+  color: #d8e1f2;
+  flex: none;
+}
+.room-line {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.room-say {
+  min-width: 90px;
+}
+@media (max-width: 420px) {
+  .room-count {
+    font-size: 13px;
+  }
+  .room-say {
+    flex-basis: 100%;
+    height: 16px;
+  }
+  .avatars span {
+    width: 32px;
+    height: 32px;
+    font-size: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .avatars.is-in span {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
 }
