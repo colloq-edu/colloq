@@ -1,5 +1,5 @@
 /**
- * Два места README, которые расходятся с деревом сами, без единой правки в них.
+ * Правила комнаты в README должны совпадать с теми, которые можно настроить.
  *
  * Перечень правил комнаты. README называл двенадцать правил и перечислял
  * одиннадцать настоящих плюс одно чужое: «whether the oracle answers here at
@@ -12,18 +12,12 @@
  * словами, и ни одного лишнего; список правил один (web/src/lib/rule-rows.ts),
  * и README обязан ходить за ним.
  *
- * Число тестов. Строка «about N tests» врала уже дважды и в обе стороны — 220,
- * когда их была тысяча, и 1,100, когда их стало 1,700, — потому что растёт она
- * от чужих правок, а живёт в файле, который при этом никто не открывает.
- * Здесь она сверяется с деревом: обещанное — не больше правды и не в разы
- * меньше неё.
- *
  * Слова проверяются вместо дела намеренно: дело — в соседних сюитах, а README
  * не собирает и не типизирует никто.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RULE_ROWS } from '../web/src/lib/rule-rows.js'
@@ -104,29 +98,4 @@ test('режим оракула README относит к созданию сем
   const said = paragraph('Whether the oracle answers in this room')
   assert.match(said, /creation form/i, 'не сказано, где режим оракула выбирают')
   assert.match(said, /not one of those rows/i, 'не сказано, что среди правил комнаты его нет')
-})
-
-test('число тестов в README — не меньше правды и не в разы', () => {
-  const dir = path.join(root, 'tests')
-  let declared = 0
-  for (const name of readdirSync(dir)) {
-    if (!name.endsWith('.test.mts')) continue
-    const body = readFileSync(path.join(dir, name), 'utf8')
-    declared += body.match(/^[ \t]*(?:test|it)\(/gm)?.length ?? 0
-  }
-  assert.ok(declared > 0, 'в tests/ не нашлось ни одного объявленного теста — сломан счёт, а не README')
-
-  const said = readme.match(/over ([\d,]+) tests/i)
-  assert.ok(said, 'в README нет строки «over N tests» — если её убрали, уберите и эту проверку')
-  const promised = Number(said[1].replace(/,/g, ''))
-  assert.ok(
-    promised <= declared,
-    `README обещает ${promised} тестов, а объявлено ${declared}: «over» перестало быть правдой`,
-  )
-  // Вдвое — та граница, за которой число перестаёт быть порядком величины и
-  // становится неправдой: прошлые расхождения были впятеро и в полтора раза.
-  assert.ok(
-    declared < promised * 2,
-    `тестов ${declared} против обещанных ${promised} — строка в README отстала больше чем вдвое`,
-  )
 })

@@ -79,7 +79,7 @@ test('deployment documentation describes mandatory broker isolation and explicit
   }
   assert.doesNotMatch(example, /^KERNEL_ISOLATION=auto$|KERNEL_ISOLATION=off/m)
   assert.doesNotMatch(example, /^JUPYTER_TOKEN=.+$/m)
-  assert.match(readme, /\.restore-in-progress/)
+  assert.match(read('runtime/README.md'), /\.restore-in-progress/)
   assert.match(readme, /MODE=consistent/)
   assert.match(readme, /live.*not an atomic snapshot/is)
   assert.match(readme, /sourceCommit/)

@@ -39,3 +39,6 @@ __pycache__/
 
 # Isolated development worktrees.
 .worktrees/
+
+# Local agent plans and working notes; product documentation remains tracked.
+/docs/superpowers/
