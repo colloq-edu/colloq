@@ -51,7 +51,7 @@
       if (cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       return cause.message
     }
-    return 'что-то пошло не так'
+    return 'Не удалось выполнить запрос. Попробуйте ещё раз.'
   }
 
   /** Адрес, который диктуют вслух: имя, если его дали, иначе идентификатор. */
@@ -145,7 +145,7 @@
       course = await adminApi.setCourseItems(course.id, course.rev, items)
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.status === 409) {
-        error = 'Этот курс успел изменить кто-то ещё. Вот он, каким стал.'
+        error = 'Курс изменён другим пользователем. Загрузим текущую версию; повторите изменение.'
         await loadOne(course.id)
       } else {
         error = explain(cause)
@@ -199,7 +199,7 @@
     try {
       await copyText(text)
     } catch {
-      error = `Браузер не отдал буфер обмена. Ссылка: ${text}`
+      error = `Не удалось скопировать ссылку. Скопируйте её вручную: ${text}`
       return
     }
     copied = key
@@ -254,7 +254,7 @@
     if (!course || busy) return
     const next = slugDraft.trim().toLowerCase()
     if (next && !slugOk(next)) {
-      error = 'Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.'
+      error = 'Адрес: 3–64 символа, строчные латинские буквы, цифры и дефис. Первый и последний символ — буква или цифра.'
       return
     }
     busy = true
@@ -273,7 +273,7 @@
   }
 
   /**
-   * Отпустить прежний адрес и занять его — одним решением.
+   * Освободить прежний адрес и занять его — одним решением.
    *
    * Одним, потому что отпускают его ровно затем, чтобы дать это имя своему
    * курсу: два нажатия подряд оставили бы посередине состояние «имя ничьё», в
@@ -348,7 +348,7 @@
     if (!open || busy) return
     const name = nameDraft.trim()
     if (!name) {
-      error = 'У курса должно быть название — его видят студенты.'
+      error = 'Введите название курса.'
       return
     }
     busy = true
@@ -361,7 +361,7 @@
        *
        * Сервер режет подпись по `MAX_COURSE_BLURB`, и после сохранения
        * сохранённое короче набранного: `detailsChanged` оставался истинным,
-       * кнопка «Сохранить название» не гасла, и её жали снова и снова. Эффект
+       * кнопка «Сохранить изменения» не гасла, и её жали снова и снова. Эффект
        * выше их не трогает — он ключом по `open.id`, а курс тот же.
        */
       nameDraft = saved.name
@@ -439,7 +439,7 @@
 {#if !open}
   <AdminPage
     title="Courses"
-    subtitle="Постоянная страница на семестр семинаров, в том порядке, в каком вы их вели."
+    subtitle="Объедините семинары на странице курса и задайте их порядок."
   >
     {#snippet actions()}
       <button type="button" class="btn-primary" onclick={() => (creating = true)}>New course</button>
@@ -477,7 +477,7 @@
         <div class="py-16 text-center">
           <p class="text-title font-semibold text-ink">Курсов пока нет</p>
           <p class="mx-auto mt-2 max-w-sm text-ui text-muted">
-            Курс — одна ссылка, которую вы даёте классу в первую неделю и больше не даёте ничего.
+            Создайте курс и добавьте семинары. Студенты увидят список и ссылки на опубликованные материалы.
           </p>
         </div>
       {/if}
@@ -515,8 +515,8 @@
         <div class="mt-8 border-t border-line pt-5">
           <p class="text-ui font-semibold text-ink">Страницы без комнаты</p>
           <p class="mt-1 max-w-xl text-2xs leading-relaxed text-muted">
-            Семинар удалён, а его публичная страница осталась — так и задумано: розданную ссылку не
-            отозвать. Отсюда её можно снять (адрес скажет, что страницу убрали) или вернуть.
+            После удаления семинара его публикация сохранена. Здесь можно снять её с публикации
+            или вернуть доступ по ссылке.
           </p>
           {#each orphans as page (page.id)}
             <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line py-3">
@@ -557,11 +557,11 @@
                     class="shrink-0 text-ui font-semibold text-danger"
                     disabled={orphanBusy === page.id}
                     onclick={() => {
-                      if (!window.confirm(`Стереть страницу /p/${addressOf(page)} совсем? Вернуть её будет нечем.`)) return
+                      if (!window.confirm(`Удалить страницу /p/${addressOf(page)} навсегда? Восстановить её через Colloq нельзя.`)) return
                       void actOnOrphan(page.id, () => adminApi.erasePublication(page.id))
                     }}
                   >
-                    Стереть совсем
+                    Удалить навсегда
                   </button>
                 {/if}
               {/if}
@@ -586,7 +586,7 @@
         {copied === 'link' ? 'Скопировано' : 'Копировать ссылку'}
       </button>
       <a class="btn-ghost" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
-        Глазами студента
+        Открыть страницу курса
       </a>
       <button type="button" class="btn-primary" onclick={() => (adding = !adding)}>
         + Добавить семинар
@@ -620,7 +620,7 @@
         <input
           class="h-9 min-w-[220px] flex-1 border border-line bg-canvas px-3 text-ui text-ink
                  placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
-          placeholder="Подпись под названием — одна строка, необязательно"
+          placeholder="Краткое описание курса (необязательно)"
           maxlength={MAX_COURSE_BLURB}
           aria-label="Подпись курса"
           bind:value={blurbDraft}
@@ -635,7 +635,7 @@
             disabled={busy}
             onclick={() => void saveDetails()}
           >
-            Сохранить название
+            Сохранить изменения
           </button>
         {/if}
       </div>
@@ -673,7 +673,7 @@
             disabled={busy}
             onclick={() => (askingSlug = true)}
           >
-            Отпустить прежний адрес
+            Освободить прежний адрес
           </button>
         {/if}
         {#if shown.slug}
@@ -683,11 +683,10 @@
 
       {#if held}
         <p class="max-w-[640px] pb-5 text-2xs leading-snug text-muted">
-          <span class="font-mono text-ink">/c/{held.slug}</span> — прежнее имя
+          <span class="font-mono text-ink">/c/{held.slug}</span> — прежний адрес
           {held.holder.kind === 'course' ? 'курса' : 'страницы'}
-          {#if held.holder.name}«{held.holder.name}»{:else}, у которого теперь другое имя{/if}. Оно
-          держится ради ссылки, которую уже дали классу; отпустив его, вы забираете имя себе, а
-          старая ссылка перестаёт открываться.
+          {#if held.holder.name}«{held.holder.name}»{/if}. После переноса эта ссылка будет открывать
+          текущий курс вместо прежнего.
         </p>
       {/if}
 
@@ -706,9 +705,8 @@
           <div class="border-b border-line px-4 py-2.5">
             <p class="text-ui font-semibold text-ink">Прежние адреса</p>
             <p class="mt-0.5 text-2xs leading-snug text-muted">
-              Ведут на этот курс и держат имя за ним: другому курсу его не дать. Отпущенное имя
-              освобождается для всех — а ссылка с ним перестаёт вести куда-либо, и вернуть её
-              нечем.
+              Эти ссылки открывают текущий курс. Если освободить адрес, он перестанет вести сюда
+              и его сможет занять другой курс.
             </p>
           </div>
           {#each former as name (name)}
@@ -720,7 +718,7 @@
                 disabled={busy}
                 onclick={() => (dropping = name)}
               >
-                Отпустить
+                Освободить
               </button>
             </div>
           {/each}
@@ -739,20 +737,20 @@
         <div class="w-[220px] shrink-0">
           <p class="text-ui font-semibold text-ink">Что видят студенты</p>
           <p class="mt-0.5 text-2xs leading-snug text-muted">
-            Любой, у кого есть ссылка. Без имени и без входа.
+            Страница доступна по ссылке без входа.
           </p>
         </div>
         <p class="min-w-0 max-w-[640px] flex-1 text-ui leading-relaxed text-muted">
-          Каждый семинар ниже появляется на странице курса по имени и в этом порядке.
-          Опубликованные — ссылками, остальные — строкой «ещё не опубликован». Ссылок на сами
-          комнаты там нет никогда.
+          На странице курса показаны названия семинаров в указанном порядке и ссылки на их
+          публикации. У остальных семинаров стоит «ещё не опубликован». Ссылки для входа
+          в комнаты на странице курса не размещаются.
         </p>
       </div>
 
       {#if adding}
         <div class="mb-5 border border-line bg-surface p-3">
           {#if addable.length === 0}
-            <p class="text-ui text-muted">Все семинары уже в этом курсе.</p>
+            <p class="text-ui text-muted">Нет доступных семинаров для добавления.</p>
           {:else}
             <div class="flex flex-wrap gap-2">
               {#each addable as session (session.id)}
@@ -805,7 +803,7 @@
             <div class="min-w-0 flex-1">
               <p class="text-ui text-muted">{item.name}</p>
               <p class="mt-0.5 text-2xs text-faint">
-                семинар удалён · строка остаётся, чтобы номера не поехали
+                семинар удалён · позиция в списке сохранена
               </p>
             </div>
             <div class="flex w-[290px] shrink-0 items-baseline gap-3">
@@ -819,10 +817,10 @@
                   target="_blank"
                   rel="noreferrer"
                 >
-                  комната закрыта, страница осталась
+                  открыть сохранённую публикацию
                 </a>
               {:else}
-                <span class="text-ui text-muted">публиковать нечего</span>
+                <span class="text-ui text-muted">публикации нет</span>
               {/if}
               <button
                 type="button"
@@ -866,7 +864,7 @@
               type="button"
               class={ARROW}
               disabled={index === 0 || busy}
-              aria-label="Выше"
+              aria-label="Переместить выше"
               onclick={() => move(index, -1)}
             >
               <Icon name="chevron-up" size={11} />
@@ -875,7 +873,7 @@
               type="button"
               class={ARROW}
               disabled={index === shown.items.length - 1 || busy}
-              aria-label="Ниже"
+              aria-label="Переместить ниже"
               onclick={() => move(index, 1)}
             >
               <Icon name="chevron-down" size={11} />
@@ -891,7 +889,7 @@
       {/if}
 
       <p class="border-t border-line pt-4 text-2xs text-muted">
-        Порядок на странице курса — этот. Стрелки двигают строку; студенты видят изменение сразу.
+        Стрелки меняют порядок семинаров. Новый порядок виден после загрузки страницы курса.
       </p>
 
       <!-- Удаление живёт внутри самого курса и называет ссылку, которую ломает:
@@ -899,9 +897,9 @@
            продиктовали в первую неделю. -->
       <div class="mt-8 flex flex-wrap items-center gap-3 border-t border-line pt-4">
         <p class="min-w-0 flex-1 text-2xs text-muted">
-          Удалить курс — значит убрать порядок и адрес
+          При удалении курса будут удалены список семинаров, их порядок и адрес
           <span class="font-mono">/c/{addressOf(shown)}</span>. Семинары и опубликованные страницы
-          остаются на месте.
+          сохранятся.
         </p>
         <button
           type="button"
@@ -924,9 +922,9 @@
       {#if loadingOne}
         <p class="text-ui text-muted">Открываем курс…</p>
       {:else}
-        <p class="text-title font-semibold text-ink">Такого курса здесь нет</p>
+        <p class="text-title font-semibold text-ink">Не удалось открыть курс</p>
         <p class="mx-auto mt-2 max-w-sm text-ui text-muted">
-          {error ?? 'Возможно, его удалили — или в адресе опечатка.'}
+          {error ?? 'Проверьте адрес или вернитесь к списку курсов.'}
         </p>
         <button type="button" class="btn-primary mt-4" onclick={() => navigate('/admin/courses')}>
           ← Все курсы
@@ -949,9 +947,8 @@
         Удалить курс «{going.name}»?
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Ссылка <span class="font-mono text-ink">/c/{addressOf(going)}</span> перестанет открываться
-        — у тех, кому её дали, останется адрес в никуда. Сами семинары и их опубликованные страницы
-        не трогаются: пропадает список и его порядок.
+        Ссылка <span class="font-mono text-ink">/c/{addressOf(going)}</span> перестанет открывать курс. Список семинаров и его порядок будут удалены.
+        Семинары и их публикации сохранятся.
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
@@ -974,7 +971,7 @@
 {/if}
 
 <!--
-  Отпустить прежний адрес — вопросом, а не нажатием.
+  Освободить прежний адрес — вопросом, а не нажатием.
 
   Единственное необратимое здесь, кроме удаления курса: ссылка, записанная в
   чате прошлогодней группы, после этого отвечает 404, и вернуть её нечем.
@@ -990,14 +987,13 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="release-slug-title" class="text-title font-semibold text-ink">
-        Отпустить адрес /c/{going.slug}?
+        Освободить адрес /c/{going.slug}?
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
         Сейчас он ведёт на
         {going.holder.kind === 'course' ? 'курс' : 'страницу'}
-        {#if going.holder.name}«{going.holder.name}»{:else}, который переименовали{/if} — и
-        перестанет открываться совсем: у того, кому эту ссылку дали, останется адрес в никуда. Имя
-        тем же движением достаётся этому курсу.
+        {#if going.holder.name}«{going.holder.name}»{/if}. После переноса эта ссылка будет
+        открывать текущий курс вместо прежнего.
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
@@ -1012,7 +1008,7 @@
           disabled={busy}
           onclick={() => void releaseSlug()}
         >
-          {busy ? 'Отпускаем…' : 'Отпустить и занять'}
+          {busy ? 'Переносим…' : 'Перенести адрес'}
         </button>
       </div>
     </div>
@@ -1036,12 +1032,11 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="drop-slug-title" class="text-title font-semibold text-ink">
-        Отпустить адрес /c/{going}?
+        Освободить адрес /c/{going}?
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Сейчас он ведёт на этот курс — и перестанет вести куда-либо: у тех, кому эту ссылку уже
-        дали, останется адрес в никуда, и вернуть её нечем. Взамен имя освобождается — его сможет
-        занять другой курс.
+        Эта ссылка перестанет открывать текущий курс. Адрес сможет занять другой курс,
+        и тогда ссылка будет вести на него.
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
@@ -1056,7 +1051,7 @@
           disabled={busy}
           onclick={() => void dropFormer()}
         >
-          {busy ? 'Отпускаем…' : 'Отпустить адрес'}
+          {busy ? 'Освобождаем…' : 'Освободить адрес'}
         </button>
       </div>
     </div>

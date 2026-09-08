@@ -111,7 +111,7 @@
    * Тетрадь при этом на сервере цела, и сказать об этом важнее всего.
    */
   const EXPIRED_NOTICE =
-    'Your place in this seminar expired, so the room asked for your name again. The notebook is unchanged.'
+    'Your sign-in expired. Enter your name to rejoin the seminar.'
 
   function navigate(next: string): void {
     if (next !== location.pathname) history.pushState({}, '', next)
@@ -363,7 +363,7 @@
         notice =
           cause instanceof ApiError
             ? cause.message
-            : 'Ссылка на пульт не сработала — попросите новую.'
+            : 'Ссылка на пульт недействительна. Создайте новую ссылку в комнате.'
         landing = `/s/${id}`
       })
       .finally(() => {
@@ -442,7 +442,7 @@
       </h1>
       <p class="mt-1.5 text-ui-lg leading-relaxed text-muted">
         {failure.missing
-          ? 'The seminar may have ended, or the link was copied only halfway. Ask whoever shared it for a fresh one.'
+          ? 'Check that you copied the full link, or ask the teacher for the current seminar link.'
           : failure.message}
       </p>
       <!--

@@ -340,7 +340,7 @@ test('комнатный потолок держит и преподавател
       assert.equal(res.status, 429)
       assert.equal(res.headers.get('retry-after'), '600')
       const body = (await res.json()) as { error: string }
-      assert.match(body.error, /все 30 вопросов/)
+      assert.match(body.error, /лимит семинара: 30 вопросов/)
       updateOracleSettings({ questionsPerHour: 20 })
     })
   } finally {
@@ -355,7 +355,7 @@ test('оракул выключен на инстансе — отказ сло�
       updateOracleSettings({ defaultMode: 'off' })
       const res = await ask(r, r.teacher)
       assert.equal(res.status, 403)
-      assert.match(((await res.json()) as { error: string }).error, /выключен/)
+      assert.match(((await res.json()) as { error: string }).error, /отключён/)
       updateOracleSettings({ defaultMode: 'full' })
     })
   } finally {
@@ -369,7 +369,7 @@ test('сдавших нет — оракулу нечего читать, и в�
     await withEndpoint('{}', async () => {
       const res = await ask(r, r.teacher)
       assert.equal(res.status, 400)
-      assert.match(((await res.json()) as { error: string }).error, /Сдавших пока нет/)
+      assert.match(((await res.json()) as { error: string }).error, /Нет сданных попыток/)
     })
   } finally {
     r.close()

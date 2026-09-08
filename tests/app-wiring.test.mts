@@ -94,7 +94,7 @@ test('чужая страница не пишет НИГДЕ, а не тольк
   })
   assert.equal(made.status, 403, 'семинар завёлся по запросу с чужого сайта')
   const said = (await made.json()) as { error?: string }
-  assert.match(said.error ?? '', /this server does not serve/)
+  assert.match(said.error ?? '', /Request blocked: this page uses a different server address/)
 })
 
 test('свой запрос и запрос без Origin проходят', async () => {

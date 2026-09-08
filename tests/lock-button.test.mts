@@ -19,12 +19,12 @@ test('в лекции щелчок — закрыта ↔ открыта все�
   // В консилиум щелчком не попадали — щелчок по нему открывает меню.
   assert.deepEqual(lockPress('council', 'shared'), { kind: 'menu' })
 
-  assert.equal(lockLabel('closed', 'shared'), 'Открыть эту ячейку комнате')
-  assert.equal(lockLabel('open', 'shared'), 'Закрыть эту ячейку')
-  assert.equal(lockLabel('council', 'shared'), 'Консилиум — положение замка')
-  assert.equal(lockHint('closed', 'shared'), 'Открыть эту ячейку комнате · удержать — консилиум')
-  assert.equal(lockHint('open', 'shared'), 'Закрыть её · удержать — консилиум')
-  assert.equal(lockHint('council', 'shared'), 'Консилиум · щелчок — положения замка')
+  assert.equal(lockLabel('closed', 'shared'), 'Открыть ячейку для совместной работы')
+  assert.equal(lockLabel('open', 'shared'), 'Закрыть ячейку')
+  assert.equal(lockLabel('council', 'shared'), 'Изменить доступ к ячейке')
+  assert.equal(lockHint('closed', 'shared'), 'Открыть ячейку для совместной работы · удержать — выбрать доступ')
+  assert.equal(lockHint('open', 'shared'), 'Закрыть ячейку · удержать — выбрать доступ')
+  assert.equal(lockHint('council', 'shared'), 'Консилиум · щелчок — настроить доступ к ячейке')
 })
 
 test('в консилиуме щелчок — закрыта ↔ консилиум, и второе нажатие закрывает', () => {
@@ -36,15 +36,15 @@ test('в консилиуме щелчок — закрыта ↔ консили
   assert.deepEqual(lockPress('open', 'council'), { kind: 'open', open: false })
 
   // Подсказка обещает ровно то, что случится: консилиум, а не общий текст.
-  assert.equal(lockLabel('closed', 'council'), 'Открыть эту ячейку консилиумом')
-  assert.equal(lockLabel('council', 'council'), 'Закрыть эту ячейку')
-  assert.equal(lockLabel('open', 'council'), 'Закрыть эту ячейку')
+  assert.equal(lockLabel('closed', 'council'), 'Открыть консилиум в этой ячейке')
+  assert.equal(lockLabel('council', 'council'), 'Закрыть ячейку')
+  assert.equal(lockLabel('open', 'council'), 'Закрыть ячейку')
   assert.equal(
     lockHint('closed', 'council'),
-    'Открыть эту ячейку консилиумом · удержать — открыть всем',
+    'Открыть консилиум в этой ячейке · удержать — выбрать доступ',
   )
-  assert.equal(lockHint('council', 'council'), 'Закрыть её · удержать — открыть всем')
-  assert.equal(lockHint('open', 'council'), 'Закрыть её · удержать — положения замка')
+  assert.equal(lockHint('council', 'council'), 'Закрыть ячейку · удержать — выбрать доступ')
+  assert.equal(lockHint('open', 'council'), 'Закрыть ячейку · удержать — выбрать доступ')
   // Ни одна подсказка консилиумной комнаты не обещает общий текст щелчком.
   for (const state of ['closed', 'open', 'council'] as const) {
     assert.equal(lockHint(state, 'council').includes('комнате'), false)

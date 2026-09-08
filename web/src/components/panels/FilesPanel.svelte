@@ -152,7 +152,7 @@
    */
   function emptyWord(path: string): string | null {
     if (filled.has(path)) return null
-    if (!readsInside(path)) return 'глубже не видно'
+    if (!readsInside(path)) return 'лимит глубины'
     return truncated ? null : 'пусто'
   }
 
@@ -581,8 +581,8 @@
     if (overwritten.length > 0 && !error) {
       note =
         overwritten.length === 1
-          ? `${overwritten[0]} лёг поверх файла, который уже был здесь.`
-          : `Поверх уже лежавших легли: ${overwritten.join(', ')}`
+          ? `${overwritten[0]} заменил существующий файл.`
+          : `Заменены существующие файлы: ${overwritten.join(', ')}`
       window.clearTimeout(noteTimer)
       noteTimer = window.setTimeout(() => (note = null), 8000)
     }
@@ -1090,7 +1090,7 @@
                 <button
                   type="button"
                   class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
-                  title="Убрать"
+                  title="Удалить"
                   aria-label={`Убрать ${entry.name}`}
                   onclick={() => (confirming = entry.path)}
                 >
@@ -1113,10 +1113,10 @@
              тетради комнаты, а не по каждой открытой. -->
         <span class="min-w-0 flex-1 truncate text-2xs text-muted">
           {entry.dir
-            ? 'Убрать папку со всем, что в ней?'
+            ? 'Удалить папку и всё её содержимое?'
             : isBook(entry.path)
-              ? 'Убрать тетрадь и её ячейки у всей комнаты?'
-              : 'Убрать?'}
+              ? 'Удалить тетрадь и её ячейки для всей группы?'
+              : 'Удалить файл?'}
         </span>
         <button
           type="button"
@@ -1124,7 +1124,7 @@
           disabled={deleting === entry.path}
           onclick={() => remove(entry)}
         >
-          {deleting === entry.path ? 'Убираю' : 'Убрать'}
+          {deleting === entry.path ? 'Удаляем…' : 'Удалить'}
         </button>
         <button
           type="button"
@@ -1153,7 +1153,7 @@
         style={`padding-left:${4 + (depth + 1) * 14 + 32}px`}
         title={readsInside(entry.path)
           ? undefined
-          : 'Глубже комната не смотрит: такому пути уже нет имени. Что в ней лежит, видно из ячейки — os.listdir().'}
+          : 'Достигнут лимит глубины дерева файлов. Содержимое папки можно посмотреть из ячейки через os.listdir().'}
         ondragover={(event) => aim(event, entry)}
         ondrop={(event) => onDrop(event, entry)}
         role="presentation"
@@ -1190,8 +1190,7 @@
        дерево: это ответ на вопрос «а где мой файл?», заданный глазами. -->
   {#if truncated}
     <p class="px-2 pt-1.5 text-2xs leading-snug text-muted">
-      Файлов в комнате больше, чем помещается в список: самые глубокие папки не раскрыты. Их видно
-      из ячейки — <span class="font-mono">os.listdir()</span>.
+      Показаны не все файлы: достигнут лимит списка. Содержимое папок можно посмотреть из ячейки через <span class="font-mono">os.listdir()</span>.
     </p>
   {/if}
 
@@ -1248,7 +1247,7 @@
     {#if !may.files}
       {may.filesWhy}
     {:else}
-      {target ? `Файлы — в папку ${target}` : 'Файлы — общие с комнатой'}
+      {target ? `Файлы — в папку ${target}` : 'Файлы доступны всей группе'}
     {/if}
   </button>
 
@@ -1299,7 +1298,7 @@
         ? 'border-accent bg-accent/10 text-accent-text'
         : 'border-line bg-surface/80 text-muted'}"
     >
-      {may.files ? 'Файлы — общие с комнатой' : may.filesWhy}
+      {may.files ? 'Файлы доступны всей группе' : may.filesWhy}
     </div>
   {/if}
 </section>

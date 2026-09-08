@@ -355,8 +355,8 @@ async function generate(
           text.trim()
             ? null
             : spokeOnce
-              ? 'The AI endpoint opened a reply and then went quiet. Ask again.'
-              : 'The AI endpoint took too long to answer. It may be a slow model, or a very large notebook — try again, or ask about one cell.',
+              ? 'The model stopped sending its response. Try again.'
+              : 'The model did not respond within the time limit. Try again.',
         )
         return
       }
@@ -374,7 +374,7 @@ async function generate(
        * failure uses in routes/ai.ts.
        */
       throw new Error(
-        `The AI endpoint answered with nothing at all for model "${providerModel()}". ` +
+        `The model returned an empty response: "${providerModel()}". ` +
           'Ask whoever runs this Colloq to check the model.',
       )
     }
@@ -386,7 +386,7 @@ async function generate(
       settle(sessionId, entryId, 'done', null)
       return
     }
-    const reason = describe(err) || 'The oracle is unavailable — check the server logs.'
+    const reason = describe(err) || 'The oracle is unavailable. Try again or ask the teacher to check the connection.'
     console.error(`[session ${sessionId}] AI request failed:`, reason)
     // The reason goes into the bubble: the room is looking at this thread, and
     // an empty grey box tells a class nothing about what broke.

@@ -51,10 +51,10 @@
   }))
 
   const MODES: Option[] = [
-    { value: 'off', label: 'Off', hint: 'No oracle at all' },
+    { value: 'off', label: 'Off', hint: 'Oracle disabled' },
     // «Просят подсказку», а не «решения не будет»: режим держится на
     // формулировке запроса к модели, и обещать за неё мы не можем.
-    { value: 'hints', label: 'Hints only', hint: 'Asked to nudge, not to solve' },
+    { value: 'hints', label: 'Hints only', hint: 'Instructed to give hints' },
     { value: 'full', label: 'Full answers', hint: 'Explains and writes code' },
   ]
 
@@ -66,8 +66,8 @@
    * двенадцати раз: самая дорогая строка стояла без подписи.
    */
   const ACTION_LABELS: Record<string, string> = {
-    ask: 'Asked in words',
-    work: 'Asked to do it',
+    ask: 'Questions',
+    work: 'File tasks',
     explain: 'Explain',
     fix: 'Fix my error',
     debug: 'Debug',
@@ -528,15 +528,14 @@
 
 <AdminPage
   title="Oracle"
-  subtitle="Instance-wide defaults. Any seminar can tighten them, none can loosen them."
+  subtitle="Configure the provider, model and limits for all seminars."
   {actions}
 >
   {#if loadError}
     <div class="mt-6 max-w-[560px] border border-line bg-surface px-4 py-3.5">
       <p class="text-ui text-danger">{loadError}</p>
       <p class="mt-1 text-2xs text-muted">
-        The settings could not be read, so nothing below them is showing. Whatever is configured on
-        the server is still in force — this page simply could not ask.
+        Could not load the settings. Try again to view the server configuration.
       </p>
       <button type="button" class="btn-outline mt-3" onclick={() => void loadSettings()}>
         Try again
@@ -546,8 +545,7 @@
     {#if !isOwner}
       <p class="mt-5 max-w-[720px] border border-line bg-surface px-4 py-3 text-ui text-muted">
         <span class="font-semibold text-ink">Read-only.</span>
-        These settings belong to the instance owner. The base URL decides which host the API key is
-        sent to, so changing it is theirs alone — ask them if something here needs to move.
+        Only an owner can change these settings. Contact an owner to update the provider, model or limits.
       </p>
     {/if}
 
@@ -563,7 +561,7 @@
 
     <Section
       title="Provider"
-      description="Anything that speaks the OpenAI HTTP shape. A model on your own hardware never sends student code off campus."
+      description="Connect an OpenAI-compatible API. Questions and notebook context are sent to the configured provider."
     >
       <Choice options={PROVIDERS} value={provider} onchange={pickProvider} />
 
@@ -676,8 +674,8 @@
             onclick={() => void saveAndTest()}
             disabled={testing || saving || !isOwner}
             title={dirty
-              ? 'Saves what you typed, then asks the provider'
-              : 'Asks the provider with the settings on this screen'}
+              ? 'Save changes and send a test request'
+              : 'Send a test request using saved settings'}
           >
             {#if testing || saving}
               <Icon name="spinner" size={15} class="animate-spin" />
@@ -709,9 +707,8 @@
              field is a third sentence nobody reads. -->
         {#if clearKey}
           <p class="mt-1.5 text-2xs text-muted">
-            Whatever <span class="font-mono text-code">OPENAI_API_KEY</span> supplies takes over
-            again. If the environment supplies nothing, the oracle stops answering until a key is
-            added.
+            The server will use <span class="font-mono text-code">OPENAI_API_KEY</span> if it is set.
+            Providers that require a key will be unavailable without one.
           </p>
         {:else if fromEnvironment}
           <p class="mt-1.5 text-2xs text-muted">
@@ -722,8 +719,8 @@
         {:else if !replacingKey}
           <p class="mt-1.5 text-2xs text-muted">
             {#if storedMask}
-              Stored on this server and never handed back to a browser — students talk to your
-              server, your server talks to the provider.
+              The key is stored on the server and masked in the browser. The server uses it
+              for requests to the provider.
             {:else}
               No key is set. Paste one here, or point the base URL at a local runtime (Ollama, vLLM)
               that does not ask for one.
@@ -735,8 +732,8 @@
           <!-- No longer a warning to obey: the button saves first and says so.
                This just tells you that pressing it will write, before it does. -->
           <p class="mt-1.5 text-2xs text-muted">
-            Testing calls the provider, and the provider only sees saved settings — so
-            <b class="font-semibold text-ink">Save &amp; test</b> stores what you typed first.
+            <b class="font-semibold text-ink">Save &amp; test</b> saves all changes on this page
+            before sending a test request.
           </p>
         {/if}
 
@@ -760,8 +757,8 @@
     </Section>
 
     <Section
-      title="Default for new seminars"
-      description="A seminar can move this down — to hints or off — but never up. The ceiling is set here."
+      title="Default mode and limit"
+      description="Applies to all seminars. Each seminar can further restrict the oracle to hints or turn it off."
     >
       <Choice
         options={MODES}
@@ -773,14 +770,14 @@
 
     <Section
       title="House rules"
-      description="Appended to the system prompt. This is where you stop the oracle teaching a library the course has not reached yet."
+      description="Add instructions about the course and expected answers. Model responses may not follow every instruction."
     >
       <textarea
         id="ai-house-rules"
         bind:value={houseRules}
         class="field min-h-[104px] resize-y text-prose"
         maxlength={LIMITS.houseRules}
-        placeholder="Students are second-year and have not covered autograd yet — explain gradients by hand rather than reaching for loss.backward()."
+        placeholder="Second-year students have not covered autograd. Explain how to calculate gradients by hand."
       ></textarea>
       <p
         class={cn(
@@ -793,8 +790,8 @@
     </Section>
 
     <Section
-      title="Guardrails"
-      description="Thirty students hammering a paid endpoint at once is a real bill. These caps are per person, per seminar."
+      title="Usage limits"
+      description="Limit student questions and request size. Teachers are exempt from the hourly and interval limits, except when the hourly limit is zero."
     >
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="min-w-0">
@@ -844,7 +841,7 @@
           -->
           <p class="mt-1.5 text-2xs text-muted">
             {#if slow === 0}
-              Off: questions may follow each other as fast as they are typed.
+              No minimum interval between questions.
             {:else}
               A student waits this long between questions. The teacher does not.
             {/if}
@@ -867,14 +864,14 @@
             <span class="shrink-0 text-2xs text-muted">characters</span>
           </div>
           <p class="mt-1.5 text-2xs text-muted">
-            {grouped(LIMITS.contextChars.min)}–{grouped(LIMITS.contextChars.max)} of
-            the notebook travels with a question.
+            {grouped(LIMITS.contextChars.min)}–{grouped(LIMITS.contextChars.max)}
+            characters of notebook context may be included with a question.
           </p>
         </div>
 
         <div class="min-w-0">
           <p class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-muted">
-            Never send files over
+            Maximum file upload
           </p>
           <!-- Dashed, because it is a reading of the environment and not a control:
                a box that looks like a field and ignores you is worse than a label.
@@ -895,7 +892,7 @@
 
     <Section
       title="Usage"
-      description="Counted on your own server, so it reflects what the room did rather than what a provider's dashboard says."
+      description="Request counts recorded by this server. Token counts depend on what the provider reports."
     >
       {#if usageError}
         <p class="text-ui text-danger">{usageError}</p>
@@ -912,7 +909,7 @@
           {:else}
             {@render tile(compact(usageTokens), 'tokens')}
           {/if}
-          {@render tile(counted.format(usageSeminars), 'seminars asked something')}
+          {@render tile(counted.format(usageSeminars), 'seminars with questions')}
         </div>
 
         <!-- Cost is not here on purpose: it would take a price table per provider
@@ -935,7 +932,7 @@
           </div>
         {:else}
           <p class="mt-4 text-ui text-muted">
-            Nothing asked yet in this window. The breakdown appears once the room starts.
+            No questions recorded in this period. The breakdown appears after the first request.
           </p>
         {/if}
 

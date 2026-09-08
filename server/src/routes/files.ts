@@ -365,7 +365,7 @@ export function fileRoutes(): Router {
       if (!target) {
         failure ??= {
           code: 400,
-          message: `${name} некуда положить: «${rel}» слишком длинный путь.`,
+          message: `${name} не загружен: путь «${rel}» слишком длинный.`,
         }
         stream.resume()
         return
@@ -391,7 +391,7 @@ export function fileRoutes(): Router {
       try {
         fs.mkdirSync(folder, { recursive: true })
       } catch {
-        failure ??= { code: 400, message: `Не удалось завести папку «${intoDir}» под ${name}.` }
+        failure ??= { code: 400, message: `Не удалось создать папку «${intoDir}» для ${name}.` }
         stream.resume()
         return
       }
@@ -496,7 +496,7 @@ export function fileRoutes(): Router {
                 code: 413,
                 message:
                   `This seminar has room for ${Math.round(config.maxSessionBytes / 1024 / 1024)} MB of files ` +
-                  `and ${name} does not fit. Delete something first.`,
+                  `and ${name} exceeds that limit. Ask the teacher to free up space.`,
               }
               resolve()
               return
@@ -513,7 +513,7 @@ export function fileRoutes(): Router {
               removeTemp(sessionId, tmp)
               failure ??= {
                 code: 409,
-                message: `${name} — тетрадь этой комнаты. Её правят в ней самой, а не загрузкой.`,
+                message: `${name} — открытая тетрадь комнаты. Редактируйте её ячейки или загрузите файл под другим именем.`,
               }
               resolve()
               return
@@ -558,7 +558,7 @@ export function fileRoutes(): Router {
     bb.on('filesLimit', () => {
       failure ??= {
         code: 400,
-        message: `Up to ${MAX_FILES_PER_UPLOAD} files at a time — drop the rest in a second go.`,
+        message: `Up to ${MAX_FILES_PER_UPLOAD} files per upload. Upload the remaining files separately.`,
       }
     })
 

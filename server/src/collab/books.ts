@@ -239,11 +239,11 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
    * верно и практически бесполезно.
    */
   const flat = source.text.trim().length === 0 ? [] : parseIpynb(source.text)
-  if (flat === null) return { ok: false, why: `${baseOf(path)} — не похоже на .ipynb.` }
+  if (flat === null) return { ok: false, why: `${baseOf(path)} содержит некорректные данные .ipynb.` }
   if (flat.length > MAX_IMPORT_CELLS) {
     return {
       ok: false,
-      why: `В ${baseOf(path)} ${flat.length} ячеек — это больше, чем комната потянет (${MAX_IMPORT_CELLS}).`,
+      why: `В ${baseOf(path)} ${flat.length} ячеек. Допустимо не более ${MAX_IMPORT_CELLS}.`,
     }
   }
 
@@ -295,7 +295,7 @@ function readBookText(sessionId: string, path: string): { text: string } | { why
     const mb = (file.size / (1024 * 1024)).toFixed(0)
     return {
       why:
-        `${baseOf(path)} — ${mb} МБ, это больше, чем комната открывает ` +
+        `${baseOf(path)} — ${mb} МБ. Превышен лимит размера ` +
         `(${MAX_BOOK_BYTES / (1024 * 1024)} МБ). Сохраните тетрадь без выводов.`,
     }
   }
@@ -312,7 +312,7 @@ function readBookText(sessionId: string, path: string): { text: string } | { why
 export function createBook(sessionId: string, path: string): OpenBookResult {
   if (statPath(sessionId, path)) return { ok: false, why: `${baseOf(path)} уже есть.` }
   const made = makeFile(sessionId, path, writeIpynb([]))
-  if (made !== 'ok') return { ok: false, why: `Не удалось завести ${baseOf(path)}.` }
+  if (made !== 'ok') return { ok: false, why: `Не удалось создать ${baseOf(path)}.` }
   return openBook(sessionId, path)
 }
 

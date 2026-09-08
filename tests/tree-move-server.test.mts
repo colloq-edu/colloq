@@ -237,7 +237,7 @@ test('содержимое, уходящее за восьмой уровень,
 
   const said = say(id, 'host', { t: 'tree:move', from: 'deep', to: 'куда/deep' })
 
-  assert.match(said ?? '', /Слишком глубоко/, `переезд за потолок прошёл молча: ${said}`)
+  assert.match(said ?? '', /Допустимая глубина пути — до 8 уровней/, `переезд за потолок прошёл молча: ${said}`)
   assert.ok(statPath(id, 'deep/a/b/c/d/e/f/g.py'), 'файл всё-таки уехал за адресуемую глубину')
   closeControlRoom(id)
 })
@@ -260,8 +260,8 @@ test('содержимое, уходящее за длину адресуемо�
 
   const said = say(id, 'host', { t: 'tree:move', from: long, to: `${far}/${long}` })
 
-  assert.match(said ?? '', /длиннее 400 символов/, `переезд за длину прошёл молча: ${said}`)
-  assert.match(said ?? '', /не переложить/, `отказ пожаловался не на то: ${said}`)
+  assert.match(said ?? '', /превысит 400 символов/, `переезд за длину прошёл молча: ${said}`)
+  assert.match(said ?? '', /нельзя переместить/, `отказ пожаловался не на то: ${said}`)
   assert.ok(statPath(id, buried), 'файл уехал по пути, которого уже не назвать')
   closeControlRoom(id)
 })

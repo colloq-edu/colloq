@@ -95,8 +95,8 @@ const MAX_FLUSH_CHARS = 64 * 1024
  * как черновик.
  */
 const FLOOD_NOTICE =
-  '[colloq] вывод идёт быстрее, чем его вывозит общая расшифровка, — от каждого мгновения ' +
-  'остаются только последние строки. Нужен весь — перенаправьте его в файл.'
+  '[colloq] Превышена скорость обновления вывода. В общей расшифровке ' +
+  'остаются только последние строки. Для полного вывода перенаправьте его в файл.'
 /** Never trim away the command that is producing output right now. */
 const MIN_KEPT_ENTRIES = 2
 const MAX_COMMAND_BYTES = 4096
@@ -115,7 +115,7 @@ const TERM_ROWS = 40
 const TERM_COLS = 120
 
 const SCREEN_NOTICE =
-  '[colloq] эта программа рисует весь экран (vim, top и подобные), а общая расшифровка везёт только строки — остального не видно. Остановить её — Ctrl+C.'
+  '[colloq] Полноэкранные программы (vim, top и другие) отображаются некорректно: терминал поддерживает только построчный вывод. Попробуйте прервать команду через Ctrl+C.'
 const CLEAR_NOTICE =
   '[colloq] очистка экрана здесь ничего не меняет: расшифровка общая. Стереть её может преподаватель — кнопкой «Очистить».'
 
@@ -1238,7 +1238,7 @@ function onShellExit(term: Term): void {
   settleRun(term, false)
   rejectWaiters(term, new Error('оболочка вышла'))
   setPhase(term, 'closed')
-  systemLine(term, '[colloq] оболочка вышла — новую заводят кнопкой «Завести оболочку заново».')
+  systemLine(term, '[colloq] Оболочка завершила работу. Нажмите «Перезапустить оболочку», чтобы создать новую.')
   dropPending(term, 'оболочка вышла')
 }
 
@@ -1337,7 +1337,7 @@ function probeShell(term: Term): void {
 function scheduleReconnect(term: Term): void {
   if (term.reconnectTimer || term.closing) return
   if (term.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    fail(term, 'связь с общей оболочкой потеряна — новую заводят кнопкой «Завести оболочку заново».')
+    fail(term, 'Связь с общей оболочкой потеряна. Нажмите «Перезапустить оболочку», чтобы создать новую.')
     return
   }
   const wait = Math.min(500 * 2 ** term.reconnectAttempts, 5000)
@@ -1498,7 +1498,7 @@ function drainQueued(term: Term): void {
   const pending = term.queued.splice(0, term.queued.length)
   for (const payload of pending) {
     if (!sendStdin(term, payload)) {
-      fail(term, 'до общей оболочки не достучаться — новую заводят кнопкой «Завести оболочку заново».')
+      fail(term, 'Не удалось подключиться к общей оболочке. Создайте новую оболочку.')
       return
     }
   }

@@ -47,14 +47,14 @@ export function signedOutNotice(reason: SignedOutReason): string {
   switch (reason) {
     case 'revoked':
       return (
-        'The server no longer accepts this sign-in: the link was rotated, or the account was ' +
+        'Your sign-in is no longer valid. The link may have been replaced or the account ' +
         'removed. Ask an owner for a new sign-in link.'
       )
     case 'removed-self':
       return 'You removed your own account, so this browser is signed out. An owner can add you back.'
     default:
       return (
-        'The sign-in did not stick: this browser sent no session back. Allow cookies for this ' +
+        'No sign-in session was received from this browser. Allow cookies for this ' +
         'address, or open the panel over the address the server publishes, and sign in again.'
       )
   }
@@ -95,11 +95,11 @@ export interface AdminRefusal {
 export function ruleRefusal(refusal: AdminRefusal | null): string {
   switch (refusal?.reason) {
     case 'network':
-      return 'Правило не сохранилось — сервер не ответил.'
+      return 'Не удалось сохранить правило: сервер не ответил. Попробуйте ещё раз.'
     case 'unauthenticated':
-      return 'Правило не сохранилось — сервер больше не признаёт этот вход.'
+      return 'Не удалось сохранить правило: сеанс входа недействителен. Войдите заново.'
     case 'forbidden':
-      return 'Правило не сохранилось — на этот семинар больше нет прав.'
+      return 'Не удалось сохранить правило: у вас нет прав на этот семинар.'
     default:
       /*
        * «Семинара больше нет» — это факт, а не догадка по коду.
@@ -112,9 +112,9 @@ export function ruleRefusal(refusal: AdminRefusal | null): string {
        * маршрута: разобранное тело, которого у чужой страницы не будет.
        */
       if (refusal?.status === 404 && refusal.body != null) {
-        return 'Правило не сохранилось — семинара больше нет.'
+        return 'Не удалось сохранить правило: семинар не найден.'
       }
-      return 'Правило не сохранилось, попробуйте ещё раз.'
+      return 'Не удалось сохранить правило. Попробуйте ещё раз.'
   }
 }
 
@@ -232,7 +232,7 @@ export function splitBySize<T extends { name: string; size: number }>(
  */
 export function skippedStepLine(step: SkippedStep, moment?: string): string {
   const named = step.label.trim() || moment?.trim() || `версия ${step.seq}`
-  return `«${named}» не стал шагом: ${SKIP_REASON_TEXT[step.reason]}`
+  return `Версия «${named}» пропущена: ${SKIP_REASON_TEXT[step.reason]}`
 }
 
 /* --------------------------------------------------------- «идёт сейчас» */

@@ -158,7 +158,7 @@ export function longestAfter(dragged: Row, into: string, files: readonly FileEnt
  * короток, — а то, что лежит внутри, и фраза говорит именно это.
  */
 export function tooLong(from: string): string {
-  return `«${baseOf(from)}» не переложить: путь до того, что внутри, стал бы длиннее ${MAX_PATH} символов.`
+  return `«${baseOf(from)}» нельзя переместить: путь к содержимому превысит ${MAX_PATH} символов.`
 }
 
 /**
@@ -204,7 +204,7 @@ export function planMove(dragged: Row, onto: Row | null, files: readonly FileEnt
   // Папка внутрь самой себя. Сюда же попадает бросок на файл, лежащий внутри
   // неё: `dropFolder` вернёт его папку, а она внутри переезжающей.
   if (dragged.dir && isInside(into, from)) {
-    return { do: 'refuse', why: `«${baseOf(from)}» нельзя положить внутрь себя.` }
+    return { do: 'refuse', why: `«${baseOf(from)}» нельзя переместить внутрь себя.` }
   }
 
   // Переезд в никуда: запись уже лежит в этой папке. Ни сообщения, ни слов —
@@ -235,7 +235,7 @@ export function planMove(dragged: Row, onto: Row | null, files: readonly FileEnt
 
   // Глубина — про СОДЕРЖИМОЕ, а не про саму запись: см. `deepestAfter`.
   if (deepestAfter(dragged, into, files) > MAX_DEPTH) {
-    return { do: 'refuse', why: `Слишком глубоко: папок в папке бывает не больше ${MAX_DEPTH}.` }
+    return { do: 'refuse', why: `Допустимая глубина пути — до ${MAX_DEPTH} уровней.` }
   }
   if (normalizePath(to) === null) {
     return { do: 'refuse', why: `Путь до «${baseOf(to)}» длиннее ${MAX_PATH} символов.` }

@@ -218,7 +218,7 @@
             <button
               type="button"
               class={STRIP}
-              title="Положить в тетрадь новой ячейкой"
+              title="Добавить код в новую ячейку"
               onclick={() => toCell(part.code)}
             >
               <Icon name="plus" size={10} />

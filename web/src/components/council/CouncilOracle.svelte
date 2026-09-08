@@ -49,12 +49,14 @@
       Оракул о {submitted} {plural(submitted, 'решении', 'решениях', 'решениях')}
     </span>
     {#if oracle?.askedAt && view !== 'reading'}
-      <span class="font-mono text-2xs text-muted">{clock(oracle.askedAt)} · читал {oracle.basedOn}</span>
+      <span class="font-mono text-2xs text-muted">
+        {clock(oracle.askedAt)} · сдано на момент запроса: {oracle.basedOn}
+      </span>
     {/if}
     <span class="ml-auto flex items-center gap-2">
       {#if view === 'reading'}
         <Icon name="spinner" size={13} class="animate-spin text-accent-text/70" />
-        <span class="text-2xs text-muted">читает…</span>
+        <span class="text-2xs text-muted">Готовит сводку…</span>
         <button type="button" class="btn-ghost h-7 px-2 text-2xs" onclick={onstop}>
           <Icon name="stop" size={12} />
           Стоп
@@ -100,10 +102,10 @@
       {:else if askWhy}
         {askWhy}
       {:else if submitted === 0}
-        спрашивать пока не о чём — никто не сдал
+        Пока никто не сдал решение.
       {:else}
-        сложит сданное по группам, назовёт типичную ошибку и предложит, что показать · читает
-        тексты, без имён
+        Оракул предложит разбор решений и примеры для показа. Провайдеру ИИ передаются
+        задание, контекст и примеры решений. Имена участников к ним не добавляются.
       {/if}
     </p>
   {:else if oracle}
@@ -126,7 +128,9 @@
         </div>
       {/each}
     </div>
-    <p class="text-2xs text-muted">читал тексты, без имён</p>
+    <p class="text-2xs text-muted">
+      Имена участников не добавляются к запросу. Проверьте выводы оракула.
+    </p>
   {/if}
 </section>
 

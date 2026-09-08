@@ -154,7 +154,7 @@ test('не тетрадь тетрадью не открывается', () => {
   fs.writeFileSync(path.join(sessionDir(ROOM), 'сломанная.ipynb'), 'это не json')
   const tried = openBook(ROOM, 'сломанная.ipynb')
   assert.ok(!tried.ok)
-  assert.match(tried.why, /не похоже/)
+  assert.match(tried.why, /некорректные данные \.ipynb/)
 })
 
 test('пустой файл .ipynb — это новая тетрадь, а не сломанная', () => {

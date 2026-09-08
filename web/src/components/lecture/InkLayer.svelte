@@ -1823,7 +1823,7 @@
     if (!session.connected) {
       if (!erasingTold) {
         erasingTold = true
-        onrefuse?.('Нет связи — стирать нечем')
+        onrefuse?.('Нет связи. Не удалось стереть штрих.')
       }
       return
     }

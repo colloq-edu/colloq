@@ -87,7 +87,7 @@ export function banRoutes(): Router {
       byTeacher: getParticipant(sessionId, auth.participantId)?.name ?? null,
       viewerDevice: deviceOf(req.headers.cookie),
     })
-    if (!ban) return res.status(403).json({ error: 'Преподавателя забанить нельзя.' })
+    if (!ban) return res.status(403).json({ error: 'Нельзя закрыть доступ преподавателю.' })
 
     /*
      * Порядок здесь значимый.
@@ -113,7 +113,7 @@ export function banRoutes(): Router {
     const auth = sessionAuth(req)
     if (!auth) return res.status(401).json({ error: 'join the session first' })
     if (auth.role !== 'host') {
-      return res.status(403).json({ error: 'Открыть доступ обратно может преподаватель.' })
+      return res.status(403).json({ error: 'Восстановить доступ может только преподаватель.' })
     }
     /*
      * Снятие возвращает человека, а не его вопросы: стёртое из ленты

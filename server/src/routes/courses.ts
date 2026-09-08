@@ -265,7 +265,7 @@ export function courseRoutes(): Router {
     const raw = req.body?.slug
     const slug = typeof raw === 'string' && raw.trim() ? raw.trim().toLowerCase() : null
     if (slug !== null && !slugOk(slug)) {
-      return bad(res, 'Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.')
+      return bad(res, 'Используйте строчные латинские буквы, цифры и дефис.')
     }
     const course = req.params.kind === 'course'
     const target = course ? getCourse(req.params.id) : getPublication(req.params.id)
@@ -392,7 +392,7 @@ export function courseRoutes(): Router {
          * него надо словами, а не молчанием и не пятисоткой из транзакции.
          */
         if (!Number.isInteger(seq) || seq <= 0) {
-          return bad(res, 'шаг называется версией из ленты: целым числом больше нуля')
+          return bad(res, 'Укажите номер версии для шага: целое число больше нуля.')
         }
         // Безымянный шаг не публикуется: рельса из «Снимок №14» — это не
         // названные моменты, а признание, что назвать их забыли.

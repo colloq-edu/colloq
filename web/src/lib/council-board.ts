@@ -131,7 +131,7 @@ export function statusLabel(attempt: Pick<CouncilAttempt, 'status' | 'run'>): st
       return 'неверно'
     case 'failed': {
       const error = attempt.run?.outputs.find((o) => o.kind === 'error')
-      return error && error.kind === 'error' && error.ename ? error.ename : 'упала'
+      return error && error.kind === 'error' && error.ename ? error.ename : 'ошибка запуска'
     }
     case 'ran':
       return 'выполнена'

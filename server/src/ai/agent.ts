@@ -303,8 +303,8 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
       const answer = chatAnswer(entry)
       answer.insert(
         answer.length,
-        `${answer.length > 0 ? '\n\n' : ''}Не тронул: ${skipped.join(', ')} — ` +
-          'после этого хода файл меняли или убрали, и возврат стёр бы чужую работу.',
+        `${answer.length > 0 ? '\n\n' : ''}Не восстановлены: ${skipped.join(', ')} — ` +
+          'после действий оракула файлы были изменены или удалены.',
       )
     }
     entry.set('undo', 'done' as UndoState)
@@ -1973,11 +1973,11 @@ async function steps(
   }
 
   if (stopped) {
-    spoke = spoke || 'Остановлено. Всё, что успело случиться, — в списке выше, и это отменяется.'
+    spoke = spoke || 'Остановлено. Выполненные действия перечислены выше. Остановка не отменяет внесённые изменения.'
   } else if (!spoke && taken >= MAX_STEPS) {
     spoke =
-      'Остановился: слишком много шагов подряд. Что успел — в списке выше; ' +
-      'скажите, что делать дальше, и я продолжу.'
+      'Достигнут лимит шагов. Выполненные действия перечислены выше. ' +
+      'Отправьте новый запрос, чтобы продолжить.'
   }
   finish(options.sessionId, entryId, spoke)
 }

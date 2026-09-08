@@ -384,7 +384,7 @@
   purpose: the shell has to read as "the machine" in either theme, and a
   terminal that turns pale in light mode stops looking like one.
 -->
-<section class="term" style="height: {height}px" aria-label="Общий терминал комнаты">
+<section class="term" style="height: {height}px" aria-label="Общий терминал">
   <div
     class="term-grip"
     role="separator"
@@ -433,7 +433,7 @@
       </button>
     {/if}
 
-    <span class="term-badge" title="Этот терминал видит весь семинар">
+    <span class="term-badge" title="Команды и вывод видят все участники">
       Общий на комнату
     </span>
 
@@ -444,7 +444,7 @@
         type="button"
         class="term-act"
         disabled={controlDisabled(session.connected)}
-        title={controlTitle(session.connected, 'Очистить расшифровку для всех')}
+        title={controlTitle(session.connected, 'Очистить историю терминала для всех')}
         onclick={() => session.send({ t: 'term:clear' })}
       >
         <Icon name="eraser" size={12} />
@@ -455,8 +455,8 @@
     <button
       type="button"
       class="term-act"
-      aria-label="Спрятать терминал"
-      title="Спрятать терминал — оболочка продолжит работать (Ctrl+`)"
+      aria-label="Свернуть терминал"
+      title="Свернуть терминал. Оболочка продолжит работать (Ctrl+`)"
       onclick={onclose}
     >
       <Icon name="x" size={14} />
@@ -481,11 +481,11 @@
     {#if shown.length === 0}
       <p class="term-empty">
         {#if shownTab === 'terminal'}
-          Эта оболочка работает в том же контейнере, что и ядро: <code>pip install pandas</code>
-          здесь меняет окружение для каждой ячейки и для всей комнаты.
-          <code>!pip install pandas</code> внутри ячейки делает ровно то же самое.
+          Терминал использует окружение занятия. Команда <code>pip install pandas</code>
+          установит пакет для всех участников.
+          <code>!pip install pandas</code> можно выполнить и в ячейке.
         {:else}
-          Пока пусто. Сюда попадают запуски, перезапуски и падения ядра.
+          Здесь появятся сообщения о запуске, перезапуске и ошибках ядра.
         {/if}
       </p>
     {/if}
@@ -548,7 +548,7 @@
       autocapitalize="off"
       autocomplete="off"
       autocorrect="off"
-      aria-label="Команда оболочки — на всю комнату"
+      aria-label="Команда в общем терминале"
       {placeholder}
       disabled={!canType}
       onkeydown={onPromptKey}
@@ -562,7 +562,7 @@
     <span class="term-hint">
       {#if status === 'busy'}
         <span class="term-live-dot"></span>
-        ctrl-c остановит
+        ctrl-c — прервать
       {:else if canType}
         ↑ история
       {:else if canRevive}
@@ -575,7 +575,7 @@
           открыть заново. Один и тот же term:open, только теперь его видно.
         -->
         <button type="button" class="term-revive" onclick={revive}>
-          Завести оболочку заново
+          Перезапустить оболочку
         </button>
       {:else if !acts && (status === 'dead' || status === 'closed')}
         <!--
@@ -586,7 +586,7 @@
           Про сам звонок сказано рядом — в приглашении строки; здесь только то,
           чего не хватает на месте кнопки.
         -->
-        оболочку заводит преподаватель
+        оболочку запускает преподаватель
       {:else if session.connected && !may.run}
         <!--
           Здесь приглашение занято правилом («запускает преподаватель»), и место

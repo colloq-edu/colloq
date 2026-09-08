@@ -204,7 +204,7 @@
      * Состояние строки всё равно догонит опросом — здесь нужно только слово.
      */
     stream.onerror = () => {
-      const lost = 'connection lost — the build goes on; reopen Build log to follow it'
+      const lost = 'Log connection lost. Reopen Build log to check the build status.'
       if (logLines[logLines.length - 1] !== lost) logLines = [...logLines, lost]
       stopWatching()
       queueMicrotask(() => logBox?.scrollTo({ top: logBox.scrollHeight }))
@@ -232,7 +232,7 @@
     } catch (cause) {
       rowError = {
         name,
-        message: cause instanceof AdminApiError ? cause.message : 'That did not work.',
+        message: cause instanceof AdminApiError ? cause.message : 'Could not update the environment. Try again.',
       }
     } finally {
       busy = null
@@ -347,7 +347,7 @@
      * уже есть.
      */
     if (nameTaken) {
-      editorError = `There is already an environment called ${name} — open it with Edit packages.`
+      editorError = `Environment ${name} already exists. Open it with Edit packages.`
       return
     }
     busy = name
@@ -361,7 +361,7 @@
       creating = false
       await refresh()
     } catch (cause) {
-      editorError = explain(cause, 'Could not save that.')
+      editorError = explain(cause, 'Could not save the package list. Try again.')
       /*
        * Имя заняли, пока диалог был открыт: вторая вкладка, планшет рядом.
        * Перечитываем список, чтобы имя показалось занятым и здесь — а набранные
@@ -424,7 +424,7 @@
 
 <AdminPage
   title="Environments"
-  subtitle="A prebuilt container per course. Built once, reused by every seminar — nobody waits for pip during class."
+  subtitle="Build container images with the Python packages your seminars need."
 >
   {#snippet actions()}
     <button
@@ -503,8 +503,8 @@
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">
-          No GPU slices here: KERNEL_GPUS is unset. A room on an environment marked GPU will not
-          start a kernel — there is nothing to hand it, and that image does not run on the CPU.
+          No GPU slices are configured in KERNEL_GPUS. Seminars using a GPU environment cannot
+          start a kernel until a GPU slice is available.
         </p>
       </div>
     {/if}
@@ -549,7 +549,7 @@
               -->
               <p class="truncate text-2xs text-muted">
                 {[
-                  'Python 3.11',
+                  'Python',
                   env.imageBytes === null ? null : imageSize(env.imageBytes),
                   env.builtAt === null ? null : builtAgo(env.builtAt),
                   `${env.packages.length} packages over ${env.parent ?? 'the base'}`,
@@ -605,7 +605,7 @@
                 <span
                   class={cn(PILL, 'text-warning')}
                   title={env.parent
-                    ? `The package list changed after the build — or ${env.parent}, which this is built on, was rebuilt later`
+                    ? `The package list changed or the parent image ${env.parent} was rebuilt`
                     : 'The package list changed after the build'}
                 >
                   Needs rebuild
@@ -722,7 +722,7 @@
             >
               <pre class="whitespace-pre-wrap font-mono text-code leading-relaxed text-[#9BA6BE]">{logLines.join(
                   '\n',
-                ) || 'waiting for the build to say something…'}</pre>
+                ) || 'Waiting for build log…'}</pre>
             </div>
           {:else if env.state === 'failed' && env.error}
             <div class="flex items-start gap-2 border-t border-line bg-danger/[0.06] px-3.5 py-2.5">
@@ -760,14 +760,12 @@
       <span>
         An environment is a container image.
         {#if sharedKernel}
-          This server runs all of its rooms in one shared kernel, so the default is not what the
-          next seminar gets — it is what every room here gets, the open ones too, as soon as that
-          kernel restarts.
+          All seminars use one shared kernel. Changing the default restarts that kernel and
+          applies the environment to every seminar, including those currently open.
         {:else}
-          Every environment somebody is using runs in its own container. A seminar picks one when
-          it is created and keeps it, so making a different one the default changes what the
-          <b class="font-semibold text-ink">next</b> seminar gets — not what an existing one is
-          running.
+          Each seminar runs in its own container using the environment selected at creation.
+          Changing the default applies to <b class="font-semibold text-ink">new</b> seminars.
+          Existing seminars keep their selected environment.
         {/if}
       </span>
     </p>
@@ -804,11 +802,10 @@
             />
             <p class={cn('text-2xs', nameTaken ? 'text-danger' : 'text-muted')}>
               {#if nameTaken}
-                {draftName.trim()} already exists, and creating does not overwrite it — pick
-                another name, or edit that one with Edit packages on its row.
+                {draftName.trim()} already exists. Choose another name or use Edit packages
+                on the existing environment.
               {:else}
-                Lowercase letters, digits and dashes — the name becomes a filename and a Docker
-                tag.
+                Use 1–32 lowercase letters, digits or dashes. Start and end with a letter or digit.
               {/if}
             </p>
           </div>
@@ -829,14 +826,14 @@
             spellcheck="false"
           ></textarea>
           <p class="text-2xs text-muted">
-            An ordinary requirements.txt. Installed on top of the base every kernel already has.
+            Use requirements.txt syntax, one package per line. Packages are added to the parent image.
           </p>
         </div>
       </div>
 
       <div class="flex items-center gap-2 border-t border-line px-5 py-3.5">
         <p class={cn('min-w-0 flex-1 text-2xs', editorError ? 'text-danger' : 'text-muted')}>
-          {editorError ?? 'Saving only writes the file. Building is what puts it in a kernel.'}
+          {editorError ?? 'Save the package list, then build the environment to install its packages.'}
         </p>
         <button class={BTN} onclick={() => ((editing = null), (creating = false))}>Cancel</button>
         <button
@@ -857,8 +854,7 @@
     <div class="dialog-card w-full max-w-md border border-line bg-canvas p-5 shadow-pop">
       <h2 class="text-head font-black tracking-tight text-ink">Delete {doomed}?</h2>
       <p class="mt-2 text-ui text-muted">
-        The package list goes. The built image stays in Docker — remove it separately if
-        you no longer want it.
+        This deletes the package list. The built image remains in Docker and can be removed separately.
       </p>
       <!-- Кнопки гаснут на время запроса. Диалог висит до ответа, а второе
            нажатие уходило вторым запросом: он приходил к уже удалённому
@@ -885,8 +881,7 @@
       <p class="mt-2 text-ui text-muted">
         Seminars created from now on get {switching}.
         {#if !sharedKernel}
-          Seminars already pinned to another environment are untouched — they run in their own
-          containers.
+          Existing seminars keep their selected environment.
         {/if}
       </p>
       <!--

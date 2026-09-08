@@ -111,7 +111,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       return res.status(403).json({
         error:
           settings.defaultMode === 'off'
-            ? 'Оракул выключен на этом Colloq — сводки не будет.'
+            ? 'Оракул отключён на этом Colloq.'
             : 'Оракул выключен в этом семинаре — включите его в правилах комнаты.',
       })
     }
@@ -153,7 +153,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
 
     if (isOracleReading(sessionId, cellId)) {
       return res.status(409).json({
-        error: 'Оракул ещё читает — дождитесь ответа или остановите его.',
+        error: 'Сводка уже готовится. Дождитесь ответа или остановите запрос.',
         oracle: deps.oracleOf(sessionId, cellId) ?? idleOracle(),
       })
     }
@@ -173,13 +173,13 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     if (roomUsed >= roomLimit) {
       res.setHeader('Retry-After', '600')
       return res.status(429).json({
-        error: `В этом семинаре за час выбраны все ${roomLimit} вопросов к оракулу — сводка подождёт.`,
+        error: `Достигнут лимит семинара: ${roomLimit} вопросов к оракулу в час. Повторите позже.`,
       })
     }
 
     const attempts = deps.attemptsOf(sessionId, cellId)
     if (!attempts.some((a) => a.submittedAt !== null)) {
-      return res.status(400).json({ error: 'Сдавших пока нет — оракулу нечего читать.' })
+      return res.status(400).json({ error: 'Нет сданных попыток для сводки.' })
     }
 
     /*

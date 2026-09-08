@@ -281,7 +281,7 @@
        сняли, и ведёт наверх, к курсу. -->
   <div class="flex min-h-screen items-center justify-center bg-canvas px-6">
     <div class="max-w-md text-center">
-      <p class="text-title font-semibold text-ink">Преподаватель снял эту страницу</p>
+      <p class="text-title font-semibold text-ink">Публикация снята</p>
       {#if seminar.course}
         <button
           class="mt-3 text-ui font-semibold text-accent-text"
@@ -313,7 +313,7 @@
         <span>
           · опубликован {dateLong(seminar.publishedAt)} ·
           {seminar.steps.length}
-          {plural(seminar.steps.length, 'страница', 'шага', 'шагов')}
+          {plural(seminar.steps.length, 'шаг', 'шага', 'шагов')}
         </span>
       </p>
     </header>
@@ -395,16 +395,16 @@
       <main class="min-w-0 flex-1 px-6 py-7 sm:px-11">
         <div class="max-w-[820px] border-l-[3px] border-accent bg-surface px-4 py-3">
           <p class="text-ui leading-relaxed text-muted">
-            Здесь то, что писали и запускали на этом занятии. Того, что говорили, здесь нет.
+            Опубликованная тетрадь занятия: код, текст и сохранённые результаты запусков.
           </p>
           {#if railed}
             <p class="mt-1.5 text-ui leading-relaxed text-muted">
-              Моменты, которые отметил преподаватель. Выводы — те, что тетрадь держала в этот
-              момент: у ячейки, код которой поменяли после запуска, остаётся прежний результат.
+              Шаги соответствуют моментам, отмеченным преподавателем. Если код изменили
+              после запуска, сохранённый результат может ему не соответствовать.
             </p>
           {/if}
           <p class="mt-1.5 text-ui leading-relaxed text-muted">
-            Ничьих имён на этой странице нет.
+            Список участников не публикуется. Имена в тексте ячеек и результатах сохраняются.
           </p>
         </div>
 
@@ -447,7 +447,7 @@
             первый шаг — его тоже нет, — а курс.
           -->
           <p class="mt-8 text-ui text-muted">
-            Преподаватель снял эту страницу.
+            Публикация снята.
             {#if seminar.course}
               <button
                 class="press font-semibold text-accent-text"
@@ -461,7 +461,7 @@
           <p class="mt-8 text-ui text-muted">
             {failure}
             <button class="font-semibold text-accent-text" onclick={() => (attempt += 1)}>
-              Ещё раз
+              Повторить
             </button>
           </p>
         {/if}
@@ -517,7 +517,7 @@
           class="mt-3 text-ui font-semibold text-accent-text"
           onclick={() => (attempt += 1)}
         >
-          Ещё раз
+          Повторить
         </button>
       </div>
     {:else}

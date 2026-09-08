@@ -34,21 +34,23 @@ export function lockPress(state: CellLock, opens: Opens): LockPress {
 /** aria-label кнопки: коротко, что случится по нажатию. */
 export function lockLabel(state: CellLock, opens: Opens): string {
   if (state === 'closed') {
-    return opens === 'council' ? 'Открыть эту ячейку консилиумом' : 'Открыть эту ячейку комнате'
+    return opens === 'council'
+      ? 'Открыть консилиум в этой ячейке'
+      : 'Открыть ячейку для совместной работы'
   }
-  if (state === 'council' && opens !== 'council') return 'Консилиум — положение замка'
-  return 'Закрыть эту ячейку'
+  if (state === 'council' && opens !== 'council') return 'Изменить доступ к ячейке'
+  return 'Закрыть ячейку'
 }
 
 /** Подсказка кнопки: что по щелчку и что по удержанию. */
 export function lockHint(state: CellLock, opens: Opens): string {
   if (opens === 'council') {
     // Удержание ведёт в меню, где есть и общий текст: щелчком его здесь не взять.
-    if (state === 'closed') return 'Открыть эту ячейку консилиумом · удержать — открыть всем'
-    if (state === 'council') return 'Закрыть её · удержать — открыть всем'
-    return 'Закрыть её · удержать — положения замка'
+    if (state === 'closed') return 'Открыть консилиум в этой ячейке · удержать — выбрать доступ'
+    if (state === 'council') return 'Закрыть ячейку · удержать — выбрать доступ'
+    return 'Закрыть ячейку · удержать — выбрать доступ'
   }
-  if (state === 'closed') return 'Открыть эту ячейку комнате · удержать — консилиум'
-  if (state === 'council') return 'Консилиум · щелчок — положения замка'
-  return 'Закрыть её · удержать — консилиум'
+  if (state === 'closed') return 'Открыть ячейку для совместной работы · удержать — выбрать доступ'
+  if (state === 'council') return 'Консилиум · щелчок — настроить доступ к ячейке'
+  return 'Закрыть ячейку · удержать — выбрать доступ'
 }

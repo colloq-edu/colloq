@@ -569,7 +569,7 @@
              {railOpen ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}"
       aria-pressed={railOpen}
       aria-label="Полоса страниц"
-      title="Страницы — прыгнуть к нужной"
+      title="Выбрать страницу"
       onclick={toggleRail}
     >
       <Icon name="text" size={12} />
@@ -588,8 +588,8 @@
              duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
              focus-visible:ring-inset focus-visible:ring-accent/40 disabled:opacity-40"
       disabled={scale <= 0.5}
-      aria-label="Мельче"
-      title="Мельче"
+      aria-label="Уменьшить масштаб"
+      title="Уменьшить масштаб"
       onclick={() => step(-1)}
     >
       −
@@ -610,8 +610,8 @@
              duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
              focus-visible:ring-inset focus-visible:ring-accent/40 disabled:opacity-40"
       disabled={scale >= 3}
-      aria-label="Крупнее"
-      title="Крупнее"
+      aria-label="Увеличить масштаб"
+      title="Увеличить масштаб"
       onclick={() => step(1)}
     >
       +
@@ -647,7 +647,7 @@
         class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
                text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
                focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-        title="Вести по этому документу лекцию: страница, перо и указка — у вас"
+        title="Начать лекцию по этому документу"
         onclick={() => session.send({ t: 'lecture:start', file })}
       >
         <Icon name="pencil" size={12} />
@@ -660,7 +660,7 @@
            об этом надо там же, где кнопки, а не только в строке вкладок. -->
       <span class="flex shrink-0 items-center gap-1.5 px-4 text-2xs text-muted">
         <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
-        смотрите сами
+        самостоятельный просмотр
       </span>
     {/if}
   </div>

@@ -58,7 +58,7 @@ function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
    * восстановление и чекпоинт, но они и так преподавательские.
    */
   if (!allows(getRules(req.params.id).history, payload.role)) {
-    res.status(403).json({ error: 'Лента версий в этом семинаре — преподавательская.' })
+    res.status(403).json({ error: 'Просматривать историю версий в этом семинаре может только преподаватель.' })
     return null
   }
   return payload

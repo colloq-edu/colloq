@@ -442,7 +442,7 @@ export class OutputWriter {
     const body = new Y.Text()
     body.insert(
       0,
-      `\n[colloq] output stopped after ${Math.round(MAX_CELL_OUTPUT_CHARS / 1024)} KB — write to a file instead of printing.\n`,
+      `\n[colloq] output stopped after ${MAX_CELL_OUTPUT_CHARS} characters. Save the full output to a file.\n`,
     )
     output.set('text', body)
     outputs.push([output])
@@ -463,9 +463,9 @@ export class OutputWriter {
         : `${Math.round(this.dataBudget / 1024)} KB`
     body.insert(
       0,
-      `\n[colloq] this cell has already shown ${shown} of images — the rest is not shown, ` +
-        'because everybody in the room has to load it. Save the figure to a file, or draw ' +
-        'it smaller (figsize/dpi).\n',
+      `\n[colloq] The ${shown} image output limit was reached. Additional images are not shown. ` +
+        'Save the figure to a file or reduce ' +
+        'its size (figsize/dpi).\n',
     )
     output.set('text', body)
     outputs.push([output])

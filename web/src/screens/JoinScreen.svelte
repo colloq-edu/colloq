@@ -288,7 +288,7 @@
     event?.preventDefault()
     const who = name.trim()
     if (!who) {
-      error = 'Enter a name so the room knows who you are'
+      error = 'Enter the name the group will see'
       nameInput?.focus()
       return
     }
@@ -463,7 +463,7 @@
           {#if retrying}
             {CROWD_NOTICE}
           {:else}
-            You are already signed in to the teaching side, so this seminar opens straight away.
+            You are signed in as a teacher. Opening the seminar…
           {/if}
         </p>
       </div>
@@ -511,8 +511,7 @@
           role="status"
         >
           <p>
-            Занятие закончено {finishedStamp}. Войти можно — тетрадь, файлы и ответы оракула на
-            месте, но здесь теперь только читают.
+            Занятие закончено {finishedStamp}. Тетрадь, файлы и ответы оракула доступны для чтения.
           </p>
           {#if session.published}
             <!--
@@ -624,8 +623,7 @@
                    сойтись. «Always yours» было обещанием сервера, которого
                    сервер не даёт. -->
               <p class="text-2xs text-muted">
-                Picked from the ones nobody in this room is wearing right now. Change it if you
-                spot a twin.
+                This mark is available in the room. You can choose another one.
               </p>
             </div>
             <!-- `press` is the house helper for a control that does not route
@@ -702,8 +700,7 @@
 
       {#if !picking}
         <p class="text-ui text-muted">
-          No account, no email. The link is the seminar — close the tab and the same link
-          brings you back.
+          No account needed. Use this link to return to the seminar.
         </p>
       {/if}
     </form>

@@ -170,7 +170,7 @@ test('картинки всё же не безграничны, и отказ г
   assert.ok(images > 0, 'не показали ни одной картинки')
   assert.ok(images < 20, 'бюджета на картинки нет вовсе')
   const said = outs.map((o) => (o.kind === 'stream' ? o.text : '')).join('\n')
-  assert.match(said, /MB of images/, 'про предел картинок не сказали')
+  assert.match(said, /MB image output limit/, 'про предел картинок не сказали')
 })
 
 test('прогресс-бар остаётся одной строкой и между окнами склейки', async () => {

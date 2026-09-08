@@ -529,7 +529,7 @@ export function renderCourse(course: PublicCourseView, base: string): string {
           `<a href="${esc(gone)}">`,
           `<span class="n">${n}</span>`,
           `<span class="t">${esc(item.name)}</span>`,
-          '<span class="s">комната закрыта, страница осталась</span>',
+          '<span class="s">семинар удалён, материалы доступны</span>',
           '</a></li>',
         ].join('')
       }
@@ -562,7 +562,7 @@ export function renderCourse(course: PublicCourseView, base: string): string {
     course.blurb ? `<p class="blurb">${esc(course.blurb)}</p>` : '',
     `<p class="addr">${esc(base.replace(/^https?:\/\//, ''))}/c/${esc(course.slug ?? course.id)}</p>`,
     `<ul class="rows">${rows}</ul>`,
-    '<p class="foot-note">Каждый семинар курса появляется здесь — по мере того, как их проводят. Сохраните эту страницу.</p>',
+    '<p class="foot-note">Здесь собраны семинары курса. Материалы доступны после публикации преподавателем.</p>',
     '</div>',
     FOOT,
   ].join('\n')
@@ -695,11 +695,11 @@ export function renderStep(page: SeminarPage): string {
     rail,
     '<main class="main">',
     '<div class="intro">',
-    '<p>Здесь то, что писали и запускали на этом занятии. Того, что говорили, здесь нет.</p>',
+    '<p>Опубликованные материалы тетради семинара.</p>',
     many
-      ? '<p>Моменты, которые отметил преподаватель. Выводы — те, что тетрадь держала в этот момент: у ячейки, код которой поменяли после запуска, остаётся прежний результат.</p>'
+      ? '<p>Шаги выбрал преподаватель. Выводы сохранены на момент каждого шага и могут относиться к предыдущей версии кода.</p>'
       : '',
-    '<p>Ничьих имён на этой странице нет.</p>',
+    '<p>Список участников не опубликован. Имена, указанные в ячейках и выводах, могут быть видны.</p>',
     '</div>',
     page.step.cells.map((cell) => cellHtml(cell, page.depth)).join('\n'),
     '<div class="take">',

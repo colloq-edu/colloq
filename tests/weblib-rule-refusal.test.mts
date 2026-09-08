@@ -62,7 +62,7 @@ test('причина отказа на пульте правил — по-рус
     assert.match(line, ROOM_LANGUAGE, `«${line}» — не на языке комнаты`)
     assert.doesNotMatch(line, PANEL_LANGUAGE, `«${line}» — английский хвост в русской комнате`)
     // Фраза целая: половинчатую («Правило не сохранилось — ») читать не о чем.
-    assert.match(line, /^Правило не сохранилось[ ,—].+[.]$/u, `«${line}» — обрывок фразы`)
+    assert.match(line, /^Не удалось сохранить правило[:.] .+[.]$/u, `«${line}» — обрывок фразы`)
   }
 })
 
@@ -85,10 +85,10 @@ test('обрыв связи, отвергнутый вход, бан и «не �
   const unknown = ruleRefusal(null)
 
   assert.match(offline, /связи/)
-  assert.match(stranger, /вход/)
+  assert.match(stranger, /войдите/)
   assert.match(banned, /удалили/)
   assert.match(notHost, /преподаватель/)
-  assert.match(unknown, /попробуйте ещё раз/)
+  assert.match(unknown, /Попробуйте ещё раз/)
   assert.equal(new Set([offline, stranger, banned, notHost, unknown]).size, 5)
 })
 
@@ -103,9 +103,9 @@ test('404 чужими словами не хоронит семинар', () =>
   const ours = ruleRefusal(new ApiError(SESSION_MISSING, 404))
   const proxied = ruleRefusal(new ApiError('Not found (404)', 404))
 
-  assert.match(ours, /семинара больше нет/)
-  assert.doesNotMatch(proxied, /семинара больше нет/)
-  assert.match(proxied, /попробуйте ещё раз/)
+  assert.match(ours, /занятие не найдено/)
+  assert.doesNotMatch(proxied, /занятие не найдено/)
+  assert.match(proxied, /Попробуйте ещё раз/)
 })
 
 /**

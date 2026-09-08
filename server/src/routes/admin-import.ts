@@ -85,7 +85,7 @@ export function adminImportRoutes(): Router {
           res,
           400,
           'invalid',
-          "That is not a GitHub link. Paste the address of a notebook or of the week's folder.",
+          "Enter a GitHub link to a notebook or folder.",
         )
       }
       try {
@@ -247,14 +247,14 @@ export function adminImportRoutes(): Router {
           res,
           400,
           'invalid',
-          'That file is not a notebook — .ipynb is JSON, and this would not parse.',
+          'Could not read this file as a notebook. Upload a valid .ipynb file.',
         )
       }
     }
 
     const cells = readIpynb(parsed)
     if (cells.length === 0) {
-      return fail(res, 400, 'invalid', 'That notebook has no cells with anything in them.')
+      return fail(res, 400, 'invalid', 'This notebook has no nonempty cells.')
     }
 
     const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''

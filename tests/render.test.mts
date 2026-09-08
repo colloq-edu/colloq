@@ -266,7 +266,7 @@ test('надгробие с оставшимся чтением — ссылка
   }
   const html = renderCourse(course, 'https://colloq.ru')
   assert.match(html, /href="https:\/\/colloq\.ru\/p\/nedelya\/"/)
-  assert.match(html, /комната закрыта, страница осталась/)
+  assert.match(html, /семинар удалён, материалы доступны/)
   // А там, где страницы не осталось, строка остаётся строкой.
   assert.match(html, /семинар удалён/)
 })

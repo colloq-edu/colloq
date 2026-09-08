@@ -202,7 +202,7 @@ function settleGhostRun(run: CouncilRun | null): CouncilRun | null {
         {
           kind: 'error',
           ename: 'ServerRestarted',
-          evalue: 'Сервер перезапустился, пока попытка считалась; вывод не доехал.',
+          evalue: 'Сервер перезапустился во время выполнения попытки. Вывод недоступен.',
           traceback: [],
         },
       ],
@@ -221,7 +221,7 @@ function settleGhostRun(run: CouncilRun | null): CouncilRun | null {
  * возвращается готовой с причиной рядом; не было — пустое место с той же
  * причиной, и кнопка «Спросить» на месте.
  */
-const ORACLE_RESTARTED = 'Сервер перезапустился, пока оракул читал, — спросите ещё раз.'
+const ORACLE_RESTARTED = 'Сервер перезапустился во время подготовки сводки. Повторите запрос.'
 
 function settleGhostOracle(oracle: CouncilOracle): CouncilOracle {
   if (oracle.state !== 'reading') return oracle

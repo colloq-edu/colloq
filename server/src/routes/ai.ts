@@ -297,7 +297,7 @@ export function aiRoutes(): Router {
     if (settings.questionsPerHour === 0) {
       return res
         .status(403)
-        .json({ error: 'The oracle is switched off for this instance — no questions are allowed.' })
+        .json({ error: 'The oracle is disabled in this Colloq instance.' })
     }
     if (!aiReady()) {
       /*
@@ -310,7 +310,7 @@ export function aiRoutes(): Router {
         error:
           auth.role === 'host'
             ? 'No model is set up on this Colloq yet — add a key under Oracle in the teaching panel.'
-            : 'No model is set up on this Colloq yet, so there is nobody to ask here.',
+            : 'No model is configured for this Colloq instance. Ask the teacher to check the settings.',
       })
     }
 
@@ -318,7 +318,7 @@ export function aiRoutes(): Router {
     const raw = typeof body?.message === 'string' ? body.message : ''
     if (raw.length > MAX_MESSAGE) {
       return res.status(400).json({
-        error: `That question is longer than ${MAX_MESSAGE.toLocaleString('en-GB')} characters. The notebook travels with it anyway — say the short version.`,
+        error: `That question is longer than ${MAX_MESSAGE.toLocaleString('en-GB')} characters. Shorten your question.`,
       })
     }
     const message = raw.trim()
@@ -361,7 +361,7 @@ export function aiRoutes(): Router {
       if (action && !actionAllowedIn('hints', action)) {
         return res.status(403).json({
           error:
-            'This oracle is in hints mode: it can point you at the problem, but it will not write the answer for you. Ask for a hint instead.',
+            'Hints mode is enabled. Ask for a hint instead.',
         })
       }
       action = 'hint'
@@ -381,14 +381,14 @@ export function aiRoutes(): Router {
       if (mode === 'hints') {
         return res.status(403).json({
           error:
-            'Этот оракул работает подсказками: он покажет, где смотреть, но не станет делать за вас.',
+            'В режиме подсказок правка файлов недоступна. Задайте вопрос оракулу.',
         })
       }
       if (!allowsAgent(getRules(sessionId).agent, auth.role)) {
         return res.status(403).json({
           error:
             getRules(sessionId).agent === 'off'
-              ? 'В этом семинаре оракул файлы не трогает.'
+              ? 'Правка файлов оракулом отключена в этом семинаре.'
               : 'Просить оракула править файлы здесь может преподаватель.',
         })
       }
@@ -447,7 +447,7 @@ export function aiRoutes(): Router {
          * надо ровно то, что ему поможет: ждать или спрашивать сообща.
          */
         return res.status(429).json({
-          error: `This seminar has used all ${roomLimit} of its oracle questions for the hour. That ceiling belongs to the whole Colloq, not to this room, so nobody here can lift it — wait a while, or ask together.`,
+          error: `This seminar has used all ${roomLimit} oracle questions allowed per hour. Try again later.`,
         })
       }
 
@@ -496,7 +496,7 @@ export function aiRoutes(): Router {
       if (left > 0) {
         res.setHeader('Retry-After', String(left))
         return res.status(429).json({
-          error: `Оракул отвечает не чаще раза в ${seconds(gap)} — ещё ${seconds(left)}.`,
+          error: `Между вопросами нужно подождать ${seconds(gap)}. Повторите через ${seconds(left)}.`,
           /*
            * Число, а не только заголовок. Retry-After — для машины, а панели
            * этим числом ещё и решать, как показать отказ: ожидание — спокойная
@@ -526,7 +526,7 @@ export function aiRoutes(): Router {
         const wait = 5
         res.setHeader('Retry-After', String(wait))
         return res.status(429).json({
-          error: `Оракул сейчас отвечает ${busy} людям в этой комнате — больше он разом не тянет. Спросите через ${seconds(wait)}.`,
+          error: `В этой комнате уже выполняется ${busy} запросов к оракулу. Повторите через ${seconds(wait)}.`,
           // То же число, что у слоу-мода: панель рисует ожидание отсчётом, а не
           // красной ошибкой. Отличить одно от другого по тексту она не может.
           retryAfter: wait,
@@ -659,7 +659,7 @@ export function aiRoutes(): Router {
         // который ничего не менял.
         error: isFinished(req.params.id)
           ? CLASS_IS_OVER
-          : 'Only the host can clear the oracle thread — those questions belong to the room.',
+          : 'Only the teacher can clear the shared oracle conversation.',
       })
     }
     /*

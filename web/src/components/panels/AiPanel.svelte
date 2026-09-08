@@ -366,8 +366,8 @@
   const seesAll = $derived.by(() => {
     const nb = books.current.length
     return (
-      `всю комнату: ${nb} ${plural(nb, 'тетрадь', 'тетради', 'тетрадей')}` +
-      `, ${fileCount} ${plural(fileCount, 'файл', 'файла', 'файлов')}`
+      `${nb} ${plural(nb, 'тетрадь', 'тетради', 'тетрадей')}` +
+      ` · список файлов: ${fileCount}`
     )
   })
 
@@ -612,7 +612,7 @@
         waitUntil = Date.now() + err.retryAfter * 1000
         return
       }
-      sendError = err instanceof Error ? err.message : 'Не удалось спросить оракула.'
+      sendError = err instanceof Error ? err.message : 'Не удалось отправить вопрос. Попробуйте ещё раз.'
     }
   }
 
@@ -745,7 +745,7 @@
     <span
       class="inline-flex h-5 shrink-0 items-center bg-raised px-1.5 text-2xs font-bold uppercase
              tracking-caps text-ink"
-      title="Ленту читает вся комната — вопросы и ответы у всех одни"
+      title="Вопросы и ответы доступны всем участникам"
     >
       общая · {entries.length}
     </span>
@@ -791,8 +791,7 @@
         <div class="flex flex-col items-start gap-2.5 px-4 pb-4 pt-4">
           <p class="text-answer text-ink">Вопросов пока нет.</p>
           <p class="text-ui text-muted">
-            Что ни спросите — вопрос встанет в ленту комнаты под вашим именем, а ответ придёт
-            на все экраны сразу.
+            Задайте вопрос по материалам занятия. Ваше имя, вопрос и ответ будут видны всей группе.
           </p>
           <!--
             «Выделите ячейку, чтобы спросить о ней» было неправдой ровно
@@ -801,8 +800,7 @@
             фокус.
           -->
           <p class="text-ui text-muted">
-            Оракул видит комнату целиком. Выделите ячейки, если хотите, чтобы он смотрел
-            прежде всего на них.
+            Оракул получает контекст тетрадей в пределах заданного лимита. Выделите ячейки, которым нужно уделить внимание.
           </p>
         </div>
       {/if}
@@ -898,7 +896,7 @@
         сервер решает всё равно сам, — а строка говорит ровно то, что есть.
       -->
       <p class="flex items-center gap-2 border border-line bg-raised px-3 py-2 text-2xs text-muted">
-        <span class="min-w-0 flex-1">Не удалось узнать, отвечает ли оракул на этом Colloq.</span>
+        <span class="min-w-0 flex-1">Не удалось проверить доступность оракула.</span>
         <button
           type="button"
           class="btn-ghost press h-6 shrink-0 px-1.5 text-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -932,7 +930,7 @@
         кнопку, и исчезнуть вместе с ними не должна была.
       -->
       <p class="text-2xs text-muted">
-        режим подсказок — оракула просят подтолкнуть, а не решить за вас
+        режим подсказок — модели задано направлять вас к решению
       </p>
     {/if}
 
@@ -960,11 +958,10 @@
             Оракул выключен на этом семинаре.
           {/if}
         {:else if isHost}
-          Оракул здесь не отвечает — загляните в
-          <span class="font-semibold text-ink">Оракул</span> в панели преподавателя: либо модель не
-          настроена, либо потолок в час стоит на нуле.
+          Проверьте настройки раздела
+          <span class="font-semibold text-ink">Оракул</span> в панели преподавателя: подключение к модели и лимит вопросов.
         {:else}
-          Оракул на этом Colloq не отвечает — спрашивать здесь некого.
+          Оракул недоступен. Обратитесь к преподавателю.
         {/if}
       </p>
     {:else if !may.ask}
@@ -1002,9 +999,9 @@
           <div class="flex items-baseline gap-1.5">
             <span
               class="shrink-0 text-2xs font-bold uppercase tracking-institution text-faint"
-              title="Тетради целиком, список файлов, состояние ядра и лента вопросов"
+              title="Код и выводы ячеек, список файлов, состояние ядра и последние сообщения. Объём контекста ограничен."
             >
-              Видит
+              Источники
             </span>
             <span class="min-w-0 truncate text-2xs text-muted">{seesAll}</span>
           </div>
@@ -1014,9 +1011,9 @@
             <div class="flex items-baseline gap-1.5">
               <span
                 class="shrink-0 text-2xs font-bold uppercase tracking-institution text-accent-text"
-                title="Это уедет отдельно и с просьбой смотреть в первую очередь сюда"
+                title="Выбранные ячейки и открытый файл добавляются к контексту. Остальные материалы из него не исключаются."
               >
-                Особенно
+                В фокусе
               </span>
               <span class="min-w-0 truncate font-mono text-2xs text-ink">
                 {focus.join(' · ')}
@@ -1079,7 +1076,7 @@
             ? 'Что сделать с файлами семинара…'
             : focusAsked
               ? `Спросить про ${focusAsked}…`
-              : 'Спросить оракула комнаты…'}
+              : 'Вопрос по материалам занятия…'}
           title="Enter — отправить, Shift+Enter — новая строка"
           class="max-h-40 flex-1 resize-none bg-transparent py-1 text-ui text-ink placeholder:text-muted focus:outline-none"
           oninput={onInput}
@@ -1116,7 +1113,7 @@
       <Icon name="users" size={13} class="shrink-0" />
       <span class="min-w-0">
         {doing && canDo
-          ? 'Правит файлы семинара сам. Тетрадь не трогает — там по-прежнему предлагает.'
+          ? 'Оракул может менять файлы и запускать код. Правки ячеек требуют принятия.'
           : 'Вопрос и ответ видит вся комната.'}
       </span>
     </p>

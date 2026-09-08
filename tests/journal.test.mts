@@ -77,15 +77,15 @@ function blamesNothingLocal(message: string): void {
   assert.doesNotMatch(message, /https?:\/\//i, `адрес эндпоинта показан: ${message}`)
   assert.doesNotMatch(message, /test-key|OPENAI_API_KEY|admin panel/i, `ключ показан: ${message}`)
   assert.doesNotMatch(message, /\bcheck\b|Could not reach/i, `послали чинить: ${message}`)
-  assert.match(message, /not the address or the key/i, `не сказано, где искать НЕ надо: ${message}`)
+  assert.doesNotMatch(message, /address|key/i, `отказ модели делает вывод об адресе или ключе: ${message}`)
 }
 
 test('отказ фильтра безопасности назван отказом модели, а не поломкой связи', async () => {
   await withEndpoint(['{"error":{"message":"SAFETY"}}'], async () => {
     const message = await said()
-    assert.match(message, /refus/i, `не сказано, что модель отказалась: ${message}`)
-    assert.match(message, /safety/i, `не названа причина: ${message}`)
-    assert.match(message, /different way|again/i, `не сказано, что делать: ${message}`)
+    assert.match(message, /declined/i, `не сказано, что модель отказалась: ${message}`)
+    assert.match(message, /model/i, `не сказано, что отказ пришёл от модели: ${message}`)
+    assert.match(message, /this request/i, `отказ не привязан к текущему запросу: ${message}`)
     blamesNothingLocal(message)
   })
 })
@@ -94,7 +94,7 @@ test('отказ, названный кодом content_filter, читается
   const frame = '{"error":{"code":"content_filter","message":"The response was blocked."}}'
   await withEndpoint([frame], async () => {
     const message = await said()
-    assert.match(message, /refus/i, `не сказано, что модель отказалась: ${message}`)
+    assert.match(message, /declined/i, `не сказано, что модель отказалась: ${message}`)
     blamesNothingLocal(message)
   })
 })

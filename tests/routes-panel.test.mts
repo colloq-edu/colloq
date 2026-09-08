@@ -166,7 +166,7 @@ test('нулевой и дробный адрес шага — отказ сло
     const res = await publish(id, [{ seq, label: 'шаг' }])
     assert.equal(res.status, 400, `seq=${seq} приняли`)
     const body = (await res.json()) as { error?: string }
-    assert.match(body.error ?? '', /версией из ленты/)
+    assert.match(body.error ?? '', /номер версии для шага: целое число больше нуля/)
   }
 })
 

@@ -90,7 +90,7 @@ test("history: 'host' закрывает ленту от участника и �
   assert.equal(student.status, 403, 'черновики преподавателя показали залу')
   const refusal = (await student.json()) as { error?: string }
   // Отказ словами: «Лента версий в этом семинаре — преподавательская».
-  assert.match(refusal.error ?? '', /преподавательск/i)
+  assert.match(refusal.error ?? '', /может только преподаватель/i)
 
   const teacher = await ask('/history', 'p_teacher')
   assert.equal(teacher.status, 200, 'правило закрыло ленту и от самого преподавателя')

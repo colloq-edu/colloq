@@ -71,15 +71,13 @@
        Цена мала: сюда приходят свои — надпись «кто мы» говорит тем, кого
        позвали по ссылке, а не тем, кто здесь работает. -->
   <Poster title="Teaching workspace" headline="banner" width="hidden w-5/12 xl:flex">
-    Seminars and the oracle are configured here — so that the classroom itself stays a link and
-    nothing else.
+    Create seminars, manage teaching access and configure the oracle here.
 
     {#snippet footer()}
       <div class="flex items-start gap-2.5">
         <Icon name="lock" size={14} class="mt-1 shrink-0 text-white/60" />
         <p class="text-2xs leading-relaxed text-white/60">
-          Students never reach this screen. They open a seminar link, type a name and are inside — no
-          account, ever.
+          Students join from a seminar link and enter their name. They do not need a teacher account.
         </p>
       </div>
     {/snippet}
@@ -93,12 +91,11 @@
         <section class="animate-fade-up flex flex-col gap-5 border border-line p-[26px]">
           <div class="flex flex-col gap-1.5">
             <p class="text-micro font-bold uppercase tracking-label text-accent-text">
-              First run · once
+              Initial setup
             </p>
             <h2 class="text-head font-black tracking-tight text-ink">Set up this instance</h2>
             <p class="text-ui text-muted">
-              Nobody owns this install yet. The token claims it and makes you the owner — after that
-              this card is gone.
+              Use the setup token to create the first owner account for this server.
             </p>
           </div>
 
@@ -177,8 +174,7 @@
                 <code class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</code>
               </p>
               <p>
-                Nothing is emailed and there is no university login to redirect to — this install has
-                neither.
+                Sign-in links are shared manually. Email sign-in and university accounts are not supported.
               </p>
             </div>
           </div>
@@ -193,19 +189,18 @@
           one line rather than as a rival.
         -->
         <p class="animate-fade-up text-ui text-muted">
-          After this, nobody signs in with a form: each teacher gets a personal link from you, and
-          opening it is the sign-in.
+          After setup, add teachers and share their personal sign-in links.
         </p>
       {:else}
       <section class="animate-fade-up flex flex-col gap-[18px] bg-surface p-[26px]">
         <div class="flex flex-col gap-1.5">
           <p class="text-micro font-bold uppercase tracking-label text-muted">
-            Returning · every time after
+            Teacher access
           </p>
           <h2 class="text-head font-black tracking-tight text-ink">Sign in</h2>
           <p class="text-ui text-muted">
-            There is no form here on purpose. Your personal link is the sign-in — open it, bookmark
-            it, and it keeps working until the owner rotates it.
+            Open the personal sign-in link an owner gave you. Save the original link to use it again.
+            It works until an owner replaces it or removes your account.
           </p>
         </div>
 
@@ -229,9 +224,9 @@
              строку было бы ловушкой, а не восстановлением. -->
         <form class="flex flex-col gap-3 border-t border-line pt-[18px]" onsubmit={recover}>
           <div class="flex flex-wrap items-baseline gap-2">
-            <span class="text-ui font-semibold text-ink">Lost your link, or you are the owner?</span>
+            <span class="text-ui font-semibold text-ink">Sign in with the setup token</span>
             <label for="recovery-token" class="text-ui text-muted">
-              Paste the setup token instead.
+              This signs you in as the longest-standing owner.
             </label>
           </div>
 
@@ -278,8 +273,8 @@
             {adminAuth.error ?? 'The server did not answer.'}
           </p>
           <p class="text-ui text-muted">
-            If you came here from a sign-in link, it may have been rotated — the link stops working
-            the moment a new one is minted. Ask whoever runs this instance for a fresh one.
+            Check your connection and try again. If the server remains unavailable, contact the person
+            who runs it.
           </p>
         </div>
         <button

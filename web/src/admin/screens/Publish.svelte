@@ -97,7 +97,7 @@
         }
       })
       .catch((cause) =>
-        (error = cause instanceof AdminApiError ? cause.message : 'не удалось прочитать историю'),
+        (error = cause instanceof AdminApiError ? cause.message : 'Не удалось загрузить историю семинара. Попробуйте обновить страницу.'),
       )
   })
 
@@ -120,7 +120,7 @@
       // Повторная публикация адрес сохраняет — показываем тот, что есть.
       slug = body.publication.slug ?? slug
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'не удалось опубликовать'
+      error = cause instanceof AdminApiError ? cause.message : 'Не удалось опубликовать семинар. Попробуйте ещё раз.'
     } finally {
       busy = false
     }
@@ -176,7 +176,7 @@
     if (!done || busy) return
     const next = slugDraft.trim().toLowerCase()
     if (next && !slugOk(next)) {
-      error = 'Только строчные латинские буквы, цифры и дефис — адрес диктуют вслух.'
+      error = 'Адрес: 3–64 символа, строчные латинские буквы, цифры и дефис. Первый и последний символ — буква или цифра.'
       return
     }
     busy = true
@@ -190,7 +190,7 @@
       slug = next
       former = [...new Set([...former, was].filter((name) => name && name !== next))]
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'адрес не сохранился'
+      error = cause instanceof AdminApiError ? cause.message : 'Не удалось сохранить адрес. Попробуйте ещё раз.'
       const holder = addressHolderOf(cause)
       // Только прежнее: живой адрес отсюда не отпускают, его снимают именем.
       if (holder?.former && next) held = { slug: next, holder }
@@ -200,7 +200,7 @@
   }
 
   /**
-   * Отпустить прежний адрес и занять его — одним решением.
+   * Освободить прежний адрес и занять его — одним решением.
    *
    * Одним, потому что отпускают его ровно затем, чтобы дать это имя своей
    * странице: два нажатия подряд оставили бы посередине состояние «имя ничьё»,
@@ -214,7 +214,7 @@
     try {
       await adminApi.releaseFormerSlug(holder.kind, holder.id, freed)
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'прежний адрес не отпустился'
+      error = cause instanceof AdminApiError ? cause.message : 'Не удалось освободить прежний адрес. Попробуйте ещё раз.'
       return
     } finally {
       busy = false
@@ -226,7 +226,7 @@
   }
 
   /**
-   * Отпустить своё прежнее имя.
+   * Освободить своё прежнее имя.
    *
    * Другое действие, чем выше, хотя маршрут тот же: там имя забирают себе,
    * здесь — просто отпускают. Единственное, что случится наверняка, — ссылка с
@@ -244,7 +244,7 @@
     try {
       await adminApi.releaseFormerSlug('publication', page, name)
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'прежний адрес не отпустился'
+      error = cause instanceof AdminApiError ? cause.message : 'Не удалось освободить прежний адрес. Попробуйте ещё раз.'
       return
     } finally {
       busy = false
@@ -299,8 +299,8 @@
     <div class="border-t border-line pt-3">
       <p class="text-ui font-semibold text-ink">Прежние адреса</p>
       <p class="mt-0.5 text-2xs leading-snug text-muted">
-        Ведут на эту страницу и держат имя за ней: другой странице его не дать. Отпущенное имя
-        освобождается для всех — а ссылка с ним перестаёт открываться, и вернуть её нечем.
+        Эти ссылки открывают текущую публикацию. Если освободить адрес, он перестанет вести сюда
+        и его сможет занять другая публикация.
       </p>
       <div class="mt-2 flex flex-col">
         {#each former as name (name)}
@@ -312,7 +312,7 @@
               disabled={busy}
               onclick={() => (dropping = name)}
             >
-              Отпустить
+              Освободить
             </button>
           </div>
         {/each}
@@ -324,10 +324,10 @@
 <AdminPage
   title={done ? 'Опубликовано' : `Опубликовать — ${title}`}
   subtitle={done
-    ? 'Ссылка постоянная: публикуя снова, вы оставляете её той же.'
+    ? 'Повторная публикация обновляет страницу по той же ссылке.'
     : already
       ? `Опубликован ранее — /p/${already.slug ?? already.id}. Публикуя снова, вы оставляете ту же ссылку.`
-      : 'Пока вы не нажали «Опубликовать», публичного ничего нет.'}
+      : 'Выберите версии тетради для публикации.'}
 >
   {#snippet actions()}
     <button type="button" class="btn-ghost" onclick={() => navigate('/admin')}>
@@ -347,7 +347,7 @@
 
     {#if done}
       <div class="flex max-w-[640px] flex-col gap-3 border border-line bg-surface p-5">
-        <p class="text-ui text-muted">Страница класса:</p>
+        <p class="text-ui text-muted">Опубликованная страница:</p>
         <a
           class="block font-mono text-ui-lg text-accent-text"
           href={`/p/${slug || done}`}
@@ -379,7 +379,7 @@
             disabled={busy || slugDraft.trim() === slug}
             onclick={() => void saveSlug()}
           >
-            {slug ? 'Сменить имя адреса' : 'Дать имя адресу'}
+            {slug ? 'Изменить адрес' : 'Задать адрес'}
           </button>
           <!-- Имя держит не живая страница, а память о розданной ссылке — и
                это единственный вид «занято», который владелец может разрешить
@@ -392,7 +392,7 @@
               disabled={busy}
               onclick={() => (asking = true)}
             >
-              Отпустить прежний адрес
+              Освободить прежний адрес
             </button>
           {/if}
           <!-- Идентификатор ведёт сюда всегда: кто продиктовал классу /p/xxxx
@@ -406,10 +406,9 @@
 
         {#if held}
           <p class="text-2xs leading-snug text-muted">
-            <span class="font-mono text-ink">/p/{held.slug}</span> — прежнее имя страницы
-            {#if held.holder.name}«{held.holder.name}»{:else}, у которой теперь другое имя{/if}.
-            Оно держится ради ссылки, которую уже дали классу; отпустив его, вы забираете имя себе,
-            а старая ссылка перестаёт открываться.
+            <span class="font-mono text-ink">/p/{held.slug}</span> — прежний адрес страницы
+            {#if held.holder.name}«{held.holder.name}»{/if}. После переноса эта ссылка будет открывать
+            текущую публикацию вместо прежней.
           </p>
         {/if}
 
@@ -429,7 +428,7 @@
           <p class="text-ui font-semibold text-ink">
             {skipped.length}
             {plural(skipped.length, 'момент', 'момента', 'моментов')}
-            {plural(skipped.length, 'не стал шагом', 'не стали шагами', 'не стали шагами')}
+            {plural(skipped.length, 'пропущен', 'пропущены', 'пропущены')}
           </p>
           <ul class="mt-1.5 flex flex-col gap-1">
             {#each skipped as step (`${step.seq}:${step.reason}`)}
@@ -439,8 +438,8 @@
             {/each}
           </ul>
           <p class="mt-2 text-2xs leading-snug text-faint">
-            Остальные шаги опубликованы. Ссылка постоянная: когда причина уйдёт, тот же семинар
-            публикуют снова — ссылка останется той же.
+            Остальные шаги опубликованы. После устранения причины можно повторить публикацию
+            по той же ссылке.
           </p>
         </div>
       {/if}
@@ -450,8 +449,7 @@
         <div class="w-[220px] shrink-0">
           <p class="text-ui font-semibold text-ink">Шаги</p>
           <p class="mt-0.5 text-2xs leading-snug text-muted">
-            Моменты, по которым пойдёт студент. Каждый показывает тетрадь такой, какой она была,
-            вместе с выводами.
+            Сохранённые версии тетради с кодом, заметками и выводом ячеек.
           </p>
         </div>
 
@@ -463,13 +461,12 @@
           -->
           <div class="min-w-0 flex-1 border border-line bg-surface px-5 py-4">
             <p class="text-ui-lg font-semibold text-ink">
-              В этом семинаре один момент — значит будет одна страница.
+              Нет сохранённых версий для выбора. Будет опубликована текущая тетрадь.
             </p>
             <p class="mt-2 text-ui leading-relaxed text-muted">
               Шаги берутся из чекпоинтов. Нажмите <span class="font-semibold text-ink">«Чекпоинт»</span>
-              в ленте версий прямо на занятии, когда класс дошёл до чего-то, к чему стоит вернуться, —
-              «перед упражнением», «версия, которая ломалась», — и это станут шаги, по которым
-              студенты пойдут.
+              в ленте версий, чтобы сохранить тетрадь на нужном этапе занятия.
+              Например, перед упражнением или после разбора решения.
             </p>
           </div>
         {:else}
@@ -487,7 +484,7 @@
                     ? 'border-brand bg-brand text-white'
                     : 'border-faint bg-canvas'}"
                   aria-pressed={picked[candidate.seq] && named}
-                  aria-label="Взять этот момент"
+                  aria-label="Включить версию в публикацию"
                   disabled={!named}
                   onclick={() => (picked[candidate.seq] = !picked[candidate.seq])}
                 >
@@ -520,7 +517,7 @@
                   <input
                     class="min-w-0 flex-1 border border-line bg-canvas px-2 py-1 text-ui text-ink
                            placeholder:text-faint focus:outline-none"
-                    placeholder="назовите этот момент"
+                    placeholder="Название версии"
                     maxlength={MAX_STEP_LABEL}
                     bind:value={labels[candidate.seq]}
                     oninput={() => (picked[candidate.seq] = true)}
@@ -541,7 +538,7 @@
               <span class="w-[86px] shrink-0"></span>
               <span class="min-w-0 flex-1 px-2 text-ui text-muted">
                 Тетрадь на момент публикации
-                <span class="pl-2 text-2xs text-faint">снять нельзя — это последняя страница</span>
+                <span class="pl-2 text-2xs text-faint">всегда включается в публикацию</span>
               </span>
             </div>
           </div>
@@ -553,7 +550,7 @@
         <div class="w-[220px] shrink-0">
           <p class="text-ui font-semibold text-ink">Что станет публичным</p>
           <p class="mt-0.5 text-2xs leading-snug text-muted">
-            И что не станет — списком, а не мелким шрифтом.
+            Имена и личные данные в тексте ячеек или их выводе сохранятся. Проверьте их перед публикацией.
           </p>
         </div>
         <div class="min-w-0 flex-1 border border-line bg-surface">
@@ -566,7 +563,7 @@
               <span class="w-[300px] shrink-0 text-2xs text-muted">{why}</span>
             </div>
           {/each}
-          {#each [['Кто что печатал и кто что запускал', 'ничьих имён на странице нет'], ['Лента вопросов к оракулу', 'в ней имена всех, кто спрашивал'], ['Терминал', 'в расшифровке оболочки может быть что угодно'], ['Файлы комнаты', 'код студенты читают, запускать его негде']] as [what, why] (what)}
+          {#each [['Кто что печатал и кто что запускал', 'авторство действий не публикуется'], ['Лента вопросов к оракулу', 'вопросы и ответы не публикуются'], ['Терминал', 'история команд не публикуется'], ['Файлы комнаты', 'файлы не включаются в публикацию']] as [what, why] (what)}
             <div class="{FACT} border-t border-line">
               <svg width="13" height="13" viewBox="0 0 13 13" fill="none" class="shrink-0">
                 <path d={NO} stroke="#8E2334" stroke-width="1.7" stroke-linecap="round" />
@@ -582,7 +579,7 @@
       <div class="flex flex-wrap items-start gap-x-7 gap-y-3 py-6">
         <div class="w-[220px] shrink-0">
           <p class="text-ui font-semibold text-ink">Ссылка</p>
-          <p class="mt-0.5 text-2xs leading-snug text-muted">Её и надо дать классу.</p>
+          <p class="mt-0.5 text-2xs leading-snug text-muted">Поделитесь ссылкой со студентами.</p>
         </div>
         <div class="flex min-w-0 max-w-[700px] flex-1 flex-col gap-3">
           {#if already}
@@ -598,15 +595,14 @@
             {@render formerNames()}
           {/if}
           <p class="text-ui leading-relaxed text-muted">
-            Постоянная. Повторная публикация её не меняет; если снять страницу, ссылка остаётся и
-            говорит, что вы её сняли. В поисковиках не показывается.
+            Повторная публикация сохраняет ссылку. После снятия публикации по ней отображается
+            сообщение об этом. Страница содержит запрет индексации для поисковых систем.
           </p>
           <div class="border-l-[3px] border-warning bg-surface px-4 py-3">
             <p class="text-ui leading-relaxed text-muted">
-              <span class="font-semibold text-ink">Комната остаётся открытой.</span>
-              Любой, у кого есть <span class="font-mono">/s/{sessionId}</span>, по-прежнему зайдёт в
-              неё и сможет печатать. Архивация убирает семинар из вашего списка и тоже её не
-              запирает.
+              <span class="font-semibold text-ink">Доступ к комнате не меняется.</span>
+              Публикация и архивация не меняют доступ по ссылке <span class="font-mono">/s/{sessionId}</span>.
+              Вход и редактирование зависят от действующих правил комнаты и статуса занятия.
             </p>
           </div>
         </div>
@@ -616,7 +612,7 @@
 </AdminPage>
 
 <!--
-  Отпустить прежний адрес — вопросом, а не нажатием.
+  Освободить прежний адрес — вопросом, а не нажатием.
 
   Единственное необратимое действие на этом экране: ссылка, которую уже
   продиктовали классу, после этого отвечает 404, и вернуть её нечем. Поэтому
@@ -633,13 +629,12 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="release-slug-title" class="text-title font-semibold text-ink">
-        Отпустить адрес /p/{going.slug}?
+        Освободить адрес /p/{going.slug}?
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
         Сейчас он ведёт на страницу
-        {#if going.holder.name}«{going.holder.name}»{:else}, которую переименовали{/if} — и
-        перестанет открываться совсем: у того, кому эту ссылку дали, останется адрес в никуда.
-        Имя тем же движением достаётся этой странице.
+        {#if going.holder.name}«{going.holder.name}»{/if}. После переноса эта ссылка будет
+        открывать текущую публикацию вместо прежней.
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
@@ -654,7 +649,7 @@
           disabled={busy}
           onclick={() => void release()}
         >
-          {busy ? 'Отпускаем…' : 'Отпустить и занять'}
+          {busy ? 'Переносим…' : 'Перенести адрес'}
         </button>
       </div>
     </div>
@@ -662,7 +657,7 @@
 {/if}
 
 <!--
-  Отпустить своё прежнее имя — тот же вопрос, но имя никто не ждёт.
+  Освободить своё прежнее имя — тот же вопрос, но имя никто не ждёт.
 
   Здесь его отпускают не затем, чтобы занять: оно освобождается для всех, и
   единственное, что случится наверняка, — ссылка с ним перестанет открываться.
@@ -678,12 +673,11 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="drop-slug-title" class="text-title font-semibold text-ink">
-        Отпустить адрес /p/{going}?
+        Освободить адрес /p/{going}?
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Сейчас он ведёт на эту страницу — и перестанет открываться совсем: у тех, кому эту ссылку
-        уже дали, останется адрес в никуда, и вернуть её нечем. Взамен имя освобождается — его
-        сможет занять другая страница.
+        Эта ссылка перестанет открывать текущую публикацию. Адрес сможет занять другая
+        публикация, и тогда ссылка будет вести на неё.
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
@@ -698,7 +692,7 @@
           disabled={busy}
           onclick={() => void dropFormer()}
         >
-          {busy ? 'Отпускаем…' : 'Отпустить адрес'}
+          {busy ? 'Освобождаем…' : 'Освободить адрес'}
         </button>
       </div>
     </div>

@@ -114,5 +114,5 @@ test('карточка даёт повод попросить вывод, а п�
 
 test('пустой вывод и «вывода в кадре нет» карточка называет по-разному', () => {
   assert.match(STACK, /\{:else if attempt\.run\.outputsOmitted\}/)
-  assert.match(STACK, /вывод не поехал со стопкой/)
+  assert.match(STACK, /onneedoutputs \? 'Загружается результат…' : 'Результат не загружен\.'/)
 })

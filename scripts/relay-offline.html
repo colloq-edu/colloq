@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Комната ещё не открыта — Colloq</title>
+    <title>Colloq сейчас недоступен — Colloq</title>
 
     <!--
       Страница ожидания ретранслятора (*.colloq.ru). Её отдаёт frps, когда для
@@ -473,11 +473,10 @@
           </svg>
           <p class="label" id="where">Colloq</p>
         </div>
-        <h1>Комната ещё не открыта</h1>
+        <h1>Colloq сейчас недоступен</h1>
         <p class="lede">
-          По этому адресу занятие сейчас не идёт. Комнату открывает
-          преподаватель — обычно незадолго до начала, и до этой минуты её здесь
-          просто нет.
+          Не удалось подключиться к Colloq по этому адресу.
+          Сервер может быть выключен или временно недоступен.
         </p>
       </header>
 
@@ -485,9 +484,8 @@
         <span class="dot"></span>
         <div class="text">
           <span id="wait-text">
-            Ждать можно прямо здесь: страница сама заглядывает в комнату и
-            откроет её, как только та появится. Оставьте вкладку открытой —
-            нажимать ничего не нужно.
+            Страница проверяет соединение каждые 20 секунд и перезагрузится,
+            когда Colloq станет доступен. Оставьте вкладку открытой.
           </span>
           <span class="mono" id="wait-line">первая проверка через 20 с</span>
         </div>
@@ -534,7 +532,7 @@
             <button class="primary" type="submit" id="send">В таблицу</button>
             <button type="button" id="again">Ещё раз</button>
           </form>
-          <p class="note status" id="status" aria-live="polite">Имя увидят все, кто ждёт на этом адресе. В таблице — лучшая попытка каждого.</p>
+          <p class="note status" id="status" aria-live="polite">Имя и рекорд будут видны в общей таблице. Следующие результаты отправляются автоматически под этим именем.</p>
         </div>
 
         <div class="board" id="board" hidden>
@@ -547,8 +545,8 @@
       </section>
 
       <p class="note">
-        Если ждёте давно, стоит сверить адрес с тем, который вам дали: одна
-        буква в имени уводит на пустую страницу вроде этой.
+        Если Colloq долго недоступен, проверьте адрес и уточните у преподавателя,
+        работает ли сервер.
       </p>
     </main>
 
@@ -619,7 +617,7 @@
               const text = await r.text();
               if (!text.includes(MARK)) {
                 opening = true;
-                document.getElementById('wait-text').textContent = 'Комната открылась — переходим…';
+                document.getElementById('wait-text').textContent = 'Соединение восстановлено. Открываем Colloq…';
                 waitLine.textContent = '';
                 setTimeout(() => location.reload(), 700);
               }
@@ -1280,7 +1278,7 @@
         const board = document.getElementById('board');
         const boardLine = document.getElementById('board-line');
         const topEl = document.getElementById('top');
-        const NOTE = 'Имя увидят все, кто ждёт на этом адресе. В таблице — лучшая попытка каждого.';
+        const NOTE = 'Имя и рекорд будут видны в общей таблице. Следующие результаты отправляются автоматически под этим именем.';
         const RENAME = 'Другое имя — впишите в поле и нажмите «Записать».';
         // Ключ владельца: браузер один раз придумывает случайную строку и дальше
         // подписывает ею записи. Сервис по нему знает, чьи строки, — так имя
@@ -1373,9 +1371,9 @@
               state.sent = true;
               sendBtn.disabled = true;
               sendBtn.dataset.done = '1';
-              sendBtn.textContent = 'Ниже рекорда';
+              sendBtn.textContent = 'Рекорд не побит';
               state.sentAs = known;
-              statusEl.textContent = 'Ваш рекорд ' + prevBest + ' уже в таблице как «' + known + '» — эта попытка ниже. ' + RENAME;
+              statusEl.textContent = 'Ваш рекорд ' + prevBest + ' уже в таблице как «' + known + '» — рекорд не побит. ' + RENAME;
             } else submitScore(known, true);
           }
           showOverHint();
@@ -1572,7 +1570,7 @@
           if (!name) {
             sendBtn.disabled = false;
             sendBtn.textContent = 'Впишите имя';
-            statusEl.textContent = 'В таблицу пишут с именем — впишите его в поле. Или играйте дальше: очки останутся здесь.';
+            statusEl.textContent = 'Введите имя для общей таблицы или продолжайте без отправки результата.';
             nameInput.focus();
             showOverHint();
             return;
@@ -1629,7 +1627,7 @@
               ? 'Первое место. Капибара гордится. '
               : d.improved
                 ? 'Вы на ' + d.rank + '-м месте из ' + d.names + '. '
-                : 'Ваш лучший результат ' + d.best + ' держит ' + d.rank + '-е место из ' + d.names + ' — эта попытка ниже. ') + RENAME;
+                : 'Ваш лучший результат ' + d.best + ' держит ' + d.rank + '-е место из ' + d.names + ' — рекорд не побит. ') + RENAME;
             renderBoard(d, { id: d.id, rank: d.rank, name: shown, best: d.best });
           } catch (err) {
             if (state.run !== run) return;
@@ -1642,16 +1640,16 @@
               : why === 'taken'
                 ? 'Имя «' + name + '» уже занято другим игроком — впишите другое.'
                 : why === 'implausible'
-                  ? 'Очки не приняты: столько за это время не набрать.'
+                  ? 'Результат не прошёл проверку. Сыграйте ещё раз.'
                   : why === 'run'
-                    ? 'Запись не принята: забег не был начат через таблицу. Сыграйте ещё раз.'
+                    ? 'Не удалось подтвердить забег. Сыграйте ещё раз.'
                     : why === 'name'
-                      ? 'Такое имя в таблицу не пишется — впишите другое.'
+                      ? 'Недопустимое имя. Введите другое.'
                       : why === 'owner'
                         // Ключ владельца заводит сама страница; сюда попадают
                         // только запросы мимо неё.
-                        ? 'Запись не принята: браузер не назвал владельца имени.'
-                        : 'Таблица сейчас недоступна — очки остались только здесь.';
+                        ? 'Не удалось подтвердить игрока. Обновите страницу и сыграйте ещё раз.'
+                        : 'Не удалось отправить результат. Попробуйте ещё раз.';
             if (why === 'taken' || why === 'name') { sendBtn.textContent = 'Записать как «' + name + '»'; nameInput.focus(); }
           } finally {
             if (state.run === run) state.sending = false;

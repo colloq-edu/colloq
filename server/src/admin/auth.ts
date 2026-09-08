@@ -285,11 +285,11 @@ export function sameOrigin(req: Request, res: Response, next: NextFunction): voi
   try {
     host = new URL(origin).host
   } catch {
-    return deny(res, 403, 'forbidden', 'that request came from somewhere this server does not serve')
+    return deny(res, 403, 'forbidden', 'Request blocked: this page uses a different server address. Open Colloq directly and try again.')
   }
   // req.host отбрасывает порт, а он здесь значимый: 5173 и 8080 — разные сайты.
   if (host !== req.get('host') && !(thisMachine(host) && thisMachine(req.get('host') ?? ''))) {
-    return deny(res, 403, 'forbidden', 'that request came from somewhere this server does not serve')
+    return deny(res, 403, 'forbidden', 'Request blocked: this page uses a different server address. Open Colloq directly and try again.')
   }
   next()
 }

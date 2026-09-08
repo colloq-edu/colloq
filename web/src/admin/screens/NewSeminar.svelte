@@ -95,14 +95,14 @@
     if (!file) return
     notebookError = null
     if (!/\.ipynb$/i.test(file.name)) {
-      notebookError = `${file.name} is not a notebook — Colloq opens .ipynb files.`
+      notebookError = `Choose a .ipynb notebook. ${file.name} has a different extension.`
       return
     }
     try {
       const doc = JSON.parse(await file.text()) as { cells?: unknown[] }
       const cells = Array.isArray(doc.cells) ? doc.cells : []
       if (cells.length === 0) {
-        notebookError = 'That notebook has no cells in it.'
+        notebookError = 'This notebook has no cells. Choose a notebook with at least one cell.'
         return
       }
       /*
@@ -124,7 +124,7 @@
       source = 'file'
       if (!name.trim()) name = tidyName(file.name)
     } catch {
-      notebookError = 'That file would not parse — .ipynb is JSON, and this is not.'
+      notebookError = 'Could not read this notebook. Check that it is a valid .ipynb file.'
     }
   }
 
@@ -163,9 +163,8 @@
       refused.length === 0 || maxUploadBytes === null
         ? null
         : `${refused.map((f) => f.name).join(', ')} ` +
-          `${refused.length === 1 ? 'is' : 'are'} over the ${uploadMb(maxUploadBytes)} MB this ` +
-          'server accepts, so it was left out. Raise MAX_UPLOAD_MB, or put the file in the room ' +
-          'another way.'
+          `exceed the ${uploadMb(maxUploadBytes)} MB upload limit and were not added. ` +
+          'Choose smaller files or ask the server administrator to increase MAX_UPLOAD_MB.'
     materials = [...materials, ...taken]
   }
 
@@ -260,25 +259,25 @@
       value: 'lab',
       label: 'Обычный',
       what:
-        'Лаборатория. Все печатают в тетради, запускают ячейки, кладут файлы и спрашивают ' +
-        'оракула. Так Colloq работал всегда.',
-      lines: ['правит — комната · запускает — комната', 'файлы — комната · оракул — по настройке'],
+        'Участники вместе редактируют тетрадь, запускают ячейки и добавляют файлы. ' +
+        'Доступ к оракулу зависит от его настроек.',
+      lines: ['редактирование и запуск — всем', 'добавление файлов — всем'],
     },
     {
       value: 'lecture',
       label: 'Лекция',
       what:
-        'Комната преподавателя. Студент читает, листает и смотрит: ни правки, ни запуска, ни ' +
-        'терминала, ни файлов. Оракул — по настройке семинара.',
-      lines: ['всё — преподаватель', 'кроме ячеек, которые он откроет сам'],
+        'Преподаватель редактирует тетрадь и запускает код. Студенты читают тетрадь; ' +
+        'преподаватель может открыть отдельные ячейки для работы.',
+      lines: ['редактирование и запуск — преподавателю', 'отдельные ячейки можно открыть студентам'],
     },
     {
       value: 'council',
       label: 'Консилиум',
       what:
-        'Лекция для большой аудитории. Открытая ячейка — у каждого свой лист: пишут все, ' +
-        'видит преподаватель, листает попытки, показывает классу и спрашивает оракула о решениях.',
-      lines: ['всё — преподаватель', 'открытая ячейка — каждому свой лист'],
+        'В открытой ячейке каждый студент пишет отдельное решение. Преподаватель ' +
+        'просматривает попытки, показывает выбранные классу и обсуждает их с оракулом.',
+      lines: ['управление занятием — преподавателю', 'отдельная попытка для каждого студента'],
     },
   ]
 
@@ -448,9 +447,9 @@
 
   /** One row of the rules table: a question, a sentence, and two answers. */
   const ORACLE: { value: RoomRules['oracle']; label: string; note: string }[] = [
-    { value: 'inherit', label: 'As set for the instance', note: 'whatever Oracle settings say' },
-    { value: 'off', label: 'Off', note: 'no oracle in this room at all' },
-    { value: 'hints', label: 'Hints only', note: 'nudges, never the solution' },
+    { value: 'inherit', label: 'As set for the instance', note: 'use the server default' },
+    { value: 'off', label: 'Off', note: 'disable the oracle for this seminar' },
+    { value: 'hints', label: 'Hints only', note: 'instructed to give hints' },
     { value: 'full', label: 'Full answers', note: 'explains and writes code' },
   ]
 
@@ -465,11 +464,11 @@
     /** Не во всех режимах: в консилиуме своя строка у каждого уже есть. */
     unless?: (mode: 'lab' | 'lecture' | 'council') => boolean
   }[] = [
-    { what: 'Read the cells', why: 'every browser holds the whole notebook' },
-    { what: 'Read the terminal transcript', why: 'it is in the shared document too' },
+    { what: 'Hide notebook cells', why: 'participants receive the whole notebook' },
+    { what: 'Hide terminal history', why: 'participants receive the terminal history' },
     {
       what: "Edit your own answer but not your neighbour's",
-      why: 'a cell has no owner',
+      why: 'editing access applies to the shared cell',
       /*
        * Кроме консилиума — там это и есть его смысл. Строка стояла на одном
        * экране с карточкой «Консилиум: открытая ячейка — каждому свой лист» и
@@ -477,7 +476,7 @@
        */
       unless: (m) => m === 'council',
     },
-    { what: 'Keep one student’s oracle question private', why: 'one thread, one document root' },
+    { what: 'Keep one student’s oracle question private', why: 'questions are visible to the room' },
     /*
      * «Remove somebody from the room — a token can expire, not be withdrawn»
      * отсюда убрано: бан с выкидыванием из комнаты есть и работает
@@ -485,7 +484,7 @@
      * evictBanned). Он не настройка комнаты, а действие внутри неё, поэтому
      * стоит в списке того, что принадлежит преподавателю, — ниже.
      */
-    { what: 'A model for this room only', why: 'not a permission, and read nowhere yet' },
+    { what: 'A model for this room only', why: 'the model is configured for the server' },
   ]
 
   const notYet = $derived(NOT_YET.filter((row) => !row.unless?.(mode)))
@@ -497,23 +496,23 @@
    */
   const COUPLINGS: { what: string; why: string; when: (r: RoomRules) => boolean }[] = [
     {
-      what: 'Running is not a boundary while typing is open.',
+      what: 'Students can edit code the teacher runs.',
       why:
-        'The kernel reads a cell’s source at the instant it runs it, not when Run was pressed — so a ' +
-        'student who may not run still writes the Python the teacher’s Run executes.',
+        'Code is read when execution starts. A student with editing access can change a queued ' +
+        'cell before the teacher’s run begins.',
       when: (r) => r.run !== 'room' && r.edit === 'room',
     },
     {
-      what: 'Files are only as locked as the kernel is.',
+      what: 'Running code also gives access to files.',
       // Про соседние комнаты — только там, где ядро общее: под своим
       // контейнером в него смонтирована одна папка, и пугать нечем.
       get why(): string {
         return (
           (sharedKernel
-            ? 'The shared container mounts this room’s folder — and every other room’s, '
-            : 'The container mounts this room’s folder, ') +
-          'so os.listdir() is the listing, open(...) is the download and os.remove(...) is the ' +
-          'delete — for anyone who may run a cell.'
+            ? 'The shared container has access to files from every seminar. '
+            : 'The container has access to this room’s files. ') +
+          'Anyone allowed to run code can list, read and delete those files, regardless of the ' +
+          'file panel permissions.'
         )
       },
       when: (r) => r.files !== 'room' && r.run !== 'host',
@@ -529,7 +528,7 @@
        дубликат. Кнопка ведёт туда, где эта комната уже лежит, со ссылкой. -->
   {#if created}
     <button type="button" class="btn-primary" onclick={() => ondone(created ?? undefined)}>
-      Go to the seminar
+      Back to seminars
     </button>
   {:else}
     <button type="button" class="btn-primary" disabled={!canCreate} onclick={create}>
@@ -545,7 +544,7 @@
 
 <AdminPage
   title="New seminar"
-  subtitle="Nothing here is saved until you press Create — the room does not exist yet."
+  subtitle="Choose a notebook, environment and access rules, then create the seminar."
   {actions}
 >
   {#if error}
@@ -556,7 +555,7 @@
 
   <Section
     title="Basics"
-    description="The name is what students see on the join screen, so write it the way you say it out loud."
+    description="Students see this name when they join the seminar."
   >
     <div class="flex flex-col gap-3">
       <input
@@ -594,7 +593,7 @@
             <span class="text-faint"># Welcome</span>
             <span class="text-muted">print("hello")</span>
           </span>
-          <span class="text-2xs leading-tight text-muted">Two cells. Nothing else is seeded.</span>
+          <span class="text-2xs leading-tight text-muted">Start with a text cell and a code cell.</span>
         </button>
 
         <button
@@ -624,7 +623,7 @@
             {#if notebook}
               {notebook.cells.length} cells · outputs are dropped
             {:else}
-              Drop a .ipynb here. Outputs are dropped.
+              Choose a .ipynb file. Outputs are not imported.
             {/if}
           </span>
         </button>
@@ -701,8 +700,8 @@
             <div class="mt-1.5 flex flex-wrap items-center gap-2 text-2xs text-warning">
               <span>
                 {preview.skipped.length === 1
-                  ? '1 file will not fit the room and stays behind:'
-                  : `${preview.skipped.length} files will not fit the room and stay behind:`}
+                  ? '1 file exceeds the import limit and will be skipped:'
+                  : `${preview.skipped.length} files exceed the import limit and will be skipped:`}
               </span>
               {#each preview.skipped as name (name)}
                 <span class="font-mono text-muted line-through">{name}</span>
@@ -717,8 +716,8 @@
   <Section
     title="Environment"
     description={sharedKernel
-      ? 'One container for every seminar on this server — what is picked here does not reach it.'
-      : "The container every cell runs in. Chosen once, and then it is this room's Python for good."}
+      ? 'All seminars use one shared container with the server’s default environment.'
+      : "The Python environment for this seminar. It is selected when the seminar is created."}
   >
     {#if sharedKernel}
       <!-- Не украшение к списку, а условие, при котором список ничего не
@@ -842,13 +841,13 @@
         <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
         <p class="min-w-0 text-2xs leading-snug text-muted">
           {#if gpus.total === 0}
-            <span class="font-semibold text-ink">Видеокарт здесь нет.</span>
-            Это окружение просит срез, а KERNEL_GPUS не задана: ядро такой комнаты не поднимется,
-            а на процессоре её пакеты не поедут.
+            <span class="font-semibold text-ink">GPU не настроены.</span>
+            Окружению нужен GPU, но KERNEL_GPUS не задана. Выберите другое окружение
+            или попросите администратора настроить GPU.
           {:else}
             <span class="font-semibold text-ink">Свободных срезов нет.</span>
-            Все срезы заняты другими комнатами, и остановленная держит свой тоже. Завести семинар
-            можно — ядро поднимется, когда чей-то контейнер уберут.
+            Все срезы заняты контейнерами других семинаров, в том числе неактивных.
+            Семинар можно создать, но для запуска ядра потребуется освободить срез.
           {/if}
         </p>
       </div>
@@ -874,7 +873,7 @@
   -->
   <Section
     title="Materials"
-    description="Everything the class opens, in the room from the first minute. Data sits beside the notebook; students download it or read it from a cell."
+    description="Add files to the seminar workspace. Participants can download them; reading them from code requires permission to run code."
   >
     <div class="flex flex-col">
       {#if materials.length > 0}
@@ -921,9 +920,9 @@
             <span class="truncate font-mono text-2xs text-ink">{file.name}</span>
             <span class="text-micro text-muted">
               {#if isNotebook(file.name)}
-                Students can open it; nobody edits it together
+                Attached notebook file
               {:else}
-                Sits beside the notebook — open("{file.name}")
+                Read from code with open("{file.name}")
               {/if}
             </span>
           </span>
@@ -936,7 +935,7 @@
           <button
             type="button"
             class="shrink-0 text-faint transition-colors duration-[var(--speed-quick)] hover:text-ink"
-            aria-label={`Take ${file.name} out of the seminar`}
+            aria-label={`Remove ${file.name} from the upload list`}
             onclick={() => (materials = materials.filter((f) => f.name !== file.name))}
           >
             <Icon name="x" size={13} />
@@ -994,7 +993,7 @@
 
   <Section
     title="The room"
-    description="A lecture and a lab are not the same room. Set here before anyone joins — and changeable from inside the seminar at any point, without anybody rejoining."
+    description="Choose a mode and adjust access rules. You can change them during the seminar."
   >
     <div class="flex flex-col gap-4">
       <!--
@@ -1027,7 +1026,7 @@
             </button>
           {/each}
         </div>
-        <p class="text-2xs text-muted">Режим меняется и потом — со страницы семинара.</p>
+        <p class="text-2xs text-muted">Режим можно изменить на странице семинара.</p>
       </div>
 
       <RoomRulesRows {rules} onchange={(patch) => (rules = { ...rules, ...patch })} />
@@ -1051,8 +1050,8 @@
 
       <div class="border border-line bg-surface">
         <div class="flex items-center gap-2.5 border-b border-line px-3.5 py-2">
-          <span class="text-micro font-bold uppercase tracking-caps text-muted">Not yet settings</span>
-          <span class="text-2xs text-faint">and the reason, which is not "coming soon"</span>
+          <span class="text-micro font-bold uppercase tracking-caps text-muted">Unavailable controls</span>
+          <span class="text-2xs text-faint">Current limitations</span>
         </div>
         {#each notYet as row (row.what)}
           <div
@@ -1067,10 +1066,10 @@
       <div class="flex items-start gap-2.5 border-l-2 border-accent bg-accent/[0.06] px-3.5 py-3">
         <Icon name="lock" size={13} class="mt-0.5 shrink-0 text-accent-text" />
         <div class="min-w-0">
-          <p class="text-ui font-semibold text-ink">Yours alone, with no setting to lose</p>
+          <p class="text-ui font-semibold text-ink">Teacher controls</p>
           <p class="mt-1 text-2xs text-muted">
             Interrupting a cell somebody else started · renaming the seminar · restoring an old
-            version and marking a checkpoint · deleting somebody's file · closing somebody's access
+            version and marking a checkpoint · deleting files from the file panel · closing somebody's access
             from the People panel, which also takes them out of the room.
           </p>
         </div>
@@ -1080,7 +1079,7 @@
 
   <Section
     title="Oracle"
-    description="Overrides the instance for this seminar only. Useful when one class is an exercise and the next is a demonstration."
+    description="Choose oracle access for this seminar within the server’s allowed mode."
   >
     <div class="flex flex-col gap-3">
       <div class="flex flex-wrap gap-1.5">
@@ -1093,7 +1092,7 @@
             class="oracle-card {rules.oracle === option.value ? 'oracle-on' : ''}"
             aria-pressed={rules.oracle === option.value}
             disabled={over}
-            title={over ? `This instance would answer as ${ceiling?.mode} anyway` : undefined}
+            title={over ? `The server allows up to ${ceiling?.mode} mode` : undefined}
             onclick={() => (rules.oracle = option.value)}
           >
             <span class="text-ui font-semibold">{option.label}</span>
@@ -1104,13 +1103,12 @@
         {/each}
       </div>
       <p class="text-2xs text-muted">
-        A room can be stricter than the instance, never looser: an instance in hints mode stays in
-        hints mode here.
+        The server’s mode limits this seminar. You can further restrict the oracle here.
         {#if ceiling?.why}
           <span class="text-ink">
             {ceiling.mode === 'off'
-              ? `This one has no oracle to hand out — ${ceiling.why} — so whatever this room asks for, its oracle stays off.`
-              : `This one is capped: ${ceiling.why}.`}
+              ? `The oracle is unavailable: ${ceiling.why}.`
+              : `Server limit: ${ceiling.why}.`}
           </span>
         {/if}
       </p>

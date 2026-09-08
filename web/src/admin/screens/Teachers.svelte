@@ -195,7 +195,7 @@
     const name = draftName.trim()
     const email = draftEmail.trim()
     if (!name) return void (composeError = 'A name is required.')
-    if (!email) return void (composeError = 'An email address is required — it is how they are identified.')
+    if (!email) return void (composeError = 'Enter an email address.')
 
     creating = true
     composeError = null
@@ -267,7 +267,7 @@
       copiedSetupTimer = setTimeout(() => (copiedSetup = false), 2200)
     } catch {
       // Небезопасное происхождение — обычный способ хостить это самому.
-      setupTokenError = 'The browser would not take the clipboard — copy the token by hand.'
+      setupTokenError = 'Could not copy the token. Select it and copy it manually.'
     }
   }
 
@@ -288,7 +288,7 @@
     if (!email) {
       return void (rowError = {
         id: draft.id,
-        message: 'An email address is required — it is how they are identified.',
+        message: 'Enter an email address.',
       })
     }
 
@@ -387,7 +387,7 @@
       rowCopyError =
         err instanceof AdminApiError
           ? err.message
-          : `This browser would not take the clipboard. Rotate ${t.name}’s link to see it on screen instead.`
+          : `Could not copy ${t.name}’s link. Try again. Replacing the link will show a new one and sign out their other sessions.`
     } finally {
       acting = null
     }
@@ -404,7 +404,7 @@
     } catch {
       // An insecure origin or a denied permission. The link is on screen and
       // selectable, so say that instead of swallowing it.
-      copyError = 'This browser would not take the clipboard. The link is selected — copy it by hand.'
+      copyError = 'Could not copy the link. It is selected; copy it manually.'
       linkField?.select()
     }
   }
@@ -444,7 +444,7 @@
 
 <AdminPage
   title="Who can teach"
-  subtitle="Everyone here can create seminars and see the oracle’s settings. Students never appear on this list — they have no account."
+  subtitle="Manage teacher accounts and sign-in links. Teachers can create seminars and view oracle settings."
   actions={isOwner ? addTeacher : undefined}
 >
   {#if composing}
@@ -474,15 +474,14 @@
         />
       </label>
       <button type="submit" class="btn-primary" disabled={creating}>
-        {creating ? 'Minting a link…' : 'Add and mint a link'}
+        {creating ? 'Creating a link…' : 'Add teacher'}
       </button>
       <button type="button" class="btn-ghost" onclick={() => (composing = false)}>Cancel</button>
       {#if composeError}
         <p class="w-full text-ui text-danger">{composeError}</p>
       {/if}
       <p class="w-full text-2xs text-muted">
-        They are added as a teacher and their link is minted at once. Promoting them to owner is a
-        second, deliberate act.
+        This creates a teacher account and a sign-in link. You can change their role to owner afterward.
       </p>
     </form>
   {/if}
@@ -542,7 +541,7 @@
           <span class="block text-ui font-semibold text-ink">Owner</span>
           <span class="flex items-center gap-1.5 text-2xs text-muted">
             <Icon name="lock" size={11} class="shrink-0" />
-            last owner · locked
+            last owner · role required
           </span>
         {:else}
           <div class="relative inline-flex items-center">
@@ -567,7 +566,7 @@
           <div class="flex items-center gap-2">
             <p
               class="min-w-0 flex-1 truncate font-mono text-code text-muted"
-              title="Only the shape is ever shown. Copy sends the real link to your clipboard."
+              title="The link is masked here. Copy puts the full sign-in link on your clipboard."
             >
               {MASKED}
             </p>
@@ -593,7 +592,7 @@
             class="inline-flex items-center gap-1.5 text-ui font-semibold text-accent-text hover:underline disabled:opacity-50"
           >
             <Icon name="link" size={13} />
-            {acting === t.id ? 'Minting…' : 'Mint a link'}
+            {acting === t.id ? 'Creating…' : 'Create a link'}
           </button>
         {:else}
           <p class="text-ui text-muted">No link yet</p>
@@ -640,7 +639,7 @@
                 class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-ink hover:bg-raised"
               >
                 <Icon name="link" size={14} class="text-faint" />
-                {t.hasLink ? 'Rotate sign-in link' : 'Mint a sign-in link'}
+                {t.hasLink ? 'Rotate sign-in link' : 'Create a sign-in link'}
               </button>
               {#if !locked}
                 <button
@@ -692,7 +691,7 @@
         </button>
         <button type="button" class="btn-ghost" onclick={() => (editing = null)}>Cancel</button>
         <p class="w-full text-2xs text-muted">
-          Their sign-in link keeps working — this changes the name and the address, nothing else.
+          This updates their name and email. Their sign-in link stays the same.
         </p>
       </form>
     {/if}
@@ -702,20 +701,18 @@
         {#if confirming.kind === 'rotate'}
           <p class="text-ui-lg font-semibold text-ink">Rotate {t.name}’s sign-in link?</p>
           <p class="mt-1.5 max-w-[640px] text-ui text-muted">
-            The link they hold now stops working the moment you press this, and every session opened
-            from it is signed out{you
-              ? ' — every browser signed in as you except this tab, which is re-issued'
-              : ''}. You get one new link to send, shown once.
+            The old link will stop working and their signed-in sessions will end{you
+              ? ', except this browser session, which will be renewed'
+              : ''}. A new link will appear here for you to share.
           </p>
         {:else}
           <p class="text-ui-lg font-semibold text-ink">
             {you ? 'Remove your own account?' : `Remove ${t.name}?`}
           </p>
           <p class="mt-1.5 max-w-[640px] text-ui text-muted">
-            Their sign-in link stops working immediately and every session opened from it ends{you
-              ? ', including this one — you would be signed out of the panel'
-              : ''}. Seminars they created stay where they are. Adding them back later mints a
-            different link.
+            Their sign-in link will stop working and their signed-in sessions will end{you
+              ? ', including this one'
+              : ''}. Their seminars will remain. Adding them again creates a new account and link.
           </p>
         {/if}
         <div class="mt-3 flex items-center gap-2">
@@ -762,10 +759,9 @@
         -->
         <p class="mt-1.5 max-w-[720px] text-ui text-ink">
           {#if shown.minted}
-            {shown.name} is on the staff list. Send them this link however you already talk to
-            them — it is the only credential they get.
+            {shown.name} is on the staff list. Share this personal sign-in link with them.
           {:else}
-            The old link and everything signed in with it are dead. Send {shown.name} this one.
+            The old link has been replaced. Share this new sign-in link with {shown.name}.
           {/if}
         </p>
         <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -790,8 +786,7 @@
           <p class="mt-2 text-ui text-danger">{copyError}</p>
         {:else if !copied}
           <p class="mt-2 text-2xs text-muted">
-            This is the last time it is shown on screen. Afterwards the copy button on their row
-            still hands it to your clipboard.
+            After closing this message, use the copy button on their row to copy the link again.
           </p>
         {/if}
       </div>
@@ -803,11 +798,11 @@
     <Icon name="link" size={13} class="shrink-0 text-faint" />
     <p class="text-2xs text-muted">
       {#if isOwner}
-        A link is a credential: rotate it when someone leaves — the old one stops working that second
-        — and removing a person kills their link immediately.
+        Anyone with a personal link can sign in to that account. Replace a shared or exposed link.
+        Remove the account when the person should no longer have access.
       {:else}
-        A link is a credential. Adding people, rotating links and removing accounts belong to an
-        owner; ask one of them.
+        Anyone with a personal link can sign in to that account. Contact an owner to add people,
+        replace links or remove accounts.
       {/if}
     </p>
   </div>
@@ -832,9 +827,8 @@
           верно ровно там, где его никто не читает.
         -->
         <p class="mt-1.5 text-2xs text-muted">
-          The setup token signs whoever holds it in as the longest-standing owner. It has been in
-          terminal history, on a projector and in whatever chat it was pasted into. Rotating it kills
-          the old one instantly and writes the new one to
+          The setup token signs anyone holding it in as the longest-standing owner. Replacing it
+          invalidates the old token and saves the new token in
           <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>.
         </p>
         {#if newSetupToken}
@@ -849,10 +843,8 @@
             </button>
           </div>
           <p class="mt-1 text-2xs text-muted">
-            Shown once here. <span class="font-mono">make host</span> prints it again at every start,
-            reading it from
-            <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span> —
-            the server itself stops announcing it once the instance has an owner.
+            The token is also available through <span class="font-mono">make host</span>, which reads it from
+            <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>. The server logs it only before the first owner is created.
           </p>
         {:else if setupTokenError}
           <p class="mt-2 text-2xs text-danger">{setupTokenError}</p>
@@ -871,12 +863,10 @@
 
   <div class="flex flex-wrap items-start gap-14 border-t border-line-soft pt-5">
     <div class="min-w-0 max-w-[600px] flex-1">
-      {@render eyebrow('Why the links look like that')}
+      {@render eyebrow('Masked sign-in links')}
       <p class="mt-1.5 text-2xs text-muted">
-        A link is on screen once — the moment it is minted or rotated — and never again: the rows
-        show only its shape, so a screen share or a screenshot of this page spills nothing. The copy
-        button hands the real one to your clipboard without it passing through the page, which is
-        how you re-send it to someone who mislaid theirs.
+        The list masks sign-in links. A newly created or replaced link is shown until you close its
+        message. Use the copy button on a teacher’s row to share their current link again.
       </p>
     </div>
     <div class="w-[392px]">
@@ -884,12 +874,12 @@
       {#if isOwner}
         <p class="mt-1.5 text-2xs text-muted">
           The setup token in <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>
-          still works and signs you in as the founding owner. It is the way back in.
+          signs you in as the longest-standing current owner.
         </p>
       {:else}
         <p class="mt-1.5 text-2xs text-muted">
-          Ask an owner to rotate it. The one you hold stops working the moment they do, and they will
-          send you the new one.
+          Ask an owner to copy and share your current link. If it may have reached someone else,
+          ask them to replace it.
         </p>
       {/if}
     </div>

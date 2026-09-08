@@ -456,7 +456,7 @@ test('work left over from a dead server is let go of, not waited on', async () =
     .filter((line) => line.get('kind') === 'system')
     .map((line) => String(line.get('text')))
   assert.ok(
-    notes.some((note) => /kernel kept running/i.test(note)),
+    notes.some((note) => /Reconnected to the existing kernel/i.test(note)),
     `the room was not told: ${JSON.stringify(notes)}`,
   )
 })

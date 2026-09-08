@@ -104,11 +104,11 @@ test('штат не банится, и кнопки ему не рисуют', (
 test('окно подтверждения называет всё, что случится, и ничего сверх', () => {
   const said = banConsequences('Иван').join(' ')
   assert.match(said, /Иван/, 'кого удаляют — имя, а не «этого участника»')
-  assert.match(said, /сутки/, 'на сколько')
+  assert.match(said, /24 часа/, 'на сколько')
   assert.match(said, /[Вв]опрос/, 'вопросы к оракулу пропадут — сам об этом никто не догадается')
   // Обратное прежнему: окно обещало возврат вопросов восстановлением версии,
   // а возврат кладёт обратно одни ячейки (tests/panels-ban-promise.test.mts).
-  assert.match(said, /насовсем|не вернёт/i, 'и что вернуть их нечем')
+  assert.match(said, /без возможности восстановления/i, 'и что вернуть их нечем')
   assert.doesNotMatch(said, /вопросы вернутся/i, 'обещания возврата больше нет')
   // Единственное обещание, которое продукт сдержать не может.
   assert.match(said, /инкогнито/i, 'бан держится на браузере, и об этом сказано')
@@ -126,7 +126,7 @@ test('«впервые, только что» живёт пять минут и 
   const fresh = personNotes({ firstSeenAt: now - 60_000 }, { bansActive: false, now })
   assert.deepEqual(
     fresh.map((note) => note.text),
-    ['впервые, только что'],
+    ['недавно вошёл'],
   )
   const settled = personNotes({ firstSeenAt: now - FRESH_MS - 1 }, { bansActive: false, now })
   assert.deepEqual(settled, [], 'через полпары «только что» — уже неправда')
@@ -144,7 +144,7 @@ test('«возможно, вернулся» — только пока чей-т
   const mark = { device: false, sameIp: true }
   assert.deepEqual(
     personNotes(mark, { bansActive: true }).map((note) => note.text),
-    ['возможно, вернулся'],
+    ['совпадает IP-адрес'],
     'без метки он и так — говорить это второй раз незачем',
   )
   assert.deepEqual(
@@ -166,7 +166,7 @@ test('догадка и новичок стоят рядом: вместе он�
   )
   assert.deepEqual(
     notes.map((note) => note.text),
-    ['возможно, вернулся', 'впервые, только что'],
+    ['совпадает IP-адрес', 'недавно вошёл'],
   )
 })
 
@@ -174,7 +174,7 @@ test('подсказка сама говорит, что может ошибат
   const [hint] = personNotes({ device: false, sameIp: true }, { bansActive: true })
   assert.match(
     hint.why,
-    /ошиб/i,
+    /не подтверждает/i,
     'она никого не блокирует, и человек, который по ней банит, должен это знать',
   )
 })

@@ -62,7 +62,7 @@ test('причина отказа в окне правил — по-русски
     assert.match(line, ROOM_LANGUAGE, `«${line}» — не на языке окна`)
     assert.doesNotMatch(line, PANEL_LANGUAGE, `«${line}» — хвост английской панели в русском окне`)
     // Фраза целая: половинчатую («Правило не сохранилось — ») читать не о чем.
-    assert.match(line, /^Правило не сохранилось[ ,—].+[.]$/u, `«${line}» — обрывок фразы`)
+    assert.match(line, /^Не удалось сохранить правило[:.] .+[.]$/u, `«${line}» — обрывок фразы`)
   }
 })
 
@@ -93,9 +93,9 @@ test('404 без тела не хоронит семинар', () => {
   })
   const stranger = ruleRefusal({ reason: 'invalid', status: 404, body: null })
 
-  assert.match(ours, /семинара больше нет/)
-  assert.doesNotMatch(stranger, /семинара больше нет/)
-  assert.match(stranger, /попробуйте ещё раз/)
+  assert.match(ours, /семинар не найден/)
+  assert.doesNotMatch(stranger, /семинар не найден/)
+  assert.match(stranger, /Попробуйте ещё раз/)
 })
 
 /* --------------------------------------------------------------- окно */

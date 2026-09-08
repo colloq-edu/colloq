@@ -87,6 +87,6 @@ test('строка про общее ядро говорит и про снят�
   // COUNCIL_SNAPSHOT_NAMES), но изменённые данные остаются общими — фраза
   // описывает ровно это, иначе она обещала бы изоляцию, которой нет.
   assert.match(COUNCIL_SHARED_KERNEL_NOTE, /по очереди/)
-  assert.match(COUNCIL_SHARED_KERNEL_NOTE, /снимаются/)
-  assert.match(COUNCIL_SHARED_KERNEL_NOTE, /общие/)
+  assert.match(COUNCIL_SHARED_KERNEL_NOTE, /удаляются после запуска/)
+  assert.match(COUNCIL_SHARED_KERNEL_NOTE, /общих объектов и файлов сохраняются/)
 })

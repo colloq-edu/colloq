@@ -110,7 +110,7 @@
               </button>
             {/if}
             <button type="button" class="btn-ghost h-8" onclick={() => toStack(group)}>
-              в стопку
+              Открыть попытку
               <Icon name="chevron-right" size={13} />
             </button>
             <button
@@ -155,7 +155,7 @@
             onclick={() => (rareOpen = !rareOpen)}
           >
             <Icon name={rareOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-            <span class="font-bold uppercase tracking-label">Редкие</span>
+            <span class="font-bold uppercase tracking-label">Малые группы</span>
             <span class="font-mono tabular-nums">{split.rare.map((g) => g.count).join(' · ')}</span>
             <span class="ml-auto">
               {split.rare.length}

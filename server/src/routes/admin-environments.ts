@@ -127,7 +127,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         res,
         400,
         'invalid',
-        'An environment name is lowercase letters, digits and dashes — it becomes a filename and a Docker tag.',
+        'Use lowercase letters, digits and dashes for the environment name.',
       )
     }
     const source = typeof body?.source === 'string' ? body.source : ''
@@ -217,9 +217,8 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         res,
         409,
         'in_use',
-        `${attached.length === 1 ? 'A seminar runs' : `${attached.length} seminars run`} on ${name} (${names}${more}). ` +
-          'A seminar keeps the environment it was created with — archived ones included — so this name is ' +
-          'free only once those seminars are deleted.',
+        `${attached.length === 1 ? 'One seminar uses' : `${attached.length} seminars use`} ${name} (${names}${more}). ` +
+          'This environment cannot be deleted while linked seminars exist, including archived seminars.',
       )
     }
     removeEnvironment(name)

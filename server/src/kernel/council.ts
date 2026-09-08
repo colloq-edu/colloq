@@ -74,7 +74,7 @@ export class CouncilOutputBuffer {
       this.outputs.push({
         kind: 'stream',
         name: 'stderr',
-        text: `\n[colloq] вывод попытки остановлен после ${Math.round(MAX_ATTEMPT_OUTPUT_CHARS / 1024)} КБ — пишите в файл, а не печатайте.\n`,
+        text: `\n[colloq] вывод попытки остановлен после ${MAX_ATTEMPT_OUTPUT_CHARS} знаков. Сохраните полный вывод в файл.\n`,
       })
     }
   }
@@ -87,7 +87,7 @@ export class CouncilOutputBuffer {
         this.outputs.push({
           kind: 'stream',
           name: 'stderr',
-          text: '\n[colloq] картинки попытки дальше не показываются — слишком много для карточки.\n',
+          text: '\n[colloq] Достигнут лимит изображений для попытки. Остальные изображения не показаны.\n',
         })
       }
       this.dataTruncated = true

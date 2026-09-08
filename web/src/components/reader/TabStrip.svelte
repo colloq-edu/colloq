@@ -81,7 +81,9 @@
 
   function closeTitle(path: string): string {
     if (path !== board) return 'Закрыть'
-    return mayBoard ? 'Убрать у всей комнаты' : 'Уйти в тетрадь; у комнаты останется'
+    return mayBoard
+      ? 'Убрать документ с общего экрана'
+      : 'Вернуться в тетрадь. Общий экран не изменится.'
   }
 </script>
 
@@ -130,7 +132,7 @@
                  duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
                  focus-visible:ring-inset focus-visible:ring-accent/40"
           title={closeTitle(key)}
-          aria-label={`Закрыть ${baseOf(key)}`}
+          aria-label={`${closeTitle(key)}: ${baseOf(key)}`}
           onclick={() => onclose(key)}
         >
           <Icon name="x" size={12} />
@@ -150,12 +152,12 @@
           onclick={oncatchup}
         >
           <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
-          {lead.name} на стр. {lead.page} — догнать
+          Перейти к {lead.name} · стр. {lead.page}
         </button>
       {:else if lead}
         <span class="flex items-center gap-1.5">
           <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
-          <span class="text-2xs font-semibold text-muted">Идём за {lead.name}</span>
+          <span class="text-2xs font-semibold text-muted">Ведущий: {lead.name}</span>
         </span>
       {:else if orphaned}
         <!--
@@ -163,7 +165,7 @@
           ведущего нет никогда — за собой не идут, — и говорить ему «вы вышли»
           значит сообщать о событии, которого не было.
         -->
-        <span class="text-2xs text-muted">Преподаватель вышел — дальше сами</span>
+        <span class="text-2xs text-muted">Ведущий отключился. Листайте документ самостоятельно.</span>
       {/if}
       {#if pages > 0}
         <span class="h-3.5 w-px bg-line" aria-hidden="true"></span>

@@ -219,7 +219,7 @@ test('чип упавшей попытки называет исключение
     by: 'host' as const,
   }
   assert.equal(statusLabel({ status: 'failed', run }), 'TypeError')
-  assert.equal(statusLabel({ status: 'failed', run: null }), 'упала')
+  assert.equal(statusLabel({ status: 'failed', run: null }), 'ошибка запуска')
   // Отметка преподавателя сильнее запуска.
   assert.equal(statusLabel({ status: 'correct', run }), 'верно')
   assert.equal(statusLabel({ status: 'unrun', run: null }), 'не запускали')

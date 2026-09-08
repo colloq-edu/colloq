@@ -126,7 +126,7 @@
       // значит держать под нажатой кнопкой того, кого уже вернули.
       bans = bans.filter((other) => other.id !== ban.id)
     } catch (cause) {
-      session.showError(cause instanceof Error ? cause.message : 'Бан не снялся.')
+      session.showError(cause instanceof Error ? cause.message : 'Не удалось снять ограничение доступа.')
     } finally {
       lifting = null
     }
@@ -320,8 +320,7 @@
       умеет ленту, сказано то, что есть.
     -->
     <p class="px-2 pt-1.5 text-micro leading-snug text-muted">
-      Вопросы к оракулу этим не возвращаются — и восстановлением версии тоже: история хранит
-      ячейки тетради, а не ленту.
+      Снятие ограничения не восстанавливает удалённые вопросы и ответы оракула. История версий хранит только ячейки тетради.
     </p>
   </section>
 {/if}

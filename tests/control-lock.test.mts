@@ -202,7 +202,7 @@ test('прервать и ответить — по-прежнему про ав
    */
   const id = room()
   assert.match(say(id, 'participant', { t: 'interrupt' }) ?? '', /host/i)
-  assert.match(say(id, 'participant', { t: 'input', value: 'да' }) ?? '', /чья ячейка/i)
+  assert.match(say(id, 'participant', { t: 'input', value: 'да' }) ?? '', /участник, запустивший ячейку/i)
 })
 
 /* ------------------------------------------------------------ после звонка */

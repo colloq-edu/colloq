@@ -314,7 +314,7 @@ test('одновременных ответов в комнате не боль�
     const refused = await ask(r, r.student, { message: 'тринадцатый' })
     assert.equal(refused.status, 429)
     const body = (await refused.json()) as { error: string; retryAfter?: number }
-    assert.match(body.error, /отвечает 12 людям/)
+    assert.match(body.error, /выполняется 12 запросов/)
     assert.ok((body.retryAfter ?? 0) > 0, 'панель нарисует это красной ошибкой, а не отсчётом')
     assert.equal(refused.headers.get('retry-after'), String(body.retryAfter))
   } finally {
@@ -356,9 +356,9 @@ test('часовой потолок комнаты считается от её 
     const refused = await ask(r, r.student, { message: 'ещё один' })
     assert.equal(refused.status, 429)
     const body = (await refused.json()) as { error: string }
-    assert.match(body.error, /all 30 of its oracle questions/)
+    assert.match(body.error, /all 30 oracle questions allowed per hour/)
     assert.doesNotMatch(body.error, /raise the limit in the panel/)
-    assert.match(body.error, /nobody here can lift it/i)
+    assert.match(body.error, /Try again later/i)
   } finally {
     updateOracleSettings({ questionsPerHour: 20 })
     r.close()

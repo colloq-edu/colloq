@@ -114,7 +114,7 @@
       -->
       <span class="flex items-center gap-1.5 text-2xs text-muted">
         <Icon name="lock" size={11} />
-        {mayEdit ? 'Правку не приняли — дальше только чтение' : whyReadOnly}
+        {mayEdit ? 'Правка не сохранена. Файл открыт только для чтения' : whyReadOnly}
       </span>
     {:else if savedAt}
       <!-- Время последней записи на диск, а не «есть несохранённое»: файл

@@ -405,9 +405,9 @@ export const DEFAULT_COUNCIL: CouncilSettings = { studentRun: false, namesOnProj
  * studentRun, полоса консилиума, README.
  */
 export const COUNCIL_SHARED_KERNEL_NOTE =
-  'Попытки считаются в общем ядре комнаты, по очереди. Переменные, заведённые ' +
-  'попыткой, после неё снимаются, а изменённые ею данные — общие: не проверяйте ' +
-  'этим то, что должно быть независимым.'
+  'Решения выполняются по очереди в общем ядре. Новые переменные, созданные ' +
+  'решением, удаляются после запуска. Изменения общих объектов и файлов сохраняются. Не используйте ' +
+  'этот режим для задач, требующих изолированного выполнения.'
 
 export type YCell = Y.Map<any>
 export type YOutput = Y.Map<any>
@@ -1480,7 +1480,7 @@ export function ensureInitialNotebook(doc: Y.Doc, title?: string): boolean {
       cells.push([
         createCell(
           'markdown',
-          '# Welcome\n\nEveryone in this session edits the same notebook. Type here, run code below.',
+          '# Welcome\n\nThis notebook is shared with the group. Your teacher controls who can edit and run code.',
         ),
         createCell('code', 'print("hello, seminar")'),
       ])

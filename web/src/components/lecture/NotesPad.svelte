@@ -562,8 +562,8 @@
           <button
             type="button"
             class="{TAP} {CELL} flex items-center justify-center gap-px text-muted hover:text-ink"
-            aria-label="Заметки крупнее"
-            title="Размер текста заметки — по кругу"
+            aria-label="Изменить размер текста заметок"
+            title="Переключить размер текста заметок"
             onclick={bigger}
           >
             <span class="text-title font-bold leading-none" aria-hidden="true">A</span>
@@ -654,7 +654,7 @@
                      min-[1300px]:max-w-[900px] {draft.trim() ? '' : 'text-muted'}"
             >
               {onBoard
-                ? 'У чистого листа заметок нет.'
+                ? 'Заметки доступны только для страниц документа.'
                 : draft.trim() || 'Заметок к этой странице нет.'}
             </div>
           {:else}

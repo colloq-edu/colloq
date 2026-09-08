@@ -747,7 +747,7 @@ export function sessionRoutes(): Router {
     // только тем, что второй обмен того же ключа получает отказ.
     const who = spendHandoffToken(sessionId, req.body?.key)
     if (!who) {
-      return res.status(401).json({ error: 'Ссылка на пульт устарела — попросите новую.' })
+      return res.status(401).json({ error: 'Ссылка на пульт недействительна или уже использована. Создайте новую ссылку на устройстве преподавателя.' })
     }
     const known = getParticipant(sessionId, who.participantId)
     if (!known) return res.status(404).json({ error: 'participant not found' })

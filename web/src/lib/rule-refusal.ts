@@ -37,15 +37,15 @@ import { saysSessionMissing } from '@shared/protocol'
 
 export function ruleRefusal(cause: unknown): string {
   const { status, until } = (cause ?? {}) as { status?: unknown; until?: unknown }
-  if (status === 0) return 'Правило не сохранилось — связи с сервером нет.'
+  if (status === 0) return 'Не удалось сохранить правило: нет связи с сервером.'
   if (status === 403) {
     return typeof until === 'number' && Number.isFinite(until)
-      ? 'Правило не сохранилось — вас удалили с занятия.'
-      : 'Правило не сохранилось — правила семинара задаёт преподаватель.'
+      ? 'Не удалось сохранить правило: вас удалили с занятия.'
+      : 'Не удалось сохранить правило: изменять правила может только преподаватель.'
   }
   if (status === 401) {
-    return 'Правило не сохранилось — вход в семинар больше не годится, зайдите заново.'
+    return 'Не удалось сохранить правило: войдите в занятие заново.'
   }
-  if (saysSessionMissing(cause)) return 'Правило не сохранилось — этого семинара больше нет.'
-  return 'Правило не сохранилось, попробуйте ещё раз.'
+  if (saysSessionMissing(cause)) return 'Не удалось сохранить правило: занятие не найдено.'
+  return 'Не удалось сохранить правило. Попробуйте ещё раз.'
 }

@@ -169,11 +169,11 @@ export type InkFull = 'page-full' | 'too-many-pages' | 'stroke-full'
 export function inkFullSays(why: InkFull): string {
   switch (why) {
     case 'page-full':
-      return 'Страница исписана — заведите чистый лист'
+      return 'Достигнут лимит штрихов на странице. Добавьте чистый лист'
     case 'too-many-pages':
-      return 'Исписано слишком много страниц — сотрите ненужные'
+      return 'Достигнут лимит страниц с разметкой. Удалите ненужную разметку'
     case 'stroke-full':
-      return 'Линия слишком длинная — оторвите перо и ведите дальше новой'
+      return 'Достигнут лимит длины штриха. Поднимите перо и продолжите новым штрихом'
   }
 }
 

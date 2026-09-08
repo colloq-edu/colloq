@@ -631,8 +631,8 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
       known
         ? `${known} Every variable is gone${hadWork ? '; whatever was queued was dropped' : ''}.`
         : hadWork
-          ? 'The kernel ran out of memory and is coming back on its own. Every variable is gone; whatever was queued was dropped.'
-          : 'The kernel restarted on its own — usually memory. Every variable is gone.',
+          ? 'The kernel restarted unexpectedly. Variables were reset and queued cells were removed.'
+          : 'The kernel restarted unexpectedly. Variables were reset.',
     )
     return
   }
@@ -669,7 +669,7 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
       known
         ? `${known}${hadWork ? ' Whatever was queued was dropped.' : ''} Run a cell to start a fresh one.`
         : hadWork
-          ? 'The kernel stopped while a cell was running — usually memory. Whatever was queued was dropped; restart to carry on.'
+          ? 'The kernel stopped during execution. Queued cells were removed. Restart the kernel to continue.'
           : 'The kernel stopped. Restart it to run anything.',
     )
     return
@@ -715,8 +715,8 @@ export function ensureKernel(sessionId: string): Promise<void> {
     kernelNote(
       sessionId,
       envName
-        ? `Starting the ${envName} environment — its container has to come up first, which takes up to a minute and a half on a cold start. Still trying; nothing can run until it answers.`
-        : `The kernel is taking longer than usual to start at ${config.jupyter.url}. Still trying — nothing can run until it answers.`,
+        ? `Starting the ${envName} environment. Waiting for the kernel before running cells.`
+        : `Waiting for the kernel at ${config.jupyter.url}. Cells cannot run until it responds.`,
     )
   }, SLOW_START_NOTICE_MS)
 
@@ -754,7 +754,7 @@ export function ensureKernel(sessionId: string): Promise<void> {
       if ((await kernel.releaseOrphanedWork()) && !runtime.retired) {
         kernelNote(
           sessionId,
-          'The kernel kept running while the server was away, so every variable is still here. The one cell it was in the middle of was stopped — its output had nowhere left to go.',
+          'Reconnected to the existing kernel. The running cell was interrupted because its output could not be received. Variables were not reset.',
         )
       }
       setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
@@ -1955,7 +1955,7 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
         onInputRequest: () => {
           buffer.stream(
             'stderr',
-            '[colloq] input() в попытке консилиума не спрашивает зал — подставлена пустая строка.\n',
+            '[colloq] Ввод через input() в попытке консилиума не поддерживается. Подставлена пустая строка.\n',
           )
           touchJob(runtime, active)
           void runtime.kernel?.answerInput('').catch(() => {})
@@ -2054,7 +2054,7 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
 }
 
 function deadMessage(): string {
-  return 'The Python kernel stopped responding — restart it to keep going. (A cell that allocates all the memory will do this.)'
+  return 'The Python kernel stopped responding. Restart it to continue.'
 }
 
 /**
@@ -2115,7 +2115,7 @@ function killedMessage(): string {
   const known = churnReason()
   return known
     ? `${known} The cell running at the time was killed with it, and every variable is gone.`
-    : 'The kernel was restarted while this cell was running — the process was killed, almost always because it ran out of memory. Every variable is gone; the kernel itself is back.'
+    : 'The kernel restarted during execution. This cell was interrupted and variables were reset. The kernel is available again.'
 }
 
 /* ------------------------------------------------------------------ outputs */

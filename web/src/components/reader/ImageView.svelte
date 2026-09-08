@@ -40,7 +40,7 @@
       })
       .catch((err: unknown) => {
         if (!alive) return
-        failed = err instanceof Error ? err.message : 'Не удалось открыть картинку.'
+        failed = err instanceof Error ? err.message : 'Не удалось открыть изображение.'
       })
     return () => {
       alive = false
@@ -60,9 +60,9 @@
       {src}
       alt={baseOf(path)}
       class="max-h-full max-w-full object-contain"
-      onerror={() => (failed = `${baseOf(path)} не открывается как картинка.`)}
+      onerror={() => (failed = `${baseOf(path)} не удалось открыть как изображение.`)}
     />
   {:else}
-    <p class="text-ui text-muted">Открываю {baseOf(path)}…</p>
+    <p class="text-ui text-muted">Загружается {baseOf(path)}…</p>
   {/if}
 </div>

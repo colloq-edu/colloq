@@ -435,7 +435,7 @@
      */
     if (attemptOver) {
       session.showError(
-        `Сдать нельзя: в попытке ${attemptCount} знаков. Сократите лист — сверх потолка он до преподавателя не доезжает.`,
+        `Сдать нельзя: в попытке ${attemptCount} знаков. Сократите ответ до указанного лимита.`,
       )
       return false
     }
@@ -461,7 +461,7 @@
       session.showError(
         may.finished
           ? CLASS_IS_OVER + '.'
-          : 'Здесь попытки запускает преподаватель: сдайте — и он запустит вашу сам.',
+          : 'Запускать ответы может только преподаватель. Сдайте решение, чтобы передать его на проверку.',
       )
       return
     }
@@ -476,7 +476,7 @@
     // меняет общую ячейку у всей комнаты, и назад его не отматывают.
     if (
       !window.confirm(
-        `Показать классу ${who ? `вариант ${who.name}` : 'этот вариант'}? Текст ляжет в общую ячейку от вашего имени.`,
+        `Показать классу ${who ? `вариант ${who.name}` : 'этот вариант'}? Ответ заменит текст общей ячейки. Автором изменения будете указаны вы.`,
       )
     ) {
       return
@@ -544,9 +544,9 @@
   const HOLD_MS = 450
 
   const LOCKS: { state: CellLock; icon: IconName; label: string; hint: string }[] = [
-    { state: 'closed', icon: 'lock', label: 'Закрыта', hint: 'печатает и запускает преподаватель' },
-    { state: 'open', icon: 'unlock', label: 'Открыта всем', hint: 'комната печатает в общий текст' },
-    { state: 'council', icon: 'users', label: 'Консилиум', hint: 'у каждого свой лист, видит преподаватель' },
+    { state: 'closed', icon: 'lock', label: 'Закрыта', hint: 'редактирует и запускает преподаватель' },
+    { state: 'open', icon: 'unlock', label: 'Открыта всем', hint: 'все редактируют общую ячейку' },
+    { state: 'council', icon: 'users', label: 'Консилиум', hint: 'у каждого свой ответ, доступный преподавателю' },
   ]
   const lockIcon = $derived<IconName>(inCouncil ? 'users' : cellOpen ? 'unlock' : 'lock')
   // Правило комнаты, а не положение ячейки: что значит «открыть» здесь.
@@ -1360,7 +1360,7 @@
    */
   function deleteIfEmpty() {
     if (!emptyCellIsRemovable(outputs.current.length)) {
-      session.showError('Текст пуст, но вывод остался. Уберите ячейку корзиной или клавишами d d.')
+      session.showError('В ячейке остался вывод. Для удаления нажмите корзину или дважды D.')
       return
     }
     removeSelf(true)
@@ -1576,7 +1576,7 @@
     <p class={cn(CAPS, 'flex flex-wrap items-center gap-x-2 pb-1 pt-0.5 text-accent-text')}>
       <span>Консилиум</span>
       <span class="font-normal normal-case tracking-normal text-muted">
-        общий текст — ваш эталон; класс видит то, что вы покажете
+        Текст общей ячейки виден группе. Ответы студентов открываются отдельно.
       </span>
     </p>
   {/if}
@@ -1779,7 +1779,7 @@
                   документов и вернётся сюда вместе с исполнением.
                 -->
                 {#if !inCouncil}
-                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">Ручка действует в консилиуме.</p>
+                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">Настройка применяется в режиме «Консилиум».</p>
                 {/if}
               </div>
             {/if}
@@ -1793,7 +1793,7 @@
               cellOpen || inCouncil ? 'text-accent-text' : 'text-faint',
             )}
             title={inCouncil
-              ? 'Консилиум — у каждого свой лист, видит только преподаватель'
+              ? 'Консилиум: у каждого свой ответ. Преподаватель может выбрать ответ для общего разбора.'
               : cellOpen
                 ? 'Эта ячейка открыта комнате'
                 : 'Закрыта — открыть её может преподаватель'}
@@ -1822,7 +1822,7 @@
         class="flex flex-col items-end gap-[3px]"
         title={[
           mark?.tone === 'idle' ? 'Ещё не запускалась' : null,
-          mark?.tone === 'lost' ? 'Считалась, но номер потерян: ядро перезапускали' : null,
+          mark?.tone === 'lost' ? 'Предыдущий запуск. Ядро было перезапущено' : null,
           meta.current.execCount === null ? null : `Запуск ${meta.current.execCount}`,
           meta.current.ranMs !== null && meta.current.ranMs >= NOTICED_MS
             ? spell(meta.current.ranMs)
@@ -2096,7 +2096,7 @@
                 <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
                   <span class={cn(CAPS, 'text-muted')}>Общая ячейка</span>
                   <span class="text-2xs text-muted">
-                    видит весь класс · сюда преподаватель кладёт то, что показывает
+                    видна всей группе
                   </span>
                 </div>
                 {#if isCode}
@@ -2127,12 +2127,12 @@
                          лежит прошлый снимок, и назвать сданным этот значило бы
                          соврать в том, ради чего консилиум и затевали. -->
                     <span class="text-warning">
-                      сдан не этот текст — у преподавателя лежит прошлый: «Изменить» и сдайте заново
+                      После сдачи текст изменился. Нажмите «Изменить» и сдайте текущую версию.
                     </span>
                   {:else if submittedAt !== null}
-                    сдано {clock(submittedAt)} · видит только преподаватель
+                    сдано {clock(submittedAt)} · доступно преподавателю
                   {:else}
-                    пишете свою версию · видит только преподаватель
+                    ваш черновик отправляется преподавателю
                   {/if}
                 </span>
                 {#if count}
@@ -2182,7 +2182,7 @@
                   )}
                 >
                   {#if attemptOver}
-                    <span>сверх потолка лист не уезжает — сократите</span>
+                    <span>превышен лимит символов — сократите ответ</span>
                   {/if}
                   <span class="font-mono tabular-nums">{attemptCount}</span>
                 </p>
@@ -2218,7 +2218,7 @@
                     {awaitingMine === 'submit' ? 'Отправляю…' : 'Сдать'}
                   </button>
                   {#if mayAttempt}
-                    <span class="text-2xs text-muted">⇧↵ — сдать · черновик уходит сам при паузе</span>
+                    <span class="text-2xs text-muted">⇧↵ — сдать · черновик отправляется после паузы в наборе</span>
                   {:else}
                     <span class="text-2xs text-muted">{attemptWhy}</span>
                   {/if}
@@ -2229,7 +2229,7 @@
                     disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
                     title={controlTitle(
                       session.connected,
-                      mayAttempt ? 'Вернуть в набор — «сдано» снимется' : attemptWhy,
+                      mayAttempt ? 'Продолжить редактирование и снять отметку о сдаче' : attemptWhy,
                     )}
                     onclick={withdrawAttempt}
                   >
@@ -2428,8 +2428,7 @@
               {:else}
                 <p class={cn(CAPS, 'text-accent-text')}>Консилиум — ячейка {ordinal}</p>
                 <p class="pt-1 text-2xs text-muted">
-                  Стопка появится с первой попыткой: студенты пишут у себя, и сюда приезжают
-                  снимки при паузе в наборе.
+                  Здесь появятся ответы студентов. Черновики обновляются после паузы в наборе.
                 </p>
               {/if}
             </div>
@@ -2537,7 +2536,7 @@
                        deletes whatever arrived in the meantime, and that has to be said
                        before the press rather than after. -->
                   <span class="text-2xs text-warning">
-                    The cell has changed since this was written — accepting replaces it whole.
+                    The cell changed after this request. Applying the suggestion will replace its current text.
                   </span>
                 {/if}
               </div>
@@ -2552,7 +2551,7 @@
                 {:else}
                   <button type="button" class="btn-primary h-8" onclick={accept}>Accept</button>
                   <button type="button" class="btn-outline h-8" onclick={decline}>Discard</button>
-                  <span class="text-2xs text-muted">Accepting writes the cell for everyone, under your name.</span>
+                  <span class="text-2xs text-muted">Applying updates the shared cell and records you as the author.</span>
                 {/if}
               </div>
             </div>
@@ -2637,7 +2636,7 @@
                           сколько остаётся правдой.
                         -->
                         <span class="text-2xs text-warning">
-                          From an earlier run — the kernel restarted or the cell was restored.
+                          Saved output from an earlier run. The kernel restarted or the cell was restored.
                         </span>
                       {/if}
                       {#if ranByOther}

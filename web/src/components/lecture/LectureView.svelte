@@ -201,7 +201,7 @@
    */
   function destructive(): boolean {
     if (session.connected) return true
-    refuse('Нет связи — ничего не стёрлось')
+    refuse('Нет связи. Не удалось изменить чернила.')
     return false
   }
 
@@ -238,7 +238,7 @@
     if (!session.connected) {
       // Своими словами: «ничего не стёрлось» здесь сказало бы не о том.
       stopAsked = false
-      refuse('Нет связи — лекция продолжается')
+      refuse('Нет связи. Не удалось закончить лекцию.')
       return
     }
     if (!stopAsked) {
@@ -672,7 +672,7 @@
           type="button"
           class="{TOOL} {tool === 'off' ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}"
           aria-pressed={tool === 'off'}
-          title="Убрать перо: страница снова листается пальцем"
+          title="Листать страницы пальцем"
           onclick={() => (tool = 'off')}
         >
           Рука
@@ -758,7 +758,7 @@
         <!-- Спокойная точка, не тревожная: это решение преподавателя, а не
              поломка, и лекция на экране как стояла, так и стоит. -->
         <span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
-        Занятие закончено — лекцией теперь управляет преподаватель. Страница и чернила остаются.
+        Занятие закончено. Управлять лекцией может преподаватель. Страница и чернила остаются доступны.
         <span class="flex-1"></span>
         <span class="font-mono tabular-nums">
           {#if page < 0}чистый лист{:else}{page} / {pages || '—'}{/if}
@@ -787,7 +787,7 @@
           <button
             type="button"
             class="{TOOL} -my-2 text-muted hover:text-ink"
-            title="Листать документ самому. Вернуться к лекции можно одним нажатием"
+            title="Листать документ самостоятельно"
             onclick={() => onsolo?.()}
           >
             Читать самому
@@ -890,7 +890,7 @@
     <button
       type="button"
       class="{TOOL} text-muted hover:text-ink"
-      title="Развернуть этот экран во весь монитор — для вывода на проектор"
+      title="Открыть проекцию во весь экран"
       onclick={() => onproject?.()}
     >
       <Icon name="board" size={12} />

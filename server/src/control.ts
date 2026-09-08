@@ -1528,7 +1528,7 @@ function mayEditThis(
 ): boolean {
   const open = cellIsOpen(sessionId, cellId)
   if (mayEditCell(getRules(sessionId), payload.role, open, isFinished(sessionId))) return true
-  refuse(ws, sessionId, payload, 'В этом семинаре тетрадь принадлежит преподавателю.')
+  refuse(ws, sessionId, payload, 'В этом семинаре редактировать тетрадь может только преподаватель.')
   return false
 }
 
@@ -1634,7 +1634,7 @@ function queue(ws: WebSocket, sessionId: string, payload: TokenPayload, ids: str
   if (refused > 0) {
     send(ws, {
       t: 'error',
-      message: 'В этом семинаре считают по одной ячейке — ваша уже в очереди.',
+      message: 'В этом семинаре можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.',
     })
   }
 }
@@ -1646,7 +1646,7 @@ function queue(ws: WebSocket, sessionId: string, payload: TokenPayload, ids: str
  * папки, содержимое которой на новом месте ушло бы за восьмой уровень. Причина
  * одна и та же, и разъехаться этим двум предложениям незачем.
  */
-const TOO_DEEP = `Слишком глубоко: папок в папке бывает не больше ${MAX_DEPTH}.`
+const TOO_DEEP = `Допустимая глубина пути — до ${MAX_DEPTH} уровней.`
 
 /**
  * Почему путь не годится — теми же словами, что и в поле ввода панели.
@@ -1738,13 +1738,13 @@ function treeTrouble(outcome: TreeResult, target: string, source = target): stri
    * словами (`tooLong` в tree-move.ts), не дожидаясь круга по сети.
    */
   if (outcome === 'too-long') {
-    return `«${baseOf(source)}» не переложить: путь до того, что внутри, стал бы длиннее ${MAX_PATH} символов.`
+    return `«${baseOf(source)}» нельзя переместить: путь к содержимому превысит ${MAX_PATH} символов.`
   }
   // Получить его можно единственным способом: попросить положить внутрь файла
   // (`отчёт.py/данные.csv`). Корень папкой быть не перестаёт, так что имя того,
   // во что не влезло, здесь есть всегда.
   if (outcome === 'not-a-folder') {
-    return `«${baseOf(parentOf(target))}» — файл, а не папка: внутрь него ничего не кладут.`
+    return `«${baseOf(parentOf(target))}» — файл. Выберите папку для перемещения.`
   }
   if (outcome === 'bad-name') return whySegmentRefused(name)
   return `«${baseOf(source)}» сейчас занят — попробуйте ещё раз через секунду.`
@@ -2468,7 +2468,7 @@ export function dispatch(
           getRules(sessionId).files,
           payload,
           ws,
-          'Заводить файлы в этом семинаре может преподаватель.',
+          'Создавать файлы в этом семинаре может только преподаватель.',
         )
       ) {
         return
@@ -2669,7 +2669,7 @@ export function dispatch(
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
       const runner = wanted ? runnerFor(wanted) : null
       if (!wanted || !runner) {
-        send(ws, { t: 'error', message: 'Этот файл нечем запустить.' })
+        send(ws, { t: 'error', message: 'Запуск поддерживается только для файлов .py и .sh.' })
         return
       }
       if (!statPath(sessionId, wanted)) {
@@ -2909,7 +2909,7 @@ export function dispatch(
         saveDraft(sessionId, id, payload.participantId, message.text, now)
       } else if (message.t === 'council:submit') {
         if (!submitAttempt(sessionId, id, payload.participantId, now)) {
-          send(ws, { t: 'error', message: 'Сдавать пока нечего — напишите что-нибудь.' })
+          send(ws, { t: 'error', message: 'Попытка пуста. Введите решение перед отправкой.' })
           return
         }
       } else if (!withdrawAttempt(sessionId, id, payload.participantId)) {
@@ -3205,7 +3205,7 @@ export function dispatch(
        * отвечать не одно и то же, а `input()` под паролем тем более.
        */
       if (payload.role !== 'host' && !startedTheRunningCell(sessionId, payload.participantId)) {
-        refuse(ws, sessionId, payload, 'Ответить может тот, чья ячейка спрашивает.')
+        refuse(ws, sessionId, payload, 'Ввести ответ может участник, запустивший ячейку.')
         return
       }
       /*
@@ -3254,7 +3254,7 @@ export function dispatch(
           getRules(sessionId).edit,
           payload,
           ws,
-          'В этом семинаре тетрадь принадлежит преподавателю.',
+          'В этом семинаре редактировать тетрадь может только преподаватель.',
         )
       ) {
         return
@@ -3297,7 +3297,7 @@ export function dispatch(
             return
           }
           if (outcome.changed === 0 && outcome.skipped === 0) {
-            kernelNote(sessionId, 'Formatted with black — everything was already in shape.')
+            kernelNote(sessionId, 'Formatting complete. No changes needed.')
             return
           }
           const parts = [
@@ -3312,12 +3312,12 @@ export function dispatch(
           const unread = outcome.skipped - outcome.edited
           if (unread > 0) {
             parts.push(
-              `${unread} left alone (a magic, a shell line, or code mid-sentence — black could not read them)`,
+              `${unread} skipped (Black could not parse the code)`,
             )
           }
           if (outcome.edited > 0) {
             parts.push(
-              `${outcome.edited} left as typed (somebody was editing them while black ran)`,
+              `${outcome.edited} skipped (edited while formatting was in progress)`,
             )
           }
           kernelNote(
@@ -3675,7 +3675,7 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     } catch (err) {
       // One bad request costs that click, never the seminar.
       console.error(`[control ${sessionId}] ${message.t} failed:`, reason(err, 'unknown error'))
-      send(ws, { t: 'error', message: reason(err, 'That did not work.') })
+      send(ws, { t: 'error', message: reason(err, 'Could not complete the action. Try again.') })
     }
   })
 

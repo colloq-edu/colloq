@@ -163,10 +163,10 @@ test('слоу-мод пускает первый вопрос и развора
   const body = (await denied.json()) as { error: string; retryAfter: number }
   assert.match(
     body.error,
-    /не чаще раза в 30 секунд/,
+    /Между вопросами нужно подождать 30 секунд/,
     `отказ не называет промежуток: ${body.error}`,
   )
-  assert.match(body.error, /ещё \d+ секунд/, `отказ не говорит, сколько ждать: ${body.error}`)
+  assert.match(body.error, /Повторите через \d+ секунд/, `отказ не говорит, сколько ждать: ${body.error}`)
   /*
    * Срок приходит и числом. По нему панель гасит кнопку и показывает ожидание
    * спокойной строкой, а не красной ошибкой; отличить ожидание от аварии по
@@ -318,7 +318,7 @@ test('комнатный слоу-мод длиннее инстансового
   const denied = await askAs(room, 'p_kid')
   assert.equal(denied.status, 429, 'комнатный слоу-мод пропустил второй вопрос подряд')
   const body = (await denied.json()) as { error: string; retryAfter: number }
-  assert.match(body.error, /не чаще раза в 30 секунд/)
+  assert.match(body.error, /Между вопросами нужно подождать 30 секунд/)
   assert.ok(body.retryAfter > 0 && body.retryAfter <= 30)
 
   // Ведущего промежуток не касается — ни инстансовый, ни комнатный: его

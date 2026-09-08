@@ -233,7 +233,7 @@
       {councilStripText(board.counts, groups.length)}
     </span>
     {#if board.lock !== 'council'}
-      <span class="text-2xs text-warning">консилиум закрыт — попытки остались на просмотр</span>
+      <span class="text-2xs text-warning">Консилиум закрыт. Попытки доступны для просмотра.</span>
     {/if}
     <div class="ml-auto flex border border-line" role="group" aria-label="Вид">
       <button
@@ -282,7 +282,7 @@
         ещё никто не сдал — {board.counts.writing}
         {plural(board.counts.writing, 'пишет', 'пишут', 'пишут')}
       {:else if board.lock === 'council'}
-        попыток пока нет — студенты видят пустой лист и пишут у себя
+        Попыток пока нет. Студенты могут написать свои решения.
       {:else}
         попыток не было
       {/if}
@@ -380,7 +380,7 @@
                  напечатал. Запрос уже ушёл (см. `asked`), ответ приедет
                  дельтой. -->
             <p class="px-3 pb-2 pt-1 text-2xs italic text-muted">
-              вывод не поехал со стопкой{onneedoutputs ? ' — просим его отдельно…' : ''}
+              {onneedoutputs ? 'Загружается результат…' : 'Результат не загружен.'}
             </p>
           {/if}
         </div>
@@ -483,7 +483,7 @@
           onclick={(event) => remove(event, attempt)}
         >
           <Icon name="trash" size={13} />
-          Убрать
+          Удалить с занятия
         </button>
       </div>
 

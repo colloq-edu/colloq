@@ -283,7 +283,7 @@ test('сдать и изменить: группы считаются тольк
   council(at)
   assert.match(
     say(at, at.petya, { t: 'council:submit', cellId: at.cell }) ?? '',
-    /нечего/i,
+    /Попытка пуста/i,
     'сдали пустое место',
   )
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })

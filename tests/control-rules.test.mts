@@ -152,7 +152,7 @@ test('ответ на input() приходит от того, чья ячейк�
    * и отвечать — разное, а `input()` под паролем тем более.
    */
   const id = room({})
-  assert.match(say(id, 'participant', { t: 'input', value: 'пароль' }) ?? '', /чья ячейка/i)
+  assert.match(say(id, 'participant', { t: 'input', value: 'пароль' }) ?? '', /участник, запустивший ячейку/i)
   assert.equal(say(id, 'host', { t: 'input', value: 'да' }), null)
 })
 

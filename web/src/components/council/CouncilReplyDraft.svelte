@@ -53,7 +53,7 @@
   <textarea
     class="field min-h-[72px] w-full resize-y text-ui"
     bind:value={text}
-    placeholder="Что сказать…"
+    placeholder="Напишите ответ…"
     rows="3"
     autofocus
     {onkeydown}
@@ -66,9 +66,9 @@
     <button type="button" class="btn-ghost h-8" onclick={oncancel}>Отмена</button>
     <span class="text-2xs text-muted">
       {#if fromOracle}
-        черновик оракула — подпись будет вашей, поправьте перед отправкой
+        Черновик оракула. Проверьте перед отправкой от своего имени.
       {:else}
-        увидят только адресаты · ⌘↵ отправить
+        Ответ получат адресаты · Ctrl/⌘+Enter — отправить
       {/if}
     </span>
   </div>

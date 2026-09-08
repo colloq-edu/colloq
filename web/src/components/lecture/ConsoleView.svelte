@@ -653,7 +653,7 @@
   function undoStroke(): void {
     if (!leading) return
     if (offline) {
-      say('Нет связи — отменять нечем', 'refusal')
+      say('Нет связи. Не удалось отменить штрих.', 'refusal')
       return
     }
     session.send({ t: 'ink:undo', page: wanted })
@@ -662,7 +662,7 @@
   function wipePage(): void {
     if (!leading) return
     if (offline) {
-      say('Нет связи — страница останется как есть', 'refusal')
+      say('Нет связи. Не удалось стереть чернила.', 'refusal')
       return
     }
     session.send({ t: 'ink:clear', page: wanted })
@@ -856,7 +856,7 @@
   function penFound(): void {
     if (!fingerOn) return
     setFinger(false)
-    say('Перо найдено — палец больше не рисует')
+    say('Рисование пальцем выключено: используется перо.')
   }
 
   /* ------------------------------------------------------------- фейдер */
@@ -1207,7 +1207,8 @@
    * без него ладонь, съехавшая к нижней кромке, сворачивает пульт посреди
    * лекции. Это настройка устройства, и пульт может только о ней сказать.
    */
-  const GUIDED = 'Настройки → Универсальный доступ → Гид-доступ, затем трижды боковая кнопка.'
+  const GUIDED =
+    'На iPad включите «Гид-доступ» в настройках универсального доступа и запустите его для браузера.'
 
   /*
    * Пульт всегда тёмный — и это не вкус, а физика аудитории: см. borrowTheme.
@@ -1267,7 +1268,7 @@
    * разрушающие нажатия сюда больше не попадают вовсе: первое двигает лист у
    * себя и досылается схождением, второе отказывается своими словами.
    */
-  const OFF_LINE = 'Нет связи — уйдёт, когда вернётся'
+  const OFF_LINE = 'Нет связи. Команда отправится после подключения.'
   $effect(() => {
     const trouble = session.lastError
     if (!trouble) return
@@ -1359,7 +1360,7 @@
     if (offline) {
       // Лист закрываем: тост живёт на листе лекции, под поднятым он не виден.
       openPane(null)
-      say('Нет связи — лекция продолжается', 'refusal')
+      say('Нет связи. Не удалось закончить лекцию.', 'refusal')
       return
     }
     session.send({ t: 'lecture:stop' })
@@ -1731,8 +1732,7 @@
     <div class="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
       <p class="text-ui-lg text-ink">Этот семинар удалён</p>
       <p class="max-w-[440px] text-answer text-muted">
-        Комнаты больше нет: ни ядра, ни файлов, ни истории. Лекция закончилась
-        вместе с ней, и чернила сохранить уже негде.
+        Файлы, история и чернила лекции удалены.
       </p>
     </div>
   {:else if !host}
@@ -1741,7 +1741,7 @@
       говорит и предлагает единственное, что ему тут нужно.
     -->
     <div class="flex h-full flex-col items-center justify-center gap-5 p-8 text-center">
-      <p class="text-ui-lg text-ink">Пульт открывается у преподавателя</p>
+      <p class="text-ui-lg text-ink">Пульт доступен преподавателю</p>
       <button type="button" class="btn-outline h-11 px-6" onclick={onexit}>В комнату</button>
     </div>
   {:else if session.stuck}
@@ -1759,14 +1759,13 @@
       пробует — потому здесь кнопка, а не крутилка.
     -->
     <div class="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-      <p class="text-ui-lg text-ink">Эта вкладка разошлась с сервером</p>
+      <p class="text-ui-lg text-ink">Не удалось синхронизировать пульт</p>
       <p class="max-w-[440px] text-answer text-muted">{session.stuck}</p>
       {#if lecture}
         <!-- Первое, о чём думает ведущий, — не пропала ли пара. Не пропала:
              страница и чернила живут на сервере, а не в этой вкладке. -->
         <p class="max-w-[440px] text-answer text-faint">
-          Лекция при этом не прервалась: страница и чернила лежат на сервере, а
-          не в этой вкладке.
+          Перезагрузка вкладки не удаляет страницу и чернила лекции на сервере.
         </p>
       {/if}
       <button type="button" class="btn-primary h-11 px-6" onclick={() => reloadByHand()}>
@@ -2210,7 +2209,7 @@
         onclick={() => blank(!lecture?.blank)}
       >
         {@render mark(lecture?.blank === true, true)}
-        {lecture?.blank ? 'Темно' : 'Гасить'}
+        {lecture?.blank ? 'Вернуть' : 'Скрыть'}
       </button>
       <span class="h-1 shrink-0" aria-hidden="true"></span>
     {:else if watching}
@@ -2347,7 +2346,7 @@
         onclick={() => blank(!lecture?.blank)}
       >
         {@render mark(lecture?.blank === true, true)}
-        {lecture?.blank ? 'Темно' : 'Гасить'}
+        {lecture?.blank ? 'Вернуть' : 'Скрыть'}
       </button>
     {:else if watching}
       <button
@@ -2586,7 +2585,7 @@
       onclick={() => blank(false)}
       disabled={!leading || offline}
     >
-      <span class="{CAP} text-warning">Зал видит чёрное</span>
+      <span class="{CAP} text-warning">Проекция затемнена</span>
       <span class="{SECTION} text-muted">Нажмите, чтобы вернуть</span>
     </button>
   {/if}
@@ -2751,7 +2750,7 @@
 {#snippet fileList(onpick: (path: string) => void, withNotes: boolean)}
   {#if slides.length === 0}
     <p class="px-1 py-6 text-answer text-muted">
-      В комнате нет документов. Загрузите PDF с компьютера — он появится здесь.
+      В комнате нет PDF для лекции. Загрузите файл с компьютера.
     </p>
   {:else}
     <ul>
@@ -2830,12 +2829,12 @@
             aria-pressed={full}
             onclick={toggleFullscreen}
           >
-            {full ? 'Выйти из полного' : 'Во весь экран'}
+            {full ? 'Выйти из полного экрана' : 'Во весь экран'}
           </button>
         {/if}
       </div>
 
-      <p class="pt-6 {CAP} text-faint">Яркость листа — три ступени под номером страницы. Начните с «зала»</p>
+      <p class="pt-6 {CAP} text-faint">Яркость листа меняется под номером страницы.</p>
 
       <div class="pt-6">{@render toast()}</div>
     </div>
@@ -2985,12 +2984,12 @@
         {:else if pane === 'grab'}
           <div class="p-6">
             <p class="text-answer text-ink">
-              Перехватить пульт у {lecture?.byName}? Он перестанет управлять проекцией. Страница и
-              чернила сохранятся.
+              Взять пульт у {lecture?.byName}? Управление проекцией перейдёт к вам.
+              Страница и чернила сохранятся.
             </p>
             <div class="mt-4 flex gap-2">
               <button type="button" class="btn-primary h-12 flex-1" onclick={grab}>
-                Перехватить
+                Взять пульт
               </button>
               <button type="button" class="btn-outline h-12 flex-1" onclick={() => openPane(null)}>
                 Отмена
@@ -3003,8 +3002,8 @@
                  целей по 88 px, и «Отмена» рядом с ними была бы седьмой. -->
             <div class="p-6">
               <p class="text-answer text-ink">
-                Начать лекцию по {baseOf(switchTo)}? Чернила текущей сотрутся, страница станет
-                первой, часы пойдут заново.
+                Начать лекцию по {baseOf(switchTo)}? Чернила текущей лекции сотрутся.
+                Новый документ откроется с первой страницы, таймер начнёт отсчёт заново.
               </p>
               <div class="mt-4 flex gap-2">
                 <button
@@ -3106,7 +3105,7 @@
             >
               <span class="flex-1">{onBoard ? 'Вернуться к слайду' : 'Чистый лист'}</span>
               {#if boards > 0 && !onBoard}
-                <span class="{CAP} text-muted">заведено {boards}</span>
+                <span class="{CAP} text-muted">листов: {boards}</span>
               {/if}
             </button>
             <button
@@ -3145,7 +3144,7 @@
                 </button>
               {:else}
                 <button type="button" class="{ROW} text-danger" onclick={() => (wipeAsked = true)}>
-                  Стереть страницу
+                  Стереть чернила
                 </button>
               {/if}
             </div>
@@ -3153,19 +3152,19 @@
 
           <div class="h-px w-full bg-line-soft" aria-hidden="true"></div>
           <div class="px-6 py-4">
-            <p class="text-answer text-ink">Экран не гаснет</p>
+            <p class="text-answer text-ink">Автоблокировка экрана</p>
             <p class="pt-1 text-2xs text-muted">
               {#if wake === 'on'}
-                Пока пульт открыт, планшет не заснёт.
+                Пульт удерживает экран включённым, пока вкладка видна.
               {:else if wake === 'refused'}
-                Система отказала — обычно это режим энергосбережения. {AUTOLOCK}
+                Не удалось отключить автоблокировку. {AUTOLOCK}
               {:else if !canKeepAwake()}
-                Этот браузер не умеет держать экран. {AUTOLOCK}
+                Браузер не поддерживает отключение автоблокировки. {AUTOLOCK}
               {:else}
                 {AUTOLOCK}
               {/if}
             </p>
-            <p class="pt-3 text-answer text-ink">Ладонь не сворачивает пульт</p>
+            <p class="pt-3 text-answer text-ink">Защита от случайного выхода</p>
             <p class="pt-1 text-2xs text-muted">{GUIDED}</p>
           </div>
           <div class="h-px w-full bg-line-soft" aria-hidden="true"></div>

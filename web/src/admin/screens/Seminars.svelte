@@ -65,7 +65,7 @@
       // Перечитываем список: у строки поменялось состояние публикации.
       local(await adminApi.listSeminars())
     } catch (cause: unknown) {
-      rowError = { id: seminar.id, message: `That did not work — ${explain(cause)}` }
+      rowError = { id: seminar.id, message: `Could not update the publication: ${explain(cause)}` }
     }
   }
 
@@ -81,7 +81,7 @@
       // Как и у ссылки на комнату: буфер закрыт на незащищённом источнике —
       // обычный способ держать инстанс кафедры. Ссылка и есть смысл нажатия,
       // поэтому она уходит на экран, а не в необработанный промис.
-      rowError = { id: seminar.id, message: `The browser blocked the clipboard. The link is ${link}` }
+      rowError = { id: seminar.id, message: `Could not copy the link. Copy it manually: ${link}` }
       return
     }
     if (rowError?.id === seminar.id) rowError = null
@@ -549,7 +549,7 @@
     } catch {
       // Blocked on an insecure origin, which is a normal way to self-host. The
       // link is the point of the click, so it goes on screen instead.
-      rowError = { id: seminar.id, message: `The browser blocked the clipboard. The link is ${linkOf(seminar)}` }
+      rowError = { id: seminar.id, message: `Could not copy the link. Copy it manually: ${linkOf(seminar)}` }
       return
     }
     if (rowError?.id === seminar.id) rowError = null
@@ -613,7 +613,7 @@
       replace(await adminApi.updateSeminar(seminar.id, { name }))
     } catch (cause: unknown) {
       patch(seminar.id, { name: before })
-      rowError = { id: seminar.id, message: `Could not rename it — ${explain(cause)}` }
+      rowError = { id: seminar.id, message: `Could not rename the seminar: ${explain(cause)}` }
     }
   }
 
@@ -689,10 +689,10 @@
     if (othersLive(seminar)) {
       const ok = window.confirm(
         finished
-          ? `${crowdIn(seminar)}. Ending the class takes editing and running away from all of ` +
-            `them at once. End it?`
-          : `${crowdIn(seminar)}. Reopening the class hands editing and running back to all of ` +
-            `them at once. Reopen it?`,
+          ? `${crowdIn(seminar)}. Ending the class disables editing and running for students. ` +
+            `End the class?`
+          : `${crowdIn(seminar)}. Reopening the class restores its configured access rules. ` +
+            `Reopen the class?`,
       )
       if (!ok) return
     }
@@ -708,8 +708,8 @@
       rowError = {
         id: seminar.id,
         message: finished
-          ? `The class did not end — ${explain(cause)}`
-          : `The class did not reopen — ${explain(cause)}`,
+          ? `Could not end the class: ${explain(cause)}`
+          : `Could not reopen the class: ${explain(cause)}`,
       }
     }
   }
@@ -721,7 +721,7 @@
       replace(await adminApi.updateSeminar(seminar.id, { archived }))
     } catch (cause: unknown) {
       patch(seminar.id, { archivedAt: before })
-      rowError = { id: seminar.id, message: `Could not archive it — ${explain(cause)}` }
+      rowError = { id: seminar.id, message: `Could not change the archive status: ${explain(cause)}` }
     }
   }
 
@@ -895,7 +895,7 @@
 
   {#if loadError}
     <div class="mt-6 border border-danger/40 bg-surface px-4 py-3">
-      <p class="text-ui text-danger">Could not load your seminars — {loadError}</p>
+      <p class="text-ui text-danger">Could not load seminars: {loadError}</p>
       <button type="button" class="btn-outline mt-2.5" onclick={() => void load()}>Try again</button>
     </div>
   {/if}
@@ -1059,8 +1059,8 @@
                     <div class="flex flex-wrap items-center gap-2 text-2xs text-warning">
                       <span>
                         {preview.skipped.length === 1
-                          ? '1 file will not fit the room and stays behind:'
-                          : `${preview.skipped.length} files will not fit the room and stay behind:`}
+                          ? '1 file exceeds the import limit and will be skipped:'
+                          : `${preview.skipped.length} files exceed the import limit and will be skipped:`}
                       </span>
                       {#each preview.skipped as name (name)}
                         <span
@@ -1246,7 +1246,7 @@
               <a
                 href="/admin/environments"
                 class="truncate font-mono text-code text-ink underline decoration-line underline-offset-2 hover:decoration-ink"
-                title="This room's kernel is running the {seminar.environment} image"
+                title="Selected environment: {seminar.environment}"
               >
                 {seminar.environment}
               </a>
@@ -1254,7 +1254,7 @@
               <!-- No kernel has started here, so there is nothing to report. It
                    will get whatever is configured when somebody presses Run —
                    saying that name now would be a guess dressed as a fact. -->
-              <span class="font-mono text-code text-faint" title="No kernel started in this room yet">
+              <span class="font-mono text-code text-faint" title="No environment recorded for this seminar">
                 —
               </span>
             {/if}
@@ -1286,7 +1286,7 @@
                   class="chip h-[22px] gap-1.5 bg-warning/[0.14] px-2 text-micro font-bold uppercase tracking-caps text-warning"
                   title="Class ended {new Date(
                     seminar.finishedAt ?? 0,
-                  ).toLocaleString()} — the room is read-only now"
+                  ).toLocaleString()} — student editing and execution are disabled"
                 >
                   {#if seminar.liveCount > 0}
                     <span
@@ -1442,14 +1442,14 @@
         <tr>
           <td colspan="6" class="py-12 text-center">
             {#if needle}
-              <p class="text-ui text-muted">Nothing here is called “{query.trim()}”.</p>
+              <p class="text-ui text-muted">No seminars match “{query.trim()}”.</p>
               <button type="button" class="btn-ghost mt-2" onclick={() => (query = '')}>
                 Show all {count(seminars.length, 'seminar')}
               </button>
             {:else if !loadError}
               <p class="text-ui text-muted">No seminars yet.</p>
               <p class="mt-1 text-ui text-muted">
-                Make one and you get a link to paste into the group chat.
+                Create a seminar and share its link with your students.
               </p>
               <button type="button" class="btn-primary mt-3" onclick={startCreate}>
                 <Icon name="plus" size={15} />
@@ -1468,7 +1468,7 @@
       {#if needle}
         Showing {shown.length} of {count(seminars.length, 'seminar')}
       {:else}
-        All {count(seminars.length, 'seminar')} this term
+        {count(seminars.length, 'seminar')} total
       {/if}
     </p>
   {/if}
@@ -1501,7 +1501,7 @@
           <h2 id="seminar-rules-title" class="min-w-0 truncate text-title font-semibold text-ink">
             {ruling.name}
           </h2>
-          <span class="shrink-0 text-2xs text-muted">что можно делать в комнате</span>
+          <span class="shrink-0 text-2xs text-muted">права участников</span>
         </div>
         <!--
           Чужая комната, и в ней идёт пара. Подтверждения здесь нет намеренно:
@@ -1512,8 +1512,8 @@
         {#if othersLive(ruling)}
           <p class="text-2xs leading-snug text-warning">
             В комнате {ruling.liveCount}
-            {plural(ruling.liveCount, 'человек', 'человека', 'человек')}, завёл {ruling.createdBy}
-            — каждое переключение действует у них сразу.
+            {plural(ruling.liveCount, 'человек', 'человека', 'человек')}. Создатель: {ruling.createdBy}.
+            Изменения правил применяются сразу.
           </p>
         {/if}
       </div>
@@ -1529,7 +1529,7 @@
           {#if rulesError}
             {rulesError}
           {:else}
-            Открытая комната узнаёт сразу — перезаходить никому не нужно.
+            Изменения применяются сразу. Участникам не нужно входить заново.
             <!-- Пока занятие закончено, выбранное здесь не действует: конец занятия
                  накладывается поверх правил и настройку не трогает (shared/rules.ts ·
                  rulesAfterClass). Без этой строки список читается как неправда — в комнате
@@ -1537,8 +1537,8 @@
                  чинить то, что не сломано. -->
             {#if ruling.finishedAt}
               <span class="text-ink">
-                Занятие закончено: пока его не продолжат, в комнате всё преподавательское, а
-                выбранное здесь включится вместе с занятием.
+                Занятие закончено. Выбранные права студентов начнут действовать,
+                когда преподаватель продолжит занятие.
               </span>
             {/if}
           {/if}
@@ -1572,12 +1572,12 @@
         Delete “{doomed.name}”?
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Deleting it takes the notebook ({count(doomed.cellCount, 'cell')}) and {count(
+        This deletes the notebook ({count(doomed.cellCount, 'cell')}) and {count(
           doomed.fileCount,
           'file',
-        )} in its workspace with it.
+        )} in its workspace.
         {#if !doomed.publication}
-          Colloq keeps no second copy of either.
+          You cannot restore the seminar through Colloq after deletion.
         {/if}
       </p>
 
@@ -1602,7 +1602,7 @@
             {#if dropReading}
               The link the class was given stops opening.
             {:else}
-              Left alone, it stays readable by everyone who has the link.
+              The publication is retained with its current visibility.
             {/if}
           </span>
         </label>
@@ -1611,16 +1611,15 @@
         <p class="mt-2 text-ui font-medium text-warning">
           {doomed.liveCount === 1
             ? 'Someone is in the room right now'
-            : `${doomed.liveCount} people are in the room right now`} — they lose the notebook
-          mid-seminar.
+            : `${doomed.liveCount} people are in the room right now`} — deleting the seminar will disconnect them.
         </p>
       {/if}
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        To take it off the list without losing anything, archive it instead.
+        Archiving removes the seminar from the active list and keeps its notebook and files.
       </p>
 
       {#if deleteError}
-        <p class="mt-3 text-ui text-danger">Could not delete it — {deleteError}</p>
+        <p class="mt-3 text-ui text-danger">Could not delete the seminar: {deleteError}</p>
       {/if}
 
       <div class="mt-5 flex justify-end gap-2">

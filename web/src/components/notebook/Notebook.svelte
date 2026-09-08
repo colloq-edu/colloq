@@ -902,7 +902,7 @@
       <Icon name="lock" size={13} class="shrink-0 text-warning" />
       <span class="text-ui font-semibold text-ink">Лекция</span>
       <span class="text-ui text-muted">
-        — считает и печатает преподаватель. Открытые ячейки помечены.
+        — ячейки редактирует и запускает преподаватель. Открытые для группы ячейки помечены.
       </span>
     </div>
   {/if}
@@ -1030,7 +1030,7 @@
           ? may.editWhy
           : !may.bulk
             ? may.bulkWhy
-            : 'Run black over every code cell — 100 columns. A cell it cannot read is left alone.',
+            : 'Format code cells with Black, using a 100-character line limit. Cells with syntax errors are skipped.',
       )}
       onclick={() => session.send({ t: 'format', book })}
     >
@@ -1046,7 +1046,7 @@
       {#if kernel === 'dead'}
         <span class={cn(PILL, 'border-danger/40 bg-danger/[0.05] text-2xs text-danger')}>
           <span class="h-1.5 w-1.5 rounded-full bg-danger"></span>
-          kernel dead
+          kernel stopped
           <!-- По правилу, а не по роли: кнопка в полосе слушается may.restart,
                и в открытой лаборатории без преподавателя плашка без кнопки
                оставляла студентов гадать, что Restart есть где-то выше. -->

@@ -496,7 +496,7 @@
     restarting: { label: 'RESTARTING', dot: 'bg-white/35', alarm: false },
     idle: { label: 'IDLE', dot: 'bg-white/50', alarm: false },
     busy: { label: 'RUNNING', dot: 'bg-accent', alarm: false },
-    dead: { label: 'KERNEL DEAD', dot: 'bg-danger', alarm: true },
+    dead: { label: 'KERNEL STOPPED', dot: 'bg-danger', alarm: true },
   }
 
   const kernel = $derived(KERNEL[meta.current.kernelStatus])
@@ -1899,7 +1899,7 @@
         <!-- Не «Reconnecting»: вкладка больше не пробует, и крутилка врала бы. -->
         <div class="flex shrink-0 items-center gap-2 text-white" role="status">
           <Icon name="alert" size={12} />
-          <span class="text-2xs font-bold uppercase tracking-label">Разошлись с сервером</span>
+          <span class="text-2xs font-bold uppercase tracking-label">Нужна синхронизация</span>
         </div>
       {:else if !session.connected}
         <div
@@ -2058,8 +2058,8 @@
            первое, что человек должен узнать, — что всё на месте. -->
       <p class="min-w-0 flex-1 text-2xs leading-snug text-muted">
         {isHost
-          ? 'Участники только читают: ни запуска, ни правки, ни терминала. У вас всё как было.'
-          : 'Тетрадь, файлы, лента терминала и ответы оракула на месте — их можно читать.'}
+          ? 'Участникам доступно только чтение. Вы можете продолжать редактировать и запускать код.'
+          : 'Вы можете читать тетрадь, файлы, историю терминала и ответы оракула.'}
       </p>
       {#if isHost}
         <button
@@ -2068,7 +2068,7 @@
           disabled={controlDisabled(session.connected)}
           title={controlTitle(
             session.connected,
-            'Открыть занятие обратно — участники снова смогут считать и печатать',
+            'Продолжить занятие с прежними правилами доступа',
           )}
           onclick={() => setClassOver(false)}
         >
@@ -2285,9 +2285,7 @@
           <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
             <p class="text-ui text-ink">{baseOf(activePath)} — больше полутора мегабайт.</p>
             <p class="text-2xs text-muted">
-              Редактор держит такой файл целиком у каждого в комнате, поэтому
-              открывать его здесь нельзя. Его можно скачать из панели файлов
-              или прочитать из ячейки — построчно, сколько нужно.
+              Файл превышает лимит редактора. Скачайте его из панели файлов или прочитайте нужные данные из ячейки.
             </p>
           </div>
         {:else if activeDoc}
@@ -2314,10 +2312,9 @@
           добиралась до неё последней и была формально права.
         -->
         <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-          <p class="text-ui text-ink">{baseOf(activePath)} — не текст.</p>
+          <p class="text-ui text-ink">{baseOf(activePath)} — этот формат не поддерживается редактором.</p>
           <p class="text-2xs text-muted">
-            Такой файл можно скачать или прочитать из ячейки; открывать его в
-            редакторе значило бы показать мусор и предложить его сохранить.
+            Скачайте файл или откройте его из ячейки подходящей библиотекой.
           </p>
         </div>
       {/if}
@@ -2422,8 +2419,7 @@
       </span>
       <h1 class="mt-4 text-title font-semibold tracking-tight text-ink">Этот семинар удалён</h1>
       <p class="mt-2 text-ui text-muted">
-        Комнаты больше нет: ни ноутбука, ни файлов, ни истории. Ссылка тоже
-        перестала работать — если она нужна была, спросите преподавателя.
+        Занятие удалено, и эта ссылка больше не работает. Запросите у преподавателя другую ссылку.
       </p>
     </div>
   </div>
@@ -2494,7 +2490,7 @@
 
     Гейт отказал теми же словами, что и всё остальное после конца занятия
     (CLASS_IS_OVER, server/src/collab/gate.ts), — по ним окно и узнаёт свой
-    случай. Заголовок «Эту правку не приняли» здесь врёт про причину: правку не
+    случай. Заголовок «Правка не сохранена» здесь врёт про причину: правку не
     приняли не потому, что она плохая, и не потому, что кто-то поменял правило,
     а потому, что пара кончилась ровно между двумя нажатиями клавиш.
   -->
@@ -2515,12 +2511,11 @@
     <div class="flex max-h-full w-full max-w-[520px] flex-col border border-line bg-canvas shadow-pop">
       <div class="border-b border-line px-5 py-3.5">
         <h2 id="refused-title" class="text-title font-semibold text-ink">
-          {overClass ? 'Занятие закончено' : 'Эту правку не приняли'}
+          {overClass ? 'Занятие закончено' : 'Правка не сохранена'}
         </h2>
         <p class="mt-1 text-ui leading-snug text-muted">
           {#if overClass}
-            Вы печатали, когда занятие закончили, — эту правку уже не приняли, и вкладке пришлось
-            перечитать тетрадь. Комната на месте: её теперь читают.
+            Сервер отклонил правку после завершения занятия. Теперь доступно только чтение. Если ниже показан несохранённый текст, скопируйте его.
           {:else}
             {refusal.message}
           {/if}
@@ -2540,12 +2535,12 @@
       -->
       {#if refusedChecking}
         <div class="border-b border-line bg-surface px-5 py-3">
-          <p class="text-ui text-muted">Сверяем набранное с тем, что принял сервер…</p>
+          <p class="text-ui text-muted">Проверяем, какой текст не сохранился…</p>
         </div>
       {:else if refusedCells.length > 0}
         <div class="min-h-0 flex-1 overflow-y-auto border-b border-line bg-surface px-5 py-3">
           <p class="pb-1.5 text-2xs font-bold uppercase tracking-caps text-muted">
-            {refusedCells.length === 1 ? 'Вот что было в вашей ячейке' : 'Вот что вы написали'}
+            {refusedCells.length === 1 ? 'Несохранённый текст ячейки' : 'Несохранённый текст'}
           </p>
           <div class="flex flex-col gap-3">
             {#each refusedCells as cell (cell.id || 'cursor')}
@@ -2656,10 +2651,9 @@
         </p>
         <p class="mt-0.5 text-2xs leading-snug text-muted">
           {#if session.finished}
-            Участники только читают. Вернуть занятие можно в любую минуту — правила встанут те же.
+            Участникам доступно только чтение. При продолжении занятия восстановятся прежние правила доступа.
           {:else}
-            Участники смогут только читать: ни запуска, ни правки, ни терминала. Комната и файлы
-            остаются на месте.
+            Участники смогут читать материалы, но не редактировать, запускать код или задавать вопросы оракулу. Тетрадь и файлы сохранятся.
           {/if}
         </p>
       </div>
@@ -2674,7 +2668,7 @@
         title={controlTitle(
           session.connected,
           session.finished
-            ? 'Открыть занятие обратно — участники снова смогут считать и печатать'
+            ? 'Продолжить занятие с прежними правилами доступа'
             : 'Закончить занятие — участникам останется чтение',
         )}
         onclick={() => setClassOver(!session.finished)}
@@ -2689,12 +2683,11 @@
       кадр, вылетевший до рассылки, гейт уже не принимает, и такой вкладке
       приходится пересобрать документ перезагрузкой (см. `lib/refusal.ts`).
       Попадает в это окно тот, кто печатал в ту самую секунду, — и он увидит
-      окно «Эту правку не приняли». Обещать ему обратное — значит объяснять
+      окно «Правка не сохранена». Обещать ему обратное — значит объяснять
       ему потом, что сломалось.
     -->
     <p class="border-t border-line px-4 py-2 text-2xs text-muted">
-      Комната узнаёт сразу — перезаходить никому не нужно. У того, кто печатал в
-      эту самую секунду, страница перезагрузится.
+      Новые правила применяются сразу. Если правка участника нарушает их, вкладка загрузит сохранённую версию и предложит скопировать несохранённый текст.
     </p>
   </div>
 {/if}
@@ -2822,9 +2815,9 @@
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
         <p class="text-ui leading-snug text-muted">
           {#if session.finished}
-            Занятие закончено. Тетрадь, файлы и ответы оракула остаются — их можно читать.
+            Занятие закончено. Материалы доступны для чтения.
           {:else}
-            Занятие продолжается — можно снова считать и печатать.
+            Занятие продолжается. Прежние правила доступа восстановлены.
           {/if}
         </p>
       </div>
@@ -2839,7 +2832,7 @@
       >
         <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-faint"></span>
         <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">
-          Кэш этой вкладки был старше сервера — тетрадь перечитана заново, всё на месте.
+          Загружена актуальная версия тетради с сервера.
         </p>
         <button
           class="btn-ghost h-6 w-6 shrink-0 px-0"

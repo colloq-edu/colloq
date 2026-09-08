@@ -140,15 +140,15 @@ export function joinPath(dir: string, name: string): string {
 export function whySegmentRefused(name: string): string {
   const shown = name.slice(0, 60) || '(пусто)'
   if (!name) return 'Имя не может быть пустым.'
-  if (name === '.' || name === '..') return 'Так называется не файл, а место в дереве.'
+  if (name === '.' || name === '..') return 'Имена «.» и «..» зарезервированы. Выберите другое имя.'
   if (name.includes('/') || name.includes('\\')) {
-    return `В «${shown}» есть косая черта — папку заводят отдельной кнопкой.`
+    return `В «${shown}» есть косая черта. Чтобы создать папку, используйте кнопку «Новая папка».`
   }
-  if (CONTROL.test(name)) return `В «${shown}» есть символы, которых не бывает в именах файлов.`
+  if (CONTROL.test(name)) return `В «${shown}» есть недопустимые символы.`
   if (name.startsWith('.')) {
-    return `«${shown}» начинается с точки — такие файлы не показываются в дереве.`
+    return `«${shown}» начинается с точки. Скрытые файлы не поддерживаются в панели.`
   }
-  if (name !== name.trim()) return `У «${shown}» пробел с краю — его потом не видно и не набрать.`
+  if (name !== name.trim()) return `У «${shown}» есть пробел в начале или конце. Удалите его.`
   if (name.length > MAX_SEGMENT)
     return `Имя длиной ${name.length} символов — оставьте ${MAX_SEGMENT}.`
   return `«${shown}» не годится в качестве имени.`

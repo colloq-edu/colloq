@@ -342,8 +342,8 @@ export async function completeWithTools(
      */
     if (isBadRequest(err) && tools.length > 0 && !usedTools(messages) && !aboutSize(err)) {
       throw new Error(
-        'Эта модель не умеет пользоваться инструментами — режим «сделать» ей недоступен. ' +
-          'Спросить её по-прежнему можно.',
+        'Модель отклонила запрос с инструментами. ' +
+          'Попробуйте режим вопроса.',
       )
     }
     throw friendly(err)
@@ -441,17 +441,17 @@ async function diagnose(err: unknown, model: string, baseUrl: string): Promise<O
 
   if (status === 401 || status === 403) {
     return fail(
-      `${baseUrl} rejected the API key. Paste the key again, or check it has not been revoked.`,
+      `${baseUrl} denied access. Check the API key and account permissions.`,
     )
   }
   if (status === 429) {
     return fail(
-      'The endpoint answered but is rate-limiting or out of quota — the key and address are right, the account is not ready.',
+      'The endpoint returned HTTP 429. Check the account quota and request limits.',
     )
   }
   if (status !== null && status >= 500) {
     return fail(
-      `${baseUrl} answered with a server error (${status}). The address and key look right; the endpoint itself is unwell.`,
+      `${baseUrl} answered with a server error (${status}). Try again later.`,
     )
   }
   if (status === 400 || status === 404 || status === 422) {
@@ -469,7 +469,7 @@ async function diagnose(err: unknown, model: string, baseUrl: string): Promise<O
    */
   if (isRefusal(err)) {
     return fail(
-      `${baseUrl} answered, and the model refused the request by its own safety filter. The address and key are fine — the model is.`,
+      `${baseUrl} returned a model refusal for the test request.`,
     )
   }
   // No status at all: nothing answered, so this is the address or the network.
@@ -500,12 +500,12 @@ async function afterRejection(
     const listStatus = statusOf(listErr)
     if (listStatus === 401 || listStatus === 403) {
       return fail(
-        `${baseUrl} rejected the API key. Paste the key again, or check it has not been revoked.`,
+        `${baseUrl} denied access. Check the API key and account permissions.`,
       )
     }
     if (status === 404) {
       return fail(
-        `${baseUrl} answered 404 for both a completion and /models — the base URL is probably wrong (most endpoints need the /v1 on the end).`,
+        `${baseUrl} returned HTTP 404 for the test request, and the model list could not be read. Check the base URL and model name.`,
       )
     }
     return fail(`${baseUrl} refused the request: ${detail || `HTTP ${status}`}`)
@@ -517,7 +517,7 @@ async function afterRejection(
     return {
       ok: false,
       ms: null,
-      message: `${baseUrl} has no model called "${model}". It offers: ${offered}${models.length > 6 ? ', …' : ''}.`,
+      message: `${baseUrl} does not list "${model}". Listed models: ${offered}${models.length > 6 ? ', …' : ''}.`,
       model: null,
     }
   }
@@ -526,7 +526,7 @@ async function afterRejection(
   return {
     ok: true,
     ms,
-    message: `${baseUrl} answered and knows "${model}", but rejected the one-token test call${detail ? ` (${detail})` : ''}. Real questions will probably work — ask one to be sure.`,
+    message: `${baseUrl} returned a model list but rejected the test request for "${model}"${detail ? ` (${detail})` : ''}. A successful model response has not been verified.`,
     model,
   }
 }
@@ -668,7 +668,7 @@ function friendly(err: unknown): Error {
    */
   if (refused) {
     return new Error(
-      'The model refused to answer this one — its own safety filter, not the address or the key. Try asking it a different way.',
+      'The model declined this request.',
     )
   }
 
@@ -680,17 +680,17 @@ function friendly(err: unknown): Error {
    */
   if (isTimeout(err)) {
     return new Error(
-      'The AI endpoint took too long to answer. It may be a slow model, or a very large notebook — try again, or ask about one cell.',
+      'The model did not respond within the time limit. Try again.',
     )
   }
 
   if (status === 401 || status === 403) {
     return new Error(
-      'The AI endpoint rejected the API key — check it in the admin panel, or OPENAI_API_KEY.',
+      'The AI provider denied access. Ask the Colloq administrator to check the API key and account permissions.',
     )
   }
   if (status === 404) {
-    return new Error(`The AI endpoint has no model "${ai.model}" — check the model name.`)
+    return new Error(`The AI endpoint returned HTTP 404 for "${ai.model}". Ask the Colloq administrator to check the endpoint address and model name.`)
   }
   if (status === 400) {
     // The endpoint's own words: a 400 is almost always a real reason — an
@@ -704,7 +704,7 @@ function friendly(err: unknown): Error {
     )
   }
   if (status === 429) {
-    return new Error('The AI endpoint is rate-limiting us — try again in a moment.')
+    return new Error('The AI provider returned HTTP 429. Its request limit or account quota may have been reached. Try later or ask the Colloq administrator to check.')
   }
   if (status !== undefined && status >= 500) {
     return new Error('The AI endpoint returned a server error.')
@@ -722,7 +722,7 @@ function friendly(err: unknown): Error {
     return new Error(
       detail
         ? `The AI endpoint broke off mid-answer: ${detail}`
-        : 'The AI endpoint broke off mid-answer without saying why. Try asking again.',
+        : 'The model response was interrupted. Try again.',
     )
   }
   /*

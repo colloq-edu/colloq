@@ -1043,7 +1043,7 @@ export class SessionState {
   #roomIsGone(): void {
     if (this.gone) return
     this.gone = true
-    this.lastError = 'This seminar was deleted. Nothing here can be saved or reopened.'
+    this.lastError = 'This seminar was deleted. Ask the teacher for another seminar link.'
     this.provider.disconnect()
     forgetSessionInfo(this.session.id)
     void this.localStore.clear()
@@ -1401,8 +1401,8 @@ export class SessionState {
       message: fresh
         ? this.#refusal!.message
         : stale
-          ? 'Кэш этой вкладки разошёлся с сервером — она собрана заново.'
-          : 'Эту правку не приняли.',
+          ? 'Загружена актуальная версия тетради с сервера.'
+          : 'Сервер не сохранил эту правку.',
       text: cell ? cellSource(cell.cell).toString() : '',
       /*
        * И весь набранный текст рядом — всех тетрадей комнаты.
@@ -1439,8 +1439,8 @@ export class SessionState {
           return
         }
         this.stuck = stale
-          ? 'Кэш этой вкладки разошёлся с сервером, и собрать её заново дважды не вышло. Закройте другие вкладки этой комнаты и перезагрузите страницу.'
-          : 'Сервер дважды подряд не принял то, что лежит в этой вкладке. Закройте другие вкладки этой комнаты и перезагрузите страницу.'
+          ? 'Не удалось синхронизировать тетрадь после двух попыток. Закройте другие вкладки этой комнаты и перезагрузите страницу.'
+          : 'Сервер дважды отклонил изменения из этой вкладки. Закройте другие вкладки этой комнаты и перезагрузите страницу.'
       })
   }
 
