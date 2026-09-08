@@ -162,12 +162,17 @@ try {
 
   const { cell: fileCell, id: fileId } = newCell("open('made-in-class.txt','w').write('hi')")
   A.doc.transact(() => cells(A.doc).push([fileCell]))
+  await until('B received the file-writing cell', () => cells(B.doc).toArray().some((c) => idOf(c) === fileId))
   control.send(JSON.stringify({ t: 'run', cellId: fileId }))
   await until('file-writing cell finished', () => {
     const c = cells(B.doc).toArray().find((x) => idOf(x) === fileId)
     return !!c && ['ok', 'error'].includes(c.get('state'))
   })
-  const files = await j(await fetch(`${BASE}/api/sessions/${sid}/files`))
+  const listed = await fetch(`${BASE}/api/sessions/${sid}/files`, {
+    headers: { authorization: `Bearer ${maria.token}` },
+  })
+  if (!listed.ok) throw new Error(`FAIL: participant could not list room files (${listed.status})`)
+  const files = await j(listed)
   console.log(`7. workspace files: ${files.files.map((f: any) => f.name).join(', ') || '(none)'}`)
 
   pass =

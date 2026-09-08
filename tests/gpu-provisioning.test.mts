@@ -117,3 +117,45 @@ test('node wait rejects multiple ready nodes instead of deploying on an arbitrar
   assert.match(result.stderr, /exactly one node/)
   assert.equal(result.stdout, '')
 })
+
+function waitForApp(readyAfter: number) {
+  const result = spawnSync('bash', ['-c', `set -euo pipefail
+PORT=30080
+calls=0
+die() { echo "$*" >&2; exit 1; }
+curl() {
+  calls=$((calls + 1))
+  local connect=0 max=0 url=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --connect-timeout) connect="$2"; shift 2 ;;
+      --max-time) max="$2"; shift 2 ;;
+      http:*) url="$1"; shift ;;
+      *) shift ;;
+    esac
+  done
+  [ "$connect" = 2 ] && [ "$max" -ge 1 ] && [ "$max" -le 5 ] && [ "$url" = http://127.0.0.1:30080/api/health ] || exit 90
+  [ "$calls" -ge "$READY_AFTER" ]
+}
+sleep() { [ "$1" = 1 ] || exit 91; SECONDS=$((SECONDS + $1)); }
+trap 'echo "calls=$calls" >&2' EXIT
+${shellFunction('wait_for_app')}
+wait_for_app
+`], { encoding: 'utf8', timeout: 5000, env: { ...process.env, READY_AFTER: String(readyAfter) } })
+  assert.equal(result.error, undefined)
+  return result
+}
+
+test('app startup waits through transient NodePort connection failures', () => {
+  const result = waitForApp(3)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stderr, /calls=3/)
+})
+
+test('app health wait terminates with an actionable error when connectivity never arrives', () => {
+  const result = waitForApp(10000)
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /health.*60|60.*health/i)
+  const calls = Number(result.stderr.match(/calls=(\d+)/)?.[1])
+  assert.ok(calls > 1 && calls <= 60, `bounded polling: ${calls}`)
+})

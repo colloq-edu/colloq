@@ -356,6 +356,21 @@ prepare() {
   printf 'Release prepared; all writers stopped. Restore if needed, then cluster.sh start.\n'
 }
 
+wait_for_app() {
+  local timeout deadline=$((SECONDS + 60))
+  # Pod readiness can precede kube-proxy programming the localhost NodePort.
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    timeout=$((deadline - SECONDS))
+    [ "$timeout" -gt 0 ] || break
+    if [ "$timeout" -gt 5 ]; then timeout=5; fi
+    if curl -fsS --connect-timeout 2 --max-time "$timeout" "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [ "$SECONDS" -lt "$deadline" ]; then sleep 1; fi
+  done
+  die "app health endpoint http://127.0.0.1:$PORT/api/health did not become reachable within 60 seconds; check app logs, Service endpoints and kube-proxy"
+}
+
 start() {
   guard_restore
   need_cluster
@@ -369,7 +384,7 @@ start() {
   release consume-recovery --release "$STATE/releases/current.json" --state-dir "$STATE"
   k scale deployment/colloq-app --replicas=1
   k rollout status deployment/colloq-app --timeout=180s
-  curl -fsS --max-time 10 "http://127.0.0.1:$PORT/api/health" >/dev/null
+  wait_for_app
   gpu_preflight
   printf 'Colloq ready on http://127.0.0.1:%s; use cluster.sh smoke to verify two-room execution.\n' "$PORT"
 }
