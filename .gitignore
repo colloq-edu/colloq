@@ -36,3 +36,6 @@ pencil-check-*.png
 
 # Байт-код Python рядом со скриптами ретранслятора (scripts/relay-capy.py).
 __pycache__/
+
+# Isolated development worktrees.
+.worktrees/
