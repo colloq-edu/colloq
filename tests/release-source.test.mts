@@ -13,6 +13,29 @@ const release = () => ({ schemaVersion: 1, version: 'v1', sourceCommit: 'a'.repe
   dataSchemaVersion: 1, compatibleDataSchemaVersions: [1], catalog: { schemaVersion: 1, release: 'v1', defaultEnvironment: 'base',
     environments: [{ name: 'base', image: 'registry.example/kernel@sha256:' + 'd'.repeat(64), gpu: false }] } })
 
+test('release builder accepts registry ports and preserves them in pushed image digests', () => {
+  const code = `import importlib.util,sys,tempfile,pathlib,json
+s=importlib.util.spec_from_file_location('builder',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+class Accepted(Exception): pass
+def stop_archive(*args): raise Accepted()
+m.archive_source=stop_archive
+sys.argv=['release-build.py','--registry','127.0.0.1:5000/colloq','--version','v1','--k3s-version','v1.36.4+k3s1','--source-commit','a'*40]
+try: m.main()
+except Accepted: pass
+else: raise AssertionError('source archive was not reached')
+with tempfile.TemporaryDirectory() as tmp:
+ metadata=pathlib.Path(tmp)/'metadata.json'
+ def pushed(cmd,**kwargs):
+  assert cmd[cmd.index('-t')+1]=='127.0.0.1:5000/colloq-app:v1'
+  metadata.write_text(json.dumps({'containerimage.digest':'sha256:'+'b'*64}))
+ m.subprocess.run=pushed
+ print(m.build('127.0.0.1:5000/colloq-app:v1','Dockerfile','.',{},metadata))
+`
+  const result = spawnSync('python3', ['-c', code, path.join(root, 'scripts/release-build.py')], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout.trim(), '127.0.0.1:5000/colloq-app@sha256:' + 'b'.repeat(64))
+})
+
 test('archived build context excludes untracked inputs and uses committed content despite working-tree edits', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-source-'))
   try {

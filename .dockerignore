@@ -28,3 +28,7 @@ kernel/environments/.*.built
 
 # Do not send isolated checkouts to the image builder.
 .worktrees
+
+# Working notes and audit reports are not image build inputs.
+docs/superpowers/
+audit-*.pdf

@@ -210,6 +210,9 @@ gpu_toolkit() {
   command -v apt-get >/dev/null || die 'pinned GPU toolkit installation supports Debian/Ubuntu apt hosts'
   for package in nvidia-container-toolkit nvidia-container-toolkit-base libnvidia-container-tools libnvidia-container1; do
     have="$(dpkg-query -W -f='${Version}' "$package" 2>/dev/null || true)"
+    if [ -n "$have" ] && dpkg --compare-versions "$have" gt "$wanted"; then
+      die "$package $have is newer than release pin $wanted; select a release with compatible tooling or explicitly downgrade the toolkit before retrying"
+    fi
     if [ "$have" != "$wanted" ]; then matches=0; fi
   done
   if [ "$matches" = 0 ]; then
@@ -237,9 +240,14 @@ gpu_plugin() {
     | kube apply -f - >/dev/null
   release gpu --release "$1" | kube apply -f -
   kube -n kube-system rollout status daemonset/colloq-nvidia-device-plugin --timeout=180s
-  local count
-  count="$(k get nodes -o 'jsonpath={.items[0].status.allocatable.nvidia\.com/gpu}')"
-  [[ "$count" =~ ^[1-9][0-9]*$ ]] || die 'NVIDIA plugin has no allocatable GPU; check driver, toolkit and k3s runtime logs'
+  # A running plugin can precede the kubelet's next node-status update.
+  local count deadline=$((SECONDS + 60))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    count="$(k get nodes --request-timeout=5s -o 'jsonpath={.items[0].status.allocatable.nvidia\.com/gpu}' || true)"
+    if [[ "$count" =~ ^[1-9][0-9]*$ ]]; then return 0; fi
+    sleep 2
+  done
+  die 'NVIDIA plugin has no allocatable GPU after waiting for registration; check driver, toolkit and k3s runtime logs'
 }
 
 gpu_preflight() {

@@ -71,7 +71,7 @@ def build(tag, dockerfile, context, args, metadata, target=None):
     digest = json.loads(metadata.read_text()).get('containerimage.digest', '')
     if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest):
         raise ValueError('buildx did not return a real image digest')
-    return tag.split(':', 1)[0] + '@' + digest
+    return tag.rsplit(':', 1)[0] + '@' + digest
 
 
 def pinned(base):
@@ -94,7 +94,7 @@ def main():
     parser.add_argument('--gpu-device-plugin-image')
     parser.add_argument('--output', default='release.json')
     args = parser.parse_args()
-    if not re.fullmatch(r'[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9._/-]*', args.registry):
+    if '/' not in args.registry or not release.image_reference(args.registry + '-runtime@sha256:' + '0' * 64):
         parser.error('--registry must be a lowercase registry/repository prefix')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', args.version):
         parser.error('invalid release version')
