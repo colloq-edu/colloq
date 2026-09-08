@@ -48,8 +48,9 @@ import {
   stepCount,
 } from '../publish/store.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
+import { blockKernelStarts, kernelRetirementInProgress } from '../kernel/retirement.js'
 import { activeName, exists as environmentExists } from '../environments.js'
-import { forgetTree, listFiles, sessionDir } from '../workspace.js'
+import { forgetTree, listFiles, sessionDir, workspaceFs } from '../workspace.js'
 import type { Course } from '@shared/publish'
 import {
   ENVIRONMENT_NAME,
@@ -187,7 +188,7 @@ const fileCounts = new Map<string, { at: number; count: number }>()
 
 function fileCount(sessionId: string): number {
   try {
-    const at = fs.statSync(sessionDir(sessionId)).mtimeMs
+    const at = workspaceFs.statSync(sessionDir(sessionId)).mtimeMs
     const cached = fileCounts.get(sessionId)
     if (cached && cached.at === at) return cached.count
     forgetTree(sessionId)
@@ -491,31 +492,49 @@ export function adminInstanceRoutes(): Router {
    * the document is evicted without a final flush, so nothing writes a snapshot
    * back for a seminar that no longer exists.
    *
-   * И всё это — до первого await, одним куском.
-   *
-   * Здесь стояло `await shutdownSession()` между закрытием пульта и сносом
-   * документа, а гасить ядро — это DELETE сессии Jupyter (до 5 с) и `docker rm`
-   * (до 60 с). Всё это время строка семинара была жива: рукопожатие сокета
-   * пропускало по ней новых, collab-сокеты продолжали печатать, а управляющий
-   * сокет, переподключавшийся в эту самую минуту (у студента моргнул вайфай),
-   * заводил комнату заново — и после сноса строк оставался единственным её
-   * жильцом. Первое Run в его вкладке пересобирало документ из истории, писало
-   * строку в ленту удалённого семинара и поднимало ему контейнер.
-   *
-   * Ядро гасится последним, когда закрывать уже нечего, и в своём try: не
-   * остановленный контейнер — это бесхозный контейнер, а не полуудалённый
-   * семинар. За ним — второй проход по тому, что могло воскреснуть, пока он
-   * гас.
+   * New joins and kernel starts are blocked while the runtime is stopped.
+   * If stopping fails, all persistent room data stays available for a retry.
+   * After confirmation, sockets, documents and rows are removed synchronously.
    */
   router.delete('/api/admin/seminars/:id', ownerOnly('delete a seminar'), (req, res) => {
     const row = seminarOr404(req, res)
     if (!row) return
+    if (kernelRetirementInProgress(row.id)) {
+      res.status(503).json({ error: 'The seminar is already stopping. Try again shortly.', reason: 'invalid' } satisfies AdminErrorBody)
+      return
+    }
+    const release = blockKernelStarts(row.id)
     // `?reading=drop` — «удалить и то и другое». Умолчание сохраняет чтение.
     const keepReading = req.query.reading !== 'drop'
     void (async () => {
       try {
+        // Keep the complete room until the broker confirms that its Pod is gone.
+        // The gate rejects new joins/starts while existing ensure requests drain.
+        stopAll(row.id)
+        try {
+          await shutdownSession(row.id, true)
+        } catch (err) {
+          console.warn(`[admin] could not stop the kernel for ${row.id}:`, err instanceof Error ? err.message : err)
+          res.status(503).json({
+            error: 'Deletion could not finish because the kernel did not stop. The seminar data and files were kept. Retry deletion.',
+            reason: 'invalid',
+          } satisfies AdminErrorBody)
+          return
+        }
         closeControlRoom(row.id)
         dropSessionDoc(row.id)
+
+        try {
+          workspaceFs.rmSync(sessionDir(row.id), { recursive: true, force: true })
+        } catch (err) {
+          console.warn(`[admin] workspace cleanup for ${row.id} is incomplete:`, err instanceof Error ? err.message : err)
+          forgetTree(row.id)
+          res.status(503).json({
+            error: 'Deletion could not finish because some files could not be removed. Retry deletion or ask the server operator to check the workspace.',
+            reason: 'invalid',
+          } satisfies AdminErrorBody)
+          return
+        }
 
         const purge = db.transaction((id: string) => {
           deleteParticipants.run(id)
@@ -566,20 +585,6 @@ export function adminInstanceRoutes(): Router {
         entombSeminar(row.id, row.name)
 
         /*
-         * И только теперь — ядро: строки уже нет, входить в комнату больше
-         * некому, и минута `docker rm` никому не открывает дверь. Отказ здесь —
-         * бесхозный контейнер, а не полуудалённый семинар, поэтому он в журнал,
-         * а не в ответ.
-         */
-        try {
-          await shutdownSession(row.id)
-        } catch (err) {
-          console.warn(
-            `[admin] could not stop the kernel for ${row.id}:`,
-            err instanceof Error ? err.message : err,
-          )
-        }
-        /*
          * Второй проход — по тому, что могло воскреснуть, пока гасло ядро.
          *
          * Опоздавший вывод ячейки или пульт, дошедший до `getSessionDoc`
@@ -592,16 +597,6 @@ export function adminInstanceRoutes(): Router {
         deleteSnapshot.run(row.id)
         discardHistory(row.id)
 
-        try {
-          fs.rmSync(sessionDir(row.id), { recursive: true, force: true })
-        } catch (err) {
-          // The row is already gone; a workspace we could not remove is a stray
-          // directory, not a half-deleted seminar.
-          console.warn(
-            `[admin] could not remove workspace for ${row.id}:`,
-            err instanceof Error ? err.message : err,
-          )
-        }
 
         res.status(204).end()
       } catch (err) {
@@ -614,7 +609,7 @@ export function adminInstanceRoutes(): Router {
             error: 'the seminar could not be deleted',
             reason: 'invalid',
           } satisfies AdminErrorBody)
-      }
+      } finally { release() }
     })()
   })
 

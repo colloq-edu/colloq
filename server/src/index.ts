@@ -16,6 +16,7 @@
 // печатают при загрузке, должно застать уже исправленную. Имена из него берутся
 // здесь же — это тот самый модуль, а не второй: журнал у процесса один.
 import { startJournal, stopJournal } from './log.js'
+import { kernelRetirementInProgress } from './kernel/retirement.js'
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
 import type { Duplex } from 'node:stream'
@@ -199,7 +200,7 @@ server.on('upgrade', (req, socket, head) => {
   // A token outlives the room it names. Without this check a browser left open
   // on a deleted seminar reconnects, gets a freshly seeded document and writes
   // a snapshot row for a seminar the owner already destroyed.
-  if (!getSession(sessionId)) return reject(socket)
+  if (!getSession(sessionId) || kernelRetirementInProgress(sessionId)) return reject(socket)
   /*
    * Бан закрывает все три двери сразу — тетрадь, пульт и файл.
    *

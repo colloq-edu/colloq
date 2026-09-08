@@ -172,7 +172,7 @@ test('запись не прошла — отменять нечего, и кн�
     JSON.stringify({ path: 'train.py/child.py', content: 'нет' }),
   )
   assert.equal(tried.step.kind, 'note', tried.said)
-  assert.match(tried.said, /Не получилось записать|не удалось/i)
+  assert.match(tried.said, /Не получилось (?:записать|создать)|не удалось/i)
   /*
    * `null`, а не `0`: снимка нет вовсе. Пока `remember` стоял ДО записи, снимок
    * оставался и от неудачи — ход получал `undo: 'available'`, а нажатие

@@ -22,6 +22,12 @@ import { fileURLToPath } from 'node:url'
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const script = fs.readFileSync(path.join(repo, 'scripts/host.sh'), 'utf8')
 
+test('cluster relay uses loopback ingress and the controlled public URL operation', () => {
+  assert.match(script, /COLLOQ_CLUSTER/)
+  assert.match(script, /PORT=30080/)
+  assert.match(script, /scripts\/cluster\.sh public-url "\$PUBLIC"/)
+})
+
 /** Строки скрипта без комментариев: про эту ошибку они как раз рассказывают. */
 const code = script
   .split('\n')

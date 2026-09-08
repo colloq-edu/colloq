@@ -25,3 +25,6 @@ site
 # Штампы «что было собрано в этом образе ядра» — состояние машины, а не
 # исходник: они принадлежат хосту и приезжают туда bind-монтом.
 kernel/environments/.*.built
+
+# Do not send isolated checkouts to the image builder.
+.worktrees

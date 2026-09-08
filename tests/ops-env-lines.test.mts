@@ -146,7 +146,7 @@ test('read_env берёт последнюю строку: дописанное 
 })
 
 test('копия read_env осталась одна — в scripts/lib.sh', () => {
-  const others = ['scripts/host.sh', 'scripts/service.sh', 'scripts/vast.sh', 'scripts/restore.sh', 'scripts/dns.sh']
+  const others = ['scripts/host.sh', 'scripts/vast.sh', 'scripts/restore.sh', 'scripts/dns.sh']
   for (const file of others) {
     const text = fs.readFileSync(path.join(repo, file), 'utf8')
     assert.ok(

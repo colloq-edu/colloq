@@ -1,46 +1,9 @@
-/**
- * Контейнер на семинар, поднимаемый по требованию.
- *
- * Был контейнер на ОКРУЖЕНИЕ, общий для всех семинаров на нём, и в него
- * монтировался весь `WORKSPACE_DIR`. Это значило, что право запускать ячейки в
- * ЛЮБОЙ комнате открывало файлы всех остальных: `os.listdir("/workspace")`
- * перечислял чужие семинары, `open("/workspace/чужая/зачёт.csv")` читал их, а
- * `os.remove` удалял. Плюс общий `JUPYTER_TOKEN` в переменных окружения —
- * то есть и API Jupyter соседних комнат. Никакое правило комнаты этого не
- * закрывает: это не права, а изоляция, и чинится она только здесь.
- *
- * Теперь у комнаты свой контейнер, в него смонтирована только её папка, и
- * токен у него свой — выведенный из секрета инстанса, так что переживает
- * перезапуск сервера и не совпадает с чужим.
- *
- * Образ берётся по имени окружения, `colloq-kernel:<env>`, — так же, как его
- * называет docker-compose для окружения по умолчанию, поэтому отдельной ветки
- * для «обычных» семинаров нет.
- *
- * Контейнеры запускаются `docker run`, а не compose: службы compose объявлены в
- * файле, а эти решаются в момент, когда преподаватель открывает комнату. Имя —
- * `colloq-room-<id>`, чтобы человек, глядящий в `docker ps` посреди пары, понял,
- * что он видит.
- *
- * Если своего контейнера комнате дать нельзя — docker не виден (сервер поднят
- * внутри контейнера без сокета) или до контейнера комнаты не будет дороги (см.
- * `roomNetwork`), — комната откатывается на общее ядро compose. Это ровно прежнее
- * поведение, включая прежнюю дыру, поэтому об этом говорится вслух: один раз в
- * журнал сервера и один раз в журнал ядра самой комнаты, где сидят люди (см.
- * `isolationLost` здесь и `noteSharedKernel` в kernel/index.ts).
- * `isolationAvailable()` — та же правда для панели.
- *
- * Срез GPU — тоже свойство контейнера, а не комнаты: окружение объявляет
- * `# colloq: gpu`, комната получает устройство на всё время жизни своего
- * контейнера, и держит его метка `colloq.gpu` — единственное, что переживает
- * перезапуск сервера. Не хватило срезов — отказ, а не тихий откат на процессор:
- * колёса torch собраны под CUDA, и «то же самое, только медленнее» здесь не
- * существует. См. `pickGpu`.
- *
- * Путь монтирования берётся глазами docker-демона, а не наших: см. `hostMount`.
- * Адрес ядра — наоборот, нашими: под `make up` сервер сам в контейнере, и порт,
- * опубликованный на петле хоста, для него не адрес — см. `roomNetwork`.
- */
+import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision } from './runtime-client.js'
+import { sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionRowExists } from '../db.js'
+import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
+/** Production starts fixed, isolated Pods through the private runtime broker.
+ * The direct Docker adapter is retained only for explicit local development.
+ * Neither backend falls back to a shared Jupyter server. */
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
 import fs from 'node:fs'
@@ -223,28 +186,11 @@ async function sameNetwork(container: string, network: string): Promise<boolean>
 let dockerReady: Promise<boolean> | null = null
 
 function haveDocker(): Promise<boolean> {
-  /*
-   * Явный выключатель, и он же — предохранитель тестов.
-   *
-   * Сюита поднимает десятки комнат с поддельным Jupyter; без этой строки она
-   * запускала для каждой настоящий контейнер — тридцать шесть за один прогон,
-   * и они оставались висеть. Оператору он тоже нужен: контейнер на семинар
-   * стоит памяти, и машина, которой это дорого, вправе вернуться к общему ядру,
-   * сказав об этом вслух, а не обнаружив однажды тридцать контейнеров.
-   */
-  if ((process.env.KERNEL_ISOLATION ?? 'auto').toLowerCase() === 'off') {
-    dockerReady ??= Promise.resolve(false)
-    return dockerReady
-  }
+  if (kernelBackend() !== 'docker') return Promise.resolve(false)
   dockerReady ??= run(['version', '--format', '{{.Server.Version}}'], 5_000).then((res) => {
     const ok = res.code === 0
     if (!ok) {
-      console.warn(
-        '[kernel] docker недоступен — семинары делят одно ядро compose, и из любой комнаты ' +
-          'видны файлы всех остальных на этой машине. Так работал Colloq раньше; чтобы у ' +
-          'каждой комнаты был свой контейнер, сервер должен видеть docker: сокет внутрь ' +
-          'контейнера или запуск на хосте (make run).',
-      )
+      console.warn('[kernel] Docker is unavailable. Isolated room execution is disabled until the development runtime is restored.')
     }
     return ok
   })
@@ -270,35 +216,23 @@ function networkExists(network: string): Promise<boolean> {
   return networkReady
 }
 
-/**
- * Можно ли вообще дать комнате свой контейнер — а не только «виден ли docker».
- *
- * Сервер в контейнере без работающей `KERNEL_NETWORK` поднял бы комнате
- * контейнер, до которого сам не достучится (см. `roomNetwork`), — или не поднял
- * бы вовсе, если такой сети нет, — и в обоих случаях каждый Run кончался бы
- * ошибкой. Откат на общее ядро честнее: он хотя бы работает и сказан вслух — и
- * в журнал сервера, и в журнал ядра самой комнаты.
- */
+/** Check the selected runtime; an unavailable backend disables execution. */
 async function canIsolate(): Promise<boolean> {
+  try { requireKernelIsolation() } catch { return false }
+  if (kernelBackend() === 'broker') return (await kernelRuntimeClient().health()).ok
+  if (kernelBackend() === 'test') return false
   if (!(await haveDocker())) return false
   if (!inContainer()) return true
 
   const network = roomNetwork()
   if (!network) {
     warnOnce(
-      '[kernel] сервер работает в контейнере, а KERNEL_NETWORK ' +
-        'не назван: до ядра комнаты не будет дороги, поэтому семинары делят одно ядро ' +
-        'compose и из любой комнаты видны файлы всех остальных. Назовите здесь сеть ' +
-        'compose, в которой стоит сам сервер.',
+      '[kernel] KERNEL_NETWORK is missing. Isolated room execution is disabled.',
     )
     return false
   }
   if (!(await networkExists(network))) {
-    warnOnce(
-      `[kernel] сети «${network}» из KERNEL_NETWORK на этой машине нет — контейнер комнаты ` +
-        'в неё не встанет, поэтому семинары делят одно ядро compose и из любой комнаты ' +
-        'видны файлы всех остальных. Настоящее имя сети покажет docker network ls.',
-    )
+    warnOnce(`[kernel] Network ${network} is unavailable. Isolated room execution is disabled.`)
     return false
   }
   return true
@@ -310,19 +244,6 @@ export function isolationAvailable(): Promise<boolean> {
 }
 
 /**
- * Изоляцию просили, но её нет: комнаты делят одно ядро и видят файлы друг друга.
- *
- * Отличается от `!isolationAvailable()` ровно одним, и это существенно:
- * `KERNEL_ISOLATION=off` — осознанный выбор оператора, про него говорить нечего,
- * а вот умолчание `auto`, споткнувшееся о недоступный docker, — невыполненное
- * обещание, и комната должна услышать про него словами.
- */
-export async function isolationLost(): Promise<boolean> {
-  if ((process.env.KERNEL_ISOLATION ?? 'auto').toLowerCase() === 'off') return false
-  return !(await canIsolate())
-}
-
-/**
  * Комнаты, чьи контейнеры сейчас живут на этой машине, — по метке docker.
  *
  * Не то же самое, что `runningRoomKernels()`: та карта заполняется только
@@ -331,6 +252,8 @@ export async function isolationLost(): Promise<boolean> {
  * `make down`. Метку ставит `docker run` ниже, и она переживает нас.
  */
 export async function listRoomKernels(): Promise<Array<{ session: string; running: boolean }>> {
+  if (kernelBackend() === 'broker') return (await kernelRuntimeClient().rooms()).map(room => ({session:room.sessionId,running:room.phase === 'ready' || room.phase === 'pending'}))
+  if (kernelBackend() === 'test') return []
   const rooms = await roomContainers()
   return rooms
     .filter((room) => room.session.length > 0)
@@ -793,18 +716,44 @@ const starting = new Map<string, Promise<KernelEndpoint>>()
  * — поэтому помечаем, а убирает за собой сам подъём.
  */
 const abandoned = new Set<string>()
+const brokerStarts = new Map<string, Set<Promise<KernelEndpoint>>>()
 
 /**
  * Адрес Python, с которым должна разговаривать эта комната.
  *
- * Без docker — общее ядро compose: ровно то, что было раньше, вместе с прежней
- * дырой, о которой сказано в шапке файла.
+ * Production image selection comes from the persisted room pin and release catalog.
  */
 export async function endpointForSession(
   sessionId: string,
   env: string | null,
 ): Promise<KernelEndpoint> {
-  if (!(await canIsolate())) return defaultEndpoint()
+  requireKernelIsolation()
+  if (kernelRetirementInProgress(sessionId)) throw new Error('Cannot start kernel: seminar is stopping')
+  const backend = kernelBackend()
+  if (backend === 'test') return defaultEndpoint()
+  if (backend === 'broker') {
+    if (!sessionRowExists(sessionId)) throw new Error('Cannot start kernel: seminar does not exist')
+    sessionDir(sessionId)
+    const previous = sessionKernelRevision(sessionId)
+    const selected = runtimeEnvironment(sessionEnvironment(sessionId), previous)
+    const revision = pinSessionKernelRevision(sessionId, selected.name, imageRevision(selected.image))
+    const pinned = runtimeEnvironment(sessionEnvironment(sessionId), revision)
+    const starts = brokerStarts.get(sessionId) ?? new Set<Promise<KernelEndpoint>>()
+    brokerStarts.set(sessionId, starts)
+    const attempt = kernelRuntimeClient().ensure(sessionId, pinned.name, revision)
+    starts.add(attempt)
+    try {
+      const endpoint = await attempt
+      if (kernelRetirementInProgress(sessionId) || !sessionRowExists(sessionId)) {
+        throw new Error('Cannot start kernel: seminar is stopping')
+      }
+      return endpoint
+    } finally {
+      starts.delete(attempt)
+      if (starts.size === 0) brokerStarts.delete(sessionId)
+    }
+  }
+  if (!(await canIsolate())) throw new Error('Room isolation is unavailable. Execution is disabled; shared Jupyter fallback is not permitted')
 
   const cached = endpoints.get(sessionId)
   if (cached) return cached
@@ -848,7 +797,18 @@ async function discardRoom(sessionId: string): Promise<void> {
  * Зовётся при удалении семинара и при уборке простоя. Файлы лежат на хосте, в
  * папке комнаты, и переживают это — уходит только Python со всеми переменными.
  */
-export async function dropRoomKernel(sessionId: string): Promise<void> {
+export async function dropRoomKernel(sessionId: string, permanent = false): Promise<void> {
+  if (kernelBackend() === 'broker') {
+    const release = blockKernelStarts(sessionId)
+    try {
+      // An already-issued ensure must settle before DELETE; otherwise its late
+      // request can recreate the Pod after a successful stop response.
+      await Promise.allSettled([...(brokerStarts.get(sessionId) ?? [])])
+      await kernelRuntimeClient().stop(sessionId, permanent)
+    } finally { release() }
+    return
+  }
+  if (kernelBackend() === 'test') return
   endpoints.delete(sessionId)
   if (!(await canIsolate())) return
   // Подъём, идущий прямо сейчас, положил бы контейнер обратно секундой позже:

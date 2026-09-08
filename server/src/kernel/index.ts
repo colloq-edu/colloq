@@ -44,7 +44,6 @@ import {
   dropRoomKernel,
   endpointForSession,
   forgetSessionKernel,
-  isolationLost,
   listRoomKernels,
   onRoomKernelRecreated,
   runningRoomKernels,
@@ -761,7 +760,6 @@ export function ensureKernel(sessionId: string): Promise<void> {
       // Подъём ядра — настоящее событие: до полутора минут холодного старта, и
       // именно между этой строкой и следующей комната смотрит в пустоту.
       console.log(`[kernel ${sessionId}] up (${envName ?? 'shared'})`)
-      await noteSharedKernel(runtime)
     } catch (err) {
       setStatus(runtime, 'dead')
       // Не чаще раза в минуту на комнату: `ensureKernel` зовёт и вход каждого
@@ -811,34 +809,6 @@ onRoomKernelRecreated((sessionId, why) => {
       'The files in the Files panel are untouched; run your cells again.',
   )
 })
-
-/** Про общее ядро комната слышит один раз, а не на каждый Run. */
-const toldSharedKernel = new Set<string>()
-
-/**
- * Сказать комнате, что своего контейнера у неё нет.
- *
- * `KERNEL_ISOLATION=auto` — умолчание, и оно обещает семинару свой контейнер, в
- * который смонтирована только его папка. Под `make up` сервер живёт в
- * контейнере, который не видит docker, и обещание тихо не выполняется: все
- * комнаты инстанса сидят в одном ядре compose, видят файлы друг друга, делят
- * один предел памяти, а выбранное окружение не значит ничего. До сих пор об
- * этом говорилось только в журнале контейнера — там, куда преподаватель не
- * смотрит; теперь и в комнате, где это касается людей.
- */
-async function noteSharedKernel(runtime: Runtime): Promise<void> {
-  if (toldSharedKernel.has(runtime.sessionId)) return
-  if (!(await isolationLost())) return
-  if (runtime.retired) return
-  toldSharedKernel.add(runtime.sessionId)
-  kernelNote(
-    runtime.sessionId,
-    'This server cannot reach Docker, so every seminar on it shares one Python container: ' +
-      "cells here can read and delete other seminars' files, the memory limit is shared, and " +
-      'the environment picked for this seminar is not the one actually running. Run the server ' +
-      'where it can see Docker (make run) to give every room its own container.',
-  )
-}
 
 /**
  * A line in the room's shared transcript, under the terminal's "Kernel log" tab.
@@ -975,7 +945,7 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
  * to finish before the document is evicted or it simply builds another.
  * Every other caller wants restartSession, which keeps the room.
  */
-export async function shutdownSession(sessionId: string): Promise<void> {
+export async function shutdownSession(sessionId: string, permanent = false): Promise<void> {
   const runtime = runtimes.get(sessionId)
   if (runtime) {
     // Первым делом, до всякого await: подъём ядра, идущий прямо сейчас, увидит
@@ -998,7 +968,6 @@ export async function shutdownSession(sessionId: string): Promise<void> {
   }
   // Комната кончилась: если её откроют снова, про общее ядро надо сказать
   // заново — это уже другое занятие.
-  toldSharedKernel.delete(sessionId)
   // И отметка прохода по призракам: комната кончилась, помнить о ней нечего.
   orphanSweeps.delete(sessionId)
   /*
@@ -1009,11 +978,9 @@ export async function shutdownSession(sessionId: string): Promise<void> {
    * этой машине. Файлы комнаты лежат на хосте и это переживают; уходит только
    * Python со всеми переменными, что и означает «семинар закончился».
    */
-  try {
-    await dropRoomKernel(sessionId)
-  } catch (err) {
-    console.error(`[kernel] could not remove the container for ${sessionId}:`, errText(err))
-  }
+  // Deleting documents or files is safe only after the runtime confirms that
+  // every room writer stopped. The caller must retain the room on failure.
+  await dropRoomKernel(sessionId, permanent)
 }
 
 /* --------------------------------------------------------- уборка простоя */
@@ -1068,7 +1035,26 @@ export function idleVerdict(opts: {
   return opts.now - opts.since < limit ? 'watch' : 'drop'
 }
 
-async function sweepIdleKernels(): Promise<void> {
+let idleSweep: Promise<void> | null = null
+
+/** A broker outage postpones maintenance; it must not reject the interval's
+ * detached promise or strand the single-flight slot for all later sweeps. */
+export function sweepIdleKernels(): Promise<void> {
+  if (idleSweep) return idleSweep
+  const attempt = sweepIdleKernelsOnce()
+    .catch(() => {
+      if (seldom('kernel-idle-sweep-census', 60_000)) {
+        console.warn('[kernel] idle sweep postponed: runtime room census failed; will retry at the next sweep')
+      }
+    })
+    .finally(() => {
+      if (idleSweep === attempt) idleSweep = null
+    })
+  idleSweep = attempt
+  return attempt
+}
+
+async function sweepIdleKernelsOnce(): Promise<void> {
   const now = Date.now()
   /*
    * Не только те, что поднял этот процесс, и не только живые.
@@ -1100,9 +1086,9 @@ async function sweepIdleKernels(): Promise<void> {
       if (verdict === 'busy' || !lastOccupied.has(sessionId)) lastOccupied.set(sessionId, now)
       continue
     }
-    lastOccupied.delete(sessionId)
     try {
       await shutdownSession(sessionId)
+      lastOccupied.delete(sessionId)
     } catch (err) {
       console.error(`[kernel] idle sweep failed for ${sessionId}:`, errText(err))
     }

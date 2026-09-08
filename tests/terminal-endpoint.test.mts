@@ -101,7 +101,15 @@ test('смена адреса обесценивает запомненное и
    */
   const source = read('server/src/kernel/terminal.ts')
   assert.ok(
-    /if \(endpoint\.url !== term\.endpoint\.url\) term\.name = null/.test(source),
-    'при смене адреса имя pty должно сбрасываться',
+    /if \(endpointIdentity\(endpoint\) !== endpointIdentity\(term\.endpoint\)\) term\.name = null/.test(source),
+    'при смене адреса или Pod UID имя pty должно сбрасываться',
   )
+})
+
+test('incarnation identity changes when a Pod is replaced behind the same Service URL', async () => {
+  await import('./_env.mts')
+  const { endpointIdentity } = await import('../server/src/kernel/jupyter.js')
+  const first = { url: 'http://room.colloq.svc:8888', token: 'private', instanceId: 'uid-one' }
+  assert.notEqual(endpointIdentity(first), endpointIdentity({ ...first, instanceId: 'uid-two' }))
+  assert.equal(endpointIdentity(first), endpointIdentity({ ...first, token: 'rotated' }))
 })

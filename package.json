@@ -6,7 +6,8 @@
   "license": "MIT",
   "workspaces": [
     "server",
-    "web"
+    "web",
+    "runtime"
   ],
   "dependencies": {
     "yjs": "^13.6.21"
@@ -15,9 +16,9 @@
     "dev": "npm run dev -w @colloq/server & npm run dev -w @colloq/web",
     "dev:server": "npm run dev -w @colloq/server",
     "dev:web": "npm run dev -w @colloq/web",
-    "build": "npm run build -w @colloq/web && npm run build -w @colloq/server",
+    "build": "npm run build -w @colloq/web && npm run build -w @colloq/server && npm run build -w @colloq/runtime",
     "start": "node server/dist/server.js",
-    "typecheck": "npm run typecheck -w @colloq/server && npm run typecheck -w @colloq/web",
+    "typecheck": "npm run typecheck -w @colloq/server && npm run typecheck -w @colloq/web && npm run typecheck -w @colloq/runtime",
     "e2e": "tsx scripts/e2e.mts",
     "perf": "tsx scripts/perf.mts",
     "test": "node --import tsx --test --test-force-exit --test-concurrency=1 tests/*.test.mts"

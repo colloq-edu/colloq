@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
+import { kernelRetirementInProgress } from '../kernel/retirement.js'
 import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
 import { getTeacher } from '../admin/store.js'
 import {
@@ -299,6 +300,10 @@ function bearerFor(req: Request): TokenPayload | null {
  * `banFor` вторая половина совпадения.
  */
 export function banDoor(req: Request, res: Response, next: NextFunction): void {
+  if (kernelRetirementInProgress(String(req.params.id))) {
+    res.status(503).json({ error: 'The seminar is stopping. Try again shortly.' })
+    return
+  }
   const payload = bearerFor(req)
   if (!payload) return next()
   const ban = banFor(payload.sessionId, payload.participantId, req.headers.cookie)

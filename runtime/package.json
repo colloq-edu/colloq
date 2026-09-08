@@ -1,0 +1,11 @@
+{
+  "name": "@colloq/runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/runtime.js",
+    "start": "node dist/runtime.js",
+    "typecheck": "tsc --noEmit"
+  }
+}

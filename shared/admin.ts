@@ -448,6 +448,7 @@ export type AdminErrorReason =
    * default — no .env, which stays on the host. The message says which.
    */
   | 'no_docker'
+  | 'managed_environment'
   | 'building'
   | 'failed'
   /**
@@ -482,6 +483,10 @@ export type EnvironmentState =
   | 'failed'
 
 export interface AdminEnvironment {
+  /** Operator-published immutable image catalog, not an editable local build. */
+  managed?: boolean
+  image?: string
+  revision?: string
   /** Also the filename and the image tag, so it is restricted to [a-z0-9-]. */
   name: string
   state: EnvironmentState
@@ -545,18 +550,11 @@ export interface EnvironmentAbilities {
 }
 
 export interface EnvironmentsState extends EnvironmentAbilities {
+  managed?: boolean
+  /** False when capacity has not been queried from the Kubernetes scheduler. */
+  gpuCapacityKnown?: boolean
   environments: AdminEnvironment[]
-  /**
-   * Whether every room here shares one kernel instead of getting its own.
-   *
-   * The panel used to promise a container per seminar unconditionally, and on
-   * an install where the server cannot start one — no Docker socket, no room
-   * network, `KERNEL_ISOLATION=off` — that promise was false in the two places
-   * it matters: rooms read each other's files, and *Make default* really does
-   * empty every open seminar's variables. The server knows which arrangement it
-   * is in, so it says so rather than making the screens describe the condition
-   * in words.
-   */
+  /** Legacy wire field, always false: shared production execution is disabled. */
   shared: boolean
   /**
    * Срезы видеокарты: сколько перечислено в KERNEL_GPUS и сколько сейчас

@@ -92,6 +92,8 @@ process.env.PORT = String(PORT)
 process.env.PUBLIC_URL = `http://127.0.0.1:${PORT}`
 // Ядра у проверки нет и не должно быть: она про интерфейс.
 process.env.JUPYTER_URL = 'http://127.0.0.1:1'
+process.env.NODE_ENV = 'test'
+process.env.KERNEL_BACKEND = 'test'
 process.env.KERNEL_ISOLATION = 'off'
 process.env.STATIC_DIR = path.resolve('web/dist')
 /*

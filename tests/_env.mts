@@ -58,6 +58,8 @@ process.env.JUPYTER_URL = 'http://127.0.0.1:1'
  * тридцать шесть висящих `colloq-room-*`. Подделка Jupyter в `kernel.test.mts`
  * заменяет собой ядро целиком, так что поднимать нечего.
  */
+process.env.NODE_ENV = 'test'
+process.env.KERNEL_BACKEND = 'test'
 process.env.KERNEL_ISOLATION = 'off'
 
 export const TEST_ROOT = root

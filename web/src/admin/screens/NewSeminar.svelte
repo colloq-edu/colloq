@@ -205,7 +205,7 @@
    * выключили, и все семинары сидят в одном ядре compose. Тогда выбор ниже —
    * не выбор, и сказать об этом надо здесь, а не в журнале ядра посреди пары.
    */
-  let sharedKernel = $state(false)
+  let gpuCapacityKnown = $state(true)
   /**
    * Срезы видеокарты: сколько их всего и сколько свободно прямо сейчас.
    *
@@ -320,7 +320,7 @@
       .listEnvironments()
       .then((r: EnvironmentsState) => {
         environments = r.environments
-        sharedKernel = r.shared
+        gpuCapacityKnown = r.gpuCapacityKnown !== false
         gpus = r.gpus
         if (!environment) environment = r.environments.find((e: AdminEnvironment) => e.active)?.name ?? ''
       })
@@ -504,17 +504,10 @@
     },
     {
       what: 'Running code also gives access to files.',
-      // Про соседние комнаты — только там, где ядро общее: под своим
-      // контейнером в него смонтирована одна папка, и пугать нечем.
-      get why(): string {
-        return (
-          (sharedKernel
-            ? 'The shared container has access to files from every seminar. '
-            : 'The container has access to this room’s files. ') +
-          'Anyone allowed to run code can list, read and delete those files, regardless of the ' +
-          'file panel permissions.'
-        )
-      },
+      why:
+        'The container has access to this room’s files. ' +
+        'Anyone allowed to run code can list, read and delete those files, regardless of the ' +
+        'file panel permissions.',
       when: (r) => r.files !== 'room' && r.run !== 'host',
     },
   ]
@@ -715,22 +708,8 @@
 
   <Section
     title="Environment"
-    description={sharedKernel
-      ? 'All seminars use one shared container with the server’s default environment.'
-      : "The Python environment for this seminar. It is selected when the seminar is created."}
+    description="The Python environment for this seminar. It is selected when the seminar is created."
   >
-    {#if sharedKernel}
-      <!-- Не украшение к списку, а условие, при котором список ничего не
-           решает: сказать это до создания комнаты дешевле, чем после. -->
-      <p class="mb-2.5 flex items-start gap-2 border border-line bg-warning/[0.08] px-3 py-2.5 text-2xs leading-relaxed text-muted">
-        <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
-        <span>
-          This server runs every seminar in one shared Python container, so this room will run the
-          instance’s default environment rather than the one picked here. Cells in it also see the
-          files of every other seminar on this machine, and share one memory limit.
-        </span>
-      </p>
-    {/if}
     <!--
       Не строка со списком, а карточка с содержимым.
 
@@ -765,6 +744,7 @@
                 {[
                   chosen.imageBytes ? imageSize(chosen.imageBytes) : null,
                   chosen.builtAt ? builtAgo(chosen.builtAt) : null,
+                  chosen.revision ? chosen.revision.slice(0, 19) + '…' : null,
                 ]
                   .filter(Boolean)
                   .join(' · ')}
@@ -836,7 +816,7 @@
       первым Run посреди занятия хуже всего. Под общим ядром выбор окружения
       и так ни на что не влияет, и пугать картами там нечем.
     -->
-    {#if chosenGpu && !sharedKernel && gpus.free === 0}
+    {#if chosenGpu && gpuCapacityKnown && gpus.free === 0}
       <div class="mt-2.5 flex items-start gap-2.5 border-l-2 border-warning bg-warning/[0.07] px-3.5 py-2.5">
         <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
         <p class="min-w-0 text-2xs leading-snug text-muted">

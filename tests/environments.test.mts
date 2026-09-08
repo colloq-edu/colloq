@@ -498,15 +498,15 @@ test('создание по занятому имени отказывает, а
  * друг друга, и «Make default» действительно забирает переменные у открытых
  * семинаров. Знает об этом только сервер — значит, он и говорит.
  */
-test('список окружений говорит, делят ли комнаты одно ядро', async () => {
+test('список окружений не предлагает общий production runtime', async () => {
   const res = await fetch(`${base}/api/admin/environments`, { headers: { cookie: staffCookie() } })
   assert.equal(res.status, 200)
   const body = (await res.json()) as { environments?: unknown; shared?: unknown }
   assert.ok(Array.isArray(body.environments))
   // Булево, а не «поля нет»: `undefined` панель читает как «всё в порядке».
   assert.equal(typeof body.shared, 'boolean')
-  // Изоляция в сюите выключена (tests/_env.mts), так что ядро тут общее.
-  assert.equal(body.shared, true)
+  // Test-only Jupyter bypass is not a production shared-runtime capability.
+  assert.equal(body.shared, false)
 })
 
 /* ------------------------------------ .env.example против docker-compose */
@@ -531,15 +531,16 @@ test('переменная, обещанная в .env.example, доезжает
 
   const compose = readFileSync(path.join(root, 'docker-compose.yml'), 'utf8')
   const app = compose.slice(compose.indexOf('\n  app:'), compose.indexOf('\n  kernel:'))
-  // Единственное исключение: PORT — это порт НА ХОСТЕ, он уходит в ports, а
-  // внутри контейнера сервер всегда слушает 3000.
-  const hostOnly = new Set(['PORT'])
+  const production = readFileSync(path.join(root, 'scripts/release.py'), 'utf8')
+  const hostOnly = new Set(['PORT', 'BIND_ADDR'])
+  const brokerOnly = new Set(['KERNEL_RUNTIME_URL', 'KERNEL_RUNTIME_TOKEN_FILE', 'KERNEL_CATALOG_FILE'])
   for (const name of documented) {
-    if (hostOnly.has(name)) continue
-    assert.match(
-      app,
-      new RegExp(`\\n +${name}: `),
-      `${name} обещан в .env.example, но в контейнер app не передаётся`,
-    )
+    // Billing/relay credentials belong to the host tooling, never the app Pod.
+    if (hostOnly.has(name) || /^(?:RELAY|CF|VAST)_/.test(name)) continue
+    if (brokerOnly.has(name)) {
+      assert.ok(production.includes(`'${name}'`), `${name} missing from production app configuration`)
+      continue
+    }
+    assert.ok(new RegExp(`\\n +${name}: `).test(app), `${name} missing from development app configuration`)
   }
 })

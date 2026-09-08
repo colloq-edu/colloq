@@ -35,8 +35,48 @@
 # одной командой, чем возить десятки гигабайт: make env-build NAME=…) и .env
 # (он едет на новую машину сам, вместе с репозиторием, — см. scripts/vast.sh).
 set -euo pipefail
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 cd "$(dirname "$0")/.."
+
+# Portable cluster recovery is explicit; a legacy archive is never silently
+# overlaid onto a PVC. Validate before stopping writers or moving any data.
+if [ "${1:-}" = --archive ]; then
+  STATE="${COLLOQ_STATE_DIR:-/var/lib/colloq}"
+  if ! python3 scripts/state-lock.py held --state "$STATE"; then
+    exec python3 scripts/state-lock.py run --state "$STATE" -- bash "$SCRIPT_PATH" "$@"
+  fi
+  shift
+  ARCHIVE="${1:?archive path required}"; shift
+  STATE="${COLLOQ_STATE_DIR:-/var/lib/colloq}"
+  RELEASE="${RELEASE:-$STATE/releases/current.json}"
+  extra=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --release) RELEASE="${2:?release required}"; shift 2;;
+      --replace) extra+=(--replace); shift;;
+      --recover) extra+=(--recover); shift;;
+      *) echo "Unknown restore argument: $1" >&2; exit 1;;
+    esac
+  done
+  [ -f "$RELEASE" ] || { echo 'Select the matching RELEASE before restoring.' >&2; exit 1; }
+  python3 scripts/runtime-backup.py validate --archive "$ARCHIVE" --name "${NAME:-}" --release "$RELEASE"
+  mkdir -p "$STATE"
+  bash scripts/cluster.sh stop
+  python3 scripts/runtime-backup.py restore --root "$STATE" --release "$RELEASE" --archive "$ARCHIVE" --name "${NAME:-}" --defer-finalize "${extra[@]}"
+  # A restored older backup may deliberately contain previously retired IDs.
+  # Keep the durable marker until those old reservations are removed, with
+  # every writer still stopped and the same operation lock held throughout.
+  bash scripts/cluster.sh restore-services
+  python3 scripts/runtime-backup.py finalize --root "$STATE" --release "$RELEASE" --archive "$ARCHIVE" --name "${NAME:-}"
+  # Ownership was set on the validated stage before the durable marker cleared.
+  echo 'Restore completed with writers stopped. Run cluster.sh prepare --release, then cluster.sh start.'
+  exit 0
+fi
+if [ -f "${COLLOQ_STATE_DIR:-/var/lib/colloq}/releases/current.json" ]; then
+  echo 'Cluster restore requires --archive PORTABLE.tar.gz --release RELEASE.json; legacy overlay is refused.' >&2
+  exit 1
+fi
 
 RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; OFF=$'\033[0m'
 say() { printf '%s\n' "$*"; }
@@ -154,7 +194,7 @@ if [ -n "$DB" ]; then
   head -c 16 "$DB" | LC_ALL=C grep -qa 'SQLite format 3' \
     || die "$DB не похож на базу sqlite — копия битая или скачалась не целиком."
   if command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "$DB" 'pragma quick_check' >/dev/null \
+    [ "$(sqlite3 "$DB" 'pragma quick_check')" = ok ] \
       || die "$DB не проходит проверку sqlite. Возьмите другую копию."
   fi
   if [ -f data/colloq.db ]; then

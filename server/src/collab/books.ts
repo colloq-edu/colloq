@@ -19,7 +19,6 @@
  * — открыть .ipynb, который положили в папку, — значит ВНЕСТИ его в комнату:
  *   ячейки переезжают в документ, и дальше правда там.
  */
-import fs from 'node:fs'
 import * as Y from 'yjs'
 import {
   addBook,
@@ -40,7 +39,7 @@ import {
 import { parseIpynb, writeIpynb, type FlatCell } from '@shared/ipynb'
 import { baseOf, isInside, kindOf } from '@shared/paths'
 import { getSessionDoc, peekSessionDoc } from './index.js'
-import { makeFile, readText, resolveInSession, statPath, writeText } from '../workspace.js'
+import { makeFile, readText, statPath, writeText } from '../workspace.js'
 
 const ORIGIN = 'server'
 
@@ -288,7 +287,7 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
  * говорит про размер.
  */
 function readBookText(sessionId: string, path: string): { text: string } | { why: string } {
-  const file = readText(sessionId, path)
+  const file = readText(sessionId, path, MAX_BOOK_BYTES)
   if (!file || file.binary) return { why: `${baseOf(path)} не читается как тетрадь.` }
   if (!file.truncated) return { text: file.text }
   if (file.size > MAX_BOOK_BYTES) {
@@ -299,13 +298,7 @@ function readBookText(sessionId: string, path: string): { text: string } | { why
         `(${MAX_BOOK_BYTES / (1024 * 1024)} МБ). Сохраните тетрадь без выводов.`,
     }
   }
-  const full = resolveInSession(sessionId, path)
-  if (!full) return { why: `${baseOf(path)} не читается как тетрадь.` }
-  try {
-    return { text: fs.readFileSync(full, 'utf8') }
-  } catch {
-    return { why: `${baseOf(path)} не читается как тетрадь.` }
-  }
+  return { why: `${baseOf(path)} не читается как тетрадь.` }
 }
 
 /** Завести пустую тетрадь по этому пути: файл и запись в комнате. */

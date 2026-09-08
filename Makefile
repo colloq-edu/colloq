@@ -51,8 +51,9 @@ OFF  := \033[0m
 
 DEV := -f docker-compose.yml -f docker-compose.dev.yml
 
-up: .env dirs docker-gid ## Поднять colloq целиком в docker на http://localhost:3000
-	docker compose up -d --build
+up: .env dirs docker-gid ## Локальная разработка в Docker: отдельное ядро каждой комнате
+	docker compose build kernel
+	docker compose up -d --build app
 	@printf '$(BOLD)colloq на$(OFF) $(CYAN)http://localhost:$(PORT)$(OFF)\n'
 	@printf '$(DIM)окружение ядра: $(CURRENT_ENV) · наружу — make host$(OFF)\n'
 
@@ -99,9 +100,9 @@ docker-gid:
 dev: .env dirs ## Ядро в docker, сервер на хосте (npm run dev рядом)
 	@# Только ядро и только с override: он публикует 8888 на хост и монтирует
 	@# ./workspace, иначе сервер с хоста ядра не видит, а файлы расходятся.
-	docker compose $(DEV) up kernel -d
-	@printf '$(BOLD)ядро на$(OFF) $(CYAN)http://localhost:8888$(OFF) $(DIM)(окружение: $(CURRENT_ENV))$(OFF)\n'
-	@printf '$(DIM)теперь: npm run dev$(OFF)\n'
+	docker compose $(DEV) build kernel
+	@printf '$(BOLD)образ ядра собран:$(OFF) $(CYAN)$(CURRENT_ENV)$(OFF) $(DIM)(окружение: $(CURRENT_ENV))$(OFF)\n'
+	@printf '$(DIM)теперь: NODE_ENV=development KERNEL_BACKEND=docker npm run dev$(OFF)\n'
 
 ## Как это запускается на самом деле.
 ##
@@ -144,8 +145,8 @@ run: .env dirs ## Собрать и запустить. Это то, что ну
 	  printf '$(DIM)это второй Colloq — остановите его и повторите: make stop · make down$(OFF)\n'; \
 	  exit 1; \
 	fi
-	docker compose $(DEV) up kernel -d
-	@printf '$(DIM)ядро: окружение $(CURRENT_ENV), порт 8888 проброшен$(OFF)\n'
+	docker compose $(DEV) build kernel
+	@printf '$(DIM)образ $(CURRENT_ENV) готов; каждой комнате — отдельное ядро$(OFF)\n'
 	npm run build
 	@# nohup и подоболочка: make уходит сразу, а сервер должен пережить и его,
 	@# и закрытие терминала. Всё, что он скажет, включая падение на старте,
@@ -165,7 +166,7 @@ run: .env dirs ## Собрать и запустить. Это то, что ну
 	@# в оболочке, теперь сильнее строки в .env, а не наоборот. Под службой и в
 	@# контейнере так было всегда; PUBLIC_URL — исключение и там, и здесь: его
 	@# сервер берёт из файла нарочно (readPublicUrl).
-	@( STATIC_DIR="$$PWD/web/dist" nohup node server/dist/server.js >> $(LOG) 2>&1 & \
+	@( NODE_ENV=development KERNEL_BACKEND=docker STATIC_DIR="$$PWD/web/dist" nohup node server/dist/server.js >> $(LOG) 2>&1 & \
 	   echo $$! > $(PID) )
 	@# Ждём, пока сервер скажет, что готов, а не две секунды наугад: две
 	@# секунды — это либо долго, либо мало, и «мало» печатает ссылку над
@@ -206,7 +207,7 @@ stop: ## Остановить сервер на хосте (ядро в docker �
 logs-run: ## Смотреть логи сервера, запущенного через make run
 	@tail -f $(LOG)
 
-backup: ## Снять копию базы и файлов семинаров в backups/ (можно на ходу)
+backup-legacy: ## Копия локального инстанса разработки (база и меняющиеся файлы)
 	@# Копия ЗДЕШНЕГО инстанса, и кладётся она в корень backups/. У среды на
 	@# арендованной машине есть имя и свой подкаталог (backups/demo/ — туда
 	@# пишет make vast-sync), а у этой машины имени нет: корень и есть её место.
@@ -265,7 +266,15 @@ backup: ## Снять копию базы и файлов семинаров в 
 	 fi; \
 	 printf '$(DIM)развернуть обратно: make restore$(OFF)\n'
 
-restore: ## Развернуть снятую копию: базу и файлы семинаров. NAME=среда — её копию
+restore: ## Восстановить k3s: ARCHIVE=копия.tar.gz RELEASE=release.json REPLACE=1
+	@test -n "$(ARCHIVE)" || { printf 'ARCHIVE is required; legacy copies use make restore-legacy\n' >&2; exit 1; }
+	@test -n "$(RELEASE)" || { printf 'RELEASE is required for portable recovery\n' >&2; exit 1; }
+	@args=(--archive "$(ARCHIVE)" --release "$(RELEASE)"); \
+	  if [ "$(REPLACE)" = 1 ]; then args+=(--replace); fi; \
+	  if [ "$(RECOVER)" = 1 ]; then args+=(--recover); fi; \
+	  NAME="$(NAME)" ./scripts/restore.sh "$${args[@]}"
+
+restore-legacy: ## Восстановить локальную копию старого формата: DB=… FILES=…
 	@# Пара к backup. Отдельным скриптом, а не тремя строками здесь: под
 	@# работающим сервером базу подменять нельзя, а рядом с ней лежит журнал WAL,
 	@# который надо убрать вместе со старой базой, — обе проверки объяснены там.
@@ -369,9 +378,9 @@ shell: ## Оболочка внутри ядра — посмотреть, чт�
 ## root (ей всё равно нужен docker.sock, а это root-эквивалент), и на машине
 ## появляется Node. Подробности — в шапке deploy/colloq.service и в README.
 
-service-install: ## Поставить службу systemd на этой машине (Ubuntu/Debian, нужен root)
+service-install: ## Совместимость: установка k3s, RELEASE=/путь/release.json
 	@# Он же обновляет: git pull && make service-install — сборка и рестарт внутри.
-	@./scripts/service.sh install
+	@./scripts/service.sh install --release "$(RELEASE)"
 
 service-restart: ## Перезапустить службу и дождаться готовности
 	@./scripts/service.sh restart
@@ -618,50 +627,7 @@ env-use: ## Окружение по умолчанию для новых сем�
 	@# localhost в ссылках для аудитории.
 	@tmp=$$(mktemp); grep -vE '^KERNEL_ENV=' .env > "$$tmp" 2>/dev/null || true; \
 	  printf 'KERNEL_ENV=$(NAME)\n' >> "$$tmp"; cat "$$tmp" > .env; rm -f "$$tmp"
-	@# Если ядро работает в dev-режиме, поднимаем его тем же составом файлов:
-	@# иначе оно вернётся без проброшенного 8888 и без ./workspace.
-	@if docker compose $(DEV) ps kernel --format '{{.Publishers}}' 2>/dev/null | grep -q 8888; then \
-	  KERNEL_ENV=$(NAME) docker compose $(DEV) up -d kernel; \
-	else \
-	  KERNEL_ENV=$(NAME) docker compose up -d kernel; \
-	fi
-	@# Что здесь правда, а что было правдой раньше.
-	@#
-	@# Окружение выбирается семинару при создании и дальше не меняется: у
-	@# комнаты свой контейнер из образа `colloq-kernel:<её окружение>`. Значит
-	@# эта команда задаёт умолчание для НОВЫХ семинаров, а открытые не трогает —
-	@# прежний текст «переменные потеряны» звал прогонять ячейки заново там, где
-	@# ничего не происходило, и обещал новые пакеты там, где их не будет.
-	@# Общее ядро compose, которое здесь перезапускается, комнаты делят только
-	@# при KERNEL_ISOLATION=off или когда сервер не может поднять контейнер
-	@# комнаты вовсе — тогда переменные действительно теряются, и об этом
-	@# сказано отдельной строкой.
-	@printf '\n$(BOLD)новые семинары будут создаваться на окружении $(CYAN)$(NAME)$(OFF)\n'
-	@printf '$(DIM)Уже созданные остаются на своём: окружение выбирается один раз,$(OFF)\n'
-	@printf '$(DIM)при создании семинара. Нужен другой набор пакетов — новый семинар.$(OFF)\n'
-	@# Про перезапущенное общее ядро говорим, только когда оно и правда общее.
-	@#
-	@# Раньше здесь печаталась условная фраза «если комнаты делят одно ядро — оно
-	@# только что перезапущено», причём всегда и независимо ни от чего, а README
-	@# обещал, что команда «скажет, что именно случилось». Спросить об этом
-	@# можно: KERNEL_ISOLATION=off — комнаты действительно делят это ядро;
-	@# живые контейнеры комнат — значит изоляция работает и открытых комнат это
-	@# не коснулось; ни того, ни другого — честное «не знаю», с условием как
-	@# было.
-	@iso="$$(grep -E '^KERNEL_ISOLATION=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \r')"; \
-	 rooms="$$(docker ps -q --filter 'label=colloq.kind=room-kernel' 2>/dev/null | wc -l | tr -d ' ')"; \
-	 if [ "$$iso" = off ]; then \
-	   printf '$(DIM)KERNEL_ISOLATION=off — комнаты делят это ядро, и оно только что$(OFF)\n'; \
-	   printf '$(DIM)перезапущено: переменные во всех открытых комнатах потеряны,$(OFF)\n'; \
-	   printf '$(DIM)ячейки надо прогнать заново. Тетради и файлы на месте.$(OFF)\n'; \
-	 elif [ "$${rooms:-0}" -gt 0 ] 2>/dev/null; then \
-	   printf '$(DIM)У каждой открытой комнаты своё ядро (их сейчас %s) — перезапуск$(OFF)\n' "$$rooms"; \
-	   printf '$(DIM)общего ядра их не коснулся: переменные на месте.$(OFF)\n'; \
-	 else \
-	   printf '$(DIM)Открытых комнат со своим ядром сейчас нет. Если сервер не может$(OFF)\n'; \
-	   printf '$(DIM)поднять контейнер комнаты, они делят это ядро — тогда оно только$(OFF)\n'; \
-	   printf '$(DIM)что перезапущено, и переменные в нём потеряны.$(OFF)\n'; \
-	 fi
+	@printf '$(BOLD)Окружение по умолчанию для новых семинаров: $(NAME)$(OFF)\n'
 
 env-freeze: ## Показать реальные версии из ядра
 	@# То же, что и у `make shell`: общего ядра compose на выделенной машине не
@@ -702,7 +668,27 @@ help: ## Показать этот список
 	@printf '$(BOLD)Colloq$(OFF) $(DIM)— совместные семинары на своём железе$(OFF)\n\n'
 	@grep -hE '^[a-z][a-z-]*:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-16s$(OFF) %s\n", $$1, $$2}'
-	@printf '\n$(DIM)Каждый день:  make run · make host · раздать ссылку$(OFF)\n'
-	@printf '$(DIM)Всё в docker: make up$(OFF)\n'
-	@printf '$(DIM)Выделенная машина: make service-install — сервер службой, в docker только ядра$(OFF)\n'
+	@printf '\n$(DIM)Production: make install RELEASE=/путь/release.json · make host$(OFF)\n'
+	@printf '$(DIM)Разработка в Docker: make up$(OFF)\n'
+	@printf '$(DIM)Управление k3s: make cluster-status · cluster-logs · cluster-stop$(OFF)\n'
 	@printf '$(DIM)Окружение ядра сейчас: $(BOLD)$(CURRENT_ENV)$(OFF)\n'
+
+.PHONY: install update rollback cluster-start cluster-stop cluster-status cluster-logs backup backup-legacy restore-legacy release-validate
+install: ## Установить версию на Linux VM. RELEASE=/путь/release.json
+	@./scripts/cluster.sh install --release "$(RELEASE)"
+update: ## Обновить до явной версии. RELEASE=/путь/release.json
+	@./scripts/cluster.sh update --release "$(RELEASE)"
+rollback: ## Вернуть совместимую версию. RELEASE=/путь/release.json
+	@./scripts/cluster.sh rollback --release "$(RELEASE)"
+cluster-start:
+	@./scripts/cluster.sh start
+cluster-stop:
+	@./scripts/cluster.sh stop
+cluster-status:
+	@./scripts/cluster.sh status
+cluster-logs:
+	@./scripts/cluster.sh logs
+backup: ## Переносимая копия k3s. MODE=consistent — остановить всех писателей
+	@./scripts/backup.sh
+release-validate:
+	@python3 scripts/release.py validate --release "$(RELEASE)"

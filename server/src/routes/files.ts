@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
+import { downloadHeldFile } from '../secure-files.js'
 import { basename } from 'node:path'
 import busboy from 'busboy'
 import { Router } from 'express'
@@ -9,6 +10,7 @@ import { baseOf, joinPath, normalizePath, safeSegment, whySegmentRefused } from 
 import { forgetFile } from '../collab/files.js'
 import { dropBook, isBookFile } from '../collab/books.js'
 import {
+  workspaceFs,
   deleteFile,
   forgetTree,
   listTree,
@@ -115,11 +117,11 @@ function sweepSometimes(sessionId: string): void {
 function removeTemp(sessionId: string, tmp: string): void {
   let size = 0
   try {
-    size = fs.statSync(tmp).size
+    size = workspaceFs.statSync(tmp).size
   } catch {
     /* его уже нет — вычитать нечего */
   }
-  fs.rmSync(tmp, { force: true })
+  try { workspaceFs.rmSync(tmp, { force: true }) } catch { /* untrusted parent changed */ }
   if (size > 0) noteBytes(sessionId, -size)
 }
 
@@ -389,7 +391,7 @@ export function fileRoutes(): Router {
         return
       }
       try {
-        fs.mkdirSync(folder, { recursive: true })
+        workspaceFs.mkdirSync(folder, { recursive: true })
       } catch {
         failure ??= { code: 400, message: `Не удалось создать папку «${intoDir}» для ${name}.` }
         stream.resume()
@@ -412,7 +414,9 @@ export function fileRoutes(): Router {
        */
       const tmp = `${folder}/.${name}.uploading-${randomBytes(6).toString('hex')}`
       temps.add(tmp)
-      const out = fs.createWriteStream(tmp)
+      let out: fs.WriteStream
+      try { out = workspaceFs.createWriteStream(tmp, { flags: 'wx' }) }
+      catch { temps.delete(tmp); failure ??= { code: 400, message: 'Upload directory changed or is not writable' }; stream.resume(); return }
       open.add(out)
       beganWriting(sessionId)
       writes.push(
@@ -440,7 +444,7 @@ export function fileRoutes(): Router {
              */
             let written = 0
             try {
-              written = fs.statSync(tmp).size
+              written = workspaceFs.statSync(tmp).size
             } catch {
               /* исчез — разберётся ветка ниже */
             }
@@ -485,7 +489,7 @@ export function fileRoutes(): Router {
             let already = 0
             let existed = false
             try {
-              already = fs.statSync(target).size
+              already = workspaceFs.statSync(target).size
               existed = true
             } catch {
               // Файла с таким именем ещё нет: место под него не освободится.
@@ -533,7 +537,7 @@ export function fileRoutes(): Router {
               return
             }
             try {
-              fs.renameSync(tmp, target)
+              workspaceFs.renameSync(tmp, target)
               // Загрузка пишет своими потоками, мимо workspace.ts, — значит и
               // короткую память обхода сбрасывает сама: ответ на этот же запрос
               // отдаёт дерево, и файла в нём иначе не было бы.
@@ -599,10 +603,13 @@ export function fileRoutes(): Router {
     const allowed = sessionAuth(req) !== null || verifyDownloadToken(sessionId, wanted, ticket)
     if (!allowed) return res.status(401).json({ error: 'join the session first' })
     const full = resolveInSession(sessionId, wanted)
-    if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
-    res.download(full, baseOf(wanted), (err) => {
-      if (err && !res.headersSent) res.status(404).json({ error: 'file not found' })
-    })
+    if (!full || !workspaceFs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
+    let file: ReturnType<typeof workspaceFs.openRead>
+    try { file = workspaceFs.openRead(full) }
+    catch { return res.status(404).json({ error: 'file not found' }) }
+    // Send uses the held file descriptor, not the attacker-controlled pathname.
+    // Preserve the original MIME/name and Express range/conditional responses.
+    downloadHeldFile(res, file, baseOf(wanted))
   })
 
   /**
@@ -619,7 +626,7 @@ export function fileRoutes(): Router {
     const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
     if (!wanted) return res.status(400).json({ error: 'bad path' })
     const full = resolveInSession(sessionId, wanted)
-    if (!full || !fs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
+    if (!full || !workspaceFs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
     res.json({ token: signDownloadToken(sessionId, wanted) })
   })
 

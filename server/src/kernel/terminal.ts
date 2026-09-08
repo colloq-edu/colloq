@@ -1,3 +1,5 @@
+import { endpointIdentity } from './jupyter.js'
+import { kernelBackend } from './runtime-client.js'
 import { createHash } from 'node:crypto'
 import { WebSocket, type RawData } from 'ws'
 import {
@@ -163,6 +165,9 @@ interface Term {
   opening: Promise<void> | null
   /** Set while we tear down on purpose, so the socket does not reconnect. */
   closing: boolean
+  /** Invalidates every async continuation from a previous open/close lifetime. */
+  generation: number
+  connecting: Set<WebSocket>
   /** False until the shell's banner and terminado's replayed scrollback are behind us. */
   primed: boolean
   primeDeadline: number
@@ -253,6 +258,8 @@ function getTerm(sessionId: string): Term {
       phase: 'closed',
       opening: null,
       closing: false,
+      generation: 0,
+      connecting: new Set(),
       primed: false,
       primeDeadline: 0,
       waiters: [],
@@ -314,19 +321,19 @@ const ptyHome = (url: string) => createHash('sha256').update(url).digest('hex').
 
 function rememberPty(term: Term): void {
   const doc = docOf(term)
-  const value = term.name ? `${ptyHome(term.endpoint.url)}\n${term.name}` : null
+  const value = term.name ? `${ptyHome(endpointIdentity(term.endpoint))}\n${term.name}` : null
   const meta = getMeta(doc)
   if ((meta.get(PTY_KEY) ?? null) === value) return
   doc.transact(() => meta.set(PTY_KEY, value), ORIGIN)
 }
 
 /** Имя pty, если оно от того же адреса, к которому мы идём сейчас. */
-function rememberedPty(term: Term, url: string): string | null {
+function rememberedPty(term: Term, identity: string): string | null {
   const saved = getMeta(docOf(term)).get(PTY_KEY)
   if (typeof saved !== 'string') return null
   const at = saved.indexOf('\n')
   if (at < 0) return null
-  return saved.slice(0, at) === ptyHome(url) ? saved.slice(at + 1) || null : null
+  return saved.slice(0, at) === ptyHome(identity) ? saved.slice(at + 1) || null : null
 }
 
 /* ------------------------------------------------------------------ phase */
@@ -1086,6 +1093,38 @@ async function deleteJupyterTerminal(endpoint: KernelEndpoint, name: string): Pr
   }
 }
 
+class TerminalCancelled extends Error {
+  constructor() { super('Открытие терминала отменено: терминал закрыли.') }
+}
+function currentAttempt(term: Term, generation: number): boolean {
+  return term.generation === generation && !term.closing && terms.get(term.sessionId) === term
+}
+function checkAttempt(term: Term, generation: number): void {
+  if (!currentAttempt(term, generation)) throw new TerminalCancelled()
+}
+function invalidateAttempt(term: Term): void {
+  term.generation++
+  term.closing = true
+  // A new explicit open need not wait for a canceled, slow HTTP response.
+  term.opening = null
+  for (const socket of term.connecting) socket.terminate()
+  term.connecting.clear()
+}
+async function createForAttempt(term: Term, endpoint: KernelEndpoint, generation: number): Promise<void> {
+  checkAttempt(term, generation)
+  const name = await createJupyterTerminal(endpoint)
+  if (!currentAttempt(term, generation)) {
+    // This PTY was never handed to term.name, so closeTerminal could not own
+    // its cleanup. Never overwrite the name belonging to a newer attempt.
+    try { await deleteJupyterTerminal(endpoint, name) }
+    catch (error) { console.error(`[terminal] late PTY cleanup failed for ${term.sessionId}:`, errText(error)) }
+    throw new TerminalCancelled()
+  }
+  // Transfer cleanup ownership synchronously with the generation check. An
+  // assignment in the caller after await would reopen a microtask race.
+  term.name = name
+}
+
 function socketUrl(endpoint: KernelEndpoint, name: string): string {
   const base = new URL(endpoint.url)
   const scheme = base.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1110,7 +1149,8 @@ const sendStdin = (term: Term, data: string) => sendFrame(term, ['stdin', data])
 const sendSize = (term: Term) =>
   sendFrame(term, ['set_size', TERM_ROWS, TERM_COLS, TERM_ROWS * 16, TERM_COLS * 8])
 
-function connect(term: Term): Promise<void> {
+function connect(term: Term, generation: number): Promise<void> {
+  checkAttempt(term, generation)
   const name = term.name
   if (!name) return Promise.reject(new Error('подключаться не к чему — у оболочки нет имени'))
 
@@ -1122,6 +1162,7 @@ function connect(term: Term): Promise<void> {
       socket = new WebSocket(socketUrl(term.endpoint, name), {
         headers: { Authorization: `token ${term.endpoint.token}` },
       })
+      term.connecting.add(socket)
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)))
       return
@@ -1145,6 +1186,12 @@ function connect(term: Term): Promise<void> {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      term.connecting.delete(socket)
+      if (!currentAttempt(term, generation)) {
+        socket.terminate()
+        reject(new TerminalCancelled())
+        return
+      }
       /*
        * Прежний сокет к тому же pty закрывается здесь, а не «когда-нибудь».
        *
@@ -1166,7 +1213,7 @@ function connect(term: Term): Promise<void> {
 
     socket.on('message', (data: RawData) => {
       // Кадры осиротевшего сокета — не наш вывод: его команда давно у другого.
-      if (term.socket !== socket) return
+      if (term.socket !== socket || !currentAttempt(term, generation)) return
       const text = frameText(data)
       if (text === null) return
       let parsed: unknown
@@ -1186,6 +1233,7 @@ function connect(term: Term): Promise<void> {
     })
 
     socket.on('error', (err: Error) => {
+      term.connecting.delete(socket)
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -1193,6 +1241,7 @@ function connect(term: Term): Promise<void> {
     })
 
     socket.on('close', () => {
+      term.connecting.delete(socket)
       clearTimeout(timer)
       const ours = term.socket === socket
       if (ours) term.socket = null
@@ -1204,7 +1253,7 @@ function connect(term: Term): Promise<void> {
       // Закрылся не тот сокет, которым терминал пользуется сейчас: это уборка
       // за собой, а не обрыв. Переподключаться на неё — плодить третий.
       if (!ours) return
-      if (term.closing || term.phase === 'closed' || term.phase === 'dead') return
+      if (!currentAttempt(term, generation) || term.phase === 'closed' || term.phase === 'dead') return
       term.primed = false
       scheduleReconnect(term)
     })
@@ -1224,7 +1273,7 @@ function closeSocket(term: Term): void {
 
 /** Somebody typed `exit` (or Ctrl-D): the pty is gone, not broken. */
 function onShellExit(term: Term): void {
-  term.closing = true
+  invalidateAttempt(term)
   clearTimers(term)
   clearRunning(term)
   detachOutput(term)
@@ -1358,6 +1407,7 @@ function scheduleReconnect(term: Term): void {
 function reconnect(term: Term): Promise<void> {
   if (term.closing || term.phase === 'closed' || !term.name) return Promise.resolve()
   if (term.opening) return term.opening
+  const generation = term.generation
   /*
    * Переподключение держится тем же полем, что и открытие, и это чинит окно.
    *
@@ -1370,14 +1420,28 @@ function reconnect(term: Term): Promise<void> {
    */
   const run = (async () => {
     try {
-      await connect(term)
+      if (kernelBackend() === 'broker') {
+        const current = await endpointForSession(term.sessionId, sessionEnvironment(term.sessionId))
+        checkAttempt(term, generation)
+        if (endpointIdentity(current) !== endpointIdentity(term.endpoint)) {
+          term.name = null
+          term.endpoint = current
+          rememberPty(term)
+          fail(term, 'Ядро занятия было пересоздано. Прежняя оболочка завершилась; откройте терминал заново.')
+          return
+        }
+        term.endpoint = current
+      }
+      await connect(term, generation)
+      checkAttempt(term, generation)
       sendSize(term)
       startPrime(term, false)
     } catch (err) {
+      if (!currentAttempt(term, generation)) return
       console.error(`[terminal] reconnect failed for ${term.sessionId}:`, errText(err))
       scheduleReconnect(term)
     } finally {
-      term.opening = null
+      if (term.generation === generation) term.opening = null
     }
   })()
   term.opening = run
@@ -1393,6 +1457,7 @@ export function openTerminal(sessionId: string): Promise<void> {
   if (term.opening) return term.opening
   if (term.socket && term.socket.readyState === WebSocket.OPEN) return Promise.resolve()
   if (term.reconnectTimer) return waitFor(term)
+  const generation = ++term.generation
 
   term.opening = (async () => {
     term.closing = false
@@ -1409,12 +1474,13 @@ export function openTerminal(sessionId: string): Promise<void> {
        * запуске ячейки, и по той же причине.
        */
       const endpoint = await endpointForSession(sessionId, sessionEnvironment(sessionId))
+      checkAttempt(term, generation)
       /*
        * Смена адреса обесценивает запомненное имя: pty с этим именем живёт в
        * другом контейнере, и попытка к нему подключиться в лучшем случае
        * промахнётся, а в худшем приведёт нас в чужую оболочку.
        */
-      if (endpoint.url !== term.endpoint.url) term.name = null
+      if (endpointIdentity(endpoint) !== endpointIdentity(term.endpoint)) term.name = null
       term.endpoint = endpoint
 
       /*
@@ -1426,22 +1492,27 @@ export function openTerminal(sessionId: string): Promise<void> {
        * заводил новую оболочку, а `python train.py`, запущенный в старой,
        * оставался считать в никуда.
        */
-      const restored = term.name === null ? rememberedPty(term, endpoint.url) : null
+      const restored = term.name === null ? rememberedPty(term, endpointIdentity(endpoint)) : null
       if (restored) term.name = restored
 
       const remembered = term.name !== null
-      if (!term.name) term.name = await createJupyterTerminal(endpoint)
+      if (!term.name) await createForAttempt(term, endpoint, generation)
+      checkAttempt(term, generation)
       let fresh = !remembered
       try {
-        await connect(term)
+        await connect(term, generation)
+        checkAttempt(term, generation)
       } catch (err) {
+        checkAttempt(term, generation)
         // A remembered pty that will not take a connection is gone (container
         // restarted, terminal reaped). Allocate a fresh one rather than making
         // someone click Open twice to find that out.
         if (!remembered) throw err
-        term.name = await createJupyterTerminal(endpoint)
+        await createForAttempt(term, endpoint, generation)
+        checkAttempt(term, generation)
         fresh = true
-        await connect(term)
+        await connect(term, generation)
+        checkAttempt(term, generation)
       }
       rememberPty(term)
       // Вернулись в ту же оболочку — значит, команда, помеченная «идёт», может
@@ -1459,6 +1530,7 @@ export function openTerminal(sessionId: string): Promise<void> {
        */
       startPrime(term, !resumed)
     } catch (err) {
+      if (!currentAttempt(term, generation)) throw new TerminalCancelled()
       term.name = null
       // Порт контейнера комнаты случайный и запоминается пулом; после
       // `docker restart` он другой. Забыть — иначе следующая попытка пойдёт по
@@ -1468,7 +1540,7 @@ export function openTerminal(sessionId: string): Promise<void> {
       fail(term, message)
       throw new Error(message)
     } finally {
-      term.opening = null
+      if (term.generation === generation) term.opening = null
     }
   })()
 
@@ -1798,7 +1870,7 @@ export function clearTerminal(sessionId: string): void {
 export async function closeTerminal(sessionId: string): Promise<void> {
   const term = terms.get(sessionId)
   if (!term) return
-  term.closing = true
+  invalidateAttempt(term)
   clearTimers(term)
   clearRunning(term)
   detachOutput(term)
@@ -1842,7 +1914,7 @@ export async function shutdownTerminals(): Promise<void> {
   const all = [...terms.values()]
   terms.clear()
   for (const term of all) {
-    term.closing = true
+    invalidateAttempt(term)
     clearTimers(term)
     closeSocket(term)
     rejectWaiters(term, new Error('сервер останавливается'))

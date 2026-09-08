@@ -130,6 +130,8 @@ process.env.PORT = String(PORT)
 process.env.PUBLIC_URL = `http://127.0.0.1:${PORT}`
 // Ядра нет и не нужно: стенд про перо, а не про Python.
 process.env.JUPYTER_URL = 'http://127.0.0.1:1'
+process.env.NODE_ENV = 'test'
+process.env.KERNEL_BACKEND = 'test'
 process.env.KERNEL_ISOLATION = 'off'
 process.env.STATIC_DIR = path.resolve('web/dist')
 process.env.OPENAI_API_KEY = 'pencil-check-not-a-real-key'

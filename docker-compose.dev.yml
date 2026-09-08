@@ -1,18 +1,5 @@
-# Development override: run only the kernel in Docker, the app on the host.
-#
-#   mkdir -p workspace && chmod 777 workspace
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up kernel -d
-#   npm run dev
-#
-# Публикация 8888 на петлю — это и есть весь override: без неё сервер с хоста
-# ядра не видит. ./workspace монтируется в обоих составах, поэтому файлы у
-# `make up` и `make run` одни и те же.
+# Optional image-build override. Room kernels are always separate containers.
+# Host development: make dev; NODE_ENV=development KERNEL_BACKEND=docker npm run dev
 services:
   kernel:
-    ports:
-      # Только на петлю. Без адреса Docker публикует на всех интерфейсах, и в
-      # аудиторном Wi-Fi по http://<ip-ноутбука>:8888/?token=... открывался
-      # полный Jupyter: терминал, файлы всех семинаров и DELETE любого ядра.
-      - "127.0.0.1:8888:8888"
-    volumes:
-      - ./workspace:/workspace
+    profiles: [image-build]

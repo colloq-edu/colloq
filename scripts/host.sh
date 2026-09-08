@@ -128,7 +128,9 @@ esac
 # PORT нужен до старта туннеля: на него cloudflared и будет светить.
 PORT="$(grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ' || true)"
 PORT="${PORT:-3000}"
-LOCAL="http://localhost:${PORT}"
+CLUSTER="${COLLOQ_CLUSTER:-$(read_env COLLOQ_CLUSTER)}"
+if [ "$CLUSTER" = 1 ]; then PORT=30080; fi
+LOCAL="http://127.0.0.1:${PORT}"
 
 # Шаблон с иксами, а не просто имя: BSD mktemp дописывает случайный хвост
 # сам, а GNU требует «XXXXXX» в шаблоне и без них падает с «too few X's».
@@ -168,7 +170,7 @@ cleanup() {
   # Только если её ставили мы: отказ на первом шаге — «докера нет», «инстанс
   # нездоров» — не повод переписывать чужую настройку, к которой мы ещё не
   # прикасались.
-  if [ -n "$TOUCHED_ENV" ] && [ -f .env ] && grep -qE '^PUBLIC_URL=https://' .env 2>/dev/null; then
+  if [ "${WHO:-}" != cluster ] && [ -n "$TOUCHED_ENV" ] && [ -f .env ] && grep -qE '^PUBLIC_URL=https://' .env 2>/dev/null; then
     restore_public_url
     # Вернуть строку в .env мало тому, кто читает её один раз, при запуске.
     #
@@ -248,6 +250,8 @@ step "проверяю colloq на ${LOCAL}"
 #
 if curl -sf -o /dev/null --max-time 5 "$LOCAL/api/health" 2>/dev/null; then
   say "${DIM}    уже работает — ничего не трогаю${OFF}"
+elif [ "$CLUSTER" = 1 ]; then
+  die "k3s application is not ready at $LOCAL. Inspect: bash scripts/cluster.sh status; bash scripts/cluster.sh logs"
 elif { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; } \
      || { [ -f "${PIDFILE:-.colloq.pid}" ] && kill -0 "$(cat "${PIDFILE:-.colloq.pid}" 2>/dev/null)" 2>/dev/null; }; then
   #
@@ -302,7 +306,9 @@ fi
 # розданный со ссылкой на localhost, — это семинар, на который никто не зашёл.
 PIDFILE="${PIDFILE:-.colloq.pid}"
 WHO="other"
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; then
+if [ "$CLUSTER" = 1 ]; then
+  WHO="cluster"
+elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; then
   WHO="service"
 elif docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running; then
   WHO="container"
@@ -924,6 +930,9 @@ step "перезапускаю приложение с внешним адрес
 set_public_url "$PUBLIC"
 TOUCHED_ENV=1
 case "$WHO" in
+  cluster)
+    bash scripts/cluster.sh public-url "$PUBLIC"
+    ;;
   service)
     # Службу НЕ перезапускаем, и это исправление.
     #

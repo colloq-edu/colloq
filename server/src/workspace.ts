@@ -1,8 +1,15 @@
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { createAnchoredFilesystem } from './secure-files.js'
 import path from 'node:path'
 import { config } from './config.js'
 import type { FileEntry } from '@shared/protocol'
 import { MAX_DEPTH, MAX_PATH, baseOf, kindOf, normalizePath, parentOf } from '@shared/paths'
+
+export const workspaceFs = createAnchoredFilesystem(config.workspaceDir, {
+  allowUnsafeDevelopment: process.env.NODE_ENV !== 'production' &&
+    (process.env.NODE_ENV === 'test' || process.env.COLLOQ_UNSAFE_DEV_FILES === '1'),
+})
 
 /**
  * Each session gets a directory under the shared /workspace volume. The kernel
@@ -11,8 +18,8 @@ import { MAX_DEPTH, MAX_PATH, baseOf, kindOf, normalizePath, parentOf } from '@s
  */
 export function sessionDir(sessionId: string): string {
   const dir = path.join(config.workspaceDir, sessionId)
-  const made = !fs.existsSync(dir)
-  fs.mkdirSync(dir, { recursive: true })
+  const made = !workspaceFs.existsSync(dir)
+  workspaceFs.mkdirSync(dir, { recursive: true })
   /*
    * Права выставляются явно, а не оставляются на umask процесса.
    *
@@ -28,7 +35,7 @@ export function sessionDir(sessionId: string): string {
    */
   if (made && process.platform !== 'win32') {
     try {
-      fs.chmodSync(dir, 0o2775)
+      workspaceFs.chmodSync(dir, 0o2775)
     } catch {
       // Не наша папка — значит и права не наши. Работа комнаты от этого не
       // зависит: если писать нельзя, об этом скажет первая же запись.
@@ -76,7 +83,7 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
   const walk = (rel: string, depth: number): void => {
     let names: string[]
     try {
-      names = fs.readdirSync(path.join(root, rel))
+      names = workspaceFs.readdirSync(path.join(root, rel))
     } catch {
       return
     }
@@ -85,8 +92,8 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
       const full = path.join(root, here)
       if (TEMP_FILE.test(name)) {
         try {
-          if (fs.statSync(full).mtimeMs < cutoff) {
-            fs.rmSync(full, { force: true })
+          if (workspaceFs.statSync(full).mtimeMs < cutoff) {
+            workspaceFs.rmSync(full, { force: true })
             // Временных имён в дереве и так нет, но обход их считал в потолок
             // записей: убрали — значит, посчитанное устарело.
             forgetTree(sessionId)
@@ -101,7 +108,7 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
       // самых временных, которые разобраны выше.
       if (name.startsWith('.') || depth + 1 >= MAX_DEPTH) continue
       try {
-        if (fs.lstatSync(full).isDirectory()) walk(here, depth + 1)
+        if (workspaceFs.lstatSync(full).isDirectory()) walk(here, depth + 1)
       } catch {
         /* исчезла */
       }
@@ -127,13 +134,13 @@ export function sweepStaleUploads(sessionId: string, olderThanMs = 60 * 60 * 100
 export function sweepAllStaleUploads(olderThanMs?: number): void {
   let rooms: string[]
   try {
-    rooms = fs.readdirSync(config.workspaceDir)
+    rooms = workspaceFs.readdirSync(config.workspaceDir)
   } catch {
     return // тома ещё нет — значит и мести нечего
   }
   for (const room of rooms) {
     try {
-      if (!fs.lstatSync(path.join(config.workspaceDir, room)).isDirectory()) continue
+      if (!workspaceFs.lstatSync(path.join(config.workspaceDir, room)).isDirectory()) continue
     } catch {
       continue
     }
@@ -157,7 +164,7 @@ export function resolveInSession(sessionId: string, name: string): string | null
    */
   let realDir: string
   try {
-    realDir = fs.realpathSync(dir)
+    realDir = workspaceFs.realpathSync(dir)
   } catch {
     return null
   }
@@ -179,9 +186,10 @@ function contained(full: string, realDir: string): boolean {
   let probe = full
   for (let up = 0; up <= MAX_DEPTH + 2; up++) {
     try {
-      const real = fs.realpathSync(probe)
+      const real = workspaceFs.realpathSync(probe)
       return real === realDir || real.startsWith(realDir + path.sep)
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false
       const parent = path.dirname(probe)
       if (parent === probe) return false
       probe = parent
@@ -270,7 +278,7 @@ function stampHolds(stamp: TreeStamp): boolean {
   for (const dir of stamp) {
     let now: fs.Stats
     try {
-      now = fs.lstatSync(dir.path)
+      now = workspaceFs.lstatSync(dir.path)
     } catch {
       // Папку унесли — дерево точно не то. Пересчитать.
       return false
@@ -329,13 +337,13 @@ function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
      */
     let mtimeMs: number | null = null
     try {
-      mtimeMs = fs.lstatSync(dir).mtimeMs
+      mtimeMs = workspaceFs.lstatSync(dir).mtimeMs
     } catch {
       /* исчезла — ниже это увидит и readdir */
     }
     let names: string[]
     try {
-      names = fs.readdirSync(dir)
+      names = workspaceFs.readdirSync(dir)
     } catch {
       return []
     }
@@ -353,7 +361,7 @@ function walkTree(sessionId: string): { tree: FileTree; stamp: TreeStamp } {
         // points at, and listing it as one is how a link to a secret became a
         // download button. A symlinked DIRECTORY is refused by the same line —
         // it is neither isFile nor isDirectory under lstat.
-        stat = fs.lstatSync(path.join(root, here))
+        stat = workspaceFs.lstatSync(path.join(root, here))
       } catch {
         continue /* vanished between readdir and stat; skip */
       }
@@ -422,7 +430,7 @@ export function sessionBytes(sessionId: string): number {
   const walk = (rel: string, depth: number): void => {
     let names: string[]
     try {
-      names = fs.readdirSync(path.join(root, rel))
+      names = workspaceFs.readdirSync(path.join(root, rel))
     } catch {
       return
     }
@@ -431,7 +439,7 @@ export function sessionBytes(sessionId: string): number {
       try {
         // lstat: символическая ссылка занимает свой размер, а не размер цели —
         // и уж точно не даёт списать на комнату чужой гигабайт.
-        const stat = fs.lstatSync(path.join(root, here))
+        const stat = workspaceFs.lstatSync(path.join(root, here))
         if (stat.isFile()) total += stat.size
         else if (stat.isDirectory() && depth + 1 < MAX_DEPTH) walk(here, depth + 1)
       } catch {
@@ -490,9 +498,9 @@ function whyFailed(err: unknown): TreeResult {
 export function makeDir(sessionId: string, rel: string): TreeResult {
   const full = resolveInSession(sessionId, rel)
   if (!full) return 'bad-name'
-  if (fs.existsSync(full)) return 'exists'
+  if (workspaceFs.existsSync(full)) return 'exists'
   try {
-    fs.mkdirSync(full, { recursive: true })
+    workspaceFs.mkdirSync(full, { recursive: true })
     forgetTree(sessionId)
     return 'ok'
   } catch (err) {
@@ -507,12 +515,12 @@ export function makeDir(sessionId: string, rel: string): TreeResult {
 export function makeFile(sessionId: string, rel: string, text = ''): TreeResult {
   const full = resolveInSession(sessionId, rel)
   if (!full) return 'bad-name'
-  if (fs.existsSync(full)) return 'exists'
+  if (workspaceFs.existsSync(full)) return 'exists'
   try {
-    fs.mkdirSync(path.dirname(full), { recursive: true })
+    workspaceFs.mkdirSync(path.dirname(full), { recursive: true })
     // 'wx' — отказ, а не перезапись, если файл появился между проверкой и
     // записью. Две вкладки, нажавшие «новый файл» одновременно, — не выдумка.
-    fs.writeFileSync(full, text, { flag: 'wx' })
+    workspaceFs.writeFileSync(full, text, { flag: 'wx' })
     forgetTree(sessionId)
     return 'ok'
   } catch (err) {
@@ -547,8 +555,8 @@ function spelledSame(source: string, target: string): boolean {
   const now = path.basename(target)
   if (was === now || was.toLowerCase() !== now.toLowerCase()) return false
   try {
-    const one = fs.lstatSync(source)
-    const two = fs.lstatSync(target)
+    const one = workspaceFs.lstatSync(source)
+    const two = workspaceFs.lstatSync(target)
     return one.ino !== 0 && one.ino === two.ino && one.dev === two.dev
   } catch {
     return false
@@ -575,7 +583,7 @@ function spelledSame(source: string, target: string): boolean {
 function outgrows(full: string, levels: number, chars: number): 'ok' | 'too-deep' | 'too-long' {
   let entries: fs.Dirent[]
   try {
-    entries = fs.readdirSync(full, { withFileTypes: true })
+    entries = workspaceFs.readdirSync(full, { withFileTypes: true })
   } catch {
     // Не папка — обычный случай, переезжает файл, — или её не прочитать.
     return 'ok'
@@ -611,12 +619,12 @@ function outgrows(full: string, levels: number, chars: number): 'ok' | 'too-deep
  */
 function linked(source: string, target: string): boolean {
   try {
-    fs.linkSync(source, target)
+    workspaceFs.linkSync(source, target)
   } catch (err) {
     if (whyFailed(err) === 'exists') throw err
     return false
   }
-  fs.unlinkSync(source)
+  workspaceFs.unlinkSync(source)
   return true
 }
 
@@ -635,7 +643,7 @@ export function movePath(sessionId: string, from: string, to: string): TreeResul
   const source = resolveInSession(sessionId, from)
   const target = resolveInSession(sessionId, to)
   if (!source || !target || !landing) return 'bad-name'
-  if (!fs.existsSync(source)) return 'missing'
+  if (!workspaceFs.existsSync(source)) return 'missing'
   // Переезд в никуда: оно уже лежит там, куда просят его положить. Отказывать
   // не в чем — а `existsSync` ниже отвечал на это «уже есть», то есть находил
   // столкновение файла с самим собой. Комната до сюда и не доходит: `tree:move`
@@ -652,19 +660,19 @@ export function movePath(sessionId: string, from: string, to: string): TreeResul
    */
   if (target.startsWith(source + path.sep)) return 'bad-name'
   const same = spelledSame(source, target)
-  if (!same && fs.existsSync(target)) return 'exists'
+  if (!same && workspaceFs.existsSync(target)) return 'exists'
   const inside = outgrows(source, MAX_DEPTH - landing.split('/').length, MAX_PATH - landing.length)
   if (inside !== 'ok') return inside
   try {
-    fs.mkdirSync(path.dirname(target), { recursive: true })
+    workspaceFs.mkdirSync(path.dirname(target), { recursive: true })
     /*
      * Смена написания и папка едут `rename`: на первой `link` ответил бы
      * «занято» самой записью, а жёстких ссылок на каталоги не бывает вовсе.
      * Непустой каталог `rename` не заменит — ответит ENOTEMPTY; пустой
      * заменит, и терять в нём нечего.
      */
-    if (same || fs.lstatSync(source).isDirectory()) fs.renameSync(source, target)
-    else if (!linked(source, target)) fs.renameSync(source, target)
+    if (same || workspaceFs.lstatSync(source).isDirectory()) workspaceFs.renameSync(source, target)
+    else if (!linked(source, target)) workspaceFs.renameSync(source, target)
     forgetTree(sessionId)
     return 'ok'
   } catch (err) {
@@ -684,9 +692,9 @@ export function deleteFile(sessionId: string, name: string): boolean {
   const full = resolveInSession(sessionId, name)
   if (!full) return false
   try {
-    const stat = fs.lstatSync(full)
-    if (stat.isDirectory()) fs.rmSync(full, { recursive: true, force: true })
-    else fs.unlinkSync(full)
+    const stat = workspaceFs.lstatSync(full)
+    if (stat.isDirectory()) workspaceFs.rmSync(full, { recursive: true, force: true })
+    else workspaceFs.unlinkSync(full)
     forgetTree(sessionId)
     return true
   } catch {
@@ -731,32 +739,27 @@ export interface TextFile {
  * все: расширение врёт (студент назвал архив `data.csv`), а содержимое нет.
  * Открыть архив в редакторе — это показать мусор и предложить его сохранить.
  */
-export function readText(sessionId: string, rel: string): TextFile | null {
+export function readText(sessionId: string, rel: string, maxBytes = MAX_TEXT_BYTES): TextFile | null {
   const full = resolveInSession(sessionId, rel)
   if (!full) return null
   let stat: fs.Stats
+  let held: ReturnType<typeof workspaceFs.openRead>
   try {
-    stat = fs.lstatSync(full)
+    held = workspaceFs.openRead(full)
+    stat = fs.fstatSync(held.fd)
   } catch {
     return null
   }
-  if (!stat.isFile()) return null
-  const truncated = stat.size > MAX_TEXT_BYTES
+  const truncated = stat.size > maxBytes
   let buf: Buffer
   try {
-    if (!truncated) buf = fs.readFileSync(full)
-    else {
-      const fd = fs.openSync(full, 'r')
-      try {
-        buf = Buffer.alloc(MAX_TEXT_BYTES)
-        const read = fs.readSync(fd, buf, 0, MAX_TEXT_BYTES, 0)
-        buf = buf.subarray(0, read)
-      } finally {
-        fs.closeSync(fd)
-      }
-    }
+    buf = Buffer.alloc(Math.min(stat.size, maxBytes))
+    const read = fs.readSync(held.fd, buf, 0, buf.length, 0)
+    buf = buf.subarray(0, read)
   } catch {
     return null
+  } finally {
+    held.close()
   }
   const binary = buf.subarray(0, 8192).includes(0)
   return {
@@ -782,16 +785,16 @@ export function writeText(sessionId: string, rel: string, text: string): boolean
   if (!full) return false
   const tmp = path.join(
     path.dirname(full),
-    `.${baseOf(rel)}.saving-${process.pid}-${Date.now().toString(36)}`,
+    `.${baseOf(rel)}.saving-${randomUUID()}`,
   )
   try {
-    fs.mkdirSync(path.dirname(full), { recursive: true })
-    fs.writeFileSync(tmp, text)
-    fs.renameSync(tmp, full)
+    workspaceFs.mkdirSync(path.dirname(full), { recursive: true })
+    workspaceFs.writeFileSync(tmp, text, { flag: 'wx' })
+    workspaceFs.renameSync(tmp, full)
     forgetTree(sessionId)
     return true
   } catch {
-    fs.rmSync(tmp, { force: true })
+    try { workspaceFs.rmSync(tmp, { force: true }) } catch { /* parent was replaced */ }
     return false
   }
 }
@@ -804,7 +807,7 @@ export function statPath(
   const full = resolveInSession(sessionId, rel)
   if (!full) return null
   try {
-    const stat = fs.lstatSync(full)
+    const stat = workspaceFs.lstatSync(full)
     if (!stat.isFile() && !stat.isDirectory()) return null
     return { dir: stat.isDirectory(), size: stat.size, modifiedAt: stat.mtimeMs }
   } catch {

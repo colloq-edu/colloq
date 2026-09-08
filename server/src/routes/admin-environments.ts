@@ -1,3 +1,4 @@
+import { usingRuntimeBroker, kernelRuntimeClient, loadRuntimeCatalog } from '../kernel/runtime-client.js'
 /**
  * The Environments screen's routes.
  *
@@ -26,8 +27,7 @@ import {
   writeSource,
 } from '../environments.js'
 import { sessionsOnEnvironment } from '../db.js'
-import { expectKernelChurn } from '../kernel/index.js'
-import { gpuBusy, gpuDevices, isolationAvailable } from '../kernel/pool.js'
+import { gpuBusy, gpuDevices } from '../kernel/pool.js'
 import {
   ENVIRONMENT_NAME,
   type AdminErrorBody,
@@ -56,6 +56,7 @@ const MAX_SOURCE = 16 * 1024
  * открытие экрана ради заведомо пустого списка платить не за что.
  */
 async function gpuState(): Promise<{ total: number; free: number }> {
+  if (usingRuntimeBroker()) return {total:0,free:0}
   const devices = gpuDevices()
   if (devices.length === 0) return { total: 0, free: 0 }
   const busy = new Set(await gpuBusy())
@@ -99,7 +100,9 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
        * действительно забирает переменные у открытых семинаров. Признак едет
        * вместе со списком, потому что показывают его там же.
        */
-      shared: !(await isolationAvailable()),
+      shared: false,
+      managed: usingRuntimeBroker(),
+      gpuCapacityKnown: !usingRuntimeBroker(),
       /*
        * Срезы — рядом со списком по той же причине, что и `shared`: смотрят на
        * них там же. Без этого числа преподаватель заводит семинар на
@@ -120,6 +123,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
   })
 
   router.put('/api/admin/environments/:name', requireStaff, (req: Request, res: Response) => {
+    if (usingRuntimeBroker()) return fail(res,409,'managed_environment','Images are managed by the release catalog. Build and import a new version outside the web application.')
     const name = String(req.params.name)
     const body = req.body as Partial<SaveEnvironmentRequest> | undefined
     if (!ENVIRONMENT_NAME.test(name)) {
@@ -172,6 +176,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
   })
 
   router.delete('/api/admin/environments/:name', ownerOnly('delete an environment'), (req, res) => {
+    if (usingRuntimeBroker()) return fail(res,409,'managed_environment','Images are managed by the release catalog. Build and import a new version outside the web application.')
     const name = String(req.params.name)
     if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', 'that is not an environment name')
     if (name === activeName()) {
@@ -285,15 +290,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
      * ячейки студента — объяснялось «кто-то переключил окружение», и
      * преподаватель шёл искать админа вместо своей ячейки.
      */
-    const shared = !(await isolationAvailable())
-    if (shared) {
-      // Пересоздание контейнера снимет ядро у всех, кто сейчас считает, и без
-      // этой строки каждая такая комната услышит «ядру не хватило памяти».
-      expectKernelChurn(
-        `Someone switched this instance to the ${name} environment, so the kernel was replaced.`,
-      )
-    }
-    const result = await activate(name, shared)
+    const result = await activate(name, false)
     if (!result.ok) {
       return fail(res, 500, 'failed', `The kernel did not come back: ${result.out.slice(-400)}`)
     }

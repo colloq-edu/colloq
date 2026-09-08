@@ -99,6 +99,13 @@ const errText = (err: unknown) => (err instanceof Error ? err.message : String(e
 export interface KernelEndpoint {
   url: string
   token: string
+  /** Pod/container incarnation, independent of its stable network address. */
+  instanceId?: string
+}
+
+/** A replacement behind the same Service DNS must not inherit a remembered PTY. */
+export function endpointIdentity(endpoint: KernelEndpoint): string {
+  return endpoint.instanceId ? `${endpoint.url}\0${endpoint.instanceId}` : endpoint.url
 }
 
 /** The instance-wide kernel: what a seminar gets when it names no environment. */

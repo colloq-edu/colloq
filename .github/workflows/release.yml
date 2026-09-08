@@ -1,0 +1,93 @@
+name: Publish immutable release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing v-prefixed git tag to publish
+        required: true
+      k3s_version:
+        description: Exact tested k3s release (vX.Y.Z+k3sN)
+        required: true
+      environments:
+        description: Comma-separated environment names
+        default: base,cv,gpu
+        required: true
+      gpu_toolkit_version:
+        description: Exact NVIDIA apt package version (required for GPU catalogs)
+        required: false
+      gpu_device_plugin_image:
+        description: NVIDIA device-plugin registry image @sha256 digest (required for GPU catalogs)
+        required: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check tag, test and build
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          test "$(git describe --tags --exact-match HEAD)" = "$VERSION"
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build
+      - name: Refuse published version reuse
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "This release already exists. Choose a new version." >&2
+            exit 1
+          fi
+      - name: Build and publish digest-pinned images
+        env:
+          VERSION: ${{ inputs.version }}
+          K3S_VERSION: ${{ inputs.k3s_version }}
+          ENVIRONMENTS: ${{ inputs.environments }}
+          REPOSITORY: ${{ github.repository }}
+          GPU_TOOLKIT_VERSION: ${{ inputs.gpu_toolkit_version }}
+          GPU_DEVICE_PLUGIN_IMAGE: ${{ inputs.gpu_device_plugin_image }}
+        run: |
+          prefix="ghcr.io/${REPOSITORY,,}"
+          python3 scripts/release-build.py --version "$VERSION" --k3s-version "$K3S_VERSION" \
+            --registry "$prefix" --environments "$ENVIRONMENTS" --source-commit "$(git rev-parse HEAD)" \
+            --gpu-toolkit-version "$GPU_TOOLKIT_VERSION" --gpu-device-plugin-image "$GPU_DEVICE_PLUGIN_IMAGE"
+          python3 scripts/release.py validate --release release.json
+          tar -czf colloq-deploy.tar.gz release.json scripts/cluster.sh scripts/release.py scripts/state-lock.py \
+            scripts/backup.sh scripts/runtime-backup.py scripts/restore.sh scripts/host.sh scripts/lib.sh deploy/k3s
+          sha256sum release.json colloq-deploy.tar.gz > SHA256SUMS
+      - name: Attach release artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release already exists; publish a new version instead of replacing immutable artifacts." >&2
+            exit 1
+          fi
+          gh release create "$VERSION" release.json colloq-deploy.tar.gz SHA256SUMS \
+            --verify-tag --title "$VERSION" --generate-notes

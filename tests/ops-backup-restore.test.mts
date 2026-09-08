@@ -69,7 +69,7 @@ function machine(): Machine {
   return {
     dir,
     make: (target) =>
-      execFileSync('make', ['--no-print-directory', '-C', dir, target], {
+      execFileSync('make', ['--no-print-directory', '-C', dir, target === 'backup' ? 'backup-legacy' : target], {
         encoding: 'utf8',
         env: { ...process.env },
       }),
@@ -227,4 +227,15 @@ test('файл, который не база sqlite, не разворачива
   assert.notEqual(r.status, 0)
   assert.match(r.out, /sqlite/i)
   assert.ok(!fs.existsSync(path.join(m.dir, 'data/colloq.db')), 'битую копию на место не кладут')
+})
+
+test('SQLite quick_check output must be ok even when sqlite3 exits successfully', () => {
+  const m = machine(); seedDb(m.dir, 'keep')
+  fs.mkdirSync(path.join(m.dir, 'backups'))
+  fs.renameSync(path.join(m.dir, 'data/colloq.db'), path.join(m.dir, 'backups/check.db'))
+  fs.mkdirSync(path.join(m.dir, 'bin'))
+  fs.writeFileSync(path.join(m.dir, 'bin/sqlite3'), '#!/bin/sh\necho "database integrity error"\nexit 0\n', { mode: 0o755 })
+  const r = m.restore(['backups/check.db'], { PATH: path.join(m.dir, 'bin') + ':' + process.env.PATH })
+  assert.notEqual(r.status, 0, r.out)
+  assert.ok(!fs.existsSync(path.join(m.dir, 'data/colloq.db')), 'non-ok database must not be installed')
 })

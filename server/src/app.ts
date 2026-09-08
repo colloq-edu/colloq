@@ -1,3 +1,4 @@
+import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, loadRuntimeCatalog, runtimeDefaultEnvironment } from './kernel/runtime-client.js'
 /**
  * Приложение целиком: middleware, маршруты, статика — и ничего про процесс.
  *
@@ -308,7 +309,22 @@ async function kernelHealth(): Promise<{ ok: boolean; reason: string | null }> {
 async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
   // Общее ядро compose кэша не заводит: у `jupyterReachable` он свой, на те же
   // пять секунд, и второй копии здесь взяться неоткуда.
-  if (!(await isolationAvailable())) return jupyterReachable()
+  try {
+    requireKernelIsolation()
+    if (kernelBackend() === 'test') return jupyterReachable()
+    if (kernelBackend() === 'broker') {
+      loadRuntimeCatalog()
+      runtimeDefaultEnvironment()
+      const health=await kernelRuntimeClient().health()
+      kernelProbe={at:Date.now(),...health}
+      return health
+    }
+    if (!(await isolationAvailable())) throw new Error('Room isolation is unavailable. Kernel execution is disabled.')
+  } catch (error) {
+    const health={ok:false,reason:error instanceof Error?error.message:'Kernel runtime is unavailable'}
+    kernelProbe={at:Date.now(),...health}
+    return health
+  }
 
   const active = activeName()
   let ok = false
@@ -338,6 +354,8 @@ async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
  * через семьдесят секунд отвечает KERNEL DEAD. Проверяются обе вещи, без
  * которых семинара не будет: своя база и Python комнаты.
  */
+app.get('/api/livez', (_req,res)=>{res.setHeader('Cache-Control','no-store');res.json({ok:true})})
+
 app.get('/api/health', (_req, res) => {
   const began = process.hrtime.bigint()
   // "The process answered" says nothing about whether it answered *quickly*. A

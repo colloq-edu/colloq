@@ -1,5 +1,6 @@
 # ---------- build ----------
-FROM node:22-bookworm-slim AS build
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 
 # better-sqlite3 falls back to a source build when no prebuild matches.
@@ -16,18 +17,21 @@ RUN apt-get update \
 COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY web/package.json web/
+COPY runtime/package.json runtime/
 RUN npm ci --no-audit --no-fund
 
 COPY shared/ shared/
 COPY server/ server/
 COPY web/ web/
+COPY runtime/ runtime/
 
 RUN npm run build -w @colloq/web \
  && npm run build -w @colloq/server \
+ && npm run build -w @colloq/runtime \
  && npm prune --omit=dev
 
 # ---------- runtime ----------
-FROM node:22-bookworm-slim AS runtime
+FROM ${NODE_IMAGE} AS app-base
 WORKDIR /app
 ENV NODE_ENV=production
 
@@ -46,31 +50,6 @@ COPY server/package.json ./package.json
 # правки из панели переживают пересборку образа.
 COPY kernel/environments ./kernel/environments
 
-# Клиент docker, чтобы у комнаты был свой контейнер и под `make up`.
-#
-# Ядро на семинар сервер поднимает сам, `docker run` — а в контейнере не было
-# ни клиента, ни сокета, поэтому все комнаты делили одно ядро compose и видели
-# файлы друг друга. Здесь только КЛИЕНТ, четырнадцать мегабайт; демон остаётся
-# на хосте, и разговаривает с ним сервер через сокет, который compose монтирует
-# рядом. Нет сокета или нет прав на него — клиент честно не отвечает, и комната
-# откатывается на общее ядро, как раньше.
-COPY --from=docker:28-cli /usr/local/bin/docker /usr/local/bin/docker
-
-# И buildx рядом с ним: без плагина `docker build` не работает вовсе.
-#
-# Окружение из панели собирается прямым `docker build` над примонтированным
-# каталогом kernel (docker-compose.yml остаётся на хосте, и compose отсюда
-# падал бы «no configuration file provided»). Но клиент, начиная с 23-го,
-# строит через BuildKit, а BuildKit — это отдельный плагин: без него ответ
-# «BuildKit is enabled but the buildx component is missing», и кнопка Build
-# снова мертва. Классический сборщик подхватился бы сам (DOCKER_BUILDKIT=0), но
-# он объявлен устаревшим и однажды исчезнет из демона — молча унеся с собой ту
-# же кнопку. Шестьдесят мегабайт против гигабайтов образов ядра, которые она
-# собирает.
-COPY --from=docker:28-cli \
-  /usr/local/libexec/docker/cli-plugins/docker-buildx \
-  /usr/local/libexec/docker/cli-plugins/docker-buildx
-
 RUN mkdir -p /data /workspace && chown -R node:node /data /workspace /app
 USER node
 
@@ -80,3 +59,23 @@ ENV PORT=3000 \
     STATIC_DIR=/app/public
 EXPOSE 3000
 CMD ["node", "dist/server.js"]
+
+# Explicit workstation development target; never used for a production release.
+FROM app-base AS development
+USER root
+COPY --from=docker:28-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:28-cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+USER node
+ENV NODE_ENV=development KERNEL_BACKEND=docker
+
+# Small private controller: no Docker client, host socket, or build context.
+FROM ${NODE_IMAGE} AS broker
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app/runtime/dist/runtime.js ./runtime.js
+USER node
+EXPOSE 8787
+CMD ["node", "runtime.js"]
+
+# Default and published app image excludes every development-only capability.
+FROM app-base AS production

@@ -42,7 +42,7 @@ import {
   writePublication,
 } from '../server/src/publish/store.js'
 import { adminInstanceRoutes } from '../server/src/routes/admin-instance.js'
-import { sessionDir } from '../server/src/workspace.js'
+import { sessionDir, workspaceFs } from '../server/src/workspace.js'
 
 let base = ''
 let server: http.Server
@@ -184,4 +184,57 @@ test('удаляет владелец, и только он', async () => {
 test('семинара нет — 404, а не бодрое «удалено»', async () => {
   const res = await remove('no-such-seminar')
   assert.equal(res.status, 404)
+})
+
+test('failed runtime termination keeps seminar, files, snapshot and publication for a retry', async () => {
+  const id = 'delete-broker-failure'
+  seminarWithEverything(id, 'Do not lose work')
+  const pub = publicationOf(id)!
+  const snapshot = loadDocSnapshot(id)
+  const old = {...process.env}
+  const tokenFile = path.join(process.env.DATA_DIR!, 'deletion-runtime-token')
+  fs.writeFileSync(tokenFile, 't'.repeat(64))
+  let fail = true
+  const methods: string[] = []
+  const broker = http.createServer((req, res) => {
+    methods.push(`${req.method} ${req.url}`)
+    res.writeHead(fail ? 503 : 200, {'content-type':'application/json'})
+    res.end(JSON.stringify(fail ? {error:'Kubernetes unavailable'} : {ok:true}))
+  })
+  await new Promise<void>(resolve => broker.listen(0, '127.0.0.1', resolve))
+  Object.assign(process.env, {KERNEL_BACKEND:'broker', KERNEL_ISOLATION:'required', KERNEL_RUNTIME_TOKEN_FILE:tokenFile,
+    KERNEL_RUNTIME_URL:`http://127.0.0.1:${(broker.address() as {port:number}).port}`})
+  try {
+    assert.equal((await remove(id, '?reading=drop')).status, 503)
+    assert.ok(getSession(id))
+    assert.deepEqual(loadDocSnapshot(id), snapshot)
+    assert.ok(versionCount(id) > 0)
+    assert.ok(getPublication(pub.id))
+    assert.equal(fs.readFileSync(path.join(sessionDir(id),'handout.csv'),'utf8'),'a,b\n1,2\n')
+    fail = false
+    assert.equal((await remove(id, '?reading=drop')).status, 204)
+    assert.equal(getSession(id), null)
+    assert.equal(getPublication(pub.id), null)
+    assert.deepEqual(methods, [`DELETE /v1/rooms/${id}?retire=true`,`DELETE /v1/rooms/${id}?retire=true`])
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in old)) delete process.env[key]
+    Object.assign(process.env,old)
+    await new Promise<void>(resolve => broker.close(() => resolve()))
+  }
+})
+
+
+test('incomplete filesystem cleanup retains database tracking and reports failure until retry', async (t) => {
+  const id = 'delete-files-failure'
+  seminarWithEverything(id, 'Retry cleanup')
+  const publication = publicationOf(id)!
+  const removal = t.mock.method(workspaceFs, 'rmSync', () => { throw new Error('simulated filesystem I/O failure') })
+  assert.equal((await remove(id, '?reading=drop')).status, 503)
+  assert.ok(getSession(id), 'failed cleanup must retain a row that can be retried')
+  assert.ok(getPublication(publication.id))
+  assert.ok(fs.existsSync(path.join(sessionDir(id), 'handout.csv')))
+  removal.mock.restore()
+  assert.equal((await remove(id, '?reading=drop')).status, 204)
+  assert.equal(getSession(id), null)
+  assert.equal(getPublication(publication.id), null)
 })

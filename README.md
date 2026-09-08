@@ -14,178 +14,122 @@ signup, no email, no course management — the link *is* the seminar.
 │ data.csv     │  In [1]: import torch         │  Ask AI...   │
 │ PEOPLE       │  In [2]: model = ...          │              │
 │ 🟢 Alex      ├───────────────────────────────┤              │
-│              │  $ pip install timm           │              │
+│              │  $ python analysis.py           │              │
 └──────────────┴───────────────────────────────┴──────────────┘
 ```
 
 ## Run it
 
-```bash
-make up
-# without make: cp .env.example .env && mkdir -p data workspace && docker compose up --build
-```
+Production runs on one Linux amd64 VM with k3s/containerd. The web app runs as
+UID 1000, without a Docker socket or Kubernetes credentials. A private runtime
+broker creates a separate Jupyter Pod, token and filesystem view for each seminar.
+A missing runtime, image or policy fails execution; rooms never fall back to a
+shared instance-wide kernel.
 
-The `mkdir` is not decoration. `./data` and `./workspace` are bind-mounted, and a bind mount
-whose source does not exist yet is created by the Docker daemon as `root` — while the server
-runs as `node` and cannot then write its own session key. `make up` does it for you, and it also
-works out the group that owns `/var/run/docker.sock` and writes it to `.env` as `DOCKER_GID`,
-which is what lets each seminar get a kernel container of its own (see *Isolation*).
-
-The first boot prints a setup token. Open <http://localhost:3000/admin>, paste it in with your
-name and email, and the instance is yours — then create a seminar and share the link it gives you.
-
-`make` with no target lists everything. The two that matter are `make host` and
-`make env-use`; both have a section below.
-
-That is the laptop shape, and it is the right one for trying Colloq out or running a class
-off your own machine. A machine whose *job* is hosting seminars — including a rented one —
-runs the server on the host under systemd instead, with only the room kernels in Docker:
-`make service-install`, described in *On a dedicated machine*.
-
-### Backing it up
+Use an explicit published release and its matching deployment bundle:
 
 ```bash
-make backup     # → backups/colloq-<date>.db
-                #   backups/colloq-<date>-files.tar.gz
-make restore    # puts the newest pair back
+python3 scripts/release.py validate --release release.json
+sudo scripts/cluster.sh install --release release.json --env-file instance.env
+sudo scripts/cluster.sh smoke
 ```
 
-The `.db` is the database — the seminars, the staff list, the version history, the
-oracle settings. The archive beside it is everything the database does not hold:
-`./workspace` (what the rooms uploaded), the setup token, and the signing key when the
-server generated one rather than reading `SESSION_SECRET` from `.env`. Both files are
-mode 0600, and the archive is not "the seminar's files" to forward to a colleague: it
-carries the keys to the instance.
+For private images, add `--registry-config /path/to/pull-only-config.json`.
+The release records real app/broker/kernel image digests, `sourceCommit`, exact
+k3s and GPU tooling versions, and hashes of its archived deployment tools.
+Installation rejects modified or mismatched tooling. Builds use a Git archive of
+that commit, so untracked and edited working-tree files cannot become release code.
 
-Both are written in one pass so that they belong to the same minute, and the pass is
-safe to run mid-seminar. Copying `data/colloq.db` by hand is not — SQLite runs in WAL
-mode, so part of the day sits in `colloq.db-wal` beside it and a copy of the one file
-alone can be hours behind. `make backup` writes a single consistent file instead.
+The app is available to the host proxy at `127.0.0.1:30080`. Use `make host` or
+`make host-direct` to give students an HTTPS address. Keep broker and Kubernetes
+ports private. GPU releases preserve the host driver, install pinned container
+runtime tooling and device plugin, and must pass a real CUDA operation.
 
-Restoring used to be described as putting the two back, and the two are three: the WAL
-journal beside the database is the third, and a restored database with the previous
-journal still next to it is corrupted quietly. `make restore` is the other half of
-`make backup` — it refuses to run while a server is up, moves the old database aside
-*with* its journal instead of deleting it, and unpacks the archive over `./workspace`
-rather than replacing it. `DB=` and `FILES=` name specific files when the newest pair is
-not the one you want, and `NAME=` names a rented environment: its copies live in
-`backups/<name>/` rather than in the root, which belongs to this machine's own instance
-(see *Several environments at once*).
+Read [single-node installation and operations](deploy/k3s/README.md),
+[the runtime boundary](runtime/README.md), and [Vast VM deployment](docs/deployment-vast.md).
+The installer refuses an unmanaged existing k3s installation and an existing
+legacy `colloq.service` unit. An old root
+`colloq.service` installation is a migration: stop and remove the old unit,
+preserve/export its data,
+and prepare a clean k3s deployment before importing a compatible portable backup.
+The compatibility `service-*` commands now manage k3s; they do not update the old
+root systemd service or silently convert its database directories into PVCs.
 
-What it deliberately does not restore is the environment images: rebuilding them
-(`make env-build NAME=…`) is cheaper than carrying tens of gigabytes around.
+### Backing it up and restoring
 
-### One instance, three ways to start it
-
-`make up` runs everything in Docker. `make run` builds and runs the server on your
-machine with only the kernel in Docker — faster after a code change, which is why it
-exists. `make service-install` puts the server on the machine itself under systemd and
-leaves only the room kernels in Docker; that is the shape for a machine that hosts
-classes, and it has a section of its own below. **They are the same instance:** all
-three keep the database in `./data` and the seminars' files in `./workspace`, next to
-this README, so a seminar created one way opens the other way and a backup is a copy of
-two folders.
-
-They cannot run at the same time — all three want port 3000 — and each of them says so
-rather than failing halfway. `make up` is the one to use on a laptop unless you are
-changing code; `make down` stops the Docker one, `make stop` the host one,
-`make service-stop` the service.
-
-Two of the three open that port on **every interface of the machine**: under `make run` the
-server binds them all, and under `make up` Compose publishes there. In a lecture hall that
-means the room also answers at `http://<the laptop's ip>:3000` — past the link you handed
-out, past the tunnel, and with nothing on screen to say so; the server prints one line about
-it in the log at startup. `BIND_ADDR=127.0.0.1` in `.env` is the loopback-only shape, and it
-means the same thing both ways (the server binds the loopback; Compose publishes on it), with
-`make host` as the way in for the class. The systemd service sets it already.
-
-Before this they were two instances: `make up` kept its data in Docker named volumes
-(`colloq_data`, `colloq_workspace`) and `make run` in `./data` and `./workspace`. If
-you have seminars in the old volumes, move them over once before starting:
+Application state is under `/var/lib/colloq`: separate `data` and `workspace`
+local volumes, persistent secrets/configuration, and installed release metadata.
+Local volumes survive Pod replacement, but do not survive losing the VM disk.
+Keep verified backups off the machine.
 
 ```bash
-docker run --rm -v colloq_data:/from -v "$PWD/data":/to alpine cp -a /from/. /to/
-docker run --rm -v colloq_workspace:/from -v "$PWD/workspace":/to alpine cp -a /from/. /to/
-docker volume rm colloq_data colloq_workspace
+sudo make backup MODE=consistent   # stop app, broker and every room writer
+sudo scripts/cluster.sh start      # resume deliberately after the backup
+sudo make backup MODE=live         # SQLite snapshot plus independently copied files
+sudo make restore ARCHIVE=backup.tar.gz RELEASE=release.json REPLACE=1
+sudo scripts/cluster.sh prepare --release release.json
+sudo scripts/cluster.sh start
 ```
 
-### On a dedicated machine
+A live backup is **not an atomic snapshot** of the database and workspace.
+Consistent backup stops every writer and loses active Python memory. Portable
+archives include database, workspace, application/runtime secrets, configuration
+and the release/catalog required to interpret them. Images remain in the registry.
+`make restore-legacy DB=old.db FILES=old-files.tar.gz` is the explicit old local
+backup format; it is refused over an installed cluster.
 
-A machine whose job is to host seminars — a box under a desk, a university VM, or one
-rented by the hour — runs the server *on the host* under systemd, with only the room
-kernels in Docker:
+Backup, restore and cluster mutations share one reentrant operation lock.
+An interrupted restore leaves a durable `.restore-in-progress` marker; starts
+and deployment changes refuse to run until recovery finishes. Repeat the verified
+restore with `RECOVER=1 REPLACE=1` when recovering that interrupted operation.
+After restore, schema compatibility comes from the restored release, rather than
+stale installed-version metadata. That override is consumed before the app can
+run a database migration. A rollback across incompatible schemas needs the
+matching backup, not just an older image.
 
 ```bash
-git clone <this repo> /opt/colloq && cd /opt/colloq
-sudo make service-install     # Ubuntu/Debian
+sudo scripts/cluster.sh update --release next-release.json
+sudo scripts/cluster.sh rollback --release previous-release.json
+sudo scripts/cluster.sh status
+sudo scripts/cluster.sh logs
 ```
 
-That one command checks that nothing else is holding the port, writes `.env` if it is
-missing, installs Docker when it is absent, installs Node 20 from nodesource, runs
-`npm ci` and the build, builds the kernel image of the active environment, gives
-`./workspace` the ownership that image needs, writes `/etc/systemd/system/colloq.service`
-out of `deploy/colloq.service`, enables it, and waits until `/api/health` says the
-instance can actually hold a class. Every step is idempotent, so it is also the update command:
+Use the deployment tools from the chosen release for either operation. Updates
+and rollbacks take a consistent backup and replace the single app/broker and
+room workloads. They have maintenance downtime; notebook files survive, Python
+variables do not. A k3s version change is a separate, explicitly planned upgrade.
+
+### Local development
 
 ```bash
-git pull && sudo make service-install     # rebuild and restart
-make service-status                       # alive? and ready to teach?
-make service-logs                         # journalctl -u colloq -f
-make service-restart                      # after editing .env by hand
-make service-stop                         # the room kernels keep running
-make host HOST=hse.colloq.ru              # the address the room opens (via the relay)
-sudo make host-direct HOST=hse.colloq.ru  # …or straight off this machine, if it has
-                                          # a public address and real 80/443
+make up                         # explicit Docker development target
+# Or develop the app on the host:
+npm ci
+make dev                        # build the room kernel image; no shared Jupyter service
+NODE_ENV=development KERNEL_BACKEND=docker npm run dev
 ```
 
-**Why not `make up` here.** It broke twice on dedicated machines, and both times the
-cause was the same: a server inside a container cannot see what is around it. The data
-directories were created by the Docker daemon as `root` while the server inside runs as
-uid 1000, so the database would not open at all and the container looped on restarts.
-And the panel could not build an environment, because building one *is*
-`docker-compose.yml`, `kernel/Dockerfile` and `.env` — none of which exist inside the
-image. On the host all three lie next to the server, the panel is fully powered, and
-there is no second user to disagree with.
+Docker development still uses a separate container per room. Access to the Docker
+socket is restricted to this explicit development backend, which is not a
+production security boundary. `make up` builds the kernel image before starting
+the app. `make run` builds and launches the host server with the same explicit
+backend. Both use local `data/` and `workspace/`.
 
-**The price, said out loud.**
+The example sets `BIND_ADDR=127.0.0.1`. Without that setting, the development
+server and Compose publication default to every interface of the machine,
+including classroom Wi-Fi. In Compose the setting controls the host port;
+the app inside its container must listen on all interfaces.
 
-- **The service runs as root.** It is stated in `deploy/colloq.service` along with the
-  reason: the server needs `/var/run/docker.sock` to give each room a kernel of its own,
-  and access to that socket *is* root on the host — "a normal user in the `docker`
-  group" is the same power under a politer name. The other half is ownership: the
-  kernel container writes the seminars' files as uid 1000, and root is the only user
-  that reads and edits both its own files and those without a single `chown`. It is the
-  same power the server already had under `make up` (the socket is mounted into the
-  container) and under `make run`; what is new is only that it is now said in a unit
-  file. Nothing has to be opened inbound for any of it — the instance reaches the room
-  through an outbound tunnel, see below — and the machine is dedicated to this.
-- **Node lives on the machine.** Node 20 from nodesource — the distributions' own
-  packages are older than the project builds against, and `nvm` installs into a shell
-  that systemd never sees. The build happens on the machine too: `npm ci` and Vite take
-  a few minutes on the first install.
-- **Updating is `git pull`, a build and a restart** — that is, `sudo make
-  service-install`. There is no image to pull, and the seminar is down for the couple of
-  seconds the restart takes. Rooms come back without anybody reloading (see *Surviving a
-  restart*).
+Native macOS filesystem development requires an additional deliberate
+`COLLOQ_UNSAFE_DEV_FILES=1` opt-in, for example:
 
-**One subtlety worth knowing, because it is invisible.** Under the other two ways of
-starting, the server and the kernel happen to run as the same uid 1000 — `node` inside
-the app container, or you on your own machine — and they share `./workspace` without
-anyone having to arrange it. As a service the server is root and the kernel is still uid
-1000, so the share has to be built: the unit sets `UMask=0002` and the installer gives
-`./workspace` the kernel's group and the setgid bit. New room folders then come out
-group-writable and inherit that group, and both sides write the same bytes. Without the
-pair, the first `open('out.csv', 'w')` in a cell fails with `PermissionError` on a screen
-where everything looks green. The group number is asked of the built kernel image rather
-than assumed to be 1000, because an environment built on top of somebody else's CUDA base
-can end up with a different one.
+```bash
+COLLOQ_UNSAFE_DEV_FILES=1 NODE_ENV=development KERNEL_BACKEND=docker npm run dev
+```
 
-Two `.env` lines matter here and only here. `WORKSPACE_HOST_DIR` must be empty: the
-server reads it as "I am inside a container" and would then put the room's kernel on the
-compose network and address it by container name, which does not exist from the host —
-`make service-install` refuses to install over it. And `KERNEL_ISOLATION=off` means
-something different on this shape: there is no shared compose kernel running here, so it
-leaves the rooms with no Python at all rather than with one they share.
+This unsafe filesystem mode is never a production option. Linux production
+requires descriptor-anchored filesystem access through `/proc/self/fd` and fails
+closed if that secure filesystem capability is unavailable.
 
 ## Giving the room a link
 
@@ -354,7 +298,7 @@ Three things happen, in this order, and the order is the point.
    the staff cookie's `Secure` flag is decided by it.
 
 Then `PUBLIC_URL` is rewritten and the app restarted, exactly as the tunnel transports do
-(systemd service, container, or `make run` — whichever is holding the port).
+(k3s app, development container, or `make run` — whichever is holding the port).
 
 **The window is not what holds the address.** `caddy` is a systemd service; it survives the
 closed terminal, the dropped ssh and the reboot, and Ctrl+C does not take the seminar down.
@@ -375,297 +319,59 @@ is left alone.
 
 ## Renting a machine
 
-A seminar with neural networks needs a GPU, and the university's A100 is either busy or
-not there at all. `make vast-up` rents one by the hour on vast.ai, puts Colloq on it and
-hands it the data from your latest backup:
+Vast deployment selects an on-demand **VM**, provisions the same release-bound
+k3s installation, restores only that named instance's backup, and checks room
+execution before publishing success. It requires an explicit release file and
+matching archived tooling; it does not rsync a mutable working tree and build it
+on the rented machine.
 
 ```bash
-make vast-up       # find a VM, rent it, deploy, restore the data
-make vast-status   # what is rented, whether it and its address answer, what it has cost
-make vast-sync     # pull the data back here
-make vast-logs     # pull the logs back here, to find out what happened in class
-make vast-down     # destroy the machine, and everything on it with it
+make vast-up NAME=hse RELEASE=/path/to/release.json HOST=hse.colloq.ru
+make vast-status NAME=hse
+make vast-sync NAME=hse
+make vast-logs NAME=hse
+make vast-down NAME=hse
 ```
 
-`VAST_TOKEN` in `.env` is the key (made once at <https://cloud.vast.ai/manage-keys/>). It
-is never printed, never passed on a command line — `ps` shows those to everyone on the
-machine — and never copied to the rented box: that box is already paid for.
+`vast-up` can create a paid VM, and `vast-down` destroys its disk. The commands
+retain the price and destruction confirmations, SSH identity checks and named
+backup directories. Before renting, declare public images or provide a pull-only
+registry configuration; private repository credentials are not forwarded as
+application credentials. GPU availability includes a CUDA operation, not just an
+app health response. Vast VM disks require independent off-node backups.
 
-The rented box is a dedicated machine like any other, and it is set up the way the
-section above describes: Docker (plus the NVIDIA container toolkit when there is a card)
-and `frpc` for the tunnel, then `make service-install` — Node, the build, the kernel
-image and the systemd service. The repository lives in `/opt/colloq` there, the `.env`
-travels with it minus the keys that pay for things, and the server runs on the host
-rather than in a container, which is what makes the panel able to build environments on
-the machine that has the GPU. Watching it live is `ssh … 'journalctl -u colloq -f'`; a code
-change is another `make vast-up`, which rsyncs the repository and re-runs the same
-idempotent install.
-
-### What happened in class
-
-Afterwards is a different question from live, and it needs more than one log: the server
-writes to the systemd journal, and every room's kernel writes to its own container. One
-command brings all of it here:
-
-```bash
-make vast-logs NAME=hse              # today, into logs/hse/<date>/
-make vast-logs NAME=hse SINCE=-2h    # the last two hours
-make vast-logs NAME=hse SINCE=yesterday
-```
-
-`SINCE` is said in `journalctl`'s own words and defaults to `today`. What lands is
-`colloq.log` — the service journal — next to one file per room kernel, named after its
-container, **including the stopped ones**: a container that was stopped on the break
-still holds the log that says why.
-
-**Secrets are cut out on the way, not afterwards.** The journal carries request lines
-with their query strings, and one-time file tokens ride in those; it also carries the
-setup-token link the server prints on every boot while nobody owns the instance, and that
-link *is* the key to the whole instance. So the filter sits on the pipe — nothing
-unredacted ever touches the disk here. It replaces the value of `token`/`key`/`sig` and
-their relatives in query strings, `Authorization` and `Cookie` headers, participant
-tokens (`body.signature`, recognisable by shape), provider keys (`sk-…`) and
-`SOMETHING_SECRET=…` lines with `<вырезано>`. It is `scrub` in `scripts/vast.sh`, and it
-is deliberately a shape-matcher rather than a list of known names: missing one is worth
-more than over-cutting. Names and cell contents are not a concern — the server never
-writes those to the log at all, only numbers and room ids.
-
-`logs/` is git-ignored, like `backups/`.
-
-**What is in the service journal.** A whole day of it used to be ninety lines, all of
-them failures — you could not tell from it how many rooms had been live, or when a kernel
-died. It now writes two different kinds of thing, both through the same `console` every
-other line here goes through; there is no second logger.
-
-Once a minute, one summary line, and only when something is going on:
-
-```
-[minute] rooms 2 · people 41 · kernels 2 live (1 busy) · frames 1204 · gate refused 3
-```
-
-Zero counters are left out, and an instance with no live room and nothing counted writes
-nothing at all — 1440 lines a night saying "nothing happened" hide the real thing exactly
-as well as an empty journal does. `frames` is accepted CRDT sync frames, which is the one
-honest measure of a room being *worked in*; the rest are refusals.
-
-And one line per thing that actually happened: `[room <id>] opened`, `[kernel <id>] up`,
-`[kernel <id>] died`, `[kernel <id>] oom`, `[gate <id>] edit refused — <why>`,
-`[join <id>] refused`, and `[ai] request failed …`. The ones that can arrive as an
-avalanche — a gate refusal, a room hitting the join limit, a kernel that will not
-start — are said once a minute per room and counted the rest of the time.
-
-`[join …]` is the exception that is deliberately per-request: one short line for every
-person who joins, saying whether they came back as themselves or got a new row, and if
-new, which check failed (`no id`, `no token`, `bad token`, `other room`, `other person`,
-`row gone`), plus the role and where it came from (`staff`, `host-token`, `link`). Five
-hundred students is five hundred lines, which a journal carries fine — and without them a
-room accumulating five hundred rows of the same person cannot be explained at all.
-
-Nothing personal goes in: no participant names, no avatars, no cell contents, no token
-material. Numbers, room ids and participant ids only.
-
-An aborted request — a student who closed the tab mid-load — is not logged at all, only
-counted as `aborted N` in the summary. On a lecture of five hundred those were hundreds
-of four-line stack traces about the server having done nothing wrong.
-
-One command covers a whole class — rent a machine with a named card, deploy, restore the
-newest backup this environment has here, and put the room on its address:
-
-```bash
-make vast-up GPU="RTX 5070" HOST=demo.colloq.ru
-```
-
-`GPU=` is the card for today and outranks `VAST_GPU` in `.env`. Naming a card also drops
-the default 24 GB memory floor, because a named card *is* the memory decision: an RTX 5070
-has 12 GB, and the floor turned "I want a 5070" into "no offers" without a word about
-which condition threw them out. A `VAST_GPU_RAM` line you write into `.env` yourself still
-applies — and still hides the 5070.
-
-`HOST=` is the address the room opens on, and `vast-up` raises it on the rented machine
-instead of telling you to. A name without a dot is a subdomain of `RELAY_DOMAIN`
-(`demo` → `demo.colloq.ru`); a name with a dot is taken as written, exactly the way
-`make host` reads it. The name and the `RELAY_*` lines are checked *before* renting: a
-machine is billed from its first second, and "that name does not resolve" costs the same
-to find out on either side of that. Cloudflare is not an option from the rented box —
-`cloudflared` is not installed there, and its addresses do not open from Russia anyway —
-so the name has to sit under `RELAY_DOMAIN`. Neither is the direct mode: vast gives a
-rented box only its forwarded ssh port, and real 80 and 443 are not handed out at all
-(the advertised `direct_port_count` is not them), so `make host-direct` there would refuse
-on its own port check. A rented machine reaches the room through the relay, full stop.
-
-On the machine the address is the same `make host`, which holds its terminal for as long
-as the tunnel lives, so `vast-up` starts it in a `tmux` session called `colloq-host`: the
-tunnel then outlives the ssh session, and the closed laptop with it. Then it waits — not
-for tmux to start, but for `https://<name>/api/health` to answer from here, with a
-three-minute ceiling, because a link printed before it answers is handed to the room once
-and debugged for the rest of the hour. If it never answers, the script prints the tail of
-that tmux session and names the three things to look at: the session's log, `RELAY_*` in
-the `.env` on the machine, and whether the name resolves. `make vast-status` asks the same
-two questions later — is `colloq-host` still alive, and does the address answer.
-
-### Several environments at once
-
-One rented machine is one environment. `hse.colloq.ru` and `demo.colloq.ru` are two
-machines, two bills and two databases; all they share is this repository and the relay.
-An environment is named by one word, and it is the same word three times over: the first
-label of the address, the instance's label on vast (`colloq-demo`), and the directory
-its backups live in (`backups/demo/`).
-
-```bash
-make vast-up NAME=demo HOST=demo.colloq.ru
-make vast-status                 # every environment: card, price, spent, address
-make vast-status NAME=demo      # the details of one, as before
-make vast-sync NAME=demo        # into backups/demo/
-make vast-down NAME=demo
-```
-
-`NAME` can be left out when `HOST` is there — the name *is* the first label of the
-address, and asking for the same word twice buys nothing — and it can be left out while
-only one environment is rented: that one is taken, and the script says which. The moment
-there are two, `vast-sync` and `vast-down` refuse without a name and print the list
-instead. Destroying the wrong machine cannot be undone, and deploying one seminar's
-database onto another's address is the same loss with a delay; either costs more than the
-convenience of a word not typed.
-
-Backups are split for that second reason. `make vast-sync NAME=demo` writes into
-`backups/demo/`, and the deploy onto a rented machine takes the newest copy *from that
-directory only*: nothing there means an honestly empty machine, not the neighbour's
-database. The root of `backups/` stays with this machine's own instance — that is where
-`make backup` writes, and what `make restore` reads unless an environment is named.
-Copies already lying there keep working exactly as before; they are simply the unnamed
-environment's.
-
-The machine rented before any of this carries the plain `colloq` label, and it counts as
-that unnamed environment rather than being orphaned. `make vast-up HOST=demo.colloq.ru`
-still reaches it: with no `colloq-demo` around, the script asks that machine which
-address it is serving — `PUBLIC_URL` in its own `.env` — and if the answer is
-`demo.colloq.ru`, renames the label in place (`PUT instances/<id>/`, field `label`, the
-same call that starts a stopped instance) and carries on. Nothing is recreated, the
-tunnel does not blink, and the question is asked once. If the answer is some other
-address, that machine is left alone and a new one is rented for the new environment. If
-it cannot be asked at all — stopped, or SSH silent — nothing is adopted and nothing is
-assumed; `make vast-adopt NAME=demo` does the rename by hand, after showing what it
-knows.
-
-An environment is another machine: another bill by the hour and another set of data. Two
-seminars on one machine would be one database and one address again, which is what the
-split is there to prevent; the relay and this repository are all they are meant to have
-in common.
-
-Three prices, and they are the point of this section rather than footnotes to it.
-
-**Only VMs, which is the expensive half.** vast rents two different things: a Docker
-instance, which is a container on somebody's machine, and a virtual machine —
-`vms_enabled=true`, booted from a `docker.io/vastai/kvm` image. Colloq starts a container
-per room itself, through the Docker socket, and inside a Docker instance vast forbids
-exactly that: "Docker-in-Docker is disabled for security", their own FAQ. The rooms would
-fall back to one shared kernel, where any room reads every other room's files — and the
-fallback is quiet enough to be noticed after the class rather than during it. So a VM it
-is, and VMs are a smaller market: fewer machines, fewer cheap ones, and minutes rather
-than seconds to boot.
-
-**Only on-demand.** Interruptible offers cost about half and are taken away the moment
-somebody bids higher, without warning. That moment lands in the middle of a class, and
-the saving buys nothing.
-
-**The data on it is temporary.** Destroy the instance and the disk goes with it; let the
-balance reach zero and vast destroys it for you. There is no snapshot and no trash. That
-is why `make vast-sync` is half of this work rather than a convenience, why
-`make vast-down` prints when the last backup was taken and asks you to type
-`уничтожить`, and why the machine is deployed *from* a backup instead of starting empty.
-
-What survives a machine being recreated is what `make backup` writes: the database,
-`./workspace`, the signing key and the setup token — plus `.env`, which travels with the
-repository, minus the keys that buy things (`VAST_TOKEN`, `CF_*`). What does not survive
-is the environment images; they are rebuilt there with `make env-build NAME=cv`, or from
-*Build* in the panel — the server builds through the Docker socket, so that works on a rented
-machine too, while making one the default still writes `.env` and stays `make env-use`. What the
-rented machine does gain is its cards: `vast-up` writes them into `KERNEL_GPUS` in the `.env`
-it leaves there, so an environment that declares `# colloq: gpu` gets a slice — see
-*Environments* and the `KERNEL_GPUS` row in *Configuration*.
-
-The room is published *from* the rented machine, with the same `make host` and the same
-relay, because that is where the kernel is. `HOST=` above does this for you; by hand it is:
-
-```bash
-ssh -p <port> root@<host>
-cd /opt/colloq && make host HOST=hse.colloq.ru
-```
-
-`vast-up` installs `frpc` on the machine for it — Cloudflare's addresses do not open from
-Russia, see *Reaching a room from Russia*.
-
-Two things to know before the first run. The SSH key must be registered in the vast
-account *before* renting: a VM's keys cannot be changed once it is running, so a machine
-rented without one is money spent on a box you cannot enter. `vast-up` checks that and
-refuses early rather than late. And what has actually been run against a live account is
-worth knowing exactly: renting, deploying and raising the address were done once, on a
-machine with an RTX 5070 published at `demo.colloq.ru`, and that single run is where four
-of the things this script now handles came from — the SSH proxy a VM does not have, a
-`mktemp` that only works on macOS, the owner of a restored copy, and a second `vast-up`
-onto a machine that is already live. Syncing, destroying and adopting have not been run
-for real at all. They cost real money, so make the first run of them on a cheap offer, and
-not on the day of a class.
-
-That read-only search did turn up one thing worth writing down. vast's own
-`cuda_max_good >= 12.1` filter drops every Blackwell offer, including the RTX 5070 and
-5090, even though those same offers report `cuda_max_good: 13.0` in the response body —
-measured twice in a row against the live account. The condition has not gone away, since
-torch wheels are built for CUDA 12.x and will not run on 11.8; it is applied to the
-response instead of asked of the server, where the answer is truthful. Otherwise the
-filter would have thrown out exactly the cards the machine is being rented for.
+See [the complete Vast procedure](docs/deployment-vast.md) for registry settings,
+GPU requirements, backup transfer and recovery. No rental is needed to run the
+unit tests or develop the app locally.
 
 ## Environments
 
-A seminar's Python is one set of packages. `kernel/requirements.txt` is the base — jupyter,
-numpy, pandas, matplotlib, scikit-learn — and it is always installed. An *environment* is a
-list of packages on top of it, one file per environment in `kernel/environments/`.
+A production environment is a catalog entry pointing to an immutable kernel
+image digest. A seminar stores its selected revision; changing the default or
+publishing a new image does not silently change an existing seminar's Python.
+Older revisions remain in the catalog while rooms reference them. Missing pinned
+revisions fail with an error rather than substituting another environment.
+
+The Environments panel lists available revisions and can choose the default for
+new seminars. Production builds run outside the web app, using
+`scripts/release-build.py` on a workstation or in release CI. Requirements and
+`# colloq: from NAME` inheritance remain under `kernel/environments/`; publish a
+new release/catalog after changing them. The panel does not require a Docker
+socket or a privileged image builder.
+
+For the explicit Docker development backend:
 
 ```bash
-make env-list              # what exists, and which one is the default
-make env-new NAME=nlp      # creates kernel/environments/nlp.txt
-$EDITOR kernel/environments/nlp.txt
-make env-use NAME=nlp      # builds it and makes it the default for new seminars
+make env-list
+make env-new NAME=nlp
+make env-build NAME=nlp
+make env-use NAME=nlp
 ```
 
-Each environment is baked into its own image tag (`colloq-kernel:nlp`), so an environment
-you have built before starts a container rather than another pip install. The base layer is
-shared between them, which is why an environment costs only the packages the base does not
-already have.
-
-**An environment can be built on top of another one.** A line `# colloq: from base-gpu` in
-the header of the file means "build this on top of that environment's image" — pip reads it
-as a comment, and the build reads it as the parent. Without such a line an environment is
-built on the plain base, which is what almost all of them do. It exists for one reason: the
-environment layer is a single layer, so any edit to the list reinstalls all of it, and for a
-list with CUDA torch in it that is three gigabytes of wheels and nine minutes to add `timm`.
-Put the heavy half in a parent — `base-gpu` here carries torch, `gpu` carries transformers on
-top of it — and editing the child costs seconds. The parent is built first when its image is
-missing, both from the panel and from `make env-build`; a loop or a parent that does not
-exist is refused before Docker is started rather than nine minutes into a build. A `# colloq:
-gpu` declaration is inherited too, because its reason is: an image built on top of CUDA
-wheels needs a device whoever asked for it. The Environments screen shows what each one is
-built over, and offers a rebuild when the parent was rebuilt later than the child.
-
-**A seminar's environment is chosen when the seminar is created, and then fixed.** The room
-runs its own container from that image; `make env-use` and *Make default* in the panel set
-what the **next** seminar gets, and leave the ones that exist alone. A room that needs a
-different set of packages is a new seminar — which is also why the choice sits in the form
-that creates one. The reason it works that way: packages changing under a class mid-seminar
-is worse than a class not having the newest ones.
-
-There is one arrangement where it is still instance-wide, and it is the old one: when the server
-cannot start a container per room, every seminar shares the kernel `docker compose` runs. That
-happens with `KERNEL_ISOLATION=off`, and it happens when the server is itself in a container
-(`make up`) and something in the chain below is missing — no `/var/run/docker.sock`, no
-permission on it, no `KERNEL_NETWORK`. Then switching really does restart that one kernel and
-every variable in every open seminar is gone — the notebooks and files untouched, the cells just
-needing to be run again. Nothing about this is silent: the server log says it, the room's kernel
-log says it, and the Environments screen says it. `make env-use` says which of the two happened —
-it looks at `KERNEL_ISOLATION` and at whether any room containers are running, and when neither
-answers (no rooms open, isolation on `auto`) it says that instead of guessing.
-
-To see what is actually installed rather than what was requested: `make env-freeze`.
+These are development image commands. Production GPU requests come from the
+operator-controlled catalog and consume one exclusive `nvidia.com/gpu` device.
+No device is silently shared across rooms. See the
+[release and environment workflow](deploy/k3s/README.md).
 
 ## The teaching side
 
@@ -766,37 +472,38 @@ nothing about whether the class was ended.
 
 ## Configuration
 
-Everything lives in `.env` — see `.env.example` for the full list.
+Use [.env.example](.env.example) for local/operator settings. The k3s installer
+passes only the application allowlist into a Secret and supplies runtime settings
+through its fixed manifests. Runtime credentials and image catalogs are files;
+they are not typed into notebook cells or exposed to browsers.
 
 | Variable | What it does |
 | --- | --- |
-| `PORT` | Port on the host. Change `PUBLIC_URL` with it — neither derives the other |
-| `PUBLIC_URL` | Origin students open; the link they receive is built from this |
-| `BIND_ADDR` | Which address of this machine answers on that port. Empty — the default — is every interface, so on classroom Wi-Fi the room also opens at `http://<ip of this machine>:3000`, past the link you handed out; the server says so in the log on every start until the line is there. `127.0.0.1` is the shape for a laptop and for a dedicated machine, where the way out is an outgoing tunnel (`make host`) — the systemd unit sets it. Under `make up` the server inside the container has to keep listening on all of them, so Compose does not pass the line in: there it limits what Compose publishes on the host instead |
-| `SESSION_SECRET` | Signs participant tokens and staff cookies. Leave empty — generated on first boot and kept in `DATA_DIR`. Set it to rotate |
-| `INSTITUTION` | Who deployed this instance — the line beside the logo on every screen that draws it. Empty by default, and then there is no line at all. Cut at 80 characters: it shares one line with the mark |
-| `ADMIN_EMAIL` | Prefills the address on the first-run claim screen |
-| `OPEN_SEMINAR_CREATION` | Let anyone create a seminar through the API — `POST /api/sessions` with no staff cookie. There is no screen for it: `/` goes to the panel. Default off: staff only |
-| `JUPYTER_TOKEN` | Fallback secret for the shared compose kernel. Each seminar's own container gets its own token, derived from `SESSION_SECRET` |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Any OpenAI-compatible endpoint |
-| `AI_REASONING` | Ask the model for its reasoning trace as well (default off — on a reasoning model the trace costs about as much as the answer) |
-| `KERNEL_MEM` / `KERNEL_CPUS` | Resource ceiling: per seminar where each room runs its own container, otherwise on the one shared kernel. `KERNEL_CPUS` also caps the thread pools inside it (`OMP_NUM_THREADS` and its siblings), because `os.cpu_count()` in a container reports the host's cores and numpy would start thirty threads on two |
-| `KERNEL_GPUS` | Devices the server may hand out to rooms, written the way Docker names them (`MIG-GPU-…`, `0,1`). Empty — the default — is today's behaviour: nobody asks for a GPU. A slice goes to one room for the life of its container and is recorded on it as the label `colloq.gpu=<device>`, which is what survives a server restart. Only an environment that declares `# colloq: gpu` asks for one |
-| `KERNEL_SHM` | `/dev/shm` for a room that got a GPU (default `1g`). Docker's own 64 MB is what breaks a DataLoader with several workers |
-| `KERNEL_ISOLATION` | `auto` (default) gives every seminar its own container, with only its own folder mounted. `off` shares one kernel, and then any room can read every other room's files on that machine. All three ways of starting can do the per-room thing; when the pieces for it are missing the server falls back to the shared kernel and says so — except under the systemd service, where there is no shared kernel running to fall back to |
-| `DOCKER_GID` / `WORKSPACE_HOST_DIR` / `KERNEL_NETWORK` | What a server inside a container needs to give rooms their own kernels: the group of `/var/run/docker.sock`, where `./workspace` lives on the host, and the network to find the room's container on. `make up` fills them in; see *Isolation*. A server on the host (`make run`, the service) needs none of them, and `WORKSPACE_HOST_DIR` in particular has to stay empty there — the server reads it as "I am in a container" |
-| `TZ` | One time zone for the whole instance — the log, the kernel and the dates on published pages (default `Europe/Moscow`) |
-| `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | One file, and everything one seminar holds (default 50 and 1024) |
-| `KERNEL_ENV` | The environment new seminars are created with, and the one baked into the shared kernel. `make env-use` writes it |
-| `RELAY_DOMAIN` / `RELAY_ADDR` / `RELAY_PORT` / `RELAY_TOKEN` | Your own relay instead of Cloudflare — see *Reaching a room from Russia*. Empty means Cloudflare. `make host` reads them to pick the transport by name |
-| `CF_TOKEN` / `CF_ZONE` | Cloudflare token with `Zone:Read` and `DNS:Edit`, and optionally the zone id. `scripts/dns.sh` writes records with it: the whole zone with no arguments, one name for `make host-direct`. Records are always created unproxied — see *Straight off this machine*. Empty means neither works; the tunnels do not need it |
-| `VAST_TOKEN` | Key to the vast.ai account for `make vast-up` and friends — see *Renting a machine*. Empty means nothing is rented; the rest of the `VAST_*` settings are defaults documented in `.env.example` |
+| `PORT` | Development app/host port; production host ingress is fixed at 30080 and the app listens on 3000 inside its Pod |
+| `PUBLIC_URL` | Origin used in student links; update a deployed instance with `cluster.sh public-url https://example.edu` |
+| `BIND_ADDR` | Development bind/publication address. Without a value it is every interface; the example uses `127.0.0.1`. Compose limits the host publication with this variable and keeps the container listener reachable |
+| `KERNEL_BACKEND` | Production: `broker`. Explicit local development: `docker` with `NODE_ENV=development`. The test backend is accepted only with `NODE_ENV=test` |
+| `KERNEL_RUNTIME_URL` | Private broker URL, normally `http://colloq-runtime:8787` inside the cluster |
+| `KERNEL_RUNTIME_TOKEN_FILE` | App-to-broker credential file; generated and mounted by the installer |
+| `KERNEL_CATALOG_FILE` | Validated immutable environment catalog file |
+| `COLLOQ_UNSAFE_DEV_FILES` | Explicit nonproduction native-filesystem opt-in; macOS development requires `1`. Linux production requires secure `/proc/self/fd` access |
+| `SESSION_SECRET` | Signs participant/staff credentials. Empty generates a persistent key in `DATA_DIR`; preserve it in backups |
+| `INSTITUTION` / `ADMIN_EMAIL` | Institution label and the initial owner's address |
+| `OPEN_SEMINAR_CREATION` | Allow anonymous API creation; off by default |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Oracle provider configuration; an empty API key leaves it disabled unless configured in the panel |
+| `AI_REASONING` | Request an additional reasoning field when the provider supports one; off by default |
+| `KERNEL_MEM` / `KERNEL_CPUS` / `KERNEL_GPUS` / `KERNEL_SHM` | Docker-development room limits/devices. Production limits are broker configuration and GPU catalog metadata |
+| `DOCKER_GID` / `WORKSPACE_HOST_DIR` / `KERNEL_NETWORK` | Docker-development socket group, daemon-visible workspace path and room network. `make up` supplies them. Leave `WORKSPACE_HOST_DIR` unset for a host-native development server |
+| `KERNEL_ENV` | Docker-development default environment; production defaults are chosen from the catalog/panel |
+| `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits, not a filesystem quota against arbitrary Python writes |
+| `TZ` | Instance time zone |
+| `RELAY_DOMAIN` / `RELAY_ADDR` / `RELAY_PORT` / `RELAY_TOKEN` | Existing host relay transport settings |
+| `CF_TOKEN` / `CF_ZONE` | Operator DNS credentials; not needed by the app |
+| `VAST_TOKEN` / `VAST_REGISTRY_CONFIG` | Operator rental credential and separate pull-only registry configuration; see the Vast deployment guide |
 
-The AI layer talks plain OpenAI-compatible HTTP, so pointing `OPENAI_BASE_URL` at Ollama, vLLM,
-LM Studio or OpenRouter works without touching code. Leaving `OPENAI_API_KEY` empty simply
-disables the oracle; everything else keeps working. All of it can also be set from
-`/admin` → *Oracle*, where a stored value overrides the environment and clearing it hands the
-setting back to `.env`.
+The Oracle panel can override application provider settings. Model requests use
+an OpenAI-compatible API; choose the endpoint and model appropriate for your own
+installation.
 
 ## How it works
 
@@ -809,7 +516,9 @@ Browser ── WS /collab  ── Yjs sync (notebook + presence)
                       ── kernel/   one shared kernel per session, FIFO run queue
                       ── ai/       context assembled from the server's own Y.Doc
                 │
-        Jupyter Server container ── one per seminar, resource-capped, only that room's folder
+        Private runtime broker ── fixed Kubernetes Pod/Service templates
+                │
+        Jupyter Pod ── one per seminar, digest-pinned, only that room's folder
 ```
 
 Six decisions worth knowing about:
@@ -831,8 +540,9 @@ cells that each need the one before produce thirty tracebacks and only the first
 Cells somebody else queued in the meantime still run — their work is not what broke.
 
 **One shell, shared like everything else.** The drawer under the notebook is a real terminal in the
-kernel's container, in the seminar's own folder — so `pip install seaborn` there changes the
-environment for every cell and everyone in the room, and `ls` lists what the Files panel uploaded.
+kernel's container, in the seminar's own folder — so commands operate on the files and Python state of everyone in that room.
+Production image packages are read-only; persistent environment changes are published
+through a new catalog image. `ls` lists what the Files panel uploaded.
 The transcript is in the document, so it is the same for everybody and it is still there when a
 student joins late; each command carries the face of whoever typed it. One shell means one command
 at a time: a command typed while another is running waits its turn and the room is told whose it
@@ -840,7 +550,8 @@ is. Full-screen programs (`vim`, `top`) are announced rather than rendered — a
 cannot give them a screen.
 
 **Browsers never touch Jupyter.** The kernel token stays on the server, which also serializes the
-run queue. Student code cannot reach the Jupyter API even though it can run arbitrary Python.
+run queue. Python inside a room can reach its own Jupyter process; the security boundary is
+between rooms, with separate tokens, mounts and enforced network policy.
 
 **Local-first editing.** Keystrokes apply to the local Yjs document immediately and sync in the
 background, so typing never waits for a round-trip. The same holds for AI and execution — both are
@@ -852,134 +563,71 @@ into the room.
 
 ### Surviving a restart
 
-The server can be killed mid-seminar — a crash, a deploy, `make restart`, `make
-service-restart` — and the room comes back without anybody reloading a page. Three things make that true, and each of them was
-false at some point:
+Notebook state is periodically snapshotted to SQLite. Graceful shutdown flushes
+pending snapshots; abrupt power loss may lose the latest changes. A new app
+process starts from persisted state and reconciles reconnecting browsers without
+resurrecting old queued/running execution state.
 
-- **The signing key outlives the process.** It is generated once and kept in `DATA_DIR`, so tokens
-  and staff cookies still verify afterwards. Generated per boot, as it was, a restart refused every
-  socket in the room and nobody was told why.
-- **The notebook is on disk before it is reachable.** Snapshots are debounced by seconds while the
-  seminar exists immediately, so a brand-new room is flushed at once. Otherwise the server came
-  back, found nothing stored, decided the room was new, and seeded a second set of starter cells
-  under everyone's real work.
-- **Execution state is rebuilt, not restored.** Cells left `running` or `queued` in the snapshot
-  are put back to rest and the room is told, because nothing is running in a process that has just
-  started. Outputs are kept: a cell that printed three lines before the crash really did print them.
+When only the app restarts and a room Pod is still alive, it can reconnect to that
+Jupyter instance. A replacement Pod has a different instance identity; terminal
+metadata from the previous process is not reused. If the kernel dies or is
+restarted, Python variables disappear and cells must be rerun; notebook text and
+workspace files remain. Kernel failures are reported instead of leaving a queued
+cell looking active indefinitely.
 
-A stopped server (`make restart`, `make stop`, `make service-stop`, a deploy) flushes its snapshot
-on the way out, so what comes back is what was on screen. That is what SIGTERM buys, and it is why
-the unit gives the service twenty seconds to stop rather than the default: the last thing the
-server does is close the database properly, which is also what folds `colloq.db-wal` back in. A server that is *killed* — SIGKILL, the OOM killer, the
-power going — cannot, and neither can a `colloq.db` restored from a backup: the snapshot is
-seconds behind, while each open tab still holds outputs and kernel state written by the previous
-server. The server no longer takes those on faith. It refuses that first frame and says so in the
-room — "Сервер не знает части того, что осталось в кэше этой вкладки, — она собирается заново" —
-and the tab rebuilds itself from the server's copy, once, without a reload. The few seconds
-between the last snapshot and the kill are the part that is genuinely gone.
-
-A room stays in memory once it has been opened, and is released only when the seminar is deleted.
-That is deliberate — the document is what everyone is editing and what a latecomer syncs from — and
-it is measured rather than assumed: eighty rooms opened, worked in and left cost about five
-megabytes between them, and a term's worth of seminars is single-digit megabytes. What does not
-grow is the room itself: thirty people typing and rewriting for a long class left a document of
-16 KB against 12 KB of live text, because Yjs merges the deletions it keeps. Memory taken by the
-people in the room comes back when they leave.
-
-The kernel is the good half. It runs in its own container and Jupyter's session API is idempotent,
-so the server re-attaches to the *same* kernel with every variable still in it. The one thing that
-cannot survive is a cell that was executing: its output has nowhere to go, and until it is stopped
-every Run anybody presses queues silently behind it. It is stopped on re-attach and the room is told.
-
-What the container does not survive is being left alone. A room's container is removed after two
-hours in which nobody was in the room and nothing was running (`IDLE_KERNEL_MS` in
-`server/src/kernel/index.ts`, swept every ten minutes; a cell still computing or a command still
-running in the terminal holds it open). Files stay, the notebook stays, the variables do not: the
-first cell after a long gap answers `NameError`, and the next Run brings a fresh kernel up. Leaving
-a model training over lunch is fine; preparing variables in the morning for a class after lunch is
-not — re-run the cells, or keep the state in a file.
-
-All of that is about restarting the *server*. Restarting the **kernel** is the opposite thing:
-the container the variables live in goes away, Jupyter hands the server a new empty one, and
-nothing on screen disagrees — the old `Out[n]` are still in the notebook and the news arrives as
-the first `NameError`. So `make restart` restarts `app` alone, and a bare `docker compose restart`
-(no service named) is the command not to run mid-seminar, because it takes the kernel with it.
-
-And when the kernel itself dies — OOM-killed by `mem_limit`, culled, or restarted underneath — the
-socket does not say so. Jupyter leaves it open. So the server asks: after ten seconds of silence
-with a cell outstanding, it checks whether the kernel still exists, and a kernel that has gone is
-announced, not waited on. A Run afterwards brings a fresh one up rather than failing once first.
+`cluster.sh stop`, consistent backup, update, rollback and the `service-restart`
+compatibility command stop room writers as well as the app. They do not preserve
+Python memory. Development `make restart` restarts only the Compose app. Plan
+production maintenance between classes and verify recovery with `cluster.sh smoke`.
 
 ### Isolation
 
-Student code runs as a non-root user in a container of its own — one per seminar, started on
-demand from that seminar's environment image, capped by `KERNEL_MEM`, `KERNEL_CPUS` and a pid
-limit, in a separate process from the Node server. Only that room's folder is mounted into it, and
-its Jupyter token is derived from `SESSION_SECRET` rather than shared, so a cell in one seminar can
-neither read another seminar's files nor talk to its kernel. Inside the room nothing changes: a CSV
-dropped in the Files panel is still `pd.read_csv('data.csv')` from a cell.
+Production gives each seminar a non-root Jupyter Pod with a separate token and
+only its validated room workspace subdirectory mounted. The app accesses its
+private broker API; it has neither a container-runtime socket nor Kubernetes
+credentials. The broker alone receives bounded namespace Pod/Service permissions,
+uses fixed workload templates and resolves images from the operator's catalog.
 
-The server starts those containers by talking to Docker, which is why the app container is given
-`/var/run/docker.sock`, the group that owns it (`DOCKER_GID`, which `make up` works out and writes
-to `.env`), the host path of `./workspace` (`WORKSPACE_HOST_DIR` — the daemon resolves `-v` paths
-its own way) and the name of the compose network the rooms join (`KERNEL_NETWORK`, how the server
-addresses a room's Jupyter, which is therefore not published on the host at all). That socket is
-root on the host for the server process — the same power it already has under `make run`, and the
-price of a container per room.
+Pod Security Admission enforces a pinned restricted policy. Room workloads drop
+capabilities, disallow privilege escalation, use RuntimeDefault seccomp and have
+resource limits. Network policy permits Jupyter ingress from app/broker and room
+egress only to cluster DNS. Runtime errors never trigger a shared-kernel fallback.
+Inside one seminar, participants deliberately share the same Python variables,
+terminal and files; isolation is between seminars, not between people in a room.
 
-A server running *on* the host — `make run`, or the systemd service on a dedicated machine — needs
-none of those three: it talks to the daemon directly, `./workspace` is already the path the daemon
-means, and a room's Jupyter is published on `127.0.0.1` with a port the kernel picks, which is an
-address the server can actually reach. `WORKSPACE_HOST_DIR` must be *empty* in that arrangement,
-because the server takes it as the sign that it is itself in a container and would then look for
-the room by container name on a network it is not on.
+Containers share a Linux kernel. Standard NetworkPolicy has a local-node traffic
+exception; the host-port firewall is not a claim that every node service is
+inaccessible from a Pod. Use a tested host-policy-capable CNI/firewall policy when
+that boundary is required. Local PVC capacity is not an enforced per-room disk
+quota, and one node is not high availability. The detailed boundary and required
+checks are in [runtime/README.md](runtime/README.md) and
+[deploy/k3s/README.md](deploy/k3s/README.md).
 
-Take the socket away and everything still works: the rooms fall back to the
-one shared kernel, where any of them can read the others' files, and the server says so in its log,
-in the room's kernel log and on the Environments screen rather than letting the promise stand. That
-shared kernel — the `kernel` service in `docker-compose.yml`, which mounts the whole of `./workspace`
-— sits on a Docker network of its own (`colloq-kernel`) that room containers are not on, so while
-isolation *is* working a cell cannot reach it at all. It used to share the rooms' network, where the
-only thing between a cell and every seminar's files was `JUPYTER_TOKEN`. The
-one place where that safety net is not there is the dedicated machine: nobody starts the compose
-kernel on it, so the fallback has nothing to fall back to and the log line is all there is.
+The Docker backend is available only for explicit local development, always with
+per-room containers. Production cannot select it or an instance-wide Jupyter
+endpoint. Linux production filesystem operations use descriptor-anchored paths;
+unsafe native-filesystem compatibility requires the explicit development opt-in.
 
-This is sandboxing appropriate to a classroom of people you know, not to hostile untrusted input.
-By default anyone with the link can execute Python inside that container — that is what an open room
-is. A room created as a lecture, or one whose `run` rule is the teacher's, does not let them, and
-the refusal is the server's rather than the client's; the container is the same either way.
-
-The same is true of the document. A CRDT everyone edits is a CRDT everyone can write anything
-into, including in somebody else's name: with a console open, a student can add a question
-attributed to the teacher, or a terminal line, or claim that someone else ran a cell. Nothing
-there is a privilege — they still cannot run code as anybody else, reach `/admin`, or read the
-API key, and the server decides who may interrupt or restart from its own record rather than from
-the document. What it means is that attribution inside a seminar is a social fact among people who
-can see each other, not a cryptographic one. The seminar's *name* is the exception, because the
-header offers it to the host alone and it reaches the admin list: a rename written by anyone else
-is put back.
-
-The server also repairs one thing that is nobody's fault. Y.Array has no move operation, so the
-editor reorders a cell by cloning it and deleting the original; two people nudging the same cell at
-the same moment leave the notebook holding it twice under one id, and running, attributing and
-asking about a cell are all keyed by that id. The server keeps the first copy and drops the rest —
-which also means the move happens once rather than being undone.
+Descriptor traversal prevents symlink/path races; it does not split pre-existing
+hardlinked inodes. Production assumes a clean per-room storage tree. When
+migrating from a previously shared runtime, materialize regular files independently
+through validated portable backup/restore, which rejects archive hardlinks and
+symlinks, instead of reusing a potentially cross-linked workspace.
 
 ## Development
 
 ```bash
-npm install                     # workspaces: server + web
-mkdir -p workspace && chmod 777 workspace
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up kernel -d
-npm run dev                     # server on :3000, Vite on :5173 with proxying
+npm ci
+make dev
+NODE_ENV=development KERNEL_BACKEND=docker npm run dev
+# Native macOS additionally requires COLLOQ_UNSAFE_DEV_FILES=1.
 ```
 
-The dev override publishes the kernel's 8888 on the loopback so the host server can reach it;
-`./workspace` is bind-mounted in both arrangements, which is what makes `make up` and `make run`
-the same instance.
-
-`shared/` holds the Y.Doc schema and wire protocol used by both sides — it is the contract to change
-first when adding a feature.
+The app runs on :3000 and Vite on :5173 with proxying. The Docker kernel service
+is an image-build target; actual rooms receive separate containers on demand.
+`shared/` defines the document and runtime protocols used by the app, client and
+private broker. See the local-development section above for port and filesystem
+constraints.
 
 ### Tests
 
@@ -1042,8 +690,8 @@ make load TREE=4 COUNCIL=200 INK=25        # + the three optional sections below
 
 `N` `RAMP` `IDLE` `K` `M` `STORM` `SPID`, and `TREE` `COUNCIL` `EVERY` `INK` for the optional
 sections, all map to `LOAD_*` environment variables the script reads directly; `SPID` is the
-server's pid and is never guessed — `systemctl show -p MainPID colloq` under
-the service, `cat .colloq.pid` under `make run`. The room's own door is set for a full lecture:
+development server's pid and is never guessed — use `cat .colloq.pid` under
+`make run`; production Pod measurements must be collected in the cluster. The room's own door is set for a full lecture:
 a seminar accepts 600 new participants a minute (`MAX_NEW_PARTICIPANTS` in
 `server/src/routes/sessions.ts`), so 500 students arriving inside one minute all get in. It used to
 be 120, and this harness is why it is not: a 500-student run came back 122 in and 378 refused, and

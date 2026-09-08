@@ -287,7 +287,8 @@ async function until(what: () => boolean, ms = 5000): Promise<boolean> {
 /** Push one stdout chunk into whatever request the fake is sitting on. */
 function say(text: string): void {
   const [first] = held
-  if (first) reply(first.socket, first.parent, 'stream', { name: 'stdout', text })
+  assert.ok(first, 'wait for the fake to receive execute_request before injecting output')
+  reply(first.socket, first.parent, 'stream', { name: 'stdout', text })
 }
 
 /** Let the held request finish, the way a kernel does when the cell ends. */
@@ -973,6 +974,10 @@ test('clearing keeps what arrives after it, and drops what came before', async (
   swallowExecutes = true
   requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
   assert.ok(await until(() => room.state() === 'running'))
+  // The room marks the cell running before execute() finishes its asynchronous
+  // liveness/socket checks. Injecting before the fake receives the request used
+  // to silently discard this chunk; a longer output timeout cannot recover it.
+  assert.ok(await until(() => held.length > 0), 'the fake did not receive execute_request')
   say('before the clear\n')
   assert.ok(await until(() => /before the clear/.test(text())), 'nothing was written at all')
 

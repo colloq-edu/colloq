@@ -11,10 +11,7 @@
    * seminar picks its environment when it is created and keeps it, so the
    * active one is only what the NEXT room gets — switching does not move a
    * class that is already running. That is said next to the button rather than
-   * discovered afterwards. Where the rooms of this install have no containers
-   * of their own (`shared` on the list), none of that holds, and the screen
-   * says the other thing instead — one kernel for everybody, and switching
-   * restarts it under a class.
+   * discovered afterwards. Production environments come from the release catalog.
    */
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
@@ -51,15 +48,8 @@
       (reason, i, all): reason is string => reason !== null && all.indexOf(reason) === i,
     ),
   )
-  /*
-   * Комнаты делят одно ядро, и своего контейнера у них нет.
-   *
-   * Приезжает вместе со списком: сервер, который не видит docker (под `make
-   * up`) или которому изоляцию выключили, поднимает не контейнер на комнату, а
-   * общее ядро compose. Комната об этом уже слышит словами в журнале ядра, а
-   * панель до сих пор обещала обратное безусловно.
-   */
-  const sharedKernel = $derived(envs?.shared ?? false)
+  const managed = $derived(envs?.managed ?? false)
+  const gpuCapacityKnown = $derived(envs?.gpuCapacityKnown !== false)
   /*
    * Срезы видеокарты и те, кто их просит.
    *
@@ -427,7 +417,7 @@
   subtitle="Build container images with the Python packages your seminars need."
 >
   {#snippet actions()}
-    <button
+    <button disabled={managed}
       type="button"
       class="inline-flex h-9 items-center gap-2 bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
       onclick={openCreate}
@@ -470,18 +460,11 @@
       </div>
     {/each}
 
-    {#if sharedKernel}
-      <!-- А это как раз про сломанное обещание, а не про способ установки:
-           умолчание обещает контейнер на комнату, и здесь его нет. -->
-      <div class="mb-4 flex items-start gap-2.5 border border-line bg-warning/[0.08] px-3 py-2.5">
-        <Icon name="alert" size={14} class="mt-0.5 shrink-0 text-warning" />
-        <p class="text-2xs leading-relaxed text-muted">
-          Every seminar on this server shares one Python container: rooms read and delete each
-          other’s files, the memory limit is one for all of them, and the environment a seminar was
-          created with is not applied — they all run the default one. Run the server where it can
-          see Docker (make run) to give every room a container of its own.
-        </p>
-      </div>
+    {#if managed}
+      <p class="mb-4 border border-line bg-surface px-4 py-3 text-ui text-muted">
+        Environments come from the release catalog. Each seminar keeps its image revision.
+        Build and import new images with the deployment tools. GPU allocation is handled by Kubernetes when a room starts.
+      </p>
     {/if}
 
     <!--
@@ -490,7 +473,7 @@
       никто не звал; а вот окружение с пометкой на машине без карт — это
       будущий отказ на подъёме ядра, и узнать о нём лучше здесь.
     -->
-    {#if gpus.total > 0}
+    {#if gpuCapacityKnown && gpus.total > 0}
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">
@@ -499,7 +482,7 @@
           in still holds one.
         </p>
       </div>
-    {:else if someoneWantsGpu}
+    {:else if gpuCapacityKnown && someoneWantsGpu}
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">
@@ -552,6 +535,7 @@
                   'Python',
                   env.imageBytes === null ? null : imageSize(env.imageBytes),
                   env.builtAt === null ? null : builtAgo(env.builtAt),
+                  env.revision ? env.revision.slice(0, 19) + '…' : null,
                   `${env.packages.length} packages over ${env.parent ?? 'the base'}`,
                 ]
                   .filter((part) => part !== null)
@@ -669,10 +653,10 @@
                     tabindex="-1"
                     class="row-menu absolute right-0 top-full z-30 mt-1 w-44 border border-line bg-canvas p-1 shadow-pop"
                   >
-                    <button role="menuitem" class={ITEM} onclick={() => openEditor(env.name)}>
+                    <button role="menuitem" class={ITEM} disabled={managed} onclick={() => openEditor(env.name)}>
                       Edit packages
                     </button>
-                    <button role="menuitem" class={ITEM} onclick={() => duplicate(env)}>
+                    <button role="menuitem" class={ITEM} disabled={managed} onclick={() => duplicate(env)}>
                       Duplicate
                     </button>
                     <button
@@ -686,7 +670,7 @@
                     <button role="menuitem" class={ITEM} onclick={() => watch(env.name)}>
                       Build log
                     </button>
-                    {#if env.name !== 'base' && !env.active}
+                    {#if !managed && env.name !== 'base' && !env.active}
                       <button
                         role="menuitem"
                         class={cn(ITEM, 'text-danger hover:bg-danger/10')}
@@ -747,7 +731,7 @@
             Rooms run on the base image: numpy, pandas, matplotlib, scikit-learn. Make one to add
             your course's own packages on top.
           </p>
-          <button type="button" class="{BTN} mt-3" onclick={openCreate}>
+          <button disabled={managed} type="button" class="{BTN} mt-3" onclick={openCreate}>
             <Icon name="plus" size={14} />
             New environment
           </button>
@@ -759,14 +743,9 @@
       <Icon name="info" size={13} class="mt-0.5 shrink-0" />
       <span>
         An environment is a container image.
-        {#if sharedKernel}
-          All seminars use one shared kernel. Changing the default restarts that kernel and
-          applies the environment to every seminar, including those currently open.
-        {:else}
-          Each seminar runs in its own container using the environment selected at creation.
-          Changing the default applies to <b class="font-semibold text-ink">new</b> seminars.
-          Existing seminars keep their selected environment.
-        {/if}
+        Each seminar runs in its own container using the environment selected at creation.
+        Changing the default applies to <b class="font-semibold text-ink">new</b> seminars.
+        {#if managed}Existing seminars keep their pinned image revision.{/if}
       </span>
     </p>
     </div>
@@ -880,25 +859,8 @@
       <h2 class="text-head font-black tracking-tight text-ink">Make {switching} the default?</h2>
       <p class="mt-2 text-ui text-muted">
         Seminars created from now on get {switching}.
-        {#if !sharedKernel}
-          Existing seminars keep their selected environment.
-        {/if}
+        Existing seminars keep their selected environment.
       </p>
-      <!--
-        Про перезапуск — только там, где он и правда бывает. Когда у каждой
-        комнаты свой контейнер, «Make default» до чужого ядра не дотягивается
-        вовсе, и обещание потерянных переменных было обещанием беды, которой не
-        будет. Условие приходилось называть словами, пока признака общего ядра
-        не было в ответе списка; теперь он приезжает вместе с ним, и
-        предупреждение стоит ровно там, где перезапуск случится.
-      -->
-      {#if sharedKernel}
-        <p class="mt-2 text-ui text-muted">
-          The rooms here share one kernel, and switching restarts it: a class running right now
-          loses its variables and has to run those cells again. The cells and the files themselves
-          stay.
-        </p>
-      {/if}
       <!-- Те же гаснущие кнопки: два нажатия — два `docker compose up`, и
            второй падает на конфликте контейнера, отвечая «ядро не вернулось»
            там, где переключение уже состоялось. -->

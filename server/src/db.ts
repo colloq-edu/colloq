@@ -1,3 +1,5 @@
+import { usingRuntimeBroker, runtimeEnvironment, imageRevision } from './kernel/runtime-client.js'
+import { RUNTIME_REVISION } from '@shared/runtime'
 import fs from 'node:fs'
 import path from 'node:path'
 import Database from 'better-sqlite3'
@@ -290,6 +292,7 @@ function ensureColumn(table: string, column: string, definition: string): void {
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`)
 }
 ensureColumn('sessions', 'environment', 'environment TEXT')
+ensureColumn('sessions', 'kernel_revision', 'kernel_revision TEXT')
 /*
  * Какую версию вернул откат.
  *
@@ -383,7 +386,7 @@ db.exec(`
 /* ------------------------------------------------------------- sessions */
 
 const insertSession = db.prepare(
-  'INSERT INTO sessions (id, name, created_at, environment) VALUES (?, ?, ?, ?)',
+  'INSERT INTO sessions (id, name, created_at, environment, kernel_revision) VALUES (?, ?, ?, ?, ?)',
 )
 const selectEnvironment = db.prepare('SELECT environment FROM sessions WHERE id = ?')
 const selectSession = db.prepare(
@@ -404,7 +407,8 @@ interface SessionRow {
 
 export function createSession(id: string, name: string, environment?: string | null): SessionInfo {
   const createdAt = Date.now()
-  insertSession.run(id, name, createdAt, environment ?? null)
+  const pinned = usingRuntimeBroker() ? runtimeEnvironment(environment) : null
+  insertSession.run(id, name, createdAt, pinned?.name ?? environment ?? null, pinned ? imageRevision(pinned.image) : null)
   // Про этот id могли спросить до того, как он появился: «нет такой комнаты»
   // лежит в кэше рядом с найденными и пережило бы её рождение.
   forgetRoom(id)
@@ -430,6 +434,19 @@ export function createSession(id: string, name: string, environment?: string | n
  * runs". Read on every kernel start rather than cached: an operator can change
  * the row, and the answer decides which container the room talks to.
  */
+/** Immutable image choice. Legacy rooms resolve once on their first broker launch. */
+export function sessionKernelRevision(id: string): string | null {
+  const row = db.prepare('SELECT kernel_revision FROM sessions WHERE id = ?').get(id) as {kernel_revision:string|null}|undefined
+  return row?.kernel_revision ?? null
+}
+export function pinSessionKernelRevision(id: string, environment: string, revision: string): string {
+  if (!RUNTIME_REVISION.test(revision)) throw new Error('Invalid kernel image revision')
+  db.prepare('UPDATE sessions SET environment = ?, kernel_revision = ? WHERE id = ? AND kernel_revision IS NULL').run(environment,revision,id)
+  const pinned = sessionKernelRevision(id)
+  if (!pinned) throw new Error('Cannot pin kernel image: seminar does not exist')
+  return pinned
+}
+
 export function sessionEnvironment(id: string): string | null {
   const row = selectEnvironment.get(id) as { environment: string | null } | undefined
   return row?.environment ?? null

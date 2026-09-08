@@ -1,27 +1,7 @@
-/**
- * Environments: the packages a seminar's Python has.
- *
- * One environment is one file, `kernel/environments/<name>.txt`, installed on
- * top of `kernel/requirements.txt` — which every kernel has and which is why an
- * environment costs only the packages the base does not already carry. Building
- * one produces the image `colloq-kernel:<name>`; every built environment keeps
- * its own tag, so going back to one is a container restart rather than another
- * pip install.
- *
- * The panel and the `make env-*` targets are two faces of this, not two
- * implementations: both read the same directory and both write the same
- * `KERNEL_ENV` line in `.env`. Edit a file by hand and the panel shows it.
- *
- * Which environment a seminar gets is decided when the seminar is created and
- * then fixed (`sessions.environment`); the room starts its own container from
- * that image. So the active environment here is the DEFAULT — what the next
- * seminar will be created with — and not something switching takes away from
- * rooms that already exist. The one arrangement where it is instance-wide is
- * the old one: `KERNEL_ISOLATION=off`, or a server that cannot start a
- * container for a room at all (no Docker socket, no permission on it, no room
- * network). Then every room shares the compose kernel and restarting it does
- * empty everybody's variables — which is exactly what `shared` tells the panel.
- */
+import { usingRuntimeBroker, loadRuntimeCatalog, runtimeDefaultEnvironment, setRuntimeDefaultEnvironment, runtimeEnvironment, imageRevision } from './kernel/runtime-client.js'
+/** Production environments are immutable entries in the operator's release
+ * catalog. The selected default is persisted separately and only affects new
+ * rooms. File editing and Docker builds below serve local development only. */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -112,6 +92,7 @@ export function listChanged(stamped: string, current: string): boolean {
 }
 
 export function listNames(): string[] {
+  if (usingRuntimeBroker()) return loadRuntimeCatalog().environments.filter(e=>e.current).map(e=>e.name).sort()
   try {
     return fs
       .readdirSync(ENV_DIR)
@@ -125,6 +106,7 @@ export function listNames(): string[] {
 }
 
 export function readSource(name: string): string {
+  if (usingRuntimeBroker()) return (runtimeEnvironment(name).packages ?? []).join("\n")
   try {
     return fs.readFileSync(fileFor(name), 'utf8')
   } catch {
@@ -253,6 +235,7 @@ export function buildChain(name: string, read: ReadEnvironment = fromDisk): stri
  * отнимать срез у окружения, которое его просит, — худший из двух ответов.
  */
 export function needsGpu(name: string, read: ReadEnvironment = fromDisk): boolean {
+  if (usingRuntimeBroker()) return runtimeEnvironment(name).gpu
   let chain: string[]
   try {
     chain = buildChain(name, read)
@@ -263,6 +246,7 @@ export function needsGpu(name: string, read: ReadEnvironment = fromDisk): boolea
 }
 
 export function writeSource(name: string, source: string): void {
+  if (usingRuntimeBroker()) throw new Error('Published environments are managed by the release catalog. Build and import images outside the web application.')
   fs.mkdirSync(ENV_DIR, { recursive: true })
   const text = source.endsWith('\n') ? source : `${source}\n`
   // Temp-file then rename: a half-written requirements file is a build that
@@ -273,6 +257,7 @@ export function writeSource(name: string, source: string): void {
 }
 
 export function removeEnvironment(name: string): void {
+  if (usingRuntimeBroker()) throw new Error('Published environments are managed by the release catalog. Build and import images outside the web application.')
   fs.rmSync(fileFor(name), { force: true })
   // Штамп уходит вместе со списком: иначе среда, заведённая под тем же именем
   // заново, сравнивалась бы с чужой сборкой.
@@ -280,6 +265,7 @@ export function removeEnvironment(name: string): void {
 }
 
 export function exists(name: string): boolean {
+  if (usingRuntimeBroker()) return loadRuntimeCatalog().environments.some(e=>e.current && e.name===name)
   return fs.existsSync(fileFor(name))
 }
 
@@ -314,6 +300,7 @@ export function pickActiveName(envFile: string | null, fromEnv: string | undefin
  * wrong environment as active for as long as the server ran.
  */
 export function activeName(): string {
+  if (usingRuntimeBroker()) return runtimeDefaultEnvironment()
   let text: string | null = null
   try {
     text = fs.readFileSync(ENV_FILE, 'utf8')
@@ -324,6 +311,7 @@ export function activeName(): string {
 }
 
 export function setActiveName(name: string): void {
+  if (usingRuntimeBroker()) { setRuntimeDefaultEnvironment(name); return }
   if (!ENVIRONMENT_NAME.test(name)) throw new Error(`bad environment name: ${name}`)
   let lines: string[] = []
   try {
@@ -423,6 +411,10 @@ export function abilities(found: {
 
 /** То же самое, но спросив docker и посмотрев, что вообще лежит рядом. */
 export async function environmentAbilities(): Promise<EnvironmentAbilities> {
+  if (usingRuntimeBroker()) {
+    loadRuntimeCatalog()
+    return {canBuild:false,cannotBuildReason:'Images are published outside the web application. Build an environment image and import its digest through the release tooling.',canSetDefault:true,cannotSetDefaultReason:null}
+  }
   const version = await run('docker', ['version', '--format', '{{.Server.Version}}'], 8000)
   return abilities({
     docker: version.code === 0,
@@ -654,6 +646,7 @@ function runStage(
  * while every container still reports healthy.
  */
 export async function startBuild(name: string): Promise<void> {
+  if (usingRuntimeBroker()) throw new Error('Published environments are built outside the web application and imported through the release catalog')
   if (isBuilding(name)) return
   failures.delete(name)
 
@@ -846,7 +839,7 @@ async function switchTo(
   restartShared: boolean,
 ): Promise<{ ok: boolean; out: string }> {
   setActiveName(name)
-  if (!restartShared) return { ok: true, out: '' }
+  if (usingRuntimeBroker() || !restartShared) return { ok: true, out: '' }
   const files = (await usesDevOverride())
     ? ['-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml']
     : []
@@ -924,6 +917,14 @@ function editedSinceBuild(name: string, built: ImageFacts): boolean {
 }
 
 export async function listEnvironments(): Promise<AdminEnvironment[]> {
+  if (usingRuntimeBroker()) {
+    const active = activeName()
+    return loadRuntimeCatalog().environments.filter(e=>e.current).map(e=>({
+      name:e.name,state:'ready',packages:e.packages??[],imageBytes:null,builtAt:null,
+      active:e.name===active,error:null,parent:null,gpu:e.gpu,
+      managed:true,image:e.image,revision:imageRevision(e.image),
+    }))
+  }
   const active = activeName()
   const names = listNames()
   // Образы всех окружений разом: строке нужен не только свой, но и родительский

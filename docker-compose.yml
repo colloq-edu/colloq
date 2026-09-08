@@ -1,217 +1,64 @@
-# Имя проекта — здесь, а не по имени папки. И имя сети — своей строкой.
-#
-# Имя сети сервер получает строкой (`KERNEL_NETWORK`): в ней он ищет ядро
-# комнаты по имени контейнера. Складывать его из имени проекта нельзя: то
-# меняется вместе с папкой клона и перебивается COMPOSE_PROJECT_NAME, — а не
-# найдя сети, сервер откатится на общее ядро, и изоляция выключится молча.
-# Поэтому сеть названа прямо, и `KERNEL_NETWORK` по умолчанию — то же имя.
+# Explicit local Docker development. Production uses deploy/k3s.
+# Each room gets its own kernel; missing Docker access or network fails execution.
 name: colloq
 
 networks:
   default:
     name: colloq
-  # Общее ядро compose стоит НЕ в той сети, где комнаты, — и это изоляция, а не
-  # порядок ради порядка.
-  #
-  # В `colloq` сервер ставит контейнер каждой комнаты (`--network colloq`), и
-  # там же до недавнего времени слушало общее ядро, у которого примонтирован
-  # ./workspace ЦЕЛИКОМ — файлы всех семинаров машины. Ячейка в любой комнате
-  # доставала до `http://kernel:8888/api/terminals`, и единственным замком был
-  # JUPYTER_TOKEN: у `make up` он случайный, а у того, кто сделал `cp
-  # .env.example .env` руками, — общеизвестный `colloq-dev-token` из
-  # публичного репозитория. То есть дыра ровно в том месте, ради которого
-  # заводился контейнер на комнату.
-  #
-  # Сеть, а не профиль: общее ядро — это запасной путь, по которому комнаты
-  # работают, когда сервер не смог поднять контейнер (нет сокета docker, нет
-  # группы, KERNEL_ISOLATION=off). Убрать его совсем значило бы убрать и
-  # запасной путь; убрать из сети комнат — оставить его серверу и только ему.
-  shared-kernel:
-    name: colloq-kernel
-
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    # Адрес хозяйской стороны порта — тем же словом, что и на хосте.
-    #
-    # Без адреса docker публикует порт на ВСЕХ интерфейсах: `make up` на
-    # ноутбуке в аудиторном Wi-Fi раздаёт комнату ещё и по
-    # http://<ip-ноутбука>:3000 — мимо ссылки, мимо туннеля и без ведома
-    # преподавателя. Ту же дыру на 8888 docker-compose.dev.yml закрывает и
-    # объясняет, а здесь она стояла молча.
-    #
-    # Умолчание оставлено прежним — все интерфейсы: под `make up` без туннеля
-    # адрес в локальной сети это единственный способ впустить аудиторию, и
-    # закрыть его молча значило бы сломать чужую пару. Кому нужна только петля,
-    # пишет в .env ту же строку, что стоит в юните systemd:
-    #
-    #   BIND_ADDR=127.0.0.1
-    #
-    # ВНУТРЬ контейнера эту строку передавать нельзя — потому её и нет в
-    # `environment` ниже: сервер в контейнере обязан слушать все интерфейсы,
-    # иначе до него не достучится и опубликованный порт.
+      target: development
+    # Bind the host publication; the app listens on all container interfaces.
     ports:
       - "${BIND_ADDR:-0.0.0.0}:${PORT:-3000}:3000"
     environment:
+      NODE_ENV: development
+      KERNEL_BACKEND: docker
       PORT: 3000
-      # PORT publishes the container's 3000 on the host; PUBLIC_URL is what goes
-      # into the link students receive. Deliberately not derived from each
-      # other: behind a tunnel or a relay the students' address is an https name
-      # with no port in it at all. Change them together — .env.example keeps
-      # them side by side for exactly this reason.
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
-      # Empty on purpose. A literal default here would ship every install the
-      # same signing key, and that key is what says who the host is. Left unset
-      # the server generates one on first boot and keeps it in DATA_DIR, so a
-      # restart does not sign the room out. Set it to rotate, or to share one
-      # key across replicas.
       SESSION_SECRET: ${SESSION_SECRET:-}
-      JUPYTER_URL: http://kernel:8888
-      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-colloq-dev-token}
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       AI_PROVIDER: ${AI_PROVIDER:-openai}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
-      # Compose reads .env for substitution only; a variable that is not named
-      # here never reaches the container. All of these are documented in
-      # .env.example and in the README table, so all of them have to be
-      # forwarded or the documentation is a lie. MAX_SESSION_MB и AI_REASONING
-      # приехали позже остальных и этой строчки не получили: комната принимала
-      # загрузки до умолчания в 1 ГБ при `MAX_SESSION_MB=200` в .env, а
-      # `make run` те же строки применял — два режима одного инстанса вели себя
-      # по-разному.
-      #
-      # Единственное исключение из «documented ⇒ forwarded» — `BIND_ADDR`: он
-      # тоже в таблице README, но говорит про хозяйскую сторону порта (см.
-      # `ports` выше), а внутри контейнера значил бы «слушать петлю контейнера»,
-      # то есть никого.
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       INSTITUTION: ${INSTITUTION:-}
       OPEN_SEMINAR_CREATION: ${OPEN_SEMINAR_CREATION:-false}
       MAX_SESSION_MB: ${MAX_SESSION_MB:-1024}
       AI_REASONING: ${AI_REASONING:-false}
-      # Не для запуска ядра — его поднимает служба ниже, — а для ответа на
-      # вопрос «какое окружение здесь по умолчанию»: файла .env в контейнере
-      # нет, и без этой строки новый семинар записывался на base при собранном
-      # ядре cv.
       KERNEL_ENV: ${KERNEL_ENV:-base}
-      # Свой контейнер на комнату — и здесь тоже. Нужны все три разом.
-      #
-      # `KERNEL_ISOLATION` — сам выключатель. `WORKSPACE_HOST_DIR` — путь к
-      # ./workspace ГЛАЗАМИ ДЕМОНА: `-v` разбирает он, и внутренний
-      # `/workspace/<id>` понял бы как путь на хосте, создав там пустую папку.
-      # `KERNEL_NETWORK` — сеть, в которой сервер зовёт ядро комнаты по имени
-      # контейнера: порт, опубликованный на петле хоста, для сервера, который
-      # сам в контейнере, не адрес. Чего-то из трёх нет — комнаты делят одно
-      # ядро, как раньше, и сервер говорит об этом в журнал и в саму комнату.
-      KERNEL_ISOLATION: ${KERNEL_ISOLATION:-auto}
+      KERNEL_ISOLATION: required
+      # This path is resolved by the Docker daemon, not by the app container.
       WORKSPACE_HOST_DIR: ${WORKSPACE_HOST_DIR:-${PWD}/workspace}
       KERNEL_NETWORK: ${KERNEL_NETWORK:-colloq}
-      # Те же потолки, что у службы kernel ниже: теперь их ставит сервер
-      # каждому контейнеру семинара, и читает он их отсюда.
       KERNEL_MEM: ${KERNEL_MEM:-2g}
       KERNEL_CPUS: ${KERNEL_CPUS:-2}
-      # Срезы видеокарты и /dev/shm для комнат, которые считают на GPU. Пусто —
-      # карт нет, и ни одна комната их не просит; тогда и nvidia-container-
-      # toolkit на хосте не нужен.
       KERNEL_GPUS: ${KERNEL_GPUS:-}
       KERNEL_SHM: ${KERNEL_SHM:-1g}
-      # Один пояс на весь инстанс: журнал, ядро и даты на выложенных страницах.
-      # Иначе страница семинара считает время по UTC, а расписание — по Москве.
       TZ: ${TZ:-Europe/Moscow}
-    # Сокет docker принадлежит root:docker, а сервер работает от `node`.
-    #
-    # gid этой группы у каждой машины свой, и важен не хостовый, а тот, каким
-    # сокет видит демон: под colima и Docker Desktop на хосте файла может не
-    # быть вовсе. `make up` определяет его и записывает в .env. Не угадали —
-    # клиент получит «permission denied», изоляции не будет, и об этом будет
-    # сказано вслух, а не молчанием.
+    # Docker socket access is root-equivalent and is development-only.
     group_add:
       - "${DOCKER_GID:-0}"
     volumes:
-      # Bind-монты, а не именованные тома, и это существенно.
-      #
-      # `make up` и `make run` — два способа поднять один и тот же Colloq, и с
-      # томами они поднимали два разных: у одного база и файлы лежали в томе
-      # docker, у другого в ./data и ./workspace рядом с кодом. Разные семинары,
-      # разные преподаватели, разные setup-token — при одинаковом адресе
-      # localhost:3000. Неделя занятий, заведённая через `make up`, наутро
-      # открывалась пустой панелью, а ссылки из расписания отвечали 404.
-      #
-      # Один каталог на оба режима: где данные лежат, теперь видно в файловом
-      # менеджере, и скопировать их — это скопировать папку.
       - ./workspace:/workspace
       - ./data:/data
-      # Весь kernel, а не только списки пакетов, — и на запись.
-      #
-      # Списки правятся из панели, и правка должна остаться на хосте: иначе она
-      # живёт до первой пересборки образа, а `make env-*` и панель перестают
-      # быть двумя лицами одного каталога. Туда же ложатся штампы `.<имя>.built`
-      # — что именно было собрано в образе.
-      #
-      # А целиком — потому что это контекст сборки: Dockerfile и
-      # requirements.txt рядом со списками. С ними сервер собирает окружение
-      # прямым `docker build` (контекст читает клиент и отдаёт демону на хосте),
-      # и «Build» в панели работает под `make up`, а не только у того, у кого
-      # рядом репозиторий. Каталог из образа этим монтом перекрывается целиком —
-      # в нём лежит ровно та же kernel/environments, только с хоста.
       - ./kernel:/app/kernel
-      # Сокет docker: им сервер поднимает комнате её собственное ядро.
-      #
-      # Плата названа вслух: у процесса с этим сокетом есть всё, что может
-      # docker на хосте, — то есть root на хосте. Это ровно та власть, с
-      # которой сервер работает при `make run`, и это цена контейнера на
-      # комнату: без него из любой комнаты видны файлы всех остальных
-      # семинаров на машине, а токен Jupyter у них общий. Убрать строку —
-      # вернуться к прежнему устройству; сервер скажет об этом в журнал и в
-      # комнату, а не сделает вид, что изоляция есть.
       - /var/run/docker.sock:/var/run/docker.sock
-    # Обе сети: `colloq` — та, куда сервер ставит ядра комнат и по которой их
-    # зовёт; `colloq-kernel` — только до общего ядра. Комнаты стоят лишь в
-    # первой, и дороги от них к ./workspace всех семинаров больше нет.
     networks:
       - default
-      - shared-kernel
-    depends_on:
-      kernel:
-        condition: service_healthy
     restart: unless-stopped
 
+  # Build target only; never an instance-wide execution service.
   kernel:
+    profiles: [image-build]
     build:
       context: ./kernel
       args:
-        # Какое окружение запечено в образ. Списки лежат в kernel/environments/;
-        # `make env-use NAME=cv` переписывает KERNEL_ENV в .env и пересобирает.
         KERNEL_ENV: ${KERNEL_ENV:-base}
-        # Поверх чего собирать. Умолчание — python-slim, то есть ровно прежняя
-        # сборка; окружение с `# colloq: from base-gpu` в шапке передаёт сюда
-        # colloq-kernel:base-gpu, и torch с CUDA не ставится заново. Переменная
-        # с приставкой KERNEL_, как и соседняя: аргумент Dockerfile зовётся
-        # PARENT, но `PARENT` в окружении человека — слишком общее имя.
         PARENT: ${KERNEL_PARENT:-python:3.11-slim-bookworm}
-    # Тег по имени окружения, чтобы переключение назад не пересобирало заново:
-    # каждое окружение — свой образ, они лежат рядом и достаются из кеша.
     image: colloq-kernel:${KERNEL_ENV:-base}
-    environment:
-      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-colloq-dev-token}
-      # Тот же пояс, что у сервера: `datetime.now()` в ячейке и время в журнале
-      # сервера — про одни и те же часы, иначе разбор «когда это упало» врёт.
-      TZ: ${TZ:-Europe/Moscow}
-    volumes:
-      - ./workspace:/workspace
-    # Только своя сеть: до общего ядра дотягивается сервер, и больше никто.
-    # Комнаты живут в `colloq`, и `kernel` оттуда теперь не резолвится вовсе.
-    networks:
-      - shared-kernel
-    # Student code is arbitrary. Keep a runaway cell from taking down the host.
-    mem_limit: ${KERNEL_MEM:-2g}
-    cpus: ${KERNEL_CPUS:-2}
-    pids_limit: 512
-    restart: unless-stopped
-    expose:
-      - "8888"
-

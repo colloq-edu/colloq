@@ -10,7 +10,7 @@
  * internet on the caller's behalf, so it is deliberately narrow: github.com
  * only, public repositories only, no token, one folder deep.
  */
-import fs from 'node:fs'
+import { workspaceFs } from '../workspace.js'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import * as Y from 'yjs'
 import { createCell, getCells, getMeta } from '@shared/notebook'
@@ -189,7 +189,7 @@ export function adminImportRoutes(): Router {
         }
         try {
           const buf = await fetchRaw(file.downloadUrl, config.maxUploadBytes)
-          fs.writeFileSync(target, buf)
+          workspaceFs.writeFileSync(target, buf)
           written.push(file.name)
         } catch {
           // One unreadable file must not cost the whole import: the notebook is

@@ -34,8 +34,7 @@ const example = read('.env.example')
 const compose = read('docker-compose.yml')
 
 test('BIND_ADDR назван и в .env.example, и в таблице настроек README', () => {
-  // Строка закомментирована нарочно (умолчание — все интерфейсы), но названа и
-  // объяснена: и петля, и то, почему под `make up` умолчание другое.
+  // Explain the host bind address and keep the shipped example on loopback.
   const at = example.indexOf('BIND_ADDR')
   assert.notEqual(at, -1, 'BIND_ADDR не назван в .env.example')
   const about = example.slice(Math.max(0, at - 900), at + 200)
@@ -48,9 +47,7 @@ test('BIND_ADDR назван и в .env.example, и в таблице настр
   assert.match(row, /every interface/i)
   assert.match(row, /127\.0\.0\.1/)
 
-  // И у `make run` сказано вслух: порт открыт в локальной сети.
-  const ways = readme.slice(readme.indexOf('### One instance, three ways to start it'))
-  assert.match(ways.slice(0, 3000), /every interface of the machine/i)
+  assert.match(example, /^BIND_ADDR=127\.0\.0\.1$/m)
 })
 
 test('переменная сервера и адрес публикации порта — одно слово, а не два', () => {
@@ -64,12 +61,29 @@ test('переменная сервера и адрес публикации п�
     'BIND_ADDR уехал в environment контейнера — сервер внутри будет слушать петлю контейнера, то есть никого',
   )
 
-  // Юнит службы ставит петлю сам, и README на это ссылается.
-  assert.match(read('deploy/colloq.service'), /\nEnvironment=BIND_ADDR=127\.0\.0\.1\n/)
+  // Production ingress is a loopback NodePort, with no root systemd web process.
+  assert.match(read('scripts/cluster.sh'), /nodeport-addresses=127\.0\.0\.0\/8/)
+  assert.doesNotMatch(read('deploy/colloq.service'), /^User=root$/m)
 
   // Умолчание кода — пусто, то есть все интерфейсы: таблица README описывает
   // именно его, и переименование переменной в сервере уронит эту строку.
   assert.match(read('server/src/index.ts'), /process\.env\.BIND_ADDR/)
+})
+
+test('deployment documentation describes mandatory broker isolation and explicit development limits', () => {
+  for (const file of ['runtime/README.md', 'deploy/k3s/README.md', 'docs/deployment-vast.md']) {
+    assert.ok(readme.includes(file), `missing operational documentation link: ${file}`)
+  }
+  for (const variable of ['KERNEL_BACKEND', 'KERNEL_RUNTIME_URL', 'KERNEL_RUNTIME_TOKEN_FILE', 'KERNEL_CATALOG_FILE', 'COLLOQ_UNSAFE_DEV_FILES']) {
+    assert.ok(example.includes(variable), `missing configuration contract: ${variable}`)
+  }
+  assert.doesNotMatch(example, /^KERNEL_ISOLATION=auto$|KERNEL_ISOLATION=off/m)
+  assert.doesNotMatch(example, /^JUPYTER_TOKEN=.+$/m)
+  assert.match(readme, /\.restore-in-progress/)
+  assert.match(readme, /MODE=consistent/)
+  assert.match(readme, /live.*not an atomic snapshot/is)
+  assert.match(readme, /sourceCommit/)
+  assert.match(readme, /COLLOQ_UNSAFE_DEV_FILES=1/)
 })
 
 test('README про консилиум говорит то же, что комната: ядро одно', () => {
