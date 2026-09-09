@@ -4,7 +4,7 @@ import type { MessageCatalog } from '../i18n-types.js'
 export const roomMessages: MessageCatalog = {
   "room.ui.0": {
     "ru": "Вас удалили с занятия",
-    "en": "You were removed from the seminar"
+    "en": "You were removed from the class"
   },
   "room.ui.1": {
     "ru": "Преподаватель закрыл вход в эту комнату до",
@@ -304,7 +304,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.78": {
     "ru": "Удалить с занятия",
-    "en": "Remove from seminar"
+    "en": "Remove from class"
   },
   "room.ui.79": {
     "ru": "← → попытка · Shift+← → группа · Enter — показать классу · когда фокус в стопке",
@@ -463,8 +463,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Lecture console"
   },
   "room.ui.145": {
-    "ru": "Этот семинар удалён",
-    "en": "This seminar was deleted"
+    "ru": "Это занятие удалено",
+    "en": "This class was deleted"
   },
   "room.ui.146": {
     "ru": "Файлы, история и чернила лекции удалены.",
@@ -936,7 +936,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.295": {
     "ru": "Занятие закончено. Управлять лекцией может преподаватель. Страница и чернила остаются доступны.",
-    "en": "The seminar has ended. The teacher can control the lecture. The page and ink remain available."
+    "en": "The class has ended. The teacher can control the lecture. The page and ink remain available."
   },
   "room.ui.296": {
     "ru": "чистый лист",
@@ -1272,7 +1272,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.388": {
     "ru": "Занятие закончено — на ввод отвечает преподаватель.",
-    "en": "The seminar has ended — the teacher provides input."
+    "en": "The class has ended — the teacher provides input."
   },
   "room.ui.389": {
     "ru": "Ядро ждёт —",
@@ -1391,8 +1391,8 @@ export const roomMessages: MessageCatalog = {
     "en": "{p0}, {p1} and {p2} more are editing here"
   },
   "room.ui.425": {
-    "ru": "Оракула в этом семинаре нет",
-    "en": "The oracle is not enabled for this seminar"
+    "ru": "Оракула на этом занятии нет",
+    "en": "The oracle is not enabled for this class"
   },
   "room.ui.426": {
     "ru": "Здесь оракул подсказывает, но ячейку не переписывает",
@@ -1516,7 +1516,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.495": {
     "ru": "Задайте вопрос по материалам занятия. Ваше имя, вопрос и ответ будут видны всей группе.",
-    "en": "Ask about the seminar materials. Your name, question and answer will be visible to the whole group."
+    "en": "Ask about the class materials. Your name, question and answer will be visible to the whole group."
   },
   "room.ui.496": {
     "ru": "Оракул получает контекст тетрадей в пределах заданного лимита. Выделите ячейки, которым нужно уделить внимание.",
@@ -1551,8 +1551,8 @@ export const roomMessages: MessageCatalog = {
     "en": "The oracle is disabled on this Colloq instance."
   },
   "room.ui.504": {
-    "ru": "Оракул выключен на этом семинаре.",
-    "en": "The oracle is disabled for this seminar."
+    "ru": "Оракул выключен на этом занятии.",
+    "en": "The oracle is disabled for this class."
   },
   "room.ui.505": {
     "ru": "Проверьте настройки раздела",
@@ -1680,7 +1680,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.541": {
     "ru": "Удалить с занятия…",
-    "en": "Remove from seminar…"
+    "en": "Remove from class…"
   },
   "room.ui.542": {
     "ru": "Удаляем…",
@@ -1823,8 +1823,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Rewrite"
   },
   "room.ui.585": {
-    "ru": "Файлы семинара",
-    "en": "Seminar files"
+    "ru": "Файлы занятия",
+    "en": "Class files"
   },
   "room.ui.586": {
     "ru": "Файлы",
@@ -2084,7 +2084,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.662": {
     "ru": "Удалённые с занятия",
-    "en": "Removed from the seminar"
+    "en": "Removed from the class"
   },
   "room.ui.663": {
     "ru": "Удалены",
@@ -2192,7 +2192,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.689": {
     "ru": "Терминал использует окружение занятия. Команда",
-    "en": "The terminal uses the seminar environment. The command"
+    "en": "The terminal uses the class environment. The command"
   },
   "room.ui.691": {
     "ru": "установит пакет для всех участников.",
@@ -2251,16 +2251,16 @@ export const roomMessages: MessageCatalog = {
     "en": "room closed, page preserved"
   },
   "room.ui.710": {
-    "ru": "семинар удалён",
-    "en": "seminar deleted"
+    "ru": "занятие удалено",
+    "en": "class deleted"
   },
   "room.ui.711": {
-    "ru": "ещё не опубликован",
+    "ru": "ещё не опубликовано",
     "en": "not published yet"
   },
   "room.ui.712": {
-    "ru": "Здесь собраны семинары курса. Сохраните ссылку, чтобы вернуться к материалам.",
-    "en": "This page collects the course seminars. Save the link to return to the materials."
+    "ru": "Здесь собраны занятия курса. Сохраните ссылку, чтобы вернуться к материалам.",
+    "en": "This page collects the course classes. Save the link to return to the materials."
   },
   "room.ui.713": {
     "ru": "шаг",
@@ -2411,12 +2411,12 @@ export const roomMessages: MessageCatalog = {
     "en": "Signing you in"
   },
   "room.ui.842": {
-    "ru": "Вы вошли как преподаватель. Открываем семинар…",
-    "en": "You are signed in as a teacher. Opening the seminar…"
+    "ru": "Вы вошли как преподаватель. Открываем занятие…",
+    "en": "You are signed in as a teacher. Opening the class…"
   },
   "room.ui.843": {
     "ru": "Занятие закончено",
-    "en": "Seminar ended"
+    "en": "Class ended"
   },
   "room.ui.844": {
     "ru": ". Тетрадь, файлы и ответы оракула доступны для чтения.",
@@ -2467,24 +2467,24 @@ export const roomMessages: MessageCatalog = {
     "en": "Joining…"
   },
   "room.ui.856": {
-    "ru": "Учётная запись не нужна. По этой ссылке можно вернуться на семинар.",
-    "en": "No account needed. Use this link to return to the seminar."
+    "ru": "Учётная запись не нужна. По этой ссылке можно вернуться на занятие.",
+    "en": "No account needed. Use this link to return to the class."
   },
   "room.ui.861": {
     "ru": "Войти как {p0}",
     "en": "Join as {p0}"
   },
   "room.ui.862": {
-    "ru": "Войти на семинар",
-    "en": "Join the seminar"
+    "ru": "Войти на занятие",
+    "en": "Join the class"
   },
   "room.ui.863": {
     "ru": "Введите имя, которое увидит группа",
     "en": "Enter the name the group will see"
   },
   "room.ui.864": {
-    "ru": "Не удалось войти на семинар",
-    "en": "Could not join the seminar"
+    "ru": "Не удалось войти на занятие",
+    "en": "Could not join the class"
   },
   "room.ui.865": {
     "ru": "Такой страницы здесь нет",
@@ -2503,12 +2503,12 @@ export const roomMessages: MessageCatalog = {
     "en": "· published"
   },
   "room.ui.869": {
-    "ru": "Шаги семинара",
-    "en": "Seminar steps"
+    "ru": "Шаги занятия",
+    "en": "Class steps"
   },
   "room.ui.871": {
     "ru": "Опубликованная тетрадь занятия: код, текст и сохранённые результаты запусков.",
-    "en": "Published seminar notebook: code, text and saved execution results."
+    "en": "Published class notebook: code, text and saved execution results."
   },
   "room.ui.872": {
     "ru": "Шаги соответствуют моментам, отмеченным преподавателем. Если код изменили после запуска, сохранённый результат может ему не соответствовать.",
@@ -2523,12 +2523,12 @@ export const roomMessages: MessageCatalog = {
     "en": "Loading…"
   },
   "room.ui.875": {
-    "ru": "В этом семинаре пока нет ни одной страницы.",
-    "en": "This seminar has no pages yet."
+    "ru": "На этом занятии пока нет ни одной страницы.",
+    "en": "This class has no pages yet."
   },
   "room.ui.876": {
-    "ru": "Такой страницы у этого семинара нет. Ссылка могла устареть или быть набрана с опечаткой.",
-    "en": "This seminar has no such page. The link may be outdated or contain a typo."
+    "ru": "Такой страницы у этого занятия нет. Ссылка могла устареть или быть набрана с опечаткой.",
+    "en": "This class has no such page. The link may be outdated or contain a typo."
   },
   "room.ui.877": {
     "ru": "Открыть первую",
@@ -2591,8 +2591,8 @@ export const roomMessages: MessageCatalog = {
     "en": "· cell {p0}"
   },
   "room.ui.895": {
-    "ru": "Название семинара",
-    "en": "Seminar title"
+    "ru": "Название занятия",
+    "en": "Class title"
   },
   "room.ui.896": {
     "ru": "в комнате",
@@ -2623,8 +2623,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Toggle the AI oracle"
   },
   "room.ui.904": {
-    "ru": "Скопировать ссылку на семинар",
-    "en": "Copy the seminar link"
+    "ru": "Скопировать ссылку на занятие",
+    "en": "Copy the class link"
   },
   "room.ui.905": {
     "ru": "Скопировано",
@@ -2644,7 +2644,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.909": {
     "ru": "Продолжить занятие",
-    "en": "Resume seminar"
+    "en": "Resume class"
   },
   "room.ui.910": {
     "ru": "Ничего не открыто.",
@@ -2692,7 +2692,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.921": {
     "ru": "Занятие удалено, и эта ссылка больше не работает. Запросите у преподавателя другую ссылку.",
-    "en": "The seminar was deleted and this link no longer works. Ask the teacher for another link."
+    "en": "The class was deleted and this link no longer works. Ask the teacher for another link."
   },
   "room.ui.922": {
     "ru": "Правка не сохранена",
@@ -2700,7 +2700,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.923": {
     "ru": "Сервер отклонил правку после завершения занятия. Теперь доступно только чтение. Если ниже показан несохранённый текст, скопируйте его.",
-    "en": "The server rejected an edit after the seminar ended. Access is now read-only. Copy any unsaved text shown below."
+    "en": "The server rejected an edit after the class ended. Access is now read-only. Copy any unsaved text shown below."
   },
   "room.ui.924": {
     "ru": "Проверяем, какой текст не сохранился…",
@@ -2728,11 +2728,11 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.930": {
     "ru": "Занятие идёт",
-    "en": "Seminar in progress"
+    "en": "Class in progress"
   },
   "room.ui.931": {
     "ru": "Участникам доступно только чтение. При продолжении занятия восстановятся прежние правила доступа.",
-    "en": "Participants have read-only access. Resuming the seminar will restore the previous access rules."
+    "en": "Participants have read-only access. Resuming the class will restore the previous access rules."
   },
   "room.ui.932": {
     "ru": "Участники смогут читать материалы, но не редактировать, запускать код или задавать вопросы оракулу. Тетрадь и файлы сохранятся.",
@@ -2740,7 +2740,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.933": {
     "ru": "Закончить занятие",
-    "en": "End seminar"
+    "en": "End class"
   },
   "room.ui.934": {
     "ru": "Новые правила применяются сразу. Если правка участника нарушает их, вкладка загрузит сохранённую версию и предложит скопировать несохранённый текст.",
@@ -2760,11 +2760,11 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.938": {
     "ru": "Занятие закончено. Материалы доступны для чтения.",
-    "en": "The seminar has ended. Materials are available to read."
+    "en": "The class has ended. Materials are available to read."
   },
   "room.ui.939": {
     "ru": "Занятие продолжается. Прежние правила доступа восстановлены.",
-    "en": "The seminar has resumed. Previous access rules were restored."
+    "en": "The class has resumed. Previous access rules were restored."
   },
   "room.ui.940": {
     "ru": "Загружена актуальная версия тетради с сервера.",
@@ -2776,7 +2776,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.957": {
     "ru": "Занятие закончено {p0} — комната открыта на чтение",
-    "en": "Seminar ended {p0} — the room is read-only"
+    "en": "Class ended {p0} — the room is read-only"
   },
   "room.ui.960": {
     "ru": "Комната",
@@ -2807,8 +2807,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Ask the oracle"
   },
   "room.ui.976": {
-    "ru": "Скопировать ссылку на семинар",
-    "en": "Copy seminar link"
+    "ru": "Скопировать ссылку на занятие",
+    "en": "Copy class link"
   },
   "room.ui.979": {
     "ru": "Открыть пульт",
@@ -2835,12 +2835,12 @@ export const roomMessages: MessageCatalog = {
     "en": "Teaching workspace"
   },
   "room.ui.999": {
-    "ru": "Создавайте семинары, управляйте доступом преподавателей и настраивайте оракула.",
-    "en": "Create seminars, manage teaching access and configure the oracle here."
+    "ru": "Создавайте занятия, управляйте доступом преподавателей и настраивайте оракула.",
+    "en": "Create classes, manage teaching access and configure the oracle here."
   },
   "room.ui.1000": {
-    "ru": "Студенты входят по ссылке на семинар и вводят имя. Учётная запись преподавателя им не нужна.",
-    "en": "Students join from a seminar link and enter their name. They do not need a teacher account."
+    "ru": "Студенты входят по ссылке на занятие и вводят имя. Учётная запись преподавателя им не нужна.",
+    "en": "Students join from a class link and enter their name. They do not need a teacher account."
   },
   "room.ui.1001": {
     "ru": "Первый запуск",
@@ -3151,8 +3151,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Council · click to configure cell access"
   },
   "room.ui.1091": {
-    "ru": "В этом семинаре это делает преподаватель",
-    "en": "In this seminar, the teacher does this"
+    "ru": "На этом занятии это делает преподаватель",
+    "en": "In this class, the teacher does this"
   },
   "room.ui.1092": {
     "ru": "Редактировать ячейки может только преподаватель",
@@ -3215,8 +3215,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Council is closed. Your text is available in the draft"
   },
   "room.ui.1107": {
-    "ru": "В этом семинаре можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.",
-    "en": "This seminar allows one cell run at a time. Your cell is already running or queued."
+    "ru": "На этом занятии можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.",
+    "en": "This class allows one cell run at a time. Your cell is already running or queued."
   },
   "room.ui.1112": {
     "ru": "запускает ячейку {p0}",
@@ -3252,19 +3252,19 @@ export const roomMessages: MessageCatalog = {
   },
   "room.ui.1120": {
     "ru": "Не удалось сохранить правило: вас удалили с занятия.",
-    "en": "Could not save the rule: you were removed from the seminar."
+    "en": "Could not save the rule: you were removed from the class."
   },
   "room.ui.1121": {
     "ru": "Не удалось сохранить правило: изменять правила может только преподаватель.",
     "en": "Could not save the rule: only the teacher can change rules."
   },
   "room.ui.1122": {
-    "ru": "Не удалось сохранить правило: войдите в занятие заново.",
-    "en": "Could not save the rule: sign in to the seminar again."
+    "ru": "Не удалось сохранить правило: войдите на занятие заново.",
+    "en": "Could not save the rule: sign in to the class again."
   },
   "room.ui.1123": {
     "ru": "Не удалось сохранить правило: занятие не найдено.",
-    "en": "Could not save the rule: seminar not found."
+    "en": "Could not save the rule: class not found."
   },
   "room.ui.1124": {
     "ru": "Не удалось сохранить правило. Попробуйте ещё раз.",
@@ -3439,12 +3439,12 @@ export const roomMessages: MessageCatalog = {
     "en": "Run cell"
   },
   "room.ui.1169": {
-    "ru": "В этом семинаре ячейки запускает только преподаватель",
-    "en": "This seminar is set so only the teacher runs cells"
+    "ru": "На этом занятии ячейки запускает только преподаватель",
+    "en": "This class is set so only the teacher runs cells"
   },
   "room.ui.1172": {
-    "ru": "Семинар удалён. Запросите у преподавателя другую ссылку.",
-    "en": "This seminar was deleted. Ask the teacher for another seminar link."
+    "ru": "Занятие удалено. Запросите у преподавателя другую ссылку.",
+    "en": "This class was deleted. Ask the teacher for another class link."
   },
   "room.ui.1173": {
     "ru": "Сервер не сохранил эту правку.",
@@ -3551,16 +3551,16 @@ export const roomMessages: MessageCatalog = {
     "en": "built just now"
   },
   "room.ui.1210": {
-    "ru": "Недействительная ссылка на семинар",
-    "en": "This seminar link is not valid"
+    "ru": "Недействительная ссылка на занятие",
+    "en": "This class link is not valid"
   },
   "room.ui.1211": {
-    "ru": "Не удалось открыть семинар",
-    "en": "Could not open this seminar"
+    "ru": "Не удалось открыть занятие",
+    "en": "Could not open this class"
   },
   "room.ui.1212": {
     "ru": "Проверьте, что ссылка скопирована целиком, или запросите у преподавателя действующую ссылку.",
-    "en": "Check that you copied the full link, or ask the teacher for the current seminar link."
+    "en": "Check that you copied the full link, or ask the teacher for the current class link."
   },
   "room.ui.1213": {
     "ru": "Вернуться в Colloq",
@@ -3571,8 +3571,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Joining the room…"
   },
   "room.ui.1219": {
-    "ru": "Ваш сеанс истёк. Введите имя, чтобы вернуться на семинар.",
-    "en": "Your sign-in expired. Enter your name to rejoin the seminar."
+    "ru": "Ваш сеанс истёк. Введите имя, чтобы вернуться на занятие.",
+    "en": "Your sign-in expired. Enter your name to rejoin the class."
   },
   "room.ui.1220": {
     "ru": "Сервер не ответил",
@@ -3779,8 +3779,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Restart the kernel"
   },
   "room.extra.217": {
-    "ru": "Что сделать с файлами семинара…",
-    "en": "What to do with the seminar files…"
+    "ru": "Что сделать с файлами занятия…",
+    "en": "What to do with the class files…"
   },
   "room.extra.218": {
     "ru": "Спросить про {p0}…",
@@ -3788,7 +3788,7 @@ export const roomMessages: MessageCatalog = {
   },
   "room.extra.219": {
     "ru": "Вопрос по материалам занятия…",
-    "en": "A question about the seminar materials…"
+    "en": "A question about the class materials…"
   },
   "room.extra.220": {
     "ru": "Ещё {p0} с",
@@ -3936,11 +3936,11 @@ export const roomMessages: MessageCatalog = {
   },
   "room.extra.411": {
     "ru": "Продолжить занятие с прежними правилами доступа",
-    "en": "Resume the seminar with previous access rules"
+    "en": "Resume the class with previous access rules"
   },
   "room.extra.412": {
     "ru": "Закончить занятие — участникам останется чтение",
-    "en": "End seminar — participants will have read-only access"
+    "en": "End class — participants will have read-only access"
   },
   "room.extra.453": {
     "ru": "попытка",
@@ -4235,8 +4235,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Many people are joining the room — trying again…"
   },
   "В этом семинаре это делает преподаватель": {
-    "ru": "В этом семинаре это делает преподаватель",
-    "en": "In this seminar, the teacher does this"
+    "ru": "На этом занятии это делает преподаватель",
+    "en": "In this class, the teacher does this"
   },
   "Эту ячейку редактирует и запускает только преподаватель": {
     "ru": "Эту ячейку редактирует и запускает только преподаватель",
@@ -4247,8 +4247,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Council is closed. Your text is available in the draft"
   },
   "В этом семинаре можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.": {
-    "ru": "В этом семинаре можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.",
-    "en": "This seminar allows one cell run at a time. Your cell is already running or queued."
+    "ru": "На этом занятии можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.",
+    "en": "This class allows one cell run at a time. Your cell is already running or queued."
   },
   "the room": {
     "ru": "комната",
@@ -4388,7 +4388,7 @@ export const roomMessages: MessageCatalog = {
   },
   "session not found": {
     "ru": "Занятие не найдено",
-    "en": "Seminar not found"
+    "en": "Class not found"
   },
   "publication not found": {
     "ru": "Публикация не найдена",

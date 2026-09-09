@@ -14,11 +14,11 @@
 </p>
 
 <p align="center">
-  <img src="site/img/workspace.webp" width="1200" alt="Colloq seminar: participants and shared files on the left, a live Python notebook in the middle, and the room’s AI discussion on the right.">
+  <img src="site/img/workspace.webp" width="1200" alt="Colloq class: participants and shared files on the left, a live Python notebook in the middle, and the room’s AI discussion on the right.">
 </p>
 <p align="center"><sub>The Colloq workspace: shared code, visible participation, and an AI conversation everyone can follow.</sub></p>
 
-A teacher creates a seminar and shares its link. Students enter their names and
+A teacher creates a class and shares its link. Students enter their names and
 join the same notebook, with the same files and the same Python state. No student
 accounts, installation or environment setup. When someone runs a cell, everyone
 sees the result.
@@ -34,15 +34,15 @@ back to the room.
 | | What you can do |
 | --- | --- |
 | **Write together** | Edit Python and Markdown cells live, see who is typing, and work across multiple notebooks. Import and export `.ipynb` files. |
-| **Run together** | Use one Python kernel per seminar. Runs enter a visible queue, outputs reach everyone, and a late arrival sees the notebook as it stands. |
+| **Run together** | Use one Python kernel per class. Runs enter a visible queue, outputs reach everyone, and a late arrival sees the notebook as it stands. |
 | **Keep the work in view** | Upload datasets, organize folders, edit text files, and preview images and PDFs. The shared terminal works in the room’s filesystem and records who ran each command. |
 | **Teach from the page** | Present a PDF with synchronized pages, annotations and a laser pointer. Open a cell to the room or collect individual attempts. |
 | **Ask in context** | The Oracle reads the room’s notebook context, including code and outputs. Questions and streamed answers belong to the shared discussion. |
-| **Come back after class** | Finish a seminar to make it read-only for students while preserving its notebook, files and discussion. Resume it with the previous rules intact. |
+| **Come back after class** | Finish a class to make it read-only for students while preserving its notebook, files and discussion. Resume it with the previous rules intact. |
 
 ## Teach your way
 
-Start with a preset, then adjust the room’s rules before or during the seminar.
+Start with a preset, then adjust the room’s rules before or during the class.
 Permissions are enforced by the server.
 
 | Preset | How the class works |
@@ -69,8 +69,8 @@ can edit a cell, they can change the source the teacher eventually runs. If they
 can execute Python, they can access the room’s files through Python regardless
 of restrictions in the Files panel.
 
-The owner manages seminars, teachers, environments and Oracle settings at
-`/admin`. Teachers sign in through personal links; students join through seminar
+The owner manages classes, teachers, environments and Oracle settings at
+`/admin`. Teachers sign in through personal links; students join through class
 links. Teacher links and the owner’s setup token grant staff access and must stay
 private. Adding a teacher does not send an email.
 
@@ -78,7 +78,8 @@ private. Adding a teacher does not send an email.
 
 ### Russian or English
 
-The owner chooses **Русский** or **English** in the `/admin` sidebar. The choice
+The owner opens the globe menu in `/admin` and chooses **Русский** or **English**.
+The button shows the current language; the menu marks the selected one. The choice
 applies to the whole server: the teaching panel, student rooms, presentation
 controls and published material interfaces. Connected rooms switch without a
 reload, preserving code, cursor position and form drafts.
@@ -115,13 +116,13 @@ This builds the app and kernel image, creates `.env` if needed, and starts Collo
 at **http://localhost:3000**. Actual room containers are created on demand.
 
 1. Open `/admin` and claim the instance using the setup token from `data/setup-token` or the initial server log (`make logs`).
-2. Create a seminar and choose its teaching preset and Python environment.
-3. For students on other machines, run `make host` to publish an HTTPS address, then copy the seminar link from the room.
+2. Create a class and choose its teaching preset and Python environment.
+3. For students on other machines, run `make host` to publish an HTTPS address, then copy the class link from the room.
 
 `make host` uses a temporary Cloudflare tunnel by default. Named tunnels, your
 own relay, and direct hosting are also available; see [public access](#give-the-room-an-address).
 The staff sign-in link printed by the hosting command is separate from the
-student seminar link.
+student class link.
 
 Local Docker mode uses a container per room and grants the development app
 access to Docker. It is intended for trusted workstation development. Production
@@ -137,7 +138,7 @@ development backend; the production installer supplies broker configuration.
 | Setting | Purpose |
 | --- | --- |
 | `BIND_ADDR` | Development server / host publication address. Unset means every interface; the example uses `127.0.0.1`. Compose applies it to the host port, keeping its container listener reachable. |
-| `PORT` / `PUBLIC_URL` | Local port and the public origin used to generate seminar links. |
+| `PORT` / `PUBLIC_URL` | Local port and the public origin used to generate class links. |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Oracle credentials, endpoint and model; also configurable in the teaching panel. |
 | `SESSION_SECRET` | Signing key. When empty, a persistent key is generated in `DATA_DIR`; preserve it in backups. |
 | `KERNEL_ENV` | Default Python environment for the Docker development backend. |
@@ -149,7 +150,7 @@ development backend; the production installer supplies broker configuration.
 
 Production runs on **one Linux amd64 VM with k3s/containerd**. A non-root web app
 calls a private runtime broker, which creates a separate Jupyter Pod, token and
-workspace mount for each seminar. The app has no Docker socket or Kubernetes
+workspace mount for each class. The app has no Docker socket or Kubernetes
 credentials. If a room’s runtime cannot start, execution fails; there is no
 fallback to an instance-wide kernel.
 
@@ -167,11 +168,11 @@ Each release records the `sourceCommit`, image digests, exact tooling versions
 and deployment-tool hashes. The installer rejects mismatched tooling. The host
 proxy reaches the app at `127.0.0.1:30080`; the broker and Kubernetes API stay private.
 
-**Choose the Python environment once, keep it for the seminar.** Production
+**Choose the Python environment once, keep it for the class.** Production
 rooms retain their selected image revision when the default changes. Publish
 custom packages through a new release/catalog; images are built outside the web
 app. GPU environments request one exclusive NVIDIA GPU per room and require a
-real CUDA preflight. GPU devices are not implicitly shared between seminars.
+real CUDA preflight. GPU devices are not implicitly shared between classes.
 
 ### Give the room an address
 
@@ -212,7 +213,7 @@ schema-compatible rollback.
 | [Runtime boundary](runtime/README.md) | Broker API, credentials, room lifecycle and isolation limits. |
 | [Deployment verification](docs/deployment-proof-2026-09-09.md) · [Vast GPU results](docs/deployment-vast-gpu-2026-09-09.md) | Recorded execution checks, tested versions and the scope of deployment evidence. |
 
-Isolation is **between seminars**. Participants inside a seminar share Python,
+Isolation is **between classes**. Participants inside a class share Python,
 files and a terminal. Containers share the host Linux kernel; standard Kubernetes
 NetworkPolicy has a local-node traffic exception. One node provides no high
 availability, and PVC capacity is not an enforced per-room disk quota. Review the
@@ -268,9 +269,9 @@ snapshotted to SQLite; graceful shutdown flushes pending changes, while abrupt
 power loss can lose the latest edits. Browsers communicate with the app and
 never receive Jupyter credentials.
 
-Colloq focuses on the live seminar. It does not provide an LMS, course progress
+Colloq focuses on the live class. It does not provide an LMS, course progress
 tracking, automated grading, SSO or video conferencing. The current interface
-is primarily Russian.
+supports Russian and English.
 
 ---
 

@@ -340,7 +340,7 @@ test('комнатный потолок держит и преподавател
       assert.equal(res.status, 429)
       assert.equal(res.headers.get('retry-after'), '600')
       const body = (await res.json()) as { error: string }
-      assert.match(body.error, /лимит семинара: 30 вопросов/)
+      assert.match(body.error, /лимит занятия: 30 вопросов/)
       updateOracleSettings({ questionsPerHour: 20 })
     })
   } finally {

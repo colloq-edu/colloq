@@ -121,7 +121,7 @@ test('комната упирается в свой потолок, даже к�
   assert.equal(res.status, 429)
   assert.equal(res.headers.get('retry-after'), '600')
   const body = (await res.json()) as { error: string }
-  assert.match(body.error, /Семинар использовал все 30/)
+  assert.match(body.error, /Занятие использовало все 30/)
 })
 
 test('личный потолок говорит, через сколько можно снова', async () => {
@@ -256,7 +256,7 @@ test('преподавателя не держат ни личный потол�
   // А в той же комнате участник упирается в комнатный потолок, как и должен.
   const denied = await askAs(room, 'p_kid')
   assert.equal(denied.status, 429)
-  assert.match(((await denied.json()) as { error: string }).error, /Семинар использовал все 30/)
+  assert.match(((await denied.json()) as { error: string }).error, /Занятие использовало все 30/)
 })
 
 test('ноль — слоу-мода нет вовсе, и это умолчание', async () => {

@@ -18,12 +18,12 @@ export const serverMessages: MessageCatalog = {
     "en": "added {p0}"
   },
   "server.untitledSeminar.08a8f2": {
-    "ru": "Семинар без названия",
-    "en": "Untitled seminar"
+    "ru": "Занятие без названия",
+    "en": "Untitled class"
   },
   "server.theTeacherHasBlockedYourAccessTo.5eba21": {
-    "ru": "{p0}, преподаватель закрыл вам доступ в этот семинар. Он откроется снова сам.",
-    "en": "{p0}, the teacher has blocked your access to this seminar. Access will be restored automatically."
+    "ru": "{p0}, преподаватель закрыл вам доступ на это занятие. Он откроется снова сам.",
+    "en": "{p0}, the teacher has blocked your access to this class. Access will be restored automatically."
   },
   "server.isNotANotebook.084f7a": {
     "ru": "{p0} — не тетрадь.",
@@ -90,8 +90,8 @@ export const serverMessages: MessageCatalog = {
     "en": "the file cannot be opened"
   },
   "server.bannedFromThisSeminar.234bce": {
-    "ru": "Доступ к этому семинару закрыт",
-    "en": "banned from this seminar"
+    "ru": "Доступ к этому занятию закрыт",
+    "en": "banned from this class"
   },
   "server.theRoomIsClosed.23a989": {
     "ru": "комната закрыта",
@@ -102,8 +102,8 @@ export const serverMessages: MessageCatalog = {
     "en": "the frame is too large to read"
   },
   "server.referenceToContentThatIsNotIn.692803": {
-    "ru": "ссылка на содержимое, которого у семинара нет",
-    "en": "reference to content that is not in this seminar"
+    "ru": "ссылка на содержимое, которого у занятия нет",
+    "en": "reference to content that is not in this class"
   },
   "server.writeToATypeOutsideTheDocument.85d447": {
     "ru": "запись в тип вне документа",
@@ -142,8 +142,8 @@ export const serverMessages: MessageCatalog = {
     "en": "unknown cell field"
   },
   "server.thisSeminarFieldIsWrittenByThe.4b1639": {
-    "ru": "это поле семинара пишет сервер",
-    "en": "this seminar field is written by the server"
+    "ru": "это поле занятия пишет сервер",
+    "en": "this class field is written by the server"
   },
   "server.thisThreadIsWrittenByTheServer.a453d6": {
     "ru": "эту ленту пишет сервер",
@@ -202,20 +202,20 @@ export const serverMessages: MessageCatalog = {
     "en": "the frame cannot be read"
   },
   "server.onlyTheTeacherMayRenameTheSeminar.61046b": {
-    "ru": "Имя семинара меняет преподаватель.",
-    "en": "Only the teacher may rename the seminar."
+    "ru": "Имя занятия меняет преподаватель.",
+    "en": "Only the teacher may rename the class."
   },
   "server.onlyTheTeacherMayEditThisSeminar.dfef31": {
-    "ru": "В этом семинаре тетрадь принадлежит преподавателю — написанное вами не отправлено.",
-    "en": "Only the teacher may edit this seminar's notebook. Your changes were not sent."
+    "ru": "На этом занятии тетрадь принадлежит преподавателю — написанное вами не отправлено.",
+    "en": "Only the teacher may edit this class's notebook. Your changes were not sent."
   },
   "server.onlyTheTeacherMayAddCellsIn.9fb3e4": {
-    "ru": "В этом семинаре ячейки добавляет преподаватель.",
-    "en": "Only the teacher may add cells in this seminar."
+    "ru": "На этом занятии ячейки добавляет преподаватель.",
+    "en": "Only the teacher may add cells in this class."
   },
   "server.onlyTheTeacherMayRemoveCellsIn.9a1ac0": {
-    "ru": "В этом семинаре ячейки убирает преподаватель.",
-    "en": "Only the teacher may remove cells in this seminar."
+    "ru": "На этом занятии ячейки убирает преподаватель.",
+    "en": "Only the teacher may remove cells in this class."
   },
   "server.notebookAtThisPoint.ccc077": {
     "ru": "тетрадь на этот момент",
@@ -266,19 +266,19 @@ export const serverMessages: MessageCatalog = {
     "en": "This edit was not accepted: {p0}."
   },
   "server.thisSeminarWasDeleted.daaaad": {
-    "ru": "Этот семинар удалён",
-    "en": "this seminar was deleted"
+    "ru": "Это занятие удалено",
+    "en": "this class was deleted"
   },
   "server.serverShuttingDown.0df697": {
     "ru": "Сервер останавливается",
     "en": "server shutting down"
   },
   "server.onlyTheTeacherMayEditTheNotebook.d8abb3": {
-    "ru": "В этом семинаре редактировать тетрадь может только преподаватель.",
-    "en": "Only the teacher may edit the notebook in this seminar."
+    "ru": "На этом занятии редактировать тетрадь может только преподаватель.",
+    "en": "Only the teacher may edit the notebook in this class."
   },
   "server.onlyTheTeacherMayRunTheWhole.8359b5": {
-    "ru": "В этом семинаре весь лист запускает преподаватель — запускайте по одной ячейке.",
+    "ru": "На этом занятии весь лист запускает преподаватель — запускайте по одной ячейке.",
     "en": "Only the teacher may run the whole notebook. Run one cell at a time."
   },
   "server.aLectureIsUsingEndTheLecture.056f12": {
@@ -286,8 +286,8 @@ export const serverMessages: MessageCatalog = {
     "en": "A lecture is using “{p0}”. End the lecture first."
   },
   "server.youMayRunOneCellAtA.35e7c7": {
-    "ru": "В этом семинаре можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.",
-    "en": "You may run one cell at a time in this seminar. Your cell is already running or queued."
+    "ru": "На этом занятии можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.",
+    "en": "You may run one cell at a time in this class. Your cell is already running or queued."
   },
   "server.theNameCannotBeEmpty.fc2696": {
     "ru": "Имя не может быть пустым.",
@@ -330,7 +330,7 @@ export const serverMessages: MessageCatalog = {
     "en": "Only the teacher may erase the whole board."
   },
   "server.onlyTheTeacherMayPutADocument.482e0d": {
-    "ru": "Ставить документ на общий экран в этом семинаре может преподаватель.",
+    "ru": "Ставить документ на общий экран на этом занятии может преподаватель.",
     "en": "Only the teacher may put a document on the shared screen."
   },
   "server.thisFileIsNotInTheRoom.f557d3": {
@@ -338,7 +338,7 @@ export const serverMessages: MessageCatalog = {
     "en": "This file is not in the room."
   },
   "server.onlyTheTeacherMayRemoveADocument.1b7a58": {
-    "ru": "Убрать документ с общего экрана в этом семинаре может преподаватель.",
+    "ru": "Убрать документ с общего экрана на этом занятии может преподаватель.",
     "en": "Only the teacher may remove a document from the shared screen."
   },
   "server.onlyTheTeacherMayFinishTheClass.84b1b4": {
@@ -350,8 +350,8 @@ export const serverMessages: MessageCatalog = {
     "en": "Only the teacher may resume the class."
   },
   "server.onlyTheTeacherMayLeadALecture.f44eb3": {
-    "ru": "Вести лекцию в этом семинаре может преподаватель.",
-    "en": "Only the teacher may lead a lecture in this seminar."
+    "ru": "Вести лекцию на этом занятии может преподаватель.",
+    "en": "Only the teacher may lead a lecture in this class."
   },
   "server.chooseAPdfDocumentForTheProjector.434426": {
     "ru": "На проектор выводится документ PDF.",
@@ -390,12 +390,12 @@ export const serverMessages: MessageCatalog = {
     "en": "A page note may contain up to {p0} characters."
   },
   "server.onlyTheTeacherMayCreateFilesIn.a33c2f": {
-    "ru": "Создавать файлы в этом семинаре может только преподаватель.",
-    "en": "Only the teacher may create files in this seminar."
+    "ru": "Создавать файлы на этом занятии может только преподаватель.",
+    "en": "Only the teacher may create files in this class."
   },
   "server.onlyTheTeacherMayOpenNotebooksIn.26080d": {
-    "ru": "Открывать тетради в этом семинаре может преподаватель.",
-    "en": "Only the teacher may open notebooks in this seminar."
+    "ru": "Открывать тетради на этом занятии может преподаватель.",
+    "en": "Only the teacher may open notebooks in this class."
   },
   "server.onlyTheTeacherMayRenameFilesIn.e04cee": {
     "ru": "Переименовать файл в комнате может преподаватель.",
@@ -422,8 +422,8 @@ export const serverMessages: MessageCatalog = {
     "en": "This action can no longer be undone: previous file versions are retained only until the server restarts."
   },
   "server.onlyTheTeacherMayReorderCellsIn.601caf": {
-    "ru": "В этом семинаре порядок ячеек меняет преподаватель.",
-    "en": "Only the teacher may reorder cells in this seminar."
+    "ru": "На этом занятии порядок ячеек меняет преподаватель.",
+    "en": "Only the teacher may reorder cells in this class."
   },
   "server.onlyTheTeacherMayOpenCells.27de8a": {
     "ru": "Открывает ячейки преподаватель.",
@@ -522,8 +522,8 @@ export const serverMessages: MessageCatalog = {
     "en": "Could not open the terminal."
   },
   "server.onlyTheTeacherMayRunCellsAnd.1d861c": {
-    "ru": "В этом семинаре запускает преподаватель — и ячейки, и команды оболочки.",
-    "en": "Only the teacher may run cells and shell commands in this seminar."
+    "ru": "На этом занятии запускает преподаватель — и ячейки, и команды оболочки.",
+    "en": "Only the teacher may run cells and shell commands in this class."
   },
   "server.theCommandExceedsBytes.4bc32c": {
     "ru": "Команда длиннее {p0} байт — ",
@@ -630,8 +630,8 @@ export const serverMessages: MessageCatalog = {
     "en": "base is what every environment is built on top of."
   },
   "server.thisEnvironmentCannotBeDeletedWhileLinked.8047b8": {
-    "ru": "Это окружение нельзя удалить, пока есть связанные семинары, в том числе архивные.",
-    "en": "This environment cannot be deleted while linked seminars exist, including archived seminars."
+    "ru": "Это окружение нельзя удалить, пока есть связанные занятия, в том числе архивные.",
+    "en": "This environment cannot be deleted while linked classes exist, including archived classes."
   },
   "server.dockerIsUnavailable.6292c5": {
     "ru": "Docker недоступен",
@@ -682,12 +682,12 @@ export const serverMessages: MessageCatalog = {
     "en": "There is no .ipynb in that folder."
   },
   "server.thatSeminarNoLongerExists.b346fe": {
-    "ru": "Этого семинара больше нет",
-    "en": "that seminar no longer exists"
+    "ru": "Этого занятия больше нет",
+    "en": "that class no longer exists"
   },
   "server.aSeminarNameIsRequired.f10426": {
-    "ru": "Введите название семинара",
-    "en": "a seminar name is required"
+    "ru": "Введите название занятия",
+    "en": "a class name is required"
   },
   "server.archivedMustBeTrueOrFalse.db6c12": {
     "ru": "Значение archived должно быть true или false",
@@ -702,15 +702,15 @@ export const serverMessages: MessageCatalog = {
     "en": "rules must be an object"
   },
   "server.theSeminarIsAlreadyStoppingTryAgain.ca0fd7": {
-    "ru": "Семинар уже останавливается. Повторите попытку чуть позже.",
-    "en": "The seminar is already stopping. Try again shortly."
+    "ru": "Занятие уже останавливается. Повторите попытку чуть позже.",
+    "en": "The class is already stopping. Try again shortly."
   },
   "server.theTestCouldNotBeRunCheck.4fcf49": {
     "ru": "Не удалось выполнить проверку — посмотрите журнал сервера.",
     "en": "The test could not be run — check the server logs."
   },
   "server.joinTheSessionFirst.442dd6": {
-    "ru": "Сначала войдите в семинар",
+    "ru": "Сначала войдите на занятие",
     "en": "join the session first"
   },
   "server.theOracleIsSwitchedOffForThis.2c2849": {
@@ -718,8 +718,8 @@ export const serverMessages: MessageCatalog = {
     "en": "The oracle is switched off for this instance."
   },
   "server.theOracleIsSwitchedOffForThis.9dc39a": {
-    "ru": "Оракул выключен в этом семинаре.",
-    "en": "The oracle is switched off for this seminar."
+    "ru": "Оракул выключен на этом занятии.",
+    "en": "The oracle is switched off for this class."
   },
   "server.theOracleIsDisabledInThisColloq.e3d7f7": {
     "ru": "Оракул отключён на этом сервере Colloq.",
@@ -750,20 +750,20 @@ export const serverMessages: MessageCatalog = {
     "en": "File edits are unavailable in hints mode. Ask the oracle a question instead."
   },
   "server.oracleFileEditingIsDisabledInThis.9b1999": {
-    "ru": "Правка файлов оракулом отключена в этом семинаре.",
-    "en": "Oracle file editing is disabled in this seminar."
+    "ru": "Правка файлов оракулом отключена на этом занятии.",
+    "en": "Oracle file editing is disabled in this class."
   },
   "server.onlyTheTeacherMayAskTheOracle.441f53": {
     "ru": "Просить оракула править файлы здесь может преподаватель.",
     "en": "Only the teacher may ask the oracle to edit files here."
   },
   "server.thisSeminarHasUsedAllOracleQuestions.5ff314": {
-    "ru": "Семинар использовал все {p0} вопросов оракулу за час. Повторите позже.",
-    "en": "This seminar has used all {p0} oracle questions allowed per hour. Try again later."
+    "ru": "Занятие использовало все {p0} вопросов оракулу за час. Повторите позже.",
+    "en": "This class has used all {p0} oracle questions allowed per hour. Try again later."
   },
   "server.youHaveUsedYourOneOracleQuestion.61ab29": {
-    "ru": "Вы использовали свой единственный вопрос оракулу за этот час в этом семинаре",
-    "en": "You have used your one oracle question for this hour in this seminar"
+    "ru": "Вы использовали свой единственный вопрос оракулу за этот час на этом занятии",
+    "en": "You have used your one oracle question for this hour in this class"
   },
   "server.waitBetweenQuestionsTryAgainIn.f64333": {
     "ru": "Между вопросами нужно подождать {p0}. Повторите через {p1}.",
@@ -790,8 +790,8 @@ export const serverMessages: MessageCatalog = {
     "en": "Only the teacher may view blocked participants."
   },
   "server.onlyTheTeacherMayBlockAccessTo.0508ad": {
-    "ru": "Закрыть доступ в этот семинар может преподаватель.",
-    "en": "Only the teacher may block access to this seminar."
+    "ru": "Закрыть доступ на это занятие может преподаватель.",
+    "en": "Only the teacher may block access to this class."
   },
   "server.participantidIsRequired.fc7d8c": {
     "ru": "Укажите participantId",
@@ -822,8 +822,8 @@ export const serverMessages: MessageCatalog = {
     "en": "The oracle is disabled on this Colloq instance."
   },
   "server.theOracleIsDisabledForThisSeminar.48f5c6": {
-    "ru": "Оракул выключен в этом семинаре — включите его в правилах комнаты.",
-    "en": "The oracle is disabled for this seminar."
+    "ru": "Оракул выключен на этом занятии — включите его в правилах комнаты.",
+    "en": "The oracle is disabled for this class."
   },
   "server.theOracleIsDisabledOnThisColloq.395e3a": {
     "ru": "Оракул выключен на этом Colloq: вопросов в час — ноль.",
@@ -842,8 +842,8 @@ export const serverMessages: MessageCatalog = {
     "en": "A summary is already being prepared. Wait for it or stop the request."
   },
   "server.thisSeminarHasReachedItsHourlyLimit.7638ce": {
-    "ru": "Достигнут лимит семинара: {p0} вопросов к оракулу в час. Повторите позже.",
-    "en": "This seminar has reached its hourly limit of {p0} oracle questions. Try again later."
+    "ru": "Достигнут лимит занятия: {p0} вопросов к оракулу в час. Повторите позже.",
+    "en": "This class has reached its hourly limit of {p0} oracle questions. Try again later."
   },
   "server.thereAreNoSubmittedAttemptsToSummarize.64f4fd": {
     "ru": "Нет сданных попыток для сводки.",
@@ -990,12 +990,12 @@ export const serverMessages: MessageCatalog = {
     "en": "Only the teacher can remove a file from the room."
   },
   "server.thisHistoryBelongsToASeminarYou.5112cc": {
-    "ru": "Эта история принадлежит семинару, в который вы не вошли",
-    "en": "this history belongs to a seminar you are not in"
+    "ru": "Эта история принадлежит занятию, на которое вы не вошли",
+    "en": "this history belongs to a class you are not in"
   },
   "server.onlyTheTeacherCanViewThisSeminar.4c05e0": {
-    "ru": "Просматривать историю версий в этом семинаре может только преподаватель.",
-    "en": "Only the teacher can view this seminar's version history."
+    "ru": "Просматривать историю версий на этом занятии может только преподаватель.",
+    "en": "Only the teacher can view this class's version history."
   },
   "server.badVersion.a29edb": {
     "ru": "Некорректная версия",
@@ -1018,24 +1018,24 @@ export const serverMessages: MessageCatalog = {
     "en": "a checkpoint needs a name"
   },
   "server.theSeminarIsStoppingTryAgainShortly.b8256e": {
-    "ru": "Семинар останавливается. Повторите чуть позже.",
-    "en": "The seminar is stopping. Try again shortly."
+    "ru": "Занятие останавливается. Повторите чуть позже.",
+    "en": "The class is stopping. Try again shortly."
   },
   "server.onlyStaffCanCreateASeminarOn.eb0b8c": {
-    "ru": "На этом сервере семинары создают только преподаватели. Попросите ссылку на нужное занятие.",
-    "en": "Only staff can create a seminar on this instance. Ask for a link to the one you are joining."
+    "ru": "На этом сервере занятия создают только преподаватели. Попросите ссылку на нужное занятие.",
+    "en": "Only staff can create a class on this instance. Ask for a link to the one you are joining."
   },
   "server.aSessionNameIsRequired.15da74": {
-    "ru": "Введите название семинара",
+    "ru": "Введите название занятия",
     "en": "a session name is required"
   },
   "server.sessionNameMustBeCharactersOrFewer.a4c426": {
-    "ru": "Название семинара должно содержать не более {p0} символов",
+    "ru": "Название занятия должно содержать не более {p0} символов",
     "en": "session name must be {p0} characters or fewer"
   },
   "server.tooManyPeopleAreJoiningThisSeminar.11739b": {
-    "ru": "Сейчас слишком много людей входят в семинар — повторите через минуту",
-    "en": "too many people are joining this seminar at once — try again in a minute"
+    "ru": "Сейчас слишком много людей входят на занятие — повторите через минуту",
+    "en": "too many people are joining this class at once — try again in a minute"
   },
   "server.onlyTheTeacherMaySharePresenterControls.d098fa": {
     "ru": "Пульт лекции передаёт преподаватель.",
@@ -1046,8 +1046,8 @@ export const serverMessages: MessageCatalog = {
     "en": "This presenter link is invalid or has already been used. Create a new link on the teacher's device."
   },
   "server.onlyTheTeacherMayChangeThisSeminar.a9e299": {
-    "ru": "Правила этого семинара задаёт преподаватель.",
-    "en": "Only the teacher may change this seminar's rules."
+    "ru": "Правила этого занятия задаёт преподаватель.",
+    "en": "Only the teacher may change this class's rules."
   },
   "server.thePageHasReachedItsStrokeLimit.748194": {
     "ru": "Достигнут лимит штрихов на странице. Добавьте чистый лист",
@@ -1378,12 +1378,12 @@ export const serverMessages: MessageCatalog = {
     "en": "lost the connection to the Python kernel"
   },
   "server.environmentRequiresAGpuButNoneIs.53af19": {
-    "ru": "Окружению «{p0}» нужен GPU, а этой машине он не выделен. Назовите срезы в KERNEL_GPUS в .env (`KERNEL_GPUS=0` или `KERNEL_GPUS=MIG-…`, как их зовёт docker) и перезапустите сервер — или откройте семинар на окружении без GPU: на процессоре это окружение не поедет.",
+    "ru": "Окружению «{p0}» нужен GPU, а этой машине он не выделен. Назовите срезы в KERNEL_GPUS в .env (`KERNEL_GPUS=0` или `KERNEL_GPUS=MIG-…`, как их зовёт docker) и перезапустите сервер — или откройте занятие на окружении без GPU: на процессоре это окружение не поедет.",
     "en": "Environment “{p0}” requires a GPU, but none is allocated to this machine. Set device IDs in KERNEL_GPUS in .env (`KERNEL_GPUS=0` or `KERNEL_GPUS=MIG-…`, as named by Docker) and restart the server, or use a CPU environment. This environment cannot run on CPU alone."
   },
   "server.environmentRequiresAGpuButAllAvailable.f3d4d9": {
-    "ru": "Окружению «{p0}» нужен GPU, а свободных срезов нет: их {p1}, и все заняты другими семинарами. Подождите, пока освободится — срез уходит вместе с ядром комнаты, — или откройте семинар на окружении без GPU: на процессоре это окружение не поедет.",
-    "en": "Environment “{p0}” requires a GPU, but all {p1} available devices are in use by other seminars. Wait for a room kernel to release one, or use a CPU environment. This environment cannot run on CPU alone."
+    "ru": "Окружению «{p0}» нужен GPU, а свободных срезов нет: их {p1}, и все заняты другими занятиями. Подождите, пока освободится — срез уходит вместе с ядром комнаты, — или откройте занятие на окружении без GPU: на процессоре это окружение не поедет.",
+    "en": "Environment “{p0}” requires a GPU, but all {p1} available devices are in use by other classes. Wait for a room kernel to release one, or use a CPU environment. This environment cannot run on CPU alone."
   },
   "server.couldNotStartTheRoomContainer.cf7398": {
     "ru": "контейнер комнаты не удалось поднять: {p0}",
@@ -1406,8 +1406,8 @@ export const serverMessages: MessageCatalog = {
     "en": "the container was started with a different GPU device"
   },
   "server.environmentHasNotBeenBuiltBuildIt.cf54f5": {
-    "ru": "Окружение «{p0}» ни разу не собиралось. Соберите его: в панели, в разделе «Окружения», или `make env-build NAME={p1}` на хосте — и откройте семинар заново.",
-    "en": "Environment “{p0}” has not been built. Build it under Environments in the panel or run `make env-build NAME={p1}` on the host, then reopen the seminar."
+    "ru": "Окружение «{p0}» ни разу не собиралось. Соберите его: в панели, в разделе «Окружения», или `make env-build NAME={p1}` на хосте — и откройте занятие заново.",
+    "en": "Environment “{p0}” has not been built. Build it under Environments in the panel or run `make env-build NAME={p1}` on the host, then reopen the class."
   },
   "server.theHostMayBeMissingNvidiaContainer.f5c0df": {
     "ru": " Похоже, на хосте нет nvidia-container-toolkit: проверьте `docker run --rm --gpus all ubuntu nvidia-smi`.",
@@ -1422,12 +1422,12 @@ export const serverMessages: MessageCatalog = {
     "en": "the room kernel did not respond within 90 seconds ({p0})"
   },
   "server.cannotStartKernelSeminarIsStopping.9820e1": {
-    "ru": "Не удалось запустить ядро: семинар останавливается",
-    "en": "Cannot start kernel: seminar is stopping"
+    "ru": "Не удалось запустить ядро: занятие останавливается",
+    "en": "Cannot start kernel: class is stopping"
   },
   "server.cannotStartKernelSeminarDoesNotExist.4f72c5": {
-    "ru": "Не удалось запустить ядро: семинара нет",
-    "en": "Cannot start kernel: seminar does not exist"
+    "ru": "Не удалось запустить ядро: занятия нет",
+    "en": "Cannot start kernel: class does not exist"
   },
   "server.invalidKernelRuntimeResponse.110f37": {
     "ru": "Некорректный ответ runtime ядра",
@@ -1462,7 +1462,7 @@ export const serverMessages: MessageCatalog = {
     "en": "Kernel runtime is unreachable or did not respond in time"
   },
   "server.invalidSessionIdentifier.0f97c4": {
-    "ru": "Некорректный идентификатор семинара",
+    "ru": "Некорректный идентификатор занятия",
     "en": "Invalid session identifier"
   },
   "server.invalidKernelRuntimeEndpointOrInstanceIdentity.a63d8b": {
@@ -1638,16 +1638,16 @@ export const serverMessages: MessageCatalog = {
     "en": "The arguments are not valid JSON. Retry the call."
   },
   "server.seminarFolder.8c9abd": {
-    "ru": "папка семинара",
-    "en": "seminar folder"
+    "ru": "папка занятия",
+    "en": "class folder"
   },
   "server.invalidPath.4b91a9": {
     "ru": "путь не годится",
     "en": "invalid path"
   },
   "server.thisPathIsNotAllowedPathsAre.47da6e": {
-    "ru": "Такой путь в этой комнате невозможен. Пути идут от корня папки семинара, без «..».",
-    "en": "This path is not allowed. Paths are relative to the seminar folder and cannot contain “..”."
+    "ru": "Такой путь в этой комнате невозможен. Пути идут от корня папки занятия, без «..».",
+    "en": "This path is not allowed. Paths are relative to the class folder and cannot contain “..”."
   },
   "server.notATextFile.51f9b2": {
     "ru": "это не текстовый файл",
@@ -1682,8 +1682,8 @@ export const serverMessages: MessageCatalog = {
     "en": "only the teacher may edit files here"
   },
   "server.onlyTheTeacherMayEditFilesIn.067d2a": {
-    "ru": "В этом семинаре файлы правит преподаватель, а ход идёт вашими руками — записать {p0} я не могу. ",
-    "en": "Only the teacher may edit files in this seminar. This action uses your permissions, so I cannot write {p0}. "
+    "ru": "На этом занятии файлы правит преподаватель, а ход идёт вашими руками — записать {p0} я не могу. ",
+    "en": "Only the teacher may edit files in this class. This action uses your permissions, so I cannot write {p0}. "
   },
   "server.explainWhatShouldBeChangedInIt.b5147e": {
     "ru": "Скажите словами, что в нём поменять.",
@@ -1814,8 +1814,8 @@ export const serverMessages: MessageCatalog = {
     "en": "only the teacher may run code"
   },
   "server.onlyTheTeacherMayRunCodeIn.fbd734": {
-    "ru": "В этом семинаре запускает преподаватель, а ход идёт вашими руками — {p0} я не запущу. ",
-    "en": "Only the teacher may run code in this seminar. This action uses your permissions, so I cannot run {p0}. "
+    "ru": "На этом занятии запускает преподаватель, а ход идёт вашими руками — {p0} я не запущу. ",
+    "en": "Only the teacher may run code in this class. This action uses your permissions, so I cannot run {p0}. "
   },
   "server.explainWhatShouldBeCheckedInYour.9855be": {
     "ru": "Скажите в ответе, что стоило бы проверить.",
@@ -1930,8 +1930,8 @@ export const serverMessages: MessageCatalog = {
     "en": "only the teacher may edit cells"
   },
   "server.onlyTheTeacherMayEditThisSeminar.91645c": {
-    "ru": "В этом семинаре тетрадь принадлежит преподавателю — ячейки правит он. ",
-    "en": "Only the teacher may edit this seminar's notebook cells. "
+    "ru": "На этом занятии тетрадь принадлежит преподавателю — ячейки правит он. ",
+    "en": "Only the teacher may edit this class's notebook cells. "
   },
   "server.explainWhatShouldBeChangedInYour.c7378b": {
     "ru": "Скажите в ответе, что в ней поменять.",
@@ -1974,8 +1974,8 @@ export const serverMessages: MessageCatalog = {
     "en": "only the teacher may add cells"
   },
   "server.onlyTheTeacherMayAddCellsIn.423ddc": {
-    "ru": "В этом семинаре ячейки добавляет преподаватель. Скажите в ответе, что дописать.",
-    "en": "Only the teacher may add cells in this seminar. Explain what to add in your reply."
+    "ru": "На этом занятии ячейки добавляет преподаватель. Скажите в ответе, что дописать.",
+    "en": "Only the teacher may add cells in this class. Explain what to add in your reply."
   },
   "server.added.bd3124": {
     "ru": "добавил",
@@ -1990,8 +1990,8 @@ export const serverMessages: MessageCatalog = {
     "en": "only the teacher may remove cells"
   },
   "server.onlyTheTeacherMayRemoveCellsIn.6cf98f": {
-    "ru": "В этом семинаре ячейки убирает преподаватель. Скажите в ответе, какая лишняя.",
-    "en": "Only the teacher may remove cells in this seminar. Explain which cell to remove."
+    "ru": "На этом занятии ячейки убирает преподаватель. Скажите в ответе, какая лишняя.",
+    "en": "Only the teacher may remove cells in this class. Explain which cell to remove."
   },
   "server.theCellIsRunning.ff6251": {
     "ru": "ячейка сейчас считается",
@@ -2450,20 +2450,20 @@ export const serverMessages: MessageCatalog = {
     "en": "not run"
   },
   "server.ssr.seminarDeleted": {
-    "ru": "семинар удалён",
-    "en": "seminar deleted"
+    "ru": "занятие удалено",
+    "en": "class deleted"
   },
   "server.ssr.deletedReadable": {
-    "ru": "семинар удалён, материалы доступны",
-    "en": "seminar deleted; materials remain available"
+    "ru": "занятие удалено, материалы доступны",
+    "en": "class deleted; materials remain available"
   },
   "server.ssr.unpublished": {
-    "ru": "ещё не опубликован",
+    "ru": "ещё не опубликовано",
     "en": "not published yet"
   },
   "server.ssr.courseAbout": {
-    "ru": "Здесь собраны семинары курса. Материалы доступны после публикации преподавателем.",
-    "en": "This page collects the course seminars. Materials become available when the teacher publishes them."
+    "ru": "Здесь собраны занятия курса. Материалы доступны после публикации преподавателем.",
+    "en": "This page collects the course classes. Materials become available when the teacher publishes them."
   },
   "server.ssr.moved": {
     "ru": "Страница переехала:",
@@ -2478,12 +2478,12 @@ export const serverMessages: MessageCatalog = {
     "en": "Other classes in this course:"
   },
   "server.ssr.stepsHeading": {
-    "ru": "Шаги семинара",
-    "en": "Seminar steps"
+    "ru": "Шаги занятия",
+    "en": "Class steps"
   },
   "server.ssr.publishedNotebook": {
-    "ru": "Опубликованные материалы тетради семинара.",
-    "en": "Published materials from the seminar notebook."
+    "ru": "Опубликованные материалы тетради занятия.",
+    "en": "Published materials from the class notebook."
   },
   "server.ssr.stepOutputs": {
     "ru": "Шаги выбрал преподаватель. Выводы сохранены на момент каждого шага и могут относиться к предыдущей версии кода.",
@@ -2758,8 +2758,8 @@ export const serverMessages: MessageCatalog = {
     "en": "The kernel did not come back: {p0}"
   },
   "server.aSeminarNameMustBeCharactersOr.c9d56a": {
-    "ru": "Название семинара должно содержать не более {p0} символов",
-    "en": "a seminar name must be {p0} characters or fewer"
+    "ru": "Название занятия должно содержать не более {p0} символов",
+    "en": "a class name must be {p0} characters or fewer"
   },
   "server.beforeBlocking.d2153d": {
     "ru": "до бана {p0}",
@@ -2767,19 +2767,19 @@ export const serverMessages: MessageCatalog = {
   },
   "server.youHaveUsedAllOfYourOracle.7a4f7f": {
     "ru": {
-      "one": "Вы использовали {count} вопрос оракулу за этот час в этом семинаре",
-      "few": "Вы использовали все {count} вопроса оракулу за этот час в этом семинаре",
-      "many": "Вы использовали все {count} вопросов оракулу за этот час в этом семинаре",
-      "other": "Вы использовали все {count} вопроса оракулу за этот час в этом семинаре"
+      "one": "Вы использовали {count} вопрос оракулу за этот час на этом занятии",
+      "few": "Вы использовали все {count} вопроса оракулу за этот час на этом занятии",
+      "many": "Вы использовали все {count} вопросов оракулу за этот час на этом занятии",
+      "other": "Вы использовали все {count} вопроса оракулу за этот час на этом занятии"
     },
     "en": {
-      "one": "You have used your {count} oracle question for this hour in this seminar",
-      "other": "You have used all {count} of your oracle questions for this hour in this seminar"
+      "one": "You have used your {count} oracle question for this hour in this class",
+      "other": "You have used all {count} of your oracle questions for this hour in this class"
     }
   },
   "server.thisSeminarHasRoomForMbOf.66f8a7": {
-    "ru": "Этот семинар вмещает до {p0} МБ файлов, ",
-    "en": "This seminar has room for {p0} MB of files "
+    "ru": "Это занятие вмещает до {p0} МБ файлов, ",
+    "en": "This class has room for {p0} MB of files "
   },
   "server.andExceedsThatLimitAskTheTeacher.1f472f": {
     "ru": "а {p0} превышает это ограничение. Попросите преподавателя освободить место.",
@@ -2827,19 +2827,19 @@ export const serverMessages: MessageCatalog = {
   },
   "server.theSeminarKernelWasReplacedThePrevious.bacb22": {
     "ru": "Ядро занятия было пересоздано. Прежняя оболочка завершилась; откройте терминал заново.",
-    "en": "The seminar kernel was replaced. The previous shell ended; open the terminal again."
+    "en": "The class kernel was replaced. The previous shell ended; open the terminal again."
   },
   "server.deletionCouldNotFinishBecauseTheKernel.c885fc": {
-    "ru": "Не удалось завершить удаление: ядро не остановилось. Данные и файлы семинара сохранены. Повторите удаление.",
-    "en": "Deletion could not finish because the kernel did not stop. The seminar data and files were kept. Retry deletion."
+    "ru": "Не удалось завершить удаление: ядро не остановилось. Данные и файлы занятия сохранены. Повторите удаление.",
+    "en": "Deletion could not finish because the kernel did not stop. The class data and files were kept. Retry deletion."
   },
   "server.deletionCouldNotFinishBecauseSomeFiles.81f721": {
     "ru": "Не удалось завершить удаление части файлов. Повторите удаление или попросите оператора проверить workspace.",
     "en": "Deletion could not finish because some files could not be removed. Retry deletion or ask the server operator to check the workspace."
   },
   "server.theSeminarCouldNotBeDeleted.e7f27d": {
-    "ru": "Не удалось удалить семинар",
-    "en": "the seminar could not be deleted"
+    "ru": "Не удалось удалить занятие",
+    "en": "the class could not be deleted"
   },
   "server.theServerRestartedCellsThatWereRunning.025fda": {
     "ru": "Сервер перезапустился. Выполнявшиеся и ожидавшие ячейки остановлены — запустите их снова, когда будете готовы.",
@@ -2994,16 +2994,16 @@ export const serverMessages: MessageCatalog = {
     "en": "The server restarted while preparing the summary. Try again."
   },
   "server.youHaveUsedAllOracleQuestionsAllowed.3b66d9": {
-    "ru": "Вы использовали все {p0} вопросов оракулу за час в этом семинаре",
-    "en": "You have used all {p0} oracle questions allowed per hour in this seminar"
+    "ru": "Вы использовали все {p0} вопросов оракулу за час на этом занятии",
+    "en": "You have used all {p0} oracle questions allowed per hour in this class"
   },
   "server.unknownError.af6321": {
     "ru": "Неизвестная ошибка",
     "en": "unknown error"
   },
   "server.onlyTheTeacherRunsCellsInThis.21ec54": {
-    "ru": "В этом семинаре ячейки запускает только преподаватель.",
-    "en": "Only the teacher runs cells in this seminar."
+    "ru": "На этом занятии ячейки запускает только преподаватель.",
+    "en": "Only the teacher runs cells in this class."
   },
   "server.aiStopped": {
     "ru": "(остановлено)",

@@ -156,7 +156,7 @@ test('читалка выбирает по телу отказа, а не по �
    * причины не знает — `step not found` приходит и на опечатку в номере.
    */
   assert.doesNotMatch(screen, /опубликовали заново/, 'причина снова названа за сервер')
-  assert.match(translate('ru', 'room.ui.876'), /Такой страницы у этого семинара нет/)
+  assert.match(translate('ru', 'room.ui.876'), /Такой страницы у этого занятия нет/)
   assert.doesNotMatch(translate('ru', 'room.ui.876'), /опубликовали заново/)
 })
 

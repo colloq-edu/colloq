@@ -14,8 +14,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Sign out"
   },
   "admin.seminars": {
-    "ru": "Семинары",
-    "en": "Seminars"
+    "ru": "Занятия",
+    "en": "Classes"
   },
   "admin.courses": {
     "ru": "Курсы",
@@ -66,12 +66,12 @@ export const adminMessages: MessageCatalog = {
     "en": "Could not save the rule: your sign-in session is no longer valid. Sign in again."
   },
   "admin.could.not.save.the.rule.you.do.not.have.access.to.this.seminar": {
-    "ru": "Не удалось сохранить правило: у вас нет прав на этот семинар.",
-    "en": "Could not save the rule: you do not have access to this seminar."
+    "ru": "Не удалось сохранить правило: у вас нет прав на это занятие.",
+    "en": "Could not save the rule: you do not have access to this class."
   },
   "admin.could.not.save.the.rule.seminar.not.found": {
-    "ru": "Не удалось сохранить правило: семинар не найден.",
-    "en": "Could not save the rule: seminar not found."
+    "ru": "Не удалось сохранить правило: занятие не найдено.",
+    "en": "Could not save the rule: class not found."
   },
   "admin.could.not.save.the.rule.try.again": {
     "ru": "Не удалось сохранить правило. Попробуйте ещё раз.",
@@ -146,8 +146,8 @@ export const adminMessages: MessageCatalog = {
     "en": "{p0} in the room · {p1}"
   },
   "admin.group.seminars.on.a.course.page.and.set.their.order": {
-    "ru": "Объедините семинары на странице курса и задайте их порядок.",
-    "en": "Group seminars on a course page and set their order."
+    "ru": "Объедините занятия на странице курса и задайте их порядок.",
+    "en": "Group classes on a course page and set their order."
   },
   "admin.new.course": {
     "ru": "Новый курс",
@@ -170,8 +170,8 @@ export const adminMessages: MessageCatalog = {
     "en": "No courses yet"
   },
   "admin.create.a.course.and.add.seminars.students.will.see.the.list.and.l": {
-    "ru": "Создайте курс и добавьте семинары. Студенты увидят список и ссылки на опубликованные материалы.",
-    "en": "Create a course and add seminars. Students will see the list and links to published materials."
+    "ru": "Создайте курс и добавьте занятия. Студенты увидят список и ссылки на опубликованные материалы.",
+    "en": "Create a course and add classes. Students will see the list and links to published materials."
   },
   "admin.published": {
     "ru": "опубликовано ·",
@@ -186,8 +186,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Pages without a room"
   },
   "admin.the.seminar.was.deleted.but.its.publication.was.kept.you.can.with": {
-    "ru": "После удаления семинара его публикация сохранена. Здесь можно снять её с публикации или вернуть доступ по ссылке.",
-    "en": "The seminar was deleted but its publication was kept. You can withdraw it here or restore access by link."
+    "ru": "После удаления занятия его публикация сохранена. Здесь можно снять её с публикации или вернуть доступ по ссылке.",
+    "en": "The class was deleted but its publication was kept. You can withdraw it here or restore access by link."
   },
   "admin.step": {
     "ru": "шаг",
@@ -238,8 +238,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Open course page"
   },
   "admin.add.seminar": {
-    "ru": "+ Добавить семинар",
-    "en": "+ Add seminar"
+    "ru": "+ Добавить занятие",
+    "en": "+ Add class"
   },
   "admin.all.courses": {
     "ru": "← Все курсы",
@@ -310,16 +310,16 @@ export const adminMessages: MessageCatalog = {
     "en": "The page is accessible by link without signing in."
   },
   "admin.the.course.page.shows.seminar.names.in.the.chosen.order.and.links": {
-    "ru": "На странице курса показаны названия семинаров в указанном порядке и ссылки на их публикации. У остальных семинаров стоит «ещё не опубликован». Ссылки для входа в комнаты на странице курса не размещаются.",
-    "en": "The course page shows seminar names in the chosen order and links to their publications. Other seminars are marked “not published yet”. Links to join rooms are not shown on the course page."
+    "ru": "На странице курса показаны названия занятий в указанном порядке и ссылки на их публикации. У остальных занятий стоит «ещё не опубликовано». Ссылки для входа в комнаты на странице курса не размещаются.",
+    "en": "The course page shows class names in the chosen order and links to their publications. Other classes are marked “not published yet”. Links to join rooms are not shown on the course page."
   },
   "admin.no.seminars.available.to.add": {
-    "ru": "Нет доступных семинаров для добавления.",
-    "en": "No seminars available to add."
+    "ru": "Нет доступных занятий для добавления.",
+    "en": "No classes available to add."
   },
   "admin.seminar": {
-    "ru": "Семинар",
-    "en": "Seminar"
+    "ru": "Занятие",
+    "en": "Class"
   },
   "admin.publication": {
     "ru": "Публикация",
@@ -338,8 +338,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Remove row"
   },
   "admin.seminar.deleted.position.in.list.kept": {
-    "ru": "семинар удалён · позиция в списке сохранена",
-    "en": "seminar deleted · position in list kept"
+    "ru": "занятие удалено · позиция в списке сохранена",
+    "en": "class deleted · position in list kept"
   },
   "admin.open.saved.publication": {
     "ru": "открыть сохранённую публикацию",
@@ -358,7 +358,7 @@ export const adminMessages: MessageCatalog = {
     "en": "steps"
   },
   "admin.not.published.yet": {
-    "ru": "ещё не опубликован",
+    "ru": "ещё не опубликовано",
     "en": "not published yet"
   },
   "admin.publish": {
@@ -374,20 +374,20 @@ export const adminMessages: MessageCatalog = {
     "en": "Move down"
   },
   "admin.this.course.has.no.seminars.yet": {
-    "ru": "В этом курсе пока нет семинаров.",
-    "en": "This course has no seminars yet."
+    "ru": "В этом курсе пока нет занятий.",
+    "en": "This course has no classes yet."
   },
   "admin.use.the.arrows.to.reorder.seminars.the.new.order.appears.when.the": {
-    "ru": "Стрелки меняют порядок семинаров. Новый порядок виден после загрузки страницы курса.",
-    "en": "Use the arrows to reorder seminars. The new order appears when the course page is loaded."
+    "ru": "Стрелки меняют порядок занятий. Новый порядок виден после загрузки страницы курса.",
+    "en": "Use the arrows to reorder classes. The new order appears when the course page is loaded."
   },
   "admin.deleting.the.course.removes.the.seminar.list.its.order.and.the.ad": {
-    "ru": "При удалении курса будут удалены список семинаров, их порядок и адрес",
-    "en": "Deleting the course removes the seminar list, its order and the address"
+    "ru": "При удалении курса будут удалены список занятий, их порядок и адрес",
+    "en": "Deleting the course removes the class list, its order and the address"
   },
   "admin.seminars.and.published.pages.will.be.kept": {
-    "ru": ". Семинары и опубликованные страницы сохранятся.",
-    "en": ". Seminars and published pages will be kept."
+    "ru": ". Занятия и опубликованные страницы сохранятся.",
+    "en": ". Classes and published pages will be kept."
   },
   "admin.delete.course": {
     "ru": "Удалить курс…",
@@ -418,8 +418,8 @@ export const adminMessages: MessageCatalog = {
     "en": "The link"
   },
   "admin.will.no.longer.open.the.course.the.seminar.list.and.its.order.wil": {
-    "ru": "перестанет открывать курс. Список семинаров и его порядок будут удалены. Семинары и их публикации сохранятся.",
-    "en": "will no longer open the course. The seminar list and its order will be deleted. Seminars and their publications will be kept."
+    "ru": "перестанет открывать курс. Список занятий и его порядок будут удалены. Занятия и их публикации сохранятся.",
+    "en": "will no longer open the course. The class list and its order will be deleted. Classes and their publications will be kept."
   },
   "admin.deleting": {
     "ru": "Удаляем…",
@@ -486,8 +486,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Enter a course name."
   },
   "admin.build.container.images.with.the.python.packages.your.seminars.nee": {
-    "ru": "Собирайте образы контейнеров с пакетами Python для ваших семинаров.",
-    "en": "Build container images with the Python packages your seminars need."
+    "ru": "Собирайте образы контейнеров с пакетами Python для ваших занятий.",
+    "en": "Build container images with the Python packages your classes need."
   },
   "admin.new.environment": {
     "ru": "Новое окружение",
@@ -502,8 +502,8 @@ export const adminMessages: MessageCatalog = {
     "en": "build finished"
   },
   "admin.environments.come.from.the.release.catalog.each.seminar.keeps.its": {
-    "ru": "Окружения загружаются из каталога релиза. Каждый семинар сохраняет свою версию образа. Собирайте и импортируйте новые образы с помощью инструментов развёртывания. Kubernetes выделяет GPU при запуске комнаты.",
-    "en": "Environments come from the release catalog. Each seminar keeps its image revision. Build and import new images with the deployment tools. GPU allocation is handled by Kubernetes when a room starts."
+    "ru": "Окружения загружаются из каталога релиза. Каждое занятие сохраняет свою версию образа. Собирайте и импортируйте новые образы с помощью инструментов развёртывания. Kubernetes выделяет GPU при запуске комнаты.",
+    "en": "Environments come from the release catalog. Each class keeps its image revision. Build and import new images with the deployment tools. GPU allocation is handled by Kubernetes when a room starts."
   },
   "admin.gpu": {
     "ru": "GPU:",
@@ -518,12 +518,12 @@ export const adminMessages: MessageCatalog = {
     "en": "slices"
   },
   "admin.free.a.room.on.a.gpu.environment.holds.its.slice.for.as.long.as.i": {
-    "ru": "свободно. Комната с GPU-окружением занимает срез, пока работает её контейнер, даже если в семинаре никого нет.",
-    "en": "free. A room on a GPU environment holds its slice for as long as its container lives — a seminar nobody is in still holds one."
+    "ru": "свободно. Комната с GPU-окружением занимает срез, пока работает её контейнер, даже если на занятии никого нет.",
+    "en": "free. A room on a GPU environment holds its slice for as long as its container lives — a class nobody is in still holds one."
   },
   "admin.no.gpu.slices.are.configured.in.kernel.gpus.seminars.using.a.gpu": {
-    "ru": "В KERNEL_GPUS не настроены срезы GPU. Семинары с GPU-окружением не смогут запустить ядро, пока срез GPU не станет доступен.",
-    "en": "No GPU slices are configured in KERNEL_GPUS. Seminars using a GPU environment cannot start a kernel until a GPU slice is available."
+    "ru": "В KERNEL_GPUS не настроены срезы GPU. Занятия с GPU-окружением не смогут запустить ядро, пока срез GPU не станет доступен.",
+    "en": "No GPU slices are configured in KERNEL_GPUS. Classes using a GPU environment cannot start a kernel until a GPU slice is available."
   },
   "admin.a.room.on.this.environment.holds.a.gpu.slice.for.as.long.as.its.c": {
     "ru": "Комната с этим окружением занимает срез GPU, пока работает её контейнер",
@@ -570,8 +570,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Default"
   },
   "admin.new.seminars.will.be.created.on.this.environment": {
-    "ru": "Новые семинары будут создаваться с этим окружением",
-    "en": "New seminars will be created on this environment"
+    "ru": "Новые занятия будут создаваться с этим окружением",
+    "en": "New classes will be created on this environment"
   },
   "admin.make.default": {
     "ru": "Использовать по умолчанию",
@@ -626,20 +626,20 @@ export const adminMessages: MessageCatalog = {
     "en": "Rooms run on the base image: numpy, pandas, matplotlib, scikit-learn. Make one to add your course's own packages on top."
   },
   "admin.an.environment.is.a.container.image.each.seminar.runs.in.its.own": {
-    "ru": "Окружение — это образ контейнера. Каждый семинар работает в своём контейнере с окружением, выбранным при создании. Изменение окружения по умолчанию применяется к",
-    "en": "An environment is a container image. Each seminar runs in its own container using the environment selected at creation. Changing the default applies to"
+    "ru": "Окружение — это образ контейнера. Каждое занятие работает в своём контейнере с окружением, выбранным при создании. Изменение окружения по умолчанию применяется к",
+    "en": "An environment is a container image. Each class runs in its own container using the environment selected at creation. Changing the default applies to"
   },
   "admin.new": {
     "ru": "новым",
     "en": "new"
   },
   "admin.seminars.330": {
-    "ru": "семинарам.",
-    "en": "seminars."
+    "ru": "занятиям.",
+    "en": "classes."
   },
   "admin.existing.seminars.keep.their.pinned.image.revision": {
-    "ru": "Существующие семинары сохраняют закреплённую версию образа.",
-    "en": "Existing seminars keep their pinned image revision."
+    "ru": "Существующие занятия сохраняют закреплённую версию образа.",
+    "en": "Existing classes keep their pinned image revision."
   },
   "admin.environment": {
     "ru": "Окружение {p0}",
@@ -698,12 +698,12 @@ export const adminMessages: MessageCatalog = {
     "en": "the default?"
   },
   "admin.seminars.created.from.now.on.get": {
-    "ru": "Новые семинары будут использовать",
-    "en": "Seminars created from now on get"
+    "ru": "Новые занятия будут использовать",
+    "en": "Classes created from now on get"
   },
   "admin.existing.seminars.keep.their.selected.environment": {
-    "ru": ". Существующие семинары сохранят выбранное окружение.",
-    "en": ". Existing seminars keep their selected environment."
+    "ru": ". Существующие занятия сохранят выбранное окружение.",
+    "en": ". Existing classes keep their selected environment."
   },
   "admin.switching": {
     "ru": "Переключаем…",
@@ -742,40 +742,40 @@ export const adminMessages: MessageCatalog = {
     "en": "Could not save the package list. Try again."
   },
   "admin.back.to.seminars": {
-    "ru": "К списку семинаров",
-    "en": "Back to seminars"
+    "ru": "К списку занятий",
+    "en": "Back to classes"
   },
   "admin.creating": {
     "ru": "Создаём…",
     "en": "Creating…"
   },
   "admin.create.seminar": {
-    "ru": "Создать семинар",
-    "en": "Create seminar"
+    "ru": "Создать занятие",
+    "en": "Create class"
   },
   "admin.new.seminar": {
-    "ru": "Новый семинар",
-    "en": "New seminar"
+    "ru": "Новое занятие",
+    "en": "New class"
   },
   "admin.choose.a.notebook.environment.and.access.rules.then.create.the.se": {
-    "ru": "Выберите тетрадь, окружение и правила доступа, затем создайте семинар.",
-    "en": "Choose a notebook, environment and access rules, then create the seminar."
+    "ru": "Выберите тетрадь, окружение и правила доступа, затем создайте занятие.",
+    "en": "Choose a notebook, environment and access rules, then create the class."
   },
   "admin.basics": {
     "ru": "Основное",
     "en": "Basics"
   },
   "admin.students.see.this.name.when.they.join.the.seminar": {
-    "ru": "Студенты увидят это название при входе в семинар.",
-    "en": "Students see this name when they join the seminar."
+    "ru": "Студенты увидят это название при входе на занятие.",
+    "en": "Students see this name when they join the class."
   },
   "admin.week.7.attention": {
     "ru": "Неделя 7 — Механизм внимания",
     "en": "Week 7 — Attention"
   },
   "admin.seminar.name": {
-    "ru": "Название семинара",
-    "en": "Seminar name"
+    "ru": "Название занятия",
+    "en": "Class name"
   },
   "admin.blank": {
     "ru": "Пустая тетрадь",
@@ -834,8 +834,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Environment"
   },
   "admin.the.python.environment.for.this.seminar.it.is.selected.when.the.s": {
-    "ru": "Окружение Python для этого семинара. Выбирается при создании семинара.",
-    "en": "The Python environment for this seminar. It is selected when the seminar is created."
+    "ru": "Окружение Python для этого занятия. Выбирается при создании занятия.",
+    "en": "The Python environment for this class. It is selected when the class is created."
   },
   "admin.built": {
     "ru": "собрано",
@@ -878,16 +878,16 @@ export const adminMessages: MessageCatalog = {
     "en": "No free slices."
   },
   "admin.all.slices.are.held.by.containers.from.other.seminars.including.i": {
-    "ru": "Все срезы заняты контейнерами других семинаров, в том числе неактивных. Семинар можно создать, но для запуска ядра потребуется освободить срез.",
-    "en": "All slices are held by containers from other seminars, including inactive ones. You can create the seminar, but a slice must be freed before starting its kernel."
+    "ru": "Все срезы заняты контейнерами других занятий, в том числе неактивных. Занятие можно создать, но для запуска ядра потребуется освободить срез.",
+    "en": "All slices are held by containers from other classes, including inactive ones. You can create the class, but a slice must be freed before starting its kernel."
   },
   "admin.materials": {
     "ru": "Материалы",
     "en": "Materials"
   },
   "admin.add.files.to.the.seminar.workspace.participants.can.download.them": {
-    "ru": "Добавьте файлы в рабочее пространство семинара. Участники смогут скачать их; для чтения из кода нужно разрешение на выполнение кода.",
-    "en": "Add files to the seminar workspace. Participants can download them; reading them from code requires permission to run code."
+    "ru": "Добавьте файлы в рабочее пространство занятия. Участники смогут скачать их; для чтения из кода нужно разрешение на выполнение кода.",
+    "en": "Add files to the class workspace. Participants can download them; reading them from code requires permission to run code."
   },
   "admin.file": {
     "ru": "файл",
@@ -958,12 +958,12 @@ export const adminMessages: MessageCatalog = {
     "en": "The room"
   },
   "admin.choose.a.mode.and.adjust.access.rules.you.can.change.them.during": {
-    "ru": "Выберите режим и настройте правила доступа. Их можно менять во время семинара.",
-    "en": "Choose a mode and adjust access rules. You can change them during the seminar."
+    "ru": "Выберите режим и настройте правила доступа. Их можно менять во время занятия.",
+    "en": "Choose a mode and adjust access rules. You can change them during the class."
   },
   "admin.you.can.change.the.mode.on.the.seminar.page": {
-    "ru": "Режим можно изменить на странице семинара.",
-    "en": "You can change the mode on the seminar page."
+    "ru": "Режим можно изменить на странице занятия.",
+    "en": "You can change the mode on the class page."
   },
   "admin.unavailable.controls": {
     "ru": "Недоступные настройки",
@@ -978,12 +978,12 @@ export const adminMessages: MessageCatalog = {
     "en": "Teacher controls"
   },
   "admin.interrupting.a.cell.somebody.else.started.renaming.the.seminar.re": {
-    "ru": "Остановка ячейки, запущенной другим участником · переименование семинара · восстановление старой версии и создание чекпоинта · удаление файлов из панели файлов · закрытие доступа участнику через панель «Участники», которое также удаляет его из комнаты.",
-    "en": "Interrupting a cell somebody else started · renaming the seminar · restoring an old version and marking a checkpoint · deleting files from the file panel · closing somebody's access from the People panel, which also takes them out of the room."
+    "ru": "Остановка ячейки, запущенной другим участником · переименование занятия · восстановление старой версии и создание чекпоинта · удаление файлов из панели файлов · закрытие доступа участнику через панель «Участники», которое также удаляет его из комнаты.",
+    "en": "Interrupting a cell somebody else started · renaming the class · restoring an old version and marking a checkpoint · deleting files from the file panel · closing somebody's access from the People panel, which also takes them out of the room."
   },
   "admin.choose.oracle.access.for.this.seminar.within.the.server.s.allowed": {
-    "ru": "Выберите доступ к оракулу для семинара в пределах режима, разрешённого сервером.",
-    "en": "Choose oracle access for this seminar within the server’s allowed mode."
+    "ru": "Выберите доступ к оракулу для занятия в пределах режима, разрешённого сервером.",
+    "en": "Choose oracle access for this class within the server’s allowed mode."
   },
   "admin.the.server.allows.up.to.mode": {
     "ru": "Сервер разрешает режим до {p0}",
@@ -994,8 +994,8 @@ export const adminMessages: MessageCatalog = {
     "en": "above what the instance allows ({p0})"
   },
   "admin.the.server.s.mode.limits.this.seminar.you.can.further.restrict.th": {
-    "ru": "Режим сервера ограничивает этот семинар. Здесь можно дополнительно ограничить оракула.",
-    "en": "The server’s mode limits this seminar. You can further restrict the oracle here."
+    "ru": "Режим сервера ограничивает это занятие. Здесь можно дополнительно ограничить оракула.",
+    "en": "The server’s mode limits this class. You can further restrict the oracle here."
   },
   "admin.the.oracle.is.unavailable": {
     "ru": "Оракул недоступен: {p0}.",
@@ -1090,8 +1090,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Could not read that link"
   },
   "admin.the.seminar.was.created.but": {
-    "ru": "Семинар создан, но {p0}",
-    "en": "The seminar was created, but {p0} "
+    "ru": "Занятие создано, но {p0}",
+    "en": "The class was created, but {p0} "
   },
   "admin.one.file": {
     "ru": "один файл",
@@ -1106,8 +1106,8 @@ export const adminMessages: MessageCatalog = {
     "en": "did not upload: {p0}. Add them from the room."
   },
   "admin.could.not.create.the.seminar": {
-    "ru": "Не удалось создать семинар",
-    "en": "Could not create the seminar"
+    "ru": "Не удалось создать занятие",
+    "en": "Could not create the class"
   },
   "admin.as.set.for.the.instance": {
     "ru": "Как настроено для инстанса",
@@ -1122,8 +1122,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Off"
   },
   "admin.disable.the.oracle.for.this.seminar": {
-    "ru": "отключить оракула для этого семинара",
-    "en": "disable the oracle for this seminar"
+    "ru": "отключить оракула для этого занятия",
+    "en": "disable the oracle for this class"
   },
   "admin.hints.only": {
     "ru": "Только подсказки",
@@ -1238,8 +1238,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Saving…"
   },
   "admin.configure.the.provider.model.and.limits.for.all.seminars": {
-    "ru": "Настройте провайдера, модель и ограничения для всех семинаров.",
-    "en": "Configure the provider, model and limits for all seminars."
+    "ru": "Настройте провайдера, модель и ограничения для всех занятий.",
+    "en": "Configure the provider, model and limits for all classes."
   },
   "admin.could.not.load.the.settings.try.again.to.view.the.server.configur": {
     "ru": "Не удалось загрузить настройки. Попробуйте снова, чтобы увидеть конфигурацию сервера.",
@@ -1370,8 +1370,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Default mode and limit"
   },
   "admin.applies.to.all.seminars.each.seminar.can.further.restrict.the.ora": {
-    "ru": "Применяется ко всем семинарам. Каждый семинар может дополнительно ограничить оракула подсказками или отключить его.",
-    "en": "Applies to all seminars. Each seminar can further restrict the oracle to hints or turn it off."
+    "ru": "Применяется ко всем занятиям. Каждое занятие может дополнительно ограничить оракула подсказками или отключить его.",
+    "en": "Applies to all classes. Each class can further restrict the oracle to hints or turn it off."
   },
   "admin.house.rules": {
     "ru": "Правила курса",
@@ -1406,8 +1406,8 @@ export const adminMessages: MessageCatalog = {
     "en": "per hour"
   },
   "admin.zero.switches.the.oracle.off.in.every.seminar": {
-    "ru": "Ноль отключает оракула во всех семинарах.",
-    "en": "Zero switches the oracle off in every seminar."
+    "ru": "Ноль отключает оракула на всех занятиях.",
+    "en": "Zero switches the oracle off in every class."
   },
   "admin.zero.switches.it.off": {
     "ru": ". Ноль отключает оракула.",
@@ -1474,8 +1474,8 @@ export const adminMessages: MessageCatalog = {
     "en": "tokens — not reported by this endpoint"
   },
   "admin.seminars.with.questions": {
-    "ru": "семинаров с вопросами",
-    "en": "seminars with questions"
+    "ru": "занятий с вопросами",
+    "en": "classes with questions"
   },
   "admin.no.questions.recorded.in.this.period.the.breakdown.appears.after": {
     "ru": "За этот период вопросов не было. Разбивка появится после первого запроса.",
@@ -1778,12 +1778,12 @@ export const adminMessages: MessageCatalog = {
     "en": "This link will stop opening the current publication. Another publication may take this address, and the link will then lead to that publication."
   },
   "admin.could.not.load.the.seminar.history.try.reloading.the.page": {
-    "ru": "Не удалось загрузить историю семинара. Попробуйте обновить страницу.",
-    "en": "Could not load the seminar history. Try reloading the page."
+    "ru": "Не удалось загрузить историю занятия. Попробуйте обновить страницу.",
+    "en": "Could not load the class history. Try reloading the page."
   },
   "admin.could.not.publish.the.seminar.try.again": {
-    "ru": "Не удалось опубликовать семинар. Попробуйте ещё раз.",
-    "en": "Could not publish the seminar. Try again."
+    "ru": "Не удалось опубликовать занятие. Попробуйте ещё раз.",
+    "en": "Could not publish the class. Try again."
   },
   "admin.could.not.save.the.address.try.again": {
     "ru": "Не удалось сохранить адрес. Попробуйте ещё раз.",
@@ -1794,12 +1794,12 @@ export const adminMessages: MessageCatalog = {
     "en": "Could not release the previous address. Try again."
   },
   "admin.search.seminars": {
-    "ru": "Поиск семинаров…",
-    "en": "Search seminars…"
+    "ru": "Поиск занятий…",
+    "en": "Search classes…"
   },
   "admin.search.seminars.by.name": {
-    "ru": "Найти семинары по названию",
-    "en": "Search seminars by name"
+    "ru": "Найти занятия по названию",
+    "en": "Search classes by name"
   },
   "admin.active": {
     "ru": "активных ·",
@@ -1826,8 +1826,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Copy"
   },
   "admin.could.not.load.seminars": {
-    "ru": "Не удалось загрузить семинары:",
-    "en": "Could not load seminars:"
+    "ru": "Не удалось загрузить занятия:",
+    "en": "Could not load classes:"
   },
   "admin.environment.919": {
     "ru": "Окружение",
@@ -1878,12 +1878,12 @@ export const adminMessages: MessageCatalog = {
     "en": "Computer Vision Seminar — 25.08"
   },
   "admin.name.of.the.new.seminar": {
-    "ru": "Название нового семинара",
-    "en": "Name of the new seminar"
+    "ru": "Название нового занятия",
+    "en": "Name of the new class"
   },
   "admin.python.environment.for.the.new.seminar": {
-    "ru": "Окружение Python для нового семинара",
-    "en": "Python environment for the new seminar"
+    "ru": "Окружение Python для нового занятия",
+    "en": "Python environment for the new class"
   },
   "admin.rename": {
     "ru": "Переименовать",
@@ -1910,8 +1910,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Selected environment:"
   },
   "admin.no.environment.recorded.for.this.seminar": {
-    "ru": "Окружение этого семинара не записано",
-    "en": "No environment recorded for this seminar"
+    "ru": "Окружение этого занятия не записано",
+    "en": "No environment recorded for this class"
   },
   "admin.joined.in.total": {
     "ru": "всего входили",
@@ -1946,8 +1946,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Empty"
   },
   "admin.open.seminar": {
-    "ru": "Открыть семинар",
-    "en": "Open seminar"
+    "ru": "Открыть занятие",
+    "en": "Open class"
   },
   "admin.rules": {
     "ru": "Правила…",
@@ -1986,24 +1986,24 @@ export const adminMessages: MessageCatalog = {
     "en": "Archive"
   },
   "admin.loading.seminars": {
-    "ru": "Загружаем семинары…",
-    "en": "Loading seminars…"
+    "ru": "Загружаем занятия…",
+    "en": "Loading classes…"
   },
   "admin.no.seminars.match": {
-    "ru": "Нет семинаров по запросу «",
-    "en": "No seminars match “"
+    "ru": "Нет занятий по запросу «",
+    "en": "No classes match “"
   },
   "admin.show.all": {
     "ru": "Показать все",
     "en": "Show all"
   },
   "admin.no.seminars.yet": {
-    "ru": "Семинаров пока нет.",
-    "en": "No seminars yet."
+    "ru": "Занятий пока нет.",
+    "en": "No classes yet."
   },
   "admin.create.a.seminar.and.share.its.link.with.your.students": {
-    "ru": "Создайте семинар и поделитесь ссылкой со студентами.",
-    "en": "Create a seminar and share its link with your students."
+    "ru": "Создайте занятие и поделитесь ссылкой со студентами.",
+    "en": "Create a class and share its link with your students."
   },
   "admin.showing": {
     "ru": "Показано",
@@ -2070,8 +2070,8 @@ export const adminMessages: MessageCatalog = {
     "en": "in its workspace."
   },
   "admin.you.cannot.restore.the.seminar.through.colloq.after.deletion": {
-    "ru": "После удаления семинар нельзя восстановить через Colloq.",
-    "en": "You cannot restore the seminar through Colloq after deletion."
+    "ru": "После удаления занятие нельзя восстановить через Colloq.",
+    "en": "You cannot restore the class through Colloq after deletion."
   },
   "admin.delete.the.public.page.as.well": {
     "ru": "Также удалить опубликованную страницу —",
@@ -2102,20 +2102,20 @@ export const adminMessages: MessageCatalog = {
     "en": "{p0} people are in the room right now"
   },
   "admin.deleting.the.seminar.will.disconnect.them": {
-    "ru": "— удаление семинара отключит их.",
-    "en": "— deleting the seminar will disconnect them."
+    "ru": "— удаление занятия отключит их.",
+    "en": "— deleting the class will disconnect them."
   },
   "admin.archiving.removes.the.seminar.from.the.active.list.and.keeps.its": {
-    "ru": "Архивация убирает семинар из активного списка и сохраняет тетрадь и файлы.",
-    "en": "Archiving removes the seminar from the active list and keeps its notebook and files."
+    "ru": "Архивация убирает занятие из активного списка и сохраняет тетрадь и файлы.",
+    "en": "Archiving removes the class from the active list and keeps its notebook and files."
   },
   "admin.could.not.delete.the.seminar": {
-    "ru": "Не удалось удалить семинар:",
-    "en": "Could not delete the seminar:"
+    "ru": "Не удалось удалить занятие:",
+    "en": "Could not delete the class:"
   },
   "admin.delete.seminar": {
-    "ru": "Удалить семинар",
-    "en": "Delete seminar"
+    "ru": "Удалить занятие",
+    "en": "Delete class"
   },
   "admin.could.not.update.the.publication": {
     "ru": "Не удалось обновить публикацию: {p0}",
@@ -2130,7 +2130,7 @@ export const adminMessages: MessageCatalog = {
     "en": "are {p0} people"
   },
   "admin.there.in.right.now.and.set.it.up": {
-    "ru": "Сейчас в семинаре «{p1}» {p0}. Автор семинара: {p2}",
+    "ru": "Сейчас на занятии «{p1}» {p0}. Автор занятия: {p2}",
     "en": "There {p0} in “{p1}” right now, and {p2} set it up"
   },
   "admin.the.new.name.appears.in.their.header.immediately": {
@@ -2142,8 +2142,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Rename it to “{p0}”?"
   },
   "admin.could.not.rename.the.seminar": {
-    "ru": "Не удалось переименовать семинар: {p0}",
-    "en": "Could not rename the seminar: {p0}"
+    "ru": "Не удалось переименовать занятие: {p0}",
+    "en": "Could not rename the class: {p0}"
   },
   "admin.ending.the.class.disables.editing.and.running.for.students": {
     "ru": "{p0}. Завершение занятия отключит редактирование и выполнение кода студентами.",
@@ -2178,8 +2178,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Add a teacher"
   },
   "admin.manage.teacher.accounts.and.sign.in.links.teachers.can.create.sem": {
-    "ru": "Управляйте аккаунтами преподавателей и ссылками для входа. Преподаватели могут создавать семинары и просматривать настройки оракула.",
-    "en": "Manage teacher accounts and sign-in links. Teachers can create seminars and view oracle settings."
+    "ru": "Управляйте аккаунтами преподавателей и ссылками для входа. Преподаватели могут создавать занятия и просматривать настройки оракула.",
+    "en": "Manage teacher accounts and sign-in links. Teachers can create classes and view oracle settings."
   },
   "admin.ada.lovelace": {
     "ru": "Ада Лавлейс",
@@ -2318,8 +2318,8 @@ export const adminMessages: MessageCatalog = {
     "en": ", including this one"
   },
   "admin.their.seminars.will.remain.adding.them.again.creates.a.new.accoun": {
-    "ru": ". Семинары сохранятся. При повторном добавлении будут созданы новый аккаунт и новая ссылка.",
-    "en": ". Their seminars will remain. Adding them again creates a new account and link."
+    "ru": ". Занятия сохранятся. При повторном добавлении будут созданы новый аккаунт и новая ссылка.",
+    "en": ". Their classes will remain. Adding them again creates a new account and link."
   },
   "admin.working": {
     "ru": "Выполняем…",
@@ -2446,8 +2446,16 @@ export const adminMessages: MessageCatalog = {
     "en": "Interface language"
   },
   "admin.language.scope": {
-    "ru": "Для всех участников и страниц",
-    "en": "For all participants and pages"
+    "ru": "Изменится у всех участников.",
+    "en": "Changes for everyone on this server."
+  },
+  "admin.language.current": {
+    "ru": "Язык интерфейса: {language}",
+    "en": "Interface language: {language}"
+  },
+  "admin.language.retry": {
+    "ru": "Повторить",
+    "en": "Try again"
   },
   "admin.language.saving": {
     "ru": "Сохраняем язык…",
@@ -2487,14 +2495,14 @@ export const adminMessages: MessageCatalog = {
   },
   "admin.count.seminar": {
     "ru": {
-      "one": "{count} семинар",
-      "few": "{count} семинара",
-      "many": "{count} семинаров",
-      "other": "{count} семинара"
+      "one": "{count} занятие",
+      "few": "{count} занятия",
+      "many": "{count} занятий",
+      "other": "{count} занятия"
     },
     "en": {
-      "one": "{count} seminar",
-      "other": "{count} seminars"
+      "one": "{count} class",
+      "other": "{count} classes"
     }
   },
   "admin.count.cell": {
@@ -2614,8 +2622,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Delete “{name}”?"
   },
   "admin.seminar.noMatch": {
-    "ru": "Нет семинаров по запросу «{query}».",
-    "en": "No seminars match “{query}”."
+    "ru": "Нет занятий по запросу «{query}».",
+    "en": "No classes match “{query}”."
   },
   "admin.teacher.rotateHeading": {
     "ru": "Заменить ссылку для входа: {name}?",

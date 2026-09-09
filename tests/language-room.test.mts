@@ -123,7 +123,7 @@ test('external file drag detection keeps the native Files token in both language
 
 test('canonical missing-resource errors are translated only for display', () => {
  assert.equal(translate('ru', 'session not found'), 'Занятие не найдено')
- assert.equal(translate('en', 'session not found'), 'Seminar not found')
+ assert.equal(translate('en', 'session not found'), 'Class not found')
  assert.equal(translate('ru', 'publication not found'), 'Публикация не найдена')
  assert.equal(translate('ru', 'step not found'), 'Шаг не найден')
 })

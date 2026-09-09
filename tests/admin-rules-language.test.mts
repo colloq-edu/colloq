@@ -98,8 +98,8 @@ test('404 без тела не хоронит семинар', () => {
   })
   const stranger = ruleRefusal({ reason: 'invalid', status: 404, body: null })
 
-  assert.match(ours, /семинар не найден/)
-  assert.doesNotMatch(stranger, /семинар не найден/)
+  assert.match(ours, /занятие не найдено/)
+  assert.doesNotMatch(stranger, /занятие не найдено/)
   assert.match(stranger, /Попробуйте ещё раз/)
 })
 
