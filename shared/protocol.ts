@@ -361,7 +361,7 @@ export type ControlClientMessage =
    *
    * `council:run` — запустить попытку в ядре комнаты; вывод ложится к попытке,
    * не в общую ячейку. Без `participantId` — своя попытка: так запускает
-   * студент, и это проходит только при включённой ручке `studentRun`
+   * студент, и это проходит только при `studentRun === true`
    * (rules.ts · mayRunCouncil); отказ — `error` словами, с номером в очереди,
    * если очередь есть.
    *
@@ -374,6 +374,11 @@ export type ControlClientMessage =
    */
   | { t: 'council:show'; cellId: string; participantId: string }
   | { t: 'council:run'; cellId: string; participantId?: string }
+  /** A request is separate from submission; its ID names a specific saved version. */
+  | { t: 'council:run:request'; cellId: string }
+  | { t: 'council:run:cancel'; cellId: string; requestId: string }
+  | { t: 'council:run:approve'; cellId: string; participantId: string; requestId: string }
+  | { t: 'council:run:decline'; cellId: string; participantId: string; requestId: string }
   | {
       t: 'council:reply'
       cellId: string
@@ -856,7 +861,14 @@ export function groupStatus(statuses: readonly CouncilStatus[]): CouncilStatus {
 }
 
 /** Своя попытка — то, что видит студент. */
+export interface CouncilRunRequest {
+  id: string
+  requestedAt: number
+  status: 'pending' | 'declined'
+}
+
 export interface CouncilMine {
+  runRequest?: CouncilRunRequest | null
   text: string
   /** Когда нажал «Сдать»; `null` — ещё пишет (или нажал «Изменить»). */
   submittedAt: number | null
@@ -909,6 +921,7 @@ export interface CouncilMine {
 
 /** Одна попытка глазами преподавателя. */
 export interface CouncilAttempt {
+  runRequest?: CouncilRunRequest | null
   participantId: string
   name: string
   color: string

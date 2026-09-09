@@ -26,6 +26,7 @@
  * этом — правда: перезапуск читает её заново (`resetCouncilCache` в тесте
  * делает то же руками).
  */
+import { createHash, randomUUID } from 'node:crypto'
 import type {
   CouncilAttempt,
   CouncilBoard,
@@ -34,6 +35,7 @@ import type {
   CouncilOracle,
   CouncilReply,
   CouncilRun,
+  CouncilRunRequest,
   CouncilStatus,
 } from '@shared/protocol'
 import { attemptStatus, groupAttempts } from '@shared/protocol'
@@ -52,6 +54,7 @@ export interface StoredAttempt {
   submittedAt: number | null
   updatedAt: number
   run: CouncilRun | null
+  runRequest: CouncilRunRequest | null
   /**
    * Письма преподавателя: личное и групповое — рядом, а не одно поверх другого.
    *
@@ -86,6 +89,7 @@ export function ensureCouncilSchema(): void {
       submitted_at   INTEGER,
       updated_at     INTEGER NOT NULL,
       run_json       TEXT,
+      run_request_json TEXT,
       /* Письма преподавателя списком — личное и групповое (см. repliesFrom). */
       reply_json     TEXT,
       correct        INTEGER,
@@ -117,6 +121,11 @@ export function ensureCouncilSchema(): void {
       PRIMARY KEY (session_id, cell_id)
     );
   `)
+  // Existing installations keep their attempts; add only the new nullable field.
+  const columns = db.pragma('table_info(council_attempts)') as { name: string }[]
+  if (!columns.some((column) => column.name === 'run_request_json')) {
+    db.exec('ALTER TABLE council_attempts ADD COLUMN run_request_json TEXT')
+  }
 }
 
 ensureCouncilSchema()
@@ -131,6 +140,7 @@ interface AttemptRow {
   submitted_at: number | null
   updated_at: number
   run_json: string | null
+  run_request_json: string | null
   reply_json: string | null
   correct: number | null
   shown: number
@@ -140,14 +150,15 @@ const selectRoom = db.prepare('SELECT * FROM council_attempts WHERE session_id =
 const upsertAttempt = db.prepare(`
   INSERT INTO council_attempts
     (session_id, cell_id, participant_id, text, submitted_at, updated_at,
-     run_json, reply_json, correct, shown)
+     run_json, run_request_json, reply_json, correct, shown)
   VALUES (@session_id, @cell_id, @participant_id, @text, @submitted_at, @updated_at,
-          @run_json, @reply_json, @correct, @shown)
+          @run_json, @run_request_json, @reply_json, @correct, @shown)
   ON CONFLICT(session_id, cell_id, participant_id) DO UPDATE SET
     text = excluded.text,
     submitted_at = excluded.submitted_at,
     updated_at = excluded.updated_at,
     run_json = excluded.run_json,
+    run_request_json = excluded.run_request_json,
     reply_json = excluded.reply_json,
     correct = excluded.correct,
     shown = excluded.shown
@@ -246,6 +257,17 @@ function repliesFrom(raw: string | null): CouncilReply[] {
   return list.filter((one) => typeof one?.text === 'string' && one.text.trim() !== '')
 }
 
+function requestFromRow(row: AttemptRow): CouncilRunRequest | null {
+  const value = parseJson<CouncilRunRequest & { sourceHash?: string }>(row.run_request_json)
+  // Older application versions can change text without updating this column.
+  // A persisted request must still name the exact bytes that were requested.
+  if (!value || typeof value.id !== 'string' || !value.id ||
+      !Number.isFinite(value.requestedAt) ||
+      (value.status !== 'pending' && value.status !== 'declined') ||
+      value.sourceHash !== createHash('sha256').update(row.text).digest('hex')) return null
+  return { id: value.id, requestedAt: value.requestedAt, status: value.status }
+}
+
 function fromRow(row: AttemptRow): StoredAttempt {
   return {
     sessionId: row.session_id,
@@ -256,6 +278,7 @@ function fromRow(row: AttemptRow): StoredAttempt {
     submittedAt: row.submitted_at ?? null,
     updatedAt: row.updated_at,
     run: settleGhostRun(parseJson<CouncilRun>(row.run_json)),
+    runRequest: requestFromRow(row),
     replies: repliesFrom(row.reply_json),
     correct: row.correct === null ? null : row.correct === 1,
     shown: row.shown === 1,
@@ -271,6 +294,10 @@ function persist(attempt: StoredAttempt): void {
     submitted_at: attempt.submittedAt,
     updated_at: attempt.updatedAt,
     run_json: attempt.run ? JSON.stringify(attempt.run) : null,
+    run_request_json: attempt.runRequest ? JSON.stringify({
+      ...attempt.runRequest,
+      sourceHash: createHash('sha256').update(attempt.text).digest('hex'),
+    }) : null,
     // Список, а не одно письмо: см. `repliesFrom`. Пусто — `null`, как и было.
     reply_json: attempt.replies.length > 0 ? JSON.stringify(attempt.replies) : null,
     correct: attempt.correct === null ? null : attempt.correct ? 1 : 0,
@@ -370,6 +397,7 @@ export function saveDraft(
     submittedAt: prior?.submittedAt ?? null,
     updatedAt: now,
     run: null,
+    runRequest: null,
     replies: prior?.replies ?? [],
     correct: null,
     shown: false,
@@ -400,6 +428,59 @@ export function withdrawAttempt(
   if (!prior) return null
   if (prior.submittedAt === null) return prior
   return save({ ...prior, submittedAt: null })
+}
+
+/** A request belongs to this draft, independently of whether it was submitted. */
+export function requestAttemptRun(
+  sessionId: string,
+  cellId: string,
+  participantId: string,
+  now: number,
+): CouncilRunRequest | null {
+  const prior = attemptOf(sessionId, cellId, participantId)
+  if (!prior?.text.trim() || prior.run?.state === 'queued' || prior.run?.state === 'running') {
+    return null
+  }
+  if (prior.runRequest?.status === 'pending') return prior.runRequest
+  const request: CouncilRunRequest = { id: randomUUID(), requestedAt: now, status: 'pending' }
+  save({ ...prior, runRequest: request })
+  return request
+}
+
+/** Only a decision for the current pending request can change its state. */
+export function resolveRunRequest(
+  sessionId: string,
+  cellId: string,
+  participantId: string,
+  requestId: string,
+  decision: 'decline' | 'clear',
+): boolean {
+  const prior = attemptOf(sessionId, cellId, participantId)
+  if (prior?.runRequest?.status !== 'pending' || prior.runRequest.id !== requestId) return false
+  save({
+    ...prior,
+    runRequest: decision === 'decline' ? { ...prior.runRequest, status: 'declined' } : null,
+  })
+  return true
+}
+
+/** Clear request state when the classroom context changes; callers notify affected authors. */
+export function clearRunRequests(
+  sessionId: string,
+  cellId?: string,
+): Array<{ cellId: string; participantId: string }> {
+  const affected: Array<{ cellId: string; participantId: string }> = []
+  db.transaction(() => {
+    for (const [id, attempts] of roomOf(sessionId).cells) {
+      if (cellId !== undefined && id !== cellId) continue
+      for (const attempt of attempts.values()) {
+        if (!attempt.runRequest) continue
+        save({ ...attempt, runRequest: null })
+        affected.push({ cellId: id, participantId: attempt.participantId })
+      }
+    }
+  })()
+  return affected
 }
 
 export function attemptOf(
@@ -485,7 +566,7 @@ export function recordRun(
    */
   if (run.state === 'queued') {
     runFor.set(key, prior.text)
-    save({ ...prior, run })
+    save({ ...prior, run, runRequest: null })
     return true
   }
   if (runFor.get(key) !== prior.text) return false
@@ -690,6 +771,7 @@ export function mineFor(
     reply: mergeReplies(attempt.replies),
     replies: attempt.replies,
     run: attempt.run,
+    ...(attempt.runRequest ? { runRequest: attempt.runRequest } : {}),
     queue,
     closed,
     ...task,
@@ -720,6 +802,7 @@ function toAttempt(attempt: StoredAttempt): CouncilAttempt {
     updatedAt: attempt.updatedAt,
     status: statusOf(attempt),
     run: attempt.run,
+    ...(attempt.runRequest ? { runRequest: attempt.runRequest } : {}),
     reply: mergeReplies(attempt.replies),
     replies: attempt.replies,
     correct: attempt.correct,

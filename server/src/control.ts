@@ -86,6 +86,8 @@ import {
   type Who,
 } from '@shared/rules'
 import {
+  db,
+  forgetRules,
   finishedAt,
   getParticipant,
   getRules,
@@ -134,6 +136,10 @@ import {
   setShown,
   submitAttempt,
   withdrawAttempt,
+  requestAttemptRun,
+  resolveRunRequest,
+  clearRunRequests,
+  resetCouncilCache,
 } from './council.js'
 import {
   clearTerminal,
@@ -1174,6 +1180,39 @@ function councilChanged(sessionId: string, cellId: string): void {
   countOut(sessionId, cellId)
 }
 
+/** Revoke approvals when a class/cell closes or its execution policy changes. */
+export function clearCouncilRunRequests(sessionId: string, cellId?: string): void {
+  tellClearedRunRequests(sessionId, clearRunRequests(sessionId, cellId))
+}
+
+/** Persist the class transition and revoke old approvals as one operation. */
+export function setClassFinished(sessionId: string, at: number | null): void {
+  let changed: ReturnType<typeof clearRunRequests>
+  try {
+    changed = db.transaction(() => {
+      setFinished(sessionId, at)
+      return clearRunRequests(sessionId)
+    })()
+  } catch (error) {
+    // Both stores cache writes; a rolled-back transaction must roll back reads too.
+    resetCouncilCache(sessionId)
+    forgetRules(sessionId)
+    throw error
+  }
+  tellClearedRunRequests(sessionId, changed)
+}
+
+function tellClearedRunRequests(sessionId: string, changed: ReturnType<typeof clearRunRequests>): void {
+  const cells = new Map<string, string[]>()
+  for (const row of changed) {
+    mineOut(sessionId, row.cellId, row.participantId)
+    const people = cells.get(row.cellId) ?? []
+    people.push(row.participantId)
+    cells.set(row.cellId, people)
+  }
+  for (const [id, people] of cells) boardOut(sessionId, id, people)
+}
+
 /** Ячейки, где консилиум идёт сейчас, — по всем тетрадям комнаты. */
 function councilCells(sessionId: string): string[] {
   const doc = peekSessionDoc(sessionId)?.doc
@@ -1246,12 +1285,12 @@ export function purgeCouncilOf(sessionId: string, participantId: string): number
   return gone
 }
 
-/** Ручки консилиума из сообщения — только известные и только булевы. */
+/** Ручки консилиума из сообщения — только известные значения. */
 function pickSettings(raw: unknown): Partial<CouncilSettings> {
   const out: Partial<CouncilSettings> = {}
   if (!raw || typeof raw !== 'object') return out
   const from = raw as Record<string, unknown>
-  if (typeof from.studentRun === 'boolean') out.studentRun = from.studentRun
+  if (typeof from.studentRun === 'boolean' || from.studentRun === 'request') out.studentRun = from.studentRun
   if (typeof from.namesOnProjector === 'boolean') out.namesOnProjector = from.namesOnProjector
   return out
 }
@@ -1273,6 +1312,7 @@ function pickSettings(raw: unknown): Partial<CouncilSettings> {
  */
 onCellsRemoved((sessionId, cellIds) => {
   cancelRun(sessionId, cellIds, '', true)
+  for (const cellId of cellIds) clearCouncilRunRequests(sessionId, cellId)
 })
 
 onRefusal((sessionId, participantId, refusal) => {
@@ -2048,7 +2088,7 @@ export function dispatch(
        */
       if (finish === (finishedAt(sessionId) !== null)) return
       const at = finish ? Date.now() : null
-      setFinished(sessionId, at)
+      setClassFinished(sessionId, at)
       broadcast(sessionId, { t: 'class', finishedAt: at })
       /*
        * И оборвать идущий ход оракула — там же, где его обрывают стирание
@@ -2822,6 +2862,9 @@ export function dispatch(
         next === null ||
         (next.studentRun === prior.studentRun && next.namesOnProjector === prior.namesOnProjector)
       if (was === state && sameKnobs) return
+      if (was !== state || next?.studentRun !== prior.studentRun) {
+        clearRunRequests(sessionId, id)
+      }
       /*
        * ЗАДАНИЕ — снимается здесь, на самом переходе в консилиум, и только на нём.
        *
@@ -2963,7 +3006,57 @@ export function dispatch(
       return
     }
 
+    case 'council:run:request': {
+      const id = optionalId(message.cellId)
+      if (!id) return
+      const { lock, settings } = councilCellOf(sessionId, id)
+      if (payload.role === 'host' || settings.studentRun !== 'request' ||
+          !mayWriteCouncil(payload.role, isFinished(sessionId), lock !== 'council')) {
+        send(ws, { t: 'error', message: 'Запросить запуск можно только в открытом консилиуме с режимом «По запросу».' })
+        return
+      }
+      const attempt = attemptOf(sessionId, id, payload.participantId)
+      if (!attempt?.text.trim()) {
+        send(ws, { t: 'error', message: 'Сначала напишите решение.' })
+        return
+      }
+      if (councilQueuePosition(sessionId, id, payload.participantId) !== null ||
+          !requestAttemptRun(sessionId, id, payload.participantId, Date.now())) {
+        send(ws, { t: 'error', message: 'Попытка уже выполняется или ждёт в очереди.' })
+        return
+      }
+      mineOut(sessionId, id, payload.participantId)
+      boardOut(sessionId, id, [payload.participantId])
+      return
+    }
+
+    case 'council:run:cancel':
+    case 'council:run:decline': {
+      const declining = message.t === 'council:run:decline'
+      if (declining && !mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, 'Запросы на запуск рассматривает преподаватель.')
+        return
+      }
+      const id = optionalId(message.cellId)
+      const requestId = optionalId(message.requestId)
+      const target = declining ? optionalId(message.participantId) : payload.participantId
+      if (!id || !requestId || !target) return
+      if (!resolveRunRequest(sessionId, id, target, requestId, declining ? 'decline' : 'clear')) {
+        send(ws, { t: 'error', message: 'Запрос уже изменился или был рассмотрен.' })
+        return
+      }
+      mineOut(sessionId, id, target)
+      boardOut(sessionId, id, [target])
+      return
+    }
+
+    case 'council:run:approve':
     case 'council:run': {
+      const approving = message.t === 'council:run:approve'
+      if (approving && !mayLeadCouncil(payload.role)) {
+        refuse(ws, sessionId, payload, 'Запросы на запуск рассматривает преподаватель.')
+        return
+      }
       const id = optionalId(message.cellId)
       if (!id) return
       const target = optionalId(message.participantId) ?? payload.participantId
@@ -2973,6 +3066,10 @@ export function dispatch(
         return
       }
       const { lock, settings } = councilCellOf(sessionId, id)
+      if (approving && (settings.studentRun !== 'request' || lock !== 'council' || isFinished(sessionId))) {
+        send(ws, { t: 'error', message: 'Приём запросов на запуск уже закрыт.' })
+        return
+      }
       if (!mayRunCouncil(payload.role, settings.studentRun, isFinished(sessionId))) {
         refuse(ws, sessionId, payload, 'В этом консилиуме попытки запускает преподаватель.')
         return
@@ -2988,6 +3085,11 @@ export function dispatch(
           t: 'error',
           message: own ? 'Сначала напишите попытку.' : 'Этой попытки уже нет.',
         })
+        return
+      }
+      if (approving && (attempt.runRequest?.status !== 'pending' ||
+          attempt.runRequest.id !== optionalId(message.requestId))) {
+        send(ws, { t: 'error', message: 'Запрос уже изменился или был рассмотрен. Проверьте текущую версию решения.' })
         return
       }
       const outcome = requestCouncilRun(

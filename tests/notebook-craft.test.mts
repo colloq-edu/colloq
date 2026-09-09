@@ -68,7 +68,7 @@ test('про общее ядро сказано там, где ручку вкл
   const knob = CELL.indexOf('Запуск студентам')
   assert.ok(knob > 0, 'ручки studentRun больше нет')
   assert.match(
-    CELL.slice(knob, knob + 1200),
+    CELL.slice(knob, CELL.indexOf('Настройка применяется', knob)),
     /\{COUNCIL_SHARED_KERNEL_NOTE\}/,
     'у ручки сказано только про очередь',
   )

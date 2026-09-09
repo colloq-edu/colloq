@@ -670,17 +670,17 @@ export function mayWriteCouncil(
 /**
  * Запускает ли этот человек попытку в консилиуме.
  *
- * Преподаватель — любую и всегда, пока занятие идёт: запускает тот, кто ведёт.
- * Студент — только свою и только при включённой ручке `studentRun`, которая
- * выключена по умолчанию: ядро одно, и очередь к нему — общая.
+ * Преподаватель запускает любую попытку, в том числе после занятия.
+ * Студент — только свою при studentRun === true. Режим request разрешает
+ * запрос одобрения, но сам по себе не даёт права на выполнение.
  */
 export function mayRunCouncil(
   role: 'host' | 'participant',
-  studentRun: boolean,
+  studentRun: boolean | 'request',
   finished: boolean,
 ): boolean {
   if (!actsAfterClass(finished, role)) return false
-  return role === 'host' || studentRun
+  return role === 'host' || studentRun === true
 }
 
 /**

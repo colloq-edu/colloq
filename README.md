@@ -55,7 +55,7 @@ A cell’s lock can be **closed**, **open to shared editing**, or set to **counc
 in any preset. The preset chooses the starting rules; the lock lets a single
 exercise change how the room participates.
 
-* **council** — attempts run in the room’s **one kernel**, one after another, so students can use the data the teacher prepared. The server removes names an attempt defines when it finishes; mutation of existing objects and files stays shared. Individual sheets are a teaching tool, not independent execution sandboxes or an isolated grading environment.
+* **council** — each cell offers teacher-only execution (default), direct student execution, or student requests requiring teacher approval. Requests work for drafts as well as submitted answers; editing the text invalidates the request. The teacher reviews pending requests and approves or declines each one. Approval queues that requested version; it does not submit the answer. All attempts run in the room’s **one kernel**, one after another, so students can use the data the teacher prepared. The server removes names an attempt defines when it finishes; mutation of existing objects and files stays shared. Individual sheets are a teaching tool, not independent execution sandboxes or an isolated grading environment.
 
 <details>
 <summary><strong>Room rules and teacher access</strong></summary>

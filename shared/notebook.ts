@@ -372,9 +372,9 @@ export type CellLock = 'closed' | 'open' | 'council'
 /**
  * Ручки консилиума на одной ячейке.
  *
- *   studentRun       — студент может запустить свою попытку сам (в очередь, по
- *                      одному). По умолчанию ВЫКЛ: ядро в комнате одно, и
- *                      пятьсот запусков — это пятьсот мест в одной очереди.
+ *   studentRun       — false: запускает преподаватель; true: студент сам;
+ *                      request: студент просит одобрить конкретную версию кода.
+ *                      По умолчанию false. Все запуски идут в одно ядро комнаты.
  *   namesOnProjector — НИКЕМ НЕ ЧИТАЕТСЯ. Задумывалось как «имена авторов
  *                      видны на проекторе», но автора не называет ни проекторная
  *                      полоса, ни `council:show`, ни счётчик; ручка из меню
@@ -385,7 +385,8 @@ export type CellLock = 'closed' | 'open' | 'council'
  *                      попытки, и именем в проекторной полосе.
  */
 export interface CouncilSettings {
-  studentRun: boolean
+  /** false: teacher only; true: direct student runs; request: teacher approval. */
+  studentRun: boolean | 'request'
   /** Хранится, но не читается — см. заметку выше. */
   namesOnProjector: boolean
 }
@@ -1082,7 +1083,7 @@ export function openValueFor(lock: CellLock): true | 'council' | null {
 export function readCouncilSettings(raw: unknown): CouncilSettings {
   const from = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
   return {
-    studentRun: from.studentRun === true,
+    studentRun: from.studentRun === 'request' ? 'request' : from.studentRun === true,
     namesOnProjector: from.namesOnProjector !== false,
   }
 }

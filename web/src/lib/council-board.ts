@@ -36,6 +36,13 @@ export interface StripSegment {
  */
 export const WRITING_KEY = 'ещё пишут'
 
+/** Запросы со всей стопки, включая несданные черновики, — сначала старые. */
+export function pendingRunRequests(attempts: readonly CouncilAttempt[]): CouncilAttempt[] {
+  return attempts
+    .filter((attempt) => attempt.runRequest?.status === 'pending')
+    .sort((a, b) => a.runRequest!.requestedAt - b.runRequest!.requestedAt || a.participantId.localeCompare(b.participantId))
+}
+
 /** Сдана — значит есть время сдачи; всё остальное — «ещё пишет». */
 const submitted = (attempt: CouncilAttempt): attempt is CouncilAttempt & { submittedAt: number } =>
   attempt.submittedAt !== null

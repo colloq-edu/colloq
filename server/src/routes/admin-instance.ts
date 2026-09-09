@@ -21,7 +21,7 @@ import { newSessionId } from '../auth.js'
 import { dropSessionDoc, getSessionDoc, liveSince, onlineCount } from '../collab/index.js'
 import { visitSessionDoc } from './doc-visit.js'
 import { config } from '../config.js'
-import { broadcast, closeControlRoom } from '../control.js'
+import { broadcast, closeControlRoom, setClassFinished } from '../control.js'
 import { COUNCIL_ROOM, LECTURE_ROOM, OPEN_ROOM, readRules } from '@shared/rules'
 import { normalizeLabel } from '@shared/text'
 import {
@@ -34,7 +34,6 @@ import {
   loadDocSnapshot,
   renameSession,
   sessionEnvironment,
-  setFinished,
   setRules,
   storedRules,
 } from '../db.js'
@@ -443,7 +442,7 @@ export function adminInstanceRoutes(): Router {
       const was = finishedAt(row.id)
       const at = body.finished ? (was ?? Date.now()) : null
       if (at !== was) {
-        setFinished(row.id, at)
+        setClassFinished(row.id, at)
         // Комната узнаёт сейчас, а не при перезагрузке: иначе у студента ещё
         // горят кнопки, которые сервер уже не примет, и отказ читается как
         // поломка. Тем же кадром она и открывается обратно.

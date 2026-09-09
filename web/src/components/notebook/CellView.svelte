@@ -235,6 +235,8 @@
   const councilClosed = $derived(!inCouncil || (mine?.closed ?? false))
   const mayAttempt = $derived(mayWriteThisCouncil(may, councilClosed))
   const mayRunAttempt = $derived(mayRunThisCouncil(may, councilSettings.studentRun))
+  const mayRequestRun = $derived(mayAttempt && councilSettings.studentRun === 'request')
+  const attemptRunning = $derived(mine?.run?.state === 'queued' || mine?.run?.state === 'running')
   const submittedAt = $derived(mine?.submittedAt ?? null)
   const attemptWhy = $derived(inCouncil ? may.attemptWhy : COUNCIL_CLOSED)
 
@@ -457,15 +459,61 @@
 
   /** Запустить свою попытку — только при включённой ручке; отказ словами. */
   function runAttempt(): void {
+    if (councilClosed || attemptRunning || attemptOver || !session.connected) return
     if (!mayRunAttempt) {
       session.showError(
         may.finished
           ? CLASS_IS_OVER + '.'
-          : 'Запускать ответы может только преподаватель. Сдайте решение, чтобы передать его на проверку.',
+          : councilSettings.studentRun === 'request'
+            ? 'Для запуска нужно разрешение преподавателя. Нажмите «Попросить запуск».'
+            : 'Запускать ответы может только преподаватель. Сдайте решение, чтобы передать его на проверку.',
       )
       return
     }
     session.council.run(id)
+  }
+
+  let requestSending = $state<{ action: 'request' | 'cancel'; previousId: string | null; text: string } | null>(null)
+  let requestTimer: number | undefined
+
+  function awaitRequest(action: 'request' | 'cancel'): void {
+    window.clearTimeout(requestTimer)
+    requestSending = { action, previousId: mine?.runRequest?.id ?? null, text: sheetText }
+    requestTimer = window.setTimeout(() => {
+      requestSending = null
+      session.showError('Ответ на запрос запуска не пришёл. Проверьте связь и попробуйте ещё раз.')
+    }, MINE_WAIT_MS)
+  }
+
+  $effect(() => {
+    const request = mine?.runRequest
+    const text = mine?.text
+    const closed = councilClosed || councilSettings.studentRun !== 'request'
+    const sending = untrack(() => requestSending)
+    if (!sending) return
+    const confirmed = sending.action === 'cancel'
+      ? request?.id !== sending.previousId || request?.status !== 'pending'
+      : request?.status === 'pending' && request.id !== sending.previousId && text === sending.text
+    if (!closed && !confirmed) return
+    requestSending = null
+    window.clearTimeout(requestTimer)
+  })
+  $effect(() => () => window.clearTimeout(requestTimer))
+
+  function requestAttemptRun(): void {
+    if (!mayRequestRun || attemptRunning || attemptOver || requestSending || !session.connected || !sheetText.trim()) return
+    if (mine?.runRequest?.status === 'pending' && attemptSynced) return
+    // В том числе нетронутое условие: его ещё могло не быть среди попыток.
+    if (!attemptSynced) session.council.draft(id, sheetText)
+    awaitRequest('request')
+    session.council.requestRun(id)
+  }
+
+  function cancelAttemptRunRequest(): void {
+    const request = mine?.runRequest
+    if (!mayRequestRun || requestSending || !session.connected || request?.status !== 'pending') return
+    awaitRequest('cancel')
+    session.council.cancelRunRequest(id, request.id)
   }
 
   /* ---- пульт преподавателя: колбэки для стопки и сводки */
@@ -620,8 +668,9 @@
     session.council.lock(id, state)
   }
 
-  function toggleKnob(key: keyof CouncilSettings): void {
-    session.council.lock(id, 'council', { [key]: !councilSettings[key] })
+  function setStudentRun(studentRun: CouncilSettings['studentRun']): void {
+    if (!inCouncil || !session.connected || studentRun === councilSettings.studentRun) return
+    session.council.lock(id, 'council', { studentRun })
   }
 
   // Меню закрывается снаружи: щелчок мимо, Escape, потеря замка.
@@ -1737,20 +1786,22 @@
                   </button>
                 {/each}
                 <div class="my-1 h-px bg-line-soft"></div>
-                <label
-                  class={cn(
-                    'flex items-center gap-2 px-2.5 py-1.5 text-ui',
-                    inCouncil ? 'text-ink' : 'text-muted',
-                  )}
-                >
-                  <input
-                    type="checkbox"
-                    class="accent-[rgb(var(--accent))]"
-                    checked={councilSettings.studentRun}
-                    disabled={!inCouncil}
-                    onchange={() => toggleKnob('studentRun')}
-                  />
-                  <span class="flex-1">Запуск студентам</span>
+                <label class="flex flex-col gap-1 px-2.5 py-1.5 text-ui">
+                  <span>Запуск студентам</span>
+                  <select
+                    class="h-8 w-full border border-line bg-canvas px-2 text-ui text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                    value={String(councilSettings.studentRun)}
+                    disabled={!inCouncil || controlDisabled(session.connected)}
+                    onchange={(event) => {
+                      const selected = event.currentTarget.value
+                      event.currentTarget.value = String(councilSettings.studentRun)
+                      setStudentRun(selected === 'request' ? 'request' : selected === 'true')
+                    }}
+                  >
+                    <option value="false">Только преподаватель</option>
+                    <option value="true">Студенты запускают сами</option>
+                    <option value="request">По запросу преподавателю</option>
+                  </select>
                 </label>
                 <!--
                   Про общее ядро говорится там, где ручку включают.
@@ -2239,26 +2290,45 @@
                     <span class="text-2xs text-muted">{attemptWhy}</span>
                   {/if}
                 {/if}
-                <!-- Ручка «запуск студентам» выключена по умолчанию: без неё
-                     кнопки нет вовсе, запускает тот, кто ведёт. -->
-                {#if mayRunAttempt && !councilClosed}
+                {#if councilSettings.studentRun === 'request' && !councilClosed}
+                  {#if mine?.runRequest?.status === 'pending' && attemptSynced}
+                    <span class="text-2xs text-accent-text" role="status">Ожидает решения преподавателя</span>
+                    <button
+                      type="button"
+                      class="btn-ghost h-7"
+                      disabled={!mayRequestRun || controlDisabled(session.connected) || requestSending !== null}
+                      onclick={cancelAttemptRunRequest}
+                    >{requestSending?.action === 'cancel' ? 'Отменяю…' : 'Отменить запрос'}</button>
+                  {:else}
+                    <button
+                      type="button"
+                      class="btn-outline h-7"
+                      disabled={!mayRequestRun || attemptRunning || attemptOver || !sheetText.trim() || controlDisabled(session.connected) || requestSending !== null}
+                      title={controlTitle(session.connected, mayRequestRun ? 'Передать код преподавателю для решения о запуске в общем ядре' : attemptWhy)}
+                      onclick={requestAttemptRun}
+                    >{requestSending?.action === 'request' ? 'Отправляю запрос…' : 'Попросить запуск'}</button>
+                    {#if mine?.runRequest?.status === 'declined' && attemptSynced}
+                      <span class="text-2xs text-muted" role="status">Преподаватель отклонил запрос. Можно попросить снова.</span>
+                    {:else if mine?.runRequest && !attemptSynced}
+                      <span class="text-2xs text-muted" role="status">Текст изменён. Для новой версии нужен новый запрос.</span>
+                    {/if}
+                  {/if}
+                {:else if mayRunAttempt && !councilClosed}
                   <button
                     type="button"
                     class="btn-ghost h-7"
-                    disabled={controlDisabled(session.connected)}
+                    disabled={controlDisabled(session.connected) || attemptRunning || attemptOver}
                     title={controlTitle(
                       session.connected,
                       `Запустить свою попытку — в очередь, по одному. ${COUNCIL_SHARED_KERNEL_NOTE}`,
                     )}
                     onclick={runAttempt}
-                  >
-                    Запустить
-                  </button>
-                  {#if mine?.queue != null}
-                    <span class="inline-flex h-5 items-center bg-raised px-2 font-mono text-2xs text-muted">
-                      {queueWords(mine.queue)}
-                    </span>
-                  {/if}
+                  >Запустить</button>
+                {/if}
+                {#if mine?.queue != null}
+                  <span class="inline-flex h-5 items-center bg-raised px-2 font-mono text-2xs text-muted" role="status">
+                    {queueWords(mine.queue)}
+                  </span>
                 {/if}
               </div>
             </div>
@@ -2417,6 +2487,9 @@
                   askWhy={may.ask ? null : may.askWhy}
                   onshow={showToClass}
                   onrun={runAttemptOf}
+                  requestsDisabled={controlDisabled(session.connected) || !inCouncil || !acts}
+                  onapproverun={(participantId, requestId) => session.council.approveRunRequest(id, participantId, requestId)}
+                  ondeclinerun={(participantId, requestId) => session.council.declineRunRequest(id, participantId, requestId)}
                   onreply={replyTo}
                   onmark={markAttempt}
                   onneedoutputs={(participantId) => session.council.wantOutputs(id, participantId)}

@@ -227,7 +227,7 @@ export function mayWriteThisCouncil(may: Permits, closed: boolean): boolean {
 }
 
 /** Запустить попытку: преподаватель — любую, студент — свою и только при ручке. */
-export function mayRunThisCouncil(may: Permits, studentRun: boolean): boolean {
+export function mayRunThisCouncil(may: Permits, studentRun: boolean | 'request'): boolean {
   return mayRunCouncil(may.role, studentRun, may.finished)
 }
 

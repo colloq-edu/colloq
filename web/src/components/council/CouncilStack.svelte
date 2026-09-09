@@ -15,6 +15,7 @@
    * `askToBan` из lib/bans.ts ничего не знает о сессии, поэтому зовётся прямо
    * отсюда; `onban` — если родитель хочет иначе.
    */
+  import { untrack } from 'svelte'
   import { COUNCIL_SHARED_KERNEL_NOTE } from '@shared/notebook'
   import { councilLetters, type CouncilAttempt, type CouncilBoard } from '@shared/protocol'
   import Avatar from '@/components/ui/Avatar.svelte'
@@ -26,6 +27,7 @@
   import {
     groupAttempts,
     neighbours,
+    pendingRunRequests,
     placeOf,
     stackKeyAction,
     stackOrder,
@@ -55,6 +57,9 @@
     askWhy?: string | null
     onshow: (participantId: string) => void
     onrun: (participantId: string) => void
+    requestsDisabled?: boolean
+    onapproverun: (participantId: string, requestId: string) => void
+    ondeclinerun: (participantId: string, requestId: string) => void
     onreply: (to: { participantId: string } | { groupKey: string }, text: string) => void
     onmark: (participantId: string, correct: boolean | null) => void
     /**
@@ -86,6 +91,9 @@
     askWhy = null,
     onshow,
     onrun,
+    requestsDisabled = false,
+    onapproverun,
+    ondeclinerun,
     onreply,
     onmark,
     onneedoutputs,
@@ -99,6 +107,37 @@
   // Один расчёт групп на оба вида: сводка получает их пропсом.
   const groups = $derived(groupAttempts(board.attempts, board.oracle?.groupLabels ?? {}))
   const order = $derived(stackOrder(groups, board.attempts))
+  // Сдача не нужна: запросы ищем по всей стопке, включая черновики.
+  const pendingRequests = $derived(pendingRunRequests(board.attempts))
+  let deciding = $state<{ participantId: string; requestId: string; action: 'approve' | 'decline' } | null>(null)
+  let decisionError = $state('')
+  let decisionTimer: ReturnType<typeof setTimeout> | undefined
+
+  $effect(() => {
+    const attempts = board.attempts
+    const closed = board.lock !== 'council' || board.settings.studentRun !== 'request'
+    const sent = untrack(() => deciding)
+    if (!sent) return
+    const request = attempts.find((attempt) => attempt.participantId === sent.participantId)?.runRequest
+    if (!closed && request?.id === sent.requestId && request.status === 'pending') return
+    deciding = null
+    clearTimeout(decisionTimer)
+  })
+  $effect(() => () => clearTimeout(decisionTimer))
+
+  function decideRun(attempt: CouncilAttempt, action: 'approve' | 'decline'): void {
+    const request = attempt.runRequest
+    if (requestsDisabled || deciding || board.lock !== 'council' || board.settings.studentRun !== 'request' || request?.status !== 'pending') return
+    if (attempt.run?.state === 'queued' || attempt.run?.state === 'running') return
+    deciding = { participantId: attempt.participantId, requestId: request.id, action }
+    decisionError = ''
+    decisionTimer = setTimeout(() => {
+      deciding = null
+      decisionError = 'Решение не подтвердилось. Проверьте связь и попробуйте ещё раз.'
+    }, 8000)
+    if (action === 'approve') onapproverun(attempt.participantId, request.id)
+    else ondeclinerun(attempt.participantId, request.id)
+  }
 
   /**
    * Что на карточке. Позиция, которой в стопке уже нет (автора убрали), и
@@ -173,7 +212,7 @@
   function onkeydown(event: KeyboardEvent): void {
     if (view !== 'stack') return
     const target = event.target as HTMLElement | null
-    const focus = target?.closest('textarea, input, [contenteditable]')
+    const focus = target?.closest('textarea, input, select, [contenteditable]')
       ? 'field'
       : target?.closest('button, a')
         ? 'control'
@@ -273,6 +312,26 @@
       {COUNCIL_SHARED_KERNEL_NOTE}
     </p>
   </div>
+
+  {#if pendingRequests.length > 0}
+    <div class="flex flex-wrap items-center gap-2 border-l-2 border-accent bg-accent/[0.04] px-3 py-2">
+      <label class="flex min-w-0 flex-1 basis-64 flex-col gap-1.5 text-ui">
+        <span class="font-semibold text-accent-text" role="status">Запросы на запуск · {pendingRequests.length}</span>
+        <select
+          class="h-8 w-full min-w-0 border border-line bg-canvas px-2 text-ui text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          value={pendingRequests.some((attempt) => attempt.participantId === currentId) ? currentId ?? '' : ''}
+          onchange={(event) => { go(event.currentTarget.value); ontoggle('stack') }}
+        >
+          <option value="" disabled>Выберите запрос</option>
+          {#each pendingRequests as request (request.participantId)}
+            <option value={request.participantId}>{request.name} · {clock(request.runRequest!.requestedAt)}{request.submittedAt === null ? ' · черновик' : ''}</option>
+          {/each}
+        </select>
+      </label>
+      <button type="button" class="btn-outline h-8 self-end" onclick={() => { go(pendingRequests[0]?.participantId ?? null); ontoggle('stack') }}>Первый запрос</button>
+    </div>
+  {/if}
+  {#if decisionError}<p class="text-2xs text-warning" role="alert">{decisionError}</p>{/if}
 
   {#if view === 'summary'}
     <CouncilSummary {board} {groups} {askWhy} {onshow} {onreply} {onposition} {ontoggle} {onask} {onstop} />
@@ -386,6 +445,26 @@
         </div>
       {/if}
 
+      {#if attempt.runRequest?.status === 'pending'}
+        <div class="flex flex-wrap items-center gap-2 border-t border-line-soft bg-accent/[0.04] px-3 py-2">
+          <span class="mr-auto text-2xs text-accent-text">Просит запустить · {clock(attempt.runRequest.requestedAt)}</span>
+          <button
+            type="button"
+            class="btn-primary h-8"
+            disabled={requestsDisabled || board.lock !== 'council' || board.settings.studentRun !== 'request' || running || deciding !== null || !attempt.text.trim()}
+            onclick={() => decideRun(attempt, 'approve')}
+          >{deciding?.requestId === attempt.runRequest.id && deciding.action === 'approve' ? 'Отправляю…' : 'Разрешить запуск'}</button>
+          <button
+            type="button"
+            class="btn-outline h-8"
+            disabled={requestsDisabled || board.lock !== 'council' || board.settings.studentRun !== 'request' || running || deciding !== null}
+            onclick={() => decideRun(attempt, 'decline')}
+          >{deciding?.requestId === attempt.runRequest.id && deciding.action === 'decline' ? 'Отправляю…' : 'Отклонить'}</button>
+        </div>
+      {:else if attempt.runRequest?.status === 'declined'}
+        <p class="border-t border-line-soft px-3 py-2 text-2xs text-muted">Запрос на запуск отклонён</p>
+      {/if}
+
       <!-- Письма преподавателя — строка на письмо, а не одним абзацем.
            Их не больше двух (личное и групповое), и это разные письма: у
            склейки через пустую строку переносы здесь схлопываются, и «Проверьте
@@ -413,19 +492,21 @@
           <Icon name="board" size={13} />
           {attempt.shown ? 'Показать снова' : 'Показать классу'}
         </button>
-        <button
-          type="button"
-          class="btn-outline h-8"
-          disabled={running || !attempt.text.trim()}
-          onclick={() => onrun(attempt.participantId)}
-        >
-          {#if running}
-            <Icon name="spinner" size={13} class="animate-spin" />
-          {:else}
-            <Icon name="play" size={13} />
-          {/if}
-          Запустить
-        </button>
+        {#if attempt.runRequest?.status !== 'pending'}
+          <button
+            type="button"
+            class="btn-outline h-8"
+            disabled={running || !attempt.text.trim()}
+            onclick={() => onrun(attempt.participantId)}
+          >
+            {#if running}
+              <Icon name="spinner" size={13} class="animate-spin" />
+            {:else}
+              <Icon name="play" size={13} />
+            {/if}
+            Запустить
+          </button>
+        {/if}
         <button
           type="button"
           class="btn-ghost h-8"

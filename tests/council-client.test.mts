@@ -358,3 +358,75 @@ test('withOracle не трогает остальное', () => {
   assert.equal(after.attempts, before.attempts)
   assert.equal(before.oracle, null)
 })
+
+test('запрос запуска отправляет свежий черновик раньше запроса; решения привязаны к id', () => {
+  mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const wire: unknown[] = []
+    const council = new CouncilState((message) => wire.push(message))
+    council.draft('c1', 'print(2)')
+    council.requestRun('c1')
+    council.cancelRunRequest('c1', 'r1')
+    council.approveRunRequest('c1', 'p1', 'r2')
+    council.declineRunRequest('c1', 'p2', 'r3')
+    mock.timers.tick(5_000)
+    assert.deepEqual(wire, [
+      { t: 'council:draft', cellId: 'c1', text: 'print(2)' },
+      { t: 'council:run:request', cellId: 'c1' },
+      { t: 'council:run:cancel', cellId: 'c1', requestId: 'r1' },
+      { t: 'council:run:approve', cellId: 'c1', participantId: 'p1', requestId: 'r2' },
+      { t: 'council:run:decline', cellId: 'c1', participantId: 'p2', requestId: 'r3' },
+    ])
+    assert.deepEqual(council.mine, {}, 'отправка не выдаёт запрос за принятый')
+  } finally {
+    mock.timers.reset()
+  }
+})
+
+test('запрос и отказ приходят в mine и patch независимо от сдачи и запуска', () => {
+  const council = new CouncilState(() => {})
+  const pending = { id: 'r1', requestedAt: 12, status: 'pending' as const }
+  const a = attemptOf('a', 'x')
+  const untouched = attemptOf('b', 'y')
+  council.receive({ t: 'council:board', cellId: 'c1', board: { ...board(), attempts: [a, untouched] } })
+  for (const runRequest of [pending, { ...pending, status: 'declined' as const }, null]) {
+    council.receive({ t: 'council:mine', cellId: 'c1', state: { ...MINE, runRequest } })
+    council.receive({
+      t: 'council:patch', cellId: 'c1', attempts: [{ ...a, runRequest }], removed: [],
+      counts: board().counts, lock: 'council', settings: { ...board().settings, studentRun: 'request' },
+    })
+    assert.deepEqual(council.mine.c1.runRequest, runRequest)
+    assert.deepEqual(council.boards.c1.attempts[0].runRequest, runRequest)
+    assert.equal(council.boards.c1.attempts[0].submittedAt, null)
+    assert.equal(council.boards.c1.attempts[0].run, null)
+    assert.equal(council.boards.c1.attempts[1], untouched)
+    assert.equal(council.boards.c1.settings.studentRun, 'request')
+  }
+})
+
+test('список запросов включает все 100 черновиков и сданных, без отказов и завершённых', async () => {
+  const { pendingRunRequests } = await import('../web/src/lib/council-board.js')
+  const attempts: CouncilAttempt[] = Array.from({ length: 100 }, (_, i) => ({
+    ...attemptOf(`p${i}`, String(i)),
+    submittedAt: i % 2 ? 1 : null,
+    runRequest: { id: `r${i}`, requestedAt: 100 - i, status: 'pending' },
+  }))
+  attempts.push({ ...attemptOf('declined', ''), runRequest: { id: 'old', requestedAt: 0, status: 'declined' } })
+  attempts.push(attemptOf('no-request', ''))
+  const before = [...attempts]
+  const requests = pendingRunRequests(attempts)
+  assert.equal(requests.length, 100)
+  assert.equal(requests.filter((a) => a.submittedAt === null).length, 50)
+  assert.equal(requests[0].participantId, 'p99')
+  assert.equal(requests[99].participantId, 'p0')
+  assert.deepEqual(attempts, before, 'порядок общей стопки не изменяется')
+})
+
+test('все три режима запуска уходят в настройки без приведения к boolean', () => {
+  const wire: unknown[] = []
+  const council = new CouncilState((message) => wire.push(message))
+  for (const studentRun of [false, 'request', true] as const) council.lock('c1', 'council', { studentRun })
+  assert.deepEqual(wire, [false, 'request', true].map((studentRun) => ({
+    t: 'cell:lock', cellId: 'c1', state: 'council', settings: { studentRun },
+  })))
+})

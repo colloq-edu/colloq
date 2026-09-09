@@ -428,6 +428,24 @@ export class CouncilState {
     )
   }
 
+  /** Запрос относится к последнему снимку, а не к прошлому тексту на сервере. */
+  requestRun(cellId: string): void {
+    this.#outbox.flush(cellId)
+    this.#send({ t: 'council:run:request', cellId })
+  }
+
+  cancelRunRequest(cellId: string, requestId: string): void {
+    this.#send({ t: 'council:run:cancel', cellId, requestId })
+  }
+
+  approveRunRequest(cellId: string, participantId: string, requestId: string): void {
+    this.#send({ t: 'council:run:approve', cellId, participantId, requestId })
+  }
+
+  declineRunRequest(cellId: string, participantId: string, requestId: string): void {
+    this.#send({ t: 'council:run:decline', cellId, participantId, requestId })
+  }
+
   /* --------------------------------------------------------------- ведущий */
 
   /** Замок в положение — и ручки консилиума тем же сообщением. */

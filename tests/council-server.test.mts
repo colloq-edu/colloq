@@ -14,7 +14,7 @@ import './_env.mts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
-import { createSession, setFinished, setRules, upsertParticipant } from '../server/src/db.js'
+import { createSession, setFinished, setRules, upsertParticipant, db, finishedAt } from '../server/src/db.js'
 import {
   closeControlRoom,
   dispatch,
@@ -209,7 +209,7 @@ function frames(at: Room): { full: number; patch: number } {
   return { full, patch }
 }
 
-function council(at: Room, settings?: { studentRun?: boolean }): void {
+function council(at: Room, settings?: { studentRun?: boolean | 'request' }): void {
   assert.equal(
     say(at, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council', settings }),
     null,
@@ -776,4 +776,102 @@ test('опоздавший сеется заданием, а не решение
   // перезагружают посреди пары.
   assert.equal(lastMine(at.petya, at.cell)?.seed, task)
   closeControlRoom(at.id)
+})
+
+
+function requestRun(at: Room, who = at.petya) {
+  say(at, who, {t:'council:run:request',cellId:at.cell})
+  const request=lastMine(who,at.cell)?.runRequest
+  assert.equal(request?.status,'pending')
+  return request!
+}
+function draftForRequest(at: Room, text='print(123)') {
+  council(at,{studentRun:'request'})
+  say(at,at.petya,{t:'council:draft',cellId:at.cell,text})
+}
+
+test('run requests are private, idempotent and separate from submitting or executing',()=>{
+ const at=room();draftForRequest(at)
+ const otherFrames=at.masha.sock.heard.length
+ const request=requestRun(at)
+ assert.equal(board(at).settings.studentRun,'request')
+ assert.equal(board(at).attempts[0].runRequest?.id,request.id)
+ assert.equal(lastMine(at.petya,at.cell)?.run,null)
+ assert.equal(lastMine(at.petya,at.cell)?.submittedAt,null)
+ assert.equal(at.masha.sock.heard.length,otherFrames)
+ assert.equal(requestRun(at).id,request.id)
+ say(at,at.petya,{t:'council:run',cellId:at.cell})
+ assert.equal(attemptsOf(at.id,at.cell)[0].run,null,'request mode must not grant direct execution')
+})
+
+test('only a teacher can approve the current request once and place it in the shared queue',()=>{
+ const at=room();draftForRequest(at);const request=requestRun(at)
+ const approve={t:'council:run:approve',cellId:at.cell,participantId:at.petya.payload.participantId,requestId:request.id} as const
+ say(at,at.masha,approve)
+ assert.equal(attemptsOf(at.id,at.cell)[0].run,null)
+ assert.equal(say(at,at.teacher,approve),null)
+ const attempt=attemptsOf(at.id,at.cell)[0]
+ assert.ok(attempt.run)
+ assert.equal(attempt.run.by,'host')
+ assert.equal(attempt.runRequest,null)
+ const started=attempt.run.startedAt
+ assert.ok(say(at,at.teacher,approve))
+ assert.equal(attemptsOf(at.id,at.cell)[0].run?.startedAt,started)
+})
+
+test('changed code invalidates approval and a new request cannot be approved with an old ID',()=>{
+ const at=room();draftForRequest(at);const old=requestRun(at)
+ say(at,at.petya,{t:'council:draft',cellId:at.cell,text:'print(456)'})
+ assert.equal(lastMine(at.petya,at.cell)?.runRequest??null,null)
+ const fresh=requestRun(at);assert.notEqual(fresh.id,old.id)
+ assert.ok(say(at,at.teacher,{t:'council:run:approve',cellId:at.cell,participantId:at.petya.payload.participantId,requestId:old.id}))
+ assert.equal(attemptsOf(at.id,at.cell)[0].run,null)
+ assert.equal(attemptsOf(at.id,at.cell)[0].runRequest?.id,fresh.id)
+})
+
+test('teacher can decline; author can retry or cancel without submitting the attempt',()=>{
+ const at=room();draftForRequest(at);const request=requestRun(at)
+ say(at,at.teacher,{t:'council:run:decline',cellId:at.cell,participantId:at.petya.payload.participantId,requestId:request.id})
+ assert.equal(lastMine(at.petya,at.cell)?.runRequest?.status,'declined')
+ const fresh=requestRun(at);assert.notEqual(fresh.id,request.id)
+ say(at,at.masha,{t:'council:run:cancel',cellId:at.cell,requestId:fresh.id})
+ assert.equal(attemptsOf(at.id,at.cell)[0].runRequest?.id,fresh.id)
+ say(at,at.petya,{t:'council:run:cancel',cellId:at.cell,requestId:fresh.id})
+ assert.equal(lastMine(at.petya,at.cell)?.runRequest??null,null)
+ assert.equal(lastMine(at.petya,at.cell)?.submittedAt,null)
+})
+
+test('changing execution policy or closing Council discards pending approvals',()=>{
+ const at=room();draftForRequest(at);let request=requestRun(at)
+ council(at,{studentRun:true})
+ assert.equal(lastMine(at.petya,at.cell)?.runRequest??null,null)
+ assert.ok(say(at,at.teacher,{t:'council:run:approve',cellId:at.cell,participantId:at.petya.payload.participantId,requestId:request.id}))
+ council(at,{studentRun:'request'});request=requestRun(at)
+ say(at,at.teacher,{t:'cell:lock',cellId:at.cell,state:'closed'})
+ assert.equal(lastMine(at.petya,at.cell)?.runRequest??null,null)
+ assert.ok(say(at,at.teacher,{t:'council:run:approve',cellId:at.cell,participantId:at.petya.payload.participantId,requestId:request.id}))
+})
+
+test('ending a class clears requests; resuming does not revive them',()=>{
+ const at=room();draftForRequest(at);const request=requestRun(at)
+ say(at,at.teacher,{t:'class:finish'})
+ assert.equal(attemptsOf(at.id,at.cell)[0].runRequest,null)
+ say(at,at.teacher,{t:'class:resume'})
+ assert.ok(say(at,at.teacher,{t:'council:run:approve',cellId:at.cell,participantId:at.petya.payload.participantId,requestId:request.id}))
+ assert.equal(attemptsOf(at.id,at.cell)[0].run,null)
+})
+
+
+test('class finish and request revocation commit together when storage fails',()=>{
+ const at=room();draftForRequest(at);const request=requestRun(at)
+ const before=at.petya.sock.heard.length
+ db.exec(`CREATE TEMP TRIGGER refuse_request_clear BEFORE UPDATE OF run_request_json ON council_attempts
+   WHEN OLD.session_id='${at.id}' AND NEW.run_request_json IS NULL
+   BEGIN SELECT RAISE(ABORT, 'test storage failure'); END`)
+ try{
+  assert.throws(()=>say(at,at.teacher,{t:'class:finish'}),/test storage failure/)
+  assert.equal(finishedAt(at.id),null,'class closure must roll back along with failed request revocation')
+  assert.equal(attemptsOf(at.id,at.cell)[0].runRequest?.id,request.id,'cache must match rolled-back data')
+  assert.equal(at.petya.sock.heard.length,before,'no premature state broadcast')
+ }finally{db.exec('DROP TRIGGER refuse_request_clear')}
 })

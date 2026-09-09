@@ -116,3 +116,27 @@ test('пустой вывод и «вывода в кадре нет» карт�
   assert.match(STACK, /\{:else if attempt\.run\.outputsOmitted\}/)
   assert.match(STACK, /onneedoutputs \? 'Загружается результат…' : 'Результат не загружен\.'/)
 })
+
+test('пульт ищет запросы во всей стопке и подтверждает точный запрос', () => {
+  assert.match(STACK, /pendingRunRequests\(board\.attempts\)/)
+  assert.match(STACK, /onapproverun\(attempt\.participantId, request\.id\)/)
+  assert.match(STACK, /ondeclinerun\(attempt\.participantId, request\.id\)/)
+  assert.match(STACK, /decideRun\(attempt, 'approve'\)/)
+  assert.match(STACK, /decideRun\(attempt, 'decline'\)/)
+  assert.match(STACK, /<select[\s\S]*?pendingRequests/)
+  assert.match(STACK, /textarea, input, select, \[contenteditable\]/, 'стрелки списка не листают стопку')
+})
+
+test('ячейка связывает запрос, отмену и решения с клиентом, а режим выбирается явно', () => {
+  const cell = code(read('web/src/components/notebook/CellView.svelte'))
+  assert.match(cell, /<option value="false">Только преподаватель<\/option>/)
+  assert.match(cell, /<option value="true">Студенты запускают сами<\/option>/)
+  assert.match(cell, /<option value="request">По запросу преподавателю<\/option>/)
+  assert.match(cell, /session\.council\.requestRun\(id\)/)
+  assert.match(cell, /session\.council\.cancelRunRequest\(id, request\.id\)/)
+  assert.match(cell, /onapproverun=\{\(participantId, requestId\) => session\.council\.approveRunRequest\(id, participantId, requestId\)\}/)
+  assert.match(cell, /ondeclinerun=\{\(participantId, requestId\) => session\.council\.declineRunRequest\(id, participantId, requestId\)\}/)
+  assert.match(cell, /Попросить запуск/)
+  assert.match(cell, /Ожидает решения преподавателя/)
+  assert.match(cell, /Преподаватель отклонил запрос/)
+})
