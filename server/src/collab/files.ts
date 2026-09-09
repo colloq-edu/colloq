@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Один открытый файл — один документ Yjs, привязанный к байтам на диске.
  *
@@ -345,7 +346,7 @@ function saveNow(entry: FileDoc): boolean {
    */
   if (tooBig(text)) {
     entry.gone = true
-    closeAll(entry, 4403, 'Файл больше потолка — дальше только чтение.')
+    closeAll(entry, 4403, tr("server.theFileExceedsTheSizeLimitAnd.2d3114"))
     dispose(entry)
     return false
   }
@@ -358,7 +359,7 @@ function saveNow(entry: FileDoc): boolean {
   const at = statPath(entry.sessionId, entry.path)
   if (!at || at.dir) {
     entry.gone = true
-    closeAll(entry, 4404, 'файла больше нет')
+    closeAll(entry, 4404, tr("server.theFileNoLongerExists.353e66"))
     dispose(entry)
     return false
   }
@@ -390,7 +391,7 @@ function watchDisk(entry: FileDoc): void {
     // Файл убрали. Комната узнает об этом из списка файлов; здесь важно
     // перестать писать — иначе следующее сохранение воскресит его.
     entry.gone = true
-    closeAll(entry, 4404, 'файла больше нет')
+    closeAll(entry, 4404, tr("server.theFileNoLongerExists.353e66"))
     dispose(entry)
     return
   }
@@ -408,8 +409,8 @@ function watchDisk(entry: FileDoc): void {
      * человеку, кроме молчаливого исчезновения.
      */
     entry.gone = true
-    if (read?.truncated) closeAll(entry, TOO_BIG, 'файл больше потолка')
-    else closeAll(entry, 4404, 'файл больше не открывается')
+    if (read?.truncated) closeAll(entry, TOO_BIG, tr("server.theFileExceedsTheSizeLimit.59e6dd"))
+    else closeAll(entry, 4404, tr("server.theFileCanNoLongerBeOpened.0fbdee"))
     dispose(entry)
     return
   }
@@ -613,8 +614,8 @@ function handleMessage(entry: FileDoc, conn: WebSocket, data: Uint8Array): void 
               entry,
               conn,
               actsAfterClass(isFinished(entry.sessionId), role)
-                ? 'Файлы в этой комнате — преподавательские'
-                : CLASS_IS_OVER,
+                ? tr("server.onlyTheTeacherMayEditFilesIn.0ca25b")
+                : tr(CLASS_IS_OVER),
             )
           }
         }
@@ -632,7 +633,7 @@ function handleMessage(entry: FileDoc, conn: WebSocket, data: Uint8Array): void 
     }
   } catch (err) {
     console.error(`[files] bad message in ${entry.sessionId}:${entry.path}`, err)
-    refuse(entry, conn, 'Правку не удалось разобрать — она не отправлена.')
+    refuse(entry, conn, tr("server.theEditCouldNotBeReadAnd.fab4ce"))
   }
 }
 
@@ -654,8 +655,8 @@ export function handleFileSocket(
     const at = statPath(sessionId, path)
     const tooBig = at !== null && !at.dir && at.size > MAX_TEXT_BYTES
     try {
-      if (tooBig) ws.close(TOO_BIG, 'файл больше потолка')
-      else ws.close(4404, 'файл не открывается')
+      if (tooBig) ws.close(TOO_BIG, tr("server.theFileExceedsTheSizeLimit.59e6dd"))
+      else ws.close(4404, tr("server.theFileCannotBeOpened.a0670d"))
     } catch {
       /* уже закрыт */
     }
@@ -733,7 +734,7 @@ export function dropFileParticipant(sessionId: string, participantId: string): v
     for (const [conn, state] of [...entry.conns]) {
       if (state.participantId !== participantId) continue
       try {
-        conn.close(1008, 'banned from this seminar')
+        conn.close(1008, tr("server.bannedFromThisSeminar.234bce"))
       } catch {
         /* уже закрыт */
       }
@@ -831,7 +832,7 @@ export function forgetFile(sessionId: string, path: string): void {
     if (entry.sessionId !== sessionId) continue
     if (!isInside(entry.path, path)) continue
     entry.gone = true
-    closeAll(entry, 4404, 'файла больше нет')
+    closeAll(entry, 4404, tr("server.theFileNoLongerExists.353e66"))
     dispose(entry)
   }
 }
@@ -841,7 +842,7 @@ export function forgetFiles(sessionId: string): void {
   for (const entry of [...open.values()]) {
     if (entry.sessionId !== sessionId) continue
     saveNow(entry)
-    closeAll(entry, 1001, 'комната закрыта')
+    closeAll(entry, 1001, tr("server.theRoomIsClosed.23a989"))
     dispose(entry)
   }
 }

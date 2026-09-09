@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { kernelRetirementInProgress } from '../kernel/retirement.js'
 import { currentStaff, staffFromCookieHeader } from '../admin/auth.js'
@@ -301,7 +302,7 @@ function bearerFor(req: Request): TokenPayload | null {
  */
 export function banDoor(req: Request, res: Response, next: NextFunction): void {
   if (kernelRetirementInProgress(String(req.params.id))) {
-    res.status(503).json({ error: 'The seminar is stopping. Try again shortly.' })
+    res.status(503).json({ error: tr("server.theSeminarIsStoppingTryAgainShortly.b8256e") })
     return
   }
   const payload = bearerFor(req)
@@ -465,17 +466,17 @@ export function sessionRoutes(): Router {
     if (!config.openSeminarCreation && !staff) {
       const denied: AdminErrorBody = {
         error:
-          'Only staff can create a seminar on this instance. Ask for a link to the one you are joining.',
+          tr("server.onlyStaffCanCreateASeminarOn.eb0b8c"),
         reason: 'forbidden',
       }
       return res.status(403).json(denied)
     }
 
     const name = normalize(req.body?.name)
-    if (!name) return res.status(400).json({ error: 'a session name is required' })
+    if (!name) return res.status(400).json({ error: tr("server.aSessionNameIsRequired.15da74") })
     if (name.length > MAX_SESSION_NAME) {
       return res.status(400).json({
-        error: `session name must be ${MAX_SESSION_NAME} characters or fewer`,
+        error: tr("server.sessionNameMustBeCharactersOrFewer.a4c426", { p0: MAX_SESSION_NAME }),
       })
     }
 
@@ -494,7 +495,7 @@ export function sessionRoutes(): Router {
      */
     const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
     if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
-      return res.status(400).json({ error: `there is no environment called "${wanted}"` })
+      return res.status(400).json({ error: tr("server.thereIsNoEnvironmentCalled.a8903e", { p0: wanted }) })
     }
 
     const id = newSessionId()
@@ -538,7 +539,7 @@ export function sessionRoutes(): Router {
     if (!session) return res.status(404).json({ error: SESSION_MISSING })
 
     const name = normalize(req.body?.name).slice(0, MAX_PARTICIPANT_NAME)
-    if (!name) return res.status(400).json({ error: 'a name is required' })
+    if (!name) return res.status(400).json({ error: tr("server.aNameIsRequired.d1287e") })
 
     const asked = readAvatar(req.body?.avatar)
     // Строго `=== true`: поле приходит из браузера, и «истинное» вроде строки
@@ -619,7 +620,7 @@ export function sessionRoutes(): Router {
         console.warn(`[join ${sessionId}] refused — more than ${MAX_NEW_PARTICIPANTS} new/min`)
       }
       return res.status(429).json({
-        error: 'too many people are joining this seminar at once — try again in a minute',
+        error: tr("server.tooManyPeopleAreJoiningThisSeminar.11739b"),
       })
     }
     const participantId = known ? known.id : newParticipantId()
@@ -695,12 +696,12 @@ export function sessionRoutes(): Router {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const payload = sessionAuth(req)
-    if (!payload) return res.status(401).json({ error: 'join the session first' })
+    if (!payload) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     if (payload.role !== 'host') {
-      return res.status(403).json({ error: 'Пульт лекции передаёт преподаватель.' })
+      return res.status(403).json({ error: tr("server.onlyTheTeacherMaySharePresenterControls.d098fa") })
     }
     const known = getParticipant(sessionId, payload.participantId)
-    if (!known) return res.status(404).json({ error: 'participant not found' })
+    if (!known) return res.status(404).json({ error: tr("server.participantNotFound.d59506") })
     /*
      * Право переезжает вместе с человеком, но остаётся отзываемым.
      *
@@ -752,10 +753,10 @@ export function sessionRoutes(): Router {
     // только тем, что второй обмен того же ключа получает отказ.
     const who = spendHandoffToken(sessionId, req.body?.key)
     if (!who) {
-      return res.status(401).json({ error: 'Ссылка на пульт недействительна или уже использована. Создайте новую ссылку на устройстве преподавателя.' })
+      return res.status(401).json({ error: tr("server.thisPresenterLinkIsInvalidOrHas.0f5b09") })
     }
     const known = getParticipant(sessionId, who.participantId)
-    if (!known) return res.status(404).json({ error: 'participant not found' })
+    if (!known) return res.status(404).json({ error: tr("server.participantNotFound.d59506") })
     // Роль в строке — для значка в списке; `token_host` не трогаем: у ведущего
     // по своему ключу он уже стоит, а ведущему по куке его ставить нельзя.
     const participant = upsertParticipant({
@@ -799,13 +800,13 @@ export function sessionRoutes(): Router {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const payload = sessionAuth(req)
-    if (!payload) return res.status(401).json({ error: 'join the session first' })
+    if (!payload) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     if (payload.role !== 'host') {
-      return res.status(403).json({ error: 'Правила этого семинара задаёт преподаватель.' })
+      return res.status(403).json({ error: tr("server.onlyTheTeacherMayChangeThisSeminar.a9e299") })
     }
     const incoming: unknown = req.body?.rules
     if (typeof incoming !== 'object' || incoming === null) {
-      return res.status(400).json({ error: 'rules must be an object' })
+      return res.status(400).json({ error: tr("server.rulesMustBeAnObject.c2a9d1") })
     }
     const rules = setRules(sessionId, readRules({ ...storedRules(sessionId), ...incoming }))
     /*

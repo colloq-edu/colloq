@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Two cells, one border: the theme is always a visible pair, never a mystery
    * toggle whose meaning depends on the state you are already in.
@@ -33,14 +34,14 @@
   }
 
   const OPTIONS: { name: ThemeName; label: string; icon: 'sun' | 'moon' }[] = [
-    { name: 'light', label: 'Light theme', icon: 'sun' },
-    { name: 'dark', label: 'Dark theme', icon: 'moon' },
+    { name: 'light', get label() { return tr('room.ui.825') }, icon: 'sun' },
+    { name: 'dark', get label() { return tr('room.ui.826') }, icon: 'moon' },
   ]
 </script>
 
 <div
   role="group"
-  aria-label="Colour theme"
+  aria-label={tr('room.ui.820')}
   class="inline-flex shrink-0 overflow-hidden border {onDark ? 'border-brand-2' : 'border-line'}
          {className}"
 >

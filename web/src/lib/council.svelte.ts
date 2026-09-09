@@ -1,3 +1,4 @@
+import { tr, formatNumber } from '@shared/i18n'
 /**
  * Консилиум на клиенте: своя попытка, стопка преподавателя и счётчики — из
  * сообщений управляющего сокета, по ячейкам.
@@ -175,20 +176,20 @@ export function sheetSeed(mineText: string | null | undefined, shared: string): 
  */
 export function councilStripText(counts: CouncilBoard['counts'], groups = counts.groups): string {
   const parts: string[] = []
-  parts.push(`${counts.attempts} ${plural(counts.attempts, 'попытка', 'попытки', 'попыток')}`)
-  parts.push(`${counts.submitted} ${plural(counts.submitted, 'сдал', 'сдали', 'сдали')}`)
+  parts.push(tr('room.ui.1054', { count: counts.attempts }))
+  parts.push(tr('room.ui.1055', { count: counts.submitted }))
   if (counts.writing > 0) {
-    parts.push(`${counts.writing} ещё ${plural(counts.writing, 'пишет', 'пишут', 'пишут')}`)
+    parts.push(tr('room.ui.1056', { count: counts.writing }))
   }
   if (groups > 0) {
-    parts.push(`${groups} ${plural(groups, 'разный ответ', 'разных ответа', 'разных ответов')}`)
+    parts.push(tr('room.ui.1057', { count: groups }))
   }
   return parts.join(' · ')
 }
 
 /** «446 сдали из 487» — чип у студента и строка проектора. */
 export function countLine(count: CouncilCount): string {
-  return `${count.submitted} ${plural(count.submitted, 'сдал', 'сдали', 'сдали')} из ${count.total}`
+  return tr('room.ui.1058', { count: count.submitted, total: count.total })
 }
 
 /**
@@ -201,9 +202,9 @@ export function ranByLine(
   run: NonNullable<CouncilMine['run']>,
   spellMs: (ms: number) => string,
 ): string {
-  if (run.state === 'queued') return 'в очереди на запуск'
-  if (run.state === 'running') return 'выполняется'
-  const who = run.by === 'host' ? 'запускал преподаватель' : 'запускали вы'
+  if (run.state === 'queued') return tr('room.ui.1059')
+  if (run.state === 'running') return tr('room.ui.1060')
+  const who = run.by === 'host' ? tr('room.ui.61') : tr('room.ui.1061')
   return run.ranMs === null ? who : `${who} · ${spellMs(run.ranMs)}`
 }
 
@@ -214,7 +215,7 @@ export function ranByLine(
  * кончается на «-й» (первый, третий, сороковой), так что окончание одно.
  */
 export function queueWords(place: number): string {
-  return `вы ${place}-й в очереди`
+  return tr('room.ui.1063', { p0: place })
 }
 
 /* ------------------------------------------------------- потолок попытки */
@@ -234,13 +235,12 @@ export function queueWords(place: number): string {
  */
 export function attemptCounter(chars: number): string | null {
   if (chars < MAX_ATTEMPT_CHARS * 0.9) return null
-  return `${countOf(chars)} из ${countOf(MAX_ATTEMPT_CHARS)}`
+  return tr('room.ui.1064', { p0: countOf(chars), p1: countOf(MAX_ATTEMPT_CHARS) })
 }
 
 /** Разряды по-русски: «9 012», а не «9012». */
-const counter = new Intl.NumberFormat('ru-RU')
 function countOf(n: number): string {
-  return counter.format(n)
+  return formatNumber(n)
 }
 
 /** Не влезает: снимок такого текста сервер отвергнет, а вставку надо не пустить. */

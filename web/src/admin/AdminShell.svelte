@@ -73,6 +73,9 @@
 </script>
 
 <script lang="ts">
+  import { tr } from '@shared/i18n'
+  import type { Locale } from '@shared/i18n-types'
+  import { language, revalidateLanguage } from '@/lib/i18n.svelte'
   import type { Snippet } from 'svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon, { type IconName } from '@/components/ui/Icon.svelte'
@@ -112,27 +115,27 @@
    * teacher that this panel lies, once, in the first minute.
    */
   const TEACHING = $derived<NavItem[]>([
-    { id: 'seminars', label: 'Seminars', icon: 'board', href: '/admin', count: navCounts.seminars },
+    { id: 'seminars', label: tr("admin.seminars"), icon: 'board', href: '/admin', count: navCounts.seminars },
     {
       id: 'courses',
-      label: 'Courses',
+      label: tr("admin.courses"),
       icon: 'folder',
       href: '/admin/courses',
       count: navCounts.courses,
     },
     {
       id: 'environments',
-      label: 'Environments',
+      label: tr("admin.environments"),
       icon: 'box',
       href: '/admin/environments',
       count: navCounts.environments,
     },
   ])
   const INSTANCE = $derived<NavItem[]>([
-    { id: 'oracle', label: 'Oracle', icon: 'sparkles', href: '/admin/oracle' },
+    { id: 'oracle', label: tr("admin.oracle"), icon: 'sparkles', href: '/admin/oracle' },
     {
       id: 'teachers',
-      label: 'Who can teach',
+      label: tr("admin.who.can.teach"),
       icon: 'users',
       href: '/admin/teachers',
       count: navCounts.teachers,
@@ -147,6 +150,29 @@
   $effect(() => {
     void navCounts.load(tab)
   })
+
+  let savingLanguage = $state(false)
+  let languageFailure = $state<unknown>(null)
+  const languageError = $derived(languageFailure ? tr('admin.language.failed') : null)
+
+  async function changeLanguage(event: Event): Promise<void> {
+    const select = event.currentTarget as HTMLSelectElement
+    const requested = select.value as Locale
+    if (savingLanguage || requested === language.current) return
+    savingLanguage = true
+    languageFailure = null
+    try {
+      await adminApi.updateInstanceSettings({ language: requested })
+      // Another owner may have changed the setting while this response was
+      // travelling. Confirm the current value instead of replaying our reply.
+      await revalidateLanguage()
+    } catch (cause) {
+      languageFailure = cause
+    } finally {
+      select.value = language.current
+      savingLanguage = false
+    }
+  }
 
   function open(event: MouseEvent, href: string): void {
     // A middle click or a modifier means "new tab", and that is the browser's
@@ -227,12 +253,68 @@
       <Icon name="logo" size={18} class="text-white md:hidden" />
     </div>
 
-    {@render section('Teaching', TEACHING, true)}
-    {@render section('Instance', INSTANCE, false)}
+    {@render section(tr("admin.teaching"), TEACHING, true)}
+    {@render section(tr("admin.instance"), INSTANCE, false)}
+
+    {#if adminAuth.isOwner}
+      <div class="mt-auto border-t border-white/10 px-1 py-3 md:px-5">
+        <details class="relative md:hidden">
+          <summary
+            aria-label={tr('admin.language.label')}
+            title={language.current === 'ru' ? 'Русский' : 'English'}
+            class="flex min-h-9 cursor-pointer list-none items-center justify-center border border-white/30 text-2xs font-semibold text-white hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            {language.current.toUpperCase()}
+          </summary>
+          <div class="absolute bottom-0 left-full z-50 ml-2 w-52 border border-white/30 bg-brand p-3 shadow-pop">
+        <label for="instance-language-mobile" class="mb-1.5 block text-2xs font-semibold text-white">
+          {tr('admin.language.label')}
+        </label>
+        <select
+          id="instance-language-mobile"
+          value={language.current}
+          onchange={(event) => void changeLanguage(event)}
+          disabled={savingLanguage}
+          aria-label={tr('admin.language.label')}
+          aria-describedby="language-status-mobile"
+          aria-invalid={languageError ? true : undefined}
+          class="w-full min-w-0 border border-white/30 bg-brand px-0.5 py-1.5 text-2xs text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-accent md:px-2"
+        >
+          <option value="ru">Русский</option>
+          <option value="en">English</option>
+        </select>
+        <p id="language-status-mobile" aria-live="polite" class="mt-1.5 text-micro text-white/70">
+          {languageError ?? (savingLanguage ? tr('admin.language.saving') : tr('admin.language.scope'))}
+        </p>
+          </div>
+        </details>
+        <div class="hidden md:block">
+        <label for="instance-language" class="mb-1.5 block text-2xs font-semibold text-white">
+          {tr('admin.language.label')}
+        </label>
+        <select
+          id="instance-language"
+          value={language.current}
+          onchange={(event) => void changeLanguage(event)}
+          disabled={savingLanguage}
+          aria-label={tr('admin.language.label')}
+          aria-describedby="language-status"
+          aria-invalid={languageError ? true : undefined}
+          class="w-full min-w-0 border border-white/30 bg-brand px-0.5 py-1.5 text-2xs text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-accent md:px-2"
+        >
+          <option value="ru">Русский</option>
+          <option value="en">English</option>
+        </select>
+        <p id="language-status" aria-live="polite" class="mt-1.5 text-micro text-white/70">
+          {languageError ?? (savingLanguage ? tr('admin.language.saving') : tr('admin.language.scope'))}
+        </p>
+        </div>
+      </div>
+    {/if}
 
     {#if teacher}
       <div
-        class="mt-auto flex min-h-[60px] shrink-0 flex-col items-center justify-center gap-1.5
+        class="{adminAuth.isOwner ? '' : 'mt-auto'} flex min-h-[60px] shrink-0 flex-col items-center justify-center gap-1.5
                border-t border-white/10 py-2 md:flex-row md:justify-start md:gap-2.5 md:px-5 md:py-0"
       >
         <Avatar name={teacher.name} color={colorForId(teacher.id)} size="md" title={teacher.email} />
@@ -240,12 +322,12 @@
           <p class="truncate text-ui font-semibold text-white">{teacher.name}</p>
           <!-- The artboard puts a faculty here; we have no faculty field, and
                the role is the thing that decides what this person can do. -->
-          <p class="truncate text-micro capitalize text-white/60">{teacher.role}</p>
+          <p class="truncate text-micro capitalize text-white/60">{tr(`admin.role.${teacher.role}`)}</p>
         </div>
         <button
           type="button"
-          title="Sign out"
-          aria-label="Sign out"
+          title={tr("admin.sign.out")}
+          aria-label={tr("admin.sign.out")}
           onclick={() => void adminAuth.signOut()}
           class="shrink-0 p-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white"
         >

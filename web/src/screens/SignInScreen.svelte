@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * The way in to the teaching side.
    *
@@ -70,15 +71,10 @@
        отдельным запросом и надписывать постер второй раз, уже нарисованный.
        Цена мала: сюда приходят свои — надпись «кто мы» говорит тем, кого
        позвали по ссылке, а не тем, кто здесь работает. -->
-  <Poster title="Teaching workspace" headline="banner" width="hidden w-5/12 xl:flex">
-    Create seminars, manage teaching access and configure the oracle here.
-
-    {#snippet footer()}
+  <Poster title={tr('room.ui.998')} headline="banner" width="hidden w-5/12 xl:flex"> {tr('room.ui.999')} {#snippet footer()}
       <div class="flex items-start gap-2.5">
         <Icon name="lock" size={14} class="mt-1 shrink-0 text-white/60" />
-        <p class="text-2xs leading-relaxed text-white/60">
-          Students join from a seminar link and enter their name. They do not need a teacher account.
-        </p>
+        <p class="text-2xs leading-relaxed text-white/60"> {tr('room.ui.1000')} </p>
       </div>
     {/snippet}
   </Poster>
@@ -90,13 +86,9 @@
       {#if !claimed}
         <section class="animate-fade-up flex flex-col gap-5 border border-line p-[26px]">
           <div class="flex flex-col gap-1.5">
-            <p class="text-micro font-bold uppercase tracking-label text-accent-text">
-              Initial setup
-            </p>
-            <h2 class="text-head font-black tracking-tight text-ink">Set up this instance</h2>
-            <p class="text-ui text-muted">
-              Use the setup token to create the first owner account for this server.
-            </p>
+            <p class="text-micro font-bold uppercase tracking-label text-accent-text"> {tr('room.ui.1001')} </p>
+            <h2 class="text-head font-black tracking-tight text-ink">{tr('room.ui.1002')}</h2>
+            <p class="text-ui text-muted"> {tr('room.ui.1003')} </p>
           </div>
 
           <form class="flex flex-col gap-5" onsubmit={claim}>
@@ -104,14 +96,12 @@
               <label
                 for="setup-token"
                 class="text-2xs font-bold uppercase tracking-label text-muted"
-              >
-                Setup token
-              </label>
+              > {tr('room.ui.1004')} </label>
               <input
                 id="setup-token"
                 bind:value={token}
                 class="field h-[46px] bg-canvas px-4 font-mono text-code-lg"
-                placeholder="paste the setup token"
+                placeholder={tr('room.ui.1005')}
                 autocomplete="off"
                 spellcheck="false"
               />
@@ -122,14 +112,12 @@
                 <label
                   for="owner-name"
                   class="text-2xs font-bold uppercase tracking-label text-muted"
-                >
-                  Your name
-                </label>
+                > {tr('room.ui.848')} </label>
                 <input
                   id="owner-name"
                   bind:value={name}
                   class="field h-[46px] bg-canvas px-4 text-ui"
-                  placeholder="Alex"
+                  placeholder={tr('room.ui.849')}
                   maxlength={LIMITS.teacherName}
                   autocomplete="name"
                 />
@@ -138,9 +126,7 @@
                 <label
                   for="owner-email"
                   class="text-2xs font-bold uppercase tracking-label text-muted"
-                >
-                  Your email
-                </label>
+                > {tr('room.ui.1006')} </label>
                 <input
                   id="owner-email"
                   bind:value={email}
@@ -162,20 +148,16 @@
               type="submit"
               disabled={!canClaim || adminAuth.loading}
             >
-              {adminAuth.loading ? 'Claiming…' : 'Claim this instance'}
+              {adminAuth.loading ? tr('room.ui.1008') : tr('room.ui.1009')}
             </button>
           </form>
 
           <div class="flex items-start gap-2.5">
             <Icon name="code" size={14} class="mt-0.5 shrink-0 text-faint" />
             <div class="flex min-w-0 flex-col gap-[3px] text-2xs text-muted">
-              <p>
-                Printed in the server log on first boot, and kept in
-                <code class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</code>
+              <p> {tr('room.ui.1010')} <code class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</code>
               </p>
-              <p>
-                Sign-in links are shared manually. Email sign-in and university accounts are not supported.
-              </p>
+              <p> {tr('room.ui.1012')} </p>
             </div>
           </div>
         </section>
@@ -188,20 +170,13 @@
           worth knowing — it is what your colleagues will get — so it stays, as
           one line rather than as a rival.
         -->
-        <p class="animate-fade-up text-ui text-muted">
-          After setup, add teachers and share their personal sign-in links.
-        </p>
+        <p class="animate-fade-up text-ui text-muted"> {tr('room.ui.1013')} </p>
       {:else}
       <section class="animate-fade-up flex flex-col gap-[18px] bg-surface p-[26px]">
         <div class="flex flex-col gap-1.5">
-          <p class="text-micro font-bold uppercase tracking-label text-muted">
-            Teacher access
-          </p>
-          <h2 class="text-head font-black tracking-tight text-ink">Sign in</h2>
-          <p class="text-ui text-muted">
-            Open the personal sign-in link an owner gave you. Save the original link to use it again.
-            It works until an owner replaces it or removes your account.
-          </p>
+          <p class="text-micro font-bold uppercase tracking-label text-muted"> {tr('room.ui.1014')} </p>
+          <h2 class="text-head font-black tracking-tight text-ink">{tr('room.ui.1015')}</h2>
+          <p class="text-ui text-muted"> {tr('room.ui.1016')} </p>
         </div>
 
         <!-- A specimen, not a link: it shows the shape of the credential so the
@@ -213,9 +188,7 @@
           <span class="min-w-0 flex-1 truncate font-mono text-ui text-accent-text">
             {window.location.host}/admin/k/&lt;your-key&gt;
           </span>
-          <span class="shrink-0 text-micro font-bold uppercase tracking-label text-muted">
-            Example
-          </span>
+          <span class="shrink-0 text-micro font-bold uppercase tracking-label text-muted"> {tr('room.ui.1018')} </span>
         </div>
 
         <!-- Эта карточка и есть «инстансом уже владеют»: она нарисована в
@@ -224,10 +197,8 @@
              строку было бы ловушкой, а не восстановлением. -->
         <form class="flex flex-col gap-3 border-t border-line pt-[18px]" onsubmit={recover}>
           <div class="flex flex-wrap items-baseline gap-2">
-            <span class="text-ui font-semibold text-ink">Sign in with the setup token</span>
-            <label for="recovery-token" class="text-ui text-muted">
-              This signs you in as the longest-standing owner.
-            </label>
+            <span class="text-ui font-semibold text-ink">{tr('room.ui.1019')}</span>
+            <label for="recovery-token" class="text-ui text-muted"> {tr('room.ui.1020')} </label>
           </div>
 
           <div class="flex flex-col gap-2.5 sm:flex-row">
@@ -235,7 +206,7 @@
               id="recovery-token"
               bind:value={token}
               class="field h-11 bg-canvas px-4 font-mono text-code-lg"
-              placeholder="setup token"
+              placeholder={tr('room.ui.1021')}
               autocomplete="off"
               spellcheck="false"
             />
@@ -246,7 +217,7 @@
               type="submit"
               disabled={!token.trim() || adminAuth.loading}
             >
-              {adminAuth.loading ? 'Signing in…' : 'Sign in'}
+              {adminAuth.loading ? tr('room.ui.1022') : tr('room.ui.1015')}
             </button>
           </div>
 
@@ -268,14 +239,11 @@
       -->
       <section class="animate-fade-up flex flex-col gap-5 border border-line p-[26px]">
         <div class="flex flex-col gap-1.5">
-          <h2 class="text-head font-black tracking-tight text-ink">Could not reach the panel</h2>
+          <h2 class="text-head font-black tracking-tight text-ink">{tr('room.ui.1023')}</h2>
           <p class="text-ui text-muted">
-            {adminAuth.error ?? 'The server did not answer.'}
+            {adminAuth.error ?? tr('room.ui.1024')}
           </p>
-          <p class="text-ui text-muted">
-            Check your connection and try again. If the server remains unavailable, contact the person
-            who runs it.
-          </p>
+          <p class="text-ui text-muted"> {tr('room.ui.1025')} </p>
         </div>
         <button
           type="button"
@@ -283,7 +251,7 @@
           disabled={adminAuth.loading}
           onclick={() => void adminAuth.refresh()}
         >
-          {adminAuth.loading ? 'Trying…' : 'Try again'}
+          {adminAuth.loading ? tr('room.ui.1026') : tr('room.ui.1027')}
         </button>
       </section>
     {/if}

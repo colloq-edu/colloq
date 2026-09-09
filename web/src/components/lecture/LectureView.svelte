@@ -17,6 +17,7 @@
   будет только в аудитории.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import { untrack } from 'svelte'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import Icon from '@/components/ui/Icon.svelte'
@@ -55,7 +56,8 @@
   const session = getSessionState()
 
   let doc = $state<PDFDocumentProxy | null>(null)
-  let failure = $state<string | null>(null)
+  let failureRender = $state<() => string | null>(() => null)
+  const failure = $derived(failureRender())
   let pages = $state(0)
 
   /**
@@ -96,7 +98,7 @@
      */
     doc = null
     pages = 0
-    failure = null
+    failureRender = () => (null)
     let dropped = false
     let opened: PDFDocumentProxy | null = null
     void loadPdf()
@@ -114,7 +116,7 @@
         pages = ready.numPages
       })
       .catch(() => {
-        if (!dropped) failure = 'Не удалось открыть документ лекции.'
+        if (!dropped) failureRender = () => (tr('room.ui.303'))
       })
     return () => {
       dropped = true
@@ -201,7 +203,7 @@
    */
   function destructive(): boolean {
     if (session.connected) return true
-    refuse('Нет связи. Не удалось изменить чернила.')
+    refuse(tr('room.ui.304'))
     return false
   }
 
@@ -238,7 +240,7 @@
     if (!session.connected) {
       // Своими словами: «ничего не стёрлось» здесь сказало бы не о том.
       stopAsked = false
-      refuse('Нет связи. Не удалось закончить лекцию.')
+      refuse(tr('room.ui.255'))
       return
     }
     if (!stopAsked) {
@@ -548,7 +550,7 @@
   <div class="fixed inset-0 z-[100] flex flex-col bg-black" onclick={fillScreen}>
     {#if lecture.blank}
       <div class="flex flex-1 items-center justify-center">
-        <span class="text-2xs uppercase tracking-section text-white/30">пауза</span>
+        <span class="text-2xs uppercase tracking-section text-white/30">{tr('room.ui.276')}</span>
       </div>
     {:else if failure}
       <div class="flex flex-1 items-center justify-center px-8 text-center text-ui text-white/70">
@@ -574,8 +576,8 @@
     <button
       type="button"
       class="absolute right-0 top-0 h-12 w-12 text-white/0 transition-colors duration-100 hover:text-white/40 focus-visible:outline-none"
-      title="Выйти из проекции — Escape"
-      aria-label="Выйти из проекции"
+      title={tr('room.ui.277')}
+      aria-label={tr('room.ui.278')}
       onclick={(event) => {
         event.stopPropagation()
         onleave?.()
@@ -590,8 +592,7 @@
         только тому, чьи это слайды: чужие она не листает.
       -->
       <p class="pointer-events-none absolute bottom-4 right-5 text-2xs uppercase tracking-label text-white/35">
-        {mine ? '← → листать · ' : ''}щелчок или F — во весь экран
-      </p>
+        {mine ? tr('room.ui.279') : ''}{tr('room.ui.280')} </p>
     {/if}
   </div>
 {:else}
@@ -606,19 +607,19 @@
           type="button"
           class="{TOOL} w-10 justify-center text-muted hover:text-ink disabled:opacity-30"
           disabled={page > 0 && page <= 1}
-          aria-label="Предыдущая страница"
+          aria-label={tr('room.ui.174')}
           onclick={() => turn(-1)}
         >
           <Icon name="chevron-left" size={14} />
         </button>
         <span class="flex items-center px-1 font-mono text-2xs tabular-nums text-ink">
-          {#if page < 0}лист{:else}{page} / {pages || '—'}{/if}
+          {#if page < 0}{tr('room.ui.159')}{:else}{page} / {pages || '—'}{/if}
         </span>
         <button
           type="button"
           class="{TOOL} w-10 justify-center text-muted hover:text-ink disabled:opacity-30"
           disabled={page > 0 && pages > 0 && page >= pages}
-          aria-label="Следующая страница"
+          aria-label={tr('room.ui.175')}
           onclick={() => turn(1)}
         >
           <Icon name="chevron-right" size={14} />
@@ -633,8 +634,8 @@
           <button
             type="button"
             class="press flex w-8 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-            title={`Перо, ${choice.short}`}
-            aria-label={`Перо, ${choice.short}`}
+            title={tr('room.extra.83', { p0: choice.short })}
+            aria-label={tr('room.extra.83', { p0: choice.short })}
             aria-pressed={tool === 'pen' && ink === choice.color}
             onclick={() => {
               tool = 'pen'
@@ -662,34 +663,28 @@
           type="button"
           class="{TOOL} {tool === 'laser' ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}"
           aria-pressed={tool === 'laser'}
-          title="Указка — ведите пальцем или пером"
+          title={tr('room.ui.282')}
           onclick={() => (tool = tool === 'laser' ? 'off' : 'laser')}
         >
-          <Icon name="bolt" size={12} />
-          Указка
-        </button>
+          <Icon name="bolt" size={12} /> {tr('room.ui.165')} </button>
         <button
           type="button"
           class="{TOOL} {tool === 'off' ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}"
           aria-pressed={tool === 'off'}
-          title="Листать страницы пальцем"
+          title={tr('room.ui.283')}
           onclick={() => (tool = 'off')}
-        >
-          Рука
-        </button>
+        > {tr('room.ui.284')} </button>
 
         <span class="my-2 w-px bg-line" aria-hidden="true"></span>
 
         <button
           type="button"
           class="{TOOL} text-muted hover:text-ink"
-          title="Убрать последний штрих — Z"
-          aria-label="Отменить последний штрих"
+          title={tr('room.ui.285')}
+          aria-label={tr('room.ui.166')}
           onclick={undoStroke}
         >
-          <Icon name="undo" size={12} />
-          Отменить
-        </button>
+          <Icon name="undo" size={12} /> {tr('room.ui.286')} </button>
         <!--
           «Стереть» спрашивает, и это не вежливость: она стоит в одном ряду с
           «Пауза», а промах мышью на одну кнопку влево уносил всю разметку
@@ -700,22 +695,20 @@
         <button
           type="button"
           class="{TOOL} {wipeAsked ? 'bg-danger/10 text-danger' : 'text-muted hover:text-ink'}"
-          title="Стереть чернила с этой страницы — E"
+          title={tr('room.ui.287')}
           onclick={askWipe}
           onblur={() => (wipeAsked = false)}
         >
           <Icon name="eraser" size={12} />
-          {wipeAsked ? 'Стереть всё?' : 'Стереть'}
+          {wipeAsked ? tr('room.ui.288') : tr('room.ui.221')}
         </button>
         <button
           type="button"
           class="{TOOL} {lecture.blank ? 'bg-ink text-canvas' : 'text-muted hover:text-ink'}"
           aria-pressed={lecture.blank}
-          title="Погасить проекцию — B. У вас страница останется"
+          title={tr('room.ui.290')}
           onclick={() => session.send({ t: 'lecture:blank', on: !lecture.blank })}
-        >
-          Пауза
-        </button>
+        > {tr('room.ui.291')} </button>
 
         <span class="flex-1"></span>
 
@@ -738,11 +731,11 @@
         <button
           type="button"
           class="{TOOL} {stopAsked ? 'bg-danger/10 text-danger' : 'text-danger hover:bg-danger/10'}"
-          title="Закончить лекцию: проекция погаснет, чернила сотрутся"
+          title={tr('room.ui.293')}
           onclick={askStop}
           onblur={() => (stopAsked = false)}
         >
-          {stopAsked ? 'Закончить лекцию?' : 'Закончить'}
+          {stopAsked ? tr('room.ui.294') : tr('room.ui.230')}
         </button>
       </div>
     {:else if presenting}
@@ -757,11 +750,9 @@
       >
         <!-- Спокойная точка, не тревожная: это решение преподавателя, а не
              поломка, и лекция на экране как стояла, так и стоит. -->
-        <span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
-        Занятие закончено. Управлять лекцией может преподаватель. Страница и чернила остаются доступны.
-        <span class="flex-1"></span>
+        <span class="h-1.5 w-1.5 rounded-full bg-accent"></span> {tr('room.ui.295')} <span class="flex-1"></span>
         <span class="font-mono tabular-nums">
-          {#if page < 0}чистый лист{:else}{page} / {pages || '—'}{/if}
+          {#if page < 0}{tr('room.ui.296')}{:else}{page} / {pages || '—'}{/if}
         </span>
         {@render projectButton()}
       </div>
@@ -770,13 +761,12 @@
       <div
         class="flex h-[34px] shrink-0 items-center gap-2 border-b border-line bg-canvas px-4 text-2xs text-muted"
       >
-        <span class="h-1.5 w-1.5 rounded-full" style={`background:${lecture.color}`}></span>
-        Лекцию ведёт {lecture.byName}
+        <span class="h-1.5 w-1.5 rounded-full" style={`background:${lecture.color}`}></span> {tr('room.ui.297')} {lecture.byName}
         <span class="text-faint">·</span>
         <span class="font-mono">{baseOf(lecture.file)}</span>
         <span class="flex-1"></span>
         <span class="font-mono tabular-nums">
-          {#if page < 0}чистый лист{:else}{page} / {pages || '—'}{/if}
+          {#if page < 0}{tr('room.ui.296')}{:else}{page} / {pages || '—'}{/if}
         </span>
         {#if onsolo}
           <!--
@@ -787,11 +777,9 @@
           <button
             type="button"
             class="{TOOL} -my-2 text-muted hover:text-ink"
-            title="Листать документ самостоятельно"
+            title={tr('room.ui.298')}
             onclick={() => onsolo?.()}
-          >
-            Читать самому
-          </button>
+          > {tr('room.ui.299')} </button>
         {/if}
         {@render projectButton()}
       </div>
@@ -809,9 +797,7 @@
           <p class="text-ui text-muted">{failure}</p>
           <!-- Повтор руками: сеть, моргнувшая в момент старта, не повод
                доводить пару без слайдов у себя на экране. -->
-          <button type="button" class="btn-outline h-8 px-3 text-2xs" onclick={() => (attempt += 1)}>
-            Попробовать снова
-          </button>
+          <button type="button" class="btn-outline h-8 px-3 text-2xs" onclick={() => (attempt += 1)}> {tr('room.ui.191')} </button>
         </div>
         {#if presenting && host}
           <aside class="hidden w-[28%] shrink-0 flex-col lg:flex">
@@ -863,9 +849,7 @@
           -->
           <aside class="hidden w-[28%] shrink-0 flex-col gap-2 lg:flex">
             {#if page > 0 && pages > page}
-              <span class="text-micro font-bold uppercase tracking-section text-muted">
-                дальше
-              </span>
+              <span class="text-micro font-bold uppercase tracking-section text-muted"> {tr('room.ui.197')} </span>
               <div class="flex min-h-0 basis-[42%]">
                 <LecturePage {doc} page={page + 1} dim />
               </div>
@@ -890,11 +874,9 @@
     <button
       type="button"
       class="{TOOL} text-muted hover:text-ink"
-      title="Открыть проекцию во весь экран"
+      title={tr('room.ui.300')}
       onclick={() => onproject?.()}
     >
-      <Icon name="board" size={12} />
-      На проектор
-    </button>
+      <Icon name="board" size={12} /> {tr('room.ui.301')} </button>
   {/if}
 {/snippet}

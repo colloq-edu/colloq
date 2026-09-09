@@ -7,6 +7,7 @@
   нет ни документа, ни ядра, и менять в ней нечего.
 -->
 <script lang="ts">
+  import { tr, formatNumber } from '@shared/i18n'
   import { onMount } from 'svelte'
   import CellOutputs from '@/components/notebook/CellOutputs.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -80,7 +81,7 @@
     setTimeout(() => (copied = copied === cell.id ? null : copied), 1600)
   }
 
-  const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`
+  const seconds = (ms: number): string => tr('room.duration.seconds', { count: formatNumber(ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })
 </script>
 
 <div class="flex flex-col gap-6">
@@ -100,10 +101,10 @@
     {:else}
       {@const said =
         refused === cell.id
-          ? 'Не удалось скопировать. Выделите код и скопируйте вручную.'
+          ? tr('room.ui.731')
           : copied === cell.id
-            ? 'Скопировано'
-            : 'Скопировать ячейку'}
+            ? tr('room.ui.138')
+            : tr('room.ui.732')}
       <div class="border border-line bg-canvas">
         <div class="flex items-start gap-3 bg-surface/60 px-4 py-3">
           <Code code={cell.source} lang="python" class="min-w-0 flex-1 text-code-lg leading-relaxed" />
@@ -154,7 +155,7 @@
               Out [{cell.execCount}]{cell.ranMs !== null ? ` · ${seconds(cell.ranMs)}` : ''}
             </span>
           {:else}
-            <span class="font-mono text-2xs text-faint">не запускалась</span>
+            <span class="font-mono text-2xs text-faint">{tr('room.ui.736')}</span>
           {/if}
         </div>
       </div>

@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Turning a stream of CRDT updates into a history a person can read.
  *
@@ -37,7 +38,7 @@ import {
   cloneCell,
   CELLS_KEY,
   createCell,
-  DEFAULT_BOOK,
+  defaultBookName,
   getMeta,
   replaceText,
   type YCell,
@@ -159,7 +160,7 @@ export function beginHistory(sessionId: string, doc: Y.Doc): void {
     authorId: null,
     createdAt: Date.now(),
     label: null,
-    summary: versionCount(sessionId) > 0 ? 'тетрадь на этот момент' : 'открылась',
+    summary: versionCount(sessionId) > 0 ? tr("server.notebookAtThisPoint.ccc077") : tr("server.opened.e716b0"),
     added: 0,
     removed: 0,
     cells: [],
@@ -221,7 +222,7 @@ function repairHistory(sessionId: string, doc: Y.Doc): void {
     authorId: null,
     createdAt: Date.now(),
     label: null,
-    summary: 'тетрадь на этот момент',
+    summary: tr("server.notebookAtThisPoint.ccc077"),
     added: 0,
     removed: 0,
     cells: [],
@@ -318,22 +319,22 @@ function describe(
    * «21 ячеек» и «2 ячеек» — ровно та ошибка, ради которой `plural` и лежит в
    * shared.
    */
-  const cells = (n: number): string => `${n} ${plural(n, 'ячейку', 'ячейки', 'ячеек')}`
+  const cells = (n: number): string => tr('server.historyCells', { count: n })
 
   let summary: string
   if (created.length > 0 && changed.length === 0 && deleted.length === 0) {
-    summary = created.length === 1 ? 'добавил ячейку' : `добавил ${cells(created.length)}`
+    summary = created.length === 1 ? tr("server.addedACell.b6ba53") : tr("server.added.f985c7", { p0: cells(created.length) })
   } else if (deleted.length > 0 && created.length === 0 && changed.length === 0) {
-    summary = deleted.length === 1 ? 'удалил ячейку' : `удалил ${cells(deleted.length)}`
+    summary = deleted.length === 1 ? tr("server.deletedACell.e08aef") : tr("server.deleted.9e3b01", { p0: cells(deleted.length) })
   } else if (changed.length === 1 && created.length === 0 && deleted.length === 0) {
-    summary = `правил ячейку ${number(changed[0])}`
+    summary = tr("server.editedCell.58cff0", { p0: number(changed[0]) })
   } else if (changed.length > 1 && created.length === 0 && deleted.length === 0) {
-    summary = `правил ${cells(changed.length)}`
+    summary = tr("server.edited.50f36f", { p0: cells(changed.length) })
   } else if (created.length + changed.length + deleted.length === 0) {
     // Nothing anybody wrote changed. The caller drops these — see close().
     summary = ''
   } else {
-    summary = 'переработал тетрадь'
+    summary = tr("server.reworkedTheNotebook.c8708b")
   }
 
   return { summary, added, removed, cells: [...new Set([...created, ...changed, ...deleted])] }
@@ -347,12 +348,13 @@ function describe(
  */
 function freeBookName(doc: Y.Doc): string {
   const taken = new Set(bookList(doc).map((book) => book.path))
-  if (!taken.has(DEFAULT_BOOK)) return DEFAULT_BOOK
+  const preferred = defaultBookName()
+  if (!taken.has(preferred)) return preferred
   for (let n = 2; n < 100; n++) {
-    const candidate = `Тетрадь ${n}.ipynb`
+    const candidate = tr("server.notebookIpynb.9616a7", { p0: n })
     if (!taken.has(candidate)) return candidate
   }
-  return DEFAULT_BOOK
+  return preferred
 }
 
 /** The cells of a document, flattened to what the history cares about. */
@@ -1142,7 +1144,7 @@ export function restoreInto(
       'restore',
       authorId,
       null,
-      onlyCell ? 'вернул ячейку' : 'вернул версию',
+      onlyCell ? tr("server.restoredACell.0f74d0") : tr("server.restoredAVersion.80c38a"),
       seq,
     )
   }

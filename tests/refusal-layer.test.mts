@@ -125,7 +125,7 @@ test('окно отказа в продукте одно — второй коп
     })) {
       const rel = `${dir}/${entry.name}`
       if (entry.isDirectory()) walk(rel)
-      else if (/\.(svelte|ts)$/.test(entry.name) && code(read(rel)).includes('Скопировать всё')) {
+      else if (/\.(svelte|ts)$/.test(entry.name) && code(read(rel)).includes("tr('room.ui.928')")) {
         seen.push(rel)
       }
     }

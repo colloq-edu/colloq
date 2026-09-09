@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
   import { MARKS } from '@/lib/marks'
 
@@ -131,8 +132,8 @@
         onkeydown={onSearchKey}
         type="search"
         class="h-9 min-w-0 flex-1 bg-transparent text-ui text-ink placeholder:text-faint focus:outline-none"
-        placeholder="fox, whale, dinosaur…"
-        aria-label="Search marks"
+        placeholder={tr('room.ui.120')}
+        aria-label={tr('room.ui.121')}
         autocomplete="off"
       />
     </div>
@@ -149,15 +150,13 @@
              text-ui font-semibold text-ink hover:border-faint"
       onclick={surprise}
     >
-      <Icon name="restart" size={13} />
-      Surprise me
-    </button>
+      <Icon name="restart" size={13} /> {tr('room.ui.122')} </button>
   </div>
 
   <div
     class="grid grid-cols-8 gap-2 pt-0.5"
     role="radiogroup"
-    aria-label="Your mark"
+    aria-label={tr('room.ui.123')}
   >
     {#each shown as entry, i (entry.mark)}
       {@const held = taken.get(entry.mark)}
@@ -186,7 +185,7 @@
         aria-checked={selected}
         aria-disabled={held ? 'true' : undefined}
         aria-label={entry.name}
-        title={held ? `${entry.name} — taken` : entry.name}
+        title={held ? tr('room.mark.taken', { name: entry.name }) : entry.name}
         tabindex={i === active ? 0 : -1}
         onclick={() => choose(entry.mark)}
         onkeydown={(event) => onGridKey(event, i)}
@@ -214,7 +213,7 @@
   </div>
 
   {#if shown.length === 0}
-    <p class="text-2xs text-muted">No mark by that name. Try "owl", or take a surprise.</p>
+    <p class="text-2xs text-muted">{tr('room.ui.127')}</p>
   {:else if legendColor}
     <div class="flex items-center gap-2 pt-0.5">
       <span class="relative h-4 w-4 shrink-0 border border-line-soft bg-surface">
@@ -223,7 +222,7 @@
           style="background-color: {legendColor}"
         ></span>
       </span>
-      <span class="text-2xs text-muted">greyed out means someone in the room already has it</span>
+      <span class="text-2xs text-muted">{tr('room.ui.128')}</span>
     </div>
   {/if}
 </div>

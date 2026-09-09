@@ -76,6 +76,19 @@ private. Adding a teacher does not send an email.
 
 </details>
 
+### Russian or English
+
+The owner chooses **Русский** or **English** in the `/admin` sidebar. The choice
+applies to the whole server: the teaching panel, student rooms, presentation
+controls and published material interfaces. Connected rooms switch without a
+reload, preserving code, cursor position and form drafts.
+
+Names, teaching materials, code and existing conversations keep their original
+text. New Oracle requests use the selected language by default, unless the
+question asks for another. The choice is stored in the database. Before an owner
+sets it, `UI_LANGUAGE=ru` (default) or `UI_LANGUAGE=en` supplies the initial value.
+[Language settings →](https://colloq.ru/docs/language.html)
+
 ### An AI the class can follow
 
 The Oracle has two ways to help. **Ask** explains the code, discusses an error,

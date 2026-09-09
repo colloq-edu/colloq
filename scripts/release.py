@@ -365,7 +365,7 @@ def main():
             'initContainers': containers[:-1], 'containers': containers[-1:]})
         print(json.dumps(pod))
     elif args.command == 'config':
-        allowed = {'PUBLIC_URL', 'ADMIN_EMAIL', 'INSTITUTION', 'OPEN_SEMINAR_CREATION',
+        allowed = {'UI_LANGUAGE', 'PUBLIC_URL', 'ADMIN_EMAIL', 'INSTITUTION', 'OPEN_SEMINAR_CREATION',
             'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'AI_PROVIDER', 'AI_REASONING',
             'SESSION_SECRET', 'TZ', 'MAX_UPLOAD_MB', 'MAX_SESSION_MB'}
         settings = {}

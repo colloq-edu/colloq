@@ -66,6 +66,14 @@ const git = (...args: string[]): { code: number; out: string } => {
 const inRepo = (dir: string): string =>
   path.relative(repo, path.join(site, dir));
 
+// This CLI does not load the web app's settings bootstrap. Select the locale
+// only after --data and the environment are resolved, using the same persisted
+// setting (and UI_LANGUAGE fallback) as the running instance. Render helpers
+// remain independent of the database and can still be used with an explicit locale.
+const { getInstanceLanguage } = await import("../server/src/admin/settings.js");
+const { setLocaleResolver } = await import("../shared/i18n.js");
+setLocaleResolver(getInstanceLanguage);
+
 const { exportSite } = await import("../server/src/publish/export.js");
 const report = exportSite(site, base);
 

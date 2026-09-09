@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Starting a seminar from a notebook that already exists on GitHub.
  *
@@ -208,17 +209,17 @@ async function ghJson(path: string): Promise<unknown> {
    */
   if (res.status === 404) {
     throw new GithubMissing(
-      'GitHub has nothing at that address — or the repository is private. ' +
-        'This server reads GitHub anonymously, so a private repository looks exactly like a missing one. ' +
-        'Check the link, and if it is private, upload the files instead.',
+      tr("server.githubHasNothingAtThatAddressOr.e7b0f0") +
+        tr("server.thisServerReadsGithubAnonymouslySoA.6f5e7a") +
+        tr("server.checkTheLinkAndIfItIs.53f905"),
     )
   }
   if (res.status === 403) {
     throw new Error(
-      'GitHub is rate-limiting this server (sixty anonymous requests an hour). Try again shortly.',
+      tr("server.githubIsRateLimitingThisServerSixty.13314c"),
     )
   }
-  if (!res.ok) throw new Error(`GitHub answered ${res.status}.`)
+  if (!res.ok) throw new Error(tr("server.githubAnswered.ac167e", { p0: res.status }))
   return res.json()
 }
 
@@ -285,7 +286,7 @@ async function listAt(target: GithubTarget): Promise<RepoEntry[]> {
   const json = await ghJson(
     `/repos/${target.owner}/${target.repo}/contents/${target.path}${ref}`,
   )
-  if (!Array.isArray(json)) throw new Error('That link points at a file, not a folder.')
+  if (!Array.isArray(json)) throw new Error(tr("server.thatLinkPointsAtAFileNot.906633"))
   return (json as Record<string, unknown>[]).map((e) => ({
     name: String(e.name ?? ''),
     path: String(e.path ?? ''),
@@ -320,12 +321,12 @@ export async function fetchRaw(url: string, maxBytes: number): Promise<Buffer> {
     signal: AbortSignal.timeout(60_000),
   })
   if (!res.ok) {
-    const message = `Could not download ${url} (${res.status}).`
+    const message = tr("server.couldNotDownload.d09a9d", { p0: url, p1: res.status })
     throw res.status === 404 ? new GithubMissing(message) : new Error(message)
   }
   const buf = Buffer.from(await res.arrayBuffer())
   if (buf.byteLength > maxBytes) {
-    throw new Error(`That file is larger than the ${Math.round(maxBytes / 1e6)} MB limit.`)
+    throw new Error(tr("server.thatFileIsLargerThanTheMb.1e9617", { p0: Math.round(maxBytes / 1e6) }))
   }
   return buf
 }

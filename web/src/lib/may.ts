@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Что этому человеку можно в этой комнате — в одном месте.
  *
@@ -108,7 +109,7 @@ export interface Permits {
   attemptWhy: string
 }
 
-const HOSTS = 'В этом семинаре это делает преподаватель'
+const HOSTS = "В этом семинаре это делает преподаватель"
 
 /**
  * @param finished — закончено ли занятие. Третьим обязательным аргументом, а не
@@ -121,7 +122,7 @@ export function permitsIn(rules: unknown, role: ParticipantRole, finished: boole
   const acts = actsAfterClass(finished, role)
   // Одна фраза вместо всех остальных: правило, которое остановило, человеку
   // сейчас неинтересно — ему важно, что занятие кончилось.
-  const why = (own: string): string => (acts ? own : CLASS_IS_OVER)
+  const why = (own: string): string => (acts ? own : tr(CLASS_IS_OVER))
   const structure = (verb: 'add' | 'remove' | 'move'): boolean =>
     allowsStructure(read.structure, role, verb)
   return {
@@ -129,50 +130,50 @@ export function permitsIn(rules: unknown, role: ParticipantRole, finished: boole
     finished,
     role,
     edit: allows(read.edit, role),
-    editWhy: why('Редактировать ячейки может только преподаватель'),
+    editWhy: why(tr('room.ui.1092')),
     run: allowsRun(read.run, role, 'one'),
     // Одна фраза на три места — кнопка ячейки, «Запустить» над файлом и строка
     // ввода в терминале, — и те же слова, которыми отказывает сервер
     // (control.ts, term:run): правило одно, значит и объяснение одно.
-    runWhy: why('Запускать ячейки и команды терминала может только преподаватель'),
+    runWhy: why(tr('room.ui.1093')),
     bulk: allowsRun(read.run, role, 'bulk'),
     bulkWhy: why(
       read.run === 'single' && role !== 'host'
-        ? 'Запускайте по одной ячейке'
-        : 'Запускать всю тетрадь может только преподаватель',
+        ? tr('room.ui.1094')
+        : tr('room.ui.1095'),
     ),
     add: structure('add'),
     remove: structure('remove'),
     move: structure('move'),
     structureWhy: why(
       read.structure === 'add' && role !== 'host'
-        ? 'Можно добавлять ячейки. Удалять и переставлять их может только преподаватель'
-        : 'Добавлять, удалять и переставлять ячейки может только преподаватель',
+        ? tr('room.ui.1096')
+        : tr('room.ui.1097'),
     ),
     wipe: allows(read.wipe, role),
-    wipeWhy: why('Очищать общие результаты и историю сообщений может только преподаватель'),
+    wipeWhy: why(tr('room.ui.1098')),
     restart: allows(read.restart, role),
-    restartWhy: why('Перезапускать ядро может только преподаватель'),
+    restartWhy: why(tr('room.ui.1099')),
     history: allows(read.history, role),
     files: allows(read.files, role),
     // Одна фраза на два места — панель файлов и полосу над редактором:
     // «добавляет» не годится там, где речь про правку, а «правит» — там, где
     // про перетаскивание.
-    filesWhy: why('Создавать и редактировать файлы может только преподаватель'),
+    filesWhy: why(tr('room.ui.1100')),
     agent: allowsAgent(read.agent, role),
     agentWhy: why(
       read.agent === 'off'
-        ? 'Режим работы оракула с файлами отключён'
-        : 'Режим работы оракула с файлами доступен только преподавателю',
+        ? tr('room.ui.1101')
+        : tr('room.ui.1102'),
     ),
     board: allows(read.board, role),
-    boardWhy: why('Показывать документ всей комнате может только преподаватель'),
+    boardWhy: why(tr('room.ui.1103')),
     ask: acts,
-    askWhy: CLASS_IS_OVER,
+    askWhy: tr(CLASS_IS_OVER),
     council: mayLeadCouncil(role),
-    councilWhy: 'Консилиум ведёт преподаватель',
+    get councilWhy() { return tr('room.ui.1104') },
     attempt: mayWriteCouncil(role, finished, false),
-    attemptWhy: CLASS_IS_OVER,
+    attemptWhy: tr(CLASS_IS_OVER),
   }
 }
 
@@ -186,7 +187,7 @@ export function permitsIn(rules: unknown, role: ParticipantRole, finished: boole
  * важно не какое поле в правилах его остановило, а что тетрадь сейчас ведут.
  * Тот же довод, что у `CLASS_IS_OVER`.
  */
-export const LECTURE_CELL = 'Эту ячейку редактирует и запускает только преподаватель'
+export const LECTURE_CELL = "Эту ячейку редактирует и запускает только преподаватель"
 
 /**
  * Права, которые нельзя посчитать без ячейки.
@@ -214,7 +215,7 @@ export function mayRunThisCell(may: Permits, open: boolean): boolean {
  * погашенной «Сдать». Текст у студента остаётся черновиком, и фраза обязана
  * это сказать — иначе она читается как «ваша работа пропала».
  */
-export const COUNCIL_CLOSED = 'Консилиум закрыт. Ваш текст доступен в черновике'
+export const COUNCIL_CLOSED = "Консилиум закрыт. Ваш текст доступен в черновике"
 
 /**
  * Права консилиума, которые нельзя посчитать без ячейки, — тонкие обёртки над

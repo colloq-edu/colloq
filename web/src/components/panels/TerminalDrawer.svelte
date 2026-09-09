@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   /*
    * The drawer is the room's second surface, and everything that belongs over
    * the notebook rather than beside it lives here as a tab: the shell, what the
@@ -126,7 +127,7 @@
   const render = $derived(renderers())
 
   const clock = (ts: number) =>
-    new Date(ts).toLocaleTimeString([], {
+    new Date(ts).toLocaleTimeString(getLocale(), {
       hour12: false,
       hour: '2-digit',
       minute: '2-digit',
@@ -263,15 +264,15 @@
 
   const placeholder = $derived(
     !session.connected
-      ? 'ждём связи…'
+      ? tr('room.ui.702')
       : !may.run
         ? may.runWhy
         : status === 'starting'
-          ? 'оболочка запускается…'
+          ? tr('room.ui.703')
           : status === 'dead'
-            ? 'оболочка остановилась'
+            ? tr('room.ui.704')
             : status === 'closed'
-              ? 'оболочка не запущена'
+              ? tr('room.ui.705')
               : 'pip install seaborn',
   )
 
@@ -384,17 +385,17 @@
   purpose: the shell has to read as "the machine" in either theme, and a
   terminal that turns pale in light mode stops looking like one.
 -->
-<section class="term" style="height: {height}px" aria-label="Общий терминал">
+<section class="term" style="height: {height}px" aria-label={tr('room.ui.676')}>
   <div
     class="term-grip"
     role="separator"
     aria-orientation="horizontal"
-    aria-label="Высота терминала"
+    aria-label={tr('room.ui.677')}
     aria-valuenow={height}
     aria-valuemin={MIN_H}
     aria-valuemax={MAX_H}
     tabindex="0"
-    title="Потяните, чтобы изменить высоту"
+    title={tr('room.ui.678')}
     onpointerdown={startResize}
     onkeydown={gripKeys}
   >
@@ -408,9 +409,7 @@
       class:on={shownTab === 'terminal'}
       aria-pressed={shownTab === 'terminal'}
       onclick={() => (tab = 'terminal')}
-    >
-      Терминал
-      {#if running}<span class="term-live-dot"></span>{/if}
+    > {tr('room.ui.679')} {#if running}<span class="term-live-dot"></span>{/if}
     </button>
     <button
       type="button"
@@ -418,9 +417,7 @@
       class:on={shownTab === 'kernel'}
       aria-pressed={shownTab === 'kernel'}
       onclick={() => (tab = 'kernel')}
-    >
-      Журнал ядра
-    </button>
+    > {tr('room.ui.680')} </button>
     {#if may.history}
       <button
         type="button"
@@ -428,14 +425,10 @@
         class:on={shownTab === 'history'}
         aria-pressed={shownTab === 'history'}
         onclick={() => (tab = 'history')}
-      >
-        История
-      </button>
+      > {tr('room.ui.681')} </button>
     {/if}
 
-    <span class="term-badge" title="Команды и вывод видят все участники">
-      Общий на комнату
-    </span>
+    <span class="term-badge" title={tr('room.ui.682')}> {tr('room.ui.683')} </span>
 
     <span class="term-cwd" title={cwd}>{cwd}</span>
 
@@ -444,19 +437,17 @@
         type="button"
         class="term-act"
         disabled={controlDisabled(session.connected)}
-        title={controlTitle(session.connected, 'Очистить историю терминала для всех')}
+        title={controlTitle(session.connected, tr('room.extra.288'))}
         onclick={() => session.send({ t: 'term:clear' })}
       >
-        <Icon name="eraser" size={12} />
-        Очистить
-      </button>
+        <Icon name="eraser" size={12} /> {tr('room.ui.684')} </button>
     {/if}
 
     <button
       type="button"
       class="term-act"
-      aria-label="Свернуть терминал"
-      title="Свернуть терминал. Оболочка продолжит работать (Ctrl+`)"
+      aria-label={tr('room.ui.685')}
+      title={tr('room.ui.686')}
       onclick={onclose}
     >
       <Icon name="x" size={14} />
@@ -473,20 +464,13 @@
     {#if shownTab === 'kernel'}
       <!-- Состояния — словами, а не именами протокола: 'starting' и 'idle'
            посреди русской строки читаются как отладочный вывод. -->
-      <div class="term-sys">
-        ядро python · {kernelWord} — оболочка · {shellWord}
+      <div class="term-sys"> {tr('room.ui.687')} {kernelWord} {tr('room.ui.688')} {shellWord}
       </div>
     {/if}
 
     {#if shown.length === 0}
       <p class="term-empty">
-        {#if shownTab === 'terminal'}
-          Терминал использует окружение занятия. Команда <code>pip install pandas</code>
-          установит пакет для всех участников.
-          <code>!pip install pandas</code> можно выполнить и в ячейке.
-        {:else}
-          Здесь появятся сообщения о запуске, перезапуске и ошибках ядра.
-        {/if}
+        {#if shownTab === 'terminal'} {tr('room.ui.689')} <code>pip install pandas</code> {tr('room.ui.691')} <code>!pip install pandas</code> {tr('room.ui.693')} {:else} {tr('room.ui.694')} {/if}
       </p>
     {/if}
 
@@ -495,11 +479,11 @@
         <div class="term-row">
           <span class="term-av">
             <Avatar
-              name={line.name ?? 'Кто-то'}
+              name={line.name ?? tr('room.extra.291')}
               color={line.color ?? 'var(--tm-muted)'}
               size="xs"
               class="!h-[14px] !w-[14px] !text-micro"
-              title="запустил {line.name ?? 'кто-то'}"
+              title={tr('room.terminal.author', { name: line.name ?? tr('room.ui.561') })}
             />
           </span>
           <span class="term-sigil">$</span>
@@ -535,7 +519,7 @@
         avatar={session.me.avatar}
         size="xs"
         class="!h-[14px] !w-[14px] !text-micro"
-        title="{session.me.name} — это вы"
+        title={tr('room.person.you', { name: session.me.name })}
       />
     </span>
     <span class="term-sigil">$</span>
@@ -548,7 +532,7 @@
       autocapitalize="off"
       autocomplete="off"
       autocorrect="off"
-      aria-label="Команда в общем терминале"
+      aria-label={tr('room.ui.695')}
       {placeholder}
       disabled={!canType}
       onkeydown={onPromptKey}
@@ -561,11 +545,7 @@
     {/if}
     <span class="term-hint">
       {#if status === 'busy'}
-        <span class="term-live-dot"></span>
-        ctrl-c — прервать
-      {:else if canType}
-        ↑ история
-      {:else if canRevive}
+        <span class="term-live-dot"></span> {tr('room.ui.696')} {:else if canType} {tr('room.ui.697')} {:else if canRevive}
         <!--
           `exit` в общей оболочке — тупик.
 
@@ -574,9 +554,7 @@
           выхода из этого не было — надо было догадаться закрыть терминал и
           открыть заново. Один и тот же term:open, только теперь его видно.
         -->
-        <button type="button" class="term-revive" onclick={revive}>
-          Перезапустить оболочку
-        </button>
+        <button type="button" class="term-revive" onclick={revive}> {tr('room.ui.698')} </button>
       {:else if !acts && (status === 'dead' || status === 'closed')}
         <!--
           На месте кнопки — причина, а не слово `dead`.
@@ -585,9 +563,7 @@
           приходят читать ленту, а встречают английский диагноз мёртвой машины.
           Про сам звонок сказано рядом — в приглашении строки; здесь только то,
           чего не хватает на месте кнопки.
-        -->
-        оболочку запускает преподаватель
-      {:else if session.connected && !may.run}
+        --> {tr('room.ui.699')} {:else if session.connected && !may.run}
         <!--
           Здесь приглашение занято правилом («запускает преподаватель»), и место
           под состояние машины свободно — значит, оно говорит словом, а не
@@ -599,8 +575,7 @@
           строке — не сведения, а эхо; а без связи состояние на руках вообще
           ничего не говорит о «сейчас» (см. `canType` выше), и называть его —
           выдавать последнее известное за настоящее.
-        -->
-        оболочка {shellWord}
+        --> {tr('room.ui.700')} {shellWord}
       {/if}
     </span>
   </div>

@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Замок на ячейке — что делает щелчок и что обещает подсказка.
  *
@@ -35,22 +36,22 @@ export function lockPress(state: CellLock, opens: Opens): LockPress {
 export function lockLabel(state: CellLock, opens: Opens): string {
   if (state === 'closed') {
     return opens === 'council'
-      ? 'Открыть консилиум в этой ячейке'
-      : 'Открыть ячейку для совместной работы'
+      ? tr('room.ui.1078')
+      : tr('room.ui.1079')
   }
-  if (state === 'council' && opens !== 'council') return 'Изменить доступ к ячейке'
-  return 'Закрыть ячейку'
+  if (state === 'council' && opens !== 'council') return tr('room.ui.1080')
+  return tr('room.ui.1081')
 }
 
 /** Подсказка кнопки: что по щелчку и что по удержанию. */
 export function lockHint(state: CellLock, opens: Opens): string {
   if (opens === 'council') {
     // Удержание ведёт в меню, где есть и общий текст: щелчком его здесь не взять.
-    if (state === 'closed') return 'Открыть консилиум в этой ячейке · удержать — выбрать доступ'
-    if (state === 'council') return 'Закрыть ячейку · удержать — выбрать доступ'
-    return 'Закрыть ячейку · удержать — выбрать доступ'
+    if (state === 'closed') return tr('room.ui.1082')
+    if (state === 'council') return tr('room.ui.1083')
+    return tr('room.ui.1083')
   }
-  if (state === 'closed') return 'Открыть ячейку для совместной работы · удержать — выбрать доступ'
-  if (state === 'council') return 'Консилиум · щелчок — настроить доступ к ячейке'
-  return 'Закрыть ячейку · удержать — выбрать доступ'
+  if (state === 'closed') return tr('room.ui.1084')
+  if (state === 'council') return tr('room.ui.1085')
+  return tr('room.ui.1083')
 }

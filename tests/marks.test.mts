@@ -69,14 +69,14 @@ test('a full room still gives a returning student a mark', () => {
 test('the card can name every mark, and has a word for none', () => {
   for (const { mark } of MARKS) {
     const name = markName(mark)
-    assert.notEqual(name, 'mark', `${mark} has no name to put on the card`)
+    assert.notEqual(name, 'метка', `${mark} has no name to put on the card`)
     // "The T. rex is yours" reads fine, so no rule about case here — only that
     // it is a single short word-or-two that can follow "The".
     assert.ok(name.length > 1 && name.length < 20, `"${name}" is not a word for a card`)
     assert.ok(!/[\n<>]/.test(name), `"${name}" is not plain text`)
   }
-  assert.equal(markName(null), 'mark')
-  assert.equal(markName('🦄'), 'mark')
+  assert.equal(markName(null), 'метка')
+  assert.equal(markName('🦄'), 'метка')
 })
 
 test('an address is never a mark', () => {

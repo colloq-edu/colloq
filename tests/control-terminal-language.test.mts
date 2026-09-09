@@ -1,80 +1,38 @@
-/**
- * Отказы про терминал говорят на языке комнаты — вторая половина ящика.
- *
- * Расшифровку сторожит terminal-language: строки, которые печатает
- * `kernel/terminal.ts`, теперь русские. Но поверх той же расшифровки всплывают
- * тосты и отказы, и печатает их другой файл — `control.ts`: «That command is
- * over 4,096 characters», «Only the host can clear the terminal» стояли рядом с
- * русским «В этом семинаре запускает преподаватель», под русскими вкладками
- * «Терминал / Журнал ядра / История» и кнопками «Очистить» и «Завести оболочку
- * заново» (аудит · panels-15).
- *
- * Тип этого не видит, а половинчатость возвращается одной строкой, поэтому
- * условие здесь механическое: в дверях терминала (`case 'term:*'`) каждая
- * ФРАЗА — строка кода из нескольких слов — обязана быть на языке комнаты.
- * Односложные литералы (`'host'`, `'utf8'`, имена сообщений) не фразы и не
- * считаются; комментарии сняты — они не то, что читает класс.
- *
- * Кнопки при этом зовутся своими подписями: команду останавливает Ctrl+C
- * (кнопки «Стоп» в ящике нет), расшифровку чистит «Очистить». Обещание кнопки,
- * которой нет, — та же находка с другой стороны, и это проверяется тем же
- * условием, что в terminal-language.
- */
+/** Terminal refusals must resolve to complete UI messages in both instance languages. */
 import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { hasTranslation, translate } from '../shared/i18n.js'
 
-const CONTROL = 'server/src/control.ts'
-const DRAWER = 'web/src/components/panels/TerminalDrawer.svelte'
-
-function read(rel: string): string {
-  return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
+const read = (file: string) => fs.readFileSync(path.resolve(import.meta.dirname, '..', file), 'utf8')
+function terminalKeys(): string[] {
+  const source = read('server/src/control.ts')
+  const start = source.indexOf("case 'term:open'")
+  const end = source.indexOf('\nfunction ', start)
+  assert.ok(start >= 0 && end > start, 'terminal dispatch must be present')
+  const body = source.slice(start, end)
+  return [...new Set([...body.matchAll(/tr\(["'](server\.[^"']+)["']/g)].map(match => match[1]))]
 }
 
-/**
- * Двери терминала: от первой из них до конца разбора сообщений.
- *
- * Двери стоят последними в `dispatch`, так что конец региона — первая функция
- * за ним. Считать скобки надёжности не добавит, а новая, седьмая дверь попадёт
- * сюда сама.
- */
-function terminalDoors(): string {
-  const code = read(CONTROL)
-  const from = code.indexOf("case 'term:open'")
-  assert.notEqual(from, -1, 'дверей терминала в control.ts не нашлось')
-  const to = code.indexOf('\nfunction ', from)
-  assert.notEqual(to, -1, 'за разбором сообщений не нашлось ни одной функции')
-  return code.slice(from, to)
-}
-
-/** Строки кода без комментариев: комментарии класс не читает. */
-function phrases(code: string): string[] {
-  const bare = code.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ')
-  const found = bare.match(/'[^'\n]*'|`[^`]*`/g) ?? []
-  // Фраза — это несколько слов. `'host'`, `'utf8'`, `'term:run'` — не фразы, а
-  // имена, и переводить их некому.
-  return found.filter((text) => text.slice(1, -1).trim().includes(' '))
-}
-
-test('в отказах про терминал не осталось английских фраз', () => {
-  const found = phrases(terminalDoors())
-  assert.ok(found.length >= 6, `фраз в дверях терминала нашлось ${found.length} — разбор сломался`)
-  for (const phrase of found) {
-    assert.match(
-      phrase,
-      /[А-Яа-яЁё]/,
-      `фраза из дверей терминала уехала бы в комнату по-английски: ${phrase}`,
-    )
+test('terminal refusals have explicit Russian and English translations', () => {
+  const keys = terminalKeys()
+  assert.ok(keys.length >= 6, 'terminal messages must remain covered')
+  for (const key of keys) {
+    assert.ok(hasTranslation(key), key)
+    assert.match(translate('ru', key), /[А-Яа-яЁё]/, key)
+    assert.match(translate('en', key), /[a-z]/i, key)
+    assert.doesNotMatch(translate('en', key), /[А-Яа-яЁё]/, key)
   }
 })
 
-test('отказ зовёт кнопки теми подписями, которые в ящике есть', () => {
-  const found = phrases(terminalDoors()).join('\n')
-  const drawer = read(DRAWER)
-  // Кнопка «Очистить» в ящике есть, кнопки «Стоп» нет: команду останавливает
-  // Ctrl+C. Обещать несуществующую кнопку в отказе — та же половинчатость.
-  assert.match(drawer, />\s*Очистить\s*</, 'кнопку «Очистить» переименовали — поправьте отказы')
-  assert.doesNotMatch(found, /«Стоп»/, 'отказ зовёт кнопку, которой в ящике нет')
-  assert.doesNotMatch(found, /Press Stop|with Clear/)
+test('terminal refusals never promise an unavailable Stop button', () => {
+  for (const locale of ['ru', 'en'] as const) {
+    const messages = terminalKeys().map(key => translate(locale, key)).join('\n')
+    assert.doesNotMatch(messages, /«Стоп»|Press Stop|with Clear/)
+    assert.match(messages, locale === 'ru' ? /преподаватель/ : /teacher/)
+  }
+  const drawer = read('web/src/components/panels/TerminalDrawer.svelte')
+  const keys = [...drawer.matchAll(/tr\(["']([^"']+)["']/g)].map(match => match[1])
+  assert.ok(keys.some(key => translate('ru', key) === 'Очистить' && translate('en', key) === 'Clear'), 'the drawer must have its translated Clear button')
 })

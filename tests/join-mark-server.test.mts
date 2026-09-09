@@ -24,7 +24,7 @@
 import './_env.mts'
 import http from 'node:http'
 import express from 'express'
-import { after, before, test } from 'node:test'
+import { after, before, beforeEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
@@ -34,7 +34,8 @@ import { createSession } from '../server/src/db.js'
 import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { sessionRoutes } from '../server/src/routes/sessions.js'
 
-const ROOM = 'mark-judge'
+let ROOM = ''
+let roomNumber = 0
 const FOX = '🦊'
 const TURTLE = '🐢'
 const HEDGEHOG = '🦔'
@@ -44,7 +45,6 @@ let base = ''
 let server: http.Server
 
 before(async () => {
-  createSession(ROOM, 'Кто есть кто', null)
   const app = express()
   app.use(express.json())
   app.use(sessionRoutes())
@@ -52,6 +52,13 @@ before(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
   base = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`
+})
+
+// Automatic reassignment picks a random free animal. A shared room lets a
+// previous test reserve the animal this test expects to be free.
+beforeEach(() => {
+  ROOM = `mark-judge-${++roomNumber}`
+  createSession(ROOM, 'Кто есть кто', null)
 })
 
 after(() => {

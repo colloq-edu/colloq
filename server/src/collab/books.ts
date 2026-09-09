@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Тетради и папка семинара: как одно становится видно в другом.
  *
@@ -226,7 +227,7 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
   const { doc } = getSessionDoc(sessionId)
   const known = bookAt(doc, path)
   if (known) return { ok: true, book: known, imported: false }
-  if (kindOf(path) !== 'notebook') return { ok: false, why: `${baseOf(path)} — не тетрадь.` }
+  if (kindOf(path) !== 'notebook') return { ok: false, why: tr("server.isNotANotebook.084f7a", { p0: baseOf(path) }) }
 
   const source = readBookText(sessionId, path)
   if ('why' in source) return { ok: false, why: source.why }
@@ -238,11 +239,11 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
    * верно и практически бесполезно.
    */
   const flat = source.text.trim().length === 0 ? [] : parseIpynb(source.text)
-  if (flat === null) return { ok: false, why: `${baseOf(path)} содержит некорректные данные .ipynb.` }
+  if (flat === null) return { ok: false, why: tr("server.containsInvalidIpynbData.6292e4", { p0: baseOf(path) }) }
   if (flat.length > MAX_IMPORT_CELLS) {
     return {
       ok: false,
-      why: `В ${baseOf(path)} ${flat.length} ячеек. Допустимо не более ${MAX_IMPORT_CELLS}.`,
+      why: tr("server.containsCellsTheLimitIs.0fbfa5", { p0: baseOf(path), p1: flat.length, p2: MAX_IMPORT_CELLS }),
     }
   }
 
@@ -268,7 +269,7 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
       )
     }
   }, ORIGIN)
-  if (!made) return { ok: false, why: 'Не удалось открыть тетрадь.' }
+  if (!made) return { ok: false, why: tr("server.couldNotOpenTheNotebook.be7a27") }
   schedule(sessionId)
   return { ok: true, book: made, imported: true }
 }
@@ -288,24 +289,24 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
  */
 function readBookText(sessionId: string, path: string): { text: string } | { why: string } {
   const file = readText(sessionId, path, MAX_BOOK_BYTES)
-  if (!file || file.binary) return { why: `${baseOf(path)} не читается как тетрадь.` }
+  if (!file || file.binary) return { why: tr("server.couldNotBeReadAsANotebook.03f997", { p0: baseOf(path) }) }
   if (!file.truncated) return { text: file.text }
   if (file.size > MAX_BOOK_BYTES) {
     const mb = (file.size / (1024 * 1024)).toFixed(0)
     return {
       why:
-        `${baseOf(path)} — ${mb} МБ. Превышен лимит размера ` +
-        `(${MAX_BOOK_BYTES / (1024 * 1024)} МБ). Сохраните тетрадь без выводов.`,
+        tr("server.isMbExceedingTheSizeLimit.72c414", { p0: baseOf(path), p1: mb }) +
+        tr("server.mbSaveTheNotebookWithoutOutputs.bf2200", { p0: MAX_BOOK_BYTES / (1024 * 1024) }),
     }
   }
-  return { why: `${baseOf(path)} не читается как тетрадь.` }
+  return { why: tr("server.couldNotBeReadAsANotebook.03f997", { p0: baseOf(path) }) }
 }
 
 /** Завести пустую тетрадь по этому пути: файл и запись в комнате. */
 export function createBook(sessionId: string, path: string): OpenBookResult {
-  if (statPath(sessionId, path)) return { ok: false, why: `${baseOf(path)} уже есть.` }
+  if (statPath(sessionId, path)) return { ok: false, why: tr("server.alreadyExists.e348cc", { p0: baseOf(path) }) }
   const made = makeFile(sessionId, path, writeIpynb([]))
-  if (made !== 'ok') return { ok: false, why: `Не удалось создать ${baseOf(path)}.` }
+  if (made !== 'ok') return { ok: false, why: tr("server.couldNotCreate.0cfbaa", { p0: baseOf(path) }) }
   return openBook(sessionId, path)
 }
 

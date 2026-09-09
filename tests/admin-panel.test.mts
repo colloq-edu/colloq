@@ -10,7 +10,9 @@
  * Каждое из четырёх однажды уже соврало на живой паре, и каждое врало
  * молча — экран выглядел исправным.
  */
-import { test } from 'node:test'
+import { afterEach, test } from 'node:test'
+import { setLocaleResolver } from '../shared/i18n.js'
+afterEach(() => setLocaleResolver(() => 'ru'))
 import assert from 'node:assert/strict'
 import {
   KEYLESS_PROVIDERS,
@@ -34,6 +36,7 @@ import {
 /* ------------------------------------------------------------------ вход */
 
 test('отвергнутое печенье и несохранившееся печенье — разные слова', () => {
+  setLocaleResolver(() => 'en')
   const cookies = signedOutNotice('no-cookie')
   const revoked = signedOutNotice('revoked')
   const removed = signedOutNotice('removed-self')
@@ -209,6 +212,7 @@ test('предел называют мегабайтами, теми же, чт�
 /* ---------------------------------------------------------- «идёт сейчас» */
 
 test('«started» — только про часы занятия, а не про час создания комнаты', () => {
+  setLocaleResolver(() => 'en')
   const now = Date.UTC(2026, 8, 7, 12, 0)
   const week = now - 6 * 24 * 60 * 60 * 1000
   const room = { liveCount: 3, createdAt: week, liveSince: now - 25 * 60_000 }
@@ -219,6 +223,7 @@ test('«started» — только про часы занятия, а не пр�
 })
 
 test('часов занятия нет — часы называются своим именем, а не чужим', () => {
+  setLocaleResolver(() => 'en')
   const now = Date.UTC(2026, 8, 7, 12, 0)
   const week = now - 6 * 24 * 60 * 60 * 1000
   const line = runningLine({ liveCount: 1, createdAt: week }, now)
@@ -229,6 +234,7 @@ test('часов занятия нет — часы называются сво�
 })
 
 test('разряды длительности: минуты, часы, вчера, дни', () => {
+  setLocaleResolver(() => 'en')
   const at = (ms: number) => ago(0, ms)
   assert.equal(at(0), 'just now')
   assert.equal(at(25 * 60_000), '25 min ago')

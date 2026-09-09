@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import * as Y from 'yjs'
 import { cellOutputs, findCell, type StreamName, type YOutput } from '@shared/notebook'
 import { config } from '../config.js'
@@ -77,7 +78,7 @@ const MAX_ERROR_LINE_CHARS = 4 * 1024
 /** Обрезать строку, сказав в ней самой, что она обрезана. */
 function clip(text: string, max: number): string {
   if (text.length <= max) return text
-  return `${text.slice(0, max)}… [colloq] ${text.length - max} more characters cut here`
+  return tr("server.colloqMoreCharactersCutHere.cfc854", { p0: text.slice(0, max), p1: text.length - max })
 }
 
 /**
@@ -233,7 +234,7 @@ export class OutputWriter {
     const lines = traceback.map((line) => clip(line, MAX_ERROR_LINE_CHARS))
     const clipped =
       lines.length > MAX_TRACEBACK_LINES
-        ? [...lines.slice(0, 20), `... ${lines.length - 60} more frames ...`, ...lines.slice(-40)]
+        ? [...lines.slice(0, 20), tr("server.moreFrames.6caf4c", { p0: lines.length - 60 }), ...lines.slice(-40)]
         : lines
     const json = JSON.stringify({
       ename: clip(ename, MAX_ERROR_LINE_CHARS),
@@ -442,7 +443,7 @@ export class OutputWriter {
     const body = new Y.Text()
     body.insert(
       0,
-      `\n[colloq] output stopped after ${MAX_CELL_OUTPUT_CHARS} characters. Save the full output to a file.\n`,
+      tr("server.colloqOutputStoppedAfterCharactersSaveThe.cf6866", { p0: MAX_CELL_OUTPUT_CHARS }),
     )
     output.set('text', body)
     outputs.push([output])
@@ -463,9 +464,9 @@ export class OutputWriter {
         : `${Math.round(this.dataBudget / 1024)} KB`
     body.insert(
       0,
-      `\n[colloq] The ${shown} image output limit was reached. Additional images are not shown. ` +
-        'Save the figure to a file or reduce ' +
-        'its size (figsize/dpi).\n',
+      tr("server.colloqTheImageOutputLimitWasReached.a9f30a", { p0: shown }) +
+        tr("server.saveTheFigureToAFileOr.961b0e") +
+        tr("server.itsSizeFigsizeDpi.24640a"),
     )
     output.set('text', body)
     outputs.push([output])

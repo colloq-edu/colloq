@@ -8,6 +8,7 @@
   изменить, и нечему давать сбой.
 -->
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   import { api, ApiError } from '@/lib/api'
   import Icon from '@/components/ui/Icon.svelte'
   import PublicNotebook from '@/components/reader/PublicNotebook.svelte'
@@ -54,7 +55,8 @@
    * перезагрузка; человек в метро читал это как «курс удалили». Фразу для
    * человека api.ts готовит сам, здесь её достаточно показать.
    */
-  let failure = $state<string | null>(null)
+  let failureRender = $state<() => string | null>(() => null)
+  const failure = $derived(failureRender())
   /** «Ещё раз»: счётчик в зависимостях эффектов, а не второй способ загрузки. */
   let attempt = $state(0)
   let loading = $state(true)
@@ -105,7 +107,7 @@
    */
   function refused(err: unknown): void {
     if (err instanceof ApiError && err.status === 404) missing = true
-    else failure = err instanceof Error ? err.message : 'Страница не открылась.'
+    else failureRender = () => (err instanceof Error ? tr(err.message) : tr('room.ui.887'))
   }
 
   $effect(() => {
@@ -115,7 +117,7 @@
     let cancelled = false
     loading = true
     missing = false
-    failure = null
+    failureRender = () => (null)
     void api
       .course(id)
       .then((body) => {
@@ -138,7 +140,7 @@
     if (!id) return
     let cancelled = false
     missing = false
-    failure = null
+    failureRender = () => (null)
     void api
       .publication(id)
       .then((body) => {
@@ -188,7 +190,7 @@
         const what = refusedStep(err.status, err.message)
         if (what === 'publication') gone = true
         else if (what === 'step') noSuchStep = true
-        else if (err.status === 404) failure = 'Шаг не открылся.'
+        else if (err.status === 404) failureRender = () => (tr('room.ui.888'))
         else refused(err)
       })
       .finally(() => {
@@ -260,18 +262,16 @@
   })
 
   const dateLong = (at: number): string =>
-    new Date(at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+    new Date(at).toLocaleDateString(getLocale(), { day: 'numeric', month: 'long', year: 'numeric' })
   const clock = (at: number): string =>
-    new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    new Date(at).toLocaleTimeString(getLocale(), { hour: '2-digit', minute: '2-digit' })
 </script>
 
 {#if missing}
   <div class="flex min-h-screen items-center justify-center bg-canvas px-6">
     <div class="max-w-md text-center">
-      <p class="text-title font-semibold text-ink">Такой страницы здесь нет</p>
-      <p class="mt-2 text-ui text-muted">
-        Ссылка могла устареть или быть набрана с опечаткой.
-      </p>
+      <p class="text-title font-semibold text-ink">{tr('room.ui.865')}</p>
+      <p class="mt-2 text-ui text-muted"> {tr('room.ui.866')} </p>
     </div>
   </div>
 {:else if courseView}
@@ -281,7 +281,7 @@
        сняли, и ведёт наверх, к курсу. -->
   <div class="flex min-h-screen items-center justify-center bg-canvas px-6">
     <div class="max-w-md text-center">
-      <p class="text-title font-semibold text-ink">Публикация снята</p>
+      <p class="text-title font-semibold text-ink">{tr('room.ui.867')}</p>
       {#if seminar.course}
         <button
           class="mt-3 text-ui font-semibold text-accent-text"
@@ -310,10 +310,9 @@
         <!-- «Страница» в единственном числе — не описка: один отмеченный
              момент и есть одна страница (так же говорит и окно публикации).
              Описка была во множественном: «5 шага», «11 шага». -->
-        <span>
-          · опубликован {dateLong(seminar.publishedAt)} ·
+        <span> {tr('room.ui.868')} {dateLong(seminar.publishedAt)} ·
           {seminar.steps.length}
-          {plural(seminar.steps.length, 'шаг', 'шага', 'шагов')}
+          {plural(seminar.steps.length, tr('room.ui.713'), tr('room.ui.714'), tr('room.ui.715'))}
         </span>
       </p>
     </header>
@@ -338,7 +337,7 @@
         bind:this={strip}
         class="sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-line bg-canvas
                px-6 sm:hidden"
-        aria-label="Шаги семинара"
+        aria-label={tr('room.ui.869')}
       >
         {#each seminar.steps as heading, index (heading.seq)}
           {@const on = heading.seq === current}
@@ -365,9 +364,9 @@
         <nav
           class="sticky top-0 hidden w-[300px] shrink-0 flex-col self-start border-r border-line
                  py-6 pl-6 pr-5 sm:flex sm:pl-16"
-          aria-label="Шаги семинара"
+          aria-label={tr('room.ui.869')}
         >
-          <p class="pb-3 text-micro font-bold uppercase tracking-caps text-muted">Шаги семинара</p>
+          <p class="pb-3 text-micro font-bold uppercase tracking-caps text-muted">{tr('room.ui.869')}</p>
           {#each seminar.steps as heading (heading.seq)}
             {@const on = heading.seq === current}
             <button
@@ -394,18 +393,11 @@
 
       <main class="min-w-0 flex-1 px-6 py-7 sm:px-11">
         <div class="max-w-[820px] border-l-[3px] border-accent bg-surface px-4 py-3">
-          <p class="text-ui leading-relaxed text-muted">
-            Опубликованная тетрадь занятия: код, текст и сохранённые результаты запусков.
-          </p>
+          <p class="text-ui leading-relaxed text-muted"> {tr('room.ui.871')} </p>
           {#if railed}
-            <p class="mt-1.5 text-ui leading-relaxed text-muted">
-              Шаги соответствуют моментам, отмеченным преподавателем. Если код изменили
-              после запуска, сохранённый результат может ему не соответствовать.
-            </p>
+            <p class="mt-1.5 text-ui leading-relaxed text-muted"> {tr('room.ui.872')} </p>
           {/if}
-          <p class="mt-1.5 text-ui leading-relaxed text-muted">
-            Список участников не публикуется. Имена в тексте ячеек и результатах сохраняются.
-          </p>
+          <p class="mt-1.5 text-ui leading-relaxed text-muted"> {tr('room.ui.873')} </p>
         </div>
 
         {#if step}
@@ -413,7 +405,7 @@
             <PublicNotebook cells={step.cells} publication={seminar.id} />
           </div>
         {:else if loading}
-          <p class="mt-8 text-ui text-muted">Загружается…</p>
+          <p class="mt-8 text-ui text-muted">{tr('room.ui.874')}</p>
         {:else if noSuchStep}
           <!--
             Семинар жив, а этой отметки в нём нет. Причин две, и сервер их не
@@ -427,16 +419,9 @@
             рельсы нет вовсе, и выбраться было нечем.
           -->
           <p class="mt-8 text-ui text-muted">
-            {#if wanted === null}
-              В этом семинаре пока нет ни одной страницы.
-            {:else}
-              Такой страницы у этого семинара нет. Ссылка могла устареть или быть набрана с
-              опечаткой.
-            {/if}
+            {#if wanted === null} {tr('room.ui.875')} {:else} {tr('room.ui.876')} {/if}
             {#if first !== null}
-              <button class="press font-semibold text-accent-text" onclick={() => go(first)}>
-                Открыть первую
-              </button>
+              <button class="press font-semibold text-accent-text" onclick={() => go(first)}> {tr('room.ui.877')} </button>
             {/if}
           </p>
         {:else if gone}
@@ -446,9 +431,7 @@
             выше, потому что событие для читателя то же самое; отсюда ведёт не
             первый шаг — его тоже нет, — а курс.
           -->
-          <p class="mt-8 text-ui text-muted">
-            Публикация снята.
-            {#if seminar.course}
+          <p class="mt-8 text-ui text-muted"> {tr('room.ui.878')} {#if seminar.course}
               <button
                 class="press font-semibold text-accent-text"
                 onclick={() => onnavigate(`/c/${seminar!.course!.id}`)}
@@ -460,9 +443,7 @@
         {:else if failure}
           <p class="mt-8 text-ui text-muted">
             {failure}
-            <button class="font-semibold text-accent-text" onclick={() => (attempt += 1)}>
-              Повторить
-            </button>
+            <button class="font-semibold text-accent-text" onclick={() => (attempt += 1)}> {tr('room.ui.552')} </button>
           </p>
         {/if}
 
@@ -486,17 +467,14 @@
             <a
               class="font-semibold text-accent-text"
               href={`/api/p/${seminar.id}/notebook.ipynb${current === null ? '' : `?step=${current}`}`}
-            >
-              Скачать тетрадь (.ipynb)
-            </a>
+            > {tr('room.ui.879')} </a>
           </p>
           <p class="mt-1.5 text-ui text-muted">
             {!railed
-              ? 'Код без выводов'
+              ? tr('room.ui.880')
               : onLast
-                ? 'Код последнего шага, без выводов'
-                : 'Код этого шага, без выводов'} — чтобы запустить у себя.
-          </p>
+                ? tr('room.ui.881')
+                : tr('room.ui.882')} {tr('room.ui.883')} </p>
         </div>
       </main>
     </div>
@@ -511,17 +489,15 @@
   <div class="flex min-h-screen items-center justify-center bg-canvas px-6">
     {#if failure}
       <div class="max-w-md text-center">
-        <p class="text-title font-semibold text-ink">Страница не открылась</p>
+        <p class="text-title font-semibold text-ink">{tr('room.ui.884')}</p>
         <p class="mt-2 text-ui text-muted">{failure}</p>
         <button
           class="mt-3 text-ui font-semibold text-accent-text"
           onclick={() => (attempt += 1)}
-        >
-          Повторить
-        </button>
+        > {tr('room.ui.552')} </button>
       </div>
     {:else}
-      <p class="text-ui text-muted">Загружается…</p>
+      <p class="text-ui text-muted">{tr('room.ui.874')}</p>
     {/if}
   </div>
 {/if}

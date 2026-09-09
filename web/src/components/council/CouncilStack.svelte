@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Пульт консилиума — то, что видит преподаватель вместо тела ячейки.
    *
@@ -110,7 +111,8 @@
   // Сдача не нужна: запросы ищем по всей стопке, включая черновики.
   const pendingRequests = $derived(pendingRunRequests(board.attempts))
   let deciding = $state<{ participantId: string; requestId: string; action: 'approve' | 'decline' } | null>(null)
-  let decisionError = $state('')
+  let decisionErrorRender = $state<() => string>(() => '')
+  const decisionError = $derived(decisionErrorRender())
   let decisionTimer: ReturnType<typeof setTimeout> | undefined
 
   $effect(() => {
@@ -130,10 +132,10 @@
     if (requestsDisabled || deciding || board.lock !== 'council' || board.settings.studentRun !== 'request' || request?.status !== 'pending') return
     if (attempt.run?.state === 'queued' || attempt.run?.state === 'running') return
     deciding = { participantId: attempt.participantId, requestId: request.id, action }
-    decisionError = ''
+    decisionErrorRender = () => ('')
     decisionTimer = setTimeout(() => {
       deciding = null
-      decisionError = 'Решение не подтвердилось. Проверьте связь и попробуйте ещё раз.'
+      decisionErrorRender = () => (tr('room.ui.86'))
     }, 8000)
     if (action === 'approve') onapproverun(attempt.participantId, request.id)
     else ondeclinerun(attempt.participantId, request.id)
@@ -242,7 +244,7 @@
     })
   }
 
-  const cellLabel = $derived(cellIndex === null ? '' : ` — ячейка ${String(cellIndex).padStart(2, '0')}`)
+  const cellLabel = $derived(cellIndex === null ? '' : tr('room.ui.87', { p0: String(cellIndex).padStart(2, '0') }))
   const SEG =
     'h-6 px-2 text-2xs font-bold uppercase tracking-label transition-colors duration-[var(--speed-quick)] ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40'
@@ -253,14 +255,14 @@
 <div
   class="flex flex-col gap-2.5 focus-visible:outline-none"
   role="group"
-  aria-label="Консилиум{cellLabel}"
+  aria-label={tr('room.council.label', { cell: cellLabel })}
   data-cell={cellId}
   tabindex="0"
   {onkeydown}
 >
   <!-- Полоса режима: счётчики и переключатель, общие для обоих видов. -->
   <div class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line pb-2">
-    <span class="text-2xs font-bold uppercase tracking-label text-accent-text">Консилиум{cellLabel}</span>
+    <span class="text-2xs font-bold uppercase tracking-label text-accent-text">{tr('room.ui.34')}{cellLabel}</span>
     <!--
       Строка счётчиков — из `councilStripText`, а не собранная здесь руками:
       это была третья копия одного правила, и она уже разошлась с остальными —
@@ -272,25 +274,21 @@
       {councilStripText(board.counts, groups.length)}
     </span>
     {#if board.lock !== 'council'}
-      <span class="text-2xs text-warning">Консилиум закрыт. Попытки доступны для просмотра.</span>
+      <span class="text-2xs text-warning">{tr('room.ui.35')}</span>
     {/if}
-    <div class="ml-auto flex border border-line" role="group" aria-label="Вид">
+    <div class="ml-auto flex border border-line" role="group" aria-label={tr('room.ui.36')}>
       <button
         type="button"
         class={cn(SEG, view === 'stack' ? 'bg-ink text-canvas' : 'text-muted hover:text-ink')}
         aria-pressed={view === 'stack'}
         onclick={() => ontoggle('stack')}
-      >
-        Стопка
-      </button>
+      > {tr('room.ui.37')} </button>
       <button
         type="button"
         class={cn(SEG, view === 'summary' ? 'bg-ink text-canvas' : 'text-muted hover:text-ink')}
         aria-pressed={view === 'summary'}
         onclick={() => ontoggle('summary')}
-      >
-        Сводка
-      </button>
+      > {tr('room.ui.38')} </button>
     </div>
     <!--
       Третье место, где говорится про общее ядро, — и последнее из трёх, что
@@ -309,26 +307,26 @@
       строка в 10 px не читается.
     -->
     <p class="basis-full max-w-[660px] text-2xs leading-snug text-muted">
-      {COUNCIL_SHARED_KERNEL_NOTE}
+      {tr(COUNCIL_SHARED_KERNEL_NOTE)}
     </p>
   </div>
 
   {#if pendingRequests.length > 0}
     <div class="flex flex-wrap items-center gap-2 border-l-2 border-accent bg-accent/[0.04] px-3 py-2">
       <label class="flex min-w-0 flex-1 basis-64 flex-col gap-1.5 text-ui">
-        <span class="font-semibold text-accent-text" role="status">Запросы на запуск · {pendingRequests.length}</span>
+        <span class="font-semibold text-accent-text" role="status">{tr('room.ui.39')} {pendingRequests.length}</span>
         <select
           class="h-8 w-full min-w-0 border border-line bg-canvas px-2 text-ui text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
           value={pendingRequests.some((attempt) => attempt.participantId === currentId) ? currentId ?? '' : ''}
           onchange={(event) => { go(event.currentTarget.value); ontoggle('stack') }}
         >
-          <option value="" disabled>Выберите запрос</option>
+          <option value="" disabled>{tr('room.ui.40')}</option>
           {#each pendingRequests as request (request.participantId)}
-            <option value={request.participantId}>{request.name} · {clock(request.runRequest!.requestedAt)}{request.submittedAt === null ? ' · черновик' : ''}</option>
+            <option value={request.participantId}>{request.name} · {clock(request.runRequest!.requestedAt)}{request.submittedAt === null ? tr('room.ui.41') : ''}</option>
           {/each}
         </select>
       </label>
-      <button type="button" class="btn-outline h-8 self-end" onclick={() => { go(pendingRequests[0]?.participantId ?? null); ontoggle('stack') }}>Первый запрос</button>
+      <button type="button" class="btn-outline h-8 self-end" onclick={() => { go(pendingRequests[0]?.participantId ?? null); ontoggle('stack') }}>{tr('room.ui.42')}</button>
     </div>
   {/if}
   {#if decisionError}<p class="text-2xs text-warning" role="alert">{decisionError}</p>{/if}
@@ -337,26 +335,21 @@
     <CouncilSummary {board} {groups} {askWhy} {onshow} {onreply} {onposition} {ontoggle} {onask} {onstop} />
   {:else if current === null}
     <p class="border border-dashed border-line px-3 py-6 text-center text-2xs text-muted">
-      {#if board.counts.writing > 0}
-        ещё никто не сдал — {board.counts.writing}
-        {plural(board.counts.writing, 'пишет', 'пишут', 'пишут')}
-      {:else if board.lock === 'council'}
-        Попыток пока нет. Студенты могут написать свои решения.
-      {:else}
-        попыток не было
-      {/if}
+      {#if board.counts.writing > 0} {tr('room.ui.43')} {board.counts.writing}
+        {plural(board.counts.writing, tr('room.ui.44'), tr('room.ui.45'), tr('room.ui.45'))}
+      {:else if board.lock === 'council'} {tr('room.ui.46')} {:else} {tr('room.ui.47')} {/if}
     </p>
   {:else}
     {@const attempt = current}
-    <article class="flex flex-col border border-line bg-surface" aria-label="Попытка · {attempt.name}">
+    <article class="flex flex-col border border-line bg-surface" aria-label={tr('room.council.attempt', { name: attempt.name })}>
       <!-- Плашка: кто, когда, в каком состоянии и где мы в стопке. -->
       <div class="flex flex-wrap items-center gap-2 border-b border-line-soft px-2 py-1.5">
         <button
           type="button"
           class="btn-ghost h-7 w-7 px-0"
           disabled={!around.prev}
-          aria-label="Предыдущая попытка"
-          title="← предыдущая · Shift+← группа"
+          aria-label={tr('room.ui.48')}
+          title={tr('room.ui.49')}
           onclick={() => go(around.prev)}
         >
           <Icon name="chevron-left" size={14} />
@@ -364,10 +357,8 @@
         <Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="xs" />
         <span class="min-w-0 max-w-[14rem] truncate text-ui font-semibold text-ink">{attempt.name}</span>
         <span class="font-mono text-2xs text-muted">
-          {#if attempt.submittedAt !== null}
-            сдано {clock(attempt.submittedAt)}
-          {:else}
-            пишет · {clock(attempt.updatedAt)}
+          {#if attempt.submittedAt !== null} {tr('room.ui.50')} {clock(attempt.submittedAt)}
+          {:else} {tr('room.ui.51')} {clock(attempt.updatedAt)}
           {/if}
         </span>
         <span
@@ -380,16 +371,13 @@
         </span>
         {#if attempt.shown}
           <span class="inline-flex h-5 items-center gap-1 bg-positive/10 px-1.5 text-2xs font-bold uppercase tracking-label text-positive">
-            <Icon name="board" size={11} />
-            на экране
-          </span>
+            <Icon name="board" size={11} /> {tr('room.ui.52')} </span>
         {/if}
         {#if place.same > 0}
-          <span class="text-2xs text-muted">так же ещё {place.same}</span>
+          <span class="text-2xs text-muted">{tr('room.ui.53')} {place.same}</span>
         {/if}
         <span class="ml-auto font-mono text-2xs tabular-nums text-muted">
-          {#if place.group > 0}
-            группа {place.group} из {place.groups} ·
+          {#if place.group > 0} {tr('room.ui.54')} {place.group} {tr('room.ui.55')} {place.groups} ·
           {/if}
           {place.index} / {place.total}
         </span>
@@ -397,8 +385,8 @@
           type="button"
           class="btn-ghost h-7 w-7 px-0"
           disabled={!around.next}
-          aria-label="Следующая попытка"
-          title="→ следующая · Shift+→ группа"
+          aria-label={tr('room.ui.56')}
+          title={tr('room.ui.57')}
           onclick={() => go(around.next)}
         >
           <Icon name="chevron-right" size={14} />
@@ -409,7 +397,7 @@
         {#if attempt.text.trim()}
           <Code code={attempt.text} />
         {:else}
-          <p class="text-2xs italic text-muted">пустой лист</p>
+          <p class="text-2xs italic text-muted">{tr('room.ui.58')}</p>
         {/if}
       </div>
 
@@ -419,11 +407,11 @@
             {#if running}
               <Icon name="spinner" size={12} class="animate-spin text-accent-text/70" />
               <span class="font-bold uppercase tracking-label text-accent-text">
-                {attempt.run.state === 'queued' ? 'В очереди' : 'Выполняется'}
+                {attempt.run.state === 'queued' ? tr('room.ui.59') : tr('room.ui.60')}
               </span>
             {:else}
               <span>
-                {attempt.run.by === 'host' ? 'запускал преподаватель' : 'запускал автор'}
+                {attempt.run.by === 'host' ? tr('room.ui.61') : tr('room.ui.62')}
                 · {clock(attempt.run.startedAt)}
                 {#if attempt.run.ranMs !== null}
                   · {spell(attempt.run.ranMs)}
@@ -439,7 +427,7 @@
                  напечатал. Запрос уже ушёл (см. `asked`), ответ приедет
                  дельтой. -->
             <p class="px-3 pb-2 pt-1 text-2xs italic text-muted">
-              {onneedoutputs ? 'Загружается результат…' : 'Результат не загружен.'}
+              {onneedoutputs ? tr('room.ui.63') : tr('room.ui.64')}
             </p>
           {/if}
         </div>
@@ -447,22 +435,22 @@
 
       {#if attempt.runRequest?.status === 'pending'}
         <div class="flex flex-wrap items-center gap-2 border-t border-line-soft bg-accent/[0.04] px-3 py-2">
-          <span class="mr-auto text-2xs text-accent-text">Просит запустить · {clock(attempt.runRequest.requestedAt)}</span>
+          <span class="mr-auto text-2xs text-accent-text">{tr('room.ui.65')} {clock(attempt.runRequest.requestedAt)}</span>
           <button
             type="button"
             class="btn-primary h-8"
             disabled={requestsDisabled || board.lock !== 'council' || board.settings.studentRun !== 'request' || running || deciding !== null || !attempt.text.trim()}
             onclick={() => decideRun(attempt, 'approve')}
-          >{deciding?.requestId === attempt.runRequest.id && deciding.action === 'approve' ? 'Отправляю…' : 'Разрешить запуск'}</button>
+          >{deciding?.requestId === attempt.runRequest.id && deciding.action === 'approve' ? tr('room.ui.66') : tr('room.ui.67')}</button>
           <button
             type="button"
             class="btn-outline h-8"
             disabled={requestsDisabled || board.lock !== 'council' || board.settings.studentRun !== 'request' || running || deciding !== null}
             onclick={() => decideRun(attempt, 'decline')}
-          >{deciding?.requestId === attempt.runRequest.id && deciding.action === 'decline' ? 'Отправляю…' : 'Отклонить'}</button>
+          >{deciding?.requestId === attempt.runRequest.id && deciding.action === 'decline' ? tr('room.ui.66') : tr('room.ui.68')}</button>
         </div>
       {:else if attempt.runRequest?.status === 'declined'}
-        <p class="border-t border-line-soft px-3 py-2 text-2xs text-muted">Запрос на запуск отклонён</p>
+        <p class="border-t border-line-soft px-3 py-2 text-2xs text-muted">{tr('room.ui.69')}</p>
       {/if}
 
       <!-- Письма преподавателя — строка на письмо, а не одним абзацем.
@@ -476,7 +464,7 @@
           <span class="font-semibold text-ink">{letter.by}</span>
           <span class="font-mono">{clock(letter.at)}</span>
           {#if letter.to === 'group'}
-            <span>· всей группе</span>
+            <span>{tr('room.ui.70')}</span>
           {/if}
           <span class="min-w-0 flex-1 break-words">{letter.text}</span>
         </p>
@@ -490,7 +478,7 @@
           onclick={() => onshow(attempt.participantId)}
         >
           <Icon name="board" size={13} />
-          {attempt.shown ? 'Показать снова' : 'Показать классу'}
+          {attempt.shown ? tr('room.ui.71') : tr('room.ui.72')}
         </button>
         {#if attempt.runRequest?.status !== 'pending'}
           <button
@@ -503,28 +491,23 @@
               <Icon name="spinner" size={13} class="animate-spin" />
             {:else}
               <Icon name="play" size={13} />
-            {/if}
-            Запустить
-          </button>
+            {/if} {tr('room.ui.73')} </button>
         {/if}
         <button
           type="button"
           class="btn-ghost h-8"
           aria-expanded={replying === 'one'}
           onclick={() => toggleReply('one')}
-        >
-          Ответить
-        </button>
+        > {tr('room.ui.74')} </button>
         {#if group && place.same > 0}
           <button
             type="button"
             class="btn-ghost h-8"
             aria-expanded={replying === 'group'}
             onclick={() => toggleReply('group')}
-          >
-            Ответить всем {group.count}
+          > {tr('room.ui.75')} {group.count}
             {#if board.oracle?.drafts[group.key]}
-              <span class="text-2xs text-accent-text">· черновик</span>
+              <span class="text-2xs text-accent-text">{tr('room.ui.41')}</span>
             {/if}
           </button>
         {/if}
@@ -546,26 +529,20 @@
           aria-pressed={attempt.correct === true}
           onclick={() => onmark(attempt.participantId, attempt.correct === true ? null : true)}
         >
-          <Icon name="check" size={13} />
-          Верно
-        </button>
+          <Icon name="check" size={13} /> {tr('room.ui.76')} </button>
         <button
           type="button"
           class={cn('btn-ghost h-8', attempt.correct === false && 'text-warning hover:text-warning')}
           aria-pressed={attempt.correct === false}
           onclick={() => onmark(attempt.participantId, attempt.correct === false ? null : false)}
         >
-          <Icon name="x" size={13} />
-          Неверно
-        </button>
+          <Icon name="x" size={13} /> {tr('room.ui.77')} </button>
         <button
           type="button"
           class="btn-ghost ml-auto h-8 text-danger hover:text-danger"
           onclick={(event) => remove(event, attempt)}
         >
-          <Icon name="trash" size={13} />
-          Удалить с занятия
-        </button>
+          <Icon name="trash" size={13} /> {tr('room.ui.78')} </button>
       </div>
 
       {#if replying === 'one'}
@@ -579,7 +556,7 @@
         />
       {:else if replying === 'group' && group}
         <CouncilReplyDraft
-          to="всем {group.count}"
+          to={tr('room.council.recipients', { count: group.count })}
           initial={board.oracle?.drafts[group.key] ?? ''}
           fromOracle={Boolean(board.oracle?.drafts[group.key])}
           onsend={(text) => {
@@ -593,8 +570,6 @@
 
     <CouncilStrip {segments} onpick={pick} />
     <!-- Клавиши работают, пока фокус в стопке (щелчок по карточке или по полосе его сюда и ставит). -->
-    <p class="text-2xs text-faint">
-      ← → попытка · Shift+← → группа · Enter — показать классу · когда фокус в стопке
-    </p>
+    <p class="text-2xs text-faint"> {tr('room.ui.79')} </p>
   {/if}
 </div>

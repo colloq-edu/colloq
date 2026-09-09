@@ -29,6 +29,8 @@
  */
 import { config } from '../config.js'
 import { db } from '../db.js'
+import { isLocale, setLocaleResolver, tr, type Locale } from '@shared/i18n'
+import { announceInstanceLanguage } from '../instance-language.js'
 import {
   LIMITS,
   PROVIDER_PRESETS,
@@ -64,6 +66,21 @@ const upsertSetting = db.prepare(`
   ON CONFLICT(key) DO UPDATE SET value = excluded.value
 `)
 const deleteSetting = db.prepare('DELETE FROM instance_settings WHERE key = ?')
+const selectLanguage = db.prepare('SELECT value FROM instance_settings WHERE key = ?')
+
+export function getInstanceLanguage(): Locale {
+  const row = selectLanguage.get('ui.language') as { value: string } | undefined
+  return isLocale(row?.value) ? row.value : config.uiLanguage
+}
+
+export function setInstanceLanguage(language: Locale): void {
+  if (!isLocale(language)) throw new Error('Invalid interface language')
+  const previous = getInstanceLanguage()
+  upsertSetting.run('ui.language', language)
+  if (previous !== language) announceInstanceLanguage(language)
+}
+
+setLocaleResolver(getInstanceLanguage)
 
 interface SettingRow {
   key: string
@@ -247,35 +264,35 @@ export type PatchResult = { patch: UpdateOracleRequest } | { error: string }
  * *types* are refused here, out-of-range *numbers* are clamped on write.
  */
 export function parseOraclePatch(body: unknown): PatchResult {
-  if (!body || typeof body !== 'object') return { error: 'a settings object is required' }
+  if (!body || typeof body !== 'object') return { error: tr('common.settingsRequired') }
   const input = body as Record<string, unknown>
   const patch: UpdateOracleRequest = {}
 
   if (input.provider !== undefined) {
     if (typeof input.provider !== 'string' || !(input.provider in PROVIDER_PRESETS)) {
-      return { error: 'unknown provider' }
+      return { error: tr('common.unknownProvider') }
     }
     patch.provider = input.provider as AiProviderId
   }
   for (const field of ['baseUrl', 'model', 'apiKey', 'houseRules'] as const) {
     if (input[field] === undefined) continue
-    if (typeof input[field] !== 'string') return { error: `${field} must be text` }
+    if (typeof input[field] !== 'string') return { error: tr('common.mustBeText',{field}) }
     patch[field] = input[field] as string
   }
   if (input.defaultMode !== undefined) {
-    if (!MODES.includes(input.defaultMode as OracleMode)) return { error: 'unknown oracle mode' }
+    if (!MODES.includes(input.defaultMode as OracleMode)) return { error: tr('common.unknownOracleMode') }
     patch.defaultMode = input.defaultMode as OracleMode
   }
   for (const field of ['questionsPerHour', 'slowModeSeconds', 'contextChars'] as const) {
     if (input[field] === undefined) continue
     const value = input[field]
-    if (typeof value !== 'number' || !Number.isFinite(value)) return { error: `${field} must be a number` }
+    if (typeof value !== 'number' || !Number.isFinite(value)) return { error: tr('common.mustBeNumber',{field}) }
     patch[field] = value
   }
 
   const baseUrl = patch.baseUrl?.trim()
   if (baseUrl !== undefined && baseUrl.length > 0 && !/^https?:\/\//i.test(baseUrl)) {
-    return { error: 'the base URL must start with http:// or https://' }
+    return { error: tr('common.urlScheme') }
   }
   return { patch }
 }

@@ -16,6 +16,7 @@
   нет, остаётся буфер обмена, и она молча становится «скопировать».
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
   import { api } from '@/lib/api'
   import { copyText } from '@/lib/clipboard'
@@ -35,7 +36,8 @@
   let busy = $state(false)
   let link = $state<string | null>(null)
   let minutes = $state(10)
-  let failure = $state<string | null>(null)
+  let failureRender = $state<() => string | null>(() => null)
+  const failure = $derived(failureRender())
   let copied = $state(false)
 
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
@@ -43,7 +45,7 @@
   async function ask(): Promise<void> {
     if (busy) return
     busy = true
-    failure = null
+    failureRender = () => (null)
     try {
       const res = await api.handoff(session.session.id, session.token)
       // Не от адресной строки: комнату чаще всего ведут с localhost, и такую
@@ -57,7 +59,7 @@
       // И прежний ключ с экрана убираем: он уже мог быть потрачен, а отказ над
       // живой на вид ссылкой — это два противоположных утверждения разом.
       link = null
-      failure = cause instanceof Error ? cause.message : 'Не удалось создать ссылку.'
+      failureRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.142'))
       open = true
     } finally {
       busy = false
@@ -75,14 +77,14 @@
       // и есть запасной ход: её видно целиком и она выделяется одним нажатием.
       // Поэтому отказ рисуется НАД ссылкой, а не вместо неё (см. разметку):
       // совет выделить ссылку, которую он же и убрал, — это тупик.
-      failure = 'Не удалось скопировать ссылку. Выделите её и скопируйте вручную.'
+      failureRender = () => (tr('room.ui.143'))
     }
   }
 
   async function share(): Promise<void> {
     if (!link) return
     try {
-      await navigator.share({ title: 'Пульт лекции', url: link })
+      await navigator.share({ get title() { return tr('room.ui.144') }, url: link })
     } catch {
       // Лист закрыли, ничего не выбрав, — это не ошибка и говорить о ней нечего.
     }
@@ -94,19 +96,17 @@
     type="button"
     class={className}
     aria-expanded={open}
-    title="Открыть пульт на планшете"
+    title={tr('room.ui.132')}
     onclick={() => (open ? (open = false) : void ask())}
   >
-    <Icon name={busy ? 'spinner' : 'link'} size={12} class={busy ? 'animate-spin' : ''} />
-    Пульт
-  </button>
+    <Icon name={busy ? 'spinner' : 'link'} size={12} class={busy ? 'animate-spin' : ''} /> {tr('room.ui.133')} </button>
 
   {#if open}
     <!-- Ниже полосы и от правого края: полоса узкая, а панель шире её кнопки. -->
     <div
       class="absolute right-0 top-full z-40 mt-px w-[min(24rem,calc(100vw-1.5rem))] border border-line bg-raised p-3 text-left shadow-pop"
       role="dialog"
-      aria-label="Пульт на планшете"
+      aria-label={tr('room.ui.134')}
     >
       <!--
         Отказ и ссылка — два независимых блока, а не ветки одного. Отказ
@@ -125,10 +125,7 @@
           не гасил, три места в продукте говорили «годится один раз», и ни одно
           не было правдой.
         -->
-        <p class="pb-2 text-2xs leading-snug text-muted">
-          Откройте ссылку на своём планшете для входа от вашего имени. Она действует
-          {minutes} минут и работает один раз. Не отправляйте её другим людям.
-        </p>
+        <p class="pb-2 text-2xs leading-snug text-muted"> {tr('room.ui.135')} {minutes} {tr('room.ui.136')} </p>
         <p
           class="select-all break-all border border-line bg-canvas px-2 py-1.5 font-mono text-2xs text-ink"
         >
@@ -137,13 +134,11 @@
       {/if}
       <div class="flex items-center gap-1.5 pt-2">
         {#if link && canShare}
-          <button type="button" class="btn-primary h-7 px-2.5 text-2xs" onclick={() => void share()}>
-            Поделиться
-          </button>
+          <button type="button" class="btn-primary h-7 px-2.5 text-2xs" onclick={() => void share()}> {tr('room.ui.137')} </button>
         {/if}
         {#if link}
           <button type="button" class="btn-outline h-7 px-2.5 text-2xs" onclick={() => void copy()}>
-            {copied ? 'Скопировано' : 'Скопировать'}
+            {copied ? tr('room.ui.138') : tr('room.ui.139')}
           </button>
         {/if}
         <span class="flex-1"></span>
@@ -152,13 +147,11 @@
           class="btn-ghost h-7 px-2.5 text-2xs"
           onclick={() => void ask()}
           disabled={busy}
-        >
-          Обновить
-        </button>
+        > {tr('room.ui.140')} </button>
         <button
           type="button"
           class="btn-ghost h-7 w-7 px-0"
-          aria-label="Закрыть"
+          aria-label={tr('room.ui.141')}
           onclick={() => (open = false)}
         >
           <Icon name="x" size={12} />

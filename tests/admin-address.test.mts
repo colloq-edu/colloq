@@ -16,10 +16,8 @@
  * этот значок был у строки ЕДИНСТВЕННОЙ подсказкой, что она нажимается, — и на
  * iPad перестал появляться вовсе.
  *
- * Третье — язык. Панель двуязычна по экранам осознанно (решение записано в
- * components/RoomRulesRows.svelte), и дефект был не в этом, а в ОДНОЙ
- * поверхности на двух языках: меню строки семинара. Здесь закреплено и то, и
- * другое: меню без русского, окно правил — русское целиком.
+ * Третье — язык. Панель и общий компонент правил следуют языку инстанса.
+ * Проверяются оба языка: подписи одной поверхности не должны смешиваться.
  *
  * Читается прямо из компонентов, как в `panels-craft.test.mts` и
  * `panels-touch.test.mts`: тест со своей копией правила проходит вечно, пока
@@ -29,6 +27,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { translate, type Locale } from '../shared/i18n.js'
 
 function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
@@ -40,6 +39,11 @@ function code(source: string): string {
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
+}
+
+/** Resolve explicit static message calls for source-level copy/layout contracts. */
+function localized(source: string, locale: Locale): string {
+  return source.replace(/\btr\(\s*['"]([^'"]+)['"]\s*\)/g, (_match, key: string) => translate(locale, key))
 }
 
 /** Переносы строк — дело форматирования, а не смысла. */
@@ -63,7 +67,7 @@ test('прежние имена курса видно там, где их и м�
 })
 
 test('цена отпускания названа у самой кнопки, а не только в вопросе', () => {
-  const courses = flat(code(read(COURSES)))
+  const courses = flat(localized(code(read(COURSES)), 'ru'))
   const list = courses.slice(courses.indexOf('Прежние адреса'), courses.indexOf('{#each former'))
   assert.ok(list.length > 0, 'блок прежних адресов не нашёлся')
   // Ссылка, записанная в чате прошлогодней группы, после этого отвечает 404 —
@@ -83,7 +87,9 @@ test('отпускают вторым шагом: кнопка задаёт во
     'необратимое зовётся мимо вопроса — вторым шагом это не назвать',
   )
   // И вопрос называет тот самый адрес, а не «связанные данные».
-  assert.match(flat(courses), /Освободить адрес \/c\/\{going\}\?/)
+  assert.match(courses, /tr\('admin\.course\.releaseHeading', \{ address: going \}\)/)
+  assert.equal(translate('ru', 'admin.course.releaseHeading', { address: 'old-course' }), 'Освободить адрес /c/old-course?')
+  assert.equal(translate('en', 'admin.course.releaseHeading', { address: 'old-course' }), 'Release address /c/old-course?')
 })
 
 test('отпускает владелец и своё: маршрут зовут с идентификатором курса', () => {
@@ -109,7 +115,7 @@ test('страница знает свои прежние имена ещё до
 
 test('у публикации отпускают то же и так же', () => {
   const publish = code(read(PUBLISH))
-  const flatPublish = flat(publish)
+  const flatPublish = flat(localized(publish, 'ru'))
   const list = flatPublish.slice(
     flatPublish.indexOf('Прежние адреса'),
     flatPublish.indexOf('{#each former'),
@@ -144,34 +150,31 @@ test('значок «скопировать» у адреса семинара �
 
 /* -------------------------------------------------- один язык на поверхность */
 
-test('меню строки семинара — на одном языке', () => {
+test('меню строки семинара целиком следует языку инстанса', () => {
   const seminars = code(read(SEMINARS))
   const opened = seminars.indexOf('role="menu"')
   const menu = seminars.slice(opened, seminars.indexOf('</tr>', opened))
-  assert.ok(menu.includes('Copy link') && menu.includes('Delete…'), 'меню не нашлось')
-  // «Copy link / Rename / Rules…» рядом с «Закончить занятие» и «Снять
-  // страницу» — одно меню на двух языках, и читается оно как две разные панели.
-  assert.doesNotMatch(menu, /[А-Яа-яЁё]/)
+  const en = localized(menu, 'en')
+  const ru = localized(menu, 'ru')
+  assert.ok(en.includes('Copy link') && en.includes('Delete…'), 'меню не нашлось')
+  assert.ok(ru.includes('Копировать ссылку') && ru.includes('Удалить…'))
+  assert.doesNotMatch(en, /[А-Яа-яЁё]/)
+  assert.doesNotMatch(ru, /Copy link|Delete…|End the class/)
 })
 
-test('окно правил остаётся русским целиком — и сказано, почему', () => {
+test('рамка окна правил и общий компонент используют язык инстанса', () => {
   const seminars = code(read(SEMINARS))
   const dialog = seminars.slice(seminars.indexOf('aria-labelledby="seminar-rules-title"'))
   const window_ = dialog.slice(0, dialog.indexOf('{#if doomed}'))
   assert.ok(window_.includes('RoomRulesRows'), 'окно правил не нашлось')
-  // Подписи правил живут в языке КОМНАТЫ: тот же компонент — пульт правил
-  // внутри неё. Перевод рамки вокруг русских строк сделал бы двуязычным само
-  // окно — ровно тот дефект, который чинили в меню.
-  assert.match(window_, /[А-Яа-яЁё]/, 'окно перевели по частям — теперь двуязычно оно')
-  assert.match(
-    read(SEMINARS),
-    /RoomRulesRows\.svelte/,
-    'решение о языке записано один раз, и отсюда на него есть ссылка',
-  )
+  assert.match(localized(window_, 'ru'), /права участников/)
+  assert.match(localized(window_, 'en'), /participant permissions/)
+  assert.match(read(SEMINARS), /RoomRulesRows\.svelte/)
 })
 
-test('на экране окружений не осталось русского абзаца посреди английского', () => {
-  // Абзац про срезы видеокарты печатался по-русски на экране, где всё
-  // остальное — от «Needs rebuild» до «Make default» — по-английски.
-  assert.doesNotMatch(code(read(ENVIRONMENTS)), /[А-Яа-яЁё]/)
+test('экран окружений целиком следует выбранному языку', () => {
+  const source = code(read(ENVIRONMENTS))
+  assert.doesNotMatch(localized(source, 'en'), /[А-Яа-яЁё]/)
+  assert.match(localized(source, 'ru'), /Окружения/)
+  assert.match(localized(source, 'ru'), /срезы GPU/)
 })

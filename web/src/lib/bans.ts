@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Бан на занятии — то, что от него видно из браузера.
  *
@@ -40,9 +41,9 @@ export function untilWords(until: number, now: number = Date.now()): string {
   const at = new Date(until)
   const time = `${pad(at.getHours())}:${pad(at.getMinutes())}`
   const days = Math.round((midnight(at) - midnight(new Date(now))) / 86_400_000)
-  if (days === 0) return `сегодня в ${time}`
-  if (days === 1) return `завтра в ${time}`
-  return `${pad(at.getDate())}.${pad(at.getMonth() + 1)} в ${time}`
+  if (days === 0) return tr('room.ui.1029', { p0: time })
+  if (days === 1) return tr('room.ui.1030', { p0: time })
+  return tr('room.ui.1031', { p0: pad(at.getDate()), p1: pad(at.getMonth() + 1), p2: time })
 }
 
 /**
@@ -90,9 +91,9 @@ export function mayBan(viewer: ParticipantRole, target: ParticipantRole): boolea
  */
 export function banConsequences(name: string): string[] {
   return [
-    `Доступ для ${name} будет закрыт на 24 часа.`,
-    'Вопросы участника и ответы оракула будут удалены без возможности восстановления через историю версий.',
-    'Ограничение привязано к браузеру. Участник может обойти его через другой браузер или режим инкогнито.',
+    tr('room.ui.1032', { p0: name }),
+    tr('room.ui.1033'),
+    tr('room.ui.1034'),
   ]
 }
 
@@ -153,23 +154,23 @@ export function personNotes(
 
   if (mark.device === false && mark.sameIp === true && options.bansActive) {
     notes.push({
-      text: 'совпадает IP-адрес',
+      get text() { return tr('room.ui.1035') },
       why:
-        'IP-адрес совпадает с адресом заблокированного участника.  ' +
-        'Это не подтверждает, что вернулся тот же человек: общий адрес может быть у  ' +
-        'всей аудитории в одной сети.',
+        tr('room.ui.1036') +
+        tr('room.ui.1037') +
+        tr('room.ui.1038'),
     })
   } else if (mark.device === false) {
     notes.push({
-      text: 'браузер без метки',
-      why: 'Браузер не сохранил метку устройства. Ограничение доступа может не сохраниться после повторного входа.',
+      get text() { return tr('room.ui.1039') },
+      get why() { return tr('room.ui.1040') },
     })
   }
 
   if (mark.firstSeenAt !== undefined && now - mark.firstSeenAt < FRESH_MS) {
     notes.push({
-      text: 'недавно вошёл',
-      why: 'Первый вход в эту комнату был менее пяти минут назад.',
+      get text() { return tr('room.ui.1041') },
+      get why() { return tr('room.ui.1042') },
     })
   }
 

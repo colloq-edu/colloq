@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Правила, о которых три экрана лекции обязаны договориться заранее.
  *
@@ -50,10 +51,10 @@ export interface Ink {
 }
 
 export const INKS: readonly Ink[] = [
-  { color: '#101a33', name: 'Перо, чёрное', short: 'чёрный' },
-  { color: '#d4162f', name: 'Перо, красное', short: 'красный' },
-  { color: '#0c7a64', name: 'Перо, зелёное', short: 'зелёный' },
-  { color: '#9b5a08', name: 'Перо, оранжевое', short: 'оранжевый' },
+  { color: '#101a33', get name() { return tr('room.ui.320') }, get short() { return tr('room.ui.321') } },
+  { color: '#d4162f', get name() { return tr('room.ui.322') }, get short() { return tr('room.ui.323') } },
+  { color: '#0c7a64', get name() { return tr('room.ui.324') }, get short() { return tr('room.ui.325') } },
+  { color: '#9b5a08', get name() { return tr('room.ui.326') }, get short() { return tr('room.ui.327') } },
 ]
 
 /* -------------------------------------------------------------- часы */

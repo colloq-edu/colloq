@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Лица в полосе состояния — и то, как не пересобирать их на каждый чужой курсор.
  *
@@ -40,7 +41,7 @@ export function faceOf(person: Someone): Face {
     name: person.user.name,
     avatar: person.user.avatar,
     color: person.user.color,
-    title: person.isSelf ? `${person.user.name} (you)` : person.user.name,
+    get title() { return person.isSelf ? tr('room.person.self', { name: person.user.name }) : person.user.name },
   }
 }
 
@@ -62,7 +63,7 @@ export function sameFaces(prev: readonly Face[], people: readonly Someone[]): bo
       was.avatar !== now.user.avatar ||
       was.color !== now.user.color ||
       // «(you)» в подписи — тоже то, что видно.
-      was.title !== (now.isSelf ? `${now.user.name} (you)` : now.user.name)
+      was.title !== (now.isSelf ? tr('room.person.self', { name: now.user.name }) : now.user.name)
     ) {
       return false
     }
@@ -80,5 +81,5 @@ export function sameFaces(prev: readonly Face[], people: readonly Someone[]): bo
 export function namesLine(faces: readonly Face[], cap = 20): string {
   if (faces.length <= cap) return faces.map((face) => face.title).join(', ')
   const shown = faces.slice(0, cap).map((face) => face.title)
-  return `${shown.join(', ')} and ${faces.length - cap} more`
+  return tr('room.people.more', { names: shown.join(', '), count: faces.length - cap })
 }

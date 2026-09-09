@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   /**
    * The packages a seminar's Python has.
    *
@@ -13,7 +14,7 @@
    * class that is already running. That is said next to the button rather than
    * discovered afterwards. Production environments come from the release catalog.
    */
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
@@ -26,9 +27,10 @@
   // reads `$state` as a subscription to a store called `state`.
   let envs = $state<EnvironmentsState | null>(null)
   let loading = $state(true)
-  let error = $state<string | null>(null)
+  let errorText = $state<(() => string | null) | null>(null)
+  const error = $derived(errorText?.() ?? null)
   /** Per-row error, so a failed delete does not blank the page. */
-  let rowError = $state<{ name: string; message: string } | null>(null)
+  let rowError = $state<{ name: string; message: () => string } | null>(null)
 
   const isOwner = $derived(adminAuth.isOwner)
   /*
@@ -70,13 +72,24 @@
       // Число в боковой навигации — отсюда: иначе шелл спрашивал docker второй
       // раз за тот же переход, ради той же цифры.
       navCounts.environments = envs.environments.length
-      error = null
+      errorText = null
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'Could not read the environments.'
+      errorText = () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.read.the.environments"))
     } finally {
       loading = false
     }
   }
+
+  // Capabilities are server-localized. Refresh only their read model; the
+  // package editor's draft and open dialogs keep their own state.
+  let environmentLocale = getLocale()
+  $effect(() => {
+    const locale = getLocale()
+    if (locale !== environmentLocale) {
+      environmentLocale = locale
+      untrack(() => void refresh())
+    }
+  })
 
   onMount(() => {
     void refresh()
@@ -118,6 +131,7 @@
 
   let logFor = $state<string | null>(null)
   let logLines = $state<string[]>([])
+  let logLost = $state(false)
   let logBox = $state<HTMLElement | null>(null)
   let stream: EventSource | null = null
 
@@ -149,6 +163,7 @@
     stopWatching()
     logFor = name
     logLines = []
+    logLost = false
     stream = new EventSource(`/api/admin/environments/${encodeURIComponent(name)}/log`)
     stream.addEventListener('line', (event) => {
       logLines = [...logLines, JSON.parse((event as MessageEvent<string>).data) as string].slice(-300)
@@ -194,8 +209,7 @@
      * Состояние строки всё равно догонит опросом — здесь нужно только слово.
      */
     stream.onerror = () => {
-      const lost = 'Log connection lost. Reopen Build log to check the build status.'
-      if (logLines[logLines.length - 1] !== lost) logLines = [...logLines, lost]
+      logLost = true
       stopWatching()
       queueMicrotask(() => logBox?.scrollTo({ top: logBox.scrollHeight }))
     }
@@ -222,7 +236,7 @@
     } catch (cause) {
       rowError = {
         name,
-        message: cause instanceof AdminApiError ? cause.message : 'Could not update the environment. Try again.',
+        message: () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.update.the.environment.try.again")),
       }
     } finally {
       busy = null
@@ -250,14 +264,15 @@
    */
   let editorReady = $state(false)
   /** Отказ виден там, где нажали: строка таблицы лежит под затемнением. */
-  let editorError = $state<string | null>(null)
+  let editorErrorText = $state<(() => string | null) | null>(null)
+  const editorError = $derived(editorErrorText?.() ?? null)
 
   const explain = (cause: unknown, fallback: string): string =>
     cause instanceof AdminApiError ? cause.message : fallback
 
   async function openEditor(name: string): Promise<void> {
     rowError = null
-    editorError = null
+    editorErrorText = null
     creating = false
     draftName = name
     draftSource = ''
@@ -267,20 +282,20 @@
       draftSource = (await adminApi.readEnvironment(name)).source
       editorReady = true
     } catch (cause) {
-      editorError = explain(cause, `Could not read ${name}.`)
+      editorErrorText = () => (explain(cause, tr("admin.could.not.read", { p0: name })))
     }
   }
 
   function openCreate(): void {
     rowError = null
-    editorError = null
+    editorErrorText = null
     creating = true
     editing = ''
     draftName = ''
     editorReady = true
     draftSource =
-      '# Installed on top of the base (numpy, pandas, matplotlib, scikit-learn),\n' +
-      '# so there is no need to list those. One package per line:\n#\n#   transformers>=4.44\n'
+      (tr("admin.installed.on.top.of.the.base.numpy.pandas.matplotlib.scikit.learn") + "\n") +
+      (tr("admin.so.there.is.no.need.to.list.those.one.package.per.line.transforme") + "\n")
   }
 
   /**
@@ -302,7 +317,7 @@
 
   function duplicate(env: AdminEnvironment): void {
     rowError = null
-    editorError = null
+    editorErrorText = null
     creating = true
     editing = ''
     draftName = freeName(`${env.name}-copy`)
@@ -316,7 +331,7 @@
       })
       // Раньше здесь не было ничего: при отказе диалог просто не открывался, и
       // «Duplicate» выглядел как кнопка, которая ничего не делает.
-      .catch((cause) => (editorError = explain(cause, `Could not read ${env.name}.`)))
+      .catch((cause) => (editorErrorText = () => (explain(cause, tr("admin.could.not.read", { p0: env.name })))))
   }
 
   const nameOk = $derived(ENVIRONMENT_NAME.test(draftName.trim()))
@@ -337,12 +352,12 @@
      * уже есть.
      */
     if (nameTaken) {
-      editorError = `Environment ${name} already exists. Open it with Edit packages.`
+      editorErrorText = () => (tr("admin.environment.already.exists.open.it.with.edit.packages", { p0: name }))
       return
     }
     busy = name
     rowError = null
-    editorError = null
+    editorErrorText = null
     try {
       // `creating` едет до сервера заголовком: список на экране успевает
       // устареть, и тогда занятость видит только он.
@@ -351,7 +366,7 @@
       creating = false
       await refresh()
     } catch (cause) {
-      editorError = explain(cause, 'Could not save the package list. Try again.')
+      editorErrorText = () => (explain(cause, tr("admin.could.not.save.the.package.list.try.again")))
       /*
        * Имя заняли, пока диалог был открыт: вторая вкладка, планшет рядом.
        * Перечитываем список, чтобы имя показалось занятым и здесь — а набранные
@@ -413,8 +428,8 @@
 </script>
 
 <AdminPage
-  title="Environments"
-  subtitle="Build container images with the Python packages your seminars need."
+  title={tr("admin.environments")}
+  subtitle={tr("admin.build.container.images.with.the.python.packages.your.seminars.nee")}
 >
   {#snippet actions()}
     <button disabled={managed}
@@ -423,7 +438,7 @@
       onclick={openCreate}
     >
       <Icon name="plus" size={14} />
-      New environment
+      {tr("admin.new.environment")}
     </button>
   {/snippet}
 
@@ -438,7 +453,7 @@
   -->
   <p class="sr-only" aria-live="polite">
     {#if finished}
-      {finished.name}: {finished.state === 'failed' ? 'build failed' : 'build finished'}
+      {finished.name}: {finished.state === 'failed' ? tr("admin.build.failed") : tr("admin.build.finished")}
     {/if}
   </p>
 
@@ -462,8 +477,7 @@
 
     {#if managed}
       <p class="mb-4 border border-line bg-surface px-4 py-3 text-ui text-muted">
-        Environments come from the release catalog. Each seminar keeps its image revision.
-        Build and import new images with the deployment tools. GPU allocation is handled by Kubernetes when a room starts.
+        {tr("admin.environments.come.from.the.release.catalog.each.seminar.keeps.its")}
       </p>
     {/if}
 
@@ -477,17 +491,14 @@
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">
-          GPU: {gpus.total} {gpus.total === 1 ? 'slice' : 'slices'}, {gpus.free} free. A room on a
-          GPU environment holds its slice for as long as its container lives — a seminar nobody is
-          in still holds one.
+          {tr("admin.gpu")} {tr("admin.count.gpu", { count: gpus.total })}, {gpus.free} {tr("admin.free.a.room.on.a.gpu.environment.holds.its.slice.for.as.long.as.i")}
         </p>
       </div>
     {:else if gpuCapacityKnown && someoneWantsGpu}
       <div class="mb-4 flex items-start gap-2.5 border border-line bg-surface px-3 py-2.5">
         <Icon name="info" size={14} class="mt-0.5 shrink-0 text-muted" />
         <p class="text-2xs leading-relaxed text-muted">
-          No GPU slices are configured in KERNEL_GPUS. Seminars using a GPU environment cannot
-          start a kernel until a GPU slice is available.
+          {tr("admin.no.gpu.slices.are.configured.in.kernel.gpus.seminars.using.a.gpu")}
         </p>
       </div>
     {/if}
@@ -511,7 +522,7 @@
                 {#if env.gpu}
                   <span
                     class="inline-flex h-[18px] shrink-0 items-center bg-accent/15 px-1.5 text-micro font-bold uppercase tracking-label text-accent-text"
-                    title="A room on this environment holds a GPU slice for as long as its container lives"
+                    title={tr("admin.a.room.on.this.environment.holds.a.gpu.slice.for.as.long.as.its.c")}
                   >
                     GPU
                   </span>
@@ -536,7 +547,7 @@
                   env.imageBytes === null ? null : imageSize(env.imageBytes),
                   env.builtAt === null ? null : builtAgo(env.builtAt),
                   env.revision ? env.revision.slice(0, 19) + '…' : null,
-                  `${env.packages.length} packages over ${env.parent ?? 'the base'}`,
+                  tr("admin.count.packages", { count: env.packages.length, parent: env.parent ?? tr("admin.the.base") }),
                 ]
                   .filter((part) => part !== null)
                   .join(' · ')}
@@ -546,10 +557,10 @@
             {#if env.state === 'building'}
               <span class="{PILL} bg-accent/15 text-accent-text">
                 <span class="h-1.5 w-1.5 animate-blink rounded-full bg-accent"></span>
-                Building
+                {tr("admin.building")}
               </span>
               <button class={BTN} onclick={() => cancel(env)} disabled={!isOwner || busy === env.name}>
-                Cancel
+                {tr("admin.cancel")}
               </button>
             {:else}
               <!--
@@ -563,14 +574,14 @@
               {#if env.state === 'ready'}
                 <span class={cn(PILL, 'text-positive', justFinished === env.name && 'enter')}>
                   <Icon name="check" size={12} />
-                  Ready
+                  {tr("admin.ready")}
                 </span>
               {:else if env.state === 'failed'}
                 <!-- The same mark on the failure. A wait ending badly is still
                      the wait ending, and a build that fails unannounced is the
                      worse of the two to miss. -->
                 <span class={cn(PILL, 'bg-danger text-white', justFinished === env.name && 'enter')}>
-                  Build failed
+                  {tr("admin.build.failed.297")}
                 </span>
               {:else if env.builtAt !== null}
                 <!--
@@ -589,13 +600,13 @@
                 <span
                   class={cn(PILL, 'text-warning')}
                   title={env.parent
-                    ? `The package list changed or the parent image ${env.parent} was rebuilt`
-                    : 'The package list changed after the build'}
+                    ? tr("admin.the.package.list.changed.or.the.parent.image.was.rebuilt", { p0: env.parent })
+                    : tr("admin.the.package.list.changed.after.the.build")}
                 >
-                  Needs rebuild
+                  {tr("admin.needs.rebuild")}
                 </span>
               {:else}
-                <span class={cn(PILL, 'text-muted')}>Not built</span>
+                <span class={cn(PILL, 'text-muted')}>{tr("admin.not.built")}</span>
               {/if}
 
               {#if env.active}
@@ -604,7 +615,7 @@
                   могут быть несколько сразу, по контейнеру на каждое. Это
                   окружение — то, что получит следующая созданная комната.
                 -->
-                <span class="{PILL} bg-accent/15 text-accent-text">Default</span>
+                <span class="{PILL} bg-accent/15 text-accent-text">{tr("admin.default")}</span>
               {/if}
 
               <!--
@@ -619,9 +630,9 @@
                   onclick={() => (switching = env.name)}
                   disabled={!isOwner || !canSetDefault || busy === env.name}
                   title={envs.cannotSetDefaultReason ??
-                    'New seminars will be created on this environment'}
+                    tr("admin.new.seminars.will.be.created.on.this.environment")}
                 >
-                  Make default
+                  {tr("admin.make.default")}
                 </button>
               {:else if env.state !== 'ready'}
                 <button
@@ -629,7 +640,7 @@
                   onclick={() => build(env)}
                   disabled={!isOwner || !canBuild || busy === env.name}
                 >
-                  Build
+                  {tr("admin.build")}
                 </button>
               {/if}
 
@@ -638,7 +649,7 @@
                   type="button"
                   aria-haspopup="menu"
                   aria-expanded={openMenu === env.name}
-                  aria-label="Actions for {env.name}"
+                  aria-label="{tr("admin.actions.for")} {env.name}"
                   class="flex h-8 w-8 items-center justify-center border border-line text-muted transition-colors duration-100 hover:bg-raised hover:text-ink"
                   onclick={(event) => {
                     event.stopPropagation()
@@ -654,10 +665,10 @@
                     class="row-menu absolute right-0 top-full z-30 mt-1 w-44 border border-line bg-canvas p-1 shadow-pop"
                   >
                     <button role="menuitem" class={ITEM} disabled={managed} onclick={() => openEditor(env.name)}>
-                      Edit packages
+                      {tr("admin.edit.packages")}
                     </button>
                     <button role="menuitem" class={ITEM} disabled={managed} onclick={() => duplicate(env)}>
-                      Duplicate
+                      {tr("admin.duplicate")}
                     </button>
                     <button
                       role="menuitem"
@@ -665,10 +676,10 @@
                       onclick={() => build(env)}
                       disabled={!isOwner || !canBuild}
                     >
-                      {env.state === 'ready' ? 'Rebuild' : 'Build'}
+                      {env.state === 'ready' ? tr("admin.rebuild") : tr("admin.build")}
                     </button>
                     <button role="menuitem" class={ITEM} onclick={() => watch(env.name)}>
-                      Build log
+                      {tr("admin.build.log")}
                     </button>
                     {#if !managed && env.name !== 'base' && !env.active}
                       <button
@@ -677,7 +688,7 @@
                         onclick={() => (doomed = env.name)}
                         disabled={!isOwner}
                       >
-                        Delete…
+                        {tr("admin.delete")}
                       </button>
                     {/if}
                   </div>
@@ -693,7 +704,7 @@
               {/each}
               {#if env.packages.length > 8}
                 <span class="px-2 py-1 font-mono text-micro text-faint">
-                  +{env.packages.length - 8} more
+                  +{env.packages.length - 8} {tr("admin.more")}
                 </span>
               {/if}
             </div>
@@ -704,9 +715,7 @@
               bind:this={logBox}
               class="max-h-[76px] overflow-y-auto border-t border-line bg-[#060C1C] px-3.5 py-2"
             >
-              <pre class="whitespace-pre-wrap font-mono text-code leading-relaxed text-[#9BA6BE]">{logLines.join(
-                  '\n',
-                ) || 'Waiting for build log…'}</pre>
+              <pre class="whitespace-pre-wrap font-mono text-code leading-relaxed text-[#9BA6BE]">{[...logLines, ...(logLost ? [tr("admin.log.connection.lost.reopen.build.log.to.check.the.build.status")] : [])].join('\n') || tr("admin.waiting.for.build.log")}</pre>
             </div>
           {:else if env.state === 'failed' && env.error}
             <div class="flex items-start gap-2 border-t border-line bg-danger/[0.06] px-3.5 py-2.5">
@@ -714,26 +723,25 @@
               <p class="min-w-0 flex-1 break-words font-mono text-micro leading-relaxed text-danger">
                 {env.error}
               </p>
-              <button class={BTN} onclick={() => watch(env.name)}>Full log</button>
+              <button class={BTN} onclick={() => watch(env.name)}>{tr("admin.full.log")}</button>
             </div>
           {/if}
 
           {#if rowError?.name === env.name}
-            <p class="border-t border-line px-3.5 py-2 text-2xs text-danger">{rowError.message}</p>
+            <p class="border-t border-line px-3.5 py-2 text-2xs text-danger">{rowError.message()}</p>
           {/if}
         </section>
       {:else}
         <!-- Пустой каталог — это установка, где никто ещё не заводил окружений,
              а не поломка. Раньше на этом месте была молчаливая пустота. -->
         <div class="border border-line px-3.5 py-6 text-center">
-          <p class="text-ui text-muted">No environments yet.</p>
+          <p class="text-ui text-muted">{tr("admin.no.environments.yet")}</p>
           <p class="mt-1 text-2xs text-muted">
-            Rooms run on the base image: numpy, pandas, matplotlib, scikit-learn. Make one to add
-            your course's own packages on top.
+            {tr("admin.rooms.run.on.the.base.image.numpy.pandas.matplotlib.scikit.learn")}
           </p>
           <button disabled={managed} type="button" class="{BTN} mt-3" onclick={openCreate}>
             <Icon name="plus" size={14} />
-            New environment
+            {tr("admin.new.environment")}
           </button>
         </div>
       {/each}
@@ -742,10 +750,8 @@
     <p class="mt-4 flex items-start gap-2 text-2xs leading-relaxed text-muted">
       <Icon name="info" size={13} class="mt-0.5 shrink-0" />
       <span>
-        An environment is a container image.
-        Each seminar runs in its own container using the environment selected at creation.
-        Changing the default applies to <b class="font-semibold text-ink">new</b> seminars.
-        {#if managed}Existing seminars keep their pinned image revision.{/if}
+        {tr("admin.an.environment.is.a.container.image.each.seminar.runs.in.its.own")} <b class="font-semibold text-ink">{tr("admin.new")}</b> {tr("admin.seminars.330")}
+        {#if managed}{tr("admin.existing.seminars.keep.their.pinned.image.revision")}{/if}
       </span>
     </p>
     </div>
@@ -760,16 +766,16 @@
     >
       <div class="flex items-center gap-3 border-b border-line px-5 py-3.5">
         <h2 class="flex-1 text-head font-black tracking-tight text-ink">
-          {creating ? 'New environment' : `Environment ${draftName}`}
+          {creating ? tr("admin.new.environment") : tr("admin.environment", { p0: draftName })}
         </h2>
-        <button class={BTN} onclick={() => ((editing = null), (creating = false))}>Close</button>
+        <button class={BTN} onclick={() => ((editing = null), (creating = false))}>{tr("admin.close")}</button>
       </div>
 
       <div class="flex flex-col gap-4 overflow-y-auto px-5 py-4">
         {#if creating}
           <div class="flex flex-col gap-[7px]">
             <label for="env-name" class="text-2xs font-bold uppercase tracking-label text-muted">
-              Name
+              {tr("admin.name")}
             </label>
             <input
               id="env-name"
@@ -781,10 +787,9 @@
             />
             <p class={cn('text-2xs', nameTaken ? 'text-danger' : 'text-muted')}>
               {#if nameTaken}
-                {draftName.trim()} already exists. Choose another name or use Edit packages
-                on the existing environment.
+                {draftName.trim()} {tr("admin.already.exists.choose.another.name.or.use.edit.packages.on.the.ex")}
               {:else}
-                Use 1–32 lowercase letters, digits or dashes. Start and end with a letter or digit.
+                {tr("admin.use.1.32.lowercase.letters.digits.or.dashes.start.and.end.with.a")}
               {/if}
             </p>
           </div>
@@ -792,7 +797,7 @@
 
         <div class="flex flex-col gap-[7px]">
           <label for="env-source" class="text-2xs font-bold uppercase tracking-label text-muted">
-            Packages
+            {tr("admin.packages")}
           </label>
           <!-- Пока файл не приехал, поле не принимает текст: иначе набранное за
                эти полсекунды затирается ответом сервера. -->
@@ -805,22 +810,22 @@
             spellcheck="false"
           ></textarea>
           <p class="text-2xs text-muted">
-            Use requirements.txt syntax, one package per line. Packages are added to the parent image.
+            {tr("admin.use.requirements.txt.syntax.one.package.per.line.packages.are.add")}
           </p>
         </div>
       </div>
 
       <div class="flex items-center gap-2 border-t border-line px-5 py-3.5">
         <p class={cn('min-w-0 flex-1 text-2xs', editorError ? 'text-danger' : 'text-muted')}>
-          {editorError ?? 'Save the package list, then build the environment to install its packages.'}
+          {editorError ?? tr("admin.save.the.package.list.then.build.the.environment.to.install.its.p")}
         </p>
-        <button class={BTN} onclick={() => ((editing = null), (creating = false))}>Cancel</button>
+        <button class={BTN} onclick={() => ((editing = null), (creating = false))}>{tr("admin.cancel")}</button>
         <button
           class="inline-flex h-8 items-center bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink transition-opacity duration-100 hover:opacity-90 disabled:opacity-40"
           onclick={save}
           disabled={!nameOk || nameTaken || !editorReady || busy !== null}
         >
-          Save
+          {tr("admin.save")}
         </button>
       </div>
     </div>
@@ -831,22 +836,22 @@
 {#if doomed}
   <div class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4">
     <div class="dialog-card w-full max-w-md border border-line bg-canvas p-5 shadow-pop">
-      <h2 class="text-head font-black tracking-tight text-ink">Delete {doomed}?</h2>
+      <h2 class="text-head font-black tracking-tight text-ink">{tr("admin.delete.350")} {doomed}?</h2>
       <p class="mt-2 text-ui text-muted">
-        This deletes the package list. The built image remains in Docker and can be removed separately.
+        {tr("admin.this.deletes.the.package.list.the.built.image.remains.in.docker.a")}
       </p>
       <!-- Кнопки гаснут на время запроса. Диалог висит до ответа, а второе
            нажатие уходило вторым запросом: он приходил к уже удалённому
            окружению и отвечал «no such environment» — ложной ошибкой поверх
            успеха. -->
       <div class="mt-5 flex justify-end gap-2">
-        <button class={BTN} onclick={() => (doomed = null)} disabled={busy !== null}>Cancel</button>
+        <button class={BTN} onclick={() => (doomed = null)} disabled={busy !== null}>{tr("admin.cancel")}</button>
         <button
           class="inline-flex h-8 items-center bg-danger px-4 text-2xs font-bold uppercase tracking-label text-white disabled:opacity-40"
           onclick={confirmDelete}
           disabled={busy !== null}
         >
-          {busy === doomed ? 'Deleting…' : 'Delete'}
+          {busy === doomed ? tr("admin.deleting") : tr("admin.delete.354")}
         </button>
       </div>
     </div>
@@ -856,24 +861,23 @@
 {#if switching}
   <div class="dialog-veil fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4">
     <div class="dialog-card w-full max-w-md border border-line bg-canvas p-5 shadow-pop">
-      <h2 class="text-head font-black tracking-tight text-ink">Make {switching} the default?</h2>
+      <h2 class="text-head font-black tracking-tight text-ink">{tr("admin.make")} {switching} {tr("admin.the.default")}</h2>
       <p class="mt-2 text-ui text-muted">
-        Seminars created from now on get {switching}.
-        Existing seminars keep their selected environment.
+        {tr("admin.seminars.created.from.now.on.get")} {switching}{tr("admin.existing.seminars.keep.their.selected.environment")}
       </p>
       <!-- Те же гаснущие кнопки: два нажатия — два `docker compose up`, и
            второй падает на конфликте контейнера, отвечая «ядро не вернулось»
            там, где переключение уже состоялось. -->
       <div class="mt-5 flex justify-end gap-2">
         <button class={BTN} onclick={() => (switching = null)} disabled={busy !== null}>
-          Cancel
+          {tr("admin.cancel")}
         </button>
         <button
           class="inline-flex h-8 items-center bg-primary px-4 text-2xs font-bold uppercase tracking-label text-primary-ink disabled:opacity-40"
           onclick={confirmUse}
           disabled={busy !== null}
         >
-          {busy === switching ? 'Switching…' : 'Make default'}
+          {busy === switching ? tr("admin.switching") : tr("admin.make.default")}
         </button>
       </div>
     </div>

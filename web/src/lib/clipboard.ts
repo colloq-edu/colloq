@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Скопировать текст там, где `navigator.clipboard` нет.
  *
@@ -37,7 +38,7 @@ export async function copyText(text: string): Promise<void> {
   try {
     field.select()
     field.setSelectionRange(0, text.length)
-    if (!document.execCommand('copy')) throw new Error('the browser refused the clipboard')
+    if (!document.execCommand('copy')) throw new Error(tr('room.ui.1043'))
   } finally {
     field.remove()
     if (had && selection) {

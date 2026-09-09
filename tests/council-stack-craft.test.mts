@@ -53,7 +53,7 @@ test('полоса режима считает одной функцией на 
 /* --------------------------------------------------------------- отметки */
 
 test('преподаватель может сказать «неверно», а не только «верно»', () => {
-  assert.match(STACK, /Неверно/, 'кнопка есть')
+  assert.match(STACK, /tr\('room\.ui\.77'\)/, 'кнопка есть')
   assert.match(
     STACK,
     /onmark\(attempt\.participantId, attempt\.correct === false \? null : false\)/,
@@ -114,7 +114,7 @@ test('карточка даёт повод попросить вывод, а п�
 
 test('пустой вывод и «вывода в кадре нет» карточка называет по-разному', () => {
   assert.match(STACK, /\{:else if attempt\.run\.outputsOmitted\}/)
-  assert.match(STACK, /onneedoutputs \? 'Загружается результат…' : 'Результат не загружен\.'/)
+  assert.match(STACK, /onneedoutputs \? tr\('room\.ui\.63'\) : tr\('room\.ui\.64'\)/)
 })
 
 test('пульт ищет запросы во всей стопке и подтверждает точный запрос', () => {
@@ -129,14 +129,14 @@ test('пульт ищет запросы во всей стопке и подт�
 
 test('ячейка связывает запрос, отмену и решения с клиентом, а режим выбирается явно', () => {
   const cell = code(read('web/src/components/notebook/CellView.svelte'))
-  assert.match(cell, /<option value="false">Только преподаватель<\/option>/)
-  assert.match(cell, /<option value="true">Студенты запускают сами<\/option>/)
-  assert.match(cell, /<option value="request">По запросу преподавателю<\/option>/)
+  assert.match(cell, /<option value="false">\{tr\('room\.ui\.336'\)\}<\/option>/)
+  assert.match(cell, /<option value="true">\{tr\('room\.ui\.337'\)\}<\/option>/)
+  assert.match(cell, /<option value="request">\{tr\('room\.ui\.338'\)\}<\/option>/)
   assert.match(cell, /session\.council\.requestRun\(id\)/)
   assert.match(cell, /session\.council\.cancelRunRequest\(id, request\.id\)/)
   assert.match(cell, /onapproverun=\{\(participantId, requestId\) => session\.council\.approveRunRequest\(id, participantId, requestId\)\}/)
   assert.match(cell, /ondeclinerun=\{\(participantId, requestId\) => session\.council\.declineRunRequest\(id, participantId, requestId\)\}/)
-  assert.match(cell, /Попросить запуск/)
-  assert.match(cell, /Ожидает решения преподавателя/)
-  assert.match(cell, /Преподаватель отклонил запрос/)
+  assert.match(cell, /tr\('room\.ui\.363'\)/)
+  assert.match(cell, /tr\('room\.ui\.359'\)/)
+  assert.match(cell, /tr\('room\.ui\.364'\)/)
 })

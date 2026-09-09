@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * The model endpoint, kept deliberately thin.
  *
@@ -136,7 +137,7 @@ export async function streamChat(
 ): Promise<string> {
   // Reaches a student verbatim, so it names what is missing rather than an
   // environment variable they have no way to set.
-  if (!providerReady()) throw new Error('No model is set up on this Colloq yet.')
+  if (!providerReady()) throw new Error(tr("server.noModelIsSetUpOnThis.1152ef"))
   if (signal?.aborted) return ''
 
   const payload = toPayload(messages)
@@ -304,7 +305,7 @@ export async function completeWithTools(
   signal?: AbortSignal,
   onUsage?: (totalTokens: number) => void,
 ): Promise<{ text: string; calls: ToolCall[] }> {
-  if (!providerReady()) throw new Error('No model is set up on this Colloq yet.')
+  if (!providerReady()) throw new Error(tr("server.noModelIsSetUpOnThis.1152ef"))
   const model = resolveAiConfig().model
   const payload = {
     model,
@@ -342,8 +343,8 @@ export async function completeWithTools(
      */
     if (isBadRequest(err) && tools.length > 0 && !usedTools(messages) && !aboutSize(err)) {
       throw new Error(
-        'Модель отклонила запрос с инструментами. ' +
-          'Попробуйте режим вопроса.',
+        tr("server.theModelRejectedTheRequestWithTools.c6fde5") +
+          tr("server.tryAskingAQuestionInstead.a2a998"),
       )
     }
     throw friendly(err)
@@ -412,12 +413,12 @@ function toToolPayload(messages: ChatTurn[]): unknown[] {
  */
 export async function testConnection(): Promise<OracleTestResult> {
   const ai = resolveAiConfig()
-  if (!ai.baseUrl) return fail('No endpoint address is set — choose a provider or type a base URL.')
+  if (!ai.baseUrl) return fail(tr("server.noEndpointAddressIsSetChooseA.93a30c"))
   if (!ai.model)
-    return fail('No model is set — type the name the endpoint expects, e.g. gpt-4o-mini.')
+    return fail(tr("server.noModelIsSetTypeTheName.dce34d"))
   if (!ai.apiKey && !isKeylessProvider(ai.provider)) {
     return fail(
-      'No API key is set — paste one, or switch the provider to a local runtime that does not need one.',
+      tr("server.noApiKeyIsSetPasteOne.d5a86a"),
     )
   }
 
@@ -429,7 +430,7 @@ export async function testConnection(): Promise<OracleTestResult> {
     )
     const ms = Date.now() - began
     const model = completion.model || ai.model
-    return { ok: true, ms, message: `Answered in ${ms} ms as "${model}".`, model }
+    return { ok: true, ms, message: tr("server.answeredInMsAs.81b232", { p0: ms, p1: model }), model }
   } catch (err) {
     return diagnose(err, ai.model, ai.baseUrl)
   }
@@ -441,24 +442,24 @@ async function diagnose(err: unknown, model: string, baseUrl: string): Promise<O
 
   if (status === 401 || status === 403) {
     return fail(
-      `${baseUrl} denied access. Check the API key and account permissions.`,
+      tr("server.deniedAccessCheckTheApiKeyAnd.302b39", { p0: baseUrl }),
     )
   }
   if (status === 429) {
     return fail(
-      'The endpoint returned HTTP 429. Check the account quota and request limits.',
+      tr("server.theEndpointReturnedHttpCheckTheAccount.346fd1"),
     )
   }
   if (status !== null && status >= 500) {
     return fail(
-      `${baseUrl} answered with a server error (${status}). Try again later.`,
+      tr("server.answeredWithAServerErrorTryAgain.9430de", { p0: baseUrl, p1: status }),
     )
   }
   if (status === 400 || status === 404 || status === 422) {
     return await afterRejection(model, baseUrl, status, detail)
   }
   if (status !== null) {
-    return fail(`${baseUrl} refused the request (${status}). ${detail}`.trim())
+    return fail(tr("server.refusedTheRequest.85f159", { p0: baseUrl, p1: status, p2: detail }).trim())
   }
   /*
    * Отказ фильтра бывает и здесь — и лечится он не адресом.
@@ -469,18 +470,18 @@ async function diagnose(err: unknown, model: string, baseUrl: string): Promise<O
    */
   if (isRefusal(err)) {
     return fail(
-      `${baseUrl} returned a model refusal for the test request.`,
+      tr("server.returnedAModelRefusalForTheTest.74f8ac", { p0: baseUrl }),
     )
   }
   // No status at all: nothing answered, so this is the address or the network.
   const code = causeCode(err)
   if (isTimeout(err)) {
     return fail(
-      `${baseUrl} did not answer within ${TEST_TIMEOUT_MS / 1000} seconds. Is it running, and reachable from the Colloq container?`,
+      tr("server.didNotAnswerWithinSecondsIsIt.dcedf5", { p0: baseUrl, p1: TEST_TIMEOUT_MS / 1000 }),
     )
   }
   return fail(
-    `Could not reach ${baseUrl}${code ? ` (${code})` : ''}. Check the address — a local runtime needs a host the server can see, not localhost inside a container.`,
+    tr("server.couldNotReachCheckTheAddressA.a531ef", { p0: baseUrl, p1: code ? ` (${code})` : '' }),
   )
 }
 
@@ -500,15 +501,15 @@ async function afterRejection(
     const listStatus = statusOf(listErr)
     if (listStatus === 401 || listStatus === 403) {
       return fail(
-        `${baseUrl} denied access. Check the API key and account permissions.`,
+        tr("server.deniedAccessCheckTheApiKeyAnd.302b39", { p0: baseUrl }),
       )
     }
     if (status === 404) {
       return fail(
-        `${baseUrl} returned HTTP 404 for the test request, and the model list could not be read. Check the base URL and model name.`,
+        tr("server.returnedHttpForTheTestRequestAnd.2b8b64", { p0: baseUrl }),
       )
     }
-    return fail(`${baseUrl} refused the request: ${detail || `HTTP ${status}`}`)
+    return fail(tr("server.refusedTheRequest.1dca50", { p0: baseUrl, p1: detail || `HTTP ${status}` }))
   }
 
   const ms = Date.now() - began
@@ -517,7 +518,7 @@ async function afterRejection(
     return {
       ok: false,
       ms: null,
-      message: `${baseUrl} does not list "${model}". Listed models: ${offered}${models.length > 6 ? ', …' : ''}.`,
+      message: tr("server.doesNotListListedModels.915980", { p0: baseUrl, p1: model, p2: offered, p3: models.length > 6 ? ', …' : '' }),
       model: null,
     }
   }
@@ -526,7 +527,7 @@ async function afterRejection(
   return {
     ok: true,
     ms,
-    message: `${baseUrl} returned a model list but rejected the test request for "${model}"${detail ? ` (${detail})` : ''}. A successful model response has not been verified.`,
+    message: tr("server.returnedAModelListButRejectedThe.2051f2", { p0: baseUrl, p1: model, p2: detail ? ` (${detail})` : '' }),
     model,
   }
 }
@@ -668,7 +669,7 @@ function friendly(err: unknown): Error {
    */
   if (refused) {
     return new Error(
-      'The model declined this request.',
+      tr("server.theModelDeclinedThisRequest.5e72c3"),
     )
   }
 
@@ -680,17 +681,17 @@ function friendly(err: unknown): Error {
    */
   if (isTimeout(err)) {
     return new Error(
-      'The model did not respond within the time limit. Try again.',
+      tr("server.theModelDidNotRespondWithinThe.be1746"),
     )
   }
 
   if (status === 401 || status === 403) {
     return new Error(
-      'The AI provider denied access. Ask the Colloq administrator to check the API key and account permissions.',
+      tr("server.theAiProviderDeniedAccessAskThe.31dbd6"),
     )
   }
   if (status === 404) {
-    return new Error(`The AI endpoint returned HTTP 404 for "${ai.model}". Ask the Colloq administrator to check the endpoint address and model name.`)
+    return new Error(tr("server.theAiEndpointReturnedHttpForAsk.56675a", { p0: ai.model }))
   }
   if (status === 400) {
     // The endpoint's own words: a 400 is almost always a real reason — an
@@ -699,15 +700,15 @@ function friendly(err: unknown): Error {
     const detail = detailOf(err)
     return new Error(
       detail
-        ? `The AI endpoint rejected the request for model "${ai.model}": ${detail}`
-        : `The AI endpoint rejected the request for model "${ai.model}".`,
+        ? tr("server.theAiEndpointRejectedTheRequestFor.2dad2f", { p0: ai.model, p1: detail })
+        : tr("server.theAiEndpointRejectedTheRequestFor.80fc8d", { p0: ai.model }),
     )
   }
   if (status === 429) {
-    return new Error('The AI provider returned HTTP 429. Its request limit or account quota may have been reached. Try later or ask the Colloq administrator to check.')
+    return new Error(tr("server.theAiProviderReturnedHttpItsRequest.7a3832"))
   }
   if (status !== undefined && status >= 500) {
-    return new Error('The AI endpoint returned a server error.')
+    return new Error(tr("server.theAiEndpointReturnedAServerError.c7d0c1"))
   }
   /*
    * Ответил и оборвался — тоже не «не достучались».
@@ -721,8 +722,8 @@ function friendly(err: unknown): Error {
     const detail = detailOf(err)
     return new Error(
       detail
-        ? `The AI endpoint broke off mid-answer: ${detail}`
-        : 'The model response was interrupted. Try again.',
+        ? tr("server.theAiEndpointBrokeOffMidAnswer.d6573e", { p0: detail })
+        : tr("server.theModelResponseWasInterruptedTryAgain.b5ba0f"),
     )
   }
   /*
@@ -730,6 +731,6 @@ function friendly(err: unknown): Error {
    * internal host, and the student reading this cannot act on it either way.
    */
   return new Error(
-    'Could not reach the AI endpoint. Whoever runs this Colloq can check its address and key.',
+    tr("server.couldNotReachTheAiEndpointWhoever.5a0409"),
   )
 }

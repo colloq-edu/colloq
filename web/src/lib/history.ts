@@ -1,3 +1,4 @@
+
 /**
  * Reading the room's history from the browser.
  *
@@ -96,4 +97,4 @@ export function initialsOf(name: string | null): string {
 }
 
 /** The word for a version that has no author: the room did it, not a person. */
-export const NOBODY = 'the room'
+export const NOBODY = "the room"

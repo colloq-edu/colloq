@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Три двери бана: завести, перечислить, снять.
  *
@@ -44,9 +45,9 @@ export function banRoutes(): Router {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const auth = sessionAuth(req)
-    if (!auth) return res.status(401).json({ error: 'join the session first' })
+    if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     if (auth.role !== 'host') {
-      return res.status(403).json({ error: 'Список закрытых доступов видит преподаватель.' })
+      return res.status(403).json({ error: tr("server.onlyTheTeacherMayViewBlockedParticipants.5bc743") })
     }
     res.json({ bans: listBans(sessionId, deviceOf(req.headers.cookie)) })
   })
@@ -55,9 +56,9 @@ export function banRoutes(): Router {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const auth = sessionAuth(req)
-    if (!auth) return res.status(401).json({ error: 'join the session first' })
+    if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     if (auth.role !== 'host') {
-      return res.status(403).json({ error: 'Закрыть доступ в этот семинар может преподаватель.' })
+      return res.status(403).json({ error: tr("server.onlyTheTeacherMayBlockAccessTo.0508ad") })
     }
 
     const body = req.body as { participantId?: unknown } | undefined
@@ -65,7 +66,7 @@ export function banRoutes(): Router {
       typeof body?.participantId === 'string' && body.participantId.length <= MAX_ID
         ? body.participantId
         : ''
-    if (!participantId) return res.status(400).json({ error: 'participantId is required' })
+    if (!participantId) return res.status(400).json({ error: tr("server.participantidIsRequired.fc7d8c") })
     /*
      * «Такого человека тут нет» и «это преподаватель» — разные ответы, а
      * `banParticipant` на оба отвечает `null`: инвариант «штат не банится»
@@ -73,7 +74,7 @@ export function banRoutes(): Router {
      * ради слов отказа.
      */
     if (!getParticipant(sessionId, participantId)) {
-      return res.status(404).json({ error: 'participant not found' })
+      return res.status(404).json({ error: tr("server.participantNotFound.d59506") })
     }
 
     const ban = banParticipant({
@@ -87,7 +88,7 @@ export function banRoutes(): Router {
       byTeacher: getParticipant(sessionId, auth.participantId)?.name ?? null,
       viewerDevice: deviceOf(req.headers.cookie),
     })
-    if (!ban) return res.status(403).json({ error: 'Нельзя закрыть доступ преподавателю.' })
+    if (!ban) return res.status(403).json({ error: tr("server.aTeacherCannotBeBlocked.ac6170") })
 
     /*
      * Порядок здесь значимый.
@@ -111,9 +112,9 @@ export function banRoutes(): Router {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const auth = sessionAuth(req)
-    if (!auth) return res.status(401).json({ error: 'join the session first' })
+    if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     if (auth.role !== 'host') {
-      return res.status(403).json({ error: 'Восстановить доступ может только преподаватель.' })
+      return res.status(403).json({ error: tr("server.onlyTheTeacherMayRestoreAccess.001a27") })
     }
     /*
      * Снятие возвращает человека, а не его вопросы: стёртое из ленты
@@ -122,7 +123,7 @@ export function banRoutes(): Router {
      * промахнулся человеком.
      */
     if (!liftBan(sessionId, req.params.banId)) {
-      return res.status(404).json({ error: 'no such ban' })
+      return res.status(404).json({ error: tr("server.noSuchBan.55c3bd") })
     }
     res.json({ ok: true })
   })

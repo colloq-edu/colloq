@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   /**
    * Who can teach — the staff list, which is really a list of live credentials.
    *
@@ -80,18 +81,21 @@
   }
 
   let teachers = $state<Teacher[]>([])
-  let listError = $state<string | null>(null)
+  let listErrorText = $state<(() => string | null) | null>(null)
+  const listError = $derived(listErrorText?.() ?? null)
 
   let composing = $state(false)
   let draftName = $state('')
   let draftEmail = $state('')
   let creating = $state(false)
-  let composeError = $state<string | null>(null)
+  let composeErrorText = $state<(() => string | null) | null>(null)
+  const composeError = $derived(composeErrorText?.() ?? null)
 
   /** The link, held in this tab only, for as long as the band stays open. */
   let reveal = $state<Reveal | null>(null)
   let copied = $state(false)
-  let copyError = $state<string | null>(null)
+  let copyErrorText = $state<(() => string | null) | null>(null)
+  const copyError = $derived(copyErrorText?.() ?? null)
   let copyTimer: ReturnType<typeof setTimeout> | undefined
   let linkField = $state<HTMLInputElement | null>(null)
 
@@ -99,12 +103,14 @@
   let copiedRow = $state<string | null>(null)
   let copiedRowTimer: ReturnType<typeof setTimeout> | undefined
   /** Separate from copyError, which lives inside the reveal band and would not be on screen. */
-  let rowCopyError = $state<string | null>(null)
+  let rowCopyErrorText = $state<(() => string | null) | null>(null)
+  const rowCopyError = $derived(rowCopyErrorText?.() ?? null)
 
   let confirming = $state<{ id: string; kind: 'rotate' | 'remove' } | null>(null)
   /** The row a destructive call is in flight for; nothing else is disabled by it. */
   let acting = $state<string | null>(null)
-  let confirmError = $state<string | null>(null)
+  let confirmErrorText = $state<(() => string | null) | null>(null)
+  const confirmError = $derived(confirmErrorText?.() ?? null)
 
   let menuId = $state<string | null>(null)
   let roleBusy = $state<string | null>(null)
@@ -117,7 +123,8 @@
    * правка не перекрашивала строку.
    */
   let newSetupToken = $state<string | null>(null)
-  let setupTokenError = $state<string | null>(null)
+  let setupTokenErrorText = $state<(() => string | null) | null>(null)
+  const setupTokenError = $derived(setupTokenErrorText?.() ?? null)
   let rotatingSetup = $state(false)
   /** Показан один раз — значит его должно быть чем взять, не выделяя мышью. */
   let copiedSetup = $state(false)
@@ -126,7 +133,7 @@
   let editing = $state<{ id: string; name: string; email: string } | null>(null)
   let savingEdit = $state(false)
   /** A refusal with no confirmation band to land in still has to be seen. */
-  let rowError = $state<{ id: string; message: string } | null>(null)
+  let rowError = $state<{ id: string; message: () => string } | null>(null)
 
   const me = $derived(adminAuth.me?.teacher ?? null)
   const isOwner = $derived(me?.role === 'owner')
@@ -153,20 +160,21 @@
     if (cause instanceof AdminApiError) {
       // С причиной: печенье сюда доехало и его отвергли — ссылку ротировали или
       // из штата сняли. Экран входа скажет именно это, а не про cookies.
-      if (cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+
       return cause.message
     }
     if (cause instanceof Error) return cause.message
-    return 'The server did not answer.'
+    return tr("admin.the.server.did.not.answer")
   }
 
   async function load(): Promise<void> {
     try {
       teachers = await adminApi.listTeachers()
       loaded = true
-      listError = null
+      listErrorText = null
     } catch (cause: unknown) {
-      listError = report(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      listErrorText = () => (report(cause))
     }
   }
 
@@ -186,7 +194,7 @@
 
   function openComposer(): void {
     composing = true
-    composeError = null
+    composeErrorText = null
     menuId = null
   }
 
@@ -194,11 +202,11 @@
     event.preventDefault()
     const name = draftName.trim()
     const email = draftEmail.trim()
-    if (!name) return void (composeError = 'A name is required.')
-    if (!email) return void (composeError = 'Enter an email address.')
+    if (!name) return void (composeErrorText = () => (tr("admin.a.name.is.required")))
+    if (!email) return void (composeErrorText = () => (tr("admin.enter.an.email.address")))
 
     creating = true
-    composeError = null
+    composeErrorText = null
     try {
       const minted = await adminApi.createTeacher({ name, email })
       // The list is ordered by creation, so the new row lands at the bottom —
@@ -214,7 +222,8 @@
         minted: true,
       })
     } catch (cause: unknown) {
-      composeError = report(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      composeErrorText = () => (report(cause))
     } finally {
       creating = false
     }
@@ -238,8 +247,9 @@
       // hear about it from the server rather than from us.
       if (updated.id === me?.id) void adminAuth.refresh()
     } catch (cause: unknown) {
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       put({ ...t, role: before })
-      rowError = { id: t.id, message: report(cause) }
+      rowError = { id: t.id, message: () => (report(cause)) }
     } finally {
       roleBusy = null
     }
@@ -247,13 +257,14 @@
 
   async function rotateSetup(): Promise<void> {
     rotatingSetup = true
-    setupTokenError = null
+    setupTokenErrorText = null
     copiedSetup = false
     try {
       const { token } = await adminApi.rotateSetupToken()
       newSetupToken = token
     } catch (cause: unknown) {
-      setupTokenError = report(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      setupTokenErrorText = () => (report(cause))
     } finally {
       rotatingSetup = false
     }
@@ -267,7 +278,7 @@
       copiedSetupTimer = setTimeout(() => (copiedSetup = false), 2200)
     } catch {
       // Небезопасное происхождение — обычный способ хостить это самому.
-      setupTokenError = 'Could not copy the token. Select it and copy it manually.'
+      setupTokenErrorText = () => (tr("admin.could.not.copy.the.token.select.it.and.copy.it.manually"))
     }
   }
 
@@ -284,11 +295,11 @@
     if (!draft) return
     const name = draft.name.trim()
     const email = draft.email.trim()
-    if (!name) return void (rowError = { id: draft.id, message: 'A name is required.' })
+    if (!name) return void (rowError = { id: draft.id, message: () => (tr("admin.a.name.is.required")) })
     if (!email) {
       return void (rowError = {
         id: draft.id,
-        message: 'Enter an email address.',
+        message: () => (tr("admin.enter.an.email.address")),
       })
     }
 
@@ -301,7 +312,8 @@
       // Своё имя стоит в шапке панели — оболочка узнаёт его от сервера.
       if (updated.id === me?.id) void adminAuth.refresh()
     } catch (cause: unknown) {
-      rowError = { id: draft.id, message: report(cause) }
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      rowError = { id: draft.id, message: () => (report(cause)) }
     } finally {
       savingEdit = false
     }
@@ -309,7 +321,7 @@
 
   function ask(t: Teacher, kind: 'rotate' | 'remove'): void {
     menuId = null
-    confirmError = null
+    confirmErrorText = null
     // Nothing to invalidate and nobody to strand: a first mint needs no warning.
     if (kind === 'rotate' && !t.hasLink) return void rotate(t)
     confirming = { id: t.id, kind }
@@ -319,7 +331,7 @@
     // A first mint runs without a confirmation, so it has no band to fail into.
     const banded = confirming?.id === t.id
     acting = t.id
-    confirmError = null
+    confirmErrorText = null
     rowError = null
     try {
       const minted = await adminApi.rotateTeacherLink(t.id)
@@ -332,8 +344,9 @@
         minted: !t.hasLink,
       })
     } catch (cause: unknown) {
-      const message = report(cause)
-      if (banded) confirmError = message
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      const message = () => report(cause)
+      if (banded) confirmErrorText = message
       else rowError = { id: t.id, message }
     } finally {
       acting = null
@@ -342,7 +355,7 @@
 
   async function remove(t: Teacher): Promise<void> {
     acting = t.id
-    confirmError = null
+    confirmErrorText = null
     try {
       await adminApi.deleteTeacher(t.id)
       teachers = teachers.filter((x) => x.id !== t.id)
@@ -353,7 +366,8 @@
       // этом надо тем же, чем это было, — своим решением, а не сбоем печенья.
       if (t.id === me?.id) void adminAuth.refresh('removed-self')
     } catch (cause: unknown) {
-      confirmError = report(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      confirmErrorText = () => (report(cause))
     } finally {
       acting = null
     }
@@ -362,7 +376,7 @@
   function show(next: Reveal): void {
     reveal = next
     copied = false
-    copyError = null
+    copyErrorText = null
   }
 
   /*
@@ -373,7 +387,7 @@
   async function copyExisting(t: Teacher): Promise<void> {
     if (acting) return
     acting = t.id
-    rowCopyError = null
+    rowCopyErrorText = null
     try {
       const { signInUrl } = await adminApi.teacherLink(t.id)
       await copyText(reachable(signInUrl))
@@ -384,10 +398,9 @@
       // Two very different failures land here — the server refusing, and a
       // browser that will not hand out the clipboard on an insecure origin.
       // Rotating is the way out of the second one, so say which happened.
-      rowCopyError =
-        err instanceof AdminApiError
+      rowCopyErrorText = () => (err instanceof AdminApiError
           ? err.message
-          : `Could not copy ${t.name}’s link. Try again. Replacing the link will show a new one and sign out their other sessions.`
+          : tr("admin.could.not.copy.s.link.try.again.replacing.the.link.will.show.a.ne", { p0: t.name }))
     } finally {
       acting = null
     }
@@ -397,14 +410,14 @@
     try {
       await copyText(url)
       copied = true
-      copyError = null
+      copyErrorText = null
       // A confirmation that never leaves stops being one.
       clearTimeout(copyTimer)
       copyTimer = setTimeout(() => (copied = false), 2200)
     } catch {
       // An insecure origin or a denied permission. The link is on screen and
       // selectable, so say that instead of swallowing it.
-      copyError = 'Could not copy the link. It is selected; copy it manually.'
+      copyErrorText = () => (tr("admin.could.not.copy.the.link.it.is.selected.copy.it.manually"))
       linkField?.select()
     }
   }
@@ -433,7 +446,7 @@
 {#snippet addTeacher()}
   <button type="button" class="btn-primary text-2xs font-bold uppercase tracking-caps" onclick={openComposer}>
     <Icon name="plus" size={13} />
-    Add a teacher
+    {tr("admin.add.a.teacher")}
   </button>
 {/snippet}
 
@@ -443,8 +456,8 @@
 {/snippet}
 
 <AdminPage
-  title="Who can teach"
-  subtitle="Manage teacher accounts and sign-in links. Teachers can create seminars and view oracle settings."
+  title={tr("admin.who.can.teach")}
+  subtitle={tr("admin.manage.teacher.accounts.and.sign.in.links.teachers.can.create.sem")}
   actions={isOwner ? addTeacher : undefined}
 >
   {#if composing}
@@ -453,17 +466,17 @@
       class="my-5 flex flex-wrap items-end gap-3 border border-line bg-surface px-4 py-3.5"
     >
       <label class="min-w-[190px] flex-1">
-        {@render eyebrow('Name')}
+        {@render eyebrow(tr("admin.name"))}
         <input
           use:takeFocus
           bind:value={draftName}
           maxlength={LIMITS.teacherName}
-          placeholder="Ada Lovelace"
+          placeholder={tr("admin.ada.lovelace")}
           class="field mt-1.5 text-ui"
         />
       </label>
       <label class="min-w-[210px] flex-1">
-        {@render eyebrow('Email')}
+        {@render eyebrow(tr("admin.email"))}
         <input
           bind:value={draftEmail}
           type="email"
@@ -474,14 +487,14 @@
         />
       </label>
       <button type="submit" class="btn-primary" disabled={creating}>
-        {creating ? 'Creating a link…' : 'Add teacher'}
+        {creating ? tr("admin.creating.a.link") : tr("admin.add.teacher")}
       </button>
-      <button type="button" class="btn-ghost" onclick={() => (composing = false)}>Cancel</button>
+      <button type="button" class="btn-ghost" onclick={() => (composing = false)}>{tr("admin.cancel")}</button>
       {#if composeError}
         <p class="w-full text-ui text-danger">{composeError}</p>
       {/if}
       <p class="w-full text-2xs text-muted">
-        This creates a teacher account and a sign-in link. You can change their role to owner afterward.
+        {tr("admin.this.creates.a.teacher.account.and.a.sign.in.link.you.can.change")}
       </p>
     </form>
   {/if}
@@ -501,17 +514,17 @@
   -->
   <div class="min-w-[600px]">
   <div class="sticky top-0 z-10 flex h-9 items-center border-b border-line bg-canvas">
-    <div class={COL_PERSON}>{@render eyebrow('Person')}</div>
-    <div class={COL_ROLE}>{@render eyebrow('Role')}</div>
-    <div class={COL_LINK}>{@render eyebrow('Sign-in link')}</div>
-    <div class={COL_SEEN}>{@render eyebrow('Last seen')}</div>
+    <div class={COL_PERSON}>{@render eyebrow(tr("admin.person.1127"))}</div>
+    <div class={COL_ROLE}>{@render eyebrow(tr("admin.role.1128"))}</div>
+    <div class={COL_LINK}>{@render eyebrow(tr("admin.sign.in.link"))}</div>
+    <div class={COL_SEEN}>{@render eyebrow(tr("admin.last.seen"))}</div>
     <div class={COL_MENU}></div>
   </div>
 
   {#if listError}
     <div class="flex items-center gap-3 py-6">
       <p class="text-ui text-danger">{listError}</p>
-      <button type="button" class="btn-outline" onclick={() => void load()}>Try again</button>
+      <button type="button" class="btn-outline" onclick={() => void load()}>{tr("admin.try.again")}</button>
     </div>
   {/if}
 
@@ -526,7 +539,7 @@
             <span class="truncate text-ui-lg font-semibold text-ink">{t.name}</span>
             {#if you}
               <span class="chip bg-accent/10 text-micro font-bold uppercase tracking-label text-accent-text">
-                you
+                {tr("admin.you")}
               </span>
             {/if}
           </div>
@@ -536,25 +549,25 @@
 
       <div class={COL_ROLE}>
         {#if !isOwner}
-          <span class="text-ui capitalize text-muted">{t.role}</span>
+          <span class="text-ui capitalize text-muted">{tr(`admin.role.${t.role}`)}</span>
         {:else if locked}
-          <span class="block text-ui font-semibold text-ink">Owner</span>
+          <span class="block text-ui font-semibold text-ink">{tr("admin.owner")}</span>
           <span class="flex items-center gap-1.5 text-2xs text-muted">
             <Icon name="lock" size={11} class="shrink-0" />
-            last owner · role required
+            {tr("admin.last.owner.role.required")}
           </span>
         {:else}
           <div class="relative inline-flex items-center">
             <select
               value={t.role}
               disabled={roleBusy === t.id}
-              aria-label="Role for {t.name}"
+              aria-label="{tr("admin.role.for")} {t.name}"
               onchange={(event) => void setRole(t, event.currentTarget.value as AdminRole)}
               class="h-6 cursor-pointer appearance-none bg-transparent pr-5 text-ui text-ink
                      outline-none disabled:opacity-50"
             >
-              <option value="owner">Owner</option>
-              <option value="teacher">Teacher</option>
+              <option value="owner">{tr("admin.owner")}</option>
+              <option value="teacher">{tr("admin.teacher")}</option>
             </select>
             <Icon name="chevron-down" size={11} class="pointer-events-none absolute right-0 text-faint" />
           </div>
@@ -566,7 +579,7 @@
           <div class="flex items-center gap-2">
             <p
               class="min-w-0 flex-1 truncate font-mono text-code text-muted"
-              title="The link is masked here. Copy puts the full sign-in link on your clipboard."
+              title={tr("admin.the.link.is.masked.here.copy.puts.the.full.sign.in.link.on.your.c")}
             >
               {MASKED}
             </p>
@@ -578,7 +591,7 @@
                 class="inline-flex h-7 w-7 shrink-0 items-center justify-center border
                        border-line text-faint transition-colors duration-100 hover:border-faint
                        hover:text-ink disabled:opacity-50"
-                aria-label="Copy {t.name}’s sign-in link"
+                aria-label={tr('admin.teacher.copyLinkLabel', { name: t.name })}
               >
                 <Icon name={copiedRow === t.id ? 'check' : 'copy'} size={13} />
               </button>
@@ -592,10 +605,10 @@
             class="inline-flex items-center gap-1.5 text-ui font-semibold text-accent-text hover:underline disabled:opacity-50"
           >
             <Icon name="link" size={13} />
-            {acting === t.id ? 'Creating…' : 'Create a link'}
+            {acting === t.id ? tr("admin.creating") : tr("admin.create.a.link")}
           </button>
         {:else}
-          <p class="text-ui text-muted">No link yet</p>
+          <p class="text-ui text-muted">{tr("admin.no.link.yet")}</p>
         {/if}
       </div>
 
@@ -603,7 +616,7 @@
         {#if t.lastSeenAt}
           <span class="text-ui text-ink">{relativeTime(t.lastSeenAt)}</span>
         {:else}
-          <span class="text-ui text-muted">never</span>
+          <span class="text-ui text-muted">{tr("admin.never")}</span>
         {/if}
       </div>
 
@@ -611,7 +624,7 @@
         {#if isOwner}
           <button
             type="button"
-            aria-label="Actions for {t.name}"
+            aria-label="{tr("admin.actions.for")} {t.name}"
             aria-expanded={menuId === t.id}
             onclick={(event) => {
               event.stopPropagation()
@@ -631,7 +644,7 @@
                 class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-ink hover:bg-raised"
               >
                 <Icon name="pencil" size={14} class="text-faint" />
-                Edit name and email
+                {tr("admin.edit.name.and.email")}
               </button>
               <button
                 type="button"
@@ -639,7 +652,7 @@
                 class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-ink hover:bg-raised"
               >
                 <Icon name="link" size={14} class="text-faint" />
-                {t.hasLink ? 'Rotate sign-in link' : 'Create a sign-in link'}
+                {t.hasLink ? tr("admin.rotate.sign.in.link") : tr("admin.create.a.sign.in.link")}
               </button>
               {#if !locked}
                 <button
@@ -648,7 +661,7 @@
                   class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-ui text-danger hover:bg-danger/[0.08]"
                 >
                   <Icon name="trash" size={14} />
-                  {you ? 'Remove my account' : 'Remove from staff'}
+                  {you ? tr("admin.remove.my.account") : tr("admin.remove.from.staff")}
                 </button>
               {/if}
             </div>
@@ -658,7 +671,7 @@
     </div>
 
     {#if rowError?.id === t.id}
-      <p class="border-b border-line-soft py-2.5 pl-11 text-ui text-danger">{rowError.message}</p>
+      <p class="border-b border-line-soft py-2.5 pl-11 text-ui text-danger">{rowError.message()}</p>
     {/if}
 
     {#if editing?.id === t.id}
@@ -667,7 +680,7 @@
         class="flex flex-wrap items-end gap-3 border-b border-line-soft bg-surface py-4 pl-11 pr-4"
       >
         <label class="min-w-[180px] flex-1">
-          {@render eyebrow('Name')}
+          {@render eyebrow(tr("admin.name"))}
           <!-- svelte-ignore a11y_autofocus -->
           <input
             autofocus
@@ -677,7 +690,7 @@
           />
         </label>
         <label class="min-w-[210px] flex-1">
-          {@render eyebrow('Email')}
+          {@render eyebrow(tr("admin.email"))}
           <input
             bind:value={editing.email}
             type="email"
@@ -687,11 +700,11 @@
           />
         </label>
         <button type="submit" class="btn-primary" disabled={savingEdit}>
-          {savingEdit ? 'Saving…' : 'Save'}
+          {savingEdit ? tr("admin.saving") : tr("admin.save")}
         </button>
-        <button type="button" class="btn-ghost" onclick={() => (editing = null)}>Cancel</button>
+        <button type="button" class="btn-ghost" onclick={() => (editing = null)}>{tr("admin.cancel")}</button>
         <p class="w-full text-2xs text-muted">
-          This updates their name and email. Their sign-in link stays the same.
+          {tr("admin.this.updates.their.name.and.email.their.sign.in.link.stays.the.sa")}
         </p>
       </form>
     {/if}
@@ -699,20 +712,20 @@
     {#if confirming?.id === t.id}
       <div class="border-b border-line-soft bg-surface py-4 pl-11 pr-4">
         {#if confirming.kind === 'rotate'}
-          <p class="text-ui-lg font-semibold text-ink">Rotate {t.name}’s sign-in link?</p>
+          <p class="text-ui-lg font-semibold text-ink">{tr('admin.teacher.rotateHeading', { name: t.name })}</p>
           <p class="mt-1.5 max-w-[640px] text-ui text-muted">
-            The old link will stop working and their signed-in sessions will end{you
-              ? ', except this browser session, which will be renewed'
-              : ''}. A new link will appear here for you to share.
+            {tr("admin.the.old.link.will.stop.working.and.their.signed.in.sessions.will")}{you
+              ? tr("admin.except.this.browser.session.which.will.be.renewed")
+              : ''}{tr("admin.a.new.link.will.appear.here.for.you.to.share")}
           </p>
         {:else}
           <p class="text-ui-lg font-semibold text-ink">
-            {you ? 'Remove your own account?' : `Remove ${t.name}?`}
+            {you ? tr("admin.remove.your.own.account") : tr("admin.remove.1171", { p0: t.name })}
           </p>
           <p class="mt-1.5 max-w-[640px] text-ui text-muted">
-            Their sign-in link will stop working and their signed-in sessions will end{you
-              ? ', including this one'
-              : ''}. Their seminars will remain. Adding them again creates a new account and link.
+            {tr("admin.their.sign.in.link.will.stop.working.and.their.signed.in.sessions")}{you
+              ? tr("admin.including.this.one")
+              : ''}{tr("admin.their.seminars.will.remain.adding.them.again.creates.a.new.accoun")}
           </p>
         {/if}
         <div class="mt-3 flex items-center gap-2">
@@ -723,11 +736,11 @@
             class="btn border border-danger/40 bg-danger/[0.05] text-danger hover:bg-danger/20"
           >
             {#if acting === t.id}
-              Working…
+              {tr("admin.working")}
             {:else if confirming.kind === 'rotate'}
-              Rotate the link
+              {tr("admin.rotate.the.link")}
             {:else}
-              Remove {you ? 'my account' : t.name}
+              {tr("admin.remove")} {you ? tr("admin.my.account") : t.name}
             {/if}
           </button>
           <button
@@ -736,7 +749,7 @@
             disabled={acting === t.id}
             onclick={() => (confirming = null)}
           >
-            Cancel
+            {tr("admin.cancel")}
           </button>
           {#if confirmError}
             <p class="text-ui text-danger">{confirmError}</p>
@@ -749,7 +762,7 @@
         use:bringIntoView
         class="enter border-b border-line-soft border-l-2 border-l-accent bg-accent/5 p-4"
       >
-        {@render eyebrow(`Sign-in link for ${shown.name} · shown once`)}
+        {@render eyebrow(tr("admin.sign.in.link.for.shown.once", { p0: shown.name }))}
         <!--
           What this says has to match what the page can actually do. The link is
           shown here once and never displayed again — but the copy button in the
@@ -759,9 +772,9 @@
         -->
         <p class="mt-1.5 max-w-[720px] text-ui text-ink">
           {#if shown.minted}
-            {shown.name} is on the staff list. Share this personal sign-in link with them.
+            {shown.name} {tr("admin.is.on.the.staff.list.share.this.personal.sign.in.link.with.them")}
           {:else}
-            The old link has been replaced. Share this new sign-in link with {shown.name}.
+            {tr("admin.the.old.link.has.been.replaced.share.this.new.sign.in.link.with")} {shown.name}.
           {/if}
         </p>
         <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -770,23 +783,23 @@
             readonly
             value={shown.url}
             spellcheck="false"
-            aria-label="Sign-in link for {shown.name}"
+            aria-label="{tr("admin.sign.in.link.for")} {shown.name}"
             onfocus={(event) => event.currentTarget.select()}
             class="field min-w-[280px] max-w-[560px] flex-1 bg-canvas font-mono text-code"
           />
           <button type="button" class="btn-primary" onclick={() => void copy(shown.url)}>
             <Icon name={copied ? 'check' : 'copy'} size={14} />
-            {copied ? 'Copied' : 'Copy link'}
+            {copied ? 'Copied' : tr("admin.copy.link")}
           </button>
           <button type="button" class="btn-ghost" onclick={() => (reveal = null)}>
-            {copied ? 'Done' : 'Close without copying'}
+            {copied ? tr("admin.done") : tr("admin.close.without.copying")}
           </button>
         </div>
         {#if copyError}
           <p class="mt-2 text-ui text-danger">{copyError}</p>
         {:else if !copied}
           <p class="mt-2 text-2xs text-muted">
-            After closing this message, use the copy button on their row to copy the link again.
+            {tr("admin.after.closing.this.message.use.the.copy.button.on.their.row.to.co")}
           </p>
         {/if}
       </div>
@@ -798,11 +811,9 @@
     <Icon name="link" size={13} class="shrink-0 text-faint" />
     <p class="text-2xs text-muted">
       {#if isOwner}
-        Anyone with a personal link can sign in to that account. Replace a shared or exposed link.
-        Remove the account when the person should no longer have access.
+        {tr("admin.anyone.with.a.personal.link.can.sign.in.to.that.account.replace.a")}
       {:else}
-        Anyone with a personal link can sign in to that account. Contact an owner to add people,
-        replace links or remove accounts.
+        {tr("admin.anyone.with.a.personal.link.can.sign.in.to.that.account.contact.a")}
       {/if}
     </p>
   </div>
@@ -819,7 +830,7 @@
   {#if isOwner}
     <div class="flex flex-wrap items-start gap-3 border-t border-line-soft py-3.5">
       <div class="min-w-0 max-w-[600px] flex-1">
-        {@render eyebrow('Setup token')}
+        {@render eyebrow(tr("admin.setup.token"))}
         <!--
           Печатает токен `make host`, читая его из файла, — не сервер: тот
           молчит, как только у инстанса появился владелец, а этот блок виден
@@ -827,8 +838,7 @@
           верно ровно там, где его никто не читает.
         -->
         <p class="mt-1.5 text-2xs text-muted">
-          The setup token signs anyone holding it in as the longest-standing owner. Replacing it
-          invalidates the old token and saves the new token in
+          {tr("admin.the.setup.token.signs.anyone.holding.it.in.as.the.longest.standin")}
           <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>.
         </p>
         {#if newSetupToken}
@@ -839,12 +849,12 @@
               class="btn-ghost shrink-0 text-2xs"
               onclick={() => void copySetupToken(newSetupToken ?? '')}
             >
-              {copiedSetup ? 'Copied' : 'Copy'}
+              {copiedSetup ? 'Copied' : tr("admin.copy")}
             </button>
           </div>
           <p class="mt-1 text-2xs text-muted">
-            The token is also available through <span class="font-mono">make host</span>, which reads it from
-            <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>. The server logs it only before the first owner is created.
+            {tr("admin.the.token.is.also.available.through")} <span class="font-mono">make host</span>{tr("admin.which.reads.it.from")}
+            <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>{tr("admin.the.server.logs.it.only.before.the.first.owner.is.created")}
           </p>
         {:else if setupTokenError}
           <p class="mt-2 text-2xs text-danger">{setupTokenError}</p>
@@ -856,30 +866,28 @@
         disabled={rotatingSetup}
         onclick={() => void rotateSetup()}
       >
-        {rotatingSetup ? 'Rotating…' : 'Rotate setup token'}
+        {rotatingSetup ? tr("admin.rotating") : tr("admin.rotate.setup.token")}
       </button>
     </div>
   {/if}
 
   <div class="flex flex-wrap items-start gap-14 border-t border-line-soft pt-5">
     <div class="min-w-0 max-w-[600px] flex-1">
-      {@render eyebrow('Masked sign-in links')}
+      {@render eyebrow(tr("admin.masked.sign.in.links"))}
       <p class="mt-1.5 text-2xs text-muted">
-        The list masks sign-in links. A newly created or replaced link is shown until you close its
-        message. Use the copy button on a teacher’s row to share their current link again.
+        {tr("admin.the.list.masks.sign.in.links.a.newly.created.or.replaced.link.is")}
       </p>
     </div>
     <div class="w-[392px]">
-      {@render eyebrow(isOwner ? 'Lost your own link' : 'Lost your link')}
+      {@render eyebrow(isOwner ? tr("admin.lost.your.own.link") : tr("admin.lost.your.link"))}
       {#if isOwner}
         <p class="mt-1.5 text-2xs text-muted">
-          The setup token in <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>
-          signs you in as the longest-standing current owner.
+          {tr("admin.the.setup.token.in")} <span class="font-mono text-2xs text-accent-text">&lt;DATA_DIR&gt;/setup-token</span>
+          {tr("admin.signs.you.in.as.the.longest.standing.current.owner")}
         </p>
       {:else}
         <p class="mt-1.5 text-2xs text-muted">
-          Ask an owner to copy and share your current link. If it may have reached someone else,
-          ask them to replace it.
+          {tr("admin.ask.an.owner.to.copy.and.share.your.current.link.if.it.may.have.r")}
         </p>
       {/if}
     </div>

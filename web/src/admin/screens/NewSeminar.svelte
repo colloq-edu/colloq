@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   /**
    * Opening a room, and deciding what kind of room it is.
    *
@@ -57,7 +58,8 @@
     filename: string
     cells: { cell_type: unknown; source: unknown }[]
   } | null>(null)
-  let notebookError = $state<string | null>(null)
+  let notebookErrorText = $state<(() => string | null) | null>(null)
+  const notebookError = $derived(notebookErrorText?.() ?? null)
   let picker = $state<HTMLInputElement | null>(null)
   let dragging = $state(false)
   /**
@@ -93,16 +95,16 @@
    */
   async function takeNotebook(file: File | null): Promise<void> {
     if (!file) return
-    notebookError = null
+    notebookErrorText = null
     if (!/\.ipynb$/i.test(file.name)) {
-      notebookError = `Choose a .ipynb notebook. ${file.name} has a different extension.`
+      notebookErrorText = () => (tr("admin.choose.a.ipynb.notebook.has.a.different.extension", { p0: file.name }))
       return
     }
     try {
       const doc = JSON.parse(await file.text()) as { cells?: unknown[] }
       const cells = Array.isArray(doc.cells) ? doc.cells : []
       if (cells.length === 0) {
-        notebookError = 'This notebook has no cells. Choose a notebook with at least one cell.'
+        notebookErrorText = () => (tr("admin.this.notebook.has.no.cells.choose.a.notebook.with.at.least.one.ce"))
         return
       }
       /*
@@ -124,7 +126,7 @@
       source = 'file'
       if (!name.trim()) name = tidyName(file.name)
     } catch {
-      notebookError = 'Could not read this notebook. Check that it is a valid .ipynb file.'
+      notebookErrorText = () => (tr("admin.could.not.read.this.notebook.check.that.it.is.a.valid.ipynb.file"))
     }
   }
 
@@ -142,7 +144,8 @@
   const materialBytes = $derived(materials.reduce((sum, f) => sum + f.size, 0))
 
   /** Что не влезло в предел сервера — словами, до нажатия Create. */
-  let oversized = $state<string | null>(null)
+  let oversizedText = $state<(() => string | null) | null>(null)
+  const oversized = $derived(oversizedText?.() ?? null)
 
   function addMaterials(list: FileList | File[] | null): void {
     const picked = Array.from(list ?? [])
@@ -159,12 +162,11 @@
      * идёт докладывать его руками из комнаты. Здесь его ещё можно заменить.
      */
     const { taken, refused } = splitBySize(fresh, maxUploadBytes ?? 0)
-    oversized =
-      refused.length === 0 || maxUploadBytes === null
+    oversizedText = () => (refused.length === 0 || maxUploadBytes === null
         ? null
         : `${refused.map((f) => f.name).join(', ')} ` +
-          `exceed the ${uploadMb(maxUploadBytes)} MB upload limit and were not added. ` +
-          'Choose smaller files or ask the server administrator to increase MAX_UPLOAD_MB.'
+          (tr("admin.exceed.the.mb.upload.limit.and.were.not.added", { p0: uploadMb(maxUploadBytes) }) + " ") +
+          tr("admin.choose.smaller.files.or.ask.the.server.administrator.to.increase"))
     materials = [...materials, ...taken]
   }
 
@@ -254,38 +256,40 @@
     label: string
     what: string
     lines: [string, string]
-  }[] = [
+  }[] = $derived([
     {
       value: 'lab',
-      label: 'Обычный',
+      label: tr("admin.standard"),
       what:
-        'Участники вместе редактируют тетрадь, запускают ячейки и добавляют файлы. ' +
-        'Доступ к оракулу зависит от его настроек.',
-      lines: ['редактирование и запуск — всем', 'добавление файлов — всем'],
+        (tr("admin.participants.edit.the.notebook.together.run.cells.and.add.files") + " ") +
+        tr("admin.oracle.access.depends.on.its.settings"),
+      lines: [tr("admin.everyone.can.edit.and.run"), tr("admin.everyone.can.add.files")],
     },
     {
       value: 'lecture',
-      label: 'Лекция',
+      label: tr("admin.lecture"),
       what:
-        'Преподаватель редактирует тетрадь и запускает код. Студенты читают тетрадь; ' +
-        'преподаватель может открыть отдельные ячейки для работы.',
-      lines: ['редактирование и запуск — преподавателю', 'отдельные ячейки можно открыть студентам'],
+        (tr("admin.the.teacher.edits.the.notebook.and.runs.code.students.read.the.no") + " ") +
+        tr("admin.the.teacher.can.open.individual.cells.for.them.to.work.on"),
+      lines: [tr("admin.only.the.teacher.can.edit.and.run"), tr("admin.individual.cells.can.be.opened.to.students")],
     },
     {
       value: 'council',
-      label: 'Консилиум',
+      label: tr("admin.council"),
       what:
-        'В открытой ячейке каждый студент пишет отдельное решение. Преподаватель ' +
-        'просматривает попытки, показывает выбранные классу и обсуждает их с оракулом.',
-      lines: ['управление занятием — преподавателю', 'отдельная попытка для каждого студента'],
+        (tr("admin.each.student.writes.a.separate.solution.in.the.open.cell.the.teac") + " ") +
+        tr("admin.reviews.attempts.shares.selected.ones.with.the.class.and.discusse"),
+      lines: [tr("admin.the.teacher.controls.the.session"), tr("admin.a.separate.attempt.for.every.student")],
     },
-  ]
+  ])
 
   let preview = $state<ImportPreview | null>(null)
   let previewing = $state(false)
-  let previewError = $state<string | null>(null)
+  let previewErrorText = $state<(() => string | null) | null>(null)
+  const previewError = $derived(previewErrorText?.() ?? null)
   let busy = $state(false)
-  let error = $state<string | null>(null)
+  let errorText = $state<(() => string | null) | null>(null)
+  const error = $derived(errorText?.() ?? null)
 
   /**
    * Настройки оракула на инстансе — потолок, выше которого комната не поднимется.
@@ -345,12 +349,12 @@
     if (previewTimer) clearTimeout(previewTimer)
     if (!fromGithub || !url) {
       preview = null
-      previewError = null
+      previewErrorText = null
       return
     }
     previewTimer = setTimeout(() => {
       previewing = true
-      previewError = null
+      previewErrorText = null
       void adminApi
         .previewImport(url)
         .then((p: ImportPreview) => {
@@ -359,7 +363,7 @@
         })
         .catch((cause: unknown) => {
           preview = null
-          previewError = cause instanceof Error ? cause.message : 'Could not read that link'
+          previewErrorText = () => (cause instanceof Error ? cause.message : tr("admin.could.not.read.that.link"))
         })
         .finally(() => (previewing = false))
     }, 500)
@@ -391,7 +395,7 @@
   async function create(): Promise<void> {
     if (!canCreate) return
     busy = true
-    error = null
+    errorText = null
     try {
       const seminar =
         source === 'github'
@@ -431,27 +435,26 @@
       if (materials.length > 0) {
         const failed = await uploadMaterials(seminar.id)
         if (failed.length > 0) {
-          error =
-            `The seminar was created, but ${failed.length === 1 ? 'one file' : `${failed.length} files`} ` +
-            `did not upload: ${failed.join(', ')}. Add them from the room.`
+          errorText = () => ((tr("admin.the.seminar.was.created.but", { p0: failed.length === 1 ? tr("admin.one.file") : tr("admin.files", { p0: failed.length }) }) + " ") +
+            tr("admin.did.not.upload.add.them.from.the.room", { p0: failed.join(', ') }))
           busy = false
           return
         }
       }
       ondone(seminar.id)
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not create the seminar'
+      errorText = () => (cause instanceof Error ? cause.message : tr("admin.could.not.create.the.seminar"))
       busy = false
     }
   }
 
   /** One row of the rules table: a question, a sentence, and two answers. */
-  const ORACLE: { value: RoomRules['oracle']; label: string; note: string }[] = [
-    { value: 'inherit', label: 'As set for the instance', note: 'use the server default' },
-    { value: 'off', label: 'Off', note: 'disable the oracle for this seminar' },
-    { value: 'hints', label: 'Hints only', note: 'instructed to give hints' },
-    { value: 'full', label: 'Full answers', note: 'explains and writes code' },
-  ]
+  const ORACLE: { value: RoomRules['oracle']; label: string; note: string }[] = $derived([
+    { value: 'inherit', label: tr("admin.as.set.for.the.instance"), note: tr("admin.use.the.server.default") },
+    { value: 'off', label: tr("admin.off"), note: tr("admin.disable.the.oracle.for.this.seminar") },
+    { value: 'hints', label: tr("admin.hints.only"), note: tr("admin.instructed.to.give.hints") },
+    { value: 'full', label: tr("admin.full.answers"), note: tr("admin.explains.and.writes.code") },
+  ])
 
   /*
    * Чего в этом списке нет и почему. «Скоро будет» преподавателю не говорит
@@ -463,12 +466,12 @@
     why: string
     /** Не во всех режимах: в консилиуме своя строка у каждого уже есть. */
     unless?: (mode: 'lab' | 'lecture' | 'council') => boolean
-  }[] = [
-    { what: 'Hide notebook cells', why: 'participants receive the whole notebook' },
-    { what: 'Hide terminal history', why: 'participants receive the terminal history' },
+  }[] = $derived([
+    { what: tr("admin.hide.notebook.cells"), why: tr("admin.participants.receive.the.whole.notebook") },
+    { what: tr("admin.hide.terminal.history"), why: tr("admin.participants.receive.the.terminal.history") },
     {
-      what: "Edit your own answer but not your neighbour's",
-      why: 'editing access applies to the shared cell',
+      what: tr("admin.edit.your.own.answer.but.not.your.neighbour.s"),
+      why: tr("admin.editing.access.applies.to.the.shared.cell"),
       /*
        * Кроме консилиума — там это и есть его смысл. Строка стояла на одном
        * экране с карточкой «Консилиум: открытая ячейка — каждому свой лист» и
@@ -476,7 +479,7 @@
        */
       unless: (m) => m === 'council',
     },
-    { what: 'Keep one student’s oracle question private', why: 'questions are visible to the room' },
+    { what: tr("admin.keep.one.student.s.oracle.question.private"), why: tr("admin.questions.are.visible.to.the.room") },
     /*
      * «Remove somebody from the room — a token can expire, not be withdrawn»
      * отсюда убрано: бан с выкидыванием из комнаты есть и работает
@@ -484,8 +487,8 @@
      * evictBanned). Он не настройка комнаты, а действие внутри неё, поэтому
      * стоит в списке того, что принадлежит преподавателю, — ниже.
      */
-    { what: 'A model for this room only', why: 'the model is configured for the server' },
-  ]
+    { what: tr("admin.a.model.for.this.room.only"), why: tr("admin.the.model.is.configured.for.the.server") },
+  ])
 
   const notYet = $derived(NOT_YET.filter((row) => !row.unless?.(mode)))
 
@@ -494,50 +497,50 @@
    * к ним относится ровно так же, как к переключателям. (Числом их здесь не
    * называют: массив рос и убывал, а слово «три» оставалось.)
    */
-  const COUPLINGS: { what: string; why: string; when: (r: RoomRules) => boolean }[] = [
+  const COUPLINGS: { what: string; why: string; when: (r: RoomRules) => boolean }[] = $derived([
     {
-      what: 'Students can edit code the teacher runs.',
+      what: tr("admin.students.can.edit.code.the.teacher.runs"),
       why:
-        'Code is read when execution starts. A student with editing access can change a queued ' +
-        'cell before the teacher’s run begins.',
+        (tr("admin.code.is.read.when.execution.starts.a.student.with.editing.access") + " ") +
+        tr("admin.cell.before.the.teacher.s.run.begins"),
       when: (r) => r.run !== 'room' && r.edit === 'room',
     },
     {
-      what: 'Running code also gives access to files.',
+      what: tr("admin.running.code.also.gives.access.to.files"),
       why:
-        'The container has access to this room’s files. ' +
-        'Anyone allowed to run code can list, read and delete those files, regardless of the ' +
-        'file panel permissions.',
+        (tr("admin.the.container.has.access.to.this.room.s.files") + " ") +
+        (tr("admin.anyone.allowed.to.run.code.can.list.read.and.delete.those.files.r") + " ") +
+        tr("admin.file.panel.permissions"),
       when: (r) => r.files !== 'room' && r.run !== 'host',
     },
-  ]
+  ])
 </script>
 
 {#snippet actions()}
   <button type="button" class="btn-ghost" onclick={() => ondone(created ?? undefined)}>
-    {created ? 'Close' : 'Cancel'}
+    {created ? tr("admin.close") : tr("admin.cancel")}
   </button>
   <!-- Комната уже создана — предлагать «создать» ещё раз значит предлагать
        дубликат. Кнопка ведёт туда, где эта комната уже лежит, со ссылкой. -->
   {#if created}
     <button type="button" class="btn-primary" onclick={() => ondone(created ?? undefined)}>
-      Back to seminars
+      {tr("admin.back.to.seminars")}
     </button>
   {:else}
     <button type="button" class="btn-primary" disabled={!canCreate} onclick={create}>
       {#if busy}
         <Icon name="spinner" size={15} class="animate-spin" />
-        Creating…
+        {tr("admin.creating")}
       {:else}
-        Create seminar
+        {tr("admin.create.seminar")}
       {/if}
     </button>
   {/if}
 {/snippet}
 
 <AdminPage
-  title="New seminar"
-  subtitle="Choose a notebook, environment and access rules, then create the seminar."
+  title={tr("admin.new.seminar")}
+  subtitle={tr("admin.choose.a.notebook.environment.and.access.rules.then.create.the.se")}
   {actions}
 >
   {#if error}
@@ -547,16 +550,16 @@
   {/if}
 
   <Section
-    title="Basics"
-    description="Students see this name when they join the seminar."
+    title={tr("admin.basics")}
+    description={tr("admin.students.see.this.name.when.they.join.the.seminar")}
   >
     <div class="flex flex-col gap-3">
       <input
         bind:value={name}
         class="field"
-        placeholder="Week 7 — Attention"
+        placeholder={tr("admin.week.7.attention")}
         maxlength={LIMITS.seminarName}
-        aria-label="Seminar name"
+        aria-label={tr("admin.seminar.name")}
       />
 
       <!--
@@ -578,15 +581,15 @@
         >
           <span class="flex items-center gap-1.5">
             <Icon name="file" size={13} class={source === 'blank' ? 'text-accent-text' : 'text-muted'} />
-            <span class={cn(CAP, source === 'blank' ? 'text-ink' : 'text-muted')}>Blank</span>
+            <span class={cn(CAP, source === 'blank' ? 'text-ink' : 'text-muted')}>{tr("admin.blank")}</span>
           </span>
           <!-- The bytes ensureInitialNotebook() actually seeds, not a description
                of them: a door should show what is behind it. -->
           <span class="flex flex-col gap-0.5 border border-line bg-canvas px-2.5 py-2 font-mono text-micro">
-            <span class="text-faint"># Welcome</span>
+            <span class="text-faint">{tr("admin.welcome")}</span>
             <span class="text-muted">print("hello")</span>
           </span>
-          <span class="text-2xs leading-tight text-muted">Start with a text cell and a code cell.</span>
+          <span class="text-2xs leading-tight text-muted">{tr("admin.start.with.a.text.cell.and.a.code.cell")}</span>
         </button>
 
         <button
@@ -597,7 +600,7 @@
         >
           <span class="flex items-center gap-1.5">
             <Icon name="upload" size={13} class={source === 'file' ? 'text-accent-text' : 'text-muted'} />
-            <span class={cn(CAP, source === 'file' ? 'text-ink' : 'text-muted')}>From a file</span>
+            <span class={cn(CAP, source === 'file' ? 'text-ink' : 'text-muted')}>{tr("admin.from.a.file")}</span>
           </span>
           <span
             class={cn(
@@ -614,9 +617,9 @@
           </span>
           <span class="text-2xs leading-tight text-muted">
             {#if notebook}
-              {notebook.cells.length} cells · outputs are dropped
+              {notebook.cells.length} {tr("admin.cells.outputs.are.dropped")}
             {:else}
-              Choose a .ipynb file. Outputs are not imported.
+              {tr("admin.choose.a.ipynb.file.outputs.are.not.imported")}
             {/if}
           </span>
         </button>
@@ -629,7 +632,7 @@
         >
           <span class="flex items-center gap-1.5">
             <Icon name="link" size={13} class={source === 'github' ? 'text-accent-text' : 'text-muted'} />
-            <span class={cn(CAP, source === 'github' ? 'text-ink' : 'text-muted')}>From GitHub</span>
+            <span class={cn(CAP, source === 'github' ? 'text-ink' : 'text-muted')}>{tr("admin.from.github")}</span>
           </span>
           <span class="flex h-[33px] items-center border border-line bg-canvas px-2.5 font-mono text-micro text-faint">
             github.com/…/week02
@@ -642,7 +645,7 @@
             называет обе причины, но узнать об этом до того, как вставишь
             ссылку, лучше, чем после.
           -->
-          <span class="text-2xs leading-tight text-muted">Public repositories only.</span>
+          <span class="text-2xs leading-tight text-muted">{tr("admin.public.repositories.only")}</span>
         </button>
       </div>
 
@@ -669,17 +672,17 @@
           placeholder="https://github.com/sleep3r/ml_hse/tree/main/week02"
           autocomplete="off"
           spellcheck="false"
-          aria-label="GitHub link to a notebook or a folder"
+          aria-label={tr("admin.github.link.to.a.notebook.or.a.folder")}
         />
         {#if previewing}
-          <p class="text-2xs text-muted">Reading the repository…</p>
+          <p class="text-2xs text-muted">{tr("admin.reading.the.repository")}</p>
         {:else if previewError}
           <p class="text-2xs text-danger">{previewError}</p>
         {:else if preview}
           <div class="flex flex-wrap items-center gap-2 text-2xs text-muted">
             <span class="font-mono text-ink">{preview.notebook}</span>
             <span>·</span>
-            <span>{preview.cells} cells</span>
+            <span>{preview.cells} {tr("admin.cells")}</span>
             {#each preview.files as f (f.name)}
               <span>·</span>
               <span class="font-mono">{f.name}</span>
@@ -692,9 +695,7 @@
           {#if preview.skipped.length > 0}
             <div class="mt-1.5 flex flex-wrap items-center gap-2 text-2xs text-warning">
               <span>
-                {preview.skipped.length === 1
-                  ? '1 file exceeds the import limit and will be skipped:'
-                  : `${preview.skipped.length} files exceed the import limit and will be skipped:`}
+                {tr("admin.count.skippedFiles", { count: preview.skipped.length })}
               </span>
               {#each preview.skipped as name (name)}
                 <span class="font-mono text-muted line-through">{name}</span>
@@ -707,8 +708,8 @@
   </Section>
 
   <Section
-    title="Environment"
-    description="The Python environment for this seminar. It is selected when the seminar is created."
+    title={tr("admin.environment.464")}
+    description={tr("admin.the.python.environment.for.this.seminar.it.is.selected.when.the.s")}
   >
     <!--
       Не строка со списком, а карточка с содержимым.
@@ -732,7 +733,7 @@
               <span class="font-mono text-code-lg font-medium text-ink">{chosen.name}</span>
               {#if chosen.state === 'ready'}
                 <span class="inline-flex h-[18px] items-center bg-positive/10 px-1.5 text-micro font-bold uppercase tracking-label text-positive">
-                  built
+                  {tr("admin.built")}
                 </span>
               {/if}
               {#if chosen.gpu}
@@ -752,7 +753,7 @@
               <select
                 bind:value={environment}
                 class="absolute h-0 w-0 opacity-0"
-                aria-label="Python environment"
+                aria-label={tr("admin.python.environment")}
               >
                 {#each environments as env (env.name)}
                   <option value={env.name} disabled={env.state !== 'ready'}>{env.name}</option>
@@ -765,7 +766,7 @@
                   <span class="bg-surface px-2 py-0.5 font-mono text-micro text-muted">{pkg}</span>
                 {/each}
                 {#if chosen.packages.length > 5}
-                  <span class="text-2xs text-faint">+ {chosen.packages.length - 5} more</span>
+                  <span class="text-2xs text-faint">+ {chosen.packages.length - 5} {tr("admin.more")}</span>
                 {/if}
               </div>
             {/if}
@@ -776,14 +777,14 @@
         <!-- и выбрать его нельзя — комната на нём не поднимется. -->
         {#if environments.length > 1}
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-micro font-bold uppercase tracking-label text-faint">or choose</span>
+            <span class="text-micro font-bold uppercase tracking-label text-faint">{tr("admin.or.choose")}</span>
             {#each environments.filter((e) => e.name !== environment) as env (env.name)}
               <button
                 type="button"
                 disabled={env.state !== 'ready'}
                 title={env.state === 'ready'
-                  ? `Use ${env.name}`
-                  : `${env.name} has not been built — a room cannot open on it`}
+                  ? tr("admin.use", { p0: env.name })
+                  : tr("admin.has.not.been.built.a.room.cannot.open.on.it", { p0: env.name })}
                 onclick={() => (environment = env.name)}
                 class={cn(
                   'inline-flex h-6 items-center gap-1.5 px-2 font-mono text-2xs',
@@ -797,7 +798,7 @@
                 {/if}
                 {env.name}
                 {#if env.state !== 'ready'}
-                  <span class="font-sans text-micro text-warning">not built</span>
+                  <span class="font-sans text-micro text-warning">{tr("admin.not.built.483")}</span>
                 {/if}
               </button>
             {/each}
@@ -805,7 +806,7 @@
         {/if}
       </div>
     {:else}
-      <p class="text-2xs text-muted">Whatever this instance runs.</p>
+      <p class="text-2xs text-muted">{tr("admin.whatever.this.instance.runs")}</p>
     {/if}
 
     <!--
@@ -821,13 +822,11 @@
         <Icon name="alert" size={13} class="mt-0.5 shrink-0 text-warning" />
         <p class="min-w-0 text-2xs leading-snug text-muted">
           {#if gpus.total === 0}
-            <span class="font-semibold text-ink">GPU не настроены.</span>
-            Окружению нужен GPU, но KERNEL_GPUS не задана. Выберите другое окружение
-            или попросите администратора настроить GPU.
+            <span class="font-semibold text-ink">{tr("admin.gpu.is.not.configured")}</span>
+            {tr("admin.this.environment.needs.a.gpu.but.kernel.gpus.is.not.set.choose.an")}
           {:else}
-            <span class="font-semibold text-ink">Свободных срезов нет.</span>
-            Все срезы заняты контейнерами других семинаров, в том числе неактивных.
-            Семинар можно создать, но для запуска ядра потребуется освободить срез.
+            <span class="font-semibold text-ink">{tr("admin.no.free.slices")}</span>
+            {tr("admin.all.slices.are.held.by.containers.from.other.seminars.including.i")}
           {/if}
         </p>
       </div>
@@ -852,16 +851,16 @@
     ровно то, что запрещает правило честности в шапке этого файла.
   -->
   <Section
-    title="Materials"
-    description="Add files to the seminar workspace. Participants can download them; reading them from code requires permission to run code."
+    title={tr("admin.materials")}
+    description={tr("admin.add.files.to.the.seminar.workspace.participants.can.download.them")}
   >
     <div class="flex flex-col">
       {#if materials.length > 0}
         <div class="flex items-center gap-3 border-b border-line pb-2">
           <span class="w-[13px] shrink-0"></span>
-          <span class="flex-1 text-micro font-bold uppercase tracking-label text-faint">file</span>
-          <span class="w-24 shrink-0 text-micro font-bold uppercase tracking-label text-faint">role</span>
-          <span class="w-14 shrink-0 text-right text-micro font-bold uppercase tracking-label text-faint">size</span>
+          <span class="flex-1 text-micro font-bold uppercase tracking-label text-faint">{tr("admin.file")}</span>
+          <span class="w-24 shrink-0 text-micro font-bold uppercase tracking-label text-faint">{tr("admin.role")}</span>
+          <span class="w-14 shrink-0 text-right text-micro font-bold uppercase tracking-label text-faint">{tr("admin.size")}</span>
           <span class="w-[13px] shrink-0"></span>
         </div>
       {/if}
@@ -876,12 +875,12 @@
           <Icon name="file" size={13} class="shrink-0 text-accent-text" />
           <span class="flex min-w-0 flex-1 flex-col gap-0.5">
             <span class="truncate font-mono text-2xs font-medium text-ink">{notebook.filename}</span>
-            <span class="text-micro text-muted">{notebook.cells.length} cells · outputs dropped</span>
+            <span class="text-micro text-muted">{notebook.cells.length} {tr("admin.cells.outputs.dropped")}</span>
           </span>
           <span class="w-24 shrink-0">
             <span class="inline-flex h-[18px] items-center gap-1.5 bg-accent px-2 text-micro font-bold uppercase tracking-label text-white">
               <span class="h-1 w-1 bg-white"></span>
-              live
+              {tr("admin.live")}
             </span>
           </span>
           <span class="w-14 shrink-0 text-right font-mono text-micro text-muted">—</span>
@@ -900,14 +899,14 @@
             <span class="truncate font-mono text-2xs text-ink">{file.name}</span>
             <span class="text-micro text-muted">
               {#if isNotebook(file.name)}
-                Attached notebook file
+                {tr("admin.attached.notebook.file")}
               {:else}
-                Read from code with open("{file.name}")
+                {tr("admin.read.from.code.with.open")}{file.name}")
               {/if}
             </span>
           </span>
           <span class="w-24 shrink-0 text-2xs text-faint">
-            {isNotebook(file.name) ? 'notebook' : 'data'}
+            {isNotebook(file.name) ? tr("admin.notebook") : tr("admin.data")}
           </span>
           <span class="w-14 shrink-0 text-right font-mono text-micro text-muted">
             {imageSize(file.size)}
@@ -915,7 +914,7 @@
           <button
             type="button"
             class="shrink-0 text-faint transition-colors duration-[var(--speed-quick)] hover:text-ink"
-            aria-label={`Remove ${file.name} from the upload list`}
+            aria-label={tr("admin.remove.from.the.upload.list", { p0: file.name })}
             onclick={() => (materials = materials.filter((f) => f.name !== file.name))}
           >
             <Icon name="x" size={13} />
@@ -941,10 +940,10 @@
       >
         <Icon name="upload" size={15} class="shrink-0 text-faint" />
         <span class="text-2xs text-muted">
-          Drop notebooks, data or slides — or <span class="text-accent-text underline decoration-line underline-offset-2">browse</span>.
+          {tr("admin.drop.notebooks.data.or.slides.or")} <span class="text-accent-text underline decoration-line underline-offset-2">{tr("admin.browse")}</span>.
           <!-- Число — с сервера. Пока его нет, предложение обрывается на точке:
                предел, названный наугад, хуже неназванного. -->
-          {#if maxUploadBytes !== null}Up to {uploadMb(maxUploadBytes)} MB each.{/if}
+          {#if maxUploadBytes !== null}{tr("admin.up.to")} {uploadMb(maxUploadBytes)} {tr("admin.mb.each")}{/if}
         </span>
         <input
           type="file"
@@ -963,8 +962,7 @@
 
       {#if materials.length > 0}
         <p class="pt-2.5 text-2xs text-faint">
-          {materials.length + (notebook ? 1 : 0)}
-          {materials.length + (notebook ? 1 : 0) === 1 ? 'material' : 'materials'} ·
+          {tr("admin.count.material", { count: materials.length + (notebook ? 1 : 0) })} ·
           {imageSize(materialBytes)}
         </p>
       {/if}
@@ -972,8 +970,8 @@
   </Section>
 
   <Section
-    title="The room"
-    description="Choose a mode and adjust access rules. You can change them during the seminar."
+    title={tr("admin.the.room")}
+    description={tr("admin.choose.a.mode.and.adjust.access.rules.you.can.change.them.during")}
   >
     <div class="flex flex-col gap-4">
       <!--
@@ -1006,7 +1004,7 @@
             </button>
           {/each}
         </div>
-        <p class="text-2xs text-muted">Режим можно изменить на странице семинара.</p>
+        <p class="text-2xs text-muted">{tr("admin.you.can.change.the.mode.on.the.seminar.page")}</p>
       </div>
 
       <RoomRulesRows {rules} onchange={(patch) => (rules = { ...rules, ...patch })} />
@@ -1030,8 +1028,8 @@
 
       <div class="border border-line bg-surface">
         <div class="flex items-center gap-2.5 border-b border-line px-3.5 py-2">
-          <span class="text-micro font-bold uppercase tracking-caps text-muted">Unavailable controls</span>
-          <span class="text-2xs text-faint">Current limitations</span>
+          <span class="text-micro font-bold uppercase tracking-caps text-muted">{tr("admin.unavailable.controls")}</span>
+          <span class="text-2xs text-faint">{tr("admin.current.limitations")}</span>
         </div>
         {#each notYet as row (row.what)}
           <div
@@ -1046,11 +1044,9 @@
       <div class="flex items-start gap-2.5 border-l-2 border-accent bg-accent/[0.06] px-3.5 py-3">
         <Icon name="lock" size={13} class="mt-0.5 shrink-0 text-accent-text" />
         <div class="min-w-0">
-          <p class="text-ui font-semibold text-ink">Teacher controls</p>
+          <p class="text-ui font-semibold text-ink">{tr("admin.teacher.controls")}</p>
           <p class="mt-1 text-2xs text-muted">
-            Interrupting a cell somebody else started · renaming the seminar · restoring an old
-            version and marking a checkpoint · deleting files from the file panel · closing somebody's access
-            from the People panel, which also takes them out of the room.
+            {tr("admin.interrupting.a.cell.somebody.else.started.renaming.the.seminar.re")}
           </p>
         </div>
       </div>
@@ -1058,8 +1054,8 @@
   </Section>
 
   <Section
-    title="Oracle"
-    description="Choose oracle access for this seminar within the server’s allowed mode."
+    title={tr("admin.oracle")}
+    description={tr("admin.choose.oracle.access.for.this.seminar.within.the.server.s.allowed")}
   >
     <div class="flex flex-col gap-3">
       <div class="flex flex-wrap gap-1.5">
@@ -1072,23 +1068,23 @@
             class="oracle-card {rules.oracle === option.value ? 'oracle-on' : ''}"
             aria-pressed={rules.oracle === option.value}
             disabled={over}
-            title={over ? `The server allows up to ${ceiling?.mode} mode` : undefined}
+            title={over ? tr("admin.the.server.allows.up.to.mode", { p0: tr(`admin.oracle.mode.${ceiling?.mode ?? 'off'}`) }) : undefined}
             onclick={() => (rules.oracle = option.value)}
           >
             <span class="text-ui font-semibold">{option.label}</span>
             <span class="text-2xs opacity-70">
-              {over ? `above what the instance allows (${ceiling?.mode})` : option.note}
+              {over ? tr("admin.above.what.the.instance.allows", { p0: tr(`admin.oracle.mode.${ceiling?.mode ?? 'off'}`) }) : option.note}
             </span>
           </button>
         {/each}
       </div>
       <p class="text-2xs text-muted">
-        The server’s mode limits this seminar. You can further restrict the oracle here.
+        {tr("admin.the.server.s.mode.limits.this.seminar.you.can.further.restrict.th")}
         {#if ceiling?.why}
           <span class="text-ink">
             {ceiling.mode === 'off'
-              ? `The oracle is unavailable: ${ceiling.why}.`
-              : `Server limit: ${ceiling.why}.`}
+              ? tr("admin.the.oracle.is.unavailable", { p0: ceiling.why })
+              : tr("admin.server.limit", { p0: ceiling.why })}
           </span>
         {/if}
       </p>

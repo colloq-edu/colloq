@@ -1,3 +1,4 @@
+import { translate, tr } from '../shared/i18n.js'
 /**
  * Мелочи тетради, которые видно только глазами, — и одно слово, без которого
  * консилиум врёт.
@@ -65,19 +66,19 @@ test('про общее ядро сказано там, где ручку вкл
   assert.match(CELL, /COUNCIL_SHARED_KERNEL_NOTE/)
   assert.doesNotMatch(CELL, /Попытки считаются в общем ядре/, 'строка переписана копией')
 
-  const knob = CELL.indexOf('Запуск студентам')
+  const knob = CELL.indexOf("tr('room.ui.335')")
   assert.ok(knob > 0, 'ручки studentRun больше нет')
   assert.match(
-    CELL.slice(knob, CELL.indexOf('Настройка применяется', knob)),
-    /\{COUNCIL_SHARED_KERNEL_NOTE\}/,
+    CELL.slice(knob, CELL.indexOf("tr('room.ui.339')", knob)),
+    /\{tr\(COUNCIL_SHARED_KERNEL_NOTE\)\}/,
     'у ручки сказано только про очередь',
   )
 
-  const run = CELL.indexOf('Запустить свою попытку — в очередь, по одному')
+  const run = CELL.indexOf("tr('room.extra.138'")
   assert.ok(run > 0, 'кнопки запуска попытки больше нет')
   assert.match(
     CELL.slice(run - 200, run + 300),
-    /\$\{COUNCIL_SHARED_KERNEL_NOTE\}/,
+    /p0: tr\(COUNCIL_SHARED_KERNEL_NOTE\)/,
     'подсказка кнопки — про очередь, а не про состояние',
   )
 })
@@ -86,7 +87,7 @@ test('строка про общее ядро говорит и про снят�
   // Сервер снимает имена, заведённые попыткой (kernel/index.ts ·
   // COUNCIL_SNAPSHOT_NAMES), но изменённые данные остаются общими — фраза
   // описывает ровно это, иначе она обещала бы изоляцию, которой нет.
-  assert.match(COUNCIL_SHARED_KERNEL_NOTE, /по очереди/)
-  assert.match(COUNCIL_SHARED_KERNEL_NOTE, /удаляются после запуска/)
-  assert.match(COUNCIL_SHARED_KERNEL_NOTE, /общих объектов и файлов сохраняются/)
+  assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /по очереди/)
+  assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /удаляются после запуска/)
+  assert.match(tr(COUNCIL_SHARED_KERNEL_NOTE), /общих объектов и файлов сохраняются/)
 })

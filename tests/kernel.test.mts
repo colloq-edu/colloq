@@ -12,7 +12,12 @@
  */
 import './_env.mts'
 import { createServer, type Server } from 'node:http'
-import { after, afterEach, before, test } from 'node:test'
+import { after, afterEach, before, beforeEach, test } from 'node:test'
+// Import settings only after the fake Jupyter URL is prepared by before().
+beforeEach(async () => {
+  const { setInstanceLanguage } = await import('../server/src/admin/settings.js')
+  setInstanceLanguage('en')
+})
 import assert from 'node:assert/strict'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type * as Y from 'yjs'

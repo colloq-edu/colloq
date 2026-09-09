@@ -1,3 +1,4 @@
+import { tr, translate } from '@shared/i18n'
 /**
  * The oracle, assembled: notebook context + the room's thread + one
  * rewritten prompt, streamed straight into the shared document.
@@ -60,7 +61,8 @@ const ANSWER_FLUSH_MS = 60
 const MAX_HISTORY_ENTRIES = 10
 const MAX_HISTORY_CHARS = 1200
 
-const STOPPED = '(stopped)'
+const STOPPED = '(stopped)' // legacy persisted marker
+const stoppedAnswer = (text: string): boolean => text === STOPPED || text === translate('ru', 'server.aiStopped') || text === translate('en', 'server.aiStopped')
 
 /** Key is `${sessionId}:${entryId}`; an entry is in here only while generating. */
 const inflight = new Map<string, AbortController>()
@@ -283,7 +285,7 @@ async function generate(
   try {
     if (!providerReady()) {
       throw new Error(
-        'No model is set up on this Colloq yet. Whoever runs it can add one under Oracle in the teaching panel.',
+        tr("server.noModelIsSetUpOnThis.7014ab"),
       )
     }
 
@@ -355,12 +357,12 @@ async function generate(
           text.trim()
             ? null
             : spokeOnce
-              ? 'The model stopped sending its response. Try again.'
-              : 'The model did not respond within the time limit. Try again.',
+              ? tr("server.theModelStoppedSendingItsResponseTry.3aa75a")
+              : tr("server.theModelDidNotRespondWithinThe.be1746"),
         )
         return
       }
-      settle(sessionId, entryId, 'done', text.trim() ? null : STOPPED)
+      settle(sessionId, entryId, 'done', text.trim() ? null : tr('server.aiStopped'))
       return
     }
     // streamChat resolves empty only when the endpoint answered but said
@@ -374,8 +376,8 @@ async function generate(
        * failure uses in routes/ai.ts.
        */
       throw new Error(
-        `The model returned an empty response: "${providerModel()}". ` +
-          'Ask whoever runs this Colloq to check the model.',
+        tr("server.theModelReturnedAnEmptyResponse.826722", { p0: providerModel() }) +
+          tr("server.askWhoeverRunsThisColloqToCheck.43c560"),
       )
     }
     settle(sessionId, entryId, 'done', null)
@@ -386,7 +388,7 @@ async function generate(
       settle(sessionId, entryId, 'done', null)
       return
     }
-    const reason = describe(err) || 'The oracle is unavailable. Try again or ask the teacher to check the connection.'
+    const reason = describe(err) || tr("server.theOracleIsUnavailableTryAgainOr.c900e7")
     console.error(`[session ${sessionId}] AI request failed:`, reason)
     // The reason goes into the bubble: the room is looking at this thread, and
     // an empty grey box tells a class nothing about what broke.
@@ -629,7 +631,7 @@ export function recentTurns(doc: Y.Doc): ChatTurn[] {
      * line about the server's own plumbing. A cancelled answer was already
      * excluded for the same reason; an errored one was not.
      */
-    const answered = answer.length > 0 && answer !== STOPPED && snapshot.state !== 'error'
+    const answered = answer.length > 0 && !stoppedAnswer(answer) && snapshot.state !== 'error'
     /*
      * И вопрос уходит вместе со своим ответом, а не отдельно от него.
      *
@@ -694,6 +696,7 @@ function systemPrompt(
    * не слабеет: последнее в системном запросе модель держит не хуже второго.
    */
   const rules = [
+    tr('server.ai.answerLanguage'),
     'You are the AI oracle built into Colloq, a live seminar notebook that a class is working in right now.',
     'Every person in the seminar can read your reply: answer the room, not a private tab.',
     'Earlier turns in this thread were asked by different people; each question is labelled with its asker.',
@@ -807,19 +810,19 @@ function capitalize(text: string): string {
 function actionLabel(action: AiAction | undefined): string {
   switch (action) {
     case 'explain':
-      return 'Explain this cell'
+      return tr("server.explainThisCell.f897a5")
     case 'fix':
-      return 'Fix this cell'
+      return tr("server.fixThisCell.0e43d1")
     case 'debug':
-      return 'Why is this wrong?'
+      return tr("server.whyIsThisWrong.50358d")
     case 'improve':
-      return 'Improve this cell'
+      return tr("server.improveThisCell.16130e")
     case 'edit':
-      return 'Rewrite this cell'
+      return tr("server.rewriteThisCell.fe2d4a")
     case 'hint':
-      return 'Give me a hint'
+      return tr("server.giveMeAHint.f2629c")
     default:
-      return 'Help me with this'
+      return tr("server.helpMeWithThis.05371a")
   }
 }
 

@@ -6,6 +6,7 @@
   самого курса и называет ссылку, которую ломает.
 -->
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
@@ -35,7 +36,8 @@
   let courses = $state<Course[]>([])
   let course = $state<Course | null>(null)
   let seminars = $state<AdminSeminar[]>([])
-  let error = $state<string | null>(null)
+  let errorText = $state<(() => string | null) | null>(null)
+  const error = $derived(errorText?.() ?? null)
   let busy = $state(false)
   let creating = $state(false)
   let draftName = $state('')
@@ -48,10 +50,10 @@
     // Мёртвым печеньем этот экран распорядиться не может: оболочка меняет всю
     // панель на экран входа. С причиной — печенье доехало и его отвергли.
     if (cause instanceof AdminApiError) {
-      if (cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+
       return cause.message
     }
-    return 'Не удалось выполнить запрос. Попробуйте ещё раз.'
+    return tr("admin.could.not.complete.the.request.try.again")
   }
 
   /** Адрес, который диктуют вслух: имя, если его дали, иначе идентификатор. */
@@ -63,7 +65,8 @@
       navCounts.courses = courses.length
       await loadOrphans()
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
     }
   }
 
@@ -71,12 +74,13 @@
     loadingOne = true
     try {
       course = await adminApi.course(id)
-      error = null
+      errorText = null
     } catch (cause) {
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       // Курса по этому адресу нет — ветка внизу скажет это словами, а раньше на
       // его месте была пустая область.
       course = null
-      error = explain(cause)
+      errorText = () => (explain(cause))
       return
     } finally {
       loadingOne = false
@@ -86,7 +90,8 @@
       // курса остаётся целым, и объявлять курс ненайденным из-за него нельзя.
       seminars = await adminApi.listSeminars()
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
     }
   }
 
@@ -121,7 +126,8 @@
       creating = false
       navigate(`/admin/courses/${made.id}`)
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
     } finally {
       busy = false
     }
@@ -140,15 +146,16 @@
     // ещё» — про собственный двойной клик.
     if (!course || busy) return
     busy = true
-    error = null
+    errorText = null
     try {
       course = await adminApi.setCourseItems(course.id, course.rev, items)
     } catch (cause) {
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       if (cause instanceof AdminApiError && cause.status === 409) {
-        error = 'Курс изменён другим пользователем. Загрузим текущую версию; повторите изменение.'
+        errorText = () => (tr("admin.another.user.changed.the.course.the.current.version.will.load.ple"))
         await loadOne(course.id)
       } else {
-        error = explain(cause)
+        errorText = () => (explain(cause))
       }
     } finally {
       busy = false
@@ -199,7 +206,7 @@
     try {
       await copyText(text)
     } catch {
-      error = `Не удалось скопировать ссылку. Скопируйте её вручную: ${text}`
+      errorText = () => (tr("admin.could.not.copy.the.link.copy.it.manually", { p0: text }))
       return
     }
     copied = key
@@ -254,17 +261,18 @@
     if (!course || busy) return
     const next = slugDraft.trim().toLowerCase()
     if (next && !slugOk(next)) {
-      error = 'Адрес: 3–64 символа, строчные латинские буквы, цифры и дефис. Первый и последний символ — буква или цифра.'
+      errorText = () => (tr("admin.address.3.64.lowercase.latin.letters.digits.or.dashes.start.and.e"))
       return
     }
     busy = true
-    error = null
+    errorText = null
     held = null
     try {
       await adminApi.setSlug('course', course.id, next || null)
       await loadOne(course.id)
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
       const holder = addressHolderOf(cause)
       if (holder?.former && next) held = { slug: next, holder }
     } finally {
@@ -283,11 +291,12 @@
     if (!held || busy) return
     const { holder, slug: freed } = held
     busy = true
-    error = null
+    errorText = null
     try {
       await adminApi.releaseFormerSlug(holder.kind, holder.id, freed)
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
       return
     } finally {
       busy = false
@@ -317,11 +326,12 @@
     const name = dropping
     if (!open || !name || busy) return
     busy = true
-    error = null
+    errorText = null
     try {
       await adminApi.releaseFormerSlug('course', open.id, name)
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
       return
     } finally {
       busy = false
@@ -348,11 +358,11 @@
     if (!open || busy) return
     const name = nameDraft.trim()
     if (!name) {
-      error = 'Введите название курса.'
+      errorText = () => (tr("admin.enter.a.course.name"))
       return
     }
     busy = true
-    error = null
+    errorText = null
     try {
       const saved = await adminApi.updateCourse(open.id, { name, blurb: blurbDraft.trim() || null })
       course = saved
@@ -367,7 +377,8 @@
       nameDraft = saved.name
       blurbDraft = saved.blurb ?? ''
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
     } finally {
       busy = false
     }
@@ -385,13 +396,14 @@
     const open = course
     if (!open || busy) return
     busy = true
-    error = null
+    errorText = null
     try {
       await adminApi.deleteCourse(open.id)
       doomed = false
       navigate('/admin/courses')
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
     } finally {
       busy = false
     }
@@ -419,12 +431,13 @@
 
   async function actOnOrphan(id: string, what: () => Promise<void>): Promise<void> {
     orphanBusy = id
-    error = null
+    errorText = null
     try {
       await what()
       await loadOrphans()
     } catch (cause) {
-      error = explain(cause)
+      if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
+      errorText = () => (explain(cause))
     } finally {
       orphanBusy = null
     }
@@ -438,11 +451,11 @@
 
 {#if !open}
   <AdminPage
-    title="Courses"
-    subtitle="Объедините семинары на странице курса и задайте их порядок."
+    title={tr("admin.courses")}
+    subtitle={tr("admin.group.seminars.on.a.course.page.and.set.their.order")}
   >
     {#snippet actions()}
-      <button type="button" class="btn-primary" onclick={() => (creating = true)}>New course</button>
+      <button type="button" class="btn-primary" onclick={() => (creating = true)}>{tr("admin.new.course")}</button>
     {/snippet}
 
     <div class="px-8 py-6">
@@ -455,7 +468,7 @@
           <!-- svelte-ignore a11y_autofocus -->
           <input
             class="h-9 min-w-0 flex-1 border border-line bg-canvas px-3 text-ui text-ink"
-            placeholder="Название курса"
+            placeholder={tr("admin.course.name")}
             maxlength={MAX_COURSE_NAME}
             autofocus
             bind:value={draftName}
@@ -465,19 +478,19 @@
             }}
           />
           <button type="button" class="btn-primary shrink-0" disabled={busy} onclick={() => void create()}>
-            Создать
+            {tr("admin.create")}
           </button>
           <button type="button" class="btn-ghost shrink-0" onclick={() => (creating = false)}>
-            Отмена
+            {tr("admin.cancel")}
           </button>
         </div>
       {/if}
 
       {#if courses.length === 0 && !creating}
         <div class="py-16 text-center">
-          <p class="text-title font-semibold text-ink">Курсов пока нет</p>
+          <p class="text-title font-semibold text-ink">{tr("admin.no.courses.yet")}</p>
           <p class="mx-auto mt-2 max-w-sm text-ui text-muted">
-            Создайте курс и добавьте семинары. Студенты увидят список и ссылки на опубликованные материалы.
+            {tr("admin.create.a.course.and.add.seminars.students.will.see.the.list.and.l")}
           </p>
         </div>
       {/if}
@@ -501,7 +514,7 @@
             <p class="mt-0.5 font-mono text-2xs text-muted">/c/{addressOf(item)}</p>
           </button>
           <p class="shrink-0 text-ui text-muted">
-            {published} опубликовано · {waiting} ещё нет
+            {published} {tr("admin.published")} {waiting} {tr("admin.not.yet")}
           </p>
         </div>
       {/each}
@@ -513,10 +526,9 @@
       -->
       {#if orphans.length > 0}
         <div class="mt-8 border-t border-line pt-5">
-          <p class="text-ui font-semibold text-ink">Страницы без комнаты</p>
+          <p class="text-ui font-semibold text-ink">{tr("admin.pages.without.a.room")}</p>
           <p class="mt-1 max-w-xl text-2xs leading-relaxed text-muted">
-            После удаления семинара его публикация сохранена. Здесь можно снять её с публикации
-            или вернуть доступ по ссылке.
+            {tr("admin.the.seminar.was.deleted.but.its.publication.was.kept.you.can.with")}
           </p>
           {#each orphans as page (page.id)}
             <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line py-3">
@@ -524,12 +536,12 @@
                 <p class="truncate text-ui text-ink">{page.title}</p>
                 <p class="mt-0.5 font-mono text-2xs text-muted">
                   /p/{addressOf(page)} · {page.steps}
-                  {plural(page.steps, 'шаг', 'шага', 'шагов')}
-                  {page.state === 'withdrawn' ? ' · снята' : ''}
+                  {plural(page.steps, tr("admin.step"), tr("admin.steps"), tr("admin.steps.143"))}
+                  {page.state === 'withdrawn' ? (" " + tr("admin.withdrawn")) : ''}
                 </p>
               </div>
               <a class="shrink-0 text-ui text-accent-text" href={`/p/${addressOf(page)}`} target="_blank" rel="noreferrer">
-                Открыть
+                {tr("admin.open")}
               </a>
               {#if page.state === 'published'}
                 <button
@@ -538,7 +550,7 @@
                   disabled={orphanBusy === page.id}
                   onclick={() => void actOnOrphan(page.id, () => adminApi.withdrawPublication(page.id))}
                 >
-                  Снять страницу
+                  {tr("admin.withdraw.page")}
                 </button>
               {:else}
                 <button
@@ -547,7 +559,7 @@
                   disabled={orphanBusy === page.id}
                   onclick={() => void actOnOrphan(page.id, () => adminApi.restorePublication(page.id))}
                 >
-                  Вернуть страницу
+                  {tr("admin.restore.page")}
                 </button>
                 <!-- Стереть — только владельцу и только у снятой: снятую можно
                      вернуть, стёртую нельзя, и надгробие в курсе теряет ссылку. -->
@@ -557,11 +569,11 @@
                     class="shrink-0 text-ui font-semibold text-danger"
                     disabled={orphanBusy === page.id}
                     onclick={() => {
-                      if (!window.confirm(`Удалить страницу /p/${addressOf(page)} навсегда? Восстановить её через Colloq нельзя.`)) return
+                      if (!window.confirm(tr("admin.permanently.delete.page.p.it.cannot.be.restored.through.colloq", { p0: addressOf(page) }))) return
                       void actOnOrphan(page.id, () => adminApi.erasePublication(page.id))
                     }}
                   >
-                    Удалить навсегда
+                    {tr("admin.delete.permanently")}
                   </button>
                 {/if}
               {/if}
@@ -583,13 +595,13 @@
         class="btn-ghost"
         onclick={() => void copy(`${location.origin}/c/${addressOf(shown)}`, 'link')}
       >
-        {copied === 'link' ? 'Скопировано' : 'Копировать ссылку'}
+        {copied === 'link' ? tr("admin.copied") : tr("admin.copy.link")}
       </button>
       <a class="btn-ghost" href={`/c/${addressOf(shown)}`} target="_blank" rel="noreferrer">
-        Открыть страницу курса
+        {tr("admin.open.course.page")}
       </a>
       <button type="button" class="btn-primary" onclick={() => (adding = !adding)}>
-        + Добавить семинар
+        {tr("admin.add.seminar")}
       </button>
     {/snippet}
 
@@ -599,7 +611,7 @@
         class="mb-5 text-ui text-muted transition-colors hover:text-ink"
         onclick={() => navigate('/admin/courses')}
       >
-        ← Все курсы
+        {tr("admin.all.courses")}
       </button>
 
       <!--
@@ -611,7 +623,7 @@
           class="h-9 w-[280px] max-w-full border border-line bg-canvas px-3 text-ui text-ink
                  focus:outline-none focus:ring-2 focus:ring-accent/40"
           maxlength={MAX_COURSE_NAME}
-          aria-label="Название курса"
+          aria-label={tr("admin.course.name")}
           bind:value={nameDraft}
           onkeydown={(event) => {
             if (event.key === 'Enter') void saveDetails()
@@ -620,9 +632,9 @@
         <input
           class="h-9 min-w-[220px] flex-1 border border-line bg-canvas px-3 text-ui text-ink
                  placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
-          placeholder="Краткое описание курса (необязательно)"
+          placeholder={tr("admin.short.course.description.optional")}
           maxlength={MAX_COURSE_BLURB}
-          aria-label="Подпись курса"
+          aria-label={tr("admin.course.description")}
           bind:value={blurbDraft}
           onkeydown={(event) => {
             if (event.key === 'Enter') void saveDetails()
@@ -635,7 +647,7 @@
             disabled={busy}
             onclick={() => void saveDetails()}
           >
-            Сохранить изменения
+            {tr("admin.save.changes")}
           </button>
         {/if}
       </div>
@@ -659,7 +671,7 @@
         />
         {#if slugDraft.trim() !== (shown.slug ?? '')}
           <button type="button" class="btn-primary h-7 px-3 text-2xs" disabled={busy} onclick={() => void saveSlug()}>
-            Сохранить адрес
+            {tr("admin.save.address")}
           </button>
         {/if}
         <!-- Имя держит не живой адрес, а память о розданной ссылке — и это
@@ -673,20 +685,19 @@
             disabled={busy}
             onclick={() => (askingSlug = true)}
           >
-            Освободить прежний адрес
+            {tr("admin.release.previous.address")}
           </button>
         {/if}
         {#if shown.slug}
-          <span class="text-2xs text-muted">старый адрес /c/{shown.id} тоже работает</span>
+          <span class="text-2xs text-muted">{tr("admin.the.old.address.c")}{shown.id} {tr("admin.also.works")}</span>
         {/if}
       </div>
 
       {#if held}
         <p class="max-w-[640px] pb-5 text-2xs leading-snug text-muted">
-          <span class="font-mono text-ink">/c/{held.slug}</span> — прежний адрес
-          {held.holder.kind === 'course' ? 'курса' : 'страницы'}
-          {#if held.holder.name}«{held.holder.name}»{/if}. После переноса эта ссылка будет открывать
-          текущий курс вместо прежнего.
+          <span class="font-mono text-ink">/c/{held.slug}</span> {tr("admin.the.previous.address.of.the")}
+          {held.holder.kind === 'course' ? tr("admin.course") : tr("admin.page")}
+          {#if held.holder.name}«{held.holder.name}»{/if}{tr("admin.after.transfer.this.link.will.open.the.current.course.instead.of")}
         </p>
       {/if}
 
@@ -703,10 +714,9 @@
       {#if former.length > 0}
         <div class="mb-5 max-w-[640px] border border-line bg-surface">
           <div class="border-b border-line px-4 py-2.5">
-            <p class="text-ui font-semibold text-ink">Прежние адреса</p>
+            <p class="text-ui font-semibold text-ink">{tr("admin.previous.addresses")}</p>
             <p class="mt-0.5 text-2xs leading-snug text-muted">
-              Эти ссылки открывают текущий курс. Если освободить адрес, он перестанет вести сюда
-              и его сможет занять другой курс.
+              {tr("admin.these.links.open.the.current.course.releasing.an.address.stops.it")}
             </p>
           </div>
           {#each former as name (name)}
@@ -718,7 +728,7 @@
                 disabled={busy}
                 onclick={() => (dropping = name)}
               >
-                Освободить
+                {tr("admin.release")}
               </button>
             </div>
           {/each}
@@ -735,22 +745,20 @@
       -->
       <div class="mb-6 flex flex-wrap items-start gap-x-7 gap-y-2 border-y border-line py-4">
         <div class="w-[220px] shrink-0">
-          <p class="text-ui font-semibold text-ink">Что видят студенты</p>
+          <p class="text-ui font-semibold text-ink">{tr("admin.what.students.see")}</p>
           <p class="mt-0.5 text-2xs leading-snug text-muted">
-            Страница доступна по ссылке без входа.
+            {tr("admin.the.page.is.accessible.by.link.without.signing.in")}
           </p>
         </div>
         <p class="min-w-0 max-w-[640px] flex-1 text-ui leading-relaxed text-muted">
-          На странице курса показаны названия семинаров в указанном порядке и ссылки на их
-          публикации. У остальных семинаров стоит «ещё не опубликован». Ссылки для входа
-          в комнаты на странице курса не размещаются.
+          {tr("admin.the.course.page.shows.seminar.names.in.the.chosen.order.and.links")}
         </p>
       </div>
 
       {#if adding}
         <div class="mb-5 border border-line bg-surface p-3">
           {#if addable.length === 0}
-            <p class="text-ui text-muted">Нет доступных семинаров для добавления.</p>
+            <p class="text-ui text-muted">{tr("admin.no.seminars.available.to.add")}</p>
           {:else}
             <div class="flex flex-wrap gap-2">
               {#each addable as session (session.id)}
@@ -771,9 +779,9 @@
 
       <div class="flex items-center gap-4 pb-2">
         <span class="w-[26px] shrink-0"></span>
-        <span class="flex-1 text-micro font-bold uppercase tracking-caps text-muted">Семинар</span>
+        <span class="flex-1 text-micro font-bold uppercase tracking-caps text-muted">{tr("admin.seminar")}</span>
         <span class="w-[290px] shrink-0 text-micro font-bold uppercase tracking-caps text-muted">
-          Публикация
+          {tr("admin.publication")}
         </span>
         <span class="w-[60px] shrink-0"></span>
       </div>
@@ -786,24 +794,24 @@
           {#if item.kind === 'planned'}
             <div class="min-w-0 flex-1">
               <p class="text-ui text-ink">{item.name}</p>
-              <p class="mt-0.5 text-2xs text-faint">по плану · {item.when}</p>
+              <p class="mt-0.5 text-2xs text-faint">{tr("admin.planned")} {item.when}</p>
             </div>
             <div class="flex w-[290px] shrink-0 items-baseline gap-3">
-              <span class="text-ui text-muted">комнаты ещё нет</span>
+              <span class="text-ui text-muted">{tr("admin.no.room.yet")}</span>
               <button
                 type="button"
                 class="text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
                 disabled={busy}
                 onclick={() => drop(index)}
               >
-                Убрать строку
+                {tr("admin.remove.row")}
               </button>
             </div>
           {:else if item.kind === 'gone'}
             <div class="min-w-0 flex-1">
               <p class="text-ui text-muted">{item.name}</p>
               <p class="mt-0.5 text-2xs text-faint">
-                семинар удалён · позиция в списке сохранена
+                {tr("admin.seminar.deleted.position.in.list.kept")}
               </p>
             </div>
             <div class="flex w-[290px] shrink-0 items-baseline gap-3">
@@ -817,10 +825,10 @@
                   target="_blank"
                   rel="noreferrer"
                 >
-                  открыть сохранённую публикацию
+                  {tr("admin.open.saved.publication")}
                 </a>
               {:else}
-                <span class="text-ui text-muted">публикации нет</span>
+                <span class="text-ui text-muted">{tr("admin.no.publication")}</span>
               {/if}
               <button
                 type="button"
@@ -828,7 +836,7 @@
                 disabled={busy}
                 onclick={() => drop(index)}
               >
-                Убрать строку
+                {tr("admin.remove.row")}
               </button>
             </div>
           {:else}
@@ -844,17 +852,17 @@
                   target="_blank"
                   rel="noreferrer"
                 >
-                  опубликован · {item.publication.steps}
-                  {plural(item.publication.steps, 'шаг', 'шага', 'шагов')}
+                  {tr("admin.published.203")} {item.publication.steps}
+                  {plural(item.publication.steps, tr("admin.step"), tr("admin.steps"), tr("admin.steps.206"))}
                 </a>
               {:else}
-                <span class="text-ui text-muted">ещё не опубликован</span>
+                <span class="text-ui text-muted">{tr("admin.not.published.yet")}</span>
                 <button
                   type="button"
                   class="text-ui font-semibold text-accent-text"
                   onclick={() => navigate(`/admin/publish/${item.sessionId}`)}
                 >
-                  Опубликовать…
+                  {tr("admin.publish")}
                 </button>
               {/if}
             </div>
@@ -864,7 +872,7 @@
               type="button"
               class={ARROW}
               disabled={index === 0 || busy}
-              aria-label="Переместить выше"
+              aria-label={tr("admin.move.up")}
               onclick={() => move(index, -1)}
             >
               <Icon name="chevron-up" size={11} />
@@ -873,7 +881,7 @@
               type="button"
               class={ARROW}
               disabled={index === shown.items.length - 1 || busy}
-              aria-label="Переместить ниже"
+              aria-label={tr("admin.move.down")}
               onclick={() => move(index, 1)}
             >
               <Icon name="chevron-down" size={11} />
@@ -884,12 +892,12 @@
 
       {#if shown.items.length === 0}
         <p class="border-t border-line py-8 text-center text-ui text-muted">
-          В этом курсе пока нет семинаров.
+          {tr("admin.this.course.has.no.seminars.yet")}
         </p>
       {/if}
 
       <p class="border-t border-line pt-4 text-2xs text-muted">
-        Стрелки меняют порядок семинаров. Новый порядок виден после загрузки страницы курса.
+        {tr("admin.use.the.arrows.to.reorder.seminars.the.new.order.appears.when.the")}
       </p>
 
       <!-- Удаление живёт внутри самого курса и называет ссылку, которую ломает:
@@ -897,16 +905,15 @@
            продиктовали в первую неделю. -->
       <div class="mt-8 flex flex-wrap items-center gap-3 border-t border-line pt-4">
         <p class="min-w-0 flex-1 text-2xs text-muted">
-          При удалении курса будут удалены список семинаров, их порядок и адрес
-          <span class="font-mono">/c/{addressOf(shown)}</span>. Семинары и опубликованные страницы
-          сохранятся.
+          {tr("admin.deleting.the.course.removes.the.seminar.list.its.order.and.the.ad")}
+          <span class="font-mono">/c/{addressOf(shown)}</span>{tr("admin.seminars.and.published.pages.will.be.kept")}
         </p>
         <button
           type="button"
           class="shrink-0 text-ui font-semibold text-danger hover:brightness-110"
           onclick={() => (doomed = true)}
         >
-          Удалить курс…
+          {tr("admin.delete.course")}
         </button>
       </div>
     </div>
@@ -917,17 +924,17 @@
     коллегой, так что по устаревшему сюда придут — а раньше здесь была пустая
     область без единого слова и без пути назад.
   -->
-  <AdminPage title="Курс">
+  <AdminPage title={tr("admin.course.218")}>
     <div class="px-8 py-16 text-center">
       {#if loadingOne}
-        <p class="text-ui text-muted">Открываем курс…</p>
+        <p class="text-ui text-muted">{tr("admin.opening.course")}</p>
       {:else}
-        <p class="text-title font-semibold text-ink">Не удалось открыть курс</p>
+        <p class="text-title font-semibold text-ink">{tr("admin.could.not.open.course")}</p>
         <p class="mx-auto mt-2 max-w-sm text-ui text-muted">
-          {error ?? 'Проверьте адрес или вернитесь к списку курсов.'}
+          {error ?? tr("admin.check.the.address.or.return.to.the.course.list")}
         </p>
         <button type="button" class="btn-primary mt-4" onclick={() => navigate('/admin/courses')}>
-          ← Все курсы
+          {tr("admin.all.courses")}
         </button>
       {/if}
     </div>
@@ -944,18 +951,17 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="delete-course-title" class="text-title font-semibold text-ink">
-        Удалить курс «{going.name}»?
+        {tr('admin.course.deleteHeading', { name: going.name })}
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Ссылка <span class="font-mono text-ink">/c/{addressOf(going)}</span> перестанет открывать курс. Список семинаров и его порядок будут удалены.
-        Семинары и их публикации сохранятся.
+        {tr("admin.the.link")} <span class="font-mono text-ink">/c/{addressOf(going)}</span> {tr("admin.will.no.longer.open.the.course.the.seminar.list.and.its.order.wil")}
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
       {/if}
       <div class="mt-5 flex justify-end gap-2">
         <button type="button" class="btn-outline" disabled={busy} onclick={() => (doomed = false)}>
-          Отмена
+          {tr("admin.cancel")}
         </button>
         <button
           type="button"
@@ -963,7 +969,7 @@
           disabled={busy}
           onclick={() => void destroy()}
         >
-          {busy ? 'Удаляем…' : 'Удалить курс'}
+          {busy ? tr("admin.deleting") : tr("admin.delete.course.230")}
         </button>
       </div>
     </div>
@@ -987,20 +993,19 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="release-slug-title" class="text-title font-semibold text-ink">
-        Освободить адрес /c/{going.slug}?
+        {tr('admin.course.releaseHeading', { address: going.slug })}
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Сейчас он ведёт на
-        {going.holder.kind === 'course' ? 'курс' : 'страницу'}
-        {#if going.holder.name}«{going.holder.name}»{/if}. После переноса эта ссылка будет
-        открывать текущий курс вместо прежнего.
+        {tr("admin.it.currently.leads.to.the")}
+        {going.holder.kind === 'course' ? tr("admin.course.234") : tr("admin.page.235")}
+        {#if going.holder.name}«{going.holder.name}»{/if}{tr("admin.after.transfer.this.link.will.open.the.current.course.instead.of")}
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
       {/if}
       <div class="mt-5 flex justify-end gap-2">
         <button type="button" class="btn-outline" disabled={busy} onclick={() => (askingSlug = false)}>
-          Отмена
+          {tr("admin.cancel")}
         </button>
         <button
           type="button"
@@ -1008,7 +1013,7 @@
           disabled={busy}
           onclick={() => void releaseSlug()}
         >
-          {busy ? 'Переносим…' : 'Перенести адрес'}
+          {busy ? tr("admin.transferring") : tr("admin.transfer.address")}
         </button>
       </div>
     </div>
@@ -1032,18 +1037,17 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="drop-slug-title" class="text-title font-semibold text-ink">
-        Освободить адрес /c/{going}?
+        {tr('admin.course.releaseHeading', { address: going })}
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Эта ссылка перестанет открывать текущий курс. Адрес сможет занять другой курс,
-        и тогда ссылка будет вести на него.
+        {tr("admin.this.link.will.stop.opening.the.current.course.another.course.may")}
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
       {/if}
       <div class="mt-5 flex justify-end gap-2">
         <button type="button" class="btn-outline" disabled={busy} onclick={() => (dropping = null)}>
-          Отмена
+          {tr("admin.cancel")}
         </button>
         <button
           type="button"
@@ -1051,7 +1055,7 @@
           disabled={busy}
           onclick={() => void dropFormer()}
         >
-          {busy ? 'Освобождаем…' : 'Освободить адрес'}
+          {busy ? tr("admin.releasing") : tr("admin.release.address")}
         </button>
       </div>
     </div>

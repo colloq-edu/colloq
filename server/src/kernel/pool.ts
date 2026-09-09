@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision } from './runtime-client.js'
 import { sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionRowExists } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
@@ -426,9 +427,9 @@ export function pickGpu(
  */
 export function gpuRefusal(env: string, devices: string[]): string {
   if (devices.length === 0) {
-    return `Окружению «${env}» нужен GPU, а этой машине он не выделен. Назовите срезы в KERNEL_GPUS в .env (\`KERNEL_GPUS=0\` или \`KERNEL_GPUS=MIG-…\`, как их зовёт docker) и перезапустите сервер — или откройте семинар на окружении без GPU: на процессоре это окружение не поедет.`
+    return tr("server.environmentRequiresAGpuButNoneIs.53af19", { p0: env })
   }
-  return `Окружению «${env}» нужен GPU, а свободных срезов нет: их ${devices.length}, и все заняты другими семинарами. Подождите, пока освободится — срез уходит вместе с ядром комнаты, — или откройте семинар на окружении без GPU: на процессоре это окружение не поедет.`
+  return tr("server.environmentRequiresAGpuButAllAvailable.f3d4d9", { p0: env, p1: devices.length })
 }
 
 /**
@@ -589,7 +590,7 @@ async function startContainer(
    * ошибки на ячейке.
    */
   const recreate = async (why: string): Promise<KernelEndpoint> => {
-    if (retried) throw new Error(`контейнер комнаты не удалось поднять: ${why}`)
+    if (retried) throw new Error(tr("server.couldNotStartTheRoomContainer.cf7398", { p0: why }))
     /*
      * Сказать вслух, если сносится живой (или замерший) контейнер.
      *
@@ -607,7 +608,7 @@ async function startContainer(
 
   if (state === 'broken') {
     // `dead`, `paused`, `restarting`: `docker start` такому не поможет.
-    return recreate('контейнер в состоянии, из которого docker start его не поднимает')
+    return recreate(tr("server.theContainerIsInAStateThat.d95d79"))
   }
   if (state === 'stopped' || state === 'running') {
     /*
@@ -616,23 +617,23 @@ async function startContainer(
      * оставляла комнату на прежнем образе, а панель показывала новый: у
      * студента падал `import transformers`, и ничто на экране с ним не спорило.
      */
-    if (!(await sameImage(container, image))) return recreate('образ окружения пересобран')
+    if (!(await sameImage(container, image))) return recreate(tr("server.theEnvironmentImageWasRebuilt.229a9d"))
     // Контейнер прошлого режима: адреса, по которому мы теперь его зовём, у
     // него нет — ни имени в нашей сети, ни опубликованного порта.
-    if (!(await sameNetwork(container, network))) return recreate('сервер сменил сеть')
+    if (!(await sameNetwork(container, network))) return recreate(tr("server.theServerChangedNetworks.08933e"))
     // Контейнер без среза (или с чужим) для GPU-окружения не годится: устройства
     // внутрь него не пробросить иначе как заново.
-    if (!(await sameGpu(container, gpu))) return recreate('контейнер поднят не с тем срезом GPU')
+    if (!(await sameGpu(container, gpu))) return recreate(tr("server.theContainerWasStartedWithADifferent.bc4d7d"))
     if (state === 'stopped') {
       const started = await run(['start', container], 60_000)
       // Результат читается: не поднявшийся контейнер дальше отвечал бы «could
       // not read the published port» на каждый Run, и так до ручного docker rm.
-      if (started.code !== 0) return recreate(`docker start: ${started.out.slice(-200)}`)
+      if (started.code !== 0) return recreate(tr("server.dockerStart.e0ac13", { p0: started.out.slice(-200) }))
     }
   } else if (state === 'missing') {
     if (!(await imageExists(image))) {
       throw new Error(
-        `Окружение «${env}» ни разу не собиралось. Соберите его: в панели, в разделе Environments, или \`make env-build NAME=${env}\` на хосте — и откройте семинар заново.`,
+        tr("server.environmentHasNotBeenBuiltBuildIt.cf54f5", { p0: env, p1: env }),
       )
     }
     /*
@@ -652,9 +653,9 @@ async function startContainer(
        */
       const noDriver = gpu !== null && /device driver|nvidia/i.test(created.out)
       const hint = noDriver
-        ? ' Похоже, на хосте нет nvidia-container-toolkit: проверьте `docker run --rm --gpus all ubuntu nvidia-smi`.'
+        ? tr("server.theHostMayBeMissingNvidiaContainer.f5c0df")
         : ''
-      throw new Error(`docker run failed: ${created.out.slice(-300)}${hint}`)
+      throw new Error(tr("server.dockerRunFailed.0f4300", { p0: created.out.slice(-300), p1: hint }))
     }
   }
 
@@ -664,7 +665,7 @@ async function startContainer(
     url = `http://${container}:8888`
   } else {
     const port = await publishedPort(container)
-    if (port === null) throw new Error(`could not read the published port of ${container}`)
+    if (port === null) throw new Error(tr("server.couldNotReadThePublishedPortOf.07ca0a", { p0: container }))
     url = `http://127.0.0.1:${port}`
   }
 
@@ -674,7 +675,7 @@ async function startContainer(
   // process is spawned, and connecting a second later fails with a bare
   // "fetch failed" that says nothing about why.
   const deadline = Date.now() + 90_000
-  let lastError = 'no response'
+  let lastError = tr("server.noResponse.187241")
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`${endpoint.url}/api/status?token=${endpoint.token}`, {
@@ -691,7 +692,7 @@ async function startContainer(
        * контейнер получит правильный.
        */
       if (res.status === 401 || res.status === 403) {
-        return recreate(`ядро комнаты не приняло токен (HTTP ${res.status})`)
+        return recreate(tr("server.theRoomKernelRejectedItsTokenHttp.c7ea0c", { p0: res.status }))
       }
       lastError = `HTTP ${res.status}`
     } catch (err) {
@@ -699,7 +700,7 @@ async function startContainer(
     }
     await new Promise((r) => setTimeout(r, 1500))
   }
-  throw new Error(`ядро комнаты не ответило за 90 с (${lastError})`)
+  throw new Error(tr("server.theRoomKernelDidNotRespondWithin.1324d5", { p0: lastError }))
 }
 
 /** Адреса, которые уже разрешили, чтобы занятая комната не звала docker на ячейку. */
@@ -728,11 +729,11 @@ export async function endpointForSession(
   env: string | null,
 ): Promise<KernelEndpoint> {
   requireKernelIsolation()
-  if (kernelRetirementInProgress(sessionId)) throw new Error('Cannot start kernel: seminar is stopping')
+  if (kernelRetirementInProgress(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
   const backend = kernelBackend()
   if (backend === 'test') return defaultEndpoint()
   if (backend === 'broker') {
-    if (!sessionRowExists(sessionId)) throw new Error('Cannot start kernel: seminar does not exist')
+    if (!sessionRowExists(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarDoesNotExist.4f72c5"))
     sessionDir(sessionId)
     const previous = sessionKernelRevision(sessionId)
     const selected = runtimeEnvironment(sessionEnvironment(sessionId), previous)
@@ -745,7 +746,7 @@ export async function endpointForSession(
     try {
       const endpoint = await attempt
       if (kernelRetirementInProgress(sessionId) || !sessionRowExists(sessionId)) {
-        throw new Error('Cannot start kernel: seminar is stopping')
+        throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
       }
       return endpoint
     } finally {

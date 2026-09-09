@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   /**
    * One exchange in the room's thread: a question, and what came back.
    *
@@ -103,11 +104,11 @@
 
   /** Что говорит строка шага: глагол, цель и итог. */
   const VERB: Record<string, string> = {
-    read: 'прочитал',
-    write: 'изменил',
-    new: 'завёл',
-    run: 'запустил',
-    note: 'не вышло',
+    get read() { return tr('room.ui.568') },
+    get write() { return tr('room.ui.569') },
+    get new() { return tr('room.ui.570') },
+    get run() { return tr('room.ui.571') },
+    get note() { return tr('room.ui.572') },
   }
   const STEP_ICON: Record<string, 'search' | 'pencil' | 'file-plus' | 'play' | 'alert'> = {
     read: 'search',
@@ -206,7 +207,7 @@
   }
 
   function clock(ts: number): string {
-    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    return new Date(ts).toLocaleTimeString(getLocale(), { hour: '2-digit', minute: '2-digit' })
   }
 
   /**
@@ -218,12 +219,12 @@
    * "edit" is the name of the request, "rewrite" is the name of the result.
    */
   const BADGE: Partial<Record<AiAction, string>> = {
-    explain: 'Объяснить',
-    fix: 'Починить',
-    debug: 'Разобрать',
-    improve: 'Улучшить',
-    hint: 'Подсказка',
-    edit: 'Переписать',
+    get explain() { return tr('room.ui.573') },
+    get fix() { return tr('room.ui.574') },
+    get debug() { return tr('room.ui.575') },
+    get improve() { return tr('room.ui.576') },
+    get hint() { return tr('room.ui.577') },
+    get edit() { return tr('room.ui.578') },
   }
   const badge = $derived(BADGE[(entry.action ?? '') as AiAction] ?? null)
 
@@ -297,7 +298,7 @@
         this={banHere ? 'button' : 'span'}
         role={banHere ? 'button' : undefined}
         type={banHere ? 'button' : undefined}
-        title={banHere ? `Что сделать с участником: ${entry.name}` : undefined}
+        title={banHere ? tr('room.extra.232', { p0: entry.name }) : undefined}
         onclick={banHere
           ? (event: MouseEvent) =>
               askToBan({
@@ -322,7 +323,7 @@
         </span>
       </svelte:element>
       {#if mine}
-        <span class="shrink-0 text-2xs text-faint">вы</span>
+        <span class="shrink-0 text-2xs text-faint">{tr('room.ui.544')}</span>
       {/if}
       {#if badge}
         <span class={cn(CHIP, 'bg-raised text-muted')}>{badge}</span>
@@ -342,8 +343,8 @@
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
           )}
           title={askedAbout.length === 1
-            ? `Перейти к ячейке ${pad(askedAbout[0])}`
-            : `Спрашивали про ячейки ${askedAbout.map(pad).join(', ')} — перейти к первой`}
+            ? tr('room.extra.238', { p0: pad(askedAbout[0]) })
+            : tr('room.extra.239', { p0: askedAbout.map(pad).join(', ') })}
           onclick={reveal}
         >
           {askedAbout.map(pad).join(' · ')}
@@ -357,7 +358,7 @@
             'transition-colors duration-[var(--speed-quick)] hover:border-faint hover:text-ink',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
           )}
-          title="Перейти к ячейке {pad(cellNumber)}"
+          title={tr('room.extra.238', { p0: pad(cellNumber) })}
           onclick={reveal}
         >
           {pad(cellNumber)}
@@ -406,9 +407,9 @@
           >
             <Icon name={open ? 'chevron-down' : 'chevron-right'} size={10} class="shrink-0" />
             {#if streaming && !entry.answer}
-              <span class="font-semibold text-accent-text">думает</span>
+              <span class="font-semibold text-accent-text">{tr('room.ui.545')}</span>
             {:else}
-              <span>думал {spell(entry.thoughtMs)}</span>
+              <span>{tr('room.ui.546')} {spell(entry.thoughtMs)}</span>
             {/if}
           </button>
         {:else}
@@ -419,9 +420,8 @@
           -->
           <span class="self-start text-2xs text-muted">
             {#if streaming && !entry.answer}
-              <span class="font-semibold text-accent-text">думает…</span>
-            {:else}
-              думал {spell(entry.thoughtMs)}
+              <span class="font-semibold text-accent-text">{tr('room.ui.547')}</span>
+            {:else} {tr('room.ui.546')} {spell(entry.thoughtMs)}
             {/if}
           </span>
         {/if}
@@ -471,8 +471,7 @@
                 class="shrink-0 font-mono text-2xs {step.exit === 0
                   ? 'text-positive'
                   : 'text-danger'}"
-              >
-                код {step.exit ?? '?'}
+              > {tr('room.ui.549')} {step.exit ?? '?'}
               </span>
             {:else if step.note}
               <span class="max-w-[45%] shrink-0 truncate text-2xs text-muted" title={step.note}>
@@ -484,7 +483,7 @@
         {#if entry.state === 'streaming'}
           <div class="flex items-center gap-2 border-t border-line-soft px-2.5 py-1.5">
             <Icon name="spinner" size={12} class="shrink-0 animate-spin text-faint" />
-            <span class="text-2xs text-muted">готовит следующий шаг</span>
+            <span class="text-2xs text-muted">{tr('room.ui.550')}</span>
           </div>
         {/if}
       </div>
@@ -495,7 +494,7 @@
         <!-- Verbatim: a limit and the minutes until the next question are known
              only to the server, and a paraphrase leaves the student guessing. -->
         <p class="break-words text-code text-danger">
-          {entry.answer || 'Оракул не ответил.'}
+          {entry.answer || tr('room.ui.551')}
         </p>
         <!-- Повтор хода «сделать» — это тот же ход: там, где его нельзя
              завести, нечего и повторять. После звонка нечего повторять вовсе:
@@ -510,18 +509,14 @@
                    focus-visible:ring-2 focus-visible:ring-danger/40"
             onclick={onretry}
           >
-            <Icon name="restart" size={11} />
-            Повторить
-          </button>
+            <Icon name="restart" size={11} /> {tr('room.ui.552')} </button>
         {/if}
       </div>
     {:else if entry.answer}
       <AnswerBody source={entry.answer} {streaming} cellId={entry.cellId} omit={entry.patch} />
     {:else if streaming && !thinking}
       <div class="flex items-center gap-1.5 text-2xs text-muted">
-        <Icon name="spinner" size={13} class="animate-spin" />
-        думает
-      </div>
+        <Icon name="spinner" size={13} class="animate-spin" /> {tr('room.ui.545')} </div>
     {/if}
 
     {#if streaming}
@@ -535,13 +530,11 @@
         title={mayStop
           ? ''
           : pending
-            ? 'Вопрос отправляется'
-            : 'Остановить чужой вопрос может преподаватель'}
+            ? tr('room.extra.242')
+            : tr('room.extra.243')}
         onclick={onstop}
       >
-        <Icon name="stop" size={10} />
-        Стоп
-      </button>
+        <Icon name="stop" size={10} /> {tr('room.ui.13')} </button>
     {/if}
 
     <!--
@@ -554,9 +547,7 @@
         <!-- Обещано ровно то, что делается: сервер возвращает только файлы, до
              которых после хода никто не дотянулся, а переименованные и
              переписанные пропускает и называет их в ответе. -->
-        <p class="text-2xs leading-snug text-muted">
-          Отмена вернёт прежний текст файлов, если после этого их не меняли. Созданные файлы останутся пустыми. Последствия запуска кода не отменяются.
-        </p>
+        <p class="text-2xs leading-snug text-muted"> {tr('room.ui.553')} </p>
         <!-- Отменяет ход тот, кому разрешено его завести: сервер отказывает
              всем остальным (control.ts), а кнопка, которая врёт до нажатия,
              хуже её отсутствия. Строка выше остаётся — она про то, что
@@ -568,14 +559,10 @@
           title={mayUndo ? '' : may.agentWhy}
           onclick={onundo}
         >
-          <Icon name="restart" size={11} />
-          Отменить правки файлов
-        </button>
+          <Icon name="restart" size={11} /> {tr('room.ui.554')} </button>
       </div>
     {:else if entry.undo === 'done'}
-      <p class="border-t border-line pt-2 text-2xs text-muted">
-        Отмена завершена{entry.undoBy ? ` — ${entry.undoBy}` : ''}: восстановлены файлы, которые не менялись после действий оракула.
-      </p>
+      <p class="border-t border-line pt-2 text-2xs text-muted"> {tr('room.ui.555')}{entry.undoBy ? ` — ${entry.undoBy}` : ''}{tr('room.ui.556')} </p>
     {/if}
 
     {#if entry.patch !== null && entry.patchState !== 'rejected'}
@@ -601,11 +588,11 @@
               !applied && (stale ? 'text-warning' : 'text-accent-text'),
             )}
           >
-            {applied ? 'Применено' : 'Предложено'}{cellNumber === null ? '' : ` · ${pad(cellNumber)}`}
+            {applied ? tr('room.ui.557') : tr('room.ui.558')}{cellNumber === null ? '' : ` · ${pad(cellNumber)}`}
           </span>
           {#if stale}
             <div class="flex-1"></div>
-            <span class="shrink-0 text-2xs text-warning">ячейку с тех пор поменяли</span>
+            <span class="shrink-0 text-2xs text-warning">{tr('room.ui.559')}</span>
           {:else}
             {#if patchCounts.added > 0}
               <span class="shrink-0 font-mono text-2xs text-positive">+{patchCounts.added}</span>
@@ -657,8 +644,7 @@
             class="flex items-center gap-1.5 border-t border-positive/30 bg-surface px-2 py-2 text-2xs"
           >
             <Icon name="check" size={12} class="shrink-0 text-positive" />
-            <span class="min-w-0 truncate text-muted">
-              применил {entry.patchBy ?? 'кто-то'}
+            <span class="min-w-0 truncate text-muted"> {tr('room.ui.560')} {entry.patchBy ?? tr('room.ui.561')}
             </span>
           </div>
         {:else}
@@ -669,9 +655,7 @@
             )}
           >
             {#if stale}
-              <p class="text-2xs text-warning">
-                Ячейку изменили после запроса. Применение заменит её текущий текст целиком.
-              </p>
+              <p class="text-2xs text-warning"> {tr('room.ui.562')} </p>
             {/if}
             <div class="flex flex-wrap items-center gap-2">
               <!--
@@ -684,11 +668,9 @@
                   type="button"
                   class="btn-primary h-7"
                   disabled={!acts}
-                  title={acts ? '' : CLASS_IS_OVER}
+                  title={acts ? '' : tr(CLASS_IS_OVER)}
                   onclick={() => decide(false)}
-                >
-                  Отклонить
-                </button>
+                > {tr('room.ui.68')} </button>
                 <!-- Применить — правка тетради, и правило комнаты про неё же.
                      Отклонить остаётся всем, пока идёт занятие: снятая плашка
                      ничего не рушит. После звонка рушит: предложение исчезнет
@@ -700,9 +682,7 @@
                   disabled={!may.edit}
                   title={may.edit ? '' : may.editWhy}
                   onclick={() => decide(true)}
-                >
-                  Всё равно применить
-                </button>
+                > {tr('room.ui.563')} </button>
               {:else}
                 <button
                   type="button"
@@ -710,20 +690,16 @@
                   disabled={!may.edit}
                   title={may.edit ? '' : may.editWhy}
                   onclick={() => decide(true)}
-                >
-                  Применить
-                </button>
+                > {tr('room.ui.564')} </button>
                 <button
                   type="button"
                   class="btn-outline h-7"
                   disabled={!acts}
-                  title={acts ? '' : CLASS_IS_OVER}
+                  title={acts ? '' : tr(CLASS_IS_OVER)}
                   onclick={() => decide(false)}
-                >
-                  Отклонить
-                </button>
+                > {tr('room.ui.68')} </button>
                 <div class="flex-1"></div>
-                <span class="shrink-0 text-2xs text-muted">Изменение увидит вся группа. Автором будете указаны вы.</span>
+                <span class="shrink-0 text-2xs text-muted">{tr('room.ui.565')}</span>
               {/if}
             </div>
           </div>
@@ -742,7 +718,7 @@
           onclick={() => (showRejected = !showRejected)}
         >
           <Icon name={showRejected ? 'chevron-down' : 'chevron-right'} size={10} class="shrink-0" />
-          <span class="min-w-0 truncate">отклонил {entry.patchBy ?? 'кто-то'}</span>
+          <span class="min-w-0 truncate">{tr('room.ui.566')} {entry.patchBy ?? tr('room.ui.561')}</span>
           <span class="shrink-0 font-mono text-2xs text-faint">
             +{patchCounts.added} −{patchCounts.removed}
           </span>

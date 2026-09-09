@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import { OPEN_ROOM } from '@shared/rules'
   import { onMount } from 'svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -111,7 +112,7 @@
    * Тетрадь при этом на сервере цела, и сказать об этом важнее всего.
    */
   const EXPIRED_NOTICE =
-    'Your sign-in expired. Enter your name to rejoin the seminar.'
+    tr('room.ui.1219')
 
   function navigate(next: string): void {
     if (next !== location.pathname) history.pushState({}, '', next)
@@ -236,7 +237,7 @@
           session = null
           identity = null
           void forgetLocalStore(id)
-          failure = { missing: true, message: 'This seminar link is not valid' }
+          failure = { missing: true, get message() { return tr('room.ui.1210') } }
           return
         }
         // Offline, or the server blinked. Anyone already in the room keeps
@@ -245,7 +246,7 @@
         if (!identity) {
           failure = {
             missing: false,
-            message: error instanceof Error ? error.message : 'The server did not respond',
+            message: error instanceof Error ? error.message : tr('room.ui.1220'),
           }
         }
       })
@@ -363,7 +364,7 @@
         notice =
           cause instanceof ApiError
             ? cause.message
-            : 'Ссылка на пульт недействительна. Создайте новую ссылку в комнате.'
+            : tr('room.ui.1221')
         landing = `/s/${id}`
       })
       .finally(() => {
@@ -438,12 +439,12 @@
         <Icon name={failure.missing ? 'link' : 'bolt'} size={16} />
       </span>
       <h1 class="mt-4 text-title font-semibold tracking-tight text-ink">
-        {failure.missing ? 'This seminar link is not valid' : 'Could not open this seminar'}
+        {failure.missing ? tr('room.ui.1210') : tr('room.ui.1211')}
       </h1>
       <p class="mt-1.5 text-ui-lg leading-relaxed text-muted">
         {failure.missing
-          ? 'Check that you copied the full link, or ask the teacher for the current seminar link.'
-          : failure.message}
+          ? tr('room.ui.1212')
+          : tr(failure.message)}
       </p>
       <!--
         «Back to Colloq» — только тому, кому там есть куда прийти.
@@ -458,15 +459,13 @@
       -->
       <div class="mt-5 flex items-center justify-center gap-2">
         {#if !failure.missing}
-          <button class="btn-primary" onclick={() => (attempt += 1)}>Try again</button>
+          <button class="btn-primary" onclick={() => (attempt += 1)}>{tr('room.ui.1027')}</button>
         {/if}
         {#if mightBeStaff()}
           <button
             class={failure.missing ? 'btn-outline' : 'btn-ghost'}
             onclick={() => navigate('/')}
-          >
-            Back to Colloq
-          </button>
+          > {tr('room.ui.1213')} </button>
         {/if}
       </div>
     </div>
@@ -479,9 +478,7 @@
   -->
   <div class="flex h-full items-center justify-center bg-canvas">
     <div class="flex items-center gap-2 text-ui text-muted">
-      <Icon name="spinner" size={14} class="animate-spin" />
-      Входим в комнату…
-    </div>
+      <Icon name="spinner" size={14} class="animate-spin" /> {tr('room.ui.1214')} </div>
   </div>
 {:else if session && identity}
   {@const room = session}

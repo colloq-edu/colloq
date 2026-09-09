@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Консилиум: попытки студентов по ячейке × человеку — хранение и снимки.
  *
@@ -213,7 +214,7 @@ function settleGhostRun(run: CouncilRun | null): CouncilRun | null {
         {
           kind: 'error',
           ename: 'ServerRestarted',
-          evalue: 'Сервер перезапустился во время выполнения попытки. Вывод недоступен.',
+          evalue: tr("server.theServerRestartedWhileTheAttemptWas.0dc824"),
           traceback: [],
         },
       ],
@@ -232,13 +233,13 @@ function settleGhostRun(run: CouncilRun | null): CouncilRun | null {
  * возвращается готовой с причиной рядом; не было — пустое место с той же
  * причиной, и кнопка «Спросить» на месте.
  */
-const ORACLE_RESTARTED = 'Сервер перезапустился во время подготовки сводки. Повторите запрос.'
+const ORACLE_RESTARTED = () => tr("server.private.oracleRestart")
 
 function settleGhostOracle(oracle: CouncilOracle): CouncilOracle {
   if (oracle.state !== 'reading') return oracle
   return oracle.summary.length > 0
-    ? { ...oracle, state: 'ready', error: ORACLE_RESTARTED }
-    : { ...oracle, state: 'idle', askedAt: null, basedOn: 0, error: ORACLE_RESTARTED }
+    ? { ...oracle, state: 'ready', error: ORACLE_RESTARTED() }
+    : { ...oracle, state: 'idle', askedAt: null, basedOn: 0, error: ORACLE_RESTARTED() }
 }
 
 /**

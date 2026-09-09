@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Сводка консилиума — взгляд сверху: группы одинаковых решений списком.
    *
@@ -68,20 +69,17 @@
 
   {#if groups.length === 0}
     <p class="border border-dashed border-line px-3 py-4 text-center text-2xs text-muted">
-      {#if board.counts.writing > 0}
-        ещё никто не сдал — {board.counts.writing}
-        {plural(board.counts.writing, 'пишет', 'пишут', 'пишут')}
-      {:else}
-        попыток пока нет
-      {/if}
+      {#if board.counts.writing > 0} {tr('room.ui.43')} {board.counts.writing}
+        {plural(board.counts.writing, tr('room.ui.44'), tr('room.ui.45'), tr('room.ui.45'))}
+      {:else} {tr('room.ui.94')} {/if}
     </p>
   {:else}
-    <ol class="flex flex-col gap-2" aria-label="Группы решений">
+    <ol class="flex flex-col gap-2" aria-label={tr('room.ui.90')}>
       {#snippet row(group: CouncilGroup)}
         <li class="flex flex-col border border-line bg-surface">
           <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2">
             <span class="font-mono text-title tabular-nums text-ink">{group.count}</span>
-            <span class="text-2xs text-muted">{plural(group.count, 'так же', 'так же', 'так же')}</span>
+            <span class="text-2xs text-muted">{plural(group.count, tr('room.ui.95'), tr('room.ui.95'), tr('room.ui.95'))}</span>
             <span
               class={cn(
                 'inline-flex h-5 items-center bg-raised px-1.5 font-mono text-2xs',
@@ -101,33 +99,26 @@
             <!-- «На экране» — если показывали любого из группы: текст у них один. -->
             {#if group.shown}
               <button type="button" class="btn-outline h-8" onclick={() => onshow(group.representative)}>
-                <Icon name="check" size={13} class="text-positive" />
-                На экране · показать снова
-              </button>
+                <Icon name="check" size={13} class="text-positive" /> {tr('room.ui.96')} </button>
             {:else}
-              <button type="button" class="btn-primary h-8" onclick={() => onshow(group.representative)}>
-                Показать классу
-              </button>
+              <button type="button" class="btn-primary h-8" onclick={() => onshow(group.representative)}> {tr('room.ui.72')} </button>
             {/if}
-            <button type="button" class="btn-ghost h-8" onclick={() => toStack(group)}>
-              Открыть попытку
-              <Icon name="chevron-right" size={13} />
+            <button type="button" class="btn-ghost h-8" onclick={() => toStack(group)}> {tr('room.ui.97')} <Icon name="chevron-right" size={13} />
             </button>
             <button
               type="button"
               class="btn-ghost h-8"
               aria-expanded={replying === group.key}
               onclick={() => (replying = replying === group.key ? null : group.key)}
-            >
-              Ответить {group.count}
+            > {tr('room.ui.74')} {group.count}
               {#if draftOf(group)}
-                <span class="text-2xs text-accent-text">· черновик</span>
+                <span class="text-2xs text-accent-text">{tr('room.ui.41')}</span>
               {/if}
             </button>
           </div>
           {#if replying === group.key}
             <CouncilReplyDraft
-              to="всем {group.count}"
+              to={tr('room.council.recipients', { count: group.count })}
               initial={draftOf(group)}
               fromOracle={draftOf(group) !== ''}
               onsend={(text) => {
@@ -155,11 +146,11 @@
             onclick={() => (rareOpen = !rareOpen)}
           >
             <Icon name={rareOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-            <span class="font-bold uppercase tracking-label">Малые группы</span>
+            <span class="font-bold uppercase tracking-label">{tr('room.ui.98')}</span>
             <span class="font-mono tabular-nums">{split.rare.map((g) => g.count).join(' · ')}</span>
             <span class="ml-auto">
               {split.rare.length}
-              {plural(split.rare.length, 'группа', 'группы', 'групп')}
+              {plural(split.rare.length, tr('room.ui.54'), tr('room.ui.99'), tr('room.ui.100'))}
             </span>
           </button>
           {#if rareOpen}

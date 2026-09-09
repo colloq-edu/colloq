@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import { usingRuntimeBroker, kernelRuntimeClient, loadRuntimeCatalog } from '../kernel/runtime-client.js'
 /**
  * The Environments screen's routes.
@@ -117,13 +118,13 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
   /** The file itself, for the editor. Kept separate: the list does not need it. */
   router.get('/api/admin/environments/:name', requireStaff, (req: Request, res: Response) => {
     const name = String(req.params.name)
-    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', 'that is not an environment name')
-    if (!exists(name)) return fail(res, 404, 'not_found', 'no such environment')
+    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', tr("server.thatIsNotAnEnvironmentName.db085f"))
+    if (!exists(name)) return fail(res, 404, 'not_found', tr("server.noSuchEnvironment.7ca461"))
     res.json({ name, source: readSource(name) })
   })
 
   router.put('/api/admin/environments/:name', requireStaff, (req: Request, res: Response) => {
-    if (usingRuntimeBroker()) return fail(res,409,'managed_environment','Images are managed by the release catalog. Build and import a new version outside the web application.')
+    if (usingRuntimeBroker()) return fail(res,409,'managed_environment',tr("server.imagesAreManagedByTheReleaseCatalog.14206b"))
     const name = String(req.params.name)
     const body = req.body as Partial<SaveEnvironmentRequest> | undefined
     if (!ENVIRONMENT_NAME.test(name)) {
@@ -131,12 +132,12 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         res,
         400,
         'invalid',
-        'Use lowercase letters, digits and dashes for the environment name.',
+        tr("server.useLowercaseLettersDigitsAndDashesFor.4f31ec"),
       )
     }
     const source = typeof body?.source === 'string' ? body.source : ''
     if (source.length > MAX_SOURCE) {
-      return fail(res, 400, 'too_long', `A package list is at most ${MAX_SOURCE / 1024} KB.`)
+      return fail(res, 400, 'too_long', tr("server.aPackageListIsAtMostKb.90ace1", { p0: MAX_SOURCE / 1024 }))
     }
     /*
      * Создание и правка — разные намерения, хотя запрос один и тот же.
@@ -153,7 +154,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         res,
         409,
         'exists',
-        `An environment called ${name} already exists. Open it to change its packages, or pick another name.`,
+        tr("server.anEnvironmentCalledAlreadyExistsOpenIt.a64ba5", { p0: name }),
       )
     }
     try {
@@ -169,26 +170,26 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         res,
         500,
         'failed',
-        `Could not write kernel/environments/${name}.txt: ${err instanceof Error ? err.message : String(err)}`,
+        tr("server.couldNotWriteKernelEnvironmentsTxt.bd3f19", { p0: name, p1: err instanceof Error ? err.message : String(err) }),
       )
     }
     res.json({ name, source: readSource(name) })
   })
 
-  router.delete('/api/admin/environments/:name', ownerOnly('delete an environment'), (req, res) => {
-    if (usingRuntimeBroker()) return fail(res,409,'managed_environment','Images are managed by the release catalog. Build and import a new version outside the web application.')
+  router.delete('/api/admin/environments/:name', ownerOnly('server.ownerAction.3'), (req, res) => {
+    if (usingRuntimeBroker()) return fail(res,409,'managed_environment',tr("server.imagesAreManagedByTheReleaseCatalog.14206b"))
     const name = String(req.params.name)
-    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', 'that is not an environment name')
+    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', tr("server.thatIsNotAnEnvironmentName.db085f"))
     if (name === activeName()) {
       return fail(
         res,
         409,
         'in_use',
-        'That is the environment the room is running. Switch to another one first.',
+        tr("server.thatIsTheEnvironmentTheRoomIs.c699b1"),
       )
     }
     if (name === 'base') {
-      return fail(res, 409, 'protected', 'base is what every environment is built on top of.')
+      return fail(res, 409, 'protected', tr("server.baseIsWhatEveryEnvironmentIsBuilt.1c36b7"))
     }
     /*
      * Комнаты, которые на нём стоят.
@@ -223,21 +224,21 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         409,
         'in_use',
         `${attached.length === 1 ? 'One seminar uses' : `${attached.length} seminars use`} ${name} (${names}${more}). ` +
-          'This environment cannot be deleted while linked seminars exist, including archived seminars.',
+          tr("server.thisEnvironmentCannotBeDeletedWhileLinked.8047b8"),
       )
     }
     removeEnvironment(name)
     res.status(204).end()
   })
 
-  router.post('/api/admin/environments/:name/build', ownerOnly('build an environment'), async (req, res) => {
+  router.post('/api/admin/environments/:name/build', ownerOnly('server.ownerAction.4'), async (req, res) => {
     const name = String(req.params.name)
     if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
-      return fail(res, 404, 'not_found', 'no such environment')
+      return fail(res, 404, 'not_found', tr("server.noSuchEnvironment.7ca461"))
     }
     const can = await deps.environmentAbilities()
     if (!can.canBuild) {
-      return fail(res, 409, 'no_docker', can.cannotBuildReason ?? 'docker is unavailable')
+      return fail(res, 409, 'no_docker', can.cannotBuildReason ?? tr("server.dockerIsUnavailable.6292c5"))
     }
     /*
      * 202 — это «принято», и уходить оно обязано сейчас.
@@ -269,17 +270,17 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
     res.json({ cancelled: cancelBuild(name) })
   })
 
-  router.post('/api/admin/environments/:name/use', ownerOnly('switch the environment'), async (req, res) => {
+  router.post('/api/admin/environments/:name/use', ownerOnly('server.ownerAction.5'), async (req, res) => {
     const name = String(req.params.name)
     if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
-      return fail(res, 404, 'not_found', 'no such environment')
+      return fail(res, 404, 'not_found', tr("server.noSuchEnvironment.7ca461"))
     }
-    if (isBuilding(name)) return fail(res, 409, 'building', 'That environment is still building.')
+    if (isBuilding(name)) return fail(res, 409, 'building', tr("server.thatEnvironmentIsStillBuilding.d8f6a6"))
     // Не «виден ли docker»: умолчание — это строка в .env рядом с
     // docker-compose.yml, и в контейнере писать её некуда.
     const can = await deps.environmentAbilities()
     if (!can.canSetDefault) {
-      return fail(res, 409, 'no_docker', can.cannotSetDefaultReason ?? 'docker is unavailable')
+      return fail(res, 409, 'no_docker', can.cannotSetDefaultReason ?? tr("server.dockerIsUnavailable.6292c5"))
     }
     /*
      * Ядро compose трогаем только когда комнаты в нём и живут.
@@ -292,7 +293,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
      */
     const result = await activate(name, false)
     if (!result.ok) {
-      return fail(res, 500, 'failed', `The kernel did not come back: ${result.out.slice(-400)}`)
+      return fail(res, 500, 'failed', tr("server.theKernelDidNotComeBack.ffdde9", { p0: result.out.slice(-400) }))
     }
     res.json({ active: name })
   })
@@ -306,7 +307,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
    */
   router.get('/api/admin/environments/:name/log', requireStaff, (req: Request, res: Response) => {
     const name = String(req.params.name)
-    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', 'that is not an environment name')
+    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', tr("server.thatIsNotAnEnvironmentName.db085f"))
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',

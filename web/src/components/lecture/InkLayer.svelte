@@ -46,6 +46,7 @@
   не значит ничего, кроме двухпальцевого тапа — отмены.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import { untrack } from 'svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { inkFullSays, LASER_EVERY_MS } from '@shared/lecture'
@@ -1823,7 +1824,7 @@
     if (!session.connected) {
       if (!erasingTold) {
         erasingTold = true
-        onrefuse?.('Нет связи. Не удалось стереть штрих.')
+        onrefuse?.(tr('room.ui.274'))
       }
       return
     }
@@ -2420,7 +2421,7 @@
     class="ink ink-input absolute {live && tool !== 'off' ? 'pointer-events-auto' : ''}"
     style="cursor: {cursor}; top: {-reach.top}px; right: {-reach.right}px; bottom: {-reach.bottom}px; left: {-reach.left}px"
     role="application"
-    aria-label="Лист для рисования"
+    aria-label={tr('room.ui.273')}
     onpointerdown={down}
     onpointermove={move}
     onpointerup={up}

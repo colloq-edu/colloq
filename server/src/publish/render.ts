@@ -1,3 +1,4 @@
+import { tr, getLocale, formatNumber } from '@shared/i18n'
 /**
  * Опубликованный семинар как набор обычных файлов.
  *
@@ -74,7 +75,7 @@ function markdown(source: string): string {
       .replace(
         /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g,
         (_all, alt: string, href: string) =>
-          `<a href="${href}" rel="noreferrer">${alt.trim() || 'картинка'}</a>`,
+          `<a href="${href}" rel="noreferrer">${alt.trim() || tr("server.image.49cd3c")}</a>`,
       )
       .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>')
 
@@ -327,7 +328,7 @@ function outputHtml(output: CellOutput, depth: number): string {
       : mime === 'image/svg+xml'
         ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(value)}`
         : `data:${mime};base64,${value.replace(/\s/g, '')}`
-    return `<p class="img"><img src="${esc(src)}" alt="вывод ячейки"></p>`
+    return `<p class="img"><img src="${esc(src)}" alt="${esc(tr('server.ssr.cellOutput'))}"></p>`
   }
   /*
    * text/html — раньше, чем text/plain, и это не вкус: у `df.style` в
@@ -348,7 +349,7 @@ function outputHtml(output: CellOutput, depth: number): string {
    */
   const kinds = Object.keys(output.data)
   return kinds.length > 0
-    ? `<p class="quiet">вывод в формате ${esc(kinds.join(', '))} на странице не показывается</p>`
+    ? `<p class="quiet">${esc(tr('server.ssr.unsupportedOutput', { format: kinds.join(', ') }))}</p>`
     : ''
 }
 
@@ -363,8 +364,8 @@ function cellHtml(cell: PublicCell, depth: number): string {
     cell.execCount === null
       ? cell.outputs.length > 0
         ? '<span class="warn">Out [—]</span>'
-        : '<span class="quiet">не запускалась</span>'
-      : `Out [${cell.execCount}]${cell.ranMs !== null ? ` · ${(cell.ranMs / 1000).toFixed(1)}s` : ''}`
+        : `<span class="quiet">${esc(tr('server.ssr.notRun'))}</span>`
+      : `Out [${cell.execCount}]${cell.ranMs !== null ? ` · ${formatNumber(cell.ranMs / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}s` : ''}`
   return [
     '<div class="cell">',
     `<pre class="code">${esc(cell.source)}</pre>`,
@@ -448,7 +449,7 @@ header.top h1{font-size:32px;margin:0 0 8px}
  */
 function head(title: string): string {
   return [
-    '<!doctype html><html lang="ru"><head>',
+    `<!doctype html><html lang="${getLocale()}"><head>`,
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
     `<meta name="robots" content="${ROBOTS_TAG}">`,
@@ -488,20 +489,20 @@ const TIME_FORM: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digi
 
 function formatter(form: Intl.DateTimeFormatOptions, zone: string): Intl.DateTimeFormat {
   try {
-    return new Intl.DateTimeFormat('ru-RU', { ...form, timeZone: zone })
+    return new Intl.DateTimeFormat(getLocale(), { ...form, timeZone: zone })
   } catch {
     // `TZ=МСК` и прочие имена, которых нет в базе поясов: опечатка в .env не
     // должна ронять выгрузку целиком.
-    return new Intl.DateTimeFormat('ru-RU', { ...form, timeZone: HOME_ZONE })
+    return new Intl.DateTimeFormat(getLocale(), { ...form, timeZone: HOME_ZONE })
   }
 }
 
-let clocks: { zone: string; date: Intl.DateTimeFormat; time: Intl.DateTimeFormat } | null = null
+let clocks: { locale: string; zone: string; date: Intl.DateTimeFormat; time: Intl.DateTimeFormat } | null = null
 
 function forms(): { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat } {
   const zone = process.env.TZ?.trim() || HOME_ZONE
-  if (!clocks || clocks.zone !== zone) {
-    clocks = { zone, date: formatter(DATE_FORM, zone), time: formatter(TIME_FORM, zone) }
+  if (!clocks || clocks.zone !== zone || clocks.locale !== getLocale()) {
+    clocks = { locale: getLocale(), zone, date: formatter(DATE_FORM, zone), time: formatter(TIME_FORM, zone) }
   }
   return clocks
 }
@@ -521,7 +522,7 @@ export function renderCourse(course: PublicCourseView, base: string): string {
          * единственного адреса, который дают классу, — до неё не дойти.
          */
         if (!item.publication) {
-          return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">семинар удалён</span></li>`
+          return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(tr('server.ssr.seminarDeleted'))}</span></li>`
         }
         const gone = `${base}/p/${item.publication.slug ?? item.publication.id}/`
         return [
@@ -529,7 +530,7 @@ export function renderCourse(course: PublicCourseView, base: string): string {
           `<a href="${esc(gone)}">`,
           `<span class="n">${n}</span>`,
           `<span class="t">${esc(item.name)}</span>`,
-          '<span class="s">семинар удалён, материалы доступны</span>',
+          `<span class="s">${esc(tr('server.ssr.deletedReadable'))}</span>`,
           '</a></li>',
         ].join('')
       }
@@ -537,13 +538,13 @@ export function renderCourse(course: PublicCourseView, base: string): string {
         return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(item.when)}</span></li>`
       }
       if (!item.publication) {
-        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">ещё не опубликован</span></li>`
+        return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(tr('server.ssr.unpublished'))}</span></li>`
       }
       const href = `${base}/p/${item.publication.slug ?? item.publication.id}/`
       const steps =
         item.publication.steps === 1
-          ? 'одна страница'
-          : `${item.publication.steps} ${plural(item.publication.steps, 'шаг', 'шага', 'шагов')}`
+          ? tr("server.onePage.d5f549")
+          : tr('server.steps', { count: item.publication.steps })
       return [
         '<li class="row">',
         `<a href="${esc(href)}">`,
@@ -562,7 +563,7 @@ export function renderCourse(course: PublicCourseView, base: string): string {
     course.blurb ? `<p class="blurb">${esc(course.blurb)}</p>` : '',
     `<p class="addr">${esc(base.replace(/^https?:\/\//, ''))}/c/${esc(course.slug ?? course.id)}</p>`,
     `<ul class="rows">${rows}</ul>`,
-    '<p class="foot-note">Здесь собраны семинары курса. Материалы доступны после публикации преподавателем.</p>',
+    `<p class="foot-note">${esc(tr('server.ssr.courseAbout'))}</p>`,
     '</div>',
     FOOT,
   ].join('\n')
@@ -579,7 +580,7 @@ export function renderCourse(course: PublicCourseView, base: string): string {
  */
 export function renderRedirect(to: string, title: string): string {
   return [
-    '<!doctype html><html lang="ru"><head>',
+    `<!doctype html><html lang="${getLocale()}"><head>`,
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
     `<meta name="robots" content="${ROBOTS_TAG}">`,
@@ -589,7 +590,7 @@ export function renderRedirect(to: string, title: string): string {
     `<style>${STYLE}</style>`,
     '</head><body>',
     '<div class="wrap">',
-    `<p class="blurb">Страница переехала: <a href="${esc(to)}">${esc(to)}</a></p>`,
+    `<p class="blurb">${esc(tr('server.ssr.moved'))} <a href="${esc(to)}">${esc(to)}</a></p>`,
     '</div>',
     FOOT,
   ].join('\n')
@@ -617,9 +618,9 @@ export function renderWithdrawn(
     head(title),
     '<div class="wrap">',
     `<h1>${esc(title)}</h1>`,
-    '<p class="blurb">Преподаватель снял эту страницу. Адрес остался прежним: если её вернут, ссылка снова заработает.</p>',
+    `<p class="blurb">${esc(tr('server.ssr.withdrawn'))}</p>`,
     course
-      ? `<p class="foot-note">Остальные занятия курса: <a href="${esc(base)}/c/${esc(course.handle)}/">${esc(course.name)}</a></p>`
+      ? `<p class="foot-note">${esc(tr('server.ssr.otherClasses'))} <a href="${esc(base)}/c/${esc(course.handle)}/">${esc(course.name)}</a></p>`
       : '',
     '</div>',
     FOOT,
@@ -662,13 +663,13 @@ export function renderStep(page: SeminarPage): string {
    * рядом со ссылкой, а не выясняется после скачивания.
    */
   const about = !many
-    ? 'Код без выводов'
+    ? tr("server.codeWithoutOutputs.e86524")
     : page.steps.at(-1)?.seq === page.step.seq
-      ? 'Код последнего шага, без выводов'
-      : 'Код этого шага, без выводов'
+      ? tr("server.codeFromTheLastStepWithoutOutputs.84324c")
+      : tr("server.codeFromThisStepWithoutOutputs.e310ab")
   const rail = many
     ? [
-        '<nav class="rail"><h2>Шаги семинара</h2>',
+        `<nav class="rail"><h2>${esc(tr('server.ssr.stepsHeading'))}</h2>`,
         ...page.steps.map((s, i) => {
           const on = s.seq === page.step.seq
           // `./`, а не пустая строка: пустой href — это «текущий URL целиком»,
@@ -688,23 +689,23 @@ export function renderStep(page: SeminarPage): string {
     page.course
       ? `<a href="${esc(page.base)}/c/${esc(page.course.handle)}/">${esc(page.course.name)}</a> · `
       : '',
-    `опубликован ${esc(when(page.publishedAt))}`,
-    many ? ` · ${page.steps.length} ${plural(page.steps.length, 'шаг', 'шага', 'шагов')}` : '',
+    tr("server.published.e49f01", { p0: esc(when(page.publishedAt)) }),
+    many ? ` · ${tr('server.steps', { count: page.steps.length })}` : '',
     '</p></div></header>',
     '<div class="body">',
     rail,
     '<main class="main">',
     '<div class="intro">',
-    '<p>Опубликованные материалы тетради семинара.</p>',
+    `<p>${esc(tr('server.ssr.publishedNotebook'))}</p>`,
     many
-      ? '<p>Шаги выбрал преподаватель. Выводы сохранены на момент каждого шага и могут относиться к предыдущей версии кода.</p>'
+      ? `<p>${esc(tr('server.ssr.stepOutputs'))}</p>`
       : '',
-    '<p>Список участников не опубликован. Имена, указанные в ячейках и выводах, могут быть видны.</p>',
+    `<p>${esc(tr('server.ssr.privacy'))}</p>`,
     '</div>',
     page.step.cells.map((cell) => cellHtml(cell, page.depth)).join('\n'),
     '<div class="take">',
-    `<p><a href="${esc(notebook)}" download>Скачать тетрадь (.ipynb)</a></p>`,
-    `<p class="why">${about} — чтобы запустить у себя.</p>`,
+    `<p><a href="${esc(notebook)}" download>${esc(tr('server.ssr.download'))}</a></p>`,
+    `<p class="why">${esc(tr('server.ssr.runLocally', { about }))}</p>`,
     '</div>',
     '</main></div>',
     FOOT,

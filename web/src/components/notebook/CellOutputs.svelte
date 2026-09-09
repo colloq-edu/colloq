@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import type { CellOutput } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
   import ScopedOutput from './ScopedOutput.svelte'
@@ -127,7 +128,7 @@
               <img
                 use:decoding
                 src={imageSrc(mime, payload)}
-                alt="Cell output"
+                alt={tr('room.ui.329')}
                 class="max-w-full bg-white/95 p-1"
               />
             {:else if mime === 'image/svg+xml' && render}
@@ -162,7 +163,7 @@
             onclick={() => (expanded[i] = !expanded[i])}
           >
             <Icon name={expanded[i] ? 'chevron-up' : 'chevron-down'} size={12} />
-            {expanded[i] ? 'Show less' : 'Show more'}
+            {expanded[i] ? tr('room.ui.330') : tr('room.ui.331')}
           </button>
         </div>
       {/if}

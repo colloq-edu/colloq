@@ -1,5 +1,8 @@
 import './_env.mts'
-import { test } from 'node:test'
+import { beforeEach, test } from 'node:test'
+import { setLocaleResolver } from '../shared/i18n.js'
+// Existing diagnostic expectations intentionally exercise English; bilingual behavior has its own tests.
+beforeEach(() => setLocaleResolver(() => 'en'))
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import fs from 'node:fs'

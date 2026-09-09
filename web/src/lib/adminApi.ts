@@ -1,3 +1,4 @@
+import {tr} from '@shared/i18n'
 /**
  * The /api/admin client.
  *
@@ -20,6 +21,7 @@ import type {
   ImportPreview,
   ImportResult,
   InstanceState,
+  InstanceSettings,
   SaveEnvironmentRequest,
   SignInWithTokenRequest,
   Teacher,
@@ -145,7 +147,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // оборванного вайфая и закрытого туннеля. Ни одного из них она не называет.
     if (cause instanceof TypeError) {
       throw new AdminApiError(
-        'Could not reach the server — check the connection and try again.',
+        tr('common.networkError'),
         0,
         'network',
       )
@@ -156,7 +158,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     // HTTP/2 отменил строку состояния: res.statusText там пустая всегда, и
     // отказ доезжал до экрана пустой строкой, которую `{#if error}` не рисует.
-    let message = res.statusText || `The request failed (${res.status})`
+    let message = tr('common.requestFailed',{status:res.status})
     let reason = reasonForStatus(res.status)
     let said: unknown = null
     try {
@@ -178,6 +180,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) })
 
 export const adminApi = {
+  getInstanceSettings: () => request<InstanceSettings>('/instance/settings'),
+  updateInstanceSettings: (body: InstanceSettings) => request<InstanceSettings>('/instance/settings', {method:'PATCH',...json(body)}),
   /* ------------------------------------------------------------- session */
 
   /** Open to anyone: it is what tells the panel whether to show the claim form. */

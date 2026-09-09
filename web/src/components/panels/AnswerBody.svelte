@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * An answer, with its code taken out of the prose.
    *
@@ -213,17 +214,15 @@
           {#if part.closed}
             <button type="button" class={STRIP} onclick={() => void copy(index, part.code)}>
               <Icon name={copied === index ? 'check' : 'copy'} size={10} />
-              {copied === index ? 'Скопировано' : 'Копировать'}
+              {copied === index ? tr('room.ui.138') : tr('room.ui.532')}
             </button>
             <button
               type="button"
               class={STRIP}
-              title="Добавить код в новую ячейку"
+              title={tr('room.ui.533')}
               onclick={() => toCell(part.code)}
             >
-              <Icon name="plus" size={10} />
-              В ячейку
-            </button>
+              <Icon name="plus" size={10} /> {tr('room.ui.534')} </button>
           {/if}
         </div>
         <Code code={part.code} lang={part.lang} class="px-2.5 py-2" />

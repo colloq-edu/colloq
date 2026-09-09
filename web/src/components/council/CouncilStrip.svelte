@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Полоса групп под карточкой: один взгляд — сколько разных решений и как они
    * распределены. Ширина сегмента — по числу людей, но не меньше `min-width`:
@@ -28,8 +29,8 @@
   }
 
   function title(segment: StripSegment): string {
-    if (segment.writing) return `${segment.count} ещё ${plural(segment.count, 'пишет', 'пишут', 'пишут')}`
-    return `${segment.count} ${plural(segment.count, 'человек', 'человека', 'человек')}`
+    if (segment.writing) return tr('room.ui.91', { count: segment.count })
+    return `${segment.count} ${plural(segment.count, tr('room.ui.92'), tr('room.ui.93'), tr('room.ui.92'))}`
   }
 </script>
 
@@ -43,7 +44,7 @@
   отдельным span'ом, а лишняя высота уходит в прозрачное поле над ней.
 -->
 {#if segments.length > 0}
-  <div class="flex h-3 items-stretch gap-px" role="group" aria-label="Группы решений">
+  <div class="flex h-3 items-stretch gap-px" role="group" aria-label={tr('room.ui.90')}>
     {#each segments as segment (segment.key)}
       {#if segment.writing}
         <span

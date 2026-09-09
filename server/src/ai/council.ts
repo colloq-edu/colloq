@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Оракул о решениях: один взгляд сверху на пятьсот попыток.
  *
@@ -163,7 +164,7 @@ const SYSTEM = [
   '  "drafts": {"G2": "черновик ответа группе с ошибкой: 2–4 предложения, на «вы»,',
   '             без имён, указать на ошибку, не решать за них"} — ТОЛЬКО для групп с ошибкой',
   '}',
-  'Пиши по-русски. Абзацы summary короткие: преподаватель читает их с пульта во время пары.',
+  'Keep summary paragraphs short: the teacher reads them during class.',
 ].join('\n')
 
 /**
@@ -182,6 +183,7 @@ export function oraclePrompt(
   attempts: readonly OracleAttempt[],
   budget: number = getOracleSettings().contextChars,
 ): { turns: ChatTurn[]; keys: string[] } {
+  const system = SYSTEM + '\n' + tr('server.ai.answerLanguage')
   const byId = new Map(attempts.map((a) => [a.participantId, a] as const))
   const head: string[] = []
   if (task.before) {
@@ -205,7 +207,7 @@ export function oraclePrompt(
 
   const keys: string[] = []
   const blocks: string[] = []
-  let used = SYSTEM.length + head.join('\n').length
+  let used = system.length + head.join('\n').length
   let hidden = 0
   let hiddenPeople = 0
   for (const group of groups) {
@@ -213,7 +215,7 @@ export function oraclePrompt(
     const block = [
       `### ${no} — ${people(group.count)}, ${statusLine(group, byId)}`,
       '```python',
-      clip(group.sample.trim() || '(пусто)', MAX_GROUP_SOURCE),
+      clip(group.sample.trim() || tr("server.empty.9a3a4f"), MAX_GROUP_SOURCE),
       '```',
     ].join('\n')
     // Хотя бы одна группа едет всегда: сводка без единого решения — это не
@@ -233,7 +235,7 @@ export function oraclePrompt(
     )
   }
   const turns: ChatTurn[] = [
-    { role: 'system', content: SYSTEM },
+    { role: 'system', content: system },
     { role: 'user', content: [...head, ...blocks].join('\n') },
   ]
   return { turns, keys }
@@ -497,7 +499,7 @@ async function read(
       return
     }
     if (!text.trim()) {
-      giveBack('Модель ответила пустым — попробуйте ещё раз.')
+      giveBack(tr("server.theModelReturnedAnEmptyResponseTry.c365b1"))
       return
     }
     const parsed = parseOracleAnswer(text, keys)
@@ -522,7 +524,7 @@ async function read(
     }
     const reason = err instanceof Error ? err.message.trim() : String(err)
     console.error(`[session ${sessionId}] council oracle failed:`, reason)
-    giveBack(reason || 'Оракул не ответил — смотрите журнал сервера.')
+    giveBack(reason || tr("server.theOracleDidNotRespondCheckThe.e430c5"))
   }
 }
 

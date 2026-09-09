@@ -7,7 +7,10 @@
  * при первой же попытке «привести к одному виду».
  */
 import './_env.mts'
-import { test } from 'node:test'
+import { test, beforeEach, afterEach } from 'node:test'
+import { setLocaleResolver } from '../shared/i18n.js'
+beforeEach(() => setLocaleResolver(() => 'en'))
+afterEach(() => setLocaleResolver(() => 'ru'))
 import assert from 'node:assert/strict'
 import { elapsed, NOTICED_MS, spell } from '../web/src/lib/utils.js'
 

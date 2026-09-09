@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   /**
    * The seminar itself: the room, and the three things around it.
    *
@@ -40,6 +41,7 @@
   import type { StoredIdentity } from '@/lib/identity'
   import { SessionState, setSessionState } from '@/lib/session.svelte'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
+  import { onLanguageChange } from '@/lib/i18n.svelte'
   import type { PaletteItem } from '@/components/ui/palette'
   import { watchBooks, watchCellNumbers, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import {
@@ -348,12 +350,7 @@
   const finishedLong = $derived.by(() => {
     const at = session.session.finishedAt
     if (at === null) return ''
-    return `Занятие закончено ${new Date(at).toLocaleString(undefined, {
-      day: 'numeric',
-      month: 'long',
-      hour: '2-digit',
-      minute: '2-digit',
-    })} — комната открыта на чтение`
+    return tr('room.ui.957', { p0: new Date(at).toLocaleString(getLocale(), { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', }) })
   })
 
   /*
@@ -424,11 +421,11 @@
   const dateShort = `${String(started.getDate()).padStart(2, '0')}.${String(
     started.getMonth() + 1,
   ).padStart(2, '0')}`
-  const dateLong = started.toLocaleDateString(undefined, {
+  const dateLong = $derived(started.toLocaleDateString(getLocale(), {
     day: 'numeric',
     month: 'long',
     year: 'numeric',
-  })
+  }))
 
   /*
    * People, not sockets. Keyed on the client id this counted a second tab as a
@@ -492,11 +489,11 @@
    * red type.
    */
   const KERNEL: Record<KernelStatus, { label: string; dot: string; alarm: boolean }> = {
-    starting: { label: 'STARTING', dot: 'bg-white/35', alarm: false },
-    restarting: { label: 'RESTARTING', dot: 'bg-white/35', alarm: false },
-    idle: { label: 'IDLE', dot: 'bg-white/50', alarm: false },
-    busy: { label: 'RUNNING', dot: 'bg-accent', alarm: false },
-    dead: { label: 'KERNEL STOPPED', dot: 'bg-danger', alarm: true },
+    starting: { get label() { return tr('room.kernel.state.starting') }, dot: 'bg-white/35', alarm: false },
+    restarting: { get label() { return tr('room.kernel.state.restarting') }, dot: 'bg-white/35', alarm: false },
+    idle: { get label() { return tr('room.kernel.state.idle') }, dot: 'bg-white/50', alarm: false },
+    busy: { get label() { return tr('room.kernel.state.busy') }, dot: 'bg-accent', alarm: false },
+    dead: { get label() { return tr('room.kernel.state.dead') }, dot: 'bg-danger', alarm: true },
   }
 
   const kernel = $derived(KERNEL[meta.current.kernelStatus])
@@ -1338,6 +1335,8 @@
     return ''
   }
 
+  $effect(() => onLanguageChange(() => { if (paletteOpen) paletteList = paletteItems() }))
+
   function paletteItems(): PaletteItem[] {
     const out: PaletteItem[] = []
     const live = session.connected
@@ -1352,35 +1351,35 @@
       hint?: string,
       keywords?: string,
     ) => {
-      if (allowed) out.push({ id, group: 'Комната', label, hint, keywords, run })
+      if (allowed) out.push({ id, get group() { return tr('room.ui.960') }, label, hint, keywords, run })
     }
     act(
       'run-all',
-      'Запустить всю тетрадь',
+      tr('room.ui.961'),
       live && may.run && may.bulk && book !== null,
       () => session.send({ t: 'runAll', book: book ?? undefined }),
       undefined,
-      'run all выполнить',
+      "run all выполнить",
     )
     act(
       'interrupt',
-      'Остановить выполнение',
+      tr('room.ui.964'),
       live && may.run,
       () => session.send({ t: 'interrupt' }),
       undefined,
-      'interrupt stop прервать',
+      "interrupt stop прервать",
     )
     act(
       'clear',
-      'Стереть выводы',
+      tr('room.ui.966'),
       live && may.wipe && book !== null,
       () => session.send({ t: 'clearOutputs', book: book ?? undefined }),
       undefined,
-      'clear outputs очистить',
+      "clear outputs очистить",
     )
     act(
       'format',
-      'Форматировать тетрадь',
+      tr('room.ui.969'),
       live && may.bulk && may.edit && book !== null,
       () => session.send({ t: 'format', book: book ?? undefined }),
       undefined,
@@ -1392,20 +1391,20 @@
      * в списке, срабатывающая по Enter с первого нажатия, обошла бы ровно тот
      * второй шаг, ради которого удержание и написано.
      */
-    act('panel-files', 'Панель файлов и людей', true, toggleLeft, `${modKey}B`, 'files people')
-    act('panel-oracle', 'Спросить оракула', true, focusOracle, `${modKey}I`, 'ai oracle ии')
-    act('panel-terminal', 'Терминал', true, toggleTerminal, `${modKey}J`, 'terminal shell консоль')
-    act('copy-link', 'Скопировать ссылку на семинар', true, () => void copyLink(), undefined, 'link')
-    act('rules', 'Что можно делать в комнате', isHost, () => (rulesOpen = true), undefined, 'правила rules')
-    act('projection', 'На проектор', isHost, toProjection, undefined, 'screen проекция')
-    act('pult', 'Открыть пульт', isHost, toPult, undefined, 'пульт console лекция')
+    act('panel-files', tr('room.ui.971'), true, toggleLeft, `${modKey}B`, 'files people')
+    act('panel-oracle', tr('room.ui.973'), true, focusOracle, `${modKey}I`, "ai oracle ии")
+    act('panel-terminal', tr('room.ui.679'), true, toggleTerminal, `${modKey}J`, "terminal shell консоль")
+    act('copy-link', tr('room.ui.976'), true, () => void copyLink(), undefined, 'link')
+    act('rules', tr('room.ui.900'), isHost, () => (rulesOpen = true), undefined, "правила rules")
+    act('projection', tr('room.ui.301'), isHost, toProjection, undefined, "screen проекция")
+    act('pult', tr('room.ui.979'), isHost, toPult, undefined, "пульт console лекция")
     act(
       'class',
-      session.finished ? 'Продолжить занятие' : 'Закончить занятие',
+      session.finished ? tr('room.ui.909') : tr('room.ui.933'),
       isHost && live,
       () => setClassOver(!session.finished),
       undefined,
-      'class занятие',
+      "class занятие",
     )
 
     /* Вкладки, которые уже открыты, — и файлы, которые ещё нет. */
@@ -1413,7 +1412,7 @@
       if (typeof key !== 'string') return
       out.push({
         id: `tab:${key}`,
-        group: 'Вкладки',
+        get group() { return tr('room.ui.982') },
         label: baseOf(key),
         hint: index < 9 ? `Ctrl${index + 1}` : undefined,
         keywords: key,
@@ -1425,7 +1424,7 @@
       if (file.dir || open.has(file.path)) continue
       out.push({
         id: `file:${file.path}`,
-        group: 'Файлы',
+        get group() { return tr('room.ui.586') },
         label: file.path,
         run: () => openFile(file.path),
       })
@@ -1437,8 +1436,8 @@
       const line = cellLine(cellId)
       out.push({
         id: `cell:${cellId}`,
-        group: 'Ячейки',
-        label: line || 'Пустая ячейка',
+        get group() { return tr('room.ui.984') },
+        label: line || tr('room.ui.985'),
         hint: String(number).padStart(2, '0'),
         keywords: `ячейка cell ${number}`,
         run: () => revealCell(session, cellId),
@@ -1560,7 +1559,7 @@
     } catch {
       // Ссылка — это весь смысл нажатия, и молча ничего не делать здесь хуже
       // всего: человек уверен, что скопировал, и вставляет в чат прошлое.
-      session.showError(`The browser blocked the clipboard. The link is ${location.origin}/s/${info.id}`)
+      session.showError(tr('room.ui.991', { p0: location.origin, p1: info.id }))
       return
     }
     copied = true
@@ -1675,7 +1674,7 @@
         role="status"
       >
         <Icon name="spinner" size={12} class="animate-spin" />
-        <span class="text-2xs font-bold uppercase tracking-label">Связь восстанавливается</span>
+        <span class="text-2xs font-bold uppercase tracking-label">{tr('room.ui.890')}</span>
       </div>
     {/if}
     {#if lecture}
@@ -1688,30 +1687,22 @@
         «сломалось».
       -->
       <div class="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
-        <span class="text-2xs font-bold uppercase tracking-institution text-white/40">
-          проекция
-        </span>
+        <span class="text-2xs font-bold uppercase tracking-institution text-white/40"> {tr('room.ui.891')} </span>
         <p class="text-marquee-sm font-black text-white">{title}</p>
-        <p class="max-w-md text-ui text-white/50">
-          Экран готов. Он покажет документ, как только преподаватель начнёт лекцию.
-        </p>
+        <p class="max-w-md text-ui text-white/50"> {tr('room.ui.892')} </p>
         <div class="mt-4 flex items-center gap-2">
           {#if fullscreenPossible()}
             <button
               type="button"
               class="border border-white/20 px-3 py-1.5 text-2xs font-bold uppercase tracking-label text-white/70 transition-colors duration-100 hover:border-white/40 hover:text-white"
               onclick={() => void goFullscreen(document.documentElement)}
-            >
-              Во весь экран
-            </button>
+            > {tr('room.ui.193')} </button>
           {/if}
           <button
             type="button"
             class="px-3 py-1.5 text-2xs font-bold uppercase tracking-label text-white/40 transition-colors duration-100 hover:text-white/70"
             onclick={fromProjection}
-          >
-            Вернуться в комнату
-          </button>
+          > {tr('room.ui.893')} </button>
         </div>
       </div>
     {/if}
@@ -1732,8 +1723,7 @@
         {#each councilsOnAir as council (council.cellId)}
           <div class="flex flex-col gap-1.5">
             <div class="flex items-baseline gap-4">
-              <span class="text-2xs font-bold uppercase tracking-institution text-white/50">
-                Консилиум{council.ordinal ? ` · ячейка ${council.ordinal}` : ''}
+              <span class="text-2xs font-bold uppercase tracking-institution text-white/50"> {tr('room.ui.34')}{council.ordinal ? tr('room.ui.894', { p0: council.ordinal }) : ''}
               </span>
               <span class="font-mono text-ui-lg tabular-nums text-white">
                 {countLine(council.count)}
@@ -1805,7 +1795,7 @@
       {#if homeHref}
         <a
           href={homeHref}
-          aria-label={isHost ? 'Back to Colloq' : `Открыть курс «${session.session.course?.name}»`}
+          aria-label={isHost ? tr('room.extra.401') : tr('room.extra.402', { p0: session.session.course?.name ?? '' })}
           class="block max-w-full transition-opacity duration-100 hover:opacity-85
                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
         >
@@ -1828,7 +1818,7 @@
                  font-black text-white hover:bg-white/5 focus:bg-white/10 sm:text-marquee"
           value={storedTitle}
           oninput={(event) => rename(event.currentTarget.value)}
-          aria-label="Seminar title"
+          aria-label={tr('room.ui.895')}
           maxlength={80}
           spellcheck="false"
         />
@@ -1864,8 +1854,7 @@
           <span
             class="hidden shrink-0 text-2xs font-bold uppercase tracking-label text-white/80 sm:inline"
           >
-            {room.length} in the room
-          </span>
+            {room.length} {tr('room.ui.896')} </span>
         </div>
         <span class="hidden h-3.5 w-px shrink-0 bg-brand-2 sm:block" aria-hidden="true"></span>
       {/if}
@@ -1885,7 +1874,7 @@
           kernel.alarm && 'bg-danger/20 px-2.5 ring-1 ring-inset ring-danger',
           !session.connected && 'opacity-50',
         )}
-        title={session.connected ? undefined : 'Last known — the connection dropped'}
+        title={session.connected ? undefined : tr('room.extra.405')}
         role="status"
       >
         <span class={cn('h-1.5 w-1.5 shrink-0 rounded-full', kernel.dot)} aria-hidden="true"></span>
@@ -1899,7 +1888,7 @@
         <!-- Не «Reconnecting»: вкладка больше не пробует, и крутилка врала бы. -->
         <div class="flex shrink-0 items-center gap-2 text-white" role="status">
           <Icon name="alert" size={12} />
-          <span class="text-2xs font-bold uppercase tracking-label">Нужна синхронизация</span>
+          <span class="text-2xs font-bold uppercase tracking-label">{tr('room.ui.898')}</span>
         </div>
       {:else if !session.connected}
         <div
@@ -1908,7 +1897,7 @@
           transition:fade={{ duration: 120 }}
         >
           <Icon name="spinner" size={12} class="animate-spin" />
-          <span class="text-2xs font-bold uppercase tracking-label">Reconnecting</span>
+          <span class="text-2xs font-bold uppercase tracking-label">{tr('room.ui.899')}</span>
         </div>
       {/if}
 
@@ -1931,8 +1920,8 @@
             class={bandIcon(rulesOpen)}
             onclick={() => (rulesOpen = !rulesOpen)}
             aria-pressed={rulesOpen}
-            aria-label="Что можно делать в комнате"
-            title="Что можно делать в комнате"
+            aria-label={tr('room.ui.900')}
+            title={tr('room.ui.900')}
           >
             <Icon name="lock" size={16} />
           </button>
@@ -1941,8 +1930,8 @@
           class={bandIcon(leftShown)}
           onclick={toggleLeft}
           aria-pressed={leftShown}
-          aria-label="Toggle files and people"
-          title={`Files and people — ${modKey}B`}
+          aria-label={tr('room.ui.901')}
+          title={tr('room.extra.407', { p0: modKey })}
         >
           <Icon name="file" size={16} />
         </button>
@@ -1957,8 +1946,8 @@
           class={cn(bandIcon(terminalOpen), 'relative')}
           onclick={toggleTerminal}
           aria-pressed={terminalOpen}
-          aria-label="Терминал, журнал ядра и история"
-          title={`Терминал, журнал ядра и история — ${modKey}J или Ctrl+\``}
+          aria-label={tr('room.ui.902')}
+          title={tr('room.extra.408', { p0: modKey })}
         >
           <Icon name="prompt" size={16} />
           {#if session.terminalStatus === 'busy'}
@@ -1975,7 +1964,7 @@
               class="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center
                      justify-center rounded-full bg-accent px-1 font-mono text-micro
                      font-bold text-white"
-              title={`${session.terminalUnread} непрочитанных сообщений ядра`}
+              title={tr('room.extra.409', { p0: session.terminalUnread })}
             >
               {session.terminalUnread > 9 ? '9+' : session.terminalUnread}
             </span>
@@ -1985,8 +1974,8 @@
           class={bandIcon(rightShown)}
           onclick={toggleRight}
           aria-pressed={rightShown}
-          aria-label="Toggle the AI oracle"
-          title={`AI oracle — ${modKey}I`}
+          aria-label={tr('room.ui.903')}
+          title={tr('room.oracle.shortcut', { key: modKey })}
         >
           <Icon name="sparkles" size={16} />
         </button>
@@ -2016,11 +2005,11 @@
         <button
           class={cn(BAND_BTN, 'h-full shrink-0 gap-2 bg-white px-3 text-brand opacity-100')}
           onclick={copyLink}
-          title="Copy the seminar link"
+          title={tr('room.ui.904')}
         >
           <Icon name={copied ? 'check' : 'copy'} size={12} />
           <span class="text-2xs font-bold uppercase tracking-label">
-            {copied ? 'Copied' : 'Copy'}
+            {copied ? tr('room.ui.905') : tr('room.ui.906')}
           </span>
         </button>
       </div>
@@ -2048,9 +2037,7 @@
       transition:fade={{ duration: 140 }}
     >
       <Icon name="lock" size={14} class="shrink-0 text-warning" />
-      <p class="text-ui font-semibold text-ink">
-        Занятие закончено
-        <span class="ml-1 font-mono text-2xs font-normal text-muted" title={finishedLong}>
+      <p class="text-ui font-semibold text-ink"> {tr('room.ui.843')} <span class="ml-1 font-mono text-2xs font-normal text-muted" title={finishedLong}>
           {finishedStamp}
         </span>
       </p>
@@ -2058,8 +2045,8 @@
            первое, что человек должен узнать, — что всё на месте. -->
       <p class="min-w-0 flex-1 text-2xs leading-snug text-muted">
         {isHost
-          ? 'Участникам доступно только чтение. Вы можете продолжать редактировать и запускать код.'
-          : 'Вы можете читать тетрадь, файлы, историю терминала и ответы оракула.'}
+          ? tr('room.ui.907')
+          : tr('room.ui.908')}
       </p>
       {#if isHost}
         <button
@@ -2068,12 +2055,10 @@
           disabled={controlDisabled(session.connected)}
           title={controlTitle(
             session.connected,
-            'Продолжить занятие с прежними правилами доступа',
+            tr('room.extra.411'),
           )}
           onclick={() => setClassOver(false)}
-        >
-          Продолжить занятие
-        </button>
+        > {tr('room.ui.909')} </button>
       {/if}
     </div>
   {/if}
@@ -2157,8 +2142,7 @@
             {#if books.current.some((book) => book.path === path)}
               <Notebook book={path} active={activePath === path} />
             {:else}
-              <div class="flex h-full items-center justify-center text-ui text-muted">
-                Открываю {baseOf(path)}…
+              <div class="flex h-full items-center justify-center text-ui text-muted"> {tr('room.ui.107')} {baseOf(path)}…
               </div>
             {/if}
           </main>
@@ -2205,8 +2189,8 @@
           </div>
           <!-- Голосом читалки состояние всё равно называется: знак его не
                произносит, а знать о нём нужно ровно тем, кто знака не видит. -->
-          <p class="sr-only">Ничего не открыто.</p>
-          <p class="text-2xs text-faint">Файлы и тетради комнаты — в панели слева.</p>
+          <p class="sr-only">{tr('room.ui.910')}</p>
+          <p class="text-2xs text-faint">{tr('room.ui.911')}</p>
         </div>
       {:else if activeKind === 'pdf'}
         {#if lecture && lectureHere && !soloRead}
@@ -2240,16 +2224,13 @@
                        enabled:active:scale-[0.97] hover:brightness-110 active:brightness-95
                        focus-visible:outline-none
                        focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-                title="Показать этот документ всей комнате — вкладка откроется у каждого"
+                title={tr('room.ui.912')}
                 onclick={() => showToRoom(activePath)}
               >
-                <Icon name="board" size={11} />
-                На общий экран
-              </button>
+                <Icon name="board" size={11} /> {tr('room.ui.913')} </button>
               <span class="flex-1"></span>
               {#if session.board}
-                <span class="flex shrink-0 items-center px-5 text-2xs text-muted">
-                  Сейчас комната смотрит {baseOf(session.board)}
+                <span class="flex shrink-0 items-center px-5 text-2xs text-muted"> {tr('room.ui.914')} {baseOf(session.board)}
                 </span>
               {/if}
             </div>
@@ -2283,10 +2264,8 @@
             живому файлу, и ему нужен ответ, а не исчезнувшая вкладка.
           -->
           <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-            <p class="text-ui text-ink">{baseOf(activePath)} — больше полутора мегабайт.</p>
-            <p class="text-2xs text-muted">
-              Файл превышает лимит редактора. Скачайте его из панели файлов или прочитайте нужные данные из ячейки.
-            </p>
+            <p class="text-ui text-ink">{baseOf(activePath)} {tr('room.ui.915')}</p>
+            <p class="text-2xs text-muted"> {tr('room.ui.916')} </p>
           </div>
         {:else if activeDoc}
           {#key activePath}
@@ -2297,8 +2276,7 @@
             />
           {/key}
         {:else}
-          <div class="flex min-h-0 flex-1 items-center justify-center text-ui text-muted">
-            Открываю {baseOf(activePath)}…
+          <div class="flex min-h-0 flex-1 items-center justify-center text-ui text-muted"> {tr('room.ui.107')} {baseOf(activePath)}…
           </div>
         {/if}
       {:else if activePath && activeKind === 'image'}
@@ -2312,10 +2290,8 @@
           добиралась до неё последней и была формально права.
         -->
         <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-          <p class="text-ui text-ink">{baseOf(activePath)} — этот формат не поддерживается редактором.</p>
-          <p class="text-2xs text-muted">
-            Скачайте файл или откройте его из ячейки подходящей библиотекой.
-          </p>
+          <p class="text-ui text-ink">{baseOf(activePath)} {tr('room.ui.917')}</p>
+          <p class="text-2xs text-muted"> {tr('room.ui.918')} </p>
         </div>
       {/if}
 
@@ -2358,7 +2334,7 @@
       <div class="absolute inset-0 z-40 flex">
         <button
           class="absolute inset-0 bg-canvas/70"
-          aria-label="Close the files panel"
+          aria-label={tr('room.ui.919')}
           onclick={() => (leftDrawer = false)}
           in:fade={{ duration: 120 }}
         ></button>
@@ -2375,7 +2351,7 @@
       <div class="absolute inset-0 z-40 flex justify-end">
         <button
           class="absolute inset-0 bg-canvas/70"
-          aria-label="Close the AI panel"
+          aria-label={tr('room.ui.920')}
           onclick={() => (rightDrawer = false)}
           in:fade={{ duration: 120 }}
         ></button>
@@ -2417,10 +2393,8 @@
       >
         <Icon name="link" size={16} />
       </span>
-      <h1 class="mt-4 text-title font-semibold tracking-tight text-ink">Этот семинар удалён</h1>
-      <p class="mt-2 text-ui text-muted">
-        Занятие удалено, и эта ссылка больше не работает. Запросите у преподавателя другую ссылку.
-      </p>
+      <h1 class="mt-4 text-title font-semibold tracking-tight text-ink">{tr('room.ui.145')}</h1>
+      <p class="mt-2 text-ui text-muted"> {tr('room.ui.921')} </p>
     </div>
   </div>
 {/if}
@@ -2494,7 +2468,7 @@
     приняли не потому, что она плохая, и не потому, что кто-то поменял правило,
     а потому, что пара кончилась ровно между двумя нажатиями клавиш.
   -->
-  {@const overClass = refusal.message === CLASS_IS_OVER}
+  {@const overClass = refusal.message === CLASS_IS_OVER || refusal.message === tr(CLASS_IS_OVER)}
   <!--
     Свой ярус между пультом и терминальными плашками: выше обёртки пульта
     (z-[95]) и проекции (z-[90]), но ниже «удалён» / «вас удалили» /
@@ -2511,12 +2485,10 @@
     <div class="flex max-h-full w-full max-w-[520px] flex-col border border-line bg-canvas shadow-pop">
       <div class="border-b border-line px-5 py-3.5">
         <h2 id="refused-title" class="text-title font-semibold text-ink">
-          {overClass ? 'Занятие закончено' : 'Правка не сохранена'}
+          {overClass ? tr('room.ui.843') : tr('room.ui.922')}
         </h2>
         <p class="mt-1 text-ui leading-snug text-muted">
-          {#if overClass}
-            Сервер отклонил правку после завершения занятия. Теперь доступно только чтение. Если ниже показан несохранённый текст, скопируйте его.
-          {:else}
+          {#if overClass} {tr('room.ui.923')} {:else}
             {refusal.message}
           {/if}
         </p>
@@ -2535,20 +2507,19 @@
       -->
       {#if refusedChecking}
         <div class="border-b border-line bg-surface px-5 py-3">
-          <p class="text-ui text-muted">Проверяем, какой текст не сохранился…</p>
+          <p class="text-ui text-muted">{tr('room.ui.924')}</p>
         </div>
       {:else if refusedCells.length > 0}
         <div class="min-h-0 flex-1 overflow-y-auto border-b border-line bg-surface px-5 py-3">
           <p class="pb-1.5 text-2xs font-bold uppercase tracking-caps text-muted">
-            {refusedCells.length === 1 ? 'Несохранённый текст ячейки' : 'Несохранённый текст'}
+            {refusedCells.length === 1 ? tr('room.ui.925') : tr('room.ui.926')}
           </p>
           <div class="flex flex-col gap-3">
             {#each refusedCells as cell (cell.id || 'cursor')}
               {@const number = cell.id ? everyCell.current.get(cell.id) : undefined}
               <div class="flex flex-col gap-1">
                 {#if number !== undefined}
-                  <p class="font-mono text-2xs text-faint">
-                    Ячейка {String(number).padStart(2, '0')}
+                  <p class="font-mono text-2xs text-faint"> {tr('room.ui.927')} {String(number).padStart(2, '0')}
                   </p>
                 {/if}
                 <pre
@@ -2569,10 +2540,10 @@
             onclick={() => void copyRefused()}
           >
             {refusalCopied
-              ? 'Скопировано'
+              ? tr('room.ui.138')
               : refusedCells.length === 1
-                ? 'Скопировать'
-                : 'Скопировать всё'}
+                ? tr('room.ui.139')
+                : tr('room.ui.928')}
           </button>
         {/if}
         <span class="flex-1"></span>
@@ -2580,9 +2551,7 @@
           type="button"
           class={cn('btn-primary', pult && 'h-11 px-6')}
           onclick={() => (refusalShown = false)}
-        >
-          Понятно
-        </button>
+        > {tr('room.ui.929')} </button>
       </div>
     </div>
   </div>
@@ -2613,18 +2582,16 @@
   <div
     class="fixed right-3 top-[104px] z-50 w-[min(30rem,calc(100vw-1.5rem))] border border-line bg-raised shadow-pop sm:right-6"
     role="dialog"
-    aria-label="Что можно делать в комнате"
+    aria-label={tr('room.ui.900')}
     in:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: quintOut }}
   >
     <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
-      <h2 class="text-2xs font-bold uppercase tracking-section text-muted">
-        Что можно делать в комнате
-      </h2>
+      <h2 class="text-2xs font-bold uppercase tracking-section text-muted"> {tr('room.ui.900')} </h2>
       <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
       <button
         class="btn-ghost h-6 w-6 shrink-0 px-0"
         onclick={() => (rulesOpen = false)}
-        aria-label="Закрыть"
+        aria-label={tr('room.ui.141')}
       >
         <Icon name="x" size={14} />
       </button>
@@ -2647,14 +2614,10 @@
     <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line px-4 py-3">
       <div class="min-w-0 flex-1 basis-56">
         <p class="text-ui font-semibold text-ink">
-          {session.finished ? 'Занятие закончено' : 'Занятие идёт'}
+          {session.finished ? tr('room.ui.843') : tr('room.ui.930')}
         </p>
         <p class="mt-0.5 text-2xs leading-snug text-muted">
-          {#if session.finished}
-            Участникам доступно только чтение. При продолжении занятия восстановятся прежние правила доступа.
-          {:else}
-            Участники смогут читать материалы, но не редактировать, запускать код или задавать вопросы оракулу. Тетрадь и файлы сохранятся.
-          {/if}
+          {#if session.finished} {tr('room.ui.931')} {:else} {tr('room.ui.932')} {/if}
         </p>
       </div>
       <!-- Как «Перезапустить ядро»: без связи нажатие никуда не уйдёт, и
@@ -2668,12 +2631,12 @@
         title={controlTitle(
           session.connected,
           session.finished
-            ? 'Продолжить занятие с прежними правилами доступа'
-            : 'Закончить занятие — участникам останется чтение',
+            ? tr('room.extra.411')
+            : tr('room.extra.412'),
         )}
         onclick={() => setClassOver(!session.finished)}
       >
-        {session.finished ? 'Продолжить занятие' : 'Закончить занятие'}
+        {session.finished ? tr('room.ui.909') : tr('room.ui.933')}
       </button>
     </div>
     <!--
@@ -2686,9 +2649,7 @@
       окно «Правка не сохранена». Обещать ему обратное — значит объяснять
       ему потом, что сломалось.
     -->
-    <p class="border-t border-line px-4 py-2 text-2xs text-muted">
-      Новые правила применяются сразу. Если правка участника нарушает их, вкладка загрузит сохранённую версию и предложит скопировать несохранённый текст.
-    </p>
+    <p class="border-t border-line px-4 py-2 text-2xs text-muted"> {tr('room.ui.934')} </p>
   </div>
 {/if}
 
@@ -2716,9 +2677,7 @@
     <div class="flex w-full max-w-2xl items-center gap-3">
       <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
       <p class="min-w-0 flex-1 text-ui leading-snug text-ink">{session.stuck}</p>
-      <button type="button" class="btn-primary shrink-0" onclick={() => reloadByHand()}>
-        Перезагрузить
-      </button>
+      <button type="button" class="btn-primary shrink-0" onclick={() => reloadByHand()}> {tr('room.ui.151')} </button>
     </div>
   </div>
 {/if}
@@ -2769,13 +2728,11 @@
         transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
       >
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
-        <p class="text-ui leading-snug text-muted">Пульт закрыт, лекция идёт.</p>
+        <p class="text-ui leading-snug text-muted">{tr('room.ui.935')}</p>
         <button
           class="btn-ghost h-6 px-2 text-2xs font-bold uppercase tracking-label"
           onclick={toPult}
-        >
-          Вернуться к пульту
-        </button>
+        > {tr('room.ui.936')} </button>
       </div>
     {/if}
 
@@ -2794,9 +2751,7 @@
         transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
       >
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
-        <p class="text-ui leading-snug text-muted">
-          Преподаватель изменил, что можно делать в этой комнате.
-        </p>
+        <p class="text-ui leading-snug text-muted"> {tr('room.ui.937')} </p>
       </div>
     {/if}
 
@@ -2814,11 +2769,7 @@
       >
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
         <p class="text-ui leading-snug text-muted">
-          {#if session.finished}
-            Занятие закончено. Материалы доступны для чтения.
-          {:else}
-            Занятие продолжается. Прежние правила доступа восстановлены.
-          {/if}
+          {#if session.finished} {tr('room.ui.938')} {:else} {tr('room.ui.939')} {/if}
         </p>
       </div>
     {/if}
@@ -2831,13 +2782,11 @@
         transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
       >
         <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-faint"></span>
-        <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">
-          Загружена актуальная версия тетради с сервера.
-        </p>
+        <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted"> {tr('room.ui.940')} </p>
         <button
           class="btn-ghost h-6 w-6 shrink-0 px-0"
           onclick={() => (staleNotice = false)}
-          aria-label="Dismiss"
+          aria-label={tr('room.ui.941')}
         >
           <Icon name="x" size={14} />
         </button>
@@ -2854,12 +2803,12 @@
       >
         <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
         <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">
-          {session.lastError}
+          {tr(session.lastError)}
         </p>
         <button
           class="btn-ghost h-6 w-6 shrink-0 px-0"
           onclick={() => session.dismissError()}
-          aria-label="Dismiss"
+          aria-label={tr('room.ui.941')}
         >
           <Icon name="x" size={14} />
         </button>

@@ -1,3 +1,4 @@
+import {tr} from '@shared/i18n'
 import type {
   AiAskRequest,
   AiAskResponse,
@@ -54,14 +55,13 @@ export class ApiError extends Error {
  * промолчать.
  */
 export function statusMessage(res: Response): string {
-  if (res.statusText) return res.statusText
-  if (res.status === 401) return 'Not signed in (401)'
-  if (res.status === 403) return 'Not allowed (403)'
-  if (res.status === 404) return 'Not found (404)'
-  if (res.status === 413) return 'Too large (413)'
-  if (res.status === 429) return 'Too many requests (429)'
-  if (res.status >= 500) return `The server failed (${res.status})`
-  return `The request failed (${res.status})`
+  if (res.status === 401) return tr('common.http401')
+  if (res.status === 403) return tr('common.http403')
+  if (res.status === 404) return tr('common.http404')
+  if (res.status === 413) return tr('common.http413')
+  if (res.status === 429) return tr('common.http429')
+  if (res.status >= 500) return tr('common.serverFailed',{status:res.status})
+  return tr('common.requestFailed',{status:res.status})
 }
 
 /**
@@ -93,7 +93,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
      * случаев она не называет; сказать, что связь пропала, честнее.
      */
     if (cause instanceof TypeError) {
-      throw new ApiError('Could not reach the server — check the connection and try again.', 0)
+      throw new ApiError(tr('common.networkError'), 0)
     }
     throw cause
   }

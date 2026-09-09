@@ -8,6 +8,7 @@
   дерущаяся с пальцем на трекпаде, даёт залипание, которое выглядит поломкой.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import { onMount } from 'svelte'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import Icon from '@/components/ui/Icon.svelte'
@@ -72,7 +73,8 @@
   const session = getSessionState()
 
   let doc = $state<PDFDocumentProxy | null>(null)
-  let failure = $state<string | null>(null)
+  let failureRender = $state<() => string | null>(() => null)
+  const failure = $derived(failureRender())
   let scroller = $state<HTMLElement | null>(null)
 
   /**
@@ -189,7 +191,7 @@
          */
       })
       .catch(() => {
-        if (!cancelled) failure = 'Не удалось открыть этот файл.'
+        if (!cancelled) failureRender = () => (tr('room.ui.730'))
       })
     return () => {
       cancelled = true
@@ -568,13 +570,11 @@
              focus-visible:ring-inset focus-visible:ring-accent/40
              {railOpen ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}"
       aria-pressed={railOpen}
-      aria-label="Полоса страниц"
-      title="Выбрать страницу"
+      aria-label={tr('room.ui.720')}
+      title={tr('room.ui.156')}
       onclick={toggleRail}
     >
-      <Icon name="text" size={12} />
-      Страницы
-    </button>
+      <Icon name="text" size={12} /> {tr('room.ui.206')} </button>
 
     <span class="my-2 w-px bg-line" aria-hidden="true"></span>
 
@@ -588,8 +588,8 @@
              duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
              focus-visible:ring-inset focus-visible:ring-accent/40 disabled:opacity-40"
       disabled={scale <= 0.5}
-      aria-label="Уменьшить масштаб"
-      title="Уменьшить масштаб"
+      aria-label={tr('room.ui.721')}
+      title={tr('room.ui.721')}
       onclick={() => step(-1)}
     >
       −
@@ -599,7 +599,7 @@
       class="flex w-16 shrink-0 items-center justify-center font-mono text-2xs tabular-nums
              text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
              focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-      title="По ширине"
+      title={tr('room.ui.722')}
       onclick={() => zoom(1)}
     >
       {Math.round(scale * 100)}%
@@ -610,8 +610,8 @@
              duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2
              focus-visible:ring-inset focus-visible:ring-accent/40 disabled:opacity-40"
       disabled={scale >= 3}
-      aria-label="Увеличить масштаб"
-      title="Увеличить масштаб"
+      aria-label={tr('room.ui.723')}
+      title={tr('room.ui.723')}
       onclick={() => step(1)}
     >
       +
@@ -630,12 +630,10 @@
         class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
                text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
                focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-        title="Вернуться к странице, на которой ведущий"
+        title={tr('room.ui.724')}
         onclick={() => backToLecture?.()}
       >
-        <Icon name="board" size={12} />
-        К лекции
-      </button>
+        <Icon name="board" size={12} /> {tr('room.ui.725')} </button>
     {:else if mayLead}
       <!--
         Начать лекцию. Кнопка стоит в читалке, а не в панели файлов, потому что
@@ -647,21 +645,17 @@
         class="flex shrink-0 items-center gap-2 px-4 text-2xs font-bold uppercase tracking-label
                text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none
                focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-        title="Начать лекцию по этому документу"
+        title={tr('room.ui.726')}
         onclick={() => session.send({ t: 'lecture:start', file })}
       >
-        <Icon name="pencil" size={12} />
-        Лекция
-      </button>
+        <Icon name="pencil" size={12} /> {tr('room.ui.444')} </button>
     {/if}
 
     {#if !following && lead}
       <!-- Отстал намеренно: следование снимается любым своим жестом, и сказать
            об этом надо там же, где кнопки, а не только в строке вкладок. -->
       <span class="flex shrink-0 items-center gap-1.5 px-4 text-2xs text-muted">
-        <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
-        самостоятельный просмотр
-      </span>
+        <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span> {tr('room.ui.727')} </span>
     {/if}
   </div>
 
@@ -701,7 +695,7 @@
       <!-- Не спиннер, а имя файла: человек знает, что открывает, и видит, что
            это уже происходит. Библиотека и воркер — полтора мегабайта, на
            лекционном вайфае это секунды. -->
-      <p class="p-4 text-ui text-muted">Открывается {file}…</p>
+      <p class="p-4 text-ui text-muted">{tr('room.ui.728')} {file}…</p>
     {:else}
       {#each Array.from({ length: pages }, (_, i) => i + 1) as index (index)}
         <!-- Ширина листа — и есть масштаб: страница рисуется по ширине своего

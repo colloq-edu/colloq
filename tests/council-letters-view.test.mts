@@ -82,7 +82,7 @@ test('лист студента рисует по строке на письмо
     /letter\.to === 'group'/,
     'рассылка группе ничем не помечена — личный ответ и письмо всем читаются одинаково',
   )
-  assert.ok(block.includes('всей группе'), 'у пометки рассылки нет слова')
+  assert.ok(block.includes("tr('room.ui.70')"), 'у пометки рассылки нет перевода')
 
   // Обратная сторона: пока склейка где-то рисуется, дефект жив ровно там.
   assert.doesNotMatch(
@@ -110,7 +110,7 @@ test('стопка преподавателя читает те же письм�
     assert.ok(block.includes(field), `в строке письма нет ${field}`)
   }
   assert.match(block, /letter\.to === 'group'/, 'рассылка группе ничем не помечена')
-  assert.ok(block.includes('всей группе'), 'у пометки рассылки нет слова')
+  assert.ok(block.includes("tr('room.ui.70')"), 'у пометки рассылки нет перевода')
   assert.doesNotMatch(
     STACK,
     /attempt\??\.reply\b/,

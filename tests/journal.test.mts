@@ -12,7 +12,10 @@
  * человек, и цена ошибки — полпары, потраченные не на то.
  */
 import './_env.mts'
-import { after, test } from 'node:test'
+import { after, beforeEach, test } from 'node:test'
+import { setLocaleResolver } from '../shared/i18n.js'
+// These diagnostics assert English copy deliberately; operator log tokens remain stable.
+beforeEach(() => setLocaleResolver(() => 'en'))
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import express from 'express'

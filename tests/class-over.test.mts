@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n.js'
 /**
  * Занятие закончено.
  *
@@ -274,7 +275,7 @@ test('оракула в законченной комнате спрашивае
   const denied = await askOracle(id, 'participant')
   assert.equal(denied.status, 403, 'участник спросил оракула после звонка')
   const body = (await denied.json()) as { error: string }
-  assert.ok(body.error.includes(CLASS_IS_OVER), `отказ говорит не про конец занятия: ${body.error}`)
+  assert.ok(body.error.includes(tr(CLASS_IS_OVER)), `отказ говорит не про конец занятия: ${body.error}`)
 
   // Преподавателю — та же дверь, что и до звонка: разбор он дописывает сам.
   assert.equal((await askOracle(id, 'host')).status, 202)
@@ -374,7 +375,7 @@ test('после звонка участник упирается во всё, �
      * значит пойти искать преподавателя, который ничего не менял.
      */
     assert.ok(
-      said.includes(CLASS_IS_OVER),
+      said.includes(tr(CLASS_IS_OVER)),
       `${message.t} отказал правилом, а не концом занятия: ${said}`,
     )
   }
@@ -646,12 +647,12 @@ test('после звонка участник не отклоняет пред�
   setFinished(id, Date.now())
 
   const denied = say(id, 'participant', { t: 'ai:decide', entryId, accept: false })
-  assert.ok(denied?.includes(CLASS_IS_OVER), `отказ говорит не про конец занятия: ${denied}`)
+  assert.ok(denied?.includes(tr(CLASS_IS_OVER)), `отказ говорит не про конец занятия: ${denied}`)
   assert.equal(patchStateOf(id, entryId), 'open', 'плашку сняли после звонка')
 
   // «Принять» закрыто правилом `edit`, и фраза у него та же.
   const accept = say(id, 'participant', { t: 'ai:decide', entryId, accept: true })
-  assert.ok(accept?.includes(CLASS_IS_OVER), `принять отказало правилом: ${accept}`)
+  assert.ok(accept?.includes(tr(CLASS_IS_OVER)), `принять отказало правилом: ${accept}`)
   assert.equal(patchStateOf(id, entryId), 'open')
 
   // Преподаватель решает и после звонка: разбор дописывает он.
@@ -730,7 +731,7 @@ test('свою запись останавливает автор, чужую �
   assert.equal(denied.status, 403, 'участник оборвал чужую работу посреди пары')
   const body = (await denied.json()) as { error: string }
   assert.match(body.error, /свой вопрос/, `отказ не назвал правило: ${body.error}`)
-  assert.ok(!body.error.includes(CLASS_IS_OVER), 'отказ сослался на звонок, которого не было')
+  assert.ok(!body.error.includes(tr(CLASS_IS_OVER)), 'отказ сослался на звонок, которого не было')
 
   assert.equal(
     (await cancelEntry(id, 'participant', mine)).status,

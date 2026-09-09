@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /** The web process sends room intent; it never forwards a container specification. */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -37,14 +38,14 @@ interface ClientOptions { url: string; tokenFile?: string; token?: string; timeo
 const TOKEN = /^[A-Za-z0-9_-]{32,256}$/
 const MAX_RESPONSE = 1024 * 1024
 function object(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RuntimeRequestError('Invalid kernel runtime response')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RuntimeRequestError(tr("server.invalidKernelRuntimeResponse.110f37"))
   return value as Record<string, unknown>
 }
 function runtimeUrl(raw: string): string {
   let url: URL
-  try { url = new URL(raw) } catch { throw new RuntimeRequestError('Invalid kernel runtime URL') }
+  try { url = new URL(raw) } catch { throw new RuntimeRequestError(tr("server.invalidKernelRuntimeUrl.e0bb3b")) }
   if (url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) {
-    throw new RuntimeRequestError('Invalid kernel runtime URL: credentials, query strings and path prefixes are not allowed')
+    throw new RuntimeRequestError(tr("server.invalidKernelRuntimeUrlCredentialsQueryStrings.b2ea18"))
   }
   const local = ['localhost', '127.0.0.1', '[::1]', 'colloq-runtime'].includes(url.hostname) ||
     url.hostname.endsWith('.svc') || url.hostname.endsWith('.svc.cluster.local')
@@ -57,9 +58,9 @@ function readToken(options: ClientOptions): string {
   let token = options.token
   if (options.tokenFile) {
     try { token = fs.readFileSync(options.tokenFile, 'utf8').trim() }
-    catch { throw new RuntimeRequestError('Cannot read the kernel runtime credential') }
+    catch { throw new RuntimeRequestError(tr("server.cannotReadTheKernelRuntimeCredential.01bb5b")) }
   }
-  if (!token || !TOKEN.test(token)) throw new RuntimeRequestError('A valid kernel runtime credential is required')
+  if (!token || !TOKEN.test(token)) throw new RuntimeRequestError(tr("server.aValidKernelRuntimeCredentialIsRequired.bf5c2f"))
   return token
 }
 async function boundedJson(response: Response): Promise<unknown> {
@@ -71,12 +72,12 @@ async function boundedJson(response: Response): Promise<unknown> {
       const {done,value} = await reader.read()
       if (done) break
       size += value.byteLength
-      if (size > MAX_RESPONSE) { await reader.cancel(); throw new RuntimeRequestError('Kernel runtime response exceeds the size limit') }
+      if (size > MAX_RESPONSE) { await reader.cancel(); throw new RuntimeRequestError(tr("server.kernelRuntimeResponseExceedsTheSizeLimit.3c5ab1")) }
       chunks.push(value)
     }
     if (!size) return {}
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) }
-    catch { throw new RuntimeRequestError('Kernel runtime returned invalid JSON', response.status) }
+    catch { throw new RuntimeRequestError(tr("server.kernelRuntimeReturnedInvalidJson.c52e11"), response.status) }
   } finally { reader.releaseLock() }
 }
 
@@ -93,55 +94,55 @@ export class RuntimeClient {
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(this.options.timeoutMs ?? timeout),
       })
-    } catch { throw new RuntimeRequestError('Kernel runtime is unreachable or did not respond in time') }
+    } catch { throw new RuntimeRequestError(tr("server.kernelRuntimeIsUnreachableOrDidNot.86406b")) }
     const value = await boundedJson(response)
     if (!response.ok) {
       const message = value && typeof value === 'object' && typeof (value as Record<string,unknown>).error === 'string'
         ? String((value as Record<string,unknown>).error).slice(0,512)
-        : `Kernel runtime refused the request (${response.status})`
+        : tr("server.kernelRuntimeRefusedTheRequest.39c35d", { p0: response.status })
       throw new RuntimeRequestError(message,response.status)
     }
     return value
   }
   async ensure(sessionId: string, environment: string, revision?: string): Promise<RuntimeEndpoint> {
-    if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError('Invalid session identifier')
+    if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
     const body = parseRuntimeEnsureRequest({environment,...(revision ? {revision} : {})})
     const value = object(await this.request('POST',`/v1/rooms/${encodeURIComponent(sessionId)}`,body,180000))
     if (typeof value.url !== 'string' || typeof value.token !== 'string' || value.token.length < 16 ||
       /[\r\n]/.test(value.token) || typeof value.instanceId !== 'string' || !value.instanceId ||
       value.environment !== environment || typeof value.revision !== 'string' || !RUNTIME_REVISION.test(value.revision)) {
-      throw new RuntimeRequestError('Invalid kernel runtime endpoint or instance identity')
+      throw new RuntimeRequestError(tr("server.invalidKernelRuntimeEndpointOrInstanceIdentity.a63d8b"))
     }
-    if (revision && value.revision !== revision) throw new RuntimeRequestError('Kernel runtime returned a different environment revision')
+    if (revision && value.revision !== revision) throw new RuntimeRequestError(tr("server.kernelRuntimeReturnedADifferentEnvironmentRevision.8f728c"))
     let target: URL
-    try { target = new URL(value.url) } catch { throw new RuntimeRequestError('Invalid Jupyter endpoint URL') }
+    try { target = new URL(value.url) } catch { throw new RuntimeRequestError(tr("server.invalidJupyterEndpointUrl.edef18")) }
     if (!['http:','https:'].includes(target.protocol) || target.username || target.password || target.search || target.hash ||
-      !['','/'].includes(target.pathname)) throw new RuntimeRequestError('Invalid Jupyter endpoint URL')
+      !['','/'].includes(target.pathname)) throw new RuntimeRequestError(tr("server.invalidJupyterEndpointUrl.edef18"))
     return {url:value.url, token:value.token, instanceId:value.instanceId,environment,revision:value.revision}
   }
   async stop(sessionId: string, permanent = false): Promise<void> {
-    if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError('Invalid session identifier')
+    if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
     const value=object(await this.request('DELETE',`/v1/rooms/${encodeURIComponent(sessionId)}${permanent ? '?retire=true' : ''}`,undefined,180000))
-    if (value.ok !== true) throw new RuntimeRequestError('Kernel runtime did not confirm room termination')
+    if (value.ok !== true) throw new RuntimeRequestError(tr("server.kernelRuntimeDidNotConfirmRoomTermination.eed974"))
   }
   async health(): Promise<RuntimeHealth> {
     try {
       const value=object(await this.request('GET','/v1/health',undefined,5000))
       if (typeof value.ok !== 'boolean' || !(value.reason === null || typeof value.reason === 'string')) {
-        throw new RuntimeRequestError('Invalid kernel runtime health response')
+        throw new RuntimeRequestError(tr("server.invalidKernelRuntimeHealthResponse.dc255b"))
       }
       return {ok:value.ok,reason:value.ok ? null : value.reason as string | null}
-    } catch(error) { return {ok:false,reason:error instanceof Error ? error.message : 'Kernel runtime is unavailable'} }
+    } catch(error) { return {ok:false,reason:error instanceof Error ? error.message : tr("server.kernelRuntimeIsUnavailable.44455e")} }
   }
   async catalog(): Promise<RuntimeCatalog> { return parseRuntimeCatalog(await this.request('GET','/v1/catalog')) }
   async rooms(): Promise<RuntimeRoom[]> {
     const value=object(await this.request('GET','/v1/rooms'))
-    if (!Array.isArray(value.rooms) || value.rooms.length>10000) throw new RuntimeRequestError('Invalid runtime room list')
+    if (!Array.isArray(value.rooms) || value.rooms.length>10000) throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
     return value.rooms.map(raw=>{
       const row=object(raw)
       if (typeof row.sessionId!=='string'||!isRuntimeSessionId(row.sessionId)||typeof row.instanceId!=='string'||
         !['pending','ready','failed','terminating'].includes(String(row.phase))||typeof row.environment!=='string'||
-        typeof row.revision!=='string'||!RUNTIME_REVISION.test(row.revision)) throw new RuntimeRequestError('Invalid runtime room list')
+        typeof row.revision!=='string'||!RUNTIME_REVISION.test(row.revision)) throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
       return row as unknown as RuntimeRoom
     })
   }
@@ -150,19 +151,19 @@ export class RuntimeClient {
 export function kernelRuntimeClient(): RuntimeClient {
   requireKernelIsolation()
   const url=process.env.KERNEL_RUNTIME_URL?.trim()
-  if (!url) throw new RuntimeRequestError('Kernel runtime is not configured: set KERNEL_RUNTIME_URL')
+  if (!url) throw new RuntimeRequestError(tr("server.kernelRuntimeIsNotConfiguredSetKernel.4598c3"))
   const tokenFile=process.env.KERNEL_RUNTIME_TOKEN_FILE?.trim()
-  if (process.env.NODE_ENV==='production'&&!tokenFile) throw new RuntimeRequestError('Production requires KERNEL_RUNTIME_TOKEN_FILE')
+  if (process.env.NODE_ENV==='production'&&!tokenFile) throw new RuntimeRequestError(tr("server.productionRequiresKernelRuntimeTokenFile.6f556a"))
   return new RuntimeClient({url,tokenFile,token:process.env.KERNEL_RUNTIME_TOKEN})
 }
 export function loadRuntimeCatalog(): RuntimeCatalog {
   const file=process.env.KERNEL_CATALOG_FILE?.trim()
-  if (!file) throw new RuntimeRequestError('Kernel image catalog is not configured: set KERNEL_CATALOG_FILE')
+  if (!file) throw new RuntimeRequestError(tr("server.kernelImageCatalogIsNotConfiguredSet.60170e"))
   try {
     if (fs.statSync(file).size>MAX_RESPONSE) throw new Error('too large')
     return parseRuntimeCatalog(JSON.parse(fs.readFileSync(file,'utf8')))
   } catch(error) {
-    throw new RuntimeRequestError(`Cannot read the kernel image catalog: ${error instanceof Error ? error.message : 'invalid catalog'}`)
+    throw new RuntimeRequestError(tr("server.cannotReadTheKernelImageCatalog.c9c5bc", { p0: error instanceof Error ? error.message : 'invalid catalog' }))
   }
 }
 function defaultFile(): string { return path.join(config.dataDir,'kernel-default.json') }
@@ -174,7 +175,7 @@ export function runtimeDefaultEnvironment(): string {
       const stored=JSON.parse(fs.readFileSync(defaultFile(),'utf8'))
       if (typeof stored.environment!=='string') throw new Error('missing environment')
       name=stored.environment
-    } catch { throw new RuntimeRequestError('The saved default kernel environment is invalid') }
+    } catch { throw new RuntimeRequestError(tr("server.theSavedDefaultKernelEnvironmentIsInvalid.c7c72c")) }
   }
   resolveRuntimeEnvironment(catalog,name)
   return name

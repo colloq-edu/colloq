@@ -1,5 +1,5 @@
 /**
- * Окно правил семинара говорит одним языком — русским, как комната.
+ * Окно правил семинара и комната следуют одному выбранному языку.
  *
  * Подписи правил живут в языке КОМНАТЫ: тот же список рисует пульт внутри неё
  * (web/src/lib/rule-rows.ts, tests/weblib-rule-rows.test.mts), и рамка вокруг
@@ -17,7 +17,9 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { test } from 'node:test'
+import { afterEach, test } from 'node:test'
+import { setLocaleResolver } from '../shared/i18n.js'
+afterEach(() => setLocaleResolver(() => 'ru'))
 import assert from 'node:assert/strict'
 import type { AdminErrorReason } from '../shared/admin.js'
 import { ruleRefusal } from '../web/src/admin/panel.js'
@@ -49,7 +51,9 @@ const REASONS: AdminErrorReason[] = [
   'network',
 ]
 
-test('причина отказа в окне правил — по-русски при любом отказе', () => {
+test('причина отказа в окне правил — на выбранном языке при любом отказе', () => {
+ for (const locale of ['ru', 'en'] as const) {
+  setLocaleResolver(() => locale)
   const lines = [
     ruleRefusal(null),
     ...REASONS.map((reason) =>
@@ -59,11 +63,12 @@ test('причина отказа в окне правил — по-русски
     ...REASONS.map((reason) => ruleRefusal({ reason, status: 502 })),
   ]
   for (const line of lines) {
-    assert.match(line, ROOM_LANGUAGE, `«${line}» — не на языке окна`)
-    assert.doesNotMatch(line, PANEL_LANGUAGE, `«${line}» — хвост английской панели в русском окне`)
+    assert.match(line, locale === 'ru' ? ROOM_LANGUAGE : PANEL_LANGUAGE, `«${line}» — не на языке окна`)
+    assert.doesNotMatch(line, locale === 'ru' ? PANEL_LANGUAGE : ROOM_LANGUAGE, `«${line}» — смешение языков`)
     // Фраза целая: половинчатую («Правило не сохранилось — ») читать не о чем.
-    assert.match(line, /^Не удалось сохранить правило[:.] .+[.]$/u, `«${line}» — обрывок фразы`)
+    assert.match(line, locale === 'ru' ? /^Не удалось сохранить правило[:.] .+[.]$/u : /^Could not save the rule[:.] .+[.]$/u, `«${line}» — обрывок фразы`)
   }
+ }
 })
 
 test('сеть, отвергнутый вход и права названы каждый своим, а не одним словом', () => {
@@ -113,14 +118,14 @@ function code(source: string): string {
 
 test('окно правил берёт причину у себя, а не у английского explain()', () => {
   const seminars = code(read(SEMINARS))
-  const assignments = seminars.match(/rulesError = [^\n]+/g) ?? []
+  const assignments = seminars.match(/rulesErrorText = [^\n]+/g) ?? []
 
   assert.ok(assignments.length > 0, 'подвал окна правил больше ничего не показывает')
   for (const line of assignments) {
     assert.doesNotMatch(line, /explain\(/, `${line.trim()} — английская причина в русском окне`)
   }
-  assert.match(seminars, /rulesError = ruleRefusal\(/, 'причина берётся из panel.ts')
+  assert.match(seminars, /rulesErrorText = \(\) => \(ruleRefusal\(/, 'причина берётся из panel.ts')
   // Отвергнутое печенье по-прежнему уводит на экран входа: перевод причины не
   // должен был отменить смену экрана (admin-1).
-  assert.match(seminars, /noteDeadCookie\(cause\)[\s\S]{0,200}rulesError = ruleRefusal\(/)
+  assert.match(seminars, /noteDeadCookie\(cause\)[\s\S]{0,200}rulesErrorText = \(\) => \(ruleRefusal\(/)
 })

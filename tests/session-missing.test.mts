@@ -12,6 +12,7 @@
  * точки зрения экрана обе ветки выглядят как «сервер ответил 404».
  */
 import { test } from 'node:test'
+import { setLocaleResolver } from '../shared/i18n.js'
 import assert from 'node:assert/strict'
 import { SESSION_MISSING, saysSessionMissing } from '../shared/protocol.js'
 import { ApiError, statusMessage } from '../web/src/lib/api.js'
@@ -26,9 +27,22 @@ test('чужой 404 без тела — это обрыв связи, а не �
    * отдаёт свою страницу, HTTP/2 не несёт строки состояния, и до экрана
    * доезжает «Not found (404)».
    */
-  const proxied = new ApiError(statusMessage({ status: 404, statusText: '' } as Response), 404)
-  assert.equal(proxied.message, 'Not found (404)')
-  assert.equal(saysSessionMissing(proxied), false)
+  try {
+    for (const [locale, expected] of [
+      ['ru', 'Не найдено (404)'],
+      ['en', 'Not found (404)'],
+    ] as const) {
+      setLocaleResolver(() => locale)
+      const proxied = new ApiError(
+        statusMessage({ status: 404, statusText: 'Not Found' } as Response),
+        404,
+      )
+      assert.equal(proxied.message, expected)
+      assert.equal(saysSessionMissing(proxied), false)
+    }
+  } finally {
+    setLocaleResolver(() => 'ru')
+  }
 })
 
 test('чужие слова с нашим кодом тоже не считаются', () => {
@@ -44,7 +58,10 @@ test('наши слова с чужим кодом не считаются те�
 })
 
 test('сеть отвалилась — ApiError с кодом 0, и комната цела', () => {
-  const offline = new ApiError('Could not reach the server — check the connection and try again.', 0)
+  const offline = new ApiError(
+    'Could not reach the server — check the connection and try again.',
+    0,
+  )
   assert.equal(saysSessionMissing(offline), false)
 })
 

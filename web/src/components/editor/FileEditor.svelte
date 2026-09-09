@@ -1,4 +1,6 @@
 <script lang="ts" module>
+  import { tr, getLocale } from '@shared/i18n'
+  import { editorPhrases } from '@/lib/editor-locale'
   /*
    * Редактор файла — тот же CodeMirror, что и в ячейках, собранный по-другому.
    *
@@ -36,8 +38,9 @@
             indentUnit,
           }),
         ),
-        import('@codemirror/search').then(({ highlightSelectionMatches, search, searchKeymap }) => ({
+        import('@codemirror/search').then(({ highlightSelectionMatches, search, searchKeymap, closeSearchPanel, openSearchPanel, searchPanelOpen }) => ({
           highlightSelectionMatches,
+          closeSearchPanel, openSearchPanel, searchPanelOpen,
           search,
           searchKeymap,
         })),
@@ -163,6 +166,7 @@
   let setWritable = $state.raw<((editable: boolean) => void) | null>(null)
   /** Что стоит в живом редакторе сейчас — чтобы не переконфигурировать впустую. */
   let writableNow = true
+  let setLabels = $state.raw<(() => void) | null>(null)
 
   $effect(() => {
     const parent = host
@@ -218,10 +222,12 @@
       )
 
       const writable = new cm.state.Compartment()
+      const localeSlot = new cm.state.Compartment()
       made = new EditorView({
         state: EditorState.create({
           doc: doc.text.toString(),
           extensions: [
+            localeSlot.of(EditorState.phrases.of(editorPhrases())),
             lineNumbers(),
             highlightActiveLineGutter(),
             highlightActiveLine(),
@@ -269,6 +275,26 @@
       })
       view = made
       const built = made
+      setLabels = () => {
+        const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+        const field = focused instanceof HTMLInputElement && focused.closest('.cm-search') ? focused : null
+        const name = field?.name
+        const start = field?.selectionStart ?? null
+        const end = field?.selectionEnd ?? null
+        const open = cm.search.searchPanelOpen(built.state)
+        built.dispatch({ effects: localeSlot.reconfigure(EditorState.phrases.of(editorPhrases())) })
+        // CodeMirror reads panel phrases on creation. Its search query lives in
+        // editor state, so renewing just this panel preserves both query and editor.
+        if (open) {
+          cm.search.closeSearchPanel(built)
+          cm.search.openSearchPanel(built)
+          const next = name ? built.dom.querySelector<HTMLInputElement>(`.cm-search input[name="${name}"]`) : null
+          if (next) {
+            next.focus()
+            if (start !== null && end !== null) next.setSelectionRange(start, end)
+          } else focused?.focus()
+        }
+      }
       writableNow = editable
       setWritable = (next) =>
         built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
@@ -278,6 +304,7 @@
     return () => {
       disposed = true
       setWritable = null
+      setLabels = null
       made?.destroy()
       if (view === made) view = null
       ready = false
@@ -289,6 +316,11 @@
    * один отсек, а фокус, курсор и прокрутка остаются на месте. Строится
    * редактор уже с верным значением, так что первый прогон — холостой.
    */
+  $effect(() => {
+    getLocale()
+    setLabels?.()
+  })
+
   $effect(() => {
     const apply = setWritable
     const editable = !readOnly
@@ -317,8 +349,7 @@
       сам ставит в неё курсор. Напечатанное не пропадало, а сливалось с
       приехавшим файлом и через секунду уезжало на диск ко всей комнате.
     -->
-    <div class="flex min-h-0 flex-1 items-center justify-center text-ui text-muted">
-      Открываю {baseOf(file.path)}…
+    <div class="flex min-h-0 flex-1 items-center justify-center text-ui text-muted"> {tr('room.ui.107')} {baseOf(file.path)}…
     </div>
   {/if}
 </div>

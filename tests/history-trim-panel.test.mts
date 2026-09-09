@@ -1,3 +1,4 @@
+import { translate } from '../shared/i18n.js'
 /**
  * Панель истории договаривает про обрезанное начало.
  *
@@ -53,7 +54,7 @@ test('панель читает признак обрезки из ответа'
 test('строка про несохранившееся начало стоит в конце ленты и только при обрезке', () => {
   const tail = TAB.slice(TAB.indexOf('{#each versions as v'))
   const each = tail.indexOf('{/each}')
-  const note = tail.indexOf('Более ранние версии не хранятся')
+  const note = tail.indexOf("tr('room.ui.634')")
   assert.ok(each >= 0, 'список версий не найден — тест смотрит не туда')
   assert.ok(note > each, 'приписка стоит не под самой старой строкой списка')
   assert.match(
@@ -63,6 +64,6 @@ test('строка про несохранившееся начало стоит
   )
   // Про удалённое, а не про окно ленты: вытесненные MAX_VERSIONS версии в базе
   // есть, и говорить о них надо другими словами.
-  assert.match(TAB, /история комнаты ограничена по объёму/)
-  assert.doesNotMatch(tail.slice(note, tail.indexOf('</p>', note)), /не показаны|показаны не все/)
+  assert.match(translate('ru', 'room.ui.634'), /история комнаты ограничена по объёму/)
+  assert.doesNotMatch(translate('ru', 'room.ui.634'), /не показаны|показаны не все/)
 })

@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Единственная REST-дверь консилиума: спросить оракула о решениях.
  *
@@ -80,7 +81,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     const sessionId = req.params.id
     const auth = sessionAuth(req)
     if (!auth) {
-      res.status(401).json({ error: 'join the session first' })
+      res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
       return null
     }
     if (!getSession(sessionId)) {
@@ -88,7 +89,7 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       return null
     }
     if (!mayLeadCouncil(auth.role)) {
-      res.status(403).json({ error: 'Консилиум ведёт преподаватель' })
+      res.status(403).json({ error: tr("server.onlyTheTeacherMayLeadCouncil.9554ff") })
       return null
     }
     return { sessionId, cellId: req.params.cellId, participantId: auth.participantId }
@@ -111,18 +112,18 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
       return res.status(403).json({
         error:
           settings.defaultMode === 'off'
-            ? 'Оракул отключён на этом Colloq.'
-            : 'Оракул выключен в этом семинаре — включите его в правилах комнаты.',
+            ? tr("server.theOracleIsDisabledOnThisColloq.e47e9a")
+            : tr("server.theOracleIsDisabledForThisSeminar.48f5c6"),
       })
     }
     if (settings.questionsPerHour === 0) {
       return res
         .status(403)
-        .json({ error: 'Оракул выключен на этом Colloq: вопросов в час — ноль.' })
+        .json({ error: tr("server.theOracleIsDisabledOnThisColloq.395e3a") })
     }
     if (!aiReady()) {
       return res.status(503).json({
-        error: 'На этом Colloq не настроена модель — добавьте ключ в разделе «Оракул» панели.',
+        error: tr("server.noModelIsConfiguredOnThisColloq.c1d63b"),
       })
     }
 
@@ -149,11 +150,11 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
         reference: null,
       }
     })
-    if (!task) return res.status(404).json({ error: 'Такой ячейки в комнате нет' })
+    if (!task) return res.status(404).json({ error: tr("server.thisCellIsNotInTheRoom.b481d9") })
 
     if (isOracleReading(sessionId, cellId)) {
       return res.status(409).json({
-        error: 'Сводка уже готовится. Дождитесь ответа или остановите запрос.',
+        error: tr("server.aSummaryIsAlreadyBeingPreparedWait.80427e"),
         oracle: deps.oracleOf(sessionId, cellId) ?? idleOracle(),
       })
     }
@@ -173,13 +174,13 @@ export function councilRoutes(deps: CouncilOracleDeps = live): Router {
     if (roomUsed >= roomLimit) {
       res.setHeader('Retry-After', '600')
       return res.status(429).json({
-        error: `Достигнут лимит семинара: ${roomLimit} вопросов к оракулу в час. Повторите позже.`,
+        error: tr("server.thisSeminarHasReachedItsHourlyLimit.7638ce", { p0: roomLimit }),
       })
     }
 
     const attempts = deps.attemptsOf(sessionId, cellId)
     if (!attempts.some((a) => a.submittedAt !== null)) {
-      return res.status(400).json({ error: 'Нет сданных попыток для сводки.' })
+      return res.status(400).json({ error: tr("server.thereAreNoSubmittedAttemptsToSummarize.64f4fd") })
     }
 
     /*

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Всё, что есть в комнате, — одной клавишей.
    *
@@ -112,7 +113,7 @@
     class="flex max-h-[70vh] w-full max-w-[560px] flex-col border border-line bg-raised shadow-pop focus:outline-none"
     role="dialog"
     aria-modal="true"
-    aria-label="Команды комнаты"
+    aria-label={tr('room.ui.751')}
     tabindex="-1"
     onkeydown={onKeydown}
   >
@@ -122,8 +123,8 @@
         bind:this={field}
         bind:value={query}
         class="min-w-0 flex-1 bg-transparent text-ui-lg text-ink placeholder:text-faint focus:outline-none"
-        placeholder="Ячейка, файл или действие…"
-        aria-label="Что найти или сделать"
+        placeholder={tr('room.ui.752')}
+        aria-label={tr('room.ui.753')}
         autocomplete="off"
         spellcheck="false"
       />
@@ -154,7 +155,7 @@
           {/if}
         </button>
       {:else}
-        <p class="px-4 py-6 text-center text-ui text-muted">Ничего не нашлось.</p>
+        <p class="px-4 py-6 text-center text-ui text-muted">{tr('room.ui.756')}</p>
       {/each}
     </div>
   </div>

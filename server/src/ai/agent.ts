@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Оракул, который не отвечает, а делает.
  *
@@ -113,7 +114,7 @@ import { recentTurns } from './index.js'
 const ORIGIN = 'server'
 
 /** Что сказать комнате про ошибку, у которой нет своих слов: читают её студенты. */
-const WENT_WRONG = 'Что-то пошло не так.'
+const WENT_WRONG = () => tr("server.private.wentWrong")
 
 /**
  * Сколько ходов подряд оракул может сделать сам.
@@ -154,7 +155,7 @@ function maxRead(): number {
 /** Прочитанное — до потолка; про обрезку сказано вслух, чтобы модель не дописывала конец. */
 function clipRead(text: string): string {
   const room = maxRead()
-  return text.length > room ? text.slice(0, room) + '\n…(обрезано)' : text
+  return text.length > room ? text.slice(0, room) + tr("server.truncated.fdb0c3") : text
 }
 
 /**
@@ -170,14 +171,14 @@ function clipRead(text: string): string {
  * попросила, и ход без него пошёл бы по кругу.
  */
 const OMITTED =
-  '(содержимое опущено, чтобы ход помещался в окно модели — прочитайте заново, если нужно)'
+  () => tr("server.private.omitted")
 
 function budgetTools(messages: ChatTurn[], budget: number): void {
   let used = 0
   let newest = true
   for (let i = messages.length - 1; i >= 0; i--) {
     const turn = messages[i]
-    if (turn.callId === undefined || turn.content === OMITTED) continue
+    if (turn.callId === undefined || turn.content === OMITTED()) continue
     if (newest) {
       newest = false
       used += turn.content.length
@@ -187,7 +188,7 @@ function budgetTools(messages: ChatTurn[], budget: number): void {
       used += turn.content.length
       continue
     }
-    messages[i] = { ...turn, content: OMITTED }
+    messages[i] = { ...turn, content: OMITTED() }
   }
 }
 
@@ -303,8 +304,8 @@ export function undoTurn(sessionId: string, entryId: string, by: string): number
       const answer = chatAnswer(entry)
       answer.insert(
         answer.length,
-        `${answer.length > 0 ? '\n\n' : ''}Не восстановлены: ${skipped.join(', ')} — ` +
-          'после действий оракула файлы были изменены или удалены.',
+        tr("server.notRestored.7d302f", { p0: answer.length > 0 ? '\n\n' : '', p1: skipped.join(', ') }) +
+          tr("server.theFilesWereChangedOrDeletedAfter.0aad9d"),
       )
     }
     entry.set('undo', 'done' as UndoState)
@@ -556,15 +557,15 @@ async function runTool(
     args = JSON.parse(rawArgs || '{}') as Record<string, unknown>
   } catch {
     return {
-      step: note('не разобрал аргументы', name),
-      said: 'Аргументы пришли не как JSON. Повторите вызов.',
+      step: note(tr("server.couldNotReadTheArguments.375da2"), name),
+      said: tr("server.theArgumentsAreNotValidJsonRetry.a91ada"),
     }
   }
   const wanted = typeof args.path === 'string' ? normalizePath(args.path) : null
 
   if (name === 'list_files') {
     return {
-      step: { kind: 'read', target: 'папка семинара', added: 0, removed: 0, exit: null, note: '' },
+      step: { kind: 'read', target: tr("server.seminarFolder.8c9abd"), added: 0, removed: 0, exit: null, note: '' },
       said: describeTree(hands.sessionId),
     }
   }
@@ -582,8 +583,8 @@ async function runTool(
 
   if (!wanted) {
     return {
-      step: note('путь не годится', typeof args.path === 'string' ? args.path : '—'),
-      said: 'Такой путь в этой комнате невозможен. Пути идут от корня папки семинара, без «..».',
+      step: note(tr("server.invalidPath.4b91a9"), typeof args.path === 'string' ? args.path : '—'),
+      said: tr("server.thisPathIsNotAllowedPathsAre.47da6e"),
     }
   }
 
@@ -602,8 +603,8 @@ async function runTool(
       const disk = readText(hands.sessionId, wanted)
       if (disk?.binary) {
         return {
-          step: note('это не текстовый файл', wanted),
-          said: `${wanted} — не текстовый файл, прочитать его нельзя.`,
+          step: note(tr("server.notATextFile.51f9b2"), wanted),
+          said: tr("server.isNotATextFileAndCannot.e4e032", { p0: wanted }),
         }
       }
       if (disk?.truncated) {
@@ -614,12 +615,12 @@ async function runTool(
             added: 0,
             removed: 0,
             exit: null,
-            note: 'только начало',
+            note: tr("server.onlyTheBeginning.cac2a9"),
           },
-          said: `${disk.text.slice(0, maxRead())}\n…(дальше не читал)\n\n${tooBig(wanted)}`,
+          said: tr("server.theRestWasNotRead.2d3e0c", { p0: disk.text.slice(0, maxRead()), p1: tooBig(wanted) }),
         }
       }
-      return { step: note('нечего читать', wanted), said: `Файла ${wanted} нет или он не текст.` }
+      return { step: note(tr("server.nothingToRead.8741a9"), wanted), said: tr("server.doesNotExistOrIsNotA.e25c4a", { p0: wanted }) }
     }
     const lines = text.split('\n').length
     return {
@@ -629,7 +630,7 @@ async function runTool(
         added: 0,
         removed: 0,
         exit: null,
-        note: `${lines} строк`,
+        note: tr("server.lines.d3c334", { p0: lines }),
       },
       said: clipRead(text),
     }
@@ -647,11 +648,11 @@ async function runTool(
      */
     if (!allows(getRules(hands.sessionId).files, hands.role)) {
       return {
-        step: note('файлы здесь правит преподаватель', wanted),
+        step: note(tr("server.onlyTheTeacherMayEditFilesHere.7af6f1"), wanted),
         said: refuseCells(
           hands,
-          `В этом семинаре файлы правит преподаватель, а ход идёт вашими руками — записать ${wanted} я не могу. ` +
-            'Скажите словами, что в нём поменять.',
+          tr("server.onlyTheTeacherMayEditFilesIn.067d2a", { p0: wanted }) +
+            tr("server.explainWhatShouldBeChangedInIt.b5147e"),
         ),
       }
     }
@@ -665,15 +666,15 @@ async function runTool(
       const doc = peekSessionDoc(hands.sessionId)?.doc
       const rights = doc ? rightsFor(hands, doc) : null
       return {
-        step: note('это тетрадь комнаты', wanted),
+        step: note(tr("server.thisIsARoomNotebook.50864d"), wanted),
         said:
-          `${wanted} — тетрадь комнаты: её ячейки живут в комнате, а файл только их отпечаток, ` +
-          'и запись поверх него пропала бы через полторы секунды. Скриптом — ровно то же самое: ' +
-          'комната файлы тетрадей не читает. ' +
+          tr("server.isARoomNotebookItsCellsLive.c322d1", { p0: wanted }) +
+          tr("server.soOverwritingItWouldBeLostShortly.f6c799") +
+          tr("server.theRoomDoesNotReadChangesFrom.df48b1") +
           (rights && (rights.edit || rights.add || rights.remove)
-            ? 'Правьте ячейки: read_notebook, дальше edit_cell, add_cell, remove_cell.'
-            : 'Посмотреть её можно через read_notebook; править ячейки в этой комнате ' +
-              'вам нельзя — скажите словами, что в ней поменять.'),
+            ? tr("server.editTheCellsUseReadNotebookThen.e64989")
+            : tr("server.youCanViewItWithReadNotebook.a0da1e") +
+              tr("server.isNotAllowedForYouExplainWhat.1333b4")),
       }
     }
     const existed = statPath(hands.sessionId, wanted) !== null
@@ -690,10 +691,10 @@ async function runTool(
     const disk = existed ? readText(hands.sessionId, wanted) : null
     if (existed && (!disk || disk.binary || disk.truncated)) {
       return {
-        step: note(disk?.truncated ? 'файл слишком большой' : 'это не текстовый файл', wanted),
+        step: note(disk?.truncated ? tr("server.fileTooLarge.83ae5f") : tr("server.notATextFile.51f9b2"), wanted),
         said: disk?.truncated
           ? tooBig(wanted)
-          : `${wanted} — не текстовый файл, править его нельзя.`,
+          : tr("server.isNotATextFileAndCannot.c00c49", { p0: wanted }),
       }
     }
     const was = currentText(hands.sessionId, wanted)
@@ -705,43 +706,43 @@ async function runTool(
      */
     if (existed && was === null) {
       return {
-        step: note('файл изменился под руками', wanted),
+        step: note(tr("server.theFileChangedDuringTheOperation.ea0571"), wanted),
         said:
-          `${wanted} только что перестал читаться целиком — похоже, в него пишет кто-то ещё. ` +
-          'Посмотрите его заново или скажите словами, что в нём поменять.',
+          tr("server.canNoLongerBeReadInFull.90290a", { p0: wanted }) +
+          tr("server.readItAgainOrExplainWhatShould.5109a7"),
       }
     }
     let next: string
     if (name === 'write_file') {
       if (typeof args.content !== 'string') {
-        return { step: note('нечего записывать', wanted), said: '`content` должен быть строкой.' }
+        return { step: note(tr("server.nothingToWrite.bee7a2"), wanted), said: tr("server.contentMustBeAString.4670e8") }
       }
       next = args.content
     } else {
       if (was === null) {
         return {
-          step: note('нечего править', wanted),
-          said: `Файла ${wanted} нет или он не текст.`,
+          step: note(tr("server.nothingToEdit.1a3cb2"), wanted),
+          said: tr("server.doesNotExistOrIsNotA.e25c4a", { p0: wanted }),
         }
       }
       const find = typeof args.find === 'string' ? args.find : ''
       const replace = typeof args.replace === 'string' ? args.replace : ''
       if (!find) {
-        return { step: note('пустой поиск', wanted), said: '`find` не может быть пустым.' }
+        return { step: note(tr("server.emptySearch.b04728"), wanted), said: tr("server.findCannotBeEmpty.7314f5") }
       }
       const first = was.indexOf(find)
       if (first === -1) {
         return {
-          step: note('не нашёл этот кусок', wanted),
-          said: `В ${wanted} нет такого текста. Прочитайте файл и повторите с точным куском.`,
+          step: note(tr("server.textNotFound.0daf2b"), wanted),
+          said: tr("server.thatTextIsNotInReadThe.0f7d35", { p0: wanted }),
         }
       }
       if (was.indexOf(find, first + 1) !== -1) {
         return {
-          step: note('кусок встречается дважды', wanted),
+          step: note(tr("server.textAppearsMoreThanOnce.cb7a0e"), wanted),
           said:
-            `Такой текст встречается в ${wanted} больше одного раза — непонятно, какой менять. ` +
-            'Возьмите кусок подлиннее.',
+            tr("server.thatTextAppearsMoreThanOnceIn.3d90f9", { p0: wanted }) +
+            tr("server.useALongerMatchingFragment.48a5a8"),
         }
       }
       next = was.slice(0, first) + replace + was.slice(first + find.length)
@@ -755,10 +756,10 @@ async function runTool(
      */
     if (next.length > MAX_TEXT_BYTES) {
       return {
-        step: note('столько не сохранится', wanted),
+        step: note(tr("server.tooMuchContentToSave.c88960"), wanted),
         said:
-          `В ${wanted} нельзя записать больше полутора мегабайт: такой файл ни открыть, ни ` +
-          'поправить. Оставьте в нём меньше — или пусть его пишет скрипт.',
+          tr("server.cannotWriteMoreThanMbToThe.236b64", { p0: wanted }) +
+          tr("server.editReduceItsSizeOrWriteIt.287901"),
       }
     }
 
@@ -766,8 +767,8 @@ async function runTool(
       const made = makeFile(hands.sessionId, wanted, '')
       if (made !== 'ok' && made !== 'exists') {
         return {
-          step: note('не удалось завести', wanted),
-          said: `Не получилось создать ${wanted}.`,
+          step: note(tr("server.couldNotCreate.c6f8bf"), wanted),
+          said: tr("server.couldNotCreate.703abe", { p0: wanted }),
         }
       }
     }
@@ -781,7 +782,7 @@ async function runTool(
     try {
       wrote = putText(hands.sessionId, wanted, next)
     } catch (err) {
-      console.error(`[session ${hands.sessionId}] не записал ${wanted}:`, reason(err, WENT_WRONG))
+      console.error(`[session ${hands.sessionId}] не записал ${wanted}:`, reason(err, WENT_WRONG()))
     }
     if (!wrote) {
       /*
@@ -793,8 +794,8 @@ async function runTool(
       const now = statPath(hands.sessionId, wanted)
       const over = now !== null && !now.dir && now.size > MAX_TEXT_BYTES
       return {
-        step: note(over ? 'файл слишком большой' : 'не удалось записать', wanted),
-        said: over ? tooBig(wanted) : `Не получилось записать ${wanted}.`,
+        step: note(over ? tr("server.fileTooLarge.83ae5f") : tr("server.couldNotWrite.610d26"), wanted),
+        said: over ? tooBig(wanted) : tr("server.couldNotWrite.09a8f1", { p0: wanted }),
       }
     }
     /*
@@ -819,7 +820,7 @@ async function runTool(
         exit: null,
         note: firstAdded(was ?? '', next),
       },
-      said: `Готово: ${wanted}, +${counts.added} −${counts.removed}.`,
+      said: tr("server.done.97d5c8", { p0: wanted, p1: counts.added, p2: counts.removed }),
     }
   }
 
@@ -833,23 +834,23 @@ async function runTool(
      */
     if (!allowsRun(getRules(hands.sessionId).run, hands.role, 'one')) {
       return {
-        step: note('запускает преподаватель', wanted),
+        step: note(tr("server.onlyTheTeacherMayRunCode.59bbe2"), wanted),
         said: refuseCells(
           hands,
-          `В этом семинаре запускает преподаватель, а ход идёт вашими руками — ${wanted} я не запущу. ` +
-            'Скажите в ответе, что стоило бы проверить.',
+          tr("server.onlyTheTeacherMayRunCodeIn.fbd734", { p0: wanted }) +
+            tr("server.explainWhatShouldBeCheckedInYour.9855be"),
         ),
       }
     }
     const runner = runnerFor(wanted)
     if (!runner) {
       return {
-        step: note('нечем запускать', wanted),
-        said: `${baseOf(wanted)} — не скрипт. Запускаются .py и .sh.`,
+        step: note(tr("server.cannotRunThisFile.94cb27"), wanted),
+        said: tr("server.isNotAScriptOnlyPyAnd.9d1397", { p0: baseOf(wanted) }),
       }
     }
     if (!statPath(hands.sessionId, wanted)) {
-      return { step: note('нет такого файла', wanted), said: `Файла ${wanted} нет.` }
+      return { step: note(tr("server.fileNotFound.f1ab8a"), wanted), said: tr("server.fileDoesNotExist.5febf3", { p0: wanted }) }
     }
     /*
      * Оболочка в комнате одна, и очередь к ней людская: команда, поставленная
@@ -866,10 +867,10 @@ async function runTool(
      */
     if (terminalBusy(hands.sessionId)) {
       return {
-        step: note('терминал занят', wanted),
+        step: note(tr("server.terminalBusy.97ab05"), wanted),
         said:
-          'В терминале комнаты сейчас идёт другая команда — свой запуск я в очередь не ставлю. ' +
-          'Скажите об этом в ответе или попробуйте ещё раз позже.',
+          tr("server.anotherCommandIsRunningInTheRoom.89c451") +
+          tr("server.mentionThisInYourReplyOrTry.a9d49e"),
       }
     }
     /*
@@ -906,16 +907,16 @@ async function runTool(
         exit: result.exit,
         note:
           result.cut === 'waiting'
-            ? 'не начался: оболочка занята чужой командой, команда снята из очереди'
+            ? tr("server.didNotStartTheShellIsRunning.93c619")
             : result.cut === 'timeout'
-              ? `не уложился в ${RUN_TIMEOUT_MS / 1000} с; ${shown}`
+              ? tr("server.exceededSeconds.cfeb9f", { p0: RUN_TIMEOUT_MS / 1000, p1: shown })
               : shown,
       },
       said: sayRun(result, shown),
     }
   }
 
-  return { step: note('неизвестный инструмент', name), said: `Инструмента ${name} нет.` }
+  return { step: note(tr("server.unknownTool.2e118e"), name), said: tr("server.toolDoesNotExist.cbeb28", { p0: name }) }
 }
 
 function note(what: string, target: string): AgentStep {
@@ -928,7 +929,7 @@ function note(what: string, target: string): AgentStep {
 const MAX_CELL_SOURCE = 4_000
 
 /** Имя отметки, которую ход ставит перед первой своей правкой тетради. */
-const CHECKPOINT_LABEL = 'до правки оракула'
+const CHECKPOINT_LABEL = () => tr("server.private.checkpoint")
 
 /** Что ход уже сделал с тетрадями. */
 interface BookWork {
@@ -1020,7 +1021,7 @@ function hasOpenCell(doc: Y.Doc): boolean {
  * пойдёт искать преподавателя, который ничего не менял.
  */
 function refuseCells(hands: Hands, own: string): string {
-  return actsAfterClass(isFinished(hands.sessionId), hands.role) ? own : CLASS_IS_OVER
+  return actsAfterClass(isFinished(hands.sessionId), hands.role) ? own : tr(CLASS_IS_OVER)
 }
 
 /** Тетрадь комнаты — та, что сидит на корне `cells` и умеет в историю версий. */
@@ -1054,21 +1055,21 @@ function bookAsked(doc: Y.Doc, raw: unknown): Book | Ran {
   const path = asked ? normalizePath(asked) : null
   if (asked && !path) {
     return {
-      step: note('путь не годится', asked),
-      said: 'Такой путь в этой комнате невозможен. Пути идут от корня папки семинара, без «..».',
+      step: note(tr("server.invalidPath.4b91a9"), asked),
+      said: tr("server.thisPathIsNotAllowedPathsAre.47da6e"),
     }
   }
   const book = path ? bookAt(doc, path) : (roomBook(doc) ?? bookList(doc)[0] ?? null)
   if (book) return book
   const known = bookList(doc).map((one) => one.path)
   return {
-    step: note('тетради с таким именем нет', path ?? 'тетрадь комнаты'),
+    step: note(tr("server.noNotebookWithThatName.c07b5d"), path ?? tr("server.roomNotebook.05515c")),
     said: path
-      ? `${path} — не тетрадь этой комнаты.` +
+      ? tr("server.isNotANotebookInThisRoom.fe1f0a", { p0: path }) +
         (known.length > 0
-          ? ` Открыты: ${known.join(', ')}.`
-          : ' Открытых тетрадей в ней нет вовсе.')
-      : 'В этой комнате нет открытой тетради.',
+          ? tr("server.open.0c252d", { p0: known.join(', ') })
+          : tr("server.thereAreNoOpenNotebooksInIt.b3a67e"))
+      : tr("server.thisRoomHasNoOpenNotebook.1f9148"),
   }
 }
 
@@ -1079,7 +1080,7 @@ function useCellTool(hands: Hands, name: string, args: Record<string, unknown>):
    */
   const doc = peekSessionDoc(hands.sessionId)?.doc
   if (!doc) {
-    return { step: note('комнаты больше нет', 'тетрадь'), said: 'Этой комнаты больше нет.' }
+    return { step: note(tr("server.theRoomNoLongerExists.dd5d47"), tr("server.notebook.02497c")), said: tr("server.thisRoomNoLongerExists.a43862") }
   }
   if (name === 'read_notebook') return listCells(doc, args)
   if (name === 'edit_cell') return editCell(hands, doc, args)
@@ -1102,22 +1103,22 @@ function listCells(doc: Y.Doc, args: Record<string, unknown>): Ran {
   const cells = bookCells(doc, book.root)
   const lines: string[] = [
     `${book.path} — ${cells.length} ${cellsWord(cells.length)}. ` +
-      'Ячейку правят по её имени, а не по номеру: номер меняется, имя нет.',
+      tr("server.editACellByItsIdentifierNot.d19277"),
   ]
   cells.forEach((cell: YCell, at: number) => {
     const head = [`[${pad(at + 1)}]`, cellId(cell), cellType(cell)]
-    if (cellOutputs(cell).length > 0) head.push('вывод есть')
-    if (isCellOpen(cell)) head.push('открыта комнате')
+    if (cellOutputs(cell).length > 0) head.push(tr("server.hasOutput.113f1b"))
+    if (isCellOpen(cell)) head.push(tr("server.openToTheRoom.467c85"))
     const source = cellSource(cell).toString()
     lines.push('')
     lines.push(head.join(' · '))
     if (!source.trim()) {
-      lines.push('(пусто)')
+      lines.push(tr("server.empty.9a3a4f"))
       return
     }
     lines.push('```' + (cellType(cell) === 'code' ? 'python' : 'markdown'))
     lines.push(
-      source.length > MAX_CELL_SOURCE ? source.slice(0, MAX_CELL_SOURCE) + '\n…(обрезано)' : source,
+      source.length > MAX_CELL_SOURCE ? source.slice(0, MAX_CELL_SOURCE) + tr("server.truncated.fdb0c3") : source,
     )
     lines.push('```')
   })
@@ -1133,7 +1134,7 @@ function listCells(doc: Y.Doc, args: Record<string, unknown>): Ran {
     .filter((path) => path !== book.path)
   if (others.length > 0) {
     lines.push('')
-    lines.push(`Ещё тетради в комнате: ${others.join(', ')} — тот же инструмент, с путём.`)
+    lines.push(tr("server.otherNotebooksInTheRoomUseThe.e01136", { p0: others.join(', ') }))
   }
   const said = lines.join('\n')
   return {
@@ -1153,8 +1154,8 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
   const id = typeof args.cellId === 'string' ? args.cellId : ''
   if (typeof args.source !== 'string') {
     return {
-      step: note('нечего записывать', id || 'ячейка'),
-      said: '`source` должен быть строкой.',
+      step: note(tr("server.nothingToWrite.bee7a2"), id || tr("server.cell.4d4b88")),
+      said: tr("server.sourceMustBeAString.88cd6f"),
     }
   }
   const found = findCell(doc, id)
@@ -1171,20 +1172,20 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
     )
   ) {
     return {
-      step: note('ячейки правит преподаватель', id),
+      step: note(tr("server.onlyTheTeacherMayEditCells.9b2337"), id),
       said: refuseCells(
         hands,
-        'В этом семинаре тетрадь принадлежит преподавателю — ячейки правит он. ' +
-          'Скажите в ответе, что в ней поменять.',
+        tr("server.onlyTheTeacherMayEditThisSeminar.91645c") +
+          tr("server.explainWhatShouldBeChangedInYour.c7378b"),
       ),
     }
   }
 
   const text = cellSource(found.cell)
   const was = text.toString()
-  const label = `${home.path} · ячейка ${pad(found.index + 1)}`
+  const label = tr("server.cell.47aead", { p0: home.path, p1: pad(found.index + 1) })
   if (was === args.source) {
-    return { step: note('и так уже так', label), said: `В ${label} уже ровно этот текст.` }
+    return { step: note(tr("server.alreadyMatches.2ef8ba"), label), said: tr("server.alreadyContainsExactlyThisText.adb3e8", { p0: label }) }
   }
   const stop = safety(hands, doc, home)
   if (stop) return stop
@@ -1203,7 +1204,7 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
    * перезапускать.
    */
   const stale =
-    cellOutputs(found.cell).length > 0 ? ' Вывод у неё прежний — теперь устаревший.' : ''
+    cellOutputs(found.cell).length > 0 ? tr("server.itsExistingOutputIsNowStale.da45eb") : ''
   return {
     step: {
       kind: 'write',
@@ -1213,7 +1214,7 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
       exit: null,
       note: firstAdded(was, next),
     },
-    said: `Готово: ${label}, +${counts.added} −${counts.removed}.${stale}`,
+    said: tr("server.done.ac3049", { p0: label, p1: counts.added, p2: counts.removed, p3: stale }),
   }
 }
 
@@ -1221,7 +1222,7 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
   const type: CellType | null =
     args.type === 'code' ? 'code' : args.type === 'markdown' ? 'markdown' : null
   if (!type) {
-    return { step: note('какой вид ячейки', 'тетрадь'), said: '`type` — «code» или «markdown».' }
+    return { step: note(tr("server.chooseACellType.e7d810"), tr("server.notebook.02497c")), said: tr("server.typeMustBeCodeOrMarkdown.74ff56") }
   }
   const source = typeof args.source === 'string' ? args.source : ''
   const after = typeof args.after === 'string' && args.after.trim() ? args.after.trim() : null
@@ -1254,10 +1255,10 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
 
   if (!rightsFor(hands, doc).add) {
     return {
-      step: note('ячейки добавляет преподаватель', home.path),
+      step: note(tr("server.onlyTheTeacherMayAddCells.264967"), home.path),
       said: refuseCells(
         hands,
-        'В этом семинаре ячейки добавляет преподаватель. Скажите в ответе, что дописать.',
+        tr("server.onlyTheTeacherMayAddCellsIn.423ddc"),
       ),
     }
   }
@@ -1269,7 +1270,7 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
   const id = cellId(cell)
   bookWork(hands).touched.set(id, { book: home.path, what: 'добавил' })
 
-  const label = `${home.path} · ячейка ${pad(at + 1)}`
+  const label = tr("server.cell.47aead", { p0: home.path, p1: pad(at + 1) })
   return {
     step: {
       kind: 'new',
@@ -1279,7 +1280,7 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
       exit: null,
       note: firstAdded('', source),
     },
-    said: `Готово: ${label}, имя ${id}.`,
+    said: tr("server.doneIdentifier.d397dc", { p0: label, p1: id }),
   }
 }
 
@@ -1292,14 +1293,14 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
 
   if (!rightsFor(hands, doc).remove) {
     return {
-      step: note('ячейки убирает преподаватель', id),
+      step: note(tr("server.onlyTheTeacherMayRemoveCells.d98982"), id),
       said: refuseCells(
         hands,
-        'В этом семинаре ячейки убирает преподаватель. Скажите в ответе, какая лишняя.',
+        tr("server.onlyTheTeacherMayRemoveCellsIn.6cf98f"),
       ),
     }
   }
-  const label = `${home.path} · ячейка ${pad(found.index + 1)}`
+  const label = tr("server.cell.47aead", { p0: home.path, p1: pad(found.index + 1) })
   /*
    * Ячейку, стоящую в очереди на ядро, ход не убирает.
    *
@@ -1311,8 +1312,8 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
   const state = (found.cell.get('state') as CellState) ?? 'idle'
   if (state === 'running' || state === 'queued') {
     return {
-      step: note('ячейка сейчас считается', id),
-      said: `${label} сейчас в очереди на ядро — на ходу я её не убираю. Скажите об этом в ответе.`,
+      step: note(tr("server.theCellIsRunning.ff6251"), id),
+      said: tr("server.isQueuedForTheKernelSoI.d94674", { p0: label }),
     }
   }
   const stop = safety(hands, doc, home)
@@ -1330,17 +1331,17 @@ function removeCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ra
   bookWork(hands).touched.set(id, { book: home.path, what: 'убрал' })
 
   return {
-    step: { kind: 'write', target: label, added: 0, removed: 1, exit: null, note: 'ячейка убрана' },
-    said: `Убрал ${label}. Номера ячеек ниже сдвинулись — имена нет.`,
+    step: { kind: 'write', target: label, added: 0, removed: 1, exit: null, note: tr("server.cellRemoved.d30a05") },
+    said: tr("server.removedFollowingCellPositionsChangedIdentifiersDid.365725", { p0: label }),
   }
 }
 
 function missingCell(id: string): Ran {
   return {
-    step: note('нет такой ячейки', id || '—'),
+    step: note(tr("server.cellNotFound.418523"), id || '—'),
     said:
-      `Ячейки ${id || '—'} в комнате нет. Имена ячеек показывает read_notebook — ` +
-      'возьмите оттуда, номер на экране именем не является.',
+      tr("server.cellIsNotInTheRoomGet.861a57", { p0: id || '—' }) +
+      tr("server.theNumberOnTheScreenIsNot.1bea60"),
   }
 }
 
@@ -1373,10 +1374,10 @@ function safety(hands: Hands, doc: Y.Doc, book: Book): Ran | null {
   const text = bookText(hands.sessionId, book.path)
   if (text === null) {
     return {
-      step: note('нечего отложить', book.path),
+      step: note(tr("server.nothingToBackUp.06ac82"), book.path),
       said:
-        `${book.path} не читается как тетрадь — отложить копию до правки не с чего, ` +
-        'а без точки возврата я её не трогаю.',
+        tr("server.cannotBeReadAsANotebookSo.d3da28", { p0: book.path }) +
+        tr("server.iWillNotEditItWithoutA.3b0423"),
     }
   }
   // Рядом и с числом, а не поверх: две попытки подряд — это два разных «как
@@ -1384,10 +1385,10 @@ function safety(hands: Hands, doc: Y.Doc, book: Book): Ran | null {
   const where = freeName(hands.sessionId, copyName(book.path))
   if (makeFile(hands.sessionId, where, text) !== 'ok') {
     return {
-      step: note('не отложил копию', book.path),
+      step: note(tr("server.couldNotSaveABackup.382cce"), book.path),
       said:
-        `Не удалось положить рядом копию ${book.path}, а историей версий эта тетрадь не ` +
-        'возвращается — без точки возврата я её не правлю. Скажите словами, что в ней поменять.',
+        tr("server.couldNotSaveABackupCopyOf.73e179", { p0: book.path }) +
+        tr("server.throughVersionHistoryIWillNotEdit.292ce9"),
     }
   }
   work.copies.set(book.path, where)
@@ -1424,16 +1425,16 @@ function checkpoint(hands: Hands, doc: Y.Doc): Ran | null {
       doc,
       'checkpoint',
       hands.by.participantId,
-      CHECKPOINT_LABEL,
-      CHECKPOINT_LABEL,
+      CHECKPOINT_LABEL(),
+      CHECKPOINT_LABEL(),
     )
   } catch (err) {
     console.error(`[session ${hands.sessionId}] не отметил тетрадь перед правкой:`, err)
     return {
-      step: note('не отметил историю', 'тетрадь'),
+      step: note(tr("server.couldNotMarkHistory.6777c1"), tr("server.notebook.02497c")),
       said:
-        'Не удалось отметить тетрадь в истории версий, а без точки возврата я её не правлю. ' +
-        'Скажите словами, что в ней поменять.',
+        tr("server.couldNotCreateANotebookHistoryCheckpoint.1934aa") +
+        tr("server.explainWhatShouldBeChanged.1d6c33"),
     }
   }
   work.marked = true
@@ -1503,11 +1504,11 @@ function rewrittenBooks(sessionId: string, was: Map<string, string>): string[] {
 /** Что сказать модели про переписанный файл — прямо на том шаге, где это вышло. */
 function sayFaked(paths: string[]): string {
   return (
-    `Файл ${paths.join(', ')} переписан мимо комнаты, и комната его не читает: ячейки живут в ` +
-    'ней, а .ipynb — только их проекция, которую она перепишет своим через полторы секунды. ' +
-    'Ничего из записанного в файл не применилось. Применяется это единственным способом — ' +
-    'edit_cell, add_cell, remove_cell; если ими нельзя, скажите в ответе, что тетрадь осталась ' +
-    'прежней.'
+    tr("server.fileWasChangedOutsideTheRoomThe.52b9a3", { p0: paths.join(', ') }) +
+    tr("server.theRoomWhileTheIpynbFileIs.32a058") +
+    tr("server.noneOfTheFileEditsWereApplied.3184da") +
+    tr("server.editCellAddCellOrRemoveCell.377bc1") +
+    tr("server.unchanged.4b21b7")
   )
 }
 
@@ -1551,19 +1552,19 @@ export function saidAboutCells(sessionId: string, entryId: string): string {
   const lines: string[] = []
   for (const [path, row] of byBook) {
     const parts: string[] = []
-    if (row.edited.length > 0) parts.push(`поправил ${row.edited.join(', ')}`)
-    if (row.added.length > 0) parts.push(`добавил ${row.added.join(', ')}`)
-    if (row.gone > 0) parts.push(`убрал ${row.gone} ${cellsWord(row.gone)}`)
+    if (row.edited.length > 0) parts.push(tr("server.edited.002cbd", { p0: row.edited.join(', ') }))
+    if (row.added.length > 0) parts.push(tr("server.added.f985c7", { p0: row.added.join(', ') }))
+    if (row.gone > 0) parts.push(tr("server.removed.c6e6b3", { p0: row.gone, p1: cellsWord(row.gone) }))
     if (parts.length === 0) continue
     const copy = work.copies.get(path)
     lines.push(
       `${path}: ${parts.join('; ')}. ` +
         (row.edited.length > 0
-          ? 'Вывод у поправленных прежний и теперь устарел — перезапустите их. '
+          ? tr("server.editedCellsRetainTheirPreviousOutputWhich.8ba614")
           : '') +
         (copy
-          ? `Историей версий эта тетрадь не возвращается — как было до хода, лежит рядом: ${copy}.`
-          : `Как было до хода — в истории версий, отметка «${CHECKPOINT_LABEL}».`),
+          ? tr("server.thisNotebookCannotBeRestoredThroughVersion.bae2c9", { p0: copy })
+          : tr("server.thePreviousStateIsInVersionHistory.8a1cab", { p0: CHECKPOINT_LABEL() })),
     )
   }
   /*
@@ -1573,9 +1574,9 @@ export function saidAboutCells(sessionId: string, entryId: string): string {
    */
   for (const path of work.faked) {
     lines.push(
-      `Файл ${path} на ходу переписали мимо комнаты — скриптом. Комната файлы тетрадей не ` +
-        'читает, и в ячейках от этой записи не изменилось ничего: тетрадь меняется только ' +
-        'правкой ячеек.',
+      tr("server.fileWasOverwrittenByAScriptOutside.2bc573", { p0: path }) +
+        tr("server.filesSoNoCellsChangedTheNotebook.14b8b3") +
+        tr("server.editingItsCells.2b51d4"),
     )
   }
   return lines.join('\n\n')
@@ -1591,9 +1592,9 @@ export function saidAboutCells(sessionId: string, entryId: string): string {
  */
 function tooBig(path: string): string {
   return (
-    `${path} больше полутора мегабайт: целиком он не читается, и переписывать его началом ` +
-    'нельзя — хвост пропал бы молча. Скажите словами, что с ним сделать, или обработайте его ' +
-    'скриптом через run_file.'
+    tr("server.exceedsMbAndCannotBeReadIn.ca5347", { p0: path }) +
+    tr("server.wouldSilentlyLoseTheRestExplainWhat.e6b35a") +
+    tr("server.withAScriptThroughRunFile.bc38de")
   )
 }
 
@@ -1611,22 +1612,22 @@ function tooBig(path: string): string {
 function sayRun(result: RunResult, shown: string): string {
   if (result.cut === 'waiting') {
     return (
-      'Запуск так и не начался: оболочка комнаты всё это время была занята чужой командой, ' +
-      'а прерывать её я не стану. Свою команду я снял из очереди — сама она не начнётся ни ' +
-      'сейчас, ни позже. Скажите об этом в ответе: запустить можно будет, когда оболочка ' +
-      'освободится.'
+      tr("server.theRunNeverStartedTheSharedShell.0e8c4b") +
+      tr("server.whichIWillNotInterruptIRemoved.b5fa36") +
+      tr("server.nowOrLaterExplainThatItCan.d2990b") +
+      tr("server.free.f3ee5f")
     )
   }
-  if (result.cut === 'stop') return 'Запуск прерван: ход остановили.'
+  if (result.cut === 'stop') return tr("server.runInterruptedTheActionWasStopped.e109df")
   if (result.cut === 'timeout') {
     return (
-      `Не уложился в ${RUN_TIMEOUT_MS / 1000} с — я прервал запуск (Ctrl+C). ` +
-      `Вывод до этого момента:\n${shown || '(пусто)'}`
+      tr("server.theRunExceededSecondsSoIInterrupted.8883fb", { p0: RUN_TIMEOUT_MS / 1000 }) +
+      tr("server.outputReceivedSoFar.c13eff", { p0: shown || tr("server.empty.9a3a4f") })
     )
   }
   return result.finished
-    ? `Код выхода ${result.exit ?? '?'}. Вывод:\n${shown || '(пусто)'}`
-    : 'Команда не доработала — терминал закрыли или оболочка умерла.'
+    ? tr("server.exitCodeOutput.294a41", { p0: result.exit ?? '?', p1: shown || tr("server.empty.9a3a4f") })
+    : tr("server.theCommandDidNotFinishTheTerminal.ef4676")
 }
 
 /**
@@ -1663,11 +1664,11 @@ function describeTree(sessionId: string): string {
   }
   for (const [dir, at] of placeholder) {
     lines[at] =
-      `… ещё ${hidden.get(dir) ?? 0} в ${dir ? `${dir}/` : 'корне'} — скажите путь, если нужно`
+      tr("server.moreInSpecifyThePathIfNeeded.f75344", { p0: hidden.get(dir) ?? 0, p1: dir ? `${dir}/` : tr("server.root.3f3351") })
   }
   if (over > 0)
-    lines.push(`… и ещё ${over} записей ниже: папка слишком велика, чтобы показать её целиком`)
-  return lines.join('\n') || 'Папка пуста.'
+    lines.push(tr("server.moreEntriesOmittedTheFolderIsToo.a62954", { p0: over }))
+  return lines.join('\n') || tr("server.theFolderIsEmpty.5c7445")
 }
 
 /** Сколько строк прибавилось и убавилось. Достаточно для строки «+9 −2». */
@@ -1781,7 +1782,7 @@ async function runInRoom(hands: Hands, command: string, signal?: AbortSignal): P
           return
         }
         cut = why
-        interruptTerminal(hands.sessionId, 'оракул', hands.by.participantId)
+        interruptTerminal(hands.sessionId, tr("server.oracle.3156fd"), hands.by.participantId)
         grace = setTimeout(() => done({ output: '', finished: false }), INTERRUPT_GRACE_MS)
         grace.unref?.()
       }
@@ -1884,8 +1885,8 @@ export function work(options: WorkOptions): string {
   const entryId = entry.get('id') as string
 
   void loop(options, entryId, history).catch((err: unknown) => {
-    console.error(`[session ${options.sessionId}] агент упал:`, reason(err, WENT_WRONG))
-    settle(options.sessionId, entryId, 'error', reason(err, WENT_WRONG))
+    console.error(`[session ${options.sessionId}] агент упал:`, reason(err, WENT_WRONG()))
+    settle(options.sessionId, entryId, 'error', reason(err, WENT_WRONG()))
   })
 
   return entryId
@@ -1973,11 +1974,11 @@ async function steps(
   }
 
   if (stopped) {
-    spoke = spoke || 'Остановлено. Выполненные действия перечислены выше. Остановка не отменяет внесённые изменения.'
+    spoke = spoke || tr("server.stoppedCompletedActionsAreListedAboveStopping.2f9e57")
   } else if (!spoke && taken >= MAX_STEPS) {
     spoke =
-      'Достигнут лимит шагов. Выполненные действия перечислены выше. ' +
-      'Отправьте новый запрос, чтобы продолжить.'
+      tr("server.theStepLimitWasReachedCompletedActions.6a7362") +
+      tr("server.sendANewRequestToContinue.960b90")
   }
   finish(options.sessionId, entryId, spoke)
 }
@@ -2145,7 +2146,8 @@ function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
         ]
       : []),
     '',
-    'В конце — короткий ответ по-русски: что сделано и что из этого следует. Без пересказа шагов:',
+    tr('server.ai.answerLanguage'),
+    'End with a short explanation of what was done and what it means. Do not repeat the steps:',
     'они и так на экране. Три-четыре предложения.',
     '',
     'Вот с чем работает комната прямо сейчас:',

@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Бан: кнопка «закрыть доступ» и всё, на что она опирается.
  *
@@ -295,7 +296,7 @@ export function banFor(
  */
 export function banRefusal(ban: BanInForce): { error: string; until: number } {
   return {
-    error: `${ban.name}, преподаватель закрыл вам доступ в этот семинар. Он откроется снова сам.`,
+    error: tr("server.theTeacherHasBlockedYourAccessTo.5eba21", { p0: ban.name }),
     until: ban.until,
   }
 }

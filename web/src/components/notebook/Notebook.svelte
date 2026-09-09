@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import { tick } from 'svelte'
   import { findCell, isCellOpen, type CellType } from '@shared/notebook'
   import { isLectureRoom } from '@shared/rules'
@@ -317,7 +318,7 @@
     // Те же слова, что у самой ячейки: запертая говорит про занятие, а не про
     // поле в правилах (см. CellView · editWhy).
     const shut = cellLockMatters(may) && !mayRunThisCell(may, open)
-    session.showError((shut ? LECTURE_CELL : may.editWhy) + '.')
+    session.showError((shut ? tr(LECTURE_CELL) : may.editWhy) + '.')
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -857,19 +858,15 @@
              duration-[var(--speed-quick)] focus-within:pointer-events-auto focus-within:opacity-100
              group-hover/add:pointer-events-auto group-hover/add:opacity-100"
     >
-      <button type="button" class={ADD} title="Insert code cell" onclick={() => addAt(index, 'code')}>
-        <Icon name="plus" size={11} />
-        Code
-      </button>
+      <button type="button" class={ADD} title={tr('room.ui.440')} onclick={() => addAt(index, 'code')}>
+        <Icon name="plus" size={11} /> {tr('room.ui.441')} </button>
       <button
         type="button"
         class={ADD}
-        title="Insert a text cell — markdown"
+        title={tr('room.ui.442')}
         onclick={() => addAt(index, 'markdown')}
       >
-        <Icon name="plus" size={11} />
-        Text
-      </button>
+        <Icon name="plus" size={11} /> {tr('room.ui.443')} </button>
     </div>
   </div>
 {/snippet}
@@ -900,10 +897,8 @@
              bg-warning/[0.07] px-4 py-2"
     >
       <Icon name="lock" size={13} class="shrink-0 text-warning" />
-      <span class="text-ui font-semibold text-ink">Лекция</span>
-      <span class="text-ui text-muted">
-        — ячейки редактирует и запускает преподаватель. Открытые для группы ячейки помечены.
-      </span>
+      <span class="text-ui font-semibold text-ink">{tr('room.ui.444')}</span>
+      <span class="text-ui text-muted"> {tr('room.ui.445')} </span>
     </div>
   {/if}
   <div
@@ -940,25 +935,21 @@
       disabled={controlDisabled(session.connected, mayRun && mayRunAll)}
       title={controlTitle(
         session.connected,
-        !mayRun ? may.runWhy : mayRunAll ? 'Run every code cell' : may.bulkWhy,
+        !mayRun ? may.runWhy : mayRunAll ? tr('room.extra.177') : may.bulkWhy,
       )}
       onclick={() => session.send({ t: 'runAll', book })}
     >
-      <Icon name="play" size={12} />
-      Run all
-    </button>
+      <Icon name="play" size={12} /> {tr('room.ui.446')} </button>
     <button
       type="button"
       class={CAP}
       disabled={controlDisabled(session.connected, canInterrupt)}
       title={controlTitle(
         session.connected,
-        canInterrupt ? 'Stop the running cell' : 'Only the host, or whoever started it, can stop a run',
+        canInterrupt ? tr('room.extra.151') : tr('room.extra.152'),
       )}
       onclick={() => session.send(interruptMessage())}
-    >
-      Interrupt
-    </button>
+    > {tr('room.ui.395')} </button>
     <!--
       Hold, not click — the reasoning and the 900ms are at HOLD_MS above. This
       is the one place in the notebook where slow is right: the user is
@@ -972,11 +963,11 @@
       type="button"
       class={cn(CAP, 'relative select-none overflow-hidden')}
       disabled={restartDisabled}
-      aria-label="Hold to restart the kernel"
+      aria-label={tr('room.ui.447')}
       title={controlTitle(
         session.connected,
         may.restart
-          ? 'Hold to restart the kernel — every variable is lost'
+          ? tr('room.extra.180')
           : may.restartWhy,
       )}
       onpointerdown={(event) => {
@@ -1003,17 +994,15 @@
         class="pointer-events-none absolute inset-0 origin-left bg-danger/[0.18]"
         style="transform: scaleX(0)"
       ></span>
-      <span class="relative">Restart</span>
+      <span class="relative">{tr('room.ui.448')}</span>
     </button>
     <button
       type="button"
       class={CAP}
       disabled={controlDisabled(session.connected, may.wipe)}
-      title={controlTitle(session.connected, may.wipe ? 'Clear every output' : may.wipeWhy)}
+      title={controlTitle(session.connected, may.wipe ? tr('room.extra.181') : may.wipeWhy)}
       onclick={() => session.send({ t: 'clearOutputs', book })}
-    >
-      Clear
-    </button>
+    > {tr('room.ui.449')} </button>
     <!--
       Форматирование стоит здесь, а не в меню ячейки: оно про весь ноутбук.
       Ячейку, которую black прочитать не может — магию, строку с ! или код,
@@ -1030,12 +1019,10 @@
           ? may.editWhy
           : !may.bulk
             ? may.bulkWhy
-            : 'Format code cells with Black, using a 100-character line limit. Cells with syntax errors are skipped.',
+            : tr('room.extra.182'),
       )}
       onclick={() => session.send({ t: 'format', book })}
-    >
-      Format
-    </button>
+    > {tr('room.ui.450')} </button>
 
     <div class="ml-auto flex shrink-0 items-center gap-2.5">
       <!--
@@ -1045,9 +1032,7 @@
       -->
       {#if kernel === 'dead'}
         <span class={cn(PILL, 'border-danger/40 bg-danger/[0.05] text-2xs text-danger')}>
-          <span class="h-1.5 w-1.5 rounded-full bg-danger"></span>
-          kernel stopped
-          <!-- По правилу, а не по роли: кнопка в полосе слушается may.restart,
+          <span class="h-1.5 w-1.5 rounded-full bg-danger"></span> {tr('room.ui.451')} <!-- По правилу, а не по роли: кнопка в полосе слушается may.restart,
                и в открытой лаборатории без преподавателя плашка без кнопки
                оставляла студентов гадать, что Restart есть где-то выше. -->
           {#if may.restart}
@@ -1058,11 +1043,9 @@
                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40
                      disabled:pointer-events-none disabled:opacity-40"
               disabled={controlDisabled(session.connected)}
-              title={controlTitle(session.connected, 'Restart the kernel')}
+              title={controlTitle(session.connected, tr('room.extra.184'))}
               onclick={() => session.send({ t: 'restart' })}
-            >
-              Restart
-            </button>
+            > {tr('room.ui.448')} </button>
           {/if}
         </span>
       {:else if kernel === 'starting' || kernel === 'restarting'}
@@ -1070,18 +1053,17 @@
              composited property instead of a repaint every frame. -->
         <span class={cn(PILL, 'animate-pulse border-line text-2xs text-muted')}>
           <span class="h-1.5 w-1.5 rounded-full bg-faint"></span>
-          {kernel === 'starting' ? 'starting…' : 'restarting…'}
+          {kernel === 'starting' ? tr('room.kernel.starting') : tr('room.kernel.restarting')}
         </span>
       {/if}
 
       {#if queued > 0}
         <span
           class={cn(PILL, 'border-line text-2xs text-muted')}
-          title="Cells waiting for the kernel"
+          title={tr('room.ui.452')}
         >
           <span class="h-1.5 w-1.5 rounded-full bg-muted"></span>
-          {queued} queued
-        </span>
+          {queued} {tr('room.ui.453')} </span>
       {/if}
       <!-- The least load-bearing thing in the strip, and the first to go when
            there is not room for all of it: how many cells there are is visible
@@ -1090,8 +1072,7 @@
            кадре — это не число, это неправда. -->
       {#if !cold}
         <span class="hidden pl-0.5 pr-5 font-mono text-2xs text-muted xl:inline">
-          {ids.current.length}
-          {ids.current.length === 1 ? 'cell' : 'cells'}
+          {tr('room.notebook.cellCount', { count: ids.current.length })}
         </span>
       {/if}
     </div>
@@ -1116,7 +1097,7 @@
         </div>
       {/each}
     </div>
-    <p class="pl-1 text-2xs text-muted" role="status">Тетрадь загружается…</p>
+    <p class="pl-1 text-2xs text-muted" role="status">{tr('room.ui.454')}</p>
   {:else}
   {#each ids.current as id, index (id)}
     {@render adder(index)}
@@ -1143,28 +1124,22 @@
     <button
       type="button"
       class={ADD_FOOT}
-      title="Add a code cell at the end"
+      title={tr('room.ui.455')}
       onclick={() => addAt(ids.current.length, 'code')}
     >
-      <Icon name="plus" size={11} />
-      Code
-    </button>
+      <Icon name="plus" size={11} /> {tr('room.ui.441')} </button>
     <button
       type="button"
       class={ADD_FOOT}
-      title="Add a text cell at the end — markdown"
+      title={tr('room.ui.456')}
       onclick={() => addAt(ids.current.length, 'markdown')}
     >
-      <Icon name="text" size={11} />
-      Text
-    </button>
+      <Icon name="text" size={11} /> {tr('room.ui.443')} </button>
     <div class="h-px flex-1 bg-line-soft"></div>
     <!-- Shift+Enter and the platform's own modifier now mean different things —
          run and move on, run and stay — so the hint says both. `modKey` reads
          ⌘ on a Mac and Ctrl everywhere else. -->
-    <span class="hidden shrink-0 font-mono text-2xs text-muted sm:inline">
-      A / B to insert · ⇧↵ run &amp; next · {modKey}↵ run in place
-    </span>
+    <span class="hidden shrink-0 font-mono text-2xs text-muted sm:inline"> {tr('room.ui.457')} {modKey}{tr('room.ui.458')} </span>
   </div>
   {/if}
   </div>

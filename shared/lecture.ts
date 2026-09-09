@@ -1,3 +1,4 @@
+import { tr } from './i18n.js'
 /**
  * Что комната показывает во время лекции — общий словарь браузера и сервера.
  *
@@ -169,11 +170,11 @@ export type InkFull = 'page-full' | 'too-many-pages' | 'stroke-full'
 export function inkFullSays(why: InkFull): string {
   switch (why) {
     case 'page-full':
-      return 'Достигнут лимит штрихов на странице. Добавьте чистый лист'
+      return tr("server.thePageHasReachedItsStrokeLimit.748194")
     case 'too-many-pages':
-      return 'Достигнут лимит страниц с разметкой. Удалите ненужную разметку'
+      return tr("server.theLimitOfAnnotatedPagesHasBeen.8ca2af")
     case 'stroke-full':
-      return 'Достигнут лимит длины штриха. Поднимите перо и продолжите новым штрихом'
+      return tr("server.theStrokeLengthLimitHasBeenReached.2f95b5")
   }
 }
 

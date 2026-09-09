@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Кто в комнате — и, у преподавателя, кого в неё не пускают.
    *
@@ -126,7 +127,7 @@
       // значит держать под нажатой кнопкой того, кого уже вернули.
       bans = bans.filter((other) => other.id !== ban.id)
     } catch (cause) {
-      session.showError(cause instanceof Error ? cause.message : 'Не удалось снять ограничение доступа.')
+      session.showError(cause instanceof Error ? tr(cause.message) : tr('room.ui.668'))
     } finally {
       lifting = null
     }
@@ -149,11 +150,11 @@
    * быть верным, когда русской стала половина интерфейса.)
    */
   function hintFor(person: Person, place: RevealTarget): string {
-    const who = person.isSelf ? 'вам' : person.user.name
-    if (place.where === 'terminal') return `К ${who} в терминал`
-    if (place.where === 'oracle') return `К ${who} в ленту оракула`
+    const who = person.isSelf ? tr('room.ui.669') : person.user.name
+    if (place.where === 'terminal') return tr('room.ui.670', { p0: who })
+    if (place.where === 'oracle') return tr('room.ui.671', { p0: who })
     const number = view.numbers.get(place.cellId)
-    return number === undefined ? 'К ячейке' : `К ячейке ${String(number).padStart(2, '0')}`
+    return number === undefined ? tr('room.ui.672') : tr('room.ui.673', { p0: String(number).padStart(2, '0') })
   }
 
   function go(place: RevealTarget): void {
@@ -164,20 +165,20 @@
   /** Кто человек — вместо строки о том, что он делает; и метка преподавателя. */
   function badgeFor(person: Person): string | null {
     const host = person.user.role === 'host'
-    if (person.isSelf) return host ? 'Преподаватель · вы' : 'вы'
-    return host ? 'Преподаватель' : null
+    if (person.isSelf) return host ? tr('room.ui.674') : tr('room.ui.544')
+    return host ? tr('room.ui.675') : null
   }
 </script>
 
-<section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5 pt-5" aria-label="Кто в комнате">
+<section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5 pt-5" aria-label={tr('room.ui.657')}>
   <div class="flex items-center gap-2 pb-2">
-    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">Люди</h2>
+    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">{tr('room.ui.658')}</h2>
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
     <span class="font-mono text-micro tabular-nums text-muted">{people.length}</span>
   </div>
 
   {#if people.length === 0}
-    <p class="px-2 text-2xs text-muted">Подключаемся к комнате…</p>
+    <p class="px-2 text-2xs text-muted">{tr('room.ui.659')}</p>
   {/if}
 
   {#each shown as person (person.user.id)}
@@ -269,7 +270,7 @@
       onclick={() => (expanded = !expanded)}
     >
       <span class="w-6 shrink-0" aria-hidden="true"></span>
-      <span>{expanded ? 'Свернуть' : `ещё ${rest}`}</span>
+      <span>{expanded ? tr('room.ui.660') : tr('room.ui.661', { p0: rest })}</span>
     </button>
   {/if}
 </section>
@@ -282,9 +283,9 @@
   оно никогда не понадобится.
 -->
 {#if isHost && live.length > 0}
-  <section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5" aria-label="Удалённые с занятия">
+  <section class="flex shrink-0 flex-col gap-0.5 px-4 pb-5" aria-label={tr('room.ui.662')}>
     <div class="flex items-center gap-2 pb-2">
-      <h2 class="text-2xs font-bold uppercase tracking-section text-muted">Удалены</h2>
+      <h2 class="text-2xs font-bold uppercase tracking-section text-muted">{tr('room.ui.663')}</h2>
       <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
       <span class="font-mono text-micro tabular-nums text-muted">{live.length}</span>
     </div>
@@ -292,12 +293,11 @@
     {#each live as ban (ban.id)}
       <div
         class="flex min-h-[34px] items-center gap-2.5 px-2"
-        title={ban.byTeacher ? `Удалил ${ban.byTeacher}` : undefined}
+        title={ban.byTeacher ? tr('room.extra.287', { p0: ban.byTeacher }) : undefined}
       >
         <div class="flex min-w-0 flex-1 flex-col">
           <span class="truncate text-ui text-ink">{ban.name}</span>
-          <span class="truncate text-2xs tracking-caps text-muted">
-            до {untilWords(ban.until, now)}{ban.mine ? ' · это ваш браузер' : ''}
+          <span class="truncate text-2xs tracking-caps text-muted"> {tr('room.ui.664')} {untilWords(ban.until, now)}{ban.mine ? tr('room.ui.665') : ''}
           </span>
         </div>
         <button
@@ -306,7 +306,7 @@
           disabled={lifting === ban.id}
           onclick={() => void lift(ban)}
         >
-          {lifting === ban.id ? 'Снимаем…' : 'Вернуть'}
+          {lifting === ban.id ? tr('room.ui.666') : tr('room.ui.170')}
         </button>
       </div>
     {/each}
@@ -319,8 +319,6 @@
       бана» и получал нетронутую тетрадь и ту же пустую ленту. Пока возврат не
       умеет ленту, сказано то, что есть.
     -->
-    <p class="px-2 pt-1.5 text-micro leading-snug text-muted">
-      Снятие ограничения не восстанавливает удалённые вопросы и ответы оракула. История версий хранит только ячейки тетради.
-    </p>
+    <p class="px-2 pt-1.5 text-micro leading-snug text-muted"> {tr('room.ui.667')} </p>
   </section>
 {/if}

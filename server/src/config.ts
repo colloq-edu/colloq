@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { normalizeLocale } from '@shared/i18n'
 
 function env(name: string, fallback: string): string {
   const value = process.env[name]
@@ -144,6 +145,7 @@ function readPublicUrl(): string {
 export const DEV_JUPYTER_TOKEN = 'colloq-dev-token'
 
 export const config = {
+  uiLanguage: normalizeLocale(process.env.UI_LANGUAGE),
   port: Number(env('PORT', '3000')),
   get publicUrl(): string {
     return readPublicUrl()

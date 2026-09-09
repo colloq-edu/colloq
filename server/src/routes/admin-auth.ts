@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Sign-in and the staff list.
  *
@@ -124,27 +125,27 @@ export function adminAuthRoutes(): Router {
     // Checked before the token, so a second claimant learns nothing about the
     // token by how long the refusal took.
     if (isClaimed()) {
-      return fail(res, 409, 'invalid', 'this instance has already been claimed')
+      return fail(res, 409, 'invalid', tr("server.thisInstanceHasAlreadyBeenClaimed.585bbd"))
     }
     const body = req.body as Partial<ClaimRequest> | undefined
     if (!verifySetupToken(body?.token)) {
-      return fail(res, 401, 'unauthenticated', 'that setup token is not the one on this server')
+      return fail(res, 401, 'unauthenticated', tr("server.thatSetupTokenIsNotTheOne.cc477e"))
     }
 
     const name = normalizeName(body?.name)
-    if (!name) return fail(res, 400, 'invalid', 'a name is required')
+    if (!name) return fail(res, 400, 'invalid', tr("server.aNameIsRequired.d1287e"))
     if (name.length > LIMITS.teacherName) {
-      return fail(res, 400, 'invalid', `name must be ${LIMITS.teacherName} characters or fewer`)
+      return fail(res, 400, 'invalid', tr("server.nameMustBeCharactersOrFewer.f2480d", { p0: LIMITS.teacherName }))
     }
     const email = normalizeEmail(typeof body?.email === 'string' ? body.email : '')
     if (!email || email.length > LIMITS.email || !looksLikeEmail(email)) {
-      return fail(res, 400, 'invalid', 'a valid email address is required')
+      return fail(res, 400, 'invalid', tr("server.aValidEmailAddressIsRequired.6f16a6"))
     }
 
     const teacher = createTeacher({ email, name, role: 'owner' })
-    if (!teacher) return fail(res, 409, 'invalid', 'that email is already on the staff list')
+    if (!teacher) return fail(res, 409, 'invalid', tr("server.thatEmailIsAlreadyOnTheStaff.cc750b"))
     const minted = rotateLinkKey(teacher.id)
-    if (!minted) return fail(res, 409, 'invalid', 'that account disappeared mid-claim')
+    if (!minted) return fail(res, 409, 'invalid', tr("server.thatAccountDisappearedMidClaim.c3a494"))
 
     touchTeacherLastSeen(minted.teacher.id)
     issueStaffCookie(res, minted.teacher)
@@ -159,10 +160,10 @@ export function adminAuthRoutes(): Router {
   router.post('/api/admin/signin/token', (req, res) => {
     const body = req.body as Partial<SignInWithTokenRequest> | undefined
     if (!verifySetupToken(body?.token)) {
-      return fail(res, 401, 'unauthenticated', 'that setup token is not the one on this server')
+      return fail(res, 401, 'unauthenticated', tr("server.thatSetupTokenIsNotTheOne.cc477e"))
     }
     const owner = oldestOwner()
-    if (!owner) return fail(res, 409, 'unclaimed', 'this instance has not been claimed yet')
+    if (!owner) return fail(res, 409, 'unclaimed', tr("server.thisInstanceHasNotBeenClaimedYet.6bbdc7"))
 
     touchTeacherLastSeen(owner.id)
     issueStaffCookie(res, owner)
@@ -179,7 +180,7 @@ export function adminAuthRoutes(): Router {
    * Только владелец, и ответ содержит новый токен: он показывается один раз,
    * как и ссылки преподавателей.
    */
-  router.post('/api/admin/setup-token/rotate', ownerOnly('rotate the setup token'), (_req, res) => {
+  router.post('/api/admin/setup-token/rotate', ownerOnly('server.ownerAction.1'), (_req, res) => {
     res.json({ token: rotateSetupToken() })
   })
 
@@ -188,7 +189,7 @@ export function adminAuthRoutes(): Router {
     const teacher = getTeacherByLinkKey(key)
     // One answer for an unknown key and a rotated one: neither says whether the
     // person on the other end of that link still exists.
-    if (!teacher) return fail(res, 401, 'unauthenticated', 'that sign-in link is no longer valid')
+    if (!teacher) return fail(res, 401, 'unauthenticated', tr("server.thatSignInLinkIsNoLonger.4fdb45"))
 
     touchTeacherLastSeen(teacher.id)
     issueStaffCookie(res, teacher)
@@ -204,7 +205,7 @@ export function adminAuthRoutes(): Router {
 
   router.get('/api/admin/me', requireStaff, (req, res) => {
     const teacher = currentStaff(req)
-    if (!teacher) return fail(res, 401, 'unauthenticated', 'sign in to use the admin panel')
+    if (!teacher) return fail(res, 401, 'unauthenticated', tr("server.signInToUseTheAdminPanel.301d28"))
     res.json(meOf(teacher))
   })
 
@@ -217,24 +218,24 @@ export function adminAuthRoutes(): Router {
 
   router.post('/api/admin/teachers', requireOwner, (req, res) => {
     const name = normalizeName(req.body?.name)
-    if (!name) return fail(res, 400, 'invalid', 'a name is required')
+    if (!name) return fail(res, 400, 'invalid', tr("server.aNameIsRequired.d1287e"))
     if (name.length > LIMITS.teacherName) {
-      return fail(res, 400, 'invalid', `name must be ${LIMITS.teacherName} characters or fewer`)
+      return fail(res, 400, 'invalid', tr("server.nameMustBeCharactersOrFewer.f2480d", { p0: LIMITS.teacherName }))
     }
     const email = normalizeEmail(typeof req.body?.email === 'string' ? req.body.email : '')
     if (!email || email.length > LIMITS.email || !looksLikeEmail(email)) {
-      return fail(res, 400, 'invalid', 'a valid email address is required')
+      return fail(res, 400, 'invalid', tr("server.aValidEmailAddressIsRequired.6f16a6"))
     }
     if (getTeacherByEmail(email)) {
-      return fail(res, 409, 'invalid', 'someone with that email is already on the staff list')
+      return fail(res, 409, 'invalid', tr("server.someoneWithThatEmailIsAlreadyOn.c19140"))
     }
 
     // Everyone is added as a teacher and promoted afterwards, so granting the
     // second owner is always a deliberate second act.
     const teacher = createTeacher({ email, name, role: 'teacher' })
-    if (!teacher) return fail(res, 409, 'invalid', 'someone with that email is already on the staff list')
+    if (!teacher) return fail(res, 409, 'invalid', tr("server.someoneWithThatEmailIsAlreadyOn.c19140"))
     const minted = rotateLinkKey(teacher.id)
-    if (!minted) return fail(res, 409, 'invalid', 'that account disappeared mid-create')
+    if (!minted) return fail(res, 409, 'invalid', tr("server.thatAccountDisappearedMidCreate.591b74"))
 
     res.status(201).json(withLink(minted))
   })
@@ -249,11 +250,11 @@ export function adminAuthRoutes(): Router {
    * a lecture hall spills nothing; this is the clipboard, not the screen. Owner
    * only, like every other write on this list.
    */
-  router.get('/api/admin/teachers/:id/link', ownerOnly('read a sign-in link'), (req, res) => {
+  router.get('/api/admin/teachers/:id/link', ownerOnly('server.ownerAction.2'), (req, res) => {
     const teacher = getTeacher(req.params.id)
-    if (!teacher) return fail(res, 404, 'invalid', 'no such teacher')
+    if (!teacher) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
     const key = linkKeyOf(teacher.id)
-    if (!key) return fail(res, 409, 'invalid', 'that person has no sign-in link yet — mint one first')
+    if (!key) return fail(res, 409, 'invalid', tr("server.thatPersonHasNoSignInLink.538ff7"))
     res.json(withLink({ teacher, key }))
   })
 
@@ -263,7 +264,7 @@ export function adminAuthRoutes(): Router {
     const actor = currentStaff(req)
 
     const minted = rotateLinkKey(req.params.id)
-    if (!minted) return fail(res, 404, 'invalid', 'no such teacher')
+    if (!minted) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
 
     // Rotating signs the old key out everywhere, which includes this browser
     // when an owner rotates their own link. Re-issuing keeps the tab they are
@@ -283,7 +284,7 @@ export function adminAuthRoutes(): Router {
    */
   router.patch('/api/admin/teachers/:id', requireOwner, (req, res) => {
     const target = getTeacher(req.params.id)
-    if (!target) return fail(res, 404, 'invalid', 'no such teacher')
+    if (!target) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
 
     const wantsIdentity = req.body?.name !== undefined || req.body?.email !== undefined
     if (wantsIdentity) {
@@ -298,24 +299,24 @@ export function adminAuthRoutes(): Router {
        */
       const name =
         req.body?.name === undefined ? target.name : normalizeName(req.body.name)
-      if (!name) return fail(res, 400, 'invalid', 'a name is required')
+      if (!name) return fail(res, 400, 'invalid', tr("server.aNameIsRequired.d1287e"))
       if (name.length > LIMITS.teacherName) {
-        return fail(res, 400, 'invalid', `name must be ${LIMITS.teacherName} characters or fewer`)
+        return fail(res, 400, 'invalid', tr("server.nameMustBeCharactersOrFewer.f2480d", { p0: LIMITS.teacherName }))
       }
       const email =
         req.body?.email === undefined
           ? target.email
           : normalizeEmail(typeof req.body.email === 'string' ? req.body.email : '')
       if (!email || email.length > LIMITS.email || !looksLikeEmail(email)) {
-        return fail(res, 400, 'invalid', 'a valid email address is required')
+        return fail(res, 400, 'invalid', tr("server.aValidEmailAddressIsRequired.6f16a6"))
       }
       const taken = getTeacherByEmail(email)
       if (taken && taken.id !== target.id) {
-        return fail(res, 409, 'invalid', 'someone with that email is already on the staff list')
+        return fail(res, 409, 'invalid', tr("server.someoneWithThatEmailIsAlreadyOn.c19140"))
       }
       const renamed = updateTeacherIdentity(target.id, { name, email })
       if (!renamed) {
-        return fail(res, 409, 'invalid', 'someone with that email is already on the staff list')
+        return fail(res, 409, 'invalid', tr("server.someoneWithThatEmailIsAlreadyOn.c19140"))
       }
       // Смена только имени и адреса — роль трогать незачем.
       if (req.body?.role === undefined) return res.json(renamed)
@@ -323,30 +324,30 @@ export function adminAuthRoutes(): Router {
 
     const role = req.body?.role as AdminRole | undefined
     if (role !== 'owner' && role !== 'teacher') {
-      return fail(res, 400, 'invalid', "role must be 'owner' or 'teacher'")
+      return fail(res, 400, 'invalid', tr("server.roleMustBeOwnerOrTeacher.514175"))
     }
 
     if (target.role === 'owner' && role === 'teacher' && countOwners() <= 1) {
-      return fail(res, 409, 'invalid', 'the last owner cannot be demoted')
+      return fail(res, 409, 'invalid', tr("server.theLastOwnerCannotBeDemoted.1782e0"))
     }
 
     const updated = updateTeacherRole(target.id, role)
-    if (!updated) return fail(res, 404, 'invalid', 'no such teacher')
+    if (!updated) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
     res.json(updated)
   })
 
   router.delete('/api/admin/teachers/:id', requireOwner, (req, res) => {
     const target = getTeacher(req.params.id)
-    if (!target) return fail(res, 404, 'invalid', 'no such teacher')
+    if (!target) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
 
     // The same rule that lets an owner remove themselves: allowed exactly when
     // somebody else is left holding the keys.
     if (target.role === 'owner' && countOwners() <= 1) {
-      return fail(res, 409, 'invalid', 'the last owner cannot be removed')
+      return fail(res, 409, 'invalid', tr("server.theLastOwnerCannotBeRemoved.d6e1d4"))
     }
 
     const actor = currentStaff(req)
-    if (!deleteTeacher(target.id)) return fail(res, 404, 'invalid', 'no such teacher')
+    if (!deleteTeacher(target.id)) return fail(res, 404, 'invalid', tr("server.noSuchTeacher.dc9e13"))
     // Their cookie stops verifying the moment the row is gone; clearing it only
     // saves the browser from sending a dead one on every request.
     if (actor && actor.id === target.id) clearStaffCookie(res)

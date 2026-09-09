@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Reading a room's history, and putting an old version back.
  *
@@ -43,7 +44,7 @@ function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
   }
   const payload = sessionAuth(req)
   if (!payload) {
-    res.status(401).json({ error: 'this history belongs to a seminar you are not in' })
+    res.status(401).json({ error: tr("server.thisHistoryBelongsToASeminarYou.5112cc") })
     return null
   }
   /*
@@ -58,7 +59,7 @@ function whoever(req: Request, res: Response): ReturnType<typeof sessionAuth> {
    * восстановление и чекпоинт, но они и так преподавательские.
    */
   if (!allows(getRules(req.params.id).history, payload.role)) {
-    res.status(403).json({ error: 'Просматривать историю версий в этом семинаре может только преподаватель.' })
+    res.status(403).json({ error: tr("server.onlyTheTeacherCanViewThisSeminar.4c05e0") })
     return null
   }
   return payload
@@ -193,9 +194,9 @@ export function historyRoutes(): Router {
     if (!whoever(req, res)) return
     const sessionId = req.params.id
     const seq = Number(req.params.seq)
-    if (!Number.isInteger(seq)) return res.status(400).json({ error: 'bad version' })
+    if (!Number.isInteger(seq)) return res.status(400).json({ error: tr("server.badVersion.a29edb") })
     const row = getVersion(sessionId, seq)
-    if (!row) return res.status(404).json({ error: 'no such version' })
+    if (!row) return res.status(404).json({ error: tr("server.noSuchVersion.57ccc9") })
 
     const after = cellsAt(sessionId, seq)
     // seq - 1 is not necessarily a row, but updatesUpTo takes a ceiling rather
@@ -234,12 +235,12 @@ export function historyRoutes(): Router {
     const identity = whoever(req, res)
     if (!identity) return
     if (identity.role !== 'host') {
-      return res.status(403).json({ error: 'only the host can restore a version' })
+      return res.status(403).json({ error: tr("server.onlyTheHostCanRestoreAVersion.0540c5") })
     }
     const sessionId = req.params.id
     const seq = Number(req.params.seq)
     const row = getVersion(sessionId, seq)
-    if (!row) return res.status(404).json({ error: 'no such version' })
+    if (!row) return res.status(404).json({ error: tr("server.noSuchVersion.57ccc9") })
 
     const onlyCell = typeof req.body?.cellId === 'string' ? req.body.cellId : null
     /*
@@ -271,13 +272,13 @@ export function historyRoutes(): Router {
     const identity = whoever(req, res)
     if (!identity) return
     if (identity.role !== 'host') {
-      return res.status(403).json({ error: 'only the host can set a checkpoint' })
+      return res.status(403).json({ error: tr("server.onlyTheHostCanSetACheckpoint.e8860a") })
     }
     const sessionId = req.params.id
     const label = String(req.body?.label ?? '')
       .trim()
       .slice(0, 80)
-    if (!label) return res.status(400).json({ error: 'a checkpoint needs a name' })
+    if (!label) return res.status(400).json({ error: tr("server.aCheckpointNeedsAName.845b89") })
 
     const marked = visitSessionDoc(sessionId, (doc) => ({
       seq: mark(sessionId, doc, 'checkpoint', identity.participantId, label, label),

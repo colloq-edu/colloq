@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Staff credentials: the setup token, and the cookie both sign-in paths spend
  * themselves for.
@@ -285,11 +286,11 @@ export function sameOrigin(req: Request, res: Response, next: NextFunction): voi
   try {
     host = new URL(origin).host
   } catch {
-    return deny(res, 403, 'forbidden', 'Request blocked: this page uses a different server address. Open Colloq directly and try again.')
+    return deny(res, 403, 'forbidden', tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"))
   }
   // req.host отбрасывает порт, а он здесь значимый: 5173 и 8080 — разные сайты.
   if (host !== req.get('host') && !(thisMachine(host) && thisMachine(req.get('host') ?? ''))) {
-    return deny(res, 403, 'forbidden', 'Request blocked: this page uses a different server address. Open Colloq directly and try again.')
+    return deny(res, 403, 'forbidden', tr("server.requestBlockedThisPageUsesADifferent.dd9b4b"))
   }
   next()
 }
@@ -315,7 +316,7 @@ function thisMachine(hostPort: string): boolean {
 
 export function requireStaff(req: Request, res: Response, next: NextFunction): void {
   const teacher = currentStaff(req)
-  if (!teacher) return deny(res, 401, 'unauthenticated', 'sign in to use the admin panel')
+  if (!teacher) return deny(res, 401, 'unauthenticated', tr("server.signInToUseTheAdminPanel.301d28"))
   next()
 }
 
@@ -328,11 +329,11 @@ export function requireStaff(req: Request, res: Response, next: NextFunction): v
 export function ownerOnly(action: string) {
   return function requireOwnerFor(req: Request, res: Response, next: NextFunction): void {
     const teacher = currentStaff(req)
-    if (!teacher) return deny(res, 401, 'unauthenticated', 'sign in to use the admin panel')
-    if (teacher.role !== 'owner') return deny(res, 403, 'forbidden', `only an owner can ${action}`)
+    if (!teacher) return deny(res, 401, 'unauthenticated', tr("server.signInToUseTheAdminPanel.301d28"))
+    if (teacher.role !== 'owner') return deny(res, 403, 'forbidden', tr('server.ownerOnly', { action: tr(action) }))
     next()
   }
 }
 
 /** The staff list is what an owner owns, so it is the default subject. */
-export const requireOwner = ownerOnly('change the staff list')
+export const requireOwner = ownerOnly('server.ownerAction.0')

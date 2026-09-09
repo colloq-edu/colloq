@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Formatting the room's code with black.
  *
@@ -147,7 +148,7 @@ export async function formatNotebook(
       skipped: 0,
       edited: 0,
       unchanged: 0,
-      error: 'The kernel could not run the formatter.',
+      error: tr("server.theKernelCouldNotRunTheFormatter.007883"),
     }
   }
 
@@ -157,10 +158,10 @@ export async function formatNotebook(
     const line = out.split('\n').reverse().find((l) => l.trim().startsWith('{')) ?? ''
     parsed = JSON.parse(line) as { formatted?: (string | null)[]; error?: string }
   } catch {
-    const error = 'The formatter did not answer.'
+    const error = tr("server.theFormatterDidNotAnswer.610402")
     return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error }
   }
-  if (parsed.error) return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: parsed.error }
+  if (parsed.error) return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: parsed.error === 'black is not installed in this environment' ? tr('server.formatter.missing') : parsed.error }
   const formatted = parsed.formatted ?? []
 
   let changed = 0

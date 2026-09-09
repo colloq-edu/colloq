@@ -11,4 +11,13 @@
  * Имена остаются прежними, чтобы экран входа, картинка человека и подборщик
  * метки продолжали спрашивать их у своего соседа, а не у общей папки.
  */
-export { MARKS, freeMark, isMark, markName, type Mark, type MarkSet } from '@shared/marks'
+import { tr } from '@shared/i18n'
+import { MARKS as sourceMarks, markName as sourceMarkName } from '@shared/marks'
+export { freeMark, isMark, type Mark, type MarkSet } from '@shared/marks'
+/** Labels are getters so an open picker follows the instance language. */
+export const MARKS = sourceMarks.map(entry => ({
+  mark: entry.mark,
+  get name() { return tr('room.mark.' + entry.name) },
+  get alt() { return [entry.name, entry.alt, entry.name === 'sauropod' || entry.name === 'T. rex' ? 'динозавр' : ''].filter(Boolean).join(' ') },
+}))
+export function markName(mark: string | null): string { return tr('room.mark.' + sourceMarkName(mark)) }

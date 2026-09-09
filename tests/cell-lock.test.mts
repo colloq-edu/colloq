@@ -1,3 +1,4 @@
+import { tr } from '../shared/i18n.js'
 /**
  * Замок на ячейке: лекция, в которой открыты отдельные ячейки.
  *
@@ -413,7 +414,7 @@ test('в законченном занятии открытая ячейка з�
   const after = rulesAfterClass(LECTURE_ROOM)
   assert.equal(
     passes(server, bytes, after, 'participant', true),
-    CLASS_IS_OVER,
+    tr(CLASS_IS_OVER),
     'открытая ячейка пережила конец занятия',
   )
   // А преподаватель после пары печатает: комната остаётся живой.

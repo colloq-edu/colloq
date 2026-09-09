@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Почему правило не сохранилось — по-русски, как и весь пульт правил в комнате.
  *
@@ -37,15 +38,15 @@ import { saysSessionMissing } from '@shared/protocol'
 
 export function ruleRefusal(cause: unknown): string {
   const { status, until } = (cause ?? {}) as { status?: unknown; until?: unknown }
-  if (status === 0) return 'Не удалось сохранить правило: нет связи с сервером.'
+  if (status === 0) return tr('room.ui.1119')
   if (status === 403) {
     return typeof until === 'number' && Number.isFinite(until)
-      ? 'Не удалось сохранить правило: вас удалили с занятия.'
-      : 'Не удалось сохранить правило: изменять правила может только преподаватель.'
+      ? tr('room.ui.1120')
+      : tr('room.ui.1121')
   }
   if (status === 401) {
-    return 'Не удалось сохранить правило: войдите в занятие заново.'
+    return tr('room.ui.1122')
   }
-  if (saysSessionMissing(cause)) return 'Не удалось сохранить правило: занятие не найдено.'
-  return 'Не удалось сохранить правило. Попробуйте ещё раз.'
+  if (saysSessionMissing(cause)) return tr('room.ui.1123')
+  return tr('room.ui.1124')
 }

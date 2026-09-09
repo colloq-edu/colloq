@@ -7,6 +7,7 @@
   говорит, что с этим можно сделать.
 -->
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { permitsIn } from '@/lib/may'
@@ -58,7 +59,7 @@
 
   const savedAt = $derived(
     entry
-      ? new Date(entry.modifiedAt).toLocaleTimeString('ru-RU', {
+      ? new Date(entry.modifiedAt).toLocaleTimeString(getLocale(), {
           hour: '2-digit',
           minute: '2-digit',
         })
@@ -91,13 +92,11 @@
         : 'cursor-not-allowed bg-surface text-faint'}"
       disabled={!mayRun}
       title={mayRun
-        ? `${runner === 'python' ? 'python -u' : 'bash'} ${path} — вывод в терминале`
+        ? tr('room.extra.31', { p0: runner === 'python' ? 'python -u' : 'bash', p1: path })
         : may.runWhy}
       onclick={onrun}
     >
-      <Icon name="play" size={11} />
-      Запустить
-    </button>
+      <Icon name="play" size={11} /> {tr('room.ui.73')} </button>
   {/if}
 
   <span class="flex-1"></span>
@@ -114,13 +113,13 @@
       -->
       <span class="flex items-center gap-1.5 text-2xs text-muted">
         <Icon name="lock" size={11} />
-        {mayEdit ? 'Правка не сохранена. Файл открыт только для чтения' : whyReadOnly}
+        {mayEdit ? tr('room.ui.104') : whyReadOnly}
       </span>
     {:else if savedAt}
       <!-- Время последней записи на диск, а не «есть несохранённое»: файл
            ложится на диск сам через секунду после последнего нажатия, и
            кнопки «сохранить» в этом продукте нет. -->
-      <span class="font-mono text-micro tabular-nums text-faint">сохранено · {savedAt}</span>
+      <span class="font-mono text-micro tabular-nums text-faint">{tr('room.ui.105')} {savedAt}</span>
     {/if}
 
     {#if here.length > 0}
@@ -132,7 +131,7 @@
             <span class="text-2xs text-muted">{user.name}</span>
           </span>
         {/each}
-        <span class="text-2xs text-faint">здесь</span>
+        <span class="text-2xs text-faint">{tr('room.ui.106')}</span>
       </span>
     {/if}
   </div>

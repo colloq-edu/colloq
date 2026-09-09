@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Process entry point: one HTTP server, two WebSocket paths, one static bundle.
  *
@@ -236,7 +237,7 @@ server.on('upgrade', (req, socket, head) => {
         const wanted = normalizePath(decodeRoom(asFile?.[2] ?? ''))
         if (!wanted) {
           try {
-            ws.close(4404, 'нет такого файла')
+            ws.close(4404, tr("server.fileNotFound.f1ab8a"))
           } catch {
             /* уже закрыт */
           }
@@ -403,7 +404,7 @@ async function shutdown(signal: string): Promise<void> {
   server.close()
   for (const client of wss.clients) {
     try {
-      client.close(1001, 'server shutting down')
+      client.close(1001, tr("server.serverShuttingDown.0df697"))
     } catch {
       client.terminate()
     }

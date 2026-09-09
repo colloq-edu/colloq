@@ -1,9 +1,16 @@
 import { mount } from 'svelte'
 import './index.css'
-import App from './App.svelte'
+import { initializeLanguage, onLanguageChange } from './lib/i18n.svelte'
+import { tr } from '@shared/i18n'
 
 const target = document.getElementById('root')
 if (!target) throw new Error('Colloq: #root is missing from index.html')
+
+function updateBootLanguage(): void {
+  document.getElementById('boot')?.setAttribute('aria-label', tr('common.loadingApp'))
+}
+updateBootLanguage()
+const stopBootLanguage = onLanguageChange(updateBootLanguage)
 
 /**
  * The built stylesheet is loaded non-blockingly (see vite.config.ts) so the
@@ -32,6 +39,7 @@ function stylesApplied(): Promise<void> {
 }
 
 function dismissShell(): void {
+  stopBootLanguage()
   const shell = document.getElementById('boot')
   if (!shell) return
   shell.dataset.leaving = ''
@@ -85,11 +93,14 @@ function offerReload(): void {
   ].join(';')
 
   const text = document.createElement('span')
-  text.textContent =
-    'Часть приложения не загрузилась — похоже, сервер обновился, пока вкладка была открыта. Перезагрузите страницу: тетрадь цела.'
+  text.textContent = tr('common.moduleLoadFailed')
   const again = document.createElement('button')
   again.type = 'button'
-  again.textContent = 'Обновить'
+  again.textContent = tr('common.reload')
+  onLanguageChange(() => {
+    text.textContent = tr('common.moduleLoadFailed')
+    again.textContent = tr('common.reload')
+  })
   again.style.cssText = [
     'flex:none',
     'padding:6px 12px',
@@ -117,5 +128,10 @@ window.addEventListener('unhandledrejection', (event) => {
   if (MODULE_LOAD_FAILURE.test(said)) offerReload()
 })
 
-mount(App, { target })
-void stylesApplied().then(dismissShell)
+void (async () => {
+  await initializeLanguage()
+  const { default: App } = await import('./App.svelte')
+  mount(App, { target })
+  await stylesApplied()
+  dismissShell()
+})().catch(offerReload)

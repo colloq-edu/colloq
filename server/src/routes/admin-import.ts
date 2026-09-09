@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Creating a seminar from a link to GitHub.
  *
@@ -85,7 +86,7 @@ export function adminImportRoutes(): Router {
           res,
           400,
           'invalid',
-          "Enter a GitHub link to a notebook or folder.",
+          tr("server.enterAGithubLinkToANotebook.110b0f"),
         )
       }
       try {
@@ -101,7 +102,7 @@ export function adminImportRoutes(): Router {
           source: `${target.owner}/${target.repo}${target.path ? '/' + target.path : ''}`,
         })
       } catch (err) {
-        fail(res, 400, 'invalid', err instanceof Error ? err.message : 'Could not read that link.')
+        fail(res, 400, 'invalid', err instanceof Error ? err.message : tr("server.couldNotReadThatLink.6d642b"))
       }
     }),
   )
@@ -112,12 +113,12 @@ export function adminImportRoutes(): Router {
     wrap(async (req: Request, res: Response) => {
       const target = parseGithubUrl(String(req.body?.url ?? ''))
       if (!target) {
-        return fail(res, 400, 'invalid', 'That is not a GitHub link.')
+        return fail(res, 400, 'invalid', tr("server.thatIsNotAGithubLink.d0476c"))
       }
 
       const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
       if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
-        return fail(res, 400, 'invalid', `there is no environment called "${wanted}"`)
+        return fail(res, 400, 'invalid', tr("server.thereIsNoEnvironmentCalled.a8903e", { p0: wanted }))
       }
 
       let plan: Plan
@@ -128,11 +129,11 @@ export function adminImportRoutes(): Router {
           res,
           400,
           'invalid',
-          err instanceof Error ? err.message : 'Could not read that link.',
+          err instanceof Error ? err.message : tr("server.couldNotReadThatLink.6d642b"),
         )
       }
       if (plan.cells.length === 0) {
-        return fail(res, 400, 'invalid', 'There is no notebook with any cells at that link.')
+        return fail(res, 400, 'invalid', tr("server.thereIsNoNotebookWithAnyCells.5fa7bc"))
       }
 
       // Та же мерка, что у панели и у комнаты: имя приезжает из чужого
@@ -239,7 +240,7 @@ export function adminImportRoutes(): Router {
     if (Array.isArray(sent)) {
       parsed = { cells: sent }
     } else {
-      if (!raw.trim()) return fail(res, 400, 'invalid', 'no notebook was sent')
+      if (!raw.trim()) return fail(res, 400, 'invalid', tr("server.noNotebookWasSent.4ec136"))
       try {
         parsed = JSON.parse(raw)
       } catch {
@@ -247,24 +248,24 @@ export function adminImportRoutes(): Router {
           res,
           400,
           'invalid',
-          'Could not read this file as a notebook. Upload a valid .ipynb file.',
+          tr("server.couldNotReadThisFileAsA.ea3fc6"),
         )
       }
     }
 
     const cells = readIpynb(parsed)
     if (cells.length === 0) {
-      return fail(res, 400, 'invalid', 'This notebook has no nonempty cells.')
+      return fail(res, 400, 'invalid', tr("server.thisNotebookHasNoNonemptyCells.bc0428"))
     }
 
     const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
     if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
-      return fail(res, 400, 'invalid', `there is no environment called "${wanted}"`)
+      return fail(res, 400, 'invalid', tr("server.thereIsNoEnvironmentCalled.a8903e", { p0: wanted }))
     }
 
     const asked = normalizeLabel(req.body?.name)
     const fallback = typeof req.body?.filename === 'string' ? req.body.filename : ''
-    const name = normalizeLabel(asked || tidyNotebookName(fallback) || 'Untitled seminar').slice(
+    const name = normalizeLabel(asked || tidyNotebookName(fallback) || tr("server.untitledSeminar.08a8f2")).slice(
       0,
       LIMITS.seminarName,
     )
@@ -422,7 +423,7 @@ export function withinRoomBudget(files: RepoEntry[]): { files: RepoEntry[]; skip
 async function planFor(target: GithubTarget): Promise<Plan> {
   if (target.kind === 'file') {
     if (!target.path.toLowerCase().endsWith('.ipynb')) {
-      throw new Error('That link is not a notebook. Point it at an .ipynb file or at a folder.')
+      throw new Error(tr("server.thatLinkIsNotANotebookPoint.1d59ce"))
     }
     /*
      * `fetchNotebook`, а не голый `fetchRaw`: ветка со слэшем в имени
@@ -450,7 +451,7 @@ async function planFor(target: GithubTarget): Promise<Plan> {
   const entries = await listDirectory(target)
   const book = pickNotebook(entries)
   if (!book || !book.downloadUrl) {
-    throw new Error('There is no .ipynb in that folder.')
+    throw new Error(tr("server.thereIsNoIpynbInThatFolder.6299b2"))
   }
   const raw = await fetchRaw(book.downloadUrl, MAX_NOTEBOOK)
   return {

@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Слова и обрезка — общие для всего, что оракул пишет и читает.
  *
@@ -26,22 +27,22 @@ export { plural }
 
 /** «22 секунды» — число и слово к нему. */
 export function seconds(n: number): string {
-  return `${n} ${plural(n, 'секунду', 'секунды', 'секунд')}`
+  return tr('server.seconds', { count: n })
 }
 
 /** «3 человека»: у «человек» родительный совпадает с именительным, и это не опечатка. */
 export function people(n: number): string {
-  return `${n} ${plural(n, 'человек', 'человека', 'человек')}`
+  return tr('server.people', { count: n })
 }
 
 /** «1 группа», «3 группы», «5 групп» — без числа: его ставят рядом. */
 export function groupsWord(n: number): string {
-  return plural(n, 'группа', 'группы', 'групп')
+  return tr('server.groupsWord', { count: n })
 }
 
 /** «1 ячейка», «3 ячейки», «5 ячеек»: счёт, который не режет глаз. */
 export function cellsWord(n: number): string {
-  return plural(n, 'ячейка', 'ячейки', 'ячеек')
+  return tr('server.cellsWord', { count: n })
 }
 
 /** 01, 02, 03 — тот же номер, который нарисован у ячейки в поле слева. */

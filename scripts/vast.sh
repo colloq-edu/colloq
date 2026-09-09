@@ -964,7 +964,7 @@ REMOTE
   # Billing and DNS credentials are never transferred. Existing remote config wins.
   local tmpenv
   tmpenv="$(mktemp -t colloq-vast-env.XXXXXX)"; TMPS+=("$tmpenv")
-  grep -E '^(RELAY_(ADDR|PORT|TOKEN|DOMAIN)|INSTITUTION|SESSION_SECRET|ORACLE_[A-Z_]+|OPENAI_[A-Z_]+|ANTHROPIC_[A-Z_]+)=' .env > "$tmpenv" || true
+  grep -E '^(UI_LANGUAGE|RELAY_(ADDR|PORT|TOKEN|DOMAIN)|INSTITUTION|SESSION_SECRET|ORACLE_[A-Z_]+|OPENAI_[A-Z_]+|ANTHROPIC_[A-Z_]+)=' .env > "$tmpenv" || true
   local public_url="http://127.0.0.1:30080"
   [ -z "$WANT_HOST" ] || public_url="https://$WANT_HOST"
   printf 'PORT=30080\nCOLLOQ_CLUSTER=1\nPUBLIC_URL=%s\n' "$public_url" >> "$tmpenv"

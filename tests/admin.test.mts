@@ -244,7 +244,7 @@ test('a teacher is refused the owner-only doors, and told which one', async () =
   const body = (await refused.json()) as { error: string; reason: string }
   assert.equal(body.reason, 'forbidden')
   // Отказ называет то, что отказано: «only an owner can …» про список штата.
-  assert.match(body.error, /staff list/)
+  assert.match(body.error, /список преподавателей/)
   assert.equal(getTeacherByEmail('someone.routes@hse.ru'), null)
 })
 

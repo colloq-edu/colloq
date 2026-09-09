@@ -1,3 +1,4 @@
+import { tr, getLocale } from '@shared/i18n'
 /**
  * Who is signed in to the teaching side, and whether this instance has an owner
  * at all.
@@ -16,14 +17,17 @@ import { signedOutNotice, type SignedOutReason } from '@/admin/panel'
 function messageFor(cause: unknown): string {
   if (cause instanceof AdminApiError) return cause.message
   if (cause instanceof Error) return cause.message
-  return 'The server did not respond'
+  return tr("admin.the.server.did.not.respond")
 }
 
 class AdminAuth {
   me = $state<AdminMe | null>(null)
   state = $state<InstanceState | null>(null)
   loading = $state(false)
-  error = $state<string | null>(null)
+  #error = $state<(() => string) | null>(null)
+  get error(): string | null { return this.#error?.() ?? null }
+  set error(value: string | null) { this.#error = value === null ? null : () => value }
+  setError(render: () => string): void { this.#error = render }
   /**
    * Почему не пустили. 'unclaimed' — не ошибка, а состояние инстанса, и
    * маршрутизатору важно отличать его от отозванного токена: одно приглашает
@@ -110,11 +114,11 @@ class AdminAuth {
        */
       if (!me && (this.#signedIn || reason !== null)) {
         this.#signedIn = false
-        this.error = signedOutNotice(reason ?? 'no-cookie')
+        this.#error = () => signedOutNotice(reason ?? 'no-cookie')
         this.errorReason = 'unauthenticated'
       }
     } catch (cause: unknown) {
-      this.error = messageFor(cause)
+      this.#error = () => messageFor(cause)
       this.errorReason = cause instanceof AdminApiError ? cause.reason : null
     } finally {
       this.loading = false
@@ -212,7 +216,7 @@ class AdminAuth {
     } catch (cause: unknown) {
       this.me = null
       clearStaffMark()
-      this.error = messageFor(cause)
+      this.#error = () => messageFor(cause)
       this.errorReason = cause instanceof AdminApiError ? cause.reason : null
       /*
        * Состояние инстанса нужно и при отказе.

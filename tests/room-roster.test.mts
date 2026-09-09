@@ -41,7 +41,7 @@ test('«(you)» — тоже то, что видно', () => {
   const faces = [someone('a', 'Ада')].map(faceOf)
   const asSelf: Someone = { user: { id: 'a', name: 'Ада', avatar: '🦊', color: '#123456' }, isSelf: true }
   assert.equal(sameFaces(faces, [asSelf]), false)
-  assert.equal(faceOf(asSelf).title, 'Ада (you)')
+  assert.equal(faceOf(asSelf).title, 'Ада (вы)')
   assert.equal(faces[0].title, 'Ада')
 })
 
@@ -64,7 +64,7 @@ test('подсказка на пятьсот человек не строитс�
   const many = Array.from({ length: 500 }, (_, i) => someone(`p${i}`, `Человек ${i}`)).map(faceOf)
   const line = namesLine(many)
   assert.ok(line.includes('Человек 0'), 'первых не видно вовсе')
-  assert.ok(line.endsWith('and 480 more'), line.slice(-40))
+  assert.ok(line.endsWith('и ещё 480'), line.slice(-40))
   assert.ok(!line.includes('Человек 400'), 'склеили всех пятьсот')
 })
 

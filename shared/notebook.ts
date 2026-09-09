@@ -1,3 +1,4 @@
+import { tr } from './i18n.js'
 /**
  * The collaborative notebook document schema.
  *
@@ -105,6 +106,8 @@ const BOOK_PREFIX = 'nb:'
 
 /** Как зовётся тетрадь комнаты, пока её не переименовали. */
 export const DEFAULT_BOOK = 'Тетрадь.ipynb'
+/** Only new material receives the current locale's name; stored paths are never renamed. */
+export function defaultBookName(): string { return tr('server.defaultNotebook') }
 
 export interface Book {
   /** Путь файла в папке семинара. */
@@ -405,10 +408,7 @@ export const DEFAULT_COUNCIL: CouncilSettings = { studentRun: false, namesOnProj
  * некому. Одна строка на всех местах, где об этом говорят: подсказка ручки
  * studentRun, полоса консилиума, README.
  */
-export const COUNCIL_SHARED_KERNEL_NOTE =
-  'Решения выполняются по очереди в общем ядре. Новые переменные, созданные ' +
-  'решением, удаляются после запуска. Изменения общих объектов и файлов сохраняются. Не используйте ' +
-  'этот режим для задач, требующих изолированного выполнения.'
+export const COUNCIL_SHARED_KERNEL_NOTE = 'server.councilSharedKernel'
 
 export type YCell = Y.Map<any>
 export type YOutput = Y.Map<any>
@@ -1416,7 +1416,7 @@ export function clearStaleWork(doc: Y.Doc): StaleWork {
       const said = answer instanceof Y.Text ? answer.toString() : ''
       if (!said.trim()) {
         const text = answer instanceof Y.Text ? answer : null
-        text?.insert(text.length, 'The answer stopped when the server restarted.')
+        text?.insert(text.length, tr("server.theAnswerStoppedWhenTheServerRestarted.a8fefc"))
       }
       entry.set('state', 'error' as ChatState)
       turns++
@@ -1472,7 +1472,7 @@ export function ensureInitialNotebook(doc: Y.Doc, title?: string): boolean {
      */
     if (!meta.get('booksSeeded')) {
       meta.set('booksSeeded', true)
-      if (bookList(doc).length === 0) addBook(doc, DEFAULT_BOOK, CELLS_KEY)
+      if (bookList(doc).length === 0) addBook(doc, getCells(doc).length > 0 ? DEFAULT_BOOK : defaultBookName(), CELLS_KEY)
     }
     const first = bookList(doc)[0]
     if (!first) return
@@ -1481,7 +1481,7 @@ export function ensureInitialNotebook(doc: Y.Doc, title?: string): boolean {
       cells.push([
         createCell(
           'markdown',
-          '# Welcome\n\nThis notebook is shared with the group. Your teacher controls who can edit and run code.',
+          tr('server.welcomeNotebook'),
         ),
         createCell('code', 'print("hello, seminar")'),
       ])

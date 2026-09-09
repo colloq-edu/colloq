@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import { usingRuntimeBroker, loadRuntimeCatalog, runtimeDefaultEnvironment, setRuntimeDefaultEnvironment, runtimeEnvironment, imageRevision } from './kernel/runtime-client.js'
 /** Production environments are immutable entries in the operator's release
  * catalog. The selected default is persisted separately and only affects new
@@ -46,7 +47,7 @@ const COMPOSE_FILE = path.join(ROOT, 'docker-compose.yml')
 function fileFor(name: string): string {
   // Belt and braces. `name` is validated at the route, and it also decides a
   // path — so it is checked again at the moment it becomes one.
-  if (!ENVIRONMENT_NAME.test(name)) throw new Error(`bad environment name: ${name}`)
+  if (!ENVIRONMENT_NAME.test(name)) throw new Error(tr("server.badEnvironmentName.cf94f0", { p0: name }))
   return path.join(ENV_DIR, `${name}.txt`)
 }
 
@@ -67,7 +68,7 @@ function fileFor(name: string): string {
  * nobody needs than to hide one somebody does.
  */
 function stampFor(name: string): string {
-  if (!ENVIRONMENT_NAME.test(name)) throw new Error(`bad environment name: ${name}`)
+  if (!ENVIRONMENT_NAME.test(name)) throw new Error(tr("server.badEnvironmentName.cf94f0", { p0: name }))
   return path.join(ENV_DIR, `.${name}.built`)
 }
 
@@ -202,22 +203,22 @@ export function buildChain(name: string, read: ReadEnvironment = fromDisk): stri
   while (current !== null) {
     if (seen.has(current)) {
       throw new Error(
-        `окружения ссылаются друг на друга по кругу: ${[...chain, current].join(' → ')}`,
+        tr("server.environmentsReferToEachOtherInA.0d5bfa", { p0: [...chain, current].join(' → ') }),
       )
     }
     if (!ENVIRONMENT_NAME.test(current)) {
-      throw new Error(`«${current}» не может быть именем окружения — ни файлом, ни тегом образа`)
+      throw new Error(tr("server.cannotBeAnEnvironmentFilenameOrImage.0ea5d5", { p0: current }))
     }
     const source = read(current)
     if (source === null) {
       throw new Error(
         chain.length === 0
-          ? `нет окружения «${current}»`
-          : `окружение «${chain[0]}» строится поверх «${current}», а такого нет`,
+          ? tr("server.environmentDoesNotExist.8a7fc4", { p0: current })
+          : tr("server.environmentIsBasedOnWhichDoesNot.3611b2", { p0: chain[0], p1: current }),
       )
     }
     if (chain.length >= MAX_INHERITANCE) {
-      throw new Error(`цепочка окружений длиннее ${MAX_INHERITANCE} звеньев: ${chain.join(' → ')}`)
+      throw new Error(tr("server.theEnvironmentChainExceedsLevels.8f1ecf", { p0: MAX_INHERITANCE, p1: chain.join(' → ') }))
     }
     seen.add(current)
     chain.unshift(current)
@@ -246,7 +247,7 @@ export function needsGpu(name: string, read: ReadEnvironment = fromDisk): boolea
 }
 
 export function writeSource(name: string, source: string): void {
-  if (usingRuntimeBroker()) throw new Error('Published environments are managed by the release catalog. Build and import images outside the web application.')
+  if (usingRuntimeBroker()) throw new Error(tr("server.publishedEnvironmentsAreManagedByTheRelease.8ff51e"))
   fs.mkdirSync(ENV_DIR, { recursive: true })
   const text = source.endsWith('\n') ? source : `${source}\n`
   // Temp-file then rename: a half-written requirements file is a build that
@@ -257,7 +258,7 @@ export function writeSource(name: string, source: string): void {
 }
 
 export function removeEnvironment(name: string): void {
-  if (usingRuntimeBroker()) throw new Error('Published environments are managed by the release catalog. Build and import images outside the web application.')
+  if (usingRuntimeBroker()) throw new Error(tr("server.publishedEnvironmentsAreManagedByTheRelease.8ff51e"))
   fs.rmSync(fileFor(name), { force: true })
   // Штамп уходит вместе со списком: иначе среда, заведённая под тем же именем
   // заново, сравнивалась бы с чужой сборкой.
@@ -312,7 +313,7 @@ export function activeName(): string {
 
 export function setActiveName(name: string): void {
   if (usingRuntimeBroker()) { setRuntimeDefaultEnvironment(name); return }
-  if (!ENVIRONMENT_NAME.test(name)) throw new Error(`bad environment name: ${name}`)
+  if (!ENVIRONMENT_NAME.test(name)) throw new Error(tr("server.badEnvironmentName.cf94f0", { p0: name }))
   let lines: string[] = []
   try {
     lines = fs.readFileSync(ENV_FILE, 'utf8').split('\n')
@@ -383,8 +384,8 @@ export function abilities(found: {
 }): EnvironmentAbilities {
   if (!found.docker) {
     const reason =
-      'Docker is not reachable from the server. Running in a container? It needs /var/run/docker.sock ' +
-      'and DOCKER_GID, the group that owns it — `make up` sets both. ' +
+      tr("server.dockerIsNotReachableFromTheServer.ffa886") +
+      tr("server.andDockerGidTheGroupThatOwns.6ee275") +
       'Environments still list and edit here; switching is `make env-use NAME=<name>`.'
     return {
       canBuild: false,
@@ -397,15 +398,15 @@ export function abilities(found: {
     canBuild: found.context,
     cannotBuildReason: found.context
       ? null
-      : 'The kernel directory is not in this container, and a build needs it as its context: ' +
-        'kernel/Dockerfile and the package lists beside it. docker-compose.yml mounts ./kernel — ' +
-        'update it and restart, or build on the host with `make env-build NAME=<name>`.',
+      : tr("server.theKernelDirectoryIsNotInThis.3ff129") +
+        tr("server.kernelDockerfileAndThePackageListsBeside.7f2949") +
+        tr("server.updateItAndRestartOrBuildOn.25c277"),
     canSetDefault: found.repository,
     cannotSetDefaultReason: found.repository
       ? null
-      : 'Making an environment the default writes KERNEL_ENV to the .env beside docker-compose.yml, ' +
-        'and that file is the host’s: run `make env-use NAME=<name>` there.' +
-        (found.context ? ' Building an image needs neither, and works from here.' : ''),
+      : tr("server.makingAnEnvironmentTheDefaultWritesKernel.40527e") +
+        tr("server.andThatFileIsTheHostS.d583a8") +
+        (found.context ? tr("server.buildingAnImageNeedsNeitherAndWorks.0701a2") : ''),
   }
 }
 
@@ -413,7 +414,7 @@ export function abilities(found: {
 export async function environmentAbilities(): Promise<EnvironmentAbilities> {
   if (usingRuntimeBroker()) {
     loadRuntimeCatalog()
-    return {canBuild:false,cannotBuildReason:'Images are published outside the web application. Build an environment image and import its digest through the release tooling.',canSetDefault:true,cannotSetDefaultReason:null}
+    return {canBuild:false,cannotBuildReason:tr("server.imagesArePublishedOutsideTheWebApplication.d2806b"),canSetDefault:true,cannotSetDefaultReason:null}
   }
   const version = await run('docker', ['version', '--format', '{{.Server.Version}}'], 8000)
   return abilities({
@@ -620,10 +621,10 @@ function runStage(
         // "it failed" and "tensorflow==1.15 does not exist".
         failures.set(
           build.name,
-          build.lines.filter((l) => /error|ERROR/.test(l)).pop() ?? `build exited ${code}`,
+          build.lines.filter((l) => /error|ERROR/.test(l)).pop() ?? tr("server.buildExited.e3b35b", { p0: String(code) }),
         )
       }
-      push(build, `— build failed (${code})`)
+      push(build, tr("server.buildFailed.3e3a83", { p0: String(code) }))
       resolve(false)
     })
   })
@@ -646,7 +647,7 @@ function runStage(
  * while every container still reports healthy.
  */
 export async function startBuild(name: string): Promise<void> {
-  if (usingRuntimeBroker()) throw new Error('Published environments are built outside the web application and imported through the release catalog')
+  if (usingRuntimeBroker()) throw new Error(tr("server.publishedEnvironmentsAreBuiltOutsideTheWeb.538ec6"))
   if (isBuilding(name)) return
   failures.delete(name)
 
@@ -700,7 +701,7 @@ export async function startBuild(name: string): Promise<void> {
   if (busy) {
     // Не «упало», а «занято»: собирается тот самый слой, поверх которого мы бы
     // встали, и ждать его — единственное разумное.
-    const message = `окружение «${busy}» из этой цепочки уже собирается — дождитесь конца`
+    const message = tr("server.environmentInThisChainIsAlreadyBuilding.166f94", { p0: busy })
     push(build, message)
     build.failed = true
     build.done = true
@@ -771,7 +772,7 @@ export async function startBuild(name: string): Promise<void> {
   }
 
   build.done = true
-  if (!build.failed) push(build, '— build finished')
+  if (!build.failed) push(build, tr("server.buildFinished.ce23d0"))
   // Дальше каждое звено отвечает за себя: чужой журнал в своей строке — это
   // «build failed» на образе, который собрался.
   release(held)

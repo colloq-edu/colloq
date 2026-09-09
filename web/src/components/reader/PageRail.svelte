@@ -20,6 +20,7 @@
   документ, хуже полосы, которой нет.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import type { Lead } from '@/lib/follow'
 
@@ -146,7 +147,7 @@
         type="button"
         data-thumb={index}
         class="mb-2 flex w-full items-start gap-1.5 text-left focus-visible:outline-none"
-        title={`Страница ${index}`}
+        title={tr('room.extra.297', { p0: index })}
         onclick={() => onpick(index)}
       >
         <span
@@ -172,7 +173,7 @@
             <span
               class="absolute -left-1 top-1 h-2 w-2 rounded-full ring-2 ring-surface"
               style={`background:${lead.color}`}
-              title={`${lead.name} здесь`}
+              title={tr('room.extra.300', { p0: lead.name })}
             ></span>
           {/if}
         </span>

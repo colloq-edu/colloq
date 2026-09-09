@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   /**
    * Instance-wide oracle settings.
    *
@@ -45,18 +46,18 @@
     hint?: string
   }
 
-  const PROVIDERS: Option[] = (Object.keys(PROVIDER_PRESETS) as AiProviderId[]).map((id) => ({
+  const PROVIDERS: Option[] = $derived((Object.keys(PROVIDER_PRESETS) as AiProviderId[]).map((id) => ({
     value: id,
-    label: PROVIDER_PRESETS[id].label,
-  }))
+    label: id === 'custom' ? tr("admin.custom.provider") : PROVIDER_PRESETS[id].label,
+  })))
 
-  const MODES: Option[] = [
-    { value: 'off', label: 'Off', hint: 'Oracle disabled' },
+  const MODES: Option[] = $derived([
+    { value: 'off', label: tr("admin.off"), hint: tr("admin.oracle.disabled") },
     // «Просят подсказку», а не «решения не будет»: режим держится на
     // формулировке запроса к модели, и обещать за неё мы не можем.
-    { value: 'hints', label: 'Hints only', hint: 'Instructed to give hints' },
-    { value: 'full', label: 'Full answers', hint: 'Explains and writes code' },
-  ]
+    { value: 'hints', label: tr("admin.hints.only"), hint: tr("admin.instructed.to.give.hints.761") },
+    { value: 'full', label: tr("admin.full.answers"), hint: tr("admin.explains.and.writes.code.764") },
+  ])
 
   /**
    * The quick actions a cell offers, plus 'ask' for anything typed by hand.
@@ -65,26 +66,22 @@
    * разбивке неотличим от вопроса, хотя один такой ход ходит к модели до
    * двенадцати раз: самая дорогая строка стояла без подписи.
    */
-  const ACTION_LABELS: Record<string, string> = {
-    ask: 'Questions',
-    work: 'File tasks',
-    explain: 'Explain',
-    fix: 'Fix my error',
-    debug: 'Debug',
-    improve: 'Improve',
-    hint: 'Hint',
-  }
+  const ACTION_LABELS: Record<string, string> = $derived({
+    ask: tr("admin.questions"),
+    work: tr("admin.file.tasks"),
+    explain: tr("admin.explain"),
+    fix: tr("admin.fix.my.error"),
+    debug: tr("admin.debug"),
+    improve: tr("admin.improve"),
+    hint: tr("admin.hint"),
+  })
 
-  const counted = new Intl.NumberFormat(undefined)
+  const counted = $derived(new Intl.NumberFormat(getLocale()))
 
-  /**
-   * Hand-rolled rather than Intl's compact notation, which localises the unit
-   * itself — a Russian browser renders "6,1 млн" into an interface that is
-   * otherwise entirely in English.
-   */
+  /** Compact units follow the instance language; decimals follow its number format. */
   function compact(value: number): string {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-    if (value >= 10_000) return `${Math.round(value / 1000)}k`
+    if (value >= 1_000_000) return tr("admin.m", { p0: new Intl.NumberFormat(getLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value / 1_000_000) })
+    if (value >= 10_000) return tr("admin.k", { p0: Math.round(value / 1000) })
     return counted.format(value)
   }
 
@@ -100,7 +97,8 @@
 
   /** The server's last word, and the only thing `dirty` is ever measured against. */
   let loaded = $state<OracleSettings | null>(null)
-  let loadError = $state<string | null>(null)
+  let loadErrorText = $state<(() => string | null) | null>(null)
+  const loadError = $derived(loadErrorText?.() ?? null)
 
   let provider = $state<AiProviderId>('custom')
   let baseUrl = $state('')
@@ -119,7 +117,8 @@
   let offeredModel = $state<string | null>(null)
 
   let saving = $state(false)
-  let saveError = $state<string | null>(null)
+  let saveErrorText = $state<(() => string | null) | null>(null)
+  const saveError = $derived(saveErrorText?.() ?? null)
   let justSaved = $state(false)
 
   /*
@@ -136,7 +135,8 @@
   let testedFor = $state<string | null>(null)
 
   let usage = $state<OracleUsage | null>(null)
-  let usageError = $state<string | null>(null)
+  let usageErrorText = $state<(() => string | null) | null>(null)
+  const usageError = $derived(usageErrorText?.() ?? null)
 
   /** Bound so pressing Replace lands the caret in the field it just opened. */
   let keyInput = $state<HTMLInputElement | null>(null)
@@ -190,23 +190,23 @@
 
   const chip = $derived.by<Chip | null>(() => {
     if (testing) {
-      return { tone: 'bg-surface text-muted', icon: 'spinner', spin: true, text: 'Testing…' }
+      return { tone: 'bg-surface text-muted', icon: 'spinner', spin: true, text: tr("admin.testing") }
     }
     if (!ready) return null
     // A stale result is not a status: it describes settings that have since been
     // replaced, so the chip goes back to admitting it does not know.
     const result = fresh ? test : null
     if (result === null) {
-      return { tone: 'bg-surface text-muted', icon: null, spin: false, text: 'Not tested' }
+      return { tone: 'bg-surface text-muted', icon: null, spin: false, text: tr("admin.not.tested") }
     }
     if (!result.ok) {
-      return { tone: 'bg-danger/[0.05] text-danger', icon: 'x', spin: false, text: 'Not connected' }
+      return { tone: 'bg-danger/[0.05] text-danger', icon: 'x', spin: false, text: tr("admin.not.connected") }
     }
     return {
       tone: 'bg-positive/10 text-positive',
       icon: 'check',
       spin: false,
-      text: result.ms === null ? 'Connected' : `Connected · ${result.ms} ms`,
+      text: result.ms === null ? tr("admin.connected") : tr("admin.connected.ms", { p0: result.ms }),
     }
   })
 
@@ -246,7 +246,7 @@
   function messageFor(cause: unknown): string {
     if (cause instanceof AdminApiError) return cause.message
     if (cause instanceof Error) return cause.message
-    return 'The server did not answer.'
+    return tr("admin.the.server.did.not.answer")
   }
 
   /**
@@ -291,9 +291,9 @@
   async function loadSettings(): Promise<void> {
     try {
       apply(await adminApi.oracle())
-      loadError = null
+      loadErrorText = null
     } catch (cause: unknown) {
-      loadError = messageFor(cause)
+      loadErrorText = () => (messageFor(cause))
       reauthenticate(cause)
     }
   }
@@ -301,9 +301,9 @@
   async function loadUsage(): Promise<void> {
     try {
       usage = await adminApi.oracleUsage()
-      usageError = null
+      usageErrorText = null
     } catch (cause: unknown) {
-      usageError = messageFor(cause)
+      usageErrorText = () => (messageFor(cause))
     }
   }
 
@@ -387,7 +387,7 @@
 
   function discard(): void {
     if (loaded) apply(loaded)
-    saveError = null
+    saveErrorText = null
   }
 
   function flashSaved(): void {
@@ -413,12 +413,12 @@
     else if (newKey.length > 0) patch.apiKey = newKey
 
     saving = true
-    saveError = null
+    saveErrorText = null
     try {
       apply(await adminApi.updateOracle(patch))
       flashSaved()
     } catch (cause: unknown) {
-      saveError = messageFor(cause)
+      saveErrorText = () => (messageFor(cause))
       reauthenticate(cause)
     } finally {
       saving = false
@@ -473,12 +473,12 @@
 {#snippet offer(suggestion: string, accept: () => void, dismiss: () => void)}
   <p class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-muted">
     <span>
-      {preset.label} suggests <span class="font-mono text-code text-ink">{suggestion}</span>
+      {provider === 'custom' ? tr('admin.custom.provider') : preset.label} {tr("admin.suggests")} <span class="font-mono text-code text-ink">{suggestion}</span>
     </span>
     <button type="button" class="font-semibold text-accent-text hover:underline" onclick={accept}>
-      Use it
+      {tr("admin.use.it")}
     </button>
-    <button type="button" class="text-muted hover:text-ink" onclick={dismiss}>Keep mine</button>
+    <button type="button" class="text-muted hover:text-ink" onclick={dismiss}>{tr("admin.keep.mine")}</button>
   </p>
 {/snippet}
 
@@ -508,44 +508,44 @@
     {#if justSaved && !dirty}
       <span class="flex items-center gap-1 text-2xs font-semibold uppercase tracking-label text-positive">
         <Icon name="check" size={13} />
-        Saved
+        {tr("admin.saved")}
       </span>
     {:else if dirty}
-      <span class="text-2xs font-semibold uppercase tracking-label text-warning">Unsaved</span>
-      <button type="button" class="btn-ghost" onclick={discard} disabled={saving}>Discard</button>
+      <span class="text-2xs font-semibold uppercase tracking-label text-warning">{tr("admin.unsaved")}</span>
+      <button type="button" class="btn-ghost" onclick={discard} disabled={saving}>{tr("admin.discard")}</button>
     {/if}
 
     <button type="button" class="btn-primary min-w-[112px]" onclick={save} disabled={!dirty || saving}>
       {#if saving}
         <Icon name="spinner" size={15} class="animate-spin" />
-        Saving…
+        {tr("admin.saving")}
       {:else}
-        Save changes
+        {tr("admin.save.changes")}
       {/if}
     </button>
   {/if}
 {/snippet}
 
 <AdminPage
-  title="Oracle"
-  subtitle="Configure the provider, model and limits for all seminars."
+  title={tr("admin.oracle")}
+  subtitle={tr("admin.configure.the.provider.model.and.limits.for.all.seminars")}
   {actions}
 >
   {#if loadError}
     <div class="mt-6 max-w-[560px] border border-line bg-surface px-4 py-3.5">
       <p class="text-ui text-danger">{loadError}</p>
       <p class="mt-1 text-2xs text-muted">
-        Could not load the settings. Try again to view the server configuration.
+        {tr("admin.could.not.load.the.settings.try.again.to.view.the.server.configur")}
       </p>
       <button type="button" class="btn-outline mt-3" onclick={() => void loadSettings()}>
-        Try again
+        {tr("admin.try.again")}
       </button>
     </div>
   {:else if ready}
     {#if !isOwner}
       <p class="mt-5 max-w-[720px] border border-line bg-surface px-4 py-3 text-ui text-muted">
-        <span class="font-semibold text-ink">Read-only.</span>
-        Only an owner can change these settings. Contact an owner to update the provider, model or limits.
+        <span class="font-semibold text-ink">{tr("admin.read.only")}</span>
+        {tr("admin.only.an.owner.can.change.these.settings.contact.an.owner.to.updat")}
       </p>
     {/if}
 
@@ -560,14 +560,14 @@
     {/if}
 
     <Section
-      title="Provider"
-      description="Connect an OpenAI-compatible API. Questions and notebook context are sent to the configured provider."
+      title={tr("admin.provider")}
+      description={tr("admin.connect.an.openai.compatible.api.questions.and.notebook.context.a")}
     >
       <Choice options={PROVIDERS} value={provider} onchange={pickProvider} />
 
       <div class="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_230px]">
         <div class="min-w-0">
-          {@render fieldLabel('Base URL', 'ai-base-url')}
+          {@render fieldLabel(tr("admin.base.url"), 'ai-base-url')}
           <input
             id="ai-base-url"
             bind:value={baseUrl}
@@ -584,7 +584,7 @@
         </div>
 
         <div class="min-w-0">
-          {@render fieldLabel('Model', 'ai-model')}
+          {@render fieldLabel(tr("admin.model"), 'ai-model')}
           <input
             id="ai-model"
             bind:value={model}
@@ -602,7 +602,7 @@
       </div>
 
       <div class="mt-4">
-        {@render fieldLabel('API key', 'ai-key')}
+        {@render fieldLabel(tr("admin.api.key"), 'ai-key')}
         <!--
           The key and the button that tests it wrap rather than overlap: at
           768px "Add a key" was printing 54px into "Test connection". A floor
@@ -614,7 +614,7 @@
             {#if clearKey}
               <div class="field flex items-center gap-3 border-warning">
                 <span class="min-w-0 flex-1 truncate text-ui text-warning">
-                  The stored key will be removed when you save
+                  {tr("admin.the.stored.key.will.be.removed.when.you.save")}
                 </span>
                 <button
                   type="button"
@@ -622,7 +622,7 @@
                          hover:underline"
                   onclick={() => (clearKey = false)}
                 >
-                  Keep it
+                  {tr("admin.keep.it")}
                 </button>
               </div>
             {:else if replacingKey}
@@ -644,7 +644,7 @@
                     storedMask ? 'text-muted' : 'text-faint',
                   )}
                 >
-                  {storedMask ?? 'No key set'}
+                  {storedMask ?? tr("admin.no.key.set")}
                 </span>
                 <!-- -my-1 py-1: 19px of type is too small a thing to aim at, and the
                      row it sits in has the height to give without moving. -->
@@ -653,7 +653,7 @@
                   class="-my-1 shrink-0 py-1 text-ui font-medium text-accent-text hover:underline"
                   onclick={startReplace}
                 >
-                  {storedMask ? 'Replace' : 'Add a key'}
+                  {storedMask ? tr("admin.replace") : tr("admin.add.a.key")}
                 </button>
                 {#if canRemoveKey}
                   <button
@@ -661,7 +661,7 @@
                     class="shrink-0 text-ui font-medium text-muted hover:text-ink"
                     onclick={markForRemoval}
                   >
-                    Remove
+                    {tr("admin.remove")}
                   </button>
                 {/if}
               </div>
@@ -674,31 +674,31 @@
             onclick={() => void saveAndTest()}
             disabled={testing || saving || !isOwner}
             title={dirty
-              ? 'Save changes and send a test request'
-              : 'Send a test request using saved settings'}
+              ? tr("admin.save.changes.and.send.a.test.request")
+              : tr("admin.send.a.test.request.using.saved.settings")}
           >
             {#if testing || saving}
               <Icon name="spinner" size={15} class="animate-spin" />
-              {saving ? 'Saving…' : 'Testing…'}
+              {saving ? tr("admin.saving") : tr("admin.testing")}
             {:else if dirty}
-              Save &amp; test
+              {tr("admin.save.test")}
             {:else}
-              Test connection
+              {tr("admin.test.connection")}
             {/if}
           </button>
         </div>
 
         {#if replacingKey}
           <p class="mt-1.5 text-2xs text-muted">
-            The new key is stored when you save. Leaving it empty changes nothing —
+            {tr("admin.the.new.key.is.stored.when.you.save.leaving.it.empty.changes.noth")}
             <button
               type="button"
               class="font-semibold text-accent-text hover:underline"
               onclick={cancelReplace}
             >
-              cancel
+              {tr("admin.cancel.681")}
             </button>
-            to keep the one already there.
+            {tr("admin.to.keep.the.one.already.there")}
           </p>
         {/if}
 
@@ -707,23 +707,18 @@
              field is a third sentence nobody reads. -->
         {#if clearKey}
           <p class="mt-1.5 text-2xs text-muted">
-            The server will use <span class="font-mono text-code">OPENAI_API_KEY</span> if it is set.
-            Providers that require a key will be unavailable without one.
+            {tr("admin.the.server.will.use")} <span class="font-mono text-code">OPENAI_API_KEY</span> {tr("admin.if.it.is.set.providers.that.require.a.key.will.be.unavailable.wit")}
           </p>
         {:else if fromEnvironment}
           <p class="mt-1.5 text-2xs text-muted">
-            This key comes from <span class="font-mono text-code">OPENAI_API_KEY</span> in the
-            server environment. A key saved here overrides it for this instance; remove that one and
-            the environment takes over again.
+            {tr("admin.this.key.comes.from")} <span class="font-mono text-code">OPENAI_API_KEY</span> {tr("admin.in.the.server.environment.a.key.saved.here.overrides.it.for.this")}
           </p>
         {:else if !replacingKey}
           <p class="mt-1.5 text-2xs text-muted">
             {#if storedMask}
-              The key is stored on the server and masked in the browser. The server uses it
-              for requests to the provider.
+              {tr("admin.the.key.is.stored.on.the.server.and.masked.in.the.browser.the.ser")}
             {:else}
-              No key is set. Paste one here, or point the base URL at a local runtime (Ollama, vLLM)
-              that does not ask for one.
+              {tr("admin.no.key.is.set.paste.one.here.or.point.the.base.url.at.a.local.run")}
             {/if}
           </p>
         {/if}
@@ -732,8 +727,7 @@
           <!-- No longer a warning to obey: the button saves first and says so.
                This just tells you that pressing it will write, before it does. -->
           <p class="mt-1.5 text-2xs text-muted">
-            <b class="font-semibold text-ink">Save &amp; test</b> saves all changes on this page
-            before sending a test request.
+            <b class="font-semibold text-ink">{tr("admin.save.test")}</b> {tr("admin.saves.all.changes.on.this.page.before.sending.a.test.request")}
           </p>
         {/if}
 
@@ -748,7 +742,7 @@
             <span>
               {testMessage}
               {#if !fresh}
-                <span class="text-2xs">— from before the settings changed.</span>
+                <span class="text-2xs">{tr("admin.from.before.the.settings.changed")}</span>
               {/if}
             </span>
           </p>
@@ -757,8 +751,8 @@
     </Section>
 
     <Section
-      title="Default mode and limit"
-      description="Applies to all seminars. Each seminar can further restrict the oracle to hints or turn it off."
+      title={tr("admin.default.mode.and.limit")}
+      description={tr("admin.applies.to.all.seminars.each.seminar.can.further.restrict.the.ora")}
     >
       <Choice
         options={MODES}
@@ -769,15 +763,15 @@
     </Section>
 
     <Section
-      title="House rules"
-      description="Add instructions about the course and expected answers. Model responses may not follow every instruction."
+      title={tr("admin.house.rules")}
+      description={tr("admin.add.instructions.about.the.course.and.expected.answers.model.resp")}
     >
       <textarea
         id="ai-house-rules"
         bind:value={houseRules}
         class="field min-h-[104px] resize-y text-prose"
         maxlength={LIMITS.houseRules}
-        placeholder="Second-year students have not covered autograd. Explain how to calculate gradients by hand."
+        placeholder={tr("admin.second.year.students.have.not.covered.autograd.explain.how.to.cal")}
       ></textarea>
       <p
         class={cn(
@@ -785,17 +779,17 @@
           houseRules.length >= LIMITS.houseRules ? 'text-warning' : 'text-muted',
         )}
       >
-        {counted.format(houseRules.length)} / {counted.format(LIMITS.houseRules)} characters
+        {counted.format(houseRules.length)} / {counted.format(LIMITS.houseRules)} {tr("admin.characters")}
       </p>
     </Section>
 
     <Section
-      title="Usage limits"
-      description="Limit student questions and request size. Teachers are exempt from the hourly and interval limits, except when the hourly limit is zero."
+      title={tr("admin.usage.limits")}
+      description={tr("admin.limit.student.questions.and.request.size.teachers.are.exempt.from")}
     >
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="min-w-0">
-          {@render fieldLabel('Questions per student', 'ai-questions')}
+          {@render fieldLabel(tr("admin.questions.per.student"), 'ai-questions')}
           <div
             class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25"
           >
@@ -807,19 +801,19 @@
               inputmode="numeric"
               autocomplete="off"
             />
-            <span class="shrink-0 text-2xs text-muted">per hour</span>
+            <span class="shrink-0 text-2xs text-muted">{tr("admin.per.hour")}</span>
           </div>
           <p class={cn('mt-1.5 text-2xs', questions === 0 ? 'text-warning' : 'text-muted')}>
             {#if questions === 0}
-              Zero switches the oracle off in every seminar.
+              {tr("admin.zero.switches.the.oracle.off.in.every.seminar")}
             {:else}
-              {LIMITS.questionsPerHour.min}–{LIMITS.questionsPerHour.max}. Zero switches it off.
+              {LIMITS.questionsPerHour.min}–{LIMITS.questionsPerHour.max}{tr("admin.zero.switches.it.off")}
             {/if}
           </p>
         </div>
 
         <div class="min-w-0">
-          {@render fieldLabel('Between questions', 'ai-slow-mode')}
+          {@render fieldLabel(tr("admin.between.questions"), 'ai-slow-mode')}
           <div
             class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25"
           >
@@ -831,7 +825,7 @@
               inputmode="numeric"
               autocomplete="off"
             />
-            <span class="shrink-0 text-2xs text-muted">seconds</span>
+            <span class="shrink-0 text-2xs text-muted">{tr("admin.seconds")}</span>
           </div>
           <!--
             Чем это не потолок в час: двадцать вопросов можно выкрикнуть за
@@ -841,15 +835,15 @@
           -->
           <p class="mt-1.5 text-2xs text-muted">
             {#if slow === 0}
-              No minimum interval between questions.
+              {tr("admin.no.minimum.interval.between.questions")}
             {:else}
-              A student waits this long between questions. The teacher does not.
+              {tr("admin.a.student.waits.this.long.between.questions.the.teacher.does.not")}
             {/if}
           </p>
         </div>
 
         <div class="min-w-0">
-          {@render fieldLabel('Notebook context', 'ai-context')}
+          {@render fieldLabel(tr("admin.notebook.context"), 'ai-context')}
           <div
             class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25"
           >
@@ -861,17 +855,17 @@
               inputmode="numeric"
               autocomplete="off"
             />
-            <span class="shrink-0 text-2xs text-muted">characters</span>
+            <span class="shrink-0 text-2xs text-muted">{tr("admin.characters")}</span>
           </div>
           <p class="mt-1.5 text-2xs text-muted">
             {grouped(LIMITS.contextChars.min)}–{grouped(LIMITS.contextChars.max)}
-            characters of notebook context may be included with a question.
+            {tr("admin.characters.of.notebook.context.may.be.included.with.a.question")}
           </p>
         </div>
 
         <div class="min-w-0">
           <p class="mb-1.5 block text-2xs font-semibold uppercase tracking-label text-muted">
-            Maximum file upload
+            {tr("admin.maximum.file.upload")}
           </p>
           <!-- Dashed, because it is a reading of the environment and not a control:
                a box that looks like a field and ignores you is worse than a label.
@@ -879,37 +873,36 @@
                значения — это не чтение, а обещание чтения. -->
           <div class="flex h-[38px] items-center border border-dashed border-line px-3">
             <span class="truncate font-mono text-code text-muted">
-              {maxUploadBytes === null ? 'MAX_UPLOAD_MB' : `${uploadMb(maxUploadBytes)} MB`}
+              {maxUploadBytes === null ? 'MAX_UPLOAD_MB' : tr("admin.mb", { p0: uploadMb(maxUploadBytes) })}
             </span>
           </div>
           <p class="mt-1.5 text-2xs text-muted">
-            <span class="font-mono text-code">MAX_UPLOAD_MB</span> in the server environment, read
-            at boot. Change it in <span class="font-mono text-code">.env</span> and restart.
+            <span class="font-mono text-code">MAX_UPLOAD_MB</span> {tr("admin.in.the.server.environment.read.at.boot.change.it.in")} <span class="font-mono text-code">.env</span> {tr("admin.and.restart")}
           </p>
         </div>
       </div>
     </Section>
 
     <Section
-      title="Usage"
-      description="Request counts recorded by this server. Token counts depend on what the provider reports."
+      title={tr("admin.usage")}
+      description={tr("admin.request.counts.recorded.by.this.server.token.counts.depend.on.wha")}
     >
       {#if usageError}
         <p class="text-ui text-danger">{usageError}</p>
         <button type="button" class="btn-outline mt-3" onclick={() => void loadUsage()}>
-          Try again
+          {tr("admin.try.again")}
         </button>
       {:else if usageReady}
         <div class="grid grid-cols-1 divide-y divide-line-soft border border-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
-          {@render tile(counted.format(usageQuestions), 'questions asked')}
+          {@render tile(counted.format(usageQuestions), tr("admin.questions.asked"))}
           {#if usageTokens === null}
             <!-- null is "no endpoint told us", which is not the same sentence as
                  zero — and only one of them is safe to print as a number. -->
-            {@render tile('—', usageQuestions === 0 ? 'tokens' : 'tokens — not reported by this endpoint')}
+            {@render tile('—', usageQuestions === 0 ? tr("admin.tokens") : tr("admin.tokens.not.reported.by.this.endpoint"))}
           {:else}
             {@render tile(compact(usageTokens), 'tokens')}
           {/if}
-          {@render tile(counted.format(usageSeminars), 'seminars with questions')}
+          {@render tile(counted.format(usageSeminars), tr("admin.seminars.with.questions"))}
         </div>
 
         <!-- Cost is not here on purpose: it would take a price table per provider
@@ -932,7 +925,7 @@
           </div>
         {:else}
           <p class="mt-4 text-ui text-muted">
-            No questions recorded in this period. The breakdown appears after the first request.
+            {tr("admin.no.questions.recorded.in.this.period.the.breakdown.appears.after")}
           </p>
         {/if}
 
@@ -940,7 +933,7 @@
           <p class="mt-4 text-2xs text-muted">
             <!-- Numeric, not a month name: the browser's locale would drop a
                  Russian word into a sentence that is otherwise English. -->
-            Counted since {new Date(usageSince).toLocaleDateString()}.
+            {tr("admin.counted.since")} {new Date(usageSince).toLocaleDateString(getLocale())}.
           </p>
         {/if}
       {/if}

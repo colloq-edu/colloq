@@ -6,6 +6,7 @@
   на неё двенадцать раз за семестр, и каждый раз ищут одну строку.
 -->
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   import { plural } from '@/lib/plural'
   import type { PublicCourseView } from '@shared/publish'
 
@@ -17,10 +18,10 @@
   let { course, onnavigate }: Props = $props()
 
   const shortDate = (at: number): string =>
-    new Date(at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
+    new Date(at).toLocaleDateString(getLocale(), { day: 'numeric', month: 'long' })
 
   /* Число опубликованных шагов с общим правилом множественного числа. */
-  const steps = (n: number): string => `${n} ${plural(n, 'шаг', 'шага', 'шагов')}`
+  const steps = (n: number): string => `${n} ${plural(n, tr('room.ui.713'), tr('room.ui.714'), tr('room.ui.715'))}`
 
   /* Тот же адрес, что и на выгруженной странице курса: имя, если его выбрали. */
   const href = (pub: { id: string; slug: string | null }): string => `/p/${pub.slug ?? pub.id}`
@@ -82,7 +83,7 @@
             >
               <span class="w-[34px] shrink-0 font-mono text-ui text-faint">{ordinal}</span>
               <span class="min-w-0 flex-1 text-title text-muted">{item.name}</span>
-              <span class="shrink-0 text-ui text-muted">комната закрыта, страница осталась</span>
+              <span class="shrink-0 text-ui text-muted">{tr('room.ui.709')}</span>
               {@render chevron()}
             </button>
           </li>
@@ -93,7 +94,7 @@
           <li class="flex items-baseline gap-6 border-b border-line py-5">
             <span class="w-[34px] shrink-0 font-mono text-ui text-faint">{ordinal}</span>
             <span class="min-w-0 flex-1 text-title text-muted">{item.name}</span>
-            <span class="shrink-0 text-ui text-muted">семинар удалён</span>
+            <span class="shrink-0 text-ui text-muted">{tr('room.ui.710')}</span>
             <span class="w-4 shrink-0"></span>
           </li>
         {:else if item.kind === 'seminar' && item.publication}
@@ -128,7 +129,7 @@
           <li class="flex items-baseline gap-6 border-b border-line py-5">
             <span class="w-[34px] shrink-0 font-mono text-ui text-faint">{ordinal}</span>
             <span class="min-w-0 flex-1 text-title text-muted">{item.name}</span>
-            <span class="shrink-0 text-ui text-muted">ещё не опубликован</span>
+            <span class="shrink-0 text-ui text-muted">{tr('room.ui.711')}</span>
             <span class="w-4 shrink-0"></span>
           </li>
         {/if}
@@ -140,8 +141,6 @@
       фраза несёт её целиком: иначе курс из одного семинара читается как
       сломанный.
     -->
-    <p class="mt-9 text-ui text-muted">
-      Здесь собраны семинары курса. Сохраните ссылку, чтобы вернуться к материалам.
-    </p>
+    <p class="mt-9 text-ui text-muted"> {tr('room.ui.712')} </p>
   </div>
 </div>

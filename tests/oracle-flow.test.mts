@@ -13,6 +13,7 @@
  */
 import './_env.mts'
 import { after, test } from 'node:test'
+import { tr } from '../shared/i18n.js'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import express from 'express'
@@ -53,6 +54,8 @@ async function gateway(options: {
 }): Promise<Gateway> {
   const seen: Record<string, unknown>[] = []
   const waiting: express.Response[] = []
+  // A 202 app response can arrive before its outbound model request reaches this fixture.
+  let released = false
   const app = express()
   app.use(express.json({ limit: '4mb' }))
   app.post('/v1/chat/completions', (req, res) => {
@@ -63,7 +66,7 @@ async function gateway(options: {
       return
     }
     res.setHeader('content-type', 'text/event-stream')
-    if (options.hold) {
+    if (options.hold && !released) {
       waiting.push(res)
       return
     }
@@ -90,12 +93,14 @@ async function gateway(options: {
     base: `http://127.0.0.1:${port}/v1`,
     seen,
     release: () => {
+      released = true
       for (const held of waiting.splice(0)) {
         held.write('data: [DONE]\n\n')
         held.end()
       }
     },
     close: async () => {
+      released = true
       for (const held of waiting.splice(0)) held.end()
       await new Promise<void>((done) => server.close(() => done()))
     },
@@ -241,7 +246,7 @@ test('«Стоп» ставит на запись «(stopped)», а не пус�
 
     const entry = await settled(r, entryId)
     assert.equal(entry!.get('state'), 'done')
-    assert.equal(chatAnswer(entry!).toString(), '(stopped)')
+    assert.equal(chatAnswer(entry!).toString(), tr('server.aiStopped'))
   } finally {
     r.close()
     gate.release()
@@ -261,7 +266,7 @@ test('пустой ответ модели не советует комнате 
     // Текст читают студенты: переменной окружения им не видно, а панель — не их
     // дверь. То же разделение, что у отказа про ключ в routes/ai.ts.
     assert.doesNotMatch(said, /OPENAI_MODEL/)
-    assert.match(said, /whoever runs this Colloq/i)
+    assert.match(said, /владельца Colloq/i)
   } finally {
     r.close()
     await gate.close()
@@ -356,9 +361,9 @@ test('часовой потолок комнаты считается от её 
     const refused = await ask(r, r.student, { message: 'ещё один' })
     assert.equal(refused.status, 429)
     const body = (await refused.json()) as { error: string }
-    assert.match(body.error, /all 30 oracle questions allowed per hour/)
+    assert.match(body.error, /все 30 вопросов оракулу за час/)
     assert.doesNotMatch(body.error, /raise the limit in the panel/)
-    assert.match(body.error, /Try again later/i)
+    assert.match(body.error, /Повторите позже/i)
   } finally {
     updateOracleSettings({ questionsPerHour: 20 })
     r.close()

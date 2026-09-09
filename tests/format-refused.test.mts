@@ -48,12 +48,12 @@ test('Format поверх очереди отказывает словами, и
 
   assert.match(
     outcome.error ?? '',
-    /cells are queued to run/,
+    /В очереди есть ячейки/,
     'отказ должен называть причину, а не молчать',
   )
   assert.equal(outcome.changed, 0, 'отказ ничего не переписывает')
   assert.ok(
-    notes(doc).includes(`Formatting failed: ${outcome.error}`),
+    notes(doc).includes(`Форматирование не удалось: ${outcome.error}`),
     `комната не получила причину: ${JSON.stringify(notes(doc))}`,
   )
 })

@@ -1,3 +1,4 @@
+import { translate, tr } from '../shared/i18n.js'
 /**
  * Стенд вживую ищет кнопки по подписям — и об этом больше некому напомнить.
  *
@@ -27,10 +28,10 @@ const stand = read('scripts/ui-check.mts')
 test('двухтактные подписи полосы лекции и стенд говорят об одних и тех же кнопках', () => {
   // Обе кнопки необратимы, и обе спрашивают вторым нажатием. Порядок в тернаре
   // важен: вопрос — это состояние «спросили», а не подпись в покое.
-  assert.match(view, /\{wipeAsked \? 'Стереть всё\?' : 'Стереть'\}/)
-  assert.match(view, /\{stopAsked \? 'Закончить лекцию\?' : 'Закончить'\}/)
+  assert.match(view, /\{wipeAsked \? tr\('room\.ui\.288'\) : tr\('room\.ui\.221'\)\}/)
+  assert.match(view, /\{stopAsked \? tr\('room\.ui\.294'\) : tr\('room\.ui\.230'\)\}/)
 
-  for (const label of ['Стереть', 'Стереть всё?', 'Закончить', 'Закончить лекцию?']) {
+  for (const label of ['room.ui.221', 'room.ui.288', 'room.ui.230', 'room.ui.294'].map(key => translate('ru', key))) {
     assert.ok(stand.includes(label), `ui-check не знает подписи «${label}»`)
   }
 })

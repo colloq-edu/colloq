@@ -2,7 +2,7 @@
 
 The Russian guides are plain HTML served at `https://colloq.ru/docs/` by the existing GitHub Pages workflow. They need no Node.js runtime, JavaScript build, external CDN, or client router. Search, code copying, and mobile navigation progressively enhance ordinary HTML navigation.
 
-The authoritative article content and shared HTML template live in `docs/build.py`. Edit them there, then regenerate all 18 guides and the search index using the Python standard library:
+The authoritative article content and shared HTML template live in `docs/build.py`. Edit them there, then regenerate all 19 guides and the search index using the Python standard library:
 
 ```sh
 python3 docs/build.py

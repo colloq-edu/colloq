@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
@@ -502,7 +503,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
       getTerminal(doc).push([
         createTerminalLine({
           kind: 'system',
-          text: 'The server restarted. Cells that were running or queued were put back to rest — run them again when you are ready.',
+          text: tr("server.theServerRestartedCellsThatWereRunning.025fda"),
         }),
       ])
     }, ORIGIN)
@@ -1037,7 +1038,7 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
             // Пол комнаты: это не право, а то, что сервер пишет сам.
             return refuse(entry, conn, {
               rule: 'edit',
-              message: stale ? STALE_SYNC : floorMessage(judgement.why),
+              message: stale ? STALE_SYNC() : floorMessage(judgement.why),
               detail: `${judgement.why} (${judgement.path})`,
               stale,
             })
@@ -1113,7 +1114,7 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
     console.error(`[collab] bad message in ${entry.sessionId}`, err)
     refuse(entry, conn, {
       rule: 'edit',
-      message: 'Правку не удалось разобрать — она не отправлена.',
+      message: tr("server.theEditCouldNotBeReadAnd.fab4ce"),
     })
   }
 }
@@ -1123,7 +1124,7 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
  * сервер пишет сам. Человеку незачем знать про пути внутри документа.
  */
 function floorMessage(why: string): string {
-  return `Эта правка не принята: ${why}.`
+  return tr("server.thisEditWasNotAccepted.540727", { p0: why })
 }
 
 /**
@@ -1138,7 +1139,7 @@ function floorMessage(why: string): string {
  * пересоберётся, потому что убрать у неё эти структуры протоколу нечем.
  */
 const STALE_SYNC =
-  'Сервер не знает части того, что осталось в кэше этой вкладки, — она собирается заново.'
+  () => tr("server.someOfThisTabSCachedChanges.47f300")
 
 /**
  * Force this connection's awareness role back to what the socket was opened
@@ -1522,7 +1523,7 @@ export function dropSessionDoc(sessionId: string): void {
     if (state) clearInterval(state.pingTimer)
     entry.conns.delete(conn)
     try {
-      conn.close(1001, 'this seminar was deleted')
+      conn.close(1001, tr("server.thisSeminarWasDeleted.daaaad"))
     } catch {
       /* already gone */
     }
@@ -1537,7 +1538,7 @@ export function shutdownCollab(): void {
       if (state) clearInterval(state.pingTimer)
       entry.conns.delete(conn)
       try {
-        conn.close(1001, 'server shutting down')
+        conn.close(1001, tr("server.serverShuttingDown.0df697"))
       } catch {
         /* already gone */
       }

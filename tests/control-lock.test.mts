@@ -201,7 +201,10 @@ test('прервать и ответить — по-прежнему про ав
    * двумя, фраза здесь сменилась бы на правило.
    */
   const id = room()
-  assert.match(say(id, 'participant', { t: 'interrupt' }) ?? '', /host/i)
+  assert.match(
+    say(id, 'participant', { t: 'interrupt' }) ?? '',
+    /преподаватель или тот, кто запустил выполняющуюся ячейку/i,
+  )
   assert.match(say(id, 'participant', { t: 'input', value: 'да' }) ?? '', /участник, запустивший ячейку/i)
 })
 

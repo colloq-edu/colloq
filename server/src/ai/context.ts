@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Renders the live notebook as plain text for the model.
  *
@@ -172,7 +173,7 @@ export function buildContext(
   )
 
   const sessionName =
-    getSession(sessionId)?.name ?? (meta.get('title') as string | undefined) ?? 'Untitled seminar'
+    getSession(sessionId)?.name ?? (meta.get('title') as string | undefined) ?? tr("server.untitledSeminar.08a8f2")
   const kernel = (meta.get('kernelStatus') as KernelStatus | undefined) ?? 'idle'
 
   const wanted = new Set(focus)

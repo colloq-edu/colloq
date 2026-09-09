@@ -1,3 +1,4 @@
+import { translate, tr } from '../shared/i18n.js'
 /**
  * Один отказ — один голос, один такт указки — одно число.
  *
@@ -101,7 +102,8 @@ test('слова отказа набраны в одном файле, и это
   const says = (['page-full', 'too-many-pages', 'stroke-full'] as const).map(inkFullSays)
   const shared = read('shared/lecture.ts')
   for (const phrase of says) {
-    assert.ok(shared.includes(phrase), `фраза «${phrase}» пропала из shared/lecture.ts`)
+    const calls = [...shared.matchAll(/tr\("([^"]+)"\)/g)].map(match => match[1])
+    assert.ok(calls.some(key => translate('ru', key) === phrase), `фраза «${phrase}» пропала из shared/lecture.ts и его каталога`)
   }
 
   /*

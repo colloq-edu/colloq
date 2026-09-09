@@ -1,3 +1,4 @@
+import { tr, getLocale, formatNumber } from '@shared/i18n'
 import clsx, { type ClassValue } from 'clsx'
 
 export const cn = (...parts: ClassValue[]) => clsx(parts)
@@ -20,13 +21,13 @@ export function prefersReducedMotion(): boolean {
 }
 
 export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`
+  if (bytes < 1024) return tr('room.bytes', { count: formatNumber(bytes) })
+  if (bytes < 1024 * 1024) return tr('room.ui.1184', { p0: formatNumber(bytes / 1024, { minimumFractionDigits: bytes < 10240 ? 1 : 0, maximumFractionDigits: bytes < 10240 ? 1 : 0 }) })
   const mb = bytes / (1024 * 1024)
   // A decimal is worth a column of its own only while it still says something:
   // past 10 MB the tenth is noise, and dropping it is what keeps the size lane
   // one width down the whole file list.
-  return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`
+  return tr('room.ui.1185', { p0: formatNumber(mb, { minimumFractionDigits: mb < 10 ? 1 : 0, maximumFractionDigits: mb < 10 ? 1 : 0 }) })
 }
 
 export function initials(name: string): string {
@@ -79,10 +80,10 @@ export function inkOn(background: string): string {
 
 export function relativeTime(ts: number): string {
   const delta = Math.max(0, Date.now() - ts)
-  if (delta < 60_000) return 'just now'
-  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`
-  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`
-  return new Date(ts).toLocaleDateString()
+  if (delta < 60_000) return tr('room.ui.1186')
+  if (delta < 3_600_000) return tr('room.ui.1187', { p0: Math.floor(delta / 60_000) })
+  if (delta < 86_400_000) return tr('room.ui.1188', { p0: Math.floor(delta / 3_600_000) })
+  return new Date(ts).toLocaleDateString(getLocale())
 }
 
 /** Meta on macOS, Ctrl elsewhere — used for shortcut hints in the UI. */
@@ -130,9 +131,9 @@ export function splitFileName(name: string): { stem: string; ext: string } {
 /** Живая длительность: «0.0s», «12.3s», «1m 04s», «2h 23m». */
 export function elapsed(since: number, now: number): string {
   const seconds = Math.max(0, now - since) / 1000
-  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  if (seconds < 60) return tr('room.ui.1190', { p0: formatNumber(seconds, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })
   if (seconds < 3600) {
-    return `${Math.floor(seconds / 60)}m ${String(Math.floor(seconds % 60)).padStart(2, '0')}s`
+    return tr('room.ui.1191', { p0: Math.floor(seconds / 60), p1: String(Math.floor(seconds % 60)).padStart(2, '0') })
   }
   /*
    * Часовой разряд — новый.
@@ -141,16 +142,16 @@ export function elapsed(since: number, now: number): string {
    * учит модель, не заканчивается: без этого разряда она печатала «143m 07s»,
    * а это число никто не читает как два часа двадцать три минуты.
    */
-  return `${Math.floor(seconds / 3600)}h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}m`
+  return tr('room.ui.1192', { p0: Math.floor(seconds / 3600), p1: String(Math.floor((seconds % 3600) / 60)).padStart(2, '0') })
 }
 
 /** Законченная длительность: «4s», «1m 20s», «2h 23m». Пусто, если её нет. */
 export function spell(ms: number | null): string {
   if (ms === null) return ''
   const total = Math.round(ms / 1000)
-  if (total < 60) return `${total}s`
-  if (total < 3600) return `${Math.floor(total / 60)}m ${total % 60}s`
-  return `${Math.floor(total / 3600)}h ${Math.floor((total % 3600) / 60)}m`
+  if (total < 60) return tr('room.duration.seconds', { count: total })
+  if (total < 3600) return tr('room.ui.1193', { p0: Math.floor(total / 60), p1: total % 60 })
+  return tr('room.ui.1194', { p0: Math.floor(total / 3600), p1: Math.floor((total % 3600) / 60) })
 }
 
 /**
@@ -202,15 +203,15 @@ export function collapseCarriage(text: string): string {
 export function imageSize(bytes: number | null): string {
   if (bytes === null) return '—'
   const gb = bytes / 1e9
-  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`
+  return gb >= 1 ? tr('room.ui.1195', { p0: formatNumber(gb, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) }) : tr('room.ui.1196', { p0: Math.round(bytes / 1e6) })
 }
 
 /** «built 3 days ago», «built 4h ago», «built just now», «never built». */
 export function builtAgo(ts: number | null, now = Date.now()): string {
-  if (ts === null) return 'never built'
+  if (ts === null) return tr('room.ui.1197')
   const days = Math.floor((now - ts) / 86_400_000)
-  if (days > 1) return `built ${days} days ago`
+  if (days > 1) return tr('room.ui.1198', { p0: days })
   const hours = Math.floor((now - ts) / 3_600_000)
-  if (hours >= 1) return `built ${hours}h ago`
-  return 'built just now'
+  if (hours >= 1) return tr('room.ui.1199', { p0: hours })
+  return tr('room.ui.1200')
 }

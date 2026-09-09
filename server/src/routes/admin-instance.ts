@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * The instance's own routes: the seminars a teacher is running, and the
  * oracle that answers in them.
@@ -295,7 +296,7 @@ function invalid(res: Response, error: string): Response {
 }
 
 function notFound(res: Response): Response {
-  const body: AdminErrorBody = { error: 'that seminar no longer exists', reason: 'invalid' }
+  const body: AdminErrorBody = { error: tr("server.thatSeminarNoLongerExists.b346fe"), reason: 'invalid' }
   return res.status(404).json(body)
 }
 
@@ -325,9 +326,9 @@ export function adminInstanceRoutes(): Router {
 
   router.post('/api/admin/seminars', requireStaff, (req, res) => {
     const name = normalize(req.body?.name)
-    if (!name) return invalid(res, 'a seminar name is required')
+    if (!name) return invalid(res, tr("server.aSeminarNameIsRequired.f10426"))
     if (name.length > LIMITS.seminarName) {
-      return invalid(res, `a seminar name must be ${LIMITS.seminarName} characters or fewer`)
+      return invalid(res, tr("server.aSeminarNameMustBeCharactersOr.c9d56a", { p0: LIMITS.seminarName }))
     }
 
     /*
@@ -337,7 +338,7 @@ export function adminInstanceRoutes(): Router {
      */
     const wanted = typeof req.body?.environment === 'string' ? req.body.environment.trim() : ''
     if (wanted && (!ENVIRONMENT_NAME.test(wanted) || !environmentExists(wanted))) {
-      return invalid(res, `there is no environment called "${wanted}"`)
+      return invalid(res, tr("server.thereIsNoEnvironmentCalled.a8903e", { p0: wanted }))
     }
 
     /*
@@ -397,9 +398,9 @@ export function adminInstanceRoutes(): Router {
       | undefined
     if (body?.name !== undefined) {
       const name = normalize(body.name)
-      if (!name) return invalid(res, 'a seminar name is required')
+      if (!name) return invalid(res, tr("server.aSeminarNameIsRequired.f10426"))
       if (name.length > LIMITS.seminarName) {
-        return invalid(res, `a seminar name must be ${LIMITS.seminarName} characters or fewer`)
+        return invalid(res, tr("server.aSeminarNameMustBeCharactersOr.c9d56a", { p0: LIMITS.seminarName }))
       }
       /*
        * В строку — через `renameSession`, а не своим UPDATE.
@@ -422,14 +423,14 @@ export function adminInstanceRoutes(): Router {
       visitSessionDoc(row.id, (doc) => getMeta(doc).set('title', name))
     }
     if (body?.archived !== undefined) {
-      if (typeof body.archived !== 'boolean') return invalid(res, 'archived must be true or false')
+      if (typeof body.archived !== 'boolean') return invalid(res, tr("server.archivedMustBeTrueOrFalse.db6c12"))
       // Archiving is a label on the list, not a lock: a room with people still
       // in it keeps working, which is why nothing here touches the document.
       setArchived.run(body.archived ? Date.now() : null, row.id)
     }
 
     if (body?.finished !== undefined) {
-      if (typeof body.finished !== 'boolean') return invalid(res, 'finished must be true or false')
+      if (typeof body.finished !== 'boolean') return invalid(res, tr("server.finishedMustBeTrueOrFalse.f9f3c0"))
       /*
        * Та же дверь, что кнопка в комнате: преподаватель, закрывший вкладку и
        * вспомнивший про занятие в метро, не должен возвращаться в семинар ради
@@ -464,7 +465,7 @@ export function adminInstanceRoutes(): Router {
        * who wanted a lecture had to make a second room.
        */
       if (typeof body.rules !== 'object' || body.rules === null) {
-        return invalid(res, 'rules must be an object')
+        return invalid(res, tr("server.rulesMustBeAnObject.c2a9d1"))
       }
       setRules(row.id, readRules({ ...storedRules(row.id), ...(body.rules as object) }))
       // The room finds out now, not on its next reload: the panel greys its
@@ -499,7 +500,7 @@ export function adminInstanceRoutes(): Router {
     const row = seminarOr404(req, res)
     if (!row) return
     if (kernelRetirementInProgress(row.id)) {
-      res.status(503).json({ error: 'The seminar is already stopping. Try again shortly.', reason: 'invalid' } satisfies AdminErrorBody)
+      res.status(503).json({ error: tr("server.theSeminarIsAlreadyStoppingTryAgain.ca0fd7"), reason: 'invalid' } satisfies AdminErrorBody)
       return
     }
     const release = blockKernelStarts(row.id)
@@ -515,7 +516,7 @@ export function adminInstanceRoutes(): Router {
         } catch (err) {
           console.warn(`[admin] could not stop the kernel for ${row.id}:`, err instanceof Error ? err.message : err)
           res.status(503).json({
-            error: 'Deletion could not finish because the kernel did not stop. The seminar data and files were kept. Retry deletion.',
+            error: tr("server.deletionCouldNotFinishBecauseTheKernel.c885fc"),
             reason: 'invalid',
           } satisfies AdminErrorBody)
           return
@@ -529,7 +530,7 @@ export function adminInstanceRoutes(): Router {
           console.warn(`[admin] workspace cleanup for ${row.id} is incomplete:`, err instanceof Error ? err.message : err)
           forgetTree(row.id)
           res.status(503).json({
-            error: 'Deletion could not finish because some files could not be removed. Retry deletion or ask the server operator to check the workspace.',
+            error: tr("server.deletionCouldNotFinishBecauseSomeFiles.81f721"),
             reason: 'invalid',
           } satisfies AdminErrorBody)
           return
@@ -605,7 +606,7 @@ export function adminInstanceRoutes(): Router {
         )
         if (!res.headersSent)
           res.status(500).json({
-            error: 'the seminar could not be deleted',
+            error: tr("server.theSeminarCouldNotBeDeleted.e7f27d"),
             reason: 'invalid',
           } satisfies AdminErrorBody)
       } finally { release() }
@@ -628,7 +629,7 @@ export function adminInstanceRoutes(): Router {
    * notices. shared/admin.ts scopes a teacher to READING settings; the GET
    * below is that read, and it is masked.
    */
-  router.put('/api/admin/oracle', ownerOnly('change the oracle settings'), (req, res) => {
+  router.put('/api/admin/oracle', ownerOnly('server.ownerAction.6'), (req, res) => {
     const parsed = parseOraclePatch(req.body)
     if ('error' in parsed) return invalid(res, parsed.error)
     // The response is the masked settings, like the GET: the key goes in and is
@@ -638,7 +639,7 @@ export function adminInstanceRoutes(): Router {
 
   // Owner-only for the same reason: this is the button that makes the server
   // send a request, with the key attached, to whatever host is configured.
-  router.post('/api/admin/oracle/test', ownerOnly('test the oracle connection'), (_req, res) => {
+  router.post('/api/admin/oracle/test', ownerOnly('server.ownerAction.7'), (_req, res) => {
     void testConnection().then(
       (result) => res.json(result),
       (err: unknown) => {
@@ -648,7 +649,7 @@ export function adminInstanceRoutes(): Router {
         const broke: OracleTestResult = {
           ok: false,
           ms: null,
-          message: 'The test could not be run — check the server logs.',
+          message: tr("server.theTestCouldNotBeRunCheck.4fcf49"),
           model: null,
         }
         res.json(broke)

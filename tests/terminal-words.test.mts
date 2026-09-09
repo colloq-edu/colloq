@@ -1,3 +1,4 @@
+import { translate, tr } from '../shared/i18n.js'
 /**
  * Ящик терминала говорит на одном языке — включая состояние машины.
  *
@@ -51,12 +52,13 @@ test('оболочка названа одинаково в строке ком�
   // Одно состояние, названное в одном ящике дважды по-разному, читается как
   // два разных: приглашение строки писалось раньше списка, и оно же — эталон.
   const term = read(DRAWER)
-  for (const [state, prompt] of [
-    ['starting', 'оболочка запускается…'],
-    ['dead', 'оболочка остановилась'],
-    ['closed', 'оболочка не запущена'],
+  for (const [state, prompt, key] of [
+    ['starting', 'оболочка запускается…', 'room.ui.703'],
+    ['dead', 'оболочка остановилась', 'room.ui.704'],
+    ['closed', 'оболочка не запущена', 'room.ui.705'],
   ] as const) {
-    assert.ok(term.includes(`'${prompt}'`), `приглашение «${prompt}» на месте`)
+    assert.ok(term.includes(`tr('${key}')`), `приглашение «${prompt}» на месте`)
+    assert.equal(translate('ru', key), prompt)
     assert.ok(prompt.includes(SHELL_WORD[state]), `«${prompt}» и «${SHELL_WORD[state]}» — одно слово`)
   }
 })

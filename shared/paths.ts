@@ -1,3 +1,4 @@
+import { tr } from './i18n.js'
 /**
  * Пути внутри папки семинара — одни правила для браузера и для сервера.
  *
@@ -138,20 +139,20 @@ export function joinPath(dir: string, name: string): string {
  * оно плохо.
  */
 export function whySegmentRefused(name: string): string {
-  const shown = name.slice(0, 60) || '(пусто)'
-  if (!name) return 'Имя не может быть пустым.'
-  if (name === '.' || name === '..') return 'Имена «.» и «..» зарезервированы. Выберите другое имя.'
+  const shown = name.slice(0, 60) || tr("server.empty.9a3a4f")
+  if (!name) return tr("server.theNameCannotBeEmpty.fc2696")
+  if (name === '.' || name === '..') return tr("server.theNamesAndAreReservedChooseAnother.d0854b")
   if (name.includes('/') || name.includes('\\')) {
-    return `В «${shown}» есть косая черта. Чтобы создать папку, используйте кнопку «Новая папка».`
+    return tr("server.containsASlashUseNewFolderTo.b86a22", { p0: shown })
   }
-  if (CONTROL.test(name)) return `В «${shown}» есть недопустимые символы.`
+  if (CONTROL.test(name)) return tr("server.containsUnsupportedCharacters.7b05cf", { p0: shown })
   if (name.startsWith('.')) {
-    return `«${shown}» начинается с точки. Скрытые файлы не поддерживаются в панели.`
+    return tr("server.startsWithADotTheFilesPanel.864c22", { p0: shown })
   }
-  if (name !== name.trim()) return `У «${shown}» есть пробел в начале или конце. Удалите его.`
+  if (name !== name.trim()) return tr("server.startsOrEndsWithASpaceRemove.32f39c", { p0: shown })
   if (name.length > MAX_SEGMENT)
-    return `Имя длиной ${name.length} символов — оставьте ${MAX_SEGMENT}.`
-  return `«${shown}» не годится в качестве имени.`
+    return tr("server.theNameContainsCharactersShortenItTo.b0c9e9", { p0: name.length, p1: MAX_SEGMENT })
+  return tr("server.cannotBeUsedAsAName.67c58f", { p0: shown })
 }
 
 /* ------------------------------------------------------------------- вид */

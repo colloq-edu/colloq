@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * The room's oracle thread.
    *
@@ -48,7 +49,8 @@
    * развернул — вопроса нет. Черновик живёт во вкладке, а не в компоненте.
    */
   const composing = oracleDraft
-  let sendError = $state<string | null>(null)
+  let sendErrorRender = $state<() => string | null>(() => null)
+  const sendError = $derived(sendErrorRender())
   /*
    * Слоу-мод — не авария, и красная плашка ему не идёт.
    *
@@ -56,7 +58,8 @@
    * инстанса, а не поломка, и человек с ним ничего не делает — он ждёт.
    * Поэтому спокойная строка того же вида, что и остальные правила ниже.
    */
-  let slowNotice = $state<string | null>(null)
+  let slowNoticeRender = $state<() => string | null>(() => null)
+  const slowNotice = $derived(slowNoticeRender())
   /** Момент, до которого сервер просил подождать, или 0. Мс, как Date.now. */
   let waitUntil = $state(0)
   /** Секунды на кнопке. Показ, не право: судья — сервер, см. `ask`. */
@@ -335,9 +338,9 @@
   const typingLine = $derived.by(() => {
     const names = typing.map((user) => user.name)
     if (names.length === 0) return null
-    if (names.length === 1) return `${names[0]} печатает вопрос…`
-    if (names.length === 2) return `${names[0]} и ${names[1]} печатают вопросы…`
-    return `${names.length} ${plural(names.length, 'человек', 'человека', 'человек')} печатают вопросы…`
+    if (names.length === 1) return tr('room.ui.519', { p0: names[0] })
+    if (names.length === 2) return tr('room.ui.520', { p0: names[0], p1: names[1] })
+    return tr('room.ui.521', { count: names.length })
   })
 
   /**
@@ -366,8 +369,8 @@
   const seesAll = $derived.by(() => {
     const nb = books.current.length
     return (
-      `${nb} ${plural(nb, 'тетрадь', 'тетради', 'тетрадей')}` +
-      ` · список файлов: ${fileCount}`
+      `${nb} ${plural(nb, tr('room.ui.522'), tr('room.ui.523'), tr('room.ui.524'))}` +
+      tr('room.ui.525', { p0: fileCount })
     )
   })
 
@@ -393,15 +396,15 @@
    */
   const focus = $derived.by(() => {
     const parts: string[] = []
-    if (focusNumbers.length === 1) parts.push(`ячейка ${focusNumbers[0]}`)
-    else if (focusNumbers.length > 1) parts.push(`ячейки ${focusNumbers.join(', ')}`)
+    if (focusNumbers.length === 1) parts.push(tr('room.ui.526', { p0: focusNumbers[0] }))
+    else if (focusNumbers.length > 1) parts.push(tr('room.ui.527', { p0: focusNumbers.join(', ') }))
     if (openFile) parts.push(openFile)
     return parts
   })
 
   const focusAsked = $derived.by(() => {
-    if (focusNumbers.length === 1) return `ячейку ${focusNumbers[0]}`
-    if (focusNumbers.length > 1) return `ячейки ${focusNumbers.join(', ')}`
+    if (focusNumbers.length === 1) return tr('room.ui.528', { p0: focusNumbers[0] })
+    if (focusNumbers.length > 1) return tr('room.ui.527', { p0: focusNumbers.join(', ') })
     return openFile
   })
 
@@ -561,7 +564,7 @@
       if (left === 0) {
         // Строка уходит вместе с ожиданием: «ещё десять секунд», висящее
         // после того как они прошли, — уже неправда.
-        slowNotice = null
+        slowNoticeRender = () => (null)
         waitUntil = 0
         return
       }
@@ -574,7 +577,7 @@
   async function ask(body: AiAskRequest) {
     if (offline) return
     stopComposing()
-    sendError = null
+    sendErrorRender = () => (null)
     pinned = true
     // Строка встаёт в ленту здесь, а не в `submit`: спрашивают ещё из тетради
     // («Спросить оракула», «Починить») и повтором хода, и ждут они ровно
@@ -582,7 +585,7 @@
     const outgoingId = openOutbox(body)
     try {
       await api.aiAsk(session.session.id, session.token, body)
-      slowNotice = null
+      slowNoticeRender = () => (null)
       waitUntil = 0
     } catch (err) {
       // Вопрос не принят — значит и в ленте ему не место: строка, оставшаяся
@@ -608,11 +611,11 @@
        */
       if (composing.question.trim() === '') composing.question = body.message
       if (err instanceof ApiError && err.retryAfter !== null && err.retryAfter > 0) {
-        slowNotice = err.message
+        slowNoticeRender = () => (tr(err.message))
         waitUntil = Date.now() + err.retryAfter * 1000
         return
       }
-      sendError = err instanceof Error ? err.message : 'Не удалось отправить вопрос. Попробуйте ещё раз.'
+      sendErrorRender = () => (err instanceof Error ? tr(err.message) : tr('room.ui.529'))
     }
   }
 
@@ -703,7 +706,7 @@
     try {
       await api.aiCancel(session.session.id, session.token, entryId)
     } catch (err) {
-      sendError = err instanceof Error ? err.message : 'Не удалось остановить ответ.'
+      sendErrorRender = () => (err instanceof Error ? tr(err.message) : tr('room.ui.530'))
     }
   }
 
@@ -720,7 +723,7 @@
     try {
       await api.aiClearThread(session.session.id, session.token)
     } catch (err) {
-      sendError = err instanceof Error ? err.message : 'Не удалось очистить ленту.'
+      sendErrorRender = () => (err instanceof Error ? tr(err.message) : tr('room.ui.531'))
     }
   }
 
@@ -741,13 +744,12 @@
 <div class="panel h-full">
   <div class="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4">
     <Icon name="sparkles" size={14} class="shrink-0 text-accent-text" />
-    <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">Оракул</span>
+    <span class="shrink-0 text-2xs font-bold uppercase tracking-section text-ink">{tr('room.ui.488')}</span>
     <span
       class="inline-flex h-5 shrink-0 items-center bg-raised px-1.5 text-2xs font-bold uppercase
              tracking-caps text-ink"
-      title="Вопросы и ответы доступны всем участникам"
-    >
-      общая · {entries.length}
+      title={tr('room.ui.489')}
+    > {tr('room.ui.490')} {entries.length}
     </span>
 
     <span class="ml-auto min-w-0 truncate font-mono text-2xs text-muted">
@@ -766,13 +768,13 @@
         class="btn-ghost h-7 shrink-0 gap-1 px-1.5 text-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {armed
           ? 'text-danger hover:text-danger'
           : ''}"
-        title="Очистить ленту комнаты"
-        aria-label="Очистить ленту комнаты"
+        title={tr('room.ui.492')}
+        aria-label={tr('room.ui.492')}
         disabled={entries.length === 0}
         onclick={clearThread}
       >
         <Icon name="eraser" size={14} />
-        {#if armed}<span>Очистить?</span>{/if}
+        {#if armed}<span>{tr('room.ui.493')}</span>{/if}
       </button>
     {/if}
   </div>
@@ -789,19 +791,15 @@
           you use it.
         -->
         <div class="flex flex-col items-start gap-2.5 px-4 pb-4 pt-4">
-          <p class="text-answer text-ink">Вопросов пока нет.</p>
-          <p class="text-ui text-muted">
-            Задайте вопрос по материалам занятия. Ваше имя, вопрос и ответ будут видны всей группе.
-          </p>
+          <p class="text-answer text-ink">{tr('room.ui.494')}</p>
+          <p class="text-ui text-muted"> {tr('room.ui.495')} </p>
           <!--
             «Выделите ячейку, чтобы спросить о ней» было неправдой ровно
             наоборот: вопрос и без выделения уезжал вместе со всей тетрадью, а
             строка советовала сделать обязательным то, что всего лишь наводит
             фокус.
           -->
-          <p class="text-ui text-muted">
-            Оракул получает контекст тетрадей в пределах заданного лимита. Выделите ячейки, которым нужно уделить внимание.
-          </p>
+          <p class="text-ui text-muted"> {tr('room.ui.496')} </p>
         </div>
       {/if}
 
@@ -861,7 +859,7 @@
             avatar={avatars.get(news.participantId) ?? null}
           />
           <span class="text-2xs font-semibold text-ink">
-            {news.participantId === session.me.id ? 'ваш ответ' : `ответ · ${news.name}`}
+            {news.participantId === session.me.id ? tr('room.ui.497') : tr('room.ui.498', { p0: news.name })}
           </span>
           <Icon name="chevron-down" size={11} class="text-accent-text" />
         </button>
@@ -878,8 +876,8 @@
         <button
           type="button"
           class="shrink-0 p-0.5 transition-colors duration-100 hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
-          aria-label="Убрать"
-          onclick={() => (sendError = null)}
+          aria-label={tr('room.ui.499')}
+          onclick={() => (sendErrorRender = () => null)}
         >
           <Icon name="x" size={12} />
         </button>
@@ -896,14 +894,12 @@
         сервер решает всё равно сам, — а строка говорит ровно то, что есть.
       -->
       <p class="flex items-center gap-2 border border-line bg-raised px-3 py-2 text-2xs text-muted">
-        <span class="min-w-0 flex-1">Не удалось проверить доступность оракула.</span>
+        <span class="min-w-0 flex-1">{tr('room.ui.500')}</span>
         <button
           type="button"
           class="btn-ghost press h-6 shrink-0 px-1.5 text-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           onclick={() => (statusTry += 1)}
-        >
-          Проверить ещё раз
-        </button>
+        > {tr('room.ui.501')} </button>
       </p>
     {/if}
 
@@ -929,9 +925,7 @@
         Строка осталась там, где стояли кнопки: она про комнату, а не про
         кнопку, и исчезнуть вместе с ними не должна была.
       -->
-      <p class="text-2xs text-muted">
-        режим подсказок — модели задано направлять вас к решению
-      </p>
+      <p class="text-2xs text-muted"> {tr('room.ui.502')} </p>
     {/if}
 
     {#if offline}
@@ -952,17 +946,8 @@
       -->
       <p class="border border-line bg-raised px-3 py-2 text-2xs text-muted">
         {#if mode === 'off'}
-          {#if status?.mode === 'off'}
-            Оракул выключен на этом Colloq.
-          {:else}
-            Оракул выключен на этом семинаре.
-          {/if}
-        {:else if isHost}
-          Проверьте настройки раздела
-          <span class="font-semibold text-ink">Оракул</span> в панели преподавателя: подключение к модели и лимит вопросов.
-        {:else}
-          Оракул недоступен. Обратитесь к преподавателю.
-        {/if}
+          {#if status?.mode === 'off'} {tr('room.ui.503')} {:else} {tr('room.ui.504')} {/if}
+        {:else if isHost} {tr('room.ui.505')} <span class="font-semibold text-ink">{tr('room.ui.488')}</span> {tr('room.ui.506')} {:else} {tr('room.ui.507')} {/if}
       </p>
     {:else if !may.ask}
       <!--
@@ -999,10 +984,8 @@
           <div class="flex items-baseline gap-1.5">
             <span
               class="shrink-0 text-2xs font-bold uppercase tracking-institution text-faint"
-              title="Код и выводы ячеек, список файлов, состояние ядра и последние сообщения. Объём контекста ограничен."
-            >
-              Источники
-            </span>
+              title={tr('room.ui.508')}
+            > {tr('room.ui.509')} </span>
             <span class="min-w-0 truncate text-2xs text-muted">{seesAll}</span>
           </div>
           {#if focus.length > 0}
@@ -1011,10 +994,8 @@
             <div class="flex items-baseline gap-1.5">
               <span
                 class="shrink-0 text-2xs font-bold uppercase tracking-institution text-accent-text"
-                title="Выбранные ячейки и открытый файл добавляются к контексту. Остальные материалы из него не исключаются."
-              >
-                В фокусе
-              </span>
+                title={tr('room.ui.510')}
+              > {tr('room.ui.511')} </span>
               <span class="min-w-0 truncate font-mono text-2xs text-ink">
                 {focus.join(' · ')}
               </span>
@@ -1037,17 +1018,13 @@
                 class="px-2 py-0.5 text-2xs font-semibold transition-colors duration-100
                        {doing ? 'text-muted hover:text-ink' : 'bg-primary text-primary-ink'}"
                 onclick={() => (doing = false)}
-              >
-                Спросить
-              </button>
+              > {tr('room.ui.513')} </button>
               <button
                 type="button"
                 class="px-2 py-0.5 text-2xs font-semibold transition-colors duration-100
                        {doing ? 'bg-primary text-primary-ink' : 'text-muted hover:text-ink'}"
                 onclick={() => (doing = true)}
-              >
-                Сделать
-              </button>
+              > {tr('room.ui.514')} </button>
             </div>
           </div>
         {/if}
@@ -1060,7 +1037,7 @@
           name={session.me.name}
           color={session.me.color}
           avatar={session.me.avatar}
-          title="спрашивает {session.me.name}"
+          title={tr('room.oracle.asker', { name: session.me.name })}
         />
         <!-- Метка для «Спросить оракула» с клавиатуры: ⌘/Ctrl+I и строка
              палитры ставят фокус сюда (SessionScreen · focusOracle). На самом
@@ -1073,11 +1050,11 @@
           bind:value={composing.question}
           rows="1"
           placeholder={doing && canDo
-            ? 'Что сделать с файлами семинара…'
+            ? tr('room.extra.217')
             : focusAsked
-              ? `Спросить про ${focusAsked}…`
-              : 'Вопрос по материалам занятия…'}
-          title="Enter — отправить, Shift+Enter — новая строка"
+              ? tr('room.extra.218', { p0: focusAsked })
+              : tr('room.extra.219')}
+          title={tr('room.ui.515')}
           class="max-h-40 flex-1 resize-none bg-transparent py-1 text-ui text-ink placeholder:text-muted focus:outline-none"
           oninput={onInput}
           onkeydown={onKeydown}
@@ -1094,7 +1071,7 @@
         <button
           type="button"
           class="btn-primary h-7 w-7 shrink-0 px-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          aria-label={waitLeft > 0 ? `Ещё ${waitLeft} с` : 'Отправить'}
+          aria-label={waitLeft > 0 ? tr('room.extra.220', { p0: waitLeft }) : tr('room.extra.221')}
           title={waitLeft > 0 ? (slowNotice ?? '') : ''}
           disabled={!composing.question.trim() || waitLeft > 0}
           onclick={submit}
@@ -1113,8 +1090,8 @@
       <Icon name="users" size={13} class="shrink-0" />
       <span class="min-w-0">
         {doing && canDo
-          ? 'Оракул может менять файлы и запускать код. Правки ячеек требуют принятия.'
-          : 'Вопрос и ответ видит вся комната.'}
+          ? tr('room.ui.516')
+          : tr('room.ui.517')}
       </span>
     </p>
   </div>

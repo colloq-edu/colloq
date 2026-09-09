@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Поле ответа преподавателя — одному автору или всей группе.
    *
@@ -48,28 +49,23 @@
 </script>
 
 <div class="flex flex-col gap-2 border-l-4 border-accent bg-surface px-3 py-2.5">
-  <p class="text-2xs font-bold uppercase tracking-label text-accent-text">Ответ · {to}</p>
+  <p class="text-2xs font-bold uppercase tracking-label text-accent-text">{tr('room.ui.26')} {to}</p>
   <!-- svelte-ignore a11y_autofocus -->
   <textarea
     class="field min-h-[72px] w-full resize-y text-ui"
     bind:value={text}
-    placeholder="Напишите ответ…"
+    placeholder={tr('room.ui.27')}
     rows="3"
     autofocus
     {onkeydown}
   ></textarea>
   <div class="flex flex-wrap items-center gap-2.5">
     <button type="button" class="btn-primary h-8" disabled={!text.trim()} onclick={send}>
-      <Icon name="send" size={13} />
-      Отправить {to}
+      <Icon name="send" size={13} /> {tr('room.ui.28')} {to}
     </button>
-    <button type="button" class="btn-ghost h-8" onclick={oncancel}>Отмена</button>
+    <button type="button" class="btn-ghost h-8" onclick={oncancel}>{tr('room.ui.29')}</button>
     <span class="text-2xs text-muted">
-      {#if fromOracle}
-        Черновик оракула. Проверьте перед отправкой от своего имени.
-      {:else}
-        Ответ получат адресаты · Ctrl/⌘+Enter — отправить
-      {/if}
+      {#if fromOracle} {tr('room.ui.30')} {:else} {tr('room.ui.31')} {/if}
     </span>
   </div>
 </div>

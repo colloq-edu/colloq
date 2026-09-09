@@ -43,7 +43,7 @@ function strip(): string {
 
 test('полоса консилиума говорит про общее ядро — строкой из shared', () => {
   assert.match(STACK, /import \{ COUNCIL_SHARED_KERNEL_NOTE \} from '@shared\/notebook'/)
-  assert.match(strip(), /\{COUNCIL_SHARED_KERNEL_NOTE\}/, 'в полосе режима строки нет')
+  assert.match(strip(), /\{tr\(COUNCIL_SHARED_KERNEL_NOTE\)\}/, 'в полосе режима строки нет')
 
   // Своей копии нет: первые слова фразы в компоненте встретиться не должны.
   const opening = COUNCIL_SHARED_KERNEL_NOTE.slice(0, 24)

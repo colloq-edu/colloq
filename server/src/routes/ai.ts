@@ -1,3 +1,4 @@
+import { tr, formatNumber } from '@shared/i18n'
 /**
  * The oracle's REST surface.
  *
@@ -213,7 +214,7 @@ export function purgeQuestions(
   }
   if (at.length === 0) return 0
 
-  const label = `до бана ${banned.name}`
+  const label = tr("server.beforeBlocking.d2153d", { p0: banned.name })
   mark(sessionId, doc, 'checkpoint', byTeacher, label, label)
 
   for (const id of ids) if (!stopWork(sessionId, id)) cancel(sessionId, id)
@@ -262,7 +263,7 @@ export function aiRoutes(): Router {
   router.post('/api/sessions/:id/ai/ask', (req, res) => {
     const sessionId = req.params.id
     const auth = sessionAuth(req)
-    if (!auth) return res.status(401).json({ error: 'join the session first' })
+    if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
 
     /*
@@ -276,7 +277,7 @@ export function aiRoutes(): Router {
      * него не доходит.
      */
     if (!actsAfterClass(isFinished(sessionId), auth.role)) {
-      return res.status(403).json({ error: CLASS_IS_OVER })
+      return res.status(403).json({ error: tr(CLASS_IS_OVER) })
     }
 
     const settings = getOracleSettings()
@@ -290,14 +291,14 @@ export function aiRoutes(): Router {
       return res.status(403).json({
         error:
           settings.defaultMode === 'off'
-            ? 'The oracle is switched off for this instance.'
-            : 'The oracle is switched off for this seminar.',
+            ? tr("server.theOracleIsSwitchedOffForThis.2c2849")
+            : tr("server.theOracleIsSwitchedOffForThis.9dc39a"),
       })
     }
     if (settings.questionsPerHour === 0) {
       return res
         .status(403)
-        .json({ error: 'The oracle is disabled in this Colloq instance.' })
+        .json({ error: tr("server.theOracleIsDisabledInThisColloq.e3d7f7") })
     }
     if (!aiReady()) {
       /*
@@ -309,8 +310,8 @@ export function aiRoutes(): Router {
       return res.status(503).json({
         error:
           auth.role === 'host'
-            ? 'No model is set up on this Colloq yet — add a key under Oracle in the teaching panel.'
-            : 'No model is configured for this Colloq instance. Ask the teacher to check the settings.',
+            ? tr("server.noModelIsSetUpOnThis.9957d2")
+            : tr("server.noModelIsConfiguredForThisColloq.112833"),
       })
     }
 
@@ -318,7 +319,7 @@ export function aiRoutes(): Router {
     const raw = typeof body?.message === 'string' ? body.message : ''
     if (raw.length > MAX_MESSAGE) {
       return res.status(400).json({
-        error: `That question is longer than ${MAX_MESSAGE.toLocaleString('en-GB')} characters. Shorten your question.`,
+        error: tr("server.thatQuestionIsLongerThanCharactersShorten.a8c280", { p0: formatNumber(MAX_MESSAGE) }),
       })
     }
     const message = raw.trim()
@@ -350,7 +351,7 @@ export function aiRoutes(): Router {
           )
           .slice(0, 20)
       : []
-    if (!message && !requested) return res.status(400).json({ error: 'nothing to ask' })
+    if (!message && !requested) return res.status(400).json({ error: tr("server.nothingToAsk.d85713") })
 
     // Hints mode: the allowed action set is exactly {hint}. The quick actions
     // that exist to produce a solution — fix, improve, explain, debug — are
@@ -361,7 +362,7 @@ export function aiRoutes(): Router {
       if (action && !actionAllowedIn('hints', action)) {
         return res.status(403).json({
           error:
-            'Hints mode is enabled. Ask for a hint instead.',
+            tr("server.hintsModeIsEnabledAskForA.ec9c2a"),
         })
       }
       action = 'hint'
@@ -381,15 +382,15 @@ export function aiRoutes(): Router {
       if (mode === 'hints') {
         return res.status(403).json({
           error:
-            'В режиме подсказок правка файлов недоступна. Задайте вопрос оракулу.',
+            tr("server.fileEditsAreUnavailableInHintsMode.29ff63"),
         })
       }
       if (!allowsAgent(getRules(sessionId).agent, auth.role)) {
         return res.status(403).json({
           error:
             getRules(sessionId).agent === 'off'
-              ? 'Правка файлов оракулом отключена в этом семинаре.'
-              : 'Просить оракула править файлы здесь может преподаватель.',
+              ? tr("server.oracleFileEditingIsDisabledInThis.9b1999")
+              : tr("server.onlyTheTeacherMayAskTheOracle.441f53"),
         })
       }
     }
@@ -447,7 +448,7 @@ export function aiRoutes(): Router {
          * надо ровно то, что ему поможет: ждать или спрашивать сообща.
          */
         return res.status(429).json({
-          error: `This seminar has used all ${roomLimit} oracle questions allowed per hour. Try again later.`,
+          error: tr("server.thisSeminarHasUsedAllOracleQuestions.5ff314", { p0: roomLimit }),
         })
       }
 
@@ -461,10 +462,10 @@ export function aiRoutes(): Router {
         // case a teacher is most likely to set deliberately, so it gets its own.
         const spent =
           limit === 1
-            ? 'You have used your one oracle question for this hour in this seminar'
-            : `You have used all ${limit} of your oracle questions for this hour in this seminar`
+            ? tr("server.youHaveUsedYourOneOracleQuestion.61ab29")
+            : tr("server.youHaveUsedAllOfYourOracle.7a4f7f", { count: limit })
         return res.status(429).json({
-          error: `${spent}. You can ask again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+          error: tr('server.askAgain', { spent, count: minutes }),
         })
       }
     }
@@ -496,7 +497,7 @@ export function aiRoutes(): Router {
       if (left > 0) {
         res.setHeader('Retry-After', String(left))
         return res.status(429).json({
-          error: `Между вопросами нужно подождать ${seconds(gap)}. Повторите через ${seconds(left)}.`,
+          error: tr("server.waitBetweenQuestionsTryAgainIn.f64333", { p0: seconds(gap), p1: seconds(left) }),
           /*
            * Число, а не только заголовок. Retry-After — для машины, а панели
            * этим числом ещё и решать, как показать отказ: ожидание — спокойная
@@ -526,7 +527,7 @@ export function aiRoutes(): Router {
         const wait = 5
         res.setHeader('Retry-After', String(wait))
         return res.status(429).json({
-          error: `В этой комнате уже выполняется ${busy} запросов к оракулу. Повторите через ${seconds(wait)}.`,
+          error: tr("server.thereAreAlreadyOracleRequestsRunningIn.5ae3f8", { p0: busy, p1: seconds(wait) }),
           // То же число, что у слоу-мода: панель рисует ожидание отсчётом, а не
           // красной ошибкой. Отличить одно от другого по тексту она не может.
           retryAfter: wait,
@@ -592,7 +593,7 @@ export function aiRoutes(): Router {
 
   router.post('/api/sessions/:id/ai/cancel', (req, res) => {
     const auth = sessionAuth(req)
-    if (!auth) return res.status(401).json({ error: 'join the session first' })
+    if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     /*
      * 404 до того, как кто-нибудь тронет документ.
      *
@@ -605,7 +606,7 @@ export function aiRoutes(): Router {
 
     const entryId = typeof req.body?.entryId === 'string' ? req.body.entryId : ''
     if (!entryId || entryId.length > MAX_ENTRY_ID) {
-      return res.status(400).json({ error: 'entryId is required' })
+      return res.status(400).json({ error: tr("server.entryidIsRequired.a5742a") })
     }
     /*
      * Свою запись — автор, чужую — преподаватель. Больше никто.
@@ -628,7 +629,7 @@ export function aiRoutes(): Router {
     if (auth.role !== 'host' && !askedBy(req.params.id, entryId, auth.participantId)) {
       return res.status(403).json({
         error:
-          'Остановить можно свой вопрос — чужой останавливает тот, кто его задал, или преподаватель.',
+          tr("server.youMayStopYourOwnQuestionOnly.9631c6"),
       })
     }
     /*
@@ -645,7 +646,7 @@ export function aiRoutes(): Router {
 
   router.delete('/api/sessions/:id/ai/thread', (req, res) => {
     const auth = sessionAuth(req)
-    if (!auth) return res.status(401).json({ error: 'join the session first' })
+    if (!auth) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     // То же, что и в cancel: clearThread поднимает комнату, а поднимать нечего.
     if (!getSession(req.params.id)) return res.status(404).json({ error: SESSION_MISSING })
     // The thread belongs to the room, so clearing it is the host's call — a
@@ -658,8 +659,8 @@ export function aiRoutes(): Router {
         // человеку правило тут уже неверно: он пойдёт искать преподавателя,
         // который ничего не менял.
         error: isFinished(req.params.id)
-          ? CLASS_IS_OVER
-          : 'Only the teacher can clear the shared oracle conversation.',
+          ? tr(CLASS_IS_OVER)
+          : tr("server.onlyTheTeacherCanClearTheShared.684c21"),
       })
     }
     /*

@@ -10,6 +10,7 @@
   говорила то же самое вторым голосом; одно место надёжнее двух.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import Icon from '@/components/ui/Icon.svelte'
   import type { Lead } from '@/lib/follow'
   import type { TabKey } from '@/lib/tabs.svelte'
@@ -80,10 +81,10 @@
   const OFF = 'text-muted hover:text-ink'
 
   function closeTitle(path: string): string {
-    if (path !== board) return 'Закрыть'
+    if (path !== board) return tr('room.ui.141')
     return mayBoard
-      ? 'Убрать документ с общего экрана'
-      : 'Вернуться в тетрадь. Общий экран не изменится.'
+      ? tr('room.ui.745')
+      : tr('room.ui.746')
   }
 </script>
 
@@ -115,7 +116,7 @@
                  уехала на другую страницу, узнаёшь, только переключившись. -->
             <span class="flex shrink-0 items-center gap-1.5 bg-raised px-1.5 py-0.5">
               <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
-              <span class="text-2xs font-semibold text-muted">{lead.name} на стр. {lead.page}</span>
+              <span class="text-2xs font-semibold text-muted">{lead.name} {tr('room.ui.737')} {lead.page}</span>
             </span>
           {/if}
         </button>
@@ -151,13 +152,12 @@
                  text-2xs font-semibold text-accent-text transition-colors duration-100 hover:bg-accent/5"
           onclick={oncatchup}
         >
-          <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
-          Перейти к {lead.name} · стр. {lead.page}
+          <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span> {tr('room.ui.738')} {lead.name} {tr('room.ui.739')} {lead.page}
         </button>
       {:else if lead}
         <span class="flex items-center gap-1.5">
           <span class="h-1.5 w-1.5 rounded-full" style={`background:${lead.color}`}></span>
-          <span class="text-2xs font-semibold text-muted">Ведущий: {lead.name}</span>
+          <span class="text-2xs font-semibold text-muted">{tr('room.ui.740')} {lead.name}</span>
         </span>
       {:else if orphaned}
         <!--
@@ -165,7 +165,7 @@
           ведущего нет никогда — за собой не идут, — и говорить ему «вы вышли»
           значит сообщать о событии, которого не было.
         -->
-        <span class="text-2xs text-muted">Ведущий отключился. Листайте документ самостоятельно.</span>
+        <span class="text-2xs text-muted">{tr('room.ui.741')}</span>
       {/if}
       {#if pages > 0}
         <span class="h-3.5 w-px bg-line" aria-hidden="true"></span>

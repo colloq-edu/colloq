@@ -240,5 +240,5 @@ test('the room is told, once, when it comes back', () => {
     .filter((line) => line.get('kind') === 'system')
     .map((line) => String(line.get('text')))
   assert.equal(notes.length, 1, `expected one line, got ${notes.length}`)
-  assert.match(notes[0], /restarted/i)
+  assert.match(notes[0], /перезапустился/i)
 })

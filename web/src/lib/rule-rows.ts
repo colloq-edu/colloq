@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Строки, которыми описывается комната, — по одной на правило.
  *
@@ -87,28 +88,28 @@ export interface LimitRow {
 
 export type RuleRow = ChoiceRow | LimitRow
 
-const EVERYONE = { value: 'room', label: 'Все' }
-const TEACHER = { value: 'host', label: 'Преподаватель' }
+const EVERYONE = { value: 'room', get label() { return tr('room.ui.1127') } }
+const TEACHER = { value: 'host', get label() { return tr('room.ui.675') } }
 
 /** Слова здесь — комнатные; про язык и про то, почему его не правят отсюда, — шапка файла. */
 export const RULE_ROWS: RuleRow[] = [
   {
     kind: 'choice',
     key: 'opens',
-    title: 'Открытая ячейка',
+    get title() { return tr('room.ui.1128') },
     // Это и есть вся разница между лекцией и консилиумом как режимами: права
     // у них одни, а «открыть ячейку» значит разное.
-    note: 'Действие кнопки замка: открыть общую ячейку для редактирования или включить Консилиум с отдельным ответом каждого студента.',
+    get note() { return tr('room.ui.1129') },
     options: [
-      { value: 'shared', label: 'Всем вместе' },
-      { value: 'council', label: 'Каждому свой лист' },
+      { value: 'shared', get label() { return tr('room.ui.1130') } },
+      { value: 'council', get label() { return tr('room.ui.1131') } },
     ],
   },
   {
     kind: 'choice',
     key: 'edit',
-    title: 'Печатать в ячейках',
-    note: 'Кто может редактировать текст ячеек. Преподаватель также может открыть отдельную ячейку для группы.',
+    get title() { return tr('room.ui.1132') },
+    get note() { return tr('room.ui.1133') },
     options: [EVERYONE, TEACHER],
   },
   {
@@ -118,40 +119,40 @@ export const RULE_ROWS: RuleRow[] = [
     // в общей оболочке (control.ts, file:run и term:run). Строка, обещавшая
     // одни ячейки, читалась как «терминал остаётся открытым» — а `python
     // train.py` там тот же контейнер и то же процессорное время.
-    title: 'Запускать код',
-    note: 'Правило действует на ячейки, запуск файлов и команды терминала. «По одной» ограничивает участника одним запуском ячейки одновременно.',
-    options: [EVERYONE, { value: 'single', label: 'По одной' }, TEACHER],
+    get title() { return tr('room.ui.1134') },
+    get note() { return tr('room.ui.1135') },
+    options: [EVERYONE, { value: 'single', get label() { return tr('room.ui.1136') } }, TEACHER],
   },
   {
     kind: 'choice',
     key: 'structure',
-    title: 'Менять состав тетради',
+    get title() { return tr('room.ui.1137') },
     // «Чужую» здесь было неправдой по умолчанию: правило не знает автора, и
     // при «только дописывать» участник не уберёт и свою только что заведённую
     // ячейку тоже. Слова — те же, что комната показывает в отказе (may.ts).
-    note: '«Только добавлять»: участники добавляют ячейки, а удаляет и переставляет их преподаватель.',
-    options: [EVERYONE, { value: 'add', label: 'Только добавлять' }, TEACHER],
+    get note() { return tr('room.ui.1138') },
+    options: [EVERYONE, { value: 'add', get label() { return tr('room.ui.1139') } }, TEACHER],
   },
   {
     kind: 'choice',
     key: 'board',
-    title: 'Показывать документ комнате',
-    note: 'Кто может открыть документ на общем экране. Участники по-прежнему могут просматривать документы у себя.',
+    get title() { return tr('room.ui.1140') },
+    get note() { return tr('room.ui.1141') },
     options: [EVERYONE, TEACHER],
   },
   {
     kind: 'choice',
     key: 'files',
-    title: 'Создавать и редактировать файлы',
-    note: 'Правило не ограничивает скачивание. Удалять и переименовывать файлы может только преподаватель.',
+    get title() { return tr('room.ui.1142') },
+    get note() { return tr('room.ui.1143') },
     options: [EVERYONE, TEACHER],
   },
   {
     kind: 'choice',
     key: 'agent',
-    title: 'Оракул правит файлы сам',
-    note: 'Режим «Сделать» позволяет оракулу читать, создавать и изменять файлы, запускать код. Отмена восстанавливает доступные версии файлов, но не последствия выполнения кода. Правки ячеек в этом режиме применяются сразу.',
-    options: [EVERYONE, TEACHER, { value: 'off', label: 'Никто' }],
+    get title() { return tr('room.ui.1144') },
+    get note() { return tr('room.ui.1145') },
+    options: [EVERYONE, TEACHER, { value: 'off', get label() { return tr('room.ui.1146') } }],
   },
   /*
    * Два потолка оракула стоят здесь, а не в настройках инстанса, потому что
@@ -163,9 +164,9 @@ export const RULE_ROWS: RuleRow[] = [
   {
     kind: 'limit',
     key: 'questionsPerHour',
-    title: 'Вопросов оракулу в час',
-    note: 'Лимит на одного участника. Не выше общего лимита сервера; на преподавателя не распространяется. Пустое поле — использовать настройку сервера.',
-    unit: 'в час',
+    get title() { return tr('room.ui.1147') },
+    get note() { return tr('room.ui.1148') },
+    get unit() { return tr('room.ui.1149') },
     /*
      * Пол — один вопрос, а не ноль: «оракула сегодня нет» — это строка выше,
      * и она говорит об этом словами, а ноль здесь развернул бы класс отказом
@@ -173,39 +174,39 @@ export const RULE_ROWS: RuleRow[] = [
      */
     min: 1,
     max: LIMITS.questionsPerHour.max,
-    atInstance: (value) => (value === 0 ? 'оракул выключен' : `${value} в час`),
+    atInstance: (value) => (value === 0 ? tr('room.ui.1150') : tr('room.ui.1151', { p0: value })),
   },
   {
     kind: 'limit',
     key: 'slowModeSeconds',
-    title: 'Промежуток между вопросами',
-    note: 'Минимальный интервал между вопросами одного участника. Не меньше интервала на сервере; на преподавателя не распространяется. Пустое поле — использовать настройку сервера.',
-    unit: 'сек',
+    get title() { return tr('room.ui.1152') },
+    get note() { return tr('room.ui.1153') },
+    get unit() { return tr('room.ui.1154') },
     min: LIMITS.slowModeSeconds.min,
     max: LIMITS.slowModeSeconds.max,
-    atInstance: (value) => (value === 0 ? 'без промежутка' : `раз в ${value} сек`),
+    atInstance: (value) => (value === 0 ? tr('room.ui.1155') : tr('room.ui.1156', { p0: value })),
   },
   {
     kind: 'choice',
     key: 'history',
-    title: 'Смотреть ленту версий',
-    note: 'Кто может просматривать предыдущие версии тетради и авторов изменений.',
+    get title() { return tr('room.ui.1157') },
+    get note() { return tr('room.ui.1158') },
     options: [EVERYONE, TEACHER],
   },
   {
     kind: 'choice',
     key: 'restart',
-    title: 'Перезапускать ядро',
-    note: 'Перезапуск сбрасывает переменные для всех участников. Текст ячеек и файлы сохраняются.',
+    get title() { return tr('room.ui.1159') },
+    get note() { return tr('room.ui.1160') },
     options: [EVERYONE, TEACHER],
   },
   {
     kind: 'choice',
     key: 'wipe',
-    title: 'Очищать общие результаты',
+    get title() { return tr('room.ui.1161') },
     // «Чистит всегда» обещало кнопку, которой не было вовсе. Своя ячейка — это
     // отдельное действие в её тулбаре, и правило у него другое: печатать.
-    note: 'Кто может очистить все выводы ячеек, историю терминала и ленту оракула. Очистка вывода отдельной ячейки зависит от права редактировать её.',
+    get note() { return tr('room.ui.1162') },
     options: [EVERYONE, TEACHER],
   },
 ]

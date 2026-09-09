@@ -42,6 +42,10 @@ import type { RoomRules } from './rules.js'
 
 export type AdminRole = 'owner' | 'teacher'
 
+export interface InstanceSettings {
+  language: import('./i18n-types.js').Locale
+}
+
 export interface Teacher {
   id: string
   /** Identity, not a delivery channel: nothing is ever sent here. */

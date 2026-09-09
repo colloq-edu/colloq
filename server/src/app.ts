@@ -1,3 +1,4 @@
+import {tr} from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, loadRuntimeCatalog, runtimeDefaultEnvironment } from './kernel/runtime-client.js'
 /**
  * Приложение целиком: middleware, маршруты, статика — и ничего про процесс.
@@ -35,6 +36,7 @@ import { courseRoutes } from './routes/courses.js'
 import { fileRoutes } from './routes/files.js'
 import { historyRoutes } from './routes/history.js'
 import { sessionRoutes } from './routes/sessions.js'
+import { instanceSettingsRoutes } from './routes/instance-settings.js'
 import { PUBLIC_PAGES_INDEXED } from '@shared/publish'
 
 const STARTED_AT = Date.now()
@@ -321,7 +323,7 @@ async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
     }
     if (!(await isolationAvailable())) throw new Error('Room isolation is unavailable. Kernel execution is disabled.')
   } catch (error) {
-    const health={ok:false,reason:error instanceof Error?error.message:'Kernel runtime is unavailable'}
+    const health={ok:false,reason:error instanceof Error?error.message:tr('common.runtimeUnavailable')}
     kernelProbe={at:Date.now(),...health}
     return health
   }
@@ -446,6 +448,7 @@ app.use('/api', (req, res, next) => {
 // /api/sessions asks currentStaff() who is calling, and the admin routers are
 // what put the staff table and the cookie in front of it.
 app.use(adminAuthRoutes())
+app.use(instanceSettingsRoutes())
 app.use(adminInstanceRoutes())
 app.use(courseRoutes())
 app.use(adminEnvironmentRoutes())
@@ -461,7 +464,7 @@ app.use(aiRoutes())
 // и тратит тот же лимит вопросов комнаты (routes/council.ts).
 app.use(councilRoutes())
 
-app.use('/api', (_req, res) => res.status(404).json({ error: 'not found' }))
+app.use('/api', (_req, res) => res.status(404).json({ error: tr('common.notFound') }))
 
 /* ------------------------------------------------------------- индексация */
 
@@ -622,7 +625,7 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
   // express.json rejects malformed bodies with an HTML error page by default,
   // which the browser's JSON-only client cannot read.
   if (err instanceof SyntaxError && 'body' in err) {
-    return res.status(400).json({ error: 'malformed JSON body' })
+    return res.status(400).json({ error: tr('common.badJson') })
   }
   /*
    * Отказ клиенту — это отказ клиенту, а не поломка сервера.
@@ -637,13 +640,10 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
   const failed = err as { status?: unknown; statusCode?: unknown; type?: unknown } | null
   const status = failed?.status ?? failed?.statusCode
   if (typeof status === 'number' && status >= 400 && status < 500) {
-    // Своими словами отвечает только body-parser — у его ошибок есть `type`, и
-    // они говорят про присланное тело. У прочих 4xx в тексте бывает путь на
-    // диске, и отдавать его наружу незачем.
-    const said = typeof failed?.type === 'string' && err instanceof Error ? err.message : ''
+    // Use a translated public message; exception details may contain host paths.
     return res
       .status(status)
-      .json({ error: status === 413 ? 'request body too large' : said || 'bad request' })
+      .json({ error: status === 413 ? tr('common.bodyTooLarge') : tr('common.badRequest') })
   }
   // Со стеком и с путём: без них строка в журнале говорит «что-то сломалось»
   // и не говорит где — а именно за этим в журнал и лезут.
@@ -651,5 +651,5 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
     `[http] unhandled error on ${req.method} ${req.originalUrl}:`,
     err instanceof Error ? (err.stack ?? err.message) : err,
   )
-  res.status(500).json({ error: 'internal error' })
+  res.status(500).json({ error: tr('common.internalError') })
 })

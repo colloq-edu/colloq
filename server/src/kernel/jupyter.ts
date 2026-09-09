@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import crypto from 'node:crypto'
 import { WebSocket, type RawData } from 'ws'
 import { config } from '../config.js'
@@ -188,10 +189,10 @@ export async function jupyterReachable(): Promise<{ ok: boolean; reason: string 
     // /api/status — самая дешёвая ручка Jupyter, и она есть у всех его версий.
     const res = await jupyterRequest(defaultEndpoint(), '/api/status', undefined, 3000)
     ok = res.ok
-    if (!ok) reason = `Jupyter answered ${res.status}`
+    if (!ok) reason = tr("server.jupyterAnswered.d1df44", { p0: res.status })
   } catch (err) {
     reason =
-      err instanceof Error ? `Jupyter is unreachable: ${err.message}` : 'Jupyter is unreachable'
+      err instanceof Error ? tr("server.jupyterIsUnreachable.aa1e10", { p0: err.message }) : tr("server.jupyterIsUnreachable.372559")
   }
   lastProbe = { at: now, ok, reason }
   return { ok, reason }
@@ -273,7 +274,7 @@ export class JupyterKernel {
 
     let created: { sessionId: string; kernelId: string } | null = null
     let fatal: Error | null = null
-    let lastError = 'no response'
+    let lastError = tr("server.noResponse.187241")
 
     while (!created && !fatal && Date.now() < deadline) {
       try {
@@ -283,11 +284,11 @@ export class JupyterKernel {
           if (parsed?.id && parsed.kernel?.id) {
             created = { sessionId: parsed.id, kernelId: parsed.kernel.id }
           } else {
-            lastError = 'Jupyter returned a session with no kernel'
+            lastError = tr("server.jupyterReturnedASessionWithNoKernel.29a99e")
           }
         } else if (res.status === 401 || res.status === 403) {
           fatal = new Error(
-            `Jupyter refused this server's credentials (HTTP ${res.status}). JUPYTER_TOKEN must match the token the Jupyter container was started with.`,
+            tr("server.jupyterRefusedThisServerSCredentialsHttp.d97e7c", { p0: res.status }),
           )
         } else {
           lastError = `HTTP ${res.status}`
@@ -302,7 +303,7 @@ export class JupyterKernel {
     if (fatal) throw fatal
     if (!created) {
       throw new Error(
-        `No Python kernel after ${Math.round(STARTUP_TIMEOUT_MS / 1000)}s at ${endpoint.url} (${lastError}). Check that the jupyter service is running and reachable.`,
+        tr("server.noPythonKernelAfterSAtCheck.2f3e07", { p0: Math.round(STARTUP_TIMEOUT_MS / 1000), p1: endpoint.url, p2: lastError }),
       )
     }
 
@@ -312,7 +313,7 @@ export class JupyterKernel {
     } catch (err) {
       kernel._phase = 'dead'
       throw new Error(
-        `The kernel started but its channel at ${endpoint.url} would not open (${errText(err)}).`,
+        tr("server.theKernelStartedButItsChannelAt.ec5fda", { p0: endpoint.url, p1: errText(err) }),
       )
     }
     kernel.setPhase('idle')
@@ -348,7 +349,7 @@ export class JupyterKernel {
     // more, and the socket will not say so. Between two cells run back to back
     // this is skipped, so it costs the seminar nothing where it is busiest.
     if (Date.now() - this.lastHeard > QUIET_MS && !(await this.confirmAlive(true))) {
-      throw new Error('the Python kernel is not running')
+      throw new Error(tr("server.thePythonKernelIsNotRunning.a9cde2"))
     }
     const socket = await this.waitForSocket()
     const header = this.makeHeader('execute_request')
@@ -388,7 +389,7 @@ export class JupyterKernel {
       socket.send(frame)
     } catch (err) {
       this.pending.delete(header.msg_id)
-      throw new Error(`Could not send the cell to the kernel (${errText(err)}).`)
+      throw new Error(tr("server.couldNotSendTheCellToThe.b4abb1", { p0: errText(err) }))
     }
     this.startWatchdog()
     return done
@@ -575,7 +576,7 @@ export class JupyterKernel {
     const res = await jupyterRequest(this.endpoint, `/api/kernels/${this.kernelId}/interrupt`, {
       method: 'POST',
     })
-    if (!res.ok) throw new Error(`Jupyter refused the interrupt (HTTP ${res.status}).`)
+    if (!res.ok) throw new Error(tr("server.jupyterRefusedTheInterruptHttp.5ac00f", { p0: res.status }))
   }
 
   async restart(): Promise<void> {
@@ -593,13 +594,13 @@ export class JupyterKernel {
     )
     if (!res.ok) {
       this.setPhase('dead')
-      throw new Error(`Jupyter refused the restart (HTTP ${res.status}).`)
+      throw new Error(tr("server.jupyterRefusedTheRestartHttp.6b7f4a", { p0: res.status }))
     }
     try {
       await this.waitForSocket(30_000)
     } catch (err) {
       this.setPhase('dead')
-      throw new Error(`The kernel restarted but its channel did not come back (${errText(err)}).`)
+      throw new Error(tr("server.theKernelRestartedButItsChannelDid.4a7ee0", { p0: errText(err) }))
     }
     this.setPhase('idle')
   }
@@ -733,7 +734,7 @@ export class JupyterKernel {
         } catch {
           /* nothing to terminate */
         }
-        reject(new Error(`no channel after ${Math.round(timeoutMs / 1000)}s`))
+        reject(new Error(tr("server.noChannelAfterS.203466", { p0: Math.round(timeoutMs / 1000) })))
       }, timeoutMs)
 
       socket.on('open', () => {
@@ -772,7 +773,7 @@ export class JupyterKernel {
         if (ours) this.socket = null
         if (!settled) {
           settled = true
-          reject(new Error('channel closed before it opened'))
+          reject(new Error(tr("server.channelClosedBeforeItOpened.7a0657")))
           return
         }
         // Закрылся не наш канал — тот, что мы сами и сменили: переподключаться
@@ -827,11 +828,11 @@ export class JupyterKernel {
   private async waitForSocket(timeoutMs = SOCKET_WAIT_MS): Promise<WebSocket> {
     const deadline = Date.now() + timeoutMs
     for (;;) {
-      if (this.disposed) throw new Error('the kernel connection was closed')
-      if (this._phase === 'dead') throw new Error('the Python kernel is not running')
+      if (this.disposed) throw new Error(tr("server.theKernelConnectionWasClosed.e0bdcf"))
+      if (this._phase === 'dead') throw new Error(tr("server.thePythonKernelIsNotRunning.a9cde2"))
       const socket = this.socket
       if (socket && socket.readyState === WebSocket.OPEN) return socket
-      if (Date.now() >= deadline) throw new Error('lost the connection to the Python kernel')
+      if (Date.now() >= deadline) throw new Error(tr("server.lostTheConnectionToThePythonKernel.c46ec2"))
       if (!socket && !this.reconnectTimer && !this.reconnecting) this.scheduleReconnect()
       await delay(SOCKET_POLL_MS)
     }

@@ -7,7 +7,10 @@
  * что уже в очереди. Такая неправда молчит, поэтому она здесь и закреплена.
  */
 import './_env.mts'
-import { test } from 'node:test'
+import { test, beforeEach, afterEach } from 'node:test'
+import { setLocaleResolver, tr } from '../shared/i18n.js'
+beforeEach(() => setLocaleResolver(() => 'en'))
+afterEach(() => setLocaleResolver(() => 'ru'))
 import assert from 'node:assert/strict'
 import { runSlot } from '../web/src/lib/run-slot.js'
 import { OFFLINE_REASON } from '../web/src/lib/controls.js'
@@ -63,7 +66,7 @@ test('чужая очередь — погашенный крест, и фраз
 test('обрыв связи перебивает любую другую причину', () => {
   for (const state of ['idle', 'queued', 'running'] as const) {
     const slot = runSlot(state, { connected: false, mayRun: true, canCancel: true, canInterrupt: true })
-    assert.equal(slot.title, OFFLINE_REASON, state)
+    assert.equal(slot.title, tr(OFFLINE_REASON), state)
     assert.equal(slot.disabled, true, state)
     // Лицо остаётся: значок по-прежнему говорит правду о том, что делает ячейка.
     assert.equal(slot.action, runSlot(state, OPEN).action, state)

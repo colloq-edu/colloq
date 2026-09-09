@@ -1,3 +1,5 @@
+import { setLanguage } from './i18n.svelte'
+import { tr } from '@shared/i18n'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import type { Awareness } from 'y-protocols/awareness'
@@ -642,6 +644,10 @@ export class SessionState {
       } catch {
         return
       }
+      if (message.t === 'instance:language') {
+        setLanguage(message.language)
+        return
+      }
       if (message.t === 'rules') {
         // Правила меняются на ходу, и комната обязана узнать сразу: кнопка,
         // которая только что начала отказывать, без объяснения читается как
@@ -1043,7 +1049,7 @@ export class SessionState {
   #roomIsGone(): void {
     if (this.gone) return
     this.gone = true
-    this.lastError = 'This seminar was deleted. Ask the teacher for another seminar link.'
+    this.lastError = tr('room.ui.1172')
     this.provider.disconnect()
     forgetSessionInfo(this.session.id)
     void this.localStore.clear()
@@ -1401,8 +1407,8 @@ export class SessionState {
       message: fresh
         ? this.#refusal!.message
         : stale
-          ? 'Загружена актуальная версия тетради с сервера.'
-          : 'Сервер не сохранил эту правку.',
+          ? tr('room.ui.940')
+          : tr('room.ui.1173'),
       text: cell ? cellSource(cell.cell).toString() : '',
       /*
        * И весь набранный текст рядом — всех тетрадей комнаты.
@@ -1439,8 +1445,8 @@ export class SessionState {
           return
         }
         this.stuck = stale
-          ? 'Не удалось синхронизировать тетрадь после двух попыток. Закройте другие вкладки этой комнаты и перезагрузите страницу.'
-          : 'Сервер дважды отклонил изменения из этой вкладки. Закройте другие вкладки этой комнаты и перезагрузите страницу.'
+          ? tr('room.ui.1174')
+          : tr('room.ui.1175')
       })
   }
 

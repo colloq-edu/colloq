@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import { endpointIdentity } from './jupyter.js'
 import { kernelBackend } from './runtime-client.js'
 import { createHash } from 'node:crypto'
@@ -96,9 +97,7 @@ const MAX_FLUSH_CHARS = 64 * 1024
  * runInRoom), рода их мы не знаем, а «нажал(а)» в общей расшифровке читается
  * как черновик.
  */
-const FLOOD_NOTICE =
-  '[colloq] Превышена скорость обновления вывода. В общей расшифровке ' +
-  'остаются только последние строки. Для полного вывода перенаправьте его в файл.'
+const FLOOD_NOTICE = 'server.terminal.flood'
 /** Never trim away the command that is producing output right now. */
 const MIN_KEPT_ENTRIES = 2
 const MAX_COMMAND_BYTES = 4096
@@ -116,10 +115,8 @@ const MAX_PENDING_ESC = 128
 const TERM_ROWS = 40
 const TERM_COLS = 120
 
-const SCREEN_NOTICE =
-  '[colloq] Полноэкранные программы (vim, top и другие) отображаются некорректно: терминал поддерживает только построчный вывод. Попробуйте прервать команду через Ctrl+C.'
-const CLEAR_NOTICE =
-  '[colloq] очистка экрана здесь ничего не меняет: расшифровка общая. Стереть её может преподаватель — кнопкой «Очистить».'
+const SCREEN_NOTICE = 'server.terminal.screen'
+const CLEAR_NOTICE = 'server.terminal.clear'
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
@@ -587,7 +584,7 @@ function systemLine(term: Term, text: string): void {
 }
 
 /** «снято 2 команды», «снято 5 команд» — числительное общее, из shared. */
-const commandWord = (n: number) => plural(n, 'команда', 'команды', 'команд')
+const commandWord = (n: number) => tr('server.commandWord', { count: n })
 
 /**
  * Stop appending to the current output entry, taking the in-progress tail back
@@ -881,14 +878,14 @@ function flush(term: Term): void {
   if (res.screen && !term.screenApp) {
     term.screenApp = true
     detachOutput(term)
-    systemLine(term, SCREEN_NOTICE)
+    systemLine(term, tr(SCREEN_NOTICE))
   }
   if (term.screenApp) return
 
   if (res.cleared && !term.clearNoticed) {
     term.clearNoticed = true
     detachOutput(term)
-    systemLine(term, CLEAR_NOTICE)
+    systemLine(term, tr(CLEAR_NOTICE))
   }
   writeOut(term, budgeted(term, res.committed))
 }
@@ -904,7 +901,7 @@ function budgeted(term: Term, committed: string): string {
   if (!term.flooded) {
     term.flooded = true
     detachOutput(term)
-    systemLine(term, FLOOD_NOTICE)
+    systemLine(term, tr(FLOOD_NOTICE))
   }
   return tail
 }
@@ -1012,8 +1009,8 @@ function dropPending(term: Term, why: string): void {
   systemLine(
     term,
     dropped.length === 1
-      ? `[colloq] ${dropped[0].by.name} — команда снята из очереди: ${why}.`
-      : `[colloq] из очереди снято ${dropped.length} ${commandWord(dropped.length)}: ${why}.`,
+      ? tr("server.colloqTheCommandWasRemovedFromThe.7c25e4", { p0: dropped[0].by.name, p1: why })
+      : tr("server.colloqRemovedFromTheQueue.649577", { p0: dropped.length, p1: commandWord(dropped.length), p2: why }),
   )
 }
 
@@ -1072,15 +1069,15 @@ async function createJupyterTerminal(endpoint: KernelEndpoint): Promise<string> 
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
       throw new Error(
-        `Jupyter отверг учётные данные сервера (HTTP ${res.status}). JUPYTER_TOKEN должен совпадать с токеном, с которым поднят контейнер ядра.`,
+        tr("server.jupyterRejectedTheServerCredentialsHttpCheck.9d96c8", { p0: res.status }),
       )
     }
-    throw new Error(`Jupyter не завёл оболочку (HTTP ${res.status}).`)
+    throw new Error(tr("server.jupyterCouldNotCreateTheShellHttp.1a2d57", { p0: res.status }))
   }
   const parsed = (await res.json()) as { name?: unknown }
   const name = parsed?.name
   if (typeof name !== 'string' && typeof name !== 'number') {
-    throw new Error('Jupyter завёл оболочку без имени.')
+    throw new Error(tr("server.jupyterCreatedAShellWithoutAName.f86302"))
   }
   return String(name)
 }
@@ -1089,12 +1086,12 @@ async function deleteJupyterTerminal(endpoint: KernelEndpoint, name: string): Pr
   const res = await jupyterRequest(endpoint, `/api/terminals/${encodeURIComponent(name)}`, 'DELETE')
   // 404 means somebody beat us to it, which is the outcome we wanted anyway.
   if (!res.ok && res.status !== 404) {
-    throw new Error(`Jupyter не закрыл оболочку (HTTP ${res.status}).`)
+    throw new Error(tr("server.jupyterCouldNotCloseTheShellHttp.2aef51", { p0: res.status }))
   }
 }
 
 class TerminalCancelled extends Error {
-  constructor() { super('Открытие терминала отменено: терминал закрыли.') }
+  constructor() { super(tr("server.openingTheTerminalWasCancelledBecauseIt.783698")) }
 }
 function currentAttempt(term: Term, generation: number): boolean {
   return term.generation === generation && !term.closing && terms.get(term.sessionId) === term
@@ -1152,7 +1149,7 @@ const sendSize = (term: Term) =>
 function connect(term: Term, generation: number): Promise<void> {
   checkAttempt(term, generation)
   const name = term.name
-  if (!name) return Promise.reject(new Error('подключаться не к чему — у оболочки нет имени'))
+  if (!name) return Promise.reject(new Error(tr("server.cannotConnectTheShellHasNoName.f64bd7")))
 
   return new Promise<void>((resolve, reject) => {
     let socket: WebSocket
@@ -1178,7 +1175,7 @@ function connect(term: Term, generation: number): Promise<void> {
         /* nothing to terminate */
       }
       reject(
-        new Error(`канал оболочки не открылся за ${Math.round(CONNECT_TIMEOUT_MS / 1000)} с`),
+        new Error(tr("server.theShellChannelDidNotOpenWithin.dcc3b4", { p0: Math.round(CONNECT_TIMEOUT_MS / 1000) })),
       )
     }, CONNECT_TIMEOUT_MS)
 
@@ -1247,7 +1244,7 @@ function connect(term: Term, generation: number): Promise<void> {
       if (ours) term.socket = null
       if (!settled) {
         settled = true
-        reject(new Error('канал оболочки закрылся, не открывшись'))
+        reject(new Error(tr("server.theShellChannelClosedBeforeOpening.45e62d")))
         return
       }
       // Закрылся не тот сокет, которым терминал пользуется сейчас: это уборка
@@ -1285,10 +1282,10 @@ function onShellExit(term: Term): void {
   term.name = null
   closeSocket(term)
   settleRun(term, false)
-  rejectWaiters(term, new Error('оболочка вышла'))
+  rejectWaiters(term, new Error(tr("server.theShellExited.3948b2")))
   setPhase(term, 'closed')
-  systemLine(term, '[colloq] Оболочка завершила работу. Нажмите «Перезапустить оболочку», чтобы создать новую.')
-  dropPending(term, 'оболочка вышла')
+  systemLine(term, tr("server.colloqTheShellExitedSelectRestartShell.bc74b5"))
+  dropPending(term, tr("server.theShellExited.3948b2"))
 }
 
 /* -------------------------------------------------------------- lifecycle */
@@ -1319,7 +1316,7 @@ function fail(term: Term, message: string): void {
   closeSocket(term)
   setPhase(term, 'dead')
   systemLine(term, `[colloq] ${message}`)
-  dropPending(term, 'терминала больше нет')
+  dropPending(term, tr("server.theTerminalNoLongerExists.fe4ae0"))
   rejectWaiters(term, new Error(message))
 }
 
@@ -1386,7 +1383,7 @@ function probeShell(term: Term): void {
 function scheduleReconnect(term: Term): void {
   if (term.reconnectTimer || term.closing) return
   if (term.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    fail(term, 'Связь с общей оболочкой потеряна. Нажмите «Перезапустить оболочку», чтобы создать новую.')
+    fail(term, tr("server.theConnectionToTheSharedShellWas.94c77c"))
     return
   }
   const wait = Math.min(500 * 2 ** term.reconnectAttempts, 5000)
@@ -1427,7 +1424,7 @@ function reconnect(term: Term): Promise<void> {
           term.name = null
           term.endpoint = current
           rememberPty(term)
-          fail(term, 'Ядро занятия было пересоздано. Прежняя оболочка завершилась; откройте терминал заново.')
+          fail(term, tr("server.theSeminarKernelWasReplacedThePrevious.bacb22"))
           return
         }
         term.endpoint = current
@@ -1536,7 +1533,7 @@ export function openTerminal(sessionId: string): Promise<void> {
       // `docker restart` он другой. Забыть — иначе следующая попытка пойдёт по
       // тому же мёртвому адресу, и так до перезапуска всего сервера.
       forgetSessionKernel(sessionId)
-      const message = `не удалось открыть общую оболочку — ${errText(err)}`
+      const message = tr("server.couldNotOpenTheSharedShell.c33160", { p0: errText(err) })
       fail(term, message)
       throw new Error(message)
     } finally {
@@ -1570,7 +1567,7 @@ function drainQueued(term: Term): void {
   const pending = term.queued.splice(0, term.queued.length)
   for (const payload of pending) {
     if (!sendStdin(term, payload)) {
-      fail(term, 'Не удалось подключиться к общей оболочке. Создайте новую оболочку.')
+      fail(term, tr("server.couldNotConnectToTheSharedShell.5b8c9e"))
       return
     }
   }
@@ -1591,7 +1588,7 @@ export function runCommand(
     return
   }
   if (Buffer.byteLength(text, 'utf8') > MAX_COMMAND_BYTES) {
-    systemLine(term, '[colloq] команда слишком длинная — положите её в файл и запустите файл.')
+    systemLine(term, tr("server.colloqTheCommandIsTooLongPut.50c546"))
     done?.({ output: '', finished: false })
     return
   }
@@ -1617,14 +1614,14 @@ export function runCommand(
    */
   if (term.commandLine) {
     if (term.pending.length >= MAX_PENDING_COMMANDS) {
-      systemLine(term, '[colloq] в очереди уже слишком много команд — повторите, когда оболочка освободится.')
+      systemLine(term, tr("server.colloqTooManyCommandsAreQueuedTry.76db34"))
       // Тот, кто ждёт ответа (оракул), должен узнать об отказе сейчас, а не
       // через полторы минуты по таймауту.
       done?.({ output: '', finished: false })
       return
     }
     term.pending.push({ text, by, done })
-    systemLine(term, `[colloq] ${by.name} — команда ждёт свободной оболочки.`)
+    systemLine(term, tr("server.colloqTheCommandIsWaitingForThe.0e6b42", { p0: by.name }))
     return
   }
 
@@ -1721,8 +1718,8 @@ export function dropPendingOf(sessionId: string, participantId: string): number 
   systemLine(
     term,
     mine.length === 1
-      ? `[colloq] ${mine[0].by.name} — команда снята из очереди.`
-      : `[colloq] из очереди снято ${mine.length} ${commandWord(mine.length)}.`,
+      ? tr("server.colloqTheCommandWasRemovedFromThe.1c9d79", { p0: mine[0].by.name })
+      : tr("server.colloqRemovedFromTheQueue.9a6da6", { p0: mine.length, p1: commandWord(mine.length) }),
   )
   return mine.length
 }
@@ -1778,8 +1775,8 @@ export function interruptTerminal(sessionId: string, by?: string, byId?: string)
       systemLine(
         term,
         dropped === 1
-          ? `[colloq] ${mine[0].by.name} — команда снята из очереди.`
-          : `[colloq] из очереди снято ${dropped} ${commandWord(dropped)}.`,
+          ? tr("server.colloqTheCommandWasRemovedFromThe.1c9d79", { p0: mine[0].by.name })
+          : tr("server.colloqRemovedFromTheQueue.9a6da6", { p0: dropped, p1: commandWord(dropped) }),
       )
     }
   }
@@ -1793,7 +1790,7 @@ export function interruptTerminal(sessionId: string, by?: string, byId?: string)
   if (!mayStop) return
   // Named, because a shared shell that goes quiet without saying who did it is
   // a room where everybody assumes it was somebody else.
-  if (by) systemLine(term, `[colloq] Ctrl+C — команду останавливает ${by}.`)
+  if (by) systemLine(term, tr("server.colloqCtrlCIsStoppingTheCommand.3aead4", { p0: by }))
   /*
    * Результат отправки читается, и это не мелочь.
    *
@@ -1811,8 +1808,8 @@ export function interruptTerminal(sessionId: string, by?: string, byId?: string)
     term.queued.unshift(ETX)
     systemLine(
       term,
-      '[colloq] связи с оболочкой сейчас нет, и Ctrl+C до неё ещё не дошёл — ' +
-        'он уйдёт, как только терминал переподключится.',
+      tr("server.colloqTheShellIsDisconnectedSoCtrl.885614") +
+        tr("server.itWillBeSentWhenTheTerminal.bdfcc3"),
     )
   }
 }
@@ -1885,10 +1882,10 @@ export async function closeTerminal(sessionId: string): Promise<void> {
   // Эту оболочку мы сейчас удалим — возвращаться будет некуда.
   rememberPty(term)
   settleRun(term, false)
-  rejectWaiters(term, new Error('терминал закрыли'))
+  rejectWaiters(term, new Error(tr("server.theTerminalWasClosed.5a818b")))
   setPhase(term, 'closed')
-  systemLine(term, '[colloq] терминал закрыт.')
-  dropPending(term, 'терминал закрыли')
+  systemLine(term, tr("server.colloqTheTerminalIsClosed.9cf9fb"))
+  dropPending(term, tr("server.theTerminalWasClosed.5a818b"))
   if (!name) return
   try {
     await deleteJupyterTerminal(term.endpoint, name)
@@ -1917,6 +1914,6 @@ export async function shutdownTerminals(): Promise<void> {
     invalidateAttempt(term)
     clearTimers(term)
     closeSocket(term)
-    rejectWaiters(term, new Error('сервер останавливается'))
+    rejectWaiters(term, new Error(tr("server.theServerIsShuttingDown.79c391")))
   }
 }

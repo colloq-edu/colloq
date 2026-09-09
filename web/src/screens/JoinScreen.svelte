@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, formatDate } from '@shared/i18n'
   /**
    * The thirty seconds before a student is in the room.
    *
@@ -87,7 +88,8 @@
    * остаётся, а здесь ему остаётся только подождать несколько секунд.
    */
   let retrying = $state(false)
-  let error = $state<string | null>(null)
+  let errorRender = $state<() => string | null>(() => null)
+  const error = $derived(errorRender())
   /**
    * Нас не пустили: момент конца бана.
    *
@@ -117,7 +119,7 @@
   function stampOf(ms: number): string {
     const at = new Date(ms)
     const pad = (value: number) => String(value).padStart(2, '0')
-    return `${pad(at.getDate())}.${pad(at.getMonth() + 1)} · ${pad(at.getHours())}:${pad(at.getMinutes())}`
+    return formatDate(ms, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
   }
   const stamp = $derived(stampOf(session.createdAt))
   /** Когда занятие закончили — теми же цифрами, что и час его начала. */
@@ -128,7 +130,7 @@
    * artboard's own logic and it is the right one: with forty marks on screen
    * the button has to say which of them is about to become you.
    */
-  const label = $derived(picking && name.trim() ? `Join as ${name.trim()}` : 'Join the seminar')
+  const label = $derived(picking && name.trim() ? tr('room.ui.861', { p0: name.trim() }) : tr('room.ui.862'))
 
   onMount(() => {
     nameInput?.focus()
@@ -288,14 +290,14 @@
     event?.preventDefault()
     const who = name.trim()
     if (!who) {
-      error = 'Enter the name the group will see'
+      errorRender = () => (tr('room.ui.863'))
       nameInput?.focus()
       return
     }
     if (busy) return
 
     busy = true
-    error = null
+    errorRender = () => (null)
     // Один раз на весь вход, а не на каждую попытку: в толпе, где повторов
     // четыре, это были бы четыре лишних запроса с каждой из пятисот вкладок.
     await freshenMark()
@@ -326,7 +328,7 @@
         }
         const wait = retryJoinIn(cause, tried)
         if (wait === null) {
-          error = cause instanceof Error ? cause.message : 'Could not join the seminar'
+          errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.864'))
           retrying = false
           busy = false
           signingIn = false
@@ -402,9 +404,7 @@
           tone="onDark"
         />
         <span>
-          {present.length}
-          {present.length === 1 ? 'person is' : 'people are'} already inside
-        </span>
+          {tr('room.join.inside', { count: present.length })} </span>
       </div>
     {/if}
   </div>
@@ -428,7 +428,7 @@
     roster landed is what made the masthead jump.
   -->
   <Poster
-    eyebrow="You’re joining"
+    eyebrow={tr('room.ui.840')}
     title={session.name || '\u00a0'}
     {meta}
     footer={inside}
@@ -449,7 +449,7 @@
     -->
     {#if signingIn}
       <div class="mx-auto flex min-h-full w-full max-w-md flex-col justify-center gap-3 py-12">
-        <p class="text-2xs font-bold uppercase tracking-label text-muted">Signing you in</p>
+        <p class="text-2xs font-bold uppercase tracking-label text-muted">{tr('room.ui.841')}</p>
         <!--
           «Straight away» — пока это правда.
 
@@ -461,10 +461,8 @@
         -->
         <p class="text-ui-lg text-muted">
           {#if retrying}
-            {CROWD_NOTICE}
-          {:else}
-            You are signed in as a teacher. Opening the seminar…
-          {/if}
+            {tr(CROWD_NOTICE)}
+          {:else} {tr('room.ui.842')} {/if}
         </p>
       </div>
     {:else}
@@ -476,7 +474,7 @@
            allowed to go with it: a student on a phone still has to see which
            room the link opened. Same content, re-set at a size that fits. -->
       <div class="flex flex-col gap-2 lg:hidden">
-        <p class="text-2xs font-bold uppercase tracking-label text-muted">You’re joining</p>
+        <p class="text-2xs font-bold uppercase tracking-label text-muted">{tr('room.ui.840')}</p>
         <h1 class="text-balance text-display font-black text-ink">
           {session.name || '\u00a0'}
         </h1>
@@ -510,9 +508,7 @@
           class="flex flex-col gap-2 border border-line bg-surface px-4 py-3 text-ui text-muted"
           role="status"
         >
-          <p>
-            Занятие закончено {finishedStamp}. Тетрадь, файлы и ответы оракула доступны для чтения.
-          </p>
+          <p> {tr('room.ui.843')} {finishedStamp}{tr('room.ui.844')} </p>
           {#if session.published}
             <!--
               И куда идти вместо комнаты.
@@ -527,15 +523,13 @@
               которое дали классу, а `/p/<id>` — запасной вход для тех, у кого
               имени нет.
             -->
-            <p>
-              Есть <a
+            <p> {tr('room.ui.845')} <a
                 class="font-semibold text-accent-text hover:underline"
                 href="/p/{publicationAddress(session.published)}"
-                >опубликованная версия</a
+                >{tr('room.ui.846')}</a
               >
               — {session.published.steps}
-              {plural(session.published.steps, 'шаг', 'шага', 'шагов')}{#if session.course}, в
-                курсе <a
+              {plural(session.published.steps, tr('room.ui.713'), tr('room.ui.714'), tr('room.ui.715'))}{#if session.course}{tr('room.ui.847')} <a
                   class="font-semibold text-accent-text hover:underline"
                   href="/c/{session.course.id}">{session.course.name}</a
                 >{/if}.
@@ -548,9 +542,7 @@
         <label
           for="join-name"
           class="text-2xs font-bold uppercase tracking-label text-muted"
-        >
-          Your name
-        </label>
+        > {tr('room.ui.848')} </label>
         <!-- A ruled box on the page's own ground, not a filled surface: on this
              screen the field is the only thing the student has to fill in.
              Через `.field`, а не своей рамкой: фокусный язык на продукт один —
@@ -565,11 +557,11 @@
           bind:this={nameInput}
           bind:value={name}
           class="field bg-canvas px-4 py-3 text-head font-semibold placeholder:font-normal"
-          placeholder="Alex"
+          placeholder={tr('room.ui.849')}
           maxlength={40}
           autocomplete="name"
           aria-invalid={error ? 'true' : undefined}
-          oninput={() => (error = null)}
+          oninput={() => (errorRender = () => null)}
         />
         {#if error}
           <p class="text-ui text-danger" role="alert">{error}</p>
@@ -577,16 +569,16 @@
           <!-- Спокойной строкой, не красной, и на том же месте, где стоял бы
                отказ: человек ничего не сделал неправильно, а знать, чего он
                ждёт, всё равно должен. -->
-          <p class="text-ui text-muted" role="status">{CROWD_NOTICE}</p>
+          <p class="text-ui text-muted" role="status">{tr(CROWD_NOTICE)}</p>
         {/if}
       </div>
 
       <div class="flex flex-col gap-2.5">
         <div class="flex items-baseline gap-2.5">
-          <span class="text-2xs font-bold uppercase tracking-label text-muted">Your mark</span>
+          <span class="text-2xs font-bold uppercase tracking-label text-muted">{tr('room.ui.123')}</span>
           {#if picking}
             <span class="ml-auto text-2xs text-muted">
-              {MARKS.length} marks{taken.size > 0 ? ` · ${taken.size} taken` : ''}
+              {MARKS.length} {tr('room.ui.850')}{taken.size > 0 ? tr('room.mark.takenCount', { count: taken.size }) : ''}
             </span>
           {/if}
         </div>
@@ -616,15 +608,13 @@
               {mark}
             </span>
             <div class="flex min-w-[11rem] flex-1 flex-col gap-0.5">
-              <p class="text-ui-lg font-semibold text-ink">The {markName(mark)} is yours</p>
+              <p class="text-ui-lg font-semibold text-ink">{tr('room.mark.owned', { name: markName(mark) })}</p>
               <!-- Обещание ровно на то, что делается: ростер читается перед
                    входом, а не при монтировании, — но сорок меток на класс и
                    две вкладки, постучавшие в одну секунду, всё ещё могут
                    сойтись. «Always yours» было обещанием сервера, которого
                    сервер не даёт. -->
-              <p class="text-2xs text-muted">
-                This mark is available in the room. You can choose another one.
-              </p>
+              <p class="text-2xs text-muted"> {tr('room.ui.853')} </p>
             </div>
             <!-- `press` is the house helper for a control that does not route
                  through .btn: transform only, --speed-press (120ms, the middle
@@ -638,9 +628,7 @@
                      sm:flex-none sm:justify-start"
               onclick={openPicker}
             >
-              <Icon name="restart" size={13} />
-              Change
-            </button>
+              <Icon name="restart" size={13} /> {tr('room.ui.854')} </button>
           </div>
         {/if}
       </div>
@@ -690,7 +678,7 @@
             {mark}
           </span>
         {/if}
-        <span class="min-w-0 truncate">{busy ? 'Joining…' : label}</span>
+        <span class="min-w-0 truncate">{busy ? tr('room.ui.855') : label}</span>
         {#if busy}
           <Icon name="spinner" size={16} class="shrink-0 animate-spin" />
         {:else}
@@ -699,9 +687,7 @@
       </button>
 
       {#if !picking}
-        <p class="text-ui text-muted">
-          No account needed. Use this link to return to the seminar.
-        </p>
+        <p class="text-ui text-muted"> {tr('room.ui.856')} </p>
       {/if}
     </form>
     {/if}

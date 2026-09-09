@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Куда ляжет строка дерева, которую тащат в папку, — и почему иногда никуда.
  *
@@ -158,7 +159,7 @@ export function longestAfter(dragged: Row, into: string, files: readonly FileEnt
  * короток, — а то, что лежит внутри, и фраза говорит именно это.
  */
 export function tooLong(from: string): string {
-  return `«${baseOf(from)}» нельзя переместить: путь к содержимому превысит ${MAX_PATH} символов.`
+  return tr('room.ui.1177', { p0: baseOf(from), p1: MAX_PATH })
 }
 
 /**
@@ -193,7 +194,7 @@ export function planMove(dragged: Row, onto: Row | null, files: readonly FileEnt
    * круг позже.
    */
   if (!files.some((entry) => entry.path === from)) {
-    return { do: 'refuse', why: `«${baseOf(from)}» в комнате больше нет.` }
+    return { do: 'refuse', get why() { return tr('room.ui.1178', { p0: baseOf(from) }) } }
   }
 
   // Папку бросили на её же строку — это промах пальцем, а не ошибка. Стоит
@@ -204,7 +205,7 @@ export function planMove(dragged: Row, onto: Row | null, files: readonly FileEnt
   // Папка внутрь самой себя. Сюда же попадает бросок на файл, лежащий внутри
   // неё: `dropFolder` вернёт его папку, а она внутри переезжающей.
   if (dragged.dir && isInside(into, from)) {
-    return { do: 'refuse', why: `«${baseOf(from)}» нельзя переместить внутрь себя.` }
+    return { do: 'refuse', get why() { return tr('room.ui.1179', { p0: baseOf(from) }) } }
   }
 
   // Переезд в никуда: запись уже лежит в этой папке. Ни сообщения, ни слов —
@@ -228,17 +229,17 @@ export function planMove(dragged: Row, onto: Row | null, files: readonly FileEnt
     return {
       do: 'refuse',
       why: into
-        ? `«${baseOf(to)}» в папке «${baseOf(into)}» уже есть.`
-        : `«${baseOf(to)}» в корне комнаты уже есть.`,
+        ? tr('room.ui.1180', { p0: baseOf(to), p1: baseOf(into) })
+        : tr('room.ui.1181', { p0: baseOf(to) }),
     }
   }
 
   // Глубина — про СОДЕРЖИМОЕ, а не про саму запись: см. `deepestAfter`.
   if (deepestAfter(dragged, into, files) > MAX_DEPTH) {
-    return { do: 'refuse', why: `Допустимая глубина пути — до ${MAX_DEPTH} уровней.` }
+    return { do: 'refuse', get why() { return tr('room.ui.1182', { p0: MAX_DEPTH }) } }
   }
   if (normalizePath(to) === null) {
-    return { do: 'refuse', why: `Путь до «${baseOf(to)}» длиннее ${MAX_PATH} символов.` }
+    return { do: 'refuse', get why() { return tr('room.ui.1183', { p0: baseOf(to), p1: MAX_PATH }) } }
   }
   // Длина — тоже про СОДЕРЖИМОЕ: см. `longestAfter`. Отдельной фразой, потому
   // что виновата не та запись, которую тащат, а путь до того, что в ней.

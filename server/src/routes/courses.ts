@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Курсы и публикации: и то, что делает преподаватель, и то, что читает студент.
  *
@@ -134,7 +135,7 @@ export function courseRoutes(): Router {
 
   router.post('/api/admin/courses', requireStaff, (req, res) => {
     const name = str(req.body?.name, MAX_COURSE_NAME)
-    if (!name) return bad(res, 'a course needs a name')
+    if (!name) return bad(res, tr("server.aCourseNeedsAName.42dad0"))
     const teacher = currentStaff(req)
     res.json({
       course: createCourse(
@@ -147,7 +148,7 @@ export function courseRoutes(): Router {
 
   router.get('/api/admin/courses/:id', requireStaff, (req, res) => {
     const course = getCourse(req.params.id)
-    if (!course) return res.status(404).json({ error: 'course not found' })
+    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
     res.json({
       course: {
         ...course,
@@ -159,7 +160,7 @@ export function courseRoutes(): Router {
 
   router.patch('/api/admin/courses/:id', requireStaff, (req, res) => {
     const course = getCourse(req.params.id)
-    if (!course) return res.status(404).json({ error: 'course not found' })
+    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
     const blurb =
       req.body?.blurb === undefined ? course.blurb : str(req.body.blurb, MAX_COURSE_BLURB) || null
     res.json({
@@ -176,9 +177,9 @@ export function courseRoutes(): Router {
    */
   router.put('/api/admin/courses/:id/items', requireStaff, (req, res) => {
     const course = getCourse(req.params.id)
-    if (!course) return res.status(404).json({ error: 'course not found' })
+    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
     const incoming: unknown = req.body?.items
-    if (!Array.isArray(incoming)) return bad(res, 'items must be an array')
+    if (!Array.isArray(incoming)) return bad(res, tr("server.itemsMustBeAnArray.399a2e"))
 
     const items: CourseItem[] = []
     for (const raw of incoming as Record<string, unknown>[]) {
@@ -228,7 +229,7 @@ export function courseRoutes(): Router {
     if (!updated) {
       const now = getCourse(course.id)!
       return res.status(409).json({
-        error: 'этот курс уже изменили',
+        error: tr("server.thisCourseHasAlreadyBeenChanged.70c236"),
         course: { ...now, items: freshItems(now.items) },
       })
     }
@@ -249,7 +250,7 @@ export function courseRoutes(): Router {
    * не было, — это неправда в ответе.
    */
   router.delete('/api/admin/courses/:id', ownerOnly('delete a course'), (req, res) => {
-    if (!getCourse(req.params.id)) return res.status(404).json({ error: 'course not found' })
+    if (!getCourse(req.params.id)) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
     deleteCourse(req.params.id)
     res.json({ ok: true })
   })
@@ -265,11 +266,11 @@ export function courseRoutes(): Router {
     const raw = req.body?.slug
     const slug = typeof raw === 'string' && raw.trim() ? raw.trim().toLowerCase() : null
     if (slug !== null && !slugOk(slug)) {
-      return bad(res, 'Используйте строчные латинские буквы, цифры и дефис.')
+      return bad(res, tr("server.useLowercaseLatinLettersDigitsAndHyphens.f004a4"))
     }
     const course = req.params.kind === 'course'
     const target = course ? getCourse(req.params.id) : getPublication(req.params.id)
-    if (!target) return res.status(404).json({ error: 'not found' })
+    if (!target) return res.status(404).json({ error: tr("server.notFound.094b76") })
 
     const outcome = course ? setCourseSlug(target.id, slug) : setPublicationSlug(target.id, slug)
     if (outcome === 'taken') {
@@ -292,14 +293,14 @@ export function courseRoutes(): Router {
        * отпускают прямо здесь, в двух сантиметрах от неё.
        */
       const holder = addressHolder(course ? 'course' : 'publication', slug!)
-      const what = course ? 'курсом' : 'страницей'
-      const whose = course ? 'курса' : 'страницы'
+      const what = course ? tr("server.course.7c69f0") : tr("server.page.356bb7")
+      const whose = course ? tr("server.course.91f120") : tr("server.page.3360a3")
       return res.status(409).json({
         error: !holder
-          ? `Адрес «${slug}» уже занят.`
+          ? tr("server.theAddressIsAlreadyInUse.795904", { p0: String(slug) })
           : holder.former
-            ? `Адрес «${slug}» — прежнее имя ${whose} «${holder.name}».`
-            : `Адрес «${slug}» занят ${what} «${holder.name}».`,
+            ? tr("server.theAddressIsAFormerNameOf.a5a2ca", { p0: String(slug), p1: whose, p2: holder.name })
+            : tr("server.theAddressIsUsedByThe.3ffa25", { p0: String(slug), p1: what, p2: holder.name }),
         holder,
       })
     }
@@ -321,7 +322,7 @@ export function courseRoutes(): Router {
   router.delete('/api/admin/slug/:kind/:id/former/:slug', requireStaff, (req, res) => {
     const kind = req.params.kind === 'course' ? 'course' : 'publication'
     if (!releaseFormerSlug(kind, req.params.id, req.params.slug.toLowerCase())) {
-      return res.status(404).json({ error: 'not found' })
+      return res.status(404).json({ error: tr("server.notFound.094b76") })
     }
     res.json({ ok: true })
   })
@@ -367,8 +368,8 @@ export function courseRoutes(): Router {
       }
 
       const asked: unknown = req.body?.steps
-      if (!Array.isArray(asked)) return bad(res, 'steps must be an array')
-      if (asked.length > MAX_STEPS) return bad(res, `не больше ${MAX_STEPS} шагов`)
+      if (!Array.isArray(asked)) return bad(res, tr("server.stepsMustBeAnArray.62b083"))
+      if (asked.length > MAX_STEPS) return bad(res, tr("server.noMoreThanSteps.63addd", { p0: MAX_STEPS }))
 
       /*
        * Что просили — и что из этого шагом не станет.
@@ -392,7 +393,7 @@ export function courseRoutes(): Router {
          * него надо словами, а не молчанием и не пятисоткой из транзакции.
          */
         if (!Number.isInteger(seq) || seq <= 0) {
-          return bad(res, 'Укажите номер версии для шага: целое число больше нуля.')
+          return bad(res, tr("server.chooseAVersionForTheStepA.ec311c"))
         }
         // Безымянный шаг не публикуется: рельса из «Снимок №14» — это не
         // названные моменты, а признание, что назвать их забыли.
@@ -452,7 +453,7 @@ export function courseRoutes(): Router {
        */
       steps.push({
         seq: 0,
-        label: str(req.body?.finalLabel, MAX_STEP_LABEL) || 'Тетрадь на момент публикации',
+        label: str(req.body?.finalLabel, MAX_STEP_LABEL) || tr("server.notebookAtPublication.33f04f"),
         at: Date.now(),
         cells: visitSessionDoc(session.id, (doc) => pageOfDoc(doc, blobs)),
       })
@@ -475,14 +476,14 @@ export function courseRoutes(): Router {
   /** Снять страницу. Ссылка остаётся и говорит, что её сняли. */
   router.delete('/api/admin/seminars/:id/publish', requireStaff, (req, res) => {
     const pub = publicationOf(req.params.id)
-    if (!pub) return res.status(404).json({ error: 'not published' })
+    if (!pub) return res.status(404).json({ error: tr("server.notPublished.61a0a5") })
     setPublicationState(pub.id, 'withdrawn')
     res.json({ ok: true })
   })
 
   router.post('/api/admin/seminars/:id/publish/restore', requireStaff, (req, res) => {
     const pub = publicationOf(req.params.id)
-    if (!pub) return res.status(404).json({ error: 'not published' })
+    if (!pub) return res.status(404).json({ error: tr("server.notPublished.61a0a5") })
     setPublicationState(pub.id, 'published')
     res.json({ ok: true })
   })
@@ -539,7 +540,7 @@ export function courseRoutes(): Router {
     // По имени или по идентификатору: ссылка, розданная до того, как курсу
     // дали имя, обязана работать и после.
     const course = findCourse(req.params.id)
-    if (!course) return res.status(404).json({ error: 'course not found' })
+    if (!course) return res.status(404).json({ error: tr("server.courseNotFound.0429ec") })
     res.json({ course: publicCourseView(course) })
   })
 
@@ -583,7 +584,7 @@ export function courseRoutes(): Router {
       return res.status(404).json({ error: PUBLICATION_NOT_FOUND })
     }
     const asked = req.params.seq === 'first' ? null : Number(req.params.seq)
-    if (asked !== null && !Number.isFinite(asked)) return bad(res, 'bad step')
+    if (asked !== null && !Number.isFinite(asked)) return bad(res, tr("server.badStep.8811c6"))
     /*
      * Шаг — самое тяжёлое, что отдаёт публичная половина: страница целиком,
      * со всеми текстовыми выводами. И самое неизменное: пока `revision` тот

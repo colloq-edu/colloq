@@ -11,6 +11,7 @@
  * Ядра, docker и сети тут нет — проверяются двери, а не то, что за ними.
  */
 import './_env.mts'
+import { tr } from '../shared/i18n.js'
 import http from 'node:http'
 import { createHmac } from 'node:crypto'
 import { after, before, test } from 'node:test'
@@ -94,7 +95,7 @@ test('чужая страница не пишет НИГДЕ, а не тольк
   })
   assert.equal(made.status, 403, 'семинар завёлся по запросу с чужого сайта')
   const said = (await made.json()) as { error?: string }
-  assert.match(said.error ?? '', /Request blocked: this page uses a different server address/)
+  assert.equal(said.error, tr('server.requestBlockedThisPageUsesADifferent.dd9b4b'))
 })
 
 test('свой запрос и запрос без Origin проходят', async () => {
@@ -177,14 +178,14 @@ test('заголовки безопасности стоят на ответах
 test('несуществующая дверь API — это JSON, а не страница express', async () => {
   const seen = await call('GET', '/api/nope')
   assert.equal(seen.status, 404)
-  assert.deepEqual(await seen.json(), { error: 'not found' })
+  assert.deepEqual(await seen.json(), { error: tr('common.notFound') })
 })
 
 test('кривое тело — 400 словами, а не HTML-страница на 500', async () => {
   const seen = await call('POST', '/api/sessions', { raw: '{не json' })
   assert.equal(seen.status, 400)
   const said = (await seen.json()) as { error?: string }
-  assert.match(said.error ?? '', /malformed JSON/)
+  assert.equal(said.error, tr('common.badJson'))
 })
 
 test('robots.txt и X-Robots-Tag говорят про публикации одно и то же', async () => {

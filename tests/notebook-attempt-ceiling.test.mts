@@ -1,3 +1,4 @@
+import { translate, tr } from '../shared/i18n.js'
 /**
  * Потолок попытки консилиума глазами тетради: лист, счётчик и «сдано».
  *
@@ -59,7 +60,7 @@ test('фильтр редактора отказывает только поль
 
 test('потолок редактору называет лист, и берёт он его из общей земли', () => {
   assert.match(CELL, /import \{[\s\S]*?MAX_ATTEMPT_CHARS,[\s\S]*?\} from '@shared\/notebook'/)
-  const at = CELL.indexOf('label={`Своя попытка')
+  const at = CELL.indexOf("label={tr('room.extra.132'")
   assert.ok(at > 0, 'своего листа в тетради больше нет')
   const sheet = CELL.slice(at, at + 900)
   assert.match(sheet, /maxChars=\{MAX_ATTEMPT_CHARS\}/, 'лист не знает потолка')
@@ -96,8 +97,9 @@ test('«сдано» не рисуется под текстом, которог
   assert.match(line, /submittedAt !== null && !attemptSynced/, 'расхождение не различается')
   // Ветка расхождения идёт ПЕРВОЙ: иначе «сдано» перехватит её всегда.
   assert.ok(
-    line.indexOf('!attemptSynced') < line.indexOf('сдано {clock(submittedAt)}'),
+    line.indexOf('!attemptSynced') < line.indexOf("tr('room.ui.50')"),
     '«сдано» стоит раньше проверки и выигрывает у неё',
   )
-  assert.match(line, /После сдачи текст изменился/, 'словам о расхождении нечего сказать')
+  assert.match(line, /tr\('room\.ui\.351'\)/, 'словам о расхождении нечего сказать')
+  assert.match(translate('ru', 'room.ui.351'), /После сдачи текст изменился/)
 })

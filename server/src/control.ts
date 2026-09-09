@@ -1,3 +1,6 @@
+import {getLocale} from '@shared/i18n'
+import {onInstanceLanguage} from './instance-language.js'
+import { tr, formatNumber } from '@shared/i18n'
 /**
  * The run-control socket.
  *
@@ -264,6 +267,9 @@ interface Room {
 }
 
 const rooms = new Map<string, Room>()
+onInstanceLanguage((language) => {
+  for (const sessionId of rooms.keys()) broadcast(sessionId, {t:'instance:language',language})
+})
 
 /* ----------------------------------------------------------------- send */
 
@@ -359,7 +365,7 @@ export function closeControlRoom(sessionId: string): void {
   room.unwatch()
   for (const ws of room.sockets) {
     try {
-      ws.close(1001, 'this seminar was deleted')
+      ws.close(1001, tr("server.thisSeminarWasDeleted.daaaad"))
     } catch {
       /* already gone */
     }
@@ -399,7 +405,7 @@ export function evictBanned(sessionId: string, participantId: string, until: num
     // Копия набора: обработчик закрытия правит его же.
     for (const ws of [...(room.byParticipant.get(participantId) ?? [])]) {
       try {
-        ws.close(1008, 'banned from this seminar')
+        ws.close(1008, tr("server.bannedFromThisSeminar.234bce"))
       } catch {
         /* already gone */
       }
@@ -806,7 +812,7 @@ const notesOpen = new WeakMap<WebSocket, string>()
  * Та же фраза, что у клиента (web/src/lib/may.ts · COUNCIL_CLOSED): отказ
  * сервера и серая кнопка должны говорить одно и то же.
  */
-const COUNCIL_CLOSED = 'Консилиум закрыт — текст остался у вас черновиком'
+const COUNCIL_CLOSED = () => tr("server.councilIsClosedYourTextRemainsIn.b08319")
 
 /**
  * Сказать всем преподавателям комнаты — и никому больше.
@@ -1480,7 +1486,7 @@ function parse(data: RawData): ControlClientMessage | typeof TOO_BIG | null {
 }
 
 /** Точка на конце — как у соседних фраз: это законченное предложение. */
-const OVER = `${CLASS_IS_OVER}.`
+const OVER = 'server.classOverPeriod'
 
 /**
  * Отказ по праву — и одна фраза на все отказы законченного занятия.
@@ -1495,7 +1501,7 @@ const OVER = `${CLASS_IS_OVER}.`
 function refuse(ws: WebSocket, sessionId: string, payload: TokenPayload, message: string): void {
   send(ws, {
     t: 'error',
-    message: actsAfterClass(isFinished(sessionId), payload.role) ? message : OVER,
+    message: actsAfterClass(isFinished(sessionId), payload.role) ? message : tr(OVER),
   })
 }
 
@@ -1506,7 +1512,7 @@ function refuse(ws: WebSocket, sessionId: string, payload: TokenPayload, message
  * фразу сам; без общего имени в коде оказалось бы два одинаковых предложения,
  * из которых однажды поправят одно.
  */
-const RUN_IS_THE_TEACHERS = 'Only the teacher runs cells in this seminar.'
+const RUN_IS_THE_TEACHERS = () => tr("server.onlyTheTeacherRunsCellsInThis.21ec54")
 
 /**
  * May this person start the kernel on something?
@@ -1530,7 +1536,7 @@ function mayRun(
   sessionId: string,
   payload: TokenPayload,
   ws: WebSocket,
-  message = RUN_IS_THE_TEACHERS,
+  message = RUN_IS_THE_TEACHERS(),
   cellOpen = false,
 ): boolean {
   if (mayRunCell(getRules(sessionId), payload.role, cellOpen, isFinished(sessionId))) return true
@@ -1568,7 +1574,7 @@ function mayEditThis(
 ): boolean {
   const open = cellIsOpen(sessionId, cellId)
   if (mayEditCell(getRules(sessionId), payload.role, open, isFinished(sessionId))) return true
-  refuse(ws, sessionId, payload, 'В этом семинаре редактировать тетрадь может только преподаватель.')
+  refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayEditTheNotebook.d8abb3"))
   return false
 }
 
@@ -1585,7 +1591,7 @@ function mayBulkRun(sessionId: string, payload: TokenPayload, ws: WebSocket): bo
     ws,
     sessionId,
     payload,
-    'В этом семинаре весь лист запускает преподаватель — запускайте по одной ячейке.',
+    tr("server.onlyTheTeacherMayRunTheWhole.8359b5"),
   )
   return false
 }
@@ -1628,7 +1634,7 @@ function lectureInTheWay(
   if (!going || going.file === wanted || going.by === payload.participantId) return false
   send(ws, {
     t: 'error',
-    message: `Идёт лекция по «${baseOf(going.file)}» — сначала закончите её.`,
+    message: tr("server.aLectureIsUsingEndTheLecture.056f12", { p0: baseOf(going.file) }),
   })
   return true
 }
@@ -1674,7 +1680,7 @@ function queue(ws: WebSocket, sessionId: string, payload: TokenPayload, ids: str
   if (refused > 0) {
     send(ws, {
       t: 'error',
-      message: 'В этом семинаре можно запускать по одной ячейке. Ваша ячейка уже выполняется или стоит в очереди.',
+      message: tr("server.youMayRunOneCellAtA.35e7c7"),
     })
   }
 }
@@ -1686,7 +1692,7 @@ function queue(ws: WebSocket, sessionId: string, payload: TokenPayload, ids: str
  * папки, содержимое которой на новом месте ушло бы за восьмой уровень. Причина
  * одна и та же, и разъехаться этим двум предложениям незачем.
  */
-const TOO_DEEP = `Допустимая глубина пути — до ${MAX_DEPTH} уровней.`
+const TOO_DEEP = () => tr("server.pathsMayBeUpToLevelsDeep.8e0b25", { p0: MAX_DEPTH })
 
 /**
  * Почему путь не годится — теми же словами, что и в поле ввода панели.
@@ -1697,8 +1703,8 @@ const TOO_DEEP = `Допустимая глубина пути — до ${MAX_DE
 function refusedPath(raw: unknown): string {
   const shown = typeof raw === 'string' ? raw : ''
   const last = shown.split('/').filter(Boolean).pop() ?? ''
-  if (!last) return 'Имя не может быть пустым.'
-  if (shown.split('/').filter(Boolean).length > MAX_DEPTH) return TOO_DEEP
+  if (!last) return tr("server.theNameCannotBeEmpty.fc2696")
+  if (shown.split('/').filter(Boolean).length > MAX_DEPTH) return TOO_DEEP()
   return whySegmentRefused(last)
 }
 
@@ -1764,13 +1770,13 @@ function treeTrouble(outcome: TreeResult, target: string, source = target): stri
      * слово: там «эта папка» — ровно та, что открыта.
      */
     const into = parentOf(target)
-    if (into === parentOf(source)) return `«${name}» в этой папке уже есть.`
+    if (into === parentOf(source)) return tr("server.alreadyExistsInThisFolder.3e8b1f", { p0: name })
     return into
-      ? `«${name}» в папке «${baseOf(into)}» уже есть.`
-      : `«${name}» в корне комнаты уже есть.`
+      ? tr("server.alreadyExistsInFolder.2f1ace", { p0: name, p1: baseOf(into) })
+      : tr("server.alreadyExistsInTheRoomSRoot.229dba", { p0: name })
   }
-  if (outcome === 'missing') return `«${baseOf(source)}» в комнате больше нет.`
-  if (outcome === 'too-deep') return TOO_DEEP
+  if (outcome === 'missing') return tr("server.isNoLongerInThisRoom.2ab165", { p0: baseOf(source) })
+  if (outcome === 'too-deep') return TOO_DEEP()
   /*
    * Виновата не та запись, которую переставляют, — её путь короток, — а то, что
    * лежит внутри: после переезда путь до него длиннее адресуемого, и открыть,
@@ -1778,16 +1784,16 @@ function treeTrouble(outcome: TreeResult, target: string, source = target): stri
    * словами (`tooLong` в tree-move.ts), не дожидаясь круга по сети.
    */
   if (outcome === 'too-long') {
-    return `«${baseOf(source)}» нельзя переместить: путь к содержимому превысит ${MAX_PATH} символов.`
+    return tr("server.cannotMoveANestedPathWouldExceed.541d8f", { p0: baseOf(source), p1: MAX_PATH })
   }
   // Получить его можно единственным способом: попросить положить внутрь файла
   // (`отчёт.py/данные.csv`). Корень папкой быть не перестаёт, так что имя того,
   // во что не влезло, здесь есть всегда.
   if (outcome === 'not-a-folder') {
-    return `«${baseOf(parentOf(target))}» — файл. Выберите папку для перемещения.`
+    return tr("server.isAFileChooseADestinationFolder.298ed2", { p0: baseOf(parentOf(target)) })
   }
   if (outcome === 'bad-name') return whySegmentRefused(name)
-  return `«${baseOf(source)}» сейчас занят — попробуйте ещё раз через секунду.`
+  return tr("server.isBusyTryAgainInAMoment.bb101a", { p0: baseOf(source) })
 }
 
 /**
@@ -1809,7 +1815,7 @@ function bookOf(message: { book?: unknown }): string | undefined {
  * а не молчанием: «Run All ничего не сделал» человек объясняет себе сам, и
  * объясняет неверно.
  */
-const NO_SUCH_BOOK = 'Этой тетради в комнате больше нет.'
+const NO_SUCH_BOOK = () => tr("server.thisNotebookIsNoLongerInThe.513a76")
 
 function optionalId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : undefined
@@ -1850,7 +1856,7 @@ export function dispatch(
        * документе. Проверка стояла до всякого знания о ячейке и потому не
        * могла его учесть. Отказ при этом остался одной фразой — той же самой.
        */
-      if (!mayRun(sessionId, payload, ws, RUN_IS_THE_TEACHERS, cellIsOpen(sessionId, id))) return
+      if (!mayRun(sessionId, payload, ws, RUN_IS_THE_TEACHERS(), cellIsOpen(sessionId, id))) return
       queue(ws, sessionId, payload, [id])
       return
     }
@@ -1869,7 +1875,7 @@ export function dispatch(
       if (!mayBulkRun(sessionId, payload, ws)) return
       const ids = codeCellIds(sessionId, bookOf(message))
       if (ids === null) {
-        send(ws, { t: 'error', message: NO_SUCH_BOOK })
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
       }
       queue(ws, sessionId, payload, ids)
@@ -1883,7 +1889,7 @@ export function dispatch(
       if (!mayBulkRun(sessionId, payload, ws)) return
       const ids = codeCellIds(sessionId, bookOf(message), id)
       if (ids === null) {
-        send(ws, { t: 'error', message: NO_SUCH_BOOK })
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
       }
       queue(ws, sessionId, payload, ids)
@@ -1905,7 +1911,7 @@ export function dispatch(
           ws,
           sessionId,
           payload,
-          'Only the host, or whoever started the running cell, can interrupt the kernel.',
+          tr("server.onlyTheHostOrWhoeverStartedThe.835184"),
         )
         return
       }
@@ -1928,14 +1934,14 @@ export function dispatch(
       if (!target && payload.role !== 'host' && !queueIsOnly(sessionId, payload.participantId)) {
         send(ws, {
           t: 'error',
-          message: 'В очереди ячейки других — остановите свою, нажав на ней.',
+          message: tr("server.otherParticipantsHaveQueuedCellsStopYour.32a330"),
         })
         return
       }
       void interruptSession(sessionId, target).catch((err: unknown) => {
         send(ws, {
           t: 'error',
-          message: reason(err, 'Could not interrupt the kernel.'),
+          message: reason(err, tr("server.couldNotInterruptTheKernel.ef82bf")),
         })
       })
       return
@@ -1951,7 +1957,7 @@ export function dispatch(
           getRules(sessionId).restart,
           payload,
           ws,
-          'Only the host can restart the kernel.',
+          tr("server.onlyTheHostCanRestartTheKernel.987dcb"),
         )
       ) {
         return
@@ -1960,7 +1966,7 @@ export function dispatch(
         (err: unknown) => {
           send(ws, {
             t: 'error',
-            message: reason(err, 'Could not restart the kernel.'),
+            message: reason(err, tr("server.couldNotRestartTheKernel.fc63d0")),
           })
         },
       )
@@ -1984,7 +1990,7 @@ export function dispatch(
        */
       const allowed = one
         ? mayEditThis(sessionId, payload, ws, one)
-        : may(sessionId, rules.wipe, payload, ws, 'Стирать всю доску здесь может преподаватель.')
+        : may(sessionId, rules.wipe, payload, ws, tr("server.onlyTheTeacherMayEraseTheWhole.56250d"))
       if (!allowed) return
       const book = bookOf(message)
       /*
@@ -1993,7 +1999,7 @@ export function dispatch(
        * полтора часа счёта, снятые нажатием в закрывающейся вкладке.
        */
       if (book && !cellsAt(getSessionDoc(sessionId).doc, book)) {
-        send(ws, { t: 'error', message: NO_SUCH_BOOK })
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
       }
       clearOutputs(sessionId, one, book)
@@ -2013,7 +2019,7 @@ export function dispatch(
           getRules(sessionId).board,
           payload,
           ws,
-          'Ставить документ на общий экран в этом семинаре может преподаватель.',
+          tr("server.onlyTheTeacherMayPutADocument.482e0d"),
         )
       ) {
         return
@@ -2027,7 +2033,7 @@ export function dispatch(
        * список упёрся в потолок, а документ на диске лежит.
        */
       if (!name || statPath(sessionId, name)?.dir !== false) {
-        send(ws, { t: 'error', message: 'Такого файла в комнате нет.' })
+        send(ws, { t: 'error', message: tr("server.thisFileIsNotInTheRoom.f557d3") })
         return
       }
       setBoard(sessionId, name)
@@ -2041,7 +2047,7 @@ export function dispatch(
           getRules(sessionId).board,
           payload,
           ws,
-          'Убрать документ с общего экрана в этом семинаре может преподаватель.',
+          tr("server.onlyTheTeacherMayRemoveADocument.1b7a58"),
         )
       ) {
         return
@@ -2076,8 +2082,8 @@ export function dispatch(
           sessionId,
           payload,
           finish
-            ? 'Закончить занятие может преподаватель.'
-            : 'Открыть занятие обратно может преподаватель.',
+            ? tr("server.onlyTheTeacherMayFinishTheClass.84b1b4")
+            : tr("server.onlyTheTeacherMayResumeTheClass.d3e509"),
         )
         return
       }
@@ -2123,18 +2129,18 @@ export function dispatch(
           getRules(sessionId).board,
           payload,
           ws,
-          'Вести лекцию в этом семинаре может преподаватель.',
+          tr("server.onlyTheTeacherMayLeadALecture.f44eb3"),
         )
       ) {
         return
       }
       const wanted = normalizePath(typeof message.file === 'string' ? message.file : '')
       if (!wanted || kindOf(wanted) !== 'pdf') {
-        send(ws, { t: 'error', message: 'На проектор выводится документ PDF.' })
+        send(ws, { t: 'error', message: tr("server.chooseAPdfDocumentForTheProjector.434426") })
         return
       }
       if (!statPath(sessionId, wanted)) {
-        send(ws, { t: 'error', message: 'Этого файла в комнате уже нет.' })
+        send(ws, { t: 'error', message: tr("server.thisFileIsNoLongerInThe.b66e1e") })
         return
       }
       /*
@@ -2175,7 +2181,7 @@ export function dispatch(
          * забирает страницу, чернила и указку себе.
          */
         if (payload.role !== 'host') {
-          refuse(ws, sessionId, payload, 'Взять пульт у ведущего может преподаватель.')
+          refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayTakeOverThe.31823b"))
           return
         }
         const taken = handOver(
@@ -2237,7 +2243,7 @@ export function dispatch(
           getRules(sessionId).board,
           payload,
           ws,
-          'Закончить лекцию может преподаватель.',
+          tr("server.onlyTheTeacherMayEndTheLecture.f996c5"),
         )
       ) {
         return
@@ -2250,7 +2256,7 @@ export function dispatch(
        * разметкой.
        */
       if (payload.role !== 'host' && !isPresenter(sessionId, payload.participantId)) {
-        refuse(ws, sessionId, payload, 'Закончить чужую лекцию может преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayEndAnotherPerson.8212a2"))
         return
       }
       stopLecture(sessionId)
@@ -2270,7 +2276,7 @@ export function dispatch(
      */
     case 'notes:open': {
       if (payload.role !== 'host') {
-        refuse(ws, sessionId, payload, 'Заметки к лекции видит преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayViewSpeakerNotes.8f7a4c"))
         return
       }
       const file = normalizePath(typeof message.file === 'string' ? message.file : '')
@@ -2291,7 +2297,7 @@ export function dispatch(
 
     case 'notes:set': {
       if (payload.role !== 'host') {
-        refuse(ws, sessionId, payload, 'Заметки к лекции пишет преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayEditSpeakerNotes.729773"))
         return
       }
       const file = normalizePath(typeof message.file === 'string' ? message.file : '')
@@ -2302,7 +2308,7 @@ export function dispatch(
       const page = Number(message.page)
       if (!Number.isFinite(page) || page < 1) {
         // Тоже вслух: всё, что теряет написанный текст, обязано это сказать.
-        send(ws, { t: 'error', message: 'Заметка пишется к странице документа.' })
+        send(ws, { t: 'error', message: tr("server.aNoteMustBelongToADocument.783591") })
         return
       }
       const text = typeof message.text === 'string' ? message.text : ''
@@ -2315,7 +2321,7 @@ export function dispatch(
          */
         send(ws, {
           t: 'error',
-          message: `Заметка к странице — не длиннее ${MAX_NOTE_CHARS} знаков.`,
+          message: tr("server.aPageNoteMayContainUpTo.86232c", { p0: MAX_NOTE_CHARS }),
         })
         return
       }
@@ -2508,7 +2514,7 @@ export function dispatch(
           getRules(sessionId).files,
           payload,
           ws,
-          'Создавать файлы в этом семинаре может только преподаватель.',
+          tr("server.onlyTheTeacherMayCreateFilesIn.a33c2f"),
         )
       ) {
         return
@@ -2558,7 +2564,7 @@ export function dispatch(
           getRules(sessionId).files,
           payload,
           ws,
-          'Открывать тетради в этом семинаре может преподаватель.',
+          tr("server.onlyTheTeacherMayOpenNotebooksIn.26080d"),
         )
       ) {
         return
@@ -2579,7 +2585,7 @@ export function dispatch(
 
     case 'tree:move': {
       if (payload.role !== 'host') {
-        refuse(ws, sessionId, payload, 'Переименовать файл в комнате может преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayRenameFilesIn.e04cee"))
         return
       }
       const from = normalizePath(typeof message.from === 'string' ? message.from : '')
@@ -2606,7 +2612,7 @@ export function dispatch(
        * что-нибудь внутри неё самой, то есть промахом на одну строку.
        */
       if (isInside(to, from)) {
-        send(ws, { t: 'error', message: `«${baseOf(from)}» нельзя положить внутрь себя.` })
+        send(ws, { t: 'error', message: tr("server.cannotBePlacedInsideItself.de928c", { p0: baseOf(from) }) })
         return
       }
       // Переименовать могли и папку — тогда переезжает всё, что в ней.
@@ -2672,7 +2678,7 @@ export function dispatch(
 
     case 'tree:remove': {
       if (payload.role !== 'host') {
-        refuse(ws, sessionId, payload, 'Убрать файл из комнаты может преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayRemoveAFile.77a4ef"))
         return
       }
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
@@ -2685,7 +2691,7 @@ export function dispatch(
       // дерево уже не о чем.
       const inside = pathsInside(sessionId, wanted)
       if (!deleteFile(sessionId, wanted)) {
-        send(ws, { t: 'error', message: 'Этого файла в комнате уже нет.' })
+        send(ws, { t: 'error', message: tr("server.thisFileIsNoLongerInThe.b66e1e") })
         return
       }
       for (const path of inside) {
@@ -2709,11 +2715,11 @@ export function dispatch(
       const wanted = normalizePath(typeof message.path === 'string' ? message.path : '')
       const runner = wanted ? runnerFor(wanted) : null
       if (!wanted || !runner) {
-        send(ws, { t: 'error', message: 'Запуск поддерживается только для файлов .py и .sh.' })
+        send(ws, { t: 'error', message: tr("server.onlyPyAndShFilesCanBe.fb990d") })
         return
       }
       if (!statPath(sessionId, wanted)) {
-        send(ws, { t: 'error', message: 'Этого файла в комнате уже нет.' })
+        send(ws, { t: 'error', message: tr("server.thisFileIsNoLongerInThe.b66e1e") })
         return
       }
       /*
@@ -2758,7 +2764,7 @@ export function dispatch(
      */
     case 'ai:undo': {
       if (payload.role !== 'host' && !allowsAgent(getRules(sessionId).agent, payload.role)) {
-        refuse(ws, sessionId, payload, 'Отменять ход оракула здесь может преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayUndoAnOracle.a064cd"))
         return
       }
       const entryId = optionalId(message.entryId)
@@ -2768,7 +2774,7 @@ export function dispatch(
         send(ws, {
           t: 'error',
           message:
-            'Этот ход уже нельзя отменить: сервер помнит прежние файлы только до перезапуска.',
+            tr("server.thisActionCanNoLongerBeUndone.29f138"),
         })
       }
       return
@@ -2777,7 +2783,7 @@ export function dispatch(
     case 'cells:move': {
       const rules = getRules(sessionId)
       if (!allowsStructure(rules.structure, payload.role, 'move')) {
-        refuse(ws, sessionId, payload, 'В этом семинаре порядок ячеек меняет преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayReorderCellsIn.601caf"))
         return
       }
       const id = typeof message.cellId === 'string' ? message.cellId : ''
@@ -2803,7 +2809,7 @@ export function dispatch(
     case 'cell:open':
     case 'cell:lock': {
       if (payload.role !== 'host') {
-        refuse(ws, sessionId, payload, 'Открывает ячейки преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayOpenCells.27de8a"))
         return
       }
       /*
@@ -2814,7 +2820,7 @@ export function dispatch(
        * идут и упираются.
        */
       if (isFinished(sessionId)) {
-        send(ws, { t: 'error', message: OVER })
+        send(ws, { t: 'error', message: tr(OVER) })
         return
       }
       const id = optionalId(message.cellId)
@@ -2845,7 +2851,7 @@ export function dispatch(
       const { doc } = getSessionDoc(sessionId)
       const found = findCell(doc, id)
       if (!found) {
-        send(ws, { t: 'error', message: 'Этой ячейки в комнате уже нет.' })
+        send(ws, { t: 'error', message: tr("server.thisCellIsNoLongerInThe.3462ea") })
         return
       }
       const was = cellLock(found.cell)
@@ -2919,8 +2925,8 @@ export function dispatch(
       if (!id) return
       const { lock } = councilCellOf(sessionId, id)
       if (!mayWriteCouncil(payload.role, isFinished(sessionId), lock !== 'council')) {
-        if (lock !== 'council') send(ws, { t: 'error', message: `${COUNCIL_CLOSED}.` })
-        else refuse(ws, sessionId, payload, COUNCIL_CLOSED)
+        if (lock !== 'council') send(ws, { t: 'error', message: `${COUNCIL_CLOSED()}.` })
+        else refuse(ws, sessionId, payload, COUNCIL_CLOSED())
         return
       }
       const before = countFor(sessionId, id)
@@ -2931,7 +2937,7 @@ export function dispatch(
           // Вслух, а не обрезать: обрезанный молча код на экране выглядит целым.
           send(ws, {
             t: 'error',
-            message: `Попытка — не длиннее ${MAX_ATTEMPT_CHARS} знаков; остальное вынесите в файл.`,
+            message: tr("server.anAttemptMayContainUpToCharacters.ff604b", { p0: MAX_ATTEMPT_CHARS }),
           })
           return
         }
@@ -2952,7 +2958,7 @@ export function dispatch(
         saveDraft(sessionId, id, payload.participantId, message.text, now)
       } else if (message.t === 'council:submit') {
         if (!submitAttempt(sessionId, id, payload.participantId, now)) {
-          send(ws, { t: 'error', message: 'Попытка пуста. Введите решение перед отправкой.' })
+          send(ws, { t: 'error', message: tr("server.theAttemptIsEmptyWriteYourSolution.f38771") })
           return
         }
       } else if (!withdrawAttempt(sessionId, id, payload.participantId)) {
@@ -2976,7 +2982,7 @@ export function dispatch(
      */
     case 'council:show': {
       if (!mayLeadCouncil(payload.role)) {
-        refuse(ws, sessionId, payload, 'Консилиум ведёт преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
         return
       }
       const id = optionalId(message.cellId)
@@ -2984,12 +2990,12 @@ export function dispatch(
       if (!id || !target) return
       const attempt = attemptOf(sessionId, id, target)
       if (!attempt) {
-        send(ws, { t: 'error', message: 'Этой попытки уже нет.' })
+        send(ws, { t: 'error', message: tr("server.thisAttemptNoLongerExists.b490bf") })
         return
       }
       const found = findCell(getSessionDoc(sessionId).doc, id)
       if (!found) {
-        send(ws, { t: 'error', message: 'Этой ячейки в комнате уже нет.' })
+        send(ws, { t: 'error', message: tr("server.thisCellIsNoLongerInThe.3462ea") })
         return
       }
       /*
@@ -3012,17 +3018,17 @@ export function dispatch(
       const { lock, settings } = councilCellOf(sessionId, id)
       if (payload.role === 'host' || settings.studentRun !== 'request' ||
           !mayWriteCouncil(payload.role, isFinished(sessionId), lock !== 'council')) {
-        send(ws, { t: 'error', message: 'Запросить запуск можно только в открытом консилиуме с режимом «По запросу».' })
+        send(ws, { t: 'error', message: tr("server.youCanRequestARunOnlyIn.dfdda0") })
         return
       }
       const attempt = attemptOf(sessionId, id, payload.participantId)
       if (!attempt?.text.trim()) {
-        send(ws, { t: 'error', message: 'Сначала напишите решение.' })
+        send(ws, { t: 'error', message: tr("server.writeYourSolutionFirst.b04f1e") })
         return
       }
       if (councilQueuePosition(sessionId, id, payload.participantId) !== null ||
           !requestAttemptRun(sessionId, id, payload.participantId, Date.now())) {
-        send(ws, { t: 'error', message: 'Попытка уже выполняется или ждёт в очереди.' })
+        send(ws, { t: 'error', message: tr("server.theAttemptIsAlreadyRunningOrQueued.fc3fa7") })
         return
       }
       mineOut(sessionId, id, payload.participantId)
@@ -3034,7 +3040,7 @@ export function dispatch(
     case 'council:run:decline': {
       const declining = message.t === 'council:run:decline'
       if (declining && !mayLeadCouncil(payload.role)) {
-        refuse(ws, sessionId, payload, 'Запросы на запуск рассматривает преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayReviewRunRequests.630a48"))
         return
       }
       const id = optionalId(message.cellId)
@@ -3042,7 +3048,7 @@ export function dispatch(
       const target = declining ? optionalId(message.participantId) : payload.participantId
       if (!id || !requestId || !target) return
       if (!resolveRunRequest(sessionId, id, target, requestId, declining ? 'decline' : 'clear')) {
-        send(ws, { t: 'error', message: 'Запрос уже изменился или был рассмотрен.' })
+        send(ws, { t: 'error', message: tr("server.theRequestHasChangedOrHasAlready.aa2b45") })
         return
       }
       mineOut(sessionId, id, target)
@@ -3054,7 +3060,7 @@ export function dispatch(
     case 'council:run': {
       const approving = message.t === 'council:run:approve'
       if (approving && !mayLeadCouncil(payload.role)) {
-        refuse(ws, sessionId, payload, 'Запросы на запуск рассматривает преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayReviewRunRequests.630a48"))
         return
       }
       const id = optionalId(message.cellId)
@@ -3062,34 +3068,34 @@ export function dispatch(
       const target = optionalId(message.participantId) ?? payload.participantId
       const own = target === payload.participantId
       if (!own && !mayLeadCouncil(payload.role)) {
-        refuse(ws, sessionId, payload, 'Чужую попытку запускает преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayRunAnotherParticipant.982a38"))
         return
       }
       const { lock, settings } = councilCellOf(sessionId, id)
       if (approving && (settings.studentRun !== 'request' || lock !== 'council' || isFinished(sessionId))) {
-        send(ws, { t: 'error', message: 'Приём запросов на запуск уже закрыт.' })
+        send(ws, { t: 'error', message: tr("server.runRequestsAreNowClosed.f23dc6") })
         return
       }
       if (!mayRunCouncil(payload.role, settings.studentRun, isFinished(sessionId))) {
-        refuse(ws, sessionId, payload, 'В этом консилиуме попытки запускает преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayRunAttemptsIn.fbe78a"))
         return
       }
       // Студент — только пока консилиум идёт; преподаватель считает и на просмотре.
       if (payload.role !== 'host' && lock !== 'council') {
-        send(ws, { t: 'error', message: `${COUNCIL_CLOSED}.` })
+        send(ws, { t: 'error', message: `${COUNCIL_CLOSED()}.` })
         return
       }
       const attempt = attemptOf(sessionId, id, target)
       if (!attempt) {
         send(ws, {
           t: 'error',
-          message: own ? 'Сначала напишите попытку.' : 'Этой попытки уже нет.',
+          message: own ? tr("server.writeYourAttemptFirst.746013") : tr("server.thisAttemptNoLongerExists.b490bf"),
         })
         return
       }
       if (approving && (attempt.runRequest?.status !== 'pending' ||
           attempt.runRequest.id !== optionalId(message.requestId))) {
-        send(ws, { t: 'error', message: 'Запрос уже изменился или был рассмотрен. Проверьте текущую версию решения.' })
+        send(ws, { t: 'error', message: tr("server.theRequestHasChangedOrHasAlready.2ee147") })
         return
       }
       const outcome = requestCouncilRun(
@@ -3133,8 +3139,8 @@ export function dispatch(
           t: 'error',
           message:
             outcome.position === 0
-              ? 'Эта попытка уже считается.'
-              : `Эта попытка уже в очереди — ${outcome.position}-я.`,
+              ? tr("server.thisAttemptIsAlreadyRunning.0efa94")
+              : tr("server.thisAttemptIsAlreadyQueuedAtPosition.0c6a86", { p0: outcome.position }),
         })
       }
       return
@@ -3142,7 +3148,7 @@ export function dispatch(
 
     case 'council:reply': {
       if (!mayLeadCouncil(payload.role)) {
-        refuse(ws, sessionId, payload, 'Консилиум ведёт преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
         return
       }
       const id = optionalId(message.cellId)
@@ -3150,7 +3156,7 @@ export function dispatch(
       const text = typeof message.text === 'string' ? message.text.trim() : ''
       if (!text) return
       if (text.length > MAX_REPLY_CHARS) {
-        send(ws, { t: 'error', message: `Ответ — не длиннее ${MAX_REPLY_CHARS} знаков.` })
+        send(ws, { t: 'error', message: tr("server.aReplyMayContainUpToCharacters.1d0ef3", { p0: MAX_REPLY_CHARS }) })
         return
       }
       const to = message.to as { participantId?: unknown; groupKey?: unknown } | undefined
@@ -3167,7 +3173,7 @@ export function dispatch(
       const reply = { text, at: Date.now(), by: displayName(sessionId, payload.participantId) }
       const told = setReply(sessionId, id, address, reply)
       if (told.length === 0) {
-        send(ws, { t: 'error', message: 'Отвечать некому: этой попытки уже нет.' })
+        send(ws, { t: 'error', message: tr("server.thereIsNobodyToReplyToThis.efbb65") })
         return
       }
       for (const who of told) mineOut(sessionId, id, who)
@@ -3177,7 +3183,7 @@ export function dispatch(
 
     case 'council:mark': {
       if (!mayLeadCouncil(payload.role)) {
-        refuse(ws, sessionId, payload, 'Консилиум ведёт преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
         return
       }
       const id = optionalId(message.cellId)
@@ -3208,7 +3214,7 @@ export function dispatch(
      */
     case 'council:attempt': {
       if (!mayLeadCouncil(payload.role)) {
-        refuse(ws, sessionId, payload, 'Консилиум ведёт преподаватель.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
         return
       }
       const id = optionalId(message.cellId)
@@ -3268,7 +3274,7 @@ export function dispatch(
           ws,
           sessionId,
           payload,
-          'Применить правку оракула здесь может преподаватель — спросить его можно по-прежнему.',
+          tr("server.onlyTheTeacherMayApplyAnOracle.231855"),
         )
         return
       }
@@ -3280,7 +3286,7 @@ export function dispatch(
        * «отклонить» правила нет вовсе — поэтому та же граница, что у `input`.
        */
       if (!actsAfterClass(isFinished(sessionId), payload.role)) {
-        send(ws, { t: 'error', message: OVER })
+        send(ws, { t: 'error', message: tr(OVER) })
         return
       }
       const who = displayName(sessionId, payload.participantId)
@@ -3307,7 +3313,7 @@ export function dispatch(
        * отвечать не одно и то же, а `input()` под паролем тем более.
        */
       if (payload.role !== 'host' && !startedTheRunningCell(sessionId, payload.participantId)) {
-        refuse(ws, sessionId, payload, 'Ввести ответ может участник, запустивший ячейку.')
+        refuse(ws, sessionId, payload, tr("server.onlyTheParticipantWhoRanTheCell.d7ea88"))
         return
       }
       /*
@@ -3316,7 +3322,7 @@ export function dispatch(
        * приглашение ко вводу в ленте по-прежнему может вся комната.
        */
       if (!actsAfterClass(isFinished(sessionId), payload.role)) {
-        send(ws, { t: 'error', message: OVER })
+        send(ws, { t: 'error', message: tr(OVER) })
         return
       }
       const value = typeof message.value === 'string' ? message.value : ''
@@ -3333,13 +3339,13 @@ export function dispatch(
       void answerInput(sessionId, value, optionalId(message.cellId))
         .then((answered) => {
           if (!answered) {
-            send(ws, { t: 'error', message: 'Ядро уже не ждёт этого ввода — форма убрана.' })
+            send(ws, { t: 'error', message: tr("server.theKernelIsNoLongerWaitingFor.e35793") })
           }
         })
         .catch((err: unknown) => {
           send(ws, {
             t: 'error',
-            message: reason(err, 'Could not send that to the cell.'),
+            message: reason(err, tr("server.couldNotSendThatToTheCell.b70cd9")),
           })
         })
       return
@@ -3356,7 +3362,7 @@ export function dispatch(
           getRules(sessionId).edit,
           payload,
           ws,
-          'В этом семинаре редактировать тетрадь может только преподаватель.',
+          tr("server.onlyTheTeacherMayEditTheNotebook.d8abb3"),
         )
       ) {
         return
@@ -3372,7 +3378,7 @@ export function dispatch(
        */
       const book = bookOf(message)
       if (book && !cellsAt(getSessionDoc(sessionId).doc, book)) {
-        send(ws, { t: 'error', message: NO_SUCH_BOOK })
+        send(ws, { t: 'error', message: NO_SUCH_BOOK() })
         return
       }
       /*
@@ -3399,11 +3405,11 @@ export function dispatch(
             return
           }
           if (outcome.changed === 0 && outcome.skipped === 0) {
-            kernelNote(sessionId, 'Formatting complete. No changes needed.')
+            kernelNote(sessionId, tr("server.formattingCompleteNoChangesNeeded.0b35b3"))
             return
           }
           const parts = [
-            `${outcome.changed} ${outcome.changed === 1 ? 'cell' : 'cells'} reformatted`,
+            tr('server.formattedCells', { count: outcome.changed }),
           ]
           /*
            * Два разных «не тронули», и сваливать их в одно число нельзя: про
@@ -3414,23 +3420,23 @@ export function dispatch(
           const unread = outcome.skipped - outcome.edited
           if (unread > 0) {
             parts.push(
-              `${unread} skipped (Black could not parse the code)`,
+              tr("server.skippedBlackCouldNotParseTheCode.ba9c0d", { p0: unread }),
             )
           }
           if (outcome.edited > 0) {
             parts.push(
-              `${outcome.edited} skipped (edited while formatting was in progress)`,
+              tr("server.skippedEditedWhileFormattingWasInProgress.6a01ab", { p0: outcome.edited }),
             )
           }
           kernelNote(
             sessionId,
-            `Formatted with black, ${LINE_LENGTH} columns: ${parts.join('; ')}.`,
+            tr("server.formattedWithBlackColumns.105f9d", { p0: LINE_LENGTH, p1: parts.join('; ') }),
           )
         })
         .catch((err: unknown) => {
           send(ws, {
             t: 'error',
-            message: reason(err, 'Could not format the notebook.'),
+            message: reason(err, tr("server.couldNotFormatTheNotebook.a8322c")),
           })
         })
       return
@@ -3458,7 +3464,7 @@ export function dispatch(
       void openTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
           t: 'error',
-          message: reason(err, 'Не удалось открыть терминал.'),
+          message: reason(err, tr("server.couldNotOpenTheTerminal.b04b2c")),
         })
       })
       return
@@ -3478,7 +3484,7 @@ export function dispatch(
           sessionId,
           payload,
           ws,
-          'В этом семинаре запускает преподаватель — и ячейки, и команды оболочки.',
+          tr("server.onlyTheTeacherMayRunCellsAnd.1d861c"),
         )
       ) {
         return
@@ -3489,8 +3495,8 @@ export function dispatch(
         send(ws, {
           t: 'error',
           message:
-            `Команда длиннее ${MAX_COMMAND_BYTES.toLocaleString('ru-RU')} байт — ` +
-            `положите её в файл и запустите файл.`,
+            tr("server.theCommandExceedsBytes.4bc32c", { p0: formatNumber(MAX_COMMAND_BYTES) }) +
+            tr("server.putItInAFileAndRun.5f2e18"),
         })
         return
       }
@@ -3510,7 +3516,7 @@ export function dispatch(
           ws,
           sessionId,
           payload,
-          'Прервать команду может преподаватель или тот, кто её набрал.',
+          tr("server.onlyTheTeacherOrTheParticipantWho.f9b6f0"),
         )
         return
       }
@@ -3537,7 +3543,7 @@ export function dispatch(
           getRules(sessionId).wipe,
           payload,
           ws,
-          'Очистить расшифровку может преподаватель: она общая на всю комнату.',
+          tr("server.onlyTheTeacherMayClearTheTranscript.695583"),
         )
       ) {
         return
@@ -3555,7 +3561,7 @@ export function dispatch(
           getRules(sessionId).wipe,
           payload,
           ws,
-          'Закрыть общую оболочку может преподаватель.',
+          tr("server.onlyTheTeacherMayCloseTheShared.c7ec17"),
         )
       ) {
         return
@@ -3563,7 +3569,7 @@ export function dispatch(
       void closeTerminal(sessionId).catch((err: unknown) => {
         send(ws, {
           t: 'error',
-          message: reason(err, 'Не удалось закрыть терминал.'),
+          message: reason(err, tr("server.couldNotCloseTheTerminal.17d21d")),
         })
       })
       return
@@ -3640,6 +3646,7 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
   // Before anything else: the browser gates its own interrupt/restart controls
   // on this, and the token it holds may say something staler than the truth.
   send(ws, { t: 'role', role: payload.role })
+  send(ws, { t: 'instance:language', language: getLocale() })
   /*
    * И правила — здесь же, а не только при их изменении.
    *
@@ -3765,9 +3772,9 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
       send(ws, {
         t: 'error',
         message:
-          `Сообщение слишком длинное — оно не отправлено. ` +
-          `Попытка — не длиннее ${MAX_ATTEMPT_CHARS.toLocaleString('ru-RU')} знаков, ` +
-          `речь к странице — ${MAX_NOTE_CHARS.toLocaleString('ru-RU')}.`,
+          tr("server.theMessageIsTooLongAndWas.e89d1c") +
+          tr("server.anAttemptMayContainUpToCharacters.6a584e", { p0: formatNumber(MAX_ATTEMPT_CHARS) }) +
+          tr("server.speakerNotesMayContainUpTo.bc3e46", { p0: formatNumber(MAX_NOTE_CHARS) }),
       })
       return
     }
@@ -3777,7 +3784,7 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     } catch (err) {
       // One bad request costs that click, never the seminar.
       console.error(`[control ${sessionId}] ${message.t} failed:`, reason(err, 'unknown error'))
-      send(ws, { t: 'error', message: reason(err, 'Could not complete the action. Try again.') })
+      send(ws, { t: 'error', message: reason(err, tr("server.couldNotCompleteTheActionTryAgain.234540")) })
     }
   })
 

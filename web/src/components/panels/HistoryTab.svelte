@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * What the room did to its notebook, and how to put any of it back.
    *
@@ -44,7 +45,7 @@
    */
   const books = watchBooks(session.doc)
   const versioned = $derived(books.current.find((book) => book.root === CELLS_KEY) ?? null)
-  const versionedName = $derived(versioned ? baseOf(versioned.path) : 'тетрадь комнаты')
+  const versionedName = $derived(versioned ? baseOf(versioned.path) : tr('room.ui.651'))
   const otherBooks = $derived(books.current.length - (versioned ? 1 : 0))
 
   let versions = $state<Version[]>([])
@@ -58,7 +59,8 @@
    */
   let trimmed = $state(false)
   let loading = $state(true)
-  let error = $state<string | null>(null)
+  let errorRender = $state<() => string | null>(() => null)
+  const error = $derived(errorRender())
   let openSeq = $state<number | null>(null)
   let detail = $state<VersionDetail | null>(null)
   let busy = $state(false)
@@ -70,7 +72,7 @@
 
   async function load(): Promise<void> {
     loading = true
-    error = null
+    errorRender = () => (null)
     try {
       const body = await listVersions(session.session.id, session.token)
       versions = body.versions
@@ -83,7 +85,7 @@
        */
       if (openSeq === null && versions.length > 0) void open(versions[0].seq)
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Не удалось прочитать историю'
+      errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.652'))
     } finally {
       loading = false
     }
@@ -99,7 +101,7 @@
      * никто не печатает) одна моргнувшая сеть закрывала диффы всех следующих
      * версий до конца пары.
      */
-    error = null
+    errorRender = () => (null)
     const cached = seen.get(seq)
     if (cached) {
       detail = cached
@@ -112,7 +114,7 @@
       // The reader may have clicked on down the list while this was in flight.
       if (openSeq === seq) detail = body
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Не удалось прочитать эту версию'
+      errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.653'))
     }
   }
 
@@ -126,7 +128,7 @@
       openSeq = null
       await load()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Не удалось вернуть'
+      errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.654'))
     } finally {
       busy = false
     }
@@ -143,7 +145,7 @@
       seen.clear()
       await load()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Не удалось поставить отметку'
+      errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.655'))
     } finally {
       busy = false
     }
@@ -213,10 +215,10 @@
    * читается началом отрезка, которого у неё нет.
    */
   function saying(v: Version): string {
-    if (v.kind === 'checkpoint') return v.label ?? 'отметка'
+    if (v.kind === 'checkpoint') return v.label ?? tr('room.ui.631')
     if (v.kind === 'restore' && v.targetSeq !== null) {
       const target = versions.find((row) => row.seq === v.targetSeq)
-      if (target) return `${v.summary} от ${clock(target.createdAt)}`
+      if (target) return tr('room.ui.656', { p0: v.summary, p1: clock(target.createdAt) })
     }
     return v.summary
   }
@@ -228,16 +230,14 @@
          первого клика: в комнате с двумя тетрадями «ничего не записалось»
          читается как пропажа правок, а не как границы истории. -->
     {#if otherBooks > 0}
-      <p class="hist-note hist-note--aside">
-        Здесь только {versionedName}: правки в {otherBooks === 1
-          ? 'другой тетради комнаты'
-          : 'других тетрадях комнаты'} не показаны и не изменятся при восстановлении.
-      </p>
+      <p class="hist-note hist-note--aside"> {tr('room.ui.624')} {versionedName}{tr('room.ui.625')} {otherBooks === 1
+          ? tr('room.ui.626')
+          : tr('room.ui.627')} {tr('room.ui.628')} </p>
     {/if}
     {#if loading && versions.length === 0}
-      <p class="hist-note">Читаем историю…</p>
+      <p class="hist-note">{tr('room.ui.629')}</p>
     {:else if versions.length === 0}
-      <p class="hist-note">У этой тетради пока нет сохранённых версий.</p>
+      <p class="hist-note">{tr('room.ui.630')}</p>
     {:else}
       {#each versions as v (v.seq)}
         <button
@@ -261,8 +261,8 @@
             <span class="hist-face hist-face--none" aria-hidden="true"></span>
           {/if}
           <span class="hist-what">
-            <b>{v.kind === 'checkpoint' ? (v.label ?? 'отметка') : (v.authorName ?? 'комната')}</b>
-            <em>{v.kind === 'checkpoint' ? `отметил ${v.authorName ?? 'кто-то'}` : saying(v)}</em>
+            <b>{v.kind === 'checkpoint' ? (v.label ?? tr('room.ui.631')) : (v.authorName ?? tr('room.ui.632'))}</b>
+            <em>{v.kind === 'checkpoint' ? tr('room.ui.633', { p0: v.authorName ?? tr('room.extra.284') }) : saying(v)}</em>
           </span>
           <span class="hist-count">
             {#if v.added > 0}<i class="plus">+{v.added}</i>{/if}
@@ -274,9 +274,7 @@
            потому что список идёт от свежего к старому: под самой ранней
            уцелевшей правкой и проходит граница того, что сохранилось. -->
       {#if trimmed}
-        <p class="hist-note hist-note--aside hist-note--tail">
-          Более ранние версии не хранятся: история комнаты ограничена по объёму.
-        </p>
+        <p class="hist-note hist-note--aside hist-note--tail"> {tr('room.ui.634')} </p>
       {/if}
     {/if}
   </div>
@@ -285,9 +283,9 @@
     {#if error}
       <p class="hist-note hist-note--bad" role="alert">{error}</p>
     {:else if openSeq === null}
-      <p class="hist-note">Выберите момент слева.</p>
+      <p class="hist-note">{tr('room.ui.635')}</p>
     {:else if !detail}
-      <p class="hist-note">Собираем эту версию…</p>
+      <p class="hist-note">{tr('room.ui.636')}</p>
     {:else if detail.diffs.length === 0}
       <!--
         Чекпоинт и «opened» ничего не правят: список затронутых ячеек у них
@@ -298,13 +296,13 @@
       <div class="hist-diffs">
         <p class="hist-note">
           {detail.version.kind === 'opened'
-            ? 'Начальная версия тетради.'
-            : 'Это сохранённая отметка. В этот момент тетрадь не менялась.'}
+            ? tr('room.ui.637')
+            : tr('room.ui.638')}
         </p>
         {#each detail.cells as c, at (c.id)}
           <div class="hist-diff">
             <div class="hist-diff-head">
-              <b>{c.type === 'markdown' ? 'текст' : 'код'} {at + 1}</b>
+              <b>{c.type === 'markdown' ? tr('room.ui.639') : tr('room.ui.549')} {at + 1}</b>
             </div>
             <pre class="hist-lines hist-source">{c.source}</pre>
           </div>
@@ -315,16 +313,14 @@
         {#each detail.diffs as d (d.cellId)}
           <div class="hist-diff">
             <div class="hist-diff-head">
-              <b>{d.before === null ? 'новая ячейка' : d.after === null ? 'удалённая ячейка' : 'ячейка'}</b>
+              <b>{d.before === null ? tr('room.ui.640') : d.after === null ? tr('room.ui.641') : tr('room.ui.642')}</b>
               {#if isHost && d.after !== null}
                 <button
                   type="button"
                   class="hist-mini"
                   disabled={busy}
                   onclick={() => restore(d.cellId)}
-                >
-                  Вернуть эту ячейку
-                </button>
+                > {tr('room.ui.643')} </button>
               {/if}
             </div>
             <pre class="hist-lines">{#each d.lines as line}<span
@@ -343,7 +339,7 @@
         <input
           class="hist-name"
           bind:value={label}
-          placeholder="перед задачей"
+          placeholder={tr('room.ui.644')}
           maxlength="80"
           onkeydown={(e) => {
             if (e.key === 'Enter') void checkpoint()
@@ -357,30 +353,24 @@
             }
           }}
         />
-        <button type="button" class="hist-go" disabled={busy || !label.trim()} onclick={checkpoint}>
-          Отметить
-        </button>
+        <button type="button" class="hist-go" disabled={busy || !label.trim()} onclick={checkpoint}> {tr('room.ui.645')} </button>
       {:else}
         {#if isHost && openSeq !== null && detail}
           <button
             type="button"
             class="hist-go"
             disabled={busy}
-            title="Восстановить выбранную тетрадь. Остальные тетради не изменятся"
+            title={tr('room.ui.646')}
             onclick={() => restore()}
           >
-            <Icon name="restart" size={12} />
-            Вернуть {versionedName} целиком
-          </button>
+            <Icon name="restart" size={12} /> {tr('room.ui.170')} {versionedName} {tr('room.ui.647')} </button>
         {/if}
         {#if isHost}
-          <button type="button" class="hist-mini" onclick={() => (naming = true)}>
-            Отметить момент
-          </button>
+          <button type="button" class="hist-mini" onclick={() => (naming = true)}> {tr('room.ui.648')} </button>
         {/if}
       {/if}
       <span class="hist-foot">
-        {#if isHost}восстановление записывается в историю{:else}восстанавливать может только преподаватель{/if}
+        {#if isHost}{tr('room.ui.649')}{:else}{tr('room.ui.650')}{/if}
       </span>
     </div>
   </div>

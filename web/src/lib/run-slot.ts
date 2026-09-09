@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Одна кнопка на все состояния выполнения ячейки.
  *
@@ -52,13 +53,13 @@ export function runSlot(state: CellState, gates: RunSlotGates): RunSlot {
       // полоса, номер, слово RUNNING. Кнопка остановки, выкрашенная тем же
       // цветом, спорила бы с состоянием, о котором он и говорит.
       tint: 'text-ink',
-      label: 'Stop the running cell',
+      get label() { return tr('room.ui.1163') },
       disabled: controlDisabled(connected, gates.canInterrupt),
       title: controlTitle(
         connected,
         gates.canInterrupt
-          ? 'Stop the running cell'
-          : 'Only the host, or whoever started it, can stop a run',
+          ? tr('room.ui.1163')
+          : tr('room.ui.1164'),
       ),
     }
   }
@@ -69,7 +70,7 @@ export function runSlot(state: CellState, gates: RunSlotGates): RunSlot {
       icon: 'x',
       size: 13,
       tint: 'text-ink',
-      label: 'Take this cell out of the run queue',
+      get label() { return tr('room.ui.1165') },
       disabled: controlDisabled(connected, gates.canCancel),
       /*
        * Фраза отказа здесь новая, и она понадобилась именно из-за этого слота.
@@ -83,8 +84,8 @@ export function runSlot(state: CellState, gates: RunSlotGates): RunSlot {
       title: controlTitle(
         connected,
         gates.canCancel
-          ? 'Take this cell out of the queue'
-          : 'Only the host, or whoever queued it, can take it out of the queue',
+          ? tr('room.ui.1166')
+          : tr('room.ui.1167'),
       ),
     }
   }
@@ -94,11 +95,11 @@ export function runSlot(state: CellState, gates: RunSlotGates): RunSlot {
     icon: 'play',
     size: 12,
     tint: 'text-accent-text',
-    label: 'Run cell',
+    get label() { return tr('room.ui.1168') },
     disabled: controlDisabled(connected, gates.mayRun),
     title: controlTitle(
       connected,
-      gates.mayRun ? 'Run cell' : 'This seminar is set so only the teacher runs cells',
+      gates.mayRun ? tr('room.ui.1168') : tr('room.ui.1169'),
     ),
   }
 }

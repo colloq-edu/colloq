@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Response } from 'express'
@@ -9,7 +10,7 @@ export function downloadHeldFile(res: Response, file: HeldFile, name: string): v
   try {
     res.download(file.path, name, { dotfiles: 'allow' }, error => {
       file.close()
-      if (error && !res.headersSent) res.status(404).json({ error: 'file not found' })
+      if (error && !res.headersSent) res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
     })
   } catch (error) { file.close(); throw error }
 }
@@ -38,10 +39,10 @@ export function createAnchoredFilesystem(rootPath: string, options: { allowUnsaf
   const pathOnly = 0x200000
   const fail = (message: string): never => { throw new Error(message) }
   const parts = (file: any): string[] => {
-    if (typeof file !== 'string') fail('Workspace access requires a pathname')
+    if (typeof file !== 'string') fail(tr("server.workspaceAccessRequiresAPathname.69ac15"))
     const relative = path.relative(root, path.resolve(file))
-    if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) fail('Path is outside the workspace')
-    if (relative.includes('\0')) fail('Invalid workspace pathname')
+    if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) fail(tr("server.pathIsOutsideTheWorkspace.5d7c04"))
+    if (relative.includes('\0')) fail(tr("server.invalidWorkspacePathname.e819a2"))
     return relative ? relative.split(path.sep) : []
   }
   const initialize = (): number => {
@@ -50,7 +51,7 @@ export function createAnchoredFilesystem(rootPath: string, options: { allowUnsaf
       fs.mkdirSync(root, { recursive: true })
       rootFd = fs.openSync(root, directoryFlags)
       try { fs.statSync(`/proc/self/fd/${rootFd}/.`) }
-      catch { fs.closeSync(rootFd); rootFd = undefined; fail('Workspace descriptor traversal is unavailable') }
+      catch { fs.closeSync(rootFd); rootFd = undefined; fail(tr("server.workspaceDescriptorTraversalIsUnavailable.be15fe")) }
     }
     return rootFd!
   }
@@ -59,7 +60,7 @@ export function createAnchoredFilesystem(rootPath: string, options: { allowUnsaf
     const names = parts(file); let current = root
     for (const name of names) {
       current = path.join(current, name)
-      try { if (fs.lstatSync(current).isSymbolicLink()) fail('Workspace symlinks are forbidden') }
+      try { if (fs.lstatSync(current).isSymbolicLink()) fail(tr("server.workspaceSymlinksAreForbidden.f2f20a")) }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     }
     return current
@@ -110,13 +111,13 @@ export function createAnchoredFilesystem(rootPath: string, options: { allowUnsaf
       a: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND,
       ax: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_EXCL,
     }
-    if (!(flags in map)) fail('Unsupported workspace open mode')
+    if (!(flags in map)) fail(tr("server.unsupportedWorkspaceOpenMode.1e9628"))
     return map[flags]
   }
   const open = (file: string, flags: string | number = 'r', mode = 0o600): number => parent(file, anchored => {
     const fd = fs.openSync(anchored, flagNumber(flags) | nofollow | fs.constants.O_NONBLOCK, mode)
     const info = fs.fstatSync(fd)
-    if (!info.isFile() && !info.isDirectory()) { fs.closeSync(fd); fail('Workspace special files are forbidden') }
+    if (!info.isFile() && !info.isDirectory()) { fs.closeSync(fd); fail(tr("server.workspaceSpecialFilesAreForbidden.fc1802")) }
     return fd
   })
   const withFile = <T>(file: string | number, action: (fd: number) => T, flags: string | number = 'r', mode?: number): T => {
@@ -140,7 +141,7 @@ export function createAnchoredFilesystem(rootPath: string, options: { allowUnsaf
     openSync: open,
     openRead(file: string): HeldFile {
       const fd = open(file)
-      if (!fs.fstatSync(fd).isFile()) { fs.closeSync(fd); fail('Expected a regular workspace file') }
+      if (!fs.fstatSync(fd).isFile()) { fs.closeSync(fd); fail(tr("server.expectedARegularWorkspaceFile.8a4343")) }
       let live = true
       return { fd, path: linux ? `/proc/self/fd/${fd}` : devPath(file), close() { if (live) { live = false; fs.closeSync(fd) } } }
     },
@@ -167,7 +168,7 @@ export function createAnchoredFilesystem(rootPath: string, options: { allowUnsaf
     linkSync(from: string, to: string) { return parent(from, a => parent(to, b => fs.linkSync(a, b))) },
     unlinkSync(file: string) { return parent(file, p => fs.unlinkSync(p)) },
     rmSync(file: string, opts?: any) {
-      if (!parts(file).length) fail('Refusing to remove the trusted workspace root')
+      if (!parts(file).length) fail(tr("server.refusingToRemoveTheTrustedWorkspaceRoot.c003d1"))
       try { return parent(file, p => linux ? removeAt(p, opts?.recursive === true) : fs.rmSync(p, opts), false, true) }
       catch (error) { if (!opts?.force || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     },

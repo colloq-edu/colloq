@@ -19,7 +19,7 @@
 </script>
 
 {#if size === 'lg'}
-  <div class="flex overflow-hidden border border-line">
+  <div class="flex flex-col overflow-hidden border border-line sm:flex-row">
     {#each options as option (option.value)}
       {@const on = option.value === value}
       <button
@@ -27,7 +27,7 @@
         aria-pressed={on}
         onclick={() => onchange(option.value)}
         class={cn(
-          'min-w-0 flex-1 border-l border-line px-3.5 py-2.5 text-left first:border-l-0',
+          'min-w-0 flex-1 border-t border-line px-3.5 py-2.5 text-left first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0',
           'transition-colors duration-100 focus:outline-none focus-visible:ring-4 focus-visible:ring-accent/15',
           on ? 'bg-primary' : 'bg-canvas hover:bg-surface',
         )}

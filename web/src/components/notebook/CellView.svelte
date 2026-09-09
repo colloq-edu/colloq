@@ -1,4 +1,5 @@
 <script lang="ts" module>
+  import { tr, getLocale } from '@shared/i18n'
   import { api } from '@/lib/api'
   import { actionAllowedIn, councilLetters } from '@shared/protocol'
 
@@ -188,7 +189,7 @@
    * в may.ts: услышать «тетрадь принадлежит преподавателю» там, где ячейку
    * открывают одним нажатием, значит пойти искать не то.
    */
-  const editWhy = $derived(shut ? LECTURE_CELL : may.editWhy)
+  const editWhy = $derived(shut ? tr(LECTURE_CELL) : may.editWhy)
   /*
    * Действует ли этот человек после звонка — для того, у чего правила нет:
    * ответить на `input()`, отклонить предложение оракула. Та же
@@ -238,7 +239,7 @@
   const mayRequestRun = $derived(mayAttempt && councilSettings.studentRun === 'request')
   const attemptRunning = $derived(mine?.run?.state === 'queued' || mine?.run?.state === 'running')
   const submittedAt = $derived(mine?.submittedAt ?? null)
-  const attemptWhy = $derived(inCouncil ? may.attemptWhy : COUNCIL_CLOSED)
+  const attemptWhy = $derived(inCouncil ? may.attemptWhy : tr(COUNCIL_CLOSED))
 
   /**
    * Свой лист: локальный документ Yjs, ни к чему не подключённый.
@@ -400,8 +401,8 @@
       awaitingMine = null
       session.showError(
         what === 'submit'
-          ? 'Сдача не подтвердилась — проверьте связь и нажмите ещё раз.'
-          : 'Ответ не пришёл — проверьте связь и нажмите ещё раз.',
+          ? tr('room.ui.407')
+          : tr('room.ui.408'),
       )
     }, MINE_WAIT_MS)
   }
@@ -437,7 +438,7 @@
      */
     if (attemptOver) {
       session.showError(
-        `Сдать нельзя: в попытке ${attemptCount} знаков. Сократите ответ до указанного лимита.`,
+        tr('room.ui.409', { p0: attemptCount ?? '' }),
       )
       return false
     }
@@ -463,10 +464,10 @@
     if (!mayRunAttempt) {
       session.showError(
         may.finished
-          ? CLASS_IS_OVER + '.'
+          ? tr(CLASS_IS_OVER) + '.'
           : councilSettings.studentRun === 'request'
-            ? 'Для запуска нужно разрешение преподавателя. Нажмите «Попросить запуск».'
-            : 'Запускать ответы может только преподаватель. Сдайте решение, чтобы передать его на проверку.',
+            ? tr('room.ui.410')
+            : tr('room.ui.411'),
       )
       return
     }
@@ -481,7 +482,7 @@
     requestSending = { action, previousId: mine?.runRequest?.id ?? null, text: sheetText }
     requestTimer = window.setTimeout(() => {
       requestSending = null
-      session.showError('Ответ на запрос запуска не пришёл. Проверьте связь и попробуйте ещё раз.')
+      session.showError(tr('room.ui.412'))
     }, MINE_WAIT_MS)
   }
 
@@ -524,7 +525,7 @@
     // меняет общую ячейку у всей комнаты, и назад его не отматывают.
     if (
       !window.confirm(
-        `Показать классу ${who ? `вариант ${who.name}` : 'этот вариант'}? Ответ заменит текст общей ячейки. Автором изменения будете указаны вы.`,
+        who ? tr('room.confirm.showNamed', { name: who.name }) : tr('room.confirm.showAnswer'),
       )
     ) {
       return
@@ -558,7 +559,7 @@
       if (stop) await api.councilStopOracle(session.session.id, session.token, id)
       else await api.councilAsk(session.session.id, session.token, id)
     } catch (cause) {
-      session.showError(cause instanceof Error ? cause.message : 'Оракул недоступен.')
+      session.showError(cause instanceof Error ? tr(cause.message) : tr('room.ui.414'))
     }
   }
 
@@ -592,9 +593,9 @@
   const HOLD_MS = 450
 
   const LOCKS: { state: CellLock; icon: IconName; label: string; hint: string }[] = [
-    { state: 'closed', icon: 'lock', label: 'Закрыта', hint: 'редактирует и запускает преподаватель' },
-    { state: 'open', icon: 'unlock', label: 'Открыта всем', hint: 'все редактируют общую ячейку' },
-    { state: 'council', icon: 'users', label: 'Консилиум', hint: 'у каждого свой ответ, доступный преподавателю' },
+    { state: 'closed', icon: 'lock', label: tr('room.ui.415'), hint: tr('room.ui.416') },
+    { state: 'open', icon: 'unlock', label: tr('room.ui.417'), hint: tr('room.ui.418') },
+    { state: 'council', icon: 'users', label: tr('room.ui.34'), hint: tr('room.ui.419') },
   ]
   const lockIcon = $derived<IconName>(inCouncil ? 'users' : cellOpen ? 'unlock' : 'lock')
   // Правило комнаты, а не положение ячейки: что значит «открыть» здесь.
@@ -1068,7 +1069,7 @@
     runBy &&
       meta.current.runById !== session.me.id &&
       (cellState === 'ok' || cellState === 'error')
-      ? `Ran by ${runBy}`
+      ? tr('room.ui.421', { p0: runBy })
       : null,
   )
 
@@ -1097,9 +1098,9 @@
   const editingHere = $derived.by(() => {
     const names = peersHere.current.map((peer) => peer.user.name)
     if (names.length === 0) return null
-    if (names.length === 1) return `${names[0]} is editing here`
-    if (names.length === 2) return `${names[0]} and ${names[1]} are editing here`
-    return `${names[0]}, ${names[1]} and ${names.length - 2} more are editing here`
+    if (names.length === 1) return tr('room.ui.422', { p0: names[0] })
+    if (names.length === 2) return tr('room.ui.423', { p0: names[0], p1: names[1] })
+    return tr('room.ui.424', { p0: names[0], p1: names[1], p2: names.length - 2 })
   })
 
   let aiReady = $state(false)
@@ -1143,8 +1144,8 @@
    * Спрашиваем тем же общим на вкладку обещанием и той же парой функций, что и
    * маршрут, который отказывает.
    */
-  const REWRITE_OFF = 'Оракула в этом семинаре нет'
-  const REWRITE_HINTS = 'Здесь оракул подсказывает, но ячейку не переписывает'
+  const REWRITE_OFF = $derived(tr('room.ui.425'))
+  const REWRITE_HINTS = $derived(tr('room.ui.426'))
   let rewriteReady = $state(false)
   let rewriteWhy = $state<string | null>(null)
 
@@ -1165,7 +1166,7 @@
       () => {
         if (!alive) return
         rewriteReady = false
-        rewriteWhy = 'Оракул сейчас недоступен'
+        rewriteWhy = tr('room.ui.427')
       },
     )
     return () => {
@@ -1175,7 +1176,7 @@
 
   /** Строка вопроса живая ровно тогда, когда её примут. */
   const mayRewrite = $derived(may.ask && rewriteReady)
-  const rewriteRefusal = $derived(!may.ask ? may.askWhy : (rewriteWhy ?? 'Оракул сейчас недоступен'))
+  const rewriteRefusal = $derived(!may.ask ? may.askWhy : (rewriteWhy ?? tr('room.ui.427')))
 
   // Право пропало под руками — открытую строку закрыть, иначе она обещает то,
   // чего уже нет (тот же довод, что у выхода из исходника заметки).
@@ -1337,7 +1338,7 @@
        * что пара кончилась. То же самое уже починено в командном режиме
        * (Notebook.svelte), в редакторе оставалось.
        */
-      session.showError((shut ? LECTURE_CELL : may.runWhy) + '.')
+      session.showError((shut ? tr(LECTURE_CELL) : may.runWhy) + '.')
       return false
     }
     // Молча: ячейка сама показывает, что она делает, — и полосой, и строкой
@@ -1354,7 +1355,7 @@
       session.me.role !== 'host' &&
       hasPendingRun(session.doc, session.me.id)
     ) {
-      session.showError(ONE_AT_A_TIME)
+      session.showError(tr(ONE_AT_A_TIME))
       return false
     }
     onselect()
@@ -1409,7 +1410,7 @@
    */
   function deleteIfEmpty() {
     if (!emptyCellIsRemovable(outputs.current.length)) {
-      session.showError('В ячейке остался вывод. Для удаления нажмите корзину или дважды D.')
+      session.showError(tr('room.ui.428'))
       return
     }
     removeSelf(true)
@@ -1460,7 +1461,7 @@
       prompt = ''
       asking = false
     } catch (cause) {
-      askError = cause instanceof Error ? cause.message : 'The oracle could not be reached'
+      askError = cause instanceof Error ? tr(cause.message) : tr('room.ui.429')
     } finally {
       sending = false
     }
@@ -1533,7 +1534,7 @@
      * навсегда. Та же граница стоит на сервере.
      */
     if (!acts) {
-      session.showError(CLASS_IS_OVER + '.')
+      session.showError(tr(CLASS_IS_OVER) + '.')
       return
     }
     session.send({ t: 'ai:decide', entryId: id, accept: false })
@@ -1615,7 +1616,7 @@
     плашкой над ячейкой.
   -->
   {#if lock && cellOpen}
-    <p class={cn(CAPS, 'pb-1 pt-0.5 text-accent-text')}>Открыта для всех</p>
+    <p class={cn(CAPS, 'pb-1 pt-0.5 text-accent-text')}>{tr('room.ui.333')}</p>
   {:else if inCouncil && leads}
     <!--
       У преподавателя в консилиуме общий текст — эталон: то, что он покажет,
@@ -1623,10 +1624,8 @@
       пульт с чужими попытками, и без слов их легко перепутать.
     -->
     <p class={cn(CAPS, 'flex flex-wrap items-center gap-x-2 pb-1 pt-0.5 text-accent-text')}>
-      <span>Консилиум</span>
-      <span class="font-normal normal-case tracking-normal text-muted">
-        Текст общей ячейки виден группе. Ответы студентов открываются отдельно.
-      </span>
+      <span>{tr('room.ui.34')}</span>
+      <span class="font-normal normal-case tracking-normal text-muted"> {tr('room.ui.334')} </span>
     </p>
   {/if}
 {/snippet}
@@ -1635,7 +1634,7 @@
   <div
     bind:this={root}
     role="group"
-    aria-label={selected ? `Cell ${index + 1}, selected` : `Cell ${index + 1}`}
+    aria-label={selected ? tr('room.extra.98', { p0: index + 1 }) : tr('room.extra.99', { p0: index + 1 })}
     data-cell-id={id}
     onfocusin={() => (focusWithin = true)}
     onfocusout={(event) => {
@@ -1787,7 +1786,7 @@
                 {/each}
                 <div class="my-1 h-px bg-line-soft"></div>
                 <label class="flex flex-col gap-1 px-2.5 py-1.5 text-ui">
-                  <span>Запуск студентам</span>
+                  <span>{tr('room.ui.335')}</span>
                   <select
                     class="h-8 w-full border border-line bg-canvas px-2 text-ui text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                     value={String(councilSettings.studentRun)}
@@ -1798,9 +1797,9 @@
                       setStudentRun(selected === 'request' ? 'request' : selected === 'true')
                     }}
                   >
-                    <option value="false">Только преподаватель</option>
-                    <option value="true">Студенты запускают сами</option>
-                    <option value="request">По запросу преподавателю</option>
+                    <option value="false">{tr('room.ui.336')}</option>
+                    <option value="true">{tr('room.ui.337')}</option>
+                    <option value="request">{tr('room.ui.338')}</option>
                   </select>
                 </label>
                 <!--
@@ -1816,7 +1815,7 @@
                   кнопки и эта строка не разъехались.
                 -->
                 {#if inCouncil}
-                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">{COUNCIL_SHARED_KERNEL_NOTE}</p>
+                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
                 {/if}
                 <!--
                   «Имена на проекторе» отсюда убраны, и это не потеря.
@@ -1830,7 +1829,7 @@
                   документов и вернётся сюда вместе с исполнением.
                 -->
                 {#if !inCouncil}
-                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">Настройка применяется в режиме «Консилиум».</p>
+                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">{tr('room.ui.339')}</p>
                 {/if}
               </div>
             {/if}
@@ -1844,10 +1843,10 @@
               cellOpen || inCouncil ? 'text-accent-text' : 'text-faint',
             )}
             title={inCouncil
-              ? 'Консилиум: у каждого свой ответ. Преподаватель может выбрать ответ для общего разбора.'
+              ? tr('room.extra.109')
               : cellOpen
-                ? 'Эта ячейка открыта комнате'
-                : 'Закрыта — открыть её может преподаватель'}
+                ? tr('room.extra.110')
+                : tr('room.extra.111')}
           >
             <Icon name={lockIcon} size={13} />
           </span>
@@ -1872,9 +1871,9 @@
       <div
         class="flex flex-col items-end gap-[3px]"
         title={[
-          mark?.tone === 'idle' ? 'Ещё не запускалась' : null,
-          mark?.tone === 'lost' ? 'Предыдущий запуск. Ядро было перезапущено' : null,
-          meta.current.execCount === null ? null : `Запуск ${meta.current.execCount}`,
+          mark?.tone === 'idle' ? tr('room.extra.112') : null,
+          mark?.tone === 'lost' ? tr('room.extra.113') : null,
+          meta.current.execCount === null ? null : tr('room.extra.114', { p0: meta.current.execCount }),
           meta.current.ranMs !== null && meta.current.ranMs >= NOTICED_MS
             ? spell(meta.current.ranMs)
             : null,
@@ -2008,8 +2007,8 @@
           <button
             type="button"
             class={TOOL}
-            title={mayEdit ? 'Edit this text cell' : editWhy}
-            aria-label="Edit text cell"
+            title={mayEdit ? tr('room.extra.120') : editWhy}
+            aria-label={tr('room.ui.340')}
             disabled={!mayEdit}
             onclick={() => enter()}
           >
@@ -2019,8 +2018,8 @@
         <button
           type="button"
           class={TOOL}
-          title={may.move ? 'Move up' : may.structureWhy}
-          aria-label="Move cell up"
+          title={may.move ? tr('room.extra.121') : may.structureWhy}
+          aria-label={tr('room.ui.341')}
           disabled={index === 0 || !may.move}
           onclick={() => session.send({ t: 'cells:move', cellId: id, direction: -1 })}
         >
@@ -2029,8 +2028,8 @@
         <button
           type="button"
           class={TOOL}
-          title={may.move ? 'Move down' : may.structureWhy}
-          aria-label="Move cell down"
+          title={may.move ? tr('room.extra.122') : may.structureWhy}
+          aria-label={tr('room.ui.342')}
           disabled={last || !may.move}
           onclick={() => session.send({ t: 'cells:move', cellId: id, direction: 1 })}
         >
@@ -2039,8 +2038,8 @@
         <button
           type="button"
           class={TOOL}
-          title={may.add ? 'Duplicate' : may.structureWhy}
-          aria-label="Duplicate cell"
+          title={may.add ? tr('room.extra.123') : may.structureWhy}
+          aria-label={tr('room.ui.343')}
           disabled={!may.add}
           onclick={() => duplicateCell(session.doc, bookRoot, id)}
         >
@@ -2049,8 +2048,8 @@
         <button
           type="button"
           class={TOOL}
-          title={mayEdit ? (isCode ? 'Convert to text — M' : 'Convert to code — Y') : editWhy}
-          aria-label={isCode ? 'Convert to markdown' : 'Convert to code'}
+          title={mayEdit ? (isCode ? tr('room.extra.124') : tr('room.extra.125')) : editWhy}
+          aria-label={isCode ? tr('room.extra.126') : tr('room.extra.127')}
           disabled={!mayEdit}
           onclick={convert}
         >
@@ -2064,8 +2063,8 @@
         <button
           type="button"
           class={TOOL}
-          title={mayRewrite ? 'Ask the oracle to change this cell' : rewriteRefusal}
-          aria-label="Ask the oracle to change this cell"
+          title={mayRewrite ? tr('room.extra.128') : rewriteRefusal}
+          aria-label={tr('room.ui.344')}
           aria-pressed={asking}
           disabled={!mayRewrite}
           onclick={() => (asking = !asking)}
@@ -2085,8 +2084,8 @@
           <button
             type="button"
             class={TOOL}
-            title={controlTitle(session.connected, mayEdit ? 'Clear this cell’s output' : editWhy)}
-            aria-label="Clear cell output"
+            title={controlTitle(session.connected, mayEdit ? tr('room.extra.129') : editWhy)}
+            aria-label={tr('room.ui.345')}
             disabled={!mayEdit || controlDisabled(session.connected)}
             onclick={() => session.send({ t: 'clearOutputs', cellId: id })}
           >
@@ -2096,8 +2095,8 @@
         <button
           type="button"
           class={TOOL_DANGER}
-          title={may.remove ? 'Delete cell' : may.structureWhy}
-          aria-label="Delete cell"
+          title={may.remove ? tr('room.extra.131') : may.structureWhy}
+          aria-label={tr('room.ui.346')}
           disabled={!may.remove}
           onclick={() => removeSelf(false)}
         >
@@ -2145,10 +2144,8 @@
             {#if liveText.current.trim()}
               <div class={cn('border-l-4 px-3 py-1', RULE[tone], 'bg-brand/[0.035]')}>
                 <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
-                  <span class={cn(CAPS, 'text-muted')}>Общая ячейка</span>
-                  <span class="text-2xs text-muted">
-                    видна всей группе
-                  </span>
+                  <span class={cn(CAPS, 'text-muted')}>{tr('room.ui.347')}</span>
+                  <span class="text-2xs text-muted"> {tr('room.ui.348')} </span>
                 </div>
                 {#if isCode}
                   <Code code={liveText.current} />
@@ -2166,25 +2163,17 @@
             >
               <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
                 <span class={cn(CAPS, mine?.shown ? 'text-positive' : 'text-accent-text')}>
-                  {mine?.shown ? 'На экране' : 'Консилиум'}
+                  {mine?.shown ? tr('room.ui.349') : tr('room.ui.34')}
                 </span>
                 <span class="text-2xs text-muted">
-                  {#if mine?.shown}
-                    преподаватель показал ваш вариант классу
-                  {:else if councilClosed}
-                    {COUNCIL_CLOSED}
+                  {#if mine?.shown} {tr('room.ui.350')} {:else if councilClosed}
+                    {tr(COUNCIL_CLOSED)}
                   {:else if submittedAt !== null && !attemptSynced}
                     <!-- «Сдано» — про текст, а не про нажатие: у преподавателя
                          лежит прошлый снимок, и назвать сданным этот значило бы
                          соврать в том, ради чего консилиум и затевали. -->
-                    <span class="text-warning">
-                      После сдачи текст изменился. Нажмите «Изменить» и сдайте текущую версию.
-                    </span>
-                  {:else if submittedAt !== null}
-                    сдано {clock(submittedAt)} · доступно преподавателю
-                  {:else}
-                    ваш черновик отправляется преподавателю
-                  {/if}
+                    <span class="text-warning"> {tr('room.ui.351')} </span>
+                  {:else if submittedAt !== null} {tr('room.ui.50')} {clock(submittedAt)} {tr('room.ui.352')} {:else} {tr('room.ui.353')} {/if}
                 </span>
                 {#if count}
                   <span class="ml-auto font-mono text-2xs tabular-nums text-muted">
@@ -2200,9 +2189,9 @@
                   awareness={sheet.awareness}
                   undoManager={sheet.undo}
                   language={isCode ? 'python' : 'markdown'}
-                  label={`Своя попытка, ячейка ${ordinal}`}
+                  label={tr('room.extra.132', { p0: ordinal })}
                   readOnly={!mayAttempt || submittedAt !== null}
-                  placeholder="Ваша версия…"
+                  placeholder={tr('room.ui.354')}
                   onfocus={() => onselect()}
                   onrun={runAttempt}
                   onrunstep={() => void submitAttempt()}
@@ -2212,7 +2201,7 @@
                   maxChars={MAX_ATTEMPT_CHARS}
                   onoverflow={(chars) =>
                     session.showError(
-                      `Вставка не поместилась: в попытке не больше ${MAX_ATTEMPT_CHARS.toLocaleString('ru-RU')} знаков, а с ней вышло бы ${chars.toLocaleString('ru-RU')}.`,
+                      tr('room.extra.133', { p0: MAX_ATTEMPT_CHARS.toLocaleString(getLocale()), p1: chars.toLocaleString(getLocale()) }),
                     )}
                 />
               </div>
@@ -2233,7 +2222,7 @@
                   )}
                 >
                   {#if attemptOver}
-                    <span>превышен лимит символов — сократите ответ</span>
+                    <span>{tr('room.ui.355')}</span>
                   {/if}
                   <span class="font-mono tabular-nums">{attemptCount}</span>
                 </p>
@@ -2252,7 +2241,7 @@
                   <span class="font-bold text-ink">{letter.by}</span>
                   <span class="font-mono text-2xs text-muted">{clock(letter.at)}</span>
                   {#if letter.to === 'group'}
-                    <span class="text-2xs text-muted">· всей группе</span>
+                    <span class="text-2xs text-muted">{tr('room.ui.70')}</span>
                   {/if}
                   <span class="text-ink">{letter.text}</span>
                 </p>
@@ -2263,13 +2252,13 @@
                     type="button"
                     class="btn-primary h-7"
                     disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
-                    title={controlTitle(session.connected, mayAttempt ? 'Сдать — ⇧↵' : attemptWhy)}
+                    title={controlTitle(session.connected, mayAttempt ? tr('room.extra.135') : attemptWhy)}
                     onclick={() => void submitAttempt()}
                   >
-                    {awaitingMine === 'submit' ? 'Отправляю…' : 'Сдать'}
+                    {awaitingMine === 'submit' ? tr('room.ui.66') : tr('room.ui.356')}
                   </button>
                   {#if mayAttempt}
-                    <span class="text-2xs text-muted">⇧↵ — сдать · черновик отправляется после паузы в наборе</span>
+                    <span class="text-2xs text-muted">{tr('room.ui.357')}</span>
                   {:else}
                     <span class="text-2xs text-muted">{attemptWhy}</span>
                   {/if}
@@ -2280,11 +2269,11 @@
                     disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
                     title={controlTitle(
                       session.connected,
-                      mayAttempt ? 'Продолжить редактирование и снять отметку о сдаче' : attemptWhy,
+                      mayAttempt ? tr('room.extra.136') : attemptWhy,
                     )}
                     onclick={withdrawAttempt}
                   >
-                    {awaitingMine === 'withdraw' ? 'Отправляю…' : 'Изменить'}
+                    {awaitingMine === 'withdraw' ? tr('room.ui.66') : tr('room.ui.358')}
                   </button>
                   {#if !mayAttempt}
                     <span class="text-2xs text-muted">{attemptWhy}</span>
@@ -2292,25 +2281,25 @@
                 {/if}
                 {#if councilSettings.studentRun === 'request' && !councilClosed}
                   {#if mine?.runRequest?.status === 'pending' && attemptSynced}
-                    <span class="text-2xs text-accent-text" role="status">Ожидает решения преподавателя</span>
+                    <span class="text-2xs text-accent-text" role="status">{tr('room.ui.359')}</span>
                     <button
                       type="button"
                       class="btn-ghost h-7"
                       disabled={!mayRequestRun || controlDisabled(session.connected) || requestSending !== null}
                       onclick={cancelAttemptRunRequest}
-                    >{requestSending?.action === 'cancel' ? 'Отменяю…' : 'Отменить запрос'}</button>
+                    >{requestSending?.action === 'cancel' ? tr('room.ui.360') : tr('room.ui.361')}</button>
                   {:else}
                     <button
                       type="button"
                       class="btn-outline h-7"
                       disabled={!mayRequestRun || attemptRunning || attemptOver || !sheetText.trim() || controlDisabled(session.connected) || requestSending !== null}
-                      title={controlTitle(session.connected, mayRequestRun ? 'Передать код преподавателю для решения о запуске в общем ядре' : attemptWhy)}
+                      title={controlTitle(session.connected, mayRequestRun ? tr('room.extra.137') : attemptWhy)}
                       onclick={requestAttemptRun}
-                    >{requestSending?.action === 'request' ? 'Отправляю запрос…' : 'Попросить запуск'}</button>
+                    >{requestSending?.action === 'request' ? tr('room.ui.362') : tr('room.ui.363')}</button>
                     {#if mine?.runRequest?.status === 'declined' && attemptSynced}
-                      <span class="text-2xs text-muted" role="status">Преподаватель отклонил запрос. Можно попросить снова.</span>
+                      <span class="text-2xs text-muted" role="status">{tr('room.ui.364')}</span>
                     {:else if mine?.runRequest && !attemptSynced}
-                      <span class="text-2xs text-muted" role="status">Текст изменён. Для новой версии нужен новый запрос.</span>
+                      <span class="text-2xs text-muted" role="status">{tr('room.ui.365')}</span>
                     {/if}
                   {/if}
                 {:else if mayRunAttempt && !councilClosed}
@@ -2320,10 +2309,10 @@
                     disabled={controlDisabled(session.connected) || attemptRunning || attemptOver}
                     title={controlTitle(
                       session.connected,
-                      `Запустить свою попытку — в очередь, по одному. ${COUNCIL_SHARED_KERNEL_NOTE}`,
+                      tr('room.extra.138', { p0: tr(COUNCIL_SHARED_KERNEL_NOTE) }),
                     )}
                     onclick={runAttempt}
-                  >Запустить</button>
+                  >{tr('room.ui.73')}</button>
                 {/if}
                 {#if mine?.queue != null}
                   <span class="inline-flex h-5 items-center bg-raised px-2 font-mono text-2xs text-muted" role="status">
@@ -2391,10 +2380,10 @@
                 cellId={id}
                 undoManager={session.undoManager}
                 language={isCode ? 'python' : 'markdown'}
-                label={`${isCode ? 'Code' : 'Text'} cell ${ordinal}`}
+                label={tr('room.cell.label', { type: isCode ? tr('room.extra.139') : tr('room.extra.140'), count: ordinal })}
                 readOnly={!mayEdit}
                 autoFocus={!isCode && focusOnEdit}
-                placeholder={isCode ? '' : 'Write in markdown…'}
+                placeholder={isCode ? '' : tr('room.extra.141')}
                 onfocus={() => onselect()}
                 onrun={run}
                 onrunstep={runAndStep}
@@ -2419,7 +2408,7 @@
               {#if shut}
                 <p class="flex items-center gap-2 pb-1 pt-1.5 text-2xs text-muted">
                   <span aria-hidden="true" class="h-px w-3.5 shrink-0 bg-line"></span>
-                  {LECTURE_CELL}
+                  {tr(LECTURE_CELL)}
                 </p>
               {/if}
             </div>
@@ -2455,7 +2444,7 @@
                      довод, по которому у запертой ячейки убран первый слот
                      тулбара. -->
                 <p class="text-prose text-muted">
-                  {mayEdit ? 'Empty — double-click to write.' : 'Empty.'}
+                  {mayEdit ? tr('room.ui.366') : tr('room.ui.367')}
                 </p>
               {/if}
             </div>
@@ -2499,10 +2488,8 @@
                   ontoggle={(view) => (session.council.view = view)}
                 />
               {:else}
-                <p class={cn(CAPS, 'text-accent-text')}>Консилиум — ячейка {ordinal}</p>
-                <p class="pt-1 text-2xs text-muted">
-                  Здесь появятся ответы студентов. Черновики обновляются после паузы в наборе.
-                </p>
+                <p class={cn(CAPS, 'text-accent-text')}>{tr('room.ui.368')} {ordinal}</p>
+                <p class="pt-1 text-2xs text-muted"> {tr('room.ui.369')} </p>
               {/if}
             </div>
           {/if}
@@ -2518,15 +2505,15 @@
           {#if !inCouncil && !leads && sheet}
             <div class={cn('border-l-4 px-3 py-1.5', RULE[tone], 'bg-surface/70')}>
               <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span class={cn(CAPS, 'text-muted')}>Консилиум закрыт</span>
-                <span class="text-2xs text-muted">{COUNCIL_CLOSED}</span>
+                <span class={cn(CAPS, 'text-muted')}>{tr('room.ui.370')}</span>
+                <span class="text-2xs text-muted">{tr(COUNCIL_CLOSED)}</span>
                 <button
                   type="button"
                   class="ml-auto text-2xs text-accent-text hover:underline"
                   aria-expanded={showDraft}
                   onclick={() => (showDraft = !showDraft)}
                 >
-                  {showDraft ? 'Свернуть черновик' : 'Показать черновик'}
+                  {showDraft ? tr('room.ui.371') : tr('room.ui.372')}
                 </button>
               </div>
               {#if showDraft}
@@ -2536,7 +2523,7 @@
                     awareness={sheet.awareness}
                     undoManager={sheet.undo}
                     language={isCode ? 'python' : 'markdown'}
-                    label={`Черновик попытки, ячейка ${ordinal}`}
+                    label={tr('room.extra.143', { p0: ordinal })}
                     readOnly={true}
                   />
                 </div>
@@ -2561,7 +2548,7 @@
                 rows="2"
                 class="w-full resize-none border border-line bg-canvas px-3 py-2 text-ui text-ink
                        placeholder:text-faint focus:border-accent focus:outline-none"
-                placeholder="What should this cell do instead?"
+                placeholder={tr('room.ui.373')}
                 onkeydown={(event) => {
                   // Enter sends: this is one sentence, not a document. Shift+Enter is
                   // there for the person who wants two.
@@ -2575,17 +2562,13 @@
               <div class="flex flex-wrap items-center gap-2.5">
                 <button type="button" class="btn-primary h-8" disabled={sending || !prompt.trim()} onclick={sendEdit}>
                   {#if sending}
-                    <Icon name="spinner" size={13} class="animate-spin" />
-                    Asking…
-                  {:else}
-                    Ask for a rewrite
-                  {/if}
+                    <Icon name="spinner" size={13} class="animate-spin" /> {tr('room.ui.374')} {:else} {tr('room.ui.375')} {/if}
                 </button>
-                <button type="button" class="btn-ghost h-8" onclick={() => (asking = false)}>Cancel</button>
+                <button type="button" class="btn-ghost h-8" onclick={() => (asking = false)}>{tr('room.ui.376')}</button>
                 {#if askError}
                   <span class="text-2xs text-danger" role="alert">{askError}</span>
                 {:else}
-                  <span class="text-2xs text-muted">The whole room sees the question and the answer.</span>
+                  <span class="text-2xs text-muted">{tr('room.ui.377')}</span>
                 {/if}
               </div>
             </div>
@@ -2599,7 +2582,7 @@
             -->
             <div class={cn('border-l-4 bg-accent/[0.04]', shownRunning ? 'border-accent/40' : 'border-accent')}>
               <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2">
-                <span class={cn(CAPS, 'text-accent-text')}>Proposed by the oracle</span>
+                <span class={cn(CAPS, 'text-accent-text')}>{tr('room.ui.378')}</span>
                 <span class="font-mono text-2xs">
                   {#if proposedCounts.added > 0}<span class="text-positive">+{proposedCounts.added}</span>{/if}
                   {#if proposedCounts.removed > 0}<span class="ml-1.5 text-danger">−{proposedCounts.removed}</span>{/if}
@@ -2608,9 +2591,7 @@
                   <!-- Not a refusal: the room may want the rewrite anyway. But accepting
                        deletes whatever arrived in the meantime, and that has to be said
                        before the press rather than after. -->
-                  <span class="text-2xs text-warning">
-                    The cell changed after this request. Applying the suggestion will replace its current text.
-                  </span>
+                  <span class="text-2xs text-warning"> {tr('room.ui.379')} </span>
                 {/if}
               </div>
               <div class="overflow-x-auto whitespace-pre px-3 py-2 font-mono text-code-lg leading-[21px]"><div class="w-max min-w-full">{#each proposedLines as line, index (index)}<span class={cn('block min-h-[21px]', line.kind === 'added' && 'bg-positive/10', line.kind === 'removed' && 'bg-danger/10', line.kind === 'same' && 'opacity-55')}><span class="inline-block w-5 select-none text-center text-faint">{line.kind === 'added' ? '+' : line.kind === 'removed' ? '\u2212' : ' '}</span><CodeLine tokens={proposedTokens[index] ?? []} /></span>{/each}</div></div>
@@ -2619,12 +2600,12 @@
                      после пяти принятий — нажать заполненную, и он обязан
                      попадать в безопасный исход. Так же в панели оракула. -->
                 {#if proposalStale}
-                  <button type="button" class="btn-primary h-8" onclick={decline}>Discard</button>
-                  <button type="button" class="btn-outline h-8" onclick={accept}>Apply anyway</button>
+                  <button type="button" class="btn-primary h-8" onclick={decline}>{tr('room.ui.380')}</button>
+                  <button type="button" class="btn-outline h-8" onclick={accept}>{tr('room.ui.381')}</button>
                 {:else}
-                  <button type="button" class="btn-primary h-8" onclick={accept}>Accept</button>
-                  <button type="button" class="btn-outline h-8" onclick={decline}>Discard</button>
-                  <span class="text-2xs text-muted">Applying updates the shared cell and records you as the author.</span>
+                  <button type="button" class="btn-primary h-8" onclick={accept}>{tr('room.ui.382')}</button>
+                  <button type="button" class="btn-outline h-8" onclick={decline}>{tr('room.ui.380')}</button>
+                  <span class="text-2xs text-muted">{tr('room.ui.383')}</span>
                 {/if}
               </div>
             </div>
@@ -2708,9 +2689,7 @@
                           промелькнувший переход, — оно висит ровно столько,
                           сколько остаётся правдой.
                         -->
-                        <span class="text-2xs text-warning">
-                          Saved output from an earlier run. The kernel restarted or the cell was restored.
-                        </span>
+                        <span class="text-2xs text-warning"> {tr('room.ui.384')} </span>
                       {/if}
                       {#if ranByOther}
                         <span class="font-mono text-2xs text-muted">{ranByOther}</span>
@@ -2741,7 +2720,7 @@
           )}
           onsubmit={sendAnswer}
         >
-          <span class={cn(CAPS, 'shrink-0 text-accent-text')}>Input</span>
+          <span class={cn(CAPS, 'shrink-0 text-accent-text')}>{tr('room.ui.385')}</span>
           {#if stdin.prompt}
             <span class="shrink-0 font-mono text-code text-ink">{stdin.prompt}</span>
           {/if}
@@ -2757,7 +2736,7 @@
               class="field h-8 min-w-0 flex-1 font-mono text-code-lg"
               autocomplete="off"
               spellcheck="false"
-              aria-label={stdin.prompt || 'The cell is waiting for input'}
+              aria-label={stdin.prompt || tr('room.cell.waitingInput')}
             />
             <!-- Нажатие — здесь же: ответ уходит в ядро, и до него на экране
                  не меняется ничего. Свойства перечислены, а не `.press`:
@@ -2771,9 +2750,7 @@
                 'transition-[opacity,transform] duration-press ease-out',
                 'enabled:active:scale-[0.97] hover:opacity-90',
               )}
-            >
-              Send
-            </button>
+            > {tr('room.ui.386')} </button>
           {/if}
         </form>
       {/if}
@@ -2811,16 +2788,10 @@
       -->
       {#if stdin}
         <p class="px-3 pt-1 text-2xs text-muted">
-          {#if canAnswer}
-            The kernel is waiting for your answer.
-          {:else if !acts}
+          {#if canAnswer} {tr('room.ui.387')} {:else if !acts}
             <!-- Две разные причины, и звонок из них старше: звать к полю того,
                  кто эту ячейку и запустил, после конца занятия — значит звать
-                 человека к отказу. Имени здесь поэтому нет. -->
-            Занятие закончено — на ввод отвечает преподаватель.
-          {:else}
-            The kernel is waiting — {runBy ?? 'whoever started this cell'} or the teacher answers.
-          {/if}
+                 человека к отказу. Имени здесь поэтому нет. --> {tr('room.ui.388')} {:else} {tr('room.ui.389')} {runBy ?? tr('room.ui.390')} {tr('room.ui.391')} {/if}
         </p>
       {/if}
 
@@ -2851,7 +2822,7 @@
               color={runner.color}
               avatar={runner.avatar}
               size="xs"
-              title={`${runner.name} started this run`}
+              title={tr('room.extra.150', { p0: runner.name })}
             />
           {/if}
           <!--
@@ -2876,9 +2847,9 @@
           {#if !stdin}
             <Icon name="spinner" size={12} class="shrink-0 animate-spin text-accent-text/70" />
           {/if}
-          <span class={cn(CAPS, 'text-accent-text')}>{stdin ? 'Waiting' : 'Running'}</span>
+          <span class={cn(CAPS, 'text-accent-text')}>{stdin ? tr('room.ui.392') : tr('room.ui.393')}</span>
           {#if runBy}
-            <span class="text-2xs text-muted">started by {runBy}</span>
+            <span class="text-2xs text-muted">{tr('room.ui.394')} {runBy}</span>
           {/if}
           <!--
             Секундомер и «стоп» — одна группа, прижатая вправо: группа растёт
@@ -2897,7 +2868,7 @@
             disabled={controlDisabled(session.connected, canInterrupt)}
             title={controlTitle(
               session.connected,
-              canInterrupt ? 'Stop the running cell' : 'Only the host, or whoever started it, can stop a run',
+              canInterrupt ? tr('room.extra.151') : tr('room.extra.152'),
             )}
             onclick={() => session.send({ t: 'interrupt', cellId: id })}
             class={cn(
@@ -2911,9 +2882,7 @@
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
               'disabled:pointer-events-none disabled:opacity-40',
             )}
-          >
-            Interrupt
-          </button>
+          > {tr('room.ui.395')} </button>
           </div>
         </div>
       <!--
@@ -2929,21 +2898,20 @@
                beside "queued by John", which is the same word twice. -->
           {#if queuePosition >= 0}
             <span
-              title="Waiting in the run queue"
+              title={tr('room.ui.396')}
               class="inline-flex h-5 items-center bg-raised px-2 font-mono text-2xs text-muted"
             >
-              {place(queuePosition + 1)} in queue
-            </span>
+              {place(queuePosition + 1)} {tr('room.ui.397')} </span>
           {/if}
-          <span class={cn(CAPS, 'text-accent-text')}>Queued</span>
+          <span class={cn(CAPS, 'text-accent-text')}>{tr('room.ui.398')}</span>
           {#if runBy}
-            <span class="text-2xs text-muted">by {runBy}</span>
+            <span class="text-2xs text-muted">{tr('room.ui.399')} {runBy}</span>
           {/if}
           {#if canCancel}
             <button
               type="button"
               disabled={controlDisabled(session.connected)}
-              title={controlTitle(session.connected, 'Take this cell out of the queue')}
+              title={controlTitle(session.connected, tr('room.extra.154'))}
               onclick={() => session.send({ t: 'cancel', cellId: id })}
               class={cn(
                 'ml-auto inline-flex h-6 items-center border border-line px-2 text-ink',
@@ -2956,9 +2924,7 @@
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
                 'disabled:pointer-events-none disabled:opacity-40',
               )}
-            >
-              Cancel
-            </button>
+            > {tr('room.ui.376')} </button>
           {/if}
         </div>
       {:else if hasError && aiReady && may.ask}
@@ -2976,10 +2942,8 @@
               'focus-visible:ring-primary-ink/60',
             )}
           >
-            <Icon name="sparkles" size={12} />
-            Fix with AI
-          </button>
-          <span class="text-2xs text-muted">sends the traceback, this cell and the notebook</span>
+            <Icon name="sparkles" size={12} /> {tr('room.ui.400')} </button>
+          <span class="text-2xs text-muted">{tr('room.ui.401')}</span>
         </div>
       {/if}
 
@@ -2991,7 +2955,7 @@
               color={peer.user.color}
               avatar={peer.user.avatar}
               size="xs"
-              title={`${peer.user.name} is in this cell`}
+              title={tr('room.extra.158', { p0: peer.user.name })}
             />
           {/each}
           <span class="text-2xs text-muted">{editingHere}</span>

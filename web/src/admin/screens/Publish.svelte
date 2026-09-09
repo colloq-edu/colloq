@@ -7,6 +7,7 @@
   забрать.
 -->
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import { AdminApiError, addressHolderOf, adminApi } from '@/lib/adminApi'
@@ -46,7 +47,8 @@
   /** Отмеченные шаги и их имена — по номеру версии. */
   let labels = $state<Record<number, string>>({})
   let picked = $state<Record<number, boolean>>({})
-  let error = $state<string | null>(null)
+  let errorText = $state<(() => string | null) | null>(null)
+  const error = $derived(errorText?.() ?? null)
   let busy = $state(false)
   let done = $state<string | null>(null)
   /**
@@ -97,7 +99,7 @@
         }
       })
       .catch((cause) =>
-        (error = cause instanceof AdminApiError ? cause.message : 'Не удалось загрузить историю семинара. Попробуйте обновить страницу.'),
+        (errorText = () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.load.the.seminar.history.try.reloading.the.page"))),
       )
   })
 
@@ -109,7 +111,7 @@
 
   async function publish(): Promise<void> {
     busy = true
-    error = null
+    errorText = null
     try {
       const body = await adminApi.publish(
         sessionId,
@@ -120,7 +122,7 @@
       // Повторная публикация адрес сохраняет — показываем тот, что есть.
       slug = body.publication.slug ?? slug
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'Не удалось опубликовать семинар. Попробуйте ещё раз.'
+      errorText = () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.publish.the.seminar.try.again"))
     } finally {
       busy = false
     }
@@ -176,11 +178,11 @@
     if (!done || busy) return
     const next = slugDraft.trim().toLowerCase()
     if (next && !slugOk(next)) {
-      error = 'Адрес: 3–64 символа, строчные латинские буквы, цифры и дефис. Первый и последний символ — буква или цифра.'
+      errorText = () => (tr("admin.address.3.64.lowercase.latin.letters.digits.or.dashes.start.and.e"))
       return
     }
     busy = true
-    error = null
+    errorText = null
     held = null
     try {
       await adminApi.setSlug('publication', done, next || null)
@@ -190,7 +192,7 @@
       slug = next
       former = [...new Set([...former, was].filter((name) => name && name !== next))]
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'Не удалось сохранить адрес. Попробуйте ещё раз.'
+      errorText = () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.save.the.address.try.again"))
       const holder = addressHolderOf(cause)
       // Только прежнее: живой адрес отсюда не отпускают, его снимают именем.
       if (holder?.former && next) held = { slug: next, holder }
@@ -210,11 +212,11 @@
     if (!held || busy) return
     const { holder, slug: freed } = held
     busy = true
-    error = null
+    errorText = null
     try {
       await adminApi.releaseFormerSlug(holder.kind, holder.id, freed)
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'Не удалось освободить прежний адрес. Попробуйте ещё раз.'
+      errorText = () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.release.the.previous.address.try.again"))
       return
     } finally {
       busy = false
@@ -240,11 +242,11 @@
     const name = dropping
     if (!page || !name || busy) return
     busy = true
-    error = null
+    errorText = null
     try {
       await adminApi.releaseFormerSlug('publication', page, name)
     } catch (cause) {
-      error = cause instanceof AdminApiError ? cause.message : 'Не удалось освободить прежний адрес. Попробуйте ещё раз.'
+      errorText = () => (cause instanceof AdminApiError ? cause.message : tr("admin.could.not.release.the.previous.address.try.again"))
       return
     } finally {
       busy = false
@@ -254,7 +256,7 @@
   }
 
   const stamp = (at: number): string =>
-    new Date(at).toLocaleString('ru-RU', {
+    new Date(at).toLocaleString(getLocale(), {
       hour: '2-digit',
       minute: '2-digit',
       day: 'numeric',
@@ -297,10 +299,9 @@
 {#snippet formerNames()}
   {#if former.length > 0}
     <div class="border-t border-line pt-3">
-      <p class="text-ui font-semibold text-ink">Прежние адреса</p>
+      <p class="text-ui font-semibold text-ink">{tr("admin.previous.addresses")}</p>
       <p class="mt-0.5 text-2xs leading-snug text-muted">
-        Эти ссылки открывают текущую публикацию. Если освободить адрес, он перестанет вести сюда
-        и его сможет занять другая публикация.
+        {tr("admin.these.links.open.the.current.publication.releasing.an.address.sto")}
       </p>
       <div class="mt-2 flex flex-col">
         {#each former as name (name)}
@@ -312,7 +313,7 @@
               disabled={busy}
               onclick={() => (dropping = name)}
             >
-              Освободить
+              {tr("admin.release")}
             </button>
           </div>
         {/each}
@@ -322,20 +323,20 @@
 {/snippet}
 
 <AdminPage
-  title={done ? 'Опубликовано' : `Опубликовать — ${title}`}
+  title={done ? tr("admin.published.795") : tr("admin.publish.796", { p0: title })}
   subtitle={done
-    ? 'Повторная публикация обновляет страницу по той же ссылке.'
+    ? tr("admin.publishing.again.updates.the.page.at.the.same.link")
     : already
-      ? `Опубликован ранее — /p/${already.slug ?? already.id}. Публикуя снова, вы оставляете ту же ссылку.`
-      : 'Выберите версии тетради для публикации.'}
+      ? tr("admin.previously.published.p.publishing.again.keeps.the.same.link", { p0: already.slug ?? already.id })
+      : tr("admin.choose.notebook.versions.to.publish")}
 >
   {#snippet actions()}
     <button type="button" class="btn-ghost" onclick={() => navigate('/admin')}>
-      {done ? 'К списку' : 'Отмена'}
+      {done ? tr("admin.back.to.list") : tr("admin.cancel")}
     </button>
     {#if !done}
       <button type="button" class="btn-primary" disabled={busy} onclick={() => void publish()}>
-        Опубликовать
+        {tr("admin.publish.803")}
       </button>
     {/if}
   {/snippet}
@@ -347,7 +348,7 @@
 
     {#if done}
       <div class="flex max-w-[640px] flex-col gap-3 border border-line bg-surface p-5">
-        <p class="text-ui text-muted">Опубликованная страница:</p>
+        <p class="text-ui text-muted">{tr("admin.published.page")}</p>
         <a
           class="block font-mono text-ui-lg text-accent-text"
           href={`/p/${slug || done}`}
@@ -379,7 +380,7 @@
             disabled={busy || slugDraft.trim() === slug}
             onclick={() => void saveSlug()}
           >
-            {slug ? 'Изменить адрес' : 'Задать адрес'}
+            {slug ? tr("admin.change.address") : tr("admin.set.address")}
           </button>
           <!-- Имя держит не живая страница, а память о розданной ссылке — и
                это единственный вид «занято», который владелец может разрешить
@@ -392,7 +393,7 @@
               disabled={busy}
               onclick={() => (asking = true)}
             >
-              Освободить прежний адрес
+              {tr("admin.release.previous.address")}
             </button>
           {/if}
           <!-- Идентификатор ведёт сюда всегда: кто продиктовал классу /p/xxxx
@@ -400,15 +401,14 @@
                Прежние ИМЕНА — ниже, отдельным списком: с ними можно ещё и
                что-то сделать. -->
           {#if slug}
-            <span class="text-2xs text-muted">старый адрес /p/{done} тоже работает</span>
+            <span class="text-2xs text-muted">{tr("admin.the.old.address.p")}{done} {tr("admin.also.works")}</span>
           {/if}
         </div>
 
         {#if held}
           <p class="text-2xs leading-snug text-muted">
-            <span class="font-mono text-ink">/p/{held.slug}</span> — прежний адрес страницы
-            {#if held.holder.name}«{held.holder.name}»{/if}. После переноса эта ссылка будет открывать
-            текущую публикацию вместо прежней.
+            <span class="font-mono text-ink">/p/{held.slug}</span> {tr("admin.the.previous.address.of.the.page")}
+            {#if held.holder.name}«{held.holder.name}»{/if}{tr("admin.after.transfer.this.link.will.open.the.current.publication.instea")}
           </p>
         {/if}
 
@@ -426,9 +426,7 @@
       {#if skipped.length > 0}
         <div class="mt-4 max-w-[640px] border-l-[3px] border-warning bg-surface px-4 py-3">
           <p class="text-ui font-semibold text-ink">
-            {skipped.length}
-            {plural(skipped.length, 'момент', 'момента', 'моментов')}
-            {plural(skipped.length, 'пропущен', 'пропущены', 'пропущены')}
+            {tr("admin.count.skippedMoments", { count: skipped.length })}
           </p>
           <ul class="mt-1.5 flex flex-col gap-1">
             {#each skipped as step (`${step.seq}:${step.reason}`)}
@@ -438,8 +436,7 @@
             {/each}
           </ul>
           <p class="mt-2 text-2xs leading-snug text-faint">
-            Остальные шаги опубликованы. После устранения причины можно повторить публикацию
-            по той же ссылке.
+            {tr("admin.the.remaining.steps.were.published.once.the.issue.is.resolved.you")}
           </p>
         </div>
       {/if}
@@ -447,9 +444,9 @@
       <!-- Шаги -->
       <div class="flex flex-wrap items-start gap-x-7 gap-y-3 border-b border-line pb-6">
         <div class="w-[220px] shrink-0">
-          <p class="text-ui font-semibold text-ink">Шаги</p>
+          <p class="text-ui font-semibold text-ink">{tr("admin.steps.825")}</p>
           <p class="mt-0.5 text-2xs leading-snug text-muted">
-            Сохранённые версии тетради с кодом, заметками и выводом ячеек.
+            {tr("admin.saved.notebook.versions.with.code.notes.and.cell.outputs")}
           </p>
         </div>
 
@@ -461,12 +458,11 @@
           -->
           <div class="min-w-0 flex-1 border border-line bg-surface px-5 py-4">
             <p class="text-ui-lg font-semibold text-ink">
-              Нет сохранённых версий для выбора. Будет опубликована текущая тетрадь.
+              {tr("admin.no.saved.versions.to.choose.from.the.current.notebook.will.be.pub")}
             </p>
             <p class="mt-2 text-ui leading-relaxed text-muted">
-              Шаги берутся из чекпоинтов. Нажмите <span class="font-semibold text-ink">«Чекпоинт»</span>
-              в ленте версий, чтобы сохранить тетрадь на нужном этапе занятия.
-              Например, перед упражнением или после разбора решения.
+              {tr("admin.steps.come.from.checkpoints.click")} <span class="font-semibold text-ink">{tr("admin.checkpoint")}</span>
+              {tr("admin.in.the.version.history.to.save.the.notebook.at.a.key.point.in.the")}
             </p>
           </div>
         {:else}
@@ -484,7 +480,7 @@
                     ? 'border-brand bg-brand text-white'
                     : 'border-faint bg-canvas'}"
                   aria-pressed={picked[candidate.seq] && named}
-                  aria-label="Включить версию в публикацию"
+                  aria-label={tr("admin.include.this.version.in.the.publication")}
                   disabled={!named}
                   onclick={() => (picked[candidate.seq] = !picked[candidate.seq])}
                 >
@@ -504,7 +500,7 @@
                   {stamp(candidate.at)}
                 </span>
                 <span class="w-[86px] shrink-0 font-mono text-2xs text-faint">
-                  {candidate.cellCount} ячеек
+                  {candidate.cellCount} {tr("admin.cells")}
                 </span>
                 {#if named}
                   <input
@@ -517,7 +513,7 @@
                   <input
                     class="min-w-0 flex-1 border border-line bg-canvas px-2 py-1 text-ui text-ink
                            placeholder:text-faint focus:outline-none"
-                    placeholder="Название версии"
+                    placeholder={tr("admin.version.name")}
                     maxlength={MAX_STEP_LABEL}
                     bind:value={labels[candidate.seq]}
                     oninput={() => (picked[candidate.seq] = true)}
@@ -534,11 +530,11 @@
                   <path d={YES} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
               </span>
-              <span class="w-[128px] shrink-0 font-mono text-2xs text-muted">сейчас</span>
+              <span class="w-[128px] shrink-0 font-mono text-2xs text-muted">{tr("admin.now")}</span>
               <span class="w-[86px] shrink-0"></span>
               <span class="min-w-0 flex-1 px-2 text-ui text-muted">
-                Тетрадь на момент публикации
-                <span class="pl-2 text-2xs text-faint">всегда включается в публикацию</span>
+                {tr("admin.notebook.at.the.time.of.publishing")}
+                <span class="pl-2 text-2xs text-faint">{tr("admin.always.included.in.the.publication")}</span>
               </span>
             </div>
           </div>
@@ -548,13 +544,13 @@
       <!-- Что станет публичным -->
       <div class="flex flex-wrap items-start gap-x-7 gap-y-3 border-b border-line py-6">
         <div class="w-[220px] shrink-0">
-          <p class="text-ui font-semibold text-ink">Что станет публичным</p>
+          <p class="text-ui font-semibold text-ink">{tr("admin.what.becomes.public")}</p>
           <p class="mt-0.5 text-2xs leading-snug text-muted">
-            Имена и личные данные в тексте ячеек или их выводе сохранятся. Проверьте их перед публикацией.
+            {tr("admin.names.and.personal.data.in.cell.text.or.outputs.will.be.kept.revi")}
           </p>
         </div>
         <div class="min-w-0 flex-1 border border-line bg-surface">
-          {#each [['Ячейки, их код и заметки', 'такими, какими были на каждом шаге'], ['Всё, что ячейки напечатали', 'графики, таблицы, трейсбеки'], ['Кнопка «скопировать» у каждой ячейки и вся тетрадь файлом .ipynb', 'чтобы код можно было забрать']] as [what, why] (what)}
+          {#each [[tr("admin.cells.code.and.notes"), tr("admin.as.they.were.at.each.step")], [tr("admin.everything.the.cells.printed"), tr("admin.charts.tables.and.tracebacks")], [tr("admin.a.copy.button.for.each.cell.and.the.whole.notebook.as.an.ipynb.fi"), tr("admin.so.the.code.can.be.downloaded")]] as [what, why] (what)}
             <div class={FACT}>
               <svg width="13" height="10" viewBox="0 0 13 10" fill="none" class="shrink-0">
                 <path d={YES} stroke="#1B7A4B" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
@@ -563,7 +559,7 @@
               <span class="w-[300px] shrink-0 text-2xs text-muted">{why}</span>
             </div>
           {/each}
-          {#each [['Кто что печатал и кто что запускал', 'авторство действий не публикуется'], ['Лента вопросов к оракулу', 'вопросы и ответы не публикуются'], ['Терминал', 'история команд не публикуется'], ['Файлы комнаты', 'файлы не включаются в публикацию']] as [what, why] (what)}
+          {#each [[tr("admin.who.typed.or.ran.what"), tr("admin.action.authorship.is.not.published")], [tr("admin.oracle.question.history"), tr("admin.questions.and.answers.are.not.published")], [tr("admin.terminal"), tr("admin.command.history.is.not.published")], [tr("admin.room.files"), tr("admin.files.are.not.included.in.the.publication")]] as [what, why] (what)}
             <div class="{FACT} border-t border-line">
               <svg width="13" height="13" viewBox="0 0 13 13" fill="none" class="shrink-0">
                 <path d={NO} stroke="#8E2334" stroke-width="1.7" stroke-linecap="round" />
@@ -578,8 +574,8 @@
       <!-- Ссылка -->
       <div class="flex flex-wrap items-start gap-x-7 gap-y-3 py-6">
         <div class="w-[220px] shrink-0">
-          <p class="text-ui font-semibold text-ink">Ссылка</p>
-          <p class="mt-0.5 text-2xs leading-snug text-muted">Поделитесь ссылкой со студентами.</p>
+          <p class="text-ui font-semibold text-ink">{tr("admin.the.link")}</p>
+          <p class="mt-0.5 text-2xs leading-snug text-muted">{tr("admin.share.the.link.with.your.students")}</p>
         </div>
         <div class="flex min-w-0 max-w-[700px] flex-1 flex-col gap-3">
           {#if already}
@@ -595,14 +591,12 @@
             {@render formerNames()}
           {/if}
           <p class="text-ui leading-relaxed text-muted">
-            Повторная публикация сохраняет ссылку. После снятия публикации по ней отображается
-            сообщение об этом. Страница содержит запрет индексации для поисковых систем.
+            {tr("admin.publishing.again.keeps.the.link.after.withdrawal.the.link.display")}
           </p>
           <div class="border-l-[3px] border-warning bg-surface px-4 py-3">
             <p class="text-ui leading-relaxed text-muted">
-              <span class="font-semibold text-ink">Доступ к комнате не меняется.</span>
-              Публикация и архивация не меняют доступ по ссылке <span class="font-mono">/s/{sessionId}</span>.
-              Вход и редактирование зависят от действующих правил комнаты и статуса занятия.
+              <span class="font-semibold text-ink">{tr("admin.room.access.stays.the.same")}</span>
+              {tr("admin.publishing.and.archiving.do.not.change.access.through.the.link")} <span class="font-mono">/s/{sessionId}</span>{tr("admin.entry.and.editing.depend.on.the.current.room.rules.and.class.stat")}
             </p>
           </div>
         </div>
@@ -629,19 +623,18 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="release-slug-title" class="text-title font-semibold text-ink">
-        Освободить адрес /p/{going.slug}?
+        {tr('admin.publication.releaseHeading', { address: going.slug })}
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Сейчас он ведёт на страницу
-        {#if going.holder.name}«{going.holder.name}»{/if}. После переноса эта ссылка будет
-        открывать текущую публикацию вместо прежней.
+        {tr("admin.it.currently.leads.to.the.page")}
+        {#if going.holder.name}«{going.holder.name}»{/if}{tr("admin.after.transfer.this.link.will.open.the.current.publication.instea")}
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
       {/if}
       <div class="mt-5 flex justify-end gap-2">
         <button type="button" class="btn-outline" disabled={busy} onclick={() => (asking = false)}>
-          Отмена
+          {tr("admin.cancel")}
         </button>
         <button
           type="button"
@@ -649,7 +642,7 @@
           disabled={busy}
           onclick={() => void release()}
         >
-          {busy ? 'Переносим…' : 'Перенести адрес'}
+          {busy ? tr("admin.transferring") : tr("admin.transfer.address")}
         </button>
       </div>
     </div>
@@ -673,18 +666,17 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="drop-slug-title" class="text-title font-semibold text-ink">
-        Освободить адрес /p/{going}?
+        {tr('admin.publication.releaseHeading', { address: going })}
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Эта ссылка перестанет открывать текущую публикацию. Адрес сможет занять другая
-        публикация, и тогда ссылка будет вести на неё.
+        {tr("admin.this.link.will.stop.opening.the.current.publication.another.publi")}
       </p>
       {#if error}
         <p class="mt-3 text-ui text-danger">{error}</p>
       {/if}
       <div class="mt-5 flex justify-end gap-2">
         <button type="button" class="btn-outline" disabled={busy} onclick={() => (dropping = null)}>
-          Отмена
+          {tr("admin.cancel")}
         </button>
         <button
           type="button"
@@ -692,7 +684,7 @@
           disabled={busy}
           onclick={() => void dropFormer()}
         >
-          {busy ? 'Освобождаем…' : 'Освободить адрес'}
+          {busy ? tr("admin.releasing") : tr("admin.release.address")}
         </button>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { tr, getLocale } from '@shared/i18n'
 /**
  * Решения панели преподавателя, вынесенные из компонентов.
  *
@@ -47,15 +48,15 @@ export function signedOutNotice(reason: SignedOutReason): string {
   switch (reason) {
     case 'revoked':
       return (
-        'Your sign-in is no longer valid. The link may have been replaced or the account ' +
-        'removed. Ask an owner for a new sign-in link.'
+        (tr("admin.your.sign.in.is.no.longer.valid.the.link.may.have.been.replaced.o") + " ") +
+        tr("admin.removed.ask.an.owner.for.a.new.sign.in.link")
       )
     case 'removed-self':
-      return 'You removed your own account, so this browser is signed out. An owner can add you back.'
+      return tr("admin.you.removed.your.own.account.so.this.browser.is.signed.out.an.own")
     default:
       return (
-        'No sign-in session was received from this browser. Allow cookies for this ' +
-        'address, or open the panel over the address the server publishes, and sign in again.'
+        (tr("admin.no.sign.in.session.was.received.from.this.browser.allow.cookies.f") + " ") +
+        tr("admin.address.or.open.the.panel.over.the.address.the.server.publishes.a")
       )
   }
 }
@@ -95,11 +96,11 @@ export interface AdminRefusal {
 export function ruleRefusal(refusal: AdminRefusal | null): string {
   switch (refusal?.reason) {
     case 'network':
-      return 'Не удалось сохранить правило: сервер не ответил. Попробуйте ещё раз.'
+      return tr("admin.could.not.save.the.rule.the.server.did.not.respond.try.again")
     case 'unauthenticated':
-      return 'Не удалось сохранить правило: сеанс входа недействителен. Войдите заново.'
+      return tr("admin.could.not.save.the.rule.your.sign.in.session.is.no.longer.valid.s")
     case 'forbidden':
-      return 'Не удалось сохранить правило: у вас нет прав на этот семинар.'
+      return tr("admin.could.not.save.the.rule.you.do.not.have.access.to.this.seminar")
     default:
       /*
        * «Семинара больше нет» — это факт, а не догадка по коду.
@@ -112,9 +113,9 @@ export function ruleRefusal(refusal: AdminRefusal | null): string {
        * маршрута: разобранное тело, которого у чужой страницы не будет.
        */
       if (refusal?.status === 404 && refusal.body != null) {
-        return 'Не удалось сохранить правило: семинар не найден.'
+        return tr("admin.could.not.save.the.rule.seminar.not.found")
       }
-      return 'Не удалось сохранить правило. Попробуйте ещё раз.'
+      return tr("admin.could.not.save.the.rule.try.again")
   }
 }
 
@@ -152,16 +153,16 @@ export function oracleCeiling(settings: OracleSettings): OracleCeiling {
     return {
       mode: 'off',
       why: isKeylessProvider(settings.provider)
-        ? `the ${PROVIDER_PRESETS[settings.provider].label} runtime has no address set`
-        : 'no model key is set for this instance',
+        ? tr("admin.the.runtime.has.no.address.set", { p0: PROVIDER_PRESETS[settings.provider].label })
+        : tr("admin.no.model.key.is.set.for.this.instance"),
     }
   }
-  if (settings.defaultMode === 'off') return { mode: 'off', why: 'the instance has the oracle off' }
+  if (settings.defaultMode === 'off') return { mode: 'off', why: tr("admin.the.instance.has.the.oracle.off") }
   if (settings.questionsPerHour === 0) {
-    return { mode: 'off', why: 'the instance allows zero questions an hour' }
+    return { mode: 'off', why: tr("admin.the.instance.allows.zero.questions.an.hour") }
   }
   if (settings.defaultMode === 'hints') {
-    return { mode: 'hints', why: 'the instance allows hints only' }
+    return { mode: 'hints', why: tr("admin.the.instance.allows.hints.only") }
   }
   return { mode: 'full', why: null }
 }
@@ -231,8 +232,8 @@ export function splitBySize<T extends { name: string; size: number }>(
  * По-русски, потому что по-русски весь экран публикации.
  */
 export function skippedStepLine(step: SkippedStep, moment?: string): string {
-  const named = step.label.trim() || moment?.trim() || `версия ${step.seq}`
-  return `Версия «${named}» пропущена: ${SKIP_REASON_TEXT[step.reason]}`
+  const named = step.label.trim() || moment?.trim() || tr("admin.version", { p0: step.seq })
+  return tr("admin.version.skipped", { p0: named, p1: SKIP_REASON_TEXT[step.reason] })
 }
 
 /* --------------------------------------------------------- «идёт сейчас» */
@@ -240,15 +241,15 @@ export function skippedStepLine(step: SkippedStep, moment?: string): string {
 /** Сколько прошло — словами, для баннера и строки списка. */
 export function ago(from: number, at: number): string {
   const minutes = Math.max(0, Math.round((at - from) / 60_000))
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes} min ago`
+  if (minutes < 1) return tr("admin.just.now")
+  if (minutes < 60) return tr("admin.min.ago", { p0: minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} h ago`
+  if (hours < 24) return tr("admin.h.ago", { p0: hours })
   const days = Math.floor(hours / 24)
-  return days === 1 ? 'yesterday' : `${days} days ago`
+  return days === 1 ? tr("admin.yesterday") : tr("admin.days.ago", { p0: days })
 }
 
-export const people = (n: number): string => (n === 1 ? '1 person' : `${n} people`)
+export const people = (n: number): string => tr("admin.count.people", { count: n })
 
 /**
  * Строка баннера «Running now».
@@ -268,6 +269,6 @@ export function runningLine(
   now: number,
 ): string {
   const since = seminar.liveSince ?? null
-  const clock = since === null ? `created ${ago(seminar.createdAt, now)}` : `started ${ago(since, now)}`
-  return `${people(seminar.liveCount)} in the room · ${clock}`
+  const clock = since === null ? tr("admin.created", { p0: ago(seminar.createdAt, now) }) : tr("admin.started", { p0: ago(since, now) })
+  return tr("admin.in.the.room", { p0: people(seminar.liveCount), p1: clock })
 }

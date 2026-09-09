@@ -175,7 +175,7 @@ test('остановить может тот, чья ячейка считает
   // Правило старше правил комнаты и ими не управляется: ядро одно, и остановка
   // задевает того, чей код в нём сейчас.
   const id = room({})
-  assert.match(say(id, 'participant', { t: 'interrupt' }) ?? '', /host/i)
+  assert.match(say(id, 'participant', { t: 'interrupt' }) ?? '', /преподаватель/i)
   assert.equal(say(id, 'host', { t: 'interrupt' }), null)
 })
 

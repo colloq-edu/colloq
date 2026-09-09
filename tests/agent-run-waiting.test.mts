@@ -15,6 +15,7 @@
  * говорит. Ни сети, ни ядра здесь нет — сверяются два места одного файла.
  */
 import { test } from 'node:test'
+import { translate } from '../shared/i18n.js'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -40,7 +41,9 @@ test('срок ожидания снимает свою команду из оч
 })
 
 test('и модели про это сказано теми же словами: команда снята', () => {
-  const said = from("if (result.cut === 'waiting') {", 500)
+  const branch = from("if (result.cut === 'waiting') {", 500)
+  const said = translatedBranch(branch, 'ru')
+  assert.match(translatedBranch(branch, 'en'), /removed my command from the queue/)
   assert.match(said, /сн(ял|ята) из очереди/)
   /*
    * Три обещания, которых код не выполняет. Каждое проверяется отдельно:
@@ -53,7 +56,16 @@ test('и модели про это сказано теми же словами:
 })
 
 test('строка шага в ленте преподавателя говорит то же самое', () => {
-  const step = from("result.cut === 'waiting'", 200)
+  const branch = from("result.cut === 'waiting'", 200)
+  const step = translatedBranch(branch, 'ru')
+  assert.match(translatedBranch(branch, 'en'), /did not start.*removed from the queue/)
   assert.match(step, /не начался/)
   assert.match(step, /снята/)
 })
+
+/** The branch references translation keys; verify the actual promised copy in both locales. */
+function translatedBranch(source: string, locale: 'ru' | 'en'): string {
+  const keys = [...source.matchAll(/tr\(["'](server\.[^"']+)["']/g)].map(match => match[1])
+  assert.ok(keys.length > 0, 'the branch must use explicit translations')
+  return keys.map(key => translate(locale, key)).join('')
+}

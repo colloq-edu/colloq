@@ -1,96 +1,41 @@
-/**
- * Расшифровка терминала говорит на языке комнаты.
- *
- * Английской в ящике оставалась половина, которой нет в разметке: строки
- * печатает сервер (`server/src/kernel/terminal.ts`), а приезжают они в ту же
- * вкладку, где русские «Терминал / Журнал ядра / История», приглашение
- * «оболочка запускается…» и кнопки «Очистить» и «Завести оболочку заново».
- * «X pressed Ctrl+C.», «the shell exited — open the terminal again…» стояли
- * строкой ниже русского отказа — класс читал оба языка в одном столбце.
- *
- * Тип этого не видит, поэтому здесь два условия, которые легко нарушить
- * следующей правкой:
- *
- *  1. в строке расшифровки нет английской фразы;
- *  2. кнопка названа той подписью, которая в ящике действительно есть.
- *
- * Второе — не педантизм: прежняя строка звала «Press Stop», а кнопки «Стоп» в
- * ящике нет и не было (команду останавливает Ctrl+C), и «with Clear» — при
- * кнопке «Очистить». Обещание кнопки, которой нет, — та же находка, только с
- * другой стороны.
- */
+/** System notices are localized at emission; shell output itself is not translated. */
 import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-
-const TERMINAL = 'server/src/kernel/terminal.ts'
-const DRAWER = 'web/src/components/panels/TerminalDrawer.svelte'
-
-function read(rel: string): string {
-  return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
+import { hasTranslation, translate } from '../shared/i18n.js'
+const read = (file: string) => fs.readFileSync(path.resolve(import.meta.dirname, '..', file), 'utf8')
+function keysIn(file: string): string[] {
+  return [...new Set([...read(file).matchAll(/["'](server\.[^"']+)["']/g)].map(match => match[1]))]
 }
 
-/**
- * Строки, которые видит комната: всё, помеченное `[colloq]`, фразы отказа
- * (`fail`) и та, что собирается для него в переменную, — вместе с их
- * продолжениями: длинная строка сложена из кусков через `+`, и второй кусок
- * такая же часть фразы, как первый.
- */
-function notices(): string[] {
-  // `systemLine(term, `[colloq] ${message}`)` — не фраза, а конверт: сама
-  // фраза приходит сюда из `fail`, и проверяется там же, где написана.
-  const envelope = /\[colloq\] \$\{[a-zA-Z.]+\}`\)/
-  const opens = /\[colloq\]|fail\(term, ['`]|const message = `/
-  const lines = read(TERMINAL).split('\n')
-  const found: string[] = []
-  for (let i = 0; i < lines.length; i++) {
-    if (!opens.test(lines[i]) || envelope.test(lines[i])) continue
-    let text = lines[i]
-    let j = i
-    while (lines[j].trimEnd().endsWith('+') && j + 1 < lines.length) {
-      j += 1
-      text += ' ' + lines[j].trim()
-    }
-    found.push(text)
-  }
-  return found
-}
-
-test('в расшифровке терминала не осталось английских фраз', () => {
-  const said = notices()
-  assert.ok(said.length >= 15, `нашли всего ${said.length} строк расшифровки — разбор сломался`)
-  for (const line of said) {
-    assert.match(line, /[А-Яа-яЁё]/, `строка без единого русского слова: ${line.trim()}`)
-    // Три латинских слова подряд — это фраза, а не `vim`, `Ctrl+C` или `HTTP`.
-    assert.doesNotMatch(
-      line,
-      /[A-Za-z]{2,}\s+[A-Za-z]{2,}\s+[A-Za-z]{2,}/,
-      `английская фраза в расшифровке: ${line.trim()}`,
-    )
+test('terminal system messages have both languages and retain the Colloq marker', () => {
+  const keys = keysIn('server/src/kernel/terminal.ts')
+  const notices = keys.filter(key => translate('ru', key).startsWith('[colloq]'))
+  assert.ok(notices.length >= 10, 'terminal notices must remain covered')
+  for (const key of keys) assert.ok(hasTranslation(key), key)
+  for (const key of notices) {
+    assert.match(translate('ru', key), /[А-Яа-яЁё]/, key)
+    assert.match(translate('en', key), /^\[colloq\]/, key)
+    assert.doesNotMatch(translate('en', key), /[А-Яа-яЁё]/, key)
   }
 })
 
-test('кнопку в расшифровке зовут её подписью из ящика', () => {
-  const drawer = read(DRAWER)
-  const named = new Set<string>()
-  for (const line of notices()) {
-    for (const found of line.matchAll(/«([^»]+)»/g)) named.add(found[1])
-  }
-  assert.ok(named.size > 0, 'расшифровка не называет ни одной кнопки — проверять нечего')
-  for (const label of named) {
-    assert.ok(
-      drawer.includes(label),
-      `расшифровка обещает кнопку «${label}», а в ящике такой подписи нет`,
-    )
+test('notice button labels match translated drawer labels', () => {
+  const source = read('web/src/components/panels/TerminalDrawer.svelte')
+  const drawerKeys = [...source.matchAll(/tr\(["']([^"']+)["']/g)].map(match => match[1])
+  for (const locale of ['ru', 'en'] as const) {
+    const labels = drawerKeys.map(key => translate(locale, key)).join('\n')
+    const notices = keysIn('server/src/kernel/terminal.ts').map(key => translate(locale, key)).join('\n')
+    const names = [...notices.matchAll(locale === 'ru' ? /«([^»]+)»/g : /“([^”]+)”/g)].map(match => match[1])
+    assert.ok(names.length > 0, 'system notices must explain available controls')
+    for (const name of names) assert.ok(labels.includes(name), `drawer lacks ${locale} label: ${name}`)
   }
 })
 
-test('ограничение полноэкранного вывода и способ отправить прерывание названы явно', () => {
-  // Ctrl+C отправляет прерывание. Реакция зависит от программы, поэтому
-  // подсказка предлагает попробовать его, не обещая завершения.
-  const screen = notices().find((line) => line.includes('vim'))
-  assert.ok(screen, 'строка про полноэкранную программу пропала')
-  assert.match(screen, /построчный вывод\. Попробуйте прервать команду через Ctrl\+C/, 'ограничение вывода или способ отправить прерывание не объяснены')
-  assert.match(read(DRAWER), /ctrl-c — прервать/, 'подсказка ящика разошлась с расшифровкой')
+test('full-screen limitations and Ctrl+C are explained in both languages', () => {
+  assert.match(translate('ru', 'server.terminal.screen'), /построчный вывод\. Попробуйте прервать команду через Ctrl\+C/)
+  assert.match(translate('en', 'server.terminal.screen'), /line-by-line output.*Ctrl\+C/)
+  const source = read('server/src/kernel/terminal.ts')
+  assert.match(source, /systemLine\(term, tr\(SCREEN_NOTICE\)\)/, 'resolve the locale when the notice is emitted')
 })

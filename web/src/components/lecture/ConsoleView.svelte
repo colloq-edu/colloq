@@ -40,6 +40,7 @@
   приезжает, — это число, которого ждут.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import type { PDFDocumentProxy } from 'pdfjs-dist'
   import { untrack } from 'svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -481,11 +482,11 @@
    * Средние имена сохранены: они — договор с проверкой интерфейса.
    */
   const WIDTHS = [
-    { width: 0.0025, name: 'Очень тонкое' },
-    { width: 0.0035, name: 'Тонкое' },
-    { width: 0.005, name: 'Среднее' },
-    { width: 0.008, name: 'Толстое' },
-    { width: 0.012, name: 'Очень толстое' },
+    { width: 0.0025, get name() { return tr('room.ui.236') } },
+    { width: 0.0035, get name() { return tr('room.ui.237') } },
+    { width: 0.005, get name() { return tr('room.ui.238') } },
+    { width: 0.008, get name() { return tr('room.ui.239') } },
+    { width: 0.012, get name() { return tr('room.ui.240') } },
   ]
   /**
    * Диаметр точки в палитре: доля ширины страницы, умноженная на ширину листа
@@ -653,7 +654,7 @@
   function undoStroke(): void {
     if (!leading) return
     if (offline) {
-      say('Нет связи. Не удалось отменить штрих.', 'refusal')
+      say(tr('room.ui.241'), 'refusal')
       return
     }
     session.send({ t: 'ink:undo', page: wanted })
@@ -662,11 +663,11 @@
   function wipePage(): void {
     if (!leading) return
     if (offline) {
-      say('Нет связи. Не удалось стереть чернила.', 'refusal')
+      say(tr('room.ui.242'), 'refusal')
       return
     }
     session.send({ t: 'ink:clear', page: wanted })
-    say('Страница очищена')
+    say(tr('room.ui.243'))
   }
 
   /*
@@ -856,7 +857,7 @@
   function penFound(): void {
     if (!fingerOn) return
     setFinger(false)
-    say('Рисование пальцем выключено: используется перо.')
+    say(tr('room.ui.244'))
   }
 
   /* ------------------------------------------------------------- фейдер */
@@ -875,9 +876,9 @@
    * какой видел.
    */
   const LAMPS = [
-    { name: 'Полный свет', veil: 0, bar: 4 },
-    { name: 'Свет зала', veil: 0.28, bar: 9 },
-    { name: 'Ночь', veil: 0.55, bar: 14 },
+    { get name() { return tr('room.ui.245') }, veil: 0, bar: 4 },
+    { get name() { return tr('room.ui.246') }, veil: 0.28, bar: 9 },
+    { get name() { return tr('room.ui.247') }, veil: 0.55, bar: 14 },
   ]
   /*
    * Умолчание — «зал»: полный свет в тёмной аудитории никому не нужен.
@@ -1034,7 +1035,7 @@
     const away = (event: Event): void => {
       if (palette === null) return
       const target = event.target as Element | null
-      if (target?.closest('[data-pult-palette], [aria-label="Перо"], [aria-label="Указка"]')) return
+      if (target?.closest('[data-pult-palette], [data-pult-tool]')) return
       palette = null
     }
     node.addEventListener('pointerdown', away, true)
@@ -1201,14 +1202,14 @@
     awakeWanted && (!canKeepAwake() || wake === 'refused' || wake === 'unavailable'),
   )
 
-  const AUTOLOCK = 'Настройки → Экран и яркость → Автоблокировка → Никогда.'
+  const AUTOLOCK = $derived(tr('room.ui.250'))
   /**
    * Гид-доступ — единственное, что убирает с iPad жест «домой» и шторки, и
    * без него ладонь, съехавшая к нижней кромке, сворачивает пульт посреди
    * лекции. Это настройка устройства, и пульт может только о ней сказать.
    */
   const GUIDED =
-    'На iPad включите «Гид-доступ» в настройках универсального доступа и запустите его для браузера.'
+    tr('room.ui.251')
 
   /*
    * Пульт всегда тёмный — и это не вкус, а физика аудитории: см. borrowTheme.
@@ -1268,14 +1269,14 @@
    * разрушающие нажатия сюда больше не попадают вовсе: первое двигает лист у
    * себя и досылается схождением, второе отказывается своими словами.
    */
-  const OFF_LINE = 'Нет связи. Команда отправится после подключения.'
+  const OFF_LINE = $derived(tr('room.ui.252'))
   $effect(() => {
     const trouble = session.lastError
     if (!trouble) return
     untrack(() => {
       session.dismissError()
       if (session.gone || session.expired) return
-      say(trouble === OFFLINE_REASON ? OFF_LINE : trouble, 'refusal')
+      say(trouble === OFFLINE_REASON || trouble === tr(OFFLINE_REASON) ? OFF_LINE : tr(trouble), 'refusal')
     })
   })
 
@@ -1286,7 +1287,7 @@
       // Закончил сам или закончил другой — разницы для экрана нет: пульт
       // возвращается к выбору документа и говорит об этом одной строкой.
       prep = null
-      say('Лекция закончена')
+      say(tr('room.ui.253'))
     }
     hadLecture = live
   })
@@ -1301,7 +1302,7 @@
     untrack(() => {
       if (!dark || darkTold) return
       darkTold = true
-      say('Экран может погаснуть — см. «Ещё»', 'refusal')
+      say(tr('room.ui.254'), 'refusal')
     })
   })
 
@@ -1360,7 +1361,7 @@
     if (offline) {
       // Лист закрываем: тост живёт на листе лекции, под поднятым он не виден.
       openPane(null)
-      say('Нет связи. Не удалось закончить лекцию.', 'refusal')
+      say(tr('room.ui.255'), 'refusal')
       return
     }
     session.send({ t: 'lecture:stop' })
@@ -1730,10 +1731,8 @@
       в нём лежит единственная копия потерянного текста (tests/refusal-layer).
     -->
     <div class="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-      <p class="text-ui-lg text-ink">Этот семинар удалён</p>
-      <p class="max-w-[440px] text-answer text-muted">
-        Файлы, история и чернила лекции удалены.
-      </p>
+      <p class="text-ui-lg text-ink">{tr('room.ui.145')}</p>
+      <p class="max-w-[440px] text-answer text-muted"> {tr('room.ui.146')} </p>
     </div>
   {:else if !host}
     <!--
@@ -1741,8 +1740,8 @@
       говорит и предлагает единственное, что ему тут нужно.
     -->
     <div class="flex h-full flex-col items-center justify-center gap-5 p-8 text-center">
-      <p class="text-ui-lg text-ink">Пульт доступен преподавателю</p>
-      <button type="button" class="btn-outline h-11 px-6" onclick={onexit}>В комнату</button>
+      <p class="text-ui-lg text-ink">{tr('room.ui.147')}</p>
+      <button type="button" class="btn-outline h-11 px-6" onclick={onexit}>{tr('room.ui.148')}</button>
     </div>
   {:else if session.stuck}
     <!--
@@ -1759,18 +1758,14 @@
       пробует — потому здесь кнопка, а не крутилка.
     -->
     <div class="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-      <p class="text-ui-lg text-ink">Не удалось синхронизировать пульт</p>
+      <p class="text-ui-lg text-ink">{tr('room.ui.149')}</p>
       <p class="max-w-[440px] text-answer text-muted">{session.stuck}</p>
       {#if lecture}
         <!-- Первое, о чём думает ведущий, — не пропала ли пара. Не пропала:
              страница и чернила живут на сервере, а не в этой вкладке. -->
-        <p class="max-w-[440px] text-answer text-faint">
-          Перезагрузка вкладки не удаляет страницу и чернила лекции на сервере.
-        </p>
+        <p class="max-w-[440px] text-answer text-faint"> {tr('room.ui.150')} </p>
       {/if}
-      <button type="button" class="btn-primary h-11 px-6" onclick={() => reloadByHand()}>
-        Перезагрузить
-      </button>
+      <button type="button" class="btn-primary h-11 px-6" onclick={() => reloadByHand()}> {tr('room.ui.151')} </button>
     </div>
   {:else if lecture === null && prep === null}
     {@render chooser()}
@@ -1785,7 +1780,7 @@
         class="pult-sheet relative shrink-0 p-3"
         style={`height:${portraitSheetH}px`}
         role="group"
-        aria-label="Страница лекции"
+        aria-label={tr('room.ui.152')}
         bind:clientWidth={sheetW}
         bind:clientHeight={sheetH}
       >
@@ -1815,7 +1810,7 @@
         <div
           class="pult-sheet absolute inset-0 p-3"
           role="group"
-          aria-label="Страница лекции"
+          aria-label={tr('room.ui.152')}
           bind:clientWidth={sheetW}
           bind:clientHeight={sheetH}
         >
@@ -1849,7 +1844,7 @@
     положение. Столбики растут 4 / 9 / 14 — положение читается формой, а не
     подписью, и нащупывается на слух руки за один взгляд.
   -->
-  <div class="flex" role="radiogroup" aria-label="Яркость листа">
+  <div class="flex" role="radiogroup" aria-label={tr('room.ui.153')}>
     {#each LAMPS as level, index (level.name)}
       <button
         type="button"
@@ -1900,7 +1895,7 @@
     <button
       type="button"
       class="{PRESS} absolute inset-x-0 top-0 h-[92px] enabled:active:bg-line"
-      aria-label="Выбрать страницу"
+      aria-label={tr('room.ui.156')}
       onclick={() => openPane('pages')}
     >
       {#if behind && lecture}
@@ -1912,7 +1907,7 @@
         <span
           class="absolute right-1.5 top-1.5 flex h-[13px] items-center font-mono text-code tabular-nums text-muted"
         >
-          {lecture.page < 0 ? `Л${-lecture.page}` : lecture.page}&nbsp;→
+          {lecture.page < 0 ? tr('room.ui.157', { p0: -lecture.page }) : lecture.page}&nbsp;→
         </span>
       {/if}
       <span
@@ -1921,12 +1916,10 @@
           ? 'text-muted'
           : 'text-ink'}"
       >
-        {onBoard ? `Л${-wanted}` : wanted}
+        {onBoard ? tr('room.ui.158', { p0: -wanted }) : wanted}
       </span>
       {#if onBoard}
-        <span class="absolute left-3 top-[44px] flex h-[13px] items-center {SECTION} text-muted">
-          лист
-        </span>
+        <span class="absolute left-3 top-[44px] flex h-[13px] items-center {SECTION} text-muted"> {tr('room.ui.159')} </span>
       {:else}
         <!-- Знаменатель отдельной строкой: иначе он ездит при переходе 9 → 10. -->
         <span
@@ -1939,7 +1932,7 @@
       <span
         class="absolute left-3 top-[70px] flex h-[13px] items-center font-mono text-code tabular-nums text-muted"
       >
-        {preparing ? 'подготовка' : wall}
+        {preparing ? tr('room.ui.160') : wall}
       </span>
     </button>
 
@@ -1958,13 +1951,13 @@
     <button
       type="button"
       class="{PRESS} relative flex h-full w-[52px] flex-col items-start justify-center pl-2 enabled:active:bg-line"
-      aria-label="Выбрать страницу"
+      aria-label={tr('room.ui.156')}
       onclick={() => openPane('pages')}
     >
       <span
         class="font-mono text-gauge tabular-nums {watching || preparing ? 'text-muted' : 'text-ink'}"
       >
-        {onBoard ? `Л${-wanted}` : wanted}
+        {onBoard ? tr('room.ui.158', { p0: -wanted }) : wanted}
       </span>
       {#if !onBoard}
         <span class="font-mono text-micro tabular-nums text-faint">/ {pages || '—'}</span>
@@ -2049,7 +2042,8 @@
   <button
     type="button"
     class="{KEY} {size} flex-col gap-1 {tool === 'pen' ? 'bg-raised' : ''}"
-    aria-label="Перо"
+    data-pult-tool
+    aria-label={tr('room.ui.161')}
     aria-pressed={tool === 'pen'}
     aria-expanded={palette === 'pen'}
     onclick={penKey}
@@ -2062,7 +2056,7 @@
   <button
     type="button"
     class="{KEY} {size} flex-col gap-1 {tool === 'marker' ? 'bg-raised' : ''}"
-    aria-label="Маркер"
+    aria-label={tr('room.ui.162')}
     aria-pressed={tool === 'marker'}
     onclick={() => pick('marker')}
   >
@@ -2078,7 +2072,7 @@
   <button
     type="button"
     class="{KEY} {size} {tool === 'eraser' ? 'bg-raised text-ink' : 'text-muted'}"
-    aria-label="Ластик"
+    aria-label={tr('room.ui.164')}
     aria-pressed={tool === 'eraser'}
     onpointerdown={eraserDown}
     onpointerup={eraserUp}
@@ -2101,7 +2095,8 @@
       : tool === 'laser' || sprung
         ? 'text-ink'
         : 'text-muted'}"
-    aria-label="Указка"
+    data-pult-tool
+    aria-label={tr('room.ui.165')}
     aria-pressed={tool === 'laser'}
     disabled={offline}
     onpointerdown={laserDown}
@@ -2150,7 +2145,7 @@
         type="button"
         class="{KEY} h-11 w-full text-muted"
         onclick={undoStroke}
-        aria-label="Отменить последний штрих"
+        aria-label={tr('room.ui.166')}
       >
         <Icon name="undo" size={22} />
       </button>
@@ -2167,12 +2162,12 @@
       <button
         type="button"
         class="{KEY} h-14 w-full {onBoard ? 'bg-raised text-ink' : 'text-muted'} {CAP}"
-        aria-label={onBoard ? 'Вернуться к слайду' : 'Чистый лист'}
+        aria-label={onBoard ? tr('room.extra.53') : tr('room.extra.54')}
         aria-pressed={onBoard}
         onclick={() => (onBoard ? backToSlides() : newBoard())}
       >
         {@render mark(onBoard, false)}
-        {onBoard ? 'Слайд' : 'Лист'}
+        {onBoard ? tr('room.ui.167') : tr('room.ui.168')}
       </button>
       <span class="h-1 shrink-0" aria-hidden="true"></span>
     {/if}
@@ -2184,9 +2179,7 @@
         type="button"
         class="{KEY} h-14 w-full bg-accent text-accent-ink {CAP}"
         onclick={() => prep && start(prep)}
-      >
-        Вести
-      </button>
+      > {tr('room.ui.169')} </button>
       <span class="h-1 shrink-0" aria-hidden="true"></span>
     {:else if leading}
       <!--
@@ -2203,13 +2196,13 @@
           : lecture?.blank
             ? 'text-warning'
             : 'text-muted'}"
-        aria-label={lecture?.blank ? 'Вернуть проекцию' : 'Затемнить проекцию'}
+        aria-label={lecture?.blank ? tr('room.extra.55') : tr('room.extra.56')}
         aria-pressed={lecture?.blank}
         disabled={offline}
         onclick={() => blank(!lecture?.blank)}
       >
         {@render mark(lecture?.blank === true, true)}
-        {lecture?.blank ? 'Вернуть' : 'Скрыть'}
+        {lecture?.blank ? tr('room.ui.170') : tr('room.ui.171')}
       </button>
       <span class="h-1 shrink-0" aria-hidden="true"></span>
     {:else if watching}
@@ -2221,9 +2214,7 @@
         type="button"
         class="{PRESS} mx-1 flex h-[112px] shrink-0 items-center justify-center border border-accent px-1 text-center {CAP} text-accent-text active:bg-line"
         onclick={() => openPane('grab')}
-      >
-        Взять пульт
-      </button>
+      > {tr('room.ui.172')} </button>
       <span class="h-1 shrink-0" aria-hidden="true"></span>
     {/if}
 
@@ -2231,13 +2222,11 @@
       <button
         type="button"
         class="{KEY} h-14 w-full {CAP} {notesOpen ? 'bg-raised text-ink' : 'text-muted'}"
-        aria-label="Заметки"
+        aria-label={tr('room.ui.173')}
         aria-pressed={notesOpen}
         onclick={() => setNotes(!notesOpen)}
       >
-        {@render mark(notesOpen, false)}
-        Заметки
-      </button>
+        {@render mark(notesOpen, false)} {tr('room.ui.173')} </button>
     {/if}
 
     <!-- ВЫРЕЗ 16: граница семейств «колода» и «листание». -->
@@ -2255,7 +2244,7 @@
         type="button"
         class="{KEY} h-14 w-full text-muted disabled:text-faint/70"
         disabled={!onBoard && wanted <= 1}
-        aria-label="Предыдущая страница"
+        aria-label={tr('room.ui.174')}
         onclick={() => step(-1)}
       >
         <Icon name="chevron-left" size={24} />
@@ -2266,18 +2255,18 @@
         type="button"
         class="{KEY} h-24 w-full flex-col gap-1 text-ink disabled:text-faint/70"
         disabled={!onBoard && pages > 0 && wanted >= pages}
-        aria-label="Следующая страница"
+        aria-label={tr('room.ui.175')}
         onclick={() => step(1)}
       >
         <Icon name="chevron-right" size={28} />
-        <span class="{CAP}">{forwardReturns ? 'К слайду' : 'Вперёд'}</span>
+        <span class="{CAP}">{forwardReturns ? tr('room.ui.176') : tr('room.ui.177')}</span>
         {#if forwardReturns}
           <span class="font-mono text-code tabular-nums text-faint">{lastSlide}</span>
         {/if}
       </button>
     {:else}
       <span class="flex h-14 shrink-0 items-center justify-center px-1 {SECTION} text-muted">
-        <span class="truncate">Ведёт {lecture?.byName}</span>
+        <span class="truncate">{tr('room.ui.178')} {lecture?.byName}</span>
       </span>
     {/if}
 
@@ -2306,7 +2295,7 @@
         type="button"
         class="{KEY} h-full w-12 text-muted"
         onclick={undoStroke}
-        aria-label="Отменить последний штрих"
+        aria-label={tr('room.ui.166')}
       >
         <Icon name="undo" size={22} />
       </button>
@@ -2316,12 +2305,12 @@
       <button
         type="button"
         class="{KEY} h-full w-[72px] {onBoard ? 'bg-raised text-ink' : 'text-muted'} {CAP}"
-        aria-label={onBoard ? 'Вернуться к слайду' : 'Чистый лист'}
+        aria-label={onBoard ? tr('room.extra.53') : tr('room.extra.54')}
         aria-pressed={onBoard}
         onclick={() => (onBoard ? backToSlides() : newBoard())}
       >
         {@render mark(onBoard, false)}
-        {onBoard ? 'Слайд' : 'Лист'}
+        {onBoard ? tr('room.ui.167') : tr('room.ui.168')}
       </button>
     {/if}
     {#if preparing}
@@ -2329,9 +2318,7 @@
         type="button"
         class="{KEY} h-full w-[72px] bg-accent text-accent-ink {CAP}"
         onclick={() => prep && start(prep)}
-      >
-        Вести
-      </button>
+      > {tr('room.ui.169')} </button>
     {:else if leading}
       <button
         type="button"
@@ -2340,22 +2327,20 @@
           : lecture?.blank
             ? 'text-warning'
             : 'text-muted'}"
-        aria-label={lecture?.blank ? 'Вернуть проекцию' : 'Затемнить проекцию'}
+        aria-label={lecture?.blank ? tr('room.extra.55') : tr('room.extra.56')}
         aria-pressed={lecture?.blank}
         disabled={offline}
         onclick={() => blank(!lecture?.blank)}
       >
         {@render mark(lecture?.blank === true, true)}
-        {lecture?.blank ? 'Вернуть' : 'Скрыть'}
+        {lecture?.blank ? tr('room.ui.170') : tr('room.ui.171')}
       </button>
     {:else if watching}
       <button
         type="button"
         class="{PRESS} my-2 flex w-[104px] shrink-0 items-center justify-center border border-accent px-1 text-center {CAP} text-accent-text active:bg-line"
         onclick={() => openPane('grab')}
-      >
-        Взять пульт
-      </button>
+      > {tr('room.ui.172')} </button>
     {/if}
     <span class="w-4 shrink-0" aria-hidden="true"></span>
     {#if mayTurn}
@@ -2363,7 +2348,7 @@
         type="button"
         class="{KEY} h-full w-16 text-muted disabled:text-faint/70"
         disabled={!onBoard && wanted <= 1}
-        aria-label="Предыдущая страница"
+        aria-label={tr('room.ui.174')}
         onclick={() => step(-1)}
       >
         <Icon name="chevron-left" size={24} />
@@ -2372,15 +2357,15 @@
         type="button"
         class="{KEY} h-full w-[112px] gap-2 text-ink disabled:text-faint/70"
         disabled={!onBoard && pages > 0 && wanted >= pages}
-        aria-label="Следующая страница"
+        aria-label={tr('room.ui.175')}
         onclick={() => step(1)}
       >
         <Icon name="chevron-right" size={28} />
-        <span class="{CAP}">{forwardReturns ? 'К слайду' : 'Вперёд'}</span>
+        <span class="{CAP}">{forwardReturns ? tr('room.ui.176') : tr('room.ui.177')}</span>
       </button>
     {:else}
       <span class="flex w-[112px] shrink-0 items-center justify-center px-1 {SECTION} text-muted">
-        <span class="truncate">Ведёт {lecture?.byName}</span>
+        <span class="truncate">{tr('room.ui.178')} {lecture?.byName}</span>
       </span>
     {/if}
   </div>
@@ -2403,8 +2388,8 @@
         : `left: calc(84px + env(safe-area-inset-left)); top: calc(136px + env(safe-area-inset-top))`}
     data-pult-palette
   >
-    <div class="flex flex-col" role="radiogroup" aria-label="Указка">
-      {#each [{ id: 'line', name: 'Линия', says: 'обводить' }, { id: 'dot', name: 'Точка', says: 'показывать' }] as choice (choice.id)}
+    <div class="flex flex-col" role="radiogroup" aria-label={tr('room.ui.165')}>
+      {#each [{ id: 'line', name: tr('room.ui.180'), says: tr('room.ui.181') }, { id: 'dot', name: tr('room.ui.182'), says: tr('room.ui.183') }] as choice (choice.id)}
         {@const on = laserShape === choice.id}
         <button
           type="button"
@@ -2469,7 +2454,7 @@
       залит плитой: плита под цветным кружком спорит с самим кружком, и на
       беглый взгляд неясно, что здесь выбрано — цвет или плитка.
     -->
-    <div class="flex justify-between" role="radiogroup" aria-label="Цвет пера">
+    <div class="flex justify-between" role="radiogroup" aria-label={tr('room.ui.184')}>
       {#each INKS as choice (choice.color)}
         {@const on = inkColor === choice.color}
         <button
@@ -2493,7 +2478,7 @@
       Толщина — точками настоящего размера, слева направо по возрастанию.
       Кольцо то же, что у цвета: одна форма выбора на всю палитру.
     -->
-    <div class="flex items-center justify-between" role="radiogroup" aria-label="Толщина">
+    <div class="flex items-center justify-between" role="radiogroup" aria-label={tr('room.ui.186')}>
       {#each WIDTHS as choice (choice.width)}
         {@const on = penWidth === choice.width}
         <button
@@ -2585,8 +2570,8 @@
       onclick={() => blank(false)}
       disabled={!leading || offline}
     >
-      <span class="{CAP} text-warning">Проекция затемнена</span>
-      <span class="{SECTION} text-muted">Нажмите, чтобы вернуть</span>
+      <span class="{CAP} text-warning">{tr('room.ui.188')}</span>
+      <span class="{SECTION} text-muted">{tr('room.ui.189')}</span>
     </button>
   {/if}
 {/snippet}
@@ -2601,23 +2586,19 @@
     -->
     <div class="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
       <Icon name="alert" size={24} class="text-danger" />
-      <p class="text-answer text-ink">Не удалось открыть документ</p>
+      <p class="text-answer text-ink">{tr('room.ui.190')}</p>
       <p class="font-mono text-code text-faint">{file}</p>
       <div class="mt-3 flex gap-3">
         <button
           type="button"
           class="{PRESS} flex h-12 w-[176px] items-center justify-center border border-line {CAP} text-muted"
           onclick={() => (attempt += 1)}
-        >
-          Попробовать снова
-        </button>
+        > {tr('room.ui.191')} </button>
         <button
           type="button"
           class="{PRESS} flex h-12 w-[176px] items-center justify-center border border-line {CAP} text-muted"
           onclick={() => openPane('files')}
-        >
-          Сменить документ
-        </button>
+        > {tr('room.ui.192')} </button>
       </div>
     </div>
   {:else}
@@ -2647,10 +2628,9 @@
     <button
       type="button"
       class="{PRESS} absolute bottom-2 left-2 z-10 flex h-11 w-[200px] items-center justify-center gap-2 border border-line bg-surface/[0.88] {CAP} text-accent-text"
-      aria-label="Во весь экран"
+      aria-label={tr('room.ui.193')}
       onclick={toggleFullscreen}
-    >
-      Во весь экран <Icon name="chevron-right" size={16} />
+    > {tr('room.ui.193')} <Icon name="chevron-right" size={16} />
     </button>
   {/if}
 
@@ -2682,7 +2662,7 @@
       class="flex min-w-0 flex-1 flex-col items-start overflow-hidden px-3 py-2 text-left"
     >
       <span class="flex items-center gap-2">
-        <span class="{SECTION} text-muted">заметки</span>
+        <span class="{SECTION} text-muted">{tr('room.ui.194')}</span>
         {#if peekNote.trim()}
           <span class="h-3 w-0.5 shrink-0 bg-accent" aria-hidden="true"></span>
         {/if}
@@ -2696,7 +2676,7 @@
         как потерянная работа.
       -->
       <span class="mt-1 line-clamp-3 whitespace-pre-line text-prompt-sm text-ink">
-        {notesHere ? peekNote.trim() || 'Что сказать на этой странице…' : 'Заметки загружаются'}
+        {notesHere ? peekNote.trim() || tr('room.ui.195') : tr('room.ui.196')}
       </span>
     </div>
     {#if doc && !onBoard && pages > wanted && !tiny}
@@ -2710,8 +2690,7 @@
             aria-hidden="true"
           ></span>
         </span>
-        <span class="mt-1 flex justify-end font-mono text-code tabular-nums text-faint">
-          дальше {wanted + 1}
+        <span class="mt-1 flex justify-end font-mono text-code tabular-nums text-faint"> {tr('room.ui.197')} {wanted + 1}
         </span>
       </div>
     {/if}
@@ -2749,9 +2728,7 @@
 
 {#snippet fileList(onpick: (path: string) => void, withNotes: boolean)}
   {#if slides.length === 0}
-    <p class="px-1 py-6 text-answer text-muted">
-      В комнате нет PDF для лекции. Загрузите файл с компьютера.
-    </p>
+    <p class="px-1 py-6 text-answer text-muted"> {tr('room.ui.198')} </p>
   {:else}
     <ul>
       {#each slides as entry (entry.path)}
@@ -2775,7 +2752,7 @@
           >
             <span class="truncate text-head font-semibold text-ink">{entry.name}</span>
             <span class="truncate font-mono text-code text-faint">
-              {going ? 'идёт сейчас' : entry.path}
+              {going ? tr('room.ui.199') : entry.path}
             </span>
           </button>
           {#if withNotes}
@@ -2783,9 +2760,7 @@
               type="button"
               class="{PRESS} flex h-[88px] w-[88px] shrink-0 items-center justify-center border-l border-line-soft {CAP} text-muted"
               onclick={() => (prep = entry.path)}
-            >
-              Заметки
-            </button>
+            > {tr('room.ui.173')} </button>
           {/if}
         </li>
       {/each}
@@ -2801,7 +2776,7 @@
   -->
   <div class="flex min-h-0 flex-1 justify-center overflow-y-auto px-6 pb-10 pt-12">
     <div class="w-full max-w-[720px]">
-      <h2 class="pb-3 {SECTION} text-muted">Выберите документ</h2>
+      <h2 class="pb-3 {SECTION} text-muted">{tr('room.ui.200')}</h2>
       <div class="border-t border-line-soft">
         {@render fileList(start, true)}
       </div>
@@ -2817,9 +2792,9 @@
           aria-pressed={hand === 'left'}
           onclick={() => setHand(hand === 'left' ? 'right' : 'left')}
         >
-          <span class="flex-1 text-left">Левая рука</span>
+          <span class="flex-1 text-left">{tr('room.ui.201')}</span>
           <span class={hand === 'left' ? 'text-ink' : 'text-faint'}>
-            {hand === 'left' ? 'вкл' : 'выкл'}
+            {hand === 'left' ? tr('room.ui.202') : tr('room.ui.203')}
           </span>
         </button>
         {#if fullscreenPossible()}
@@ -2829,12 +2804,12 @@
             aria-pressed={full}
             onclick={toggleFullscreen}
           >
-            {full ? 'Выйти из полного экрана' : 'Во весь экран'}
+            {full ? tr('room.ui.204') : tr('room.ui.193')}
           </button>
         {/if}
       </div>
 
-      <p class="pt-6 {CAP} text-faint">Яркость листа меняется под номером страницы.</p>
+      <p class="pt-6 {CAP} text-faint">{tr('room.ui.205')}</p>
 
       <div class="pt-6">{@render toast()}</div>
     </div>
@@ -2854,21 +2829,19 @@
       <button
         type="button"
         class="pult-scrim absolute inset-0 bg-canvas/[0.72]"
-        aria-label="Закрыть"
+        aria-label={tr('room.ui.141')}
         onclick={() => openPane(null)}
       ></button>
 
       <div class="pult-drawer relative max-h-full overflow-y-auto border-t border-line bg-surface">
         {#if pane === 'pages'}
           <div class="flex h-10 items-center justify-between px-6">
-            <span class="{SECTION} text-muted">Страницы</span>
+            <span class="{SECTION} text-muted">{tr('room.ui.206')}</span>
             <button
               type="button"
               class="{PRESS} h-10 px-2 {CAP} text-muted"
               onclick={() => openPane(null)}
-            >
-              Отмена
-            </button>
+            > {tr('room.ui.29')} </button>
           </div>
           <div
             bind:this={strip}
@@ -2956,8 +2929,7 @@
                   class="pb-1 font-mono text-2xs tabular-nums {-wanted === index
                     ? 'text-ink'
                     : 'text-faint'}"
-                >
-                  Лист {index}
+                > {tr('room.ui.168')} {index}
                 </span>
               </button>
             {/each}
@@ -2977,23 +2949,16 @@
                 >
                   <Icon name="plus" size={24} />
                 </span>
-                <span class="pb-1 {CAP} text-faint">Новый лист</span>
+                <span class="pb-1 {CAP} text-faint">{tr('room.ui.207')}</span>
               </button>
             {/if}
           </div>
         {:else if pane === 'grab'}
           <div class="p-6">
-            <p class="text-answer text-ink">
-              Взять пульт у {lecture?.byName}? Управление проекцией перейдёт к вам.
-              Страница и чернила сохранятся.
-            </p>
+            <p class="text-answer text-ink"> {tr('room.ui.208')} {lecture?.byName}{tr('room.ui.209')} </p>
             <div class="mt-4 flex gap-2">
-              <button type="button" class="btn-primary h-12 flex-1" onclick={grab}>
-                Взять пульт
-              </button>
-              <button type="button" class="btn-outline h-12 flex-1" onclick={() => openPane(null)}>
-                Отмена
-              </button>
+              <button type="button" class="btn-primary h-12 flex-1" onclick={grab}> {tr('room.ui.172')} </button>
+              <button type="button" class="btn-outline h-12 flex-1" onclick={() => openPane(null)}> {tr('room.ui.29')} </button>
             </div>
           </div>
         {:else if pane === 'files'}
@@ -3001,10 +2966,7 @@
             <!-- Вопрос вместо списка, а не поверх него: список — это шесть
                  целей по 88 px, и «Отмена» рядом с ними была бы седьмой. -->
             <div class="p-6">
-              <p class="text-answer text-ink">
-                Начать лекцию по {baseOf(switchTo)}? Чернила текущей лекции сотрутся.
-                Новый документ откроется с первой страницы, таймер начнёт отсчёт заново.
-              </p>
+              <p class="text-answer text-ink"> {tr('room.ui.210')} {baseOf(switchTo)}{tr('room.ui.211')} </p>
               <div class="mt-4 flex gap-2">
                 <button
                   type="button"
@@ -3014,21 +2976,17 @@
                     switchTo = null
                     if (path !== null) start(path)
                   }}
-                >
-                  Начать заново
-                </button>
+                > {tr('room.ui.212')} </button>
                 <button
                   type="button"
                   class="btn-outline h-12 flex-1"
                   onclick={() => (switchTo = null)}
-                >
-                  Отмена
-                </button>
+                > {tr('room.ui.29')} </button>
               </div>
             </div>
           {:else}
             <div class="flex h-10 items-center px-6">
-              <span class="{SECTION} text-muted">Документ</span>
+              <span class="{SECTION} text-muted">{tr('room.ui.213')}</span>
             </div>
             <!-- Пиксели, а не `vh`: единица высоты окна на iPad живёт своей
                  жизнью между панелями Safari и Split View. -->
@@ -3051,13 +3009,11 @@
           -->
           {#if lecture}
             <div class="flex h-12 items-center justify-between px-6">
-              <span class="{SECTION} text-muted">лекция идёт</span>
+              <span class="{SECTION} text-muted">{tr('room.ui.214')}</span>
               <span class="font-mono text-gauge tabular-nums text-ink">{stopwatch(runningFor)}</span>
             </div>
           {/if}
-          <button type="button" class="{ROW} border-t border-line-soft text-ink" onclick={onexit}>
-            В комнату
-          </button>
+          <button type="button" class="{ROW} border-t border-line-soft text-ink" onclick={onexit}> {tr('room.ui.148')} </button>
           {#if fullscreenPossible()}
             <button
               type="button"
@@ -3068,8 +3024,8 @@
                 openPane(null)
               }}
             >
-              <span class="flex-1">Во весь экран</span>
-              <span class="{CAP} text-muted">{full ? 'вкл' : 'выкл'}</span>
+              <span class="flex-1">{tr('room.ui.193')}</span>
+              <span class="{CAP} text-muted">{full ? tr('room.ui.202') : tr('room.ui.203')}</span>
             </button>
           {/if}
           <button
@@ -3078,19 +3034,19 @@
             aria-pressed={hand === 'left'}
             onclick={() => setHand(hand === 'left' ? 'right' : 'left')}
           >
-            <span class="flex-1">Левая рука</span>
-            <span class="{CAP} text-muted">{hand === 'left' ? 'вкл' : 'выкл'}</span>
+            <span class="flex-1">{tr('room.ui.201')}</span>
+            <span class="{CAP} text-muted">{hand === 'left' ? tr('room.ui.202') : tr('room.ui.203')}</span>
           </button>
           {#if leading}
             <button
               type="button"
               class="{ROW} border-t border-line-soft text-ink"
-              aria-label="Рисовать пальцем"
+              aria-label={tr('room.ui.215')}
               aria-pressed={fingerOn}
               onclick={() => setFinger(!fingerOn)}
             >
-              <span class="flex-1">Рисовать пальцем</span>
-              <span class="{CAP} text-muted">{fingerOn ? 'вкл' : 'выкл'}</span>
+              <span class="flex-1">{tr('room.ui.215')}</span>
+              <span class="{CAP} text-muted">{fingerOn ? tr('room.ui.202') : tr('room.ui.203')}</span>
             </button>
           {/if}
           {#if mayTurn}
@@ -3103,9 +3059,9 @@
                 openPane(null)
               }}
             >
-              <span class="flex-1">{onBoard ? 'Вернуться к слайду' : 'Чистый лист'}</span>
+              <span class="flex-1">{onBoard ? tr('room.ui.216') : tr('room.ui.217')}</span>
               {#if boards > 0 && !onBoard}
-                <span class="{CAP} text-muted">листов: {boards}</span>
+                <span class="{CAP} text-muted">{tr('room.ui.218')} {boards}</span>
               {/if}
             </button>
             <button
@@ -3113,7 +3069,7 @@
               class="{ROW} border-t border-line-soft text-ink"
               onclick={() => openPane('files')}
             >
-              <span class="shrink-0">Сменить документ…</span>
+              <span class="shrink-0">{tr('room.ui.219')}</span>
               <span class="min-w-0 flex-1 truncate text-right font-mono text-code text-faint">
                 {file ? baseOf(file) : ''}
               </span>
@@ -3122,9 +3078,7 @@
           {#if leading}
             <div class="flex items-center border-t border-line-soft">
               {#if wipeAsked}
-                <span class="flex-1 px-6 text-answer text-ink">
-                  Стереть чернила с этой страницы?
-                </span>
+                <span class="flex-1 px-6 text-answer text-ink"> {tr('room.ui.220')} </span>
                 <button
                   type="button"
                   class="{PRESS} h-16 px-4 {CAP} text-danger"
@@ -3132,39 +3086,29 @@
                     wipePage()
                     openPane(null)
                   }}
-                >
-                  Стереть
-                </button>
+                > {tr('room.ui.221')} </button>
                 <button
                   type="button"
                   class="{PRESS} h-16 px-6 {CAP} text-muted"
                   onclick={() => (wipeAsked = false)}
-                >
-                  Отмена
-                </button>
+                > {tr('room.ui.29')} </button>
               {:else}
-                <button type="button" class="{ROW} text-danger" onclick={() => (wipeAsked = true)}>
-                  Стереть чернила
-                </button>
+                <button type="button" class="{ROW} text-danger" onclick={() => (wipeAsked = true)}> {tr('room.ui.222')} </button>
               {/if}
             </div>
           {/if}
 
           <div class="h-px w-full bg-line-soft" aria-hidden="true"></div>
           <div class="px-6 py-4">
-            <p class="text-answer text-ink">Автоблокировка экрана</p>
+            <p class="text-answer text-ink">{tr('room.ui.223')}</p>
             <p class="pt-1 text-2xs text-muted">
-              {#if wake === 'on'}
-                Пульт удерживает экран включённым, пока вкладка видна.
-              {:else if wake === 'refused'}
-                Не удалось отключить автоблокировку. {AUTOLOCK}
-              {:else if !canKeepAwake()}
-                Браузер не поддерживает отключение автоблокировки. {AUTOLOCK}
+              {#if wake === 'on'} {tr('room.ui.224')} {:else if wake === 'refused'} {tr('room.ui.225')} {AUTOLOCK}
+              {:else if !canKeepAwake()} {tr('room.ui.226')} {AUTOLOCK}
               {:else}
                 {AUTOLOCK}
               {/if}
             </p>
-            <p class="pt-3 text-answer text-ink">Защита от случайного выхода</p>
+            <p class="pt-3 text-answer text-ink">{tr('room.ui.227')}</p>
             <p class="pt-1 text-2xs text-muted">{GUIDED}</p>
           </div>
           <div class="h-px w-full bg-line-soft" aria-hidden="true"></div>
@@ -3172,9 +3116,7 @@
           {#if leading}
             {#if stopAsked}
               <div class="px-6 py-4">
-                <p class="text-answer text-ink">
-                  Закончить лекцию? Проекция погаснет, чернила сотрутся.
-                  <b class="font-semibold">Заметки останутся.</b>
+                <p class="text-answer text-ink"> {tr('room.ui.228')} <b class="font-semibold">{tr('room.ui.229')}</b>
                 </p>
                 <div class="mt-4 flex gap-2">
                   <!-- Опасное слева, «Отмена» справа — под пальцем той руки,
@@ -3183,18 +3125,12 @@
                     type="button"
                     class="{PRESS} h-12 flex-1 border border-danger/40 {CAP} text-danger"
                     onclick={stop}
-                  >
-                    Закончить
-                  </button>
-                  <button type="button" class="btn-outline h-12 flex-1" onclick={() => (stopAsked = false)}>
-                    Отмена
-                  </button>
+                  > {tr('room.ui.230')} </button>
+                  <button type="button" class="btn-outline h-12 flex-1" onclick={() => (stopAsked = false)}> {tr('room.ui.29')} </button>
                 </div>
               </div>
             {:else}
-              <button type="button" class="{ROW} text-danger" onclick={() => (stopAsked = true)}>
-                Закончить лекцию
-              </button>
+              <button type="button" class="{ROW} text-danger" onclick={() => (stopAsked = true)}> {tr('room.ui.231')} </button>
             {/if}
           {:else if preparing}
             <!-- У подготовки заканчивать нечего: та же последняя строка
@@ -3206,9 +3142,7 @@
                 prep = null
                 openPane(null)
               }}
-            >
-              Закончить подготовку
-            </button>
+            > {tr('room.ui.232')} </button>
           {/if}
         {/if}
       </div>

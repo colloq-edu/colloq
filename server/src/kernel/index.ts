@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * One Python kernel per seminar, and the queue in front of it.
  *
@@ -347,7 +348,7 @@ async function runOnKernel(
     if (runtime.kernel && runtime.kernel.phase !== 'dead') throw err
     kernelNote(
       runtime.sessionId,
-      'The kernel had stopped. Starting a fresh one — variables from before are gone.',
+      tr("server.theKernelHadStoppedStartingAFresh.65e2e2"),
     )
     await ensureKernel(runtime.sessionId)
     /*
@@ -628,10 +629,10 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     kernelNote(
       runtime.sessionId,
       known
-        ? `${known} Every variable is gone${hadWork ? '; whatever was queued was dropped' : ''}.`
+        ? tr("server.everyVariableIsGone.eff831", { p0: known, p1: hadWork ? '; whatever was queued was dropped' : '' })
         : hadWork
-          ? 'The kernel restarted unexpectedly. Variables were reset and queued cells were removed.'
-          : 'The kernel restarted unexpectedly. Variables were reset.',
+          ? tr("server.theKernelRestartedUnexpectedlyVariablesWereReset.f87dd9")
+          : tr("server.theKernelRestartedUnexpectedlyVariablesWereReset.a76c88"),
     )
     return
   }
@@ -666,10 +667,10 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
     kernelNote(
       runtime.sessionId,
       known
-        ? `${known}${hadWork ? ' Whatever was queued was dropped.' : ''} Run a cell to start a fresh one.`
+        ? tr("server.runACellToStartAFresh.ffee95", { p0: known, p1: hadWork ? tr("server.whateverWasQueuedWasDropped.752abc") : '' })
         : hadWork
-          ? 'The kernel stopped during execution. Queued cells were removed. Restart the kernel to continue.'
-          : 'The kernel stopped. Restart it to run anything.',
+          ? tr("server.theKernelStoppedDuringExecutionQueuedCells.74ec64")
+          : tr("server.theKernelStoppedRestartItToRun.911803"),
     )
     return
   }
@@ -714,8 +715,8 @@ export function ensureKernel(sessionId: string): Promise<void> {
     kernelNote(
       sessionId,
       envName
-        ? `Starting the ${envName} environment. Waiting for the kernel before running cells.`
-        : `Waiting for the kernel at ${config.jupyter.url}. Cells cannot run until it responds.`,
+        ? tr("server.startingTheEnvironmentWaitingForTheKernel.df8f76", { p0: envName })
+        : tr("server.waitingForTheKernelAtCellsCannot.8019bf", { p0: config.jupyter.url }),
     )
   }, SLOW_START_NOTICE_MS)
 
@@ -753,7 +754,7 @@ export function ensureKernel(sessionId: string): Promise<void> {
       if ((await kernel.releaseOrphanedWork()) && !runtime.retired) {
         kernelNote(
           sessionId,
-          'Reconnected to the existing kernel. The running cell was interrupted because its output could not be received. Variables were not reset.',
+          tr("server.reconnectedToTheExistingKernelTheRunning.a20941"),
         )
       }
       setStatus(runtime, runtime.currentCell ? 'busy' : (kernel.phase as KernelStatus))
@@ -805,7 +806,7 @@ onRoomKernelRecreated((sessionId, why) => {
   if (runtimes.get(sessionId)?.retired) return
   kernelNote(
     sessionId,
-    `The room's Python container had to be rebuilt (${why}), so every variable is gone. ` +
+    tr("server.theRoomSPythonContainerHadTo.253b0b", { p0: why }) +
       'The files in the Files panel are untouched; run your cells again.',
   )
 })
@@ -850,8 +851,8 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
       kernelNote(
         sessionId,
         restartedBy
-          ? `Kernel restarted by ${restartedBy}. Every variable is gone and the queue was dropped.`
-          : 'Kernel restarted. Every variable is gone and the queue was dropped.',
+          ? tr("server.kernelRestartedByEveryVariableIsGone.3322fd", { p0: restartedBy })
+          : tr("server.kernelRestartedEveryVariableIsGoneAnd.38530e"),
       )
     } catch (err) {
       // Never a rejection: the person clicked a button, the document carries the news.
@@ -859,7 +860,7 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
       setStatus(runtime, 'dead')
       kernelNote(
         sessionId,
-        'The kernel did not come back after the restart. Nothing can run until it does.',
+        tr("server.theKernelDidNotComeBackAfter.cadaf5"),
       )
     }
   })()
@@ -1348,8 +1349,8 @@ function stopBatchOf(runtime: Runtime, cellId: string): void {
   kernelNote(
     runtime.sessionId,
     dropped.length === 1
-      ? 'The interrupt also dropped the one cell queued behind it.'
-      : `The interrupt also dropped the ${dropped.length} cells queued behind it.`,
+      ? tr("server.theInterruptAlsoDroppedTheOneCell.612a37")
+      : tr("server.theInterruptAlsoDroppedTheCellsQueued.cfbaff", { p0: dropped.length }),
   )
 }
 
@@ -1373,8 +1374,8 @@ function stopBatch(runtime: Runtime, failedItem: QueueItem): void {
   kernelNote(
     runtime.sessionId,
     dropped.length === 1
-      ? 'A cell failed, so the one queued behind it was not run.'
-      : `A cell failed, so the ${dropped.length} cells queued behind it were not run.`,
+      ? tr("server.aCellFailedSoTheOneQueued.6d932d")
+      : tr("server.aCellFailedSoTheCellsQueued.bbcda8", { p0: dropped.length }),
   )
 }
 
@@ -1941,7 +1942,7 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
         onInputRequest: () => {
           buffer.stream(
             'stderr',
-            '[colloq] Ввод через input() в попытке консилиума не поддерживается. Подставлена пустая строка.\n',
+            tr("server.colloqInputIsNotSupportedInCouncil.fd07fb"),
           )
           touchJob(runtime, active)
           void runtime.kernel?.answerInput('').catch(() => {})
@@ -1955,7 +1956,7 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
       if (phase === 'dead') buffer.error('KernelDied', deadMessage(), [])
       else if (phase === 'restarting' && runtime.kernel?.phaseExpected === false) {
         buffer.error('KernelDied', killedMessage(), [])
-      } else buffer.error('Interrupted', 'Запуск попытки прервали.', [])
+      } else buffer.error('Interrupted', tr("server.theAttemptWasInterrupted.4f4edf"), [])
     }
   } catch (err) {
     buffer.error('KernelError', errText(err), [])
@@ -2040,7 +2041,7 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
 }
 
 function deadMessage(): string {
-  return 'The Python kernel stopped responding. Restart it to continue.'
+  return tr("server.thePythonKernelStoppedRespondingRestartIt.09f400")
 }
 
 /**
@@ -2073,7 +2074,7 @@ function stopIfDeleted(
     fired = true
     kernelNote(
       runtime.sessionId,
-      'The cell that was running was deleted, so the kernel was interrupted — whatever it had already changed is still in memory.',
+      tr("server.theCellThatWasRunningWasDeleted.ec6ea8"),
     )
     void runtime.kernel?.interrupt().catch(() => {})
   }
@@ -2100,8 +2101,8 @@ function flushToDisk(sessionId: string): void {
 function killedMessage(): string {
   const known = churnReason()
   return known
-    ? `${known} The cell running at the time was killed with it, and every variable is gone.`
-    : 'The kernel restarted during execution. This cell was interrupted and variables were reset. The kernel is available again.'
+    ? tr("server.theCellRunningAtTheTimeWas.11ac96", { p0: known })
+    : tr("server.theKernelRestartedDuringExecutionThisCell.e72a65")
 }
 
 /* ------------------------------------------------------------------ outputs */
@@ -2141,7 +2142,7 @@ export async function formatSession(sessionId: string, book?: string): Promise<F
     return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error: errText(err) }
   }
   const kernel = runtime.kernel
-  if (!kernel) return formatRefused(sessionId, 'The kernel is not running.')
+  if (!kernel) return formatRefused(sessionId, tr("server.theKernelIsNotRunning.2a9152"))
   // Ядро могло уйти в работу, пока оно поднималось: спрашиваем ещё раз, уже
   // зная и про `input()`.
   const nowBusy = formatBlocker(runtime)
@@ -2163,20 +2164,20 @@ export async function formatSession(sessionId: string, book?: string): Promise<F
  * возвращает одни нули.
  */
 function formatRefused(sessionId: string, error: string): FormatOutcome {
-  kernelNote(sessionId, `Formatting failed: ${error}`)
+  kernelNote(sessionId, tr("server.formattingFailed.e1afc5", { p0: error }))
   return { changed: 0, skipped: 0, edited: 0, unchanged: 0, error }
 }
 
 /** Почему сейчас не время форматировать — теми словами, что уедут в журнал ядра. */
 function formatBlocker(runtime: Runtime): string | null {
   if (runtime.kernel?.waitingForInput) {
-    return 'a cell is waiting for input() — answer it (or stop it) and press Format again.'
+    return tr("server.aCellIsWaitingForInputAnswer.370e11")
   }
   if (runtime.currentCell) {
-    return 'the kernel is busy running a cell — press Format again when it finishes.'
+    return tr("server.theKernelIsBusyRunningACell.9452d9")
   }
   if (runtime.queue.length > 0) {
-    return 'cells are queued to run — press Format again when the queue is empty.'
+    return tr("server.cellsAreQueuedToRunPressFormat.204e75")
   }
   return null
 }

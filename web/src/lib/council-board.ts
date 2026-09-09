@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Стопка консилиума — чистая арифметика пульта, без Svelte и без сокета.
  *
@@ -34,7 +35,7 @@ export interface StripSegment {
  * ключом ''. Хвост с тем же ключом давал бы два одинаковых ключа в keyed
  * `{#each}` полосы: падение в dev, сломанная реконсиляция в prod.
  */
-export const WRITING_KEY = 'ещё пишут'
+export const WRITING_KEY = "ещё пишут"
 
 /** Запросы со всей стопки, включая несданные черновики, — сначала старые. */
 export function pendingRunRequests(attempts: readonly CouncilAttempt[]): CouncilAttempt[] {
@@ -133,17 +134,17 @@ export function toneOf(status: CouncilStatus): StripTone {
 export function statusLabel(attempt: Pick<CouncilAttempt, 'status' | 'run'>): string {
   switch (attempt.status) {
     case 'correct':
-      return 'верно'
+      return tr('room.ui.1046')
     case 'wrong':
-      return 'неверно'
+      return tr('room.ui.1047')
     case 'failed': {
       const error = attempt.run?.outputs.find((o) => o.kind === 'error')
-      return error && error.kind === 'error' && error.ename ? error.ename : 'ошибка запуска'
+      return error && error.kind === 'error' && error.ename ? error.ename : tr('room.ui.1048')
     }
     case 'ran':
-      return 'выполнена'
+      return tr('room.ui.1049')
     default:
-      return 'не запускали'
+      return tr('room.ui.1050')
   }
 }
 
@@ -151,7 +152,7 @@ export function statusLabel(attempt: Pick<CouncilAttempt, 'status' | 'run'>): st
 export function groupTitle(group: Pick<CouncilGroup, 'label' | 'sample'>): string {
   if (group.label) return group.label
   const line = group.sample.split('\n').find((l) => l.trim())
-  return line?.trim() ?? '(пусто)'
+  return line?.trim() ?? tr('room.ui.1051')
 }
 
 export interface Neighbours {

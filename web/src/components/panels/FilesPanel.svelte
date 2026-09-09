@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Папка семинара деревом.
    *
@@ -71,7 +72,8 @@
   /** Не ошибка, а предупреждение: загрузка прошла, но что-то заменила собой. */
   let note = $state<string | null>(null)
   let noteTimer: number | undefined
-  let error = $state<string | null>(null)
+  let errorRender = $state<() => string | null>(() => null)
+  const error = $derived(errorRender())
   let copied = $state<string | null>(null)
   let confirming = $state<string | null>(null)
   const isHost = $derived(session.me.role === 'host')
@@ -152,8 +154,8 @@
    */
   function emptyWord(path: string): string | null {
     if (filled.has(path)) return null
-    if (!readsInside(path)) return 'лимит глубины'
-    return truncated ? null : 'пусто'
+    if (!readsInside(path)) return tr('room.ui.610')
+    return truncated ? null : tr('room.ui.611')
   }
 
   const fileCount = $derived(session.files.filter((entry) => !entry.dir).length)
@@ -271,7 +273,7 @@
     if (kindOf(entry.path) === 'notebook' && !may.files && !isBook(entry.path)) {
       // Из `may`, как в двух соседних ветках: свои слова здесь после звонка
       // называли правило, которого никто не менял.
-      error = may.filesWhy + '.'
+      errorRender = () => (may.filesWhy + '.')
       return
     }
     onopen?.(entry.path)
@@ -295,7 +297,7 @@
       a.click()
       a.remove()
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Не удалось скачать файл.'
+      errorRender = () => (err instanceof Error ? tr(err.message) : tr('room.ui.612'))
     }
   }
 
@@ -338,7 +340,7 @@
      */
     if (!name || (current.kind === 'book' && name === '.ipynb')) return cancelDraft()
     if (!safeSegment(name)) {
-      error = whySegmentRefused(name)
+      errorRender = () => (whySegmentRefused(name))
       return
     }
     const path = joinPath(current.dir, current.kind === 'book' && !name.endsWith('.ipynb') ? name + '.ipynb' : name)
@@ -355,11 +357,11 @@
          * проверяется до отправки, его же словами.
          */
         if (!session.files.some((entry) => entry.path === current.from)) {
-          error = `«${baseOf(current.from)}» в комнате больше нет.`
+          errorRender = () => (tr('room.ui.613', { p0: baseOf(current.from!) }))
           return
         }
         if (session.files.some((entry) => entry.path === path)) {
-          error = `«${baseOf(path)}» в этой папке уже есть.`
+          errorRender = () => (tr('room.ui.614', { p0: baseOf(path) }))
           return
         }
         session.send({ t: 'tree:move', from: current.from, to: path })
@@ -527,9 +529,9 @@
         }
         if (xhr.status >= 200 && xhr.status < 300 && body.files) {
           resolve({ files: body.files, replaced: body.replaced ?? [] })
-        } else reject(new Error(body.error || xhr.statusText || 'Upload failed'))
+        } else reject(new Error(body.error || xhr.statusText || tr('room.ui.618')))
       }
-      xhr.onerror = () => reject(new Error('Upload failed'))
+      xhr.onerror = () => reject(new Error(tr('room.ui.618')))
       xhr.send(form)
     })
   }
@@ -540,10 +542,10 @@
     // Право — до первого байта: отказ, приходящий после выбора файла, человек
     // читает как поломку, а не как правило комнаты.
     if (!may.files) {
-      error = may.filesWhy + '.'
+      errorRender = () => (may.filesWhy + '.')
       return
     }
-    error = null
+    errorRender = () => (null)
 
     const queued: Upload[] = files.map((file) => ({
       id: nextUploadId++,
@@ -572,7 +574,7 @@
         session.files = done.files
         overwritten.push(...done.replaced)
       } catch (err) {
-        error = err instanceof Error ? err.message : `Не удалось загрузить ${files[i].name}`
+        errorRender = () => (err instanceof Error ? tr(err.message) : tr('room.ui.619', { p0: files[i].name }))
       } finally {
         uploads = uploads.filter((item) => item.id !== id)
       }
@@ -581,8 +583,8 @@
     if (overwritten.length > 0 && !error) {
       note =
         overwritten.length === 1
-          ? `${overwritten[0]} заменил существующий файл.`
-          : `Заменены существующие файлы: ${overwritten.join(', ')}`
+          ? tr('room.ui.620', { p0: overwritten[0] })
+          : tr('room.ui.621', { p0: overwritten.join(', ') })
       window.clearTimeout(noteTimer)
       noteTimer = window.setTimeout(() => (note = null), 8000)
     }
@@ -590,7 +592,7 @@
 
   function remove(entry: FileEntry): void {
     deleting = entry.path
-    error = null
+    errorRender = () => (null)
     session.send({ t: 'tree:remove', path: entry.path })
     confirming = null
     // Ответа нет: список файлов приходит комнате целиком, и строка исчезает
@@ -605,7 +607,7 @@
       window.clearTimeout(copyTimer)
       copyTimer = window.setTimeout(() => (copied = null), 1400)
     } catch {
-      error = 'Браузер не дал доступ к буферу обмена'
+      errorRender = () => (tr('room.ui.622'))
     }
   }
 
@@ -643,13 +645,13 @@
 
   function sayRefusal(why: string | null): void {
     if (why) {
-      error = why
+      errorRender = () => (why)
       saidOnDrag = true
       return
     }
     if (!saidOnDrag) return
     saidOnDrag = false
-    error = null
+    errorRender = () => (null)
   }
 
   function onDragStart(event: DragEvent, entry: FileEntry): void {
@@ -796,7 +798,7 @@
       // Право спрашивают и здесь, а не только у `draggable`: строка могла
       // приехать из окна, открытого до того, как правила комнаты сменились.
       if (!mayDrag) {
-        error = may.filesWhy + '.'
+        errorRender = () => (may.filesWhy + '.')
         saidOnDrag = false
         return
       }
@@ -807,12 +809,12 @@
       // Три исхода, а не два: жест, кончившийся там же, где начался, — это
       // промах пальцем, и отказ на него был бы неправдой.
       if (plan.do === 'refuse') {
-        error = plan.why
+        errorRender = () => (plan.why)
         saidOnDrag = false
         return
       }
       if (plan.do !== 'move') return
-      error = null
+      errorRender = () => (null)
       saidOnDrag = false
       session.send({ t: 'tree:move', from: plan.from, to: plan.to })
       // Вкладки едут следом сразу и обязаны: список файлов придёт позже и
@@ -828,7 +830,7 @@
     // Сказать до броска нельзя — но и молча съесть файл нельзя тем более:
     // отпущенный файл, о котором ничего не произошло, читается как поломка.
     if (!may.files) {
-      error = may.filesWhy + '.'
+      errorRender = () => (may.filesWhy + '.')
       return
     }
     void upload(event.dataTransfer?.files ?? null, dropFolder(onto))
@@ -846,7 +848,7 @@
     : !dragFiles && dragDeny === ''
       ? 'ring-1 ring-inset ring-danger/50'
       : ''}"
-  aria-label="Файлы семинара"
+  aria-label={tr('room.ui.585')}
   ondragenter={onDragEnter}
   ondragover={(event) => aim(event, null)}
   ondragleave={onDragLeave}
@@ -855,15 +857,15 @@
   <!-- Полоса уводит заголовок к действиям, так что кнопки читаются как тихий
        конец заголовка, а не как значки, повешенные на него. -->
   <div class="flex items-center gap-2 px-1 pb-2">
-    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">Файлы</h2>
+    <h2 class="text-2xs font-bold uppercase tracking-section text-muted">{tr('room.ui.586')}</h2>
     <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
     {#if may.files}
       <div class="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          title={target ? `Новый файл в ${target}` : 'Новый файл'}
-          aria-label="Новый файл"
+          title={target ? tr('room.extra.258', { p0: target }) : tr('room.extra.259')}
+          aria-label={tr('room.ui.587')}
           onclick={() => startDraft('file')}
         >
           <Icon name="file-plus" size={13} />
@@ -871,8 +873,8 @@
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          title={target ? `Новая тетрадь в ${target}` : 'Новая тетрадь'}
-          aria-label="Новая тетрадь"
+          title={target ? tr('room.extra.260', { p0: target }) : tr('room.extra.261')}
+          aria-label={tr('room.ui.588')}
           onclick={() => startDraft('book')}
         >
           <Icon name="notebook" size={13} />
@@ -880,8 +882,8 @@
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          title={target ? `Новая папка в ${target}` : 'Новая папка'}
-          aria-label="Новая папка"
+          title={target ? tr('room.extra.262', { p0: target }) : tr('room.extra.263')}
+          aria-label={tr('room.ui.589')}
           onclick={() => startDraft('dir')}
         >
           <Icon name="folder-plus" size={13} />
@@ -889,8 +891,8 @@
         <button
           type="button"
           class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          title="Загрузить файлы"
-          aria-label="Загрузить файлы"
+          title={tr('room.ui.590')}
+          aria-label={tr('room.ui.590')}
           onclick={() => picker?.click()}
         >
           <Icon name="upload" size={13} />
@@ -974,7 +976,7 @@
           type="button"
           class="-m-1 flex h-[22px] w-[22px] shrink-0 items-center justify-center p-1 text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
           aria-expanded={!collapsed.has(entry.path)}
-          aria-label={`${collapsed.has(entry.path) ? 'Раскрыть' : 'Свернуть'} ${entry.name}`}
+          aria-label={`${collapsed.has(entry.path) ? tr('room.extra.265') : tr('room.extra.266')} ${entry.name}`}
           onclick={() => toggle(entry.path)}
         >
           <Icon name="chevron-down" size={9} class={collapsed.has(entry.path) ? '-rotate-90' : ''} />
@@ -1007,7 +1009,7 @@
             : active === entry.path
               ? 'font-semibold text-ink'
               : 'text-muted'}"
-          title={entry.dir ? entry.path : `${entry.path} — открыть`}
+          title={entry.dir ? entry.path : tr('room.extra.269', { p0: entry.path })}
           onclick={(event) => pick(entry, event.detail)}
           ondblclick={() => startRename(entry)}
         >
@@ -1017,9 +1019,7 @@
 
         {#if copied === entry.path}
           <span class="flex shrink-0 items-center gap-1 pr-2 text-2xs font-medium text-positive">
-            <Icon name="check" size={11} />
-            скопировано
-          </span>
+            <Icon name="check" size={11} /> {tr('room.ui.594')} </span>
         {:else}
           <!--
             Полоса размера — она же полоса действий: обе начинаются в одном
@@ -1038,7 +1038,7 @@
                   <span
                     class="h-1.5 w-1.5 rounded-full"
                     style={`background:${peer.color}`}
-                    title={`${peer.name} — здесь`}
+                    title={tr('room.extra.270', { p0: peer.name })}
                   ></span>
                 {/each}
               </span>
@@ -1067,8 +1067,8 @@
                 <button
                   type="button"
                   class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                  title={`Скопировать ${snippetFor(entry.path)}`}
-                  aria-label="Скопировать строку для ячейки"
+                  title={tr('room.extra.272', { p0: snippetFor(entry.path) })}
+                  aria-label={tr('room.ui.596')}
                   onclick={() => void copySnippet(entry.path)}
                 >
                   <Icon name="copy" size={12} />
@@ -1076,8 +1076,8 @@
                 <button
                   type="button"
                   class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                  title="Скачать"
-                  aria-label={`Скачать ${entry.name}`}
+                  title={tr('room.ui.597')}
+                  aria-label={tr('room.extra.273', { p0: entry.name })}
                   onclick={() => void download(entry.path)}
                 >
                   <Icon name="download" size={12} />
@@ -1090,8 +1090,8 @@
                 <button
                   type="button"
                   class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
-                  title="Удалить"
-                  aria-label={`Убрать ${entry.name}`}
+                  title={tr('room.ui.598')}
+                  aria-label={tr('room.extra.274', { p0: entry.name })}
                   onclick={() => (confirming = entry.path)}
                 >
                   <Icon name="trash" size={12} />
@@ -1113,10 +1113,10 @@
              тетради комнаты, а не по каждой открытой. -->
         <span class="min-w-0 flex-1 truncate text-2xs text-muted">
           {entry.dir
-            ? 'Удалить папку и всё её содержимое?'
+            ? tr('room.ui.599')
             : isBook(entry.path)
-              ? 'Удалить тетрадь и её ячейки для всей группы?'
-              : 'Удалить файл?'}
+              ? tr('room.ui.600')
+              : tr('room.ui.601')}
         </span>
         <button
           type="button"
@@ -1124,15 +1124,13 @@
           disabled={deleting === entry.path}
           onclick={() => remove(entry)}
         >
-          {deleting === entry.path ? 'Удаляем…' : 'Удалить'}
+          {deleting === entry.path ? tr('room.ui.542') : tr('room.ui.598')}
         </button>
         <button
           type="button"
           class="shrink-0 text-2xs font-bold uppercase tracking-caps text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           onclick={() => (confirming = null)}
-        >
-          Отмена
-        </button>
+        > {tr('room.ui.29')} </button>
       </div>
     {/if}
 
@@ -1153,7 +1151,7 @@
         style={`padding-left:${4 + (depth + 1) * 14 + 32}px`}
         title={readsInside(entry.path)
           ? undefined
-          : 'Достигнут лимит глубины дерева файлов. Содержимое папки можно посмотреть из ячейки через os.listdir().'}
+          : tr('room.extra.275')}
         ondragover={(event) => aim(event, entry)}
         ondrop={(event) => onDrop(event, entry)}
         role="presentation"
@@ -1189,8 +1187,7 @@
   <!-- Список кончился, но папка — нет. Строка стоит там же, где кончается
        дерево: это ответ на вопрос «а где мой файл?», заданный глазами. -->
   {#if truncated}
-    <p class="px-2 pt-1.5 text-2xs leading-snug text-muted">
-      Показаны не все файлы: достигнут лимит списка. Содержимое папок можно посмотреть из ячейки через <span class="font-mono">os.listdir()</span>.
+    <p class="px-2 pt-1.5 text-2xs leading-snug text-muted"> {tr('room.ui.602')} <span class="font-mono">os.listdir()</span>.
     </p>
   {/if}
 
@@ -1214,7 +1211,7 @@
       <div
         class="h-0.5 bg-line"
         role="progressbar"
-        aria-label="Загружается {item.name}"
+        aria-label={tr('room.files.loading', { name: item.name })}
         aria-valuenow={done}
         aria-valuemin={0}
         aria-valuemax={100}
@@ -1247,7 +1244,7 @@
     {#if !may.files}
       {may.filesWhy}
     {:else}
-      {target ? `Файлы — в папку ${target}` : 'Файлы доступны всей группе'}
+      {target ? tr('room.ui.607', { p0: target }) : tr('room.ui.608')}
     {/if}
   </button>
 
@@ -1265,8 +1262,8 @@
       <button
         type="button"
         class="shrink-0 p-0.5 transition-opacity duration-100 hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
-        aria-label="Убрать"
-        onclick={() => (error = null)}
+        aria-label={tr('room.ui.499')}
+        onclick={() => (errorRender = () => null)}
       >
         <Icon name="x" size={11} />
       </button>
@@ -1281,7 +1278,7 @@
       <button
         type="button"
         class="shrink-0 p-0.5 transition-opacity duration-100 hover:opacity-70"
-        aria-label="Убрать"
+        aria-label={tr('room.ui.499')}
         onclick={() => (note = null)}
       >
         <Icon name="x" size={11} />
@@ -1298,7 +1295,7 @@
         ? 'border-accent bg-accent/10 text-accent-text'
         : 'border-line bg-surface/80 text-muted'}"
     >
-      {may.files ? 'Файлы доступны всей группе' : may.filesWhy}
+      {may.files ? tr('room.ui.608') : may.filesWhy}
     </div>
   {/if}
 </section>

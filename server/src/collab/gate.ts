@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Разбор входящего Yjs-кадра на глаголы — до того, как он применён.
  *
@@ -282,7 +283,7 @@ class Frame {
 
   private step(path: string): void {
     this.walked += 1
-    if (this.walked > MAX_WALK) throw new Refusal('кадр слишком велик для разбора', path)
+    if (this.walked > MAX_WALK) throw new Refusal(tr("server.theFrameIsTooLargeToRead.4cb416"), path)
   }
 
   /**
@@ -311,7 +312,7 @@ class Frame {
     this.step(path)
     if (id.clock >= Y.getState(this.doc.store, id.client)) {
       const fresh = this.byId.get(`${id.client}:${id.clock}`)
-      if (!fresh) throw new Refusal('ссылка на содержимое, которого у семинара нет', path)
+      if (!fresh) throw new Refusal(tr("server.referenceToContentThatIsNotIn.692803"), path)
       return { kind: 'fresh', struct: fresh }
     }
     // Тип у `getItem` врёт: на месте собранного мусора он отдаёт GC.
@@ -338,14 +339,14 @@ class Frame {
       const item = current._item
       if (item === null) {
         // `findRootTypeKey` бросает на оторванном типе — до неё надо дойти живым.
-        if (!current.doc) throw new Refusal('запись в тип вне документа', segs.join('/'))
+        if (!current.doc) throw new Refusal(tr("server.writeToATypeOutsideTheDocument.85d447"), segs.join('/'))
         segs.unshift(Y.findRootTypeKey(current))
         return { segs, cell }
       }
       segs.unshift(segment(item.parentSub))
       const parent = item.parent
       if (!(parent instanceof Y.AbstractType)) {
-        throw new Refusal('родитель не разрешается', segs.join('/'))
+        throw new Refusal(tr("server.theParentCannotBeResolved.65a644"), segs.join('/'))
       }
       // Элемент, лежащий прямо в корне cells, и есть ячейка.
       if (item.parentSub === null && parent._item === null && parent.doc) {
@@ -379,7 +380,7 @@ class Frame {
       if (memo) return memo
       const parent = item.parent
       if (!(parent instanceof Y.AbstractType)) {
-        throw new Refusal('родитель не разрешается', path)
+        throw new Refusal(tr("server.theParentCannotBeResolved.65a644"), path)
       }
       const { segs: container, cell } = this.pathOfType(parent)
       const here: Place = {
@@ -420,7 +421,7 @@ class Frame {
     } else {
       // Родителя на проводе нет — берём его у соседа, вместе с ключом.
       const neighbourId = struct.origin ?? struct.rightOrigin
-      if (!neighbourId) throw new Refusal('структура без родителя и без соседа', path)
+      if (!neighbourId) throw new Refusal(tr("server.structureHasNeitherAParentNorA.62175e"), path)
       const neighbour = this.resolve(neighbourId, path)
       const beside = this.place(neighbour, path)
       here = {
@@ -495,10 +496,10 @@ class Frame {
           path,
         }
       }
-      if (slot.length < 3) throw new Refusal('запись в неизвестное место тетради', path)
+      if (slot.length < 3) throw new Refusal(tr("server.writeToAnUnknownNotebookLocation.6e676f"), path)
 
       const key = slot[2].startsWith('::') ? slot[2].slice(2) : null
-      if (key === null) throw new Refusal('запись в неизвестное место тетради', path)
+      if (key === null) throw new Refusal(tr("server.writeToAnUnknownNotebookLocation.6e676f"), path)
 
       // Ячейка, созданная этим же кадром, — часть создания целиком; её значения
       // проверяются отдельно, в checkFresh.
@@ -512,41 +513,41 @@ class Frame {
          */
         throw new Refusal(
           key === 'open' || key === 'council'
-            ? 'ячейку открывает преподаватель, а не браузер'
-            : 'это поле пишет сервер, а не браузер',
+            ? tr("server.onlyTheTeacherMayOpenACell.408fc1")
+            : tr("server.thisFieldIsWrittenByTheServer.ea61b2"),
           path,
         )
       }
-      if (key === 'id') throw new Refusal('имя ячейки не меняется', path)
+      if (key === 'id') throw new Refusal(tr("server.theCellIdentifierCannotBeChanged.ed6a4a"), path)
       if (key === 'source') {
         // Внутрь текста — правка; замена самого ключа — нет: она сносит Y.Text,
         // в котором в этот момент стоят чужие курсоры.
-        if (slot.length === 3) throw new Refusal('текст ячейки заменяется целиком', path)
+        if (slot.length === 3) throw new Refusal(tr("server.theEntireCellTextIsBeingReplaced.ef575f"), path)
         // Единственное место, где замок что-то разрешает: набор в открытой
         // ячейке идёт при закрытой тетради — см. shared/rules.ts · mayEditCell.
         return { rule: 'edit', cellId, path, open: this.openOf(place) }
       }
       if (key === 'type') {
-        if (slot.length !== 3) throw new Refusal('запись в неизвестное место тетради', path)
+        if (slot.length !== 3) throw new Refusal(tr("server.writeToAnUnknownNotebookLocation.6e676f"), path)
         // Без `open`: сменить вид — это переписать ячейку целиком вместе с её
         // выводом, то есть состав тетради, а он в лекции преподавательский.
         return { rule: 'edit', cellId, path }
       }
-      throw new Refusal('неизвестный ключ ячейки', path)
+      throw new Refusal(tr("server.unknownCellField.5417fd"), path)
     }
 
     if (slot[0] === META_KEY) {
       if (slot.length === 2 && slot[1] === '::title') {
         return { rule: 'title', cellId: null, path }
       }
-      throw new Refusal('это поле семинара пишет сервер', path)
+      throw new Refusal(tr("server.thisSeminarFieldIsWrittenByThe.4b1639"), path)
     }
 
     if (slot[0] === CHAT_KEY || slot[0] === TERMINAL_KEY) {
-      throw new Refusal('эту ленту пишет сервер', path)
+      throw new Refusal(tr("server.thisThreadIsWrittenByTheServer.a453d6"), path)
     }
 
-    throw new Refusal('запись в раздел, которого у документа нет', path)
+    throw new Refusal(tr("server.writeToASectionThatDoesNot.901f9e"), path)
   }
 
   /**
@@ -565,18 +566,18 @@ class Frame {
     for (const keys of fresh.values()) {
       const path = `${CELLS_KEY}/[]`
       for (const key of keys.keys()) {
-        if (!FRESH_KEYS.has(key)) throw new Refusal(`новая ячейка несёт лишнее поле «${key}»`, path)
+        if (!FRESH_KEYS.has(key)) throw new Refusal(tr("server.theNewCellContainsAnUnexpectedField.0d2454", { p0: key }), path)
       }
       const id = valueOf(keys.get('id'))
       if (typeof id !== 'string' || id.length === 0 || id.length > 128) {
-        throw new Refusal('у новой ячейки нет имени', path)
+        throw new Refusal(tr("server.theNewCellHasNoIdentifier.6dfd8e"), path)
       }
       /*
        * Имя обязано быть новым. Совпадающее имя — не опечатка, а захват:
        * «Запустить» преподавателя ищет ячейку по имени и выполнит чужой
        * исходник.
        */
-      if (namesHere.has(id)) throw new Refusal('две новые ячейки с одним именем', path)
+      if (namesHere.has(id)) throw new Refusal(tr("server.twoNewCellsShareTheSameIdentifier.844381"), path)
       namesHere.add(id)
       /*
        * Во ВСЕХ тетрадях комнаты, а не в одной: ячейку ищут по имени, не зная,
@@ -590,12 +591,12 @@ class Frame {
       )
 
       const type = valueOf(keys.get('type'))
-      if (type !== 'code' && type !== 'markdown') throw new Refusal('у новой ячейки нет вида', path)
+      if (type !== 'code' && type !== 'markdown') throw new Refusal(tr("server.theNewCellHasNoType.fd1999"), path)
 
       if (!isType(keys.get('source'), Y.Text))
-        throw new Refusal('текст новой ячейки не Y.Text', path)
+        throw new Refusal(tr("server.theNewCellSTextIsNot.21d144"), path)
       if (!isType(keys.get('outputs'), Y.Array))
-        throw new Refusal('вывод новой ячейки не Y.Array', path)
+        throw new Refusal(tr("server.theNewCellSOutputIsNot.2d985e"), path)
 
       /*
        * Ни готовый вывод, ни «In [7]», ни занятое имя отказом не судятся, и
@@ -678,13 +679,13 @@ class Frame {
           // приводит всякую новую ячейку к чистой сразу после применения
           // (ops.ts · settleFresh). Всё прочее содержимое — отказ.
           if (slot[2] !== '::outputs') {
-            throw new Refusal('новая ячейка несёт готовое содержимое', slot.join('/'))
+            throw new Refusal(tr("server.theNewCellContainsPresetContent.c75536"), slot.join('/'))
           }
         }
       } else if (verdict?.rule === 'edit' && slot.length === 3 && slot[2] === '::type') {
         const value = valueOf(struct)
         if (value !== 'code' && value !== 'markdown') {
-          throw new Refusal('такого вида ячейки не бывает', slot.join('/'))
+          throw new Refusal(tr("server.unknownCellType.df318b"), slot.join('/'))
         }
         if (verdict.cellId) retyped.push(verdict.cellId)
       }
@@ -745,7 +746,7 @@ class Frame {
     const byClient = new Map<number, Struct[]>()
     for (const struct of this.dec.structs) {
       if (struct instanceof Y.Skip) {
-        throw new Refusal('кадр с пропуском в нажатиях', `${CELLS_KEY}#${struct.id.client}`)
+        throw new Refusal(tr("server.theFrameHasAGapInEdits.6c7e40"), `${CELLS_KEY}#${struct.id.client}`)
       }
       const list = byClient.get(struct.id.client)
       if (list) list.push(struct)
@@ -761,7 +762,7 @@ class Frame {
         if (end <= expected) continue
         if (struct.id.clock > expected) {
           throw new Refusal(
-            'кадр продолжает нажатия, которых сервер не видел',
+            tr("server.theFrameContinuesEditsThatTheServer.1709af"),
             `${CELLS_KEY}#${client}`,
           )
         }
@@ -843,7 +844,7 @@ export function classify(
   maxBytes: number = MAX_SYNC_FRAME_BYTES,
 ): Judgement {
   if (payload.byteLength > maxBytes) {
-    return { ok: false, why: 'слишком большой кадр', path: '' }
+    return { ok: false, why: tr("server.frameTooLarge.5693f1"), path: '' }
   }
   try {
     const dec = Y.decodeUpdate(payload) as unknown as {
@@ -856,7 +857,7 @@ export function classify(
     if (err instanceof Refusal) return { ok: false, why: err.why, path: err.path }
     // Развалившийся разбор — отказ, а не пропуск: пропустить то, что не смогли
     // прочитать, значит выполнить это после того, как проверка перестала смотреть.
-    return { ok: false, why: 'кадр не разбирается', path: '' }
+    return { ok: false, why: tr("server.theFrameCannotBeRead.c96480"), path: '' }
   }
 }
 
@@ -888,14 +889,14 @@ export function permits(
   finished = false,
 ): { ok: true } | { ok: false; rule: GateRule; message: string } {
   const acts = actsAfterClass(finished, role)
-  const why = (own: string): string => (acts ? own : CLASS_IS_OVER)
+  const why = (own: string): string => (acts ? own : tr(CLASS_IS_OVER))
   for (const verdict of verdicts) {
     if (verdict.rule === 'title') {
       if (role === 'host') continue
       return {
         ok: false,
         rule: 'title',
-        message: why('Имя семинара меняет преподаватель.'),
+        message: why(tr("server.onlyTheTeacherMayRenameTheSeminar.61046b")),
       }
     }
     if (verdict.rule === 'edit') {
@@ -904,7 +905,7 @@ export function permits(
         ok: false,
         rule: 'edit',
         message: why(
-          'В этом семинаре тетрадь принадлежит преподавателю — написанное вами не отправлено.',
+          tr("server.onlyTheTeacherMayEditThisSeminar.dfef31"),
         ),
       }
     }
@@ -915,8 +916,8 @@ export function permits(
       rule: 'structure',
       message: why(
         verb === 'add'
-          ? 'В этом семинаре ячейки добавляет преподаватель.'
-          : 'В этом семинаре ячейки убирает преподаватель.',
+          ? tr("server.onlyTheTeacherMayAddCellsIn.9fb3e4")
+          : tr("server.onlyTheTeacherMayRemoveCellsIn.9a1ac0"),
       ),
     }
   }

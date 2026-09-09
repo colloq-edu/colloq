@@ -1,4 +1,5 @@
 import type { RoomRules } from './rules.js'
+import type {Locale} from './i18n-types.js'
 
 /**
  * Wire contracts between browser and server: the control WebSocket, the REST
@@ -545,6 +546,7 @@ export type TerminalStatus = 'closed' | 'starting' | 'idle' | 'busy' | 'dead'
 export type GateRule = 'structure' | 'edit' | 'title'
 
 export type ControlServerMessage =
+  | { t: 'instance:language'; language: Locale }
   | { t: 'ready'; kernel: KernelStatus }
   /*
    * The role the SERVER will act on, sent as soon as the socket opens. A

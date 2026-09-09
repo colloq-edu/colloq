@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * What a control that needs the server may say and do while the server is gone.
  *
@@ -26,7 +27,7 @@
  * запуска и на пульт лекции — всё это поверхности, переведённые целиком, и
  * английская строка в них выглядит сбоем, а не сообщением.
  */
-export const OFFLINE_REASON = 'Нет связи с сервером. Повторите запуск после подключения'
+export const OFFLINE_REASON = "Нет связи с сервером. Повторите запуск после подключения"
 
 /**
  * The title a server-backed control should carry.
@@ -36,7 +37,7 @@ export const OFFLINE_REASON = 'Нет связи с сервером. Повто
  * answers a question nobody asked, and hides the one fact that matters.
  */
 export function controlTitle(connected: boolean, reason: string): string {
-  return connected ? reason : OFFLINE_REASON
+  return connected ? reason : tr(OFFLINE_REASON)
 }
 
 /**

@@ -8,7 +8,10 @@
  * cannot make the notebook unloadable for the whole seminar".
  */
 import './_env.mts'
-import { test } from 'node:test'
+import { beforeEach, test } from 'node:test'
+import { setLocaleResolver } from '../shared/i18n.js'
+// Existing diagnostic expectations intentionally exercise English; bilingual behavior has its own tests.
+beforeEach(() => setLocaleResolver(() => 'en'))
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 import { cellId, createCell, getCells, readCell } from '../shared/notebook.js'

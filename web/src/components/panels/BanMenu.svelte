@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Одно меню бана на всю комнату — и окно, которым его подтверждают.
    *
@@ -31,7 +32,8 @@
   /** Меню нажато — на экране окно подтверждения. */
   let asked = $state(false)
   let busy = $state(false)
-  let error = $state<string | null>(null)
+  let errorRender = $state<() => string | null>(() => null)
+  const error = $derived(errorRender())
   let cancelButton = $state<HTMLButtonElement | null>(null)
 
   $effect(() => {
@@ -39,7 +41,7 @@
       target = (event as CustomEvent<BanTarget>).detail
       asked = false
       busy = false
-      error = null
+      errorRender = () => (null)
     }
     window.addEventListener(BAN_MENU_EVENT, open)
     return () => window.removeEventListener(BAN_MENU_EVENT, open)
@@ -91,7 +93,7 @@
     const who = target
     if (!who || busy) return
     busy = true
-    error = null
+    errorRender = () => (null)
     try {
       await api.ban(session.session.id, session.token, who.id)
       // Список у преподавателя перечитывается сам: он рисуется в другой панели,
@@ -101,7 +103,7 @@
       // него как раз и не сработал бы.
       dismiss()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Не получилось удалить с занятия.'
+      errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.543'))
     } finally {
       busy = false
     }
@@ -132,7 +134,7 @@
     class="fixed z-50 border border-line bg-raised py-1 shadow-pop"
     style="left: {at.x}px; top: {at.y}px; width: {MENU_W}px"
     role="menu"
-    aria-label="Что сделать с участником"
+    aria-label={tr('room.ui.540')}
     in:fly={{ y: prefersReducedMotion() ? 0 : -4, duration: 120, easing: quintOut }}
   >
     <p class="truncate px-2.5 pb-1 pt-0.5 text-2xs font-bold uppercase tracking-label text-muted">
@@ -146,9 +148,7 @@
              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
       onclick={() => (asked = true)}
     >
-      <Icon name="lock" size={14} />
-      Удалить с занятия…
-    </button>
+      <Icon name="lock" size={14} /> {tr('room.ui.541')} </button>
   </div>
 {/if}
 
@@ -169,7 +169,7 @@
       class="w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop"
       in:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: quintOut }}
     >
-      <h2 id="ban-title" class="text-title font-semibold text-ink">Удалить с занятия</h2>
+      <h2 id="ban-title" class="text-title font-semibold text-ink">{tr('room.ui.78')}</h2>
 
       <!-- Имя — отдельной строкой с меткой, а не внутри заголовка: в списке
            людей одни имена, лиц там нет, и промахнуться строкой легко. -->
@@ -198,9 +198,7 @@
           class="btn-outline"
           disabled={busy}
           onclick={close}
-        >
-          Отмена
-        </button>
+        > {tr('room.ui.29')} </button>
         <button
           type="button"
           class="btn bg-danger text-white hover:brightness-110 active:brightness-95"
@@ -208,12 +206,8 @@
           onclick={() => void ban()}
         >
           {#if busy}
-            <Icon name="spinner" size={15} class="animate-spin" />
-            Удаляем…
-          {:else}
-            <Icon name="lock" size={15} />
-            Удалить с занятия
-          {/if}
+            <Icon name="spinner" size={15} class="animate-spin" /> {tr('room.ui.542')} {:else}
+            <Icon name="lock" size={15} /> {tr('room.ui.78')} {/if}
         </button>
       </div>
     </div>

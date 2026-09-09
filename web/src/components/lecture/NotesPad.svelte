@@ -35,6 +35,7 @@
   хоста, — ни залу, ни проекции, ни при каких условиях.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import { untrack } from 'svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { getSessionState } from '@/lib/session.svelte'
@@ -530,12 +531,12 @@
       onpointerup={headUp}
       onpointercancel={headUp}
     >
-      <span class="text-micro font-bold uppercase tracking-section text-muted">заметки</span>
+      <span class="text-micro font-bold uppercase tracking-section text-muted">{tr('room.ui.194')}</span>
       {#if arrived && draft.trim()}
-        <span class="h-3 w-0.5 shrink-0 bg-accent" title="У этой страницы есть заметка"></span>
+        <span class="h-3 w-0.5 shrink-0 bg-accent" title={tr('room.ui.307')}></span>
       {/if}
       {#if showClock}
-        <span class="ml-2 font-mono text-code tabular-nums text-muted" aria-label="Идёт лекция">
+        <span class="ml-2 font-mono text-code tabular-nums text-muted" aria-label={tr('room.ui.308')}>
           {stopwatch(runningFor)}
         </span>
       {/if}
@@ -562,8 +563,8 @@
           <button
             type="button"
             class="{TAP} {CELL} flex items-center justify-center gap-px text-muted hover:text-ink"
-            aria-label="Изменить размер текста заметок"
-            title="Переключить размер текста заметок"
+            aria-label={tr('room.ui.309')}
+            title={tr('room.ui.310')}
             onclick={bigger}
           >
             <span class="text-title font-bold leading-none" aria-hidden="true">A</span>
@@ -586,8 +587,8 @@
           <button
             type="button"
             class="{TAP} {CELL} flex items-center justify-center text-muted hover:text-ink"
-            aria-label="Ещё"
-            title="Ещё: во весь экран, левая рука, сменить документ, закончить"
+            aria-label={tr('room.ui.312')}
+            title={tr('room.ui.313')}
             onclick={() => onmore?.()}
           >
             <Icon name="more" size={16} />
@@ -597,9 +598,9 @@
           <button
             type="button"
             class="{TAP} {CELL} flex items-center justify-center text-muted hover:text-ink"
-            aria-label={folded ? 'Развернуть заметки' : 'Свернуть заметки'}
+            aria-label={folded ? tr('room.extra.89') : tr('room.extra.90')}
             aria-pressed={folded}
-            title={folded ? 'Развернуть заметки' : 'Свернуть заметки'}
+            title={folded ? tr('room.extra.89') : tr('room.extra.90')}
             onclick={() => onfold?.(!folded)}
           >
             <Icon name={folded ? 'chevron-up' : 'chevron-down'} size={16} />
@@ -625,9 +626,7 @@
             двадцати строк читается как потерянная работа.
           -->
           <p class="flex items-center gap-2 py-2 text-2xs text-muted" aria-live="polite">
-            <Icon name="spinner" size={14} class="shrink-0 animate-spin" />
-            Заметки загружаются
-          </p>
+            <Icon name="spinner" size={14} class="shrink-0 animate-spin" /> {tr('room.ui.196')} </p>
         {:else}
           <!--
             Поле всегда открыто, а не «двойным щелчком в правку»: на планшете
@@ -654,8 +653,8 @@
                      min-[1300px]:max-w-[900px] {draft.trim() ? '' : 'text-muted'}"
             >
               {onBoard
-                ? 'Заметки доступны только для страниц документа.'
-                : draft.trim() || 'Заметок к этой странице нет.'}
+                ? tr('room.ui.314')
+                : draft.trim() || tr('room.ui.315')}
             </div>
           {:else}
           <textarea
@@ -663,8 +662,8 @@
             bind:value={draft}
             rows="1"
             maxlength={MAX}
-            aria-label="Заметки к странице {page}"
-            placeholder="Что сказать на этой странице…"
+            aria-label={tr('room.notes.page', { count: page })}
+            placeholder={tr('room.ui.195')}
             class="{size} pult-prompt pult-caret block max-h-full w-full max-w-[660px] resize-none
                    overscroll-contain bg-transparent pb-6 text-ink placeholder:text-muted
                    focus-visible:outline-offset-0 min-[1300px]:max-w-[900px]
@@ -697,8 +696,7 @@
             >
               <span
                 class="pl-2 font-mono text-2xs tabular-nums text-faint {compact ? 'bg-canvas' : 'bg-surface'}"
-              >
-                осталось {left}
+              > {tr('room.ui.316')} {left}
               </span>
             </span>
           {/if}

@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Вывод попытки консилиума — в память, а не в общую ячейку.
  *
@@ -27,7 +28,7 @@ const MAX_ERROR_LINE_CHARS = 2 * 1024
 
 function clip(text: string, max: number): string {
   if (text.length <= max) return text
-  return `${text.slice(0, max)}… [colloq] ${text.length - max} more characters cut here`
+  return tr("server.colloqMoreCharactersCutHere.cfc854", { p0: text.slice(0, max), p1: text.length - max })
 }
 
 /** Что ядру надо, чтобы посчитать попытку, и кому сказать, что вышло. */
@@ -74,7 +75,7 @@ export class CouncilOutputBuffer {
       this.outputs.push({
         kind: 'stream',
         name: 'stderr',
-        text: `\n[colloq] вывод попытки остановлен после ${MAX_ATTEMPT_OUTPUT_CHARS} знаков. Сохраните полный вывод в файл.\n`,
+        text: tr("server.colloqAttemptOutputStoppedAfterCharactersSave.97282a", { p0: MAX_ATTEMPT_OUTPUT_CHARS }),
       })
     }
   }
@@ -87,7 +88,7 @@ export class CouncilOutputBuffer {
         this.outputs.push({
           kind: 'stream',
           name: 'stderr',
-          text: '\n[colloq] Достигнут лимит изображений для попытки. Остальные изображения не показаны.\n',
+          text: tr("server.colloqTheAttemptImageLimitWasReached.3d579d"),
         })
       }
       this.dataTruncated = true
@@ -102,7 +103,7 @@ export class CouncilOutputBuffer {
     const lines = traceback.map((line) => clip(line, MAX_ERROR_LINE_CHARS))
     const clipped =
       lines.length > MAX_TRACEBACK_LINES
-        ? [...lines.slice(0, 20), `... ${lines.length - 50} more frames ...`, ...lines.slice(-30)]
+        ? [...lines.slice(0, 20), tr("server.moreFrames.6caf4c", { p0: lines.length - 50 }), ...lines.slice(-30)]
         : lines
     this.outputs.push({
       kind: 'error',

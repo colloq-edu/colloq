@@ -1,3 +1,4 @@
+import { tr } from './i18n.js'
 /**
  * Курс, опубликованный семинар и шаги, по которым идёт студент.
  *
@@ -394,10 +395,10 @@ export interface SkippedStep {
  * называют один и тот же отказ по-разному.
  */
 export const SKIP_REASON_TEXT: Record<SkipReason, string> = {
-  empty: 'в тетради на этот момент не было ни одной ячейки',
-  broken: 'запись этого момента не читается',
-  unnamed: 'момент остался без имени',
-  duplicate: 'этот момент уже есть в списке',
+  get empty() { return tr('server.skip_reason_text.empty') },
+  get broken() { return tr('server.skip_reason_text.broken') },
+  get unnamed() { return tr('server.skip_reason_text.unnamed') },
+  get duplicate() { return tr('server.skip_reason_text.duplicate') },
 }
 
 /* --------------------------------------------------------------- индексация */

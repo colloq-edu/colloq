@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr, getLocale } from '@shared/i18n'
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import { navCounts } from '@/admin/AdminShell.svelte'
@@ -23,7 +24,8 @@
 
   let seminars = $state<AdminSeminar[]>([])
   let loading = $state(true)
-  let loadError = $state<string | null>(null)
+  let loadErrorText = $state<(() => string | null) | null>(null)
+  const loadError = $derived(loadErrorText?.() ?? null)
   let query = $state('')
   /** Ticks with the poll below so "started 12 min ago" does not freeze at 12. */
   let now = $state(Date.now())
@@ -65,7 +67,8 @@
       // Перечитываем список: у строки поменялось состояние публикации.
       local(await adminApi.listSeminars())
     } catch (cause: unknown) {
-      rowError = { id: seminar.id, message: `Could not update the publication: ${explain(cause)}` }
+      noteDeadCookie(cause)
+      rowError = { id: seminar.id, message: () => (tr("admin.could.not.update.the.publication", { p0: explain(cause) })) }
     }
   }
 
@@ -81,7 +84,7 @@
       // Как и у ссылки на комнату: буфер закрыт на незащищённом источнике —
       // обычный способ держать инстанс кафедры. Ссылка и есть смысл нажатия,
       // поэтому она уходит на экран, а не в необработанный промис.
-      rowError = { id: seminar.id, message: `Could not copy the link. Copy it manually: ${link}` }
+      rowError = { id: seminar.id, message: () => (tr("admin.could.not.copy.the.link.copy.it.manually", { p0: link })) }
       return
     }
     if (rowError?.id === seminar.id) rowError = null
@@ -126,14 +129,15 @@
   let githubUrl = $state('')
   let preview = $state<ImportPreview | null>(null)
   let previewing = $state(false)
-  let previewError = $state<string | null>(null)
+  let previewErrorText = $state<(() => string | null) | null>(null)
+  const previewError = $derived(previewErrorText?.() ?? null)
 
   let previewTimer: number | undefined
   $effect(() => {
     const url = githubUrl.trim()
     window.clearTimeout(previewTimer)
     preview = null
-    previewError = null
+    previewErrorText = null
     if (!fromGithub || url.length < 20) return
     // Пауза, а не запрос на каждый символ: ссылку вставляют целиком, но её же
     // и дописывают руками, а каждый запрос уходит наружу к GitHub.
@@ -145,7 +149,7 @@
           preview = p
           if (!newName.trim()) newName = p.name
         })
-        .catch((cause) => (previewError = explain(cause)))
+        .catch((cause) => (previewErrorText = () => (explain(cause))))
         .finally(() => (previewing = false))
     }, 500)
     return () => window.clearTimeout(previewTimer)
@@ -156,7 +160,7 @@
     const url = githubUrl.trim()
     if (!url || createBusy || !preview) return
     createBusy = true
-    createError = null
+    createErrorText = null
     try {
       const done = await adminApi.importSeminar({
         url,
@@ -173,14 +177,16 @@
       newEnvironment = ''
       preview = null
     } catch (cause: unknown) {
-      createError = explain(cause)
+      noteDeadCookie(cause)
+      createErrorText = () => (explain(cause))
     } finally {
       createBusy = false
     }
   }
   let newName = $state('')
   let createBusy = $state(false)
-  let createError = $state<string | null>(null)
+  let createErrorText = $state<(() => string | null) | null>(null)
+  const createError = $derived(createErrorText?.() ?? null)
   let nameInput = $state<HTMLInputElement | null>(null)
   let justCreatedId = $state<string | null>(null)
 
@@ -191,7 +197,7 @@
   let renameValue = $state('')
 
   /** At most one row is ever explaining itself; a second failure replaces the first. */
-  let rowError = $state<{ id: string; message: string } | null>(null)
+  let rowError = $state<{ id: string; message: () => string } | null>(null)
   let openMenuId = $state<string | null>(null)
   /**
    * Куда поставить открытое меню, в координатах окна.
@@ -241,7 +247,8 @@
 
   let doomed = $state<AdminSeminar | null>(null)
   let deleteBusy = $state(false)
-  let deleteError = $state<string | null>(null)
+  let deleteErrorText = $state<(() => string | null) | null>(null)
+  const deleteError = $derived(deleteErrorText?.() ?? null)
   let cancelButton = $state<HTMLButtonElement | null>(null)
 
   const live = $derived(seminars.filter((s) => s.status === 'live'))
@@ -303,7 +310,7 @@
     return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}`
   }
 
-  const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
+  const count = (n: number, noun: string): string => tr(`admin.count.${noun}`, { count: n })
 
   /**
    * Nobody can act on a dead cookie. Hand it to the shell, which swaps the
@@ -323,9 +330,8 @@
   }
 
   function explain(cause: unknown): string {
-    noteDeadCookie(cause)
     if (cause instanceof AdminApiError) return cause.message
-    return cause instanceof Error ? cause.message : 'The server did not respond'
+    return cause instanceof Error ? cause.message : tr("admin.the.server.did.not.respond")
   }
 
   /* ---------------------------------------------------------------- data */
@@ -372,11 +378,12 @@
       // Пока ответ ехал, на экране что-то изменили. Их правка новее.
       if (started !== generation) return
       seminars = list
-      loadError = null
+      loadErrorText = null
     } catch (cause: unknown) {
+      noteDeadCookie(cause)
       // A poll that fails leaves the list it already has: the screen was right a
       // minute ago, and a banner over live data is worse than data a minute old.
-      if (!silent) loadError = explain(cause)
+      if (!silent) loadErrorText = () => (explain(cause))
     } finally {
       if (!silent) loading = false
     }
@@ -467,13 +474,13 @@
         // получит окружение по умолчанию — то же, что было всегда.
         .catch(() => (environments = []))
     }
-    createError = null
+    createErrorText = null
   }
 
   function cancelCreate(): void {
     creating = false
     newName = ''
-    createError = null
+    createErrorText = null
   }
 
   // The field lands a paint after the row does, so focus follows the element.
@@ -523,7 +530,7 @@
     if (!name || createBusy) return
 
     createBusy = true
-    createError = null
+    createErrorText = null
     try {
       const seminar = await adminApi.createSeminar({ name, environment: newEnvironment || null })
       // A filter that hides the row you just made would send the teacher
@@ -535,7 +542,8 @@
       newName = ''
       newEnvironment = ''
     } catch (cause: unknown) {
-      createError = explain(cause)
+      noteDeadCookie(cause)
+      createErrorText = () => (explain(cause))
     } finally {
       createBusy = false
     }
@@ -549,7 +557,7 @@
     } catch {
       // Blocked on an insecure origin, which is a normal way to self-host. The
       // link is the point of the click, so it goes on screen instead.
-      rowError = { id: seminar.id, message: `Could not copy the link. Copy it manually: ${linkOf(seminar)}` }
+      rowError = { id: seminar.id, message: () => (tr("admin.could.not.copy.the.link.copy.it.manually", { p0: linkOf(seminar) })) }
       return
     }
     if (rowError?.id === seminar.id) rowError = null
@@ -580,8 +588,8 @@
 
   /** «There are 12 people in “ML week 3” right now, and Мария set it up». */
   function crowdIn(seminar: AdminSeminar): string {
-    const crowd = seminar.liveCount === 1 ? 'is 1 person' : `are ${seminar.liveCount} people`
-    return `There ${crowd} in “${seminar.name}” right now, and ${seminar.createdBy} set it up`
+    const crowd = seminar.liveCount === 1 ? tr("admin.is.1.person") : tr("admin.are.people", { p0: seminar.liveCount })
+    return tr("admin.there.in.right.now.and.set.it.up", { p0: crowd, p1: seminar.name, p2: seminar.createdBy ?? tr("admin.unknown.teacher") })
   }
 
   async function commitRename(seminar: AdminSeminar): Promise<void> {
@@ -599,8 +607,8 @@
      */
     if (othersLive(seminar)) {
       const ok = window.confirm(
-        `${crowdIn(seminar)}. The new name appears in their header immediately. ` +
-          `Rename it to “${name}”?`,
+        (tr("admin.the.new.name.appears.in.their.header.immediately", { p0: crowdIn(seminar) }) + " ") +
+          tr("admin.rename.it.to", { p0: name }),
       )
       if (!ok) return
     }
@@ -612,8 +620,9 @@
     try {
       replace(await adminApi.updateSeminar(seminar.id, { name }))
     } catch (cause: unknown) {
+      noteDeadCookie(cause)
       patch(seminar.id, { name: before })
-      rowError = { id: seminar.id, message: `Could not rename the seminar: ${explain(cause)}` }
+      rowError = { id: seminar.id, message: () => (tr("admin.could.not.rename.the.seminar", { p0: explain(cause) })) }
     }
   }
 
@@ -639,18 +648,19 @@
    * ничего: истёкшее печенье выглядело как «щелчок не сработал», и щёлкали ещё
    * и ещё, а сообщение ждало в строке, закрытой веялью.
    */
-  let rulesError = $state<string | null>(null)
+  let rulesErrorText = $state<(() => string | null) | null>(null)
+  const rulesError = $derived(rulesErrorText?.() ?? null)
 
   async function setRule(seminar: AdminSeminar, patchRules: Partial<RoomRules>): Promise<void> {
     rulesBusy = true
-    rulesError = null
+    rulesErrorText = null
     try {
       const updated = await adminApi.updateSeminar(seminar.id, { rules: patchRules })
       replace(updated)
       ruling = updated
     } catch (cause: unknown) {
       /*
-       * Причина — по-русски и без хвоста сервера.
+       * Причина — на языке инстанса и без непереведённого хвоста сервера.
        *
        * Здесь стоял общий `explain()`, а он английский на всю панель: в русском
        * подвале этого окна выходило «Правило не сохранилось — The server did
@@ -659,7 +669,7 @@
        * отвергнутое печенье при этом по-прежнему уводит на экран входа.
        */
       noteDeadCookie(cause)
-      rulesError = ruleRefusal(cause instanceof AdminApiError ? cause : null)
+      rulesErrorText = () => (ruleRefusal(cause instanceof AdminApiError ? cause : null))
     } finally {
       rulesBusy = false
     }
@@ -689,10 +699,10 @@
     if (othersLive(seminar)) {
       const ok = window.confirm(
         finished
-          ? `${crowdIn(seminar)}. Ending the class disables editing and running for students. ` +
-            `End the class?`
-          : `${crowdIn(seminar)}. Reopening the class restores its configured access rules. ` +
-            `Reopen the class?`,
+          ? (tr("admin.ending.the.class.disables.editing.and.running.for.students", { p0: crowdIn(seminar) }) + " ") +
+            tr("admin.end.the.class.1110")
+          : (tr("admin.reopening.the.class.restores.its.configured.access.rules", { p0: crowdIn(seminar) }) + " ") +
+            tr("admin.reopen.the.class.1112"),
       )
       if (!ok) return
     }
@@ -704,12 +714,13 @@
     try {
       replace(await adminApi.updateSeminar(seminar.id, { finished }))
     } catch (cause: unknown) {
+      noteDeadCookie(cause)
       patch(seminar.id, { finishedAt: before })
       rowError = {
         id: seminar.id,
-        message: finished
-          ? `Could not end the class: ${explain(cause)}`
-          : `Could not reopen the class: ${explain(cause)}`,
+        message: () => (finished
+          ? tr("admin.could.not.end.the.class", { p0: explain(cause) })
+          : tr("admin.could.not.reopen.the.class", { p0: explain(cause) })),
       }
     }
   }
@@ -720,8 +731,9 @@
     try {
       replace(await adminApi.updateSeminar(seminar.id, { archived }))
     } catch (cause: unknown) {
+      noteDeadCookie(cause)
       patch(seminar.id, { archivedAt: before })
-      rowError = { id: seminar.id, message: `Could not change the archive status: ${explain(cause)}` }
+      rowError = { id: seminar.id, message: () => (tr("admin.could.not.change.the.archive.status", { p0: explain(cause) })) }
     }
   }
 
@@ -741,7 +753,7 @@
 
   function confirmDelete(seminar: AdminSeminar): void {
     doomed = seminar
-    deleteError = null
+    deleteErrorText = null
     dropReading = false
   }
 
@@ -755,19 +767,20 @@
     if (!target || deleteBusy) return
 
     deleteBusy = true
-    deleteError = null
+    deleteErrorText = null
     try {
       await adminApi.deleteSeminar(target.id, dropReading)
       local(seminars.filter((s) => s.id !== target.id))
       doomed = null
     } catch (cause: unknown) {
+      noteDeadCookie(cause)
       // Already gone: the list is the thing that is wrong, so correct the list
       // rather than asking the owner to delete something that does not exist.
       if (cause instanceof AdminApiError && cause.status === 404) {
         local(seminars.filter((s) => s.id !== target.id))
         doomed = null
       } else {
-        deleteError = explain(cause)
+        deleteErrorText = () => (explain(cause))
       }
     } finally {
       deleteBusy = false
@@ -775,7 +788,7 @@
   }
 </script>
 
-<AdminPage title="Seminars">
+<AdminPage title={tr("admin.seminars")}>
   {#snippet actions()}
     <!--
       An empty instance gets one path, not three. The search has nothing to
@@ -791,8 +804,8 @@
       <input
         type="search"
         bind:value={query}
-        placeholder="Search seminars…"
-        aria-label="Search seminars by name"
+        placeholder={tr("admin.search.seminars")}
+        aria-label={tr("admin.search.seminars.by.name")}
         class="min-w-0 flex-1 bg-transparent text-ui text-ink outline-none placeholder:text-faint"
       />
     </div>
@@ -801,10 +814,10 @@
         class="flex h-[34px] cursor-pointer select-none items-center gap-2 border border-line
                bg-canvas px-3 text-2xs font-bold uppercase tracking-caps text-muted
                hover:text-ink"
-        title="{seminars.length - archivedCount} active · {archivedCount} archived"
+        title="{seminars.length - archivedCount} {tr("admin.active")} {archivedCount} {tr("admin.archived")}"
       >
         <input type="checkbox" bind:checked={showArchived} class="accent-accent" />
-        Archived
+        {tr("admin.archived.903")}
         <span class="tabular-nums text-faint">{archivedCount}</span>
       </label>
     {/if}
@@ -814,7 +827,7 @@
       class="btn-primary h-[34px] gap-2 px-3.5 text-2xs font-bold uppercase tracking-caps"
     >
       <Icon name="plus" size={14} />
-      New seminar
+      {tr("admin.new.seminar")}
     </button>
     {/if}
   {/snippet}
@@ -839,7 +852,7 @@
                  tracking-label text-accent-text"
         >
           <span class="h-[7px] w-[7px] shrink-0 rounded-full bg-accent"></span>
-          Running now
+          {tr("admin.running.now")}
         </p>
         <h2 class="truncate text-title font-bold tracking-tight text-ink">{seminar.name}</h2>
       </div>
@@ -861,7 +874,7 @@
       -->
       <p
         class="shrink-0 text-ui text-muted"
-        title="Created {new Date(seminar.createdAt).toLocaleString()}"
+        title="{tr("admin.created.906")} {new Date(seminar.createdAt).toLocaleString(getLocale())}"
       >
         {runningLine(seminar, now)}
       </p>
@@ -870,7 +883,7 @@
         <button
           type="button"
           onclick={() => copy(seminar)}
-          title="Copy {linkOf(seminar)}"
+          title="{tr("admin.copy")}  {linkOf(seminar)}"
           class={cn(
             'flex h-8 items-center gap-2 border border-line bg-canvas px-3 font-mono text-code',
             'transition-colors duration-100 hover:border-faint hover:text-ink',
@@ -887,7 +900,7 @@
           class="btn h-8 bg-accent px-3.5 text-2xs font-bold uppercase tracking-caps text-accent-ink
                  hover:brightness-110"
         >
-          Open
+          {tr("admin.open")}
         </a>
       </div>
     </section>
@@ -895,8 +908,8 @@
 
   {#if loadError}
     <div class="mt-6 border border-danger/40 bg-surface px-4 py-3">
-      <p class="text-ui text-danger">Could not load seminars: {loadError}</p>
-      <button type="button" class="btn-outline mt-2.5" onclick={() => void load()}>Try again</button>
+      <p class="text-ui text-danger">{tr("admin.could.not.load.seminars")} {loadError}</p>
+      <button type="button" class="btn-outline mt-2.5" onclick={() => void load()}>{tr("admin.try.again")}</button>
     </div>
   {/if}
 
@@ -923,24 +936,24 @@
     </colgroup>
     <thead class={shown.length === 0 && !creating ? 'sr-only' : ''}>
       <tr class="border-b border-line text-micro font-bold uppercase tracking-label text-muted">
-        <th scope="col" class="py-3 text-left">Seminar</th>
+        <th scope="col" class="py-3 text-left">{tr("admin.seminar")}</th>
         <!--
           The environment this room's kernel is ACTUALLY on, which is not always
           the one configured: a seminar that was live through a switch keeps the
           image it came up on until its own kernel restarts. That gap is the
           only reason this column is worth a lane of its own.
         -->
-        <th scope="col" class="py-3 text-left">Environment</th>
-        <th scope="col" class="py-3 text-left">Date</th>
+        <th scope="col" class="py-3 text-left">{tr("admin.environment.919")}</th>
+        <th scope="col" class="py-3 text-left">{tr("admin.date")}</th>
         <!--
           "Joined", not "People". This column is everyone who ever joined; the
           banner above it counts who is connected right now. Both were labelled
           people, so the same view could read "2 people in the room" beside an
           11 and give the reader no way to tell which number was wrong.
         -->
-        <th scope="col" class="py-3 text-right">Joined</th>
-        <th scope="col" class="py-3 text-right">Status</th>
-        <th scope="col" class="py-3"><span class="sr-only">Actions</span></th>
+        <th scope="col" class="py-3 text-right">{tr("admin.joined")}</th>
+        <th scope="col" class="py-3 text-right">{tr("admin.status")}</th>
+        <th scope="col" class="py-3"><span class="sr-only">{tr("admin.actions")}</span></th>
       </tr>
     </thead>
     <tbody>
@@ -956,14 +969,14 @@
                 class={cn(TABBTN, !fromGithub && 'bg-raised text-ink')}
                 onclick={() => ((fromGithub = false), (preview = null))}
               >
-                Blank
+                {tr("admin.blank")}
               </button>
               <button
                 type="button"
                 class={cn(TABBTN, fromGithub && 'bg-raised text-ink')}
                 onclick={() => (fromGithub = true)}
               >
-                From GitHub
+                {tr("admin.from.github")}
               </button>
             </div>
 
@@ -976,7 +989,7 @@
                     placeholder="https://github.com/sleep3r/ml_hse/tree/main/week02"
                     autocomplete="off"
                     spellcheck="false"
-                    aria-label="GitHub link to a notebook or a folder"
+                    aria-label={tr("admin.github.link.to.a.notebook.or.a.folder")}
                   />
                   <button
                     class="btn-primary"
@@ -985,12 +998,12 @@
                   >
                     {#if createBusy}
                       <Icon name="spinner" size={15} class="animate-spin" />
-                      Importing…
+                      {tr("admin.importing")}
                     {:else}
-                      Import
+                      {tr("admin.import")}
                     {/if}
                   </button>
-                  <button class="btn-ghost" type="button" onclick={cancelCreate}>Cancel</button>
+                  <button class="btn-ghost" type="button" onclick={cancelCreate}>{tr("admin.cancel")}</button>
                 </div>
 
                 <!--
@@ -1004,22 +1017,22 @@
                   <input
                     bind:value={newName}
                     class="field max-w-[380px]"
-                    placeholder="Name — filled in from the link"
+                    placeholder={tr("admin.name.filled.in.from.the.link")}
                     maxlength={LIMITS.seminarName}
                     autocomplete="off"
-                    aria-label="Seminar name"
+                    aria-label={tr("admin.seminar.name")}
                   />
                   {#if environments && environments.length > 1}
                     <select
                       bind:value={newEnvironment}
                       class="field h-[38px] max-w-[240px] font-mono text-code-lg"
-                      aria-label="Python environment"
+                      aria-label={tr("admin.python.environment")}
                     >
                       {#each environments as env (env.name)}
                         <option value={env.name} disabled={env.state !== 'ready'}>
-                          {env.name}{env.active ? ' — default' : ''}{env.state === 'ready'
+                          {env.name}{env.active ? (" " + tr("admin.default.937")) : ''}{env.state === 'ready'
                             ? ''
-                            : ' — not built'}
+                            : (" " + tr("admin.not.built.939"))}
                         </option>
                       {/each}
                     </select>
@@ -1027,7 +1040,7 @@
                 </div>
 
                 {#if previewing}
-                  <p class="text-2xs text-muted">Reading the repository…</p>
+                  <p class="text-2xs text-muted">{tr("admin.reading.the.repository")}</p>
                 {:else if previewError}
                   <p class="text-2xs text-danger">{previewError}</p>
                 {:else if preview}
@@ -1035,7 +1048,7 @@
                   <div class="flex flex-wrap items-center gap-2 text-2xs text-muted">
                     <span class="font-mono text-ink">{preview.notebook}</span>
                     <span>·</span>
-                    <span>{preview.cells} cells</span>
+                    <span>{preview.cells} {tr("admin.cells")}</span>
                     {#if preview.files.length > 0}
                       <span>·</span>
                       {#each preview.files as f (f.name)}
@@ -1045,7 +1058,7 @@
                     <span>·</span>
                     <span class="font-mono">{preview.source}</span>
                     <span>·</span>
-                    <span>outputs not imported</span>
+                    <span>{tr("admin.outputs.not.imported")}</span>
                   </div>
                   <!--
                     И то, что не приедет. Отдельной строкой, а не ещё одной
@@ -1058,9 +1071,7 @@
                   {#if preview.skipped.length > 0}
                     <div class="flex flex-wrap items-center gap-2 text-2xs text-warning">
                       <span>
-                        {preview.skipped.length === 1
-                          ? '1 file exceeds the import limit and will be skipped:'
-                          : `${preview.skipped.length} files exceed the import limit and will be skipped:`}
+                        {tr("admin.count.skippedFiles", { count: preview.skipped.length })}
                       </span>
                       {#each preview.skipped as name (name)}
                         <span
@@ -1079,10 +1090,10 @@
                 bind:this={nameInput}
                 bind:value={newName}
                 class="field max-w-[380px]"
-                placeholder="Computer Vision Seminar — 25.08"
+                placeholder={tr("admin.computer.vision.seminar.25.08")}
                 maxlength={LIMITS.seminarName}
                 autocomplete="off"
-                aria-label="Name of the new seminar"
+                aria-label={tr("admin.name.of.the.new.seminar")}
               />
 
               <!--
@@ -1094,7 +1105,7 @@
                 <select
                   bind:value={newEnvironment}
                   class="field h-[38px] max-w-[220px] font-mono text-code-lg"
-                  aria-label="Python environment for the new seminar"
+                  aria-label={tr("admin.python.environment.for.the.new.seminar")}
                 >
                                     {#each environments as env (env.name)}
                     <option value={env.name} disabled={env.state !== 'ready'}>
@@ -1107,12 +1118,12 @@
               <button class="btn-primary" type="submit" disabled={!newName.trim() || createBusy}>
                 {#if createBusy}
                   <Icon name="spinner" size={15} class="animate-spin" />
-                  Creating…
+                  {tr("admin.creating")}
                 {:else}
-                  Create
+                  {tr("admin.create")}
                 {/if}
               </button>
-              <button class="btn-ghost" type="button" onclick={cancelCreate}>Cancel</button>
+              <button class="btn-ghost" type="button" onclick={cancelCreate}>{tr("admin.cancel")}</button>
             </form>
             {/if}
             {#if createError}
@@ -1134,7 +1145,7 @@
                 maxlength={LIMITS.seminarName}
                 autocomplete="off"
                 autofocus
-                aria-label="Rename {seminar.name}"
+                aria-label="{tr("admin.rename")} {seminar.name}"
                 onblur={() => void commitRename(seminar)}
                 onkeydown={(event) => {
                   if (event.key === 'Enter') void commitRename(seminar)
@@ -1160,7 +1171,7 @@
                 type="button"
                 data-copy={seminar.id}
                 onclick={() => copy(seminar)}
-                title="Copy {linkOf(seminar)}"
+                title="{tr("admin.copy")}  {linkOf(seminar)}"
                 class={cn(
                   // -my-1 py-1: the row's path is 16px of type, which is too small
                   // a thing to aim at. The target grows to 24 and the row does not.
@@ -1196,10 +1207,10 @@
                 />
               </button>
               {#if seminar.status === 'draft'}
-                <span class="whitespace-nowrap text-2xs text-muted">link not shared yet</span>
+                <span class="whitespace-nowrap text-2xs text-muted">{tr("admin.link.not.shared.yet")}</span>
               {/if}
               {#if seminar.archivedAt}
-                <span class="whitespace-nowrap text-2xs text-muted">archived</span>
+                <span class="whitespace-nowrap text-2xs text-muted"> {tr("admin.archived")}</span>
               {/if}
               <!--
                 Кто завёл комнату. Хранилось с самого начала и не показывалось
@@ -1209,7 +1220,7 @@
                 арендаторы, — но чьё это, теперь видно до нажатия.
               -->
               {#if seminar.createdBy}
-                <span class="whitespace-nowrap text-2xs text-faint">by {seminar.createdBy}</span>
+                <span class="whitespace-nowrap text-2xs text-faint">{tr("admin.by")} {seminar.createdBy}</span>
               {/if}
               <!-- Курс и публикация — в той же строке, что и ссылка: это факты
                    об этом семинаре, а не второй столбец в таблице, где их уже
@@ -1229,15 +1240,15 @@
                   target="_blank"
                   rel="noreferrer"
                 >
-                  · published · {count(seminar.publication.steps, 'step')}
+                  {tr("admin.published.978")} {count(seminar.publication.steps, 'step')}
                 </a>
               {:else if seminar.publication}
-                <span class="whitespace-nowrap text-2xs text-muted">· page taken down</span>
+                <span class="whitespace-nowrap text-2xs text-muted">{tr("admin.page.taken.down")}</span>
               {/if}
             </div>
 
             {#if rowError?.id === seminar.id}
-              <p class="mt-1 text-2xs text-danger">{rowError.message}</p>
+              <p class="mt-1 text-2xs text-danger">{rowError.message()}</p>
             {/if}
           </td>
 
@@ -1246,7 +1257,7 @@
               <a
                 href="/admin/environments"
                 class="truncate font-mono text-code text-ink underline decoration-line underline-offset-2 hover:decoration-ink"
-                title="Selected environment: {seminar.environment}"
+                title="{tr("admin.selected.environment")} {seminar.environment}"
               >
                 {seminar.environment}
               </a>
@@ -1254,20 +1265,20 @@
               <!-- No kernel has started here, so there is nothing to report. It
                    will get whatever is configured when somebody presses Run —
                    saying that name now would be a guess dressed as a fact. -->
-              <span class="font-mono text-code text-faint" title="No environment recorded for this seminar">
+              <span class="font-mono text-code text-faint" title={tr("admin.no.environment.recorded.for.this.seminar")}>
                 —
               </span>
             {/if}
           </td>
 
           <td class="py-2 align-middle text-ui text-muted">
-            <span title={new Date(seminar.createdAt).toLocaleString()}>
+            <span title={new Date(seminar.createdAt).toLocaleString(getLocale())}>
               {stamp(seminar.createdAt)}
             </span>
           </td>
 
           <td class="py-2 text-right align-middle font-mono text-code text-ink">
-            <span title="{people(seminar.totalParticipants)} joined in total">
+            <span title="{people(seminar.totalParticipants)} {tr("admin.joined.in.total")}">
               {seminar.totalParticipants > 0 ? seminar.totalParticipants : '—'}
             </span>
           </td>
@@ -1284,36 +1295,36 @@
                 -->
                 <span
                   class="chip h-[22px] gap-1.5 bg-warning/[0.14] px-2 text-micro font-bold uppercase tracking-caps text-warning"
-                  title="Class ended {new Date(
+                  title="{tr("admin.class.ended")} {new Date(
                     seminar.finishedAt ?? 0,
-                  ).toLocaleString()} — student editing and execution are disabled"
+                  ).toLocaleString(getLocale())} {tr("admin.student.editing.and.execution.are.disabled")}"
                 >
                   {#if seminar.liveCount > 0}
                     <span
                       class="h-[5px] w-[5px] rounded-full bg-accent"
-                      title="{people(seminar.liveCount)} in the room right now"
+                      title="{people(seminar.liveCount)} {tr("admin.in.the.room.right.now")}"
                     ></span>
                   {/if}
-                  Finished
+                  {tr("admin.finished")}
                 </span>
               {:else if seminar.status === 'live'}
                 <span
                   class="chip h-[22px] gap-1.5 bg-accent/15 px-2 text-micro font-bold uppercase tracking-caps text-accent-text"
                 >
                   <span class="h-[5px] w-[5px] rounded-full bg-accent"></span>
-                  Live
+                  {tr("admin.live.990")}
                 </span>
               {:else if seminar.status === 'draft'}
                 <span
                   class="chip h-[22px] border border-line px-2 text-micro font-bold uppercase tracking-caps text-muted"
                 >
-                  Draft
+                  {tr("admin.draft")}
                 </span>
               {:else}
                 <!-- Bare, so the four states share one right-hand lane: an empty
                      room is a fact, not a badge. Слово честное: заходили, а
                      сейчас никого — «закончено» это не значит. -->
-                <span class="text-micro font-bold uppercase tracking-caps text-muted">Empty</span>
+                <span class="text-micro font-bold uppercase tracking-caps text-muted">{tr("admin.empty")}</span>
               {/if}
             </div>
           </td>
@@ -1324,7 +1335,7 @@
                 type="button"
                 aria-haspopup="menu"
                 aria-expanded={openMenuId === seminar.id}
-                aria-label="Actions for {seminar.name}"
+                aria-label="{tr("admin.actions.for")} {seminar.name}"
                 onclick={(event) => {
                   event.stopPropagation()
                   openMenu(seminar, event.currentTarget as HTMLElement)
@@ -1342,7 +1353,7 @@
                   style={menuStyle}
                 >
                   <button role="menuitem" type="button" class="{ITEM} text-ink hover:bg-raised" onclick={() => copy(seminar)}>
-                    Copy link
+                    {tr("admin.copy.link")}
                   </button>
                   <a
                     role="menuitem"
@@ -1351,10 +1362,10 @@
                     rel="noreferrer"
                     class="{ITEM} text-ink hover:bg-raised"
                   >
-                    Open seminar
+                    {tr("admin.open.seminar")}
                   </a>
                   <button role="menuitem" type="button" class="{ITEM} text-ink hover:bg-raised" onclick={() => startRename(seminar)}>
-                    Rename
+                    {tr("admin.rename")}
                   </button>
                   <button
                     role="menuitem"
@@ -1362,7 +1373,7 @@
                     class="{ITEM} text-ink hover:bg-raised"
                     onclick={() => (ruling = seminar)}
                   >
-                    Rules…
+                    {tr("admin.rules")}
                   </button>
                   <button
                     role="menuitem"
@@ -1370,7 +1381,7 @@
                     class="{ITEM} text-ink hover:bg-raised"
                     onclick={() => void finish(seminar, !seminar.finishedAt)}
                   >
-                    {seminar.finishedAt ? 'Reopen the class' : 'End the class'}
+                    {seminar.finishedAt ? tr("admin.reopen.the.class") : tr("admin.end.the.class")}
                   </button>
                   <div class="my-1 border-t border-line-soft"></div>
                   <button
@@ -1379,7 +1390,7 @@
                     class="{ITEM} text-ink hover:bg-raised"
                     onclick={() => onpublish?.(seminar.id)}
                   >
-                    {seminar.publication ? 'Publish again…' : 'Publish…'}
+                    {seminar.publication ? tr("admin.publish.again") : tr("admin.publish")}
                   </button>
                   {#if seminar.publication?.state === 'published'}
                     <button
@@ -1388,7 +1399,7 @@
                       class="{ITEM} text-ink hover:bg-raised"
                       onclick={() => void copyPublished(seminar)}
                     >
-                      Copy public link
+                      {tr("admin.copy.public.link")}
                     </button>
                     <button
                       role="menuitem"
@@ -1396,7 +1407,7 @@
                       class="{ITEM} text-ink hover:bg-raised"
                       onclick={() => void withdraw(seminar, true)}
                     >
-                      Take the page down
+                      {tr("admin.take.the.page.down")}
                     </button>
                   {:else if seminar.publication}
                     <button
@@ -1405,7 +1416,7 @@
                       class="{ITEM} text-ink hover:bg-raised"
                       onclick={() => void withdraw(seminar, false)}
                     >
-                      Put the page back
+                      {tr("admin.put.the.page.back")}
                     </button>
                   {/if}
                   <button
@@ -1414,7 +1425,7 @@
                     class="{ITEM} text-ink hover:bg-raised"
                     onclick={() => void archive(seminar, !seminar.archivedAt)}
                   >
-                    {seminar.archivedAt ? 'Move back to the list' : 'Archive'}
+                    {seminar.archivedAt ? tr("admin.move.back.to.the.list") : tr("admin.archive")}
                   </button>
                   {#if canDelete}
                     <div class="my-1 border-t border-line-soft"></div>
@@ -1424,7 +1435,7 @@
                       class="{ITEM} text-danger hover:bg-danger/[0.08]"
                       onclick={() => confirmDelete(seminar)}
                     >
-                      Delete…
+                      {tr("admin.delete")}
                     </button>
                   {/if}
                 </div>
@@ -1436,24 +1447,24 @@
 
       {#if loading && seminars.length === 0}
         <tr>
-          <td colspan="6" class="py-6 text-ui text-muted">Loading seminars…</td>
+          <td colspan="6" class="py-6 text-ui text-muted">{tr("admin.loading.seminars")}</td>
         </tr>
       {:else if shown.length === 0 && !creating}
         <tr>
           <td colspan="6" class="py-12 text-center">
             {#if needle}
-              <p class="text-ui text-muted">No seminars match “{query.trim()}”.</p>
+              <p class="text-ui text-muted">{tr('admin.seminar.noMatch', { query: query.trim() })}</p>
               <button type="button" class="btn-ghost mt-2" onclick={() => (query = '')}>
-                Show all {count(seminars.length, 'seminar')}
+                {tr("admin.show.all")} {count(seminars.length, 'seminar')}
               </button>
             {:else if !loadError}
-              <p class="text-ui text-muted">No seminars yet.</p>
+              <p class="text-ui text-muted">{tr("admin.no.seminars.yet")}</p>
               <p class="mt-1 text-ui text-muted">
-                Create a seminar and share its link with your students.
+                {tr("admin.create.a.seminar.and.share.its.link.with.your.students")}
               </p>
               <button type="button" class="btn-primary mt-3" onclick={startCreate}>
                 <Icon name="plus" size={15} />
-                New seminar
+                {tr("admin.new.seminar")}
               </button>
             {/if}
           </td>
@@ -1466,9 +1477,9 @@
   {#if seminars.length > 0}
     <p class="mt-4 text-2xs text-muted">
       {#if needle}
-        Showing {shown.length} of {count(seminars.length, 'seminar')}
+        {tr("admin.showing")} {shown.length} {tr("admin.of")} {count(seminars.length, 'seminar')}
       {:else}
-        {count(seminars.length, 'seminar')} total
+        {count(seminars.length, 'seminar')} {tr("admin.total")}
       {/if}
     </p>
   {/if}
@@ -1501,7 +1512,7 @@
           <h2 id="seminar-rules-title" class="min-w-0 truncate text-title font-semibold text-ink">
             {ruling.name}
           </h2>
-          <span class="shrink-0 text-2xs text-muted">права участников</span>
+          <span class="shrink-0 text-2xs text-muted">{tr("admin.participant.permissions")}</span>
         </div>
         <!--
           Чужая комната, и в ней идёт пара. Подтверждения здесь нет намеренно:
@@ -1511,9 +1522,8 @@
         -->
         {#if othersLive(ruling)}
           <p class="text-2xs leading-snug text-warning">
-            В комнате {ruling.liveCount}
-            {plural(ruling.liveCount, 'человек', 'человека', 'человек')}. Создатель: {ruling.createdBy}.
-            Изменения правил применяются сразу.
+            {tr("admin.in.the.room.1023")} {ruling.liveCount}
+            {plural(ruling.liveCount, tr("admin.person"), tr("admin.people.1025"), tr("admin.person"))}{tr("admin.created.by")} {ruling.createdBy}{tr("admin.rule.changes.apply.immediately")}
           </p>
         {/if}
       </div>
@@ -1529,7 +1539,7 @@
           {#if rulesError}
             {rulesError}
           {:else}
-            Изменения применяются сразу. Участникам не нужно входить заново.
+            {tr("admin.changes.apply.immediately.participants.do.not.need.to.sign.in.aga")}
             <!-- Пока занятие закончено, выбранное здесь не действует: конец занятия
                  накладывается поверх правил и настройку не трогает (shared/rules.ts ·
                  rulesAfterClass). Без этой строки список читается как неправда — в комнате
@@ -1537,8 +1547,7 @@
                  чинить то, что не сломано. -->
             {#if ruling.finishedAt}
               <span class="text-ink">
-                Занятие закончено. Выбранные права студентов начнут действовать,
-                когда преподаватель продолжит занятие.
+                {tr("admin.the.class.has.ended.the.selected.student.permissions.will.take.ef")}
               </span>
             {/if}
           {/if}
@@ -1548,10 +1557,10 @@
           class="btn-primary shrink-0"
           onclick={() => {
             ruling = null
-            rulesError = null
+            rulesErrorText = null
           }}
         >
-          Готово
+          {tr("admin.done")}
         </button>
       </div>
     </div>
@@ -1569,15 +1578,15 @@
   >
     <div class="dialog-card w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop">
       <h2 id="delete-seminar-title" class="text-title font-semibold text-ink">
-        Delete “{doomed.name}”?
+        {tr('admin.seminar.deleteHeading', { name: doomed.name })}
       </h2>
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        This deletes the notebook ({count(doomed.cellCount, 'cell')}) and {count(
+        {tr("admin.this.deletes.the.notebook")}{count(doomed.cellCount, 'cell')}{tr("admin.and")} {count(
           doomed.fileCount,
           'file',
-        )} in its workspace.
+        )} {tr("admin.in.its.workspace")}
         {#if !doomed.publication}
-          You cannot restore the seminar through Colloq after deletion.
+          {tr("admin.you.cannot.restore.the.seminar.through.colloq.after.deletion")}
         {/if}
       </p>
 
@@ -1595,14 +1604,12 @@
             class="mt-0.5 accent-accent"
           />
           <span class="text-ui leading-relaxed text-muted">
-            Delete the public page as well —
-            <span class="font-mono text-code text-ink">/p/{addressOf(doomed.publication)}</span>, a
-            second copy of the notebook in {count(doomed.publication.steps, 'step')}, outputs
-            included.
+            {tr("admin.delete.the.public.page.as.well")}
+            <span class="font-mono text-code text-ink">/p/{addressOf(doomed.publication)}</span>{tr("admin.a.second.copy.of.the.notebook.in")} {count(doomed.publication.steps, 'step')}{tr("admin.outputs.included")}
             {#if dropReading}
-              The link the class was given stops opening.
+              {tr("admin.the.link.the.class.was.given.stops.opening")}
             {:else}
-              The publication is retained with its current visibility.
+              {tr("admin.the.publication.is.retained.with.its.current.visibility")}
             {/if}
           </span>
         </label>
@@ -1610,16 +1617,16 @@
       {#if doomed.liveCount > 0}
         <p class="mt-2 text-ui font-medium text-warning">
           {doomed.liveCount === 1
-            ? 'Someone is in the room right now'
-            : `${doomed.liveCount} people are in the room right now`} — deleting the seminar will disconnect them.
+            ? tr("admin.someone.is.in.the.room.right.now")
+            : tr("admin.people.are.in.the.room.right.now", { p0: doomed.liveCount })} {tr("admin.deleting.the.seminar.will.disconnect.them")}
         </p>
       {/if}
       <p class="mt-2 text-ui leading-relaxed text-muted">
-        Archiving removes the seminar from the active list and keeps its notebook and files.
+        {tr("admin.archiving.removes.the.seminar.from.the.active.list.and.keeps.its")}
       </p>
 
       {#if deleteError}
-        <p class="mt-3 text-ui text-danger">Could not delete the seminar: {deleteError}</p>
+        <p class="mt-3 text-ui text-danger">{tr("admin.could.not.delete.the.seminar")} {deleteError}</p>
       {/if}
 
       <div class="mt-5 flex justify-end gap-2">
@@ -1630,7 +1637,7 @@
           disabled={deleteBusy}
           onclick={() => (doomed = null)}
         >
-          Cancel
+          {tr("admin.cancel")}
         </button>
         <button
           type="button"
@@ -1640,10 +1647,10 @@
         >
           {#if deleteBusy}
             <Icon name="spinner" size={15} class="animate-spin" />
-            Deleting…
+            {tr("admin.deleting")}
           {:else}
             <Icon name="trash" size={15} />
-            Delete seminar
+            {tr("admin.delete.seminar")}
           {/if}
         </button>
       </div>

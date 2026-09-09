@@ -121,7 +121,7 @@ test('комната упирается в свой потолок, даже к�
   assert.equal(res.status, 429)
   assert.equal(res.headers.get('retry-after'), '600')
   const body = (await res.json()) as { error: string }
-  assert.match(body.error, /seminar has used all 30/)
+  assert.match(body.error, /Семинар использовал все 30/)
 })
 
 test('личный потолок говорит, через сколько можно снова', async () => {
@@ -134,9 +134,9 @@ test('личный потолок говорит, через сколько мо
   const res = await askAs(room, 'p_ada')
   assert.equal(res.status, 429)
   const body = (await res.json()) as { error: string }
-  assert.match(body.error, /used all 2 of your oracle questions/)
+  assert.match(body.error, /Вы использовали все 2 вопроса оракулу/)
   // Окно скользит: срок берётся из windowResetAt, а не из «начала следующего часа».
-  assert.match(body.error, /again in 60 minutes/)
+  assert.match(body.error, /через 60 минут/)
   assert.ok(Number(res.headers.get('retry-after')) > 0)
 })
 
@@ -256,7 +256,7 @@ test('преподавателя не держат ни личный потол�
   // А в той же комнате участник упирается в комнатный потолок, как и должен.
   const denied = await askAs(room, 'p_kid')
   assert.equal(denied.status, 429)
-  assert.match(((await denied.json()) as { error: string }).error, /seminar has used all 30/)
+  assert.match(((await denied.json()) as { error: string }).error, /Семинар использовал все 30/)
 })
 
 test('ноль — слоу-мода нет вовсе, и это умолчание', async () => {
@@ -294,7 +294,7 @@ test('комната опускает потолок в час под инста
   const body = (await denied.json()) as { error: string }
   // Текст отказа тот же, что и у инстансового потолка: студенту важно число,
   // а не то, в каком из двух мест его поставили.
-  assert.match(body.error, /used your one oracle question/)
+  assert.match(body.error, /использовали свой единственный вопрос оракулу/)
 })
 
 test('комната не поднимает потолок инстанса', async () => {

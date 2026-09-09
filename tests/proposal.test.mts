@@ -165,7 +165,7 @@ test('ход, брошенный на полуслове, не крутит сп
   clearStaleExecution(doc)
 
   assert.equal(entry.get('state'), 'error')
-  assert.match(chatAnswer(entry).toString(), /server restarted/)
+  assert.match(chatAnswer(entry).toString(), /перезапуске сервера/)
 })
 
 test('два браузера, принявшие одно предложение, не вписывают патч дважды', () => {

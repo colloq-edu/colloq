@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import { downloadHeldFile } from '../secure-files.js'
@@ -145,7 +146,7 @@ export function fileRoutes(): Router {
    */
   router.get('/api/sessions/:id/files', (req, res) => {
     if (!getSession(req.params.id)) return res.status(404).json({ error: SESSION_MISSING })
-    if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
+    if (!sessionAuth(req)) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     // Вместе с признаком обрезки: список, упёршийся в потолок, — это не «в
     // комнате столько файлов», и решать по нему, что чего-то не стало, нельзя.
     res.json(listTree(req.params.id))
@@ -177,7 +178,7 @@ export function fileRoutes(): Router {
      */
     const joined = sessionAuth(req)
     if (!joined && !currentStaff(req)) {
-      return res.status(401).json({ error: 'join the session first' })
+      return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     }
     // Роль решается тут же: печенье преподавателя сильнее токена участника, и
     // человек, вошедший в комнату до входа в панель, — всё равно преподаватель.
@@ -188,14 +189,14 @@ export function fileRoutes(): Router {
       // Скачивание и чтение ниже не трогаются: после пары в файлы и ходят.
       return res.status(403).json({
         error: isFinished(sessionId)
-          ? CLASS_IS_OVER
-          : 'Файлы в эту комнату добавляет преподаватель.',
+          ? tr(CLASS_IS_OVER)
+          : tr("server.onlyTheTeacherMayAddFilesTo.2b4b09"),
       })
     }
 
     const contentType = req.headers['content-type'] ?? ''
     if (!contentType.includes('multipart/form-data')) {
-      return res.status(400).json({ error: 'expected a multipart/form-data upload' })
+      return res.status(400).json({ error: tr("server.expectedAMultipartFormDataUpload.ccb3d0") })
     }
 
     // Before anything is written: an interrupted upload leaves a hidden temp
@@ -225,7 +226,7 @@ export function fileRoutes(): Router {
         },
       })
     } catch {
-      return res.status(400).json({ error: 'malformed upload' })
+      return res.status(400).json({ error: tr("server.malformedUpload.084748") })
     }
 
     /*
@@ -293,7 +294,7 @@ export function fileRoutes(): Router {
     const cutOff = () => {
       if (aborted || answered) return
       aborted = true
-      failure ??= { code: 400, message: 'the upload was cut off' }
+      failure ??= { code: 400, message: tr("server.theUploadWasCutOff.7fff95") }
       bb.destroy()
       for (const out of open) out.destroy()
       void Promise.all(writes).then(finish)
@@ -367,7 +368,7 @@ export function fileRoutes(): Router {
       if (!target) {
         failure ??= {
           code: 400,
-          message: `${name} не загружен: путь «${rel}» слишком длинный.`,
+          message: tr("server.wasNotUploadedThePathIsToo.f1300d", { p0: name, p1: rel }),
         }
         stream.resume()
         return
@@ -385,7 +386,7 @@ export function fileRoutes(): Router {
       if (at && !at.dir) {
         failure ??= {
           code: 400,
-          message: `«${intoDir}» — файл, а не папка: положить в него ${name} нельзя.`,
+          message: tr("server.isAFileNotAFolderIt.8e6810", { p0: intoDir, p1: name }),
         }
         stream.resume()
         return
@@ -393,7 +394,7 @@ export function fileRoutes(): Router {
       try {
         workspaceFs.mkdirSync(folder, { recursive: true })
       } catch {
-        failure ??= { code: 400, message: `Не удалось создать папку «${intoDir}» для ${name}.` }
+        failure ??= { code: 400, message: tr("server.couldNotCreateFolderFor.1dcce8", { p0: intoDir, p1: name }) }
         stream.resume()
         return
       }
@@ -416,7 +417,7 @@ export function fileRoutes(): Router {
       temps.add(tmp)
       let out: fs.WriteStream
       try { out = workspaceFs.createWriteStream(tmp, { flags: 'wx' }) }
-      catch { temps.delete(tmp); failure ??= { code: 400, message: 'Upload directory changed or is not writable' }; stream.resume(); return }
+      catch { temps.delete(tmp); failure ??= { code: 400, message: tr("server.uploadDirectoryChangedOrIsNotWritable.3c0d96") }; stream.resume(); return }
       open.add(out)
       beganWriting(sessionId)
       writes.push(
@@ -431,7 +432,7 @@ export function fileRoutes(): Router {
           out.on('error', () => {
             open.delete(out)
             removeTemp(sessionId, tmp)
-            failure ??= { code: 500, message: `could not write ${name}` }
+            failure ??= { code: 500, message: tr("server.couldNotWrite.2758e3", { p0: name }) }
             resolve()
           })
           out.on('close', () => {
@@ -458,7 +459,7 @@ export function fileRoutes(): Router {
               removeTemp(sessionId, tmp)
               failure ??= {
                 code: 413,
-                message: `${name} is larger than ${Math.round(config.maxUploadBytes / 1024 / 1024)} MB`,
+                message: tr("server.isLargerThanMb.28d7e5", { p0: name, p1: Math.round(config.maxUploadBytes / 1024 / 1024) }),
               }
               resolve()
               return
@@ -499,8 +500,8 @@ export function fileRoutes(): Router {
               failure ??= {
                 code: 413,
                 message:
-                  `This seminar has room for ${Math.round(config.maxSessionBytes / 1024 / 1024)} MB of files ` +
-                  `and ${name} exceeds that limit. Ask the teacher to free up space.`,
+                  tr("server.thisSeminarHasRoomForMbOf.66f8a7", { p0: Math.round(config.maxSessionBytes / 1024 / 1024) }) +
+                  tr("server.andExceedsThatLimitAskTheTeacher.1f472f", { p0: name }),
               }
               resolve()
               return
@@ -517,7 +518,7 @@ export function fileRoutes(): Router {
               removeTemp(sessionId, tmp)
               failure ??= {
                 code: 409,
-                message: `${name} — открытая тетрадь комнаты. Редактируйте её ячейки или загрузите файл под другим именем.`,
+                message: tr("server.isAnOpenRoomNotebookEditIts.eaabdd", { p0: name }),
               }
               resolve()
               return
@@ -531,7 +532,7 @@ export function fileRoutes(): Router {
               removeTemp(sessionId, tmp)
               failure ??= {
                 code: 403,
-                message: `${name} уже есть в этой комнате — заменить его может преподаватель.`,
+                message: tr("server.alreadyExistsInThisRoomOnlyThe.2ac397", { p0: name }),
               }
               resolve()
               return
@@ -550,7 +551,7 @@ export function fileRoutes(): Router {
               if (existed) replaced.push(name)
             } catch {
               removeTemp(sessionId, tmp)
-              failure ??= { code: 500, message: `could not write ${name}` }
+              failure ??= { code: 500, message: tr("server.couldNotWrite.2758e3", { p0: name }) }
             }
             resolve()
           })
@@ -562,12 +563,12 @@ export function fileRoutes(): Router {
     bb.on('filesLimit', () => {
       failure ??= {
         code: 400,
-        message: `Up to ${MAX_FILES_PER_UPLOAD} files per upload. Upload the remaining files separately.`,
+        message: tr("server.upToFilesPerUploadUploadThe.0987d4", { p0: MAX_FILES_PER_UPLOAD }),
       }
     })
 
     bb.on('error', () => {
-      failure ??= { code: 400, message: 'malformed upload' }
+      failure ??= { code: 400, message: tr("server.malformedUpload.084748") }
       void Promise.all(writes).then(finish)
     })
 
@@ -592,7 +593,7 @@ export function fileRoutes(): Router {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
-    if (!wanted) return res.status(400).json({ error: 'bad path' })
+    if (!wanted) return res.status(400).json({ error: tr("server.badPath.95c1aa") })
     /*
      * Either a header from a fetch, or the file's own short-lived token in the
      * query string — the anchor case. What is not accepted here is the session
@@ -601,12 +602,12 @@ export function fileRoutes(): Router {
      */
     const ticket = typeof req.query.token === 'string' ? req.query.token : ''
     const allowed = sessionAuth(req) !== null || verifyDownloadToken(sessionId, wanted, ticket)
-    if (!allowed) return res.status(401).json({ error: 'join the session first' })
+    if (!allowed) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     const full = resolveInSession(sessionId, wanted)
-    if (!full || !workspaceFs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
+    if (!full || !workspaceFs.existsSync(full)) return res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
     let file: ReturnType<typeof workspaceFs.openRead>
     try { file = workspaceFs.openRead(full) }
-    catch { return res.status(404).json({ error: 'file not found' }) }
+    catch { return res.status(404).json({ error: tr("server.fileNotFound.3e2256") }) }
     // Send uses the held file descriptor, not the attacker-controlled pathname.
     // Preserve the original MIME/name and Express range/conditional responses.
     downloadHeldFile(res, file, baseOf(wanted))
@@ -622,11 +623,11 @@ export function fileRoutes(): Router {
   router.get('/api/sessions/:id/file/ticket', (req, res) => {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
-    if (!sessionAuth(req)) return res.status(401).json({ error: 'join the session first' })
+    if (!sessionAuth(req)) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
-    if (!wanted) return res.status(400).json({ error: 'bad path' })
+    if (!wanted) return res.status(400).json({ error: tr("server.badPath.95c1aa") })
     const full = resolveInSession(sessionId, wanted)
-    if (!full || !workspaceFs.existsSync(full)) return res.status(404).json({ error: 'file not found' })
+    if (!full || !workspaceFs.existsSync(full)) return res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
     res.json({ token: signDownloadToken(sessionId, wanted) })
   })
 
@@ -641,14 +642,14 @@ export function fileRoutes(): Router {
     const sessionId = req.params.id
     if (!getSession(sessionId)) return res.status(404).json({ error: SESSION_MISSING })
     const who = sessionAuth(req)
-    if (!who) return res.status(401).json({ error: 'join the session first' })
+    if (!who) return res.status(401).json({ error: tr("server.joinTheSessionFirst.442dd6") })
     if (who.role !== 'host') {
-      return res.status(403).json({ error: 'Only the teacher can remove a file from the room.' })
+      return res.status(403).json({ error: tr("server.onlyTheTeacherCanRemoveAFile.289f45") })
     }
     const wanted = normalizePath(typeof req.query.path === 'string' ? req.query.path : '')
-    if (!wanted) return res.status(400).json({ error: 'bad path' })
+    if (!wanted) return res.status(400).json({ error: tr("server.badPath.95c1aa") })
     if (!deleteFile(sessionId, wanted)) {
-      return res.status(404).json({ error: 'file not found' })
+      return res.status(404).json({ error: tr("server.fileNotFound.3e2256") })
     }
     // Убрали не мы, а сколько там было — не спросишь после: считаем заново.
     // Преподаватель удаляет датасет ровно затем, чтобы место сразу освободилось.

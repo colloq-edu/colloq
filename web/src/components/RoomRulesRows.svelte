@@ -30,6 +30,7 @@
   и одним куском: сами подписи лежат в `lib/rule-rows.ts`, здесь только рамка.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import { RULE_ROWS, type LimitRow } from '@/lib/rule-rows'
   import type { OracleLimits, RoomRules } from '@shared/rules'
 
@@ -141,8 +142,7 @@
         <p class="text-ui font-semibold text-ink">{row.title}</p>
         <p class="mt-0.5 text-2xs leading-snug text-muted">{row.note}</p>
         {#if row.kind === 'limit' && instance}
-          <p class="mt-0.5 text-2xs font-semibold leading-snug text-muted">
-            Настройка сервера: {row.atInstance(instance[row.key])}
+          <p class="mt-0.5 text-2xs font-semibold leading-snug text-muted"> {tr('room.ui.5')} {row.atInstance(instance[row.key])}
           </p>
         {/if}
       </div>
@@ -185,9 +185,7 @@
               class="rule-clear"
               disabled={busy}
               onclick={() => onchange({ [row.key]: null } as Partial<RoomRules>)}
-            >
-              как на сервере
-            </button>
+            > {tr('room.ui.6')} </button>
           {/if}
         </div>
       {/if}

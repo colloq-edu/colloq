@@ -1,4 +1,6 @@
 <script lang="ts" module>
+  import { tr, getLocale } from '@shared/i18n'
+  import { editorPhrases } from '@/lib/editor-locale'
   /*
    * CodeMirror, its two language modes and the Yjs binding are the largest
    * thing Colloq ships, and no screen before the notebook can use a line of it.
@@ -228,6 +230,8 @@
     /** Потолок знаков для вставки — или null, если его тут нет. */
     ceiling: number | null
     /** Отсек, через который правило edit меняют, не разбирая редактор. */
+    hintSlot: Compartment
+    localeSlot: Compartment
     writable: Compartment
   }
 
@@ -241,7 +245,7 @@
     const { bracketMatching, indentOnInput, indentUnit } = cm.language
     const { EditorState, Prec } = cm.state
     const { highlightActiveLine, keymap, placeholder: placeholderExt } = cm.view
-    const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling } = options
+    const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot } = options
 
 
     /** Leave the cell only from its outer edge, and never out from under a popup. */
@@ -330,7 +334,8 @@
           highlightActiveLine(),
           cm.view.EditorView.lineWrapping,
           writable.of(writableExtensions(cm, editable)),
-          hint ? placeholderExt(hint) : [],
+          hintSlot.of(hint ? placeholderExt(hint) : []),
+          localeSlot.of(EditorState.phrases.of(editorPhrases())),
           cm.theme.colloqTheme,
           cm.view.EditorView.contentAttributes.of({ 'aria-label': label }),
           /*
@@ -420,6 +425,7 @@
   let setWritable = $state.raw<((editable: boolean) => void) | null>(null)
   /** Что стоит в живом редакторе сейчас — чтобы не переконфигурировать впустую. */
   let writableNow = true
+  let setLabels = $state.raw<((hint: string) => void) | null>(null)
   /**
    * Живой редактор — не для перерисовки, а чтобы спросить про фокус.
    *
@@ -475,7 +481,9 @@
       // with focus, this is the one question that matters.
       const holdingFocus = parent.contains(document.activeElement)
       const writable = new cm.state.Compartment()
-      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling })
+      const hintSlot = new cm.state.Compartment()
+      const localeSlot = new cm.state.Compartment()
+      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot })
       /*
        * Order matters, and nothing paints between these three statements. The
        * editor goes in first so focus can move straight from the shim into it:
@@ -486,6 +494,10 @@
       ready = true
       const built = view
       live = built
+      setLabels = (nextHint) => built.dispatch({ effects: [
+        hintSlot.reconfigure(nextHint ? cm.view.placeholder(nextHint) : []),
+        localeSlot.reconfigure(cm.state.EditorState.phrases.of(editorPhrases())),
+      ] })
       writableNow = editable
       setWritable = (next) =>
         built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
@@ -495,6 +507,7 @@
     return () => {
       disposed = true
       setWritable = null
+      setLabels = null
       if (live === view) live = null
       view?.destroy()
       view = null
@@ -510,6 +523,12 @@
    * месте. Строится редактор уже с верным значением, так что первый прогон
    * этого эффекта — обычно холостой.
    */
+  // Display language changes reconfigure labels in place; the editor, undo, and selection survive.
+  $effect(() => {
+    getLocale()
+    setLabels?.(placeholder)
+  })
+
   $effect(() => {
     const apply = setWritable
     const editable = !readOnly
@@ -558,7 +577,7 @@
       aria-multiline="true"
       aria-readonly="true"
       aria-busy="true"
-      aria-label="Cell editor, loading"
+      aria-label={tr('room.ui.435')}
       onpointerdown={(event) => event.currentTarget.focus()}
     >
       {#each shimLines as line, index}

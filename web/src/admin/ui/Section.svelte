@@ -22,16 +22,15 @@
   the control, the explanation goes above it instead of eating it.
 -->
 <section class="flex flex-wrap gap-x-10 gap-y-4 border-b border-line-soft py-6 last:border-b-0">
-  <div class="w-[210px] shrink-0">
+  <div class="w-[210px] max-w-full shrink-0">
     <h2 class="text-ui font-semibold text-ink">{title}</h2>
     {#if description}
       <p class="mt-1.5 text-2xs text-muted">{description}</p>
     {/if}
   </div>
-  <!-- basis is the width the control WANTS, min-w the width it can be argued
-       down to: the pair separates on the first, and once it is on its own line
-       it may shrink to the second. -->
-  <div class="min-w-[260px] grow basis-[340px]">
+  <!-- The basis keeps the two-column layout when it fits. Once wrapped,
+       controls can use the actual width available beside the mobile rail. -->
+  <div class="min-w-0 grow basis-[340px]">
     {@render children()}
   </div>
 </section>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * «Оракул о N решениях» — блок над сводкой, четыре состояния.
    *
@@ -33,7 +34,7 @@
   const canAsk = $derived(askWhy === null && submitted > 0)
 
   /** Три абзаца сводки под своими подписями: что верно, типичная ошибка, что показать. */
-  const HEADS = ['Что верно', 'Типичная ошибка', 'Что показать']
+  const HEADS = $derived([tr('room.ui.23'), tr('room.ui.24'), tr('room.ui.25')])
 </script>
 
 <section
@@ -41,29 +42,25 @@
     'flex flex-col gap-2.5 px-3 py-2.5',
     view === 'idle' ? 'border border-dashed border-line' : 'border border-line bg-surface',
   )}
-  aria-label="Оракул о решениях"
+  aria-label={tr('room.ui.7')}
 >
   <div class="flex flex-wrap items-center gap-2">
     <Icon name="sparkles" size={13} class="shrink-0 text-accent-text" />
-    <span class="text-2xs font-bold uppercase tracking-label text-ink">
-      Оракул о {submitted} {plural(submitted, 'решении', 'решениях', 'решениях')}
+    <span class="text-2xs font-bold uppercase tracking-label text-ink"> {tr('room.ui.8')} {submitted} {plural(submitted, tr('room.ui.9'), tr('room.ui.10'), tr('room.ui.10'))}
     </span>
     {#if oracle?.askedAt && view !== 'reading'}
       <span class="font-mono text-2xs text-muted">
-        {clock(oracle.askedAt)} · сдано на момент запроса: {oracle.basedOn}
+        {clock(oracle.askedAt)} {tr('room.ui.11')} {oracle.basedOn}
       </span>
     {/if}
     <span class="ml-auto flex items-center gap-2">
       {#if view === 'reading'}
         <Icon name="spinner" size={13} class="animate-spin text-accent-text/70" />
-        <span class="text-2xs text-muted">Готовит сводку…</span>
+        <span class="text-2xs text-muted">{tr('room.ui.12')}</span>
         <button type="button" class="btn-ghost h-7 px-2 text-2xs" onclick={onstop}>
-          <Icon name="stop" size={12} />
-          Стоп
-        </button>
+          <Icon name="stop" size={12} /> {tr('room.ui.13')} </button>
       {:else if view === 'stale'}
-        <span class="text-2xs text-warning">
-          с тех пор {plural(behind, 'сдал', 'сдали', 'сдали')} ещё {behind}
+        <span class="text-2xs text-warning"> {tr('room.ui.14')} {plural(behind, tr('room.ui.15'), tr('room.ui.16'), tr('room.ui.16'))} {tr('room.ui.17')} {behind}
         </span>
         <button
           type="button"
@@ -72,9 +69,7 @@
           title={askWhy ?? undefined}
           onclick={onask}
         >
-          <Icon name="restart" size={12} />
-          Обновить · 1 вопрос
-        </button>
+          <Icon name="restart" size={12} /> {tr('room.ui.18')} </button>
       {:else if view === 'idle'}
         <button
           type="button"
@@ -83,9 +78,7 @@
           title={askWhy ?? undefined}
           onclick={onask}
         >
-          <Icon name="sparkles" size={12} />
-          Спросить · 1 вопрос
-        </button>
+          <Icon name="sparkles" size={12} /> {tr('room.ui.19')} </button>
       {/if}
     </span>
   </div>
@@ -101,12 +94,7 @@
         <span class="text-danger">{oracle.error}</span>
       {:else if askWhy}
         {askWhy}
-      {:else if submitted === 0}
-        Пока никто не сдал решение.
-      {:else}
-        Оракул предложит разбор решений и примеры для показа. Провайдеру ИИ передаются
-        задание, контекст и примеры решений. Имена участников к ним не добавляются.
-      {/if}
+      {:else if submitted === 0} {tr('room.ui.20')} {:else} {tr('room.ui.21')} {/if}
     </p>
   {:else if oracle}
     <!--
@@ -128,9 +116,7 @@
         </div>
       {/each}
     </div>
-    <p class="text-2xs text-muted">
-      Имена участников не добавляются к запросу. Проверьте выводы оракула.
-    </p>
+    <p class="text-2xs text-muted"> {tr('room.ui.22')} </p>
   {/if}
 </section>
 

@@ -1,3 +1,4 @@
+import { tr } from './i18n.js'
 /**
  * Состояния машины — словами комнаты.
  *
@@ -22,11 +23,11 @@ import type { TerminalStatus } from './protocol.js'
 
 /** Ядро — оно: «ядро python · считает». */
 export const KERNEL_WORD: Record<KernelStatus, string> = {
-  starting: 'запускается',
-  restarting: 'перезапускается',
-  idle: 'свободно',
-  busy: 'считает',
-  dead: 'остановилось',
+  get starting() { return tr('server.kernel_word.starting') },
+  get restarting() { return tr('server.kernel_word.restarting') },
+  get idle() { return tr('server.kernel_word.idle') },
+  get busy() { return tr('server.kernel_word.busy') },
+  get dead() { return tr('server.kernel_word.dead') },
 }
 
 /**
@@ -37,9 +38,9 @@ export const KERNEL_WORD: Record<KernelStatus, string> = {
  * в ящике дважды по-разному, читается как два разных.
  */
 export const SHELL_WORD: Record<TerminalStatus, string> = {
-  closed: 'не запущена',
-  starting: 'запускается',
-  idle: 'свободна',
-  busy: 'занята',
-  dead: 'остановилась',
+  get closed() { return tr('server.shell_word.closed') },
+  get starting() { return tr('server.shell_word.starting') },
+  get idle() { return tr('server.shell_word.idle') },
+  get busy() { return tr('server.shell_word.busy') },
+  get dead() { return tr('server.shell_word.dead') },
 }

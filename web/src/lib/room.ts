@@ -1,3 +1,4 @@
+import { tr } from '@shared/i18n'
 /**
  * Who is in the room, counted once each.
  *
@@ -118,22 +119,22 @@ export function whereabouts(person: Person, view: RoomView): Whereabouts {
     (view.runBy === person.user.name || person.user.activeCellId === view.runningCellId)
   if (runs && view.runningCellId) {
     return {
-      line: `запускает ячейку ${runningNo}`,
+      get line() { return tr('room.ui.1112', { p0: runningNo }) },
       place: { where: 'cell', cellId: view.runningCellId },
     }
   }
 
-  if (person.user.inTerminal) return { line: 'в терминале', place: { where: 'terminal' } }
-  if (person.user.composing) return { line: 'спрашивает оракула', place: { where: 'oracle' } }
+  if (person.user.inTerminal) return { get line() { return tr('room.ui.1113') }, place: { where: 'terminal' } }
+  if (person.user.composing) return { get line() { return tr('room.ui.1114') }, place: { where: 'oracle' } }
 
   const at = person.user.activeCellId
   const atNo = cellNumber(view, at)
   // Ячейку могли удалить с тех пор, как человек в ней стоял: вести к тому,
   // чего нет, хуже, чем не вести никуда — и говорить про это тоже нечего.
-  if (at && atNo) return { line: `правит ячейку ${atNo}`, place: { where: 'cell', cellId: at } }
+  if (at && atNo) return { get line() { return tr('room.ui.1115', { p0: atNo }) }, place: { where: 'cell', cellId: at } }
 
   if (person.tabs > 1) {
-    const word = plural(person.tabs, 'вкладка', 'вкладки', 'вкладок')
+    const word = plural(person.tabs, tr('room.ui.1116'), tr('room.ui.1117'), tr('room.ui.1118'))
     return { line: `${person.tabs} ${word}`, place: null }
   }
   return { line: null, place: null }

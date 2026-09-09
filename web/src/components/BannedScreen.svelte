@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   /**
    * Что видит тот, кого удалили с занятия.
    *
@@ -32,11 +33,7 @@
   >
     <Icon name="lock" size={16} />
   </span>
-  <h1 class="mt-4 text-title font-semibold tracking-tight text-ink">Вас удалили с занятия</h1>
-  <p class="mt-2 text-ui leading-relaxed text-muted">
-    Преподаватель закрыл вход в эту комнату до {untilWords(until)}. После этого ограничение перестанет действовать.
-  </p>
-  <p class="mt-2 text-ui leading-relaxed text-muted">
-    Преподаватель может снять ограничение раньше. Обратитесь к нему, если это произошло по ошибке.
-  </p>
+  <h1 class="mt-4 text-title font-semibold tracking-tight text-ink">{tr('room.ui.0')}</h1>
+  <p class="mt-2 text-ui leading-relaxed text-muted"> {tr('room.ui.1')} {untilWords(until)}{tr('room.ui.2')} </p>
+  <p class="mt-2 text-ui leading-relaxed text-muted"> {tr('room.ui.3')} </p>
 </div>

@@ -12,6 +12,7 @@
   обратно приходит право на ОДИН файл на пять минут, и уже оно едет в адресе.
 -->
 <script lang="ts">
+  import { tr } from '@shared/i18n'
   import { api } from '@/lib/api'
   import { getSessionState } from '@/lib/session.svelte'
   import { baseOf } from '@shared/paths'
@@ -25,13 +26,14 @@
   const session = getSessionState()
 
   let src = $state<string | null>(null)
-  let failed = $state<string | null>(null)
+  let failedRender = $state<() => string | null>(() => null)
+  const failed = $derived(failedRender())
 
   $effect(() => {
     const wanted = path
     let alive = true
     src = null
-    failed = null
+    failedRender = () => (null)
     void api
       .fileTicket(session.session.id, wanted, session.token)
       .then(({ token }) => {
@@ -40,7 +42,7 @@
       })
       .catch((err: unknown) => {
         if (!alive) return
-        failed = err instanceof Error ? err.message : 'Не удалось открыть изображение.'
+        failedRender = () => (err instanceof Error ? tr(err.message) : tr('room.ui.717'))
       })
     return () => {
       alive = false
@@ -60,9 +62,9 @@
       {src}
       alt={baseOf(path)}
       class="max-h-full max-w-full object-contain"
-      onerror={() => (failed = `${baseOf(path)} не удалось открыть как изображение.`)}
+      onerror={() => (failedRender = () => tr('room.extra.296', { p0: baseOf(path) }))}
     />
   {:else}
-    <p class="text-ui text-muted">Загружается {baseOf(path)}…</p>
+    <p class="text-ui text-muted">{tr('room.ui.716')} {baseOf(path)}…</p>
   {/if}
 </div>
