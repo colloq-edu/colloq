@@ -62,6 +62,25 @@ test('доехавшая запись снимает свою строку', () 
   assert.deepEqual(settleOutbox(pending, [real('q1', 'почему nan?')]), [])
 })
 
+test('подтверждённый запрос «починить» заменяется записью с серверным текстом', () => {
+  const pending = [{ ...mine(''), entryId: 'fix1' }]
+  assert.equal(settleOutbox(pending, []), pending, 'HTTP раньше документа не убирает строку')
+  assert.deepEqual(settleOutbox(pending, [real('fix1', 'Исправь эту ячейку')]), [])
+})
+
+test('подтверждение после документа убирает временную строку без следующего кадра', () => {
+  const pending = [mine('')]
+  const fresh = [real('fix1', 'Исправь эту ячейку')]
+  assert.equal(settleOutbox(pending, fresh), pending)
+  assert.deepEqual(settleOutbox([{ ...pending[0]!, entryId: 'fix1' }], fresh), [])
+})
+
+test('идентификатор подтверждения не позволяет другому одинаковому вопросу снять строку', () => {
+  const pending = [{ ...mine('почему nan?'), entryId: 'q2' }]
+  assert.equal(settleOutbox(pending, [real('q1', 'почему nan?')]), pending)
+  assert.deepEqual(settleOutbox(pending, [real('q1', 'почему nan?'), real('q2', 'почему nan?')]), [])
+})
+
 test('чужая запись с тем же текстом мою строку не снимает', () => {
   // Вопрос «почему nan?» на семинаре задают трое, и снять чужой записью
   // означало бы, что мой вопрос пропал с экрана, не успев доехать.

@@ -67,7 +67,7 @@ test('стенд нажимает в тело ячейки — туда же, к
   assert.notEqual(body, -1, 'у тела ячейки больше нет признака data-cell-body')
   assert.match(
     cell.slice(body, body + 200),
-    /onpointerdown=\{\(event\) => onselect\(event\)\}/,
+    /onpointerdown(?:capture)?=\{\(event\) => onselect\(event\)\}/,
     'нажатие переехало с тела ячейки — стенд целится не туда',
   )
   assert.match(stand, /const body=cells\[\$\{n\}\]\.querySelector\('\[data-cell-body\]'\)/)

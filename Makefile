@@ -103,6 +103,7 @@ dev: .env dirs ## Ядро в docker, сервер на хосте (npm run dev 
 	docker compose $(DEV) build kernel
 	@printf '$(BOLD)образ ядра собран:$(OFF) $(CYAN)$(CURRENT_ENV)$(OFF) $(DIM)(окружение: $(CURRENT_ENV))$(OFF)\n'
 	@printf '$(DIM)теперь: NODE_ENV=development KERNEL_BACKEND=docker npm run dev$(OFF)\n'
+	@if [ "$$(uname -s)" != Linux ]; then printf '$(DIM)для нативного запуска: COLLOQ_UNSAFE_DEV_FILES=1 в .env (только доверенная локальная разработка); сервер в Docker: make up$(OFF)\n'; fi
 
 ## Как это запускается на самом деле.
 ##

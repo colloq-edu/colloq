@@ -37,6 +37,7 @@ import { fileRoutes } from './routes/files.js'
 import { historyRoutes } from './routes/history.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { instanceSettingsRoutes } from './routes/instance-settings.js'
+import { workspaceFs } from './workspace.js'
 import { PUBLIC_PAGES_INDEXED } from '@shared/publish'
 
 const STARTED_AT = Date.now()
@@ -353,8 +354,8 @@ async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
  * Раньше значило «процесс отвечает», и этого хватало, чтобы host.sh и
  * `make status` напечатали «Colloq доступен по ссылке» над инстансом, где
  * Docker выключен со вчера: комната открывается, ссылка работает, а первый Run
- * через семьдесят секунд отвечает KERNEL DEAD. Проверяются обе вещи, без
- * которых семинара не будет: своя база и Python комнаты.
+ * через семьдесят секунд отвечает KERNEL DEAD. Проверяются база, Python и
+ * доступ к файлам: без него нельзя ни открыть тетрадь, ни запустить ядро.
  */
 app.get('/api/livez', (_req,res)=>{res.setHeader('Cache-Control','no-store');res.json({ok:true})})
 
@@ -380,7 +381,15 @@ app.get('/api/health', (_req, res) => {
       const kernel = await kernelHealth()
       if (dbOk && !kernel.ok) reason = kernel.reason
 
-      const ok = dbOk && kernel.ok
+      let workspaceOk = true
+      try {
+        workspaceFs.mkdirSync(config.workspaceDir, { recursive: true })
+      } catch (err) {
+        workspaceOk = false
+        if (reason === null) reason = err instanceof Error ? err.message : 'The workspace is unavailable'
+      }
+
+      const ok = dbOk && kernel.ok && workspaceOk
       res.setHeader('Cache-Control', 'no-store')
       res.setHeader('Server-Timing', `loop;dur=${loopLagMs.toFixed(3)}`)
       // 503, а не 200 с полем: зонды смотрят на код, и только код заставляет
@@ -390,6 +399,7 @@ app.get('/api/health', (_req, res) => {
         reason,
         kernel: kernel.ok,
         database: dbOk,
+        workspace: workspaceOk,
         uptimeMs: Date.now() - STARTED_AT,
         loopLagMs: Number(loopLagMs.toFixed(3)),
         /*

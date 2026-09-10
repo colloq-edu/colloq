@@ -12,6 +12,8 @@
 import type { ChatSnapshot } from '@shared/notebook'
 
 export interface Outgoing {
+  /** Server acknowledgement identifies the row even when it supplies the question text. */
+  entryId?: string
   /** Строка, нарисованная этой вкладкой. Формой — та же запись ленты. */
   row: ChatSnapshot
   /**
@@ -71,8 +73,9 @@ export function outgoingRow(input: {
 /**
  * Убрать те строки, чьи записи уже доехали.
  *
- * Своя запись узнаётся по автору и тексту — но только среди тех, которых при
- * отправке в ленте ещё не было. Два одинаковых вопроса подряд разбираются по
+ * После HTTP-подтверждения запись узнаётся по entryId: сервер может дописать
+ * текст для действий вроде «починить». До подтверждения — по автору и тексту,
+ * но только среди тех, которых при отправке ещё не было. Одинаковые вопросы разбираются по
  * очереди: первая пришедшая запись достаётся первой отправленной, иначе одна
  * запись сняла бы обе строки и второй вопрос снова провалился бы в пустоту.
  */
@@ -88,7 +91,9 @@ export function settleOutbox(
         !taken.has(entry.id) &&
         !mine.before.has(entry.id) &&
         entry.participantId === mine.row.participantId &&
-        entry.question === mine.row.question,
+        (mine.entryId !== undefined
+          ? entry.id === mine.entryId
+          : entry.question === mine.row.question),
     )
     if (!landed) return true
     taken.add(landed.id)

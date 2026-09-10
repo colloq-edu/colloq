@@ -1947,7 +1947,15 @@
     <div
       class="relative min-w-0 flex-1"
       data-cell-body
-      onpointerdown={(event) => onselect(event)}
+      onpointerdowncapture={(event) => onselect(event)}
+      oncontextmenucapture={(event) => {
+        // Chrome on macOS emits contextmenu after Ctrl+left-click even when
+        // pointerdown was cancelled. Keep CodeMirror from taking focus back.
+        if (event.ctrlKey && event.button === 0) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
+      }}
     >
       <!-- Out of flow and above the body: a toolbar that appeared in flow would
            push the cell down the moment the pointer arrived. -->

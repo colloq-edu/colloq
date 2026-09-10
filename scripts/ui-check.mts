@@ -22,6 +22,8 @@ import path from 'node:path'
 import WS from 'ws'
 
 const HEADED = process.argv.includes('--headed')
+const SELECTION_ONLY = process.argv.includes('--cell-selection-only')
+const OUTBOX_ONLY = process.argv.includes('--oracle-outbox-only')
 // Порты переопределяются окружением — чтобы отлаживать сам стенд, пока
 // на штатных идёт полный прогон.
 const PORT = Number(process.env.UI_CHECK_PORT ?? 3891)
@@ -95,6 +97,7 @@ process.env.JUPYTER_URL = 'http://127.0.0.1:1'
 process.env.NODE_ENV = 'test'
 process.env.KERNEL_BACKEND = 'test'
 process.env.KERNEL_ISOLATION = 'off'
+if (SELECTION_ONLY || OUTBOX_ONLY) process.env.UI_LANGUAGE = 'en'
 process.env.STATIC_DIR = path.resolve('web/dist')
 /*
  * Оракул — «настроен», но никуда не ходит: ключ выдуманный, адрес заведомо
@@ -105,6 +108,22 @@ process.env.STATIC_DIR = path.resolve('web/dist')
 process.env.OPENAI_API_KEY = 'ui-check-not-a-real-key'
 process.env.OPENAI_BASE_URL = 'http://127.0.0.1:1/v1'
 
+let oracleRequests = 0
+if (OUTBOX_ONLY) {
+  const http = await import('node:http')
+  const gateway = http.createServer((req, res) => {
+    req.resume()
+    oracleRequests++
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    setTimeout(() => {
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Fixture: corrected the failing cell.' } }] })}\n\n`)
+      res.end('data: [DONE]\n\n')
+    }, 200)
+  })
+  await new Promise<void>(resolve => gateway.listen(0, '127.0.0.1', resolve))
+  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${(gateway.address() as { port: number }).port}/v1`
+}
+
 await import('../server/src/index.js')
 const { createSession } = await import('../server/src/db.js')
 const { createTeacher } = await import('../server/src/admin/store.js')
@@ -112,6 +131,21 @@ const { issueStaffCookie } = await import('../server/src/admin/auth.js')
 const { STAFF_COOKIE } = await import('../shared/admin.js')
 await new Promise((r) => setTimeout(r, 700))
 createSession(ROOM, 'Проверка интерфейса', null)
+if (SELECTION_ONLY || OUTBOX_ONLY) {
+  const { getSessionDoc } = await import('../server/src/collab/index.js')
+  const { createCell, cellOutputs, writeOutput } = await import('../shared/notebook.js')
+  const { doc } = getSessionDoc(ROOM)
+  const cells = doc.getArray('cells')
+  doc.transact(() => {
+    cells.delete(0, cells.length)
+    cells.push([0, 1, 2].map(n => createCell('code', `value_${n} = ${n}`)))
+    if (OUTBOX_ONLY) {
+      const cell = cells.get(0) as ReturnType<typeof createCell>
+      cell.set('state', 'error')
+      cellOutputs(cell).push([writeOutput({ kind: 'error', ename: 'NameError', evalue: 'missing is not defined', traceback: ['NameError: missing is not defined'] })])
+    }
+  })
+}
 const teacher = createTeacher({ name: 'Ада', email: 'ada@ui.local', role: 'owner' })!
 let cookieValue = ''
 issueStaffCookie({ cookie: (_n: string, v: string) => (cookieValue = v) } as never, teacher)
@@ -302,6 +336,31 @@ await host.send('Network.setCookie', {
 })
 await host.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/s/${ROOM}` })
 await enter(host, 'Ада')
+
+if (SELECTION_ONLY) {
+  const { checkCellSelection } = await import('./cell-selection-check.mts')
+  await checkCellSelection(host)
+  process.exit(0)
+}
+
+if (OUTBOX_ONLY) {
+  const assert = (await import('node:assert/strict')).default
+  assert.equal(await until(host, `[...document.querySelectorAll('button')].some(b=>/fix with ai/i.test(b.textContent))`, 'Fix with AI is available'), true)
+  for (let n = 1; n <= 2; n++) {
+    await host.js(`const button=[...document.querySelectorAll('button')].find(b=>/fix with ai/i.test(b.textContent)); button.click(); return 1`)
+    assert.equal(await until(host, `[...document.querySelectorAll('article')].filter(a=>a.textContent.includes('Fixture: corrected')).length===${n}`, 'the answer arrived'), true)
+    // Let the HTTP acknowledgement and document observer both finish.
+    await wait(300)
+    assert.equal(await host.js(`return document.querySelectorAll('article').length`), n, 'one question has one turn, without a pending duplicate')
+    assert.equal(oracleRequests, n, 'one click sends one request to the model')
+  }
+  await host.send('Page.reload')
+  assert.equal(await until(host, `[...document.querySelectorAll('article')].filter(a=>a.textContent.includes('Fixture: corrected')).length===2`, 'the same two turns survive reload'), true)
+  assert.equal(await host.js(`return document.querySelectorAll('article').length`), 2)
+  assert.deepEqual(host.trouble, [], 'no browser exceptions or console errors')
+  console.log('PASS Fix with AI: one turn per click, repeat works, reload shows the same turns')
+  process.exit(0)
+}
 
 const student = await tab(`http://127.0.0.1:${PORT}/s/${ROOM}`)
 await student.send('Network.clearBrowserCookies')

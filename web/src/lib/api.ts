@@ -313,8 +313,8 @@ export const api = {
 
   /**
    * Fire-and-forget. The server appends the question to the shared document and
-   * streams the answer into it, so there is nothing to read from this response:
-   * the asker's browser watches the CRDT like everyone else's does.
+   * streams the answer into it. The response entryId links the optimistic row
+   * to that entry; the browser reads the answer from the CRDT like everyone else.
    */
   aiAsk: (id: string, token: string, body: AiAskRequest) =>
     request<AiAskResponse>(`/api/sessions/${id}/ai/ask`, {

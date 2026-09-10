@@ -154,6 +154,19 @@
     outbox = outbox.filter((row) => row.row.id !== id)
   }
 
+  function settlePending(fresh: readonly ChatSnapshot[]): void {
+    const pending = untrack(() => outbox)
+    const left = settleOutbox(pending, fresh)
+    if (left === pending) return
+    const landed = landedIds(pending, left, fresh)
+    if (landed.length > 0) {
+      const alive = new Set(fresh.map((entry) => entry.id))
+      const kept = [...untrack(() => inherited)].filter((id) => alive.has(id))
+      inherited = new Set([...kept, ...landed])
+    }
+    outbox = left
+  }
+
   $effect(() => {
     /*
      * Читает документ и пишет `entries` — и НИЧЕГО не читает из состояния.
@@ -176,21 +189,7 @@
       const previous = untrack(() => entries)
       const fresh = rereadRows(previous, chat, readChatEntry, events)
       if (fresh !== previous) entries = fresh
-      const pending = untrack(() => outbox)
-      const left = settleOutbox(pending, fresh)
-      // Тот же массив — значит снимать нечего; лишняя запись здесь и есть
-      // второй виток того же цикла.
-      if (left === pending) return
-      // Строку заменила настоящая запись — и появиться второй раз она не
-      // должна: см. `inherited`. Заодно отсюда уходят те, кого в ленте больше
-      // нет: тред чистят, и набор не должен расти до перезагрузки вкладки.
-      const landed = landedIds(pending, left, fresh)
-      if (landed.length > 0) {
-        const alive = new Set(fresh.map((entry) => entry.id))
-        const kept = [...untrack(() => inherited)].filter((id) => alive.has(id))
-        inherited = new Set([...kept, ...landed])
-      }
-      outbox = left
+      settlePending(fresh)
     }
     read(null)
     // Deep: an answer streams into a Y.Text *inside* an entry. The array itself
@@ -584,7 +583,11 @@
     // столько же.
     const outgoingId = openOutbox(body)
     try {
-      await api.aiAsk(session.session.id, session.token, body)
+      const { entryId } = await api.aiAsk(session.session.id, session.token, body)
+      outbox = outbox.map(row => row.row.id === outgoingId ? { ...row, entryId } : row)
+      // The document may arrive before HTTP, including an already finished
+      // answer. Reconcile now as well as on the next document update.
+      settlePending(entries)
       slowNoticeRender = () => (null)
       waitUntil = 0
     } catch (err) {

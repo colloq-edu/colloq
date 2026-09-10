@@ -136,17 +136,29 @@
    * Нажали по ячейке — одной, или добавили к выделенным.
    *
    * Cmd на маке и Ctrl на остальном — тот же модификатор, которым выделяют
-   * вразбивку везде; Shift — диапазон. Внутри редактора модификаторы
-   * принадлежат ему: Cmd-клик в тексте ставит второй курсор, и перехватывать
-   * его здесь значило бы ломать редактор ради панели.
+   * вразбивку везде; Shift — диапазон, включая поле кода другой ячейки.
+   * В уже активном редакторе Shift продолжает выделять текст. Обработчик тела
+   * вызывается в capture-фазе: редактор не должен перехватить этот жест или
+   * получить фокус и сбросить выделение своим onfocus.
    */
   function pick(id: string, event?: MouseEvent | PointerEvent): void {
-    const inEditor = (event?.target as HTMLElement | null)?.closest('.cm-editor') !== null
-    if (event && !inEditor && (event.metaKey || event.ctrlKey)) {
+    if (event && event.button !== 0) return
+    if (event?.shiftKey && !event.metaKey && !event.ctrlKey) {
+      const editor = (event.target as Element | null)?.closest('.cm-editor')
+      if (editor?.contains(document.activeElement)) return
+    }
+    if (event && (event.metaKey || event.ctrlKey || event.shiftKey)) {
+      event.preventDefault()
+      event.stopPropagation()
+      // Keep subsequent notebook shortcuts out of the previously focused editor.
+      const focused = document.activeElement
+      if (focused instanceof HTMLElement && focused.closest('.cm-editor')) focused.blur()
+    }
+    if (event && (event.metaKey || event.ctrlKey)) {
       session.toggleCell(id)
       return
     }
-    if (event && !inEditor && event.shiftKey && session.selectedCellId) {
+    if (event?.shiftKey && session.selectedCellId) {
       session.extendTo(id, ids.current)
       return
     }

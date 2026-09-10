@@ -244,6 +244,10 @@ This mode is for trusted local development. Linux production requires secure
 filesystem access through `/proc/self/fd` and refuses to start without it.
 Leave `WORKSPACE_HOST_DIR` unset when running the app directly on the host.
 
+For a built frontend and a background server, use `make run`. On macOS, first
+add `COLLOQ_UNSAFE_DEV_FILES=1` to your local `.env`; this also persists the opt-in
+across restarts. Use `make up` to run the server in Linux Docker instead.
+
 ```bash
 npm run typecheck
 npm test

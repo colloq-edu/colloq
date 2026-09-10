@@ -46,7 +46,7 @@ export function createAnchoredFilesystem(rootPath: string, options: { allowUnsaf
     return relative ? relative.split(path.sep) : []
   }
   const initialize = (): number => {
-    if (!linux) fail('Linux descriptor traversal is required; unsafe development fallback must be explicitly enabled')
+    if (!linux) fail('Linux descriptor traversal is required. Use make up (Linux in Docker), or set COLLOQ_UNSAFE_DEV_FILES=1 in .env for trusted native development only; never use it in production.')
     if (rootFd === undefined) {
       fs.mkdirSync(root, { recursive: true })
       rootFd = fs.openSync(root, directoryFlags)
