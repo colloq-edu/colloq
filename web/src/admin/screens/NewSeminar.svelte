@@ -458,42 +458,6 @@
   ])
 
   /*
-   * Чего в этом списке нет и почему. «Скоро будет» преподавателю не говорит
-   * ничего, что можно спланировать, поэтому у каждой строки своя причина, и
-   * список сокращается, но не пустеет.
-   */
-  const NOT_YET: {
-    what: string
-    why: string
-    /** Не во всех режимах: в консилиуме своя строка у каждого уже есть. */
-    unless?: (mode: 'lab' | 'lecture' | 'council') => boolean
-  }[] = $derived([
-    { what: tr("admin.hide.notebook.cells"), why: tr("admin.participants.receive.the.whole.notebook") },
-    { what: tr("admin.hide.terminal.history"), why: tr("admin.participants.receive.the.terminal.history") },
-    {
-      what: tr("admin.edit.your.own.answer.but.not.your.neighbour.s"),
-      why: tr("admin.editing.access.applies.to.the.shared.cell"),
-      /*
-       * Кроме консилиума — там это и есть его смысл. Строка стояла на одном
-       * экране с карточкой «Консилиум: открытая ячейка — каждому свой лист» и
-       * говорила ей прямо противоположное.
-       */
-      unless: (m) => m === 'council',
-    },
-    { what: tr("admin.keep.one.student.s.oracle.question.private"), why: tr("admin.questions.are.visible.to.the.room") },
-    /*
-     * «Remove somebody from the room — a token can expire, not be withdrawn»
-     * отсюда убрано: бан с выкидыванием из комнаты есть и работает
-     * (server/src/routes/bans.ts, panels/BanMenu.svelte, control.ts ·
-     * evictBanned). Он не настройка комнаты, а действие внутри неё, поэтому
-     * стоит в списке того, что принадлежит преподавателю, — ниже.
-     */
-    { what: tr("admin.a.model.for.this.room.only"), why: tr("admin.the.model.is.configured.for.the.server") },
-  ])
-
-  const notYet = $derived(NOT_YET.filter((row) => !row.unless?.(mode)))
-
-  /*
    * И сцепки — проверенные факты об этом коде, а не оговорки. Правило честности
    * к ним относится ровно так же, как к переключателям. (Числом их здесь не
    * называют: массив рос и убывал, а слово «три» оставалось.)
@@ -1032,21 +996,6 @@
           </p>
         </div>
       {/each}
-
-      <div class="border border-line bg-surface">
-        <div class="flex items-center gap-2.5 border-b border-line px-3.5 py-2">
-          <span class="text-micro font-bold uppercase tracking-caps text-muted">{tr("admin.unavailable.controls")}</span>
-          <span class="text-2xs text-faint">{tr("admin.current.limitations")}</span>
-        </div>
-        {#each notYet as row (row.what)}
-          <div
-            class="flex items-center gap-3 border-b border-line-soft px-3.5 py-2 last:border-b-0"
-          >
-            <span class="min-w-0 flex-1 text-ui text-muted">{row.what}</span>
-            <span class="shrink-0 text-right font-mono text-micro text-faint">{row.why}</span>
-          </div>
-        {/each}
-      </div>
 
       <div class="flex items-start gap-2.5 border-l-2 border-accent bg-accent/[0.06] px-3.5 py-3">
         <Icon name="lock" size={13} class="mt-0.5 shrink-0 text-accent-text" />
