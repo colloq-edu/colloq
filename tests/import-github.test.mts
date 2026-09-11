@@ -24,9 +24,11 @@ import { STAFF_COOKIE } from '../shared/admin.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createTeacher, oldestOwner } from '../server/src/admin/store.js'
 import { adminImportRoutes } from '../server/src/routes/admin-import.js'
-import { storedRules } from '../server/src/db.js'
+import { db, storedRules } from '../server/src/db.js'
 import { COUNCIL_ROOM, LECTURE_ROOM, OPEN_ROOM } from '../shared/rules.js'
 import { readText } from '../server/src/workspace.js'
+import { visitSessionDoc } from '../server/src/routes/doc-visit.js'
+import { allBooks } from '../shared/notebook.js'
 
 /* --------------------------------------------------------- поддельный GitHub */
 
@@ -176,6 +178,73 @@ test('ссылка на папку недели везёт и соседние �
   const rules = storedRules(made.id)
   assert.equal(rules.run, 'host')
   assert.equal(rules.files, 'host')
+})
+
+test('папка с двумя ноутбуками сохраняет оба отдельными тетрадями и показывает их в превью', async () => {
+  const folder = 'https://api.github.com/repos/hse/ml/contents/week01?ref=main'
+  const names = ['01_Into_to_python.ipynb', '01_Vizualization_Seaborn.ipynb']
+  served.set(folder, JSON.stringify(names.map((name) => ({
+    name, path: `week01/${name}`, type: 'file', size: NOTEBOOK.length,
+    download_url: `https://raw.githubusercontent.com/hse/ml/main/week01/${name}`,
+  }))))
+  served.set(`https://raw.githubusercontent.com/hse/ml/main/week01/${names[0]}`, NOTEBOOK)
+  served.set(`https://raw.githubusercontent.com/hse/ml/main/week01/${names[1]}`, JSON.stringify({
+    cells: [{ cell_type: 'code', source: ['import seaborn as sns'], outputs: [{ text: 'old output' }] }],
+  }))
+  const url = 'https://github.com/hse/ml/tree/main/week01'
+  const preview = await realFetch(`${base}/api/admin/import/preview`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ url }),
+  })
+  assert.equal(preview.status, 200)
+  const body = await preview.json()
+  assert.deepEqual(body.notebooks, [{ name: names[0], cells: 2 }, { name: names[1], cells: 1 }])
+  assert.equal(body.cells, 3)
+  const made = await importFrom({ url })
+  assert.equal(made.cells, 3)
+  visitSessionDoc(made.id, (doc) => {
+    assert.deepEqual(allBooks(doc).map(({ book, cells }) => ({ name: book.path, count: cells.length })),
+      [{ name: names[0], count: 2 }, { name: names[1], count: 1 }])
+  })
+  assert.match(readText(made.id, names[0])?.text ?? '', /import pandas/)
+  const second = readText(made.id, names[1])?.text ?? ''
+  assert.match(second, /import seaborn/)
+  assert.doesNotMatch(second, /old output/)
+})
+
+test('недоступный второй ноутбук возвращает ошибку до создания неполной комнаты', async () => {
+  served.set('https://api.github.com/repos/hse/ml/contents/broken?ref=main', JSON.stringify([
+    { name: 'a.ipynb', path: 'broken/a.ipynb', type: 'file', size: NOTEBOOK.length,
+      download_url: 'https://raw.githubusercontent.com/hse/ml/main/week1/lab.ipynb' },
+    { name: 'b.ipynb', path: 'broken/b.ipynb', type: 'file', size: 100,
+      download_url: 'https://raw.githubusercontent.com/hse/ml/main/broken/b.ipynb' },
+  ]))
+  const before = db.prepare('SELECT COUNT(*) AS n FROM sessions').get()
+  const response = await realFetch(`${base}/api/admin/import`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ url: 'https://github.com/hse/ml/tree/main/broken' }),
+  })
+  assert.equal(response.status, 400)
+  assert.match((await response.json()).error, /b\.ipynb/)
+  assert.deepEqual(db.prepare('SELECT COUNT(*) AS n FROM sessions').get(), before)
+})
+
+test('пустая первая тетрадь не теряет вторую, а слишком большой ноутбук назван в skipped', async () => {
+  served.set('https://api.github.com/repos/hse/ml/contents/mixed?ref=main', JSON.stringify([
+    { name: 'a.ipynb', path: 'mixed/a.ipynb', type: 'file', size: 12,
+      download_url: 'https://raw.githubusercontent.com/hse/ml/main/mixed/a.ipynb' },
+    { name: 'b.ipynb', path: 'mixed/b.ipynb', type: 'file', size: NOTEBOOK.length,
+      download_url: 'https://raw.githubusercontent.com/hse/ml/main/week1/lab.ipynb' },
+    { name: 'large.ipynb', path: 'mixed/large.ipynb', type: 'file', size: 26 * 1024 * 1024,
+      download_url: 'https://raw.githubusercontent.com/hse/ml/main/mixed/large.ipynb' },
+  ]))
+  served.set('https://raw.githubusercontent.com/hse/ml/main/mixed/a.ipynb', '{"cells":[]}')
+  const made = await importFrom({ url: 'https://github.com/hse/ml/tree/main/mixed' })
+  assert.equal(made.cells, 2)
+  assert.deepEqual(made.skipped, ['large.ipynb'])
+  visitSessionDoc(made.id, (doc) => {
+    assert.deepEqual(allBooks(doc).map(({ book, cells }) => [book.path, cells.length]),
+      [['b.ipynb', 2], ['a.ipynb', 0]])
+  })
 })
 
 test('режим — тоже правило, и он доезжает по обеим ссылкам', async () => {

@@ -286,6 +286,8 @@ export interface OracleSettings {
   slowModeSeconds: number
   /** Ceiling on the notebook text sent as context. */
   contextChars: number
+  /** Tool actions per Do request; 0 means unlimited. */
+  agentSteps: number
   /** Whether the environment supplied a key, in which case the UI must not
    *  claim the instance is unconfigured while OPENAI_API_KEY is doing the job. */
   keyFromEnvironment: boolean
@@ -302,6 +304,7 @@ export interface UpdateOracleRequest {
   questionsPerHour?: number
   slowModeSeconds?: number
   contextChars?: number
+  agentSteps?: number
 }
 
 export interface OracleTestResult {
@@ -350,6 +353,7 @@ export const LIMITS = {
    */
   slowModeSeconds: { min: 0, max: 300, default: 0 },
   contextChars: { min: 2_000, max: 100_000, default: 20_000 },
+  agentSteps: { min: 0, max: 10_000, default: 0 },
 } as const
 
 export const PROVIDER_PRESETS: Record<
@@ -593,6 +597,7 @@ export interface ImportPreview {
   /** Имя, выведенное из имени файла или папки; его можно переписать. */
   name: string
   notebook: string
+  notebooks: { name: string; cells: number }[]
   cells: number
   files: { name: string; size: number }[]
   /**

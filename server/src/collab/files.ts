@@ -251,7 +251,8 @@ export function openFileDoc(sessionId: string, path: string): FileDoc | null {
  *
  * Единственный путь записи для всего, что не браузер: оракул в режиме
  * «сделать», восстановление после отмены хода. Если файл открыт — правка идёт в
- * документ и оттуда на диск обычным сохранением; если нет — прямо на диск.
+ * документ и сразу на диск; если нет — прямо на диск. Завершённая запись
+ * сообщается панели файлов сразу, до ответа оракула об успехе.
  * Двух путей быть не должно: они разошлись бы ровно в тот момент, когда
  * кто-нибудь смотрит на файл.
  *
@@ -278,10 +279,12 @@ export function putText(sessionId: string, path: string, text: string): boolean 
      */
     const at = statPath(sessionId, path)
     if (at && !at.dir && at.size > MAX_TEXT_BYTES) return false
-    return writeText(sessionId, path, text)
+    const wrote = writeText(sessionId, path, text)
+    if (wrote) fileSaved?.(sessionId, path, 'server')
+    return wrote
   }
   entry.doc.transact(() => spliceText(entry.doc.getText(TEXT_KEY), text), SERVER)
-  return saveNow(entry)
+  return saveNow(entry, 'server')
 }
 
 /**
@@ -327,7 +330,7 @@ function scheduleSave(entry: FileDoc): void {
 }
 
 /** Записать документ на диск. `false` — не записали, и файл остался прежним. */
-function saveNow(entry: FileDoc): boolean {
+function saveNow(entry: FileDoc, origin: FileSaveOrigin = 'editor'): boolean {
   if (entry.saveTimer) {
     clearTimeout(entry.saveTimer)
     entry.saveTimer = null
@@ -366,17 +369,18 @@ function saveNow(entry: FileDoc): boolean {
   if (!writeText(entry.sessionId, entry.path, text)) return false
   entry.onDisk = text
   entry.stamp = stampOf(entry.sessionId, entry.path)
-  fileSaved?.(entry.sessionId, entry.path)
+  fileSaved?.(entry.sessionId, entry.path, origin)
   return true
 }
 
-let fileSaved: ((sessionId: string, path: string) => void) | null = null
+type FileSaveOrigin = 'editor' | 'server'
+let fileSaved: ((sessionId: string, path: string, origin: FileSaveOrigin) => void) | null = null
 
 /**
  * Кому сообщать, что файл лёг на диск. Регистрирует control.ts: комната узнаёт
  * новый размер и время, а импортировать его отсюда значило бы замкнуть цикл.
  */
-export function onFileSaved(listener: (sessionId: string, path: string) => void): void {
+export function onFileSaved(listener: (sessionId: string, path: string, origin: FileSaveOrigin) => void): void {
   fileSaved = listener
 }
 

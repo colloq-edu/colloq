@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
   import { onMount } from 'svelte'
   import AdminShell, { type AdminTab } from '@/admin/AdminShell.svelte'
   import NewSeminar from '@/admin/screens/NewSeminar.svelte'
@@ -206,9 +207,7 @@
 </script>
 
 {#if !adminAuth.ready || exchanging}
-  <!-- The answer takes a few milliseconds. A spinner for that is a flash of
-       anxiety, not information — the ground paints and the panel lands on it. -->
-  <div class="h-full bg-canvas"></div>
+  <ContentSkeleton />
 {:else if !adminAuth.me}
   <SignInScreen />
 {:else}

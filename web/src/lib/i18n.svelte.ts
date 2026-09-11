@@ -9,7 +9,10 @@ function cachedLanguage(): Locale | null {
   }
 }
 const cached = typeof window === 'undefined' ? null : cachedLanguage()
-export const language = $state<{ current: Locale }>({ current: cached ?? 'ru' })
+const suppliedValue = typeof document === 'undefined'
+  ? null : document.querySelector?.('meta[name="colloq-language"]')?.getAttribute('content')
+const supplied = isLocale(suppliedValue) ? suppliedValue : null
+export const language = $state<{ current: Locale }>({ current: supplied ?? cached ?? 'ru' })
 if (typeof window !== 'undefined') setLocaleResolver(() => language.current)
 let generation = 0
 const listeners = new Set<() => void>()
@@ -94,9 +97,9 @@ export async function initializeLanguage(): Promise<void> {
     }
   }
   const initial = refreshLanguage()
-  // Cached/offline rooms can paint immediately. A first visit resolves the server
-  // language before components and their default metadata are constructed.
-  if (!cached) await initial
+  // Navigation HTML already carries the authoritative language on a cold visit.
+  // Older/static servers still use the original bounded request as a fallback.
+  if (!cached && !supplied) await initial
 }
 export function stopLanguageSync(): void {
   stopSync?.()

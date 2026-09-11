@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "npm run pdf:worker && vite",
     "build": "npm run pdf:worker && vite build",
+    "build:optimized": "npm run build && node scripts/precompress.mjs",
     "preview": "vite preview",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json --threshold error",
     "pdf:worker": "node -e \"const{copyFileSync,mkdirSync}=require('fs');mkdirSync('public/pdf',{recursive:true});copyFileSync(require.resolve('pdfjs-dist/build/pdf.worker.min.mjs'),'public/pdf/pdf.worker.min.mjs')\""

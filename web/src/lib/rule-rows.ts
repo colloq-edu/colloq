@@ -70,7 +70,7 @@ export interface ChoiceRow {
  */
 export interface LimitRow {
   kind: 'limit'
-  key: keyof RoomRules & ('questionsPerHour' | 'slowModeSeconds')
+  key: keyof RoomRules & ('questionsPerHour' | 'slowModeSeconds' | 'agentSteps')
   title: string
   note: string
   /** Подпись у поля — чтобы число не осталось голым. */
@@ -161,6 +161,16 @@ export const RULE_ROWS: RuleRow[] = [
    * Инстанс при этом остаётся потолком: опуститься под него можно, подняться
    * над ним — нет, за модель платит он.
    */
+  {
+    kind: 'limit',
+    key: 'agentSteps',
+    get title() { return tr('common.agentSteps') },
+    get note() { return tr('common.agentStepsNote') + ' ' + tr('common.agentStepsRoomNote') },
+    get unit() { return tr('common.agentStepsUnit') },
+    min: LIMITS.agentSteps.min,
+    max: LIMITS.agentSteps.max,
+    atInstance: (value) => value === 0 ? tr('common.unlimitedActions') : tr('common.actionCount', { count: value }),
+  },
   {
     kind: 'limit',
     key: 'questionsPerHour',

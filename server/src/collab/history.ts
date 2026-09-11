@@ -45,6 +45,8 @@ import {
 } from '@shared/notebook'
 import { plural } from '@shared/plural'
 import { appendVersion, hasHistoryBase, trimHistory, updatesUpTo, versionCount } from '../db.js'
+import { appendActivity } from '../activity.js'
+import type { ParticipantRole } from '@shared/protocol'
 
 /** Marks writes this module makes into a live doc, so they are not re-recorded twice. */
 export const RESTORE_ORIGIN = 'history-restore'
@@ -62,6 +64,8 @@ interface Burst {
    * секунд. Всплеск, в который писали двое, так и записывается — «the room».
    */
   authors: Set<string>
+  /** Only authenticated direct edits; on-behalf Oracle operations are not independent participation. */
+  contributors: Map<string, ParticipantRole>
   updates: Uint8Array[]
   /** State of the document when the burst opened, for the summary and the counts. */
   before: Uint8Array
@@ -486,7 +490,7 @@ function close(key: string): void {
 
   let wrote = false
   try {
-    appendVersion({
+    const versionSeq = appendVersion({
       sessionId: burst.sessionId,
       update: merged,
       kind: quiet ? 'quiet' : 'edit',
@@ -497,6 +501,13 @@ function close(key: string): void {
       label: null,
       ...facts,
     })
+    // Participation comes from proven changed notebook types, not the primary
+    // notebook's net diff: secondary books and edits later undone can be quiet.
+    for (const [participantId, role] of burst.contributors) {
+      appendActivity(burst.sessionId, participantId, 'notebook.contributed', {
+        versionSeq, count: 1, source: 'participant',
+      }, role)
+    }
     wrote = true
   } catch (err) {
     // A history that cannot be written must not stop the seminar being taught.
@@ -660,6 +671,7 @@ export function record(
    * менялось (так зовут тесты), — считаем, как раньше.
    */
   transaction?: Y.Transaction,
+  directContributor?: { participantId: string; role: ParticipantRole },
 ): void {
   const key = sessionId
   const existing = bursts.get(key)
@@ -690,6 +702,7 @@ export function record(
     burst = {
       sessionId,
       authors: authorId === null ? new Set() : new Set([authorId]),
+      contributors: new Map(),
       updates: [],
       before: baselines.get(key) ?? Y.encodeStateAsUpdate(new Y.Doc()),
       openedAt: now,
@@ -702,6 +715,9 @@ export function record(
   }
 
   burst.updates.push(update)
+  if (directContributor && changedNotebook(doc, transaction)) {
+    burst.contributors.set(directContributor.participantId, directContributor.role)
+  }
   burst.lastAt = now
   // Байты сервера всплеск не растят: поток вывода резал чужой набор на строки
   // по четыре килобайта, а «человек написал много» — это про то, что написал
@@ -768,6 +784,21 @@ export function record(
   // A pending burst must not be the reason the process stays alive; shutdown
   // flushes them all on the way out.
   burst.timer.unref?.()
+}
+
+/** Read changed types, not full cell text, on the hot path. Chat and output updates do not qualify. */
+function changedNotebook(doc: Y.Doc, transaction: Y.Transaction | undefined): boolean {
+  if (!transaction) return false
+  if (mayHaveReshaped(doc, transaction)) return true
+  for (const [type, keys] of transaction.changed) {
+    if (type instanceof Y.Text && type._item?.parentSub === 'source') {
+      const cell = type._item.parent
+      if (cell instanceof Y.Map && ['code', 'markdown'].includes(String(cell.get('type')))) return true
+    }
+    if (type instanceof Y.Map && (keys.has('source') || keys.has('type'))
+      && ['code', 'markdown'].includes(String(type.get('type')))) return true
+  }
+  return false
 }
 
 /** Close whatever is open for one session — before a read, or on shutdown. */

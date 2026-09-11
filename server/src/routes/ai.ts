@@ -1,4 +1,5 @@
 import { tr, formatNumber } from '@shared/i18n'
+import { appendActivity } from '../activity.js'
 /**
  * The oracle's REST surface.
  *
@@ -257,6 +258,7 @@ export function aiRoutes(): Router {
        */
       questionsPerHour: settings.questionsPerHour,
       slowModeSeconds: settings.slowModeSeconds,
+      agentSteps: settings.agentSteps,
     })
   })
 
@@ -641,6 +643,7 @@ export function aiRoutes(): Router {
      * ставит он сам, когда правда закончил.
      */
     if (!stopWork(req.params.id, entryId)) cancel(req.params.id, entryId)
+    appendActivity(req.params.id, auth.participantId, 'oracle.cancel_requested', { entryId }, auth.role)
     res.json({ ok: true })
   })
 
@@ -673,6 +676,7 @@ export function aiRoutes(): Router {
      */
     stopAll(req.params.id)
     clearThread(req.params.id)
+    appendActivity(req.params.id, auth.participantId, 'oracle.thread_cleared', {}, auth.role)
     res.json({ ok: true })
   })
 

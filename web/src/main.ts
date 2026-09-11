@@ -129,9 +129,19 @@ window.addEventListener('unhandledrejection', (event) => {
 })
 
 void (async () => {
-  await initializeLanguage()
-  const { default: App } = await import('./App.svelte')
+  // The form's code can travel while we read the instance language. Mounting
+  // still waits for both so the first interactive frame uses that language.
+  const [, { default: App }] = await Promise.all([
+    initializeLanguage(),
+    import('./App.svelte'),
+  ])
   mount(App, { target })
   await stylesApplied()
   dismissShell()
+  // Give the styled join form a frame before using spare bandwidth for the
+  // room. The build's head listener only preloads modules; their evaluation
+  // still waits for entry. A saved identity already warmed them in the head.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => window.dispatchEvent(new Event('colloq:ready')))
+  })
 })().catch(offerReload)

@@ -41,6 +41,7 @@ import { flushAllFiles, forgetFiles } from './files.js'
 import { watchBooks } from './books.js'
 import { forgetUndo } from '../ai/agent.js'
 import { abortSession } from '../ai/index.js'
+import { appendActivity } from '../activity.js'
 
 /**
  * Происхождение для записи, которую сервер делает от чьего-то имени.
@@ -166,6 +167,8 @@ interface ConnState {
    * сокетов (см. liveSince), и других у сервера нет.
    */
   openedAt: number
+  /** Shared across one person's overlapping tabs; survives closing their first tab. */
+  presenceStartedAt: number
 }
 
 interface DocEntry extends SessionDoc {
@@ -275,6 +278,11 @@ function closeConn(entry: DocEntry, conn: WebSocket): void {
   const state = entry.conns.get(conn)
   if (!state) return
   entry.conns.delete(conn)
+  if (state.participantId && !Array.from(entry.conns.values()).some(other => other.participantId === state.participantId)) {
+    appendActivity(entry.sessionId, state.participantId, 'presence.left', {
+      reason: 'disconnected', durationMs: Math.max(0, Date.now() - state.presenceStartedAt),
+    }, state.role)
+  }
   // Ушёл последний — с этой секунды комната пустая, и отсчёт до выселения
   // (см. `sweepIdleRooms`) идёт отсюда.
   if (entry.conns.size === 0) entry.emptySince = Date.now()
@@ -689,7 +697,9 @@ function getEntry(sessionId: string, title?: string): DocEntry {
         : typeof origin === 'string' && origin.startsWith(BEHALF_PREFIX)
           ? origin.slice(BEHALF_PREFIX.length)
           : null
-    record(sessionId, doc, update, author, tr)
+    const direct = origin instanceof WebSocket ? entry.conns.get(origin) : undefined
+    record(sessionId, doc, update, author, tr, direct?.participantId
+      ? { participantId: direct.participantId, role: direct.role } : undefined)
   })
 
   awareness.on(
@@ -1180,10 +1190,13 @@ export function handleCollabSocket(
   entry.emptySince = 0
   ws.binaryType = 'arraybuffer'
 
+  const existingPresence = participantId ? Array.from(entry.conns.values()).find(other => other.participantId === participantId) : undefined
+
   const state: ConnState = {
     role,
     participantId,
     openedAt: Date.now(),
+    presenceStartedAt: existingPresence?.presenceStartedAt ?? Date.now(),
     clientIds: new Set<number>(),
     missedPongs: 0,
     pingTimer: setInterval(() => {
@@ -1202,6 +1215,7 @@ export function handleCollabSocket(
     }, PING_INTERVAL_MS),
   }
   entry.conns.set(ws, state)
+  if (participantId && !existingPresence) appendActivity(sessionId, participantId, 'presence.joined', {}, role)
   if (wasEmpty) console.log(`[room ${sessionId}] opened`)
 
   ws.on('pong', () => {
@@ -1533,6 +1547,10 @@ export function dropSessionDoc(sessionId: string): void {
 
 export function shutdownCollab(): void {
   for (const entry of docs.values()) {
+    const people = new Map(Array.from(entry.conns.values()).filter(state => state.participantId).map(state => [state.participantId!, state]))
+    for (const [id, state] of people) appendActivity(entry.sessionId, id, 'presence.left', {
+      reason: 'server_shutdown', durationMs: Math.max(0, Date.now() - state.presenceStartedAt),
+    }, state.role)
     for (const conn of Array.from(entry.conns.keys())) {
       const state = entry.conns.get(conn)
       if (state) clearInterval(state.pingTimer)

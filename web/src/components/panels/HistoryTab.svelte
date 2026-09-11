@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
+  import ActivityHistory from './ActivityHistory.svelte'
   /**
    * What the room did to its notebook, and how to put any of it back.
    *
@@ -33,6 +34,8 @@
 
   const session = getSessionState()
   const isHost = $derived(session.me.role === 'host')
+  let view = $state<'activity' | 'versions'>('activity')
+  const showActivity = $derived(isHost && view === 'activity')
 
   /**
    * История — про одну тетрадь, и панель обязана назвать какую.
@@ -177,6 +180,7 @@
   const BURST_SETTLED_MS = BURST_IDLE_MS + 500
 
   $effect(() => {
+    if (showActivity) return
     void load()
 
     let soon: ReturnType<typeof setTimeout> | null = null
@@ -224,8 +228,18 @@
   }
 </script>
 
+<div class="history-panel">
+  {#if isHost}
+    <nav class="history-views" aria-label={tr('activity.views')}>
+      <button type="button" aria-pressed={showActivity} class:on={showActivity} onclick={() => (view = 'activity')}>{tr('activity.title')}</button>
+      <button type="button" aria-pressed={!showActivity} class:on={!showActivity} onclick={() => (view = 'versions')}>{tr('activity.versions')}</button>
+    </nav>
+  {/if}
+  {#if showActivity}
+    <ActivityHistory />
+  {:else}
 <div class="hist">
-  <div class="hist-list" role="list">
+  <div class="hist-list">
     <!-- Лента не про всю комнату, а про одну тетрадь. Сказать это надо до
          первого клика: в комнате с двумя тетрадями «ничего не записалось»
          читается как пропажа правок, а не как границы истории. -->
@@ -242,7 +256,7 @@
       {#each versions as v (v.seq)}
         <button
           type="button"
-          role="listitem"
+          aria-pressed={openSeq === v.seq}
           class="hist-row"
           class:on={openSeq === v.seq}
           class:mark={v.kind === 'checkpoint'}
@@ -335,10 +349,13 @@
     {/if}
 
     <div class="hist-actions">
+      <p id="history-versioned-notebook" class="hist-target" title={versionedName}>{tr('activity.notebook')}: <strong>{versionedName}</strong></p>
+      <div class="hist-buttons">
       {#if naming}
         <input
           class="hist-name"
           bind:value={label}
+          aria-label={tr('activity.checkpointName')}
           placeholder={tr('room.ui.644')}
           maxlength="80"
           onkeydown={(e) => {
@@ -361,22 +378,32 @@
             class="hist-go"
             disabled={busy}
             title={tr('room.ui.646')}
+            aria-describedby="history-versioned-notebook"
             onclick={() => restore()}
           >
-            <Icon name="restart" size={12} /> {tr('room.ui.170')} {versionedName} {tr('room.ui.647')} </button>
+            <Icon name="restart" size={14} /> {tr('activity.restoreWhole')} </button>
         {/if}
         {#if isHost}
           <button type="button" class="hist-mini" onclick={() => (naming = true)}> {tr('room.ui.648')} </button>
         {/if}
       {/if}
+      </div>
       <span class="hist-foot">
         {#if isHost}{tr('room.ui.649')}{:else}{tr('room.ui.650')}{/if}
       </span>
     </div>
   </div>
 </div>
+  {/if}
+</div>
 
 <style>
+  .history-panel { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
+  .history-views { display: flex; flex: none; gap: 4px; padding: 7px 14px; border-bottom: 1px solid var(--tm-edge); }
+  .history-views button { min-height: 32px; padding: 5px 12px; border: 1px solid transparent; background: transparent; color: var(--tm-muted); font: inherit; font-size: 12px; cursor: pointer; }
+  .history-views button.on { border-color: var(--tm-edge); background: #0e1a3d; color: var(--tm-accent); }
+  .history-views button:focus-visible { outline: 2px solid var(--tm-accent); outline-offset: 2px; }
+
   /*
    * Палитра ящика — ОДНА, и берётся она отсюда переменными, а не второй копией
    * тех же чисел. Копия успела разойтись: подчёркивание вкладки History стояло
@@ -394,6 +421,7 @@
     display: flex;
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
     color: var(--tm-muted);
   }
 
@@ -538,6 +566,7 @@
     flex-direction: column;
     flex: 1 1 auto;
     min-width: 0;
+    min-height: 0;
   }
 
   .hist-diffs {
@@ -603,13 +632,20 @@
 
   .hist-actions {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
     flex: none;
-    height: 44px;
-    padding: 0 14px;
+    margin-top: auto;
+    padding: 10px 14px;
     border-top: 1px solid var(--tm-edge);
   }
+
+  .hist-target { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--tm-faint); }
+  .hist-target strong { font-weight: 500; color: var(--tm-muted); }
+  .hist-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .hist-buttons .hist-go, .hist-buttons .hist-mini { box-sizing: border-box; height: 36px; flex: 0 0 auto; justify-content: center; white-space: nowrap; letter-spacing: 0.06em; }
+  .hist-buttons .hist-name { box-sizing: border-box; height: 36px; min-width: 100px; }
 
   .hist-go,
   .hist-mini {
@@ -679,7 +715,6 @@
   }
 
   .hist-foot {
-    margin-left: auto;
     font-size: 11px;
     color: var(--tm-faint);
   }
@@ -719,12 +754,17 @@
   @media (max-width: 720px) {
     .hist {
       flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .hist-change {
+      flex: 1 0 200px;
     }
 
     .hist-list {
       width: 100%;
       flex: 0 0 auto;
-      max-height: 45%;
+      max-height: 140px;
       border-right: 0;
       border-bottom: 1px solid var(--tm-edge);
     }

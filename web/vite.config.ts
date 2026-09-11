@@ -1,8 +1,35 @@
 import { defineConfig, type Plugin } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { fileURLToPath, URL } from 'node:url'
+import path from 'node:path'
+import { messages } from '../shared/i18n'
+import { collectEntryMessages } from './scripts/entry-messages'
 
 const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
+
+/** Server imports keep all catalogs; browser entry carries only its own copy. */
+function entryLanguage(): Plugin {
+  const root = fileURLToPath(new URL('../', import.meta.url))
+  const shared = path.join(root, 'shared/i18n')
+  const browser = path.join(root, 'web/src/lib/i18n-browser.ts')
+  const virtual = 'virtual:colloq-entry-messages'
+  return {
+    name: 'colloq-entry-language',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      if (source === virtual) return '\0' + virtual
+      const resolved = source.startsWith('.') && importer
+        ? path.resolve(path.dirname(importer), source) : source
+      if (source === '@shared/i18n' || resolved.replace(/\.(?:js|ts)$/, '') === shared) return browser
+    },
+    load(id) {
+      if (id !== '\0' + virtual) return
+      const entry = collectEntryMessages(root, messages)
+      for (const file of entry.files) this.addWatchFile(file)
+      return `export default ${JSON.stringify(entry.messages)}`
+    },
+  }
+}
 
 /* ------------------------------------------------------------------ chunks */
 
@@ -12,8 +39,8 @@ const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
  * student who comes back next week revalidates only the chunks that actually
  * changed instead of one monolith whose hash moves on every app edit.
  *
- * Экран входа живёт на /s/:id, и там codemirror с render нарочно приезжают
- * сразу: за входом всегда идёт комната — см. firstPaint ниже.
+ * On /s/:id a cold visitor gets the join form first, then warms the editor
+ * while entering their name — see firstPaint below.
  */
 const CODEMIRROR = /^(@codemirror\/|@lezer\/|y-codemirror\.next$|style-mod$|w3c-keyname$|crelt$)/
 const YJS = /^(yjs|y-websocket|y-protocols|y-indexeddb|lib0)$/
@@ -72,11 +99,10 @@ function manualChunks(id: string): string | undefined {
  *  - the app stylesheet stops blocking render, so the inlined shell in
  *    index.html paints with zero network. main.ts holds the shell up until the
  *    sheet has applied, so the app itself is never seen undressed.
- *  - a seminar link goes straight into the notebook, so on /s/:id the room
- *    screen and the editor and renderer chunks are requested alongside the
- *    entry rather than three round trips later, once the route has resolved and
- *    the first cell has mounted. On '/' none of them is fetched at all — that is
- *    the whole point of splitting them out.
+ *  - the router/join form is requested alongside the entry, so a cold visit
+ *    doesn't wait for entry → language API → form before starting its download.
+ *    The notebook is warmed immediately for a saved identity, and after the
+ *    form paints for a cold visit, without delaying the name field.
  */
 function firstPaint(): Plugin {
   let base = '/'
@@ -89,7 +115,15 @@ function firstPaint(): Plugin {
     transformIndexHtml: {
       order: 'post',
       handler(html, ctx) {
-        let out = html.replace(/<link[^>]+rel="stylesheet"[^>]*>/g, (tag) => {
+        // The cold form's small date/id labels can use the metric-matched
+        // fallback until normal font discovery. Do not put 31 KB of code font
+        // ahead of its JS. Returning rooms still preload before editors paint.
+        let out = html.replace(/<link\b[^>]*href="\/fonts\/jetbrains-mono-latin\.woff2"[^>]*>/g,
+          `<script data-colloq-mono-preload>(()=>{const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(location.pathname);` +
+          `let warm=!room;try{if(room)warm=!!JSON.parse(localStorage.getItem("colloq.identity.v1")||"{}")[room[1]]?.token}catch{}` +
+          `if(warm){const l=document.createElement("link");l.rel="preload";l.as="font";l.type="font/woff2";` +
+          `l.crossOrigin="anonymous";l.href="/fonts/jetbrains-mono-latin.woff2";document.head.appendChild(l)}})()</script>`)
+        out = out.replace(/<link[^>]+rel="stylesheet"[^>]*>/g, (tag) => {
           // Leave anything already deferred alone, and anything cross-origin:
           // the fonts are ours and local now, but the rule outlives them.
           if (/\bmedia=/.test(tag) || /href="https?:/.test(tag)) return tag
@@ -100,15 +134,10 @@ function firstPaint(): Plugin {
           return `${deferred}<noscript>${tag}</noscript>`
         })
 
-        /*
-         * Что просить сразу на /s/:id: сам экран комнаты и то, без чего он не
-         * рисует ни одной ячейки. Все три — уже собранные куски, так что это не
-         * лишние байты, а те же самые, запрошенные на круг раньше. Экран
-         * комнаты — самый крупный из них, и до сих пор он начинал качаться
-         * только после того, как index.js скачан, разобран и запущен: лишний
-         * круг сети на единственном пути, по которому в комнату идут все.
-         */
-        const notebookOnly = new Set([ROOM_CHUNK, 'codemirror', 'render'])
+        // Only returning identities need these before the form. Cold visitors
+        // warm them after paint, while typing, instead of waiting for /join
+        // and then document sync to start the editor's download.
+        const notebookOnly = new Set([ROOM_CHUNK, 'codemirror', 'render', 'full-language'])
         const deferred = Object.values(ctx.bundle ?? {}).filter(
           (asset): asset is typeof asset & { fileName: string } =>
             asset.type === 'chunk' && notebookOnly.has(asset.name ?? ''),
@@ -133,11 +162,35 @@ function firstPaint(): Plugin {
           const files = JSON.stringify(deferred.map((chunk) => base + chunk.fileName))
           out = out.replace(
             '</head>',
-            `<script>if(location.pathname.startsWith("/s/"))for(const f of ${files}){` +
+            `<script data-colloq-room-preload>(()=>{const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(location.pathname);` +
+              `let known=false;try{known=!!(room&&JSON.parse(localStorage.getItem("colloq.identity.v1")||"{}")[room[1]]?.token)}catch{}` +
+              `let warmed=false;const warm=()=>{if(!room||warmed)return;warmed=true;for(const f of ${files}){` +
               `const l=document.createElement("link");l.rel="modulepreload";` +
-              `l.crossOrigin="anonymous";l.href=f;document.head.appendChild(l)}</script></head>`,
+              `l.crossOrigin="anonymous";l.href=f;document.head.appendChild(l)}};` +
+              `if(known)warm();else window.addEventListener("colloq:ready",warm,{once:true})})()</script></head>`,
           )
         }
+        const entry = Object.values(ctx.bundle ?? {}).find(
+          (asset) => asset.type === 'chunk' && asset.name === 'App',
+        )
+        if (!entry || entry.type !== 'chunk') throw new Error('Missing App chunk for first-paint preload')
+        const formFiles = new Set([entry.fileName, ...entry.imports])
+        out = out.replace('</head>', [...formFiles].map((file) =>
+          `<link rel="modulepreload" crossorigin href="${base}${file}">`,
+        ).join('') + '</head>')
+        // These routes have no join form. Fetch their code and catalog together
+        // now, while loadLocalizedScreen still controls evaluation order.
+        const routeFiles = (names: string[]) => names.flatMap((name) => {
+          const chunk = Object.values(ctx.bundle ?? {}).find((asset) => asset.type === 'chunk' && asset.name === name)
+          return chunk ? [base + chunk.fileName] : []
+        })
+        const adminFiles = JSON.stringify(routeFiles(['full-language', 'AdminScreen']))
+        const readerFiles = JSON.stringify(routeFiles(['full-language', 'ReaderScreen', 'render']))
+        out = out.replace('</head>', `<script data-colloq-route-preload>(()=>{` +
+          `const p=location.pathname;const files=/^\\/(?:admin(?:\\/|$)|$)/.test(p)?${adminFiles}:` +
+          `/^\\/(?:c|p)\\//.test(p)?${readerFiles}:[];for(const f of files){` +
+          `const l=document.createElement("link");l.rel="modulepreload";l.crossOrigin="anonymous";` +
+          `l.href=f;document.head.appendChild(l)}})()</script></head>`)
         return out
       },
     },
@@ -145,7 +198,7 @@ function firstPaint(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [svelte(), firstPaint()],
+  plugins: [entryLanguage(), svelte(), firstPaint()],
   resolve: {
     alias: {
       '@shared': fileURLToPath(new URL('../shared', import.meta.url)),

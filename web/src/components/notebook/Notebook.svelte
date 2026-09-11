@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
   import { tr } from '@shared/i18n'
   import { tick } from 'svelte'
   import { findCell, isCellOpen, type CellType } from '@shared/notebook'
@@ -18,6 +19,7 @@
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
   import { watchBooks, watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import CellView from './CellView.svelte'
+  import { nextBuiltCells } from './first-mount'
 
   interface Props {
     /**
@@ -111,7 +113,11 @@
   }
 
   function enter(id: string) {
-    window.dispatchEvent(new CustomEvent('colloq:enter-cell', { detail: { cellId: id } }))
+    // Selection can construct a previously unseen cell. Its window listener
+    // must exist before handing focus to it (including Shift+Enter handoffs).
+    void tick().then(() => {
+      window.dispatchEvent(new CustomEvent('colloq:enter-cell', { detail: { cellId: id } }))
+    })
   }
 
   async function addAt(index: number, type: CellType) {
@@ -238,10 +244,11 @@
 
   /**
    * Every mounted code cell is a CodeMirror instance, and a seminar notebook is
-   * tens of them. Cells far outside the viewport keep their component — and
-   * every Yjs subscription with it — but swap the editor and the outputs for a
-   * placeholder the height of what they last measured, so the scrollbar stays
-   * honest and coming back is a render rather than a rebuild.
+   * tens of them. Defer the full cell component until it is near the viewport,
+   * selected, or running. Constructing hundreds of offscreen components and
+   * their subscriptions took longer than the entire download on cold entry.
+   * Once visited, cells keep their component and editing state; CellView only
+   * parks the editor and output body at its measured height.
    *
    * A cell the observer has not ruled on yet falls back to its position, which
    * is what keeps a cold start from building forty editors before the first
@@ -251,6 +258,7 @@
   const NEAR_MARGIN = '1200px 0px'
 
   let ruling = $state.raw(new Map<string, boolean>())
+  let built = $state.raw<ReadonlySet<string>>(new Set())
 
   const viewport =
     typeof IntersectionObserver === 'undefined'
@@ -272,8 +280,17 @@
   $effect(() => () => viewport?.disconnect())
 
   function isNear(id: string, index: number): boolean {
-    return ruling.get(id) ?? index < EAGER
+    return viewport === null || (ruling.get(id) ?? index < EAGER)
   }
+
+  function needsCell(id: string, index: number): boolean {
+    return (active && isNear(id, index)) || session.selection.includes(id) ||
+      session.selectedCellId === id || notebook.current.runningCellId === id
+  }
+
+  $effect(() => {
+    built = nextBuiltCells(built, ids.current, needsCell)
+  })
 
   function slot(node: HTMLElement, id: string) {
     node.dataset.cellSlot = id
@@ -1094,26 +1111,17 @@
   <div class="px-6">
 
   {#if cold}
-    <!--
-      Три серые ячейки вместо пустой тетради с живыми кнопками.
-
-      Не «загрузка…» и не крутилка: место, которое сейчас займут настоящие
-      ячейки, — тот же приём, что у резерва под вывод. Пульс общий на все три,
-      чтобы это читалось как одно ожидание, а не как три предмета.
-    -->
-    <div class="animate-pulse" aria-hidden="true">
-      {#each [180, 96, 132] as height, index (index)}
-        <div class="flex gap-4 pb-4">
-          <div class={cn('h-7 shrink-0', gutter === '4.5rem' ? 'w-14' : 'w-8')}></div>
-          <div class="min-w-0 flex-1 border-l-4 border-line bg-surface/50" style="height: {height}px"></div>
-        </div>
-      {/each}
-    </div>
-    <p class="pl-1 text-2xs text-muted" role="status">{tr('room.ui.454')}</p>
+    <ContentSkeleton variant="notebook" label={tr('room.ui.454')} />
   {:else}
   {#each ids.current as id, index (id)}
-    {@render adder(index)}
+    {@const showCell = built.has(id) || needsCell(id, index)}
+    {#if showCell}
+      {@render adder(index)}
+    {:else}
+      <div class="h-6" aria-hidden="true"></div>
+    {/if}
     <div use:slot={id}>
+      {#if showCell}
       <CellView
         {id}
         {index}
@@ -1124,6 +1132,11 @@
         near={isNear(id, index)}
         onselect={(event) => pick(id, event)}
       />
+      {:else}
+        <!-- Keep jump/selection targets and an estimated scroll position even
+             before the cell's subscriptions and toolbar have been built. -->
+        <div data-cell-id={id} data-cell-deferred class="h-[240px]" aria-hidden="true"></div>
+      {/if}
     </div>
   {/each}
 

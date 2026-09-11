@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
   import { tr } from '@shared/i18n'
   /**
    * Папка семинара деревом.
@@ -91,8 +92,11 @@
   const books = watchBooks(session.doc)
   const isBook = (path: string): boolean => books.current.some((book) => book.path === path)
 
-  /** Свёрнутые папки. Всё, чего здесь нет, развёрнуто: дерево видно целиком. */
-  let collapsed = $state<Set<string>>(new Set())
+  /** Folders open only by an explicit click or drag-hover, including on first sync. */
+  let expanded = $state<Set<string>>(new Set())
+  const collapsed = $derived(new Set(
+    session.files.filter(entry => entry.dir && !expanded.has(entry.path)).map(entry => entry.path),
+  ))
   /**
    * Строка, которой коснулись последней, — и единственный вход к её действиям
    * с пальца.
@@ -127,8 +131,10 @@
 
   const visible = $derived(
     session.files.filter((entry) => {
-      for (const folder of collapsed) {
-        if (entry.path.startsWith(folder + '/')) return false
+      let folder = parentOf(entry.path)
+      while (folder) {
+        if (!expanded.has(folder)) return false
+        folder = parentOf(folder)
       }
       return true
     }),
@@ -231,10 +237,10 @@
     // Тап по стрелке — тоже прикосновение к строке: раскрыв папку пальцем,
     // человек должен видеть и то, что с ней можно сделать.
     picked = path
-    const next = new Set(collapsed)
+    const next = new Set(expanded)
     if (next.has(path)) next.delete(path)
     else next.add(path)
-    collapsed = next
+    expanded = next
   }
 
   /**
@@ -709,9 +715,9 @@
     hoverTimer = window.setTimeout(() => {
       // Только разворачивает: свернуть папку под указателем — фокус, а не
       // помощь, и цель исчезла бы вместе со своими строками.
-      const next = new Set(collapsed)
-      next.delete(wanted)
-      collapsed = next
+      const next = new Set(expanded)
+      next.add(wanted)
+      expanded = next
     }, 500)
   }
 
@@ -938,6 +944,10 @@
       }}
     />
   {/snippet}
+
+  {#if !session.filesArrived && !listed}
+    <div class="px-2"><ContentSkeleton variant="rows" /></div>
+  {/if}
 
   {#each visible as entry (entry.path)}
     {@const depth = depthOf(entry.path)}

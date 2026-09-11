@@ -309,6 +309,7 @@ export const api = {
       mode: 'full' | 'hints' | 'off'
       questionsPerHour: number
       slowModeSeconds: number
+      agentSteps?: number
     }>('/api/ai/status'),
 
   /**

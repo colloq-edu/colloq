@@ -108,6 +108,7 @@
   let questionsText = $state('')
   let slowText = $state('')
   let contextText = $state('')
+  let stepsText = $state('')
 
   let replacingKey = $state(false)
   let newKey = $state('')
@@ -160,6 +161,8 @@
     whole(contextText, LIMITS.contextChars, loaded?.contextChars ?? LIMITS.contextChars.default),
   )
 
+  const steps = $derived(whole(stepsText, LIMITS.agentSteps, loaded?.agentSteps ?? LIMITS.agentSteps.default))
+
   const dirty = $derived.by(() => {
     const saved = loaded
     if (!saved) return false
@@ -172,6 +175,7 @@
       questions !== saved.questionsPerHour ||
       slow !== saved.slowModeSeconds ||
       context !== saved.contextChars ||
+      steps !== (saved.agentSteps ?? LIMITS.agentSteps.default) ||
       newKey.length > 0 ||
       clearKey
     )
@@ -318,6 +322,7 @@
     questionsText = String(settings.questionsPerHour)
     slowText = String(settings.slowModeSeconds)
     contextText = grouped(settings.contextChars)
+    stepsText = String(settings.agentSteps ?? LIMITS.agentSteps.default)
     replacingKey = false
     newKey = ''
     clearKey = false
@@ -409,6 +414,7 @@
     if (questions !== saved.questionsPerHour) patch.questionsPerHour = questions
     if (slow !== saved.slowModeSeconds) patch.slowModeSeconds = slow
     if (context !== saved.contextChars) patch.contextChars = context
+    if (steps !== (saved.agentSteps ?? LIMITS.agentSteps.default)) patch.agentSteps = steps
     if (clearKey) patch.apiKey = ''
     else if (newKey.length > 0) patch.apiKey = newKey
 
@@ -840,6 +846,23 @@
               {tr("admin.a.student.waits.this.long.between.questions.the.teacher.does.not")}
             {/if}
           </p>
+        </div>
+
+        <div class="min-w-0">
+          {@render fieldLabel(tr('common.agentSteps'), 'ai-agent-steps')}
+          <div class="field flex items-center gap-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/25">
+            <input
+              id="ai-agent-steps"
+              bind:value={stepsText}
+              onblur={() => (stepsText = String(steps))}
+              class="min-w-0 flex-1 bg-transparent font-mono text-code text-ink outline-none"
+              inputmode="numeric"
+              autocomplete="off"
+            />
+            <span class="shrink-0 text-2xs text-muted">{tr('common.agentStepsUnit')}</span>
+          </div>
+          <p class="mt-1.5 text-2xs text-muted">{tr('common.agentStepsNote')}</p>
+          {#if steps === 0}<p class="mt-1 text-2xs font-semibold text-muted">{tr('common.unlimitedActions')}</p>{/if}
         </div>
 
         <div class="min-w-0">

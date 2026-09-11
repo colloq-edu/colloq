@@ -17,6 +17,7 @@
     "dev:server": "npm run dev -w @colloq/server",
     "dev:web": "npm run dev -w @colloq/web",
     "build": "npm run build -w @colloq/web && npm run build -w @colloq/server && npm run build -w @colloq/runtime",
+    "build:optimized": "npm run build:optimized -w @colloq/web && npm run build -w @colloq/server && npm run build -w @colloq/runtime",
     "start": "node server/dist/server.js",
     "typecheck": "npm run typecheck -w @colloq/server && npm run typecheck -w @colloq/web && npm run typecheck -w @colloq/runtime",
     "e2e": "tsx scripts/e2e.mts",

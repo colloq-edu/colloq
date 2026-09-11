@@ -3,6 +3,7 @@
   import { OPEN_ROOM } from '@shared/rules'
   import { onMount } from 'svelte'
   import Icon from '@/components/ui/Icon.svelte'
+  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
   import JoinScreen from '@/screens/JoinScreen.svelte'
   import { api, ApiError } from '@/lib/api'
   import {
@@ -12,13 +13,23 @@
     type StoredIdentity,
   } from '@/lib/identity'
   import {
-    forgetLocalStore,
+    forgetSessionInfo,
     recallSessionInfo,
     rememberSessionInfo,
-  } from '@/lib/persistence.svelte'
+  } from '@/lib/session-cache'
   import { isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '@/lib/routes'
   import { upgradeIfStaff } from '@/screens/staff'
+  import { loadLocalizedScreen } from '@/lib/screen-language'
   import { saysSessionMissing, type SessionInfo } from '@shared/protocol'
+
+  // Removing a deleted room is the only entry-screen operation that needs
+  // IndexedDB; normal cold entry must not download the notebook CRDT for it.
+  const forgetLocalStore = (id: string) => {
+    forgetSessionInfo(id)
+    return import('@/lib/persistence.svelte')
+      .then((store) => store.forgetLocalStore(id))
+      .catch(() => {})
+  }
 
   /**
    * The whole router. Two routes — '/' and '/s/:id' — is not enough surface to
@@ -66,7 +77,7 @@
    */
   let adminChunk: Promise<typeof import('@/screens/AdminScreen.svelte').default> | null = null
   const adminScreen = () =>
-    (adminChunk ??= import('@/screens/AdminScreen.svelte').then((m) => m.default))
+    (adminChunk ??= loadLocalizedScreen(() => import('@/screens/AdminScreen.svelte').then((m) => m.default)))
 
   /*
    * The workspace goes the same way, and for a sharper version of the same
@@ -75,14 +86,13 @@
    * field. Statically imported, those bytes had to be fetched, parsed and run
    * before the join form could exist at all.
    *
-   * Warmed below the moment a seminar route is on screen, so the chunk is on
-   * the wire while the student is still typing — a returning student, who goes
-   * straight through, never waits on a request that has not already started.
+   * Evaluation starts alongside the join request. The build preloads room
+   * bytes after the form paints, so neither phase holds up the name field.
    */
   let workspaceChunk: Promise<typeof import('@/screens/SessionScreen.svelte').default> | null =
     null
   const workspace = () =>
-    (workspaceChunk ??= import('@/screens/SessionScreen.svelte').then((m) => m.default))
+    (workspaceChunk ??= loadLocalizedScreen(() => import('@/screens/SessionScreen.svelte').then((m) => m.default)))
 
   /*
    * Публичные страницы — тоже отдельным куском, и по более резкому поводу, чем
@@ -92,7 +102,7 @@
    */
   let readerChunk: Promise<typeof import('@/screens/ReaderScreen.svelte').default> | null = null
   const reader = () =>
-    (readerChunk ??= import('@/screens/ReaderScreen.svelte').then((m) => m.default))
+    (readerChunk ??= loadLocalizedScreen(() => import('@/screens/ReaderScreen.svelte').then((m) => m.default)))
 
   let session = $state<SessionInfo | null>(null)
   let identity = $state<StoredIdentity | null>(null)
@@ -180,9 +190,9 @@
   let entered = sessionId
   let entryAttempt = 0
 
-  // After the first paint, not during it: the join screen owes nothing to this.
+  // A returning visitor goes straight to the room; a new visitor joins first.
   $effect(() => {
-    if (sessionId) void workspace()
+    if (sessionId && identity) void workspace()
   })
 
   onMount(() => {
@@ -373,11 +383,6 @@
         path = landing
       })
   })
-
-  // The join screen's poster half does not depend on the seminar name, so it
-  // paints immediately; a non-breaking space holds the line the name lands on so
-  // its arrival never pushes the form down.
-  const poster = $derived(session ? { ...session, name: session.name || '\u00a0' } : null)
 </script>
 
 {#if courseId || publicSeminar}
@@ -400,7 +405,9 @@
     адрес, оставляя на экране тот же список.
   -->
   {#key courseId ? `c:${courseId}` : `p:${publicSeminar?.id ?? ''}`}
-    {#await reader() then Reader}
+    {#await reader()}
+      <ContentSkeleton />
+    {:then Reader}
       <Reader
         course={courseId}
         publication={publicSeminar}
@@ -409,10 +416,9 @@
     {/await}
   {/key}
 {:else if isAdmin}
-  <!-- No pending branch: the chunk is one request on a local network and the
-       panel itself paints an empty canvas until the server answers, so a
-       spinner here would only add a second flash to the same wait. -->
-  {#await adminScreen() then AdminScreen}
+  {#await adminScreen()}
+    <ContentSkeleton />
+  {:then AdminScreen}
     <AdminScreen />
   {/await}
 {:else if sessionId === null}
@@ -427,7 +433,9 @@
     отказа вели на `/`. Обе теперь ведут туда только штат — см. выше и
     SessionScreen.
   -->
-  {#await adminScreen() then AdminScreen}
+  {#await adminScreen()}
+    <ContentSkeleton />
+  {:then AdminScreen}
     <AdminScreen />
   {/await}
 {:else if failure}
@@ -491,10 +499,9 @@
     connection the server still answers as a student's.
   -->
   {#key me.token}
-    <!-- No pending branch, as with the admin panel above: the workspace paints
-         its own empty room while the document loads, and a spinner in front of
-         it would only be a second thing to wait through. -->
-    {#await workspace() then Workspace}
+    {#await workspace()}
+      <ContentSkeleton />
+    {:then Workspace}
       <Workspace
         session={room}
         identity={me}
@@ -507,6 +514,11 @@
       />
     {/await}
   {/key}
-{:else if poster}
-  <JoinScreen session={poster} {notice} onjoined={(next) => (identity = next)} />
+{:else if session}
+  <JoinScreen
+    {session}
+    {notice}
+    onjoining={() => { void workspace().catch(() => {}) }}
+    onjoined={(next) => (identity = next)}
+  />
 {/if}

@@ -141,8 +141,8 @@
       <div class="min-w-0 flex-1 basis-56">
         <p class="text-ui font-semibold text-ink">{row.title}</p>
         <p class="mt-0.5 text-2xs leading-snug text-muted">{row.note}</p>
-        {#if row.kind === 'limit' && instance}
-          <p class="mt-0.5 text-2xs font-semibold leading-snug text-muted"> {tr('room.ui.5')} {row.atInstance(instance[row.key])}
+        {#if row.kind === 'limit' && instance && instance[row.key] !== undefined}
+          <p class="mt-0.5 text-2xs font-semibold leading-snug text-muted"> {tr('room.ui.5')} {row.atInstance(instance[row.key]!)}
           </p>
         {/if}
       </div>
@@ -171,7 +171,7 @@
             max={row.max}
             step="1"
             value={rules[row.key] ?? ''}
-            placeholder={instance ? String(instance[row.key]) : '—'}
+            placeholder={instance?.[row.key] !== undefined ? String(instance[row.key]) : '—'}
             aria-label={row.title}
             disabled={busy}
             onchange={(event) => commit(row, event.currentTarget)}

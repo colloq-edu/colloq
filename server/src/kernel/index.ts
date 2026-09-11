@@ -38,6 +38,8 @@ import {
   type YCell,
 } from '@shared/notebook'
 import { config } from '../config.js'
+import { appendActivity } from '../activity.js'
+import type { ActivityDetails, ActivityKind, ActivityOutcome } from '@shared/activity'
 import { sessionEnvironment } from '../db.js'
 import { activeName } from '../environments.js'
 import { formatNotebook, type FormatOutcome } from './format.js'
@@ -79,6 +81,9 @@ interface QueueItem {
   cellId: string
   runBy: string
   runById: string
+  activitySeq?: number | null
+  activityFinished?: boolean
+  activityCancelled?: boolean
   /**
    * Which press of Run this cell came from.
    *
@@ -103,6 +108,26 @@ interface QueueItem {
   council?: CouncilJob
 }
 
+function executionActivity(runtime: Runtime, item: QueueItem, kind: ActivityKind, details: ActivityDetails = {}): number | null {
+  return appendActivity(runtime.sessionId, item.runById, kind, {
+    cellId: item.council?.cellId ?? item.cellId,
+    subjectId: item.council?.participantId,
+    requestSeq: item.activitySeq ?? undefined,
+    source: 'participant',
+    ...details,
+  })
+}
+
+function finishExecution(runtime: Runtime, item: QueueItem, outcome: ActivityOutcome, durationMs = 0): void {
+  if (item.activityFinished) return
+  item.activityFinished = true
+  executionActivity(runtime, item, 'execution.finished', {
+    outcome: item.activityCancelled && outcome !== 'completed' ? 'cancelled' : outcome,
+    durationMs,
+  })
+  if (runtime.activityItem === item) runtime.activityItem = null
+}
+
 /** Попытка консилиума, которую ядро считает прямо сейчас. */
 interface ActiveJob {
   item: QueueItem
@@ -120,6 +145,7 @@ function councilQueueId(cellId: string, participantId: string): string {
 
 interface Runtime {
   sessionId: string
+  activityItem?: QueueItem | null
   kernel: JupyterKernel | null
   /** In-flight connect, shared by concurrent ensureKernel callers. */
   starting: Promise<void> | null
@@ -538,7 +564,7 @@ function dropQueue(runtime: Runtime): void {
         found.cell.set('state', 'idle' as CellState)
     }
   }, ORIGIN)
-  releaseCouncil(dropped)
+  releaseCouncil(runtime, dropped)
   syncQueue(runtime)
 }
 
@@ -549,8 +575,11 @@ function dropQueue(runtime: Runtime): void {
  * её сама. У попытки документа нет: не позвать — значит оставить на карточке
  * «в очереди» до конца пары. `null` — «запуска не было», см. CouncilJob.
  */
-function releaseCouncil(dropped: QueueItem[]): void {
-  for (const item of dropped) if (item.council) tellJob(item.council, null)
+function releaseCouncil(runtime: Runtime, dropped: QueueItem[]): void {
+  for (const item of dropped) {
+    finishExecution(runtime, item, 'cancelled')
+    if (item.council) tellJob(item.council, null)
+  }
 }
 
 /** Обратный вызов чужого модуля не должен уметь уронить насос. */
@@ -839,6 +868,7 @@ export async function restartSession(sessionId: string, restartedBy?: string): P
   // Два нажатия — один перезапуск. Второе присоединяется к первому, а не
   // запускает поверх него ещё один.
   if (runtime.restarting) return runtime.restarting
+  if (runtime.activityItem) runtime.activityItem.activityCancelled = true
   dropQueue(runtime)
   setStatus(runtime, 'restarting')
 
@@ -931,6 +961,7 @@ export async function interruptSession(sessionId: string, cellId?: string): Prom
     if (batch === null || batch === runtime.currentBatch) stopBatchOf(runtime, running)
   } else if (cellId === undefined) dropQueue(runtime)
   if (!runtime.kernel || runtime.kernel.phase === 'dead') return
+  if (runtime.activityItem) runtime.activityItem.activityCancelled = true
   try {
     await runtime.kernel.interrupt()
   } catch (err) {
@@ -954,6 +985,7 @@ export async function shutdownSession(sessionId: string, permanent = false): Pro
     // подключённое ядро.
     runtime.retired = true
     runtimes.delete(sessionId)
+    for (const item of runtime.queue) finishExecution(runtime, item, 'cancelled')
     runtime.queue.length = 0
     dropWriter(runtime)
     try {
@@ -1119,6 +1151,7 @@ export async function shutdownKernels(): Promise<void> {
   // с чистого листа, и первый же его повод обязан пройти по призракам.
   orphanSweeps.clear()
   for (const runtime of all) {
+    for (const item of runtime.queue) finishExecution(runtime, item, 'cancelled')
     runtime.queue.length = 0
     dropWriter(runtime)
     runtime.kernel?.detach()
@@ -1234,7 +1267,9 @@ export function requestRun(
         continue
       }
       mine += 1
-      runtime.queue.push({ cellId, runBy, runById, batch })
+      const item: QueueItem = { cellId, runBy, runById, batch }
+      item.activitySeq = executionActivity(runtime, item, 'execution.queued', { count: 1 })
+      runtime.queue.push(item)
       found.cell.set('state', 'queued' as CellState)
       found.cell.set('runBy', runBy)
       found.cell.set('runById', runById)
@@ -1273,6 +1308,7 @@ export function cancelRun(
     if (!wanted.has(item.cellId)) return true
     if (!isHost && item.runById !== participantId) return true
     removed.push(item.cellId)
+    finishExecution(runtime, item, 'cancelled')
     return false
   })
   if (removed.length === 0) return 0
@@ -1342,7 +1378,7 @@ function stopBatchOf(runtime: Runtime, cellId: string): void {
       found.cell.set('runById', null)
     }
   }, ORIGIN)
-  releaseCouncil(dropped)
+  releaseCouncil(runtime, dropped)
   syncQueue(runtime)
   // Said out loud, because a queue that empties without a word reads as a
   // product that ignored the button.
@@ -1369,7 +1405,7 @@ function stopBatch(runtime: Runtime, failedItem: QueueItem): void {
       found.cell.set('runById', null)
     }
   }, ORIGIN)
-  releaseCouncil(dropped)
+  releaseCouncil(runtime, dropped)
   syncQueue(runtime)
   kernelNote(
     runtime.sessionId,
@@ -1426,9 +1462,13 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   const { doc } = getSessionDoc(runtime.sessionId)
   const found = findCell(doc, item.cellId)
   // Someone deleted the cell while it sat in the queue.
-  if (!found || cellType(found.cell) !== 'code') return
+  if (!found || cellType(found.cell) !== 'code') {
+    finishExecution(runtime, item, 'cancelled')
+    return
+  }
 
   const cell = found.cell
+  runtime.activityItem = item
   const source = cellSource(cell).toString()
   /*
    * Потолок картинок — по числу тех, кому они поедут.
@@ -1452,6 +1492,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   // среду исполнения — чтобы длительность считалась по нашей записи.
   const startedAt = Date.now()
   runtime.started = { cellId: item.cellId, at: startedAt }
+  executionActivity(runtime, item, 'execution.started')
   syncQueue(runtime)
   setStatus(runtime, 'busy')
 
@@ -1503,6 +1544,7 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
     runtime.lastFinished = { cellId: item.cellId, batch: item.batch }
     dropWriter(runtime)
     setCellState(runtime.sessionId, item.cellId, 'ok')
+    finishExecution(runtime, item, 'completed', Math.max(0, Date.now() - startedAt))
     return
   }
 
@@ -1601,6 +1643,8 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
   }
 
   setCellState(runtime.sessionId, item.cellId, state)
+  finishExecution(runtime, item, state === 'ok' ? 'completed' : state === 'error' ? 'error' : 'cancelled',
+    Math.max(0, Date.now() - startedAt))
   syncQueue(runtime)
   // The cell may have written a CSV; the Files panel should not need a refresh.
   notifyWorkspaceChanged(runtime.sessionId)
@@ -1716,17 +1760,22 @@ export function requestCouncilRun(
     }
     // Кадр «в очереди» уходит по НОВОМУ заданию: он же переставляет отпечаток
     // текста, по которому recordRun решает, чей вывод считать своим.
-    runtime.queue[index] = { ...waiting, runBy, runById, council: job }
+    finishExecution(runtime, waiting, 'cancelled')
+    const replacement: QueueItem = { ...waiting, runBy, runById, council: job, activityFinished: false, activityCancelled: false, activitySeq: null }
+    replacement.activitySeq = executionActivity(runtime, replacement, 'execution.queued', { count: 1 })
+    runtime.queue[index] = replacement
     tellJob(job, queuedRun(job))
     return { queued: true, position: already }
   }
-  runtime.queue.push({
+  const item: QueueItem = {
     cellId: councilQueueId(job.cellId, job.participantId),
     runBy,
     runById,
     batch: ++batchCounter,
     council: job,
-  })
+  }
+  item.activitySeq = executionActivity(runtime, item, 'execution.queued', { count: 1 })
+  runtime.queue.push(item)
   const position = councilQueuePosition(sessionId, job.cellId, job.participantId) ?? 1
   tellJob(job, queuedRun(job))
   syncQueue(runtime)
@@ -1760,7 +1809,7 @@ export function cancelCouncilRun(
   const index = runtime.queue.findIndex((item) => item.cellId === id)
   if (index < 0) return false
   const [dropped] = runtime.queue.splice(index, 1)
-  releaseCouncil([dropped])
+  releaseCouncil(runtime, [dropped])
   syncQueue(runtime)
   return true
 }
@@ -1851,6 +1900,7 @@ function finishCouncil(runtime: Runtime, active: ActiveJob, state: 'ok' | 'error
     outputs: active.buffer.snapshot(),
     ranMs: Math.max(0, Date.now() - startedAt),
   }
+  finishExecution(runtime, active.item, state === 'ok' ? 'completed' : 'error', active.run.ranMs ?? 0)
   if (runtime.started?.cellId === active.item.cellId) runtime.started = null
   runtime.job = null
   runtime.currentCell = null
@@ -1881,6 +1931,8 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
   runtime.currentRunById = item.runById
   runtime.started = { cellId: item.cellId, at: startedAt }
   runtime.job = active
+  runtime.activityItem = item
+  executionActivity(runtime, item, 'execution.started')
   syncQueue(runtime)
   setStatus(runtime, 'busy')
   tellJob(job, { ...active.run })
@@ -1974,6 +2026,10 @@ async function runCouncilOne(runtime: Runtime, item: QueueItem, job: CouncilJob)
 
 /** A kernel that will not come up is an output on the cell, never a crash. */
 function reportDeadKernel(runtime: Runtime, message: string): void {
+  if (runtime.activityItem && !runtime.job) {
+    finishExecution(runtime, runtime.activityItem, 'error',
+      Math.max(0, Date.now() - (runtime.started?.at ?? Date.now())))
+  }
   /*
    * Попытка консилиума — тем же словом, но к попытке, а не в ячейку: у неё
    * нет ячейки, и OutputWriter ниже написал бы в пустоту, оставив карточку
@@ -1988,6 +2044,7 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
   }
   const head = runtime.queue[0]
   if (!runtime.currentCell && head?.council) {
+    finishExecution(runtime, head, 'error')
     runtime.queue.shift()
     tellJob(head.council, {
       state: 'error',
@@ -2014,6 +2071,7 @@ function reportDeadKernel(runtime: Runtime, message: string): void {
     runtime.currentBatch = null
     runtime.currentRunById = null
     const waiting = runtime.queue[0]?.cellId === stuck
+    if (waiting) finishExecution(runtime, runtime.queue[0], 'error')
     if (waiting) runtime.queue.shift()
     /*
      * Ячейка, которая только стояла в очереди, теряет номер вместе с ядром.
@@ -2072,6 +2130,7 @@ function stopIfDeleted(
     if (fired || origin === ORIGIN) return
     if (runtime.currentCell !== cellId || findCell(doc, watched)) return
     fired = true
+    if (runtime.activityItem) runtime.activityItem.activityCancelled = true
     kernelNote(
       runtime.sessionId,
       tr("server.theCellThatWasRunningWasDeleted.ec6ea8"),

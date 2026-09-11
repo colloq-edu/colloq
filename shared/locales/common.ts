@@ -2,6 +2,15 @@ import type { MessageCatalog } from '../i18n-types.js'
 export const commonMessages: MessageCatalog = {
   'common.loadingApp': { ru: 'Загрузка Colloq', en: 'Loading Colloq' },
   'common.loading': { ru: 'Загрузка…', en: 'Loading…' },
+  'common.agentSteps': { ru: 'Действий на запрос', en: 'Actions per request' },
+  'common.agentStepsUnit': { ru: 'действий', en: 'actions' },
+  'common.agentStepsNote': { ru: 'Для режима «Сделать»: чтение, правка и запуск — отдельные действия. 0 — без лимита, остановить можно вручную.', en: 'For Do mode: reading, editing and running each count as one action. 0 means unlimited; you can stop manually.' },
+  'common.agentStepsRoomNote': { ru: '0 — без лимита; пустое поле — как на сервере. Если на сервере задан лимит, занятие может только уменьшить его.', en: '0 means unlimited; leave blank to inherit the server setting. A class can only lower a finite server limit.' },
+  'common.unlimitedActions': { ru: 'Без лимита действий', en: 'Unlimited actions' },
+  'common.actionCount': { ru: '{count} действий на запрос', en: '{count} actions per request' },
+  'common.invalidAgentSteps': { ru: 'Введите целое число от 0 до {max}; 0 — без лимита действий.', en: 'Enter a whole number from 0 to {max}; 0 means unlimited actions.' },
+  'common.agentStepsReached': { ru: 'Достигнут настроенный лимит: {count} действий на запрос. Его можно изменить в правилах занятия или настройках Оракула. Выполненные действия перечислены выше. Отправьте новый запрос, чтобы продолжить.', en: 'The configured limit of {count} actions per request was reached. Change it in class rules or Oracle settings. Completed actions are listed above. Send a new request to continue.' },
+  'common.retryingConnection': { ru: 'Восстанавливаем соединение — пробуем войти ещё раз…', en: 'Reconnecting — trying to join again…' },
   'common.greeting': { ru: 'Здравствуйте, {name}', en: 'Hello, {name}' },
   'common.people': {
     ru: {

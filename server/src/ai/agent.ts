@@ -1,4 +1,6 @@
 import { tr } from '@shared/i18n'
+import { appendActivity } from '../activity.js'
+import type { ActivityOutcome } from '@shared/activity'
 /**
  * Оракул, который не отвечает, а делает.
  *
@@ -82,6 +84,7 @@ import {
 import { baseOf, normalizePath, parentOf, runnerFor } from '@shared/paths'
 import {
   actsAfterClass,
+  agentStepsIn,
   allows,
   allowsRun,
   allowsStructure,
@@ -116,16 +119,6 @@ const ORIGIN = 'server'
 /** Что сказать комнате про ошибку, у которой нет своих слов: читают её студенты. */
 const WENT_WRONG = () => tr("server.private.wentWrong")
 
-/**
- * Сколько ходов подряд оракул может сделать сам.
- *
- * Двенадцать — это «прочитал два файла, поправил один, запустил, увидел ошибку,
- * поправил, запустил снова» с запасом. Дальше он либо ходит по кругу, либо
- * взялся за работу, которую надо было разбить на части, — и в обоих случаях
- * честнее остановиться и сказать об этом, чем считать дальше за чужой счёт.
- */
-const MAX_STEPS = 12
-
 /** Сколько ждать один запуск. Дольше — это не «медленно», а «зависло». */
 const RUN_TIMEOUT_MS = 90_000
 
@@ -134,7 +127,7 @@ const RUN_TIMEOUT_MS = 90_000
  *
  * Стояло шестьдесят тысяч знаков — потолок, взятый под большое окно. Беда в
  * том, что прочитанное не уходит: оно остаётся в переписке и повторяется в
- * КАЖДОМ следующем шаге хода, до двенадцати раз. Одного `read_file` хватало,
+ * КАЖДОМ следующем шаге хода, много раз. Одного `read_file` хватало,
  * чтобы окно на 8k токенов переполнилось на втором шаге, `completeWithTools`
  * бросил 400 и ход оборвался, — а сделанные до этого правки уже лежали в
  * файлах, и объяснить их было некому.
@@ -200,7 +193,7 @@ const MAX_OUTPUT = 4_000
  *
  * `listFiles` держит две тысячи строк — это потолок для панели, которая рисует
  * дерево один раз. Здесь список ложится в переписку и повторяется в КАЖДОМ
- * следующем шаге хода, до двенадцати раз: распакованный датасет стоил бы
+ * следующем шаге хода, много раз: распакованный датасет стоил бы
  * дороже всей остальной работы и переполнил бы окно небольшой модели на
  * третьем шаге. Из каждой папки едет начало, про остальное сказано числом.
  */
@@ -1830,7 +1823,7 @@ export function stopWork(sessionId: string, entryId: string): boolean {
  *
  * Спрашивает маршрут: у комнаты один потолок на всё, что оракул делает разом
  * (routes/ai.ts · MAX_ROOM_STREAMS), и ход в нём считается наравне с потоком —
- * он держит запрос к провайдеру до двенадцати раз подряд и правит файлы.
+ * он держит запрос к провайдеру много раз подряд и правит файлы.
  */
 export function turnsInRoom(sessionId: string): number {
   const prefix = `${sessionId} `
@@ -1884,6 +1877,8 @@ export function work(options: WorkOptions): string {
   doc.transact(() => getChat(doc).push([entry]), ORIGIN)
   const entryId = entry.get('id') as string
 
+  appendActivity(options.sessionId, options.participantId, 'oracle.work_started', { entryId, action: 'work', source: 'participant' }, options.role)
+
   void loop(options, entryId, history).catch((err: unknown) => {
     console.error(`[session ${options.sessionId}] агент упал:`, reason(err, WENT_WRONG()))
     settle(options.sessionId, entryId, 'error', reason(err, WENT_WRONG()))
@@ -1893,12 +1888,19 @@ export function work(options: WorkOptions): string {
 }
 
 async function loop(options: WorkOptions, entryId: string, history: ChatTurn[]): Promise<void> {
+  const activityBeganAt = Date.now()
   const key = `${options.sessionId} ${entryId}`
   const controller = new AbortController()
   running.set(key, controller)
+  let outcome: ActivityOutcome = 'error'
   try {
     await steps(options, entryId, history, controller.signal)
+    outcome = controller.signal.aborted ? 'cancelled' : 'completed'
   } finally {
+    if (controller.signal.aborted) outcome = 'cancelled'
+    appendActivity(options.sessionId, options.participantId, 'oracle.work_finished', {
+      entryId, action: 'work', outcome, source: 'oracle', durationMs: Date.now() - activityBeganAt,
+    }, options.role)
     running.delete(key)
   }
 }
@@ -1920,6 +1922,7 @@ async function steps(
     role: options.role,
   }
   const tools = toolsFor(hands)
+  const stepLimit = agentStepsIn(getRules(options.sessionId).agentSteps, getOracleSettings().agentSteps)
 
   const messages: ChatTurn[] = [
     { role: 'system', content: systemPrompt(hands, tools) },
@@ -1927,7 +1930,7 @@ async function steps(
     { role: 'user', content: options.message.trim() },
   ]
 
-  // Строка расхода одна на весь ход, а шагов до двенадцати: каждый отчитывается
+  // Строка расхода одна на весь ход, а шагов может быть много: каждый отчитывается
   // за себя, а складывает их `noteTokens` — иначе в панели оставался бы
   // последний шаг вместо цены всего хода.
   const bill = (tokens: number) => {
@@ -1937,7 +1940,7 @@ async function steps(
   let taken = 0
   let spoke = ''
   let stopped = false
-  while (taken < MAX_STEPS) {
+  while (stepLimit === 0 || taken < stepLimit) {
     if (signal.aborted) {
       stopped = true
       break
@@ -1968,17 +1971,15 @@ async function steps(
       const ran = await useTool(hands, call.name, call.args, signal)
       push(options.sessionId, entryId, ran.step)
       messages.push({ role: 'assistant', content: ran.said, callId: call.id })
-      if (taken >= MAX_STEPS) break
+      if (stepLimit > 0 && taken >= stepLimit) break
     }
     if (stopped) break
   }
 
   if (stopped) {
     spoke = spoke || tr("server.stoppedCompletedActionsAreListedAboveStopping.2f9e57")
-  } else if (!spoke && taken >= MAX_STEPS) {
-    spoke =
-      tr("server.theStepLimitWasReachedCompletedActions.6a7362") +
-      tr("server.sendANewRequestToContinue.960b90")
+  } else if (!spoke && stepLimit > 0 && taken >= stepLimit) {
+    spoke = tr('common.agentStepsReached', { count: stepLimit })
   }
   finish(options.sessionId, entryId, spoke)
 }

@@ -220,6 +220,8 @@ export interface RoomRules {
    * Enforced in server/src/ai/agent.ts.
    */
   agent: 'off' | 'host' | 'room'
+  /** Per-request tool actions: null inherits the server; 0 means unlimited. */
+  agentSteps: number | null
 
   /**
    * Сколько вопросов в час на человека — или null, «как на инстансе».
@@ -300,6 +302,7 @@ export const OPEN_ROOM: RoomRules = {
   restart: 'host',
   board: 'host',
   agent: 'host',
+  agentSteps: null,
   history: 'room',
   oracle: 'inherit',
   opens: 'shared',
@@ -341,6 +344,7 @@ export const LECTURE_ROOM: RoomRules = {
   wipe: 'host',
   restart: 'host',
   agent: 'host',
+  agentSteps: OPEN_ROOM.agentSteps,
   history: OPEN_ROOM.history,
   oracle: OPEN_ROOM.oracle,
   questionsPerHour: OPEN_ROOM.questionsPerHour,
@@ -415,6 +419,8 @@ export function readRules(raw: unknown): RoomRules {
     restart: who(source.restart, OPEN_ROOM.restart),
     board: who(source.board, OPEN_ROOM.board),
     agent: one(AGENT, source.agent, OPEN_ROOM.agent),
+    agentSteps: Number.isInteger(source.agentSteps)
+      ? cap(source.agentSteps, LIMITS.agentSteps.min, LIMITS.agentSteps.max) : null,
     history: who(source.history, OPEN_ROOM.history),
     oracle: ORACLE.has(source.oracle as RoomRules['oracle'])
       ? (source.oracle as RoomRules['oracle'])
@@ -473,6 +479,7 @@ const IS_A_RIGHT: Record<keyof RoomRules, boolean> = {
   wipe: true,
   restart: true,
   agent: true,
+  agentSteps: false,
   /* Смотреть и спрашивать — не «кто печатает»: лекция их не трогает. */
   history: false,
   oracle: false,
@@ -739,6 +746,14 @@ export function oracleModeIn(
 export interface OracleLimits {
   questionsPerHour: number
   slowModeSeconds: number
+  agentSteps?: number
+}
+
+/** A room can tighten a server ceiling; zero represents an unlimited ceiling. */
+export function agentStepsIn(room: number | null, instance: number): number {
+  if (room === null) return instance
+  if (instance === 0) return room
+  return room === 0 ? instance : Math.min(room, instance)
 }
 
 /**
@@ -799,6 +814,7 @@ export function rulesAfterClass(rules: RoomRules): RoomRules {
      * закончившееся занятие его не смягчает.
      */
     agent: rules.agent === 'off' ? 'off' : 'host',
+    agentSteps: rules.agentSteps,
     /*
      * Остаются как были. `history` — это чтение, а его-то и надо оставить.
      * `oracle` и `model` описывают не право действовать, а модель и её

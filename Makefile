@@ -116,7 +116,7 @@ dev: .env dirs ## Ядро в docker, сервер на хосте (npm run dev 
 PID := .colloq.pid
 LOG := .colloq.log
 
-run: .env dirs ## Собрать и запустить. Это то, что нужно после любой правки кода
+run: .env dirs ## Собрать и запустить. OPTIMIZE=1 — заранее сжать фронтенд для раздачи
 	@$(MAKE) --no-print-directory stop
 	@# Контейнерный app и хостовой сервер — это два Colloq на одном порту.
 	@# Раньше второй просто падал с EADDRINUSE, а после `make down` вставал на
@@ -148,7 +148,7 @@ run: .env dirs ## Собрать и запустить. Это то, что ну
 	fi
 	docker compose $(DEV) build kernel
 	@printf '$(DIM)образ $(CURRENT_ENV) готов; каждой комнате — отдельное ядро$(OFF)\n'
-	npm run build
+	npm run $(if $(filter 1,$(OPTIMIZE)),build:optimized,build)
 	@# nohup и подоболочка: make уходит сразу, а сервер должен пережить и его,
 	@# и закрытие терминала. Всё, что он скажет, включая падение на старте,
 	@# уходит в $(LOG) — иначе оно пропадает вместе с оболочкой.

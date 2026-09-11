@@ -208,6 +208,7 @@ import {
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
 import { evicted } from './bans.js'
+import { appendActivity } from './activity.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
@@ -718,7 +719,12 @@ export function forgetMissingBoard(sessionId: string): void {
  * файлов показывала бы размер, каким он был при открытии вкладки: «0 B» у
  * файла, в котором уже сорок строк.
  */
-onFileSaved((sessionId) => scheduleFiles(sessionId))
+onFileSaved((sessionId, _path, origin) => {
+  // Explicit agent writes (including new, unopened files) are complete now.
+  // Keep editor autosave coalesced, but don't delay a reported tool result.
+  if (origin === 'server') broadcastFiles(sessionId)
+  else scheduleFiles(sessionId)
+})
 
 /*
  * Тетрадь легла на диск — комната узнаёт про файл.
@@ -1938,7 +1944,9 @@ export function dispatch(
         })
         return
       }
-      void interruptSession(sessionId, target).catch((err: unknown) => {
+      void interruptSession(sessionId, target).then(() => {
+        appendActivity(sessionId, payload.participantId, 'execution.interrupted', target ? { cellId: target } : {}, payload.role)
+      }).catch((err: unknown) => {
         send(ws, {
           t: 'error',
           message: reason(err, tr("server.couldNotInterruptTheKernel.ef82bf")),
@@ -1962,7 +1970,9 @@ export function dispatch(
       ) {
         return
       }
-      void restartSession(sessionId, displayName(sessionId, payload.participantId)).catch(
+      void restartSession(sessionId, displayName(sessionId, payload.participantId)).then(() => {
+        appendActivity(sessionId, payload.participantId, 'execution.restarted', {}, payload.role)
+      }).catch(
         (err: unknown) => {
           send(ws, {
             t: 'error',
@@ -2095,6 +2105,7 @@ export function dispatch(
       if (finish === (finishedAt(sessionId) !== null)) return
       const at = finish ? Date.now() : null
       setClassFinished(sessionId, at)
+      appendActivity(sessionId, payload.participantId, finish ? 'class.finished' : 'class.resumed', {}, payload.role)
       broadcast(sessionId, { t: 'class', finishedAt: at })
       /*
        * И оборвать идущий ход оракула — там же, где его обрывают стирание
@@ -2957,12 +2968,16 @@ export function dispatch(
         }
         saveDraft(sessionId, id, payload.participantId, message.text, now)
       } else if (message.t === 'council:submit') {
+        const alreadySubmitted = attemptOf(sessionId, id, payload.participantId)?.submittedAt != null
         if (!submitAttempt(sessionId, id, payload.participantId, now)) {
           send(ws, { t: 'error', message: tr("server.theAttemptIsEmptyWriteYourSolution.f38771") })
           return
         }
-      } else if (!withdrawAttempt(sessionId, id, payload.participantId)) {
-        return
+        if (!alreadySubmitted) appendActivity(sessionId, payload.participantId, 'council.submitted', { cellId: id, source: 'participant' }, payload.role)
+      } else {
+        const wasSubmitted = attemptOf(sessionId, id, payload.participantId)?.submittedAt != null
+        if (!withdrawAttempt(sessionId, id, payload.participantId)) return
+        if (wasSubmitted) appendActivity(sessionId, payload.participantId, 'council.withdrawn', { cellId: id, source: 'participant' }, payload.role)
       }
       mineOut(sessionId, id, payload.participantId)
       boardOut(sessionId, id, [payload.participantId])

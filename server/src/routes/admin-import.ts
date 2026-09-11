@@ -2,8 +2,8 @@ import { tr } from '@shared/i18n'
 /**
  * Creating a seminar from a link to GitHub.
  *
- * The teacher's material is already written — one notebook per week, in a
- * course repository, with the CSV it reads sitting next to it. This turns that
+ * The teacher's material is already written — notebooks in a course
+ * repository, with the CSVs they read sitting next to them. This turns that
  * into a room: paste the link, get a seminar whose cells are already there and
  * whose workspace already holds the data.
  *
@@ -14,7 +14,7 @@ import { tr } from '@shared/i18n'
 import { workspaceFs } from '../workspace.js'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import * as Y from 'yjs'
-import { createCell, getCells, getMeta } from '@shared/notebook'
+import { addBook, bookCells, bookList, createCell, getCells, getMeta, renameBook } from '@shared/notebook'
 import { currentStaff, requireStaff } from '../admin/auth.js'
 import { setSeminarCreator } from './admin-instance.js'
 import { newSessionId } from '../auth.js'
@@ -30,7 +30,6 @@ import {
   filesToTake,
   listDirectory,
   parseGithubUrl,
-  pickNotebook,
   seminarNameFor,
   type GithubTarget,
   type RepoEntry,
@@ -94,7 +93,8 @@ export function adminImportRoutes(): Router {
         res.json({
           name: seminarNameFor(plan.notebookTarget ?? target),
           notebook: plan.notebookName,
-          cells: plan.cells.length,
+          notebooks: plan.notebooks.map((book) => ({ name: book.name, cells: book.cells.length })),
+          cells: plan.notebooks.reduce((total, book) => total + book.cells.length, 0),
           files: plan.files.map((f) => ({ name: f.name, size: f.size })),
           // То, что не поместится в комнату, названо здесь — до того, как её
           // заведут: узнать об этом после импорта поздно.
@@ -132,7 +132,7 @@ export function adminImportRoutes(): Router {
           err instanceof Error ? err.message : tr("server.couldNotReadThatLink.6d642b"),
         )
       }
-      if (plan.cells.length === 0) {
+      if (!plan.notebooks.some((book) => book.cells.length > 0)) {
         return fail(res, 400, 'invalid', tr("server.thereIsNoNotebookWithAnyCells.5fa7bc"))
       }
 
@@ -165,6 +165,7 @@ export function adminImportRoutes(): Router {
         rules: req.body?.rules,
         mode: req.body?.mode,
         cells: plan.cells,
+        notebooks: target.kind === 'dir' ? plan.notebooks : undefined,
         author: staff?.name ?? null,
       })
 
@@ -203,7 +204,7 @@ export function adminImportRoutes(): Router {
         id,
         name,
         url: `${config.publicUrl}/s/${id}`,
-        cells: plan.cells.length,
+        cells: plan.notebooks.reduce((total, book) => total + book.cells.length, 0),
         files: written,
         skipped,
         createdBy: staff?.name ?? null,
@@ -307,6 +308,7 @@ function seedSeminar(input: {
   rules: unknown
   mode: unknown
   cells: FlatCell[]
+  notebooks?: ImportedNotebook[]
   author: string | null
 }): string {
   const id = newSessionId()
@@ -348,6 +350,14 @@ function seedSeminar(input: {
       // Стартовая тетрадь, которую сервер сеет свежей комнате, здесь только мешает.
       if (cells.length > 0) cells.delete(0, cells.length)
       cells.push(input.cells.map((c) => createCell(c.type, c.source)))
+      if (input.notebooks) {
+        const first = bookList(doc)[0]
+        if (first) renameBook(doc, first.path, input.notebooks[0].name)
+        for (const book of input.notebooks.slice(1)) {
+          const added = addBook(doc, book.name)
+          bookCells(doc, added.root).push(book.cells.map((c) => createCell(c.type, c.source)))
+        }
+      }
       getMeta(doc).set('title', input.name)
     }, 'import')
     /*
@@ -375,8 +385,14 @@ function tidyNotebookName(filename: string): string {
 
 /* ------------------------------------------------------------------ plan */
 
+interface ImportedNotebook {
+  name: string
+  cells: FlatCell[]
+}
+
 interface Plan {
   cells: FlatCell[]
+  notebooks: ImportedNotebook[]
   files: RepoEntry[]
   /** Имена файлов, которые в комнату не поедут: им не хватило её потолка. */
   skipped: string[]
@@ -416,8 +432,8 @@ export function withinRoomBudget(files: RepoEntry[]): { files: RepoEntry[]; skip
 /**
  * What a link would turn into, without creating anything.
  *
- * A file link is one request; a folder link is two — list, then fetch the
- * notebook. Files next to the notebook come along; subfolders do not, because
+ * A file link is one request; a folder link lists and reads all its notebooks.
+ * Files next to the notebooks come along; subfolders do not, because
  * walking somebody's course repository is a surprise rather than a feature.
  */
 async function planFor(target: GithubTarget): Promise<Plan> {
@@ -439,25 +455,49 @@ async function planFor(target: GithubTarget): Promise<Plan> {
      * ради редкой ветки нельзя.
      */
     const raw = await fetchNotebook(target, MAX_NOTEBOOK)
+    const cells = readIpynb(JSON.parse(raw.toString('utf8')))
+    const name = target.path.split('/').pop() ?? 'notebook.ipynb'
     return {
-      cells: readIpynb(JSON.parse(raw.toString('utf8'))),
+      cells,
+      notebooks: [{ name, cells }],
       files: [],
       skipped: [],
-      notebookName: target.path.split('/').pop() ?? 'notebook.ipynb',
+      notebookName: name,
       notebookTarget: target,
     }
   }
 
   const entries = await listDirectory(target)
-  const book = pickNotebook(entries)
-  if (!book || !book.downloadUrl) {
+  const books = entries
+    .filter((entry) => entry.type === 'file' && /\.ipynb$/i.test(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const invalid = books.filter((book) => !safeSegment(book.name) || !book.downloadUrl || book.size > MAX_NOTEBOOK)
+  const budget = withinRoomBudget([
+    ...books.filter((book) => !invalid.includes(book)),
+    ...filesToTake(entries, config.maxUploadBytes),
+  ])
+  const selected = books.filter((book) => budget.files.includes(book))
+  if (selected.length === 0) {
     throw new Error(tr("server.thereIsNoIpynbInThatFolder.6299b2"))
   }
-  const raw = await fetchRaw(book.downloadUrl, MAX_NOTEBOOK)
+  // Read and validate every notebook before creating the room. A failed second
+  // download must not silently leave a successful-looking, incomplete import.
+  const notebooks: ImportedNotebook[] = []
+  for (const book of selected) {
+    const raw = await fetchRaw(book.downloadUrl!, MAX_NOTEBOOK)
+    notebooks.push({ name: book.name, cells: readIpynb(JSON.parse(raw.toString('utf8'))) })
+  }
+  // The primary book is opened on entry. Keep an empty companion as a file,
+  // but start with actual material (an empty primary is seeded on room load).
+  const firstContent = notebooks.findIndex((book) => book.cells.length > 0)
+  if (firstContent > 0) notebooks.unshift(...notebooks.splice(firstContent, 1))
+  const book = selected.find((entry) => entry.name === notebooks[0].name)!
   return {
-    cells: readIpynb(JSON.parse(raw.toString('utf8'))),
-    ...withinRoomBudget(filesToTake(entries, config.maxUploadBytes)),
+    cells: notebooks[0].cells,
+    notebooks,
+    files: budget.files.filter((file) => !selected.includes(file)),
+    skipped: [...invalid.map((file) => file.name), ...budget.skipped],
     notebookName: book.name,
-    notebookTarget: { ...target, path: book.path, kind: 'file' },
+    notebookTarget: notebooks.length === 1 ? { ...target, path: book.path, kind: 'file' } : null,
   }
 }

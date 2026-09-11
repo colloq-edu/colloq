@@ -12,8 +12,8 @@
  * apiKey. Пустая строка стирает их строку (`set` ниже), и дальше отвечает
  * .env. Остальные так не умеют, и это не забывчивость, а разная природа
  * полей: houseRules пусты по умолчанию (возвращаться некуда), provider и
- * defaultMode — выбор из списка, где «ничего» не значение, а три числа
- * (вопросы в час, пауза, размер контекста) в окружении не живут вовсе и
+ * defaultMode — выбор из списка, где «ничего» не значение, а числовые настройки
+ * (вопросы в час, пауза, размер контекста, действия на запрос) в окружении не живут вовсе и
  * падают на встроенные пределы из shared/admin. Написанное здесь однажды
  * говорило «clearing a field hands the question back to the environment» про
  * все девять, и человек, стерший «вопросы в час», ждал бы .env, а получал
@@ -58,6 +58,7 @@ const KEY = {
   questionsPerHour: 'ai.questionsPerHour',
   slowModeSeconds: 'ai.slowModeSeconds',
   contextChars: 'ai.contextChars',
+  agentSteps: 'ai.agentSteps',
 } as const
 
 const selectAll = db.prepare('SELECT key, value FROM instance_settings')
@@ -187,6 +188,7 @@ export function getOracleSettings(): OracleSettings {
       LIMITS.contextChars.min,
       LIMITS.contextChars.max,
     ),
+    agentSteps: asInt(rows.get(KEY.agentSteps), LIMITS.agentSteps.default, LIMITS.agentSteps.min, LIMITS.agentSteps.max),
     keyFromEnvironment: key.fromEnvironment,
   }
 }
@@ -243,6 +245,12 @@ export function updateOracleSettings(patch: UpdateOracleRequest): OracleSettings
       const { min, max } = LIMITS.contextChars
       upsertSetting.run(KEY.contextChars, String(clamp(Math.round(changes.contextChars), min, max)))
     }
+    if (changes.agentSteps !== undefined) {
+      if (!Number.isInteger(changes.agentSteps) || changes.agentSteps < 0 || changes.agentSteps > LIMITS.agentSteps.max) {
+        throw new Error(tr('common.invalidAgentSteps', { max: LIMITS.agentSteps.max }))
+      }
+      upsertSetting.run(KEY.agentSteps, String(changes.agentSteps))
+    }
   })
   write(patch)
   return getOracleSettings()
@@ -290,6 +298,12 @@ export function parseOraclePatch(body: unknown): PatchResult {
     patch[field] = value
   }
 
+  if (input.agentSteps !== undefined) {
+    if (typeof input.agentSteps !== 'number' || !Number.isInteger(input.agentSteps) || input.agentSteps < 0 || input.agentSteps > LIMITS.agentSteps.max) {
+      return { error: tr('common.invalidAgentSteps', { max: LIMITS.agentSteps.max }) }
+    }
+    patch.agentSteps = input.agentSteps
+  }
   const baseUrl = patch.baseUrl?.trim()
   if (baseUrl !== undefined && baseUrl.length > 0 && !/^https?:\/\//i.test(baseUrl)) {
     return { error: tr('common.urlScheme') }

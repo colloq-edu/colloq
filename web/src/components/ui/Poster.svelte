@@ -1,11 +1,14 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import Wordmark from '@/components/ui/Wordmark.svelte'
+  import Skeleton from './Skeleton.svelte'
+  import { tr } from '@shared/i18n'
 
   interface Props {
     /** Small caps-tracked line above the masthead, e.g. "YOU'RE JOINING". */
     eyebrow?: string
     title: string
+    loading?: boolean
     /** The line under the masthead — date · time | host. */
     meta?: Snippet
     children?: Snippet
@@ -32,6 +35,7 @@
   let {
     eyebrow,
     title,
+    loading = false,
     meta,
     children,
     footer,
@@ -67,7 +71,14 @@
       class="text-balance break-words font-black text-white
              {headline === 'banner' ? 'text-banner' : 'text-masthead'}"
     >
-      {title}
+      {#if loading}
+        <span role="status" aria-label={tr('common.loading')} aria-busy="true" class="flex flex-col gap-4 py-2">
+          <Skeleton width="88%" height="0.78em" tone="onDark" />
+          <Skeleton width="60%" height="0.78em" tone="onDark" />
+        </span>
+      {:else}
+        {title}
+      {/if}
     </h1>
 
     {#if meta}

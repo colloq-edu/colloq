@@ -26,6 +26,7 @@
   import AvatarStack from '@/components/ui/AvatarStack.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import Poster from '@/components/ui/Poster.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { api, ApiError } from '@/lib/api'
   import { CROWD_NOTICE, retryJoinIn } from '@/lib/crowd'
   import { plural } from '@/lib/plural'
@@ -53,10 +54,12 @@
      * занятия читается как «всё сломалось».
      */
     notice?: string | null
+    /** Load the room concurrently with the join request, without delaying it. */
+    onjoining?: () => void
     onjoined: (identity: StoredIdentity) => void
   }
 
-  let { session, notice = null, onjoined }: Props = $props()
+  let { session, notice = null, onjoining, onjoined }: Props = $props()
 
   const profile = loadProfile()
   // Derived, not read once: App hands this screen a fresh session object when
@@ -88,6 +91,7 @@
    * остаётся, а здесь ему остаётся только подождать несколько секунд.
    */
   let retrying = $state(false)
+  let retryNotice = $state(CROWD_NOTICE)
   let errorRender = $state<() => string | null>(() => null)
   const error = $derived(errorRender())
   /**
@@ -164,6 +168,7 @@
       // Один помощник на оба экрана — см. screens/staff.ts. Он же решает
       // судьбу местной метки: снимает её отказ сервера, а не оборванный вайфай.
       const staff = await staffName()
+      if (!alive) return
       if (!staff) {
         // Печенье протухло, этот браузер никогда не был штатом — или сервера
         // не слышно. В любом случае человеку нужна обычная форма, а не тупик.
@@ -194,9 +199,8 @@
   /**
    * Кто в комнате прямо сейчас — и метка по этому ответу.
    *
-   * Одно чтение на три места: при монтировании (карточка и постер), при
-   * открытии подборщика (занятые метки должны быть сегодняшними, иначе плитка
-   * зовёт нажать на зверя, которого уже носят) и перед стуком. Правило выбора
+   * Читаем при монтировании (карточка и постер) и открытии подборщика
+   * (занятые метки должны быть сегодняшними). Правило выбора
    * при этом одно — `markToClaim`: выданную нами метку пересчитываем по свежей
    * занятости, выбранную руками не трогаем.
    */
@@ -228,32 +232,9 @@
     })
   }
 
-  /**
-   * Ростер — ещё раз, прямо перед входом, и метка по нему.
-   *
-   * Читать его один раз при монтировании было ровно бесполезно в единственном
-   * случае, ради которого он и читается: класс открывает ссылку в одну минуту,
-   * у всех тридцати комната пуста, и каждый выбирает из полного списка
-   * независимо. Сорок меток на тридцать человек дают около одиннадцати пар с
-   * одним и тем же зверем — то есть с одним и тем же курсором в тетради, а
-   * цвет их тоже не различает (он минтуется из id).
-   *
-   * Своя метка, выбранная руками, не трогается никогда (см. `markToClaim`) —
-   * ни здесь, ни на сервере, который узнаёт об этом по `picked`, — и поэтому
-   * запрос для неё не нужен вовсе. Неудача запроса ничего не меняет: входим с
-   * тем, что есть, — закрытая дверь хуже двух ежей.
-   */
-  async function freshenMark(): Promise<void> {
-    if (picked) return
-    try {
-      await readRoom()
-    } catch {
-      /* offline or slow; the mark we already have is the one we knock with */
-    }
-  }
-
   /** Одна попытка войти: если она удалась, человек уже в комнате. */
   async function knock(who: string): Promise<void> {
+    onjoining?.()
     const result = await api.join(session.id, {
       name: who,
       avatar: mark,
@@ -298,9 +279,8 @@
 
     busy = true
     errorRender = () => (null)
-    // Один раз на весь вход, а не на каждую попытку: в толпе, где повторов
-    // четыре, это были бы четыре лишних запроса с каждой из пятисот вкладок.
-    await freshenMark()
+    // The roster paints in the background. /join chooses a free mark on the
+    // server and respects `picked`, so a slow roster must not delay entry.
     if (!alive) return
     /*
      * Толпа на входе — не отказ, а очередь: вкладка стучится ещё раз сама.
@@ -334,6 +314,9 @@
           signingIn = false
           return
         }
+        retryNotice = cause instanceof ApiError && cause.status === 429
+          ? CROWD_NOTICE
+          : 'common.retryingConnection'
         retrying = true
         await new Promise((done) => window.setTimeout(done, wait))
       }
@@ -342,7 +325,9 @@
 </script>
 
 {#snippet meta()}
-  <span class="font-mono">{stamp}</span>
+  <span class="font-mono">
+    {#if session.name}{stamp}{:else}<Skeleton width="10rem" height="0.85em" tone="onDark" />{/if}
+  </span>
   {#if host}
     <span class="h-4 w-px shrink-0 bg-brand-2" aria-hidden="true"></span>
     <span>{host.name}</span>
@@ -429,7 +414,8 @@
   -->
   <Poster
     eyebrow={tr('room.ui.840')}
-    title={session.name || '\u00a0'}
+    title={session.name}
+    loading={!session.name}
     {meta}
     footer={inside}
     width="hidden w-3/5 lg:flex"
@@ -461,7 +447,7 @@
         -->
         <p class="text-ui-lg text-muted">
           {#if retrying}
-            {tr(CROWD_NOTICE)}
+            {tr(retryNotice)}
           {:else} {tr('room.ui.842')} {/if}
         </p>
       </div>
@@ -476,10 +462,19 @@
       <div class="flex flex-col gap-2 lg:hidden">
         <p class="text-2xs font-bold uppercase tracking-label text-muted">{tr('room.ui.840')}</p>
         <h1 class="text-balance text-display font-black text-ink">
-          {session.name || '\u00a0'}
+          {#if session.name}
+            {session.name}
+          {:else}
+            <span role="status" aria-label={tr('common.loading')} aria-busy="true" class="flex flex-col gap-3 py-1">
+              <Skeleton width="90%" height="0.8em" />
+              <Skeleton width="62%" height="0.8em" />
+            </span>
+          {/if}
         </h1>
         <div class="flex flex-wrap items-center gap-3.5 text-ui text-muted">
-          <span class="font-mono">{stamp}</span>
+          <span class="font-mono">
+            {#if session.name}{stamp}{:else}<Skeleton width="10rem" height="0.85em" />{/if}
+          </span>
           {#if host}
             <span class="h-4 w-px shrink-0 bg-line" aria-hidden="true"></span>
             <span>{host.name}</span>
@@ -569,7 +564,7 @@
           <!-- Спокойной строкой, не красной, и на том же месте, где стоял бы
                отказ: человек ничего не сделал неправильно, а знать, чего он
                ждёт, всё равно должен. -->
-          <p class="text-ui text-muted" role="status">{tr(CROWD_NOTICE)}</p>
+          <p class="text-ui text-muted" role="status">{tr(retryNotice)}</p>
         {/if}
       </div>
 

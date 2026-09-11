@@ -8,6 +8,7 @@
   изменить, и нечему давать сбой.
 -->
 <script lang="ts">
+  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
   import { tr, getLocale } from '@shared/i18n'
   import { api, ApiError } from '@/lib/api'
   import Icon from '@/components/ui/Icon.svelte'
@@ -405,7 +406,7 @@
             <PublicNotebook cells={step.cells} publication={seminar.id} />
           </div>
         {:else if loading}
-          <p class="mt-8 text-ui text-muted">{tr('room.ui.874')}</p>
+          <ContentSkeleton variant="notebook" label={tr('room.ui.874')} />
         {:else if noSuchStep}
           <!--
             Семинар жив, а этой отметки в нём нет. Причин две, и сервер их не
@@ -486,7 +487,7 @@
     курса больше нет»: ни слова, ни кнопки, а единственный выход — перезагрузка,
     о которой на странице не сказано ничего.
   -->
-  <div class="flex min-h-screen items-center justify-center bg-canvas px-6">
+  <div class="min-h-screen bg-canvas {failure ? 'flex items-center justify-center px-6' : ''}">
     {#if failure}
       <div class="max-w-md text-center">
         <p class="text-title font-semibold text-ink">{tr('room.ui.884')}</p>
@@ -497,7 +498,7 @@
         > {tr('room.ui.552')} </button>
       </div>
     {:else}
-      <p class="text-ui text-muted">{tr('room.ui.874')}</p>
+      <ContentSkeleton label={tr('room.ui.874')} />
     {/if}
   </div>
 {/if}

@@ -14,13 +14,16 @@ const settle = () => new Promise<void>(resolve => setImmediate(resolve))
 const response = (language: string) => Response.json({ language })
 
 /** Exercise the actual compiled rune module with controllable HTTP responses. */
-async function withClient(run: (client: Client, requests: Pending[]) => Promise<void>, cached?: string) {
+async function withClient(run: (client: Client, requests: Pending[]) => Promise<void>, cached?: string, supplied?: string) {
   const names = ['window', 'document', 'localStorage', 'fetch'] as const
   const descriptors = new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]))
   const requests: Pending[] = []
   const storage = new Map(cached ? [['colloq:instance-language', cached]] : [])
   const win = Object.assign(new EventTarget(), { setInterval: () => 1, clearInterval: () => {} })
-  const doc = Object.assign(new EventTarget(), { documentElement: { lang: '' }, visibilityState: 'visible' })
+  const doc = Object.assign(new EventTarget(), {
+    documentElement: { lang: '' }, visibilityState: 'visible',
+    querySelector: () => supplied === undefined ? null : { getAttribute: () => supplied },
+  })
   const globals = {
     window: win,
     document: doc,
@@ -61,6 +64,29 @@ test('an older GET cannot overwrite a newer room language', async () => {
     assert.equal(client.language.current, 'en')
     assert.equal(document.documentElement.lang, 'en')
   })
+})
+
+test('HTML-supplied language lets a cold app start before the settings request answers', async () => {
+  await withClient(async (client, requests) => {
+    assert.equal(client.language.current, 'en')
+    let ready = false
+    const initial = client.initializeLanguage().then(() => { ready = true })
+    await settle()
+    assert.equal(ready, true, 'initial app still waits for the language round trip')
+    assert.equal(document.documentElement.lang, 'en')
+    requests[0].resolve(response('en'))
+    await initial
+  }, undefined, 'en')
+})
+
+test('current HTML language overrides stale cache, while unsupported values use normal initialization', async () => {
+  await withClient(async client => { assert.equal(client.language.current, 'en') }, 'ru', 'en')
+  await withClient(async (client, requests) => {
+    const initial = client.initializeLanguage()
+    requests[0].resolve(response('en'))
+    await initial
+    assert.equal(client.language.current, 'en')
+  }, undefined, 'unsupported')
 })
 
 test('owner confirmation waits for an older GET and starts a fresh read', async () => {

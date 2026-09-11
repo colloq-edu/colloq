@@ -260,16 +260,17 @@ function htmlRefs(html: string): HtmlRefs {
   /*
    * Preloads written by a script, not by a tag.
    *
-   * The first-paint plugin appends an inline <script> that modulepreloads the
-   * editor and renderer chunks when the path starts with /s/ — that is, on
-   * every seminar link a student ever opens. Read by tag alone those chunks
+   * The first-paint plugin can append inline modulepreloads. Read by tag alone those chunks
    * looked lazy, and the harness printed "only on dynamic import()" about a
    * quarter-megabyte that goes out on the wire at once. The literals are plain
    * "/assets/*.js" strings in a JSON array, so lift them out of the script.
    */
   const inline = html.replace(/<noscript>[\s\S]*?<\/noscript>/gi, '')
-  for (const block of inline.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
-    for (const ref of block[1].matchAll(/["'](\/assets\/[^"']+\.(?:js|mjs|css))["']/g)) {
+  for (const block of inline.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+    // This script is guarded by a saved room identity. It is not part of a
+    // student's cold visit; first-paint.test.mts exercises the emitted guard.
+    if (/\bdata-colloq-room-preload\b/.test(block[1])) continue
+    for (const ref of block[2].matchAll(/["'](\/assets\/[^"']+\.(?:js|mjs|css))["']/g)) {
       refs.hints.push(ref[1])
     }
   }
@@ -320,6 +321,8 @@ function bundle(): BundleReport | null {
   const code = new Map<string, string>()
   const chunks: Chunk[] = []
   for (const full of walk(assetsDir)) {
+    // Sidecars are alternative encodings of the same URL, not extra bundles.
+    if (/\.(?:br|gz)$/.test(full)) continue
     const buf = readFileSync(full)
     const rel = '/' + relative(DIST, full).split(/[\\/]/).join('/')
     // Markers are searched in script only: a stylesheet can name a library's
@@ -361,7 +364,7 @@ function bundle(): BundleReport | null {
    * edges, so blocking/preload/lazy would be three wrong answers.
    */
   const extras = walk(DIST)
-    .filter((full) => !full.startsWith(assetsDir + '/') && !/\.html?$/i.test(full))
+    .filter((full) => !full.startsWith(assetsDir + '/') && !/\.(?:html?|br|gz)$/i.test(full))
     .map((full) => {
       const buf = readFileSync(full)
       return {

@@ -42,6 +42,12 @@ back to the room.
 
 ## Teach your way
 
+The teacher's History panel includes a filtered activity journal alongside
+notebook versions: attendance connections, Oracle requests, execution outcomes,
+submitted answers and editing participation. Cumulative counts remain available
+when the detailed event log is trimmed. See [activity history and statistics](docs/activity-history.md)
+for the API, retained data and interpretation limits.
+
 Start with a preset, then adjust the room’s rules before or during the class.
 Permissions are enforced by the server.
 
@@ -60,7 +66,7 @@ exercise change how the room participates.
 <details>
 <summary><strong>Room rules and teacher access</strong></summary>
 
-Whatever the card sets, the room can change what opening a cell does; who edits a cell's text; who runs code; who changes the structure; who can put a document on the room's screen; who may create and edit files; whether the Oracle may act on the room's files; questions per hour; seconds between questions; who may read the history; who may restart the kernel; and who may wipe shared work. The source of these settings is [rule-rows.ts](web/src/lib/rule-rows.ts).
+Whatever the card sets, the room can change what opening a cell does; who edits a cell's text; who runs code; who changes the structure; who can put a document on the room's screen; who may create and edit files; whether the Oracle may act on the room's files; actions per request; questions per hour; seconds between questions; who may read the history; who may restart the kernel; and who may wipe shared work. The source of these settings is [rule-rows.ts](web/src/lib/rule-rows.ts).
 
 Whether the oracle answers in this room is chosen on the creation form: **off**, **hints**, or **full**. It is not one of those rows and cannot be changed later in the room settings. Room limits can tighten the instance settings, never loosen them.
 
@@ -103,6 +109,13 @@ or environment settings. The notebook works without an AI key. When enabled,
 selected notebook and file context is sent to the configured provider. Tool use
 requires provider support and respects the requesting participant’s room permissions.
 
+**Do mode has no action limit by default.** The owner can set **Actions per
+request** in `/admin/oracle`; class rules expose the same setting when creating
+or editing a class. Reading, editing and running each consume one action,
+including failed attempts. `0` means unlimited; a blank class field inherits the
+server setting. A class can tighten a finite server limit. Manual Stop remains
+available without a step limit. Changes apply to the next request.
+
 ## Start locally
 
 For a workstation with **Docker, Docker Compose and Make**, run this from a clone
@@ -128,6 +141,30 @@ Local Docker mode uses a container per room and grants the development app
 access to Docker. It is intended for trusted workstation development. Production
 uses the private broker described below. Both paths keep notebooks and uploaded
 files across app restarts; restarting a kernel loses its Python variables.
+
+### Frontend build modes
+
+Both build modes produce a minified production frontend with lazy screens,
+hashed asset URLs and no source maps. The server's development mode does not
+turn the built frontend into a development bundle.
+
+| Command | Use |
+| --- | --- |
+| `npm run dev` | Active development with Vite hot reload. |
+| `make run` | Build and run locally; fast build, response compression at runtime. |
+| `make run OPTIMIZE=1` | Build and run with precompressed frontend assets; useful when hosting a class through a tunnel. |
+| `npm run build:optimized` | Build all artifacts without starting or restarting the server. |
+
+The optimized mode adds Brotli quality 11 and gzip level 9 files alongside
+JavaScript, CSS and the PDF worker. The server selects an accepted encoding at
+the original URL and sends the stored bytes, avoiding compression work on each
+download. Unsupported clients and ordinary builds use the original delivery
+path. HTML retains revalidation; hashed assets retain their one-year cache.
+
+Production Docker images and release CI use the optimized build by default.
+It costs extra build time and disk space, not extra JavaScript or dependencies
+in the browser. `npm run perf` checks the bundle budgets for either mode.
+For complete cold entry through a working notebook, see [the entry benchmark](docs/entry-performance.md).
 
 <details>
 <summary><strong>Local settings</strong></summary>

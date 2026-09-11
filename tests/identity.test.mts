@@ -309,9 +309,20 @@ test('на переполненный вход вкладка стучится �
 
   // Всё остальное — отказ человеку, и ждать тут нечего: занятое имя, комнаты
   // нет, связи нет. Повтор молча съел бы объяснение.
-  assert.equal(retryJoinIn(new ApiError('Not found (404)', 404), 1), null)
+  assert.equal(retryJoinIn(new ApiError('session not found', 404), 1), null)
   assert.equal(retryJoinIn(new ApiError('Could not reach the server', 0), 1), null)
   assert.equal(retryJoinIn(new TypeError('Failed to fetch'), 1), null)
+})
+
+test('временный 404 от прокси повторяет вход один раз, не выдавая его за удалённую комнату', () => {
+  const proxyError = new ApiError('Не найдено (404)', 404)
+  const wait = retryJoinIn(proxyError, 1)
+  assert.ok(wait !== null && wait > 0 && wait <= 1000)
+  assert.equal(retryJoinIn(proxyError, 2), null)
+  assert.equal(retryJoinIn(new ApiError('session not found', 404), 1), null)
+  for (const status of [401, 403, 500, 502, 503, 504]) {
+    assert.equal(retryJoinIn(new ApiError('refused', status), 1), null)
+  }
 })
 
 /* ------------------------------------------------ удалённый семинар уносит своё */

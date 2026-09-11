@@ -25,7 +25,7 @@ COPY server/ server/
 COPY web/ web/
 COPY runtime/ runtime/
 
-RUN npm run build -w @colloq/web \
+RUN npm run build:optimized -w @colloq/web \
  && npm run build -w @colloq/server \
  && npm run build -w @colloq/runtime \
  && npm prune --omit=dev

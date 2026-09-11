@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
   import { tr, getLocale } from '@shared/i18n'
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
@@ -1447,7 +1448,7 @@
 
       {#if loading && seminars.length === 0}
         <tr>
-          <td colspan="6" class="py-6 text-ui text-muted">{tr("admin.loading.seminars")}</td>
+          <td colspan="6" class="px-3 py-4"><ContentSkeleton variant="rows" label={tr('admin.loading.seminars')} /></td>
         </tr>
       {:else if shown.length === 0 && !creating}
         <tr>

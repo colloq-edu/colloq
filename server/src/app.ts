@@ -14,7 +14,12 @@ import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, loadRuntime
  * жизнь, и она не должна начинаться от одного `import`.
  */
 import path from 'node:path'
+import { readFile } from 'node:fs/promises'
 import zlib from 'node:zlib'
+import { preferredEncodings, type Encoding } from './http-encoding.js'
+import { precompressedStatic } from './precompressed-static.js'
+import { withInitialLanguage } from './frontend-html.js'
+import { getInstanceLanguage } from './admin/settings.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { sameOrigin, slideStaffCookie } from './admin/auth.js'
 import { markDevice } from './bans.js'
@@ -35,6 +40,7 @@ import { councilRoutes } from './routes/council.js'
 import { courseRoutes } from './routes/courses.js'
 import { fileRoutes } from './routes/files.js'
 import { historyRoutes } from './routes/history.js'
+import { activityRoutes } from './routes/activity.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { instanceSettingsRoutes } from './routes/instance-settings.js'
 import { workspaceFs } from './workspace.js'
@@ -66,28 +72,6 @@ const BROTLI_OPTIONS: zlib.BrotliOptions = {
   },
 }
 
-type Encoding = 'br' | 'gzip'
-
-function negotiate(header: string | undefined): Encoding | null {
-  if (!header) return null
-  const offered = new Map<string, number>()
-  for (const part of header.split(',')) {
-    const [token, ...params] = part.trim().split(';')
-    let q = 1
-    for (const param of params) {
-      const match = /^\s*q=([\d.]+)/i.exec(param)
-      if (match) q = Number(match[1])
-    }
-    offered.set(token.trim().toLowerCase(), Number.isFinite(q) ? q : 0)
-  }
-  // A named encoding wins over '*', so `*, gzip;q=0` is still a refusal of gzip.
-  const wildcard = offered.get('*') ?? 0
-  const br = offered.get('br') ?? wildcard
-  const gzip = offered.get('gzip') ?? wildcard
-  if (br > 0 && br >= gzip) return 'br'
-  return gzip > 0 ? 'gzip' : null
-}
-
 function worthCompressing(res: Response): boolean {
   if (res.getHeader('Content-Encoding')) return false
   // 204/304 have no body; 206 is a byte range of the *identity* representation
@@ -117,7 +101,7 @@ function compression(req: Request, res: Response, next: NextFunction): void {
   // cache must key it on the header that decided its encoding.
   res.vary('Accept-Encoding')
 
-  const encoding = negotiate(req.headers['accept-encoding'])
+  const encoding = preferredEncodings(req.headers['accept-encoding'])[0]
   // A HEAD response carries the identity headers and no body to encode.
   if (!encoding || req.method === 'HEAD') return next()
 
@@ -468,6 +452,7 @@ app.use(sessionRoutes())
 // (routes/bans.ts), а проверку, которую они заводят, делает bans.ts на входе.
 app.use(banRoutes())
 app.use(historyRoutes())
+app.use(activityRoutes())
 app.use(fileRoutes())
 app.use(aiRoutes())
 // Консилиум — за оракулом: его единственная REST-дверь спрашивает ту же модель
@@ -530,6 +515,18 @@ app.use((req, res, next) => {
 
 if (config.staticDir) {
   const staticDir = path.resolve(config.staticDir)
+  app.use(precompressedStatic(staticDir))
+  const sendFrontend = (req: Request, res: Response, next: NextFunction): void => {
+    markDevice(req, res)
+    void readFile(path.join(staticDir, 'index.html'), 'utf8').then((html) => {
+      const language = getInstanceLanguage()
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Content-Language', language)
+      // res.send computes an ETag over both the build and current language.
+      res.type('html').send(withInitialLanguage(html, language))
+    }).catch(next)
+  }
+  app.get('/index.html', sendFrontend)
   /*
    * Версионное — это `assets/`, и только оно.
    *
@@ -575,16 +572,7 @@ if (config.staticDir) {
      * отдал не этот процесс. Метка переживает чистку хранилища и перезаход, но
      * не инкогнито — и большего от неё не ждут (server/src/bans.ts).
      */
-    markDevice(req, res)
-    // no-cache, not no-store: the browser still holds the file and an ETag, so
-    // an unchanged deploy costs one 304 and a changed one is picked up at once.
-    res.sendFile(
-      path.join(staticDir, 'index.html'),
-      { headers: { 'Cache-Control': 'no-cache' } },
-      (err) => {
-        if (err) next(err)
-      },
-    )
+    sendFrontend(req, res, next)
   })
 }
 

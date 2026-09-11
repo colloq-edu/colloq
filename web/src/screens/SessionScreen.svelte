@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { tr, getLocale } from '@shared/i18n'
   /**
    * The seminar itself: the room, and the three things around it.
@@ -269,6 +270,7 @@
           oracleLimits = {
             questionsPerHour: status.questionsPerHour,
             slowModeSeconds: status.slowModeSeconds,
+            agentSteps: status.agentSteps,
           }
         }
       })
@@ -1811,7 +1813,11 @@
     <!-- The loudest thing on the screen. Black rather than bold: HSE Sans Black
          is what the artboard is drawn in, and Inter at 700 reads thin here. -->
     <div class="flex items-end gap-3 px-4 pb-4 pt-2 sm:gap-4 sm:px-7 sm:pb-5 sm:pt-3">
-      {#if isHost}
+      {#if !title}
+        <div role="status" aria-label={tr('common.loading')} aria-busy="true" class="min-w-0 flex-1 text-marquee-sm sm:text-marquee">
+          <Skeleton width="min(80%, 32rem)" height="0.85em" tone="onDark" />
+        </div>
+      {:else if isHost}
         <!-- Renaming writes into the shared doc, so the room sees it immediately. -->
         <input
           class="name-field -mx-1.5 min-w-0 truncate bg-transparent px-1.5 text-marquee-sm

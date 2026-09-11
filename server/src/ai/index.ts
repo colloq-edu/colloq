@@ -1,4 +1,6 @@
 import { tr, translate } from '@shared/i18n'
+import { appendActivity } from '../activity.js'
+import type { ActivityOutcome } from '@shared/activity'
 /**
  * The oracle, assembled: notebook context + the room's thread + one
  * rewritten prompt, streamed straight into the shared document.
@@ -156,6 +158,10 @@ export function ask(options: AskOptions): string {
   doc.transact(() => getChat(doc).push([entry]), ORIGIN)
   const entryId = entry.get('id') as string
 
+  appendActivity(options.sessionId, options.participantId, 'oracle.asked', {
+    entryId, action: options.action ?? 'ask', source: 'participant', ...(options.cellId ? { cellId: options.cellId } : {}),
+  })
+
   void generate(options, entryId, history).catch((err: unknown) => {
     // generate() handles its own failures; this only catches a broken document.
     console.error(`[session ${options.sessionId}] AI thread write failed:`, describe(err))
@@ -215,6 +221,7 @@ async function generate(
   history: ChatTurn[],
 ): Promise<void> {
   const { sessionId } = options
+  const activityBeganAt = Date.now()
   const key = `${sessionId}:${entryId}`
   const controller = new AbortController()
   inflight.set(key, controller)
@@ -281,6 +288,7 @@ async function generate(
 
   const answer = new StreamBuffer(sessionId, entryId, chatAnswer, stop)
   const thinking = new StreamBuffer(sessionId, entryId, chatReasoning, stop)
+  let outcome: ActivityOutcome = 'error'
 
   try {
     if (!providerReady()) {
@@ -362,6 +370,7 @@ async function generate(
         )
         return
       }
+      outcome = 'cancelled'
       settle(sessionId, entryId, 'done', text.trim() ? null : tr('server.aiStopped'))
       return
     }
@@ -381,10 +390,12 @@ async function generate(
       )
     }
     settle(sessionId, entryId, 'done', null)
+    outcome = 'completed'
   } catch (err) {
     thinking.flush()
     answer.flush()
     if (controller.signal.aborted) {
+      outcome = wentQuiet ? 'error' : 'cancelled'
       settle(sessionId, entryId, 'done', null)
       return
     }
@@ -394,6 +405,9 @@ async function generate(
     // an empty grey box tells a class nothing about what broke.
     settle(sessionId, entryId, 'error', reason)
   } finally {
+    appendActivity(sessionId, options.participantId, 'oracle.finished', {
+      entryId, action: options.action ?? 'ask', outcome, source: 'oracle', durationMs: Date.now() - activityBeganAt,
+    })
     if (silence) clearTimeout(silence)
     inflight.delete(key)
     enteredRoom(sessionId, -1)

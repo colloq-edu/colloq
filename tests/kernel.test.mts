@@ -336,6 +336,106 @@ async function seminar() {
   }
 }
 
+test('activity records accepted execution once with correlated start and result', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { listActivity } = await import('../server/src/activity.js')
+  const { getCells } = await import('../shared/notebook.js')
+  const room = await seminar()
+  room.type('print(1)')
+  const markdown = getCells(room.doc).get(0).get('id') as string
+  requestRun(room.id, [markdown, room.cellId, room.cellId, 'missing'], 'Student', 'p_student', 1)
+  assert.ok(await until(() => room.state() === 'ok'))
+  const events = listActivity(room.id, { level: 'detailed', category: 'runtime' }).events.reverse()
+  assert.deepEqual(events.map(event => event.kind), ['execution.queued', 'execution.started', 'execution.finished'])
+  assert.equal(events[0].details.count, 1)
+  assert.equal(events[1].details.requestSeq, events[0].seq)
+  assert.equal(events[2].details.requestSeq, events[0].seq)
+  assert.equal(events[2].details.outcome, 'completed')
+  assert.ok(events[2].details.durationMs! >= 0)
+  assert.ok(events.every(event => event.actor?.id === 'p_student' && event.details.cellId === room.cellId))
+})
+
+test('activity keeps unsuccessful attempts separate from successful runs', async () => {
+  const { requestRun } = await import('../server/src/kernel/index.js')
+  const { listActivity } = await import('../server/src/activity.js')
+  const room = await seminar()
+  room.type('RAISE')
+  requestRun(room.id, [room.cellId], 'Student', 'p_student')
+  assert.ok(await until(() => room.state() === 'error'))
+  const events = listActivity(room.id, { level: 'detailed', category: 'runtime' }).events
+  assert.equal(events.filter(event => event.kind === 'execution.finished').length, 1)
+  assert.equal(events[0].details.outcome, 'error')
+  assert.equal(JSON.stringify(events).includes('RAISE'), false, 'activity must not copy code')
+})
+
+test('activity identifies a council draft owner separately from the teacher running it', async () => {
+  const { requestCouncilRun } = await import('../server/src/kernel/index.js')
+  const { listActivity } = await import('../server/src/activity.js')
+  const room = await seminar()
+  let done = false
+  requestCouncilRun(room.id, {
+    cellId: room.cellId, participantId: 'p_student', source: 'print("attempt")', by: 'host',
+    onChange: run => { done = run?.state === 'ok' },
+  }, 'Teacher', 'p_teacher')
+  assert.ok(await until(() => done))
+  const events = listActivity(room.id, { level: 'detailed', category: 'runtime' }).events.reverse()
+  assert.deepEqual(events.map(event => event.kind), ['execution.queued', 'execution.started', 'execution.finished'])
+  assert.ok(events.every(event => event.actor?.id === 'p_teacher' && event.details.subjectId === 'p_student'))
+  assert.equal(events[2].details.requestSeq, events[0].seq)
+  assert.equal(events[2].details.outcome, 'completed')
+})
+
+test('activity records a cancelled queued cell without inventing an execution', async () => {
+  const { requestRun, cancelRun } = await import('../server/src/kernel/index.js')
+  const { listActivity } = await import('../server/src/activity.js')
+  const { getCells, createCell } = await import('../shared/notebook.js')
+  const room = await seminar()
+  room.type('print(1)')
+  const second = createCell('code', 'print(2)')
+  getCells(room.doc).push([second])
+  const secondId = second.get('id') as string
+  requestRun(room.id, [room.cellId, secondId], 'Student', 'p_student')
+  assert.equal(cancelRun(room.id, [secondId], 'p_student', false), 1)
+  assert.ok(await until(() => room.state() === 'ok'))
+  const events = listActivity(room.id, { level: 'detailed', category: 'runtime' }).events
+    .filter(event => event.details.cellId === secondId).reverse()
+  assert.deepEqual(events.map(event => event.kind), ['execution.queued', 'execution.finished'])
+  assert.equal(events[1].details.outcome, 'cancelled')
+  assert.equal(events[1].details.requestSeq, events[0].seq)
+  assert.equal(events[1].details.durationMs, 0)
+})
+
+test('activity treats explicit KeyboardInterrupt as cancellation for cells and council attempts', async () => {
+  const { requestRun, requestCouncilRun, interruptSession } = await import('../server/src/kernel/index.js')
+  const { listActivity } = await import('../server/src/activity.js')
+  for (const council of [false, true]) {
+    const room = await seminar()
+    room.type('print("long")')
+    swallowExecutes = true
+    try {
+      if (council) requestCouncilRun(room.id, {
+        cellId: room.cellId, participantId: 'p_student', source: 'print("long")', by: 'host', onChange() {},
+      }, 'Teacher', 'p_teacher')
+      else requestRun(room.id, [room.cellId], 'Student', 'p_student')
+      assert.ok(await until(() => held.length > 0))
+      if (council) {
+        // Allow the namespace snapshot to finish, then interrupt the student's
+        // actual request; teardown must be allowed to finish normally as well.
+        shellFinish()
+        assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === false))
+      }
+      swallowExecutes = false
+      await interruptSession(room.id)
+      assert.ok(await until(() => listActivity(room.id, { level: 'detailed', category: 'runtime' }).events
+        .some(event => event.kind === 'execution.finished')))
+      const finished = listActivity(room.id, { level: 'detailed', category: 'runtime' }).events
+        .filter(event => event.kind === 'execution.finished')
+      assert.equal(finished.length, 1)
+      assert.equal(finished[0].details.outcome, 'cancelled', council ? 'council' : 'cell')
+    } finally { swallowExecutes = false; shellFinish() }
+  }
+})
+
 /* -------------------------------------------------------------------- tests */
 
 test('a cell runs and the room sees its output', async () => {

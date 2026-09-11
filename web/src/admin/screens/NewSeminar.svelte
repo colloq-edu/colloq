@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { tr, getLocale } from '@shared/i18n'
   /**
    * Opening a room, and deciding what kind of room it is.
@@ -675,12 +676,18 @@
           aria-label={tr("admin.github.link.to.a.notebook.or.a.folder")}
         />
         {#if previewing}
-          <p class="text-2xs text-muted">{tr("admin.reading.the.repository")}</p>
+          <div role="status" aria-label={tr('admin.reading.the.repository')} aria-busy="true" class="flex flex-wrap items-center gap-2 py-1">
+            <Skeleton width="13rem" height="0.8rem" />
+            <Skeleton width="11rem" height="0.8rem" />
+            <Skeleton width="4rem" height="0.8rem" />
+          </div>
         {:else if previewError}
           <p class="text-2xs text-danger">{previewError}</p>
         {:else if preview}
           <div class="flex flex-wrap items-center gap-2 text-2xs text-muted">
-            <span class="font-mono text-ink">{preview.notebook}</span>
+            {#each preview.notebooks ?? [{ name: preview.notebook, cells: preview.cells }] as book (book.name)}
+              <span class="font-mono text-ink">{book.name}</span>
+            {/each}
             <span>·</span>
             <span>{preview.cells} {tr("admin.cells")}</span>
             {#each preview.files as f (f.name)}
@@ -1007,7 +1014,7 @@
         <p class="text-2xs text-muted">{tr("admin.you.can.change.the.mode.on.the.seminar.page")}</p>
       </div>
 
-      <RoomRulesRows {rules} onchange={(patch) => (rules = { ...rules, ...patch })} />
+      <RoomRulesRows {rules} instance={instanceOracle} onchange={(patch) => (rules = { ...rules, ...patch })} />
 
       <!--
         Сцепки, напечатанные здесь, а не спрятанные в коде. Каждая — про

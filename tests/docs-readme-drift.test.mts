@@ -54,6 +54,7 @@ const NAMED_IN_README: Record<string, RegExp> = {
   board: /document on the room's screen/i,
   files: /create and edit files/i,
   agent: /on the room's files/i,
+  agentSteps: /actions per request/i,
   questionsPerHour: /questions per hour/i,
   slowModeSeconds: /seconds between questions/i,
   history: /read the history/i,

@@ -67,3 +67,17 @@ test('страница не кэшируется вовсе: за ней вся 
   const seen = await fetch(`${base}/s/abc`)
   assert.equal(seen.headers.get('cache-control'), 'no-cache')
 })
+
+test('navigation HTML supplies the saved language and revalidates when it changes', async () => {
+  const { setInstanceLanguage } = await import('../server/src/admin/settings.js')
+  setInstanceLanguage('en')
+  const english = await fetch(`${base}/s/abc`)
+  assert.match(await english.text(), /name="colloq-language" content="en"/)
+  assert.equal(english.headers.get('content-language'), 'en')
+  const etag = english.headers.get('etag')!
+  setInstanceLanguage('ru')
+  const russian = await fetch(`${base}/s/abc`, { headers: { 'if-none-match': etag } })
+  assert.equal(russian.status, 200)
+  assert.match(await russian.text(), /name="colloq-language" content="ru"/)
+  assert.notEqual(russian.headers.get('etag'), etag)
+})

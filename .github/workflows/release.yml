@@ -53,7 +53,7 @@ jobs:
           npm ci
           npm test
           npm run typecheck
-          npm run build
+          npm run build:optimized
       - name: Refuse published version reuse
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
