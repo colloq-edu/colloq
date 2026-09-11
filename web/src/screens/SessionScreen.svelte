@@ -1774,7 +1774,18 @@
     {/await}
   </div>
 {:else}
-<div class="flex h-full min-h-0 flex-col overflow-hidden bg-canvas">
+<!--
+  `clip`, а не `hidden`: у комнаты нет прокрутки вбок ни при каком содержимом.
+
+  `overflow-hidden` создаёт прокручиваемую коробку — невидимую, но настоящую:
+  стоит браузеру показать фокус на кнопке, уехавшей за правый край (панель,
+  ящик, чужая полоса), и он прокручивает эту коробку сам. Комната после этого
+  стоит сдвинутой влево целиком — с маркой и именем занятия за кромкой, — и
+  вернуть её нечем: полосы прокрутки нет, а жеста для скрытой коробки не
+  существует. `clip` режет точно так же, но коробку не заводит, и такой сдвиг
+  становится невозможен, кто бы что ни переполнил внутри.
+-->
+<div class="flex h-full min-h-0 flex-col overflow-clip bg-canvas">
   <!--
     Two bands, one brand ground. The navy is the printed object the room is
     held in — the same in both themes, like the join poster — so nothing in
@@ -1851,7 +1862,31 @@
       оставшихся 43 всякий чётный по высоте ребёнок центрируется на половине
       пикселя. Круги от этого размывались по кольцу, а на 1x — заметно.
     -->
-    <div class="flex h-[45px] items-center gap-3 border-t border-brand-2 px-4 sm:gap-4 sm:px-7">
+    <!--
+      Полоса ПЕРЕНОСИТСЯ, а не выталкивает своё содержимое за экран.
+
+      На телефоне в ней восемь органов сразу: люди, ядро, состояние связи,
+      четыре переключателя, тема и ссылка — около 520 px при окне в 360. Пока
+      строка была одна и без переноса, лишнее уезжало вправо под
+      `overflow-hidden` корня: кнопка «Скопировать» стояла за краем целиком, а
+      «Восстанавливаем связь» уводила туда же и её, и тему — то есть обрыв
+      связи забирал с экрана ровно те две кнопки, которыми на него отвечают.
+      Перенос ставит группу кнопок второй строкой ровно тогда, когда она не
+      влезла, и не стоит ни пикселя там, где влезла.
+
+      Без точки перелома нарочно: полоса переполняется не на «телефонной»
+      ширине, а тогда, когда в ней много СОДЕРЖИМОГО — четверо в комнате,
+      «ЯДРО ОСТАНОВЛЕНО» и «Восстанавливаем связь» вместе занимают 500 px и на
+      планшете в 768. Перенос по месту чинит и этот случай, а на ноутбуке не
+      случается ни разу.
+
+      Рост прежний: 45 − 1 (правило сверху) = 44, минус py-1.5 с двух сторон =
+      32 на строку, и ребёнок в 28 по-прежнему центрируется целыми пикселями.
+    -->
+    <div
+      class="flex min-h-[45px] flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-brand-2
+             px-4 py-1.5 sm:gap-x-4 sm:px-7"
+    >
       {#if room.length > 0}
         <div class="flex shrink-0 items-center gap-4" title={roomNames}>
           <!-- 28, как на экране входа: 24 в этой полосе читались мелко, а
@@ -1890,134 +1925,168 @@
         {/if}
       </div>
 
+      <!--
+        Обе строки состояния УСЫХАЮТ, а не растут.
+
+        «Восстанавливаем связь» разрядкой в верхнем регистре — это 185 px, и
+        `shrink-0` на них означал, что связь, оборвавшись, уносит за правый край
+        всё, что стоит правее: тему и «Скопировать». Значок при этом не
+        усыхает никогда (`shrink-0` на нём), слово усыхает многоточием, а
+        целиком его держит `title` — вместе с переносом полосы выше этого
+        хватает, чтобы фраза читалась полностью в комнате на четверых.
+      -->
       {#if session.stuck}
         <!-- Не «Reconnecting»: вкладка больше не пробует, и крутилка врала бы. -->
-        <div class="flex shrink-0 items-center gap-2 text-white" role="status">
-          <Icon name="alert" size={12} />
-          <span class="text-2xs font-bold uppercase tracking-label">{tr('room.ui.898')}</span>
+        <div
+          class="flex min-w-0 shrink items-center gap-2 text-white"
+          role="status"
+          title={tr('room.ui.898')}
+        >
+          <Icon name="alert" size={12} class="shrink-0" />
+          <span class="truncate text-2xs font-bold uppercase tracking-label">{tr('room.ui.898')}</span>
         </div>
       {:else if !session.connected}
         <div
-          class="flex shrink-0 items-center gap-2 text-white"
+          class="flex min-w-0 shrink items-center gap-2 text-white"
           role="status"
+          title={tr('room.ui.899')}
           transition:fade={{ duration: 120 }}
         >
-          <Icon name="spinner" size={12} class="animate-spin" />
-          <span class="text-2xs font-bold uppercase tracking-label">{tr('room.ui.899')}</span>
+          <Icon name="spinner" size={12} class="shrink-0 animate-spin" />
+          <span class="truncate text-2xs font-bold uppercase tracking-label">{tr('room.ui.899')}</span>
         </div>
       {/if}
 
       <span class="min-w-0 flex-1"></span>
 
-      <!-- Panels are not on the artboard, which draws both columns open; they
-           stay because on a narrow window they are the only way to reach the
-           files, the people and the oracle. -->
-      <div class="flex shrink-0 items-center gap-0.5">
-        {#if isHost}
-          <!--
-            Пульт правил стоит здесь, а не только в панели.
+      <!--
+        Кнопки комнаты — ОДНОЙ группой, и переносятся они тоже вместе.
 
-            Лекция, лабораторная и консультация — три фазы одной пары, а
-            правило, до которого можно дотянуться только из админки и только
-            при создании семинара, — это правило, до которого преподаватель не
-            дотягивается в ту минуту, когда оно нужно.
+        Порознь перенос рвал их по живому: переключатели оставались в первой
+        строке, тема с «Скопировать» уезжали во вторую, и одна полоса читалась
+        как две разные. Группа переносится целиком и прижимается вправо на той
+        строке, куда попала (`ml-auto`), — на широком окне её прижимает та же
+        распорка, что и раньше, и рисунок полосы не меняется.
+      -->
+      <div class="ml-auto flex shrink-0 items-center gap-3 sm:gap-4">
+        <!-- Panels are not on the artboard, which draws both columns open; they
+             stay because on a narrow window they are the only way to reach the
+             files, the people and the oracle. -->
+        <div class="flex shrink-0 items-center gap-0.5">
+          {#if isHost}
+            <!--
+              Пульт правил стоит здесь, а не только в панели.
+
+              Лекция, лабораторная и консультация — три фазы одной пары, а
+              правило, до которого можно дотянуться только из админки и только
+              при создании семинара, — это правило, до которого преподаватель не
+              дотягивается в ту минуту, когда оно нужно.
+            -->
+            <button
+              class={bandIcon(rulesOpen)}
+              onclick={() => (rulesOpen = !rulesOpen)}
+              aria-pressed={rulesOpen}
+              aria-label={tr('room.ui.900')}
+              title={tr('room.ui.900')}
+            >
+              <Icon name="lock" size={16} />
+            </button>
+          {/if}
+          <button
+            class={bandIcon(leftShown)}
+            onclick={toggleLeft}
+            aria-pressed={leftShown}
+            aria-label={tr('room.ui.901')}
+            title={tr('room.extra.407', { p0: modKey })}
+          >
+            <Icon name="file" size={16} />
+          </button>
+          <!--
+            Ящик снизу — такая же поверхность комнаты, как панели по краям, и
+            переключается там же, где они. Стоял он до сих пор в тулбаре тетради,
+            среди Run All и Restart, — то есть среди того, что ЗАПУСКАЕТ, а не
+            того, что открывает и закрывает. Порядок слева направо повторяет
+            экран: файлы слева, ящик снизу, оракул справа.
           -->
           <button
-            class={bandIcon(rulesOpen)}
-            onclick={() => (rulesOpen = !rulesOpen)}
-            aria-pressed={rulesOpen}
-            aria-label={tr('room.ui.900')}
-            title={tr('room.ui.900')}
+            class={cn(bandIcon(terminalOpen), 'relative')}
+            onclick={toggleTerminal}
+            aria-pressed={terminalOpen}
+            aria-label={tr('room.ui.902')}
+            title={tr('room.extra.408', { p0: modKey })}
           >
-            <Icon name="lock" size={16} />
+            <Icon name="prompt" size={16} />
+            {#if session.terminalStatus === 'busy'}
+              <span
+                class="absolute right-1 top-1 h-1.5 w-1.5 animate-blink rounded-full bg-accent"
+              ></span>
+            {:else if session.terminalUnread > 0}
+              <!--
+                Новости самого ядра — почему остановился Run All, кто перезапустил
+                — пишутся в ленту, а лента за этой кнопкой. Без метки у комнаты
+                была причина на руках и ни одного повода её искать.
+              -->
+              <span
+                class="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center
+                       justify-center rounded-full bg-accent px-1 font-mono text-micro
+                       font-bold text-white"
+                title={tr('room.extra.409', { p0: session.terminalUnread })}
+              >
+                {session.terminalUnread > 9 ? '9+' : session.terminalUnread}
+              </span>
+            {/if}
           </button>
-        {/if}
-        <button
-          class={bandIcon(leftShown)}
-          onclick={toggleLeft}
-          aria-pressed={leftShown}
-          aria-label={tr('room.ui.901')}
-          title={tr('room.extra.407', { p0: modKey })}
-        >
-          <Icon name="file" size={16} />
-        </button>
+          <button
+            class={bandIcon(rightShown)}
+            onclick={toggleRight}
+            aria-pressed={rightShown}
+            aria-label={tr('room.ui.903')}
+            title={tr('room.oracle.shortcut', { key: modKey })}
+          >
+            <Icon name="sparkles" size={16} />
+          </button>
+        </div>
+
+        <ThemeSwitch tone="onDark" />
+
         <!--
-          Ящик снизу — такая же поверхность комнаты, как панели по краям, и
-          переключается там же, где они. Стоял он до сих пор в тулбаре тетради,
-          среди Run All и Restart, — то есть среди того, что ЗАПУСКАЕТ, а не
-          того, что открывает и закрывает. Порядок слева направо повторяет
-          экран: файлы слева, ящик снизу, оракул справа.
+          The link, readable and attached to the button that takes it.
+
+          Показывается с 1024px, а не с 1280: до этого адрес прятался на любом
+          ноутбуке уже 13", то есть на большинстве машин, с которых семинар и
+          ведут. А адрес на экране — это запасной ход, когда буфер обмена не
+          работает: его можно продиктовать или переписать руками. Прятать его
+          именно там, где он чаще всего и нужен, — ровно наоборот.
+
+          `select-all`, чтобы одно нажатие выделяло его целиком.
         -->
-        <button
-          class={cn(bandIcon(terminalOpen), 'relative')}
-          onclick={toggleTerminal}
-          aria-pressed={terminalOpen}
-          aria-label={tr('room.ui.902')}
-          title={tr('room.extra.408', { p0: modKey })}
-        >
-          <Icon name="prompt" size={16} />
-          {#if session.terminalStatus === 'busy'}
-            <span
-              class="absolute right-1 top-1 h-1.5 w-1.5 animate-blink rounded-full bg-accent"
-            ></span>
-          {:else if session.terminalUnread > 0}
-            <!--
-              Новости самого ядра — почему остановился Run All, кто перезапустил
-              — пишутся в ленту, а лента за этой кнопкой. Без метки у комнаты
-              была причина на руках и ни одного повода её искать.
-            -->
-            <span
-              class="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center
-                     justify-center rounded-full bg-accent px-1 font-mono text-micro
-                     font-bold text-white"
-              title={tr('room.extra.409', { p0: session.terminalUnread })}
-            >
-              {session.terminalUnread > 9 ? '9+' : session.terminalUnread}
-            </span>
-          {/if}
-        </button>
-        <button
-          class={bandIcon(rightShown)}
-          onclick={toggleRight}
-          aria-pressed={rightShown}
-          aria-label={tr('room.ui.903')}
-          title={tr('room.oracle.shortcut', { key: modKey })}
-        >
-          <Icon name="sparkles" size={16} />
-        </button>
-      </div>
-
-      <ThemeSwitch tone="onDark" />
-
-      <!--
-        The link, readable and attached to the button that takes it.
-
-        Показывается с 1024px, а не с 1280: до этого адрес прятался на любом
-        ноутбуке уже 13", то есть на большинстве машин, с которых семинар и
-        ведут. А адрес на экране — это запасной ход, когда буфер обмена не
-        работает: его можно продиктовать или переписать руками. Прятать его
-        именно там, где он чаще всего и нужен, — ровно наоборот.
-
-        `select-all`, чтобы одно нажатие выделяло его целиком.
-      -->
-      <div class="flex h-7 min-w-0 shrink items-center">
-        <span
-          class="hidden h-full min-w-0 select-all items-center truncate border border-r-0
-                 border-brand-2 px-3 font-mono text-2xs text-white/80 lg:flex"
-          title={shareUrl}
-        >
-          {shareUrl}
-        </span>
-        <button
-          class={cn(BAND_BTN, 'h-full shrink-0 gap-2 bg-white px-3 text-brand opacity-100')}
-          onclick={copyLink}
-          title={tr('room.ui.904')}
-        >
-          <Icon name={copied ? 'check' : 'copy'} size={12} />
-          <span class="text-2xs font-bold uppercase tracking-label">
-            {copied ? tr('room.ui.905') : tr('room.ui.906')}
+        <div class="flex h-7 min-w-0 shrink items-center">
+          <span
+            class="hidden h-full min-w-0 select-all items-center truncate border border-r-0
+                   border-brand-2 px-3 font-mono text-2xs text-white/80 lg:flex"
+            title={shareUrl}
+          >
+            {shareUrl}
           </span>
-        </button>
+          <button
+            class={cn(BAND_BTN, 'h-full shrink-0 gap-2 bg-white px-3 text-brand opacity-100')}
+            onclick={copyLink}
+            title={tr('room.ui.904')}
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={12} />
+            <!--
+              Слово уходит в `sr-only`, а не под `hidden`: кнопка с одним
+              значком обязана остаться названной. «СКОПИРОВАТЬ» — это 108 px из
+              360, и ради них полоса до сих пор выталкивала саму кнопку за край
+              экрана: на телефоне от неё оставались две буквы. Имя для читалки
+              и `title` для указателя говорят то же самое, а с `sm` слово
+              возвращается на место (`not-sr-only`).
+            -->
+            <span class="sr-only text-2xs font-bold uppercase tracking-label sm:not-sr-only">
+              {copied ? tr('room.ui.905') : tr('room.ui.906')}
+            </span>
+          </button>
+        </div>
       </div>
     </div>
   </header>
@@ -2049,7 +2118,11 @@
       </p>
       <!-- Что осталось, а не что отняли: сюда приходят перечитывать разбор, и
            первое, что человек должен узнать, — что всё на месте. -->
-      <p class="min-w-0 flex-1 text-2xs leading-snug text-muted">
+      <!-- `basis-56`, как у подвала пульта правил: `flex-1` с нулевой основой
+           брал на телефоне остаток строки в 30 px и ставил фразу в столбик по
+           слову на строку. Двести двадцать четыре — та ширина, ниже которой
+           строку переносят целиком на свою. -->
+      <p class="min-w-0 flex-1 basis-56 text-2xs leading-snug text-muted">
         {isHost
           ? tr('room.ui.907')
           : tr('room.ui.908')}
@@ -2236,8 +2309,11 @@
                 <Icon name="board" size={11} /> {tr('room.ui.913')} </button>
               <span class="flex-1"></span>
               {#if session.board}
-                <span class="flex shrink-0 items-center px-5 text-2xs text-muted"> {tr('room.ui.914')} {baseOf(session.board)}
-                </span>
+                <!-- Имя файла усыхает: «идём за» с длинным именем выталкивало
+                   саму кнопку «На общий экран» за правый край телефона. -->
+              <span class="flex min-w-0 shrink items-center px-3 text-2xs text-muted sm:px-5">
+                <span class="truncate"> {tr('room.ui.914')} {baseOf(session.board)} </span>
+              </span>
               {/if}
             </div>
           {/if}
@@ -2585,14 +2661,25 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-40" role="presentation" onclick={() => (rulesOpen = false)}></div>
+  <!--
+    Рост ОГРАНИЧЕН экраном, а не содержимым.
+
+    Ограничение стояло на списке правил (60vh), а заголовок, «Закончить
+    занятие» и примечание считались бесплатными — и в альбомной ориентации
+    телефона (390 px высоты) 104 сверху плюс 60vh плюс эти три полосы уезжали
+    за нижнюю кромку вместе с самой важной кнопкой. Домотать до неё было
+    нельзя: прокручивался список ВНУТРИ, а не лист. Теперь лист не выше окна,
+    а прокручивается по-прежнему список — заголовок и кнопка всегда на виду.
+  -->
   <div
-    class="fixed right-3 top-[104px] z-50 w-[min(30rem,calc(100vw-1.5rem))] border border-line bg-raised shadow-pop sm:right-6"
+    class="fixed right-3 top-[104px] z-50 flex max-h-[calc(100dvh-7.5rem)] flex-col
+           w-[min(30rem,calc(100vw-1.5rem))] border border-line bg-raised shadow-pop sm:right-6"
     role="dialog"
     aria-label={tr('room.ui.900')}
     in:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: quintOut }}
   >
-    <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
-      <h2 class="text-2xs font-bold uppercase tracking-section text-muted"> {tr('room.ui.900')} </h2>
+    <div class="flex shrink-0 items-center gap-2 border-b border-line px-4 py-2.5">
+      <h2 class="min-w-0 truncate text-2xs font-bold uppercase tracking-section text-muted"> {tr('room.ui.900')} </h2>
       <span class="h-px flex-1 bg-line" aria-hidden="true"></span>
       <button
         class="btn-ghost h-6 w-6 shrink-0 px-0"
@@ -2602,7 +2689,9 @@
         <Icon name="x" size={14} />
       </button>
     </div>
-    <div class="max-h-[min(60vh,32rem)] overflow-y-auto px-4">
+    <!-- Прокручивается СПИСОК, а не весь лист: заголовок и «Закончить
+         занятие» под ним обязаны оставаться на виду. -->
+    <div class="min-h-0 flex-1 overflow-y-auto px-4 sm:max-h-[min(60vh,32rem)]">
       <RoomRulesRows
         rules={roomRules}
         busy={rulesBusy}
@@ -2617,7 +2706,7 @@
       все восемь разом и снимается тем же нажатием, и выбранные правила при
       этом остаются на месте, чтобы вернуться, когда занятие продолжат.
     -->
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line px-4 py-3">
+    <div class="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-line px-4 py-3">
       <div class="min-w-0 flex-1 basis-56">
         <p class="text-ui font-semibold text-ink">
           {session.finished ? tr('room.ui.843') : tr('room.ui.930')}
@@ -2655,7 +2744,7 @@
       окно «Правка не сохранена». Обещать ему обратное — значит объяснять
       ему потом, что сломалось.
     -->
-    <p class="border-t border-line px-4 py-2 text-2xs text-muted"> {tr('room.ui.934')} </p>
+    <p class="shrink-0 border-t border-line px-4 py-2 text-2xs text-muted"> {tr('room.ui.934')} </p>
   </div>
 {/if}
 
@@ -2734,7 +2823,7 @@
         transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
       >
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
-        <p class="text-ui leading-snug text-muted">{tr('room.ui.935')}</p>
+        <p class="min-w-0 flex-1 text-ui leading-snug text-muted">{tr('room.ui.935')}</p>
         <button
           class="btn-ghost h-6 px-2 text-2xs font-bold uppercase tracking-label"
           onclick={toPult}
@@ -2757,7 +2846,7 @@
         transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
       >
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
-        <p class="text-ui leading-snug text-muted"> {tr('room.ui.937')} </p>
+        <p class="min-w-0 flex-1 text-ui leading-snug text-muted"> {tr('room.ui.937')} </p>
       </div>
     {/if}
 
@@ -2774,7 +2863,7 @@
         transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
       >
         <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
-        <p class="text-ui leading-snug text-muted">
+        <p class="min-w-0 flex-1 text-ui leading-snug text-muted">
           {#if session.finished} {tr('room.ui.938')} {:else} {tr('room.ui.939')} {/if}
         </p>
       </div>

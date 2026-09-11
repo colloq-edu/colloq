@@ -1,11 +1,92 @@
+<script module lang="ts">
+  import { api } from '@/lib/api'
+  import type { OutputBlob } from '@shared/notebook'
+
+  /**
+   * Ключ на картинки комнаты — один на вкладку, а не на ячейку.
+   *
+   * Крупные картинки лежат не в документе, а рядом с комнатой, и забираются
+   * отдельным запросом (server/src/routes/blobs.ts). Заголовок в `<img>` не
+   * положить, поэтому в адресе едет короткоживущий ключ — тот же приём, что у
+   * скачивания файла. Здесь он живёт на уровне модуля: тетрадь — это сотня
+   * таких компонентов, и просить ключ каждому значило бы сотню одинаковых
+   * запросов на открытие комнаты.
+   */
+  let ticket = $state<{ room: string; token: string; at: number } | null>(null)
+  /** Комната, за ключ которой уже спросили: второй запрос ничего не добавит. */
+  let asking: string | null = null
+
+  /** Ключ живёт пять минут; за новым идём заранее, чтобы не ловить отказ. */
+  const TICKET_FRESH_MS = 4 * 60_000
+
+  /**
+   * Адрес, выданный один раз.
+   *
+   * Ключ обновляется, а адрес уже нарисованной картинки меняться не должен:
+   * другой адрес — это другой `src`, то есть повторная загрузка всего, что
+   * видно на экране, каждые несколько минут. Имя записи — хэш её содержимого,
+   * так что выданный адрес не устаревает по смыслу; устаревает только ключ в
+   * нём, и это лечится перезапросом при отказе.
+   */
+  const issued = new Map<string, string>()
+
+  export function blobSrc(room: string, blob: OutputBlob): string | null {
+    const key = `${room}:${blob.sha}`
+    const known = issued.get(key)
+    if (known) return known
+    if (!ticket || ticket.room !== room) return null
+    const url = api.blobUrl(room, blob.sha, ticket.token)
+    issued.set(key, url)
+    return url
+  }
+
+  /** Спросить ключ, если его нет или он вот-вот протухнет. */
+  export function askTicket(room: string, token: string): void {
+    const fresh = ticket && ticket.room === room && Date.now() - ticket.at < TICKET_FRESH_MS
+    if (fresh || asking === room) return
+    asking = room
+    void api
+      .blobTicket(room, token)
+      .then((got) => {
+        ticket = { room, token: got.token, at: Date.now() }
+      })
+      .catch(() => {
+        /* Не дали ключ — картинка покажется текстовым представлением; следующая
+           попытка придёт со следующей картинкой. */
+      })
+      .finally(() => {
+        if (asking === room) asking = null
+      })
+  }
+
+  /**
+   * Адрес отказал (ключ протух) — забыть его и взять новый ключ.
+   *
+   * Ровно один раз на запись: картинка, которой на сервере нет вовсе, иначе
+   * гоняла бы по кругу «отказ → новый ключ → новый адрес → отказ», и пустая
+   * рамка стоила бы запроса в секунду.
+   */
+  const retried = new Set<string>()
+
+  export function forgetBlobSrc(room: string, sha: string): boolean {
+    const key = `${room}:${sha}`
+    if (retried.has(key)) return false
+    retried.add(key)
+    issued.delete(key)
+    if (ticket && ticket.room === room) ticket = null
+    return true
+  }
+</script>
+
 <script lang="ts">
   import { tr } from '@shared/i18n'
   import type { CellOutput } from '@shared/notebook'
   import Icon from '@/components/ui/Icon.svelte'
   import ScopedOutput from './ScopedOutput.svelte'
+  import { getSessionState } from '@/lib/session.svelte'
   // Что показывать картинкой, что разметкой, что текстом — в своём модуле:
   // список растровых типов там связан с публикацией, а не переписан от руки.
-  import { asImage, imageSrc, isPicture, pickMime } from './output-mimes'
+  import { asImage, imageSrc, isPicture, pickMime, withBlobs } from './output-mimes'
   import { loadRenderers, renderers, stripAnsi } from '@/lib/render.svelte'
   import { withoutEcho } from '@/lib/traceback'
   import { cn, collapseCarriage } from '@/lib/utils'
@@ -23,6 +104,50 @@
   }
 
   let { outputs, pending = $bindable(0) }: Props = $props()
+
+  /**
+   * Комната — или ничего, и это не оговорка.
+   *
+   * Тот же компонент рисует выводы на опубликованной странице (reader/
+   * PublicNotebook) и в стопке консилиума: там сессии нет вовсе, а картинки
+   * приезжают уже адресами публикации. `getSessionState` вне сессии бросает —
+   * это правильно для всех, кто без неё не работает, и не про нас.
+   */
+  let room: { id: string; token: string } | null = null
+  try {
+    const session = getSessionState()
+    room = { id: session.session.id, token: session.token }
+  } catch {
+    room = null
+  }
+  /*
+   * Ключ спрашивается на открытии тетради, а не на первой картинке: иначе
+   * график, досчитанный ядром, ждал бы ещё один круг до сервера, и комната
+   * успевала бы увидеть на его месте «<Figure size 640x480 with 1 Axes>».
+   */
+  if (room) askTicket(room.id, room.token)
+
+  /** Вывод, готовый к показу: вынесенные картинки — адресами. См. withBlobs. */
+  function shown(output: CellOutput): CellOutput {
+    if (!room) return output
+    const here = room
+    return withBlobs(output, (blob) => blobSrc(here.id, blob))
+  }
+
+  /**
+   * Картинка не загрузилась — скорее всего, протух ключ в её адресе.
+   *
+   * Пять минут ключа против пары в полтора часа: вкладка, вернувшаяся из сна,
+   * приходит за картинкой со старым ключом и получает 401. Забываем адрес и
+   * берём новый ключ — перерисовка подставит свежий, и это единственный
+   * случай, когда `src` у нарисованной картинки меняется.
+   */
+  function retry(output: CellOutput): void {
+    if (!room || output.kind !== 'data') return
+    let again = false
+    for (const blob of output.blobs ?? []) again = forgetBlobSrc(room.id, blob.sha) || again
+    if (again) askTicket(room.id, room.token)
+  }
 
   /**
    * Картинка, которая ещё не раскодировалась.
@@ -88,7 +213,9 @@
     становится графиком на двести внутри той же обёртки с прежним `heights[0]`
     — график рисуется подрезанным, под ним висит «Show more» из ниоткуда.
   -->
-  {#each outputs as output, i (outputKey(i, output))}
+  {#each outputs as raw, i (outputKey(i, raw))}
+    <!-- Вынесенные картинки — адресами; всё остальное как приехало. -->
+    {@const output = shown(raw)}
     {@const clipped = tall(i, output) && !expanded[i]}
     <div class="relative">
       <div class="overflow-hidden" style:max-height={clipped ? `${COLLAPSE_PX}px` : undefined}>
@@ -130,6 +257,7 @@
                 src={imageSrc(mime, payload)}
                 alt={tr('room.ui.329')}
                 class="max-w-full bg-white/95 p-1"
+                onerror={() => retry(raw)}
               />
             {:else if mime === 'image/svg+xml' && render}
               <ScopedOutput

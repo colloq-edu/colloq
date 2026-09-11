@@ -48,7 +48,8 @@
  *   LOAD_SETUP_TOKEN  ключ установки, если файла рядом нет (удалённый инстанс)
  *   LOAD_STAFF_COOKIE готовая кука `colloq_staff=...`, если ключа нет вовсе
  *   LOAD_STAFF_JOIN   1 — входить с кукой штата, мимо предела новых участников
- *   LOAD_ECHO         0 — не повторять серверу чужое присутствие (см. ниже)
+ *   LOAD_ECHO         1 — повторять серверу чужое присутствие, как делали
+ *                     вкладки до presence.ts · ownChanges (см. ниже) default 0
  *   DATA_DIR          где лежит setup-token    default <repo>/data
  */
 import { execFileSync } from 'node:child_process'
@@ -119,17 +120,22 @@ const INK_SEC = num('LOAD_INK_SEC', 10)
 const SERVER_PID = (process.env.LOAD_SERVER_PID ?? '').trim()
 const STAFF_JOIN = process.env.LOAD_STAFF_JOIN === '1'
 /*
- * Настоящая вкладка повторяет серверу ЧУЖОЕ присутствие.
+ * Настоящая вкладка чужое присутствие серверу БОЛЬШЕ НЕ ПОВТОРЯЕТ.
  *
- * Не выдумка стенда: `_awarenessUpdateHandler` в y-websocket — а это ровно тот
- * провайдер, которым живёт web/src/lib/session.svelte.ts — шлёт в сокет все
- * изменившиеся clientID, не разбирая, свои они или приехавшие. То есть каждый
- * кадр присутствия возвращается серверу столько раз, сколько в комнате
- * вкладок; сервер их отвергает (`ownAwareness`), но разбирает. При пятистах
- * это и есть главный источник трафика, и стенд, который так не делает, меряет
- * не ту комнату. Выключается тем, кому важнее не захлебнуться самому.
+ * Повторяла: `_awarenessUpdateHandler` в y-websocket шлёт в сокет все
+ * изменившиеся clientID, не разбирая, свои они или приехавшие, — и каждый кадр
+ * возвращался серверу столько раз, сколько в комнате вкладок. Этого больше
+ * нет с обеих сторон: web/src/lib/presence.ts · ownChanges отсеивает чужие
+ * clientID перед отправкой, а провайдер поднимается с disableBc
+ * (session.svelte.ts), так что соседние вкладки не пересказывают друг другу
+ * ещё и это.
+ *
+ * Поэтому умолчание — 0. С единицей стенд грузил сервер работой, которой в
+ * настоящей комнате нет вовсе: холостой процессор сервера завышался в 2.7
+ * раза, и «выдержит ли поток» стенд отвечал про чужую комнату. Единица
+ * остаётся ради одного вопроса — сколько стоил бы возврат старого поведения.
  */
-const ECHO = process.env.LOAD_ECHO !== '0'
+const ECHO = process.env.LOAD_ECHO === '1'
 
 /** y-websocket'овские метки кадров. Числа — протокол, а не выбор. */
 const MSG_SYNC = 0
@@ -597,7 +603,7 @@ function printWindow(w: Window): void {
   }
   if (ECHO && w.echoes > 0) {
     row('эхо присутствия', `${w.echoes} кадров назад`,
-      `${Math.round(w.echoes / w.seconds)}/с: столько раз вкладки повторили серверу чужое`)
+      `${Math.round(w.echoes / w.seconds)}/с чужого — так вкладки вели себя ДО ownChanges`)
   }
   if (w.selfLagP95 > 50) {
     say(red(`    стенд ждал СВОЕГО цикла p95 ${ms(w.selfLagP95)} — числа выше это оценка снизу`))
@@ -1179,6 +1185,16 @@ let stormWin: Window | null = null
 let stormOut: Storm | null = null
 let treeWin: Window | null = null
 let treeOut: Tree | null = null
+/*
+ * Цена одного файла — то, что окно дерева приняло СВЕРХ покоя, делённое на
+ * число файлов. Без вычитания покоя стенд приписывал дереву всё присутствие
+ * комнаты: при 500 вкладках это 2,2 МБ/с независимо от файлов, и «упёрлось:
+ * дерево» печаталось даже тогда, когда дельты стоили комнате 100 КБ на файл.
+ */
+function treeCost(win: Window, out: Tree): number {
+  const idleRate = idleWin && idleWin.seconds > 0 ? idleWin.bytesIn / idleWin.seconds : 0
+  return Math.max(0, win.bytesIn - idleRate * win.seconds) / Math.max(out.made, 1)
+}
 let councilWin: Window | null = null
 let councilOut: Council | null = null
 let lectureWin: Window | null = null
@@ -1460,9 +1476,9 @@ try {
        * дороже, чем всё присутствие вместе взятое.
        */
       treeWin !== null && treeOut !== null && treeOut.made > 0 &&
-        treeWin.bytesIn / treeOut.made > 1024 * 1024,
+        treeCost(treeWin, treeOut) > 1024 * 1024,
       `дерево файлов — один заведённый файл стоил комнате ` +
-        `${size((treeWin?.bytesIn ?? 0) / Math.max(treeOut?.made ?? 1, 1))} рассылки: ` +
+        `${size(treeWin && treeOut ? treeCost(treeWin, treeOut) : 0)} рассылки сверх покоя: ` +
         `список уходит целиком и каждому (broadcastFiles, server/src/control.ts).`,
     ],
     [

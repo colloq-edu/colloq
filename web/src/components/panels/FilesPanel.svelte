@@ -111,7 +111,14 @@
    * и `focus-within` остаются рядом.
    */
   let picked = $state<string | null>(null)
-  /** Куда лягут «новый файл» и «новая папка». Пустая строка — корень. */
+  /**
+   * Куда лягут «новый файл», «новая папка» и загрузка. Пустая строка — корень.
+   *
+   * Цель — папка, которую открыли последней (или родитель открытого файла), и
+   * живёт она ровно столько, сколько папка открыта: свернул — цель поднялась
+   * к родителю. Так у неё есть очевидный выход, а не только «нажми на другой
+   * файл», и подпись внизу всегда называет место, а не правило.
+   */
   let target = $state('')
   /**
    * Та же папка строкой дерева — для броска на пунктирную кнопку внизу.
@@ -238,8 +245,16 @@
     // человек должен видеть и то, что с ней можно сделать.
     picked = path
     const next = new Set(expanded)
-    if (next.has(path)) next.delete(path)
-    else next.add(path)
+    if (next.has(path)) {
+      next.delete(path)
+      // Свёрнутая папка целью не остаётся: файл лёг бы туда, где его не видно,
+      // а вернуть цель в корень иначе было нечем — только открыть файл рядом.
+      // Закрыть папку — и есть «снять выделение».
+      if (target === path || target.startsWith(`${path}/`)) target = parentOf(path)
+    } else {
+      next.add(path)
+      target = path
+    }
     expanded = next
   }
 
@@ -259,7 +274,7 @@
     // свои действия, даже если открыть файл правило комнаты не дало.
     picked = entry.path
     if (entry.dir) {
-      target = entry.path
+      // Цель ставит и снимает `toggle`: открытая папка — цель, закрытая — нет.
       toggle(entry.path)
       return
     }
@@ -1247,6 +1262,7 @@
       ? 'border-accent bg-accent/10 text-accent-text'
       : 'border-line text-muted'} {may.files ? 'hover:border-faint hover:text-ink' : ''}"
     disabled={!may.files}
+    title={may.files ? tr('room.extra.461') : undefined}
     onclick={() => picker?.click()}
     ondragover={(event) => aim(event, targetRow)}
     ondrop={(event) => onDrop(event, targetRow)}

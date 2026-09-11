@@ -17,24 +17,50 @@ const stopBootLanguage = onLanguageChange(updateBootLanguage)
  * inlined shell can paint with zero network. The cost is that the app can mount
  * before its CSS has applied, so the shell — which is covering an undressed
  * document until then — leaves on the stylesheet, not on the mount.
+ *
+ * Ждём ПРИМЕНЁННЫЙ лист (`link.sheet`), а не событие загрузки. Ссылка теперь
+ * едет как `rel=preload as=style` — так браузер даёт ей высокий приоритет, —
+ * и её `load` срабатывает на скачанных байтах, до того как встроенный
+ * обработчик переведёт её в `rel=stylesheet` и лист встанет в документ. Уйти
+ * по такому событию значило бы показать приложение раздетым на кадр.
  */
+const STYLE_WAIT = 2000
+
 function stylesApplied(): Promise<void> {
-  const pending = [...document.querySelectorAll<HTMLLinkElement>('link[data-colloq-css]')].filter(
-    (link) => !link.sheet,
-  )
-  if (pending.length === 0) return Promise.resolve()
+  const sheets = [...document.querySelectorAll<HTMLLinkElement>('link[data-colloq-css]')]
+  const failed = new Set<HTMLLinkElement>()
+  const ready = () => sheets.every((link) => link.sheet !== null || failed.has(link))
+  if (ready()) return Promise.resolve()
 
   return new Promise((resolve) => {
-    let waiting = pending.length
-    const settle = () => {
-      if (--waiting === 0) resolve()
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve()
     }
-    for (const link of pending) {
-      link.addEventListener('load', settle, { once: true })
-      link.addEventListener('error', settle, { once: true })
+    const check = () => {
+      if (settled) return
+      if (ready()) finish()
+      else requestAnimationFrame(check)
     }
-    // A stylesheet that never arrives must not hold the seminar hostage.
-    setTimeout(resolve, 2000)
+    for (const link of sheets) {
+      link.addEventListener('load', check)
+      link.addEventListener('error', () => {
+        failed.add(link)
+        check()
+      })
+    }
+    requestAnimationFrame(check)
+    // A stylesheet that never arrives must not hold the seminar hostage. Ни
+    // одного кадра в норме здесь не бывает — поэтому, если сюда дошли, это
+    // поломка выкладки, и молчать о ней нельзя: приложение сейчас покажут
+    // раздетым, и объяснить это в консоли обязаны мы, а не пользователь.
+    setTimeout(() => {
+      if (settled) return
+      console.warn('Colloq: стили не применились за 2 с — оболочка уходит без них')
+      finish()
+    }, STYLE_WAIT)
   })
 }
 

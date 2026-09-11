@@ -1479,7 +1479,13 @@ async function runOne(runtime: Runtime, item: QueueItem): Promise<void> {
    * те же шесть на потоке из пятисот — это гигабайт исходящего, за которым у
    * всех встаёт очередь из собственного набора текста. См. dataBudgetFor.
    */
-  const writer = new OutputWriter(doc, item.cellId, dataBudgetFor(onlineCount(runtime.sessionId)))
+  const writer = new OutputWriter(
+    doc,
+    item.cellId,
+    dataBudgetFor(onlineCount(runtime.sessionId)),
+    // Комната — чтобы крупные картинки легли рядом с ней, а не в документ.
+    runtime.sessionId,
+  )
   runtime.currentCell = item.cellId
   runtime.currentBatch = item.batch
   runtime.currentRunById = item.runById

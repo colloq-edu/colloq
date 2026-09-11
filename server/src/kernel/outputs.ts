@@ -1,6 +1,8 @@
 import { tr } from '@shared/i18n'
 import * as Y from 'yjs'
-import { cellOutputs, findCell, type StreamName, type YOutput } from '@shared/notebook'
+import { cellOutputs, findCell, type OutputBlob, type StreamName, type YOutput } from '@shared/notebook'
+import { BLOB_MIMES } from '@shared/publish'
+import { putBlob } from '../blobs.js'
 import { config } from '../config.js'
 
 /**
@@ -60,6 +62,39 @@ export function dataBudgetFor(viewers: number): number {
   const scaled = Math.round((MAX_CELL_DATA_CHARS * FULL_DATA_BUDGET_VIEWERS) / viewers)
   return Math.max(MIN_CELL_DATA_CHARS, scaled)
 }
+
+/**
+ * Порог, за которым картинка уезжает из документа наружу (`server/blobs.ts`).
+ *
+ * Шестнадцать килобайт base64 — это двенадцать килобайт байтов: меньше весит
+ * значок или маленький спрайт, которому отдельный запрос дороже собственного
+ * размера, а всё, что больше, — уже график. Текст, HTML и SVG не выносятся
+ * никогда: первые два комната показывает разметкой и санитайзит на месте, а
+ * ссылка на них была бы вторым кругом загрузки ради килобайта.
+ */
+const BLOB_FROM_CHARS = 16 * 1024
+
+/**
+ * Во сколько раз вынесенная картинка дешевле для комнаты, чем лежащая в
+ * документе.
+ *
+ * Бюджет у ячейки остался один (`dataBudget`), и это правильно: он про то,
+ * сколько комната готова заплатить за вывод одной ячейки. Но ссылка стоит
+ * иначе, чем base64 в документе: документ её не несёт вовсе, снимок и кадр
+ * истории — тоже, zlib на каждого зрителя не тратится, а картинка едет один
+ * раз, отдельным запросом, и дальше живёт в кэше браузера. Остаётся только
+ * исходящий трафик — примерно восьмая часть прежней цены. Так что вынесенные
+ * байты и считаются восьмой частью: ячейка, которая раньше упиралась в потолок
+ * на шести мегабайтах картинок, теперь рисует их сорок восемь.
+ */
+const BLOB_BUDGET_FACTOR = 8
+
+/**
+ * Во что обходится документу одна ссылка: хэш в шестьдесят четыре знака, тип,
+ * вес и кавычки вокруг — с запасом. Считается до записи на диск, когда хэша
+ * ещё нет, а решать про бюджет уже надо.
+ */
+const REF_CHARS = 150
 
 /** RecursionError tracebacks run to thousands of identical frames. */
 const MAX_TRACEBACK_LINES = 80
@@ -154,6 +189,14 @@ export class OutputWriter {
      * зависит от того, сколько человек сейчас в комнате (см. dataBudgetFor).
      */
     private readonly dataBudget: number = MAX_CELL_DATA_CHARS,
+    /**
+     * Комната, рядом с которой лягут вынесенные картинки.
+     *
+     * Необязательна, и это не забывчивость: писатель без комнаты (тесты,
+     * аварийный писатель мёртвого ядра) пишет всё в документ, как раньше.
+     * Хранилище адресуется семинаром — без него выносить некуда.
+     */
+    private readonly sessionId: string | null = null,
   ) {}
 
   stream(name: StreamName, text: string): void {
@@ -212,19 +255,81 @@ export class OutputWriter {
     this.flush()
     // Строка потока закрыта картинкой: дописывать в неё уже некуда.
     this.forgetTail()
-    const json = JSON.stringify({ data: mimebundle, execCount })
+    /*
+     * Раскодировать — до транзакции, положить — внутри неё.
+     *
+     * Внутри транзакции документ закрыт для всех остальных, и `Buffer.from`
+     * мегабайтного base64 там — это миллисекунды, за которыми встаёт очередь
+     * из чужого набора текста. А вот решение «класть или не класть» зависит от
+     * бюджета, который отложенное стирание сбрасывает ровно в начале
+     * транзакции (см. `write`), — поэтому оно принимается там.
+     */
+    const heavy = this.heavyParts(mimebundle)
     this.write((outputs) => {
-      if (this.dataTruncated || this.usedData + json.length > this.dataBudget) {
+      const inline: Record<string, string> = {}
+      for (const [mime, value] of Object.entries(mimebundle)) {
+        if (!heavy.has(mime)) inline[mime] = value
+      }
+      /*
+       * Сначала цена, потом запись на диск.
+       *
+       * Иначе ячейка, упёршаяся в потолок, оставляла бы по файлу на каждую
+       * картинку, которую ей не дали показать: в документ они не попадут, и
+       * убрать их потом будет некому до удаления семинара.
+       */
+      let spilled = 0
+      for (const body of heavy.values()) spilled += body.length
+      const cost =
+        JSON.stringify({ data: inline, execCount }).length +
+        heavy.size * REF_CHARS +
+        Math.ceil(spilled / BLOB_BUDGET_FACTOR)
+      if (this.dataTruncated || this.usedData + cost > this.dataBudget) {
         this.dataTruncated = true
         this.dataNotice(outputs)
         return
       }
-      this.usedData += json.length
+      const blobs: OutputBlob[] = []
+      for (const [mime, body] of heavy) {
+        const stored = this.sessionId ? putBlob(this.sessionId, body) : null
+        if (!stored) {
+          // Не записалось — картинка всё равно едет, просто по-старому. Потерять
+          // её из-за полного диска хуже, чем заплатить за неё документом.
+          inline[mime] = mimebundle[mime]
+          continue
+        }
+        blobs.push({ sha: stored.sha, mime, bytes: stored.bytes })
+      }
+      const json = JSON.stringify(
+        blobs.length > 0 ? { data: inline, blobs, execCount } : { data: inline, execCount },
+      )
+      this.usedData += cost
       const output = new Y.Map<any>()
       output.set('kind', 'data')
       output.set('json', json)
       outputs.push([output])
     })
+  }
+
+  /**
+   * Что из набора уедет по ссылке — уже раскодированным.
+   *
+   * Только растровые картинки (`BLOB_MIMES`) и только крупные: остальное
+   * дешевле оставить в документе, чем сходить за ним вторым запросом. Тот же
+   * список, по которому выносит содержимое публикация, — чтобы в комнате и на
+   * опубликованной странице по ссылке уезжало одно и то же.
+   */
+  private heavyParts(mimebundle: Record<string, string>): Map<string, Uint8Array> {
+    const heavy = new Map<string, Uint8Array>()
+    if (!this.sessionId) return heavy
+    for (const [mime, value] of Object.entries(mimebundle)) {
+      if (typeof value !== 'string' || value.length < BLOB_FROM_CHARS) continue
+      if (!BLOB_MIMES.has(mime)) continue
+      const body = Buffer.from(value, 'base64')
+      // Пустое после раскодирования — это не картинка, а что-то, что ядро
+      // назвало картинкой: пусть едет в документ и разбирается там.
+      if (body.length > 0) heavy.set(mime, body)
+    }
+    return heavy
   }
 
   error(ename: string, evalue: string, traceback: string[]): void {

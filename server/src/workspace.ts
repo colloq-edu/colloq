@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { createAnchoredFilesystem } from './secure-files.js'
 import path from 'node:path'
 import { config } from './config.js'
-import type { FileEntry } from '@shared/protocol'
+import type { FileEntry, FilesDelta } from '@shared/protocol'
 import { MAX_DEPTH, MAX_PATH, baseOf, kindOf, normalizePath, parentOf } from '@shared/paths'
 
 export const workspaceFs = createAnchoredFilesystem(config.workspaceDir, {
@@ -220,6 +220,49 @@ export interface FileTree {
    * обязано знать разницу, иначе оно удалит живое.
    */
   truncated: boolean
+}
+
+/**
+ * Чем новое дерево отличается от прошлого.
+ *
+ * Считается по двум обходам — тому, что комната уже видела, и свежему, — и
+ * едет вместо всего списка (shared/protocol.ts · FilesDelta). Цена перемены
+ * перестаёт зависеть от размера папки: заведённый файл — это одна запись в
+ * кадре, а не две тысячи.
+ *
+ * `at` у новой записи — её место в ГОТОВОМ списке. Это работает потому, что
+ * порядок дерева однозначно определён его составом (обход в глубину, папки
+ * перед файлами, по имени): уцелевшие записи стоят друг относительно друга в
+ * новом списке ровно так же, как в старом, и вставка по возрастанию `at` после
+ * удалений даёт в точности новый список. Правило применения — одно, и живёт
+ * оно на вкладке (web/src/lib/files-delta.ts), а проверено на обеих.
+ */
+export function treeDelta(before: readonly FileEntry[], after: readonly FileEntry[]): FilesDelta {
+  const was = new Map<string, FileEntry>()
+  for (const entry of before) was.set(entry.path, entry)
+  const changed: FileEntry[] = []
+  const added: { at: number; entry: FileEntry }[] = []
+  const kept = new Set<string>()
+  after.forEach((entry, at) => {
+    const old = was.get(entry.path)
+    if (!old) {
+      added.push({ at, entry })
+      return
+    }
+    kept.add(entry.path)
+    // Имя — тоже: переименование внутри папки меняет путь целиком, но файл,
+    // переехавший на диске мимо нас, может прийти с тем же путём и другим всем.
+    if (
+      old.dir !== entry.dir ||
+      old.size !== entry.size ||
+      old.modifiedAt !== entry.modifiedAt ||
+      old.name !== entry.name
+    )
+      changed.push(entry)
+  })
+  const removed: string[] = []
+  for (const entry of before) if (!kept.has(entry.path)) removed.push(entry.path)
+  return { removed, changed, added }
 }
 
 /**

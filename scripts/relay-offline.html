@@ -3,24 +3,75 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Colloq сейчас недоступен — Colloq</title>
+    <title>Комната ещё не открыта — Colloq</title>
 
     <!--
-      Страница ожидания ретранслятора (*.colloq.ru). Её отдаёт frps, когда для
-      имени нет живого туннеля, и caddy, когда не отвечает сам frps. Ставится
-      на машину скриптом scripts/relay-setup.sh (или make relay-page — только
-      она, без перезапуска служб). Макет — Paper, страница «06 · Страница
-      ожидания».
+      Страницы ошибок ретранслятора (*.colloq.ru). Один файл на все случаи —
+      и это не экономия байтов: опрос комнаты, игра и таблица рекордов у них
+      общие, расходится только текст. Ставится на машину скриптом
+      scripts/relay-setup.sh (или make relay-page — только страница, без
+      перезапуска служб). Макет — Paper, страница «06 · Страница ожидания»;
+      состояний в макете одно, остальные три собраны из того же набора
+      (см. REPORT рядом с правкой).
 
-      Метка ниже — то, по чему скрипт на этой же странице отличает «всё ещё
-      ждём» от «комната открылась»: раз в двадцать секунд он запрашивает свой
-      адрес заново и, не найдя метки в ответе, перезагружает вкладку прямо в
-      комнату. Раньше это делала <meta http-equiv="refresh">, но она убивала
-      бы игру ниже на самом интересном месте; без JS она остаётся запасным
-      ходом внутри <noscript>.
+      Случаев четыре, и раньше все они показывали один и тот же текст «комната
+      ещё не открыта» с советом проверить адрес — даже когда комнаты с таким
+      именем не бывало вовсе, а иногда и тогда, когда ломался сам
+      ретранслятор:
+
+        ещё не открыта — имя знакомо, туннеля сейчас нет (обычный случай:
+                         преподаватель ещё не начал);
+        такой нет      — имя ретранслятор не видел ни разу, то есть опечатка
+                         в ссылке;
+        не отвечает    — связь есть, а Colloq по ту сторону молчит (машина
+                         преподавателя) или ретранслятор не может дозвониться
+                         до своей же службы туннелей;
+        сломалось      — любой другой ответ: код и номер запроса в журнале.
+
+      Кто именно отдал страницу и с каким кодом, страница узнаёт из подстановки
+      ниже и из /.relay/state; разбор — в скрипте, раздел «что случилось».
+
+      Метка ниже — то, по чему страница отличает «всё ещё ждём» от «комната
+      открылась»: раз в двадцать секунд она запрашивает свой адрес заново и, не
+      найдя метки в ответе, перезагружает вкладку прямо в комнату. Содержимое
+      метки не трогать: на ретрансляторе может лежать страница прошлой версии,
+      и опрос у обеих должен искать одно и то же слово. Раньше это делала
+      <meta http-equiv="refresh">, но она убивала бы игру ниже на самом
+      интересном месте; без JS она остаётся запасным ходом внутри <noscript>.
     -->
     <meta name="colloq-page" content="offline" />
     <noscript><meta http-equiv="refresh" content="20" /><style>.game { display: none; }</style></noscript>
+
+    <!--
+      Что именно случилось, знает только caddy — и говорит это подстановкой:
+      директива templates в handle_errors заменяет три выражения ниже на
+      настоящий код ответа, его название и номер записи в журнале. frps своей
+      404-й отдаёт ТОТ ЖЕ файл как есть, ничего не подставляя, — и по тому, что
+      вместо трёх цифр здесь осталась угловая скобка, страница понимает, кто её
+      отдал. Второй файл для этого не нужен.
+
+      Скобки не те, что у шаблонов Go по умолчанию, и это выстраданное:
+      templates разбирает как шаблон ВЕСЬ файл, а пара фигурных скобок подряд
+      встречается в JS и в тексте сама собой (первая же попытка упала на
+      комментарии ниже, где такая пара стояла в объяснении). Ошибка разбора —
+      это пустой ответ вместо страницы ошибки, то есть белый экран ровно в ту
+      минуту, когда человеку нужно объяснение. Пара «угловая скобка с
+      процентом» в HTML, CSS и JS не встречается никогда. Задаётся она у
+      директивы templates настройкой between — сами скобки написать здесь
+      нельзя, их тут же разобрало бы как подстановку; смотреть в
+      scripts/relay-setup.sh, раздел handle_errors.
+
+      Отсюда же правило: во всём файле этих скобок ровно три, и все три —
+      ниже. Четвёртая, где угодно — хоть в комментарии, — и страницы ошибки
+      не станет. За этим следит tests/relay-errors.test.mts.
+    -->
+    <script>
+      window.__relay = {
+        code: '<%placeholder "http.error.status_code"%>',
+        text: '<%placeholder "http.error.status_text"%>',
+        id: '<%placeholder "http.error.id"%>',
+      };
+    </script>
 
     <!--
       Ни одного внешнего запроса: ни шрифтов, ни картинок, ни библиотек. Эту
@@ -163,6 +214,23 @@
 
       .note { font-size: 15px; line-height: 24px; color: var(--muted); }
 
+      .lang {
+        margin-left: auto;
+        flex: none;
+        padding: 2px 9px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.16em;
+        line-height: 18px;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+
       /* Что делать — единственный блок с землёй под ним: это и есть ответ. */
       .wait {
         display: flex;
@@ -176,6 +244,29 @@
 
       .wait .text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 
+      .wait .act {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px 12px;
+        margin-top: 6px;
+      }
+
+      .wait .act button {
+        height: 32px;
+        padding: 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--canvas);
+        color: var(--ink);
+        font: inherit;
+        font-size: 14px;
+        font-weight: 500;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .wait .act button[disabled] { opacity: 0.55; cursor: default; }
+
       .dot {
         flex: none;
         width: 9px;
@@ -185,6 +276,15 @@
         background: var(--accent);
         animation: breathe 2.6s ease-in-out infinite;
       }
+
+      /*
+       * Точка дышит ровно там, где есть чего ждать. На «такой комнаты нет» и
+       * на поломке ждать нечего — и мигающий огонёк врал бы, что вот-вот
+       * откроется. Цвет тоже разный: серый — ничего не происходит, тёплый —
+       * сломалось.
+       */
+      [data-state='missing'] .dot { background: var(--muted); animation: none; }
+      [data-state='fault'] .dot { background: var(--warm-text); animation: none; }
 
       @keyframes breathe {
         0%, 100% { opacity: 0.35; transform: scale(0.85); }
@@ -456,7 +556,7 @@
     </style>
   </head>
   <body>
-    <main>
+    <main id="page" data-state="waiting">
       <header>
         <div class="top">
           <!-- Знак Colloq: та же сетка, что и в фавиконе продукта. -->
@@ -472,22 +572,35 @@
             <rect x="16" y="16" width="6" height="6" rx="1.6" />
           </svg>
           <p class="label" id="where">Colloq</p>
+          <!-- Язык страницы: русский по умолчанию, английский — по браузеру. -->
+          <button class="lang" id="lang" type="button" aria-label="Switch to English">EN</button>
         </div>
-        <h1>Colloq сейчас недоступен</h1>
-        <p class="lede">
-          Не удалось подключиться к Colloq по этому адресу.
-          Сервер может быть выключен или временно недоступен.
+        <!--
+          В разметке лежит самый частый случай — «комната ещё не открыта»: без
+          JS страница честна ровно для него, а он и случается каждый день.
+          Остальные три собирает скрипт, когда узнаёт, что именно произошло.
+        -->
+        <h1 id="head">Комната ещё не открыта</h1>
+        <p class="lede" id="lede">
+          По этому адресу занятие сейчас не идёт. Комнату открывает
+          преподаватель — обычно незадолго до начала, и до этой минуты её
+          здесь просто нет.
         </p>
       </header>
 
-      <section class="wait" aria-label="Ожидание комнаты">
+      <section class="wait" id="wait" aria-label="Что сейчас известно">
         <span class="dot"></span>
         <div class="text">
           <span id="wait-text">
-            Страница проверяет соединение каждые 20 секунд и перезагрузится,
-            когда Colloq станет доступен. Оставьте вкладку открытой.
+            Ждать можно прямо здесь: страница сама заглядывает в комнату и
+            откроет её, как только та появится. Оставьте вкладку открытой —
+            нажимать ничего не нужно.
           </span>
           <span class="mono" id="wait-line">первая проверка через 20 с</span>
+          <div class="act">
+            <button type="button" id="retry">Попробовать снова</button>
+            <span class="mono" id="retry-line" aria-live="polite"></span>
+          </div>
         </div>
       </section>
 
@@ -518,7 +631,7 @@
           <div class="numbers">
             <span class="big"><b id="final">0</b><small id="final-word">очков</small></span>
             <span><b id="tang">0</b><small id="tang-word">мандаринов</small></span>
-            <span><b id="time">0 с</b><small>в пути</small></span>
+            <span><b id="time">0 с</b><small id="time-word">в пути</small></span>
           </div>
           <form class="submit" id="submit" autocomplete="off">
             <input
@@ -537,16 +650,16 @@
 
         <div class="board" id="board" hidden>
           <div class="board-head">
-            <p class="label">Рекорды</p>
+            <p class="label" id="board-label">Рекорды</p>
             <span class="mono" id="board-line"></span>
           </div>
           <ol id="top"></ol>
         </div>
       </section>
 
-      <p class="note">
-        Если Colloq долго недоступен, проверьте адрес и уточните у преподавателя,
-        работает ли сервер.
+      <p class="note" id="foot">
+        Если ждёте давно, стоит сверить адрес с тем, который вам дал
+        преподаватель: одна буква в имени уводит на пустую страницу вроде этой.
       </p>
     </main>
 
@@ -563,20 +676,394 @@
           if (b === 1) return forms[0];
           return forms[2];
         }
+        // 1 point, 2 points — и никаких падежей.
+        function many(n, forms) { return Math.abs(n) === 1 ? forms[0] : forms[1]; }
+        // 1st, 2nd, 3rd, 11th, 21st.
+        function ord(n) {
+          const a = n % 100;
+          const b = n % 10;
+          return n + (a > 10 && a < 20 ? 'th' : b === 1 ? 'st' : b === 2 ? 'nd' : b === 3 ? 'rd' : 'th');
+        }
         const store = {
           get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
           set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} },
         };
 
+        /* ------------------------------------------------ язык
+         *
+         * Языков здесь ровно столько же, сколько у самого продукта: занятие
+         * ведут и по-английски, и студент на этой странице — тот же, что через
+         * минуту войдёт в комнату. Accept-Language странице недоступен: её
+         * отдаёт file_server (а то и вовсе frps) как файл, ничего не разбирая,
+         * — поэтому язык берётся из того же списка, который видит браузер, и
+         * может быть переключён кнопкой. Выбор помнится на этом устройстве.
+         */
+        function pickLang() {
+          const saved = store.get('colloq.lang');
+          if (saved === 'ru' || saved === 'en') return saved;
+          const list = navigator.languages && navigator.languages.length
+            ? navigator.languages
+            : [navigator.language || 'ru'];
+          for (const one of list) {
+            const tag = String(one).toLowerCase();
+            if (tag === 'en' || tag.startsWith('en-')) return 'en';
+            if (tag === 'ru' || tag.startsWith('ru-')) return 'ru';
+          }
+          return 'ru';
+        }
+
+        /*
+         * Весь текст страницы — здесь, и ничего кроме текста. Строки, в которые
+         * подставляются числа и имена, — функции: так падежи и множественное
+         * число остаются внутри своего языка, а не собираются склейкой снаружи.
+         * f — то, что известно о случившемся: адрес, код ответа, его название,
+         * номер записи в журнале и причина молчания.
+         */
+        const TEXT = {
+          ru: {
+            html: 'ru',
+            switch: 'EN',
+            switchLabel: 'Switch to English',
+            waitLabel: 'Что сейчас известно',
+            states: {
+              waiting: {
+                head: 'Комната ещё не открыта',
+                lede: () => 'По этому адресу занятие сейчас не идёт. Комнату открывает преподаватель — обычно незадолго до начала, и до этой минуты её здесь просто нет.',
+                wait: () => 'Ждать можно прямо здесь: страница сама заглядывает в комнату и откроет её, как только та появится. Оставьте вкладку открытой — нажимать ничего не нужно.',
+                foot: () => 'Если ждёте давно, стоит сверить адрес с тем, который вам дал преподаватель: одна буква в имени уводит на пустую страницу вроде этой.',
+              },
+              missing: {
+                head: 'Такой комнаты нет',
+                lede: (f) => 'Имя ' + f.host + ' ретранслятору незнакомо: комнату с таким адресом здесь не открывали ни разу. Чаще всего это опечатка в ссылке.',
+                wait: () => 'Сверьте адрес с тем, который дал преподаватель, — особенно часть до первой точки. Сама страница ждать не будет: пока комнату не открыли ни разу, ждать нечего.',
+                foot: () => 'Если адрес точно верный, спросите у преподавателя, запущен ли Colloq: имя появляется на ретрансляторе в ту минуту, когда комнату открывают впервые.',
+              },
+              down: {
+                head: 'Colloq не отвечает',
+                lede: (f) => f.reason === 'relay'
+                  ? 'Ретранслятор не смог соединиться со своей же службой туннелей. Это поломка на нашей стороне; машина преподавателя тут ни при чём.'
+                  : 'Машина преподавателя на связи с ретранслятором, но Colloq на ней не отвечает. Похоже, сервер занятия перезапускается.',
+                wait: () => 'Страница пробует адрес заново каждые 20 секунд и откроет комнату, как только та ответит. Обычно это проходит само за минуту-другую.',
+                foot: (f) => f.reason === 'relay'
+                  ? 'Если тянется дольше пары минут — напишите тому, кто держит ретранслятор: занятие тут ни при чём.'
+                  : 'Если не отвечает дольше пары минут — скажите преподавателю: связь до его машины есть, а Colloq на ней молчит.',
+              },
+              fault: {
+                head: 'Что-то пошло не так',
+                lede: (f) => f.code === 413
+                  ? 'Запрос оказался слишком большим для ретранслятора — так бывает, когда в комнату отправляют большой файл.'
+                  : 'Ретранслятор ответил ошибкой ' + (f.code || 'без кода') + '. Это не закрытая комната и не опечатка в адресе — сломалось по дороге.',
+                wait: () => 'Попробуйте ещё раз: разовая ошибка чаще всего проходит сама. Если повторяется — покажите преподавателю строку ниже: по ней случившееся найдут в журнале ретранслятора.',
+                foot: () => 'Ни занятие, ни адрес тут ни при чём: до комнаты запрос не дошёл.',
+              },
+            },
+            retry: 'Попробовать снова',
+            retryBusy: 'Проверяем…',
+            retrySame: 'пока то же самое',
+            retryFail: 'ретранслятор не ответил',
+            opening: 'Комната ответила — открываем…',
+            first: (left) => 'первая проверка через ' + left + ' с',
+            next: (left, n) => 'следующая проверка через ' + left + ' с · проверено ' + n + ' ' + plural(n, ['раз', 'раза', 'раз']),
+            fact: (f) => 'код ' + f.code + (f.text ? ' · ' + f.text : '') + (f.id ? ' · запрос ' + f.id : ''),
+
+            gameLabel: 'Пока ждём',
+            keys: '↑ или пробел — прыжок · ↓ — присесть',
+            touch: 'тап — прыжок · свайп вниз — присесть',
+            hintStart: (t) => (t ? 'Тап — начать' : 'Пробел, ↑ или тап — начать'),
+            hintPause: (t) => (t ? 'Пауза — тап, чтобы продолжить' : 'Пауза — пробел, чтобы продолжить'),
+            hintAgain: (t) => (t ? 'Ещё раз — тап' : 'Ещё раз — пробел или ↑'),
+            hintFree: (t) => (t ? 'Тап — играть без записи' : 'Пробел — играть без записи'),
+            hintName: (t) => (t ? 'Впишите имя — или тап дважды' : 'Впишите имя — или пробел дважды'),
+            sound: 'Звук',
+            soundOn: 'Звук включён',
+            soundOff: 'Звук выключен',
+            canvas: 'Игра: капибара бежит по берегу реки, прыгает через камни и брёвна, пригибается под цаплями и собирает мандарины',
+            namePlace: 'Имя для таблицы',
+            nameLabel: 'Имя для таблицы рекордов',
+            hits: {
+              rock: 'споткнулась о камень',
+              log: 'запнулась о бревно',
+              caiman: 'не заметила каймана',
+              heron: 'столкнулась с цаплей',
+            },
+            over: (why) => 'Капибара ' + (TEXT.ru.hits[why] || why),
+            chip: 'личный рекорд',
+            points: (n) => plural(n, ['очко', 'очка', 'очков']),
+            tangerines: (n) => plural(n, ['мандарин', 'мандарина', 'мандаринов']),
+            secs: (sec) => (sec < 60 ? sec + ' с' : Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0')),
+            onRun: 'в пути',
+            send: 'В таблицу',
+            again: 'Ещё раз',
+            saved: 'Записано',
+            sending: 'Отправляем…',
+            noRecord: 'Рекорд не побит',
+            needName: 'Впишите имя',
+            saveAs: (v) => 'Записать как «' + v + '»',
+            note: 'Имя и рекорд будут видны в общей таблице. Следующие результаты отправляются автоматически под этим именем.',
+            rename: 'Другое имя — впишите в поле и нажмите «Записать».',
+            held: (best, who) => 'Ваш рекорд ' + best + ' уже в таблице как «' + who + '» — рекорд не побит. ' + TEXT.ru.rename,
+            askName: 'Введите имя для общей таблицы или продолжайте без отправки результата.',
+            renamed: (who) => 'Теперь вы «' + who + '», рекорд переехал. ',
+            savedAs: (who) => 'Записано как «' + who + '». ',
+            noPlace: 'Очков не хватило, чтобы попасть в таблицу.',
+            firstPlace: 'Первое место. Капибара гордится. ',
+            yourPlace: (rank, names) => 'Вы на ' + rank + '-м месте из ' + names + '. ',
+            bestPlace: (best, rank, names) => 'Ваш лучший результат ' + best + ' держит ' + rank + '-е место из ' + names + ' — рекорд не побит. ',
+            records: 'Рекорды',
+            boardLine: (total, names) => total + ' ' + plural(total, ['попытка', 'попытки', 'попыток'])
+              + ' · ' + names + ' ' + plural(names, ['имя', 'имени', 'имён']),
+            empty: 'Пока пусто — первое место свободно.',
+            more: (n) => 'ещё ' + n + ' ' + plural(n, ['имя', 'имени', 'имён']),
+            errors: {
+              rate: 'Слишком часто — подождите пару секунд и попробуйте снова.',
+              taken: (name) => 'Имя «' + name + '» уже занято другим игроком — впишите другое.',
+              implausible: 'Результат не прошёл проверку. Сыграйте ещё раз.',
+              run: 'Не удалось подтвердить забег. Сыграйте ещё раз.',
+              name: 'Недопустимое имя. Введите другое.',
+              owner: 'Не удалось подтвердить игрока. Обновите страницу и сыграйте ещё раз.',
+              other: 'Не удалось отправить результат. Попробуйте ещё раз.',
+            },
+          },
+
+          en: {
+            html: 'en',
+            switch: 'RU',
+            switchLabel: 'Переключить на русский',
+            waitLabel: 'What is known right now',
+            states: {
+              waiting: {
+                head: 'The room is not open yet',
+                lede: () => 'There is no class at this address right now. The room is opened by the teacher — usually shortly before the start, and until that minute it simply is not here.',
+                wait: () => 'You can wait right here: the page looks into the room by itself and opens it the moment it appears. Leave the tab open — nothing to press.',
+                foot: () => 'If you have been waiting for a while, check the address against the one your teacher gave you: one wrong letter leads to an empty page like this one.',
+              },
+              missing: {
+                head: 'No such room',
+                lede: (f) => 'The relay does not know the name ' + f.host + ': a room at this address has never been opened here. Most often this is a typo in the link.',
+                wait: () => 'Check the address against the one your teacher gave you — especially the part before the first dot. This page will not wait: while the room has never been opened, there is nothing to wait for.',
+                foot: () => 'If the address is definitely right, ask your teacher whether Colloq is running: the name appears on the relay the minute the room is opened for the first time.',
+              },
+              down: {
+                head: 'Colloq is not answering',
+                lede: (f) => f.reason === 'relay'
+                  ? 'The relay could not reach its own tunnel service. This is a fault on our side; the teacher’s machine has nothing to do with it.'
+                  : 'The teacher’s machine is connected to the relay, but Colloq on it is not answering. It looks like the class server is restarting.',
+                wait: () => 'The page retries this address every 20 seconds and opens the room as soon as it answers. Usually this clears up by itself within a minute or two.',
+                foot: (f) => f.reason === 'relay'
+                  ? 'If it lasts longer than a couple of minutes, write to whoever keeps the relay: the class is not at fault here.'
+                  : 'If it does not answer for longer than a couple of minutes, tell your teacher: the link to their machine is up, but Colloq on it is silent.',
+              },
+              fault: {
+                head: 'Something went wrong',
+                lede: (f) => f.code === 413
+                  ? 'The request turned out to be too large for the relay — this happens when a big file is sent into the room.'
+                  : 'The relay answered with error ' + (f.code || 'with no code') + '. This is not a closed room and not a typo in the address — something broke on the way.',
+                wait: () => 'Try again: a one-off error most often passes by itself. If it repeats, show your teacher the line below: it is how the failure is found in the relay log.',
+                foot: () => 'Neither the class nor the address is at fault: the request never reached the room.',
+              },
+            },
+            retry: 'Try again',
+            retryBusy: 'Checking…',
+            retrySame: 'still the same',
+            retryFail: 'the relay did not answer',
+            opening: 'The room answered — opening…',
+            first: (left) => 'first check in ' + left + ' s',
+            next: (left, n) => 'next check in ' + left + ' s · checked ' + n + ' ' + many(n, ['time', 'times']),
+            fact: (f) => 'code ' + f.code + (f.text ? ' · ' + f.text : '') + (f.id ? ' · request ' + f.id : ''),
+
+            gameLabel: 'While you wait',
+            keys: '↑ or space — jump · ↓ — duck',
+            touch: 'tap — jump · swipe down — duck',
+            hintStart: (t) => (t ? 'Tap to start' : 'Space, ↑ or tap to start'),
+            hintPause: (t) => (t ? 'Paused — tap to resume' : 'Paused — space to resume'),
+            hintAgain: (t) => (t ? 'Again — tap' : 'Again — space or ↑'),
+            hintFree: (t) => (t ? 'Tap — play without saving' : 'Space — play without saving'),
+            hintName: (t) => (t ? 'Enter a name — or tap twice' : 'Enter a name — or press space twice'),
+            sound: 'Sound',
+            soundOn: 'Sound on',
+            soundOff: 'Sound off',
+            canvas: 'Game: a capybara runs along the riverbank, jumps over rocks and logs, ducks under herons and collects tangerines',
+            namePlace: 'Name for the board',
+            nameLabel: 'Name for the leaderboard',
+            hits: {
+              rock: 'tripped on a rock',
+              log: 'stumbled over a log',
+              caiman: 'did not see the caiman',
+              heron: 'ran into a heron',
+            },
+            over: (why) => 'The capybara ' + (TEXT.en.hits[why] || why),
+            chip: 'personal best',
+            points: (n) => many(n, ['point', 'points']),
+            tangerines: (n) => many(n, ['tangerine', 'tangerines']),
+            secs: (sec) => (sec < 60 ? sec + ' s' : Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0')),
+            onRun: 'on the run',
+            send: 'To the board',
+            again: 'Again',
+            saved: 'Saved',
+            sending: 'Sending…',
+            noRecord: 'No new record',
+            needName: 'Enter a name',
+            saveAs: (v) => 'Save as “' + v + '”',
+            note: 'Your name and score will be visible on the shared board. Later runs are sent automatically under this name.',
+            rename: 'For another name, type it in the field and press “Save”.',
+            held: (best, who) => 'Your record ' + best + ' is already on the board as “' + who + '” — no new record. ' + TEXT.en.rename,
+            askName: 'Enter a name for the shared board, or keep playing without sending the result.',
+            renamed: (who) => 'You are “' + who + '” now, the record moved. ',
+            savedAs: (who) => 'Saved as “' + who + '”. ',
+            noPlace: 'Not enough points to make the board.',
+            firstPlace: 'First place. The capybara is proud. ',
+            yourPlace: (rank, names) => 'You are in ' + ord(rank) + ' place of ' + names + '. ',
+            bestPlace: (best, rank, names) => 'Your best ' + best + ' holds ' + ord(rank) + ' place of ' + names + ' — no new record. ',
+            records: 'Records',
+            boardLine: (total, names) => total + ' ' + many(total, ['run', 'runs'])
+              + ' · ' + names + ' ' + many(names, ['name', 'names']),
+            empty: 'Empty so far — first place is open.',
+            more: (n) => n + ' more ' + many(n, ['name', 'names']),
+            errors: {
+              rate: 'Too often — wait a couple of seconds and try again.',
+              taken: (name) => 'The name “' + name + '” is taken by another player — pick another one.',
+              implausible: 'The result did not pass the check. Play once more.',
+              run: 'Could not confirm the run. Play once more.',
+              name: 'The name is not allowed. Enter another one.',
+              owner: 'Could not confirm the player. Reload the page and play once more.',
+              other: 'Could not send the result. Try again.',
+            },
+          },
+        };
+
+        let lang = pickLang();
+        let T = TEXT[lang];
+
+        /*
+         * Язык переключают в любую минуту — в том числе поверх разобранной
+         * карточки и таблицы на экране. Поэтому показанное помнит не строку, а
+         * то, как её сложить: при смене языка страница складывает заново.
+         * Элемент в словаре один — последняя сказанная фраза и есть текущая.
+         */
+        const live = new Map();
+        function say(el, make) { live.set(el, make); el.textContent = make(); }
+        const redress = [];
+        function switchLang() {
+          lang = lang === 'ru' ? 'en' : 'ru';
+          T = TEXT[lang];
+          store.set('colloq.lang', lang);
+          live.forEach((make, el) => { el.textContent = make(); });
+          redress.forEach((f) => f());
+        }
+
         /* ------------------------------------------------ где мы */
-        if (location.hostname && location.hostname !== 'localhost') {
-          document.getElementById('where').textContent = 'Colloq · ' + location.hostname;
-        }
         const coarse = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
-        if (coarse) {
-          document.getElementById('controls').textContent = 'тап — прыжок · свайп вниз — присесть';
-          document.getElementById('hint').textContent = 'Тап — начать';
+        const whereEl = document.getElementById('where');
+        const headEl = document.getElementById('head');
+        const ledeEl = document.getElementById('lede');
+        const waitEl = document.getElementById('wait');
+        const waitText = document.getElementById('wait-text');
+        const waitLine = document.getElementById('wait-line');
+        const footEl = document.getElementById('foot');
+        const retryBtn = document.getElementById('retry');
+        const retryLine = document.getElementById('retry-line');
+        const pageEl = document.getElementById('page');
+        const langBtn = document.getElementById('lang');
+
+        /* ------------------------------------------------ что случилось
+         *
+         * Четыре разных случая приезжали на одну и ту же страницу «комната ещё
+         * не открыта» — и трём из четырёх она врала, а совет «проверьте адрес»
+         * давала даже тогда, когда адрес был ни при чём. Отличить их можно так:
+         *
+         *  • страницу отдал CADDY — значит, до frps он не достучался, и в
+         *    разметке подставлен настоящий код ответа (см. window.__relay в
+         *    голове). 502/503/504 — «не отвечает» по вине ретранслятора, любой
+         *    другой код — «что-то пошло не так» с кодом и номером в журнале;
+         *  • страницу отдал FRPS своей 404-й — кода нет, зато можно спросить
+         *    сам ретранслятор о судьбе имени (/.relay/state): туннель жив, а
+         *    комната молчит — «не отвечает» по вине машины преподавателя; имя
+         *    знакомо, туннеля нет — «ещё не открыта»; имя не видели ни разу —
+         *    «такой комнаты нет».
+         *
+         * Спросить некого (маршрута на ретрансляторе ещё нет, сеть молчит) —
+         * говорим то, что вернее всего: «ещё не открыта». Это единственный из
+         * четырёх случаев, который случается каждый день, и он же лежит в
+         * разметке — на случай выключенного JS.
+         *
+         * Подстановка приезжает строкой, и проверяется она как чужая: пока в
+         * ней не ровно три цифры, кода нет вовсе. Незаполненный шаблон (тот,
+         * что отдаёт frps) на эту проверку не проходит, и название с номером
+         * берутся только вместе с кодом.
+         */
+        const fact = (() => {
+          const raw = window.__relay || {};
+          const code = /^[1-9][0-9][0-9]$/.test(String(raw.code)) ? Number(raw.code) : 0;
+          const text = code && /^[\x20-\x7e]{1,48}$/.test(String(raw.text || '')) ? String(raw.text) : '';
+          const id = code && /^[0-9a-z]{4,32}$/.test(String(raw.id || '')) ? String(raw.id) : '';
+          return { host: location.hostname || 'colloq.ru', code, text, id, reason: '' };
+        })();
+
+        /** Состояние по коду ответа caddy: 502–504 — молчит, прочее — сломалось. */
+        function byCode(code) {
+          return code >= 502 && code <= 504
+            ? { state: 'down', reason: 'relay' }
+            : { state: 'fault', reason: '' };
         }
+
+        let page = fact.code ? byCode(fact.code) : { state: 'waiting', reason: '' };
+        /** Ждать имеет смысл, только когда есть чему вернуться. */
+        function polls() { return page.state === 'waiting' || page.state === 'down'; }
+
+        function show(next) {
+          if (next) page = next;
+          fact.reason = page.reason;
+          const s = T.states[page.state];
+          document.documentElement.lang = T.html;
+          pageEl.dataset.state = page.state;
+          document.title = s.head + ' — Colloq';
+          waitEl.setAttribute('aria-label', T.waitLabel);
+          langBtn.setAttribute('aria-label', T.switchLabel);
+          say(langBtn, () => T.switch);
+          say(headEl, () => T.states[page.state].head);
+          say(ledeEl, () => T.states[page.state].lede(fact));
+          say(waitText, () => T.states[page.state].wait(fact));
+          say(footEl, () => T.states[page.state].foot(fact));
+          say(retryBtn, () => T.retry);
+          // Строка под текстом: у ждущих — счётчик проверок (его ведёт tick),
+          // у остальных — то, что ответил ретранслятор, слово в слово.
+          if (!polls()) say(waitLine, () => (fact.code ? T.fact(fact) : ''));
+        }
+        if (location.hostname && location.hostname !== 'localhost') {
+          say(whereEl, () => 'Colloq · ' + fact.host);
+        }
+        show();
+        // При смене языка заново собирается и само состояние: заголовок вкладки,
+        // язык документа и подписи для читалки — это не textContent, и словарь
+        // сказанного их не касается.
+        redress.push(() => show());
+        langBtn.addEventListener('click', switchLang);
+
+        /*
+         * Спрашиваем ретранслятор, что он знает об этом имени. Маршрута может
+         * не быть вовсе — на машине, куда новый конфиг ещё не доехал, сюда
+         * приедет 404 от frps или сама эта страница от службы очков. Поэтому
+         * ответ принимается, только если он json и в нём ровно то, что мы
+         * спрашивали; во всех прочих случаях остаёмся при «ещё не открыта».
+         */
+        async function askRelay() {
+          if (fact.code) return;
+          try {
+            const r = await fetch('/.relay/state', { cache: 'no-store', headers: { accept: 'application/json' } });
+            if (!r.ok) return;
+            if (!/application\/json/i.test(r.headers.get('content-type') || '')) return;
+            const d = await r.json();
+            if (!d || typeof d.known !== 'boolean' || typeof d.tunnel !== 'boolean') return;
+            show(d.tunnel
+              ? { state: 'down', reason: 'class' }
+              : d.known
+                ? { state: 'waiting', reason: '' }
+                : { state: 'missing', reason: '' });
+          } catch (_) {
+            /* не ответил — пусть остаётся то, что показано */
+          }
+        }
+        askRelay();
 
         /* ------------------------------------------------ ждём комнату
          *
@@ -585,10 +1072,14 @@
          * 404, caddy как 502), ждём дальше. Как только пришло что-то другое,
          * это и есть комната: перезагружаемся в неё. Строка под текстом честно
          * показывает, когда следующая проверка и сколько их уже было.
+         *
+         * Тот же ответ мог принести другую новость: комнату закрыли совсем,
+         * ноутбук вернулся на связь, ретранслятор починили. Код каждой проверки
+         * перечитывается — состояние на странице меняется, не дожидаясь, пока
+         * человек нажмёт обновление.
          */
         const MARK = 'name="colloq-page" content="offline"';
         const EVERY = 20;
-        const waitLine = document.getElementById('wait-line');
         // Срок — по часам, а не по тикам: в фоновой вкладке таймеры душатся до
         // раза в минуту и замирают вовсе, а обещание «раз в двадцать секунд»
         // должно держаться и там.
@@ -598,34 +1089,93 @@
         function due() {
           if (opening || Date.now() < nextAt) return;
           nextAt = Date.now() + EVERY * 1000;
-          checkRoom();
+          if (polls()) checkRoom();
           if (state.mode !== 'run') loadBoard();
         }
         function tick() {
           if (opening) return;
           due();
+          // «Такой комнаты нет» и поломка ничего не ждут — и счётчик проверок
+          // на них не идёт: строка занята кодом ответа.
+          if (!polls()) return;
           const left = Math.max(0, Math.ceil((nextAt - Date.now()) / 1000));
-          waitLine.textContent = (checks ? 'следующая проверка через ' : 'первая проверка через ')
-            + left + ' с' + (checks ? ' · проверено ' + checks + ' ' + plural(checks, ['раз', 'раза', 'раз']) : '');
+          say(waitLine, () => (checks ? T.next(left, checks) : T.first(left)));
         }
         setInterval(tick, 1000);
+        // Первый тик — сразу: в разметке строка лежит по-русски, а страницу
+        // могли открыть по-английски, и секунда чужого языка была бы видна.
+        tick();
+
+        /** Комната ответила: уводим вкладку в неё. */
+        function enterRoom() {
+          opening = true;
+          say(waitText, () => T.opening);
+          waitLine.textContent = '';
+          retryLine.textContent = '';
+          // Перезагрузка, а не переход по тому же адресу: она перезапрашивает
+          // страницу у сервера, а переход мог бы взять 404 из кэша браузера.
+          setTimeout(() => location.reload(), 700);
+        }
+
+        /** Перечитать, что случилось, по коду ответа на тот же адрес. */
+        function reread(status) {
+          if (status === 404) {
+            // Отвечает frps — значит, дело снова в имени, а не в caddy.
+            if (fact.code) {
+              fact.code = 0;
+              fact.text = '';
+              fact.id = '';
+              show({ state: 'waiting', reason: '' });
+            }
+            askRelay();
+            return;
+          }
+          if (!status || status < 400) return;
+          fact.code = status;
+          fact.text = '';
+          fact.id = '';
+          show(byCode(status));
+        }
+
         async function checkRoom() {
           checks += 1;
+          let r;
           try {
-            const r = await fetch(location.href, { cache: 'no-store' });
-            if (r.ok) {
-              const text = await r.text();
-              if (!text.includes(MARK)) {
-                opening = true;
-                document.getElementById('wait-text').textContent = 'Соединение восстановлено. Открываем Colloq…';
-                waitLine.textContent = '';
-                setTimeout(() => location.reload(), 700);
-              }
-            }
+            r = await fetch(location.href, { cache: 'no-store' });
           } catch (_) {
-            /* сеть моргнула — просто попробуем ещё раз */
+            return 'net'; /* сеть моргнула — просто попробуем ещё раз */
           }
+          let text = '';
+          try { text = await r.text(); } catch (_) {}
+          if (r.ok && !text.includes(MARK)) {
+            enterRoom();
+            return 'open';
+          }
+          reread(r.status);
+          return 'same';
         }
+
+        /*
+         * «Попробовать снова» — это именно новый запрос того же адреса, по
+         * которому пришёл человек. И frps, и caddy подменяют только внутренний
+         * путь (rewrite), строка в адресе остаётся исходной — так что
+         * location.href и есть тот адрес; страницу видно на нём же, а не на
+         * /offline.html. Комната ответила — уходим в неё; нет — честно говорим,
+         * что ничего не изменилось, и не трогаем игру: перезагрузка ради
+         * проверки стоила бы человеку начатого забега.
+         */
+        retryBtn.addEventListener('click', async () => {
+          if (opening || retryBtn.disabled) return;
+          retryBtn.disabled = true;
+          say(retryBtn, () => T.retryBusy);
+          retryLine.textContent = '';
+          const what = await checkRoom();
+          nextAt = Date.now() + EVERY * 1000;
+          if (what === 'open') return;
+          retryBtn.disabled = false;
+          say(retryBtn, () => T.retry);
+          say(retryLine, what === 'net' ? () => T.retryFail : () => T.retrySame);
+        });
 
         /* -------------------------------------------------------- игра
          *
@@ -901,13 +1451,13 @@
         // Цапли трёх высот: низкую перепрыгнуть, под высокой пробежать, среднюю
         // — присесть (или перепрыгнуть с точным моментом).
         const KINDS = [
-          { name: 'rock', rows: ROCK_S, w: 12, h: 6, y: GROUND - 6, weight: 4, from: 0, hit: 'споткнулась о камень' },
-          { name: 'rock', rows: ROCK_L, w: 16, h: 10, y: GROUND - 10, weight: 3, from: 0, hit: 'споткнулась о камень' },
-          { name: 'log', rows: LOG, w: 24, h: 5, y: GROUND - 5, weight: 3, from: 0.13, hit: 'запнулась о бревно' },
-          { name: 'caiman', rows: CAIMAN_A, alt: CAIMAN_B, w: 28, h: 5, y: GROUND - 5, weight: 2, from: 0.15, hit: 'не заметила каймана', walk: true },
-          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 10, weight: 2, from: 0.12, hit: 'столкнулась с цаплей' },
-          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 17, weight: 2, from: 0.16, hit: 'столкнулась с цаплей' },
-          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 26, weight: 1, from: 0.14, hit: 'столкнулась с цаплей' },
+          { name: 'rock', rows: ROCK_S, w: 12, h: 6, y: GROUND - 6, weight: 4, from: 0, hit: 'rock' },
+          { name: 'rock', rows: ROCK_L, w: 16, h: 10, y: GROUND - 10, weight: 3, from: 0, hit: 'rock' },
+          { name: 'log', rows: LOG, w: 24, h: 5, y: GROUND - 5, weight: 3, from: 0.13, hit: 'log' },
+          { name: 'caiman', rows: CAIMAN_A, alt: CAIMAN_B, w: 28, h: 5, y: GROUND - 5, weight: 2, from: 0.15, hit: 'caiman', walk: true },
+          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 10, weight: 2, from: 0.12, hit: 'heron' },
+          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 17, weight: 2, from: 0.16, hit: 'heron' },
+          { name: 'heron', rows: HERON_A, alt: HERON_B, w: 16, h: 8, y: GROUND - 26, weight: 1, from: 0.14, hit: 'heron' },
         ];
         function pickKind(speed) {
           const pool = KINDS.filter((k) => speed >= k.from);
@@ -1249,7 +1799,7 @@
             } catch (_) { /* без звука — не беда */ }
           },
         };
-        function showSound() { soundBtn.setAttribute('aria-pressed', sound.on ? 'true' : 'false'); soundBtn.setAttribute('aria-label', sound.on ? 'Звук включён' : 'Звук выключен'); }
+        function showSound() { soundBtn.setAttribute('aria-pressed', sound.on ? 'true' : 'false'); soundBtn.setAttribute('aria-label', sound.on ? T.soundOn : T.soundOff); }
         showSound();
         soundBtn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -1278,8 +1828,30 @@
         const board = document.getElementById('board');
         const boardLine = document.getElementById('board-line');
         const topEl = document.getElementById('top');
-        const NOTE = 'Имя и рекорд будут видны в общей таблице. Следующие результаты отправляются автоматически под этим именем.';
-        const RENAME = 'Другое имя — впишите в поле и нажмите «Записать».';
+
+        /*
+         * Всё, что уже написано на экране, произносится через say: при смене
+         * языка страница складывает те же фразы заново, не теряя ни разобранной
+         * карточки, ни таблицы. Свойства (подписи для читалки, placeholder)
+         * текстом не являются — их переодевает dressGame.
+         */
+        say(document.getElementById('game-label'), () => T.gameLabel);
+        say(document.getElementById('controls'), () => (coarse ? T.touch : T.keys));
+        say(document.getElementById('time-word'), () => T.onRun);
+        say(document.getElementById('board-label'), () => T.records);
+        say(recordChip, () => T.chip);
+        say(hint, () => T.hintStart(coarse));
+        say(statusEl, () => T.note);
+        say(sendBtn, () => T.send);
+        say(document.getElementById('again'), () => T.again);
+        function dressGame() {
+          canvas.setAttribute('aria-label', T.canvas);
+          nameInput.placeholder = T.namePlace;
+          nameInput.setAttribute('aria-label', T.nameLabel);
+          showSound();
+        }
+        redress.push(dressGame);
+        dressGame();
         // Ключ владельца: браузер один раз придумывает случайную строку и дальше
         // подписывает ею записи. Сервис по нему знает, чьи строки, — так имя
         // можно сменить, не потеряв рекорд, а под чужое имя записаться нельзя.
@@ -1330,7 +1902,7 @@
           if (state.mode !== 'run') return;
           state.mode = 'pause';
           canvas.style.touchAction = '';
-          hint.textContent = coarse ? 'Пауза — тап, чтобы продолжить' : 'Пауза — пробел, чтобы продолжить';
+          say(hint, () => T.hintPause(coarse));
           hint.hidden = false;
         }
 
@@ -1347,17 +1919,17 @@
           for (let i = 0; i < 6; i++) state.dust.push({ x: 26 + Math.random() * 20, y: GROUND - 2 - Math.random() * 6, t: Math.random() * 100 });
           render();
           sound.play('hit');
-          overTitle.textContent = 'Капибара ' + why;
+          say(overTitle, () => T.over(why));
           recordChip.hidden = !state.recordNow;
           finalEl.textContent = String(state.score);
-          document.getElementById('final-word').textContent = plural(state.score, ['очко', 'очка', 'очков']);
+          say(document.getElementById('final-word'), () => T.points(state.score));
           tangEl.textContent = String(state.tangerines);
-          document.getElementById('tang-word').textContent = plural(state.tangerines, ['мандарин', 'мандарина', 'мандаринов']);
+          say(document.getElementById('tang-word'), () => T.tangerines(state.tangerines));
           const sec = Math.round(state.elapsed / 1000);
-          timeEl.textContent = sec < 60 ? sec + ' с' : Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
-          statusEl.textContent = NOTE;
+          say(timeEl, () => T.secs(sec));
+          say(statusEl, () => T.note);
           sendBtn.disabled = false;
-          sendBtn.textContent = 'В таблицу';
+          say(sendBtn, () => T.send);
           delete sendBtn.dataset.done;
           const known = store.get('capy.name') || '';
           nameInput.value = known;
@@ -1371,9 +1943,9 @@
               state.sent = true;
               sendBtn.disabled = true;
               sendBtn.dataset.done = '1';
-              sendBtn.textContent = 'Рекорд не побит';
+              say(sendBtn, () => T.noRecord);
               state.sentAs = known;
-              statusEl.textContent = 'Ваш рекорд ' + prevBest + ' уже в таблице как «' + known + '» — рекорд не побит. ' + RENAME;
+              say(statusEl, () => T.held(prevBest, known));
             } else submitScore(known, true);
           }
           showOverHint();
@@ -1383,9 +1955,9 @@
 
         function showOverHint() {
           if (state.mode !== 'over') return;
-          if (state.sent || state.score === 0) hint.textContent = coarse ? 'Ещё раз — тап' : 'Ещё раз — пробел или ↑';
-          else if (state.armed) hint.textContent = coarse ? 'Тап — играть без записи' : 'Пробел — играть без записи';
-          else hint.textContent = coarse ? 'Впишите имя — или тап дважды' : 'Впишите имя — или пробел дважды';
+          if (state.sent || state.score === 0) say(hint, () => T.hintAgain(coarse));
+          else if (state.armed) say(hint, () => T.hintFree(coarse));
+          else say(hint, () => T.hintName(coarse));
           hint.hidden = false;
         }
 
@@ -1494,26 +2066,30 @@
           return li;
         }
 
+        // Последняя таблица помнится целиком: строки в ней — имена и числа, но
+        // «ещё N имён» и счётчик попыток на своём языке, и при переключении
+        // таблицу складывают заново из того же ответа, а не запрашивают снова.
+        let lastBoard = null;
         function renderBoard(d, mine) {
+          lastBoard = { d, mine };
           topEl.textContent = '';
           const top = d.top || [];
-          boardLine.textContent = d.total
-            ? d.total + ' ' + plural(d.total, ['попытка', 'попытки', 'попыток']) + ' · ' + d.names + ' ' + plural(d.names, ['имя', 'имени', 'имён'])
-            : '';
+          boardLine.textContent = d.total ? T.boardLine(d.total, d.names) : '';
           if (!top.length) {
             const li = document.createElement('li');
             li.className = 'note empty';
-            li.textContent = 'Пока пусто — первое место свободно.';
+            li.textContent = T.empty;
             topEl.appendChild(li);
           }
           top.forEach((r, i) => topEl.appendChild(row(mine && r.id === mine.id ? 'me' : '', String(i + 1), r.name, String(r.score))));
           if (mine && mine.rank > top.length) {
             const skipped = mine.rank - top.length - 1;
-            if (skipped > 0) topEl.appendChild(row('gap', '…', 'ещё ' + skipped + ' ' + plural(skipped, ['имя', 'имени', 'имён']), ''));
+            if (skipped > 0) topEl.appendChild(row('gap', '…', T.more(skipped), ''));
             topEl.appendChild(row('me', String(mine.rank), mine.name, String(mine.best)));
           }
           board.hidden = false;
         }
+        redress.push(() => { if (lastBoard) renderBoard(lastBoard.d, lastBoard.mine); });
 
         async function loadBoard() {
           try {
@@ -1541,12 +2117,12 @@
             state.sent = false;
             sendBtn.disabled = false;
             delete sendBtn.dataset.done;
-            sendBtn.textContent = v ? 'Записать как «' + v + '»' : 'Впишите имя';
+            say(sendBtn, v ? () => T.saveAs(v) : () => T.needName);
           } else {
             state.sent = true;
             sendBtn.disabled = true;
             sendBtn.dataset.done = '1';
-            sendBtn.textContent = 'Записано';
+            say(sendBtn, () => T.saved);
           }
           showOverHint();
         });
@@ -1569,8 +2145,8 @@
            */
           if (!name) {
             sendBtn.disabled = false;
-            sendBtn.textContent = 'Впишите имя';
-            statusEl.textContent = 'Введите имя для общей таблицы или продолжайте без отправки результата.';
+            say(sendBtn, () => T.needName);
+            say(statusEl, () => T.askName);
             nameInput.focus();
             showOverHint();
             return;
@@ -1578,7 +2154,7 @@
           store.set('capy.name', name);
           state.sending = true;
           sendBtn.disabled = true;
-          sendBtn.textContent = 'Отправляем…';
+          say(sendBtn, () => T.sending);
           const post = () => fetch(API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1602,7 +2178,7 @@
             state.sent = true;
             state.everSent = true;
             state.sentAs = name;
-            sendBtn.textContent = 'Записано';
+            say(sendBtn, () => T.saved);
             sendBtn.dataset.done = '1';
             nameInput.blur();
             showOverHint();
@@ -1614,43 +2190,33 @@
               render();
             }
             const shown = d.name || name;
-            const who = (d.renamed ? 'Теперь вы «' + shown + '», рекорд переехал. ' : 'Записано как «' + shown + '». ');
+            const who = () => (d.renamed ? T.renamed(shown) : T.savedAs(shown));
             if (d.rank == null) {
-              statusEl.textContent = who + 'Очков не хватило, чтобы попасть в таблицу.';
+              say(statusEl, () => who() + T.noPlace);
               recordChip.hidden = true;
               renderBoard(d, null);
               return;
             }
             // Чип про рекорд считался по этому устройству; таблица знает лучше.
             if (d.improved === false) recordChip.hidden = true;
-            statusEl.textContent = who + (d.rank === 1
-              ? 'Первое место. Капибара гордится. '
+            say(statusEl, () => who() + (d.rank === 1
+              ? T.firstPlace
               : d.improved
-                ? 'Вы на ' + d.rank + '-м месте из ' + d.names + '. '
-                : 'Ваш лучший результат ' + d.best + ' держит ' + d.rank + '-е место из ' + d.names + ' — рекорд не побит. ') + RENAME;
+                ? T.yourPlace(d.rank, d.names)
+                : T.bestPlace(d.best, d.rank, d.names)) + T.rename);
             renderBoard(d, { id: d.id, rank: d.rank, name: shown, best: d.best });
           } catch (err) {
             if (state.run !== run) return;
             sendBtn.disabled = false;
-            sendBtn.textContent = 'В таблицу';
+            say(sendBtn, () => T.send);
             showOverHint();
             const why = err && err.message;
-            statusEl.textContent = why === 'rate'
-              ? 'Слишком часто — подождите пару секунд и попробуйте снова.'
-              : why === 'taken'
-                ? 'Имя «' + name + '» уже занято другим игроком — впишите другое.'
-                : why === 'implausible'
-                  ? 'Результат не прошёл проверку. Сыграйте ещё раз.'
-                  : why === 'run'
-                    ? 'Не удалось подтвердить забег. Сыграйте ещё раз.'
-                    : why === 'name'
-                      ? 'Недопустимое имя. Введите другое.'
-                      : why === 'owner'
-                        // Ключ владельца заводит сама страница; сюда попадают
-                        // только запросы мимо неё.
-                        ? 'Не удалось подтвердить игрока. Обновите страницу и сыграйте ещё раз.'
-                        : 'Не удалось отправить результат. Попробуйте ещё раз.';
-            if (why === 'taken' || why === 'name') { sendBtn.textContent = 'Записать как «' + name + '»'; nameInput.focus(); }
+            // Ключ владельца заводит сама страница; в ответ owner попадают
+            // только запросы мимо неё.
+            say(statusEl, () => (why === 'taken'
+              ? T.errors.taken(name)
+              : T.errors[why] || T.errors.other));
+            if (why === 'taken' || why === 'name') { say(sendBtn, () => T.saveAs(name)); nameInput.focus(); }
           } finally {
             if (state.run === run) state.sending = false;
           }
@@ -1662,6 +2228,21 @@
 
         // Для проверок вживую (headless Chrome), не для игры.
         window.capy = { state, press, jump, duck, gameOver, start, pause, resume, render };
+        // То же для страниц ошибок: чем страница себя считает и на каком языке
+        // говорит. Состояние отсюда меняется только в проверках — по ссылке
+        // его не подделать, иначе чужая ссылка врала бы «такой комнаты нет».
+        window.colloqPage = {
+          fact,
+          get state() { return page.state; },
+          get reason() { return page.reason; },
+          get lang() { return lang; },
+          get polls() { return polls(); },
+          setLang(next) { if ((next === 'ru' || next === 'en') && next !== lang) switchLang(); },
+          setState(name, reason, about) {
+            if (about) Object.assign(fact, about);
+            show({ state: name, reason: reason || '' });
+          },
+        };
       })();
     </script>
   </body>

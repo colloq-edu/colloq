@@ -37,7 +37,12 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[]; closed: numbe
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      if (typeof frame === 'string') heard.push(JSON.parse(frame) as ControlServerMessage)
+      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
+      // (рассылка, дерево, чернила), уходят уже закодированными — см.
+      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
+        heard.push(JSON.parse(String(frame)) as ControlServerMessage)
+      }
     },
     on() {
       return this

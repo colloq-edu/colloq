@@ -286,6 +286,24 @@ export const api = {
     `/api/sessions/${id}/file?path=${encodeURIComponent(path)}&token=${encodeURIComponent(ticket)}`,
 
   /**
+   * Ключ на картинки вывода этой комнаты — один на все.
+   *
+   * То же, что у файла, и по той же причине: адрес уезжает в `src` элемента
+   * `<img>`, а туда не положить заголовок. Отличие одно — ключ не на запись, а
+   * на комнату: вывод одной ячейки это десяток картинок, и спрашивать ключ на
+   * каждую значило бы десяток запросов на каждый график. Открывает он ровно
+   * то, что человек и так видит в тетради.
+   */
+  blobTicket: (id: string, token: string) =>
+    request<{ token: string }>(`/api/sessions/${id}/blobs/ticket`, {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+
+  /** Адрес картинки вывода. Имя — хэш содержимого, поэтому кэш вечный. */
+  blobUrl: (id: string, sha: string, ticket: string) =>
+    `/api/sessions/${id}/blobs/${encodeURIComponent(sha)}?token=${encodeURIComponent(ticket)}`,
+
+  /**
    * Тот же файл, но без билета в строке запроса — для читалки.
    *
    * Билет нужен якорю: `<a download>` не умеет отправить заголовок. Читалка

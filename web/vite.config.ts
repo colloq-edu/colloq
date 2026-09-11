@@ -1,11 +1,19 @@
 import { defineConfig, type Plugin } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { fileURLToPath, URL } from 'node:url'
+import fs from 'node:fs'
 import path from 'node:path'
 import { messages } from '../shared/i18n'
-import { collectEntryMessages } from './scripts/entry-messages'
+import type { Locale, MessageCatalog } from '../shared/i18n-types'
+import { commonMessages } from '../shared/locales/common'
+import { roomMessages } from '../shared/locales/room'
+import { adminMessages } from '../shared/locales/admin'
+import { serverMessages } from '../shared/locales/server'
+import { activityMessages } from '../shared/locales/activity'
+import { collectEntryMessages, collectClientKeys } from './scripts/entry-messages'
 
 const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
+const LOCALES: readonly Locale[] = ['ru', 'en']
 
 /** Server imports keep all catalogs; browser entry carries only its own copy. */
 function entryLanguage(): Plugin {
@@ -27,6 +35,69 @@ function entryLanguage(): Plugin {
       const entry = collectEntryMessages(root, messages)
       for (const file of entry.files) this.addWatchFile(file)
       return `export default ${JSON.stringify(entry.messages)}`
+    },
+  }
+}
+
+/**
+ * Словарь экрана: одна область, один язык.
+ *
+ * Он был один на всех — `full-language`, 351 КБ исходника и 74 КБ по проводу,
+ * и приезжал ПЕРЕД любым экраном. В нём лежали оба языка, весь каталог панели
+ * преподавателя и весь серверный, из которых браузер умеет искать три десятка
+ * ключей. Комнате на одном языке нужно 80 КБ.
+ *
+ * Настоящие файлы lib/messages/<область>-<язык>.ts остаются на диске: их
+ * грузят node и тесты, и они же — единственное место, где записан СОСТАВ
+ * области. Здесь их содержимое подменяется на сборочное: те же каталоги,
+ * прочитанные из их собственных импортов, но один язык и урезанный `server`.
+ */
+function screenLanguage(): Plugin {
+  const root = fileURLToPath(new URL('../', import.meta.url))
+  const folder = path.join(root, 'web/src/lib/messages')
+  const catalogs: Record<string, MessageCatalog> = {
+    common: commonMessages,
+    room: roomMessages,
+    admin: adminMessages,
+    server: serverMessages,
+    activity: activityMessages,
+  }
+  /*
+   * Серверный каталог — единственный, который режется по ключам, а не целиком.
+   *
+   * Почти весь он никогда не доезжает до браузера: это страницы публикации,
+   * письма и журнал. Клиент переводит серверные СЛОВА состояния («ядро занято»)
+   * и несколько имён по умолчанию, и все они записаны в его исходниках
+   * буквально — отсюда и считаются. Ошибки приходят уже переведёнными
+   * сервером и проходят через tr() нетронутыми, словаря им не нужно.
+   */
+  let client: Set<string> | null = null
+  return {
+    name: 'colloq-screen-language',
+    enforce: 'pre',
+    load(id) {
+      const file = id.split('?')[0]
+      if (path.dirname(file) !== folder || !file.endsWith('.ts')) return
+      const [area, locale] = path.basename(file, '.ts').split('-')
+      if (!area || !LOCALES.includes(locale as Locale)) {
+        throw new Error(`colloq-screen-language: ${file} — имя вида <область>-<ru|en>.ts`)
+      }
+      const source = fs.readFileSync(file, 'utf8')
+      const wanted = [...source.matchAll(/@shared\/locales\/([a-z]+)/g)].map((match) => match[1])
+      if (wanted.length === 0) throw new Error(`colloq-screen-language: в ${file} нет каталогов`)
+      client ??= collectClientKeys(root, messages, 'server')
+      const out: Record<string, Record<string, unknown>> = {}
+      for (const name of wanted) {
+        const catalog = catalogs[name]
+        if (!catalog) throw new Error(`colloq-screen-language: неизвестный каталог ${name}`)
+        this.addWatchFile(path.join(root, 'shared/locales', `${name}.ts`))
+        for (const [key, pair] of Object.entries(catalog)) {
+          if (name === 'server' && !client.has(key)) continue
+          out[key] = { [locale]: pair[locale as Locale] }
+        }
+      }
+      return "import { registerMessages } from '@shared/i18n-runtime'\n" +
+        `registerMessages(${JSON.stringify(out)})\n`
     },
   }
 }
@@ -77,6 +148,14 @@ function packageOf(id: string): string | null {
  * сборку, а не молчит.
  */
 const ROOM_CHUNK = 'SessionScreen'
+/*
+ * И два куска, которые комната просит динамически, но просит ВСЕГДА: редактор
+ * ячейки и рендерер вывода. Статическим графом (`reach` в firstPaint) их не
+ * достать — тем графом и считается всё остальное, чтобы список не отставал от
+ * сборки, — а греть их вместе с экраном надо, иначе тетрадь рисуется в две
+ * волны сети вместо одной.
+ */
+const ROOM_ALSO = ['codemirror', 'render'] as const
 
 function manualChunks(id: string): string | undefined {
   // The editor's palette is never wanted without the editor, and a second
@@ -94,15 +173,55 @@ function manualChunks(id: string): string | undefined {
 /* ------------------------------------------------------- first-paint plugin */
 
 /**
- * Two edits to the HTML Vite emits, both aimed at the first frame:
+ * Комментарии — в исходник, а не в ответ браузеру.
  *
- *  - the app stylesheet stops blocking render, so the inlined shell in
- *    index.html paints with zero network. main.ts holds the shell up until the
- *    sheet has applied, so the app itself is never seen undressed.
- *  - the router/join form is requested alongside the entry, so a cold visit
- *    doesn't wait for entry → language API → form before starting its download.
- *    The notebook is warmed immediately for a saved identity, and after the
- *    form paints for a cold visit, without delaying the name field.
+ * Vite не минифицирует HTML, и собранный index.html уезжал с десятью
+ * килобайтами объяснений: и своих `<!-- -->`, и блочных внутри встроенного
+ * `<style>`. Это 8.9 КБ brotli против 3.0 без них — на КАЖДУЮ навигацию, то
+ * есть на каждый вход в комнату, впереди всего остального.
+ *
+ * Исходник при этом остаётся как есть: объяснения в index.html написаны для
+ * того, кто будет его править, а не для того, кто открывает ссылку на семинар.
+ * Скрипты не трогаются вовсе — там блочный комментарий это код, а не оформление.
+ */
+const SCRIPTS = /<script\b[^>]*>[\s\S]*?<\/script>/gi
+const STYLES = /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi
+function withoutComments(html: string): string {
+  const kept: string[] = []
+  const masked = html.replace(SCRIPTS, (tag) => '\u0000' + (kept.push(tag) - 1) + '\u0000')
+  const stripped = masked
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(STYLES, (_all, open: string, css: string, close: string) =>
+      open + css.replace(/\/\*[\s\S]*?\*\//g, '') + close)
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{2,}/g, '\n')
+  return stripped.replace(/\u0000(\d+)\u0000/g, (_all, index: string) => kept[Number(index)]!)
+}
+
+/*
+ * Одна и та же пара помощников для обоих скриптов в голове: `add` кладёт ссылку
+ * предзагрузки, разбираясь, модуль это или стиль, а `lang` читает язык из
+ * `<html lang>`, который сервер уже переписал под инстанс (frontend-html.ts).
+ * Мета с языком лежит ПОСЛЕ этих скриптов и им ещё не видна.
+ */
+const PRELOAD_HELPERS =
+  `const add=(f,w)=>{const l=document.createElement("link");const css=f.endsWith(".css");` +
+  `l.rel=css?"preload":"modulepreload";if(css)l.as="style";l.crossOrigin="anonymous";` +
+  `if(w)l.fetchPriority=w;l.href=f;document.head.appendChild(l)};` +
+  `const lang=document.documentElement.lang==="en"?"en":"ru";`
+
+/**
+ * Правки к HTML, который отдаёт Vite, — все ради первого кадра:
+ *
+ *  - комментарии уходят (см. выше);
+ *  - таблица стилей перестаёт блокировать отрисовку, но едет с ВЫСОКИМ
+ *    приоритетом: `rel=preload as=style` вместо `media=print`, который в Chrome
+ *    получал Low и приезжал позже шрифтов. main.ts держит оболочку до тех пор,
+ *    пока лист не применился, так что раздетым приложение не видно;
+ *  - код формы просится первым в документе, раньше кусков комнаты, и вместе со
+ *    своим CSS, которого помощник предзагрузки Vite всё равно дождётся;
+ *  - куски комнаты греются с fetchpriority=low: они нужны после формы, а не
+ *    вместо неё. Их состав считается по сборке, а не перечисляется руками.
  */
 function firstPaint(): Plugin {
   let base = '/'
@@ -115,33 +234,40 @@ function firstPaint(): Plugin {
     transformIndexHtml: {
       order: 'post',
       handler(html, ctx) {
+        let out = withoutComments(html)
         // The cold form's small date/id labels can use the metric-matched
         // fallback until normal font discovery. Do not put 31 KB of code font
         // ahead of its JS. Returning rooms still preload before editors paint.
-        let out = html.replace(/<link\b[^>]*href="\/fonts\/jetbrains-mono-latin\.woff2"[^>]*>/g,
-          `<script data-colloq-mono-preload>(()=>{const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(location.pathname);` +
-          `let warm=!room;try{if(room)warm=!!JSON.parse(localStorage.getItem("colloq.identity.v1")||"{}")[room[1]]?.token}catch{}` +
+        //
+        // `/` и `/admin` — это форма входа штата, и кода на ней нет вовсе:
+        // моноширинный там грелся просто потому, что «не комната».
+        out = out.replace(/<link\b[^>]*href="\/fonts\/jetbrains-mono-latin\.woff2"[^>]*>/g,
+          `<script data-colloq-mono-preload>(()=>{const p=location.pathname;` +
+          `const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(p);` +
+          `let warm=/^\\/(?:c|p)\\//.test(p);` +
+          `try{if(room)warm=!!JSON.parse(localStorage.getItem("colloq.identity.v1")||"{}")[room[1]]?.token}catch{}` +
           `if(warm){const l=document.createElement("link");l.rel="preload";l.as="font";l.type="font/woff2";` +
           `l.crossOrigin="anonymous";l.href="/fonts/jetbrains-mono-latin.woff2";document.head.appendChild(l)}})()</script>`)
         out = out.replace(/<link[^>]+rel="stylesheet"[^>]*>/g, (tag) => {
           // Leave anything already deferred alone, and anything cross-origin:
           // the fonts are ours and local now, but the rule outlives them.
           if (/\bmedia=/.test(tag) || /href="https?:/.test(tag)) return tag
-          const deferred = tag.replace(
-            /\/?>$/,
-            ` media="print" onload="this.media='all'" data-colloq-css>`,
-          )
+          const deferred = tag
+            .replace(/\brel="stylesheet"/, 'rel="preload" as="style"')
+            .replace(/\/?>$/, ` onload="this.rel='stylesheet'" data-colloq-css>`)
           return `${deferred}<noscript>${tag}</noscript>`
         })
 
-        // Only returning identities need these before the form. Cold visitors
-        // warm them after paint, while typing, instead of waiting for /join
-        // and then document sync to start the editor's download.
-        const notebookOnly = new Set([ROOM_CHUNK, 'codemirror', 'render', 'full-language'])
-        const deferred = Object.values(ctx.bundle ?? {}).filter(
-          (asset): asset is typeof asset & { fileName: string } =>
-            asset.type === 'chunk' && notebookOnly.has(asset.name ?? ''),
-        )
+        type Chunk = {
+          fileName: string
+          name?: string
+          imports?: string[]
+          viteMetadata?: { importedCss?: Iterable<string> }
+        }
+        const chunks = Object.values(ctx.bundle ?? {})
+          .filter((asset): asset is typeof asset & Chunk => asset.type === 'chunk')
+        const byName = new Map(chunks.map((chunk) => [chunk.name, chunk]))
+        const byFile = new Map(chunks.map((chunk) => [chunk.fileName, chunk]))
         /*
          * И вслух, если имя разошлось со сборкой.
          *
@@ -150,47 +276,93 @@ function firstPaint(): Plugin {
          * тот самый лишний круг сети, который здесь и убирают. Такое не
          * замечают годами, поэтому сборка падает.
          */
-        const found = new Set(deferred.map((chunk) => chunk.name))
-        const missing = [...notebookOnly].filter((name) => !found.has(name))
-        if (missing.length > 0) {
-          throw new Error(
-            `colloq-first-paint: в сборке нет кусков ${missing.join(', ')} — ` +
-              'их переименовали, а modulepreload на /s/:id остался со старым именем',
-          )
+        const need = (name: string): Chunk => {
+          const chunk = byName.get(name)
+          if (!chunk) {
+            throw new Error(
+              `colloq-first-paint: в сборке нет куска ${name} — его переименовали, ` +
+                'а предзагрузка в голове осталась со старым именем',
+            )
+          }
+          return chunk
         }
-        if (deferred.length > 0) {
-          const files = JSON.stringify(deferred.map((chunk) => base + chunk.fileName))
-          out = out.replace(
-            '</head>',
-            `<script data-colloq-room-preload>(()=>{const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(location.pathname);` +
-              `let known=false;try{known=!!(room&&JSON.parse(localStorage.getItem("colloq.identity.v1")||"{}")[room[1]]?.token)}catch{}` +
-              `let warmed=false;const warm=()=>{if(!room||warmed)return;warmed=true;for(const f of ${files}){` +
-              `const l=document.createElement("link");l.rel="modulepreload";` +
-              `l.crossOrigin="anonymous";l.href=f;document.head.appendChild(l)}};` +
-              `if(known)warm();else window.addEventListener("colloq:ready",warm,{once:true})})()</script></head>`,
-          )
+        /** Кусок и всё, что он тянет статически: это и есть одна волна сети. */
+        const reach = (start: Chunk[]): Chunk[] => {
+          const seen = new Map<string, Chunk>()
+          const pending = [...start]
+          while (pending.length > 0) {
+            const chunk = pending.shift()!
+            if (seen.has(chunk.fileName)) continue
+            seen.set(chunk.fileName, chunk)
+            for (const file of chunk.imports ?? []) {
+              const next = byFile.get(file)
+              if (next) pending.push(next)
+            }
+          }
+          return [...seen.values()]
         }
-        const entry = Object.values(ctx.bundle ?? {}).find(
-          (asset) => asset.type === 'chunk' && asset.name === 'App',
-        )
-        if (!entry || entry.type !== 'chunk') throw new Error('Missing App chunk for first-paint preload')
-        const formFiles = new Set([entry.fileName, ...entry.imports])
-        out = out.replace('</head>', [...formFiles].map((file) =>
-          `<link rel="modulepreload" crossorigin href="${base}${file}">`,
-        ).join('') + '</head>')
+        /** Листы стилей этих кусков, кроме тех, что страница уже называет. */
+        const styles = (list: Chunk[]): string[] => [
+          ...new Set(list.flatMap((chunk) => [...(chunk.viteMetadata?.importedCss ?? [])])),
+        ].filter((file) => !out.includes(`href="${base}${file}"`))
+        /** Словарь области на каждом языке: выбор делает скрипт в голове. */
+        const speaks = (area: string, files: string[]): Record<string, string[]> =>
+          Object.fromEntries(LOCALES.map((locale) =>
+            [locale, [...files, base + need(`${area}-${locale}`).fileName]]))
+
+        /*
+         * Вход — ПЕРВЫМ в документе. Раньше скрипт комнаты стоял выше этих
+         * ссылок, и 394 КБ тетради успевали занять очередь перед App.js: форма
+         * имени ждала кода, который ей не нужен.
+         *
+         * Вместе с ним — его собственный CSS. Помощник предзагрузки Vite ждёт
+         * `App-*.css` перед тем, как выполнить App, а в голове его не было: о
+         * нём узнавали из index.js, то есть волной позже, и 852 байта стояли
+         * между входным куском и экраном.
+         */
+        const entry = reach([need('App')])
+        out = out.replace('</head>', [
+          ...entry.map((chunk) => `<link rel="modulepreload" crossorigin href="${base}${chunk.fileName}">`),
+          ...styles(entry).map((file) =>
+            `<link rel="preload" as="style" href="${base}${file}" onload="this.rel='stylesheet'">`),
+        ].join('') + '</head>')
+
+        /*
+         * Комната. Состав считается по сборке: экран и всё, что он тянет
+         * статически, — перечисленные руками четыре имени отставали на волну,
+         * потому что SessionScreen статически тянет ещё yjs, CellOutputs,
+         * буфер обмена, хранилище и ссылку на семинар. Редактор и рендерер он
+         * просит динамически, но просит всегда, поэтому названы отдельно.
+         *
+         * Only returning identities need these before the form. Cold visitors
+         * warm them after paint, while typing, instead of waiting for /join
+         * and then document sync to start the editor's download.
+         */
+        const entryFiles = new Set(entry.map((chunk) => chunk.fileName))
+        const room = reach([need(ROOM_CHUNK), ...ROOM_ALSO.map(need)])
+        const roomFiles = [
+          ...room.filter((chunk) => !entryFiles.has(chunk.fileName)).map((chunk) => base + chunk.fileName),
+          ...styles(room).map((file) => base + file),
+        ]
+        out = out.replace('</head>',
+          `<script data-colloq-room-preload>(()=>{const room=/^\\/s\\/([A-Za-z0-9_-]{1,64})(?:\\/|$)/.exec(location.pathname);` +
+            `let known=false;try{known=!!(room&&JSON.parse(localStorage.getItem("colloq.identity.v1")||"{}")[room[1]]?.token)}catch{}` +
+            `${PRELOAD_HELPERS}const files=${JSON.stringify(speaks('room', roomFiles))};` +
+            `let warmed=false;const warm=()=>{if(!room||warmed)return;warmed=true;` +
+            `for(const f of files[lang])add(f,"low")};` +
+            `if(known)warm();else window.addEventListener("colloq:ready",warm,{once:true})})()</script></head>`)
+
         // These routes have no join form. Fetch their code and catalog together
         // now, while loadLocalizedScreen still controls evaluation order.
-        const routeFiles = (names: string[]) => names.flatMap((name) => {
-          const chunk = Object.values(ctx.bundle ?? {}).find((asset) => asset.type === 'chunk' && asset.name === name)
-          return chunk ? [base + chunk.fileName] : []
-        })
-        const adminFiles = JSON.stringify(routeFiles(['full-language', 'AdminScreen']))
-        const readerFiles = JSON.stringify(routeFiles(['full-language', 'ReaderScreen', 'render']))
+        const route = (area: string, names: string[]) => speaks(area, names.flatMap((name) => {
+          const chunk = byName.get(name)
+          return chunk ? [base + chunk.fileName, ...styles([chunk]).map((file) => base + file)] : []
+        }))
         out = out.replace('</head>', `<script data-colloq-route-preload>(()=>{` +
-          `const p=location.pathname;const files=/^\\/(?:admin(?:\\/|$)|$)/.test(p)?${adminFiles}:` +
-          `/^\\/(?:c|p)\\//.test(p)?${readerFiles}:[];for(const f of files){` +
-          `const l=document.createElement("link");l.rel="modulepreload";l.crossOrigin="anonymous";` +
-          `l.href=f;document.head.appendChild(l)}})()</script></head>`)
+          `const p=location.pathname;${PRELOAD_HELPERS}` +
+          `const files=/^\\/(?:admin(?:\\/|$)|$)/.test(p)?${JSON.stringify(route('admin', ['AdminScreen']))}:` +
+          `/^\\/(?:c|p)\\//.test(p)?${JSON.stringify(route('reader', ['ReaderScreen', 'render']))}:null;` +
+          `if(files)for(const f of files[lang])add(f)})()</script></head>`)
         return out
       },
     },
@@ -198,7 +370,7 @@ function firstPaint(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [entryLanguage(), svelte(), firstPaint()],
+  plugins: [entryLanguage(), screenLanguage(), svelte(), firstPaint()],
   resolve: {
     alias: {
       '@shared': fileURLToPath(new URL('../shared', import.meta.url)),

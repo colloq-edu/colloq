@@ -20,6 +20,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { createSession, listVersions } from '../server/src/db.js'
 import { sessionDir } from '../server/src/workspace.js'
 import {
+  FACES_WINDOW_MS,
   getSessionDoc,
   handleCollabSocket,
   holdRoom,
@@ -62,6 +63,8 @@ function released(id: string, at: number = Date.now() + LATER): boolean {
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+/** Окно присутствия и немного сверху: курсоры уезжают по его концу. */
+const faceWindow = (): Promise<void> => wait(FACES_WINDOW_MS + 50)
 
 /* ------------------------------------------------ выселение простаивающих */
 
@@ -249,7 +252,20 @@ test('пять правок в одном тике уезжают комнате
   watcher.close()
 })
 
-test('свои же байты автору обратно не едут, чужие — едут одним кадром', async () => {
+/**
+ * Склеенный кадр уезжает ВСЕМ, автору в том числе, — и это дешевле, чем
+ * вычитать из него автора.
+ *
+ * Вычитание стоило квадрата: батч склеивался заново на каждый приславший сокет
+ * (`mergeUpdates` по всему всплеску минус его правки). Замер стенда: один автор
+ * — 0.01 мс на рассылку, сто — 15.75 мс, пятьсот — 1403 мс, то есть полторы
+ * секунды занятого цикла событий на один тик комнаты, где печатает полкурса.
+ *
+ * Своё обратно безопасно потому, что применение уже стоящих структур в Yjs —
+ * бездействие: транзакция ничего не меняет, и события `update` из неё не
+ * выходит. Проверяется здесь тем же способом, каким это увидит вкладка.
+ */
+test('склеенный кадр уезжает всем, и свои же байты автору ничего не меняют', async () => {
   const id = 'coalesce-author'
   createSession(id, 'Автор', null)
   const { doc } = getSessionDoc(id)
@@ -261,27 +277,50 @@ test('свои же байты автору обратно не едут, чуж
   author.frames.length = 0
   reader.frames.length = 0
 
+  // Вкладка автора: то же, что у сервера, плюс её собственные нажатия.
+  const tab = new Y.Doc()
+  Y.applyUpdate(tab, Y.encodeStateAsUpdate(doc))
+
   // Правка, пришедшая по сокету, несёт его в качестве происхождения — так её
   // и применяет `handleMessage`.
   for (const ch of 'xyz') {
     doc.transact(() => cellSource(getCells(doc).get(0)).insert(0, ch), author.ws)
   }
+  // У вкладки эти нажатия уже есть: она их и набрала.
+  Y.applyUpdate(tab, Y.encodeStateAsUpdate(doc))
   await tick()
 
-  assert.equal(syncFrames(author).length, 0, 'автору вернули его же нажатия')
+  assert.equal(syncFrames(author).length, 1, 'автору не уехал общий кадр комнаты')
   assert.equal(syncFrames(reader).length, 1, 'соседу уехало больше одного кадра')
+  assert.deepEqual(
+    syncFrames(author)[0],
+    syncFrames(reader)[0],
+    'комната получила два разных кадра — склейка считалась дважды',
+  )
+
+  // Эха нет: вкладка, применив свои же байты, не рождает обновления, которое
+  // поехало бы обратно на сервер.
+  const echo: Uint8Array[] = []
+  tab.on('update', (update: Uint8Array) => echo.push(update))
+  Y.applyUpdate(tab, updateIn(syncFrames(author)[0]), 'провайдер')
+  assert.deepEqual(echo, [], 'свои же байты породили у вкладки обновление')
+  assert.equal(
+    cellSource(getCells(tab).get(0)).toString(),
+    cellSource(getCells(doc).get(0)).toString(),
+    'текст вкладки разъехался с комнатой',
+  )
 
   author.close()
   reader.close()
 })
 
-test('присутствие тоже склеивается: десять движений курсора — один кадр', async () => {
+test('присутствие склеивается окном: десять движений курсора — один кадр', async () => {
   const id = 'coalesce-faces'
   createSession(id, 'Курсоры', null)
   const entry = getSessionDoc(id)
   const watcher = socket()
   handleCollabSocket(watcher.ws, id, 'participant', 'p_watch')
-  await tick()
+  await faceWindow()
   watcher.frames.length = 0
 
   const guest = new Awareness(new Y.Doc())
@@ -295,9 +334,18 @@ test('присутствие тоже склеивается: десять дв�
     )
   }
   const faces = watcher.frames.filter((frame) => frame[0] === 1)
-  assert.equal(faces.length, 0, 'кадр присутствия уехал, не дождавшись конца тика')
+  assert.equal(faces.length, 0, 'кадр присутствия уехал, не дождавшись окна')
 
+  // Такта уже не хватает: присутствие ждёт окна — четверти секунды на комнату,
+  // а не такта на движение (collab/index.ts · FACES_WINDOW_MS).
   await tick()
+  assert.equal(
+    watcher.frames.filter((frame) => frame[0] === 1).length,
+    0,
+    'курсор уехал по концу такта, окно не работает',
+  )
+
+  await faceWindow()
   assert.equal(
     watcher.frames.filter((frame) => frame[0] === 1).length,
     1,
@@ -341,7 +389,8 @@ test('отставшему сокету перестают слать курсо
   guest.setLocalStateField('user', { id: 'p_guest', name: 'Гость', activeCellId: 'c1' })
   applyAwarenessUpdate(entry.awareness, encodeAwarenessUpdate(guest, [guest.clientID]), 'приезжий')
   entry.doc.transact(() => cellSource(getCells(entry.doc).get(0)).insert(0, 'z'))
-  await tick()
+  // Правка уезжает по концу такта, присутствие — по концу окна.
+  await faceWindow()
 
   assert.equal(
     slow.frames.filter((frame) => frame[0] === 1).length,

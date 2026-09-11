@@ -750,8 +750,9 @@
       >
         <!-- Спокойная точка, не тревожная: это решение преподавателя, а не
              поломка, и лекция на экране как стояла, так и стоит. -->
-        <span class="h-1.5 w-1.5 rounded-full bg-accent"></span> {tr('room.ui.295')} <span class="flex-1"></span>
-        <span class="font-mono tabular-nums">
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+        <span class="min-w-0 flex-1 truncate"> {tr('room.ui.295')} </span>
+        <span class="shrink-0 font-mono tabular-nums">
           {#if page < 0}{tr('room.ui.296')}{:else}{page} / {pages || '—'}{/if}
         </span>
         {@render projectButton()}
@@ -761,11 +762,21 @@
       <div
         class="flex h-[34px] shrink-0 items-center gap-2 border-b border-line bg-canvas px-4 text-2xs text-muted"
       >
-        <span class="h-1.5 w-1.5 rounded-full" style={`background:${lecture.color}`}></span> {tr('room.ui.297')} {lecture.byName}
-        <span class="text-faint">·</span>
-        <span class="font-mono">{baseOf(lecture.file)}</span>
-        <span class="flex-1"></span>
-        <span class="font-mono tabular-nums">
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full" style={`background:${lecture.color}`}></span>
+        <!--
+          Кто ведёт и что идёт — одной усыхающей группой.
+
+          Имя и файл стояли голым текстом прямо во флексе, то есть не усыхали
+          ничем: на телефоне «идёт лекция Александра Константинопольская ·
+          lecture-07.pdf» выталкивала за правый край и счётчик страниц, и
+          «На общий экран». Усыхает то, что читают; счётчик и кнопки целы.
+        -->
+        <span class="flex min-w-0 flex-1 items-center gap-2">
+          <span class="truncate"> {tr('room.ui.297')} {lecture.byName} </span>
+          <span class="shrink-0 text-faint">·</span>
+          <span class="truncate font-mono">{baseOf(lecture.file)}</span>
+        </span>
+        <span class="shrink-0 font-mono tabular-nums">
           {#if page < 0}{tr('room.ui.296')}{:else}{page} / {pages || '—'}{/if}
         </span>
         {#if onsolo}

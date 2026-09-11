@@ -1883,8 +1883,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Files — into folder {p0}"
   },
   "room.ui.608": {
-    "ru": "Файлы доступны всей группе",
-    "en": "Files are available to the whole group"
+    "ru": "Файлы — в комнату",
+    "en": "Files — into the room"
   },
   "room.ui.610": {
     "ru": "лимит глубины",
@@ -3973,6 +3973,10 @@ export const roomMessages: MessageCatalog = {
   "room.extra.460": {
     "ru": "разных ответов",
     "en": "different answers"
+  },
+  "room.extra.461": {
+    "ru": "Загруженные файлы видит вся группа",
+    "en": "Uploaded files are visible to the whole group"
   },
   "room.confirm.showNamed": {
     "ru": "Показать классу вариант {name}? Ответ заменит текст общей ячейки. Автором изменения будете указаны вы.",

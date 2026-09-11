@@ -26,23 +26,29 @@ import {
   type PublicCell,
   type SkipReason,
 } from '@shared/publish'
+import { readBlob, roomOfDoc } from '../blobs.js'
 import { openReplay } from './replay.js'
 
 /** Крупные куски выводов, вынесенные по хэшу. Наполняется по ходу сборки. */
 export interface BlobBag {
   put(mime: string, base64: string): string
+  /** То же самое, но байтами: у комнаты картинка уже раскодирована. */
+  putBytes(mime: string, body: Buffer): string
   all(): { hash: string; mime: string; body: Buffer }[]
 }
 
 export function newBlobBag(): BlobBag {
   const seen = new Map<string, { mime: string; body: Buffer }>()
+  const keep = (mime: string, body: Buffer): string => {
+    const hash = createHash('sha256').update(body).digest('hex').slice(0, 32)
+    if (!seen.has(hash)) seen.set(hash, { mime, body })
+    return `${BLOB_PREFIX}${hash}`
+  }
   return {
     put(mime, base64) {
-      const body = Buffer.from(base64, 'base64')
-      const hash = createHash('sha256').update(body).digest('hex').slice(0, 32)
-      if (!seen.has(hash)) seen.set(hash, { mime, body })
-      return `${BLOB_PREFIX}${hash}`
+      return keep(mime, Buffer.from(base64, 'base64'))
     },
+    putBytes: keep,
     all() {
       return [...seen].map(([hash, v]) => ({
         hash,
@@ -63,7 +69,7 @@ export function newBlobBag(): BlobBag {
  * Уезжает только то, что перечислено в `BLOB_MIMES`: запись хранит
  * раскодированные байты, а `image/svg+xml` — это XML-текст, а не base64.
  */
-function projectOutput(output: CellOutput, blobs: BlobBag): CellOutput {
+function projectOutput(output: CellOutput, blobs: BlobBag, sessionId: string | null): CellOutput {
   if (output.kind === 'stream') return { kind: 'stream', name: output.name, text: output.text }
   if (output.kind === 'error') {
     return {
@@ -81,6 +87,23 @@ function projectOutput(output: CellOutput, blobs: BlobBag): CellOutput {
         : value
   }
   /*
+   * Картинка, вынесенная из документа комнаты, переезжает в публикацию сама.
+   *
+   * Публикация — отдельный предмет с собственным сроком жизни: она переживает
+   * и удаление семинара (`orphanPublication`), и выгрузку на статический
+   * хостинг, где полки комнаты нет вовсе. Поэтому байты не остаются лежать
+   * там, откуда их взяли, а копируются в записи публикации — ровно так же, как
+   * копировалась бы base64-картинка, лежавшая в документе.
+   *
+   * Не нашлись (комнату удалили между ссылкой и сборкой) — записи в наборе
+   * просто не будет: страница покажет `text/plain`, а не битую рамку.
+   */
+  for (const blob of output.blobs ?? []) {
+    if (data[blob.mime] !== undefined) continue
+    const body = sessionId ? readBlob(sessionId, blob.sha) : null
+    if (body) data[blob.mime] = blobs.putBytes(blob.mime, body)
+  }
+  /*
    * Перечислением, а не спредом: у вывода поля тоже добавляются со временем —
    * кто его получил, из какой попытки консилиума он пришёл, — и `{ ...output }`
    * увёз бы на публичную страницу каждое из них молча, ровно вопреки шапке
@@ -90,12 +113,12 @@ function projectOutput(output: CellOutput, blobs: BlobBag): CellOutput {
 }
 
 /** Ячейка на публичной странице. Белый список — см. шапку файла. */
-function projectCell(cell: CellSnapshot, blobs: BlobBag): PublicCell {
+function projectCell(cell: CellSnapshot, blobs: BlobBag, sessionId: string | null): PublicCell {
   return {
     id: cell.id,
     type: cell.type,
     source: cell.source,
-    outputs: cell.outputs.map((o) => projectOutput(o, blobs)),
+    outputs: cell.outputs.map((o) => projectOutput(o, blobs, sessionId)),
     /*
      * Номер выполнения переносится как есть, включая `null` при непустом
      * выводе. Это не пропуск данных, а факт: результат на экране есть, а
@@ -136,7 +159,7 @@ function* walkPages(
         page =
           cells.length === 0
             ? { ok: false, reason: 'empty' }
-            : { ok: true, cells: cells.map((c) => projectCell(c, blobs)) }
+            : { ok: true, cells: cells.map((c) => projectCell(c, blobs, sessionId)) }
       } catch (err) {
         // В журнал, а не в тишину: испорченная строка истории неотличима от
         // пустой тетради только до тех пор, пока о ней никто не сказал вслух.
@@ -202,5 +225,13 @@ export function pageAt(sessionId: string, seq: number, blobs: BlobBag): PublicCe
 
 /** Тетрадь как она есть прямо сейчас — последняя страница публикации. */
 export function pageOfDoc(doc: Y.Doc, blobs: BlobBag): PublicCell[] {
-  return readNotebook(doc).map((c) => projectCell(c, blobs))
+  /*
+   * Комната — у документа, а не в параметре.
+   *
+   * Картинки лежат на полке комнаты (server/blobs.ts), и чтобы вложить их в
+   * публикацию, надо знать, чьи они. Спрашивать это вызывающего значило бы
+   * протащить идентификатор через каждый вызов ради одной ветки; документ
+   * комнаты знает своё имя сам с момента привязки к диску.
+   */
+  return readNotebook(doc).map((c) => projectCell(c, blobs, roomOfDoc(doc)))
 }

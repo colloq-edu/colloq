@@ -39,6 +39,7 @@ import {
   storedRules,
 } from '../db.js'
 import { forgetCache } from '../collab/history.js'
+import { deleteRoomBlobs } from '../blobs.js'
 import {
   deletePublication,
   entombSeminar,
@@ -535,6 +536,11 @@ export function adminInstanceRoutes(): Router {
           } satisfies AdminErrorBody)
           return
         }
+
+        // И картинки вывода: они лежат не в папке комнаты, а на своей полке
+        // рядом с базой (server/src/blobs.ts). Без этой строки папка дожила бы
+        // до ближайшего подметания — оно есть, но час лишний.
+        deleteRoomBlobs(row.id)
 
         const purge = db.transaction((id: string) => {
           deleteParticipants.run(id)

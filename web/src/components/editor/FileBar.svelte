@@ -101,7 +101,17 @@
 
   <span class="flex-1"></span>
 
-  <div class="flex shrink-0 items-center gap-2.5 px-5">
+  <!--
+    Правая половина полосы УСЫХАЕТ, а левая (кнопка запуска) — нет.
+
+    Причина отказа в правах — это целая фраза («Преподаватель разрешил править
+    только себе»), а рядом с ней ещё и имена тех, кто держит файл открытым. На
+    телефоне всё это вместе с кнопкой «Запустить» вдвое шире экрана, и стояло
+    оно под `shrink-0`: полоса уезжала вправо под `overflow-hidden` комнаты, и
+    от фразы оставалось начало без конца. Теперь усыхает и обрезается
+    многоточием то, что ЧИТАЮТ, а то, что НАЖИМАЮТ, остаётся целым.
+  -->
+  <div class="flex min-w-0 shrink items-center gap-2.5 px-3 sm:px-5">
     {#if refused || !mayEdit}
       <!--
         Правило важнее отказа, а не наоборот.
@@ -111,9 +121,12 @@
         человек, ничего не напечатавший, получал упрёк вместо правила. Отказ
         называется только там, где печатать было можно.
       -->
-      <span class="flex items-center gap-1.5 text-2xs text-muted">
-        <Icon name="lock" size={11} />
-        {mayEdit ? tr('room.ui.104') : whyReadOnly}
+      <span
+        class="flex min-w-0 items-center gap-1.5 text-2xs text-muted"
+        title={mayEdit ? tr('room.ui.104') : whyReadOnly}
+      >
+        <Icon name="lock" size={11} class="shrink-0" />
+        <span class="truncate">{mayEdit ? tr('room.ui.104') : whyReadOnly}</span>
       </span>
     {:else if savedAt}
       <!-- Время последней записи на диск, а не «есть несохранённое»: файл
@@ -123,15 +136,17 @@
     {/if}
 
     {#if here.length > 0}
-      <span class="h-3.5 w-px bg-line" aria-hidden="true"></span>
-      <span class="flex items-center gap-2">
+      <span class="h-3.5 w-px shrink-0 bg-line" aria-hidden="true"></span>
+      <!-- Имена тоже усыхают: три человека с длинными именами — это ещё одна
+           экранная ширина, и выталкивать ими причину отказа нечестно. -->
+      <span class="flex min-w-0 items-center gap-2">
         {#each here as user (user.id)}
-          <span class="flex items-center gap-1.5">
-            <span class="h-1.5 w-1.5 rounded-full" style={`background:${user.color}`}></span>
-            <span class="text-2xs text-muted">{user.name}</span>
+          <span class="flex min-w-0 items-center gap-1.5">
+            <span class="h-1.5 w-1.5 shrink-0 rounded-full" style={`background:${user.color}`}></span>
+            <span class="truncate text-2xs text-muted">{user.name}</span>
           </span>
         {/each}
-        <span class="text-2xs text-faint">{tr('room.ui.106')}</span>
+        <span class="shrink-0 text-2xs text-faint">{tr('room.ui.106')}</span>
       </span>
     {/if}
   </div>

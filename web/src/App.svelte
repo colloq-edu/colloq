@@ -19,7 +19,8 @@
   } from '@/lib/session-cache'
   import { isAdminPath, readCourseId, readPublicRoute, readRoomRoute } from '@/lib/routes'
   import { upgradeIfStaff } from '@/screens/staff'
-  import { loadLocalizedScreen } from '@/lib/screen-language'
+  import { loadLocalizedScreen, reloadAreaMessages } from '@/lib/screen-language'
+  import { language, messagesChanged } from '@/lib/i18n.svelte'
   import { saysSessionMissing, type SessionInfo } from '@shared/protocol'
 
   // Removing a deleted room is the only entry-screen operation that needs
@@ -77,7 +78,8 @@
    */
   let adminChunk: Promise<typeof import('@/screens/AdminScreen.svelte').default> | null = null
   const adminScreen = () =>
-    (adminChunk ??= loadLocalizedScreen(() => import('@/screens/AdminScreen.svelte').then((m) => m.default)))
+    (adminChunk ??= loadLocalizedScreen(
+      () => import('@/screens/AdminScreen.svelte').then((m) => m.default), 'admin', language.current))
 
   /*
    * The workspace goes the same way, and for a sharper version of the same
@@ -92,7 +94,8 @@
   let workspaceChunk: Promise<typeof import('@/screens/SessionScreen.svelte').default> | null =
     null
   const workspace = () =>
-    (workspaceChunk ??= loadLocalizedScreen(() => import('@/screens/SessionScreen.svelte').then((m) => m.default)))
+    (workspaceChunk ??= loadLocalizedScreen(
+      () => import('@/screens/SessionScreen.svelte').then((m) => m.default), 'room', language.current))
 
   /*
    * Публичные страницы — тоже отдельным куском, и по более резкому поводу, чем
@@ -102,7 +105,8 @@
    */
   let readerChunk: Promise<typeof import('@/screens/ReaderScreen.svelte').default> | null = null
   const reader = () =>
-    (readerChunk ??= loadLocalizedScreen(() => import('@/screens/ReaderScreen.svelte').then((m) => m.default)))
+    (readerChunk ??= loadLocalizedScreen(
+      () => import('@/screens/ReaderScreen.svelte').then((m) => m.default), 'reader', language.current))
 
   let session = $state<SessionInfo | null>(null)
   let identity = $state<StoredIdentity | null>(null)
@@ -193,6 +197,23 @@
   // A returning visitor goes straight to the room; a new visitor joins first.
   $effect(() => {
     if (sessionId && identity) void workspace()
+  })
+
+  /*
+   * Язык сменили — доложить словарь тому экрану, который уже открыт.
+   *
+   * Экранный словарь везёт один язык (lib/screen-language.ts), поэтому смена
+   * языка — это ещё и загрузка. До её конца `translate` отдаёт прежний язык, а
+   * не голый ключ; `messagesChanged` перерисовывает переведённое, когда словарь
+   * доехал. Куски экранов при этом не трогаются: ни одна память комнаты не
+   * пересобирается из-за переключателя языка.
+   */
+  let localeShown = language.current
+  $effect(() => {
+    const locale = language.current
+    if (locale === localeShown) return
+    localeShown = locale
+    void reloadAreaMessages(locale).then(messagesChanged, () => {})
   })
 
   onMount(() => {

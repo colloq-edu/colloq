@@ -962,4 +962,29 @@
       opacity: 0.25;
     }
   }
+
+  /*
+   * Телефон: в полосе 565 px содержимого на 360 экрана, и уезжает за кромку
+   * крестик — то есть ящик нечем закрыть. Уходит то, что ЧИТАЮТ (метка про
+   * общий контейнер и путь), остаётся то, что НАЖИМАЮТ.
+   */
+  @media (max-width: 560px) {
+    .term-badge,
+    .term-cwd {
+      display: none;
+    }
+
+    .term-tabs {
+      gap: 4px;
+      padding: 0 4px 0 6px;
+    }
+
+    /* Три вкладки делят остаток и усыхают многоточием, а не выталкивают. */
+    .term-tab {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
 </style>

@@ -151,17 +151,20 @@ turn the built frontend into a development bundle.
 | Command | Use |
 | --- | --- |
 | `npm run dev` | Active development with Vite hot reload. |
-| `make run` | Build and run locally; fast build, response compression at runtime. |
-| `make run OPTIMIZE=1` | Build and run with precompressed frontend assets; useful when hosting a class through a tunnel. |
+| `make run` | Build and run locally, with precompressed frontend assets. |
+| `make run FAST=1` | Skip precompression; for the edit-build loop only, since the server then compresses every asset on every request. |
 | `npm run build:optimized` | Build all artifacts without starting or restarting the server. |
 
-The optimized mode adds Brotli quality 11 and gzip level 9 files alongside
+Precompression adds Brotli quality 11 and gzip level 9 files alongside
 JavaScript, CSS and the PDF worker. The server selects an accepted encoding at
 the original URL and sends the stored bytes, avoiding compression work on each
-download. Unsupported clients and ordinary builds use the original delivery
-path. HTML retains revalidation; hashed assets retain their one-year cache.
+download. Unsupported clients and `FAST=1` builds use the original delivery
+path, where the server compresses each asset per request: 11.6 ms of CPU and
+25 KB more on the wire for the largest chunk, once per student. `make host`
+warns when it is about to publish a build with no precompressed files.
+HTML retains revalidation; hashed assets retain their one-year cache.
 
-Production Docker images and release CI use the optimized build by default.
+Production Docker images and release CI use the precompressed build by default.
 It costs extra build time and disk space, not extra JavaScript or dependencies
 in the browser. `npm run perf` checks the bundle budgets for either mode.
 For complete cold entry through a working notebook, see [the entry benchmark](docs/entry-performance.md).
@@ -226,6 +229,14 @@ bundle contains the cluster and recovery tools.
 Test access from the students’ network before class. Use your own relay or direct
 hosting where the Cloudflare tunnel is unreachable. Keep the relay sized for the
 connected audience: every room published through it depends on that machine.
+
+Your own relay also mirrors the frontend. `make host` uploads `assets/`,
+`fonts/` and `pdf/` from the build to the relay, which serves those paths itself
+with the same cache headers the app sends; only the live room still travels
+through the tunnel. A missing or stale file falls through to the tunnel, so the
+mirror never breaks a class. `curl -sI https://<host>/assets/<file>` reports
+`X-Colloq-Mirror: hit` when the relay answered. Previous chunk names stay
+available for 30 days, so tabs opened before a deploy still load.
 
 ### Keep the work recoverable
 

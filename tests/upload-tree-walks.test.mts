@@ -26,7 +26,8 @@ import express from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
-import type { ControlServerMessage } from '../shared/protocol.js'
+import { applyFilesDelta } from '../web/src/lib/files-delta.js'
+import type { ControlServerMessage, FileEntry } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 import { signToken } from '../server/src/auth.js'
 import { createSession, upsertParticipant } from '../server/src/db.js'
@@ -141,10 +142,20 @@ async function upload(room: string, who: TokenPayload, name: string): Promise<An
   return { status: res.status, files: (body.files ?? []).map((f) => f.path) }
 }
 
-/** Список файлов, каким его увидела комната последним кадром. */
+/**
+ * Список файлов, каким его собрала комната из всего, что ей рассказали.
+ *
+ * Перемена в дереве едет дельтой (`files:delta`), а не списком целиком: один
+ * заведённый файл стоил комнате в пятьсот человек 3.0 МБ. Поэтому здесь не
+ * последний кадр, а сборка — ровно та же, что делает вкладка.
+ */
 const lastFiles = (heard: ControlServerMessage[]): string[] | null => {
-  const frame = heard.filter((f) => f.t === 'files').at(-1)
-  return frame ? (frame as { files: { path: string }[] }).files.map((f) => f.path) : null
+  let files: FileEntry[] | null = null
+  for (const frame of heard) {
+    if (frame.t === 'files') files = frame.files
+    else if (frame.t === 'files:delta') files = applyFilesDelta(files ?? [], frame)
+  }
+  return files ? files.map((f) => f.path) : null
 }
 
 test('загрузка обходит папку один раз — и на комнату, и на ответ', async () => {
@@ -154,7 +165,8 @@ test('загрузка обходит папку один раз — и на к�
   // занятое место): мерить надо обход дерева, а не их.
   await upload(ROOM, HOST, 'warm.csv')
 
-  seat.heard.length = 0
+  // Кадры НЕ забываются: перемена едет дельтой, и собрать из неё дерево можно
+  // только поверх полного списка, который комната получила приветственной пачкой.
   let answer: Answer = { status: 0, files: [] }
   const walked = await walksDuring(ROOM, async () => {
     answer = await upload(ROOM, HOST, 'handout.csv')
@@ -174,7 +186,6 @@ test('загрузка обходит папку один раз — и на к�
 test('удаление обходит папку один раз — и комната узнаёт о нём тем же деревом', async () => {
   const seat = socket()
   handleControlSocket(seat.ws, ROOM, HOST)
-  seat.heard.length = 0
 
   let files: string[] = []
   const walked = await walksDuring(ROOM, async () => {

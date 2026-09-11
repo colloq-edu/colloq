@@ -31,7 +31,12 @@ import {
 } from '../server/src/control.js'
 import { startLecture, stopLecture } from '../server/src/lecture.js'
 import { MAX_POINTS_PER_STROKE, inkFullSays } from '../shared/lecture.js'
-import type { ControlClientMessage, ControlServerMessage } from '../shared/protocol.js'
+import { applyFilesDelta } from '../web/src/lib/files-delta.js'
+import type {
+  ControlClientMessage,
+  ControlServerMessage,
+  FileEntry,
+} from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 
 function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
@@ -78,8 +83,25 @@ function say(id: string, who: TokenPayload, ws: WebSocket, message: ControlClien
   dispatch(ws, id, who, message)
 }
 
+/**
+ * Всё, чем комнате рассказали про дерево, — полными кадрами и переменами.
+ *
+ * Перемена в дереве едет дельтой (`files:delta`), а не списком целиком: один
+ * заведённый файл стоил комнате в пятьсот человек 3.0 МБ. Считать кадры
+ * по-прежнему надо ОБА вида — молчание проверяется по их сумме.
+ */
 const filesFrames = (heard: ControlServerMessage[]): ControlServerMessage[] =>
-  heard.filter((frame) => frame.t === 'files')
+  heard.filter((frame) => frame.t === 'files' || frame.t === 'files:delta')
+
+/** Дерево, каким его собрал бы клиент из того, что ему рассказали. */
+function treeOf(heard: ControlServerMessage[]): string[] {
+  let files: FileEntry[] = []
+  for (const frame of heard) {
+    if (frame.t === 'files') files = frame.files
+    else if (frame.t === 'files:delta') files = applyFilesDelta(files, frame)
+  }
+  return files.map((entry) => entry.path)
+}
 
 const laserFrames = (heard: ControlServerMessage[]): ControlServerMessage[] =>
   heard.filter((frame) => frame.t === 'laser')
@@ -107,27 +129,117 @@ test('одно и то же дерево второй раз никуда не �
   makeFile(id, 'data.csv', 'a,b')
   broadcastFiles(id)
   assert.equal(filesFrames(seat.heard).length, 2, 'новый файл до комнаты не доехал')
+  // И уезжает ПЕРЕМЕНОЙ, а не списком целиком: в кадре одна запись, а не вся папка.
+  const change = seat.heard.at(-1)
+  assert.ok(change && change.t === 'files:delta', 'заведённый файл увёз всё дерево')
+  assert.deepEqual(
+    change.added.map((one) => one.entry.path),
+    ['data.csv'],
+  )
+  assert.deepEqual(change.removed, [])
+  assert.deepEqual(treeOf(seat.heard), ['data.csv', 'model.py'], 'дерево из перемен собралось не то')
   closeControlRoom(id)
 })
 
-test('опустевшая комната не уносит расписку с собой в следующую пару', () => {
+test('перемена ложится только на тот список, из которого её посчитали', () => {
   /*
-   * `treeSent` держит обещание «этот список видели ВСЕ в комнате». Пока комната
-   * стоит пустой, дерево может измениться и вернуться обратно, и расписка,
+   * Номер списка — единственное, чем дельта доказывает, что склеивать её есть
+   * с чем. Комната стояла пустой, вошедший пересчитал дерево — номер сдвинулся,
+   * и у тех, кто этого не видел, дельта не подойдёт: они спросят дерево целиком
+   * (`files:ask`) вместо того, чтобы применить перемену к чужому списку.
+   */
+  const { id, host, seat } = room()
+  makeFile(id, 'model.py', 'x = 1')
+  broadcastFiles(id)
+  const first = seat.heard.filter((frame) => frame.t === 'files').at(-1)
+  assert.ok(first && first.t === 'files')
+  assert.equal(typeof first.rev, 'number', 'полный список приехал без номера')
+
+  seat.heard.length = 0
+  makeFile(id, 'data.csv', 'a,b')
+  broadcastFiles(id)
+  const delta = seat.heard.at(-1)
+  assert.ok(delta && delta.t === 'files:delta')
+  assert.equal(delta.from, first.rev, 'перемена посчитана не от того списка')
+  assert.equal(delta.rev, (first.rev ?? 0) + 1, 'номер не вырос на единицу')
+
+  // И вопрос про полное дерево на него отвечают — тем же кадром, что и в пачке.
+  seat.heard.length = 0
+  say(id, host, seat.ws, { t: 'files:ask' })
+  const full = seat.heard.at(-1)
+  assert.ok(full && full.t === 'files', 'на вопрос про дерево ответили молчанием')
+  assert.equal(full.rev, delta.rev, 'ответ приехал с номером не той перемены')
+  assert.deepEqual(full.files.map((entry) => entry.path), ['data.csv', 'model.py'])
+  closeControlRoom(id)
+})
+
+test('обрезанное дерево едет целиком: в нём «нет» и «не поместилось» неразличимы', () => {
+  const { id, seat } = room()
+  makeFile(id, 'model.py', 'x = 1')
+  broadcastFiles(id)
+  seat.heard.length = 0
+
+  // Готовое дерево с признаком обрезки — как его отдаёт обход, упёршийся в потолок.
+  broadcastFiles(id, {
+    files: [{ name: 'model.py', path: 'model.py', dir: false, size: 5, modifiedAt: 1 }],
+    truncated: true,
+  })
+  const frame = seat.heard.at(-1)
+  assert.ok(frame && frame.t === 'files', 'обрезанное дерево описали переменой')
+  assert.equal(frame.truncated, true)
+
+  // И обратно: из обрезанного в полное — тоже целиком, склеивать не с чем.
+  seat.heard.length = 0
+  broadcastFiles(id, {
+    files: [{ name: 'model.py', path: 'model.py', dir: false, size: 5, modifiedAt: 2 }],
+    truncated: false,
+  })
+  const back = seat.heard.at(-1)
+  assert.ok(back && back.t === 'files', 'перемену посчитали от обрезанного списка')
+  assert.equal(back.truncated, false)
+  closeControlRoom(id)
+})
+
+test('опустевшая комната не уносит память о дереве в следующую пару', () => {
+  /*
+   * Память комнаты держит и список, и его номер, и на нём стоит молчание
+   * рассылки. Пока комната стоит пустой, дерево может измениться, — и память,
    * пережившая последнего ушедшего, заставила бы следующую рассылку промолчать
    * перед людьми, которые ничего этого не видели.
+   *
+   * Вошедший при этом получает список приветственной пачкой, и повторять его
+   * тем же кадром незачем: вот это и проверяется — сначала молчание на
+   * неизменившееся дерево, потом настоящая перемена, доехавшая до новичка.
    */
   const { id, seat } = room()
   makeFile(id, 'model.py', 'x = 1')
   broadcastFiles(id)
 
   seat.ws.close()
+  makeFile(id, 'while-empty.txt', 'пока никого не было')
   const second = socket()
   handleControlSocket(second.ws, id, { sessionId: id, participantId: 'p_two', role: 'participant' })
-  second.heard.length = 0
+  assert.deepEqual(
+    treeOf(second.heard),
+    ['model.py', 'while-empty.txt'],
+    'вошедший получил дерево без файла, положенного в пустую комнату',
+  )
 
+  const told = filesFrames(second.heard).length
   broadcastFiles(id)
-  assert.equal(filesFrames(second.heard).length, 1, 'расписка пережила пустую комнату')
+  assert.equal(
+    filesFrames(second.heard).length,
+    told,
+    'неизменившееся дерево уехало вошедшему второй раз',
+  )
+
+  makeFile(id, 'data.csv', 'a,b')
+  broadcastFiles(id)
+  assert.deepEqual(
+    treeOf(second.heard),
+    ['data.csv', 'model.py', 'while-empty.txt'],
+    'перемена после пустой комнаты до новичка не доехала',
+  )
   closeControlRoom(id)
 })
 

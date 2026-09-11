@@ -67,8 +67,14 @@ interface Burst {
   /** Only authenticated direct edits; on-behalf Oracle operations are not independent participation. */
   contributors: Map<string, ParticipantRole>
   updates: Uint8Array[]
-  /** State of the document when the burst opened, for the summary and the counts. */
-  before: Uint8Array
+  /**
+   * State of the document when the burst opened, for the summary and the counts.
+   *
+   * `null` — «есть теневой документ, спрашивать нечего»: он и есть это
+   * состояние, и байты его никому не нужны, пока всплеск не придётся собирать
+   * запасным ходом (см. `close`).
+   */
+  before: Uint8Array | null
   openedAt: number
   lastAt: number
   chars: number
@@ -94,6 +100,61 @@ const bursts = new Map<string, Burst>()
  * recorded and now", which is what it claims to be.
  */
 const baselines = new Map<string, Uint8Array>()
+
+/**
+ * Та же базовая точка, но живым документом — по одному на комнату.
+ *
+ * Закрытие всплеска обязано знать, как тетрадь выглядит ПОСЛЕ него, и знало
+ * единственным способом: собрать документ заново из базовой точки и склеенного
+ * обновления. Это полный разбор двух мегабайт на каждый всплеск — замер на
+ * тетради 2.2 МБ дал 37 миллисекунд заблокированного цикла событий ради того,
+ * чтобы записать полтора килобайта разницы. А всплеск закрывается не только по
+ * тишине: любое добавление, удаление и перетаскивание ячейки закрывает его
+ * немедленно, то есть в комнате, где двигают ячейки, эти 37 миллисекунд стоят
+ * между нажатиями клавиш у всех остальных.
+ *
+ * Документ держится живым и двигается ТЕМ ЖЕ склеенным обновлением: это
+ * миллисекунда вместо тридцати семи. Полная сборка осталась запасным ходом —
+ * на комнату, которую только что подняли, и на случай, когда применение
+ * почему-то не прошло.
+ *
+ * Цена — копия тетради в памяти на активную комнату. Она же и снимается первой:
+ * `forgetHistory` роняет её вместе с выселением комнаты, а выселяют через
+ * десять минут пустоты.
+ */
+const shadows = new Map<string, Y.Doc>()
+
+/** Сколько весила последняя посчитанная полная копия — оценка для кейфреймов. */
+const sizes = new Map<string, number>()
+
+/**
+ * Байты базовой точки — тогда и только тогда, когда их правда спросили.
+ *
+ * Спрашивают их двое: комната без теневого документа (её всплеск придётся
+ * собирать заново) и починка истории. Остальным хватает самого теневого
+ * документа, а разворот тетради в байты — это миллисекунды на мегабайт.
+ */
+function baselineBytes(sessionId: string): Uint8Array {
+  const cached = baselines.get(sessionId)
+  if (cached) return cached
+  const shadow = shadows.get(sessionId)
+  const empty = shadow ? null : new Y.Doc()
+  const bytes = Y.encodeStateAsUpdate(shadow ?? empty!)
+  empty?.destroy()
+  baselines.set(sessionId, bytes)
+  if (shadow) sizes.set(sessionId, bytes.byteLength)
+  return bytes
+}
+
+/** Поставить теневой документ комнаты, уронив прежний. */
+function setShadow(sessionId: string, doc: Y.Doc | null): void {
+  const had = shadows.get(sessionId)
+  if (had && had !== doc) {
+    shadows.delete(sessionId)
+    had.destroy()
+  }
+  if (doc) shadows.set(sessionId, doc)
+}
 
 /*
  * The notebook's shape as of each baseline: which cells existed, in what order.
@@ -134,7 +195,12 @@ const gaps = new Set<string>()
  * does not record its whole notebook as somebody's edit.
  */
 export function beginHistory(sessionId: string, doc: Y.Doc): void {
-  baselines.set(sessionId, Y.encodeStateAsUpdate(doc))
+  const snapshot = Y.encodeStateAsUpdate(doc)
+  baselines.set(sessionId, snapshot)
+  sizes.set(sessionId, snapshot.byteLength)
+  // Теневой документ — из тех же байтов: один разбор на открытие комнаты
+  // вместо одного на каждый закрытый всплеск. См. `shadows`.
+  setShadow(sessionId, docFrom([snapshot]))
   shapes.set(sessionId, shapeOf(doc))
   // Запомненные тексты идут в ногу с базовой точкой: сравнивать следующий
   // всплеск с чужим слепком — это приписать ему всё, что было до него.
@@ -424,6 +490,22 @@ function docFrom(updates: Uint8Array[]): Y.Doc {
   return doc
 }
 
+/**
+ * Тетрадь после всплеска, собранная заново, — запасной ход.
+ *
+ * Три источника, по убыванию точности: байты базовой точки, снятые при
+ * открытии всплеска; те же байты из памяти модуля; сама история. Последний —
+ * для комнаты, у которой теневая тетрадь отказала посреди работы: байты
+ * базовой точки к этому моменту уже никто не хранит, а собирать «после» из
+ * одного склеенного обновления значило бы записать кейфреймом тетрадь из одной
+ * этой правки. Повтор идёт от ближайшего снимка, а не от начала семинара.
+ */
+function rebuiltAfter(sessionId: string, before: Uint8Array | null, merged: Uint8Array): Y.Doc {
+  const bytes = before ?? baselines.get(sessionId) ?? null
+  if (bytes) return docFrom([bytes, merged])
+  return docFrom([...updatesUpTo(sessionId, LATEST), merged])
+}
+
 /** Close a burst and write it as one version. */
 function close(key: string): void {
   const burst = bursts.get(key)
@@ -433,7 +515,6 @@ function close(key: string): void {
   if (burst.updates.length === 0) return
 
   const merged = Y.mergeUpdates(burst.updates)
-  const after = docFrom([burst.before, merged])
   /*
    * «До» берётся из памяти, а не разворачивается заново.
    *
@@ -442,12 +523,36 @@ function close(key: string): void {
    * миллисекунд блокировки цикла событий на нажатие клавиши в трёхмегабайтной
    * тетради. Запись пропадает только при перезапуске сервера, и тогда
    * разворачиваем, как раньше.
+   *
+   * И считается это ДО того, как теневой документ сдвинут: он и есть «до», и
+   * сдвинутый отвечал бы на вопрос «что изменилось» словом «ничего».
    */
+  const shadow = shadows.get(burst.sessionId) ?? null
   let was = digests.get(burst.sessionId)
   if (!was) {
-    const before = docFrom([burst.before])
+    const before = shadow ?? docFrom([burst.before ?? baselineBytes(burst.sessionId)])
     was = new Map(cellsOf(before).map((c) => [c.id, c.source]))
-    before.destroy()
+    if (before !== shadow) before.destroy()
+  }
+  /*
+   * «После» — это базовая точка, сдвинутая на этот всплеск, и сдвигается она
+   * на месте: теневой документ комнаты живёт между закрытиями (см. `shadows`).
+   * Собрать его заново — запасной ход: комната, поднятая этим процессом
+   * впервые, и применение, которое почему-то не прошло.
+   */
+  let after = shadow
+  if (after) {
+    try {
+      Y.applyUpdate(after, merged, 'history')
+    } catch (err) {
+      console.error(`[history] теневая тетрадь ${burst.sessionId} не приняла всплеск`, err)
+      setShadow(burst.sessionId, null)
+      after = null
+    }
+  }
+  if (!after) {
+    after = rebuiltAfter(burst.sessionId, burst.before, merged)
+    setShadow(burst.sessionId, after)
   }
   const now = new Map(cellsOf(after).map((c) => [c.id, c.source]))
   const facts = describe(was, now)
@@ -519,15 +624,19 @@ function close(key: string): void {
   // неудачи: байтов всплеска всё равно больше нет, а следующая версия обязана
   // описывать разницу с тем, что в комнате на самом деле.
   /*
-   * Один разворот документа в байты на закрытие, а не три.
+   * Ни одного разворота документа в байты на закрытие.
    *
-   * Те же самые байты нужны трижды — базовой точке, оценке «пора ли снимок» и
-   * самому снимку, — и каждый раз кодировались заново. На трёхмегабайтной
-   * тетради это по семь миллисекунд цикла событий за штуку, а закрытий на
-   * оживлённой паре десятки.
+   * Байты нужны были трижды — базовой точке, оценке «пора ли снимок» и самому
+   * снимку, — и один раз считались. Теперь базовая точка это сам теневой
+   * документ, оценка идёт по запомненному размеру, а снимок считается там, где
+   * его правда пишут, то есть редко. На тетради 2.2 МБ это семь миллисекунд
+   * цикла событий, снятых с каждого закрытия.
+   *
+   * Байты базовой точки при этом должны быть не старее теневого документа:
+   * забыв их здесь, мы заставим следующего спрашивающего посчитать их заново с
+   * него же.
    */
-  const snapshot = Y.encodeStateAsUpdate(after)
-  baselines.set(burst.sessionId, snapshot)
+  baselines.delete(burst.sessionId)
   shapes.set(burst.sessionId, shapeOf(after))
   digests.set(burst.sessionId, now)
   if (gaps.has(burst.sessionId)) {
@@ -541,13 +650,14 @@ function close(key: string): void {
      * поэтому комната помечена до первого удачного снимка — обычный keyframe
      * сюда не годится, он приходит по счёту байтов и может не прийти вовсе.
      */
-    if (writeKeyframe(burst.sessionId, snapshot)) gaps.delete(burst.sessionId)
+    if (writeKeyframe(burst.sessionId, after)) gaps.delete(burst.sessionId)
   } else if (wrote) {
     // Quiet rows count toward the keyframe interval too: they are replayed
     // like any other, so they are exactly what the interval is bounding.
-    maybeKeyframe(burst.sessionId, snapshot, merged.byteLength)
+    maybeKeyframe(burst.sessionId, after, merged.byteLength)
   }
-  after.destroy()
+  // `after` не уничтожается: это и есть теневой документ комнаты, с которого
+  // начнётся следующее закрытие. Роняет его выселение (`forgetHistory`).
 }
 
 /**
@@ -573,25 +683,48 @@ const sinceKeyframe = new Map<string, number>()
  * повтора, и без него крошечная тетрадь с тысячей мелких правок собиралась бы
  * из тысячи кусков.
  */
-function maybeKeyframe(sessionId: string, snapshot: Uint8Array, wrote: number): void {
-  const size = snapshot.byteLength
+function maybeKeyframe(sessionId: string, doc: Y.Doc, wrote: number): void {
+  /*
+   * Размер — по памяти, а не свежим разворотом документа в байты.
+   *
+   * Раньше байты считал каждый закрытый всплеск и заодно отвечал на этот
+   * вопрос бесплатно. Теперь их не считает никто (см. `close`), а решение
+   * «пора ли снимок» не стоит семи миллисекунд цикла событий: оно и так
+   * приблизительное. Запомненный размер обновляется на каждой записанной
+   * копии, то есть ровно тогда, когда он меняется заметно.
+   */
+  const size = sizes.get(sessionId) ?? KEYFRAME_MIN_BYTES
   const grown = (sinceKeyframe.get(sessionId) ?? 0) + wrote
   sinceKeyframe.set(sessionId, grown)
 
   const byBytes = grown >= Math.max(size, KEYFRAME_MIN_BYTES)
-  const byRows = versionCount(sessionId) % KEYFRAME_EVERY === 0
+  /*
+   * Потолок по строкам — со своим порогом по байтам, а не сам по себе.
+   *
+   * Правило «каждые двести строк» ограничивает длину повтора, и это правильно.
+   * Но двести строк на живом семинаре — это чаще всего двести ТИХИХ строк:
+   * вывод ячейки, состояние запуска, поток оракула. Дельты в них крошечные, а
+   * полная копия — мегабайты, и на тетради с картинками это был мегабайт
+   * снимка на каждые несколько килобайт разницы. Повтор двухсот мелких
+   * обновлений — доли миллисекунды, так что ограничение ничего не теряет:
+   * снимок приходит, когда накопилось хоть сколько-то различия.
+   */
+  const byRows = versionCount(sessionId) % KEYFRAME_EVERY === 0 && grown >= KEYFRAME_MIN_BYTES
   if (!byBytes && !byRows) return
 
-  writeKeyframe(sessionId, snapshot)
+  writeKeyframe(sessionId, doc)
 }
 
 /**
  * Полный снимок документа отдельной строкой. Говорит, удалось ли записать.
  *
- * Байтами, а не документом: их уже посчитал тот, кто зовёт, и второй
- * `encodeStateAsUpdate` подряд — это ровно та же работа второй раз.
+ * Документом, а не байтами: разворот в байты — самая дорогая работа на этом
+ * пути, и делается она ровно здесь, то есть только когда снимок правда пишут.
+ * Заодно здесь обновляется запомненный размер комнаты (см. `maybeKeyframe`).
  */
-function writeKeyframe(sessionId: string, snapshot: Uint8Array): boolean {
+function writeKeyframe(sessionId: string, doc: Y.Doc): boolean {
+  const snapshot = Y.encodeStateAsUpdate(doc)
+  sizes.set(sessionId, snapshot.byteLength)
   try {
     appendVersion({
       sessionId,
@@ -704,7 +837,7 @@ export function record(
       authors: authorId === null ? new Set() : new Set([authorId]),
       contributors: new Map(),
       updates: [],
-      before: baselines.get(key) ?? Y.encodeStateAsUpdate(new Y.Doc()),
+      before: shadows.has(key) ? null : baselineBytes(key),
       openedAt: now,
       lastAt: now,
       chars: 0,
@@ -825,6 +958,8 @@ export function flushAllHistory(): void {
 export function forgetHistory(sessionId: string): void {
   close(sessionId)
   baselines.delete(sessionId)
+  setShadow(sessionId, null)
+  sizes.delete(sessionId)
   shapes.delete(sessionId)
   digests.delete(sessionId)
   sinceKeyframe.delete(sessionId)
@@ -835,6 +970,8 @@ export function forgetHistory(sessionId: string): void {
 /** Drop a session's open burst without writing it. Used when a seminar is deleted. */
 export function discardBurst(sessionId: string): void {
   baselines.delete(sessionId)
+  setShadow(sessionId, null)
+  sizes.delete(sessionId)
   shapes.delete(sessionId)
   digests.delete(sessionId)
   sinceKeyframe.delete(sessionId)
@@ -942,6 +1079,16 @@ export function mark(
   // начинается заново.
   gaps.delete(sessionId)
   baselines.set(sessionId, snapshot)
+  sizes.set(sessionId, snapshot.byteLength)
+  /*
+   * И теневая тетрадь встаёт на ту же точку.
+   *
+   * Не «сдвигается»: чекпоинт и возврат версии приходят из живого документа, и
+   * сколько всего в нём изменилось с прошлого закрытия, отсюда не видно. Одна
+   * полная сборка на чекпоинт — это ровно то, чем закрытие всплеска было до
+   * сих пор, а чекпоинты ставят единицами за пару, а не десятками в минуту.
+   */
+  setShadow(sessionId, docFrom([snapshot]))
   shapes.set(sessionId, shapeOf(doc))
   digests.set(sessionId, now)
   forgetCache(sessionId)

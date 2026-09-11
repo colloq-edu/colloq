@@ -33,11 +33,13 @@ import { oracleOf, setOracle } from '../server/src/council.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
 import { cellId, createCell, getCells } from '../shared/notebook.js'
 import { LECTURE_ROOM } from '../shared/rules.js'
+import { withQueuePosition } from '../web/src/lib/council-queue.js'
 import type {
   ControlClientMessage,
   ControlServerMessage,
   CouncilAttempt,
   CouncilBoard,
+  CouncilMine,
   CouncilRun,
 } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
@@ -52,7 +54,12 @@ function socket(): Fake {
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      if (typeof frame === 'string') heard.push(JSON.parse(frame) as ControlServerMessage)
+      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
+      // (рассылка, дерево, чернила), уходят уже закодированными — см.
+      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
+        heard.push(JSON.parse(String(frame)) as ControlServerMessage)
+      }
     },
     on() {
       return this
@@ -299,9 +306,24 @@ test('«вы 2-й» становится «вы 1-й», когда вперед�
   assert.equal(say(at, at.teacher, { t: 'run', cellId: at.plain }), null)
   assert.equal(say(at, student, { t: 'council:run', cellId: at.cell }), null)
 
+  /*
+   * Номер — тем же способом, что и вкладка: лист (`council:mine`) привозит его
+   * на момент отправки, а дальше двигает очередь комнаты (`council:queue`),
+   * одним кадром на всех. Свой номер в ней каждый читает сам
+   * (web/src/lib/council-queue.ts).
+   */
   const queue = () => {
-    const m = [...student.sock.heard].reverse().find((x) => x.t === 'council:mine')
-    return m && m.t === 'council:mine' ? m.state.queue : 'кадра нет'
+    let mine: Record<string, CouncilMine> = {}
+    let seen = false
+    for (const m of student.sock.heard) {
+      if (m.t === 'council:mine') {
+        mine = { ...mine, [m.cellId]: m.state }
+        seen = true
+      } else if (m.t === 'council:queue') {
+        mine = withQueuePosition(mine, m.cellId, m.at)
+      }
+    }
+    return seen ? (mine[at.cell]?.queue ?? null) : 'кадра нет'
   }
   assert.equal(queue(), 2, 'номер за ячейкой преподавателя посчитан неверно')
 

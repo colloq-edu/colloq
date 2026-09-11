@@ -29,7 +29,9 @@ import { readRules, type RoomRules } from '@shared/rules'
 import { inkedPages, noteInkedPages, replaceInkPage } from '@/components/lecture/ink'
 import { api } from './api'
 import { boardGone } from './board'
-import { enqueueControl, OFFLINE_REASON, reconnectDelay } from './controls'
+import { collabBackoff, enqueueControl, OFFLINE_REASON, reconnectDelay } from './controls'
+import { applyFilesDelta } from './files-delta'
+import { withQueuePosition } from './council-queue'
 import { CouncilState } from './council.svelte'
 import { reopenRefusedFiles } from './filedoc.svelte'
 import { countsAsUnread } from './notes'
@@ -211,6 +213,15 @@ export class SessionState {
    * не нашедший свой файл, ищет его заново, а про потолок не догадывается.
    */
   filesTruncated = $state(false)
+  /**
+   * Номер списка файлов, который у нас на руках. Ноль — списка нет вовсе.
+   *
+   * Перемена в дереве едет дельтой (`files:delta`), а дельта ложится только на
+   * тот список, из которого её посчитали. Номер — единственный способ это
+   * проверить: не совпал — склеивать нечего, и дерево спрашивается целиком.
+   * Руны здесь не нужно, номер никто не рисует.
+   */
+  #filesRev = 0
   /**
    * Кто в комнате — целиком заменяемым снимком, и только когда он изменился.
    *
@@ -419,6 +430,14 @@ export class SessionState {
        * сервер защищался отдельно (collab/index.ts · ownAwareness).
        */
       disableBc: true,
+      /*
+       * Потолок отступа — свой у каждой вкладки (lib/controls.ts ·
+       * collabBackoff). По умолчанию он один на всех (2500 мс), и пятьсот
+       * вкладок после перезапуска сервера возвращаются в одну миллисекунду —
+       * снова и снова, потому что отступ у них общий и считается от общего
+       * события.
+       */
+      maxBackoffTime: collabBackoff(),
     })
     this.awareness = this.provider.awareness
     /*
@@ -736,6 +755,15 @@ export class SessionState {
         this.council.receive(message)
         return
       }
+      if (message.t === 'council:queue') {
+        /*
+         * Номер в очереди — числом, а не полным листом. На пятистах ждущих один
+         * досчитавшийся запуск двигал номер у всех и стоил пятисот листов с
+         * текстами попыток (server/src/control.ts · tellQueued).
+         */
+        this.council.mine = withQueuePosition(this.council.mine, message.cellId, message.at)
+        return
+      }
       if (message.t === 'banned') {
         /*
          * Нас удалили посреди занятия. Сервер закроет сокет следующим шагом —
@@ -810,6 +838,7 @@ export class SessionState {
         this.files = message.files
         this.filesArrived = true
         this.filesTruncated = message.truncated === true
+        this.#filesRev = message.rev ?? 0
         /*
          * Файл могли удалить или переписать прямо на занятии: удаляет
          * преподаватель, а переписать может любая ячейка — `df.to_csv` идёт в
@@ -818,6 +847,30 @@ export class SessionState {
          * а что нет, — в lib/board.ts: по обрезанному зал вылетал из лекции.
          */
         if (boardGone(this.board, message.files, this.filesTruncated)) this.board = null
+      } else if (message.t === 'files:delta') {
+        /*
+         * Перемена в дереве — вместо всего дерева.
+         *
+         * Полный список стоил комнате в пятьсот человек 3.0 МБ на один
+         * заведённый файл (замерено), а правит папку всё подряд: автосохранение
+         * редактора, `df.to_csv` в ячейке, `pip install` в терминале.
+         *
+         * Склеивается дельта только со списком того номера, из которого её
+         * посчитали. Не совпал — склеивать нечего, и вместо догадки задаётся
+         * вопрос: разрыв бывает, когда вошедший пересчитал дерево за пустую
+         * комнату, и лечится он одним полным кадром, а не испорченной панелью.
+         */
+        if (this.#filesRev !== message.from) {
+          this.send({ t: 'files:ask' })
+          return
+        }
+        this.files = applyFilesDelta(this.files, message)
+        this.#filesRev = message.rev
+        this.filesArrived = true
+        // Дельтами описывается только необрезанное дерево (control.ts ·
+        // deltaFrame), так что обрезка здесь снимается вместе с ней.
+        this.filesTruncated = false
+        if (boardGone(this.board, this.files, false)) this.board = null
       } else if (message.t === 'board') this.board = message.open
       else if (message.t === 'lecture') {
         const before = this.lecture

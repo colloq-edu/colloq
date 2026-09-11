@@ -28,7 +28,12 @@ import { councilQueuePositions } from '../server/src/kernel/index.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
 import { cellId, createCell, getCells } from '../shared/notebook.js'
 import { LECTURE_ROOM } from '../shared/rules.js'
-import type { ControlClientMessage, ControlServerMessage } from '../shared/protocol.js'
+import { withQueuePosition } from '../web/src/lib/council-queue.js'
+import type {
+  ControlClientMessage,
+  ControlServerMessage,
+  CouncilMine,
+} from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 
 interface Person {
@@ -48,7 +53,12 @@ function join(
   const fake = {
     readyState: WebSocket.OPEN as number,
     send(frame: unknown) {
-      if (typeof frame === 'string') heard.push(JSON.parse(frame) as ControlServerMessage)
+      // Строкой или байтами: кадры, которые сервер собирает раз на комнату
+      // (рассылка, дерево, чернила), уходят уже закодированными — см.
+      // control.ts · sendFrame. Настоящий сокет тут разницы не делает.
+      if (typeof frame === 'string' || Buffer.isBuffer(frame)) {
+        heard.push(JSON.parse(String(frame)) as ControlServerMessage)
+      }
     },
     on() {
       return this
@@ -102,10 +112,26 @@ test('номер в листе — тот, что дал массовый счё
     assert.equal(say(student, { t: 'council:run', cellId: cell }), null)
   }
 
-  /** Последний номер, который этот человек видел в своём листе. */
+  /**
+   * Номер, который этот человек видит сейчас, — тем же способом, что и вкладка.
+   *
+   * Лист (`council:mine`) привозит номер на момент своей отправки, дальше его
+   * двигает очередь комнаты (`council:queue`), одним кадром на всех: свой номер
+   * в ней каждый читает сам (web/src/lib/council-queue.ts). Сборка здесь — та
+   * же самая, иначе проверялся бы не тот путь, которым номер доезжает до глаз.
+   */
   const queue = (who: Person): number | null | 'кадра нет' => {
-    const m = [...who.heard].reverse().find((x) => x.t === 'council:mine' && x.cellId === cell)
-    return m && m.t === 'council:mine' ? m.state.queue : 'кадра нет'
+    let mine: Record<string, CouncilMine> = {}
+    let seen = false
+    for (const m of who.heard) {
+      if (m.t === 'council:mine') {
+        mine = { ...mine, [m.cellId]: m.state }
+        seen = true
+      } else if (m.t === 'council:queue') {
+        mine = withQueuePosition(mine, m.cellId, m.at)
+      }
+    }
+    return seen ? (mine[cell]?.queue ?? null) : 'кадра нет'
   }
 
   const bulk = (who: Person): number | undefined =>
@@ -155,10 +181,60 @@ test('рассылка номеров не ищет в очереди на ка�
     /councilQueuePosition\(/,
     'номер снова ищется в очереди на каждого ждущего',
   )
-  assert.match(body, /mineOut\([^)]*position\)/, 'лист не получил готовый номер и посчитает свой')
+  /*
+   * И лист ради номера больше не собирается вовсе. Он стоил чтения попытки из
+   * базы и вёз её текст целиком — на каждого из пятисот ждущих, на каждый конец
+   * любой работы ядра. Очередь уезжает одним кадром на комнату.
+   */
+  assert.doesNotMatch(body, /mineOut\(/, 'номер снова везут полным листом')
+  assert.match(body, /t: 'council:queue'/, 'номер в очереди никуда не уезжает')
   assert.equal(
     /\bcouncilQueued\b/.test(source),
     false,
     'councilQueued больше ничей — его незачем звать',
   )
+})
+
+/* ------------------------------------------- свой номер в чужой очереди */
+
+const sheet = (queue: number | null): CouncilMine => ({
+  text: '',
+  submittedAt: null,
+  updatedAt: 0,
+  shown: false,
+  correct: null,
+  reply: null,
+  run: null,
+  queue,
+  closed: false,
+})
+
+test('номер ложится в лист этой ячейки — и не трогает соседние', () => {
+  const mine = { c1: sheet(null), c2: sheet(7) }
+  const next = withQueuePosition(mine, 'c1', 5)
+  assert.equal(next.c1.queue, 5)
+  assert.equal(next.c2.queue, 7, 'номер уехал не в ту ячейку')
+})
+
+test('null — это ответ: в очереди человека больше нет', () => {
+  // Его попытка дошла до ядра, и «считается сейчас» говорит `run.state`, а не
+  // место в очереди. Раньше об этом не говорил никто — рассылка шла только по
+  // тем, кто в очереди остался, — и «вы 1-й» висел над считающейся попыткой.
+  assert.equal(withQueuePosition({ c1: sheet(1) }, 'c1', null).c1.queue, null)
+})
+
+test('кадр без перемен не будит перерисовку стопки', () => {
+  /*
+   * Снимок листов заменяется целиком и будит все карточки консилиума, а
+   * очередь дёргается четыре раза в секунду: на своей ячейке студент
+   * перерисовывал бы редактор под собственными руками.
+   */
+  const mine = { c1: sheet(3) }
+  assert.equal(withQueuePosition(mine, 'c1', 3), mine, 'снимок листов заменили без перемен')
+})
+
+test('лист, которого ещё нет, номером не заводится', () => {
+  // Лист приедет своим кадром и привезёт номер с собой; завести его здесь
+  // значило бы показать человеку пустую попытку с номером в очереди.
+  assert.deepEqual(withQueuePosition({}, 'c1', 2), {})
 })

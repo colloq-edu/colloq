@@ -10,7 +10,7 @@
  * рисоваться вовсе — `pickMime` его бы не выбрал.
  */
 import { BLOB_MIMES } from '@shared/publish'
-import type { CellOutput } from '@shared/notebook'
+import type { CellOutput, OutputBlob } from '@shared/notebook'
 
 /**
  * Растровые картинки — те, что показывает `<img>`.
@@ -33,6 +33,38 @@ const MIME_ORDER_PLAIN = [...IMG_MIMES, 'text/plain']
 export function pickMime(data: Record<string, string>, rich: boolean): string | null {
   for (const mime of rich ? MIME_ORDER : MIME_ORDER_PLAIN) if (data[mime]) return mime
   return Object.keys(data).find((mime) => mime.startsWith('text/')) ?? null
+}
+
+/**
+ * Вывод, у которого вынесенные картинки заменены адресами.
+ *
+ * Крупная картинка живой комнаты в документе не лежит — там стоит ссылка
+ * (`shared/notebook.ts · OutputBlob`), а байты раздаёт сервер. Показывается это
+ * ровно так же, как вынесенное на опубликованной странице: адрес в наборе
+ * mime, дальше всё как обычно — `pickMime`, `asImage`, `imageSrc`.
+ *
+ * Ключа ещё нет (первая картинка приехала раньше, чем ответ на запрос ключа) —
+ * запись просто не подставляется: выбор дойдёт до `text/plain`, то есть до
+ * «<Figure size 640x480>», а не до битой рамки. Как только ключ появится,
+ * перерисовка поставит адрес.
+ */
+export function withBlobs(
+  output: CellOutput,
+  src: (blob: OutputBlob) => string | null,
+): CellOutput {
+  if (output.kind !== 'data' || !output.blobs || output.blobs.length === 0) return output
+  const data: Record<string, string> = { ...output.data }
+  let put = false
+  for (const blob of output.blobs) {
+    // Свой же mime в наборе старше ссылки: если ядро прислало и то и другое,
+    // показывать надо то, что уже приехало.
+    if (data[blob.mime] !== undefined) continue
+    const address = src(blob)
+    if (!address) continue
+    data[blob.mime] = address
+    put = true
+  }
+  return put ? { ...output, data } : output
 }
 
 /**

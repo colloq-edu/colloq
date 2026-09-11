@@ -14,8 +14,8 @@ const settle = () => new Promise<void>(resolve => setImmediate(resolve))
 const response = (language: string) => Response.json({ language })
 
 /** Exercise the actual compiled rune module with controllable HTTP responses. */
-async function withClient(run: (client: Client, requests: Pending[]) => Promise<void>, cached?: string, supplied?: string) {
-  const names = ['window', 'document', 'localStorage', 'fetch'] as const
+async function withClient(run: (client: Client, requests: Pending[]) => Promise<void>, cached?: string, supplied?: string, path = '/admin') {
+  const names = ['window', 'document', 'localStorage', 'fetch', 'location'] as const
   const descriptors = new Map(names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]))
   const requests: Pending[] = []
   const storage = new Map(cached ? [['colloq:instance-language', cached]] : [])
@@ -27,6 +27,8 @@ async function withClient(run: (client: Client, requests: Pending[]) => Promise<
   const globals = {
     window: win,
     document: doc,
+    // Адрес решает, опрашивать ли сервер: в комнате язык приносит сокет.
+    location: { pathname: path },
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
     fetch: () => new Promise<Response>((resolve, reject) => requests.push({ resolve, reject })),
   }
@@ -39,6 +41,7 @@ async function withClient(run: (client: Client, requests: Pending[]) => Promise<
     const compiled = compileModule(javascript, { filename: 'i18n.svelte.js', generate: 'client' }).js.code
       .replaceAll("'svelte/internal/client'", JSON.stringify(import.meta.resolve('svelte/internal/client')))
       .replaceAll("'@shared/i18n'", JSON.stringify(new URL('../shared/i18n.ts', import.meta.url).href))
+      .replaceAll("'./routes'", JSON.stringify(new URL('../web/src/lib/routes.ts', import.meta.url).href))
     const file = join(dir, 'client.mjs')
     await writeFile(file, compiled)
     client = await import(pathToFileURL(file).href) as Client
@@ -66,7 +69,7 @@ test('an older GET cannot overwrite a newer room language', async () => {
   })
 })
 
-test('HTML-supplied language lets a cold app start before the settings request answers', async () => {
+test('HTML-supplied language starts a cold app with no settings request at all', async () => {
   await withClient(async (client, requests) => {
     assert.equal(client.language.current, 'en')
     let ready = false
@@ -74,9 +77,29 @@ test('HTML-supplied language lets a cold app start before the settings request a
     await settle()
     assert.equal(ready, true, 'initial app still waits for the language round trip')
     assert.equal(document.documentElement.lang, 'en')
-    requests[0].resolve(response('en'))
+    // Навигационный HTML уже принёс язык инстанса. Спрашивать его ещё раз —
+    // это лишний запрос на пути к первому кадру у каждого входящего.
+    assert.deepEqual(requests, [])
     await initial
   }, undefined, 'en')
+})
+
+test('a room leaves the polling to its control socket; other screens keep a slow one', async () => {
+  const started: number[] = []
+  const stopped: number[] = []
+  const spy = { setInterval: (_run: () => void, every: number) => started.push(every), clearInterval: (id: number) => stopped.push(id) }
+  await withClient(async (client, requests) => {
+    Object.assign(window, spy)
+    await client.initializeLanguage()
+    requests[0]?.resolve(response('ru'))
+    assert.deepEqual(started, [], 'a seminar room polls nothing')
+  }, 'ru', undefined, '/s/room1')
+  await withClient(async (client, requests) => {
+    Object.assign(window, spy)
+    await client.initializeLanguage()
+    requests[0]?.resolve(response('ru'))
+    assert.deepEqual(started, [5 * 60_000], 'the panel still reads, ten times more slowly')
+  }, 'ru', undefined, '/admin')
 })
 
 test('current HTML language overrides stale cache, while unsupported values use normal initialization', async () => {

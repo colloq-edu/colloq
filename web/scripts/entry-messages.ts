@@ -84,3 +84,41 @@ export function collectEntryMessages(root: string, catalog: MessageCatalog): { m
   }
   return { messages, files: [...seen].sort() }
 }
+
+/*
+ * Ключи, которые БРАУЗЕР умеет искать в чужом каталоге.
+ *
+ * Нужен ровно для серверного словаря: в нём 732 ключа, а до вкладки доезжают
+ * три десятка — слова состояния ядра и оболочки, причины пропуска, пара имён
+ * по умолчанию. Остальное — страницы публикации, письма и журнал, которые
+ * рисует сам сервер. Ошибки приходят уже переведёнными и проходят через tr()
+ * нетронутыми (см. комментарий выше), так что словаря им не нужно.
+ *
+ * Считается по сырому тексту, а не по разбору: здесь нужен не граф импортов, а
+ * «встречается ли такая строка в клиентских исходниках вообще». Лишний ключ из
+ * комментария стоит десятки байт, пропущенный — надпись `server.x` на экране,
+ * поэтому сторона ошибки выбрана намеренно. Склейка вида `'server.kernel_word.'
+ * + status` ловится тем же префиксным правилом, что и в collectEntryMessages.
+ */
+export function collectClientKeys(root: string, catalog: MessageCatalog, prefix: string): Set<string> {
+  const words = new Set<string>()
+  const literal = new RegExp(`['"\`](${prefix}\\.[A-Za-z0-9_.]*)['"\`]`, 'g')
+  const skip = new Set(['node_modules', 'locales', 'dist'])
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (skip.has(entry.name)) continue
+      const file = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(file)
+      else if (/\.(?:ts|svelte)$/.test(entry.name)) {
+        for (const match of fs.readFileSync(file, 'utf8').matchAll(literal)) words.add(match[1])
+      }
+    }
+  }
+  for (const dir of ['web/src', 'shared']) walk(path.join(root, dir))
+  const prefixes = [...words].filter((word) => word.endsWith('.'))
+  const keys = new Set<string>()
+  for (const key of Object.keys(catalog)) {
+    if (words.has(key) || prefixes.some((start) => key.startsWith(start))) keys.add(key)
+  }
+  return keys
+}

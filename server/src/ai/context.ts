@@ -439,6 +439,15 @@ function renderData(output: DataOutput, limit: number): string {
       parts.push(`[${mime}, ${value.length} chars]`)
     }
   }
+  /*
+   * Крупные картинки в документе не лежат — там ссылка (shared/notebook.ts ·
+   * OutputBlob). Пиксели модели не нужны и не отправлялись никогда, а вот
+   * «здесь был график» — нужно: без этой строки ячейка с одним `plt.show()`
+   * выглядит для оракула как ячейка, которая ничего не вывела.
+   */
+  for (const blob of output.blobs ?? []) {
+    parts.push(`[${blob.mime}, ~${Math.max(1, Math.round(blob.bytes / 1024))} KB image]`)
+  }
   return parts.length ? parts.join('\n') : '(no data)'
 }
 

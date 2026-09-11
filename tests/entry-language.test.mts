@@ -31,34 +31,45 @@ test('a lazy screen is not evaluated until all of its translated constants can r
   let finish!: () => void
   let registered = false
   let evaluated = false
+  let asked: [string, string] | null = null
   const loading = new Promise<void>((resolve) => { finish = () => { registered = true; resolve() } })
   const screen = loadLocalizedScreen(async () => {
     assert.ok(registered)
     evaluated = true
     return 'screen'
-  }, () => loading)
+  }, 'room', 'en', (area, locale) => { asked = [area, locale]; return loading })
   await Promise.resolve()
   assert.equal(evaluated, false)
+  assert.deepEqual(asked, ['room', 'en'], 'the screen asks for its own area in the chosen language')
   finish()
   assert.equal(await screen, 'screen')
   let failedScreen = false
-  await assert.rejects(loadLocalizedScreen(async () => { failedScreen = true }, async () => { throw new Error('offline') }), /offline/)
+  await assert.rejects(loadLocalizedScreen(async () => { failedScreen = true }, 'room', 'ru',
+    async () => { throw new Error('offline') }), /offline/)
   assert.equal(failedScreen, false)
 })
 
-test('the real lazy loader registers admin, History, and shared notebook copy before evaluation', () => {
+test('the real lazy loader registers each area\'s own copy before evaluation', () => {
   // Fresh process: importing the complete test catalog above must not make
   // this pass by having already populated the browser's runtime registry.
+  //
+  // Области спрашиваются по очереди в ОДНОМ процессе намеренно: реестр общий,
+  // и «комната зарегистрировала панель» — это ровно та ошибка, которую эта
+  // проверка обязана поймать.
   const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
     import assert from 'node:assert/strict';
-    import { tr, messages } from './shared/i18n-runtime.ts';
+    import { tr, messages, hasTranslation } from './shared/i18n-runtime.ts';
     import { loadLocalizedScreen } from './web/src/lib/screen-language.ts';
     assert.equal(Object.keys(messages).length, 0);
     await loadLocalizedScreen(async () => {
-      for (const key of ['admin.teaching', 'activity.title', 'activity.versions', 'room.ui.651', 'server.defaultNotebook']) {
+      for (const key of ['common.reload', 'activity.title', 'activity.versions', 'room.ui.651', 'server.defaultNotebook']) {
         assert.notEqual(tr(key), key, 'late screen evaluated before ' + key);
       }
-    });
+      assert.equal(hasTranslation('admin.teaching'), false, 'the room carries the panel\\'s copy');
+    }, 'room', 'ru');
+    await loadLocalizedScreen(async () => {
+      assert.notEqual(tr('admin.teaching'), 'admin.teaching', 'late screen evaluated before admin.teaching');
+    }, 'admin', 'ru');
   `], { cwd: path.resolve(import.meta.dirname, '..'), encoding: 'utf8' })
   assert.equal(child.status, 0, child.stderr || child.stdout)
 })

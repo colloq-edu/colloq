@@ -18,7 +18,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { reconnectDelay, RECONNECT_MAX_MS } from '../web/src/lib/controls.js'
+import {
+  COLLAB_BACKOFF_MIN_MS,
+  COLLAB_BACKOFF_SPREAD_MS,
+  collabBackoff,
+  reconnectDelay,
+  RECONNECT_MAX_MS,
+} from '../web/src/lib/controls.js'
 
 /* ---------------------------------------------------------------- отступ */
 
@@ -78,4 +84,35 @@ test('дерево файлов вкладка спрашивает один р�
   // без дерева вовсе.
   assert.match(SESSION, /message\.t === 'files'/)
   assert.match(SESSION, /this\.filesArrived = true/)
+})
+
+/* --------------------------------------------- отступ общего документа */
+
+test('у общего документа потолок отступа свой у каждой вкладки', () => {
+  /*
+   * Лестница y-websocket — `min(2^n · 100 мс, maxBackoffTime)`, и потолок по
+   * умолчанию ОДИН И ТОТ ЖЕ у всех (2500 мс). То есть с шестой попытки пятьсот
+   * вкладок стучатся ровно каждые две с половиной секунды, все вместе, от
+   * одного и того же события. Разброса в самой лестнице провайдер не умеет, а
+   * потолок читает у себя на каждой попытке — случайным он и растаскивает пачку.
+   */
+  assert.equal(collabBackoff(0), COLLAB_BACKOFF_MIN_MS)
+  assert.equal(collabBackoff(1), COLLAB_BACKOFF_MIN_MS + COLLAB_BACKOFF_SPREAD_MS)
+  assert.notEqual(collabBackoff(0.1), collabBackoff(0.9))
+  // Ждать дольше — цена, и она ограничена с обеих сторон: не раньше прежних
+  // двух с половиной секунд и не дольше десяти.
+  for (const random of [0, 0.2, 0.5, 0.8, 1]) {
+    const wait = collabBackoff(random)
+    assert.ok(wait >= 2500, `${random}: возвращаются раньше прежнего`)
+    assert.ok(wait <= COLLAB_BACKOFF_MIN_MS + COLLAB_BACKOFF_SPREAD_MS, `${random}: ждут слишком долго`)
+  }
+  // Шире окна, в которое сервер принимает пачку рукопожатий: иначе разброс
+  // ничего не растаскивает.
+  assert.ok(COLLAB_BACKOFF_SPREAD_MS >= 5000)
+})
+
+test('провайдер общего документа заводится с этим потолком, а не со своим', () => {
+  assert.match(SESSION, /maxBackoffTime: collabBackoff\(\)/)
+  // И вторая копия лестницы не заведена: правило одно и живёт в controls.ts.
+  assert.doesNotMatch(SESSION, /maxBackoffTime: \d/, 'потолок прибит числом — он снова общий')
 })

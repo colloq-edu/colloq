@@ -60,6 +60,7 @@ import type {
   CouncilAttempt,
   CouncilBoard,
   CouncilRun,
+  FileEntry,
   Participant,
 } from '@shared/protocol'
 import type { TokenPayload } from './auth.js'
@@ -163,6 +164,7 @@ import {
   makeFile,
   movePath,
   statPath,
+  treeDelta,
   type FileTree,
   type TreeResult,
 } from './workspace.js'
@@ -177,7 +179,7 @@ import {
   runnerFor,
   whySegmentRefused,
 } from '@shared/paths'
-import { inkFullSays, LASER_EVERY_MS, MAX_NOTE_CHARS } from '@shared/lecture'
+import { inkFullSays, LASER_EVERY_MS, MAX_NOTE_CHARS, type InkStroke } from '@shared/lecture'
 import { flushFile, forgetFile, onFileSaved } from './collab/files.js'
 import {
   addInk,
@@ -208,6 +210,7 @@ import {
 import { stopAll, undoTurn } from './ai/agent.js'
 import { onCouncilOracle } from './ai/council.js'
 import { evicted } from './bans.js'
+import { seldom } from './log.js'
 import { appendActivity } from './activity.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
@@ -265,6 +268,52 @@ interface Room {
   byParticipant: Map<string, Set<WebSocket>>
   hosts: Set<WebSocket>
   unwatch: () => void
+  /**
+   * Один такт пинга на комнату, а не на сокет.
+   *
+   * Пинг — это два счётчика и `ws.ping()`; на одном сокете таймер вокруг него
+   * не виден. На пятистах это пятьсот таймеров в куче node, каждый со своим
+   * замыканием, и просыпаются они вразнобой по всей минуте — то есть цикл
+   * событий будят пятьсот раз там, где хватает одного обхода набора, который
+   * и так лежит рядом. Сроки те же: PING_INTERVAL_MS и MAX_MISSED_PONGS не
+   * менялись, сдвинулась только фаза — сокеты комнаты пингуются вместе.
+   */
+  pingTimer: NodeJS.Timeout | null
+}
+
+/** Сколько пингов подряд этот сокет пропустил. Ноль ставит его же `pong`. */
+const missedPongs = new WeakMap<WebSocket, number>()
+
+/**
+ * Обойти комнату и спросить каждый сокет, жив ли он.
+ *
+ * Молчащий второй раз — это закрытая крышка ноутбука, а не медленная сеть:
+ * такой сокет рвётся, и вкладка, если она всё-таки есть, возвращается сама.
+ */
+function pingRoom(sessionId: string): void {
+  const room = rooms.get(sessionId)
+  if (!room) return
+  for (const ws of room.sockets) {
+    const missed = missedPongs.get(ws) ?? 0
+    if (missed >= MAX_MISSED_PONGS) {
+      try {
+        ws.terminate()
+      } catch {
+        /* уже мёртв */
+      }
+      continue
+    }
+    missedPongs.set(ws, missed + 1)
+    try {
+      ws.ping()
+    } catch {
+      try {
+        ws.terminate()
+      } catch {
+        /* уже мёртв */
+      }
+    }
+  }
 }
 
 const rooms = new Map<string, Room>()
@@ -293,11 +342,38 @@ function frameOf(message: ControlServerMessage): string | null {
   }
 }
 
-function send(ws: WebSocket, message: ControlServerMessage): void {
+/**
+ * Чем кадр важен — и что с ним делать, когда сокет не успевает.
+ *
+ * `stream` — то, что имеет смысл ровно сейчас: точка указки и кусок штриха.
+ * Отставшему они не нужны вовсе: пока его очередь разгребается, рука ведущего
+ * уже в другом месте, а следующий кадр всё равно везёт положение целиком.
+ * `essential` — всё остальное: приветственная пачка, правила, конец занятия,
+ * результат запуска, отказ. Такой кадр не повторится, и потерять его значит
+ * оставить человека с комнатой, которой нет.
+ */
+type FrameClass = 'essential' | 'stream'
+
+/**
+ * Кадры, которые можно не досылать отставшему. Список, а не признак в каждом
+ * месте отправки: «можно потерять» — свойство самого кадра, и решаться оно
+ * должно один раз.
+ */
+const STREAM_FRAMES = new Set<ControlServerMessage['t']>(['laser', 'ink:add'])
+
+function frameClass(message: ControlServerMessage): FrameClass {
+  return STREAM_FRAMES.has(message.t) ? 'stream' : 'essential'
+}
+
+function send(
+  ws: WebSocket,
+  message: ControlServerMessage,
+  kind: FrameClass = frameClass(message),
+): void {
   if (ws.readyState !== WebSocket.OPEN) return
   const frame = frameOf(message)
   if (frame === null) return
-  sendFrame(ws, frame)
+  sendFrame(ws, frame, kind)
 }
 
 /**
@@ -310,9 +386,39 @@ function send(ws: WebSocket, message: ControlServerMessage): void {
  * полсекунды блокировки цикла событий ровно на возврате зала. Кто собирает
  * такой кадр раз на комнату, тот и кодирует его раз на комнату; `binary: false`
  * держит кадр текстовым, каким его ждёт браузер.
+ *
+ * И две черты обратного давления — те же, что у общего документа (collab/index.ts
+ * · AWARENESS_STALL_BYTES, HOPELESS_BYTES), и по той же причине. Провод не
+ * бесконечен: ноутбук с закрытой крышкой, телефон в лифте, мобильная сеть на
+ * краю аудитории принимают медленнее, чем комната говорит. Пока здесь стоял
+ * один `readyState`, сервер складывал В ПАМЯТЬ ПРОЦЕССА всё, что не влезло в
+ * провод: дерево файлов, стопку консилиума (до четырёх мегабайт) и чернила
+ * тридцать раз в секунду — по копии на каждый отставший сокет. Одна забытая
+ * вкладка выедала гигабайты и уводила инстанс со всеми чужими комнатами.
  */
-function sendFrame(ws: WebSocket, frame: string | Buffer): void {
+const STREAM_STALL_BYTES = 1024 * 1024
+const HOPELESS_BYTES = 8 * 1024 * 1024
+
+function sendFrame(ws: WebSocket, frame: string | Buffer, kind: FrameClass = 'essential'): void {
   if (ws.readyState !== WebSocket.OPEN) return
+  const waiting = ws.bufferedAmount
+  if (waiting > HOPELESS_BYTES) {
+    if (seldom('control-backpressure')) {
+      console.warn(
+        `[control] сокет отстал на ${Math.round(waiting / 1024)} КБ — закрыт, ` +
+          'вкладка вернётся сама и соберёт комнату заново',
+      )
+    }
+    try {
+      ws.terminate()
+    } catch {
+      /* уже мёртв */
+    }
+    return
+  }
+  // Отстал, но не безнадёжно: точку указки и кусок штриха он не увидит, а
+  // всё, что случается один раз, — увидит.
+  if (kind === 'stream' && waiting > STREAM_STALL_BYTES) return
   try {
     ws.send(frame, { binary: false })
   } catch {
@@ -320,12 +426,37 @@ function sendFrame(ws: WebSocket, frame: string | Buffer): void {
   }
 }
 
-export function broadcast(sessionId: string, message: ControlServerMessage): void {
+export function broadcast(
+  sessionId: string,
+  message: ControlServerMessage,
+  kind: FrameClass = frameClass(message),
+): void {
   const room = rooms.get(sessionId)
   if (!room) return
-  const frame = frameOf(message)
-  if (frame === null) return
-  for (const ws of room.sockets) sendFrame(ws, frame)
+  /*
+   * Придержанные чернила — вперёд всего остального.
+   *
+   * Куски штриха склеиваются на такт (`inkTo`), и всё, что говорит о чернилах
+   * что-то ещё, обязано приехать ПОСЛЕ них: «сотрите штрих», к которому в
+   * очереди лежат точки, стёр бы его до того, как они дописались, а «вот вся
+   * страница целиком» получила бы их дважды. Здесь, а не в каждом из десятка
+   * мест, где это сказано: забыть одно из них — значит нарисовать залу не то,
+   * что рисовали, и узнать об этом от преподавателя.
+   */
+  if (message.t !== 'ink:add') flushInk(sessionId)
+  const text = frameOf(message)
+  if (text === null) return
+  /*
+   * Байтами, а не строкой, и ровно один раз на комнату.
+   *
+   * `ws.send(строка)` кодирует её в UTF-8 заново на КАЖДЫЙ сокет. Кадр пера в
+   * лекции — 89.6 КБ на комнату в пятьсот человек (замерено), тридцать раз в
+   * секунду: это 4.9 МБ/с одного только кодирования, которое можно сделать
+   * один раз. Дерево и чернила это давно делали сами (`filesFrame`, `inkFrame`)
+   * — здесь то же самое для всех остальных рассылок.
+   */
+  const frame = Buffer.from(text, 'utf8')
+  for (const ws of room.sockets) sendFrame(ws, frame, kind)
 }
 
 /**
@@ -354,16 +485,18 @@ export function closeControlRoom(sessionId: string): void {
   discardCouncil(sessionId)
   forgetBoards(sessionId)
   forgetQueue(sessionId)
-  treeFrames.delete(sessionId)
   treeSent.delete(sessionId)
   inkFrames.delete(sessionId)
   laserHeld.delete(sessionId)
+  inkHeld.delete(sessionId)
   // И все открытые окна склейки: их хвосты искали бы комнату, которой нет.
   forgetTicks(sessionId)
   const room = rooms.get(sessionId)
   if (!room) return
   rooms.delete(sessionId)
   room.unwatch()
+  if (room.pingTimer) clearInterval(room.pingTimer)
+  room.pingTimer = null
   for (const ws of room.sockets) {
     try {
       ws.close(1001, tr("server.thisSeminarWasDeleted.daaaad"))
@@ -430,33 +563,72 @@ export function evictBanned(sessionId: string, participantId: string, until: num
  * Окно нужно только на пачку подключений подряд; за ним обход делается честно.
  */
 const TREE_FRESH_MS = 1000
-const treeFrames = new Map<string, { at: number; frame: Buffer }>()
 
 /**
- * Кадр, который комната уже получила, — чтобы не слать его второй раз.
+ * Дерево, которое комната держит на руках, — одно на комнату и с номером.
+ *
+ * Тут сошлись две памяти, которые раньше стояли порознь: кадр на пачку
+ * подключений и расписка «этот список уже разослан». Развести их больше нельзя,
+ * потому что появился номер: перемена едет ДЕЛЬТОЙ (`files:delta`), а дельта
+ * ложится только на тот список, из которого её посчитали. Значит запись обязана
+ * быть одна — и список, и его номер, и собранный кадр.
+ *
+ * Номер растёт на единицу на каждую перемену состава. Вкладка, у которой на
+ * руках не `from` дельты, склеивать её не пытается, а спрашивает дерево целиком
+ * (`files:ask`) — так лечится и вошедший, пересчитавший дерево за пустую
+ * комнату, и любое расхождение, о котором мы не знаем.
  *
  * Тик рассылки взводится от всего, что ТРОГАЕТ папку: автосохранение
  * редактора, проекция тетради, запись из ячейки. Дерево при этом чаще всего то
- * же самое — текст файла поменялся, список файлов нет. Без этой карты каждый
- * такой тик уезжал полным списком (до двух тысяч записей, под двести килобайт
- * строки) в каждый из пятисот сокетов, и на паре, где считается ячейка с
- * `print` в цикле, это происходило дважды в секунду при неподвижном диске.
- *
- * Сравнение по собранному кадру, а не по хэшу: кадр всё равно уже собран —
- * его и надо отправить, — а хэш от него стоил бы отдельного прохода.
+ * же самое — текст файла поменялся, список файлов нет. Совпавший обход поэтому
+ * номера не двигает и не уезжает вовсе.
  */
-const treeSent = new Map<string, Buffer>()
+interface TreeRecord {
+  at: number
+  rev: number
+  files: FileEntry[]
+  truncated: boolean
+  frame: Buffer
+}
+
+const treeSent = new Map<string, TreeRecord>()
+
+/** Тот же состав, та же цифра рядом с именем — говорить нечего. */
+function sameTree(before: readonly FileEntry[], after: readonly FileEntry[]): boolean {
+  if (before.length !== after.length) return false
+  for (let i = 0; i < before.length; i++) {
+    const was = before[i]
+    const now = after[i]
+    if (
+      was.path !== now.path ||
+      was.name !== now.name ||
+      was.dir !== now.dir ||
+      was.size !== now.size ||
+      was.modifiedAt !== now.modifiedAt
+    )
+      return false
+  }
+  return true
+}
 
 /**
- * Кадр списка файлов — из кэша, если он моложе окна, иначе обходом.
+ * Дерево комнаты с номером — из памяти, если она моложе `reuseMs`, иначе обходом.
+ *
+ * Обход папки стоит readdir и lstat на каждую запись (до двух тысяч), а кадр —
+ * до сотни килобайт строки. Одному подключению это незаметно; после перезапуска
+ * сервера пятьсот вкладок возвращаются в одну-две секунды, и каждая получала
+ * СВОЙ обход и СВОЮ сборку одного и того же списка — секунды блокировки цикла
+ * ровно там, где все ждут возврата. Поэтому приветственная пачка берёт запись
+ * моложе окна как есть, а рассылка (`reuseMs = 0`) считает честно: её зовут
+ * ровно потому, что дерево изменилось.
  *
  * `ready` — дерево, которое вызывающий уже построил (загрузка файлов строит его
  * на ответ). Обход папки не дешевле подсчёта байтов, и делать его дважды на
  * одну загрузку незачем.
  */
-function filesFrame(sessionId: string, ready?: FileTree): Buffer | null {
-  const known = treeFrames.get(sessionId)
-  if (!ready && known && Date.now() - known.at < TREE_FRESH_MS) return known.frame
+function treeRecord(sessionId: string, ready?: FileTree, reuseMs = 0): TreeRecord | null {
+  const known = treeSent.get(sessionId)
+  if (!ready && known && Date.now() - known.at < reuseMs) return known
   /*
    * Дерево едет вместе с признаком обрезки: список, упёршийся в потолок обхода,
    * — это не «в комнате столько файлов». Панель говорит это вслух, иначе
@@ -473,47 +645,78 @@ function filesFrame(sessionId: string, ready?: FileTree): Buffer | null {
       return null
     }
   }
-  const text = frameOf({ t: 'files', files: tree.files, truncated: tree.truncated })
+  if (known && known.truncated === tree.truncated && sameTree(known.files, tree.files)) {
+    known.at = Date.now()
+    return known
+  }
+  const rev = (known?.rev ?? 0) + 1
+  const text = frameOf({ t: 'files', files: tree.files, truncated: tree.truncated, rev })
   if (text === null) return null
   // Байтами, а не строкой: этот кадр уходит всем сокетам комнаты подряд, и
   // кодировать его на каждый из них — работа впустую (см. sendFrame).
-  const frame = Buffer.from(text, 'utf8')
-  treeFrames.set(sessionId, { at: Date.now(), frame })
-  return frame
+  const record: TreeRecord = {
+    at: Date.now(),
+    rev,
+    files: tree.files,
+    truncated: tree.truncated,
+    frame: Buffer.from(text, 'utf8'),
+  }
+  treeSent.set(sessionId, record)
+  return record
+}
+
+/** Кадр дерева для того, кто только что вошёл, — общий на всю пачку возврата. */
+function filesFrame(sessionId: string): Buffer | null {
+  return treeRecord(sessionId, undefined, TREE_FRESH_MS)?.frame ?? null
 }
 
 export function broadcastFiles(sessionId: string, tree?: FileTree): void {
   /*
-   * Обе памяти забываются ДО проверки на пустую комнату.
+   * Короткая память обхода забывается ДО проверки на пустую комнату.
    *
    * Рассылка — всегда по свежему обходу: её зовут ровно потому, что дерево
-   * изменилось, и отдать на это вчерашний кадр значило бы не сказать ничего.
-   * Память кадра живёт здесь, короткая память самого обхода — в workspace.ts
-   * (`forgetTree`), и сбросить надо обе: в папку пишут и мимо workspace.ts
-   * (загрузка своими потоками, ядро изнутри контейнера), так что обход своей
-   * памяти сам не забудет.
+   * изменилось, и отдать на это вчерашний список значило бы не сказать ничего.
+   * Память самого обхода живёт в workspace.ts (`forgetTree`), и сбросить её
+   * надо отсюда: в папку пишут и мимо workspace.ts (загрузка своими потоками,
+   * ядро изнутри контейнера), так что обход своей памяти сам не забудет.
    *
    * Выше возврата — потому что комната без единого сокета не значит «ничего не
    * изменилось». Это ровно тот случай, когда файлы кладут до входа: рассылать
    * некому, а тот же запрос следом отдаёт `listTree` в ответе, и по старой
    * памяти он отдавал дерево БЕЗ только что положенного файла.
    */
-  treeFrames.delete(sessionId)
   forgetTree(sessionId)
   const room = rooms.get(sessionId)
   if (!room || room.sockets.size === 0) return
-  const frame = filesFrame(sessionId, tree)
-  if (frame === null) return
+  const before = treeSent.get(sessionId)
+  const record = treeRecord(sessionId, tree)
+  if (record === null) return
   /*
-   * И только если оно ДЕЙСТВИТЕЛЬНО изменилось. Тот же кадр второй раз не
+   * И только если оно ДЕЙСТВИТЕЛЬНО изменилось. Тот же список второй раз не
    * рассказывает панели ничего — а стоит пятисот отправок и пятисот отдельных
    * сжатий. Подключившемуся список приезжает своим путём (приветственная
    * пачка), так что молчание здесь его не касается.
    */
-  const sent = treeSent.get(sessionId)
-  if (sent && sent.equals(frame)) return
-  treeSent.set(sessionId, frame)
+  if (before && before.rev === record.rev) return
+  const frame = deltaFrame(before, record) ?? record.frame
   for (const ws of room.sockets) sendFrame(ws, frame)
+}
+
+/**
+ * Кадр перемены — или `null`, если дешевле и честнее послать список целиком.
+ *
+ * Целиком отправляется в трёх случаях: комната и так ничего не держала,
+ * обрезанное дерево (в нём «записи нет» и «не поместилась» неразличимы, а
+ * разница эта стоит удалённой у всех тетради) и перемена крупнее самого списка
+ * — так бывает на `pip install`, когда меняется вся папка разом.
+ */
+function deltaFrame(before: TreeRecord | undefined, now: TreeRecord): Buffer | null {
+  if (!before || before.truncated || now.truncated) return null
+  const delta = treeDelta(before.files, now.files)
+  const text = frameOf({ t: 'files:delta', from: before.rev, rev: now.rev, ...delta })
+  if (text === null) return null
+  const frame = Buffer.from(text, 'utf8')
+  return frame.length < now.frame.length ? frame : null
 }
 
 /* ---------------------------------------------------------- тик склейки */
@@ -670,6 +873,80 @@ function laserTo(sessionId: string, at: LaserAt): void {
   })
 }
 
+/* --------------------------------------------------------------- чернила */
+
+/**
+ * Такт склейки чернил. Чуть меньше трёх кадров экрана — рука этого не замечает.
+ *
+ * Перо шлёт точки пачками по мере рисования — двадцать-тридцать кусков штриха
+ * в секунду, — и каждый кусок уезжал своим кадром всей комнате. На пятистах
+ * слушателях это 89.6 КБ на кадр и 4.9 МБ/с (замерено) на ОДНУ проведённую
+ * линию: сорок восемь байт полезных точек, остальное — обвязка кадра,
+ * умноженная на зал.
+ *
+ * Куски одного штриха складываются в один кадр, и это ровно то же, что зал
+ * увидел бы и так: разбор `ink:add` на вкладке дописывает точки к штриху с тем
+ * же именем (session.svelte.ts), а склеенная пачка — это те же точки, в том же
+ * порядке, одной записью.
+ *
+ * Первый кадр уходит СРАЗУ, до окна, как у указки: линия обязана появиться
+ * там, где её начали, а не через такт.
+ */
+const INK_EVERY_MS = 45
+
+/** Куски штрихов, придержанные на такт, — в порядке прихода. */
+const inkHeld = new Map<string, InkStroke[]>()
+
+function inkTo(sessionId: string, stroke: InkStroke): void {
+  if (ticking(sessionId, 'чернила')) {
+    const held = inkHeld.get(sessionId) ?? []
+    const last = held.at(-1)
+    /*
+     * Только ПОДРЯД идущие куски одного штриха: между двумя кусками пера может
+     * оказаться штрих второго преподавателя с планшета, и переставить их
+     * местами значило бы нарисовать залу не то, что рисовали.
+     *
+     * Копия точек, а не память комнаты: `addInk` на новый штрих возвращает тот
+     * самый массив, который лежит в комнате, и дописывать в него склейку
+     * значило бы дважды разослать одни и те же точки.
+     */
+    if (last && last.id === stroke.id && last.page === stroke.page) {
+      last.points = [...last.points, ...stroke.points]
+    } else {
+      held.push({ ...stroke, points: [...stroke.points] })
+    }
+    inkHeld.set(sessionId, held)
+    return
+  }
+  broadcast(sessionId, { t: 'ink:add', stroke })
+  openInkWindow(sessionId)
+}
+
+function openInkWindow(sessionId: string): void {
+  onTick(sessionId, 'чернила', INK_EVERY_MS, () => {
+    // Рука ещё идёт — отправить придержанное и открыть следующее окно.
+    if (flushInk(sessionId)) openInkWindow(sessionId)
+  })
+}
+
+/**
+ * Придержанные куски — в провод сейчас. Возвращает, было ли что отправлять.
+ *
+ * Зовётся не только хвостом окна: всё, что говорит о чернилах ЧТО-ТО ЕЩЁ —
+ * «сотрите штрих», «страница чистая», «вот вся страница целиком», — обязано
+ * уехать ПОСЛЕ придержанного, иначе зал получает точки, дописанные к штриху,
+ * который у него уже стёрт, или страницу, к которой тут же дописывается то,
+ * что в ней и так есть. Место этого правила — `broadcast` ниже: там видно
+ * всякую рассылку комнате, а не только те, про которые не забыли.
+ */
+function flushInk(sessionId: string): boolean {
+  const held = inkHeld.get(sessionId)
+  if (!held || held.length === 0) return false
+  inkHeld.delete(sessionId)
+  for (const stroke of held) broadcast(sessionId, { t: 'ink:add', stroke })
+  return true
+}
+
 function setBoard(sessionId: string, name: string | null): void {
   if (name === null) boards.delete(sessionId)
   else boards.set(sessionId, name)
@@ -756,9 +1033,13 @@ function tell(sessionId: string, participantId: string, message: ControlServerMe
   const room = rooms.get(sessionId)
   const mine = room?.byParticipant.get(participantId)
   if (!mine || mine.size === 0) return
-  const frame = frameOf(message)
-  if (frame === null) return
-  for (const ws of mine) sendFrame(ws, frame)
+  const text = frameOf(message)
+  if (text === null) return
+  const kind = frameClass(message)
+  // Байтами — по той же причине, что и в `broadcast`: у одного человека обычно
+  // два сокета (ноутбук и планшет), и кодировать лист консилиума дважды незачем.
+  const frame = mine.size > 1 ? Buffer.from(text, 'utf8') : text
+  for (const ws of mine) sendFrame(ws, frame, kind)
 }
 
 /*
@@ -790,13 +1071,16 @@ function tell(sessionId: string, participantId: string, message: ControlServerMe
 function toHosts(sessionId: string, file: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
   if (!room || room.hosts.size === 0) return
-  let frame: string | null = null
+  let frame: Buffer | null = null
   for (const ws of room.hosts) {
     if (ws.readyState !== WebSocket.OPEN) continue
     // И только тем, кто спрашивал про ЭТОТ документ.
     if (notesOpen.get(ws) !== file) continue
-    frame ??= frameOf(message)
-    if (frame === null) return
+    if (frame === null) {
+      const text = frameOf(message)
+      if (text === null) return
+      frame = Buffer.from(text, 'utf8')
+    }
     sendFrame(ws, frame)
   }
 }
@@ -832,13 +1116,16 @@ const COUNCIL_CLOSED = () => tr("server.councilIsClosedYourTextRemainsIn.b08319"
 function toTeachers(sessionId: string, message: ControlServerMessage): void {
   const room = rooms.get(sessionId)
   if (!room || room.hosts.size === 0) return
-  let frame: string | null = null
+  let frame: Buffer | null = null
   for (const ws of room.hosts) {
     if (ws.readyState !== WebSocket.OPEN) continue
-    frame ??= frameOf(message)
-    // Кадр не собрался (стопка выросла за предел строки) — молчим одинаково
-    // всем пультам, а не половине.
-    if (frame === null) return
+    if (frame === null) {
+      const text = frameOf(message)
+      // Кадр не собрался (стопка выросла за предел строки) — молчим одинаково
+      // всем пультам, а не половине.
+      if (text === null) return
+      frame = Buffer.from(text, 'utf8')
+    }
     sendFrame(ws, frame)
   }
 }
@@ -1106,50 +1393,58 @@ function countOut(sessionId: string, cellId: string): void {
 /**
  * Номер в очереди, который каждый ждущий видел последним, — по комнате.
  *
- * Нужен, чтобы не слать пятистам человекам кадр, в котором для них ничего не
- * изменилось: очередь дёргается на каждое начало и каждый конец ЛЮБОЙ работы
- * ядра, а номер меняется только у тех, кого сдвинуло.
+ * Нужен, чтобы не слать кадр, в котором для человека ничего не изменилось:
+ * очередь дёргается на каждое начало и каждый конец ЛЮБОЙ работы ядра.
+ * Ключ — «ячейка и человек», значение — номер.
  */
-const queuePositions = new Map<string, Map<string, number | null>>()
+const queueSent = new Map<string, Map<string, number>>()
 
 /**
- * Очередь сдвинулась — каждому, кто в ней ждёт, новый номер.
+ * Очередь сдвинулась — каждому, кого сдвинуло, его новый номер.
  *
  * «Вы 37-й» без этого показывал бы номер на момент нажатия до конца пары.
+ *
+ * Уезжает ЧИСЛО, а не лист. Каждый конец любой работы ядра двигает номер у всех
+ * ждущих сразу — то есть отсев «у этого не изменилось» не срабатывал никогда, —
+ * и на пятистах попытках один досчитавшийся запуск рассылал пятьсот
+ * `council:mine`. Каждый из них сервер собирал отдельно (`mineFor`: чтение
+ * попытки из базы, её запуск, письма преподавателя) и вёз целиком, вместе с
+ * текстом попытки и заданием, ради одного числа в нём. Замер на пятистах
+ * ждущих: 0.32 МБ на сдвиг против 30 КБ.
+ *
+ * Комнате целиком очередь при этом не рассылается, хотя так её и собирали бы
+ * один раз на всех: список из пятисот ждущих — одиннадцать килобайт, и уехал
+ * бы он пятистам (замерено 5.65 МБ на сдвиг) ради одного числа каждому.
+ * Дешевле собрать пятьсот кадров по шестьдесят байт — сборка такого кадра
+ * стоит рядом с отправкой ничего.
+ *
+ * И `null` тому, кого в очереди больше нет: его попытка дошла до ядра. Раньше
+ * об этом не говорил никто — рассылка шла только по тем, кто в очереди
+ * остался, — и «вы 1-й» висел над считающейся попыткой до её конца.
+ *
+ * Номера — одним проходом по очереди, а не поиском в ней на каждого ждущего:
+ * поштучный `councilQueuePosition` — это поиск по всей очереди на каждого её
+ * участника, то есть четверть миллиона сравнений на один сдвиг при пятистах
+ * попытках. Формула номера при этом одна и лежит в kernel/index.ts: здесь её
+ * нет и не должно быть.
  */
 function tellQueued(sessionId: string): void {
-  /*
-   * Номера — одним проходом по очереди, а не поиском в ней на каждого ждущего.
-   *
-   * Очередь дёргается дважды на каждую работу ядра, а ждущих на паре бывает
-   * столько же, сколько людей: поштучный `councilQueuePosition` — это поиск по
-   * всей очереди на каждого её участника, то есть четверть миллиона сравнений
-   * на один сдвиг при пятистах попытках. Формула номера при этом одна и лежит
-   * в kernel/index.ts: здесь её нет и не должно быть.
-   */
   const queued = councilQueuePositions(sessionId)
-  if (queued.length === 0) {
-    queuePositions.delete(sessionId)
-    return
-  }
-  const was = queuePositions.get(sessionId)
-  const now = new Map<string, number | null>()
-  // Замок — один раз на ячейку, а не на каждого ждущего.
-  const locks = new Map<string, CellLock>()
+  const was = queueSent.get(sessionId)
+  if (queued.length === 0 && !was) return
+  const now = new Map<string, number>()
   for (const { cellId, participantId, position } of queued) {
-    let lock = locks.get(cellId)
-    if (lock === undefined) {
-      lock = councilCellOf(sessionId, cellId).lock
-      locks.set(cellId, lock)
-    }
-    const key = `${cellId}\n${participantId}`
-    now.set(key, position)
-    // Номер тот же — говорить нечего: свой лист по всем остальным поводам
-    // уезжает там, где этот повод случился.
-    if (was && was.get(key) === position) continue
-    mineOut(sessionId, cellId, participantId, lock, position)
+    now.set(`${cellId}\n${participantId}`, position)
+    if (was?.get(`${cellId}\n${participantId}`) === position) continue
+    tell(sessionId, participantId, { t: 'council:queue', cellId, at: position })
   }
-  queuePositions.set(sessionId, now)
+  for (const [key] of was ?? []) {
+    if (now.has(key)) continue
+    const split = key.indexOf('\n')
+    tell(sessionId, key.slice(split + 1), { t: 'council:queue', cellId: key.slice(0, split), at: null })
+  }
+  if (now.size === 0) queueSent.delete(sessionId)
+  else queueSent.set(sessionId, now)
 }
 
 /**
@@ -1170,9 +1465,9 @@ function nudgeQueue(sessionId: string): void {
   onTick(sessionId, 'номера очереди', QUEUE_EVERY_MS, () => tellQueued(sessionId))
 }
 
-/** Комната опустела: номера, которые в ней помнили, больше ничьи. */
+/** Комната опустела: очередь, которую в ней помнили, больше ничья. */
 function forgetQueue(sessionId: string): void {
-  queuePositions.delete(sessionId)
+  queueSent.delete(sessionId)
 }
 
 /** Все, кому положен свой лист по этой ячейке: онлайн и те, у кого есть попытка. */
@@ -2365,6 +2660,9 @@ export function dispatch(
       const asked = Number(message.page)
       if (!Number.isFinite(asked)) return
       const page = Math.trunc(asked)
+      // Придержанные куски — вперёд ответа: страница едет целиком, и точки,
+      // дописанные к ней следом, приехали бы спрашивавшему дважды.
+      flushInk(sessionId)
       send(ws, { t: 'ink:page', page, strokes: inkPageOf(sessionId, page) })
       return
     }
@@ -2437,7 +2735,7 @@ export function dispatch(
         send(ws, { t: 'error', message: inkFullSays(added.full) })
         return
       }
-      broadcast(sessionId, { t: 'ink:add', stroke: added.stroke })
+      inkTo(sessionId, added.stroke)
       return
     }
 
@@ -2713,6 +3011,20 @@ export function dispatch(
       }
       forgetMissingBoard(sessionId)
       broadcastFiles(sessionId)
+      return
+    }
+
+    /*
+     * Дерево целиком — тому, кто спросил.
+     *
+     * Спрашивают в одном случае: приехала дельта, а склеить её не с чем. Права
+     * здесь нет и быть не может — этот же список сокет получает приветственной
+     * пачкой. Кадр берётся из общей памяти комнаты: если разрыв увидели все
+     * разом, обход папки всё равно будет один.
+     */
+    case 'files:ask': {
+      const frame = filesFrame(sessionId)
+      if (frame !== null) sendFrame(ws, frame)
       return
     }
 
@@ -3643,10 +3955,15 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
       byParticipant: new Map<string, Set<WebSocket>>(),
       hosts: new Set<WebSocket>(),
       unwatch: () => {},
+      pingTimer: null,
     }
     rooms.set(sessionId, room)
     // Attach after the room exists, so the first status change has somewhere to go.
     room.unwatch = watchRoomMeta(sessionId)
+    // И один такт пинга на всю комнату — заводится с первым её сокетом и
+    // снимается с последним (см. `pingRoom`).
+    room.pingTimer = setInterval(() => pingRoom(sessionId), PING_INTERVAL_MS)
+    room.pingTimer.unref?.()
   }
   room.sockets.add(ws)
   const mine = room.byParticipant.get(payload.participantId) ?? new Set<WebSocket>()
@@ -3710,6 +4027,9 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
      * Порядок — кадр, потом опись: вкладка принимает `ink` как полную замену
      * чернил, и опись, пришедшая перед ним, описывала бы прошлую лекцию.
      */
+    // И придержанные куски — до кадра: вошедший получает страницу целиком, а
+    // склейка, уехавшая следом, дописала бы ему точки, которые в ней уже есть.
+    flushInk(sessionId)
     const ink = inkFrame(sessionId, lecture.page)
     if (ink !== null) sendFrame(ws, ink)
     send(ws, { t: 'ink:pages', pages: inkedPagesOf(sessionId) })
@@ -3721,22 +4041,9 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    */
   councilWelcome(ws, sessionId, payload)
 
-  let missedPongs = 0
-  const pingTimer = setInterval(() => {
-    if (missedPongs >= MAX_MISSED_PONGS) {
-      ws.terminate()
-      return
-    }
-    missedPongs++
-    try {
-      ws.ping()
-    } catch {
-      ws.terminate()
-    }
-  }, PING_INTERVAL_MS)
+  missedPongs.set(ws, 0)
 
   const drop = () => {
-    clearInterval(pingTimer)
     const current = rooms.get(sessionId)
     if (!current) return
     current.sockets.delete(ws)
@@ -3759,23 +4066,25 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
     if (who && isPresenter(sessionId, who) && !current.byParticipant.has(who)) laserOff(sessionId)
     if (current.sockets.size === 0) {
       current.unwatch()
+      if (current.pingTimer) clearInterval(current.pingTimer)
+      current.pingTimer = null
       rooms.delete(sessionId)
       // Ждать в этой комнате больше некому: номера, которые в ней помнили,
       // ничьи.
       forgetQueue(sessionId)
       // И кэшам приветственной пачки незачем переживать последнего ушедшего:
       // семестр пустых комнат — это семестр списков файлов в памяти процесса.
-      treeFrames.delete(sessionId)
       treeSent.delete(sessionId)
       inkFrames.delete(sessionId)
       laserHeld.delete(sessionId)
+      inkHeld.delete(sessionId)
       // Хвосты склейки — туда же: слать их некому и некуда.
       forgetTicks(sessionId)
     }
   }
 
   ws.on('pong', () => {
-    missedPongs = 0
+    missedPongs.set(ws, 0)
   })
 
   ws.on('message', (data: RawData, isBinary: boolean) => {
@@ -3823,16 +4132,14 @@ export function handleControlSocket(ws: WebSocket, sessionId: string, payload: T
    * вернувшегося — 87 КБ и 5.6 мс разбора гейтом, ответ сервера ему — те же 87
    * КБ. Это ×500 и лежит уже не здесь, а на общем документе.
    */
+  /*
+   * И номер списка вошедший получает вместе с ним. Это же и лечит расхождение,
+   * ради которого раньше снималась расписка: пока комната стояла пустой, дерево
+   * могло измениться, и вошедший пересчитал его — то есть сдвинул номер. У
+   * остальных на руках прежний, и первая же дельта к ним не подойдёт: они
+   * спросят дерево целиком сами (`files:ask`), вместо того чтобы применить
+   * перемену к чужому списку.
+   */
   const files = filesFrame(sessionId)
   if (files !== null) sendFrame(ws, files)
-  /*
-   * И расписка о разосланном кадре снимается, если новичок получил НЕ ЕЁ.
-   *
-   * `treeSent` держит обещание «этот список видели все в комнате», и на нём
-   * стоит молчание рассылки. Вошедший это обещание рушит: пока комната стояла
-   * пустой, дерево могло измениться и вернуться обратно, и следующая рассылка
-   * приняла бы совпадение с распиской за «никому ничего не нужно». Один лишний
-   * кадр на вход дешевле панели, показывающей позавчерашнюю папку.
-   */
-  if (files === null || !treeSent.get(sessionId)?.equals(files)) treeSent.delete(sessionId)
 }

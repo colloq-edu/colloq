@@ -147,8 +147,8 @@ interface ConnState {
   participantId: string | null
   /** Awareness clientIDs this socket introduced, so we can retract exactly those. */
   clientIds: Set<number>
+  /** Сколько пингов подряд остались без ответа; сердцебиение — на комнату. */
   missedPongs: number
-  pingTimer: NodeJS.Timeout
   /**
    * The role the token carried. The document is shared and every field in it is
    * writable by anyone connected — that is what a CRDT is — so this is not an
@@ -178,12 +178,33 @@ interface DocEntry extends SessionDoc {
   /** Только снять наблюдение за тетрадями — для удаления семинара, где писать некуда. */
   unwatch: () => void
   /**
-   * Кадры, ещё не уехавшие в комнату, — см. `scheduleFlush`.
+   * Кадры, ещё не уехавшие в комнату, — см. `scheduleFlush` и `scheduleFaces`.
    *
-   * Правки лежат вместе с сокетом, по которому пришли: свои же байты автору
-   * обратно не едут, и склейка обязана это сохранить.
+   * Правки склеиваются на такт, присутствие — на окно (`FACES_WINDOW_MS`), и
+   * очереди у них поэтому разные. `from` у присутствия — происхождения, из-за
+   * которых оно накопилось: если за окно объявился ровно один сокет, его же
+   * лицо ему обратно не едет.
    */
-  outbox: { updates: { update: Uint8Array; from: unknown }[]; faces: Set<number>; queued: boolean }
+  outbox: {
+    updates: Uint8Array[]
+    queued: boolean
+    faces: Set<number>
+    from: Set<unknown>
+    facesTimer: NodeJS.Timeout | null
+  }
+  /**
+   * Ответ ХОЛОДНОЙ вкладке — весь документ одним кадром, собранным один раз.
+   *
+   * Байты у всех холодных одинаковые (`encodeStateAsUpdate` от пустого вектора
+   * состояния), а стоят они мегабайта кодирования на каждого. Пятьсот вкладок
+   * после перезапуска сервера возвращаются за секунду — это один и тот же
+   * снимок, собранный пятьсот раз. Обнуляется любой правкой документа.
+   */
+  coldFrame: Uint8Array | null
+  /** Полный список лиц для входящего — тоже один на всех, пока никто не шевелится. */
+  welcomeFaces: Uint8Array | null
+  /** Сердцебиение всей комнаты: один таймер на сокеты, а не таймер на сокет. */
+  pingTimer: NodeJS.Timeout | null
   /** С какого момента в комнате нет ни одного сокета; 0 — есть. */
   emptySince: number
 }
@@ -242,12 +263,29 @@ const HOPELESS_BYTES = 8 * 1024 * 1024
  */
 const MAX_DEFLATE_BYTES = 256 * 1024
 
+/**
+ * Кадр, который несёт документ ЦЕЛИКОМ, — исключение из потолка.
+ *
+ * Потолок написан про вывод ядра: картинка в base64 уже сжата, и deflate
+ * платит за неё секундами процессора ради четверти объёма. Первая
+ * синхронизация устроена наоборот — это структуры Yjs и текст ячеек, то есть
+ * самые сжимаемые байты, какие бывают на этом проводе. Замер на живой паре:
+ * ответ холодной вкладке 1 065 985 Б, тот же ответ через deflate сервера
+ * (level 4, windowBits 13) — 360 985 Б, втрое меньше.
+ *
+ * Без этой пометки потолок отменял сжатие ровно там, где оно окупается: пятьсот
+ * вкладок, вернувшихся после перезапуска, — это полгигабайта в аудиторный
+ * аплинк вместо ста восьмидесяти мегабайт.
+ */
 function send(
   entry: DocEntry,
   conn: WebSocket,
   message: Uint8Array,
-  /** Присутствие можно пропустить; правки — нет, они и есть документ. */
-  kind: 'sync' | 'awareness' = 'sync',
+  /**
+   * Присутствие можно пропустить; правки — нет, они и есть документ.
+   * `state` — кадр целого документа или целого присутствия: жать всегда.
+   */
+  kind: 'sync' | 'state' | 'awareness' = 'sync',
 ): void {
   if (conn.readyState !== WebSocket.CONNECTING && conn.readyState !== WebSocket.OPEN) {
     closeConn(entry, conn)
@@ -266,7 +304,8 @@ function send(
   }
   if (kind === 'awareness' && waiting > AWARENESS_STALL_BYTES) return
   try {
-    conn.send(message, { compress: message.byteLength <= MAX_DEFLATE_BYTES }, (err) => {
+    const compress = kind === 'state' || message.byteLength <= MAX_DEFLATE_BYTES
+    conn.send(message, { compress }, (err) => {
       if (err) closeConn(entry, conn)
     })
   } catch {
@@ -285,8 +324,10 @@ function closeConn(entry: DocEntry, conn: WebSocket): void {
   }
   // Ушёл последний — с этой секунды комната пустая, и отсчёт до выселения
   // (см. `sweepIdleRooms`) идёт отсюда.
-  if (entry.conns.size === 0) entry.emptySince = Date.now()
-  clearInterval(state.pingTimer)
+  if (entry.conns.size === 0) {
+    entry.emptySince = Date.now()
+    stopHeartbeat(entry)
+  }
   // Without this the People panel keeps showing whoever just walked out.
   awarenessProtocol.removeAwarenessStates(entry.awareness, Array.from(state.clientIds), null)
   try {
@@ -294,6 +335,46 @@ function closeConn(entry: DocEntry, conn: WebSocket): void {
   } catch {
     /* already gone */
   }
+}
+
+/**
+ * Сердцебиение — одно на комнату, а не на сокет.
+ *
+ * Таймер на сокет выглядел честно: у каждого своя фаза, каждый сам за себя. Но
+ * пятьсот `setInterval` — это пятьсот записей в куче таймеров Node, пятьсот
+ * замыканий и пятьсот пробуждений цикла событий врассыпную на каждые двадцать
+ * пять секунд; на десяти идущих парах — пять тысяч. Один обход карты сокетов
+ * делает ровно то же самое и просыпается раз на комнату.
+ *
+ * Что здесь остаётся прежним до буквы: частота (`PING_INTERVAL_MS`), счётчик
+ * пропущенных ответов у КАЖДОГО сокета и закрытие на втором пропуске. Меняется
+ * одна вещь — фаза: вошедший получает первый пинг вместе с комнатой, а не через
+ * двадцать пять секунд после себя.
+ */
+function startHeartbeat(entry: DocEntry): void {
+  if (entry.pingTimer) return
+  entry.pingTimer = setInterval(() => {
+    // Снимок: `closeConn` изнутри цикла вынимает сокет из той самой карты.
+    for (const [conn, state] of Array.from(entry.conns)) {
+      if (state.missedPongs >= MAX_MISSED_PONGS) {
+        closeConn(entry, conn)
+        conn.terminate()
+        continue
+      }
+      state.missedPongs++
+      try {
+        conn.ping()
+      } catch {
+        closeConn(entry, conn)
+        conn.terminate()
+      }
+    }
+  }, PING_INTERVAL_MS)
+}
+
+function stopHeartbeat(entry: DocEntry): void {
+  if (entry.pingTimer) clearInterval(entry.pingTimer)
+  entry.pingTimer = null
 }
 
 function syncFrame(update: Uint8Array): Uint8Array {
@@ -304,7 +385,8 @@ function syncFrame(update: Uint8Array): Uint8Array {
 }
 
 /**
- * Рассылка комнате — одним кадром за тик цикла событий, а не кадром на нажатие.
+ * Рассылка правок комнате — одним кадром за тик цикла событий, а не кадром на
+ * нажатие. Присутствие едет своей дорогой, см. `scheduleFaces`.
  *
  * Считать так. Одно нажатие — это одно обновление документа И один кадр
  * присутствия (`yCollab` объявляет положение курсора на каждое движение
@@ -334,9 +416,53 @@ function scheduleFlush(entry: DocEntry): void {
     } catch (err) {
       console.error(`[collab] could not deliver a frame to ${entry.sessionId}`, err)
       entry.outbox.updates = []
-      entry.outbox.faces.clear()
     }
   })
+}
+
+/**
+ * Окно присутствия: четверть секунды на комнату, а не такт на движение.
+ *
+ * Присутствие — единственный поток, который течёт в МОЛЧАЩЕЙ комнате.
+ * `y-protocols` объявляет состояние заново каждые пятнадцать секунд
+ * (`outdatedTimeout / 2`), даже если человек просто смотрит в экран: иначе
+ * соседи вычеркнут его через тридцать. Пятьсот вкладок — это тридцать три
+ * объявления в секунду, и на такте каждое становится пятьюстами отправками:
+ * замер стенда — 16 578 кадров/с и 2.3 МБ/с в комнате, где никто ничего не
+ * делает.
+ *
+ * Окно этого не отменяет, оно склеивает: за 200 мс накапливаются все лица, что
+ * шевельнулись, и уезжает ОДИН кадр на получателя. Продление жизни при этом не
+ * теряется — тридцатисекундный потолок `y-protocols` больше окна в полтораста
+ * раз, — а движение курсора отстаёт на те же 200 мс, чего глазу не видно.
+ */
+export const FACES_WINDOW_MS = 200
+
+function scheduleFaces(entry: DocEntry): void {
+  if (entry.outbox.facesTimer) return
+  const timer = setTimeout(() => {
+    entry.outbox.facesTimer = null
+    /* Своё исключение — только своей комнате; см. `scheduleFlush`. */
+    try {
+      flushFaces(entry)
+    } catch (err) {
+      console.error(`[collab] could not deliver presence to ${entry.sessionId}`, err)
+      entry.outbox.faces.clear()
+      entry.outbox.from.clear()
+    }
+  }, FACES_WINDOW_MS)
+  // Курсоры не повод держать процесс живым: этот модуль импортируют и тесты, и
+  // одноразовые скрипты.
+  timer.unref?.()
+  entry.outbox.facesTimer = timer
+}
+
+/** Окно закрыть, ничего не рассылая: комнату уносят из памяти. */
+function stopFaces(entry: DocEntry): void {
+  if (entry.outbox.facesTimer) clearTimeout(entry.outbox.facesTimer)
+  entry.outbox.facesTimer = null
+  entry.outbox.faces.clear()
+  entry.outbox.from.clear()
 }
 
 function flushRoom(entry: DocEntry): void {
@@ -348,7 +474,6 @@ function flushRoom(entry: DocEntry): void {
    */
   if (entry.conns.size === 0) {
     entry.outbox.updates = []
-    entry.outbox.faces.clear()
     return
   }
   const batch = entry.outbox.updates
@@ -356,17 +481,21 @@ function flushRoom(entry: DocEntry): void {
     entry.outbox.updates = []
     sendUpdates(entry, batch)
   }
-  const faces = entry.outbox.faces
-  if (faces.size > 0) {
-    entry.outbox.faces = new Set()
-    sendAwareness(entry, [...faces])
-  }
 }
 
-const mergeOf = (batch: { update: Uint8Array }[]): Uint8Array =>
-  batch.length === 1 ? batch[0].update : Y.mergeUpdates(batch.map((it) => it.update))
+function flushFaces(entry: DocEntry): void {
+  const faces = entry.outbox.faces
+  const from = entry.outbox.from
+  entry.outbox.faces = new Set()
+  entry.outbox.from = new Set()
+  if (entry.conns.size === 0 || faces.size === 0) return
+  sendAwareness(entry, [...faces], from)
+}
 
-function sendUpdates(entry: DocEntry, batch: { update: Uint8Array; from: unknown }[]): void {
+const mergeOf = (batch: Uint8Array[]): Uint8Array =>
+  batch.length === 1 ? batch[0] : Y.mergeUpdates(batch)
+
+function sendUpdates(entry: DocEntry, batch: Uint8Array[]): void {
   let merged: Uint8Array
   try {
     merged = mergeOf(batch)
@@ -378,38 +507,34 @@ function sendUpdates(entry: DocEntry, batch: { update: Uint8Array; from: unknown
      */
     console.error(`[collab] could not merge updates for ${entry.sessionId}`, err)
     for (const item of batch) {
-      const frame = syncFrame(item.update)
-      for (const conn of entry.conns.keys()) if (conn !== item.from) send(entry, conn, frame)
+      const frame = syncFrame(item)
+      for (const conn of entry.conns.keys()) send(entry, conn, frame)
     }
     return
   }
-  const whole = syncFrame(merged)
   /*
-   * Автору его собственные байты обратно не едут. Происхождение — сокет только
-   * у того, что сделал человек; серверные записи (вывод ядра, правка оракула)
-   * приходят с другим происхождением и уезжают всем.
+   * Один кадр на всю комнату — авторам в том числе.
    *
-   * Поэтому кадров получается не один, а один плюс по одному на КАЖДЫЙ сокет,
-   * приславший что-то в этом тике, — обычно это ровно один человек.
+   * Раньше автору вычиталось своё: на каждый приславший сокет батч склеивался
+   * заново (`mergeUpdates` по всему всплеску минус его правки). Это выглядело
+   * бережно, а стоило квадрата. Замер на стенде (tests/collab-fanout):
+   * один автор — 0.01 мс на рассылку, сто — 15.75 мс, пятьсот — 1403 мс. То
+   * есть в секунду, когда полкурса печатает одновременно, цикл событий занят
+   * склейками, а не комнатой. И платится это за байты, которые получатель уже
+   * имеет.
+   *
+   * Слать своё обратно безопасно, и это свойство протокола, а не надежда.
+   * Применение обновления, все структуры которого уже стоят, в Yjs —
+   * бездействие: транзакция не меняет ни документа, ни набора удалений, и
+   * события `update` из неё не выходит. А `WebsocketProvider` у себя
+   * ретранслирует только обновления, чьё происхождение — не он сам, так что
+   * эхо не возвращается на сервер даже теоретически.
    */
-  const authors = new Set(batch.map((it) => it.from))
-  const spare = new Map<unknown, Uint8Array | null>()
-  for (const conn of entry.conns.keys()) {
-    if (!authors.has(conn)) {
-      send(entry, conn, whole)
-      continue
-    }
-    let frame = spare.get(conn)
-    if (frame === undefined) {
-      const rest = batch.filter((it) => it.from !== conn)
-      frame = rest.length === 0 ? null : syncFrame(mergeOf(rest))
-      spare.set(conn, frame)
-    }
-    if (frame) send(entry, conn, frame)
-  }
+  const whole = syncFrame(merged)
+  for (const conn of entry.conns.keys()) send(entry, conn, whole)
 }
 
-function sendAwareness(entry: DocEntry, clients: number[]): void {
+function sendAwareness(entry: DocEntry, clients: number[], from: Set<unknown>): void {
   const encoder = encoding.createEncoder()
   encoding.writeVarUint(encoder, MESSAGE_AWARENESS)
   encoding.writeVarUint8Array(
@@ -417,7 +542,22 @@ function sendAwareness(entry: DocEntry, clients: number[]): void {
     awarenessProtocol.encodeAwarenessUpdate(entry.awareness, clients),
   )
   const message = encoding.toUint8Array(encoder)
-  for (const conn of entry.conns.keys()) send(entry, conn, message, 'awareness')
+  /*
+   * Своё лицо обратно не едет — но только когда за окно объявился ровно один
+   * сокет. Это обычный случай молчащей комнаты: продление жизни приходит по
+   * одному, и без этой строки каждое пятнадцатисекундное «я ещё здесь»
+   * возвращалось бы отправителю.
+   *
+   * Когда за окно шевельнулось несколько, кадр один на всех, и вычитать себя из
+   * него значило бы кодировать его заново на каждого получателя — дороже, чем
+   * лишние полсотни байт тому, кто их и так знает: `applyAwarenessUpdate`
+   * пропускает состояние со своим же тактом.
+   */
+  const alone = from.size === 1 ? [...from][0] : undefined
+  for (const conn of entry.conns.keys()) {
+    if (conn === alone) continue
+    send(entry, conn, message, 'awareness')
+  }
 }
 
 /**
@@ -465,7 +605,10 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     conns: new Map(),
     dispose: bindPersistence(sessionId, doc),
     unwatch: () => {},
-    outbox: { updates: [], faces: new Set(), queued: false },
+    outbox: { updates: [], queued: false, faces: new Set(), from: new Set(), facesTimer: null },
+    coldFrame: null,
+    welcomeFaces: null,
+    pingTimer: null,
     // Комната заводится не только человеком (ядро, оракул, маршрут истории), и
     // пустой она с этой секунды: отсчёт до выселения идёт от рождения.
     emptySince: Date.now(),
@@ -665,7 +808,10 @@ function getEntry(sessionId: string, title?: string): DocEntry {
   })
 
   doc.on('update', (update: Uint8Array, origin: unknown, _doc: Y.Doc, tr: Y.Transaction) => {
-    entry.outbox.updates.push({ update, from: origin })
+    entry.outbox.updates.push(update)
+    // Ответ холодной вкладке собран из документа, а документ только что стал
+    // другим: следующий вошедший должен получить кадр, а не вчерашний снимок.
+    entry.coldFrame = null
     scheduleFlush(entry)
     /*
      * The author comes from the origin, which for anything a person did is the
@@ -720,10 +866,20 @@ function getEntry(sessionId: string, title?: string): DocEntry {
          */
         pinRole(entry, state, changes.added.concat(changes.updated))
       }
+      /*
+       * Лицо в окно кладётся по clientID, а не по кадру: продлений жизни от
+       * одной вкладки за окно может прийти несколько, а кодируется присутствие
+       * всё равно из текущего состояния — значит, повтор в окне ничего не
+       * добавляет, и множества довольно.
+       */
       for (const id of changes.added) entry.outbox.faces.add(id)
       for (const id of changes.updated) entry.outbox.faces.add(id)
       for (const id of changes.removed) entry.outbox.faces.add(id)
-      scheduleFlush(entry)
+      entry.outbox.from.add(origin)
+      // Список лиц для входящего собран из состояния, которое только что стало
+      // другим: пересобрать. После `pinRole` — он правит состояние молча.
+      entry.welcomeFaces = null
+      scheduleFaces(entry)
     },
   )
 
@@ -738,8 +894,38 @@ function getEntry(sessionId: string, title?: string): DocEntry {
  * браузер отвечает step2 всем, чего у сервера нет, и любой отказ отмывается
  * повторным входом.
  */
+const SYNC_STEP1 = 0
 const SYNC_STEP2 = 1
 const SYNC_UPDATE = 2
+
+/**
+ * Вектор состояния пустой вкладки — ровно один байт, ноль клиентов.
+ *
+ * Так выглядит step1 от вкладки, у которой нет ничего: чистый браузер, режим
+ * инкогнито, вычищенный IndexedDB, — и ответ ей одинаков до байта, потому что
+ * собирается из документа, а не из её кадра.
+ */
+function coldTab(stateVector: Uint8Array): boolean {
+  return stateVector.byteLength === 1 && stateVector[0] === 0
+}
+
+/**
+ * Весь документ одним кадром — собранный один раз на комнату.
+ *
+ * Замер живой пары: 1 065 985 Б и десятки миллисекунд на кодирование. Пятьсот
+ * вкладок, вошедших после перезапуска сервера, — это пятьсот одинаковых
+ * снимков, и разница между «собрать раз» и «собрать пятьсот раз» тут в секундах
+ * занятого цикла событий. Обнуляется в обработчике `doc.on('update')`: пока
+ * документ не изменился, байты холодного ответа те же самые.
+ */
+function coldFrame(entry: DocEntry): Uint8Array {
+  if (entry.coldFrame) return entry.coldFrame
+  const encoder = encoding.createEncoder()
+  encoding.writeVarUint(encoder, MESSAGE_SYNC)
+  syncProtocol.writeSyncStep2(encoder, entry.doc)
+  entry.coldFrame = encoding.toUint8Array(encoder)
+  return entry.coldFrame
+}
 
 /**
  * Отказать этому соединению в кадре.
@@ -1016,6 +1202,15 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
          */
         const peek = decoding.clone(decoder)
         const subtype = decoding.readVarUint(peek)
+        /*
+         * Холодная вкладка — по короткой дороге. Её step1 не несёт ничего, что
+         * надо проверять (это запрос, а не правка), а ответ ей у комнаты уже
+         * собран: ровно тот же снимок, что и предыдущему вошедшему.
+         */
+        if (subtype === SYNC_STEP1 && coldTab(decoding.readVarUint8Array(peek))) {
+          send(entry, conn, coldFrame(entry), 'state')
+          break
+        }
         let accepted: { retyped: string[]; created: string[]; removed: string[] } | null = null
         /*
          * Чего эта ветка стоит на возврате зала — числом, а не на глаз.
@@ -1100,8 +1295,14 @@ function handleMessage(entry: DocEntry, conn: WebSocket, data: Uint8Array): void
           // После применения: ядру говорят про ячейки, которых в тетради уже нет.
           if (removed.length > 0) removedListener?.(entry.sessionId, removed)
         }
-        // A bare message type and nothing after it means there is nothing to say.
-        if (encoding.length(encoder) > 1) send(entry, conn, encoding.toUint8Array(encoder))
+        /*
+         * A bare message type and nothing after it means there is nothing to
+         * say. Всё, что здесь не пусто, — это step2 в ответ на step1, то есть
+         * документ целиком: жать его стоит при любом размере (`send` · state).
+         */
+        if (encoding.length(encoder) > 1) {
+          send(entry, conn, encoding.toUint8Array(encoder), 'state')
+        }
         break
       }
       case MESSAGE_AWARENESS: {
@@ -1199,22 +1400,9 @@ export function handleCollabSocket(
     presenceStartedAt: existingPresence?.presenceStartedAt ?? Date.now(),
     clientIds: new Set<number>(),
     missedPongs: 0,
-    pingTimer: setInterval(() => {
-      if (state.missedPongs >= MAX_MISSED_PONGS) {
-        closeConn(entry, ws)
-        ws.terminate()
-        return
-      }
-      state.missedPongs++
-      try {
-        ws.ping()
-      } catch {
-        closeConn(entry, ws)
-        ws.terminate()
-      }
-    }, PING_INTERVAL_MS),
   }
   entry.conns.set(ws, state)
+  startHeartbeat(entry)
   if (participantId && !existingPresence) appendActivity(sessionId, participantId, 'presence.joined', {}, role)
   if (wasEmpty) console.log(`[room ${sessionId}] opened`)
 
@@ -1228,18 +1416,34 @@ export function handleCollabSocket(
   const encoder = encoding.createEncoder()
   encoding.writeVarUint(encoder, MESSAGE_SYNC)
   syncProtocol.writeSyncStep1(encoder, entry.doc)
-  send(entry, ws, encoding.toUint8Array(encoder))
+  send(entry, ws, encoding.toUint8Array(encoder), 'state')
 
+  const welcome = welcomeFaces(entry)
+  if (welcome) send(entry, ws, welcome, 'state')
+}
+
+/**
+ * Полный список лиц комнаты для входящего — один кадр на всех, пока никто не
+ * шевелится.
+ *
+ * Замер на комнате в пятьсот человек: 75 КБ и 5.46 мс на каждого входящего.
+ * Возврат зала после моргания ретранслятора — это пятьсот входов подряд, то
+ * есть 413 мс процессора и 37 МБ мусора на одно и то же присутствие. Кадр
+ * обнуляется любым изменением присутствия (обработчик `awareness.on('update')`,
+ * после `pinRole`), так что устареть он не может.
+ */
+function welcomeFaces(entry: DocEntry): Uint8Array | null {
+  if (entry.welcomeFaces) return entry.welcomeFaces
   const states = entry.awareness.getStates()
-  if (states.size > 0) {
-    const awarenessEncoder = encoding.createEncoder()
-    encoding.writeVarUint(awarenessEncoder, MESSAGE_AWARENESS)
-    encoding.writeVarUint8Array(
-      awarenessEncoder,
-      awarenessProtocol.encodeAwarenessUpdate(entry.awareness, Array.from(states.keys())),
-    )
-    send(entry, ws, encoding.toUint8Array(awarenessEncoder))
-  }
+  if (states.size === 0) return null
+  const encoder = encoding.createEncoder()
+  encoding.writeVarUint(encoder, MESSAGE_AWARENESS)
+  encoding.writeVarUint8Array(
+    encoder,
+    awarenessProtocol.encodeAwarenessUpdate(entry.awareness, Array.from(states.keys())),
+  )
+  entry.welcomeFaces = encoding.toUint8Array(encoder)
+  return entry.welcomeFaces
 }
 
 /** Open sockets, not distinct people — a second tab counts twice. */
@@ -1455,6 +1659,10 @@ export function sweepIdleRooms(now: number = Date.now()): string[] {
 function evictRoom(entry: DocEntry): void {
   docs.delete(entry.sessionId)
   forgetHistory(entry.sessionId)
+  // Незакрытое окно присутствия пережило бы документ и выстрелило бы в
+  // уничтоженное `awareness` через четверть секунды после выселения.
+  stopHeartbeat(entry)
+  stopFaces(entry)
   entry.dispose()
   // И то, что сервер помнил об удалённых в ней ячейках ради Ctrl+Z: отменять
   // спустя десять минут пустой комнаты уже некому.
@@ -1532,9 +1740,9 @@ export function dropSessionDoc(sessionId: string): void {
   discardBurst(sessionId)
   // И то, что сервер помнил об удалённых в ней ячейках: возвращать некуда.
   forgetSession(sessionId)
+  stopHeartbeat(entry)
+  stopFaces(entry)
   for (const conn of Array.from(entry.conns.keys())) {
-    const state = entry.conns.get(conn)
-    if (state) clearInterval(state.pingTimer)
     entry.conns.delete(conn)
     try {
       conn.close(1001, tr("server.thisSeminarWasDeleted.daaaad"))
@@ -1551,9 +1759,9 @@ export function shutdownCollab(): void {
     for (const [id, state] of people) appendActivity(entry.sessionId, id, 'presence.left', {
       reason: 'server_shutdown', durationMs: Math.max(0, Date.now() - state.presenceStartedAt),
     }, state.role)
+    stopHeartbeat(entry)
+    stopFaces(entry)
     for (const conn of Array.from(entry.conns.keys())) {
-      const state = entry.conns.get(conn)
-      if (state) clearInterval(state.pingTimer)
       entry.conns.delete(conn)
       try {
         conn.close(1001, tr("server.serverShuttingDown.0df697"))

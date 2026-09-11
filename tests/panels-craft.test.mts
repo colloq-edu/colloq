@@ -14,6 +14,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { roomMessages } from '../shared/locales/room.js'
 
 function read(rel: string): string {
   return fs.readFileSync(path.resolve(import.meta.dirname, '..', rel), 'utf8')
@@ -179,4 +180,28 @@ test('неудачная выборка состояния оракула не �
   assert.doesNotMatch(fetchBlock, /mode: 'off'/, "'off' говорит только сервер")
   assert.match(fetchBlock, /status = null/, 'на ошибке — «ещё не знаем»')
   assert.match(fetchBlock, /statusFailed = true/)
+})
+
+test('цель для файлов живёт, пока папка открыта: свернул — вернулась к родителю', () => {
+  const files = code(read(FILES))
+  const toggle = files.slice(files.indexOf('function toggle(path: string)'), files.indexOf('function pick('))
+  // Открытая папка — цель, закрытая — нет; закрыть папку над целью значит
+  // поднять цель к её родителю. Иначе снять «Файлы — в папку …» было нечем,
+  // кроме как открыть файл рядом.
+  assert.match(toggle, /next\.add\(path\)\s*target = path/, 'раскрытие делает папку целью')
+  assert.match(
+    toggle,
+    /target\.startsWith\(`\$\{path\}\/`\)\) target = parentOf\(path\)/,
+    'сворачивание поднимает цель к родителю',
+  )
+  const pick = files.slice(files.indexOf('function pick(entry: FileEntry'), files.indexOf('function startDraft('))
+  assert.doesNotMatch(pick, /if \(entry\.dir\) \{\s*target = entry\.path/, 'папке цель ставит только toggle')
+  // Подпись внизу в обоих состояниях называет место, а не правило комнаты:
+  // «доступны всей группе» рядом с «в папку data» читалось как второй режим.
+  const catalog = roomMessages as Record<string, { ru: string; en: string }>
+  for (const key of ['room.ui.607', 'room.ui.608']) {
+    assert.ok(catalog[key].ru.startsWith('Файлы — '), key)
+    assert.ok(catalog[key].en.startsWith('Files — '), key)
+  }
+  assert.match(files, /title=\{may\.files \? tr\('room\.extra\.461'\) : undefined\}/, 'правило — подсказкой')
 })

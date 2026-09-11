@@ -14,11 +14,10 @@ import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, loadRuntime
  * жизнь, и она не должна начинаться от одного `import`.
  */
 import path from 'node:path'
-import { readFile } from 'node:fs/promises'
 import zlib from 'node:zlib'
 import { preferredEncodings, type Encoding } from './http-encoding.js'
 import { precompressedStatic } from './precompressed-static.js'
-import { withInitialLanguage } from './frontend-html.js'
+import { etagMatches, frontendPage } from './frontend-html.js'
 import { getInstanceLanguage } from './admin/settings.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { sameOrigin, slideStaffCookie } from './admin/auth.js'
@@ -38,6 +37,7 @@ import { aiRoutes } from './routes/ai.js'
 import { banRoutes } from './routes/bans.js'
 import { councilRoutes } from './routes/council.js'
 import { courseRoutes } from './routes/courses.js'
+import { blobRoutes } from './routes/blobs.js'
 import { fileRoutes } from './routes/files.js'
 import { historyRoutes } from './routes/history.js'
 import { activityRoutes } from './routes/activity.js'
@@ -454,6 +454,8 @@ app.use(banRoutes())
 app.use(historyRoutes())
 app.use(activityRoutes())
 app.use(fileRoutes())
+// Картинки вывода лежат рядом с комнатой, а не в её документе (server/blobs.ts).
+app.use(blobRoutes())
 app.use(aiRoutes())
 // Консилиум — за оракулом: его единственная REST-дверь спрашивает ту же модель
 // и тратит тот же лимит вопросов комнаты (routes/council.ts).
@@ -516,14 +518,40 @@ app.use((req, res, next) => {
 if (config.staticDir) {
   const staticDir = path.resolve(config.staticDir)
   app.use(precompressedStatic(staticDir))
+  const indexFile = path.join(staticDir, 'index.html')
+  /*
+   * Одна и та же страница на всю аудиторию, собранная один раз.
+   *
+   * Байты, ETag и обе кодировки держит frontend-html.ts — там же написано,
+   * почему. Здесь остаётся то, что зависит от запроса: метка устройства,
+   * выбор кодировки и ответ «у вас уже есть».
+   *
+   * Content-Encoding ставится своей рукой, и это не мелочь: сжимающий
+   * middleware выше (worthCompressing) видит заголовок и не трогает ответ —
+   * иначе готовые байты уехали бы в brotli второй раз.
+   */
   const sendFrontend = (req: Request, res: Response, next: NextFunction): void => {
     markDevice(req, res)
-    void readFile(path.join(staticDir, 'index.html'), 'utf8').then((html) => {
-      const language = getInstanceLanguage()
+    const language = getInstanceLanguage()
+    void frontendPage(indexFile, language).then((page) => {
       res.setHeader('Cache-Control', 'no-cache')
       res.setHeader('Content-Language', language)
-      // res.send computes an ETag over both the build and current language.
-      res.type('html').send(withInitialLanguage(html, language))
+      res.setHeader('ETag', page.etag)
+      res.vary('Accept-Encoding')
+      // Вернувшийся студент открывает комнату второй раз за пару: тело не
+      // нужно ни ему, ни сокету. Язык инстанса входит в ETag, поэтому смена
+      // языка в панели сама отменяет все выданные.
+      if (etagMatches(req.headers['if-none-match'], page.etag)) {
+        res.status(304).end()
+        return
+      }
+      const encoding = preferredEncodings(req.headers['accept-encoding'])
+        .find((name) => page.encoded[name])
+      const body = encoding ? page.encoded[encoding]! : page.body
+      if (encoding) res.setHeader('Content-Encoding', encoding)
+      res.type('html')
+      res.setHeader('Content-Length', String(body.length))
+      res.end(body)
     }).catch(next)
   }
   app.get('/index.html', sendFrontend)

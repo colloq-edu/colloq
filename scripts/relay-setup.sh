@@ -38,6 +38,15 @@
 # colloq-capy (scripts/relay-capy.py, python3 из коробки): caddy отдаёт ему
 # путь /.relay/capy/* на любом имени. Игра без него работает, таблица — нет.
 #
+# И четвёртый демон — colloq-assets (scripts/relay-assets.py), зеркало
+# неизменяемой статики. До него КАЖДЫЙ байт каждого /assets/*, /fonts/* и
+# /pdf/* ехал через туннель с ноутбука преподавателя — 598 КБ сжатого на
+# каждого пришедшего, по тому же каналу, по которому живут сокеты комнаты.
+# Файлы у всех одинаковые (имена в assets/ содержат хэш содержимого), поэтому
+# инстанс кладёт их сюда одним архивом на `make host`, а отдаёт их caddy прямо
+# из /var/lib/colloq-assets/<имя>. Промах зеркала — не отказ: матчер `file`
+# пропускает такой запрос в туннель, как было раньше.
+#
 # И ещё один каталог — /etc/caddy/names, память имён. Сертификат выпускается
 # только имени, у которого есть туннель, а список туннелей frps держит в
 # памяти: после его перезапуска или переезда на другую машину список пуст, и
@@ -69,10 +78,30 @@ SSH=(ssh -o IdentitiesOnly=yes -i "$SSH_KEY")
 # поток как base64: так их текст — JS с долларами и обратными кавычками —
 # не проходит ни через одну подстановку bash ни здесь, ни на машине.
 HERE=$(cd "$(dirname "$0")" && pwd)
+
+# Сертификат на всю звёздочку — по желанию: RELAY_WILDCARD=1 и CF_TOKEN (тот
+# же, что у scripts/dns.sh; из окружения или из .env рядом с репозиторием).
+#
+# Без него имя, которого ретранслятор не видел ни разу, не получает
+# сертификата вовсе: спрашивалка отвечает 403, и браузер показывает ошибку TLS
+# раньше любой страницы — состояние «такой комнаты нет» написано, но
+# недостижимо. Со звёздочкой любое имя под зоной получает рабочий TLS через
+# DNS-проверку Cloudflare, исчезает потолок Let's Encrypt в 50 имён в неделю и
+# зависимость выпуска от порта 80. Плата: токен Cloudflare живёт на
+# ретрансляторе, ключ один на все имена, и обновление caddy мимо этого скрипта
+# (apt, caddy upgrade) снесёт модуль dns.providers.cloudflare — caddy тогда не
+# встанет вовсе; повторный прогон скрипта это чинит.
+WILDCARD=${RELAY_WILDCARD:-0}
+CF_TOKEN=${CF_TOKEN:-$(grep -E '^CF_TOKEN=' "$HERE/../.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "' || true)}
+if [ "$WILDCARD" = 1 ] && [ -z "$CF_TOKEN" ]; then
+  die "RELAY_WILDCARD=1 требует CF_TOKEN (Zone:DNS:Edit на зону ${DOMAIN}) — в окружении или в .env."
+fi
 PAGE_FILE=$HERE/relay-offline.html
 CAPY_FILE=$HERE/relay-capy.py
+ASSETS_FILE=$HERE/relay-assets.py
 [ -f "$PAGE_FILE" ] || { printf '\033[31mнет %s\033[0m\n' "$PAGE_FILE" >&2; exit 1; }
 [ -f "$CAPY_FILE" ] || { printf '\033[31mнет %s\033[0m\n' "$CAPY_FILE" >&2; exit 1; }
+[ -f "$ASSETS_FILE" ] || { printf '\033[31mнет %s\033[0m\n' "$ASSETS_FILE" >&2; exit 1; }
 embed() { base64 < "$1" | fold -w 76; }
 
 RED=$'\033[31m'; OFF=$'\033[0m'
@@ -134,7 +163,8 @@ if [ "$PAGE_ONLY" = 1 ]; then
 # Молчать об этом нельзя — снаружи это выглядит как «страница не обновилась».
 if ! grep -q 'custom404Page' /etc/colloq-relay/frps.toml 2>/dev/null ||
    ! grep -q 'offline.html' /etc/caddy/Caddyfile 2>/dev/null ||
-   ! grep -q '/.relay/capy/' /etc/caddy/Caddyfile 2>/dev/null; then
+   ! grep -q '/.relay/capy/' /etc/caddy/Caddyfile 2>/dev/null ||
+   ! grep -q '/.relay/state' /etc/caddy/Caddyfile 2>/dev/null; then
   echo
   echo "ВНИМАНИЕ: конфиги ещё не знают про эту страницу."
   echo "Прогоните полную установку один раз: make relay-setup WHERE=..."
@@ -154,6 +184,10 @@ say "ставлю ретранслятор на $HOST для *.${DOMAIN}"
 # (тот же TOKEN) переживают склейку — куски не отдельные сеансы, а части
 # одного текста.
 {
+# Первые строки удалённого скрипта — из локальных переменных. Через поток, а
+# не через окружение команды ssh: командная строка видна всей машине в ps, а
+# здесь может быть токен Cloudflare.
+printf 'WILDCARD=%q\nCF_TOKEN=%q\n' "$WILDCARD" "$CF_TOKEN"
 cat <<'REMOTE_HEAD'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -162,14 +196,54 @@ echo "== пакеты"
 apt-get update -qq
 apt-get install -y -qq curl tar >/dev/null
 
+echo "== подкачка"
+# Два гигабайта поверх 3.9 ГБ памяти — и не ради того, чтобы машина в них
+# работала.
+#
+# Измерено на живой паре: двести студентов в один вечер, и ядро тридцать шесть
+# раз убивало то frps, то caddy. Убийство здесь — не «стало медленнее», а
+# разрыв ВСЕХ туннелей разом: у каждого семинара под этим ретранслятором зал
+# уходит в переподключение. Подкачка даёт ядру что отдать вместо выстрела, а
+# MemoryHigh ниже — тормозить того, кто зарвался, раньше, чем дойдёт до OOM.
+#
+# Повторный прогон ничего не делает: и файл, и строка в fstab проверяются.
+if ! swapon --show=NAME --noheadings 2>/dev/null | grep -qx /swapfile; then
+  if [ ! -f /swapfile ]; then
+    # fallocate быстрее, но на некоторых файловых системах оставляет дыры, и
+    # swapon такой файл не берёт. Тогда — честный dd.
+    fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null 2>&1 || true
+  fi
+  if ! swapon /swapfile 2>/dev/null; then
+    rm -f /swapfile
+    dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null
+    swapon /swapfile || echo "подкачку включить не вышло — это не смертельно"
+  fi
+fi
+grep -q '^/swapfile ' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+# Своп для этой машины — спасательный круг, а не рабочий инструмент: лезть в
+# него раньше времени значит отдавать студентам страницы через диск.
+sysctl -qw vm.swappiness=10 || true
+grep -q '^vm.swappiness' /etc/sysctl.conf 2>/dev/null || echo 'vm.swappiness=10' >> /etc/sysctl.conf
+swapon --show 2>/dev/null | tail -n +1 | sed 's/^/  /'
+
 echo "== caddy"
 # Собранный на их стороне бинарник вместо пакета из apt: модули здесь не
 # нужны (сертификаты по требованию берутся через HTTP-01), а один файл проще
 # обновлять и понимать, чем репозиторий с ключом.
-if ! command -v caddy >/dev/null; then
-  curl -fsSL -o /usr/local/bin/caddy \
-    "https://caddyserver.com/api/download?os=linux&arch=amd64"
-  chmod +x /usr/local/bin/caddy
+# Со звёздочкой (WILDCARD=1) нужен модуль dns.providers.cloudflare — тот же
+# сервис сборки отдаёт бинарник с ним; проверка не «бинарник есть», а «модуль
+# есть», иначе машина со старым caddy тихо осталась бы без DNS-проверки.
+CADDY_URL="https://caddyserver.com/api/download?os=linux&arch=amd64"
+if [ "${WILDCARD:-0}" = 1 ]; then CADDY_URL="${CADDY_URL}&p=github.com/caddy-dns/cloudflare"; fi
+if ! command -v caddy >/dev/null \
+   || { [ "${WILDCARD:-0}" = 1 ] && ! caddy list-modules 2>/dev/null | grep -q '^dns.providers.cloudflare'; }; then
+  curl -fsSL -o /usr/local/bin/caddy.new "${CADDY_URL}"
+  chmod +x /usr/local/bin/caddy.new
+  mv /usr/local/bin/caddy.new /usr/local/bin/caddy
 fi
 caddy version | head -1
 
@@ -187,8 +261,15 @@ echo "== пользователи и каталоги"
 id -u caddy >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --shell /usr/sbin/nologin caddy
 id -u frps  >/dev/null 2>&1 || useradd --system --home /var/lib/frps  --shell /usr/sbin/nologin frps
 id -u capy  >/dev/null 2>&1 || useradd --system --home /var/lib/colloq-capy --shell /usr/sbin/nologin capy
+id -u assets >/dev/null 2>&1 || useradd --system --home /var/lib/colloq-assets --shell /usr/sbin/nologin assets
 install -d -o caddy -g caddy -m 0750 /var/lib/caddy /etc/caddy /etc/caddy/names
 install -d -o frps  -g frps  -m 0750 /var/lib/frps
+# Зеркало статики пишет один демон, читает другой: владелец assets, группа
+# caddy, и только чтение группе — caddy не должен уметь переписать то, что
+# раздаёт. Бит 2000 (setgid) обязателен: без него всё, что создаст внутри
+# служба, получит группу assets, и caddy будет отдавать 403 на каждый файл —
+# то есть зеркало просто не заработает, молча и целиком.
+install -d -o assets -g caddy -m 2750 /var/lib/colloq-assets
 # Группа frps, а не только root: демон работает не от рута, и одного chown на
 # файл мало — каталог тоже нужно уметь пройти.
 install -d -o root -g frps -m 0750 /etc/colloq-relay
@@ -237,6 +318,15 @@ custom404Page = "/etc/colloq-relay/offline.html"
 auth.method = "token"
 auth.token = "${TOKEN}"
 
+# Сколько готовых соединений разрешается держать инстансу.
+#
+# Инстанс просит запас (transport.poolCount в scripts/host.sh), чтобы запрос
+# студента не ждал установления соединения перед первым байтом; сервер обязан
+# назвать потолок, иначе запас не выдаётся вовсе. Десять на инстанс — это
+# десятки холостых соединений на всю машину, и на 3.9 ГБ памяти это ничто по
+# сравнению с тем, что даёт первый экран без лишнего круга по сети.
+transport.maxPoolCount = 10
+
 # Панель состояния — тоже только на петле, смотреть через ssh -L.
 webServer.addr = "127.0.0.1"
 webServer.port = 7500
@@ -247,6 +337,20 @@ chown root:frps /etc/colloq-relay/frps.toml
 chmod 640 /etc/colloq-relay/frps.toml
 
 echo "== настройка caddy"
+# Заголовок сайта: по умолчанию «любое имя на 443» с сертификатом по
+# требованию; со звёздочкой — один сайт *.домен и один сертификат через DNS.
+if [ "${WILDCARD:-0}" = 1 ]; then
+  SITE_LABEL="*.${DOMAIN}"
+  SITE_TLS="tls {
+		dns cloudflare {env.CF_TOKEN}
+		resolvers 1.1.1.1
+	}"
+else
+  SITE_LABEL=":443"
+  SITE_TLS="tls {
+		on_demand
+	}"
+fi
 cat > /etc/caddy/Caddyfile <<CONF
 {
 	# Сертификат берётся при первом обращении к имени, а не заранее на всю
@@ -304,10 +408,8 @@ http://127.0.0.1:9180 {
 }
 
 # Всё остальное, что приходит на 443 по любому имени.
-:443 {
-	tls {
-		on_demand
-	}
+${SITE_LABEL} {
+	${SITE_TLS}
 	# Заголовки, без которых инстанс не узнает, по какому адресу к нему
 	# пришли: ссылка на семинар и адреса сокетов строятся из них.
 	# Роботам здесь делать нечего.
@@ -339,6 +441,93 @@ Disallow: /
 			header_up X-Forwarded-Host {host}
 		}
 	}
+
+	# Приём статики от инстанса: на \`make host\` он кладёт сюда свои assets/,
+	# fonts/ и pdf/ одним архивом (scripts/relay-assets.py). Секрет тот же, что
+	# у frps, и писать инстанс может только в зеркало своего имени — сервис
+	# сверяет имя в пути с тем, по которому пришёл запрос.
+	handle /.relay/assets/* {
+		request_body {
+			max_size 64MB
+		}
+		reverse_proxy 127.0.0.1:9182 {
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	# Неизменяемое — с этой машины, а не через ноутбук преподавателя.
+	#
+	# Имена в assets/ содержат хэш содержимого, fonts/ и pdf/ меняются только с
+	# выкладкой, и инстанс сам отдаёт всё это с долгим сроком жизни. Значит их
+	# можно держать здесь: 598 КБ сжатого на студента перестают ехать через
+	# туннель, и он остаётся тому, ради чего он есть, — живой комнате.
+	#
+	# Матчер \`file\` — это и есть вся защита от устаревшего или пустого
+	# зеркала: нет файла на диске — правило не совпало, запрос идёт дальше в
+	# туннель, как было всегда. Поэтому здесь \`file\`, а не file_server с
+	# pass_thru: ответ 404 из зеркала не должен получить ни заголовков, ни
+	# срока жизни.
+	#
+	# Сроки — те же, что ставит сам инстанс (server/src/app.ts): год и
+	# immutable только версионному, час — шрифтам и pdf. Шрифт под тем же
+	# именем меняют руками, и год на него — это год, когда замену не увидит
+	# никто из вернувшихся.
+	@mirror {
+		host *.${DOMAIN}
+		path /assets/* /fonts/* /pdf/*
+		file {
+			root /var/lib/colloq-assets/{host}
+			try_files {path}
+		}
+	}
+	handle @mirror {
+		root * /var/lib/colloq-assets/{host}
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		header /fonts/* Cache-Control "public, max-age=3600"
+		header /pdf/* Cache-Control "public, max-age=3600"
+		# Чтобы \`curl -sI\` отвечал на вопрос «а зеркало-то работает?» одним
+		# словом, а не сравнением длин.
+		header X-Colloq-Mirror hit
+		file_server {
+			precompressed br gzip
+		}
+	}
+
+	# Что ретранслятор знает об этом имени — для страницы ошибки. По этому
+	# ответу она отличает «комната ещё не открыта» от «такой комнаты нет» и от
+	# «Colloq на машине преподавателя молчит»: у frps для всех трёх один и тот
+	# же 404 без единого различимого признака, и снаружи их не разобрать никак.
+	#
+	# known — файл памяти имён есть, то есть комнату здесь когда-то открывали;
+	# tunnel — туннель поднят прямо сейчас (спрашиваем у frps его же API, как
+	# это делает спрашивалка сертификатов выше). Наружу уходят только эти два
+	# слова: адрес машины преподавателя и счётчики трафика из ответа API
+	# остаются здесь.
+	handle /.relay/state {
+		header Cache-Control "no-store"
+		header Content-Type "application/json"
+		@known file {
+			root /etc/caddy/names
+			try_files {host}
+		}
+		handle @known {
+			rewrite * /api/proxy/http/{labels.2}
+			reverse_proxy 127.0.0.1:7500 {
+				@live status 200
+				handle_response @live {
+					respond \`{"known":true,"tunnel":true}\` 200
+				}
+				@gone status 404
+				handle_response @gone {
+					respond \`{"known":true,"tunnel":false}\` 200
+				}
+			}
+		}
+		handle {
+			respond \`{"known":false,"tunnel":false}\` 200
+		}
+	}
+
 	reverse_proxy 127.0.0.1:8080 {
 		header_up X-Forwarded-Host {host}
 		header_up X-Forwarded-Proto https
@@ -357,6 +546,25 @@ Disallow: /
 	handle_errors {
 		root * /etc/caddy
 		rewrite * /offline.html
+		# Страница выросла до 116 КБ (два языка и четыре состояния), а
+		# открывают её с телефона по сотовой связи в аудитории. Сжатие режет
+		# её до 34 КБ; на остальное движение через ретранслятор это не влияет —
+		# encode стоит внутри handle_errors и трогает только страницы ошибок.
+		encode gzip zstd
+		# Страница у всех случаев одна, а текст разный: код ответа, его
+		# название и номер записи в журнале приезжают в неё подстановкой.
+		# Скобки не по умолчанию: templates разбирает как шаблон Go ВЕСЬ файл,
+		# а пара фигурных скобок подряд встречается в JS и в тексте сама
+		# собой — первая же проверка упала на комментарии, где такая пара
+		# стояла в объяснении. Ошибка разбора — это пустой ответ вместо
+		# страницы ошибки, то есть белый экран ровно тогда, когда человеку
+		# нужно объяснение. Пара с процентом в HTML, CSS и JS не встречается.
+		templates {
+			between <% %>
+		}
+		# Ошибку нельзя оставлять в кэше: комната откроется через минуту, а
+		# браузер будет показывать «не открыта» из своей памяти.
+		header Cache-Control "no-store"
 		# Код ответа остаётся тем, что случилось на самом деле. Со стандартным
 		# для file_server 200 страница выглядела бы как успех, и любая проверка
 		# снаружи — та же, что ждёт адрес в make host, — считала бы мёртвый
@@ -396,6 +604,17 @@ Group=frps
 ExecStart=/usr/local/bin/frps -c /etc/colloq-relay/frps.toml
 Restart=always
 RestartSec=3
+# Потолки. Измерено на живой паре: двести студентов в один вечер положили эту
+# машину — ядро тридцать шесть раз убивало то frps (209 МБ), то caddy (186 МБ),
+# и каждое убийство рвало ВСЕ туннели разом. MemoryHigh — не убийство, а
+# торможение: под давлением ядро начинает отбирать страницы у того, кто
+# зарвался, а не стрелять в него. Полтора гигабайта из 3.9 — с запасом на
+# несколько параллельных семинаров.
+MemoryHigh=1536M
+# Тысяча студентов — это тысячи сокетов, а по умолчанию у службы их 1024:
+# упереться в это значит «не открывается ни у кого», без единой строки в
+# журнале о том, почему.
+LimitNOFILE=65535
 # Ничего лишнего этому демону не нужно: он читает один файл и держит сокеты.
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -416,10 +635,15 @@ Wants=network-online.target
 [Service]
 User=caddy
 Group=caddy
-ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
 Restart=on-abnormal
 RestartSec=3
+# Те же потолки, что у frps, и по той же причине: убитый caddy — это отказ
+# TLS сразу всем именам. Гигабайта хватает с большим запасом (измеренный
+# максимум — 186 МБ на двух сотнях сокетов), и он оставляет место соседу.
+MemoryHigh=1024M
+LimitNOFILE=65535
 # Право слушать 80 и 443 без запуска от root.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
@@ -440,6 +664,17 @@ embed "$CAPY_FILE"
 cat <<'REMOTE_TAIL'
 CAPY_B64
 chmod 0755 /usr/local/bin/colloq-capy
+# Токен Cloudflare — процессу caddy, только со звёздочкой. EnvironmentFile
+# читает systemd от root до сброса прав, ProtectSystem=strict не мешает.
+# Без звёздочки оба файла убираются, чтобы старый токен не пережил переключение.
+if [ "${WILDCARD:-0}" = 1 ]; then
+  install -o root -g caddy -m 0640 /dev/null /etc/caddy/cloudflare.env
+  printf 'CF_TOKEN=%s\n' "${CF_TOKEN}" > /etc/caddy/cloudflare.env
+  mkdir -p /etc/systemd/system/caddy.service.d
+  printf '[Service]\nEnvironmentFile=/etc/caddy/cloudflare.env\n' > /etc/systemd/system/caddy.service.d/cloudflare.conf
+else
+  rm -f /etc/systemd/system/caddy.service.d/cloudflare.conf /etc/caddy/cloudflare.env
+fi
 cat > /etc/systemd/system/colloq-capy.service <<'UNIT'
 [Unit]
 Description=capybara leaderboard for the colloq relay waiting page
@@ -461,6 +696,84 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 UNIT
+
+echo "== зеркало статики"
+base64 -d > /usr/local/bin/colloq-assets <<'ASSETS_B64'
+REMOTE_TAIL
+embed "$ASSETS_FILE"
+cat <<REMOTE_TAIL
+ASSETS_B64
+chmod 0755 /usr/local/bin/colloq-assets
+# Метка в кавычках: \${DOMAIN} уже подставлен здесь, а \$CREDENTIALS_DIRECTORY
+# в комментарии ниже — переменная systemd, и раскрывать её при установке
+# нельзя (под set -u она роняла весь прогон пустым юнитом). Экранировано
+# дважды: этот текст сам идёт через heredoc без кавычек.
+cat > /etc/systemd/system/colloq-assets.service <<'UNIT'
+[Unit]
+Description=static mirror for colloq relay
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=assets
+Group=assets
+Environment=ASSETS_ROOT=/var/lib/colloq-assets
+Environment=ASSETS_PORT=9182
+Environment=ASSETS_DOMAIN=${DOMAIN}
+ExecStart=/usr/bin/python3 /usr/local/bin/colloq-assets
+Restart=always
+RestartSec=3
+# Секрет тот же, что у frps, — и берётся он копией от systemd, а не членством
+# в группе frps: службе нужен один файл, а не право читать каталог демона
+# целиком. Файл появляется в \$CREDENTIALS_DIRECTORY/token и виден только ей.
+LoadCredential=token:/etc/colloq-relay/token
+# Разбор чужого архива: памяти — с запасом на распаковку, но не больше.
+MemoryHigh=256M
+# Каталоги внутри зеркала — 0750, файлы 0640, группа наследуется от setgid на
+# корне: читает их caddy, и больше никто.
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/colloq-assets
+[Install]
+WantedBy=multi-user.target
+UNIT
+REMOTE_TAIL
+
+# Дальше снова буквальный текст: ниже есть и awk с \$4, и python, и подставлять
+# в них ничего не надо.
+cat <<'REMOTE_TAIL'
+
+# Уборка раз в сутки: брошенные имена, обрывки распаковки, прошлые наборы.
+# Куски прежних сборок стареют сами — они переносятся в новый набор только
+# пока им меньше месяца (scripts/relay-assets.py · carry_over).
+cat > /etc/systemd/system/colloq-assets-prune.service <<'UNIT'
+[Unit]
+Description=drop abandoned colloq relay mirrors
+[Service]
+Type=oneshot
+User=assets
+Group=assets
+Environment=ASSETS_ROOT=/var/lib/colloq-assets
+ExecStart=/usr/bin/python3 /usr/local/bin/colloq-assets --prune
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/colloq-assets
+UNIT
+cat > /etc/systemd/system/colloq-assets-prune.timer <<'UNIT'
+[Unit]
+Description=drop abandoned colloq relay mirrors daily
+[Timer]
+OnCalendar=daily
+Persistent=true
+AccuracySec=1h
+[Install]
+WantedBy=timers.target
+UNIT
+
 echo "== память имён"
 cat > /usr/local/bin/colloq-relay-names <<NAMES
 #!/usr/bin/env bash
@@ -510,15 +823,19 @@ AccuracySec=10s
 WantedBy=timers.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now frps caddy colloq-capy colloq-relay-names.timer
+systemctl enable --now frps caddy colloq-capy colloq-assets \
+  colloq-relay-names.timer colloq-assets-prune.timer
 # enable --now не трогает уже запущенное, а скрипт задуман повторяемым:
 # без явного перезапуска второй прогон оставил бы обе службы на старом конфиге.
-systemctl restart frps caddy colloq-capy
+systemctl restart frps caddy colloq-capy colloq-assets
 sleep 3
-systemctl is-active frps caddy colloq-capy | tr '\n' ' '; echo
+systemctl is-active frps caddy colloq-capy colloq-assets | tr '\n' ' '; echo
 
 echo "== слушают"
-ss -lntp | awk 'NR==1 || /:(80|443|7000|8080|9180|7500)\b/{print "  "$4"  "$6}'
+ss -lntp | awk 'NR==1 || /:(80|443|7000|8080|9180|9182|7500)\b/{print "  "$4"  "$6}'
+
+echo "== память"
+free -m | awk 'NR<=3{print "  "$0}'
 
 echo
 echo "секрет для инстансов лежит в /etc/colloq-relay/token"
