@@ -8,7 +8,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AdminEnvironment, EnvironmentAbilities, EnvironmentState } from '@shared/admin'
-import { ENVIRONMENT_NAME } from '@shared/admin'
+import { DEFAULT_PYTHON, ENVIRONMENT_NAME, declaresParent, declaresPython, pythonImage } from '@shared/admin'
+/*
+ * Директивы шапки разбираются в одном месте на всех — в shared/admin.ts.
+ *
+ * Форма создания окружения читает `# colloq: from` и `# colloq: python` тем же
+ * разбором, что и сборка: второй список регулярных выражений разъехался бы с
+ * первым на первой же правке, и панель показывала бы не ту версию, на которой
+ * образ соберётся. Переэкспорт — чтобы соседи по файлу (declaresGpu, buildChain)
+ * читались как одна семья, какой они и являются.
+ */
+export { declaresParent, declaresPython }
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 /**
@@ -149,27 +159,6 @@ export function declaresGpu(source: string): boolean {
   return source.split('\n').some((line) => /^#\s*colloq:\s*gpu$/i.test(line.trim()))
 }
 
-/**
- * Поверх чего строится это окружение — по директиве `# colloq: from <имя>` в
- * шапке, в том же виде, что и `# colloq: gpu`.
- *
- * Слой окружения один, и любая правка списка ставит его целиком заново. Для
- * окружения с torch это три гигабайта колёс и девять минут за добавленный timm.
- * Директива переносит тяжёлое в общий слой: родитель собирается один раз, а
- * дети — за секунды.
- *
- * Имя проверяется тем же выражением, что и всюду: оно становится и путём к
- * файлу, и тегом образа. Не имя — не директива; а несуществующее окружение
- * назвать родителем можно, и тогда откажет сборка, назвав его вслух.
- */
-export function declaresParent(source: string): string | null {
-  for (const line of source.split('\n')) {
-    const found = /^#\s*colloq:\s*from\s+(\S+)\s*$/i.exec(line.trim())
-    if (found) return found[1] ?? null
-  }
-  return null
-}
-
 /** Чем читается список: имя → текст, или null, когда такого окружения нет. */
 export type ReadEnvironment = (name: string) => string | null
 
@@ -224,7 +213,54 @@ export function buildChain(name: string, read: ReadEnvironment = fromDisk): stri
     chain.unshift(current)
     current = declaresParent(source)
   }
+  /*
+   * Версию Python выбирает КОРЕНЬ цепочки, и четвёртый отказ — про это.
+   *
+   * Слой поверх готового образа не меняет интерпретатор: pip в нём ставит
+   * колёса под тот Python, который пришёл из базы. Файл, где написано
+   * `# colloq: from base-gpu` и `# colloq: python 3.12`, обещает ровно то, чего
+   * сборка сделать не может, — и молча собрался бы на версии родителя, а панель
+   * показывала бы 3.12. Та же цена, что у неизвестного родителя: лучше отказать
+   * здесь и назвать обе версии вслух.
+   *
+   * Повтор родительской версии — не конфликт: это лишняя строка, а не ложь.
+   */
+  const root = chain[0] as string
+  const rootPython = declaresPython(read(root) ?? '') ?? DEFAULT_PYTHON
+  for (const step of chain.slice(1)) {
+    const own = declaresPython(read(step) ?? '')
+    if (own !== null && own !== rootPython) {
+      throw new Error(
+        tr('server.environmentAsksForPythonButTheChain.7b21ac', {
+          p0: step,
+          p1: own,
+          p2: root,
+          p3: rootPython,
+        }),
+      )
+    }
+  }
   return chain
+}
+
+/**
+ * На каком Python поедет это окружение: версия корня цепочки, иначе умолчание
+ * Dockerfile.
+ *
+ * Не своя директива, а корневая, потому что версия приходит из базового образа:
+ * `# colloq: python` у листа — это либо повтор корня, либо ложь, и второе
+ * сборка отвергает (buildChain выше). Сломанная цепочка здесь не исключение:
+ * об этом скажет сборка, а панели нужно что-то показать — показывается то, что
+ * просит сам файл.
+ */
+export function pythonOf(name: string, read: ReadEnvironment = fromDisk): string {
+  let root = name
+  try {
+    root = buildChain(name, read)[0] ?? name
+  } catch {
+    root = name
+  }
+  return declaresPython(read(root) ?? '') ?? DEFAULT_PYTHON
 }
 
 /**
@@ -427,21 +463,49 @@ export async function environmentAbilities(): Promise<EnvironmentAbilities> {
 interface ImageFacts {
   bytes: number
   builtAt: number
+  /** `3.12.7` — из самого образа; null, если он про Python молчит. */
+  python: string | null
 }
 
-/** Size and build time of `colloq-kernel:<name>`, or null when never built. */
+/**
+ * Строка формата: размер, дата и переменные образа — по строке на каждую.
+ *
+ * Одним `docker image inspect`, а не двумя: список опрашивает КАЖДОЕ окружение
+ * на каждое открытие экрана и на каждый тик опроса во время сборки, и второй
+ * вызов на строку удвоил бы это в том же цикле событий, который ведёт чужую
+ * пару.
+ */
+const IMAGE_FORMAT = '{{println .Size}}{{println .Created}}{{range .Config.Env}}{{println .}}{{end}}'
+
+/**
+ * Что образ рассказывает о себе сам.
+ *
+ * Версия Python берётся из переменной PYTHON_VERSION, которую официальный
+ * `python:<версия>-slim` записывает в конфигурацию образа, — значит, спросить
+ * её можно не запуская контейнер. Это ВЕРСИЯ СБОРКИ, а не то, что просит файл:
+ * расходятся они ровно тогда, когда файл поправили после сборки, и показать
+ * надо обе.
+ */
+export function parseImageFacts(out: string): ImageFacts | null {
+  const [size, created, ...vars] = out.split('\n')
+  const bytes = Number(size?.trim())
+  const builtAt = Date.parse(created?.trim() ?? '')
+  if (!Number.isFinite(bytes) || !Number.isFinite(builtAt)) return null
+  const found = vars
+    .map((line) => /^PYTHON_VERSION=(\d+\.\d+(?:\.\d+)?)/.exec(line.trim())?.[1])
+    .find((value) => value !== undefined)
+  return { bytes, builtAt, python: found ?? null }
+}
+
+/** Size, build time and Python of `colloq-kernel:<name>`; null when never built. */
 async function imageFacts(name: string): Promise<ImageFacts | null> {
   const res = await run(
     'docker',
-    ['image', 'inspect', `colloq-kernel:${name}`, '--format', '{{.Size}} {{.Created}}'],
+    ['image', 'inspect', `colloq-kernel:${name}`, '--format', IMAGE_FORMAT],
     8000,
   )
   if (res.code !== 0) return null
-  const [size, created] = res.out.trim().split(' ')
-  const bytes = Number(size)
-  const builtAt = Date.parse(created ?? '')
-  if (!Number.isFinite(bytes) || !Number.isFinite(builtAt)) return null
-  return { bytes, builtAt }
+  return parseImageFacts(res.out)
 }
 
 /* --------------------------------------------------------- build state */
@@ -631,6 +695,34 @@ function runStage(
 }
 
 /**
+ * Поверх чего встаёт КОРЕНЬ цепочки: официальный python той версии, которую
+ * просит его файл.
+ *
+ * Передаётся всегда, а не только когда версия не умолчательная, — ровно затем,
+ * чтобы строка команды в журнале называла базовый образ целиком: «на чём это
+ * собрано» человек читает там, а не в Dockerfile.
+ *
+ * KERNEL_PARENT из окружения сервера (оболочка или строка в .env — config.ts
+ * читает его dotenv) сильнее директивы: это способ собрать цепочку на своём
+ * базовом образе, и молча его игнорировать значит собрать не то, что просили.
+ * Но тогда об этом говорится вслух, потому что в панели у окружения будет
+ * стоять версия из директивы, а в образе — чужая.
+ */
+export function rootParentImage(version: string, override?: string): string {
+  const named = override?.trim()
+  return named ? named : pythonImage(version)
+}
+
+function rootParent(build: Build, root: string): string {
+  const asked = pythonImage(pythonOf(root))
+  const chosen = rootParentImage(pythonOf(root), process.env.KERNEL_PARENT)
+  if (chosen !== asked) {
+    push(build, tr('server.kernelParentIsSetInTheServers.4c1d90', { p0: chosen, p1: asked }))
+  }
+  return chosen
+}
+
+/**
  * Build an environment's image, in the background — вместе с цепочкой, на
  * которой оно стоит.
  *
@@ -765,10 +857,11 @@ export async function startBuild(name: string): Promise<void> {
   // собирается, и «Building» в их строке было бы враньём с запертой кнопкой.
   release(chain.slice(0, from))
 
+  const base = rootParent(build, chain[0] as string)
   for (const step of stages) {
     if (build.done) break
     const before = chain[chain.indexOf(step) - 1]
-    if (!(await runStage(build, plan, step, before ? `colloq-kernel:${before}` : null))) break
+    if (!(await runStage(build, plan, step, before ? `colloq-kernel:${before}` : base))) break
   }
 
   build.done = true
@@ -889,6 +982,16 @@ function stateOf(
    */
   if (editedSinceBuild(name, built)) return 'unbuilt'
   /*
+   * Просит одну версию Python, а собрано на другой — тоже «пересобрать».
+   *
+   * Отдельной проверкой, потому что штамп здесь не помогает: директива для pip
+   * комментарий, и `listChanged` её не видит вовсе — то есть смена версии в
+   * шапке не меняет НИЧЕГО в том, чем мы отличаем свежий образ от старого.
+   * Панель показывала бы «Python 3.12 · Ready» над образом с 3.11, а узнавали
+   * бы об этом на первом `match` посреди пары.
+   */
+  if (pythonDrifted(name, built)) return 'unbuilt'
+  /*
    * Родителя пересобрали позже — значит, этот образ стоит на прежнем слое.
    *
    * Список ребёнка не менялся, и по нему всё готово; но torch в нём тот, что
@@ -898,6 +1001,21 @@ function stateOf(
    */
   if (parentBuilt && parentBuilt.builtAt > built.builtAt) return 'unbuilt'
   return 'ready'
+}
+
+/**
+ * Разошлись ли версия из файла и версия в образе.
+ *
+ * Сравниваются минорные версии: образ говорит `3.12.7`, файл просит `3.12` —
+ * это одна и та же версия, и предлагать из-за патча пересборку значит звать на
+ * неё после каждого обновления официального образа. Образ, который про Python
+ * молчит (собран не от python-slim), расхождением не считается: сказать
+ * «пересоберите» на основании незнания — хуже, чем промолчать.
+ */
+function pythonDrifted(name: string, built: ImageFacts): boolean {
+  if (built.python === null) return false
+  const minor = built.python.split('.').slice(0, 2).join('.')
+  return minor !== pythonOf(name)
 }
 
 /** Whether the package list was written after the image was built. */
@@ -923,6 +1041,10 @@ export async function listEnvironments(): Promise<AdminEnvironment[]> {
     return loadRuntimeCatalog().environments.filter(e=>e.current).map(e=>({
       name:e.name,state:'ready',packages:e.packages??[],imageBytes:null,builtAt:null,
       active:e.name===active,error:null,parent:null,gpu:e.gpu,
+      // Версия — только та, которую назвал каталог: образ здесь чужой и
+      // неизменный, спросить его отсюда нечем, а умолчание на этом месте было
+      // бы выдумкой о production-сборке. Не сказано — панель промолчит.
+      python:e.python??'',pythonBuilt:null,
       managed:true,image:e.image,revision:imageRevision(e.image),
     }))
   }
@@ -950,6 +1072,11 @@ export async function listEnvironments(): Promise<AdminEnvironment[]> {
       // же самое, по чему потом решает подъём ядра, — включая унаследованное от
       // родителя.
       gpu: needsGpu(name),
+      // Обе версии: чего просит файл и что получилось в образе. Пока они
+      // совпадают, панель показывает вторую — она точнее (`3.12.7`); разошлись
+      // — первую, вместе с «Needs rebuild», который её и объясняет.
+      python: pythonOf(name),
+      pythonBuilt: built?.python ?? null,
     }
   })
 }

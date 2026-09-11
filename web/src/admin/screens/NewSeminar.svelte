@@ -691,8 +691,12 @@
       размер образа, когда собран. Показать это дешевле, чем объяснять словами,
       и честнее, чем не показывать.
 
-      Версии Python здесь нет намеренно: сервер её не знает, а придумать
-      правдоподобную строчку — ровно тот жанр, который этот экран запрещает.
+      Версия Python — оттуда же, из ответа сервера: он читает её из шапки файла
+      окружения и из самого собранного образа (PYTHON_VERSION в его
+      конфигурации). Раньше её здесь не было именно потому, что придумывать её
+      этот экран не вправе; теперь она известна — и это первое, о чём
+      спрашивают, принося тетрадь с чужого ноутбука. Пустая строка значит «не
+      знаем» (так отвечает опубликованный каталог), и тогда её просто нет.
     -->
     {#if environments && environments.length > 0}
       {@const chosen = environments.find((e) => e.name === environment) ?? null}
@@ -714,6 +718,9 @@
               {/if}
               <span class="ml-auto text-2xs text-muted">
                 {[
+                  chosen.pythonBuilt || chosen.python
+                    ? `Python ${chosen.pythonBuilt ?? chosen.python}`
+                    : null,
                   chosen.imageBytes ? imageSize(chosen.imageBytes) : null,
                   chosen.builtAt ? builtAgo(chosen.builtAt) : null,
                   chosen.revision ? chosen.revision.slice(0, 19) + '…' : null,

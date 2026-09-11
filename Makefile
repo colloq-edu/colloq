@@ -21,6 +21,20 @@ SHELL := /bin/bash
 
 # Каталог со списками пакетов. Одно окружение — один файл.
 ENV_DIR := kernel/environments
+# Версия Python по умолчанию — из самого Dockerfile, а не вторым списком: там
+# стоит `ARG PARENT=python:<версия>-slim-bookworm`, и именно она действует,
+# когда окружение про версию молчит. Своя копия числа разъехалась бы с ней
+# молча — и `make env-show` рассказывал бы про 3.11 над образом с 3.12.
+PY_DEFAULT := $(shell sed -nE 's/^ARG PARENT=python:([0-9]+\.[0-9]+)-.*/\1/p' kernel/Dockerfile | head -1)
+# Какие версии вообще предлагаются — оттуда же, откуда их берёт панель.
+PY_LIST := $(shell sed -nE "s/^export const PYTHON_VERSIONS = \[(.*)\].*/\1/p" shared/admin.ts | tr -d "' " | tr ',' ' ')
+# Разбор двух директив шапки. Для pip это комментарии, для нас — устройство.
+PY_FROM = sed -nE 's/^[[:space:]]*\#[[:space:]]*colloq:[[:space:]]*from[[:space:]]+([^[:space:]]+)[[:space:]]*$$/\1/p'
+PY_PICK = sed -nE 's/^[[:space:]]*\#[[:space:]]*colloq:[[:space:]]*python[[:space:]]+(3\.[0-9]+)[[:space:]]*$$/\1/p'
+# На каком Python поедет окружение: версию задаёт КОРЕНЬ цепочки `# colloq:
+# from`, потому что приходит она из базового образа, а слой поверх готового
+# образа интерпретатор не меняет. Восемь шагов — тот же потолок, что и у сборки.
+PY_OF = py_of() { n="$$1"; i=0; while [ $$i -lt 8 ]; do u=$$($(PY_FROM) $(ENV_DIR)/$$n.txt 2>/dev/null | head -1); if [ -z "$$u" ] || [ ! -f $(ENV_DIR)/$$u.txt ]; then break; fi; n="$$u"; i=$$((i+1)); done; v=$$($(PY_PICK) $(ENV_DIR)/$$n.txt 2>/dev/null | head -1); printf '%s' "$${v:-$(PY_DEFAULT)}"; }
 # Какое окружение сейчас запечено в образ ядра. Пишется в .env, читается compose.
 CURRENT_ENV = $(shell grep -E '^KERNEL_ENV=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ')
 CURRENT_ENV := $(if $(CURRENT_ENV),$(CURRENT_ENV),base)
@@ -567,31 +581,39 @@ vast-adopt: ## Назвать средой машину со старой мет
 
 env-list: ## Какие окружения заведены
 	@printf '$(BOLD)Окружения$(OFF) $(DIM)($(ENV_DIR)/)$(OFF)\n\n'
-	@for f in $(ENV_DIR)/*.txt; do \
+	@$(PY_OF); for f in $(ENV_DIR)/*.txt; do \
 	  name=$$(basename "$$f" .txt); \
 	  n=$$(grep -vE '^\s*(#|-|$$)' "$$f" | grep -c . || true); \
 	  mark=' '; [ "$$name" = "$(CURRENT_ENV)" ] && mark='*'; \
-	  printf '  %s %-14s $(DIM)%s пакетов сверх базы$(OFF)\n' "$$mark" "$$name" "$$n"; \
+	  printf '  %s %-14s $(DIM)Python %s · %s пакетов сверх базы$(OFF)\n' "$$mark" "$$name" "$$(py_of "$$name")" "$$n"; \
 	done
 	@printf '\n$(DIM)* — умолчание для новых семинаров. Сменить: make env-use NAME=<имя>$(OFF)\n'
 
 env-show: ## Что за окружение стоит сейчас и что в нём
-	@printf '$(BOLD)$(CURRENT_ENV)$(OFF) $(DIM)— $(ENV_DIR)/$(CURRENT_ENV).txt$(OFF)\n\n'
+	@$(PY_OF); printf '$(BOLD)$(CURRENT_ENV)$(OFF) $(DIM)— $(ENV_DIR)/$(CURRENT_ENV).txt · Python %s$(OFF)\n\n' "$$(py_of $(CURRENT_ENV))"
 	@out=$$(grep -vE '^\s*(#|$$)' $(ENV_DIR)/$(CURRENT_ENV).txt 2>/dev/null || true); \
 	  if [ -n "$$out" ]; then printf '%s\n' "$$out" | sed 's/^/  /'; \
 	  else printf '  $(DIM)ничего сверх базы$(OFF)\n'; fi
 	@printf '\n$(DIM)База (есть всегда):$(OFF)\n'
 	@grep -vE '^\s*(#|$$)' kernel/requirements.txt | sed 's/^/  /'
 
-env-new: ## Завести окружение. NAME=cv
+env-new: ## Завести окружение. NAME=cv [PYTHON=3.12]
 	@test -n "$(NAME)" || { printf '$(RED)Укажите имя: make env-new NAME=cv$(OFF)\n'; exit 1; }
 	@test ! -f $(ENV_DIR)/$(NAME).txt || { printf '$(RED)$(ENV_DIR)/$(NAME).txt уже есть.$(OFF)\n'; exit 1; }
-	@printf '# Окружение «$(NAME)». Ставится поверх базы из kernel/requirements.txt,\n' > $(ENV_DIR)/$(NAME).txt
+	@test -z "$(PYTHON)" || printf '%s\n' $(PY_LIST) | grep -qx '$(PYTHON)' || { \
+	  printf '$(RED)Python $(PYTHON) не из тех, на которых собирается ядро: $(PY_LIST)$(OFF)\n'; exit 1; }
+	@# Версия — директивой в шапке, и только если её просили НЕ по умолчанию:
+	@# файл без строки и файл со строкой про умолчание значат одно и то же, а
+	@# второй ещё и врёт, если умолчание в Dockerfile однажды поднимут.
+	@: > $(ENV_DIR)/$(NAME).txt
+	@test -z "$(PYTHON)" || test "$(PYTHON)" = "$(PY_DEFAULT)" || \
+	  printf '# colloq: python $(PYTHON)\n#\n' >> $(ENV_DIR)/$(NAME).txt
+	@printf '# Окружение «$(NAME)». Ставится поверх базы из kernel/requirements.txt,\n' >> $(ENV_DIR)/$(NAME).txt
 	@printf '# поэтому numpy/pandas/matplotlib/scikit-learn перечислять не нужно.\n#\n' >> $(ENV_DIR)/$(NAME).txt
 	@printf '# Один пакет на строку, как в обычном requirements.txt:\n#\n' >> $(ENV_DIR)/$(NAME).txt
 	@printf '#   transformers>=4.44\n#   datasets>=2.20\n' >> $(ENV_DIR)/$(NAME).txt
 	@printf '$(BOLD)создан$(OFF) $(ENV_DIR)/$(NAME).txt\n'
-	@printf '$(DIM)впишите пакеты, потом: make env-use NAME=$(NAME)$(OFF)\n'
+	@$(PY_OF); printf '$(DIM)Python %s · впишите пакеты, потом: make env-use NAME=$(NAME)$(OFF)\n' "$$(py_of $(NAME))"
 
 env-build: ## Собрать образ окружения, не переключаясь. NAME=cv
 	@test -n "$(NAME)" || { printf '$(RED)Укажите имя: make env-build NAME=cv$(OFF)\n'; exit 1; }

@@ -489,6 +489,34 @@ export const adminMessages: MessageCatalog = {
     "ru": "Собирайте образы контейнеров с пакетами Python для ваших занятий.",
     "en": "Build container images with the Python packages your classes need."
   },
+  "admin.env.pythonVersion": {
+    "ru": "Версия Python",
+    "en": "Python version"
+  },
+  "admin.env.pythonHint": {
+    "ru": "Соберётся из официального образа python:{version}-slim-bookworm; кнопка пишет это строкой «# colloq: python» в шапку, а про умолчание не пишет ничего.",
+    "en": "Built from the official python:{version}-slim-bookworm image; the button writes a “# colloq: python” line into the header, and writes nothing for the default."
+  },
+  "admin.env.pythonFromParent": {
+    "ru": "Версию задаёт «{parent}» — Python {version}: слой поверх готового образа интерпретатор не меняет.",
+    "en": "“{parent}” decides the version — Python {version}: a layer on top of a built image does not change the interpreter."
+  },
+  "admin.env.pythonFromParentUnknown": {
+    "ru": "Версию задаёт «{parent}»: слой поверх готового образа интерпретатор не меняет.",
+    "en": "“{parent}” decides the version: a layer on top of a built image does not change the interpreter."
+  },
+  "admin.env.pythonNotUnderstood": {
+    "ru": "Строка «{line}» версией не считается: доступны {list}. Окружение соберётся на Python {version}.",
+    "en": "The line “{line}” is not a version: {list} are available. The environment will be built on Python {version}."
+  },
+  "admin.env.pythonConflict": {
+    "ru": "«{parent}» собран на Python {version}, и версию задаёт он: сборка со строкой про другую версию откажет.",
+    "en": "“{parent}” is built on Python {version} and decides the version: a build asking for another one will be refused."
+  },
+  "admin.env.pythonNeedsRebuild": {
+    "ru": "Файл просит Python {version}, а образ собран на {built} — пересоберите",
+    "en": "The file asks for Python {version}; the image was built on {built}. Rebuild it"
+  },
   "admin.new.environment": {
     "ru": "Новое окружение",
     "en": "New environment"

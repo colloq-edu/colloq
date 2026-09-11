@@ -5,6 +5,14 @@ export interface RuntimeEnvironment {
   image: string
   gpu: boolean
   packages?: string[]
+  /**
+   * Версия Python в опубликованном образе, `'3.12'` — если каталог её назвал.
+   *
+   * Необязательна нарочно: образ здесь неизменен и собран снаружи, спросить его
+   * веб-приложение не может, а подставить умолчание — значит написать в панели
+   * версию, которой в образе может не быть. Не сказано — не показываем.
+   */
+  python?: string
   current: boolean
 }
 export interface RuntimeCatalog {
@@ -94,7 +102,7 @@ export function parseRuntimeCatalog(value: unknown): RuntimeCatalog {
   const seen = new Set<string>()
   const entries = row.environments.map((value) => {
     const item = object(value)
-    onlyKeys(item, ['name', 'image', 'gpu', 'packages', 'current'])
+    onlyKeys(item, ['name', 'image', 'gpu', 'packages', 'python', 'current'])
     if (
       typeof item.name !== 'string' ||
       !ENVIRONMENT_NAME.test(item.name) ||
@@ -114,11 +122,17 @@ export function parseRuntimeCatalog(value: unknown): RuntimeCatalog {
         item.packages.some((p) => typeof p !== 'string' || p.length > 512))
     )
       throw new Error('Invalid environment packages')
+    // Версия — та же форма, что и в директиве окружения: «3.12», а не «3.12 или
+    // новее». Панель показывает её как факт об образе, и свободный текст на
+    // этом месте был бы выдумкой о чужой сборке.
+    if ('python' in item && (typeof item.python !== 'string' || !/^\d+\.\d+$/.test(item.python)))
+      throw new Error('Invalid environment Python version')
     return {
       name: item.name,
       image: item.image,
       gpu: item.gpu,
       ...(Array.isArray(item.packages) ? { packages: [...item.packages] as string[] } : {}),
+      ...(typeof item.python === 'string' ? { python: item.python } : {}),
       current: item.current as boolean | undefined,
     }
   })

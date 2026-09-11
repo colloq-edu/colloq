@@ -21,7 +21,17 @@
   import Icon from '@/components/ui/Icon.svelte'
   import { AdminApiError, adminApi } from '@/lib/adminApi'
   import { builtAgo, cn, imageSize } from '@/lib/utils'
-  import { ENVIRONMENT_NAME, type AdminEnvironment, type EnvironmentsState } from '@shared/admin'
+  import {
+    DEFAULT_PYTHON,
+    ENVIRONMENT_NAME,
+    PYTHON_VERSIONS,
+    declaresParent,
+    declaresPython,
+    unreadablePython,
+    withPython,
+    type AdminEnvironment,
+    type EnvironmentsState,
+  } from '@shared/admin'
 
   // Not `state`: a variable by that name breaks the `$state` rune — Svelte
   // reads `$state` as a subscription to a store called `state`.
@@ -334,6 +344,58 @@
       .catch((cause) => (editorErrorText = () => (explain(cause, tr("admin.could.not.read", { p0: env.name })))))
   }
 
+  /* ------------------------------------------------------ версия Python */
+
+  /**
+   * Версия, которую просит черновик, — и та, что задана за него родителем.
+   *
+   * Читается из того же текста, который уедет на сервер, тем же разбором, что и
+   * сборка (shared/admin.ts): отдельное поле формы рядом с редактируемой шапкой
+   * разъехалось бы с ней на первой же правке руками, а правят здесь именно
+   * текст.
+   */
+  const draftParent = $derived(declaresParent(draftSource))
+  const draftPython = $derived(declaresPython(draftSource) ?? DEFAULT_PYTHON)
+  /** Версия родителя — из уже загруженного списка; '' значит «не знаем». */
+  const parentPython = $derived(
+    draftParent === null
+      ? null
+      : ((envs?.environments ?? []).find((e: AdminEnvironment) => e.name === draftParent)?.python ??
+          ''),
+  )
+
+  function pickPython(version: string): void {
+    draftSource = withPython(draftSource, version)
+  }
+
+  /**
+   * Что не так с шапкой черновика — одной строкой, не мешая сохранить.
+   *
+   * Обе беды молчаливые: `# colloq: python 3.8` разбором не считается вовсе
+   * (такого slim-образа нет), а своя версия у окружения поверх чужого образа —
+   * это будущий отказ сборки. Сказать об этом здесь стоит строки; узнать это
+   * из журнала сборки — минут.
+   */
+  const draftWarning = $derived.by<(() => string) | null>(() => {
+    const line = unreadablePython(draftSource)
+    if (line !== null) {
+      return () =>
+        tr('admin.env.pythonNotUnderstood', {
+          line,
+          list: PYTHON_VERSIONS.join(', '),
+          version: draftPython,
+        })
+    }
+    if (draftParent !== null && parentPython && declaresPython(draftSource) !== null) {
+      const own = declaresPython(draftSource)
+      if (own !== parentPython) {
+        return () =>
+          tr('admin.env.pythonConflict', { parent: draftParent, version: parentPython })
+      }
+    }
+    return null
+  })
+
   const nameOk = $derived(ENVIRONMENT_NAME.test(draftName.trim()))
   /** Имя, уже занятое на этом же экране. Правка своего же имени — не занятость. */
   const nameTaken = $derived(
@@ -404,6 +466,32 @@
 
   /* ---------------------------------------------------------- formatting */
 
+
+  /**
+   * Файл просит одну версию, а образ собран на другой.
+   *
+   * Не косметика: директива для pip — комментарий, поэтому смена версии в шапке
+   * не меняет ни одного пакета и «Needs rebuild» от списка не зажигает. Сервер
+   * считает это тем же устареванием (environments.ts · pythonDrifted), а здесь
+   * это решает, ЧТО показать в строке: обещание файла или правду образа.
+   */
+  function pythonStale(env: AdminEnvironment): boolean {
+    if (env.pythonBuilt === null || env.python === '') return false
+    return env.pythonBuilt !== env.python && !env.pythonBuilt.startsWith(`${env.python}.`)
+  }
+
+  /**
+   * «Python 3.12.7» — то, что в образе, пока оно совпадает с просимым, и
+   * «Python 3.13» — то, что просит файл, когда его поправили после сборки.
+   *
+   * null — когда версии нет вовсе: опубликованный каталог может её не назвать,
+   * и написать на этом месте умолчание значило бы выдумать версию чужого
+   * образа.
+   */
+  function pythonLabel(env: AdminEnvironment): string | null {
+    const shown = env.pythonBuilt !== null && !pythonStale(env) ? env.pythonBuilt : env.python
+    return shown === '' ? null : `Python ${shown}`
+  }
 
   /** A stable colour per environment, so a row is recognisable at a glance. */
   function swatch(name: string): string {
@@ -540,10 +628,16 @@
                 и есть ответ на «сверх чего эти пакеты», а строка «4 packages
                 over base-gpu» объясняет заодно, почему torch в списке нет, а в
                 комнате он есть.
+
+                Слово «Python» здесь стояло голым, без версии, — а версия и есть
+                то, ради чего на эту строку смотрят: тетрадь с `match` на 3.9 не
+                поедет, и узнать об этом до пары дешевле. Показывается версия
+                СОБРАННОГО образа, пока она совпадает с просимой в файле; иначе
+                — просимая, и рядом «Needs rebuild», который её объясняет.
               -->
               <p class="truncate text-2xs text-muted">
                 {[
-                  'Python',
+                  pythonLabel(env),
                   env.imageBytes === null ? null : imageSize(env.imageBytes),
                   env.builtAt === null ? null : builtAgo(env.builtAt),
                   env.revision ? env.revision.slice(0, 19) + '…' : null,
@@ -599,9 +693,14 @@
                 -->
                 <span
                   class={cn(PILL, 'text-warning')}
-                  title={env.parent
-                    ? tr("admin.the.package.list.changed.or.the.parent.image.was.rebuilt", { p0: env.parent })
-                    : tr("admin.the.package.list.changed.after.the.build")}
+                  title={pythonStale(env)
+                    ? tr('admin.env.pythonNeedsRebuild', {
+                        version: env.python,
+                        built: env.pythonBuilt ?? '',
+                      })
+                    : env.parent
+                      ? tr("admin.the.package.list.changed.or.the.parent.image.was.rebuilt", { p0: env.parent })
+                      : tr("admin.the.package.list.changed.after.the.build")}
                 >
                   {tr("admin.needs.rebuild")}
                 </span>
@@ -793,6 +892,57 @@
               {/if}
             </p>
           </div>
+          <!--
+            Версия Python — выбором, а не строчкой, которую надо помнить
+            наизусть.
+
+            Пишется она всё равно в текст ниже (`# colloq: python 3.12`), и это
+            намеренно: файл остаётся единственной правдой об окружении, а кнопки
+            — способом её набрать. Поэтому и читается отсюда же: вписанная
+            руками директива подсвечивает свою кнопку.
+
+            Умолчание директивой не записывается: файл без строки и файл со
+            строкой про умолчание значат одно и то же, а второй ещё и врёт, если
+            умолчание однажды поднимут.
+          -->
+          <div class="flex flex-col gap-[7px]">
+            <span class="text-2xs font-bold uppercase tracking-label text-muted">
+              {tr('admin.env.pythonVersion')}
+            </span>
+            <div class="flex flex-wrap gap-1.5">
+              {#each PYTHON_VERSIONS as version (version)}
+                <button
+                  type="button"
+                  class={cn(
+                    BTN,
+                    'font-mono normal-case tracking-normal',
+                    (draftParent === null ? draftPython === version : parentPython === version) &&
+                      'border-accent bg-accent/10 text-accent-text',
+                  )}
+                  aria-pressed={draftParent === null && draftPython === version}
+                  disabled={draftParent !== null || !editorReady}
+                  onclick={() => pickPython(version)}
+                >
+                  {version}
+                </button>
+              {/each}
+            </div>
+            <p class="text-2xs text-muted">
+              {#if draftParent !== null}
+                <!-- Слой поверх готового образа интерпретатор не меняет: pip
+                     в нём ставит колёса под тот Python, что пришёл из базы.
+                     Поэтому кнопки заперты, а не просто ничего не делают. -->
+                {parentPython
+                  ? tr('admin.env.pythonFromParent', {
+                      parent: draftParent,
+                      version: parentPython,
+                    })
+                  : tr('admin.env.pythonFromParentUnknown', { parent: draftParent })}
+              {:else}
+                {tr('admin.env.pythonHint', { version: draftPython })}
+              {/if}
+            </p>
+          </div>
         {/if}
 
         <div class="flex flex-col gap-[7px]">
@@ -816,8 +966,17 @@
       </div>
 
       <div class="flex items-center gap-2 border-t border-line px-5 py-3.5">
-        <p class={cn('min-w-0 flex-1 text-2xs', editorError ? 'text-danger' : 'text-muted')}>
-          {editorError ?? tr("admin.save.the.package.list.then.build.the.environment.to.install.its.p")}
+        <!-- Отказ важнее предупреждения, предупреждение важнее подсказки: одна
+             строка на троих, и занимает её самое срочное из сказанного. -->
+        <p
+          class={cn(
+            'min-w-0 flex-1 text-2xs',
+            editorError ? 'text-danger' : draftWarning ? 'text-warning' : 'text-muted',
+          )}
+        >
+          {editorError ??
+            draftWarning?.() ??
+            tr("admin.save.the.package.list.then.build.the.environment.to.install.its.p")}
         </p>
         <button class={BTN} onclick={() => ((editing = null), (creating = false))}>{tr("admin.cancel")}</button>
         <button

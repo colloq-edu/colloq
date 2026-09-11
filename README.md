@@ -142,6 +142,22 @@ access to Docker. It is intended for trusted workstation development. Production
 uses the private broker described below. Both paths keep notebooks and uploaded
 files across app restarts; restarting a kernel loses its Python variables.
 
+**An environment is a file.** `kernel/environments/<name>.txt` is a pip
+requirements list, and three header lines are directives rather than comments:
+`# colloq: gpu` claims an exclusive GPU slice for every room on it,
+`# colloq: from <name>` builds this image on another environment's image instead
+of the base, and `# colloq: python 3.12` chooses the interpreter — 3.10 to 3.13,
+defaulting to the `ARG PARENT` version in `kernel/Dockerfile`. pip treats all
+three as comments, so they install nothing and do not mark a built image stale.
+Only the **root** of a `from` chain decides the Python version: a layer on top
+of a built image installs wheels for the interpreter it inherited and cannot
+replace it, so a child that asks for a different version is refused by name
+before Docker is started. `make env-new NAME=cv PYTHON=3.12` writes the
+directive, `make env-list` and `make env-show` print the resolved version, and
+the Environments screen shows the version of the **built** image beside its
+size — falling back to the version the file asks for, with the usual rebuild
+mark, once the two disagree.
+
 ### Frontend build modes
 
 Both build modes produce a minified production frontend with lazy screens,

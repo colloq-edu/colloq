@@ -1257,6 +1257,14 @@ export const serverMessages: MessageCatalog = {
     "ru": "окружение «{p0}» из этой цепочки уже собирается — дождитесь конца",
     "en": "environment “{p0}” in this chain is already building. Wait for it to finish"
   },
+  "server.environmentAsksForPythonButTheChain.7b21ac": {
+    "ru": "окружение «{p0}» просит Python {p1}, но версию выбирает корень цепочки — «{p2}» с Python {p3}. Уберите строку либо соберите «{p0}» отдельно, без `# colloq: from`",
+    "en": "environment “{p0}” asks for Python {p1}, but the chain root decides the version — “{p2}” with Python {p3}. Drop the line, or build “{p0}” on its own, without `# colloq: from`"
+  },
+  "server.kernelParentIsSetInTheServers.4c1d90": {
+    "ru": "— KERNEL_PARENT={p0} задан в окружении сервера и сильнее директивы: собираем на нём, а не на {p1}",
+    "en": "— KERNEL_PARENT={p0} is set in the server’s environment and outranks the directive: building on it, not on {p1}"
+  },
   "server.buildFinished.ce23d0": {
     "ru": "— сборка завершена",
     "en": "— build finished"
