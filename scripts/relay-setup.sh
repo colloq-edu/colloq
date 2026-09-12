@@ -351,6 +351,67 @@ else
 		on_demand
 	}"
 fi
+# Чей сертификат. По умолчанию — Let's Encrypt, как у caddy из коробки. Но
+# LE живёт за Cloudflare, а у машины на Cogent (relay2 в Эстонии, 12.09.2026)
+# до Cloudflare по IPv4 не доходит вовсе, по IPv6 — через раз: у Cogent с
+# Cloudflare давний спор о пиринге. ZeroSSL и Google оттуда открыты. Файл
+# /etc/colloq-relay/acme.env на машине (ACME_DIR, ACME_EMAIL, ACME_EAB_KID,
+# ACME_EAB_KEY) переключает удостоверяющий центр; ZeroSSL выдаёт EAB по
+# одному письму: POST https://api.zerossl.com/acme/eab-credentials-email
+# -d email=… . Файла нет — Let's Encrypt.
+# MTU исходящего пути. На relay2 (Cogent) до Cloudflare — а за ним Let's
+# Encrypt — пакеты в 1500 байт глохнут: ICMP «фрагментируй» по дороге
+# теряется, TLS-рукопожатие проходит, а ответ HTTP не приходит никогда
+# (12.09.2026, найдено перебором: с mtu 1300 на маршруте LE отвечает за
+# полсекунды). Число в /etc/colloq-relay/path-mtu вешается на маршруты по
+# умолчанию (v4 и v6) службой при каждой загрузке; файла нет — ничего не
+# меняется. Интерфейсу MTU не трогаем: он же принимает кадры студентов.
+if [ -s /etc/colloq-relay/path-mtu ]; then
+  PATH_MTU=$(tr -dc '0-9' < /etc/colloq-relay/path-mtu)
+  cat > /usr/local/sbin/colloq-relay-mtu <<'MTU'
+#!/bin/sh
+# Ограничить MTU маршрутов по умолчанию числом из /etc/colloq-relay/path-mtu.
+mtu=$(tr -dc '0-9' < /etc/colloq-relay/path-mtu)
+[ -n "$mtu" ] || exit 0
+ip -4 route show default | while read -r line; do
+  # shellcheck disable=SC2086
+  ip -4 route change $line mtu "$mtu"
+done
+ip -6 route show default | sed 's/ expires [^ ]*//; s/ pref [^ ]*//; s/ nhid [^ ]*//' | while read -r line; do
+  # shellcheck disable=SC2086
+  ip -6 route change $line mtu "$mtu" 2>/dev/null || true
+done
+MTU
+  chmod 755 /usr/local/sbin/colloq-relay-mtu
+  cat > /etc/systemd/system/colloq-relay-mtu.service <<UNIT
+[Unit]
+Description=path MTU ${PATH_MTU} on default routes for colloq relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/colloq-relay-mtu
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now colloq-relay-mtu.service >/dev/null 2>&1 || true
+fi
+
+ACME_BLOCK=""
+if [ -s /etc/colloq-relay/acme.env ]; then
+  # shellcheck disable=SC1091
+  . /etc/colloq-relay/acme.env
+  ACME_BLOCK="
+	email ${ACME_EMAIL}
+	cert_issuer acme {
+		dir ${ACME_DIR}
+		eab ${ACME_EAB_KID} ${ACME_EAB_KEY}
+	}"
+fi
 cat > /etc/caddy/Caddyfile <<CONF
 {
 	# Сертификат берётся при первом обращении к имени, а не заранее на всю
@@ -359,7 +420,7 @@ cat > /etc/caddy/Caddyfile <<CONF
 	# и лимиты Let's Encrypt кончились бы за вечер.
 	on_demand_tls {
 		ask http://127.0.0.1:9180/allow
-	}
+	}${ACME_BLOCK}
 }
 
 # Кто достоин сертификата. Отдельный сайт на петле, потому что caddy

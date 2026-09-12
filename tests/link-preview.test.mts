@@ -66,7 +66,7 @@ test('ссылка на комнату несёт имя занятия, кар�
   assert.ok((meta(html, 'og:image') ?? '').startsWith(`${origin}/og/rooms/`))
   assert.equal(meta(html, 'og:image:width'), '1200')
   assert.match(html, /<meta name="twitter:card" content="summary_large_image">/)
-  assert.match(meta(html, 'og:description') ?? '', /Вы входите на занятие/)
+  assert.match(meta(html, 'og:description') ?? '', /Занятие в Colloq/)
   // Страница осталась той же: язык, корень приложения.
   assert.match(html, /<meta name="colloq-language" content="ru">/)
   assert.match(html, /<div id="app">/)

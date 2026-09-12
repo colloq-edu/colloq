@@ -3370,8 +3370,8 @@ export const serverMessages: MessageCatalog = {
     "en": "Run lectures, write code together and review student work. Notebook, slides and tasks behind one link, no sign-up for students."
   },
   "server.linkPreview.roomDescription": {
-    "ru": "Вы входите на занятие. Учётная запись не нужна: введите имя — и вы в комнате.",
-    "en": "You are joining a class. No account needed: type your name and you are in."
+    "ru": "Занятие в Colloq: общий ноутбук, слайды и задания по одной ссылке.",
+    "en": "A class in Colloq: shared notebook, slides and tasks behind one link."
   },
   "server.linkPreview.imageAlt": {
     "ru": "Экран входа Colloq: «Вы входите в…», поле для имени и кнопка «Войти на занятие»",
