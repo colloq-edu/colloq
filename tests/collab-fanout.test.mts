@@ -220,11 +220,26 @@ test('продления присутствия за окно уезжают о�
   for (const face of faces) face.destroy()
 })
 
-test('в окне с одним объявившимся его собственное лицо ему обратно не едет', async () => {
+test('одинокому объявившемуся его лицо возвращается — иначе вкладка рвёт сокет', async () => {
+  /*
+   * WebsocketProvider закрывает соединение, если тридцать секунд не получал от
+   * сервера ничего: протокольные пинги браузеру не видны, и в молчащей
+   * комнате его держит только эхо собственного продления присутствия. Одна
+   * вкладка в комнате без эха переподключалась каждые тридцать секунд.
+   */
   const id = 'fanout-self'
   createSession(id, 'Сам себе', null)
   getSessionDoc(id)
-  const room = Array.from({ length: 3 }, () => socket())
+  const lone = socket()
+  handleCollabSocket(lone.ws, id, 'participant', 'p_self_lone')
+  const loneFace = new Awareness(new Y.Doc())
+  loneFace.setLocalStateField('user', { id: 'p_self_lone', name: 'Одна вкладка' })
+  lone.fire('message', faceFrame(loneFace))
+  await faceWindow()
+  assert.equal(faceSent(lone).length, 1, 'одинокой вкладке не вернули её лицо')
+
+  // И в компании то же самое: своё — обратно, соседям — по разу.
+  const room = Array.from({ length: 2 }, () => socket())
   const faces = room.map(() => new Awareness(new Y.Doc()))
   for (const [i, seat] of room.entries()) {
     handleCollabSocket(seat.ws, id, 'participant', `p_self_${i}`)
@@ -232,18 +247,18 @@ test('в окне с одним объявившимся его собствен
     seat.fire('message', faceFrame(faces[i]))
   }
   await faceWindow()
-  for (const seat of room) seat.sent.length = 0
+  for (const seat of [lone, ...room]) seat.sent.length = 0
 
-  faces[0].setLocalStateField('user', { id: 'p_self_0', name: 'Вкладка 0', at: 1 })
-  room[0].fire('message', faceFrame(faces[0]))
+  loneFace.setLocalStateField('user', { id: 'p_self_lone', name: 'Одна вкладка', at: 1 })
+  lone.fire('message', faceFrame(loneFace))
   await faceWindow()
 
-  assert.equal(faceSent(room[0]).length, 0, 'объявившемуся вернули его же лицо')
-  assert.equal(faceSent(room[1]).length, 1, 'соседу лицо не доехало')
-  assert.equal(faceSent(room[2]).length, 1, 'второму соседу лицо не доехало')
+  assert.equal(faceSent(lone).length, 1, 'объявившемуся не вернули его лицо')
+  assert.equal(faceSent(room[0]).length, 1, 'соседу лицо не доехало')
+  assert.equal(faceSent(room[1]).length, 1, 'второму соседу лицо не доехало')
 
-  for (const seat of room) seat.close()
-  for (const face of faces) face.destroy()
+  for (const seat of [lone, ...room]) seat.close()
+  for (const face of [loneFace, ...faces]) face.destroy()
 })
 
 /* ------------------------------------------------- S-7: список лиц вошедшему */

@@ -181,15 +181,13 @@ interface DocEntry extends SessionDoc {
    * Кадры, ещё не уехавшие в комнату, — см. `scheduleFlush` и `scheduleFaces`.
    *
    * Правки склеиваются на такт, присутствие — на окно (`FACES_WINDOW_MS`), и
-   * очереди у них поэтому разные. `from` у присутствия — происхождения, из-за
-   * которых оно накопилось: если за окно объявился ровно один сокет, его же
-   * лицо ему обратно не едет.
+   * очереди у них поэтому разные. Кадр присутствия едет всем, отправителю
+   * тоже — почему, см. `sendAwareness`.
    */
   outbox: {
     updates: Uint8Array[]
     queued: boolean
     faces: Set<number>
-    from: Set<unknown>
     facesTimer: NodeJS.Timeout | null
   }
   /**
@@ -448,7 +446,6 @@ function scheduleFaces(entry: DocEntry): void {
     } catch (err) {
       console.error(`[collab] could not deliver presence to ${entry.sessionId}`, err)
       entry.outbox.faces.clear()
-      entry.outbox.from.clear()
     }
   }, FACES_WINDOW_MS)
   // Курсоры не повод держать процесс живым: этот модуль импортируют и тесты, и
@@ -462,7 +459,6 @@ function stopFaces(entry: DocEntry): void {
   if (entry.outbox.facesTimer) clearTimeout(entry.outbox.facesTimer)
   entry.outbox.facesTimer = null
   entry.outbox.faces.clear()
-  entry.outbox.from.clear()
 }
 
 function flushRoom(entry: DocEntry): void {
@@ -485,11 +481,9 @@ function flushRoom(entry: DocEntry): void {
 
 function flushFaces(entry: DocEntry): void {
   const faces = entry.outbox.faces
-  const from = entry.outbox.from
   entry.outbox.faces = new Set()
-  entry.outbox.from = new Set()
   if (entry.conns.size === 0 || faces.size === 0) return
-  sendAwareness(entry, [...faces], from)
+  sendAwareness(entry, [...faces])
 }
 
 const mergeOf = (batch: Uint8Array[]): Uint8Array =>
@@ -534,7 +528,7 @@ function sendUpdates(entry: DocEntry, batch: Uint8Array[]): void {
   for (const conn of entry.conns.keys()) send(entry, conn, whole)
 }
 
-function sendAwareness(entry: DocEntry, clients: number[], from: Set<unknown>): void {
+function sendAwareness(entry: DocEntry, clients: number[]): void {
   const encoder = encoding.createEncoder()
   encoding.writeVarUint(encoder, MESSAGE_AWARENESS)
   encoding.writeVarUint8Array(
@@ -543,21 +537,19 @@ function sendAwareness(entry: DocEntry, clients: number[], from: Set<unknown>): 
   )
   const message = encoding.toUint8Array(encoder)
   /*
-   * Своё лицо обратно не едет — но только когда за окно объявился ровно один
-   * сокет. Это обычный случай молчащей комнаты: продление жизни приходит по
-   * одному, и без этой строки каждое пятнадцатисекундное «я ещё здесь»
-   * возвращалось бы отправителю.
+   * Один кадр на всех — отправителю в том числе, и это не небрежность.
    *
-   * Когда за окно шевельнулось несколько, кадр один на всех, и вычитать себя из
-   * него значило бы кодировать его заново на каждого получателя — дороже, чем
-   * лишние полсотни байт тому, кто их и так знает: `applyAwarenessUpdate`
-   * пропускает состояние со своим же тактом.
+   * Вкладка-клиент (`WebsocketProvider`) закрывает сокет сама, если тридцать
+   * секунд не получала от сервера ни одного сообщения: протокольные пинги
+   * браузеру не видны, и единственное, на что она рассчитывает в молчащей
+   * комнате, — эхо собственного «я ещё здесь», которое присутствие шлёт раз в
+   * пятнадцать секунд. Пока эхо вычиталось (12.09.2026, «своё лицо обратно
+   * не едет»), одинокая вкладка рвала и поднимала соединение каждые
+   * тридцать секунд — «[room …] opened» в журнале шло метрономом, а в шапке
+   * мигало «Восстанавливаем связь». Полсотни байт раз в пятнадцать секунд
+   * дешевле: `applyAwarenessUpdate` состояние со своим же тактом пропускает.
    */
-  const alone = from.size === 1 ? [...from][0] : undefined
-  for (const conn of entry.conns.keys()) {
-    if (conn === alone) continue
-    send(entry, conn, message, 'awareness')
-  }
+  for (const conn of entry.conns.keys()) send(entry, conn, message, 'awareness')
 }
 
 /**
@@ -605,7 +597,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     conns: new Map(),
     dispose: bindPersistence(sessionId, doc),
     unwatch: () => {},
-    outbox: { updates: [], queued: false, faces: new Set(), from: new Set(), facesTimer: null },
+    outbox: { updates: [], queued: false, faces: new Set(), facesTimer: null },
     coldFrame: null,
     welcomeFaces: null,
     pingTimer: null,
@@ -875,7 +867,6 @@ function getEntry(sessionId: string, title?: string): DocEntry {
       for (const id of changes.added) entry.outbox.faces.add(id)
       for (const id of changes.updated) entry.outbox.faces.add(id)
       for (const id of changes.removed) entry.outbox.faces.add(id)
-      entry.outbox.from.add(origin)
       // Список лиц для входящего собран из состояния, которое только что стало
       // другим: пересобрать. После `pinRole` — он правит состояние молча.
       entry.welcomeFaces = null
