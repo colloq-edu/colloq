@@ -18,12 +18,14 @@ import zlib from 'node:zlib'
 import { preferredEncodings, type Encoding } from './http-encoding.js'
 import { precompressedStatic } from './precompressed-static.js'
 import { etagMatches, frontendPage } from './frontend-html.js'
+import { linkPreview } from './link-preview.js'
+import { roomCardPng } from './og-card.js'
 import { getInstanceLanguage } from './admin/settings.js'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { sameOrigin, slideStaffCookie } from './admin/auth.js'
 import { markDevice } from './bans.js'
 import { aiEnabled, config } from './config.js'
-import { db } from './db.js'
+import { db, getSession } from './db.js'
 import { activeName, listEnvironments } from './environments.js'
 import { SECURITY_HEADERS } from './headers.js'
 import { jupyterReachable } from './kernel/jupyter.js'
@@ -499,19 +501,72 @@ const NOINDEX = new RegExp(
  * За ретранслятором такой же отдаёт он сам, до туннеля; в прямом режиме
  * (`make host-direct`) его некому отдать, кроме нас.
  */
+/*
+ * Разворачиватели ссылок — не поисковики, и им можно всё.
+ *
+ * Telegram (представляется ещё и Twitterbot), WhatsApp, iMessage, Slack и
+ * Discord перед тем, как собрать карточку, читают robots.txt и смотрят на
+ * X-Robots-Tag; закрытый адрес они оставляют голой ссылкой — так и было с
+ * комнатами до 12.09.2026. Индексировать они ничего не индексируют: берут из
+ * `<head>` имя занятия и картинку (link-preview.ts) и уходят. Тот же список
+ * стоит в robots.txt ретранслятора (scripts/relay-setup.sh) — он отвечает до
+ * туннеля.
+ */
+export const LINK_PREVIEW_AGENTS = [
+  'TelegramBot',
+  'Twitterbot',
+  'facebookexternalhit',
+  'Facebot',
+  'WhatsApp',
+  'Slackbot-LinkExpanding',
+  'Discordbot',
+  'LinkedInBot',
+]
+const LINK_PREVIEW_AGENT = new RegExp(LINK_PREVIEW_AGENTS.join('|'), 'i')
+
+export function isLinkPreviewAgent(userAgent: string | undefined): boolean {
+  return userAgent !== undefined && LINK_PREVIEW_AGENT.test(userAgent)
+}
+
+/*
+ * Картинка карточки комнаты — см. og-card.ts. Час в кэше: за ней приходят
+ * мессенджеры, и приходят они по адресу с версией (link-preview.ts), так что
+ * переименование комнаты меняет адрес, а не ждёт истечения.
+ */
+app.get('/og/rooms/:id.png', (req, res, next) => {
+  const session = getSession(req.params.id)
+  if (!session) {
+    res.status(404).type('text/plain').send(tr('common.notFound'))
+    return
+  }
+  const host = config.publicUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '')
+  roomCardPng({ name: session.name, createdAt: session.createdAt, host, language: getInstanceLanguage() })
+    .then((png) => {
+      res.setHeader('Cache-Control', 'public, max-age=3600')
+      res.type('png').send(png)
+    })
+    .catch(next)
+})
+
 app.get('/robots.txt', (_req, res) => {
   res
     .type('text/plain')
-    .send(`User-agent: *\n${NOINDEX_PATHS.map((path) => `Disallow: ${path}`).join('\n')}\n`)
+    .send(
+      `${LINK_PREVIEW_AGENTS.map((agent) => `User-agent: ${agent}`).join('\n')}\nAllow: /\n\n` +
+        `User-agent: *\n${NOINDEX_PATHS.map((path) => `Disallow: ${path}`).join('\n')}\n`,
+    )
 })
 
 /*
  * Заголовок, а не только `Disallow`: закрытый в robots.txt адрес поисковик всё
  * равно вправе показать в выдаче по чужой ссылке — `noindex` это уже ответ, а
- * не просьба не заходить.
+ * не просьба не заходить. Разворачивателю ссылок заголовок не ставится — см.
+ * LINK_PREVIEW_AGENTS.
  */
 app.use((req, res, next) => {
-  if (NOINDEX.test(req.path)) res.setHeader('X-Robots-Tag', 'noindex, nofollow')
+  if (NOINDEX.test(req.path) && !isLinkPreviewAgent(req.headers['user-agent'])) {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow')
+  }
   next()
 })
 
@@ -533,7 +588,11 @@ if (config.staticDir) {
   const sendFrontend = (req: Request, res: Response, next: NextFunction): void => {
     markDevice(req, res)
     const language = getInstanceLanguage()
-    void frontendPage(indexFile, language).then((page) => {
+    // Заголовок вкладки и карточка ссылки — по адресу: у комнаты своё имя
+    // (link-preview.ts), у всего остального — общая карточка Colloq.
+    void linkPreview(req.path, language, staticDir)
+      .then((extras) => frontendPage(indexFile, language, extras))
+      .then((page) => {
       res.setHeader('Cache-Control', 'no-cache')
       res.setHeader('Content-Language', language)
       res.setHeader('ETag', page.etag)

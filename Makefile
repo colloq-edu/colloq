@@ -54,7 +54,7 @@ OFF  := \033[0m
 # Все цели — .PHONY, и это не формальность: рядом лежит каталог `site/`, из-за
 # которого `make site` печатал «site is up to date» и не делал ничего — ни
 # страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
-.PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell \
+.PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell activity \
         service-install service-restart service-stop service-status service-logs \
         host host-direct relay-setup relay-page tunnel-setup site ui sync load course \
         vast-up vast-status vast-sync vast-logs vast-down vast-adopt \
@@ -421,6 +421,13 @@ service-status: ## Жива ли служба и готова ли вести с
 
 service-logs: ## Журнал службы (Ctrl+C — выйти)
 	@./scripts/service.sh logs
+
+## ----------------------------------------------------------------- учёт
+
+activity: .env ## Активность семинара — в Google-таблицу. ROOM=id (или ALL=1); REPLACE=1 — пересчитать
+	@# Строка на человека на семинар, лист «Сводка» считает итог сам. Куда —
+	@# ACTIVITY_SHEET_ID в .env; завести таблицу: scripts/activity-sheet.py --create «название».
+	@python3 scripts/activity-sheet.py $(ROOM) $(if $(ALL),--all) $(if $(REPLACE),--replace)
 
 ## ----------------------------------------------------------------- наружу
 

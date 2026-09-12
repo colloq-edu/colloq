@@ -8,10 +8,39 @@ import type { Encoding } from './http-encoding.js'
 const brotliCompress = promisify(zlib.brotliCompress)
 const gzipCompress = promisify(zlib.gzip)
 
+/**
+ * Что в странице зависит от адреса: заголовок вкладки и теги карточки ссылки.
+ *
+ * Собранный index.html один на все адреса, а мессенджеру, который разворачивает
+ * ссылку на комнату, нужно имя занятия — его знает только сервер
+ * (link-preview.ts). `head` вставляется перед `</head>` как есть: экранирует
+ * тот, кто его собрал.
+ */
+export interface PageExtras {
+  readonly title?: string
+  readonly head?: string
+}
+
 /** Small public bootstrap data: the browser need not fetch it before mounting. */
-export function withInitialLanguage(html: string, language: Locale): string {
+export function withInitialLanguage(html: string, language: Locale, extras: PageExtras = {}): string {
   const locale = normalizeLocale(language)
   const meta = `<meta name="colloq-language" content="${locale}">`
+  if (extras.title !== undefined) {
+    const title = extras.title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    html = html.replace(/<title>[^<]*<\/title>/i, () => `<title>${title}</title>`)
+  }
+  /*
+   * Карточка ссылки — в самое начало head, сразу за кодировкой: у собранной
+   * страницы до `</head>` двенадцать килобайт стилей и скриптов, а сколько
+   * читает разворачиватель ссылок в чате, нигде не написано.
+   */
+  if (extras.head) {
+    html = /<meta\s+charset=[^>]*>/i.test(html)
+      ? html.replace(/<meta\s+charset=[^>]*>/i, (charset) => charset + extras.head)
+      : /<head\b[^>]*>/i.test(html)
+        ? html.replace(/<head\b[^>]*>/i, (head) => head + extras.head)
+        : extras.head + html
+  }
   const localized = html.replace(/<html\b([^>]*)>/i, (_tag, attributes: string) => {
     const next = /\blang\s*=/i.test(attributes)
       ? attributes.replace(/\blang\s*=\s*(['"])[^'"]*\1/i, `lang="${locale}"`)
@@ -49,6 +78,14 @@ export interface FrontendPage {
 }
 
 const pages = new Map<string, { stamp: string; page: Promise<FrontendPage> }>()
+/*
+ * Потолок кэша. Вариантов страницы стало не два на язык, а по одному на
+ * комнату (заголовок и карточка ссылки — свои у каждой), и без потолка
+ * инстанс с тысячей семинаров за семестр держал бы тысячу сжатых копий
+ * одного файла. Вытесняется самая давняя; на курсе в десяток текущих комнат
+ * до вытеснения дело не доходит.
+ */
+const MAX_PAGES = 256
 let builds = 0
 
 /** Сколько раз страницу действительно собирали: этим тест и ловит пересжатие. */
@@ -56,14 +93,22 @@ export function frontendPageBuilds(): number {
   return builds
 }
 
-export async function frontendPage(file: string, language: Locale): Promise<FrontendPage> {
+export async function frontendPage(
+  file: string,
+  language: Locale,
+  extras: PageExtras = {},
+): Promise<FrontendPage> {
   const locale = normalizeLocale(language)
   const info = await stat(file)
   const stamp = `${info.mtimeMs}:${info.size}`
-  const key = `${file} ${locale}`
+  const key = `${file} ${locale} ${extras.title ?? ''}\u0000${extras.head ?? ''}`
   const known = pages.get(key)
   if (known && known.stamp === stamp) return known.page
-  const page = buildPage(file, locale)
+  const page = buildPage(file, locale, extras)
+  if (pages.size >= MAX_PAGES) {
+    const oldest = pages.keys().next().value
+    if (oldest !== undefined) pages.delete(oldest)
+  }
   pages.set(key, { stamp, page })
   // Отказ чтения не должен запомниться навсегда: следующий запрос спросит снова.
   page.catch(() => {
@@ -72,8 +117,8 @@ export async function frontendPage(file: string, language: Locale): Promise<Fron
   return page
 }
 
-async function buildPage(file: string, locale: Locale): Promise<FrontendPage> {
-  const body = Buffer.from(withInitialLanguage(await readFile(file, 'utf8'), locale), 'utf8')
+async function buildPage(file: string, locale: Locale, extras: PageExtras): Promise<FrontendPage> {
+  const body = Buffer.from(withInitialLanguage(await readFile(file, 'utf8'), locale, extras), 'utf8')
   const [br, gzip] = await Promise.all([
     brotliCompress(body, {
       params: {

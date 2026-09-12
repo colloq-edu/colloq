@@ -3360,5 +3360,21 @@ export const serverMessages: MessageCatalog = {
   "server.agent.prompt.nowHead": {
     "ru": "Вот с чем работает комната прямо сейчас:",
     "en": "Here is what the room is working with right now:"
+  },
+  "server.linkPreview.title": {
+    "ru": "Colloq — одна ссылка на всё занятие",
+    "en": "Colloq — one link for the whole class"
+  },
+  "server.linkPreview.description": {
+    "ru": "Проводите лекции, пишите код вместе и разбирайте решения студентов. Ноутбук, слайды и задания — по одной ссылке, без регистрации для студентов.",
+    "en": "Run lectures, write code together and review student work. Notebook, slides and tasks behind one link, no sign-up for students."
+  },
+  "server.linkPreview.roomDescription": {
+    "ru": "Вы входите на занятие. Учётная запись не нужна: введите имя — и вы в комнате.",
+    "en": "You are joining a class. No account needed: type your name and you are in."
+  },
+  "server.linkPreview.imageAlt": {
+    "ru": "Экран входа Colloq: «Вы входите в…», поле для имени и кнопка «Войти на занятие»",
+    "en": "Colloq join screen: “You are entering…”, a name field and a “Join the class” button"
   }
 }

@@ -37,6 +37,8 @@ ENV NODE_ENV=production
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server/dist ./dist
+# Шрифты карточки ссылки (server/src/og-card.ts): читаются с диска рядом с dist.
+COPY server/assets ./assets
 COPY --from=build /app/web/dist ./public
 COPY server/package.json ./package.json
 

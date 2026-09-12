@@ -211,6 +211,10 @@ test('robots.txt и X-Robots-Tag говорят про публикации од
   // Комната и панель закрыты всегда, лендинг — открыт всегда.
   assert.equal((await call('GET', '/s/abc')).headers.get('x-robots-tag'), 'noindex, nofollow')
   assert.equal((await call('GET', '/')).headers.get('x-robots-tag'), null)
+  // Разворачивателю ссылок комната открыта: и в robots.txt, и заголовком.
+  assert.match(text, /User-agent: TelegramBot\n(?:User-agent: [^\n]+\n)*Allow: \//)
+  const telegram = await fetch(`${base}/s/abc`, { headers: { 'user-agent': 'TelegramBot (like TwitterBot)' } })
+  assert.equal(telegram.headers.get('x-robots-tag'), null)
 })
 
 test('здоровье называет адрес, который сервер сейчас пишет в ссылки', async () => {

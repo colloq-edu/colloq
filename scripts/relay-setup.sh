@@ -420,9 +420,26 @@ ${SITE_LABEL} {
 	# целиком, и красный экран увидели бы студенты на всех семинарских адресах.
 	# Отказ отдаётся до туннеля: он один и тот же для всех комнат и не зависит
 	# от того, поднят ли сейчас семинар.
+	#
+	# Разворачивателям ссылок — можно. Telegram (он же представляется
+	# Twitterbot), WhatsApp, iMessage и Slack читают robots.txt и без
+	# разрешения не собирают карточку: ссылка на комнату в чате оставалась
+	# голой (12.09.2026). Они ничего не индексируют — только берут из <head>
+	# имя занятия и картинку, которые инстанс для того и подставляет
+	# (server/src/link-preview.ts).
 	handle /robots.txt {
 		header Content-Type text/plain
-		respond "User-agent: *
+		respond "User-agent: TelegramBot
+User-agent: Twitterbot
+User-agent: facebookexternalhit
+User-agent: Facebot
+User-agent: WhatsApp
+User-agent: Slackbot-LinkExpanding
+User-agent: Discordbot
+User-agent: LinkedInBot
+Allow: /
+
+User-agent: *
 Disallow: /
 " 200
 	}
