@@ -69,3 +69,56 @@ test('Oracle lifecycle records requests, completion, failure and stop without qu
     }
   } finally { server.closeAllConnections(); server.close() }
 })
+
+/**
+ * Каждый вызов инструмента — своя строка в журнале занятия.
+ *
+ * Лента шагов живёт в документе комнаты и уходит вместе с ним; журнал остаётся.
+ * До сих пор от целого хода в нём было две строки — «начался» и «кончился», —
+ * и вопрос «оракул семнадцать раз читал файлы и ни разу не написал» задать было
+ * не по чему. Уровень «Подробное», потому что это подробность хода, а не
+ * событие занятия.
+ */
+test('each tool call of a work turn is its own detailed row, named and with an outcome', async () => {
+  let round = 0
+  const server = http.createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      const call = round++ < 2
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ choices: [{ message: call
+        ? { role: 'assistant', content: null, tool_calls: [{ id: `c${round}`, type: 'function', function: { name: round === 1 ? 'list_files' : 'no_such_tool', arguments: '{}' } }] }
+        : { role: 'assistant', content: 'Готово' } }] }))
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  updateOracleSettings({ provider: 'custom', baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, apiKey: 'secret-key', model: 'test-model' })
+  const id = 'activity-work-steps'
+  createSession(id, id)
+  upsertParticipant({ id: 'teacher', sessionId: id, name: 'Ада', avatar: null, role: 'host' })
+  try {
+    const entryId = work({ sessionId: id, participantId: 'teacher', participantName: 'Ада', participantColor: '#123456', message: 'сделай тетрадь', role: 'host' })
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      if (listActivity(id, { level: 'detailed' }).events.some(e => e.kind === 'oracle.work_finished')) break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    const steps = listActivity(id, { level: 'detailed', category: 'oracle' }).events
+      .filter(event => event.kind === 'oracle.work_step')
+      .reverse()
+    assert.equal(steps.length, 2)
+    assert.deepEqual(steps.map(s => [s.details.subjectId, s.details.outcome]), [
+      ['list_files', 'completed'],
+      // Инструмента с таким именем нет: шаг потрачен, и в журнале это видно.
+      ['no_such_tool', 'error'],
+    ])
+    for (const step of steps) {
+      assert.equal(step.level, 'detailed')
+      assert.equal(step.details.entryId, entryId)
+      assert.equal(step.details.source, 'oracle')
+      assert.ok(step.details.durationMs! >= 0)
+    }
+    // Обычный уровень подробностей хода не показывает: их две на каждый шаг.
+    assert.ok(!listActivity(id).events.some(event => event.kind === 'oracle.work_step'))
+  } finally { stopAll(id); server.closeAllConnections(); server.close() }
+})

@@ -3990,6 +3990,18 @@ export const roomMessages: MessageCatalog = {
     "ru": "{count} с",
     "en": "{count}s"
   },
+  "room.oracle.stepAt": {
+    "ru": "+{p0}",
+    "en": "+{p0}"
+  },
+  "room.oracle.progress": {
+    "ru": "шаг {p0} · {p1}",
+    "en": "step {p0} · {p1}"
+  },
+  "room.oracle.stalled": {
+    "ru": "шаг {p0} · ждём ответа модели уже {p1}",
+    "en": "step {p0} · waiting for the model for {p1}"
+  },
   "room.bytes": {
     "ru": "{count} Б",
     "en": "{count} B"

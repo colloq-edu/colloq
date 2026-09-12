@@ -404,13 +404,39 @@ function renderCell(entry: Entry, full: boolean, selected: boolean): string {
     lines.push('```')
   }
 
-  for (const output of outputsOf(entry)) lines.push(renderOutput(output, full))
+  for (const output of outputsOf(entry))
+    lines.push(renderOutput(output, full ? MAX_OUTPUT * 2 : MAX_OUTPUT, full))
   return lines.join('\n')
 }
 
-function renderOutput(output: CellOutput, full: boolean): string {
-  const limit = full ? MAX_OUTPUT * 2 : MAX_OUTPUT
+/**
+ * Выводы одной ячейки — теми же словами, какими их видит кадр вопроса.
+ *
+ * Экспортируется ради `run_cell` в agent.ts: ход, запустивший ячейку, должен
+ * увидеть её вывод, и увидеть его ТАК ЖЕ — с тем же «out[error]», той же
+ * снятой раскраской трейсбека и той же строкой вместо картинки. Второй
+ * отрисовщик рядом с этим разошёлся бы с ним на первой правке, а разошедшись,
+ * научил бы модель двум разным форматам одного и того же.
+ */
+export function renderOutputs(cell: YCell, limit: number, whole = false): string[] {
+  const outputs = outputArray(cell)
+  if (!outputs) return []
+  const out: string[] = []
+  outputs.forEach((one: YOutput) => {
+    const parsed = readOutput(one)
+    if (parsed) out.push(renderOutput(parsed, limit, whole))
+  })
+  return out
+}
 
+/**
+ * `whole` — про трейсбек, и только про него.
+ *
+ * У закреплённой ячейки — той, о которой спросили, и той, что упала последней, —
+ * трейсбек едет целиком: обрезанный посередине, он теряет как раз ту строку, где
+ * названа поломка. Остальное режется потолком, как и прежде.
+ */
+function renderOutput(output: CellOutput, limit: number, whole: boolean): string {
   if (output.kind === 'stream') {
     return `out[${output.name}]:\n${clip(output.text.trimEnd(), limit)}`
   }
@@ -418,7 +444,7 @@ function renderOutput(output: CellOutput, full: boolean): string {
     const label = `out[error]: ${output.ename}: ${output.evalue}`
     const traceback = stripAnsi(output.traceback.join('\n')).trim()
     if (!traceback) return label
-    return `${label}\n${full ? traceback : clip(traceback, limit)}`
+    return `${label}\n${whole ? traceback : clip(traceback, limit)}`
   }
   return `out[result]:\n${renderData(output, limit)}`
 }

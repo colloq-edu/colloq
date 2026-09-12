@@ -31,7 +31,12 @@ test('agent file creation and updates reach every file panel before the tool rep
   getChat(doc).push([entry])
   const hands: Hands = { sessionId: id, entryId: entry.get('id'), by: { name: 'Teacher', color: '#123456', participantId: 'teacher' }, role: 'host' }
   const teacher = seat(id, 'teacher'), student = seat(id, 'student')
-  const name = '02_Mini_proekt_recommender.ipynb'
+  /*
+   * Обычный файл, а не .ipynb: тетрадь `write_file` больше не пишет вовсе
+   * (её заводит create_notebook), и проверка про рассылку дерева проверяла бы
+   * тогда отказ. Рассылке всё равно, что за файл.
+   */
+  const name = '02_Mini_proekt_recommender.py'
   const content = JSON.stringify({ cells: [{ cell_type: 'markdown', source: ['# Рекомендатель'] }], nbformat: 4 })
   try {
     const made = await useTool(hands, 'write_file', JSON.stringify({ path: name, content }))

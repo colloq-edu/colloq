@@ -100,21 +100,24 @@ sets it, `UI_LANGUAGE=ru` (default) or `UI_LANGUAGE=en` supplies the initial val
 
 The Oracle has two ways to help. **Ask** explains the code, discusses an error,
 or proposes an edit for a person to accept. **Do** uses tools to read and edit
-files, change notebook cells, and run scripts, with a visible record of its steps.
-In Do mode, permitted edits apply immediately; notebook history and file snapshots
-provide recovery paths.
+files, create notebooks, change and run notebook cells, and run scripts, with a
+visible record of its steps. In Do mode, permitted edits apply immediately;
+notebook history and file snapshots provide recovery paths. One Do request runs
+at a time per class.
 
 Configure your own OpenAI-compatible endpoint and model in the teaching panel
 or environment settings. The notebook works without an AI key. When enabled,
 selected notebook and file context is sent to the configured provider. Tool use
 requires provider support and respects the requesting participant’s room permissions.
 
-**Do mode has no action limit by default.** The owner can set **Actions per
+**Do mode stops after 24 actions by default.** The owner can change **Actions per
 request** in `/admin/oracle`; class rules expose the same setting when creating
 or editing a class. Reading, editing and running each consume one action,
 including failed attempts. `0` means unlimited; a blank class field inherits the
-server setting. A class can tighten a finite server limit. Manual Stop remains
-available without a step limit. Changes apply to the next request.
+server setting. A class can tighten a finite server limit. A request also stops
+after five minutes of wall-clock work, and when the same call repeats with the
+same arguments three times; either way the completed actions stand and the reply
+says what was done. Manual Stop remains available. Changes apply to the next request.
 
 ## Start locally
 

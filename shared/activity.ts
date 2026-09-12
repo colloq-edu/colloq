@@ -22,6 +22,7 @@ export const ACTIVITY_KIND_LEVEL = {
   'execution.finished': 'detailed',
   'execution.interrupted': 'detailed',
   'execution.restarted': 'detailed',
+  'oracle.work_step': 'detailed',
   'oracle.cancel_requested': 'detailed',
   'oracle.thread_cleared': 'detailed',
 } as const satisfies Record<string, ActivityLevel>

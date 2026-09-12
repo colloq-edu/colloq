@@ -3016,5 +3016,349 @@ export const serverMessages: MessageCatalog = {
   "server.aiStopped": {
     "ru": "(остановлено)",
     "en": "(stopped)"
+  },
+  "server.agent.tool.listFiles": {
+    "ru": "Показать все файлы и папки занятия с размерами.",
+    "en": "List every file and folder of the class with sizes."
+  },
+  "server.agent.tool.readFile": {
+    "ru": "Прочитать текстовый файл. Путь — от корня папки занятия. Большой файл читается страницами: offset — с какой строки, limit — сколько строк.",
+    "en": "Read a text file. The path is relative to the class folder. A large file is read in pages: offset is the first line, limit is how many lines."
+  },
+  "server.agent.tool.writeFile": {
+    "ru": "Записать файл целиком, заменив прежнее содержимое. Заводит файл, если его не было. Для точечной правки лучше edit_file: она не даёт случайно потерять то, чего вы не читали. Тетради (.ipynb) этим не пишут — для них create_notebook и инструменты ячеек.",
+    "en": "Write a whole file, replacing what was there. Creates the file when it does not exist. For a small change prefer edit_file: it cannot quietly drop what you have not read. Notebooks (.ipynb) are not written this way — use create_notebook and the cell tools."
+  },
+  "server.agent.tool.editFile": {
+    "ru": "Заменить один точный кусок текста в файле. `find` должен встречаться в файле ровно один раз.",
+    "en": "Replace one exact piece of text in a file. `find` must appear in the file exactly once."
+  },
+  "server.agent.tool.runFile": {
+    "ru": "Запустить скрипт (.py или .sh) в контейнере занятия и получить его вывод. Запуск виден всей комнате в терминале.",
+    "en": "Run a script (.py or .sh) in the class container and get its output. The room sees the run in the terminal."
+  },
+  "server.agent.tool.createNotebook": {
+    "ru": "Завести новую тетрадь комнаты по этому пути и открыть её всем. Единственный способ сделать тетрадь: файлом .ipynb она не заводится.",
+    "en": "Create a new room notebook at this path and open it for everyone. This is the only way to make a notebook; writing an .ipynb file does not create one."
+  },
+  "server.agent.tool.readNotebook": {
+    "ru": "Показать ячейки живой тетради: имя ячейки, вид, исходник, есть ли вывод. Правят тетрадь по этим именам, а не через файл .ipynb. Без пути — тетрадь комнаты; остальные её тетради названы в конце списка.",
+    "en": "Show the cells of a live notebook: cell name, kind, source and whether it has output. Cells are edited by these names, not through the .ipynb file. Without a path this is the room notebook; the room's other notebooks are named at the end of the listing."
+  },
+  "server.agent.tool.runCell": {
+    "ru": "Запустить одну ячейку кода на ядре комнаты и дождаться её вывода. Так проверяют код тетради; скрипты проверяют run_file.",
+    "en": "Run one code cell on the room kernel and wait for its output. This is how notebook code is checked; scripts are checked with run_file."
+  },
+  "server.agent.tool.editCell": {
+    "ru": "Заменить исходник ячейки целиком — в любой тетради комнаты. Имя ячейки — из read_notebook. Вывод остаётся прежним и становится устаревшим: назовите такие ячейки в ответе.",
+    "en": "Replace a cell's source entirely, in any notebook of the room. The cell name comes from read_notebook. The existing output stays and becomes stale: name such cells in your reply."
+  },
+  "server.agent.tool.addCell": {
+    "ru": "Добавить ячейку после указанной. Без `after` — в конец тетради по `path`, а без пути — в конец тетради комнаты.",
+    "en": "Add a cell after the given one. Without `after` it goes to the end of the notebook named by `path`, and without a path to the end of the room notebook."
+  },
+  "server.agent.tool.removeCell": {
+    "ru": "Убрать ячейку из тетради — из любой тетради комнаты.",
+    "en": "Remove a cell from a notebook — from any notebook of the room."
+  },
+  "server.agent.arg.path": {
+    "ru": "например src/model.py",
+    "en": "for example src/model.py"
+  },
+  "server.agent.arg.offset": {
+    "ru": "с какой строки читать, считая с нуля; отрицательное — с конца файла",
+    "en": "the first line to read, counting from zero; a negative value reads from the end of the file"
+  },
+  "server.agent.arg.limit": {
+    "ru": "сколько строк показать; без него — сколько поместится",
+    "en": "how many lines to show; without it, as many as fit"
+  },
+  "server.agent.arg.find": {
+    "ru": "текст, который надо заменить, дословно",
+    "en": "the text to replace, verbatim"
+  },
+  "server.agent.arg.replace": {
+    "ru": "чем заменить",
+    "en": "what to replace it with"
+  },
+  "server.agent.arg.cellId": {
+    "ru": "имя ячейки, например c_8f21ab3c",
+    "en": "the cell name, for example c_8f21ab3c"
+  },
+  "server.agent.arg.source": {
+    "ru": "весь новый исходник ячейки",
+    "en": "the complete new source of the cell"
+  },
+  "server.agent.arg.after": {
+    "ru": "имя ячейки, после которой встать",
+    "en": "the name of the cell to stand after"
+  },
+  "server.agent.arg.bookPath": {
+    "ru": "например Разбор.ipynb",
+    "en": "for example Review.ipynb"
+  },
+  "server.agent.arg.newBookPath": {
+    "ru": "путь новой тетради, например Разбор.ipynb; .ipynb допишется само",
+    "en": "the path of the new notebook, for example Review.ipynb; the .ipynb suffix is added for you"
+  },
+  "server.agent.arg.from": {
+    "ru": "с какой ячейки показывать, считая с единицы",
+    "en": "the first cell to show, counting from one"
+  },
+  "server.agent.arg.count": {
+    "ru": "сколько ячеек показать",
+    "en": "how many cells to show"
+  },
+  "server.agent.arg.outputs": {
+    "ru": "показать и выводы ячеек, а не только их наличие",
+    "en": "show the cell outputs too, not only whether they exist"
+  },
+  "server.agent.linesShown": {
+    "ru": "показаны строки {p0}–{p1} из {p2}",
+    "en": "showing lines {p0}–{p1} of {p2}"
+  },
+  "server.agent.linesRest": {
+    "ru": "дальше — read_file по {p0} с offset: {p1}",
+    "en": "for the rest call read_file on {p0} with offset: {p1}"
+  },
+  "server.agent.cellsShown": {
+    "ru": "Показаны ячейки {p0}–{p1} из {p2}. Дальше — read_notebook по {p3} с from: {p4}.",
+    "en": "Showing cells {p0}–{p1} of {p2}. For the rest call read_notebook on {p3} with from: {p4}."
+  },
+  "server.agent.notebookIsNotAFile": {
+    "ru": "{p0} — тетрадь, а тетрадь в этой комнате не файл: её ячейки живут в документе комнаты, и записанный .ipynb комната не прочитает. ",
+    "en": "{p0} is a notebook, and in this room a notebook is not a file: its cells live in the room document, and an .ipynb written to disk is never read back. "
+  },
+  "server.agent.useCreateNotebook": {
+    "ru": "Заведите её вызовом create_notebook по пути {p0}, а потом наполняйте ячейками.",
+    "en": "Create it with create_notebook at the path {p0}, then fill it with cells."
+  },
+  "server.agent.askTeacherForNotebook": {
+    "ru": "Заводить тетради в этой комнате может преподаватель — скажите словами, какая тетрадь нужна.",
+    "en": "Only the teacher can create notebooks in this room — say in words which notebook is needed."
+  },
+  "server.agent.mayNotCreateNotebook": {
+    "ru": "Заводить тетради здесь нельзя",
+    "en": "Notebooks cannot be created here"
+  },
+  "server.agent.onlyTheTeacherCreatesNotebooks": {
+    "ru": "Заводить тетради в этой комнате может только преподаватель. Опишите словами, какая тетрадь нужна и что в ней должно быть.",
+    "en": "Only the teacher may create notebooks in this room. Describe in words which notebook is needed and what should be in it."
+  },
+  "server.agent.createNotebookFailed": {
+    "ru": "Выберите другой путь или наполняйте ячейками ту тетрадь, что уже есть.",
+    "en": "Choose another path, or fill the notebook that already exists."
+  },
+  "server.agent.notebookCreated": {
+    "ru": "тетрадь заведена",
+    "en": "notebook created"
+  },
+  "server.agent.createdNotebook": {
+    "ru": "Готово: {p0} заведена и открыта всей комнате. Наполняйте её add_cell; убрать тетрадь может только преподаватель через дерево файлов.",
+    "en": "Done: {p0} has been created and opened for the whole room. Fill it with add_cell; only the teacher can remove a notebook, through the file tree."
+  },
+  "server.agent.cellIsNotCode": {
+    "ru": "ячейка не с кодом",
+    "en": "not a code cell"
+  },
+  "server.agent.onlyCodeCellsRun": {
+    "ru": "{p0} — не ячейка с кодом, запускать в ней нечего.",
+    "en": "{p0} is not a code cell, so there is nothing to run."
+  },
+  "server.agent.cellAlreadyRunning": {
+    "ru": "{p0} уже считается или стоит в очереди к ядру. Дождитесь её вывода — он появится в тетради — и не ставьте её второй раз.",
+    "en": "{p0} is already running or queued for the kernel. Wait for its output — it appears in the notebook — and do not queue it again."
+  },
+  "server.agent.cellDidNotFinish": {
+    "ru": "{p0} не досчиталась за {p1} с. Ячейка снята с очереди; посмотрите, нет ли в ней бесконечного цикла или ожидания ввода, и скажите об этом в ответе.",
+    "en": "{p0} did not finish within {p1} s. The cell was taken out of the queue; check it for an endless loop or a wait for input, and say so in your reply."
+  },
+  "server.agent.cellRan": {
+    "ru": "{p0} посчиталась.",
+    "en": "{p0} finished."
+  },
+  "server.agent.cellFailed": {
+    "ru": "{p0} упала — вывод ниже.",
+    "en": "{p0} failed — its output is below."
+  },
+  "server.agent.noOutput": {
+    "ru": "вывода нет",
+    "en": "no output"
+  },
+  "server.agent.rerunWithRunCell": {
+    "ru": " Перезапустить её можно вызовом run_cell.",
+    "en": " You can re-run it with run_cell."
+  },
+  "server.agent.sameCall": {
+    "ru": "Это тот же вызов с теми же аргументами — результат не изменится. Сделайте что-то другое или закончите ход итогом.",
+    "en": "This is the same call with the same arguments, so the result will not change. Do something else or end the turn with a summary."
+  },
+  "server.agent.repeatedNote": {
+    "ru": "повтор вызова",
+    "en": "repeated call"
+  },
+  "server.agent.loopNote": {
+    "ru": "вызов пошёл по кругу",
+    "en": "the call went in circles"
+  },
+  "server.agent.loopStop": {
+    "ru": "Один и тот же вызов с теми же аргументами повторился трижды подряд — ход остановлен, чтобы не ходить по кругу. Сделанное выше осталось сделанным. Отправьте новый запрос, уточнив, что нужно.",
+    "en": "The same call with the same arguments repeated three times in a row, so the turn was stopped rather than looping. What was done above stands. Send a new request saying more precisely what is needed."
+  },
+  "server.agent.outOfTime": {
+    "ru": "На один ход отведено {p0} мин, и они вышли. Сделанное выше осталось сделанным. Отправьте новый запрос, чтобы продолжить с этого места.",
+    "en": "A single turn is allowed {p0} minutes and they have run out. What was done above stands. Send a new request to continue from here."
+  },
+  "server.agent.nudge": {
+    "ru": "Продолжайте: вызовите инструмент или закончите ход итогом. Описание вызова словами ходом не считается.",
+    "en": "Carry on: call a tool, or end the turn with a summary. Describing a call in prose does not count as making one."
+  },
+  "server.agent.saidNothing": {
+    "ru": "Модель ничего не ответила: ни текста, ни вызова инструмента. Попробуйте повторить запрос; если повторяется — выберите другую модель в настройках Оракула.",
+    "en": "The model answered with nothing at all: no text and no tool call. Try the request again; if it keeps happening, choose another model in the Oracle settings."
+  },
+  "server.agent.toolMissing": {
+    "ru": "Инструмента {p0} нет. Есть эти: {p1}.",
+    "en": "There is no tool called {p0}. These exist: {p1}."
+  },
+  "server.agent.badJsonArgs": {
+    "ru": "Аргументы пришли не как JSON. У {p0} такая схема: {p1}. Повторите вызов, передав аргументы корректным JSON.",
+    "en": "The arguments did not arrive as JSON. The schema of {p0} is: {p1}. Call it again with the arguments as valid JSON."
+  },
+  "server.agent.movedHead": {
+    "ru": "Скрипт изменил файлы мимо инструментов: {p0}. Скажите об этом в ответе: комната видит такие правки только с ваших слов.",
+    "en": "The script changed files outside the tools: {p0}. Say so in your reply: the room learns about such changes only from you."
+  },
+  "server.agent.movedDeleted": {
+    "ru": "{p0} (удалён)",
+    "en": "{p0} (deleted)"
+  },
+  "server.agent.movedRewritten": {
+    "ru": "{p0} (переписан)",
+    "en": "{p0} (rewritten)"
+  },
+  "server.agent.movedAdded": {
+    "ru": "{p0} (заведён)",
+    "en": "{p0} (created)"
+  },
+  "server.agent.andMore": {
+    "ru": "и ещё {p0}",
+    "en": "and {p0} more"
+  },
+  "server.agent.rewrotePastTheRoom": {
+    "ru": "файл тетради переписан мимо комнаты",
+    "en": "the notebook file was rewritten outside the room"
+  },
+  "server.agent.busyTurn": {
+    "ru": "Оракул уже выполняет поручение в этой комнате. Дождитесь его конца или остановите его, а потом отправьте новое.",
+    "en": "The oracle is already carrying out a request in this room. Wait for it to finish, or stop it, and then send a new one."
+  },
+  "server.agent.prompt.role": {
+    "ru": "Вы — оракул Colloq, помощник на техническом занятии. Сейчас вас попросили не объяснить, а СДЕЛАТЬ.",
+    "en": "You are the Colloq oracle, an assistant in a technical class. You have been asked not to explain, but to DO."
+  },
+  "server.agent.prompt.workFull": {
+    "ru": "У вас есть папка занятия и инструменты к ней. Порядок работы обычный: посмотрите, что есть, прочитайте то, что собираетесь менять, поменяйте и проверьте.",
+    "en": "You have the class folder and tools for it. Work in the usual order: look at what is there, read what you are about to change, change it and check it."
+  },
+  "server.agent.prompt.workNoRun": {
+    "ru": "У вас есть папка занятия и инструменты к ней. Запускать в этой комнате вам нельзя — запускает преподаватель, — так что проверить написанное можно только чтением.",
+    "en": "You have the class folder and tools for it. You may not run anything in this room — the teacher does that — so the only way to check your work is to read it."
+  },
+  "server.agent.prompt.workReadOnly": {
+    "ru": "Папку занятия вам видно, но править файлы в этой комнате вам нельзя: это делает преподаватель. Читайте и говорите словами, что и где стоит поменять.",
+    "en": "You can see the class folder, but you may not edit files in this room: the teacher does that. Read, and say in words what should change and where."
+  },
+  "server.agent.prompt.notebooksHead": {
+    "ru": "Про тетради этой комнаты:",
+    "en": "About this room's notebooks:"
+  },
+  "server.agent.prompt.notebooksAre": {
+    "ru": "— Сейчас в комнате открыты: {p0}. Это живые тетради — то, что видит комната.",
+    "en": "— Open in the room right now: {p0}. These are the live notebooks — what the room sees."
+  },
+  "server.agent.prompt.noNotebooks": {
+    "ru": "— Открытых тетрадей в комнате сейчас нет.",
+    "en": "— The room has no open notebooks right now."
+  },
+  "server.agent.prompt.cellsHaveNames": {
+    "ru": "— У каждой ячейки есть имя (c_…), и адресуют ячейку только им: номер на экране меняется. Имена показывает read_notebook, он же — выводы, если попросить outputs.",
+    "en": "— Every cell has a name (c_…) and a cell is addressed only by it: the number on screen shifts. read_notebook shows the names, and the outputs too when asked for them."
+  },
+  "server.agent.prompt.createNotebook": {
+    "ru": "— Новая тетрадь заводится create_notebook: один вызов — файл, запись в комнате и открытая вкладка у всех.",
+    "en": "— A new notebook is created with create_notebook: one call gives the file, the room record and an open tab for everyone."
+  },
+  "server.agent.prompt.askTeacherForNotebook": {
+    "ru": "— Заводить тетради в этой комнате может преподаватель. Если нужна новая — скажите об этом словами.",
+    "en": "— Only the teacher can create notebooks in this room. If a new one is needed, say so in words."
+  },
+  "server.agent.prompt.cellTools": {
+    "ru": "— Править тетрадь можно этим: {p0} — и любую тетрадь комнаты, не только первую. Правки идут от имени того, кто попросил ход, и по его правам. Перед первой правкой тетради комнаты ход отмечает историю версий; у остальных тетрадей истории нет, и им ход кладёт рядом копию файла.",
+    "en": "— The notebook is edited with these: {p0} — and any notebook of the room, not just the first. Edits are made in the name of whoever asked for the turn and under their rights. Before the first edit of the room notebook the turn marks version history; the other notebooks have no history, so the turn puts a copy of the file beside them."
+  },
+  "server.agent.prompt.staleOutput": {
+    "ru": "— Вывод ячейки правка не стирает: он остаётся прежним и становится устаревшим. Назовите в ответе ячейки, которые поменяли, чтобы их перезапустили.",
+    "en": "— Editing a cell does not clear its output: the output stays and becomes stale. Name the cells you changed in your reply so they get re-run."
+  },
+  "server.agent.prompt.noCellTools": {
+    "ru": "— Ячейки в этой комнате правит человек: тому, кто попросил ход, менять тетрадь нельзя, и вам тем более. Если нужно поменять ячейку, скажите об этом словами в конце.",
+    "en": "— In this room a person edits the cells: whoever asked for the turn may not change the notebook, and neither may you. If a cell should change, say so in words at the end."
+  },
+  "server.agent.prompt.howToCheck": {
+    "ru": "— Код тетради проверяют ячейками (run_cell), скрипты — run_file. Не переписывайте код тетради в .py ради запуска: это вторая копия того же кода, и проверять её бессмысленно.",
+    "en": "— Notebook code is checked by running cells (run_cell); scripts are checked with run_file. Do not copy notebook code into a .py file to run it: that is a second copy of the same code, and checking it proves nothing."
+  },
+  "server.agent.prompt.limitsHead": {
+    "ru": "Границы, которые не обойти:",
+    "en": "Limits that cannot be worked around:"
+  },
+  "server.agent.prompt.ipynbIsProjection": {
+    "ru": "— Файл .ipynb — проекция тетради, а не тетрадь: запись в него НИЧЕГО не меняет в комнате, и через полторы секунды комната перепишет его своим. Это верно и для скрипта: json.dump, nbformat, open(...,\"w\") в run_file комната не прочитает.",
+    "en": "— An .ipynb file is a projection of the notebook, not the notebook: writing to it changes NOTHING in the room, and a second and a half later the room overwrites it with its own. The same goes for scripts: json.dump, nbformat and open(...,\"w\") inside run_file are never read back."
+  },
+  "server.agent.prompt.noDelete": {
+    "ru": "— Удалять файлы и папки нельзя. Совсем. Если файл лишний, скажите об этом.",
+    "en": "— You may not delete files or folders. Not at all. If a file is in the way, say so."
+  },
+  "server.agent.prompt.runFiles": {
+    "ru": "— Запускать можно только .py и .sh из папки занятия. Оболочки у вас нет.",
+    "en": "— Only .py and .sh from the class folder can be run. You have no shell."
+  },
+  "server.agent.prompt.visible": {
+    "ru": "— Всё, что вы делаете, видит вся комната; правки в файлах отменяются одной кнопкой под ходом.",
+    "en": "— Everything you do is visible to the whole room; file edits are undone with one button under the turn."
+  },
+  "server.agent.prompt.howHead": {
+    "ru": "Как делать ход:",
+    "en": "How to take a turn:"
+  },
+  "server.agent.prompt.oneAtATime": {
+    "ru": "— Один вызов за раз: сделайте вызов, прочитайте ответ, потом решайте, каким будет следующий.",
+    "en": "— One call at a time: make the call, read the answer, then decide what the next one is."
+  },
+  "server.agent.prompt.doNotDescribe": {
+    "ru": "— Не описывайте вызов прозой — делайте его. «Сейчас я заведу тетрадь» ходом не считается и не меняет ничего.",
+    "en": "— Do not describe a call in prose — make it. \"Now I will create the notebook\" is not a turn and changes nothing."
+  },
+  "server.agent.prompt.stopRule": {
+    "ru": "— Сделано — закончите итогом. Нельзя этими инструментами — закончите и скажите, чего не хватает. Отказавший вызов не повторяйте: тот же вызов с теми же аргументами ответит тем же.",
+    "en": "— When it is done, end with a summary. When these tools cannot do it, end and say what is missing. Do not repeat a call that was refused: the same call with the same arguments gives the same answer."
+  },
+  "server.agent.prompt.houseRules": {
+    "ru": "Правила этого занятия от преподавателя. Они про то, ЧТО делать и чего не касаться по существу, и не отменяют границ выше — те про устройство комнаты: {p0}",
+    "en": "The teacher's rules for this class. They are about WHAT to do and what to leave alone on the merits, and they do not override the limits above, which are about how this room works: {p0}"
+  },
+  "server.agent.prompt.ending": {
+    "ru": "Закончите коротким объяснением, что сделано и что это значит. Шаги не пересказывайте — они и так на экране. Три-четыре предложения.",
+    "en": "End with a short explanation of what was done and what it means. Do not retell the steps: they are on screen already. Three or four sentences."
+  },
+  "server.agent.notebookIsNew": {
+    "ru": "Этой тетради до хода не было — её завёл сам ход; возвращаться некуда, а убрать её может преподаватель через дерево файлов.",
+    "en": "This notebook did not exist before the turn — the turn created it; there is nothing to restore, and the teacher can remove it through the file tree."
+  },
+  "server.agent.prompt.nowHead": {
+    "ru": "Вот с чем работает комната прямо сейчас:",
+    "en": "Here is what the room is working with right now:"
   }
 }

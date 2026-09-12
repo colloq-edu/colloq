@@ -488,6 +488,14 @@ export interface AgentStep {
   exit: number | null
   /** Короткая выжимка: хвост вывода, первые строки правки, причина отказа. */
   note: string
+  /**
+   * Когда шаг записали, по часам сервера.
+   *
+   * Необязательно на чтении, и это не небрежность: ленты ходов, записанных до
+   * появления поля, лежат в снимках комнат и приезжают без него. Панель рисует
+   * промежуток между шагами только там, где время есть у обоих соседей.
+   */
+  at?: number
 }
 
 /** Отменяемость хода: у обычного вопроса её нет вовсе. */
@@ -638,6 +646,9 @@ export function addStep(entry: YChatEntry, step: AgentStep): void {
   row.set('removed', step.removed)
   row.set('exit', step.exit)
   row.set('note', step.note)
+  // Время пишет сервер, а не вызывающий: часы у шага должны быть одни на всю
+  // ленту, иначе «сколько занял запуск» считается по двум разным источникам.
+  row.set('at', step.at ?? Date.now())
   chatSteps(entry).push([row])
 }
 
@@ -652,6 +663,7 @@ function readStep(row: unknown): AgentStep | null {
     removed: typeof row.get('removed') === 'number' ? (row.get('removed') as number) : 0,
     exit: typeof row.get('exit') === 'number' ? (row.get('exit') as number) : null,
     note: typeof row.get('note') === 'string' ? (row.get('note') as string) : '',
+    ...(typeof row.get('at') === 'number' ? { at: row.get('at') as number } : {}),
   }
 }
 

@@ -287,6 +287,17 @@ function openStream(
 }
 
 /**
+ * Потолок ответа на пути инструментов.
+ *
+ * Назван, а не оставлен на усмотрение эндпоинта: умолчания у них разные и
+ * иногда крошечные, а обрезанный ответ на этом пути — это недописанный JSON
+ * вызова, который разбирается в «аргументы пришли не как JSON», то есть в шаг
+ * хода, потраченный на чужое умолчание. Восемь тысяч — с запасом на самый
+ * длинный вызов (`write_file` с целым файлом).
+ */
+const MAX_TOOL_TOKENS = 8_000
+
+/**
  * Один ход с инструментами — без потока.
  *
  * Поток здесь не нужен и был бы вреден: аргументы инструмента приезжают в
@@ -304,12 +315,17 @@ export async function completeWithTools(
   tools: ToolSpec[],
   signal?: AbortSignal,
   onUsage?: (totalTokens: number) => void,
-): Promise<{ text: string; calls: ToolCall[] }> {
+): Promise<{ text: string; reasoning: string; calls: ToolCall[] }> {
+  const nothing = { text: '', reasoning: '', calls: [] }
   if (!providerReady()) throw new Error(tr("server.noModelIsSetUpOnThis.1152ef"))
   const model = resolveAiConfig().model
   const payload = {
     model,
     messages: toToolPayload(messages),
+    max_tokens: MAX_TOOL_TOKENS,
+    // Та же температура, что и у ответа на вопрос: ход — это та же модель и
+    // та же работа, и расходиться этим двум путям незачем.
+    temperature: 0.3,
     ...(tools.length > 0
       ? {
           tools: tools.map((tool) => ({
@@ -328,26 +344,51 @@ export async function completeWithTools(
   try {
     answer = await getClient().chat.completions.create(payload as never, { signal })
   } catch (err) {
-    if (isAbort(err, signal)) return { text: '', calls: [] }
+    if (isAbort(err, signal)) return nothing
     /*
-     * Эндпоинт, который не умеет инструменты, отвечает 400 — и это не поломка,
-     * а свойство того, куда указали. Отдельная фраза, потому что «сделать» на
-     * такой модели не заработает никогда, сколько ни повторяй, а «спросить»
-     * работает прекрасно.
+     * Голая попытка — та же, что у потока, и по той же причине.
      *
-     * Но 400 у агента бывает и по другой причине: переписка растёт на каждый
-     * прочитанный файл, и небольшое окно переполняется на третьем шаге. Тогда
-     * эта фраза — враньё: инструментами только что пользовались. Отличаем по
-     * самой переписке (в ней уже есть ответы инструментов) и по словам
-     * эндпоинта, а в остальных случаях 400 показывается как есть, с деталью.
+     * Рассуждающая модель отвергает любую температуру, кроме своей, а строгий
+     * шлюз — незнакомое поле; оба отвечают 400. Пока её здесь не было, ход на
+     * таком эндпоинте не начинался вовсе — а вопросы на нём шли прекрасно, и
+     * объяснялось это фразой «модель не умеет инструменты», которая была
+     * неправдой. Инструменты в голой попытке остаются: без них это не тот
+     * запрос, который просили.
+     *
+     * Про размер не повторяем: переполненное окно вторая попытка переполнит
+     * ровно так же, а лишний запрос — это лишние деньги и лишние полминуты.
      */
-    if (isBadRequest(err) && tools.length > 0 && !usedTools(messages) && !aboutSize(err)) {
-      throw new Error(
-        tr("server.theModelRejectedTheRequestWithTools.c6fde5") +
-          tr("server.tryAskingAQuestionInstead.a2a998"),
-      )
+    if (!isBadRequest(err) || aboutSize(err)) throw friendly(err)
+    const { max_tokens: _tokens, temperature: _heat, ...bare } = payload
+    try {
+      answer = await getClient().chat.completions.create(bare as never, { signal })
+    } catch (retryErr) {
+      if (isAbort(retryErr, signal)) return nothing
+      /*
+       * Эндпоинт, который не умеет инструменты, отвечает 400 — и это не поломка,
+       * а свойство того, куда указали. Отдельная фраза, потому что «сделать» на
+       * такой модели не заработает никогда, сколько ни повторяй, а «спросить»
+       * работает прекрасно.
+       *
+       * Но 400 у агента бывает и по другой причине: переписка растёт на каждый
+       * прочитанный файл, и небольшое окно переполняется на третьем шаге. Тогда
+       * эта фраза — враньё: инструментами только что пользовались. Отличаем по
+       * самой переписке (в ней уже есть ответы инструментов) и по словам
+       * эндпоинта, а в остальных случаях 400 показывается как есть, с деталью.
+       */
+      if (
+        isBadRequest(retryErr) &&
+        tools.length > 0 &&
+        !usedTools(messages) &&
+        !aboutSize(retryErr)
+      ) {
+        throw new Error(
+          tr("server.theModelRejectedTheRequestWithTools.c6fde5") +
+            tr("server.tryAskingAQuestionInstead.a2a998"),
+        )
+      }
+      throw friendly(retryErr)
     }
-    throw friendly(err)
   }
   const spent = (answer as { usage?: { total_tokens?: number } | null }).usage
   if (spent && typeof spent.total_tokens === 'number') onUsage?.(spent.total_tokens)
@@ -361,7 +402,75 @@ export async function completeWithTools(
       args: typeof call.function.arguments === 'string' ? call.function.arguments : '{}',
     })
   }
-  return { text: typeof choice?.content === 'string' ? choice.content : '', calls }
+  const text = typeof choice?.content === 'string' ? choice.content : ''
+  /*
+   * След рассуждения — тем же двумя написаниями, что и в потоке.
+   *
+   * Читался он только в потоке, а здесь терялся целиком, и это стоило дороже
+   * красоты: у рассуждающих моделей весь ответ уходит в `reasoning`, а
+   * `content` приходит пустым — и ход, спросивший только `content`, видел
+   * пустоту и заканчивался пустой подписью под лентой шагов. Вызывающий решает
+   * сам, что с этим делать; здесь — только не потерять.
+   */
+  const reasoning =
+    typeof choice?.reasoning === 'string'
+      ? choice.reasoning
+      : typeof choice?.reasoning_content === 'string'
+        ? choice.reasoning_content
+        : ''
+  return { text, reasoning, calls: calls.length > 0 ? calls : callsInText(text, tools) }
+}
+
+/**
+ * Вызов, написанный в тексте вместо поля `tool_calls`.
+ *
+ * Небольшие модели — и любая модель на шлюзе, который потерял `tools` по
+ * дороге, — отвечают на просьбу позвать инструмент JSON-объектом в тексте:
+ * `{"name": "read_file", "arguments": {"path": "train.py"}}`, иногда в
+ * ограде ```json. Вызовом это не становится, и ход заканчивался ответом, в
+ * котором модель описывает, что она сейчас сделает, — с той же лентой из двух
+ * шагов, ради которой всё это и чинится.
+ *
+ * Разбирается только когда настоящих вызовов НЕТ и только под известное имя
+ * инструмента: JSON в ответе бывает и просто данными, и принять кусок данных
+ * за вызов значит сделать что-то, чего никто не просил.
+ */
+function callsInText(text: string, tools: ToolSpec[]): ToolCall[] {
+  const trimmed = text.trim()
+  if (!trimmed || tools.length === 0) return []
+  const names = new Set(tools.map((tool) => tool.name))
+  const fenced = /```(?:json|tool_call|tool_calls)?\s*([\s\S]*?)```/i.exec(trimmed)
+  const source = (fenced ? fenced[1] : trimmed).trim()
+  if (!source.startsWith('{') && !source.startsWith('[')) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(source)
+  } catch {
+    return []
+  }
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : isRecord(parsed) && Array.isArray(parsed.tool_calls)
+      ? parsed.tool_calls
+      : [parsed]
+  const calls: ToolCall[] = []
+  for (const row of rows) {
+    if (!isRecord(row)) continue
+    const body = isRecord(row.function) ? row.function : row
+    const name = body.name
+    if (typeof name !== 'string' || !names.has(name)) continue
+    const args = body.arguments ?? body.parameters ?? body.args ?? {}
+    calls.push({
+      id: `text_${calls.length}`,
+      name,
+      args: typeof args === 'string' ? args : JSON.stringify(args),
+    })
+  }
+  return calls
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** Инструментами в этом ходе уже пользовались — значит, эндпоинт их умеет. */
@@ -377,6 +486,9 @@ function aboutSize(err: unknown): boolean {
 /** Сообщение, как его правда присылают: `tool_calls` нет в типах SDK для этой формы. */
 interface RawMessage {
   content?: string | null
+  /** OpenRouter кладёт след сюда, DeepSeek и повторившие его — в `reasoning_content`. */
+  reasoning?: string | null
+  reasoning_content?: string | null
   tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>
 }
 

@@ -11,6 +11,7 @@ import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   bookCells,
+  bookList,
   cellId,
   cellsAt,
   cellOutputs,
@@ -27,8 +28,18 @@ import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { flushHistory, restoreInto } from '../server/src/collab/history.js'
 import { bookText, createBook, projectBooks } from '../server/src/collab/books.js'
 import { flushAllFiles } from '../server/src/collab/files.js'
-import { readText, writeText } from '../server/src/workspace.js'
-import { saidAboutCells, toolsFor, undoTurn, useTool, type Hands } from '../server/src/ai/agent.js'
+import { readText, sessionDir, writeText } from '../server/src/workspace.js'
+import {
+  movedFiles,
+  saidAboutCells,
+  toolsFor,
+  treePrint,
+  undoTurn,
+  useTool,
+  type Hands,
+} from '../server/src/ai/agent.js'
+import { rmSync } from 'node:fs'
+import path from 'node:path'
 
 after(() => shutdownCollab())
 
@@ -300,6 +311,15 @@ test('файл тетради, переписанный мимо комнаты,
 
   assert.match(ran.said, /мимо комнаты/, 'модели не сказали, что запись не применилась')
   assert.match(ran.said, /edit_cell/, 'не сказано, чем применить на самом деле')
+  /*
+   * И отдельной строкой в ленте, а не только в ответе модели.
+   *
+   * «Посмотрел папку» и «файл тетради переписали мимо комнаты» — это две разные
+   * строки: склеенные в одну, вторая читается как подробность первой, а она про
+   * то, ради чего вся эта проверка и написана.
+   */
+  assert.equal(ran.also?.kind, 'note')
+  assert.match(ran.also!.target, /Тетрадь\.ipynb/)
   assert.equal(source(id, 1), was, 'запись в файл всё-таки добралась до ячеек')
 
   const said = saidAboutCells(id, entry)
@@ -486,4 +506,196 @@ test('после звонка тетрадь не правит и препода
   })
   assert.equal(host.step.kind, 'write')
   setFinished(id, null)
+})
+
+/* ------------------------------------------------------- заводит тетрадь */
+
+test('create_notebook заводит тетрадь комнаты, и add_cell тут же в неё пишет', async () => {
+  const id = room()
+  const entry = turn(id)
+
+  const made = await call(hands(id, entry), 'create_notebook', { path: 'Сирена' })
+  assert.equal(made.step.kind, 'new')
+  // Расширение дописано само: «сделай тетрадь Сирена» — обычная просьба.
+  assert.equal(made.step.target, 'Сирена.ipynb')
+  assert.ok(bookList(getSessionDoc(id).doc).some((book) => book.path === 'Сирена.ipynb'))
+  // Список ячеек приезжает тем же шагом: имя ячейки нужно уже сейчас.
+  assert.match(made.said, /Сирена\.ipynb/)
+  assert.match(made.said, /c_[0-9a-z]+/)
+
+  const added = await call(hands(id, entry), 'add_cell', {
+    path: 'Сирена.ipynb',
+    type: 'code',
+    source: 'print(1)',
+  })
+  assert.equal(added.step.kind, 'new')
+  assert.match(added.step.target, /Сирена\.ipynb/)
+
+  // И файл на диске — настоящая тетрадь, а не пустышка рядом с комнатой.
+  projectBooks(id)
+  assert.match(readText(id, 'Сирена.ipynb')?.text ?? '', /"nbformat"/)
+
+  /*
+   * И никакой копии «как было до хода» рядом.
+   *
+   * Первый настоящий прогон положил рядом с новенькой тетрадью пустой
+   * `…before-oracle.ipynb` и дописал в ответ, что убрать его не может, — это к
+   * преподавателю. До хода этой тетради не было вовсе: возвращаться некуда.
+   */
+  assert.equal(readText(id, 'Сирена.before-oracle.ipynb'), null)
+  const said = saidAboutCells(id, entry)
+  assert.doesNotMatch(said, /before-oracle/)
+  // И про возврат сказана правда: возвращаться некуда, а не «в истории версий».
+  assert.match(said, /до хода не было/)
+})
+
+test('тетрадь не пишут файлом — ни известную комнате, ни ещё не заведённую', async () => {
+  const id = room()
+  const entry = turn(id)
+
+  // Ещё не тетрадь комнаты: раньше запись проходила молча и уводила ход в тупик.
+  const unknown = await call(hands(id, entry), 'write_file', {
+    path: '03_Sirena.ipynb',
+    content: '{"cells": [], "nbformat": 4}',
+  })
+  assert.equal(unknown.step.kind, 'note')
+  assert.match(unknown.said, /create_notebook/)
+  assert.equal(readText(id, '03_Sirena.ipynb'), null, 'файл всё-таки записали')
+
+  // Известная тетрадь комнаты — отказ ведёт к ячейкам.
+  const mine = await call(hands(id, entry), 'write_file', {
+    path: bookList(getSessionDoc(id).doc)[0].path,
+    content: '{}',
+  })
+  assert.equal(mine.step.kind, 'note')
+  assert.match(mine.said, /read_notebook|edit_cell/)
+
+  // И правка куском — тоже.
+  const edited = await call(hands(id, entry), 'edit_file', {
+    path: '04_Drugaya.ipynb',
+    find: 'a',
+    replace: 'b',
+  })
+  assert.equal(edited.step.kind, 'note')
+  assert.match(edited.said, /create_notebook/)
+})
+
+test('тетради, которой нет, отказ называет выход, а не только отсутствие', async () => {
+  const id = room()
+  const entry = turn(id)
+  const asked = await call(hands(id, entry), 'add_cell', {
+    path: 'Нет такой.ipynb',
+    type: 'code',
+    source: 'x = 1',
+  })
+  assert.equal(asked.step.kind, 'note')
+  assert.match(asked.said, /create_notebook/)
+
+  // Участнику в лекции заводить нечем — и ему сказано идти к преподавателю.
+  setRules(id, { ...LECTURE_ROOM })
+  const student = await call(hands(id, entry, 'participant'), 'add_cell', {
+    path: 'Нет такой.ipynb',
+    type: 'code',
+    source: 'x = 1',
+  })
+  assert.match(student.said, /преподавател/i)
+  assert.doesNotMatch(student.said, /create_notebook/)
+  setRules(id, {} as never)
+})
+
+test('заводить тетради может тот, кому можно и файл, и структуру', () => {
+  const id = room()
+  const names = () => toolsFor(hands(id, turn(id))).map((tool) => tool.name)
+  assert.ok(names().includes('create_notebook'))
+  assert.ok(names().includes('run_cell'))
+  setRules(id, { ...LECTURE_ROOM })
+  const student = toolsFor(hands(id, turn(id), 'participant')).map((tool) => tool.name)
+  assert.ok(!student.includes('create_notebook'), 'в лекции участнику дали заводить тетради')
+  assert.ok(!student.includes('run_cell'), 'в лекции участнику дали запускать ячейки')
+  setRules(id, {} as never)
+})
+
+/* --------------------------------------------------------- смотрит вывод */
+
+test('read_notebook отдаёт страницу и, если попросят, сами выводы', async () => {
+  const id = room()
+  const entry = turn(id)
+  const doc = getSessionDoc(id).doc
+  doc.transact(() =>
+    cellOutputs(cells(id)[1]).push([
+      writeOutput({ kind: 'stream', name: 'stdout', text: 'сирена 07:14\n' }),
+    ]),
+  )
+  for (let i = 0; i < 8; i++) {
+    await call(hands(id, entry), 'add_cell', { type: 'code', source: `x = ${i}` })
+  }
+
+  const page = await call(hands(id, entry), 'read_notebook', { from: 3, count: 2 })
+  assert.match(page.said, /Показаны ячейки 3–4 из 10/)
+  assert.match(page.said, /read_notebook по .+ с from: 5/)
+
+  const plain = await call(hands(id, entry), 'read_notebook', {})
+  assert.doesNotMatch(plain.said, /сирена 07:14/, 'выводы поехали без просьбы')
+  const withOut = await call(hands(id, entry), 'read_notebook', { outputs: true })
+  assert.match(withOut.said, /out\[stdout\]/)
+  assert.match(withOut.said, /сирена 07:14/)
+})
+
+test('run_cell отказывает человечно там, где запускать нельзя', async () => {
+  const id = room()
+  const entry = turn(id)
+  const markdown = cellId(cells(id)[0])
+
+  const notCode = await call(hands(id, entry), 'run_cell', { cell: markdown })
+  assert.equal(notCode.step.kind, 'note')
+  assert.match(notCode.said, /не ячейка с кодом/)
+
+  const missing = await call(hands(id, entry), 'run_cell', { cell: 'c_нет' })
+  assert.equal(missing.step.kind, 'note')
+
+  // Уже считается: второй раз её не ставят, и вывод чужого запуска не присваивают.
+  const code = cells(id)[1]
+  getSessionDoc(id).doc.transact(() => code.set('state', 'running'))
+  const busy = await call(hands(id, entry), 'run_cell', { cell: cellId(code) })
+  assert.equal(busy.step.kind, 'note')
+  assert.match(busy.said, /очеред|считается/)
+  getSessionDoc(id).doc.transact(() => code.set('state', 'idle'))
+
+  // Правило `run` — то же, что у пальцев просящего.
+  setRules(id, { ...LECTURE_ROOM })
+  const student = await call(hands(id, entry, 'participant'), 'run_cell', { cell: cellId(code) })
+  assert.equal(student.step.kind, 'note')
+  assert.match(student.said, /преподавател/i)
+  setRules(id, {} as never)
+})
+
+/* ------------------------------------------- что скрипт сделал мимо рук */
+
+test('правки скрипта мимо инструментов называются поимённо', () => {
+  const id = room()
+  writeText(id, 'data.csv', 'a,b\n1,2\n')
+  writeText(id, 'train.py', 'print(1)\n')
+  const was = treePrint(id)
+  assert.equal(movedFiles(id, was), '', 'ничего не двигали, а сказано, что двигали')
+
+  writeText(id, 'train.py', 'print(2)\nprint(3)\n')
+  writeText(id, '_archive.py', 'import os\n')
+  rmSync(path.join(sessionDir(id), 'data.csv'))
+  const said = movedFiles(id, was)
+  assert.match(said, /data\.csv \(удалён\)/)
+  assert.match(said, /train\.py \(переписан\)/)
+  assert.match(said, /_archive\.py \(заведён\)/)
+})
+
+test('неизвестный инструмент называет те, что есть, а кривой JSON — свою схему', async () => {
+  const id = room()
+  const entry = turn(id)
+  const missing = await useTool(hands(id, entry), 'read_the_notebook', '{}')
+  assert.equal(missing.step.kind, 'note')
+  assert.match(missing.said, /read_notebook/)
+  assert.match(missing.said, /list_files/)
+
+  const broken = await useTool(hands(id, entry), 'read_file', '{path: train.py}')
+  assert.equal(broken.step.kind, 'note')
+  assert.match(broken.said, /"offset"/, 'схема инструмента в отказе не названа')
 })

@@ -7,6 +7,13 @@
   import { getSessionState } from '@/lib/session.svelte'
 
   const session = getSessionState()
+  /**
+   * Шаг работы оракула: в подробностях у него имя инструмента, а не человека.
+   *
+   * `subjectId` общее поле — у разбора там владелец черновика, — поэтому имя
+   * показывается только этому виду события, и только здесь.
+   */
+  const WORK_STEP = 'oracle.work_step'
   let level = $state<ActivityLevel>('normal')
   let category = $state<ActivityCategory>('all')
   let events = $state<ActivityEvent[]>([])
@@ -104,6 +111,7 @@
       {/if}
       <ul aria-label={tr('activity.title')}>
         {#each events as event (event.seq)}
+          {@const tool = event.kind === WORK_STEP ? (event.details.subjectId ?? '') : ''}
           <li>
             <button type="button" class="event" class:selected={selected === event.seq} aria-pressed={selected === event.seq} onclick={() => (selected = event.seq)}>
               <time datetime={new Date(event.createdAt).toISOString()} title={formatDate(event.createdAt, { dateStyle: 'medium', timeStyle: 'medium' })}>{clock(event.createdAt)}</time>
@@ -111,8 +119,10 @@
               <span class="event-copy">
                 <strong>{event.actor?.name ?? tr('activity.system')}</strong>
                 <span>{tr(`activity.${event.kind}`)}</span>
-                {#if event.details.source || event.details.outcome}
+                {#if tool || event.details.source || event.details.outcome}
                   <small class:bad={event.details.outcome === 'error'}>
+                    {#if tool}<code>{tool}</code>{/if}
+                    {#if tool && (event.details.source || event.details.outcome)} · {/if}
                     {#if event.details.source}{tr(`activity.source.${event.details.source}`)}{/if}
                     {#if event.details.source && event.details.outcome} · {/if}
                     {#if event.details.outcome}{tr(`activity.outcome.${event.details.outcome}`)}{/if}
@@ -142,6 +152,7 @@
             {#if detail.details.source}<dt>{tr('activity.source')}</dt><dd>{tr(`activity.source.${detail.details.source}`)}</dd>{/if}
             {#if detail.details.durationMs !== undefined}<dt>{tr('activity.duration')}</dt><dd>{tr('activity.seconds', { count: formatNumber(detail.details.durationMs / 1000, { maximumFractionDigits: 1 }) })}</dd>{/if}
             {#if detail.details.versionSeq !== undefined}<dt>{tr('activity.version')}</dt><dd>#{detail.details.versionSeq}</dd>{/if}
+            {#if detail.kind === WORK_STEP && detail.details.subjectId}<dt>{tr('activity.tool')}</dt><dd><code>{detail.details.subjectId}</code></dd>{/if}
             {#if detail.details.cellId}<dt>{tr('activity.cell')}</dt><dd><code>{detail.details.cellId}</code></dd>{/if}
             {#if detail.details.count !== undefined}<dt>{tr('activity.count')}</dt><dd>{detail.details.count}</dd>{/if}
             {#if detail.details.reason}<dt>{tr('activity.reason')}</dt><dd>{tr(`activity.reason.${detail.details.reason}`)}</dd>{/if}
@@ -176,6 +187,7 @@
   .event-copy strong { color: var(--tm-ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .event-copy span { overflow-wrap: anywhere; color: var(--tm-muted); }
   .event-copy small { color: var(--tm-live); font-size: 11px; }
+  .event-copy small code, dd code { font: inherit; font-family: var(--tm-mono); }
   .more { margin: 8px 12px; }
   .detail { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
   .detail-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }

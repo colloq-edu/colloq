@@ -17,7 +17,7 @@
    * it proposed, what the room decided — because a log whose rows are shaped
    * differently is a log you have to read rather than scan.
    */
-  import type { ChatSnapshot } from '@shared/notebook'
+  import type { AgentStep, ChatSnapshot } from '@shared/notebook'
   import { findChatEntry } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction, ParticipantRole } from '@shared/protocol'
@@ -190,6 +190,78 @@
 
   const streaming = $derived(entry.state === 'streaming')
 
+  /* ------------------------------------------------------- секундомер хода */
+
+  /**
+   * Идёт поручение: у него одного есть лента шагов и живая строка под ней.
+   *
+   * Строка-обещание из ask-outbox сюда не попадает: у сервера этого хода ещё
+   * нет, шагов не будет, и секундомер считал бы не работу, а дорогу запроса.
+   */
+  const working = $derived(streaming && !pending && entry.mode === 'agent')
+
+  /**
+   * Столько ждут молча, прежде чем сказать это вслух.
+   *
+   * Поручение шло тринадцать минут, а панель показывала неподвижную вертушку и
+   * «готовит следующий шаг»: отличить работу от зависания было нечем. Две
+   * минуты без нового шага — уже не «сейчас допишет»: столько держится запрос
+   * к модели, который не вернётся.
+   */
+  const STALLED_MS = 120_000
+
+  /**
+   * Часы живой строки: тикают раз в секунду и только пока ход идёт.
+   *
+   * Раз в секунду, а не пять раз, как секундомер ячейки: здесь цифра читается
+   * не как «шевелится ли», а как «сколько уже» — десятые в ней только мельтешат.
+   * Производное `working` само снимает таймер, когда ход закончился.
+   */
+  let now = $state(Date.now())
+  $effect(() => {
+    if (!working) return
+    now = Date.now()
+    const timer = setInterval(() => (now = Date.now()), 1000)
+    return () => clearInterval(timer)
+  })
+
+  /**
+   * Когда шаг записан.
+   *
+   * Поле появилось позже самой ленты: у ходов, записанных до него, времени нет
+   * вовсе — и тогда строка не показывает ничего, а не «+0 с» на каждом шаге.
+   */
+  function stepAt(step: AgentStep): number | null {
+    return typeof step.at === 'number' && Number.isFinite(step.at) ? step.at : null
+  }
+
+  /**
+   * «+2 мин 10 с» — от начала хода, а не от прошлого шага.
+   *
+   * От начала, потому что читают ленту целиком: по столбцу сразу видно, что
+   * первые шесть шагов уложились в минуту, а седьмой стоит одиннадцать. Разница
+   * между соседними строками из тех же чисел вычитается глазом, обратно — нет.
+   */
+  function since(step: AgentStep): string {
+    const at = stepAt(step)
+    if (at === null) return ''
+    const delta = at - entry.createdAt
+    // Под секунду — шум: первые шаги идут подряд, и «+0 с» стоял бы у каждого.
+    if (delta < 1000) return ''
+    return tr('room.oracle.stepAt', { p0: spell(delta) })
+  }
+
+  /** С чего считает живая цифра: последний записанный шаг или начало хода. */
+  const lastAt = $derived.by(() => {
+    for (let index = entry.steps.length - 1; index >= 0; index -= 1) {
+      const at = stepAt(entry.steps[index])
+      if (at !== null) return at
+    }
+    return entry.createdAt
+  })
+  const waited = $derived(Math.max(0, now - lastAt))
+  const stalled = $derived(waited >= STALLED_MS)
+
   /**
    * Whether to say anything about thinking at all.
    *
@@ -279,6 +351,23 @@
     'uppercase tracking-caps text-muted transition-colors duration-[var(--speed-quick)] ' +
     'hover:border-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40'
 </script>
+
+<!--
+  «Стоп» — один на ход, в двух местах разметки: у поручения он стоит в живой
+  строке (остановить хотят ровно тогда, когда смотрят на счётчик), у вопроса —
+  под ответом. Сниппет, а не две копии: у кнопки своё правило прав и своя
+  подсказка отказа, и разъехались бы они на первой же правке.
+-->
+{#snippet stopButton(extra: string)}
+  <button
+    type="button"
+    class={cn(GHOST, extra, 'disabled:cursor-not-allowed disabled:opacity-40')}
+    disabled={!mayStop}
+    title={mayStop ? '' : pending ? tr('room.extra.242') : tr('room.extra.243')}
+    onclick={onstop}
+  >
+    <Icon name="stop" size={10} /> {tr('room.ui.13')} </button>
+{/snippet}
 
 <article class={cn('flex items-stretch border-b border-line-soft', enter && 'animate-fade-up')}>
   <!-- The asker's colour, running the whole height of the turn. -->
@@ -444,46 +533,89 @@
       логах сервера: комната должна видеть, что именно случилось с её файлами,
       а не читать про это в пересказе.
     -->
-    {#if entry.steps.length > 0}
+    {#if entry.steps.length > 0 || working}
       <div class="flex flex-col border border-line bg-canvas">
         {#each entry.steps as step, at (at)}
-          <div
-            class="flex items-center gap-2 px-2.5 py-1.5 {at > 0 ? 'border-t border-line-soft' : ''}"
-          >
-            <Icon
-              name={STEP_ICON[step.kind] ?? 'info'}
-              size={12}
-              class="shrink-0 {step.kind === 'note' ? 'text-warning' : 'text-faint'}"
-            />
-            <span class="shrink-0 text-2xs text-muted">{VERB[step.kind] ?? step.kind}</span>
-            <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink" title={step.target}>
-              {step.target}
-            </span>
-            {#if step.kind === 'write' || step.kind === 'new'}
-              <span class="shrink-0 font-mono text-2xs font-semibold text-positive">
-                +{step.added}
+          <!--
+            Незнакомый вид шага рисуется, а не пропускается: сервер и вкладка
+            обновляются порознь, и лента, молчащая про то, чего вкладка ещё не
+            знает, врёт сильнее, чем лента с голым словом из документа.
+          -->
+          <div class="flex flex-col {at > 0 ? 'border-t border-line-soft' : ''}">
+            <div class="flex items-center gap-2 px-2.5 py-1.5">
+              <Icon
+                name={STEP_ICON[step.kind] ?? 'info'}
+                size={12}
+                class="shrink-0 {step.kind === 'note' ? 'text-warning' : 'text-faint'}"
+              />
+              <span class="shrink-0 text-2xs text-muted">{VERB[step.kind] ?? step.kind}</span>
+              <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink" title={step.target}>
+                {step.target}
               </span>
-              <span class="shrink-0 font-mono text-2xs font-semibold text-danger">
-                −{step.removed}
-              </span>
-            {:else if step.kind === 'run'}
-              <span
-                class="shrink-0 font-mono text-2xs {step.exit === 0
-                  ? 'text-positive'
-                  : 'text-danger'}"
-              > {tr('room.ui.549')} {step.exit ?? '?'}
-              </span>
-            {:else if step.note}
-              <span class="max-w-[45%] shrink-0 truncate text-2xs text-muted" title={step.note}>
-                {step.note}
-              </span>
+              {#if step.kind === 'write' || step.kind === 'new'}
+                <span class="shrink-0 font-mono text-2xs font-semibold text-positive">
+                  +{step.added}
+                </span>
+                <span class="shrink-0 font-mono text-2xs font-semibold text-danger">
+                  −{step.removed}
+                </span>
+              {:else if step.kind === 'run'}
+                <span
+                  class="shrink-0 font-mono text-2xs {step.exit === 0
+                    ? 'text-positive'
+                    : 'text-danger'}"
+                > {tr('room.ui.549')} {step.exit ?? '?'}
+                </span>
+              {:else if step.note}
+                <span class="max-w-[45%] shrink-0 truncate text-2xs text-muted" title={step.note}>
+                  {step.note}
+                </span>
+              {/if}
+              <!--
+                Сколько прошло от начала хода. Пусто у записей, сделанных до
+                того, как шаг стал запоминать своё время.
+              -->
+              {#if since(step)}
+                <span class="shrink-0 font-mono text-2xs tabular-nums text-faint">
+                  {since(step)}
+                </span>
+              {/if}
+            </div>
+            <!--
+              У запуска строка занята кодом выхода, и выжимка — «не уложился в
+              90 с», хвост вывода — не помещалась в неё ни разу: ветка ниже по
+              разметке была для `run` недостижима. Она и есть то единственное,
+              что объясняет код 124.
+            -->
+            {#if step.kind === 'run' && step.note}
+              <p
+                class="max-h-16 overflow-y-auto whitespace-pre-wrap break-words px-2.5 pb-1.5
+                       text-2xs leading-snug text-muted"
+              >{step.note}</p>
             {/if}
           </div>
         {/each}
-        {#if entry.state === 'streaming'}
-          <div class="flex items-center gap-2 border-t border-line-soft px-2.5 py-1.5">
+        {#if streaming}
+          <!--
+            Живая строка, а не неподвижная вертушка: номер шага и растущая
+            цифра. Тринадцать минут под надписью «готовит следующий шаг»
+            выглядят ровно так же, как тринадцать минут зависания.
+          -->
+          <div
+            class="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-line-soft px-2.5 py-1.5"
+          >
             <Icon name="spinner" size={12} class="shrink-0 animate-spin text-faint" />
-            <span class="text-2xs text-muted">{tr('room.ui.550')}</span>
+            <span
+              class={cn('min-w-0 text-2xs tabular-nums', stalled ? 'text-warning' : 'text-muted')}
+              role="status"
+              aria-live="polite"
+            >
+              {stalled
+                ? tr('room.oracle.stalled', { p0: entry.steps.length + 1, p1: spell(waited) })
+                : tr('room.oracle.progress', { p0: entry.steps.length + 1, p1: spell(waited) })}
+            </span>
+            <div class="flex-1"></div>
+            {@render stopButton('')}
           </div>
         {/if}
       </div>
@@ -514,27 +646,18 @@
       </div>
     {:else if entry.answer}
       <AnswerBody source={entry.answer} {streaming} cellId={entry.cellId} omit={entry.patch} />
-    {:else if streaming && !thinking}
+    {:else if streaming && !thinking && !working}
+      <!-- У поручения «думает» без цифры не стоит: там же, под лентой шагов,
+           живая строка говорит то же самое и называет, сколько уже. -->
       <div class="flex items-center gap-1.5 text-2xs text-muted">
         <Icon name="spinner" size={13} class="animate-spin" /> {tr('room.ui.545')} </div>
     {/if}
 
-    {#if streaming}
+    {#if streaming && !working}
       <!-- Кнопка остаётся стоять и на чужой записи: она идёт, и молча
            исчезнувший «Стоп» читался бы как «оракула уже не остановить». Она
            гаснет и говорит, почему. -->
-      <button
-        type="button"
-        class={cn(GHOST, 'self-start disabled:cursor-not-allowed disabled:opacity-40')}
-        disabled={!mayStop}
-        title={mayStop
-          ? ''
-          : pending
-            ? tr('room.extra.242')
-            : tr('room.extra.243')}
-        onclick={onstop}
-      >
-        <Icon name="stop" size={10} /> {tr('room.ui.13')} </button>
+      {@render stopButton('self-start')}
     {/if}
 
     <!--

@@ -132,32 +132,54 @@ test('открытая комната: участник пишет файлы с
   )
 })
 
-test('потолок чтения считается от contextChars, а не стоит числом', async () => {
+test('потолок чтения считается от contextChars, и у обрезки есть продолжение', async () => {
   const was = getOracleSettings().contextChars
   try {
-    fs.writeFileSync(path.join(sessionDir(ROOM), 'big.py'), 'a'.repeat(20_000))
-    // Маленькая модель на ноутбуке преподавателя: одно чтение на 60 000 знаков
-    // переполняло её окно на втором шаге, и ход обрывался с 400 — уже после
-    // того, как часть правок легла в файлы.
+    // Восемьсот строк по сто знаков: файл, который целиком не влезает ни в одно
+    // окно, но читается страницами — ровно так читают лог и длинный модуль.
+    const lines = Array.from({ length: 800 }, (_, i) => `${String(i).padStart(3, '0')} ${'a'.repeat(95)}`)
+    fs.writeFileSync(path.join(sessionDir(ROOM), 'big.py'), lines.join('\n'))
+    /*
+     * Маленькая модель на ноутбуке преподавателя. Потолок — половина бюджета,
+     * а не всё окно: прочитанное остаётся в переписке и повторяется на каждом
+     * следующем шаге хода.
+     */
     updateOracleSettings({ contextChars: 40_000 })
-    const first = await useTool(
-      hands(turn(), 'host'),
-      'read_file',
-      JSON.stringify({ path: 'big.py' }),
-    )
-    assert.ok(
-      first.said.length < 12_000,
-      `прочитано ${first.said.length} знаков при бюджете 40 000`,
-    )
-    assert.match(first.said, /обрезано/)
+    const first = await useTool(hands(turn(), 'host'), 'read_file', JSON.stringify({ path: 'big.py' }))
+    assert.ok(first.said.length < 22_000, `прочитано ${first.said.length} знаков при бюджете 40 000`)
+    assert.ok(first.said.startsWith('000 '), 'чтение началось не с начала файла')
+    // Обрезка больше не тупик: сказано, что показали и чем брать остальное.
+    assert.match(first.said, /показаны строки 1–\d+ из 800/)
+    assert.match(first.said, /read_file по big\.py с offset: \d+/)
 
-    updateOracleSettings({ contextChars: 100_000 })
-    const wide = await useTool(
-      hands(turn(), 'host'),
-      'read_file',
-      JSON.stringify({ path: 'big.py' }),
-    )
-    assert.equal(wide.said.length, 20_000, 'на большом окне файл читается целиком')
+    // Страница с середины — по тому же offset, что назван в ответе.
+    const next = await useTool(hands(turn(), 'host'), 'read_file', JSON.stringify({ path: 'big.py', offset: 200, limit: 10 }))
+    assert.ok(next.said.startsWith('200 '), next.said.slice(0, 40))
+    assert.equal(next.said.split('\n').filter(line => /^\d{3} a/.test(line)).length, 10)
+    assert.match(next.said, /показаны строки 201–210 из 800/)
+
+    // Отрицательное смещение — хвост: так читают конец лога и трейсбека.
+    const tail = await useTool(hands(turn(), 'host'), 'read_file', JSON.stringify({ path: 'big.py', offset: -3 }))
+    assert.ok(tail.said.startsWith('797 '), tail.said.slice(0, 40))
+    assert.match(tail.said, /показаны строки 798–800 из 800/)
+
+    /*
+     * Файл в одну строку — тот же потолок.
+     *
+     * Страница всегда оставляет хотя бы одну строку, иначе она бывает пустой, —
+     * а одна строка бывает и в двести килобайт: свёрнутый JSON, датасет строкой.
+     * Без потолка по знакам такой файл проезжал бы мимо всякого бюджета.
+     */
+    fs.writeFileSync(path.join(sessionDir(ROOM), 'one.json'), 'x'.repeat(200_000))
+    const flat = await useTool(hands(turn(), 'host'), 'read_file', JSON.stringify({ path: 'one.json' }))
+    assert.ok(flat.said.length < 22_000, `одна строка проехала ${flat.said.length} знаков`)
+    assert.match(flat.said, /обрезано/)
+
+    // Потолок правда растёт вместе с бюджетом, а не стоит числом.
+    updateOracleSettings({ contextChars: 8_000 })
+    const narrow = await useTool(hands(turn(), 'host'), 'read_file', JSON.stringify({ path: 'big.py' }))
+    assert.ok(narrow.said.length < first.said.length, 'узкое окно прочитало не меньше широкого')
+    assert.ok(narrow.said.length > 8_000, 'нижняя граница чтения ниже двенадцати тысяч знаков')
   } finally {
     updateOracleSettings({ contextChars: was })
   }

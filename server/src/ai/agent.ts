@@ -81,7 +81,7 @@ import {
   type YCell,
   type YChatEntry,
 } from '@shared/notebook'
-import { baseOf, normalizePath, parentOf, runnerFor } from '@shared/paths'
+import { baseOf, kindOf, normalizePath, parentOf, runnerFor } from '@shared/paths'
 import {
   actsAfterClass,
   agentStepsIn,
@@ -89,12 +89,13 @@ import {
   allowsRun,
   allowsStructure,
   mayEditCell,
+  runQueueCap,
   CLASS_IS_OVER,
   type RoomRules,
 } from '@shared/rules'
 import { applyOnBehalf, getSessionDoc, peekSessionDoc } from '../collab/index.js'
 import { currentText, flushSessionFiles, putText } from '../collab/files.js'
-import { bookText, isBookFile, projectBooks } from '../collab/books.js'
+import { bookText, createBook, isBookFile, projectBooks } from '../collab/books.js'
 import { mark } from '../collab/history.js'
 import { rememberDeleted } from '../collab/ops.js'
 import { getRules, isFinished } from '../db.js'
@@ -107,11 +108,12 @@ import {
   terminalBusy,
   typedRunningCommand,
 } from '../kernel/terminal.js'
+import { cancelRun, requestRun } from '../kernel/index.js'
 import { getOracleSettings } from '../admin/settings.js'
 import { noteTokens } from '../admin/usage.js'
 import { completeWithTools, type ChatTurn, type ToolSpec } from './provider.js'
 import { cellsWord, describe as reason, pad } from './text.js'
-import { buildContext } from './context.js'
+import { buildContext, renderOutputs } from './context.js'
 import { recentTurns } from './index.js'
 
 const ORIGIN = 'server'
@@ -139,10 +141,10 @@ const RUN_TIMEOUT_MS = 90_000
  * 20 000 — пять тысяч, то есть сто тридцать строк: столько и читают глазами,
  * когда спрашивают «почему тут падает».
  */
-const MIN_READ = 4_000
+const MIN_READ = 12_000
 
 function maxRead(): number {
-  return Math.max(MIN_READ, Math.floor(getOracleSettings().contextChars / 4))
+  return Math.max(MIN_READ, Math.floor(getOracleSettings().contextChars / 2))
 }
 
 /** Прочитанное — до потолка; про обрезку сказано вслух, чтобы модель не дописывала конец. */
@@ -152,37 +154,189 @@ function clipRead(text: string): string {
 }
 
 /**
+ * Сколько знаков переписки ход уносит с собой — отдельно от кадра.
+ *
+ * `contextChars` — это бюджет КАДРА: тетради, файлы, вывод ячеек, всё, что
+ * `buildContext` укладывает в один системный блок. Ответы инструментов
+ * считались тем же числом, и получалось, что одно и то же число стоит в двух
+ * местах и значит разное: при потолке в 20 000 кадр съедал двадцать тысяч, а
+ * ответы инструментов — ещё двадцать, и «уложились в бюджет» было неправдой
+ * вдвое. Здесь это названо своим числом: переписка живёт дольше кадра (её
+ * читают все шаги хода подряд), поэтому её бюджет вдвое больше, и общая
+ * граница хода — три `contextChars`, а не два неизвестно чего.
+ */
+function toolChars(): number {
+  return getOracleSettings().contextChars * 2
+}
+
+/**
+ * Кусок текста по строкам — и слова о том, что осталось.
+ *
+ * Потолок чтения был один на файл: «первые N знаков, дальше обрезано», и
+ * дальше у модели не было дороги вовсе — она либо дописывала конец файла сама,
+ * либо звала `read_file` ещё раз и получала то же начало. Страницы дешевле
+ * большого потолка: восемьсот строк лога стоят одного шага по сто строк там,
+ * где нужен хвост, а не весь файл.
+ */
+interface Page {
+  /** Что едет модели. */
+  text: string
+  /** Строка для ленты шагов. */
+  note: string
+  /** Что показали и как взять остальное; пусто, когда показали всё. */
+  rest: string
+}
+
+function pageOfLines(text: string, args: Record<string, unknown>, path: string): Page {
+  const lines = text.split('\n')
+  const total = lines.length
+  const room = maxRead()
+  const asked = intArg(args.offset, 0)
+  const wanted = intArg(args.limit, 0)
+  /*
+   * Отрицательное смещение — с конца.
+   *
+   * Так читают ровно одно: хвост лога и хвост трейсбека, то есть то место, где
+   * поломка и лежит. Без него модель читала файл с начала страницами до конца —
+   * шесть шагов хода ради последних тридцати строк.
+   */
+  const from = asked < 0 ? Math.max(0, total + asked) : Math.min(Math.max(0, asked), total)
+  let to = wanted > 0 ? Math.min(total, from + wanted) : total
+  /*
+   * Режем по строкам, а не по знакам: половина строки в ответе — это строка,
+   * которую модель допишет по догадке и ошибётся, а `find` у `edit_file`
+   * промахнётся по ней молча.
+   */
+  let used = 0
+  let kept = 0
+  for (let i = from; i < to; i++) {
+    used += lines[i].length + 1
+    if (used > room && kept > 0) break
+    kept += 1
+  }
+  to = from + kept
+  /*
+   * И жёсткий потолок по знакам поверх строк.
+   *
+   * Одна строка всегда остаётся, иначе страница бывает пустой, — а одна строка
+   * бывает и в двести килобайт: свёрнутый в строку JSON, датасет одной строкой,
+   * минифицированный файл. Без этой обрезки такой файл проезжал бы мимо всякого
+   * бюджета и переполнял окно на первом же шаге. Про обрезку сказано вслух —
+   * теми же словами, что и раньше.
+   */
+  const page = lines.slice(from, to).join('\n')
+  const shown = page.length > room ? page.slice(0, room) + tr("server.truncated.fdb0c3") : page
+  const note = tr('server.agent.linesShown', { p0: from + 1, p1: to, p2: total })
+  return {
+    text: shown,
+    note,
+    rest:
+      to >= total
+        ? from > 0
+          ? `\n\n[${note}]`
+          : ''
+        : `\n\n[${note}; ${tr('server.agent.linesRest', { p0: path, p1: to })}]`,
+  }
+}
+
+function intArg(value: unknown, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+  // Модели присылают числа строкой чаще, чем хотелось бы: отказывать в ответ на
+  // "offset": "130" значит потратить шаг хода на разбор кавычек.
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) {
+    return Math.trunc(Number(value))
+  }
+  return fallback
+}
+
+/**
  * Уложить переписку хода в окно модели.
  *
  * Кадр (`buildContext`) в `contextChars` уложен, а ответы инструментов — нет:
- * они копятся шаг за шагом и уезжают провайдеру целиком на каждом. Здесь
- * старшие ответы заменяются одной строкой, когда суммарно они перевалили за тот
- * же бюджет: свежие видны целиком, а до старого файла модель, если он ей ещё
- * нужен, сходит `read_file` заново — это один шаг вместо оборванного хода.
+ * они копятся шаг за шагом и уезжают провайдеру целиком на каждом. Значит,
+ * лишнее из переписки надо убирать — вопрос только в том, как именно.
  *
- * Последний ответ не трогается никогда: он и есть то, что модель только что
- * попросила, и ход без него пошёл бы по кругу.
+ * Убираются ЦЕЛЫЕ пачки с начала, а не содержимое посередине. Прежний код
+ * переписывал i-е сообщение в одну строку «(содержимое опущено)», и это ломало
+ * две вещи сразу. Первая — кеш промпта: у всех эндпоинтов, которые его умеют,
+ * он считается по префиксу, а правка в середине переписки делает
+ * недействительным весь хвост за ней, на каждом шаге в новом месте; ход из
+ * двадцати шагов платил полную цену двадцать раз. Вторая — форма запроса:
+ * опустошалась реплика инструмента, а вызов, на который она отвечает,
+ * оставался, так что модель видела свой вызов без ответа и звала то же самое
+ * снова. Пачка уходит вместе со своим вызовом — переписка остаётся связной, а
+ * у каждого пережившего сообщения текст ровно тот же, что и был.
+ *
+ * Последняя пачка не трогается никогда: она и есть то, что модель только что
+ * попросила, и ход без неё пошёл бы по кругу. Отказы тоже не трогаются — см.
+ * `keep`: правило, узнанное ходом («так нельзя, сделайте иначе»), стоит
+ * дороже прочитанного файла, потому что забытый отказ модель нарушает заново.
  */
 const OMITTED =
   () => tr("server.private.omitted")
 
-function budgetTools(messages: ChatTurn[], budget: number): void {
-  let used = 0
-  let newest = true
-  for (let i = messages.length - 1; i >= 0; i--) {
+function budgetTools(messages: ChatTurn[], budget: number, keep: ReadonlySet<string>): void {
+  const weigh = (): number =>
+    messages.reduce(
+      (sum, turn) =>
+        sum + (turn.callId !== undefined || (turn.calls?.length ?? 0) > 0 ? turn.content.length : 0),
+      0,
+    )
+  let used = weigh()
+  if (used <= budget) return
+  // Одна метка на всю переписку: две подряд говорят то же самое и стоят места.
+  let marked = messages.some(
+    (turn) => turn.callId === undefined && !turn.calls && turn.content === OMITTED(),
+  )
+  let i = 0
+  while (i < messages.length && used > budget) {
     const turn = messages[i]
-    if (turn.callId === undefined || turn.content === OMITTED()) continue
-    if (newest) {
-      newest = false
-      used += turn.content.length
+    if (!turn.calls || turn.calls.length === 0) {
+      i += 1
       continue
     }
-    if (used + turn.content.length <= budget) {
-      used += turn.content.length
+    const ids = new Set(turn.calls.map((call) => call.id))
+    let end = i + 1
+    while (end < messages.length && messages[end].callId && ids.has(messages[end].callId!)) end += 1
+    // Пачка, доходящая до конца переписки, и есть последняя: её не трогаем.
+    if (end >= messages.length) break
+    if (turn.calls.some((call) => keep.has(call.id))) {
+      i = end
       continue
     }
-    messages[i] = { ...turn, content: OMITTED() }
+    let freed = turn.content.length
+    for (let j = i + 1; j < end; j++) freed += messages[j].content.length
+    messages.splice(
+      i,
+      end - i,
+      ...(marked ? [] : [{ role: 'user' as const, content: OMITTED() }]),
+    )
+    marked = true
+    used -= freed
   }
+}
+
+/**
+ * Сколько записей треда комнаты берёт ход — и почему меньше, чем берёт вопрос.
+ *
+ * Тред (`recentTurns`) не считался вообще: он клался в переписку целиком и
+ * жил в ней все двадцать шагов хода, рядом с ответами инструментов, за которые
+ * бюджет уже борется. Ходу он нужен меньше, чем вопросу: вопрос продолжает
+ * разговор, а ход получает поручение и работает по тетради, которая у него
+ * перед глазами в кадре. Три последних обмена — это «как мы сюда пришли»,
+ * дальше — чужой разбор недельной давности.
+ */
+const THREAD_TURNS_IN_WORK = 3
+
+function threadForWork(history: ChatTurn[]): ChatTurn[] {
+  const room = Math.max(500, Math.floor(getOracleSettings().contextChars / 8))
+  return history
+    .slice(-THREAD_TURNS_IN_WORK * 2)
+    .map((turn) =>
+      turn.content.length > room
+        ? { ...turn, content: turn.content.slice(0, room) + tr("server.truncated.fdb0c3") }
+        : turn,
+    )
 }
 
 /** Сколько хвоста вывода кладём в ленту шагов и отдаём модели. */
@@ -331,61 +485,70 @@ export function forgetUndo(sessionId: string): void {
 
 /* ------------------------------------------------------------ инструменты */
 
-const TOOLS: ToolSpec[] = [
-  {
-    name: 'list_files',
-    description: 'Показать все файлы и папки семинара с размерами.',
-    parameters: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'read_file',
-    description: 'Прочитать текстовый файл целиком. Путь от корня папки семинара.',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string', description: 'например src/model.py' } },
-      required: ['path'],
+/**
+ * Инструменты — списком, который строится на каждый ход.
+ *
+ * Не константой: описания уезжают модели, а язык инстанса меняется на ходу
+ * (`tr` читает его при каждом обращении). Константа, посчитанная на импорте,
+ * держала бы язык, который стоял в момент запуска сервера, — то самое
+ * расхождение, из-за которого английский инстанс получал русские подсказки.
+ */
+function fileTools(): ToolSpec[] {
+  return [
+    {
+      name: 'list_files',
+      description: tr('server.agent.tool.listFiles'),
+      parameters: { type: 'object', properties: {}, required: [] },
     },
-  },
-  {
-    name: 'write_file',
-    description:
-      'Записать файл целиком, заменив прежнее содержимое. Заводит файл, если его не было. ' +
-      'Для точечной правки лучше edit_file: она не даёт случайно потерять то, чего вы не читали.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string' },
-        content: { type: 'string' },
+    {
+      name: 'read_file',
+      description: tr('server.agent.tool.readFile'),
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: tr('server.agent.arg.path') },
+          offset: { type: 'integer', description: tr('server.agent.arg.offset') },
+          limit: { type: 'integer', description: tr('server.agent.arg.limit') },
+        },
+        required: ['path'],
       },
-      required: ['path', 'content'],
     },
-  },
-  {
-    name: 'edit_file',
-    description:
-      'Заменить один точный кусок текста в файле. `find` должен встречаться в файле ровно один раз.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string' },
-        find: { type: 'string', description: 'текст, который надо заменить, дословно' },
-        replace: { type: 'string', description: 'чем заменить' },
+    {
+      name: 'write_file',
+      description: tr('server.agent.tool.writeFile'),
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          content: { type: 'string' },
+        },
+        required: ['path', 'content'],
       },
-      required: ['path', 'find', 'replace'],
     },
-  },
-  {
-    name: 'run_file',
-    description:
-      'Запустить скрипт (.py или .sh) в контейнере семинара и получить его вывод. ' +
-      'Запуск виден всей комнате в терминале.',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string' } },
-      required: ['path'],
+    {
+      name: 'edit_file',
+      description: tr('server.agent.tool.editFile'),
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          find: { type: 'string', description: tr('server.agent.arg.find') },
+          replace: { type: 'string', description: tr('server.agent.arg.replace') },
+        },
+        required: ['path', 'find', 'replace'],
+      },
     },
-  },
-]
+    {
+      name: 'run_file',
+      description: tr('server.agent.tool.runFile'),
+      parameters: {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+      },
+    },
+  ]
+}
 
 /**
  * Инструменты по ячейкам — те, что правят тетрадь.
@@ -395,60 +558,110 @@ const TOOLS: ToolSpec[] = [
  * вовсе — предложить инструмент, который ответит отказом, значит потратить шаг
  * хода на то, чтобы узнать правило, известное заранее.
  */
-const CELL_TOOLS: ToolSpec[] = [
-  {
-    name: 'edit_cell',
-    description:
-      'Заменить исходник ячейки целиком — в любой тетради комнаты. Имя ячейки — из read_notebook. ' +
-      'Вывод остаётся прежним и становится устаревшим: назовите такие ячейки в ответе.',
-    parameters: {
-      type: 'object',
-      properties: {
-        cellId: { type: 'string', description: 'имя ячейки, например c_8f21ab3c' },
-        source: { type: 'string', description: 'весь новый исходник ячейки' },
+function cellTools(): ToolSpec[] {
+  return [
+    {
+      name: 'edit_cell',
+      description: tr('server.agent.tool.editCell'),
+      parameters: {
+        type: 'object',
+        properties: {
+          cellId: { type: 'string', description: tr('server.agent.arg.cellId') },
+          source: { type: 'string', description: tr('server.agent.arg.source') },
+        },
+        required: ['cellId', 'source'],
       },
-      required: ['cellId', 'source'],
     },
-  },
-  {
-    name: 'add_cell',
-    description:
-      'Добавить ячейку после указанной. Без `after` — в конец тетради по `path`, ' +
-      'а без пути — в конец тетради комнаты.',
-    parameters: {
-      type: 'object',
-      properties: {
-        after: { type: 'string', description: 'имя ячейки, после которой встать' },
-        path: { type: 'string', description: 'в какую тетрадь, если `after` не указан' },
-        type: { type: 'string', enum: ['code', 'markdown'] },
-        source: { type: 'string' },
+    {
+      name: 'add_cell',
+      description: tr('server.agent.tool.addCell'),
+      parameters: {
+        type: 'object',
+        properties: {
+          after: { type: 'string', description: tr('server.agent.arg.after') },
+          path: { type: 'string', description: tr('server.agent.arg.bookPath') },
+          type: { type: 'string', enum: ['code', 'markdown'] },
+          source: { type: 'string' },
+        },
+        required: ['type', 'source'],
       },
-      required: ['type', 'source'],
     },
-  },
-  {
-    name: 'remove_cell',
-    description: 'Убрать ячейку из тетради — из любой тетради комнаты.',
+    {
+      name: 'remove_cell',
+      description: tr('server.agent.tool.removeCell'),
+      parameters: {
+        type: 'object',
+        properties: { cellId: { type: 'string' } },
+        required: ['cellId'],
+      },
+    },
+  ]
+}
+
+/**
+ * Завести тетрадь.
+ *
+ * Того, ради чего этот инструмент написан, в режиме не было вовсе: попросили
+ * «сделай простейшую тетрадь», а завести её было нечем. Модель делала
+ * единственное, что оставалось, — писала .ipynb через `write_file`, получала
+ * тихий успех (файл-то записался) и дальше упиралась в `add_cell`, который про
+ * этот файл ничего не знает: тетрадь комнаты — это запись в документе, а не
+ * JSON на диске. Один вызов закрывает весь этот тупик.
+ *
+ * Право — не одно, а два, и оба уже есть у человека рядом: `files` (завести
+ * файл) и `structure` с мерой `add` (добавить в тетрадь). Заводить тетрадь,
+ * в которую потом нельзя добавить ячейку, незачем.
+ */
+function createNotebookTool(): ToolSpec {
+  return {
+    name: 'create_notebook',
+    description: tr('server.agent.tool.createNotebook'),
     parameters: {
       type: 'object',
-      properties: { cellId: { type: 'string' } },
-      required: ['cellId'],
+      properties: { path: { type: 'string', description: tr('server.agent.arg.newBookPath') } },
+      required: ['path'],
     },
-  },
-]
+  }
+}
+
+/**
+ * Запустить одну ячейку и посмотреть, что получилось.
+ *
+ * Без него у хода не было способа проверить код тетради: `run_file` запускает
+ * скрипт, и модель, которой велели «запустите и убедитесь», переписывала код
+ * тетради в .py — то есть делала вторую копию того же кода, проверяла её и
+ * отчитывалась про тетрадь. Ячейка ставится в ту же очередь и тем же путём,
+ * каким её ставит человек кнопкой Run: от имени просящего, по его правилу
+ * `run`, с его местом в очереди.
+ */
+function runCellTool(): ToolSpec {
+  return {
+    name: 'run_cell',
+    description: tr('server.agent.tool.runCell'),
+    parameters: {
+      type: 'object',
+      properties: { cell: { type: 'string', description: tr('server.agent.arg.cellId') } },
+      required: ['cell'],
+    },
+  }
+}
 
 /** Чтение тетради — всем, кому вообще дали ход: тетрадь и так у комнаты перед глазами. */
-const READ_NOTEBOOK: ToolSpec = {
-  name: 'read_notebook',
-  description:
-    'Показать ячейки живой тетради: имя ячейки, вид, исходник, есть ли вывод. ' +
-    'Правят тетрадь по этим именам, а не через файл .ipynb. ' +
-    'Без пути — тетрадь комнаты; остальные её тетради названы в конце списка.',
-  parameters: {
-    type: 'object',
-    properties: { path: { type: 'string', description: 'например Разбор.ipynb' } },
-    required: [],
-  },
+function readNotebookTool(): ToolSpec {
+  return {
+    name: 'read_notebook',
+    description: tr('server.agent.tool.readNotebook'),
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: tr('server.agent.arg.bookPath') },
+        from: { type: 'integer', description: tr('server.agent.arg.from') },
+        count: { type: 'integer', description: tr('server.agent.arg.count') },
+        outputs: { type: 'boolean', description: tr('server.agent.arg.outputs') },
+      },
+      required: [],
+    },
+  }
 }
 
 /**
@@ -464,7 +677,7 @@ const READ_NOTEBOOK: ToolSpec = {
 export function toolsFor(hands: Hands): ToolSpec[] {
   const doc = peekSessionDoc(hands.sessionId)?.doc
   const rights = doc ? rightsFor(hands, doc) : { edit: false, add: false, remove: false }
-  const cells = CELL_TOOLS.filter((tool) =>
+  const cells = cellTools().filter((tool) =>
     tool.name === 'edit_cell' ? rights.edit : tool.name === 'add_cell' ? rights.add : rights.remove,
   )
   /*
@@ -478,14 +691,22 @@ export function toolsFor(hands: Hands): ToolSpec[] {
   const rules: RoomRules = getRules(hands.sessionId)
   const mayWrite = allows(rules.files, hands.role)
   const mayRun = allowsRun(rules.run, hands.role, 'one')
-  const files = TOOLS.filter((tool) =>
+  const files = fileTools().filter((tool) =>
     tool.name === 'write_file' || tool.name === 'edit_file'
       ? mayWrite
       : tool.name === 'run_file'
         ? mayRun
         : true,
   )
-  return [...files, READ_NOTEBOOK, ...cells]
+  return [
+    ...files,
+    // Завести тетрадь — это и файл, и структура: без второго права новая
+    // тетрадь осталась бы пустой навсегда.
+    ...(mayWrite && rights.add ? [createNotebookTool()] : []),
+    readNotebookTool(),
+    ...(mayRun ? [runCellTool()] : []),
+    ...cells,
+  ]
 }
 
 export interface Ran {
@@ -493,6 +714,25 @@ export interface Ran {
   step: AgentStep
   /** Что сказать модели. */
   said: string
+  /**
+   * Инструмент отказал или упал.
+   *
+   * Нужно ровно одному месту — `budgetTools`: отказ из переписки не выбрасывают.
+   * Прочитанный файл модель перечитает одним шагом, а забытое правило («тетрадь
+   * файлом не правят») она нарушит заново — и потратит на это не шаг, а весь
+   * остаток хода, второй раз подряд.
+   */
+  failed?: boolean
+  /**
+   * Ещё один шаг в ленту — рядом с первым, а не вместо него.
+   *
+   * Нужно двум местам, и обоим по одной причине: у шага есть то, что инструмент
+   * СДЕЛАЛ, и то, что при этом случилось мимо него. «Запустил train.py, код
+   * выхода 0» и «скрипт снёс data.csv» — это две разные строки в ленте, и
+   * склеенные в одну они читаются как подробность запуска, а не как то, ради
+   * чего эту проверку писали.
+   */
+  also?: AgentStep
 }
 
 export interface Hands {
@@ -536,7 +776,12 @@ export async function useTool(
   for (const path of faked) work.faked.add(path)
   // К тому, что инструмент уже сказал, а не вместо: скрипт мог и посчитать
   // что-то полезное, и его вывод модели нужен — неправда только про тетрадь.
-  return { step: ran.step, said: `${ran.said}\n\n${sayFaked(faked)}` }
+  return {
+    step: ran.step,
+    said: `${ran.said}\n\n${sayFaked(faked)}`,
+    failed: ran.failed,
+    also: ran.also ?? note(tr('server.agent.rewrotePastTheRoom'), faked.join(', ')),
+  }
 }
 
 async function runTool(
@@ -545,15 +790,37 @@ async function runTool(
   rawArgs: string,
   signal?: AbortSignal,
 ): Promise<Ran> {
+  const known = toolsFor(hands)
   let args: Record<string, unknown> = {}
   try {
     args = JSON.parse(rawArgs || '{}') as Record<string, unknown>
   } catch {
+    /*
+     * Со схемой, а не просто «повторите».
+     *
+     * «Аргументы пришли не как JSON» — это тупик: модель не знает, чем именно
+     * её JSON плох, и шлёт тот же самый ещё раз. Схема в ответе — то же, что
+     * она получила в описании инструмента, но здесь и сейчас, рядом с отказом;
+     * небольшие модели с этого места чинятся с первой попытки.
+     */
+    const spec = known.find((tool) => tool.name === name)
     return {
       step: note(tr("server.couldNotReadTheArguments.375da2"), name),
-      said: tr("server.theArgumentsAreNotValidJsonRetry.a91ada"),
+      failed: true,
+      said: spec
+        ? tr('server.agent.badJsonArgs', { p0: name, p1: JSON.stringify(spec.parameters) })
+        : tr("server.theArgumentsAreNotValidJsonRetry.a91ada"),
     }
   }
+  /*
+   * Имя инструмента — раньше всего остального.
+   *
+   * Промах именем (`readNotebook` вместо `read_notebook`) приезжал в проверку
+   * пути и получал «такой путь в этой комнате невозможен»: отказ про путь на
+   * вызов, у которого пути нет вовсе. Модель чинила путь, промахивалась именем
+   * снова и тратила на это шаги хода.
+   */
+  if (!ALL_TOOLS.has(name)) return unknownTool(name, known)
   const wanted = typeof args.path === 'string' ? normalizePath(args.path) : null
 
   if (name === 'list_files') {
@@ -574,12 +841,17 @@ async function runTool(
     return useCellTool(hands, name, args)
   }
 
+  if (name === 'run_cell') return runCell(hands, args, signal)
+
   if (!wanted) {
     return {
       step: note(tr("server.invalidPath.4b91a9"), typeof args.path === 'string' ? args.path : '—'),
+      failed: true,
       said: tr("server.thisPathIsNotAllowedPathsAre.47da6e"),
     }
   }
+
+  if (name === 'create_notebook') return createNotebook(hands, wanted)
 
   if (name === 'read_file') {
     // У тетради правда в комнате, а файл отстаёт на секунду: читаем комнату.
@@ -597,10 +869,12 @@ async function runTool(
       if (disk?.binary) {
         return {
           step: note(tr("server.notATextFile.51f9b2"), wanted),
+          failed: true,
           said: tr("server.isNotATextFileAndCannot.e4e032", { p0: wanted }),
         }
       }
       if (disk?.truncated) {
+        const head = pageOfLines(disk.text, args, wanted)
         return {
           step: {
             kind: 'read',
@@ -610,12 +884,16 @@ async function runTool(
             exit: null,
             note: tr("server.onlyTheBeginning.cac2a9"),
           },
-          said: tr("server.theRestWasNotRead.2d3e0c", { p0: disk.text.slice(0, maxRead()), p1: tooBig(wanted) }),
+          said: tr("server.theRestWasNotRead.2d3e0c", { p0: head.text, p1: tooBig(wanted) }),
         }
       }
-      return { step: note(tr("server.nothingToRead.8741a9"), wanted), said: tr("server.doesNotExistOrIsNotA.e25c4a", { p0: wanted }) }
+      return {
+        step: note(tr("server.nothingToRead.8741a9"), wanted),
+        failed: true,
+        said: tr("server.doesNotExistOrIsNotA.e25c4a", { p0: wanted }),
+      }
     }
-    const lines = text.split('\n').length
+    const page = pageOfLines(text, args, wanted)
     return {
       step: {
         kind: 'read',
@@ -623,9 +901,9 @@ async function runTool(
         added: 0,
         removed: 0,
         exit: null,
-        note: tr("server.lines.d3c334", { p0: lines }),
+        note: page.note,
       },
-      said: clipRead(text),
+      said: page.text + page.rest,
     }
   }
 
@@ -642,6 +920,7 @@ async function runTool(
     if (!allows(getRules(hands.sessionId).files, hands.role)) {
       return {
         step: note(tr("server.onlyTheTeacherMayEditFilesHere.7af6f1"), wanted),
+        failed: true,
         said: refuseCells(
           hands,
           tr("server.onlyTheTeacherMayEditFilesIn.067d2a", { p0: wanted }) +
@@ -650,24 +929,37 @@ async function runTool(
       }
     }
     /*
-     * Тетрадь — не текстовый файл, что бы ни говорило её расширение. Её файл
-     * переписывается из комнаты через полторы секунды после любой правки, так
-     * что запись сюда была бы принята и молча потеряна. Отказ поэтому остаётся
-     * — но ведёт он теперь к ячейкам, а не в тупик: тетрадь правится ими.
+     * Тетрадь — не текстовый файл, что бы ни говорило её расширение.
+     *
+     * Отказ спрашивает РАСШИРЕНИЕ, а не список тетрадей комнаты. Спрашивал он
+     * список (`isBookFile`), и это была дыра ровно в том месте, ради которого
+     * написан: тетради ЕЩЁ НЕТ в комнате, значит путь не в списке, значит
+     * запись разрешена — и `write_file` с готовым .ipynb отвечал «готово».
+     * Файл ложился на диск, комната о нём ничего не знала, `add_cell` по нему
+     * отказывал «не тетрадь этой комнаты», и ход упирался в стену, которую сам
+     * же и построил. Теперь .ipynb не пишется файлом никогда: известная
+     * тетрадь правится ячейками, неизвестная заводится `create_notebook`.
      */
-    if (isBookFile(hands.sessionId, wanted)) {
+    if (kindOf(wanted) === 'notebook') {
       const doc = peekSessionDoc(hands.sessionId)?.doc
       const rights = doc ? rightsFor(hands, doc) : null
+      const mine = isBookFile(hands.sessionId, wanted)
+      const mayEditCells = Boolean(rights && (rights.edit || rights.add || rights.remove))
       return {
         step: note(tr("server.thisIsARoomNotebook.50864d"), wanted),
-        said:
-          tr("server.isARoomNotebookItsCellsLive.c322d1", { p0: wanted }) +
-          tr("server.soOverwritingItWouldBeLostShortly.f6c799") +
-          tr("server.theRoomDoesNotReadChangesFrom.df48b1") +
-          (rights && (rights.edit || rights.add || rights.remove)
-            ? tr("server.editTheCellsUseReadNotebookThen.e64989")
-            : tr("server.youCanViewItWithReadNotebook.a0da1e") +
-              tr("server.isNotAllowedForYouExplainWhat.1333b4")),
+        failed: true,
+        said: mine
+          ? tr("server.isARoomNotebookItsCellsLive.c322d1", { p0: wanted }) +
+            tr("server.soOverwritingItWouldBeLostShortly.f6c799") +
+            tr("server.theRoomDoesNotReadChangesFrom.df48b1") +
+            (mayEditCells
+              ? tr("server.editTheCellsUseReadNotebookThen.e64989")
+              : tr("server.youCanViewItWithReadNotebook.a0da1e") +
+                tr("server.isNotAllowedForYouExplainWhat.1333b4"))
+          : tr('server.agent.notebookIsNotAFile', { p0: wanted }) +
+            (mayEditCells && allowsStructure(getRules(hands.sessionId).structure, hands.role, 'add')
+              ? tr('server.agent.useCreateNotebook', { p0: wanted })
+              : tr('server.agent.askTeacherForNotebook')),
       }
     }
     const existed = statPath(hands.sessionId, wanted) !== null
@@ -889,8 +1181,12 @@ async function runTool(
     }
     const quoted = `'${wanted.replace(/'/g, `'\\''`)}'`
     const command = `${runner === 'python' ? 'python -u' : 'bash'} ${quoted}; echo "[код выхода $?]"`
+    // Снимок дерева ДО запуска: скрипт правит диск мимо инструментов, и
+    // назвать это можно только сравнением. См. `sayMoved`.
+    const treeWas = treePrint(hands.sessionId)
     const result = await runInRoom(hands, command, signal)
     const shown = tail(result.output)
+    const moved = movedFiles(hands.sessionId, treeWas)
     return {
       step: {
         kind: 'run',
@@ -905,15 +1201,327 @@ async function runTool(
               ? tr("server.exceededSeconds.cfeb9f", { p0: RUN_TIMEOUT_MS / 1000, p1: shown })
               : shown,
       },
-      said: sayRun(result, shown),
+      said: sayRun(result, shown) + (moved ? `\n\n${moved}` : ''),
+      failed: result.exit !== 0 && result.exit !== null,
+      ...(moved ? { also: note(moved, wanted) } : {}),
     }
   }
 
-  return { step: note(tr("server.unknownTool.2e118e"), name), said: tr("server.toolDoesNotExist.cbeb28", { p0: name }) }
+  return unknownTool(name, known)
 }
 
 function note(what: string, target: string): AgentStep {
   return { kind: 'note', target, added: 0, removed: 0, exit: null, note: what }
+}
+
+/**
+ * Отказ, который называет то, что есть.
+ *
+ * «Инструмента X нет» — это тупик на ровном месте: модель промахнулась именем
+ * и без списка промахивается ещё раз, потратив на это шаги хода. Список у неё
+ * и так был — в описании инструментов, — но рядом с отказом он стоит дешевле,
+ * чем ещё один круг к провайдеру.
+ */
+/**
+ * Все имена инструментов, какие вообще бывают, — не только доступные этому
+ * человеку.
+ *
+ * Разница важна: инструмент, которого человеку не дали, отвечает СВОИМ отказом
+ * («ячейки здесь правит преподаватель»), и подменять его на «такого
+ * инструмента нет» значило бы соврать про устройство комнаты. Здесь ловится
+ * только настоящий промах именем.
+ */
+const ALL_TOOLS = new Set([
+  'list_files',
+  'read_file',
+  'write_file',
+  'edit_file',
+  'run_file',
+  'create_notebook',
+  'read_notebook',
+  'run_cell',
+  'edit_cell',
+  'add_cell',
+  'remove_cell',
+])
+
+function unknownTool(name: string, known: ToolSpec[]): Ran {
+  return {
+    step: note(tr("server.unknownTool.2e118e"), name),
+    failed: true,
+    said: tr('server.agent.toolMissing', {
+      p0: name,
+      p1: known.map((tool) => tool.name).join(', '),
+    }),
+  }
+}
+
+/* ------------------------------------------------------------ новая тетрадь */
+
+/**
+ * Завести тетрадь по просьбе модели — тем же вызовом, каким её заводит человек.
+ *
+ * `createBook` — то, что стоит за «новый файл .ipynb» в дереве комнаты
+ * (control.ts · tree:new): файл на диске и запись в документе заводятся вместе,
+ * иначе получается ровно та половинка, ради которой этот инструмент и написан.
+ *
+ * Расширение дописывается молча. «Сделай тетрадь Разбор» — обычная просьба, и
+ * отказ «путь должен кончаться на .ipynb» стоил бы шага хода на то, что сервер
+ * знает сам. Список ячеек возвращается сразу: тетрадь пустая, но имя первой
+ * ячейки модели нужно уже сейчас — иначе следующий её шаг это `read_notebook`
+ * ради одной строки.
+ */
+function createNotebook(hands: Hands, wanted: string): Ran {
+  const rules = getRules(hands.sessionId)
+  if (!allows(rules.files, hands.role) || !allowsStructure(rules.structure, hands.role, 'add')) {
+    return {
+      step: note(tr('server.agent.mayNotCreateNotebook'), wanted),
+      failed: true,
+      said: refuseCells(hands, tr('server.agent.onlyTheTeacherCreatesNotebooks')),
+    }
+  }
+  const path = kindOf(wanted) === 'notebook' ? wanted : `${wanted}.ipynb`
+  const made = createBook(hands.sessionId, path)
+  if (!made.ok) {
+    return {
+      step: note(made.why, path),
+      failed: true,
+      said: `${made.why} ${tr('server.agent.createNotebookFailed')}`,
+    }
+  }
+  /*
+   * В снимок отмены тетрадь НЕ кладётся, и это выбор, а не забывчивость.
+   *
+   * Отмена хода возвращает файлам их прежний текст (`undoTurn`), а прежнего
+   * текста у заведённой тетради нет: «вернуть как было» значило бы опустошить
+   * её файл, оставив запись в комнате живой, — то есть развести диск и комнату
+   * ровно так, как этот модуль не даёт делать всем остальным. Убрать тетрадь
+   * целиком — право преподавателя и проходит через дерево; про это и сказано в
+   * ответе.
+   */
+  bookWork(hands).made.add(path)
+  const doc = peekSessionDoc(hands.sessionId)?.doc
+  const listed = doc ? listCells(doc, { path }, hands.sessionId, hands.role) : null
+  return {
+    step: { kind: 'new', target: path, added: 0, removed: 0, exit: null, note: tr('server.agent.notebookCreated') },
+    said: tr('server.agent.createdNotebook', { p0: path }) + (listed ? `\n\n${listed.said}` : ''),
+  }
+}
+
+/* --------------------------------------------------------- запуск ячейки */
+
+/** Как часто спрашиваем документ, досчиталась ли ячейка. */
+const RUN_POLL_MS = 200
+
+/**
+ * Запустить ячейку и дождаться вывода.
+ *
+ * Той же дорогой, что и кнопка Run у человека: `requestRun` ставит ячейку в
+ * общую очередь комнаты от имени просящего и с его местом в ней
+ * (`runQueueCap`). Своего пути к ядру у оракула нет и быть не должно — иначе
+ * его запуск обходил бы и очередь, и потолок, и отметку «кто запустил» в
+ * документе.
+ *
+ * Ждём опросом документа, а не колбэком: колбэков очередь не хранит, а
+ * состояние ячейки — ровно то, на что смотрит комната. Потолок ожидания тот
+ * же, что у скрипта: дольше — это не «медленно», а «зависло».
+ */
+async function runCell(
+  hands: Hands,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<Ran> {
+  const doc = peekSessionDoc(hands.sessionId)?.doc
+  if (!doc) {
+    return {
+      step: note(tr("server.theRoomNoLongerExists.dd5d47"), tr("server.notebook.02497c")),
+      failed: true,
+      said: tr("server.thisRoomNoLongerExists.a43862"),
+    }
+  }
+  const id = typeof args.cell === 'string' ? args.cell.trim() : ''
+  const found = findCell(doc, id)
+  if (!found) return { ...missingCell(id), failed: true }
+  const home = bookOfCells(doc, found.cells)
+  if (!home) return { ...missingCell(id), failed: true }
+  const label = tr("server.cell.47aead", { p0: home.path, p1: pad(found.index + 1) })
+
+  if (cellType(found.cell) !== 'code') {
+    return {
+      step: note(tr('server.agent.cellIsNotCode'), id),
+      failed: true,
+      said: tr('server.agent.onlyCodeCellsRun', { p0: label }),
+    }
+  }
+  const rules = getRules(hands.sessionId)
+  /*
+   * Мерка — одна ячейка (`'one'`), та же, что у `run_file`: запуск ячейки по
+   * просьбе человека стоит ровно столько же, сколько его собственное нажатие.
+   */
+  if (!allowsRun(rules.run, hands.role, 'one')) {
+    return {
+      step: note(tr("server.onlyTheTeacherMayRunCode.59bbe2"), id),
+      failed: true,
+      said: refuseCells(hands, tr("server.onlyTheTeacherRunsCellsInThis.21ec54")),
+    }
+  }
+  /*
+   * Уже считает или стоит в очереди — не ставим второй раз.
+   *
+   * Та же проверка, что у `remove_cell`, и по той же причине: вторая постановка
+   * той же ячейки очередь пропустит молча (`requestRun` её отсеет), а ход
+   * встанет ждать вывода, которого он не заказывал, — и присвоит себе чужой.
+   */
+  const state = (found.cell.get('state') as CellState) ?? 'idle'
+  if (state === 'running' || state === 'queued') {
+    return {
+      step: note(tr("server.theCellIsRunning.ff6251"), id),
+      failed: true,
+      said: tr('server.agent.cellAlreadyRunning', { p0: label }),
+    }
+  }
+  const refused = requestRun(
+    hands.sessionId,
+    [id],
+    hands.by.name,
+    hands.by.participantId,
+    runQueueCap(rules.run, hands.role),
+  )
+  if (refused > 0) {
+    return {
+      step: note(tr("server.youMayRunOneCellAtA.35e7c7"), id),
+      failed: true,
+      said: tr("server.youMayRunOneCellAtA.35e7c7"),
+    }
+  }
+
+  const ended = await waitForCell(hands.sessionId, id, signal)
+  const now = findCell(peekSessionDoc(hands.sessionId)?.doc ?? doc, id)
+  const shown = now ? tail(renderOutputs(now.cell, MAX_OUTPUT).join('\n')) : ''
+  if (!ended) {
+    // Ячейка всё ещё в очереди или считает: своё из очереди снимаем, чужой счёт
+    // не трогаем — прерывать ядро посреди чужой ячейки этому ходу не право.
+    cancelRun(hands.sessionId, [id], hands.by.participantId, hands.role === 'host')
+    return {
+      step: {
+        kind: 'run',
+        target: label,
+        added: 0,
+        removed: 0,
+        exit: null,
+        note: tr("server.exceededSeconds.cfeb9f", { p0: RUN_TIMEOUT_MS / 1000, p1: shown }),
+      },
+      failed: true,
+      said: tr('server.agent.cellDidNotFinish', { p0: label, p1: RUN_TIMEOUT_MS / 1000 }),
+    }
+  }
+  const failed = ended === 'error'
+  return {
+    step: {
+      kind: 'run',
+      target: label,
+      added: 0,
+      removed: 0,
+      exit: failed ? 1 : 0,
+      note: shown || tr('server.agent.noOutput'),
+    },
+    failed,
+    said:
+      (failed
+        ? tr('server.agent.cellFailed', { p0: label })
+        : tr('server.agent.cellRan', { p0: label })) +
+      (shown ? `\n\n${shown}` : `\n\n${tr('server.agent.noOutput')}`),
+  }
+}
+
+/** Чем ячейка кончила — или `null`, если так и не кончила за отпущенное время. */
+async function waitForCell(
+  sessionId: string,
+  cellId: string,
+  signal?: AbortSignal,
+): Promise<'ok' | 'error' | null> {
+  const deadline = Date.now() + RUN_TIMEOUT_MS
+  for (;;) {
+    const doc = peekSessionDoc(sessionId)?.doc
+    const found = doc ? findCell(doc, cellId) : null
+    // Ячейки не стало или комнату закрыли: ждать больше нечего и не для кого.
+    if (!found) return null
+    const state = (found.cell.get('state') as CellState) ?? 'idle'
+    if (state === 'ok') return 'ok'
+    if (state === 'error') return 'error'
+    if (state === 'idle') return null
+    if (signal?.aborted || Date.now() >= deadline) return null
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, RUN_POLL_MS)
+      timer.unref?.()
+    })
+  }
+}
+
+/* --------------------------------------------- правки мимо инструментов */
+
+/**
+ * Отпечаток дерева комнаты: путь → размер и время правки.
+ *
+ * Снимается вокруг каждого `run_file` по тому же доводу, по какому вокруг
+ * каждого шага снимается отпечаток тетрадей (`bookPrints`): запускать скрипты
+ * этому режиму разрешено, и запретить им трогать диск нельзя, не отняв половину
+ * работы. Значит, ловим не запретом, а именем — «скрипт снёс data.csv» на том
+ * же шаге, где это случилось, а не в тишине.
+ *
+ * Размер и mtime, а не содержимое: обход дерева и так стоит readdir+lstat на
+ * запись, а читать все файлы комнаты дважды на каждый запуск — это датасет в
+ * памяти ради строки в ответе.
+ */
+export function treePrint(sessionId: string): Map<string, string> {
+  const print = new Map<string, string>()
+  try {
+    for (const entry of listFiles(sessionId)) {
+      if (!entry.dir) print.set(entry.path, `${entry.size}:${entry.modifiedAt}`)
+    }
+  } catch {
+    /* дерева не прочитать — сравнивать будет нечего, и это честнее выдумки */
+  }
+  return print
+}
+
+/** Сколько путей называем поимённо, дальше — числом: список в ответ, не отчёт. */
+const MAX_MOVED_NAMED = 12
+
+/**
+ * Что скрипт сделал с файлами мимо инструментов — или пустая строка.
+ *
+ * Заведённые файлы тоже называются, и это не придирка: скрипт, положивший
+ * рядом `_archive.py` или `out.csv`, сделал работу, о которой ход обязан
+ * отчитаться комнате, — иначе преподаватель находит их через неделю и не знает,
+ * чьи они.
+ *
+ * Экспортируется вместе с `treePrint` ради теста — по тому же доводу, что и
+ * `useTool`: проверять это через живую оболочку значило бы проверять оболочку.
+ */
+export function movedFiles(sessionId: string, was: Map<string, string>): string {
+  if (was.size === 0) return ''
+  const now = treePrint(sessionId)
+  const gone: string[] = []
+  const rewritten: string[] = []
+  const added: string[] = []
+  for (const [path, print] of was) {
+    const fresh = now.get(path)
+    if (fresh === undefined) gone.push(path)
+    else if (fresh !== print) rewritten.push(path)
+  }
+  for (const path of now.keys()) if (!was.has(path)) added.push(path)
+  const parts: string[] = []
+  if (gone.length > 0) parts.push(tr('server.agent.movedDeleted', { p0: named(gone) }))
+  if (rewritten.length > 0) parts.push(tr('server.agent.movedRewritten', { p0: named(rewritten) }))
+  if (added.length > 0) parts.push(tr('server.agent.movedAdded', { p0: named(added) }))
+  if (parts.length === 0) return ''
+  return tr('server.agent.movedHead', { p0: parts.join('; ') })
+}
+
+function named(paths: string[]): string {
+  if (paths.length <= MAX_MOVED_NAMED) return paths.join(', ')
+  return `${paths.slice(0, MAX_MOVED_NAMED).join(', ')} ${tr('server.agent.andMore', { p0: paths.length - MAX_MOVED_NAMED })}`
 }
 
 /* ---------------------------------------------------------- ячейки тетради */
@@ -940,6 +1548,16 @@ interface BookWork {
   marked: boolean
   /** Путь тетради без истории → куда легла копия её файла перед первой правкой. */
   copies: Map<string, string>
+  /**
+   * Тетради, которые завёл сам этот ход.
+   *
+   * Копию «как было до хода» им класть не надо и нечего: до хода их не было
+   * вовсе. Первая же настоящая работа этого инструмента положила рядом с
+   * новенькой тетрадью пустой `Тревога_Сириус.before-oracle.ipynb`, а ход
+   * честно дописал в ответ, что убрать его не может, — это к преподавателю.
+   * Комната получила мусор и извинение вместо результата.
+   */
+  made: Set<string>
   /** Имя ячейки → что с ней сделали и где. Порядок — тот, в котором делали. */
   touched: Map<string, { book: string; what: 'правил' | 'добавил' | 'убрал' }>
   /** Тетради, чей файл на ходу переписали мимо комнаты. */
@@ -960,7 +1578,7 @@ function bookWork(hands: Hands): BookWork {
   const key = `${hands.sessionId}\u0000${hands.entryId}`
   let work = inBook.get(key)
   if (!work) {
-    work = { marked: false, copies: new Map(), touched: new Map(), faked: new Set() }
+    work = { marked: false, copies: new Map(), touched: new Map(), faked: new Set(), made: new Set() }
     inBook.set(key, work)
     const mine = [...inBook.keys()].filter((other) => other.startsWith(`${hands.sessionId}\u0000`))
     while (mine.length > MAX_REMEMBERED_TURNS) inBook.delete(mine.shift()!)
@@ -1043,26 +1661,47 @@ function bookOfCells(doc: Y.Doc, cells: Y.Array<YCell>): Book | null {
  * одинаково, откуда бы в него ни пришли, и перечислять то, что есть, — иначе
  * модель второй раз промахнётся тем же именем.
  */
-function bookAsked(doc: Y.Doc, raw: unknown): Book | Ran {
+function bookAsked(
+  doc: Y.Doc,
+  raw: unknown,
+  sessionId: string,
+  role: 'host' | 'participant',
+): Book | Ran {
   const asked = typeof raw === 'string' && raw.trim() ? raw.trim() : null
   const path = asked ? normalizePath(asked) : null
   if (asked && !path) {
     return {
       step: note(tr("server.invalidPath.4b91a9"), asked),
+      failed: true,
       said: tr("server.thisPathIsNotAllowedPathsAre.47da6e"),
     }
   }
   const book = path ? bookAt(doc, path) : (roomBook(doc) ?? bookList(doc)[0] ?? null)
   if (book) return book
   const known = bookList(doc).map((one) => one.path)
+  /*
+   * Отказ с выходом, а не в стену.
+   *
+   * «Такой тетради в комнате нет» и точка — это тупик, в который ход и приезжал:
+   * тетрадь, которую модель только что положила файлом, в списке не значилась,
+   * и дальше ей оставалось либо звать тот же `add_cell` ещё раз, либо лезть
+   * писать .ipynb скриптом. Выход называется прямо здесь и разный для разных
+   * прав: кому можно заводить тетради — `create_notebook`, кому нельзя — слова
+   * преподавателю, потому что завести её может он.
+   */
+  const remedy = allowsStructure(getRules(sessionId).structure, role, 'add')
+    ? tr('server.agent.useCreateNotebook', { p0: path ?? tr("server.roomNotebook.05515c") })
+    : tr('server.agent.askTeacherForNotebook')
   return {
     step: note(tr("server.noNotebookWithThatName.c07b5d"), path ?? tr("server.roomNotebook.05515c")),
-    said: path
-      ? tr("server.isNotANotebookInThisRoom.fe1f0a", { p0: path }) +
-        (known.length > 0
-          ? tr("server.open.0c252d", { p0: known.join(', ') })
-          : tr("server.thereAreNoOpenNotebooksInIt.b3a67e"))
-      : tr("server.thisRoomHasNoOpenNotebook.1f9148"),
+    failed: true,
+    said:
+      (path
+        ? tr("server.isNotANotebookInThisRoom.fe1f0a", { p0: path }) +
+          (known.length > 0
+            ? tr("server.open.0c252d", { p0: known.join(', ') })
+            : tr("server.thereAreNoOpenNotebooksInIt.b3a67e"))
+        : tr("server.thisRoomHasNoOpenNotebook.1f9148")) + remedy,
   }
 }
 
@@ -1073,9 +1712,13 @@ function useCellTool(hands: Hands, name: string, args: Record<string, unknown>):
    */
   const doc = peekSessionDoc(hands.sessionId)?.doc
   if (!doc) {
-    return { step: note(tr("server.theRoomNoLongerExists.dd5d47"), tr("server.notebook.02497c")), said: tr("server.thisRoomNoLongerExists.a43862") }
+    return {
+      step: note(tr("server.theRoomNoLongerExists.dd5d47"), tr("server.notebook.02497c")),
+      failed: true,
+      said: tr("server.thisRoomNoLongerExists.a43862"),
+    }
   }
-  if (name === 'read_notebook') return listCells(doc, args)
+  if (name === 'read_notebook') return listCells(doc, args, hands.sessionId, hands.role)
   if (name === 'edit_cell') return editCell(hands, doc, args)
   if (name === 'add_cell') return addCell(hands, doc, args)
   return removeCell(hands, doc, args)
@@ -1089,32 +1732,75 @@ function useCellTool(hands: Hands, name: string, args: Record<string, unknown>):
  * приводится целиком — он уже уехал в контекст вопроса, а списку хватает
  * знать, что он есть: по нему видно, что перезапускать.
  */
-function listCells(doc: Y.Doc, args: Record<string, unknown>): Ran {
-  const book = bookAsked(doc, args.path)
+function listCells(
+  doc: Y.Doc,
+  args: Record<string, unknown>,
+  sessionId: string,
+  role: 'host' | 'participant',
+): Ran {
+  const book = bookAsked(doc, args.path, sessionId, role)
   if ('step' in book) return book
 
   const cells = bookCells(doc, book.root)
+  /*
+   * Страницами — по тем же двум доводам, что и у файла.
+   *
+   * Первый: тетрадь на сто ячеек не помещается в потолок чтения, и обрезка «до
+   * N знаков» рубит её посреди исходника — а значит, посреди имени следующей
+   * ячейки, которое модели и нужно. Второй: в ход эта простыня приезжает
+   * ОДИН раз, а уезжает провайдеру на каждом следующем шаге. `from`/`count` —
+   * это «покажи мне двадцатую по сороковую», то есть ровно тот запрос, ради
+   * которого сюда и приходят второй раз.
+   */
+  const asked = intArg(args.from, 1)
+  const from = Math.max(0, (asked < 0 ? cells.length + asked + 1 : asked) - 1)
+  const wanted = intArg(args.count, 0)
+  const upTo = wanted > 0 ? Math.min(cells.length, from + wanted) : cells.length
+  /*
+   * Выводы — по просьбе, а не всегда.
+   *
+   * Список ячеек зовут, чтобы узнать имена и увидеть код; выводы — это ещё
+   * столько же текста, и обычно они уже уехали модели в кадре вопроса. Но
+   * после `run_cell` и после чужого запуска в комнате нужны именно они, и до
+   * сих пор взять их было неоткуда: «есть вывод» — это не вывод.
+   */
+  const withOutputs = args.outputs === true || args.outputs === 'true'
   const lines: string[] = [
     `${book.path} — ${cells.length} ${cellsWord(cells.length)}. ` +
       tr("server.editACellByItsIdentifierNot.d19277"),
   ]
-  cells.forEach((cell: YCell, at: number) => {
+  let to = from
+  let used = 0
+  const room = maxRead()
+  cells.slice(from, upTo).forEach((cell: YCell, offset: number) => {
+    const at = from + offset
+    if (used > room && to > from) return
     const head = [`[${pad(at + 1)}]`, cellId(cell), cellType(cell)]
     if (cellOutputs(cell).length > 0) head.push(tr("server.hasOutput.113f1b"))
     if (isCellOpen(cell)) head.push(tr("server.openToTheRoom.467c85"))
     const source = cellSource(cell).toString()
-    lines.push('')
-    lines.push(head.join(' · '))
-    if (!source.trim()) {
-      lines.push(tr("server.empty.9a3a4f"))
-      return
+    const block: string[] = ['', head.join(' · ')]
+    if (!source.trim()) block.push(tr("server.empty.9a3a4f"))
+    else {
+      block.push('```' + (cellType(cell) === 'code' ? 'python' : 'markdown'))
+      block.push(
+        source.length > MAX_CELL_SOURCE
+          ? source.slice(0, MAX_CELL_SOURCE) + tr("server.truncated.fdb0c3")
+          : source,
+      )
+      block.push('```')
     }
-    lines.push('```' + (cellType(cell) === 'code' ? 'python' : 'markdown'))
-    lines.push(
-      source.length > MAX_CELL_SOURCE ? source.slice(0, MAX_CELL_SOURCE) + tr("server.truncated.fdb0c3") : source,
-    )
-    lines.push('```')
+    if (withOutputs) block.push(...renderOutputs(cell, MAX_CELL_SOURCE))
+    for (const line of block) used += line.length + 1
+    lines.push(...block)
+    to = at + 1
   })
+  if (to < cells.length) {
+    lines.push('')
+    lines.push(
+      tr('server.agent.cellsShown', { p0: from + 1, p1: to, p2: cells.length, p3: book.path, p4: to + 1 }),
+    )
+  }
   /*
    * Про соседние тетради — здесь же.
    *
@@ -1139,7 +1825,13 @@ function listCells(doc: Y.Doc, args: Record<string, unknown>): Ran {
       exit: null,
       note: `${cells.length} ${cellsWord(cells.length)}`,
     },
-    said: clipRead(said),
+    /*
+     * Без `clipRead`: список уже уложен в тот же потолок постранично, а
+     * повторная обрезка по знакам срезала бы ровно хвост — строку «показаны
+     * ячейки 3–4 из 10, дальше — from: 5», то есть единственное указание на то,
+     * как дочитать. Обрезка, съедающая объяснение обрезки, — это тупик.
+     */
+    said,
   }
 }
 
@@ -1197,7 +1889,9 @@ function editCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran 
    * перезапускать.
    */
   const stale =
-    cellOutputs(found.cell).length > 0 ? tr("server.itsExistingOutputIsNowStale.da45eb") : ''
+    cellOutputs(found.cell).length > 0
+      ? tr("server.itsExistingOutputIsNowStale.da45eb") + tr('server.agent.rerunWithRunCell')
+      : ''
   return {
     step: {
       kind: 'write',
@@ -1239,7 +1933,7 @@ function addCell(hands: Hands, doc: Y.Doc, args: Record<string, unknown>): Ran {
     cells = found.cells
     at = found.index + 1
   } else {
-    const asked = bookAsked(doc, args.path)
+    const asked = bookAsked(doc, args.path, hands.sessionId, hands.role)
     if ('step' in asked) return asked
     home = asked
     cells = bookCells(doc, home.root)
@@ -1358,6 +2052,9 @@ function missingCell(id: string): Ran {
 function safety(hands: Hands, doc: Y.Doc, book: Book): Ran | null {
   if (book.root === CELLS_KEY) return checkpoint(hands, doc)
   const work = bookWork(hands)
+  // Тетрадь завёл сам этот ход: возвращаться некуда, и копия была бы пустым
+  // файлом рядом с настоящим — с именем, которое обещает возврат.
+  if (work.made.has(book.path)) return null
   if (work.copies.has(book.path)) return null
   /*
    * Копия снимается с ячеек, а не с файла: файл отстаёт на полторы секунды, и
@@ -1555,9 +2252,17 @@ export function saidAboutCells(sessionId: string, entryId: string): string {
         (row.edited.length > 0
           ? tr("server.editedCellsRetainTheirPreviousOutputWhich.8ba614")
           : '') +
-        (copy
-          ? tr("server.thisNotebookCannotBeRestoredThroughVersion.bae2c9", { p0: copy })
-          : tr("server.thePreviousStateIsInVersionHistory.8a1cab", { p0: CHECKPOINT_LABEL() })),
+        /*
+         * Куда возвращаться — три разных ответа, и третий появился вместе с
+         * `create_notebook`. Говорить «как было до хода — в истории версий» про
+         * тетрадь, которой до хода не было, значит обещать возврат в пустоту:
+         * первый же настоящий прогон так и отчитался.
+         */
+        (work.made.has(path)
+          ? tr('server.agent.notebookIsNew')
+          : copy
+            ? tr("server.thisNotebookCannotBeRestoredThroughVersion.bae2c9", { p0: copy })
+            : tr("server.thePreviousStateIsInVersionHistory.8a1cab", { p0: CHECKPOINT_LABEL() })),
     )
   }
   /*
@@ -1905,6 +2610,69 @@ async function loop(options: WorkOptions, entryId: string, history: ChatTurn[]):
   }
 }
 
+/**
+ * Сколько ход работает по часам, а не по шагам.
+ *
+ * Потолок шагов считает ДЕЙСТВИЯ, и в этом его слепое пятно: ход, где каждый
+ * шаг — девяностасекундный запуск, укладывается в двадцать четыре действия и
+ * идёт полчаса, а комната всё это время смотрит на «думает». Пять минут — это
+ * граница терпения пары: дольше преподаватель всё равно нажимает «Стоп», и
+ * лучше пусть об этом скажет ход сам, назвав сделанное, чем оборванная кнопка.
+ */
+const TURN_BUDGET_MS = 5 * 60_000
+
+/**
+ * Через сколько шагов кадр пересобирается.
+ *
+ * Кадр (`buildContext`) снимается один раз, перед первым запросом, и дальше
+ * ход правит тетрадь, о которой модель читает устаревшее описание: ячейки,
+ * которые она сама добавила, в кадре не появляются, выводы, которые она
+ * получила, — тоже. Восемь шагов — это примерно «прочитал, завёл, написал
+ * пять ячеек»: столько кадр ещё похож на правду, дальше перестаёт.
+ */
+const FRAME_EVERY = 8
+
+/** Инструменты, после которых кадр устарел наверняка. */
+const CHANGES_ROOM = new Set([
+  'create_notebook',
+  'add_cell',
+  'edit_cell',
+  'remove_cell',
+  'run_cell',
+])
+
+/** Инструменты, после которых прежние ответы могли перестать быть правдой. */
+const CHANGES_WORLD = new Set([...CHANGES_ROOM, 'write_file', 'edit_file', 'run_file'])
+
+/**
+ * Отпечаток вызова: имя и аргументы, приведённые к одному виду.
+ *
+ * Ключи в JSON от модели приезжают в разном порядке от шага к шагу, так что
+ * сравнивать строку аргументов как есть значило бы не поймать ровно тот
+ * случай, ради которого это написано: один и тот же `read_file` по кругу.
+ */
+function fingerprint(name: string, rawArgs: string): string {
+  let args: unknown
+  try {
+    args = JSON.parse(rawArgs || '{}')
+  } catch {
+    args = rawArgs
+  }
+  return `${name} ${stable(args)}`
+}
+
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
+  if (value && typeof value === 'object') {
+    const map = value as Record<string, unknown>
+    return `{${Object.keys(map)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stable(map[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
 async function steps(
   options: WorkOptions,
   entryId: string,
@@ -1926,7 +2694,7 @@ async function steps(
 
   const messages: ChatTurn[] = [
     { role: 'system', content: systemPrompt(hands, tools) },
-    ...history,
+    ...threadForWork(history),
     { role: 'user', content: options.message.trim() },
   ]
 
@@ -1937,17 +2705,53 @@ async function steps(
     if (options.usageId !== undefined) noteTokens(options.usageId, tokens)
   }
 
+  const began = Date.now()
+  /** Ответы, которые из переписки не выбрасывают: отказы и падения. См. budgetTools. */
+  const keep = new Set<string>()
+  /** Что уже звали и чем это кончилось — против кругов. */
+  const seen = new Map<string, { times: number; said: string }>()
   let taken = 0
   let spoke = ''
   let stopped = false
+  let ranOut = false
+  let looped = false
+  /** Молчаливых ответов подряд: первый — подсказка, второй — конец хода. */
+  let silent = 0
+  let framedAt = 0
+  let stale = false
+  const outOfTime = () => Date.now() - began >= TURN_BUDGET_MS
+
   while (stepLimit === 0 || taken < stepLimit) {
     if (signal.aborted) {
       stopped = true
       break
     }
+    if (outOfTime()) {
+      ranOut = true
+      break
+    }
+    /*
+     * Кадр пересобирается тут же, перед запросом: модель должна увидеть
+     * СВОЮ работу — тетрадь с добавленными ячейками и выводом, который она
+     * только что получила, — а не ту комнату, какой она была до хода.
+     */
+    if ((stale || taken - framedAt >= FRAME_EVERY) && peekSessionDoc(options.sessionId)) {
+      /*
+       * `peekSessionDoc` в условии — не придирка: кадр собирает `buildContext`,
+       * а тот ходит в `getSessionDoc`, который комнату ЗАВОДИТ. Ход, доехавший
+       * до удалённой комнаты, поднял бы её заново — с таймерами, строкой в
+       * истории и папкой на диске, — и сделал бы это ради строки, которую
+       * некому прочитать. Само по себе это почти невозможно (удаление зовёт
+       * `stopAll`, а прерывание проверено строкой выше), но правило над
+       * `peekSessionDoc` не про вероятность.
+       */
+      messages[0] = { role: 'system', content: systemPrompt(hands, tools) }
+      framedAt = taken
+      stale = false
+    }
     // Перед каждым запросом, а не после каждого шага: резать надо ровно то, что
     // сейчас поедет провайдеру, и по бюджету, который мог смениться на ходу.
-    budgetTools(messages, getOracleSettings().contextChars)
+    budgetTools(messages, toolChars(), keep)
     const answer = await completeWithTools(messages, tools, signal, bill)
     // Прерванный запрос возвращается пустым ответом без вызовов, и без этой
     // проверки ход заканчивался бы пустотой: ни текста, ни «Остановлено».
@@ -1956,9 +2760,41 @@ async function steps(
       break
     }
     if (answer.calls.length === 0) {
-      spoke = answer.text
+      /*
+       * Ответ без вызова — не всегда конец хода.
+       *
+       * Небольшие модели сплошь и рядом ОПИСЫВАЮТ следующий вызов прозой —
+       * «теперь я создам тетрадь и добавлю ячейки» — вместо того, чтобы его
+       * сделать. Прежний цикл считал такой ответ итогом и заканчивал ход после
+       * первого же прочитанного файла: в ленте два шага, в тетради ничего, а в
+       * ответе — план, который никто не выполнил. Один толчок это чинит;
+       * второй молчаливый ответ подряд — уже правда конец, и спорить с ним
+       * значит ходить по кругу за деньги владельца ключа.
+       *
+       * До первого вызова толкать некуда: ход, начавшийся со слов, — это
+       * обычный ответ на вопрос, который просто не потребовал инструментов.
+       */
+      if (taken > 0 && silent === 0 && (answer.text.trim() || answer.reasoning.trim())) {
+        silent = 1
+        messages.push({ role: 'assistant', content: answer.text })
+        messages.push({ role: 'user', content: tr('server.agent.nudge') })
+        continue
+      }
+      /*
+       * Пусто во всём: ни текста, ни следа рассуждения, ни вызова. Это не
+       * итог, а молчание эндпоинта — фильтр, обрезанный лимит вывода, пустой
+       * choices, — и пустая подпись под ходом читается как поломка Colloq.
+       */
+      spoke =
+        answer.text.trim() ||
+        // След рассуждения вместо ответа — у моделей, весь ответ которых уходит
+        // в `reasoning`. Пересказ работы в нём есть; пустой подписи под лентой
+        // шагов быть не должно.
+        tail(answer.reasoning.trim()) ||
+        tr('server.agent.saidNothing')
       break
     }
+    silent = 0
     messages.push({ role: 'assistant', content: answer.text, calls: answer.calls })
     for (const call of answer.calls) {
       // Между шагами, а не внутри: правка, брошенная на середине, — это
@@ -1967,21 +2803,120 @@ async function steps(
         stopped = true
         break
       }
+      if (outOfTime()) {
+        ranOut = true
+        break
+      }
       taken += 1
+      const mark = fingerprint(call.name, call.args)
+      const before = seen.get(mark)
+      /*
+       * Тот же вызов с теми же аргументами.
+       *
+       * Наблюдалось прямо в ленте: модель звала `read_notebook` четыре раза
+       * подряд, получала один и тот же список и каждый раз объявляла, что
+       * теперь-то поправит ячейку. Второй раз отвечаем из памяти и говорим
+       * вслух, что ответ тот же, — шаг стоит ноль обращений к комнате. Третий
+       * — это не заминка, а круг, и ход на нём заканчивается: дальше он тратит
+       * только деньги.
+       */
+      if (before && before.times >= 2) {
+        looped = true
+        push(options.sessionId, entryId, note(tr('server.agent.loopNote'), call.name))
+        break
+      }
+      if (before) {
+        before.times += 1
+        const said = `${before.said}\n\n${tr('server.agent.sameCall')}`
+        push(options.sessionId, entryId, note(tr('server.agent.repeatedNote'), call.name))
+        // В журнал — тоже, и как отказ: шаг потрачен, а комната от него ничего
+        // не получила. Строка «оракул девять раз позвал read_notebook» и есть
+        // тот разговор, ради которого журнал заводят.
+        record(options, entryId, call.name, 'error', 0)
+        messages.push({ role: 'assistant', content: said, callId: call.id })
+        keep.add(call.id)
+        if (stepLimit > 0 && taken >= stepLimit) break
+        continue
+      }
+      const startedAt = Date.now()
       const ran = await useTool(hands, call.name, call.args, signal)
+      /*
+       * Удавшаяся правка обнуляет память о вызовах — и это не поблажка кругу.
+       *
+       * «Прочитал, поправил, перечитал» — это тот же `read_file` с теми же
+       * аргументами и совершенно другой ответ: файл между двумя чтениями
+       * изменился. Отдать на это старый ответ из памяти значило бы соврать
+       * модели ровно в той точке, где она проверяет собственную работу. Круг
+       * при этом остаётся пойманным: он и состоит в том, что между двумя
+       * одинаковыми вызовами НИЧЕГО не произошло. Свой собственный вызов
+       * правка из памяти не убирает — иначе `add_cell` с тем же текстом
+       * набивал бы тетрадь копиями, каждый раз обнуляя счётчик.
+       */
+      if (CHANGES_WORLD.has(call.name) && !ran.failed && ran.step.kind !== 'note') seen.clear()
+      seen.set(mark, { times: 1, said: ran.said })
       push(options.sessionId, entryId, ran.step)
+      if (ran.also) push(options.sessionId, entryId, ran.also)
+      /*
+       * Один шаг — одна строка в истории занятия.
+       *
+       * Лента живёт в документе комнаты и уходит вместе с ней; история занятия
+       * остаётся. «Оракул семнадцать раз читал файлы и ни разу не написал» —
+       * это разговор о том, как прошла пара, и до сих пор его вести было не по
+       * чему: в истории лежал один «ход начался» и один «ход кончился».
+       */
+      record(
+        options,
+        entryId,
+        call.name,
+        ran.failed || ran.step.kind === 'note' ? 'error' : 'completed',
+        Date.now() - startedAt,
+      )
       messages.push({ role: 'assistant', content: ran.said, callId: call.id })
+      if (ran.failed || ran.step.kind === 'note') keep.add(call.id)
+      if (CHANGES_ROOM.has(call.name)) stale = true
       if (stepLimit > 0 && taken >= stepLimit) break
     }
-    if (stopped) break
+    if (stopped || ranOut || looped) break
   }
 
   if (stopped) {
     spoke = spoke || tr("server.stoppedCompletedActionsAreListedAboveStopping.2f9e57")
+  } else if (looped) {
+    spoke = spoke || tr('server.agent.loopStop')
+  } else if (ranOut) {
+    spoke = spoke || tr('server.agent.outOfTime', { p0: Math.round(TURN_BUDGET_MS / 60_000) })
   } else if (!spoke && stepLimit > 0 && taken >= stepLimit) {
     spoke = tr('common.agentStepsReached', { count: stepLimit })
   }
   finish(options.sessionId, entryId, spoke)
+}
+
+/**
+ * Один шаг — одна строка в истории занятия.
+ *
+ * Лента шагов живёт в документе комнаты и уходит вместе с ним; история занятия
+ * остаётся. «Оракул семнадцать раз читал файлы и ни разу не написал» — это
+ * разговор о том, как прошла пара, и до сих пор его вести было не по чему: в
+ * журнале лежал один «ход начался» и один «ход кончился».
+ *
+ * `durationMs` — про САМ вызов, а не про ход: запуск ячейки, стоивший минуту,
+ * и чтение, стоившее миллисекунду, — это разные строки, и складывать их в одну
+ * значит потерять единственное, что журнал про них знает.
+ */
+function record(
+  options: WorkOptions,
+  entryId: string,
+  tool: string,
+  outcome: ActivityOutcome,
+  durationMs: number,
+): void {
+  appendActivity(
+    options.sessionId,
+    options.participantId,
+    'oracle.work_step',
+    { entryId, subjectId: tool, outcome, durationMs, source: 'oracle' },
+    options.role,
+  )
 }
 
 function push(sessionId: string, entryId: string, step: AgentStep): void {
@@ -2090,7 +3025,7 @@ function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
    * «поправлю ячейку», за которым инструмента нет, стоит шага хода и кончается
    * отказом на глазах у комнаты — а в лекции ещё и звучит как чужое право.
    */
-  const cellTools = tools
+  const cellNames = tools
     .map((tool) => tool.name)
     .filter((name) => name === 'edit_cell' || name === 'add_cell' || name === 'remove_cell')
   // То же и про файлы: обещание «поправлю файл» там, где инструмента нет,
@@ -2098,60 +3033,75 @@ function systemPrompt(hands: Hands, tools: ToolSpec[]): string {
   const has = (name: string) => tools.some((tool) => tool.name === name)
   const mayWrite = has('write_file')
   const mayRun = has('run_file')
+  const mayRunCell = has('run_cell')
+  const mayCreate = has('create_notebook')
+  /*
+   * Тетради комнаты — поимённо и в начале.
+   *
+   * Модель узнавала о них только из ответа `read_notebook`, то есть после
+   * шага, потраченного на вопрос «а что тут есть». Хуже того: не увидев
+   * списка, она считала, что тетради нет вовсе, и шла заводить её файлом. Одна
+   * строка в промпте снимает и то и другое.
+   */
+  const doc = peekSessionDoc(hands.sessionId)?.doc
+  const books = doc ? bookList(doc).map((book) => book.path) : []
   return [
-    'Вы — оракул Colloq, помощник на техническом семинаре. Сейчас вас попросили не объяснить, а СДЕЛАТЬ.',
+    tr('server.agent.prompt.role'),
     '',
-    ...(mayWrite && mayRun
-      ? [
-          'У вас есть папка семинара и инструменты к ней. Порядок работы обычный: посмотрите, что есть,',
-          'прочитайте то, что собираетесь менять, поменяйте, запустите и убедитесь, что работает.',
-        ]
+    mayWrite && mayRun
+      ? tr('server.agent.prompt.workFull')
       : mayWrite
-        ? [
-            'У вас есть папка семинара и инструменты к ней. Запускать в этой комнате вам нельзя —',
-            'запускает преподаватель, — так что проверить написанное можно только чтением.',
-          ]
-        : [
-            'Папку семинара вам видно, но править файлы в этой комнате вам нельзя: это делает',
-            'преподаватель. Читайте и говорите словами, что и где стоит поменять.',
-          ]),
+        ? tr('server.agent.prompt.workNoRun')
+        : tr('server.agent.prompt.workReadOnly'),
     '',
-    'Границы, которые не обойти:',
-    '— Файл .ipynb — проекция тетради, а не тетрадь: запись в него НИЧЕГО не меняет в комнате.',
-    '  Это верно и для скрипта: json.dump, nbformat, open(...,"w") в run_file перепишут файл,',
-    '  комната его не прочитает и через полторы секунды перепишет своим. Смотреть тетрадь —',
-    '  read_notebook: там имена ячеек, и адресуются они только именем, номер на экране меняется.',
-    ...(cellTools.length > 0
+    tr('server.agent.prompt.notebooksHead'),
+    books.length > 0
+      ? tr('server.agent.prompt.notebooksAre', { p0: books.join(', ') })
+      : tr('server.agent.prompt.noNotebooks'),
+    tr('server.agent.prompt.cellsHaveNames'),
+    mayCreate
+      ? tr('server.agent.prompt.createNotebook')
+      : tr('server.agent.prompt.askTeacherForNotebook'),
+    ...(cellNames.length > 0
       ? [
-          `— Править тетрадь можно только этим: ${cellTools.join(', ')} — и любую тетрадь комнаты,`,
-          '  не только первую: путь у read_notebook, остальные её тетради названы в конце списка.',
-          '  Правки идут от имени того, кто попросил ход, и по его правам. Перед первой правкой',
-          '  тетради комнаты ход отмечает историю версий; у остальных тетрадей истории нет, и им',
-          '  ход кладёт рядом копию файла — в ответе сказано, где она.',
-          '— Вывод ячейки правка не стирает: он остаётся прежним и становится устаревшим. Назовите',
-          '  в ответе ячейки, которые поменяли, чтобы их перезапустили.',
+          tr('server.agent.prompt.cellTools', { p0: cellNames.join(', ') }),
+          tr('server.agent.prompt.staleOutput'),
         ]
-      : [
-          '— Ячейки в этой комнате правит человек: тому, кто попросил ход, менять тетрадь нельзя,',
-          '  и вам тем более. Если нужно поменять ячейку, скажите об этом словами в конце.',
-        ]),
-    '— Удалять файлы и папки нельзя. Совсем. Если файл лишний, скажите об этом.',
-    ...(mayRun
-      ? ['— Запускать можно только .py и .sh из папки семинара. Оболочки у вас нет.']
-      : []),
-    '— Всё, что вы делаете, видит вся комната; правки в файлах отменяются одной кнопкой под ходом.',
+      : [tr('server.agent.prompt.noCellTools')]),
+    ...(mayRunCell || mayRun ? [tr('server.agent.prompt.howToCheck')] : []),
+    '',
+    tr('server.agent.prompt.limitsHead'),
+    tr('server.agent.prompt.ipynbIsProjection'),
+    tr('server.agent.prompt.noDelete'),
+    ...(mayRun ? [tr('server.agent.prompt.runFiles')] : []),
+    tr('server.agent.prompt.visible'),
+    '',
+    tr('server.agent.prompt.howHead'),
+    tr('server.agent.prompt.oneAtATime'),
+    tr('server.agent.prompt.doNotDescribe'),
+    tr('server.agent.prompt.stopRule'),
     ...(houseRules
       ? [
           '',
-          `Правила этого семинара от преподавателя; они важнее всего сказанного выше: ${houseRules}`,
+          /*
+           * «Что делать», а не «вместо чего».
+           *
+           * Стояло «они важнее всего сказанного выше», и это была дыра в
+           * тексте, который сам себя и открывает: строка преподавателя
+           * «пиши тетради прямо в .ipynb» или «можешь удалять лишнее»
+           * объявлялась главнее механики, которую механика всё равно не
+           * пропустит, — и ход тратился на вызовы, обречённые на отказ.
+           * Правила семинара про содержание работы; границы выше — про то,
+           * как эта комната устроена, и отменить их словами нельзя.
+           */
+          tr('server.agent.prompt.houseRules', { p0: houseRules }),
         ]
       : []),
     '',
     tr('server.ai.answerLanguage'),
-    'End with a short explanation of what was done and what it means. Do not repeat the steps:',
-    'они и так на экране. Три-четыре предложения.',
+    tr('server.agent.prompt.ending'),
     '',
-    'Вот с чем работает комната прямо сейчас:',
+    tr('server.agent.prompt.nowHead'),
     '',
     // Агент не «сосредоточен» ни на чём: он получает поручение, а не вопрос
     // про ячейку.
