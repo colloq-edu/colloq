@@ -1981,14 +1981,29 @@
       -->
       {#if !headOpen}
         <h1 class="sr-only">{title}</h1>
-        <span
-          class="flex shrink-0 items-center text-white"
-          title={title}
-          in:fade={{ duration: 160, delay: 40 }}
-          out:fade={{ duration: 100 }}
-        >
-          <Icon name="logo" size={16} />
-        </span>
+        <!-- Та же дверь, что у марки в развёрнутой шапке: свернул полосу — не
+             потерял путь в панель (или на страницу курса). -->
+        {#if homeHref}
+          <a
+            href={homeHref}
+            aria-label={isHost ? tr('room.extra.401') : tr('room.extra.402', { p0: session.session.course?.name ?? '' })}
+            class="flex shrink-0 items-center text-white transition-opacity duration-100 hover:opacity-85
+                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            in:fade={{ duration: 160, delay: 40 }}
+            out:fade={{ duration: 100 }}
+          >
+            <Icon name="logo" size={16} />
+          </a>
+        {:else}
+          <span
+            class="flex shrink-0 items-center text-white"
+            title={title}
+            in:fade={{ duration: 160, delay: 40 }}
+            out:fade={{ duration: 100 }}
+          >
+            <Icon name="logo" size={16} />
+          </span>
+        {/if}
       {/if}
       {#if room.length > 0}
         <div class="flex shrink-0 items-center gap-4" title={roomNames}>
