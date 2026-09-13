@@ -81,9 +81,17 @@ export const adminMessages: MessageCatalog = {
     "ru": " и ещё {p0}",
     "en": " and {p0} more"
   },
-  "admin.resources.unknown": {
-    "ru": "Сколько на машине памяти и карт — сейчас неизвестно.",
-    "en": "How much memory and how many cards the machine has is not known right now."
+  "admin.resources.reading": {
+    "ru": "Читаем ресурсы машины",
+    "en": "Reading the machine's resources"
+  },
+  "admin.resources.unreadable": {
+    "ru": "Не удалось прочитать ресурсы машины.",
+    "en": "Could not read the machine's resources."
+  },
+  "admin.resources.asDefault": {
+    "ru": "по умолчанию",
+    "en": "default"
   },
   "admin.teaching": {
     "ru": "Преподавание",

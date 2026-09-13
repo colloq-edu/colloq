@@ -17,9 +17,8 @@
   import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
   import {
-    advanceTarget,
-    advanceTop,
     anchorShift,
+    nearestTarget,
     TOOLBAR_FALLBACK,
     type Frame,
     type HeightChange,
@@ -135,13 +134,16 @@
   }
 
   /*
-   * К какой ячейке мы ведём экран прямо сейчас.
+   * Куда мы ведём экран прямо сейчас — и к какой ячейке.
    *
-   * Ход занимает кадры, и ровно в эти кадры всё выше цели ещё меняет высоту:
-   * запущенная ячейка теряет строку «без номера», отдаёт место выводу,
-   * получает трейсбек. Поэтому помним не «сколько осталось проехать», а КУДА
-   * — имя ячейки: по нему цель пересчитывается заново в любой момент хода и не
-   * зависит от того, где экран оказался в этот кадр (см. settle).
+   * Ход занимает кадры, и ровно в эти кадры что-нибудь выше цели ещё меняет
+   * высоту: отложенная ячейка распрямляется, картинка сообщает свой размер.
+   * Цель, посчитанная в начале, к концу хода устаревает ровно на этот прирост,
+   * — и якорь (см. settle) её на него же и поправляет.
+   *
+   * Имя ячейки хранится не ради пересчёта (цель у перехода одна и считается
+   * один раз), а ради проверки «эта ячейка ещё жива»: её могли удалить, пока
+   * экран ехал.
    */
   let steering: { id: string; top: number } | null = null
 
@@ -194,7 +196,12 @@
   }
 
   /**
-   * Подвести ячейку под верх экрана — с местом под тулбар.
+   * Показать ячейку, если её не видно, — и ни пикселем больше.
+   *
+   * Зовут отсюда ТОЛЬКО переходы: стрелка, `j`/`k`, растягивание выделения,
+   * шаг из последней строки редактора. Запуск не зовёт вовсе — см. `select` и
+   * lib/cell-scroll.ts: вывод появляется под кодом, а человек в этот момент
+   * смотрит на код.
    *
    * Считаем, а не просим браузер: см. разбор в lib/cell-scroll.ts. Тулбар
    * меряется по месту, потому что он есть не всегда (у припаркованной и у
@@ -210,7 +217,7 @@
       cell.scrollIntoView({ block: 'nearest' })
       return
     }
-    const target = advanceTarget(frameOf(box), boxOf(cell))
+    const target = nearestTarget(frameOf(box), boxOf(cell))
     if (target === null) return
     steerTo(box, id, target)
   }
@@ -250,27 +257,35 @@
     const frameTop = box.getBoundingClientRect().top
     const at = box.scrollTop
     /*
-     * Идёт ход к ячейке — цель пересчитывают, а не поправляют.
+     * Идёт ход к ячейке — двигают ЦЕЛЬ, а не экран.
      *
-     * Копить поправки тут бесполезно: их знак и порядок зависят от того, где
-     * экран оказался в этот кадр, а живая геометрия самой ячейки отвечает на
-     * вопрос «куда ехать» одинаково в любой момент хода.
+     * Поправить `scrollTop` посреди плавной прокрутки нельзя: браузер считает
+     * это чужим вмешательством и ход обрывает. А прирост высоты выше цели
+     * устаревает саму цель ровно на свою величину — значит его и надо ей
+     * прибавить, оставив ход идти. Считается прирост относительно ЦЕЛИ, а не
+     * относительно текущего `scrollTop`: где экран окажется в этот кадр,
+     * зависит от кадра, а куда он едет — нет.
      */
     if (steering) {
-      const cell = document.querySelector<HTMLElement>(`[data-cell-id="${steering.id}"]`)
-      if (!cell) {
+      const aim = steering.top
+      const moved: HeightChange[] = []
+      for (const node of column.querySelectorAll<HTMLElement>('[data-cell-slot]')) {
+        const id = node.dataset.cellSlot
+        if (!id) continue
+        const rect = node.getBoundingClientRect()
+        const was = slotHeights.get(id)
+        slotHeights.set(id, rect.height)
+        if (was === undefined || Math.abs(rect.height - was) < 0.5) continue
+        moved.push({ top: rect.top - frameTop + at, delta: rect.height - was })
+      }
+      // Ячейку могли удалить, пока экран ехал: везти уже некуда.
+      if (!document.querySelector(`[data-cell-id="${steering.id}"]`)) {
         steering = null
         return
       }
-      // Слоты всё равно переписываем: иначе накопленная разница выстрелит,
-      // когда ход кончится.
-      for (const node of column.querySelectorAll<HTMLElement>('[data-cell-slot]')) {
-        const id = node.dataset.cellSlot
-        if (id) slotHeights.set(id, node.getBoundingClientRect().height)
-      }
-      const aim = advanceTop(frameOf(box), boxOf(cell))
-      if (Math.abs(aim - steering.top) < 1) return
-      steerTo(box, steering.id, aim)
+      const shift = anchorShift(moved, aim)
+      if (Math.abs(shift) < 1) return
+      steerTo(box, steering.id, Math.max(0, aim + shift))
       return
     }
     const changes: HeightChange[] = []
@@ -313,8 +328,18 @@
 
   $effect(() => () => anchoring?.disconnect())
 
-  function select(id: string) {
+  /**
+   * Выделить ячейку — и показать её, если сюда пришли переходом.
+   *
+   * `show: false` — это запуск. Shift+Enter выделяет следующую ячейку, и
+   * выделение на этом кончается: экран остаётся там, где он был, потому что
+   * смотреть после запуска надо на вывод запущенной, а он растёт под ней же.
+   * Раньше выделение и прокрутка были одним действием, и отделить второе от
+   * первого было нельзя — отсюда и «перекидывает вниз».
+   */
+  function select(id: string, show = true) {
     session.selectCell(id)
+    if (!show) return
     // Keyboard navigation must not walk the selection off screen — and the
     // target may have been parked, so let it take its real height first.
     void tick().then(() => reveal(id))
@@ -328,7 +353,7 @@
     })
   }
 
-  async function addAt(index: number, type: CellType) {
+  async function addAt(index: number, type: CellType, show = true) {
     /*
      * Вслух, а не молча — и на клавише тоже. Отказ, о котором не сказали,
      * читается как поломка, а не как решение преподавателя; а без этой
@@ -340,7 +365,7 @@
       return
     }
     const created = insertCell(session.doc, root, type, index)
-    select(created)
+    select(created, show)
     // The new cell has to exist in the DOM before it can take focus.
     await tick()
     enter(created)
@@ -390,6 +415,8 @@
           fallback?: boolean
           /** Make a cell when there is none to step to; Shift+Enter only. */
           grow?: boolean
+          /** Запуск передаёт `false`: выделение переходит, экран стоит. */
+          scroll?: boolean
         }>
       ).detail
       if (!detail) return
@@ -405,10 +432,10 @@
       })
       if (plan.kind === 'stay') return
       if (plan.kind === 'grow') {
-        void addAt(plan.at, 'code')
+        void addAt(plan.at, 'code', detail.scroll !== false)
         return
       }
-      select(plan.cellId)
+      select(plan.cellId, detail.scroll !== false)
       if (detail.focus !== false) enter(plan.cellId)
     }
     window.addEventListener('colloq:step-cell', onStep)

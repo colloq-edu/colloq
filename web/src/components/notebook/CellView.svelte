@@ -1399,13 +1399,24 @@
    */
   function runAndStep() {
     if (!run()) return
-    step(1, true, false, true)
+    step(1, true, false, true, false)
   }
 
-  /** Only Notebook knows the cell order, so hand-offs go through it. */
-  function step(direction: -1 | 1, focus = true, fallback = false, grow = false) {
+  /**
+   * Only Notebook knows the cell order, so hand-offs go through it.
+   *
+   * `scroll` отдельно от `focus` — потому что это разные вопросы. Курсор после
+   * Shift+Enter переходит в следующую ячейку (пальцы этого ждут), а экран
+   * остаётся на выводе той, которую запустили: «запускаю ячейку и хочу
+   * посмотреть на её вывод, а меня перекидывает вниз». Переход же стрелкой из
+   * последней строки — наоборот, обязан довести ячейку до глаза, иначе курсор
+   * уходит за край.
+   */
+  function step(direction: -1 | 1, focus = true, fallback = false, grow = false, scroll = true) {
     window.dispatchEvent(
-      new CustomEvent('colloq:step-cell', { detail: { cellId: id, direction, focus, fallback, grow } }),
+      new CustomEvent('colloq:step-cell', {
+        detail: { cellId: id, direction, focus, fallback, grow, scroll },
+      }),
     )
   }
 
@@ -1592,7 +1603,7 @@
       const detail = (event as CustomEvent<{ cellId: string; step?: boolean }>).detail
       if (detail?.cellId !== id) return
       if (!run()) return
-      if (detail.step) step(1, false, false, true)
+      if (detail.step) step(1, false, false, true, false)
     }
     window.addEventListener('colloq:run-cell', onRunCell)
     return () => window.removeEventListener('colloq:run-cell', onRunCell)
@@ -2347,7 +2358,16 @@
             <!-- Вывод запуска — к попытке, не к общей ячейке: приезжает автору
                  вместе с попыткой и лежит под ней. -->
             {#if mine?.run}
-              <div class={cn('border-l-4', RULE[tone], mine.run.state === 'error' ? 'bg-danger/5' : 'bg-surface/50')}>
+              <!-- Та же пара, что у общей ячейки: лист под выводом и волосяная
+                   линия по границе с листом попытки. -->
+              <div
+                class={cn(
+                  'border-l-4 border-t',
+                  RULE[tone],
+                  mine.run.state === 'error' ? 'bg-danger/5' : 'bg-canvas',
+                )}
+                style:border-top-color="rgb(var(--line))"
+              >
                 {#if mine.run.outputs.length > 0}
                   <div class="px-2 py-1.5">
                     <CellOutputs outputs={mine.run.outputs} />
@@ -2681,13 +2701,42 @@
               высота.
             -->
             {@const seatOnly = outputs.current.length === 0}
+            <!--
+              Вывод лежит на ЛИСТЕ, код — на плите: разные подложки плюс
+              волосяная линия по границе.
+
+              Раньше обе половины ячейки стояли на surface — код сплошным, вывод
+              тем же цветом в половину силы, — и на белой теме различить их было
+              нечем: 243→249 при фоне страницы 255. Ночью пара читалась, и
+              именно поэтому беда жила так долго: смотрели в тёмной.
+
+              Направление выбрано не из вкуса, а по тому, что уже напечатано:
+              опубликованная страница (server/src/publish/render.ts) и читальня
+              рисуют ровно это — код на подложке, вывод на фоне карточки, между
+              ними линия в `line`. Комната была единственным местом, где тетрадь
+              выглядела иначе. Заодно счёт сходится в обе стороны: на свету лист
+              светлее плиты, ночью — темнее её, и «это напечатал компьютер»
+              читается одинаково.
+
+              Полоса состояния идёт сквозь обе половины и цвета не меняет: она
+              про ЯЧЕЙКУ — работает, упала, открыта, выбрана, — а не про то,
+              где кончается код. Разорвать её значило бы завести второй язык
+              там, где уже есть первый.
+
+              Цвет самой линии — стилем, а не классом: `RULE[tone]` красит
+              border-color целиком, и `border-t-line` рядом с ним решался бы
+              порядком утилит в собранном CSS, а не тем, что написано здесь. А
+              линия обязана остаться серой и у работающей, и у упавшей: она не
+              сигнал, она граница.
+            -->
             <div
               class={cn(
                 'transition-[background-color] duration-[var(--speed-quick)]',
-                !seatOnly && 'border-l-4',
+                !seatOnly && 'border-l-4 border-t',
                 !seatOnly && RULE[tone],
-                !seatOnly && (hasError ? 'bg-danger/5' : 'bg-surface/50'),
+                !seatOnly && (hasError ? 'bg-danger/5' : 'bg-canvas'),
               )}
+              style:border-top-color={seatOnly ? undefined : 'rgb(var(--line))'}
               style:min-height={outputFloor > 0 ? `${outputFloor}px` : undefined}
             >
               <!--

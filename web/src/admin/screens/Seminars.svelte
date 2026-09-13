@@ -669,15 +669,29 @@
    * кто пришёл её менять.
    */
   let resources = $state<InstanceResources | null>(null)
+  /**
+   * Ответ ещё в пути.
+   *
+   * Окно настроек открывают с чистого листа каждый раз, и первые кадры в нём —
+   * это кадры без чисел: `null` тут значил и «ещё не знаем», и «спросили и не
+   * узнали», а раздел на оба случая показывал пустое включённое поле памяти.
+   * Пока флаг поднят, на месте полей стоят заглушки их размера.
+   */
+  let resourcesLoading = $state(true)
   let memoryBusy = $state(false)
   let memoryErrorText = $state<(() => string | null) | null>(null)
   const memoryError = $derived(memoryErrorText?.() ?? null)
 
   function readResources(): void {
+    // Флаг поднимается только на ПЕРВОМ чтении: перечитывание после
+    // сохранения идёт под уже нарисованными числами, и подменять их заглушками
+    // значило бы мигать разделом на каждое изменение памяти.
+    resourcesLoading = resources === null
     void adminApi
       .resources()
       .then((r: InstanceResources) => (resources = r))
       .catch(() => (resources = null))
+      .finally(() => (resourcesLoading = false))
   }
 
   /**
@@ -1455,6 +1469,10 @@
                     onclick={() => {
                       ruling = seminar
                       memoryErrorText = null
+                      // Числа прошлого открытия — числа прошлой минуты: с тех
+                      // пор чужую комнату закрыли, память освободилась. Окно
+                      // открывается с заглушками и ждёт свежего ответа.
+                      resources = null
                       readResources()
                     }}
                   >
@@ -1632,6 +1650,7 @@
           <p class="mb-3 mt-1.5 text-2xs text-muted">{tr('admin.resources.description')}</p>
           <Resources
             {resources}
+            loading={resourcesLoading}
             environment={ruling.environment ?? ''}
             memoryMb={ruling.memoryMb ?? null}
             cpus={ruling.cpus ?? null}

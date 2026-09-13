@@ -337,6 +337,21 @@
     if (cap && oracleOverCeiling(rules.oracle, cap.mode)) rules.oracle = cap.mode
   })
 
+  /*
+   * Три чтения, и у каждого свой флаг «ещё едет».
+   *
+   * Одного `null` на «не знаем» и «не узнали» не хватает: до ответа раздел
+   * обязан показать заглушку и не пускать к кнопке, после отказа — сказать об
+   * отказе и всё-таки пустить. Флаг гаснет и на успехе, и на отказе: ждать
+   * второго ответа от того, кто уже ответил «нет», нечего.
+   */
+  let environmentsLoading = $state(true)
+  let oracleLoading = $state(true)
+  let resourcesLoading = $state(true)
+
+  /** Хоть что-то из решающего ещё в пути — форма не знает, что отправит. */
+  const settling = $derived(environmentsLoading || oracleLoading || resourcesLoading)
+
   onMount(() => {
     void adminApi
       .listEnvironments()
@@ -347,18 +362,21 @@
         if (!environment) environment = r.environments.find((e: AdminEnvironment) => e.active)?.name ?? ''
       })
       .catch(() => (environments = []))
+      .finally(() => (environmentsLoading = false))
     // Читается любым преподавателем (GET /api/admin/oracle · requireStaff);
     // ключ приезжает замаскированным.
     void adminApi
       .oracle()
       .then((settings: OracleSettings) => (instanceOracle = settings))
       .catch(() => (instanceOracle = null))
+      .finally(() => (oracleLoading = false))
     // Машина. Тем же правилом, что и потолок оракула: не доехало — раздел
     // молчит о числах, а не показывает выдуманные.
     void adminApi
       .resources()
       .then((r: InstanceResources) => (resources = r))
       .catch(() => (resources = null))
+      .finally(() => (resourcesLoading = false))
   })
 
   /*
@@ -406,8 +424,19 @@
    */
   let created = $state<string | null>(null)
 
+  /*
+   * Пока читаются окружение, потолок оракула и ресурсы — кнопка не нажимается.
+   *
+   * Не из вежливости к заглушкам: в теле запроса уезжает ВСЁ, что нарисовано на
+   * экране, — окружение, режим оракула, память и ядра. Нажатие на первом кадре
+   * заводило комнату на пустом окружении и с режимом оракула, который через миг
+   * опустится под потолок инстанса ($effect ниже), то есть с настройками,
+   * которых никто не выбирал. Ответы приходят одним походом на сервер, так что
+   * ждать приходится ровно один круг.
+   */
   const canCreate = $derived(
     !busy &&
+      !settling &&
       created === null &&
       (source === 'github'
         ? Boolean(preview)
@@ -742,7 +771,44 @@
       спрашивают, принося тетрадь с чужого ноутбука. Пустая строка значит «не
       знаем» (так отвечает опубликованный каталог), и тогда её просто нет.
     -->
-    {#if environments && environments.length > 0}
+    {#if environmentsLoading}
+      <!--
+        Список ещё едет.
+
+        Заглушка повторяет карточку выбранного окружения — рамку, кружок,
+        строку имени — и ряд «или выбрать» под ней, потому что через мгновение
+        здесь встанет ровно это. Пустая строка «на чём работает инстанс» на её
+        месте была ответом на вопрос, которого никто не задавал: она значит
+        «окружений нет», а их просто ещё не принесли.
+
+        Ряда пакетов в заглушке нет намеренно: он есть не у всякого окружения,
+        и обещать его каждому значит уронить карточку на тридцать пикселей там,
+        где пакеты не перечислены.
+      -->
+      <div
+        role="status"
+        aria-label={tr("admin.python.environment")}
+        aria-busy="true"
+        class="flex flex-col gap-2.5"
+      >
+        <div class="flex flex-col border border-line">
+          <!-- 45px — это те же py-3 вокруг строки имени в 21px (font-mono
+               text-code-lg). Полоски внутри тоньше букв, поэтому высоту держит
+               ряд, а не они: иначе карточка приезжает на семь пикселей ниже. -->
+          <div class="flex h-[45px] items-center gap-3 px-3.5">
+            <Skeleton width="0.5rem" height="0.5rem" radius="0" />
+            <Skeleton width="9rem" height="0.85rem" />
+            <Skeleton width="7rem" height="0.7rem" class="ml-auto" />
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-micro font-bold uppercase tracking-label text-faint">{tr("admin.or.choose")}</span>
+          {#each ['4.5rem', '6rem'] as width (width)}
+            <Skeleton {width} height="24px" radius="0" />
+          {/each}
+        </div>
+      </div>
+    {:else if environments && environments.length > 0}
       {@const chosen = environments.find((e) => e.name === environment) ?? null}
       <div class="flex flex-col gap-2.5">
         {#if chosen}
@@ -867,6 +933,7 @@
   <Section title={tr('admin.resources.title')} description={tr('admin.resources.description')}>
     <Resources
       {resources}
+      loading={resourcesLoading}
       {environment}
       {memoryMb}
       onmemory={(mb) => (memoryMb = mb)}
