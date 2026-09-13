@@ -103,7 +103,35 @@ const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>([
   'ink',
   'ink:page',
   'laser',
+  /*
+   * Дополнение и справка — туда же, и по той же причине.
+   *
+   * Их спрашивает редактор на нажатие клавиши: очередь в шестнадцать мест
+   * забивалась бы ими за полторы секунды набора, вытесняя запуск ячейки,
+   * ради которого она заведена. А досылать вопрос о слове, дописанном
+   * минуту назад, некуда: обещание на той стороне давно разрешилось пустым.
+   */
+  'complete',
+  'inspect',
 ])
+
+/** Ответ ядра на вопрос о дополнении — ровно то, что показывает редактор. */
+export type CompleteReply = Extract<ControlServerMessage, { t: 'complete:reply' }>
+export type InspectReply = Extract<ControlServerMessage, { t: 'inspect:reply' }>
+
+/**
+ * Сколько ждём ответа на вопрос о дополнении.
+ *
+ * Столько же, сколько ждёт ядра сервер (kernel/jupyter.ts · SHELL_REQUEST_MS):
+ * его отказ по времени должен успеть приехать сюда раньше нашего, иначе на
+ * каждый вопрос к занятому ядру здесь оставалась бы висеть запись, которую
+ * потом закроет пришедший ответ — к тому времени уже ничей. Полсекунды сверху
+ * — на дорогу.
+ */
+const ASK_TIMEOUT_MS = 3000
+
+/** Тот же потолок, что у сервера (control.ts · MAX_COMPLETE_CHARS). */
+const MAX_ASK_CHARS = 24 * 1024
 
 export class SessionState {
   /** Not readonly: the room's rules can change while the seminar is running. */
@@ -385,6 +413,18 @@ export class SessionState {
   #pingSentAt: number | null = null
   /** Самый быстрый круг на этом соединении: по нему и берут поправку часов. */
   #bestRtt = Number.POSITIVE_INFINITY
+  /**
+   * Вопросы ядру о дополнении, которые ещё не разрешились.
+   *
+   * Номер — свой у каждого, и он же ключ: ответы приходят не в том порядке, в
+   * каком спрашивали, и опоздавший обязан быть узнан по номеру, а не по
+   * «последний вопрос был этот». Обещание разрешается ВСЕГДА — ответом,
+   * таймером или обрывом сокета, — потому что на той стороне его ждёт
+   * автодополнение CodeMirror: неразрешённое означало бы список, который не
+   * появится и не закроется.
+   */
+  #asked = new Map<number, { settle: (reply: ControlServerMessage | null) => void; timer: number }>()
+  #askId = 0
 
   constructor(session: SessionInfo, identity: StoredIdentity) {
     this.session = session
@@ -997,6 +1037,21 @@ export class SessionState {
         if (page === null) noteInkedPages(this, [])
         else this.#forgetInkedPage(page)
         this.inkRevision += 1
+      } else if (message.t === 'complete:reply' || message.t === 'inspect:reply') {
+        /*
+         * Ответ находит своего спрашивавшего по номеру — и только его.
+         *
+         * Пока человек печатает, в проводе бывает по три вопроса сразу, и
+         * ответы приходят в любом порядке: ядро, занятое ячейкой, промолчит
+         * на второй и ответит на четвёртый. Без номера редактор показал бы
+         * список к тексту, которого в ячейке уже нет.
+         */
+        const waiting = this.#asked.get(message.id)
+        if (waiting) {
+          this.#asked.delete(message.id)
+          window.clearTimeout(waiting.timer)
+          waiting.settle(message)
+        }
       } else if (message.t === 'laser') this.laser = message.at
       else if (message.t === 'terminal') this.terminalStatus = message.status
       else if (message.t === 'error') this.lastError = message.message
@@ -1006,6 +1061,7 @@ export class SessionState {
       window.clearInterval(this.#heartbeat)
       this.#control = null
       this.controlConnected = false
+      this.#dropAsked()
       /*
        * Указка не переживает разрыв.
        *
@@ -1173,6 +1229,81 @@ export class SessionState {
       // knows it is disconnected, a Shift+Enter that goes nowhere gets the same
       // sentence the buttons carry instead of silence.
       if (!this.connected) this.lastError = OFFLINE_REASON
+    }
+  }
+
+  /**
+   * Спросить у ядра комнаты, что дописать в этом месте кода.
+   *
+   * `null` — «подсказки не будет»: сокет закрыт, право не дано, ядро молчит
+   * или его нет вовсе. Отдельного слова про причину здесь нет намеренно —
+   * показывать его было бы негде и незачем, а редактор на такой ответ
+   * подставляет слова самой ячейки (CodeEditor.svelte · localWords).
+   *
+   * Мимо очереди `send`: в ней шестнадцать мест и лежат в ней НАЖАТИЯ. Вопрос
+   * о дополнении уходит только по живому сокету — см. `#askNotes`, там та же
+   * развилка и те же доводы.
+   */
+  complete(code: string, cursor: number): Promise<CompleteReply | null> {
+    return this.#ask('complete', code, cursor) as Promise<CompleteReply | null>
+  }
+
+  /** Справка о том, что стоит под кареткой, — теми же правилами, что и выше. */
+  inspect(code: string, cursor: number): Promise<InspectReply | null> {
+    return this.#ask('inspect', code, cursor) as Promise<InspectReply | null>
+  }
+
+  /**
+   * Общая половина обоих вопросов: номер, потолок текста, таймер, отправка.
+   *
+   * Потолок в двадцать четыре килобайта стоит и здесь, и на сервере. Здесь —
+   * потому что кадр пульта режется на тридцати двух (control.ts ·
+   * MAX_FRAME_BYTES), и ячейка, которую кто-то догадался наполнить романом,
+   * иначе получила бы на каждую букву не подсказку, а тост «сообщение
+   * слишком длинное». Режется начало: дополняют то, что перед кареткой.
+   */
+  #ask(
+    kind: 'complete' | 'inspect',
+    code: string,
+    cursor: number,
+  ): Promise<ControlServerMessage | null> {
+    const socket = this.#control
+    if (socket?.readyState !== WebSocket.OPEN) return Promise.resolve(null)
+    const at = Math.max(0, Math.min(cursor, code.length))
+    const head = code.slice(0, at)
+    const sent = head.length > MAX_ASK_CHARS ? head.slice(head.length - MAX_ASK_CHARS) : head
+    const id = ++this.#askId
+    return new Promise<ControlServerMessage | null>((resolve) => {
+      const timer = window.setTimeout(() => {
+        this.#asked.delete(id)
+        resolve(null)
+      }, ASK_TIMEOUT_MS)
+      this.#asked.set(id, { settle: resolve, timer })
+      try {
+        socket.send(JSON.stringify({ t: kind, id, code: sent, cursor: sent.length }))
+      } catch {
+        // Сокет закрылся между проверкой и отправкой — обычная гонка вкладки,
+        // уходящей в фон. Обещание всё равно обязано разрешиться.
+        this.#asked.delete(id)
+        window.clearTimeout(timer)
+        resolve(null)
+      }
+    })
+  }
+
+  /**
+   * Оборвалась связь — разрешить всё, чего мы ждали от ядра.
+   *
+   * Ответа по мёртвому сокету не будет никогда, а таймер разрешил бы вопрос
+   * через три секунды: всё это время автодополнение в ячейке стояло бы
+   * открытым и пустым. Дешевле сказать «нет» сразу.
+   */
+  #dropAsked(): void {
+    const waiting = [...this.#asked.values()]
+    this.#asked.clear()
+    for (const { settle, timer } of waiting) {
+      window.clearTimeout(timer)
+      settle(null)
     }
   }
 

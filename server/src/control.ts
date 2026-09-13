@@ -105,7 +105,9 @@ import {
 import {
   answerInput,
   clearOutputs,
+  completeIn,
   formatSession,
+  inspectIn,
   kernelNote,
   interruptSession,
   onWorkspaceChanged,
@@ -359,7 +361,21 @@ type FrameClass = 'essential' | 'stream'
  * месте отправки: «можно потерять» — свойство самого кадра, и решаться оно
  * должно один раз.
  */
-const STREAM_FRAMES = new Set<ControlServerMessage['t']>(['laser', 'ink:add'])
+/*
+ * Ответы на дополнение и справку — тоже сюда.
+ *
+ * Подсказка имеет смысл ровно в ту секунду, когда её просили. Отставшему на
+ * мегабайт сокету она не нужна вовсе: пока его очередь разгребается, человек
+ * дописал слово сам, а следующая буква спросит заново. Досылать её значило бы
+ * складывать в память процесса списки имён, которые никто не прочтёт, —
+ * ровно та беда, ради которой этот класс кадров и заведён.
+ */
+const STREAM_FRAMES = new Set<ControlServerMessage['t']>([
+  'laser',
+  'ink:add',
+  'complete:reply',
+  'inspect:reply',
+])
 
 function frameClass(message: ControlServerMessage): FrameClass {
   return STREAM_FRAMES.has(message.t) ? 'stream' : 'essential'
@@ -2122,6 +2138,170 @@ function optionalId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 ? value : undefined
 }
 
+/* --------------------------------------------- дополнение и справка ядра */
+
+/**
+ * Потолок текста, который едет ядру на дополнение.
+ *
+ * Двадцать четыре килобайта — это ячейка на восемьсот строк, каких в тетради
+ * не бывает; а кадр пульта режется на тридцати двух (MAX_FRAME_BYTES), и
+ * между этими числами должно остаться место под сам JSON. Клиент режет у себя
+ * (session.svelte.ts), сервер режет ещё раз: клиент не единственный, кто умеет
+ * открыть этот сокет, а `complete_request` с мегабайтом кода — это jedi,
+ * разбирающий мегабайт, на ядре, которое в этот момент общее для всей комнаты.
+ */
+const MAX_COMPLETE_CHARS = 24 * 1024
+
+/**
+ * Сколько вопросов о дополнении один сокет вправе задавать.
+ *
+ * Подсказка спрашивается НА НАЖАТИЕ КЛАВИШИ, и это делает её единственным
+ * сообщением пульта, которое человек отправляет десятками в секунду, ничего
+ * при этом не нажимая осознанно. Ведро на десять в секунду — это быстрее,
+ * чем печатает человек, и медленнее, чем вкладка, у которой что-то заело;
+ * четыре в полёте — потому что ядро отвечает по одному, и пятый вопрос всё
+ * равно ждал бы своей очереди на shell.
+ *
+ * Перебравшему отвечаем ПУСТЫМ ответом, а не молчанием: обещание на клиенте
+ * должно чем-то разрешиться, иначе редактор будет ждать своей подсказки до
+ * таймаута и не покажет даже слова из самой ячейки.
+ */
+const ASK_PER_SECOND = 10
+const ASK_BURST = 10
+const ASK_IN_FLIGHT = 4
+
+interface AskBudget {
+  /** Ведро, пополняемое временем; дробное — доливается по миллисекундам. */
+  tokens: number
+  at: number
+  /** Сколько вопросов этого сокета ядро ещё не закрыло. */
+  flight: number
+}
+
+/*
+ * По сокету, а не по человеку: ограничение тут про провод и про ядро, а
+ * вкладка — это и есть провод. WeakMap по той же причине, что у `owner`:
+ * закрытый сокет уносит свою запись сам, и чистить за ним нечего.
+ */
+const asking = new WeakMap<WebSocket, AskBudget>()
+
+function mayAsk(ws: WebSocket): boolean {
+  const now = Date.now()
+  const budget = asking.get(ws) ?? { tokens: ASK_BURST, at: now, flight: 0 }
+  asking.set(ws, budget)
+  budget.tokens = Math.min(ASK_BURST, budget.tokens + ((now - budget.at) * ASK_PER_SECOND) / 1000)
+  budget.at = now
+  if (budget.flight >= ASK_IN_FLIGHT || budget.tokens < 1) return false
+  budget.tokens -= 1
+  budget.flight += 1
+  return true
+}
+
+function askDone(ws: WebSocket): void {
+  const budget = asking.get(ws)
+  if (budget && budget.flight > 0) budget.flight -= 1
+}
+
+/**
+ * Двадцать четыре килобайта, КОНЧАЮЩИЕСЯ курсором.
+ *
+ * Начало режется, а не конец: дополняют то, что стоит перед кареткой, и
+ * тысяча строк ниже по ячейке разбору не нужна вовсе. Курсор при этом
+ * переезжает вместе с текстом — иначе ядро дополняло бы другое место.
+ */
+function trimToCursor(code: string, cursor: number): { code: string; cursor: number } {
+  const at = Math.max(0, Math.min(cursor, code.length))
+  const head = code.slice(0, at)
+  if (head.length <= MAX_COMPLETE_CHARS) return { code: head, cursor: at }
+  return { code: head.slice(head.length - MAX_COMPLETE_CHARS), cursor: MAX_COMPLETE_CHARS }
+}
+
+/**
+ * Право на подсказку — то же самое, что право запустить ячейку.
+ *
+ * И это не осторожность ради осторожности. `complete_request` спрашивает
+ * ЖИВОЕ ядро комнаты: по `df.` видно, какие у преподавателя переменные, по
+ * `_` — что он считал последним, а `__builtins__.` вместе со справкой читается
+ * как оглавление чужого сеанса. Комната, где запускает преподаватель, — это
+ * комната, где состояние ядра принадлежит ему; читать его через подсказку
+ * было бы обходом правила, а не удобством.
+ *
+ * Замок на ячейке здесь не спрашивается: кадр не называет ячейку, а
+ * додумывать за него, в какой из тридцати стоит каретка, значило бы отдать
+ * право по догадке. Человек с открытой ячейкой запускает её кнопкой — она
+ * знает своё имя.
+ */
+function mayComplete(sessionId: string, payload: TokenPayload): boolean {
+  return mayRunCell(getRules(sessionId), payload.role, false, isFinished(sessionId))
+}
+
+/**
+ * Спросить ядро и ответить — или ответить пустым, что бы ни случилось.
+ *
+ * Пустой ответ на КАЖДУЮ беду: нет права, нет ядра, ядро занято, вопросов
+ * больше позволенного, ядро бросило. Обещание на той стороне должно
+ * разрешиться всегда, и разрешиться молча: подсказка — фон набора, и отказ в
+ * ней не повод для слов на экране.
+ *
+ * В журнал занятия не пишется ничего. Журнал — это то, что человек СДЕЛАЛ
+ * («запустил ячейку», «открыл терминал»); нажатая точка — не поступок, а
+ * тысяча строк «спросил дополнение» за пару похоронила бы в нём всё
+ * остальное.
+ */
+function askKernel(
+  ws: WebSocket,
+  sessionId: string,
+  payload: TokenPayload,
+  message: Extract<ControlClientMessage, { t: 'complete' | 'inspect' }>,
+): void {
+  const id = message.id
+  if (typeof id !== 'number' || !Number.isFinite(id)) return
+  const empty: ControlServerMessage =
+    message.t === 'complete'
+      ? { t: 'complete:reply', id, matches: [], start: 0, end: 0 }
+      : { t: 'inspect:reply', id, found: false }
+  if (typeof message.code !== 'string' || typeof message.cursor !== 'number') {
+    send(ws, empty)
+    return
+  }
+  if (!mayComplete(sessionId, payload) || !mayAsk(ws)) {
+    send(ws, empty)
+    return
+  }
+  const { code, cursor } = trimToCursor(message.code, message.cursor)
+  const answer =
+    message.t === 'complete' ? completeIn(sessionId, code, cursor) : inspectIn(sessionId, code, cursor)
+  void answer
+    .then((result) => {
+      if (result === null) {
+        send(ws, empty)
+        return
+      }
+      if (message.t === 'complete' && 'matches' in result) {
+        send(ws, {
+          t: 'complete:reply',
+          id,
+          matches: result.matches.map(({ text, type }) => (type ? { text, type } : { text })),
+          start: result.cursorStart,
+          end: result.cursorEnd,
+        })
+        return
+      }
+      if (message.t === 'inspect' && 'found' in result) {
+        send(ws, {
+          t: 'inspect:reply',
+          id,
+          found: result.found,
+          ...(result.text === null ? {} : { text: result.text }),
+        })
+        return
+      }
+      send(ws, empty)
+    })
+    .catch(() => send(ws, empty))
+    .finally(() => askDone(ws))
+}
+
 /**
  * Разбор одного сообщения управляющего сокета.
  *
@@ -2161,6 +2341,16 @@ export function dispatch(
       queue(ws, sessionId, payload, [id])
       return
     }
+
+    /*
+     * Дополнение и справка — единственные два кадра пульта, которые приходят
+     * на нажатие КЛАВИШИ, а не на нажатие кнопки. Поэтому у них своя дверь с
+     * ведром, ответ в классе «можно потерять», и ни строки в журнале занятия.
+     */
+    case 'complete':
+    case 'inspect':
+      askKernel(ws, sessionId, payload, message)
+      return
 
     case 'cancel': {
       const id = optionalId(message.cellId)

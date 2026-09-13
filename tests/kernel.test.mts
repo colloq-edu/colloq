@@ -33,6 +33,15 @@ let wss: WebSocketServer
 let port = 0
 /** Set to hang instead of answering, the way a kernel that is thinking does. */
 let swallowExecutes = false
+/**
+ * То же для служебных запросов по shell — дополнения и справки.
+ *
+ * Отдельным флагом, потому что это отдельный случай из жизни: ядро, считающее
+ * чужую ячейку, на `complete_request` не отвечает вовсе — ipykernel разбирает
+ * shell по одному сообщению за раз. Проверять это через `swallowExecutes`
+ * нечем: выполнение и дополнение теперь ходят разными дорогами.
+ */
+let swallowShell = false
 /** Счётчик выполнений подделки — то же, что In [n] у настоящего ядра. */
 let executions = 0
 /** Что просили выполнить и как: `store_history` — кладёт ли IPython исходник в In/_ih. */
@@ -61,12 +70,11 @@ function reply(socket: WebSocket, parent: unknown, msgType: string, content: unk
        * stdin, и первая же маршрутизация входящих по каналу разошлась бы с
        * подделкой молча — тесты зелёные, живое ядро сломано.
        */
-      channel:
-        msgType === 'execute_reply'
-          ? 'shell'
-          : msgType === 'input_request'
-            ? 'stdin'
-            : 'iopub',
+      channel: msgType.endsWith('_reply')
+        ? 'shell'
+        : msgType === 'input_request'
+          ? 'stdin'
+          : 'iopub',
     }),
   )
 }
@@ -156,6 +164,35 @@ before(async () => {
         const msg = JSON.parse(String(raw)) as {
           header: { msg_type: string }
           content: { code: string; store_history: boolean; silent: boolean }
+        }
+        /*
+         * Дополнение и справка: тот же сокет, тот же shell, но ни вывода, ни
+         * закрывающего idle — ровно один ответ, как у настоящего ipykernel.
+         */
+        if (msg.header.msg_type === 'complete_request') {
+          if (swallowShell) return
+          reply(ws, msg.header, 'complete_reply', {
+            status: 'ok',
+            matches: ['df.head', 'df.describe'],
+            cursor_start: 3,
+            cursor_end: 3,
+            // Поле экспериментальное и есть не у всех ядер — отсюда и
+            // проверка, что без него список всё равно строится.
+            metadata: {
+              _jupyter_types_experimental: [{ type: 'function' }, { type: 'function' }],
+            },
+          })
+          return
+        }
+        if (msg.header.msg_type === 'inspect_request') {
+          if (swallowShell) return
+          reply(ws, msg.header, 'inspect_reply', {
+            status: 'ok',
+            found: true,
+            // С раскраской: IPython красит справку, о которой никто не просил.
+            data: { 'text/plain': '\u001b[0;31mSignature:\u001b[0m df.head(n=5)' },
+          })
+          return
         }
         if (msg.header.msg_type !== 'execute_request') return
         requests.push({
@@ -262,6 +299,7 @@ before(async () => {
  */
 afterEach(() => {
   swallowExecutes = false
+  swallowShell = false
   held = []
 })
 
@@ -1656,6 +1694,77 @@ test('номера очереди консилиума считаются одн
   swallowExecutes = false
   await interruptSession(room.id)
   assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+})
+
+/*
+ * Дополнение ходит к ядру мимо очереди выполнения — и это главное, что о нём
+ * надо знать. Очередь комнаты общая: подсказка, вставшая в неё за чужой
+ * ячейкой, приехала бы через минуту, то есть не приехала бы вовсе.
+ */
+test('ядро отвечает на complete и inspect отдельным путём, без очереди выполнения', async () => {
+  const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
+  const kernel = await JupyterKernel.connect('complete-ok', defaultEndpoint())
+  try {
+    const done = await kernel.complete('df.', 3)
+    assert.deepEqual(done.matches, [
+      { text: 'df.head', type: 'function' },
+      { text: 'df.describe', type: 'function' },
+    ])
+    assert.equal(done.cursorStart, 3)
+    assert.equal(done.cursorEnd, 3)
+
+    const help = await kernel.inspect('df.head', 7)
+    assert.equal(help.found, true)
+    // Раскраска снята: в подсказке над кареткой ANSI читается как мусор.
+    assert.equal(help.text, 'Signature: df.head(n=5)')
+  } finally {
+    await kernel.dispose()
+  }
+})
+
+test('занятое ядро не отвечает на дополнение — и обещание отказывает по времени', async () => {
+  const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
+  const kernel = await JupyterKernel.connect('complete-timeout', defaultEndpoint())
+  swallowShell = true
+  try {
+    const started = Date.now()
+    await assert.rejects(kernel.complete('df.', 3), /timed out/)
+    /*
+     * Не мгновенно и не «пока не надоест»: две с половиной секунды — потолок,
+     * записанный в SHELL_REQUEST_MS. Нижняя граница со скидкой на то, что
+     * таймеры в node просыпаются не раньше, но и не ровно вовремя.
+     */
+    const spent = Date.now() - started
+    assert.ok(spent >= 2000 && spent < 6000, `отказ пришёл через ${spent} мс`)
+  } finally {
+    swallowShell = false
+    await kernel.dispose()
+  }
+})
+
+test('перезапуск ядра снимает и висящее дополнение, а не только выполнение', async () => {
+  const { JupyterKernel, defaultEndpoint } = await import('../server/src/kernel/jupyter.js')
+  const kernel = await JupyterKernel.connect('complete-restart', defaultEndpoint())
+  swallowShell = true
+  try {
+    /*
+     * Ожидание отказа берётся ДО перезапуска: `restart` снимает висящее тем же
+     * движением, каким объявляет фазу, то есть в той же задаче цикла событий, —
+     * и обещание, к которому ещё никто не приставлен, успело бы стать
+     * необработанным отказом и уронить весь файл.
+     */
+    const asking = assert.rejects(kernel.complete('df.', 3), /kernel/i)
+    /*
+     * Процесс за сокетом меняется, и ответа на вопрос, заданный прошлому, не
+     * будет никогда. Без этого обещание досиживало бы свои две с половиной
+     * секунды впустую — а `dispose` оставлял бы его висеть навсегда.
+     */
+    await kernel.restart()
+    await asking
+  } finally {
+    swallowShell = false
+    await kernel.dispose()
+  }
 })
 
 test('пока ячейка пишет вывод, комнату из памяти не выселяют', async () => {

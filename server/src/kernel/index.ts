@@ -51,11 +51,18 @@ import {
   onRoomKernelRecreated,
   runningRoomKernels,
 } from './pool.js'
+import { kernelBackend } from './runtime-client.js'
 import { getSessionDoc, holdRoom, onlineCount } from '../collab/index.js'
 import { seldom } from '../log.js'
 import { projectBooks } from '../collab/books.js'
 import { flushSessionFiles } from '../collab/files.js'
-import { JupyterKernel, type ExecuteStatus, type KernelPhase } from './jupyter.js'
+import {
+  JupyterKernel,
+  type CompleteResult,
+  type ExecuteStatus,
+  type InspectResult,
+  type KernelPhase,
+} from './jupyter.js'
 import { dataBudgetFor, OutputWriter } from './outputs.js'
 import { CouncilOutputBuffer, type CouncilJob } from './council.js'
 import type { CouncilRun } from '@shared/protocol'
@@ -2284,6 +2291,105 @@ export async function answerInput(
   const answered = await kernel.answerInput(value)
   if (answered) clearStdinOn(sessionId, runtime.currentCell)
   return answered
+}
+
+/**
+ * Ядро комнаты — но только то, которое УЖЕ живо.
+ *
+ * Про дополнение это не оговорка, а правило. `ensureKernel` поднимает
+ * контейнер, и это до полутора минут: набранная точка после `df` не имеет
+ * права заводить комнате Python, греть машину и объявлять всем «запускается
+ * окружение» — тем более что человек, может быть, просто пишет текст в ячейку
+ * и запускать ничего не собирается. Нет ядра, оно мертво или перезапускается —
+ * ответ пуст, и клиент подставляет слова самой ячейки.
+ */
+function liveKernel(sessionId: string): JupyterKernel | null {
+  const kernel = runtimes.get(sessionId)?.kernel ?? null
+  if (!kernel) return null
+  return kernel.phase === 'dead' || kernel.phase === 'restarting' || kernel.phase === 'starting'
+    ? null
+    : kernel
+}
+
+/**
+ * Что ядро дописало бы в этом месте кода.
+ *
+ * `null` — «спросить было не у кого или ядро не ответило»: отдельного слова
+ * для отказа нет намеренно, потому что показывать его негде. Подсказка либо
+ * есть, либо её нет; тост про то, что jedi задумался, — это шум посреди
+ * набора.
+ */
+export async function completeIn(
+  sessionId: string,
+  code: string,
+  cursor: number,
+): Promise<CompleteResult | null> {
+  /*
+   * У тестового бэкенда ядра нет вовсе (KERNEL_BACKEND=test, JUPYTER_URL
+   * смотрит в мёртвый порт), а проверять надо путь целиком — от кадра пульта
+   * до кадра обратно. Заготовленный ответ здесь и есть «ядро» этого бэкенда:
+   * тот же набор, что даёт pandas на `df.`, чтобы тест говорил про настоящий
+   * случай, а не про пустой список.
+   */
+  if (kernelBackend() === 'test') return cannedComplete(code, cursor)
+  const kernel = liveKernel(sessionId)
+  if (!kernel) return null
+  try {
+    return await kernel.complete(code, cursor)
+  } catch {
+    // Занятое ядро не отвечает на shell вовсе — см. SHELL_REQUEST_MS. Это
+    // обычный исход посреди прогона, и жаловаться на него некуда.
+    return null
+  }
+}
+
+/** Справка о том, что стоит под кареткой, — теми же правилами, что и выше. */
+export async function inspectIn(
+  sessionId: string,
+  code: string,
+  cursor: number,
+): Promise<InspectResult | null> {
+  if (kernelBackend() === 'test') return cannedInspect(code, cursor)
+  const kernel = liveKernel(sessionId)
+  if (!kernel) return null
+  try {
+    return await kernel.inspect(code, cursor)
+  } catch {
+    return null
+  }
+}
+
+/** Дополнение тестового бэкенда: несколько имён pandas и ничего больше. */
+function cannedComplete(code: string, cursor: number): CompleteResult {
+  const before = code.slice(0, cursor)
+  // Слово, которое человек уже начал, и точка перед ним — ровно то, по чему
+  // настоящий ядерный ответ решает, откуда начинается заменяемый кусок.
+  const word = /[A-Za-z_][A-Za-z0-9_]*$/.exec(before)?.[0] ?? ''
+  const start = cursor - word.length
+  const attribute = before[start - 1] === '.'
+  const names = attribute
+    ? ['head', 'tail', 'describe', 'shape', 'columns']
+    : ['print', 'pandas', 'property']
+  return {
+    matches: names
+      .filter((name) => name.startsWith(word))
+      .map((name) => ({
+        text: name,
+        type: name === 'shape' || name === 'columns' ? 'instance' : 'function',
+      })),
+    cursorStart: start,
+    cursorEnd: cursor,
+  }
+}
+
+/** Справка тестового бэкенда: сигнатура, узнаваемая на глаз и в утверждении. */
+function cannedInspect(code: string, cursor: number): InspectResult {
+  const name = /[A-Za-z_][A-Za-z0-9_.]*$/.exec(code.slice(0, cursor))?.[0] ?? ''
+  if (!name) return { found: false, text: null }
+  return {
+    found: true,
+    text: `Signature: ${name}(n: int = 5)\nDocstring:\nReturn the first n rows.`,
+  }
 }
 
 /** Погасить приглашение ко вводу на ячейке — там, где спрашивать уже нечему. */

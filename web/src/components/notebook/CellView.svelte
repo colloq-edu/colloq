@@ -2382,6 +2382,15 @@
               }}
             >
               {@render openMark()}
+              <!--
+                Подсказки от ядра получает только этот редактор — тот, в
+                котором пишут в общую тетрадь. Лист консилиума и черновик ниже
+                по файлу про ядро комнаты ничего не спрашивают: там пишут СВОЙ
+                текст, которого в ядре нет, а показывать по нему чужие
+                переменные значило бы открывать состояние ядра тем, кому
+                правило `run` его не открывает. Markdown-ячейка отсеивается уже
+                в самом редакторе: там пишут прозой.
+              -->
               <CodeEditor
                 text={ytext}
                 awareness={session.awareness}
@@ -2392,6 +2401,8 @@
                 readOnly={!mayEdit}
                 autoFocus={!isCode && focusOnEdit}
                 placeholder={isCode ? '' : tr('room.extra.141')}
+                complete={(code, cursor) => session.complete(code, cursor)}
+                inspect={(code, cursor) => session.inspect(code, cursor)}
                 onfocus={() => onselect()}
                 onrun={run}
                 onrunstep={runAndStep}

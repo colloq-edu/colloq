@@ -17,11 +17,20 @@
     const [autocomplete, commands, md, py, language, state, view, collab, theme] = await Promise.all(
       [
         import('@codemirror/autocomplete').then(
-          ({ autocompletion, closeBrackets, closeBracketsKeymap, completionStatus }) => ({
+          ({
+            acceptCompletion,
             autocompletion,
             closeBrackets,
             closeBracketsKeymap,
             completionStatus,
+            startCompletion,
+          }) => ({
+            acceptCompletion,
+            autocompletion,
+            closeBrackets,
+            closeBracketsKeymap,
+            completionStatus,
+            startCompletion,
           }),
         ),
         import('@codemirror/commands').then(({ defaultKeymap, indentLess, indentMore }) => ({
@@ -30,7 +39,20 @@
           indentMore,
         })),
         import('@codemirror/lang-markdown').then(({ markdown }) => ({ markdown })),
-        import('@codemirror/lang-python').then(({ python }) => ({ python })),
+        /*
+         * Разбор текста самой ячейки — как запасной источник дополнения.
+         *
+         * `localCompletionSource` знает ровно одно: слова, которые в этой
+         * ячейке уже написаны. Против ядра это ничто — оно знает настоящие
+         * методы настоящего DataFrame, — но ядра может не быть вовсе (никто
+         * ещё не нажимал «запустить»), оно может считать чужую ячейку и не
+         * ответить, а правило комнаты может не дать спросить. Во всех трёх
+         * случаях список из собственных слов лучше пустоты.
+         */
+        import('@codemirror/lang-python').then(({ localCompletionSource, python }) => ({
+          localCompletionSource,
+          python,
+        })),
         import('@codemirror/language').then(({ bracketMatching, indentOnInput, indentUnit }) => ({
           bracketMatching,
           indentOnInput,
@@ -43,9 +65,18 @@
           Prec,
         })),
         import('@codemirror/view').then(
-          ({ EditorView, highlightActiveLine, keymap, placeholder }) => ({
+          ({
+            closeHoverTooltips,
             EditorView,
             highlightActiveLine,
+            hoverTooltip,
+            keymap,
+            placeholder,
+          }) => ({
+            closeHoverTooltips,
+            EditorView,
+            highlightActiveLine,
+            hoverTooltip,
             keymap,
             placeholder,
           }),
@@ -70,12 +101,32 @@
   import { flushSync, untrack } from 'svelte'
   import type * as Y from 'yjs'
   import type { Awareness } from 'y-protocols/awareness'
+  import type { Completion, CompletionContext, CompletionResult } from '@codemirror/autocomplete'
   import type { Compartment } from '@codemirror/state'
   import type { EditorView } from '@codemirror/view'
   import { INDENT, tabKey } from '@/lib/indent'
   import { backspaceRemovesCell } from './cell-keys'
   import { changeFits } from './cell-paste'
   import { cellAwareness, type CellAwareness } from './cell-awareness'
+
+  /**
+   * Что ответило ядро на «что тут можно дописать».
+   *
+   * Форма нарочно повторяет кадр протокола (`complete:reply`), а не заводит
+   * свою: между сокетом и редактором и так стоит один вызов, и лишний перевод
+   * из одной записи в другую — лишнее место, где однажды потеряется `start`.
+   */
+  interface KernelCompletions {
+    matches: Array<{ text: string; type?: string }>
+    /** Границы куска, который замена заменяет собой, — знаками от начала кода. */
+    start: number
+    end: number
+  }
+
+  interface KernelSignature {
+    found: boolean
+    text?: string
+  }
 
   interface Props {
     text: Y.Text
@@ -115,6 +166,19 @@
     onoverflow?: (chars: number) => void
     placeholder?: string
     /**
+     * Спросить у ядра, что дописать в этом месте кода, — или ничего.
+     *
+     * Прокинуто сюда вызовом, а не взято из глобального состояния комнаты, и
+     * это несущее решение. Этот же компонент рисует лист консилиума и
+     * черновик — тексты, которые в ядре комнаты не значат ничего, — и
+     * редактор файлов (FileEditor) живёт вовсе без комнаты. Кто хочет
+     * подсказок от ядра, тот их и передаёт; остальные молчат и получают
+     * дополнение по словам самой ячейки.
+     */
+    complete?: ((code: string, cursor: number) => Promise<KernelCompletions | null>) | null
+    /** Справка о том, что стоит под кареткой, — для подсказки над скобкой. */
+    inspect?: ((code: string, cursor: number) => Promise<KernelSignature | null>) | null
+    /**
      * What a screen reader announces on arriving here.
      *
      * CodeMirror's editable surface is a bare contenteditable: in the
@@ -142,6 +206,8 @@
     onarrowout,
     maxChars = null,
     onoverflow,
+    complete = null,
+    inspect = null,
     placeholder = '',
     label = '',
   }: Props = $props()
@@ -183,6 +249,8 @@
     | 'ondeleteempty'
     | 'onarrowout'
     | 'onoverflow'
+    | 'complete'
+    | 'inspect'
   > = {}
 
   $effect(() => {
@@ -194,6 +262,8 @@
     handlers.ondeleteempty = ondeleteempty
     handlers.onarrowout = onarrowout
     handlers.onoverflow = onoverflow
+    handlers.complete = complete
+    handlers.inspect = inspect
   })
 
   function fire(callback: (() => void) | undefined): boolean {
@@ -235,17 +305,191 @@
     writable: Compartment
   }
 
+  /**
+   * Чем jedi называет найденное — и чем это же называет CodeMirror.
+   *
+   * Два словаря, и переводить приходится вручную: ipykernel отдаёт слова
+   * Python («instance», «statement», «param»), а значки и цвета в списке
+   * нарисованы под словарь редактора. Незнакомое — «text»: безымянная строка
+   * в списке лучше, чем список, который не построился из-за одного слова,
+   * которого мы не предусмотрели.
+   */
+  const COMPLETION_TYPE: Record<string, string> = {
+    function: 'function',
+    method: 'function',
+    class: 'class',
+    module: 'namespace',
+    instance: 'variable',
+    statement: 'variable',
+    param: 'variable',
+    keyword: 'keyword',
+  }
+
+  /** Сколько строк справки показываем: сигнатура и начало docstring. */
+  const SIGNATURE_LINES = 6
+  /**
+   * Сколько указатель должен постоять на имени, прежде чем спросить ядро.
+   *
+   * Треть секунды — это «человек остановился и смотрит», а не «мышь проехала
+   * по строке». Без задержки один проход указателем вдоль `df.groupby('a').sum()`
+   * стоил бы комнате пяти запросов к общему ядру подряд.
+   */
+  const HOVER_MS = 300
+
+  /** Шапка справки: сигнатура и начало docstring, без пустых строк сверху. */
+  function signatureHead(text: string): string {
+    const lines = text.replace(/\r/g, '').split('\n')
+    while (lines.length > 0 && lines[0].trim() === '') lines.shift()
+    return lines.slice(0, SIGNATURE_LINES).join('\n').trimEnd()
+  }
+
+  /**
+   * Имя под указателем — целиком, вместе с тем, чьё оно.
+   *
+   * Наведя на `head` в `df.head()`, человек спрашивает не про абстрактный
+   * `head`, а про метод ЭТОГО DataFrame — и ядро ответит правильно только
+   * если спросить его о `df.head`. Поэтому слово под указателем сначала
+   * находится целиком, а потом влево дотягивается вся цепочка через точки.
+   *
+   * Скобки в середине цепочки (`df.groupby('a').sum`) намеренно не
+   * разбираются: до них тут нет ни дерева разбора, ни нужды — вызов внутри
+   * цепочки ядро всё равно выполнять не станет, и ответом был бы «не найдено».
+   */
+  function nameAround(line: string, at: number): { from: number; to: number } | null {
+    const word = /[A-Za-z0-9_]/
+    if (at > line.length) return null
+    let to = at
+    while (to < line.length && word.test(line[to])) to++
+    let from = at
+    while (from > 0 && word.test(line[from - 1])) from--
+    // Указатель стоит не на слове, а на пробеле или скобке — спрашивать не о чем.
+    if (from === to) return null
+    const chain = /[A-Za-z_][A-Za-z0-9_.]*$/.exec(line.slice(0, to))
+    if (!chain) return null
+    return { from: chain.index, to }
+  }
+
   /** Обе стороны «можно ли печатать» — одним куском, чтобы их нельзя было развести. */
   function writableExtensions(cm: CodeMirror, editable: boolean) {
     return [cm.state.EditorState.readOnly.of(!editable), cm.view.EditorView.editable.of(editable)]
   }
 
   function createView(cm: CodeMirror, options: ViewOptions): EditorView {
-    const { autocompletion, closeBrackets, closeBracketsKeymap, completionStatus } = cm.autocomplete
+    const { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, completionStatus, startCompletion } =
+      cm.autocomplete
     const { bracketMatching, indentOnInput, indentUnit } = cm.language
     const { EditorState, Prec } = cm.state
     const { highlightActiveLine, keymap, placeholder: placeholderExt } = cm.view
     const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot } = options
+
+    /**
+     * Дополнение глазами ядра комнаты.
+     *
+     * Спрашивается не на каждое нажатие, а там, где человек действительно
+     * чего-то ждёт: после буквы или точки. Иначе `complete_request` уходил бы
+     * и на пробел, и на скобку, и на перевод строки — по десятку в секунду на
+     * каждого в комнате, в одно на всех ядро. `validFor` доканчивает начатое
+     * здесь же, на клиенте: пока человек дописывает `he` к `head`, список
+     * фильтруется на месте и ядро не спрашивается вовсе.
+     */
+    async function kernelCompletions(context: CompletionContext): Promise<CompletionResult | null> {
+      const ask = handlers.complete
+      // Ячейка, в которой не печатают, не дополняется: чужой лист под замком
+      // и закончившееся занятие — это чтение, а не набор.
+      if (!ask || context.state.readOnly) return null
+      const before = context.state.sliceDoc(Math.max(0, context.pos - 1), context.pos)
+      if (!context.explicit && !/[\w.]/.test(before)) return null
+      const answer = await ask(context.state.doc.toString(), context.pos)
+      if (!answer || answer.matches.length === 0) return null
+      const from = Math.max(0, Math.min(answer.start, context.pos))
+      /*
+       * `df.head` или просто `head` — решает то, ОТКУДА ядро велело заменять.
+       *
+       * Ядра отвечают по-разному: одни возвращают имя целиком с приставкой,
+       * другие — только хвост, и `cursor_start` у них при этом одинаково
+       * стоит за точкой. Показать первое как есть значило бы нарисовать в
+       * списке `df.head` и вставить в текст `df.df.head`.
+       */
+      const dotted = from > 0 && context.state.sliceDoc(from - 1, from) === '.'
+      const options: Completion[] = []
+      const seen = new Set<string>()
+      for (const match of answer.matches) {
+        const label =
+          dotted && match.text.includes('.')
+            ? match.text.slice(match.text.lastIndexOf('.') + 1)
+            : match.text
+        if (label === '' || seen.has(label)) continue
+        seen.add(label)
+        options.push({
+          label,
+          detail: match.type ?? undefined,
+          type: match.type ? (COMPLETION_TYPE[match.type] ?? 'text') : 'text',
+        })
+      }
+      if (options.length === 0) return null
+      return { from, options, validFor: /^[\w]*$/ }
+    }
+
+    /* -------------------------------------- справка по наведению мыши */
+
+    /**
+     * Навёл на имя — увидел сигнатуру. И ничего на нажатие клавиши.
+     *
+     * Раньше подсказка выскакивала на набранную `(`. Это ошибка в самой
+     * задумке: скобку печатают, ЗНАЯ, что пишут, и выехавшая в этот момент
+     * панель закрывает собой строку, которую человек в эту секунду набирает.
+     * Наведение — противоположный жест: его делают, когда чего-то НЕ знают, и
+     * делают намеренно.
+     *
+     * `hoverTime` — та самая треть секунды, которая отличает «смотрю сюда» от
+     * «веду мышь мимо»; закрывает подсказку сам CodeMirror, как только
+     * указатель ушёл.
+     */
+    const signatureHover = cm.view.hoverTooltip(
+      async (view, pos) => {
+        const ask = handlers.inspect
+        // В ячейке, которую не дают править, справки нет: чужой лист под
+        // замком и закончившееся занятие — это чтение, и читать через них
+        // состояние общего ядра нельзя (то же правило, что у дополнения).
+        if (!ask || view.state.readOnly) return null
+        const line = view.state.doc.lineAt(pos)
+        const found = nameAround(line.text, pos - line.from)
+        if (!found) return null
+        const from = line.from + found.from
+        const to = line.from + found.to
+        /*
+         * Каретка для ядра ставится в КОНЕЦ имени: `inspect_request` отвечает
+         * о том, что стоит перед ней. Посреди слова он ответил бы о `he`.
+         */
+        const answer = await ask(view.state.doc.toString(), to)
+        if (!answer?.found || !answer.text) return null
+        const text = signatureHead(answer.text)
+        if (text === '') return null
+        return {
+          pos: from,
+          end: to,
+          /*
+           * ПОД строкой, а не над ней.
+           *
+           * Над строкой висит тулбар ячейки — «запустить», «остановить»,
+           * «форматировать», — и подсказка, выехавшая вверх, закрывала его
+           * собой ровно тогда, когда человек тянется к кнопке. Стопка слоёв
+           * доводит то же правило до конца: у подсказки z-index ниже
+           * тулбарного, так что даже снизу она не может его перекрыть (см.
+           * cm-theme.ts · .cm-tooltip.cm-signature).
+           */
+          above: false,
+          create: () => {
+            const dom = document.createElement('div')
+            dom.className = 'cm-signature'
+            dom.textContent = text
+            return { dom }
+          },
+        }
+      },
+      { hoverTime: HOVER_MS },
+    )
+
 
 
     /** Leave the cell only from its outer edge, and never out from under a popup. */
@@ -294,6 +538,22 @@
           run: (view) => {
             // Let the completion popup have Escape first.
             if (completionStatus(view.state) === 'active') return false
+            /*
+             * Потом — справка по наведению, и только потом командный режим.
+             *
+             * Порядок читается как «убрать самое ближнее»: сначала список,
+             * потом справка, и лишь когда на экране не осталось ничего
+             * лишнего, Escape уводит из ячейки. Иначе один и тот же Escape
+             * выбрасывал бы человека из набора вместе с закрытием подсказки.
+             *
+             * Открыта ли она — спрашиваем у DOM, а не у состояния: подсказки
+             * по наведению живут в своём плагине, и наружу он показывает
+             * только сам узел. Ошибиться тут нечем — узел наш и назван нами.
+             */
+            if (view.dom.querySelector('.cm-signature')) {
+              view.dispatch({ effects: cm.view.closeHoverTooltips })
+              return true
+            }
             return fire(handlers.onescape)
           },
         },
@@ -318,7 +578,29 @@
           lang === 'python' ? cm.py.python() : cm.md.markdown(),
           bracketMatching(),
           closeBrackets(),
-          autocompletion({ activateOnTyping: true, icons: false }),
+          /*
+           * Дополнение: сперва ядро, следом слова самой ячейки.
+           *
+           * `override` — весь список источников целиком, и в нём намеренно
+           * нет разбора дерева языка: в Python дерево знает только ключевые
+           * слова, а имя переменной, лежащей в ядре, не знает вовсе. Зато
+           * ядро знает и `df.head`, и `df.описание`, если человек так назвал
+           * столбец, — это и есть разница между подсказкой по тексту и
+           * подсказкой по тому, что в комнате действительно посчитано.
+           *
+           * В markdown-ячейке ни того, ни другого: там пишут прозой, и список
+           * слов, выскакивающий на каждую букву, мешает.
+           */
+          lang === 'python'
+            ? [
+                autocompletion({
+                  override: [kernelCompletions, cm.py.localCompletionSource],
+                  activateOnTyping: true,
+                  icons: false,
+                }),
+                signatureHover,
+              ]
+            : autocompletion({ activateOnTyping: true, icons: false }),
           indentOnInput(),
           /*
            * Четыре пробела — размер отступа в ячейке.
@@ -363,6 +645,24 @@
           cm.collab.yCollab(ytext, peers, { undoManager: undo }),
           cellKeymap,
           keymap.of([...closeBracketsKeymap, ...cm.commands.defaultKeymap]),
+          /*
+           * Tab принимает подсказку — и только когда она открыта.
+           *
+           * Стоит ВЫШЕ отступа намеренно: ниже он не сработал бы никогда,
+           * потому что `tabKey` обрабатывает нажатие всегда и дальше его не
+           * пускает. Когда списка на экране нет, `acceptCompletion` отвечает
+           * false, нажатие идёт дальше и отбивает пробелы, как отбивало.
+           *
+           * Ctrl-Space — тот же список по требованию, даже посреди пустой
+           * строки. Он есть и в наборе клавиш самого `autocompletion`; назван
+           * здесь ещё раз, чтобы обещание «подсказку можно позвать руками» не
+           * зависело от умолчания чужого пакета.
+           */
+          keymap.of([
+            { key: 'Tab', run: acceptCompletion },
+            { key: 'Mod-Space', preventDefault: true, run: startCompletion },
+            { key: 'Ctrl-Space', preventDefault: true, run: startCompletion },
+          ]),
           /*
            * Tab — отступ, а не переход по фокусу.
            *

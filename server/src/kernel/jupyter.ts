@@ -64,6 +64,13 @@ interface Pending {
   graceTimer: NodeJS.Timeout | null
 }
 
+/** Ожидание одного `*_reply` по shell: ни вывода, ни рукопожатия с iopub. */
+interface ShellPending {
+  resolve: (content: Record<string, any>) => void
+  reject: (err: Error) => void
+  timer: NodeJS.Timeout
+}
+
 /** Cold start is container boot + kernel spawn, not just an HTTP round trip. */
 const STARTUP_TIMEOUT_MS = 60_000
 const STARTUP_RETRY_MS = 1000
@@ -83,6 +90,44 @@ const QUIET_MS = config.kernelQuietMs
 const WATCHDOG_MS = config.kernelWatchdogMs
 /** iopub and shell are independent streams, so the reply can beat the final idle. */
 const IDLE_GRACE_MS = 3000
+/**
+ * Сколько ждём ответа на служебный запрос по shell — дополнение и справку.
+ *
+ * Две с половиной секунды, и это не «на всякий случай». ipykernel разбирает
+ * shell по одному сообщению за раз: пока считается ячейка, `complete_request`
+ * просто стоит в очереди за ней и ответа не будет вовсе. Ждать его дольше
+ * нечем — подсказка, приехавшая через минуту, это подсказка к тексту, который
+ * человек давно дописал. Отказ по времени здесь — обычный исход, а не сбой.
+ */
+const SHELL_REQUEST_MS = 2500
+
+/**
+ * ANSI из `text/plain` справки.
+ *
+ * IPython раскрашивает вывод `?` даже тогда, когда его никто не просил: в
+ * `inspect_reply` приезжает `\x1b[0;31mSignature:\x1b[0m` — и в подсказке над
+ * кареткой это выглядит как мусор перед каждым словом. Тот же набор, что в
+ * publish/render.ts: CSI, OSC и двухсимвольные.
+ */
+const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]/g
+
+/** Одно дополнение: текст замены и то, чем jedi его считает. */
+export interface CompleteMatch {
+  text: string
+  type: string | null
+}
+
+export interface CompleteResult {
+  matches: CompleteMatch[]
+  /** Границы куска, который замена собой заменяет, в знаках от начала кода. */
+  cursorStart: number
+  cursorEnd: number
+}
+
+export interface InspectResult {
+  found: boolean
+  text: string | null
+}
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -201,6 +246,16 @@ export async function jupyterReachable(): Promise<{ ok: boolean; reason: string 
 export class JupyterKernel {
   private socket: WebSocket | null = null
   private readonly pending = new Map<string, Pending>()
+  /**
+   * Служебные запросы по shell — отдельной картой от выполнений.
+   *
+   * Отдельной намеренно: у `pending` есть обработчики вывода и рукопожатие с
+   * iopub («ответ ПЛЮС закрывающий idle»), а дополнению ни то ни другое не
+   * нужно и вредно. `complete_reply` — это весь ответ целиком; ждать после
+   * него ещё и idle значило бы держать подсказку лишние миллисекунды, а на
+   * занятом ядре — не дождаться её никогда.
+   */
+  private readonly shellPending = new Map<string, ShellPending>()
   private readonly listeners: Array<(phase: KernelPhase, expected: boolean) => void> = []
   private reconnectAttempts = 0
   private reconnectTimer: NodeJS.Timeout | null = null
@@ -435,6 +490,101 @@ export class JupyterKernel {
   /** True while a cell is stopped inside input(), waiting for a person. */
   get waitingForInput(): boolean {
     return this.awaitingInput !== null
+  }
+
+  /**
+   * Спросить ядро о чём-нибудь по shell — и дождаться ровно одного ответа.
+   *
+   * Мимо очереди выполнения, и это главное свойство. `execute` ставит ячейку в
+   * общую очередь комнаты (kernel/index.ts · pump), где она ждёт своей минуты
+   * за чужими; подсказка, доехавшая через минуту, не подсказка. Здесь запрос
+   * уходит в провод сразу, а если ядро занято своей ячейкой — ответа не
+   * приходит вовсе, и через SHELL_REQUEST_MS обещание отказывает. Это
+   * НОРМАЛЬНЫЙ исход, а не сбой: ipykernel разбирает shell по одному, и пока
+   * `time.sleep(60)` не кончится, ответить он не может.
+   *
+   * Канала нет — отказ сразу, без `waitForSocket`: тот ждёт до сорока пяти
+   * секунд, и ждать их ради подсказки некому.
+   */
+  private request(
+    msgType: string,
+    content: Record<string, unknown>,
+    timeoutMs = SHELL_REQUEST_MS,
+  ): Promise<Record<string, any>> {
+    const socket = this.socket
+    if (this.disposed || this._phase === 'dead' || !socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error(tr("server.thePythonKernelIsNotRunning.a9cde2")))
+    }
+    const header = this.makeHeader(msgType)
+    return new Promise<Record<string, any>>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.shellPending.delete(header.msg_id)
+        reject(new Error(`${msgType} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      // Вопрос о ядре не имеет права держать процесс живым — как и сторож выше.
+      timer.unref?.()
+      this.shellPending.set(header.msg_id, { resolve, reject, timer })
+      try {
+        socket.send(
+          JSON.stringify({ header, parent_header: {}, metadata: {}, content, channel: 'shell' }),
+        )
+      } catch (err) {
+        clearTimeout(timer)
+        this.shellPending.delete(header.msg_id)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    })
+  }
+
+  /**
+   * Что можно дописать в этом месте кода — глазами самого ядра.
+   *
+   * Именно ядра, а не разбора текста в браузере: `df.` в тетради — это
+   * настоящий DataFrame с настоящими методами, и список их знает только тот
+   * процесс, где он лежит. Разбор текста знает слова этой же ячейки, и ими мы
+   * подпираем ответ на клиенте, когда ядра нет.
+   *
+   * `types` — из `metadata._jupyter_types_experimental`: ipykernel кладёт туда
+   * то, чем jedi считает каждое совпадение («function», «instance», «module»).
+   * Поле экспериментальное больше десяти лет и есть не у всех ядер, поэтому
+   * его отсутствие — не ошибка, а просто список без значков.
+   */
+  async complete(code: string, cursorPos: number): Promise<CompleteResult> {
+    const content = await this.request('complete_request', { code, cursor_pos: cursorPos })
+    const matches = Array.isArray(content.matches)
+      ? content.matches.filter((m: unknown): m is string => typeof m === 'string')
+      : []
+    const experimental = (content.metadata as Record<string, unknown> | undefined)?.[
+      '_jupyter_types_experimental'
+    ]
+    const types = Array.isArray(experimental) ? experimental : null
+    return {
+      matches: matches.map((text, index) => {
+        const hint = types?.[index] as { type?: unknown } | undefined
+        return { text, type: typeof hint?.type === 'string' ? hint.type : null }
+      }),
+      cursorStart: typeof content.cursor_start === 'number' ? content.cursor_start : cursorPos,
+      cursorEnd: typeof content.cursor_end === 'number' ? content.cursor_end : cursorPos,
+    }
+  }
+
+  /**
+   * Справка о том, что стоит под кареткой: сигнатура и начало docstring.
+   *
+   * То же, что делает `имя?` в ячейке, только ответ не печатается в вывод, а
+   * едет вызвавшему. `detail_level` 0 — сигнатура и документация, 1 — ещё и
+   * исходник; для подсказки над скобкой хватает нуля.
+   */
+  async inspect(code: string, cursorPos: number, detailLevel = 0): Promise<InspectResult> {
+    const content = await this.request('inspect_request', {
+      code,
+      cursor_pos: cursorPos,
+      detail_level: detailLevel,
+    })
+    const bundle = toStringBundle(content.data)
+    const plain = bundle['text/plain']
+    if (content.found !== true || typeof plain !== 'string') return { found: false, text: null }
+    return { found: true, text: plain.replace(ANSI, '') }
   }
 
   /**
@@ -854,6 +1004,22 @@ export class JupyterKernel {
     const parentId = msg.parent_header?.msg_id
     const pending = parentId ? this.pending.get(parentId) : undefined
 
+    /*
+     * Ответ на служебный запрос — раньше всего остального.
+     *
+     * Раньше, потому что ниже начинается разбор выполнения: ветка `status`
+     * отвечает за фазы, а всё, что после неё, молча уходит в `if (!pending)
+     * return`. `complete_reply` в `pending` не лежит и лежать не должен — у
+     * него нет ни вывода, ни закрывающего idle, которого стоило бы ждать.
+     */
+    const waiting = parentId ? this.shellPending.get(parentId) : undefined
+    if (waiting && typeof msgType === 'string' && msgType.endsWith('_reply')) {
+      this.shellPending.delete(parentId as string)
+      clearTimeout(waiting.timer)
+      waiting.resolve(content)
+      return
+    }
+
     if (msgType === 'status') {
       const state = content.execution_state
       /*
@@ -1006,6 +1172,20 @@ export class JupyterKernel {
     for (const [, pending] of inFlight) {
       if (pending.graceTimer) clearTimeout(pending.graceTimer)
       pending.settle('abort')
+    }
+    /*
+     * Служебные запросы — тем же движением.
+     *
+     * Процесс за сокетом меняется (перезапуск, OOM), и ответа на вопрос,
+     * заданный прошлому процессу, не будет никогда. Без этой половины
+     * дополнение висело бы до своего таймаута — недолго, но на ровном месте, а
+     * `dispose` оставлял бы после себя обещание, которое никто не тронет.
+     */
+    const asked = [...this.shellPending.entries()]
+    this.shellPending.clear()
+    for (const [, waiting] of asked) {
+      clearTimeout(waiting.timer)
+      waiting.reject(new Error(tr("server.thePythonKernelIsNotRunning.a9cde2")))
     }
   }
 }
