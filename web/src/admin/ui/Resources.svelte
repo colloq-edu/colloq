@@ -8,11 +8,14 @@
    * ячейке и не имел ни числа, ни ручки. Здесь и число, и ручка.
    *
    * Правило честности этого экрана (см. шапку NewSeminar.svelte) держится и
-   * тут, поэтому память — поле, а карта и ядра — строки. Видеопамять cgroup не
+   * тут, поэтому память и ядра — поля, а карта — строка. Видеопамять cgroup не
    * режет вовсе: карту комнаты делят целиком, и рисовать рядом с ней поле
-   * значило бы обещать ограничение, которого нет. Ядра задаются одной
-   * переменной на инстанс (`KERNEL_CPUS`), и поле на комнату было бы таким же
-   * обещанием.
+   * значило бы обещать ограничение, которого нет.
+   *
+   * У ядер своя оговорка, и она сказана вслух под полем: `docker update`
+   * меняет долю процессора живому контейнеру сразу, но число потоков numpy и
+   * torch считается ОДИН раз, при старте интерпретатора, — так что уже
+   * работающее ядро продолжит считать прежним их числом до перезапуска.
    *
    * Один компонент на обе двери — форму нового занятия и настройки
    * существующего. Настройка, которую в двух местах называют по-разному и
@@ -32,14 +35,26 @@
     memoryMb: number | null
     /** Число уехало. `null` возвращает комнату к умолчанию окружения. */
     onmemory: (mb: number | null) => void
+    /** Сколько ядер задано комнате; null — «как у инстанса». */
+    cpus: number | null
+    /** Ядра уехали. `null` возвращает комнату к умолчанию инстанса. */
+    oncpus: (cores: number | null) => void
     /** Запрос идёт — поле не трогаем, чтобы не обогнать ответ. */
     busy?: boolean
     /** Отказ сервера, если он был: печатается под полем, а не в стороне. */
     refusal?: string | null
   }
 
-  let { resources, environment, memoryMb, onmemory, busy = false, refusal = null }: Props =
-    $props()
+  let {
+    resources,
+    environment,
+    memoryMb,
+    onmemory,
+    cpus,
+    oncpus,
+    busy = false,
+    refusal = null,
+  }: Props = $props()
 
   const MB_IN_GB = 1024
 
@@ -54,6 +69,11 @@
 
   /** Что реально получит комната: своё число либо умолчание окружения. */
   const effectiveMb = $derived(memoryMb ?? defaultMb ?? 0)
+
+  /** Умолчание инстанса по ядрам; от окружения оно не зависит. */
+  const defaultCores = $derived(resources?.kernel.defaultCpus ?? null)
+  /** Что реально получит комната по ядрам. */
+  const effectiveCores = $derived(cpus ?? defaultCores ?? 0)
 
   /*
    * Поле держит СВОЮ строку, а не производную от числа.
@@ -96,6 +116,24 @@
     onmemory(mb)
   }
 
+  /* Ядра — тем же устройством, что и память: своя строка у поля, наверх едет
+     только осмысленное. Целое и вниз: дробные `--cpus` docker понимает, а
+     потоки numpy — нет, и число в поле обязано быть тем же, что уедет в обе. */
+  let typedCores = $state('')
+  let editingCores = $state(false)
+  const shownCores = $derived(editingCores ? typedCores : effectiveCores ? String(effectiveCores) : '')
+
+  function commitCores(): void {
+    editingCores = false
+    if (typedCores.trim() === '') {
+      if (cpus !== null) oncpus(null)
+      return
+    }
+    const value = Math.floor(Number(typedCores.replace(',', '.').trim()))
+    if (!Number.isFinite(value) || value <= 0 || value === cpus) return
+    oncpus(value)
+  }
+
   /* ------------------------------------------------------------- полоска */
 
   const totalMb = $derived(resources?.memory.totalMb ?? 0)
@@ -111,6 +149,11 @@
    */
   const tight = $derived(
     resources !== null && effectiveMb > resources.memory.availableMb && effectiveMb > 0,
+  )
+
+  /** Доля процессора машины, которую просит комната. */
+  const cpuShare = $derived(
+    resources && resources.cpus > 0 ? Math.min(1, effectiveCores / resources.cpus) : 0,
   )
 
   const asGb = (mb: number): string => {
@@ -187,8 +230,67 @@
       <p class="text-2xs leading-snug text-danger" role="alert">{refusal}</p>
     {/if}
 
-    <!-- Карта и ядра — строками, потому что они и есть строки: задать их этой
-         комнате нечем, а знать, на чём она поедет, надо. -->
+    <!--
+      Процессор — вторым полем, и устроен он как первое.
+
+      Целые ядра, потому что число из этого поля уезжает в две разные вещи
+      сразу: в `--cpus` docker (тот понимает и дробные) и в OMP/MKL/OPENBLAS/
+      NUMEXPR внутри контейнера (те — только целые). Показать «1,5» и молча
+      округлить одно из двух значило бы снова развести слово и дело.
+    -->
+    <div class="flex flex-col gap-3 border-t border-line-soft pt-4">
+      <div class="flex flex-wrap items-center gap-2.5">
+        <input
+          type="number"
+          min="1"
+          step="1"
+          inputmode="numeric"
+          disabled={busy}
+          class="field w-[110px]"
+          aria-label={tr('admin.resources.cpuLabel')}
+          value={shownCores}
+          oninput={(event) => {
+            editingCores = true
+            typedCores = event.currentTarget.value
+          }}
+          onblur={commitCores}
+          onkeydown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+          }}
+        />
+        <span class="text-ui text-muted">{tr('admin.resources.cores')}</span>
+        {#if cpus !== null && defaultCores !== null}
+          <button
+            type="button"
+            class="text-2xs text-muted underline decoration-line underline-offset-2 hover:text-ink"
+            disabled={busy}
+            onclick={() => {
+              editingCores = false
+              oncpus(null)
+            }}
+          >
+            {tr('admin.resources.useDefaultCpu')}
+          </button>
+        {/if}
+      </div>
+
+      <div class="flex h-1 w-full max-w-[320px] bg-line-soft" aria-hidden="true">
+        <div
+          class="h-full bg-accent transition-[width] duration-[var(--speed-quick)] ease-out"
+          style="width: {(cpuShare * 100).toFixed(1)}%"
+        ></div>
+      </div>
+
+      <p class="text-2xs leading-snug text-muted">
+        {tr('admin.resources.cpuHint', {
+          p0: resources.cpus,
+          p1: defaultCores ?? resources.kernel.defaultCpus,
+        })}
+      </p>
+    </div>
+
+    <!-- Карта — строкой, потому что она и есть строка: задать её этой комнате
+         нечем, а знать, на чём она поедет, надо. -->
     <div class="flex flex-col gap-1.5 border-t border-line-soft pt-3">
       {#if resources.gpus.length > 0}
         {@const card = resources.gpus[0]}
@@ -202,10 +304,6 @@
         </p>
         <p class="text-2xs leading-snug text-faint">{tr('admin.resources.vramShared')}</p>
       {/if}
-      <p class="text-2xs leading-snug text-muted">
-        <span class="font-semibold text-ink">CPU:</span>
-        {tr('admin.resources.cpus', { p0: resources.cpus })}
-      </p>
     </div>
   {:else}
     <!-- Числа не доехали: выдумывать их нельзя, и подсказка просто молчит. -->

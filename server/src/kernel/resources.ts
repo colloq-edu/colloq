@@ -22,7 +22,7 @@ import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { db, sessionMemoryMb } from '../db.js'
 import { listNames, needsGpu } from '../environments.js'
-import { containerMemoryMb, defaultMemoryMb, listRoomKernels, memoryLimitMb } from './pool.js'
+import { containerLimits, defaultCpus, defaultMemoryMb, listRoomKernels, memoryLimitMb } from './pool.js'
 import { kernelBackend } from './runtime-client.js'
 import type { GpuCard, InstanceResources, RoomResource } from '@shared/admin'
 
@@ -119,6 +119,7 @@ interface RoomRow {
   name: string
   environment: string | null
   memory_mb: number | null
+  cpus: number | null
 }
 
 /**
@@ -129,7 +130,7 @@ interface RoomRow {
  * вопрос. Потолок стоит на всякий случай — панель этот список рисует.
  */
 const selectRooms = db.prepare(
-  'SELECT id, name, environment, memory_mb FROM sessions ORDER BY created_at DESC LIMIT 200',
+  'SELECT id, name, environment, memory_mb, cpus FROM sessions ORDER BY created_at DESC LIMIT 200',
 )
 
 async function rooms(): Promise<RoomResource[]> {
@@ -140,23 +141,28 @@ async function rooms(): Promise<RoomResource[]> {
     alive = new Set()
   }
   const rows = selectRooms.all() as RoomRow[]
-  const interesting = rows.filter((row) => alive.has(row.id) || row.memory_mb !== null).slice(0, 50)
+  const interesting = rows
+    .filter((row) => alive.has(row.id) || row.memory_mb !== null || row.cpus !== null)
+    .slice(0, 50)
   return Promise.all(
     interesting.map(async (row) => {
-      const settled = row.memory_mb ?? envDefaultMb(row.environment)
+      const settledMb = row.memory_mb ?? envDefaultMb(row.environment)
+      const settledCpus = row.cpus ?? defaultCpus()
       /*
        * У живой комнаты спрашивается docker, а не строка семинара: разойтись
        * они могут ровно тогда, когда это важно — лимит подняли между парами, а
        * контейнер с утра работает на старом. Показывать надо то, что у неё
-       * есть, а не то, что ей записали.
+       * есть, а не то, что ей записали. Оба числа одним `inspect`: список
+       * зовёт его на каждую живую комнату.
        */
       const real = alive.has(row.id) && kernelBackend() === 'docker'
-        ? await containerMemoryMb(row.id).catch(() => null)
-        : null
+        ? await containerLimits(row.id).catch(() => ({ memoryMb: null, cpus: null }))
+        : { memoryMb: null, cpus: null }
       return {
         id: row.id,
         name: row.name,
-        memoryMb: real ?? settled,
+        memoryMb: real.memoryMb ?? settledMb,
+        cpus: real.cpus ?? settledCpus,
         environment: row.environment,
         alive: alive.has(row.id),
       }
@@ -189,6 +195,9 @@ async function collect(): Promise<Collected> {
     kernel: {
       defaultMemoryMb: defaultMemoryMb(false),
       gpuDefaultMemoryMb: defaultMemoryMb(true),
+      // Ядра одним числом на инстанс: окружение на них не влияет, в отличие
+      // от памяти, где окружение с GPU просит вчетверо больше.
+      defaultCpus: defaultCpus(),
       perEnvironment,
     },
     rooms: await rooms(),
@@ -284,6 +293,40 @@ export interface MemoryBounds {
 export function memoryBounds(): MemoryBounds {
   const totalMb = kernelBackend() === 'test' ? 73_728 : Math.floor(os.totalmem() / MB)
   return { min: MIN_ROOM_MB, max: Math.max(MIN_ROOM_MB, totalMb - HOST_RESERVE_MB) }
+}
+
+/**
+ * Сколько ядер на машине — по тому же правилу, что и память.
+ *
+ * Под тестовым бэкендом число выдуманное и то же самое, что в ответе двери:
+ * граница, не совпадающая с подписью под полем, — это отказ, который человеку
+ * не объяснить.
+ */
+export function machineCpus(): number {
+  return kernelBackend() === 'test' ? 16 : Math.max(1, os.cpus().length)
+}
+
+/**
+ * Границы для ядер: от одного до всех, что есть на машине.
+ *
+ * Запаса «оставь машине ядро», как у памяти, здесь нет намеренно: `--cpus` —
+ * это доля времени, а не отобранное железо. Комната с восемью ядрами из восьми
+ * не оставляет сервер без процессора, она просто конкурирует с ним за него;
+ * комната с памятью машины минус ничего — оставляет его без памяти совсем.
+ */
+export function cpuBounds(): MemoryBounds {
+  return { min: 1, max: machineCpus() }
+}
+
+export type CpuInput = { ok: true; cpus: number | null } | { ok: false; error: 'type' | 'range' }
+
+/** Та же мерка, что и у памяти: целое, в границах, и null — «как у инстанса». */
+export function readCpuInput(value: unknown): CpuInput {
+  if (value === null || value === undefined) return { ok: true, cpus: null }
+  if (typeof value !== 'number' || !Number.isInteger(value)) return { ok: false, error: 'type' }
+  const { min, max } = cpuBounds()
+  if (value < min || value > max) return { ok: false, error: 'range' }
+  return { ok: true, cpus: value }
 }
 
 export type MemoryInput = { ok: true; mb: number | null } | { ok: false; error: 'type' | 'range' }

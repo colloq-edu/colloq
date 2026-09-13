@@ -147,6 +147,11 @@ export interface CreateSessionRequest {
    * появления поля.
    */
   memoryMb?: number | null
+  /**
+   * Сколько ядер выдать комнате. Тем же правилом: только для штата, от одного
+   * до всех ядер машины, опущено — умолчание инстанса (`KERNEL_CPUS`).
+   */
+  cpus?: number | null
 }
 
 export interface CreateSessionResponse {

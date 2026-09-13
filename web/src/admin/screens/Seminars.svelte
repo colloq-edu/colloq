@@ -708,6 +708,30 @@
     }
   }
 
+  /**
+   * Ядра — той же дверью и тем же окном, что и память.
+   *
+   * Оговорка про потоки живёт в подсказке под полем, а не здесь: сервер
+   * применяет число к контейнеру сразу, а numpy с торчем внутри уже
+   * запущенного ядра считают прежним их числом до перезапуска.
+   */
+  async function setCpus(seminar: AdminSeminar, cores: number | null): Promise<void> {
+    memoryBusy = true
+    memoryErrorText = null
+    try {
+      const updated = await adminApi.updateSeminar(seminar.id, { cpus: cores })
+      replace(updated)
+      ruling = updated
+      readResources()
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      memoryErrorText = () =>
+        cause instanceof AdminApiError ? cause.message : tr('admin.resources.notSaved')
+    } finally {
+      memoryBusy = false
+    }
+  }
+
   async function setRule(seminar: AdminSeminar, patchRules: Partial<RoomRules>): Promise<void> {
     rulesBusy = true
     rulesErrorText = null
@@ -1610,9 +1634,11 @@
             {resources}
             environment={ruling.environment ?? ''}
             memoryMb={ruling.memoryMb ?? null}
+            cpus={ruling.cpus ?? null}
             busy={memoryBusy}
             refusal={memoryError}
             onmemory={(mb) => void setMemory(ruling as AdminSeminar, mb)}
+            oncpus={(cores) => void setCpus(ruling as AdminSeminar, cores)}
           />
         </div>
       </div>

@@ -19,15 +19,31 @@ import { STAFF_COOKIE, type InstanceResources } from '../shared/admin.js'
 import { issueStaffCookie } from '../server/src/admin/auth.js'
 import { createTeacher, oldestOwner, rotateLinkKey } from '../server/src/admin/store.js'
 import { app } from '../server/src/app.js'
-import { createSession, db, sessionMemoryMb, setSessionMemoryMb } from '../server/src/db.js'
 import {
+  createSession,
+  db,
+  sessionCpus,
+  sessionMemoryMb,
+  setSessionCpus,
+  setSessionMemoryMb,
+} from '../server/src/db.js'
+import {
+  applyCpuLimit,
   applyMemoryLimit,
   memSpec,
   parseMemMb,
   runArgs,
   useDockerForLimits,
 } from '../server/src/kernel/pool.js'
-import { forgetResources, machineResources, memoryBounds, parseGpus, readMemoryInput } from '../server/src/kernel/resources.js'
+import {
+  cpuBounds,
+  forgetResources,
+  machineResources,
+  memoryBounds,
+  parseGpus,
+  readCpuInput,
+  readMemoryInput,
+} from '../server/src/kernel/resources.js'
 
 function mintCookie(teacher: Parameters<typeof issueStaffCookie>[1]): string {
   let value = ''
@@ -115,6 +131,10 @@ test('описание машины — только штату, и в нём е
   // браузере разошлась бы с серверной на первом же её изменении.
   assert.equal(body.limits.min, 512)
   assert.equal(body.limits.max, body.memory.totalMb - 1024)
+  // Ядра: умолчание инстанса и свои границы рядом с памятью.
+  assert.ok(body.kernel.defaultCpus >= 1)
+  assert.equal(body.limits.cpus.min, 1)
+  assert.equal(body.limits.cpus.max, body.cpus)
 })
 
 test('комната со своим числом попадает в список тех, кто держит память', async () => {
@@ -126,7 +146,16 @@ test('комната со своим числом попадает в списо
   const listed = body.rooms.find((r) => r.id === room)
   assert.ok(listed, 'комната с заданным лимитом не названа')
   assert.equal(listed.memoryMb, 6144)
+  assert.equal(listed.cpus, 2, 'комната без своих ядер показана не умолчанием инстанса')
   assert.equal(listed.alive, false)
+
+  // Комната, которой задали ТОЛЬКО ядра, тоже держит машину — и тоже названа.
+  const cores = 'res-cores'
+  createSession(cores, 'Потоки', null)
+  setSessionCpus(cores, 6)
+  forgetResources()
+  const again = await machineResources()
+  assert.equal(again.rooms.find((r) => r.id === cores)?.cpus, 6)
   forgetResources()
 })
 
@@ -143,6 +172,54 @@ test('число принимают только целым и только в �
   assert.deepEqual(readMemoryInput(1024.5), { ok: false, error: 'type' })
   assert.deepEqual(readMemoryInput(256), { ok: false, error: 'range' })
   assert.deepEqual(readMemoryInput(max + 1), { ok: false, error: 'range' })
+})
+
+test('ядер принимают от одного до всех, что есть на машине', () => {
+  const { min, max } = cpuBounds()
+  assert.equal(min, 1)
+  assert.ok(max >= 1)
+  assert.deepEqual(readCpuInput(4), { ok: true, cpus: 4 })
+  // null — «как у инстанса», тем же правилом, что и у памяти.
+  assert.deepEqual(readCpuInput(null), { ok: true, cpus: null })
+  assert.deepEqual(readCpuInput(undefined), { ok: true, cpus: null })
+  assert.deepEqual(readCpuInput('4'), { ok: false, error: 'type' })
+  assert.deepEqual(readCpuInput(1.5), { ok: false, error: 'type' })
+  assert.deepEqual(readCpuInput(0), { ok: false, error: 'range' })
+  assert.deepEqual(readCpuInput(max + 1), { ok: false, error: 'range' })
+})
+
+test('панель заводит комнату с её ядрами и меняет их число', async () => {
+  const created = await call('POST', '/api/admin/seminars', {
+    cookie,
+    body: { name: 'Численные методы', cpus: 4 },
+  })
+  assert.equal(created.status, 201)
+  const seminar = (await created.json()) as { id: string; cpus: number | null }
+  assert.equal(seminar.cpus, 4, 'число ядер не доехало до карточки')
+  assert.equal(sessionCpus(seminar.id), 4)
+
+  const raised = await call('PATCH', `/api/admin/seminars/${seminar.id}`, {
+    cookie,
+    body: { cpus: 6 },
+  })
+  assert.equal(raised.status, 200)
+  assert.equal(((await raised.json()) as { cpus: number | null }).cpus, 6)
+  assert.equal(sessionCpus(seminar.id), 6)
+
+  // null возвращает комнату к умолчанию инстанса.
+  const reset = await call('PATCH', `/api/admin/seminars/${seminar.id}`, {
+    cookie,
+    body: { cpus: null },
+  })
+  assert.equal(reset.status, 200)
+  assert.equal(sessionCpus(seminar.id), null)
+
+  const refused = await call('PATCH', `/api/admin/seminars/${seminar.id}`, {
+    cookie,
+    body: { cpus: cpuBounds().max + 1 },
+  })
+  assert.equal(refused.status, 400)
+  assert.match(((await refused.json()) as { error: string }).error, /1/)
 })
 
 test('панель заводит комнату с её памятью и меняет число, не трогая остального', async () => {
@@ -224,6 +301,40 @@ test('своё число комнаты сильнее умолчания ок�
   assert.ok(own.includes('--memory-swap=6144m'))
 })
 
+test('своё число ядер уезжает и в --cpus, и в потоки численных библиотек', () => {
+  const room = { sessionId: 'res-cpu-args', mount: '/w/res-cpu-args', network: '', gpu: null, env: 'base' }
+  // Умолчание инстанса — то же, что и было: два ядра и два потока.
+  const plain = runArgs(room)
+  assert.ok(plain.includes('--cpus=2'), JSON.stringify(plain))
+  assert.ok(plain.includes('OMP_NUM_THREADS=2'))
+
+  const own = runArgs({ ...room, cpus: 6 })
+  assert.ok(own.includes('--cpus=6'), JSON.stringify(own))
+  assert.ok(!own.includes('--cpus=2'), 'умолчание инстанса осталось рядом со своим числом')
+  /*
+   * Главное здесь — вторая половина: `os.cpu_count()` внутри контейнера
+   * показывает ядра ХОСТА, и комната с шестью выданными поднимала бы по
+   * тридцать потоков numpy на них, считая медленнее, чем в один.
+   */
+  for (const name of ['OMP', 'MKL', 'OPENBLAS', 'NUMEXPR']) {
+    assert.ok(own.includes(`${name}_NUM_THREADS=6`), `${name} остался с числом инстанса`)
+  }
+})
+
+test('живой комнате ядра меняют docker update --cpus', async () => {
+  const calls: Array<string[]> = []
+  useDockerForLimits(async (args) => {
+    calls.push(args)
+    return { code: 0, out: '' }
+  })
+  assert.equal(await applyCpuLimit('res-live-cpu', 6), 'applied')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], 'update')
+  assert.ok(calls[0].includes('--cpus=6'), JSON.stringify(calls[0]))
+  assert.ok(calls[0].includes('colloq-room-res-live-cpu'), JSON.stringify(calls[0]))
+  useDockerForLimits(null)
+})
+
 test('живой комнате память меняют docker update, обоими флагами сразу', async () => {
   const calls: Array<string[]> = []
   useDockerForLimits(async (args) => {
@@ -267,4 +378,10 @@ test('столбец памяти заводится один раз и пере
    * запуске — не на том, где эту строку писали.
    */
   assert.throws(() => db.exec('ALTER TABLE sessions ADD COLUMN memory_mb INTEGER'))
+
+  const cores = (db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).filter(
+    (c) => c.name === 'cpus',
+  )
+  assert.equal(cores.length, 1, 'столбца ядер нет или их два')
+  assert.throws(() => db.exec('ALTER TABLE sessions ADD COLUMN cpus INTEGER'))
 })

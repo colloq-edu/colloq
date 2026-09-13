@@ -26,6 +26,7 @@ import {
   isTokenHost,
   listParticipants,
   setRules,
+  setSessionCpus,
   setSessionMemoryMb,
   upsertParticipant,
 } from '../db.js'
@@ -33,7 +34,7 @@ import { onlineParticipantIds } from '../collab/index.js'
 import { freeMark } from '@shared/marks'
 import { seldom, tally } from '../log.js'
 import { ensureKernel } from '../kernel/index.js'
-import { forgetResources, readMemoryInput } from '../kernel/resources.js'
+import { forgetResources, readCpuInput, readMemoryInput } from '../kernel/resources.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { publicationOf, stepCount } from '../publish/store.js'
 import { broadcast } from '../control.js'
@@ -542,11 +543,22 @@ export function sessionRoutes(): Router {
     if (memory.mb !== null && !staff) {
       return res.status(403).json({ error: tr('server.memoryIsStaffOnly'), reason: 'forbidden' })
     }
+    const cpu = readCpuInput(req.body?.cpus)
+    if (!cpu.ok) {
+      return res.status(400).json({ error: tr('server.cpusMustBeWholeCores') })
+    }
+    if (cpu.cpus !== null && !staff) {
+      return res.status(403).json({ error: tr('server.memoryIsStaffOnly'), reason: 'forbidden' })
+    }
 
     const id = newSessionId()
     const session = createSession(id, name, wanted || activeName())
     if (memory.mb !== null) {
       setSessionMemoryMb(id, memory.mb)
+      forgetResources()
+    }
+    if (cpu.cpus !== null) {
+      setSessionCpus(id, cpu.cpus)
       forgetResources()
     }
     // A seminar created straight against this endpoint by a signed-in teacher

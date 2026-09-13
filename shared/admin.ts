@@ -202,6 +202,8 @@ export interface AdminSeminar {
    * присылает, и тогда раздел «Ресурсы» просто молчит.
    */
   memoryMb?: number | null
+  /** Сколько ядер задано этой комнате, или null — умолчание инстанса. */
+  cpus?: number | null
 }
 
 export interface CreateSeminarRequest {
@@ -249,6 +251,8 @@ export interface CreateSeminarRequest {
    * выбор окружения рядом.
    */
   memoryMb?: number | null
+  /** Сколько ядер дать комнате; опущено или null — умолчание инстанса. */
+  cpus?: number | null
 }
 
 export interface UpdateSeminarRequest {
@@ -280,6 +284,14 @@ export interface UpdateSeminarRequest {
    * открытого терминала.
    */
   memoryMb?: number | null
+  /**
+   * Сколько ядер дать комнате; null возвращает её к умолчанию инстанса.
+   *
+   * Живому контейнеру применяется сразу (`docker update --cpus`), но потоки
+   * numpy и torch внутри уже запущенного ядра остаются прежними: их число
+   * считается один раз, при старте интерпретатора. Об этом сказано в форме.
+   */
+  cpus?: number | null
 }
 
 /* ----------------------------------------------------------- ресурсы */
@@ -297,6 +309,8 @@ export interface RoomResource {
   name: string
   /** Действующий лимит: своё число комнаты, иначе умолчание её окружения. */
   memoryMb: number
+  /** Сколько ядер у комнаты: своё число, иначе умолчание инстанса. */
+  cpus: number
   environment: string | null
   alive: boolean
 }
@@ -316,12 +330,18 @@ export interface InstanceResources {
   kernel: {
     defaultMemoryMb: number
     gpuDefaultMemoryMb: number
+    /** Ядра комнате по умолчанию — `KERNEL_CPUS`, одно число на инстанс. */
+    defaultCpus: number
     /** Что получит комната на этом окружении, если ей ничего не задали. */
     perEnvironment: Record<string, { memoryMb: number; gpu: boolean }>
   }
   rooms: RoomResource[]
-  /** Границы, в которых сервер примет число. Считает их он, а не форма. */
-  limits: { min: number; max: number }
+  /**
+   * Границы, в которых сервер примет число: мегабайты — полем, ядра — своим.
+   * Считает их он, а не форма: вторая копия правила в браузере разошлась бы с
+   * серверной на первом же её изменении.
+   */
+  limits: { min: number; max: number; cpus: { min: number; max: number } }
 }
 
 /* -------------------------------------------------------------- oracle */

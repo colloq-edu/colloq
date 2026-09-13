@@ -298,6 +298,8 @@
   let resources = $state<InstanceResources | null>(null)
   /** Сколько памяти задали ЭТОЙ комнате; null — как у окружения. */
   let memoryMb = $state<number | null>(null)
+  /** Сколько ядер задали ЭТОЙ комнате; null — как у инстанса. */
+  let cpus = $state<number | null>(null)
 
   let preview = $state<ImportPreview | null>(null)
   let previewing = $state(false)
@@ -443,6 +445,7 @@
                 mode,
                 rules,
                 memoryMb,
+                cpus,
               })
 
       /*
@@ -464,9 +467,9 @@
        * Семинар уже создан, лимит на живую комнату применяется тем же PATCH,
        * что и в настройках, — цена одного лишнего запроса на создание.
        */
-      if (memoryMb !== null && source !== 'blank') {
+      if ((memoryMb !== null || cpus !== null) && source !== 'blank') {
         try {
-          await adminApi.updateSeminar(seminar.id, { memoryMb })
+          await adminApi.updateSeminar(seminar.id, { memoryMb, cpus })
         } catch {
           /* Комната есть и работает на умолчании окружения; молчать об этом
              нельзя ровно настолько же, насколько нельзя из-за этого отменять
@@ -867,6 +870,8 @@
       {environment}
       {memoryMb}
       onmemory={(mb) => (memoryMb = mb)}
+      {cpus}
+      oncpus={(cores) => (cpus = cores)}
     />
   </Section>
 

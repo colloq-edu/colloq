@@ -35,8 +35,10 @@ import {
   loadDocSnapshot,
   renameSession,
   sessionEnvironment,
+  sessionCpus,
   sessionMemoryMb,
   setRules,
+  setSessionCpus,
   setSessionMemoryMb,
   storedRules,
 } from '../db.js'
@@ -51,8 +53,14 @@ import {
   stepCount,
 } from '../publish/store.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
-import { applyMemoryLimit } from '../kernel/pool.js'
-import { forgetResources, memoryBounds, readMemoryInput } from '../kernel/resources.js'
+import { applyCpuLimit, applyMemoryLimit } from '../kernel/pool.js'
+import {
+  cpuBounds,
+  forgetResources,
+  memoryBounds,
+  readCpuInput,
+  readMemoryInput,
+} from '../kernel/resources.js'
 import { blockKernelStarts, kernelRetirementInProgress } from '../kernel/retirement.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { forgetTree, listFiles, sessionDir, workspaceFs } from '../workspace.js'
@@ -269,6 +277,8 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
      * на все комнаты и меняется без них.
      */
     memoryMb: sessionMemoryMb(row.id),
+    /** И ядра тем же правилом: своё число комнаты, а не действующее. */
+    cpus: sessionCpus(row.id),
     finishedAt: finishedAt(row.id),
     publication: publication
       ? {
@@ -321,6 +331,14 @@ function memoryRefusal(why: 'type' | 'range'): string {
   return why === 'type'
     ? tr('server.memoryMustBeWholeMegabytes')
     : tr('server.memoryOutOfRange', { p0: min, p1: max })
+}
+
+/** То же, что и у памяти: границы называются числами, а не «неверно». */
+function cpuRefusal(why: 'type' | 'range'): string {
+  const { min, max } = cpuBounds()
+  return why === 'type'
+    ? tr('server.cpusMustBeWholeCores')
+    : tr('server.cpusOutOfRange', { p0: min, p1: max })
 }
 
 function notFound(res: Response): Response {
@@ -388,6 +406,8 @@ export function adminInstanceRoutes(): Router {
      */
     const memory = readMemoryInput(req.body?.memoryMb)
     if (!memory.ok) return invalid(res, memoryRefusal(memory.error))
+    const cpu = readCpuInput(req.body?.cpus)
+    if (!cpu.ok) return invalid(res, cpuRefusal(cpu.error))
 
     const id = newSessionId()
     createSession(id, name, environment)
@@ -429,6 +449,10 @@ export function adminInstanceRoutes(): Router {
       setSessionMemoryMb(id, memory.mb)
       forgetResources()
     }
+    if (cpu.ok && cpu.cpus !== null) {
+      setSessionCpus(id, cpu.cpus)
+      forgetResources()
+    }
 
     const staff = currentStaff(req)
     if (staff) setSeminarCreator(id, staff.name)
@@ -448,6 +472,7 @@ export function adminInstanceRoutes(): Router {
           finished?: unknown
           rules?: unknown
           memoryMb?: unknown
+          cpus?: unknown
         }
       | undefined
     if (body?.name !== undefined) {
@@ -546,6 +571,24 @@ export function adminInstanceRoutes(): Router {
       if (memory.mb !== null) {
         void applyMemoryLimit(row.id, memory.mb).catch((err: unknown) => {
           console.error(`[kernel] лимит памяти для ${row.id} не доехал:`, err)
+        })
+      }
+    }
+
+    if (body?.cpus !== undefined) {
+      const cpu = readCpuInput(body.cpus)
+      if (!cpu.ok) return invalid(res, cpuRefusal(cpu.error))
+      setSessionCpus(row.id, cpu.cpus)
+      forgetResources()
+      /*
+       * Живой комнате — сразу, как и память. Оговорка одна и честная: потоки
+       * numpy и torch считаются при старте интерпретатора, так что уже
+       * запущенное ядро будет считать прежним их числом до перезапуска. Форма
+       * об этом говорит вслух, поэтому здесь ядро не трогается.
+       */
+      if (cpu.cpus !== null) {
+        void applyCpuLimit(row.id, cpu.cpus).catch((err: unknown) => {
+          console.error(`[kernel] число ядер для ${row.id} не доехало:`, err)
         })
       }
     }

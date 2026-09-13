@@ -3413,6 +3413,14 @@ export const serverMessages: MessageCatalog = {
     "ru": "Памяти комнате можно выдать от {p0} до {p1} МБ: меньше не поднимется ядро, больше не останется самой машине.",
     "en": "A room may be given between {p0} and {p1} MB: less and the kernel will not start, more and nothing is left for the machine itself."
   },
+  "server.cpusMustBeWholeCores": {
+    "ru": "Число ядер комнаты задаётся целым числом.",
+    "en": "A room's core count is set as a whole number."
+  },
+  "server.cpusOutOfRange": {
+    "ru": "Ядер комнате можно выдать от {p0} до {p1}: больше, чем есть на машине, не бывает.",
+    "en": "A room may be given between {p0} and {p1} cores: there are no more on the machine."
+  },
   "server.memoryIsStaffOnly": {
     "ru": "Память комнате назначает преподаватель.",
     "en": "Only staff can set a room's memory."

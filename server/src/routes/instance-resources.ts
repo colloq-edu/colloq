@@ -14,7 +14,7 @@
  */
 import { Router } from 'express'
 import { requireStaff } from '../admin/auth.js'
-import { machineResources, memoryBounds } from '../kernel/resources.js'
+import { cpuBounds, machineResources, memoryBounds } from '../kernel/resources.js'
 
 export function instanceResourcesRoutes(): Router {
   const router = Router()
@@ -31,7 +31,7 @@ export function instanceResourcesRoutes(): Router {
            * машине гигабайт»: сервер отвергает по своей, форма красит по
            * своей, и расходятся они ровно в тот день, когда правило меняют.
            */
-          limits: memoryBounds(),
+          limits: { ...memoryBounds(), cpus: cpuBounds() },
         }),
       )
       .catch(next)

@@ -1,6 +1,22 @@
 import type {MessageCatalog} from '../i18n-types.js'
 
 export const adminMessages: MessageCatalog = {
+  "admin.resources.cpuLabel": {
+    "ru": "Процессор, ядер",
+    "en": "Processor, cores"
+  },
+  "admin.resources.cores": {
+    "ru": "ядер",
+    "en": "cores"
+  },
+  "admin.resources.useDefaultCpu": {
+    "ru": "вернуть умолчание инстанса",
+    "en": "back to the instance default"
+  },
+  "admin.resources.cpuHint": {
+    "ru": "На машине {p0} ядер; по умолчанию {p1}. На живой комнате новое число применится сразу, а ядро начнёт считать им после перезапуска: потоки numpy и torch считаются при старте.",
+    "en": "The machine has {p0} cores; the default is {p1}. On a live room the new number applies at once, but the kernel only uses it after a restart: numpy and torch count their threads at start-up."
+  },
   "admin.seminar.settingsMenu": {
     "ru": "Настройки",
     "en": "Settings"
@@ -60,10 +76,6 @@ export const adminMessages: MessageCatalog = {
   "admin.resources.vramShared": {
     "ru": "Видеопамять делят все комнаты на карте, и она не ограничивается: задать её комнате нечем.",
     "en": "Video memory is shared by every room on the card and is not limited: there is nothing to set here."
-  },
-  "admin.resources.cpus": {
-    "ru": "{p0} ядер на машине; сколько их у комнаты, задаёт инстанс.",
-    "en": "{p0} cores on the machine; how many a room gets is an instance setting."
   },
   "admin.resources.moreCards": {
     "ru": " и ещё {p0}",

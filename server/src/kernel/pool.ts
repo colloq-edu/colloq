@@ -1,6 +1,6 @@
 import { tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision } from './runtime-client.js'
-import { sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists } from '../db.js'
+import { sessionCpus, sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
 /** Production starts fixed, isolated Pods through the private runtime broker.
  * The direct Docker adapter is retained only for explicit local development.
@@ -484,10 +484,23 @@ async function sameGpu(container: string, gpu: string | null): Promise<boolean> 
  * понимает, а число потоков — целое, и вниз, а не вверх: просить больше
  * потоков, чем есть ядер, — ровно та беда, от которой это ставится.
  */
-function threadLimit(): string {
-  const cpus = Number(process.env.KERNEL_CPUS ?? '2')
+function threadLimit(own?: number | null): string {
+  const cpus = own ?? Number(process.env.KERNEL_CPUS ?? '2')
   if (!Number.isFinite(cpus) || cpus <= 0) return '2'
   return String(Math.max(1, Math.floor(cpus)))
+}
+
+/**
+ * Сколько ядер получает комната, которой ничего не задали, — числом.
+ *
+ * `KERNEL_CPUS` — строка из окружения, и она может быть дробной («1.5»):
+ * docker так умеет. Наружу отдаётся то же самое число, потому что форма
+ * занятия подписывает им поле «Процессор» — и подписывать обязана тем, что
+ * комната действительно получит.
+ */
+export function defaultCpus(): number {
+  const cpus = Number(process.env.KERNEL_CPUS ?? '2')
+  return Number.isFinite(cpus) && cpus > 0 ? cpus : 2
 }
 
 /**
@@ -613,10 +626,21 @@ export function runArgs(opts: {
    * то есть `KERNEL_MEM` и умолчание окружения.
    */
   memoryMb?: number | null
+  /**
+   * Сколько ядер выдать именно ЭТОЙ комнате.
+   *
+   * Тем же правилом, что и память: `null` — прежнее поведение, то есть
+   * `KERNEL_CPUS` на весь инстанс. Число здесь решает не только `--cpus`, но и
+   * потоки численных библиотек ниже: `os.cpu_count()` внутри контейнера видит
+   * ядра ХОСТА, и комната с двумя выданными ядрами поднимала бы тридцать
+   * потоков на них — ровно то, от чего эти переменные и стоят.
+   */
+  cpus?: number | null
 }): string[] {
   const { sessionId, env, mount, network, gpu } = opts
   const memory = opts.memoryMb ? memSpec(opts.memoryMb) : memoryLimit(env)
-  const threads = threadLimit()
+  const cpus = opts.cpus && opts.cpus > 0 ? opts.cpus : defaultCpus()
+  const threads = threadLimit(cpus)
   return [
     'run',
     '-d',
@@ -641,6 +665,10 @@ export function runArgs(opts: {
     `MKL_NUM_THREADS=${threads}`,
     '-e',
     `OPENBLAS_NUM_THREADS=${threads}`,
+    // numexpr считает своё число по ядрам ХОСТА так же, как остальные три, и
+    // молча ругается в журнал ядра, не найдя своей переменной.
+    '-e',
+    `NUMEXPR_NUM_THREADS=${threads}`,
     '-v',
     `${mount}:/workspace/${sessionId}`,
     // Student code is arbitrary, exactly as in compose. A runaway cell in
@@ -653,7 +681,7 @@ export function runArgs(opts: {
      * минутами там, где честнее сразу сказать «не хватило памяти».
      */
     `--memory-swap=${memory}`,
-    `--cpus=${process.env.KERNEL_CPUS ?? '2'}`,
+    `--cpus=${cpus}`,
     '--pids-limit=512',
     /*
      * Разделяемая память нужна только там, где есть GPU: умолчание docker —
@@ -746,18 +774,60 @@ export async function applyMemoryLimit(sessionId: string, mb: number): Promise<L
 }
 
 /**
- * Сколько памяти docker реально выдал контейнеру комнаты — в мегабайтах.
+ * Поднять (или опустить) число ядер живой комнате.
+ *
+ * `docker update --cpus` меняет cgroup работающего контейнера, и ядру от этого
+ * становится просторнее в ту же секунду. Оговорка одна, и она честная: потоки
+ * numpy и torch считаются ОДИН раз, при старте интерпретатора, по переменным
+ * окружения контейнера — так что уже запущенное ядро будет считать прежним
+ * числом потоков, пока его не перезапустят. Об этом сказано в подсказке под
+ * полем, а не только здесь.
+ *
+ * Swap-подобной пары флагов тут нет: `--cpus` самодостаточен.
+ */
+export async function applyCpuLimit(sessionId: string, cpus: number): Promise<LimitOutcome> {
+  const container = containerFor(sessionId)
+  if (!limitsInjected) {
+    if (kernelBackend() !== 'docker') return 'pending'
+    if (!(await canIsolate())) return 'pending'
+  }
+  const res = await limitsDocker(['update', `--cpus=${cpus}`, container], 30_000)
+  if (res.code === 0) {
+    console.log(`[kernel] комнате ${sessionId} выдано ${cpus} ядер на живом контейнере`)
+    return 'applied'
+  }
+  if (/no such container/i.test(res.out)) {
+    console.log(`[kernel] комнате ${sessionId} записано ${cpus} ядер; контейнера нет, возьмёт при пуске`)
+    return 'pending'
+  }
+  console.error(`[kernel] docker update --cpus для ${sessionId} не удался: ${res.out.slice(-200)}`)
+  return 'failed'
+}
+
+/**
+ * Что docker реально выдал контейнеру комнаты — память и ядра одним вопросом.
  *
  * Спрашивается у docker, а не берётся из строки семинара: разойтись они могут
  * ровно тогда, когда это важно — лимит подняли, а комната с утра работает на
- * старом. Ноль в ответе docker значит «без лимита», и это `null`, а не 0.
+ * старом. Ноль в ответе docker значит «без лимита», и это `null`, а не 0. Один
+ * `inspect` на оба числа, потому что список комнат зовёт его на каждую живую.
  */
-export async function containerMemoryMb(sessionId: string): Promise<number | null> {
-  const res = await limitsDocker(['inspect', containerFor(sessionId), '--format', '{{.HostConfig.Memory}}'], 10_000)
-  if (res.code !== 0) return null
-  const bytes = Number(res.out.trim())
-  if (!Number.isFinite(bytes) || bytes <= 0) return null
-  return Math.floor(bytes / 1024 ** 2)
+export async function containerLimits(
+  sessionId: string,
+): Promise<{ memoryMb: number | null; cpus: number | null }> {
+  const res = await limitsDocker(
+    ['inspect', containerFor(sessionId), '--format', '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'],
+    10_000,
+  )
+  if (res.code !== 0) return { memoryMb: null, cpus: null }
+  const [rawBytes, rawNano] = res.out.trim().split(/\s+/)
+  const bytes = Number(rawBytes)
+  const nano = Number(rawNano)
+  return {
+    memoryMb: Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes / 1024 ** 2) : null,
+    // NanoCpus — миллиардные доли ядра: 2,5 ядра приезжают как 2500000000.
+    cpus: Number.isFinite(nano) && nano > 0 ? Math.round(nano / 1e8) / 10 : null,
+  }
 }
 
 async function startContainer(
@@ -839,7 +909,15 @@ async function startContainer(
      */
     const mount = hostMount(sessionId)
     const created = await run(
-      runArgs({ sessionId, env, mount, network, gpu, memoryMb: sessionMemoryMb(sessionId) }),
+      runArgs({
+        sessionId,
+        env,
+        mount,
+        network,
+        gpu,
+        memoryMb: sessionMemoryMb(sessionId),
+        cpus: sessionCpus(sessionId),
+      }),
       120_000,
     )
     if (created.code !== 0) {

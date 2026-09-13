@@ -309,6 +309,17 @@ ensureColumn('sessions', 'kernel_revision', 'kernel_revision TEXT')
  */
 ensureColumn('sessions', 'memory_mb', 'memory_mb INTEGER')
 /*
+ * Сколько ядер выдать этой комнате.
+ *
+ * NULL — «как задано инстансу» (`KERNEL_CPUS`, по умолчанию два), и таковы все
+ * семинары до появления поля. Отдельным столбцом рядом с памятью и по той же
+ * причине: занятие по зрению и семинар по статистике живут на одном образе, и
+ * вся разница между ними — сколько машины им надо. Число здесь решает не
+ * только `--cpus`, но и число потоков numpy и torch внутри контейнера
+ * (kernel/pool.ts · threadLimit).
+ */
+ensureColumn('sessions', 'cpus', 'cpus INTEGER')
+/*
  * Какую версию вернул откат.
  *
  * Раньше в `summary` лежало «restored the version from 15:04», и время это
@@ -486,6 +497,26 @@ export function sessionMemoryMb(id: string): number | null {
 /** Задать лимит комнате; null возвращает её к умолчанию окружения. */
 export function setSessionMemoryMb(id: string, mb: number | null): void {
   updateMemoryMb.run(mb === null ? null : Math.floor(mb), id)
+}
+
+const selectCpus = db.prepare('SELECT cpus FROM sessions WHERE id = ?')
+const updateCpus = db.prepare('UPDATE sessions SET cpus = ? WHERE id = ?')
+
+/**
+ * Сколько ядер у комнаты, или null — «как задано инстансу».
+ *
+ * Читается на каждом пуске контейнера, рядом с памятью и окружением: ответ
+ * решает и `--cpus`, и число потоков, которое увидят numpy с торчем внутри.
+ */
+export function sessionCpus(id: string): number | null {
+  const row = selectCpus.get(id) as { cpus: number | null } | undefined
+  const cpus = row?.cpus ?? null
+  return typeof cpus === 'number' && Number.isFinite(cpus) && cpus > 0 ? Math.floor(cpus) : null
+}
+
+/** Задать число ядер комнате; null возвращает её к умолчанию инстанса. */
+export function setSessionCpus(id: string, cpus: number | null): void {
+  updateCpus.run(cpus === null ? null : Math.floor(cpus), id)
 }
 
 const selectByEnvironment = db.prepare(
