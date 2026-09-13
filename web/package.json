@@ -26,6 +26,7 @@
     "ansi_up": "^6.0.2",
     "clsx": "^2.1.1",
     "dompurify": "^3.2.3",
+    "katex": "^0.18.7",
     "marked": "^15.0.4",
     "pdfjs-dist": "^6.2.108",
     "y-codemirror.next": "^0.3.5",

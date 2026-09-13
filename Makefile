@@ -553,17 +553,23 @@ tunnel-setup: ## Один раз завести постоянный адрес.
 ## Имя можно не называть, когда назван HOST (оно там уже есть) или когда среда
 ## одна. Как только их две, sync и down без имени отказывают со списком.
 
+VAST_SCRIPT := $(if $(RELEASE),vast.sh,vast-legacy.sh)
+
 vast-up: ## Арендовать машину с GPU и развернуть Colloq. NAME=среда HOST=имя GPU="RTX 5070"
 	@# NAME, HOST и GPU уходят окружением, а не аргументами, — как
 	@# COLLOQ_HOSTNAME в `make host`. Пустые они и означают «не просили»: скрипт
 	@# тогда ведёт себя ровно как до их появления.
-	@NAME="$(NAME)" HOST="$(HOST)" GPU="$(GPU)" ./scripts/vast.sh up
+	@# Два пути. Без RELEASE — прежний (scripts/vast-legacy.sh): рабочее дерево,
+	@# копия из backups/<среда>/, служба systemd и докер-ядра; с RELEASE=… —
+	@# k3s-релиз (scripts/vast.sh). Прежний вернули 13.09.2026: релиза под рукой
+	@# не оказалось за два часа до лекции, а машина из копии нужна была сразу.
+	@NAME="$(NAME)" HOST="$(HOST)" GPU="$(GPU)" ./scripts/$(VAST_SCRIPT) up
 
 vast-status: ## Что арендовано: без NAME — все среды, с NAME — подробности одной
-	@NAME="$(NAME)" ./scripts/vast.sh status
+	@NAME="$(NAME)" ./scripts/$(VAST_SCRIPT) status
 
 vast-sync: ## Снять данные с арендованной машины в backups/<среда>/. NAME=среда
-	@NAME="$(NAME)" ./scripts/vast.sh sync
+	@NAME="$(NAME)" ./scripts/$(VAST_SCRIPT) sync
 
 vast-logs: ## Забрать журналы с арендованной машины в logs/<среда>/<дата>/. NAME=среда SINCE=today
 	@# Раньше это была прогулка по ssh руками, и потому не делалась: чтобы
@@ -572,10 +578,10 @@ vast-logs: ## Забрать журналы с арендованной маши
 	@# остановки. SINCE передаётся окружением, как NAME и HOST: пустое означает
 	@# «сегодня». Секреты режутся на лету, до записи на диск, — см. scrub в
 	@# scripts/vast.sh и абзац в README.
-	@NAME="$(NAME)" SINCE="$(SINCE)" ./scripts/vast.sh logs
+	@NAME="$(NAME)" SINCE="$(SINCE)" ./scripts/$(VAST_SCRIPT) logs
 
 vast-down: ## Уничтожить арендованную машину — вместе со всем, что на ней. NAME=среда
-	@NAME="$(NAME)" ./scripts/vast.sh down
+	@NAME="$(NAME)" ./scripts/$(VAST_SCRIPT) down
 
 vast-adopt: ## Назвать средой машину со старой меткой «colloq». NAME=demo
 	@# Метка меняется у живого инстанса, без пересоздания: семинар на нём не

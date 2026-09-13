@@ -3361,6 +3361,22 @@ export const serverMessages: MessageCatalog = {
     "ru": "Вот с чем работает комната прямо сейчас:",
     "en": "Here is what the room is working with right now:"
   },
+  "server.tooManyParticipantsToPrune.7a1c2e": {
+    "ru": "За один раз можно снять записи не больше чем {p0} участников.",
+    "en": "At most {p0} participants can be pruned in one request."
+  },
+  "server.beforePruningTheThread.4b0d9f": {
+    "ru": "до чистки треда оракула",
+    "en": "before pruning the oracle thread"
+  },
+  "server.theOracleAnswersThoseWhoHaveBeen.91d4c0": {
+    "ru": "Оракул отвечает тем, кто в комнате хотя бы пару минут. Попробуйте через {p0}.",
+    "en": "The oracle answers people who have been in the room for a couple of minutes. Try again in {p0}."
+  },
+  "server.tooManyQuestionsFromYourAddress.5e2b8d": {
+    "ru": "С вашего адреса за минуту задано слишком много вопросов. Подождите минуту.",
+    "en": "Too many questions from your address in the last minute. Wait a minute."
+  },
   "server.linkPreview.title": {
     "ru": "Colloq — одна ссылка на всё занятие",
     "en": "Colloq — one link for the whole class"

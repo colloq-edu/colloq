@@ -163,7 +163,7 @@ async function room(): Promise<Room> {
 }
 
 function ask(r: Room, who: string, body: unknown): Promise<Response> {
-  const token = signToken({ sessionId: r.id, participantId: who, role: 'participant' })
+  const token = signToken({ sessionId: r.id, participantId: who, role: 'participant', iat: Date.now() - 3 * 60_000 })
   return fetch(`${r.base}/api/sessions/${r.id}/ai/ask`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -236,7 +236,7 @@ test('«Стоп» ставит на запись «(stopped)», а не пус�
     const res = await ask(r, r.student, { message: 'долгий вопрос' })
     const { entryId } = (await res.json()) as { entryId: string }
 
-    const token = signToken({ sessionId: r.id, participantId: r.student, role: 'participant' })
+    const token = signToken({ sessionId: r.id, participantId: r.student, role: 'participant', iat: Date.now() - 3 * 60_000 })
     const stop = await fetch(`${r.base}/api/sessions/${r.id}/ai/cancel`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },

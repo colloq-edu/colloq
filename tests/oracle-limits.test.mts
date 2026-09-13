@@ -98,7 +98,8 @@ function askAs(
   participantId: string,
   options: { mode?: 'agent' } = {},
 ): Promise<Response> {
-  const token = signToken({ sessionId: room, participantId, role: 'participant' })
+  // Старше двух минут: новичкам оракул не отвечает (routes/ai.ts · NEWCOMER_MS).
+  const token = signToken({ sessionId: room, participantId, role: 'participant', iat: Date.now() - 3 * 60_000 })
   return fetch(`${base}/api/sessions/${room}/ai/ask`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },

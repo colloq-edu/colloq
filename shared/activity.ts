@@ -25,6 +25,7 @@ export const ACTIVITY_KIND_LEVEL = {
   'oracle.work_step': 'detailed',
   'oracle.cancel_requested': 'detailed',
   'oracle.thread_cleared': 'detailed',
+  'oracle.thread_pruned': 'detailed',
 } as const satisfies Record<string, ActivityLevel>
 export type ActivityKind = keyof typeof ACTIVITY_KIND_LEVEL
 export type ActivityOutcome = 'completed' | 'cancelled' | 'error'

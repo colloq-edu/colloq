@@ -211,7 +211,8 @@ function tokenFor(sessionId: string, role: 'host' | 'participant'): string {
     role,
     tokenHost: role === 'host',
   })
-  return signToken({ sessionId, participantId, role })
+  // Старше двух минут: новичкам оракул не отвечает (routes/ai.ts · NEWCOMER_MS).
+  return signToken({ sessionId, participantId, role, iat: Date.now() - 3 * 60_000 })
 }
 
 test('патч правил после звонка правит выбранное, а не ужесточённое', async () => {

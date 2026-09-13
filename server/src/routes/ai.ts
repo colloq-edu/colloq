@@ -24,6 +24,7 @@ import {
 import { aiModel, aiReady, ask, cancel, clearThread, streamsInRoom } from '../ai/index.js'
 import { stopAll, stopWork, turnsInRoom, work } from '../ai/agent.js'
 import { seconds } from '../ai/text.js'
+import { addressOf } from '../bans.js'
 import {
   applyOnBehalf,
   getSessionDoc,
@@ -187,6 +188,28 @@ export function purgeQuestions(
   banned: { participantId: string; name: string },
   byTeacher: string,
 ): number {
+  return purgeQuestionsOf(
+    sessionId,
+    new Set([banned.participantId]),
+    byTeacher,
+    tr("server.beforeBlocking.d2153d", { p0: banned.name }),
+  )
+}
+
+/**
+ * Снять из общего треда записи нескольких участников разом.
+ *
+ * Появилось 13.09.2026: скрипт с одного адреса завёл пятьсот «участников» по
+ * одному вопросу на каждого — обход медленного режима, который считает по
+ * человеку. Банить их по одному значило бы пятьсот контрольных точек в ленте
+ * версий и пятьсот правок; здесь одна точка и одна правка на всех.
+ */
+export function purgeQuestionsOf(
+  sessionId: string,
+  participantIds: ReadonlySet<string>,
+  byTeacher: string,
+  label: string,
+): number {
   /*
    * `getSessionDoc`, а не `peekSessionDoc`: вычистка — это правка, и правка
    * должна лечь в документ комнаты, а не мимо неё. Комнату, которую никто не
@@ -208,14 +231,14 @@ export function purgeQuestions(
   const ids: string[] = []
   for (let i = 0; i < chat.length; i++) {
     const entry = chat.get(i)
-    if (entry.get('participantId') !== banned.participantId) continue
+    const author: unknown = entry.get('participantId')
+    if (typeof author !== 'string' || !participantIds.has(author)) continue
     at.push(i)
     const id: unknown = entry.get('id')
     if (typeof id === 'string') ids.push(id)
   }
   if (at.length === 0) return 0
 
-  const label = tr("server.beforeBlocking.d2153d", { p0: banned.name })
   mark(sessionId, doc, 'checkpoint', byTeacher, label, label)
 
   for (const id of ids) if (!stopWork(sessionId, id)) cancel(sessionId, id)
@@ -232,6 +255,40 @@ export function purgeQuestions(
     for (let i = at.length - 1; i >= 0; i--) chat.delete(at[i], 1)
   })
   return at.length
+}
+
+/** Сколько имён можно снять из треда одним запросом. */
+const MAX_PRUNE_IDS = 2000
+/** Длина id участника — та же, что у routes/bans.ts. */
+const MAX_ID = 128
+/** Новичок молчит: токену участника должно быть хотя бы столько. */
+const NEWCOMER_MS = 2 * 60_000
+/**
+ * Вопросов оракулу с одного адреса за окно — на все имена сразу.
+ *
+ * Больше дюжины одновременных в комнате (см. ниже, IN_FLIGHT): очередь
+ * комнаты должна отказывать первой, иначе класс за одним NAT, упёршийся в
+ * очередь, читал бы «с вашего адреса» вместо «подождите пять секунд».
+ */
+const ADDRESS_ASKS = 20
+const ADDRESS_WINDOW_MS = 60_000
+const asksByAddress = new Map<string, number[]>()
+
+function addressMayAsk(sessionId: string, address: string): boolean {
+  const key = `${sessionId} ${address}`
+  const now = Date.now()
+  const recent = (asksByAddress.get(key) ?? []).filter((at) => now - at < ADDRESS_WINDOW_MS)
+  if (recent.length >= ADDRESS_ASKS) {
+    asksByAddress.set(key, recent)
+    return false
+  }
+  recent.push(now)
+  asksByAddress.set(key, recent)
+  // Карта не растёт без предела: адреса, замолчавшие на окно, уносятся здесь же.
+  if (asksByAddress.size > 5000) {
+    for (const [k, v] of asksByAddress) if (v.every((at) => now - at >= ADDRESS_WINDOW_MS)) asksByAddress.delete(k)
+  }
+  return true
 }
 
 export function aiRoutes(): Router {
@@ -512,6 +569,40 @@ export function aiRoutes(): Router {
      * «когда окно отпустит» и означает «когда пройдёт промежуток после
      * последнего». Второго счётчика заводить не за что.
      */
+    /*
+     * Две защиты от скрипта, а не от человека (13.09.2026, event: с одного
+     * адреса за два часа пятьсот «участников» по одному вопросу каждый).
+     *
+     * Медленный режим и потолок в час считаются по человеку, и обходятся
+     * ровно так: новый участник — новый счётчик. Поэтому первое — новичок
+     * ждёт: вопрос оракулу принимается, когда токену участника хотя бы две
+     * минуты. Студент входит по звонку и спрашивает позже; скрипт входит и
+     * спрашивает в ту же секунду. Второе — адрес: сколько бы ни было имён,
+     * провод один, и с одного адреса больше ADDRESS_ASKS за минуту не бывает
+     * даже у класса за одним NAT — двенадцать вопросов оракулу в минуту с
+     * одной школы это уже не вопросы. Преподавателя не касается ни то, ни
+     * другое: он разбирает, и разбирает подряд.
+     */
+    if (auth.role !== 'host') {
+      const age = typeof auth.iat === 'number' ? Date.now() - auth.iat : Infinity
+      if (age < NEWCOMER_MS) {
+        const left = Math.ceil((NEWCOMER_MS - age) / 1000)
+        res.setHeader('Retry-After', String(left))
+        return res.status(429).json({
+          error: tr("server.theOracleAnswersThoseWhoHaveBeen.91d4c0", { p0: seconds(left) }),
+          retryAfter: left,
+        })
+      }
+      const address = addressOf(req)
+      if (address && !addressMayAsk(sessionId, address)) {
+        res.setHeader('Retry-After', '60')
+        return res.status(429).json({
+          error: tr("server.tooManyQuestionsFromYourAddress.5e2b8d"),
+          retryAfter: 60,
+        })
+      }
+    }
+
     const gap = limits.slowModeSeconds
     if (gap > 0 && auth.role !== 'host') {
       const freeAt = windowResetAt(sessionId, auth.participantId, gap * 1000, 1)
@@ -694,6 +785,24 @@ export function aiRoutes(): Router {
      * которая бы это объяснила, и без кнопки отмены, потому что выставить её
      * стало некуда. Здесь же, где рядом стоит та же пара для «Стоп».
      */
+    /*
+     * С именами — вычистить только их записи, без имён — весь тред. Список
+     * приходит от преподавателя, который увидел в ленте сотню одинаковых
+     * «участников» и хочет снять их, не теряя вопросы группы.
+     */
+    const listed: unknown = (req.body as { participantIds?: unknown } | undefined)?.participantIds
+    if (Array.isArray(listed)) {
+      if (listed.length > MAX_PRUNE_IDS) {
+        return res.status(400).json({ error: tr("server.tooManyParticipantsToPrune.7a1c2e", { p0: MAX_PRUNE_IDS }) })
+      }
+      const ids = new Set(
+        listed.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= MAX_ID),
+      )
+      const byTeacher = getParticipant(req.params.id, auth.participantId)?.name ?? auth.participantId
+      const removed = purgeQuestionsOf(req.params.id, ids, byTeacher, tr("server.beforePruningTheThread.4b0d9f"))
+      appendActivity(req.params.id, auth.participantId, 'oracle.thread_pruned', { count: removed }, auth.role)
+      return res.json({ ok: true, removed })
+    }
     stopAll(req.params.id)
     clearThread(req.params.id)
     appendActivity(req.params.id, auth.participantId, 'oracle.thread_cleared', {}, auth.role)

@@ -36,12 +36,57 @@ export interface Renderers {
  * assume every export of the package is live, which measured 28 KB of dead
  * CodeMirror when the editor was split the same way.
  */
+/*
+ * Математика в заметках — как в Jupyter: `$…$` внутри строки, `$$…$$` блоком.
+ *
+ * Свои два расширения marked вместо готового marked-katex-extension: тому
+ * нужно рисовать формулу сразу, а здесь она должна пережить санитайзер (см.
+ * ниже в `markdown`). Разметка получает пустой узел с TeX в атрибуте —
+ * закодированным, чтобы ни кавычка, ни `<` из формулы не стали разметкой.
+ *
+ * `$5 и $10` — не формула: после открывающего доллара и перед закрывающим не
+ * бывает пробела, а за закрывающим — цифры. Это правило Pandoc, и оно же
+ * спасает цены в тексте задачи.
+ */
+const mathSlot = (tex: string, display: boolean): string =>
+  `<${display ? 'div' : 'span'} data-math="${encodeURIComponent(tex)}"${display ? ' data-display=""' : ''}></${display ? 'div' : 'span'}>`
+
+const blockMath = {
+  name: 'blockMath',
+  level: 'block' as const,
+  start: (src: string) => src.indexOf('$$'),
+  tokenizer(src: string) {
+    const match = /^\$\$([\s\S]+?)\$\$(?:\n|$)/.exec(src)
+    return match ? { type: 'blockMath', raw: match[0], text: match[1].trim() } : undefined
+  },
+  renderer: (token: { text: string }) => mathSlot(token.text, true),
+}
+
+const inlineMath = {
+  name: 'inlineMath',
+  level: 'inline' as const,
+  start: (src: string) => src.indexOf('$'),
+  tokenizer(src: string) {
+    const match = /^\$\$([^$]+?)\$\$/.exec(src) ?? /^\$(?!\s)((?:[^$\n\\]|\\.)+?)(?<!\s)\$(?!\d)/.exec(src)
+    if (!match) return undefined
+    const display = match[0].startsWith('$$')
+    return { type: display ? 'blockMath' : 'inlineMath', raw: match[0], text: match[1].trim() }
+  },
+  renderer: (token: { text: string }) => mathSlot(token.text, false),
+}
+
 async function importRenderers(): Promise<Renderers> {
-  const [{ marked }, { DOMPurify }, { AnsiUp }] = await Promise.all([
+  const [{ marked }, { DOMPurify }, { AnsiUp }, { katex }] = await Promise.all([
     import('marked').then(({ marked }) => ({ marked })),
     import('dompurify').then(({ default: DOMPurify }) => ({ DOMPurify })),
     import('ansi_up').then(({ AnsiUp }) => ({ AnsiUp })),
+    import('katex').then(({ default: katex }) => ({ katex })),
+    // Стили KaTeX вместе с его шрифтами — отдельным куском, только когда на
+    // экране тетрадь: остальным страницам формулы не нужны.
+    // @ts-expect-error — у css нет типов, а нужен только побочный эффект
+    import('katex/dist/katex.min.css'),
   ])
+  marked.use({ extensions: [blockMath, inlineMath] })
 
   const newConverter = () => {
     const converter = new AnsiUp()
@@ -96,6 +141,31 @@ async function importRenderers(): Promise<Renderers> {
           FORBID_ATTR: MARKDOWN_FORBIDDEN_ATTRS,
         }),
       )
+      /*
+       * Формулы рисуются ПОСЛЕ санитайзера, и это не случайный порядок.
+       *
+       * KaTeX раскладывает формулу инлайновыми `style` — высота, сдвиг,
+       * отбивка, — а `style` в заметке запрещён (lib/sanitize.ts), и правильно
+       * запрещён. Пропускать его «только внутри .katex» нельзя: сырой HTML в
+       * markdown проходит как есть, и `<span class="katex"><span style=…>`
+       * написал бы кто угодно. Поэтому разметка несёт не готовую формулу, а
+       * её TeX в атрибуте, санитайзер проходит по нему как по тексту, и лишь
+       * потом KaTeX строит своё дерево из TeX — а в TeX ни стиля, ни тега
+       * не пронести: `trust` выключен, ошибка разбора выводится текстом.
+       */
+      for (const slot of holder.querySelectorAll('[data-math]')) {
+        const tex = decodeURIComponent(slot.getAttribute('data-math') ?? '')
+        slot.removeAttribute('data-math')
+        const display = slot.hasAttribute('data-display')
+        slot.removeAttribute('data-display')
+        slot.innerHTML = katex.renderToString(tex, {
+          throwOnError: false,
+          displayMode: display,
+          output: 'htmlAndMathml',
+          trust: false,
+          strict: 'ignore',
+        })
+      }
       // A note is written by a classmate; a link in it must not be able to
       // navigate the seminar tab away from the seminar.
       for (const anchor of holder.querySelectorAll('a[href]')) {

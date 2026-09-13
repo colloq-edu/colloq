@@ -65,6 +65,7 @@ export const activityMessages: MessageCatalog = {
   'activity.execution.restarted': { ru: 'Перезапустил ядро', en: 'Restarted the kernel' },
   'activity.oracle.cancel_requested': { ru: 'Запросил остановку Оракула', en: 'Requested Oracle stop' },
   'activity.oracle.thread_cleared': { ru: 'Очистил беседу с Оракулом', en: 'Cleared the Oracle conversation' },
+  'activity.oracle.thread_pruned': { ru: 'Снял из беседы с Оракулом {count} записей', en: 'Pruned {count} entries from the Oracle conversation' },
   'activity.action.ask': { ru: 'Вопрос', en: 'Question' },
   'activity.action.explain': { ru: 'Объяснение', en: 'Explanation' },
   'activity.action.fix': { ru: 'Исправление', en: 'Fix' },

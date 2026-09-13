@@ -15,7 +15,7 @@ import {
   verifyHostToken,
   verifyToken,
 } from '../auth.js'
-import { banFor, banRefusal, deviceOf } from '../bans.js'
+import { addressOf, banFor, banRefusal, deviceOf } from '../bans.js'
 import { config } from '../config.js'
 import {
   createSession,
@@ -110,6 +110,33 @@ function readAvatar(value: unknown): string | null {
 const ARRIVAL_WINDOW_MS = 60_000
 const MAX_NEW_PARTICIPANTS = 600
 const arrivals = new Map<string, number[]>()
+
+/*
+ * И по адресу тоже. Шестьсот в минуту на комнату — про звонок, когда входит
+ * весь поток; но пятьсот «участников» с одного адреса за два часа (13.09.2026,
+ * скрипт против оракула) под этот потолок не попали. Класс за одним NAT
+ * входит разом, поэтому окно длиннее, а число — с запасом на аудиторию.
+ */
+const ADDRESS_WINDOW_MS = 10 * 60_000
+const MAX_NEW_PER_ADDRESS = 60
+const arrivalsByAddress = new Map<string, number[]>()
+
+function tooManyArrivalsFrom(sessionId: string, address: string | null): boolean {
+  if (!address) return false
+  const key = `${sessionId} ${address}`
+  const now = Date.now()
+  const recent = (arrivalsByAddress.get(key) ?? []).filter((at) => now - at < ADDRESS_WINDOW_MS)
+  if (recent.length >= MAX_NEW_PER_ADDRESS) {
+    arrivalsByAddress.set(key, recent)
+    return true
+  }
+  recent.push(now)
+  arrivalsByAddress.set(key, recent)
+  if (arrivalsByAddress.size > 5000) {
+    for (const [k, v] of arrivalsByAddress) if (v.every((at) => now - at >= ADDRESS_WINDOW_MS)) arrivalsByAddress.delete(k)
+  }
+  return false
+}
 
 function tooManyArrivals(sessionId: string): boolean {
   const now = Date.now()
@@ -611,7 +638,7 @@ export function sessionRoutes(): Router {
 
     // Незнакомец заводит строку — и это единственное место, где комната растёт
     // от чужого запроса. Штат и вернувшиеся со своим токеном проходят мимо.
-    if (!known && !staff && tooManyArrivals(sessionId)) {
+    if (!known && !staff && (tooManyArrivals(sessionId) || tooManyArrivalsFrom(sessionId, addressOf(req)))) {
       tally('joins')
       // Первый отказ за минуту — словами, остальные числом в сводке: стенд на
       // пятистах студентах дал 378 таких подряд, и это ровно тот поток, от
