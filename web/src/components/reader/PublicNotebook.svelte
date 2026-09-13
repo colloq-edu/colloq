@@ -55,6 +55,23 @@
     return { ...output, data }
   }
 
+  /**
+   * Заметка со ссылками на записи публикации — адресами.
+   *
+   * Картинка условия лежит в комнате на полке, а при сборке страницы
+   * копируется в записи публикации и получает в тексте вид
+   * `![схема](blob:<хэш>.<ext>)` (server/src/publish/build.ts · projectNote).
+   * Читалка раздаёт записи тем же маршрутом, что и картинки вывода строкой
+   * выше; расширение в адрес не входит — оно там ради выгрузки каталога, где
+   * запись становится файлом.
+   */
+  function noted(source: string): string {
+    return source.replace(
+      /\]\(blob:([0-9a-f]{8,64})\.[a-z0-9]+\)/gi,
+      (_all, hash: string) => `](/api/p/${publication}/blob/${hash})`,
+    )
+  }
+
   let copied = $state<string | null>(null)
   /**
    * Ячейка, у которой буфер обмена ОТКАЗАЛ.
@@ -93,7 +110,7 @@
       <div class="prose-note prose-cell leading-relaxed">
         {#if render}
           <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized in lib/render -->
-          {@html render.markdown(cell.source)}
+          {@html render.markdown(noted(cell.source))}
         {:else}
           <p class="whitespace-pre-wrap">{cell.source}</p>
         {/if}

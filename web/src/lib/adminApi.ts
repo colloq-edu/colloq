@@ -20,6 +20,7 @@ import type {
   EnvironmentsState,
   ImportPreview,
   ImportResult,
+  InstanceResources,
   InstanceState,
   InstanceSettings,
   SaveEnvironmentRequest,
@@ -131,10 +132,18 @@ function reasonForStatus(status: number): AdminErrorReason {
   return 'invalid'
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * `base` — не украшение: описание МАШИНЫ живёт не под /api/admin.
+ *
+ * Ресурсы инстанса — про железо, а не про панель, и дверь у них своя
+ * (/api/instance/resources). Разбор отказа, печенье и сеть при этом обязаны
+ * быть теми же: вторая копия этого кода разошлась бы с первой на первом же
+ * изменении в обработке 401.
+ */
+async function request<T>(path: string, init?: RequestInit, base = BASE): Promise<T> {
   let res: Response
   try {
-    res = await fetch(`${BASE}${path}`, {
+    res = await fetch(`${base}${path}`, {
       ...init,
       credentials: 'include',
       headers: {
@@ -268,6 +277,16 @@ export const adminApi = {
     }),
 
   /* ------------------------------------------------------------ seminars */
+
+  /* ----------------------------------------------------------- ресурсы */
+
+  /**
+   * Чем располагает машина: память, ядра, карты и умолчания ядра по окружениям.
+   *
+   * Читается формой занятия, чтобы поле «сколько памяти» не было гаданием.
+   * Своя дверь мимо /api/admin: это описание машины, а не панели.
+   */
+  resources: () => request<InstanceResources>('/resources', undefined, '/api/instance'),
 
   listSeminars: () => request<AdminSeminar[]>('/seminars'),
 

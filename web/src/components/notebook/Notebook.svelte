@@ -16,6 +16,14 @@
   import { selectionHere, stepPlan } from './command-mode'
   import { deleteCell, insertCell, setCellType } from '@/lib/notebook-ops'
   import { getSessionState } from '@/lib/session.svelte'
+  import {
+    advanceTarget,
+    advanceTop,
+    anchorShift,
+    TOOLBAR_FALLBACK,
+    type Frame,
+    type HeightChange,
+  } from '@/lib/cell-scroll'
   import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
   import { watchBooks, watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import CellView from './CellView.svelte'
@@ -101,9 +109,209 @@
 
   /* --------------------------------------------------------- navigation */
 
-  function reveal(id: string) {
-    document.querySelector(`[data-cell-id="${id}"]`)?.scrollIntoView({ block: 'nearest' })
+  /**
+   * Колонка тетради — и через неё контейнер прокрутки.
+   *
+   * Прокручивает не окно и не сама тетрадь, а `<main>` над ней (одна на
+   * вкладку, см. SessionScreen): тетрадей смонтировано столько, сколько
+   * открыто вкладок, и у каждой свой прокручиваемый предок. Поэтому его
+   * ищут от своего узла вверх, а не берут `document.scrollingElement`.
+   */
+  let column = $state<HTMLDivElement | null>(null)
+  let scrollBox: HTMLElement | null = null
+
+  function scrollerFrom(node: HTMLElement | null): HTMLElement | null {
+    for (let up = node?.parentElement ?? null; up; up = up.parentElement) {
+      const overflow = getComputedStyle(up).overflowY
+      if (overflow === 'auto' || overflow === 'scroll') return up
+    }
+    return null
   }
+
+  function scroller(): HTMLElement | null {
+    if (scrollBox?.isConnected) return scrollBox
+    scrollBox = scrollerFrom(column)
+    return scrollBox
+  }
+
+  /*
+   * К какой ячейке мы ведём экран прямо сейчас.
+   *
+   * Ход занимает кадры, и ровно в эти кадры всё выше цели ещё меняет высоту:
+   * запущенная ячейка теряет строку «без номера», отдаёт место выводу,
+   * получает трейсбек. Поэтому помним не «сколько осталось проехать», а КУДА
+   * — имя ячейки: по нему цель пересчитывается заново в любой момент хода и не
+   * зависит от того, где экран оказался в этот кадр (см. settle).
+   */
+  let steering: { id: string; top: number } | null = null
+
+  /**
+   * Сколько держим цель.
+   *
+   * Ровно на ход, не дольше. Пока цель жива, любое изменение высоты выше неё
+   * ПЕРЕНАЦЕЛИВАЕТ экран; когда она снята, то же изменение экран просто
+   * придерживает (якорь ниже). Для хода верно первое, для уже приехавшего
+   * человека — второе: вывод, пришедший через секунду, не должен тянуть лист
+   * из-под глаз. Семьсот миллисекунд — плавная прокрутка с запасом.
+   */
+  const STEER_MS = 700
+
+  function steerTo(box: HTMLElement, id: string, top: number): void {
+    steering = { id, top }
+    box.scrollTo({ top, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+    // Своего события у конца плавной прокрутки нет везде, где нам нужно
+    // (`scrollend` молод). Человек обрывает ход раньше — колесом или нажатием,
+    // см. обработчики на колонке: его прокрутка главнее нашей всегда.
+    window.setTimeout(() => {
+      if (steering?.id === id && steering.top === top) steering = null
+    }, STEER_MS)
+  }
+
+  /**
+   * Окно за вычетом липкой полосы.
+   *
+   * Полоса режима прибита к верху контейнера и закрывает его первые 40 px.
+   * Ячейка, подведённая к «верху экрана» буквально, приезжала тулбаром ПОД
+   * полосу — то есть ровно туда, где его не видно, и всё вычисленное место
+   * доставалось не ему.
+   */
+  function frameOf(box: HTMLElement): Frame {
+    const rect = box.getBoundingClientRect()
+    const bar = column?.querySelector<HTMLElement>('[data-notebook-bar]')
+    const under = bar ? bar.getBoundingClientRect().height : 0
+    return { top: rect.top + under, bottom: rect.bottom, scrollTop: box.scrollTop }
+  }
+
+  /** Геометрия ячейки и её тулбара в том виде, в каком её считает cell-scroll. */
+  function boxOf(cell: HTMLElement) {
+    const rect = cell.getBoundingClientRect()
+    const bar = cell.querySelector<HTMLElement>('[data-cell-toolbar]')
+    return {
+      top: rect.top,
+      bottom: rect.bottom,
+      toolbar: bar ? bar.getBoundingClientRect().height : TOOLBAR_FALLBACK,
+    }
+  }
+
+  /**
+   * Подвести ячейку под верх экрана — с местом под тулбар.
+   *
+   * Считаем, а не просим браузер: см. разбор в lib/cell-scroll.ts. Тулбар
+   * меряется по месту, потому что он есть не всегда (у припаркованной и у
+   * отложенной ячейки его в DOM нет вовсе) и потому что число в CSS и число в
+   * коде разъезжаются молча.
+   */
+  function reveal(id: string) {
+    const cell = document.querySelector<HTMLElement>(`[data-cell-id="${id}"]`)
+    const box = scroller()
+    if (!cell) return
+    if (!box) {
+      // Тетрадь без прокручиваемого предка бывает только в тесте и в печати.
+      cell.scrollIntoView({ block: 'nearest' })
+      return
+    }
+    const target = advanceTarget(frameOf(box), boxOf(cell))
+    if (target === null) return
+    steerTo(box, id, target)
+  }
+
+  /* ------------------------------------------------------------- якорь */
+
+  /**
+   * Свой scroll anchoring: ячейка выше экрана меняет высоту — экран стоит.
+   *
+   * Вниз тетрадь листалась гладко, вверх — дёргалась «к началу предыдущей
+   * ячейки». Причина мерена на стенде и она наша собственная: отложенная
+   * ячейка стоит заглушкой в 240 px, а построенная бывает 809, и подмена
+   * случается ровно тогда, когда ячейка подходит к краю экрана. Вниз этого не
+   * видно — прирост уходит НИЖЕ экрана. Вверх ячейка приходит верхом уже за
+   * краем, распрямляется вниз, и всё видимое уезжает на 569 px разом; за один
+   * подъём по тетради таких рывков набиралось два десятка.
+   *
+   * Браузерный scroll anchoring это чинить обязан и не чинит: замерено —
+   * ячейка выше экрана растёт на 569 px, `scrollTop` не меняется ни на пиксель.
+   * Поэтому якорь свой, а браузерный выключен явно (см. разметку колонки).
+   *
+   * Заодно он закрывает всё, что меряется поздно и само: картинку без
+   * размеров, формулу KaTeX, таблицу DataFrame, — потому что смотрит не на
+   * причину, а на высоту.
+   */
+  const slotHeights = new Map<string, number>()
+
+  /**
+   * Свести высоты и вернуть экран на место.
+   *
+   * Считается по всем слотам сразу, а не по одному: за один кадр меняются
+   * несколько соседей, и сдвиг у них общий.
+   */
+  function settle(): void {
+    const box = scroller()
+    if (!box || !column) return
+    const frameTop = box.getBoundingClientRect().top
+    const at = box.scrollTop
+    /*
+     * Идёт ход к ячейке — цель пересчитывают, а не поправляют.
+     *
+     * Копить поправки тут бесполезно: их знак и порядок зависят от того, где
+     * экран оказался в этот кадр, а живая геометрия самой ячейки отвечает на
+     * вопрос «куда ехать» одинаково в любой момент хода.
+     */
+    if (steering) {
+      const cell = document.querySelector<HTMLElement>(`[data-cell-id="${steering.id}"]`)
+      if (!cell) {
+        steering = null
+        return
+      }
+      // Слоты всё равно переписываем: иначе накопленная разница выстрелит,
+      // когда ход кончится.
+      for (const node of column.querySelectorAll<HTMLElement>('[data-cell-slot]')) {
+        const id = node.dataset.cellSlot
+        if (id) slotHeights.set(id, node.getBoundingClientRect().height)
+      }
+      const aim = advanceTop(frameOf(box), boxOf(cell))
+      if (Math.abs(aim - steering.top) < 1) return
+      steerTo(box, steering.id, aim)
+      return
+    }
+    const changes: HeightChange[] = []
+    for (const node of column.querySelectorAll<HTMLElement>('[data-cell-slot]')) {
+      const id = node.dataset.cellSlot
+      if (!id) continue
+      const rect = node.getBoundingClientRect()
+      const was = slotHeights.get(id)
+      slotHeights.set(id, rect.height)
+      if (was === undefined || Math.abs(rect.height - was) < 0.5) continue
+      changes.push({ top: rect.top - frameTop + at, delta: rect.height - was })
+    }
+    // Первый ВИДИМЫЙ пиксель, а не первый пиксель контейнера: то, что стоит
+    // под липкой полосой, для глаза тоже «выше экрана».
+    const shift = anchorShift(changes, frameOf(box).top - frameTop + at)
+    if (Math.abs(shift) < 1) return
+    box.scrollTop = at + shift
+  }
+
+  /*
+   * Свою подмену ловим ДО кадра, чужую — после.
+   *
+   * Почти весь рывок — наша же работа: заглушка в 240 px превращается в ячейку
+   * в 809, и происходит это в обычном обновлении DOM. Эффект Svelte идёт сразу
+   * за этим обновлением и ЗАДОЛГО до того, как браузер начнёт раскладывать
+   * кадр, — поправка отсюда попадает в тот же кадр, и на экране не дёргается
+   * ничего. Поправка из ResizeObserver в тот же кадр НЕ попадает (проверено на
+   * стенде: один кадр экран стоит смещённым и возвращается на следующем), и
+   * поэтому наблюдатель здесь только запасной — на то, что меряется само и
+   * позже: картинку без размеров, формулу, таблицу.
+   */
+  $effect(() => {
+    void built
+    void ruling
+    settle()
+  })
+
+  const anchoring =
+    typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => settle())
+
+  $effect(() => () => anchoring?.disconnect())
 
   function select(id: string) {
     session.selectCell(id)
@@ -260,27 +468,47 @@
   let ruling = $state.raw(new Map<string, boolean>())
   let built = $state.raw<ReadonlySet<string>>(new Set())
 
-  const viewport =
-    typeof IntersectionObserver === 'undefined'
-      ? null
-      : new IntersectionObserver(
-          (entries) => {
-            let next: Map<string, boolean> | null = null
-            for (const entry of entries) {
-              const id = (entry.target as HTMLElement).dataset.cellSlot
-              if (!id || ruling.get(id) === entry.isIntersecting) continue
-              next ??= new Map(ruling)
-              next.set(id, entry.isIntersecting)
-            }
-            if (next) ruling = next
-          },
-          { rootMargin: NEAR_MARGIN },
-        )
+  const watching = typeof IntersectionObserver !== 'undefined'
+
+  /*
+   * Наблюдатель заводится от первого же слота — и вот почему это важно.
+   *
+   * `rootMargin` без `root` меряется от ОКНА, а тетрадь прокручивает не окно, а
+   * `<main>` над ней. Окно ячейку за краем `<main>` не видит вовсе — её обрезал
+   * предок, — и никакой запас в 1200 px этого не отменяет: обещанного задела
+   * не было ни пикселя, ячейка строилась ровно в тот миг, когда касалась края
+   * экрана. Вниз это проходило незаметно (растёт то, что ниже), вверх — ячейка
+   * приходила верхом уже ЗА краем и распрямлялась с 240 px до своих 809, унося
+   * весь экран вниз на 570. Это и есть «прыжок к началу предыдущей ячейки».
+   *
+   * `root` узнаётся от узла, а не от `column`: порядок, в котором Svelte
+   * присваивает `bind:this` предку и запускает действие на потомке, — не то, на
+   * что стоит опираться.
+   */
+  let viewport: IntersectionObserver | null = null
+
+  function ensureViewport(node: HTMLElement): IntersectionObserver | null {
+    if (viewport || !watching) return viewport
+    viewport = new IntersectionObserver(
+      (entries) => {
+        let next: Map<string, boolean> | null = null
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.cellSlot
+          if (!id || ruling.get(id) === entry.isIntersecting) continue
+          next ??= new Map(ruling)
+          next.set(id, entry.isIntersecting)
+        }
+        if (next) ruling = next
+      },
+      { root: scrollerFrom(node), rootMargin: NEAR_MARGIN },
+    )
+    return viewport
+  }
 
   $effect(() => () => viewport?.disconnect())
 
   function isNear(id: string, index: number): boolean {
-    return viewport === null || (ruling.get(id) ?? index < EAGER)
+    return !watching || (ruling.get(id) ?? index < EAGER)
   }
 
   function needsCell(id: string, index: number): boolean {
@@ -294,10 +522,13 @@
 
   function slot(node: HTMLElement, id: string) {
     node.dataset.cellSlot = id
-    viewport?.observe(node)
+    ensureViewport(node)?.observe(node)
+    anchoring?.observe(node)
     return {
       destroy() {
         viewport?.unobserve(node)
+        anchoring?.unobserve(node)
+        slotHeights.delete(id)
         // In place on purpose: a ruling for a cell that no longer exists cannot
         // change anything on screen and must not schedule a render.
         ruling.delete(id)
@@ -819,6 +1050,44 @@
   })
 
   /*
+   * Ширина полосы, а не ширина окна.
+   *
+   * Счётчик ячеек прятался по `xl:` — медиазапросу про окно. Но полосу сужает
+   * не только узкий экран: панели по бокам тетради отнимают у неё место, а зум
+   * браузера (Cmd-+) сужает CSS-пиксель, не трогая окно вовсе. Оттого счётчик
+   * пропадал на широком экране с открытым терминалом и держался на узком, где
+   * панели закрыты. Меряем то место, которое есть на самом деле.
+   */
+  let barWidth = $state(0)
+
+  /** Сколько плашек висит справа: ядро не в порядке, очередь не пуста, или и то и другое. */
+  const chipCount = $derived(
+    (kernel === 'dead' || kernel === 'starting' || kernel === 'restarting' ? 1 : 0) +
+      (queued > 0 ? 1 : 0),
+  )
+
+  /*
+   * Порядок отступления в правом углу — решённый, а не «что не влезло, то
+   * срезано».
+   *
+   * Плашка состояния важнее счётчика: она про то, что с ядром происходит
+   * сейчас, а сколько в тетради ячеек — видно прокруткой. Поэтому уступает
+   * счётчик, и уступает ступенями: полная строка → одно число с подсказкой →
+   * ничего. Плашка не уступает никогда — она вынесена из прокручиваемой части
+   * полосы и стоит у правого края.
+   *
+   * Пороги — ширина полосы в CSS-пикселях, посчитанная по содержимому: пять
+   * кнопок слева занимают около 650, плашка — до 160, счётчик — около 70.
+   * Каждая плашка поднимает порог на свою ширину: место под неё счётчик
+   * освобождает заранее, а не отдаёт постфактум, когда её уже режет.
+   */
+  const countMode = $derived.by(() => {
+    if (barWidth >= 560 + 160 * chipCount) return 'full'
+    if (barWidth >= 400 + 120 * chipCount) return 'short'
+    return 'none'
+  })
+
+  /*
    * The run bar is four caps-tracked words, and only the first one is filled.
    * The artboard runs each button the full height of the bar with no rounding
    * and no border, so the hover ground is the whole slot rather than a pill
@@ -851,8 +1120,16 @@
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset ' +
     'focus-visible:ring-accent/50 disabled:pointer-events-none disabled:opacity-40'
 
-  /** Bordered, square, mono: the voice every status readout in the sheet uses. */
-  const PILL = 'inline-flex h-6 shrink-0 items-center gap-2 border px-2.5 font-mono'
+  /**
+   * Bordered, square, mono: the voice every status readout in the sheet uses.
+   *
+   * Гнётся, а не держится: `shrink-0` уместен там, где рядом есть чему
+   * уступить, а в правом углу полосы уступать некому — негнущаяся плашка
+   * вылезала за край, где её срезал `contain: paint`. Сжимается коробка,
+   * слово внутри уходит в многоточие и целиком остаётся в `title`:
+   * обрезанного состояния ядра не бывает.
+   */
+  const PILL = 'inline-flex h-6 min-w-0 items-center gap-2 border px-2.5 font-mono text-2xs'
 
   /** Same button, at the foot of the sheet, where nothing needs to hide a rule. */
   const ADD_FOOT =
@@ -907,7 +1184,22 @@
   edge to edge and the cells using the room they are given. The panels beside it
   are what bound the measure; this element should not bound it a second time.
 -->
-<div class="w-full pb-40">
+<!--
+  `overflow-anchor: none` — не отключение якоря, а отказ от ВТОРОГО.
+
+  Свой якорь у тетради теперь есть (см. `settle` выше), и он точный: знает,
+  какая ячейка выросла и на сколько. Браузерный в этом контейнере и так не
+  срабатывал — замерено: ячейка выше экрана росла на 569 px, `scrollTop` не
+  менялся, — но полагаться на то, что он и дальше промолчит, нельзя: стоит ему
+  однажды сработать, и поправят оба, а уедет вдвое.
+-->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  bind:this={column}
+  class="w-full pb-40 [overflow-anchor:none]"
+  onwheelcapture={() => (steering = null)}
+  onpointerdowncapture={() => (steering = null)}
+>
   <!--
     Полоса режима — над тетрадью и НЕ липкая, в отличие от ряда кнопок под ней.
 
@@ -930,144 +1222,184 @@
       <span class="text-ui text-muted"> {tr('room.ui.445')} </span>
     </div>
   {/if}
-  <div
-    bind:this={runBar}
-    onscroll={scheduleRunBarMeasure}
-    class={cn(
-      /*
-       * Непрозрачная подложка, а не размытая.
-       *
-       * Полоса липкая и висит над тетрадью на две сотни ячеек, а
-       * `backdrop-blur` заставляет браузер пересчитывать размытие подложки на
-       * КАЖДЫЙ кадр прокрутки — на встроенной графике студенческого ноутбука
-       * это дорогой слой на весь сеанс. Смотрят на полосу ради кнопок, а не
-       * ради того, что под ней; `contain: paint` рядом отрезает её рисование
-       * от остальной страницы.
-       */
-      `sticky top-0 z-30 mb-4 flex h-10 items-center overflow-x-auto overflow-y-hidden
-       border-b border-line bg-canvas [contain:paint] [scrollbar-width:none]
-       [&::-webkit-scrollbar]:hidden`,
-      // A phone fits Run all, Interrupt, Restart and Clear and no more, and the
-      // bar cut off flush with the screen edge: the terminal was still there,
-      // one swipe away, with nothing on screen to say so. The fade is the only
-      // thing that says the row continues.
-      runBarMore && '[mask-image:linear-gradient(to_right,#000_calc(100%-40px),transparent)]',
-    )}
-  >
-    <button
-      type="button"
-      class="inline-flex h-full shrink-0 items-center gap-2 bg-primary px-5 text-2xs font-bold uppercase
-             tracking-label text-primary-ink transition-[opacity,transform] duration-press ease-out
-             enabled:active:scale-[0.97] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2
-             focus-visible:ring-inset focus-visible:ring-primary-ink/60
-             disabled:pointer-events-none disabled:opacity-40"
-      disabled={controlDisabled(session.connected, mayRun && mayRunAll)}
-      title={controlTitle(
-        session.connected,
-        !mayRun ? may.runWhy : mayRunAll ? tr('room.extra.177') : may.bulkWhy,
-      )}
-      onclick={() => session.send({ t: 'runAll', book })}
-    >
-      <Icon name="play" size={12} /> {tr('room.ui.446')} </button>
-    <button
-      type="button"
-      class={CAP}
-      disabled={controlDisabled(session.connected, canInterrupt)}
-      title={controlTitle(
-        session.connected,
-        canInterrupt ? tr('room.extra.151') : tr('room.extra.152'),
-      )}
-      onclick={() => session.send(interruptMessage())}
-    > {tr('room.ui.395')} </button>
-    <!--
-      Hold, not click — the reasoning and the 900ms are at HOLD_MS above. This
-      is the one place in the notebook where slow is right: the user is
-      deciding, so the press takes its time, while everything the system
-      answers with stays fast. The press comes from CAP, which carries it for
-      the whole strip: the `.press` helper cannot be used beside a Tailwind
-      `transition-*` utility, because the utility rewrites transition-property
-      and leaves the helper's transform out of it.
-    -->
-    <button
-      type="button"
-      class={cn(CAP, 'relative select-none overflow-hidden')}
-      disabled={restartDisabled}
-      aria-label={tr('room.ui.447')}
-      title={controlTitle(
-        session.connected,
-        may.restart
-          ? tr('room.extra.180')
-          : may.restartWhy,
-      )}
-      onpointerdown={(event) => {
-        // A secondary button opens a context menu instead of pressing, and must
-        // not arm a restart on its way there.
-        if (event.button === 0) startHold()
-      }}
-      onpointerup={cancelHold}
-      onpointerleave={cancelHold}
-      onpointercancel={cancelHold}
-      onblur={cancelHold}
-      onkeydown={onRestartKeyDown}
-      onkeyup={onRestartKeyUp}
-    >
-      <!--
-        Scaled, not clipped and not resized: the vocabulary is the upload bar's
-        in FilesPanel, where a width transition would relayout on every progress
-        event and only transform is allowed to move. It is the first child so
-        the label, which is positioned, keeps painting on top of the tint.
-      -->
-      <span
-        bind:this={holdFill}
-        aria-hidden="true"
-        class="pointer-events-none absolute inset-0 origin-left bg-danger/[0.18]"
-        style="transform: scaleX(0)"
-      ></span>
-      <span class="relative">{tr('room.ui.448')}</span>
-    </button>
-    <button
-      type="button"
-      class={CAP}
-      disabled={controlDisabled(session.connected, may.wipe)}
-      title={controlTitle(session.connected, may.wipe ? tr('room.extra.181') : may.wipeWhy)}
-      onclick={() => session.send({ t: 'clearOutputs', book })}
-    > {tr('room.ui.449')} </button>
-    <!--
-      Форматирование стоит здесь, а не в меню ячейки: оно про весь ноутбук.
-      Ячейку, которую black прочитать не может — магию, строку с ! или код,
-      который сейчас дописывают, — оно оставляет как есть и идёт дальше, и
-      именно поэтому кнопка одна на всю панель, а не по одной на ячейку.
-    -->
-    <button
-      type="button"
-      class={CAP}
-      disabled={controlDisabled(session.connected, may.edit && may.bulk)}
-      title={controlTitle(
-        session.connected,
-        !may.edit
-          ? may.editWhy
-          : !may.bulk
-            ? may.bulkWhy
-            : tr('room.extra.182'),
-      )}
-      onclick={() => session.send({ t: 'format', book })}
-    > {tr('room.ui.450')} </button>
+  <!--
+    Полоса — два слота, а не один прокручиваемый ряд.
 
-    <div class="ml-auto flex shrink-0 items-center gap-2.5">
+    Кнопки и состояние лежали в одном `overflow-x-auto`, и правый край полосы
+    принадлежал ему же: на узком экране — или при зуме, который сужает
+    CSS-пиксель так же, как сужает окно, — состояние ядра уезжало за край
+    вместе с «Форматировать», а затухание, поставленное намекнуть на
+    прокрутку, гасило ровно то место, где это состояние написано. Теперь
+    прокручиваются действия; состояние стоит и не гаснет.
+  -->
+  <!-- Признак для расчёта прокрутки: полоса липкая и закрывает собой верх
+       экрана, поэтому «верх экрана» для ячейки начинается под ней. -->
+  <div
+    data-notebook-bar
+    bind:clientWidth={barWidth}
+    class="sticky top-0 z-30 mb-4 flex h-10 items-stretch border-b border-line bg-canvas
+           [contain:paint]"
+  >
+    <!--
+      Непрозрачная подложка, а не размытая.
+
+      Полоса липкая и висит над тетрадью на две сотни ячеек, а `backdrop-blur`
+      заставляет браузер пересчитывать размытие подложки на КАЖДЫЙ кадр
+      прокрутки — на встроенной графике студенческого ноутбука это дорогой
+      слой на весь сеанс. Смотрят на полосу ради кнопок, а не ради того, что
+      под ней; `contain: paint` на полосе отрезает её рисование от остальной
+      страницы.
+    -->
+    <div
+      bind:this={runBar}
+      onscroll={scheduleRunBarMeasure}
+      class={cn(
+        `flex min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden
+         [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`,
+        // A phone fits Run all, Interrupt, Restart and Clear and no more, and the
+        // bar cut off flush with the screen edge: the terminal was still there,
+        // one swipe away, with nothing on screen to say so. The fade is the only
+        // thing that says the row continues. Оно накрывает только действия:
+        // состояние стоит правее и в прокрутке не участвует.
+        runBarMore && '[mask-image:linear-gradient(to_right,#000_calc(100%-40px),transparent)]',
+      )}
+    >
+      <button
+        type="button"
+        class="inline-flex h-full shrink-0 items-center gap-2 bg-primary px-5 text-2xs font-bold uppercase
+               tracking-label text-primary-ink transition-[opacity,transform] duration-press ease-out
+               enabled:active:scale-[0.97] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2
+               focus-visible:ring-inset focus-visible:ring-primary-ink/60
+               disabled:pointer-events-none disabled:opacity-40"
+        disabled={controlDisabled(session.connected, mayRun && mayRunAll)}
+        title={controlTitle(
+          session.connected,
+          !mayRun ? may.runWhy : mayRunAll ? tr('room.extra.177') : may.bulkWhy,
+        )}
+        onclick={() => session.send({ t: 'runAll', book })}
+      >
+        <Icon name="play" size={12} /> {tr('room.ui.446')} </button>
+      <button
+        type="button"
+        class={CAP}
+        disabled={controlDisabled(session.connected, canInterrupt)}
+        title={controlTitle(
+          session.connected,
+          canInterrupt ? tr('room.extra.151') : tr('room.extra.152'),
+        )}
+        onclick={() => session.send(interruptMessage())}
+      > {tr('room.ui.395')} </button>
       <!--
-        The artboard's run bar carries the queue and the cell count and nothing
-        else — a healthy kernel is reported in the masthead. An unhealthy one is
-        not reported anywhere else yet, so it keeps its pill here.
+        Hold, not click — the reasoning and the 900ms are at HOLD_MS above. This
+        is the one place in the notebook where slow is right: the user is
+        deciding, so the press takes its time, while everything the system
+        answers with stays fast. The press comes from CAP, which carries it for
+        the whole strip: the `.press` helper cannot be used beside a Tailwind
+        `transition-*` utility, because the utility rewrites transition-property
+        and leaves the helper's transform out of it.
       -->
+      <button
+        type="button"
+        class={cn(CAP, 'relative select-none overflow-hidden')}
+        disabled={restartDisabled}
+        aria-label={tr('room.ui.447')}
+        title={controlTitle(
+          session.connected,
+          may.restart
+            ? tr('room.extra.180')
+            : may.restartWhy,
+        )}
+        onpointerdown={(event) => {
+          // A secondary button opens a context menu instead of pressing, and must
+          // not arm a restart on its way there.
+          if (event.button === 0) startHold()
+        }}
+        onpointerup={cancelHold}
+        onpointerleave={cancelHold}
+        onpointercancel={cancelHold}
+        onblur={cancelHold}
+        onkeydown={onRestartKeyDown}
+        onkeyup={onRestartKeyUp}
+      >
+        <!--
+          Scaled, not clipped and not resized: the vocabulary is the upload bar's
+          in FilesPanel, where a width transition would relayout on every progress
+          event and only transform is allowed to move. It is the first child so
+          the label, which is positioned, keeps painting on top of the tint.
+        -->
+        <span
+          bind:this={holdFill}
+          aria-hidden="true"
+          class="pointer-events-none absolute inset-0 origin-left bg-danger/[0.18]"
+          style="transform: scaleX(0)"
+        ></span>
+        <span class="relative">{tr('room.ui.448')}</span>
+      </button>
+      <button
+        type="button"
+        class={CAP}
+        disabled={controlDisabled(session.connected, may.wipe)}
+        title={controlTitle(session.connected, may.wipe ? tr('room.extra.181') : may.wipeWhy)}
+        onclick={() => session.send({ t: 'clearOutputs', book })}
+      > {tr('room.ui.449')} </button>
+      <!--
+        Форматирование стоит здесь, а не в меню ячейки: оно про весь ноутбук.
+        Ячейку, которую black прочитать не может — магию, строку с ! или код,
+        который сейчас дописывают, — оно оставляет как есть и идёт дальше, и
+        именно поэтому кнопка одна на всю панель, а не по одной на ячейку.
+      -->
+      <button
+        type="button"
+        class={CAP}
+        disabled={controlDisabled(session.connected, may.edit && may.bulk)}
+        title={controlTitle(
+          session.connected,
+          !may.edit
+            ? may.editWhy
+            : !may.bulk
+              ? may.bulkWhy
+              : tr('room.extra.182'),
+        )}
+        onclick={() => session.send({ t: 'format', book })}
+      > {tr('room.ui.450')} </button>
+    </div>
+
+    <!--
+      The artboard's run bar carries the queue and the cell count and nothing
+      else — a healthy kernel is reported in the masthead. An unhealthy one is
+      not reported anywhere else yet, so it keeps its pill here.
+
+      Угол не прокручивается и прибит вправо: плашка приходит и уходит, но
+      растёт она влево, в сторону прокручиваемых кнопок, — счётчик у правого
+      края не сдвигается ни на пиксель, и в полосе ничего не прыгает. 70 % —
+      потолок: на телефоне двум плашкам разом нужно около 240 px, и это ровно
+      столько, чтобы обе читались целиком, а кнопкам осталось за что тянуть
+      полосу.
+    -->
+    <div class="flex max-w-[70%] shrink-0 items-center gap-2.5 pl-2.5 pr-5">
       {#if kernel === 'dead'}
-        <span class={cn(PILL, 'border-danger/40 bg-danger/[0.05] text-2xs text-danger')}>
-          <span class="h-1.5 w-1.5 rounded-full bg-danger"></span> {tr('room.ui.451')} <!-- По правилу, а не по роли: кнопка в полосе слушается may.restart,
+        <!-- animate-fade-up — продуктовое «появилось»; под
+             prefers-reduced-motion index.css оставляет от него одно
+             проявление без сдвига. -->
+        <span
+          class={cn(PILL, 'animate-fade-up border-danger/40 bg-danger/[0.05] text-danger')}
+          title={tr('room.ui.451')}
+        >
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
+          <span class="truncate">{tr('room.ui.451')}</span>
+          <!-- По правилу, а не по роли: кнопка в полосе слушается may.restart,
                и в открытой лаборатории без преподавателя плашка без кнопки
-               оставляла студентов гадать, что Restart есть где-то выше. -->
-          {#if may.restart}
+               оставляла студентов гадать, что Restart есть где-то выше.
+
+               На самой узкой ступени её тут нет: она стоит 110 px рядом со
+               словом, ради которого плашку и читают, и там же, в двух пальцах
+               левее, её близнец в самой полосе. Уступает дубль, а не
+               состояние; shrink-0 — чтобы там, где она есть, сжималось слово,
+               а не выход из положения. -->
+          {#if may.restart && countMode !== 'none'}
             <button
               type="button"
-              class="text-2xs font-bold uppercase tracking-label text-ink
+              class="shrink-0 text-2xs font-bold uppercase tracking-label text-ink
                      transition-opacity duration-[var(--speed-quick)] hover:opacity-70
                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40
                      disabled:pointer-events-none disabled:opacity-40"
@@ -1079,29 +1411,42 @@
         </span>
       {:else if kernel === 'starting' || kernel === 'restarting'}
         <!-- Opacity, not a background sweep: the same information for one
-             composited property instead of a repaint every frame. -->
-        <span class={cn(PILL, 'animate-pulse border-line text-2xs text-muted')}>
-          <span class="h-1.5 w-1.5 rounded-full bg-faint"></span>
-          {kernel === 'starting' ? tr('room.kernel.starting') : tr('room.kernel.restarting')}
+             composited property instead of a repaint every frame. Пульс здесь
+             вместо появления: две анимации на одном элементе спорят за
+             animation, а дышащая плашка и так говорит «происходит». -->
+        {@const label =
+          kernel === 'starting' ? tr('room.kernel.starting') : tr('room.kernel.restarting')}
+        <span class={cn(PILL, 'animate-pulse border-line text-muted')} title={label}>
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-faint"></span>
+          <span class="truncate">{label}</span>
         </span>
       {/if}
 
       {#if queued > 0}
         <span
-          class={cn(PILL, 'border-line text-2xs text-muted')}
-          title={tr('room.ui.452')}
+          class={cn(PILL, 'animate-fade-up border-line text-muted')}
+          title={`${queued} ${tr('room.ui.453')} — ${tr('room.ui.452')}`}
         >
-          <span class="h-1.5 w-1.5 rounded-full bg-muted"></span>
-          {queued} {tr('room.ui.453')} </span>
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-muted"></span>
+          <span class="truncate">{queued} {tr('room.ui.453')}</span>
+        </span>
       {/if}
       <!-- The least load-bearing thing in the strip, and the first to go when
            there is not room for all of it: how many cells there are is visible
-           by scrolling the notebook. -->
+           by scrolling the notebook. Ступени — у countMode: сначала строка
+           сжимается до одного числа, и слово уходит в подсказку, и только
+           потом число исчезает совсем. -->
       <!-- Пока тетрадь не прочитана, счётчика нет вовсе: «0 cells» на холодном
            кадре — это не число, это неправда. -->
-      {#if !cold}
-        <span class="hidden pl-0.5 pr-5 font-mono text-2xs text-muted xl:inline">
-          {tr('room.notebook.cellCount', { count: ids.current.length })}
+      {#if !cold && countMode !== 'none'}
+        {@const count = ids.current.length}
+        <span
+          class="shrink-0 pl-0.5 font-mono text-2xs tabular-nums text-muted"
+          title={countMode === 'short'
+            ? tr('room.notebook.cellCount', { count })
+            : undefined}
+        >
+          {countMode === 'short' ? count : tr('room.notebook.cellCount', { count })}
         </span>
       {/if}
     </div>

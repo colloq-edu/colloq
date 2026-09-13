@@ -144,7 +144,8 @@ test('обычная комната запускается ровно как р�
   assert.equal(args[args.length - 1], 'colloq-kernel:cv')
   assert.equal(valueOf(args, '-v'), '/srv/workspace/seminar1:/workspace/seminar1')
   assert.equal(valueOf(args, '-p'), '127.0.0.1:0:8888')
-  assert.ok(args.includes('--memory=2g') && args.includes('--cpus=2'))
+  // Умолчание памяти с 13.09.2026 — 4g обычному окружению (kernel/pool.ts).
+  assert.ok(args.includes('--memory=4g') && args.includes('--cpus=2'))
   assert.ok(args.includes('colloq.session=seminar1'))
 })
 

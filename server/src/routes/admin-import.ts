@@ -35,6 +35,7 @@ import {
   type RepoEntry,
 } from '../github.js'
 import { readIpynb, type FlatCell } from '@shared/ipynb'
+import { shelveCellImages } from '../notebook-images.js'
 import { safeSegment } from '@shared/paths'
 import { normalizeLabel } from '@shared/text'
 import { resolveInSession } from '../workspace.js'
@@ -349,13 +350,23 @@ function seedSeminar(input: {
       const cells = getCells(doc)
       // Стартовая тетрадь, которую сервер сеет свежей комнате, здесь только мешает.
       if (cells.length > 0) cells.delete(0, cells.length)
-      cells.push(input.cells.map((c) => createCell(c.type, c.source)))
+      /*
+       * Картинки условий — на полку комнаты, а не в её документ.
+       *
+       * Курсовая тетрадь с картинками весит мегабайты, и весь этот base64
+       * иначе переезжает в документ: каждому вошедшему целиком и в каждый
+       * снимок (server/src/notebook-images.ts).
+       */
+      const shelve = (c: FlatCell): FlatCell => shelveCellImages(id, c)
+      cells.push(input.cells.map((c) => createCell(c.type, shelve(c).source)))
       if (input.notebooks) {
         const first = bookList(doc)[0]
         if (first) renameBook(doc, first.path, input.notebooks[0].name)
         for (const book of input.notebooks.slice(1)) {
           const added = addBook(doc, book.name)
-          bookCells(doc, added.root).push(book.cells.map((c) => createCell(c.type, c.source)))
+          bookCells(doc, added.root).push(
+            book.cells.map((c) => createCell(c.type, shelve(c).source)),
+          )
         }
       }
       getMeta(doc).set('title', input.name)

@@ -22,6 +22,7 @@ import { getRules, getSession, isFinished, renameSession } from '../db.js'
 import { seldom, tally } from '../log.js'
 import { classify, MAX_SYNC_STEP2_BYTES, permits } from './gate.js'
 import { forgetSession, onCarets, rememberDeleted, resetRetyped, settleFresh } from './ops.js'
+import { shelveRoomImages } from '../notebook-images.js'
 import {
   bindPersistence,
   flushPersistence,
@@ -205,6 +206,15 @@ interface DocEntry extends SessionDoc {
   pingTimer: NodeJS.Timeout | null
   /** С какого момента в комнате нет ни одного сокета; 0 — есть. */
   emptySince: number
+  /**
+   * Сколько сокетов закрыто отставанием с прошлой строки в журнале.
+   *
+   * Отставший сокет закрывается, браузер подключается заново, снова не
+   * успевает — и так по кругу: в журнале живой комнаты это была одинаковая
+   * строка раз в минуту, по которой не видно ни того, что она про РАЗНЫЕ
+   * сокеты, ни того, сколько их. Считаем и говорим числом.
+   */
+  lagDrops: number
 }
 
 const docs = new Map<string, DocEntry>()
@@ -238,6 +248,8 @@ function toUint8Array(data: RawData): Uint8Array {
  * в памяти сервера.
  */
 const AWARENESS_STALL_BYTES = 1024 * 1024
+/** Как редко комната жалуется на отставшие сокеты. Считает их всё это время. */
+const LAG_QUIET_MS = 10 * 60_000
 const HOPELESS_BYTES = 8 * 1024 * 1024
 
 /**
@@ -291,11 +303,25 @@ function send(
   }
   const waiting = conn.bufferedAmount
   if (waiting > HOPELESS_BYTES) {
-    if (seldom(`collab-backpressure-${entry.sessionId}`)) {
+    /*
+     * Строка в журнале — про КРУГ, а не про сокет.
+     *
+     * Сокет здесь закрывается один раз и больше не возвращается: возвращается
+     * браузер, и если документ комнаты не пролезает в канал вовсе, он
+     * возвращается каждые несколько секунд. В журнале живой комнаты это
+     * выглядело одной и той же строкой раз в минуту — по ней не прочесть ни
+     * что сокеты разные, ни сколько их. Поэтому раз в десять минут и числом:
+     * «закрыт 87-й» читается как «комната не доезжает», а не как «моргнула
+     * сеть».
+     */
+    entry.lagDrops += 1
+    if (seldom(`collab-backpressure-${entry.sessionId}`, LAG_QUIET_MS)) {
+      const again = entry.lagDrops > 1 ? ` (таких за последние минуты: ${entry.lagDrops})` : ''
       console.warn(
         `[collab ${entry.sessionId}] сокет отстал на ${Math.round(waiting / 1024)} КБ — закрыт, ` +
-          'браузер соберёт документ заново',
+          `браузер соберёт документ заново${again}`,
       )
+      entry.lagDrops = 0
     }
     closeConn(entry, conn)
     return
@@ -604,6 +630,7 @@ function getEntry(sessionId: string, title?: string): DocEntry {
     // Комната заводится не только человеком (ядро, оракул, маршрут истории), и
     // пустой она с этой секунды: отсчёт до выселения идёт от рождения.
     emptySince: Date.now(),
+    lagDrops: 0,
   }
   docs.set(sessionId, entry)
   if (dropPending(sessionId, doc)) invalidateSnapshot(sessionId)
@@ -677,6 +704,22 @@ function getEntry(sessionId: string, title?: string): DocEntry {
    * принятие патча не показывалось в ленте, а «вернуть версию» обнуляло текст
    * ячейки у всей комнаты.
    */
+  /*
+   * Картинки заметок — на полку, и до `beginHistory`.
+   *
+   * Комнаты, заведённые до появления полки для заметок, носят условия задач
+   * base64-строками в тексте ячеек: замер на живой комнате — 9.4 МБ из 10.5 МБ
+   * документа, который целиком едет каждому вошедшему. Импорт с этого дня
+   * кладёт их на полку сам (server/src/notebook-images.ts), а уже лежащие
+   * разгружаются здесь, один раз при подъёме комнаты.
+   *
+   * Строкой ВЫШЕ, а не ниже, ровно по доводу соседнего абзаца: правка, сделанная
+   * после базовой точки, показалась бы комнате чужой версией в ленте истории —
+   * и пришла бы туда от «сервера», который ничего не писал. До точки она
+   * становится частью того документа, с которого история начинается.
+   */
+  shelveRoomImages(sessionId, doc)
+
   beginHistory(sessionId, doc)
 
   /*

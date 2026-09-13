@@ -26,12 +26,14 @@ import {
   isTokenHost,
   listParticipants,
   setRules,
+  setSessionMemoryMb,
   upsertParticipant,
 } from '../db.js'
 import { onlineParticipantIds } from '../collab/index.js'
 import { freeMark } from '@shared/marks'
 import { seldom, tally } from '../log.js'
 import { ensureKernel } from '../kernel/index.js'
+import { forgetResources, readMemoryInput } from '../kernel/resources.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { publicationOf, stepCount } from '../publish/store.js'
 import { broadcast } from '../control.js'
@@ -525,8 +527,28 @@ export function sessionRoutes(): Router {
       return res.status(400).json({ error: tr("server.thereIsNoEnvironmentCalled.a8903e", { p0: wanted }) })
     }
 
+    /*
+     * Память комнаты — только штату, и только в границах машины.
+     *
+     * На открытом инстансе эту дверь толкает кто угодно, и «сколько памяти
+     * отдать» — не тот вопрос, который решает гость: комната, взявшая всё,
+     * убивает не себя, а сервер под собой. Штат шлёт число, все остальные —
+     * молчат, и тогда комната живёт умолчанием своего окружения.
+     */
+    const memory = readMemoryInput(req.body?.memoryMb)
+    if (!memory.ok) {
+      return res.status(400).json({ error: tr('server.memoryMustBeWholeMegabytes') })
+    }
+    if (memory.mb !== null && !staff) {
+      return res.status(403).json({ error: tr('server.memoryIsStaffOnly'), reason: 'forbidden' })
+    }
+
     const id = newSessionId()
     const session = createSession(id, name, wanted || activeName())
+    if (memory.mb !== null) {
+      setSessionMemoryMb(id, memory.mb)
+      forgetResources()
+    }
     // A seminar created straight against this endpoint by a signed-in teacher
     // is still theirs. There is no page that does it — the panel has its own
     // route — so this is the scripted path, and on an open instance it produces

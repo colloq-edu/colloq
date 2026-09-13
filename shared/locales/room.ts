@@ -4218,6 +4218,14 @@ export const roomMessages: MessageCatalog = {
     "ru": "ЯДРО ОСТАНОВЛЕНО",
     "en": "KERNEL STOPPED"
   },
+  "room.head.fold": {
+    "ru": "Свернуть шапку",
+    "en": "Collapse the header"
+  },
+  "room.head.unfold": {
+    "ru": "Развернуть шапку",
+    "en": "Expand the header"
+  },
   "room.oracle.shortcut": {
     "ru": "Оракул — {key}I",
     "en": "AI oracle — {key}I"

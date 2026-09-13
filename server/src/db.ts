@@ -294,6 +294,21 @@ function ensureColumn(table: string, column: string, definition: string): void {
 ensureColumn('sessions', 'environment', 'environment TEXT')
 ensureColumn('sessions', 'kernel_revision', 'kernel_revision TEXT')
 /*
+ * Сколько памяти выдать ядру ЭТОЙ комнаты, в мегабайтах.
+ *
+ * NULL — «как у окружения», то есть `KERNEL_MEM` и умолчания пула
+ * (kernel/pool.ts · memoryLimit), и таковы все семинары, заведённые до того,
+ * как это поле появилось. Число здесь заводится ради одного дня: 13.09 ядро
+ * семинара убили по памяти шестнадцать раз подряд, и единственной ручкой была
+ * переменная окружения на всю машину — поднять её одной комнате было нельзя,
+ * а поднять всем значило отдать память десяти комнатам, которым она не нужна.
+ *
+ * В мегабайтах, а не строкой docker: число сравнивается с тем, что есть на
+ * машине, и складывается по комнатам. Строку «4g» для этого пришлось бы
+ * разбирать в каждом месте, где её читают.
+ */
+ensureColumn('sessions', 'memory_mb', 'memory_mb INTEGER')
+/*
  * Какую версию вернул откат.
  *
  * Раньше в `summary` лежало «restored the version from 15:04», и время это
@@ -450,6 +465,27 @@ export function pinSessionKernelRevision(id: string, environment: string, revisi
 export function sessionEnvironment(id: string): string | null {
   const row = selectEnvironment.get(id) as { environment: string | null } | undefined
   return row?.environment ?? null
+}
+
+const selectMemoryMb = db.prepare('SELECT memory_mb FROM sessions WHERE id = ?')
+const updateMemoryMb = db.prepare('UPDATE sessions SET memory_mb = ? WHERE id = ?')
+
+/**
+ * Лимит памяти комнаты, или null — «как у окружения».
+ *
+ * Читается на каждом пуске контейнера, как и окружение рядом: преподаватель
+ * меняет число между парами, и ответ решает, с каким `--memory` поднимется
+ * ядро. Кэша нет намеренно — спрашивают его раз в жизни контейнера.
+ */
+export function sessionMemoryMb(id: string): number | null {
+  const row = selectMemoryMb.get(id) as { memory_mb: number | null } | undefined
+  const mb = row?.memory_mb ?? null
+  return typeof mb === 'number' && Number.isFinite(mb) && mb > 0 ? Math.floor(mb) : null
+}
+
+/** Задать лимит комнате; null возвращает её к умолчанию окружения. */
+export function setSessionMemoryMb(id: string, mb: number | null): void {
+  updateMemoryMb.run(mb === null ? null : Math.floor(mb), id)
 }
 
 const selectByEnvironment = db.prepare(

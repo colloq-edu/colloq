@@ -37,7 +37,10 @@ services:
       # This path is resolved by the Docker daemon, not by the app container.
       WORKSPACE_HOST_DIR: ${WORKSPACE_HOST_DIR:-${PWD}/workspace}
       KERNEL_NETWORK: ${KERNEL_NETWORK:-colloq}
-      KERNEL_MEM: ${KERNEL_MEM:-2g}
+      KERNEL_MEM: ${KERNEL_MEM:-4g}
+      # Per-environment override, one line per environment that needs its own
+      # ceiling: a deep-learning seminar wants 8-16g where a plain room wants 2g.
+      KERNEL_MEM_BASE_GPU: ${KERNEL_MEM_BASE_GPU:-}
       KERNEL_CPUS: ${KERNEL_CPUS:-2}
       KERNEL_GPUS: ${KERNEL_GPUS:-}
       KERNEL_SHM: ${KERNEL_SHM:-1g}

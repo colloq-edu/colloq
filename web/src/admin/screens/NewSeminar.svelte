@@ -20,6 +20,7 @@
   import { onMount } from 'svelte'
   import AdminPage from '@/admin/ui/AdminPage.svelte'
   import Section from '@/admin/ui/Section.svelte'
+  import Resources from '@/admin/ui/Resources.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import { adminAuth } from '@/admin/auth.svelte'
   import { oracleCeiling, oracleOverCeiling, splitBySize, uploadMb } from '@/admin/panel'
@@ -30,6 +31,7 @@
     type AdminEnvironment,
     type EnvironmentsState,
     type ImportPreview,
+    type InstanceResources,
     type OracleSettings,
   } from '@shared/admin'
   import { LECTURE_ROOM, OPEN_ROOM, type RoomRules, COUNCIL_ROOM } from '@shared/rules'
@@ -284,6 +286,19 @@
     },
   ])
 
+  /**
+   * Чем располагает машина — и сколько из этого просит комната.
+   *
+   * Читается здесь, а не на экране окружений, ровно потому, что решение
+   * принимается здесь: 13.09 ядро семинара убили по памяти шестнадцать раз
+   * подряд, и числа, по которым это можно было предвидеть, знал только тот, у
+   * кого есть ssh. `null` — «ещё не знаем»: выдуманная подсказка хуже
+   * отсутствующей.
+   */
+  let resources = $state<InstanceResources | null>(null)
+  /** Сколько памяти задали ЭТОЙ комнате; null — как у окружения. */
+  let memoryMb = $state<number | null>(null)
+
   let preview = $state<ImportPreview | null>(null)
   let previewing = $state(false)
   let previewErrorText = $state<(() => string | null) | null>(null)
@@ -336,6 +351,12 @@
       .oracle()
       .then((settings: OracleSettings) => (instanceOracle = settings))
       .catch(() => (instanceOracle = null))
+    // Машина. Тем же правилом, что и потолок оракула: не доехало — раздел
+    // молчит о числах, а не показывает выдуманные.
+    void adminApi
+      .resources()
+      .then((r: InstanceResources) => (resources = r))
+      .catch(() => (resources = null))
   })
 
   /*
@@ -421,6 +442,7 @@
                 environment: environment || null,
                 mode,
                 rules,
+                memoryMb,
               })
 
       /*
@@ -433,6 +455,25 @@
        * ничего не создано.
        */
       created = seminar.id
+      /*
+       * Память — вдогонку, и только у дверей импорта.
+       *
+       * Пустая комната уносит число в теле создания. Импорт с GitHub и с диска
+       * — чужие двери (routes/admin-import.ts), и добавлять им поле ради одного
+       * числа значило бы менять разбор тетради там, где его никто не просил.
+       * Семинар уже создан, лимит на живую комнату применяется тем же PATCH,
+       * что и в настройках, — цена одного лишнего запроса на создание.
+       */
+      if (memoryMb !== null && source !== 'blank') {
+        try {
+          await adminApi.updateSeminar(seminar.id, { memoryMb })
+        } catch {
+          /* Комната есть и работает на умолчании окружения; молчать об этом
+             нельзя ровно настолько же, насколько нельзя из-за этого отменять
+             создание — поэтому строка ниже, а не отказ. */
+          errorText = () => tr('admin.resources.notApplied')
+        }
+      }
       if (materials.length > 0) {
         const failed = await uploadMaterials(seminar.id)
         if (failed.length > 0) {
@@ -809,6 +850,24 @@
         </p>
       </div>
     {/if}
+  </Section>
+
+  <!--
+    Ресурсы — сразу под окружением, и это не вкусовщина.
+
+    Умолчание памяти зависит от выбранного окружения (окружение с GPU просит
+    шестнадцать гигабайт против четырёх), так что читать подсказку «по
+    умолчанию для окружения X — K ГБ» имеет смысл только после того, как X
+    выбран. Тот же компонент стоит в настройках существующего занятия: одна
+    настройка, названная и посчитанная одинаково в обоих местах.
+  -->
+  <Section title={tr('admin.resources.title')} description={tr('admin.resources.description')}>
+    <Resources
+      {resources}
+      {environment}
+      {memoryMb}
+      onmemory={(mb) => (memoryMb = mb)}
+    />
   </Section>
 
   <!--

@@ -45,6 +45,7 @@ import { historyRoutes } from './routes/history.js'
 import { activityRoutes } from './routes/activity.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { instanceSettingsRoutes } from './routes/instance-settings.js'
+import { instanceResourcesRoutes } from './routes/instance-resources.js'
 import { workspaceFs } from './workspace.js'
 import { PUBLIC_PAGES_INDEXED } from '@shared/publish'
 
@@ -445,6 +446,7 @@ app.use('/api', (req, res, next) => {
 // what put the staff table and the cookie in front of it.
 app.use(adminAuthRoutes())
 app.use(instanceSettingsRoutes())
+app.use(instanceResourcesRoutes())
 app.use(adminInstanceRoutes())
 app.use(courseRoutes())
 app.use(adminEnvironmentRoutes())

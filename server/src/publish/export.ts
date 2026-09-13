@@ -203,6 +203,22 @@ export function exportSite(root: string, base: string): ExportReport {
     let blobs = 0
     for (const step of steps) {
       for (const cell of step?.cells ?? []) {
+        /*
+         * Картинки ЗАМЕТОК — такие же записи, и в каталог они обязаны попасть.
+         *
+         * Ссылку на них страница несёт не в наборе вывода, а прямо в тексте
+         * (`![схема](blob:<хэш>.<ext>)`, см. publish/build.ts · projectNote);
+         * обход, смотревший только `cell.outputs`, выгружал страницу с
+         * условиями задач, которых на ней нет.
+         */
+        if (cell.type === 'markdown') {
+          for (const found of cell.source.matchAll(/blob:([0-9a-f]{8,64})\.([a-z0-9]+)/gi)) {
+            const blob = readBlob(pub.id, found[1])
+            if (!blob) continue
+            write(path.join(dir, `blob/${found[1]}.${found[2]}`), blob.body)
+            blobs += 1
+          }
+        }
         for (const output of cell.outputs) {
           if (output.kind !== 'data') continue
           for (const [mime, value] of Object.entries(output.data)) {

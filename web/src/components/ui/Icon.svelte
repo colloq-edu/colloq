@@ -112,6 +112,12 @@
     // Environments artboard draws it as one.
     box: '<path d="M21 8.5v7a1.6 1.6 0 0 1-.85 1.41l-7.4 3.9a1.6 1.6 0 0 1-1.5 0l-7.4-3.9A1.6 1.6 0 0 1 3 15.5v-7"/><path d="M3.4 7.6l8.6-4.5 8.6 4.5-8.6 4.5-8.6-4.5z"/><path d="M12 12.1V20"/>',
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.6h.01"/>',
+    // Шапка комнаты: оконце с залитой верхней полосой. Не стрелка вверх —
+    // стрелка обещает прокрутку или переход, а здесь складывается ровно та
+    // полоса, которую видно над кнопкой.
+    masthead:
+      '<rect x="3" y="4" width="18" height="16" rx="2"/>' +
+      '<path d="M4.6 4h14.8A1.6 1.6 0 0 1 21 5.6V9.4H3V5.6A1.6 1.6 0 0 1 4.6 4z" fill="currentColor" stroke="none"/>',
     alert:
       '<path d="M10.6 3.9 2.5 18a1.6 1.6 0 0 0 1.4 2.4h16.2A1.6 1.6 0 0 0 21.5 18L13.4 3.9a1.6 1.6 0 0 0-2.8 0z"/><path d="M12 9v4.5"/><path d="M12 17.2h.01"/>',
     // The brand grid: corners and centre filled, edges as a tint of the same ink.

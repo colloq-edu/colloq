@@ -649,21 +649,54 @@ test('ячейка, убившая ядро по памяти, кончаетс�
    */
   const { requestRun } = await import('../server/src/kernel/index.js')
   const { readNotebook } = await import('../shared/notebook.js')
-  const room = await seminar()
-  room.type('OOM: x = np.zeros((10**6, 10**4))')
-  requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
+  const { useDockerForPostmortem } = await import('../server/src/kernel/postmortem.js')
+  /*
+   * Подделка docker — с числами живой машины 13.09: лимит два гигабайта, пик,
+   * упёршийся в лимит, и счётчик убийств cgroup. Настоящий docker сюите
+   * недоступен (см. `_env.mts`), а проверяется здесь как раз то, что без него
+   * не случается.
+   */
+  let kills = 16
+  useDockerForPostmortem(async (args) => {
+    // Счётчик растёт между замерами — ровно так это и выглядит на машине:
+    // подъём ядра запоминает одно число, смерть приносит следующее.
+    if (args[0] === 'exec') return { code: 0, out: `limit 2147483648\npeak 2149163008\ncurrent 122683392\nkills ${kills++}` }
+    if (args[0] === 'logs') return { code: 0, out: '' }
+    return { code: 0, out: 'running 0 true 2147483648' }
+  })
+  try {
+    const room = await seminar()
+    room.type('OOM: x = np.zeros((10**6, 10**4))')
+    requestRun(room.id, [room.cellId], 'Maria', 'p_maria')
 
-  assert.ok(
-    await until(() => room.state() === 'error'),
-    `ячейка кончилась как ${String(room.state())}`,
-  )
-  const outputs = readNotebook(room.doc)[1].outputs
-  assert.match(JSON.stringify(outputs), /KernelDied/, 'ячейка ничего не сказала про смерть ядра')
-  assert.equal(room.cell.get('execCount'), null, 'номер выполнения остался от убитого процесса')
-  assert.ok(
-    room.notes().some((note) => /memory|restart/i.test(note)),
-    `комнате не сказали про перезапуск: ${JSON.stringify(room.notes())}`,
-  )
+    assert.ok(
+      await until(() => room.state() === 'error'),
+      `ячейка кончилась как ${String(room.state())}`,
+    )
+    const outputs = readNotebook(room.doc)[1].outputs
+    assert.match(JSON.stringify(outputs), /KernelDied/, 'ячейка ничего не сказала про смерть ядра')
+    assert.equal(room.cell.get('execCount'), null, 'номер выполнения остался от убитого процесса')
+    assert.ok(
+      room.notes().some((note) => /memory|restart/i.test(note)),
+      `комнате не сказали про перезапуск: ${JSON.stringify(room.notes())}`,
+    )
+    /*
+     * И, второй строкой, — ПОЧЕМУ. Вся беда 13.09 была в том, что дальше
+     * «ядро перезапустилось» журнал не шёл: пятнадцать одинаковых записей и ни
+     * одного числа. Лимит, занятое и номер ячейки — то, с чем можно что-то
+     * сделать, не заходя на машину.
+     */
+    assert.ok(
+      await until(() => room.notes().some((note) => /2 ГБ|2 GB/.test(note))),
+      `причину смерти комната так и не узнала: ${JSON.stringify(room.notes())}`,
+    )
+    const why = room.notes().find((note) => /2 ГБ|2 GB/.test(note)) ?? ''
+    // Номер — порядковый в тетради, считая markdown: тот же, что нарисован
+    // слева от ячейки. Здесь тетрадь из markdown и кода, ячейка вторая.
+    assert.match(why, /(ячейке|cell) 2\b/, `номер ячейки в причине неверен: ${why}`)
+  } finally {
+    useDockerForPostmortem(null)
+  }
 })
 
 /* ------------------------------------------------- who may stop the kernel */

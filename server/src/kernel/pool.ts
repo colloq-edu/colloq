@@ -1,6 +1,6 @@
 import { tr } from '@shared/i18n'
 import { kernelBackend, requireKernelIsolation, kernelRuntimeClient, runtimeEnvironment, imageRevision } from './runtime-client.js'
-import { sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionRowExists } from '../db.js'
+import { sessionEnvironment, sessionKernelRevision, pinSessionKernelRevision, sessionMemoryMb, sessionRowExists } from '../db.js'
 import { blockKernelStarts, kernelRetirementInProgress } from './retirement.js'
 /** Production starts fixed, isolated Pods through the private runtime broker.
  * The direct Docker adapter is retained only for explicit local development.
@@ -491,6 +491,106 @@ function threadLimit(): string {
 }
 
 /**
+ * Сколько памяти выдать контейнеру комнаты — и почему это не одно число на всю
+ * машину.
+ *
+ * Две гигабайты на комнату — честное умолчание для ноутбука, на котором
+ * поднимают колло́к посмотреть, и приговор для семинара по компьютерному
+ * зрению: `resnet18` на батче из 250 картинок 224×224 занимает под два
+ * гигабайта одними активациями, и это ПОВЕРХ торча, CUDA-контекста и уже
+ * загруженной языковой модели. Дальше cgroup убивает python, Jupyter молча
+ * поднимает новый, и преподаватель видит «ядро перезапустилось» на одной и той
+ * же ячейке пятнадцать раз подряд.
+ *
+ * Поэтому лимит спрашивается у окружения, а не зашит: `KERNEL_MEM` — общий, а
+ * `KERNEL_MEM_<ОКРУЖЕНИЕ>` перебивает его для одного. Имя окружения приводится
+ * к виду переменной среды: `base-gpu` → `KERNEL_MEM_BASE_GPU`. Так тяжёлое
+ * окружение получает своё, а лёгкие комнаты рядом не съедают машину впустую.
+ */
+export function memoryLimit(env: string): string {
+  const named = process.env[`KERNEL_MEM_${env.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`]
+  return named || process.env.KERNEL_MEM || (needsGpu(env) ? DEFAULT_MEM_GPU : DEFAULT_MEM)
+}
+
+/*
+ * Умолчания подняты 13.09.2026 после дня, когда 2g убивали ядро на каждом
+ * запуске одной ячейки. Четыре гигабайта — обычная тетрадь с pandas и
+ * картинками на ноутбуке ещё терпит; окружение с GPU без шестнадцати не имеет
+ * смысла: арендуемая машина — 3090 с 24 ГБ видеопамяти и 72 ГБ оперативной,
+ * и торч с CUDA-контекстом и моделью кладёт в оперативную не меньше, чем в
+ * видео. Это про RAM: видеопамять cgroup не ограничивает, карту комнаты делят
+ * целиком.
+ */
+const DEFAULT_MEM = '4g'
+const DEFAULT_MEM_GPU = '16g'
+
+/**
+ * Строка docker («4g», «512m», «2048») — в мегабайтах, и обратно.
+ *
+ * Нужна ровно потому, что лимит перестал быть делом одного `.env`: его теперь
+ * видно в панели и можно задать комнате числом. Панель говорит гигабайтами,
+ * строка семинара хранит мегабайты, docker понимает суффиксы — и без одной
+ * общей мерки посередине эти трое расходятся молча, а расплачивается за это
+ * ядро, которому выдали вдвое меньше, чем нарисовано на экране.
+ *
+ * Округление вниз намеренное: дробного мегабайта docker не выдаст, а лишний,
+ * приписанный при чтении, вернулся бы в `--memory` числом больше того, что
+ * стояло в переменной окружения.
+ */
+export function parseMemMb(spec: string): number | null {
+  const match = /^\s*(\d+(?:\.\d+)?)\s*([bkmg])?b?\s*$/i.exec(spec)
+  if (!match) return null
+  const value = Number(match[1])
+  if (!Number.isFinite(value) || value <= 0) return null
+  const unit = (match[2] ?? 'b').toLowerCase()
+  const bytes = value * (unit === 'g' ? 1024 ** 3 : unit === 'm' ? 1024 ** 2 : unit === 'k' ? 1024 : 1)
+  const mb = Math.floor(bytes / 1024 ** 2)
+  return mb > 0 ? mb : null
+}
+
+/** Обратно — тем же языком, которым `--memory` и задают. */
+export function memSpec(mb: number): string {
+  return `${Math.floor(mb)}m`
+}
+
+/**
+ * На что ложатся окружения: общее умолчание и умолчание окружения с GPU.
+ *
+ * Отдельно от `memoryLimitMb(env)` потому, что форма семинара показывает и то
+ * и другое ДО выбора окружения: «по умолчанию 4 ГБ, на GPU — 16».
+ */
+export function defaultMemoryMb(gpu = false): number {
+  const fallback = gpu ? DEFAULT_MEM_GPU : DEFAULT_MEM
+  return parseMemMb(process.env.KERNEL_MEM || fallback) ?? (parseMemMb(fallback) as number)
+}
+
+/** Умолчание окружения числом — его показывает форма семинара. */
+export function memoryLimitMb(env: string): number {
+  const named = parseMemMb(memoryLimit(env))
+  if (named !== null) return named
+  // Переменную окружения написали как попало («4 гига»): своё умолчание
+  // разобрать заведомо получится, и комната поднимется, а не упадёт на NaN.
+  return parseMemMb(needsGpu(env) ? DEFAULT_MEM_GPU : DEFAULT_MEM) as number
+}
+
+/**
+ * Позвать docker чужими руками — для postmortem.ts, который выясняет, почему
+ * ядро умерло.
+ *
+ * Отдельным экспортом, а не «вынести `run` наружу»: наружу отдаётся ровно
+ * чтение, с коротким сроком, и зависимость идёт в одну сторону — пул ничего не
+ * знает о том, кто и зачем читает состояние его контейнеров.
+ */
+export function dockerRead(args: string[], timeoutMs = 10_000): Promise<{ code: number; out: string }> {
+  return run(args, timeoutMs)
+}
+
+/** Имя контейнера комнаты — тем, кто спрашивает docker о нём напрямую. */
+export function roomContainer(sessionId: string): string {
+  return containerFor(sessionId)
+}
+
+/**
  * Аргументы `docker run` для контейнера комнаты.
  *
  * Отдельной функцией, потому что настоящего docker в тестах нет, а собрать эту
@@ -504,8 +604,18 @@ export function runArgs(opts: {
   mount: string
   network: string
   gpu: string | null
+  /**
+   * Лимит памяти именно ЭТОЙ комнаты, если преподаватель его задал.
+   *
+   * Перебивает умолчание окружения, а не дополняет его: семинар по зрению и
+   * семинар по статистике живут на одном образе, и вся разница между ними —
+   * сколько памяти им надо. `null` (и отсутствие поля) — прежнее поведение,
+   * то есть `KERNEL_MEM` и умолчание окружения.
+   */
+  memoryMb?: number | null
 }): string[] {
   const { sessionId, env, mount, network, gpu } = opts
+  const memory = opts.memoryMb ? memSpec(opts.memoryMb) : memoryLimit(env)
   const threads = threadLimit()
   return [
     'run',
@@ -535,7 +645,14 @@ export function runArgs(opts: {
     `${mount}:/workspace/${sessionId}`,
     // Student code is arbitrary, exactly as in compose. A runaway cell in
     // one room must not be able to take the host down either.
-    `--memory=${process.env.KERNEL_MEM ?? '2g'}`,
+    `--memory=${memory}`,
+    /*
+     * Swap ровно по памяти, и потому же, почему он стоит в `docker update`
+     * ниже: без этого флага docker выдаёт контейнеру столько же swap сверху, и
+     * упёршееся в лимит ядро не умирает, а уходит на диск — комната стоит
+     * минутами там, где честнее сразу сказать «не хватило памяти».
+     */
+    `--memory-swap=${memory}`,
     `--cpus=${process.env.KERNEL_CPUS ?? '2'}`,
     '--pids-limit=512',
     /*
@@ -563,6 +680,84 @@ export function runArgs(opts: {
     ...(gpu ? ['--label', `colloq.gpu=${gpu}`] : []),
     `${IMAGE_PREFIX}:${env}`,
   ]
+}
+
+/* ------------------------------------------------ лимит памяти на живой комнате */
+
+type DockerRun = (args: string[], timeoutMs?: number) => Promise<RunResult>
+let limitsDocker: DockerRun = run
+
+/**
+ * Подменить docker — тестам.
+ *
+ * Ровно как в postmortem.ts и ровно по той же причине: настоящего docker в
+ * сюите нет, а проверять надо то, что бывает только с ним. Подмена действует
+ * ТОЛЬКО на изменение лимита: жизненный цикл контейнеров она не трогает, и
+ * тест, забывший её снять, не может поднять на машине ни одного контейнера.
+ */
+export function useDockerForLimits(fake: DockerRun | null): void {
+  limitsDocker = fake ?? run
+  limitsInjected = fake !== null
+}
+let limitsInjected = false
+
+/** Что стало с лимитом: применён на живом контейнере, ждёт следующего пуска, не вышло. */
+export type LimitOutcome = 'applied' | 'pending' | 'failed'
+
+/**
+ * Поднять (или опустить) память живой комнате, не убивая её Python.
+ *
+ * `docker update` умеет менять cgroup работающего контейнера — а значит,
+ * преподаватель, чьё ядро только что убили по памяти, добавляет гигабайты и
+ * запускает ту же ячейку заново, не потеряв ни переменных семинара, ни
+ * открытого терминала. Пересоздание контейнера здесь было бы ровно тем, от
+ * чего страдали: чистый Python посреди пары.
+ *
+ * Оба флага вместе, и это не перестраховка: `--memory` без `--memory-swap`
+ * docker отвергает всякий раз, когда новая память больше СТАРОГО swap
+ * («Memory limit should be smaller than already set memoryswap limit»), то
+ * есть ровно в том случае, ради которого сюда и пришли. Swap равен памяти —
+ * тот же расклад, что и при `docker run` выше.
+ *
+ * Контейнера нет — не беда и не ошибка: число уже лежит в строке семинара, и
+ * следующий пуск возьмёт его оттуда.
+ */
+export async function applyMemoryLimit(sessionId: string, mb: number): Promise<LimitOutcome> {
+  const container = containerFor(sessionId)
+  if (!limitsInjected) {
+    // Под брокером контейнерами распоряжаемся не мы, а под тестовым бэкендом
+    // их нет вовсе. И там и там число ждёт следующего пуска.
+    if (kernelBackend() !== 'docker') return 'pending'
+    if (!(await canIsolate())) return 'pending'
+  }
+  const spec = memSpec(mb)
+  const res = await limitsDocker(['update', `--memory=${spec}`, `--memory-swap=${spec}`, container], 30_000)
+  if (res.code === 0) {
+    console.log(`[kernel] комнате ${sessionId} выдано ${spec} памяти на живом контейнере`)
+    return 'applied'
+  }
+  // «No such container» — обычное дело: комнату ещё не открывали сегодня.
+  if (/no such container/i.test(res.out)) {
+    console.log(`[kernel] комнате ${sessionId} записано ${spec} памяти; контейнера нет, возьмёт при пуске`)
+    return 'pending'
+  }
+  console.error(`[kernel] docker update для ${sessionId} не удался: ${res.out.slice(-200)}`)
+  return 'failed'
+}
+
+/**
+ * Сколько памяти docker реально выдал контейнеру комнаты — в мегабайтах.
+ *
+ * Спрашивается у docker, а не берётся из строки семинара: разойтись они могут
+ * ровно тогда, когда это важно — лимит подняли, а комната с утра работает на
+ * старом. Ноль в ответе docker значит «без лимита», и это `null`, а не 0.
+ */
+export async function containerMemoryMb(sessionId: string): Promise<number | null> {
+  const res = await limitsDocker(['inspect', containerFor(sessionId), '--format', '{{.HostConfig.Memory}}'], 10_000)
+  if (res.code !== 0) return null
+  const bytes = Number(res.out.trim())
+  if (!Number.isFinite(bytes) || bytes <= 0) return null
+  return Math.floor(bytes / 1024 ** 2)
 }
 
 async function startContainer(
@@ -643,7 +838,10 @@ async function startContainer(
      * содержимое `/workspace` внутрь больше не попадает вовсе.
      */
     const mount = hostMount(sessionId)
-    const created = await run(runArgs({ sessionId, env, mount, network, gpu }), 120_000)
+    const created = await run(
+      runArgs({ sessionId, env, mount, network, gpu, memoryMb: sessionMemoryMb(sessionId) }),
+      120_000,
+    )
     if (created.code !== 0) {
       /*
        * Самая частая беда GPU-комнаты — не в нас: на хосте не поставлен

@@ -17,7 +17,7 @@
    */
   import { onDestroy, untrack } from 'svelte'
   import { quintOut } from 'svelte/easing'
-  import { fade, fly } from 'svelte/transition'
+  import { fade, fly, slide } from 'svelte/transition'
   import { peopleInRoom } from '@/lib/room'
   import { faceOf, namesLine, sameFaces, type Face } from '@/screens/roster'
   import { ruleRefusal } from '@/lib/rule-refusal'
@@ -504,22 +504,33 @@
 
   const PANELS_KEY = 'colloq.panels.v1'
 
-  function loadPanels(): { left: boolean; right: boolean } {
+  /*
+   * Шапка лежит в той же коробке, что и панели, и это нарочно.
+   *
+   * Свёрнутая шапка — такая же настройка раскладки комнаты, как закрытая
+   * панель файлов: её выбирают один раз на своей машине и ждут, что она
+   * переживёт F5. Отдельный ключ означал бы вторую запись про одно и то же и
+   * второе место, где её забывают почистить. Поле необязательное: у того, кто
+   * закрывал панели до этой правки, в коробке нет `head` вовсе, и шапка ему
+   * достаётся развёрнутой — то есть ровно та, что была.
+   */
+  function loadPanels(): { left: boolean; right: boolean; head: boolean } {
     try {
       const raw = localStorage.getItem(PANELS_KEY)
       if (raw) {
-        const saved = JSON.parse(raw) as { left?: boolean; right?: boolean }
-        return { left: saved.left !== false, right: saved.right !== false }
+        const saved = JSON.parse(raw) as { left?: boolean; right?: boolean; head?: boolean }
+        return { left: saved.left !== false, right: saved.right !== false, head: saved.head !== false }
       }
     } catch {
       /* private browsing; the default layout is fine */
     }
-    return { left: true, right: true }
+    return { left: true, right: true, head: true }
   }
 
   const panels = loadPanels()
   let leftOpen = $state(panels.left)
   let rightOpen = $state(panels.right)
+  let headOpen = $state(panels.head)
   let leftDrawer = $state(false)
   let rightDrawer = $state(false)
 
@@ -1154,10 +1165,25 @@
 
   function persistPanels(): void {
     try {
-      localStorage.setItem(PANELS_KEY, JSON.stringify({ left: leftOpen, right: rightOpen }))
+      localStorage.setItem(
+        PANELS_KEY,
+        JSON.stringify({ left: leftOpen, right: rightOpen, head: headOpen }),
+      )
     } catch {
       /* ignore */
     }
+  }
+
+  /**
+   * Свернуть и развернуть верхнюю полосу шапки.
+   *
+   * Без ветки «а на узком экране иначе», как у панелей: шапка нигде не
+   * становится выдвижным ящиком — она просто есть или её нет, и на телефоне
+   * это нужнее всего, потому что 110 px из 640 там стоят дороже.
+   */
+  function toggleHead(): void {
+    headOpen = !headOpen
+    persistPanels()
   }
 
   function toggleLeft(): void {
@@ -1394,6 +1420,16 @@
      * второй шаг, ради которого удержание и написано.
      */
     act('panel-files', tr('room.ui.971'), true, toggleLeft, `${modKey}B`, 'files people')
+    // Шапка складывается и с клавиатуры: горячей клавиши у неё нет нарочно —
+    // это настройка на пару, а не то, что дёргают посреди работы.
+    act(
+      'head',
+      headOpen ? tr('room.head.fold') : tr('room.head.unfold'),
+      true,
+      toggleHead,
+      undefined,
+      'header шапка',
+    )
     act('panel-oracle', tr('room.ui.973'), true, focusOracle, `${modKey}I`, "ai oracle ии")
     act('panel-terminal', tr('room.ui.679'), true, toggleTerminal, `${modKey}J`, "terminal shell консоль")
     act('copy-link', tr('room.ui.976'), true, () => void copyLink(), undefined, 'link')
@@ -1804,55 +1840,88 @@
       если семинар в курсе состоит. Больше некуда — и тогда марка просто знак, а
       не обещание.
     -->
-    <div class="px-4 pt-4 sm:px-7">
-      {#if homeHref}
-        <a
-          href={homeHref}
-          aria-label={isHost ? tr('room.extra.401') : tr('room.extra.402', { p0: session.session.course?.name ?? '' })}
-          class="block max-w-full transition-opacity duration-100 hover:opacity-85
-                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+    <!--
+      Вся верхняя полоса шапки — один складывающийся блок.
+
+      Складка меряется высотой, и это единственное место в комнате, где
+      геометрия анимируется нарочно: свернуть шапку — значит ОТДАТЬ её место
+      тетради, а место отдаётся только настоящей высотой. `slide` держит её на
+      своём element.animate() и умеет разворачиваться с полдороги — нажатие
+      посреди хода не начинает заново, а едет обратно от того кадра, на котором
+      застало. 200 мс — ярус панели (--speed-panel), quintOut — та же кривая,
+      что у ящиков по краям.
+
+      Содержимое гаснет быстрее складки (120 мс): к середине хода читать уже
+      нечего, и название не успевает подъехать к полосе состояния вплотную —
+      оно уходит под кромку целым, а не сплющенным.
+
+      Под `prefers-reduced-motion` обе длительности — нули, и это тот редкий
+      случай, когда правило index.css («прозрачность остаётся») не годится:
+      блок уезжает из DOM только после ПОСЛЕДНЕГО своего перехода, и складка в
+      0 мс рядом с растворением в 120 оставляла шапку стоять во всю высоту эти
+      120 мс, а потом срезала её скачком. Мерено на стенде: высота через 35 мс
+      после нажатия — прежние 157. Нуль на обоих — настоящее мгновенно.
+      Перекрытие двух марок внизу при этом живёт: оно ничего не смещает.
+    -->
+    {#if headOpen}
+      <div transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}>
+        <div
+          class="px-4 pt-4 sm:px-7"
+          transition:fade={{ duration: prefersReducedMotion() ? 0 : 120 }}
         >
-          <Wordmark institution={session.session.institution} tone="onDark" />
-        </a>
-      {:else}
-        <div class="block max-w-full">
-          <Wordmark institution={session.session.institution} tone="onDark" />
+          {#if homeHref}
+            <a
+              href={homeHref}
+              aria-label={isHost ? tr('room.extra.401') : tr('room.extra.402', { p0: session.session.course?.name ?? '' })}
+              class="block max-w-full transition-opacity duration-100 hover:opacity-85
+                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            >
+              <Wordmark institution={session.session.institution} tone="onDark" />
+            </a>
+          {:else}
+            <div class="block max-w-full">
+              <Wordmark institution={session.session.institution} tone="onDark" />
+            </div>
+          {/if}
         </div>
-      {/if}
-    </div>
 
-    <!-- The loudest thing on the screen. Black rather than bold: HSE Sans Black
-         is what the artboard is drawn in, and Inter at 700 reads thin here. -->
-    <div class="flex items-end gap-3 px-4 pb-4 pt-2 sm:gap-4 sm:px-7 sm:pb-5 sm:pt-3">
-      {#if !title}
-        <div role="status" aria-label={tr('common.loading')} aria-busy="true" class="min-w-0 flex-1 text-marquee-sm sm:text-marquee">
-          <Skeleton width="min(80%, 32rem)" height="0.85em" tone="onDark" />
+        <!-- The loudest thing on the screen. Black rather than bold: HSE Sans Black
+             is what the artboard is drawn in, and Inter at 700 reads thin here. -->
+        <div
+          class="flex items-end gap-3 px-4 pb-4 pt-2 sm:gap-4 sm:px-7 sm:pb-5 sm:pt-3"
+          transition:fade={{ duration: prefersReducedMotion() ? 0 : 120 }}
+        >
+          {#if !title}
+            <div role="status" aria-label={tr('common.loading')} aria-busy="true" class="min-w-0 flex-1 text-marquee-sm sm:text-marquee">
+              <Skeleton width="min(80%, 32rem)" height="0.85em" tone="onDark" />
+            </div>
+          {:else if isHost}
+            <!-- Renaming writes into the shared doc, so the room sees it immediately. -->
+            <input
+              class="name-field -mx-1.5 min-w-0 truncate bg-transparent px-1.5 text-marquee-sm
+                     font-black text-white hover:bg-white/5 focus:bg-white/10 sm:text-marquee"
+              value={storedTitle}
+              oninput={(event) => rename(event.currentTarget.value)}
+              aria-label={tr('room.ui.895')}
+              maxlength={80}
+              spellcheck="false"
+            />
+          {:else}
+            <h1 class="-mx-1.5 min-w-0 truncate px-1.5 text-marquee-sm font-black text-white sm:text-marquee">
+              {title}
+            </h1>
+          {/if}
+
+          <time
+            datetime={started.toISOString()}
+            title={dateLong}
+            class="shrink-0 pb-1 font-mono text-ui-lg text-white/60">{dateShort}</time
+          >
+          <!-- Holds the pair to the left when the name is short. -->
+          <span class="min-w-0 flex-1"></span>
         </div>
-      {:else if isHost}
-        <!-- Renaming writes into the shared doc, so the room sees it immediately. -->
-        <input
-          class="name-field -mx-1.5 min-w-0 truncate bg-transparent px-1.5 text-marquee-sm
-                 font-black text-white hover:bg-white/5 focus:bg-white/10 sm:text-marquee"
-          value={storedTitle}
-          oninput={(event) => rename(event.currentTarget.value)}
-          aria-label={tr('room.ui.895')}
-          maxlength={80}
-          spellcheck="false"
-        />
-      {:else}
-        <h1 class="-mx-1.5 min-w-0 truncate px-1.5 text-marquee-sm font-black text-white sm:text-marquee">
-          {title}
-        </h1>
-      {/if}
-
-      <time
-        datetime={started.toISOString()}
-        title={dateLong}
-        class="shrink-0 pb-1 font-mono text-ui-lg text-white/60">{dateShort}</time
-      >
-      <!-- Holds the pair to the left when the name is short. -->
-      <span class="min-w-0 flex-1"></span>
-    </div>
+      </div>
+    {/if}
 
     <!-- The live state of the room: who is here, what the machine is doing, and
          the two controls that are about this room rather than about the
@@ -1883,10 +1952,44 @@
       Рост прежний: 45 − 1 (правило сверху) = 44, минус py-1.5 с двух сторон =
       32 на строку, и ребёнок в 28 по-прежнему центрируется целыми пикселями.
     -->
+    <!--
+      Линейка сверху — пока сверху что-то есть.
+
+      Она отделяет полосу от названия занятия, и у свёрнутой шапки отделять
+      нечего: полоса стоит первой строкой экрана, и линейка на её верхней
+      кромке читалась бы как недорисованная рамка окна.
+    -->
     <div
-      class="flex min-h-[45px] flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-brand-2
-             px-4 py-1.5 sm:gap-x-4 sm:px-7"
+      class={cn(
+        'flex min-h-[45px] flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-1.5 sm:gap-x-4 sm:px-7',
+        headOpen && 'border-t border-brand-2',
+      )}
     >
+      <!--
+        Марка у свёрнутой шапки — та же самая, и стоит она в том же столбце.
+
+        Левый отступ у полосы и у шапки один (px-4 / sm:px-7), поэтому знак
+        никуда не едет по горизонтали: пока складка сходится, полоса сама
+        поднимается к нему, и две марки — уходящая в шапке и приходящая здесь —
+        съезжаются в одну точку. Перекрытие плотностей на этом пути читается как
+        ПЕРЕЕЗД одного знака, а не как подмена одного другим; настоящий
+        общий элемент дал бы ту же картинку ценой измерений на каждом кадре.
+
+        Заголовок уезжает вместе со складкой, и без `h1` страница осталась бы
+        безымянной для читалки: `sr-only` возвращает имя занятия туда, где оно
+        и было, а `title` у знака — тем, кто наводит указатель.
+      -->
+      {#if !headOpen}
+        <h1 class="sr-only">{title}</h1>
+        <span
+          class="flex shrink-0 items-center text-white"
+          title={title}
+          in:fade={{ duration: 160, delay: 40 }}
+          out:fade={{ duration: 100 }}
+        >
+          <Icon name="logo" size={16} />
+        </span>
+      {/if}
       {#if room.length > 0}
         <div class="flex shrink-0 items-center gap-4" title={roomNames}>
           <!-- 28, как на экране входа: 24 в этой полосе читались мелко, а
@@ -1992,6 +2095,26 @@
               <Icon name="lock" size={16} />
             </button>
           {/if}
+          <!--
+            Шапка — такая же поверхность комнаты, как панели и ящик, и
+            переключается там же. Порядок слева направо повторяет экран:
+            шапка сверху, файлы слева, ящик снизу, оракул справа.
+
+            `aria-expanded`, а не `aria-pressed`, как у соседей: те включают и
+            выключают панель, а эта раскрывает и складывает то, что стоит прямо
+            над ней, — это раскрывашка, и читалка должна назвать её так.
+            Подпись меняется вместе с состоянием: «свернуть» на развёрнутой
+            шапке — это то, что произойдёт, а не то, что есть.
+          -->
+          <button
+            class={bandIcon(headOpen)}
+            onclick={toggleHead}
+            aria-expanded={headOpen}
+            aria-label={headOpen ? tr('room.head.fold') : tr('room.head.unfold')}
+            title={headOpen ? tr('room.head.fold') : tr('room.head.unfold')}
+          >
+            <Icon name="masthead" size={16} />
+          </button>
           <button
             class={bandIcon(leftShown)}
             onclick={toggleLeft}

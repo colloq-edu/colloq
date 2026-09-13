@@ -27,6 +27,7 @@ import {
   type SkipReason,
 } from '@shared/publish'
 import { readBlob, roomOfDoc } from '../blobs.js'
+import { applyEdits, findAttachmentRefs, shaOfAttachment, type TextEdit } from '@shared/images'
 import { openReplay } from './replay.js'
 
 /** Крупные куски выводов, вынесенные по хэшу. Наполняется по ходу сборки. */
@@ -112,12 +113,54 @@ function projectOutput(output: CellOutput, blobs: BlobBag, sessionId: string | n
   return { kind: 'data', data, execCount: output.execCount }
 }
 
+/**
+ * Заметка на публичной странице: картинки из неё — в записи публикации.
+ *
+ * В документе комнаты картинка заметки стоит ссылкой на полку комнаты
+ * (`attachment:<sha>.<ext>`, см. shared/images.ts), а полка комнаты публичной
+ * странице недоступна и переживёт её не обязательно. Поэтому байты копируются
+ * в записи публикации — ровно так же, как копируется картинка вывода строкой
+ * ниже, — а в тексте остаётся её адрес там.
+ *
+ * Расширение в адресе — из mime, а не из имени ссылки: по нему выгрузка
+ * каталога называет файл на диске (`render.ts · blobHref`), и разойтись этим
+ * двум нельзя.
+ */
+function projectNote(source: string, blobs: BlobBag, sessionId: string | null): string {
+  const edits: TextEdit[] = []
+  for (const ref of findAttachmentRefs(source)) {
+    const sha = shaOfAttachment(ref.name)
+    if (!sha) continue
+    const body = sessionId ? readBlob(sessionId, sha) : null
+    if (!body) continue
+    const mime = mimeOfAttachment(ref.name)
+    const value = blobs.putBytes(mime, body)
+    edits.push({ start: ref.start, end: ref.end, text: `${value}.${extOfMime(mime)}` })
+  }
+  return applyEdits(source, edits)
+}
+
+const NOTE_MIMES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+}
+
+function mimeOfAttachment(name: string): string {
+  return NOTE_MIMES[name.slice(name.lastIndexOf('.') + 1).toLowerCase()] ?? 'image/png'
+}
+
+const extOfMime = (mime: string): string => mime.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
+
 /** Ячейка на публичной странице. Белый список — см. шапку файла. */
 function projectCell(cell: CellSnapshot, blobs: BlobBag, sessionId: string | null): PublicCell {
   return {
     id: cell.id,
     type: cell.type,
-    source: cell.source,
+    source: cell.type === 'markdown' ? projectNote(cell.source, blobs, sessionId) : cell.source,
     outputs: cell.outputs.map((o) => projectOutput(o, blobs, sessionId)),
     /*
      * Номер выполнения переносится как есть, включая `null` при непустом

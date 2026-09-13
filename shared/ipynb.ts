@@ -36,11 +36,25 @@ export interface FlatCell {
    * иначе файл, переписанный после перестановки ячеек, поменяет им имена.
    */
   id?: string
+  /**
+   * Вложения ячейки в том виде, в каком их держит nbformat: имя → набор
+   * «тип → base64».
+   *
+   * Картинка в заметке живёт в файле двумя способами — вложением и прямо в
+   * тексте (`data:image/png;base64,…`), — и первый из них разбор ТЕРЯЛ: поле
+   * читалось мимо, ссылка `![](attachment:схема.png)` доезжала до комнаты без
+   * своих байтов и рисовалась битой рамкой. Теперь оно доезжает, и на полку
+   * комнаты ложатся оба (server/src/notebook-images.ts).
+   *
+   * Необязательное: у кода вложений не бывает, а у заметки — почти никогда.
+   */
+  attachments?: Record<string, Record<string, string>>
 }
 
 interface RawCell {
   cell_type?: unknown
   source?: unknown
+  attachments?: unknown
 }
 
 /** Jupyter пишет `source` то строкой, то массивом строк — по настроению. */
@@ -50,6 +64,29 @@ function sourceText(value: unknown): string {
     return value.map((line) => (typeof line === 'string' ? line : '')).join('')
   }
   return ''
+}
+
+/**
+ * Вложения ячейки — если они там есть и похожи на вложения.
+ *
+ * Файл пишет кто угодно, а base64 в нём Jupyter хранит то строкой, то массивом
+ * строк, как и `source`. Всё, что не уложилось в «имя → тип → строка»,
+ * выбрасывается молча: битое вложение — это картинка, которой не будет, а не
+ * повод отказать тетради целиком.
+ */
+function readAttachments(value: unknown): Record<string, Record<string, string>> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const out: Record<string, Record<string, string>> = {}
+  for (const [name, bundle] of Object.entries(value as Record<string, unknown>)) {
+    if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) continue
+    const parts: Record<string, string> = {}
+    for (const [mime, body] of Object.entries(bundle as Record<string, unknown>)) {
+      const text = sourceText(body)
+      if (text) parts[mime] = text
+    }
+    if (Object.keys(parts).length > 0) out[name] = parts
+  }
+  return Object.keys(out).length > 0 ? out : null
 }
 
 /**
@@ -69,10 +106,14 @@ function sourceText(value: unknown): string {
 export function readIpynb(json: unknown): FlatCell[] {
   const doc = json as { cells?: unknown } | null
   const cells = Array.isArray(doc?.cells) ? doc.cells : []
-  const all: FlatCell[] = (cells as RawCell[]).map((raw) => ({
-    type: raw?.cell_type === 'code' ? 'code' : 'markdown',
-    source: sourceText(raw?.source),
-  }))
+  const all: FlatCell[] = (cells as RawCell[]).map((raw) => {
+    const attachments = readAttachments(raw?.attachments)
+    return {
+      type: raw?.cell_type === 'code' ? 'code' : 'markdown',
+      source: sourceText(raw?.source),
+      ...(attachments ? { attachments } : {}),
+    }
+  })
   let end = all.length
   while (end > 0 && all[end - 1].source.trim().length === 0) end -= 1
   return all.slice(0, end)
@@ -112,6 +153,17 @@ export function writeIpynb(cells: readonly FlatCell[]): string {
       id: cellIdFor(cell, index),
       cell_type: cell.type,
       metadata: {},
+      /*
+       * Вложения — рядом с текстом, который на них ссылается.
+       *
+       * Иначе тетрадь, унесённая из комнаты, открывалась бы у студента с
+       * пустыми рамками вместо условий задачи: в документе комнаты картинка
+       * лежит ссылкой на полку (shared/images.ts), а полка осталась на сервере.
+       * Схема 4.5 держит вложения только у markdown — у кода их не бывает.
+       */
+      ...(cell.type === 'markdown' && cell.attachments && Object.keys(cell.attachments).length > 0
+        ? { attachments: cell.attachments }
+        : {}),
       source: cell.source.split(/(?<=\n)/),
       ...(cell.type === 'code' ? { execution_count: null, outputs: [] } : {}),
     })),

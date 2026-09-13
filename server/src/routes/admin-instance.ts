@@ -35,7 +35,9 @@ import {
   loadDocSnapshot,
   renameSession,
   sessionEnvironment,
+  sessionMemoryMb,
   setRules,
+  setSessionMemoryMb,
   storedRules,
 } from '../db.js'
 import { forgetCache } from '../collab/history.js'
@@ -49,6 +51,8 @@ import {
   stepCount,
 } from '../publish/store.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
+import { applyMemoryLimit } from '../kernel/pool.js'
+import { forgetResources, memoryBounds, readMemoryInput } from '../kernel/resources.js'
 import { blockKernelStarts, kernelRetirementInProgress } from '../kernel/retirement.js'
 import { activeName, exists as environmentExists } from '../environments.js'
 import { forgetTree, listFiles, sessionDir, workspaceFs } from '../workspace.js'
@@ -256,6 +260,15 @@ function toSeminar(row: SeminarRow, courses = listCourses()): AdminSeminar {
      * настройку, — а `finishedAt` рядом говорит, идёт ли оно сейчас.
      */
     rules: storedRules(row.id),
+    /*
+     * Сколько памяти выдано ЭТОЙ комнате, или null — «как у окружения».
+     *
+     * Своё число, а не действующее: в форме настроек человек обязан видеть то,
+     * что он задал, и отличать «я поставил 4 ГБ» от «столько даёт окружение».
+     * Умолчание окружения панель берёт из /api/instance/resources — оно одно
+     * на все комнаты и меняется без них.
+     */
+    memoryMb: sessionMemoryMb(row.id),
     finishedAt: finishedAt(row.id),
     publication: publication
       ? {
@@ -294,6 +307,20 @@ const normalize = normalizeLabel
 function invalid(res: Response, error: string): Response {
   const body: AdminErrorBody = { error, reason: 'invalid' }
   return res.status(400).json(body)
+}
+
+/**
+ * Почему число не взяли — числами же.
+ *
+ * Границы называются вслух: «должно быть числом» на поле, куда форма шлёт
+ * мегабайты, ничего не говорит тому, кто прислал гигабайты, а «от 512 до
+ * 71 680 МБ» говорит всё сразу.
+ */
+function memoryRefusal(why: 'type' | 'range'): string {
+  const { min, max } = memoryBounds()
+  return why === 'type'
+    ? tr('server.memoryMustBeWholeMegabytes')
+    : tr('server.memoryOutOfRange', { p0: min, p1: max })
 }
 
 function notFound(res: Response): Response {
@@ -354,6 +381,14 @@ export function adminInstanceRoutes(): Router {
      */
     const environment = wanted || activeName()
 
+    /*
+     * Лимит памяти проверяется той же меркой, что и при изменении: граница у
+     * машины одна, и форма создания не то место, где комнате можно пообещать
+     * больше, чем есть.
+     */
+    const memory = readMemoryInput(req.body?.memoryMb)
+    if (!memory.ok) return invalid(res, memoryRefusal(memory.error))
+
     const id = newSessionId()
     createSession(id, name, environment)
     /*
@@ -383,6 +418,18 @@ export function adminInstanceRoutes(): Router {
     if (preset || asked) {
       setRules(id, readRules({ ...(preset ?? OPEN_ROOM), ...asked }))
     }
+    /*
+     * Память — сразу в строку, до первого пуска ядра.
+     *
+     * Занятие по зрению заводят накануне, и выбор «шесть гигабайт» должен
+     * дожить до пары, а не быть отдельным походом в настройки утром. Контейнера
+     * ещё нет, менять нечего — число просто лежит и ждёт своего `docker run`.
+     */
+    if (memory.ok && memory.mb !== null) {
+      setSessionMemoryMb(id, memory.mb)
+      forgetResources()
+    }
+
     const staff = currentStaff(req)
     if (staff) setSeminarCreator(id, staff.name)
 
@@ -395,7 +442,13 @@ export function adminInstanceRoutes(): Router {
     if (!row) return
 
     const body = req.body as
-      | { name?: unknown; archived?: unknown; finished?: unknown; rules?: unknown }
+      | {
+          name?: unknown
+          archived?: unknown
+          finished?: unknown
+          rules?: unknown
+          memoryMb?: unknown
+        }
       | undefined
     if (body?.name !== undefined) {
       const name = normalize(body.name)
@@ -473,6 +526,28 @@ export function adminInstanceRoutes(): Router {
       // controls from this, and a rule nobody was told about is a rule that
       // looks like a bug when a button stops working.
       broadcast(row.id, { t: 'rules', rules: storedRules(row.id) })
+    }
+
+    if (body?.memoryMb !== undefined) {
+      const memory = readMemoryInput(body.memoryMb)
+      if (!memory.ok) return invalid(res, memoryRefusal(memory.error))
+      setSessionMemoryMb(row.id, memory.mb)
+      forgetResources()
+      /*
+       * Живой комнате — прямо сейчас, и БЕЗ перезапуска ядра.
+       *
+       * Ради этого всё и затевалось: преподаватель, чьё ядро только что убили
+       * по памяти, добавляет гигабайты и запускает ту же ячейку заново, не
+       * потеряв ни переменных семинара, ни открытого терминала. Ответ не
+       * ждётся: `docker update` на занятой машине занимает сотни миллисекунд,
+       * а число уже записано — контейнера нет или docker отказал, и его
+       * возьмёт следующий пуск. Что именно случилось, скажет журнал ядра.
+       */
+      if (memory.mb !== null) {
+        void applyMemoryLimit(row.id, memory.mb).catch((err: unknown) => {
+          console.error(`[kernel] лимит памяти для ${row.id} не доехал:`, err)
+        })
+      }
     }
 
     res.json(toSeminar(selectSeminar.get(row.id) as SeminarRow))

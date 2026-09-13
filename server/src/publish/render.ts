@@ -60,9 +60,24 @@ function esc(value: string): string {
  * конструкция учебной тетради читалась на странице как каша: крупный заголовок
  * посреди примера и код, разорванный на абзацы по пустым строкам.
  */
-function markdown(source: string): string {
+function markdown(source: string, depth = 1): string {
+  /** Путь до корня публикации: картинка заметки лежит рядом со страницей шага. */
+  const up = '../'.repeat(Math.max(0, depth - 1))
   const inline = (text: string): string =>
     esc(text)
+      /*
+       * Картинка ЗАМЕТКИ — из записи публикации, а не строкой base64.
+       *
+       * В комнате она лежит на полке (shared/images.ts), при сборке страницы
+       * копируется в записи публикации (publish/build.ts · projectNote) и
+       * получает адрес `blob:<хэш>.<ext>`. Правило стоит ДО остальных: без
+       * него `![схема](blob:…)` уходил в `esc` и печатался на странице текстом.
+       */
+      .replace(
+        /!\[([^\]]*)\]\(blob:([0-9a-f]{8,64})\.([a-z0-9]+)\)/gi,
+        (_all, alt: string, hash: string, ext: string) =>
+          `<img class="note-img" src="${up}blob/${hash}.${ext}" alt="${alt.trim()}">`,
+      )
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
@@ -354,7 +369,7 @@ function outputHtml(output: CellOutput, depth: number): string {
 }
 
 function cellHtml(cell: PublicCell, depth: number): string {
-  if (cell.type === 'markdown') return `<div class="note">${markdown(cell.source)}</div>`
+  if (cell.type === 'markdown') return `<div class="note">${markdown(cell.source, depth)}</div>`
   const outputs = cell.outputs.map((o) => outputHtml(o, depth)).join('\n')
   /*
    * `Out [—]` — вывод есть, а выполнения за ним уже нет: перезапускали ядро
@@ -431,6 +446,7 @@ header.top h1{font-size:32px;margin:0 0 8px}
 .rich p{margin:0 0 6px}.rich p:last-child{margin:0}
 .quiet{color:var(--faint);margin:0}
 .img{margin:0}.img img{max-width:100%;height:auto;display:block}
+.note-img{max-width:100%;height:auto;display:block;margin:10px 0}
 .foot{border-top:1px solid var(--line);background:#FBFCFE;padding:6px 15px;text-align:right;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
 .foot .warn{color:var(--warn)}.foot .quiet{color:var(--faint)}
 .take{border-top:1px solid var(--line);margin-top:34px;padding-top:18px;font-size:14px}

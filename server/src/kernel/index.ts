@@ -52,6 +52,7 @@ import {
   runningRoomKernels,
 } from './pool.js'
 import { kernelBackend } from './runtime-client.js'
+import { explain as explainDeath, forgetKills, sampleKills } from './postmortem.js'
 import { getSessionDoc, holdRoom, onlineCount } from '../collab/index.js'
 import { seldom } from '../log.js'
 import { projectBooks } from '../collab/books.js'
@@ -626,6 +627,48 @@ function churnReason(): string | null {
   return churn.reason
 }
 
+/**
+ * Досказать комнате, ПОЧЕМУ ядра не стало.
+ *
+ * Первая заметка уходит мгновенно и говорит правду о последствиях: переменных
+ * нет, очередь пуста. Причина приезжает следом, через полсекунды, потому что
+ * за ней надо сходить к docker — и ждать её, держа комнату в неведении, было бы
+ * хуже, чем дописать вторую строку. В журнале ядра это две строки подряд, и
+ * читаются они как одна мысль: что случилось и отчего.
+ *
+ * Номер ячейки — тот же, что нарисован в комнате слева от неё: порядковый в
+ * своей тетради, считая markdown. Иначе преподаватель идёт искать «ячейку 11»
+ * там, где на экране написано 21.
+ *
+ * Ничего не обещает: `explain` возвращает `null`, когда сказать нечего, и
+ * молчание здесь — осознанный ответ, а не потерянная ошибка.
+ */
+function tellWhyItDied(runtime: Runtime, cellId: string | null): void {
+  // Закрытой комнате — молча: и заметка, и сам поиск ячейки завели бы её
+  // документ заново, а рассказывать причину уже некому.
+  if (runtime.retired) return
+  const doc = (() => {
+    try {
+      return getSessionDoc(runtime.sessionId).doc
+    } catch {
+      return null
+    }
+  })()
+  const found = cellId && doc ? findCell(doc, cellId) : null
+  const cell = found ? found.index + 1 : null
+  void explainDeath(runtime.sessionId, cell)
+    .then((why) => {
+      if (!why) return
+      // В журнал машины — тем же словом `oom`, по которому эту беду уже ищут
+      // одним grep, и с числами, которых там до сих пор не было.
+      console.warn(`[kernel ${runtime.sessionId}] ${why.oom ? 'oom' : 'died'}: ${why.text}`)
+      if (!runtime.retired) kernelNote(runtime.sessionId, why.text)
+    })
+    .catch(() => {
+      /* Вскрытие, сорвавшее работу комнаты, — хуже отсутствия вскрытия. */
+    })
+}
+
 function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
   /*
    * Jupyter restarting the kernel by itself — the container's OOM killer,
@@ -670,6 +713,8 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
           ? tr("server.theKernelRestartedUnexpectedlyVariablesWereReset.f87dd9")
           : tr("server.theKernelRestartedUnexpectedlyVariablesWereReset.a76c88"),
     )
+    // Пересборка окружения объяснена и без docker; всё остальное объясняет он.
+    if (!known) tellWhyItDied(runtime, runtime.currentCell)
     return
   }
   if (phase === 'dead') {
@@ -708,6 +753,7 @@ function onPhase(runtime: Runtime, phase: KernelPhase, expected = false): void {
           ? tr("server.theKernelStoppedDuringExecutionQueuedCells.74ec64")
           : tr("server.theKernelStoppedRestartItToRun.911803"),
     )
+    if (!known) tellWhyItDied(runtime, runtime.currentCell)
     return
   }
   // A cell mid-run keeps the room's status honest even between kernel messages.
@@ -797,6 +843,16 @@ export function ensureKernel(sessionId: string): Promise<void> {
       // Подъём ядра — настоящее событие: до полутора минут холодного старта, и
       // именно между этой строкой и следующей комната смотрит в пустоту.
       console.log(`[kernel ${sessionId}] up (${envName ?? 'shared'})`)
+      /*
+       * Точка отсчёта для будущего вскрытия.
+       *
+       * Счётчик убийств по памяти у контейнера сквозной — он считает с рождения
+       * контейнера, а контейнер переживает и смену ядра, и перезапуск сервера.
+       * Не запомнив его сейчас, на первой же смерти мы не отличим «убит этой
+       * ячейкой» от «убит утром на прошлой паре». Не ждём: старт комнаты не
+       * должен стоять из-за диагностики, которая понадобится через час.
+       */
+      void sampleKills(sessionId)
     } catch (err) {
       setStatus(runtime, 'dead')
       // Не чаще раза в минуту на комнату: `ensureKernel` зовёт и вход каждого
@@ -838,6 +894,8 @@ export function ensureKernel(sessionId: string): Promise<void> {
  * почему.
  */
 onRoomKernelRecreated((sessionId, why) => {
+  // Контейнер новый — и счётчик его убийств тоже начинается с нуля.
+  forgetKills(sessionId)
   // Закрытой комнате — молча: заметка завела бы её документ заново.
   if (runtimes.get(sessionId)?.retired) return
   kernelNote(
@@ -1021,6 +1079,10 @@ export async function shutdownSession(sessionId: string, permanent = false): Pro
   // Deleting documents or files is safe only after the runtime confirms that
   // every room writer stopped. The caller must retain the room on failure.
   await dropRoomKernel(sessionId, permanent)
+  // Счётчик убийств по памяти считает с рождения КОНТЕЙНЕРА. Контейнера
+  // больше нет, а запомненное число пережило бы его и объявило бы первую же
+  // смерть в новом контейнере «не по памяти».
+  forgetKills(sessionId)
 }
 
 /* --------------------------------------------------------- уборка простоя */

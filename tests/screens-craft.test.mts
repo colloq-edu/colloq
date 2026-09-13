@@ -124,3 +124,47 @@ test('указатель на публикацию стоит внутри «з�
   const published = join.indexOf('{#if session.published}')
   assert.ok(published > finished, 'указатель — внутри него')
 })
+
+/* ------------------------------------------------------------ шапка комнаты */
+
+test('складка шапки: под уменьшенной анимацией нули у ОБОИХ переходов', () => {
+  const session = code(read(SESSION))
+  const fold = session.slice(session.indexOf('{#if headOpen}'), session.indexOf('{#if room.length'))
+  assert.notEqual(fold, '', 'складка на месте')
+  // Блок уезжает из DOM только после последнего своего перехода: высота в 0 мс
+  // рядом с растворением в 120 оставляла шапку стоять во всю высоту эти 120 мс,
+  // а потом срезала её скачком (мерено на стенде: 157 px через 35 мс).
+  assert.match(
+    fold,
+    /transition:slide=\{\{ duration: prefersReducedMotion\(\) \? 0 : 200, easing: quintOut \}\}/,
+    'высота едет 200 мс и ничего не едет под prefers-reduced-motion',
+  )
+  const fades = fold.match(/transition:fade=\{\{ duration: prefersReducedMotion\(\) \? 0 : 120 \}\}/g)
+  assert.equal(fades?.length, 2, 'оба содержимых гаснут по тому же правилу')
+})
+
+test('свёрнутая шапка оставляет марку в полосе и имя занятия — читалке', () => {
+  const session = code(read(SESSION))
+  const band = session.slice(session.indexOf('{#if !headOpen}'), session.indexOf('{#if room.length'))
+  assert.match(band, /<h1 class="sr-only">\{title\}<\/h1>/, 'страница не остаётся безымянной')
+  assert.match(band, /<Icon name="logo" size=\{16\} \/>/, 'марка та же, что в шапке')
+  assert.match(band, /title=\{title\}/, 'и под указателем говорит, что за комната')
+  // Перекрытие двух марок: приходящая ждёт 40 мс, уходящая гаснет быстрее хода.
+  assert.match(band, /in:fade=\{\{ duration: 160, delay: 40 \}\}/)
+  assert.match(band, /out:fade=\{\{ duration: 100 \}\}/)
+})
+
+test('переключатель шапки — раскрывашка, и состояние переживает перезагрузку', () => {
+  const session = code(read(SESSION))
+  const button = session.slice(session.indexOf('onclick={toggleHead}') - 200)
+  assert.match(button, /aria-expanded=\{headOpen\}/, 'не aria-pressed: это раскрывашка')
+  assert.match(
+    button,
+    /aria-label=\{headOpen \? tr\('room\.head\.fold'\) : tr\('room\.head\.unfold'\)\}/,
+    'подпись меняется вместе с состоянием и переведена',
+  )
+  // Раскладка комнаты хранится одной записью: отдельный ключ был бы вторым
+  // местом, где её забывают почистить.
+  assert.match(session, /JSON\.stringify\(\{ left: leftOpen, right: rightOpen, head: headOpen \}\)/)
+  assert.match(session, /head: saved\.head !== false/, 'старая запись без поля — шапка развёрнута')
+})

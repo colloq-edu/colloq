@@ -1250,13 +1250,23 @@
     await tick()
     const find = () => root?.querySelector<HTMLElement>('.cm-content') ?? null
     const node = find()
+    /*
+     * `preventScroll` — потому что экран ведёт тетрадь, а не фокус.
+     *
+     * Голый `focus()` прокручивает КАЖДЫЙ прокручиваемый предок так, чтобы
+     * поле стало видно «как-нибудь», и делает это минимальным ходом. Именно он
+     * и оставлял Shift+Enter посреди следующей ячейки: тетрадь уже вела экран
+     * к её верху с местом под тулбар, а фокус тут же обрывал ход и доводил до
+     * первой строки у самого края. Куда везти — решено одним местом
+     * (`reveal` в Notebook.svelte); здесь берут только курсор.
+     */
     if (node) {
-      node.focus()
+      node.focus({ preventScroll: true })
       return
     }
     // The cell was inserted or unparked a moment ago and CodeMirror has not
     // been built yet.
-    requestAnimationFrame(() => find()?.focus())
+    requestAnimationFrame(() => find()?.focus({ preventScroll: true }))
   }
 
   function enter() {
@@ -1959,7 +1969,12 @@
     >
       <!-- Out of flow and above the body: a toolbar that appeared in flow would
            push the cell down the moment the pointer arrived. -->
+      <!-- Признак для тетради: она меряет этот ряд, чтобы оставить ему место
+           над ячейкой, к которой ведёт экран (см. lib/cell-scroll.ts). Ряд
+           стоит вне потока, и без замера Shift+Enter увозил его за верхний
+           край — тулбар оказывался ровно там, куда не смотрят. -->
       <div
+        data-cell-toolbar
         class={cn(
           'absolute bottom-full right-0 z-10 flex items-center gap-0.5 bg-raised px-1.5 py-0.5',
           'opacity-0 group-hover:opacity-100 focus-within:opacity-100',

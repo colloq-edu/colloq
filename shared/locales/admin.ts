@@ -1,6 +1,78 @@
 import type {MessageCatalog} from '../i18n-types.js'
 
 export const adminMessages: MessageCatalog = {
+  "admin.seminar.settingsMenu": {
+    "ru": "Настройки",
+    "en": "Settings"
+  },
+  "admin.seminar.settingsSubtitle": {
+    "ru": "права участников и ресурсы",
+    "en": "participant permissions and resources"
+  },
+  "admin.resources.notSaved": {
+    "ru": "Память не сохранилась.",
+    "en": "The memory limit was not saved."
+  },
+  "admin.resources.notApplied": {
+    "ru": "Занятие создано, но память осталась умолчанием окружения: изменить её можно в настройках занятия.",
+    "en": "The class was created, but its memory stayed at the environment default: change it in the class settings."
+  },
+  "admin.resources.title": {
+    "ru": "Ресурсы",
+    "en": "Resources"
+  },
+  "admin.resources.description": {
+    "ru": "Сколько машины достаётся ядру этой комнаты. Память можно поднять и во время занятия — ядро при этом не перезапускается.",
+    "en": "How much of the machine this room's kernel gets. Memory can be raised mid-class; the kernel is not restarted."
+  },
+  "admin.resources.memoryLabel": {
+    "ru": "Память ядра комнаты, ГБ",
+    "en": "Memory for the room's kernel, GB"
+  },
+  "admin.resources.gb": {
+    "ru": "ГБ",
+    "en": "GB"
+  },
+  "admin.resources.useDefault": {
+    "ru": "вернуть умолчание окружения",
+    "en": "back to the environment default"
+  },
+  "admin.resources.hint": {
+    "ru": "На машине {p0} ГБ, свободно {p1} ГБ; по умолчанию для окружения {p2} — {p3} ГБ.",
+    "en": "The machine has {p0} GB, {p1} GB free; the default for environment {p2} is {p3} GB."
+  },
+  "admin.resources.thisEnvironment": {
+    "ru": "этого окружения",
+    "en": "this environment"
+  },
+  "admin.resources.overFree": {
+    "ru": "Это больше, чем свободно на машине прямо сейчас. Ядро может не подняться — или поднимется, когда освободится соседняя комната.",
+    "en": "That is more than the machine has free right now. The kernel may not start — or it will once a neighbouring room closes."
+  },
+  "admin.resources.envUsesGpu": {
+    "ru": "выбранное окружение берёт карту",
+    "en": "the chosen environment takes the card"
+  },
+  "admin.resources.envNoGpu": {
+    "ru": "выбранное окружение карту не берёт",
+    "en": "the chosen environment does not take the card"
+  },
+  "admin.resources.vramShared": {
+    "ru": "Видеопамять делят все комнаты на карте, и она не ограничивается: задать её комнате нечем.",
+    "en": "Video memory is shared by every room on the card and is not limited: there is nothing to set here."
+  },
+  "admin.resources.cpus": {
+    "ru": "{p0} ядер на машине; сколько их у комнаты, задаёт инстанс.",
+    "en": "{p0} cores on the machine; how many a room gets is an instance setting."
+  },
+  "admin.resources.moreCards": {
+    "ru": " и ещё {p0}",
+    "en": " and {p0} more"
+  },
+  "admin.resources.unknown": {
+    "ru": "Сколько на машине памяти и карт — сейчас неизвестно.",
+    "en": "How much memory and how many cards the machine has is not known right now."
+  },
   "admin.teaching": {
     "ru": "Преподавание",
     "en": "Teaching"

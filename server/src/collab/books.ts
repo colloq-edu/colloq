@@ -39,6 +39,7 @@ import {
 } from '@shared/notebook'
 import { parseIpynb, writeIpynb, type FlatCell } from '@shared/ipynb'
 import { baseOf, isInside, kindOf } from '@shared/paths'
+import { shelveCellImages, withInlinedImages } from '../notebook-images.js'
 import { getSessionDoc, peekSessionDoc } from './index.js'
 import { makeFile, readText, statPath, writeText } from '../workspace.js'
 
@@ -91,6 +92,22 @@ function flatten(cells: Y.Array<any>): FlatCell[] {
 }
 
 /**
+ * То же самое, но для ФАЙЛА: картинки заметок возвращаются вложениями.
+ *
+ * В документе они лежат ссылкой на полку комнаты (shared/images.ts) — ради
+ * этого ссылка и заведена, — а файл несут к себе и открывают чем угодно. Без
+ * этого тетрадь с условиями-картинками доезжала бы до студента пустыми
+ * рамками.
+ *
+ * Отдельной функцией, а не флагом у `flatten`, потому что второй читатель
+ * тетради — оракул (`bookText`), и ему в запрос модели раскодированный
+ * мегабайт картинки не нужен и никогда не отправлялся.
+ */
+function flattenForFile(sessionId: string, cells: Y.Array<any>): FlatCell[] {
+  return withInlinedImages(sessionId, flatten(cells))
+}
+
+/**
  * Переписать файлы всех тетрадей комнаты.
  *
  * Все, а не одну изменившуюся: сравнение с тем, что уже на диске, стоит дешевле
@@ -106,7 +123,7 @@ export function projectBooks(sessionId: string): boolean {
   const { doc } = open
   let wrote = false
   for (const { book, cells } of allBooks(doc)) {
-    const text = writeIpynb(flatten(cells))
+    const text = writeIpynb(flattenForFile(sessionId, cells))
     const now = readText(sessionId, book.path)
     if (now && !now.binary && now.text === text) continue
     if (writeText(sessionId, book.path, text)) wrote = true
@@ -262,9 +279,17 @@ export function openBook(sessionId: string, path: string): OpenBookResult {
     made = book
     const cells = bookCells(doc, book.root)
     if (cells.length === 0) {
+      /*
+       * Картинки — на полку комнаты, а в текст ячейки ссылка на них.
+       *
+       * Тетрадь лекции с условиями-картинками весит мегабайты, и до этой
+       * строки весь этот base64 переезжал в документ комнаты, то есть каждому
+       * вошедшему и в каждый снимок (server/src/notebook-images.ts).
+       */
+      const shelved = flat.map((cell) => shelveCellImages(sessionId, cell))
       cells.push(
-        flat.length > 0
-          ? flat.map((cell) => createCell(cell.type, cell.source))
+        shelved.length > 0
+          ? shelved.map((cell) => createCell(cell.type, cell.source))
           : [createCell('code', '')],
       )
     }

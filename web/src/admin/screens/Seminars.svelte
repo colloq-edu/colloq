@@ -10,10 +10,17 @@
   import { people, ruleRefusal, runningLine } from '@/admin/panel'
   import { seminarLink } from '@/lib/seminar-link'
   import { cn } from '@/lib/utils'
-  import { LIMITS, type AdminEnvironment, type AdminSeminar, type ImportPreview } from '@shared/admin'
+  import {
+    LIMITS,
+    type AdminEnvironment,
+    type AdminSeminar,
+    type ImportPreview,
+    type InstanceResources,
+  } from '@shared/admin'
   import { copyText } from '@/lib/clipboard'
   import { plural } from '@/lib/plural'
   import RoomRulesRows from '@/components/RoomRulesRows.svelte'
+  import Resources from '@/admin/ui/Resources.svelte'
   import type { RoomRules } from '@shared/rules'
 
   /**
@@ -651,6 +658,55 @@
    */
   let rulesErrorText = $state<(() => string | null) | null>(null)
   const rulesError = $derived(rulesErrorText?.() ?? null)
+
+  /* ------------------------------------------------------------- ресурсы */
+
+  /**
+   * Чем располагает машина — то же чтение, что и в форме нового занятия.
+   *
+   * Спрашивается при открытии окна настроек, а не при загрузке списка: список
+   * открывают на каждой смене вкладки, а свободная память нужна ровно тому,
+   * кто пришёл её менять.
+   */
+  let resources = $state<InstanceResources | null>(null)
+  let memoryBusy = $state(false)
+  let memoryErrorText = $state<(() => string | null) | null>(null)
+  const memoryError = $derived(memoryErrorText?.() ?? null)
+
+  function readResources(): void {
+    void adminApi
+      .resources()
+      .then((r: InstanceResources) => (resources = r))
+      .catch(() => (resources = null))
+  }
+
+  /**
+   * Поменять память комнате — и она поменяется прямо сейчас.
+   *
+   * Сервер применяет число к живому контейнеру через `docker update`, без
+   * перезапуска ядра: преподаватель, чьё ядро только что убили по памяти,
+   * добавляет гигабайты и запускает ту же ячейку заново, не потеряв ни
+   * переменных семинара, ни открытого терминала. Здесь поэтому нет ни
+   * подтверждения, ни предупреждения о потере состояния — терять нечего.
+   */
+  async function setMemory(seminar: AdminSeminar, mb: number | null): Promise<void> {
+    memoryBusy = true
+    memoryErrorText = null
+    try {
+      const updated = await adminApi.updateSeminar(seminar.id, { memoryMb: mb })
+      replace(updated)
+      ruling = updated
+      // Полоска «сколько машины занято» после этого другая: свободная память
+      // изменилась ровно на то, что комната только что взяла или отдала.
+      readResources()
+    } catch (cause: unknown) {
+      noteDeadCookie(cause)
+      memoryErrorText = () =>
+        cause instanceof AdminApiError ? cause.message : tr('admin.resources.notSaved')
+    } finally {
+      memoryBusy = false
+    }
+  }
 
   async function setRule(seminar: AdminSeminar, patchRules: Partial<RoomRules>): Promise<void> {
     rulesBusy = true
@@ -1372,9 +1428,13 @@
                     role="menuitem"
                     type="button"
                     class="{ITEM} text-ink hover:bg-raised"
-                    onclick={() => (ruling = seminar)}
+                    onclick={() => {
+                      ruling = seminar
+                      memoryErrorText = null
+                      readResources()
+                    }}
                   >
-                    {tr("admin.rules")}
+                    {tr('admin.seminar.settingsMenu')}
                   </button>
                   <button
                     role="menuitem"
@@ -1513,7 +1573,7 @@
           <h2 id="seminar-rules-title" class="min-w-0 truncate text-title font-semibold text-ink">
             {ruling.name}
           </h2>
-          <span class="shrink-0 text-2xs text-muted">{tr("admin.participant.permissions")}</span>
+          <span class="shrink-0 text-2xs text-muted">{tr('admin.seminar.settingsSubtitle')}</span>
         </div>
         <!--
           Чужая комната, и в ней идёт пара. Подтверждения здесь нет намеренно:
@@ -1534,6 +1594,27 @@
           busy={rulesBusy}
           onchange={(patch) => void setRule(ruling as AdminSeminar, patch)}
         />
+
+        <!--
+          Тот же раздел и тот же компонент, что в форме нового занятия.
+
+          Настройка, которую в двух местах называют по-разному и считают
+          по-разному, — это две настройки; здесь она вдобавок применяется к
+          ЖИВОЙ комнате, и ровно за этим сюда и приходят: ядро убили по памяти,
+          пара идёт, добавить гигабайты надо сейчас.
+        -->
+        <div class="border-t border-line-soft py-4">
+          <h3 class="text-ui font-semibold text-ink">{tr('admin.resources.title')}</h3>
+          <p class="mb-3 mt-1.5 text-2xs text-muted">{tr('admin.resources.description')}</p>
+          <Resources
+            {resources}
+            environment={ruling.environment ?? ''}
+            memoryMb={ruling.memoryMb ?? null}
+            busy={memoryBusy}
+            refusal={memoryError}
+            onmemory={(mb) => void setMemory(ruling as AdminSeminar, mb)}
+          />
+        </div>
       </div>
       <div class="flex items-center gap-3 border-t border-line px-5 py-3">
         <p class={cn('min-w-0 flex-1 text-2xs', rulesError ? 'text-danger' : 'text-muted')}>

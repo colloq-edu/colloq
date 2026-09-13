@@ -1313,6 +1313,22 @@ export const serverMessages: MessageCatalog = {
     "ru": "Ядро остановилось во время выполнения. Очередь ячеек очищена. Перезапустите ядро, чтобы продолжить.",
     "en": "The kernel stopped during execution. Queued cells were removed. Restart the kernel to continue."
   },
+  "server.theContainerWasKilledByMemoryLimit.6ab1f2": {
+    "ru": "Контейнер комнаты убит по памяти: лимит {p0}, занято {p1}. Поднимите KERNEL_MEM в .env этой машины или считайте меньшими порциями.",
+    "en": "The room's container was killed by memory: the limit is {p0} and {p1} was in use. Raise KERNEL_MEM in this machine's .env, or work in smaller batches."
+  },
+  "server.theContainerWasKilledByMemoryOnCell.0d3c74": {
+    "ru": "Контейнер комнаты убит по памяти: лимит {p0}, занято {p1} на ячейке {p2}. Поднимите KERNEL_MEM в .env этой машины или считайте меньшими порциями.",
+    "en": "The room's container was killed by memory: the limit is {p0} and {p1} was in use on cell {p2}. Raise KERNEL_MEM in this machine's .env, or work in smaller batches."
+  },
+  "server.theRoomContainerStoppedWithCode.b72e19": {
+    "ru": "Контейнер комнаты остановился, код выхода {p0}. Последнее в его журнале: {p1}",
+    "en": "The room's container stopped with exit code {p0}. The last thing in its log: {p1}"
+  },
+  "server.theKernelProcessEndedWithoutRunningOut.4fd8a1": {
+    "ru": "Процесс ядра завершился не по памяти: в контейнере занято {p0} из {p1}. Последнее в журнале контейнера: {p2}",
+    "en": "The kernel process ended without running out of memory: the container was using {p0} of {p1}. The last thing in its log: {p2}"
+  },
   "server.theKernelStoppedRestartItToRun.911803": {
     "ru": "Ядро остановилось. Перезапустите его для выполнения кода.",
     "en": "The kernel stopped. Restart it to run anything."
@@ -3388,6 +3404,18 @@ export const serverMessages: MessageCatalog = {
   "server.linkPreview.roomDescription": {
     "ru": "Занятие в Colloq: общий ноутбук, слайды и задания по одной ссылке.",
     "en": "A class in Colloq: shared notebook, slides and tasks behind one link."
+  },
+  "server.memoryMustBeWholeMegabytes": {
+    "ru": "Память комнаты задаётся целым числом мегабайт.",
+    "en": "Room memory is set as a whole number of megabytes."
+  },
+  "server.memoryOutOfRange": {
+    "ru": "Памяти комнате можно выдать от {p0} до {p1} МБ: меньше не поднимется ядро, больше не останется самой машине.",
+    "en": "A room may be given between {p0} and {p1} MB: less and the kernel will not start, more and nothing is left for the machine itself."
+  },
+  "server.memoryIsStaffOnly": {
+    "ru": "Память комнате назначает преподаватель.",
+    "en": "Only staff can set a room's memory."
   },
   "server.linkPreview.imageAlt": {
     "ru": "Экран входа Colloq: «Вы входите в…», поле для имени и кнопка «Войти на занятие»",
