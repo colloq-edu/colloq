@@ -23,6 +23,7 @@ import {
   purgeCouncilOf,
 } from '../server/src/control.js'
 import { attemptsOf, oracleOf, resetCouncilCache, setOracle } from '../server/src/council.js'
+import { listActivity } from '../server/src/activity.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
 import {
   cellId,
@@ -41,6 +42,7 @@ import type {
   CouncilBoard,
   CouncilMine,
   CouncilOracle,
+  CouncilShown,
 } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
 
@@ -157,6 +159,18 @@ function lastCount(who: Person, cell: string): { submitted: number; total: numbe
   return null
 }
 
+/**
+ * Последний кадр «что на экране» этому человеку. `undefined` — кадра не было
+ * вовсе (это не то же самое, что `null`: `null` — «убрали с экрана»).
+ */
+function lastShown(who: Person, cell: string): CouncilShown | null | undefined {
+  for (let i = who.sock.heard.length - 1; i >= 0; i--) {
+    const m = who.sock.heard[i]
+    if (m.t === 'council:shown' && m.cellId === cell) return m.shown
+  }
+  return undefined
+}
+
 function lockOf(at: Room): string {
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
   return found ? cellLock(found.cell) : 'нет такой'
@@ -214,7 +228,10 @@ function frames(at: Room): { full: number; patch: number } {
   return { full, patch }
 }
 
-function council(at: Room, settings?: { studentRun?: boolean | 'request' }): void {
+function council(
+  at: Room,
+  settings?: { studentRun?: boolean | 'request'; namesOnProjector?: boolean },
+): void {
   assert.equal(
     say(at, at.teacher, { t: 'cell:lock', cellId: at.cell, state: 'council', settings }),
     null,
@@ -318,8 +335,9 @@ test('сдать и изменить: группы считаются тольк
 
 /* -------------------------------------------------------- действия ведущего */
 
-test('«показать классу» кладёт текст в общую ячейку рукой преподавателя', () => {
+test('«показать классу» не трогает текст ячейки, а едет подписанной плашкой всем', () => {
   const at = room()
+  const task = '# задание: посчитайте x'
   council(at)
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
   say(at, at.petya, { t: 'council:submit', cellId: at.cell })
@@ -340,13 +358,171 @@ test('«показать классу» кладёт текст в общую я
     }),
     null,
   )
+
+  // Главное: заготовка на месте. Прежде здесь лежало 'x = 42' — правка от
+  // имени преподавателя, которой он не делал.
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
-  assert.equal(cellSource(found!.cell).toString(), 'x = 42')
+  assert.equal(cellSource(found!.cell).toString(), task, 'показ переписал общую ячейку')
+
+  // Плашка уехала ВСЕЙ комнате, а не одному пульту: подписанной и с кодом.
+  const seen = lastShown(at.masha, at.cell)
+  assert.equal(seen?.participantId, at.petya.payload.participantId)
+  assert.equal(seen?.name, 'Петя')
+  assert.equal(seen?.text, 'x = 42')
+  assert.equal(seen?.shownBy, 'Ада')
+  assert.ok((seen?.shownAt ?? 0) > 0, 'у показа нет времени')
+  assert.equal(seen?.variant, 1)
+  assert.equal(seen?.alsoWrote, 0)
+  assert.equal(seen?.run, null, 'преподаватель ничего не запускал')
+  // И автору — тем же кадром, и своим листом: у себя он видит «ваш вариант».
+  assert.equal(lastShown(at.petya, at.cell)?.participantId, at.petya.payload.participantId)
   assert.equal(lastMine(at.petya, at.cell)?.shown, true)
   assert.equal(board(at).attempts[0].shown, true)
 
-  // Общий текст в консилиуме по-прежнему закрыт: показанное правит преподаватель.
+  // Общий текст в консилиуме по-прежнему закрыт: ячейка осталась ячейкой.
   assert.equal(lockOf(at), 'council')
+  closeControlRoom(at.id)
+})
+
+test('«убрать с экрана» обнуляет плашку у всех, и текст ячейки снова ни при чём', () => {
+  const at = room()
+  const task = '# задание: посчитайте x'
+  council(at)
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.teacher, {
+    t: 'council:show',
+    cellId: at.cell,
+    participantId: at.petya.payload.participantId,
+  })
+
+  // Убрать вправе только ведущий — тем же правилом, что и показать.
+  assert.match(
+    say(at, at.masha, { t: 'council:show:clear', cellId: at.cell }) ?? '',
+    /преподавател/i,
+  )
+  assert.equal(say(at, at.teacher, { t: 'council:show:clear', cellId: at.cell }), null)
+
+  assert.equal(lastShown(at.masha, at.cell), null, 'плашка у соседа осталась')
+  assert.equal(lastShown(at.petya, at.cell), null)
+  assert.equal(lastMine(at.petya, at.cell)?.shown, false)
+  assert.equal(board(at).attempts[0].shown, false)
+  const found = findCell(getSessionDoc(at.id).doc, at.cell)
+  assert.equal(cellSource(found!.cell).toString(), task)
+  closeControlRoom(at.id)
+})
+
+test('показ другого сменяет плашку, а не кладёт вторую', () => {
+  const at = room()
+  council(at)
+  const petya = at.petya.payload.participantId
+  const masha = at.masha.payload.participantId
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'x = 43' })
+  say(at, at.masha, { t: 'council:submit', cellId: at.cell })
+
+  say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
+  say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: masha })
+
+  assert.equal(lastShown(at.petya, at.cell)?.participantId, masha)
+  assert.equal(lastMine(at.petya, at.cell)?.shown, false, 'с прежнего отметка не снялась')
+  assert.equal(lastMine(at.masha, at.cell)?.shown, true)
+  assert.equal(
+    attemptsOf(at.id, at.cell).filter((one) => one.shown).length,
+    1,
+    'на экране двое сразу',
+  )
+  closeControlRoom(at.id)
+})
+
+test('автор переписал показанный текст — плашка уходит у всей комнаты', () => {
+  const at = room()
+  council(at)
+  const petya = at.petya.payload.participantId
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
+  assert.equal(lastShown(at.masha, at.cell)?.text, 'x = 42')
+
+  /*
+   * «На экране» приклеено к тексту, а не к человеку (saveDraft), — но знал об
+   * этом только сам автор: у соседа под ячейкой продолжал висеть код, которого
+   * больше нет ни у кого.
+   */
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 43' })
+  assert.equal(lastShown(at.masha, at.cell), null)
+  closeControlRoom(at.id)
+})
+
+test('имена на проекторе выключены: «Вариант N» и ни одного имени в кадре', () => {
+  const at = room()
+  council(at, { namesOnProjector: false })
+  const petya = at.petya.payload.participantId
+  // Маша сдала первой — значит, вариант Пети второй: номер по времени сдачи.
+  say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
+  say(at, at.masha, { t: 'council:submit', cellId: at.cell })
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
+
+  const seen = lastShown(at.masha, at.cell)
+  assert.equal(seen?.name, null, 'имя доехало до чужого браузера')
+  assert.equal(seen?.color, null)
+  assert.equal(seen?.avatar, null)
+  assert.equal(seen?.variant, 2)
+  assert.equal(seen?.participantId, petya)
+  // И ни в одном кадре этому человеку имени автора нет вовсе — ни в плашке,
+  // ни где-либо ещё: стопку он не получает.
+  assert.ok(
+    !JSON.stringify(at.masha.sock.heard.filter((m) => m.t === 'council:shown')).includes('Петя'),
+    'имя автора уехало студенту',
+  )
+
+  // Ручку щёлкнули обратно — подпись приезжает именем, тем же кадром.
+  say(at, at.teacher, {
+    t: 'cell:lock',
+    cellId: at.cell,
+    state: 'council',
+    settings: { namesOnProjector: true },
+  })
+  assert.equal(lastShown(at.masha, at.cell)?.name, 'Петя')
+  assert.equal(lastShown(at.masha, at.cell)?.variant, 2, 'номер переехал от чужого нажатия')
+  closeControlRoom(at.id)
+})
+
+test('«так же написали ещё K» считается по сданным и без автора', () => {
+  const at = room()
+  council(at)
+  const petya = at.petya.payload.participantId
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 1' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.masha, { t: 'council:draft', cellId: at.cell, text: 'x = 1  # то же самое' })
+  say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
+  assert.equal(lastShown(at.masha, at.cell)?.alsoWrote, 0, 'несданное посчитали')
+
+  say(at, at.masha, { t: 'council:submit', cellId: at.cell })
+  say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
+  assert.equal(lastShown(at.masha, at.cell)?.alsoWrote, 1)
+  closeControlRoom(at.id)
+})
+
+test('показ и снятие ложатся в события занятия — с автором в subjectId', () => {
+  const at = room()
+  council(at)
+  const petya = at.petya.payload.participantId
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
+  say(at, at.teacher, { t: 'council:show:clear', cellId: at.cell })
+
+  const events = listActivity(at.id, { level: 'normal', category: 'council' }).events
+  const shown = events.find((one) => one.kind === 'council.shown')
+  const unshown = events.find((one) => one.kind === 'council.unshown')
+  assert.equal(shown?.actor?.id, at.teacher.payload.participantId)
+  assert.equal(shown?.details.subjectId, petya)
+  assert.equal(shown?.details.cellId, at.cell)
+  assert.equal(unshown?.details.subjectId, petya)
   closeControlRoom(at.id)
 })
 
@@ -749,13 +925,12 @@ test('после звонка попытки не принимаются, а з�
 
 /* -------------------------------------------------------------- задание */
 
-test('опоздавший сеется заданием, а не решением, которое показали классу', () => {
+test('опоздавший сеется заданием, а не переписанной заготовкой', () => {
   const at = room()
   // Тот самый текст, что лежит в ячейке к моменту открытия консилиума.
   const task = '# задание: посчитайте x'
   council(at)
 
-  // Петя сдал, преподаватель показал: общий текст ячейки — уже чужое решение.
   say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
   say(at, at.petya, { t: 'council:submit', cellId: at.cell })
   say(at, at.teacher, {
@@ -763,14 +938,23 @@ test('опоздавший сеется заданием, а не решение
     cellId: at.cell,
     participantId: at.petya.payload.participantId,
   })
+  /*
+   * Показ общий текст больше не трогает — а преподаватель его правит: дописал
+   * условие посреди консилиума, и с этой секунды «то, что лежит в ячейке
+   * сейчас» уже не то задание, с которым сидит класс.
+   */
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
   assert.ok(found)
-  assert.equal(cellSource(found.cell).toString(), 'x = 42', 'показ переписал общий текст')
+  assert.equal(cellSource(found.cell).toString(), task, 'показ переписал общий текст')
+  getSessionDoc(at.id).doc.transact(() => {
+    const source = cellSource(found.cell)
+    source.insert(source.length, '\n# и y тоже')
+  })
 
   /*
-   * Клава заходит по ссылке уже после показа. Раньше её лист сеялся общим
-   * текстом — то есть решением Пети, — и одно нажатие «Сдать» отправляло её в
-   * его группу. Теперь в приветственной пачке едет задание.
+   * Клава заходит по ссылке уже после этого. Раньше её лист сеялся общим
+   * текстом — то есть тем, что в ячейке сейчас. Теперь в приветственной пачке
+   * едет задание, снятое на переходе замка.
    */
   const late = join(at.id, `${at.id}_late`, 'Клава', 'participant')
   const mine = lastMine(late, at.cell)
@@ -780,6 +964,34 @@ test('опоздавший сеется заданием, а не решение
   // И тому, у кого попытка уже есть: лист мог не завестись, а страницу
   // перезагружают посреди пары.
   assert.equal(lastMine(at.petya, at.cell)?.seed, task)
+  closeControlRoom(at.id)
+})
+
+test('вошедший посреди показа получает плашку в приветственной пачке', () => {
+  const at = room()
+  council(at)
+  say(at, at.petya, { t: 'council:draft', cellId: at.cell, text: 'x = 42' })
+  say(at, at.petya, { t: 'council:submit', cellId: at.cell })
+  say(at, at.teacher, {
+    t: 'council:show',
+    cellId: at.cell,
+    participantId: at.petya.payload.participantId,
+  })
+
+  // Кадр «что на экране» — не перемена, а состояние: тот, кто подключился
+  // после показа, иначе сидел бы без плашки до следующего нажатия.
+  const late = join(at.id, `${at.id}_late2`, 'Клава', 'participant')
+  assert.equal(lastShown(late, at.cell)?.text, 'x = 42')
+
+  /*
+   * А там, где не показывают, приезжает `null` — и это не лишний кадр.
+   * Состояние комнаты живёт у клиента дольше сокета: вкладка, потерявшая связь
+   * до «убрать с экрана», вернулась бы с плашкой, которой у всех остальных уже
+   * нет, и стояла бы с ней до следующего нажатия преподавателя.
+   */
+  say(at, at.teacher, { t: 'council:show:clear', cellId: at.cell })
+  const later = join(at.id, `${at.id}_late3`, 'Нина', 'participant')
+  assert.equal(lastShown(later, at.cell), null)
   closeControlRoom(at.id)
 })
 

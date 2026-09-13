@@ -43,6 +43,8 @@
 
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte'
+  import { slide } from 'svelte/transition'
+  import { quintOut } from 'svelte/easing'
   import * as Y from 'yjs'
   import { Awareness } from 'y-protocols/awareness'
   import {
@@ -80,6 +82,7 @@
   } from '@/lib/council.svelte'
   import { clock } from '@/lib/history'
   import CouncilStack from '@/components/council/CouncilStack.svelte'
+  import CouncilOnScreen from '@/components/council/CouncilOnScreen.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon, { type IconName } from '@/components/ui/Icon.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
@@ -94,7 +97,7 @@
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import { lockHint, lockLabel, lockPress } from '@/lib/lock-button'
   import { getSessionState } from '@/lib/session.svelte'
-  import { cn, elapsed, NOTICED_MS, spell } from '@/lib/utils'
+  import { cn, elapsed, NOTICED_MS, prefersReducedMotion, spell } from '@/lib/utils'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import {
     watchCell,
@@ -227,6 +230,22 @@
   const letters = $derived(councilLetters(mine))
   const count = $derived(session.council.counts[id] ?? null)
   const board = $derived(session.council.boards[id] ?? null)
+  /**
+   * Что преподаватель вывел на экран по этой ячейке — приезжает ВСЕЙ комнате.
+   *
+   * Показ больше не переписывает общий текст ячейки: он приходит подписанной
+   * плашкой под той же ячейкой (shared/protocol.ts · CouncilShown), а заготовка
+   * преподавателя остаётся на месте у всех.
+   */
+  const onScreen = $derived(session.council.shown[id] ?? null)
+  /**
+   * Автору второй плашки нет: его код и так перед ним, а два одинаковых блока
+   * подряд читаются как ошибка. Про себя он узнаёт раньше всех — по зелёному
+   * «Ваш вариант на экране» в подвале своего листа.
+   */
+  const showsOnScreen = $derived(
+    inCouncil && onScreen !== null && onScreen.participantId !== session.me.id,
+  )
   /*
    * Консилиум на этой ячейке закрыт — по замку или по слову сервера. Замок
    * приезжает кадром CRDT, `mine.closed` — сокетом; какой из двух дойдёт
@@ -850,6 +869,22 @@
   function setStudentRun(studentRun: CouncilSettings['studentRun']): void {
     if (!inCouncil || !session.connected || studentRun === councilSettings.studentRun) return
     session.council.lock(id, 'council', { studentRun })
+  }
+
+  /**
+   * Имена на проекторе — ручка, у которой снова есть исполнение.
+   *
+   * Её убирали из этого меню как обещание без исполнения: поле писалось в
+   * документ и не читалось ничем. Теперь его читает сервер, когда собирает
+   * подпись показанной попытки (shared/protocol.ts · CouncilShown): выключенная
+   * — и ни имени, ни цвета, ни аватара нет ни в одном кадре, а подписывает
+   * «Вариант N» — одинаково в тетради у всех, в плашке преподавателя и на
+   * проекторе.
+   */
+  function setNamesOnProjector(namesOnProjector: boolean): void {
+    if (!inCouncil || !session.connected) return
+    if (namesOnProjector === councilSettings.namesOnProjector) return
+    session.council.lock(id, 'council', { namesOnProjector })
   }
 
   // Меню закрывается снаружи: щелчок мимо, Escape, потеря замка.
@@ -2057,16 +2092,33 @@
                   <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
                 {/if}
                 <!--
-                  «Имена на проекторе» отсюда убраны, и это не потеря.
+                  «Имена на проекторе» вернулись сюда вместе с исполнением.
 
-                  Ручка писалась в документ и сравнивалась на сервере — и на
-                  этом всё: ни проекторная полоса (SessionScreen), ни `council:
-                  show`, ни счётчик имён не показывают, а проектор в своём же
-                  комментарии объясняет, почему их там нет. Переключатель,
-                  который в обе стороны не меняет ничего, — обещание без
-                  исполнения; поле в `CouncilSettings` остаётся ради старых
-                  документов и вернётся сюда вместе с исполнением.
+                  Ручку убирали, когда она писалась в документ и не читалась
+                  ничем: переключатель, который в обе стороны не меняет ничего,
+                  — обещание без исполнения. Теперь её читает сервер на подписи
+                  показанной попытки: выключенная — и в кадре нет ни имени, ни
+                  цвета, ни аватара, а подписывает «Вариант N» одинаково везде —
+                  в тетради у всех, в плашке преподавателя и на проекторе.
+                  Скрыть имя постфактум нельзя: то, что уже уехало в чужой
+                  браузер, считается показанным, — поэтому ручку и щёлкают до
+                  показа.
                 -->
+                {#if inCouncil}
+                  <label class="flex items-start gap-2 px-2.5 py-1.5 text-ui">
+                    <input
+                      type="checkbox"
+                      class="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                      checked={councilSettings.namesOnProjector}
+                      disabled={controlDisabled(session.connected)}
+                      onchange={(event) => setNamesOnProjector(event.currentTarget.checked)}
+                    />
+                    <span class="flex min-w-0 flex-1 flex-col">
+                      <span>{tr('room.ui.1258')}</span>
+                      <span class="text-2xs text-muted">{tr('room.ui.1259')}</span>
+                    </span>
+                  </label>
+                {/if}
                 {#if !inCouncil}
                   <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">{tr('room.ui.339')}</p>
                 {/if}
@@ -2539,6 +2591,27 @@
                 </div>
               {/if}
               <!--
+                Показанное классу — приставкой к СВОЕЙ ячейке, а не второй ячейкой.
+
+                Преподаватель вывел чей-то вариант: свой текст у человека
+                остаётся своим, чужой прирастает снизу — под той же кромкой, без
+                зазора, со сменой цвета полосы на positive и с подписью. Это
+                единственное место в тетради, где кромка меняет цвет посередине,
+                и живёт оно ровно столько, сколько показывают: «убрать с экрана»
+                сворачивает блок, и ячейка возвращается к одной колонке.
+
+                Складка мерена высотой (`slide`), как складка шапки: блок
+                отдаёт своё место тетради целиком, а не растворяется, оставив
+                дыру. Под `prefers-reduced-motion` — ноль, то есть мгновенно.
+              -->
+              {#if showsOnScreen && onScreen}
+                <div
+                  transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}
+                >
+                  <CouncilOnScreen shown={onScreen} />
+                </div>
+              {/if}
+              <!--
                 Переспрос про возврат — полосой во всю ячейку, а не окном
                 браузера.
 
@@ -2938,6 +3011,24 @@
                 <p class={cn(CAPS, 'text-accent-text')}>{tr('room.ui.368')} {ordinal}</p>
                 <p class="pt-1 text-2xs text-muted"> {tr('room.ui.369')} </p>
               {/if}
+            </div>
+          {/if}
+
+          <!--
+            Та же плашка — преподавателю, под стопкой.
+
+            Он ведёт по ней разговор и должен видеть ровно то, что видит класс:
+            ту же подпись (имя или «Вариант N» при выключенной ручке имён), тот
+            же код, тот же свой вывод. Разница в одной ссылке справа — «убрать с
+            экрана», и она есть только здесь.
+          -->
+          {#if leads && showsOnScreen && onScreen}
+            <div transition:slide={{ duration: prefersReducedMotion() ? 0 : 200, easing: quintOut }}>
+              <CouncilOnScreen
+                shown={onScreen}
+                mayClear
+                onclear={() => session.council.clearShown(id)}
+              />
             </div>
           {/if}
 

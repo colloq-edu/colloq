@@ -32,6 +32,7 @@ const {
   queueWords,
   ranByLine,
   sheetSeed,
+  shownOutputLines,
   withOracle,
   withPatch,
 } = await import('../web/src/lib/council.svelte.js')
@@ -191,6 +192,60 @@ test('счётчик кладётся по ячейке, соседний не �
   council.receive({ t: 'council:count', cellId: 'c2', submitted: 3, total: 3 })
   assert.equal(council.counts.c1, first)
   assert.deepEqual(council.counts.c2, { submitted: 3, total: 3 })
+})
+
+test('«что на экране» кладётся по ячейке, а null — это «убрали», а не «не было»', () => {
+  const council = new CouncilState(() => {})
+  const shown = {
+    participantId: 'p_2',
+    variant: 3,
+    name: 'Петя',
+    color: '#123456',
+    avatar: null,
+    shownBy: 'Ада',
+    shownAt: 1_700_000_000_000,
+    text: 'x = 42',
+    run: null,
+    alsoWrote: 4,
+    correct: null,
+  }
+  council.receive({ t: 'council:shown', cellId: 'c1', shown })
+  assert.equal(council.shown.c1?.name, 'Петя')
+  assert.equal(council.shown.c2, undefined, 'плашка уехала в соседнюю ячейку')
+  council.receive({ t: 'council:shown', cellId: 'c1', shown: null })
+  assert.equal(council.shown.c1, null)
+  assert.ok('c1' in council.shown, 'ключ пропал вместе с плашкой')
+})
+
+test('«убрать с экрана» — одно сообщение без адресата: на экране всегда один', () => {
+  const wire: unknown[] = []
+  const council = new CouncilState((message) => wire.push(message))
+  council.show('c1', 'p_2')
+  council.clearShown('c1')
+  assert.deepEqual(wire, [
+    { t: 'council:show', cellId: 'c1', participantId: 'p_2' },
+    { t: 'council:show:clear', cellId: 'c1' },
+  ])
+})
+
+test('вывод для проектора: строки, хвост отрезан, картинок нет', () => {
+  const run = {
+    state: 'ok',
+    execCount: 1,
+    ranMs: 400,
+    startedAt: 0,
+    by: 'host',
+    outputs: [
+      { kind: 'stream', name: 'stdout', text: 'первая\nвторая\n' },
+      { kind: 'data', data: { 'image/png': 'AAAA', 'text/plain': 'третья' }, execCount: 1 },
+      { kind: 'error', ename: 'ValueError', evalue: 'плохо', traceback: ['…'] },
+    ],
+  } as unknown as CouncilRun
+  assert.deepEqual(shownOutputLines(run, 4), ['первая', 'вторая', 'третья', 'ValueError: плохо'])
+  assert.deepEqual(shownOutputLines(run, 2), ['первая', 'вторая'])
+  assert.deepEqual(shownOutputLines(null), [], 'запуска не было — и строк нет')
+  // Картинка в ленту проектора не едет: там на неё нет ни места, ни повода.
+  assert.ok(!shownOutputLines(run, 9).some((line) => line.includes('AAAA')))
 })
 
 test('замок и ручки — одним сообщением cell:lock', () => {

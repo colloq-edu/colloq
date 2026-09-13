@@ -788,9 +788,10 @@ export class SessionState {
         message.t === 'council:board' ||
         message.t === 'council:patch' ||
         message.t === 'council:oracle' ||
-        message.t === 'council:count'
+        message.t === 'council:count' ||
+        message.t === 'council:shown'
       ) {
-        // Пять кадров консилиума — одному разборщику: он знает, кому какой
+        // Шесть кадров консилиума — одному разборщику: он знает, кому какой
         // адресован, и хранит их по ячейкам.
         this.council.receive(message)
         return

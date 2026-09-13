@@ -23,6 +23,7 @@
   import { ruleRefusal } from '@/lib/rule-refusal'
   import { REVEAL_EVENT, revealCell, type RevealTarget } from '@/lib/reveal'
   import { gridFaviconHref } from '@/lib/logo'
+  import Avatar from '@/components/ui/Avatar.svelte'
   import AvatarStack from '@/components/ui/AvatarStack.svelte'
   import Icon from '@/components/ui/Icon.svelte'
   import Notebook from '@/components/notebook/Notebook.svelte'
@@ -53,8 +54,9 @@
     rootOfCell,
     type KernelStatus,
   } from '@shared/notebook'
-  import { countLine, type CouncilCount } from '@/lib/council.svelte'
-  import type { SessionInfo } from '@shared/protocol'
+  import { countLine, shownOutputLines, type CouncilCount } from '@/lib/council.svelte'
+  import { clock } from '@/lib/history'
+  import type { CouncilShown, SessionInfo } from '@shared/protocol'
   import { copyText } from '@/lib/clipboard'
   import {
     beginVisit,
@@ -893,18 +895,20 @@
   const everyCell = watchCellNumbers(session.doc)
 
   /**
-   * Консилиумы, идущие сейчас, — для проектора: номер ячейки и «N сдали из M».
+   * Консилиумы, идущие сейчас, — для проектора: пока класс пишет, счёт «N сдали
+   * из M»; как только преподаватель вывел чей-то вариант — этот вариант, с
+   * подписью.
    *
-   * Без текстов и без имён намеренно: проектор смотрят все, а попытки видит
-   * один преподаватель. Здесь и показывать нечего, кроме счёта: чья попытка
-   * лежит в общей ячейке, знает только преподаватель (кадр `council:board`), а
-   * на эту полосу приезжают одни счётчики.
+   * Чужих попыток здесь по-прежнему нет: стопку видит один преподаватель. На
+   * полосу едет РОВНО ОДНА — та, которую он сам решил показать залу (кадр
+   * `council:shown`, он же приходит всей комнате плашкой под ячейкой). Раньше
+   * показанное ложилось в общий текст ячейки и на экране оказывалось
+   * анонимным: зал читал решение и не знал, чьё оно; полоса под ним считала
+   * сдавших, будто показа и не было.
    *
-   * Ручки «имена на проекторе» в меню замка больше нет — она писалась в
-   * документ и не читалась ничем (CellView · комментарий на её месте). Поле
-   * `namesOnProjector` в shared/notebook.ts осталось ради старых документов;
-   * вернуть ручку можно только вместе со второй половиной — сервером, который
-   * называет автора показанной попытки всей комнате, и именем в этой полосе.
+   * Имя в подписи решает ручка `namesOnProjector` — и решает на СЕРВЕРЕ: при
+   * выключенной имени в кадре нет вовсе, и подписывает «Вариант N»
+   * (shared/protocol.ts · CouncilShown). Здесь его просто рисуют.
    *
    * Замок читается из документа на каждый пересчёт, а пересчёт заказывают
    * счётчики (сокет) и нумерация ячеек (документ): консилиум, который закрыли,
@@ -912,7 +916,12 @@
    * каждую ячейку проектор не заводит — ему это и не по чину, и не по цене.
    */
   const councilsOnAir = $derived.by(() => {
-    const out: { cellId: string; ordinal: string; count: CouncilCount }[] = []
+    const out: {
+      cellId: string
+      ordinal: string
+      count: CouncilCount
+      shown: CouncilShown | null
+    }[] = []
     const numbers = everyCell.current
     for (const [cellId, count] of Object.entries(session.council.counts)) {
       const found = findCell(session.doc, cellId)
@@ -922,6 +931,7 @@
         cellId,
         ordinal: number === undefined ? '' : String(number).padStart(2, '0'),
         count,
+        shown: session.council.shown[cellId] ?? null,
       })
     }
     return out
@@ -1745,13 +1755,18 @@
       </div>
     {/if}
     <!--
-      Консилиум на проекторе — счётчик и полоса, ничего больше.
+      Консилиум на проекторе — счётчик, пока пишут, и подписанный вариант,
+      когда его вывели.
 
       Класс работает у себя, и зал должен видеть, что работа идёт: сколько
-      сдали из скольких. Ни текстов, ни имён: попытки видит преподаватель, а
-      что показать — он решает сам, и показанное ляжет в общую ячейку. Поверх
-      лекции, а не в потоке: страница документа не должна ёрзать от того, что
-      сдал ещё один человек.
+      сдали из скольких. Чужих попыток здесь нет — кроме одной, которую
+      преподаватель сам решил показать: тогда счётчик уступает место ей, потому
+      что смотрят в эту минуту на неё. И подписана она так же, как плашка в
+      тетради у каждого: то же имя (или «Вариант N»), то же время, тот же
+      вывод — один показ, одна подпись на весь зал.
+
+      Поверх лекции, а не в потоке: страница документа не должна ёрзать от
+      того, что сдал ещё один человек.
     -->
     {#if councilsOnAir.length > 0}
       <div
@@ -1763,26 +1778,77 @@
             <div class="flex items-baseline gap-4">
               <span class="text-2xs font-bold uppercase tracking-institution text-white/50"> {tr('room.ui.34')}{council.ordinal ? tr('room.ui.894', { p0: council.ordinal }) : ''}
               </span>
-              <span class="font-mono text-ui-lg tabular-nums text-white">
-                {countLine(council.count)}
-              </span>
+              {#if council.shown}
+                <!-- Справа — состояние показанного: «на экране», и отметка
+                     преподавателя рядом, если она уже стоит. Счёт сдавших
+                     уходит: в эту минуту зал смотрит не на него. -->
+                <span
+                  class={cn(
+                    'ml-auto text-2xs font-bold uppercase tracking-institution',
+                    council.shown.correct === false ? 'text-warning' : 'text-positive',
+                  )}
+                >
+                  {tr('room.ui.52')}{council.shown.correct === null
+                    ? ''
+                    : ` · ${council.shown.correct ? tr('room.ui.1225') : tr('room.ui.1226')}`}
+                </span>
+              {:else}
+                <span class="font-mono text-ui-lg tabular-nums text-white">
+                  {countLine(council.count)}
+                </span>
+              {/if}
             </div>
-            <!--
-              Полоса растёт масштабом, а не шириной.
+            {#if council.shown}
+              {@const shown = council.shown}
+              {@const lines = shownOutputLines(council.shown.run)}
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                {#if shown.name !== null}
+                  <Avatar name={shown.name} color={shown.color ?? '#888888'} avatar={shown.avatar} size="sm" />
+                  <span class="text-prompt-sm font-bold text-white">{shown.name}</span>
+                {:else}
+                  <!-- Имена на проекторе выключены: номер варианта вместо имени
+                       и пустой кружок вместо лица — тот же кадр, что в тетради. -->
+                  <span class="h-6 w-6 shrink-0 rounded-full bg-white/15" aria-hidden="true"></span>
+                  <span class="text-prompt-sm font-bold text-white">
+                    {tr('room.ui.1255', { p0: shown.variant })}
+                  </span>
+                {/if}
+                <span class="text-ui text-white/50">
+                  {tr('room.ui.1256')}{shown.shownAt === null ? '' : ` · ${clock(shown.shownAt)}`}{shown.alsoWrote >
+                  0
+                    ? ` · ${tr('room.ui.1257', { count: shown.alsoWrote })}`
+                    : ''}
+                </span>
+              </div>
+              <!--
+                Код — простым моноширинным, без подсветки: краски тетради
+                набраны под белый лист, и на чёрном половина их растворяется.
+                Зал читает форму решения, а не цвет его литералов.
+              -->
+              <pre
+                class="overflow-x-auto whitespace-pre font-mono text-prompt-sm text-white">{shown.text}</pre>
+              {#if lines.length > 0}
+                <pre
+                  class="overflow-x-auto whitespace-pre font-mono text-ui-lg text-white/50">{lines.join('\n')}</pre>
+              {/if}
+            {:else}
+              <!--
+                Полоса растёт масштабом, а не шириной.
 
-              Единственное место в комнате, где анимировалась геометрия: ширина
-              стоит layout на каждом кадре перехода, и делала она это на
-              проекторе, поверх страницы лекции, каждый раз, когда кто-то сдал.
-              `scaleX` от левого края даёт ту же картинку на композиторе — так
-              же сделана полоса загрузки в панели файлов. Ярус тот же, что у
-              панели (220 мс): 300 выше всего, что продукт себе позволяет.
-            -->
-            <div class="h-1 w-full bg-white/15">
-              <div
-                class="h-full w-full origin-left bg-white transition-transform duration-panel ease-out"
-                style:transform={`scaleX(${council.count.total > 0 ? council.count.submitted / council.count.total : 0})`}
-              ></div>
-            </div>
+                Единственное место в комнате, где анимировалась геометрия: ширина
+                стоит layout на каждом кадре перехода, и делала она это на
+                проекторе, поверх страницы лекции, каждый раз, когда кто-то сдал.
+                `scaleX` от левого края даёт ту же картинку на композиторе — так
+                же сделана полоса загрузки в панели файлов. Ярус тот же, что у
+                панели (220 мс): 300 выше всего, что продукт себе позволяет.
+              -->
+              <div class="h-1 w-full bg-white/15">
+                <div
+                  class="h-full w-full origin-left bg-white transition-transform duration-panel ease-out"
+                  style:transform={`scaleX(${council.count.total > 0 ? council.count.submitted / council.count.total : 0})`}
+                ></div>
+              </div>
+            {/if}
           </div>
         {/each}
       </div>

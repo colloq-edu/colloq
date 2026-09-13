@@ -16,6 +16,8 @@ export const ACTIVITY_KIND_LEVEL = {
   'class.resumed': 'important',
   'council.submitted': 'important',
   'council.withdrawn': 'normal',
+  'council.shown': 'important',
+  'council.unshown': 'normal',
   'notebook.contributed': 'detailed',
   'execution.queued': 'detailed',
   'execution.started': 'detailed',

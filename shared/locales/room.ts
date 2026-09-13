@@ -4087,12 +4087,12 @@ export const roomMessages: MessageCatalog = {
     "en": "Uploaded files are visible to the whole group"
   },
   "room.confirm.showNamed": {
-    "ru": "Показать классу вариант {name}? Ответ заменит текст общей ячейки. Автором изменения будете указаны вы.",
-    "en": "Show {name}’s answer to the class? It will replace the shared cell text. You will be recorded as the author."
+    "ru": "Показать классу вариант {name}? Его код появится подписанной плашкой под ячейкой у всех; текст ячейки не изменится, убрать можно одним нажатием.",
+    "en": "Show {name}’s answer to the class? Their code appears as a signed block under the cell for everyone; the cell text does not change, and one press takes it off."
   },
   "room.confirm.showAnswer": {
-    "ru": "Показать классу этот вариант? Ответ заменит текст общей ячейки. Автором изменения будете указаны вы.",
-    "en": "Show this answer to the class? It will replace the shared cell text. You will be recorded as the author."
+    "ru": "Показать классу этот вариант? Его код появится подписанной плашкой под ячейкой у всех; текст ячейки не изменится, убрать можно одним нажатием.",
+    "en": "Show this answer to the class? The code appears as a signed block under the cell for everyone; the cell text does not change, and one press takes it off."
   },
   "room.duration.seconds": {
     "ru": "{count} с",
@@ -4540,6 +4540,38 @@ export const roomMessages: MessageCatalog = {
     "en": {
       "one": "{count} cell",
       "other": "{count} cells"
+    }
+  },
+  "room.ui.1254": {
+    "ru": "убрать с экрана",
+    "en": "take off screen"
+  },
+  "room.ui.1255": {
+    "ru": "Вариант {p0}",
+    "en": "Answer {p0}"
+  },
+  "room.ui.1256": {
+    "ru": "показал преподаватель",
+    "en": "shown by the teacher"
+  },
+  "room.ui.1258": {
+    "ru": "Имена на проекторе",
+    "en": "Names on the projector"
+  },
+  "room.ui.1259": {
+    "ru": "Выключено — показанное подписано «Вариант N»",
+    "en": "Off — a shown answer is signed “Answer N”"
+  },
+  "room.ui.1257": {
+    "ru": {
+      "one": "так же написал ещё {count}",
+      "few": "так же написали ещё {count}",
+      "many": "так же написали ещё {count}",
+      "other": "так же написали ещё {count}"
+    },
+    "en": {
+      "one": "{count} more wrote the same",
+      "other": "{count} more wrote the same"
     }
   }
 }

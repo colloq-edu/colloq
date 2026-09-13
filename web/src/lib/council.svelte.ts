@@ -37,13 +37,22 @@ import type {
   CouncilBoard,
   CouncilMine,
   CouncilOracle,
+  CouncilShown,
 } from '@shared/protocol'
 import { plural } from './plural'
 
 /** То из серверных сообщений, что про консилиум, — ровно то, что берёт `receive`. */
 export type CouncilMessage = Extract<
   ControlServerMessage,
-  { t: 'council:mine' | 'council:board' | 'council:patch' | 'council:oracle' | 'council:count' }
+  {
+    t:
+      | 'council:mine'
+      | 'council:board'
+      | 'council:patch'
+      | 'council:oracle'
+      | 'council:count'
+      | 'council:shown'
+  }
 >
 
 export type CouncilPatch = Extract<CouncilMessage, { t: 'council:patch' }>
@@ -209,6 +218,32 @@ export function ranByLine(
 }
 
 /**
+ * Вывод показанной попытки — строками текста, для проектора.
+ *
+ * Полоса проектора — тёмная лента в двадцать пикселей высотой поверх страницы
+ * лекции, и рисовать в ней настоящий `CellOutputs` нечем: он набран под
+ * светлую тетрадь (рамки, подложки, картинки в полную ширину) и на чёрном
+ * читался бы белым прямоугольником. Зал смотрит на вывод ОДНИМ взглядом:
+ * напечатанное, имя исключения с сообщением, текстовое представление — и
+ * хвост, который в ленту всё равно не поместится, отрезан.
+ *
+ * Картинки сюда не едут вовсе: график в ленте внизу экрана — это либо марка в
+ * пятнадцать пикселей, либо половина лекции под ним.
+ */
+export function shownOutputLines(run: CouncilMine['run'], limit = 4): string[] {
+  const lines: string[] = []
+  for (const output of run?.outputs ?? []) {
+    if (output.kind === 'stream') lines.push(...output.text.replace(/\n+$/, '').split('\n'))
+    else if (output.kind === 'error') lines.push(`${output.ename}: ${output.evalue}`)
+    else if (output.data['text/plain']) {
+      lines.push(...output.data['text/plain'].replace(/\n+$/, '').split('\n'))
+    }
+    if (lines.length > limit) break
+  }
+  return lines.slice(0, limit)
+}
+
+/**
  * «вы 37-й в очереди» — место в очереди на запуск, если ручка включена.
  *
  * Мужской род без склонения: порядковое от любого числа в именительном
@@ -278,6 +313,15 @@ export class CouncilState {
   /** «N сдали из M» по ячейкам — всей комнате. */
   counts = $state.raw<Record<string, CouncilCount>>({})
   /**
+   * Что сейчас на экране по ячейкам — тоже всей комнате.
+   *
+   * Единственное место, где у студента лежит чужой код, и лежит он там по
+   * делу: это подпись к решению, которое в ту же секунду стоит на проекторе
+   * (shared/protocol.ts · CouncilShown). Ключ есть, а значение `null` — показ
+   * убрали: плашка сворачивается, а ячейка помнит, что кадр по ней приезжал.
+   */
+  shown = $state.raw<Record<string, CouncilShown | null>>({})
+  /**
    * Стопка или сводка — положение общее на все ячейки, а не своё у каждой:
    * преподаватель, переключившийся на сводку, смотрит сводку и в следующей
    * ячейке тоже — это способ смотреть, а не свойство ячейки.
@@ -344,6 +388,10 @@ export class CouncilState {
       // выдала бы стопку из одного человека за весь класс.
       if (!board) return
       this.boards = { ...this.boards, [message.cellId]: withPatch(board, message) }
+      return
+    }
+    if (message.t === 'council:shown') {
+      this.shown = { ...this.shown, [message.cellId]: message.shown }
       return
     }
     if (message.t === 'council:oracle') {
@@ -457,6 +505,11 @@ export class CouncilState {
 
   show(cellId: string, participantId: string): void {
     this.#send({ t: 'council:show', cellId, participantId })
+  }
+
+  /** «Убрать с экрана»: показ снимается с ячейки целиком, текст никто не трогал. */
+  clearShown(cellId: string): void {
+    this.#send({ t: 'council:show:clear', cellId })
   }
 
   reply(cellId: string, to: { participantId: string } | { groupKey: string }, text: string): void {

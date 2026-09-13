@@ -48,7 +48,6 @@ import {
   openValueFor,
   readCouncilSettings,
   rejectPatch,
-  replaceText,
   type CellLock,
   type CouncilSettings,
   type KernelStatus,
@@ -140,6 +139,7 @@ import {
   setMark,
   setReply,
   setShown,
+  shownFor,
   submitAttempt,
   withdrawAttempt,
   requestAttemptRun,
@@ -1407,6 +1407,36 @@ function countOut(sessionId: string, cellId: string): void {
 }
 
 /**
+ * Что на экране по этой ячейке — всей комнате, включая студентов.
+ *
+ * Единственный кадр консилиума с чужим кодом, который уходит не только
+ * преподавателю, и это ровно то, что сейчас стоит на проекторе: плашка под
+ * ячейкой у всех — это подпись к тому, на что класс и так смотрит
+ * (shared/protocol.ts · CouncilShown).
+ *
+ * Зовётся только там, где показ мог смениться: показали, убрали, автор
+ * переписал показанный текст, преподаватель досчитал его запуск, щёлкнули
+ * ручкой имён, забанили автора. На каждый кадр ядра — нет: в плашку едет
+ * только досчитавшийся запуск, и промежуточные кадры в ней ничего не меняют.
+ */
+function shownOut(sessionId: string, cellId: string): void {
+  const { settings } = councilCellOf(sessionId, cellId)
+  broadcast(sessionId, {
+    t: 'council:shown',
+    cellId,
+    shown: shownFor(sessionId, cellId, settings.namesOnProjector),
+  })
+}
+
+/** Кто сейчас на экране по ячейке — без сборки кадра; `null` — никто. */
+function shownWho(sessionId: string, cellId: string): string | null {
+  for (const attempt of attemptsOf(sessionId, cellId)) {
+    if (attempt.shown) return attempt.participantId
+  }
+  return null
+}
+
+/**
  * Номер в очереди, который каждый ждущий видел последним, — по комнате.
  *
  * Нужен, чтобы не слать кадр, в котором для человека ничего не изменилось:
@@ -1493,7 +1523,7 @@ function councilAudience(sessionId: string, cellId: string): Set<string> {
   return people
 }
 
-/** Замок сменился — хосту стопка, каждому его лист, комнате счётчик. */
+/** Замок сменился — хосту стопка, каждому его лист, комнате счётчик и экран. */
 function councilChanged(sessionId: string, cellId: string): void {
   boardOut(sessionId, cellId)
   // Замок читается один раз на всех: он один на ячейку, а листов пятьсот.
@@ -1501,6 +1531,9 @@ function councilChanged(sessionId: string, cellId: string): void {
   for (const participantId of councilAudience(sessionId, cellId))
     mineOut(sessionId, cellId, participantId, lock)
   countOut(sessionId, cellId)
+  // И «что на экране»: сюда же приходит перемена ручки имён, а она решает,
+  // чьим именем подписано показанное — или номером варианта вместо имени.
+  shownOut(sessionId, cellId)
 }
 
 /** Revoke approvals when a class/cell closes or its execution policy changes. */
@@ -1580,6 +1613,21 @@ function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload)
   for (const id of cells) {
     const { submitted, total } = countFor(sessionId, id)
     send(ws, { t: 'council:count', cellId: id, submitted, total })
+    /*
+     * И «что на экране» — кадром на каждую ячейку, даже когда показывать
+     * нечего.
+     *
+     * `null` здесь не лишний, а несущий: состояние консилиума живёт у клиента
+     * дольше сокета, и вкладка, у которой связь оборвалась ДО «убрать с
+     * экрана», вернулась бы с плашкой, которой у всех остальных уже нет, и
+     * стояла бы с ней до следующего нажатия преподавателя. Цена — кадр в
+     * шестьдесят байт рядом со счётчиком, который по тем же ячейкам едет уже.
+     */
+    send(ws, {
+      t: 'council:shown',
+      cellId: id,
+      shown: shownFor(sessionId, id, councilCellOf(sessionId, id).settings.namesOnProjector),
+    })
   }
 }
 
@@ -1604,6 +1652,9 @@ export function purgeCouncilOf(sessionId: string, participantId: string): number
     // Попытки уже нет — кадр назовёт человека в `removed`.
     boardOut(sessionId, id, [participantId])
     countOut(sessionId, id)
+    // И плашка с его кодом, если на экране был он: забаненный уходит с экрана
+    // вместе со своей попыткой, а не остаётся висеть под ячейкой у класса.
+    shownOut(sessionId, id)
   }
   return gone
 }
@@ -3464,11 +3515,21 @@ export function dispatch(
          * «эта попытка уже в очереди» на попытку запустить НОВУЮ версию: пока
          * старый исходник не досчитается, перезапустить нечего.
          */
-        const priorText = attemptOf(sessionId, id, payload.participantId)?.text
+        const prior = attemptOf(sessionId, id, payload.participantId)
+        const priorText = prior?.text
         if (priorText !== undefined && priorText !== message.text) {
           cancelCouncilRun(sessionId, id, payload.participantId)
         }
         saveDraft(sessionId, id, payload.participantId, message.text, now)
+        /*
+         * Автор переписал показанный текст — плашка на экране больше ни о чём.
+         *
+         * `saveDraft` честно снимает «на экране» вместе с запуском и отметкой
+         * (они приклеены к тексту), но комната об этом узнавала только из
+         * своего листа автора: у остальных под ячейкой продолжал висеть код,
+         * которого больше нет ни у кого.
+         */
+        if (prior?.shown && priorText !== message.text) shownOut(sessionId, id)
       } else if (message.t === 'council:submit') {
         const alreadySubmitted = attemptOf(sessionId, id, payload.participantId)?.submittedAt != null
         if (!submitAttempt(sessionId, id, payload.participantId, now)) {
@@ -3497,35 +3558,58 @@ export function dispatch(
      * и после звонка тоже: сданное остаётся на просмотр, разобрать его после
      * пары — дело преподавателя.
      */
-    case 'council:show': {
+    case 'council:show':
+    case 'council:show:clear': {
       if (!mayLeadCouncil(payload.role)) {
         refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))
         return
       }
       const id = optionalId(message.cellId)
-      const target = optionalId(message.participantId)
-      if (!id || !target) return
-      const attempt = attemptOf(sessionId, id, target)
-      if (!attempt) {
+      if (!id) return
+      const clearing = message.t === 'council:show:clear'
+      const target = clearing ? null : (optionalId(message.participantId) ?? null)
+      if (!clearing && target === null) return
+      if (target !== null && !attemptOf(sessionId, id, target)) {
         send(ws, { t: 'error', message: tr("server.thisAttemptNoLongerExists.b490bf") })
         return
       }
-      const found = findCell(getSessionDoc(sessionId).doc, id)
-      if (!found) {
-        send(ws, { t: 'error', message: tr("server.thisCellIsNoLongerInThe.3462ea") })
-        return
-      }
       /*
-       * Обычной правкой от имени преподавателя, а не от имени сервера: это
-       * текст, который теперь читает класс, и в истории у него должен быть
-       * автор — тот, кто решил показать, а не тот, кто написал.
+       * Общий текст ячейки при показе НЕ трогается — в этом вся правка.
+       *
+       * Прежде «показать классу» переписывало `source` ячейки текстом попытки
+       * обычной правкой от имени преподавателя: заготовка исчезала у всех, в
+       * истории документа автором значился ведущий, отката не было (только
+       * печатать руками), а на экране ничто не говорило, что это чьё-то
+       * решение. Теперь показ — отметка на попытке плюс подписанный кадр
+       * комнате (`council:shown`), и ячейка остаётся ячейкой.
        */
-      applyOnBehalf(sessionId, payload.participantId, () => {
-        replaceText(cellSource(found.cell), attempt.text)
-      })
-      const changed = setShown(sessionId, id, target)
-      for (const participantId of changed) mineOut(sessionId, id, participantId)
-      boardOut(sessionId, id, [target, ...changed])
+      // Кого показывали до этого: по нему различаются «показали другого» и
+      // «нажали на том же ещё раз» — второе обновляет время подписи, но
+      // событием в истории не становится.
+      const before = shownWho(sessionId, id)
+      const changed = setShown(sessionId, id, target, clearing ? null : payload.participantId, Date.now())
+      // Убирать нечего — и говорить нечего: комнате не нужен кадр «плашки нет»
+      // там, где её и не было. А вот ПОКАЗ пересылается всегда, даже когда в
+      // строке ничего не поменялось: «Показать снова» на карточке — это и есть
+      // «обнови подпись», по нему пересчитывается «так же написали ещё K».
+      if (clearing && changed.length === 0) return
+      const touched = target === null ? changed : [...new Set([...changed, target])]
+      for (const participantId of touched) mineOut(sessionId, id, participantId)
+      boardOut(sessionId, id, touched)
+      shownOut(sessionId, id)
+      /*
+       * В историю — обоими концами: «вывел решение на экран» и «убрал». Кто
+       * решал, чей код увидит класс, и чей это был код — то же самое, что
+       * «предложил ячейку для разбора» рядом, только со стороны ведущего.
+       * `subjectId` — автор показанного, актёр — преподаватель.
+       */
+      if (clearing) {
+        appendActivity(sessionId, payload.participantId, 'council.unshown',
+          { cellId: id, ...(before ? { subjectId: before } : {}) }, payload.role)
+      } else if (before !== target) {
+        appendActivity(sessionId, payload.participantId, 'council.shown',
+          { cellId: id, ...(target ? { subjectId: target } : {}) }, payload.role)
+      }
       return
     }
 
@@ -3645,6 +3729,10 @@ export function dispatch(
             }
             mineOut(sessionId, id, target)
             boardOut(sessionId, id, [target])
+            // Досчитался запуск того, кто на экране, — под плашкой у всей
+            // комнаты появляется его вывод. Промежуточные кадры в плашку не
+            // едут (`shownFor` берёт только досчитавшийся), и слать их некуда.
+            if (over && shownWho(sessionId, id) === target) shownOut(sessionId, id)
             if (over) tellQueued(sessionId)
           },
         },
@@ -3714,6 +3802,9 @@ export function dispatch(
       setMark(sessionId, id, target, correct)
       mineOut(sessionId, id, target)
       boardOut(sessionId, id, [target])
+      // Отметка стоит и в углу проекторной карточки: «верно», сказанное вслух,
+      // на экране держится дольше голоса.
+      if (shownWho(sessionId, id) === target) shownOut(sessionId, id)
       return
     }
 

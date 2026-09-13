@@ -1457,7 +1457,7 @@ cmd_sync() {
   # половина дня лежит в журнале рядом, и файл, скопированный на ходу,
   # отстаёт на часы. `make backup` пишет согласованный снимок и не требует
   # останавливать семинар.
-  rssh "cd $REMOTE_DIR && make backup" </dev/null
+  rssh "cd $REMOTE_DIR && make backup-legacy" </dev/null
 
   say "${BOLD}2/2${OFF} забираю сюда, в $BACKUP_DIR/"
   # Каталог у каждой среды свой, и заводится он здесь же: копия, положенная в
@@ -1466,7 +1466,7 @@ cmd_sync() {
   local newest
   newest="$(rssh "ls -1t $REMOTE_DIR/backups/colloq-*.db 2>/dev/null | head -1" </dev/null || true)"
   [ -n "$newest" ] || die "на той машине копия не появилась.
-  Посмотрите руками: ssh … 'cd $REMOTE_DIR && make backup'"
+  Посмотрите руками: ssh … 'cd $REMOTE_DIR && make backup-legacy'"
   rsync -a -e "$(ssh_cmd)" "root@$INST_SSH_HOST:$newest" "$BACKUP_DIR/" \
     || die "база не приехала — не считайте данные снятыми."
   # Отдельным вызовом, а не вторым источником в предыдущем: там, где архива

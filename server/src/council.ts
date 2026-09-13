@@ -15,10 +15,16 @@ import { tr } from '@shared/i18n'
  * состояние хранится здесь `setOracle`.
  *
  * Таблица council_attempts (session_id, cell_id, participant_id, text,
- * submitted_at, updated_at, run_json, reply_json, correct, shown) с ключом
- * (session_id, cell_id, participant_id); council_oracle (session_id, cell_id,
- * oracle_json). Схему заводит `ensureCouncilSchema` при импорте модуля —
- * как lecture_notes в db.ts, только рядом с запросами к ней.
+ * submitted_at, updated_at, run_json, reply_json, correct, shown, shown_by,
+ * shown_at, shown_no) с ключом (session_id, cell_id, participant_id);
+ * council_oracle (session_id, cell_id, oracle_json). Схему заводит
+ * `ensureCouncilSchema` при импорте модуля — как lecture_notes в db.ts, только
+ * рядом с запросами к ней.
+ *
+ * «На экране» живёт ЗДЕСЬ, на попытке, а не в ячейке тетради: показ — это
+ * ссылка на чью-то попытку, а не текст (shared/protocol.ts · CouncilShown).
+ * Показанных в ячейке не больше одной, и `shownFor` собирает из неё то, что
+ * едет всей комнате.
  *
  * Кэш в памяти — на комнату целиком, с записью насквозь: снимок приходит на
  * каждую паузу в наборе от каждого из пятисот, и на каждый из них хосту
@@ -37,6 +43,7 @@ import type {
   CouncilReply,
   CouncilRun,
   CouncilRunRequest,
+  CouncilShown,
   CouncilStatus,
 } from '@shared/protocol'
 import { attemptStatus, groupAttempts } from '@shared/protocol'
@@ -66,6 +73,17 @@ export interface StoredAttempt {
   replies: CouncilReply[]
   correct: boolean | null
   shown: boolean
+  /** Кто вывел на экран (participantId преподавателя); `null` — не выводили. */
+  shownBy: string | null
+  shownAt: number | null
+  /**
+   * Номер варианта, присвоенный НА ПОКАЗЕ.
+   *
+   * Считается по времени сдачи (`variantOf`) один раз и дальше не переезжает:
+   * времена сдачи живые — сосед сдал, передумал, сдал снова, — и номер на
+   * проекторе менялся бы от чужого нажатия, пока класс на него смотрит.
+   */
+  shownNo: number | null
   /**
    * Ключ группы — `normalizeAttempt(text)`, посчитанный ОДИН РАЗ на смену текста.
    *
@@ -95,6 +113,10 @@ export function ensureCouncilSchema(): void {
       reply_json     TEXT,
       correct        INTEGER,
       shown          INTEGER NOT NULL DEFAULT 0,
+      /* Подпись показанного: кто вывел, когда и под каким номером варианта. */
+      shown_by       TEXT,
+      shown_at       INTEGER,
+      shown_no       INTEGER,
       PRIMARY KEY (session_id, cell_id, participant_id)
     );
     /* Бан спрашивает «всё этого человека в комнате» — по всем ячейкам сразу. */
@@ -122,11 +144,24 @@ export function ensureCouncilSchema(): void {
       PRIMARY KEY (session_id, cell_id)
     );
   `)
-  // Existing installations keep their attempts; add only the new nullable field.
+  // Existing installations keep their attempts; add only the new nullable fields.
   const columns = db.pragma('table_info(council_attempts)') as { name: string }[]
-  if (!columns.some((column) => column.name === 'run_request_json')) {
+  const has = (name: string) => columns.some((column) => column.name === name)
+  if (!has('run_request_json')) {
     db.exec('ALTER TABLE council_attempts ADD COLUMN run_request_json TEXT')
   }
+  /*
+   * Подпись показанного — три столбца, дописанные к живой таблице.
+   *
+   * У комнаты, которая шла на прошлой версии, показ был подменой текста: в
+   * ячейке уже лежит чьё-то решение, а подписи к нему нет и взяться ей неоткуда
+   * (кто нажал и когда, нигде не записано). Переносить нечего: `shown` у такой
+   * попытки остаётся, а плашка соберётся без времени показа — или преподаватель
+   * покажет заново, и она будет полной.
+   */
+  if (!has('shown_by')) db.exec('ALTER TABLE council_attempts ADD COLUMN shown_by TEXT')
+  if (!has('shown_at')) db.exec('ALTER TABLE council_attempts ADD COLUMN shown_at INTEGER')
+  if (!has('shown_no')) db.exec('ALTER TABLE council_attempts ADD COLUMN shown_no INTEGER')
 }
 
 ensureCouncilSchema()
@@ -145,15 +180,19 @@ interface AttemptRow {
   reply_json: string | null
   correct: number | null
   shown: number
+  shown_by: string | null
+  shown_at: number | null
+  shown_no: number | null
 }
 
 const selectRoom = db.prepare('SELECT * FROM council_attempts WHERE session_id = ?')
 const upsertAttempt = db.prepare(`
   INSERT INTO council_attempts
     (session_id, cell_id, participant_id, text, submitted_at, updated_at,
-     run_json, run_request_json, reply_json, correct, shown)
+     run_json, run_request_json, reply_json, correct, shown, shown_by, shown_at, shown_no)
   VALUES (@session_id, @cell_id, @participant_id, @text, @submitted_at, @updated_at,
-          @run_json, @run_request_json, @reply_json, @correct, @shown)
+          @run_json, @run_request_json, @reply_json, @correct, @shown,
+          @shown_by, @shown_at, @shown_no)
   ON CONFLICT(session_id, cell_id, participant_id) DO UPDATE SET
     text = excluded.text,
     submitted_at = excluded.submitted_at,
@@ -162,7 +201,10 @@ const upsertAttempt = db.prepare(`
     run_request_json = excluded.run_request_json,
     reply_json = excluded.reply_json,
     correct = excluded.correct,
-    shown = excluded.shown
+    shown = excluded.shown,
+    shown_by = excluded.shown_by,
+    shown_at = excluded.shown_at,
+    shown_no = excluded.shown_no
 `)
 const deleteOfPerson = db.prepare(
   'DELETE FROM council_attempts WHERE session_id = ? AND participant_id = ?',
@@ -283,6 +325,9 @@ function fromRow(row: AttemptRow): StoredAttempt {
     replies: repliesFrom(row.reply_json),
     correct: row.correct === null ? null : row.correct === 1,
     shown: row.shown === 1,
+    shownBy: row.shown_by ?? null,
+    shownAt: row.shown_at ?? null,
+    shownNo: row.shown_no ?? null,
   }
 }
 
@@ -303,6 +348,9 @@ function persist(attempt: StoredAttempt): void {
     reply_json: attempt.replies.length > 0 ? JSON.stringify(attempt.replies) : null,
     correct: attempt.correct === null ? null : attempt.correct ? 1 : 0,
     shown: attempt.shown ? 1 : 0,
+    shown_by: attempt.shownBy,
+    shown_at: attempt.shownAt,
+    shown_no: attempt.shownNo,
   })
 }
 
@@ -402,6 +450,9 @@ export function saveDraft(
     replies: prior?.replies ?? [],
     correct: null,
     shown: false,
+    shownBy: null,
+    shownAt: null,
+    shownNo: null,
   })
 }
 
@@ -654,17 +705,63 @@ export function setMark(
 }
 
 /**
- * «Показать классу» уже положил текст в общую ячейку; здесь — отметка на попытке.
+ * Номер варианта в ячейке — по времени сдачи, ничья по идентификатору.
+ *
+ * Нужен подписью, когда имена на проекторе выключены: «Вариант 12» вместо
+ * «Аня Соколова». Считается ОДИН раз — на показе (`setShown` кладёт его в
+ * `shownNo`), и дальше живёт числом: порядок сдачи меняется под чужими
+ * руками (сдал, передумал, сдал снова), и номер на проекторе иначе переезжал
+ * бы, пока класс на него смотрит.
+ *
+ * Те, кто ещё пишет, считаются по времени правки и оказываются в хвосте: у
+ * них времени сдачи нет, а номер показанному нужен в любом случае —
+ * преподаватель вправе вывести и несданное.
+ */
+function variantOf(attempts: readonly StoredAttempt[], participantId: string): number {
+  const order = [...attempts].sort((a, b) => {
+    const left = a.submittedAt ?? a.updatedAt
+    const right = b.submittedAt ?? b.updatedAt
+    if (left !== right) return left - right
+    return a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0
+  })
+  return order.findIndex((attempt) => attempt.participantId === participantId) + 1
+}
+
+/**
+ * «Показать классу» — отметка на попытке, и больше ничего.
+ *
+ * Общий текст ячейки при этом не трогается: показ — это ссылка на чью-то
+ * попытку (shared/protocol.ts · CouncilShown), а не подмена. Прежде здесь
+ * стояла вторая половина подмены, и снять её было нечем.
  *
  * На экране один вариант: отметка снимается с того, кого показывали до этого.
- * Возвращает, у кого она сменилась (включая нового), — им нужен `council:mine`.
+ * `participantId: null` — «убрать с экрана»: снимается со всех. Возвращает, у
+ * кого она сменилась (включая нового), — им нужен `council:mine`.
  */
-export function setShown(sessionId: string, cellId: string, participantId: string): string[] {
+export function setShown(
+  sessionId: string,
+  cellId: string,
+  participantId: string | null,
+  by: string | null,
+  at: number,
+): string[] {
+  const attempts = attemptsOf(sessionId, cellId)
+  const no = participantId === null ? null : variantOf(attempts, participantId)
   const changed: string[] = []
-  for (const attempt of attemptsOf(sessionId, cellId)) {
+  for (const attempt of attempts) {
     const shown = attempt.participantId === participantId
-    if (attempt.shown === shown) continue
-    save({ ...attempt, shown })
+    const next = shown
+      ? { shown, shownBy: by, shownAt: at, shownNo: no }
+      : { shown, shownBy: null, shownAt: null, shownNo: null }
+    if (
+      attempt.shown === next.shown &&
+      attempt.shownBy === next.shownBy &&
+      attempt.shownAt === next.shownAt &&
+      attempt.shownNo === next.shownNo
+    ) {
+      continue
+    }
+    save({ ...attempt, ...next })
     changed.push(attempt.participantId)
   }
   return changed
@@ -884,6 +981,60 @@ export function boardFor(
     attempts,
     groups,
     oracle,
+  }
+}
+
+/**
+ * Что сейчас на экране по этой ячейке — кадр всей комнате.
+ *
+ * `null` — не показывают ничего (или показанную попытку унесло: автор
+ * переписал текст, автора забанили). Показанная в ячейке одна: `setShown`
+ * снимает отметку со всех остальных, и `find` здесь — это она.
+ *
+ * `names` — ручка `namesOnProjector` с ячейки. Выключена — ни имени, ни цвета,
+ * ни аватара в кадре нет ВООБЩЕ, и подписывает номер варианта: имя, доехавшее
+ * до чужого браузера, считается показанным, а «приехало, но не рисуем» держится
+ * ровно до первого F12.
+ *
+ * Вывод — только преподавательский и только досчитавшийся: под кодом на экране
+ * класс читает то, за что отвечает ведущий. Свой запуск автора остаётся на его
+ * листе, а секундомер посреди чужого запуска на проекторе никому не нужен.
+ */
+export function shownFor(sessionId: string, cellId: string, names: boolean): CouncilShown | null {
+  const attempts = attemptsOf(sessionId, cellId)
+  const shown = attempts.find((attempt) => attempt.shown)
+  if (!shown) return null
+  const card = toAttempt(shown)
+  const run = shown.run
+  let by: string | null = null
+  if (shown.shownBy !== null) {
+    try {
+      by = getParticipant(sessionId, shown.shownBy)?.name ?? null
+    } catch {
+      /* строки участника нет — плашка без подписи лучше, чем без плашки */
+    }
+  }
+  return {
+    participantId: shown.participantId,
+    // Показ до появления номеров (или у комнаты, пережившей обновление) —
+    // считаем сейчас: подпись без номера хуже, чем номер по нынешнему порядку.
+    variant: shown.shownNo ?? variantOf(attempts, shown.participantId),
+    name: names ? card.name : null,
+    color: names ? card.color : null,
+    avatar: names ? card.avatar : null,
+    shownBy: by,
+    shownAt: shown.shownAt,
+    text: shown.text,
+    run: run && run.by === 'host' && (run.state === 'ok' || run.state === 'error') ? run : null,
+    // «так же написали ещё K» — среди СДАННЫХ и без самого автора: число под
+    // подписью отвечает на «это один такой или полкласса».
+    alsoWrote: attempts.filter(
+      (attempt) =>
+        attempt.participantId !== shown.participantId &&
+        attempt.submittedAt !== null &&
+        attempt.groupKey === shown.groupKey,
+    ).length,
+    correct: shown.correct,
   }
 }
 
