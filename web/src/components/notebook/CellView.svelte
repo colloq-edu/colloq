@@ -82,7 +82,6 @@
   import CouncilStack from '@/components/council/CouncilStack.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon, { type IconName } from '@/components/ui/Icon.svelte'
-  import Code from '@/components/ui/Code.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
   import {
     deleteCell,
@@ -516,6 +515,185 @@
     awaitRequest('cancel')
     session.council.cancelRunRequest(id, request.id)
   }
+
+  /* ---- лист: состояние словом, заготовка под рукой и клавиши */
+
+  /**
+   * Заготовка преподавателя — то, с чего лист начинался.
+   *
+   * Та же пара, что у `sheetSeed`: `mine.seed` (общий текст на момент, когда
+   * замок перевели в консилиум) главнее нынешнего общего текста, потому что
+   * после «Показать классу» в общем лежит уже чьё-то решение. Старый сервер
+   * поля не шлёт — тогда остаётся общий текст, как и при засеве листа.
+   */
+  /*
+   * Функцией, а не руной: `liveText` объявлен ниже по файлу (он про ОБЩИЙ
+   * текст ячейки и живёт среди прочего её хозяйства), а руна, читающая его
+   * отсюда, была бы обращением к переменной до объявления. Тело функции
+   * выполняется при чтении — то есть уже после, — и зависимости считаются
+   * там же, где читаются.
+   */
+  function stubText(): string {
+    return mine?.seed ?? liveText.current
+  }
+
+  /**
+   * Состояние листа ОДНИМ словом: чип в подвале и цвет полосы слева.
+   *
+   * Порядок — по тому, что человеку делать дальше. «Есть правки» впереди
+   * отметки: у преподавателя лежит не то, что на экране, и пока это так,
+   * любая отметка относится к прошлому тексту. Отметку до сегодня автор не
+   * видел вовсе: преподаватель ставил её в стопке, она доезжала в
+   * `council:mine` и умирала в нём.
+   */
+  const sheetState = $derived(
+    (submittedAt !== null && !attemptSynced) || (submittedAt === null && mine?.correct != null)
+      ? 'edited'
+      : submittedAt === null
+        ? 'draft'
+        : mine?.correct === true
+          ? 'correct'
+          : mine?.correct === false
+            ? 'wrong'
+            : 'submitted',
+  )
+  /**
+   * Разобрано — когда? Своего времени у отметки в протоколе нет
+   * (`CouncilMine.correct` — голый признак), и придумывать его ради подписи
+   * значило бы менять кадр под оформление. Поэтому берётся время последнего
+   * письма: разбор и письмо пишутся в одну минуту, а если письма нет —
+   * подпись говорит «разобрано» без часов, и это правда.
+   */
+  const reviewedAt = $derived(letters.length > 0 ? letters[letters.length - 1].at : null)
+
+  /**
+   * Вывод попытки, стёртый возвратом к заготовке.
+   *
+   * Стереть его у сервера нечем: кадра «забудь этот запуск» в `council:*` нет,
+   * а заводить его ради одной кнопки — менять протокол под оформление. Поэтому
+   * помним МОМЕНТ СТАРТА того запуска, чей вывод человек убрал вместе с
+   * текстом: следующий запуск придёт со своим `startedAt` и нарисуется сам.
+   */
+  let clearedRunAt = $state<number | null>(null)
+  const attemptRun = $derived(
+    mine?.run && mine.run.startedAt !== clearedRunAt ? mine.run : null,
+  )
+
+  /**
+   * «Восстановить» — вернуть лист к заготовке.
+   *
+   * Стёртый каркас переставал существовать: спросить его было не у кого, и
+   * преподаватель диктовал вслух. Нельзя у сданного (сданное правят после
+   * «Изменить») и нельзя, когда лист уже равен заготовке, — возвращать нечего.
+   */
+  const mayRestore = $derived(mayAttempt && submittedAt === null && sheetText !== stubText())
+  /** Вопрос «вернуть?» — на месте кнопки, без окна браузера. */
+  let restoreAsking = $state(false)
+  /**
+   * Ширина подвала — чтобы чип ужимался раньше, чем строка переносится.
+   *
+   * Подвал живёт в колонке тетради, а её ширину решают боковые панели, а не
+   * окно: на 636 px с обеими открытыми панелями «СДАНО 14:32 · ЖДЁТ РАЗБОРА»
+   * вместе с двумя кнопками не помещалось, и вниз уезжали кнопки — то есть
+   * главное. Медиазапросу этого не видно, поэтому меряется сам элемент.
+   */
+  let footerWidth = $state(0)
+  /** Ноль — ещё не мерили: до первого замера чип полный, а не урезанный. */
+  const tightFooter = $derived(footerWidth > 0 && footerWidth < 460)
+  $effect(() => {
+    if (!mayRestore) restoreAsking = false
+  })
+
+  function restoreStub(): void {
+    const current = untrack(() => sheet)
+    restoreAsking = false
+    if (!current || !mayRestore) return
+    /*
+     * Происхождение обычное (null), а не SEED, и это несущее решение: снимок
+     * обязан уехать на сервер как всякий набор — иначе у преподавателя
+     * остался бы стёртый текст, — а сам возврат обязан лечь в отмену, чтобы
+     * Cmd+Z вернул написанное. SEED делает ровно наоборот: не уезжает и не
+     * отменяется.
+     */
+    clearedRunAt = untrack(() => mine?.run?.startedAt ?? null)
+    current.doc.transact(() => replaceText(current.text, stubText()))
+  }
+
+  /**
+   * «Сдать заново»: у преподавателя лежит не то, что человек видит на листе.
+   *
+   * `submitAttempt` сюда не годится — он нарочно не пускает второе нажатие по
+   * уже сданному листу (иначе на плохой сети это пятьсот `council:submit`
+   * подряд). А здесь второе нажатие и есть смысл: дослать снимок и сдать ещё
+   * раз. Чип вернётся к «Сдано» тем же эхом, каким разошёлся.
+   */
+  function resubmitAttempt(): void {
+    if (!mayAttempt) {
+      session.showError(attemptWhy + '.')
+      return
+    }
+    if (attemptOver) {
+      session.showError(tr('room.ui.409', { p0: attemptCount ?? '' }))
+      return
+    }
+    session.council.draft(id, sheetText)
+    // Снятая попытка сдаётся заново по-настоящему (сервер поставит время), и
+    // тогда ждём эха, как обычная сдача. Сданной сервер время не переносит —
+    // ждать нечего, чип вернётся к «Сдано», как только доедет свежий снимок.
+    if (submittedAt === null) awaitMine('submit')
+    session.council.submit(id)
+  }
+
+  /**
+   * ⇧↵ на своём листе СЧИТАЕТ, а не сдаёт.
+   *
+   * Сдавало: запуска у студента не было вовсе, и пальцам, привыкшим к
+   * «выполнить и дальше», надо было куда-то попадать. Запуск появился — и с
+   * ним вернулась обычная мерка тетради: ⇧↵ считает, ⌘↵ считает не уходя,
+   * сдаёт одно ⌘⇧↵. При выключенной ручке клавиша не ругается и ничего не
+   * сдаёт: говорит словами, кто здесь запускает, и гаснет через две секунды.
+   * Тост тут был бы не к месту — это не отказ, а правило ячейки.
+   */
+  let runHint = $state(false)
+  let runHintTimer: number | undefined
+  const RUN_HINT_MS = 2000
+
+  function sheetRunKey(): void {
+    if (councilSettings.studentRun === 'request' && mayRequestRun) {
+      requestAttemptRun()
+      return
+    }
+    if (mayRunAttempt) {
+      runAttempt()
+      return
+    }
+    window.clearTimeout(runHintTimer)
+    runHint = true
+    runHintTimer = window.setTimeout(() => (runHint = false), RUN_HINT_MS)
+  }
+
+  $effect(() => () => window.clearTimeout(runHintTimer))
+
+  /**
+   * Сдача с клавиатуры — и мигание кнопки в ответ.
+   *
+   * Сочетание неудобное нарочно, а неудобное нажатие должно быть видно: без
+   * вспышки ⌘⇧↵ неотличимо от промаха по ⌘↵, потому что «сдано» приезжает
+   * эхом сервера и не мгновенно.
+   */
+  let submitFlash = $state(false)
+  let flashTimer: number | undefined
+  const FLASH_MS = 260
+
+  function submitFromKey(): void {
+    window.clearTimeout(flashTimer)
+    submitFlash = true
+    flashTimer = window.setTimeout(() => (submitFlash = false), FLASH_MS)
+    if (sheetState === 'edited') resubmitAttempt()
+    else void submitAttempt()
+  }
+
+  $effect(() => () => window.clearTimeout(flashTimer))
 
   /* ---- пульт преподавателя: колбэки для стопки и сводки */
 
@@ -1095,7 +1273,18 @@
     return `${n}${suffix}`
   }
 
+  /*
+   * Кто правит ЭТУ ячейку — и почему строки нет под своим листом.
+   *
+   * Присутствие здесь про общий Y.Text: в консилиуме его правит преподаватель,
+   * готовя эталон. У студента на экране в это время только свой лист — и
+   * строка «Мария Кузнецова редактирует здесь» читалась под ним как «она сидит
+   * в вашем листе». Что текст видит преподаватель, лист говорит подписью в
+   * шапке; больше про чужие каретки сказать нечего — их тут физически нет
+   * (свой документ, своё пустое присутствие).
+   */
   const editingHere = $derived.by(() => {
+    if (ownSheet) return null
     const names = peersHere.current.map((peer) => peer.user.name)
     if (names.length === 0) return null
     if (names.length === 1) return tr('room.ui.422', { p0: names[0] })
@@ -1627,6 +1816,35 @@
    * 525 runs of 10px the workspace was carrying.
    */
   const CAPS = 'text-2xs font-bold uppercase tracking-label'
+  /**
+   * Чип состояния и полоса слева говорят одно и то же двумя способами: словом
+   * и цветом. Врозь они бессмысленны — цвет без слова не переживает ни
+   * проектор, ни дальтонизм, слово без цвета не читается из середины
+   * аудитории, — поэтому обе таблицы стоят рядом и меняются вместе.
+   */
+  const SHEET_CHIP = {
+    edited: 'bg-warning/15 text-warning',
+    correct: 'bg-positive/15 text-positive',
+    wrong: 'bg-danger/10 text-danger',
+    submitted: 'bg-brand/10 text-brand-2',
+    draft: 'bg-surface text-muted',
+  } as const
+  /**
+   * Полоса — на всю высоту листа: код, вывод и письмо преподавателя стоят под
+   * одним цветом, потому что всё это одна попытка.
+   *
+   * Покой и правка цвета не берут вовсе и отдают полосу обычной ячейке: пока
+   * человек пишет, важнее, что ячейка выбрана, стоит в очереди или упала.
+   * Старая отметка при этом перестаёт быть правдой — она уходит в слово
+   * «было:» рядом с чипом, а не остаётся цветом.
+   */
+  const SHEET_RULE = {
+    edited: '',
+    correct: 'border-positive',
+    wrong: 'border-danger',
+    submitted: 'border-brand',
+    draft: '',
+  } as const
 </script>
 
 {#snippet openMark()}
@@ -2153,71 +2371,72 @@
         <div bind:clientHeight={contentHeight}>
           {#if ownSheet && sheet}
             <!--
-              Свой лист студента в консилиуме — вместо общего редактора.
+              Свой лист студента в консилиуме — и это ВСЯ ячейка.
 
               Тот же CodeMirror, но привязан к локальному документу (см.
               `openSheet`): в общий Y.Text отсюда не уходит ни буквы. Снимок
-              уезжает сам при паузе в наборе и на уходе фокуса; «Сдать» — кнопка
-              и Shift+Enter, потому что запуска у студента здесь нет и пальцы,
-              привыкшие к «выполнить и дальше», должны попадать в «сдать», а не
-              в отказ.
-            -->
-            <!--
-              Общая ячейка — над своим листом, только чтение.
+              уезжает сам при паузе в наборе и на уходе фокуса; сдаёт кнопка
+              справа и одно сочетание ⌘⇧↵.
 
-              Третье правило консилиума: класс видит то, что показал
-              преподаватель. «Показать классу» кладёт текст попытки в общий
-              Y.Text ячейки — а тело ячейки у студента в это время занято его
-              листом, и общий текст не рисовался нигде: показанное видел один
-              преподаватель, автору приходил чип «На экране», а соседи не
-              видели ничего. Проектор на лекции показывает страницы, не
-              тетрадь. Поэтому общий текст стоит здесь, и вместе с ним —
-              задание, пока преподаватель ничего не показал. Пустой — не
-              рисуется: пустая рамка над листом ничего не говорит.
+              Над листом больше нет второй ячейки. Общий текст стоял здесь
+              только чтением — «Общая ячейка, видна всей группе», — и платой за
+              него был второй блок кода на экране у человека, который пишет
+              свой. Задание и так читается сверху, в маркдаун-ячейке над этой, а
+              показанное классу видно на проекторе; в тетради студента ему
+              места нет. Вывод общей ячейки по той же причине не рисуется вовсе
+              (см. область вывода ниже): под листом лежит вывод СВОЕЙ попытки, и
+              два разных вывода подряд читаются как один.
+
+              Полос здесь одна на всё: лист, вывод и письмо преподавателя стоят
+              под одной кромкой одного цвета, потому что это одна попытка, а не
+              три соседних блока. Подвал из-под кромки выходит — он про то, что
+              с попыткой можно СДЕЛАТЬ, и выровнен по коду, как у обычной
+              ячейки.
             -->
-            {#if liveText.current.trim()}
-              <div class={cn('border-l-4 px-3 py-1', RULE[tone], 'bg-brand/[0.035]')}>
-                <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
-                  <span class={cn(CAPS, 'text-muted')}>{tr('room.ui.347')}</span>
-                  <span class="text-2xs text-muted"> {tr('room.ui.348')} </span>
-                </div>
-                {#if isCode}
-                  <Code code={liveText.current} />
-                {:else}
-                  <Markdown source={liveText.current} class="text-prose text-muted" />
-                {/if}
-              </div>
-            {/if}
             <div
-              class={cn('border-l-4 px-3 py-1', RULE[tone], 'bg-surface')}
               onfocusout={(event) => {
                 const next = event.relatedTarget as Node | null
                 if (!next || !event.currentTarget.contains(next)) session.council.flush(id)
               }}
             >
-              <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
-                <span class={cn(CAPS, mine?.shown ? 'text-positive' : 'text-accent-text')}>
-                  {mine?.shown ? tr('room.ui.349') : tr('room.ui.34')}
-                </span>
-                <span class="text-2xs text-muted">
-                  {#if mine?.shown} {tr('room.ui.350')} {:else if councilClosed}
-                    {tr(COUNCIL_CLOSED)}
-                  {:else if submittedAt !== null && !attemptSynced}
-                    <!-- «Сдано» — про текст, а не про нажатие: у преподавателя
-                         лежит прошлый снимок, и назвать сданным этот значило бы
-                         соврать в том, ради чего консилиум и затевали. -->
-                    <span class="text-warning"> {tr('room.ui.351')} </span>
-                  {:else if submittedAt !== null} {tr('room.ui.50')} {clock(submittedAt)} {tr('room.ui.352')} {:else} {tr('room.ui.353')} {/if}
-                </span>
-                {#if count}
-                  <span class="ml-auto font-mono text-2xs tabular-nums text-muted">
-                    {countLine(count)}
+              <div class={cn('border-l-4 px-3 py-1', SHEET_RULE[sheetState] || RULE[tone], 'bg-surface')}>
+                <!--
+                  Шапка листа: чем эта ячейка отличается от соседних (чип) и что
+                  с попыткой уже произошло (подпись). Чип не меняется никогда —
+                  по нему ячейку узнают; подпись меняется с состоянием и говорит
+                  ровно то, чего не умещается в одно слово чипа в подвале.
+                -->
+                <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1 pt-0.5">
+                  <span class={cn(CAPS, 'bg-accent/10 px-1.5 py-px text-accent-text')}>
+                    {tr('room.ui.34')}
                   </span>
-                {/if}
-              </div>
-              <!-- Сданное приглушено: текст на месте, но это уже не черновик, а
-                   лист, который смотрят. «Изменить» возвращает всё как было. -->
-              <div class={cn(submittedAt !== null && 'opacity-60')}>
+                  <span class="text-2xs text-muted">
+                    {#if councilClosed} {tr(COUNCIL_CLOSED)} {:else if sheetState === 'edited'}
+                      {mine?.correct != null ? tr('room.ui.1245') : tr('room.ui.1246')}
+                    {:else if sheetState === 'correct' || sheetState === 'wrong'}
+                      {reviewedAt === null
+                        ? tr('room.ui.1243', { p0: clock(submittedAt ?? 0) })
+                        : tr('room.ui.1242', { p0: clock(submittedAt ?? 0), p1: clock(reviewedAt) })}
+                    {:else if sheetState === 'submitted'}
+                      {letters.length > 0 ? tr('room.ui.1244') : tr('room.ui.1241')}
+                    {:else} {tr('room.ui.1222')} {/if}
+                  </span>
+                  <!-- Счёт класса стоит здесь, а не в подвале: это сведение о
+                       комнате, а не действие, и в подвале он спорил за место с
+                       кнопками — на узкой колонке они от него уезжали вниз. -->
+                  {#if count && !councilClosed}
+                    <span class="font-mono text-2xs tabular-nums text-muted">{countLine(count)}</span>
+                  {/if}
+                </div>
+                <!--
+                  Сданный текст не приглушён.
+
+                  Приглушение стояло здесь и читалось как «выцвело»: сданная
+                  попытка — ровно та вещь, которую после сдачи и перечитывают,
+                  а половина контраста на коде мешает именно перечитывать. Что
+                  правка закрыта, говорят чип в подвале и пропавшие кнопки
+                  запуска — словом и отсутствием, а не туманом.
+                -->
                 <CodeEditor
                   text={sheet.text}
                   awareness={sheet.awareness}
@@ -2227,9 +2446,9 @@
                   readOnly={!mayAttempt || submittedAt !== null}
                   placeholder={tr('room.ui.354')}
                   onfocus={() => onselect()}
-                  onrun={runAttempt}
-                  onrunstep={() => void submitAttempt()}
-                  onrunandadd={() => void submitAttempt()}
+                  onrun={sheetRunKey}
+                  onrunstep={sheetRunKey}
+                  onsubmit={submitFromKey}
                   onescape={() => root?.querySelector<HTMLElement>('.cm-content')?.blur()}
                   onarrowout={(direction) => step(direction)}
                   maxChars={MAX_ATTEMPT_CHARS}
@@ -2238,146 +2457,320 @@
                       tr('room.extra.133', { p0: MAX_ATTEMPT_CHARS.toLocaleString(getLocale()), p1: chars.toLocaleString(getLocale()) }),
                     )}
                 />
-              </div>
-              <!--
-                Счётчик знаков — под листом и только к концу.
+                <!--
+                  Счётчик знаков — под листом и только к концу.
 
-                Раньше про потолок говорил сервер: отказ на каждую паузу в
-                наборе, то есть тост раз в секунду, из которого не следовало ни
-                сколько набрано, ни сколько можно. Счётчик появляется на
-                девяти десятых пути (council.svelte.ts · attemptCounter) и
-                говорит одно и то же число, что и отказ.
-              -->
-              {#if attemptCount}
-                <p
-                  class={cn(
-                    'flex flex-wrap items-baseline justify-end gap-x-2 pt-0.5 text-2xs',
-                    attemptOver ? 'text-warning' : 'text-muted',
-                  )}
-                >
-                  {#if attemptOver}
-                    <span>{tr('room.ui.355')}</span>
-                  {/if}
-                  <span class="font-mono tabular-nums">{attemptCount}</span>
-                </p>
-              {/if}
-              <!-- Ответ преподавателя — строкой под попыткой, видна двоим.
-                   Подпись — того, кто отвечал: в комнате может быть два
-                   преподавателя, а черновик оракула сюда приходит уже его
-                   словами.
-
-                   Письмо на строку, а не все в одном абзаце: личный ответ и
-                   рассылка группе написаны в разное время и разным людям, и
-                   слитно они читаются одним письмом. Групповое помечено
-                   словом — тогда молчание на личном значит «это вам». -->
-              {#each letters as letter}
-                <p class="flex flex-wrap items-baseline gap-x-2 border-t border-line-soft pb-1 pt-1.5 text-ui">
-                  <span class="font-bold text-ink">{letter.by}</span>
-                  <span class="font-mono text-2xs text-muted">{clock(letter.at)}</span>
-                  {#if letter.to === 'group'}
-                    <span class="text-2xs text-muted">{tr('room.ui.70')}</span>
-                  {/if}
-                  <span class="text-ink">{letter.text}</span>
-                </p>
-              {/each}
-              <div class="flex flex-wrap items-center gap-2.5 pb-1 pt-1.5">
-                {#if submittedAt === null}
-                  <button
-                    type="button"
-                    class="btn-primary h-7"
-                    disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
-                    title={controlTitle(session.connected, mayAttempt ? tr('room.extra.135') : attemptWhy)}
-                    onclick={() => void submitAttempt()}
-                  >
-                    {awaitingMine === 'submit' ? tr('room.ui.66') : tr('room.ui.356')}
-                  </button>
-                  {#if mayAttempt}
-                    <span class="text-2xs text-muted">{tr('room.ui.357')}</span>
-                  {:else}
-                    <span class="text-2xs text-muted">{attemptWhy}</span>
-                  {/if}
-                {:else}
-                  <button
-                    type="button"
-                    class="btn-outline h-7"
-                    disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
-                    title={controlTitle(
-                      session.connected,
-                      mayAttempt ? tr('room.extra.136') : attemptWhy,
+                  Раньше про потолок говорил сервер: отказ на каждую паузу в
+                  наборе, то есть тост раз в секунду, из которого не следовало ни
+                  сколько набрано, ни сколько можно. Счётчик появляется на
+                  девяти десятых пути (council.svelte.ts · attemptCounter) и
+                  говорит одно и то же число, что и отказ.
+                -->
+                {#if attemptCount}
+                  <p
+                    class={cn(
+                      'flex flex-wrap items-baseline justify-end gap-x-2 pt-0.5 text-2xs',
+                      attemptOver ? 'text-warning' : 'text-muted',
                     )}
-                    onclick={withdrawAttempt}
                   >
-                    {awaitingMine === 'withdraw' ? tr('room.ui.66') : tr('room.ui.358')}
+                    {#if attemptOver}
+                      <span>{tr('room.ui.355')}</span>
+                    {/if}
+                    <span class="font-mono tabular-nums">{attemptCount}</span>
+                  </p>
+                {/if}
+              </div>
+              <!-- Вывод запуска — к попытке, не к общей ячейке: приезжает автору
+                   вместе с попыткой и лежит прямо под ней, под той же кромкой.
+                   У общей ячейки вывода на этом экране нет вовсе, так что
+                   спутать их нечем. -->
+              {#if attemptRun}
+                <!-- Та же пара, что у обычной ячейки: вывод на листе, код на
+                     плите, между ними волосяная линия. -->
+                <div
+                  class={cn(
+                    'border-l-4 border-t',
+                    SHEET_RULE[sheetState] || RULE[tone],
+                    attemptRun.state === 'error' ? 'bg-danger/5' : 'bg-canvas',
+                  )}
+                  style:border-top-color="rgb(var(--line))"
+                >
+                  {#if attemptRun.outputs.length > 0}
+                    <div class="px-2 py-1.5">
+                      <CellOutputs outputs={attemptRun.outputs} />
+                    </div>
+                  {/if}
+                  <div class="px-4 pb-1.5 pt-0.5 text-2xs text-muted">
+                    {ranByLine(attemptRun, spell)}
+                  </div>
+                </div>
+              {/if}
+              <!--
+                Письмо преподавателя — ПОД выводом и внутри той же кромки: это
+                часть попытки, а не соседний чат. Подпись — того, кто отвечал: в
+                комнате может быть два преподавателя, а черновик оракула сюда
+                приходит уже его словами.
+
+                Письмо на строку, а не все в одном абзаце: личный ответ и
+                рассылка группе написаны в разное время и разным людям, и
+                слитно они читаются одним письмом. Групповое помечено словом —
+                тогда молчание на личном значит «это вам».
+              -->
+              {#if letters.length > 0}
+                <div
+                  class={cn('border-l-4 border-t px-3 py-1.5', SHEET_RULE[sheetState] || RULE[tone], 'bg-surface')}
+                  style:border-top-color="rgb(var(--line))"
+                >
+                  {#each letters as letter}
+                    <div class="flex items-start gap-2 py-0.5">
+                      <span class="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-2" aria-hidden="true"></span>
+                      <div class="min-w-0">
+                        <p class="flex flex-wrap items-baseline gap-x-2 text-2xs">
+                          <span class="text-ui font-bold text-ink">{letter.by}</span>
+                          <span class="text-muted">{tr('room.ui.1251')} · {clock(letter.at)}</span>
+                          {#if letter.to === 'group'}
+                            <span class="text-muted">{tr('room.ui.70')}</span>
+                          {/if}
+                        </p>
+                        <p class="text-ui text-ink">{letter.text}</p>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              <!--
+                Переспрос про возврат — полосой во всю ячейку, а не окном
+                браузера.
+
+                `window.confirm` выбивает из страницы и выглядит чужим ровно
+                там, где ответ виден тут же: в листе, который заменят. Охра —
+                потому что это не ошибка и не опасность, а незаконченное
+                движение: одно нажатие туда, одно обратно.
+              -->
+              {#if restoreAsking}
+                <div
+                  class="mt-px flex flex-wrap items-center gap-x-3 gap-y-1.5 border-l-4 border-warning bg-warning/10 px-3 py-2"
+                  role="group"
+                >
+                  <span class="text-ui font-bold text-ink">{tr('room.ui.1233')}</span>
+                  <span class="text-2xs text-muted">{tr('room.ui.1250')}</span>
+                  <!-- Пара ответов держится вместе: на узкой колонке строка
+                       переносится, и «Отмена», прижатая к краю в одиночку,
+                       уезжала на строку выше своего «Вернуть». -->
+                  <span class="ml-auto flex items-center gap-3">
+                    <button
+                      type="button"
+                      class="text-2xs text-muted hover:text-ink"
+                      onclick={() => (restoreAsking = false)}
+                    >{tr('room.ui.1235')}</button>
+                    <button
+                      type="button"
+                      class="btn h-7 bg-warning text-canvas hover:brightness-110"
+                      onclick={restoreStub}
+                    >{tr('room.ui.1234')}</button>
+                  </span>
+                </div>
+              {/if}
+              <!--
+                Подвал: слева тихое «начать заново», справа — действия по
+                возрастанию веса: состояние словом, запуск, сдача.
+
+                «Восстановить» стоит на другом конце подвала от «Запустить» и
+                «Сдать» нарочно: между ними половина ширины ячейки, мимо не
+                попадёшь. Вес у него тихий — значок и muted, без рамки и
+                заливки: спасательный круг видно, но он не спорит с главным.
+              -->
+              <div
+                class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-5 pr-1"
+                bind:clientWidth={footerWidth}
+              >
+                {#if !councilClosed}
+                  <button
+                    type="button"
+                    class="inline-flex h-7 items-center gap-1.5 text-2xs text-muted transition-colors
+                           duration-[var(--speed-quick)] hover:text-ink disabled:cursor-not-allowed
+                           disabled:text-faint disabled:hover:text-faint"
+                    disabled={!mayRestore || restoreAsking}
+                    title={tr('room.ui.1240')}
+                    onclick={() => (restoreAsking = true)}
+                  >
+                    <span aria-hidden="true">↺</span>
+                    {tr('room.ui.1232')}
                   </button>
+                  {#if submittedAt === null && sheetText === stubText()}
+                    <span class="text-2xs text-faint">{tr('room.ui.1249')}</span>
+                  {/if}
+                {/if}
+
+                <!--
+                  Действия — одной группой, прижатой вправо.
+
+                  Не россыпью в общем флексе: там при нехватке места вниз
+                  уезжала ОДНА крайняя кнопка, оставляя чип наверху, — то есть
+                  ломалась ровно та связка, ради которой подвал и читают.
+                  Группа переносится целиком и остаётся выровненной по правому
+                  краю, как на досках.
+                -->
+                <span class="ml-auto flex flex-wrap items-center justify-end gap-x-2.5 gap-y-1.5">
+                {#if councilClosed}
+                  <span class={cn(CAPS, 'bg-surface px-2 py-0.5 text-muted')}>{tr('room.ui.370')}</span>
+                {:else}
+                  {#if sheetState === 'edited' && mine?.correct != null}
+                    <!-- Старая отметка больше не правда — но и не пустое место:
+                         ради неё и правят. Остаётся памятью, приглушённо. -->
+                    <span class="text-2xs text-faint">
+                      {tr('room.ui.1247')} {mine.correct ? tr('room.ui.1225') : tr('room.ui.1226')}
+                    </span>
+                  {/if}
+                  <span class={cn(CAPS, 'px-2 py-0.5', SHEET_CHIP[sheetState])} role="status">
+                    {#if sheetState === 'edited'} {tr('room.ui.1228')} {:else if sheetState === 'correct'}
+                      {tr('room.ui.1225')}
+                    {:else if sheetState === 'wrong'} {tr('room.ui.1226')} {:else if sheetState === 'submitted'}
+                      {tr(tightFooter ? 'room.ui.1252' : 'room.ui.1224', { p0: clock(submittedAt ?? 0) })}
+                    {:else} {tightFooter ? tr('room.ui.1253') : tr('room.ui.1223')} {/if}
+                  </span>
+                  {#if mine?.shown}
+                    <span class={cn(CAPS, 'bg-positive/15 px-2 py-0.5 text-positive')}>
+                      {tr('room.ui.1227')}
+                    </span>
+                  {/if}
                   {#if !mayAttempt}
                     <span class="text-2xs text-muted">{attemptWhy}</span>
                   {/if}
-                {/if}
-                {#if councilSettings.studentRun === 'request' && !councilClosed}
-                  {#if mine?.runRequest?.status === 'pending' && attemptSynced}
-                    <span class="text-2xs text-accent-text" role="status">{tr('room.ui.359')}</span>
+
+                  <!--
+                    Кнопок запуска у сданной попытки нет вовсе: сдано — значит
+                    закрыто, и погашенная кнопка сказала бы, что дело в связи.
+                    Возвращаются они вместе с правом писать — после «Изменить».
+                  -->
+                  {#if submittedAt === null}
+                    {#if mine?.queue != null}
+                      <!--
+                        Очередь стоит НА МЕСТЕ кнопки запуска, а не рядом с ней:
+                        ядро одно на комнату, нажимать второй раз нечего, и
+                        кнопка, оставшаяся живой рядом с номером в очереди,
+                        ровно это и предлагала.
+                      -->
+                      <span
+                        class={cn(CAPS, 'inline-flex h-7 items-center border border-accent px-3 text-accent-text')}
+                        role="status"
+                      >
+                        {tr('room.ui.1236', { p0: mine.queue })}
+                      </span>
+                    {:else if councilSettings.studentRun === 'request'}
+                      {#if mine?.runRequest?.status === 'pending' && attemptSynced}
+                        <span class={cn(CAPS, 'inline-flex h-7 items-center gap-2 bg-surface px-3 text-muted')} role="status">
+                          {tr('room.ui.1237', { p0: clock(mine.runRequest.requestedAt) })}
+                          <button
+                            type="button"
+                            class="font-normal normal-case tracking-normal text-accent-text hover:underline disabled:no-underline disabled:opacity-40"
+                            disabled={!mayRequestRun || controlDisabled(session.connected) || requestSending !== null}
+                            onclick={cancelAttemptRunRequest}
+                          >{requestSending?.action === 'cancel' ? tr('room.ui.360') : tr('room.ui.1238')}</button>
+                        </span>
+                      {:else}
+                        {#if mine?.runRequest?.status === 'declined' && attemptSynced}
+                          <span class="text-2xs text-muted" role="status">{tr('room.ui.364')}</span>
+                        {:else if mine?.runRequest && !attemptSynced}
+                          <span class="text-2xs text-muted" role="status">{tr('room.ui.365')}</span>
+                        {/if}
+                        <button
+                          type="button"
+                          class="btn-outline h-7"
+                          disabled={!mayRequestRun || attemptRunning || attemptOver || !sheetText.trim() || controlDisabled(session.connected) || requestSending !== null}
+                          title={controlTitle(session.connected, mayRequestRun ? tr('room.extra.137') : attemptWhy)}
+                          onclick={requestAttemptRun}
+                        >
+                          {requestSending?.action === 'request' ? tr('room.ui.362') : tr('room.ui.363')}
+                          {#if requestSending === null}
+                            <span class="font-mono text-2xs text-faint">⇧↵</span>
+                          {/if}
+                        </button>
+                      {/if}
+                    {:else if mayRunAttempt}
+                      <button
+                        type="button"
+                        class="btn-outline h-7"
+                        disabled={controlDisabled(session.connected) || attemptRunning || attemptOver}
+                        title={controlTitle(
+                          session.connected,
+                          tr('room.extra.138', { p0: tr(COUNCIL_SHARED_KERNEL_NOTE) }),
+                        )}
+                        onclick={runAttempt}
+                      >
+                        {tr('room.ui.73')}
+                        <span class="font-mono text-2xs text-faint">⇧↵</span>
+                      </button>
+                    {:else}
+                      <!-- Ручка выключена: кнопки нет, и это сказано словом, а не
+                           погашенной кнопкой — гасить нечего, запуск здесь не
+                           ваш. -->
+                      <span class="text-2xs text-faint">{tr('room.ui.1230')}</span>
+                    {/if}
+                  {/if}
+
+                  <!--
+                    Сдача — одна кнопка на одном месте, меняющая слово: «Сдать»
+                    → «Изменить» → «Сдать заново». «Исправить» — то же
+                    «Изменить», названное по делу: после «есть ошибка» кнопка
+                    ведёт к выходу, а не повторяет беду.
+                  -->
+                  {#if sheetState === 'edited'}
                     <button
                       type="button"
-                      class="btn-ghost h-7"
-                      disabled={!mayRequestRun || controlDisabled(session.connected) || requestSending !== null}
-                      onclick={cancelAttemptRunRequest}
-                    >{requestSending?.action === 'cancel' ? tr('room.ui.360') : tr('room.ui.361')}</button>
+                      class={cn('btn h-7 bg-warning text-canvas hover:brightness-110', submitFlash && 'brightness-90')}
+                      disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
+                      title={controlTitle(session.connected, mayAttempt ? tr('room.extra.135') : attemptWhy)}
+                      onclick={resubmitAttempt}
+                    >{awaitingMine === 'submit' ? tr('room.ui.66') : tr('room.ui.1229')}</button>
+                  {:else if submittedAt === null}
+                    <button
+                      type="button"
+                      class={cn('btn-primary h-7', submitFlash && 'brightness-90')}
+                      disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
+                      title={controlTitle(session.connected, mayAttempt ? tr('room.extra.135') : attemptWhy)}
+                      onclick={() => void submitAttempt()}
+                    >
+                      {awaitingMine === 'submit' ? tr('room.ui.66') : tr('room.ui.356')}
+                    </button>
                   {:else}
                     <button
                       type="button"
                       class="btn-outline h-7"
-                      disabled={!mayRequestRun || attemptRunning || attemptOver || !sheetText.trim() || controlDisabled(session.connected) || requestSending !== null}
-                      title={controlTitle(session.connected, mayRequestRun ? tr('room.extra.137') : attemptWhy)}
-                      onclick={requestAttemptRun}
-                    >{requestSending?.action === 'request' ? tr('room.ui.362') : tr('room.ui.363')}</button>
-                    {#if mine?.runRequest?.status === 'declined' && attemptSynced}
-                      <span class="text-2xs text-muted" role="status">{tr('room.ui.364')}</span>
-                    {:else if mine?.runRequest && !attemptSynced}
-                      <span class="text-2xs text-muted" role="status">{tr('room.ui.365')}</span>
-                    {/if}
+                      disabled={!mayAttempt || controlDisabled(session.connected) || awaitingMine !== null}
+                      title={controlTitle(
+                        session.connected,
+                        mayAttempt ? tr('room.extra.136') : attemptWhy,
+                      )}
+                      onclick={withdrawAttempt}
+                    >
+                      {awaitingMine === 'withdraw'
+                        ? tr('room.ui.66')
+                        : sheetState === 'wrong'
+                          ? tr('room.ui.1248')
+                          : tr('room.ui.358')}
+                    </button>
                   {/if}
-                {:else if mayRunAttempt && !councilClosed}
-                  <button
-                    type="button"
-                    class="btn-ghost h-7"
-                    disabled={controlDisabled(session.connected) || attemptRunning || attemptOver}
-                    title={controlTitle(
-                      session.connected,
-                      tr('room.extra.138', { p0: tr(COUNCIL_SHARED_KERNEL_NOTE) }),
-                    )}
-                    onclick={runAttempt}
-                  >{tr('room.ui.73')}</button>
-                {/if}
-                {#if mine?.queue != null}
-                  <span class="inline-flex h-5 items-center bg-raised px-2 font-mono text-2xs text-muted" role="status">
-                    {queueWords(mine.queue)}
-                  </span>
-                {/if}
+                  {/if}
+                </span>
               </div>
+              <!--
+                Подсказка на ⇧↵ при выключенной ручке: две секунды и гаснет.
+
+                Не тост: тост уезжает в угол экрана, а вопрос был задан здесь,
+                пальцами в этой ячейке. И не отказ — запуск не «не удался», его
+                тут просто нет.
+              -->
+              {#if runHint}
+                <p class="ml-5 mt-1.5 inline-flex items-center gap-2 bg-ink px-2.5 py-1 text-2xs text-canvas" role="status">
+                  <span class="font-mono">⇧↵</span>
+                  <span>{tr('room.ui.1231')}</span>
+                </p>
+              {/if}
+              {#if mayAttempt && !councilClosed}
+                <p class="pl-5 pt-1 text-2xs text-muted">{tr('room.ui.357')}</p>
+              {/if}
             </div>
-            <!-- Вывод запуска — к попытке, не к общей ячейке: приезжает автору
-                 вместе с попыткой и лежит под ней. -->
-            {#if mine?.run}
-              <!-- Та же пара, что у общей ячейки: лист под выводом и волосяная
-                   линия по границе с листом попытки. -->
-              <div
-                class={cn(
-                  'border-l-4 border-t',
-                  RULE[tone],
-                  mine.run.state === 'error' ? 'bg-danger/5' : 'bg-canvas',
-                )}
-                style:border-top-color="rgb(var(--line))"
-              >
-                {#if mine.run.outputs.length > 0}
-                  <div class="px-2 py-1.5">
-                    <CellOutputs outputs={mine.run.outputs} />
-                  </div>
-                {/if}
-                <div class="px-4 pb-1.5 pt-0.5 text-2xs text-muted">
-                  {ranByLine(mine.run, spell)}
-                </div>
-              </div>
-            {/if}
           {:else if showEditor}
             <!-- The focus ring lands at once: box-shadow cannot be animated
                  on the compositor, and a focus cue that arrives late is worse
@@ -2686,7 +3079,14 @@
             — привязать место к нему значило бы схлопывать быстрые ячейки и
             держать медленные, то есть вывернуть оба механизма наизнанку.
           -->
-          {#if isCode && (outputs.current.length > 0 || outputFloor > 0)}
+          <!--
+            `!ownSheet`: у студента в открытом консилиуме общей ячейки на
+            экране нет — ни кода, ни вывода. Вывод остался бы последним её
+            следом: чужой запуск (или «Показать классу») печатал бы числа прямо
+            под СВОИМ листом человека, и прочитать их как не свои нечем. Свой
+            вывод у попытки есть, и лежит он там же — сразу под листом.
+          -->
+          {#if isCode && !ownSheet && (outputs.current.length > 0 || outputFloor > 0)}
             <!--
               Пустое место не рисует ничего — ни фона, ни кромки.
 

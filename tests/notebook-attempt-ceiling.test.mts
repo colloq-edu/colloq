@@ -92,14 +92,17 @@ test('«Сдать» не отправляет то, чего у сервера 
 
 test('«сдано» не рисуется под текстом, которого у преподавателя нет', () => {
   assert.match(CELL, /const attemptSynced = \$derived\(attemptInSync\(mine, sheetText\)\)/)
-  const at = CELL.indexOf('{:else if submittedAt !== null')
-  const line = CELL.slice(at, at + 700)
-  assert.match(line, /submittedAt !== null && !attemptSynced/, 'расхождение не различается')
+  // Расхождение — не ветка подписи, а состояние листа: его несут и чип, и
+  // главное действие, и цвет полосы разом (доски E и G).
+  const at = CELL.indexOf('const sheetState = $derived(')
+  const state = CELL.slice(at, CELL.indexOf('const reviewedAt', at))
+  assert.match(state, /submittedAt !== null && !attemptSynced/, 'расхождение не различается')
   // Ветка расхождения идёт ПЕРВОЙ: иначе «сдано» перехватит её всегда.
   assert.ok(
-    line.indexOf('!attemptSynced') < line.indexOf("tr('room.ui.50')"),
+    state.indexOf('!attemptSynced') < state.indexOf("'submitted'"),
     '«сдано» стоит раньше проверки и выигрывает у неё',
   )
-  assert.match(line, /tr\('room\.ui\.351'\)/, 'словам о расхождении нечего сказать')
-  assert.match(translate('ru', 'room.ui.351'), /После сдачи текст изменился/)
+  assert.match(CELL, /tr\('room\.ui\.1228'\)/, 'словам о расхождении нечего сказать')
+  assert.match(translate('ru', 'room.ui.1228'), /Есть правки/)
+  assert.match(translate('ru', 'room.ui.1229'), /Сдать заново/)
 })

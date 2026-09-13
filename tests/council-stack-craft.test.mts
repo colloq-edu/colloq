@@ -137,6 +137,8 @@ test('ячейка связывает запрос, отмену и решени
   assert.match(cell, /onapproverun=\{\(participantId, requestId\) => session\.council\.approveRunRequest\(id, participantId, requestId\)\}/)
   assert.match(cell, /ondeclinerun=\{\(participantId, requestId\) => session\.council\.declineRunRequest\(id, participantId, requestId\)\}/)
   assert.match(cell, /tr\('room\.ui\.363'\)/)
-  assert.match(cell, /tr\('room\.ui\.359'\)/)
+  // Ожидание названо чипом «Запрошено 14:31 · отменить» (доска E), а не
+  // строкой «Ожидает решения преподавателя»: время в нём — то, о чём спросят.
+  assert.match(cell, /tr\('room\.ui\.1237', \{ p0: clock\(mine\.runRequest\.requestedAt\) \}\)/)
   assert.match(cell, /tr\('room\.ui\.364'\)/)
 })

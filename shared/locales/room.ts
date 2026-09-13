@@ -1106,14 +1106,6 @@ export const roomMessages: MessageCatalog = {
     "ru": "Удалить ячейку",
     "en": "Delete cell"
   },
-  "room.ui.347": {
-    "ru": "Общая ячейка",
-    "en": "Shared cell"
-  },
-  "room.ui.348": {
-    "ru": "видна всей группе",
-    "en": "visible to the whole group"
-  },
   "room.ui.349": {
     "ru": "На экране",
     "en": "On screen"
@@ -1121,10 +1113,6 @@ export const roomMessages: MessageCatalog = {
   "room.ui.350": {
     "ru": "преподаватель показал ваш вариант классу",
     "en": "the teacher showed your answer to the class"
-  },
-  "room.ui.351": {
-    "ru": "После сдачи текст изменился. Нажмите «Изменить» и сдайте текущую версию.",
-    "en": "The text changed after submission. Click “Edit” and submit the current version."
   },
   "room.ui.352": {
     "ru": "· доступно преподавателю",
@@ -1147,24 +1135,16 @@ export const roomMessages: MessageCatalog = {
     "en": "Submit"
   },
   "room.ui.357": {
-    "ru": "⇧↵ — сдать · черновик отправляется после паузы в наборе",
-    "en": "⇧↵ to submit · draft sent after a pause in typing"
+    "ru": "⌘⇧↵ — сдать · черновик отправляется после паузы в наборе",
+    "en": "⌘⇧↵ to submit · draft sent after a pause in typing"
   },
   "room.ui.358": {
     "ru": "Изменить",
     "en": "Edit"
   },
-  "room.ui.359": {
-    "ru": "Ожидает решения преподавателя",
-    "en": "Waiting for the teacher’s decision"
-  },
   "room.ui.360": {
     "ru": "Отменяю…",
     "en": "Cancelling…"
-  },
-  "room.ui.361": {
-    "ru": "Отменить запрос",
-    "en": "Cancel request"
   },
   "room.ui.362": {
     "ru": "Отправляю запрос…",
@@ -1209,6 +1189,134 @@ export const roomMessages: MessageCatalog = {
   "room.ui.372": {
     "ru": "Показать черновик",
     "en": "Show draft"
+  },
+  "room.ui.1222": {
+    "ru": "у каждого свой лист · ваш текст видит только преподаватель",
+    "en": "everyone writes their own sheet · only the teacher sees your text"
+  },
+  "room.ui.1223": {
+    "ru": "Черновик · сохраняется",
+    "en": "Draft · saving"
+  },
+  "room.ui.1224": {
+    "ru": "Сдано {p0} · ждёт разбора",
+    "en": "Submitted {p0} · awaiting review"
+  },
+  "room.ui.1225": {
+    "ru": "✓ Верно",
+    "en": "✓ Correct"
+  },
+  "room.ui.1226": {
+    "ru": "✗ Есть ошибка",
+    "en": "✗ Has an error"
+  },
+  "room.ui.1227": {
+    "ru": "Ваш вариант на экране",
+    "en": "Your answer is on screen"
+  },
+  "room.ui.1228": {
+    "ru": "Есть правки",
+    "en": "Unsent edits"
+  },
+  "room.ui.1229": {
+    "ru": "Сдать заново",
+    "en": "Submit again"
+  },
+  "room.ui.1230": {
+    "ru": "запускает преподаватель",
+    "en": "the teacher runs this one"
+  },
+  "room.ui.1231": {
+    "ru": "В этой ячейке запускает преподаватель. Сдать — кнопкой справа.",
+    "en": "In this cell the teacher runs the code. To submit, use the button on the right."
+  },
+  "room.ui.1232": {
+    "ru": "Восстановить",
+    "en": "Restore"
+  },
+  "room.ui.1233": {
+    "ru": "Вернуть исходную ячейку?",
+    "en": "Restore the original cell?"
+  },
+  "room.ui.1234": {
+    "ru": "Вернуть",
+    "en": "Restore"
+  },
+  "room.ui.1235": {
+    "ru": "Отмена",
+    "en": "Cancel"
+  },
+  "room.ui.1236": {
+    "ru": "В очереди · вы {p0}-й",
+    "en": "In queue · you are number {p0}"
+  },
+  "room.ui.1237": {
+    "ru": "Запрошено {p0}",
+    "en": "Requested {p0}"
+  },
+  "room.ui.1238": {
+    "ru": "отменить",
+    "en": "cancel"
+  },
+  "room.ui.1239": {
+    "ru": "Ответ преподавателя",
+    "en": "Teacher’s reply"
+  },
+  "room.ui.1240": {
+    "ru": "Вернуть заготовку преподавателя — то, с чего лист начинался",
+    "en": "Restore the teacher’s stub — the text this sheet started from"
+  },
+  "room.ui.1241": {
+    "ru": "сдано · текст закрыт для правки",
+    "en": "submitted · the text is locked"
+  },
+  "room.ui.1242": {
+    "ru": "сдано {p0} · разобрано {p1}",
+    "en": "submitted {p0} · reviewed {p1}"
+  },
+  "room.ui.1243": {
+    "ru": "сдано {p0} · разобрано",
+    "en": "submitted {p0} · reviewed"
+  },
+  "room.ui.1244": {
+    "ru": "сдано · отметки пока нет",
+    "en": "submitted · no mark yet"
+  },
+  "room.ui.1245": {
+    "ru": "текст изменён после разбора",
+    "en": "the text changed after the review"
+  },
+  "room.ui.1246": {
+    "ru": "текст изменён после сдачи",
+    "en": "the text changed after submission"
+  },
+  "room.ui.1247": {
+    "ru": "было:",
+    "en": "was:"
+  },
+  "room.ui.1248": {
+    "ru": "Исправить",
+    "en": "Fix"
+  },
+  "room.ui.1249": {
+    "ru": "— уже исходная",
+    "en": "— already the original"
+  },
+  "room.ui.1250": {
+    "ru": "Ваш текст будет заменён заготовкой, вывод очистится.",
+    "en": "Your text will be replaced by the stub, and the output cleared."
+  },
+  "room.ui.1251": {
+    "ru": "преподаватель",
+    "en": "teacher"
+  },
+  "room.ui.1252": {
+    "ru": "Сдано {p0}",
+    "en": "Submitted {p0}"
+  },
+  "room.ui.1253": {
+    "ru": "Черновик",
+    "en": "Draft"
   },
   "room.ui.373": {
     "ru": "Что должна делать эта ячейка?",
@@ -3707,8 +3815,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Paste exceeds the limit: an attempt allows {p0} characters, but this would make {p1}."
   },
   "room.extra.135": {
-    "ru": "Сдать — ⇧↵",
-    "en": "Submit — ⇧↵"
+    "ru": "Сдать — ⌘⇧↵",
+    "en": "Submit — ⌘⇧↵"
   },
   "room.extra.136": {
     "ru": "Продолжить редактирование и снять отметку о сдаче",

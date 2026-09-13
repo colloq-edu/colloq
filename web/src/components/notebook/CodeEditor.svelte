@@ -149,6 +149,16 @@
     /** Run, then move on — Shift+Enter. See CellView.runAndStep. */
     onrunstep?: () => void
     onrunandadd?: () => void
+    /**
+     * Сдать написанное — ⌘⇧↵, и только оно.
+     *
+     * Стоит на листе консилиума: ⇧↵ там СЧИТАЕТ, как в любой тетради, а сдача
+     * — движение, после которого текст уходит преподавателю и обратно уже не
+     * берётся. Пальцам, привыкшим к «выполнить и дальше», оно не должно
+     * попадаться по дороге, поэтому сочетание нарочно неудобное: три клавиши
+     * против двух у запуска. Единственное, которое сдаёт.
+     */
+    onsubmit?: () => void
     onescape?: () => void
     ondeleteempty?: () => void
     onarrowout?: (direction: -1 | 1) => void
@@ -201,6 +211,7 @@
     onrun,
     onrunstep,
     onrunandadd,
+    onsubmit,
     onescape,
     ondeleteempty,
     onarrowout,
@@ -245,6 +256,7 @@
     | 'onrun'
     | 'onrunstep'
     | 'onrunandadd'
+    | 'onsubmit'
     | 'onescape'
     | 'ondeleteempty'
     | 'onarrowout'
@@ -258,6 +270,7 @@
     handlers.onrun = onrun
     handlers.onrunstep = onrunstep
     handlers.onrunandadd = onrunandadd
+    handlers.onsubmit = onsubmit
     handlers.onescape = onescape
     handlers.ondeleteempty = ondeleteempty
     handlers.onarrowout = onarrowout
@@ -530,6 +543,13 @@
 
     const cellKeymap = Prec.highest(
       keymap.of([
+        /*
+         * ⌘⇧↵ стоит ПЕРЕД ⇧↵ и ⌘↵ только для чтения: набор модификаторов у
+         * биндинга полный, и «Shift-Enter» с зажатым Cmd не совпадает ни с
+         * чем, кроме этой строки. Порядок здесь — порядок рассказа: сначала
+         * то, что сдаёт, потом то, что считает.
+         */
+        { key: 'Mod-Shift-Enter', preventDefault: true, run: () => fire(handlers.onsubmit) },
         { key: 'Shift-Enter', preventDefault: true, run: () => fire(handlers.onrunstep) },
         { key: 'Mod-Enter', preventDefault: true, run: () => fire(handlers.onrun) },
         { key: 'Alt-Enter', preventDefault: true, run: () => fire(handlers.onrunandadd) },
