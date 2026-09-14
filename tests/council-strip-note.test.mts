@@ -1,20 +1,21 @@
 /**
- * Полоса консилиума говорит про общее ядро — и говорит чужими словами.
+ * Про общее ядро сказано там, где ручку включают, — и чужими словами.
  *
  * Попытки считаются в ОДНОМ ядре комнаты: имена, заведённые попыткой, сервер
  * снимает (kernel/index.ts · COUNCIL_SNAPSHOT_NAMES), а изменения существующих
  * объектов остаются общими. Преподаватель ставит «верно» по выводу, поэтому
- * сказать это надо там, где он на вывод смотрит. Шапка `COUNCIL_SHARED_KERNEL_NOTE`
- * называет три таких места: подсказка ручки studentRun, полоса консилиума,
- * README. Первое и третье закрыты своими тестами (notebook-craft, docs-promises),
- * второе — здесь.
+ * сказать это надо там, где он на вывод смотрит и где решает, кому запускать.
+ * Шапка `COUNCIL_SHARED_KERNEL_NOTE` называет три таких места: ручка «кто может
+ * запускать», подсказка кнопки запуска у студента, README. Первое было в меню
+ * замка и уехало в полосу очереди пульта вместе с самой ручкой; второе и
+ * третье закрыты своими тестами (notebook-craft, docs-promises), первое — здесь.
  *
  * Проверяется и то, что строка не переписана своими словами: копия одна, в
- * shared/notebook.ts, иначе ручка и полоса разъедутся на первой же правке — и
- * не подсказкой на метке: пульт ведут с планшета, где наведения нет вовсе.
+ * shared/notebook.ts, иначе ручка и строка разъедутся на первой же правке, — и
+ * что она стоит текстом, а не подсказкой: пульт ведут с планшета, где наведения
+ * нет вовсе.
  *
- * Разметка читается прямо из компонента — тот же приём, что в panels-craft и
- * council-stack-craft.
+ * Разметка читается прямо из компонента — тот же приём, что в panels-craft.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -31,28 +32,32 @@ function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
-const STACK = code(read('web/src/components/council/CouncilStack.svelte'))
+const QUEUE = code(read('web/src/components/council/pult/PultQueueStrip.svelte'))
 
-/** Полоса режима: от счётчиков до первой ветки вида. */
-function strip(): string {
-  const from = STACK.indexOf('councilStripText(board.counts')
-  const to = STACK.indexOf('{#if view ===', from)
-  assert.ok(from > 0 && to > from, 'полосы режима в стопке больше нет')
-  return STACK.slice(from, to)
+/** Панель ручки: от заголовка «кто может запускать» до списка ждущих. */
+function knob(): string {
+  const from = QUEUE.indexOf("tr('room.ui.1286')")
+  const to = QUEUE.indexOf('{#if kernel.pending.length > 0}', from)
+  assert.ok(from > 0 && to > from, 'ручки запуска в полосе очереди больше нет')
+  return QUEUE.slice(from, to)
 }
 
-test('полоса консилиума говорит про общее ядро — строкой из shared', () => {
-  assert.match(STACK, /import \{ COUNCIL_SHARED_KERNEL_NOTE \} from '@shared\/notebook'/)
-  assert.match(strip(), /\{tr\(COUNCIL_SHARED_KERNEL_NOTE\)\}/, 'в полосе режима строки нет')
+test('ручка запуска говорит про общее ядро — строкой из shared', () => {
+  assert.match(QUEUE, /import \{ COUNCIL_SHARED_KERNEL_NOTE[^}]*\} from '@shared\/notebook'/)
+  assert.match(knob(), /\{tr\(COUNCIL_SHARED_KERNEL_NOTE\)\}/, 'у ручки строки нет')
 
   // Своей копии нет: первые слова фразы в компоненте встретиться не должны.
   const opening = COUNCIL_SHARED_KERNEL_NOTE.slice(0, 24)
-  assert.ok(!STACK.includes(opening), 'строка переписана копией')
+  assert.ok(!QUEUE.includes(opening), 'строка переписана копией')
 })
 
 test('строка видна без наведения — на планшете наведения нет', () => {
-  // Подсказка на метке «Консилиум» не доезжает до пульта на iPad, а именно там
-  // его и ведут: предупреждение должно стоять текстом.
-  assert.doesNotMatch(strip(), /title=\{COUNCIL_SHARED_KERNEL_NOTE\}/)
-  assert.doesNotMatch(strip(), /title="\{COUNCIL_SHARED_KERNEL_NOTE\}"/)
+  assert.doesNotMatch(knob(), /title=\{COUNCIL_SHARED_KERNEL_NOTE\}/)
+  assert.doesNotMatch(knob(), /title="\{COUNCIL_SHARED_KERNEL_NOTE\}"/)
+})
+
+test('в тетради ручки запуска не осталось: её место — пульт', () => {
+  const cell = code(read('web/src/components/notebook/CellView.svelte'))
+  assert.doesNotMatch(cell, /setStudentRun|studentRun \}/, 'ручка вернулась в меню замка')
+  assert.doesNotMatch(cell, /tr\('room\.ui\.335'\)/, 'заголовок ручки остался в тетради')
 })

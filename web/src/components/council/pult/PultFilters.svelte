@@ -8,7 +8,8 @@
    * место числа; при выключенных именах его нет вовсе — искать нечего, имён в
    * пульте не показывают.
    */
-  import { countLine } from '@/lib/council.svelte'
+  import type { CouncilBoard } from '@shared/protocol'
+  import { councilStripText } from '@/lib/council.svelte'
   import { FILTERS, filterLabel, type PultFilter } from '@/lib/council-pult'
   import { cn } from '@/lib/utils'
 
@@ -19,14 +20,16 @@
     searching: boolean
     /** Имена включены: выключены — поиск по имени не работает. */
     names: boolean
-    submitted: number
-    total: number
+    /** Счётчики комнаты — их же складывает полоса режима. */
+    counts: CouncilBoard['counts']
+    /** Сколько разных ответов ВИДНО: сервер считает их по всей комнате. */
+    groups: number
     onfilter: (filter: PultFilter) => void
     onsearch: (text: string) => void
     onclose: () => void
   }
 
-  let { filter, search, searching, names, submitted, total, onfilter, onsearch, onclose }: Props = $props()
+  let { filter, search, searching, names, counts, groups, onfilter, onsearch, onclose }: Props = $props()
 
   const CAPS = 'text-micro font-bold uppercase tracking-caps'
   let field = $state<HTMLInputElement | null>(null)
@@ -64,6 +67,14 @@
       onblur={onclose}
     />
   {:else}
-    <span class="shrink-0 font-mono text-micro text-faint">{countLine({ submitted, total })}</span>
+    <!--
+      Полоса режима старой консоли: попытки, сдачи, пишущие и число разных
+      ответов. Складывает её одна функция на весь клиент (`councilStripText`) —
+      это уже был третий способ считать одно и то же, и он с остальными
+      расходился.
+    -->
+    <span class="min-w-0 truncate font-mono text-micro text-faint">
+      {councilStripText(counts, groups)}
+    </span>
   {/if}
 </div>

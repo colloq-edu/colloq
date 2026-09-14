@@ -22,7 +22,7 @@
    * просмотр, и подпись говорит об этом прямо.
    */
   import type { CouncilAttempt } from '@shared/protocol'
-  import type { CouncilSettings } from '@shared/notebook'
+  import { COUNCIL_SHARED_KERNEL_NOTE, type CouncilSettings } from '@shared/notebook'
   import { requestReason, type KernelView } from '@/lib/council-pult'
   import { clock } from '@/lib/history'
   import { cn, spell } from '@/lib/utils'
@@ -162,6 +162,16 @@
             </button>
           {/each}
         </div>
+        <!--
+          Про общее ядро сказано ТАМ, ГДЕ РУЧКУ ВКЛЮЧАЮТ, — и ручка теперь
+          здесь, а не в меню замка. Попытки считаются в одном ядре комнаты:
+          имена, заведённые самой попыткой, сервер снимает, а изменения общих
+          объектов остаются общими, и по выводу преподаватель ставит «верно».
+          Копия одна на весь продукт (shared/notebook.ts) — пересказ своими
+          словами разъехался бы с ручкой на первой же правке. Строкой, а не
+          подсказкой: пульт ведут с планшета, где наведения нет вовсе.
+        -->
+        <p class="max-w-[660px] text-2xs leading-snug text-faint">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
       </div>
 
       {#if kernel.pending.length > 0}

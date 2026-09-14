@@ -39,6 +39,10 @@
     hasNeighbour: boolean
     reply: string
     replyToGroup: boolean
+    /** У группы есть черновик оракула. */
+    replyDraft: boolean
+    /** В поле ответа стоит черновик оракула. */
+    replyFromOracle: boolean
     onshow: () => void
     onclear: () => void
     onrun: () => void
@@ -50,6 +54,8 @@
     onreplysend: () => void
     onreplyfocus: () => void
     onreplyblur: () => void
+    /** Удалить автора с занятия — подтверждает общее меню бана. */
+    onremove: (event: MouseEvent) => void
   }
 
   let {
@@ -68,6 +74,8 @@
     hasNeighbour,
     reply,
     replyToGroup,
+    replyDraft,
+    replyFromOracle,
     onshow,
     onclear,
     onrun,
@@ -79,6 +87,7 @@
     onreplysend,
     onreplyfocus,
     onreplyblur,
+    onremove,
   }: Props = $props()
 
   const CAPS = 'text-micro font-bold uppercase tracking-caps'
@@ -138,6 +147,21 @@
       <span class={cn(CAPS, 'flex h-5 shrink-0 items-center border px-2', markTone)}>
         {statusLabel(attempt)}
       </span>
+      <!--
+        Удаление с занятия — здесь, а не в полосе действий: в полосе стоит то,
+        что делают по каждой работе, а это делают раз в семестр. Тихая до
+        наведения и без заливки: единственное наказание в продукте не должно
+        стоять рядом с «показать классу» одинаково громко. Подтверждение
+        спрашивает общее меню бана (lib/bans.ts), оно же перечисляет
+        последствия — второго такого разговора в продукте нет.
+      -->
+      <button
+        type="button"
+        class={cn(CAPS, 'shrink-0 text-faint hover:text-danger disabled:text-faint')}
+        disabled={disabled}
+        data-pult-remove
+        onclick={onremove}
+      >{tr('room.ui.78')}</button>
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4 pt-3.5">
@@ -181,6 +205,8 @@
         text={reply}
         toGroup={replyToGroup}
         groupSize={group?.count ?? 1}
+        hasDraft={replyDraft}
+        fromOracle={replyFromOracle}
         {disabled}
         onchange={onreplychange}
         ontoggle={onreplytoggle}

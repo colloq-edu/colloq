@@ -30,8 +30,6 @@ const HISTORY = 'web/src/components/panels/HistoryTab.svelte'
 const FILES = 'web/src/components/panels/FilesPanel.svelte'
 const AI = 'web/src/components/panels/AiPanel.svelte'
 const BAN = 'web/src/components/panels/BanMenu.svelte'
-const STRIP = 'web/src/components/council/CouncilStrip.svelte'
-const ORACLE = 'web/src/components/council/CouncilOracle.svelte'
 const RULES = 'web/src/components/RoomRulesRows.svelte'
 
 /* ------------------------------------------------------------- гарнитуры */
@@ -94,15 +92,6 @@ test('ручка ящика и его действия — не тоньше п�
   assert.ok(Number(act[1]) >= 24, 'пол 24px — тот же, что цитирует тетрадь')
 })
 
-test('сегменты полосы групп нажимаются пальцем, а рисуются прежними', () => {
-  const strip = code(read(STRIP))
-  // Кнопка выросла до 24px отрицательным полем, полоса внутри осталась 12px:
-  // 8×12 — вдвое меньше пола 2.5.8, и на планшете в неё не попасть.
-  assert.match(strip, /-my-1\.5[^']*h-6/, 'кнопка — 24px с отрицательным полем')
-  assert.match(strip, /min-w-\[16px\]/, 'и не уже шестнадцати')
-  assert.match(strip, /h-3 w-full border-b-2/, 'сама полоса по-прежнему 12px')
-})
-
 test('«как на инстансе» — кнопка, а не строчка текста высотой в буквы', () => {
   const rules = code(read(RULES))
   const clear = rules.slice(rules.indexOf('.rule-clear'))
@@ -116,20 +105,6 @@ test('правила комнаты берут скорость и кривую 
   assert.doesNotMatch(rules, /100ms ease-out/, 'литеральных «100ms ease-out» не осталось')
   assert.match(rules, /var\(--speed-quick\)/, 'цвет — по --speed-quick')
   assert.match(rules, /var\(--speed-press\) var\(--ease-out\)/, 'форма — по --speed-press')
-})
-
-test('полоса ожидания консилиума бежит, а не мигает на месте', () => {
-  const oracle = code(read(ORACLE))
-  // animate-pulse двигает одну opacity: треть дорожки стояла слева и тускнела,
-  // а остановившийся указатель читается как зависший.
-  assert.doesNotMatch(oracle, /animate-pulse/, 'pulse убран')
-  assert.match(oracle, /@keyframes council-run/, 'есть своя петля')
-  assert.match(oracle, /translateX\(300%\)/, 'и она проходит дорожку насквозь')
-  assert.doesNotMatch(
-    /@keyframes council-run[\s\S]*?}\s*}/.exec(oracle)?.[0] ?? '',
-    /(width|left|opacity):/,
-    'только transform — иначе кадр стоит layout',
-  )
 })
 
 test('история не рвёт нажатие под reduced-motion', () => {

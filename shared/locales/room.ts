@@ -5034,6 +5034,18 @@ export const roomMessages: MessageCatalog = {
     "ru": "верно · типичная · падает · ещё пишут",
     "en": "correct · typical · failing · still writing"
   },
+  "room.ui.1400": {
+    "ru": "Пульт",
+    "en": "Console"
+  },
+  "room.ui.1401": {
+    "ru": "Пульт открыт",
+    "en": "Console is open"
+  },
+  "room.ui.1402": {
+    "ru": "Браузер не дал открыть окно. Разрешите всплывающие окна для этой страницы — или нажмите кнопку ещё раз.",
+    "en": "The browser blocked the window. Allow pop-ups for this page — or press the button again."
+  },
   "room.ui.1385": {
     "ru": "Пульт открыт в отдельном окне — стопка и сводка живут там, чтобы их не увидел зал.",
     "en": "The console is open in a separate window — the stack and the summary live there so the room cannot see them."

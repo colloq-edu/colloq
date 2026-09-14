@@ -4,11 +4,11 @@
    * ПУЛЬТ КОНСИЛИУМА — отдельное окно, мессенджер: слева люди, справа их работа.
    *
    * Зачем окно, а не блок под ячейкой. Тетрадь зеркалится на проектор. Пока
-   * стопка жила в ней, зал читал имена, черновики, ошибки и отметки ✓/✗ —
-   * то есть всё, что преподаватель держит при себе. Второе: листание «‹ ›» по
-   * одной карточке не отвечает на вопрос «кто сдал минуту назад» и прячет
-   * очередь на запуск. Мессенджер отвечает на оба: лента сдач с курсором и
-   * полоса очереди сверху.
+   * консоль жила в ней, зал читал имена, черновики, ошибки и отметки ✓/✗ —
+   * то есть всё, что преподаватель держит при себе; поэтому в тетради её нет
+   * больше вовсе, ни запасным путём. Второе: листание «‹ ›» по одной карточке
+   * не отвечает на вопрос «кто сдал минуту назад» и прячет очередь на запуск.
+   * Мессенджер отвечает на оба: лента сдач с курсором и полоса очереди сверху.
    *
    * Окно 900×700 (мин 760×600) — размер выведен из содержимого, а не выбран:
    * 560 px тела это десять строк по 50, а справа в те же 560 укладываются шапка
@@ -24,14 +24,19 @@
    * ВСЁ, ЧТО ВИДИТ ЗАЛ, — ОДНА КНОПКА. «Показать классу» (и Enter на строке).
    * Листание, отметки, письма и оракул не меняют на стене ни пикселя.
    *
-   * Пульт всегда тёмный — как и лекционный, и по той же причине: тёмный зал —
-   * это факт о мире, а не настройка; светлая плита 900×700 в тёмной аудитории
-   * бьёт по глазам. Тему одалживаем через `borrowTheme`.
+   * ТЕМА — КОМНАТНАЯ, светлая или тёмная. Пульт держат не в тёмном зале, как
+   * лекционный, а рядом с тетрадью — вторым окном на том же мониторе, и тёмная
+   * плита возле светлой комнаты читается как вторая программа. Своей темы у
+   * окна нет вовсе: оно берёт ту же (`colloq.theme.v1`, lib/theme.svelte.ts),
+   * что и комната, и следует за тумблером в шапке тетради живьём — цвета здесь
+   * названы смыслом (canvas, surface, raised, line, ink, accent, positive,
+   * warning, danger), а не тоном, и оба набора им уже отвечают.
    */
   import { untrack } from 'svelte'
   import { DEFAULT_COUNCIL, findCell, type CouncilSettings } from '@shared/notebook'
   import type { CouncilAttempt } from '@shared/protocol'
   import { api } from '@/lib/api'
+  import { askToBan } from '@/lib/bans'
   import { OFFLINE_REASON } from '@/lib/controls'
   import { groupAttempts } from '@/lib/council-board'
   import {
@@ -50,7 +55,6 @@
   } from '@/lib/council-pult'
   import { announcePult, savePultPlace } from '@/lib/council-pult-window'
   import { getSessionState } from '@/lib/session.svelte'
-  import { borrowTheme } from '@/lib/theme.svelte'
   import { cn, spell } from '@/lib/utils'
   import PultFilters from './PultFilters.svelte'
   import PultHeader from './PultHeader.svelte'
@@ -75,9 +79,7 @@
 
   /* ------------------------------------------------------------ окно */
 
-  $effect(() => untrack(() => borrowTheme('dark')))
-
-  // Стук соседнему окну: пока он идёт, тетрадь прячет свою стопку целиком.
+  // Стук соседнему окну: по нему кнопка под ячейкой знает, что окно живо.
   $effect(() => announcePult(session.session.id, cellId))
 
   /**
@@ -150,6 +152,8 @@
   let focus = $state<PultFocus>('list')
   let reply = $state('')
   let replyToGroup = $state(false)
+  /** В поле ответа стоит черновик оракула, а не свой текст. */
+  let replyFromOracle = $state(false)
   /** Момент открытия пульта: всё, что сдано раньше, непрочитанным не считается. */
   const openedAt = Date.now()
 
@@ -213,6 +217,14 @@
       : 0,
   )
   const place = $derived(cursor === null ? 0 : ids.indexOf(cursor) + 1)
+  /**
+   * Черновик письма этой группе — от оракула (CouncilOracle.drafts).
+   *
+   * Он есть не всегда и только у сданных: у черновика автора группы нет.
+   */
+  const groupDraft = $derived(
+    group && current?.submittedAt !== null ? (board?.oracle?.drafts[group.key] ?? '') : '',
+  )
   const neighbour = $derived(neighbourInGroup(attempts, cursor, 1))
   const shownNeighbour = $derived(neighbourInGroup(attempts, shown?.participantId ?? null, 1))
 
@@ -237,6 +249,21 @@
     untrack(() => {
       if (seen.has(at)) return
       seen = new Set(seen).add(at)
+    })
+  })
+
+  /**
+   * Перешли к другой работе — неотправленный ЧЕРНОВИК ОРАКУЛА уходит с ней.
+   *
+   * Он написан про другую группу, и уехать в чужое письмо ему нельзя. Своё,
+   * набранное руками, остаётся: его писал человек, и стирать это молча нельзя.
+   */
+  $effect(() => {
+    void cursor
+    untrack(() => {
+      if (!replyFromOracle) return
+      reply = ''
+      replyFromOracle = false
     })
   })
 
@@ -360,6 +387,41 @@
       text,
     )
     reply = ''
+    replyFromOracle = false
+  }
+
+  /**
+   * «Всем N» — и черновик оракула, если он для этой группы есть.
+   *
+   * Черновик не подтверждают кнопкой «отправить как есть»: письмо уйдёт от
+   * имени преподавателя, поэтому текст встаёт В ПОЛЕ и правится. Своё
+   * написанное он не затирает никогда — только пустое поле.
+   */
+  function toggleReplyToGroup(): void {
+    replyToGroup = !replyToGroup
+    if (replyToGroup && reply.trim() === '' && groupDraft) {
+      reply = groupDraft
+      replyFromOracle = true
+    }
+  }
+
+  /**
+   * Удалить автора открытой работы с занятия.
+   *
+   * Спрашивает общее меню бана (components/panels/BanMenu.svelte) — оно живёт
+   * в этом же окне и перечисляет последствия. Имя в вопросе настоящее и при
+   * выключенных именах: «Вариант 12» удалять нельзя, удаляют человека.
+   */
+  function remove(event: MouseEvent): void {
+    if (disabled || !current) return
+    askToBan({
+      id: current.participantId,
+      name: current.name,
+      color: current.color,
+      avatar: current.avatar,
+      x: event.clientX,
+      y: event.clientY,
+    })
   }
 
   /** Оракул о классе — через тот же маршрут, что и в тетради. */
@@ -524,8 +586,8 @@
       {search}
       {searching}
       {names}
-      submitted={counts.submitted}
-      total={counts.attempts}
+      {counts}
+      groups={groups.length}
       onfilter={(next) => (filter = next)}
       onsearch={(text) => (search = text)}
       onclose={() => (searching = false)}
@@ -593,6 +655,8 @@
             hasNeighbour={neighbour !== null}
             {reply}
             {replyToGroup}
+            replyDraft={groupDraft !== ''}
+            {replyFromOracle}
             onshow={() => show()}
             onclear={clearShown}
             onrun={() => run()}
@@ -601,8 +665,13 @@
               if (neighbour) show(neighbour)
             }}
             onmark={mark}
-            onreplychange={(text) => (reply = text)}
-            onreplytoggle={() => (replyToGroup = !replyToGroup)}
+            onremove={remove}
+            onreplychange={(text) => {
+              reply = text
+              // Стёрли черновик до конца — он больше не черновик оракула.
+              if (text.trim() === '') replyFromOracle = false
+            }}
+            onreplytoggle={toggleReplyToGroup}
             onreplysend={sendReply}
             onreplyfocus={() => (focus = 'reply')}
             onreplyblur={() => (focus = 'list')}

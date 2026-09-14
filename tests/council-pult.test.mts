@@ -5,7 +5,7 @@
  * работа. Проверяется здесь ровно то, из-за чего такой список врёт молча.
  *
  *   порядок — по времени сдачи, свежие сверху, а НЕ по размеру группы (так
- *             ходит стопка, council-board.ts · stackOrder): два разных вопроса,
+ *             ходила стопка под ячейкой, пока она была): два разных вопроса,
  *             и однажды они уже были одной функцией;
  *   группы  — от трёх одинаковых в списке стоит ОДИН, остальные за хвостом;
  *   курсор  — j и k перепрыгивают свёрнутое целиком: строка, которой на экране
@@ -16,7 +16,9 @@
  *             списку, Enter на кнопке нажимает кнопку.
  *
  * И окно: «открыт ли пульт» тетрадь узнаёт стуком, а не ссылкой на окно, —
- * ссылку теряет перезагрузка тетради, и стопка осталась бы скрытой навсегда.
+ * ссылку теряет перезагрузка тетради, а окно при этом живо. По тому же стуку
+ * решается, что делать с кнопкой «Пульт ↗»: открыть, поднять или перевести
+ * единственное окно комнаты на эту ячейку.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -44,6 +46,7 @@ import {
   PULT_STALE_MS,
   beatsAlive,
   pultPath,
+  pultReach,
   pultWindowName,
   windowFeatures,
 } from '../web/src/lib/council-pult-window.js'
@@ -403,4 +406,32 @@ test('окно открывается по имени комнаты, всплы
   assert.match(remembered, /left=120/)
   assert.match(remembered, /top=40/)
   assert.match(remembered, /width=1000/)
+})
+
+test('кнопка «Пульт»: открыть, поднять или перевести — по последнему стуку', () => {
+  const here = { sessionId: 'kf3n8q2p', cellId: 'c1', at: T }
+  // Не стучится вовсе — окна нет, открываем.
+  assert.equal(pultReach(null, 'c1', T), 'open')
+  // Стучится, но давно: окно закрыли, а последняя весть осталась.
+  assert.equal(pultReach(here, 'c1', T + PULT_STALE_MS), 'open')
+  assert.equal(pultReach({ ...here, closed: true }, 'c1', T), 'open', 'попрощалось — значит закрыто')
+  // Живо и по этой ячейке — поднять, не перезагружая: иначе стёрся бы отбор,
+  // курсор и раскрытые группы, то есть весь способ смотреть.
+  assert.equal(pultReach(here, 'c1', T + 100), 'focus')
+  // Живо, но по другой ячейке — перевести его сюда: второе окно той же комнаты
+  // было бы вторым местом с именами, ради чего окно и заводили.
+  assert.equal(pultReach(here, 'c2', T + 100), 'navigate')
+})
+
+test('шапка раскрытой группы несёт её имя, а не только номер и счёт', () => {
+  const list = [
+    attempt({ participantId: 'a', text: 'x = 1', submittedAt: T + 3 }),
+    attempt({ participantId: 'b', text: 'x = 1', submittedAt: T + 2 }),
+    attempt({ participantId: 'c', text: 'x = 1', submittedAt: T + 1 }),
+  ]
+  const built = rows(list, { expanded: new Set([groupAttempts(list)[0].key]) })
+  const header = built.find((row) => row.kind === 'header')
+  assert.ok(header && header.kind === 'header')
+  assert.equal(header.count, 3)
+  assert.equal(header.label, 'x = 1', 'шапка не говорит, ЧТО написали эти трое')
 })

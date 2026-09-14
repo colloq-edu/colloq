@@ -262,7 +262,7 @@ test('подсказка оракула — по упавшему запуску
   assert.doesNotMatch(SHEET, /\bapi\./, 'лист ходит к модели через общую ленту')
   // Письмо оракула отличимо от письма преподавателя — и у автора, и в стопке.
   assert.match(SHEET, /letter\.to === 'oracle' \? tr\('room\.ui\.1261'\) : tr\('room\.ui\.1251'\)/)
-  assert.match(read('web/src/components/council/CouncilStack.svelte'), /letter\.to === 'oracle'/)
+  assert.match(read('web/src/components/council/pult/PultLetters.svelte'), /letter\.to === 'oracle'/)
 })
 
 test('«переписать ячейку» закрыто там, где ячейку не правят, а копия — нигде', () => {

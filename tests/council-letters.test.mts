@@ -26,7 +26,13 @@ const read = (rel: string) => readFileSync(resolve(ROOT, rel), 'utf8')
 const code = (s: string) => s.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 
 const SHEET = 'web/src/components/notebook/CellView.svelte'
-const STACK = 'web/src/components/council/CouncilStack.svelte'
+/*
+ * Вторая поверхность — окно пульта: письма читает `PultWork` (той же общей
+ * функцией), а рисует построчно `PultLetters`. Прежняя стопка под ячейкой,
+ * которая стояла здесь, удалена вместе с консолью в тетради.
+ */
+const WORK = 'web/src/components/council/pult/PultWork.svelte'
+const LETTERS = 'web/src/components/council/pult/PultLetters.svelte'
 
 const letter = (text: string, to?: 'person' | 'group'): CouncilReply => ({
   text,
@@ -53,11 +59,13 @@ test('письма берутся из replies, а reply остаётся зап
 })
 
 test('обе поверхности рисуют строку на письмо, а не абзац на попытку', () => {
-  for (const [name, rel] of [
-    ['лист студента', SHEET],
-    ['стопка преподавателя', STACK],
+  for (const [name, sources, mark] of [
+    ['лист студента', [SHEET], /tr\('room\.ui\.70'\)/],
+    // В пульте рассылка названа «Вы · всем N» (room.ui.1329): у преподавателя
+    // это его собственное письмо, и адресат в нём — число людей.
+    ['пульт преподавателя', [WORK, LETTERS], /tr\('room\.ui\.1329'/],
   ] as const) {
-    const source = code(read(rel))
+    const source = sources.map((rel) => code(read(rel))).join('\n')
     assert.match(source, /councilLetters\(/, `${name}: письма берутся мимо shared`)
     assert.match(
       source,
@@ -71,14 +79,14 @@ test('обе поверхности рисуют строку на письмо,
     )
     // Молчание на личном письме значит «это вам»; рассылку надо назвать вслух.
     assert.match(source, /letter\.to === 'group'/, `${name}: групповое письмо ничем не помечено`)
-    assert.match(source, /tr\('room\.ui\.70'\)/, `${name}: нет слова про рассылку`)
+    assert.match(source, mark, `${name}: нет слова про рассылку`)
   }
 })
 
 test('правило запасного пути живёт в shared в одной копии', () => {
   const shared = code(read('shared/protocol.ts'))
   assert.match(shared, /export function councilLetters\(/, 'shared больше не объявляет правило')
-  for (const rel of [SHEET, STACK]) {
+  for (const rel of [SHEET, WORK, LETTERS]) {
     assert.doesNotMatch(
       code(read(rel)),
       /replies\s*\?\?/,

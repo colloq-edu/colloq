@@ -55,7 +55,6 @@
     patchIsStale,
     replaceText,
     type CellLock,
-    type CouncilSettings,
   } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction } from '@shared/protocol'
@@ -82,11 +81,12 @@
     watchCellLock,
   } from '@/lib/council.svelte'
   import { clock } from '@/lib/history'
-  import CouncilStack from '@/components/council/CouncilStack.svelte'
   import CouncilOnScreen from '@/components/council/CouncilOnScreen.svelte'
   import {
     beatsAlive,
+    focusPult,
     openPult,
+    pultReach,
     watchPult,
     type PultBeat,
   } from '@/lib/council-pult-window'
@@ -780,59 +780,6 @@
 
   $effect(() => () => window.clearTimeout(flashTimer))
 
-  /* ---- пульт преподавателя: колбэки для стопки и сводки */
-
-  function showToClass(participantId: string): void {
-    const who = board?.attempts.find((attempt) => attempt.participantId === participantId)
-    // Подтверждение — потому что это единственное действие консилиума, которое
-    // меняет общую ячейку у всей комнаты, и назад его не отматывают.
-    if (
-      !window.confirm(
-        who ? tr('room.confirm.showNamed', { name: who.name }) : tr('room.confirm.showAnswer'),
-      )
-    ) {
-      return
-    }
-    session.council.show(id, participantId)
-  }
-
-  function runAttemptOf(participantId: string): void {
-    session.council.run(id, participantId)
-  }
-
-  function replyTo(to: { participantId: string } | { groupKey: string }, text: string): void {
-    const trimmed = text.trim()
-    if (!trimmed) return
-    session.council.reply(id, to, trimmed)
-  }
-
-  function markAttempt(participantId: string, correct: boolean | null): void {
-    session.council.mark(id, participantId, correct)
-  }
-
-  /**
-   * Спросить оракула о решениях — или остановить чтение.
-   *
-   * По HTTP, а не сокетом: у отказа есть цена (вопрос из лимита комнаты) и
-   * срок (429 с `retryAfter`), и говорить о них умеет `ApiError`. Готовая
-   * сводка приедет сокетом (`council:oracle`) вместе со стопкой.
-   */
-  async function askOracle(stop: boolean): Promise<void> {
-    try {
-      if (stop) await api.councilStopOracle(session.session.id, session.token, id)
-      else await api.councilAsk(session.session.id, session.token, id)
-    } catch (cause) {
-      session.showError(cause instanceof Error ? tr(cause.message) : tr('room.ui.414'))
-    }
-  }
-
-  /**
-   * Какая попытка на карточке стопки. Состояние экрана, не комнаты: два
-   * преподавателя листают одну стопку каждый со своего места, и второй
-   * планшет не должен перелистывать первый.
-   */
-  let stackPosition = $state<{ participantId: string | null }>({ participantId: null })
-
   /* ---- замок в три положения */
 
   /**
@@ -850,17 +797,16 @@
   /* ------------------------------------------- пульт консилиума в окне */
 
   /**
-   * Пульт консилиума открыт в отдельном окне — и пока он открыт, приватная
-   * консоль ПОД ЯЧЕЙКОЙ НЕ РИСУЕТСЯ.
+   * Открыт ли пульт этой ячейки — на это отвечает одна кнопка под ячейкой.
    *
-   * Это и есть починка утечки, ради которой окно заводили: тетрадь зеркалится
-   * в зал, и два места с одними и теми же именами, черновиками и отметками —
-   * источник того, что зал видит чужие фамилии. Одно место за раз.
+   * Приватной консоли в тетради больше нет вовсе: консилиум ведут в окне
+   * пульта, и второго места с именами, черновиками и отметками в продукте
+   * быть не должно — тетрадь зеркалится в зал. Поэтому «открыт» решает только
+   * подпись кнопки: открыт — поднимаем окно, закрыт — открываем.
    *
    * Узнаём стуком по BroadcastChannel (lib/council-pult-window.ts), а не по
    * ссылке на окно: ссылку теряет перезагрузка тетради, а окно при этом живо.
-   * Молчание дольше трёх секунд — закрыто: отсутствие вести о смерти не должно
-   * прятать консоль навсегда.
+   * Молчание дольше трёх секунд — закрыто.
    */
   let pultBeat = $state.raw<PultBeat | null>(null)
   let pultNow = $state(Date.now())
@@ -884,18 +830,59 @@
     }
   })
 
-  function openCouncilPult(): void {
-    lockMenu = false
-    pultWindow = openPult(session.session.id, id)
-  }
+  /**
+   * Окно заблокировано браузером — сказать это словом, а не молчать.
+   *
+   * `window.open` из обработчика щелчка проходит везде, но не всегда: в
+   * Safari с «блокировать всплывающие окна» и в Chrome по политике
+   * предприятия он возвращает `null`. Молчащая кнопка читается как сломанная,
+   * а преподаватель в этот момент стоит перед аудиторией; строка гаснет сама,
+   * потому что она про одно нажатие, а не про состояние комнаты.
+   */
+  let pultBlocked = $state(false)
+  let blockedTimer: number | undefined
+  const BLOCKED_MS = 6000
 
-  /** Поднять уже открытое окно; ссылки нет (перезагрузили тетрадь) — открыть заново. */
-  function raiseCouncilPult(): void {
-    if (pultWindow && !pultWindow.closed) {
-      pultWindow.focus()
-      return
+  $effect(() => () => window.clearTimeout(blockedTimer))
+
+  /**
+   * Дотянуться до пульта этой ячейки: открыть, поднять или перевести.
+   *
+   * Одна дверь, и открывает её ТОЛЬКО КНОПКА ПОД ЯЧЕЙКОЙ. Замок окон не
+   * открывает: перевести ячейку в консилиум и открыть пульт — два разных
+   * решения, и второе принимает преподаватель, а не тетрадь. Что делать с
+   * окном — открыть, поднять или перевести на эту ячейку — решает `pultReach`
+   * по последнему стуку (lib/council-pult-window.ts); здесь остаются только
+   * окна и отказ.
+   *
+   * Звать ТОЛЬКО ИЗ ОБРАБОТЧИКА ЩЕЛЧКА: `window.open` вне пользовательского
+   * жеста браузер не пропускает, и на кадре из сети окно не открылось бы
+   * никогда — молча.
+   */
+  function reachPult(): void {
+    lockMenu = false
+    if (pultReach(pultBeat, id, Date.now()) === 'focus') {
+      try {
+        if (pultWindow && !pultWindow.closed) {
+          pultWindow.focus()
+          return
+        }
+      } catch {
+        // Кросс-оконный focus умеет отказывать; окно при этом живо.
+      }
+      const raised = focusPult(session.session.id)
+      if (raised) {
+        pultWindow = raised
+        return
+      }
     }
-    pultWindow = openPult(session.session.id, id)
+    // Открыть — или перевести уже открытое окно на эту ячейку: имя окна одно
+    // на комнату, и второй `open` его не удваивает, а ведёт сюда.
+    const opened = openPult(session.session.id, id)
+    if (opened) pultWindow = opened
+    window.clearTimeout(blockedTimer)
+    pultBlocked = opened === null
+    if (opened === null) blockedTimer = window.setTimeout(() => (pultBlocked = false), BLOCKED_MS)
   }
 
   let holdTimer: number | undefined
@@ -982,27 +969,6 @@
     if (state === lockState) return
     markSending()
     session.council.lock(id, state)
-  }
-
-  function setStudentRun(studentRun: CouncilSettings['studentRun']): void {
-    if (!inCouncil || !session.connected || studentRun === councilSettings.studentRun) return
-    session.council.lock(id, 'council', { studentRun })
-  }
-
-  /**
-   * Имена на проекторе — ручка, у которой снова есть исполнение.
-   *
-   * Её убирали из этого меню как обещание без исполнения: поле писалось в
-   * документ и не читалось ничем. Теперь его читает сервер, когда собирает
-   * подпись показанной попытки (shared/protocol.ts · CouncilShown): выключенная
-   * — и ни имени, ни цвета, ни аватара нет ни в одном кадре, а подписывает
-   * «Вариант N» — одинаково в тетради у всех, в плашке преподавателя и на
-   * проекторе.
-   */
-  function setNamesOnProjector(namesOnProjector: boolean): void {
-    if (!inCouncil || !session.connected) return
-    if (namesOnProjector === councilSettings.namesOnProjector) return
-    session.council.lock(id, 'council', { namesOnProjector })
   }
 
   // Меню закрывается снаружи: щелчок мимо, Escape, потеря замка.
@@ -2189,9 +2155,11 @@
             {#if lockMenu}
               <!--
                 Слева от тетради места нет — меню раскрывается вправо, поверх
-                тела ячейки. Ручки консилиума стоят и вне консилиума, но
-                погашены: чтобы было видно, что они есть и где они, до того как
-                положение выбрано.
+                тела ячейки. В меню ТОЛЬКО ТРИ ПОЛОЖЕНИЯ ЗАМКА — ни ручек
+                консилиума, ни строки «открыть пульт»: всё, чем консилиум
+                ведут, живёт в окне пульта, а меню отвечает на один вопрос —
+                чья эта ячейка сейчас. Пульт открывают кнопкой под ячейкой,
+                где видно, сколько уже сдали.
               -->
               <div
                 role="menu"
@@ -2226,90 +2194,6 @@
                     {/if}
                   </button>
                 {/each}
-                <!--
-                  Пульт открывается ИЗ ЗАМКА, а не из панели инструментов и не
-                  из меню комнаты: место, где ячейку сделали консилиумной, и
-                  есть место, где ею управляют. Отдельная строка под тремя
-                  положениями — потому что это не четвёртое положение замка, а
-                  действие над третьим.
-                -->
-                {#if inCouncil}
-                  <button
-                    type="button"
-                    class={cn(
-                      'flex w-full items-center gap-2 bg-surface py-2.5 pl-[66px] pr-3.5 text-left',
-                      'transition-colors duration-100 hover:bg-raised',
-                    )}
-                    onclick={openCouncilPult}
-                  >
-                    <span class="flex-1 text-ui font-bold text-brand">{tr('room.ui.1366')} ↗</span>
-                    <span class="shrink-0 font-mono text-micro text-faint">{tr('room.ui.1367')}</span>
-                  </button>
-                {/if}
-                <div class="my-1 h-px bg-line-soft"></div>
-                <label class="flex flex-col gap-1 px-2.5 py-1.5 text-ui">
-                  <span>{tr('room.ui.335')}</span>
-                  <select
-                    class="h-8 w-full border border-line bg-canvas px-2 text-ui text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-                    value={String(councilSettings.studentRun)}
-                    disabled={!inCouncil || controlDisabled(session.connected)}
-                    onchange={(event) => {
-                      const selected = event.currentTarget.value
-                      event.currentTarget.value = String(councilSettings.studentRun)
-                      setStudentRun(selected === 'request' ? 'request' : selected === 'true')
-                    }}
-                  >
-                    <option value="false">{tr('room.ui.336')}</option>
-                    <option value="true">{tr('room.ui.337')}</option>
-                    <option value="request">{tr('room.ui.338')}</option>
-                  </select>
-                </label>
-                <!--
-                  Про общее ядро говорится там, где ручку включают.
-
-                  Прежде здесь и в подсказке кнопки стояло только «в очередь, по
-                  одному» — это про очередь, а не про состояние: попытка видит
-                  `df` преподавателя (иначе консилиум был бы бесполезен), и её
-                  запись в этот `df` остаётся после неё. Имена, заведённые самой
-                  попыткой, сервер снимает (kernel/index.ts ·
-                  COUNCIL_SNAPSHOT_NAMES), и строка описывает ровно это. Копия
-                  одна на весь продукт — shared/notebook.ts, чтобы подсказка
-                  кнопки и эта строка не разъехались.
-                -->
-                {#if inCouncil}
-                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
-                {/if}
-                <!--
-                  «Имена на проекторе» вернулись сюда вместе с исполнением.
-
-                  Ручку убирали, когда она писалась в документ и не читалась
-                  ничем: переключатель, который в обе стороны не меняет ничего,
-                  — обещание без исполнения. Теперь её читает сервер на подписи
-                  показанной попытки: выключенная — и в кадре нет ни имени, ни
-                  цвета, ни аватара, а подписывает «Вариант N» одинаково везде —
-                  в тетради у всех, в плашке преподавателя и на проекторе.
-                  Скрыть имя постфактум нельзя: то, что уже уехало в чужой
-                  браузер, считается показанным, — поэтому ручку и щёлкают до
-                  показа.
-                -->
-                {#if inCouncil}
-                  <label class="flex items-start gap-2 px-2.5 py-1.5 text-ui">
-                    <input
-                      type="checkbox"
-                      class="mt-0.5 h-4 w-4 shrink-0 accent-accent"
-                      checked={councilSettings.namesOnProjector}
-                      disabled={controlDisabled(session.connected)}
-                      onchange={(event) => setNamesOnProjector(event.currentTarget.checked)}
-                    />
-                    <span class="flex min-w-0 flex-1 flex-col">
-                      <span>{tr('room.ui.1258')}</span>
-                      <span class="text-2xs text-muted">{tr('room.ui.1259')}</span>
-                    </span>
-                  </label>
-                {/if}
-                {#if !inCouncil}
-                  <p class="px-2.5 pb-1 pt-0.5 text-2xs text-muted">{tr('room.ui.339')}</p>
-                {/if}
               </div>
             {/if}
           </div>
@@ -3231,71 +3115,46 @@
           {/if}
 
           <!--
-            Пульт преподавателя — под эталоном.
+            Консилиум у преподавателя — ОДНА СТРОКА И КНОПКА. Всегда.
 
-            Полоса режима, стопка и сводка живут в CouncilStack (components/
-            council): один вход на оба вида. Здесь — монтаж и провода к сокету:
-            показать, запустить, ответить, отметить, спросить оракула, попросить
-            вывод попытки, не поехавший со стопкой. Положение в стопке —
-            состояние этого экрана, не комнаты, и живёт в этой ячейке;
-            вид (стопка/сводка) — общий на все ячейки, в CouncilState.
+            Тетрадь зеркалится на проектор, а консоль консилиума полна имён,
+            черновиков, ошибок и отметок: место у неё одно — окно пульта
+            (components/council/pult). Под ячейкой остаётся ровно то, что зал и
+            так видит на проекторе, — сколько сдали и сколько ещё пишут, — и
+            дверь в пульт. Приватной стопки здесь нет НИ В КАКОМ случае, в том
+            числе при закрытом окне: запасной путь, рисующий имена в тетради, и
+            есть та самая утечка, ради которой окно заводили.
+
+            Блок стоит и после закрытия консилиума, пока есть попытки: сданное
+            смотрят до конца занятия, и смотрят там же, в пульте.
           -->
-          {#if pultOpen}
-            <!--
-              Пульт открыт в отдельном окне — под ячейкой остаётся ОДНА строка.
-
-              Ровно те числа, что зал и так видит на проекторе, и ни одного
-              имени: стопка, сводка и оракул на это время скрыты целиком. Два
-              места с одним и тем же — источник утечки, ради которой окно и
-              заводили (Paper · 05c · доска 11).
-            -->
+          {#if leads && (inCouncil || (board?.counts.attempts ?? 0) > 0)}
             <div
-              class="flex flex-wrap items-center gap-2.5 border-l-4 border-brand bg-surface px-3 py-2"
-              data-council-pult-open
+              class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-l-4 border-brand bg-surface px-3 py-2"
+              data-council-host
             >
-              <span class="text-ui font-bold text-ink">{tr('room.ui.1364')}</span>
-              <span class="flex-1 text-2xs text-muted">
+              <span class="shrink-0 text-ui font-bold text-ink">{tr('room.ui.34')}</span>
+              <span class="min-w-0 flex-1 font-mono text-2xs tabular-nums text-muted">
                 · {countLine(count ?? { submitted: 0, total: 0 })}
                 {#if (board?.counts.writing ?? 0) > 0}
                   · {tr('room.ui.1056', { count: board?.counts.writing ?? 0 })}
                 {/if}
               </span>
+              <!--
+                Главная кнопка ячейки в консилиуме — и она заливается: всё
+                остальное здесь только числа. Пока окно живо, она не открывает
+                второе, а поднимает то (`pultReach`), и говорит об этом словом.
+              -->
               <button
                 type="button"
-                class={cn(CAPS, 'shrink-0 text-accent-text hover:underline')}
-                onclick={raiseCouncilPult}
-              >{tr('room.ui.1365')}</button>
-            </div>
-          {:else if leads && (inCouncil || (board?.counts.attempts ?? 0) > 0)}
-            <!--
-              И после закрытия консилиума, пока есть попытки: сданное остаётся
-              на просмотр до конца занятия, а закрытие стопка объявляет сама.
-            -->
-            <div class="border-l-4 border-accent bg-accent/[0.04] px-3 py-2">
-              {#if board}
-                <CouncilStack
-                  {board}
-                  cellId={id}
-                  cellIndex={index + 1}
-                  position={stackPosition}
-                  view={session.council.view}
-                  askWhy={may.ask ? null : may.askWhy}
-                  onshow={showToClass}
-                  onrun={runAttemptOf}
-                  requestsDisabled={controlDisabled(session.connected) || !inCouncil || !acts}
-                  onapproverun={(participantId, requestId) => session.council.approveRunRequest(id, participantId, requestId)}
-                  ondeclinerun={(participantId, requestId) => session.council.declineRunRequest(id, participantId, requestId)}
-                  onreply={replyTo}
-                  onmark={markAttempt}
-                  onneedoutputs={(participantId) => session.council.wantOutputs(id, participantId)}
-                  onask={() => void askOracle(false)}
-                  onstop={() => void askOracle(true)}
-                  onposition={(participantId) => (stackPosition = { participantId })}
-                  ontoggle={(view) => (session.council.view = view)}
-                />
-              {:else}
-                <p class={cn(CAPS, 'text-accent-text')}>{tr('room.ui.368')} {ordinal}</p>
-                <p class="pt-1 text-2xs text-muted"> {tr('room.ui.369')} </p>
+                class={cn('h-8 shrink-0', pultOpen ? 'btn-outline' : 'btn-primary')}
+                data-council-pult-button
+                onclick={reachPult}
+              >{pultOpen ? tr('room.ui.1401') : tr('room.ui.1400')} ↗</button>
+              {#if pultBlocked}
+                <!-- Браузер не дал открыть окно: молчащая кнопка читается как
+                     сломанная, поэтому причина стоит строкой и гаснет сама. -->
+                <p class="basis-full text-2xs text-warning" role="status">{tr('room.ui.1402')}</p>
               {/if}
             </div>
           {/if}

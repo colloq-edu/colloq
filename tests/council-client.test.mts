@@ -460,7 +460,9 @@ test('запрос и отказ приходят в mine и patch незави�
 })
 
 test('список запросов включает все 100 черновиков и сданных, без отказов и завершённых', async () => {
-  const { pendingRunRequests } = await import('../web/src/lib/council-board.js')
+  // Список ждущих собирает пульт (`kernelView`): прежняя `pendingRunRequests`
+  // жила в стопке под ячейкой и уехала вместе с ней — правило осталось то же.
+  const { kernelView } = await import('../web/src/lib/council-pult.js')
   const attempts: CouncilAttempt[] = Array.from({ length: 100 }, (_, i) => ({
     ...attemptOf(`p${i}`, String(i)),
     submittedAt: i % 2 ? 1 : null,
@@ -469,7 +471,7 @@ test('список запросов включает все 100 черновик
   attempts.push({ ...attemptOf('declined', ''), runRequest: { id: 'old', requestedAt: 0, status: 'declined' } })
   attempts.push(attemptOf('no-request', ''))
   const before = [...attempts]
-  const requests = pendingRunRequests(attempts)
+  const requests = kernelView(attempts).pending
   assert.equal(requests.length, 100)
   assert.equal(requests.filter((a) => a.submittedAt === null).length, 50)
   assert.equal(requests[0].participantId, 'p99')

@@ -54,7 +54,29 @@ function apply(next: ThemeName): void {
 function onSystemChange(event: MediaQueryListEvent): void {
   if (chosen) return
   current = event.matches ? 'dark' : 'light'
-  apply(current)
+  if (!borrowed) apply(current)
+}
+
+/**
+ * Соседнее окно той же комнаты — пульт консилиума — следует за переключателем.
+ *
+ * Выбор темы хранится на браузер (`colloq.theme.v1`), а не на вкладку, и
+ * второе окно обязано слушаться того же тумблера: переключили тему в тетради,
+ * и пульт рядом на втором мониторе обязан перекраситься вместе с ней, а не
+ * ждать перезагрузки. `storage` приходит только в ДРУГИЕ документы — тот, кто
+ * писал, уже перекрасился сам.
+ *
+ * `key === null` — хранилище очистили целиком: возвращаемся к системной.
+ */
+function onStorage(event: StorageEvent): void {
+  if (event.key !== null && event.key !== STORAGE_KEY) return
+  chosen = readStored()
+  const next = chosen ?? systemTheme()
+  if (next === current) return
+  current = next
+  // Экран, одолживший тему (лекционный пульт), чужого выбора не слушается: он
+  // тёмный по физике аудитории, а не по вкусу.
+  if (!borrowed) apply(next)
 }
 
 let started = false
@@ -64,6 +86,7 @@ export function initTheme(): void {
   started = true
   apply(current)
   media?.addEventListener('change', onSystemChange)
+  if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
 }
 
 function setTheme(next: ThemeName): void {
@@ -77,6 +100,9 @@ function setTheme(next: ThemeName): void {
   apply(next)
 }
 
+/** Экран одолжил тему: чужой выбор его не перекрашивает. */
+let borrowed = false
+
 /**
  * Одолжить тему на время одного экрана.
  *
@@ -88,15 +114,20 @@ function setTheme(next: ThemeName): void {
  * Именно ОДОЛЖИТЬ, а не выбрать: сохранённый выбор человека не трогается
  * вовсе, и, выйдя из пульта в комнату, он получает ту тему, с которой пришёл.
  * Возвращаемая функция ставит всё на место.
+ *
+ * Одалживает только лекционный пульт. Пульт консилиума — НЕТ: его держат не в
+ * тёмном зале, а рядом с тетрадью, вторым окном на том же мониторе, и светлая
+ * комната со тёмным окном рядом — это две разные программы на одном экране.
  */
 export function borrowTheme(next: ThemeName): () => void {
-  const was = current
-  if (was === next) return () => {}
-  current = next
+  const was = borrowed
+  borrowed = true
   apply(next)
   return () => {
-    current = was
-    apply(was)
+    borrowed = was
+    // Не к запомненной теме, а к нынешней: пока экран был открыт, тему могли
+    // переключить в соседнем окне, и вернуть надо ТУ, что выбрана сейчас.
+    apply(current)
   }
 }
 

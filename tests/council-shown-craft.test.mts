@@ -102,10 +102,12 @@ test('плашка стоит под своей ячейкой — и у сту�
     SHEET.indexOf('<CouncilOnScreen') < SHEET.indexOf('{#if restoreAsking}'),
     'плашка уехала ниже подвала',
   )
-  // У преподавателя — под стопкой, и с ссылкой «убрать с экрана».
-  const stack = CELL.slice(CELL.indexOf('<CouncilStack'))
-  assert.match(stack, /\{#if leads && showsOnScreen && onScreen\}/)
-  assert.match(stack, /mayClear\s+onclear=\{\(\) => session\.council\.clearShown\(id\)\}/)
+  // У преподавателя — под компактным блоком консилиума, и с ссылкой «убрать
+  // с экрана». Плашка — единственное, что осталось в тетради от консоли: это
+  // не приватное, это ровно то, что в эту секунду видит зал.
+  const host = CELL.slice(CELL.indexOf('data-council-host'))
+  assert.match(host, /\{#if leads && showsOnScreen && onScreen\}/)
+  assert.match(host, /mayClear\s+onclear=\{\(\) => session\.council\.clearShown\(id\)\}/)
 })
 
 test('автору второй плашки нет: у него горит «ваш вариант на экране»', () => {
@@ -152,11 +154,22 @@ test('вывод на проекторе — строками текста, бе
 
 /* ------------------------------------------------------------- ручка имён */
 
-test('ручка «имена на проекторе» вернулась в меню замка — вместе с исполнением', () => {
-  assert.match(CELL, /function setNamesOnProjector\(namesOnProjector: boolean\): void/)
-  assert.match(CELL, /session\.council\.lock\(id, 'council', \{ namesOnProjector \}\)/)
-  assert.match(CELL, /checked=\{councilSettings\.namesOnProjector\}/)
-  assert.match(CELL, /tr\('room\.ui\.1258'\)/)
+test('ручка «имена на проекторе» стоит рядом с показом — в пульте, а не в тетради', () => {
+  /*
+   * Решение «подписывать ли на стене именем» принимают за секунду до показа, а
+   * не за день, и стоять ручка должна рядом с тем, что печатает имя. Показывает
+   * классу пульт — там же, в его строке состояния, и ручка.
+   */
+  const status = code(read('web/src/components/council/pult/PultStatusLine.svelte'))
+  const window = code(read('web/src/components/council/pult/PultWindow.svelte'))
+  assert.match(status, /role="switch"/, 'ручка — переключатель, а не строка текста')
+  assert.match(status, /aria-checked=\{names\}/)
+  assert.match(status, /tr\('room\.ui\.1353'\)/)
+  assert.match(status, /tr\('room\.ui\.1354'\)/)
+  assert.match(window, /function setNames\(namesOnProjector: boolean\): void/)
+  assert.match(window, /session\.council\.lock\(cellId, 'council', \{ namesOnProjector \}\)/)
+  // И в тетради её нет: меню замка — три положения и ничего больше.
+  assert.doesNotMatch(CELL, /namesOnProjector/, 'ручка имён вернулась в меню замка')
   assert.match(translate('ru', 'room.ui.1258'), /^Имена на проекторе$/)
 })
 

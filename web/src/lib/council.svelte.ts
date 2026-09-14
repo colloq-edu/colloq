@@ -328,12 +328,6 @@ export class CouncilState {
    * убрали: плашка сворачивается, а ячейка помнит, что кадр по ней приезжал.
    */
   shown = $state.raw<Record<string, CouncilShown | null>>({})
-  /**
-   * Стопка или сводка — положение общее на все ячейки, а не своё у каждой:
-   * преподаватель, переключившийся на сводку, смотрит сводку и в следующей
-   * ячейке тоже — это способ смотреть, а не свойство ячейки.
-   */
-  view = $state<'stack' | 'summary'>('stack')
 
   readonly #send: (message: ControlClientMessage) => void
   readonly #outbox: DraftOutbox

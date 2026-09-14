@@ -21,6 +21,7 @@
  */
 import { tr } from '@shared/i18n'
 import type { CouncilAttempt, CouncilGroup, CouncilStatus } from '@shared/protocol'
+import { groupTitle } from './council-board'
 
 /** С какого числа одинаковых ответов группа сворачивается в одну строку. */
 export const GROUP_MIN = 3
@@ -66,7 +67,19 @@ export type PultRow =
       variant: number
     }
   | { kind: 'collapsed'; id: string; groupKey: string; rest: number; faces: CouncilAttempt[] }
-  | { kind: 'header'; id: string; groupKey: string; index: number; count: number }
+  | {
+      kind: 'header'
+      id: string
+      groupKey: string
+      index: number
+      count: number
+      /**
+       * Как группа называется: имя от оракула, а без него — первая строка кода
+       * (council-board.ts · groupTitle). «Группа 2 · 87 одинаковых» не говорит,
+       * ЧТО написали эти восемьдесят семь; название говорит.
+       */
+      label: string
+    }
 
 export interface PultListInput {
   attempts: readonly CouncilAttempt[]
@@ -212,6 +225,7 @@ export function listRows(input: PultListInput): PultRow[] {
       groupKey: key,
       index: index.get(key) ?? 0,
       count: group.count,
+      label: groupTitle(group),
     })
     for (const member of rest) rows.push(row(member, true))
   }

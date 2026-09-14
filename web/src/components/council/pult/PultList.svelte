@@ -127,9 +127,12 @@
         </button>
       {:else}
         <div class="flex h-7 shrink-0 items-center gap-[9px] border-b border-line bg-surface px-3">
-          <span class={cn(CAPS, 'min-w-0 flex-1 truncate text-faint')}>
+          <span class={cn(CAPS, 'shrink-0 text-faint')}>
             {tr('room.ui.1318', { p0: row.index, p1: row.count })}
           </span>
+          <!-- Имя группы — от оракула, а до него первая строка кода: шапка
+               обязана сказать, ЧТО написали эти люди, а не только сколько их. -->
+          <span class="min-w-0 flex-1 truncate text-2xs text-faint" title={row.label}>{row.label}</span>
           <button type="button" class={cn(CAPS, 'shrink-0 text-accent')} onclick={() => ontoggle(row.groupKey)}>
             {tr('room.ui.1316')}
           </button>
