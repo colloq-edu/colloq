@@ -97,6 +97,44 @@ test('⇧↵ на листе считает, сдаёт только ⌘⇧↵',
   assert.match(submit, /submitFlash = true/)
 })
 
+test('запуск и запрос — одна кнопка и одно ожидание', () => {
+  const footer = SHEET.slice(SHEET.indexOf('<span class="ml-auto flex'))
+  // Одна кнопка с одним словом на обе ручки — и та же функция, что у клавиши.
+  assert.match(footer, /onclick=\{sheetRunKey\}/, 'кнопка и клавиша разошлись')
+  assert.equal(footer.match(/tr\('room\.ui\.73'\)/g)?.length, 1, 'кнопок запуска в подвале не одна')
+  // Про «запрос» студенту больше не рассказывают: ни кнопкой, ни часами, ни
+  // словом «отправляю».
+  for (const key of ['363', '362', '1237']) {
+    assert.doesNotMatch(footer, new RegExp(`room\\.ui\\.${key}`), `в подвале осталось room.ui.${key}`)
+    assert.doesNotMatch(read('shared/locales/room.ts'), new RegExp(`"room\\.ui\\.${key}"`), `ключ ${key} остался в каталоге`)
+  }
+  // Ожидание одно на обе ручки, и номер в нём — необязательный.
+  assert.match(footer, /\{#if runWaiting\}/)
+  assert.match(footer, /mine\?\.queue != null\s*\?\s*tr\('room\.ui\.1236', \{ p0: mine\.queue \}\)\s*:\s*tr\('room\.ui\.1260'\)/)
+  assert.equal(translate('ru', 'room.ui.1260'), 'В очереди')
+  // Отмена рисуется только там, где ей есть что снять: кадра «убрать из
+  // очереди ядра» в протоколе нет, `council:run:cancel` снимает запрос.
+  assert.match(CELL, /const mayCancelRun = \$derived\(requestPending && mayRequestRun\)/)
+  assert.match(footer, /\{#if mayCancelRun\}/)
+  assert.match(read('shared/protocol.ts'), /t: 'council:run:cancel'; cellId: string; requestId: string/)
+  // Отказ говорит словами и не поминает запрос; разошедшийся текст молчит.
+  assert.match(translate('ru', 'room.ui.364'), /^Преподаватель не запустил/)
+  assert.doesNotMatch(footer, /room\.ui\.365/, 'о разошедшемся тексте снова говорят')
+})
+
+test('у черновика нет чипа, а подсказка под кнопками — только про сдачу', () => {
+  const footer = SHEET.slice(SHEET.indexOf('<span class="ml-auto flex'))
+  assert.match(footer, /\{#if sheetState !== 'draft'\}/, 'чип рисуется и в черновике')
+  const catalog = read('shared/locales/room.ts')
+  assert.doesNotMatch(catalog, /"room\.ui\.1223"/, '«Черновик · сохраняется» остался в каталоге')
+  assert.doesNotMatch(catalog, /"room\.ui\.1253"/, 'короткий «Черновик» остался в каталоге')
+  assert.equal(translate('ru', 'room.ui.357'), '⌘⇧↵ — сдать')
+  // Счёт класса при этом остаётся — он в подписи под чипом, а не в подвале.
+  const head = SHEET.slice(SHEET.indexOf("tr('room.ui.34')"), SHEET.indexOf('<CodeEditor'))
+  assert.match(head, /countLine\(count\)/)
+  assert.match(head, /tr\('room\.ui\.1222'\)/)
+})
+
 test('при выключенной ручке ⇧↵ не сдаёт, а говорит словами и гаснет', () => {
   const key = CELL.slice(CELL.indexOf('function sheetRunKey'), CELL.indexOf('$effect(() => () => window.clearTimeout(runHintTimer))'))
   assert.match(key, /requestAttemptRun\(\)/, 'по запросу — просит')
@@ -126,6 +164,13 @@ test('«верно» и «есть ошибка» доходят до автор
     for (const name of ['edited', 'correct', 'wrong', 'submitted', 'draft']) {
       assert.match(block, new RegExp(`\\b${name}:`), `${table} не знает ${name}`)
     }
+  }
+  // Черновик стоит в обеих таблицах пустой строкой: у него нет ни своего
+  // цвета полосы, ни чипа, и обе таблицы обязаны это СКАЗАТЬ, а не умолчать —
+  // иначе `SHEET_CHIP[sheetState]` однажды вернёт undefined в класс.
+  for (const table of ['SHEET_CHIP', 'SHEET_RULE']) {
+    const block = CELL.slice(CELL.indexOf(`const ${table} = {`), CELL.indexOf('} as const', CELL.indexOf(`const ${table} = {`)))
+    assert.match(block, /draft: '',/, `${table} даёт черновику своё оформление`)
   }
   assert.match(CELL, /correct: 'border-positive'/)
   assert.match(CELL, /wrong: 'border-danger'/)

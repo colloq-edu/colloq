@@ -136,9 +136,10 @@ test('ячейка связывает запрос, отмену и решени
   assert.match(cell, /session\.council\.cancelRunRequest\(id, request\.id\)/)
   assert.match(cell, /onapproverun=\{\(participantId, requestId\) => session\.council\.approveRunRequest\(id, participantId, requestId\)\}/)
   assert.match(cell, /ondeclinerun=\{\(participantId, requestId\) => session\.council\.declineRunRequest\(id, participantId, requestId\)\}/)
-  assert.match(cell, /tr\('room\.ui\.363'\)/)
-  // Ожидание названо чипом «Запрошено 14:31 · отменить» (доска E), а не
-  // строкой «Ожидает решения преподавателя»: время в нём — то, о чём спросят.
-  assert.match(cell, /tr\('room\.ui\.1237', \{ p0: clock\(mine\.runRequest\.requestedAt\) \}\)/)
+  // Запуск и запрос для студента — одна кнопка «Запустить»: про механику
+  // запроса он ничего не знает и знать не должен. Отличает их только то, чего
+  // ждут, и ждут они одинаково — «В очереди».
+  assert.match(cell, /tr\('room\.ui\.73'\)/)
+  assert.match(cell, /tr\('room\.ui\.1260'\)/)
   assert.match(cell, /tr\('room\.ui\.364'\)/)
 })

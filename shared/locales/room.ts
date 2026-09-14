@@ -1135,8 +1135,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Submit"
   },
   "room.ui.357": {
-    "ru": "⌘⇧↵ — сдать · черновик отправляется после паузы в наборе",
-    "en": "⌘⇧↵ to submit · draft sent after a pause in typing"
+    "ru": "⌘⇧↵ — сдать",
+    "en": "⌘⇧↵ to submit"
   },
   "room.ui.358": {
     "ru": "Изменить",
@@ -1146,21 +1146,9 @@ export const roomMessages: MessageCatalog = {
     "ru": "Отменяю…",
     "en": "Cancelling…"
   },
-  "room.ui.362": {
-    "ru": "Отправляю запрос…",
-    "en": "Sending request…"
-  },
-  "room.ui.363": {
-    "ru": "Попросить запуск",
-    "en": "Request run"
-  },
   "room.ui.364": {
-    "ru": "Преподаватель отклонил запрос. Можно попросить снова.",
-    "en": "The teacher declined the request. You can ask again."
-  },
-  "room.ui.365": {
-    "ru": "Текст изменён. Для новой версии нужен новый запрос.",
-    "en": "The text changed. A new version requires a new request."
+    "ru": "Преподаватель не запустил. Можно нажать снова.",
+    "en": "The teacher did not run it. You can press again."
   },
   "room.ui.366": {
     "ru": "Пусто — дважды щёлкните, чтобы написать.",
@@ -1193,10 +1181,6 @@ export const roomMessages: MessageCatalog = {
   "room.ui.1222": {
     "ru": "у каждого свой лист · ваш текст видит только преподаватель",
     "en": "everyone writes their own sheet · only the teacher sees your text"
-  },
-  "room.ui.1223": {
-    "ru": "Черновик · сохраняется",
-    "en": "Draft · saving"
   },
   "room.ui.1224": {
     "ru": "Сдано {p0} · ждёт разбора",
@@ -1249,10 +1233,6 @@ export const roomMessages: MessageCatalog = {
   "room.ui.1236": {
     "ru": "В очереди · вы {p0}-й",
     "en": "In queue · you are number {p0}"
-  },
-  "room.ui.1237": {
-    "ru": "Запрошено {p0}",
-    "en": "Requested {p0}"
   },
   "room.ui.1238": {
     "ru": "отменить",
@@ -1314,9 +1294,9 @@ export const roomMessages: MessageCatalog = {
     "ru": "Сдано {p0}",
     "en": "Submitted {p0}"
   },
-  "room.ui.1253": {
-    "ru": "Черновик",
-    "en": "Draft"
+  "room.ui.1260": {
+    "ru": "В очереди",
+    "en": "In queue"
   },
   "room.ui.373": {
     "ru": "Что должна делать эта ячейка?",
@@ -3821,10 +3801,6 @@ export const roomMessages: MessageCatalog = {
   "room.extra.136": {
     "ru": "Продолжить редактирование и снять отметку о сдаче",
     "en": "Continue editing and undo submission"
-  },
-  "room.extra.137": {
-    "ru": "Передать код преподавателю для решения о запуске в общем ядре",
-    "en": "Send code to the teacher for permission to run in the shared kernel"
   },
   "room.extra.138": {
     "ru": "Запустить свою попытку — в очередь, по одному. {p0}",

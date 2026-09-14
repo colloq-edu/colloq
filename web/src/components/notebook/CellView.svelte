@@ -606,6 +606,47 @@
    * «Изменить») и нельзя, когда лист уже равен заготовке, — возвращать нечего.
    */
   const mayRestore = $derived(mayAttempt && submittedAt === null && sheetText !== stubText())
+
+  /**
+   * Запуск и запрос — одна кнопка, потому что для студента это одно движение.
+   *
+   * Ручка `studentRun` — правило ПРЕПОДАВАТЕЛЯ о том, чья очередь: сам или с
+   * разрешения. Студенту она объясняла себя тремя лишними словами
+   * («Попросить запуск», «Запрошено 14:31», «Отправляю запрос…»), то есть
+   * заставляла его знать про механику, которой он не управляет. Нажатие одно
+   * — «Запустить», — а дальше в обоих случаях ждут: в одном ядра, в другом
+   * преподавателя и ядра. Ожидание и называется одинаково.
+   */
+  const mayPressRun = $derived(
+    councilSettings.studentRun === 'request'
+      ? mayRequestRun && sheetText.trim() !== '' && requestSending === null
+      : mayRunAttempt,
+  )
+  /** Запрос лежит у преподавателя и относится к тому тексту, что на экране. */
+  const requestPending = $derived(
+    councilSettings.studentRun === 'request' &&
+      attemptSynced &&
+      mine?.runRequest?.status === 'pending',
+  )
+  /**
+   * Нажатие уже сделано и ждёт — очереди ядра или преподавателя.
+   *
+   * `requestSending` здесь же: между нажатием и эхом сервера кнопка обязана
+   * быть погашенной, иначе на плохой сети её жмут второй раз.
+   */
+  const runWaiting = $derived(
+    mine?.queue != null ||
+      attemptRunning ||
+      requestPending ||
+      requestSending?.action === 'request',
+  )
+  /**
+   * Отменить можно ЗАПРОС, и только его: очередь ядра отменять нечем —
+   * `council:run:cancel` снимает запрос (server/src/control.ts · resolveRunRequest),
+   * а кадра «убрать из очереди» в протоколе нет. Ссылку рядом с «В очереди»
+   * рисуем поэтому только там, где ей есть что сделать.
+   */
+  const mayCancelRun = $derived(requestPending && mayRequestRun)
   /** Вопрос «вернуть?» — на месте кнопки, без окна браузера. */
   let restoreAsking = $state(false)
   /**
@@ -1862,7 +1903,8 @@
     correct: 'bg-positive/15 text-positive',
     wrong: 'bg-danger/10 text-danger',
     submitted: 'bg-brand/10 text-brand-2',
-    draft: 'bg-surface text-muted',
+    /* Черновик чипа не получает вовсе — см. подвал: сказать о нём нечего. */
+    draft: '',
   } as const
   /**
    * Полоса — на всю высоту листа: код, вывод и письмо преподавателя стоят под
@@ -2695,13 +2737,27 @@
                       {tr('room.ui.1247')} {mine.correct ? tr('room.ui.1225') : tr('room.ui.1226')}
                     </span>
                   {/if}
-                  <span class={cn(CAPS, 'px-2 py-0.5', SHEET_CHIP[sheetState])} role="status">
-                    {#if sheetState === 'edited'} {tr('room.ui.1228')} {:else if sheetState === 'correct'}
-                      {tr('room.ui.1225')}
-                    {:else if sheetState === 'wrong'} {tr('room.ui.1226')} {:else if sheetState === 'submitted'}
-                      {tr(tightFooter ? 'room.ui.1252' : 'room.ui.1224', { p0: clock(submittedAt ?? 0) })}
-                    {:else} {tightFooter ? tr('room.ui.1253') : tr('room.ui.1223')} {/if}
-                  </span>
+                  <!--
+                    У черновика чипа нет.
+
+                    Стоял «ЧЕРНОВИК · СОХРАНЯЕТСЯ» — два слова про то, что и так
+                    происходит с каждой буквой в каждом поле продукта, на самом
+                    видном месте подвала и при этом в самом частом состоянии
+                    ячейки: девяносто процентов времени человек читал сообщение
+                    о том, что ничего не случилось. Чип появляется там, где есть
+                    что сказать: сдано, есть правки, отметка, на экране. Что
+                    текст уходит преподавателю, говорит подпись в шапке — один
+                    раз и наверху.
+                  -->
+                  {#if sheetState !== 'draft'}
+                    <span class={cn(CAPS, 'px-2 py-0.5', SHEET_CHIP[sheetState])} role="status">
+                      {#if sheetState === 'edited'} {tr('room.ui.1228')} {:else if sheetState === 'correct'}
+                        {tr('room.ui.1225')}
+                      {:else if sheetState === 'wrong'} {tr('room.ui.1226')} {:else}
+                        {tr(tightFooter ? 'room.ui.1252' : 'room.ui.1224', { p0: clock(submittedAt ?? 0) })}
+                      {/if}
+                    </span>
+                  {/if}
                   {#if mine?.shown}
                     <span class={cn(CAPS, 'bg-positive/15 px-2 py-0.5 text-positive')}>
                       {tr('room.ui.1227')}
@@ -2717,59 +2773,50 @@
                     Возвращаются они вместе с правом писать — после «Изменить».
                   -->
                   {#if submittedAt === null}
-                    {#if mine?.queue != null}
+                    {#if runWaiting}
                       <!--
-                        Очередь стоит НА МЕСТЕ кнопки запуска, а не рядом с ней:
-                        ядро одно на комнату, нажимать второй раз нечего, и
-                        кнопка, оставшаяся живой рядом с номером в очереди,
-                        ровно это и предлагала.
+                        Ожидание стоит НА МЕСТЕ кнопки, а не рядом с ней: ядро
+                        одно на комнату, нажимать второй раз нечего, и кнопка,
+                        оставшаяся живой рядом с номером в очереди, ровно это и
+                        предлагала. Номер называется, когда он известен; пока
+                        запрос у преподавателя, известно только, что ждём.
                       -->
                       <span
-                        class={cn(CAPS, 'inline-flex h-7 items-center border border-accent px-3 text-accent-text')}
+                        class={cn(CAPS, 'inline-flex h-7 items-center gap-2 border border-accent px-3 text-accent-text')}
                         role="status"
                       >
-                        {tr('room.ui.1236', { p0: mine.queue })}
-                      </span>
-                    {:else if councilSettings.studentRun === 'request'}
-                      {#if mine?.runRequest?.status === 'pending' && attemptSynced}
-                        <span class={cn(CAPS, 'inline-flex h-7 items-center gap-2 bg-surface px-3 text-muted')} role="status">
-                          {tr('room.ui.1237', { p0: clock(mine.runRequest.requestedAt) })}
+                        {mine?.queue != null
+                          ? tr('room.ui.1236', { p0: mine.queue })
+                          : tr('room.ui.1260')}
+                        {#if mayCancelRun}
                           <button
                             type="button"
                             class="font-normal normal-case tracking-normal text-accent-text hover:underline disabled:no-underline disabled:opacity-40"
-                            disabled={!mayRequestRun || controlDisabled(session.connected) || requestSending !== null}
+                            disabled={controlDisabled(session.connected) || requestSending !== null}
                             onclick={cancelAttemptRunRequest}
                           >{requestSending?.action === 'cancel' ? tr('room.ui.360') : tr('room.ui.1238')}</button>
-                        </span>
-                      {:else}
-                        {#if mine?.runRequest?.status === 'declined' && attemptSynced}
-                          <span class="text-2xs text-muted" role="status">{tr('room.ui.364')}</span>
-                        {:else if mine?.runRequest && !attemptSynced}
-                          <span class="text-2xs text-muted" role="status">{tr('room.ui.365')}</span>
                         {/if}
-                        <button
-                          type="button"
-                          class="btn-outline h-7"
-                          disabled={!mayRequestRun || attemptRunning || attemptOver || !sheetText.trim() || controlDisabled(session.connected) || requestSending !== null}
-                          title={controlTitle(session.connected, mayRequestRun ? tr('room.extra.137') : attemptWhy)}
-                          onclick={requestAttemptRun}
-                        >
-                          {requestSending?.action === 'request' ? tr('room.ui.362') : tr('room.ui.363')}
-                          {#if requestSending === null}
-                            <span class="font-mono text-2xs text-faint">⇧↵</span>
-                          {/if}
-                        </button>
+                      </span>
+                    {:else if mayRunAttempt || mayRequestRun}
+                      <!--
+                        Отказ преподавателя — единственное, о чём тут говорят
+                        словами: кнопка вернулась в исходное, и без строки это
+                        читалось бы как «нажатие не дошло». Разошедшийся текст
+                        (запрос был про прошлую версию) молчит: кнопка снова
+                        живая, и нажать её — и есть весь ответ.
+                      -->
+                      {#if mine?.runRequest?.status === 'declined' && attemptSynced}
+                        <span class="text-2xs text-muted" role="status">{tr('room.ui.364')}</span>
                       {/if}
-                    {:else if mayRunAttempt}
                       <button
                         type="button"
                         class="btn-outline h-7"
-                        disabled={controlDisabled(session.connected) || attemptRunning || attemptOver}
+                        disabled={!mayPressRun || attemptOver || controlDisabled(session.connected)}
                         title={controlTitle(
                           session.connected,
                           tr('room.extra.138', { p0: tr(COUNCIL_SHARED_KERNEL_NOTE) }),
                         )}
-                        onclick={runAttempt}
+                        onclick={sheetRunKey}
                       >
                         {tr('room.ui.73')}
                         <span class="font-mono text-2xs text-faint">⇧↵</span>
