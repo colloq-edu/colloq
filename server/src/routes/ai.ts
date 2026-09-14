@@ -32,12 +32,14 @@ import {
   peekSessionDoc,
 } from '../collab/index.js'
 import { mark } from '../collab/history.js'
-import { findChatEntry, getChat } from '@shared/notebook'
+import { cellLock, findCell, findChatEntry, getChat, type CellLock } from '@shared/notebook'
 import {
   actsAfterClass,
   allows,
   allowsAgent,
   CLASS_IS_OVER,
+  mayEditCell,
+  mayLeadCouncil,
   oracleLimitsIn,
   oracleModeIn,
 } from '@shared/rules'
@@ -131,6 +133,20 @@ function oracleModeFor(
  * `peekSessionDoc`). Незнакомая запись считается чужой: останавливать в ней
  * нечего, и лучше пусть об этом скажет отказ, чем молчание.
  */
+/**
+ * Положение замка на ячейке — открыта, заперта, консилиум.
+ *
+ * Тем же `peekSessionDoc` и по той же причине: спрашиваем ради отказа, а отказ
+ * — не повод поднимать тетрадь остывшей комнаты. Документа нет или ячейки в
+ * нём нет — считаем запертой: право по догадке не раздаётся.
+ */
+function cellLockIn(sessionId: string, cellId: string | null): CellLock {
+  if (!cellId) return 'closed'
+  const doc = peekSessionDoc(sessionId)?.doc
+  const found = doc ? findCell(doc, cellId) : null
+  return found ? cellLock(found.cell) : 'closed'
+}
+
 function askedBy(sessionId: string, entryId: string, participantId: string): boolean {
   const doc = peekSessionDoc(sessionId)?.doc
   const entry = doc ? findChatEntry(doc, entryId) : null
@@ -399,6 +415,34 @@ export function aiRoutes(): Router {
         })
       }
       action = 'hint'
+    }
+
+    /*
+     * «Переписать ячейку» — правка, а не ответ, и правило у неё от ЯЧЕЙКИ.
+     *
+     * `edit` — единственное действие, которое кончается предложением с кнопкой
+     * «Применить» (ai/index.ts · patchBase), то есть правкой общей тетради.
+     * Остальные — `explain`, `fix`, `debug`, `improve`, `hint`, `ask` — про
+     * ячейку РАССКАЗЫВАЮТ, и в лекции они студенту не заказаны: спрашивать про
+     * запертую ячейку можно и нужно.
+     *
+     * Проверка здесь, а не только у «Применить»: иначе участник в лекции пишет
+     * фразу, тратит вопрос из часового лимита комнаты и получает предложение,
+     * которое сам же принять не может, — а вопрос уже потрачен.
+     *
+     * Консилиум отдельным слагаемым: правило `edit` в открытой комнате
+     * разрешает участнику править ячейки, но общая ячейка консилиума — это
+     * задание, и переписать её под себя значило бы переписать его всему классу.
+     * Свой лист у него есть, и у листа есть своя подсказка оракула.
+     */
+    if (action === 'edit') {
+      const lock = cellLockIn(sessionId, cellId)
+      const mayHere =
+        mayEditCell(getRules(sessionId), auth.role, lock === 'open', isFinished(sessionId)) &&
+        (lock !== 'council' || mayLeadCouncil(auth.role))
+      if (!mayHere) {
+        return res.status(403).json({ error: tr('server.ai.cellIsTheTeachers') })
+      }
     }
 
     /*

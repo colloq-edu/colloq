@@ -3988,11 +3988,23 @@ export function dispatch(
        * `edit` при этом никуда не делось: в закрытой ячейке принимает
        * преподаватель, как и было.
        */
+      /*
+       * И у консилиума — отдельным слагаемым.
+       *
+       * Правило `edit` в открытой комнате разрешает участнику править ячейки,
+       * а общая ячейка консилиума — это ЗАДАНИЕ: принять в неё предложение
+       * значило бы переписать задание всему классу одним нажатием. Замок при
+       * этом «открытой» её не считает (`open === 'council'`), так что прежняя
+       * проверка её и не замечала. Преподаватель принимает везде: эталон в
+       * общей ячейке — его текст.
+       */
       const target = entry.get('cellId')
-      const targetOpen = typeof target === 'string' ? cellIsOpen(sessionId, target) : false
+      const targetLock = typeof target === 'string' ? councilCellOf(sessionId, target).lock : 'closed'
+      const targetOpen = targetLock === 'open'
       if (
         message.accept &&
-        !mayEditCell(getRules(sessionId), payload.role, targetOpen, isFinished(sessionId))
+        (!mayEditCell(getRules(sessionId), payload.role, targetOpen, isFinished(sessionId)) ||
+          (targetLock === 'council' && !mayLeadCouncil(payload.role)))
       ) {
         // Отклонить может кто угодно: снятая плашка ничего не разрушает — пока
         // занятие идёт и оракула можно спросить заново.

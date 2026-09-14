@@ -265,6 +265,37 @@ test('подсказка оракула — по упавшему запуску
   assert.match(read('web/src/components/council/CouncilStack.svelte'), /letter\.to === 'oracle'/)
 })
 
+test('«переписать ячейку» закрыто там, где ячейку не правят, а копия — нигде', () => {
+  // Действие спрашивает у ячейки, а не только у правила комнаты: в лекции и в
+  // общей ячейке консилиума предложение с кнопкой «Применить» участнику
+  // некуда применить, а вопрос из лимита комнаты он бы уже потратил.
+  assert.match(CELL, /const mayPatchHere = \$derived\(mayEdit && \(leads \|\| !inCouncil\)\)/)
+  assert.match(CELL, /const mayRewrite = \$derived\(may\.ask && rewriteReady && mayPatchHere\)/)
+  // Не погашен, а не нарисован: погашенный обещает, что действие тут есть.
+  assert.match(CELL, /\{#if mayPatchHere\}[\s\S]{0,400}?aria-label=\{tr\('room\.ui\.344'\)\}/)
+  // И «Принять» под самой ячейкой — тем же правилом: оно правит общую тетрадь.
+  assert.match(CELL, /if \(!mayPatchHere\) \{\s*session\.showError\(patchWhy/)
+  assert.equal(CELL.match(/disabled=\{!mayPatchHere\}/g)?.length, 2, 'оба «принять» в ячейке закрыты не одинаково')
+
+  // «Применить» в ленте — то же правило, и оно тоже про ячейку: предложение
+  // могло приехать до того, как щёлкнул замок.
+  const turn = code(read('web/src/components/panels/ChatTurn.svelte'))
+  assert.match(turn, /const mayApply = \$derived\(/)
+  assert.match(turn, /cellLockHere !== 'council' \|\| session\.me\.role === 'host'/)
+  assert.equal(turn.match(/disabled=\{!mayApply\}/g)?.length, 2, 'оба «применить» закрыты не одинаково')
+  assert.doesNotMatch(turn, /disabled=\{!may\.edit\}/, 'осталась проверка правила комнаты вместо ячейки')
+
+  // А копия — всегда: кода предложения в ответе нет вовсе (`omit`), и там, где
+  // применить нельзя, унести из панели было нечего.
+  assert.match(turn, /onclick=\{\(\) => void copyPatch\(\)\}/)
+  assert.doesNotMatch(
+    turn.slice(turn.indexOf('void copyPatch()') - 400, turn.indexOf('void copyPatch()')),
+    /disabled=/,
+    'копию закрыли вместе с правкой',
+  )
+  assert.equal(translate('ru', 'room.ui.1267'), 'Скопировать')
+})
+
 /* ------------------------------------------------------------- заготовка */
 
 test('заготовку преподавателя можно вернуть — с переспросом на месте', () => {

@@ -63,6 +63,7 @@
   import {
     cellLockMatters,
     COUNCIL_CLOSED,
+    COUNCIL_SHARED_CELL,
     LECTURE_CELL,
     mayEditThisCell,
     mayRunThisCell,
@@ -1456,9 +1457,37 @@
     }
   })
 
+  /**
+   * И — только там, где эту ячейку вообще можно менять.
+   *
+   * «Попросить оракула изменить ячейку» кончается предложением с кнопкой
+   * «Применить»: это правка тетради, а не ответ. В лекции (`edit: host`) и в
+   * запертой ячейке править её участник не может — а строку вопроса ему
+   * рисовали, он писал фразу, тратил вопрос из лимита комнаты и получал
+   * предложение, которое сам же и не может принять. Отказ при этом молчал бы
+   * дважды: и про правило, и про потраченный вопрос.
+   *
+   * Консилиум — отдельным слагаемым, и это не придирка. Правило `edit` в
+   * открытой комнате разрешает участнику править ячейки, но общая ячейка
+   * консилиума — не его: в ней задание, и переписывать его под себя означало
+   * бы переписать задание всему классу. Свой лист у него при этом есть, и у
+   * листа есть своя подсказка оракула — личная и без правки чужого текста.
+   *
+   * Преподаватель сохраняет действие везде, включая консилиум: эталон в общей
+   * ячейке — его текст.
+   */
+  const mayPatchHere = $derived(mayEdit && (leads || !inCouncil))
+  /** Один отказ на оба нажатия: попросить правку и принять её. */
+  const patchWhy = $derived(inCouncil && !leads ? tr(COUNCIL_SHARED_CELL) : editWhy)
   /** Строка вопроса живая ровно тогда, когда её примут. */
-  const mayRewrite = $derived(may.ask && rewriteReady)
-  const rewriteRefusal = $derived(!may.ask ? may.askWhy : (rewriteWhy ?? tr('room.ui.427')))
+  const mayRewrite = $derived(may.ask && rewriteReady && mayPatchHere)
+  const rewriteRefusal = $derived(
+    !may.ask
+      ? may.askWhy
+      : !mayPatchHere
+        ? patchWhy
+        : (rewriteWhy ?? tr('room.ui.427')),
+  )
 
   // Право пропало под руками — открытую строку закрыть, иначе она обещает то,
   // чего уже нет (тот же довод, что у выхода из исходника заметки).
@@ -1818,8 +1847,8 @@
   function accept(): void {
     const id = proposal?.get('id')
     if (typeof id !== 'string') return
-    if (!mayEdit) {
-      session.showError(editWhy + '.')
+    if (!mayPatchHere) {
+      session.showError(patchWhy + '.')
       return
     }
     session.send({ t: 'ai:decide', entryId: id, accept: true })
@@ -2423,17 +2452,28 @@
              написать фразу, — это отказ, полученный уже после работы. То же и с
              режимом оракула: `hints` переписывать ячейку отказывается, и знать
              об этом надо ДО набранной фразы (см. `rewriteReady`). -->
-        <button
-          type="button"
-          class={TOOL}
-          title={mayRewrite ? tr('room.extra.128') : rewriteRefusal}
-          aria-label={tr('room.ui.344')}
-          aria-pressed={asking}
-          disabled={!mayRewrite}
-          onclick={() => (asking = !asking)}
-        >
-          <Icon name="sparkles" size={13} class="text-accent-text" />
-        </button>
+        <!--
+          Значка нет вовсе там, где ячейку не правят, — не погашен, а не
+          нарисован.
+
+          Погашенный обещает, что действие тут есть и однажды включится; в
+          лекции и в общей ячейке консилиума его нет и не будет, а место в
+          тулбаре стоит дороже обещания. Спросить ПРО ячейку при этом можно
+          по-прежнему — вопрос живёт в панели, а не здесь.
+        -->
+        {#if mayPatchHere}
+          <button
+            type="button"
+            class={TOOL}
+            title={mayRewrite ? tr('room.extra.128') : rewriteRefusal}
+            aria-label={tr('room.ui.344')}
+            aria-pressed={asking}
+            disabled={!mayRewrite}
+            onclick={() => (asking = !asking)}
+          >
+            <Icon name="sparkles" size={13} class="text-accent-text" />
+          </button>
+        {/if}
         {#if isCode}
           <!--
             Прибрать за собой в своей ячейке.
@@ -3241,13 +3281,29 @@
                 <!-- Когда почва ушла, залитая кнопка меняет владельца: рефлекс
                      после пяти принятий — нажать заполненную, и он обязан
                      попадать в безопасный исход. Так же в панели оракула. -->
+                <!-- «Принять» — правка общей тетради, и спрашивает она у ЯЧЕЙКИ:
+                     в лекции и в общей ячейке консилиума правит преподаватель.
+                     Кнопка гаснет и называет причину; «Отклонить» остаётся
+                     всем — снятая плашка ничего не рушит, пока идёт занятие. -->
                 {#if proposalStale}
                   <button type="button" class="btn-primary h-8" onclick={decline}>{tr('room.ui.380')}</button>
-                  <button type="button" class="btn-outline h-8" onclick={accept}>{tr('room.ui.381')}</button>
+                  <button
+                    type="button"
+                    class="btn-outline h-8"
+                    disabled={!mayPatchHere}
+                    title={mayPatchHere ? '' : patchWhy}
+                    onclick={accept}
+                  >{tr('room.ui.381')}</button>
                 {:else}
-                  <button type="button" class="btn-primary h-8" onclick={accept}>{tr('room.ui.382')}</button>
+                  <button
+                    type="button"
+                    class="btn-primary h-8"
+                    disabled={!mayPatchHere}
+                    title={mayPatchHere ? '' : patchWhy}
+                    onclick={accept}
+                  >{tr('room.ui.382')}</button>
                   <button type="button" class="btn-outline h-8" onclick={decline}>{tr('room.ui.380')}</button>
-                  <span class="text-2xs text-muted">{tr('room.ui.383')}</span>
+                  <span class="text-2xs text-muted">{mayPatchHere ? tr('room.ui.383') : patchWhy}</span>
                 {/if}
               </div>
             </div>

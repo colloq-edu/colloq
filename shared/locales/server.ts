@@ -2441,6 +2441,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "Оракул",
     "en": "Oracle"
   },
+  "server.ai.cellIsTheTeachers": {
+    "ru": "В этой ячейке оракул только отвечает: менять её может преподаватель",
+    "en": "In this cell the oracle only answers: the teacher changes it"
+  },
   "server.ai.answerLanguage": {
     "ru": "По умолчанию отвечайте по-русски; если пользователь явно просит другой язык, используйте его.",
     "en": "Answer in English by default; if the user explicitly requests another language, use it."

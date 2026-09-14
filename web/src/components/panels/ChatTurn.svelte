@@ -18,7 +18,7 @@
    * differently is a log you have to read rather than scan.
    */
   import type { AgentStep, ChatSnapshot } from '@shared/notebook'
-  import { findChatEntry } from '@shared/notebook'
+  import { cellLock, findChatEntry } from '@shared/notebook'
   import { diffCounts, diffLines } from '@shared/diff'
   import type { AiAction, ParticipantRole } from '@shared/protocol'
   import { actsAfterClass, CLASS_IS_OVER } from '@shared/rules'
@@ -27,7 +27,8 @@
   import { watchCell, watchText } from '@/lib/yreactive.svelte'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import { revealCell } from '@/lib/reveal'
-  import { permitsIn } from '@/lib/may'
+  import { COUNCIL_SHARED_CELL, LECTURE_CELL, mayEditThisCell, permitsIn } from '@/lib/may'
+  import { copyText } from '@/lib/clipboard'
   import { cn, NOTICED_MS, spell } from '@/lib/utils'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon from '@/components/ui/Icon.svelte'
@@ -315,6 +316,48 @@
    * очереди.
    */
   const may = $derived(permitsIn(session.session.rules, session.me.role, session.finished))
+  /**
+   * «Применить» спрашивает у ЯЧЕЙКИ, а не только у правила комнаты.
+   *
+   * Правило `edit` — про комнату целиком, и в открытой комнате оно разрешает
+   * участнику всё. Замок и консилиум это сужают: запертую ячейку правит
+   * преподаватель, а общая ячейка консилиума — задание, и переписать её под
+   * себя значило бы переписать его всему классу. Предложение при этом могло
+   * приехать ДО того, как замок щёлкнул: лента переживает смену режима, и
+   * кнопка на старой записи обязана считаться с новым положением дел.
+   *
+   * Сервер отказывает ровно этим же (control.ts · ai:decide), и кнопка, которая
+   * врёт до нажатия, хуже её отсутствия.
+   */
+  const cellLockHere = $derived(cell ? cellLock(cell) : 'closed')
+  const mayApply = $derived(
+    mayEditThisCell(may, cellLockHere === 'open') &&
+      (cellLockHere !== 'council' || session.me.role === 'host'),
+  )
+  const applyWhy = $derived(
+    cellLockHere === 'council' && session.me.role !== 'host'
+      ? tr(COUNCIL_SHARED_CELL)
+      : may.edit
+        ? tr(LECTURE_CELL)
+        : may.editWhy,
+  )
+
+  /** Предложение копируется и тем, кто его применить не может. */
+  let copied = $state(false)
+  let copyTimer: number | undefined
+  async function copyPatch(): Promise<void> {
+    if (entry.patch === null) return
+    try {
+      await copyText(entry.patch)
+      copied = true
+      window.clearTimeout(copyTimer)
+      copyTimer = window.setTimeout(() => (copied = false), NOTICED_MS)
+    } catch {
+      // Браузер, отказавший в буфере, оставляет текст выделяемым — как в
+      // AnswerBody: молчать тут честнее, чем ругаться на его настройку.
+    }
+  }
+  $effect(() => () => window.clearTimeout(copyTimer))
   /*
    * Отменить ход — там же, где его можно завести, плюс преподаватель всегда:
    * ровно так это читает сервер (control.ts, case 'ai:undo').
@@ -782,6 +825,23 @@
             {/if}
             <div class="flex flex-wrap items-center gap-2">
               <!--
+                «Скопировать» стоит рядом с решениями и живёт всегда.
+                
+                Код предложения не показан больше нигде: в ответе он опущен
+                (`omit={entry.patch}` у AnswerBody), чтобы не читаться дважды,
+                — и там, где применить нельзя, из панели нельзя было унести
+                вообще ничего. Прочитать и перенести руками к себе в лист —
+                ровно то, что участнику в лекции и в консилиуме и остаётся.
+              -->
+              <button
+                type="button"
+                class={cn(GHOST, 'h-7')}
+                onclick={() => void copyPatch()}
+              >
+                <Icon name={copied ? 'check' : 'copy'} size={11} />
+                {copied ? tr('room.ui.1268') : tr('room.ui.1267')}
+              </button>
+              <!--
                 When the ground has moved the primary button changes hands. The
                 reflex press after five accepts is the filled one, and the
                 reflex must land on the safe outcome.
@@ -802,16 +862,16 @@
                 <button
                   type="button"
                   class="btn-outline h-7"
-                  disabled={!may.edit}
-                  title={may.edit ? '' : may.editWhy}
+                  disabled={!mayApply}
+                  title={mayApply ? '' : applyWhy}
                   onclick={() => decide(true)}
                 > {tr('room.ui.563')} </button>
               {:else}
                 <button
                   type="button"
                   class="btn-primary h-7"
-                  disabled={!may.edit}
-                  title={may.edit ? '' : may.editWhy}
+                  disabled={!mayApply}
+                  title={mayApply ? '' : applyWhy}
                   onclick={() => decide(true)}
                 > {tr('room.ui.564')} </button>
                 <button

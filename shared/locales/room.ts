@@ -1318,6 +1318,18 @@ export const roomMessages: MessageCatalog = {
     "ru": "· подсказка оракула, попросил студент",
     "en": "· oracle hint, asked by the student"
   },
+  "room.ui.1266": {
+    "ru": "В этой ячейке оракул только отвечает: менять её может преподаватель",
+    "en": "In this cell the oracle only answers: the teacher changes it"
+  },
+  "room.ui.1267": {
+    "ru": "Скопировать",
+    "en": "Copy"
+  },
+  "room.ui.1268": {
+    "ru": "Скопировано",
+    "en": "Copied"
+  },
   "room.ui.373": {
     "ru": "Что должна делать эта ячейка?",
     "en": "What should this cell do instead?"
