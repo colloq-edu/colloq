@@ -2429,6 +2429,18 @@ export const serverMessages: MessageCatalog = {
     "ru": "Только владелец может {action}",
     "en": "Only an owner can {action}"
   },
+  "server.council.hintNeedsError": {
+    "ru": "Подсказка даётся по упавшему запуску: запустите свой код и попросите снова",
+    "en": "A hint needs a failed run: run your code, then ask again"
+  },
+  "server.council.hintNotInCouncil": {
+    "ru": "Консилиум в этой ячейке закрыт",
+    "en": "The council is closed in this cell"
+  },
+  "server.council.oracleName": {
+    "ru": "Оракул",
+    "en": "Oracle"
+  },
   "server.ai.answerLanguage": {
     "ru": "По умолчанию отвечайте по-русски; если пользователь явно просит другой язык, используйте его.",
     "en": "Answer in English by default; if the user explicitly requests another language, use it."

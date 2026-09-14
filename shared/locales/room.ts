@@ -1298,6 +1298,26 @@ export const roomMessages: MessageCatalog = {
     "ru": "В очереди",
     "en": "In queue"
   },
+  "room.ui.1261": {
+    "ru": "оракул",
+    "en": "oracle"
+  },
+  "room.ui.1262": {
+    "ru": "Подсказка оракула",
+    "en": "Ask the oracle"
+  },
+  "room.ui.1263": {
+    "ru": "Оракул думает…",
+    "en": "The oracle is thinking…"
+  },
+  "room.ui.1264": {
+    "ru": "Спросить оракула, почему упал ваш запуск. Ответ увидите вы и преподаватель",
+    "en": "Ask the oracle why your run failed. Only you and the teacher see the answer"
+  },
+  "room.ui.1265": {
+    "ru": "· подсказка оракула, попросил студент",
+    "en": "· oracle hint, asked by the student"
+  },
   "room.ui.373": {
     "ru": "Что должна делать эта ячейка?",
     "en": "What should this cell do instead?"

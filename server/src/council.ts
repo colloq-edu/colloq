@@ -651,11 +651,36 @@ export function setReply(
   return targets.map((attempt) => attempt.participantId)
 }
 
-/** Личное или групповое — по этому письма и различаются в хранении. */
-function kindOf(reply: CouncilReply): 'person' | 'group' {
+/**
+ * Подсказка оракула — тому, кто её попросил, и в его же попытке.
+ *
+ * Отдельной функцией от `setReply`, а не флагом в ней: та ставит `to` по
+ * адресату (личное или группе) и умеет рассылку, а здесь адресат всегда один —
+ * автор, — и вида письма два быть не может. Общий путь стоил бы ветки в
+ * каждом из этих трёх решений ради экономии четырёх строк.
+ *
+ * Хранится там же, где письма преподавателя, и по той же причине: это разговор
+ * об ЭТОЙ попытке, он переживает перезагрузку и виден ровно двоим.
+ */
+export function setHint(
+  sessionId: string,
+  cellId: string,
+  participantId: string,
+  hint: CouncilReply,
+): boolean {
+  const prior = attemptOf(sessionId, cellId, participantId)
+  if (!prior) return false
+  save({ ...prior, replies: keeping(prior.replies, { ...hint, to: 'oracle' }) })
+  return true
+}
+
+/** Личное, групповое или подсказка — по этому письма и различаются в хранении. */
+function kindOf(reply: CouncilReply): 'person' | 'group' | 'oracle' {
   // Письмо, записанное до появления `to`, считается личным: сберечь лишнее
   // дешевле, чем потерять нужное.
-  return reply.to === 'group' ? 'group' : 'person'
+  if (reply.to === 'group') return 'group'
+  if (reply.to === 'oracle') return 'oracle'
+  return 'person'
 }
 
 /**

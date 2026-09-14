@@ -136,8 +136,10 @@ import {
   recordRun,
   rememberSeed,
   saveDraft,
+  setHint,
   setMark,
   setReply,
+  seedOf,
   setShown,
   shownFor,
   submitAttempt,
@@ -214,6 +216,9 @@ import { onCouncilOracle } from './ai/council.js'
 import { evicted } from './bans.js'
 import { seldom } from './log.js'
 import { appendActivity } from './activity.js'
+import { recordQuestion } from './admin/usage.js'
+import { oracleDoor } from './ai/door.js'
+import { askCouncilHint, runFailed } from './ai/hint.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
 const PING_INTERVAL_MS = 25_000
@@ -2277,12 +2282,37 @@ function trimToCursor(code: string, cursor: number): { code: string; cursor: num
  * комната, где состояние ядра принадлежит ему; читать его через подсказку
  * было бы обходом правила, а не удобством.
  *
- * Замок на ячейке здесь не спрашивается: кадр не называет ячейку, а
- * додумывать за него, в какой из тридцати стоит каретка, значило бы отдать
- * право по догадке. Человек с открытой ячейкой запускает её кнопкой — она
- * знает своё имя.
+ * Замок на ячейке по догадке здесь по-прежнему не спрашивается — но кадр
+ * теперь МОЖЕТ назвать ячейку сам, и это меняет ровно один случай: свой лист
+ * консилиума.
+ *
+ * Лист — та единственная ячейка, в которой студенту велено писать код: за этим
+ * консилиум и открывают. В лекционной комнате (`run: 'host'`) прежнее правило
+ * отказывало в нём каждому, и отказывало молча: имена приезжали из слов самой
+ * ячейки, а столбцы настоящего `df`, ради которого задание и дано, — нет.
+ * Обхода правила тут нет: попытка и так считается в ОБЩЕМ ядре комнаты
+ * (`council:run` с ручкой преподавателя), и то же состояние, которое подсказка
+ * покажет, человек в этой ячейке и так может напечатать и запустить.
+ *
+ * Имя ячейки доверяется потому, что проверяется: замок читается из документа
+ * комнаты, а не из кадра. Назвал чужую ячейку не в консилиуме — правило
+ * прежнее; назвал ячейку в консилиуме — значит она в консилиуме у всех.
  */
-function mayComplete(sessionId: string, payload: TokenPayload): boolean {
+/**
+ * По каким листам подсказка сейчас в пути — `sessionId:cellId:participantId`.
+ *
+ * Второе нажатие, пока первое идёт, — второй запрос к модели и вторая строка
+ * расхода: кнопка гаснет на клиенте, но клиент здесь не единственный, кто
+ * может прислать кадр. Память местная и умирает с процессом: незавершённый
+ * запрос его не переживёт.
+ */
+const hintsReading = new Set<string>()
+
+function mayComplete(sessionId: string, payload: TokenPayload, cellId?: unknown): boolean {
+  const id = optionalId(cellId)
+  if (id && councilCellOf(sessionId, id).lock === 'council') {
+    return mayWriteCouncil(payload.role, isFinished(sessionId), false)
+  }
   return mayRunCell(getRules(sessionId), payload.role, false, isFinished(sessionId))
 }
 
@@ -2315,7 +2345,7 @@ function askKernel(
     send(ws, empty)
     return
   }
-  if (!mayComplete(sessionId, payload) || !mayAsk(ws)) {
+  if (!mayComplete(sessionId, payload, message.cellId) || !mayAsk(ws)) {
     send(ws, empty)
     return
   }
@@ -3820,6 +3850,94 @@ export function dispatch(
      * Ответ — обычная дельта, её пульт уже умеет класть в стопку. Попытки
      * больше нет — молчим: её могли забанить, и `removed` уже уехал.
      */
+    /*
+     * «Подсказка оракула» — одному студенту по его же упавшей попытке.
+     *
+     * Сокетом, а не `/ai/ask`, и это несущее решение: тот маршрут пишет вопрос
+     * и ответ в ОБЩИЙ тред комнаты, а тексты консилиума частные — вопрос
+     * «почему у меня падает» вместе с кодом ушёл бы туда, где его прочитают
+     * сорок соседей. Ответ возвращается письмом внутрь самой попытки: его
+     * видят те же двое, что видят её текст, и он переживает перезагрузку.
+     *
+     * Чужую попытку спросить нельзя по устройству кадра: participantId в нём
+     * не называется вовсе, он берётся из токена.
+     */
+    case 'council:hint': {
+      const id = optionalId(message.cellId)
+      if (!id) return
+      const author = payload.participantId
+      const hintState = (asking: boolean, error?: string) =>
+        send(ws, error === undefined
+          ? { t: 'council:hint:state', cellId: id, asking }
+          : { t: 'council:hint:state', cellId: id, asking, error })
+      if (councilCellOf(sessionId, id).lock !== 'council') {
+        hintState(false, tr("server.council.hintNotInCouncil"))
+        return
+      }
+      const attempt = attemptFor(sessionId, id, author)
+      /*
+       * Подсказку дают по УПАВШЕМУ запуску, и только по нему: без трейсбека
+       * спрашивать нечего, а «посмотри на мой код и скажи, верно ли» — это
+       * решение за студента, то есть ровно то, от чего консилиум и защищают.
+       */
+      if (!attempt || !runFailed(attempt.run)) {
+        hintState(false, tr("server.council.hintNeedsError"))
+        return
+      }
+      const refusal = oracleDoor(sessionId, payload)
+      if (refusal) {
+        hintState(false, refusal.error)
+        return
+      }
+      if (hintsReading.has(`${sessionId}:${id}:${author}`)) return
+      hintsReading.add(`${sessionId}:${id}:${author}`)
+      hintState(true)
+
+      // Условие обычно лежит в маркдаун-ячейке над заданием; заготовка — в
+      // `council_seed`, потому что в самой ячейке её к этому времени может уже
+      // не быть («Показать классу» кладёт туда чужое решение).
+      const before = (() => {
+        const found = findCell(getSessionDoc(sessionId).doc, id)
+        if (!found || found.index === 0) return null
+        const above = found.cells.get(found.index - 1)
+        return above ? cellSource(above).toString() : null
+      })()
+      /*
+       * Строка расхода — при приёме, как у `/ai/ask`: запрос к провайдеру уйдёт,
+       * чем бы он ни кончился. Своё действие в учёте: подсказка в разбивке
+       * панели не должна прятаться среди «спросили».
+       */
+      const usageId = recordQuestion({ sessionId, participantId: author, action: 'hint' })
+      appendActivity(sessionId, author, 'oracle.asked', { action: 'hint', source: 'participant', cellId: id })
+
+      void askCouncilHint({
+        before,
+        stub: seedOf(sessionId, id),
+        attempt: attempt.text,
+        run: attempt.run,
+        usageId,
+      })
+        .then((text) => {
+          if (!text) {
+            hintState(false, tr("server.theModelReturnedAnEmptyResponseTry.c365b1"))
+            return
+          }
+          setHint(sessionId, id, author, { text, at: Date.now(), by: tr('server.council.oracleName') })
+          hintState(false)
+          mineOut(sessionId, id, author)
+          // Преподавателю подсказка видна тоже: она часть попытки, и на разборе
+          // из неё понятно, что человек уже слышал.
+          boardOut(sessionId, id, [author])
+        })
+        .catch((err: unknown) => {
+          const reason = err instanceof Error ? err.message.trim() : String(err)
+          console.error(`[session ${sessionId}] council hint failed:`, reason)
+          hintState(false, reason || tr("server.theOracleDidNotRespondCheckThe.e430c5"))
+        })
+        .finally(() => hintsReading.delete(`${sessionId}:${id}:${author}`))
+      return
+    }
+
     case 'council:attempt': {
       if (!mayLeadCouncil(payload.role)) {
         refuse(ws, sessionId, payload, tr("server.onlyTheTeacherMayLeadCouncil.745e70"))

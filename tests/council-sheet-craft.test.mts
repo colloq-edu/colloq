@@ -224,6 +224,47 @@ test('чужая каретка в общей ячейке не приписыв
   assert.match(block, /if \(ownSheet\) return null/, 'строка присутствия висит под чужим листом')
 })
 
+/* --------------------------------------------------- ядро и оракул в листе */
+
+test('свой лист спрашивает ядро — и называет себя, чтобы право нашлось', () => {
+  // Без имени ячейки сервер не отличает лист консилиума от обычной ячейки
+  // (control.ts · mayComplete) и в лекционной комнате отказывает молча: имена
+  // приезжали из слов самой ячейки, а столбцы настоящего `df` — нет.
+  assert.match(SHEET, /complete=\{\(code, cursor\) => session\.complete\(code, cursor, id\)\}/)
+  assert.match(SHEET, /inspect=\{\(code, cursor\) => session\.inspect\(code, cursor, id\)\}/)
+  // И обычная ячейка называет себя тем же способом: правило для неё не
+  // изменилось, но спрашивают обе одинаково.
+  assert.equal(CELL.match(/session\.complete\(code, cursor, id\)/g)?.length, 2)
+  assert.match(
+    read('web/src/lib/session.svelte.ts'),
+    /complete\(code: string, cursor: number, cellId\?: string\)/,
+  )
+  assert.match(read('shared/protocol.ts'), /t: 'complete'; id: number; code: string; cursor: number; cellId\?: string/)
+})
+
+test('подсказка оракула — по упавшему запуску, тихой кнопкой и своим путём', () => {
+  assert.match(CELL, /const mayHint = \$derived\(/)
+  assert.match(CELL, /mine\?\.run\?\.state === 'error'/, 'подсказку дают не по упавшему запуску')
+  assert.match(SHEET, /onclick=\{\(\) => session\.council\.askHint\(id\)\}/)
+  assert.match(SHEET, /tr\('room\.ui\.1262'\)/)
+  assert.match(SHEET, /tr\('room\.ui\.1263'\)/)
+  assert.equal(translate('ru', 'room.ui.1262'), 'Подсказка оракула')
+  assert.equal(translate('ru', 'room.ui.1263'), 'Оракул думает…')
+  // Пока думает — кнопка погашена: второе нажатие это второй вопрос из лимита.
+  assert.match(SHEET, /disabled=\{hint\?\.asking \|\| !mayHint\}/)
+  // Отказ виден на месте, а не только тостом в углу.
+  assert.match(SHEET, /\{#if hint\?\.error\}/)
+  // Путь свой, не общая лента: `/ai/ask` пишет в тред, который читает класс.
+  const client = read('web/src/lib/council.svelte.ts')
+  assert.match(client, /this\.#send\(\{ t: 'council:hint', cellId \}\)/)
+  // Ни одного REST-вызова в листе: общий тред комнаты (`/ai/ask`) читает весь
+  // класс, а тексты консилиума видят двое.
+  assert.doesNotMatch(SHEET, /\bapi\./, 'лист ходит к модели через общую ленту')
+  // Письмо оракула отличимо от письма преподавателя — и у автора, и в стопке.
+  assert.match(SHEET, /letter\.to === 'oracle' \? tr\('room\.ui\.1261'\) : tr\('room\.ui\.1251'\)/)
+  assert.match(read('web/src/components/council/CouncilStack.svelte'), /letter\.to === 'oracle'/)
+})
+
 /* ------------------------------------------------------------- заготовка */
 
 test('заготовку преподавателя можно вернуть — с переспросом на месте', () => {

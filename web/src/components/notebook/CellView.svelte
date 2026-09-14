@@ -647,6 +647,23 @@
    * рисуем поэтому только там, где ей есть что сделать.
    */
   const mayCancelRun = $derived(requestPending && mayRequestRun)
+
+  /**
+   * «Подсказка оракула» — по СВОЕЙ упавшей попытке и только по ней.
+   *
+   * Кнопка появляется ровно тогда, когда есть о чём спрашивать: запуск кончился
+   * ошибкой. Без трейсбека вопрос выродился бы в «посмотри мой код и скажи,
+   * верно ли» — то есть в решение за студента, от которого консилиум и
+   * защищают.
+   *
+   * Путь у неё свой, не `/ai/ask`: тот пишет вопрос и ответ в общую ленту, а
+   * тексты консилиума частные. Ответ приходит письмом в саму попытку
+   * (`council:hint` в control.ts), и виден он тем же двоим, что видят её текст.
+   */
+  const hint = $derived(session.council.hints[id] ?? null)
+  const mayHint = $derived(
+    !councilClosed && mine?.run?.state === 'error' && mayAttempt && session.connected,
+  )
   /** Вопрос «вернуть?» — на месте кнопки, без окна браузера. */
   let restoreAsking = $state(false)
   /**
@@ -2530,6 +2547,13 @@
                   а половина контраста на коде мешает именно перечитывать. Что
                   правка закрыта, говорят чип в подвале и пропавшие кнопки
                   запуска — словом и отсутствием, а не туманом.
+
+                  Подсказки ядра здесь такие же, как в обычной ячейке, и имя
+                  ячейки едет вместе с вопросом: им сервер и отличает свой лист
+                  консилиума от прочих (control.ts · mayComplete). Без него в
+                  лекционной комнате студент получал в ЕДИНСТВЕННОЙ ячейке, где
+                  ему велено писать код, только слова из неё же — `df.` не знал
+                  ни одного настоящего столбца.
                 -->
                 <CodeEditor
                   text={sheet.text}
@@ -2545,6 +2569,8 @@
                   onsubmit={submitFromKey}
                   onescape={() => root?.querySelector<HTMLElement>('.cm-content')?.blur()}
                   onarrowout={(direction) => step(direction)}
+                  complete={(code, cursor) => session.complete(code, cursor, id)}
+                  inspect={(code, cursor) => session.inspect(code, cursor, id)}
                   maxChars={MAX_ATTEMPT_CHARS}
                   onoverflow={(chars) =>
                     session.showError(
@@ -2617,11 +2643,20 @@
                 >
                   {#each letters as letter}
                     <div class="flex items-start gap-2 py-0.5">
-                      <span class="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-2" aria-hidden="true"></span>
+                      <span
+                        class={cn(
+                          'mt-1.5 h-2 w-2 shrink-0 rounded-full',
+                          letter.to === 'oracle' ? 'bg-accent' : 'bg-brand-2',
+                        )}
+                        aria-hidden="true"
+                      ></span>
                       <div class="min-w-0">
                         <p class="flex flex-wrap items-baseline gap-x-2 text-2xs">
                           <span class="text-ui font-bold text-ink">{letter.by}</span>
-                          <span class="text-muted">{tr('room.ui.1251')} · {clock(letter.at)}</span>
+                          <span class="text-muted">
+                            {letter.to === 'oracle' ? tr('room.ui.1261') : tr('room.ui.1251')} ·
+                            {clock(letter.at)}
+                          </span>
                           {#if letter.to === 'group'}
                             <span class="text-muted">{tr('room.ui.70')}</span>
                           {/if}
@@ -2714,6 +2749,28 @@
                   </button>
                   {#if submittedAt === null && sheetText === stubText()}
                     <span class="text-2xs text-faint">{tr('room.ui.1249')}</span>
+                  {/if}
+                  <!--
+                    Подсказка стоит слева, рядом с «Восстановить», а не среди
+                    действий справа: и то и другое — помощь застрявшему, и оба
+                    тихие. Справа живёт то, что двигает попытку вперёд.
+                  -->
+                  {#if mayHint || hint?.asking}
+                    <button
+                      type="button"
+                      class="inline-flex h-7 items-center gap-1.5 text-2xs text-accent-text transition-colors
+                             duration-[var(--speed-quick)] hover:text-ink disabled:cursor-not-allowed
+                             disabled:text-faint disabled:hover:text-faint"
+                      disabled={hint?.asking || !mayHint}
+                      title={tr('room.ui.1264')}
+                      onclick={() => session.council.askHint(id)}
+                    >
+                      <Icon name="sparkles" size={12} />
+                      {hint?.asking ? tr('room.ui.1263') : tr('room.ui.1262')}
+                    </button>
+                  {/if}
+                  {#if hint?.error}
+                    <span class="text-2xs text-warning" role="status">{hint.error}</span>
                   {/if}
                 {/if}
 
@@ -2949,8 +3006,8 @@
                 readOnly={!mayEdit}
                 autoFocus={!isCode && focusOnEdit}
                 placeholder={isCode ? '' : tr('room.extra.141')}
-                complete={(code, cursor) => session.complete(code, cursor)}
-                inspect={(code, cursor) => session.inspect(code, cursor)}
+                complete={(code, cursor) => session.complete(code, cursor, id)}
+                inspect={(code, cursor) => session.inspect(code, cursor, id)}
                 onfocus={() => onselect()}
                 onrun={run}
                 onrunstep={runAndStep}

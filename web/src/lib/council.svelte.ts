@@ -52,6 +52,7 @@ export type CouncilMessage = Extract<
       | 'council:oracle'
       | 'council:count'
       | 'council:shown'
+      | 'council:hint:state'
   }
 >
 
@@ -313,6 +314,12 @@ export class CouncilState {
   /** «N сдали из M» по ячейкам — всей комнате. */
   counts = $state.raw<Record<string, CouncilCount>>({})
   /**
+   * Подсказка оракула по своей попытке: думает ли и чем кончилось прошлое
+   * нажатие. По ячейкам, потому что листов у человека столько же, сколько
+   * ячеек в консилиуме.
+   */
+  hints = $state.raw<Record<string, { asking: boolean; error: string | null }>>({})
+  /**
    * Что сейчас на экране по ячейкам — тоже всей комнате.
    *
    * Единственное место, где у студента лежит чужой код, и лежит он там по
@@ -394,6 +401,18 @@ export class CouncilState {
       this.shown = { ...this.shown, [message.cellId]: message.shown }
       return
     }
+    if (message.t === 'council:hint:state') {
+      /*
+       * Кадр только про кнопку: сам ответ приезжает письмом в `council:mine` и
+       * живёт в попытке. Отказ держится до следующего нажатия — он объясняет,
+       * почему кнопка снова живая и ничего не произошло.
+       */
+      this.hints = {
+        ...this.hints,
+        [message.cellId]: { asking: message.asking, error: message.error ?? null },
+      }
+      return
+    }
     if (message.t === 'council:oracle') {
       const board = this.boards[message.cellId]
       if (board)
@@ -434,6 +453,20 @@ export class CouncilState {
   submit(cellId: string): void {
     this.#outbox.flush(cellId)
     this.#send({ t: 'council:submit', cellId })
+  }
+
+  /**
+   * Попросить подсказку по своей упавшей попытке.
+   *
+   * «Думает» ставится здесь, не дожидаясь эха: между нажатием и первым кадром
+   * сервера лежит поход к модели, и живая кнопка всё это время — приглашение
+   * нажать второй раз, то есть второй вопрос из лимита. Сервер подтвердит то
+   * же самое кадром `council:hint:state`, и он же снимет.
+   */
+  askHint(cellId: string): void {
+    if (this.hints[cellId]?.asking) return
+    this.hints = { ...this.hints, [cellId]: { asking: true, error: null } }
+    this.#send({ t: 'council:hint', cellId })
   }
 
   /** «Изменить»: снять «сдано», текст остаётся. */

@@ -465,6 +465,10 @@
           <span class="font-mono">{clock(letter.at)}</span>
           {#if letter.to === 'group'}
             <span>{tr('room.ui.70')}</span>
+          {:else if letter.to === 'oracle'}
+            <!-- Подсказку просил сам студент, и на разборе это важно знать: из
+                 неё видно, что он уже слышал, и повторять это вслух незачем. -->
+            <span class="text-accent-text">{tr('room.ui.1265')}</span>
           {/if}
           <span class="min-w-0 flex-1 break-words">{letter.text}</span>
         </p>

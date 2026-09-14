@@ -789,9 +789,10 @@ export class SessionState {
         message.t === 'council:patch' ||
         message.t === 'council:oracle' ||
         message.t === 'council:count' ||
-        message.t === 'council:shown'
+        message.t === 'council:shown' ||
+        message.t === 'council:hint:state'
       ) {
-        // Шесть кадров консилиума — одному разборщику: он знает, кому какой
+        // Семь кадров консилиума — одному разборщику: он знает, кому какой
         // адресован, и хранит их по ячейкам.
         this.council.receive(message)
         return
@@ -1245,13 +1246,13 @@ export class SessionState {
    * о дополнении уходит только по живому сокету — см. `#askNotes`, там та же
    * развилка и те же доводы.
    */
-  complete(code: string, cursor: number): Promise<CompleteReply | null> {
-    return this.#ask('complete', code, cursor) as Promise<CompleteReply | null>
+  complete(code: string, cursor: number, cellId?: string): Promise<CompleteReply | null> {
+    return this.#ask('complete', code, cursor, cellId) as Promise<CompleteReply | null>
   }
 
   /** Справка о том, что стоит под кареткой, — теми же правилами, что и выше. */
-  inspect(code: string, cursor: number): Promise<InspectReply | null> {
-    return this.#ask('inspect', code, cursor) as Promise<InspectReply | null>
+  inspect(code: string, cursor: number, cellId?: string): Promise<InspectReply | null> {
+    return this.#ask('inspect', code, cursor, cellId) as Promise<InspectReply | null>
   }
 
   /**
@@ -1267,6 +1268,15 @@ export class SessionState {
     kind: 'complete' | 'inspect',
     code: string,
     cursor: number,
+    /**
+     * Откуда спрашивают — и это про ПРАВО, а не про разбор.
+     *
+     * Свой лист консилиума — единственная ячейка, где право дополнять есть у
+     * студента и в лекционной комнате (control.ts · mayComplete). Без имени
+     * ячейки сервер о ней не знает и отказывает молча: имена в листе приезжали
+     * из слов самой ячейки, а столбцы настоящего `df` — нет.
+     */
+    cellId?: string,
   ): Promise<ControlServerMessage | null> {
     const socket = this.#control
     if (socket?.readyState !== WebSocket.OPEN) return Promise.resolve(null)
@@ -1281,7 +1291,13 @@ export class SessionState {
       }, ASK_TIMEOUT_MS)
       this.#asked.set(id, { settle: resolve, timer })
       try {
-        socket.send(JSON.stringify({ t: kind, id, code: sent, cursor: sent.length }))
+        socket.send(
+          JSON.stringify(
+            cellId
+              ? { t: kind, id, code: sent, cursor: sent.length, cellId }
+              : { t: kind, id, code: sent, cursor: sent.length },
+          ),
+        )
       } catch {
         // Сокет закрылся между проверкой и отправкой — обычная гонка вкладки,
         // уходящей в фон. Обещание всё равно обязано разрешиться.

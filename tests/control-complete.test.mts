@@ -28,9 +28,14 @@ import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
 import { createSession, setRules } from '../server/src/db.js'
 import { dispatch } from '../server/src/control.js'
+import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
+import { cellId as nameOf, createCell, getCells } from '../shared/notebook.js'
 import { LECTURE_ROOM, OPEN_ROOM, type RoomRules } from '../shared/rules.js'
 import type { ControlClientMessage, ControlServerMessage } from '../shared/protocol.js'
 import type { TokenPayload } from '../server/src/auth.js'
+import { after } from 'node:test'
+
+after(() => shutdownCollab())
 
 /** Ровно то, что читает `send`: состояние и приём кадра. */
 function socket(): { ws: WebSocket; said: ControlServerMessage[] } {
@@ -217,4 +222,88 @@ test('кадр без кода или без номера не роняет ко
   const broken = { t: 'complete', id: 5 } as unknown as ControlClientMessage
   const reply = await ask(ws, said, id, 'host', broken)
   assert.deepEqual(reply, { t: 'complete:reply', id: 5, matches: [], start: 0, end: 0 })
+})
+
+/* ------------------------------------------------- свой лист консилиума */
+
+/** Ячейка в тетради комнаты — с замком в это положение. */
+function cell(sessionId: string, lock: 'closed' | 'council'): string {
+  const { doc } = getSessionDoc(sessionId)
+  const made = createCell('code', 'imp = ...')
+  doc.transact(() => {
+    // Положение замка живёт в ключе `open` (notebook.ts · cellLock); ручки —
+    // отдельным ключом, и без них консилиум всё равно консилиум.
+    if (lock === 'council') made.set('open', 'council')
+    getCells(doc).push([made])
+  })
+  return nameOf(made)
+}
+
+test('в лекционной комнате студент дополняет в своём листе консилиума — и только в нём', async () => {
+  const id = room(LECTURE_ROOM)
+  const council = cell(id, 'council')
+  const plain = cell(id, 'closed')
+  const { ws, said } = socket()
+
+  /*
+   * Та же комната, тот же человек, та же строка кода — разница только в том,
+   * какую ячейку называет кадр. Лист консилиума — единственная ячейка, где
+   * студенту велено писать код самому, и молчаливый отказ в ней означал «пиши
+   * на память»: имена приезжали из слов самой ячейки, а столбцы настоящего
+   * `df` — нет.
+   */
+  const mine = (await ask(ws, said, id, 'participant', {
+    t: 'complete',
+    id: 11,
+    code: 'df.',
+    cursor: 3,
+    cellId: council,
+  })) as Extract<ControlServerMessage, { t: 'complete:reply' }>
+  assert.ok(mine.matches.length > 0, 'в своём листе консилиума студенту отказали')
+  assert.deepEqual(
+    mine.matches.map((match) => match.text),
+    ['head', 'tail', 'describe', 'shape', 'columns'],
+  )
+
+  // Соседняя ячейка той же комнаты — правило прежнее, и отказ по-прежнему молчит.
+  const other = (await ask(ws, said, id, 'participant', {
+    t: 'complete',
+    id: 12,
+    code: 'df.',
+    cursor: 3,
+    cellId: plain,
+  })) as Extract<ControlServerMessage, { t: 'complete:reply' }>
+  assert.deepEqual(other.matches, [], 'обычная ячейка лекции раздала состояние ядра')
+
+  // И имя ячейки, которой в комнате нет, ничего не открывает: замок читается
+  // из документа, а не из кадра.
+  const made = (await ask(ws, said, id, 'participant', {
+    t: 'complete',
+    id: 13,
+    code: 'df.',
+    cursor: 3,
+    cellId: 'c_nosuchcell',
+  })) as Extract<ControlServerMessage, { t: 'complete:reply' }>
+  assert.deepEqual(made.matches, [], 'выдуманное имя ячейки дало право')
+
+  assert.equal(
+    said.some((frame) => frame.t === 'error'),
+    false,
+    'отказ в подсказке сказал что-то вслух',
+  )
+})
+
+test('справка по наведению в листе консилиума отвечает тому же студенту', async () => {
+  const id = room(LECTURE_ROOM)
+  const council = cell(id, 'council')
+  const { ws, said } = socket()
+  const help = (await ask(ws, said, id, 'participant', {
+    t: 'inspect',
+    id: 21,
+    code: 'df.head',
+    cursor: 7,
+    cellId: council,
+  })) as Extract<ControlServerMessage, { t: 'inspect:reply' }>
+  assert.equal(help.found, true, 'сигнатуры в своём листе нет')
+  assert.match(help.text ?? '', /Signature: df\.head/)
 })
