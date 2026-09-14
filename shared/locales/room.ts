@@ -1299,8 +1299,8 @@ export const roomMessages: MessageCatalog = {
     "en": "In queue"
   },
   "room.ui.1261": {
-    "ru": "оракул",
-    "en": "oracle"
+    "ru": "подсказка",
+    "en": "hint"
   },
   "room.ui.1262": {
     "ru": "Подсказка оракула",
