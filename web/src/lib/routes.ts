@@ -11,14 +11,23 @@
  * преподаватель вставляет в чат.
  */
 
-/** Который из трёх экранов комнаты открыт. */
-export type RoomMode = 'room' | 'screen' | 'pult'
+/** Который из экранов комнаты открыт. */
+export type RoomMode = 'room' | 'screen' | 'pult' | 'council'
 
 export interface RoomRoute {
   id: string
   mode: RoomMode
   /** Ключ из ссылки на пульт: планшет меняет его на обычный вход. */
   handoffKey: string | null
+  /**
+   * Ячейка пульта консилиума — только у режима `council`, у остальных `null`.
+   *
+   * Пульт консилиума открывают ПО ЯЧЕЙКЕ: консилиумных ячеек в тетради бывает
+   * несколько, и окно без имени ячейки не знало бы, чью стопку показывать.
+   * Отсюда и отдельный сегмент в адресе, а не флаг: окно переживает
+   * перезагрузку и после неё обязано вернуться к той же ячейке.
+   */
+  cellId: string | null
 }
 
 export interface PublicRoute {
@@ -29,9 +38,10 @@ export interface PublicRoute {
 
 /*
  * `/s/:id` — комната, `/s/:id/screen` — её проекция на балке в аудитории,
- * `/s/:id/pult` — пульт в руках у преподавателя.
+ * `/s/:id/pult` — пульт лекции в руках у преподавателя, `/s/:id/council/:cell`
+ * — пульт консилиума по одной ячейке, в отдельном окне 900×700.
  *
- * Один адрес на три экрана: и проекция, и пульт — это та же комната тем же
+ * Один адрес на четыре экрана: и проекция, и оба пульта — это та же комната тем же
  * человеком, а не отдельные страницы. Отсюда и хвост в том же выражении, а не
  * три регулярки: id остаётся одним и тем же, и переход между ними НЕ
  * пересобирает сессию — сокеты, документ и присутствие остаются на месте.
@@ -46,7 +56,7 @@ export interface PublicRoute {
  * разойтись они умеют молча.
  */
 const SESSION_PATH =
-  /^\/s\/([A-Za-z0-9_-]{1,64})(?:\/(screen|pult)|\/t\/([A-Za-z0-9_.-]{8,512}))?\/?$/
+  /^\/s\/([A-Za-z0-9_-]{1,64})(?:\/(screen|pult)|\/council\/([A-Za-z0-9_-]{1,64})|\/t\/([A-Za-z0-9_.-]{8,512}))?\/?$/
 /*
  * Две публичные страницы: курс и опубликованный семинар.
  *
@@ -70,10 +80,12 @@ export function readRoomRoute(path: string): RoomRoute | null {
   const match = SESSION_PATH.exec(path)
   if (!match) return null
   const tail = match[2]
+  const cellId = match[3] ?? null
   return {
     id: match[1],
-    mode: tail === 'screen' ? 'screen' : tail === 'pult' ? 'pult' : 'room',
-    handoffKey: match[3] ?? null,
+    mode: cellId !== null ? 'council' : tail === 'screen' ? 'screen' : tail === 'pult' ? 'pult' : 'room',
+    handoffKey: match[4] ?? null,
+    cellId,
   }
 }
 

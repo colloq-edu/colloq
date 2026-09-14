@@ -90,18 +90,22 @@
     session: SessionInfo
     identity: StoredIdentity
     /**
-     * Который из трёх экранов комнаты нарисован.
+     * Который из экранов комнаты нарисован.
      *
      * `room` — семинар, как его видят все; `screen` — проекция на балке
-     * (`/s/:id/screen`); `pult` — пульт в руках у преподавателя
-     * (`/s/:id/pult`). Один проп, а не два флага: экраны взаимоисключающие, и
-     * пара булевых умела бы означать то, чего не бывает.
+     * (`/s/:id/screen`); `pult` — пульт лекции в руках у преподавателя
+     * (`/s/:id/pult`); `council` — пульт консилиума по одной ячейке в
+     * отдельном окне (`/s/:id/council/:cell`). Один проп, а не набор флагов:
+     * экраны взаимоисключающие, и пара булевых умела бы означать то, чего не
+     * бывает.
      *
-     * Все три живут в ОДНОМ компоненте, потому что живут на одном соединении:
+     * Все они живут в ОДНОМ компоненте, потому что живут на одном соединении:
      * `SessionState` создаётся ниже один раз, и переход между экранами его не
      * трогает — сокеты, документ и присутствие остаются на месте.
      */
-    mode?: 'room' | 'screen' | 'pult'
+    mode?: 'room' | 'screen' | 'pult' | 'council'
+    /** Ячейка пульта консилиума; имеет смысл только при `mode: 'council'`. */
+    councilCell?: string | null
     /** Уйти на другой адрес, не пересобирая комнату. */
     onnavigate?: (to: string) => void
     /**
@@ -113,10 +117,24 @@
     onexpired?: () => void
   }
 
-  let { session: info, identity, mode = 'room', onnavigate, onexpired }: Props = $props()
+  let {
+    session: info,
+    identity,
+    mode = 'room',
+    councilCell = null,
+    onnavigate,
+    onexpired,
+  }: Props = $props()
 
   const projection = $derived(mode === 'screen')
   const pult = $derived(mode === 'pult')
+  /**
+   * Пульт консилиума — отдельное окно, и комната под ним не рисуется по той же
+   * причине, что и под лекционным пультом, только повёрнутой в третью сторону:
+   * тетрадь зеркалится на проектор, а в пульте лежат имена, черновики и
+   * отметки. Одно окно — один зритель.
+   */
+  const councilPult = $derived(mode === 'council')
 
   /*
    * Пульт приезжает по требованию — по тому же поводу, что и панель в App.
@@ -136,10 +154,21 @@
     null
   const consoleView = () =>
     (pultChunk ??= import('@/components/lecture/ConsoleView.svelte').then((m) => m.default))
+  /**
+   * Пульт консилиума — вторым чанком, по тому же доводу и с той же ценой: он
+   * рисуется в одном окне у одного человека, а лежал бы в чанке комнаты у
+   * каждого студента.
+   */
+  let councilChunk: Promise<
+    typeof import('@/components/council/pult/PultWindow.svelte').default
+  > | null = null
+  const councilWindow = () =>
+    (councilChunk ??= import('@/components/council/pult/PultWindow.svelte').then((m) => m.default))
   // Начинаем качать, как только адрес пульта на экране, а не когда дошли до
   // разметки: у планшета, открывшего ссылку-ключ, это выигрывает целый круг.
   $effect(() => {
     if (pult) void consoleView()
+    if (councilPult) void councilWindow()
   })
 
   // Context can only be written during initialisation, so the live session is
@@ -1853,6 +1882,20 @@
         {/each}
       </div>
     {/if}
+  </div>
+{:else if councilPult && councilCell}
+  <!--
+    Пульт консилиума. Ни тетради, ни панелей: окно открыто ради того, чтобы
+    имена, черновики, ошибки и отметки НЕ попали на проектор, и всё, что
+    нарисовано рядом с ними, эту цель отменяет.
+    Соединение то же самое — то же `SessionState`, та же личность из
+    localStorage, тот же управляющий сокет. Отказ не-преподавателю пульт
+    печатает сам, своими словами: он один знает, чего именно нельзя.
+  -->
+  <div class="fixed inset-0 z-[95] bg-canvas">
+    {#await councilWindow() then Pult}
+      <Pult cellId={councilCell} onexit={() => window.close()} />
+    {/await}
   </div>
 {:else if pult}
   <!--

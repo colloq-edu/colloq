@@ -84,6 +84,12 @@
   import { clock } from '@/lib/history'
   import CouncilStack from '@/components/council/CouncilStack.svelte'
   import CouncilOnScreen from '@/components/council/CouncilOnScreen.svelte'
+  import {
+    beatsAlive,
+    openPult,
+    watchPult,
+    type PultBeat,
+  } from '@/lib/council-pult-window'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Icon, { type IconName } from '@/components/ui/Icon.svelte'
   import CodeLine from '@/components/ui/CodeLine.svelte'
@@ -840,6 +846,58 @@
    * не попадали: там одно нажатие не знает, куда вернуть.
    */
   let lockMenu = $state(false)
+
+  /* ------------------------------------------- пульт консилиума в окне */
+
+  /**
+   * Пульт консилиума открыт в отдельном окне — и пока он открыт, приватная
+   * консоль ПОД ЯЧЕЙКОЙ НЕ РИСУЕТСЯ.
+   *
+   * Это и есть починка утечки, ради которой окно заводили: тетрадь зеркалится
+   * в зал, и два места с одними и теми же именами, черновиками и отметками —
+   * источник того, что зал видит чужие фамилии. Одно место за раз.
+   *
+   * Узнаём стуком по BroadcastChannel (lib/council-pult-window.ts), а не по
+   * ссылке на окно: ссылку теряет перезагрузка тетради, а окно при этом живо.
+   * Молчание дольше трёх секунд — закрыто: отсутствие вести о смерти не должно
+   * прятать консоль навсегда.
+   */
+  let pultBeat = $state.raw<PultBeat | null>(null)
+  let pultNow = $state(Date.now())
+  /** Ссылка на окно, если открывали из этой вкладки, — чтобы поднять его. */
+  let pultWindow: Window | null = null
+  const pultOpen = $derived(
+    leads && inCouncil && pultBeat?.cellId === id && beatsAlive(pultBeat, pultNow),
+  )
+
+  $effect(() => {
+    if (!leads || !inCouncil) return
+    const stop = watchPult(session.session.id, (beat) => {
+      pultBeat = beat
+      pultNow = Date.now()
+    })
+    // Своё затухание: сообщений больше нет, а «открыт» обязан погаснуть сам.
+    const timer = setInterval(() => (pultNow = Date.now()), 1000)
+    return () => {
+      stop()
+      clearInterval(timer)
+    }
+  })
+
+  function openCouncilPult(): void {
+    lockMenu = false
+    pultWindow = openPult(session.session.id, id)
+  }
+
+  /** Поднять уже открытое окно; ссылки нет (перезагрузили тетрадь) — открыть заново. */
+  function raiseCouncilPult(): void {
+    if (pultWindow && !pultWindow.closed) {
+      pultWindow.focus()
+      return
+    }
+    pultWindow = openPult(session.session.id, id)
+  }
+
   let holdTimer: number | undefined
   /**
    * Когда удержание открыло меню: щелчок, который приходит вслед за отпусканием,
@@ -2168,6 +2226,26 @@
                     {/if}
                   </button>
                 {/each}
+                <!--
+                  Пульт открывается ИЗ ЗАМКА, а не из панели инструментов и не
+                  из меню комнаты: место, где ячейку сделали консилиумной, и
+                  есть место, где ею управляют. Отдельная строка под тремя
+                  положениями — потому что это не четвёртое положение замка, а
+                  действие над третьим.
+                -->
+                {#if inCouncil}
+                  <button
+                    type="button"
+                    class={cn(
+                      'flex w-full items-center gap-2 bg-surface py-2.5 pl-[66px] pr-3.5 text-left',
+                      'transition-colors duration-100 hover:bg-raised',
+                    )}
+                    onclick={openCouncilPult}
+                  >
+                    <span class="flex-1 text-ui font-bold text-brand">{tr('room.ui.1366')} ↗</span>
+                    <span class="shrink-0 font-mono text-micro text-faint">{tr('room.ui.1367')}</span>
+                  </button>
+                {/if}
                 <div class="my-1 h-px bg-line-soft"></div>
                 <label class="flex flex-col gap-1 px-2.5 py-1.5 text-ui">
                   <span>{tr('room.ui.335')}</span>
@@ -3162,7 +3240,33 @@
             состояние этого экрана, не комнаты, и живёт в этой ячейке;
             вид (стопка/сводка) — общий на все ячейки, в CouncilState.
           -->
-          {#if leads && (inCouncil || (board?.counts.attempts ?? 0) > 0)}
+          {#if pultOpen}
+            <!--
+              Пульт открыт в отдельном окне — под ячейкой остаётся ОДНА строка.
+
+              Ровно те числа, что зал и так видит на проекторе, и ни одного
+              имени: стопка, сводка и оракул на это время скрыты целиком. Два
+              места с одним и тем же — источник утечки, ради которой окно и
+              заводили (Paper · 05c · доска 11).
+            -->
+            <div
+              class="flex flex-wrap items-center gap-2.5 border-l-4 border-brand bg-surface px-3 py-2"
+              data-council-pult-open
+            >
+              <span class="text-ui font-bold text-ink">{tr('room.ui.1364')}</span>
+              <span class="flex-1 text-2xs text-muted">
+                · {countLine(count ?? { submitted: 0, total: 0 })}
+                {#if (board?.counts.writing ?? 0) > 0}
+                  · {tr('room.ui.1056', { count: board?.counts.writing ?? 0 })}
+                {/if}
+              </span>
+              <button
+                type="button"
+                class={cn(CAPS, 'shrink-0 text-accent-text hover:underline')}
+                onclick={raiseCouncilPult}
+              >{tr('room.ui.1365')}</button>
+            </div>
+          {:else if leads && (inCouncil || (board?.counts.attempts ?? 0) > 0)}
             <!--
               И после закрытия консилиума, пока есть попытки: сданное остаётся
               на просмотр до конца занятия, а закрытие стопка объявляет сама.

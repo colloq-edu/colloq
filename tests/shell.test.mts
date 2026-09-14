@@ -53,13 +53,39 @@ test('ссылка на семинар — это комната и ничего
     id: 'kf3n8q2p',
     mode: 'room',
     handoffKey: null,
+    cellId: null,
   })
   // Косая черта на конце — та же ссылка: её дописывают почтовые клиенты.
   assert.deepEqual(readRoomRoute('/s/kf3n8q2p/'), {
     id: 'kf3n8q2p',
     mode: 'room',
     handoffKey: null,
+    cellId: null,
   })
+})
+
+test('пульт консилиума — та же комната и одна её ячейка', () => {
+  /*
+   * Ячейка стоит В АДРЕСЕ, а не в состоянии окна: пульт открывают отдельным
+   * окном, окно переживает перезагрузку, и после неё оно обязано вернуться к
+   * той же стопке. Консилиумных ячеек в тетради бывает несколько.
+   */
+  assert.deepEqual(readRoomRoute('/s/kf3n8q2p/council/cell-04'), {
+    id: 'kf3n8q2p',
+    mode: 'council',
+    handoffKey: null,
+    cellId: 'cell-04',
+  })
+  assert.equal(readRoomRoute('/s/kf3n8q2p/council/cell-04/')?.cellId, 'cell-04')
+  // Без ячейки это не пульт консилиума, а несуществующий адрес: показывать
+  // стопку наугад — значит однажды показать не ту.
+  assert.equal(readRoomRoute('/s/kf3n8q2p/council'), null)
+  assert.equal(readRoomRoute('/s/kf3n8q2p/council/'), null)
+  // Ячейка чужого алфавита адресом не притворяется.
+  assert.equal(readRoomRoute('/s/kf3n8q2p/council/../secret'), null)
+  // У остальных экранов ячейки нет вовсе.
+  assert.equal(readRoomRoute('/s/kf3n8q2p/pult')?.cellId, null)
+  assert.equal(readRoomRoute('/s/kf3n8q2p')?.cellId, null)
 })
 
 test('проекция и пульт — та же комната, другой экран', () => {
@@ -88,7 +114,7 @@ test('чужие адреса комнатой не притворяются', (
   for (const path of ['/', '/admin', '/admin/seminars', '/c/ml-2026', '/p/x9tb4kwm', '/s/']) {
     assert.equal(readRoomRoute(path), null, path)
   }
-  // Хвост, которого не бывает: три экрана — это весь список.
+  // Хвост, которого не бывает: четыре экрана — это весь список.
   assert.equal(readRoomRoute('/s/kf3n8q2p/notes'), null)
 })
 

@@ -4585,5 +4585,505 @@ export const roomMessages: MessageCatalog = {
       "one": "{count} more wrote the same",
       "other": "{count} more wrote the same"
     }
+  },
+  "room.ui.1269": {
+    "ru": "Пульт консилиума",
+    "en": "Council console"
+  },
+  "room.ui.1270": {
+    "ru": "окно преподавателя · зал этого не видит",
+    "en": "the teacher’s window · the room cannot see it"
+  },
+  "room.ui.1271": {
+    "ru": "В тетрадь",
+    "en": "To the notebook"
+  },
+  "room.ui.1272": {
+    "ru": "ячейка {p0}",
+    "en": "cell {p0}"
+  },
+  "room.ui.1273": {
+    "ru": "Ядро",
+    "en": "Kernel"
+  },
+  "room.ui.1274": {
+    "ru": "свободно",
+    "en": "free"
+  },
+  "room.ui.1275": {
+    "ru": "Считает",
+    "en": "Running"
+  },
+  "room.ui.1276": {
+    "ru": "никто",
+    "en": "nobody"
+  },
+  "room.ui.1277": {
+    "ru": "в очереди никого",
+    "en": "nobody in the queue"
+  },
+  "room.ui.1278": {
+    "ru": "в очереди {p0}",
+    "en": "{p0} in the queue"
+  },
+  "room.ui.1279": {
+    "ru": "ждут разрешения {p0}",
+    "en": "{p0} waiting for permission"
+  },
+  "room.ui.1280": {
+    "ru": "запуск: {p0}",
+    "en": "runs: {p0}"
+  },
+  "room.ui.1281": {
+    "ru": "только я",
+    "en": "only me"
+  },
+  "room.ui.1282": {
+    "ru": "все по очереди",
+    "en": "everyone, in turn"
+  },
+  "room.ui.1283": {
+    "ru": "по просьбе",
+    "en": "on request"
+  },
+  "room.ui.1284": {
+    "ru": "Прервать",
+    "en": "Interrupt"
+  },
+  "room.ui.1285": {
+    "ru": "Разрешить всех",
+    "en": "Allow all"
+  },
+  "room.ui.1286": {
+    "ru": "Кто может запускать эту ячейку",
+    "en": "Who may run this cell"
+  },
+  "room.ui.1287": {
+    "ru": "Только я",
+    "en": "Only me"
+  },
+  "room.ui.1288": {
+    "ru": "Кнопка запуска у студента не показывается вовсе",
+    "en": "The student sees no run button at all"
+  },
+  "room.ui.1289": {
+    "ru": "Все, по очереди",
+    "en": "Everyone, in turn"
+  },
+  "room.ui.1290": {
+    "ru": "Запускают сами, ядро берёт по одному",
+    "en": "They run it themselves, the kernel takes one at a time"
+  },
+  "room.ui.1291": {
+    "ru": "По просьбе — разрешаю я",
+    "en": "On request — I allow it"
+  },
+  "room.ui.1292": {
+    "ru": "Просьба приходит сюда, в список ниже",
+    "en": "The request arrives here, in the list below"
+  },
+  "room.ui.1293": {
+    "ru": "Ждут разрешения",
+    "en": "Waiting for permission"
+  },
+  "room.ui.1294": {
+    "ru": "пока не разрешите, их код никуда не идёт",
+    "en": "until you allow it, their code goes nowhere"
+  },
+  "room.ui.1295": {
+    "ru": "Разрешить всех по очереди",
+    "en": "Allow everyone, in turn"
+  },
+  "room.ui.1296": {
+    "ru": "Пустить",
+    "en": "Let through"
+  },
+  "room.ui.1297": {
+    "ru": "Отклонить",
+    "en": "Decline"
+  },
+  "room.ui.1298": {
+    "ru": "попросил в {p0}",
+    "en": "asked at {p0}"
+  },
+  "room.ui.1299": {
+    "ru": "ждёт {p0}",
+    "en": "waiting {p0}"
+  },
+  "room.ui.1302": {
+    "ru": "{p0} в прошлый раз",
+    "en": "{p0} last time"
+  },
+  "room.ui.1300": {
+    "ru": "В очереди",
+    "en": "In the queue"
+  },
+  "room.ui.1301": {
+    "ru": "разрешены, ждут ядра · порядок решает ядро",
+    "en": "allowed, waiting for the kernel · the kernel decides the order"
+  },
+  "room.ui.1303": {
+    "ru": "кнопки запуска у студентов нет",
+    "en": "students have no run button"
+  },
+  "room.ui.1304": {
+    "ru": "все",
+    "en": "all"
+  },
+  "room.ui.1305": {
+    "ru": "новые",
+    "en": "new"
+  },
+  "room.ui.1306": {
+    "ru": "с ошибкой",
+    "en": "with an error"
+  },
+  "room.ui.1307": {
+    "ru": "не запущены",
+    "en": "not run"
+  },
+  "room.ui.1308": {
+    "ru": "группы",
+    "en": "groups"
+  },
+  "room.ui.1309": {
+    "ru": "пишут",
+    "en": "writing"
+  },
+  "room.ui.1310": {
+    "ru": "Поиск по имени",
+    "en": "Search by name"
+  },
+  "room.ui.1311": {
+    "ru": "пишет…",
+    "en": "writing…"
+  },
+  "room.ui.1312": {
+    "ru": "сейчас",
+    "en": "now"
+  },
+  "room.ui.1313": {
+    "ru": "на экране",
+    "en": "on screen"
+  },
+  "room.ui.1315": {
+    "ru": "Раскрыть",
+    "en": "Expand"
+  },
+  "room.ui.1316": {
+    "ru": "Свернуть",
+    "en": "Collapse"
+  },
+  "room.ui.1318": {
+    "ru": "Группа {p0} · {p1} одинаковых",
+    "en": "Group {p0} · {p1} identical"
+  },
+  "room.ui.1319": {
+    "ru": "та же строка",
+    "en": "the same line"
+  },
+  "room.ui.1321": {
+    "ru": "упало на запуске",
+    "en": "failed on the run"
+  },
+  "room.ui.1322": {
+    "ru": "сдано {p0}",
+    "en": "submitted {p0}"
+  },
+  "room.ui.1323": {
+    "ru": "группа {p0} из {p1}",
+    "en": "group {p0} of {p1}"
+  },
+  "room.ui.1324": {
+    "ru": "Письма по этой работе",
+    "en": "Letters about this work"
+  },
+  "room.ui.1325": {
+    "ru": "Оракул · подсказка",
+    "en": "Oracle · hint"
+  },
+  "room.ui.1326": {
+    "ru": "попросил студент",
+    "en": "the student asked"
+  },
+  "room.ui.1327": {
+    "ru": "только вам",
+    "en": "only you see it"
+  },
+  "room.ui.1328": {
+    "ru": "Вы",
+    "en": "You"
+  },
+  "room.ui.1329": {
+    "ru": "Вы · всем {p0}",
+    "en": "You · to all {p0}"
+  },
+  "room.ui.1330": {
+    "ru": "прочитано",
+    "en": "read"
+  },
+  "room.ui.1331": {
+    "ru": "Написать — письмо придёт под ячейку автора",
+    "en": "Write — the letter arrives under the author’s cell"
+  },
+  "room.ui.1332": {
+    "ru": "Написать всем, кто ответил так же",
+    "en": "Write to everyone who answered the same"
+  },
+  "room.ui.1333": {
+    "ru": "Всем {p0}",
+    "en": "All {p0}"
+  },
+  "room.ui.1335": {
+    "ru": "не запускали",
+    "en": "not run yet"
+  },
+  "room.ui.1336": {
+    "ru": "Показать классу",
+    "en": "Show the class"
+  },
+  "room.ui.1337": {
+    "ru": "Запустить",
+    "en": "Run"
+  },
+  "room.ui.1338": {
+    "ru": "Запустить снова",
+    "en": "Run again"
+  },
+  "room.ui.1339": {
+    "ru": "Соседнюю",
+    "en": "The next one"
+  },
+  "room.ui.1340": {
+    "ru": "сосед",
+    "en": "neighbour"
+  },
+  "room.ui.1341": {
+    "ru": "в кадре {p0}",
+    "en": "on screen for {p0}"
+  },
+  "room.ui.1342": {
+    "ru": "отмечено {p0}",
+    "en": "marked at {p0}"
+  },
+  "room.ui.1343": {
+    "ru": "Работа",
+    "en": "The work"
+  },
+  "room.ui.1344": {
+    "ru": "Оракул о классе",
+    "en": "Oracle about the class"
+  },
+  "room.ui.1345": {
+    "ru": "На экране сейчас",
+    "en": "On screen now"
+  },
+  "room.ui.1346": {
+    "ru": "с {p0}",
+    "en": "since {p0}"
+  },
+  "room.ui.1347": {
+    "ru": "Показать соседнюю",
+    "en": "Show the next one"
+  },
+  "room.ui.1348": {
+    "ru": "Убрать",
+    "en": "Take off"
+  },
+  "room.ui.1349": {
+    "ru": "Имена на проекторе — включены",
+    "en": "Names on the projector — on"
+  },
+  "room.ui.1350": {
+    "ru": "Имена на проекторе — выключены",
+    "en": "Names on the projector — off"
+  },
+  "room.ui.1351": {
+    "ru": "выключить — и в зале будет «Вариант N»; автор у себя всё равно видит свой вариант на экране",
+    "en": "turn it off and the room sees “Answer N”; the author still sees their answer on screen"
+  },
+  "room.ui.1352": {
+    "ru": "на экране: {p0}",
+    "en": "on screen: {p0}"
+  },
+  "room.ui.1353": {
+    "ru": "имена в зале включены",
+    "en": "names in the room are on"
+  },
+  "room.ui.1354": {
+    "ru": "имена в зале выключены",
+    "en": "names in the room are off"
+  },
+  "room.ui.1355": {
+    "ru": "? — клавиши",
+    "en": "? — keys"
+  },
+  "room.ui.1356": {
+    "ru": "Клавиши пульта",
+    "en": "Console keys"
+  },
+  "room.ui.1357": {
+    "ru": "Пульт консилиума — для преподавателя",
+    "en": "The council console is for the teacher"
+  },
+  "room.ui.1358": {
+    "ru": "Эта ссылка открывает чужие работы. Откройте комнату обычной ссылкой.",
+    "en": "This link opens other people’s work. Open the room with the usual link."
+  },
+  "room.ui.1359": {
+    "ru": "Ячейка не в консилиуме",
+    "en": "This cell is not in council mode"
+  },
+  "room.ui.1360": {
+    "ru": "Замок этой ячейки в другом положении — показывать в пульте нечего.",
+    "en": "The cell’s lock is in another position — the console has nothing to show."
+  },
+  "room.ui.1361": {
+    "ru": "Пока никто не сдал",
+    "en": "Nobody has submitted yet"
+  },
+  "room.ui.1362": {
+    "ru": "Как только кто-то нажмёт «Сдать», он появится слева.",
+    "en": "The moment somebody presses “Submit”, they appear on the left."
+  },
+  "room.ui.1363": {
+    "ru": "Выберите работу слева",
+    "en": "Pick a work on the left"
+  },
+  "room.ui.1364": {
+    "ru": "Пульт открыт в отдельном окне",
+    "en": "The console is open in a separate window"
+  },
+  "room.ui.1365": {
+    "ru": "Перевести сюда",
+    "en": "Bring it back here"
+  },
+  "room.ui.1366": {
+    "ru": "Открыть пульт",
+    "en": "Open the console"
+  },
+  "room.ui.1367": {
+    "ru": "окно 900×700 · помнит место",
+    "en": "a 900×700 window · remembers where it stood"
+  },
+  "room.ui.1368": {
+    "ru": "Спросить, когда сдадут хотя бы десять",
+    "en": "Ask once at least ten have submitted"
+  },
+  "room.ui.1369": {
+    "ru": "Спросить всё равно",
+    "en": "Ask anyway"
+  },
+  "room.ui.1370": {
+    "ru": "Читает {p0} решений",
+    "en": "Reading {p0} answers"
+  },
+  "room.ui.1371": {
+    "ru": "Обновить",
+    "en": "Refresh"
+  },
+  "room.ui.1372": {
+    "ru": "Весь класс одной строкой",
+    "en": "The whole class in one line"
+  },
+  "room.ui.1373": {
+    "ru": "Списком слева можно пользоваться как обычно",
+    "en": "The list on the left keeps working as usual"
+  },
+  "room.ui.1374": {
+    "ru": "следующая и прежняя",
+    "en": "next and previous"
+  },
+  "room.ui.1375": {
+    "ru": "раскрыть группу",
+    "en": "expand a group"
+  },
+  "room.ui.1376": {
+    "ru": "поиск по имени",
+    "en": "search by name"
+  },
+  "room.ui.1377": {
+    "ru": "в работу и обратно",
+    "en": "into the work and back"
+  },
+  "room.ui.1378": {
+    "ru": "показать классу",
+    "en": "show the class"
+  },
+  "room.ui.1379": {
+    "ru": "запустить и отметить",
+    "en": "run and mark"
+  },
+  "room.ui.1380": {
+    "ru": "убрать и соседняя",
+    "en": "take off and the next one"
+  },
+  "room.ui.1381": {
+    "ru": "выйти и закрыть",
+    "en": "leave and close"
+  },
+  "room.ui.1382": {
+    "ru": "просит запуск",
+    "en": "asking to run"
+  },
+  "room.ui.1383": {
+    "ru": "ещё пишет",
+    "en": "still writing"
+  },
+  "room.ui.1384": {
+    "ru": "верно · типичная · падает · ещё пишут",
+    "en": "correct · typical · failing · still writing"
+  },
+  "room.ui.1385": {
+    "ru": "Пульт открыт в отдельном окне — стопка и сводка живут там, чтобы их не увидел зал.",
+    "en": "The console is open in a separate window — the stack and the summary live there so the room cannot see them."
+  },
+  "room.ui.1314": {
+    "ru": {
+      "one": "так же ещё {count}",
+      "few": "так же ещё {count}",
+      "many": "так же ещё {count}",
+      "other": "так же ещё {count}"
+    },
+    "en": {
+      "one": "{count} more the same",
+      "other": "{count} more the same"
+    }
+  },
+  "room.ui.1317": {
+    "ru": {
+      "one": "ещё {count} с тем же ответом",
+      "few": "ещё {count} с тем же ответом",
+      "many": "ещё {count} с тем же ответом",
+      "other": "ещё {count} с тем же ответом"
+    },
+    "en": {
+      "one": "{count} more with the same answer",
+      "other": "{count} more with the same answer"
+    }
+  },
+  "room.ui.1320": {
+    "ru": {
+      "one": "ещё {count} сдал — показать",
+      "few": "ещё {count} сдали — показать",
+      "many": "ещё {count} сдали — показать",
+      "other": "ещё {count} сдали — показать"
+    },
+    "en": {
+      "one": "{count} more submitted — show",
+      "other": "{count} more submitted — show"
+    }
+  },
+  "room.ui.1334": {
+    "ru": {
+      "one": "ещё {count} строка — прокрутить",
+      "few": "ещё {count} строки — прокрутить",
+      "many": "ещё {count} строк — прокрутить",
+      "other": "ещё {count} строк — прокрутить"
+    },
+    "en": {
+      "one": "{count} more line — scroll",
+      "other": "{count} more lines — scroll"
+    }
   }
 }

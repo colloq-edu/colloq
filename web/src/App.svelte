@@ -48,15 +48,17 @@
    */
   let path = $state(location.pathname)
   /**
-   * Комната и то, каким из трёх её экранов её открыли.
+   * Комната и то, каким из её экранов её открыли.
    *
-   * Режим одним значением, а не двумя флагами: экранов ровно три и они
+   * Режим одним значением, а не набором флагов: экранов ровно четыре и они
    * взаимоисключающие, а пара `projection` + `pult` умеет быть включённой
    * одновременно — то есть умеет означать то, чего не бывает.
    */
   const roomRoute = $derived(readRoomRoute(path))
   const sessionId = $derived(roomRoute?.id ?? null)
   const mode = $derived(roomRoute?.mode ?? 'room')
+  /** Ячейка пульта консилиума — только у режима `council`. */
+  const councilCell = $derived(roomRoute?.cellId ?? null)
   /** Ключ из ссылки на пульт: планшет меняет его на обычный вход. */
   const handoffKey = $derived(roomRoute?.handoffKey ?? null)
   // The teaching side. It routes its own sub-paths; this only has to get out of
@@ -527,6 +529,7 @@
         session={room}
         identity={me}
         {mode}
+        {councilCell}
         onnavigate={(next) => navigate(next)}
         onexpired={() => {
           identity = null

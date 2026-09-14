@@ -1,0 +1,69 @@
+<script lang="ts">
+  import { tr } from '@shared/i18n'
+  /**
+   * Полоса отбора, 36 px: шесть чипов по 22 и одно число справа.
+   *
+   * Счётчиков крупным кеглем в мессенджере нет: сколько сдало из скольких —
+   * это одна строка, а не приборная доска. Поиск открывается по ⌘F и встаёт на
+   * место числа; при выключенных именах его нет вовсе — искать нечего, имён в
+   * пульте не показывают.
+   */
+  import { countLine } from '@/lib/council.svelte'
+  import { FILTERS, filterLabel, type PultFilter } from '@/lib/council-pult'
+  import { cn } from '@/lib/utils'
+
+  interface Props {
+    filter: PultFilter
+    search: string
+    /** Поле поиска раскрыто. */
+    searching: boolean
+    /** Имена включены: выключены — поиск по имени не работает. */
+    names: boolean
+    submitted: number
+    total: number
+    onfilter: (filter: PultFilter) => void
+    onsearch: (text: string) => void
+    onclose: () => void
+  }
+
+  let { filter, search, searching, names, submitted, total, onfilter, onsearch, onclose }: Props = $props()
+
+  const CAPS = 'text-micro font-bold uppercase tracking-caps'
+  let field = $state<HTMLInputElement | null>(null)
+
+  // Фокус в поле, как только его открыли: ⌘F, после которого надо ещё
+  // прицелиться мышью, — это не поиск, а два действия вместо одного.
+  $effect(() => {
+    if (searching) field?.focus()
+  })
+</script>
+
+<div class="flex h-9 shrink-0 items-center gap-1.5 border-b border-line bg-surface px-4">
+  {#each FILTERS as item (item)}
+    <button
+      type="button"
+      class={cn(
+        CAPS,
+        'h-[22px] shrink-0 border px-2',
+        filter === item ? 'border-accent text-accent' : 'border-line text-muted hover:text-ink',
+      )}
+      aria-pressed={filter === item}
+      onclick={() => onfilter(item)}
+    >{filterLabel(item)}</button>
+  {/each}
+  <div class="min-w-0 flex-1"></div>
+  {#if searching && names}
+    <input
+      bind:this={field}
+      class="h-[22px] w-40 shrink-0 border border-accent bg-canvas px-2 text-2xs text-ink outline-none"
+      type="search"
+      value={search}
+      placeholder={tr('room.ui.1310')}
+      data-pult-search
+      oninput={(event) => onsearch(event.currentTarget.value)}
+      onblur={onclose}
+    />
+  {:else}
+    <span class="shrink-0 font-mono text-micro text-faint">{countLine({ submitted, total })}</span>
+  {/if}
+</div>
