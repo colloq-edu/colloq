@@ -92,11 +92,10 @@
 
   const CAPS = 'text-micro font-bold uppercase tracking-caps'
   /** Сколько строк кода показываем, не прокручивая. */
-  const LINES = 3
+  const LINES = 10
 
   const writing = $derived(attempt !== null && attempt.submittedAt === null)
   const run = $derived(attempt?.run ?? null)
-  const running = $derived(run?.state === 'running' || run?.state === 'queued')
   const letters = $derived(councilLetters(attempt))
   const lines = $derived(attempt ? attempt.text.split('\n') : [])
   const rest = $derived(Math.max(lines.length - LINES, 0))
@@ -130,7 +129,7 @@
     <p class="text-ui-lg font-bold text-muted">{tr('room.ui.1363')}</p>
   </div>
 {:else}
-  <div class="flex min-h-0 flex-1 flex-col" data-pult-work={attempt.participantId}>
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col" data-pult-work={attempt.participantId}>
     <!-- Шапка работы: кто, когда, какая группа и какая это работа по счёту. -->
     <div class="flex h-[50px] shrink-0 items-center gap-2.5 border-b border-line px-4">
       <span
@@ -157,21 +156,23 @@
       -->
       <button
         type="button"
-        class={cn(CAPS, 'shrink-0 text-faint hover:text-danger disabled:text-faint')}
+        class={cn(CAPS, 'h-8 w-8 shrink-0 text-ui-lg text-faint hover:text-danger disabled:text-faint')}
         disabled={disabled}
+        aria-label={tr('room.ui.78')}
+        title={tr('room.ui.78')}
         data-pult-remove
         onclick={onremove}
-      >{tr('room.ui.78')}</button>
+      >⋯</button>
     </div>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4 pt-3.5">
       <!-- Код: подложка surface, полоса line, и своя прокрутка внутри. -->
       <div class="shrink-0 border-l-2 border-line bg-surface px-3.5 py-3">
-        <div class="max-h-[76px] overflow-y-auto">
+        <div class="max-h-[240px] overflow-auto">
           <Code code={attempt.text} />
         </div>
         {#if rest > 0}
-          <p class="pt-1 font-mono text-micro text-faint">{tr('room.ui.1334', { count: rest })}</p>
+          <p class="pt-1 font-mono text-micro text-faint">{tr('room.pult.codeLines', { count: lines.length })}</p>
         {/if}
       </div>
 
@@ -199,8 +200,9 @@
         <PultLetters {letters} groupSize={group?.count ?? 1} />
       {/if}
 
-      <div class="min-h-0 flex-1"></div>
+    </div>
 
+    <div class="shrink-0 px-4 py-3">
       <PultReply
         text={reply}
         toGroup={replyToGroup}
@@ -218,7 +220,8 @@
 
     <PultActions
       {onScreen}
-      running={Boolean(running)}
+      running={run?.state === 'running'}
+      queued={run?.state === 'queued'}
       elapsed={run ? Math.max(now - run.startedAt, 0) : 0}
       inFrame={shownAt === null ? 0 : Math.max(now - shownAt, 0)}
       ran={run !== null}

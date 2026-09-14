@@ -32,10 +32,10 @@
   let { onScreen, inFrame, names, index, total, disabled, onnames, onclear, onhelp }: Props = $props()
 </script>
 
-<footer class="flex h-[26px] shrink-0 items-center gap-3 border-t border-line bg-surface px-4">
+<footer class="flex min-h-[32px] shrink-0 flex-wrap py-1 items-center gap-3 border-t border-line bg-surface px-4">
   <span class="flex min-w-0 flex-1 items-center gap-2 font-mono text-micro text-faint">
     {#if onScreen !== null}
-      <span class="shrink-0 truncate text-positive">{tr('room.ui.1352', { p0: onScreen })}</span>
+      <span class="min-w-0 max-w-[180px] truncate text-positive">{tr('room.ui.1352', { p0: onScreen })}</span>
       {#if inFrame}<span class="shrink-0">· {inFrame}</span>{/if}
       <span class="shrink-0">·</span>
     {/if}

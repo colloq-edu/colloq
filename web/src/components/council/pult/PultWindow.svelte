@@ -32,7 +32,7 @@
    * названы смыслом (canvas, surface, raised, line, ink, accent, positive,
    * warning, danger), а не тоном, и оба набора им уже отвечают.
    */
-  import { untrack } from 'svelte'
+  import { tick, untrack } from 'svelte'
   import { DEFAULT_COUNCIL, findCell, type CouncilSettings } from '@shared/notebook'
   import type { CouncilAttempt } from '@shared/protocol'
   import { api } from '@/lib/api'
@@ -68,7 +68,7 @@
 
   interface Props {
     cellId: string
-    /** «В тетрадь ⇤»: окно закрывается, консоль возвращается под ячейку. */
+    /** Возврат в тетрадь: закрыть отдельное окно или перейти по адресу комнаты. */
     onexit: () => void
   }
 
@@ -124,15 +124,18 @@
   const offline = $derived(!session.connected)
   const disabled = $derived(offline || !host)
 
-  /** Номер ячейки в тетради — для шапки. Читается один раз, по готовности. */
+  /** Номер ячейки обновляется при перестановке и удалении ячеек. */
   let cellIndex = $state<number | null>(null)
   $effect(() => {
-    // Пересчитывается на каждый кадр стопки: тетрадь доезжает своим сокетом, и
-    // на первой отрисовке ячейки в документе ещё может не быть.
-    void board
-    void session.connected
-    const found = findCell(session.doc, cellId)
-    if (found) cellIndex = found.index + 1
+    const doc = session.doc
+    const id = cellId
+    const refresh = (): void => {
+      const found = findCell(doc, id)
+      cellIndex = found ? found.index + 1 : null
+    }
+    refresh()
+    doc.on('afterTransaction', refresh)
+    return () => doc.off('afterTransaction', refresh)
   })
 
   /* -------------------------------------------------- состояние экрана */
@@ -150,10 +153,20 @@
   let queueOpen = $state(false)
   let helpOpen = $state(false)
   let focus = $state<PultFocus>('list')
-  let reply = $state('')
-  let replyToGroup = $state(false)
-  /** В поле ответа стоит черновик оракула, а не свой текст. */
-  let replyFromOracle = $state(false)
+  type ReplyDraft = { text: string; toGroup: boolean; fromOracle: boolean; groupKey: string }
+  // A draft belongs to its recipient, even when filters or live arrivals move the cursor.
+  let oracleError = $state('')
+  let replyDrafts = $state<Record<string, ReplyDraft>>({})
+  const reply = $derived(cursor ? (replyDrafts[cursor]?.text ?? '') : '')
+  const replyFromOracle = $derived(Boolean(cursor && replyDrafts[cursor]?.fromOracle))
+
+  function updateReply(patch: Partial<ReplyDraft>): void {
+    if (!cursor || !current) return
+    replyDrafts[cursor] = {
+      text: reply, toGroup: replyToGroup, fromOracle: replyFromOracle,
+      groupKey: current.groupKey, ...patch,
+    }
+  }
   /** Момент открытия пульта: всё, что сдано раньше, непрочитанным не считается. */
   const openedAt = Date.now()
 
@@ -210,6 +223,8 @@
   const current = $derived<CouncilAttempt | null>(
     attempts.find((attempt) => attempt.participantId === cursor) ?? null,
   )
+  const replyToGroup = $derived(Boolean(cursor && replyDrafts[cursor]?.toGroup &&
+    replyDrafts[cursor]?.groupKey === current?.groupKey))
   const group = $derived(current ? groups.find((one) => one.key === current.groupKey) : undefined)
   const groupIndex = $derived(
     current && current.submittedAt !== null
@@ -253,42 +268,35 @@
   })
 
   /**
-   * Перешли к другой работе — неотправленный ЧЕРНОВИК ОРАКУЛА уходит с ней.
-   *
-   * Он написан про другую группу, и уехать в чужое письмо ему нельзя. Своё,
-   * набранное руками, остаётся: его писал человек, и стирать это молча нельзя.
-   */
-  $effect(() => {
-    void cursor
-    untrack(() => {
-      if (!replyFromOracle) return
-      reply = ''
-      replyFromOracle = false
-    })
-  })
-
-  /**
    * Держать ли новые сдачи.
    *
    * Полоса появляется, когда список прокручен или курсор не на первой строке.
    * Под курсором строка не двигается никогда — даже если её автор сдал заново.
    */
   let scrolled = $state(false)
+  let standing = $state.raw<ReadonlySet<string>>(new Set())
   $effect(() => {
-    const list = attempts
-    const holds = holdsArrivals(scrolled, untrack(() => cursor) === untrack(() => ids)[0])
+    const atTop = cursor === ids[0]
+    const away = scrolled
     untrack(() => {
-      if (!holds) {
-        if (frozenAt !== null) {
-          frozenAt = null
-          held = new Set()
-        }
+      if (!holdsArrivals(away, atTop)) {
+        frozenAt = null
         return
       }
-      const since = frozenAt ?? Date.now()
-      if (frozenAt === null) frozenAt = since
-      const standing = new Set(ids)
-      const next = heldArrivals(list, since, standing, cursor)
+      if (frozenAt === null) {
+        // Capture BEFORE the next board frame. Reading live ids after an arrival
+        // would already include that arrival and could never hold it back.
+        standing = new Set(attempts.filter((attempt) => attempt.submittedAt !== null && ids.includes(attempt.participantId)).map((attempt) => attempt.participantId))
+        frozenAt = Date.now()
+      }
+    })
+  })
+  $effect(() => {
+    const list = attempts
+    const since = frozenAt
+    const snapshot = standing
+    untrack(() => {
+      const next = since === null ? new Set<string>() : heldArrivals(list, since, snapshot, cursor)
       if (next.size !== held.size || [...next].some((id) => !held.has(id))) held = next
     })
   })
@@ -378,7 +386,7 @@
 
   function sendReply(): void {
     const text = reply.trim()
-    if (disabled || !text || !current) return
+    if (disabled || !text || text.length > 3000 || !current) return
     session.council.reply(
       cellId,
       replyToGroup && current.submittedAt !== null
@@ -386,8 +394,7 @@
         : { participantId: current.participantId },
       text,
     )
-    reply = ''
-    replyFromOracle = false
+    updateReply({ text: '', fromOracle: false, toGroup: false })
   }
 
   /**
@@ -398,11 +405,9 @@
    * написанное он не затирает никогда — только пустое поле.
    */
   function toggleReplyToGroup(): void {
-    replyToGroup = !replyToGroup
-    if (replyToGroup && reply.trim() === '' && groupDraft) {
-      reply = groupDraft
-      replyFromOracle = true
-    }
+    const toGroup = !replyToGroup
+    updateReply({ toGroup, ...(toGroup && reply.trim() === '' && groupDraft
+      ? { text: groupDraft, fromOracle: true } : {}) })
   }
 
   /**
@@ -426,11 +431,12 @@
 
   /** Оракул о классе — через тот же маршрут, что и в тетради. */
   async function askOracle(stop: boolean): Promise<void> {
+    oracleError = ''
     try {
       if (stop) await api.councilStopOracle(session.session.id, session.token, cellId)
       else await api.councilAsk(session.session.id, session.token, cellId)
-    } catch {
-      // Отказ приедет кадром `council:oracle` со своим словом — второго не надо.
+    } catch (error) {
+      oracleError = error instanceof Error ? error.message : tr('room.pult.oracleError')
     }
   }
 
@@ -451,16 +457,25 @@
     const node = target instanceof HTMLElement ? target : null
     if (!node) return 'list'
     if (node.closest('[data-pult-reply]')) return 'reply'
+    if (node.closest('[data-pult-row]') && node.hasAttribute('data-pult-select')) return 'list'
     if (node.closest('[data-pult-search]')) return 'search'
     if (node.tagName === 'BUTTON' || node.closest('[data-pult-actions]')) return 'actions'
     return 'list'
   }
 
   function onkeydown(event: KeyboardEvent): void {
+    if (event.defaultPrevented || event.isComposing) return
+    if (helpOpen) {
+      if (event.key === 'Escape' || event.key === '?') {
+        event.preventDefault()
+        helpOpen = false
+      }
+      return
+    }
     const at = where(event.target)
     focus = at
     const action = pultKeyAction(
-      { key: event.key, shift: event.shiftKey, meta: event.metaKey, ctrl: event.ctrlKey },
+      { key: event.key, shift: event.shiftKey, meta: event.metaKey, ctrl: event.ctrlKey, alt: event.altKey, composing: event.isComposing },
       at,
     )
     if (action === null) return
@@ -469,13 +484,14 @@
       return
     }
     event.preventDefault()
+    if (event.repeat && !['next', 'prev'].includes(action)) return
     switch (action) {
       case 'next':
       case 'prev':
         cursor = moveCursor(rows, cursor, action === 'next' ? 1 : -1)
         keyboard = true
         tab = 'work'
-        scrollToCursor()
+        void scrollToCursor(at !== 'search')
         return
       case 'toggleGroup': {
         const key = current?.groupKey
@@ -506,7 +522,7 @@
         if (to) {
           cursor = to
           keyboard = true
-          scrollToCursor()
+          void scrollToCursor(at !== 'search')
         }
         return
       }
@@ -524,15 +540,14 @@
   }
 
   /** Строка под курсором не должна оказаться у самого края списка. */
-  function scrollToCursor(): void {
-    queueMicrotask(() => {
-      const at = cursor
-      if (at === null) return
-      document
-        .querySelector(`[data-pult-row="${CSS.escape(at)}"]`)
-        ?.scrollIntoView({ block: 'nearest' })
-    })
+  async function scrollToCursor(moveFocus = true): Promise<void> {
+    await tick()
+    if (cursor === null) return
+    const row = document.querySelector(`[data-pult-row="${CSS.escape(cursor)}"]`)
+    row?.scrollIntoView({ block: 'nearest' })
+    if (moveFocus) row?.querySelector<HTMLButtonElement>('[data-pult-select]')?.focus({ preventScroll: true })
   }
+
 </script>
 
 <svelte:window on:keydown={onkeydown} />
@@ -554,6 +569,8 @@
 {:else}
   <div class="relative flex h-full min-h-0 w-full flex-col bg-canvas text-ink" data-council-pult={cellId}>
     <PultHeader {cellIndex} title={session.session.name} {onexit} />
+    {#if offline}<p class="border-b border-warning px-4 py-2 text-ui text-warning" role="status">{tr(OFFLINE_REASON)}</p>{/if}
+    {#if oracleError}<p class="border-b border-danger px-4 py-2 text-ui text-danger" role="alert">{oracleError}</p>{/if}
 
     <PultQueueStrip
       {kernel}
@@ -590,7 +607,8 @@
       groups={groups.length}
       onfilter={(next) => (filter = next)}
       onsearch={(text) => (search = text)}
-      onclose={() => (searching = false)}
+      onclose={() => { searching = false; search = '' }}
+      onopensearch={() => (searching = true)}
     />
 
     <div class="flex min-h-0 flex-1">
@@ -610,7 +628,7 @@
         onrelease={release}
       />
 
-      <div class="flex min-h-0 flex-1 flex-col">
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
         <!-- Две вкладки, а не третья колонка: на 900 px её негде взять, а
              карточка поверх списка закрыла бы те строки, о которых говорит. -->
         <div class="flex h-10 shrink-0 border-b border-line">
@@ -667,9 +685,7 @@
             onmark={mark}
             onremove={remove}
             onreplychange={(text) => {
-              reply = text
-              // Стёрли черновик до конца — он больше не черновик оракула.
-              if (text.trim() === '') replyFromOracle = false
+              updateReply({ text, ...(text.trim() === '' ? { fromOracle: false } : {}) })
             }}
             onreplytoggle={toggleReplyToGroup}
             onreplysend={sendReply}
@@ -697,3 +713,13 @@
     {/if}
   </div>
 {/if}
+
+<style>
+  /* Essential captions remain readable in both room themes. */
+  [data-council-pult] :global(.text-faint) { color: rgb(var(--muted)); }
+  [data-council-pult] :global(button:focus-visible),
+  [data-council-pult] :global(input:focus-visible),
+  [data-council-pult] :global(textarea:focus-visible) {
+    outline: 2px solid rgb(var(--accent)); outline-offset: -2px;
+  }
+</style>

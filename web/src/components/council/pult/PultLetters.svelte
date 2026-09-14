@@ -36,7 +36,7 @@
     {#if letter.to === 'oracle'}
       <div class="flex flex-col gap-1 border-l-2 border-accent bg-surface px-3 py-2.5">
         <div class="flex flex-wrap items-baseline gap-2">
-          <span class={cn(CAPS, 'text-accent')}>{tr('room.ui.1325')}</span>
+          <span class={cn(CAPS, 'text-accent-text')}>{tr('room.ui.1325')}</span>
           <span class="font-mono text-micro text-faint">
             {tr('room.ui.1326')} · {tr('room.ui.1327')} · {clock(letter.at)}
           </span>

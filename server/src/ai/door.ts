@@ -29,7 +29,8 @@ import {
 } from '../admin/usage.js'
 import { onlineParticipantIds } from '../collab/index.js'
 import { getRules, isFinished } from '../db.js'
-import { aiReady } from './index.js'
+import { aiReady, streamsInRoom } from './index.js'
+import { turnsInRoom } from './agent.js'
 import { seconds } from './text.js'
 
 const HOUR_MS = 3_600_000
@@ -87,6 +88,32 @@ export interface DoorRefusal {
   error: string
   /** Через сколько секунд пробовать снова — если это ожидание, а не запрет. */
   retryAfter?: number
+}
+
+const hintsInRoom = new Map<string, number>()
+
+/** Private hints, public answers and agent turns share the same room capacity. */
+export function oracleCapacity(sessionId: string, role: Asker['role']): DoorRefusal | null {
+  if (role === 'host') return null
+  const busy = streamsInRoom(sessionId) + turnsInRoom(sessionId) + (hintsInRoom.get(sessionId) ?? 0)
+  if (busy < 12) return null
+  return {
+    error: tr('server.thereAreAlreadyOracleRequestsRunningIn.5ae3f8', { p0: busy, p1: seconds(5) }),
+    retryAfter: 5,
+  }
+}
+
+/** Reserve until the provider settles, including failures and empty replies. */
+export function holdOracleHint(sessionId: string): () => void {
+  hintsInRoom.set(sessionId, (hintsInRoom.get(sessionId) ?? 0) + 1)
+  let held = true
+  return () => {
+    if (!held) return
+    held = false
+    const left = (hintsInRoom.get(sessionId) ?? 1) - 1
+    if (left > 0) hintsInRoom.set(sessionId, left)
+    else hintsInRoom.delete(sessionId)
+  }
 }
 
 /**

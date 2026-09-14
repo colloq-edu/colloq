@@ -62,7 +62,7 @@
 
   /** Отметка капителью — слово и его цвет. */
   const mark = $derived.by(() => {
-    if (writing) return { text: tr('room.ui.1311'), tone: 'text-accent' }
+    if (writing) return { text: tr('room.ui.1311'), tone: 'text-accent-text' }
     switch (attempt.status) {
       case 'correct':
         return { text: `✓ ${statusLabel(attempt)}`, tone: 'text-positive' }
@@ -106,7 +106,9 @@
   <button
     type="button"
     class="flex min-w-0 flex-1 items-center gap-[9px] text-left"
-    tabindex="-1"
+    tabindex={selected ? 0 : -1}
+    data-pult-select
+    aria-pressed={selected}
     onclick={onopen}
   >
     <!-- Слот точки занят всегда: гаснущая точка не должна двигать имя. -->
@@ -144,11 +146,11 @@
     <button
       type="button"
       class={cn(CAPS, 'h-6 shrink-0 bg-warning px-3 text-surface')}
-      tabindex="-1"
+      aria-label={`${tr('room.ui.1296')} · ${names ? attempt.name : tr('room.ui.1255', { p0: variant })}`}
       onclick={onlet}
     >{tr('room.ui.1296')}</button>
   {:else if writing}
-    <span class="w-[30px] shrink-0 text-right font-mono text-micro text-accent">{tr('room.ui.1312')}</span>
+    <span class="w-[30px] shrink-0 text-right font-mono text-micro text-accent-text">{tr('room.ui.1312')}</span>
   {:else}
     <span class="w-[30px] shrink-0 text-right font-mono text-micro text-faint">
       {clock(attempt.submittedAt ?? 0)}

@@ -305,10 +305,10 @@ test('test: без шаблона — make test, с шаблоном — фай�
   }
   assert.deepEqual((await run(['test', '--dry-run'], { files })).out, ['make test'])
   assert.deepEqual((await run(['test', 'cli', '--dry-run'], { files })).out, [
-    'node --import tsx --test --test-force-exit --test-concurrency=1 tests/cli-local.test.mts',
+    'node --import tsx --import ./tests/_cli.mts --test --test-force-exit --test-concurrency=1 tests/cli-local.test.mts',
   ])
   assert.deepEqual((await run(['test', 'shell', '--dry-run'], { files })).out, [
-    'node --import tsx --test --test-force-exit --test-concurrency=1 tests/shell.test.mts',
+    'node --import tsx --import ./tests/_cli.mts --test --test-force-exit --test-concurrency=1 tests/shell.test.mts',
   ])
 })
 

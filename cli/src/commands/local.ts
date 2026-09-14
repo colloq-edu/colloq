@@ -435,6 +435,8 @@ export const commands: Command[] = [
       return await ctx.sh.run('node', [
         '--import',
         'tsx',
+        '--import',
+        './tests/_cli.mts',
         '--test',
         '--test-force-exit',
         '--test-concurrency=1',

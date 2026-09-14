@@ -23,8 +23,9 @@ import { spawn } from 'node:child_process'
 import { db, sessionMemoryMb } from '../db.js'
 import { listNames, needsGpu } from '../environments.js'
 import { containerLimits, defaultCpus, defaultMemoryMb, listRoomKernels, memoryLimitMb } from './pool.js'
-import { kernelBackend } from './runtime-client.js'
+import { kernelBackend, kernelRuntimeClient } from './runtime-client.js'
 import type { GpuCard, InstanceResources, RoomResource } from '@shared/admin'
+import type { RuntimeRoom } from '@shared/runtime'
 
 const MB = 1024 * 1024
 
@@ -133,10 +134,12 @@ const selectRooms = db.prepare(
   'SELECT id, name, environment, memory_mb, cpus FROM sessions ORDER BY created_at DESC LIMIT 200',
 )
 
-async function rooms(): Promise<RoomResource[]> {
+async function rooms(instanceCpus: number, runtimeRooms?: RuntimeRoom[]): Promise<RoomResource[]> {
   let alive: Set<string>
   try {
-    alive = new Set((await listRoomKernels()).filter((r) => r.running).map((r) => r.session))
+    alive = runtimeRooms
+      ? new Set(runtimeRooms.filter((room) => room.phase === 'ready' || room.phase === 'pending').map((room) => room.sessionId))
+      : new Set((await listRoomKernels()).filter((r) => r.running).map((r) => r.session))
   } catch {
     alive = new Set()
   }
@@ -147,7 +150,7 @@ async function rooms(): Promise<RoomResource[]> {
   return Promise.all(
     interesting.map(async (row) => {
       const settledMb = row.memory_mb ?? envDefaultMb(row.environment)
-      const settledCpus = row.cpus ?? defaultCpus()
+      const settledCpus = row.cpus ?? instanceCpus
       /*
        * У живой комнаты спрашивается docker, а не строка семинара: разойтись
        * они могут ровно тогда, когда это важно — лимит подняли между парами, а
@@ -157,7 +160,7 @@ async function rooms(): Promise<RoomResource[]> {
        */
       const real = alive.has(row.id) && kernelBackend() === 'docker'
         ? await containerLimits(row.id).catch(() => ({ memoryMb: null, cpus: null }))
-        : { memoryMb: null, cpus: null }
+        : { memoryMb: null, cpus: runtimeRooms?.find((room) => room.sessionId === row.id)?.cpus ?? null }
       return {
         id: row.id,
         name: row.name,
@@ -182,6 +185,16 @@ async function rooms(): Promise<RoomResource[]> {
  */
 async function collect(): Promise<Collected> {
   const fake = kernelBackend() === 'test'
+  let instanceCpus = defaultCpus()
+  let runtimeRooms: RuntimeRoom[] | undefined
+  if (kernelBackend() === 'broker') {
+    try {
+      const client = kernelRuntimeClient()
+      const [health, census] = await Promise.all([client.health(), client.rooms().catch(() => [])])
+      instanceCpus = health.defaultCpus ?? instanceCpus
+      runtimeRooms = census
+    } catch { /* Broker unavailable: retain the last configured estimates. */ }
+  }
   const perEnvironment: Record<string, { memoryMb: number; gpu: boolean }> = {}
   for (const name of safeNames()) {
     perEnvironment[name] = { memoryMb: envDefaultMb(name), gpu: safeGpu(name) }
@@ -197,10 +210,10 @@ async function collect(): Promise<Collected> {
       gpuDefaultMemoryMb: defaultMemoryMb(true),
       // Ядра одним числом на инстанс: окружение на них не влияет, в отличие
       // от памяти, где окружение с GPU просит вчетверо больше.
-      defaultCpus: defaultCpus(),
+      defaultCpus: instanceCpus,
       perEnvironment,
     },
-    rooms: await rooms(),
+    rooms: await rooms(instanceCpus, runtimeRooms),
   }
 }
 
@@ -315,7 +328,7 @@ export function machineCpus(): number {
  * комната с памятью машины минус ничего — оставляет его без памяти совсем.
  */
 export function cpuBounds(): MemoryBounds {
-  return { min: 1, max: machineCpus() }
+  return { min: 1, max: Math.min(machineCpus(), kernelBackend() === 'broker' ? 64 : Infinity) }
 }
 
 export type CpuInput = { ok: true; cpus: number | null } | { ok: false; error: 'type' | 'range' }

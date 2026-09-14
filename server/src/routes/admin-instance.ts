@@ -53,7 +53,7 @@ import {
   stepCount,
 } from '../publish/store.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
-import { applyCpuLimit, applyMemoryLimit } from '../kernel/pool.js'
+import { applyCpuLimit, applyMemoryLimit, defaultCpus } from '../kernel/pool.js'
 import {
   cpuBounds,
   forgetResources,
@@ -586,11 +586,10 @@ export function adminInstanceRoutes(): Router {
        * запущенное ядро будет считать прежним их числом до перезапуска. Форма
        * об этом говорит вслух, поэтому здесь ядро не трогается.
        */
-      if (cpu.cpus !== null) {
-        void applyCpuLimit(row.id, cpu.cpus).catch((err: unknown) => {
-          console.error(`[kernel] число ядер для ${row.id} не доехало:`, err)
-        })
-      }
+      // Сброс к умолчанию тоже меняет квоту уже работающего контейнера.
+      void applyCpuLimit(row.id, cpu.cpus ?? defaultCpus()).catch((err: unknown) => {
+        console.error(`[kernel] число ядер для ${row.id} не доехало:`, err)
+      })
     }
 
     res.json(toSeminar(selectSeminar.get(row.id) as SeminarRow))

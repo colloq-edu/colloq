@@ -104,9 +104,9 @@ export class RuntimeClient {
     }
     return value
   }
-  async ensure(sessionId: string, environment: string, revision?: string): Promise<RuntimeEndpoint> {
+  async ensure(sessionId: string, environment: string, revision?: string, cpus?: number | null): Promise<RuntimeEndpoint> {
     if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
-    const body = parseRuntimeEnsureRequest({environment,...(revision ? {revision} : {})})
+    const body = parseRuntimeEnsureRequest({environment,...(revision ? {revision} : {}), ...(cpus != null ? {cpus} : {})})
     const value = object(await this.request('POST',`/v1/rooms/${encodeURIComponent(sessionId)}`,body,180000))
     if (typeof value.url !== 'string' || typeof value.token !== 'string' || value.token.length < 16 ||
       /[\r\n]/.test(value.token) || typeof value.instanceId !== 'string' || !value.instanceId ||
@@ -131,7 +131,10 @@ export class RuntimeClient {
       if (typeof value.ok !== 'boolean' || !(value.reason === null || typeof value.reason === 'string')) {
         throw new RuntimeRequestError(tr("server.invalidKernelRuntimeHealthResponse.dc255b"))
       }
-      return {ok:value.ok,reason:value.ok ? null : value.reason as string | null}
+      const cpus = value.defaultCpus
+      if (cpus !== undefined && (typeof cpus !== 'number' || !Number.isFinite(cpus) || cpus <= 0 || cpus > 64))
+        throw new RuntimeRequestError(tr("server.invalidKernelRuntimeHealthResponse.dc255b"))
+      return {ok:value.ok,reason:value.ok ? null : value.reason as string | null, ...(typeof cpus === 'number' ? {defaultCpus:cpus} : {})}
     } catch(error) { return {ok:false,reason:error instanceof Error ? error.message : tr("server.kernelRuntimeIsUnavailable.44455e")} }
   }
   async catalog(): Promise<RuntimeCatalog> { return parseRuntimeCatalog(await this.request('GET','/v1/catalog')) }
@@ -143,6 +146,8 @@ export class RuntimeClient {
       if (typeof row.sessionId!=='string'||!isRuntimeSessionId(row.sessionId)||typeof row.instanceId!=='string'||
         !['pending','ready','failed','terminating'].includes(String(row.phase))||typeof row.environment!=='string'||
         typeof row.revision!=='string'||!RUNTIME_REVISION.test(row.revision)) throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
+      if (row.cpus !== undefined && (typeof row.cpus !== 'number' || !Number.isFinite(row.cpus) || row.cpus <= 0 || row.cpus > 64))
+        throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
       return row as unknown as RuntimeRoom
     })
   }

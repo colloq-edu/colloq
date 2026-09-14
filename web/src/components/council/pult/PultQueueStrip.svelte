@@ -84,7 +84,7 @@
 <div class="shrink-0 border-b border-line bg-raised" data-pult-queue>
   <!-- Свёрнутая полоса. Кнопки не переезжают при переключении ручки: гаснет
        то, чего больше нет, но остаётся на месте. -->
-  <div class="flex h-11 items-center gap-3 px-4">
+  <div class="flex min-h-11 flex-wrap items-center gap-3 px-4 py-2">
     <span
       class={cn('h-2 w-2 shrink-0 rounded-full', running ? 'bg-accent' : 'bg-faint')}
       aria-hidden="true"
@@ -93,7 +93,7 @@
       <span class={cn(CAPS, 'text-faint')}>{running ? tr('room.ui.1275') : tr('room.ui.1273')}</span>
       {#if running}
         <span class="max-w-[180px] truncate text-ui font-bold text-ink">{who(running)}</span>
-        <span class="font-mono text-2xs text-accent">{spell(elapsed)}</span>
+        <span class="font-mono text-2xs text-accent-text">{spell(elapsed)}</span>
       {:else}
         <span class="text-ui text-muted">{tr('room.ui.1274')}</span>
       {/if}

@@ -65,7 +65,7 @@
   работа справа от лишних 52 px читается не лучше, а список читается.
 -->
 <div
-  class="flex min-h-0 w-[308px] shrink-0 flex-col border-r border-line min-[1100px]:w-[360px]"
+  class="flex min-h-0 w-[220px] min-[760px]:w-[260px] min-[900px]:w-[308px] shrink-0 flex-col border-r border-line min-[1100px]:w-[360px]"
   data-pult-list
 >
   {#if held > 0}
@@ -123,7 +123,7 @@
           <span class="min-w-0 flex-1 truncate text-2xs text-muted">
             {tr('room.ui.1317', { count: row.rest })}
           </span>
-          <span class={cn(CAPS, 'shrink-0 text-accent')}>{tr('room.ui.1315')}</span>
+          <span class={cn(CAPS, 'shrink-0 text-accent-text')}>{tr('room.ui.1315')}</span>
         </button>
       {:else}
         <div class="flex h-7 shrink-0 items-center gap-[9px] border-b border-line bg-surface px-3">
@@ -133,7 +133,7 @@
           <!-- Имя группы — от оракула, а до него первая строка кода: шапка
                обязана сказать, ЧТО написали эти люди, а не только сколько их. -->
           <span class="min-w-0 flex-1 truncate text-2xs text-faint" title={row.label}>{row.label}</span>
-          <button type="button" class={cn(CAPS, 'shrink-0 text-accent')} onclick={() => ontoggle(row.groupKey)}>
+          <button type="button" class={cn(CAPS, 'shrink-0 text-accent-text')} onclick={() => ontoggle(row.groupKey)}>
             {tr('room.ui.1316')}
           </button>
         </div>

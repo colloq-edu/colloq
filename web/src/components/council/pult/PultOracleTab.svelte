@@ -77,7 +77,7 @@
     <div class="flex flex-1 flex-col gap-3 p-4">
       <div class="flex items-center gap-2">
         <span class="h-2 w-2 shrink-0 bg-accent" aria-hidden="true"></span>
-        <span class={cn(CAPS, 'text-accent')}>{tr('room.ui.1370', { p0: submitted })}</span>
+        <span class={cn(CAPS, 'text-accent-text')}>{tr('room.ui.1370', { p0: submitted })}</span>
         <button type="button" class="ml-auto font-mono text-micro text-faint hover:text-ink" onclick={onstop}>
           {tr('room.ui.13')}
         </button>

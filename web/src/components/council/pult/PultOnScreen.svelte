@@ -31,7 +31,7 @@
 </script>
 
 <div
-  class="flex h-11 shrink-0 items-center gap-3 border-b border-l-[3px] border-b-line border-l-positive bg-raised px-4"
+  class="flex min-h-11 shrink-0 flex-wrap py-2 items-center gap-3 border-b border-l-[3px] border-b-line border-l-positive bg-raised px-4"
   data-pult-onscreen
 >
   <span class={cn(CAPS, 'shrink-0 text-positive')}>{tr('room.ui.1345')}</span>
@@ -40,7 +40,7 @@
     style:background-color={shown.color ?? 'rgb(var(--line))'}
     aria-hidden="true"
   ></span>
-  <span class="shrink-0 truncate text-ui-lg font-bold text-ink">
+  <span class="min-w-0 max-w-[220px] truncate text-ui-lg font-bold text-ink">
     {shown.name ?? tr('room.ui.1255', { p0: shown.variant })}
   </span>
   <span class="min-w-0 flex-1 truncate font-mono text-micro text-faint">

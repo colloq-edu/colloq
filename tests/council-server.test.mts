@@ -22,7 +22,7 @@ import {
   handleControlSocket,
   purgeCouncilOf,
 } from '../server/src/control.js'
-import { attemptsOf, oracleOf, resetCouncilCache, setOracle } from '../server/src/council.js'
+import { attemptsOf, oracleOf, resetCouncilCache, saveDraft, setOracle, submitAttempt } from '../server/src/council.js'
 import { listActivity } from '../server/src/activity.js'
 import { getSessionDoc } from '../server/src/collab/index.js'
 import {
@@ -504,6 +504,18 @@ test('«так же написали ещё K» считается по сдан
   say(at, at.masha, { t: 'council:submit', cellId: at.cell })
   say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
   assert.equal(lastShown(at.masha, at.cell)?.alsoWrote, 1)
+  closeControlRoom(at.id)
+})
+
+test('номер показанного решения считает сданные раньше любых черновиков', () => {
+  const at = room()
+  council(at)
+  const petya = at.petya.payload.participantId
+  saveDraft(at.id, at.cell, at.masha.payload.participantId, 'still writing', 1000)
+  saveDraft(at.id, at.cell, petya, 'finished', 2000)
+  submitAttempt(at.id, at.cell, petya, 3000)
+  say(at, at.teacher, { t: 'council:show', cellId: at.cell, participantId: petya })
+  assert.equal(lastShown(at.masha, at.cell)?.variant, 1, 'an earlier draft must not consume a submitted variant number')
   closeControlRoom(at.id)
 })
 

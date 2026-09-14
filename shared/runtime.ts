@@ -24,6 +24,8 @@ export interface RuntimeCatalog {
 export interface RuntimeEnsureRequest {
   environment: string
   revision?: string
+  /** Whole CPU cores for this room; absent uses the runtime's default. */
+  cpus?: number
 }
 export interface RuntimeEndpoint {
   url: string
@@ -35,6 +37,7 @@ export interface RuntimeEndpoint {
 export interface RuntimeHealth {
   ok: boolean
   reason: string | null
+  defaultCpus?: number
 }
 export interface RuntimeRoom {
   sessionId: string
@@ -43,6 +46,7 @@ export interface RuntimeRoom {
   environment: string
   revision: string
   reason?: string
+  cpus?: number
 }
 
 export const RUNTIME_SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/
@@ -69,7 +73,7 @@ export function imageRevision(image: string): string {
 }
 export function parseRuntimeEnsureRequest(value: unknown): RuntimeEnsureRequest {
   const row = object(value)
-  onlyKeys(row, ['environment', 'revision'])
+  onlyKeys(row, ['environment', 'revision', 'cpus'])
   if (typeof row.environment !== 'string' || !ENVIRONMENT_NAME.test(row.environment))
     throw new Error('Invalid environment name')
   if (
@@ -77,9 +81,12 @@ export function parseRuntimeEnsureRequest(value: unknown): RuntimeEnsureRequest 
     (typeof row.revision !== 'string' || !RUNTIME_REVISION.test(row.revision))
   )
     throw new Error('Invalid environment revision')
+  if ('cpus' in row && (typeof row.cpus !== 'number' || !Number.isInteger(row.cpus) || row.cpus < 1 || row.cpus > 64))
+    throw new Error('Invalid room CPU limit: expected 1 to 64 whole cores')
   return {
     environment: row.environment,
     ...(typeof row.revision === 'string' ? { revision: row.revision } : {}),
+    ...(typeof row.cpus === 'number' ? { cpus: row.cpus } : {}),
   }
 }
 export function parseRuntimeCatalog(value: unknown): RuntimeCatalog {

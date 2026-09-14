@@ -5,7 +5,7 @@
    *
    * Пультом пользуются, не отводя глаз от зала, поэтому руки не должны искать
    * мышь. Двенадцать клавиш; две главные напоминает строка состояния, остальные
-   * живут здесь и закрываются по Esc, по «?» и по щелчку мимо.
+   * живут здесь и закрываются по Esc, по «?» и кнопкой закрытия.
    */
   import { cn } from '@/lib/utils'
 
@@ -14,6 +14,9 @@
   }
 
   let { onclose }: Props = $props()
+
+  let dialog = $state<HTMLDialogElement | null>(null)
+  $effect(() => { dialog?.showModal() })
 
   const KEY =
     'flex h-6 min-w-6 shrink-0 items-center justify-center border border-line bg-surface px-1.5 font-mono text-2xs font-bold text-ink'
@@ -30,24 +33,24 @@
   ]
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="absolute inset-0 z-50 flex items-center justify-center bg-canvas/80 p-8"
+<dialog
+  bind:this={dialog}
+  class="m-auto max-h-[90dvh] w-[560px] max-w-[calc(100%-32px)] overflow-y-auto border border-line bg-canvas p-5 text-ink shadow-pop backdrop:bg-canvas/80"
+  aria-label={tr('room.ui.1356')}
   data-pult-keys
-  onclick={onclose}
+  onclose={onclose}
+  oncancel={onclose}
 >
-  <div class="flex w-[520px] max-w-full flex-col gap-2.5 border border-line bg-canvas p-5 shadow-pop">
-    <p class="text-2xs font-bold uppercase tracking-label text-ink">{tr('room.ui.1356')}</p>
-    {#each ROWS as row, at (at)}
-      <div class="flex items-center gap-4 border-b border-line py-1.5 last:border-b-0">
-        <span class="flex w-[116px] shrink-0 gap-1">
-          {#each row.keys as key (key)}
-            <span class={cn(KEY)}>{key}</span>
-          {/each}
-        </span>
-        <span class="min-w-0 flex-1 text-ui text-muted">{row.what}</span>
-      </div>
-    {/each}
+  <div class="flex items-center justify-between gap-4 pb-3">
+    <h2 class="text-ui font-bold text-ink">{tr('room.ui.1356')}</h2>
+    <button type="button" class="h-8 w-8 border border-line text-ui-lg" aria-label={tr('room.pult.closeHelp')} onclick={onclose}>×</button>
   </div>
-</div>
+  {#each ROWS as row, at (at)}
+    <div class="flex items-center gap-4 border-b border-line py-2 last:border-b-0">
+      <span class="flex w-[116px] shrink-0 gap-1">
+        {#each row.keys as key (key)}<kbd class={cn(KEY)}>{key}</kbd>{/each}
+      </span>
+      <span class="min-w-0 flex-1 text-ui text-muted">{row.what}</span>
+    </div>
+  {/each}
+</dialog>

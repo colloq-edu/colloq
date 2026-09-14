@@ -2,6 +2,16 @@ import type { MessageCatalog } from '../i18n-types.js'
 
 /** Explicit display-copy catalog for entry, room, lecture, and public readers. */
 export const roomMessages: MessageCatalog = {
+  "room.pult.codeLines": { "ru": "Всего строк: {count} · прокрутите код", "en": "{count} lines total · scroll code" },
+  "room.pult.oracleError": { "ru": "Не удалось связаться с Оракулом. Попробуйте снова.", "en": "Could not reach the Oracle. Try again." },
+  "room.pult.closeHelp": { "ru": "Закрыть справку", "en": "Close keyboard help" },
+  "room.pult.groupReply": { "ru": "Письмо группе", "en": "Group reply" },
+  "room.pult.send": { "ru": "Отправить", "en": "Send" },
+  "room.pult.replyScope": { "ru": "Личное письмо", "en": "Private reply" },
+  "room.pult.closeSearch": { "ru": "Закрыть поиск", "en": "Close search" },
+  "room.pult.running": { "ru": "Считает", "en": "Running" },
+  "room.pult.queued": { "ru": "В очереди", "en": "Queued" },
+
   "room.ui.0": {
     "ru": "Вас удалили с занятия",
     "en": "You were removed from the class"

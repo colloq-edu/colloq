@@ -738,16 +738,18 @@ export function setMark(
  * руками (сдал, передумал, сдал снова), и номер на проекторе иначе переезжал
  * бы, пока класс на него смотрит.
  *
- * Те, кто ещё пишет, считаются по времени правки и оказываются в хвосте: у
+ * Те, кто ещё пишет, считаются по идентификатору и оказываются в хвосте: у
  * них времени сдачи нет, а номер показанному нужен в любом случае —
  * преподаватель вправе вывести и несданное.
  */
 function variantOf(attempts: readonly StoredAttempt[], participantId: string): number {
   const order = [...attempts].sort((a, b) => {
-    const left = a.submittedAt ?? a.updatedAt
-    const right = b.submittedAt ?? b.updatedAt
-    if (left !== right) return left - right
-    return a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0
+    const left = a.submittedAt
+    const right = b.submittedAt
+    if (left !== null && right !== null) return left - right || a.participantId.localeCompare(b.participantId)
+    if (left !== null) return -1
+    if (right !== null) return 1
+    return a.participantId.localeCompare(b.participantId)
   })
   return order.findIndex((attempt) => attempt.participantId === participantId) + 1
 }

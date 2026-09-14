@@ -159,6 +159,17 @@
    * рисуется в одном окне у одного человека, а лежал бы в чанке комнаты у
    * каждого студента.
    */
+  function exitCouncil(): void {
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.focus()
+        window.close()
+        return
+      }
+    } catch { /* An opener may no longer be accessible. */ }
+    onnavigate?.(`/s/${session.session.id}`)
+  }
+
   let councilChunk: Promise<
     typeof import('@/components/council/pult/PultWindow.svelte').default
   > | null = null
@@ -1894,7 +1905,9 @@
   -->
   <div class="fixed inset-0 z-[95] bg-canvas">
     {#await councilWindow() then Pult}
-      <Pult cellId={councilCell} onexit={() => window.close()} />
+      {#key councilCell}
+        <Pult cellId={councilCell} onexit={exitCouncil} />
+      {/key}
     {/await}
   </div>
 {:else if pult}

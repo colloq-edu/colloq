@@ -14,8 +14,8 @@ export const adminMessages: MessageCatalog = {
     "en": "back to the instance default"
   },
   "admin.resources.cpuHint": {
-    "ru": "На машине {p0} ядер; по умолчанию {p1}. На живой комнате новое число применится сразу, а ядро начнёт считать им после перезапуска: потоки numpy и torch считаются при старте.",
-    "en": "The machine has {p0} cores; the default is {p1}. On a live room the new number applies at once, but the kernel only uses it after a restart: numpy and torch count their threads at start-up."
+    "ru": "На машине {p0} ядер; по умолчанию {p1}. В Docker квота меняется сразу; в кластере — после перезапуска ядра. Перезапустите ядро, чтобы numpy и torch также использовали новое число потоков.",
+    "en": "The machine has {p0} cores; the default is {p1}. Docker updates the quota immediately; the cluster applies it after a kernel restart. Restart the kernel so numpy and torch also use the new thread count."
   },
   "admin.seminar.settingsMenu": {
     "ru": "Настройки",

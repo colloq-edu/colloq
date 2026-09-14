@@ -8,10 +8,11 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { TEST_ROOT } from './_env.mts'
-import {createSession,sessionEnvironment,sessionKernelRevision} from '../server/src/db.js'
+import {createSession,sessionEnvironment,sessionKernelRevision,setSessionCpus} from '../server/src/db.js'
 import {endpointForSession,isolationAvailable,dropRoomKernel} from '../server/src/kernel/pool.js'
 import {listEnvironments,environmentAbilities,setActiveName,activeName,writeSource,removeEnvironment,startBuild} from '../server/src/environments.js'
 import {endpointIdentity} from '../server/src/kernel/jupyter.js'
+import {forgetResources,machineResources} from '../server/src/kernel/resources.js'
 
 const image=(c:string)=>`registry.example/colloq/kernel@sha256:${c.repeat(64)}`
 const rev=(c:string)=>`sha256:${c.repeat(64)}`
@@ -19,7 +20,7 @@ const rev=(c:string)=>`sha256:${c.repeat(64)}`
 test('room image pins survive catalog/default updates and missing revisions fail closed',async()=>{
  const old={...process.env};const file=path.join(TEST_ROOT,'catalog.json'),tokenFile=path.join(TEST_ROOT,'broker-token')
  const requests:any[]=[]
- const runtime=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;const input=body?JSON.parse(body):{};requests.push({path:req.url,...input});res.setHeader('content-type','application/json');res.end(JSON.stringify(req.url==='/v1/health'?{ok:true,reason:null}:{url:'http://room.colloq.svc:8888',token:'r'.repeat(64),instanceId:'pod-1',environment:input.environment,revision:input.revision}))})
+ const runtime=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;const input=body?JSON.parse(body):{};requests.push({path:req.url,...input});res.setHeader('content-type','application/json');res.end(JSON.stringify(req.url==='/v1/health'?{ok:true,reason:null,defaultCpus:1.5}:req.url==='/v1/rooms'?{rooms:[{sessionId:'pin-old',instanceId:'pod-1',phase:'ready',environment:'base',revision:rev('a'),cpus:4}]}:{url:'http://room.colloq.svc:8888',token:'r'.repeat(64),instanceId:'pod-1',environment:input.environment,revision:input.revision}))})
  await new Promise<void>(r=>runtime.listen(0,'127.0.0.1',r));const port=(runtime.address() as {port:number}).port
  let entries:any[]=[{name:'base',image:image('a'),gpu:false},{name:'cv',image:image('c'),gpu:false}]
  const write=()=>fs.writeFileSync(file,JSON.stringify({schemaVersion:1,release:'v0.2.0',defaultEnvironment:'base',environments:entries}))
@@ -36,6 +37,16 @@ test('room image pins survive catalog/default updates and missing revisions fail
   createSession('pin-new','New','base');assert.equal(sessionKernelRevision('pin-new'),rev('b'))
   assert.equal((await endpointForSession('pin-old','base')).instanceId,'pod-1')
   assert.equal(requests.at(-1).revision,rev('a'))
+  setSessionCpus('pin-old', 6)
+  await endpointForSession('pin-old','base')
+  assert.equal(requests.at(-1).cpus, 6, 'persisted room cores must reach the broker')
+  forgetResources()
+  const resources = await machineResources()
+  assert.equal(resources.kernel.defaultCpus, 1.5, 'defaults come from the broker rather than the app environment')
+  assert.equal(resources.rooms.find(room => room.id === 'pin-old')?.cpus, 4, 'show the running quota while a new quota awaits restart')
+  setSessionCpus('pin-old', null)
+  await endpointForSession('pin-old','base')
+  assert.equal('cpus' in requests.at(-1), false, 'reset must use the broker default')
   assert.equal((await environmentAbilities()).canBuild,false)
   assert.equal((await environmentAbilities()).canSetDefault,true)
   assert.equal((await listEnvironments()).find(e=>e.name==='base')?.image,image('b'))

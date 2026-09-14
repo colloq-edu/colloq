@@ -222,6 +222,35 @@ test('панель заводит комнату с её ядрами и мен�
   assert.match(((await refused.json()) as { error: string }).error, /1/)
 })
 
+test('сброс ядер в панели возвращает живому контейнеру лимит инстанса', async () => {
+  const calls: string[][] = []
+  const previous = process.env.KERNEL_CPUS
+  process.env.KERNEL_CPUS = '1.5'
+  useDockerForLimits(async (args) => {
+    calls.push(args)
+    return { code: 0, out: '' }
+  })
+  try {
+    const created = await call('POST', '/api/admin/seminars', {
+      cookie,
+      body: { name: 'Сброс процессора', cpus: 6 },
+    })
+    assert.equal(created.status, 201)
+    const { id } = await created.json() as { id: string }
+    const reset = await call('PATCH', `/api/admin/seminars/${id}`, {
+      cookie,
+      body: { cpus: null },
+    })
+    assert.equal(reset.status, 200)
+    assert.equal(sessionCpus(id), null)
+    assert.deepEqual(calls, [['update', '--cpus=1.5', `colloq-room-${id}`]])
+  } finally {
+    useDockerForLimits(null)
+    if (previous === undefined) delete process.env.KERNEL_CPUS
+    else process.env.KERNEL_CPUS = previous
+  }
+})
+
 test('панель заводит комнату с её памятью и меняет число, не трогая остального', async () => {
   const created = await call('POST', '/api/admin/seminars', {
     cookie,

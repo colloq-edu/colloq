@@ -27,9 +27,10 @@
     onfilter: (filter: PultFilter) => void
     onsearch: (text: string) => void
     onclose: () => void
+    onopensearch: () => void
   }
 
-  let { filter, search, searching, names, counts, groups, onfilter, onsearch, onclose }: Props = $props()
+  let { filter, search, searching, names, counts, groups, onfilter, onsearch, onclose, onopensearch }: Props = $props()
 
   const CAPS = 'text-micro font-bold uppercase tracking-caps'
   let field = $state<HTMLInputElement | null>(null)
@@ -41,14 +42,14 @@
   })
 </script>
 
-<div class="flex h-9 shrink-0 items-center gap-1.5 border-b border-line bg-surface px-4">
+<div class="flex min-h-10 shrink-0 flex-wrap items-center gap-1.5 py-1.5 border-b border-line bg-surface px-4">
   {#each FILTERS as item (item)}
     <button
       type="button"
       class={cn(
         CAPS,
-        'h-[22px] shrink-0 border px-2',
-        filter === item ? 'border-accent text-accent' : 'border-line text-muted hover:text-ink',
+        'h-7 shrink-0 border px-2',
+        filter === item ? 'border-accent text-accent-text' : 'border-line text-muted hover:text-ink',
       )}
       aria-pressed={filter === item}
       onclick={() => onfilter(item)}
@@ -58,14 +59,16 @@
   {#if searching && names}
     <input
       bind:this={field}
-      class="h-[22px] w-40 shrink-0 border border-accent bg-canvas px-2 text-2xs text-ink outline-none"
+      aria-label={tr('room.ui.1310')}
+      class="h-7 w-40 min-w-0 border border-accent bg-canvas px-2 text-2xs text-ink outline-none"
       type="search"
       value={search}
       placeholder={tr('room.ui.1310')}
       data-pult-search
       oninput={(event) => onsearch(event.currentTarget.value)}
-      onblur={onclose}
+
     />
+    <button type="button" class="h-7 px-2 text-ui text-muted" aria-label={tr('room.pult.closeSearch')} onclick={onclose}>×</button>
   {:else}
     <!--
       Полоса режима старой консоли: попытки, сдачи, пишущие и число разных
@@ -73,6 +76,9 @@
       это уже был третий способ считать одно и то же, и он с остальными
       расходился.
     -->
+    {#if names}
+      <button type="button" class="h-7 shrink-0 border border-line px-2 text-2xs text-muted hover:text-ink" onclick={onopensearch}>{tr('room.ui.1310')}</button>
+    {/if}
     <span class="min-w-0 truncate font-mono text-micro text-faint">
       {councilStripText(counts, groups)}
     </span>

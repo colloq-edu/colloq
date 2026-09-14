@@ -60,6 +60,13 @@ should have to unwind. Without the flag the runner waits on a child that has
 finished its work and has no intention of exiting, and a suite that takes 600 ms
 takes three minutes to say so.
 
+Both `npm test` and `colloq test <pattern>` preload `tests/_cli.mts` after tsx.
+It makes the test child's stdout synchronous before forced exit, so buffered
+test events reach the parent. Without this preload Node 23.7 reported only
+49 of 64 passing pult tests in one audit run; with it all 64 were reported.
+Keep the preload when running a subset with `--test-force-exit`:
+`node --import tsx --import ./tests/_cli.mts --test --test-force-exit tests/example.test.mts`.
+
 ## What a browser measured, and what lives here instead
 
 Three of these files are the residue of things found in a real browser rather

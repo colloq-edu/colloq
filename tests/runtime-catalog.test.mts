@@ -71,3 +71,9 @@ test('room intent rejects templates, image/path injection, invalid revisions and
   for (const value of ['../abcde', '', 'a/bcdefg', 'a'.repeat(65), 'abcdefgh%2f'])
     assert.equal(isRuntimeSessionId(value), false)
 })
+
+test('room CPU intent accepts bounded whole cores without accepting container settings', () => {
+  assert.deepEqual(parseRuntimeEnsureRequest({ environment: 'base', cpus: 6 }), { environment: 'base', cpus: 6 })
+  for (const cpus of [0, -1, 1.5, 65, '6', null])
+    assert.throws(() => parseRuntimeEnsureRequest({ environment: 'base', cpus }))
+})

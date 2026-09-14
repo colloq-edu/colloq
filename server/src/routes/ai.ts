@@ -21,7 +21,7 @@ import {
   recordQuestion,
   windowResetAt,
 } from '../admin/usage.js'
-import { aiModel, aiReady, ask, cancel, clearThread, streamsInRoom } from '../ai/index.js'
+import { aiModel, aiReady, ask, cancel, clearThread } from '../ai/index.js'
 import { stopAll, stopWork, turnsInRoom, work } from '../ai/agent.js'
 import { seconds } from '../ai/text.js'
 import { addressOf } from '../bans.js'
@@ -90,7 +90,7 @@ const HOUR_MS = 3_600_000
  * routes/council.ts и тесты, и переименовывать их ради переезда незачем.
  */
 export { roomQuestionCeiling } from '../ai/door.js'
-import { roomQuestionCeiling } from '../ai/door.js'
+import { oracleCapacity, roomQuestionCeiling } from '../ai/door.js'
 
 /**
  * Сколько ответов оракул пишет в одной комнате разом.
@@ -107,7 +107,6 @@ import { roomQuestionCeiling } from '../ai/door.js'
  * очередь рассасывается быстрее, чем класс успевает её создать. Отказ — не
  * ошибка, а ожидание: панель показывает его обратным отсчётом, как слоу-мод.
  */
-const MAX_ROOM_STREAMS = 12
 
 /**
  * The mode this seminar actually runs in.
@@ -473,7 +472,7 @@ export function aiRoutes(): Router {
       /*
        * Один ход на комнату — и преподавателя это касается тоже.
        *
-       * Потолок ниже (`MAX_ROOM_STREAMS`) считает нагрузку и ведущего мимо себя
+       * Потолок ниже (`oracleCapacity`) считает нагрузку и ведущего мимо себя
        * пропускает: его единственный вопрос среди дюжины студенческих ничего
        * не решает. С ходом это неправда, и дело не в нагрузке. Два хода в одной
        * комнате правят одну тетрадь и одни файлы наперегонки: у каждого свой
@@ -652,18 +651,10 @@ export function aiRoutes(): Router {
      * единственный вопрос среди дюжины студенческих ничего не решает — а вот
      * молчащий посреди разбора оракул решает многое.
      */
-    if (auth.role !== 'host') {
-      const busy = streamsInRoom(sessionId) + turnsInRoom(sessionId)
-      if (busy >= MAX_ROOM_STREAMS) {
-        const wait = 5
-        res.setHeader('Retry-After', String(wait))
-        return res.status(429).json({
-          error: tr("server.thereAreAlreadyOracleRequestsRunningIn.5ae3f8", { p0: busy, p1: seconds(wait) }),
-          // То же число, что у слоу-мода: панель рисует ожидание отсчётом, а не
-          // красной ошибкой. Отличить одно от другого по тексту она не может.
-          retryAfter: wait,
-        })
-      }
+    const capacity = oracleCapacity(sessionId, auth.role)
+    if (capacity) {
+      res.setHeader('Retry-After', String(capacity.retryAfter))
+      return res.status(429).json(capacity)
     }
 
     // Name and colour are resolved server-side: the bubble in everyone's panel

@@ -23,6 +23,6 @@
     "typecheck": "npm run typecheck -w @colloq/server && npm run typecheck -w @colloq/web && npm run typecheck -w @colloq/runtime && npm run typecheck -w @colloq/cli",
     "e2e": "tsx scripts/e2e.mts",
     "perf": "tsx scripts/perf.mts",
-    "test": "node --import tsx --test --test-force-exit --test-concurrency=1 tests/*.test.mts"
+    "test": "node --import tsx --import ./tests/_cli.mts --test --test-force-exit --test-concurrency=1 tests/*.test.mts"
   }
 }

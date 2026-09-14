@@ -365,6 +365,8 @@ export interface PultKey {
   shift?: boolean
   meta?: boolean
   ctrl?: boolean
+  alt?: boolean
+  composing?: boolean
 }
 
 /**
@@ -379,6 +381,7 @@ export interface PultKey {
  * кнопке (`actions`) он нажимает кнопку, а не делает второе дело первым.
  */
 export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
+  if (event.alt || event.composing) return null
   const mod = Boolean(event.meta || event.ctrl)
   if (mod && (event.key === 'f' || event.key === 'F' || event.key === 'а' || event.key === 'А')) return 'search'
   if (focus === 'reply') {
@@ -386,6 +389,8 @@ export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
     if (event.key === 'Escape') return 'escape'
     return null
   }
+  if (mod) return null
+  if (focus === 'actions' && (event.key === ' ' || event.key === 'Enter')) return null
   if (event.key === 'ArrowDown') return 'next'
   if (event.key === 'ArrowUp') return 'prev'
   if (event.key === 'Escape') return 'escape'

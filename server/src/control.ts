@@ -217,7 +217,7 @@ import { evicted } from './bans.js'
 import { seldom } from './log.js'
 import { appendActivity } from './activity.js'
 import { recordQuestion } from './admin/usage.js'
-import { oracleDoor } from './ai/door.js'
+import { holdOracleHint, oracleCapacity, oracleDoor } from './ai/door.js'
 import { askCouncilHint, runFailed } from './ai/hint.js'
 
 /** Same reason as the collab socket: stay under the usual 30s idle timeout. */
@@ -3884,7 +3884,7 @@ export function dispatch(
         hintState(false, tr("server.council.hintNeedsError"))
         return
       }
-      const refusal = oracleDoor(sessionId, payload)
+      const refusal = oracleDoor(sessionId, payload) ?? oracleCapacity(sessionId, payload.role)
       if (refusal) {
         hintState(false, refusal.error)
         return
@@ -3909,6 +3909,7 @@ export function dispatch(
        */
       const usageId = recordQuestion({ sessionId, participantId: author, action: 'hint' })
       appendActivity(sessionId, author, 'oracle.asked', { action: 'hint', source: 'participant', cellId: id })
+      const releaseCapacity = holdOracleHint(sessionId)
 
       void askCouncilHint({
         before,
@@ -3934,7 +3935,10 @@ export function dispatch(
           console.error(`[session ${sessionId}] council hint failed:`, reason)
           hintState(false, reason || tr("server.theOracleDidNotRespondCheckThe.e430c5"))
         })
-        .finally(() => hintsReading.delete(`${sessionId}:${id}:${author}`))
+        .finally(() => {
+          releaseCapacity()
+          hintsReading.delete(`${sessionId}:${id}:${author}`)
+        })
       return
     }
 

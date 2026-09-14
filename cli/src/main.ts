@@ -777,8 +777,8 @@ async function pick(ui: ReturnType<typeof createUi>, total: number): Promise<num
 // Запуск: шим зовёт этот файл напрямую.
 const entry = process.argv[1] ?? ''
 if (entry.endsWith('/cli/src/main.ts') || entry.endsWith('/cli/src/main.js')) {
-  // Ctrl+C без ребёнка — выход 130 и ни строки сверх того.
-  process.on('SIGINT', () => process.exit(130))
+  // Без ребёнка действует обычный SIGINT Node. При запуске sh сам пересылает
+  // сигнал и ждёт ребёнка: ранний process.exit здесь оставлял его работать.
   const code = await cli(process.argv.slice(2))
   process.exitCode = code
 }

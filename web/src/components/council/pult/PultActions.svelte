@@ -23,6 +23,7 @@
     onScreen: boolean
     /** Эта работа считается в ядре. */
     running: boolean
+    queued: boolean
     /** Сколько уже считает. */
     elapsed: number
     /** Сколько уже в кадре. */
@@ -46,6 +47,7 @@
   let {
     onScreen,
     running,
+    queued,
     elapsed,
     inFrame,
     ran,
@@ -67,7 +69,7 @@
 
 <div
   class={cn(
-    'flex h-14 shrink-0 items-center gap-2 border-t bg-surface px-4',
+    'flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-t bg-surface px-3 py-2',
     onScreen ? 'border-t-positive' : 'border-t-line',
   )}
   data-pult-actions
@@ -91,9 +93,11 @@
   {#if running}
     <!-- Нажимать больше нечего: показание со счётчиком вместо кнопки. -->
     <span class={cn(BTN, 'gap-2 border border-accent')} aria-live="polite">
-      <span class={cn(CAPS, 'text-accent')}>{tr('room.ui.1343')}</span>
-      <span class="font-mono text-2xs text-accent">{spell(elapsed)}</span>
+      <span class={cn(CAPS, 'text-accent-text')}>{tr('room.pult.running')}</span>
+      <span class="font-mono text-2xs text-accent-text">{spell(elapsed)}</span>
     </span>
+  {:else if queued}
+    <span class={cn(BTN, CAPS, 'text-muted')} role="status">{tr('room.pult.queued')}</span>
   {:else if onScreen && hasNeighbour}
     <button
       type="button"
@@ -120,6 +124,7 @@
     )}
     aria-pressed={correct === true}
     title={tr('room.ui.1046')}
+    aria-label={tr('room.ui.1046')}
     disabled={disabled}
     onclick={() => onmark(true)}
   >✓</button>
@@ -131,6 +136,7 @@
     )}
     aria-pressed={correct === false}
     title={tr('room.ui.1047')}
+    aria-label={tr('room.ui.1047')}
     disabled={disabled}
     onclick={() => onmark(false)}
   >✗</button>
@@ -148,6 +154,6 @@
     <span class="h-1.5 w-1.5 shrink-0 bg-positive" aria-hidden="true"></span>
     <span class="shrink-0 font-mono text-micro text-positive">{tr('room.ui.1341', { p0: spell(inFrame) })}</span>
   {:else}
-    <span class="shrink-0 font-mono text-micro text-faint">← → {tr('room.ui.1340')}</span>
+    <span class="hidden min-[1000px]:inline shrink-0 font-mono text-micro text-faint">← → {tr('room.ui.1340')}</span>
   {/if}
 </div>

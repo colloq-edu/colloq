@@ -55,11 +55,13 @@
 </script>
 
 <div class={cn('flex shrink-0 flex-col border', toGroup ? 'border-accent' : 'border-line')}>
-  <div class="flex items-center gap-2.5 px-3 py-2.5">
-    <span class="h-4 w-0.5 shrink-0 bg-accent" aria-hidden="true"></span>
+  <div class="flex flex-wrap items-center gap-2.5 px-3 py-2.5">
+
     <textarea
-      class="min-h-[19px] w-full flex-1 resize-none bg-transparent text-ui text-ink outline-none placeholder:text-faint"
-      rows="1"
+      class="min-h-[38px] min-w-0 basis-full flex-1 resize-none bg-transparent text-ui text-ink outline-none placeholder:text-faint"
+      rows="2"
+      maxlength="3000"
+      aria-label={toGroup ? tr('room.ui.1332') : tr('room.ui.1331')}
       value={text}
       disabled={disabled}
       data-pult-reply
@@ -74,7 +76,7 @@
         }
       }}
     ></textarea>
-    <span class="shrink-0 font-mono text-micro text-faint">⌘↵</span>
+    <span class="min-w-0 flex-1 text-2xs text-muted">{toGroup ? tr('room.pult.groupReply') : tr('room.pult.replyScope')}</span>
     {#if groupSize > 1}
       <button
         type="button"
@@ -84,10 +86,13 @@
           toGroup ? 'border-accent bg-accent text-accent-ink' : 'border-line text-muted',
         )}
         aria-pressed={toGroup}
+        {disabled}
         onclick={ontoggle}
       >{tr('room.ui.1333', { p0: groupSize })}{hasDraft ? tr('room.ui.41') : ''}</button>
     {/if}
+    <button type="button" class="h-7 shrink-0 border border-accent px-3 text-2xs font-bold text-accent-text disabled:opacity-50" disabled={disabled || !text.trim() || text.trim().length > 3000} onclick={onsend}>{tr('room.pult.send')}</button>
   </div>
+  {#if text.length > 2700}<p class="px-3 pb-2 text-2xs" class:text-danger={text.length > 3000} role="status">{text.length} / 3000</p>{/if}
   <!-- Черновик оракула правят, а не подтверждают: строка говорит, чей это
        текст и что уйдёт он от вашего имени. -->
   {#if fromOracle}

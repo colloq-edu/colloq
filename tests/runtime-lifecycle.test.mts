@@ -122,6 +122,22 @@ test('GPU is one explicit device and runtime class, never a host mount', async (
   assert.equal(pod.spec.containers[0].resources.limits['nvidia.com/gpu'], 1)
 })
 
+test('room CPU intent sets quota and threads and resets to the runtime default', async () => {
+  const { kube, runtime } = setup()
+  const first = await runtime.ensure('cpuRoom', { environment: 'base', cpus: 6 })
+  const kernel = kube.creates.find((o) => o.kind === 'Pod')!.spec.containers[0]
+  assert.equal(kernel.resources.requests.cpu, '6')
+  assert.equal(kernel.resources.limits.cpu, '6')
+  assert.equal((await runtime.list()).find((room) => room.sessionId === 'cpuRoom')?.cpus, 6)
+  for (const name of ['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'])
+    assert.equal(kernel.env.find((entry: any) => entry.name === name).value, '6')
+  assert.equal((await runtime.ensure('cpuRoom', { environment: 'base', cpus: 6 })).instanceId, first.instanceId)
+  const reset = await runtime.ensure('cpuRoom', { environment: 'base' })
+  assert.notEqual(reset.instanceId, first.instanceId)
+  const replacement = kube.creates.filter((o) => o.kind === 'Pod').at(-1)!
+  assert.equal(replacement.spec.containers[0].resources.limits.cpu, '2')
+})
+
 test('delete invalidates an in-flight ensure, removes its resources, and later ensure gets a new incarnation', async () => {
   let enter!: () => void, release!: () => void
   const entered = new Promise<void>((r) => (enter = r)),
@@ -418,7 +434,7 @@ test('an old POST body completed after permanent DELETE cannot resurrect its roo
 
 test('readiness checks API permissions and catalog without claiming that a room was scheduled', async () => {
   const { kube, runtime } = setup()
-  assert.deepEqual(await runtime.health(), { ok: true, reason: null })
+  assert.deepEqual(await runtime.health(), { ok: true, reason: null, defaultCpus: 2 })
   assert.equal(kube.creates.length, 0)
   kube.failure = 403
   assert.equal((await runtime.health()).ok, false)

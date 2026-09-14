@@ -249,8 +249,10 @@ export class RuntimeController {
   }
   ensure(id: string, intent: RuntimeEnsureRequest): Promise<RuntimeEndpoint> {
     let environment: RuntimeEnvironment, queue: RoomQueue
+    let cpus: number | undefined
     try {
       const request = parseRuntimeEnsureRequest(intent)
+      cpus = request.cpus
       environment = resolveRuntimeEnvironment(
         this.options.catalog(),
         request.environment,
@@ -265,7 +267,7 @@ export class RuntimeController {
       )
     }
     const generation = queue.generation,
-      key = `${generation}:${environment.name}:${imageRevision(environment.image)}`
+      key = `${generation}:${environment.name}:${imageRevision(environment.image)}:${cpus ?? 'default'}`
     const existing = queue.inflight.get(key)
     if (existing) return existing
     if ([...queue.inflight.keys()].some((k) => k.startsWith(`${generation}:`)))
@@ -276,7 +278,7 @@ export class RuntimeController {
       if (queue.generation !== generation)
         throw new RuntimeError('Room startup cancelled by deletion', 409)
     }
-    const task = this.enqueue(id, queue, () => this.ensureWorkload(id, environment, check)).finally(
+    const task = this.enqueue(id, queue, () => this.ensureWorkload(id, environment, check, cpus)).finally(
       () => queue.inflight.delete(key),
     )
     queue.inflight.set(key, task)
@@ -320,14 +322,15 @@ export class RuntimeController {
     assertOwned(created, id)
     return created
   }
-  private pod(id: string, environment: RuntimeEnvironment, token: string): KubeObject {
+  private pod(id: string, environment: RuntimeEnvironment, token: string, cpus?: number): KubeObject {
     const { config } = this.options
     const revision = imageRevision(environment.image)
-    const cpu = config.cpu.endsWith('m')
-      ? Number(config.cpu.slice(0, -1)) / 1000
-      : Number(config.cpu)
+    const quota = cpus === undefined ? config.cpu : String(cpus)
+    const cpu = quota.endsWith('m')
+      ? Number(quota.slice(0, -1)) / 1000
+      : Number(quota)
     const limits: Record<string, string | number> = {
-      cpu: config.cpu,
+      cpu: quota,
       memory: config.memory,
       'ephemeral-storage': config.ephemeral,
       ...(environment.gpu ? { 'nvidia.com/gpu': 1 } : {}),
@@ -426,12 +429,13 @@ export class RuntimeController {
     id: string,
     environment: RuntimeEnvironment,
     check: () => void,
+    cpus?: number,
   ): Promise<RuntimeEndpoint> {
     check()
     const token = createHmac('sha256', this.options.roomSecret())
       .update(`jupyter:${id}`)
       .digest('hex')
-    const desired = this.pod(id, environment, token),
+    const desired = this.pod(id, environment, token, cpus),
       desiredService = this.service(id)
     let [pod, service] = await Promise.all([this.get('pods', id), this.get('services', id)])
     check()
@@ -598,6 +602,7 @@ export class RuntimeController {
     return pods.flatMap((pod) => {
       const id = pod.metadata.annotations?.['colloq.dev/session-id']
       if (!id || !isRuntimeSessionId(id) || !owned(pod, id) || !pod.metadata.uid) return []
+      const milliCpus = resourceQuantity('cpu', pod.spec.containers?.find((container: any) => container.name === 'kernel')?.resources?.limits?.cpu)
       return [
         {
           sessionId: id,
@@ -605,6 +610,7 @@ export class RuntimeController {
           phase: podPhase(pod),
           environment: pod.metadata.labels?.['colloq.dev/environment'] ?? '',
           revision: pod.metadata.annotations?.['colloq.dev/revision'] ?? '',
+          ...(typeof milliCpus === 'number' && milliCpus > 0 ? { cpus: milliCpus / 1000 } : {}),
           ...(podReason(pod) ? { reason: podReason(pod) } : {}),
         },
       ]
@@ -619,7 +625,7 @@ export class RuntimeController {
           this.options.kube.request('GET', `${this.root}/${kind}?limit=1`),
         ),
       )
-      return { ok: true, reason: null }
+      return { ok: true, reason: null, defaultCpus: Number(resourceQuantity('cpu', this.options.config.cpu)) / 1000 }
     } catch (err) {
       return {
         ok: false,

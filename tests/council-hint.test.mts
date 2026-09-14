@@ -39,7 +39,8 @@ import { getSessionDoc, shutdownCollab } from '../server/src/collab/index.js'
 import { attemptOf, recordRun, saveDraft } from '../server/src/council.js'
 import { createSession, setRules } from '../server/src/db.js'
 import { hintPrompt, tracebackOf } from '../server/src/ai/hint.js'
-import type { TokenPayload } from '../server/src/auth.js'
+import { signToken, type TokenPayload } from '../server/src/auth.js'
+import { aiRoutes } from '../server/src/routes/ai.js'
 
 /*
  * Шлюзы закрываются здесь, а не в теле теста: упавшее утверждение уносит
@@ -61,12 +62,13 @@ interface Gateway {
 }
 
 /** OpenAI-совместимый шлюз, отвечающий одной заготовленной строкой. */
-async function gateway(answer: string): Promise<Gateway> {
+async function gateway(answer: string, wait?: Promise<void>): Promise<Gateway> {
   const seen: Record<string, unknown>[] = []
   const app = express()
   app.use(express.json({ limit: '4mb' }))
-  app.post('/v1/chat/completions', (req, res) => {
+  app.post('/v1/chat/completions', async (req, res) => {
     seen.push(req.body as Record<string, unknown>)
+    if (wait) await wait
     res.setHeader('content-type', 'text/event-stream')
     if (answer) {
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: answer } }] })}\n\n`)
@@ -332,4 +334,49 @@ test('кончились вопросы — подсказка отказыва�
   assert.match((answer as { error: string }).error, /вопрос|question/i)
   updateOracleSettings({ questionsPerHour: 20 })
   await gate.close()
+})
+
+test('подсказки делят предел одновременных запросов комнаты и освобождают место', async () => {
+  let release!: () => void
+  const wait = new Promise<void>((resolve) => { release = resolve })
+  const gate = await gateway('Проверьте имя атрибута.', wait)
+  const api = http.createServer(express().use(express.json()).use(aiRoutes()))
+  await new Promise<void>((resolve) => api.listen(0, '127.0.0.1', resolve))
+  const apiBase = `http://127.0.0.1:${(api.address() as { port: number }).port}`
+  const { id, cellId } = room()
+  const reading = Array.from({ length: 12 }, (_, i) => {
+    const author = `capacity-${i}`
+    failedAttempt(id, cellId, author)
+    const client = socket()
+    dispatch(client.ws, id, who('participant', id, author), { t: 'council:hint', cellId })
+    assert.ok(client.said.some((f) => f.t === 'council:hint:state' && f.asking))
+    return client
+  })
+  try {
+    failedAttempt(id, cellId, 'overflow')
+    const overflow = socket()
+    dispatch(overflow.ws, id, who('participant', id, 'overflow'), { t: 'council:hint', cellId })
+    assert.ok(overflow.said.some((f) => f.t === 'council:hint:state' && !f.asking && f.error),
+      'thirteenth request must be refused before reaching the provider')
+    const publicQuestion = await fetch(`${apiBase}/api/sessions/${id}/ai/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${signToken(who('participant', id, 'http-overflow'))}` },
+      body: JSON.stringify({ message: 'Почему падает код?' }),
+    })
+    assert.equal(publicQuestion.status, 429, 'HTTP must count pending private hints too')
+    assert.equal(publicQuestion.headers.get('retry-after'), '5')
+    release()
+    for (const client of reading)
+      await settle(client.said, (f) => f.t === 'council:hint:state' && !f.asking)
+    assert.equal(gate.seen.length, 12)
+    dispatch(overflow.ws, id, who('participant', id, 'overflow'), { t: 'council:hint', cellId })
+    assert.ok(overflow.said.some((f) => f.t === 'council:hint:state' && f.asking))
+    await settle(overflow.said, (f) => f.t === 'council:hint:state' && !f.asking && !f.error)
+    assert.equal(gate.seen.length, 13)
+  } finally {
+    release()
+    await gate.close()
+    api.closeAllConnections()
+    await new Promise<void>((resolve) => api.close(() => resolve()))
+  }
 })

@@ -308,6 +308,13 @@ test('полоса смысла говорит, что требуется, а н
   assert.equal(rowMeaning(asking, 'b', 'b'), 'asking', 'просьба важнее всего')
 })
 
+test('native button activation and modified arrows are not council shortcuts', () => {
+  assert.equal(pultKeyAction({ key: ' ' }, 'actions'), null)
+  assert.equal(pultKeyAction({ key: 'ArrowLeft', alt: true }, 'list'), null)
+  assert.equal(pultKeyAction({ key: 'ArrowDown', ctrl: true }, 'list'), null)
+  assert.equal(pultKeyAction({ key: 'r', composing: true }, 'list'), null)
+})
+
 test('повод для просьбы выводится из прошлого запуска и не сочиняется', () => {
   const clean = attempt({ participantId: 'a' })
   assert.equal(requestReason(clean), null)

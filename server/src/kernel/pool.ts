@@ -1017,7 +1017,7 @@ export async function endpointForSession(
     const pinned = runtimeEnvironment(sessionEnvironment(sessionId), revision)
     const starts = brokerStarts.get(sessionId) ?? new Set<Promise<KernelEndpoint>>()
     brokerStarts.set(sessionId, starts)
-    const attempt = kernelRuntimeClient().ensure(sessionId, pinned.name, revision)
+    const attempt = kernelRuntimeClient().ensure(sessionId, pinned.name, revision, sessionCpus(sessionId))
     starts.add(attempt)
     try {
       const endpoint = await attempt
