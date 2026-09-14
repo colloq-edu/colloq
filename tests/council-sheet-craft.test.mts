@@ -271,8 +271,10 @@ test('«переписать ячейку» закрыто там, где яче
   // некуда применить, а вопрос из лимита комнаты он бы уже потратил.
   assert.match(CELL, /const mayPatchHere = \$derived\(mayEdit && \(leads \|\| !inCouncil\)\)/)
   assert.match(CELL, /const mayRewrite = \$derived\(may\.ask && rewriteReady && mayPatchHere\)/)
-  // Не погашен, а не нарисован: погашенный обещает, что действие тут есть.
-  assert.match(CELL, /\{#if mayPatchHere\}[\s\S]{0,400}?aria-label=\{tr\('room\.ui\.344'\)\}/)
+  // Кнопка на месте, но погашена — с причиной в подсказке. Исчезать ей нельзя:
+  // тулбар у всех ячеек один, и пропавшая кнопка читается как поломка.
+  assert.doesNotMatch(CELL, /\{#if mayPatchHere\}\s*<button/, 'кнопку оракула спрятали вместо того, чтобы погасить')
+  assert.match(CELL, /aria-label=\{tr\('room\.ui\.344'\)\}[\s\S]{0,80}?disabled=\{!mayRewrite\}/)
   // И «Принять» под самой ячейкой — тем же правилом: оно правит общую тетрадь.
   assert.match(CELL, /if \(!mayPatchHere\) \{\s*session\.showError\(patchWhy/)
   assert.equal(CELL.match(/disabled=\{!mayPatchHere\}/g)?.length, 2, 'оба «принять» в ячейке закрыты не одинаково')
@@ -294,6 +296,17 @@ test('«переписать ячейку» закрыто там, где яче
     'копию закрыли вместе с правкой',
   )
   assert.equal(translate('ru', 'room.ui.1267'), 'Скопировать')
+
+  // И в тулбаре ячейки: слот «Создать копию» у того, кому структуру не дают
+  // (лекция, консилиум), копирует текст ячейки в буфер — и не гаснет.
+  assert.match(CELL, /\{#if may\.add\}[\s\S]{0,600}?\{:else\}[\s\S]{0,400}?onclick=\{\(\) => void copySource\(\)\}/)
+  assert.doesNotMatch(
+    CELL.slice(CELL.indexOf('void copySource()') - 300, CELL.indexOf('void copySource()')),
+    /disabled=/,
+    'копию в буфер погасили вместе с копией в тетрадь',
+  )
+  assert.doesNotMatch(CELL, /disabled=\{!may\.add\}/, 'слот копии всё ещё гаснет по правилу структуры')
+  assert.equal(translate('ru', 'room.ui.1900'), 'Скопировать текст ячейки')
 })
 
 /* ------------------------------------------------------------- заготовка */

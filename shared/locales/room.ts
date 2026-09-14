@@ -1330,6 +1330,10 @@ export const roomMessages: MessageCatalog = {
     "ru": "Скопировано",
     "en": "Copied"
   },
+  "room.ui.1900": {
+    "ru": "Скопировать текст ячейки",
+    "en": "Copy the cell text"
+  },
   "room.ui.373": {
     "ru": "Что должна делать эта ячейка?",
     "en": "What should this cell do instead?"

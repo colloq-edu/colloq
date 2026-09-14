@@ -99,6 +99,7 @@
   import { lockHint, lockLabel, lockPress } from '@/lib/lock-button'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn, elapsed, NOTICED_MS, prefersReducedMotion, spell } from '@/lib/utils'
+  import { copyText } from '@/lib/clipboard'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
   import {
     watchCell,
@@ -1079,6 +1080,27 @@
   const notebook = watchNotebookMeta(session.doc)
 
   const ytext = $derived(cell.current ? cellSource(cell.current) : null)
+
+  /**
+   * Текст ячейки в буфер — для тех, кому копию в тетрадь не дают.
+   *
+   * Слот «Создать копию» в тулбаре у участника лекции и консилиума был просто
+   * погашен: правило структуры не пускает, а унести код к себе всё равно надо.
+   * Отказ буфера (настройка браузера) молчит: текст остаётся выделяемым.
+   */
+  let copied = $state(false)
+  let copiedTimer: number | undefined
+  async function copySource(): Promise<void> {
+    try {
+      await copyText(ytext?.toString() ?? '')
+      copied = true
+      window.clearTimeout(copiedTimer)
+      copiedTimer = window.setTimeout(() => (copied = false), NOTICED_MS)
+    } catch {
+      // см. выше
+    }
+  }
+  $effect(() => () => window.clearTimeout(copiedTimer))
   const queuePosition = $derived(notebook.current.queue.indexOf(id))
   const hasError = $derived(
     cellState === 'error' || outputs.current.some((output) => output.kind === 'error'),
@@ -2427,16 +2449,36 @@
         >
           <Icon name="chevron-down" size={13} />
         </button>
-        <button
-          type="button"
-          class={TOOL}
-          title={may.add ? tr('room.extra.123') : may.structureWhy}
-          aria-label={tr('room.ui.343')}
-          disabled={!may.add}
-          onclick={() => duplicateCell(session.doc, bookRoot, id)}
-        >
-          <Icon name="duplicate" size={13} />
-        </button>
+        <!--
+          Один слот — два действия, по праву.
+
+          Кому можно менять структуру, тот получает копию ячейки в тетрадь,
+          как и было. Остальным (лекция, консилиум) слот не гаснет, а копирует
+          текст ячейки в буфер: унести код к себе — ровно то, что студенту на
+          лекции и нужно, и для этого не надо ни писать в общую тетрадь, ни
+          спрашивать правило комнаты.
+        -->
+        {#if may.add}
+          <button
+            type="button"
+            class={TOOL}
+            title={tr('room.extra.123')}
+            aria-label={tr('room.ui.343')}
+            onclick={() => duplicateCell(session.doc, bookRoot, id)}
+          >
+            <Icon name="duplicate" size={13} />
+          </button>
+        {:else}
+          <button
+            type="button"
+            class={TOOL}
+            title={copied ? tr('room.ui.1268') : tr('room.ui.1900')}
+            aria-label={tr('room.ui.1900')}
+            onclick={() => void copySource()}
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={13} />
+          </button>
+        {/if}
         <button
           type="button"
           class={TOOL}
@@ -2453,27 +2495,23 @@
              режимом оракула: `hints` переписывать ячейку отказывается, и знать
              об этом надо ДО набранной фразы (см. `rewriteReady`). -->
         <!--
-          Значка нет вовсе там, где ячейку не правят, — не погашен, а не
-          нарисован.
-
-          Погашенный обещает, что действие тут есть и однажды включится; в
-          лекции и в общей ячейке консилиума его нет и не будет, а место в
-          тулбаре стоит дороже обещания. Спросить ПРО ячейку при этом можно
-          по-прежнему — вопрос живёт в панели, а не здесь.
+          Там, где ячейку не правят (лекция, общая ячейка консилиума), значок
+          стоит на месте, но погашен — с причиной в подсказке. Не исчезает:
+          тулбар у всех ячеек один, и пропавшая кнопка читается как поломка,
+          а не как правило. Спросить ПРО ячейку при этом можно по-прежнему —
+          вопрос живёт в панели, а не здесь.
         -->
-        {#if mayPatchHere}
-          <button
-            type="button"
-            class={TOOL}
-            title={mayRewrite ? tr('room.extra.128') : rewriteRefusal}
-            aria-label={tr('room.ui.344')}
-            aria-pressed={asking}
-            disabled={!mayRewrite}
-            onclick={() => (asking = !asking)}
-          >
-            <Icon name="sparkles" size={13} class="text-accent-text" />
-          </button>
-        {/if}
+        <button
+          type="button"
+          class={TOOL}
+          title={mayRewrite ? tr('room.extra.128') : rewriteRefusal}
+          aria-label={tr('room.ui.344')}
+          aria-pressed={asking}
+          disabled={!mayRewrite}
+          onclick={() => (asking = !asking)}
+        >
+          <Icon name="sparkles" size={13} class="text-accent-text" />
+        </button>
         {#if isCode}
           <!--
             Прибрать за собой в своей ячейке.
