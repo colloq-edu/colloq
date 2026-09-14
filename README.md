@@ -286,6 +286,13 @@ NetworkPolicy has a local-node traffic exception. One node provides no high
 availability, and PVC capacity is not an enforced per-room disk quota. Review the
 [runtime boundary](runtime/README.md) before admitting untrusted workloads.
 
+## CLI
+
+`./colloq` wraps these Make targets: it knows their arguments, asks before
+anything destructive, and prints the exact call under `--dry-run`. Nothing to
+install — run `./colloq` for a grouped menu, or `./colloq help` for the list.
+See [cli/README.md](cli/README.md).
+
 ## Development
 
 Use **Node.js 22**, npm, Docker and Make. For a Linux host with the app running

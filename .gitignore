@@ -16,6 +16,10 @@ kernel/environments/.*.built
 # Локальный запуск через make run.
 .colloq.pid
 .colloq.log
+
+# Состояние обёртки ./colloq: имя последнего семинара, адрес, код выхода.
+# Машинное, не исходник.
+.colloq/
 backups/
 
 # Журналы, забранные с арендованных машин: make vast-logs. Секреты из них
