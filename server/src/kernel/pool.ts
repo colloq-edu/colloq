@@ -830,11 +830,17 @@ export async function containerLimits(
   }
 }
 
+const locallyStoppedRooms = new Set<string>()
+function assertLocalRoomRunning(sessionId: string): void {
+  if (locallyStoppedRooms.has(sessionId)) throw new Error('Local session is stopping')
+}
+
 async function startContainer(
   sessionId: string,
   env: string,
   retried = false,
 ): Promise<KernelEndpoint> {
+  assertLocalRoomRunning(sessionId)
   const container = containerFor(sessionId)
   const image = `${IMAGE_PREFIX}:${env}`
   const network = roomNetwork()
@@ -846,6 +852,7 @@ async function startContainer(
    */
   const gpu = needsGpu(env) ? await takeGpu(sessionId, env) : null
   const state = await stateOf(container)
+  assertLocalRoomRunning(sessionId)
 
   /*
    * Пересоздать контейнер и попробовать ещё раз — ровно один раз.
@@ -855,6 +862,7 @@ async function startContainer(
    * ошибки на ячейке.
    */
   const recreate = async (why: string): Promise<KernelEndpoint> => {
+    assertLocalRoomRunning(sessionId)
     if (retried) throw new Error(tr("server.couldNotStartTheRoomContainer.cf7398", { p0: why }))
     /*
      * Сказать вслух, если сносится живой (или замерший) контейнер.
@@ -890,6 +898,7 @@ async function startContainer(
     // внутрь него не пробросить иначе как заново.
     if (!(await sameGpu(container, gpu))) return recreate(tr("server.theContainerWasStartedWithADifferent.bc4d7d"))
     if (state === 'stopped') {
+      assertLocalRoomRunning(sessionId)
       const started = await run(['start', container], 60_000)
       // Результат читается: не поднявшийся контейнер дальше отвечал бы «could
       // not read the published port» на каждый Run, и так до ручного docker rm.
@@ -908,6 +917,7 @@ async function startContainer(
      * содержимое `/workspace` внутрь больше не попадает вовсе.
      */
     const mount = hostMount(sessionId)
+    assertLocalRoomRunning(sessionId)
     const created = await run(
       runArgs({
         sessionId,
@@ -935,6 +945,7 @@ async function startContainer(
     }
   }
 
+  assertLocalRoomRunning(sessionId)
   let url: string
   if (network) {
     // Внутри сети слушают тот же 8888, публиковать нечего.
@@ -953,6 +964,7 @@ async function startContainer(
   const deadline = Date.now() + 90_000
   let lastError = tr("server.noResponse.187241")
   while (Date.now() < deadline) {
+    assertLocalRoomRunning(sessionId)
     try {
       const res = await fetch(`${endpoint.url}/api/status?token=${endpoint.token}`, {
         signal: AbortSignal.timeout(4000),
@@ -1005,6 +1017,7 @@ export async function endpointForSession(
   env: string | null,
 ): Promise<KernelEndpoint> {
   requireKernelIsolation()
+  assertLocalRoomRunning(sessionId)
   if (kernelRetirementInProgress(sessionId)) throw new Error(tr("server.cannotStartKernelSeminarIsStopping.9820e1"))
   const backend = kernelBackend()
   if (backend === 'test') return defaultEndpoint()
@@ -1032,6 +1045,7 @@ export async function endpointForSession(
   }
   if (!(await canIsolate())) throw new Error('Room isolation is unavailable. Execution is disabled; shared Jupyter fallback is not permitted')
 
+  assertLocalRoomRunning(sessionId)
   const cached = endpoints.get(sessionId)
   if (cached) return cached
 
@@ -1102,4 +1116,20 @@ export function forgetSessionKernel(sessionId: string): void {
 /** Комнаты, для которых этот процесс поднял контейнер. Нужно панели. */
 export function runningRoomKernels(): string[] {
   return [...endpoints.keys()]
+}
+
+/** Local supervisor shutdown; independent of network readiness and never deletes files. */
+export async function dropLocalRoomKernel(sessionId: string): Promise<void> {
+  if (kernelBackend() === 'test') return
+  if (kernelBackend() !== 'docker') throw new Error('Local cleanup requires KERNEL_BACKEND=docker')
+  locallyStoppedRooms.add(sessionId)
+  const release = blockKernelStarts(sessionId)
+  try {
+    // A Docker create already sent to the daemon must settle before rm; checks
+    // throughout startup prevent any later create or readiness retry.
+    await Promise.allSettled([starting.get(sessionId)])
+    endpoints.delete(sessionId)
+    const result = await run(['rm', '-f', containerFor(sessionId)], 60_000)
+    if (result.code !== 0 && !/No such container/i.test(result.out)) throw new Error(result.out)
+  } finally { release() }
 }

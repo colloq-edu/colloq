@@ -17,6 +17,8 @@ import { tr } from '@shared/i18n'
 // печатают при загрузке, должно застать уже исправленную. Имена из него берутся
 // здесь же — это тот самый модуль, а не второй: журнал у процесса один.
 import { startJournal, stopJournal } from './log.js'
+import { retireDatabaseKernels, stopsLocalKernelsOnExit } from './local/kernel-cleanup.js'
+import { dropLocalRoomKernel } from './kernel/pool.js'
 import { kernelRetirementInProgress } from './kernel/retirement.js'
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
@@ -30,7 +32,7 @@ import { handleFileSocket } from './collab/files.js'
 import { normalizePath } from '@shared/paths'
 
 import { handleControlSocket } from './control.js'
-import { closeDatabase, getSession, touchLastSeenAll } from './db.js'
+import { db, closeDatabase, getSession, touchLastSeenAll } from './db.js'
 import { kernelCensus, shutdownKernels } from './kernel/index.js'
 import { sweepAllStaleUploads } from './workspace.js'
 import { roleFor } from './routes/sessions.js'
@@ -38,7 +40,7 @@ import { app } from './app.js'
 
 /** A whole notebook's state travels in one sync frame; images make it big. */
 const MAX_WS_PAYLOAD = 16 * 1024 * 1024
-const SHUTDOWN_GRACE_MS = 8000
+const SHUTDOWN_GRACE_MS = stopsLocalKernelsOnExit() ? 70000 : 8000
 const UPGRADE_PATH = /^\/(collab|control)\/([A-Za-z0-9_-]{1,64})\/?$/
 /*
  * У файла в адресе два отрезка: комната и сам файл, путь в base64url.
@@ -423,6 +425,7 @@ async function shutdown(signal: string): Promise<void> {
   }
   try {
     await shutdownKernels()
+    if (stopsLocalKernelsOnExit()) await retireDatabaseKernels(db, dropLocalRoomKernel)
   } catch (err) {
     console.error('colloq: could not stop kernels:', err instanceof Error ? err.message : err)
   }

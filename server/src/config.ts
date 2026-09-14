@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { readLeaseUrl } from './local/public-url-lease.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -100,6 +101,12 @@ let publicUrlCache: { at: number; value: string } | null = null
 
 function readPublicUrl(): string {
   const fallback = `http://localhost:${env('PORT', '3000')}`
+  if (process.env.COLLOQ_LOCAL_SESSION === '1') {
+    const local = (process.env.COLLOQ_LOCAL_URL || fallback).replace(/\/+$/, '')
+    const lease = process.env.COLLOQ_PUBLIC_URL_LEASE_FILE
+    const runId = process.env.COLLOQ_LOCAL_RUN_ID
+    return (lease && runId ? readLeaseUrl(lease, runId) : null) || local
+  }
   const now = Date.now()
   if (publicUrlCache && now - publicUrlCache.at < 2000) return publicUrlCache.value
 

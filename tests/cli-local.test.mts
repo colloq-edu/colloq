@@ -99,28 +99,55 @@ const ALIVE = {
 
 // ------------------------------------------------------------------ запуск
 
-test('run: строка make, FAST флагом и парой, дубля пары не бывает', async () => {
-  assert.deepEqual((await run(['run', '--dry-run'])).out, ['make run'])
-  assert.deepEqual((await run(['run', '--fast', '--dry-run'])).out, ['make run FAST=1'])
-  assert.deepEqual((await run(['run', 'FAST=1', '--dry-run'])).out, ['make run FAST=1'])
-  assert.deepEqual((await run(['start', '--dry-run'])).out, ['make run'])
+const LAUNCH = 'node --import tsx /repo/cli/src/launch.ts'
+const SESSION = { files: { '/repo/.colloq/local-session.json': '{"pid":4242,"port":4000,"mode":"run"}' } }
+
+test('run: foreground launcher, aliases and flags have one exact dry-run command', async () => {
+  for (const argv of [[], ['run'], ['start']]) {
+    assert.deepEqual((await run([...argv, '--dry-run'])).out, [LAUNCH + ' run'])
+  }
+  for (const flags of [['--fast'], ['FAST=1']]) {
+    assert.deepEqual((await run(['run', ...flags, '--dry-run'])).out, [LAUNCH + ' run --fast'])
+  }
+  assert.deepEqual((await run(['run', '--host', 'hse.colloq.ru', '--detach', '--port', '4100', '--no-open', '--fast', '--dry-run'])).out,
+    [LAUNCH + ' run --host hse.colloq.ru --detach --port 4100 --no-open --fast'])
+  assert.deepEqual((await run(['run', 'HOST=hse.colloq.ru', 'DETACH=1', 'PORT=4100', 'OPEN=0', 'FAST=1', '--dry-run'])).out,
+    [LAUNCH + ' run --host hse.colloq.ru --detach --port 4100 --no-open --fast'])
+  assert.deepEqual((await run(['run', "DATA_DIR=folder with 'quote'", '--dry-run'])).out,
+    ["DATA_DIR='folder with '\\''quote'\\''' " + LAUNCH + ' run'])
 })
 
-test('run: спрашивает только под живым сервером', async () => {
-  const quiet = await run(['run'], { tty: true, answer: 'y' })
-  assert.equal(quiet.code, 0)
-  assert.deepEqual(quiet.asked, [])
-  assert.deepEqual(spawned(quiet), [['make', 'run']])
+test('run: launch never asks to restart a busy server and preserves launcher exit', async () => {
+  for (const argv of [[], ['run'], ['run', '--yes']]) {
+    const result = await run(argv, { tty: true, answer: 'n', ...ALIVE, exit: 3 })
+    assert.equal(result.code, 3)
+    assert.deepEqual(result.asked, [])
+    assert.deepEqual(result.calls, [['node', '--import', 'tsx', '/repo/cli/src/launch.ts', 'run']])
+  }
+})
 
-  const busy = await run(['run'], { tty: true, answer: 'n', ...ALIVE })
-  assert.equal(busy.code, 4)
-  assert.deepEqual(spawned(busy), [])
-  assert.match(busy.asked[0] ?? '', /перезапустить сервер\? \[y\/N\]/)
-  assert.deepEqual(busy.out, ['отменено'])
+test('run/dev: invalid ports and host names fail before launcher or prompts', async () => {
+  for (const argv of [
+    ['run', '--port', '0'], ['run', '--port', '65536'], ['dev', '--port', '3.5'], ['dev', '--port', ''],
+    ['run', '--host', 'https://hse.colloq.ru'], ['run', '--host', ''], ['run', '--direct'],
+  ]) {
+    const result = await run(argv, { tty: true, answer: 'y' })
+    assert.equal(result.code, 2, argv.join(' '))
+    assert.deepEqual(result.calls, [])
+    assert.deepEqual(result.asked, [])
+  }
+})
 
-  const forced = await run(['run', '--yes'], { tty: true, ...ALIVE })
-  assert.deepEqual(forced.asked, [])
-  assert.deepEqual(spawned(forced), [['make', 'run']])
+test('stop/restart: new receipt selects supervisor without legacy probing', async () => {
+  for (const command of ['stop', 'restart']) {
+    const result = await run([command, '--dry-run'], SESSION)
+    assert.deepEqual(result.out, [LAUNCH + ' ' + command])
+    assert.deepEqual(result.calls, [])
+    const live = await run([command, '--yes'], SESSION)
+    assert.deepEqual(spawned(live), [['node', '--import', 'tsx', '/repo/cli/src/launch.ts', command]])
+  }
+  assert.deepEqual((await run(['restart', '--build', '--fast', '--dry-run'], SESSION)).out,
+    [LAUNCH + ' restart --build --fast'])
 })
 
 test('stop: вопрос каркаса, «нет» — код 4, --yes снимает', async () => {
@@ -260,8 +287,9 @@ test('logs --server без .colloq.log — отказ 3 и подсказка', 
 
 // ------------------------------------------------------------ сборка и проверки
 
-test('dev, check, shell: по одной цели make', async () => {
-  assert.deepEqual((await run(['dev', '--dry-run'])).out, ['make dev'])
+test('dev uses the supervisor; check and shell retain their make targets', async () => {
+  assert.deepEqual((await run(['dev', '--dry-run'])).out, [LAUNCH + ' dev'])
+  assert.deepEqual((await run(['dev', '--port', '4100', '--no-open', '--dry-run'])).out, [LAUNCH + ' dev --port 4100 --no-open'])
   assert.deepEqual((await run(['check', '--dry-run'])).out, ['make check'])
   assert.deepEqual((await run(['shell', '--dry-run'])).out, ['make shell'])
 })
@@ -327,7 +355,7 @@ test('test: шаблон ни во что не попал — отказ 1, ка
 
 test('link: адрес печатается, токен — никогда', async () => {
   assert.deepEqual((await run(['link', '--dry-run'])).out, [
-    'native: link (читает PUBLIC_URL и RELAY_DOMAIN из .env)',
+    'native: link (читает расписку сессии, временный адрес и .env)',
   ])
 
   const outside = await run(['link'], {
@@ -345,6 +373,27 @@ test('link: адрес печатается, токен — никогда', asy
   })
   assert.match(inside.out.join('\n'), /наружу не выставлен/)
   assert.match(inside.out.join('\n'), /colloq host/)
+})
+
+test('link: local receipt wins over .env and only its current lease is public', async () => {
+  const receipt = JSON.stringify({ pid: 4242, runId: 'session-1', url: 'http://localhost:4100', leaseFile: '/repo/.colloq/public-url.json' })
+  const base = { '/repo/.env': 'PUBLIC_URL=https://old.example.org', '/repo/.colloq/local-session.json': receipt }
+  for (const [lease, expected] of [
+    [{ runId: 'session-1', owner: 'tunnel', url: 'https://hse.colloq.ru', expiresAt: 1_700_000_010_000 }, 'https://hse.colloq.ru'],
+    [{ runId: 'other-session', owner: 'tunnel', url: 'https://wrong.example.org', expiresAt: 1_700_000_010_000 }, 'наружу не выставлен'],
+    [{ runId: 'session-1', owner: 'tunnel', url: 'https://expired.example.org', expiresAt: 1_700_000_000_000 }, 'наружу не выставлен'],
+    [{ runId: 'session-1', owner: 'tunnel', url: 'https://secret@bad.example.org', expiresAt: 1_700_000_010_000 }, 'наружу не выставлен'],
+  ] as const) {
+    const result = await run(['link'], { files: { ...base, '/repo/.colloq/public-url.json': JSON.stringify(lease) }, capture: ALIVE.capture })
+    assert.equal(result.code, 0)
+    const text = result.out.join('\n')
+    assert.ok(text.includes(expected), text)
+    assert.match(text, /http:\/\/localhost:4100/)
+    assert.doesNotMatch(text, /old\.example|wrong\.example|expired\.example|secret@/)
+    assert.deepEqual(spawned(result), [])
+  }
+  const dead = await run(['link'], { files: { ...base, '/repo/.colloq/public-url.json': JSON.stringify({runId:'session-1', owner:'tunnel', url:'https://hse.colloq.ru', expiresAt:1_700_000_010_000}) } })
+  assert.doesNotMatch(dead.out.join('\n'), /https:\/\/hse\.colloq\.ru|old\.example/)
 })
 
 test('docker-gid: спрашивает, пока строки в .env нет', async () => {

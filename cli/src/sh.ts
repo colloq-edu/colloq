@@ -145,11 +145,14 @@ export function createSh(opts: ShOptions): Sh {
         }
         const onInt = forward('SIGINT')
         const onTerm = forward('SIGTERM')
+        const onHangup = forward('SIGHUP')
         process.on('SIGINT', onInt)
         process.on('SIGTERM', onTerm)
+        process.on('SIGHUP', onHangup)
         const done = (code: number) => {
           process.off('SIGINT', onInt)
           process.off('SIGTERM', onTerm)
+          process.off('SIGHUP', onHangup)
           resolve(code)
         }
         child.on('error', () => done(127))

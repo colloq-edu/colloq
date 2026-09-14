@@ -399,6 +399,7 @@ app.get('/api/health', (_req, res) => {
          * ждут, а потому, что спросить было некого.
          */
         publicUrl: config.publicUrl,
+        localRunId: process.env.COLLOQ_LOCAL_SESSION === '1' ? process.env.COLLOQ_LOCAL_RUN_ID ?? null : null,
       })
     })()
   })

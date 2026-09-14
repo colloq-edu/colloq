@@ -34,6 +34,10 @@ import { cancelled, PreconditionError, SYMBOL, UsageError } from '../ui.js'
 /** Имя в DNS: латиница, цифры, точки и дефисы — на него выпишут сертификат. */
 const NAME = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/
 
+export function hostNameOk(host: string): boolean {
+  return NAME.test(host)
+}
+
 /** Адрес IPv4: A-запись другого не принимает. */
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
 
@@ -103,7 +107,7 @@ function hostProblem(ctx: Ctx, direct: boolean): Problem | null {
       fix: 'colloq host hse.colloq.ru --direct',
     }
   }
-  if (host && !NAME.test(host)) {
+  if (host && !hostNameOk(host)) {
     return {
       what: 'имя ' + host + ' не годится',
       why: 'в имени бывают только латиница, цифры, точки и дефисы',
@@ -289,7 +293,7 @@ export const commands: Command[] = [
     examples: ['colloq host hse.colloq.ru', 'colloq host hse.colloq.ru --direct'],
     notes:
       'Семинар уже должен работать: host.sh публикует, но не разворачивает — молчит /api/health, и он умрёт с инструкцией. ' +
-      'Окно держать открытым: туннель и есть этот процесс, Ctrl+C закрывает его и возвращает PUBLIC_URL на localhost. ' +
+      'Окно держать открытым: туннель и есть этот процесс, Ctrl+C закрывает только туннель. У локальной сессии временный адрес снимается без перезапуска сервера и без изменения .env. ' +
       'Имя под RELAY_DOMAIN идёт на ретранслятор, любое другое — молча в Cloudflare, а он из России не открывается. ' +
       'Короткое имя достраивает до RELAY_DOMAIN только ретранслятор, и решает это host.sh. ' +
       'Прямому режиму нужны Linux, systemd, root и белый адрес — на macOS скрипт откажет сам.',

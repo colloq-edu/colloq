@@ -121,29 +121,49 @@ says what was done. Manual Stop remains available. Changes apply to the next req
 
 ## Start locally
 
-For a workstation with **Docker, Docker Compose and Make**, run this from a clone
-of the repository:
+Use **Node.js 22, npm, Docker, Docker Compose and Make**. From a clone:
 
 ```bash
-make up
+npm ci
+./colloq
 ```
 
-This builds the app and kernel image, creates `.env` if needed, and starts Colloq
-at **http://localhost:3000**. Actual room containers are created on demand.
+Colloq prepares missing or changed builds, starts in this terminal and opens
+`http://localhost:3000/admin`. Logs stay visible. Re-running the command reports
+the existing instance without restarting it. `--no-open` suppresses browser
+opening; `--port 4000` selects another local port.
 
-1. Open `/admin` and claim the instance using the setup token from `data/setup-token` or the initial server log (`make logs`).
+On macOS, add `COLLOQ_UNSAFE_DEV_FILES=1` to `.env` for trusted native development.
+The first launch creates `.env` from the example if needed. To keep the app
+inside Linux Docker instead, use the existing `make up` workflow.
+
+1. Claim the instance in `/admin` using `data/setup-token` or the initial server log.
 2. Create a class and choose its teaching preset and Python environment.
-3. For students on other machines, run `make host` to publish an HTTPS address, then copy the class link from the room.
+3. To invite others, run `./colloq host seminar.colloq.ru` in another terminal,
+   or launch everything with `./colloq run --host seminar.colloq.ru`.
 
-`make host` uses a temporary Cloudflare tunnel by default. Named tunnels, your
-own relay, and direct hosting are also available; see [public access](#give-the-room-an-address).
-The staff sign-in link printed by the hosting command is separate from the
-student class link.
+```bash
+./colloq run --host seminar.colloq.ru  # application and tunnel in one terminal
+./colloq run --detach                 # explicitly run in the background
+./colloq stop                         # stop the local session
+./colloq dev                          # server watcher + Vite
+./colloq menu                         # administration command menu
+```
 
-Local Docker mode uses a container per room and grants the development app
-access to Docker. It is intended for trusted workstation development. Production
-uses the private broker described below. Both paths keep notebooks and uploaded
-files across app restarts; restarting a kernel loses its Python variables.
+Ctrl+C saves the notebook and stops this local instance's application and
+Python kernels. Files, outputs and the database remain; Python variables do not.
+Development reloads preserve kernels until the development session ends.
+Background runs use `.colloq.log`; inspect it with `./colloq logs`.
+
+A separate `host` command owns only its tunnel: stopping it leaves the local
+session running. Tunnel failure also preserves local work. Local publication
+uses an expiring address and leaves `.env` unchanged. Named tunnels, your own
+relay and dedicated-server hosting remain available; see
+[public access](#give-the-room-an-address). Staff sign-in links and student class
+links serve different purposes.
+
+Local kernels use Docker containers and are intended for trusted workstation
+use. Production uses the private broker described below.
 
 **An environment is a file.** `kernel/environments/<name>.txt` is a pip
 requirements list, and three header lines are directives rather than comments:
@@ -169,9 +189,9 @@ turn the built frontend into a development bundle.
 
 | Command | Use |
 | --- | --- |
-| `npm run dev` | Active development with Vite hot reload. |
-| `make run` | Build and run locally, with precompressed frontend assets. |
-| `make run FAST=1` | Skip precompression; for the edit-build loop only, since the server then compresses every asset on every request. |
+| `./colloq dev` / `npm run dev` | Supervised server watcher and Vite hot reload; kernels survive reloads. |
+| `./colloq run` | Foreground local session; reuse the optimized build until inputs change. |
+| `./colloq run --fast` | Skip precompression for the edit-build loop; use the default for a class. |
 | `npm run build:optimized` | Build all artifacts without starting or restarting the server. |
 
 Precompression adds Brotli quality 11 and gzip level 9 files alongside
@@ -288,9 +308,9 @@ availability, and PVC capacity is not an enforced per-room disk quota. Review th
 
 ## CLI
 
-`./colloq` wraps these Make targets: it knows their arguments, asks before
-anything destructive, and prints the exact call under `--dry-run`. Nothing to
-install — run `./colloq` for a grouped menu, or `./colloq help` for the list.
+`./colloq` starts a local session. Administrative commands retain the Make
+targets, argument validation, confirmations and `--dry-run`. Run `./colloq menu`
+for the grouped menu, or `./colloq help` for the list.
 See [cli/README.md](cli/README.md).
 
 ## Development
@@ -300,25 +320,24 @@ outside Docker:
 
 ```bash
 npm ci
-make dev
-NODE_ENV=development KERNEL_BACKEND=docker npm run dev
+./colloq dev
 ```
 
 The server listens on `:3000`; Vite serves the development UI on `:5173` and
-proxies API/WebSocket traffic to the server. `make dev` builds the room kernel
-image; there is no shared Jupyter service.
+proxies API/WebSocket traffic to the server. `colloq dev` prepares the room kernel
+image when needed; there is no shared Jupyter service.
 
 Native macOS development additionally requires the deliberate filesystem opt-in:
 
 ```bash
-COLLOQ_UNSAFE_DEV_FILES=1 NODE_ENV=development KERNEL_BACKEND=docker npm run dev
+COLLOQ_UNSAFE_DEV_FILES=1 ./colloq dev
 ```
 
 This mode is for trusted local development. Linux production requires secure
 filesystem access through `/proc/self/fd` and refuses to start without it.
 Leave `WORKSPACE_HOST_DIR` unset when running the app directly on the host.
 
-For a built frontend and a background server, use `make run`. On macOS, first
+For an explicitly background session, use `./colloq run --detach`. On macOS, first
 add `COLLOQ_UNSAFE_DEV_FILES=1` to your local `.env`; this also persists the opt-in
 across restarts. Use `make up` to run the server in Linux Docker instead.
 

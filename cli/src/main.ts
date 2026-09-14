@@ -230,17 +230,13 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       return 0
     }
 
-    // Без аргументов: терминал — меню, иначе help и код 2.
+    // Без аргументов запускается локальная сессия; меню вызывается явно.
     if (tokens.length === 0) {
       if (globals.help) {
         renderHelp(ui, commands, env.kernelEnv())
         return 0
       }
-      if (!tty) {
-        renderHelp(ui, commands, env.kernelEnv())
-        return 2
-      }
-      return await menu(ctx, commands, (next) => dispatch(next))
+      return await dispatch(['run'])
     }
 
     return await dispatch(tokens)
@@ -268,6 +264,20 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
   async function dispatch(input: string[]): Promise<number> {
     const head = input.filter((token) => !token.startsWith('-'))
     const first = head[0] ?? ''
+
+    if (first === 'menu' || (first === 'help' && head[1] === 'menu')) {
+      if (globals.help || first === 'help') {
+        ui.line('Употребление: colloq menu')
+        ui.line('Интерактивное меню команд по группам; нужен терминал.')
+        return 0
+      }
+      if (input.length !== 1 || globals.json) {
+        throw new UsageError('у меню нет аргументов или --json', 'colloq menu')
+      }
+      if (globals.dryRun) return sh.dry('native: menu')
+      if (!tty) throw new PreconditionError('для меню нужен терминал', 'colloq help — список команд')
+      return await menu(ctx, commands, (next) => dispatch(next))
+    }
 
     if (first === 'help') {
       const wanted = head[1]
@@ -580,7 +590,7 @@ export function renderHelp(
     }
     ui.line()
   }
-  ui.line(ui.dim('Чаще всего: colloq run · colloq host <имя> · colloq status'))
+  ui.line(ui.dim('Чаще всего: colloq · colloq run --host <имя> · colloq dev · colloq menu'))
   ui.line(ui.dim('Везде: --dry-run — показать и не делать · --yes — не спрашивать'))
   ui.line(ui.dim('Переменные make пишутся парами: colloq backup MODE=consistent'))
   ui.line(ui.dim('Окружение ядра сейчас: ' + kernelEnv))

@@ -6,7 +6,7 @@
 # его в ссылку, которую вы копируете и раздаёте. Если оставить localhost, ссылка
 # будет открываться только у вас, а вся аудитория получит «сайт недоступен» —
 # и это выяснится ровно в тот момент, когда тридцать человек уже сидят в классе.
-# Поэтому внешний адрес узнаётся первым, а приложение перезапускается уже с ним.
+# Временный адрес публикуется без перезапуска приложения.
 #
 # Транспортов четыре:
 #
@@ -67,7 +67,7 @@ RELAY_TOKEN="$(read_env RELAY_TOKEN)"
 # есть ли у машины белый адрес. Спросить об этом можно только явно, поэтому у
 # прямого режима есть свой выключатель: COLLOQ_DIRECT=1 (make host-direct HOST=…).
 VIA="cloudflare"
-if [ "${COLLOQ_DIRECT:-}" = "1" ]; then
+if [ "${COLLOQ_DIRECT:-}" = "1" ] && [ "${COLLOQ_LOCAL_SESSION:-}" != 1 ]; then
   VIA="direct"
 elif [ -n "${COLLOQ_HOSTNAME:-}" ] && [ -n "$RELAY_DOMAIN" ] \
    && [ "${COLLOQ_HOSTNAME%".$RELAY_DOMAIN"}" != "$COLLOQ_HOSTNAME" ]; then
@@ -126,11 +126,30 @@ case "$VIA" in
 esac
 
 # PORT нужен до старта туннеля: на него cloudflared и будет светить.
-PORT="$(grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ' || true)"
+PORT="${PORT:-$(read_env PORT)}"
 PORT="${PORT:-3000}"
 CLUSTER="${COLLOQ_CLUSTER:-$(read_env COLLOQ_CLUSTER)}"
+if [ "${COLLOQ_LOCAL_SESSION:-}" = 1 ]; then CLUSTER=0; fi
 if [ "$CLUSTER" = 1 ]; then PORT=30080; fi
 LOCAL="http://127.0.0.1:${PORT}"
+TUNNEL_PORT="$PORT"
+LOCAL_RUN_ID=""
+LEASE_FILE=""
+LEASE_OWNER=""
+LEASE_PID=""
+if [ "$CLUSTER" != 1 ] && [ "$VIA" != direct ] && { [ "${COLLOQ_LOCAL_SESSION:-}" = 1 ] || [ -f .colloq/local-session.json ]; }; then
+  if DISCOVERY="$(node --import tsx scripts/public-url-lease.mts discover .colloq/local-session.json)"; then
+    IFS=$'\t' read -r LOCAL_RUN_ID LEASE_FILE LOCAL PORT DATA_DIR TUNNEL_PORT <<< "$DISCOVERY"
+  else
+    discovery_code=$?
+    [ "$discovery_code" = 2 ] || die "Не удалось проверить локальную сессию."
+  fi
+fi
+HEALTH_LOCAL="http://127.0.0.1:${PORT}"
+# Only the local origin sees this rewrite; the public Host still routes at the relay.
+# Vite retains its Host protection instead of accepting every external hostname.
+ORIGIN_ARGS=()
+if [ -n "$LOCAL_RUN_ID" ]; then ORIGIN_ARGS=(--http-host-header "127.0.0.1:${TUNNEL_PORT}"); fi
 
 # Шаблон с иксами, а не просто имя: BSD mktemp дописывает случайный хвост
 # сам, а GNU требует «XXXXXX» в шаблоне и без них падает с «too few X's».
@@ -154,6 +173,11 @@ step() { STEP=$((STEP + 1)); say "${BOLD}${STEP}/${STEPS}${OFF} $*"; }
 
 cleanup() {
   local code=$?
+  trap - EXIT INT TERM
+  [ -n "$LEASE_PID" ] && kill "$LEASE_PID" 2>/dev/null || true
+  if [ -n "$LEASE_OWNER" ]; then
+    node --import tsx scripts/public-url-lease.mts release "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" || true
+  fi
   [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null || true
   # Слушатель занимает ровно те порты, которые нужны caddy. Не убрать его —
   # значит уронить выдачу сертификата, причём молча.
@@ -328,7 +352,7 @@ step "проверяю colloq на ${LOCAL}"
 # поэтому «не отвечает» здесь значит и «никого нет», и «есть, но семинар вести
 # нельзя» — второе curl -sf тоже считает отказом, и правильно делает.
 #
-if curl -sf -o /dev/null --max-time 5 "$LOCAL/api/health" 2>/dev/null; then
+if curl -sf -o /dev/null --max-time 5 "$HEALTH_LOCAL/api/health" 2>/dev/null; then
   say "${DIM}    уже работает — ничего не трогаю${OFF}"
 elif [ "$CLUSTER" = 1 ]; then
   die "k3s application is not ready at $LOCAL. Inspect: bash scripts/cluster.sh status; bash scripts/cluster.sh logs"
@@ -386,7 +410,9 @@ fi
 # розданный со ссылкой на localhost, — это семинар, на который никто не зашёл.
 PIDFILE="${PIDFILE:-.colloq.pid}"
 WHO="other"
-if [ "$CLUSTER" = 1 ]; then
+if [ -n "$LOCAL_RUN_ID" ]; then
+  WHO="local"
+elif [ "$CLUSTER" = 1 ]; then
   WHO="cluster"
 elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; then
   WHO="service"
@@ -973,9 +999,12 @@ transport.poolCount = 5
 name = "${SUB}"
 type = "http"
 localIP = "127.0.0.1"
-localPort = ${PORT}
+localPort = ${TUNNEL_PORT}
 subdomain = "${SUB}"
 CONF
+  if [ -n "$LOCAL_RUN_ID" ]; then
+    printf 'hostHeaderRewrite = "127.0.0.1:%s"\n' "$TUNNEL_PORT" >> "$CONF"
+  fi
   chmod 600 "$CONF"
   frpc -c "$CONF" >"$LOG" 2>&1 &
   TUNNEL_PID=$!
@@ -1026,12 +1055,12 @@ elif [ -n "${COLLOQ_HOSTNAME:-}" ]; then
   # выяснялось это уже в аудитории, где ссылка не открылась ни у кого.
   say "${DIM}    через Cloudflare. Свой ретранслятор (адреса Cloudflare не${OFF}"
   say "${DIM}    открываются из России) — RELAY_* в .env, см. make relay-setup${OFF}"
-  cloudflared tunnel --no-autoupdate run --url "$LOCAL" colloq >"$LOG" 2>&1 &
+  cloudflared tunnel --no-autoupdate run --url "$LOCAL" "${ORIGIN_ARGS[@]}" colloq >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC="https://${COLLOQ_HOSTNAME}"
 else
   step "открываю быстрый туннель Cloudflare"
-  cloudflared tunnel --no-autoupdate --url "$LOCAL" >"$LOG" 2>&1 &
+  cloudflared tunnel --no-autoupdate --url "$LOCAL" "${ORIGIN_ARGS[@]}" >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC=""
   # Адрес приходит не сразу и не первой строкой — cloudflared сначала пишет
@@ -1045,10 +1074,18 @@ else
   [ -n "$PUBLIC" ] || { cat "$LOG" >&2; die "не дождался адреса туннеля за минуту."; }
 fi
 
-step "перезапускаю приложение с внешним адресом"
-set_public_url "$PUBLIC"
-TOUCHED_ENV=1
+step "публикую внешний адрес"
+if [ "$WHO" != local ]; then
+  set_public_url "$PUBLIC"
+  TOUCHED_ENV=1
+fi
 case "$WHO" in
+  local)
+    LEASE_OWNER="${LOCAL_RUN_ID}:$$:${RANDOM}"
+    node --import tsx scripts/public-url-lease.mts acquire "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" "$PUBLIC" "$HEALTH_LOCAL"
+    node --import tsx scripts/public-url-lease.mts watch "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" "$TUNNEL_PID" "$$" "$HEALTH_LOCAL" &
+    LEASE_PID=$!
+    ;;
   cluster)
     bash scripts/cluster.sh public-url "$PUBLIC"
     ;;
@@ -1103,25 +1140,15 @@ case "$WHO" in
     PUBLIC_URL="$PUBLIC" docker compose up -d app >/dev/null
     ;;
   host)
-    # Ровно то же, что делает `make run`, только с новым адресом: .env уже
-    # переписан выше, поэтому достаточно поднять процесс заново.
-    #
-    # И без `set -a; . ./.env`, которое стояло здесь раньше. Это не чтение
-    # файла, а исполнение его оболочкой: `INSTITUTION=Высшая школа экономики`
-    # (форма из .env.example и README) для bash — команда `школа` с префиксным
-    # присваиванием, то есть rc=127. Под `set -euo pipefail` подоболочка
-    # умирала молча — уже ПОСЛЕ того, как строкой выше убит старый сервер:
-    # преподаватель перед парой оставался без сервера вовсе. Сервер читает
-    # .env сам (dotenv, server/src/config.ts) и значения с пробелами берёт
-    # правильно.
-    kill "$(cat "$PIDFILE")" 2>/dev/null || true
-    sleep 1
-    ( STATIC_DIR="$PWD/web/dist" nohup node server/dist/server.js >> .colloq.log 2>&1 &
-      echo $! > "$PIDFILE" )
-    sleep 2
-    kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null \
-      || { tail -20 .colloq.log >&2; die "сервер не поднялся с новым адресом."; }
-    say "${DIM}    сервер на хосте перезапущен с ${PUBLIC}${OFF}"
+    # Native servers reread .env on each cache refresh, just like the service.
+    # The tunnel owns no application PID and must never restart it.
+    ok=""
+    for _ in $(seq 1 20); do
+      said="$(curl -s --max-time 2 "$LOCAL/api/health" 2>/dev/null || true)"
+      if printf '%s' "$said" | grep -qF "\"publicUrl\":\"${PUBLIC%/}\""; then ok=1; break; fi
+      sleep 1
+    done
+    [ -n "$ok" ] || die "Сервер не перечитал внешний адрес; локальная работа продолжается."
     ;;
   *)
     # Молча пройти мимо нельзя: аудитория получит localhost, то есть ничего.

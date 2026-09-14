@@ -6,7 +6,7 @@
 #   make host              поднять семинар и получить ссылку для аудитории
 #   make env-use NAME=cv   окружение Python для новых семинаров
 #
-# То же самое с меню, подсказками и --dry-run: ./colloq (см. cli/README.md).
+# Локальная сессия в терминале: ./colloq; меню: ./colloq menu (см. cli/README.md).
 #
 # Всё считается на этой машине. Наружу её выводит `make host` — туннелем,
 # исходящим соединением, так что ни белого IP, ни проброса портов на роутере
@@ -728,13 +728,13 @@ help: ## Показать этот список
 	@printf '$(DIM)Разработка в Docker: make up$(OFF)\n'
 	@printf '$(DIM)Управление k3s: make cluster-status · cluster-logs · cluster-stop$(OFF)\n'
 	@printf '$(DIM)Окружение ядра сейчас: $(BOLD)$(CURRENT_ENV)$(OFF)\n'
-	@printf '$(DIM)Обёртка с меню и подсказками: ./colloq (без аргументов — меню)$(OFF)\n'
+	@printf '$(DIM)Локальная сессия: ./colloq · меню: ./colloq menu$(OFF)\n'
 
 # Обёртка: ./colloq. Сама зовёт эти же цели, но знает, какие у них аргументы,
 # и умеет спрашивать. .PHONY тут не формальность: рядом лежит каталог cli/, и
 # без него make говорил бы «cli is up to date» и не делал ничего.
 .PHONY: cli
-cli: ## Обёртка над этими целями: ./colloq (без аргументов — меню)
+cli: ## Локальная сессия ./colloq; меню: make cli ARGS=menu
 	@./colloq $(ARGS)
 
 .PHONY: install update rollback cluster-start cluster-stop cluster-status cluster-logs backup backup-legacy restore-legacy release-validate

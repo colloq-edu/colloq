@@ -11,6 +11,7 @@ test('SIGINT sent to the CLI reaches its delegated process before the wrapper ex
   const root = fileURLToPath(new URL('..', import.meta.url))
   const fixture = mkdtempSync(join(tmpdir(), 'colloq-signal-'))
   cpSync(join(root, 'cli'), join(fixture, 'cli'), { recursive: true })
+  cpSync(join(root, 'shared'), join(fixture, 'shared'), { recursive: true })
   writeFileSync(join(fixture, 'package.json'), '{"name":"colloq","type":"module"}')
   writeFileSync(join(fixture, 'Makefile'), 'hold:\n')
   mkdirSync(join(fixture, 'bin'))

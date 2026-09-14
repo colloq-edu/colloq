@@ -14,7 +14,7 @@
     "yjs": "^13.6.21"
   },
   "scripts": {
-    "dev": "npm run dev -w @colloq/server & npm run dev -w @colloq/web",
+    "dev": "node --import tsx cli/src/launch.ts dev",
     "dev:server": "npm run dev -w @colloq/server",
     "dev:web": "npm run dev -w @colloq/web",
     "build": "npm run build -w @colloq/web && npm run build -w @colloq/server && npm run build -w @colloq/runtime",

@@ -393,15 +393,30 @@ test('--json есть только там, где объявлен', async () =>
   assert.equal(no.code, 2)
 })
 
-test('без аргументов и без терминала — help и код 2', async () => {
-  const result = await run([], { commands: fakeCommands() })
-  assert.equal(result.code, 2)
-  assert.match(result.out.join('\n'), /Локально/)
-  assert.match(result.out.join('\n'), /Окружение ядра сейчас: cv/)
+test('bare invocation launches run in either terminal mode; help stays read-only', async () => {
+  for (const tty of [false, true]) {
+    const result = await run([], { tty })
+    assert.equal(result.code, 0)
+    assert.deepEqual(result.asked, [])
+    assert.deepEqual(result.calls, [['node', '--import', 'tsx', '/repo/cli/src/launch.ts', 'run']])
+  }
+  const help = await run(['--help'])
+  assert.equal(help.code, 0)
+  assert.deepEqual(help.calls, [])
+  assert.match(help.out.join('\n'), /colloq menu/)
+})
+
+test('explicit menu requires terminal, supports help and rejects extra arguments', async () => {
+  assert.equal((await run(['menu'])).code, 3)
+  const help = await run(['menu', '--help'])
+  assert.equal(help.code, 0)
+  assert.deepEqual(help.calls, [])
+  assert.match(help.out.join('\n'), /colloq menu/)
+  assert.equal((await run(['menu', 'run'], { tty: true })).code, 2)
 })
 
 test('меню: пять групп, сквозная нумерация, цифра ведёт в команду', async () => {
-  const result = await run([], { commands: fakeCommands(), tty: true, answer: '1' })
+  const result = await run(['menu'], { commands: fakeCommands(), tty: true, answer: '1' })
   assert.equal(result.code, 0)
   const text = result.out.join('\n')
   assert.match(text, /Локально/)
@@ -417,7 +432,7 @@ test('меню: пять групп, сквозная нумерация, циф
 
 test('меню спрашивает только обязательный аргумент и принимает его позицией', async () => {
   const commands = fakeCommands().filter((command) => command.name === 'vast up')
-  const result = await run([], { commands, tty: true, answers: ['1', 'hse'] })
+  const result = await run(['menu'], { commands, tty: true, answers: ['1', 'hse'] })
   assert.equal(result.code, 0)
   assert.match(result.asked.at(-1) ?? '', /имя\?/)
   assert.deepEqual(
@@ -446,7 +461,7 @@ test('меню: умолчание подставляется имени, а н�
       return 0
     },
   }
-  const dns = await run([], {
+  const dns = await run(['menu'], {
     commands: [point],
     tty: true,
     answers: ['1', 'hse', ''],
@@ -472,7 +487,7 @@ test('меню: умолчание подставляется имени, а н�
       return 0
     },
   }
-  const env = await run([], { commands: [build], tty: true, answers: ['1', ''], files: state })
+  const env = await run(['menu'], { commands: [build], tty: true, answers: ['1', ''], files: state })
   // Окружение ядра и среда vast — разные миры: умолчание берётся из .env.
   assert.match(env.asked[1] ?? '', /имя\? \[cv\]/)
   assert.equal((env.asked[1] ?? '').includes('hse'), false)

@@ -26,6 +26,8 @@ import type { Command, Ctx } from '../registry.js'
 import { cancelled, heading as head, UsageError } from '../ui.js'
 import { envNameOk } from '../env.js'
 import { quote } from '../sh.js'
+import { hostNameOk } from './host.js'
+import { leaseUrl } from '../../../shared/local-public-url-lease.js'
 
 /** Свой вопрос: «нет» — это DIM «отменено» и код 4. --yes и --dry-run отвечают «да». */
 async function ask(ctx: Ctx, question: string): Promise<boolean> {
@@ -101,48 +103,106 @@ async function logSource(ctx: Ctx): Promise<'server' | 'docker' | 'service'> {
   return ctx.io.exists(ctx.env.paths.logFile) ? 'server' : 'docker'
 }
 
+/** Receipt ownership and process validation remain inside the supervisor. */
+function localSession(ctx: Ctx): boolean {
+  return ctx.io.exists(ctx.env.path('.colloq/local-session.json'))
+}
+
+async function sessionAddress(
+  ctx: Ctx,
+): Promise<{ local: string; public: string | undefined } | undefined> {
+  try {
+    const receipt: unknown = JSON.parse(
+      ctx.io.readText(ctx.env.path('.colloq/local-session.json')) ?? 'null',
+    )
+    if (!receipt || typeof receipt !== 'object') return undefined
+    const data = receipt as Record<string, unknown>
+    if (typeof data.pid !== 'number' || !Number.isSafeInteger(data.pid) || data.pid < 1 ||
+        typeof data.runId !== 'string' || typeof data.url !== 'string') return undefined
+    const local = new URL(data.url)
+    if (local.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(local.hostname) ||
+        local.username || local.password || local.search || local.hash || local.pathname !== '/') return undefined
+    const alive = await ctx.sh.capture('kill', ['-0', String(data.pid)], { timeoutMs: 4000 })
+    const publicUrl = alive.code === 0 && typeof data.leaseFile === 'string'
+      ? leaseUrl(ctx.io.readText(data.leaseFile), data.runId, ctx.io.now()) : undefined
+    return { local: data.url, public: publicUrl }
+  } catch {
+    return undefined
+  }
+}
+
+function checkLaunch(ctx: Ctx): void {
+  const port = value(ctx, 'port', 'PORT')
+  if ((ctx.values.port !== undefined && port === undefined) ||
+      (port !== undefined && (!/^[0-9]+$/.test(port) || Number(port) < 1 || Number(port) > 65535))) {
+    throw new UsageError('порт должен быть целым числом от 1 до 65535', 'colloq run --port 3000')
+  }
+  const host = value(ctx, 'host', 'HOST')
+  if ((ctx.values.host !== undefined && host === undefined) || (host !== undefined && !hostNameOk(host))) {
+    throw new UsageError('имя туннеля не годится', 'colloq run --host hse.colloq.ru')
+  }
+}
+
+async function launch(ctx: Ctx, command: 'run' | 'dev' | 'stop' | 'restart'): Promise<number> {
+  const args = ['--import', 'tsx', ctx.env.path('cli/src/launch.ts'), command]
+  if (command === 'run') {
+    const host = value(ctx, 'host', 'HOST')
+    if (host) args.push('--host', host)
+    if (on(ctx, 'detach', 'DETACH')) args.push('--detach')
+  }
+  if (command === 'run' || command === 'dev') {
+    const port = value(ctx, 'port', 'PORT')
+    if (port) args.push('--port', port)
+    if (ctx.values['no-open'] === true || ctx.makeVars.OPEN === '0') args.push('--no-open')
+  }
+  if (command === 'restart' && ctx.values.build === true) args.push('--build')
+  if (command !== 'stop' && on(ctx, 'fast', 'FAST')) args.push('--fast')
+  const consumed = new Set(['HOST', 'DETACH', 'PORT', 'OPEN', 'FAST'])
+  const env = Object.fromEntries(Object.entries(ctx.makeVars).filter(([key]) => !consumed.has(key)))
+  return await ctx.sh.run('node', args, Object.keys(env).length ? { env } : {})
+}
+
 export const commands: Command[] = [
   {
     name: 'run',
     aliases: ['start'],
     group: 'local',
-    summary: 'Собрать и запустить сервер на этой машине',
-    usage: 'colloq run [--fast]',
+    summary: 'Запустить локальную сессию в терминале и открыть браузер',
+    usage: 'colloq run [--host <имя>] [--detach] [--port <порт>] [--no-open] [--fast]',
     flags: [
-      { name: 'fast', summary: 'Не сжимать фронтенд заранее (FAST=1), только для правки кода' },
+      { name: 'host', arg: 'имя', summary: 'Опубликовать сессию через принадлежащий ей туннель (HOST=…)' },
+      { name: 'detach', summary: 'Оставить сессию в фоне (DETACH=1)' },
+      { name: 'port', arg: 'порт', summary: 'Порт локального сервера (PORT=…)' },
+      { name: 'no-open', summary: 'Не открывать браузер (OPEN=0)' },
+      { name: 'fast', summary: 'Собирать без предварительного сжатия фронтенда (FAST=1)' },
     ],
-    destructive: true,
-    confirm: 'cli',
-    confirmWhen: (ctx) => ctx.serverAlive(),
-    confirmQuestion: 'перезапустить сервер?',
-    delegates: 'make run [FAST=1]',
-    examples: ['colloq run', 'colloq run --fast'],
+    destructive: false,
+    check: checkLaunch,
+    delegates: 'node --import tsx cli/src/launch.ts run',
+    examples: ['colloq', 'colloq run --host hse.colloq.ru'],
     notes:
-      'make run начинается с make stop и снимает сервер, чей pid записан в .colloq.pid, — поэтому вопрос. Живой app в docker и любого чужого слушателя порта рецепт ловит сам и говорит точнее: его отказ идёт наружу как есть. Сжатие по умолчанию не зря: без .br рядом с assets/ сервер сжимает каждый файл на каждый запрос. .env рецепт не сорсит нарочно — сервер читает его сам, и переменная из оболочки теперь сильнее строки в .env, кроме PUBLIC_URL.',
+      'Без аргументов colloq делает то же, что run. Журналы остаются в терминале; Ctrl+C завершает сессию, её туннель и ядра этой базы, сохраняя файлы и данные. Занятый сервер не перезапускается. --detach оставляет сессию в фоне; colloq stop завершает её. Для прежнего меню есть colloq menu.',
     async run(ctx) {
-      head(ctx, 'собираю и запускаю сервер')
-      return await ctx.sh.make(
-        'run',
-        mine(ctx, { FAST: on(ctx, 'fast', 'FAST') ? '1' : undefined }),
-      )
+      head(ctx, 'запускаю локальную сессию')
+      return await launch(ctx, 'run')
     },
   },
   {
     name: 'stop',
     group: 'local',
-    summary: 'Остановить сервер, поднятый через run (ядро в docker остаётся)',
+    summary: 'Завершить локальную сессию, её туннель и ядра этой базы',
     usage: 'colloq stop',
     flags: [],
     destructive: true,
     confirm: 'cli',
     confirmQuestion: 'остановить сервер?',
-    delegates: 'make stop',
+    delegates: 'node --import tsx cli/src/launch.ts stop; без расписки сессии — make stop',
     examples: ['colloq stop', 'colloq stop --yes'],
     notes:
-      'Убивается только pid из .colloq.pid. Про чужие серверные процессы make stop скажет вслух и посоветует pkill — CLI проводит этот текст как есть и не выполняет его: убийство по шаблону уже сносило живой :3000.',
+      'Для .colloq/local-session.json супервизор завершает принадлежащие ему процессы и ядра своей базы. Файлы и база сохраняются. Без новой расписки используется прежний make stop.',
     async run(ctx) {
       head(ctx, 'останавливаю сервер')
-      return await ctx.sh.make('stop')
+      return localSession(ctx) ? await launch(ctx, 'stop') : await ctx.sh.make('stop')
     },
   },
   {
@@ -157,11 +217,15 @@ export const commands: Command[] = [
     destructive: true,
     confirm: 'self',
     delegates:
-      'native: контейнер → make restart · служба → make service-restart · хост → make stop, make run',
+      'сессия → супервизор restart; контейнер → make restart · служба → make service-restart · хост → make stop, make run',
     examples: ['colloq restart', 'colloq restart --build'],
     notes:
-      'Форма определяется тем же порядком, что в scripts/host.sh: COLLOQ_CLUSTER=1 → кластер, служба, контейнер app, живая расписка .colloq.pid. Порядок менять нельзя: pid-файл говорит о прошлом. Голый docker compose restart не зовём никогда — он перезапускает и kernel, а это Python-состояние всех комнат. Кластер сюда не ходит: colloq cluster stop · colloq cluster start.',
+      'Новая расписка сессии направляет к супервизору. Для прежних запусков форма определяется тем же порядком, что в scripts/host.sh: COLLOQ_CLUSTER=1 → кластер, служба, контейнер app, живая расписка .colloq.pid. Порядок менять нельзя: pid-файл говорит о прошлом. Голый docker compose restart не зовём никогда — он перезапускает и kernel, а это Python-состояние всех комнат. Кластер сюда не ходит: colloq cluster stop · colloq cluster start.',
     async run(ctx) {
+      if (localSession(ctx)) {
+        if (!ctx.dryRun && !(await ask(ctx, 'перезапустить локальную сессию?'))) return 4
+        return await launch(ctx, 'restart')
+      }
       const form = await ctx.form()
       if (form === 'cluster') {
         ctx.ui.refuse(
@@ -334,17 +398,21 @@ export const commands: Command[] = [
   {
     name: 'dev',
     group: 'local',
-    summary: 'Собрать образ ядра для разработки и сказать, что запускать дальше',
-    usage: 'colloq dev',
-    flags: [],
+    summary: 'Запустить сервер с перезагрузкой и Vite в одной сессии',
+    usage: 'colloq dev [--port <порт>] [--no-open]',
+    flags: [
+      { name: 'port', arg: 'порт', summary: 'Порт браузера и Vite (PORT=… в аргументах)' },
+      { name: 'no-open', summary: 'Не открывать браузер (OPEN=0)' },
+    ],
     destructive: false,
-    delegates: 'make dev',
-    examples: ['colloq dev', 'colloq dev --dry-run'],
+    check: checkLaunch,
+    delegates: 'node --import tsx cli/src/launch.ts dev',
+    examples: ['colloq dev', 'colloq dev --port 4000 --no-open'],
     notes:
-      'Собирается только ядро и только с dev-override: он публикует 8888 и монтирует ./workspace, иначе сервер с хоста ядра не видит и файлы расходятся по двум папкам. Сервер make dev не запускает: он печатает строку NODE_ENV=development KERNEL_BACKEND=docker npm run dev, и выполнить её за человека CLI не берётся.',
+      'Сервер с наблюдением за исходниками и Vite работают до Ctrl+C. Перезагрузки сервера сохраняют ядра комнат; окончание сессии завершает ядра этой базы. Файлы и база сохраняются.',
     async run(ctx) {
-      head(ctx, 'собираю образ ядра для разработки')
-      return await ctx.sh.make('dev')
+      head(ctx, 'запускаю сервер и Vite для разработки')
+      return await launch(ctx, 'dev')
     },
   },
   {
@@ -482,15 +550,16 @@ export const commands: Command[] = [
     usage: 'colloq link',
     flags: [],
     destructive: false,
-    delegates: 'native: читает PUBLIC_URL и RELAY_DOMAIN из .env',
+    delegates: 'native: читает расписку сессии, временный адрес и .env',
     examples: ['colloq link', 'colloq link --dry-run'],
     notes:
       'Токен установки не печатается никогда — ни из data/setup-token, ни из журнала: ссылка /admin/t/<токен> это ключ ко всему инстансу.',
     async run(ctx) {
       if (ctx.dryRun) {
-        return ctx.sh.dry('native: link (читает PUBLIC_URL и RELAY_DOMAIN из .env)')
+        return ctx.sh.dry('native: link (читает расписку сессии, временный адрес и .env)')
       }
-      if (!ctx.io.exists(ctx.env.paths.envFile)) {
+      const session = await sessionAddress(ctx)
+      if (!session && !ctx.io.exists(ctx.env.paths.envFile)) {
         ctx.ui.refuse(
           'нет .env',
           'адрес семинара берётся оттуда',
@@ -498,10 +567,11 @@ export const commands: Command[] = [
         )
         return 3
       }
-      const url = ctx.env.publicUrl()
+      const url = session ? session.public ?? session.local : ctx.env.publicUrl()
       const inside =
-        url === '' || /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)([:/]|$)/.test(url)
+        (session !== undefined && session.public === undefined) || url === '' || /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)([:/]|$)/.test(url)
       ctx.ui.header('Семинар')
+      if (session) ctx.ui.kv('локально', session.local)
       if (inside) {
         ctx.ui.kv('адрес', 'наружу не выставлен', url === '' ? undefined : url)
         ctx.ui.hint('colloq host <имя> — выставить наружу и получить ссылку для аудитории')
