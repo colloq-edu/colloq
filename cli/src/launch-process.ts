@@ -64,7 +64,7 @@ export class Processes {
   }
   async run(name: string, command: string, args: string[]): Promise<void> {
     const code = await this.start(name, command, args).done
-    if (code !== 0) throw new Error(`${name}: процесс завершился с кодом ${code}.`)
+    if (code !== 0) throw new Error(`${name}: the process exited with code ${code}.`)
   }
   signal(item: ManagedProcess, signal: NodeJS.Signals): void {
     if (item.settled || !item.child.pid) return

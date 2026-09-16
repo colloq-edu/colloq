@@ -44,7 +44,7 @@ RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; CYAN=$'\033[36m'; OFF=$'\033[0
 say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
-command -v docker >/dev/null 2>&1 || die "docker не установлен."
+command -v docker >/dev/null 2>&1 || die "docker is not installed."
 
 # Настройки ретранслятора живут в .env рядом со всем остальным. Пусто — значит
 # этот инстанс им не пользуется, и остаётся Cloudflare.
@@ -52,6 +52,36 @@ command -v docker >/dev/null 2>&1 || die "docker не установлен."
 # read_env общий для всех скриптов — scripts/lib.sh. Своя копия была в трёх
 # файлах и во всех трёх вырезала пробелы внутри значений.
 . ./scripts/lib.sh
+
+# Состояние — не там, где приложение. Каталог над scripts/ — это приложение
+# (web/dist, kernel/, эти скрипты), а .env, расписка занятия и .colloq.pid
+# лежат в каталоге СОСТОЯНИЯ: он и есть COLLOQ_STATE_ROOT из lib.sh. В
+# репозитории это один и тот же каталог, у поставленного пакета — разные, и
+# все пути ниже считаются от состояния, а не от «себя».
+SESSION_RECEIPT="$COLLOQ_STATE_ROOT/.colloq/local-session.json"
+PIDFILE="${PIDFILE:-$COLLOQ_STATE_ROOT/.colloq.pid}"
+
+# Чем звать расписку внешнего адреса (scripts/public-url-lease.mts).
+#
+# В репозитории — исходником через tsx: его правят рядом с сервером, и сборка
+# между правкой и проверкой ни к чему. В дистрибутиве нет ни исходника, ни
+# tsx: `node --import tsx` падает там ещё до первой строки («Cannot find
+# package 'tsx'»), а вместе с ним падал и весь скрипт — локальная сессия
+# оставалась без адреса на ровном месте. Поэтому scripts/pack.mts кладёт рядом
+# с cli/launch.mjs собранный cli/public-url-lease.mjs, и если он на месте,
+# зовём голый node. Та же развилка и по той же причине стоит в CLI —
+# cli/src/commands/local.ts · launcher.
+#
+# Массивом, а не функцией: сторож адреса запускается в фон, и в $! должен
+# оказаться номер самого node. У функции там был бы номер подоболочки, а
+# cleanup убивал бы её, оставляя сторожа сиротой — он ещё три секунды продлевал
+# бы аренду адреса, который мы только что отдали.
+if [ -f cli/public-url-lease.mjs ]; then
+  LEASE=(node cli/public-url-lease.mjs)
+else
+  LEASE=(node --import tsx scripts/public-url-lease.mts)
+fi
+
 RELAY_DOMAIN="$(read_env RELAY_DOMAIN)"
 RELAY_ADDR="$(read_env RELAY_ADDR)"
 RELAY_PORT="$(read_env RELAY_PORT)"; RELAY_PORT="${RELAY_PORT:-7000}"
@@ -77,9 +107,9 @@ fi
 case "$VIA" in
   relay)
     command -v frpc >/dev/null 2>&1 || die \
-      "frpc не установлен. brew install frpc — и запустите снова."
-    [ -n "$RELAY_ADDR" ]  || die "в .env нет RELAY_ADDR — адреса ретранслятора."
-    [ -n "$RELAY_TOKEN" ] || die "в .env нет RELAY_TOKEN — общего секрета ретранслятора."
+      "frpc is not installed. brew install frpc — then run this again."
+    [ -n "$RELAY_ADDR" ]  || die "no RELAY_ADDR in .env — the address of the relay."
+    [ -n "$RELAY_TOKEN" ] || die "no RELAY_TOKEN in .env — the shared secret of the relay."
     ;;
   direct)
     # Всё, что нужно проверить до первого действия. Отказ здесь дешёвый:
@@ -90,38 +120,39 @@ case "$VIA" in
     # у быстрого туннеля имя выдаёт Cloudflare, а здесь имя — это то, на что
     # выпишут сертификат, и придумать его за человека нельзя.
     [ -n "${COLLOQ_HOSTNAME:-}" ] || die \
-      "прямому режиму нужно имя: make host-direct HOST=hse.colloq.ru"
+      "direct mode needs a name: make host-direct HOST=hse.colloq.ru"
     case "$COLLOQ_HOSTNAME" in
       *.*) : ;;
-      *) die "имя должно быть полным, с точкой: make host-direct HOST=hse.colloq.ru
-  Короткое имя достраивает до RELAY_DOMAIN только ретранслятор." ;;
+      *) die "the name must be a full one, with a dot: make host-direct HOST=hse.colloq.ru
+  Only the relay completes a short name up to RELAY_DOMAIN." ;;
     esac
     printf '%s' "$COLLOQ_HOSTNAME" | grep -qE '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' || die \
-      "в имени ${COLLOQ_HOSTNAME} есть что-то кроме латиницы, цифр, точек и дефисов."
+      "the name ${COLLOQ_HOSTNAME} has something other than a-z, digits, dots and hyphens."
 
     # systemd — не придирка. Прямой режим оставляет после себя службу caddy,
     # которая живёт дольше этого окна; без systemd оставить её было бы негде,
     # и семинар умирал бы вместе с закрытым терминалом, ничего об этом не сказав.
     # На ноутбуке (macOS) это и не нужно: у него нет белого адреса, ему туннель.
     command -v systemctl >/dev/null 2>&1 || die \
-      "прямой режим — для машины с systemd и белым адресом (Linux-сервер).
-  Здесь systemd нет: с ноутбука семинар выставляют туннелем — make host HOST=<имя>."
+      "direct mode is for a machine with systemd and a public address (a Linux server).
+  There is no systemd here: from a laptop a class goes out through a tunnel —
+  make host HOST=<name>."
 
     # 80 и 443 — привилегированные порты, и службу в systemd тоже ставят от root.
     [ "$(id -u)" = "0" ] || die \
-      "прямой режим ставит службу caddy и занимает 80 и 443 — нужен root.
-  Повторите: sudo make host-direct HOST=${COLLOQ_HOSTNAME}"
+      "direct mode installs the caddy service and takes 80 and 443 — root is needed.
+  Try again: sudo make host-direct HOST=${COLLOQ_HOSTNAME}"
 
     # python3 нужен и здесь (проверка портов), и в scripts/dns.sh, который
     # пишет запись.
     command -v python3 >/dev/null 2>&1 || die \
-      "нет python3 — им проверяются порты и пишется запись DNS (scripts/dns.sh)."
-    command -v curl >/dev/null 2>&1 || die "нет curl."
-    [ -x ./scripts/dns.sh ] || die "нет scripts/dns.sh — им ставится A-запись имени."
+      "no python3 — it is what checks the ports and writes the DNS record (scripts/dns.sh)."
+    command -v curl >/dev/null 2>&1 || die "no curl."
+    [ -x ./scripts/dns.sh ] || die "no scripts/dns.sh — it is what sets the A record for the name."
     ;;
   *)
     command -v cloudflared >/dev/null 2>&1 || die \
-      "cloudflared не установлен. brew install cloudflared — и запустите снова."
+      "cloudflared is not installed. brew install cloudflared — then run this again."
     ;;
 esac
 
@@ -137,12 +168,12 @@ LOCAL_RUN_ID=""
 LEASE_FILE=""
 LEASE_OWNER=""
 LEASE_PID=""
-if [ "$CLUSTER" != 1 ] && [ "$VIA" != direct ] && { [ "${COLLOQ_LOCAL_SESSION:-}" = 1 ] || [ -f .colloq/local-session.json ]; }; then
-  if DISCOVERY="$(node --import tsx scripts/public-url-lease.mts discover .colloq/local-session.json)"; then
+if [ "$CLUSTER" != 1 ] && [ "$VIA" != direct ] && { [ "${COLLOQ_LOCAL_SESSION:-}" = 1 ] || [ -f "$SESSION_RECEIPT" ]; }; then
+  if DISCOVERY="$("${LEASE[@]}" discover "$SESSION_RECEIPT")"; then
     IFS=$'\t' read -r LOCAL_RUN_ID LEASE_FILE LOCAL PORT DATA_DIR TUNNEL_PORT <<< "$DISCOVERY"
   else
     discovery_code=$?
-    [ "$discovery_code" = 2 ] || die "Не удалось проверить локальную сессию."
+    [ "$discovery_code" = 2 ] || die "Could not check the local session."
   fi
 fi
 HEALTH_LOCAL="http://127.0.0.1:${PORT}"
@@ -176,7 +207,7 @@ cleanup() {
   trap - EXIT INT TERM
   [ -n "$LEASE_PID" ] && kill "$LEASE_PID" 2>/dev/null || true
   if [ -n "$LEASE_OWNER" ]; then
-    node --import tsx scripts/public-url-lease.mts release "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" || true
+    "${LEASE[@]}" release "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" || true
   fi
   [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null || true
   # Слушатель занимает ровно те порты, которые нужны caddy. Не убрать его —
@@ -194,7 +225,7 @@ cleanup() {
   # Только если её ставили мы: отказ на первом шаге — «докера нет», «инстанс
   # нездоров» — не повод переписывать чужую настройку, к которой мы ещё не
   # прикасались.
-  if [ "${WHO:-}" != cluster ] && [ -n "$TOUCHED_ENV" ] && [ -f .env ] && grep -qE '^PUBLIC_URL=https://' .env 2>/dev/null; then
+  if [ "${WHO:-}" != cluster ] && [ -n "$TOUCHED_ENV" ] && [ -f "$ENV_FILE" ] && grep -qE '^PUBLIC_URL=https://' "$ENV_FILE" 2>/dev/null; then
     restore_public_url
     # Вернуть строку в .env мало тому, кто читает её один раз, при запуске.
     #
@@ -214,7 +245,7 @@ cleanup() {
     case "${WHO:-}" in
       container) PUBLIC_URL="$LOCAL" docker compose up -d app >/dev/null 2>&1 || true ;;
     esac
-    say "${DIM}PUBLIC_URL возвращён на ${LOCAL}${OFF}"
+    say "${DIM}PUBLIC_URL is back at ${LOCAL}${OFF}"
   fi
   rm -f "$LOG"
   exit $code
@@ -225,10 +256,10 @@ trap cleanup EXIT INT TERM
 set_public_url() {
   local url="$1" tmp
   tmp="$(mktemp)"
-  if grep -qE '^PUBLIC_URL=' .env 2>/dev/null; then
-    grep -vE '^PUBLIC_URL=' .env > "$tmp"
+  if grep -qE '^PUBLIC_URL=' "$ENV_FILE" 2>/dev/null; then
+    grep -vE '^PUBLIC_URL=' "$ENV_FILE" > "$tmp"
   else
-    cat .env > "$tmp" 2>/dev/null || true
+    cat "$ENV_FILE" > "$tmp" 2>/dev/null || true
   fi
   printf 'PUBLIC_URL=%s\n' "$url" >> "$tmp"
   # Содержимое переливается в существующий .env, а не `mv` поверх него.
@@ -237,7 +268,7 @@ set_public_url() {
   # и следующий `make run` от преподавателя не смог бы его ни переписать, ни
   # прочитать. Файл при этом всё равно готовится целиком заранее — на месте
   # он не редактируется ни секунды.
-  cat "$tmp" > .env
+  cat "$tmp" > "$ENV_FILE"
   rm -f "$tmp"
 }
 restore_public_url() { set_public_url "$LOCAL"; }
@@ -322,24 +353,24 @@ upload_assets() {
   if [ "$code" = "200" ]; then
     files="$(sed -n 's/.*"files":[ ]*\([0-9]*\).*/\1/p' "$answer")"
     bytes="$(sed -n 's/.*"bytes":[ ]*\([0-9]*\).*/\1/p' "$answer")"
-    say "${DIM}    зеркало на ретрансляторе: ${files:-?} файлов, $(( ${bytes:-0} / 1024 )) КБ —${OFF}"
-    say "${DIM}    статику студенты возьмут у него, а не через этот ноутбук${OFF}"
+    say "${DIM}    mirror on the relay: ${files:-?} files, $(( ${bytes:-0} / 1024 )) KB —${OFF}"
+    say "${DIM}    students take the static files from it, not through this laptop${OFF}"
   elif [ "$code" = "404" ] || [ "$code" = "000" ]; then
-    say "${DIM}    зеркала статики на ретрансляторе нет: он поставлен до того, как${OFF}"
-    say "${DIM}    оно появилось. Обновить: make relay-setup WHERE=root@<адрес>${OFF}"
-    say "${DIM}    Пара пойдёт и так — вся статика будет ехать через этот ноутбук.${OFF}"
+    say "${DIM}    the relay has no static mirror: it was installed before the mirror${OFF}"
+    say "${DIM}    appeared. Update it: make relay-setup WHERE=root@<address>${OFF}"
+    say "${DIM}    The class runs anyway — every static file goes through this laptop.${OFF}"
   else
-    say "${RED}    статику на ретранслятор выложить не вышло (HTTP ${code})${OFF}"
+    say "${RED}    could not upload the static files to the relay (HTTP ${code})${OFF}"
     head -c 200 "$answer" >&2 2>/dev/null || true
     printf '\n' >&2
-    say "${DIM}    Не страшно: файлы поедут через туннель, как раньше.${OFF}"
+    say "${DIM}    Not fatal: the files go through the tunnel, as before.${OFF}"
   fi
   rm -f "$archive" "$answer"
 }
 
 # ---------------------------------------------------------------- запуск
 
-step "проверяю colloq на ${LOCAL}"
+step "checking colloq at ${LOCAL}"
 #
 # Ничего не поднимаем, если оно уже поднято. Это не бережливость, а исправление:
 # `docker compose up -d` пересоздаёт и ядро тоже — по основному compose-файлу,
@@ -353,11 +384,11 @@ step "проверяю colloq на ${LOCAL}"
 # нельзя» — второе curl -sf тоже считает отказом, и правильно делает.
 #
 if curl -sf -o /dev/null --max-time 5 "$HEALTH_LOCAL/api/health" 2>/dev/null; then
-  say "${DIM}    уже работает — ничего не трогаю${OFF}"
+  say "${DIM}    already running — touching nothing${OFF}"
 elif [ "$CLUSTER" = 1 ]; then
   die "k3s application is not ready at $LOCAL. Inspect: bash scripts/cluster.sh status; bash scripts/cluster.sh logs"
 elif { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; } \
-     || { [ -f "${PIDFILE:-.colloq.pid}" ] && kill -0 "$(cat "${PIDFILE:-.colloq.pid}" 2>/dev/null)" 2>/dev/null; }; then
+     || { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }; then
   #
   # Сервер на хосте жив — службой или руками, — но здоровым себя не считает.
   # Почти всегда это выключенный Docker или ни разу не собранное окружение
@@ -365,9 +396,10 @@ elif { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet collo
   # порту окажется второй Colloq с другой базой поверх первого. Это и был
   # «третий переход»: три разных инстанса за одно утро.
   #
-  die "colloq на ${LOCAL} работает, но не готов вести семинар — обычно это выключенный
-  Docker или несобранное окружение ядра (make env-build NAME=<окружение>).
-  Проверьте: curl -s ${LOCAL}/api/health"
+  die "colloq at ${LOCAL} is running, but is not ready to hold a class — usually that
+  is Docker switched off or a kernel environment that was never built
+  (make env-build NAME=<environment>).
+  Check: curl -s ${LOCAL}/api/health"
 else
   #
   # Ничего не поднимаем сами — и это исправление, купленное дорого.
@@ -383,9 +415,20 @@ else
   # Туннель — это про то, чтобы показать наружу уже работающий инстанс. Решать
   # за человека, какой из двух способов запуска ему нужен, он не должен.
   #
-  say "${RED}    на ${LOCAL} никто не отвечает${OFF}"
-  die "сначала поднимите colloq — «make up» (всё в docker), «make run» (сервер на хосте)
-  или «make service-install» (выделенная машина: служба systemd), — потом повторите."
+  say "${RED}    nobody answers at ${LOCAL}${OFF}"
+  # Совет обязан быть выполнимым на той машине, где его прочитали.
+  #
+  # Здесь стояло «make up / make run / make service-install» — три цели Makefile,
+  # которого у поставленного через pip colloq нет вовсе. А срабатывает эта
+  # строка именно на `colloq host`: на команде, которой класс получает ссылку.
+  # Человек читал совет, набирал make и получал «command not found» вторым
+  # отказом подряд. Цели остаются — но только там, где есть Makefile, и это
+  # видно по тому же признаку, по которому скрипт уже выбирает каталоги.
+  if [ "${COLLOQ_STATE_ROOT}" = "." ] || [ -f "$PWD/Makefile" ]; then
+    die "start the class first — colloq start (or make up for everything in
+  docker, make service-install on a dedicated machine), then try again."
+  fi
+  die "start the class first — colloq start — then try again."
 fi
 
 # Кто именно держит порт. Случаев четыре, и все четыре настоящие:
@@ -408,7 +451,6 @@ fi
 #
 # Различать обязательно: ссылки на семинары строятся из PUBLIC_URL, и семинар,
 # розданный со ссылкой на localhost, — это семинар, на который никто не зашёл.
-PIDFILE="${PIDFILE:-.colloq.pid}"
 WHO="other"
 if [ -n "$LOCAL_RUN_ID" ]; then
   WHO="local"
@@ -627,7 +669,7 @@ else:
 # ---------------------------------------------------------- шаг: порты
 
 direct_check_ports() {
-  step "проверяю, что 80 и 443 на этой машине видны снаружи"
+  step "checking that 80 and 443 on this machine are visible from outside"
   #
   # Это самая важная проверка прямого режима, и поэтому она первая — до записи
   # в DNS и до установки caddy.
@@ -647,23 +689,23 @@ direct_check_ports() {
   # нём не поместятся. Сказать это здесь дешевле, чем сломать уже работающий
   # инстанс перезапуском caddy, который всё равно не встанет.
   case "$PORT" in
-    80|443) die "colloq слушает ${PORT} — а прямому режиму нужен именно этот порт под caddy.
-  Переставьте инстанс на другой порт (PORT в .env, потом make run/service-restart)
-  и повторите." ;;
+    80|443) die "colloq listens on ${PORT} — and direct mode needs exactly that port for caddy.
+  Move the instance to another port (PORT in .env, then make run/service-restart)
+  and try again." ;;
   esac
 
   DIRECT_IP="${COLLOQ_PUBLIC_IP:-$(public_ip || true)}"
   [ -n "$DIRECT_IP" ] || die \
-    "не смог узнать публичный адрес этой машины: ни одна из служб не ответила.
-  Назовите его сами: COLLOQ_PUBLIC_IP=<адрес> make host-direct HOST=${COLLOQ_HOSTNAME}"
-  say "${DIM}    снаружи эта машина выглядит как ${DIRECT_IP}${OFF}"
+    "could not find out this machine's public address: none of the services answered.
+  Name it yourself: COLLOQ_PUBLIC_IP=<address> make host-direct HOST=${COLLOQ_HOSTNAME}"
+  say "${DIM}    from outside this machine looks like ${DIRECT_IP}${OFF}"
 
   local on_iface=""
   if ip_is_local "$DIRECT_IP"; then
     on_iface=1
   else
-    say "${DIM}    (на интерфейсе его нет — это NAT: у облачной машины так и${OFF}"
-    say "${DIM}    должно быть, у машины за пробросом портов — беда)${OFF}"
+    say "${DIM}    (it is not on an interface — this is NAT: on a cloud machine that${OFF}"
+    say "${DIM}    is how it should be, behind port forwarding it is trouble)${OFF}"
   fi
 
   # caddy, уже занявший порты с прошлого запуска, — это не «занято», а «мы же
@@ -672,18 +714,18 @@ direct_check_ports() {
   local held_by_caddy=""
   if systemctl is-active --quiet caddy 2>/dev/null; then
     held_by_caddy=1
-    say "${DIM}    caddy уже работает — проверяю прямо через него${OFF}"
+    say "${DIM}    caddy is already running — checking straight through it${OFF}"
   elif ! listener_start; then
     tail -3 "$LISTEN_LOG" 2>/dev/null | sed 's/^/    /' >&2 || true
     if grep -q 'Address already in use' "$LISTEN_LOG" 2>/dev/null; then
       # Кто именно держит порт — это ответ, а «занято» — только половина.
       command -v ss >/dev/null 2>&1 && \
         ss -lntp 2>/dev/null | awk 'NR==1 || /:(80|443) /' >&2 || true
-      die "80 или 443 на этой машине уже заняты — а прямому режиму нужны именно они.
-  Остановите чужой веб-сервер (nginx, apache) или выставляйте семинар туннелем:
+      die "80 or 443 on this machine are already taken — and direct mode needs exactly them.
+  Stop the other web server (nginx, apache) or publish the class through a tunnel:
   make host HOST=${COLLOQ_HOSTNAME}"
     fi
-    die "не смог занять 80 и 443 на этой машине — см. ошибку выше."
+    die "could not take 80 and 443 on this machine — see the error above."
   fi
 
   local verdict closed="" unknown="" foreign=""
@@ -704,32 +746,32 @@ direct_check_ports() {
     esac
   fi
   case "$verdict" in
-    open)    say "${DIM}    80 — снаружи открыт, и отвечает на нём эта машина${OFF}" ;;
-    foreign) say "${RED}    80 — открыт, но отвечает на нём НЕ эта машина${OFF}"; foreign=1 ;;
-    closed)  say "${RED}    80 — снаружи закрыт${OFF}"; closed="${closed} 80" ;;
-    *)       say "${DIM}    80 — спросить снаружи не удалось${OFF}"; unknown="${unknown} 80" ;;
+    open)    say "${DIM}    80 — open from outside, and this machine is what answers${OFF}" ;;
+    foreign) say "${RED}    80 — open, but it is NOT this machine that answers${OFF}"; foreign=1 ;;
+    closed)  say "${RED}    80 — closed from outside${OFF}"; closed="${closed} 80" ;;
+    *)       say "${DIM}    80 — could not ask from outside${OFF}"; unknown="${unknown} 80" ;;
   esac
 
   # 443 — только связность: TLS наш временный слушатель не умеет, и ничего
   # умнее «соединение состоялось» про этот порт заранее не узнать.
   case "$(ask_outside "$DIRECT_IP" 443)" in
-    open)   say "${DIM}    443 — снаружи открыт${OFF}" ;;
-    closed) say "${RED}    443 — снаружи закрыт${OFF}"; closed="${closed} 443" ;;
-    *)      say "${DIM}    443 — спросить снаружи не удалось${OFF}"; unknown="${unknown} 443" ;;
+    open)   say "${DIM}    443 — open from outside${OFF}" ;;
+    closed) say "${RED}    443 — closed from outside${OFF}"; closed="${closed} 443" ;;
+    *)      say "${DIM}    443 — could not ask from outside${OFF}"; unknown="${unknown} 443" ;;
   esac
   [ -n "$held_by_caddy" ] || listener_stop
 
   # Чужая машина на нашем «публичном» адресе — отдельный отказ, и обойти его
   # флагом нельзя: тут не сомнение проверки, а прямой ответ, что адрес не наш.
   if [ -n "$foreign" ]; then
-    die "адрес ${DIRECT_IP} снаружи отвечает, но отвечает не эта машина.
-  Так выглядит VPN или прокси: наружу трафик выходит через чужую коробку, её
-  адрес мы и приняли за свой. Направить на него имя семинара — значит увести
-  аудиторию к ней, а сертификата не дождаться вовсе.
+    die "the address ${DIRECT_IP} answers from outside, but it is not this machine.
+  That is what a VPN or a proxy looks like: traffic leaves through someone else's
+  box, and we took its address for ours. Pointing a class name at it means sending
+  the room to that box, and the certificate never arrives at all.
 
-  Если публичный адрес у машины всё-таки есть, назовите его прямо:
-    COLLOQ_PUBLIC_IP=<адрес> make host-direct HOST=${COLLOQ_HOSTNAME}
-  Если нет — это случай для туннеля:  make host HOST=${COLLOQ_HOSTNAME}"
+  If the machine does have a public address, name it directly:
+    COLLOQ_PUBLIC_IP=<address> make host-direct HOST=${COLLOQ_HOSTNAME}
+  If it does not — this is a case for a tunnel:  make host HOST=${COLLOQ_HOSTNAME}"
   fi
 
   # Отказ должен называть причину и давать выход, а не просто «нельзя».
@@ -740,37 +782,37 @@ direct_check_ports() {
   # тогда за человеком — но он должен сказать это вслух, а не узнать, что
   # скрипт молча пошёл дальше.
   if [ -n "$closed" ] && [ "${COLLOQ_DIRECT_FORCE:-}" = "1" ]; then
-    say "${RED}    порты${closed} снаружи закрыты, но COLLOQ_DIRECT_FORCE=1 — иду дальше${OFF}"
-    say "${DIM}    Если проверка права, сертификата не будет: journalctl -u caddy -f${OFF}"
+    say "${RED}    ports${closed} are closed from outside, but COLLOQ_DIRECT_FORCE=1 — going on${OFF}"
+    say "${DIM}    If the check is right, there will be no certificate: journalctl -u caddy -f${OFF}"
     closed=""
   fi
   if [ -n "$closed" ]; then
-    die "порты${closed} на ${DIRECT_IP} снаружи закрыты — прямой режим на этой машине невозможен.
-  Так бывает у фаервола провайдера, у домашнего роутера без проброса и всегда
-  на арендованной машине vast.ai: там наружу открыт только проброшенный ssh,
-  а 80 и 443 не выдаются вовсе.
+    die "ports${closed} on ${DIRECT_IP} are closed from outside — direct mode is impossible here.
+  That is how it is behind a provider firewall, behind a home router without
+  forwarding and always on a rented vast.ai machine: only the forwarded ssh is
+  open there, and 80 and 443 are not handed out at all.
 
-  Выставляйте семинар туннелем — он идёт исходящим соединением, и открытых
-  портов ему не нужно:  make host HOST=${COLLOQ_HOSTNAME}
+  Publish the class through a tunnel — it goes out as an outbound connection and
+  needs no open ports:  make host HOST=${COLLOQ_HOSTNAME}
 
-  Если знаете точно, что порты открыты, а проверка врёт: COLLOQ_DIRECT_FORCE=1"
+  If you know for certain the ports are open and the check is lying: COLLOQ_DIRECT_FORCE=1"
   fi
 
   if [ -n "$unknown" ]; then
     # Спросить снаружи не вышло — это не приговор портам, это молчание
     # проверяющей службы. Но и «всё хорошо» сказать нельзя.
     if [ -n "$on_iface" ]; then
-      say "${DIM}    проверяющая служба не ответила; адрес принадлежит этой машине,${OFF}"
-      say "${DIM}    порты свободны — иду дальше. Если 80 и 443 всё же закрыты,${OFF}"
-      say "${DIM}    caddy не получит сертификат: journalctl -u caddy -f${OFF}"
+      say "${DIM}    the checking service did not answer; the address belongs to this${OFF}"
+      say "${DIM}    machine, the ports are free — going on. If 80 and 443 are closed${OFF}"
+      say "${DIM}    after all, caddy gets no certificate: journalctl -u caddy -f${OFF}"
     elif [ "${COLLOQ_DIRECT_FORCE:-}" != "1" ]; then
-      die "спросить снаружи не удалось, а адрес ${DIRECT_IP} не принадлежит этой машине.
-  Это NAT, и он бывает двух видов: у облачной машины один к одному — тогда всё
-  в порядке; у проброса портов — тогда 80 и 443 закрыты, и сертификата не будет.
-  Отличить их отсюда нечем.
+      die "could not ask from outside, and the address ${DIRECT_IP} does not belong to this machine.
+  This is NAT, and it comes in two kinds: one to one on a cloud machine — then all
+  is well; port forwarding — then 80 and 443 are closed and there will be no
+  certificate. Nothing here can tell them apart.
 
-  Туннель работает в обоих случаях:  make host HOST=${COLLOQ_HOSTNAME}
-  Уверены, что порты открыты:        COLLOQ_DIRECT_FORCE=1 make host-direct HOST=${COLLOQ_HOSTNAME}"
+  A tunnel works in both cases:  make host HOST=${COLLOQ_HOSTNAME}
+  Certain the ports are open:    COLLOQ_DIRECT_FORCE=1 make host-direct HOST=${COLLOQ_HOSTNAME}"
     fi
   fi
 }
@@ -778,7 +820,7 @@ direct_check_ports() {
 # ------------------------------------------------------------- шаг: имя
 
 direct_point_dns() {
-  step "направляю ${COLLOQ_HOSTNAME} на ${DIRECT_IP}"
+  step "pointing ${COLLOQ_HOSTNAME} at ${DIRECT_IP}"
   #
   # Запись пишет scripts/dns.sh — тот же код, что приводит в порядок всю зону.
   # Своей копии здесь нет намеренно: правило «удалить лишнее, создать
@@ -792,9 +834,9 @@ direct_point_dns() {
   # самого, от которого уходили.
   #
   ./scripts/dns.sh point "$COLLOQ_HOSTNAME" "$DIRECT_IP" || die \
-    "не удалось поставить A-запись ${COLLOQ_HOSTNAME} → ${DIRECT_IP}.
-  Нужны CF_TOKEN (Zone:Read + DNS:Edit) и, если токену не видно список зон,
-  CF_ZONE в .env."
+    "could not set the A record ${COLLOQ_HOSTNAME} → ${DIRECT_IP}.
+  CF_TOKEN (Zone:Read + DNS:Edit) is needed, and CF_ZONE in .env if the token
+  cannot list the zones."
 
   # Ждём, пока имя начнёт разрешаться в наш адрес. Это не педантизм: пока
   # публичные резолверы отдают старое, Let's Encrypt придёт по HTTP-01 на
@@ -806,19 +848,19 @@ direct_point_dns() {
     sleep 2
   done
   if [ -n "$seen" ]; then
-    say "${DIM}    имя уже разрешается в ${DIRECT_IP}${OFF}"
+    say "${DIM}    the name already resolves to ${DIRECT_IP}${OFF}"
   else
     # Не отказ: TTL записи 300 секунд, и старый ответ может ещё лежать в
     # кэшах. caddy повторит попытку сам, поэтому идём дальше, но вслух.
-    say "${DIM}    имя пока разрешается не сюда — записи 300 секунд TTL.${OFF}"
-    say "${DIM}    Сертификат может задержаться на эти пять минут.${OFF}"
+    say "${DIM}    the name does not resolve here yet — the record has a 300 second TTL.${OFF}"
+    say "${DIM}    The certificate may be late by those five minutes.${OFF}"
   fi
 }
 
 # ----------------------------------------------------------- шаг: caddy
 
 direct_caddy() {
-  step "поднимаю caddy на этой машине"
+  step "starting caddy on this machine"
   #
   # Приём тот же, что у ретранслятора (scripts/relay-setup.sh): один собранный
   # бинарник вместо репозитория с ключом. Модули здесь не нужны — сертификат
@@ -829,12 +871,12 @@ direct_caddy() {
     case "$(uname -m)" in
       x86_64|amd64) arch=amd64 ;;
       aarch64|arm64) arch=arm64 ;;
-      *) die "не знаю, какой caddy брать для $(uname -m) — поставьте его сами и повторите." ;;
+      *) die "I do not know which caddy to take for $(uname -m) — install it yourself and try again." ;;
     esac
-    say "${DIM}    ставлю caddy (${arch})${OFF}"
+    say "${DIM}    installing caddy (${arch})${OFF}"
     curl -fsSL -o /usr/local/bin/caddy \
       "https://caddyserver.com/api/download?os=linux&arch=${arch}" \
-      || die "не смог скачать caddy."
+      || die "could not download caddy."
     chmod +x /usr/local/bin/caddy
   fi
   caddy_bin="$(command -v caddy)"
@@ -844,10 +886,10 @@ direct_caddy() {
   # что-то обслуживает, переписать Caddyfile значило бы молча выключить чей-то
   # сайт — и узнал бы об этом его владелец, а не мы.
   if [ -f /etc/caddy/Caddyfile ] && ! grep -q '^# colloq:' /etc/caddy/Caddyfile; then
-    die "на этой машине уже есть свой /etc/caddy/Caddyfile — переписывать его я не буду.
-  Допишите в него сайт руками:
+    die "this machine already has a /etc/caddy/Caddyfile of its own — I will not overwrite it.
+  Add the site to it by hand:
     ${COLLOQ_HOSTNAME} { reverse_proxy 127.0.0.1:${PORT} }
-  и перезапустите caddy."
+  and restart caddy."
   fi
 
   id -u caddy >/dev/null 2>&1 || \
@@ -884,12 +926,12 @@ CONF
   local report
   if ! report="$("$caddy_bin" validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1)"; then
     printf '%s\n' "$report" >&2
-    die "caddy не принял конфиг — см. ошибку выше."
+    die "caddy did not accept the config — see the error above."
   fi
 
   cat > /etc/systemd/system/caddy.service <<UNIT
 [Unit]
-Description=Caddy for colloq (прямой режим)
+Description=Caddy for colloq (direct mode)
 After=network-online.target
 Wants=network-online.target
 
@@ -921,14 +963,14 @@ UNIT
   # то есть на прошлом имени семинара.
   systemctl restart caddy || {
     journalctl -u caddy -n 20 --no-pager 2>/dev/null >&2 || true
-    die "caddy не запустился."
+    die "caddy did not start."
   }
   sleep 2
   systemctl is-active --quiet caddy || {
     journalctl -u caddy -n 20 --no-pager 2>/dev/null >&2 || true
-    die "caddy запустился и тут же лёг — журнал выше."
+    die "caddy started and fell over at once — the log is above."
   }
-  say "${DIM}    caddy держит 443 и отдаёт запросы на ${LOCAL}${OFF}"
+  say "${DIM}    caddy holds 443 and passes requests to ${LOCAL}${OFF}"
 }
 
 direct_publish() {
@@ -952,11 +994,11 @@ direct_publish() {
 # аудиторию ровно так.
 UNCOMPRESSED="$(assets_uncompressed)"
 if [ "${UNCOMPRESSED:-0}" != 0 ]; then
-  say "${RED}в web/dist/assets ${UNCOMPRESSED} файлов без сжатого соседа (.br)${OFF}"
-  say "${DIM}    Сервер будет сжимать их заново на КАЖДЫЙ запрос: 11.6 мс процессорного${OFF}"
-  say "${DIM}    времени и лишние 25 КБ на каждого студента, на той же машине, где${OFF}"
-  say "${DIM}    поднимаются ядра комнат.${OFF}"
-  say "${DIM}    Пересобрать: npm run build:optimized (это же делает make run)${OFF}"
+  say "${RED}${UNCOMPRESSED} files in web/dist/assets have no compressed neighbour (.br)${OFF}"
+  say "${DIM}    The server compresses them again on EVERY request: 11.6 ms of CPU time${OFF}"
+  say "${DIM}    and an extra 25 KB per student, on the same machine where the room${OFF}"
+  say "${DIM}    kernels come up.${OFF}"
+  say "${DIM}    Rebuild: npm run build:optimized (make run does the same)${OFF}"
   printf '\n'
 fi
 
@@ -965,7 +1007,7 @@ if [ "$VIA" = direct ]; then
   # поднять caddy. Туннеля здесь нет вовсе — наружу смотрит сама машина.
   direct_publish
 elif [ "$VIA" = relay ]; then
-  step "открываю туннель до ретранслятора"
+  step "opening the tunnel to the relay"
   # Поддомен — это всё, что инстанс просит у ретранслятора: frps выдаёт имена
   # только под своей зоной, поэтому попросить чужое имя нельзя даже с секретом.
   SUB="${COLLOQ_HOSTNAME%".$RELAY_DOMAIN"}"
@@ -1026,40 +1068,40 @@ CONF
   for _ in $(seq 1 30); do
     grep -q 'start proxy success' "$LOG" 2>/dev/null && { ok=1; break; }
     if grep -qE 'already exists' "$LOG" 2>/dev/null; then
-      die "поддомен ${COLLOQ_HOSTNAME} уже занят — этот семинар открыт с другой машины.
-  Закройте его там или возьмите другое имя: make host HOST=<имя>.colloq.ru"
+      die "the subdomain ${COLLOQ_HOSTNAME} is taken — this class is open from another machine.
+  Close it there or take another name: make host HOST=<name>.colloq.ru"
     fi
     if grep -qiE 'login to server failed|authorization failed|authentication failed|token in login doesn' "$LOG" 2>/dev/null; then
-      die "ретранслятор не принял секрет. Проверьте RELAY_TOKEN в .env."
+      die "the relay did not accept the secret. Check RELAY_TOKEN in .env."
     fi
     if grep -qiE 'start error|login to server failed' "$LOG" 2>/dev/null; then
       grep -iE 'start error|login to server failed' "$LOG" | head -3 >&2
-      die "ретранслятор отказал."
+      die "the relay refused."
     fi
-    kill -0 "$TUNNEL_PID" 2>/dev/null || { cat "$LOG" >&2; die "frpc умер, не открыв туннель."; }
+    kill -0 "$TUNNEL_PID" 2>/dev/null || { cat "$LOG" >&2; die "frpc died without opening the tunnel."; }
     sleep 1
   done
   rm -f "$CONF"
-  [ -n "$ok" ] || { cat "$LOG" >&2; die "не дождался ответа ретранслятора за 30 секунд."; }
+  [ -n "$ok" ] || { cat "$LOG" >&2; die "no answer from the relay in 30 seconds."; }
   # Туннель есть — значит у имени есть и сертификат (ретранслятор выпускает
   # его только живому имени), и статику можно класть на место. Именно здесь, а
   # не в конце: зеркало должно быть полным к моменту, когда ссылка уйдёт в чат.
   upload_assets
 elif [ -n "${COLLOQ_HOSTNAME:-}" ]; then
-  step "открываю именованный туннель Cloudflare"
+  step "opening the named Cloudflare tunnel"
   # Именованный туннель: постоянный адрес, но его нужно один раз завести
   # (make tunnel-setup). Без этого cloudflared не знает, куда маршрутизировать.
   #
   # И говорим вслух, через что пошли: имя под своей зоной без RELAY_DOMAIN в
   # .env молча уезжало в Cloudflare, а его адреса из России не открываются —
   # выяснялось это уже в аудитории, где ссылка не открылась ни у кого.
-  say "${DIM}    через Cloudflare. Свой ретранслятор (адреса Cloudflare не${OFF}"
-  say "${DIM}    открываются из России) — RELAY_* в .env, см. make relay-setup${OFF}"
+  say "${DIM}    through Cloudflare. Your own relay (Cloudflare addresses do not${OFF}"
+  say "${DIM}    open from Russia) — RELAY_* in .env, see make relay-setup${OFF}"
   cloudflared tunnel --no-autoupdate run --url "$LOCAL" "${ORIGIN_ARGS[@]}" colloq >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC="https://${COLLOQ_HOSTNAME}"
 else
-  step "открываю быстрый туннель Cloudflare"
+  step "opening the quick Cloudflare tunnel"
   cloudflared tunnel --no-autoupdate --url "$LOCAL" "${ORIGIN_ARGS[@]}" >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC=""
@@ -1068,13 +1110,13 @@ else
   for _ in $(seq 1 60); do
     PUBLIC="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG" | head -1 || true)"
     [ -n "$PUBLIC" ] && break
-    kill -0 "$TUNNEL_PID" 2>/dev/null || { cat "$LOG" >&2; die "cloudflared умер, не открыв туннель."; }
+    kill -0 "$TUNNEL_PID" 2>/dev/null || { cat "$LOG" >&2; die "cloudflared died without opening the tunnel."; }
     sleep 1
   done
-  [ -n "$PUBLIC" ] || { cat "$LOG" >&2; die "не дождался адреса туннеля за минуту."; }
+  [ -n "$PUBLIC" ] || { cat "$LOG" >&2; die "no tunnel address in a minute."; }
 fi
 
-step "публикую внешний адрес"
+step "publishing the external address"
 if [ "$WHO" != local ]; then
   set_public_url "$PUBLIC"
   TOUCHED_ENV=1
@@ -1082,8 +1124,8 @@ fi
 case "$WHO" in
   local)
     LEASE_OWNER="${LOCAL_RUN_ID}:$$:${RANDOM}"
-    node --import tsx scripts/public-url-lease.mts acquire "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" "$PUBLIC" "$HEALTH_LOCAL"
-    node --import tsx scripts/public-url-lease.mts watch "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" "$TUNNEL_PID" "$$" "$HEALTH_LOCAL" &
+    "${LEASE[@]}" acquire "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" "$PUBLIC" "$HEALTH_LOCAL"
+    "${LEASE[@]}" watch "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" "$TUNNEL_PID" "$$" "$HEALTH_LOCAL" &
     LEASE_PID=$!
     ;;
   cluster)
@@ -1131,10 +1173,10 @@ case "$WHO" in
     done
     [ -n "$ok" ] || {
       journalctl -u colloq -n 20 --no-pager 2>/dev/null >&2 || true
-      [ -n "$said" ] || die "служба перестала отвечать, пока менялся адрес. Журнал: make service-logs"
-      die "служба отвечает, но в ссылки пишет не ${PUBLIC}: .env не перечитан. Журнал: make service-logs"
+      [ -n "$said" ] || die "the service stopped answering while the address was changing. Log: make service-logs"
+      die "the service answers, but writes not ${PUBLIC} into links: .env was not reread. Log: make service-logs"
     }
-    say "${DIM}    служба перечитала .env: ${PUBLIC} (без перезапуска, сокеты целы)${OFF}"
+    say "${DIM}    the service reread .env: ${PUBLIC} (no restart, sockets intact)${OFF}"
     ;;
   container)
     PUBLIC_URL="$PUBLIC" docker compose up -d app >/dev/null
@@ -1148,17 +1190,17 @@ case "$WHO" in
       if printf '%s' "$said" | grep -qF "\"publicUrl\":\"${PUBLIC%/}\""; then ok=1; break; fi
       sleep 1
     done
-    [ -n "$ok" ] || die "Сервер не перечитал внешний адрес; локальная работа продолжается."
+    [ -n "$ok" ] || die "The server did not reread the external address; local work continues."
     ;;
   *)
     # Молча пройти мимо нельзя: аудитория получит localhost, то есть ничего.
-    say "${RED}    ${LOCAL} держит не colloq, а какой-то другой процесс.${OFF}"
-    say "${DIM}    Его PUBLIC_URL отсюда не поменять — перезапустите его сами с${OFF}"
-    say "${DIM}    PUBLIC_URL=${PUBLIC}, иначе ссылки на семинары будут вести на localhost.${OFF}"
+    say "${RED}    ${LOCAL} is held by some other process, not colloq.${OFF}"
+    say "${DIM}    Its PUBLIC_URL cannot be changed from here — restart it yourself with${OFF}"
+    say "${DIM}    PUBLIC_URL=${PUBLIC}, or links to classes will lead to localhost.${OFF}"
     ;;
 esac
 
-step "проверяю, что снаружи действительно отвечает"
+step "checking that it really answers from outside"
 #
 # Проверка идёт мимо системного резолвера. Измерено на живой машине: туннель
 # отдавал 200 за 0.6 секунды, а `curl https://<адрес>` тут же падал с «could
@@ -1211,7 +1253,7 @@ read_setup_token() {
     t="$(docker compose exec -T app cat /data/setup-token 2>/dev/null | tr -d '\r\n' || true)"
     [ -n "$t" ] && token_works "$t" && { printf '%s' "$t"; return 0; }
   fi
-  dir="${DATA_DIR:-./data}"
+  dir="${DATA_DIR:-$COLLOQ_STATE_ROOT/data}"
   t="$(cat "$dir/setup-token" 2>/dev/null | tr -d '\r\n' || true)"
   [ -n "$t" ] && token_works "$t" && { printf '%s' "$t"; return 0; }
   return 1
@@ -1220,43 +1262,43 @@ SETUP_TOKEN="$(read_setup_token || true)"
 
 printf '\n'
 if [ -n "$ok" ]; then
-  say "${BOLD}Colloq доступен по ссылке${OFF}"
+  say "${BOLD}Colloq is available at this link${OFF}"
 else
-  say "${RED}С этой машины проверить не удалось.${OFF}"
+  say "${RED}The check from this machine did not go through.${OFF}"
   if [ "$VIA" = direct ]; then
     # В прямом режиме подозреваемый другой, и он один: сертификат. Порты мы уже
     # проверили снаружи, имя направили — остаётся выдача, которая идёт минуту, а
     # при неуехавшем DNS и все пять. caddy при этом молчит в терминал, зато
     # говорит в журнал, поэтому сюда и посылаем.
-    say "${DIM}Порты открыты и имя направлено сюда — скорее всего сертификат ещё${OFF}"
-    say "${DIM}выпускается: это до минуты, а если запись DNS только что менялась —${OFF}"
-    say "${DIM}до пяти. Что именно происходит: journalctl -u caddy -f${OFF}"
+    say "${DIM}The ports are open and the name points here — most likely the certificate${OFF}"
+    say "${DIM}is still being issued: up to a minute, and up to five if the DNS record${OFF}"
+    say "${DIM}has just changed. What is going on: journalctl -u caddy -f${OFF}"
   else
     # Чаще всего это не туннель, а сеть, из которой мы проверяем: корпоративный
     # DNS или блокировка исходящих. Студенты из дома при этом заходят нормально,
     # поэтому пугать «не работает» нельзя — надо сказать, что именно неясно.
-    say "${DIM}Туннель поднят, но проверка не прошла — обычно виноват DNS этой сети,${OFF}"
-    say "${DIM}а не сам семинар. Откройте ссылку с телефона по мобильному интернету.${OFF}"
+    say "${DIM}The tunnel is up, but the check did not pass — usually this network's DNS${OFF}"
+    say "${DIM}is to blame, not the class. Open the link from a phone on mobile internet.${OFF}"
   fi
 fi
 say "  ${CYAN}${BOLD}${PUBLIC}${OFF}"
 
 if [ -n "$SETUP_TOKEN" ]; then
   printf '\n'
-  say "${BOLD}Вход в панель — эта ссылка только для вас${OFF}"
+  say "${BOLD}Sign-in to the panel — this link is for you only${OFF}"
   say "  ${CYAN}${PUBLIC}/admin/t/${SETUP_TOKEN}${OFF}"
   # Строка стоит прямо под ссылкой, а не в конце: спутать её с адресом семинара
   # и отправить в чат группы — ровно одно движение, и оно необратимо.
-  say "  ${RED}Это ключ от инстанса.${OFF} ${DIM}Не отправляйте её в чат и не оставляйте${OFF}"
-  say "  ${DIM}на экране, пока аудитория смотрит. Студентам — ссылка на семинар,${OFF}"
-  say "  ${DIM}которую вы скопируете уже в панели.${OFF}"
+  say "  ${RED}This is the key to the instance.${OFF} ${DIM}Do not send it to a chat and do${OFF}"
+  say "  ${DIM}not leave it on screen while the room is watching. Students get the${OFF}"
+  say "  ${DIM}class link, which you copy from the panel.${OFF}"
 else
   # Ссылка, которая не откроет панель, хуже, чем её отсутствие: человек три раза
   # ткнёт в неё, прежде чем усомнится в ссылке, а не в себе.
   printf '\n'
-  say "${DIM}Ссылку для входа в панель не печатаю: ни один найденный setup-token${OFF}"
-  say "${DIM}не подошёл серверу на ${LOCAL}. Возьмите его из DATA_DIR того сервера,${OFF}"
-  say "${DIM}который там отвечает, и откройте ${PUBLIC}/admin/t/<токен>.${OFF}"
+  say "${DIM}Not printing the sign-in link for the panel: none of the setup tokens found${OFF}"
+  say "${DIM}suited the server at ${LOCAL}. Take it from the DATA_DIR of the server that${OFF}"
+  say "${DIM}answers there and open ${PUBLIC}/admin/t/<token>.${OFF}"
 fi
 
 printf '\n'
@@ -1265,34 +1307,34 @@ if [ "$VIA" = direct ]; then
   # и притворяться, что Ctrl+C что-то выключает, значит обещать выключатель,
   # которого нет. Адрес держит служба caddy, она переживает и закрытый терминал,
   # и оборванный ssh, и перезагрузку машины.
-  say "${DIM}Всё считается здесь, и приходят студенты тоже прямо сюда: caddy на этой${OFF}"
-  say "${DIM}машине снимает TLS и отдаёт запрос colloq на ${LOCAL}.${OFF}"
-  say "${DIM}Ни ретранслятора, ни Cloudflare на этом пути нет.${OFF}"
+  say "${DIM}Everything runs here, and the students come straight here too: caddy on${OFF}"
+  say "${DIM}this machine terminates TLS and passes the request to colloq at ${LOCAL}.${OFF}"
+  say "${DIM}There is no relay and no Cloudflare on this path.${OFF}"
   printf '\n'
-  say "${DIM}Это окно можно закрывать: caddy — служба systemd, она живёт сама.${OFF}"
-  say "${DIM}Выключить адрес:   ${OFF}systemctl stop caddy"
-  say "${DIM}Посмотреть журнал: ${OFF}journalctl -u caddy -f"
-  say "${DIM}PUBLIC_URL остаётся в .env: адрес живой, откатывать его на localhost${OFF}"
-  say "${DIM}незачем — в отличие от туннеля, он не умирает вместе со скриптом.${OFF}"
+  say "${DIM}This window can be closed: caddy is a systemd service, it lives on its own.${OFF}"
+  say "${DIM}Switch the address off: ${OFF}systemctl stop caddy"
+  say "${DIM}Read the log:           ${OFF}journalctl -u caddy -f"
+  say "${DIM}PUBLIC_URL stays in .env: the address is alive, and rolling it back to${OFF}"
+  say "${DIM}localhost is pointless — unlike a tunnel, it does not die with the script.${OFF}"
   if [ -n "$RELAY_DOMAIN" ] && [ "${COLLOQ_HOSTNAME%".$RELAY_DOMAIN"}" != "$COLLOQ_HOSTNAME" ]; then
     # Про это надо сказать прямо: запись на конкретное имя сильнее звёздочки,
     # и пока она есть, ретранслятор для этого имени не при делах. Вернуть имя
     # ему — значит удалить запись руками (или прогнать scripts/dns.sh, который
     # приводит зону к виду «звёздочка на ретранслятор»).
     printf '\n'
-    say "${DIM}Запись ${COLLOQ_HOSTNAME} → ${DIRECT_IP} остаётся в зоне и перебивает${OFF}"
-    say "${DIM}*.${RELAY_DOMAIN}: пока она есть, это имя ведёт сюда, а не на ретранслятор.${OFF}"
+    say "${DIM}The record ${COLLOQ_HOSTNAME} → ${DIRECT_IP} stays in the zone and overrides${OFF}"
+    say "${DIM}*.${RELAY_DOMAIN}: while it is there, this name leads here, not to the relay.${OFF}"
   fi
   printf '\n'
   exit 0
 fi
 if [ "$VIA" = relay ]; then
-  say "${DIM}Всё считается здесь: браузеры студентов ходят на ретранслятор, а он — в${OFF}"
+  say "${DIM}Everything runs here: the students' browsers go to the relay, and it goes${OFF}"
 else
-  say "${DIM}Всё считается здесь: браузеры студентов ходят в Cloudflare, а он — в${OFF}"
+  say "${DIM}Everything runs here: the students' browsers go to Cloudflare, and it goes${OFF}"
 fi
-say "${DIM}это окно. Закроете его (Ctrl+C) — ссылка перестанет работать, а colloq${OFF}"
-say "${DIM}продолжит крутиться локально на ${LOCAL}.${OFF}"
+say "${DIM}to this window. Close it (Ctrl+C) and the link stops working, while colloq${OFF}"
+say "${DIM}keeps turning locally at ${LOCAL}.${OFF}"
 printf '\n'
 
 # Держим окно живым: туннель существует ровно столько, сколько этот процесс.

@@ -52,6 +52,9 @@ async function run(
     answer?: string
     tty?: boolean
     capture?: (cmd: string, args: string[]) => Answer
+    /** Установленный colloq: приложение отдельно, состояние отдельно. */
+    dist?: boolean
+    home?: string
   } = {},
 ): Promise<Harness> {
   const out: string[] = []
@@ -62,6 +65,8 @@ async function run(
   const code = await cli(argv, {
     io,
     root: ROOT,
+    home: opts.home,
+    dist: opts.dist ?? false,
     cwd: ROOT,
     out: (line) => void out.push(line),
     err: (line) => void err.push(line),
@@ -137,7 +142,9 @@ test('status: --dry-run говорит, что читает, и ничего н�
   const result = await run(['status', '--dry-run'])
   assert.equal(result.code, 0)
   assert.deepEqual(result.calls, [])
-  assert.deepEqual(result.out, ['native: status (читает .env, .colloq.pid, docker ps)'])
+  assert.deepEqual(result.out, [
+    'native: status (reads the class receipt, .env, .colloq.pid, docker ps)',
+  ])
 })
 
 test('status: экран собирается из ps, docker и pgrep, сеть не трогается', async () => {
@@ -145,14 +152,17 @@ test('status: экран собирается из ps, docker и pgrep, сеть
   assert.equal(result.code, 0)
   assert.deepEqual(result.made, [])
   assert.match(result.text, /^Colloq · hse$/m)
-  assert.match(result.text, /● сервер\s+pid 4821 · порт 4000 · 1 ч 14 мин · make run/)
-  assert.match(result.text, /● наружу\s+hse\.colloq\.ru · ретранслятор \(frpc pid 4990\)/)
-  assert.match(result.text, /ссылка\s+https:\/\/hse\.colloq\.ru/)
-  assert.match(result.text, /● ядра\s+colloq-kernel:cv, собран 12\.09 · комнат с ядром: 2/)
-  assert.match(result.text, /окружение\s+cv · сменить: colloq env use <имя>/)
+  assert.match(result.text, /● server\s+pid 4821 · port 4000 · 1h 14m · make run/)
+  assert.match(result.text, /● outside\s+hse\.colloq\.ru · relay \(frpc pid 4990\)/)
+  assert.match(result.text, /link\s+https:\/\/hse\.colloq\.ru/)
+  assert.match(result.text, /● kernels\s+colloq-kernel:cv, built 12\.09 · rooms with a kernel: 2/)
+  assert.match(result.text, /env\s+cv · change: colloq env use <name>/)
   // Адрес машины CLI не запоминает: его печатает скрипт, чужой поток мы не разбираем.
-  assert.match(result.text, /○ vast\s+hse — vast up прошёл .* · RTX 5070 · по памяти, без сети/)
-  assert.match(result.text, /● копия\s+colloq-20260905-201332\.db/)
+  assert.match(
+    result.text,
+    /○ vast\s+hse — vast up succeeded .* · RTX 5070 · from memory, no network/,
+  )
+  assert.match(result.text, /● backup\s+colloq-20260905-201332\.db/)
   // Токен установки и прочие значения .env на экран не попадают.
   assert.equal(result.text.includes('SHEETID'), false)
 })
@@ -161,7 +171,7 @@ test('status: собранный позже сервера клиент — пр
   const result = await run(['status'], { files: LIVE, capture: alive })
   assert.match(
     result.text,
-    /● клиент\s+web\/dist собран \d\d:\d\d — новее сервера \(поднят \d\d:\d\d\)/,
+    /● client\s+web\/dist built \d\d:\d\d — newer than the server \(started \d\d:\d\d\)/,
   )
   const hints = result.out.filter((line) => line.includes('→ colloq restart'))
   assert.equal(hints.length, 1)
@@ -174,8 +184,8 @@ test('status: docker не ответил — строка про него, ос�
       cmd === 'docker' ? { code: 124, stdout: '', stderr: '' } : alive(cmd, args),
   })
   assert.equal(result.code, 0)
-  assert.match(result.text, /○ ядра\s+docker не ответил за 0,7 с/)
-  assert.match(result.text, /● сервер\s+pid 4821/)
+  assert.match(result.text, /○ kernels\s+docker did not answer in 0\.7s/)
+  assert.match(result.text, /● server\s+pid 4821/)
 })
 
 test('status: без публикации местный адрес называется один раз', async () => {
@@ -184,17 +194,17 @@ test('status: без публикации местный адрес называ
     capture: alive,
   })
   assert.equal(result.code, 0)
-  assert.match(result.text, /○ наружу\s+не выставлен · только http:\/\/127\.0\.0\.1:4000/)
+  assert.match(result.text, /○ outside\s+not published · http:\/\/127\.0\.0\.1:4000 only/)
   // Отдельной строки «ссылка» с тем же адресом нет: её дают, когда есть кому.
-  assert.equal(/ссылка/.test(result.text), false)
+  assert.equal(/link/.test(result.text), false)
 })
 
 test('status: --short — ровно две строки, ими открывается меню', async () => {
   const result = await run(['status', '--short'], { files: LIVE, capture: alive })
   assert.equal(result.code, 0)
   assert.equal(result.out.length, 2)
-  assert.match(result.out[0] ?? '', /● сервер/)
-  assert.match(result.out[1] ?? '', /● наружу/)
+  assert.match(result.out[0] ?? '', /● server/)
+  assert.match(result.out[1] ?? '', /● outside/)
 })
 
 test('status: --json — одна строка и ни одного лишнего значения .env', async () => {
@@ -215,7 +225,7 @@ test('status: --json — одна строка и ни одного лишнег
   assert.equal(value.server.port, 4000)
   assert.equal(value.server.uptimeSec, 4463)
   assert.equal(value.client.stale, true)
-  assert.equal(value.public.transport, 'ретранслятор')
+  assert.equal(value.public.transport, 'relay')
   assert.equal(value.public.tunnelPid, 4990)
   assert.equal(value.kernel.rooms, 2)
   assert.equal(value.kernel.image, 'colloq-kernel:cv')
@@ -226,7 +236,7 @@ test('status: --json — одна строка и ни одного лишнег
 test('status: пусто — ровно одна строка', async () => {
   const result = await run(['status'])
   assert.equal(result.code, 0)
-  assert.deepEqual(result.out, ['ничего не запущено · colloq run'])
+  assert.deepEqual(result.out, ['nothing is running · colloq run'])
 })
 
 // ------------------------------------------------------------------ doctor
@@ -236,7 +246,7 @@ test('doctor: --dry-run печатает, что проверил бы, и не 
   assert.equal(result.code, 0)
   assert.deepEqual(result.calls, [])
   assert.deepEqual(result.out, [
-    'native: doctor (программы, файлы, образы, место; TCP до ретранслятора — 2 с)',
+    'native: doctor (programs, files, images, disk space; TCP to the relay — 2s)',
   ])
 })
 
@@ -244,11 +254,11 @@ test('doctor: сломанное — ✗ и код 3, выключенное —
   const result = await run(['doctor'])
   assert.equal(result.code, 3)
   assert.deepEqual(result.made, [])
-  assert.match(result.text, /✗ docker\s+демон не отвечает/)
+  assert.match(result.text, /✗ docker\s+the daemon is not answering/)
   assert.match(result.text, /✗ tsx/)
-  assert.match(result.text, /✗ образ ядра\s+нет образа colloq-kernel:cv/)
-  assert.match(result.text, /○ python3\s+нет — не будет activity/)
-  assert.match(result.text, /✓ \.env\s+есть · PORT 4000 · KERNEL_ENV cv/)
+  assert.match(result.text, /✗ kernel image\s+no colloq-kernel:cv image/)
+  assert.match(result.text, /○ python3\s+missing — no activity/)
+  assert.match(result.text, /✓ \.env\s+present · PORT 4000 · KERNEL_ENV cv/)
   // Из .env наружу только PORT и KERNEL_ENV.
   assert.equal(result.text.includes('SHEETID'), false)
 })
@@ -265,7 +275,7 @@ test('doctor: порт держит наш сервер — это не заня
           }
         : silent,
   })
-  assert.match(result.text, /✓ порт 4000\s+слушает наш сервер, pid 4821/)
+  assert.match(result.text, /✓ port 4000\s+our server is listening, pid 4821/)
 })
 
 test('doctor: чужой процесс на порту — ✗ и починка без pkill', async () => {
@@ -275,8 +285,8 @@ test('doctor: чужой процесс на порту — ✗ и починк�
         ? { code: 0, stdout: 'node 5150 alex 23u IPv4 TCP *:4000 (LISTEN)\n', stderr: '' }
         : silent,
   })
-  assert.match(result.text, /✗ порт 4000\s+занят: node pid 5150 — это второй Colloq/)
-  assert.match(result.text, /→ colloq stop · colloq status \(pkill по имени — никогда\)/)
+  assert.match(result.text, /✗ port 4000\s+taken: node pid 5150 — a second Colloq/)
+  assert.match(result.text, /→ colloq stop · colloq status \(never pkill by name\)/)
 })
 
 test('doctor: --offline снимает единственную сетевую проверку', async () => {
@@ -287,7 +297,7 @@ test('doctor: --offline снимает единственную сетевую �
     offline.calls.some((call) => call[1] === 'node'),
     false,
   )
-  assert.match(offline.text, /○ ретранслятор\s+не проверяли: --offline/)
+  assert.match(offline.text, /○ relay\s+not checked: --offline/)
 })
 
 test('doctor: --json — массив проверок и ни строки вне него', async () => {
@@ -334,7 +344,7 @@ test('activity: имя комнаты просеивается — ROOM уход
     const result = await run(['activity', room, '--replace'], { tty: true, answer: 'y' })
     assert.equal(result.code, 2, room)
     assert.deepEqual(result.calls, [], room)
-    assert.match(result.err.join('\n'), /не годится/, room)
+    assert.match(result.err.join('\n'), /will not do/, room)
   }
   // Отказ идёт до вопроса: терминала нет, а код всё равно 2.
   const quiet = await run(['activity', 'x;id', '--replace'], { tty: false })
@@ -345,7 +355,7 @@ test('activity: без комнаты и без --all — отказ до вся
   const result = await run(['activity'])
   assert.equal(result.code, 2)
   assert.deepEqual(result.calls, [])
-  assert.match(result.err.join('\n'), /✗ не сказано, чью активность считать/)
+  assert.match(result.err.join('\n'), /✗ no room to count activity for/)
 })
 
 test('activity: комната вместе с --all не читается', async () => {
@@ -358,7 +368,7 @@ test('activity: --replace спрашивает, «нет» — код 4, --yes �
   const no = await run(['activity', 'y84w9hpc', '--replace'], { answer: 'n', tty: true })
   assert.equal(no.code, 4)
   assert.deepEqual(no.made, [])
-  assert.match(no.asked[0] ?? '', /переписать строки этих комнат в таблице\? \[y\/N\]/)
+  assert.match(no.asked[0] ?? '', /rewrite the rows of these rooms in the sheet\? \[y\/N\]/)
 
   const yes = await run(['activity', 'y84w9hpc', '--replace', '--yes'], { tty: true })
   assert.equal(yes.code, 0)
@@ -380,7 +390,7 @@ test('activity: нет ACTIVITY_SHEET_ID — предусловие, код 3', 
   })
   assert.equal(result.code, 3)
   assert.deepEqual(result.made, [])
-  assert.match(result.err.join('\n'), /нет ACTIVITY_SHEET_ID/)
+  assert.match(result.err.join('\n'), /no ACTIVITY_SHEET_ID/)
 })
 
 // -------------------------------------------------------------------- site
@@ -403,7 +413,7 @@ test('site: без --dry спрашивает про push, «нет» — код
   const no = await run(['site'], { answer: 'n', tty: true })
   assert.equal(no.code, 4)
   assert.deepEqual(no.made, [])
-  assert.match(no.asked[0] ?? '', /выложить сайт\? будет коммит и push в main/)
+  assert.match(no.asked[0] ?? '', /publish the site\? there will be a commit and a push to main/)
 
   const yes = await run(['site', '--yes'], { tty: true })
   assert.equal(yes.code, 0)
@@ -425,41 +435,41 @@ test('course: колонка по тексту заголовка доезжае
     '--sheet',
     'SHEETID',
     '--col',
-    'ML · сильная',
+    'ML · advanced',
     '--dry',
     '--dry-run',
   ])
   assert.equal(result.code, 0)
-  assert.deepEqual(result.out, ["make course SHEET=SHEETID GID=0 'COL=ML · сильная' DRY=1"])
+  assert.deepEqual(result.out, ["make course SHEET=SHEETID GID=0 'COL=ML · advanced' DRY=1"])
 })
 
 test('course: без --sheet и без --col — отказ, ничего не запущено', async () => {
-  const noSheet = await run(['course', '--col', 'ML · сильная'])
+  const noSheet = await run(['course', '--col', 'ML · advanced'])
   assert.equal(noSheet.code, 2)
   assert.deepEqual(noSheet.calls, [])
-  assert.match(noSheet.err.join('\n'), /✗ не сказано, из какой таблицы брать расписание/)
+  assert.match(noSheet.err.join('\n'), /✗ no sheet to take the schedule from/)
 
   const noColumn = await run(['course', '--sheet', 'SHEETID'])
   assert.equal(noColumn.code, 2)
   assert.deepEqual(noColumn.calls, [])
-  assert.match(noColumn.err.join('\n'), /✗ не сказано, какую колонку брать/)
+  assert.match(noColumn.err.join('\n'), /✗ no column to take/)
 })
 
 test('course: запись в базу спрашивают, --yes снимает вопрос', async () => {
   const no = await run(['course', '--sheet', 'SHEETID', '--col', 'ML'], { answer: 'n', tty: true })
   assert.equal(no.code, 4)
   assert.deepEqual(no.made, [])
-  assert.match(no.asked[0] ?? '', /завести курс\? пишем в data\/colloq\.db/)
+  assert.match(no.asked[0] ?? '', /create the course\? we write into data\/colloq\.db/)
 
   const yes = await run(
-    ['course', '--sheet', 'SHEETID', '--col', 'ML', '--name', 'ML · сильная', '--yes'],
+    ['course', '--sheet', 'SHEETID', '--col', 'ML', '--name', 'ML · advanced', '--yes'],
     {
       tty: true,
     },
   )
   assert.equal(yes.code, 0)
   assert.deepEqual(yes.made, [
-    ['make', 'course', 'SHEET=SHEETID', 'GID=0', 'COL=ML', 'NAME=ML · сильная'],
+    ['make', 'course', 'SHEET=SHEETID', 'GID=0', 'COL=ML', 'NAME=ML · advanced'],
   ])
 })
 
@@ -482,10 +492,10 @@ test('load: --url идёт окружением, и строка показыв�
 })
 
 test('load: N — это число', async () => {
-  const result = await run(['load', 'много'])
+  const result = await run(['load', 'many'])
   assert.equal(result.code, 2)
   assert.deepEqual(result.calls, [])
-  assert.match(result.err.join('\n'), /✗ N — это число студентов/)
+  assert.match(result.err.join('\n'), /✗ N is a number of students/)
 })
 
 test('load: вопрос называет цель, «нет» — код 4 и «отменено»', async () => {
@@ -494,15 +504,15 @@ test('load: вопрос называет цель, «нет» — код 4 и �
   assert.deepEqual(no.made, [])
   assert.match(
     no.asked[0] ?? '',
-    /стенд пойдёт по http:\/\/localhost:3000 — это сервер преподавателя/,
+    /the load test will go at http:\/\/localhost:3000 — that is the teacher's server/,
   )
-  assert.deepEqual(no.out, ['отменено'])
+  assert.deepEqual(no.out, ['cancelled'])
 
   const yes = await run(['load', '500', '--yes'], { files: LIVE, tty: true })
   assert.equal(yes.code, 0)
   assert.deepEqual(yes.asked, [])
   assert.deepEqual(yes.made, [['make', 'load', 'N=500', 'SPID=4821']])
-  assert.match(yes.text, /→ pid сервера взят из \.colloq\.pid: 4821/)
+  assert.match(yes.text, /→ the server pid is taken from \.colloq\.pid: 4821/)
 })
 
 // -------------------------------------------------------------------- make
@@ -526,13 +536,191 @@ test('make: ручка цели — это пара, а не флаг; про --
   // Пример `colloq make ui -- --headed` не работал: make отвергает такой ключ.
   assert.equal(notes.includes('-- --headed'), false)
   assert.match(notes, /HEADED=1/)
-  assert.match(notes, /только ДО --/)
+  assert.match(notes, /only BEFORE --/)
 })
 
 test('make: без цели — код 2 и список целей', async () => {
   const result = await run(['make', '--dry-run'])
   assert.equal(result.code, 2)
   assert.deepEqual(result.made, [])
-  assert.match(result.err.join('\n'), /✗ не сказано, какую цель звать/)
+  assert.match(result.err.join('\n'), /✗ no target to call/)
   assert.deepEqual(result.out, ['make help'])
+})
+
+/**
+ * Доктор у установленного colloq: два каталога окружений и выполнимые советы.
+ *
+ * Найдено живьём, из колеса: `colloq doctor` писал «нет kernel/environments/
+ * mlcourse.txt» про окружение, которое человек только что завёл сам и которое
+ * лежало целым в его каталоге, — а рядом советовал `colloq env build`, который
+ * у установленного colloq отказывает нарочно. Оба совета вели в тупик.
+ */
+const INSTALLED = {
+  '/repo/kernel/environments/base.txt': '# база\n',
+  '/home/.colloq/.env': 'PORT=4000\nKERNEL_ENV=mine\n',
+  '/home/.colloq/environments/mine.txt': '# своё\nstatsmodels\n',
+}
+
+test('doctor видит своё окружение во втором каталоге и не зовёт туда, где откажут', async () => {
+  const result = await run(['doctor'], { dist: true, home: '/home/.colloq', files: INSTALLED })
+  assert.match(result.text, /environment\s+mine\.txt in place · your own/)
+  assert.doesNotMatch(result.text, /no mine\.txt list/)
+  // Образа нет (docker подставной молчит) — но чинится это запуском, не сборкой.
+  assert.match(result.text, /colloq start — the image is built before the class/)
+  assert.doesNotMatch(result.text, /colloq env build/)
+})
+
+test('doctor у установленного colloq всё равно говорит, когда списка нет нигде', async () => {
+  const { '/home/.colloq/environments/mine.txt': _gone, ...without } = INSTALLED
+  const result = await run(['doctor'], { dist: true, home: '/home/.colloq', files: without })
+  assert.match(result.text, /no mine\.txt list in either environment directory/)
+  assert.match(result.text, /colloq env list · colloq env new <name>/)
+})
+
+test('в репозитории доктор по-прежнему советует сборку окружения', async () => {
+  const result = await run(['doctor'])
+  assert.match(result.text, /colloq env build cv/)
+})
+
+/**
+ * Занятие под супервизором: два процесса, два корня и одна расписка.
+ *
+ * .colloq.pid хранит номер СУПЕРВИЗОРА, а порт держит его ребёнок — сервер, и
+ * половина экрана считала по неверному номеру. Живьём это выглядело так:
+ * status называл сервером супервизора и печатал «порт 3000», пока класс сидел
+ * на 4100; doctor тут же объявлял настоящий слушатель «вторым Colloq»,
+ * советовал colloq stop и возвращал 3 — то есть звал преподавателя остановить
+ * собственную пару. Ниже — по тесту на каждое место, где номер и порт теперь
+ * берутся из расписки.
+ */
+const SESSION = JSON.stringify({
+  pid: 4821,
+  serverPid: 4822,
+  port: 4100,
+  url: 'http://localhost:4100',
+  runId: 'r1',
+  mode: 'run',
+  phase: 'ready',
+  startedAt: NOW - 600_000,
+  leaseFile: '/repo/.colloq/public-url.json',
+})
+
+const RECEIPT = '/repo/.colloq/local-session.json'
+
+test('status: порт и номер сервера берутся из расписки, а не из .env и .colloq.pid', async () => {
+  const result = await run(['status'], { files: { ...LIVE, [RECEIPT]: SESSION }, capture: alive })
+  assert.equal(result.code, 0)
+  assert.match(result.text, /● server\s+pid 4822 · port 4100 · 1h 14m · colloq run/)
+  // Супервизора под подписью «сервер» нет, порта из .env — тоже.
+  assert.doesNotMatch(result.text, /pid 4821/)
+  assert.doesNotMatch(result.text, /port 4000/)
+  // И живость спрашивали у сервера: doctor назовёт слушателем тот же номер.
+  assert.ok(result.calls.some((call) => call[1] === 'ps' && call[3] === '4822'))
+})
+
+test('status: занятие в режиме dev называется своей формой', async () => {
+  const dev = JSON.stringify({ ...JSON.parse(SESSION), mode: 'dev' })
+  const result = await run(['status'], { files: { ...LIVE, [RECEIPT]: dev }, capture: alive })
+  assert.match(result.text, /● server\s+pid 4822 · port 4100 · 1h 14m · colloq dev/)
+})
+
+test('status: сервер занятия ещё не поднялся — порт есть, чужого номера нет', async () => {
+  const starting = JSON.stringify({
+    ...JSON.parse(SESSION),
+    serverPid: null,
+    phase: 'starting',
+  })
+  const result = await run(['status'], { files: { ...LIVE, [RECEIPT]: starting }, capture: alive })
+  assert.match(result.text, /● server\s+port 4100 · 1h 14m · colloq run/)
+  assert.doesNotMatch(result.text, /pid 4821/)
+})
+
+test('status: публичный адрес занятия — из его расписки на адрес, а не из .env', async () => {
+  const result = await run(['status'], {
+    files: {
+      ...LIVE,
+      [RECEIPT]: SESSION,
+      '/repo/.colloq/public-url.json': JSON.stringify({
+        runId: 'r1',
+        owner: 'colloq',
+        url: 'https://hse.colloq.ru',
+        expiresAt: NOW + 600_000,
+      }),
+    },
+    capture: alive,
+  })
+  assert.match(result.text, /^Colloq · hse$/m)
+  assert.match(result.text, /● outside\s+hse\.colloq\.ru · relay \(frpc pid 4990\)/)
+  assert.match(result.text, /link\s+https:\/\/hse\.colloq\.ru/)
+})
+
+test('status: расписка от убитого занятия ничего не рисует', async () => {
+  // kill -9 файл не убирает: верить ему без живого процесса нельзя.
+  const result = await run(['status'], { files: { [RECEIPT]: SESSION } })
+  assert.equal(result.code, 0)
+  assert.deepEqual(result.out, ['nothing is running · colloq run'])
+})
+
+/** Осмотр во время занятия: .colloq.pid нет вовсе, всё знает расписка. */
+const CLASS: Record<string, string> = {
+  '/repo/.env': 'PORT=4000\nKERNEL_ENV=cv\n',
+  [RECEIPT]: SESSION,
+}
+
+function listening(pid: number): (cmd: string) => Answer {
+  return (cmd) =>
+    cmd === 'lsof'
+      ? { code: 0, stdout: 'node ' + pid + ' alex 23u IPv4 TCP *:4100 (LISTEN)\n', stderr: '' }
+      : silent
+}
+
+test('doctor: слушатель порта — сервер занятия, а не «второй Colloq»', async () => {
+  const result = await run(['doctor'], { files: CLASS, capture: listening(4822) })
+  assert.match(result.text, /✓ port 4100\s+our server is listening, pid 4822/)
+  assert.doesNotMatch(result.text, /a second Colloq/)
+  // Проверяли тот порт, на котором идёт занятие: .env про 4100 не знает.
+  assert.ok(result.calls.some((call) => call.includes('-iTCP:4100')))
+  // А строка про .env говорит своё — вопрос у неё другой.
+  assert.match(result.text, /✓ \.env\s+present · PORT 4000 · KERNEL_ENV cv/)
+})
+
+test('doctor: супервизор на порту — тоже наш: сервер мог перезапуститься', async () => {
+  const result = await run(['doctor'], { files: CLASS, capture: listening(4821) })
+  assert.match(result.text, /✓ port 4100\s+our server is listening, pid 4821/)
+})
+
+test('doctor: чужой на порту занятия — по-прежнему ✗', async () => {
+  const result = await run(['doctor'], { files: CLASS, capture: listening(5150) })
+  assert.equal(result.code, 3)
+  assert.match(result.text, /✗ port 4100\s+taken: node pid 5150 — a second Colloq/)
+})
+
+test('doctor: место меряется на томе каталога состояния, а не приложения', async () => {
+  const result = await run(['doctor'], { dist: true, home: '/home/.colloq', files: INSTALLED })
+  assert.ok(result.calls.some((call) => call[1] === 'df' && call[3] === '/home/.colloq'))
+  assert.equal(
+    result.calls.some((call) => call[1] === 'df' && call[3] === '/repo'),
+    false,
+  )
+})
+
+test('load: SPID — номер сервера из расписки, а не супервизор из .colloq.pid', async () => {
+  const dry = await run(['load', '100', '--dry-run'], { files: { ...LIVE, [RECEIPT]: SESSION } })
+  assert.deepEqual(dry.out, ['make load N=100 SPID=4822'])
+
+  const yes = await run(['load', '100', '--yes'], {
+    files: { ...LIVE, [RECEIPT]: SESSION },
+    tty: true,
+  })
+  assert.equal(yes.code, 0)
+  assert.deepEqual(yes.made, [['make', 'load', 'N=100', 'SPID=4822']])
+  assert.match(yes.text, /→ the server pid is taken from the class receipt: 4822/)
+})
+
+test('load: расписка без номера сервера — лучше не мерить, чем мерить супервизора', async () => {
+  const starting = JSON.stringify({ ...JSON.parse(SESSION), serverPid: null })
+  const result = await run(['load', '100', '--dry-run'], {
+    files: { ...LIVE, [RECEIPT]: starting },
+  })
+  assert.deepEqual(result.out, ['make load N=100'])
 })

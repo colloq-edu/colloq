@@ -6,28 +6,41 @@
  * The panel and the `make env-*` targets are two faces of the same directory
  * and the same `KERNEL_ENV` line, which is why the parsing rules live in one
  * place and are pinned here.
+ *
+ * Каталогов, впрочем, два: привезённые с продуктом только читаются, свои
+ * человек заводит сам. Про это — последняя секция файла.
  */
 import './_env.mts'
 import http from 'node:http'
 import path from 'node:path'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import type { Response } from 'express'
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  ENV_DIR,
   MAX_INHERITANCE,
   abilities,
+  activeName,
   buildChain,
   buildCommand,
+  buildContext,
   declaresGpu,
   declaresParent,
+  isShipped,
   listChanged,
+  listNames,
   needsGpu,
+  ownEnvDirOf,
   parsePackages,
   pickActiveName,
   readSource,
+  removeEnvironment,
+  setActiveName,
+  writeSource,
 } from '../server/src/environments.js'
 import { adminEnvironmentRoutes } from '../server/src/routes/admin-environments.js'
 import { createTeacher } from '../server/src/admin/store.js'
@@ -300,7 +313,7 @@ test('в прямом пути каждый слой встаёт поверх �
  */
 
 test('репозиторий рядом — можно и собрать, и назначить умолчанием', () => {
-  const can = abilities({ docker: true, context: true, repository: true })
+  const can = abilities({ docker: true, context: true, repository: true, home: false })
   assert.deepEqual(
     [can.canBuild, can.cannotBuildReason, can.canSetDefault, can.cannotSetDefaultReason],
     [true, null, true, null],
@@ -311,7 +324,7 @@ test('в контейнере только kernel: собрать можно, у
   // Ровно `make up`: примонтированы kernel и сокет, а docker-compose.yml и .env
   // остались снаружи. Писать .env внутрь контейнера — врать: правка доживёт до
   // первой пересборки, пока compose читает файл на хосте.
-  const can = abilities({ docker: true, context: true, repository: false })
+  const can = abilities({ docker: true, context: true, repository: false, home: false })
   assert.equal(can.canBuild, true)
   assert.equal(can.cannotBuildReason, null)
   assert.equal(can.canSetDefault, false)
@@ -320,7 +333,7 @@ test('в контейнере только kernel: собрать можно, у
 })
 
 test('нет и каталога kernel — отказ в сборке называет монт', () => {
-  const can = abilities({ docker: true, context: false, repository: false })
+  const can = abilities({ docker: true, context: false, repository: false, home: false })
   assert.equal(can.canBuild, false)
   assert.match(can.cannotBuildReason ?? '', /kernel/)
   // И умолчание не обещает сборку, которой здесь тоже нет.
@@ -328,7 +341,7 @@ test('нет и каталога kernel — отказ в сборке назы�
 })
 
 test('docker не виден — нельзя ничего, и причина у обеих кнопок одна', () => {
-  const can = abilities({ docker: false, context: true, repository: true })
+  const can = abilities({ docker: false, context: true, repository: true, home: false })
   assert.equal(can.canBuild, false)
   assert.equal(can.canSetDefault, false)
   assert.equal(can.cannotBuildReason, can.cannotSetDefaultReason)
@@ -345,7 +358,17 @@ test('a name is what a filename and a Docker tag can both be', () => {
 
 test('a name that would escape the directory or break a tag is refused', () => {
   // It becomes a path and an image tag, so this is not cosmetic.
-  for (const bad of ['../etc', 'CV', 'cv torch', 'cv.torch', '-cv', 'cv-', '', 'cv/../x', 'cv:latest']) {
+  for (const bad of [
+    '../etc',
+    'CV',
+    'cv torch',
+    'cv.torch',
+    '-cv',
+    'cv-',
+    '',
+    'cv/../x',
+    'cv:latest',
+  ]) {
     assert.ok(!ENVIRONMENT_NAME.test(bad), bad)
   }
 })
@@ -533,14 +556,197 @@ test('переменная, обещанная в .env.example, доезжает
   const app = compose.slice(compose.indexOf('\n  app:'), compose.indexOf('\n  kernel:'))
   const production = readFileSync(path.join(root, 'scripts/release.py'), 'utf8')
   const hostOnly = new Set(['PORT', 'BIND_ADDR'])
-  const brokerOnly = new Set(['KERNEL_RUNTIME_URL', 'KERNEL_RUNTIME_TOKEN_FILE', 'KERNEL_CATALOG_FILE'])
+  const brokerOnly = new Set([
+    'KERNEL_RUNTIME_URL',
+    'KERNEL_RUNTIME_TOKEN_FILE',
+    'KERNEL_CATALOG_FILE',
+  ])
   for (const name of documented) {
     // Billing/relay credentials belong to the host tooling, never the app Pod.
     if (hostOnly.has(name) || /^(?:RELAY|CF|VAST)_/.test(name)) continue
     if (brokerOnly.has(name)) {
-      assert.ok(production.includes(`'${name}'`), `${name} missing from production app configuration`)
+      assert.ok(
+        production.includes(`'${name}'`),
+        `${name} missing from production app configuration`,
+      )
       continue
     }
-    assert.ok(new RegExp(`\\n +${name}: `).test(app), `${name} missing from development app configuration`)
+    assert.ok(
+      new RegExp(`\\n +${name}: `).test(app),
+      `${name} missing from development app configuration`,
+    )
   }
+})
+
+/* ------------------------------------------- два каталога окружений */
+
+/**
+ * Окружения живут в двух местах, и это не симметрия, а необходимость.
+ *
+ * Привезённые с продуктом (base, base-gpu, cv, gpu) лежат рядом с приложением;
+ * у установленного через pip colloq это site-packages — каталог перезаписывает
+ * следующий `pip install -U`, а на многих машинах в него и не пишется вовсе.
+ * Свои человек заводит `colloq env new`, и они ложатся в каталог состояния,
+ * рядом с .env и data/.
+ *
+ * Панель знала об одном каталоге из двух, и на одном экране противоречила сама
+ * себе: заведённое человеком окружение не показывалось в списке, а активным
+ * панель называла именно его имя. Заведённое ИЗ панели уезжало в site-packages
+ * — отказ прав или файл, исчезающий на первом обновлении.
+ *
+ * Здесь проверяется вся модель: чтение объединением, запись только в своё,
+ * удаление только своего и контекст `docker build`, который видит оба.
+ */
+
+/** Каталог состояния на один тест: переменная — то, чем его называет супервизор. */
+async function withHome<T>(run: (home: string) => Promise<T> | T): Promise<T> {
+  const home = mkdtempSync(path.join(tmpdir(), 'colloq-home-'))
+  const before = process.env.COLLOQ_HOME
+  process.env.COLLOQ_HOME = home
+  try {
+    return await run(home)
+  } finally {
+    if (before === undefined) delete process.env.COLLOQ_HOME
+    else process.env.COLLOQ_HOME = before
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+test('свой каталог считается от состояния, а в репозитории совпадает с привезённым', () => {
+  // Без переменной сервер подняли не супервизором — каталог один, как было.
+  assert.equal(ownEnvDirOf('/app', null), path.join('/app', 'kernel', 'environments'))
+  // Состояние и есть приложение (репозиторий, клон, контейнер под make up):
+  // второй каталог рядом увёл бы файл из-под make env-list и из-под сборки.
+  assert.equal(ownEnvDirOf('/app', '/app'), path.join('/app', 'kernel', 'environments'))
+  assert.equal(
+    ownEnvDirOf('/app', '/home/ada/.colloq'),
+    path.join('/home/ada/.colloq', 'environments'),
+  )
+})
+
+test('список — объединение двух каталогов, и переопределённое имя в нём одно', async () => {
+  await withHome(async () => {
+    writeSource('own-nlp', 'transformers\n')
+    // Своё окружение с именем привезённого — то же самое окружение,
+    // переопределённое: в списке панели ему полагается одна строка.
+    writeSource('cv', '# мой курс\ntimm\n')
+    const names = listNames()
+    assert.ok(names.includes('own-nlp'), `своего окружения нет в списке: ${names.join(', ')}`)
+    assert.ok(names.includes('base'), 'привезённое окружение пропало из списка')
+    assert.equal(names.filter((name) => name === 'cv').length, 1)
+  })
+})
+
+test('запись идёт в свой каталог, а привезённый файл остаётся нетронутым', async () => {
+  const shipped = readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8')
+  await withHome(async (home) => {
+    writeSource('cv', '# мой курс\ntimm\n')
+    // Своё перебивает привезённое при чтении — человек вправе переопределить
+    // cv под свой курс.
+    assert.equal(readSource('cv'), '# мой курс\ntimm\n')
+    assert.equal(
+      readFileSync(path.join(home, 'environments', 'cv.txt'), 'utf8'),
+      '# мой курс\ntimm\n',
+    )
+  })
+  // Главное: каталог приложения не тронут. Раньше запись шла ровно туда.
+  assert.equal(readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8'), shipped)
+})
+
+test('привезённое окружение не удаляется, и отказ говорит, что делать вместо', async () => {
+  await withHome(async () => {
+    assert.equal(isShipped('cv'), true)
+    assert.throws(() => removeEnvironment('cv'), /colloq/)
+    assert.equal(existsSync(path.join(ENV_DIR, 'cv.txt')), true)
+    // Своя копия — уже не привезённое: её и удаляют.
+    writeSource('cv', 'timm\n')
+    assert.equal(isShipped('cv'), false)
+    removeEnvironment('cv')
+    // Под тем же именем снова привезённое: удалили копию, а не окружение.
+    assert.equal(readSource('cv'), readFileSync(path.join(ENV_DIR, 'cv.txt'), 'utf8'))
+  })
+})
+
+test('контекст docker build видит оба каталога, и своё в нём сильнее', async () => {
+  await withHome(async (home) => {
+    writeSource('own-nlp', '# colloq: from base\ntransformers\n')
+    writeSource('cv', '# мой курс\ntimm\n')
+    const context = buildContext('own-nlp')
+    // Склейка лежит в состоянии: в каталог приложения писать нечем.
+    assert.ok(context.startsWith(home), `контекст собран не в состоянии: ${context}`)
+    assert.equal(existsSync(path.join(context, 'Dockerfile')), true)
+    assert.equal(existsSync(path.join(context, 'requirements.txt')), true)
+    // Привезённое на месте — без base цепочка не собирается вовсе.
+    assert.equal(existsSync(path.join(context, 'environments', 'base.txt')), true)
+    assert.equal(
+      readFileSync(path.join(context, 'environments', 'own-nlp.txt'), 'utf8'),
+      '# colloq: from base\ntransformers\n',
+    )
+    assert.equal(
+      readFileSync(path.join(context, 'environments', 'cv.txt'), 'utf8'),
+      '# мой курс\ntimm\n',
+    )
+  })
+  // Без переменной склеивать нечего: контекст — сам каталог ядра, как раньше.
+  assert.equal(buildContext('cv'), path.dirname(ENV_DIR))
+})
+
+test('умолчание читается и пишется в .env каталога состояния', async () => {
+  await withHome(async (home) => {
+    const file = path.join(home, '.env')
+    writeFileSync(file, 'PORT=3000\nKERNEL_ENV=own-nlp\n')
+    // Тот же файл правит `colloq env use` и перечитывает следующий запуск.
+    // Панель, смотревшая в .env каталога приложения, у установленного colloq
+    // называла активным base при любом выборе человека.
+    assert.equal(activeName(), 'own-nlp')
+    setActiveName('base')
+    const written = readFileSync(file, 'utf8')
+    assert.match(written, /KERNEL_ENV=base/)
+    // Остальные строки на месте: .env — файл человека, а не наш.
+    assert.match(written, /PORT=3000/)
+  })
+})
+
+test('у установленного colloq умолчание назначается, хотя compose рядом нет', () => {
+  // Запрет был про контейнер: там KERNEL_ENV читает compose с ХОСТА, и запись
+  // внутрь — ложь, которая доживёт до первой пересборки. У установленного
+  // colloq никакого хоста снаружи нет: .env лежит в каталоге состояния, и тот
+  // же файл читает следующий colloq run. Гасить кнопку значило посылать
+  // преподавателя в make, которого у него тоже нет.
+  const can = abilities({ docker: true, context: true, repository: false, home: true })
+  assert.equal(can.canSetDefault, true)
+  assert.equal(can.cannotSetDefaultReason, null)
+  assert.equal(can.canBuild, true)
+  // А в контейнере — по-прежнему нельзя, и причина прежняя.
+  const inContainer = abilities({ docker: true, context: true, repository: false, home: false })
+  assert.equal(inContainer.canSetDefault, false)
+})
+
+test('панель отказывает на удалении привезённого, а свою копию удаляет', async () => {
+  await withHome(async (home) => {
+    // Активное окружение защищено отдельной веткой; чтобы проверялась именно
+    // эта, умолчание назначается явно.
+    writeFileSync(path.join(home, '.env'), 'KERNEL_ENV=base\n')
+    const shipped = readSource('cv')
+    const refused = await fetch(`${base}/api/admin/environments/cv`, {
+      method: 'DELETE',
+      headers: { cookie: staffCookie() },
+    })
+    assert.equal(refused.status, 409)
+    const body = (await refused.json()) as { reason?: string; error?: string }
+    assert.equal(body.reason, 'protected')
+    // Отказ, а не тихое «ничего не произошло» и не голое «internal error»
+    // от EACCES в site-packages.
+    assert.match(body.error ?? '', /colloq/)
+    assert.equal(readSource('cv'), shipped)
+
+    writeSource('cv', '# мой курс\ntimm\n')
+    const removed = await fetch(`${base}/api/admin/environments/cv`, {
+      method: 'DELETE',
+      headers: { cookie: staffCookie() },
+    })
+    assert.equal(removed.status, 204)
+    assert.equal(readSource('cv'), shipped)
+    assert.equal(existsSync(path.join(home, 'environments', 'cv.txt')), false)
+  })
 })

@@ -1,5 +1,9 @@
 import { tr } from '@shared/i18n'
-import { usingRuntimeBroker, kernelRuntimeClient, loadRuntimeCatalog } from '../kernel/runtime-client.js'
+import {
+  usingRuntimeBroker,
+  kernelRuntimeClient,
+  loadRuntimeCatalog,
+} from '../kernel/runtime-client.js'
 /**
  * The Environments screen's routes.
  *
@@ -20,6 +24,7 @@ import {
   environmentAbilities,
   exists,
   isBuilding,
+  isShipped,
   listEnvironments,
   readSource,
   removeEnvironment,
@@ -57,7 +62,7 @@ const MAX_SOURCE = 16 * 1024
  * открытие экрана ради заведомо пустого списка платить не за что.
  */
 async function gpuState(): Promise<{ total: number; free: number }> {
-  if (usingRuntimeBroker()) return {total:0,free:0}
+  if (usingRuntimeBroker()) return { total: 0, free: 0 }
   const devices = gpuDevices()
   if (devices.length === 0) return { total: 0, free: 0 }
   const busy = new Set(await gpuBusy())
@@ -118,26 +123,33 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
   /** The file itself, for the editor. Kept separate: the list does not need it. */
   router.get('/api/admin/environments/:name', requireStaff, (req: Request, res: Response) => {
     const name = String(req.params.name)
-    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', tr("server.thatIsNotAnEnvironmentName.db085f"))
-    if (!exists(name)) return fail(res, 404, 'not_found', tr("server.noSuchEnvironment.7ca461"))
+    if (!ENVIRONMENT_NAME.test(name))
+      return fail(res, 400, 'invalid', tr('server.thatIsNotAnEnvironmentName.db085f'))
+    if (!exists(name)) return fail(res, 404, 'not_found', tr('server.noSuchEnvironment.7ca461'))
     res.json({ name, source: readSource(name) })
   })
 
   router.put('/api/admin/environments/:name', requireStaff, (req: Request, res: Response) => {
-    if (usingRuntimeBroker()) return fail(res,409,'managed_environment',tr("server.imagesAreManagedByTheReleaseCatalog.14206b"))
+    if (usingRuntimeBroker())
+      return fail(
+        res,
+        409,
+        'managed_environment',
+        tr('server.imagesAreManagedByTheReleaseCatalog.14206b'),
+      )
     const name = String(req.params.name)
     const body = req.body as Partial<SaveEnvironmentRequest> | undefined
     if (!ENVIRONMENT_NAME.test(name)) {
-      return fail(
-        res,
-        400,
-        'invalid',
-        tr("server.useLowercaseLettersDigitsAndDashesFor.4f31ec"),
-      )
+      return fail(res, 400, 'invalid', tr('server.useLowercaseLettersDigitsAndDashesFor.4f31ec'))
     }
     const source = typeof body?.source === 'string' ? body.source : ''
     if (source.length > MAX_SOURCE) {
-      return fail(res, 400, 'too_long', tr("server.aPackageListIsAtMostKb.90ace1", { p0: MAX_SOURCE / 1024 }))
+      return fail(
+        res,
+        400,
+        'too_long',
+        tr('server.aPackageListIsAtMostKb.90ace1', { p0: MAX_SOURCE / 1024 }),
+      )
     }
     /*
      * Создание и правка — разные намерения, хотя запрос один и тот же.
@@ -154,7 +166,7 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         res,
         409,
         'exists',
-        tr("server.anEnvironmentCalledAlreadyExistsOpenIt.a64ba5", { p0: name }),
+        tr('server.anEnvironmentCalledAlreadyExistsOpenIt.a64ba5', { p0: name }),
       )
     }
     try {
@@ -170,26 +182,51 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         res,
         500,
         'failed',
-        tr("server.couldNotWriteKernelEnvironmentsTxt.bd3f19", { p0: name, p1: err instanceof Error ? err.message : String(err) }),
+        tr('server.couldNotWriteKernelEnvironmentsTxt.bd3f19', {
+          p0: name,
+          p1: err instanceof Error ? err.message : String(err),
+        }),
       )
     }
     res.json({ name, source: readSource(name) })
   })
 
   router.delete('/api/admin/environments/:name', ownerOnly('server.ownerAction.3'), (req, res) => {
-    if (usingRuntimeBroker()) return fail(res,409,'managed_environment',tr("server.imagesAreManagedByTheReleaseCatalog.14206b"))
-    const name = String(req.params.name)
-    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', tr("server.thatIsNotAnEnvironmentName.db085f"))
-    if (name === activeName()) {
+    if (usingRuntimeBroker())
       return fail(
         res,
         409,
-        'in_use',
-        tr("server.thatIsTheEnvironmentTheRoomIs.c699b1"),
+        'managed_environment',
+        tr('server.imagesAreManagedByTheReleaseCatalog.14206b'),
       )
+    const name = String(req.params.name)
+    if (!ENVIRONMENT_NAME.test(name))
+      return fail(res, 400, 'invalid', tr('server.thatIsNotAnEnvironmentName.db085f'))
+    if (name === activeName()) {
+      return fail(res, 409, 'in_use', tr('server.thatIsTheEnvironmentTheRoomIs.c699b1'))
     }
     if (name === 'base') {
-      return fail(res, 409, 'protected', tr("server.baseIsWhatEveryEnvironmentIsBuilt.1c36b7"))
+      return fail(res, 409, 'protected', tr('server.baseIsWhatEveryEnvironmentIsBuilt.1c36b7'))
+    }
+    /*
+     * Привезённое с продуктом удалить нельзя, и сказать об этом надо здесь.
+     *
+     * Список такого окружения лежит в каталоге приложения — у установленного
+     * colloq это site-packages: `rm` там либо падает правами (и человек видит
+     * голое «internal error»), либо снимает файл, который вернётся следующим
+     * `pip install -U`. Отказ называет, что делать вместо этого: правка ложится
+     * своей копией рядом с настройками и переживает обновление.
+     *
+     * В репозитории каталог один, свой и привезённый совпадают, и эта ветка не
+     * срабатывает никогда — удаление там работает ровно как работало.
+     */
+    if (isShipped(name)) {
+      return fail(
+        res,
+        409,
+        'protected',
+        tr('server.shipsWithColloqAndCannotBeDeletedHere.06a8ea', { p0: name }),
+      )
     }
     /*
      * Комнаты, которые на нём стоят.
@@ -206,7 +243,10 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
      */
     const attached = sessionsOnEnvironment(name)
     if (attached.length > 0) {
-      const names = attached.slice(0, 3).map((s) => s.name).join(', ')
+      const names = attached
+        .slice(0, 3)
+        .map((s) => s.name)
+        .join(', ')
       const more = attached.length > 3 ? `, and ${attached.length - 3} more` : ''
       /*
        * Инструкция должна быть выполнимой.
@@ -224,79 +264,103 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
         409,
         'in_use',
         `${attached.length === 1 ? 'One seminar uses' : `${attached.length} seminars use`} ${name} (${names}${more}). ` +
-          tr("server.thisEnvironmentCannotBeDeletedWhileLinked.8047b8"),
+          tr('server.thisEnvironmentCannotBeDeletedWhileLinked.8047b8'),
       )
     }
     removeEnvironment(name)
     res.status(204).end()
   })
 
-  router.post('/api/admin/environments/:name/build', ownerOnly('server.ownerAction.4'), async (req, res) => {
-    const name = String(req.params.name)
-    if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
-      return fail(res, 404, 'not_found', tr("server.noSuchEnvironment.7ca461"))
-    }
-    const can = await deps.environmentAbilities()
-    if (!can.canBuild) {
-      return fail(res, 409, 'no_docker', can.cannotBuildReason ?? tr("server.dockerIsUnavailable.6292c5"))
-    }
-    /*
-     * 202 — это «принято», и уходить оно обязано сейчас.
-     *
-     * Здесь стояло `await startBuild(name)`, а сборка — это минуты docker
-     * build: запрос висел всё это время, и «Accepted» приезжало ровно тогда,
-     * когда принимать было уже нечего. Вкладка, нажавшая Build, всё это время
-     * держала строку занятой — то есть не открывала живой журнал, ради
-     * которого сделан /log, и не давала нажать Cancel на своей же сборке; а
-     * ретранслятор, обрывающий десятиминутный запрос, показывал владельцу
-     * ошибку при прекрасно идущей сборке.
-     *
-     * Слот в `builds` занимается синхронно, до первого await (environments.ts ·
-     * startBuild), так что /log и Cancel находят сборку сразу после ответа.
-     * Провал сборки и так лежит в её журнале — сюда он приехать не может,
-     * незачем и ждать его.
-     */
-    void deps.startBuild(name).catch((err: unknown) => {
-      console.error(
-        `[environments] build ${name} failed:`,
-        err instanceof Error ? err.message : err,
-      )
-    })
-    res.status(202).json({ name })
-  })
+  router.post(
+    '/api/admin/environments/:name/build',
+    ownerOnly('server.ownerAction.4'),
+    async (req, res) => {
+      const name = String(req.params.name)
+      if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
+        return fail(res, 404, 'not_found', tr('server.noSuchEnvironment.7ca461'))
+      }
+      const can = await deps.environmentAbilities()
+      if (!can.canBuild) {
+        return fail(
+          res,
+          409,
+          'no_docker',
+          can.cannotBuildReason ?? tr('server.dockerIsUnavailable.6292c5'),
+        )
+      }
+      /*
+       * 202 — это «принято», и уходить оно обязано сейчас.
+       *
+       * Здесь стояло `await startBuild(name)`, а сборка — это минуты docker
+       * build: запрос висел всё это время, и «Accepted» приезжало ровно тогда,
+       * когда принимать было уже нечего. Вкладка, нажавшая Build, всё это время
+       * держала строку занятой — то есть не открывала живой журнал, ради
+       * которого сделан /log, и не давала нажать Cancel на своей же сборке; а
+       * ретранслятор, обрывающий десятиминутный запрос, показывал владельцу
+       * ошибку при прекрасно идущей сборке.
+       *
+       * Слот в `builds` занимается синхронно, до первого await (environments.ts ·
+       * startBuild), так что /log и Cancel находят сборку сразу после ответа.
+       * Провал сборки и так лежит в её журнале — сюда он приехать не может,
+       * незачем и ждать его.
+       */
+      void deps.startBuild(name).catch((err: unknown) => {
+        console.error(
+          `[environments] build ${name} failed:`,
+          err instanceof Error ? err.message : err,
+        )
+      })
+      res.status(202).json({ name })
+    },
+  )
 
   router.post('/api/admin/environments/:name/cancel', ownerOnly('cancel a build'), (req, res) => {
     const name = String(req.params.name)
     res.json({ cancelled: cancelBuild(name) })
   })
 
-  router.post('/api/admin/environments/:name/use', ownerOnly('server.ownerAction.5'), async (req, res) => {
-    const name = String(req.params.name)
-    if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
-      return fail(res, 404, 'not_found', tr("server.noSuchEnvironment.7ca461"))
-    }
-    if (isBuilding(name)) return fail(res, 409, 'building', tr("server.thatEnvironmentIsStillBuilding.d8f6a6"))
-    // Не «виден ли docker»: умолчание — это строка в .env рядом с
-    // docker-compose.yml, и в контейнере писать её некуда.
-    const can = await deps.environmentAbilities()
-    if (!can.canSetDefault) {
-      return fail(res, 409, 'no_docker', can.cannotSetDefaultReason ?? tr("server.dockerIsUnavailable.6292c5"))
-    }
-    /*
-     * Ядро compose трогаем только когда комнаты в нём и живут.
-     *
-     * При изоляции у каждой комнаты свой контейнер из образа её окружения, и
-     * «Make default» до них не дотягивается вовсе. Окно churn при этом стояло
-     * всегда: любое настоящее падение ядра в ближайшие две минуты — OOM от
-     * ячейки студента — объяснялось «кто-то переключил окружение», и
-     * преподаватель шёл искать админа вместо своей ячейки.
-     */
-    const result = await activate(name, false)
-    if (!result.ok) {
-      return fail(res, 500, 'failed', tr("server.theKernelDidNotComeBack.ffdde9", { p0: result.out.slice(-400) }))
-    }
-    res.json({ active: name })
-  })
+  router.post(
+    '/api/admin/environments/:name/use',
+    ownerOnly('server.ownerAction.5'),
+    async (req, res) => {
+      const name = String(req.params.name)
+      if (!ENVIRONMENT_NAME.test(name) || !exists(name)) {
+        return fail(res, 404, 'not_found', tr('server.noSuchEnvironment.7ca461'))
+      }
+      if (isBuilding(name))
+        return fail(res, 409, 'building', tr('server.thatEnvironmentIsStillBuilding.d8f6a6'))
+      // Не «виден ли docker»: умолчание — это строка в .env рядом с
+      // docker-compose.yml, и в контейнере писать её некуда.
+      const can = await deps.environmentAbilities()
+      if (!can.canSetDefault) {
+        return fail(
+          res,
+          409,
+          'no_docker',
+          can.cannotSetDefaultReason ?? tr('server.dockerIsUnavailable.6292c5'),
+        )
+      }
+      /*
+       * Ядро compose трогаем только когда комнаты в нём и живут.
+       *
+       * При изоляции у каждой комнаты свой контейнер из образа её окружения, и
+       * «Make default» до них не дотягивается вовсе. Окно churn при этом стояло
+       * всегда: любое настоящее падение ядра в ближайшие две минуты — OOM от
+       * ячейки студента — объяснялось «кто-то переключил окружение», и
+       * преподаватель шёл искать админа вместо своей ячейки.
+       */
+      const result = await activate(name, false)
+      if (!result.ok) {
+        return fail(
+          res,
+          500,
+          'failed',
+          tr('server.theKernelDidNotComeBack.ffdde9', { p0: result.out.slice(-400) }),
+        )
+      }
+      res.json({ active: name })
+    },
+  )
 
   /*
    * The build log, as it happens.
@@ -307,7 +371,8 @@ export function adminEnvironmentRoutes(deps: BuildDeps = liveBuilds): Router {
    */
   router.get('/api/admin/environments/:name/log', requireStaff, (req: Request, res: Response) => {
     const name = String(req.params.name)
-    if (!ENVIRONMENT_NAME.test(name)) return fail(res, 400, 'invalid', tr("server.thatIsNotAnEnvironmentName.db085f"))
+    if (!ENVIRONMENT_NAME.test(name))
+      return fail(res, 400, 'invalid', tr('server.thatIsNotAnEnvironmentName.db085f'))
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',

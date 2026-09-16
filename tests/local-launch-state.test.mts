@@ -10,7 +10,7 @@ test('launch lock excludes a second owner, reclaims a dead owner and never remov
     file = join(root, 'lock')
   try {
     const release = acquireLock(file, 42, 'first', () => true)
-    assert.throws(() => acquireLock(file, 43, 'second', () => true), /уже/)
+    assert.throws(() => acquireLock(file, 43, 'second', () => true), /already/)
     writeJson(file, { pid: 44, runId: 'replacement' })
     release()
     assert.equal(JSON.parse(readFileSync(file, 'utf8')).runId, 'replacement')

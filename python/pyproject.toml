@@ -1,0 +1,65 @@
+# Колесо Colloq: `pip install colloq` — и на машине есть команда `colloq`.
+#
+# Внутри колеса лежит собранное приложение (colloq/_app): сервер, фронтенд,
+# CLI и Dockerfile ядра. Кладёт его туда scripts/pack.mts, он же пишет
+# colloq/_version.py. Питон здесь — упаковка и ничего больше: вся логика
+# занятия живёт в CLI, шим только находит Node и передаёт ему управление.
+#
+#   make pack    собрать приложение в colloq/_app
+#   make wheel   собрать колесо (pack сделается сам)
+#
+# Backend — hatchling: он единственный из ходовых кладёт в колесо непитоновские
+# файлы без отдельного MANIFEST.in, а у нас таких файлов несколько тысяч.
+
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colloq"
+dynamic = ["version"]
+description = "Colloq — a shared workspace for teaching: one link, one live notebook, one assistant"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Colloq" }]
+keywords = ["jupyter", "notebook", "teaching", "seminar", "collaborative"]
+# 3.9 — не прихоть: это python3 из коробки в macOS 12–13 и в Debian 11. Шим
+# ничего сверх него не просит, и требовать больше значило бы отправлять
+# преподавателя ставить Python ради программы, которая написана не на Python.
+requires-python = ">=3.9"
+# Зависимостей нет и не будет: всё, что нужно шиму, есть в стандартной
+# библиотеке. Пустой список здесь сказан вслух, чтобы это было решением, а не
+# упущением.
+dependencies = []
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Education",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Education",
+]
+
+[project.scripts]
+colloq = "colloq.__main__:main"
+
+[project.urls]
+Homepage = "https://colloq.ru"
+
+[tool.hatch.version]
+path = "colloq/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["colloq"]
+# _app собран, а не написан, и поэтому лежит в .gitignore. Hatchling по
+# умолчанию выбрасывает из колеса всё, что игнорирует git, — и колесо выходило
+# бы пустым, с одним шимом и без приложения. `artifacts` — это ровно список
+# исключений из того правила.
+artifacts = ["colloq/_app/**"]
+
+[tool.hatch.build.targets.sdist]
+# Исходник пакета — это шим; приложение в него не кладём. Собирать колесо из
+# sdist всё равно нечем: для этого нужен весь репозиторий с npm и esbuild.
+include = ["colloq/*.py", "pyproject.toml", "README.md"]

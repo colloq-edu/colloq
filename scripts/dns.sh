@@ -38,8 +38,8 @@ cd "$(dirname "$0")"
 MODE=zone
 if [[ "${1:-}" == point ]]; then
   MODE=point
-  POINT_NAME=${2:?scripts/dns.sh point <имя> <адрес>}
-  POINT_ADDR=${3:?scripts/dns.sh point <имя> <адрес>}
+  POINT_NAME=${2:?scripts/dns.sh point <name> <address>}
+  POINT_ADDR=${3:?scripts/dns.sh point <name> <address>}
 fi
 
 # ../.env, а не ../colloq/.env: скрипт приехал из соседнего репозитория, где
@@ -53,7 +53,12 @@ fi
 # Двумя строками, а не `ENV_FILE=../.env . ./lib.sh`: присваивание перед
 # встроенной командой bash считает временным и после возврата снимает — а
 # read_env зовут потом, и файл настроек ему нужен уже настоящий.
-ENV_FILE=../.env
+#
+# COLLOQ_HOME сильнее «этажом выше»: у поставленного через pip colloq этажом
+# выше лежит только каталог приложения (доступный на чтение и сносимый
+# обновлением), а .env с CF_TOKEN — в каталоге состояния. Без переменной всё
+# как было: ../.env, то есть корень репозитория.
+ENV_FILE="${COLLOQ_HOME:-..}/.env"
 . ./lib.sh
 
 DOMAIN=${DOMAIN:-colloq.ru}
@@ -74,7 +79,7 @@ if [[ -z "${CF_TOKEN_COLLOQ:-}" ]]; then
   # токен», а не молчаливый выход по set -e без единого слова на экране.
   CF_TOKEN_COLLOQ=$(read_env CF_TOKEN)
 fi
-: "${CF_TOKEN_COLLOQ:?нужен токен с Zone:Read и DNS:Edit на ${DOMAIN}}"
+: "${CF_TOKEN_COLLOQ:?a token with Zone:Read and DNS:Edit on ${DOMAIN} is needed}"
 
 # Идентификатор зоны лежит в том же .env соседней строкой с токеном, а читался
 # только из окружения. Из-за этого он не использовался никогда: зона искалась
@@ -151,8 +156,8 @@ reconcile() {
     done
     if (( keep == 0 )); then
       curl -s -X DELETE "${AUTH[@]}" "$API/zones/$zone/dns_records/$id" >/dev/null
-      printf '  убрано    %-5s %-16s -> %s%s\n' "$type" "$name" "$content" \
-        "$([[ $proxied == 1 ]] && echo ' (было проксировано)')"
+      printf '  removed   %-5s %-16s -> %s%s\n' "$type" "$name" "$content" \
+        "$([[ $proxied == 1 ]] && echo ' (was proxied)')"
     fi
   done < <(printf '%s' "$records" | python3 -c "
 import json,sys
@@ -171,7 +176,7 @@ print(' '.join(r['content'] for r in json.load(sys.stdin)['result']
   local resp
   for w in "${want[@]}"; do
     if [[ " $have " == *" $w "* ]]; then
-      printf '  на месте  %-5s %-16s -> %s\n' "$type" "$name" "$w"
+      printf '  in place  %-5s %-16s -> %s\n' "$type" "$name" "$w"
       continue
     fi
     resp=$(curl -s -X POST "${AUTH[@]}" "$API/zones/$zone/dns_records" \
@@ -183,10 +188,10 @@ print(' '.join(r['content'] for r in json.load(sys.stdin)['result']
     # означало «сайт почему-то не открылся», а для прямого режима — машину,
     # которая ждёт сертификат на имя, никуда не указывающее.
     if [[ "$resp" == *'"success":true'* || "$resp" == *'"success": true'* ]]; then
-      printf '  создано   %-5s %-16s -> %s\n' "$type" "$name" "$w"
+      printf '  created   %-5s %-16s -> %s\n' "$type" "$name" "$w"
     else
       printf '%s\n' "$resp" | head -c 400 >&2; printf '\n' >&2
-      die "Cloudflare не создал ${type} ${name} -> ${w}"
+      die "Cloudflare did not create ${type} ${name} -> ${w}"
     fi
   done
 }
@@ -196,7 +201,7 @@ print(' '.join(r['content'] for r in json.load(sys.stdin)['result']
 # Одна запись: имя → адрес машины. Больше в зоне не трогается ничего.
 if [[ "$MODE" == point ]]; then
   zone=$(zone_id_for "$POINT_NAME")
-  [[ -n "$zone" ]] || die "зона для ${POINT_NAME} этому токену не видна (CF_TOKEN, CF_ZONE в .env)"
+  [[ -n "$zone" ]] || die "this token cannot see the zone for ${POINT_NAME} (CF_TOKEN, CF_ZONE in .env)"
   # Сначала снять CNAME с этого имени, потом ставить A — ровно та же причина,
   # что у www ниже: Cloudflare не даёт держать их рядом. Случай не выдуманный:
   # имя, которое когда-то заводил `make tunnel-setup`, держит CNAME на
@@ -215,15 +220,15 @@ fi
 # Адрес ретранслятора спрашивается до первой правки зоны, а не перед самой
 # звёздочкой: лендинг и www приводятся в порядок раньше её, и отказ на середине
 # оставил бы зону наполовину переписанной.
-[[ -n "$RELAY" ]] || die "не знаю, куда направить *.${DOMAIN}: в ../.env нет RELAY_ADDR.
-  Это адрес ретранслятора (make relay-setup его печатает). Разово можно назвать
-  его и так: RELAY_ADDR=1.2.3.4 scripts/dns.sh"
+[[ -n "$RELAY" ]] || die "I do not know where to point *.${DOMAIN}: ../.env has no RELAY_ADDR.
+  That is the address of the relay (make relay-setup prints it). For one run it
+  can also be named like this: RELAY_ADDR=1.2.3.4 scripts/dns.sh"
 
 zone=$(zone_id_for "$DOMAIN")
-[[ -n "$zone" ]] || die "зона ${DOMAIN} этому токену не видна"
-echo "зона ${DOMAIN}: $zone"
+[[ -n "$zone" ]] || die "this token cannot see the zone ${DOMAIN}"
+echo "zone ${DOMAIN}: $zone"
 
-echo "лендинг на GitHub Pages:"
+echo "landing page on GitHub Pages:"
 reconcile A "$DOMAIN" 185.199.108.153 185.199.109.153 185.199.110.153 185.199.111.153
 # Без AAAA посетитель на чистом IPv6 не откроет сайт вовсе.
 reconcile AAAA "$DOMAIN" 2606:50c0:8000::153 2606:50c0:8001::153 2606:50c0:8002::153 2606:50c0:8003::153
@@ -232,15 +237,15 @@ reconcile AAAA "$DOMAIN" 2606:50c0:8000::153 2606:50c0:8001::153 2606:50c0:8002:
 reconcile A "www.$DOMAIN"
 reconcile CNAME "www.$DOMAIN" "$PAGES_HOST"
 
-echo "семинары на ретранслятор:"
+echo "classes on the relay:"
 # Одной звёздочкой, а не именем на каждый университет: поддомены раздаёт frps
 # по общему секрету, и запись в DNS на каждого означала бы самообслуживание
 # на ручном приводе.
 reconcile A "*.$DOMAIN" "$RELAY"
 
 echo
-echo "готово. Дальше:"
-echo "  1. запушить лендинг: CNAME в репозитории уже указывает на ${DOMAIN}"
-echo "  2. дождаться сертификата Pages на ${DOMAIN}"
-echo "  3. проверить с телефона БЕЗ VPN: https://${DOMAIN}"
-echo "  4. семинар наружу:  make host HOST=hse.${DOMAIN}"
+echo "done. Next:"
+echo "  1. push the landing page: CNAME in the repository already points at ${DOMAIN}"
+echo "  2. wait for the Pages certificate on ${DOMAIN}"
+echo "  3. check from a phone WITHOUT a VPN: https://${DOMAIN}"
+echo "  4. publish a class:  make host HOST=hse.${DOMAIN}"

@@ -147,14 +147,14 @@ test('vast up: имя со скобкой и «../» не доходит до с
   const result = await run(['vast', 'up', '../evil'])
   assert.equal(result.code, 2)
   assert.deepEqual(result.calls, [])
-  assert.match(result.err[0] ?? '', /имя среды «\.\.\/evil» не годится/)
+  assert.match(result.err[0] ?? '', /environment name “\.\.\/evil” will not do/)
 })
 
 test('vast up: среда и адрес — одно слово, иначе отказ до аренды', async () => {
   const result = await run(['vast', 'up', 'hse', '--host', 'demo.colloq.ru'])
   assert.equal(result.code, 2)
   assert.deepEqual(result.calls, [])
-  assert.match(result.err[0] ?? '', /разные имена/)
+  assert.match(result.err[0] ?? '', /are different names/)
 })
 
 test('vast up: про цену спрашивает скрипт, а не мы', async () => {
@@ -171,7 +171,7 @@ test('vast up: после выхода среда и путь остаются �
   const state = JSON.parse(result.state ?? '{}') as Record<string, unknown>
   assert.equal(state.name, 'hse')
   assert.equal(state.gpu, 'RTX 5070')
-  assert.equal(state.path, 'прежний')
+  assert.equal(state.path, 'legacy')
   assert.deepEqual((state.last as { command?: string }).command, 'vast up hse')
 })
 
@@ -220,10 +220,10 @@ test('vast sync: MODE и RESUME уходят make', async () => {
 })
 
 test('vast sync: чужого MODE не бывает', async () => {
-  const result = await run(['vast', 'sync', 'hse', '--mode', 'быстро'])
+  const result = await run(['vast', 'sync', 'hse', '--mode', 'fast'])
   assert.equal(result.code, 2)
   assert.deepEqual(result.calls, [])
-  assert.match(result.err[0] ?? '', /live или consistent/)
+  assert.match(result.err[0] ?? '', /live or consistent/)
 })
 
 test('vast sync: consistent спрашивает, «нет» — код 4 и «отменено»', async () => {
@@ -236,8 +236,8 @@ test('vast sync: consistent спрашивает, «нет» — код 4 и «�
     result.calls.filter((call) => call[0] !== 'capture'),
     [],
   )
-  assert.match(result.asked[0] ?? '', /снять согласованную копию\?.*\[y\/N\]/)
-  assert.deepEqual(result.out, ['отменено'])
+  assert.match(result.asked[0] ?? '', /take a consistent backup\?.*\[y\/N\]/)
+  assert.deepEqual(result.out, ['cancelled'])
 })
 
 test('vast sync: live не спрашивает вовсе, --yes снимает вопрос', async () => {
@@ -257,8 +257,8 @@ test('vast sync: в прежнем пути MODE и RESUME не действую
   const result = await run(['vast', 'sync', 'hse', '--mode', 'consistent', '--yes'])
   assert.equal(result.code, 0)
   assert.deepEqual(result.out, [
-    'в прежнем пути MODE и RESUME не действуют: копия снимается как есть',
-    'снимаю копию среды hse',
+    'on the legacy path MODE and RESUME do nothing: the backup is taken as is',
+    'taking a backup of environment hse',
   ])
   assert.deepEqual(result.calls, [['make', 'vast-sync', 'NAME=hse', 'MODE=consistent']])
 })
@@ -284,7 +284,7 @@ test('vast logs: словари окна у путей разные и не пе
   const wrong = await run(['vast', 'logs', 'hse', '--since', 'today', '--release', 'release.json'])
   assert.equal(wrong.code, 2)
   assert.deepEqual(wrong.calls, [])
-  assert.match(wrong.err[0] ?? '', /в k3s-пути это длительность/)
+  assert.match(wrong.err[0] ?? '', /on the k3s path it is a duration/)
 })
 
 test('vast logs: вторая команда в окне не проедет', async () => {
@@ -324,7 +324,7 @@ test('vast adopt: без имени отказ до make, с именем — в
   const empty = await run(['vast', 'adopt'])
   assert.equal(empty.code, 2)
   assert.deepEqual(empty.calls, [])
-  assert.match(empty.err[0] ?? '', /обязательного аргумента <среда>/)
+  assert.match(empty.err[0] ?? '', /<environment>/)
 
   const named = await run(['vast', 'adopt', 'hse', '--dry-run'])
   assert.deepEqual(named.out, ['make vast-adopt NAME=hse'])
@@ -340,12 +340,12 @@ for (const name of ['install', 'update', 'rollback']) {
     const empty = await run([name, '--yes'])
     assert.equal(empty.code, 2)
     assert.deepEqual(empty.calls, [])
-    assert.match(empty.err[0] ?? '', /нет обязательного флага --release/)
+    assert.match(empty.err[0] ?? '', /missing required flag --release/)
 
-    const missing = await run([name, '--release', 'нет.json', '--yes'])
+    const missing = await run([name, '--release', 'none.json', '--yes'])
     assert.equal(missing.code, 3)
     assert.deepEqual(missing.calls, [])
-    assert.match(missing.err[0] ?? '', /файла релиза нет/)
+    assert.match(missing.err[0] ?? '', /no release file/)
 
     const ok = await run([name, '--release', 'release.json', '--dry-run'])
     assert.deepEqual(ok.out, ['make ' + name + ' RELEASE=/repo/release.json'])
@@ -359,7 +359,7 @@ for (const name of ['install', 'update', 'rollback']) {
       [],
     )
     assert.match(refused.asked[0] ?? '', /\[y\/N\]/)
-    assert.deepEqual(refused.out, ['отменено'])
+    assert.deepEqual(refused.out, ['cancelled'])
 
     const agreed = await run([name, '--release', 'release.json'], { tty: true, answer: 'y' })
     assert.equal(agreed.code, 0)
@@ -379,13 +379,13 @@ for (const name of ['install', 'update', 'rollback']) {
     })
     assert.equal(result.code, 3)
     assert.deepEqual(result.calls, [])
-    assert.match(result.err[0] ?? '', /не доведено восстановление/)
+    assert.match(result.err[0] ?? '', /restore was left unfinished/)
   })
 }
 
 test('update: вопрос говорит цену вслух', () => {
   const found = MINE.find((command) => command.name === 'update')
-  assert.match(found?.confirmQuestion ?? '', /комнаты/)
+  assert.match(found?.confirmQuestion ?? '', /rooms/)
 })
 
 // -------------------------------------------------------------- cluster / service
@@ -405,8 +405,8 @@ test('cluster: четыре цели без переменных', async () => {
 test('cluster stop: спрашивает и считает комнаты, --yes снимает вопрос', async () => {
   const refused = await run(['cluster', 'stop'], { tty: true, answer: 'n' })
   assert.equal(refused.code, 4)
-  assert.match(refused.asked[0] ?? '', /остановить приложение\?.*\[y\/N\]/)
-  assert.deepEqual(refused.out, ['отменено'])
+  assert.match(refused.asked[0] ?? '', /stop the application\?.*\[y\/N\]/)
+  assert.deepEqual(refused.out, ['cancelled'])
 
   const forced = await run(['cluster', 'stop', '--yes'])
   assert.deepEqual(forced.asked, [])
@@ -443,7 +443,7 @@ test('service: пять целей, install требует релиз', async ()
 test('service restart и stop спрашивают, status и logs — нет', async () => {
   const restart = await run(['service', 'restart'], { tty: true, answer: 'n' })
   assert.equal(restart.code, 4)
-  assert.match(restart.asked[0] ?? '', /перезапустить\?/)
+  assert.match(restart.asked[0] ?? '', /restart\?/)
 
   const stop = await run(['service', 'stop', '--yes'])
   assert.deepEqual(stop.asked, [])
@@ -464,7 +464,7 @@ test('release validate: манифест обязателен, цели нет �
   const ok = await run(['release', 'validate', 'RELEASE=release.json', '--dry-run'])
   assert.deepEqual(ok.out, ['make release-validate RELEASE=release.json'])
 
-  const missing = await run(['release', 'validate', '--release', '/нет/release.json'])
+  const missing = await run(['release', 'validate', '--release', '/none/release.json'])
   assert.equal(missing.code, 3)
   assert.deepEqual(missing.calls, [])
 })

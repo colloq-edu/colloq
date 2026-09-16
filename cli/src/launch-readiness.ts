@@ -9,7 +9,7 @@ export async function devFrontendReady(url: string): Promise<boolean> {
       return false
     }
     if (response.status >= 500)
-      throw new Error(`Vite не смог скомпилировать ${resource}. Проверьте ошибку интерфейса выше.`)
+      throw new Error(`Vite could not compile ${resource}. Check the frontend error above.`)
     if (!response.ok) return false
   }
   return true

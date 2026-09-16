@@ -64,9 +64,14 @@ test('несжатым считается только то, что действ
   const assets = path.join(fake, 'web/dist/assets')
   fs.mkdirSync(assets, { recursive: true })
   const счёт = (): string => {
-    const run = spawnSync('bash', ['-c', `${/^assets_uncompressed\(\) \{$[\s\S]*?^\}$/m.exec(host)![0]}\nassets_uncompressed`], {
-      cwd: fake, encoding: 'utf8',
-    })
+    const run = spawnSync(
+      'bash',
+      ['-c', `${/^assets_uncompressed\(\) \{$[\s\S]*?^\}$/m.exec(host)![0]}\nassets_uncompressed`],
+      {
+        cwd: fake,
+        encoding: 'utf8',
+      },
+    )
     assert.equal(run.status, 0, run.stderr)
     return run.stdout.trim()
   }
@@ -82,7 +87,7 @@ test('несжатым считается только то, что действ
 
 test('статика уезжает на ретранслятор после туннеля, и отказ — не смерть', () => {
   const lines = code(host).split('\n')
-  const proxied = lines.findIndex((line) => /не дождался ответа ретранслятора/.test(line))
+  const proxied = lines.findIndex((line) => /no answer from the relay/.test(line))
   const uploaded = lines.findIndex((line) => /^\s*upload_assets$/.test(line))
   assert.ok(uploaded > proxied && proxied > 0, 'зеркало наполняется не после подтверждения туннеля')
   const body = /^upload_assets\(\) \{$[\s\S]*?^\}$/m.exec(host)![0]
@@ -103,7 +108,10 @@ test('туннель держит запас соединений и не сжи
 test('ретранслятор раздаёт зеркало сам, а промах уходит в туннель', () => {
   // Матчер `file`, а не file_server с pass_thru: пустое или устаревшее
   // зеркало не должно ни отвечать, ни ставить заголовки.
-  assert.match(relay, /@mirror \{[\s\S]*?host \*\.\$\{DOMAIN\}[\s\S]*?path \/assets\/\* \/fonts\/\* \/pdf\/\*[\s\S]*?file \{[\s\S]*?try_files \{path\}/)
+  assert.match(
+    relay,
+    /@mirror \{[\s\S]*?host \*\.\$\{DOMAIN\}[\s\S]*?path \/assets\/\* \/fonts\/\* \/pdf\/\*[\s\S]*?file \{[\s\S]*?try_files \{path\}/,
+  )
   assert.match(relay, /handle @mirror \{[\s\S]*?precompressed br gzip/)
   assert.match(relay, /header \/assets\/\* Cache-Control "public, max-age=31536000, immutable"/)
   // Шрифт под тем же именем меняют руками: год на него — это год, когда
@@ -131,7 +139,11 @@ test('демонам ретранслятора есть чем дышать: п
   assert.match(relay, /swapon \/swapfile/)
   assert.match(relay, /^MemoryHigh=1536M$/m)
   assert.match(relay, /^MemoryHigh=1024M$/m)
-  assert.equal((relay.match(/^LimitNOFILE=65535$/gm) ?? []).length, 2, 'дескрипторы подняты не обоим демонам')
+  assert.equal(
+    (relay.match(/^LimitNOFILE=65535$/gm) ?? []).length,
+    2,
+    'дескрипторы подняты не обоим демонам',
+  )
 })
 
 test('нагрузочный стенд не повторяет серверу то, чего вкладки больше не шлют', () => {

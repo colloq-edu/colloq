@@ -1,79 +1,109 @@
-# colloq — локальная сессия и команды управления
+# colloq — a local class and the commands around it
 
-Ставить нечего. Из клона репозитория, из любого каталога:
+The CLI has two lives, and it is the same code in both.
+
+**For a teacher** it is a pip package. Install it, start it, teach:
 
 ```bash
-./colloq                 # локальная сессия, журналы в терминале, браузер
-./colloq menu            # прежнее меню по группам
-./colloq help            # список команд
-./colloq <команда> --help
+pip install colloq
+colloq                   # three lines about what lives here
+colloq start             # a class: browser, logs in the terminal, Ctrl+C stops
+colloq <command> --help
 ```
 
-Шим `./colloq` зовёт `node --import tsx cli/src/main.ts`; tsx уже стоит как
-dev-зависимость, шага сборки нет. Из другого каталога тоже работает: шим
-запоминает, откуда его позвали, и пути из аргументов считает оттуда, а не от
-корня репозитория.
+Fourteen commands are visible there — the ones a class is run with: `start`,
+`stop`, `status`, `doctor`, `host`, `env`, `logs`, `link`, `backup`. The workshop
+(`vast *`, `cluster *`, `relay *`, `dns *`, `site`, `load`, `dev`) is hidden: it
+has nothing to do on a teacher's machine, and a long list buries what matters.
+Hidden is not gone — those commands still answer to their exact names.
 
-## Как это относится к make
+State lives **outside the package**, in `~/.colloq`: `.env`, the database,
+`workspace/`, environments of your own. Reinstalling or upgrading the package
+leaves all of it alone. `COLLOQ_HOME` moves it elsewhere.
 
-`colloq` и `colloq run` запускают локальный супервизор
-`node --import tsx cli/src/launch.ts`. Он подготавливает сборку и образ ядра,
-запускает сервер, открывает браузер и показывает журналы до Ctrl+C. Готовые
-сборки и образы используются повторно, если входные файлы не изменились.
-Занятый сервер не перезапускается автоматически.
+**In the repository** there is nothing to install. From a clone, from any
+directory:
+
+```bash
+./colloq                 # a local session, logs in the terminal, browser
+./colloq menu            # the older menu, grouped
+./colloq help            # every command, workshop included
+./colloq dev             # server with reload, and Vite
+```
+
+The `./colloq` shim runs `node --import tsx cli/src/main.ts`; tsx is already a
+dev dependency, so there is no build step. It works from another directory too:
+the shim remembers where it was called from and resolves paths in arguments
+against that, not against the repository root. Here the state directory is the
+repository: `.env`, `data/` and `workspace/` sit in it, as they always did.
+
+The pip wheel is built from here as well: `make pack` (the distribution into
+`python/colloq/_app`), `make wheel` (the wheel into `python/dist`). What goes
+inside it and why is explained at the top of `scripts/pack.mts`.
+
+## How this relates to make
+
+`colloq` and `colloq run` start the local supervisor — `cli/launch.mjs` in the
+installed package, `cli/src/launch.ts` through tsx in the repository. It prepares
+the build and the kernel image, starts the server, opens the browser and streams
+the logs until Ctrl+C. Existing builds and images are reused when their inputs
+have not changed. A busy server is never restarted on its own.
 
 ```bash
 ./colloq run --port 4000 --no-open
-./colloq run --host hse.colloq.ru   # сервер и принадлежащий сессии туннель
-./colloq run --detach             # явный фоновый режим
-./colloq stop --yes               # завершить фоновую сессию
-./colloq dev                      # сервер с перезагрузкой и Vite до Ctrl+C
+./colloq run --host hse.colloq.ru   # the server and a tunnel the session owns
+./colloq run --detach               # background, asked for explicitly
+./colloq stop --yes                 # end a background session
+./colloq dev                        # server with reload and Vite until Ctrl+C
 ```
 
-`run` принимает `--host <имя>`, `--detach`, `--port <порт>`, `--no-open`,
-`--fast`; `dev` — `--port <порт>` и `--no-open`. В `dev` флаг
-`--port` задаёт порт браузера и Vite; `PORT` в `.env` задаёт порт сервера. Публикация происходит только
-по явному `--host` либо отдельной команде `host`. Отдельный `host` держит
-только туннель: его завершение не останавливает сервер. У локальной сессии
-адрес туннеля временный; `.env` не переписывается, сервер не перезапускается.
+`run` takes `--host <name>`, `--detach`, `--port <port>`, `--no-open` and
+`--fast`; `dev` takes `--port <port>` and `--no-open`. In `dev` the `--port` flag
+sets the browser and Vite port, while `PORT` in `.env` sets the server's.
+Publishing happens only on an explicit `--host` or through the separate `host`
+command. A standalone `host` holds the tunnel and nothing else: ending it does
+not stop the server. A local session's tunnel address is temporary — `.env` is
+not rewritten and the server is not restarted.
 
-Ctrl+C и `colloq stop` завершают процессы сессии и ядра, принадлежащие её базе.
-Данные, файлы и остальные инстансы сохраняются. Перезагрузки исходников в
-`dev` сохраняют ядра до окончания всей сессии. Ошибка туннеля оставляет
-локальную сессию работающей.
+Ctrl+C and `colloq stop` end the session's processes and the kernels belonging to
+its database. Data, files and any other instance are left alone. Source reloads
+in `dev` keep the kernels alive for the whole session. A tunnel that fails leaves
+the local session running.
 
-Остальные команды используют цели Makefile и `scripts/*.sh`, спрашивают
-перед опасным действием, учитывают форму установки (хост, docker, служба,
-кластер) и отдают наружу код выхода ребёнка. Для старых запусков без
-`.colloq/local-session.json` у `stop` и `restart` сохранены прежние цели make.
+The remaining commands go through Makefile targets and `scripts/*.sh`, ask before
+anything dangerous, take into account how the machine is set up (host, docker,
+service, cluster) and pass the child's exit code straight out. In the installed
+package there is no Makefile, so the commands a teacher needs call their scripts
+directly — the `delegates` column below says which.
 
-Отсюда три правила. Всё, что умеет make, умеет и обёртка: `colloq make <цель>`
-зовёт цель напрямую, ничего не разбирая. Дефисное имя команды — это сама
-команда: `colloq cluster-stop` — тот же `colloq cluster stop`, со своим
-вопросом, своими проверками и своими флагами (`colloq vast-logs --since 2h`).
-А цель, у которой обёртки нет вовсе, молча не выполняется: CLI скажет, что
-она есть, и попросит назвать её явно — `colloq make <цель>`. И наоборот: если
-обёртки под рукой нет, `make` работает как работал.
+Three rules follow. Anything make can do, the wrapper can do: `colloq make
+<target>` calls the target directly and parses nothing. A hyphenated command name
+is the command itself: `colloq cluster-stop` is the same as `colloq cluster
+stop`, with its own question, its own checks and its own flags (`colloq
+vast-logs --since 2h`). And a target with no wrapper at all is never run
+silently: the CLI says the target exists and asks for it by name — `colloq make
+<target>`. The other way round holds too: with no wrapper at hand, `make` works
+exactly as it did.
 
-## Три флага, которые есть везде
+## Three flags that are everywhere
 
-| Флаг          | Что делает                                                                                                                                                                                                                                                       |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--dry-run`   | Печатает ровно одну строку — то, что выполнилось бы, — и не запускает ничего. Значения из `.env` в неё не подставляются: секреты живут в `.env`, в argv их нет.                                                                                                  |
-| `--yes`, `-y` | Согласиться заранее: вопроса не будет. Там, где спрашивает не CLI, а скрипт, `--yes` уходит ему как `FORCE=1`. Смысла команды он не меняет: `REPLACE=1` у `restore` из него не берётся — разворачивать поверх живой базы разрешают отдельно, флагом `--replace`. |
-| `--json`      | Машинный вид; объявлен там, где ему есть что отдать: `status`, `doctor`, `env list`. В этом режиме обычный вывод погашен целиком, и отказ тоже приходит объектом.                                                                                                |
+| Flag          | What it does                                                                                                                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--dry-run`   | Prints exactly one line — what would have run — and runs nothing. Values from `.env` are not substituted into it: secrets live in `.env`, never in argv.                                                                                                                              |
+| `--yes`, `-y` | Agree in advance; there will be no question. Where the script asks rather than the CLI, `--yes` reaches it as `FORCE=1`. It never changes what a command means: `restore` does not take `REPLACE=1` from it — restoring over a live database is allowed separately, with `--replace`. |
+| `--json`      | Machine-readable output, declared where there is something to hand over: `status`, `doctor`, `env list`. In this mode the ordinary output is silenced entirely, and a refusal arrives as an object too.                                                                               |
 
-Общие флаги действуют только ДО `--`: всё после него неприкосновенно и уходит
-дальше как есть, поэтому `colloq make check -- -n --dry-run` — это ключи make,
-а не наши.
+The shared flags apply only BEFORE `--`: everything after it is untouched and
+passed straight through, so `colloq make check -- -n --dry-run` means make's
+switches, not ours.
 
-Ещё есть `--no-color` (ни одного байта escape в потоке; то же делает
-`NO_COLOR` и вывод не в терминал), `--version` и `-h`.
+There is also `--no-color` (not one escape byte in the stream; `NO_COLOR` and
+output that is not a terminal do the same), `--version` and `-h`.
 
-## Переменные make пишутся парами
+## make variables are written as pairs
 
-Пара `ВИДА=ЗНАЧЕНИЕ` снимается из любого места строки и уходит `make` как
-есть, поэтому обе формы означают одно:
+A `NAME=VALUE` pair is picked up anywhere in the line and passed to `make` as it
+is, so both forms mean the same thing:
 
 ```bash
 ./colloq backup --mode consistent
@@ -82,135 +112,139 @@ Ctrl+C и `colloq stop` завершают процессы сессии и яд
 ./colloq vast up NAME=hse GPU="RTX 5070"
 ```
 
-Для `run` есть пары `HOST=…`, `DETACH=1`, `PORT=…`, `OPEN=0`, `FAST=1`;
-они переводятся во флаги супервизора. Остальные пары передаются ему
-окружением. Значения из `.env` в строку `--dry-run` не подставляются.
+`run` understands the pairs `HOST=…`, `DETACH=1`, `PORT=…`, `OPEN=0` and
+`FAST=1`; they become supervisor flags. Other pairs reach it through the
+environment. Values from `.env` are never substituted into the `--dry-run` line.
 
-Пару, написанную руками, CLI второй раз не шлёт: `NAME=hse NAME=hse` в строке
-не бывает. Тонкие ручки, у которых нет флага, задаются только парой —
-`colloq load 500 K=20 STORM=20`.
+A pair written by hand is not sent a second time: `NAME=hse NAME=hse` never
+appears in a line. The fine-grained knobs that have no flag are set only by a
+pair — `colloq load 500 K=20 STORM=20`.
 
-## Коды выхода
+## Exit codes
 
-| Код   | Что значит                                                                                 |
-| ----- | ------------------------------------------------------------------------------------------ |
-| `0`   | Сделано.                                                                                   |
-| `1`   | Ошибка внутри CLI или код ребёнка.                                                         |
-| `2`   | Употребление: нет команды, нет обязательного аргумента, конфликт флагов, лишний аргумент.  |
-| `3`   | Не выполнено предусловие: нет `.env`, нет файла релиза, нет терминала для вопроса.         |
-| `4`   | Отказались на вопрос.                                                                      |
-| `130` | Ctrl+C. Вообще сигнал у ребёнка — это `128 + номер`: 137 — снёс OOM-killer, 143 — SIGTERM. |
+| Code  | What it means                                                                                 |
+| ----- | --------------------------------------------------------------------------------------------- |
+| `0`   | Done.                                                                                         |
+| `1`   | An error inside the CLI, or the child's own code.                                             |
+| `2`   | Usage: no command, a missing required argument, conflicting flags, an argument too many.      |
+| `3`   | A precondition is missing: no `.env`, no release file, no terminal to ask in.                 |
+| `4`   | The question was answered no.                                                                 |
+| `130` | Ctrl+C. A child's signal is `128 + number` in general: 137 is the OOM killer, 143 is SIGTERM. |
 
-Код подчинённого процесса отдаётся наружу как есть: `colloq check` в CI
-кончается тем же, чем `make check`.
+A child process's code is passed straight out: `colloq check` in CI ends the same
+way `make check` does.
 
-## Вопрос перед опасным
+## Asking before anything dangerous
 
-Опасная команда спрашивает ровно один раз. Где цену называет сам скрипт
-(`vast up` показывает ставку, `vast down` просит напечатать «уничтожить»),
-CLI молчит и не спрашивает второй раз: второй вопрос подряд перестают читать.
-Если сейчас идут комнаты, их число дописывается к вопросу — оно ничего не
-запрещает, только уточняет. Без терминала и без `--yes` вопрос не «да», а
-отказ с кодом 3.
+A dangerous command asks exactly once. Where the script names the cost itself
+(`vast up` shows the bid, `vast down` asks you to type the word for destroy), the
+CLI stays quiet and does not ask again: a second question in a row stops being
+read. If rooms are running right now, their number is appended to the question —
+it forbids nothing, it only makes the question precise. With no terminal and no
+`--yes`, the question is not a yes: it is a refusal with code 3.
 
-## Команды
+## Commands
 
-### Локально
+### Locally
 
-| Команда               | Что делает                                                                   | Делегирует                                                                                      |
-| --------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `run` <br>`start` | Локальная сессия в терминале; `--detach` оставляет её в фоне | `node --import tsx cli/src/launch.ts run` |
-| `stop` | Завершить сессию, её туннель и ядра её базы | Супервизор `stop`; без расписки — `make stop` |
-| `restart` | Перезапустить текущую сессию или прежнюю форму установки | Супервизор `restart`; без расписки — прежние цели make |
-| `up`                  | Поднять весь стек в docker: приложение и ядро                                | `make up`                                                                                       |
-| `down`                | Остановить всё в docker (данные и файлы остаются)                            | `make down`                                                                                     |
-| `ps` <br>`containers` | Что запущено в docker: compose, ядра комнат, окружение                       | `make status (он же make ps)`                                                                   |
-| `logs` <br>`log`      | Смотреть журнал той формы, которая работает                                  | `make logs-run · make logs · make service-logs`                                                 |
-| `dev` | Сервер с перезагрузкой и Vite в одной сессии | `node --import tsx cli/src/launch.ts dev` |
-| `build`               | Собрать фронтенд и сервер                                                    | `npm run build:optimized (с --fast — npm run build)`                                            |
-| `ui`                  | Проверить интерфейс настоящим браузером                                      | `make ui [HEADED=1]`                                                                            |
-| `test`                | Прогнать тесты                                                               | `make test · node --import tsx --test tests/*<шаблон>*.test.mts`                                |
-| `check`               | Прогнать тесты и проверку типов                                              | `make check`                                                                                    |
-| `shell`               | Открыть оболочку в ядре — посмотреть, что там стоит                          | `make shell`                                                                                    |
-| `link`                | Показать адрес семинара и где искать вход в панель                           | `native: расписка сессии, действующий временный адрес, .env`                                              |
-| `docker-gid`          | Записать в .env группу сокета docker — чтобы у каждой комнаты было своё ядро | `make docker-gid`                                                                               |
-| `backup`              | Снять копию: переносимую k3s или локальную старого формата                   | `make backup MODE=… · make backup-legacy`                                                       |
-| `restore`             | Развернуть копию: переносимую k3s или локальную старого формата              | `make restore ARCHIVE=… RELEASE=… · make restore-legacy DB=… FILES=…`                           |
+| Command               | What it does                                                              | Delegates to                                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run` <br>`start`     | Start a local session in this terminal and open the browser               | `native: the class supervisor — cli/launch.mjs in the distribution, cli/src/launch.ts through tsx in the repository`                                                                    |
+| `stop`                | End the local session, its tunnel and the kernels of this database        | `native: the same supervisor with the stop command; without a session receipt — make stop (in the repository)`                                                                          |
+| `restart`             | Restart whatever is running on this machine                               | `session → supervisor restart; container → make restart · service → make service-restart · host → make stop, make run; without a receipt in the installed package — a refusal in words` |
+| `up`                  | Bring the whole stack up in docker: the application and the kernel        | `make up`                                                                                                                                                                               |
+| `down`                | Stop everything in docker (data and files stay)                           | `make down`                                                                                                                                                                             |
+| `ps` <br>`containers` | What is running in docker: compose, room kernels, the environment         | `make status (also known as make ps)`                                                                                                                                                   |
+| `logs` <br>`log`      | Watch the log of whatever is running on this machine                      | `tail <log> · make logs · make service-logs`                                                                                                                                            |
+| `dev`                 | Start the reloading server and Vite in one session                        | `native: the same supervisor with the dev command (in the repository only)`                                                                                                             |
+| `build`               | Build the frontend and the server                                         | `npm run build:optimized (with --fast — npm run build)`                                                                                                                                 |
+| `ui`                  | Check the interface in a real browser                                     | `make ui [HEADED=1]`                                                                                                                                                                    |
+| `test`                | Run the tests                                                             | `make test · node --import tsx --test tests/*<pattern>*.test.mts`                                                                                                                       |
+| `check`               | Run the tests and the type check                                          | `make check`                                                                                                                                                                            |
+| `shell`               | Open a shell in the kernel to see what is installed there                 | `make shell`                                                                                                                                                                            |
+| `link`                | Show the class address and where to find the sign-in to the panel         | `native: reads the session receipt, the temporary address and .env`                                                                                                                     |
+| `docker-gid`          | Write the docker socket group into .env so every room gets its own kernel | `make docker-gid`                                                                                                                                                                       |
+| `backup`              | Take a backup: a portable k3s one or a local one in the old format        | `make backup MODE=… · make backup-legacy (in an installed colloq — scripts/backup.sh and scripts/backup-local.sh directly)`                                                             |
+| `restore`             | Restore a backup: a portable k3s one or a local one in the old format     | `make restore ARCHIVE=… RELEASE=… · make restore-legacy DB=… FILES=… (in an installed colloq — scripts/restore.sh directly)`                                                            |
 
-### Занятие в сети
+### A class on the network
 
-| Команда              | Что делает                                                      | Делегирует                                                       |
-| -------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `host` <br>`public`  | Выставить работающий семинар наружу и получить ссылку           | `make host HOST=… (с --direct — make host-direct HOST=…)`        |
-| `host-direct`        | То же, но caddy на этой машине: без ретранслятора и посредников | `make host-direct HOST=…`                                        |
-| `tunnel setup`       | Один раз завести постоянный адрес через Cloudflare              | `make tunnel-setup HOST=…`                                       |
-| `relay setup`        | Поставить ретранслятор \*.colloq.ru на VPS                      | `make relay-setup WHERE=…`                                       |
-| `relay page`         | Обновить страницу «комната ещё не открыта»                      | `make relay-page WHERE=… (scripts/relay-setup.sh --page)`        |
-| `relay ping`         | Отвечает ли ретранслятор                                        | `native: TCP до RELAY_ADDR:RELAY_PORT из .env, таймаут 2 с`      |
-| `dns sync` <br>`dns` | Привести зону colloq.ru к нужному виду                          | `./scripts/dns.sh (с --domain — DOMAIN=<зона> ./scripts/dns.sh)` |
-| `dns point`          | Направить одно имя на один адрес                                | `./scripts/dns.sh point <имя> <ip>`                              |
-| `sync`               | Проверить, что проектор идёт за пультом при быстром листании    | `make sync (с --headed — make sync HEADED=1)`                    |
+| Command              | What it does                                                            | Delegates to                                                                                                                              |
+| -------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `host` <br>`public`  | Publish the running class and get a link                                | `make host HOST=… (with --direct: make host-direct HOST=…); in the package there is no make to call: COLLOQ_HOSTNAME=… ./scripts/host.sh` |
+| `host-direct`        | The same, but caddy on this machine: no relay and no middlemen          | `make host-direct HOST=… (in the package: COLLOQ_DIRECT=1 COLLOQ_HOSTNAME=… ./scripts/host.sh)`                                           |
+| `tunnel setup`       | Set up a permanent address through Cloudflare, once                     | `make tunnel-setup HOST=…`                                                                                                                |
+| `relay setup`        | Install the \*.colloq.ru relay on a VPS                                 | `make relay-setup WHERE=…`                                                                                                                |
+| `relay page`         | Update the "room is not open yet" page                                  | `make relay-page WHERE=… (scripts/relay-setup.sh --page)`                                                                                 |
+| `relay ping`         | Whether the relay answers                                               | `native: TCP to RELAY_ADDR:RELAY_PORT from .env, 2s timeout`                                                                              |
+| `dns sync` <br>`dns` | Put the colloq.ru zone in order                                         | `./scripts/dns.sh (with --domain: DOMAIN=<zone> ./scripts/dns.sh)`                                                                        |
+| `dns point`          | Point one name at one address                                           | `./scripts/dns.sh point <name> <ip>`                                                                                                      |
+| `sync`               | Check that the projector follows the console when pages are turned fast | `make sync (with --headed: make sync HEADED=1)`                                                                                           |
 
-### Машины и версии
+### Machines and releases
 
-| Команда                     | Что делает                                                   | Делегирует                                                                 |
-| --------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| `vast up`                   | Арендовать машину с GPU и развернуть на ней Colloq           | `make vast-up NAME=… HOST=… GPU=… [RELEASE=…] [REPLACE=1] [FORCE=1]`       |
-| `vast status` <br>`vast ls` | Что арендовано: все среды или подробности одной              | `make vast-status NAME=… [RELEASE=…]`                                      |
-| `vast sync`                 | Снять копию с арендованной машины в backups/<среда>/         | `make vast-sync NAME=… [MODE=…] [RESUME=1] [RELEASE=…]`                    |
-| `vast logs`                 | Забрать журналы с арендованной машины в logs/<среда>/<дата>/ | `make vast-logs NAME=… [SINCE=…] [RELEASE=…]`                              |
-| `vast down`                 | Уничтожить арендованную машину вместе со всем, что на ней    | `make vast-down NAME=… [RELEASE=…] [FORCE=1]`                              |
-| `vast adopt`                | Назвать средой машину со старой меткой «colloq»              | `make vast-adopt NAME=… (всегда scripts/vast.sh, даже без RELEASE)`        |
-| `install`                   | Установить версию k3s на этой Linux-машине                   | `make install RELEASE=… (scripts/cluster.sh install)`                      |
-| `update`                    | Обновить до явной версии                                     | `make update RELEASE=… (scripts/cluster.sh update)`                        |
-| `rollback`                  | Вернуть совместимую версию                                   | `make rollback RELEASE=… (scripts/cluster.sh rollback)`                    |
-| `cluster start`             | Запустить установленное приложение k3s                       | `make cluster-start (scripts/cluster.sh start)`                            |
-| `cluster stop`              | Остановить приложение k3s (все писатели)                     | `make cluster-stop (scripts/cluster.sh stop)`                              |
-| `cluster status`            | Что в кластере: развёртывания, поды, тома, здоровье          | `make cluster-status (scripts/cluster.sh status)`                          |
-| `cluster logs`              | Смотреть журнал приложения в кластере                        | `make cluster-logs (scripts/cluster.sh logs)`                              |
-| `service install`           | Поставить k3s по релизу — прежнее имя цели                   | `make service-install RELEASE=… (scripts/service.sh → cluster.sh install)` |
-| `service restart`           | Перезапустить приложение и дождаться готовности              | `make service-restart (service.sh: cluster.sh stop, затем start)`          |
-| `service stop`              | Остановить приложение (ядра комнат остаются жить)            | `make service-stop (cluster.sh stop)`                                      |
-| `service status`            | Жива ли служба и готова ли вести семинар                     | `make service-status (cluster.sh status)`                                  |
-| `service logs`              | Смотреть журнал службы                                       | `make service-logs (cluster.sh logs)`                                      |
-| `release validate`          | Проверить манифест релиза                                    | `make release-validate RELEASE=… (python3 scripts/release.py validate)`    |
+| Command                     | What it does                                                           | Delegates to                                                               |
+| --------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `vast up`                   | Rent a GPU machine and deploy Colloq on it                             | `make vast-up NAME=… HOST=… GPU=… [RELEASE=…] [REPLACE=1] [FORCE=1]`       |
+| `vast status` <br>`vast ls` | What is rented: every environment, or one in detail                    | `make vast-status NAME=… [RELEASE=…]`                                      |
+| `vast sync`                 | Take a backup from the rented machine into backups/<environment>/      | `make vast-sync NAME=… [MODE=…] [RESUME=1] [RELEASE=…]`                    |
+| `vast logs`                 | Fetch the logs from the rented machine into logs/<environment>/<date>/ | `make vast-logs NAME=… [SINCE=…] [RELEASE=…]`                              |
+| `vast down`                 | Destroy the rented machine along with everything on it                 | `make vast-down NAME=… [RELEASE=…] [FORCE=1]`                              |
+| `vast adopt`                | Name a machine with the old “colloq” label as an environment           | `make vast-adopt NAME=… (always scripts/vast.sh, even without RELEASE)`    |
+| `install`                   | Install a k3s version on this Linux machine                            | `make install RELEASE=… (scripts/cluster.sh install)`                      |
+| `update`                    | Update to an explicit version                                          | `make update RELEASE=… (scripts/cluster.sh update)`                        |
+| `rollback`                  | Bring back a compatible version                                        | `make rollback RELEASE=… (scripts/cluster.sh rollback)`                    |
+| `cluster start`             | Start the installed k3s application                                    | `make cluster-start (scripts/cluster.sh start)`                            |
+| `cluster stop`              | Stop the k3s application (every writer)                                | `make cluster-stop (scripts/cluster.sh stop)`                              |
+| `cluster status`            | What is in the cluster: deployments, pods, volumes, health             | `make cluster-status (scripts/cluster.sh status)`                          |
+| `cluster logs`              | Watch the application log in the cluster                               | `make cluster-logs (scripts/cluster.sh logs)`                              |
+| `service install`           | Install k3s from a release — the old target name                       | `make service-install RELEASE=… (scripts/service.sh → cluster.sh install)` |
+| `service restart`           | Restart the application and wait until it is ready                     | `make service-restart (service.sh: cluster.sh stop, then start)`           |
+| `service stop`              | Stop the application (room kernels stay alive)                         | `make service-stop (cluster.sh stop)`                                      |
+| `service status`            | Whether the service is alive and ready to run a class                  | `make service-status (cluster.sh status)`                                  |
+| `service logs`              | Watch the service log                                                  | `make service-logs (cluster.sh logs)`                                      |
+| `release validate`          | Check the release manifest                                             | `make release-validate RELEASE=… (python3 scripts/release.py validate)`    |
 
-### Окружения ядра
+### Kernel environments
 
-| Команда                         | Что делает                                       | Делегирует                                                         |
-| ------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------ |
-| `env list` <br>`env` · `env ls` | Какие окружения заведены                         | `make env-list (с --json — чтение kernel/environments/*.txt)`      |
-| `env show`                      | Что в окружении и на каком оно Python            | `make env-show (чужое имя — чтение kernel/environments/<имя>.txt)` |
-| `env new`                       | Завести окружение                                | `make env-new NAME=… [PYTHON=…]`                                   |
-| `env build`                     | Собрать образ окружения, не переключаясь на него | `make env-build NAME=…`                                            |
-| `env use` <br>`env switch`      | Сделать окружение умолчанием для новых семинаров | `make env-use NAME=…`                                              |
-| `env freeze`                    | Показать реальные версии пакетов из ядра         | `make env-freeze`                                                  |
+| Command                         | What it does                                              | Delegates to                                                                      |
+| ------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `env list` <br>`env` · `env ls` | Which environments exist                                  | `native: reads both environment directories and KERNEL_ENV from .env`             |
+| `env show`                      | What is in an environment and which Python it runs on     | `native: reads <environment>.txt and kernel/requirements.txt`                     |
+| `env new`                       | Create an environment                                     | `native: creates <name>.txt with a header in your own environment directory`      |
+| `env build`                     | Build the image of an environment without switching to it | `make env-build NAME=… (in the repository only)`                                  |
+| `env use` <br>`env switch`      | Make an environment the default for new classes           | `native: KERNEL_ENV in .env (in the repository, make env-build first)`            |
+| `env freeze`                    | Show the real package versions from the kernel            | `make env-freeze (with colloq installed: docker run colloq-kernel:<environment>)` |
 
-### Инструменты
+### Tools
 
-| Команда           | Что делает                                                  | Делегирует                                                                         |
-| ----------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `status` <br>`st` | Что сейчас с этой машиной — одним экраном, без сети         | `native: .env, .colloq.pid, ps, docker ps, web/dist, backups/, .colloq/state.json` |
-| `doctor`          | Проверить, всё ли на месте перед парой                      | `native: программы, файлы, образы, место; одна проверка ретранслятора по TCP`      |
-| `activity`        | Посчитать активность семинара и записать в Google-таблицу   | `make activity ROOM=… [ALL=1] [REPLACE=1]`                                         |
-| `site`            | Выложить сайт colloq.ru — лендинг и опубликованные семинары | `make site [SITE=…] [BASE=…] [DRY=1]`                                              |
-| `course`          | Завести курс из расписания в таблице                        | `make course SHEET=… GID=… COL=… [NAME=…] [BLURB=…] [DRY=1]`                       |
-| `load`            | Загнать N студентов в свою комнату — нагрузочный стенд      | `make load N=… RAMP=… [SPID=… IDLE=… TREE=… COUNCIL=… INK=… STAFF=1]`              |
-| `make`            | Позвать цель Makefile напрямую, ничего не разбирая          | `make <цель> [ПЕРЕМ=значение …]`                                                   |
+| Command           | What it does                                                       | Delegates to                                                                                                   |
+| ----------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `status` <br>`st` | Show what is on this machine right now: one screen, no network     | `native: .colloq/local-session.json, .env, .colloq.pid, ps, docker ps, web/dist, backups/, .colloq/state.json` |
+| `doctor`          | Check that everything is in place before a class                   | `native: programs, files, images, disk space; one TCP check of the relay`                                      |
+| `activity`        | Count the activity of a class and write it into a Google sheet     | `make activity ROOM=… [ALL=1] [REPLACE=1]`                                                                     |
+| `site`            | Publish the colloq.ru site: the landing page and published classes | `make site [SITE=…] [BASE=…] [DRY=1]`                                                                          |
+| `course`          | Create a course from a schedule in a sheet                         | `make course SHEET=… GID=… COL=… [NAME=…] [BLURB=…] [DRY=1]`                                                   |
+| `load`            | Drive N students into a room of your own: the load test            | `make load N=… RAMP=… [SPID=… IDLE=… TREE=… COUNCIL=… INK=… STAFF=1]`                                          |
+| `make`            | Call a Makefile target directly, parsing nothing                   | `make <target> [VAR=value …]`                                                                                  |
 
-## Что CLI не делает
+## What the CLI does not do
 
-Не читает секретов: для `JUPYTER_TOKEN`, `RELAY_TOKEN`, `CF_TOKEN` и прочего
-есть только «есть строка или нет». Не переписывает отказы скриптов — их
-stderr уходит наружу дословно. Не поднимает инстанс вместо человека и не
-достраивает короткое имя до зоны. Не убивает процессы по шаблону.
+It does not read secrets: for `JUPYTER_TOKEN`, `RELAY_TOKEN`, `CF_TOKEN` and the
+rest there is only "the line is there or it is not". It does not rewrite a
+script's refusal — that stderr reaches you word for word. It does not bring an
+instance up on your behalf, and it does not complete a short name into a zone.
+It does not kill processes by pattern.
 
-## Состояние
+## State
 
-`.colloq/local-session.json` — расписка супервизора с идентификатором запуска,
-pid, портом, локальным адресом и путями данных. По ней `stop` и `restart`
-выбирают новую сессию; проверку владения процессами выполняет супервизор.
+`.colloq/local-session.json` is the supervisor's session receipt: the run id, the
+pid, the port, the local address and the data paths. `stop` and `restart` pick
+out a current session by it; the supervisor is what checks which processes it
+owns. It lives in the state directory — the repository in a clone, `~/.colloq`
+for an installed package — never next to the code.
 
-`.colloq/state.json` — имя последней среды, карта, путь развёртывания и
-последняя команда с кодом выхода. Машинное, не исходник, в `.gitignore`;
-`colloq status` читает его, чтобы сказать про аренду, не ходя в сеть.
+`.colloq/state.json` holds the last environment's name, its GPU, the deployment
+path and the last command with its exit code. It is machine state, not source; it
+is in `.gitignore`, and `colloq status` reads it to say something about a rented
+machine without going to the network.

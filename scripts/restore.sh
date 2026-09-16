@@ -82,6 +82,24 @@ RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; OFF=$'\033[0m'
 say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
+# Корень СОСТОЯНИЯ — оттуда берутся data/, workspace/ и backups/.
+#
+# Пара к scripts/backup-local.sh, и по той же причине. Скрипт пришёл сюда из
+# мира, где корень был один, и считал data/ с workspace/ от каталога над собой,
+# то есть от каталога ПРИЛОЖЕНИЯ. У поставленного через pip colloq это
+# site-packages: `colloq restore --legacy` распаковал бы копию занятия рядом с
+# кодом — туда, куда не смотрит ни сервер, ни следующий запуск, — и стёр бы её
+# первым же `pip install -U`. Адрес состояния приезжает переменной COLLOQ_HOME,
+# разбор — в scripts/lib.sh · COLLOQ_STATE_ROOT.
+#
+# Каталог приложения при этом нужен и дальше: в нём лежат сами скрипты,
+# docker-compose.yml и cluster.sh. Поэтому он запоминается, а не теряется.
+. ./scripts/lib.sh
+APP="$PWD"
+STATE="$(cd "$COLLOQ_STATE_ROOT" 2>/dev/null && pwd || true)"
+[ -n "$STATE" ] || die "no state directory \"${COLLOQ_STATE_ROOT}\" — check COLLOQ_HOME."
+cd "$STATE"
+
 # Каталог копий одной среды. Имя приезжает переменной окружения, как HOST у
 # `make host`: так его передаёт Makefile, и так оно не мешает старому вызову с
 # путями в аргументах. Проверяем те же знаки, что и vast.sh: имя уходит в путь,
@@ -89,7 +107,7 @@ die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 ENV_NAME="${NAME:-}"
 case "$ENV_NAME" in
   '') : ;;
-  *[!A-Za-z0-9-]*|-*|*-) die "имя среды «${ENV_NAME}» не годится: буквы, цифры и дефис в середине." ;;
+  *[!A-Za-z0-9-]*|-*|*-) die "deployment name \"${ENV_NAME}\" is not valid: letters, digits and a hyphen inside." ;;
 esac
 BACKUP_DIR="backups${ENV_NAME:+/$ENV_NAME}"
 
@@ -99,7 +117,7 @@ for arg in "$@"; do
   case "$arg" in
     *.db) DB="$arg" ;;
     *.tar.gz) FILES="$arg" ;;
-    *) die "не понимаю «${arg}». Ожидаю backups/colloq-<дата>.db и/или backups/colloq-<дата>-files.tar.gz" ;;
+    *) die "I do not understand \"${arg}\". Expected backups/colloq-<date>.db and/or backups/colloq-<date>-files.tar.gz" ;;
   esac
 done
 
@@ -110,10 +128,13 @@ if [ -z "$DB" ] && [ -z "$FILES" ]; then
     # — это не отсутствие копии, а не то имя, и выяснять это на пустой машине
     # посреди занятия незачем.
     others="$(ls -1d backups/*/ 2>/dev/null | sed 's#backups/##;s#/##' | tr '\n' ' ' | sed 's/ *$//' || true)"
-    die "в $BACKUP_DIR/ нет ни одной копии.
-  Снять её на работающем инстансе: make backup${others:+
-  Копии сред лежат по подкаталогам: $others
-  Развернуть копию среды: make restore NAME=<имя>}"
+    # Совет называется командой, которая есть на ЭТОЙ машине: у поставленного
+    # пакета Makefile нет, и «make backup» было бы вторым отказом подряд.
+    take="colloq backup"; [ "$STATE" = "$APP" ] && take="make backup"
+    die "there is not a single backup in $BACKUP_DIR/.
+  Take one on a running instance: $take${others:+
+  Backups of other deployments live in subdirectories: $others
+  Restore a deployment backup: make restore NAME=<name>}"
   fi
 fi
 # Архив ищется по имени базы, а не по «самому свежему»: пара из базы одного дня
@@ -123,10 +144,10 @@ if [ -z "$FILES" ] && [ -n "$DB" ] && [ -f "${DB%.db}-files.tar.gz" ]; then
   FILES="${DB%.db}-files.tar.gz"
 fi
 
-[ -z "$DB" ] || [ -f "$DB" ] || die "нет файла $DB"
-[ -z "$FILES" ] || [ -f "$FILES" ] || die "нет файла $FILES"
+[ -z "$DB" ] || [ -f "$DB" ] || die "no file $DB"
+[ -z "$FILES" ] || [ -f "$FILES" ] || die "no file $FILES"
 
-say "${BOLD}1/3${OFF} проверяю, что восстанавливать есть куда"
+say "${BOLD}1/3${OFF} checking there is somewhere to restore into"
 
 # Под работающим сервером базу не подменяют. sqlite держит открытым тот файл,
 # который открыл: старый inode останется живым до последнего закрытия, семинар
@@ -134,23 +155,26 @@ say "${BOLD}1/3${OFF} проверяю, что восстанавливать е
 # работа просто исчезнет. Причём на экране до самого перезапуска всё выглядит
 # исправно — поэтому проверка здесь, а не в напутствии внизу.
 # Читает .env общий read_env (scripts/lib.sh) — тот же, что у host.sh и
-# service.sh: одна копия правила на все скрипты.
-. ./scripts/lib.sh
+# service.sh: одна копия правила на все скрипты. Подключён он выше, вместе с
+# корнем состояния: оттуда же берётся и путь к .env.
 PORT="$(read_env PORT)"; PORT="${PORT:-3000}"
 if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; then
-  die "работает служба colloq — сначала остановите её: make service-stop.
-  Остановленная служба — это ещё не «машина пустая»: разворачивать копию поверх
-  сегодняшней работы всё равно надо нарочно, см. REPLACE=1 ниже по тексту."
+  die "the colloq service is running — stop it first: make service-stop.
+  A stopped service is not yet an empty machine: restoring a backup over today's
+  work still has to be deliberate, see REPLACE=1 further down."
 fi
-if docker compose ps --status running --services 2>/dev/null | grep -qx app; then
-  die "в docker работает app — сначала остановите его: make down"
+# Спрашиваем из каталога ПРИЛОЖЕНИЯ: docker-compose.yml лежит там, а мы стоим
+# в состоянии. У поставленного пакета compose нет вовсе — вопрос останется без
+# ответа, и это верный ответ: контейнером там никто не поднимается.
+if (cd "$APP" && docker compose ps --status running --services 2>/dev/null) | grep -qx app; then
+  die "app is running in docker — stop it first: make down"
 fi
 if [ -f .colloq.pid ] && kill -0 "$(cat .colloq.pid 2>/dev/null)" 2>/dev/null; then
-  die "на хосте работает сервер (make run) — сначала: make stop"
+  die "a class is running on this machine — first: colloq stop"
 fi
 if curl -sf -o /dev/null --max-time 3 "http://localhost:$PORT/api/health" 2>/dev/null; then
-  die "на localhost:$PORT кто-то отвечает — это второй Colloq.
-  Остановите его (make down · make stop) и повторите."
+  die "something answers on localhost:$PORT — that is a second Colloq.
+  Stop it (make down · make stop) and try again."
 fi
 
 # Поверх непустой машины — только по просьбе.
@@ -167,35 +191,36 @@ fi
 # REPLACE=1, названный вслух.
 if [ -n "$DB" ] && [ -s data/colloq.db ]; then
   if [ "${REPLACE:-}" = 1 ]; then
-    say "${DIM}    здесь уже есть база — разворачиваю поверх (REPLACE=1)${OFF}"
+    say "${DIM}    a database is already here — restoring over it (REPLACE=1)${OFF}"
   elif [ -t 0 ]; then
-    say "${RED}Здесь уже есть data/colloq.db${OFF} — семинары, преподаватели, история версий."
-    say "${DIM}Она будет отложена в data/colloq.db.replaced-<штамп>, а файлы из архива${OFF}"
-    say "${DIM}лягут поверх workspace/ — одноимённые перезапишутся без копии.${OFF}"
-    printf '%sразвернуть копию поверх? [y/N] %s' "$BOLD" "$OFF"
+    say "${RED}There is already a data/colloq.db here${OFF} — classes, teachers, version history."
+    say "${DIM}It will be set aside as data/colloq.db.replaced-<stamp>, and the archive will${OFF}"
+    say "${DIM}land on workspace/ — same-named files are overwritten with no backup.${OFF}"
+    printf '%srestore the backup over it? [y/N] %s' "$BOLD" "$OFF"
     read -r answer
-    case "$answer" in y|Y|д|да) : ;; *) die "не разворачиваю." ;; esac
+    case "$answer" in y|Y|yes|YES|Yes) : ;; *) die "not restoring." ;; esac
   else
-    die "здесь уже есть data/colloq.db, а терминала, чтобы спросить, нет.
-  Это не пустая машина: развернуть копию поверх — значит отложить нынешнюю базу
-  в data/colloq.db.replaced-<штамп> и распаковать архив поверх workspace/.
-  Если это и нужно: REPLACE=1 $0 $*"
+    die "there is already a data/colloq.db here, and no terminal to ask in.
+  This is not an empty machine: restoring a backup over it means setting the
+  current database aside as data/colloq.db.replaced-<stamp> and unpacking the
+  archive on top of workspace/.
+  If that is what you want: REPLACE=1 $0 $*"
   fi
 fi
 
 mkdir -p data workspace
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
-say "${BOLD}2/3${OFF} база"
+say "${BOLD}2/3${OFF} database"
 if [ -n "$DB" ]; then
   # Дешёвая проверка вместо доверия расширению: первые шестнадцать байт файла
   # sqlite — это «SQLite format 3». Восстановить пустой файл, скачавшийся до
   # половины, значит потерять и то, что было.
   head -c 16 "$DB" | LC_ALL=C grep -qa 'SQLite format 3' \
-    || die "$DB не похож на базу sqlite — копия битая или скачалась не целиком."
+    || die "$DB does not look like an sqlite database — the backup is broken or incomplete."
   if command -v sqlite3 >/dev/null 2>&1; then
     [ "$(sqlite3 "$DB" 'pragma quick_check')" = ok ] \
-      || die "$DB не проходит проверку sqlite. Возьмите другую копию."
+      || die "$DB does not pass the sqlite check. Take another backup."
   fi
   if [ -f data/colloq.db ]; then
     # Прежняя база уезжает целиком со своим журналом. Не удаляется — «я нажал
@@ -207,16 +232,16 @@ if [ -n "$DB" ]; then
         mv "data/colloq.db-$j" "data/colloq.db.replaced-$STAMP-$j"
       fi
     done
-    say "${DIM}    прежняя база отложена в data/colloq.db.replaced-$STAMP${OFF}"
+    say "${DIM}    the previous database is set aside as data/colloq.db.replaced-$STAMP${OFF}"
   fi
   cp "$DB" data/colloq.db
   chmod 600 data/colloq.db
   say "    $DB → data/colloq.db"
 else
-  say "${DIM}    базу не трогаю — её в аргументах не было${OFF}"
+  say "${DIM}    not touching the database — it was not in the arguments${OFF}"
 fi
 
-say "${BOLD}3/3${OFF} файлы семинаров и ключи"
+say "${BOLD}3/3${OFF} class files and keys"
 if [ -n "$FILES" ]; then
   # Разворачивается поверх, а не вместо: комнаты, которых в копии нет, остаются
   # на месте. Забрать лишнее всегда можно, а вернуть стёртое — нет.
@@ -224,17 +249,22 @@ if [ -n "$FILES" ]; then
   # -p обязателен: у data/session-secret права 0600, и без сохранения режима
   # ключ подписи стал бы читаемым для всех, кто есть на машине.
   tar -xzpf "$FILES"
-  say "    $FILES → workspace/, data/, kernel/environments/"
+  # Куда легли списки окружений — зависит от того, разошлись ли корни: в
+  # репозитории это kernel/environments, у поставленного пакета — свой каталог
+  # рядом с .env. Ровно так их и клал scripts/backup-local.sh, и называть надо
+  # то же место, иначе человек пойдёт искать файлы не туда.
+  if [ "$STATE" = "$APP" ]; then lists=kernel/environments; else lists=environments; fi
+  say "    $FILES → workspace/, data/, $lists/"
   if [ -f data/session-secret ]; then
     chmod 600 data/session-secret
-    say "${DIM}    ключ подписи на месте — выданные ссылки и куки переживут переезд${OFF}"
+    say "${DIM}    the signing key is in place — issued links and cookies survive the move${OFF}"
   fi
   if [ -f data/setup-token ]; then
     chmod 600 data/setup-token
   fi
 else
-  say "${DIM}    архива файлов нет — восстановлена только база.${OFF}"
-  say "${DIM}    Тетради и настройки на месте, загруженные файлы — нет.${OFF}"
+  say "${DIM}    no file archive — only the database was restored.${OFF}"
+  say "${DIM}    Notebooks and settings are in place, uploaded files are not.${OFF}"
 fi
 
 # Хозяин файлов — тот, от кого работает сервер, а не тот, кто восстанавливал.
@@ -277,16 +307,32 @@ if [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ]; then
     # удалять файлы внутри, не трогая уже лежащие.
     chgrp -R 1000 workspace
     find workspace -type d -exec chmod 2775 {} + 2>/dev/null || true
-    say "${DIM}    data/ — за root (сервер работает службой), workspace/ — группа 1000 (ядро)${OFF}"
+    say "${DIM}    data/ — root's (the server is a service), workspace/ — group 1000 (the kernel)${OFF}"
   else
     chown -R 1000:1000 data workspace
-    say "${DIM}    владелец data/ и workspace/ — uid 1000: от него сервер работает в контейнере${OFF}"
+    say "${DIM}    data/ and workspace/ — uid 1000: that is who the server is in the container${OFF}"
   fi
 fi
 
 printf '\n'
-say "${BOLD}готово${OFF}"
-say "${DIM}Поднять: make up (или make run; на выделенной машине — make service-install).${OFF}"
-say "${DIM}Окружения ядра здесь не восстанавливаются —${OFF}"
-say "${DIM}их собирают заново: make env-build NAME=…${OFF}"
-say "${DIM}Ключ оракула, RELAY_* и PUBLIC_URL живут в .env, а не в копии.${OFF}"
+say "${BOLD}done${OFF}"
+# Куда идти дальше — словом, которое есть у того, кто это читает.
+#
+# Прежнее напутствие звало `make up / make run / make service-install` и
+# `make env-build NAME=…`. У поставленного через pip colloq make нет вовсе
+# (в колесо едут приложение и scripts/, Makefile не едет — scripts/pack.mts ·
+# SCRIPTS), и обе строки врали ровно тому, кто только что развернул копию на
+# новой машине и ищет, чем её запустить. `colloq start` есть у обоих: и у
+# пакета, и рядом с исходниками. Образ окружения он собирает сам, первым
+# запуском — тот же ответ, что даёт отказ `colloq env build` у дистрибутива
+# (cli/src/commands/env.ts).
+#
+# Про службу говорим только там, где make есть: выделенную машину ставят из
+# репозитория, и цель service-install живёт там же.
+say "${DIM}Start a class: colloq start${OFF}"
+if [ "$STATE" = "$APP" ]; then
+  say "${DIM}On a dedicated machine the class is held by a service: make service-install.${OFF}"
+fi
+say "${DIM}Kernel environments are not restored here —${OFF}"
+say "${DIM}the image is built on your first colloq start.${OFF}"
+say "${DIM}The Oracle key, RELAY_* and PUBLIC_URL live in .env, not in the backup.${OFF}"

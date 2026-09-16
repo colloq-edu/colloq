@@ -11,11 +11,15 @@
  *   · дефисное имя команды («cluster-stop») ведёт в саму команду, а не в make:
  *     иначе мимо проходят её проверки, вопрос и флаги;
  *   · неизвестное слово — подсказка: группа, соседнее имя по расстоянию
- *     Левенштейна или «зовите цель явно: colloq make <цель>».
+ *     Левенштейна или «зовите цель явно: colloq make <цель>»;
+ *   · поверхность: в поверхности преподавателя (COLLOQ_SURFACE=teacher) help,
+ *     меню и подсказки показывают только команды с audience:'teacher'. Поиск
+ *     команды по имени поверхность не сужает никогда — спрятанное остаётся
+ *     доступным, иначе «спрятать» превратилось бы в «выбросить».
  */
 import { parseArgs } from 'node:util'
-import { GROUPS, registry, type Command, type Ctx, type Form } from './registry.js'
-import { createEnv, createIo, type Io } from './env.js'
+import { GROUPS, registry, type Audience, type Command, type Ctx, type Form } from './registry.js'
+import { createEnv, createIo, isDistribution, type Io } from './env.js'
 import { createSh, type Runner } from './sh.js'
 import {
   cancelled,
@@ -40,7 +44,11 @@ export type Deps = {
   /** Реестр целиком — для тестов. */
   commands?: Command[]
   root?: string
+  /** Каталог состояния. Не назван — совпадает с root, как в репозитории. */
+  home?: string
   cwd?: string
+  /** Считать приложение установленным: иначе признак ищется у корня. */
+  dist?: boolean
 }
 
 const GLOBAL_FLAGS = new Set([
@@ -58,9 +66,38 @@ const GLOBAL_FLAGS = new Set([
 /** Пара вида ВИДА=ЗНАЧЕНИЕ: так переменные передают make, и так же их принимаем мы. */
 const MAKE_VAR = /^[A-Z][A-Z0-9_]*=/
 
+/**
+ * Какая сейчас поверхность.
+ *
+ * Выбирает её окружение, а не догадка по каталогу: COLLOQ_SURFACE=teacher
+ * выставляет питоновский шим, которым команда `colloq` приходит к человеку
+ * после `pip install colloq`. В репозитории переменной нет, и поверхность
+ * остаётся мастерской — видно всё, как было до разделения. Любое другое
+ * значение тоже мастерская: незнакомое слово не должно прятать команды.
+ */
+export function surfaceOf(processEnv: NodeJS.ProcessEnv): Audience {
+  return (processEnv.COLLOQ_SURFACE ?? '').trim() === 'teacher' ? 'teacher' : 'workshop'
+}
+
+/**
+ * Что показывать в этой поверхности.
+ *
+ * Сужение применяется РОВНО к трём вещам: список в help, пункты меню и
+ * подсказка по опечатке (включая перечисление команд группы и список тех, у
+ * кого есть --json). Поиск команды по имени идёт по полному реестру: `colloq
+ * dev` у преподавателя работает, просто про него нигде не написано.
+ */
+export function visibleIn(commands: Command[], surface: Audience): Command[] {
+  if (surface !== 'teacher') return commands
+  return commands.filter((command) => command.audience === 'teacher')
+}
+
 export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
   const processEnv = deps.processEnv ?? process.env
   const commands = deps.commands ?? registry
+  const surface = surfaceOf(processEnv)
+  // Показываем это, ищем по всему: см. visibleIn.
+  const shown = visibleIn(commands, surface)
   const io = deps.io ?? createIo()
   const tty = deps.tty ?? Boolean(process.stdout.isTTY && process.stdin.isTTY)
 
@@ -118,7 +155,7 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
     tty,
     ask: deps.ask,
   })
-  const env = createEnv({ io, root: deps.root, cwd: deps.cwd, processEnv })
+  const env = createEnv({ io, root: deps.root, home: deps.home, cwd: deps.cwd, processEnv })
   const sh = createSh({
     root: env.root(),
     ui,
@@ -142,6 +179,8 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
     ui,
     env,
     io,
+    surface,
+    dist: deps.dist ?? isDistribution(),
     rooms() {
       roomsCache ??= countRooms()
       return roomsCache
@@ -230,10 +269,19 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       return 0
     }
 
-    // Без аргументов запускается локальная сессия; меню вызывается явно.
+    // Без аргументов: в мастерской — локальная сессия, как было (голый
+    // `colloq` в репозитории поднимает сервер, и менять это нельзя). У
+    // преподавателя голый вызов ничего не запускает: пакет ставят задолго до
+    // пары, и первое знакомство должно быть строкой «что я умею», а не
+    // внезапно занятым портом и открытым браузером. Занятие начинается словом
+    // — `colloq start`, как `jupyter lab`.
     if (tokens.length === 0) {
       if (globals.help) {
-        renderHelp(ui, commands, env.kernelEnv())
+        renderHelp(ui, commands, env.kernelEnv(), surface)
+        return 0
+      }
+      if (surface === 'teacher') {
+        renderIntro(ui)
         return 0
       }
       return await dispatch(['run'])
@@ -267,16 +315,20 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
 
     if (first === 'menu' || (first === 'help' && head[1] === 'menu')) {
       if (globals.help || first === 'help') {
-        ui.line('Употребление: colloq menu')
-        ui.line('Интерактивное меню команд по группам; нужен терминал.')
+        ui.line('Usage: colloq menu')
+        ui.line('Interactive menu of commands by group; needs a terminal.')
         return 0
       }
       if (input.length !== 1 || globals.json) {
-        throw new UsageError('у меню нет аргументов или --json', 'colloq menu')
+        throw new UsageError('the menu takes no arguments and no --json', 'colloq menu')
       }
       if (globals.dryRun) return sh.dry('native: menu')
-      if (!tty) throw new PreconditionError('для меню нужен терминал', 'colloq help — список команд')
-      return await menu(ctx, commands, (next) => dispatch(next))
+      if (!tty)
+        throw new PreconditionError(
+          'the menu needs a terminal',
+          'colloq help — the list of commands',
+        )
+      return await menu(ctx, shown, (next) => dispatch(next))
     }
 
     if (first === 'help') {
@@ -287,7 +339,7 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
         renderCommandHelp(ui, target, env)
         return 0
       }
-      renderHelp(ui, commands, env.kernelEnv())
+      renderHelp(ui, commands, env.kernelEnv(), surface)
       return 0
     }
 
@@ -302,7 +354,7 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       if (twin) return await dispatch(respell(input, first, twin.name))
       // --help не должен выполнить ни одного неизвестного слова.
       if (globals.help) {
-        renderHelp(ui, commands, env.kernelEnv())
+        renderHelp(ui, commands, env.kernelEnv(), surface)
         return 2
       }
       return unknownOrMake(first)
@@ -323,14 +375,17 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
     }
 
     if (globals.json && !found.flags.some((flag) => flag.name === 'json')) {
-      const where = commands
+      // Перечисляем только видимое: советовать преподавателю `colloq env list
+      // --json` можно, а отправлять его к спрятанной команде — значит назвать
+      // её вслух и тут же не найти в help.
+      const where = shown
         .filter((command) => command.flags.some((flag) => flag.name === 'json'))
         .map((command) => command.name)
       throw new UsageError(
-        'у команды ' + found.name + ' нет --json',
+        'command ' + found.name + ' has no --json',
         where.length
-          ? '--json есть у ' + where.join(', ')
-          : 'машинного вида нет ни у одной команды',
+          ? '--json works with ' + where.join(', ')
+          : 'no command has a machine-readable view',
       )
     }
 
@@ -367,17 +422,14 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
       if (!arg?.required) continue
       if ((parsed.positionals[i] ?? '').trim() !== '') continue
       if (arg.makeVar && (makeVars[arg.makeVar] ?? '').trim() !== '') continue
-      throw new UsageError(
-        'нет обязательного аргумента <' + arg.name + '>',
-        'Употребление: ' + found.usage,
-      )
+      throw new UsageError('missing required argument <' + arg.name + '>', 'Usage: ' + found.usage)
     }
     // Лишний позиционный — это чаще всего опечатка в имени команды
     // (`colloq env cv`): молча свести её к другой команде хуже, чем отказать.
     if (!found.extra && parsed.positionals.length > declared.length) {
       throw new UsageError(
-        'лишний аргумент: ' + (parsed.positionals[declared.length] ?? ''),
-        'Употребление: ' + found.usage,
+        'extra argument: ' + (parsed.positionals[declared.length] ?? ''),
+        'Usage: ' + found.usage,
       )
     }
 
@@ -393,7 +445,7 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
         const asked =
           typeof found.confirmQuestion === 'function'
             ? await found.confirmQuestion(ctx)
-            : (found.confirmQuestion ?? 'продолжить?')
+            : (found.confirmQuestion ?? 'continue?')
         const question = found.rooms === false ? asked : await withRooms(asked)
         if (!(await ui.confirm(question))) return cancelled(ui)
       }
@@ -420,9 +472,9 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
     if (name && isMakeTarget(io.readText(env.paths.makefile) ?? '', name)) {
       return report(
         2,
-        'нет команды ' + name,
-        'colloq make ' + name + ' — так цель зовётся напрямую, без вопроса',
-        'цель Makefile с таким именем есть, а обёртки у неё нет',
+        'no command ' + name,
+        'colloq make ' + name + ' — that calls the target directly, without a question',
+        'a Makefile target with this name exists, but nothing wraps it',
       )
     }
     return unknown(name)
@@ -431,22 +483,26 @@ export async function cli(argv: string[], deps: Deps = {}): Promise<number> {
   function unknown(name: string): number {
     // Голое имя группы — самое естественное, что печатают после help: показать
     // её команды честнее, чем гадать по буквам («vast» → «может быть, test?»).
-    const inGroup = commands
+    // По видимому списку: в поверхности преподавателя «colloq vast» — это не
+    // группа, про которую надо рассказать, а слово, которого он не знает.
+    const inGroup = shown
       .filter((command) => command.name.startsWith(name + ' '))
       .map((command) => command.name)
     if (inGroup.length > 0) {
       return report(
         2,
-        name + ' — это группа команд, а не команда',
+        name + ' is a group of commands, not a command',
         'colloq ' + inGroup.join(' · colloq '),
-        'у группы есть второе слово',
+        'the group needs a second word',
       )
     }
-    const near = nearest(commands, name)
+    // Тоже по видимому: подсказка — это приглашение напечатать её, и звать
+    // ею спрятанную команду нельзя.
+    const near = nearest(shown, name)
     return report(
       2,
-      'нет команды ' + name,
-      near ? 'может быть, colloq ' + near + '?' : 'colloq help — список команд',
+      'no command ' + name,
+      near ? 'did you mean colloq ' + near + '?' : 'colloq help — the list of commands',
     )
   }
 }
@@ -495,8 +551,8 @@ export function parseTrouble(error: unknown, command: Command): UsageError {
       flag,
     )
     return new UsageError(
-      'нет флага ' + flag + ' у команды ' + command.name,
-      near ? 'может быть, ' + near + '? · ' + fix : fix,
+      'command ' + command.name + ' has no flag ' + flag,
+      near ? 'did you mean ' + near + '? · ' + fix : fix,
     )
   }
   return new UsageError(message, fix)
@@ -563,10 +619,9 @@ export function isMakeTarget(makefile: string, name: string): boolean {
   return new RegExp('^' + name + ':', 'm').test(makefile)
 }
 
-/** «сейчас идут 3 комнаты» — только уточнение к вопросу. Слово считает ui. */
+/** «3 rooms are running» — только уточнение к вопросу. Слово считает ui. */
 export function roomsPhrase(count: number): string {
-  const one = count % 10 === 1 && count % 100 !== 11
-  return (one ? 'сейчас идёт ' : 'сейчас идут ') + roomsWord(count)
+  return roomsWord(count) + (count === 1 ? ' is running' : ' are running')
 }
 
 function version(io: Io, packagePath: string): string {
@@ -575,14 +630,43 @@ function version(io: Io, packagePath: string): string {
   return match?.[1] ?? '0.0.0'
 }
 
-/** Список команд пятью группами. */
+/**
+ * Короткая справка голого вызова в поверхности преподавателя.
+ *
+ * Четыре строки и ни одной лишней: что это такое и три слова, которыми
+ * занятие начинают, показывают классу и заканчивают. Ни dev, ни make, ни меню
+ * — их в этой поверхности нет вовсе. Полный список так и остаётся за `colloq
+ * help`, как у git и jupyter.
+ */
+export function renderIntro(ui: ReturnType<typeof createUi>): void {
+  ui.line(ui.bold('colloq') + ' — a class on this computer: notebooks, a Python kernel and a board')
+  ui.line()
+  ui.table([
+    [ui.cyan('colloq start'), 'start the class and open the browser'],
+    [ui.cyan('colloq host <name>'), 'publish it and give the room a link'],
+    [ui.cyan('colloq stop'), 'end the class'],
+  ])
+  ui.line()
+  ui.line(ui.dim('More: colloq help · one command: colloq <command> --help'))
+}
+
+/**
+ * Список команд пятью группами.
+ *
+ * Сужается поверхностью: у преподавателя показываются только команды с
+ * audience:'teacher', и подвал у него свой. Мастерской подвал зовёт в dev,
+ * menu и пары make — того, кто поставил пакет, туда звать некуда: ни dev, ни
+ * Makefile рядом с ним нет.
+ */
 export function renderHelp(
   ui: ReturnType<typeof createUi>,
   commands: Command[],
   kernelEnv: string,
+  surface: Audience = 'workshop',
 ): void {
+  const shown = visibleIn(commands, surface)
   for (const group of GROUPS) {
-    const inGroup = commands.filter((command) => command.group === group.name)
+    const inGroup = shown.filter((command) => command.group === group.name)
     if (inGroup.length === 0) continue
     ui.header(group.title)
     for (const command of inGroup) {
@@ -590,11 +674,17 @@ export function renderHelp(
     }
     ui.line()
   }
-  ui.line(ui.dim('Чаще всего: colloq · colloq run --host <имя> · colloq dev · colloq menu'))
-  ui.line(ui.dim('Везде: --dry-run — показать и не делать · --yes — не спрашивать'))
-  ui.line(ui.dim('Переменные make пишутся парами: colloq backup MODE=consistent'))
-  ui.line(ui.dim('Окружение ядра сейчас: ' + kernelEnv))
-  ui.line(ui.dim('Подробно: colloq <команда> --help'))
+  if (surface === 'teacher') {
+    ui.line(ui.dim('Most used: colloq start · colloq host <name> · colloq status · colloq stop'))
+  } else {
+    ui.line(ui.dim('Most used: colloq · colloq run --host <name> · colloq dev · colloq menu'))
+  }
+  ui.line(ui.dim('Everywhere: --dry-run — show what would run and do nothing · --yes — do not ask'))
+  if (surface !== 'teacher') {
+    ui.line(ui.dim('Variables for make are written as pairs: colloq backup MODE=consistent'))
+  }
+  ui.line(ui.dim('Kernel environment now: ' + kernelEnv))
+  ui.line(ui.dim('In detail: colloq <command> --help'))
 }
 
 /** Помощь по одной команде: назначение, употребление, аргументы, флаги, два примера. */
@@ -609,20 +699,20 @@ export function renderCommandHelp(
     text.replaceAll('{domain}', domain).replaceAll('{env}', kernel)
 
   ui.line(command.summary)
-  ui.line('Употребление: ' + ui.cyan(command.usage))
+  ui.line('Usage: ' + ui.cyan(command.usage))
   if (command.args?.length) {
     ui.line()
-    ui.header('Аргументы')
+    ui.header('Arguments')
     // Обязательный в угловых скобках, необязательный в квадратных — как в usage.
     ui.table(
       command.args.map((arg) => [
         arg.required ? '<' + arg.name + '>' : '[' + arg.name + ']',
-        arg.summary + (arg.makeVar ? ' (или ' + arg.makeVar + '=…)' : ''),
+        arg.summary + (arg.makeVar ? ' (or ' + arg.makeVar + '=…)' : ''),
       ]),
     )
   }
   ui.line()
-  ui.header('Флаги')
+  ui.header('Flags')
   ui.table([
     ...command.flags.map((flag) => [
       (flag.short ? '-' + flag.short + ', ' : '') +
@@ -641,22 +731,22 @@ export function renderCommandHelp(
       ? examples.slice(0, 2)
       : [examples[0] ?? '', fill(command.usage) + ' --dry-run']
   ui.line()
-  ui.header('Примеры')
+  ui.header('Examples')
   ui.table(shown.map((example) => [ui.cyan(example)]))
   if (command.notes) {
     ui.line()
     ui.line(ui.dim(command.notes))
   }
   ui.line()
-  ui.line(ui.dim('делегирует: ' + command.delegates))
+  ui.line(ui.dim('delegates: ' + command.delegates))
 }
 
 /** Общие флаги, которые к этой команде и правда применимы. */
 function globalFlagRows(command: Command): string[][] {
-  const rows: string[][] = [['--dry-run', 'Показать, что выполнилось бы, и не делать ничего']]
-  if (command.destructive) rows.push(['-y, --yes', 'Согласиться заранее, вопроса не будет'])
-  rows.push(['--no-color', 'Без цвета: то же самое, но ни одного escape'])
-  rows.push(['-h, --help', 'Эта страница'])
+  const rows: string[][] = [['--dry-run', 'Show what would run and do nothing']]
+  if (command.destructive) rows.push(['-y, --yes', 'Agree in advance, no question will be asked'])
+  rows.push(['--no-color', 'No colour: the same output without a single escape'])
+  rows.push(['-h, --help', 'This page'])
   return rows
 }
 
@@ -673,8 +763,8 @@ async function menu(
     ctx.values = { short: true }
     await status.run(ctx)
   } else {
-    ui.kv('порт', String(env.port()), 'форма: ' + (await ctx.form()))
-    ui.kv('ядро', env.kernelEnv(), 'комнат сейчас: ' + String(await ctx.rooms()))
+    ui.kv('port', String(env.port()), 'setup: ' + (await ctx.form()))
+    ui.kv('kernel', env.kernelEnv(), 'rooms now: ' + String(await ctx.rooms()))
   }
   ui.line()
 
@@ -691,10 +781,10 @@ async function menu(
     ui.line()
   }
   if (items.length === 0) {
-    ui.line(ui.dim('команд пока нет'))
+    ui.line(ui.dim('no commands yet'))
     return 0
   }
-  ui.line(ui.dim('цифра и Enter · ↑ ↓ · q — выход'))
+  ui.line(ui.dim('a number and Enter · ↑ ↓ · q — quit'))
 
   const picked = await pick(ui, items.length)
   // Ctrl+C в сыром режиме приходит байтом, а не сигналом: код тот же 130.
@@ -724,7 +814,7 @@ async function menu(
 function menuDefault(ctx: Ctx, command: Command, argName: string): string {
   const state = ctx.env.readState()
   if (command.group === 'env') return ctx.env.kernelEnv()
-  if (/^(имя|host|домен|name|среда)$/i.test(argName)) {
+  if (/^(name|host|domain|machine|env|environment)$/i.test(argName)) {
     return state.name ?? ctx.env.relay().domain
   }
   return ''
@@ -737,7 +827,7 @@ const INTERRUPT = -1
 async function pick(ui: ReturnType<typeof createUi>, total: number): Promise<number | null> {
   const stdin = process.stdin
   if (!stdin.isTTY || typeof stdin.setRawMode !== 'function') {
-    const answer = await ui.prompt('выбор', { default: '' })
+    const answer = await ui.prompt('choice', { default: '' })
     if (answer === '' || answer === 'q') return null
     const number = Number.parseInt(answer, 10)
     return Number.isFinite(number) && number >= 1 && number <= total ? number : null
@@ -747,7 +837,7 @@ async function pick(ui: ReturnType<typeof createUi>, total: number): Promise<num
     let cursor = 1
     const draw = (): void => {
       const shown = typed === '' ? String(cursor) : typed
-      process.stdout.write('\u001b[2K\r' + SYMBOL.next + ' выбор [' + shown + '] ')
+      process.stdout.write('\u001b[2K\r' + SYMBOL.next + ' choice [' + shown + '] ')
     }
     const finish = (value: number | null): void => {
       stdin.setRawMode?.(false)
@@ -759,7 +849,7 @@ async function pick(ui: ReturnType<typeof createUi>, total: number): Promise<num
     const onData = (chunk: Buffer): void => {
       const key = chunk.toString()
       if (key === '\u0003') return finish(INTERRUPT)
-      if (key === 'q' || key === 'й') return finish(null)
+      if (key === 'q') return finish(null)
       if (key === '\r' || key === '\n') {
         const number = typed === '' ? cursor : Number.parseInt(typed, 10)
         return finish(Number.isFinite(number) && number >= 1 && number <= total ? number : null)

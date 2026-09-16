@@ -933,7 +933,14 @@ export function watchCellPeers(awareness: Awareness, id: () => string): Reactive
  * складываются во вложенный массив. Ни одно из этих событий не может ни
  * завести предложение, ни закрыть его.
  */
-const PATCH_KEYS = ['patch', 'patchState', 'cellId'] as const
+/*
+ * Ключи хода, ради которых стоит будить ячейки: предложение, его судьба, адрес
+ * и СОСТОЯНИЕ. Последний добавился вместе с признаком «оракул занят этой
+ * ячейкой»: `state` меняется с `streaming` на `done` один раз за ход, а куски
+ * ответа идут по `answer` — то есть отсев по ключам продолжает отбрасывать
+ * поток, ради которого он и заведён.
+ */
+const PATCH_KEYS = ['patch', 'patchState', 'cellId', 'cellIds', 'state'] as const
 
 /**
  * Открытые предложения оракула — по ячейке, одним наблюдателем на документ.
@@ -954,6 +961,15 @@ class PatchRegistry {
   readonly #chat: Y.Array<YChatEntry>
   readonly #watchers = new Map<string, Set<(entry: YChatEntry | null) => void>>()
   readonly #current = new Map<string, YChatEntry | null>()
+  /*
+   * Второй канал того же реестра: «оракул сейчас работает над этой ячейкой».
+   *
+   * Отдельным наблюдателем это было бы вторым обходом ленты на каждое событие —
+   * ровно та цена, от которой этот класс и заведён. Один проход считает обе
+   * карты: предложение и занятость.
+   */
+  readonly #busyWatchers = new Map<string, Set<(busy: boolean) => void>>()
+  readonly #busy = new Map<string, boolean>()
 
   constructor(doc: Y.Doc) {
     this.#chat = getChat(doc)
@@ -983,6 +999,56 @@ class PatchRegistry {
       if (this.#current.get(id) === next) continue
       this.#current.set(id, next)
       for (const watcher of watchers) watcher(next)
+    }
+
+    if (this.#busyWatchers.size === 0) return
+    const busy = this.#working()
+    for (const [id, watchers] of this.#busyWatchers) {
+      const next = busy.has(id)
+      if (this.#busy.get(id) === next) continue
+      this.#busy.set(id, next)
+      for (const watcher of watchers) watcher(next)
+    }
+  }
+
+  /**
+   * Ячейки, над которыми оракул работает прямо сейчас.
+   *
+   * `cellIds` наравне с `cellId`: агент берёт несколько ячеек одним ходом, и
+   * занята каждая из них. Проход по всей ленте, а не с конца до первого
+   * попадания: ходов может идти несколько сразу — свой и чужой.
+   */
+  #working(): Set<string> {
+    const busy = new Set<string>()
+    for (let i = 0; i < this.#chat.length; i++) {
+      const entry = this.#chat.get(i)
+      if (entry.get('state') !== 'streaming') continue
+      const one = entry.get('cellId')
+      if (typeof one === 'string' && one) busy.add(one)
+      const many = entry.get('cellIds')
+      if (Array.isArray(many)) for (const id of many) if (typeof id === 'string' && id) busy.add(id)
+    }
+    return busy
+  }
+
+  busy(id: string): boolean {
+    const known = this.#busy.get(id)
+    return known !== undefined ? known : this.#working().has(id)
+  }
+
+  watchBusy(id: string, onChange: (busy: boolean) => void): Unsubscribe {
+    let watchers = this.#busyWatchers.get(id)
+    if (!watchers) {
+      watchers = new Set()
+      this.#busyWatchers.set(id, watchers)
+      this.#busy.set(id, this.#working().has(id))
+    }
+    watchers.add(onChange)
+    return () => {
+      watchers.delete(onChange)
+      if (watchers.size > 0) return
+      this.#busyWatchers.delete(id)
+      this.#busy.delete(id)
     }
   }
 
@@ -1050,6 +1116,36 @@ function patchRegistry(doc: Y.Doc): PatchRegistry {
  * resolve, so the cell would keep offering a patch that had already been
  * applied.
  */
+/**
+ * Занят ли оракул этой ячейкой прямо сейчас.
+ *
+ * Нужно там, где панель оракула свёрнута: жест сделан кнопкой над ячейкой, а
+ * ответ приходит в другое место экрана, и без этого признака непонятно, взял
+ * ли он задачу вообще. Заканчивается сменой `state` на `done` или `error` —
+ * то есть признак снимается сам, чем бы ход ни кончился.
+ */
+export function watchOracleBusy(doc: Y.Doc, id: () => string): Reactive<boolean> {
+  const registry = patchRegistry(doc)
+  const value = box(false)
+  const bound = box<string | null>(null)
+
+  $effect(() => {
+    const key = id()
+    const unwatch = registry.watchBusy(key, (busy) => (value.value = busy))
+    value.value = registry.busy(key)
+    bound.value = key
+    return unwatch
+  })
+
+  return {
+    get current() {
+      const key = id()
+      if (key !== bound.value) return registry.busy(key)
+      return value.value
+    },
+  }
+}
+
 export function watchPatchFor(doc: Y.Doc, id: () => string): Reactive<YChatEntry | null> {
   const registry = patchRegistry(doc)
   const value = box<YChatEntry | null>(null)

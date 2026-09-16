@@ -2,6 +2,7 @@ import type { MessageCatalog } from '../i18n-types.js'
 
 /** Explicit display-copy catalog for entry, room, lecture, and public readers. */
 export const roomMessages: MessageCatalog = {
+  "room.oracle.working": {"ru": "Оракул смотрит эту ячейку", "en": "The oracle is looking at this cell"},
   "room.goto.unknown": {"ru": "Не нашлось, где определено «{name}» — ни в тетрадях комнаты, ни в файлах занятия", "en": "No definition for “{name}” — not in the room’s notebooks, not in the class files"},
   "room.goto.outsideModule": {"ru": "Модуль {module} лежит не в папке занятия, а в библиотеках — открыть его нечем", "en": "Module {module} lives in the libraries, not in the class folder — there is nothing to open"},
   "room.goto.outside": {"ru": "«{name}» приходит из {module}, а этого модуля нет в папке занятия — открыть нечего", "en": "“{name}” comes from {module}, and that module is not in the class folder — there is nothing to open"},

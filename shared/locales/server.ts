@@ -629,6 +629,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "Окружение base служит основой остальных окружений.",
     "en": "base is what every environment is built on top of."
   },
+  "server.shipsWithColloqAndCannotBeDeletedHere.06a8ea": {
+    "ru": "Окружение {p0} приехало вместе с colloq — удалить его нельзя. Правьте список пакетов: ваша копия ляжет рядом с настройками и переживёт обновление.",
+    "en": "{p0} ships with colloq and cannot be deleted here. Edit its package list instead: your copy is saved beside your settings and survives an update."
+  },
   "server.thisEnvironmentCannotBeDeletedWhileLinked.8047b8": {
     "ru": "Это окружение нельзя удалить, пока есть связанные занятия, в том числе архивные.",
     "en": "This environment cannot be deleted while linked classes exist, including archived classes."

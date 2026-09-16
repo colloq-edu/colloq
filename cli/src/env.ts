@@ -15,6 +15,15 @@
 
 import * as fs from 'node:fs'
 
+/*
+ * Два корня — приложение и состояние — разрешаются в одном месте на весь CLI:
+ * launch-state.ts (там же и объяснение, почему именно там). Здесь они только
+ * перепечатываются наружу, чтобы команды звали их отсюда, вместе с остальными
+ * путями, и второго ответа на вопрос «где мои данные» не завелось.
+ */
+import { appDir, homeDir, isDistribution, SESSION_FILE } from './launch-state.js'
+export { appDir, homeDir, isDistribution }
+
 /**
  * Имя среды: дословно то же сито, что в scripts/vast.sh, scripts/backup.sh и
  * scripts/restore.sh — буквы, цифры и дефис в середине. Правило одно на всех:
@@ -48,13 +57,17 @@ export type Io = {
   list(path: string): string[]
   /** Сейчас, в миллисекундах. В тестах — постоянное число. */
   now(): number
-  /** Запись. Нужна ровно одному месту — .colloq/state.json. */
-  writeText(path: string, text: string): void
+  /**
+   * Запись. mode ставится только при создании файла — так же, как у fs: у
+   * существующего права не трогаются, и .env, положенный человеком, остаётся
+   * его. Нужен он одному случаю — .env, в котором лежат ключи входа.
+   */
+  writeText(path: string, text: string, mode?: number): void
 }
 
 /** Последний вызов: чем занимались, где и чем кончилось. Ничего секретного. */
 export type State = {
-  /** Имя семинара или машины. */
+  /** Имя занятия или машины. */
   name?: string
   /** Карта арендованной машины. */
   gpu?: string
@@ -79,15 +92,48 @@ export type State = {
 export type Relay = { domain: string; addr: string; port: number }
 
 export type EnvPaths = {
-  /** Корень репозитория. */
+  /**
+   * Каталог приложения: web/dist, server/dist, kernel/, Makefile, node_modules.
+   *
+   * Не «корень репозитория», как было сказано здесь до разделения корней: у
+   * установленного colloq репозитория нет вовсе, а этот каталог есть — он
+   * внутри пакета. Состояние занятия сюда не кладут НИКОГДА (см. home ниже):
+   * его перезапишет следующий `pip install -U`, а на многих машинах в него и
+   * не пишется.
+   */
   root: string
+  /**
+   * Каталог состояния: .env, .colloq/, .colloq.pid, .colloq.log, data/.
+   * В репозитории он же и есть корень; у установленного colloq — свой
+   * (homeDir). Пути ниже, которые относятся к состоянию, считаются от него.
+   */
+  home: string
   envFile: string
   makefile: string
-  /** Локальный запуск через make run. */
+  /**
+   * Кто сейчас ведёт занятие: pid супервизора, а НЕ сервера.
+   *
+   * Сервер — его ребёнок, и его номер лежит в расписке полем serverPid. Кто
+   * ищет по этому файлу слушателя порта, найдёт не того и назовёт своё же
+   * занятие чужим.
+   */
   pidFile: string
   logFile: string
-  /** Списки пакетов: одно окружение — один файл. */
+  /**
+   * Расписка идущего занятия: порт, адрес, pid супервизора и сервера.
+   *
+   * Единственный источник правды о том, что работает ПРЯМО СЕЙЧАС. .env
+   * отвечает на другой вопрос — что настроено, — и `colloq run --port 4100`
+   * его не трогает вовсе.
+   */
+  sessionFile: string
+  /** Списки пакетов, приехавшие с продуктом: одно окружение — один файл. */
   envDir: string
+  /**
+   * Списки пакетов, которые завёл человек: сюда и только сюда пишет
+   * `colloq env new`. Почему каталог второй — объяснено у его вычисления ниже.
+   */
+  ownEnvDir: string
   backupsDir: string
   /** Собранная панель. */
   dist: string
@@ -98,9 +144,16 @@ export type EnvPaths = {
 }
 
 export type Env = {
-  /** Корень репозитория: вверх по каталогам до Makefile рядом с package.json. */
+  /** Каталог приложения; см. EnvPaths.root. */
   root(): string
-  /** Путь внутри репозитория. */
+  /**
+   * Путь внутри каталога ПРИЛОЖЕНИЯ.
+   *
+   * Только для файлов, которые приехали вместе с программой: cli/launch.mjs,
+   * kernel/Dockerfile, web/dist. Всё, что заводится на машине — .env, журнал,
+   * расписка, данные, свои окружения, — берётся из paths.*, и там оно уже
+   * посчитано от каталога состояния.
+   */
   path(...parts: string[]): string
   /** Путь из аргумента человека: считается от каталога, откуда он позвал (COLLOQ_CWD). */
   userPath(path: string): string
@@ -130,6 +183,8 @@ export type EnvOptions = {
   io?: Io
   /** Корень; по умолчанию ищется вверх от этого файла. */
   root?: string
+  /** Каталог состояния; по умолчанию — корень, как было всегда. */
+  home?: string
   /** Каталог, откуда позвали (шим кладёт его в COLLOQ_CWD). */
   cwd?: string
   /** Переменные окружения процесса — для COLLOQ_STATE_DIR. */
@@ -210,10 +265,10 @@ export function createIo(): Io {
       }
     },
     now: () => Date.now(),
-    writeText: (path, text) => {
+    writeText: (path, text, mode) => {
       const dir = path.slice(0, path.lastIndexOf(SEP))
       if (dir) fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(path, text)
+      fs.writeFileSync(path, text, mode === undefined ? undefined : { mode })
     },
   }
 }
@@ -242,22 +297,58 @@ export function createMemoryIo(files: Record<string, string> = {}, now = 0): Io 
 export function createEnv(opts: EnvOptions = {}): Env {
   const processEnv = opts.processEnv ?? process.env
   const io = opts.io ?? createIo()
-  const root = opts.root ?? findRoot(io)
+  /*
+   * Умолчания корней — те же два ответа, что у запуска (launch-state.ts), и
+   * это важнее, чем кажется: иначе `colloq run` писал бы журнал в одно место,
+   * а `colloq logs` читал его в другом. У пакета такое расхождение неизбежно —
+   * бандл лежит в cli/, а не в cli/src/, и findRoot по приметам репозитория
+   * там не находит ничего.
+   *
+   * home берёт корень, когда его назвали явно: так живут тесты и всё, что
+   * прикалывает CLI к своему дереву, — для них ничего не меняется.
+   */
+  const root = opts.root ?? appDir()
+  const home = opts.home ?? opts.root ?? homeDir()
   const cwd = opts.cwd ?? processEnv.COLLOQ_CWD ?? root
 
   const path = (...parts: string[]): string => joinPath(root, ...parts)
+  const statePath = (...parts: string[]): string => joinPath(home, ...parts)
   const paths: EnvPaths = {
     root,
-    envFile: path('.env'),
+    home,
+    envFile: statePath('.env'),
     makefile: path('Makefile'),
-    pidFile: path('.colloq.pid'),
-    logFile: path('.colloq.log'),
+    pidFile: statePath('.colloq.pid'),
+    logFile: statePath('.colloq.log'),
     envDir: path('kernel/environments'),
-    backupsDir: path('backups'),
+    /*
+     * Второй каталог окружений — и он заводится ровно там, где первый писать
+     * нельзя.
+     *
+     * Окружения, приехавшие с продуктом (base, base-gpu, cv, gpu), лежат в
+     * <app>/kernel/environments. У установленного colloq это site-packages:
+     * каталог целиком перезаписывается следующим `pip install -U`, а на многих
+     * машинах не пишется вовсе. Завести там своё окружение значит либо
+     * получить отказ прав, либо потерять файл на первом же обновлении.
+     *
+     * Поэтому своё живёт в каталоге состояния, рядом с .env и data/, — там,
+     * где его никто не перезапишет: <home>/environments.
+     *
+     * В репозитории (и в любом рабочем дереве, где home и есть корень
+     * приложения) второй каталог — это ПЕРВЫЙ, тот же самый путь. Так и
+     * задумано: там kernel/environments и пишется, и читается, и попадает в
+     * контекст `docker build`, и её же видят make env-list, launch-config.ts ·
+     * kernelInputs и панель преподавателя. Новый каталог рядом увёл бы файл
+     * из-под всех троих, и `colloq env new` в клоне заводил бы окружение,
+     * которого не видит сборка.
+     */
+    ownEnvDir: home === root ? path('kernel/environments') : joinPath(home, 'environments'),
+    sessionFile: statePath(SESSION_FILE),
+    backupsDir: statePath('backups'),
     dist: path('web/dist'),
     serviceUnit: '/etc/systemd/system/colloq.service',
     clusterState: processEnv.COLLOQ_STATE_DIR ?? '/var/lib/colloq',
-    stateFile: path('.colloq/state.json'),
+    stateFile: statePath('.colloq/state.json'),
   }
 
   const readRaw = (key: string): string => {
@@ -273,7 +364,7 @@ export function createEnv(opts: EnvOptions = {}): Env {
     read(key) {
       if ((SECRET_KEYS as readonly string[]).includes(key)) {
         throw new Error(
-          'значение ' + key + ' не читается: секреты живут в .env, у CLI есть только has()',
+          'the value of ' + key + ' is not readable: secrets live in .env, the CLI only has has()',
         )
       }
       return readRaw(key)

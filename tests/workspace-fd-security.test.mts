@@ -15,9 +15,26 @@ function fixture() {
   return { root, outside, safe: createAnchoredFilesystem(root, { allowUnsafeDevelopment: false }) }
 }
 const linux = process.platform === 'linux'
-test('production refuses non-Linux descriptor traversal rather than silently falling back', { skip: linux }, () => {
+/*
+ * Прежде эта клятва звучала наоборот: «вне Linux отказываем, а не подменяем
+ * тихо запасным путём», и на macOS панель файлов не работала вовсе без
+ * `COLLOQ_UNSAFE_DEV_FILES=1` в .env.
+ *
+ * Слово UNSAFE ушло с пути преподавателя: занятие на ноутбуке ставится через
+ * pip и запускается одной командой, а первое, что видел человек с макбуком, —
+ * требование вписать руками флаг, обещающий небезопасность. Вместо флага
+ * секьюр-слой получил рабочий путь: каждый сегмент открывается с O_NOFOLLOW,
+ * так что симлинк НЕ ПРОЙТИ ни последним звеном, ни в середине, — а что
+ * именно на macOS остаётся (гонка подмены каталога: адресовать относительно
+ * дескриптора нечем, openat в Node нет), сказано в шапке secure-files.ts и
+ * проверяется в secure-files-macos.test.mts.
+ *
+ * Здесь остаётся половина, которая проверяется одной строкой: работает без
+ * всякого флага.
+ */
+test('вне Linux обход работает и без флага', { skip: linux }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-fd-')); roots.push(root)
-  assert.throws(() => createAnchoredFilesystem(root, { allowUnsafeDevelopment: false }).readdirSync(root), /Linux|descriptor/)
+  assert.deepEqual(createAnchoredFilesystem(root, { allowUnsafeDevelopment: false }).readdirSync(root), [])
 })
 test('opened parent remains confined after a deterministic parent symlink swap', { skip: !linux }, () => {
   const { root, outside, safe } = fixture(); const original = fs.openSync; let swapped = false

@@ -5,6 +5,12 @@
  * ровно свой файл и свой тест: ни строки здесь, в main.ts, ui.ts, sh.ts,
  * env.ts, Makefile и package.json группам менять не нужно. Порядок в help и в
  * меню — порядок массива внутри файла группы.
+ *
+ * Реестр один на обе поверхности. Поверхность преподавателя (COLLOQ_SURFACE=
+ * teacher) не укорачивает его, а только показывает меньше: команда с
+ * audience:'teacher' видна в help и в меню, остальные прячутся, но зовутся по
+ * точному имени как прежде. Кто в какой поверхности — решает поле audience у
+ * самой команды, а не отдельный список: список разъехался бы с реестром.
  */
 import type { Env, Io } from './env.js'
 import type { Sh } from './sh.js'
@@ -17,6 +23,23 @@ import { commands as env } from './commands/env.js'
 import { commands as tools } from './commands/tools.js'
 
 export type Group = 'local' | 'host' | 'vast' | 'env' | 'tools'
+
+/**
+ * Кому команда предназначена — и, значит, кому её видно.
+ *
+ * 'teacher' — поверхность человека, который поставил пакет (`pip install
+ * colloq`) и ведёт занятие на своём ноутбуке: поднять, выставить наружу,
+ * посмотреть, остановить, снять копию. 'workshop' — всё, что имеет смысл
+ * только рядом с исходниками: разработка, сборка, тесты, аренда машин,
+ * развёртывание, DNS.
+ *
+ * Разделение не удаляет ничего: workshop-команда остаётся в реестре и
+ * находится по точному имени в любой поверхности. Она лишь не показывается
+ * в help, в меню и в подсказке по опечатке, когда CLI работает поверхностью
+ * преподавателя (COLLOQ_SURFACE=teacher). В репозитории по умолчанию видно
+ * всё — разработка не меняется ни на шаг.
+ */
+export type Audience = 'teacher' | 'workshop'
 
 /** Флаг команды. arg — имя значения; нет arg — флаг булев. */
 export type Flag = {
@@ -60,6 +83,24 @@ export type Ctx = {
   form(): Promise<Form>
   /** Жив ли сервер этой машины: расписка .colloq.pid или кто-то на порту. */
   serverAlive(): Promise<boolean>
+  /**
+   * Чья это поверхность: преподавателя или мастерской.
+   *
+   * Приходит через ctx, а не читается из process.env в модуле группы, — как и
+   * всё остальное: модули групп герметичны, и это стережёт cli-core
+   * («модули групп не открывают дверь к процессам и файлам мимо ctx»).
+   * Решает не команда, а каркас: COLLOQ_SURFACE выставляет питоновский шим.
+   */
+  surface: Audience
+  /**
+   * Приложение приехало готовым: ни Makefile, ни npm, ни исходников рядом нет.
+   *
+   * Через ctx по той же причине, что и surface: модуль группы не смотрит на
+   * файловую систему мимо ctx.io, иначе его нельзя проверить, не разложив
+   * настоящий дистрибутив на диске. Решает каркас — по признаку у корня
+   * приложения (launch-state.ts · isDistribution).
+   */
+  dist: boolean
   /** Спросить самому: --yes и --dry-run отвечают «да» молча. */
   confirm(question: string): Promise<boolean>
 }
@@ -68,7 +109,13 @@ export type Command = {
   name: string
   aliases?: string[]
   group: Group
-  /** Одна строка по-русски: что делает. */
+  /**
+   * Кому команда видна. Не указано — 'workshop': поверхность преподавателя
+   * узкая и перечисляется поимённо, а всё новое по умолчанию остаётся в
+   * мастерской. Прятать — не то же самое, что удалять: см. Audience.
+   */
+  audience?: Audience
+  /** Одна строка по-английски: что делает. */
   summary: string
   /** Начинается с 'colloq '. */
   usage: string
@@ -107,11 +154,11 @@ export type Command = {
 }
 
 export const GROUPS: { name: Group; title: string }[] = [
-  { name: 'local', title: 'Локально' },
-  { name: 'host', title: 'Занятие в сети' },
-  { name: 'vast', title: 'Машины и версии' },
-  { name: 'env', title: 'Окружения ядра' },
-  { name: 'tools', title: 'Инструменты' },
+  { name: 'local', title: 'Locally' },
+  { name: 'host', title: 'Class online' },
+  { name: 'vast', title: 'Machines and releases' },
+  { name: 'env', title: 'Kernel environments' },
+  { name: 'tools', title: 'Tools' },
 ]
 
 export const registry: Command[] = [...local, ...host, ...vast, ...env, ...tools]

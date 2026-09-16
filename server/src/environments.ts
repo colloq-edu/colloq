@@ -1,5 +1,12 @@
 import { tr } from '@shared/i18n'
-import { usingRuntimeBroker, loadRuntimeCatalog, runtimeDefaultEnvironment, setRuntimeDefaultEnvironment, runtimeEnvironment, imageRevision } from './kernel/runtime-client.js'
+import {
+  usingRuntimeBroker,
+  loadRuntimeCatalog,
+  runtimeDefaultEnvironment,
+  setRuntimeDefaultEnvironment,
+  runtimeEnvironment,
+  imageRevision,
+} from './kernel/runtime-client.js'
 /** Production environments are immutable entries in the operator's release
  * catalog. The selected default is persisted separately and only affects new
  * rooms. File editing and Docker builds below serve local development only. */
@@ -8,7 +15,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AdminEnvironment, EnvironmentAbilities, EnvironmentState } from '@shared/admin'
-import { DEFAULT_PYTHON, ENVIRONMENT_NAME, declaresParent, declaresPython, pythonImage } from '@shared/admin'
+import {
+  DEFAULT_PYTHON,
+  ENVIRONMENT_NAME,
+  declaresParent,
+  declaresPython,
+  pythonImage,
+} from '@shared/admin'
 /*
  * Директивы шапки разбираются в одном месте на всех — в shared/admin.ts.
  *
@@ -48,17 +61,120 @@ const ROOT = findRepoRoot()
  */
 const KERNEL_DIR = path.join(ROOT, 'kernel')
 export const ENV_DIR = path.join(KERNEL_DIR, 'environments')
-const ENV_FILE = path.join(ROOT, '.env')
 /** Репозиторий целиком: compose и .env рядом с ним — файлы хоста, не образа. */
 const COMPOSE_FILE = path.join(ROOT, 'docker-compose.yml')
 
+/* --------------------------------------------- два каталога окружений */
+
+/**
+ * Каталог состояния этой машины: .env, data/, workspace/ и свои окружения.
+ *
+ * Сам сервер его не вычисляет и вычислить не может: корень ПРИЛОЖЕНИЯ он
+ * находит шагами вверх до kernel/environments (findRepoRoot выше), а состояние
+ * у установленного через pip colloq лежит совсем в другом месте — ~/.colloq или
+ * COLLOQ_HOME. Поэтому каталог ему СООБЩАЮТ переменной, ровно как DATA_DIR и
+ * WORKSPACE_DIR (cli/src/launch-config.ts · launchConfig).
+ *
+ * Переменной нет — значит, сервер подняли не супервизором: репозиторий, `make
+ * up`, служба. Тогда каталог окружений один, как было всегда, и ни одна строка
+ * ниже своего поведения не меняет.
+ *
+ * Читается на каждом обращении, а не однажды при импорте: .env доезжает до
+ * process.env из config.ts (`dotenv/config`), и порядок вычисления модулей не
+ * должен решать, увидим мы переменную или нет. Цена вопроса — один path.join.
+ */
+function stateHome(): string | null {
+  const named = process.env.COLLOQ_HOME?.trim()
+  return named ? path.resolve(named) : null
+}
+
+/**
+ * Куда панель ПИШЕТ окружения. Та же развилка, что у CLI (cli/src/env.ts ·
+ * ownEnvDir), и списана она оттуда дословно: разъехаться этим двоим нельзя —
+ * иначе `colloq env new` заводит окружение, которого не видит панель, а панель
+ * заводит такое, которого не видит `colloq env list`. Ровно это и было.
+ *
+ * У установленного colloq <app>/kernel/environments — это site-packages:
+ * каталог целиком перезаписывается следующим `pip install -U`, а на многих
+ * машинах в него и не пишется вовсе. Поэтому своё живёт в каталоге состояния,
+ * рядом с .env и data/, — там, где его никто не перезапишет.
+ *
+ * Когда состояние И ЕСТЬ каталог приложения (репозиторий, клон, контейнер под
+ * `make up`), второй каталог — это ПЕРВЫЙ, тот же самый путь: новый каталог
+ * рядом увёл бы файл из-под make env-list, из-под `colloq env new` и из-под
+ * контекста `docker build`.
+ */
+export function ownEnvDirOf(root: string, home: string | null): string {
+  const shipped = path.join(root, 'kernel', 'environments')
+  if (home === null || home === path.resolve(root)) return shipped
+  return path.join(home, 'environments')
+}
+
+function ownEnvDir(): string {
+  return ownEnvDirOf(ROOT, stateHome())
+}
+
+/**
+ * Оба каталога в порядке старшинства: своё перебивает привезённое.
+ *
+ * Перебивает, а не отказывает: человек вправе переопределить `cv` под свой
+ * курс, и его список должен побеждать везде — в чтении, в списке, в цепочке
+ * наследования и в контексте сборки.
+ */
+function envDirs(): string[] {
+  const own = ownEnvDir()
+  return own === ENV_DIR ? [ENV_DIR] : [own, ENV_DIR]
+}
+
 /* ------------------------------------------------------------- the files */
 
-function fileFor(name: string): string {
+function checkName(name: string): void {
   // Belt and braces. `name` is validated at the route, and it also decides a
   // path — so it is checked again at the moment it becomes one.
-  if (!ENVIRONMENT_NAME.test(name)) throw new Error(tr("server.badEnvironmentName.cf94f0", { p0: name }))
-  return path.join(ENV_DIR, `${name}.txt`)
+  if (!ENVIRONMENT_NAME.test(name))
+    throw new Error(tr('server.badEnvironmentName.cf94f0', { p0: name }))
+}
+
+/**
+ * Где файл ЛЕЖИТ: сначала свой каталог, потом привезённый.
+ *
+ * Нет ни там, ни там — возвращается привезённый путь: читать по нему нечего, а
+ * «нет такого окружения» отвечают вызывающие, каждый по-своему (readSource —
+ * пустой строкой, fromDisk — null).
+ */
+function findFile(file: string): string {
+  const dirs = envDirs()
+  return path.join(dirs.find((dir) => fs.existsSync(path.join(dir, file))) ?? ENV_DIR, file)
+}
+
+function fileFor(name: string): string {
+  checkName(name)
+  return findFile(`${name}.txt`)
+}
+
+/** Куда ПИСАТЬ список: всегда своё. Каталог приложения только читается. */
+function ownFileFor(name: string): string {
+  checkName(name)
+  return path.join(ownEnvDir(), `${name}.txt`)
+}
+
+/**
+ * Приехало с продуктом и своей копии не имеет — значит, это не наш файл.
+ *
+ * Отдельным вопросом, потому что от него зависит отказ на удаление: `rm` по
+ * site-packages либо падает правами, либо удаляет файл, который вернётся
+ * следующим `pip install -U`. Кнопка, которая иногда работает, хуже честного
+ * отказа. В репозитории каталог один, свой и привезённый совпадают, и ответ
+ * здесь всегда «нет» — то есть поведение прежнее.
+ */
+export function isShipped(name: string): boolean {
+  checkName(name)
+  return !fs.existsSync(ownFileFor(name)) && fs.existsSync(path.join(ENV_DIR, `${name}.txt`))
+}
+
+/** `.env` со строкой KERNEL_ENV — файл СОСТОЯНИЯ, а не приложения. */
+function envFile(): string {
+  return path.join(stateHome() ?? ROOT, '.env')
 }
 
 /**
@@ -76,10 +192,22 @@ function fileFor(name: string): string {
  * No stamp (an image from before this file existed) falls back to the mtime,
  * which is the old behaviour and the safer guess: better to offer a rebuild
  * nobody needs than to hide one somebody does.
+ *
+ * Штамп — состояние ЭТОЙ машины: он про образ, который лежит в её docker, а не
+ * про продукт. Поэтому пишется он в свой каталог (ownStampFor), даже когда сам
+ * список приехал с colloq: в site-packages ему либо откажут правами, либо он
+ * исчезнет на первом `pip install -U` вместе со всей папкой. Читается из обоих:
+ * штамп, оставленный в каталоге приложения прежней версией, — это ответ на тот
+ * же вопрос, и терять его значит звать на лишнюю пересборку перед парой.
  */
 function stampFor(name: string): string {
-  if (!ENVIRONMENT_NAME.test(name)) throw new Error(tr("server.badEnvironmentName.cf94f0", { p0: name }))
-  return path.join(ENV_DIR, `.${name}.built`)
+  checkName(name)
+  return findFile(`.${name}.built`)
+}
+
+function ownStampFor(name: string): string {
+  checkName(name)
+  return path.join(ownEnvDir(), `.${name}.built`)
 }
 
 /**
@@ -102,22 +230,40 @@ export function listChanged(stamped: string, current: string): boolean {
   return meaningful(stamped) !== meaningful(current)
 }
 
+/**
+ * Все окружения — объединением двух каталогов, по одному имени на строку.
+ *
+ * Set, а не конкатенация: своё окружение с именем привезённого — это то же
+ * самое окружение, переопределённое, и в списке панели ему полагается одна
+ * строка. Раньше читался только каталог приложения, и заведённое `colloq env
+ * new` окружение не показывалось вовсе — при том что активным панель называла
+ * именно его имя.
+ */
 export function listNames(): string[] {
-  if (usingRuntimeBroker()) return loadRuntimeCatalog().environments.filter(e=>e.current).map(e=>e.name).sort()
-  try {
-    return fs
-      .readdirSync(ENV_DIR)
-      .filter((f) => f.endsWith('.txt'))
-      .map((f) => f.slice(0, -4))
-      .filter((n) => ENVIRONMENT_NAME.test(n))
+  if (usingRuntimeBroker())
+    return loadRuntimeCatalog()
+      .environments.filter((e) => e.current)
+      .map((e) => e.name)
       .sort()
-  } catch {
-    return []
+  const names = new Set<string>()
+  for (const dir of envDirs()) {
+    let files: string[] = []
+    try {
+      files = fs.readdirSync(dir)
+    } catch {
+      // Своего каталога может не быть вовсе: человек ещё не заводил окружений.
+      continue
+    }
+    for (const file of files) {
+      const name = file.endsWith('.txt') ? file.slice(0, -4) : ''
+      if (name && ENVIRONMENT_NAME.test(name)) names.add(name)
+    }
   }
+  return [...names].sort()
 }
 
 export function readSource(name: string): string {
-  if (usingRuntimeBroker()) return (runtimeEnvironment(name).packages ?? []).join("\n")
+  if (usingRuntimeBroker()) return (runtimeEnvironment(name).packages ?? []).join('\n')
   try {
     return fs.readFileSync(fileFor(name), 'utf8')
   } catch {
@@ -192,22 +338,29 @@ export function buildChain(name: string, read: ReadEnvironment = fromDisk): stri
   while (current !== null) {
     if (seen.has(current)) {
       throw new Error(
-        tr("server.environmentsReferToEachOtherInA.0d5bfa", { p0: [...chain, current].join(' → ') }),
+        tr('server.environmentsReferToEachOtherInA.0d5bfa', {
+          p0: [...chain, current].join(' → '),
+        }),
       )
     }
     if (!ENVIRONMENT_NAME.test(current)) {
-      throw new Error(tr("server.cannotBeAnEnvironmentFilenameOrImage.0ea5d5", { p0: current }))
+      throw new Error(tr('server.cannotBeAnEnvironmentFilenameOrImage.0ea5d5', { p0: current }))
     }
     const source = read(current)
     if (source === null) {
       throw new Error(
         chain.length === 0
-          ? tr("server.environmentDoesNotExist.8a7fc4", { p0: current })
-          : tr("server.environmentIsBasedOnWhichDoesNot.3611b2", { p0: chain[0], p1: current }),
+          ? tr('server.environmentDoesNotExist.8a7fc4', { p0: current })
+          : tr('server.environmentIsBasedOnWhichDoesNot.3611b2', { p0: chain[0], p1: current }),
       )
     }
     if (chain.length >= MAX_INHERITANCE) {
-      throw new Error(tr("server.theEnvironmentChainExceedsLevels.8f1ecf", { p0: MAX_INHERITANCE, p1: chain.join(' → ') }))
+      throw new Error(
+        tr('server.theEnvironmentChainExceedsLevels.8f1ecf', {
+          p0: MAX_INHERITANCE,
+          p1: chain.join(' → '),
+        }),
+      )
     }
     seen.add(current)
     chain.unshift(current)
@@ -282,27 +435,51 @@ export function needsGpu(name: string, read: ReadEnvironment = fromDisk): boolea
   return chain.some((step) => declaresGpu(read(step) ?? ''))
 }
 
+/**
+ * Запись — всегда в свой каталог, никогда в каталог приложения.
+ *
+ * Правка привезённого окружения тоже: она ложится своей копией, и чтение её
+ * перебивает (envDirs). Иначе панель писала бы в site-packages — отказ прав в
+ * лучшем случае, а в худшем файл, который исчезнет на первом `pip install -U`
+ * вместе со штампом сборки, и человек не поймёт, куда делся его список.
+ */
 export function writeSource(name: string, source: string): void {
-  if (usingRuntimeBroker()) throw new Error(tr("server.publishedEnvironmentsAreManagedByTheRelease.8ff51e"))
-  fs.mkdirSync(ENV_DIR, { recursive: true })
+  if (usingRuntimeBroker())
+    throw new Error(tr('server.publishedEnvironmentsAreManagedByTheRelease.8ff51e'))
+  const file = ownFileFor(name)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
   const text = source.endsWith('\n') ? source : `${source}\n`
   // Temp-file then rename: a half-written requirements file is a build that
   // fails in a way nobody can explain.
-  const tmp = `${fileFor(name)}.tmp`
+  const tmp = `${file}.tmp`
   fs.writeFileSync(tmp, text, 'utf8')
-  fs.renameSync(tmp, fileFor(name))
+  fs.renameSync(tmp, file)
 }
 
+/**
+ * Удалить можно только своё.
+ *
+ * Отказ, а не тихое «ничего не произошло»: `rm` по каталогу приложения либо
+ * падает правами, либо снимает файл, который вернётся следующим обновлением
+ * пакета, — и в обоих случаях строка в панели пропадает не навсегда. Маршрут
+ * спрашивает isShipped раньше и отвечает 409; этот отказ — для всех остальных,
+ * чтобы дыру нельзя было обойти мимо маршрута.
+ */
 export function removeEnvironment(name: string): void {
-  if (usingRuntimeBroker()) throw new Error(tr("server.publishedEnvironmentsAreManagedByTheRelease.8ff51e"))
-  fs.rmSync(fileFor(name), { force: true })
+  if (usingRuntimeBroker())
+    throw new Error(tr('server.publishedEnvironmentsAreManagedByTheRelease.8ff51e'))
+  if (isShipped(name)) {
+    throw new Error(tr('server.shipsWithColloqAndCannotBeDeletedHere.06a8ea', { p0: name }))
+  }
+  fs.rmSync(ownFileFor(name), { force: true })
   // Штамп уходит вместе со списком: иначе среда, заведённая под тем же именем
   // заново, сравнивалась бы с чужой сборкой.
-  fs.rmSync(stampFor(name), { force: true })
+  fs.rmSync(ownStampFor(name), { force: true })
 }
 
 export function exists(name: string): boolean {
-  if (usingRuntimeBroker()) return loadRuntimeCatalog().environments.some(e=>e.current && e.name===name)
+  if (usingRuntimeBroker())
+    return loadRuntimeCatalog().environments.some((e) => e.current && e.name === name)
   return fs.existsSync(fileFor(name))
 }
 
@@ -335,12 +512,17 @@ export function pickActiveName(envFile: string | null, fromEnv: string | undefin
  * Read from disk on every call rather than cached: the make targets edit this
  * file too, and a panel that believed a value from process start would show the
  * wrong environment as active for as long as the server ran.
+ *
+ * Файл берётся из каталога СОСТОЯНИЯ (envFile выше). У установленного colloq
+ * .env лежит в ~/.colloq, а не в site-packages: там его пишет `colloq env use`,
+ * оттуда его читает следующий запуск, — и панель обязана смотреть в тот же
+ * файл, иначе она называет активным одно, а занятие поднимается на другом.
  */
 export function activeName(): string {
   if (usingRuntimeBroker()) return runtimeDefaultEnvironment()
   let text: string | null = null
   try {
-    text = fs.readFileSync(ENV_FILE, 'utf8')
+    text = fs.readFileSync(envFile(), 'utf8')
   } catch {
     text = null
   }
@@ -348,20 +530,25 @@ export function activeName(): string {
 }
 
 export function setActiveName(name: string): void {
-  if (usingRuntimeBroker()) { setRuntimeDefaultEnvironment(name); return }
-  if (!ENVIRONMENT_NAME.test(name)) throw new Error(tr("server.badEnvironmentName.cf94f0", { p0: name }))
+  if (usingRuntimeBroker()) {
+    setRuntimeDefaultEnvironment(name)
+    return
+  }
+  if (!ENVIRONMENT_NAME.test(name))
+    throw new Error(tr('server.badEnvironmentName.cf94f0', { p0: name }))
+  const file = envFile()
   let lines: string[] = []
   try {
-    lines = fs.readFileSync(ENV_FILE, 'utf8').split('\n')
+    lines = fs.readFileSync(file, 'utf8').split('\n')
   } catch {
     /* no .env yet: the file is about to have exactly one line */
   }
   const kept = lines.filter((l) => !l.startsWith('KERNEL_ENV='))
   while (kept.length > 0 && kept[kept.length - 1] === '') kept.pop()
   kept.push(`KERNEL_ENV=${name}`, '')
-  const tmp = `${ENV_FILE}.tmp`
+  const tmp = `${file}.tmp`
   fs.writeFileSync(tmp, kept.join('\n'), 'utf8')
-  fs.renameSync(tmp, ENV_FILE)
+  fs.renameSync(tmp, file)
 }
 
 /* ------------------------------------------------------------- docker */
@@ -410,6 +597,15 @@ function run(
  * правка доживёт до первой пересборки, пока compose всё это время читает файл
  * на хосте. Поэтому «Make default» остаётся командой на хосте, и панель
  * говорит об этом ровно про ту кнопку, которой это касается.
+ *
+ * У установленного colloq всё это верно наоборот, и потому появился третий
+ * вопрос — `home`. Репозитория там нет и docker-compose.yml нет, а .env есть:
+ * он лежит в каталоге состояния, который назвал супервизор. Тот же самый файл
+ * читает и пишет `colloq env use`, и перечитает его следующий `colloq run`, —
+ * никакого хоста «снаружи» здесь не существует, врать некому. Гасить
+ * «Make default» в этом случае значило отнимать у преподавателя единственный
+ * способ выбрать окружение из панели и посылать его в make, которого у него
+ * тоже нет.
  */
 export function abilities(found: {
   docker: boolean
@@ -417,11 +613,13 @@ export function abilities(found: {
   context: boolean
   /** docker-compose.yml: репозиторий целиком, а с ним и .env. */
   repository: boolean
+  /** Нам назвали каталог состояния: .env в нём — наш, и писать его можно. */
+  home: boolean
 }): EnvironmentAbilities {
   if (!found.docker) {
     const reason =
-      tr("server.dockerIsNotReachableFromTheServer.ffa886") +
-      tr("server.andDockerGidTheGroupThatOwns.6ee275") +
+      tr('server.dockerIsNotReachableFromTheServer.ffa886') +
+      tr('server.andDockerGidTheGroupThatOwns.6ee275') +
       'Environments still list and edit here; switching is `make env-use NAME=<name>`.'
     return {
       canBuild: false,
@@ -434,15 +632,16 @@ export function abilities(found: {
     canBuild: found.context,
     cannotBuildReason: found.context
       ? null
-      : tr("server.theKernelDirectoryIsNotInThis.3ff129") +
-        tr("server.kernelDockerfileAndThePackageListsBeside.7f2949") +
-        tr("server.updateItAndRestartOrBuildOn.25c277"),
-    canSetDefault: found.repository,
-    cannotSetDefaultReason: found.repository
-      ? null
-      : tr("server.makingAnEnvironmentTheDefaultWritesKernel.40527e") +
-        tr("server.andThatFileIsTheHostS.d583a8") +
-        (found.context ? tr("server.buildingAnImageNeedsNeitherAndWorks.0701a2") : ''),
+      : tr('server.theKernelDirectoryIsNotInThis.3ff129') +
+        tr('server.kernelDockerfileAndThePackageListsBeside.7f2949') +
+        tr('server.updateItAndRestartOrBuildOn.25c277'),
+    canSetDefault: found.repository || found.home,
+    cannotSetDefaultReason:
+      found.repository || found.home
+        ? null
+        : tr('server.makingAnEnvironmentTheDefaultWritesKernel.40527e') +
+          tr('server.andThatFileIsTheHostS.d583a8') +
+          (found.context ? tr('server.buildingAnImageNeedsNeitherAndWorks.0701a2') : ''),
   }
 }
 
@@ -450,13 +649,21 @@ export function abilities(found: {
 export async function environmentAbilities(): Promise<EnvironmentAbilities> {
   if (usingRuntimeBroker()) {
     loadRuntimeCatalog()
-    return {canBuild:false,cannotBuildReason:tr("server.imagesArePublishedOutsideTheWebApplication.d2806b"),canSetDefault:true,cannotSetDefaultReason:null}
+    return {
+      canBuild: false,
+      cannotBuildReason: tr('server.imagesArePublishedOutsideTheWebApplication.d2806b'),
+      canSetDefault: true,
+      cannotSetDefaultReason: null,
+    }
   }
   const version = await run('docker', ['version', '--format', '{{.Server.Version}}'], 8000)
   return abilities({
     docker: version.code === 0,
     context: fs.existsSync(path.join(KERNEL_DIR, 'Dockerfile')),
     repository: fs.existsSync(COMPOSE_FILE),
+    // Переменная от супервизора, а не догадка по файлам: она и значит, что
+    // .env этой установки лежит там, куда мы можем писать.
+    home: stateHome() !== null,
   })
 }
 
@@ -475,7 +682,8 @@ interface ImageFacts {
  * вызов на строку удвоил бы это в том же цикле событий, который ведёт чужую
  * пару.
  */
-const IMAGE_FORMAT = '{{println .Size}}{{println .Created}}{{range .Config.Env}}{{println .}}{{end}}'
+const IMAGE_FORMAT =
+  '{{println .Size}}{{println .Created}}{{range .Config.Env}}{{println .}}{{end}}'
 
 /**
  * Что образ рассказывает о себе сам.
@@ -582,6 +790,11 @@ export type BuildPlan = { via: 'direct' } | { via: 'compose'; files: string[] }
  * python-slim), и тонкий слой поверх готового colloq-образа. Когда родителя
  * нет, аргумент не передаётся вовсе — действует умолчание самого Dockerfile, и
  * имя базового образа остаётся в одном месте, а не в двух расходящихся.
+ *
+ * `kernel` — каталог контекста: обычно это kernel/ приложения, а у
+ * установленного colloq — склеенная копия со своими окружениями (buildContext).
+ * Путь через compose его не принимает и не должен: контекст ./kernel записан в
+ * docker-compose.yml, а он лежит только там, где каталог окружений и так один.
  */
 export function buildCommand(
   plan: BuildPlan,
@@ -614,6 +827,48 @@ export function buildCommand(
 }
 
 /**
+ * Контекст `docker build`, когда каталогов окружений два: копия kernel/ со
+ * своими списками поверх привезённых.
+ *
+ * Склейка, а не развилка в самой сборке, — тот же выбор и по той же причине,
+ * что на стороне запуска (cli/src/launch-prepare.ts · kernelRoot): развилку
+ * «этот файл оттуда, а тот отсюда» пришлось бы протащить в цепочку
+ * наследования, в COPY внутри Dockerfile и в сам вызов docker, и однажды
+ * забыть про одно из трёх. Здесь она ровно в одном месте: контекст собирается
+ * заново перед сборкой, а дальше всё идёт как раньше, с ОДНИМ каталогом.
+ *
+ * А вот каталог свой, и он на имя: kernelRoot чистит своё место rmSync раз за
+ * запуск, когда сервера ещё нет вовсе, а панель собирает несколько окружений
+ * разом — две сборки на один каталог значат, что чистка второй выдёргивает
+ * контекст из-под первой, и та падает на «no such file or directory» посреди
+ * чтения. Одно имя дважды одновременно не собирается (слот в builds), так что
+ * на своём каталоге чистка безопасна.
+ *
+ * Каталог не убирается после сборки: он маленький (весь kernel/ — десятки
+ * килобайт), по нему видно, что именно уехало в docker, а следующая сборка того
+ * же имени всё равно переписывает его целиком.
+ *
+ * Возвращается сам каталог ядра, а не корень над ним: buildCommand ждёт ту
+ * папку, где лежит Dockerfile.
+ */
+export function buildContext(name: string): string {
+  const home = stateHome()
+  if (home === null || ownEnvDir() === ENV_DIR) return KERNEL_DIR
+  const staged = path.join(home, '.colloq', 'kernel-context', name)
+  fs.rmSync(staged, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(staged), { recursive: true })
+  // preserveTimestamps: копия обязана быть неотличима от оригинала — по времени
+  // правки решается свежесть образа, пока штампа сборки ещё нет.
+  const keep = { recursive: true, preserveTimestamps: true } as const
+  fs.cpSync(KERNEL_DIR, staged, keep)
+  const into = path.join(staged, 'environments')
+  fs.mkdirSync(into, { recursive: true })
+  for (const file of fs.readdirSync(ownEnvDir()))
+    if (file.endsWith('.txt')) fs.cpSync(path.join(ownEnvDir(), file), path.join(into, file), keep)
+  return staged
+}
+
+/**
  * Одно звено цепочки: одна сборка одного окружения.
  *
  * Возвращает, продолжать ли: упавшее звено делает следующие бессмысленными.
@@ -623,9 +878,10 @@ function runStage(
   plan: BuildPlan,
   step: string,
   parentImage: string | null,
+  kernel: string,
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    const { args, env: vars } = buildCommand(plan, step, parentImage)
+    const { args, env: vars } = buildCommand(plan, step, parentImage, kernel)
     /*
      * Список читается ДО спавна — это и уедет в штамп.
      *
@@ -670,8 +926,13 @@ function runStage(
     child.on('close', (code) => {
       if (code === 0) {
         // Remember WHAT was built, so the next comparison is about content.
+        // Штамп — про образ в docker этой машины, поэтому в свой каталог: см.
+        // stampFor. Каталога может ещё не быть — своих окружений человек не
+        // заводил, а собрал привезённое.
         try {
-          fs.writeFileSync(stampFor(step), built)
+          const stamp = ownStampFor(step)
+          fs.mkdirSync(path.dirname(stamp), { recursive: true })
+          fs.writeFileSync(stamp, built)
         } catch {
           // No stamp is not a failure: staleness falls back to mtime, as before.
         }
@@ -685,10 +946,11 @@ function runStage(
         // "it failed" and "tensorflow==1.15 does not exist".
         failures.set(
           build.name,
-          build.lines.filter((l) => /error|ERROR/.test(l)).pop() ?? tr("server.buildExited.e3b35b", { p0: String(code) }),
+          build.lines.filter((l) => /error|ERROR/.test(l)).pop() ??
+            tr('server.buildExited.e3b35b', { p0: String(code) }),
         )
       }
-      push(build, tr("server.buildFailed.3e3a83", { p0: String(code) }))
+      push(build, tr('server.buildFailed.3e3a83', { p0: String(code) }))
       resolve(false)
     })
   })
@@ -739,7 +1001,8 @@ function rootParent(build: Build, root: string): string {
  * while every container still reports healthy.
  */
 export async function startBuild(name: string): Promise<void> {
-  if (usingRuntimeBroker()) throw new Error(tr("server.publishedEnvironmentsAreBuiltOutsideTheWeb.538ec6"))
+  if (usingRuntimeBroker())
+    throw new Error(tr('server.publishedEnvironmentsAreBuiltOutsideTheWeb.538ec6'))
   if (isBuilding(name)) return
   failures.delete(name)
 
@@ -793,7 +1056,7 @@ export async function startBuild(name: string): Promise<void> {
   if (busy) {
     // Не «упало», а «занято»: собирается тот самый слой, поверх которого мы бы
     // встали, и ждать его — единственное разумное.
-    const message = tr("server.environmentInThisChainIsAlreadyBuilding.166f94", { p0: busy })
+    const message = tr('server.environmentInThisChainIsAlreadyBuilding.166f94', { p0: busy })
     push(build, message)
     build.failed = true
     build.done = true
@@ -857,15 +1120,35 @@ export async function startBuild(name: string): Promise<void> {
   // собирается, и «Building» в их строке было бы враньём с запертой кнопкой.
   release(chain.slice(0, from))
 
+  /*
+   * Контекст готовится здесь, а не в начале: до этой строки сборку могли
+   * отменить, и копировать каталог ради отменённой сборки незачем. Отказ
+   * копирования (нет места, закрыт каталог состояния) — это провал сборки со
+   * своей причиной в журнале, а не исключение, летящее мимо панели.
+   */
+  let kernel: string
+  try {
+    kernel = buildContext(name)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    push(build, message)
+    build.failed = true
+    build.done = true
+    failures.set(name, message)
+    release(held)
+    return
+  }
+
   const base = rootParent(build, chain[0] as string)
   for (const step of stages) {
     if (build.done) break
     const before = chain[chain.indexOf(step) - 1]
-    if (!(await runStage(build, plan, step, before ? `colloq-kernel:${before}` : base))) break
+    if (!(await runStage(build, plan, step, before ? `colloq-kernel:${before}` : base, kernel)))
+      break
   }
 
   build.done = true
-  if (!build.failed) push(build, tr("server.buildFinished.ce23d0"))
+  if (!build.failed) push(build, tr('server.buildFinished.ce23d0'))
   // Дальше каждое звено отвечает за себя: чужой журнал в своей строке — это
   // «build failed» на образе, который собрался.
   release(held)
@@ -947,12 +1230,9 @@ async function switchTo(
    * image while the panel reported the new one — "nlp is active", and
    * `import transformers` still failing in every room.
    */
-  const res = await run(
-    'docker',
-    ['compose', ...files, 'up', '-d', 'kernel'],
-    120_000,
-    { KERNEL_ENV: name },
-  )
+  const res = await run('docker', ['compose', ...files, 'up', '-d', 'kernel'], 120_000, {
+    KERNEL_ENV: name,
+  })
   return { ok: res.code === 0, out: res.out }
 }
 
@@ -1038,15 +1318,27 @@ function editedSinceBuild(name: string, built: ImageFacts): boolean {
 export async function listEnvironments(): Promise<AdminEnvironment[]> {
   if (usingRuntimeBroker()) {
     const active = activeName()
-    return loadRuntimeCatalog().environments.filter(e=>e.current).map(e=>({
-      name:e.name,state:'ready',packages:e.packages??[],imageBytes:null,builtAt:null,
-      active:e.name===active,error:null,parent:null,gpu:e.gpu,
-      // Версия — только та, которую назвал каталог: образ здесь чужой и
-      // неизменный, спросить его отсюда нечем, а умолчание на этом месте было
-      // бы выдумкой о production-сборке. Не сказано — панель промолчит.
-      python:e.python??'',pythonBuilt:null,
-      managed:true,image:e.image,revision:imageRevision(e.image),
-    }))
+    return loadRuntimeCatalog()
+      .environments.filter((e) => e.current)
+      .map((e) => ({
+        name: e.name,
+        state: 'ready',
+        packages: e.packages ?? [],
+        imageBytes: null,
+        builtAt: null,
+        active: e.name === active,
+        error: null,
+        parent: null,
+        gpu: e.gpu,
+        // Версия — только та, которую назвал каталог: образ здесь чужой и
+        // неизменный, спросить его отсюда нечем, а умолчание на этом месте было
+        // бы выдумкой о production-сборке. Не сказано — панель промолчит.
+        python: e.python ?? '',
+        pythonBuilt: null,
+        managed: true,
+        image: e.image,
+        revision: imageRevision(e.image),
+      }))
   }
   const active = activeName()
   const names = listNames()

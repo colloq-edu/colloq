@@ -352,8 +352,8 @@ function announceBind(): void {
 function announceJupyterToken(): void {
   if (config.jupyter.token !== DEV_JUPYTER_TOKEN) return
   console.warn(
-    `[kernel] JUPYTER_TOKEN — общеизвестное значение из .env.example (${DEV_JUPYTER_TOKEN}); ` +
-      'замените его или пересоздайте .env через make up',
+    `[kernel] JUPYTER_TOKEN is the well-known value from .env.example (${DEV_JUPYTER_TOKEN}); ` +
+      'put your own in: the JUPYTER_TOKEN= line in .env, then restart',
   )
 }
 

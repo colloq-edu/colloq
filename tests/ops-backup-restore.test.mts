@@ -57,7 +57,11 @@ function machine(): Machine {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-restore-'))
   built.push(dir)
   fs.mkdirSync(path.join(dir, 'scripts'))
-  for (const f of ['restore.sh', 'lib.sh']) {
+  // backup-local.sh — тот самый рецепт копии: он уехал из Makefile в scripts/,
+  // потому что в колесо pip едут скрипты, а Makefile нет. Цель backup-legacy
+  // теперь обёртка над ним, и без файла машина в миниатюре снимать копию
+  // нечем.
+  for (const f of ['backup-local.sh', 'restore.sh', 'lib.sh']) {
     fs.copyFileSync(path.join(repo, 'scripts', f), path.join(dir, 'scripts', f))
   }
   fs.copyFileSync(path.join(repo, 'Makefile'), path.join(dir, 'Makefile'))

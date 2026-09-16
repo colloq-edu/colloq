@@ -122,7 +122,7 @@ test(
       assert.match(first.output(), new RegExp('localhost:' + p))
       const second = invoke(root, ['run', '--no-open'])
       assert.equal(await second.done, 0, second.output())
-      assert.match(second.output(), /уже/)
+      assert.match(second.output(), /already/)
       assert.equal(fs.readFileSync(path.join(root, 'events'), 'utf8').split('start').length - 1, 1)
       first.child.kill('SIGINT')
       assert.equal(await first.done, 130, first.output())
@@ -179,9 +179,9 @@ test(
       path.join(root, 'scripts/host.sh'),
       '#!/bin/bash\nprintf "tunnel-start\\n" >> events\nexit 3\n',
     )
-    const run = invoke(root, ['run', '--host', 'seminar.example.test', '--no-open'])
+    const run = invoke(root, ['run', '--host', 'class.example.test', '--no-open'])
     try {
-      await until(() => run.output().includes('Локальная работа продолжается'))
+      await until(() => run.output().includes('Local work continues'))
       assert.equal((await fetch(`http://127.0.0.1:${p}/api/health`)).status, 200)
       run.child.kill('SIGINT')
       assert.equal(await run.done, 130, run.output())
@@ -238,7 +238,7 @@ test(
     )
     const run = invoke(root, ['dev', '--port', String(ui), '--no-open'])
     try {
-      await until(() => run.output().includes('Colloq работает'), 20000)
+      await until(() => run.output().includes('Colloq is running'), 20000)
       assert.equal((await fetch(`http://localhost:${ui}`)).status, 200)
       const styles = await fetch(`http://localhost:${ui}/src/index.css`)
       assert.equal(styles.status, 200, await styles.text())
@@ -272,7 +272,7 @@ test(
     const root = fixture(await port()),
       run = invoke(root, ['run', '--no-open'])
     try {
-      await until(() => run.output().includes('Colloq работает'))
+      await until(() => run.output().includes('Colloq is running'))
       run.child.kill('SIGHUP')
       assert.equal(await run.done, 129, run.output())
       assert.match(fs.readFileSync(path.join(root, 'events'), 'utf8'), /stop:1/)

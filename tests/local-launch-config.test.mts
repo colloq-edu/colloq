@@ -19,8 +19,8 @@ test('local launch defaults to a foreground session and validates flags before w
     build: false,
   })
   assert.equal(
-    parseLaunchArgs(['run', '--host', 'seminar.colloq.ru', '--detach']).host,
-    'seminar.colloq.ru',
+    parseLaunchArgs(['run', '--host', 'class.example.ru', '--detach']).host,
+    'class.example.ru',
   )
   assert.equal(parseLaunchArgs(['dev', '--port', '4310', '--no-open']).port, 4310)
   for (const args of [

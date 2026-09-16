@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { messages, translate } from '../shared/i18n.js'
 
 test('generic teaching entities use classes in both catalogs, preserving the example seminar title', () => {
@@ -22,14 +22,23 @@ test('generic teaching entities use classes in both catalogs, preserving the exa
   assert.equal(translate('ru', 'admin.count.seminar', { count: 5 }), '5 занятий')
   assert.equal(translate('en', 'admin.count.seminar', { count: 1 }), '1 class')
   assert.equal(translate('en', 'admin.count.seminar', { count: 2 }), '2 classes')
-  assert.equal(translate('ru', 'admin.computer.vision.seminar.25.08'), 'Семинар по компьютерному зрению — 25.08')
+  assert.equal(
+    translate('ru', 'admin.computer.vision.seminar.25.08'),
+    'Семинар по компьютерному зрению — 25.08',
+  )
 })
 
 test('language menu states the shared scope and names the current language', () => {
   assert.equal(translate('ru', 'admin.language.scope'), 'Изменится у всех участников.')
   assert.equal(translate('en', 'admin.language.scope'), 'Changes for everyone on this server.')
-  assert.equal(translate('ru', 'admin.language.current', { language: 'Русский' }), 'Язык интерфейса: Русский')
-  assert.equal(translate('en', 'admin.language.current', { language: 'English' }), 'Interface language: English')
+  assert.equal(
+    translate('ru', 'admin.language.current', { language: 'Русский' }),
+    'Язык интерфейса: Русский',
+  )
+  assert.equal(
+    translate('en', 'admin.language.current', { language: 'English' }),
+    'Interface language: English',
+  )
   assert.equal(translate('ru', 'admin.language.retry'), 'Повторить')
   assert.equal(translate('en', 'admin.language.retry'), 'Try again')
 })
@@ -39,3 +48,13 @@ test('getting started names the Classes list in generated documentation', () => 
   assert.match(page, /«Занятия»/)
   assert.doesNotMatch(page, /«Семинары»|Создайте семинар/)
 })
+
+/**
+ * Словарь CLI переехал в tests/cli-language.test.mts.
+ *
+ * Здесь проверка была, пока CLI говорил по-русски: она стерегла, чтобы он
+ * говорил «занятие», а не «семинар». Теперь CLI говорит по-английски целиком,
+ * и вопрос стал шире — не одно слово, а язык, — поэтому он проверяется рядом с
+ * самим языком. Исключение про лист Google-таблицы («Семинары») умерло вместе с
+ * русской строкой, в которой оно жило.
+ */

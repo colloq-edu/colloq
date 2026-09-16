@@ -201,21 +201,21 @@ export function createUi(opts: UiOptions = {}): Ui {
       const ask = opts.ask
       if (!ask && !tty) {
         throw new PreconditionError(
-          'нет терминала для вопроса',
-          'повторите с --yes, если согласны заранее',
+          'no terminal to ask in',
+          'repeat with --yes if you agree in advance',
         )
       }
       const line = SYMBOL.next + ' ' + question + ' [y/N] '
       const answer = ask ? await ask(line) : await readLine(line)
       const value = answer.trim().toLowerCase()
-      return value === 'y' || value === 'yes' || value === 'д' || value === 'да'
+      return value === 'y' || value === 'yes'
     },
     async prompt(question, promptOpts = {}) {
       const fallback = promptOpts.default ?? ''
       const ask = opts.ask
       if (!ask && !tty) {
         if (fallback) return fallback
-        throw new PreconditionError('нет терминала для вопроса', 'передайте значение аргументом')
+        throw new PreconditionError('no terminal to ask in', 'pass the value as an argument')
       }
       const suffix = fallback ? ' [' + fallback + '] ' : ' '
       const line = SYMBOL.next + ' ' + question + suffix
@@ -233,13 +233,20 @@ export function createUi(opts: UiOptions = {}): Ui {
   return ui
 }
 
-/** «3 комнаты»: число перед словом всегда, слово по числу. Счёт комнат нужен двоим. */
+/**
+ * «3 rooms», «1 package»: число перед словом всегда, слово по числу.
+ *
+ * Форм две, и правило одно на все слова, поэтому списывать его во второй раз
+ * ради пакетов незачем. Второе слово даётся только там, где множественное
+ * неправильное: countWord(2, 'class', 'classes'), — обычному хватает 's'.
+ */
+export function countWord(count: number, one: string, many = one + 's'): string {
+  return count + ' ' + (count === 1 ? one : many)
+}
+
+/** Счёт комнат нужен двоим: вопросу перед опасным действием и строке состояния. */
 export function roomsWord(count: number): string {
-  const tail = count % 10
-  const hundred = count % 100
-  if (tail === 1 && hundred !== 11) return count + ' комната'
-  if (tail >= 2 && tail <= 4 && (hundred < 12 || hundred > 14)) return count + ' комнаты'
-  return count + ' комнат'
+  return countWord(count, 'room')
 }
 
 /**
@@ -252,7 +259,7 @@ export function heading(ctx: { dryRun: boolean; ui: Ui }, text: string): void {
 
 /** «нет» на вопрос: DIM «отменено» и код 4. Говорится одинаково во всех группах. */
 export function cancelled(ui: Ui): number {
-  ui.line(ui.dim('отменено'))
+  ui.line(ui.dim('cancelled'))
   return 4
 }
 
