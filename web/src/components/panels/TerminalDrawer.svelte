@@ -408,6 +408,7 @@
       class="term-tab"
       class:on={shownTab === 'terminal'}
       aria-pressed={shownTab === 'terminal'}
+      title={tr('room.ui.679')}
       onclick={() => (tab = 'terminal')}
     > {tr('room.ui.679')} {#if running}<span class="term-live-dot"></span>{/if}
     </button>
@@ -416,6 +417,7 @@
       class="term-tab"
       class:on={shownTab === 'kernel'}
       aria-pressed={shownTab === 'kernel'}
+      title={tr('room.ui.680')}
       onclick={() => (tab = 'kernel')}
     > {tr('room.ui.680')} </button>
     {#if may.history}
@@ -424,6 +426,7 @@
         class="term-tab"
         class:on={shownTab === 'history'}
         aria-pressed={shownTab === 'history'}
+      title={tr('room.ui.681')}
         onclick={() => (tab = 'history')}
       > {tr('room.ui.681')} </button>
     {/if}
@@ -482,7 +485,7 @@
               name={line.name ?? tr('room.extra.291')}
               color={line.color ?? 'var(--tm-muted)'}
               size="xs"
-              class="!h-[14px] !w-[14px] !text-micro"
+              class="!h-4 !w-4 !text-micro !leading-none"
               title={tr('room.terminal.author', { name: line.name ?? tr('room.ui.561') })}
             />
           </span>
@@ -518,7 +521,7 @@
         color={session.me.color}
         avatar={session.me.avatar}
         size="xs"
-        class="!h-[14px] !w-[14px] !text-micro"
+        class="!h-4 !w-4 !text-micro !leading-none"
         title={tr('room.person.you', { name: session.me.name })}
       />
     </span>
@@ -616,7 +619,7 @@
        той же надписью в панели. */
     --tm-sans: 'HSE Sans', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
     /* Output aligns under the command text, not under the avatar. */
-    --tm-indent: 38px;
+    --tm-indent: 40px;
 
     position: relative;
     z-index: 20;
@@ -680,13 +683,13 @@
     gap: 5px;
     padding: 0 2px;
     font-family: var(--tm-sans);
-    /* 11px, а не 10: десять — для того, что читают один раз и не нажимают
-       (tailwind.config.js), а это вкладки, по которым щёлкают всю пару. */
-    font-size: 11px;
+    /* Вкладки, по которым щёлкают всю пару, стоят на обычной ступени
+       управляющего текста. */
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--tm-faint);
+    color: var(--tm-muted);
     border-bottom: 1.5px solid transparent;
     transition: color var(--speed-quick, 0.1s) ease;
   }
@@ -703,9 +706,9 @@
     border-radius: 4px;
     padding: 2px 6px;
     font-family: var(--tm-sans);
-    /* Читают один раз и не нажимают — 10px здесь на своём месте, а 9.5
-       было ниже собственного пола продукта. */
-    font-size: 10px;
+    /* Общий контейнер — состояние комнаты, поэтому подпись не мельче другого
+       метатекста в этой полосе. */
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -720,7 +723,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--tm-mono);
-    font-size: 10.5px;
+    font-size: 12px;
     color: var(--tm-faint);
   }
 
@@ -735,8 +738,8 @@
     }
   }
 
-  /* 24 px по высоте — тот же пол, что у кнопок тетради, и 11px вместо 10:
-     «Clear» и крестик нажимают пальцем и пером. */
+  /* 24 px по высоте — тот же пол, что у кнопок тетради; «Clear» и крестик
+     нажимают пальцем и пером. */
   .term-act {
     display: inline-flex;
     flex: none;
@@ -747,11 +750,11 @@
     border-radius: 6px;
     padding: 0 6px;
     font-family: var(--tm-sans);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--tm-faint);
+    color: var(--tm-muted);
     transition:
       color var(--speed-quick, 0.1s) ease,
       background-color var(--speed-quick, 0.1s) ease,
@@ -781,7 +784,7 @@
     overflow-y: auto;
     padding: 8px 12px 10px;
     font-family: var(--tm-mono);
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.55;
   }
 
@@ -789,13 +792,13 @@
     max-width: 68ch;
     padding: 4px 0 0 var(--tm-indent);
     font-family: var(--tm-sans);
-    font-size: 12px;
+    font-size: 14px;
     line-height: 1.65;
-    color: var(--tm-faint);
+    color: var(--tm-muted);
   }
   .term-empty code {
     font-family: var(--tm-mono);
-    font-size: 11.5px;
+    font-size: 13px;
     color: var(--tm-muted);
   }
 
@@ -809,8 +812,8 @@
      starts at exactly --tm-indent. */
   .term-av {
     display: flex;
-    height: 19px;
-    width: 14px;
+    height: 20px;
+    width: 16px;
     flex: none;
     align-items: center;
     margin-right: 8px;
@@ -836,7 +839,7 @@
     align-items: center;
     gap: 5px;
     padding-left: 10px;
-    font-size: 10.5px;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
     color: var(--tm-live);
   }
@@ -855,7 +858,7 @@
     white-space: pre-wrap;
     word-break: break-word;
     font-family: var(--tm-mono);
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.55;
     color: var(--tm-muted);
   }
@@ -863,12 +866,12 @@
   .term-sys {
     padding-left: var(--tm-indent);
     font-style: italic;
-    color: var(--tm-faint);
+    color: var(--tm-muted);
   }
   .term-time {
     margin-right: 8px;
     font-style: normal;
-    color: rgb(255 255 255 / 0.22);
+    color: var(--tm-faint);
   }
 
   .term-prompt {
@@ -879,7 +882,7 @@
     padding: 7px 12px;
     background: var(--tm-bg);
     font-family: var(--tm-mono);
-    font-size: 12.5px;
+    font-size: 13px;
     transition: background-color 100ms ease;
   }
   .term-prompt.off {
@@ -897,7 +900,7 @@
     color: var(--tm-ink);
     caret-color: var(--tm-accent);
     font-family: var(--tm-mono);
-    font-size: 12.5px;
+    font-size: 13px;
   }
   .term-input::placeholder {
     color: var(--tm-faint);
@@ -919,15 +922,15 @@
     animation: tmblink 1.1s ease-in-out infinite;
   }
 
-  /* Единственная кнопка в этой строке — и она же была самой мелкой подписью
-     ящика: 11px и 24 px высоты, как у всего, что нажимают. */
+  /* Единственная кнопка в этой строке стоит на той же ступени и высоте, что
+     остальные действия ящика. */
   .term-revive {
     display: inline-flex;
     align-items: center;
     min-height: 24px;
     padding: 0 2px;
     font-family: var(--tm-sans);
-    font-size: 11px;
+    font-size: 13px;
     color: var(--tm-accent);
     text-decoration: underline;
     text-underline-offset: 2px;
@@ -949,8 +952,8 @@
     gap: 5px;
     padding-left: 10px;
     font-family: var(--tm-sans);
-    font-size: 10px;
-    color: var(--tm-faint);
+    font-size: 13px;
+    color: var(--tm-muted);
   }
 
   @keyframes tmblink {
@@ -981,6 +984,7 @@
 
     /* Три вкладки делят остаток и усыхают многоточием, а не выталкивают. */
     .term-tab {
+      flex: 1 1 auto;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;

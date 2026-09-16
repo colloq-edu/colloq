@@ -164,8 +164,8 @@ test('ручка «имена на проекторе» стоит рядом с
   const window = code(read('web/src/components/council/pult/PultWindow.svelte'))
   assert.match(status, /role="switch"/, 'ручка — переключатель, а не строка текста')
   assert.match(status, /aria-checked=\{names\}/)
-  assert.match(status, /tr\('room\.ui\.1353'\)/)
-  assert.match(status, /tr\('room\.ui\.1354'\)/)
+  assert.match(status, /tr\('room\.pult\.v2\.names'\)/)
+  assert.match(status, /onclick=\{\(\) => onnames\(!names\)\}/)
   assert.match(window, /function setNames\(namesOnProjector: boolean\): void/)
   assert.match(window, /session\.council\.lock\(cellId, 'council', \{ namesOnProjector \}\)/)
   // И в тетради её нет: меню замка — три положения и ничего больше.

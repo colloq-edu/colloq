@@ -534,8 +534,8 @@
 .cm-editor {
   background: transparent;
   font-family: theme('fontFamily.mono');
-  font-size: 13px;
-  line-height: 1.65;
+  font-size: theme('fontSize.code-lg[0]');
+  line-height: 1.6;
 }
 .cm-editor.cm-focused {
   outline: none !important;
@@ -587,43 +587,24 @@
   margin-left: -1px;
   box-sizing: border-box;
 }
-/*
- * Плашка с именем соседа — и почему у селектора три класса.
- *
- * y-codemirror.next объявляет её своей БАЗОВОЙ темой, а базовая тема — это
- * `.ͼ1 .cm-ySelectionInfo`, два класса. Правило в один класс проигрывало ей по
- * старшинству молча и наполовину: высота плашки, капитель и разрядка приезжали
- * отсюда, а шрифт, кегль, начертание, интерлиньяж и подъём оставались чужими —
- * на экране получалась плашка 14 px с засечным текстом 9.75 px обычного
- * начертания, прижатым к её верхнему краю. Здесь три класса, и они выигрывают
- * без `!important`.
- *
- * Не перечислено — и держится на базовой теме — ровно то, что менять незачем:
- * `position`, фон (наследует цвет каретки) и появление по наведению.
- *
- * Подъём в пикселях, а не в `em`: `em` здесь считается от кегля САМОЙ плашки
- * (8.5 px), и «−1.2em» поднимало её на 10 px вместо её же высоты — низ плашки
- * налезал на строку с кодом. −14 px ставит её ровно на строку.
- */
+/* Three classes override y-codemirror's base theme. The collaborator's name
+ * uses a readable 12px label, lifted by exactly its height. File editors reserve
+ * matching space above the first line; notebook cells allow the label to overflow.
+ * Participant colours are bright, so the same dark ink as avatars stays legible. */
 .cm-editor .cm-ySelectionCaret > .cm-ySelectionInfo {
-  top: -14px;
+  top: -18px;
   left: -2px;
-  /* Off the artboard: a 14px plate of 8.5px caps. Raw px because this is not a
-     Tailwind utility and 8.5 is below the smallest step on the type scale — it
-     is a label on a caret, not text anybody reads as text. */
-  height: 14px;
+  height: 18px;
   padding: 0 5px;
-  font-size: 8.5px;
+  font-size: 12px;
   font-family: theme('fontFamily.sans');
   font-style: normal;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  line-height: 14px;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 18px;
   white-space: nowrap;
-  /* The label sits on the peer's own colour, which is the same in both themes,
-     so this one must NOT follow the ink. */
-  color: #fff;
+  color: rgb(var(--accent-ink));
   pointer-events: none;
   user-select: none;
   z-index: 20;
@@ -845,6 +826,56 @@
 }
 .prose-note hr {
   @apply border-line;
+}
+
+/*
+ * Две страховки под оформление, которое заметка приносит своим `style`
+ * (shared/note-css.ts). Белый список свойств отвечает за то, чтобы чужая
+ * заметка не дотянулась до экрана; эти два правила — за то, чтобы она не
+ * разъехалась внутри колонки.
+ *
+ * `max-width` — селектором из двух частей, то есть слабее инлайнового стиля:
+ * автор, написавший `max-width` сам, своё получит, а `width: 1200px` в колонке
+ * на 700 упрётся в край ячейки вместо горизонтальной прокрутки всей страницы.
+ *
+ * Обтекание закрывается собой: `float: right` у картинки — обычный приём
+ * учебной заметки, но без этого поплавок вылезает за низ ячейки и ложится на
+ * следующую.
+ */
+.prose-note [style] {
+  max-width: 100%;
+}
+/*
+ * Врезка со своим фоном получает и свои чернила.
+ *
+ * `background: #eef` человек пишет, думая о белом листе, и о тёмной теме не
+ * думает никогда — а в ней текст заметки светлый, и светлое по светлому
+ * читается никак: коробка есть, слов в ней нет. Селектор из двух частей, то
+ * есть слабее инлайнового стиля: автор, назвавший `color` сам, своё получит.
+ */
+.prose-note [style*='background'] {
+  color: #1b2233;
+}
+/*
+ * И обе страховки обязаны пропустить формулу.
+ *
+ * KaTeX строит своё дерево уже ПОСЛЕ фильтра оформления (lib/render.svelte.ts)
+ * и раскладывает его такими же инлайновыми `style`: высотами в `em` у
+ * `.vlist`, фоном у `\colorbox`. Под общим правилом дробь получала бы
+ * `max-width` от ширины строки, а подкрашенная формула — чужие чернила.
+ * Селектор на ступень длиннее, поэтому спор решается в её пользу.
+ */
+.prose-note .katex,
+.prose-note .katex [style] {
+  max-width: none;
+}
+.prose-note .katex [style*='background'] {
+  color: inherit;
+}
+.prose-note::after {
+  content: '';
+  display: table;
+  clear: both;
 }
 
 /* Cell outputs keep whitespace but must never widen the page. */

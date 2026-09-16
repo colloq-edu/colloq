@@ -16,7 +16,7 @@ import { tr } from '@shared/i18n'
  * которые преподаватель прочитает один раз и по которым кого-то удалит,
  * должны проверяться тестом, а не глазами на живой паре.
  */
-import type { Ban, ParticipantRole } from '@shared/protocol'
+import type { Ban, CouncilAttempt, ParticipantRole } from '@shared/protocol'
 
 /* ----------------------------------------------------------------- сроки */
 
@@ -93,6 +93,7 @@ export function banConsequences(name: string): string[] {
   return [
     tr('room.ui.1032', { p0: name }),
     tr('room.ui.1033'),
+    tr('room.ban.councilConsequences'),
     tr('room.ui.1034'),
   ]
 }
@@ -204,6 +205,27 @@ export interface BanTarget {
   avatar: string | null
   x: number
   y: number
+}
+
+/**
+ * Настоящий адресат кнопки в пульте.
+ *
+ * Имя на экране может быть заменено «вариантом» или «работой без имени», но
+ * бан ставится человеку. Поэтому и id, и имя берутся из самой попытки, а не
+ * из того, что сейчас нарисовано преподавателю.
+ */
+export function banTargetOf(
+  attempt: Pick<CouncilAttempt, 'participantId' | 'name' | 'color' | 'avatar'>,
+  point: Pick<MouseEvent, 'clientX' | 'clientY'>,
+): BanTarget {
+  return {
+    id: attempt.participantId,
+    name: attempt.name,
+    color: attempt.color,
+    avatar: attempt.avatar,
+    x: point.clientX,
+    y: point.clientY,
+  }
 }
 
 export function askToBan(target: BanTarget): void {

@@ -1,28 +1,19 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  /**
-   * Правая колонка: одна работа целиком.
-   *
-   * Шапка 50, плита кода, плита вывода, письма, поле ответа — и полоса действий,
-   * прибитая к низу. Всё, что выше поля ответа, — только ваше; ниже начинается
-   * зал, и туда ведёт ровно одна кнопка.
-   *
-   * Плита кода НЕ РАСТЁТ: высота разбора не должна зависеть от длины чужого
-   * кода. Первые строки видны, дальше плита прокручивается внутри себя, а под
-   * ней стоит счёт оставшихся строк.
-   */
+  import Avatar from '@/components/ui/Avatar.svelte'
   import { councilLetters, type CouncilAttempt, type CouncilGroup } from '@shared/protocol'
   import CellOutputs from '@/components/notebook/CellOutputs.svelte'
   import Code from '@/components/ui/Code.svelte'
-  import { statusLabel } from '@/lib/council-board'
+  import { attemptReview, attemptExecution, type PultPresence } from '@/lib/council-pult'
   import { clock } from '@/lib/history'
-  import { cn, spell } from '@/lib/utils'
+  import { spell } from '@/lib/utils'
   import PultActions from './PultActions.svelte'
   import PultLetters from './PultLetters.svelte'
   import PultReply from './PultReply.svelte'
 
   interface Props {
     attempt: CouncilAttempt | null
+    presence: PultPresence
     group: CouncilGroup | undefined
     /** Номер группы с единицы и сколько групп всего. */
     groupIndex: number
@@ -55,11 +46,12 @@
     onreplyfocus: () => void
     onreplyblur: () => void
     /** Удалить автора с занятия — подтверждает общее меню бана. */
-    onremove: (event: MouseEvent) => void
+    onremove: (attempt: CouncilAttempt, event: MouseEvent) => void
   }
 
   let {
     attempt,
+    presence,
     group,
     groupIndex,
     groups,
@@ -90,151 +82,142 @@
     onremove,
   }: Props = $props()
 
-  const CAPS = 'text-micro font-bold uppercase tracking-caps'
-  /** Сколько строк кода показываем, не прокручивая. */
-  const LINES = 10
-
   const writing = $derived(attempt !== null && attempt.submittedAt === null)
   const run = $derived(attempt?.run ?? null)
   const letters = $derived(councilLetters(attempt))
-  const lines = $derived(attempt ? attempt.text.split('\n') : [])
-  const rest = $derived(Math.max(lines.length - LINES, 0))
+  const lines = $derived(attempt ? attempt.text.split('\n').length : 0)
   const same = $derived(group ? group.count - 1 : 0)
+  const review = $derived(attempt ? attemptReview(attempt) : null)
+  const execution = $derived(attempt ? attemptExecution(attempt) : null)
 
-  /** Одна моноширинная строка под именем: всё про место этой работы. */
   const place = $derived.by(() => {
     if (!attempt) return ''
-    const parts: string[] = []
-    if (attempt.submittedAt !== null) parts.push(tr('room.ui.1322', { p0: clock(attempt.submittedAt) }))
-    else parts.push(tr('room.ui.1311'))
-    if (groupIndex > 0) parts.push(tr('room.ui.1323', { p0: groupIndex, p1: groups }))
-    if (same > 0) parts.push(tr('room.ui.1314', { count: same }))
-    parts.push(`${index} / ${total}`)
+    const parts = [attempt.submittedAt !== null
+      ? tr('room.ui.1322', { p0: clock(attempt.submittedAt) })
+      : tr('room.pult.v2.workSavedDraft', { time: clock(attempt.updatedAt) })]
+    parts.push(tr(presence === 'unknown'
+      ? 'room.pult.v2.workPresenceUnknown'
+      : presence === 'online' ? 'room.pult.online' : 'room.pult.offline'))
     return parts.join(' · ')
   })
-
-  const markTone = $derived(
-    attempt?.status === 'correct'
-      ? 'border-positive text-positive'
-      : attempt?.status === 'wrong'
-        ? 'border-warning text-warning'
-        : attempt?.status === 'failed'
-          ? 'border-danger text-danger'
-          : 'border-line text-faint',
-  )
 </script>
 
 {#if !attempt}
-  <div class="flex flex-1 items-center justify-center px-16 text-center">
-    <p class="text-ui-lg font-bold text-muted">{tr('room.ui.1363')}</p>
-  </div>
+  <div class="work-empty"><p>{tr('room.ui.1363')}</p></div>
 {:else}
-  <div class="flex min-h-0 min-w-0 flex-1 flex-col" data-pult-work={attempt.participantId}>
-    <!-- Шапка работы: кто, когда, какая группа и какая это работа по счёту. -->
-    <div class="flex h-[50px] shrink-0 items-center gap-2.5 border-b border-line px-4">
-      <span
-        class="h-[26px] w-[26px] shrink-0 rounded-full"
-        style:background-color={names ? attempt.color : 'rgb(var(--line))'}
-        aria-hidden="true"
-      ></span>
-      <span class="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span class="truncate text-ui-lg font-bold text-ink">
-          {names ? attempt.name : tr('room.ui.1255', { p0: variant })}
-        </span>
-        <span class="truncate font-mono text-micro text-faint">{place}</span>
-      </span>
-      <span class={cn(CAPS, 'flex h-5 shrink-0 items-center border px-2', markTone)}>
-        {statusLabel(attempt)}
-      </span>
-      <!--
-        Удаление с занятия — здесь, а не в полосе действий: в полосе стоит то,
-        что делают по каждой работе, а это делают раз в семестр. Тихая до
-        наведения и без заливки: единственное наказание в продукте не должно
-        стоять рядом с «показать классу» одинаково громко. Подтверждение
-        спрашивает общее меню бана (lib/bans.ts), оно же перечисляет
-        последствия — второго такого разговора в продукте нет.
-      -->
-      <button
-        type="button"
-        class={cn(CAPS, 'h-8 w-8 shrink-0 text-ui-lg text-faint hover:text-danger disabled:text-faint')}
-        disabled={disabled}
-        aria-label={tr('room.ui.78')}
-        title={tr('room.ui.78')}
-        data-pult-remove
-        onclick={onremove}
-      >⋯</button>
-    </div>
-
-    <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4 pt-3.5">
-      <!-- Код: подложка surface, полоса line, и своя прокрутка внутри. -->
-      <div class="shrink-0 border-l-2 border-line bg-surface px-3.5 py-3">
-        <div class="max-h-[240px] overflow-auto">
-          <Code code={attempt.text} />
-        </div>
-        {#if rest > 0}
-          <p class="pt-1 font-mono text-micro text-faint">{tr('room.pult.codeLines', { count: lines.length })}</p>
+  <div class="work" data-pult-work={attempt.participantId}>
+    <header class="work-header">
+      <span class="work-avatar" style:background-color={names ? attempt.color : 'rgb(var(--line))'} aria-hidden="true">
+        {#if names}
+          <Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="xs" emojiPx={28} class="!h-full !w-full" />
         {/if}
+      </span>
+      <div class="work-author">
+        <h2>{names ? attempt.name : tr('room.ui.1255', { p0: variant })}</h2>
+        <p class="pult-meta">{place}</p>
       </div>
+      <div class="work-review">
+        <span class="pult-meta">{tr('room.pult.v2.workReview')}</span>
+        <span class="pult-badge" data-tone={review?.tone} data-pult-review>{review?.label}</span>
+      </div>
+      <button type="button" class="pult-button pult-button--danger work-remove" disabled={disabled}
+        data-pult-remove onclick={(event) => onremove(attempt, event)}>{tr('room.ui.78')}</button>
+    </header>
 
-      <!-- Вывод: подложка raised, полоса цвета исхода, подпись — кто запускал. -->
-      {#if run}
-        <div
-          class={cn(
-            'shrink-0 border-l-2 bg-raised px-3.5 py-2.5',
-            run.state === 'error' ? 'border-danger' : run.state === 'ok' ? 'border-positive' : 'border-accent',
-          )}
-        >
-          {#if run.outputs.length > 0}
-            <CellOutputs outputs={run.outputs} />
-          {/if}
-          <p class={cn(CAPS, 'pt-1.5 text-faint')}>
-            {run.by === 'host' ? tr('room.ui.61') : tr('room.ui.1061')}
-            {#if run.ranMs !== null} · {spell(run.ranMs)}{/if}
-          </p>
+    <div class="work-content" data-pult-work-scroll>
+      <section class="work-code" aria-label={tr('room.pult.v2.workCode')}>
+        <div class="work-section-meta pult-meta">
+          <span>{tr('room.pult.v2.workCode')}</span>
+          {#if same > 0}<span>{tr('room.pult.v2.workSame', { count: same })}</span>{/if}
         </div>
-      {:else}
-        <p class="shrink-0 text-2xs text-faint">{tr('room.ui.1335')}</p>
-      {/if}
+        <div class="work-code-surface">
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable code needs keyboard access.) -->
+          <div class="work-code-scroll" tabindex="0" role="region" aria-label={tr('room.pult.v2.workCode')}>
+            <Code code={attempt.text} class="pult-solution-code" />
+          </div>
+          {#if lines > 10}<p class="pult-meta work-lines">{tr('room.pult.codeLines', { count: lines })}</p>{/if}
+        </div>
+      </section>
 
-      {#if letters.length > 0}
-        <PultLetters {letters} groupSize={group?.count ?? 1} />
-      {/if}
+      <section class="work-execution" data-tone={execution?.tone} aria-label={tr('room.pult.v2.workExecution')}>
+        <div class="work-execution-title" role="status">
+          {tr('room.pult.v2.workExecution')}: {execution?.label}
+          {#if run?.ranMs !== null && run?.ranMs !== undefined} · {spell(run.ranMs)}{/if}
+        </div>
+        {#if run}
+          {#if run.outputs.length > 0}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable output needs keyboard access.) -->
+            <div class="work-output" tabindex="0" role="region" aria-label={tr('room.pult.v2.workOutput')}>
+              <CellOutputs outputs={run.outputs} />
+            </div>
+          {:else if run.outputsOmitted}
+            <p class="pult-meta">{tr('room.pult.v2.workLoadingOutput')}</p>
+          {/if}
+          <p class="pult-meta">{run.by === 'host' ? tr('room.ui.61') : tr('room.ui.1061')}</p>
+        {/if}
+      </section>
 
+      <PultLetters {letters} groupSize={group?.count ?? 1} />
+      <p class="work-position pult-meta">
+        {tr('room.pult.v2.workPosition', { index, total })}
+        {#if groupIndex > 0} · {tr('room.ui.1323', { p0: groupIndex, p1: groups })}{/if}
+      </p>
     </div>
 
-    <div class="shrink-0 px-4 py-3">
-      <PultReply
-        text={reply}
-        toGroup={replyToGroup}
-        groupSize={group?.count ?? 1}
-        hasDraft={replyDraft}
-        fromOracle={replyFromOracle}
-        {disabled}
-        onchange={onreplychange}
-        ontoggle={onreplytoggle}
-        onsend={onreplysend}
-        onfocus={onreplyfocus}
-        onblur={onreplyblur}
-      />
+    <div class="work-reply">
+      <PultReply text={reply} toGroup={replyToGroup} groupSize={group?.count ?? 1}
+        hasDraft={replyDraft} fromOracle={replyFromOracle} {disabled}
+        onchange={onreplychange} ontoggle={onreplytoggle} onsend={onreplysend}
+        onfocus={onreplyfocus} onblur={onreplyblur} />
     </div>
-
-    <PultActions
-      {onScreen}
-      running={run?.state === 'running'}
-      queued={run?.state === 'queued'}
+    <PultActions {onScreen} running={run?.state === 'running'} queued={run?.state === 'queued'}
       elapsed={run ? Math.max(now - run.startedAt, 0) : 0}
-      inFrame={shownAt === null ? 0 : Math.max(now - shownAt, 0)}
-      ran={run !== null}
-      correct={attempt.correct}
-      {writing}
-      {disabled}
-      {hasNeighbour}
-      {onshow}
-      {onclear}
-      {onrun}
-      {oninterrupt}
-      {onneighbour}
-      {onmark}
-    />
+      inFrame={shownAt === null ? 0 : Math.max(now - shownAt, 0)} ran={run !== null}
+      correct={attempt.correct} {writing} {disabled} {hasNeighbour}
+      {onshow} {onclear} {onrun} {oninterrupt} {onneighbour} {onmark} />
   </div>
 {/if}
+
+<style>
+  .work { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; background: rgb(var(--canvas)); }
+  .work-empty { display: grid; flex: 1; place-items: center; padding: 32px; text-align: center; font-size: 16px; color: rgb(var(--muted)); }
+  .work-header { display: flex; align-items: center; flex-shrink: 0; gap: 14px; padding: 16px 24px; border-bottom: 1px solid rgb(var(--line)); }
+  .work-avatar { flex-shrink: 0; width: 44px; height: 44px; overflow: hidden; border-radius: 50%; }
+  .work-author { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 6px; }
+  .work-author h2 { margin: 0; font-size: 22px; line-height: 28px; font-weight: 700; overflow-wrap: anywhere; }
+  .work-author p { margin: 0; }
+  .work-review { display: flex; flex-shrink: 0; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .work-review :global(.pult-badge) { font-size: 14px; line-height: 20px; padding: 5px 10px; }
+  .work-remove { flex-shrink: 0; }
+  .work-remove:focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 2px; }
+  .work-content { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 24px; display: flex; flex-direction: column; gap: 16px; }
+  .work-content > * { flex-shrink: 0; }
+  .work-section-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; margin-bottom: 10px; }
+  .work-code-surface { padding: 12px 16px; background: rgb(var(--surface)); }
+  .work-code-scroll { max-height: 240px; overflow: auto; }
+  .work-code-scroll:focus-visible, .work-output:focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 3px; }
+  .work-code-scroll :global(.pult-solution-code) { font-size: 14px; line-height: 22px; }
+  .work-code-scroll :global(.pult-solution-code > span) { min-height: 22px; }
+  .work-lines { margin: 8px 0 0; }
+  .work-execution { --run-tone: var(--muted); border-left: 4px solid rgb(var(--run-tone)); padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; background: rgb(var(--run-tone) / 0.08); }
+  .work-execution[data-tone='positive'] { --run-tone: var(--positive); }
+  .work-execution[data-tone='warning'] { --run-tone: var(--warning); }
+  .work-execution[data-tone='danger'] { --run-tone: var(--danger); }
+  .work-execution[data-tone='accent'] { --run-tone: var(--accent-text); }
+  .work-execution-title { color: rgb(var(--run-tone)); font-size: 14px; line-height: 20px; font-weight: 600; }
+  .work-output { max-height: 320px; overflow: auto; }
+  .work-output :global(.output-stream), .work-output :global(.text-code) { font-size: 14px; line-height: 22px; }
+  .work-output :global(button) { min-height: 40px; font-size: 14px; }
+  .work-position { margin: 0; }
+  .work-reply { flex-shrink: 0; margin: 0 24px 12px; }
+  @media (max-height: 700px) {
+    .work { min-height: 650px; flex-shrink: 0; }
+    .work-content { min-height: 180px; }
+  }
+  @media (max-width: 1000px) {
+    .work-header { gap: 10px; padding: 14px 16px; flex-wrap: wrap; }
+    .work-review { align-items: flex-start; flex-direction: row; align-items: center; order: 1; flex-basis: 100%; }
+    .work-content { padding: 16px; }
+    .work-reply { margin-inline: 16px; }
+  }
+</style>

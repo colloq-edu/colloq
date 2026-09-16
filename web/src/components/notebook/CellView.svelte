@@ -104,6 +104,7 @@
   import { controlDisabled, controlTitle } from '@/lib/controls'
   import { lockHint, lockLabel, lockPress } from '@/lib/lock-button'
   import { getSessionState } from '@/lib/session.svelte'
+  import { jumpToDefinition, landingInCell } from '@/lib/goto.svelte'
   import { cn, elapsed, NOTICED_MS, prefersReducedMotion, spell } from '@/lib/utils'
   import { copyText } from '@/lib/clipboard'
   import { diffTokens, loadSyntax, syntax } from '@/lib/syntax.svelte'
@@ -1275,6 +1276,23 @@
     return () => window.clearInterval(id)
   })
 
+  /* --------------------------------------- переход к определению */
+
+  /**
+   * «Тебя привели сюда» — метка для ЭТОЙ ячейки или ничего.
+   *
+   * Не событие, а состояние, и потому `$derived`: ячейку, к которой ведёт
+   * переход, тетрадь часто строит уже ПОСЛЕ ответа сервера (далёкие стоят
+   * заглушками, см. Notebook.svelte · data-cell-deferred), и посланное ей
+   * событие слушать было бы некому. Ячейка, собранная через кадр после
+   * прокрутки, читает метку сама — см. lib/goto.svelte.ts.
+   *
+   * Разовое значение вместо сигнала тоже не годится: `landingInCell` читает
+   * `$state`, и переданное в редактор один раз навсегда осталось бы тем, каким
+   * было в первый рендер, — то есть пустым.
+   */
+  const landing = $derived(landingInCell(id))
+
   /* ------------------------------------------------- место под вывод */
 
   /** Сколько область намерила собой сейчас; пишется на внутренний узел. */
@@ -2244,7 +2262,20 @@
           .filter(Boolean)
           .join(' · ') || undefined}
       >
+      <!--
+        Номер нажимается и выделяет свою ячейку — тем же обработчиком и с теми
+        же Shift и Cmd, что и тело: диапазон и снятие одной из нескольких
+        работают отсюда так же, как из кода.
+
+        Признак и обработчик висят на самом номере, а не на колонке: пустое
+        место под ним — это уже «мимо ячейки», и снимать выделение оно обязано
+        по-прежнему. Две цифры — мишень небольшая, но у выбранной ячейки это
+        залитый прямоугольник, то есть ровно то, во что и целятся.
+      -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <span
+        data-cell-pick
+        onpointerdown={(event) => onselect(event)}
         class={cn(
           'text-head font-black tabular-nums tracking-tight',
           /*
@@ -2297,19 +2328,25 @@
       как выбор: целились мимо, попали в ячейку.
 
       Теперь нажатие слушает колонка тела — код, вывод, форма ввода, тулбар над
-      ними, — а поле с номером и просветы остаются нейтральными: там не
-      выделяют.
+      ними, — а просветы вокруг остаются нейтральными: там не выделяют.
 
       И снимают выделение они тоже. Половины дела было мало: колонка с номером
       перестала выделять, но для снятия по-прежнему считалась ячейкой (проверка
       шла по `data-cell-id`, а он на корне), и щелчок в белое место под номером
-      не делал ничего — приходилось целиться в поля тетради. Поэтому у тела
-      свой признак: он и говорит, где кончается ячейка на ощупь.
+      не делал ничего — приходилось целиться в поля тетради. Поэтому признак
+      стоит не на корне, а на том, что нажимают: `data-cell-pick` и говорит,
+      где кончается ячейка на ощупь.
+
+      САМ НОМЕР — исключение, и он тоже несёт этот признак (см. ниже). Выбранная
+      ячейка помечена именно номером, залитым прямоугольником, так что человек
+      целится в метку выделения — и промахивался: нажатие на неё выделение
+      СНИМАЛО. Пустое поле под номером по-прежнему снимает, как и просят поля
+      тетради вокруг.
     -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="relative min-w-0 flex-1"
-      data-cell-body
+      data-cell-pick
       onpointerdowncapture={(event) => onselect(event)}
       oncontextmenucapture={(event) => {
         // Chrome on macOS emits contextmenu after Ctrl+left-click even when
@@ -2594,6 +2631,25 @@
                   лекционной комнате студент получал в ЕДИНСТВЕННОЙ ячейке, где
                   ему велено писать код, только слова из неё же — `df.` не знал
                   ни одного настоящего столбца.
+
+                  ПЕРЕХОД К ОПРЕДЕЛЕНИЮ здесь тоже есть, и это решение, а не
+                  симметрия с ячейкой. Лист — единственное место, где студент в
+                  лекционной комнате пишет код сам, и пишет его поверх модулей
+                  семинара: `from utils import helper` в первой строке, а
+                  дальше весь разбор в том, что там внутри у `helper`. Без
+                  перехода он туда не попадает вовсе.
+
+                  А вот имя ячейки в вопрос НЕ идёт, хотя в дополнение идёт.
+                  Лист не живёт в общей тетради — у него свой Y.Doc, ни к чему
+                  не подключённый (выше · openSheet), — и `cellId` означал бы
+                  «спрашиваю из этой ячейки», то есть увёл бы поиск в чужой
+                  текст, которого студент не писал. Без него сервер разбирает
+                  свой исходник из присланного кода, а ищет по тетрадям комнаты
+                  и файлам семинара.
+
+                  Метки приземления (`mark`) нет по той же причине: в лист
+                  привести некуда — он есть только у автора, и в ответе сервера
+                  появиться не может.
                 -->
                 <CodeEditor
                   text={sheet.text}
@@ -2611,6 +2667,7 @@
                   onarrowout={(direction) => step(direction)}
                   complete={(code, cursor) => session.complete(code, cursor, id)}
                   inspect={(code, cursor) => session.inspect(code, cursor, id)}
+                  jump={(code, cursor) => void jumpToDefinition(session, code, cursor, {})}
                   maxChars={MAX_ATTEMPT_CHARS}
                   onoverflow={(chars) =>
                     session.showError(
@@ -2788,7 +2845,7 @@
                     {tr('room.ui.1232')}
                   </button>
                   {#if submittedAt === null && sheetText === stubText()}
-                    <span class="text-2xs text-faint">{tr('room.ui.1249')}</span>
+                    <span class="text-2xs text-muted">{tr('room.ui.1249')}</span>
                   {/if}
                   <!--
                     Подсказка стоит слева, рядом с «Восстановить», а не среди
@@ -2830,7 +2887,7 @@
                   {#if sheetState === 'edited' && mine?.correct != null}
                     <!-- Старая отметка больше не правда — но и не пустое место:
                          ради неё и правят. Остаётся памятью, приглушённо. -->
-                    <span class="text-2xs text-faint">
+                    <span class="text-2xs text-muted">
                       {tr('room.ui.1247')} {mine.correct ? tr('room.ui.1225') : tr('room.ui.1226')}
                     </span>
                   {/if}
@@ -2916,13 +2973,13 @@
                         onclick={sheetRunKey}
                       >
                         {tr('room.ui.73')}
-                        <span class="font-mono text-2xs text-faint">⇧↵</span>
+                        <span class="font-mono text-2xs text-muted">⇧↵</span>
                       </button>
                     {:else}
                       <!-- Ручка выключена: кнопки нет, и это сказано словом, а не
                            погашенной кнопкой — гасить нечего, запуск здесь не
                            ваш. -->
-                      <span class="text-2xs text-faint">{tr('room.ui.1230')}</span>
+                      <span class="text-2xs text-muted">{tr('room.ui.1230')}</span>
                     {/if}
                   {/if}
 
@@ -3035,6 +3092,12 @@
                 переменные значило бы открывать состояние ядра тем, кому
                 правило `run` его не открывает. Markdown-ячейка отсеивается уже
                 в самом редакторе: там пишут прозой.
+
+                Тем же порядком прокинут и переход к определению. Имя ячейки
+                едет с вопросом, потому что по нему сервер считает и порядок
+                поиска (своя тетрадь раньше чужих), и относительные импорты
+                (lib/goto.svelte.ts). Обратно приезжает не событие, а метка
+                `landing`: пока ответ шёл, ячейку могли построить заново.
               -->
               <CodeEditor
                 text={ytext}
@@ -3048,6 +3111,8 @@
                 placeholder={isCode ? '' : tr('room.extra.141')}
                 complete={(code, cursor) => session.complete(code, cursor, id)}
                 inspect={(code, cursor) => session.inspect(code, cursor, id)}
+                jump={(code, cursor) => void jumpToDefinition(session, code, cursor, { cellId: id })}
+                mark={landing}
                 onfocus={() => onselect()}
                 onrun={run}
                 onrunstep={runAndStep}
@@ -3184,6 +3249,10 @@
             человек написал, никуда не пропало: оно здесь, черновиком, свёрнуто.
             Строка обязана это сказать — иначе пропавший из-под рук редактор
             читается как «вашу работу стёрли».
+
+            Спрашивать отсюда нечего и некуда: ни подсказок ядра, ни перехода к
+            определению черновику не передано. Это архив — его перечитывают, а
+            не пишут, и редактор здесь только показывает текст.
           -->
           {#if !inCouncil && !leads && sheet}
             <div class={cn('border-l-4 px-3 py-1.5', RULE[tone], 'bg-surface/70')}>
@@ -3230,7 +3299,7 @@
                 bind:value={prompt}
                 rows="2"
                 class="w-full resize-none border border-line bg-canvas px-3 py-2 text-ui text-ink
-                       placeholder:text-faint focus:border-accent focus:outline-none"
+                       placeholder:text-muted focus:border-accent focus:outline-none"
                 placeholder={tr('room.ui.373')}
                 onkeydown={(event) => {
                   // Enter sends: this is one sentence, not a document. Shift+Enter is
@@ -3663,13 +3732,13 @@
           {/if}
         </div>
       {:else if hasError && aiReady && may.ask}
-        <div class={FOOTER}>
+        <div class="{FOOTER} flex-wrap">
           <button
             type="button"
             onclick={() => askAi('fix')}
             class={cn(
               // The filled pair, like Run all: cyan cannot carry a fill in light.
-              'inline-flex h-7 items-center gap-2 bg-primary px-3 text-primary-ink',
+              'inline-flex h-7 shrink-0 items-center gap-2 whitespace-nowrap bg-primary px-3 text-primary-ink',
               CAPS,
               'transition-[opacity,transform] duration-press ease-out',
               'enabled:active:scale-[0.97] hover:opacity-90',

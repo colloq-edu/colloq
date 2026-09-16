@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { applyEdits, findAttachmentRefs, shaOfAttachment, type TextEdit } from '@shared/images'
+  import {
+    applyEdits,
+    findAttachmentRefs,
+    findWorkspaceImages,
+    shaOfAttachment,
+    type TextEdit,
+  } from '@shared/images'
+  import { askFiles, fileSrc, forgetFileSrc, pathOfFileSrc } from '@/lib/note-files.svelte'
   import { loadRenderers, renderers } from '@/lib/render.svelte'
   import { getSessionState } from '@/lib/session.svelte'
   import { cn } from '@/lib/utils'
@@ -58,8 +65,41 @@
       const url = blobSrc(here.id, { sha, mime: '', bytes: 0 })
       if (url) edits.push({ start: ref.start, end: ref.end, text: url })
     }
+    /*
+     * И картинка, лежащая ФАЙЛОМ в папке семинара: `![схема](assets/fig01.png)`.
+     *
+     * Так написаны условия в тетради, приехавшей из репозитория курса, — путь к
+     * соседнему файлу, который Jupyter читает с диска рядом с ноутбуком. В
+     * комнате он оставался как написан, и браузер разрешал его относительно
+     * адреса страницы: `/s/<комната>/assets/fig01.png`, где стоит приложение и
+     * на любой путь отвечает своим `index.html`. То есть 200, `text/html` и
+     * пустая рамка — успех, который нечем показать, и в сети даже не 404.
+     *
+     * Подставляется только адрес показа: в тексте ячейки путь не меняется (см.
+     * shared/images.ts), и `.ipynb` с `assets/fig01.png` внутри по-прежнему
+     * открывается в Jupyter.
+     */
+    for (const ref of findWorkspaceImages(text)) {
+      const url = fileSrc(here.id, ref.path)
+      if (url) edits.push({ start: ref.start, end: ref.end, text: url })
+    }
     return applyEdits(text, edits)
   }
+
+  /*
+   * Билеты на файлы — из эффекта, а не из `withImages`.
+   *
+   * Там сеть и запись в состояние, а `withImages` зовут из `$derived`: и то и
+   * другое посреди вычисления — способ получить перерисовку внутри
+   * перерисовки. Эффект перезапускается на правку текста, поэтому картинка,
+   * дописанная в ячейку при всех, находится так же, как при открытии комнаты.
+   */
+  $effect(() => {
+    const here = room
+    if (!here) return
+    const paths = findWorkspaceImages(source ?? '').map((ref) => ref.path)
+    if (paths.length > 0) askFiles(here.id, here.token, paths)
+  })
 
   const render = $derived(renderers())
   const shown = $derived(withImages(source ?? ''))
@@ -75,10 +115,17 @@
    */
   function imageFailed(event: Event): void {
     if (!room) return
+    const here = room
     const img = event.target as HTMLImageElement | null
-    const sha = /\/blobs\/([0-9a-f]{64})/.exec(img?.getAttribute('src') ?? '')?.[1]
-    if (!sha) return
-    if (forgetBlobSrc(room.id, sha)) askTicket(room.id, room.token)
+    const src = img?.getAttribute('src') ?? ''
+    const sha = /\/blobs\/([0-9a-f]{64})/.exec(src)?.[1]
+    if (sha) {
+      if (forgetBlobSrc(here.id, sha)) askTicket(here.id, here.token)
+      return
+    }
+    // И то же самое для файла из папки: билет на него живёт те же пять минут.
+    const path = pathOfFileSrc(here.id, src)
+    if (path && forgetFileSrc(here.id, path)) askFiles(here.id, here.token, [path])
   }
 </script>
 

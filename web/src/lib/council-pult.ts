@@ -23,6 +23,46 @@ import { tr } from '@shared/i18n'
 import type { CouncilAttempt, CouncilGroup, CouncilStatus } from '@shared/protocol'
 import { groupTitle } from './council-board'
 
+export type PultPresence = 'online' | 'offline' | 'unknown'
+
+/** Saved work is independent of the live room roster. Lost connection makes it unknown. */
+export function pultPresence(connected: boolean, people: ReadonlyMap<string, unknown>, id: string): PultPresence {
+  if (!connected) return 'unknown'
+  return people.has(id) ? 'online' : 'offline'
+}
+
+export type PultTone = 'neutral' | 'positive' | 'warning' | 'danger' | 'accent'
+export interface PultBadge { label: string; tone: PultTone }
+export type PultView = 'work' | 'queue' | 'oracle'
+
+/** Evaluation and execution are separate facts: running code successfully is not a grade. */
+export function attemptReview(attempt: Pick<CouncilAttempt, 'submittedAt' | 'correct'>): PultBadge {
+  if (attempt.submittedAt === null) return { label: tr('room.pult.v2.review.draft'), tone: 'neutral' }
+  if (attempt.correct === true) return { label: tr('room.pult.v2.review.correct'), tone: 'positive' }
+  if (attempt.correct === false) return { label: tr('room.pult.v2.review.wrong'), tone: 'warning' }
+  return { label: tr('room.pult.v2.review.pending'), tone: 'neutral' }
+}
+
+export function attemptExecution(attempt: {
+  run: Pick<NonNullable<CouncilAttempt['run']>, 'state'> | null
+  runRequest?: Pick<NonNullable<CouncilAttempt['runRequest']>, 'status'> | null
+}): PultBadge {
+  switch (attempt.run?.state) {
+    case 'running': return { label: tr('room.pult.v2.execution.running'), tone: 'accent' }
+    case 'queued': return { label: tr('room.pult.v2.execution.queued'), tone: 'accent' }
+    case 'error': return { label: tr('room.pult.v2.execution.error'), tone: 'danger' }
+  }
+  if (attempt.runRequest?.status === 'pending') return { label: tr('room.pult.v2.execution.request'), tone: 'warning' }
+  if (attempt.run?.state === 'ok') return { label: tr('room.pult.v2.execution.ok'), tone: 'positive' }
+  return { label: tr('room.pult.v2.execution.none'), tone: 'neutral' }
+}
+
+export function pultShortcutAllowed(action: PultAction, view: PultView, navigation: boolean, overlay = false): boolean {
+  if (overlay || action === null) return false
+  if (action === 'help' || action === 'escape' || action === 'search') return true
+  return view === 'work' && !navigation
+}
+
 /** С какого числа одинаковых ответов группа сворачивается в одну строку. */
 export const GROUP_MIN = 3
 
@@ -96,7 +136,7 @@ export interface PultListInput {
   held: ReadonlySet<string>
 }
 
-/** Сдана — значит есть время сдачи; всё остальное — черновик, «ещё пишет». */
+/** Сдана — значит есть время сдачи; всё остальное — сохранённый черновик, независимо от присутствия. */
 const isSubmitted = (attempt: CouncilAttempt): boolean => attempt.submittedAt !== null
 
 /**
@@ -141,7 +181,7 @@ export function matchesFilter(
     case 'new':
       return unread.has(attempt.participantId)
     case 'error':
-      return attempt.status === 'failed' || attempt.status === 'wrong'
+      return attempt.run?.state === 'error' || attempt.correct === false
     case 'unrun':
       return attempt.run === null
     case 'groups':

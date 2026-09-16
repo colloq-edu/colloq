@@ -22,6 +22,7 @@ import type { Ban } from '../shared/protocol.js'
 import {
   activeBans,
   banConsequences,
+  banTargetOf,
   FRESH_MS,
   mayBan,
   personNotes,
@@ -101,10 +102,34 @@ test('штат не банится, и кнопки ему не рисуют', (
 
 /* -------------------------------------------------------- подтверждение */
 
+test('пульт передаёт в бан настоящего автора, даже когда на экране имя скрыто', () => {
+  const target = banTargetOf(
+    {
+      participantId: 'participant-real-id',
+      name: 'Настоящее имя',
+      color: '#123456',
+      avatar: 'avatar.png',
+    },
+    { clientX: 120, clientY: 240 },
+  )
+
+  assert.deepEqual(target, {
+    id: 'participant-real-id',
+    name: 'Настоящее имя',
+    color: '#123456',
+    avatar: 'avatar.png',
+    x: 120,
+    y: 240,
+  })
+})
+
 test('окно подтверждения называет всё, что случится, и ничего сверх', () => {
   const said = banConsequences('Иван').join(' ')
   assert.match(said, /Иван/, 'кого удаляют — имя, а не «этого участника»')
   assert.match(said, /24 часа/, 'на сколько')
+  assert.match(said, /[Пп]опытки консилиума/, 'попытки и очередь тоже очищаются')
+  assert.match(said, /будет прервана/, 'выполняющаяся попытка останавливается')
+  assert.match(said, /других участников останутся/, 'чужая очередь сохраняется')
   assert.match(said, /[Вв]опрос/, 'вопросы к оракулу пропадут — сам об этом никто не догадается')
   // Обратное прежнему: окно обещало возврат вопросов восстановлением версии,
   // а возврат кладёт обратно одни ячейки (tests/panels-ban-promise.test.mts).

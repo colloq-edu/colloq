@@ -120,43 +120,20 @@ test('браузер заблокировал окно — кнопка гово
 
 /* ------------------------------------------------ строка списка · 12 состояний */
 
-test('строка всегда 50 и всегда с полосой смысла в три пикселя', () => {
-  assert.match(ROW, /h-\[50px\]/)
-  assert.match(ROW, /border-l-\[3px\]/)
-  // Высота не обсуждается ни в одной ветке: второго роста у строки нет.
-  assert.equal(ROW.match(/h-\[\d+px\]/g)?.filter((one) => one === 'h-[50px]').length, 1)
+
+
+
+
+test('сохранённый черновик не выдаётся за текущий набор', () => {
+  assert.match(ROW, /attemptReview\(attempt\)/, 'оценка и черновик определяются отдельно от запуска')
+  assert.doesNotMatch(ROW, /room\.ui\.1312/, 'нельзя ставить «сейчас» по наличию черновика')
+  assert.match(ROW, /clock\(attempt\.submittedAt \?\? attempt\.updatedAt\)/)
+  assert.match(ROW, /presence\s*===\s*'offline'/)
 })
 
-test('четыре цвета полосы — и ни один из них не двигает строку', () => {
-  for (const tone of ['border-l-warning', 'border-l-positive', 'border-l-accent', 'border-l-transparent']) {
-    assert.match(ROW, new RegExp(tone.replace('-', '-')), tone)
-  }
-  // Полоса прозрачная, а не отсутствующая: `{#if}` сдвинул бы содержимое на 3px.
-  assert.doesNotMatch(ROW, /\{#if[^}]*\}\s*border-l/)
-})
-
-test('пустые слоты занимают место: точка, аватар и хвост', () => {
-  assert.match(ROW, /h-\[7px\] w-\[7px\][^"]*rounded-full/, 'точка 7')
-  assert.match(ROW, /unread \? 'bg-accent' : 'bg-transparent'/, 'слот занят и когда точки нет')
-  assert.match(ROW, /h-\[22px\] w-\[22px\]/, 'аватар 22')
-  assert.match(ROW, /w-\[30px\] shrink-0 text-right font-mono/, 'время — колонка 30, а не «сколько влезет»')
-})
-
-test('имя 13/700, отметка капителью 10, уточнение 11', () => {
-  assert.match(ROW, /truncate text-ui font-bold/, 'имя 13/700 в одну строку')
-  assert.match(ROW, /text-micro font-bold uppercase tracking-caps/, 'капитель 10 / 0.08em')
-  assert.match(ROW, /min-w-0 truncate text-2xs/, 'уточнение 11 — и оно уступает место кнопке')
-})
-
-test('пишущий помечен словом и временем «сейчас», а не пустотой', () => {
-  assert.match(ROW, /room\.ui\.1311/, '«пишет…»')
-  assert.match(ROW, /room\.ui\.1312/, '«сейчас»')
-  assert.match(ROW, /if \(writing\) return \{ text: tr\('room\.ui\.1311'\), tone: 'text-accent-text' \}/)
-})
-
-test('просьба о запуске вытесняет время кнопкой 24 — не открывая работу', () => {
+test('просьба о запуске вытесняет время кнопкой — не открывая работу', () => {
   assert.match(ROW, /\{#if onlet\}/, 'кнопка вместо времени')
-  assert.match(ROW, /h-6 shrink-0 bg-warning/, 'кнопка 24 в цвете просьбы')
+  assert.match(ROW, /onclick=\{onlet\}/, 'просьба доступна прямо из списка')
   assert.match(ROW, /room\.ui\.1296/, '«Пустить»')
   assert.match(
     LIST,
@@ -165,29 +142,17 @@ test('просьба о запуске вытесняет время кнопк�
   )
 })
 
-test('«на экране» — залитый чип, а не ещё одно слово', () => {
-  assert.match(ROW, /meaning === 'screen'/)
-  assert.match(ROW, /bg-positive px-1\.5 py-px text-canvas/)
-})
 
 test('выбранная, наведённая и та, на которой фокус, различимы', () => {
-  assert.match(ROW, /selected \? 'bg-raised' : 'hover:bg-surface'/)
+  assert.match(ROW, /class:selected class:focused/)
   // Кольцо ВНУТРЬ и поверх полосы: строка не становится шире, соседи не съезжают.
-  assert.match(ROW, /focused && 'outline outline-2 -outline-offset-2 outline-accent'/)
+  assert.match(ROW, /outline-offset:-2px/)
   // И только с клавиатуры: щелчок мышью кольца не рисует.
   assert.match(WINDOW, /keyboard = true/)
   assert.match(WINDOW, /keyboard = false/)
   assert.match(WINDOW, /keyboard=\{keyboard && focus !== 'reply'\}/)
 })
 
-test('группа: свёрнутая 40 без полосы, шапка 28 на surface, члены с отступом', () => {
-  assert.match(LIST, /kind === 'collapsed'/)
-  assert.match(LIST, /h-10 w-full shrink-0/, 'хвост 40')
-  assert.match(LIST, /room\.ui\.1315/, '«Раскрыть»')
-  assert.match(LIST, /h-7 shrink-0 items-center[^"]*bg-surface/, 'шапка 28 на surface')
-  assert.match(LIST, /room\.ui\.1316/, '«Свернуть»')
-  assert.match(ROW, /inGroup \? 'pl-\[21px\]' : 'pl-\[9px\]'/, 'отступ 12 сверх обычных 9')
-})
 
 test('отбор «новые» не тает под курсором', () => {
   // Точка гаснет на открытии; если бы чип читал живой набор, список вычёркивал
@@ -198,70 +163,29 @@ test('отбор «новые» не тает под курсором', () => {
 
 test('имена выключены — «Вариант N» в muted и серый диск, поиск не работает', () => {
   assert.match(ROW, /names \? attempt\.name : tr\('room\.ui\.1255'/)
-  assert.match(ROW, /names \? 'text-ink' : 'text-muted'/)
-  assert.match(ROW, /names \? attempt\.color : 'rgb\(var\(--line\)\)'/)
+  assert.match(ROW, /\{#if names\}<Avatar[\s\S]*?\{:else\}<span class="pult-anonymous"/)
   assert.match(WINDOW, /search: names \? search : ''/, 'искать нечего — поиск гасится у источника')
 })
 
 /* --------------------------------------- полоса действий · четыре состояния */
 
-test('порядок кнопок в полосе действий не меняется никогда', () => {
-  const order = [...ACTIONS.matchAll(/room\.ui\.(1254|1336|1339|1337|1338|1343|1284|1340|1341)/g)].map(
-    (m) => m[1],
-  )
-  // Показать/убрать — первыми, запустить/соседняя/считает — вторыми, хвост — последним.
-  assert.deepEqual(order.slice(0, 2), ['1254', '1336'], 'первая кнопка — дверь в зал')
-  assert.ok(order.indexOf('1284') > order.indexOf('1337'), '«Прервать» — в хвосте, не среди кнопок')
-})
 
-test('по умолчанию: «Убрать» нет вовсе, заливка одна', () => {
-  assert.match(ACTIONS, /\{#if onScreen\}/)
-  assert.match(ACTIONS, /bg-accent text-accent-ink/)
-  // Единственная заливка в окне, кроме нажатой отметки: из пульта наружу ведёт
-  // ровно одна дверь, и она обязана быть видна с одного взгляда.
-  const fills = new Set([...ACTIONS.matchAll(/bg-(accent|positive|danger|warning)\b/g)].map((m) => m[1]))
-  assert.deepEqual([...fills].sort(), ['accent', 'danger', 'positive'], 'показать + нажатые ✓ и ✗')
-})
 
-test('эта работа на экране: кромка зеленеет, первая кнопка переворачивается', () => {
-  assert.match(ACTIONS, /onScreen \? 'border-t-positive' : 'border-t-line'/)
-  assert.match(ACTIONS, /border border-danger text-danger/, '«Убрать с экрана» — рамка danger')
-  assert.match(ACTIONS, /room\.ui\.1254/)
-  assert.match(ACTIONS, /onScreen && hasNeighbour/)
-  assert.match(ACTIONS, /room\.ui\.1339/, '«Соседнюю →»')
-  assert.match(ACTIONS, /room\.ui\.1341/, '«в кадре N»')
-})
 
-test('работа считается: вместо кнопки показание, а в хвосте «Прервать»', () => {
-  assert.match(ACTIONS, /\{#if running\}/)
-  assert.match(ACTIONS, /room\.pult\.running/, '«Считает»')
-  assert.match(ACTIONS, /<span class=\{cn\(BTN, 'gap-2 border border-accent'\)\}/, 'это не кнопка — нажимать нечего')
-  assert.match(ACTIONS, /room\.ui\.1284/, '«Прервать» на месте соседа')
-})
 
-test('отметка — единственная кнопка, которая заливается нажатой, и снимается собой', () => {
-  assert.match(ACTIONS, /correct === true \? 'border-positive bg-positive text-canvas'/)
-  assert.match(ACTIONS, /correct === false \? 'border-danger bg-danger text-canvas'/)
+test('отметка доступно обозначена и снимается повторным нажатием', () => {
+  assert.match(ACTIONS, /aria-pressed=\{correct === false\}/)
   assert.match(WINDOW, /current\.correct === correct \? null : correct/, 'второе нажатие снимает')
   assert.match(ACTIONS, /aria-pressed=\{correct === true\}/)
 })
 
 test('черновик классу не показывают ни кнопкой, ни клавишей', () => {
-  assert.match(ACTIONS, /disabled=\{disabled \|\| writing\}/)
+  assert.match(ACTIONS, /disabled=\{disabled \|\| \(!onScreen && writing\)\}/)
   assert.match(WINDOW, /if \(!attempt \|\| attempt\.submittedAt === null\) return/)
 })
 
 /* --------------------------------------------------------- окно целиком */
 
-test('пояса окна стоят в объявленной высоте', () => {
-  assert.match(read(`${PULT}/PultHeader.svelte`), /h-\[34px\]/, 'шапка 34')
-  assert.match(QUEUE, /min-h-11 flex-wrap items-center gap-3 px-4/, 'полоса очереди 44')
-  assert.match(read(`${PULT}/PultFilters.svelte`), /min-h-10 shrink-0 flex-wrap/, 'фильтры могут переноситься')
-  assert.match(STATUS, /min-h-\[32px\]/, 'строка состояния доступна в небольшом окне')
-  assert.match(ACTIONS, /h-14 shrink-0/, 'полоса действий 56')
-  assert.match(LIST, /w-\[308px\]/, 'список 308')
-  assert.match(LIST, /min-\[1100px\]:w-\[360px\]/, 'и 360 там, где экран это позволяет')
-})
 
 test('в пульте нет ни тетради, ни панелей — только он сам', () => {
   const screen = code(read('web/src/screens/SessionScreen.svelte'))
@@ -280,14 +204,14 @@ test('не-преподавателю пульт отвечает отказом
 test('очередь показана на просмотр: переставлять её нечем, и рука об этом не просит', () => {
   // Кадра «переставить» или «убрать из очереди» в протоколе нет — рисовать
   // кнопку, которой не на что нажать, значит обещать несуществующее.
-  assert.match(QUEUE, /room\.ui\.1300/, 'секция «В очереди» есть')
+  assert.match(QUEUE, /room\.pult\.v2\.queue\.queuedTitle/, 'секция «В очереди» есть')
   assert.doesNotMatch(QUEUE, /draggable|room\.ui\.1348/, 'ни перетаскивания, ни «Убрать»')
 })
 
 test('ручка запуска — три положения настроек консилиума, и все три подписаны', () => {
-  assert.match(QUEUE, /value: false, label: tr\('room\.ui\.1287'\)/)
-  assert.match(QUEUE, /value: true, label: tr\('room\.ui\.1289'\)/)
-  assert.match(QUEUE, /value: 'request', label: tr\('room\.ui\.1291'\)/)
+  assert.match(QUEUE, /value: false, key: 'room\.pult\.v2\.queue\.policyTeacher'/)
+  assert.match(QUEUE, /value: true, key: 'room\.pult\.v2\.queue\.policyEveryone'/)
+  assert.match(QUEUE, /value: 'request', key: 'room\.pult\.v2\.queue\.policyRequest'/)
   assert.match(WINDOW, /session\.council\.lock\(cellId, 'council', \{ studentRun \}\)/)
 })
 
@@ -303,14 +227,14 @@ test('вывод, не поехавший со стопкой, пульт про
 })
 
 test('плита кода не растёт от чужого кода и честно говорит, сколько скрыла', () => {
-  assert.match(WORK, /max-h-\[240px\] overflow-auto/)
+  assert.match(WORK, /max-height: 240px; overflow: auto/)
   assert.match(WORK, /room\.pult\.codeLines/, 'полный счёт строк без выдуманного числа скрытых')
 })
 
 test('вывод подписан тем, кто запускал, и окрашен исходом', () => {
-  assert.match(WORK, /run\.state === 'error' \? 'border-danger' : run\.state === 'ok' \? 'border-positive'/)
+  assert.match(WORK, /data-tone=\{execution\?\.tone\}/)
   assert.match(WORK, /run\.by === 'host' \? tr\('room\.ui\.61'\) : tr\('room\.ui\.1061'\)/)
-  assert.match(WORK, /room\.ui\.1335/, '«не запускали» вместо пустой плиты')
+  assert.match(WORK, /execution\?\.label/, 'явная подпись запуска')
 })
 
 /* ------------------------------- что переехало из тетради вместе с консолью */
@@ -331,16 +255,26 @@ test('черновик оракула правят в поле, а не подт
 
 // Recipient changes, retained drafts and actual sends are verified in the browser audit.
 
-test('удалить с занятия можно из пульта — тихой кнопкой и общим меню бана', () => {
+test('удалить с занятия можно из работы видимой кнопкой и общим меню бана', () => {
   assert.match(WORK, /data-pult-remove/, 'кнопки «удалить» в пульте нет')
-  assert.match(WORK, /tr\('room\.ui\.78'\)/)
-  // Тихая до наведения: единственное наказание в продукте не стоит рядом с
-  // «показать классу» одинаково громко.
-  assert.match(WORK, /text-faint hover:text-danger/)
-  assert.match(WINDOW, /import \{ askToBan \} from '@\/lib\/bans'/)
-  assert.match(WINDOW, /askToBan\(\{[\s\S]*?id: current\.participantId/)
-  // Имя в вопросе настоящее и при выключенных именах: «Вариант 12» не удаляют.
-  assert.match(WINDOW, /name: current\.name/)
+  assert.match(WORK, /data-pult-remove[^>]*>[\s\S]*?tr\('room\.ui\.78'\)[\s\S]*?<\/button>/)
+  assert.match(WINDOW, /import \{ askToBan, banTargetOf \} from '@\/lib\/bans'/)
+  assert.match(WINDOW, /askToBan\(banTargetOf\(attempt, event\)\)/)
+})
+
+test('удалить с занятия можно у выполняющегося, ждущего разрешения и стоящего в очереди', () => {
+  assert.match(QUEUE, /onremove: \(attempt: CouncilAttempt, event: MouseEvent\) => void/)
+  assert.equal(
+    QUEUE.match(/data-pult-remove/g)?.length,
+    3,
+    'кнопка должна быть у каждого из трёх видов записи очереди',
+  )
+  assert.equal(
+    QUEUE.match(/tr\('room\.ui\.78'\)/g)?.length,
+    3,
+    'все три кнопки должны быть подписаны, а не спрятаны под значком',
+  )
+  assert.match(WINDOW, /onremove=\{remove\}/)
 })
 
 test('шапка раскрытой группы называет группу, а не только считает её', () => {
@@ -349,11 +283,6 @@ test('шапка раскрытой группы называет группу, 
   assert.match(pult, /label: groupTitle\(group\)/, 'имя берётся не общей функцией')
 })
 
-test('полоса отбора несёт счёт одной функцией на весь клиент', () => {
-  const filters = code(read(`${PULT}/PultFilters.svelte`))
-  assert.match(filters, /councilStripText\(counts, groups\)/)
-  assert.doesNotMatch(filters, /plural\(/, 'своя копия счёта вернулась')
-})
 
 /* --------------------------- обещания, пережившие консоль в тетради */
 

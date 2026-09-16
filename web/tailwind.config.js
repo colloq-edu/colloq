@@ -85,46 +85,19 @@ export default {
         // список в четырёх местах уже однажды разошёлся.
         mono: ['var(--font-mono)'],
       },
-      // A scale sized for a dense workspace. Tailwind's defaults start at 12px
-      // and step in 2px, which is why every component was escaping into
-      // text-[13px] and inventing its own line-height. Names say what the text
-      // IS, not how big it is — that is what stops the next person reaching for
-      // text-[13.5px]. Line-height is baked in, in px, so leading- is never
-      // needed alongside these.
+      // Readable workspace scale. Words and actions start at 13px; the smaller
+      // step is reserved for compact counters and keyboard hints.
       fontSize: {
-        /*
-         * The line between the two smallest steps, because it kept being
-         * crossed. `micro` is for a thing READ ONCE and not read again: a
-         * keycap, a count in a bubble — a shape you recognise rather than a
-         * word you read. `2xs` is for anything with words in it that somebody
-         * reads repeatedly or clicks: cell state, run credits, hints, panel
-         * labels.
-         *
-         * It was crossed at scale. A count over the workspace found 10px bold
-         * as the most frequent text in the product — 525 runs of it against 20
-         * of everything else put together — because every cell's state strip
-         * and every cell action was set in it. Ten pixels of tracked caps at
-         * 5.3:1 is the floor of what is readable, and the floor is the wrong
-         * place for the labels of the controls people press most.
-         */
-        micro: ['10px', '13px'],   // badges read once: keycaps, counts in bubbles
-        '2xs': ['11px', '16px'],   // anything with words: labels, meta, cell state
-        code: ['12px', '19px'],    // mono: outputs, file sizes, terminal
-        ui: ['13px', '19px'],      // the workhorse: rows, buttons, fields
-        'code-lg': ['13px', '21px'], // mono: the editor itself
-        'ui-lg': ['14px', '21px'],
-        prose: ['14px', '23px'],   // markdown body, full notebook measure
-        /*
-         * The oracle's answers, and the only step above `prose` for running
-         * text. Same words, half the measure: a markdown cell spans the whole
-         * notebook, while an answer lives in a 380px column with a 28px indent
-         * — about 45 characters to the line. It is also the one place in the
-         * product where a person reads several sentences in a row rather than
-         * one cell at a time, so it gets the step the measure asks for.
-         */
+        micro: ['12px', '16px'],
+        '2xs': ['13px', '18px'],
+        code: ['13px', '20px'],
+        ui: ['14px', '21px'],
+        'code-lg': ['14px', '22px'],
+        'ui-lg': ['15px', '22px'],
+        prose: ['15px', '24px'],
         answer: ['15px', '25px'],
-        title: ['16px', '22px'],
-        head: ['20px', '26px'],
+        title: ['18px', '24px'],
+        head: ['22px', '28px'],
         /*
          * Суфлёрский текст: заметка спикера, и больше ничей. Читают её, ПОДНЯВ
          * голову, урывками между взглядами в зал, — то есть с той же дистанции,

@@ -17,6 +17,7 @@ import {
   type LaunchReceipt,
 } from './launch-state.js'
 import { prepare } from './launch-prepare.js'
+import { devFrontendReady } from './launch-readiness.js'
 import { leaseUrl } from '../../shared/local-public-url-lease.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -291,26 +292,30 @@ async function runSession(options: LaunchOptions): Promise<number> {
     writeJson(receiptFile, receipt)
     let frontend: ManagedProcess | undefined
     if (dev) {
-      frontend = processes.start('Интерфейс dev', process.execPath, [
-        path.join(root, 'node_modules/vite/bin/vite.js'),
+      frontend = processes.start(
+        'Интерфейс dev',
+        process.execPath,
+        [
+          path.join(root, 'node_modules/vite/bin/vite.js'),
+          path.join(root, 'web'),
+          '--host',
+          '127.0.0.1',
+          '--port',
+          String(config.uiPort),
+          '--strictPort',
+          '--clearScreen=false',
+        ],
+        false,
+        {},
         path.join(root, 'web'),
-        '--host',
-        '127.0.0.1',
-        '--port',
-        String(config.uiPort),
-        '--strictPort',
-      ])
+      )
     }
     const deadline = Date.now() + 90000
     while (!stopping) {
       if (server.settled || frontend?.settled)
         throw new Error('Сервер или интерфейс завершился до готовности. Проверьте журнал выше.')
       const status = await health(config.port)
-      let uiReady = !dev
-      if (dev)
-        try {
-          uiReady = (await fetch(config.url, { signal: AbortSignal.timeout(1000) })).ok
-        } catch {}
+      const uiReady = !dev || (await devFrontendReady(config.url))
       if (status?.localRunId === runId && uiReady) break
       if (Date.now() > deadline)
         throw new Error('Сервер не стал готов за 90 секунд. Проверьте Docker и журнал выше.')

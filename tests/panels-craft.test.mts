@@ -95,7 +95,7 @@ test('ручка ящика и его действия — не тоньше п�
 test('«как на инстансе» — кнопка, а не строчка текста высотой в буквы', () => {
   const rules = code(read(RULES))
   const clear = rules.slice(rules.indexOf('.rule-clear'))
-  assert.match(clear, /min-height:\s*24px/, 'у ссылки-кнопки есть цель')
+  assert.ok(Number(clear.match(/min-height:\s*(\d+)px/)?.[1]) >= 24, 'у ссылки-кнопки есть цель не меньше 24px')
 })
 
 /* ------------------------------------------------------------- движение */

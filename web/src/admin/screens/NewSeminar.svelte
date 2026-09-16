@@ -77,12 +77,12 @@
   const maxUploadBytes = $derived(adminAuth.state?.maxUploadBytes ?? null)
 
   /*
-   * Три двери одной ширины: 568 на троих с зазором 10 — это 182 на карточку,
-   * ровно как в макете. Обводка выбранной толще слева, как у всего
-   * выбранного в этом продукте.
+   * Три двери доходят до 182px — ровно как в макете — но могут сжаться до
+   * 168px и перенестись по доступной ширине колонки. Так третья дверь не
+   * уезжает под обрезанный край, когда подпись Section ещё стоит слева.
    */
   const DOOR =
-    'flex w-[182px] shrink-0 flex-col gap-2.5 border p-3.5 text-left ' +
+    'flex min-w-[168px] max-w-[182px] flex-1 basis-[168px] flex-col gap-2.5 border p-3.5 text-left ' +
     'transition-colors duration-[var(--speed-quick)] ease-out'
   const DOOR_ON = 'border-accent border-l-[3px] bg-surface'
   const DOOR_OFF = 'border-line bg-canvas hover:border-faint'
@@ -610,7 +610,7 @@
         seeds, the other names the file it will take. A tab pair says "pick a
         mode"; these say "pick a starting point".
       -->
-      <div class="flex gap-2.5">
+      <div class="flex flex-wrap gap-2.5">
         <button
           type="button"
           class={cn(DOOR, source === 'blank' ? DOOR_ON : DOOR_OFF)}
@@ -817,7 +817,7 @@
               <span class="h-2 w-2 shrink-0 bg-accent"></span>
               <span class="font-mono text-code-lg font-medium text-ink">{chosen.name}</span>
               {#if chosen.state === 'ready'}
-                <span class="inline-flex h-[18px] items-center bg-positive/10 px-1.5 text-micro font-bold uppercase tracking-label text-positive">
+                <span class="inline-flex h-6 items-center bg-positive/10 px-1.5 text-2xs font-bold uppercase tracking-label text-positive">
                   {tr("admin.built")}
                 </span>
               {/if}
@@ -886,7 +886,7 @@
                 {/if}
                 {env.name}
                 {#if env.state !== 'ready'}
-                  <span class="font-sans text-micro text-warning">{tr("admin.not.built.483")}</span>
+                  <span class="font-sans text-2xs text-warning">{tr("admin.not.built.483")}</span>
                 {/if}
               </button>
             {/each}
@@ -967,10 +967,10 @@
       {#if materials.length > 0}
         <div class="flex items-center gap-3 border-b border-line pb-2">
           <span class="w-[13px] shrink-0"></span>
-          <span class="flex-1 text-micro font-bold uppercase tracking-label text-faint">{tr("admin.file")}</span>
-          <span class="w-24 shrink-0 text-micro font-bold uppercase tracking-label text-faint">{tr("admin.role")}</span>
-          <span class="w-14 shrink-0 text-right text-micro font-bold uppercase tracking-label text-faint">{tr("admin.size")}</span>
-          <span class="w-[13px] shrink-0"></span>
+          <span class="flex-1 text-2xs font-bold uppercase tracking-label text-muted">{tr("admin.file")}</span>
+          <span class="w-24 shrink-0 text-2xs font-bold uppercase tracking-label text-muted">{tr("admin.role")}</span>
+          <span class="w-14 shrink-0 text-right text-2xs font-bold uppercase tracking-label text-muted">{tr("admin.size")}</span>
+          <span class="w-8 shrink-0"></span>
         </div>
       {/if}
 
@@ -987,13 +987,13 @@
             <span class="text-micro text-muted">{notebook.cells.length} {tr("admin.cells.outputs.dropped")}</span>
           </span>
           <span class="w-24 shrink-0">
-            <span class="inline-flex h-[18px] items-center gap-1.5 bg-accent px-2 text-micro font-bold uppercase tracking-label text-white">
+            <span class="inline-flex h-6 items-center gap-1.5 bg-accent px-2 text-2xs font-bold uppercase tracking-label text-white">
               <span class="h-1 w-1 bg-white"></span>
               {tr("admin.live")}
             </span>
           </span>
           <span class="w-14 shrink-0 text-right font-mono text-micro text-muted">—</span>
-          <span class="w-[13px] shrink-0"></span>
+          <span class="w-8 shrink-0"></span>
         </div>
       {/if}
 
@@ -1014,7 +1014,7 @@
               {/if}
             </span>
           </span>
-          <span class="w-24 shrink-0 text-2xs text-faint">
+          <span class="w-24 shrink-0 text-2xs text-muted">
             {isNotebook(file.name) ? tr("admin.notebook") : tr("admin.data")}
           </span>
           <span class="w-14 shrink-0 text-right font-mono text-micro text-muted">
@@ -1022,7 +1022,7 @@
           </span>
           <button
             type="button"
-            class="shrink-0 text-faint transition-colors duration-[var(--speed-quick)] hover:text-ink"
+            class="-my-2 flex h-8 w-8 shrink-0 items-center justify-center text-faint transition-colors duration-[var(--speed-quick)] hover:text-ink"
             aria-label={tr("admin.remove.from.the.upload.list", { p0: file.name })}
             onclick={() => (materials = materials.filter((f) => f.name !== file.name))}
           >

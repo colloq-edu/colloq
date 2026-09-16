@@ -34,10 +34,10 @@ function code(source: string): string {
 
 const QUEUE = code(read('web/src/components/council/pult/PultQueueStrip.svelte'))
 
-/** Панель ручки: от заголовка «кто может запускать» до списка ждущих. */
+/** Панель ручки: секция выбора политики и пояснения. */
 function knob(): string {
-  const from = QUEUE.indexOf("tr('room.ui.1286')")
-  const to = QUEUE.indexOf('{#if kernel.pending.length > 0}', from)
+  const from = QUEUE.indexOf('<section class="queue-policy"')
+  const to = QUEUE.indexOf('</section>', from)
   assert.ok(from > 0 && to > from, 'ручки запуска в полосе очереди больше нет')
   return QUEUE.slice(from, to)
 }

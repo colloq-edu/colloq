@@ -400,7 +400,7 @@
 <style>
   .history-panel { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }
   .history-views { display: flex; flex: none; gap: 4px; padding: 7px 14px; border-bottom: 1px solid var(--tm-edge); }
-  .history-views button { min-height: 32px; padding: 5px 12px; border: 1px solid transparent; background: transparent; color: var(--tm-muted); font: inherit; font-size: 12px; cursor: pointer; }
+  .history-views button { min-height: 32px; padding: 5px 12px; border: 1px solid transparent; background: transparent; color: var(--tm-muted); font: inherit; font-size: 13px; cursor: pointer; }
   .history-views button.on { border-color: var(--tm-edge); background: #0e1a3d; color: var(--tm-accent); }
   .history-views button:focus-visible { outline: 2px solid var(--tm-accent); outline-offset: 2px; }
 
@@ -470,10 +470,11 @@
     flex: none;
     /* Тот же моношрифт, что и у расшифровки над ней: `--font-mono` в проекте
        не объявлен нигде, и время истории уезжало в системный SF Mono рядом с
-       JetBrains Mono терминала. 11px — здесь есть слова, которые читают. */
+       JetBrains Mono терминала. Время остаётся на компактной ступени, но уже
+       не мельче читаемого метатекста. */
     font-family: var(--tm-mono);
-    font-size: 11px;
-    color: var(--tm-faint);
+    font-size: 12px;
+    color: var(--tm-muted);
   }
 
   .hist-rail {
@@ -524,7 +525,7 @@
   }
 
   .hist-what b {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--tm-ink);
     overflow: hidden;
@@ -533,9 +534,9 @@
   }
 
   .hist-what em {
-    font-size: 11px;
+    font-size: 13px;
     font-style: normal;
-    color: var(--tm-faint);
+    color: var(--tm-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -546,7 +547,7 @@
     gap: 6px;
     flex: none;
     font-family: var(--tm-mono);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .hist-count .plus {
@@ -581,10 +582,10 @@
     align-items: center;
     gap: 10px;
     padding: 0 14px 6px;
-    font-size: 11px;
+    font-size: 13px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--tm-faint);
+    color: var(--tm-muted);
   }
 
   .hist-diff-head b {
@@ -605,12 +606,12 @@
      под плюс и минус — менять здесь нечего. */
   .hist-source {
     padding-left: 26px;
-    color: var(--tm-faint);
+    color: var(--tm-muted);
   }
 
   .hist-line {
     display: block;
-    color: var(--tm-faint);
+    color: var(--tm-muted);
   }
 
   .hist-line i {
@@ -641,8 +642,8 @@
     border-top: 1px solid var(--tm-edge);
   }
 
-  .hist-target { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--tm-faint); }
-  .hist-target strong { font-weight: 500; color: var(--tm-muted); }
+  .hist-target { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--tm-muted); }
+  .hist-target strong { font-weight: 500; color: var(--tm-ink); }
   .hist-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .hist-buttons .hist-go, .hist-buttons .hist-mini { box-sizing: border-box; height: 36px; flex: 0 0 auto; justify-content: center; white-space: nowrap; letter-spacing: 0.06em; }
   .hist-buttons .hist-name { box-sizing: border-box; height: 36px; min-width: 100px; }
@@ -655,9 +656,9 @@
     height: 26px;
     padding: 0 12px;
     font: inherit;
-    /* 11px: это две кнопки, которыми возвращают тетрадь всей комнате, а 10 —
-       для того, что читают один раз и не нажимают. */
-    font-size: 11px;
+    /* Это две кнопки, которыми возвращают тетрадь всей комнате, поэтому они
+       стоят на обычной ступени управляющего текста. */
+    font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -708,22 +709,22 @@
     max-width: 260px;
     padding: 0 10px;
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--tm-ink);
     background: var(--hist-hover);
     border: 1px solid var(--tm-edge);
   }
 
   .hist-foot {
-    font-size: 11px;
-    color: var(--tm-faint);
+    font-size: 13px;
+    color: var(--tm-muted);
   }
 
   .hist-note {
     margin: 0;
     padding: 14px;
-    font-size: 12px;
-    color: var(--tm-faint);
+    font-size: 14px;
+    color: var(--tm-muted);
   }
 
   .hist-note--bad {
@@ -733,7 +734,7 @@
   /* Границы истории, а не событие в ней: тише строк и отделено от них. */
   .hist-note--aside {
     padding: 10px 14px;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.45;
     border-bottom: 1px solid var(--tm-edge);
   }

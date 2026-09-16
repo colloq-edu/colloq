@@ -122,7 +122,7 @@
           <li class="flex items-baseline gap-6 border-b border-line py-5">
             <span class="w-[34px] shrink-0 font-mono text-ui text-faint">{ordinal}</span>
             <span class="min-w-0 flex-1 text-title text-muted">{item.name}</span>
-            <span class="shrink-0 whitespace-nowrap text-ui text-faint">{item.when}</span>
+            <span class="shrink-0 whitespace-nowrap text-ui text-muted">{item.when}</span>
             <span class="w-4 shrink-0"></span>
           </li>
         {:else}

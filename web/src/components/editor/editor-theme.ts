@@ -22,16 +22,9 @@ const surface = EditorView.theme({
     // Тот же шрифт, что и в ячейках: он задан в index.css для .cm-editor и
     // сюда доезжает сам. Здесь — только то, что относится к колонке.
     paddingBottom: '40vh',
-    /*
-     * Четырнадцать пикселей сверху — ровно высота плашки с именем соседа.
-     *
-     * Плашка висит НАД строкой, а скроллер файла — настоящий и обязан резать:
-     * это окно в длинный файл. Без запаса каретка на ПЕРВОЙ строке теряла
-     * десять пикселей из четырнадцати, то есть имя было срезано по горизонту.
-     * В ячейке этот же запас не нужен: там ничего не режется вовсе
-     * (CodeEditor.svelte · .cm-scroller).
-     */
-    paddingTop: '14px',
+    // Space above the first line keeps the 18px collaborator label inside
+    // the scrolling file editor; notebook cells allow it to overflow instead.
+    paddingTop: '20px',
   },
   /*
    * Поле номеров отделено линией, а не воздухом.
@@ -73,24 +66,28 @@ const surface = EditorView.theme({
   '.cm-panel.cm-search': {
     padding: '6px 12px',
     fontFamily: 'inherit',
-    fontSize: '12px',
+    fontSize: '14px',
   },
   '.cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label': {
     fontFamily: 'inherit',
-    fontSize: '12px',
+    fontSize: '14px',
+  },
+  '.cm-panel.cm-search input, .cm-panel.cm-search button': {
+    boxSizing: 'border-box',
+    minHeight: '30px',
   },
   '.cm-panel.cm-search input': {
     backgroundColor: 'rgb(var(--canvas))',
     border: '1px solid rgb(var(--line))',
     color: 'rgb(var(--ink))',
-    padding: '3px 6px',
+    padding: '5px 7px',
   },
   '.cm-panel.cm-search button': {
     backgroundColor: 'rgb(var(--canvas))',
     backgroundImage: 'none',
     border: '1px solid rgb(var(--line))',
     color: 'rgb(var(--muted))',
-    padding: '3px 8px',
+    padding: '5px 9px',
   },
 })
 

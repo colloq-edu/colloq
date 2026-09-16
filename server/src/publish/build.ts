@@ -27,7 +27,14 @@ import {
   type SkipReason,
 } from '@shared/publish'
 import { readBlob, roomOfDoc } from '../blobs.js'
-import { applyEdits, findAttachmentRefs, shaOfAttachment, type TextEdit } from '@shared/images'
+import {
+  applyEdits,
+  findAttachmentRefs,
+  findWorkspaceImages,
+  shaOfAttachment,
+  type TextEdit,
+} from '@shared/images'
+import { readBytes } from '../workspace.js'
 import { openReplay } from './replay.js'
 
 /** Крупные куски выводов, вынесенные по хэшу. Наполняется по ходу сборки. */
@@ -137,6 +144,28 @@ function projectNote(source: string, blobs: BlobBag, sessionId: string | null): 
     const value = blobs.putBytes(mime, body)
     edits.push({ start: ref.start, end: ref.end, text: `${value}.${extOfMime(mime)}` })
   }
+  /*
+   * И картинка, лежащая ФАЙЛОМ в папке семинара: `![схема](assets/fig01.png)`.
+   *
+   * Уезжает она сюда по той же причине, по какой сюда уезжает всё остальное:
+   * страница обязана открываться в среду вечером, когда ноутбук преподавателя
+   * закрыт, — а папка семинара живёт ровно столько, сколько живёт комната.
+   * Оставить путь как есть значило бы выгрузить страницу с мёртвой ссылкой на
+   * `assets/fig01.png`, которой рядом с ней нет и не будет.
+   *
+   * Читается только то, что заведомо картинка (`NOTE_MIMES`) и влезает в
+   * потолок: `![](data/train.csv.gz)` в заметке — это не картинка, а полтора
+   * гигабайта в память посреди сборки публикации. Что не прочиталось, остаётся
+   * путём — так же, как было до этой правки.
+   */
+  for (const ref of findWorkspaceImages(source)) {
+    const mime = mimeOfNotePath(ref.path)
+    if (!mime) continue
+    const body = sessionId ? readBytes(sessionId, ref.path, MAX_NOTE_IMAGE_BYTES) : null
+    if (!body) continue
+    const value = blobs.putBytes(mime, body)
+    edits.push({ start: ref.start, end: ref.end, text: `${value}.${extOfMime(mime)}` })
+  }
   return applyEdits(source, edits)
 }
 
@@ -152,6 +181,24 @@ const NOTE_MIMES: Record<string, string> = {
 function mimeOfAttachment(name: string): string {
   return NOTE_MIMES[name.slice(name.lastIndexOf('.') + 1).toLowerCase()] ?? 'image/png'
 }
+
+/**
+ * Тип файла из папки семинара — или `null`, если он вообще не картинка.
+ *
+ * Отличается от `mimeOfAttachment` умолчанием, и отличается намеренно: имя
+ * вложения выдал сам продукт, и «не знаю расширение — значит png» там верная
+ * догадка. Путь в заметке пишет человек, и там незнакомое расширение означает
+ * ровно то, что написано: это не картинка, забирать её в публикацию незачем.
+ */
+function mimeOfNotePath(path: string): string | null {
+  return NOTE_MIMES[path.slice(path.lastIndexOf('.') + 1).toLowerCase()] ?? null
+}
+
+/**
+ * Потолок картинки заметки. Восьми мегабайт хватает на любую схему; всё, что
+ * больше, — это уже не иллюстрация, а датасет, которому в странице не место.
+ */
+const MAX_NOTE_IMAGE_BYTES = 8 * 1024 * 1024
 
 const extOfMime = (mime: string): string => mime.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
 

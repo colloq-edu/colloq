@@ -884,7 +884,7 @@
       <div class="-my-1 -mr-1 flex shrink-0 items-center gap-0.5">
         <button
           type="button"
-          class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           title={target ? tr('room.extra.258', { p0: target }) : tr('room.extra.259')}
           aria-label={tr('room.ui.587')}
           onclick={() => startDraft('file')}
@@ -893,7 +893,7 @@
         </button>
         <button
           type="button"
-          class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           title={target ? tr('room.extra.260', { p0: target }) : tr('room.extra.261')}
           aria-label={tr('room.ui.588')}
           onclick={() => startDraft('book')}
@@ -902,7 +902,7 @@
         </button>
         <button
           type="button"
-          class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           title={target ? tr('room.extra.262', { p0: target }) : tr('room.extra.263')}
           aria-label={tr('room.ui.589')}
           onclick={() => startDraft('dir')}
@@ -911,7 +911,7 @@
         </button>
         <button
           type="button"
-          class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           title={tr('room.ui.590')}
           aria-label={tr('room.ui.590')}
           onclick={() => picker?.click()}
@@ -1091,7 +1091,7 @@
               {#if !entry.dir}
                 <button
                   type="button"
-                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                   title={tr('room.extra.272', { p0: snippetFor(entry.path) })}
                   aria-label={tr('room.ui.596')}
                   onclick={() => void copySnippet(entry.path)}
@@ -1100,7 +1100,7 @@
                 </button>
                 <button
                   type="button"
-                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                   title={tr('room.ui.597')}
                   aria-label={tr('room.extra.273', { p0: entry.name })}
                   onclick={() => void download(entry.path)}
@@ -1114,7 +1114,7 @@
               {#if isHost}
                 <button
                   type="button"
-                  class="flex h-6 w-6 items-center justify-center text-faint transition-colors duration-100 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
+                  class="flex h-6 w-6 items-center justify-center text-muted transition-colors duration-100 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
                   title={tr('room.ui.598')}
                   aria-label={tr('room.extra.274', { p0: entry.name })}
                   onclick={() => (confirming = entry.path)}

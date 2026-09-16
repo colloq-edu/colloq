@@ -46,6 +46,7 @@ import { permitsIn } from './may'
 import { cellToAnnounce, ownChanges, type AwarenessChanges } from './presence'
 import { nextPeers, peersById, PRESENCE_TICK_MS, type Peer } from './peers'
 import { bindLocalStore, forgetSessionInfo, type LocalStore } from './persistence.svelte'
+import { syncLocalReplay } from './local-replay-sync'
 import {
   mayReload,
   REFUSED_CLOSE,
@@ -113,11 +114,29 @@ const DISCARDED_OFFLINE = new Set<ControlClientMessage['t']>([
    */
   'complete',
   'inspect',
+  /*
+   * Переход к определению — туда же, хотя довод у него свой.
+   *
+   * Его зовут осознанно и по одному, очередь он бы не забил. Но ответ на него —
+   * это прыжок экрана: вопрос, досланный при переподключении, приехал бы
+   * ответом через минуту и утащил бы человека из того места, где он к тому
+   * времени работает. Да и ждать этот ответ уже некому — обещание закрыл
+   * `#dropAsked` ещё на обрыве. Ходит он, как и соседи, мимо `send` по живому
+   * сокету (`#ask`), и запись здесь — то место, где это правило сказано
+   * словами: маршрут менялся уже дважды, а правило не менялось ни разу.
+   */
+  'define',
 ])
 
 /** Ответ ядра на вопрос о дополнении — ровно то, что показывает редактор. */
 export type CompleteReply = Extract<ControlServerMessage, { t: 'complete:reply' }>
 export type InspectReply = Extract<ControlServerMessage, { t: 'inspect:reply' }>
+/**
+ * Ответ на «где это определено» — единственный из трёх, который считает не
+ * ядро, а сам сервер: разбор Python и обход папки семинара (protocol.ts ·
+ * `define`). Отсюда и то, что в нём приезжает: место, а не текст.
+ */
+export type DefineReply = Extract<ControlServerMessage, { t: 'define:reply' }>
 
 /**
  * Сколько ждём ответа на вопрос о дополнении.
@@ -127,11 +146,67 @@ export type InspectReply = Extract<ControlServerMessage, { t: 'inspect:reply' }>
  * каждый вопрос к занятому ядру здесь оставалась бы висеть запись, которую
  * потом закроет пришедший ответ — к тому времени уже ничей. Полсекунды сверху
  * — на дорогу.
+ *
+ * Переходу к определению столько не нужно: его считает сам сервер по файлам, и
+ * три секунды ему не срок, а предохранитель — обещание обязано разрешиться даже
+ * тогда, когда ответа не будет вовсе.
  */
 const ASK_TIMEOUT_MS = 3000
 
 /** Тот же потолок, что у сервера (control.ts · MAX_COMPLETE_CHARS). */
 const MAX_ASK_CHARS = 24 * 1024
+
+/**
+ * Двадцать четыре килобайта, КОНЧАЮЩИЕСЯ кареткой.
+ *
+ * Дополняют и объясняют то, что перед ней, — низ ячейки для этого не нужен
+ * вовсе, и режется начало: на длинной ячейке подсказка всё равно считается по
+ * ближайшим строкам.
+ */
+function headBeforeCursor(code: string, at: number): { code: string; cursor: number; from: number } {
+  const head = code.slice(0, at)
+  const sent = head.length > MAX_ASK_CHARS ? head.slice(head.length - MAX_ASK_CHARS) : head
+  // `from` тут всегда 0: дополнению и справке номера строк не нужны вовсе, и
+  // поле существует только затем, чтобы обе резки были одной формы.
+  return { code: sent, cursor: sent.length, from: 0 }
+}
+
+/**
+ * Окно ВОКРУГ каретки — и это не придирка, а разница между работающим переходом
+ * и молча неработающим.
+ *
+ * Обрезать хвост, как у дополнения, здесь нельзя: определение почти всегда
+ * стоит НИЖЕ места, откуда по нему щёлкнули. `helper()` в третьей строке при
+ * `def helper()` в тридцатой — обычная ячейка; обратный порядок — редкость. На
+ * обрезанном по каретку тексте сервер честно ответил бы «не нашлось, где
+ * определено», и переход перестал бы работать ровно там, где он нужнее всего —
+ * в длинном файле.
+ *
+ * Поэтому код едет целиком, а потолок срабатывает только на том, что в кадр не
+ * влезает (control.ts · MAX_FRAME_BYTES — тридцать два килобайта на всё
+ * сообщение). Тогда берётся окно вокруг каретки, и курсор переезжает ровно на
+ * столько, сколько срезано слева: разъехавшись на символ, сервер разобрал бы
+ * ДРУГОЕ имя — и увёл бы уверенно и не туда.
+ */
+function windowAroundCursor(
+  code: string,
+  at: number,
+): { code: string; cursor: number; from: number } {
+  if (code.length <= MAX_ASK_CHARS) return { code, cursor: at, from: 0 }
+  // Каретка посередине окна, но у краёв текста окно прижимается к краю: сдвигать
+  // его за границу значило бы отдать меньше, чем влезает.
+  const half = Math.floor(MAX_ASK_CHARS / 2)
+  const start = Math.max(0, Math.min(at - half, code.length - MAX_ASK_CHARS))
+  /*
+   * `from` едет вместе с окном, и без него переход врал.
+   *
+   * Сервер считает строки от начала присланного текста, а человек видит их от
+   * начала файла: в `case_cian.py` живого курса (886 КБ) окно — это правило, и
+   * приземление уходило на сотни строк мимо. По этому же числу сервер узнаёт,
+   * что видит не весь исходник, и достаёт целый — он у него есть.
+   */
+  return { code: code.slice(start, start + MAX_ASK_CHARS), cursor: at - start, from: start }
+}
 
 export class SessionState {
   /** Not readonly: the room's rules can change while the seminar is running. */
@@ -449,9 +524,9 @@ export class SessionState {
     getChat(this.doc)
     getTerminal(this.doc).observe(this.#onTerminalLines)
 
-    // Disk before network, in this order deliberately: IndexedDB answers in
-    // single-digit milliseconds and a websocket in hundreds, so the notebook
-    // paints from the local copy and the server merges into what is on screen.
+    // Attach disk first, but do not assume it resolves before localhost.
+    // syncLocalReplay below keeps a late cache replay on the reconciliation
+    // path, with the same validation as the initial websocket handshake.
     this.localStore = bindLocalStore(session.id, this.doc)
     void this.localStore.whenSynced.then(() => {
       if (!this.#disposed) this.hydrated = true
@@ -479,6 +554,7 @@ export class SessionState {
        */
       maxBackoffTime: collabBackoff(),
     })
+    syncLocalReplay(this.provider, this.localStore)
     this.awareness = this.provider.awareness
     /*
      * Серверу — только своё присутствие.
@@ -1039,7 +1115,11 @@ export class SessionState {
         if (page === null) noteInkedPages(this, [])
         else this.#forgetInkedPage(page)
         this.inkRevision += 1
-      } else if (message.t === 'complete:reply' || message.t === 'inspect:reply') {
+      } else if (
+        message.t === 'complete:reply' ||
+        message.t === 'inspect:reply' ||
+        message.t === 'define:reply'
+      ) {
         /*
          * Ответ находит своего спрашивавшего по номеру — и только его.
          *
@@ -1047,6 +1127,13 @@ export class SessionState {
          * ответы приходят в любом порядке: ядро, занятое ячейкой, промолчит
          * на второй и ответит на четвёртый. Без номера редактор показал бы
          * список к тексту, которого в ячейке уже нет.
+         *
+         * Переход к определению разбирается тем же столом. Номер ему нужен не
+         * меньше: щелчок по второму имени, пока не приехал ответ про первое,
+         * увёл бы человека в место, которого он уже не просил. И разрешить его
+         * обещание обязано что-то одно из трёх — этот ответ, таймер или обрыв
+         * (`#dropAsked`): иначе ожидание на той стороне не кончится никогда, и
+         * следующий щелчок по тому же имени не сделает вообще ничего.
          */
         const waiting = this.#asked.get(message.id)
         if (waiting) {
@@ -1256,16 +1343,49 @@ export class SessionState {
   }
 
   /**
-   * Общая половина обоих вопросов: номер, потолок текста, таймер, отправка.
+   * Где определено имя под кареткой — третий вопрос той же формы и с той же
+   * дорогой, но отвечает на него не ядро, а сервер.
+   *
+   * Он разбирает Python сам (shared/python-defs.ts) и ищет по тетрадям комнаты
+   * и по .py-файлам папки семинара. Отсюда две вещи, которых нет у соседей:
+   * переход работает без запущенного ядра — у того, кто только что открыл
+   * тетрадь, — и право здесь не «право запускать», а право читать.
+   *
+   * `path` — файл, в котором щёлкнули, если это не ячейка: от него сервер
+   * считает относительные импорты (`from . import util`). Соседям это поле не
+   * нужно вовсе — они спрашивают ядро, а у ядра свой текущий каталог.
+   *
+   * `null` — ответа не будет: сокет закрыт или три секунды вышли. В отличие от
+   * дополнения, тишина здесь человеку видна — жест он сделал осознанно, — и что
+   * ему на это сказать, решает lib/goto.svelte.ts, а не редактор.
+   */
+  define(
+    code: string,
+    cursor: number,
+    cellId?: string,
+    path?: string,
+  ): Promise<DefineReply | null> {
+    return this.#ask('define', code, cursor, cellId, path) as Promise<DefineReply | null>
+  }
+
+  /**
+   * Общая половина всех трёх вопросов: номер, потолок текста, таймер, отправка.
    *
    * Потолок в двадцать четыре килобайта стоит и здесь, и на сервере. Здесь —
    * потому что кадр пульта режется на тридцати двух (control.ts ·
    * MAX_FRAME_BYTES), и ячейка, которую кто-то догадался наполнить романом,
    * иначе получила бы на каждую букву не подсказку, а тост «сообщение
-   * слишком длинное». Режется начало: дополняют то, что перед кареткой.
+   * слишком длинное».
+   *
+   * А вот КАК он режется, у перехода своё: дополнению довольно текста до
+   * каретки, переходу нужен весь — см. `headBeforeCursor` и
+   * `windowAroundCursor`. Это единственная развилка на всю дорогу, и ради неё
+   * дальше стоит одно `kind === 'define'`, а не второй такой же метод: номер,
+   * таймер, запись в `#asked` и разбор обрыва у всех троих обязаны быть одними
+   * и теми же — разойдясь, они дают зависшее обещание, а не видимую ошибку.
    */
   #ask(
-    kind: 'complete' | 'inspect',
+    kind: 'complete' | 'inspect' | 'define',
     code: string,
     cursor: number,
     /**
@@ -1277,12 +1397,19 @@ export class SessionState {
      * из слов самой ячейки, а столбцы настоящего `df` — нет.
      */
     cellId?: string,
+    /**
+     * Файл, из которого спрашивают, — и это поле есть только у `define`.
+     *
+     * Соседи спрашивают ЯДРО, и у него свой текущий каталог; определение ищет
+     * сервер по папке семинара, и `from . import util` значит «рядом с ЭТИМ
+     * файлом» — без пути точка не от чего считается.
+     */
+    path?: string,
   ): Promise<ControlServerMessage | null> {
     const socket = this.#control
     if (socket?.readyState !== WebSocket.OPEN) return Promise.resolve(null)
     const at = Math.max(0, Math.min(cursor, code.length))
-    const head = code.slice(0, at)
-    const sent = head.length > MAX_ASK_CHARS ? head.slice(head.length - MAX_ASK_CHARS) : head
+    const sent = kind === 'define' ? windowAroundCursor(code, at) : headBeforeCursor(code, at)
     const id = ++this.#askId
     return new Promise<ControlServerMessage | null>((resolve) => {
       const timer = window.setTimeout(() => {
@@ -1291,12 +1418,24 @@ export class SessionState {
       }, ASK_TIMEOUT_MS)
       this.#asked.set(id, { settle: resolve, timer })
       try {
+        /*
+         * Один литерал вместо ветки на каждое необязательное поле: `cellId` и
+         * `path` бывают порознь, и веток было бы четыре. Свойство со значением
+         * undefined `JSON.stringify` не пишет вовсе, так что на проводе выходит
+         * ровно прежний кадр — без имени ячейки у того, кто его не назвал.
+         */
         socket.send(
-          JSON.stringify(
-            cellId
-              ? { t: kind, id, code: sent, cursor: sent.length, cellId }
-              : { t: kind, id, code: sent, cursor: sent.length },
-          ),
+          JSON.stringify({
+            t: kind,
+            id,
+            code: sent.code,
+            cursor: sent.cursor,
+            cellId,
+            path,
+            // Только у перехода и только когда окно правда резало: у соседей
+            // этого поля нет, и `undefined` в кадр не попадает.
+            from: kind === 'define' && sent.from > 0 ? sent.from : undefined,
+          }),
         )
       } catch {
         // Сокет закрылся между проверкой и отправкой — обычная гонка вкладки,

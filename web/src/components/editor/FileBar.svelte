@@ -132,7 +132,7 @@
       <!-- Время последней записи на диск, а не «есть несохранённое»: файл
            ложится на диск сам через секунду после последнего нажатия, и
            кнопки «сохранить» в этом продукте нет. -->
-      <span class="font-mono text-micro tabular-nums text-faint">{tr('room.ui.105')} {savedAt}</span>
+      <span class="font-mono text-2xs tabular-nums text-muted">{tr('room.ui.105')} {savedAt}</span>
     {/if}
 
     {#if here.length > 0}
@@ -146,7 +146,7 @@
             <span class="truncate text-2xs text-muted">{user.name}</span>
           </span>
         {/each}
-        <span class="shrink-0 text-2xs text-faint">{tr('room.ui.106')}</span>
+        <span class="shrink-0 text-2xs text-muted">{tr('room.ui.106')}</span>
       </span>
     {/if}
   </div>

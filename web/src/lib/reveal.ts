@@ -22,6 +22,14 @@ export type { RevealTarget }
 export const REVEAL_EVENT = 'colloq:reveal'
 
 /**
+ * Сколько ждать, пока ячейки по дороге развернутся, и подвести экран ещё раз.
+ *
+ * Чуть больше плавной прокрутки браузера (она укладывается в полсекунды) и
+ * заведомо меньше, чем человек успевает начать читать не то.
+ */
+const SETTLE_MS = 700
+
+/**
  * Выделить ячейку и подвести к ней экран.
  *
  * По центру, а не к ближайшему краю: это переход по чужой ссылке, а не шаг
@@ -42,11 +50,25 @@ export function revealCell(session: SessionState, cellId: string): void {
    */
   session.showCell?.(cellId)
   session.selectCell(cellId)
-  requestAnimationFrame(() => {
-    document
-      .querySelector(`[data-cell-id="${cellId}"]`)
-      ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  })
+  const bring = (behavior: ScrollBehavior): void => {
+    document.querySelector(`[data-cell-id="${cellId}"]`)?.scrollIntoView({ block: 'center', behavior })
+  }
+  requestAnimationFrame(() => bring('smooth'))
+  /*
+   * И второй подвод — уже без плавности.
+   *
+   * Далёкая ячейка в этот момент ещё не построена: вместо неё стоит заглушка
+   * ровно в 240 px (Notebook.svelte · data-cell-deferred). Пока экран едет к
+   * ней, соседи по дороге разворачиваются в настоящие ячейки — с кодом,
+   * выводом и картинками, — и цель уезжает вниз на разницу высот. Переход
+   * через всю тетрадь останавливался в полутора экранах от того, что искали.
+   *
+   * Поправка приходит после того, как ход кончился: трогать `scrollTop`
+   * посреди плавной прокрутки нельзя — браузер считает это чужим
+   * вмешательством и обрывает ход (Notebook.svelte · steering), — и потому же
+   * сама поправка мгновенная, без второго плавного хода поверх первого.
+   */
+  setTimeout(() => bring('auto'), SETTLE_MS)
 }
 
 /**

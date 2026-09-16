@@ -619,6 +619,16 @@
   // svelte-ignore state_referenced_locally
   const tabs = new Tabs(info.id)
   const row = $derived(tabs.row(session.board, session.lecture?.file ?? null))
+  /*
+   * Вкладки, приколотые комнатой, — те же, из которых складывается `row`.
+   *
+   * Строка вкладок по ним решает, что можно двигать: порядок приколотых задаёт
+   * комната, и переставить их себе значило бы завести у одного человека свой
+   * порядок общего экрана.
+   */
+  const roomPinned = $derived(
+    [session.board, session.lecture?.file ?? null].filter((path): path is string => !!path),
+  )
   const activePath = $derived(typeof tabs.active === 'string' ? tabs.active : null)
   const activeKind = $derived(activePath ? kindOf(activePath) : null)
 
@@ -1284,6 +1294,35 @@
       if (leftIsDrawer) leftDrawer = false
       if (target.where === 'cell') {
         revealCell(session, target.cellId)
+        return
+      }
+      if (target.where === 'file') {
+        /*
+         * Вкладкой, а не `openFile`.
+         *
+         * `openFile` — жест из панели файлов, и он про КОМНАТУ: PDF у
+         * преподавателя уезжает оттуда на общий экран, а .ipynb сперва вносится
+         * в комнату кадром `book:open`. Переход к определению — чтение себе: он
+         * не должен ни отнимать у зала экран, ни заводить в комнате тетрадь
+         * из-за того, что кто-то щёлкнул по имени с зажатым Cmd.
+         *
+         * Определение бывает только в .py, то есть ветка с PDF не сработала бы
+         * и так, — но правило «переход ничего не показывает комнате» должно
+         * держаться на решении здесь, а не на том, что сервер сегодня отвечает
+         * именно про .py-файлы.
+         *
+         * Уже открытую вкладку `Tabs.open` просто делает текущей: второй такой
+         * же в ряду не появляется, и место в файле при этом не теряется — его
+         * помнит lib/goto.svelte.ts, и читает его сам редактор файла.
+         *
+         * Файла может уже не быть — его убрали между ответом сервера и щелчком.
+         * Отдельной проверки здесь нет намеренно: «есть ли такой файл» этот
+         * экран решает один раз и в одном месте (`tabs.settle` выше и `doc.missing`
+         * рядом с ним), а вторая, более слабая копия того же суждения врала бы
+         * на обрезанном списке файлов (`filesTruncated`) — то есть закрывала бы
+         * переход тому, у кого в папке три тысячи файлов.
+         */
+        tabs.open(target.path)
         return
       }
       if (target.where === 'terminal') {
@@ -2430,8 +2469,10 @@
           following={readerFollowing}
           page={readerPage}
           pages={readerPages}
+          pinned={roomPinned}
           onshow={(key) => tabs.show(key)}
           onclose={closeTab}
+          onreorder={(dragged, onto) => tabs.reorder(dragged, onto)}
           oncatchup={() => (catchUp += 1)}
         />
       {/if}
@@ -2472,9 +2513,10 @@
             class:hidden={activePath !== path}
             aria-hidden={activePath !== path}
             onclick={(event) => {
-              // По телу ячейки, а не по её корню: колонка с номером и пустое
-              // место под ним — это уже мимо, там и снимают.
-              if ((event.target as HTMLElement | null)?.closest('[data-cell-body]')) return
+              // По тому, что нажимают, а не по корню ячейки: тело и сам номер
+              // несут `data-cell-pick` и выделяют, а пустое место в поле рядом
+              // с номером — это уже мимо, там и снимают.
+              if ((event.target as HTMLElement | null)?.closest('[data-cell-pick]')) return
               if (session.selection.length > 0) session.selectCell(null)
             }}
           >
@@ -2529,7 +2571,7 @@
           <!-- Голосом читалки состояние всё равно называется: знак его не
                произносит, а знать о нём нужно ровно тем, кто знака не видит. -->
           <p class="sr-only">{tr('room.ui.910')}</p>
-          <p class="text-2xs text-faint">{tr('room.ui.911')}</p>
+          <p class="text-2xs text-muted">{tr('room.ui.911')}</p>
         </div>
       {:else if activeKind === 'pdf'}
         {#if lecture && lectureHere && !soloRead}
@@ -2861,7 +2903,7 @@
               {@const number = cell.id ? everyCell.current.get(cell.id) : undefined}
               <div class="flex flex-col gap-1">
                 {#if number !== undefined}
-                  <p class="font-mono text-2xs text-faint"> {tr('room.ui.927')} {String(number).padStart(2, '0')}
+                  <p class="font-mono text-2xs text-muted"> {tr('room.ui.927')} {String(number).padStart(2, '0')}
                   </p>
                 {/if}
                 <pre

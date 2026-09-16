@@ -2,7 +2,7 @@
   import ContentSkeleton from '@/components/ui/ContentSkeleton.svelte'
   import { tr } from '@shared/i18n'
   import { tick } from 'svelte'
-  import { findCell, isCellOpen, type CellType } from '@shared/notebook'
+  import { cellType, findCell, isCellOpen, type CellType } from '@shared/notebook'
   import { isLectureRoom } from '@shared/rules'
   import Icon from '@/components/ui/Icon.svelte'
   import { controlDisabled, controlTitle } from '@/lib/controls'
@@ -23,7 +23,7 @@
     type Frame,
     type HeightChange,
   } from '@/lib/cell-scroll'
-  import { cn, modKey, prefersReducedMotion } from '@/lib/utils'
+  import { cn, isJumpClick, modKey, prefersReducedMotion } from '@/lib/utils'
   import { watchBooks, watchCellIds, watchNotebookMeta } from '@/lib/yreactive.svelte'
   import CellView from './CellView.svelte'
   import { nextBuiltCells } from './first-mount'
@@ -382,6 +382,32 @@
    */
   function pick(id: string, event?: MouseEvent | PointerEvent): void {
     if (event && event.button !== 0) return
+    /*
+     * Модификатор перехода внутри поля кода — чужой жест: пропустить насквозь.
+     *
+     * Там им ходят к определению (CodeEditor.svelte · jump), а перехват в
+     * capture-фазе — ровно то, из-за чего до редактора не доходило НИЧЕГО:
+     * preventDefault, stopPropagation и blur срабатывали раньше, чем
+     * CodeMirror узнавал о нажатии. Поэтому здесь не «не выделять», а именно
+     * вернуться, не тронув событие.
+     *
+     * Это размен, а не недосмотр, и отдано ровно одно из четырёх мест.
+     * Выделение вразбивку по КОДУ на маке осталось за вторым модификатором —
+     * Ctrl+клик; ради этого lib/utils · isJumpClick и разводит платформы, а не
+     * читает «любой из двух». Мимо кода не изменилось ничего: номер ячейки,
+     * поля и вывод набирают её как раньше, и номер стал мишенью недавно и
+     * нарочно — он помечен `data-cell-pick` (CellView.svelte), потому что
+     * именно в него целятся, когда хотят ячейку.
+     *
+     * Отдаётся жест только в ячейке с КОДОМ: в текстовой ходить некуда, там
+     * пишут прозой, и молча съеденный клик был бы чистой потерей. Обход
+     * списка ячеек ради одного нажатия стоит ровно столько же, сколько
+     * `convertCell` ниже платит за то же знание.
+     */
+    if (event && isJumpClick(event) && (event.target as Element | null)?.closest('.cm-editor')) {
+      const found = findCell(session.doc, id)
+      if (found && cellType(found.cell) === 'code') return
+    }
     if (event?.shiftKey && !event.metaKey && !event.ctrlKey) {
       const editor = (event.target as Element | null)?.closest('.cm-editor')
       if (editor?.contains(document.activeElement)) return
@@ -1141,7 +1167,7 @@
    * same 3% and the same curve, or none of them should.
    */
   const CAP =
-    'inline-flex h-full shrink-0 items-center px-4 text-2xs font-semibold uppercase tracking-label ' +
+    'inline-flex h-full shrink-0 items-center px-3 text-2xs font-semibold uppercase tracking-wide ' +
     'text-ink transition-[color,background-color,border-color,transform] duration-press ease-out ' +
     'enabled:active:scale-[0.97] hover:bg-raised ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset ' +
@@ -1516,7 +1542,7 @@
 
   <div
     style:padding-left={gutter}
-    class={cn('mt-1 flex items-center gap-3', ids.current.length === 0 && 'mt-8')}
+    class={cn('mt-1 flex flex-wrap items-center gap-3', ids.current.length === 0 && 'mt-8')}
   >
     <button
       type="button"
@@ -1536,7 +1562,7 @@
     <!-- Shift+Enter and the platform's own modifier now mean different things —
          run and move on, run and stay — so the hint says both. `modKey` reads
          ⌘ on a Mac and Ctrl everywhere else. -->
-    <span class="hidden shrink-0 font-mono text-2xs text-muted sm:inline"> {tr('room.ui.457')} {modKey}{tr('room.ui.458')} </span>
+    <span class="hidden min-w-0 flex-[1_1_300px] whitespace-normal font-mono text-2xs text-muted sm:inline"> {tr('room.ui.457')} {modKey}{tr('room.ui.458')} </span>
   </div>
   {/if}
   </div>

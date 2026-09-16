@@ -171,6 +171,8 @@ interface Runtime {
    */
   restarting: Promise<void> | null
   queue: QueueItem[]
+  /** A targeted interrupt that must settle before the queue may start another job. */
+  beforeNext: Promise<void> | null
   pumping: boolean
   currentCell: string | null
   /** Which press of Run the running cell came from; see stopBatchOf. */
@@ -250,6 +252,7 @@ function getRuntime(sessionId: string): Runtime {
       starting: null,
       restarting: null,
       queue: [],
+      beforeNext: null,
       pumping: false,
       currentCell: null,
       currentBatch: null,
@@ -1489,6 +1492,11 @@ async function pump(runtime: Runtime): Promise<void> {
   runtime.pumping = true
   try {
     while (runtime.queue.length > 0) {
+      // A ban may interrupt one Council author while another waits behind
+      // them. The HTTP interrupt can arrive after the first run ends; starting
+      // the next job before it settles would deliver that SIGINT to the wrong
+      // author. Keep the queue intact and wait only at this boundary.
+      if (runtime.beforeNext) await runtime.beforeNext
       // Перезапуск идёт — ждать его, а не слать execute в ядро, которого через
       // мгновение не будет. Ответ на такой execute не приходит никогда.
       if (runtime.restarting) {
@@ -1887,6 +1895,44 @@ export function cancelCouncilRun(
   releaseCouncil(runtime, [dropped])
   syncQueue(runtime)
   return true
+}
+
+/**
+ * Убрать из ядра все попытки человека, которого удаляют с занятия.
+ *
+ * Обычная отмена намеренно не трогает выполняющуюся попытку. Для бана это
+ * оставляло бесконечный цикл занимать общее ядро уже после того, как автора и
+ * его работу убрали из комнаты. Здесь текущая работа проверяется по серверной
+ * записи задания. Следующую чужую попытку очередь не начинает до ответа на
+ * interrupt: иначе поздний SIGINT мог попасть уже в неё.
+ */
+export function purgeCouncilRunsOf(
+  sessionId: string,
+  participantId: string,
+): { running: boolean; queued: number } {
+  const runtime = runtimes.get(sessionId)
+  if (!runtime) return { running: false, queued: 0 }
+
+  const dropped = runtime.queue.filter((item) => item.council?.participantId === participantId)
+  if (dropped.length > 0) {
+    const gone = new Set(dropped)
+    runtime.queue = runtime.queue.filter((item) => !gone.has(item))
+    releaseCouncil(runtime, dropped)
+    syncQueue(runtime)
+  }
+
+  const active = runtime.job
+  const running = active?.job.participantId === participantId
+  if (running) {
+    const interrupt = interruptSession(sessionId, active.item.cellId)
+    const prior = runtime.beforeNext
+    const barrier = prior ? Promise.all([prior, interrupt]).then(() => {}) : interrupt
+    runtime.beforeNext = barrier
+    void barrier.then(() => {
+      if (runtime.beforeNext === barrier) runtime.beforeNext = null
+    })
+  }
+  return { running, queued: dropped.length }
 }
 
 /**

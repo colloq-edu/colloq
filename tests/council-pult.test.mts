@@ -147,8 +147,8 @@ test('раскрытая группа даёт шапку и членов с о�
 
 test('шесть чипов отбирают то, что обещают', () => {
   const grouped = new Set(['x=1'])
-  const failed = attempt({ participantId: 'f', status: 'failed', run: null })
-  const wrong = attempt({ participantId: 'w', status: 'wrong' })
+  const failed = attempt({ participantId: 'f', status: 'failed', run: { state: 'error', outputs: [], execCount: 1, ranMs: 10, startedAt: T, by: 'host' } })
+  const wrong = attempt({ participantId: 'w', status: 'wrong', correct: false })
   const ran = attempt({
     participantId: 'r',
     status: 'ran',
@@ -162,7 +162,7 @@ test('шесть чипов отбирают то, что обещают', () =>
   assert.equal(matchesFilter(wrong, 'error', unread, grouped), true, '«неверно» — тоже ошибка')
   assert.equal(matchesFilter(ran, 'error', unread, grouped), false)
   assert.equal(matchesFilter(ran, 'unrun', unread, grouped), false, 'запускали — значит не сюда')
-  assert.equal(matchesFilter(failed, 'unrun', unread, grouped), true)
+  assert.equal(matchesFilter(failed, 'unrun', unread, grouped), false)
   assert.equal(matchesFilter(draft, 'writing', unread, grouped), true)
   assert.equal(matchesFilter(ran, 'writing', unread, grouped), false)
   assert.equal(matchesFilter(failed, 'new', unread, grouped), true)
@@ -406,8 +406,8 @@ test('окно открывается по имени комнаты, всплы
   // popup=yes обязателен: без него Chrome открывает ВКЛАДКУ и молча забывает
   // размеры, а пульт во вкладке — это второй раз та же тетрадь.
   assert.match(fresh, /popup=yes/)
-  assert.match(fresh, /width=900/)
-  assert.match(fresh, /height=700/)
+  assert.match(fresh, /width=1120/)
+  assert.match(fresh, /height=820/)
   assert.doesNotMatch(fresh, /left=/, 'места ещё не знаем — координат в строке нет')
   const remembered = windowFeatures({ left: 120, top: 40, width: 1000, height: 800 })
   assert.match(remembered, /left=120/)

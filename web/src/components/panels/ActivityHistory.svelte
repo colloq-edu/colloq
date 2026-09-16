@@ -167,37 +167,37 @@
 </div>
 
 <style>
-  .activity { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; color: var(--tm-muted); font-size: 12px; }
+  .activity { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; color: var(--tm-muted); font-size: 14px; }
   .filters { display: flex; align-items: end; flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px; border-bottom: 1px solid var(--tm-edge); flex: none; }
-  label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--tm-faint); }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--tm-muted); }
   select, .refresh, .more { box-sizing: border-box; min-height: 34px; padding: 6px 10px; border: 1px solid var(--tm-edge); color: var(--tm-ink); background: var(--tm-bg); font: inherit; cursor: pointer; }
   select { max-width: 100%; }
   button:focus-visible, select:focus-visible { outline: 2px solid var(--tm-accent); outline-offset: -2px; }
   button:disabled { cursor: default; opacity: 0.5; }
-  .filter-hint { flex: 1 1 140px; margin: 0 0 8px; color: var(--tm-faint); font-size: 11px; }
+  .filter-hint { flex: 1 1 140px; margin: 0 0 8px; color: var(--tm-muted); font-size: 13px; }
   .activity-body { display: flex; flex: 1; min-height: 0; min-width: 0; }
   .timeline { flex: 0 0 45%; min-width: 0; overflow-y: auto; border-right: 1px solid var(--tm-edge); padding-block: 6px; }
   ul { margin: 0; padding: 0; list-style: none; }
   .event { box-sizing: border-box; display: flex; align-items: start; gap: 10px; width: 100%; padding: 9px 12px; text-align: left; color: inherit; border: 0; border-left: 2px solid transparent; background: transparent; font: inherit; cursor: pointer; }
   .event:hover { background: #0c1631; }
   .event.selected { background: #0e1a3d; border-left-color: var(--tm-accent); }
-  time { flex: none; width: 34px; margin-top: 3px; color: var(--tm-faint); font: 11px var(--tm-mono); }
+  time { flex: none; width: 38px; margin-top: 3px; color: var(--tm-muted); font: 12px var(--tm-mono); }
   .avatar { display: flex; flex: none; align-items: center; justify-content: center; width: 23px; height: 23px; border: 1px solid var(--tm-edge); border-radius: 50%; color: var(--tm-accent); font-size: 9px; font-weight: 700; }
   .event-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; line-height: 1.4; }
   .event-copy strong { color: var(--tm-ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .event-copy span { overflow-wrap: anywhere; color: var(--tm-muted); }
-  .event-copy small { color: var(--tm-live); font-size: 11px; }
+  .event-copy small { color: var(--tm-live); font-size: 13px; }
   .event-copy small code, dd code { font: inherit; font-family: var(--tm-mono); }
   .more { margin: 8px 12px; }
   .detail { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
   .detail-content { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
-  .eyebrow { margin: 0 0 8px; color: var(--tm-accent); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .eyebrow { margin: 0 0 8px; color: var(--tm-accent); font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; }
   h3 { margin: 0 0 18px; color: var(--tm-ink); font-size: 16px; font-weight: 600; line-height: 1.4; }
   dl { display: grid; grid-template-columns: minmax(75px, 0.7fr) minmax(0, 1fr); gap: 10px 16px; line-height: 1.5; }
-  dt { color: var(--tm-faint); } dd { margin: 0; color: var(--tm-ink); overflow-wrap: anywhere; }
-  footer { flex: none; border-top: 1px solid var(--tm-edge); padding: 12px 16px; font-size: 11px; line-height: 1.5; }
-  footer p { margin: 0 0 8px; } footer span { color: var(--tm-faint); }
-  .note { margin: 0; padding: 12px; color: var(--tm-faint); line-height: 1.5; }
+  dt { color: var(--tm-muted); } dd { margin: 0; color: var(--tm-ink); overflow-wrap: anywhere; }
+  footer { flex: none; border-top: 1px solid var(--tm-edge); padding: 12px 16px; font-size: 13px; line-height: 1.5; }
+  footer p { margin: 0 0 8px; } footer span { color: var(--tm-muted); }
+  .note { margin: 0; padding: 12px; color: var(--tm-muted); line-height: 1.5; }
   .detail-content > .note { padding: 0; }
   .error, .bad, .event-copy small.bad { color: #e8a3b1; }
   .tail { border-top: 1px solid var(--tm-edge); }

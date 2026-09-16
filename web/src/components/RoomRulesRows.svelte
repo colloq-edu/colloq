@@ -195,11 +195,11 @@
 
 <style>
   .rule-seg {
-    height: 30px;
+    height: 32px;
     padding-inline: 11px;
     /* Живое правило не должно быть самым мелким текстом на экране — тот же
        довод, что и у сегмента «кто запускает» на экране создания. */
-    font-size: 12.5px;
+    font-size: 14px;
     font-weight: 600;
     letter-spacing: 0.03em;
     color: rgb(var(--muted));
@@ -244,9 +244,9 @@
      кегль, чтобы две строки из одиннадцати не выглядели чужими. */
   .rule-num {
     width: 4.5rem;
-    height: 30px;
+    height: 32px;
     padding-inline: 8px;
-    font-size: 12.5px;
+    font-size: 14px;
     font-weight: 600;
     text-align: right;
     color: rgb(var(--ink));
@@ -274,15 +274,12 @@
     outline: none;
     box-shadow: inset 0 0 0 2px rgb(var(--accent) / 0.5);
   }
-  /* Одиннадцать пикселей подчёркнутого текста — это кнопка, и цель у неё была
-     ровно по высоте букв. Поля растят её до 24 px, ничего не сдвигая: строка
-     выровнена по центру, и лишние четыре пикселя уходят в её собственный
-     зазор. Нажатие отвечает тем же, чем и сегменты рядом. */
+  /* A text action still needs a readable label and a full click target. */
   .rule-clear {
     display: inline-flex;
     align-items: center;
-    min-height: 24px;
-    font-size: 11px;
+    min-height: 28px;
+    font-size: 13px;
     font-weight: 600;
     color: rgb(var(--muted));
     background: none;

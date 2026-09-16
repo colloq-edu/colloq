@@ -24,10 +24,21 @@ export const IMG_MIMES: readonly string[] = [...BLOB_MIMES]
 /*
  * Preference order for a rich result. The second list is what we can show
  * before the sanitizer exists: a data URI needs no sanitizing, and text/plain
- * goes out as text — SVG and HTML wait, because rendering either of them
- * unsanitized is not a trade worth one frame.
+ * goes out as text — SVG, HTML and markdown wait, because rendering any of
+ * them unsanitized is not a trade worth one frame.
+ *
+ * `text/markdown` стоит между разметкой и текстом, и обе стороны важны.
+ *
+ * `display(Markdown("**Решение**: …"))` — обычный способ подписать вывод в
+ * учебной тетради, и ядро присылает ДВА представления: саму разметку и
+ * `text/plain` с репром `<IPython.core.display.Markdown object>`. Пока
+ * markdown в этом списке не стоял, побеждал `text/plain`, и на месте вывода
+ * человек читал имя класса — вывод как бы был и как бы отсутствовал.
+ *
+ * Ниже `text/html`: если библиотека прислала и то и другое, готовая разметка
+ * точнее — её собрал тот, кто знает, как это должно выглядеть.
  */
-const MIME_ORDER = [...IMG_MIMES, 'image/svg+xml', 'text/html', 'text/plain']
+const MIME_ORDER = [...IMG_MIMES, 'image/svg+xml', 'text/html', 'text/markdown', 'text/plain']
 const MIME_ORDER_PLAIN = [...IMG_MIMES, 'text/plain']
 
 export function pickMime(data: Record<string, string>, rich: boolean): string | null {

@@ -1,0 +1,66 @@
+/* Shared controls for the private console. Values follow Paper 05d / v2. */
+[data-council-pult] {
+  --pult-pad: 28px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgb(var(--ink));
+  background: rgb(var(--canvas));
+}
+[data-council-pult] [hidden] { display: none !important; }
+[data-council-pult] button, [data-council-pult] input,
+[data-council-pult] select, [data-council-pult] textarea { font: inherit; }
+[data-council-pult] .pult-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  flex-shrink: 0;
+  padding: 9px 14px;
+  border: 1px solid rgb(var(--line));
+  background: rgb(var(--canvas));
+  color: rgb(var(--ink));
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background-color 140ms, border-color 140ms;
+}
+[data-council-pult] .pult-button:hover:not(:disabled) { background: rgb(var(--raised)); border-color: rgb(var(--muted)); }
+[data-council-pult] .pult-button:disabled { opacity: .48; cursor: default; }
+[data-council-pult] .pult-button--primary { background: rgb(var(--primary)); color: rgb(var(--primary-ink)); border-color: rgb(var(--primary)); }
+[data-council-pult] .pult-button--primary:hover:not(:disabled) { background: rgb(var(--primary) / .88); border-color: rgb(var(--primary)); }
+[data-council-pult] .pult-button--danger { color: rgb(var(--danger)); border-color: rgb(var(--danger)); }
+[data-council-pult] .pult-button--selected { background: rgb(var(--raised)); color: rgb(var(--ink)); border-color: rgb(var(--primary)); }
+[data-council-pult] .pult-button[data-tone="positive"] { color: rgb(var(--positive)); }
+[data-council-pult] .pult-button[data-tone="warning"] { color: rgb(var(--warning)); }
+[data-council-pult] .pult-button[data-tone="positive"][aria-pressed="true"] { background: rgb(var(--positive) / .12); border-color: rgb(var(--positive)); }
+[data-council-pult] .pult-button[data-tone="warning"][aria-pressed="true"] { background: rgb(var(--warning) / .12); border-color: rgb(var(--warning)); }
+[data-council-pult] .pult-meta { font-size: 13px; line-height: 18px; color: rgb(var(--muted)); }
+[data-council-pult] .pult-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgb(var(--surface));
+  color: rgb(var(--muted));
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+[data-council-pult] .pult-badge[data-tone="positive"] { color: rgb(var(--positive)); background: rgb(var(--positive) / .1); }
+[data-council-pult] .pult-badge[data-tone="warning"] { color: rgb(var(--warning)); background: rgb(var(--warning) / .1); }
+[data-council-pult] .pult-badge[data-tone="danger"] { color: rgb(var(--danger)); background: rgb(var(--danger) / .1); }
+[data-council-pult] .pult-badge[data-tone="accent"] { color: rgb(var(--accent-text)); background: rgb(var(--accent) / .1); }
+[data-council-pult] button:focus-visible, [data-council-pult] input:focus-visible,
+[data-council-pult] select:focus-visible, [data-council-pult] textarea:focus-visible {
+  outline: 2px solid rgb(var(--accent-text)); outline-offset: 2px;
+}
+[data-council-pult] [data-pult-keys] kbd { font-size: 13px; min-height: 28px; }
+@media (max-width: 900px) { [data-council-pult] { --pult-pad: 20px; } }
+@media (max-width: 650px) { [data-council-pult] { --pult-pad: 16px; } }
+@media (prefers-reduced-motion: reduce) { [data-council-pult] * { transition: none !important; animation: none !important; } }

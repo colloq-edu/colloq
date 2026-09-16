@@ -815,6 +815,42 @@ export function readText(sessionId: string, rel: string, maxBytes = MAX_TEXT_BYT
 }
 
 /**
+ * Прочитать файл байтами.
+ *
+ * Двойник `readText` для того, что текстом не является: картинка условия,
+ * лежащая в папке семинара рядом с тетрадью. Понадобилось это публикации —
+ * `![схема](assets/fig01.png)` в заметке указывает на файл, а на выгруженной
+ * странице никакой папки семинара уже нет, так что картинку надо забрать с
+ * собой (publish/build.ts · projectNote).
+ *
+ * Потолок — обязательный довод, а не предосторожность: файл читается ЦЕЛИКОМ в
+ * память, и `![](data/train.csv.gz)` на полтора гигабайта уронил бы сборку
+ * публикации вместе с сервером. Больше потолка — `null`, то есть «не смогли»,
+ * и вызывающий сам решает, что показать вместо.
+ */
+export function readBytes(sessionId: string, rel: string, maxBytes: number): Buffer | null {
+  const full = resolveInSession(sessionId, rel)
+  if (!full) return null
+  let held: ReturnType<typeof workspaceFs.openRead>
+  try {
+    held = workspaceFs.openRead(full)
+  } catch {
+    return null
+  }
+  try {
+    const stat = fs.fstatSync(held.fd)
+    if (!stat.isFile() || stat.size > maxBytes) return null
+    const buf = Buffer.alloc(stat.size)
+    const read = fs.readSync(held.fd, buf, 0, buf.length, 0)
+    return buf.subarray(0, read)
+  } catch {
+    return null
+  } finally {
+    held.close()
+  }
+}
+
+/**
  * Записать файл целиком.
  *
  * Рядом и переименованием, не поверх: `writeFileSync` сначала обрезает файл до

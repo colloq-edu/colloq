@@ -91,6 +91,20 @@ const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigat
 export const modKey = isMac ? '⌘' : 'Ctrl'
 
 /**
+ * Тот ли это модификатор, которым в коде ходят к определению.
+ *
+ * ⌘ на маке, Ctrl везде ещё — как в любой IDE и как в самом браузере, где этой
+ * же парой открывают ссылку в новой вкладке. Разделение платформ тут не
+ * педантизм, а размен: ВТОРОЙ модификатор остаётся за выделением ячеек
+ * вразбивку (Notebook.svelte · pick), то есть на маке Ctrl+клик по коду
+ * по-прежнему набирает ячейки, а не прыгает. Заодно это обходит вторую беду
+ * мака: Ctrl+клик там — ещё и вызов контекстного меню.
+ */
+export function isJumpClick(event: { metaKey: boolean; ctrlKey: boolean }): boolean {
+  return isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
+}
+
+/**
  * Split a filename so a narrow lane can drop the middle and keep the end.
  *
  * `text-overflow: ellipsis` always eats the tail, and the tail of a filename is

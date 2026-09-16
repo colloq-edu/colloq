@@ -152,35 +152,18 @@
 /*
  * ------------------------------------------------------- the panel's type ---
  *
- * The admin runs one notch larger than the notebook, and the reason is measure
- * rather than taste.
- *
- * The two surfaces borrowed one scale and have opposite densities. In the
- * notebook 13px is the workhorse and the small steps are chrome around code — a
- * cell label, a run credit, a keycap, all read at a glance beside something
- * else. In the panel those same steps carry the sentences that explain what a
- * setting will do to a room full of people: fourteen separate lines of 11px on
- * the New seminar screen alone, read slowly, once, before a decision that
- * cannot be taken back. That is the oracle-column mistake again — the right
- * step at half the measure.
- *
- * Redefined here rather than at 93 call sites because it is one decision about
- * one surface, and ninety-three edits would be the same decision written badly:
- * impossible to review, and one missed class away from a screen that disagrees
- * with itself. Scoped to .admin so the notebook keeps the scale it was tuned
- * for.
- *
- * The floor stays a floor: `micro` moves 10 → 11 and no further, because what
- * it labels — a status pill, a version stamp — is recognised rather than read.
+ * The admin keeps compact numeric counters at 12px and explanatory labels
+ * at 13px. Form controls and body copy stay at 14px, so the existing tables
+ * and settings columns retain their layout while the smaller text is readable.
  */
 .admin .text-micro {
-  font-size: 11px;
-  line-height: 15px;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .admin .text-2xs {
-  font-size: 12.5px;
-  line-height: 18px;
+  font-size: 13px;
+  line-height: 19px;
 }
 
 .admin .text-code {

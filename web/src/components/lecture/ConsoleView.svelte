@@ -1682,7 +1682,7 @@
    */
   const KEY = `relative flex shrink-0 items-center justify-center ${PRESS} enabled:active:bg-line`
   /** Подпись действия: 0.14em называет ДЕЙСТВИЕ. Трекингов на пульте ровно два. */
-  const CAP = 'text-2xs font-bold uppercase tracking-label'
+  const CAP = 'text-2xs font-semibold tracking-normal'
   /** Название места: 0.2em называет МЕСТО (полоса, область). */
   const SECTION = 'text-micro font-bold uppercase tracking-section'
   /** Строка поднятого листа. */
@@ -1763,7 +1763,7 @@
       {#if lecture}
         <!-- Первое, о чём думает ведущий, — не пропала ли пара. Не пропала:
              страница и чернила живут на сервере, а не в этой вкладке. -->
-        <p class="max-w-[440px] text-answer text-faint"> {tr('room.ui.150')} </p>
+        <p class="max-w-[440px] text-answer text-muted"> {tr('room.ui.150')} </p>
       {/if}
       <button type="button" class="btn-primary h-11 px-6" onclick={() => reloadByHand()}> {tr('room.ui.151')} </button>
     </div>
@@ -1923,7 +1923,7 @@
       {:else}
         <!-- Знаменатель отдельной строкой: иначе он ездит при переходе 9 → 10. -->
         <span
-          class="absolute left-3 top-[44px] flex h-[13px] items-center font-mono text-code tabular-nums text-faint"
+          class="absolute left-3 top-[44px] flex h-[13px] items-center font-mono text-code tabular-nums text-muted"
         >
           / {pages || '—'}
         </span>
@@ -2261,7 +2261,7 @@
         <Icon name="chevron-right" size={28} />
         <span class="{CAP}">{forwardReturns ? tr('room.ui.176') : tr('room.ui.177')}</span>
         {#if forwardReturns}
-          <span class="font-mono text-code tabular-nums text-faint">{lastSlide}</span>
+          <span class="font-mono text-code tabular-nums text-muted">{lastSlide}</span>
         {/if}
       </button>
     {:else}
@@ -2418,7 +2418,7 @@
             {/if}
           </svg>
           <span class="{on ? 'text-ink' : 'text-muted'} text-ui-lg">{choice.name}</span>
-          <span class="{CAP} ml-auto text-faint">{choice.says}</span>
+          <span class="{CAP} ml-auto text-muted">{choice.says}</span>
         </button>
       {/each}
     </div>
@@ -2587,7 +2587,7 @@
     <div class="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
       <Icon name="alert" size={24} class="text-danger" />
       <p class="text-answer text-ink">{tr('room.ui.190')}</p>
-      <p class="font-mono text-code text-faint">{file}</p>
+      <p class="font-mono text-code text-muted">{file}</p>
       <div class="mt-3 flex gap-3">
         <button
           type="button"
@@ -2690,7 +2690,7 @@
             aria-hidden="true"
           ></span>
         </span>
-        <span class="mt-1 flex justify-end font-mono text-code tabular-nums text-faint"> {tr('room.ui.197')} {wanted + 1}
+        <span class="mt-1 flex justify-end font-mono text-code tabular-nums text-muted"> {tr('room.ui.197')} {wanted + 1}
         </span>
       </div>
     {/if}
@@ -2751,7 +2751,7 @@
             onclick={() => onpick(entry.path)}
           >
             <span class="truncate text-head font-semibold text-ink">{entry.name}</span>
-            <span class="truncate font-mono text-code text-faint">
+            <span class="truncate font-mono text-code text-muted">
               {going ? tr('room.ui.199') : entry.path}
             </span>
           </button>
@@ -2793,7 +2793,7 @@
           onclick={() => setHand(hand === 'left' ? 'right' : 'left')}
         >
           <span class="flex-1 text-left">{tr('room.ui.201')}</span>
-          <span class={hand === 'left' ? 'text-ink' : 'text-faint'}>
+          <span class={hand === 'left' ? 'text-ink' : 'text-muted'}>
             {hand === 'left' ? tr('room.ui.202') : tr('room.ui.203')}
           </span>
         </button>
@@ -2809,7 +2809,7 @@
         {/if}
       </div>
 
-      <p class="pt-6 {CAP} text-faint">{tr('room.ui.205')}</p>
+      <p class="pt-6 {CAP} text-muted">{tr('room.ui.205')}</p>
 
       <div class="pt-6">{@render toast()}</div>
     </div>
@@ -2949,7 +2949,7 @@
                 >
                   <Icon name="plus" size={24} />
                 </span>
-                <span class="pb-1 {CAP} text-faint">{tr('room.ui.207')}</span>
+                <span class="pb-1 {CAP} text-muted">{tr('room.ui.207')}</span>
               </button>
             {/if}
           </div>
@@ -3070,7 +3070,7 @@
               onclick={() => openPane('files')}
             >
               <span class="shrink-0">{tr('room.ui.219')}</span>
-              <span class="min-w-0 flex-1 truncate text-right font-mono text-code text-faint">
+              <span class="min-w-0 flex-1 truncate text-right font-mono text-code text-muted">
                 {file ? baseOf(file) : ''}
               </span>
             </button>

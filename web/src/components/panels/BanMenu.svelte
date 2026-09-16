@@ -18,6 +18,7 @@
    * Обещать герметичность, которой нет, дороже, чем признать её отсутствие.
    */
   import { quintOut } from 'svelte/easing'
+  import { tick } from 'svelte'
   import { fade, fly } from 'svelte/transition'
   import { api } from '@/lib/api'
   import { BAN_MENU_EVENT, banConsequences, bansChanged, type BanTarget } from '@/lib/bans'
@@ -34,10 +35,14 @@
   let busy = $state(false)
   let errorRender = $state<() => string | null>(() => null)
   const error = $derived(errorRender())
+  let opener = $state<HTMLElement | null>(null)
+  let menuButton = $state<HTMLButtonElement | null>(null)
   let cancelButton = $state<HTMLButtonElement | null>(null)
+  let dialog = $state<HTMLElement | null>(null)
 
   $effect(() => {
     const open = (event: Event) => {
+      opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
       target = (event as CustomEvent<BanTarget>).detail
       asked = false
       busy = false
@@ -47,9 +52,11 @@
     return () => window.removeEventListener(BAN_MENU_EVENT, open)
   })
 
-  // Отказаться — рефлекс, поэтому под первым же Enter стоит «Отмена».
+  // Открытый слой сразу получает клавиатуру. В подтверждении первым остаётся
+  // безопасное действие: по первому Enter ничего необратимого не произойдёт.
   $effect(() => {
-    if (asked) cancelButton?.focus()
+    if (asked) (busy ? dialog : cancelButton)?.focus()
+    else if (target) menuButton?.focus()
   })
 
   const MENU_W = 208
@@ -79,8 +86,13 @@
    * конец.
    */
   function dismiss(): void {
+    const back = opener
     target = null
     asked = false
+    opener = null
+    void tick().then(() => {
+      if (back?.isConnected) back.focus()
+    })
   }
 
   /** То же, но по жесту человека: пока запрос в пути, жест не действует. */
@@ -106,6 +118,26 @@
       errorRender = () => (cause instanceof Error ? tr(cause.message) : tr('room.ui.543'))
     } finally {
       busy = false
+    }
+  }
+
+  /** Две кнопки подтверждения образуют один модальный круг Tab. */
+  function trapDialogFocus(event: KeyboardEvent): void {
+    if (event.key !== 'Tab' || !dialog) return
+    const controls = [...dialog.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
+    const first = controls[0]
+    const last = controls.at(-1)
+    if (!first || !last) {
+      event.preventDefault()
+      dialog.focus()
+      return
+    }
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
     }
   }
 </script>
@@ -141,6 +173,7 @@
       {target.name}
     </p>
     <button
+      bind:this={menuButton}
       role="menuitem"
       type="button"
       class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-ui text-danger
@@ -163,9 +196,12 @@
     in:fade={{ duration: 120 }}
   >
     <div
+      bind:this={dialog}
       role="dialog"
+      tabindex="-1"
       aria-modal="true"
       aria-labelledby="ban-title"
+      onkeydown={trapDialogFocus}
       class="w-full max-w-[440px] border border-line bg-canvas p-5 shadow-pop"
       in:fly={{ y: prefersReducedMotion() ? 0 : -6, duration: 140, easing: quintOut }}
     >

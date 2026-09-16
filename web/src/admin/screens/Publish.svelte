@@ -309,7 +309,7 @@
             <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink">/p/{name}</span>
             <button
               type="button"
-              class="btn-outline h-7 shrink-0 px-3 text-2xs"
+              class="btn-outline h-9 shrink-0 px-3 text-2xs"
               disabled={busy}
               onclick={() => (dropping = name)}
             >
@@ -365,7 +365,7 @@
         <div class="flex flex-wrap items-center gap-2 border-t border-line pt-3">
           <span class="font-mono text-2xs text-muted">{location.host}/p/</span>
           <input
-            class="h-7 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
+            class="h-9 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
                    placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
             placeholder={done}
             maxlength={64}
@@ -376,7 +376,7 @@
           />
           <button
             type="button"
-            class="btn-primary h-7 px-3 text-2xs"
+            class="btn-primary h-9 px-3 text-2xs"
             disabled={busy || slugDraft.trim() === slug}
             onclick={() => void saveSlug()}
           >
@@ -389,7 +389,7 @@
           {#if held}
             <button
               type="button"
-              class="btn-outline h-7 px-3 text-2xs"
+              class="btn-outline h-9 px-3 text-2xs"
               disabled={busy}
               onclick={() => (asking = true)}
             >

@@ -285,7 +285,7 @@ test('запуск своей попытки идёт без participantId и п
 test('полоса режима: числительные и пропуск пустых кусков', () => {
   assert.equal(
     councilStripText({ attempts: 487, submitted: 446, writing: 41, groups: 6 }),
-    '487 попыток · 446 сдали · 41 ещё пишет · 6 разных ответов',
+    '487 попыток · 446 сдали · 41 черновик · 6 разных ответов',
   )
   assert.equal(
     councilStripText({ attempts: 1, submitted: 1, writing: 0, groups: 1 }),
@@ -293,7 +293,7 @@ test('полоса режима: числительные и пропуск пу
   )
   assert.equal(
     councilStripText({ attempts: 2, submitted: 0, writing: 2, groups: 0 }),
-    '2 попытки · 0 сдали · 2 ещё пишут',
+    '2 попытки · 0 сдали · 2 черновика',
   )
 })
 

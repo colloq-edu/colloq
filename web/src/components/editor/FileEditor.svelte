@@ -14,6 +14,9 @@
    * ячейками, и Vite складывает его в один кусок на обоих.
    */
   import type { Highlight } from '@shared/paths'
+  import type { DecorationSet, EditorView } from '@codemirror/view'
+  import { questionAt } from '@shared/python-defs'
+  import { isJumpClick } from '@/lib/utils'
 
   async function importCore() {
     const [autocomplete, commands, language, search, state, view, collab, theme] =
@@ -44,19 +47,33 @@
           search,
           searchKeymap,
         })),
-        import('@codemirror/state').then(({ Compartment, EditorSelection, EditorState, Prec }) => ({
-          Compartment,
-          EditorSelection,
-          EditorState,
-          Prec,
-        })),
+        import('@codemirror/state').then(
+          ({ Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField }) => ({
+            Compartment,
+            EditorSelection,
+            EditorState,
+            Prec,
+            StateEffect,
+            StateField,
+          }),
+        ),
         import('@codemirror/view').then(
-          ({ EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers }) => ({
+          ({
+            Decoration,
             EditorView,
             highlightActiveLine,
             highlightActiveLineGutter,
             keymap,
             lineNumbers,
+            ViewPlugin,
+          }) => ({
+            Decoration,
+            EditorView,
+            highlightActiveLine,
+            highlightActiveLineGutter,
+            keymap,
+            lineNumbers,
+            ViewPlugin,
           }),
         ),
         import('y-codemirror.next').then(({ yCollab }) => ({ yCollab })),
@@ -103,14 +120,211 @@
     grammarCache.set(name, made)
     return made
   }
+
+  /** Сколько горит полоса под строкой, к которой привёл переход. */
+  const LANDED_MS = 2000
+
+  /**
+   * Номер последнего применённого приземления — на весь модуль, а не на экземпляр.
+   *
+   * SessionScreen держит этот редактор под `{#key activePath}`: уход на соседнюю
+   * вкладку и возврат — это НОВЫЙ CodeMirror и новый прогон эффекта, а метка в
+   * lib/goto.svelte.ts всё ещё лежит и всё ещё про этот файл (она состояние, а
+   * не событие, — почему, написано там же). Счётчик, живущий в экземпляре,
+   * обнулялся бы вместе с ним, и каждое возвращение на вкладку заново уносило
+   * бы каретку к определению — хоть через час после самого перехода.
+   */
+  let appliedSeq = 0
+
+  /**
+   * Переход к определению: подчёркивание под зажатым модификатором и сам жест.
+   *
+   * Вторая копия того, что стоит в ячейке (notebook/CodeEditor.svelte), и по
+   * той же причине, по которой копией живёт весь этот редактор: набор
+   * расширений у файла свой. Общее — там, где оно и должно быть: разбор в
+   * shared/python-defs.ts, ответ на «куда вести» на сервере, а решение, что
+   * делать с ответом, — в lib/goto.svelte.ts.
+   *
+   * Ставится ТОЛЬКО на Python (см. место сборки): `questionAt` разбирает
+   * Python, и подчёркнутое имя в YAML обещало бы переход, которого не будет.
+   */
+  function gotoGesture(cm: Core, jump: (code: string, cursor: number) => void) {
+    const { Decoration, ViewPlugin } = cm.view
+    const { Prec, StateEffect, StateField } = cm.state
+
+    const mark = Decoration.mark({ class: 'cm-goto' })
+    const setGoto = StateEffect.define<{ from: number; to: number } | null>()
+    const underline = StateField.define<DecorationSet>({
+      create: () => Decoration.none,
+      update(deco, tr) {
+        // Звено зовётся `sent`, а не `effect`: svelte2tsx роняет разбор ВСЕГО
+        // файла на локальном имени `effect` рядом с рунами (проверено —
+        // 34 ошибки на пустом месте, начиная с `of` в этой строке).
+        for (const sent of tr.effects) {
+          if (sent.is(setGoto)) {
+            const at = sent.value
+            return at ? Decoration.set([mark.range(at.from, at.to)]) : Decoration.none
+          }
+        }
+        // Текст поехал под указателем — сосед печатает выше по файлу, и
+        // подчёркнуто уже не то имя. Следующее движение мыши поставит заново.
+        return tr.docChanged ? Decoration.none : deco
+      },
+      provide: (self) => cm.view.EditorView.decorations.from(self),
+    })
+
+    /*
+     * Текст файла целиком — но не на каждое движение мыши.
+     *
+     * `questionAt` читает исходник от начала: состояние тройных кавычек к
+     * щёлкнутой строке иначе не узнать. В редактор пускают файлы до 1,5 МБ
+     * (server/src/workspace.ts · MAX_TEXT_BYTES), и `doc.toString()` на каждый
+     * пиксель — это мегабайт мусора в секунду. Документ CodeMirror неизменяем,
+     * значит его можно сверить по ссылке и не собирать строку заново.
+     */
+    let lastDoc: unknown = null
+    let lastText = ''
+    const textOf = (view: EditorView): string => {
+      if (view.state.doc !== lastDoc) {
+        lastDoc = view.state.doc
+        lastText = view.state.doc.toString()
+      }
+      return lastText
+    }
+
+    /** Что подчёркнуто прямо сейчас — чтобы не слать кадр на каждый пиксель. */
+    const shown = (view: EditorView): { from: number; to: number } | null => {
+      const at = view.state.field(underline, false)?.iter()
+      return at?.value ? { from: at.from, to: at.to } : null
+    }
+
+    const put = (view: EditorView, at: { from: number; to: number } | null): void => {
+      const now = shown(view)
+      if (!now && !at) return
+      if (now && at && now.from === at.from && now.to === at.to) return
+      view.dispatch({ effects: setGoto.of(at) })
+    }
+
+    const nameAt = (view: EditorView, event: MouseEvent) => {
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+      if (pos === null) return null
+      const question = questionAt(textOf(view), pos)
+      return question ? { from: question.from, to: question.to, pos } : null
+    }
+
+    const handlers = cm.view.EditorView.domEventHandlers({
+      mousemove(event, view) {
+        /*
+         * Разбор — только пока модификатор зажат, и это не экономия ради
+         * экономии: `questionAt` на полуторамегабайтном файле стоит миллисекунд,
+         * а движений мыши в секунду бывает сотня. Под зажатой клавишей их
+         * считанные единицы, да и кадр уходит только когда имя правда сменилось.
+         */
+        if (!isJumpClick(event)) {
+          put(view, null)
+          return false
+        }
+        put(view, nameAt(view, event))
+        return false
+      },
+      mouseleave(_event, view) {
+        put(view, null)
+        return false
+      },
+      keyup(_event, view) {
+        // Модификатор отпустили — подчёркивания быть не должно, даже если мышь
+        // с тех пор не двигалась.
+        put(view, null)
+        return false
+      },
+      mousedown(event, view) {
+        if (event.button !== 0 || !isJumpClick(event)) return false
+        const found = nameAt(view, event)
+        // Под указателем не имя — щелчок остаётся обычным щелчком.
+        if (!found) return false
+        /*
+         * Своё же поведение и перехватываем: без этого CodeMirror поставит по
+         * щелчку каретку, и человек, вернувшийся назад, найдёт её не там, где
+         * оставил. Возврат `true` говорит редактору то же самое.
+         */
+        event.preventDefault()
+        put(view, null)
+        jump(textOf(view), found.pos)
+        return true
+      },
+    })
+
+    /*
+     * Cmd+Tab уносит `keyup` с собой: модификатор отпускают уже в другом окне,
+     * и подчёркивание осталось бы висеть до следующего движения мыши — а
+     * вернувшийся человек щёлкнул бы по нему, ожидая обычного щелчка. Поэтому
+     * гасим ещё и по уходу окна из фокуса и по уходу вкладки.
+     */
+    const watch = ViewPlugin.fromClass(
+      class {
+        view: EditorView
+        constructor(view: EditorView) {
+          this.view = view
+          window.addEventListener('blur', this.drop)
+          document.addEventListener('visibilitychange', this.drop)
+        }
+        drop = () => {
+          put(this.view, null)
+        }
+        destroy() {
+          window.removeEventListener('blur', this.drop)
+          document.removeEventListener('visibilitychange', this.drop)
+        }
+      },
+    )
+
+    return [underline, watch, Prec.highest(handlers)]
+  }
+
+  /**
+   * Полоса под строкой, к которой привёл переход, — и то, чем её зажигают.
+   *
+   * Отдельная от подчёркивания вещь: подчёркивание — про «сюда можно уйти», а
+   * это — про «вот куда я тебя привёл», и живёт оно секунды, а не пока держат
+   * клавишу.
+   */
+  function landingMark(cm: Core) {
+    const { Decoration } = cm.view
+    const { StateEffect, StateField } = cm.state
+    const show = StateEffect.define<number>()
+    const hide = StateEffect.define<null>()
+    const row = Decoration.line({ class: 'cm-landed' })
+    const field = StateField.define<DecorationSet>({
+      create: () => Decoration.none,
+      update(deco, tr) {
+        for (const sent of tr.effects) {
+          if (sent.is(show)) {
+            return Decoration.set([row.range(tr.state.doc.lineAt(sent.value).from)])
+          }
+          if (sent.is(hide)) return Decoration.none
+        }
+        /*
+         * Первое же собственное движение каретки гасит полосу: она отвечает на
+         * вопрос «куда меня привели», и после того, как человек поставил
+         * каретку сам, остаётся непонятной полосой посреди кода. Кадр самого
+         * приземления сюда не доходит — он несёт `show`, и цикл выше выходит
+         * раньше, хотя каретку двигает тоже он.
+         */
+        if (deco.size && (tr.selection || tr.docChanged)) return Decoration.none
+        return deco.map(tr.changes)
+      },
+      provide: (self) => cm.view.EditorView.decorations.from(self),
+    })
+    return { field, show, hide }
+  }
 </script>
 
 <script lang="ts">
   import { untrack } from 'svelte'
-  import type { EditorView } from '@codemirror/view'
   import type { FileDoc } from '@/lib/filedoc.svelte'
   import { baseOf, highlightFor } from '@shared/paths'
   import { INDENT, tabKey } from '@/lib/indent'
+  import { jumpToDefinition, landingInFile } from '@/lib/goto.svelte'
   import { getSessionState } from '@/lib/session.svelte'
 
   interface Props {
@@ -167,6 +381,15 @@
   /** Что стоит в живом редакторе сейчас — чтобы не переконфигурировать впустую. */
   let writableNow = true
   let setLabels = $state.raw<(() => void) | null>(null)
+  /**
+   * Поставить каретку туда, куда привёл переход, и подсветить строку.
+   *
+   * `null`, пока редактора нет вовсе, — и это не мелочь: до прихода текста
+   * здесь стоит заглушка «читаем файл…», а метка перехода может лежать уже
+   * сейчас. `$state.raw`, по тому же доводу, что и у соседей выше: эффект
+   * приземления должен проснуться и когда редактор построился заново.
+   */
+  let landOn = $state.raw<((line: number, column: number) => void) | null>(null)
 
   $effect(() => {
     const parent = host
@@ -186,6 +409,8 @@
 
     let disposed = false
     let made: EditorView | null = null
+    /** Таймер, гасящий полосу приземления. Снимается вместе с редактором. */
+    let fade: number | undefined
 
     void Promise.all([loadCore(), loadGrammar(highlightFor(doc.path))]).then(([cm, grammar]) => {
       if (disposed) return
@@ -221,6 +446,21 @@
         ]),
       )
 
+      /*
+       * Переход к определению — только по Python.
+       *
+       * Язык здесь тот же, по которому выбрана грамматика: .py и .pyi. В
+       * остальных файлах жеста нет вовсе — ни подчёркивания, ни перехвата
+       * щелчка, — и Cmd+клик по .md остаётся обычным щелчком.
+       */
+      const goto =
+        highlightFor(doc.path) === 'python'
+          ? gotoGesture(cm, (code, cursor) => {
+              void jumpToDefinition(session, code, cursor, { path: doc.path })
+            })
+          : []
+      const landed = landingMark(cm)
+
       const writable = new cm.state.Compartment()
       const localeSlot = new cm.state.Compartment()
       made = new EditorView({
@@ -245,6 +485,8 @@
             writable.of(writableExtensions(cm, editable)),
             cm.theme.fileTheme,
             grammar ? (grammar.extension as never) : [],
+            goto,
+            landed.field,
             // Общий текст — источник правды; своей истории у редактора нет,
             // Mod-Z принадлежит общему UndoManager.
             cm.collab.yCollab(doc.text, doc.awareness, { undoManager: doc.undoManager }),
@@ -298,13 +540,42 @@
       writableNow = editable
       setWritable = (next) =>
         built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
+      landOn = (line, column) => {
+        const text = built.state.doc
+        /*
+         * Номер строки приехал от сервера и про ТОТ текст, который был у него
+         * на руках: файл с тех пор мог укоротить сосед, правящий его рядом.
+         * Промахнуться в конец файла честнее, чем уронить редактор исключением
+         * на несуществующей строке.
+         */
+        const row = text.line(Math.min(Math.max(1, line), text.lines))
+        const pos = Math.min(row.from + column, row.to)
+        built.dispatch({
+          selection: cm.state.EditorSelection.cursor(pos),
+          /*
+           * Везёт сам редактор, а не экран комнаты, и это ровно то, чем файл
+           * отличается от ячейки: у него свой скроллер (`.cm-scroller` ниже),
+           * снаружи его двигать нечем. Ячейку, наоборот, везёт тетрадь — см.
+           * lib/goto.svelte.ts.
+           */
+          effects: [EditorView.scrollIntoView(pos, { y: 'center' }), landed.show.of(pos)],
+        })
+        built.focus()
+        window.clearTimeout(fade)
+        fade = window.setTimeout(
+          () => built.dispatch({ effects: landed.hide.of(null) }),
+          LANDED_MS,
+        )
+      }
       ready = true
     })
 
     return () => {
       disposed = true
+      window.clearTimeout(fade)
       setWritable = null
       setLabels = null
+      landOn = null
       made?.destroy()
       if (view === made) view = null
       ready = false
@@ -335,6 +606,29 @@
     if (!ready) return
     untrack(() => view)?.focus()
   })
+
+  /** Метка «сюда привёл переход» — или ничего. Живёт в lib/goto.svelte.ts. */
+  const landing = $derived(landingInFile(file.path))
+
+  /*
+   * Приземление.
+   *
+   * Стоит ПОСЛЕ эффекта с фокусом нарочно: `view.focus()` возвращает браузер к
+   * каретке, а в только что построенном редакторе она в начале файла, — и,
+   * случись фокус вторым, он увёз бы экран от найденной строки обратно наверх.
+   *
+   * Ждёт `landOn`, а не `ready`: пока текст не приехал, вместо редактора стоит
+   * заглушка, и приземляться попросту некуда. Метка это переживает — она
+   * состояние, а не событие, и дождётся построенного редактора сама.
+   */
+  $effect(() => {
+    const land = landOn
+    const mark = landing
+    if (!land || !mark || !file.ready) return
+    if (mark.seq <= appliedSeq) return
+    appliedSeq = mark.seq
+    land(mark.line, mark.column)
+  })
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col bg-canvas">
@@ -363,5 +657,27 @@
   }
   .cm-file :global(.cm-scroller) {
     overflow: auto;
+  }
+
+  /*
+   * Одежда перехода к определению — здесь, а не в теме.
+   *
+   * Тема файла (editor-theme.ts) собрана из общей одежды редактора и того, что
+   * есть только у файла, и обе половины — общие с ячейкой. Эти два класса
+   * ставит расширение, объявленное прямо в этом компоненте, и держать их в
+   * третьем месте значило бы разводить жест и его вид по разным файлам.
+   */
+  .cm-file :global(.cm-goto) {
+    text-decoration: underline;
+    text-decoration-color: rgb(var(--accent-text));
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  /* Полоса перебивает фон активной строки: каретка после перехода стоит ровно
+     на ней, и без `!important` видно было бы только обычную подсветку строки
+     под курсором — тем же приёмом и по тому же поводу, что в editor-theme.ts. */
+  .cm-file :global(.cm-landed) {
+    background-color: rgb(var(--accent) / 0.14) !important;
+    box-shadow: inset 2px 0 0 rgb(var(--accent-text));
   }
 </style>

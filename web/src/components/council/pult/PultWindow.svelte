@@ -1,42 +1,13 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  /**
-   * ПУЛЬТ КОНСИЛИУМА — отдельное окно, мессенджер: слева люди, справа их работа.
-   *
-   * Зачем окно, а не блок под ячейкой. Тетрадь зеркалится на проектор. Пока
-   * консоль жила в ней, зал читал имена, черновики, ошибки и отметки ✓/✗ —
-   * то есть всё, что преподаватель держит при себе; поэтому в тетради её нет
-   * больше вовсе, ни запасным путём. Второе: листание «‹ ›» по одной карточке
-   * не отвечает на вопрос «кто сдал минуту назад» и прячет очередь на запуск.
-   * Мессенджер отвечает на оба: лента сдач с курсором и полоса очереди сверху.
-   *
-   * Окно 900×700 (мин 760×600) — размер выведен из содержимого, а не выбран:
-   * 560 px тела это десять строк по 50, а справа в те же 560 укладываются шапка
-   * работы, три строки кода, вывод, письма, поле ответа и полоса действий 56.
-   *
-   * СОЕДИНЕНИЕ ТО ЖЕ САМОЕ. Это та же комната тем же человеком: `SessionState`
-   * создаётся в SessionScreen один раз, личность берётся из localStorage, и
-   * пульт только читает `session.council` и шлёт в тот же управляющий сокет.
-   * Своего состояния комнаты у окна нет — есть состояние ЭКРАНА: отбор, курсор,
-   * раскрытые группы, придержанные сдачи. Оно и не пересылается: это способ
-   * смотреть, а не свойство комнаты.
-   *
-   * ВСЁ, ЧТО ВИДИТ ЗАЛ, — ОДНА КНОПКА. «Показать классу» (и Enter на строке).
-   * Листание, отметки, письма и оракул не меняют на стене ни пикселя.
-   *
-   * ТЕМА — КОМНАТНАЯ, светлая или тёмная. Пульт держат не в тёмном зале, как
-   * лекционный, а рядом с тетрадью — вторым окном на том же мониторе, и тёмная
-   * плита возле светлой комнаты читается как вторая программа. Своей темы у
-   * окна нет вовсе: оно берёт ту же (`colloq.theme.v1`, lib/theme.svelte.ts),
-   * что и комната, и следует за тумблером в шапке тетради живьём — цвета здесь
-   * названы смыслом (canvas, surface, raised, line, ink, accent, positive,
-   * warning, danger), а не тоном, и оба набора им уже отвечают.
-   */
+  import './pult.css'
+  /** Private teacher console: work, execution queue and class summary share
+   * the room connection. Only explicit projection actions change the class screen. */
   import { tick, untrack } from 'svelte'
   import { DEFAULT_COUNCIL, findCell, type CouncilSettings } from '@shared/notebook'
   import type { CouncilAttempt } from '@shared/protocol'
   import { api } from '@/lib/api'
-  import { askToBan } from '@/lib/bans'
+  import { askToBan, banTargetOf } from '@/lib/bans'
   import { OFFLINE_REASON } from '@/lib/controls'
   import { groupAttempts } from '@/lib/council-board'
   import {
@@ -47,6 +18,9 @@
     moveCursor,
     neighbourInGroup,
     pultKeyAction,
+    pultShortcutAllowed,
+    type PultView,
+    pultPresence,
     selectable,
     unreadIds,
     variantNumbers,
@@ -76,6 +50,15 @@
 
   const session = getSessionState()
   const host = $derived(session.me.role === 'host')
+  let rosterReady = $state(false)
+  $effect(() => {
+    const provider = session.provider
+    const sync = (ready: boolean): void => { rosterReady = ready }
+    sync(provider.synced)
+    provider.on('sync', sync)
+    return () => provider.off('sync', sync)
+  })
+  const presenceKnown = $derived(session.connected && rosterReady)
 
   /* ------------------------------------------------------------ окно */
 
@@ -149,8 +132,7 @@
   let expanded = $state.raw<ReadonlySet<string>>(new Set())
   /** Чьи строки уже открывали: точка непрочитанного гаснет и не возвращается. */
   let seen = $state.raw<ReadonlySet<string>>(new Set())
-  let tab = $state<'work' | 'oracle'>('work')
-  let queueOpen = $state(false)
+  let tab = $state<PultView>('work')
   let helpOpen = $state(false)
   let focus = $state<PultFocus>('list')
   type ReplyDraft = { text: string; toGroup: boolean; fromOracle: boolean; groupKey: string }
@@ -257,8 +239,9 @@
     cursor = list[0] ?? null
   })
 
-  /** Открытая строка — прочитанная. */
+  /** Only a work actually visible to the teacher counts as read. */
   $effect(() => {
+    if (tab !== 'work') return
     const at = cursor
     if (at === null) return
     untrack(() => {
@@ -277,7 +260,7 @@
   let standing = $state.raw<ReadonlySet<string>>(new Set())
   $effect(() => {
     const atTop = cursor === ids[0]
-    const away = scrolled
+    const away = scrolled || tab !== 'work'
     untrack(() => {
       if (!holdsArrivals(away, atTop)) {
         frozenAt = null
@@ -411,22 +394,15 @@
   }
 
   /**
-   * Удалить автора открытой работы с занятия.
+   * Удалить автора работы или записи очереди с занятия.
    *
    * Спрашивает общее меню бана (components/panels/BanMenu.svelte) — оно живёт
-   * в этом же окне и перечисляет последствия. Имя в вопросе настоящее и при
-   * выключенных именах: «Вариант 12» удалять нельзя, удаляют человека.
+   * в этом же окне и перечисляет последствия. Имя и id берутся из попытки и
+   * при выключенных именах: «Вариант 12» удалять нельзя, удаляют человека.
    */
-  function remove(event: MouseEvent): void {
-    if (disabled || !current) return
-    askToBan({
-      id: current.participantId,
-      name: current.name,
-      color: current.color,
-      avatar: current.avatar,
-      x: event.clientX,
-      y: event.clientY,
-    })
+  function remove(attempt: CouncilAttempt, event: MouseEvent): void {
+    if (disabled) return
+    askToBan(banTargetOf(attempt, event))
   }
 
   /** Оракул о классе — через тот же маршрут, что и в тетради. */
@@ -456,9 +432,10 @@
   function where(target: EventTarget | null): PultFocus {
     const node = target instanceof HTMLElement ? target : null
     if (!node) return 'list'
-    if (node.closest('[data-pult-reply]')) return 'reply'
+    if (node.closest('[data-pult-reply], [data-pult-work-scroll] [role=region]')) return 'reply'
     if (node.closest('[data-pult-row]') && node.hasAttribute('data-pult-select')) return 'list'
     if (node.closest('[data-pult-search]')) return 'search'
+    if (node.matches('input, textarea, select') || node.isContentEditable) return 'reply'
     if (node.tagName === 'BUTTON' || node.closest('[data-pult-actions]')) return 'actions'
     return 'list'
   }
@@ -478,7 +455,9 @@
       { key: event.key, shift: event.shiftKey, meta: event.metaKey, ctrl: event.ctrlKey, alt: event.altKey, composing: event.isComposing },
       at,
     )
-    if (action === null) return
+    const inNavigation = event.target instanceof HTMLElement && Boolean(event.target.closest('[data-pult-nav]'))
+    const inOverlay = event.target instanceof HTMLElement && Boolean(event.target.closest('[role=menu], [role=dialog], [role=alertdialog]'))
+    if (action === null || !pultShortcutAllowed(action, tab, inNavigation, inOverlay)) return
     if (action === 'send') {
       // Отправку разбирает само поле: ⌘↵ внутри textarea уже перехвачен там.
       return
@@ -499,7 +478,9 @@
         return
       }
       case 'search':
+        tab = 'work'
         searching = true
+        void tick().then(() => document.querySelector<HTMLInputElement>('[data-pult-search]')?.focus())
         return
       case 'show':
         show()
@@ -572,32 +553,29 @@
     {#if offline}<p class="border-b border-warning px-4 py-2 text-ui text-warning" role="status">{tr(OFFLINE_REASON)}</p>{/if}
     {#if oracleError}<p class="border-b border-danger px-4 py-2 text-ui text-danger" role="alert">{oracleError}</p>{/if}
 
-    <PultQueueStrip
-      {kernel}
-      {settings}
-      {names}
-      {now}
-      open={queueOpen}
-      disabled={disabled}
-      ontoggle={() => (queueOpen = !queueOpen)}
-      onpolicy={setPolicy}
-      oninterrupt={interrupt}
-      onapprove={letThrough}
-      ondecline={declineRun}
-      onapproveall={approveAll}
-    />
+    <nav class="pult-nav" data-pult-nav aria-label={tr('room.pult.v2.navigation')}>
+      <button type="button" class="pult-view-tab" aria-pressed={tab === 'work'} onclick={() => (tab = 'work')}>
+        {tr('room.pult.v2.workTab')} <span class="pult-tab-count">{counts.attempts}</span>
+      </button>
+      <button type="button" class="pult-view-tab" aria-pressed={tab === 'queue'} onclick={() => (tab = 'queue')}>
+        {tr('room.pult.v2.queueTab')} <span class="pult-tab-count" class:needs-attention={kernel.pending.length > 0}>{kernel.pending.length + kernel.queued.length}</span>
+      </button>
+      <button type="button" class="pult-view-tab" aria-pressed={tab === 'oracle'} onclick={() => (tab = 'oracle')}>
+        <span aria-hidden="true">✦</span> {tr('room.pult.v2.oracleTab')}
+      </button>
+      {#if kernel.pending.length > 0 && tab !== 'queue'}
+        <button type="button" class="pult-pending-link" onclick={() => (tab = 'queue')}>{tr('room.pult.v2.pending', {count:kernel.pending.length})}</button>
+      {:else if !kernel.running && kernel.queued.length === 0 && kernel.pending.length === 0}
+        <span class="pult-nav-status">{tr('room.pult.v2.queueEmpty')}</span>
+      {/if}
+    </nav>
 
     {#if shown}
-      <PultOnScreen
-        {shown}
-        {now}
-        hasNeighbour={shownNeighbour !== null}
-        disabled={disabled}
-        onneighbour={() => show(shownNeighbour)}
-        onclear={clearShown}
-      />
+      <PultOnScreen {shown} {now} hasNeighbour={shownNeighbour !== null} {disabled} onneighbour={() => show(shownNeighbour)} onclear={clearShown} />
     {/if}
 
+    <section class="pult-work-layout" hidden={tab !== 'work'} aria-label={tr('room.pult.v2.workTab')}>
+      <aside class="pult-sidebar">
     <PultFilters
       {filter}
       {search}
@@ -610,9 +588,10 @@
       onclose={() => { searching = false; search = '' }}
       onopensearch={() => (searching = true)}
     />
-
-    <div class="flex min-h-0 flex-1">
       <PultList
+        people={session.peersById}
+        connected={presenceKnown}
+        filtered={filter !== 'all' || search.trim() !== ''}
         {rows}
         {cursor}
         keyboard={keyboard && focus !== 'reply'}
@@ -627,38 +606,11 @@
         ontoggle={toggleGroup}
         onrelease={release}
       />
-
-      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-        <!-- Две вкладки, а не третья колонка: на 900 px её негде взять, а
-             карточка поверх списка закрыла бы те строки, о которых говорит. -->
-        <div class="flex h-10 shrink-0 border-b border-line">
-          {#each [{ id: 'work', label: tr('room.ui.1343') }, { id: 'oracle', label: tr('room.ui.1344') }] as item (item.id)}
-            <button
-              type="button"
-              class={cn(
-                'flex items-center px-4 text-2xs font-bold uppercase tracking-label',
-                tab === item.id ? 'border-b-2 border-accent bg-raised text-ink' : 'text-faint hover:text-muted',
-              )}
-              aria-pressed={tab === item.id}
-              onclick={() => (tab = item.id as 'work' | 'oracle')}
-            >{item.label}</button>
-          {/each}
-          <span class="flex-1"></span>
-        </div>
-
-        {#if tab === 'oracle'}
-          <PultOracleTab
-            oracle={board.oracle}
-            {attempts}
-            submitted={counts.submitted}
-            {names}
-            askWhy={offline ? tr(OFFLINE_REASON) : null}
-            onask={() => void askOracle(false)}
-            onstop={() => void askOracle(true)}
-          />
-        {:else}
+      </aside>
+      <div class="pult-work-pane">
           <PultWork
             attempt={current}
+            presence={current ? pultPresence(presenceKnown, session.peersById, current.participantId) : 'unknown'}
             {group}
             {groupIndex}
             groups={groups.length}
@@ -692,9 +644,16 @@
             onreplyfocus={() => (focus = 'reply')}
             onreplyblur={() => (focus = 'list')}
           />
-        {/if}
       </div>
-    </div>
+    </section>
+    {#if tab === 'queue'}
+      <PultQueueStrip {kernel} {settings} {names} {now} open={true} {disabled}
+        ontoggle={() => {}} onpolicy={setPolicy} oninterrupt={interrupt} onapprove={letThrough}
+        ondecline={declineRun} onapproveall={approveAll} onremove={remove} />
+    {:else if tab === 'oracle'}
+      <PultOracleTab oracle={board.oracle} {attempts} submitted={counts.submitted} {names}
+        askWhy={offline ? tr(OFFLINE_REASON) : null} onask={() => void askOracle(false)} onstop={() => void askOracle(true)} />
+    {/if}
 
     <PultStatusLine
       onScreen={shown === null ? null : (shown.name ?? tr('room.ui.1255', { p0: shown.variant }))}
@@ -715,11 +674,18 @@
 {/if}
 
 <style>
-  /* Essential captions remain readable in both room themes. */
-  [data-council-pult] :global(.text-faint) { color: rgb(var(--muted)); }
-  [data-council-pult] :global(button:focus-visible),
-  [data-council-pult] :global(input:focus-visible),
-  [data-council-pult] :global(textarea:focus-visible) {
-    outline: 2px solid rgb(var(--accent)); outline-offset: -2px;
-  }
+  .pult-nav { display:flex; align-items:center; flex-wrap:wrap; gap:8px; flex-shrink:0; padding:12px var(--pult-pad); background:rgb(var(--surface)); border-bottom:1px solid rgb(var(--line)); }
+  .pult-view-tab { display:inline-flex; align-items:center; justify-content:center; gap:10px; min-height:48px; padding:10px 18px; border:1px solid rgb(var(--line)); background:rgb(var(--canvas)); font-size:16px; font-weight:600; line-height:24px; cursor:pointer; }
+  .pult-view-tab[aria-pressed="true"] { background:rgb(var(--primary)); border-color:rgb(var(--primary)); color:rgb(var(--primary-ink)); font-weight:700; }
+  .pult-tab-count { min-width:24px; text-align:center; padding:0 4px; font-variant-numeric:tabular-nums; }
+  .pult-tab-count.needs-attention { background:rgb(var(--warning)); color:rgb(var(--canvas)); }
+  .pult-pending-link { min-height:44px; padding:10px 14px; margin-left:auto; background:rgb(var(--warning)/.1); border:1px solid rgb(var(--warning)/.35); color:rgb(var(--warning)); font-size:14px; font-weight:600; cursor:pointer; }
+  .pult-nav-status { margin-left:auto; font-size:14px; color:rgb(var(--muted)); }
+  .pult-work-layout { display:flex; min-height:0; flex:1; }
+  .pult-sidebar { display:flex; flex-direction:column; min-height:0; width:332px; flex-shrink:0; border-right:1px solid rgb(var(--line)); background:rgb(var(--surface)); }
+  .pult-work-pane { display:flex; flex-direction:column; min-height:0; min-width:0; flex:1; }
+  @media(max-height:700px) { .pult-work-pane { overflow-y:auto; } }
+  @media(max-width:1000px) { .pult-sidebar { width:292px; } .pult-view-tab { padding:10px 14px; } }
+  @media(max-width:800px) { .pult-sidebar { width:268px; } .pult-view-tab { font-size:15px; min-height:44px; padding:9px 10px; } .pult-pending-link { min-height:36px; padding:6px 10px; } }
+  @media(max-width:650px) { .pult-nav-status { display:none; }.pult-work-layout { flex-direction:column; }.pult-sidebar { width:100%; max-height:40%; border-right:0; border-bottom:1px solid rgb(var(--line)); flex-shrink:1; }.pult-work-pane { min-height:260px; }.pult-nav { gap:6px; }.pult-view-tab { font-size:14px; } }
 </style>

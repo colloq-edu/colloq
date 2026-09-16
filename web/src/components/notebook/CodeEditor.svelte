@@ -58,27 +58,35 @@
           indentOnInput,
           indentUnit,
         })),
-        import('@codemirror/state').then(({ Compartment, EditorSelection, EditorState, Prec }) => ({
-          Compartment,
-          EditorSelection,
-          EditorState,
-          Prec,
-        })),
+        import('@codemirror/state').then(
+          ({ Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField }) => ({
+            Compartment,
+            EditorSelection,
+            EditorState,
+            Prec,
+            StateEffect,
+            StateField,
+          }),
+        ),
         import('@codemirror/view').then(
           ({
             closeHoverTooltips,
+            Decoration,
             EditorView,
             highlightActiveLine,
             hoverTooltip,
             keymap,
             placeholder,
+            ViewPlugin,
           }) => ({
             closeHoverTooltips,
+            Decoration,
             EditorView,
             highlightActiveLine,
             hoverTooltip,
             keymap,
             placeholder,
+            ViewPlugin,
           }),
         ),
         import('y-codemirror.next').then(({ yCollab }) => ({ yCollab })),
@@ -103,8 +111,10 @@
   import type { Awareness } from 'y-protocols/awareness'
   import type { Completion, CompletionContext, CompletionResult } from '@codemirror/autocomplete'
   import type { Compartment } from '@codemirror/state'
-  import type { EditorView } from '@codemirror/view'
+  import type { Decoration as Deco, DecorationSet, EditorView, ViewUpdate } from '@codemirror/view'
+  import { questionAt, type Question } from '@shared/python-defs'
   import { INDENT, tabKey } from '@/lib/indent'
+  import { isJumpClick } from '@/lib/utils'
   import { backspaceRemovesCell } from './cell-keys'
   import { changeFits } from './cell-paste'
   import { cellAwareness, type CellAwareness } from './cell-awareness'
@@ -189,6 +199,32 @@
     /** Справка о том, что стоит под кареткой, — для подсказки над скобкой. */
     inspect?: ((code: string, cursor: number) => Promise<KernelSignature | null>) | null
     /**
+     * Уйти туда, где это имя определено, — ⌘/Ctrl-клик по нему. Или ничего.
+     *
+     * Прокинуто вызовом по тому же доводу, что `complete` и `inspect`: искать
+     * определение умеет сервер комнаты, а этим же компонентом нарисованы лист
+     * консилиума, черновик и редактор файлов, где искать негде и не у кого. Кто
+     * может увести — тот и передаёт; у остальных ⌘-клик остаётся тем, чем был у
+     * CodeMirror, то есть второй кареткой.
+     *
+     * Ответа сюда не возвращают: кто спросил, тот и везёт экран к найденному
+     * (lib/goto.svelte.ts), а обратно приезжает `mark`.
+     */
+    jump?: ((code: string, cursor: number) => void) | null
+    /**
+     * Куда привели: строка (с единицы), колонка (с нуля) и номер перехода.
+     *
+     * Состояние, а не событие, и это не вкусовщина: ячейку, к которой ведут,
+     * тетрадь может ещё не построить — вместо далёких она держит заглушку
+     * (Notebook.svelte · data-cell-deferred), — и событие, посланное такой
+     * ячейке, слушать некому. Метка просто лежит, а редактор читает её, как
+     * только построится сам.
+     *
+     * `seq` — почему это не просто пара чисел: второй переход НА ТУ ЖЕ строку
+     * иначе не виден вовсе, а уйти, вернуться и щёлкнуть снова — обычное дело.
+     */
+    mark?: { line: number; column: number; seq: number } | null
+    /**
      * What a screen reader announces on arriving here.
      *
      * CodeMirror's editable surface is a bare contenteditable: in the
@@ -219,6 +255,8 @@
     onoverflow,
     complete = null,
     inspect = null,
+    jump = null,
+    mark = null,
     placeholder = '',
     label = '',
   }: Props = $props()
@@ -263,6 +301,7 @@
     | 'onoverflow'
     | 'complete'
     | 'inspect'
+    | 'jump'
   > = {}
 
   $effect(() => {
@@ -277,6 +316,7 @@
     handlers.onoverflow = onoverflow
     handlers.complete = complete
     handlers.inspect = inspect
+    handlers.jump = jump
   })
 
   function fire(callback: (() => void) | undefined): boolean {
@@ -316,6 +356,8 @@
     hintSlot: Compartment
     localeSlot: Compartment
     writable: Compartment
+    /** Поле подсветки «вот куда привели» и эффект, которым её ставят. */
+    landing: ReturnType<typeof makeLanding>
   }
 
   /**
@@ -348,6 +390,23 @@
    * стоил бы комнате пяти запросов к общему ядру подряд.
    */
   const HOVER_MS = 300
+  /**
+   * Сколько держится подсветка строки, на которую привёл переход.
+   *
+   * Две секунды — это «успел поднять глаза», а не «теперь тут всегда жёлтая
+   * полоса»: метка отвечает на вопрос «куда меня привели» и после ответа
+   * мешает читать. Столько же длится угасание в cm-theme.ts (`colloq-landed`),
+   * и числа обязаны совпадать: здесь украшение снимается, там оно гаснет.
+   */
+  const LANDING_MS = 2000
+  /**
+   * Насколько правее конца строки указатель ещё считается стоящим НА строке.
+   *
+   * Полузнак с запасом: `posAtCoords` и так приводит указатель к ближайшей
+   * позиции с точностью до половины знака, и допуск меньше гасил бы
+   * подчёркивание на последней букве строки.
+   */
+  const PAST_LINE = 6
 
   /** Шапка справки: сигнатура и начало docstring, без пустых строк сверху. */
   function signatureHead(text: string): string {
@@ -382,9 +441,187 @@
     return { from: chain.index, to }
   }
 
+  /**
+   * Имя под экранной точкой — ровно то, о котором спросят сервер.
+   *
+   * Одно на два жеста, и это не экономия строк: подчёркивает и открывает один
+   * и тот же ответ. Разойдись они — и однажды подчёркнутое имя не откроется, а
+   * откроется соседнее, то есть человек уедет читать не тот код, на который
+   * целился.
+   *
+   * Проверка на конец строки — про то, что `posAtCoords` подтягивает указатель,
+   * ушедший ПРАВЕЕ текста, к последнему знаку строки: без неё пустое поле
+   * справа от `import numpy as np` подчёркивало бы `np` на всю ширину ячейки.
+   */
+  function questionAtPoint(view: EditorView, x: number, y: number): Question | null {
+    const pos = view.posAtCoords({ x, y })
+    if (pos === null) return null
+    const line = view.state.doc.lineAt(pos)
+    if (pos === line.to) {
+      const end = view.coordsAtPos(line.to)
+      if (end && x > end.right + PAST_LINE) return null
+    }
+    return questionAt(view.state.doc.toString(), pos)
+  }
+
+  /**
+   * Пока модификатор зажат, имя под указателем подчёркнуто, а указатель — рука.
+   *
+   * Разрешения при этом НЕ спрашиваем: подчёркивается ЛЮБОЕ имя, а есть ли за
+   * ним определение, выясняет только клик. Довод замерен и записан рядом с
+   * самим разбором (shared/python-defs.ts): тетрадь из восьмидесяти ячеек
+   * разбирается 17 мс, и вешать эти миллисекунды на каждое движение мыши
+   * нельзя — а спрашивать о том же сервер тем более. Цена честности —
+   * подчёркнутое имя, которое иногда отвечает «не нашёл»; она дешевле, чем
+   * редактор, спотыкающийся под указателем.
+   *
+   * Клавиши слушаются на `view.dom`, а не на окне, и это тоже размен: в тетради
+   * сорок редакторов, и сорок слушателей keyup на окне — это сорок вызовов на
+   * КАЖДОЕ нажатие при наборе. На своём узле обработчик просыпается только у
+   * того редактора, в котором сейчас работают; остальным про модификатор
+   * рассказывает движение мыши, у которого он записан в событии.
+   *
+   * `Decoration` приезжает в конструкторе, а не берётся из модуля: CodeMirror
+   * тут грузится лениво, и на верхнем уровне файла его ещё нет.
+   */
+  class JumpHint {
+    view: EditorView
+    deco: typeof Deco
+    /** Само подчёркивание — одно на редактор. */
+    underline: Deco
+    marks: DecorationSet
+    /** Что подчёркнуто сейчас — чтобы не будить редактор одним и тем же. */
+    at: { from: number; to: number } | null = null
+    /** Где последний раз видели указатель; `null` — мыши тут нет. */
+    x: number | null = null
+    y = 0
+
+    constructor(view: EditorView, deco: typeof Deco) {
+      this.view = view
+      this.deco = deco
+      this.underline = deco.mark({ class: 'cm-goto' })
+      this.marks = deco.none
+      view.dom.addEventListener('mousemove', this.onMove)
+      view.dom.addEventListener('mouseleave', this.onOff)
+      view.dom.addEventListener('keydown', this.onKey)
+      view.dom.addEventListener('keyup', this.onKey)
+      /*
+       * И третья причина снять подчёркивание — окно, у которого забрали фокус.
+       * ⌘+Tab уносит keyup вместе с ним: клавишу отпускают уже в другом
+       * приложении, сюда не приходит ни keyup, ни движение мыши, и
+       * подчёркивание остаётся висеть навсегда — до следующего случайного
+       * захода мышью в эту же ячейку. Тем же лечится удержание кнопки
+       * перезапуска (Notebook.svelte · visibilitychange): вкладка, ушедшая в
+       * фон, обязана отпустить то, что держала.
+       */
+      window.addEventListener('blur', this.onOff)
+      document.addEventListener('visibilitychange', this.onOff)
+    }
+
+    /** Показать или снять подчёркивание — и разбудить редактор, если оно сменилось. */
+    show(question: Question | null): void {
+      const now = question ? { from: question.from, to: question.to } : null
+      if (now?.from === this.at?.from && now?.to === this.at?.to) return
+      this.at = now
+      this.marks = now ? this.deco.set([this.underline.range(now.from, now.to)]) : this.deco.none
+      /*
+       * Пустая транзакция — единственный способ показать украшение, которое
+       * плагин держит САМ: свои украшения редактор перечитывает только в такте
+       * обновления, а такт заводит транзакция.
+       *
+       * Она поэтому и стоит за проверкой выше. Пока указатель едет вдоль одного
+       * имени, не уходит ни одной: каждая будит и чужие каретки из
+       * y-codemirror, которые пересчитываются на любое обновление вида.
+       */
+      this.view.dispatch({})
+    }
+
+    onMove = (event: MouseEvent): void => {
+      this.x = event.clientX
+      this.y = event.clientY
+      const live = handlers.jump && isJumpClick(event)
+      this.show(live ? questionAtPoint(this.view, event.clientX, event.clientY) : null)
+    }
+
+    onKey = (event: KeyboardEvent): void => {
+      if (this.x === null) return
+      const live = handlers.jump && isJumpClick(event)
+      this.show(live ? questionAtPoint(this.view, this.x, this.y) : null)
+    }
+
+    /** Мышь ушла, окно потеряло фокус, вкладку убрали — держать нечего. */
+    onOff = (): void => {
+      this.x = null
+      this.show(null)
+    }
+
+    update(update: ViewUpdate): void {
+      // Текст поехал — границы имени больше не те. Снимаем молча, БЕЗ
+      // транзакции: мы внутри такта обновления, и заводить отсюда ещё один
+      // нельзя.
+      if (update.docChanged && this.at) {
+        this.at = null
+        this.marks = this.deco.none
+      }
+    }
+
+    destroy(): void {
+      const dom = this.view.dom
+      dom.removeEventListener('mousemove', this.onMove)
+      dom.removeEventListener('mouseleave', this.onOff)
+      dom.removeEventListener('keydown', this.onKey)
+      dom.removeEventListener('keyup', this.onKey)
+      window.removeEventListener('blur', this.onOff)
+      document.removeEventListener('visibilitychange', this.onOff)
+    }
+  }
+
   /** Обе стороны «можно ли печатать» — одним куском, чтобы их нельзя было развести. */
   function writableExtensions(cm: CodeMirror, editable: boolean) {
     return [cm.state.EditorState.readOnly.of(!editable), cm.view.EditorView.editable.of(editable)]
+  }
+
+  /**
+   * Подсветка строки, на которую привёл переход: поле состояния и эффект к нему.
+   *
+   * Поле хранит ПОЗИЦИЮ, а украшение считается из неё на месте. Готовый набор
+   * украшений хранить нельзя: линейное украшение живёт только в начале строки,
+   * а правка соседа выше по ячейке двигает под ним текст — перенесённая метка
+   * оказалась бы посреди строки, где ей стоять негде. Позиция же переносится
+   * и снова приводится к началу своей строки.
+   */
+  function makeLanding(cm: CodeMirror) {
+    const { Decoration, EditorView } = cm.view
+    const { StateEffect, StateField } = cm.state
+    /** Куда привели — позиция в документе; `null` гасит подсветку. */
+    const landed = StateEffect.define<number | null>()
+    const row = Decoration.line({ class: 'cm-landed' })
+    const field = StateField.define<number | null>({
+      create: () => null,
+      update(at, tr) {
+        for (const effect of tr.effects) if (effect.is(landed)) return effect.value
+        if (at === null) return null
+        /*
+         * Гаснет от первого же СОБСТВЕННОГО движения: человек поставил каретку
+         * или начал печатать — и подсветка из «вот куда я тебя привёл»
+         * превращается в непонятную полосу посреди кода. Набор сюда попадает
+         * тоже: у транзакции набора селекция задана.
+         *
+         * Чужая правка в этой же ячейке подсветку НЕ гасит: позиция едет вместе
+         * с текстом, и сосед, дописавший строку выше через секунду, не должен
+         * стирать ответ на чужой вопрос.
+         */
+        if (tr.selection) return null
+        return tr.changes.mapPos(at)
+      },
+      provide: (f) =>
+        EditorView.decorations.compute([f], (state) => {
+          const at = state.field(f)
+          if (at === null) return Decoration.none
+          return Decoration.set([row.range(state.doc.lineAt(at).from)])
+        }),
+    })
+    return { landed, field }
   }
 
   function createView(cm: CodeMirror, options: ViewOptions): EditorView {
@@ -392,8 +629,8 @@
       cm.autocomplete
     const { bracketMatching, indentOnInput, indentUnit } = cm.language
     const { EditorState, Prec } = cm.state
-    const { highlightActiveLine, keymap, placeholder: placeholderExt } = cm.view
-    const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot } = options
+    const { Decoration, highlightActiveLine, keymap, placeholder: placeholderExt, ViewPlugin } = cm.view
+    const { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot, landing } = options
 
     /**
      * Дополнение глазами ядра комнаты.
@@ -503,7 +740,52 @@
       { hoverTime: HOVER_MS },
     )
 
+    /* -------------------------------------- переход к определению */
 
+    /**
+     * ⌘/Ctrl-клик по имени — уйти туда, где оно определено.
+     *
+     * `Prec.highest`, чтобы опередить собственный mousedown CodeMirror: у него
+     * клик с модификатором добавляет ВТОРУЮ каретку, и без старшинства жест
+     * сначала рвал бы выделение надвое, а потом уводил из ячейки.
+     *
+     * Под указателем не имя — обработчик отказывается, и нажатие достаётся
+     * редактору целиком: ⌘-клик по пустому месту по-прежнему ставит вторую
+     * каретку, как ставил. Ровно так же он отказывается там, где уводить
+     * некому (`jump` не передали): подчёркивания в такой ячейке нет, и обещать
+     * клику нечего.
+     *
+     * Кареткой уезжает КОНЕЦ найденного звена, а не та позиция, куда попали
+     * пикселем. Ответ от этого не меняется — `questionAt` из любой точки
+     * внутри имени отвечает одно и то же, — зато сервер получает ровно то
+     * имя, которое было подчёркнуто, а не то, во что округлится координата,
+     * пока вопрос едет.
+     */
+    const jumpClick = Prec.highest(
+      cm.view.EditorView.domEventHandlers({
+        mousedown(event, view) {
+          const go = handlers.jump
+          // Только левая кнопка: ⌘ с правой на маке — это ещё и контекстное
+          // меню, и уводить из ячейки вместе с ним нельзя.
+          if (!go || event.button !== 0 || !isJumpClick(event)) return false
+          const question = questionAtPoint(view, event.clientX, event.clientY)
+          if (!question) return false
+          event.preventDefault()
+          go(view.state.doc.toString(), question.to)
+          return true
+        },
+      }),
+    )
+
+    /*
+     * Подчёркивание под зажатым модификатором держит `JumpHint` — он живёт на
+     * верхнем уровне файла, потому что классу, объявленному внутри функции,
+     * пришлось бы рождаться заново на каждую постройку редактора. Всё, что ему
+     * нужно от лениво загруженного CodeMirror, он получает в конструкторе.
+     */
+    const jumpHint = ViewPlugin.define((view) => new JumpHint(view, Decoration), {
+      decorations: (plugin) => plugin.marks,
+    })
 
     /** Leave the cell only from its outer edge, and never out from under a popup. */
     /*
@@ -619,6 +901,13 @@
                   icons: false,
                 }),
                 signatureHover,
+                /*
+                 * Переход к определению — только в коде. В заметке определений
+                 * нет вовсе, а подчёркивать слова в прозе значит обещать жест,
+                 * которого там не бывает.
+                 */
+                jumpClick,
+                jumpHint,
               ]
             : autocompletion({ activateOnTyping: true, icons: false }),
           indentOnInput(),
@@ -634,6 +923,13 @@
            */
           indentUnit.of(INDENT),
           highlightActiveLine(),
+          /*
+           * Подсветка строки, на которую привёл переход, — в обоих языках, хотя
+           * ведут переходы только в код: поле пустое ничего не стоит, а ветка
+           * по языку тут была бы ещё одним местом, где однажды разойдутся
+           * правило и жест.
+           */
+          landing.field,
           cm.view.EditorView.lineWrapping,
           writable.of(writableExtensions(cm, editable)),
           hintSlot.of(hint ? placeholderExt(hint) : []),
@@ -747,6 +1043,17 @@
   let writableNow = true
   let setLabels = $state.raw<((hint: string) => void) | null>(null)
   /**
+   * Показать в живом редакторе, куда привёл переход, — или null, пока его нет.
+   *
+   * `$state.raw` по тому же доводу, что у `setWritable`: эффект с меткой обязан
+   * проснуться и тогда, когда редактор ТОЛЬКО ЧТО построился. Для перехода это
+   * не редкий случай, а обычный: далёкую ячейку тетрадь держит заглушкой и
+   * строит уже после прокрутки, то есть позже, чем пришёл ответ.
+   */
+  let setLanding = $state.raw<((spot: { line: number; column: number }) => void) | null>(null)
+  /** Номер последнего показанного перехода — чтобы не показывать его дважды. */
+  let landedSeq = 0
+  /**
    * Живой редактор — не для перерисовки, а чтобы спросить про фокус.
    *
    * Обычный `let`, не `$state`: читают его только обработчики, и реактивным он
@@ -794,6 +1101,8 @@
 
     let view: EditorView | null = null
     let disposed = false
+    /** Часы угасания подсветки — один на редактор, переход их перезаводит. */
+    let fading: ReturnType<typeof setTimeout> | null = null
 
     void loadCodeMirror().then((cm) => {
       if (disposed) return
@@ -803,7 +1112,8 @@
       const writable = new cm.state.Compartment()
       const hintSlot = new cm.state.Compartment()
       const localeSlot = new cm.state.Compartment()
-      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot })
+      const landing = makeLanding(cm)
+      view = createView(cm, { parent, ytext, peers, undo, lang, editable, hint, writable, ceiling, hintSlot, localeSlot, landing })
       /*
        * Order matters, and nothing paints between these three statements. The
        * editor goes in first so focus can move straight from the shim into it:
@@ -821,6 +1131,42 @@
       writableNow = editable
       setWritable = (next) =>
         built.dispatch({ effects: writable.reconfigure(writableExtensions(cm, next)) })
+      /**
+       * Показать, куда привели: подсветить строку и — если тут дают печатать —
+       * поставить в неё каретку.
+       *
+       * Порядок именно такой, и подсветка тут главная, а каретка второстепенная.
+       * В ячейке, которую не дают править, `focus()` не делает НИЧЕГО: у
+       * закрытого редактора `contenteditable=false`, а такой узел фокуса не
+       * берёт вовсе — это записано по живому отказу в CellView.svelte (заметка
+       * под замком, из которой нечем было выйти, потому что выход висел на
+       * уходе фокуса). Переход же обязан работать и там: чужую тетрадь и
+       * закончившееся занятие читают чаще, чем правят. Поэтому «куда привели»
+       * говорит украшение строки, а не каретка.
+       *
+       * Прокрутки здесь нет намеренно. `EditorView.scrollIntoView` пошёл бы
+       * искать скроллер вверх по предкам — своего у ячейки нет
+       * (`.cm-scroller { overflow: visible }` ниже в этом файле), — то есть
+       * подвинул бы `<main>` посреди плавного хода тетради, а браузер считает
+       * такую правку `scrollTop` чужим вмешательством и ход обрывает
+       * (Notebook.svelte · steering). К ячейке везёт тетрадь; редактор только
+       * подсвечивает строку.
+       */
+      setLanding = (spot) => {
+        const doc = built.state.doc
+        // Строка могла уехать: ответ считали по тексту, который с тех пор
+        // успели поправить. Промах внутрь документа лучше исключения.
+        const row = doc.line(Math.min(Math.max(1, Math.round(spot.line)), doc.lines))
+        const pos = Math.min(row.from + Math.max(0, spot.column), row.to)
+        const mayType = !built.state.readOnly
+        built.dispatch({
+          effects: landing.landed.of(row.from),
+          selection: mayType ? cm.state.EditorSelection.cursor(pos) : undefined,
+        })
+        if (mayType) built.focus()
+        if (fading !== null) clearTimeout(fading)
+        fading = setTimeout(() => built.dispatch({ effects: landing.landed.of(null) }), LANDING_MS)
+      }
       flushSync()
     })
 
@@ -828,6 +1174,8 @@
       disposed = true
       setWritable = null
       setLabels = null
+      setLanding = null
+      if (fading !== null) clearTimeout(fading)
       if (live === view) live = null
       view?.destroy()
       view = null
@@ -870,6 +1218,24 @@
      */
     if (!editable && live?.hasFocus) awareness.setLocalStateField('cursor', null)
     apply(editable)
+  })
+
+  /*
+   * Переход приехал — показать его в ЖИВОМ редакторе, не разбирая его.
+   *
+   * Тот же приём, что у правила edit и у языка подписей выше: метка никогда не
+   * читается при постройке вида, потому что дойти она может и раньше неё, и
+   * много позже. Раньше — когда ячейку ещё строит тетрадь; позже — когда
+   * человек вернулся и щёлкнул по тому же имени второй раз, а по полям метки
+   * это тот же самый переход. Различает их `seq`, и сравнение с ним — ровно
+   * то, что не даёт одному переходу показаться дважды.
+   */
+  $effect(() => {
+    const show = setLanding
+    const spot = mark
+    if (!show || !spot || spot.seq === landedSeq) return
+    landedSeq = spot.seq
+    show(spot)
   })
 </script>
 

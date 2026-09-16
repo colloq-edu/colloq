@@ -21,6 +21,7 @@ import { tr, getLocale, formatNumber } from '@shared/i18n'
  */
 import { BLOB_PREFIX, ROBOTS_TAG, type PublicCell, type PublicCourseView } from '@shared/publish'
 import { plural } from '@shared/plural'
+import { safeStyle } from '@shared/note-css'
 import type { CellOutput } from '@shared/notebook'
 
 /**
@@ -53,6 +54,13 @@ function esc(value: string): string {
  * полноценный markdown с санитайзером — это тот же вес, что и в приложении,
  * ради страницы без единого скрипта. Всё, что подмножество не знает, остаётся
  * текстом: непонятый синтаксис виден, но безвреден.
+ *
+ * А вот HTML — не «то, чего подмножество не знает», и текстом оставаться не
+ * должен. Вся заметка уходила в `esc()`, поэтому врезка `<div style="…">` из
+ * учебного ноутбука доезжала до студента тегами напечатанными, тогда как в
+ * комнате та же ячейка рисовалась. Теперь разметка идёт через тот же белый
+ * список тегов, что и вывод ядра (`htmlSubset`), только шире — и через тот же
+ * белый список свойств, что и в комнате (shared/note-css.ts).
  *
  * Огороженный код разбирается первым и не по желанию оформления: внутри
  * учебного примера строка `# считаем среднее` — комментарий, а не заголовок, а
@@ -94,19 +102,41 @@ function markdown(source: string, depth = 1): string {
       )
       .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>')
 
+  const policy = noteHtml(up)
+  /*
+   * Стопка незакрытых тегов — одна на всю заметку, а не на кусок разметки.
+   *
+   * `<div align="center">`, пустая строка, `# Заголовок`, пустая строка,
+   * `</div>` — самый частый способ отцентрировать заголовок в ноутбуке, и
+   * пустые строки режут его на ТРИ куска. Закрывай каждый кусок по себе — див
+   * схлопнулся бы пустым, а заголовок встал бы рядом с ним, а не внутри.
+   */
+  const open: string[] = []
+  /** Разметка блока: теги копятся в общей стопке и переживают пустую строку. */
+  const blockHtml = (markup: string): string => htmlSubset(markup, policy, esc, open)
+  /*
+   * Разметка ВНУТРИ строки — со своей стопкой, и это не мелочь: у абзаца есть
+   * `</p>`, и незакрытый `<b>` обязан закрыться раньше него, а не дожить до
+   * конца заметки. Иначе `<p><b>текст</p>…</b>` — и жирным становится всё
+   * остальное.
+   */
+  const lineHtml = (markup: string): string => htmlSubset(markup, policy, inline)
+
   const out: string[] = []
   let bullets: string[] = []
   let numbers: string[] = []
   /** Строки внутри ```-ограды. `null` — ограды сейчас нет. */
   let fenced: string[] | null = null
+  /** Строки блока разметки. `null` — блока сейчас нет; конец блока — пустая строка. */
+  let block: string[] | null = null
 
   const flush = (): void => {
     if (bullets.length > 0) {
-      out.push(`<ul>${bullets.map((li) => `<li>${inline(li)}</li>`).join('')}</ul>`)
+      out.push(`<ul>${bullets.map((li) => `<li>${lineHtml(li)}</li>`).join('')}</ul>`)
       bullets = []
     }
     if (numbers.length > 0) {
-      out.push(`<ol>${numbers.map((li) => `<li>${inline(li)}</li>`).join('')}</ol>`)
+      out.push(`<ol>${numbers.map((li) => `<li>${lineHtml(li)}</li>`).join('')}</ol>`)
       numbers = []
     }
   }
@@ -114,6 +144,16 @@ function markdown(source: string, depth = 1): string {
     if (fenced === null) return
     out.push(`<pre class="code">${esc(fenced.join('\n'))}</pre>`)
     fenced = null
+  }
+  /*
+   * Внутри блока разметки инлайнового markdown нет — так же, как в комнате у
+   * marked и как в CommonMark. `**жирный**` внутри `<div>` остаётся звёздочками,
+   * и это не упущение: автор, написавший тег, верстает сам.
+   */
+  const closeBlock = (): void => {
+    if (block === null) return
+    out.push(blockHtml(block.join('\n')))
+    block = null
   }
 
   for (const line of source.split('\n')) {
@@ -132,13 +172,25 @@ function markdown(source: string, depth = 1): string {
       fenced.push(line)
       continue
     }
+    if (block === null) {
+      const opens = /^\s{0,3}<\/?([a-zA-Z][a-zA-Z0-9]*)/.exec(line)
+      if (opens && NOTE_BLOCKS.has(opens[1].toLowerCase())) {
+        flush()
+        block = []
+      }
+    }
+    if (block !== null) {
+      if (line.trim() === '') closeBlock()
+      else block.push(line)
+      continue
+    }
     const heading = /^(#{1,4})\s+(.*)$/.exec(line)
     const bullet = /^\s*[-*]\s+(.*)$/.exec(line)
     const number = /^\s*\d{1,3}[.)]\s+(.*)$/.exec(line)
     if (heading) {
       flush()
       const level = Math.min(heading[1].length + 1, 5)
-      out.push(`<h${level}>${inline(heading[2])}</h${level}>`)
+      out.push(`<h${level}>${lineHtml(heading[2])}</h${level}>`)
     } else if (bullet) {
       if (numbers.length > 0) flush()
       bullets.push(bullet[1])
@@ -149,13 +201,17 @@ function markdown(source: string, depth = 1): string {
       flush()
     } else {
       flush()
-      out.push(`<p>${inline(line)}</p>`)
+      out.push(`<p>${lineHtml(line)}</p>`)
     }
   }
   flush()
   // Ограда, которую забыли закрыть: остаток заметки — всё равно код, и
   // потерять его молча хуже, чем показать лишний блок.
   closeFence()
+  closeBlock()
+  // Незакрытый `<div>` из заметки закрывается здесь и дальше `.note` не идёт:
+  // иначе он утащил бы за собой вёрстку всей страницы.
+  while (open.length > 0) out.push(`</${open.pop()!}>`)
   return out.join('\n')
 }
 
@@ -219,9 +275,9 @@ const HTML_TAGS: ReadonlySet<string> = new Set(
 )
 
 /** Теги без содержимого: закрывать их нечем и не надо. */
-const HTML_VOID: ReadonlySet<string> = new Set(['br', 'hr', 'col'])
+const HTML_VOID: ReadonlySet<string> = new Set(['br', 'hr', 'col', 'img'])
 
-/** Что разрешено при теге. Всё остальное — включая on*, style и class — снимается. */
+/** Что разрешено при теге в ВЫВОДЕ ядра. Всё остальное — включая style и class. */
 const HTML_ATTRS: Record<string, ReadonlySet<string>> = {
   td: new Set(['colspan', 'rowspan']),
   th: new Set(['colspan', 'rowspan', 'scope']),
@@ -230,21 +286,135 @@ const HTML_ATTRS: Record<string, ReadonlySet<string>> = {
   a: new Set(['href']),
 }
 
-function keepAttrs(tag: string, raw: string): string {
-  const allowed = HTML_ATTRS[tag]
-  if (!allowed) return ''
-  let out = ''
-  const pairs = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g
-  let found: RegExpExecArray | null
-  while ((found = pairs.exec(raw)) !== null) {
-    const name = found[1].toLowerCase()
-    if (!allowed.has(name)) continue
-    const value = found[2] ?? found[3] ?? found[4] ?? ''
+/**
+ * Набор тегов и правило для атрибутов — одним предметом.
+ *
+ * Разборщик ниже один, а наборов два, и различаются они не капризом: вывод
+ * ячейки — это репр `df.style` и таблица pandas, где оформление приходит
+ * отдельным `<style>` и потому снимается целиком; заметка — это текст, который
+ * человек написал руками, и `style` в нём и есть предмет разговора.
+ */
+interface HtmlPolicy {
+  tags: ReadonlySet<string>
+  /** Значение атрибута, каким его писать, или `null` — «не писать». */
+  attr: (tag: string, name: string, value: string) => string | null
+}
+
+const OUTPUT_HTML: HtmlPolicy = {
+  tags: HTML_TAGS,
+  attr(tag, name, value) {
+    if (!HTML_ATTRS[tag]?.has(name)) return null
     // Адрес — только http(s): `javascript:` в ссылке из вывода ячейки
     // исполнился бы у того, кто открыл страницу.
-    if (name === 'href' && !/^https?:\/\//i.test(value)) continue
-    if (name !== 'href' && !/^\d{1,3}$|^(row|col|rowgroup|colgroup)$/.test(value)) continue
-    out += ` ${name}="${esc(value)}"`
+    if (name === 'href') return /^https?:\/\//i.test(value) ? value : null
+    return /^\d{1,3}$|^(row|col|rowgroup|colgroup)$/.test(value) ? value : null
+  },
+}
+
+/**
+ * Теги, которые может принести ЗАМЕТКА.
+ *
+ * Шире, чем у вывода, и ровно настолько, насколько шире сам предмет: заметку
+ * пишут разметкой, а не получают репром. `img`, `details`, `figure`, `font`,
+ * `center` — то, из чего состоит обычная текстовая ячейка учебного ноутбука, и
+ * без чего «HTML не работает» было бы правдой наполовину.
+ *
+ * `style`, `script`, `iframe`, `form`, `audio`, `video` сюда не входят и не
+ * войдут: тот же список, что и в комнате (web/src/lib/sanitize.ts), — обещание
+ * «те же ячейки» держится одинаковыми запретами, а не похожими.
+ */
+const NOTE_TAGS: ReadonlySet<string> = new Set([
+  ...HTML_TAGS,
+  ...`img figure figcaption details summary mark kbd abbr samp var q cite time
+      ins del big tt center font
+      section article aside header footer nav main`
+    .trim()
+    .split(/\s+/),
+])
+
+/**
+ * Блочные теги заметки: со строки, начатой таким, идёт разметка, а не абзац.
+ *
+ * Без этого списка многострочный `<div>` разрезался бы на строки и каждая
+ * оборачивалась в `<p>`: `<p><div …></p>` браузер чинит по-своему, и врезка
+ * разъезжается. Правило конца блока — пустая строка, как в CommonMark и как у
+ * marked в комнате; оно же и делает работающим `<div align="center">`, пустая
+ * строка, `# Заголовок`, пустая строка, `</div>`.
+ */
+const NOTE_BLOCKS: ReadonlySet<string> = new Set(
+  `div p table thead tbody tfoot tr td th caption colgroup col
+   ul ol li dl dt dd blockquote pre hr
+   h1 h2 h3 h4 h5 h6
+   figure figcaption details summary center
+   section article aside header footer nav main`
+    .trim()
+    .split(/\s+/),
+)
+
+/**
+ * Адрес картинки заметки на выгруженной странице.
+ *
+ * `blob:<хэш>.<ext>` — запись публикации рядом со страницей шага (build.ts ·
+ * projectNote), тот же путь, что у `![схема](blob:…)` в `inline`. Внешний
+ * `https://` остаётся как написан: в markdown-картинке отрисовщик волен выбрать
+ * представление и делает из неё ссылку, а сырой `<img>` человек поставил сам и
+ * рассчитывал на него в вёрстке — подменять его ссылкой значит ломать чужой
+ * макет молча.
+ */
+function noteImageSrc(value: string, up: string): string | null {
+  const blob = /^blob:([0-9a-f]{8,64})\.([a-z0-9]+)$/i.exec(value)
+  if (blob) return `${up}blob/${blob[1]}.${blob[2]}`
+  if (/^https?:\/\//i.test(value)) return value
+  if (/^data:image\/(png|jpeg|gif|webp|svg\+xml);/i.test(value)) return value
+  return null
+}
+
+function noteHtml(up: string): HtmlPolicy {
+  return {
+    tags: NOTE_TAGS,
+    attr(tag, name, value) {
+      // Оформление — тем же белым списком свойств, что и в комнате.
+      if (name === 'style') return safeStyle(value) || null
+      if (name === 'title' || name === 'alt') return value
+      if (name === 'align') return /^(left|right|center|justify)$/i.test(value) ? value : null
+      if (name === 'width' || name === 'height') return /^\d{1,4}$/.test(value) ? value : null
+      if (name === 'colspan' || name === 'rowspan' || name === 'span')
+        return /^\d{1,3}$/.test(value) ? value : null
+      if (name === 'scope') return /^(row|col|rowgroup|colgroup)$/i.test(value) ? value : null
+      if (name === 'start' && (tag === 'ol' || tag === 'li'))
+        return /^\d{1,4}$/.test(value) ? value : null
+      if (tag === 'details' && name === 'open') return ''
+      if (tag === 'time' && name === 'datetime') return value
+      if (tag === 'font' && name === 'color') return /^[#\w(),.%\s-]{1,40}$/.test(value) ? value : null
+      if (tag === 'font' && name === 'size') return /^[+-]?\d{1,2}$/.test(value) ? value : null
+      if (tag === 'font' && name === 'face') return /^[\w ,'"-]{1,80}$/.test(value) ? value : null
+      // Ссылка: http(s), почта и якорь. `javascript:` исполнился бы у того, кто
+      // открыл страницу, — тот же довод, что и у вывода выше.
+      if (tag === 'a' && name === 'href')
+        return /^(https?:\/\/|mailto:|#)/i.test(value) ? value : null
+      if (tag === 'img' && name === 'src') return noteImageSrc(value, up)
+      /*
+       * `class` не проходит намеренно. На статической странице свои правила —
+       * `.code`, `.out`, `.err`, `.quiet`, — и заметка с `class="err"` читалась
+       * бы как ошибка выполнения. В комнате класс безвреден, потому что там
+       * оформление заметки задаёт `.prose-note`, а не имена из ячейки.
+       */
+      return null
+    },
+  }
+}
+
+function keepAttrs(policy: HtmlPolicy, tag: string, raw: string): string {
+  let out = ''
+  const pairs = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))|([a-zA-Z-]+)/g
+  let found: RegExpExecArray | null
+  while ((found = pairs.exec(raw)) !== null) {
+    const name = (found[1] ?? found[5] ?? '').toLowerCase()
+    if (!name) continue
+    const value = found[2] ?? found[3] ?? found[4] ?? ''
+    const kept = policy.attr(tag, name, value)
+    if (kept === null) continue
+    out += kept ? ` ${name}="${esc(kept)}"` : ` ${name}`
   }
   return out
 }
@@ -252,20 +422,38 @@ function keepAttrs(tag: string, raw: string): string {
 /** Тег с его атрибутами: кавычки могут прятать внутри себя и «<», и «>». */
 const TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y
 
-function htmlSubset(source: string): string {
+/**
+ * Разметка, приведённая к подмножеству политики.
+ *
+ * `text` — что делать с текстом ВНЕ тегов. У вывода он идёт как есть (репр уже
+ * экранирован ядром, второй проход дал бы `&amp;amp;`), у заметки через него
+ * проходит инлайновый markdown — и только через него: подставлять `**жирный**`
+ * во всю строку значило бы дописывать теги внутрь чужого атрибута.
+ *
+ * `open` — стопка незакрытых тегов. Своя на вызов, если её не дали: одинокий
+ * `<div>` из вывода утащил бы за собой вёрстку всей страницы. Заметка передаёт
+ * сюда общую на все свои куски — тогда `<div align="center">` перед пустой
+ * строкой и `</div>` после заголовка остаются одним блоком, как в комнате.
+ */
+function htmlSubset(
+  source: string,
+  policy: HtmlPolicy = OUTPUT_HTML,
+  text: (value: string) => string = (value) => value,
+  open?: string[],
+): string {
   const stripped = source
     .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
     .replace(/<(script|style)\b[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
   const out: string[] = []
-  const open: string[] = []
+  const stack = open ?? []
   let i = 0
   while (i < stripped.length) {
     const lt = stripped.indexOf('<', i)
     if (lt === -1) {
-      out.push(stripped.slice(i))
+      out.push(text(stripped.slice(i)))
       break
     }
-    out.push(stripped.slice(i, lt))
+    out.push(text(stripped.slice(i, lt)))
     // Липкий разбор с позиции, а не по куску строки: `slice` на каждый тег
     // превращал бы таблицу на мегабайт в квадрат от её длины.
     TAG.lastIndex = lt
@@ -278,17 +466,17 @@ function htmlSubset(source: string): string {
     }
     i = TAG.lastIndex
     const name = tag[2].toLowerCase()
-    if (!HTML_TAGS.has(name)) continue
+    if (!policy.tags.has(name)) continue
     if (tag[1]) {
-      const at = open.lastIndexOf(name)
+      const at = stack.lastIndexOf(name)
       if (at === -1) continue
-      while (open.length > at) out.push(`</${open.pop()!}>`)
+      while (stack.length > at) out.push(`</${stack.pop()!}>`)
       continue
     }
-    out.push(`<${name}${keepAttrs(name, tag[3])}>`)
-    if (!HTML_VOID.has(name) && !/\/\s*$/.test(tag[3])) open.push(name)
+    out.push(`<${name}${keepAttrs(policy, name, tag[3])}>`)
+    if (!HTML_VOID.has(name) && !/\/\s*$/.test(tag[3])) stack.push(name)
   }
-  while (open.length > 0) out.push(`</${open.pop()!}>`)
+  if (!open) while (stack.length > 0) out.push(`</${stack.pop()!}>`)
   return out.join('')
 }
 
@@ -354,6 +542,24 @@ function outputHtml(output: CellOutput, depth: number): string {
   if (rich) {
     const safe = htmlSubset(rich).trim()
     if (hasVisible(safe)) return `<div class="rich">${safe}</div>`
+  }
+  /*
+   * `display(Markdown(...))` — подпись к выводу словами, и на странице она
+   * обязана быть словами.
+   *
+   * Ядро присылает два представления: саму разметку и `text/plain` с репром
+   * `<IPython.core.display.Markdown object>`. Пока этой ветки не было,
+   * страница печатала имя класса — ровно то же, что делала комната до
+   * `text/markdown` в `MIME_ORDER` (web/src/components/notebook/output-mimes.ts).
+   *
+   * Разбирается тем же подмножеством, что и заметка: `markdown` выше уже умеет
+   * и белый список тегов, и белый список свойств, — то есть вывод ядра и текст
+   * человека проходят здесь одну и ту же проверку.
+   */
+  const note = output.data['text/markdown']
+  if (note) {
+    const body = markdown(plain(note), depth).trim()
+    if (hasVisible(body)) return `<div class="note">${body}</div>`
   }
   const text = output.data['text/plain']
   if (text) return `<pre class="out">${esc(plain(text))}</pre>`
@@ -434,6 +640,16 @@ header.top h1{font-size:32px;margin:0 0 8px}
 .note{margin:0 0 22px}
 .note h2{font-size:22px;margin:0 0 8px}.note h3{font-size:18px;margin:0 0 6px}
 .note p{margin:0 0 8px}
+.note:after{content:'';display:table;clear:both}
+.note ul,.note ol{margin:0 0 8px;padding-left:22px}
+.note blockquote{margin:0 0 8px;padding-left:12px;border-left:2px solid var(--line);color:var(--muted)}
+.note img{max-width:100%;height:auto}
+.note table{border-collapse:collapse;margin:0 0 10px}
+.note th,.note td{border:1px solid var(--line);padding:4px 9px;text-align:left}
+.note details{margin:0 0 8px}.note summary{cursor:pointer;color:var(--muted)}
+.note code{background:var(--surface);padding:1px 4px;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+.note [style]{max-width:100%}
+.note [style*="background"]{color:#1B2233}
 .cell{border:1px solid var(--line);margin:0 0 22px}
 .code{margin:0;padding:13px 15px;background:#FBFCFE;overflow-x:auto;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre}
 .outs{border-top:1px solid var(--line);padding:11px 15px}

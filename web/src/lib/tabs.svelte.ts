@@ -127,6 +127,40 @@ export function restore(saved: Remembered | null, room: Room): Remembered {
   return { open, active: wanted && open.includes(wanted) ? wanted : (open[0] ?? null) }
 }
 
+/**
+ * Ряд своих вкладок после перетаскивания.
+ *
+ * Чистая функция, потому что решает она одно: КУДА встала вкладка, — и это
+ * единственное, что стоит проверять. Тот же приём, что у перетаскивания файлов
+ * в дереве (lib/tree-move.ts): решение отдельно, мышь отдельно.
+ *
+ * Правило вставки — «сторона, с которой пришли». Тянут влево — вкладка встаёт
+ * ПЕРЕД целью, вправо — ПОСЛЕ неё. Иначе жест наполовину не работает: вкладку
+ * тянут на соседа справа, а она встаёт перед ним, то есть возвращается на своё
+ * же место, и человек тянет снова.
+ *
+ * `onto === null` — бросили в пустоту справа от ряда: это «в конец». Цель,
+ * которой в своих вкладках нет, — приколотая комнатой (общий экран, лекция):
+ * их порядок не наш, и вставать «на её место» значит вставать первым среди
+ * своих, сразу за приколотыми.
+ */
+export function reordered(
+  mine: readonly string[],
+  dragged: string,
+  onto: string | null,
+): string[] {
+  const from = mine.indexOf(dragged)
+  if (from === -1 || dragged === onto) return [...mine]
+  const rest = mine.filter((path) => path !== dragged)
+  if (onto === null) return [...rest, dragged]
+  const to = mine.indexOf(onto)
+  if (to === -1) return [dragged, ...rest]
+  const at = rest.indexOf(onto)
+  return from > to
+    ? [...rest.slice(0, at), dragged, ...rest.slice(at)]
+    : [...rest.slice(0, at + 1), dragged, ...rest.slice(at + 1)]
+}
+
 export class Tabs {
   /** Пути, которые открыл этот человек, в порядке открытия. */
   mine = $state<string[]>([])
@@ -228,6 +262,22 @@ export class Tabs {
     const next = restore(this.#saved, room)
     this.mine = next.open
     this.active = next.active
+    this.#remember()
+  }
+
+  /**
+   * Переставить свою вкладку.
+   *
+   * Приколотые комнатой не двигаются и двигать ими нельзя: их порядок задаёт
+   * комната, а не тот, кто на них смотрит. Всё решение — в `reordered`; здесь
+   * только запись, и `active` не трогается намеренно: человек переставляет
+   * вкладки, а не переключается между ними.
+   */
+  reorder(dragged: string, onto: string | null): void {
+    if (!this.mine.includes(dragged)) return
+    const next = reordered(this.mine, dragged, onto)
+    if (next.length === this.mine.length && next.every((path, i) => path === this.mine[i])) return
+    this.mine = next
     this.#remember()
   }
 

@@ -153,6 +153,17 @@
     const who = person.isSelf ? tr('room.ui.669') : person.user.name
     if (place.where === 'terminal') return tr('room.ui.670', { p0: who })
     if (place.where === 'oracle') return tr('room.ui.671', { p0: who })
+    /*
+     * Сюда доходит только ячейка, и проверка стоит ради этого.
+     *
+     * У `RevealTarget` появился вариант `file` — им переход к определению
+     * открывает .py-файл (lib/goto.svelte.ts), — но список людей такого места
+     * не показывает: он говорит, кто где РАБОТАЕТ, а работают в ячейке, в
+     * терминале и у оракула. Раньше вариантов было три, и после двух проверок
+     * оставался ровно один; теперь их четыре, и молчаливое «всё остальное —
+     * ячейка» стало неправдой.
+     */
+    if (place.where !== 'cell') return tr('room.ui.672')
     const number = view.numbers.get(place.cellId)
     return number === undefined ? tr('room.ui.672') : tr('room.ui.673', { p0: String(number).padStart(2, '0') })
   }
@@ -227,7 +238,7 @@
         <!-- Who you are outranks what you are doing: your own row and a host's
              carry the label, everyone else's carries the live line. -->
         {#if badge && (person.isSelf || !activity)}
-          <span class="truncate text-2xs font-bold uppercase tracking-label text-accent-text">
+          <span class="text-2xs font-semibold text-accent-text">
             {badge}
           </span>
         {:else if activity}

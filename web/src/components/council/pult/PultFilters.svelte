@@ -1,86 +1,51 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  /**
-   * Полоса отбора, 36 px: шесть чипов по 22 и одно число справа.
-   *
-   * Счётчиков крупным кеглем в мессенджере нет: сколько сдало из скольких —
-   * это одна строка, а не приборная доска. Поиск открывается по ⌘F и встаёт на
-   * место числа; при выключенных именах его нет вовсе — искать нечего, имён в
-   * пульте не показывают.
-   */
-  import type { CouncilBoard } from '@shared/protocol'
   import { councilStripText } from '@/lib/council.svelte'
+  import type { CouncilBoard } from '@shared/protocol'
   import { FILTERS, filterLabel, type PultFilter } from '@/lib/council-pult'
-  import { cn } from '@/lib/utils'
-
   interface Props {
-    filter: PultFilter
-    search: string
-    /** Поле поиска раскрыто. */
-    searching: boolean
-    /** Имена включены: выключены — поиск по имени не работает. */
-    names: boolean
-    /** Счётчики комнаты — их же складывает полоса режима. */
-    counts: CouncilBoard['counts']
-    /** Сколько разных ответов ВИДНО: сервер считает их по всей комнате. */
-    groups: number
-    onfilter: (filter: PultFilter) => void
-    onsearch: (text: string) => void
-    onclose: () => void
-    onopensearch: () => void
+    filter: PultFilter; search: string; searching: boolean; names: boolean;
+    counts: CouncilBoard['counts']; groups: number;
+    onfilter: (filter: PultFilter) => void; onsearch: (text: string) => void;
+    onclose: () => void; onopensearch: () => void
   }
-
-  let { filter, search, searching, names, counts, groups, onfilter, onsearch, onclose, onopensearch }: Props = $props()
-
-  const CAPS = 'text-micro font-bold uppercase tracking-caps'
+  let { filter, search, searching, names, counts, groups, onfilter, onsearch, onclose }: Props = $props()
   let field = $state<HTMLInputElement | null>(null)
-
-  // Фокус в поле, как только его открыли: ⌘F, после которого надо ещё
-  // прицелиться мышью, — это не поиск, а два действия вместо одного.
-  $effect(() => {
-    if (searching) field?.focus()
-  })
+  $effect(() => { if(searching) field?.focus() })
 </script>
-
-<div class="flex min-h-10 shrink-0 flex-wrap items-center gap-1.5 py-1.5 border-b border-line bg-surface px-4">
-  {#each FILTERS as item (item)}
-    <button
-      type="button"
-      class={cn(
-        CAPS,
-        'h-7 shrink-0 border px-2',
-        filter === item ? 'border-accent text-accent-text' : 'border-line text-muted hover:text-ink',
-      )}
-      aria-pressed={filter === item}
-      onclick={() => onfilter(item)}
-    >{filterLabel(item)}</button>
-  {/each}
-  <div class="min-w-0 flex-1"></div>
-  {#if searching && names}
-    <input
-      bind:this={field}
-      aria-label={tr('room.ui.1310')}
-      class="h-7 w-40 min-w-0 border border-accent bg-canvas px-2 text-2xs text-ink outline-none"
-      type="search"
-      value={search}
-      placeholder={tr('room.ui.1310')}
-      data-pult-search
-      oninput={(event) => onsearch(event.currentTarget.value)}
-
-    />
-    <button type="button" class="h-7 px-2 text-ui text-muted" aria-label={tr('room.pult.closeSearch')} onclick={onclose}>×</button>
-  {:else}
-    <!--
-      Полоса режима старой консоли: попытки, сдачи, пишущие и число разных
-      ответов. Складывает её одна функция на весь клиент (`councilStripText`) —
-      это уже был третий способ считать одно и то же, и он с остальными
-      расходился.
-    -->
-    {#if names}
-      <button type="button" class="h-7 shrink-0 border border-line px-2 text-2xs text-muted hover:text-ink" onclick={onopensearch}>{tr('room.ui.1310')}</button>
-    {/if}
-    <span class="min-w-0 truncate font-mono text-micro text-faint">
-      {councilStripText(counts, groups)}
-    </span>
+<div class="pult-filters">
+  <div class="pult-counts" role="group" aria-label={councilStripText(counts, groups)}><strong>{counts.submitted}</strong><span>{tr('room.pult.v2.submitted')} · {tr('room.ui.1056',{count:counts.writing})}</span></div>
+  {#if names}
+    <div class="pult-search">
+      <span aria-hidden="true">⌕</span>
+      <input bind:this={field} type="search" value={search} placeholder={tr('room.ui.1310')} aria-label={tr('room.ui.1310')} data-pult-search oninput={(event)=>onsearch(event.currentTarget.value)} />
+      {#if search}<button type="button" aria-label={tr('room.pult.closeSearch')} onclick={onclose}>×</button>{/if}
+    </div>
   {/if}
+  <div class="pult-filter-controls">
+    {#each ['all','error'] as item}
+      <button type="button" class:selected={filter===item} aria-pressed={filter===item} onclick={()=>onfilter(item as PultFilter)}>{filterLabel(item as PultFilter)}</button>
+    {/each}
+    <select class:selected={!['all','error'].includes(filter)} aria-label={tr('room.pult.v2.filterLabel')} value={['all','error'].includes(filter)?'':filter} onchange={(event)=>onfilter(event.currentTarget.value as PultFilter)}>
+      <option value="" disabled>{tr('room.pult.v2.moreFilters')}</option>
+      {#each FILTERS.filter(item=>item!=='all'&&item!=='error') as item}<option value={item}>{filterLabel(item)}</option>{/each}
+    </select>
+  </div>
 </div>
+<style>
+  .pult-filters { display:flex; flex-direction:column; gap:10px; flex-shrink:0; padding:16px 20px; border-bottom:1px solid rgb(var(--line)); background:rgb(var(--surface)); }
+  .pult-counts { display:flex; align-items:baseline; gap:8px; margin:0; }
+  .pult-counts strong { font-size:26px; line-height:32px; font-weight:700; }
+  .pult-counts span { font-size:14px; color:rgb(var(--muted)); }
+  .pult-search { display:flex; align-items:center; min-height:40px; gap:6px; border:1px solid rgb(var(--line)); background:rgb(var(--canvas)); padding:0 10px; }
+  .pult-search span { color:rgb(var(--muted)); font-size:20px; }
+  .pult-search input { min-width:0; width:100%; background:transparent; outline:none; color:rgb(var(--ink)); font-size:14px; }
+  .pult-search input::placeholder { color:rgb(var(--muted)); }
+  .pult-search:focus-within { outline:2px solid rgb(var(--accent-text)); outline-offset:1px; }
+  .pult-search button { min-width:28px; min-height:32px; font-size:20px; }
+  .pult-filter-controls { display:flex; gap:4px; align-items:center; }
+  .pult-filter-controls button,.pult-filter-controls select { min-width:0; min-height:32px; padding:5px 8px; background:transparent; color:rgb(var(--muted)); font-size:14px; cursor:pointer; }
+  .pult-filter-controls select { flex:1; }
+  .pult-filter-controls option { background:rgb(var(--canvas)); color:rgb(var(--ink)); }
+  .pult-filter-controls .selected { background:rgb(var(--raised)); color:rgb(var(--ink)); font-weight:600; }
+</style>

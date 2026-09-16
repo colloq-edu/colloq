@@ -571,8 +571,8 @@
     >
       <Choice options={PROVIDERS} value={provider} onchange={pickProvider} />
 
-      <div class="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_230px]">
-        <div class="min-w-0">
+      <div class="mt-4 flex flex-wrap gap-4">
+        <div class="min-w-[220px] flex-[1_1_320px]">
           {@render fieldLabel(tr("admin.base.url"), 'ai-base-url')}
           <input
             id="ai-base-url"
@@ -589,7 +589,7 @@
           {/if}
         </div>
 
-        <div class="min-w-0">
+        <div class="w-[230px] max-w-full shrink-0">
           {@render fieldLabel(tr("admin.model"), 'ai-model')}
           <input
             id="ai-model"
@@ -760,12 +760,14 @@
       title={tr("admin.default.mode.and.limit")}
       description={tr("admin.applies.to.all.seminars.each.seminar.can.further.restrict.the.ora")}
     >
-      <Choice
-        options={MODES}
-        value={defaultMode}
-        size="lg"
-        onchange={(value) => (defaultMode = value as OracleMode)}
-      />
+      <div class="oracle-mode-choice">
+        <Choice
+          options={MODES}
+          value={defaultMode}
+          size="lg"
+          onchange={(value) => (defaultMode = value as OracleMode)}
+        />
+      </div>
     </Section>
 
     <Section
@@ -964,3 +966,29 @@
     </fieldset>
   {/if}
 </AdminPage>
+
+<style>
+  /*
+   * Choice's viewport breakpoint cannot see that Section has already spent
+   * 250px on its explanation. Stack the three wordy choices when their own
+   * column is narrow, while keeping the existing three-column desktop row.
+   */
+  .oracle-mode-choice {
+    container-type: inline-size;
+  }
+
+  @container (max-width: 539px) {
+    .oracle-mode-choice > :global(div) {
+      flex-direction: column;
+    }
+
+    .oracle-mode-choice > :global(div > button) {
+      border-top-width: 1px;
+      border-left-width: 0;
+    }
+
+    .oracle-mode-choice > :global(div > button:first-child) {
+      border-top-width: 0;
+    }
+  }
+</style>

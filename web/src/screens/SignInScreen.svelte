@@ -63,7 +63,7 @@
   }
 </script>
 
-<div class="flex h-full">
+<div class="admin flex h-full">
   <!-- The poster does not depend on anything the server has to say, so it
        paints on the first frame while the cards wait for the instance state.
        И организацию оно поэтому не подписывает: строка приезжает в карточке

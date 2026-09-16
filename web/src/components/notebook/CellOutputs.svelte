@@ -271,6 +271,24 @@
                 markup={render.html(payload)}
                 class="overflow-x-auto px-2 py-1 text-code text-ink"
               />
+            {:else if mime === 'text/markdown' && render}
+              <!--
+                Разметка вывода рисуется тем же отрисовщиком, что и заметка, и
+                прямо в странице — без теневого корня, в отличие от `text/html`
+                рядом.
+                
+                Разница не в доверии, а в том, ЧТО пропускает санитайзер.
+                Заметочный проход запрещает `<style>` целиком и считает
+                свойства инлайнового `style` по белому списку
+                (shared/note-css.ts), то есть отдаёт ровно то же, что может
+                написать любой студент в текстовой ячейке; накрыть экран этим
+                нельзя. А `text/html` от ядра `<style>` СОХРАНЯЕТ — там живёт
+                `df.style` — и потому обязан ехать в корень.
+                
+                И выглядеть это должно прозой: `display(Markdown(...))` пишут,
+                чтобы подписать вывод словами, а не чтобы показать разметку.
+              -->
+              <div class="prose-note px-2 py-1 text-prose">{@html render.markdown(payload)}</div>
             {:else if mime}
               <div
                 class="output-stream px-2 py-1 text-ink/90"
@@ -285,8 +303,8 @@
         <div class="mt-1 border-t border-line-soft pt-1">
           <button
             type="button"
-            class="inline-flex items-center gap-1 px-1.5 py-0.5 text-2xs font-medium
-                   text-faint transition-colors duration-100 hover:bg-raised hover:text-ink
+            class="inline-flex min-h-7 items-center gap-1 px-1.5 py-0.5 text-2xs font-medium
+                   text-muted transition-colors duration-100 hover:bg-raised hover:text-ink
                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             onclick={() => (expanded[i] = !expanded[i])}
           >

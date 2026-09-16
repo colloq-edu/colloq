@@ -19,6 +19,8 @@ export { recallSessionInfo, rememberSessionInfo, forgetSessionInfo } from './ses
 export interface LocalStore {
   /** Resolves when the stored document has been replayed into the Y.Doc. */
   whenSynced: Promise<void>
+  /** Identifies updates replayed or merged by this IndexedDB binding. */
+  isReplay(origin: unknown): boolean
   destroy(): void
   clear(): Promise<void>
 }
@@ -37,7 +39,7 @@ const REPLAY_DEADLINE = 3000
 const DONE: Promise<void> = Promise.resolve()
 
 function noopStore(): LocalStore {
-  return { whenSynced: DONE, destroy() {}, clear: () => DONE }
+  return { whenSynced: DONE, isReplay: () => false, destroy() {}, clear: () => DONE }
 }
 
 function hasIndexedDb(): boolean {
@@ -87,6 +89,7 @@ export function bindLocalStore(sessionId: string, doc: Y.Doc): LocalStore {
 
   return {
     whenSynced,
+    isReplay: (origin) => origin === store,
     destroy() {
       if (closed) return
       closed = true

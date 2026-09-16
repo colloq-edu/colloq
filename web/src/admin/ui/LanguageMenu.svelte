@@ -131,7 +131,7 @@
   >
     <Icon name={failed ? 'alert' : 'globe'} size={16} class="shrink-0 text-white/80" />
     <span class="hidden flex-1 text-left text-[14px] leading-5 md:block" lang={language.current}>{currentName}</span>
-    <span class="font-mono text-[11px] leading-4 md:hidden">{language.current.toUpperCase()}</span>
+    <span class="font-mono text-micro leading-4 md:hidden">{language.current.toUpperCase()}</span>
     <span class="hidden w-3 shrink-0 items-center justify-center text-white/80 md:flex">
       <Icon name={saving ? 'spinner' : 'chevron-up'} size={12} class={saving ? 'animate-spin motion-reduce:animate-none' : ''} />
     </span>
@@ -169,7 +169,7 @@
       onclick={() => void choose(option.value)}
     >
       <span class="flex-1" lang={option.value}>{option.label}</span>
-      <span class="w-6 shrink-0 font-mono text-[11px] font-normal leading-4 text-muted">{option.value.toUpperCase()}</span>
+      <span class="w-6 shrink-0 font-mono text-micro font-normal leading-4 text-muted">{option.value.toUpperCase()}</span>
       <span class="flex h-4 w-4 shrink-0 items-center justify-center text-brand">
         {#if saving && requested === option.value}
           <Icon name="spinner" size={16} class="animate-spin motion-reduce:animate-none" />
@@ -179,7 +179,7 @@
       </span>
     </button>
   {/each}
-  <div class="mt-1.5 border-t border-line px-2.5 pb-2 pt-2.5 text-[12px] leading-[18px] text-muted">
+  <div class="mt-1.5 border-t border-line px-2.5 pb-2 pt-2.5 text-2xs text-muted">
     <p id="language-menu-scope">{tr('admin.language.scope')}</p>
     {#if failed}
       <p role="alert" class="mt-2 text-danger">{tr('admin.language.failed')}</p>

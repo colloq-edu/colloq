@@ -2,10 +2,118 @@ import type { MessageCatalog } from '../i18n-types.js'
 
 /** Explicit display-copy catalog for entry, room, lecture, and public readers. */
 export const roomMessages: MessageCatalog = {
+  "room.goto.unknown": {"ru": "Не нашлось, где определено «{name}» — ни в тетрадях комнаты, ни в файлах занятия", "en": "No definition for “{name}” — not in the room’s notebooks, not in the class files"},
+  "room.goto.outsideModule": {"ru": "Модуль {module} лежит не в папке занятия, а в библиотеках — открыть его нечем", "en": "Module {module} lives in the libraries, not in the class folder — there is nothing to open"},
+  "room.goto.outside": {"ru": "«{name}» приходит из {module}, а этого модуля нет в папке занятия — открыть нечего", "en": "“{name}” comes from {module}, and that module is not in the class folder — there is nothing to open"},
+  "room.goto.opaqueThing": {"ru": "Чей это метод, отсюда не видно: слева выражение, а не имя — переход работает по именам из тетради и по модулям папки занятия", "en": "Whose method this is cannot be told from here: an expression stands to the left, not a name — the jump works for names in the notebook and modules in the class folder"},
+  "room.goto.opaque": {"ru": "Что такое «{owner}», отсюда не видно: переход работает по именам из тетради и по модулям папки занятия", "en": "What “{owner}” is cannot be told from here: the jump works for names in the notebook and modules in the class folder"},
+  "room.goto.gone": {"ru": "Определение «{name}» было в {path}, но открыть файл не вышло", "en": "“{name}” was defined in {path}, but the file would not open"},
+  "room.ban.councilConsequences": {"ru": "Попытки консилиума и заявки на запуск участника будут удалены. Его выполняющаяся попытка будет прервана; работы других участников останутся в очереди.", "en": "The participant’s Council attempts and run requests will be removed. Their running attempt will be interrupted; other participants’ jobs will stay queued."},
+  "room.pult.v2.workSavedDraft": {"ru": "Черновик сохранён в {time}", "en": "Draft saved at {time}"},
+  "room.pult.v2.workPresenceUnknown": {"ru": "Статус сети неизвестен", "en": "Connection status unknown"},
+  "room.pult.v2.workReview": {"ru": "Оценка преподавателя", "en": "Teacher’s review"},
+  "room.pult.v2.workCode": {"ru": "Код решения", "en": "Solution code"},
+  "room.pult.v2.workSame": {"ru": "Так же ответили ещё {count}", "en": "{count} others answered the same"},
+  "room.pult.v2.workExecution": {"ru": "Запуск", "en": "Execution"},
+  "room.pult.v2.workOutput": {"ru": "Результат запуска", "en": "Execution output"},
+  "room.pult.v2.workLoadingOutput": {"ru": "Загружаем результат…", "en": "Loading output…"},
+  "room.pult.v2.workPosition": {"ru": "Работа {index} из {total}", "en": "Work {index} of {total}"},
+  "room.pult.v2.workClear": {"ru": "Убрать с экрана", "en": "Clear the screen"},
+  "room.pult.v2.workCorrect": {"ru": "Верно", "en": "Correct"},
+  "room.pult.v2.workRevise": {"ru": "Исправить", "en": "Revise"},
+  "room.pult.v2.workRunning": {"ru": "Выполняется", "en": "Running"},
+  "room.pult.v2.workQueued": {"ru": "В очереди · запуск начнётся автоматически", "en": "Queued · execution will start automatically"},
+  "room.pult.v2.workWrite": {"ru": "Написать автору…", "en": "Write to the author…"},
+  "room.pult.v2.workFeedback": {"ru": "Обратная связь", "en": "Feedback"},
+  "room.pult.v2.workNoFeedback": {"ru": "Писем по этой работе пока нет.", "en": "No feedback on this work yet."},
+  "room.pult.v2.workOraclePrivate": {"ru": "Подсказка по просьбе автора", "en": "Hint requested by the author"},
+  "room.pult.v2.queue.title": {"ru": "Очередь запусков", "en": "Run queue"},
+  "room.pult.v2.queue.scope": {"ru": "Запуски этой ячейки · код выполняется по одному", "en": "Runs for this cell · code executes one at a time"},
+  "room.pult.v2.queue.counts": {"ru": "{running} выполняется · {queued} в очереди", "en": "{running} running · {queued} queued"},
+  "room.pult.v2.queue.current": {"ru": "Сейчас выполняется", "en": "Running now"},
+  "room.pult.v2.queue.interrupt": {"ru": "Прервать", "en": "Interrupt"},
+  "room.pult.v2.queue.idle": {"ru": "В этой ячейке сейчас ничего не выполняется", "en": "No code is running in this cell"},
+  "room.pult.v2.queue.pendingTitle": {"ru": "Ждут вашего разрешения {count}", "en": "Waiting for your approval · {count}"},
+  "room.pult.v2.queue.allowAll": {"ru": "Разрешить все {count}", "en": "Approve all {count}"},
+  "room.pult.v2.queue.noRequests": {"ru": "Просьб о запуске пока нет", "en": "No run requests"},
+  "room.pult.v2.queue.waiting": {"ru": "Просит запуск · ждёт {duration}", "en": "Run requested · waiting {duration}"},
+  "room.pult.v2.queue.allow": {"ru": "Разрешить", "en": "Approve"},
+  "room.pult.v2.queue.decline": {"ru": "Отклонить", "en": "Decline"},
+  "room.pult.v2.queue.queuedTitle": {"ru": "В очереди {count}", "en": "Queued · {count}"},
+  "room.pult.v2.queue.noQueued": {"ru": "В этой ячейке нет запусков в очереди", "en": "No queued runs for this cell"},
+  "room.pult.v2.queue.order": {"ru": "Порядком запусков управляет общее ядро комнаты", "en": "The shared room kernel manages the run order"},
+  "room.pult.v2.queue.policyTitle": {"ru": "Кто может запускать код", "en": "Who can run code"},
+  "room.pult.v2.queue.policyTeacher": {"ru": "Только преподаватель", "en": "Teacher only"},
+  "room.pult.v2.queue.policyEveryone": {"ru": "Все по очереди", "en": "Everyone, in turn"},
+  "room.pult.v2.queue.policyRequest": {"ru": "По разрешению", "en": "With approval"},
+  "room.pult.v2.queue.anonymous": {"ru": "Работа без имени", "en": "Anonymous work"},
+  "room.pult.v2.oracle.title": {"ru": "Оракул о классе", "en": "Oracle on the class"},
+  "room.pult.v2.oracle.purpose": {"ru": "Обобщает сданные решения и помогает выбрать тему разбора.", "en": "Summarizes submitted solutions and helps choose what to discuss."},
+  "room.pult.v2.oracle.submitted": {"ru": "сдано", "en": "submitted"},
+  "room.pult.v2.oracle.evaluated": {"ru": "оценено вами", "en": "evaluated by you"},
+  "room.pult.v2.oracle.drafts": {"ru": {"one":"черновик","few":"черновика","many":"черновиков","other":"черновика"}, "en": {"one":"draft","other":"drafts"}},
+  "room.pult.v2.oracle.success": {"ru": "Что получилось", "en": "What worked"},
+  "room.pult.v2.oracle.discuss": {"ru": "Что стоит разобрать", "en": "What to discuss"},
+  "room.pult.v2.oracle.show": {"ru": "Что показать", "en": "What to show"},
+  "room.pult.v2.oracle.observation": {"ru": "Наблюдение", "en": "Observation"},
+  "room.pult.v2.oracle.error": {"ru": "Не удалось подготовить сводку", "en": "Could not prepare the summary"},
+  "room.pult.v2.oracle.reading": {"ru": "Оракул готовит сводку…", "en": "The Oracle is preparing a summary…"},
+  "room.pult.v2.oracle.readingScope": {"ru": "Решений в запросе: {count}", "en": "Solutions in this request: {count}"},
+  "room.pult.v2.oracle.readingHint": {"ru": "Можно вернуться к работам, пока Оракул читает решения.", "en": "You can return to the work while the Oracle reads the solutions."},
+  "room.pult.v2.oracle.basedOn": {"ru": "Сводка по работам: {count}", "en": "Summary based on {count} submissions"},
+  "room.pult.v2.oracle.requestedAt": {"ru": "запрошена в {time}", "en": "requested at {time}"},
+  "room.pult.v2.oracle.stale": {"ru": "После этого сдали ещё {count}", "en": "{count} more submissions since then"},
+  "room.pult.v2.oracle.noSubmissions": {"ru": "Пока нет сданных решений", "en": "No submitted solutions yet"},
+  "room.pult.v2.oracle.noSubmissionsHint": {"ru": "Сводка появится после сдачи решений и вашего запроса к Оракулу.", "en": "Once students submit their solutions, ask the Oracle for a summary."},
+  "room.pult.v2.oracle.noSummary": {"ru": "Сводки пока нет", "en": "No summary yet"},
+  "room.pult.v2.oracle.fewSubmissions": {"ru": "Решений пока мало. Оракул может подготовить сводку, но общая картина станет яснее после новых сдач.", "en": "There are only a few solutions so far. The Oracle can summarize them, but more submissions will give a clearer picture."},
+  "room.pult.v2.oracle.emptyHint": {"ru": "Попросите Оракула найти общие подходы, типичные ошибки и примеры для разбора.", "en": "Ask the Oracle to identify common approaches, typical mistakes, and examples to discuss."},
+  "room.pult.v2.oracle.private": {"ru": "Сводка видна только преподавателю", "en": "Only the teacher can see this summary"},
+  "room.pult.v2.oracle.anonymous": {"ru": "Имена скрыты", "en": "Names are hidden"},
+  "room.pult.v2.oracle.stop": {"ru": "Остановить Оракула", "en": "Stop the Oracle"},
+  "room.pult.v2.oracle.refresh": {"ru": "Обновить сводку", "en": "Refresh summary"},
+  "room.pult.v2.oracle.ask": {"ru": "Подготовить сводку", "en": "Prepare summary"},
+  "room.pult.v2.oracle.retry": {"ru": "Попробовать снова", "en": "Try again"},
+  "room.pult.v2.projection.title": {"ru": "На экране класса", "en": "On the class screen"},
+  "room.pult.v2.projection.since": {"ru": "с {time} · {duration}", "en": "since {time} · {duration}"},
+  "room.pult.v2.projection.neighbour": {"ru": "Показать похожую работу", "en": "Show similar work"},
+  "room.pult.v2.projection.clear": {"ru": "Убрать с экрана", "en": "Clear class screen"},
+
+  "room.pult.v2.title": {"ru": "Консилиум", "en": "Council"},
+  "room.pult.v2.private": {"ru": "Личный пульт преподавателя", "en": "Private teacher console"},
+  "room.pult.v2.workTab": {"ru": "Работы", "en": "Work"},
+  "room.pult.v2.queueTab": {"ru": "Очередь", "en": "Queue"},
+  "room.pult.v2.oracleTab": {"ru": "Оракул о классе", "en": "Class Oracle"},
+  "room.pult.v2.navigation": {"ru": "Разделы пульта", "en": "Console sections"},
+  "room.pult.v2.pending": {"ru": "{count} ждут разрешения →", "en": "{count} awaiting approval →"},
+  "room.pult.v2.queueEmpty": {"ru": "Очередь пуста", "en": "Queue is empty"},
+  "room.pult.v2.submitted": {"ru": "сдано", "en": "submitted"},
+  "room.pult.v2.moreFilters": {"ru": "Ещё", "en": "More"},
+  "room.pult.v2.filterLabel": {"ru": "Фильтр работ", "en": "Filter work"},
+  "room.pult.v2.noMatches": {"ru": "Нет подходящих работ", "en": "No matching work"},
+  "room.pult.v2.changeFilter": {"ru": "Измените фильтр или поисковый запрос.", "en": "Change the filter or search."},
+  "room.pult.v2.noAttempts": {"ru": "Работы появятся здесь", "en": "Work will appear here"},
+  "room.pult.v2.noAttemptsHint": {"ru": "Участники могут писать свой код и сдавать решения.", "en": "Participants can write code and submit their work."},
+  "room.pult.v2.nothingShown": {"ru": "На экране класса пока ничего", "en": "Nothing is shown to the class"},
+  "room.pult.v2.names": {"ru": "Имена на проекторе", "en": "Names on the projector"},
+  "room.pult.v2.keys": {"ru": "Клавиши", "en": "Keyboard shortcuts"},
+  "room.pult.v2.review.draft": {"ru": "Черновик", "en": "Draft"},
+  "room.pult.v2.review.pending": {"ru": "Не проверено", "en": "Not reviewed"},
+  "room.pult.v2.review.correct": {"ru": "Верно", "en": "Correct"},
+  "room.pult.v2.review.wrong": {"ru": "На доработку", "en": "Needs revision"},
+  "room.pult.v2.execution.running": {"ru": "Выполняется", "en": "Running"},
+  "room.pult.v2.execution.queued": {"ru": "В очереди", "en": "Queued"},
+  "room.pult.v2.execution.error": {"ru": "Ошибка запуска", "en": "Execution error"},
+  "room.pult.v2.execution.request": {"ru": "Просит запуск", "en": "Run requested"},
+  "room.pult.v2.execution.ok": {"ru": "Запуск выполнен", "en": "Execution completed"},
+  "room.pult.v2.execution.none": {"ru": "Не запускали", "en": "Not run"},
+
   "room.pult.codeLines": { "ru": "Всего строк: {count} · прокрутите код", "en": "{count} lines total · scroll code" },
   "room.pult.oracleError": { "ru": "Не удалось связаться с Оракулом. Попробуйте снова.", "en": "Could not reach the Oracle. Try again." },
   "room.pult.closeHelp": { "ru": "Закрыть справку", "en": "Close keyboard help" },
   "room.pult.groupReply": { "ru": "Письмо группе", "en": "Group reply" },
+  "room.pult.online": { "ru": "в сети", "en": "online" },
+  "room.pult.offline": { "ru": "не в сети", "en": "offline" },
   "room.pult.send": { "ru": "Отправить", "en": "Send" },
   "room.pult.replyScope": { "ru": "Личное письмо", "en": "Private reply" },
   "room.pult.closeSearch": { "ru": "Закрыть поиск", "en": "Close search" },
@@ -181,8 +289,8 @@ export const roomMessages: MessageCatalog = {
     "en": "writing"
   },
   "room.ui.45": {
-    "ru": "пишут",
-    "en": "writing"
+    "ru": "черновики",
+    "en": "drafts"
   },
   "room.ui.46": {
     "ru": "Попыток пока нет. Студенты могут написать свои решения.",
@@ -3189,16 +3297,8 @@ export const roomMessages: MessageCatalog = {
     }
   },
   "room.ui.1056": {
-    "ru": {
-      "one": "{count} ещё пишет",
-      "few": "{count} ещё пишут",
-      "many": "{count} ещё пишут",
-      "other": "{count} ещё пишут"
-    },
-    "en": {
-      "one": "{count} still writing",
-      "other": "{count} still writing"
-    }
+    "ru": { "one": "{count} черновик", "few": "{count} черновика", "many": "{count} черновиков", "other": "{count} черновика" },
+    "en": { "one": "{count} draft", "other": "{count} drafts" }
   },
   "room.ui.1057": {
     "ru": {
@@ -3721,8 +3821,8 @@ export const roomMessages: MessageCatalog = {
     "en": "writing"
   },
   "room.extra.27": {
-    "ru": "пишут",
-    "en": "writing"
+    "ru": "черновики",
+    "en": "drafts"
   },
   "room.extra.31": {
     "ru": "{p0} {p1} — вывод в терминале",
@@ -4757,16 +4857,16 @@ export const roomMessages: MessageCatalog = {
     "en": "groups"
   },
   "room.ui.1309": {
-    "ru": "пишут",
-    "en": "writing"
+    "ru": "черновики",
+    "en": "drafts"
   },
   "room.ui.1310": {
     "ru": "Поиск по имени",
     "en": "Search by name"
   },
   "room.ui.1311": {
-    "ru": "пишет…",
-    "en": "writing…"
+    "ru": "черновик",
+    "en": "draft"
   },
   "room.ui.1312": {
     "ru": "сейчас",
@@ -5041,8 +5141,8 @@ export const roomMessages: MessageCatalog = {
     "en": "still writing"
   },
   "room.ui.1384": {
-    "ru": "верно · типичная · падает · ещё пишут",
-    "en": "correct · typical · failing · still writing"
+    "ru": "верно · неверно · ошибка запуска · черновики",
+    "en": "correct · incorrect · run error · drafts"
   },
   "room.ui.1400": {
     "ru": "Пульт",

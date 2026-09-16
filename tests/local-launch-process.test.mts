@@ -84,7 +84,14 @@ function invoke(root: string, args: string[]) {
     ['--import', 'tsx', path.join(root, 'cli/src/launch.ts'), ...args],
     {
       cwd: root,
-      env: { ...process.env, PATH: path.join(root, 'bin') + ':' + process.env.PATH },
+      env: {
+        ...process.env,
+        // The caller may already run a local server; fixtures own their ports and files.
+        PORT: fs.readFileSync(path.join(root, '.env'), 'utf8').match(/^PORT=(\d+)/m)![1],
+        DATA_DIR: path.join(root, 'data'),
+        WORKSPACE_DIR: path.join(root, 'workspace'),
+        PATH: path.join(root, 'bin') + ':' + process.env.PATH,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -111,6 +118,7 @@ test(
           JSON.parse(fs.readFileSync(path.join(root, '.colloq/local-session.json'), 'utf8'))
             .phase === 'ready',
       )
+      await until(() => first.output().includes('localhost:' + p))
       assert.match(first.output(), new RegExp('localhost:' + p))
       const second = invoke(root, ['run', '--no-open'])
       assert.equal(await second.done, 0, second.output())
@@ -212,7 +220,18 @@ test(
     const p = await port(),
       ui = await port(),
       root = fixture(p)
-    fs.writeFileSync(path.join(root, 'web/index.html'), '<html><body>development</body></html>')
+    // Exercise the actual project's Tailwind/PostCSS pipeline, not an HTML-only fixture.
+    fs.mkdirSync(path.join(root, 'web/src'), { recursive: true })
+    for (const file of ['src/index.css', 'tailwind.config.js', 'postcss.config.js'])
+      fs.copyFileSync(path.join(repo, 'web', file), path.join(root, 'web', file))
+    fs.writeFileSync(
+      path.join(root, 'web/src/check.svelte'),
+      '<div class="bg-canvas text-ink">development</div>',
+    )
+    fs.writeFileSync(
+      path.join(root, 'web/index.html'),
+      '<html><head><link rel="stylesheet" href="/src/index.css"></head><body>development</body></html>',
+    )
     fs.writeFileSync(
       path.join(root, 'web/vite.config.mjs'),
       `export default {server:{proxy:{'/api':'http://127.0.0.1:${p}'}}}`,
@@ -221,6 +240,13 @@ test(
     try {
       await until(() => run.output().includes('Colloq работает'), 20000)
       assert.equal((await fetch(`http://localhost:${ui}`)).status, 200)
+      const styles = await fetch(`http://localhost:${ui}/src/index.css`)
+      assert.equal(styles.status, 200, await styles.text())
+      assert.doesNotMatch(
+        run.output(),
+        /Pre-transform error|class does not exist|content.*missing or empty/,
+      )
+
       fs.appendFileSync(path.join(root, 'server/src/index.ts'), '\n// reload')
       await until(
         () => fs.readFileSync(path.join(root, 'events'), 'utf8').split('start').length >= 3,

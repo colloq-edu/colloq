@@ -563,7 +563,7 @@
               disabled={roleBusy === t.id}
               aria-label="{tr("admin.role.for")} {t.name}"
               onchange={(event) => void setRole(t, event.currentTarget.value as AdminRole)}
-              class="h-6 cursor-pointer appearance-none bg-transparent pr-5 text-ui text-ink
+              class="h-8 cursor-pointer appearance-none bg-transparent pr-5 text-ui text-ink
                      outline-none disabled:opacity-50"
             >
               <option value="owner">{tr("admin.owner")}</option>
@@ -588,7 +588,7 @@
                 type="button"
                 disabled={acting === t.id}
                 onclick={() => void copyExisting(t)}
-                class="inline-flex h-7 w-7 shrink-0 items-center justify-center border
+                class="inline-flex h-8 w-8 shrink-0 items-center justify-center border
                        border-line text-faint transition-colors duration-100 hover:border-faint
                        hover:text-ink disabled:opacity-50"
                 aria-label={tr('admin.teacher.copyLinkLabel', { name: t.name })}
@@ -630,7 +630,7 @@
               event.stopPropagation()
               menuId = menuId === t.id ? null : t.id
             }}
-            class="flex h-6 w-6 items-center justify-center p-1 text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
+            class="flex h-8 w-8 items-center justify-center text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
           >
             <Icon name="more" size={15} />
           </button>

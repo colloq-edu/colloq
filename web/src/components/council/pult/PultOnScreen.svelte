@@ -1,24 +1,13 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  /**
-   * «На экране сейчас» — обратная сторона единственной двери из пульта в зал.
-   *
-   * Стоит под полосой очереди и НЕ ЗАВИСИТ от того, какую работу вы читаете
-   * сейчас: показанная и открытая — разные вещи, и пока что-то горит на стене,
-   * преподаватель обязан видеть, что именно, не отвлекаясь на список.
-   *
-   * Подпись берётся из кадра показа (`CouncilShown`), а не из стопки: при
-   * выключенных именах в кадре нет ни имени, ни цвета — подписывает «Вариант
-   * N», и в пульте стоит ровно то, что стоит в зале.
-   */
+  import Avatar from '@/components/ui/Avatar.svelte'
   import type { CouncilShown } from '@shared/protocol'
   import { clock } from '@/lib/history'
-  import { cn, spell } from '@/lib/utils'
+  import { spell } from '@/lib/utils'
 
   interface Props {
     shown: CouncilShown
     now: number
-    /** Есть сосед в той же группе — можно показать следующий такой же. */
     hasNeighbour: boolean
     disabled: boolean
     onneighbour: () => void
@@ -26,42 +15,35 @@
   }
 
   let { shown, now, hasNeighbour, disabled, onneighbour, onclear }: Props = $props()
-
-  const CAPS = 'text-micro font-bold uppercase tracking-caps'
 </script>
 
-<div
-  class="flex min-h-11 shrink-0 flex-wrap py-2 items-center gap-3 border-b border-l-[3px] border-b-line border-l-positive bg-raised px-4"
-  data-pult-onscreen
->
-  <span class={cn(CAPS, 'shrink-0 text-positive')}>{tr('room.ui.1345')}</span>
-  <span
-    class="h-5 w-5 shrink-0 rounded-full"
-    style:background-color={shown.color ?? 'rgb(var(--line))'}
-    aria-hidden="true"
-  ></span>
-  <span class="min-w-0 max-w-[220px] truncate text-ui-lg font-bold text-ink">
-    {shown.name ?? tr('room.ui.1255', { p0: shown.variant })}
-  </span>
-  <span class="min-w-0 flex-1 truncate font-mono text-micro text-faint">
-    {#if shown.shownAt !== null}
-      {tr('room.ui.1346', { p0: clock(shown.shownAt) })} · {tr('room.ui.1341', {
-        p0: spell(Math.max(now - shown.shownAt, 0)),
-      })}
+<div class="projection-banner" data-pult-onscreen>
+  <span class="projection-label">{tr('room.pult.v2.projection.title')}</span>
+  <span class="projection-avatar" style:background-color={shown.name !== null ? shown.color ?? 'rgb(var(--line))' : 'rgb(var(--line))'} aria-hidden="true">
+    {#if shown.name !== null}
+      <Avatar name={shown.name} color={shown.color ?? '#888888'} avatar={shown.avatar} size="md" />
     {/if}
   </span>
-  {#if hasNeighbour}
-    <button
-      type="button"
-      class={cn(CAPS, 'h-6 shrink-0 border border-line px-3 text-ink')}
-      disabled={disabled}
-      onclick={onneighbour}
-    >{tr('room.ui.1347')} →</button>
-  {/if}
-  <button
-    type="button"
-    class={cn(CAPS, 'h-6 shrink-0 border border-danger px-3 text-danger')}
-    disabled={disabled}
-    onclick={onclear}
-  >{tr('room.ui.1348')}</button>
+  <strong class="projection-name">{shown.name ?? tr('room.ui.1255', { p0: shown.variant })}</strong>
+  <span class="projection-time">
+    {#if shown.shownAt !== null}
+      {tr('room.pult.v2.projection.since', { time: clock(shown.shownAt), duration: spell(Math.max(now - shown.shownAt, 0)) })}
+    {/if}
+  </span>
+  <div class="projection-actions">
+    {#if hasNeighbour}
+      <button type="button" class="pult-button" {disabled} onclick={onneighbour}>{tr('room.pult.v2.projection.neighbour')} →</button>
+    {/if}
+    <button type="button" class="pult-button pult-button--danger" {disabled} onclick={onclear}>{tr('room.pult.v2.projection.clear')}</button>
+  </div>
 </div>
+
+<style>
+  .projection-banner { display: flex; align-items: center; flex-wrap: wrap; flex-shrink: 0; gap: 12px; padding: 12px 24px; border-bottom: 1px solid rgb(var(--line)); border-left: 4px solid rgb(var(--positive)); background: rgb(var(--raised)); color: rgb(var(--ink)); }
+  .projection-label { color: rgb(var(--positive)); font-size: 14px; line-height: 20px; font-weight: 700; }
+  .projection-avatar { width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; }
+  .projection-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; font-size: 16px; line-height: 22px; white-space: nowrap; }
+  .projection-time { flex: 1; min-width: 80px; color: rgb(var(--muted)); font-size: 14px; line-height: 20px; font-variant-numeric: tabular-nums; }
+  .projection-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  @media (max-width: 850px) { .projection-banner { padding: 12px 16px; } }
+</style>

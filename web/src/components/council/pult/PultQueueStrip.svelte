@@ -1,40 +1,19 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  /**
-   * Полоса очереди, 44 px в покое и до 300 развёрнутой.
-   *
-   * Ядро в комнате одно и считает по одному — это единственное место, где
-   * видно, чем оно занято. Свёрнутая полоса — одна строка из четырёх слов:
-   * точка, кто считает, сколько в очереди, сколько ждут разрешения. Числа, а не
-   * списки; списки живут в развёрнутом виде.
-   *
-   * «Ждут разрешения N» — единственное, что набрано полужирным warning: это то,
-   * чего от вас ждут прямо сейчас.
-   *
-   * ПРЕДЕЛА ЯДРА КЛИЕНТ НЕ ЗНАЕТ. На макете с 25-й секунды счётчик желтеет и
-   * справа появляется «оборвётся само»; числа, из которого это считается, в
-   * протоколе нет (`CouncilRun` времени жизни не везёт, лимита в shared нет), и
-   * желтеть по выдуманному порогу значило бы обещать залу обрыв, которого не
-   * будет. Поэтому здесь только прошедшее время — и «Прервать» рукой.
-   *
-   * ПОРЯДОК В ОЧЕРЕДИ РУКОЙ НЕ ТРОГАЕТСЯ: кадра «переставить» или «убрать из
-   * очереди» в протоколе нет, очередь ведёт ядро. Список показан только на
-   * просмотр, и подпись говорит об этом прямо.
-   */
+  import Avatar from '@/components/ui/Avatar.svelte'
   import type { CouncilAttempt } from '@shared/protocol'
   import { COUNCIL_SHARED_KERNEL_NOTE, type CouncilSettings } from '@shared/notebook'
   import { requestReason, type KernelView } from '@/lib/council-pult'
   import { clock } from '@/lib/history'
-  import { cn, spell } from '@/lib/utils'
+  import { spell } from '@/lib/utils'
 
   interface Props {
     kernel: KernelView
     settings: CouncilSettings
     names: boolean
-    /** Живые часы пульта — тикают раз в секунду в родителе. */
     now: number
+    /** Retained for callers; global navigation now controls this view. */
     open: boolean
-    /** Ничего решать нельзя: нет связи или ячейка уже не консилиум. */
     disabled: boolean
     ontoggle: () => void
     onpolicy: (value: CouncilSettings['studentRun']) => void
@@ -42,209 +21,176 @@
     onapprove: (attempt: CouncilAttempt) => void
     ondecline: (attempt: CouncilAttempt) => void
     onapproveall: () => void
+    onremove: (attempt: CouncilAttempt, event: MouseEvent) => void
   }
 
-  let {
-    kernel,
-    settings,
-    names,
-    now,
-    open,
-    disabled,
-    ontoggle,
-    onpolicy,
-    oninterrupt,
-    onapprove,
-    ondecline,
-    onapproveall,
-  }: Props = $props()
-
-  const CAPS = 'text-micro font-bold uppercase tracking-caps'
+  let { kernel, settings, names, now, disabled, onpolicy, oninterrupt, onapprove, ondecline, onapproveall, onremove }: Props = $props()
   const running = $derived(kernel.running)
-  const waiting = $derived(kernel.pending.length)
   const elapsed = $derived(running ? Math.max(now - running.run!.startedAt, 0) : 0)
-
-  const POLICY: { value: CouncilSettings['studentRun']; label: string; hint: string }[] = [
-    { value: false, label: tr('room.ui.1287'), hint: tr('room.ui.1288') },
-    { value: true, label: tr('room.ui.1289'), hint: tr('room.ui.1290') },
-    { value: 'request', label: tr('room.ui.1291'), hint: tr('room.ui.1292') },
+  const POLICY: { value: CouncilSettings['studentRun']; key: string }[] = [
+    { value: false, key: 'room.pult.v2.queue.policyTeacher' },
+    { value: true, key: 'room.pult.v2.queue.policyEveryone' },
+    { value: 'request', key: 'room.pult.v2.queue.policyRequest' },
   ]
-
-  const policyWord = $derived(
-    settings.studentRun === 'request'
-      ? tr('room.ui.1283')
-      : settings.studentRun === true
-        ? tr('room.ui.1282')
-        : tr('room.ui.1281'),
-  )
-
-  const who = (attempt: CouncilAttempt): string => (names ? attempt.name : tr('room.ui.1255', { p0: 0 }))
+  const who = (attempt: CouncilAttempt): string => names ? attempt.name : tr('room.pult.v2.queue.anonymous')
 </script>
 
-<div class="shrink-0 border-b border-line bg-raised" data-pult-queue>
-  <!-- Свёрнутая полоса. Кнопки не переезжают при переключении ручки: гаснет
-       то, чего больше нет, но остаётся на месте. -->
-  <div class="flex min-h-11 flex-wrap items-center gap-3 px-4 py-2">
-    <span
-      class={cn('h-2 w-2 shrink-0 rounded-full', running ? 'bg-accent' : 'bg-faint')}
-      aria-hidden="true"
-    ></span>
-    <span class="flex shrink-0 items-baseline gap-[7px]">
-      <span class={cn(CAPS, 'text-faint')}>{running ? tr('room.ui.1275') : tr('room.ui.1273')}</span>
-      {#if running}
-        <span class="max-w-[180px] truncate text-ui font-bold text-ink">{who(running)}</span>
-        <span class="font-mono text-2xs text-accent-text">{spell(elapsed)}</span>
-      {:else}
-        <span class="text-ui text-muted">{tr('room.ui.1274')}</span>
-      {/if}
-    </span>
-    <span class="h-4 w-px shrink-0 bg-line" aria-hidden="true"></span>
-    <span class="shrink-0 text-ui text-muted">
-      {kernel.queued.length === 0 ? tr('room.ui.1277') : tr('room.ui.1278', { p0: kernel.queued.length })}
-    </span>
-    <span
-      class={cn(
-        'min-w-0 flex-1 truncate text-ui',
-        waiting > 0 ? 'font-bold text-warning' : 'text-faint',
-      )}
-    >
-      {#if waiting > 0}
-        {tr('room.ui.1279', { p0: waiting })}
-      {:else if settings.studentRun === false}
-        {tr('room.ui.1303')}
-      {/if}
-    </span>
-    <button
-      type="button"
-      class="shrink-0 pr-1 font-mono text-micro text-faint hover:text-ink"
-      aria-expanded={open}
-      onclick={ontoggle}
-    >{tr('room.ui.1280', { p0: policyWord })} {open ? '▴' : '▾'}</button>
-    <button
-      type="button"
-      class={cn(CAPS, 'h-6 shrink-0 border px-3', running ? 'border-line text-ink' : 'border-line text-faint')}
-      disabled={!running || disabled}
-      onclick={oninterrupt}
-    >{tr('room.ui.1284')}</button>
-    <button
-      type="button"
-      class={cn(
-        CAPS,
-        'h-6 shrink-0 px-3',
-        waiting > 0 ? 'bg-warning text-surface' : 'border border-line text-faint',
-      )}
-      disabled={waiting === 0 || disabled}
-      onclick={onapproveall}
-    >{tr('room.ui.1285')}{waiting > 0 ? ` ${waiting}` : ''}</button>
-  </div>
-
-  {#if open}
-    <div class="max-h-[300px] overflow-y-auto border-t border-line">
-      <!-- Ручка стоит НАД очередью, а не в меню: переключили на «по просьбе» —
-           под ней тут же появился список тех, кто просит. -->
-      <div class="flex flex-col gap-2.5 border-b border-line p-4">
-        <span class={cn(CAPS, 'text-faint')}>{tr('room.ui.1286')}</span>
-        <div class="flex border border-line">
-          {#each POLICY as item (String(item.value))}
-            {@const on = settings.studentRun === item.value}
-            <button
-              type="button"
-              class={cn(
-                'flex flex-1 basis-0 flex-col gap-[3px] border-r border-line px-3.5 py-2.5 text-left last:border-r-0',
-                on && 'border-b-2 border-b-accent bg-raised',
-              )}
-              aria-pressed={on}
-              disabled={disabled}
-              onclick={() => onpolicy(item.value)}
-            >
-              <span class={cn('text-ui font-bold', on ? 'text-ink' : 'text-muted')}>{item.label}</span>
-              <span class={cn('text-2xs', on ? 'text-muted' : 'text-faint')}>{item.hint}</span>
-            </button>
-          {/each}
-        </div>
-        <!--
-          Про общее ядро сказано ТАМ, ГДЕ РУЧКУ ВКЛЮЧАЮТ, — и ручка теперь
-          здесь, а не в меню замка. Попытки считаются в одном ядре комнаты:
-          имена, заведённые самой попыткой, сервер снимает, а изменения общих
-          объектов остаются общими, и по выводу преподаватель ставит «верно».
-          Копия одна на весь продукт (shared/notebook.ts) — пересказ своими
-          словами разъехался бы с ручкой на первой же правке. Строкой, а не
-          подсказкой: пульт ведут с планшета, где наведения нет вовсе.
-        -->
-        <p class="max-w-[660px] text-2xs leading-snug text-faint">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
+<div class="queue-view" data-pult-queue>
+  <div class="queue-content">
+    <header class="queue-heading">
+      <div>
+        <h2>{tr('room.pult.v2.queue.title')}</h2>
+        <p>{tr('room.pult.v2.queue.scope')}</p>
       </div>
+      <p class="queue-counts">{tr('room.pult.v2.queue.counts', { running: running ? 1 : 0, queued: kernel.queued.length })}</p>
+    </header>
 
-      {#if kernel.pending.length > 0}
-        <div class="flex flex-col">
-          <div class="flex h-10 shrink-0 items-center gap-3 border-b border-line bg-surface px-4">
-            <span class={cn('shrink-0 text-2xs font-bold uppercase tracking-label text-warning')}>
-              {tr('room.ui.1293')} · {kernel.pending.length}
-            </span>
-            <span class="min-w-0 flex-1 truncate text-2xs text-faint">{tr('room.ui.1294')}</span>
-            <button
-              type="button"
-              class={cn(CAPS, 'h-7 shrink-0 bg-warning px-3.5 text-surface')}
-              disabled={disabled}
-              onclick={onapproveall}
-            >{tr('room.ui.1295')}</button>
+    <section class="running-card" class:is-running={running !== null} aria-label={tr('room.pult.v2.queue.current')}>
+      {#if running}
+        <span class="running-icon" aria-hidden="true">▶</span>
+        <div class="running-copy">
+          <span class="running-label">{tr('room.pult.v2.queue.current')}</span>
+          <div class="running-author">
+            {#if names}<Avatar name={running.name} color={running.color} avatar={running.avatar} size="md" />{/if}
+            <strong>{who(running)}</strong><span class="running-time">{spell(elapsed)}</span>
           </div>
+        </div>
+        <div class="running-actions">
+          <button type="button" class="pult-button pult-button--danger" {disabled} onclick={oninterrupt}>{tr('room.pult.v2.queue.interrupt')}</button>
+          <button type="button" class="pult-button pult-button--danger" {disabled} data-pult-remove
+            onclick={(event) => onremove(running, event)}>{tr('room.ui.78')}</button>
+        </div>
+      {:else}
+        <span class="running-icon" aria-hidden="true">○</span>
+        <p class="idle-copy">{tr('room.pult.v2.queue.idle')}</p>
+      {/if}
+    </section>
+
+    <section class="pending-section" aria-label={tr('room.pult.v2.queue.pendingTitle', { count: kernel.pending.length })}>
+      <div class="section-heading">
+        <h3 class="pending-title">{tr('room.pult.v2.queue.pendingTitle', { count: kernel.pending.length })}</h3>
+        {#if kernel.pending.length > 0}
+          <button type="button" class="pult-button" {disabled} onclick={onapproveall}>{tr('room.pult.v2.queue.allowAll', { count: kernel.pending.length })}</button>
+        {/if}
+      </div>
+      {#if kernel.pending.length === 0}
+        <p class="empty-copy">{tr('room.pult.v2.queue.noRequests')}</p>
+      {:else}
+        <ul class="attempt-list">
           {#each kernel.pending as attempt (attempt.participantId)}
             {@const reason = requestReason(attempt)}
-            <div class="flex h-[50px] shrink-0 items-center gap-3 border-b border-l-[3px] border-b-line border-l-warning px-4">
-              <span
-                class="h-6 w-6 shrink-0 rounded-full"
-                style:background-color={names ? attempt.color : 'rgb(var(--line))'}
-                aria-hidden="true"
-              ></span>
-              <span class="w-40 shrink-0 truncate text-ui-lg font-bold text-ink">{who(attempt)}</span>
-              <span class="w-[120px] shrink-0 text-2xs text-muted">
-                {tr('room.ui.1298', { p0: clock(attempt.runRequest!.requestedAt) })}
+            <li class="pending-row">
+              <span class="avatar-slot" aria-hidden="true">
+                {#if names}<Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="md" />{:else}<span class="anonymous-avatar"></span>{/if}
               </span>
-              <span class="w-[72px] shrink-0 font-mono text-2xs text-warning">
-                {tr('room.ui.1299', { p0: spell(Math.max(now - attempt.runRequest!.requestedAt, 0)) })}
-              </span>
-              <span class="min-w-0 flex-1 truncate font-mono text-micro text-faint">{reason ?? ''}</span>
-              <button
-                type="button"
-                class={cn(CAPS, 'h-6 shrink-0 bg-warning px-3 text-surface')}
-                disabled={disabled}
-                onclick={() => onapprove(attempt)}
-              >{tr('room.ui.1296')}</button>
-              <button
-                type="button"
-                class={cn(CAPS, 'h-6 shrink-0 border border-line px-3 text-muted')}
-                disabled={disabled}
-                onclick={() => ondecline(attempt)}
-              >{tr('room.ui.1297')}</button>
-            </div>
+              <div class="attempt-copy">
+                <strong>{who(attempt)}</strong>
+                <span class="request-time" title={clock(attempt.runRequest!.requestedAt)}>{tr('room.pult.v2.queue.waiting', { duration: spell(Math.max(now - attempt.runRequest!.requestedAt, 0)) })}</span>
+              </div>
+              {#if reason}<span class="request-reason pult-meta">{reason}</span>{/if}
+              <div class="row-actions">
+                <button type="button" class="pult-button pult-button--primary" {disabled} onclick={() => onapprove(attempt)}>{tr('room.pult.v2.queue.allow')}</button>
+                <button type="button" class="pult-button" {disabled} onclick={() => ondecline(attempt)}>{tr('room.pult.v2.queue.decline')}</button>
+                <button type="button" class="pult-button pult-button--danger" {disabled} data-pult-remove
+                  onclick={(event) => onremove(attempt, event)}>{tr('room.ui.78')}</button>
+              </div>
+            </li>
           {/each}
-        </div>
+        </ul>
       {/if}
+    </section>
 
-      {#if kernel.queued.length > 0}
-        <div class="flex flex-col">
-          <div class="flex h-10 shrink-0 items-center gap-3 border-b border-line bg-surface px-4">
-            <span class="shrink-0 text-2xs font-bold uppercase tracking-label text-muted">
-              {tr('room.ui.1300')} · {kernel.queued.length}
-            </span>
-            <span class="min-w-0 flex-1 truncate text-2xs text-faint">{tr('room.ui.1301')}</span>
-          </div>
+    <section class="queued-section" aria-label={tr('room.pult.v2.queue.queuedTitle', { count: kernel.queued.length })}>
+      <div class="section-heading"><h3>{tr('room.pult.v2.queue.queuedTitle', { count: kernel.queued.length })}</h3></div>
+      {#if kernel.queued.length === 0}
+        <p class="empty-copy">{tr('room.pult.v2.queue.noQueued')}</p>
+      {:else}
+        <ol class="attempt-list">
           {#each kernel.queued as attempt, at (attempt.participantId)}
-            <div class="flex h-11 shrink-0 items-center gap-3 border-b border-line px-4">
-              <span class="w-4 shrink-0 font-mono text-2xs text-muted">{at + 1}</span>
-              <span
-                class="h-5 w-5 shrink-0 rounded-full"
-                style:background-color={names ? attempt.color : 'rgb(var(--line))'}
-                aria-hidden="true"
-              ></span>
-              <span class="w-40 shrink-0 truncate text-ui font-bold text-ink">{who(attempt)}</span>
-              <span class="min-w-0 flex-1 truncate font-mono text-code text-faint">
-                {attempt.text.split('\n').find((line) => line.trim()) ?? ''}
+            <li class="queued-row">
+              <span class="queue-position" aria-hidden="true">{String(at + 1).padStart(2, '0')}</span>
+              <span class="avatar-slot" aria-hidden="true">
+                {#if names}<Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="md" />{:else}<span class="anonymous-avatar"></span>{/if}
               </span>
-            </div>
+              <strong class="queued-author">{who(attempt)}</strong>
+              <code>{attempt.text.split('\n').find((line) => line.trim()) ?? ''}</code>
+              <button type="button" class="pult-button pult-button--danger" {disabled} data-pult-remove
+                onclick={(event) => onremove(attempt, event)}>{tr('room.ui.78')}</button>
+            </li>
           {/each}
-        </div>
+        </ol>
+        <p class="queue-order pult-meta">{tr('room.pult.v2.queue.order')}</p>
       {/if}
+    </section>
+  </div>
+
+  <section class="queue-policy" aria-label={tr('room.pult.v2.queue.policyTitle')}>
+    <div class="policy-controls">
+      <h3>{tr('room.pult.v2.queue.policyTitle')}</h3>
+      <div class="policy-options">
+        {#each POLICY as item (String(item.value))}
+          <button type="button" class="pult-button" class:pult-button--selected={settings.studentRun === item.value} aria-pressed={settings.studentRun === item.value} {disabled} onclick={() => onpolicy(item.value)}>
+            {tr(item.key)}{settings.studentRun === item.value ? ' ✓' : ''}
+          </button>
+        {/each}
+      </div>
     </div>
-  {/if}
+    <p class="pult-meta shared-note">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
+  </section>
 </div>
+
+<style>
+  .queue-view { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; color: rgb(var(--ink)); }
+  .queue-content { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 28px; }
+  .queue-heading, .section-heading, .policy-controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  h2 { font-size: 24px; line-height: 30px; font-weight: 700; }
+  .queue-heading p { margin-top: 6px; color: rgb(var(--muted)); font-size: 14px; line-height: 20px; }
+  .queue-counts { flex-shrink: 0; }
+  .running-card { display: flex; align-items: center; gap: 16px; margin: 20px 0 24px; padding: 18px 20px; border-left: 4px solid rgb(var(--line)); background: rgb(var(--raised)); }
+  .running-card.is-running { border-left-color: rgb(var(--accent)); }
+  .running-icon { flex-shrink: 0; width: 32px; color: rgb(var(--accent-text)); font-size: 26px; line-height: 32px; }
+  .running-copy { flex: 1; min-width: 0; }
+  .running-label { color: rgb(var(--accent-text)); font-size: 14px; line-height: 20px; font-weight: 600; }
+  .running-author { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 6px; font-size: 18px; line-height: 24px; }
+  .running-author strong { overflow-wrap: anywhere; }
+  .running-time { color: rgb(var(--muted)); font-size: 16px; font-variant-numeric: tabular-nums; }
+  .running-actions { display: flex; flex-shrink: 0; flex-wrap: wrap; gap: 8px; }
+  .idle-copy { font-size: 16px; line-height: 24px; color: rgb(var(--muted)); }
+  h3 { font-size: 18px; line-height: 26px; font-weight: 700; }
+  .pending-title { color: rgb(var(--warning)); font-size: 20px; }
+  .section-heading { margin-bottom: 12px; }
+  .attempt-list { padding: 0; margin: 0; list-style: none; }
+  .pending-row { display: flex; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid rgb(var(--line)); }
+  .avatar-slot, .anonymous-avatar { display: block; width: 32px; height: 32px; flex-shrink: 0; }
+  .anonymous-avatar { border-radius: 50%; background: rgb(var(--line)); }
+  .attempt-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 5px; }
+  .attempt-copy strong, .queued-author { font-size: 16px; line-height: 20px; font-weight: 700; overflow-wrap: anywhere; }
+  .request-time { color: rgb(var(--muted)); font-size: 14px; line-height: 20px; }
+  .request-reason { max-width: 180px; color: rgb(var(--danger)); overflow-wrap: anywhere; }
+  .row-actions { display: flex; flex-shrink: 0; gap: 8px; }
+  .empty-copy { color: rgb(var(--muted)); font-size: 14px; line-height: 20px; }
+  .queued-section { margin-top: 24px; }
+  .queued-row { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-top: 1px solid rgb(var(--line)); }
+  .queue-position { width: 24px; flex-shrink: 0; color: rgb(var(--muted)); font-size: 15px; font-variant-numeric: tabular-nums; }
+  .queued-author { width: 170px; flex-shrink: 0; }
+  code { min-width: 0; color: rgb(var(--muted)); font-family: var(--font-mono); font-size: 14px; line-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .queue-order { margin-top: 8px; color: rgb(var(--muted)); }
+  .queue-policy { flex-shrink: 0; padding: 18px 28px; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
+  .policy-controls h3 { font-size: 15px; line-height: 20px; }
+  .policy-options { display: flex; flex-wrap: wrap; gap: 8px; }
+  .shared-note { margin-top: 12px; color: rgb(var(--muted)); line-height: 20px; }
+  @media (max-width: 850px) {
+    .queue-content { padding: 20px; }
+    .queue-policy { padding: 16px 20px; }
+    .pending-row { flex-wrap: wrap; gap: 12px; }
+    .attempt-copy { min-width: 180px; }
+    .request-reason { max-width: none; flex-basis: 100%; padding-left: 44px; order: 1; }
+    .queued-author { width: 140px; }
+  }
+  @media (max-width: 540px) {
+    .running-card { flex-wrap: wrap; }
+    .row-actions { margin-left: 44px; }
+    .queued-row { flex-wrap: wrap; gap: 10px; }
+    .queued-row code { flex-basis: 100%; margin-left: 34px; }
+  }
+</style>

@@ -943,7 +943,7 @@
     >
       <div class="flex min-w-[180px] flex-col gap-[3px]">
         <p
-          class="flex items-center gap-[7px] whitespace-nowrap text-micro font-bold uppercase
+          class="flex items-center gap-[7px] whitespace-nowrap text-2xs font-bold uppercase
                  tracking-label text-accent-text"
         >
           <span class="h-[7px] w-[7px] shrink-0 rounded-full bg-accent"></span>
@@ -1389,7 +1389,7 @@
                   всё-таки кто-то есть: перечитывают разбор, и это видно.
                 -->
                 <span
-                  class="chip h-[22px] gap-1.5 bg-warning/[0.14] px-2 text-micro font-bold uppercase tracking-caps text-warning"
+                  class="chip h-6 gap-1.5 bg-warning/[0.14] px-2 text-2xs font-bold uppercase tracking-caps text-warning"
                   title="{tr("admin.class.ended")} {new Date(
                     seminar.finishedAt ?? 0,
                   ).toLocaleString(getLocale())} {tr("admin.student.editing.and.execution.are.disabled")}"
@@ -1404,14 +1404,14 @@
                 </span>
               {:else if seminar.status === 'live'}
                 <span
-                  class="chip h-[22px] gap-1.5 bg-accent/15 px-2 text-micro font-bold uppercase tracking-caps text-accent-text"
+                  class="chip h-6 gap-1.5 bg-accent/15 px-2 text-2xs font-bold uppercase tracking-caps text-accent-text"
                 >
                   <span class="h-[5px] w-[5px] rounded-full bg-accent"></span>
                   {tr("admin.live.990")}
                 </span>
               {:else if seminar.status === 'draft'}
                 <span
-                  class="chip h-[22px] border border-line px-2 text-micro font-bold uppercase tracking-caps text-muted"
+                  class="chip h-6 border border-line px-2 text-2xs font-bold uppercase tracking-caps text-muted"
                 >
                   {tr("admin.draft")}
                 </span>
@@ -1419,7 +1419,7 @@
                 <!-- Bare, so the four states share one right-hand lane: an empty
                      room is a fact, not a badge. Слово честное: заходили, а
                      сейчас никого — «закончено» это не значит. -->
-                <span class="text-micro font-bold uppercase tracking-caps text-muted">{tr("admin.empty")}</span>
+                <span class="text-2xs font-bold uppercase tracking-caps text-muted">{tr("admin.empty")}</span>
               {/if}
             </div>
           </td>
@@ -1435,7 +1435,7 @@
                   event.stopPropagation()
                   openMenu(seminar, event.currentTarget as HTMLElement)
                 }}
-                class="flex h-6 w-6 items-center justify-center p-1 text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
+                class="flex h-8 w-8 items-center justify-center text-faint transition-colors duration-100 hover:bg-raised hover:text-ink"
               >
                 <Icon name="more" size={15} />
               </button>

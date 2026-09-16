@@ -1,159 +1,70 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  /**
-   * Строка списка пульта — главный предмет мессенджера.
-   *
-   * 50 px и шесть слотов, из которых ни один не плавает: слот, пустой в этой
-   * строке, всё равно занимает своё место, иначе соседние строки перестают
-   * читаться колонками (Paper · 05c · доска 06). Высота не меняется НИКОГДА —
-   * меняются полоса слева, подложка и хвост.
-   *
-   * Полоса смысла 3 px есть у каждой строки, чаще всего цвета корпуса, то есть
-   * невидимая: строка не должна дёргаться вбок оттого, что человек попросил
-   * запуск. По той же причине точку непрочитанного рисует пустой кружок, а не
-   * `{#if}`.
-   *
-   * Компонент чистый: всё приезжает пропсами, нажатия уходят наверх.
-   */
   import type { CouncilAttempt } from '@shared/protocol'
-  import { statusLabel } from '@/lib/council-board'
-  import type { RowMeaning } from '@/lib/council-pult'
+  import Avatar from '@/components/ui/Avatar.svelte'
+  import { attemptReview, attemptExecution, type PultPresence, type RowMeaning } from '@/lib/council-pult'
   import { clock } from '@/lib/history'
-  import { cn } from '@/lib/utils'
-
   interface Props {
-    attempt: CouncilAttempt
-    /** Сдал после того, как в список смотрели: голубая точка слева. */
-    unread: boolean
-    /** Строка внутри раскрытой группы: отступ и подпись «та же строка». */
-    inGroup: boolean
-    /** Номер варианта — подпись при выключенных именах. */
-    variant: number
-    /** Имена включены; выключены — «Вариант N» в muted и серый диск. */
-    names: boolean
-    /** Выбрана: подложка raised, полоса accent, работа открыта справа. */
-    selected: boolean
-    /** Кольцо фокуса: только когда пришли с клавиатуры. */
-    focused: boolean
-    meaning: RowMeaning
-    /** Сколько ЕЩЁ написали то же самое; 0 — никого. */
-    same: number
-    /** Пустить в ядро прямо отсюда; `null` — просьбы нет или решать нельзя. */
-    onlet: (() => void) | null
-    onopen: () => void
+    attempt: CouncilAttempt; presence: PultPresence; unread: boolean; inGroup: boolean; variant: number;
+    names: boolean; selected: boolean; focused: boolean; meaning: RowMeaning; same: number;
+    onlet: (() => void) | null; onopen: () => void
   }
-
-  let { attempt, unread, inGroup, variant, names, selected, focused, meaning, same, onlet, onopen }: Props =
-    $props()
-
-  const CAPS = 'text-micro font-bold uppercase tracking-caps'
-  const writing = $derived(attempt.submittedAt === null)
-
-  /** Полоса смысла: что от вас требуется, а не что случилось. */
-  const stripe = $derived(
-    meaning === 'asking'
-      ? 'border-l-warning'
-      : meaning === 'screen'
-        ? 'border-l-positive'
-        : meaning === 'cursor'
-          ? 'border-l-accent'
-          : 'border-l-transparent',
-  )
-
-  /** Отметка капителью — слово и его цвет. */
-  const mark = $derived.by(() => {
-    if (writing) return { text: tr('room.ui.1311'), tone: 'text-accent-text' }
-    switch (attempt.status) {
-      case 'correct':
-        return { text: `✓ ${statusLabel(attempt)}`, tone: 'text-positive' }
-      case 'wrong':
-        return { text: `✗ ${statusLabel(attempt)}`, tone: 'text-warning' }
-      case 'failed':
-        return { text: statusLabel(attempt), tone: 'text-danger' }
-      default:
-        return { text: statusLabel(attempt), tone: 'text-faint' }
-    }
-  })
-
-  /**
-   * Одно уточнение справа от отметки, и не больше двух слов.
-   *
-   * Порядок важен: «просит запуск» вытесняет всё, потому что это единственное,
-   * что требует от вас действия прямо сейчас; «на экране» — единственное, что
-   * прямо сейчас видит зал.
-   */
-  const why = $derived.by(() => {
-    if (meaning === 'asking') return { text: tr('room.ui.1382'), tone: 'text-warning font-bold' }
-    if (inGroup) return { text: tr('room.ui.1319'), tone: 'text-faint' }
-    if (writing) return null
-    if (attempt.status === 'failed' && same === 0) return { text: tr('room.ui.1321'), tone: 'text-faint' }
-    if (same > 0) return { text: tr('room.ui.1314', { count: same }), tone: 'text-faint' }
-    return null
-  })
+  let { attempt, presence, unread, inGroup, variant, names, selected, focused, meaning, same, onlet, onopen }: Props = $props()
+  const review = $derived(attemptReview(attempt))
+  const execution = $derived(attemptExecution(attempt))
+  const title = $derived(names ? attempt.name : tr('room.ui.1255',{p0:variant}))
+  const draft = $derived(attempt.submittedAt === null)
+  const runText = $derived(draft && !attempt.run && attempt.runRequest?.status !== 'pending' && presence !== 'unknown'
+    ? tr(presence === 'online' ? 'room.pult.online' : 'room.pult.offline') : execution.label)
+  const runIcon = $derived(execution.tone === 'danger' ? '×' : execution.tone === 'accent' ? '▶' : execution.tone === 'warning' ? '◷' : '')
 </script>
-
-<div
-  class={cn(
-    'flex h-[50px] shrink-0 items-center gap-[9px] border-b border-l-[3px] border-b-line pr-3 text-left',
-    stripe,
-    inGroup ? 'pl-[21px]' : 'pl-[9px]',
-    selected ? 'bg-raised' : 'hover:bg-surface',
-    focused && 'outline outline-2 -outline-offset-2 outline-accent',
-  )}
-  data-pult-row={attempt.participantId}
-  data-selected={selected ? 'yes' : 'no'}
->
-  <button
-    type="button"
-    class="flex min-w-0 flex-1 items-center gap-[9px] text-left"
-    tabindex={selected ? 0 : -1}
-    data-pult-select
-    aria-pressed={selected}
-    onclick={onopen}
-  >
-    <!-- Слот точки занят всегда: гаснущая точка не должна двигать имя. -->
-    <span
-      class={cn('h-[7px] w-[7px] shrink-0 rounded-full', unread ? 'bg-accent' : 'bg-transparent')}
-      aria-hidden="true"
-    ></span>
-    <span
-      class="h-[22px] w-[22px] shrink-0 rounded-full"
-      style:background-color={names ? attempt.color : 'rgb(var(--line))'}
-      aria-hidden="true"
-    ></span>
-    <span class="flex min-w-0 flex-1 flex-col gap-[3px]">
-      <span class={cn('truncate text-ui font-bold', names ? 'text-ink' : 'text-muted')}>
-        {names ? attempt.name : tr('room.ui.1255', { p0: variant })}
+<div class="pult-row" class:selected class:focused class:in-group={inGroup} class:asking={meaning==='asking'} class:on-screen={meaning==='screen'} data-pult-row={attempt.participantId} data-selected={selected?'yes':'no'} data-presence={presence}>
+  <button type="button" class="pult-row-select" data-pult-select tabindex={selected?0:-1} aria-pressed={selected} title={title} onclick={onopen}>
+    <span class="pult-unread" class:unread aria-hidden="true"></span>
+    <span class="pult-avatar" aria-hidden="true">
+      {#if names}<Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="md" emojiPx={18} />{:else}<span class="pult-anonymous"></span>{/if}
+    </span>
+    <span class="pult-row-main">
+      <span class="pult-row-name">{title}</span>
+      <span class="pult-row-tags">
+        <span class="pult-badge" data-tone={review.tone}>{#if review.tone==='positive'}<span aria-hidden="true">✓</span>{:else if review.tone==='warning'}<span aria-hidden="true">↺</span>{/if}{review.label}</span>
+        {#if meaning==='screen'}<span class="pult-badge" data-tone="positive">{tr('room.ui.1313')}</span>{/if}
       </span>
-      <span class="flex min-w-0 items-center gap-1.5">
-        <span class={cn(CAPS, 'shrink-0', mark.tone)}>{mark.text}</span>
-        {#if meaning === 'screen'}
-          <span class={cn(CAPS, 'shrink-0 bg-positive px-1.5 py-px text-canvas')}>{tr('room.ui.1313')}</span>
-        {:else if why}
-          <!-- Уточнение уступает место кнопке, а не лезет под неё: слоты в
-               строке фиксированы, и растягивается только этот. -->
-          <span class={cn('min-w-0 truncate text-2xs', why.tone)}>{why.text}</span>
-        {/if}
-      </span>
+      <span class="pult-run-state" data-tone={execution.tone}>{#if runIcon}<span aria-hidden="true">{runIcon} </span>{/if}{runText}</span>
     </span>
   </button>
-  <!--
-    Хвост: время сдачи — или кнопка, когда от вас требуется действие. Это
-    единственный случай, когда строка теряет время: пустить в ядро можно прямо
-    отсюда, не открывая работу и не теряя места в списке.
-  -->
-  {#if onlet}
-    <button
-      type="button"
-      class={cn(CAPS, 'h-6 shrink-0 bg-warning px-3 text-surface')}
-      aria-label={`${tr('room.ui.1296')} · ${names ? attempt.name : tr('room.ui.1255', { p0: variant })}`}
-      onclick={onlet}
-    >{tr('room.ui.1296')}</button>
-  {:else if writing}
-    <span class="w-[30px] shrink-0 text-right font-mono text-micro text-accent-text">{tr('room.ui.1312')}</span>
-  {:else}
-    <span class="w-[30px] shrink-0 text-right font-mono text-micro text-faint">
-      {clock(attempt.submittedAt ?? 0)}
-    </span>
-  {/if}
+  <div class="pult-row-tail">
+    {#if onlet}
+      <button type="button" class="pult-allow" aria-label={`${tr('room.ui.1296')} · ${title}`} onclick={onlet}>{tr('room.ui.1296')}</button>
+    {:else}
+      <time class="pult-meta" datetime={new Date(attempt.submittedAt ?? attempt.updatedAt).toISOString()}>{clock(attempt.submittedAt ?? attempt.updatedAt)}</time>
+    {/if}
+    {#if presence==='offline' && !draft}<span class="pult-meta">{tr('room.pult.offline')}</span>{/if}
+    {#if same>0 && !onlet}<span class="pult-same pult-meta" title={tr('room.ui.1314',{count:same})}>+{same}</span>{/if}
+  </div>
 </div>
+<style>
+  .pult-row { display:flex; align-items:center; gap:8px; min-height:86px; border-bottom:1px solid rgb(var(--line)); border-left:4px solid transparent; padding:10px 12px 10px 8px; background:rgb(var(--canvas)); }
+  .pult-row:hover { background:rgb(var(--surface)); }
+  .pult-row.selected { background:rgb(var(--raised)); border-left-color:rgb(var(--primary)); }
+  .pult-row.asking:not(.selected) { border-left-color:rgb(var(--warning)); }
+  .pult-row.on-screen:not(.selected) { border-left-color:rgb(var(--positive)); }
+  .pult-row.focused { outline:2px solid rgb(var(--accent-text)); outline-offset:-2px; }
+  .pult-row.in-group { padding-left:20px; }
+  .pult-row-select { display:flex; align-items:center; gap:10px; min-width:0; flex:1; text-align:left; cursor:pointer; }
+  .pult-unread { width:6px; height:6px; flex-shrink:0; border-radius:50%; background:transparent; }
+  .pult-unread.unread { background:rgb(var(--accent)); }
+  .pult-avatar,.pult-anonymous { display:block; width:32px; height:32px; flex-shrink:0; }
+  .pult-anonymous { background:rgb(var(--line)); border-radius:50%; }
+  .pult-row-main { display:flex; flex-direction:column; gap:4px; min-width:0; flex:1; }
+  .pult-row-name { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:16px; font-weight:700; line-height:20px; }
+  .pult-row-tags { display:flex; gap:4px; flex-wrap:wrap; }
+  .pult-run-state { font-size:13px; line-height:18px; color:rgb(var(--muted)); }
+  .pult-run-state[data-tone="danger"] { color:rgb(var(--danger)); }
+  .pult-run-state[data-tone="warning"] { color:rgb(var(--warning)); }
+  .pult-run-state[data-tone="accent"] { color:rgb(var(--accent-text)); }
+  .pult-row-tail { display:flex; flex-direction:column; gap:4px; align-items:flex-end; width:64px; flex-shrink:0; text-align:right; }
+  .pult-allow { min-height:34px; padding:5px 8px; background:rgb(var(--warning)/.12); border:1px solid rgb(var(--warning)/.45); color:rgb(var(--warning)); font-size:13px; font-weight:600; cursor:pointer; }
+  .pult-same { padding:1px 5px; border:1px solid rgb(var(--line)); }
+  @media(max-width:800px) { .pult-row { padding-right:8px; }.pult-row-tail { width:56px; }.pult-row-select { gap:6px; }.pult-row-name { font-size:15px; } }
+</style>

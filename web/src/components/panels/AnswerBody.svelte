@@ -186,7 +186,7 @@
   }
 
   const STRIP =
-    'inline-flex h-[19px] shrink-0 items-center gap-1 border border-line px-1.5 text-2xs ' +
+    'inline-flex min-h-6 shrink-0 items-center gap-1 border border-line px-1.5 py-0.5 text-2xs ' +
     'font-bold uppercase tracking-caps text-muted transition-colors duration-[var(--speed-quick)] ' +
     'hover:border-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 ' +
     'focus-visible:ring-accent/40'

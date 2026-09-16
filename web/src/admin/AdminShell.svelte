@@ -163,7 +163,7 @@
   <div class={cn('flex shrink-0 flex-col gap-px', first ? 'pt-4' : 'pt-5')}>
     <!-- The group heading is the first thing to go on the narrow rail: with the
          labels gone it heads a column of icons, which it cannot describe. -->
-    <p class="hidden px-5 pb-2 text-micro font-bold uppercase tracking-section text-white/60 md:block">
+    <p class="hidden px-5 pb-2 text-2xs font-bold uppercase tracking-section text-white/60 md:block">
       {label}
     </p>
 
@@ -246,14 +246,14 @@
           <p class="truncate text-ui font-semibold text-white">{teacher.name}</p>
           <!-- The artboard puts a faculty here; we have no faculty field, and
                the role is the thing that decides what this person can do. -->
-          <p class="truncate text-micro capitalize text-white/60">{tr(`admin.role.${teacher.role}`)}</p>
+          <p class="truncate text-2xs capitalize text-white/70">{tr(`admin.role.${teacher.role}`)}</p>
         </div>
         <button
           type="button"
           title={tr("admin.sign.out")}
           aria-label={tr("admin.sign.out")}
           onclick={() => void adminAuth.signOut()}
-          class="shrink-0 p-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white"
+          class="inline-flex h-9 w-9 shrink-0 items-center justify-center text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white"
         >
           <Icon name="x" size={15} />
         </button>

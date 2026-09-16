@@ -54,21 +54,48 @@ test('стенд нажимает на них дважды, а не один р�
   )
 })
 
-test('стенд нажимает в тело ячейки — туда же, куда человек', () => {
+test('стенд нажимает туда же, куда человек', () => {
   /*
-   * Выделение слушает колонку тела, а поле с номером и просветы нарочно
-   * нейтральны. Событие всплывает вверх: `pointerdown` в корень
+   * Выделение слушает то, что помечено `data-cell-pick`, а просветы вокруг
+   * нарочно нейтральны. Событие всплывает вверх: `pointerdown` в корень
    * `[data-cell-id]` до обработчика не доходит вовсе, и стенд, целившийся
    * туда, не выделял ничего — четыре проверки подряд обвиняли в этом продукт,
    * а пятая падала на `null` и уносила с собой весь хвост прогона.
    */
   const cell = readFileSync(path.join(root, 'web/src/components/notebook/CellView.svelte'), 'utf8')
-  const body = cell.indexOf('data-cell-body')
-  assert.notEqual(body, -1, 'у тела ячейки больше нет признака data-cell-body')
+  // Только атрибут — отдельной строкой в разметке: в комментариях рядом это же
+  // имя написано словами, и считать их значило бы считать объяснения.
+  const picks = [...cell.matchAll(/^ *data-cell-pick$/gm)].map((m) => m.index ?? 0)
+  assert.equal(picks.length, 2, `признак нажатия стоит на ${picks.length} узлах вместо двух: тело и номер`)
+  for (const at of picks) {
+    assert.match(
+      cell.slice(at, at + 200),
+      /onpointerdown(?:capture)?=\{\(event\) => onselect\(event\)\}/,
+      'помеченный узел ячейки не выделяет — стенд целится не туда',
+    )
+  }
+  assert.match(stand, /const body=cells\[\$\{n\}\]\.querySelector\('\[data-cell-pick\]:not\(span\)'\)/)
+})
+
+test('номер ячейки выделяет её, а поле вокруг — снимает', () => {
+  /*
+   * Выбранная ячейка помечена НОМЕРОМ — залитым прямоугольником, — так что
+   * целятся именно в него. Пока номер был нейтрален, нажатие на метку
+   * выделения выделение снимало: человек тыкал в то, что видит, и терял выбор.
+   *
+   * Проверяется парой, потому что и работает парой: признак на номере (иначе
+   * не выделит) и признак же в проверке снятия (иначе снимет сразу после того,
+   * как выделил, — обработчики стоят на разных событиях и не мешают друг другу).
+   */
+  const cell = readFileSync(path.join(root, 'web/src/components/notebook/CellView.svelte'), 'utf8')
+  const at = cell.search(/<span\n *data-cell-pick/)
+  assert.notEqual(at, -1, 'номер ячейки больше не помечен как место нажатия')
+  assert.match(cell.slice(at, at + 1200), /\{ordinal\}/, 'помечен не номер, а что-то другое')
+
+  const screen = readFileSync(path.join(root, 'web/src/screens/SessionScreen.svelte'), 'utf8')
   assert.match(
-    cell.slice(body, body + 200),
-    /onpointerdown(?:capture)?=\{\(event\) => onselect\(event\)\}/,
-    'нажатие переехало с тела ячейки — стенд целится не туда',
+    screen,
+    /closest\('\[data-cell-pick\]'\)\) return/,
+    'снятие выделения проверяет не тот признак — нажатие на номер снимет то, что только что выделило',
   )
-  assert.match(stand, /const body=cells\[\$\{n\}\]\.querySelector\('\[data-cell-body\]'\)/)
 })

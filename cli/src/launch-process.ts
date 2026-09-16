@@ -24,9 +24,10 @@ export class Processes {
     args: string[],
     quiet = false,
     extraEnv: NodeJS.ProcessEnv = {},
+    cwd = this.root,
   ): ManagedProcess {
     const child = spawn(command, args, {
-      cwd: this.root,
+      cwd,
       env: { ...this.env, ...extraEnv },
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],

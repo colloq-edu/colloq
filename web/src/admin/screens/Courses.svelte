@@ -445,7 +445,7 @@
 
   const ROW = 'flex items-center gap-4 border-t border-line py-2.5'
   const ARROW =
-    'flex h-6 w-6 items-center justify-center border border-line text-muted transition-colors ' +
+    'flex h-8 w-8 items-center justify-center border border-line text-muted transition-colors ' +
     'duration-100 hover:border-faint hover:text-ink disabled:border-line-soft disabled:text-faint'
 </script>
 
@@ -660,7 +660,7 @@
       <div class="flex flex-wrap items-center gap-2 pb-5">
         <span class="font-mono text-2xs text-muted">{location.host}/c/</span>
         <input
-          class="h-7 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
+          class="h-9 w-[220px] border border-line bg-canvas px-2 font-mono text-2xs text-ink
                  placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
           placeholder={shown.id}
           maxlength={64}
@@ -670,7 +670,7 @@
           }}
         />
         {#if slugDraft.trim() !== (shown.slug ?? '')}
-          <button type="button" class="btn-primary h-7 px-3 text-2xs" disabled={busy} onclick={() => void saveSlug()}>
+          <button type="button" class="btn-primary h-9 px-3 text-2xs" disabled={busy} onclick={() => void saveSlug()}>
             {tr("admin.save.address")}
           </button>
         {/if}
@@ -681,7 +681,7 @@
         {#if held}
           <button
             type="button"
-            class="btn-outline h-7 px-3 text-2xs"
+            class="btn-outline h-9 px-3 text-2xs"
             disabled={busy}
             onclick={() => (askingSlug = true)}
           >
@@ -724,7 +724,7 @@
               <span class="min-w-0 flex-1 truncate font-mono text-2xs text-ink">/c/{name}</span>
               <button
                 type="button"
-                class="btn-outline h-7 shrink-0 px-3 text-2xs"
+                class="btn-outline h-9 shrink-0 px-3 text-2xs"
                 disabled={busy}
                 onclick={() => (dropping = name)}
               >
@@ -794,7 +794,7 @@
           {#if item.kind === 'planned'}
             <div class="min-w-0 flex-1">
               <p class="text-ui text-ink">{item.name}</p>
-              <p class="mt-0.5 text-2xs text-faint">{tr("admin.planned")} {item.when}</p>
+              <p class="mt-0.5 text-2xs text-muted">{tr("admin.planned")} {item.when}</p>
             </div>
             <div class="flex w-[290px] shrink-0 items-baseline gap-3">
               <span class="text-ui text-muted">{tr("admin.no.room.yet")}</span>
@@ -810,7 +810,7 @@
           {:else if item.kind === 'gone'}
             <div class="min-w-0 flex-1">
               <p class="text-ui text-muted">{item.name}</p>
-              <p class="mt-0.5 text-2xs text-faint">
+              <p class="mt-0.5 text-2xs text-muted">
                 {tr("admin.seminar.deleted.position.in.list.kept")}
               </p>
             </div>

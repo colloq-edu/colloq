@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
+  import Avatar from '@/components/ui/Avatar.svelte'
   /**
    * Левая колонка пульта: люди сверху вниз, свежие первыми.
    *
@@ -13,12 +14,15 @@
    * двигается.
    */
   import type { CouncilAttempt } from '@shared/protocol'
-  import { rowMeaning, type PultRow as Row } from '@/lib/council-pult'
+  import { pultPresence, rowMeaning, type PultRow as Row } from '@/lib/council-pult'
   import { cn } from '@/lib/utils'
   import PultRow from './PultRow.svelte'
 
   interface Props {
     rows: readonly Row[]
+    people: ReadonlyMap<string, unknown>
+    connected: boolean
+    filtered?: boolean
     /** Выбранная работа — она же открыта справа. */
     cursor: string | null
     /** Пришли с клавиатуры: только тогда рисуется кольцо. */
@@ -42,6 +46,9 @@
 
   let {
     rows,
+    people,
+    connected,
+    filtered = false,
     cursor,
     keyboard,
     names,
@@ -56,7 +63,7 @@
     onscroll,
   }: Props = $props()
 
-  const CAPS = 'text-micro font-bold uppercase tracking-caps'
+  const CAPS = 'text-[13px] font-semibold'
 </script>
 
 <!--
@@ -65,7 +72,7 @@
   работа справа от лишних 52 px читается не лучше, а список читается.
 -->
 <div
-  class="flex min-h-0 w-[220px] min-[760px]:w-[260px] min-[900px]:w-[308px] shrink-0 flex-col border-r border-line min-[1100px]:w-[360px]"
+  class="flex min-h-0 flex-1 flex-col"
   data-pult-list
 >
   {#if held > 0}
@@ -75,7 +82,7 @@
     -->
     <button
       type="button"
-      class={cn(CAPS, 'flex h-7 shrink-0 items-center justify-center border-b border-line bg-accent text-accent-ink')}
+      class={cn(CAPS, 'flex min-h-10 shrink-0 items-center justify-center border-b border-line bg-accent text-accent-ink')}
       onclick={onrelease}
     >{tr('room.ui.1320', { count: held })}</button>
   {/if}
@@ -88,6 +95,7 @@
       {#if row.kind === 'attempt'}
         <PultRow
           attempt={row.attempt}
+          presence={pultPresence(connected, people, row.attempt.participantId)}
           unread={row.unread}
           inGroup={row.inGroup}
           variant={row.variant}
@@ -108,7 +116,7 @@
         -->
         <button
           type="button"
-          class="flex h-10 w-full shrink-0 items-center gap-[9px] border-b border-line px-3 text-left"
+          class="flex min-h-12 w-full shrink-0 items-center gap-[9px] border-b border-line px-3 text-left"
           onclick={() => ontoggle(row.groupKey)}
         >
           <span class="flex shrink-0" aria-hidden="true">
@@ -117,22 +125,26 @@
                 class="h-5 w-5 shrink-0 rounded-full"
                 style:background-color={names ? face.color : 'rgb(var(--line))'}
                 style:margin-left={at === 0 ? '0' : '-7px'}
-              ></span>
+              >
+                {#if names}
+                  <Avatar name={face.name} color={face.color} avatar={face.avatar} size="xs" class="!h-full !w-full" />
+                {/if}
+              </span>
             {/each}
           </span>
-          <span class="min-w-0 flex-1 truncate text-2xs text-muted">
+          <span class="min-w-0 flex-1 truncate text-[14px] text-muted">
             {tr('room.ui.1317', { count: row.rest })}
           </span>
           <span class={cn(CAPS, 'shrink-0 text-accent-text')}>{tr('room.ui.1315')}</span>
         </button>
       {:else}
-        <div class="flex h-7 shrink-0 items-center gap-[9px] border-b border-line bg-surface px-3">
+        <div class="flex min-h-10 shrink-0 items-center gap-[9px] border-b border-line bg-surface px-3">
           <span class={cn(CAPS, 'shrink-0 text-faint')}>
             {tr('room.ui.1318', { p0: row.index, p1: row.count })}
           </span>
           <!-- Имя группы — от оракула, а до него первая строка кода: шапка
                обязана сказать, ЧТО написали эти люди, а не только сколько их. -->
-          <span class="min-w-0 flex-1 truncate text-2xs text-faint" title={row.label}>{row.label}</span>
+          <span class="min-w-0 flex-1 truncate text-[13px] text-muted" title={row.label}>{row.label}</span>
           <button type="button" class={cn(CAPS, 'shrink-0 text-accent-text')} onclick={() => ontoggle(row.groupKey)}>
             {tr('room.ui.1316')}
           </button>
@@ -140,8 +152,8 @@
       {/if}
     {:else}
       <div class="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
-        <p class="text-ui-lg font-bold text-muted">{tr('room.ui.1361')}</p>
-        <p class="text-2xs text-faint">{tr('room.ui.1362')}</p>
+        <p class="text-ui-lg font-bold text-muted">{tr(filtered ? 'room.pult.v2.noMatches' : 'room.pult.v2.noAttempts')}</p>
+        <p class="text-[14px] leading-relaxed text-muted">{tr(filtered ? 'room.pult.v2.changeFilter' : 'room.pult.v2.noAttemptsHint')}</p>
       </div>
     {/each}
   </div>

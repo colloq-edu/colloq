@@ -33,6 +33,9 @@ let wss: WebSocketServer
 let port = 0
 /** Set to hang instead of answering, the way a kernel that is thinking does. */
 let swallowExecutes = false
+/** Delay the HTTP interrupt response to exercise the queue/interrupt race. */
+let holdInterrupts = false
+let pendingInterrupts: Array<() => void> = []
 /**
  * То же для служебных запросов по shell — дополнения и справки.
  *
@@ -137,15 +140,19 @@ before(async () => {
       return
     }
     if (req.method === 'POST' && /\/interrupt$/.test(url.pathname)) {
-      const id = /^\/api\/kernels\/([^/]+)\/interrupt$/.exec(url.pathname)?.[1]
-      const kernel = id ? kernels.get(id) : undefined
-      if (kernel) kernel.busy = false
-      for (const { socket, parent } of held.splice(0)) {
-        reply(socket, parent, 'error', { ename: 'KeyboardInterrupt', evalue: '', traceback: [] })
-        reply(socket, parent, 'execute_reply', { status: 'error', execution_count: 1 })
-        reply(socket, parent, 'status', { execution_state: 'idle' })
+      const finish = () => {
+        const id = /^\/api\/kernels\/([^/]+)\/interrupt$/.exec(url.pathname)?.[1]
+        const kernel = id ? kernels.get(id) : undefined
+        if (kernel) kernel.busy = false
+        for (const { socket, parent } of held.splice(0)) {
+          reply(socket, parent, 'error', { ename: 'KeyboardInterrupt', evalue: '', traceback: [] })
+          reply(socket, parent, 'execute_reply', { status: 'error', execution_count: 1 })
+          reply(socket, parent, 'status', { execution_state: 'idle' })
+        }
+        res.writeHead(204).end()
       }
-      res.writeHead(204).end()
+      if (holdInterrupts) pendingInterrupts.push(finish)
+      else finish()
       return
     }
     res.writeHead(404).end('{}')
@@ -300,6 +307,8 @@ before(async () => {
 afterEach(() => {
   swallowExecutes = false
   swallowShell = false
+  holdInterrupts = false
+  for (const finish of pendingInterrupts.splice(0)) finish()
   held = []
 })
 
@@ -1727,6 +1736,141 @@ test('номера очереди консилиума считаются одн
   swallowExecutes = false
   await interruptSession(room.id)
   assert.ok(await until(() => room.state() !== 'running'), 'ячейка не остановилась')
+})
+
+test('бан участника останавливает его текущую попытку и сохраняет чужую очередь', async () => {
+  const { requestCouncilRun } = await import('../server/src/kernel/index.js')
+  const { purgeCouncilOf } = await import('../server/src/control.js')
+  const { saveDraft } = await import('../server/src/council.js')
+  const room = await seminar()
+  swallowExecutes = true
+  const offender: (string | null)[] = []
+  const neighbour: (string | null)[] = []
+  saveDraft(room.id, room.cellId, 'offender', 'while True: pass', Date.now())
+
+  requestCouncilRun(room.id, {
+    cellId: room.cellId,
+    participantId: 'offender',
+    source: 'while True: pass',
+    by: 'author',
+    onChange: (run) => offender.push(run?.state ?? null),
+  }, 'Нарушитель', 'offender')
+  requestCouncilRun(room.id, {
+    cellId: room.cellId,
+    participantId: 'neighbour',
+    source: 'print(2)',
+    by: 'author',
+    onChange: (run) => neighbour.push(run?.state ?? null),
+  }, 'Сосед', 'neighbour')
+  assert.ok(await until(() => offender.includes('running')), 'попытка нарушителя не началась')
+  assert.ok(
+    await until(() => held.length > 0 && requests.at(-1)?.silent === true),
+    'служебный снимок пространства имён не начался',
+  )
+  shellFinish()
+  assert.ok(
+    await until(() => held.length > 0 && requests.at(-1)?.silent === false),
+    'до ядра не дошёл код нарушителя',
+  )
+
+  swallowExecutes = false
+  assert.equal(purgeCouncilOf(room.id, 'offender'), 1)
+  assert.ok(await until(() => neighbour.includes('ok')), 'чужая очередь не продолжилась после остановки')
+  assert.deepEqual(offender.slice(0, 2), ['queued', 'running'])
+  assert.equal(offender.at(-1), 'error')
+  assert.deepEqual(neighbour, ['queued', 'running', 'ok'])
+})
+
+test('бан другого участника снимает только его очередь и не прерывает текущую попытку', async () => {
+  const { councilQueuePositions, requestCouncilRun } =
+    await import('../server/src/kernel/index.js')
+  const { purgeCouncilOf } = await import('../server/src/control.js')
+  const { saveDraft } = await import('../server/src/council.js')
+  const room = await seminar()
+  swallowExecutes = true
+  const running: (string | null)[] = []
+  const removed: (string | null)[] = []
+  saveDraft(room.id, room.cellId, 'offline-offender', 'print(1)', Date.now())
+
+  requestCouncilRun(room.id, {
+    cellId: room.cellId,
+    participantId: 'running-neighbour',
+    source: 'while True: pass',
+    by: 'author',
+    onChange: (run) => running.push(run?.state ?? null),
+  }, 'Сосед', 'running-neighbour')
+  requestCouncilRun(room.id, {
+    cellId: room.cellId,
+    participantId: 'offline-offender',
+    source: 'print(1)',
+    by: 'author',
+    onChange: (run) => removed.push(run?.state ?? null),
+  }, 'Ушедший', 'offline-offender')
+  assert.ok(await until(() => running.includes('running')), 'чужая попытка не началась')
+  assert.ok(
+    await until(() => held.length > 0 && requests.at(-1)?.silent === true),
+    'служебный снимок пространства имён не начался',
+  )
+  shellFinish()
+  assert.ok(
+    await until(() => held.length > 0 && requests.at(-1)?.silent === false),
+    'до ядра не дошёл код текущей попытки',
+  )
+
+  assert.equal(purgeCouncilOf(room.id, 'offline-offender'), 1)
+  assert.deepEqual(removed, ['queued', null])
+  assert.deepEqual(running, ['queued', 'running'], 'текущей попытке досталось прерывание чужого бана')
+  assert.deepEqual(councilQueuePositions(room.id), [])
+
+  swallowExecutes = false
+  await (await import('../server/src/kernel/index.js')).interruptSession(room.id)
+  assert.ok(await until(() => running.at(-1) === 'error'), 'тестовая попытка не завершилась')
+})
+
+test('опоздавшее прерывание бана не попадает в следующего автора', async () => {
+  const { requestCouncilRun } = await import('../server/src/kernel/index.js')
+  const { purgeCouncilOf } = await import('../server/src/control.js')
+  const { saveDraft } = await import('../server/src/council.js')
+  const room = await seminar()
+  swallowExecutes = true
+  const offender: (string | null)[] = []
+  const neighbour: (string | null)[] = []
+  saveDraft(room.id, room.cellId, 'late-offender', 'while True: pass', Date.now())
+
+  requestCouncilRun(room.id, {
+    cellId: room.cellId,
+    participantId: 'late-offender',
+    source: 'while True: pass',
+    by: 'author',
+    onChange: (run) => offender.push(run?.state ?? null),
+  }, 'Нарушитель', 'late-offender')
+  requestCouncilRun(room.id, {
+    cellId: room.cellId,
+    participantId: 'next-author',
+    source: 'print(2)',
+    by: 'author',
+    onChange: (run) => neighbour.push(run?.state ?? null),
+  }, 'Следующий', 'next-author')
+  assert.ok(await until(() => offender.includes('running')))
+  assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === true))
+  shellFinish()
+  assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === false))
+
+  holdInterrupts = true
+  assert.equal(purgeCouncilOf(room.id, 'late-offender'), 1)
+  assert.ok(await until(() => pendingInterrupts.length === 1), 'прерывание не дошло до сервера')
+
+  // Нарушитель успевает закончить сам, пока HTTP-ответ на interrupt задержан.
+  shellFinish()
+  assert.ok(await until(() => held.length > 0 && requests.at(-1)?.silent === true))
+  shellFinish()
+  await wait(50)
+  assert.deepEqual(neighbour, ['queued'], 'очередь пустила следующего под опоздавший SIGINT')
+
+  swallowExecutes = false
+  holdInterrupts = false
+  for (const finish of pendingInterrupts.splice(0)) finish()
+  assert.ok(await until(() => neighbour.at(-1) === 'ok'), 'следующая попытка не продолжилась')
 })
 
 /*

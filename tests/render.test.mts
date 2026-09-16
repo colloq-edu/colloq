@@ -138,7 +138,7 @@ test('на публичной странице не появляется иде�
   assert.ok(!renderCourse(course, 'https://colloq.ru').includes('k7m2xq4b'))
 })
 
-test('разметка заметки не пропускает чужой HTML', () => {
+test('разметка заметки пропускает теги, но не рычаги', () => {
   // Текст ячейки пишет кто угодно из комнаты, а страница уходит классу.
   const html = renderStep({
     title: 'x',
@@ -157,12 +157,15 @@ test('разметка заметки не пропускает чужой HTML'
     base: 'https://colloq.ru',
   })
   /*
-   * Проверяется тег, а не слово: в безопасном «&lt;img … onerror=…&gt;»
-   * подстрока `onerror=` остаётся — и это ровно то, чего мы хотели, потому что
-   * браузер видит текст, а не атрибут.
+   * Раньше здесь проверялось, что тега нет вовсе: вся заметка уходила в `esc()`.
+   * Теперь HTML в заметке рисуется (см. note-html.test.mts) — но белым списком,
+   * по тегу и по атрибуту, так что от этой строки остаётся `<img>` без единого
+   * атрибута: `onerror` не назван нигде, а `src=x` — не запись публикации, не
+   * `https://` и не `data:image`.
    */
-  assert.ok(!/<img/i.test(html), 'сырой тег доехал до страницы')
-  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/)
+  assert.doesNotMatch(html, /onerror/i)
+  assert.doesNotMatch(html, /alert/i)
+  assert.doesNotMatch(html, /src=/i)
   assert.match(html, /<h2>Заголовок<\/h2>/)
 })
 

@@ -31,8 +31,8 @@ export const PULT_BEAT_MS = 1000
 /** Старше этого — считаем закрытым. Три стука: одного пропущенного мало. */
 export const PULT_STALE_MS = 3000
 
-export const PULT_WIDTH = 900
-export const PULT_HEIGHT = 700
+export const PULT_WIDTH = 1120
+export const PULT_HEIGHT = 820
 export const PULT_MIN_WIDTH = 760
 export const PULT_MIN_HEIGHT = 600
 

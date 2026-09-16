@@ -743,19 +743,23 @@ check(
 const selectedCount = `document.querySelectorAll('[aria-label$="selected"]').length`
 
 /**
- * Нажатие в ячейку — это нажатие в её ТЕЛО, и стенд обязан целиться туда же.
+ * Нажатие в ячейку — это нажатие туда, где ячейку нажимают, и стенд обязан
+ * целиться туда же.
  *
- * Выделение слушает `[data-cell-body]` — колонку кода, вывода и тулбара над
- * ними, — а поле с номером и просветы вокруг нарочно нейтральны: щелчок в
- * пустоту слева ячейку не выбирает (см. комментарий у этого блока в
- * CellView.svelte). События всплывают вверх, а не вниз, поэтому
- * `pointerdown`, посланный в корень `[data-cell-id]`, до обработчика не
- * доходил вовсе: стенд не выделял ничего и обвинял в этом продукт.
+ * Выделение слушает `[data-cell-pick]` — колонку тела (код, вывод, тулбар над
+ * ними) и сам НОМЕР, — а просветы вокруг и пустое поле под номером нарочно
+ * нейтральны: щелчок туда выделение снимает (см. комментарий у этого блока в
+ * CellView.svelte). События всплывают вверх, а не вниз, поэтому `pointerdown`,
+ * посланный в корень `[data-cell-id]`, до обработчика не доходил вовсе: стенд
+ * не выделял ничего и обвинял в этом продукт.
+ *
+ * Целится он в ТЕЛО: признак теперь на двух узлах, и `querySelector` без
+ * уточнения взял бы тот, что раньше в разметке. Номер проверяется отдельно.
  */
 const pressCell = (n: number, extra = ''): string =>
   `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
   `if(cells.length < ${n + 1}) throw new Error('в тетради меньше ${n + 1} ячеек');` +
-  `const body=cells[${n}].querySelector('[data-cell-body]');` +
+  `const body=cells[${n}].querySelector('[data-cell-pick]:not(span)');` +
   `if(!body) throw new Error('у ячейки ${n + 1} нет тела — нажимать нечего');` +
   `body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true${extra}})); return 1`
 
@@ -2199,9 +2203,9 @@ if (process.argv.includes('--shot')) {
   // С выделенной ячейкой: залитый номер — самое мелкое, что стоит смотреть
   // глазами, и ровно то, что однажды оказалось тёмным квадратом.
   await host.js(
-    // В тело, а не в корень: выделение слушает `[data-cell-body]` (см. pressCell).
+    // В тело, а не в корень: выделение слушает `[data-cell-pick]` (см. pressCell).
     `const cells=[...document.querySelectorAll('[data-cell-id]')];` +
-      `cells[1]?.querySelector('[data-cell-body]')` +
+      `cells[1]?.querySelector('[data-cell-pick]:not(span)')` +
       `?.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); return 1`,
   )
   await wait(400)

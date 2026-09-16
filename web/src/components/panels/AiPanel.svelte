@@ -986,7 +986,7 @@
         <div class="flex flex-col gap-0.5 border-b border-line px-2 py-1.5">
           <div class="flex items-baseline gap-1.5">
             <span
-              class="shrink-0 text-2xs font-bold uppercase tracking-institution text-faint"
+              class="shrink-0 text-2xs font-bold uppercase tracking-institution text-muted"
               title={tr('room.ui.508')}
             > {tr('room.ui.509')} </span>
             <span class="min-w-0 truncate text-2xs text-muted">{seesAll}</span>

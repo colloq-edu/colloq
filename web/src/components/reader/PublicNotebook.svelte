@@ -66,9 +66,14 @@
    * запись становится файлом.
    */
   function noted(source: string): string {
+    /*
+     * Обе записи картинки: `![схема](blob:…)` из markdown и `<img src="blob:…">`
+     * из разметки, которую заметка теперь рисует. Закрывающая скобка и кавычка
+     * не трогаются — заменяется только адрес между ними.
+     */
     return source.replace(
-      /\]\(blob:([0-9a-f]{8,64})\.[a-z0-9]+\)/gi,
-      (_all, hash: string) => `](/api/p/${publication}/blob/${hash})`,
+      /(\]\(|src\s*=\s*["'])blob:([0-9a-f]{8,64})\.[a-z0-9]+/gi,
+      (_all, lead: string, hash: string) => `${lead}/api/p/${publication}/blob/${hash}`,
     )
   }
 
@@ -172,7 +177,7 @@
               Out [{cell.execCount}]{cell.ranMs !== null ? ` · ${seconds(cell.ranMs)}` : ''}
             </span>
           {:else}
-            <span class="font-mono text-2xs text-faint">{tr('room.ui.736')}</span>
+            <span class="font-mono text-2xs text-muted">{tr('room.ui.736')}</span>
           {/if}
         </div>
       </div>

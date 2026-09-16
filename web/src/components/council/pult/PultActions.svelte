@@ -1,21 +1,5 @@
 <script lang="ts">
   import { tr } from '@shared/i18n'
-  /**
-   * Полоса действий открытой работы, 591×56, прибитая к низу правой колонки.
-   *
-   * Порядок кнопок не меняется НИКОГДА: показать · запустить · разделитель ·
-   * верно · ошибка · … · хвост. Меняются смысл первых двух и хвост — по тому,
-   * что сейчас в зале и что сейчас в ядре. Кнопка, которая переезжает под
-   * пальцем, стоит одного промаха перед аудиторией.
-   *
-   * «Показать классу» — единственная заливка в окне: из пульта наружу ведёт
-   * ровно одна дверь, и она обязана быть видна с одного взгляда.
-   *
-   * ВРЕМЕНИ ОТМЕТКИ ЗДЕСЬ НЕТ. На макете в хвосте отмеченной работы стоит
-   * «отмечено 14:39»; в протоколе у отметки только `correct: boolean | null`,
-   * времени нет, и выдумывать его на месте — значит поставить в пульт час,
-   * который ничему не соответствует.
-   */
   import { cn, spell } from '@/lib/utils'
 
   interface Props {
@@ -49,111 +33,62 @@
     running,
     queued,
     elapsed,
-    inFrame,
     ran,
     correct,
     writing,
     disabled,
-    hasNeighbour,
     onshow,
     onclear,
     onrun,
     oninterrupt,
-    onneighbour,
     onmark,
   }: Props = $props()
 
-  const CAPS = 'text-2xs font-bold uppercase tracking-label'
-  const BTN = 'flex h-8 shrink-0 items-center px-3.5'
 </script>
 
-<div
-  class={cn(
-    'flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-t bg-surface px-3 py-2',
-    onScreen ? 'border-t-positive' : 'border-t-line',
-  )}
-  data-pult-actions
->
-  {#if onScreen}
-    <button
-      type="button"
-      class={cn(BTN, CAPS, 'border border-danger text-danger')}
-      disabled={disabled}
-      onclick={onclear}
-    >{tr('room.ui.1254')}</button>
-  {:else}
-    <button
-      type="button"
-      class={cn(BTN, CAPS, 'bg-accent text-accent-ink disabled:opacity-50')}
-      disabled={disabled || writing}
-      onclick={onshow}
-    >{tr('room.ui.1336')}</button>
-  {/if}
-
+<div class="actions" data-pult-actions>
+  <div class="actions-main">
+    <button type="button" class="pult-button pult-button--primary action-show"
+      disabled={disabled || (!onScreen && writing)} onclick={onScreen ? onclear : onshow}>
+      {onScreen ? tr('room.pult.v2.workClear') : tr('room.ui.1336')}
+      <span aria-hidden="true">{onScreen ? '×' : '↗'}</span>
+    </button>
+    <button type="button" class="pult-button action-run" disabled={disabled || running || queued}
+      title={ran ? tr('room.ui.1338') : tr('room.ui.1337')} data-pult-run onclick={onrun}>
+      <span aria-hidden="true">▶</span> {tr('room.ui.1337')}
+    </button>
+    <div class="actions-grades" role="group" aria-label={tr('room.pult.v2.workReview')}>
+      <button type="button" class={cn('pult-button action-grade', correct === true && 'pult-button--selected')}
+        data-tone="positive" aria-pressed={correct === true} disabled={disabled} onclick={() => onmark(true)}>
+        <span aria-hidden="true">✓</span> {tr('room.pult.v2.workCorrect')}
+      </button>
+      <button type="button" class={cn('pult-button action-grade', correct === false && 'pult-button--selected')}
+        data-tone="warning" aria-pressed={correct === false} disabled={disabled} onclick={() => onmark(false)}>
+        <span aria-hidden="true">↺</span> {tr('room.pult.v2.workRevise')}
+      </button>
+    </div>
+  </div>
   {#if running}
-    <!-- Нажимать больше нечего: показание со счётчиком вместо кнопки. -->
-    <span class={cn(BTN, 'gap-2 border border-accent')} aria-live="polite">
-      <span class={cn(CAPS, 'text-accent-text')}>{tr('room.pult.running')}</span>
-      <span class="font-mono text-2xs text-accent-text">{spell(elapsed)}</span>
-    </span>
+    <div class="actions-run-state">
+      <span class="pult-meta" role="status">{tr('room.pult.v2.workRunning')} · {spell(elapsed)}</span>
+      <button type="button" class="pult-button pult-button--danger" disabled={disabled} onclick={oninterrupt}>
+        {tr('room.ui.1284')}
+      </button>
+    </div>
   {:else if queued}
-    <span class={cn(BTN, CAPS, 'text-muted')} role="status">{tr('room.pult.queued')}</span>
-  {:else if onScreen && hasNeighbour}
-    <button
-      type="button"
-      class={cn(BTN, CAPS, 'border border-line text-ink')}
-      disabled={disabled}
-      onclick={onneighbour}
-    >{tr('room.ui.1339')} →</button>
-  {:else}
-    <button
-      type="button"
-      class={cn(BTN, CAPS, 'border border-line text-ink disabled:text-faint')}
-      disabled={disabled}
-      onclick={onrun}
-    >{ran ? tr('room.ui.1338') : tr('room.ui.1337')}</button>
-  {/if}
-
-  <span class="h-5 w-px shrink-0 bg-line" aria-hidden="true"></span>
-
-  <button
-    type="button"
-    class={cn(
-      'flex h-8 w-8 shrink-0 items-center justify-center border font-mono text-ui-lg font-bold',
-      correct === true ? 'border-positive bg-positive text-canvas' : 'border-line text-faint',
-    )}
-    aria-pressed={correct === true}
-    title={tr('room.ui.1046')}
-    aria-label={tr('room.ui.1046')}
-    disabled={disabled}
-    onclick={() => onmark(true)}
-  >✓</button>
-  <button
-    type="button"
-    class={cn(
-      'flex h-8 w-8 shrink-0 items-center justify-center border font-mono text-ui-lg font-bold',
-      correct === false ? 'border-danger bg-danger text-canvas' : 'border-line text-faint',
-    )}
-    aria-pressed={correct === false}
-    title={tr('room.ui.1047')}
-    aria-label={tr('room.ui.1047')}
-    disabled={disabled}
-    onclick={() => onmark(false)}
-  >✗</button>
-
-  <span class="min-w-0 flex-1"></span>
-
-  {#if running}
-    <button
-      type="button"
-      class={cn(BTN, CAPS, 'border border-line text-ink')}
-      disabled={disabled}
-      onclick={oninterrupt}
-    >{tr('room.ui.1284')}</button>
-  {:else if onScreen}
-    <span class="h-1.5 w-1.5 shrink-0 bg-positive" aria-hidden="true"></span>
-    <span class="shrink-0 font-mono text-micro text-positive">{tr('room.ui.1341', { p0: spell(inFrame) })}</span>
-  {:else}
-    <span class="hidden min-[1000px]:inline shrink-0 font-mono text-micro text-faint">← → {tr('room.ui.1340')}</span>
+    <p class="pult-meta actions-queued" role="status">{tr('room.pult.v2.workQueued')}</p>
   {/if}
 </div>
+
+<style>
+  .actions { flex-shrink: 0; padding: 12px 24px; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
+  .actions-main { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-height: 44px; }
+  .actions :global(.pult-button) { min-height: 42px; padding: 10px 12px; font-size: 14px; line-height: 20px; white-space: nowrap; }
+  .actions :global(.action-show), .actions :global(.action-run) { font-size: 15px; }
+  .actions-grades { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+  .actions :global(.action-grade[data-tone='positive'][aria-pressed='true']) { border-color: rgb(var(--positive)); background: rgb(var(--positive) / 0.1); color: rgb(var(--positive)); }
+  .actions :global(.action-grade[data-tone='warning'][aria-pressed='true']) { border-color: rgb(var(--warning)); background: rgb(var(--warning) / 0.1); color: rgb(var(--warning)); }
+  .actions-run-state { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-top: 10px; }
+  .actions-queued { margin: 10px 0 0; }
+  @media (max-width: 1000px) { .actions { padding-inline: 16px; } }
+</style>

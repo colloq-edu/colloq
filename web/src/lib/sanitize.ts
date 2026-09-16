@@ -13,7 +13,9 @@
  * `style` is not scoped to the cell. `<style>* { display: none }</style>` in a
  * text cell blanks the seminar for the whole room, and `<style>@import
  * "http://…"</style>` had every browser in the room fetch a stranger's URL.
- * Nothing a person writes in a note has ever needed a stylesheet.
+ * A stylesheet reaches the whole page, so it is the one piece of styling a
+ * note still may not carry — the style ATTRIBUTE reaches one element, and that
+ * one is now filtered by value instead of banned (shared/note-css.ts).
  *
  * `form` survives with its action intact, which puts a button in the middle of
  * the notebook that posts wherever its author chose.
@@ -41,20 +43,36 @@
 export const MARKDOWN_FORBIDDEN_TAGS = ['style', 'form', 'audio', 'video']
 
 /**
- * И атрибут `style` — он же половина той самой дыры.
+ * И атрибут `style` — он же был половиной той самой дыры.
  *
- * Тег запрещён, а атрибут DOMPurify оставляет по умолчанию и значение его не
- * разбирает вовсе: ни CSS, ни адресов внутри. `<div style="position:fixed;
- * inset:0;background:#000;z-index:9999">` из одной текстовой ячейки — чёрный
- * экран у всех тридцати человек и у ноутбука в проекторе, причём поверх
- * интерфейса: удалить ячейку мышью уже нельзя, а перезагрузка возвращает ту же
- * ячейку. Ровно тот вред, от которого закрывались тегом.
+ * Запрета здесь больше нет, и вот почему он тут стоял. Тег `<style>` запрещён,
+ * а АТРИБУТ DOMPurify оставляет по умолчанию и значение его не разбирает вовсе:
+ * ни CSS, ни адресов внутри. `<div style="position:fixed;inset:0;
+ * background:#000;z-index:9999">` из одной текстовой ячейки — чёрный экран у
+ * всех тридцати человек и у ноутбука в проекторе, причём поверх интерфейса:
+ * удалить ячейку мышью уже нельзя, а перезагрузка возвращает ту же ячейку.
  *
- * Заметке оформление не нужно: размеры, отбивки и цвета в ней задаёт
- * `.prose-note`, и он делает это одинаково у всех.
+ * Запрет это закрывал, но вместе с дырой уносил всю привычную разметку учебной
+ * тетради: `<div style="background:#eef;padding:8px">` — врезка «Замечание» из
+ * каждого второго ноутбука — доезжала голым `<div>`, то есть неотличимо от
+ * абзаца. Читалось это не как «оформление запрещено», а как «HTML не
+ * работает»: структура-то проходила, а видимой разницы не было.
  *
- * `input` и `canvas` в списке НЕТ намеренно: чекбокс — это список задач
+ * Теперь запрещён не атрибут, а СВОЙСТВА, и считает их одно место —
+ * shared/note-css.ts · safeStyle. `background`, `padding`, `border`, `color`,
+ * `text-align`, `width` проходят; `position`, `z-index`, `transform`,
+ * `box-shadow`, `url(...)` — нет, и длины упираются в потолок. Санитайзер
+ * атрибут не трогает, а render.svelte.ts переписывает его значение ДО того,
+ * как разметка попадёт в страницу: пока она лежит в отцепленном узле, ни одно
+ * правило из неё не действует и ни один адрес из неё не запрашивается.
+ *
+ * Остаётся `ping`: DOMPurify оставляет его по умолчанию, и `<a href="…"
+ * ping="http://…">` — это POST на чужой адрес из браузера того, кто нажал на
+ * ссылку в чужой заметке. Оформлению он не нужен, а рычаг на читателя — самый
+ * настоящий, и виден он только в исходнике ссылки.
+ *
+ * `input` и `canvas` в списке тегов НЕТ намеренно: чекбокс — это список задач
  * из GFM (`- [ ] сделать`), а холст без скрипта, которого сюда не пронести,
  * не рисует ничего.
  */
-export const MARKDOWN_FORBIDDEN_ATTRS = ['style']
+export const MARKDOWN_FORBIDDEN_ATTRS = ['ping']

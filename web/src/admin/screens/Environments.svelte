@@ -506,7 +506,7 @@
     'uppercase tracking-label text-ink transition-colors duration-100 hover:bg-raised ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ' +
     'disabled:pointer-events-none disabled:opacity-40'
-  const PILL = 'inline-flex h-[26px] shrink-0 items-center gap-1.5 px-2.5 text-micro font-bold uppercase tracking-label'
+  const PILL = 'inline-flex h-7 shrink-0 items-center gap-1.5 px-2.5 text-2xs font-bold uppercase tracking-label'
   const ITEM =
     'flex w-full items-center px-2.5 py-1.5 text-left text-ui text-ink transition-colors ' +
     'duration-100 hover:bg-raised disabled:pointer-events-none disabled:opacity-40'

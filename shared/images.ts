@@ -27,6 +27,8 @@
  * программу. Поэтому всё, что здесь есть, зовут только для текстовых ячеек.
  */
 
+import { normalizePath } from './paths.js'
+
 /**
  * Картинки меньше этого в документе и остаются.
  *
@@ -132,4 +134,83 @@ export function applyEdits(source: string, edits: readonly TextEdit[]): string {
   let out = source
   for (const edit of ordered) out = out.slice(0, edit.start) + edit.text + out.slice(edit.end)
   return out
+}
+
+/**
+ * Картинка, лежащая ФАЙЛОМ в папке семинара: `![схема](assets/fig01.png)`.
+ *
+ * Третий способ положить картинку в заметку, и до сих пор единственный
+ * неработавший. Два первых сюда приезжают из .ipynb и уходят на полку —
+ * `data:` в тексте и вложение nbformat (см. шапку файла). А этот из .ipynb не
+ * приезжает вовсе: в файле тетради его и нет, есть путь к соседнему файлу,
+ * который Jupyter читает с диска рядом с ноутбуком.
+ *
+ * В комнате такой путь оставался как написан, и браузер разрешал его
+ * относительно адреса страницы: `/s/<комната>/assets/fig01.png`. Там стоит
+ * приложение, и на любой путь оно отвечает своим `index.html` — то есть 200 и
+ * `text/html`. Картинка не рисовалась, а в сети не было даже 404: успех,
+ * который нечем показать.
+ *
+ * Путь НЕ переписывается в тексте ячейки — в отличие от полки. Полка получает
+ * ссылку `attachment:<sha>` потому, что содержимое переехало и старой ссылки
+ * больше нет; здесь же файл как лежал рядом с тетрадью, так и лежит, и `.ipynb`
+ * с `assets/fig01.png` внутри обязан открыться в Jupyter ровно так же. Адрес
+ * подставляется только на время показа.
+ */
+export interface WorkspaceImage {
+  /** Границы ПУТИ в исходнике — без скобок, кавычек и самого `![…]`. */
+  start: number
+  end: number
+  /** Он же, приведённый к канону `shared/paths`. */
+  path: string
+}
+
+/*
+ * Две записи картинки, и обе нужны: `![…](путь)` из markdown и `<img src="…">`
+ * из разметки, которую заметка теперь рисует. В обеих скобка захватывает то,
+ * что стоит ПЕРЕД путём, — так его начало считается сложением длин, а не
+ * поиском подстроки: `![assets/x.png](assets/x.png)` иначе нашёл бы первое
+ * вхождение, то есть подпись вместо адреса.
+ */
+const MD_IMAGE = /(!\[[^\]]*\]\(\s*)([^)\s]+)/g
+const IMG_SRC = /(<img\b[^<>]*?\bsrc\s*=\s*)("[^"]*"|'[^']*'|[^\s"'<>]+)/gi
+
+/** Адрес, за которым идут не к нам: другая схема, корень сайта, якорь. */
+const NOT_A_FILE = /^(?:[A-Za-z][A-Za-z0-9+.-]*:|\/\/|\/|#)/
+
+/**
+ * Путь к файлу семинара — или `null`, если это вообще не он.
+ *
+ * `./` в начале снимается, а `..` не прощается: первое — та же самая папка
+ * записанная иначе (так пишет половина ноутбуков), второе — выход из неё, и
+ * канон `shared/paths` отвергает его целиком.
+ */
+export function workspacePathOf(raw: string): string | null {
+  if (!raw || NOT_A_FILE.test(raw)) return null
+  let value = raw.replace(/^(?:\.\/)+/, '')
+  // Пробел в имени файла в markdown пишут как `%20`; в атрибуте — пробелом.
+  try {
+    value = decodeURIComponent(value)
+  } catch {
+    /* Не разбирается — значит это не экранирование, а сам текст. */
+  }
+  return normalizePath(value) || null
+}
+
+export function findWorkspaceImages(source: string): WorkspaceImage[] {
+  const found: WorkspaceImage[] = []
+  const add = (start: number, raw: string): void => {
+    const path = workspacePathOf(raw)
+    if (path) found.push({ start, end: start + raw.length, path })
+  }
+  for (const match of source.matchAll(MD_IMAGE)) {
+    add((match.index ?? 0) + match[1].length, match[2])
+  }
+  for (const match of source.matchAll(IMG_SRC)) {
+    const value = match[2]
+    const quoted = value.startsWith('"') || value.startsWith("'")
+    const at = (match.index ?? 0) + match[1].length + (quoted ? 1 : 0)
+    add(at, quoted ? value.slice(1, -1) : value)
+  }
+  return found
 }

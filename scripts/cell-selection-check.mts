@@ -10,12 +10,13 @@ export async function checkCellSelection(page: Page): Promise<void> {
   const cells = `document.querySelectorAll('main:not(.hidden) [data-cell-id]')`
   const selected = async () => page.js(`return [...${cells}].map((c,i)=>/selected|выделена/.test(c.getAttribute('aria-label'))?i:null).filter(i=>i!==null)`)
   const focused = async () => page.js(`return !!document.activeElement?.closest('.cm-editor')`)
-  async function click(n: number, modifiers = 0, offset = 30) {
+  async function click(n: number, modifiers = 0, offset = 30, where: 'code' | 'ordinal' = 'code') {
     const position = await page.js(`
-      const el=${cells}[${n}].querySelector('.cm-content');
+      const cell=${cells}[${n}];
+      const el=${where === 'ordinal' ? "cell.querySelector('span[data-cell-pick]')" : "cell.querySelector('.cm-content')"};
       el.scrollIntoView({block:'center'});
       const rect=el.getBoundingClientRect();
-      return {x:rect.x+${offset},y:rect.y+10};
+      return ${where === 'ordinal' ? '{x:rect.x+rect.width/2,y:rect.y+rect.height/2}' : `{x:rect.x+${offset},y:rect.y+10}`};
     `) as { x: number; y: number }
     await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...position, button: 'left', clickCount: 1, modifiers })
     await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...position, button: 'left', clickCount: 1, modifiers })
@@ -36,19 +37,43 @@ export async function checkCellSelection(page: Page): Promise<void> {
   await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39, modifiers: 8 })
   assert.equal(await focused(), true, 'Shift+Arrow stays in text editing mode')
   console.log('PASS Shift inside the active cell selects text by mouse and keyboard')
-  for (const [name, modifier] of [['Cmd', 4], ['Ctrl', 2]] as const) {
+  /*
+   * Модификатор набора ячеек вразбивку — ВТОРОЙ, не тот, которым ходят к
+   * определению (web/src/lib/utils.ts · isJumpClick: ⌘ на маке, Ctrl иначе).
+   * Стенд гоняют на маке, значит набирает здесь Ctrl, а ⌘ отдан переходу.
+   *
+   * По коду это стоило одного жеста, и взамен у набора осталось три места:
+   * номер ячейки, поля и вывод. Номер и проверяется ниже — в него целятся,
+   * когда хотят ячейку, и он для того и помечен `data-cell-pick`.
+   */
+  for (const [name, modifier, where] of [
+    ['Ctrl in code', 2, 'code'],
+    ['Cmd on the ordinal', 4, 'ordinal'],
+  ] as const) {
     await click(0)
     assert.deepEqual(await selected(), [0])
     assert.equal(await focused(), true, 'plain click enters the code editor')
-    await click(2, modifier)
-    assert.deepEqual(await selected(), [0, 2], `${name}+click in code keeps both whole cells selected`)
+    await click(2, modifier, 30, where)
+    assert.deepEqual(await selected(), [0, 2], `${name} keeps both whole cells selected`)
     assert.equal(await focused(), false, 'cell selection leaves text editing mode')
-    await click(2, modifier)
-    assert.deepEqual(await selected(), [0], `${name}+click toggles a cell off`)
-    await click(0, modifier)
-    assert.deepEqual(await selected(), [], `${name}+click can deselect the final cell`)
+    await click(2, modifier, 30, where)
+    assert.deepEqual(await selected(), [0], `${name} toggles a cell off`)
+    await click(0, modifier, 30, where)
+    assert.deepEqual(await selected(), [], `${name} can deselect the final cell`)
     console.log(`PASS ${name}: add, remove, deselect, focus`)
   }
+
+  /*
+   * И обратное утверждение: ⌘+клик ПО КОДУ выделения больше не меняет — это
+   * жест перехода к определению, и тетрадь пропускает его насквозь
+   * (Notebook.svelte · pick). Куда он уводит, проверяется не здесь: у стенда
+   * нет ни модулей семинара, ни второй ячейки с определением.
+   */
+  await click(1)
+  assert.deepEqual(await selected(), [1])
+  await click(2, 4)
+  assert.deepEqual(await selected(), [1], 'Cmd+click in code is the jump gesture, not selection')
+  console.log('PASS Cmd in code goes to the editor, not to selection')
   await click(0)
   await click(2, 8)
   assert.deepEqual(await selected(), [0, 1, 2], 'Shift+click selects the full range through code')

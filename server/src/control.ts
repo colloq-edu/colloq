@@ -72,6 +72,7 @@ import {
   onRefusal,
 } from './collab/index.js'
 import { moveInCells } from './collab/ops.js'
+import { defineIn } from './definitions.js'
 import { LINE_LENGTH } from './kernel/format.js'
 import {
   actsAfterClass,
@@ -115,6 +116,7 @@ import {
   sweepOrphanRuns,
   cancelRun,
   cancelCouncilRun,
+  purgeCouncilRunsOf,
   councilQueuePosition,
   councilQueuePositions,
   queueIsOnly,
@@ -375,11 +377,25 @@ type FrameClass = 'essential' | 'stream'
  * складывать в память процесса списки имён, которые никто не прочтёт, —
  * ровно та беда, ради которой этот класс кадров и заведён.
  */
+/*
+ * И ответ о том, где определено имя, — сюда же, хотя довод у него свой.
+ *
+ * Он приезжает не на букву, а на ОСОЗНАННЫЙ щелчок, и потерять его было бы
+ * жалко — если бы было что терять. Но у этого ответа есть срок годности, и он
+ * записан на той стороне: три секунды (session.svelte.ts · ASK_TIMEOUT_MS),
+ * после чего обещание закрывается пустым, а опоздавший кадр отбрасывается по
+ * неизвестному номеру. Сокет, отставший на мегабайт, доставит его заведомо
+ * позже — то есть кадр не «теряется», он уже ничего не стоил. А доехав всё-таки
+ * вовремя-но-поздно, он утащил бы экран из того места, где человек к тому
+ * времени работает: ровно поэтому `define` не досылается и после обрыва
+ * (session.svelte.ts · DISCARDED_OFFLINE).
+ */
 const STREAM_FRAMES = new Set<ControlServerMessage['t']>([
   'laser',
   'ink:add',
   'complete:reply',
   'inspect:reply',
+  'define:reply',
 ])
 
 function frameClass(message: ControlServerMessage): FrameClass {
@@ -1645,15 +1661,14 @@ function councilWelcome(ws: WebSocket, sessionId: string, payload: TokenPayload)
 export function purgeCouncilOf(sessionId: string, participantId: string): number {
   const cells = cellsOfParticipant(sessionId, participantId)
   const gone = purgeAttempts(sessionId, participantId)
+  /*
+   * И очередь тоже: ядро на поток одно, а его минута, потраченная на код
+   * человека, которого в комнате уже нет, — это минута, которую ждёт весь
+   * остальной класс. Убираются все его ждущие попытки; если одна уже крутится,
+   * прерывается только она, а чужая очередь дожидается конца этого interrupt.
+   */
+  purgeCouncilRunsOf(sessionId, participantId)
   for (const id of cells) {
-    /*
-     * И очередь тоже: ядро на потоке одно, а его минута, потраченная на код
-     * человека, которого в комнате уже нет, — это минута, которую ждёт весь
-     * остальной класс. Вывод такого запуска всё равно выбрасывался
-     * (`recordRun` не воскрешает стёртую попытку), то есть работа была
-     * заведомо впустую.
-     */
-    cancelCouncilRun(sessionId, id, participantId)
     // Попытки уже нет — кадр назовёт человека в `removed`.
     boardOut(sessionId, id, [participantId])
     countOut(sessionId, id)
@@ -2384,6 +2399,107 @@ function askKernel(
 }
 
 /**
+ * Двадцать четыре килобайта ВОКРУГ каретки — тот же потолок, что у соседей, и
+ * стоит он здесь по тому же поводу: клиент режет у себя (session.svelte.ts ·
+ * windowAroundCursor), а сервер режет ещё раз, потому что клиент не
+ * единственный, кто умеет открыть этот сокет.
+ *
+ * Но режется иначе, и это единственная развилка на всю дорогу. Дополнению
+ * довольно текста ДО каретки, а определение почти всегда стоит НИЖЕ места,
+ * откуда по нему щёлкнули: `helper()` в третьей строке при `def helper()` в
+ * тридцатой — обычная ячейка, обратный порядок — редкость. Обрезав хвост, как
+ * `trimToCursor`, сервер честно отвечал бы «не нашлось, где определено» ровно
+ * там, где переход нужнее всего, — в длинном файле.
+ *
+ * Курсор переезжает ровно на столько, сколько срезано слева: разъехавшись на
+ * символ, разбор взял бы ДРУГОЕ имя — и увёл бы уверенно и не туда.
+ */
+function windowAround(code: string, cursor: number): { code: string; cursor: number; from: number } {
+  const at = Math.max(0, Math.min(cursor, code.length))
+  if (code.length <= MAX_COMPLETE_CHARS) return { code, cursor: at, from: 0 }
+  const half = Math.floor(MAX_COMPLETE_CHARS / 2)
+  const start = Math.max(0, Math.min(at - half, code.length - MAX_COMPLETE_CHARS))
+  return { code: code.slice(start, start + MAX_COMPLETE_CHARS), cursor: at - start, from: start }
+}
+
+/**
+ * Где это определено — третий вопрос той же формы и единственный, на который
+ * отвечает не ядро.
+ *
+ * ПРАВА здесь не спрашиваются, и это решение, а не пропуск. `mayComplete` у
+ * соседей — про чтение состояния ЖИВОГО ядра: по `df.` видно переменные
+ * преподавателя, по `_` — что он считал последним, и в лекционной комнате это
+ * его и только его. Переход к определению не трогает ядро вовсе: он читает
+ * документ комнаты и .py-файлы её папки — то самое, что каждый участник и так
+ * видит в тетради и в панели файлов, и читает через CRDT без всякого спроса.
+ * Поставить сюда `mayComplete` значило бы погасить переход всей группе в
+ * лекции — за чтение того, что у них и так открыто на экране.
+ *
+ * Ведро `mayAsk` переиспользуется как есть. Щелчок редок, и человеку это ведро
+ * не помеха; но кадр в сокет умеет слать не только редактор, а каждый такой
+ * вопрос — это обход папки семинара и разбор до восьмидесяти файлов
+ * (definitions.ts · MAX_FILES_READ). `askDone` тут же, в `finally`: ядра никто
+ * не ждёт, ответ считается здесь и сейчас, и держать место «в полёте» не за
+ * чем — иначе пятый щелчок подряд отказывал бы навсегда.
+ *
+ * В журнал занятия не пишется ничего — по тому же доводу, что у дополнения:
+ * журнал про поступки, а прочитать, где определена функция, поступком не
+ * является.
+ */
+function answerDefine(
+  ws: WebSocket,
+  sessionId: string,
+  message: Extract<ControlClientMessage, { t: 'define' }>,
+): void {
+  const id = message.id
+  if (typeof id !== 'number' || !Number.isFinite(id)) return
+  /*
+   * Ответ на всякую беду — `nothing`, а не молчание: обещание на той стороне
+   * обязано разрешиться. И именно `nothing`, потому что его одного клиент
+   * проживает МОЛЧА (goto.svelte.ts · words): там, где сервер отказал по
+   * ведру или не разобрал кадр, человеку сказать нечего — жест он сделал
+   * правильный, объяснять ему нечего.
+   */
+  const nothing: ControlServerMessage = { t: 'define:reply', id, miss: { why: 'nothing' } }
+  if (typeof message.code !== 'string' || typeof message.cursor !== 'number') {
+    send(ws, nothing)
+    return
+  }
+  if (!mayAsk(ws)) {
+    send(ws, nothing)
+    return
+  }
+  try {
+    const { code, cursor, from } = windowAround(message.code, message.cursor)
+    /*
+     * Срез складывается: клиент мог отрезать своё окно (session.svelte.ts ·
+     * windowAroundCursor), а здесь режется второй раз — от чужого клиента,
+     * который потолка не знает. Строки считаются от НАЧАЛА ИСХОДНИКА, и оба
+     * среза обязаны доехать до `defineIn` одним числом.
+     */
+    const cut =
+      (typeof message.from === 'number' && Number.isFinite(message.from) && message.from > 0
+        ? Math.floor(message.from)
+        : 0) + from
+    const cellId = optionalId(message.cellId)
+    const path =
+      typeof message.path === 'string' && message.path.length > 0 && message.path.length <= MAX_PATH
+        ? message.path
+        : undefined
+    const answer = defineIn(sessionId, code, cursor, cellId, path, cut)
+    send(ws, { t: 'define:reply', id, ...answer })
+  } catch (error) {
+    // Разбор чужого кода — место, где ошибиться можно на любом углу, а цена
+    // такой ошибки не должна быть «упал сокет комнаты». Молчаливый `nothing`
+    // и строка в консоль: человеку переход просто не сработал.
+    if (seldom('define-failed')) console.warn('[control] переход к определению не удался:', error)
+    send(ws, nothing)
+  } finally {
+    askDone(ws)
+  }
+}
+
+/**
  * Разбор одного сообщения управляющего сокета.
  *
  * Экспортируется ради теста: таблица прав живёт здесь, и проверять её через
@@ -2431,6 +2547,15 @@ export function dispatch(
     case 'complete':
     case 'inspect':
       askKernel(ws, sessionId, payload, message)
+      return
+
+    /*
+     * Переход к определению — третий кадр той же формы, но своей дверью: он не
+     * идёт в ядро вовсе, отвечается синхронно и стоит не на праве запускать, а
+     * на праве читать комнату. Всё это — в `answerDefine`.
+     */
+    case 'define':
+      answerDefine(ws, sessionId, message)
       return
 
     case 'cancel': {
