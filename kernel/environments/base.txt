@@ -9,3 +9,4 @@
 #     make env-new NAME=cv     # создаст kernel/environments/cv.txt
 #     make env-use NAME=cv     # соберёт образ и сделает его умолчанием
 #                              # для НОВЫХ семинаров
+seaborn
