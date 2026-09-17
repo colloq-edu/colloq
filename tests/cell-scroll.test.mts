@@ -7,17 +7,22 @@
  * гипотезы. Числа в проверках взяты из того же замера: ячейка 809 px на экране
  * 705, заглушка 240 px, тулбар 28 px.
  *
- * Про запуск здесь проверок нет, и это не пропуск: запуск экран НЕ ДВИГАЕТ и
- * в этот модуль не заходит вовсе (см. Notebook · select и CellView · step).
- * Сюда приходит только переход стрелкой.
+ * Запуск сюда тоже приходит — с недавних пор и по третьей жалобе: «в Колабе
+ * после запуска спускается к низу вывода, а у нас тетрадь стоит». Она прямо
+ * противоположна второй, и мирит их одно условие: двигаем, только если низа
+ * вывода не видно. И только у ОДИНОЧНОГО запуска: за «Запустить всё» лист не
+ * ходит вовсе (разбор — Notebook · follow). Проверки на это — в конце файла.
  */
 import "./_env.mts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  afterRun,
   anchorShift,
   BREATH,
+  measurable,
   nearestTarget,
+  TAIL,
   TOOLBAR_FALLBACK,
 } from "../web/src/lib/cell-scroll.js";
 
@@ -149,4 +154,70 @@ test("то, что растёт на глазах, не трогаем", () => {
 
 test("ничего не менялось — ничего не двигаем", () => {
   assert.equal(anchorShift([], 4000), 0);
+});
+
+/* ------------------------------------------------ спрятанная вкладка */
+
+/**
+ * Жалоба: «перехожу к скрипту по cmd+клику из четвёртой ячейки, закрываю,
+ * возвращаюсь — тетрадь спустилась к десятой».
+ *
+ * Числа замерены в Chrome отдельной страницей: у `display: none` контейнера
+ * `getBoundingClientRect()` даёт нули, `scrollTop` читается нулём, а после
+ * показа браузер сам возвращает прежние 1500. То есть прокрутку теряет не
+ * браузер — её увозит наш собственный якорь, если дать ему померить нули.
+ */
+test("a frame that is not on screen cannot be measured", () => {
+  assert.equal(measurable({ top: 0, bottom: 705 }), true);
+  // Ровно то, что читается со спрятанной вкладки.
+  assert.equal(measurable({ top: 0, bottom: 0 }), false);
+  // Вырожденная раскладка: полоса выше контейнера. Мерить тоже нечего.
+  assert.equal(measurable({ top: 40, bottom: 12 }), false);
+});
+
+test("zero heights from a hidden tab would have moved the screen by the whole notebook", () => {
+  /*
+   * Что случалось без проверки. Якорь записал всем ячейкам ноль, а при
+   * возврате увидел настоящие высоты — и для него это прирост выше экрана.
+   * Шесть ячеек по 809 над целью — это 4854 px, четвёртая ячейка против
+   * десятой ровно на столько и отличается.
+   */
+  const asIfGrown = Array.from({ length: 6 }, (_, index) => ({
+    top: index * 809,
+    delta: 809,
+  }));
+  assert.equal(anchorShift(asIfGrown, 4854), 4854);
+});
+
+/* ------------------------------------------------ ход после запуска */
+
+/** Экран 705 px, тулбар 28 px, как и в остальном файле. */
+const ran = { top: 0, bottom: 705, scrollTop: 1000 };
+
+test("a cell whose output already fits is not moved at all", () => {
+  assert.equal(afterRun(ran, { top: 200, bottom: 705 - TAIL, toolbar: BAR }), null);
+});
+
+test("an output hanging below the fold is brought up, plus room for what follows", () => {
+  // Низ на 200 px ниже экрана: подводим его и просвет.
+  assert.equal(afterRun(ran, { top: 300, bottom: 905, toolbar: BAR }), 1000 + 200 + TAIL);
+});
+
+test("a cell taller than the screen arrives top first, not last line first", () => {
+  /*
+   * Тот же потолок, что у перехода стрелкой: «низ вывода» у ячейки на три
+   * экрана — это её последняя строка, и подвозить её значит увезти код и
+   * начало вывода за верхний край.
+   */
+  assert.equal(afterRun(ran, { top: 400, bottom: 2800, toolbar: BAR }), 1000 + 400 - ROOM);
+});
+
+test("running never pulls the sheet upwards", () => {
+  // Ячейка выше экрана: «подвести низ» означало бы ход ВВЕРХ — не делаем.
+  assert.equal(afterRun(ran, { top: -900, bottom: -100, toolbar: BAR }), null);
+});
+
+test("nothing is decided from a hidden tab, running or not", () => {
+  const hidden = { top: 0, bottom: 0, scrollTop: 0 };
+  assert.equal(afterRun(hidden, { top: 300, bottom: 905, toolbar: BAR }), null);
 });

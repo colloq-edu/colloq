@@ -275,20 +275,42 @@ test('env list --json по настоящим файлам совпадает с
     current: string
     environments: { name: string; python: string; packages: number; current: boolean }[]
   }
-  // Сверено с выводом make env-list на этих же файлах:
-  //     base-gpu  Python 3.11 · 2 пакета сверх базы
-  //   * base      Python 3.11 · 0 пакетов сверх базы
-  //     cv        Python 3.11 · 5 пакетов сверх базы
-  //     gpu       Python 3.11 · 2 пакета сверх базы
-  assert.equal(parsed.current, 'base')
+  /*
+   * Ожидание считается ПО ФАЙЛАМ, а не выписано числами.
+   *
+   * Числа тут стояли, и они устарели ровно так, как и должны были: списки
+   * окружений правят из панели прямо на машине, где идут занятия (окно
+   * «Окружения» пишет kernel/environments/<имя>.txt), и первая же такая
+   * правка красила тест — не найдя ошибки, а найдя чужую работу. Проверять
+   * надо не «в базе ноль пакетов», а «CLI считает их тем же правилом, что и
+   * цель env-list»: комментарии и ключи pip не пакеты, пустые строки тоже.
+   *
+   * Правило здесь своё и нарочно простое — второй счёт, независимый от
+   * первого. Совпали два разных способа — значит считает верно; разъехались —
+   * значит в одном из них ошибка, и это ровно то, что тест обязан ловить.
+   */
+  const dir = new URL('../kernel/environments/', import.meta.url)
+  const expected = readdirSync(dir)
+    .filter((name) => name.endsWith('.txt'))
+    // По ИМЕНИ окружения, а не по имени файла: «base-gpu.txt» встаёт раньше
+    // «base.txt» (дефис младше точки), а список сортирует «base» и «base-gpu».
+    .sort((left, right) => (left.replace(/\.txt$/, '') < right.replace(/\.txt$/, '') ? -1 : 1))
+    .map((file) => {
+      const text = readFileSync(new URL(file, dir), 'utf8')
+      const packages = text
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '' && !line.startsWith('#') && !line.startsWith('--')).length
+      return [file.replace(/\.txt$/, ''), packages]
+    })
   assert.deepEqual(
-    parsed.environments.map((item) => [item.name, item.python, item.packages, item.current]),
-    [
-      ['base', '3.11', 0, true],
-      ['base-gpu', '3.11', 2, false],
-      ['cv', '3.11', 5, false],
-      ['gpu', '3.11', 2, false],
-    ],
+    parsed.environments.map((item) => [item.name, item.packages]),
+    expected,
+  )
+  // Питон берётся из корня цепочки «# colloq: from», и это отдельная арифметика.
+  assert.deepEqual(
+    parsed.environments.map((item) => item.python),
+    parsed.environments.map(() => '3.11'),
   )
 })
 

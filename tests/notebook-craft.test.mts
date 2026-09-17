@@ -128,3 +128,74 @@ test('счётчик ячеек уступает ступенями, а не п�
     assert.ok(bar.includes(step), `ступень ${step} пропала`)
   }
 })
+
+test('якорь не меряет спрятанную вкладку, и ход после запуска идёт через один расчёт', () => {
+  const settle = NOTEBOOK.slice(NOTEBOOK.indexOf('function settle(): void'))
+  const body = settle.slice(0, settle.indexOf('\n  }'))
+  /*
+   * Проверка обязана стоять ДО первого измерения: отравляет не поправка, а
+   * память высот — один записанный ноль уводит экран на следующем кадре, когда
+   * тетрадь уже видна. Поэтому ищем `measurable` раньше, чем `slotHeights.set`.
+   */
+  const guard = body.indexOf('measurable(')
+  assert.ok(guard > 0, 'якорь снова меряет всё подряд, включая спрятанную вкладку')
+  assert.ok(guard < body.indexOf('slotHeights.set'), 'ноль успевает попасть в память высот')
+
+  // Арифметика хода живёт в cell-scroll (там тесты и там обе жалобы), а не
+  // вторым списком чисел в компоненте.
+  const show = code(NOTEBOOK).slice(code(NOTEBOOK).indexOf('function show(id: string)'))
+  assert.match(show.slice(0, 500), /afterRun\(frameOf\(box\), boxOf\(cell\)\)/)
+  assert.doesNotMatch(
+    show.slice(0, 500),
+    /scrollTo\(/,
+    'плавный ход мимо steerTo не обрывается чужой прокруткой',
+  )
+})
+
+test('за «Запустить всё» лист не ходит вовсе, а увёзший его сам остаётся хозяином', () => {
+  const body = code(NOTEBOOK)
+
+  /*
+   * Прогон отличается от одиночного запуска ПИКОМ очереди, а не текущей её
+   * длиной: к концу «Запустить всё» очередь пуста, и последняя ячейка по ней
+   * неотличима от одиночной — лист дёргался бы ровно один раз, напоследок.
+   * И решение принимается синхронно с переходом: ход отложен на tick и кадр,
+   * к тому времени пик уже сброшен.
+   */
+  const run = body.slice(body.indexOf('let peak = 0'))
+  const head = run.slice(0, run.indexOf('\n  })'))
+  assert.match(head, /if \(queued > peak\) peak = queued/, 'пик очереди больше не считается')
+  assert.match(head, /const batch = peak >= 2/, 'прогон снова путают с одиночным запуском')
+  assert.ok(
+    head.indexOf('const batch = peak >= 2') < head.indexOf('if (now === null) peak = 0'),
+    'пик сбрасывается раньше решения — последняя ячейка прогона потянет лист',
+  )
+  assert.match(head, /if \(batch\) return/)
+
+  // Ход остался ровно один и плавный: мгновенная езда по очереди была нужна,
+  // пока за очередью вообще ходили.
+  const show = body.slice(body.indexOf('function show(id: string)'))
+  const inside = show.slice(0, show.indexOf('\n  }'))
+  assert.doesNotMatch(inside, /box\.scrollTop = target/, 'мгновенная езда вернулась без очереди')
+  assert.match(inside, /steerTo\(box, id, target\)/)
+  assert.match(
+    inside,
+    /steering && Math\.abs\(steering\.top - target\) < 2/,
+    'разгон сбивается заново',
+  )
+
+  // Просьбы за кадр всё равно складываются: Shift+Enter подряд — тоже частый ход.
+  const follow = body.slice(body.indexOf('function follow(id: string)'))
+  assert.match(
+    follow.slice(0, 500),
+    /requestAnimationFrame/,
+    'просьбы за кадр больше не складываются',
+  )
+
+  // Увёл сам — не ведём. Увозом считается прокрутка, а не нажатие: выделить
+  // ячейку по ходу работы можно, не отказываясь от того, чтобы показывали.
+  assert.match(body, /onwheelcapture=\{\(\) => \{[\s\S]{0,120}handedOver = true/)
+  assert.match(body, /ontouchmovecapture=\{\(\) => \{[\s\S]{0,120}handedOver = true/)
+  const down = body.slice(body.indexOf('onpointerdowncapture'))
+  assert.doesNotMatch(down.slice(0, 80), /handedOver/, 'нажатие на ячейку отключает показ')
+})
