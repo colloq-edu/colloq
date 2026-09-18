@@ -1,236 +1,255 @@
 <p align="center">
-  <img src=".github/assets/mark.svg" width="64" height="64" alt="Colloq mark">
+  <img src=".github/assets/mark.svg" width="64" height="64" alt="Colloq">
 </p>
 <h1 align="center">Colloq</h1>
 <p align="center">
   <strong>One link. One live notebook. The whole room.</strong><br>
-  A self-hosted workspace for teaching Python, data science and machine learning together.
+  A self-hosted classroom for teaching Python, data science and ML together.
+  Students join from a browser with just a name.
 </p>
 <p align="center">
-  <a href="#start-locally">Quick start</a> ·
-  <a href="#teach-your-way">Teaching</a> ·
-  <a href="#deploy-for-a-class">Deployment</a> ·
-  <a href="https://colloq.ru/docs/">Documentation</a>
+  <a href="https://github.com/sleep3r/colloq/actions/workflows/ci.yml"><img src="https://github.com/sleep3r/colloq/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0f2d69" alt="License: MIT"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/github/package-json/v/sleep3r/colloq?label=version&color=0fa0d7" alt="Version"></a>
+  <a href="https://colloq.ru/docs/en/"><img src="https://img.shields.io/badge/docs-colloq.ru-374b9b" alt="Documentation"></a>
 </p>
-
 <p align="center">
-  <img src="site/img/workspace.webp" width="1200" alt="Colloq class: participants and shared files on the left, a live Python notebook in the middle, and the room’s AI discussion on the right.">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-a-class-runs">How a class runs</a> ·
+  <a href="https://colloq.ru/docs/en/">Documentation</a> ·
+  <a href="#contributing">Contributing</a>
 </p>
-<p align="center"><sub>The Colloq workspace: shared code, visible participation, and an AI conversation everyone can follow.</sub></p>
 
-A teacher creates a class and shares its link. Students enter their names and
-join the same notebook, with the same files and the same Python state. No student
-accounts, installation or environment setup. When someone runs a cell, everyone
-sees the result.
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/room-dark.svg"><img src=".github/assets/readme/room-light.svg" width="880" alt="Anna opens the class link, types her name and joins; the room count goes from 6 to 7 and her row appears in the teacher's People panel, editing cell 03; Timur and Rita arrive, and Ivan leaves."></picture></p>
+<p align="center"><sub>Share one link; the class fills the room and everyone sees where everyone is.</sub></p>
 
-Colloq is built around the class happening together: a live coding exercise,
-a lecture that opens up for questions, or individual attempts the teacher brings
-back to the room.
+## What Colloq is
 
-[Read the documentation →](https://colloq.ru/docs/)
+A teacher creates a class and shares its link. Students type a name, get a mark,
+and they are in: the same notebook, the same files and the same running Python
+process as everyone else. There are no student accounts, no installs and no
+environment setup. When someone runs a cell, everyone sees the result.
 
-## Inside the room
+Colloq runs on your own machine or server, under the MIT license. It is built for
+the class that happens together: a live coding exercise, a lecture that opens up
+for questions, or individual attempts the teacher brings back to the room.
 
-| | What you can do |
+- **For teachers:** presets for how the class works, rules the server enforces, a
+  lecture console for an iPad and pen, and a council console for reviewing
+  individual answers.
+- **For students:** a browser is all it takes, and the same link brings you back.
+- **For operators:** a laptop for one class, one Linux VM with k3s for a term, or
+  a rented GPU box for a deep-learning course.
+
+> **Status:** pre-1.0 (0.1.0). Colloq is used in the author's own courses; the
+> public release is being prepared.
+
+## How a class runs
+
+### Seminar: write together, run once
+
+Everyone edits the same cells live and sees who is typing where. Each class has
+**one Python kernel**: runs enter a visible queue, outputs reach everyone, and a
+variable one student defines is there for the next. A late arrival sees the
+notebook as it stands. This is the **Standard** preset.
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/run-dark.svg"><img src=".github/assets/readme/run-light.svg" width="880" alt="Maria runs cell 03, which loads df; Ivan's cell 04 waits in the queue, then runs in the same kernel using her df, and everyone sees both outputs."></picture></p>
+
+### Council: everyone answers, the class discusses one
+
+Open a cell as a council and every student writes on their own sheet; only the
+teacher sees the text. The teacher's council console, a separate window, lists the
+submitted work and the run queue, sets a time limit for each run, marks each
+answer correct or for revision, and shows one answer to the class, **with or
+without names**. Attempts share the room's one kernel, so council is a teaching tool, not
+an isolated grading sandbox ([details below](#presets-and-cell-locks)).
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/council-dark.svg"><img src=".github/assets/readme/council-light.svg" width="880" alt="Three students write their own answers to one cell; their runs queue through the room's one kernel, a runaway loop is stopped by the time limit, the teacher marks the results in the council console and shows one answer to the class without the author's name."></picture></p>
+
+### Lecture: a PDF, your pen, every screen
+
+Present a PDF from the **Lecture console**, built for an iPad and a pen: turn
+pages, draw, point with the laser. The projector window (`/s/:id/screen`) and
+every student's screen follow, and ink lands at the same spot on each of them.
+Students can press **Read on my own** to page through by themselves, and **To
+lecture** brings them back to the presenter's page.
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/lecture-dark.svg"><img src=".github/assets/readme/lecture-light.svg" width="880" alt="The teacher underlines a formula and writes a note on the iPad lecture console; the ink and the red laser appear at the same spot on the projector; the page turns everywhere, and a student reading an earlier page returns to the presenter's page in one tap."></picture></p>
+
+### Presets and cell locks
+
+Pick a preset when you create the class, then adjust the room's rules before or
+during the class. **Permissions are enforced by the server.**
+
+| Preset | What the class can do |
 | --- | --- |
-| **Write together** | Edit Python and Markdown cells live, see who is typing, and work across multiple notebooks. Import and export `.ipynb` files. |
-| **Run together** | Use one Python kernel per class. Runs enter a visible queue, outputs reach everyone, and a late arrival sees the notebook as it stands. |
-| **Keep the work in view** | Upload datasets, organize folders, edit text files, and preview images and PDFs. The shared terminal works in the room’s filesystem and records who ran each command. |
-| **Teach from the page** | Present a PDF with synchronized pages, annotations and a laser pointer. Open a cell to the room or collect individual attempts. |
-| **Ask in context** | The Oracle reads the room’s notebook context, including code and outputs. Questions and streamed answers belong to the shared discussion. |
-| **Come back after class** | Finish a class to make it read-only for students while preserving its notebook, files and discussion. Resume it with the previous rules intact. |
+| **Standard** | Everyone edits the notebook, runs cells and adds files. Oracle access follows its settings. |
+| **Lecture** | The teacher edits and runs. Students read the notebook, and the teacher can open individual cells for them to work on. |
+| **Council** | Lecture rules, but opening a cell gives every student a separate sheet. The teacher reviews the attempts and shows chosen ones to the class. |
 
-## Teach your way
+The preset sets the starting rules; a cell's lock lets a single exercise change
+how the room takes part. In any preset, a cell can be:
 
-The teacher's History panel includes a filtered activity journal alongside
-notebook versions: attendance connections, Oracle requests, execution outcomes,
-submitted answers and editing participation. Cumulative counts remain available
-when the detailed event log is trimmed. See [activity history and statistics](docs/activity-history.md)
-for the API, retained data and interpretation limits.
-
-Start with a preset, then adjust the room’s rules before or during the class.
-Permissions are enforced by the server.
-
-| Preset | How the class works |
-| --- | --- |
-| **Lab · Обычный** | Everyone can edit the notebook, run code, upload files and ask the Oracle, subject to the configured limits. |
-| **Lecture · Лекция** | The teacher controls editing and execution. Students follow the notebook and can still ask the Oracle when enabled. |
-| **Council · Консилиум** | Lecture rules, with an individual sheet for each student when the teacher opens a cell. The teacher reviews attempts and can project one for discussion. |
-
-A cell’s lock can be **closed**, **open to shared editing**, or set to **council**
-in any preset. The preset chooses the starting rules; the lock lets a single
-exercise change how the room participates.
-
-* **council** — each cell offers teacher-only execution (default), direct student execution, or student requests requiring teacher approval. Requests work for drafts as well as submitted answers; editing the text invalidates the request. The teacher reviews pending requests and approves or declines each one. Approval queues that requested version; it does not submit the answer. All attempts run in the room’s **one kernel**, one after another, so students can use the data the teacher prepared. The server removes names an attempt defines when it finishes; mutation of existing objects and files stays shared. Individual sheets are a teaching tool, not independent execution sandboxes or an isolated grading environment.
+* **closed** — the room's rules decide who edits and runs it.
+* **open to shared editing** — anyone in the room can edit and run that one cell, even under Lecture rules.
+* **council** — each cell runs **Only me** (teacher-only execution, the default), **Everyone in turn** (students run directly) or **On request** (each student run needs the teacher's approval). Requests work for drafts as well as submitted answers; editing the text invalidates the request. Approval queues the requested version; it does not submit the answer. All attempts run in the room's **one kernel**, one after another, so students can use the data the teacher prepared. The server removes the names an attempt defines when it finishes; mutation of existing objects and files stays shared. A review mark reaches only the answer's author, and the class sees it only on an answer the teacher shows. Individual sheets are a teaching tool, not independent execution sandboxes or an isolated grading environment.
 
 <details>
 <summary><strong>Room rules and teacher access</strong></summary>
 
 Whatever the card sets, the room can change what opening a cell does; who edits a cell's text; who runs code; who changes the structure; who can put a document on the room's screen; who may create and edit files; whether the Oracle may act on the room's files; actions per request; questions per hour; seconds between questions; who may read the history; who may restart the kernel; and who may wipe shared work. The source of these settings is [rule-rows.ts](web/src/lib/rule-rows.ts).
 
-Whether the oracle answers in this room is chosen on the creation form: **off**, **hints**, or **full**. It is not one of those rows and cannot be changed later in the room settings. Room limits can tighten the instance settings, never loosen them.
+Whether the oracle answers in this room is chosen on the creation form: **As set for the instance**, **Off**, **Hints only** or **Full answers**. It is not one of those rows and cannot be changed later in the room settings. Room limits can tighten the instance settings, never loosen them.
 
 Execution and editing permissions need to agree with the exercise. If students
 can edit a cell, they can change the source the teacher eventually runs. If they
-can execute Python, they can access the room’s files through Python regardless
+can execute Python, they can access the room's files through Python regardless
 of restrictions in the Files panel.
 
 The owner manages classes, teachers, environments and Oracle settings at
 `/admin`. Teachers sign in through personal links; students join through class
-links. Teacher links and the owner’s setup token grant staff access and must stay
+links. Teacher links and the owner's setup token grant staff access and must stay
 private. Adding a teacher does not send an email.
 
 </details>
 
-### Russian or English
+Guides: [room rules](https://colloq.ru/docs/en/room-rules.html) ·
+[council](https://colloq.ru/docs/en/council.html) ·
+[lectures](https://colloq.ru/docs/en/lectures.html)
 
-The owner opens the globe menu in `/admin` and chooses **Русский** or **English**.
-The button shows the current language; the menu marks the selected one. The choice
-applies to the whole server: the teaching panel, student rooms, presentation
-controls and published material interfaces. Connected rooms switch without a
-reload, preserving code, cursor position and form drafts.
+## An AI the class can follow
 
-Names, teaching materials, code and existing conversations keep their original
-text. New Oracle requests use the selected language by default, unless the
-question asks for another. The choice is stored in the database. Before an owner
-sets it, `UI_LANGUAGE=ru` (default) or `UI_LANGUAGE=en` supplies the initial value.
-[Language settings →](https://colloq.ru/docs/language.html)
+The Oracle lives in the room's shared thread: the whole room sees each question and
+each answer, so one student's question helps the next. It reads the notebook's
+context, code and outputs included.
 
-### An AI the class can follow
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/oracle-dark.svg"><img src=".github/assets/readme/oracle-light.svg" width="880" alt="Dina asks the Oracle to rewrite cell 04; her question and the streamed answer appear in the room's shared thread, the proposed edit lands in the cell with Accept and Discard, she accepts it, and Marat starts typing the next question."></picture></p>
 
-The Oracle has two ways to help. **Ask** explains the code, discusses an error,
-or proposes an edit for a person to accept. **Do** uses tools to read and edit
-files, create notebooks, change and run notebook cells, and run scripts, with a
-visible record of its steps. In Do mode, permitted edits apply immediately;
-notebook history and file snapshots provide recovery paths. One Do request runs
-at a time per class.
+- **Per class, chosen at creation:** As set for the instance, Off, Hints only, or
+  Full answers.
+- **Ask** explains code, discusses an error, or, from a cell, proposes an edit that
+  shows up in the cell with **Accept** and **Discard**. Whoever accepts it is
+  recorded as the author.
+- **Act** uses tools: it reads and edits files, creates notebooks, changes and
+  runs cells and runs scripts, with a visible record of its steps, and only within
+  the permissions of the person who asked. Its edits apply immediately; notebook
+  history and file snapshots are the way back. One Act request runs at a time per
+  class.
+- **Any OpenAI-compatible endpoint and model**, including local models served by
+  Ollama or vLLM, set in the teaching panel or the environment. With no provider
+  configured, the notebook works and there is no Oracle. When the Oracle is enabled, selected
+  notebook and file context is sent to the configured provider.
 
-Configure your own OpenAI-compatible endpoint and model in the teaching panel
-or environment settings. The notebook works without an AI key. When enabled,
-selected notebook and file context is sent to the configured provider. Tool use
-requires provider support and respects the requesting participant’s room permissions.
+<details>
+<summary><strong>Act mode limits</strong></summary>
 
-**Do mode stops after 24 actions by default.** The owner can change **Actions per
+**Act mode stops after 24 actions by default.** The owner can change **Actions per
 request** in `/admin/oracle`; class rules expose the same setting when creating
 or editing a class. Reading, editing and running each consume one action,
 including failed attempts. `0` means unlimited; a blank class field inherits the
 server setting. A class can tighten a finite server limit. A request also stops
 after five minutes of wall-clock work, and when the same call repeats with the
 same arguments three times; either way the completed actions stand and the reply
-says what was done. Manual Stop remains available. Changes apply to the next request.
-
-## Start locally
-
-Use **Node.js 22, npm, Docker, Docker Compose and Make**. From a clone:
-
-```bash
-npm ci
-./colloq
-```
-
-Colloq prepares missing or changed builds, starts in this terminal and opens
-`http://localhost:3000/admin`. Logs stay visible. Re-running the command reports
-the existing instance without restarting it. `--no-open` suppresses browser
-opening; `--port 4000` selects another local port.
-
-On macOS, add `COLLOQ_UNSAFE_DEV_FILES=1` to `.env` for trusted native development.
-The first launch creates `.env` from the example if needed. To keep the app
-inside Linux Docker instead, use the existing `make up` workflow.
-
-1. Claim the instance in `/admin` using `data/setup-token` or the initial server log.
-2. Create a class and choose its teaching preset and Python environment.
-3. To invite others, run `./colloq host seminar.colloq.ru` in another terminal,
-   or launch everything with `./colloq run --host seminar.colloq.ru`.
-
-```bash
-./colloq run --host seminar.colloq.ru  # application and tunnel in one terminal
-./colloq run --detach                 # explicitly run in the background
-./colloq stop                         # stop the local session
-./colloq dev                          # server watcher + Vite
-./colloq menu                         # administration command menu
-```
-
-Ctrl+C saves the notebook and stops this local instance's application and
-Python kernels. Files, outputs and the database remain; Python variables do not.
-Development reloads preserve kernels until the development session ends.
-Background runs use `.colloq.log`; inspect it with `./colloq logs`.
-
-A separate `host` command owns only its tunnel: stopping it leaves the local
-session running. Tunnel failure also preserves local work. Local publication
-uses an expiring address and leaves `.env` unchanged. Named tunnels, your own
-relay and dedicated-server hosting remain available; see
-[public access](#give-the-room-an-address). Staff sign-in links and student class
-links serve different purposes.
-
-Local kernels use Docker containers and are intended for trusted workstation
-use. Production uses the private broker described below.
-
-**An environment is a file.** `kernel/environments/<name>.txt` is a pip
-requirements list, and three header lines are directives rather than comments:
-`# colloq: gpu` claims an exclusive GPU slice for every room on it,
-`# colloq: from <name>` builds this image on another environment's image instead
-of the base, and `# colloq: python 3.12` chooses the interpreter — 3.10 to 3.13,
-defaulting to the `ARG PARENT` version in `kernel/Dockerfile`. pip treats all
-three as comments, so they install nothing and do not mark a built image stale.
-Only the **root** of a `from` chain decides the Python version: a layer on top
-of a built image installs wheels for the interpreter it inherited and cannot
-replace it, so a child that asks for a different version is refused by name
-before Docker is started. `make env-new NAME=cv PYTHON=3.12` writes the
-directive, `make env-list` and `make env-show` print the resolved version, and
-the Environments screen shows the version of the **built** image beside its
-size — falling back to the version the file asks for, with the usual rebuild
-mark, once the two disagree.
-
-### Frontend build modes
-
-Both build modes produce a minified production frontend with lazy screens,
-hashed asset URLs and no source maps. The server's development mode does not
-turn the built frontend into a development bundle.
-
-| Command | Use |
-| --- | --- |
-| `./colloq dev` / `npm run dev` | Supervised server watcher and Vite hot reload; kernels survive reloads. |
-| `./colloq run` | Foreground local session; reuse the optimized build until inputs change. |
-| `./colloq run --fast` | Skip precompression for the edit-build loop; use the default for a class. |
-| `npm run build:optimized` | Build all artifacts without starting or restarting the server. |
-
-Precompression adds Brotli quality 11 and gzip level 9 files alongside
-JavaScript, CSS and the PDF worker. The server selects an accepted encoding at
-the original URL and sends the stored bytes, avoiding compression work on each
-download. Unsupported clients and `FAST=1` builds use the original delivery
-path, where the server compresses each asset per request: 11.6 ms of CPU and
-25 KB more on the wire for the largest chunk, once per student. `make host`
-warns when it is about to publish a build with no precompressed files.
-HTML retains revalidation; hashed assets retain their one-year cache.
-
-Production Docker images and release CI use the precompressed build by default.
-It costs extra build time and disk space, not extra JavaScript or dependencies
-in the browser. `npm run perf` checks the bundle budgets for either mode.
-For complete cold entry through a working notebook, see [the entry benchmark](docs/entry-performance.md).
-
-<details>
-<summary><strong>Local settings</strong></summary>
-
-Start with [.env.example](.env.example). `make up` selects the explicit Docker
-development backend; the production installer supplies broker configuration.
-
-| Setting | Purpose |
-| --- | --- |
-| `BIND_ADDR` | Development server / host publication address. Unset means every interface; the example uses `127.0.0.1`. Compose applies it to the host port, keeping its container listener reachable. |
-| `PORT` / `PUBLIC_URL` | Local port and the public origin used to generate class links. |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Oracle credentials, endpoint and model; also configurable in the teaching panel. |
-| `SESSION_SECRET` | Signing key. When empty, a persistent key is generated in `DATA_DIR`; preserve it in backups. |
-| `KERNEL_ENV` | Default Python environment for the Docker development backend. |
-| `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits; these do not limit arbitrary writes from Python. |
+says what was done. Manual Stop remains available. Tool use requires provider
+support. Changes apply to the next request.
 
 </details>
 
-## Deploy for a class
+Guide: [the Oracle](https://colloq.ru/docs/en/oracle.html)
+
+## Everything else in the room
+
+| Feature | What you get |
+| --- | --- |
+| **Shared files and terminal** | Upload datasets, organize folders, edit text files, preview images and PDFs. The shared terminal works in the room's filesystem and records who ran each command. |
+| **History** | Notebook versions, plus a filtered activity journal in the teacher's History panel: attendance, Oracle requests, run outcomes, submitted answers and editing participation. See [activity history](docs/activity-history.md). |
+| **Notebooks in and out** | Several notebooks per room and `.ipynb` export. Start a class from a `.ipynb` file (outputs are not imported) or from a GitHub link to a notebook or folder in a public repository. |
+| **End class, resume later** | **End class** makes the room read-only for students and keeps its notebook, files and discussion. **Resume class** brings back the previous rules. |
+| **Courses and published pages** | Publish chosen notebook versions as a read-only page that keeps its link, and group classes on a course page. |
+| **Russian or English** | The owner switches the interface for the whole instance from `/admin`. Open rooms switch live, keeping code, cursors and drafts. [Language settings](https://colloq.ru/docs/en/language.html). |
+| **Python environments** | An environment is a requirements file; each class picks one at creation. GPU environments give each room an exclusive GPU slice. |
+
+## Quick start
+
+### From source
+
+You need **Node.js 22 or newer**, npm, **Docker** (running) and Make.
+
+```bash
+git clone https://github.com/sleep3r/colloq.git
+cd colloq
+npm ci
+make dev
+```
+
+`make dev` builds the room kernel image when it is missing or stale, then runs
+the server on `:3000` (with reload) and Vite on `:5173` in this terminal and opens
+the browser (`OPEN=0` skips that). The first launch writes a short local `.env`;
+every setting is documented in [.env.example](.env.example).
+
+1. Claim the instance at `/admin` with the token from `data/setup-token` or the
+   first server log.
+2. Create a class and choose its preset and Python environment.
+3. Share the class link. To let people outside your machine in, run `make host`
+   in a second terminal for a temporary public address; for a permanent one, see
+   [Give the room an address](#give-the-room-an-address).
+
+<details>
+<summary><strong>More on local runs</strong></summary>
+
+Ctrl+C saves the notebook and stops this local instance's application and
+Python kernels. Files, outputs and the database remain; Python variables do not.
+Server reloads preserve kernels until the development session ends. `make run`
+builds the optimized frontend and runs the server in the background instead
+(`make logs-run`, `make stop`); `make up` keeps the app inside Linux Docker and
+also needs Docker Compose.
+
+`make host` owns only its tunnel: stopping it leaves the local session running.
+Tunnel failure also preserves local work. Publishing a `make dev` session uses
+an expiring address and leaves `.env` unchanged. Staff sign-in links and student
+class links serve different purposes.
+
+Local kernels use Docker containers and are intended for trusted workstation
+use. Production uses the private broker described under
+[Deploy for a real class](#deploy-for-a-real-class).
+
+</details>
+
+### The `colloq` command
+
+The same app ships as a Python package with a `colloq` command, for a teacher who
+wants no checkout. **It is not on PyPI yet**, so `pip install colloq` does not work
+today. Until the first release is published, build the wheel from a checkout
+(after `npm ci`; it needs Python 3 with pip):
+
+```bash
+make wheel                              # python/dist/colloq-0.1.0-py3-none-any.whl
+pip install python/dist/colloq-*.whl    # into a virtualenv, or with pipx
+colloq start
+```
+
+The machine needs Node.js 22+ and Docker. State lives in `~/.colloq`
+(`COLLOQ_HOME` moves it). `colloq host`, `status`, `doctor`, `backup` and `env`
+cover the rest; see [python/README.md](python/README.md) and
+[cli/README.md](cli/README.md).
+
+### A rented GPU box on Vast.ai
+
+`colloq-vast` is one ready image for a rented Vast.ai **VM**: the server, the
+built web app, the tunnel clients and the kernel build context. Paste one on-start
+script into the Vast template, and the machine comes up with a class address and
+an owner sign-in link in its log. Each room still gets its own kernel container.
+[deploy/vast/README.md](deploy/vast/README.md) covers the template, settings,
+backups and building the image (`make vast-image`); read its *What has been
+verified* section before relying on it for a class. For stricter isolation on a
+Vast VM, use the k3s path in [docs/deployment-vast.md](docs/deployment-vast.md).
+
+## Deploy for a real class
 
 Production runs on **one Linux amd64 VM with k3s/containerd**. A non-root web app
 calls a private runtime broker, which creates a separate Jupyter Pod, token and
 workspace mount for each class. The app has no Docker socket or Kubernetes
-credentials. If a room’s runtime cannot start, execution fails; there is no
+credentials. If a room's runtime cannot start, execution fails; there is no
 fallback to an instance-wide kernel.
 
 Use an explicitly published release and its matching deployment bundle. From the
@@ -245,13 +264,21 @@ sudo scripts/cluster.sh smoke
 Private images also require `--registry-config /path/to/pull-only-config.json`.
 Each release records the `sourceCommit`, image digests, exact tooling versions
 and deployment-tool hashes. The installer rejects mismatched tooling. The host
-proxy reaches the app at `127.0.0.1:30080`; the broker and Kubernetes API stay private.
+proxy reaches the app at `127.0.0.1:30080`; the broker and Kubernetes API stay
+private.
 
-**Choose the Python environment once, keep it for the class.** Production
-rooms retain their selected image revision when the default changes. Publish
-custom packages through a new release/catalog; images are built outside the web
-app. GPU environments request one exclusive NVIDIA GPU per room and require a
-real CUDA preflight. GPU devices are not implicitly shared between classes.
+Rooms keep the Python environment image they were created with when the default
+changes. Publish custom packages through a new release catalog; images are built
+outside the web app. GPU environments request one exclusive NVIDIA GPU per room
+and require a real CUDA preflight.
+
+| Operator guide | What it covers |
+| --- | --- |
+| [Single-node deployment](deploy/k3s/README.md) | Releases, installation, environments, storage, updates, rollback and GPU prerequisites. |
+| [Runtime boundary](runtime/README.md) | Broker API, credentials, room lifecycle and isolation limits. |
+| [Vast VM with k3s](docs/deployment-vast.md) | Renting a VM, registry credentials, named backups and recovery. Rental and disk destruction require confirmation. |
+| [Vast VM with one image](deploy/vast/README.md) | The `colloq-vast` image, its template and on-start script. |
+| [Guides at colloq.ru](https://colloq.ru/docs/en/) | Installing, networking, environments, backups and updates, for operators and teachers. |
 
 ### Give the room an address
 
@@ -265,17 +292,9 @@ bundle contains the cluster and recovery tools.
 | Your own relay | `make relay-setup WHERE=root@your-relay`, then `make host HOST=seminar.example.edu` | A public relay, its domain, and relay settings in `.env`. |
 | Direct HTTPS | `sudo make host-direct HOST=seminar.example.edu` | Public Linux host, reachable ports 80/443, and a Cloudflare DNS token; Caddy serves the app. |
 
-Test access from the students’ network before class. Use your own relay or direct
+Test access from the students' network before class. Use your own relay or direct
 hosting where the Cloudflare tunnel is unreachable. Keep the relay sized for the
 connected audience: every room published through it depends on that machine.
-
-Your own relay also mirrors the frontend. `make host` uploads `assets/`,
-`fonts/` and `pdf/` from the build to the relay, which serves those paths itself
-with the same cache headers the app sends; only the live room still travels
-through the tunnel. A missing or stale file falls through to the tunnel, so the
-mirror never breaks a class. `curl -sI https://<host>/assets/<file>` reports
-`X-Colloq-Mirror: hit` when the relay answered. Previous chunk names stay
-available for 30 days, so tabs opened before a deploy still load.
 
 ### Keep the work recoverable
 
@@ -293,53 +312,140 @@ of the database and workspace. Updates and rollbacks also interrupt active rooms
 Follow the deployment guide for restore, interrupted-operation recovery and
 schema-compatible rollback.
 
-| Operator guide | What it covers |
+<details>
+<summary><strong>Operator notes</strong></summary>
+
+#### An environment is a file
+
+`kernel/environments/<name>.txt` is a pip requirements list, and three header
+lines are directives rather than comments: `# colloq: gpu` claims an exclusive GPU
+slice for every room on it, `# colloq: from <name>` builds this image on another
+environment's image instead of the base, and `# colloq: python 3.12` chooses the
+interpreter — 3.10 to 3.13, defaulting to the `ARG PARENT` version in
+`kernel/Dockerfile`. pip treats all three as comments, so they install nothing and
+do not mark a built image stale. Only the **root** of a `from` chain decides the
+Python version: a layer on top of a built image installs wheels for the
+interpreter it inherited and cannot replace it, so a child that asks for a
+different version is refused by name before Docker is started.
+`make env-new NAME=cv PYTHON=3.12` writes the directive, `make env-list` and
+`make env-show` print the resolved version, and the Environments screen shows the
+version of the **built** image beside its size — falling back to the version the
+file asks for, with the usual rebuild mark, once the two disagree.
+
+#### Frontend build modes
+
+Both build modes produce a minified production frontend with lazy screens,
+hashed asset URLs and no source maps. The server's development mode does not
+turn the built frontend into a development bundle.
+
+| Command | Use |
 | --- | --- |
-| [Single-node deployment](deploy/k3s/README.md) | Releases, installation, environments, storage, updates, rollback and GPU prerequisites. |
-| [Vast VM deployment](docs/deployment-vast.md) | Renting a VM, registry credentials, named backups and recovery. Rental and disk destruction require confirmation. |
-| [Runtime boundary](runtime/README.md) | Broker API, credentials, room lifecycle and isolation limits. |
-| [Deployment verification](docs/deployment-proof-2026-09-09.md) · [Vast GPU results](docs/deployment-vast-gpu-2026-09-09.md) | Recorded execution checks, tested versions and the scope of deployment evidence. |
+| `make dev` / `npm run dev` | Supervised server watcher and Vite hot reload; kernels survive reloads. |
+| `make run` | Background server on the optimized build. |
+| `make run FAST=1` | Skip precompression for the edit-build loop; use the default for a class. |
+| `npm run build:optimized` | Build all artifacts without starting or restarting the server. |
 
-Isolation is **between classes**. Participants inside a class share Python,
-files and a terminal. Containers share the host Linux kernel; standard Kubernetes
-NetworkPolicy has a local-node traffic exception. One node provides no high
-availability, and PVC capacity is not an enforced per-room disk quota. Review the
-[runtime boundary](runtime/README.md) before admitting untrusted workloads.
+Precompression adds Brotli quality 11 and gzip level 9 files alongside
+JavaScript, CSS and the PDF worker. The server selects an accepted encoding at
+the original URL and sends the stored bytes, avoiding compression work on each
+download. Unsupported clients and `FAST=1` builds use the original delivery
+path, where the server compresses each asset per request: 11.6 ms of CPU and
+25 KB more on the wire for the largest chunk, once per student. `make host`
+warns when it is about to publish a build with no precompressed files.
+HTML retains revalidation; hashed assets retain their one-year cache.
+Production Docker images and release CI use the precompressed build by default.
+`npm run perf` checks the bundle budgets for either mode. For complete cold entry
+through a working notebook, see [the entry benchmark](docs/entry-performance.md).
 
-## CLI
+#### The relay mirrors the frontend
 
-`./colloq` starts a local session. Administrative commands retain the Make
-targets, argument validation, confirmations and `--dry-run`. Run `./colloq menu`
-for the grouped menu, or `./colloq help` for the list.
-See [cli/README.md](cli/README.md).
+Your own relay also serves the frontend. `make host` uploads `assets/`, `fonts/`
+and `pdf/` from the build to the relay, which serves those paths itself with the
+same cache headers the app sends; only the live room still travels through the
+tunnel. A missing or stale file falls through to the tunnel, so the mirror never
+breaks a class. `curl -sI https://<host>/assets/<file>` reports
+`X-Colloq-Mirror: hit` when the relay answered. Previous chunk names stay
+available for 30 days, so tabs opened before a deploy still load.
 
-## Development
+#### Local settings
 
-Use **Node.js 22**, npm, Docker and Make. For a Linux host with the app running
-outside Docker:
+Start with [.env.example](.env.example). `make up` selects the explicit Docker
+development backend; the production installer supplies broker configuration.
 
-```bash
-npm ci
-./colloq dev
-```
+| Setting | Purpose |
+| --- | --- |
+| `BIND_ADDR` | Development server / host publication address. Unset means every interface; the example uses `127.0.0.1`. Compose applies it to the host port, keeping its container listener reachable. |
+| `PORT` / `PUBLIC_URL` | Local port and the public origin used to generate class links. |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Oracle credentials, endpoint and model; also configurable in the teaching panel. |
+| `SESSION_SECRET` | Signing key. When empty, a persistent key is generated in `DATA_DIR`; preserve it in backups. |
+| `UI_LANGUAGE` | Interface language (`ru`, the default, or `en`) until the owner chooses one in `/admin`. |
+| `KERNEL_ENV` | Default Python environment for the Docker development backend. |
+| `KERNEL_PIDS` / `KERNEL_ROOM_SUBNET` | Process ceiling of a room container (512 by default) and the subnet of the `colloq-rooms` network (`10.213.0.0/22`). |
+| `COLLOQ_ROOM_NETWORK` | Unset: rooms cannot reach local addresses (LAN, router, the host, cloud metadata), and they refuse to start if that block cannot be installed. `open` lifts the block for a trusted setup; `colloq doctor` then says so. |
+| `MAX_UPLOAD_MB` / `MAX_SESSION_MB` | Application upload limits; these do not limit arbitrary writes from Python. |
 
-The server listens on `:3000`; Vite serves the development UI on `:5173` and
-proxies API/WebSocket traffic to the server. `colloq dev` prepares the room kernel
-image when needed; there is no shared Jupyter service.
+</details>
 
-Native macOS development additionally requires the deliberate filesystem opt-in:
+## Security model
 
-```bash
-COLLOQ_UNSAFE_DEV_FILES=1 ./colloq dev
-```
+Isolation is **between classes**, not inside one: participants in a class share
+Python, files and a terminal. Containers share the host Linux kernel; standard
+Kubernetes NetworkPolicy has a local-node traffic exception; one node provides no
+high availability; and PVC capacity is not an enforced per-room disk quota. On the
+Docker-based paths (local runs, `make up` and the Vast image) the server controls
+the Docker daemon, which on a Linux host amounts to root; room containers there
+run as uid 1000 with no capabilities and no access to local addresses. Review the [runtime boundary](runtime/README.md)
+before admitting untrusted workloads, and report vulnerabilities privately as
+described in [SECURITY.md](SECURITY.md).
 
-This mode is for trusted local development. Linux production requires secure
-filesystem access through `/proc/self/fd` and refuses to start without it.
-Leave `WORKSPACE_HOST_DIR` unset when running the app directly on the host.
+## Documentation
 
-For an explicitly background session, use `./colloq run --detach`. On macOS, first
-add `COLLOQ_UNSAFE_DEV_FILES=1` to your local `.env`; this also persists the opt-in
-across restarts. Use `make up` to run the server in Linux Docker instead.
+The guides at **[colloq.ru/docs](https://colloq.ru/docs/en/)** cover installing,
+running a class, room rules, lectures, council, the Oracle, environments,
+publishing, networking, backups and updates, in
+[English](https://colloq.ru/docs/en/) and [Russian](https://colloq.ru/docs/).
+Operator and developer references live next to the code: [deploy/k3s](deploy/k3s/README.md),
+[deploy/vast](deploy/vast/README.md), [runtime](runtime/README.md),
+[tests](tests/README.md), [cli](cli/README.md) and [python](python/README.md).
+
+## Versions and releases
+
+The version's single source is `"version"` in the root `package.json` (the
+badge at the top shows it). The other copies, including
+`python/colloq/_version.py`, are kept in step, and `make version` checks that
+they agree. Versions are never bumped by hand. Commits on `main` follow
+[Conventional Commits](https://www.conventionalcommits.org/), and
+[release-please](https://github.com/googleapis/release-please) keeps a release
+pull request open that bumps every copy and adds the changelog section. Merging
+that pull request tags `vX.Y.Z`, creates the GitHub Release and attaches the pip
+wheel. Publishing to PyPI and GHCR is switched on separately, and the k3s release
+bundle comes from a separate, manually started workflow. A running server
+reports its version at `/api/health`.
+
+What changed is in [CHANGELOG.md](CHANGELOG.md); how a release is cut is in
+[RELEASING.md](RELEASING.md).
+
+## Contributing
+
+Colloq is maintained by one person, and help is welcome: a clear bug report, a
+reproduction from a real class, a translation fix or a small, well-tested pull
+request all go a long way. For anything larger, such as a new room mode, a new
+deployment path or a change to the permission model, open an issue first.
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): setting up a checkout, the checks, the conventions that matter here, and commits and pull requests.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): how we treat each other.
+- [SUPPORT.md](SUPPORT.md): where to ask questions.
+- [SECURITY.md](SECURITY.md): reporting vulnerabilities privately.
+- [Issue templates](.github/ISSUE_TEMPLATE): bug reports and feature requests.
+
+### Development loop
+
+After `npm ci` and `make dev` (see [Quick start](#quick-start)), the server
+listens on `:3000`; Vite serves the development UI on `:5173` and proxies
+API/WebSocket traffic to the server. `make dev` prepares the room kernel image
+when needed; there is no shared Jupyter service. Linux production requires secure
+filesystem access through `/proc/self/fd` and refuses to start without it. Leave
+`WORKSPACE_HOST_DIR` unset when running the app directly on the host.
 
 ```bash
 npm run typecheck
@@ -348,28 +454,45 @@ npm run build
 ```
 
 Tests run without a live server or browser. End-to-end, performance and load
-harnesses need a running disposable instance; see [the test guide](tests/README.md)
-for setup, authentication and scope. Use the actual test output for counts and timing.
+harnesses (`npm run e2e`, `npm run perf`, `make load`) need a running disposable
+instance, never a real class; the header of each script in `scripts/` gives its
+target and settings. Operations such as releases, the relay,
+environments and backups are Make targets: `make help` lists them, with help text
+in Russian.
 
 | Directory | Responsibility |
 | --- | --- |
-| [`web/`](web/) | Svelte 5 UI, CodeMirror editors and Yjs collaboration. |
-| [`server/`](server/) | Express API, WebSockets, SQLite persistence, execution queues and AI. |
-| [`shared/`](shared/) | Notebook schema, permissions and protocols shared across the application. |
+| [`web/`](web/) | Svelte 5 UI, CodeMirror 6 editors and Yjs collaboration. |
+| [`server/`](server/) | Express API, WebSockets, SQLite persistence, execution queues and the Oracle. |
+| [`shared/`](shared/) | Notebook schema, room rules, protocols and UI strings shared by server and web. |
 | [`runtime/`](runtime/) | Private broker and fixed Kubernetes room templates. |
-| [`kernel/`](kernel/) | Python kernel images and environment definitions. |
-| [`deploy/`](deploy/) · [`scripts/`](scripts/) | Release tooling, deployment, hosting and operations. |
+| [`kernel/`](kernel/) | Python kernel image and environment definitions. |
+| [`cli/`](cli/) | The `colloq` command and the supervisor behind `make dev`. |
+| [`python/`](python/) | The pip package that carries the built app and the `colloq` command. |
+| [`deploy/`](deploy/) · [`scripts/`](scripts/) | Release tooling, the k3s and Vast deployments, hosting and operations. |
+| [`site/`](site/) · [`docs/`](docs/) | The colloq.ru landing page and guides (sources in `docs/pages`, built by `docs/build.py`), plus operator notes in `docs/`. |
+| [`tests/`](tests/) | The `node --test` unit suite; its README explains how the run is set up. |
 
 The server participates in the Yjs document and writes execution results into
 it, so every client receives the same output. Notebook state is periodically
 snapshotted to SQLite; graceful shutdown flushes pending changes, while abrupt
-power loss can lose the latest edits. Browsers communicate with the app and
-never receive Jupyter credentials.
+power loss can lose the latest edits. Each class gets its own kernel container
+(Docker locally, a Jupyter Pod behind the broker in production). Browsers talk
+only to the app and never receive Jupyter credentials.
 
-Colloq focuses on the live class. It does not provide an LMS, course progress
-tracking, automated grading, SSO or video conferencing. The current interface
-supports Russian and English.
+The animations in this README are generated by `make readme-art`
+([scripts/readme-art.mts](scripts/readme-art.mts)).
+
+## What Colloq is not
+
+Colloq focuses on the live class. It is not an LMS: there is no course progress
+tracking, automated grading, SSO or video conferencing. Pair it with the call tool
+you already use.
 
 ---
 
-<p align="center"><a href="LICENSE">MIT licensed</a> · <a href="https://colloq.ru/docs/">Documentation</a></p>
+<p align="center">
+  MIT © 2026 Aleksandr Kalashnikov ·
+  <a href="https://colloq.ru/docs/en/">Documentation</a> ·
+  <a href="https://colloq.ru">colloq.ru</a>
+</p>

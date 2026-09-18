@@ -1,0 +1,117 @@
+[
+  {
+    "slug": "index",
+    "group": "start",
+    "title": "One link. The whole class.",
+    "description": "A guide to Colloq: from your first class to your own server.",
+    "nav": "Docs overview"
+  },
+  {
+    "slug": "getting-started",
+    "group": "start",
+    "title": "Your first class",
+    "description": "From signing in to the panel to the link your students open."
+  },
+  {
+    "slug": "students",
+    "group": "start",
+    "title": "For students",
+    "description": "How to join a room, take part in a class and come back to the materials."
+  },
+  {
+    "slug": "room-rules",
+    "group": "teach",
+    "title": "Room rules",
+    "description": "Control who edits, runs code and changes the shared work."
+  },
+  {
+    "slug": "notebook",
+    "group": "teach",
+    "title": "Notebook, files and terminal",
+    "description": "A shared Python workspace: what is shared, what is kept and how to run code."
+  },
+  {
+    "slug": "oracle",
+    "group": "teach",
+    "title": "Oracle",
+    "description": "Set up AI help, question limits and file editing by the oracle."
+  },
+  {
+    "slug": "council",
+    "group": "teach",
+    "title": "Council",
+    "description": "Everyone writes their own answer; the teacher chooses what to discuss together."
+  },
+  {
+    "slug": "lectures",
+    "group": "teach",
+    "title": "Lecture, projection and console",
+    "description": "Show a PDF and handwritten annotations on the projector and in students' browsers."
+  },
+  {
+    "slug": "publishing",
+    "group": "teach",
+    "title": "Publications and courses",
+    "description": "Turn a live notebook into reading material and keep one link for the whole course."
+  },
+  {
+    "slug": "install",
+    "group": "server",
+    "title": "Installing on Linux",
+    "description": "One Linux amd64 server, an exact release and a separate runtime for each room."
+  },
+  {
+    "slug": "language",
+    "group": "server",
+    "title": "Interface language",
+    "description": "Choose Russian or English for the whole Colloq server."
+  },
+  {
+    "slug": "environments",
+    "group": "server",
+    "title": "Environments and resources",
+    "description": "Prepare libraries in advance and pin a Python image to a class."
+  },
+  {
+    "slug": "networking",
+    "group": "server",
+    "title": "Domain and classroom access",
+    "description": "Choose how to publish the server and check a real student link."
+  },
+  {
+    "slug": "backup-restore",
+    "group": "server",
+    "title": "Backups and restore",
+    "description": "Keep data, room files and keys off the server — and test the way back."
+  },
+  {
+    "slug": "updates",
+    "group": "server",
+    "title": "Updates and rollback",
+    "description": "Update in a maintenance window and keep a compatible way back."
+  },
+  {
+    "slug": "vast",
+    "group": "server",
+    "title": "Deploying on a Vast VM",
+    "description": "Rent a full VM, install an exact release and check the GPU by running code."
+  },
+  {
+    "slug": "development",
+    "group": "server",
+    "title": "Local development",
+    "description": "Run Colloq on your workstation with a separate Docker kernel for each room."
+  },
+  {
+    "slug": "security",
+    "group": "server",
+    "title": "Isolation and limits",
+    "description": "Which boundaries Colloq provides and what the operator must check."
+  },
+  {
+    "slug": "troubleshooting",
+    "group": "server",
+    "title": "When something doesn't work",
+    "description": "Start from the symptom and check the layer responsible for it."
+  }
+]

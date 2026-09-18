@@ -1,5 +1,7 @@
 # Versioned deployment on a Vast VM
 
+> For the common case, you can rent a VM, paste one on-start script and hold a class with the prebuilt `colloq-vast` image; see [deploy/vast/README.md](../deploy/vast/README.md). It keeps a separate container per room on the VM's Docker. The k3s path described here stays the option for stricter isolation: restricted Pods, NetworkPolicy, a separate runtime broker and digest-pinned releases.
+
 Use a full Vast **VM**, not an ordinary Vast Docker instance. The workflow keeps VM-only, verified, on-demand offer selection, named-instance labels, price confirmation, registered SSH-key checks, direct mapped SSH, and the existing FRP relay names. A VM hosts one k3s node; application and room Pods share that VM's Linux kernel.
 
 Vast VMs support systemd and nested containers. Only Vast's `docker.io/vastai/kvm` images work as VM templates. The default is a dated Ubuntu VM image; this is separate from the application images pinned by digest in the Colloq release. [Vast VM documentation](https://docs.vast.ai/guides/instances/virtual-machines)
@@ -14,9 +16,11 @@ Without credentials, explicitly set `VAST_PUBLIC_IMAGES=1` to declare that all r
 
 ```sh
 VAST_PUBLIC_IMAGES=1 RELEASE=/absolute/path/release.json NAME=hse HOST=hse.colloq.ru make vast-up
-NAME=hse make vast-status
-NAME=hse SINCE=2h make vast-logs
+RELEASE=/absolute/path/release.json NAME=hse make vast-status
+RELEASE=/absolute/path/release.json NAME=hse SINCE=2h make vast-logs
 ```
+
+The `make vast-*` targets reach this k3s tooling (`scripts/vast.sh`) only when `RELEASE` is set; without it the Makefile routes them to `scripts/vast-legacy.sh`, the old Docker path. Pass `RELEASE` to every target as above, or call `NAME=hse scripts/vast.sh <command>` directly. The hints `scripts/vast.sh` prints already follow this rule.
 
 `vast-up` validates the manifest before contacting the account, packages only the deployment scripts from `release.sourceCommit`, and transfers that archive and manifest. Initial application/relay configuration is allowlisted from the local `.env`; Vast billing and Cloudflare DNS credentials are excluded. Later updates preserve the remote configuration. Edit the remote configuration deliberately rather than expecting every local `.env` change to overwrite it.
 
@@ -38,13 +42,13 @@ Application data is stored under `/var/lib/colloq/{data,workspace}` in static lo
 
 ```sh
 # Keep the class running: consistent SQLite, files copied at different instants.
-NAME=hse MODE=live make vast-sync
+RELEASE=/absolute/path/release.json NAME=hse MODE=live make vast-sync
 
 # Stop app, broker and all room Pods; kernel memory is discarded.
-NAME=hse MODE=consistent make vast-sync
+RELEASE=/absolute/path/release.json NAME=hse MODE=consistent make vast-sync
 
 # Explicitly resume after the verified consistent backup.
-NAME=hse MODE=consistent RESUME=1 make vast-sync
+RELEASE=/absolute/path/release.json NAME=hse MODE=consistent RESUME=1 make vast-sync
 ```
 
 Each archive is named `colloq-<UTC>-<mode>.tar.gz` under `backups/<name>/`. It contains the SQLite snapshot, workspaces, application configuration, application/broker secrets, release manifest, catalog and a checksum inventory. Treat it as a secret. Checksums detect corruption; they do not authenticate an archive from an untrusted sender. Symlinks and special files are refused; regular files preserve the owner executable bit while group/world access is removed. Files changing or disappearing can make a live backup fail; retry or choose consistent mode.
@@ -69,7 +73,7 @@ bash scripts/cluster.sh start
 
 The second prepare reconciles restored broker secrets and historical catalog revisions. Do not pass a new `--env-file` during this step unless replacing the recovered application configuration is intentional. Only then start the application. Verify the expected class data, old links, two independent room executions, room separation, and GPU execution where applicable.
 
-Before destroying a rental, obtain and validate a consistent archive outside it. `NAME=hse make vast-down` retains the existing explicit destruction confirmation; `FORCE=1` remains an operator-controlled bypass. A stopped single-node cluster is not high availability, and k3s state backups do not replace application/PV backups.
+Before destroying a rental, obtain and validate a consistent archive outside it. `RELEASE=/absolute/path/release.json NAME=hse make vast-down` (or `NAME=hse scripts/vast.sh down`) retains the existing explicit destruction confirmation; `FORCE=1` remains an operator-controlled bypass. A stopped single-node cluster is not high availability, and k3s state backups do not replace application/PV backups.
 
 ## Isolation checks
 

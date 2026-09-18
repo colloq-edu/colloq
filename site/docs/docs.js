@@ -1,5 +1,42 @@
 /* Progressive enhancement: every guide and navigation link also works without JavaScript. */
 (() => {
+  const lang = document.documentElement.lang === 'en' ? 'en' : 'ru';
+  const text = {
+    ru: {
+      start: 'Начните вводить название или вопрос.',
+      searching: 'Ищем в документации…',
+      found: (count, shown) => `Найдено: ${count}${count > shown ? `. Показаны первые ${shown}.` : '.'}`,
+      nothing: 'Ничего не найдено. Попробуйте «ядро», «публикация» или «backup».',
+      failed: 'Не удалось загрузить поиск. Попробуйте ещё раз или выберите статью в меню разделов.',
+      copy: 'Копировать', copyLabel: 'Копировать этот блок кода', copied: 'Скопировано', copyByHand: 'Выделите код вручную',
+    },
+    en: {
+      start: 'Start typing a title or a question.',
+      searching: 'Searching the docs…',
+      found: (count, shown) => `Found: ${count}${count > shown ? `. Showing the first ${shown}.` : '.'}`,
+      nothing: 'Nothing found. Try “kernel”, “publishing” or “backup”.',
+      failed: 'Search could not load. Try again or pick an article from the menu.',
+      copy: 'Copy', copyLabel: 'Copy this code block', copied: 'Copied', copyByHand: 'Select the code by hand',
+    },
+  }[lang];
+
+  // Language switch: the other language's link keeps the #section, and the choice is
+  // remembered. No page redirects on its own (URLs stay stable); a remembered choice
+  // that differs from this page only highlights the switch.
+  const LANG_KEY = 'colloq-docs-lang';
+  const switchLinks = [...document.querySelectorAll('.lang-switch a[data-lang]')];
+  switchLinks.forEach(link => { link.dataset.base = link.getAttribute('href'); });
+  const syncHash = () => switchLinks.forEach(link => link.setAttribute('href', link.dataset.base + location.hash));
+  syncHash();
+  window.addEventListener('hashchange', syncHash);
+  switchLinks.forEach(link => link.addEventListener('click', () => {
+    syncHash();
+    try { localStorage.setItem(LANG_KEY, link.dataset.lang); } catch {}
+  }));
+  let preferred = null;
+  try { preferred = localStorage.getItem(LANG_KEY); } catch {}
+  if (preferred && preferred !== lang) switchLinks.find(link => link.dataset.lang === preferred)?.classList.add('lang-suggested');
+
   const menu = document.querySelector('.mobile-nav');
   const mobile = window.matchMedia('(max-width: 760px)');
   const syncMenu = () => { menu.open = !mobile.matches; };
@@ -14,12 +51,13 @@
   let entries = null;
   let loading = null;
   let returnFocus = null;
-  const normalize = value => value.toLocaleLowerCase('ru').replaceAll('ё', 'е');
+  const normalize = value => value.toLocaleLowerCase(lang).replaceAll('ё', 'е');
 
   async function loadIndex() {
     if (entries) return entries;
     if (!loading) {
-      loading = fetch(new URL('search-index.json', document.currentScript?.src || location.href))
+      // Each language has its own index next to its pages: /docs/ and /docs/en/.
+      loading = fetch(new URL('search-index.json', location.href))
         .then(response => { if (!response.ok) throw new Error('index'); return response.json(); })
         .then(data => { entries = data.map(entry => ({ ...entry, haystack: normalize(entry.title + ' ' + entry.section + ' ' + entry.text) })); return entries; })
         .catch(error => { loading = null; throw error; });
@@ -30,8 +68,8 @@
   async function search() {
     const query = normalize(input.value.trim());
     results.replaceChildren();
-    if (!query) { status.textContent = 'Начните вводить название или вопрос.'; return; }
-    status.textContent = 'Ищем в документации…';
+    if (!query) { status.textContent = text.start; return; }
+    status.textContent = text.searching;
     try {
       const all = await loadIndex();
       if (query !== normalize(input.value.trim())) return;
@@ -40,7 +78,7 @@
         .map(entry => ({ entry, score: words.reduce((sum, word) => sum + (normalize(entry.title).includes(word) ? 5 : 0) + (normalize(entry.section).includes(word) ? 2 : 0), 0) }))
         .sort((a, b) => b.score - a.score);
       const shown = matches.slice(0, 18);
-      status.textContent = matches.length ? `Найдено: ${matches.length}${matches.length > shown.length ? '. Показаны первые 18.' : '.'}` : 'Ничего не найдено. Попробуйте «ядро», «публикация» или «backup».';
+      status.textContent = matches.length ? text.found(matches.length, shown.length) : text.nothing;
       for (const { entry } of shown) {
         const link = document.createElement('a');
         link.className = 'search-result';
@@ -58,7 +96,7 @@
         results.append(link);
       }
     } catch {
-      if (query === normalize(input.value.trim())) status.textContent = 'Не удалось загрузить поиск. Попробуйте ещё раз или выберите статью в меню разделов.';
+      if (query === normalize(input.value.trim())) status.textContent = text.failed;
     }
   }
   if (typeof dialog.showModal === 'function') {
@@ -88,12 +126,12 @@
       const button = document.createElement('button');
       button.className = 'copy-code';
       button.type = 'button';
-      button.textContent = 'Копировать';
-      button.setAttribute('aria-label', 'Копировать этот блок кода');
+      button.textContent = text.copy;
+      button.setAttribute('aria-label', text.copyLabel);
       button.addEventListener('click', async () => {
-        try { await navigator.clipboard.writeText(code.textContent); button.textContent = 'Скопировано'; }
-        catch { button.textContent = 'Выделите код вручную'; }
-        setTimeout(() => { button.textContent = 'Копировать'; }, 2200);
+        try { await navigator.clipboard.writeText(code.textContent); button.textContent = text.copied; }
+        catch { button.textContent = text.copyByHand; }
+        setTimeout(() => { button.textContent = text.copy; }, 2200);
       });
       pre.append(button);
     });

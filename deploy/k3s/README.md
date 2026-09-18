@@ -6,14 +6,22 @@ path. `deploy/colloq.service` no longer installs a root web process.
 
 ## Publish and select a release
 
-Create a version tag, then run the **Publish immutable release** workflow for that
-tag and an exact k3s patch release that has passed your deployment smoke test. The
+Cut a release by merging the release-please pull request (it bumps the version,
+tags `v<version>` and creates the GitHub Release; see
+[RELEASING.md](../../RELEASING.md)), then run the
+**Publish immutable release**
+workflow for that tag and an exact k3s patch release that has passed your
+deployment smoke test. The tag must equal `v` + the root `package.json` version at
+that commit; the workflow and `release-build.py` refuse anything else. The
 workflow builds app, broker and selected kernel environments, captures actual OCI
-digests, and attaches `release.json`, `colloq-deploy.tar.gz` and `SHA256SUMS`.
+digests, and attaches `release.json`, `colloq-deploy.tar.gz` and `SHA256SUMS` to
+the tag's GitHub Release (the one release-please created; without it the workflow
+refuses).
 It does not guess a k3s version or fabricate image digests. Publication does not
 itself prove that a release was exercised on your university/Vast GPU VM.
 
-An operator can run the same build outside the app:
+An operator can run the same build outside the app. `--version` may be omitted:
+it defaults to `v` + the `package.json` version at `--source-commit`.
 
 ```sh
 python3 scripts/release-build.py --version v0.2.0 \
@@ -59,10 +67,41 @@ preserved. Kubernetes API access is required from the broker through the cluster
 network; the app and room Pods do not receive service-account tokens.
 
 Environment settings are read as data, never sourced as shell commands. Only the
-app variable allowlist becomes a Kubernetes Secret. The original configuration
+app variable allowlist becomes a Kubernetes Secret; the two broker memory keys
+below go into the broker Deployment. The original configuration
 is retained at `/var/lib/colloq/config.env` with mode 0600 for recovery. Runtime
 auth and room-token derivation secrets are distinct and persistent under
 `/var/lib/colloq/secrets/`; only the broker receives the latter.
+
+## Room memory
+
+Each room Pod reserves its memory in full (requests equal limits). The broker
+gives a room `RUNTIME_KERNEL_MEMORY` (default `2Gi`) unless the class sets its
+own value, and never more than `RUNTIME_KERNEL_MEMORY_MAX` (default: node memory
+minus 1Gi). Set them in the same env file as the app settings:
+
+```sh
+RUNTIME_KERNEL_MEMORY=4Gi
+RUNTIME_KERNEL_MEMORY_MAX=24Gi
+```
+
+Values are whole `Mi` or `Gi` from `64Mi` to `256Gi`; an explicit ceiling must
+not be below the default (`2Gi` when unset); an empty value means the broker
+default. `install`, `prepare` and `update` check them before stopping anything
+and render them into the broker Deployment from `/var/lib/colloq/config.env`, so
+every later update keeps them. `cluster.sh render` shows the result (it reads
+`--env-file`, otherwise a readable `config.env`). To change them on an installed
+server, run an update with the installed release and the edited file — the same
+maintenance stop as any update:
+
+```sh
+sudo scripts/cluster.sh update --release release.json --env-file /path/to/instance.env
+```
+
+A room that the node cannot fit stays `Pending` with `Insufficient memory`
+(or `cpu`, `nvidia.com/gpu`). After 20 seconds the broker gives up, deletes that
+never-scheduled Pod and reports the resource; the teacher sees how much the room
+asked for and what to lower, students see a short note that the teacher can fix it.
 
 ## Storage and recovery
 
@@ -122,7 +161,8 @@ version. This cluster backup is separate from Colloq application/PVC backup.
 ## Isolation limits and GPU hosts
 
 Namespace Pod Security Admission enforces restricted workloads. The broker has
-only Pod/Service get/list/create/delete in the namespace. Its fixed templates
+only Pod/Service get/list/create/delete in the namespace, plus `patch` on the
+`pods/resize` subresource to change a live room's memory. Its fixed templates
 and catalog are trusted control-plane code; Kubernetes RBAC alone cannot constrain
 every field of a Pod the broker may create. The app cannot access those credentials.
 
@@ -168,10 +208,8 @@ tested k3s host and registry configuration before attempting an offline install.
 
 ## Verification record
 
-See [the local CPU deployment proof](../../docs/deployment-proof-2026-09-09.md)
-for tested versions, image identities, actual isolation/restart/deletion checks,
-and the remaining VM/GPU validation. Permanent room retirement and explicit
-restore reconciliation are described in [the runtime contract](../../runtime/README.md).
+Permanent room retirement and explicit restore reconciliation are described in
+[the runtime contract](../../runtime/README.md).
 
 Existing storage must not contain cross-room hardlinks. Restricted room mounts
 cannot create new sibling hardlinks, but descriptor traversal cannot turn an

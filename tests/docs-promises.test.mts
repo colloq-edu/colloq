@@ -83,7 +83,11 @@ test('deployment documentation describes mandatory broker isolation and explicit
   assert.match(readme, /MODE=consistent/)
   assert.match(readme, /live.*not an atomic snapshot/is)
   assert.match(readme, /sourceCommit/)
-  assert.match(readme, /COLLOQ_UNSAFE_DEV_FILES=1/)
+  // COLLOQ_UNSAFE_DEV_FILES больше ничего не решает (server/src/secure-files.ts),
+  // и README не зовёт его ставить; предел разработки, который остался, — Linux
+  // в проде требует /proc/self/fd.
+  assert.doesNotMatch(readme, /COLLOQ_UNSAFE_DEV_FILES=1/)
+  assert.match(readme, /\/proc\/self\/fd/)
 })
 
 test('README про консилиум говорит то же, что комната: ядро одно', () => {
