@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -20,8 +20,8 @@
     <script>
       ;(function () {
         try {
-          var here = 'ru'
-          var there = '/en/'
+          var here = 'en'
+          var there = '/'
           var want = null
           try {
             want = localStorage.getItem('colloq-site-lang')
@@ -46,14 +46,14 @@
       })()
     </script>
 
-    <title>Colloq — одна ссылка на всё занятие</title>
+    <title>Colloq — one link for the whole class</title>
     <meta
       name="description"
-      content="Общий Python-ноутбук, лекции с рукописными заметками и отдельные ответы студентов в режиме «Консилиум». Colloq работает на вашем сервере; студенты входят по ссылке."
+      content="A shared Python notebook, lectures with handwritten notes and a separate answer from every student in Council. Colloq runs on your own machine; students join from a link."
     />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#0f2d69" />
-    <link rel="canonical" href="https://colloq.ru/" />
+    <link rel="canonical" href="https://colloq.ru/en/" />
 
     <!--
       Канон обеих страниц живёт на colloq.ru: зеркало colloq.cc отдаёт тот же
@@ -66,15 +66,15 @@
     <link rel="alternate" hreflang="x-default" href="https://colloq.ru/en/" />
 
     <meta property="og:type" content="website" />
-    <meta property="og:locale" content="ru_RU" />
-    <meta property="og:locale:alternate" content="en_US" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="ru_RU" />
     <meta property="og:site_name" content="Colloq" />
-    <meta property="og:title" content="Colloq — одна ссылка на всё занятие" />
+    <meta property="og:title" content="Colloq — one link for the whole class" />
     <meta
       property="og:description"
-      content="Проводите лекции, пишите код вместе и разбирайте решения студентов. Ноутбук, слайды и задания — по одной ссылке, без регистрации для студентов."
+      content="Give lectures, write code together and go through your students’ answers. Notebook, slides and tasks behind one link, with no sign-up for students."
     />
-    <meta property="og:url" content="https://colloq.ru/" />
+    <meta property="og:url" content="https://colloq.ru/en/" />
     <meta property="og:image" content="https://colloq.ru/img/og.png?v=30b2e08a" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -85,26 +85,26 @@
       href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2232%22%20height%3D%2232%22%20viewBox%3D%220%200%2024%2024%22%3E%3Crect%20width%3D%2224%22%20height%3D%2224%22%20fill%3D%22%230F2D69%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3C%2Fsvg%3E"
     />
 
-    <link rel="preload" href="fonts/hse-sans-900.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/hse-sans-900.woff2" as="font" type="font/woff2" crossorigin />
 
     <link
       rel="preload"
-      href="fonts/jetbrains-mono-latin.woff2"
+      href="/fonts/jetbrains-mono-latin.woff2"
       as="font"
       type="font/woff2"
       crossorigin
     />
 
-    <link rel="stylesheet" href="styles.css?v=8218d015" />
+    <link rel="stylesheet" href="/styles.css?v=8218d015" />
   </head>
 
   <body>
-    <a class="skip-link" href="#main">К содержанию</a>
+    <a class="skip-link" href="#main">Skip to content</a>
 
     <header class="section section--brand on-brand hero" aria-labelledby="hero-h">
       <div class="inner">
-        <nav class="nav" aria-label="Основная навигация">
-          <a class="wordmark" href="/">
+        <nav class="nav" aria-label="Main navigation">
+          <a class="wordmark" href="/en/">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
               <rect x="2" y="2" width="6" height="6" rx="1.6" />
               <rect x="9" y="2" width="6" height="6" rx="1.6" fill="#374B9B" />
@@ -119,85 +119,87 @@
             <span>COLLOQ</span>
           </a>
           <div class="nav-links">
-            <a href="#seminar">Возможности</a>
-            <a href="#konsilium">Консилиум</a>
-            <a href="#voprosy">Вопросы</a>
-            <a href="/docs/">Документация</a>
-            <a href="#start">Установить <span aria-hidden="true">↗</span></a>
+            <a href="#seminar">Features</a>
+            <a href="#konsilium">Council</a>
+            <a href="#voprosy">Questions</a>
+            <a href="/docs/en/">Documentation</a>
+            <a href="#start">Install <span aria-hidden="true">↗</span></a>
           </div>
           <!--
             Текущий язык — не ссылка: вести со страницы на неё же незачем, а
             диктор по aria-current сам скажет, что читатель уже здесь.
           -->
-          <div class="lang-switch" role="group" aria-label="Язык страницы">
-            <span class="lang-option" aria-current="page">RU</span>
+          <div class="lang-switch" role="group" aria-label="Page language">
+            <a class="lang-option" href="/" data-lang="ru" lang="ru" hreflang="ru" title="Русский"
+              >RU</a
+            >
             <span class="lang-sep" aria-hidden="true">·</span>
-            <a class="lang-option" href="/en/" data-lang="en" lang="en" hreflang="en">EN</a>
+            <span class="lang-option" aria-current="page">EN</span>
           </div>
         </nav>
 
         <div class="hero-layout">
           <div class="hero-head">
-            <p class="label label--on-brand">Для лекций и практических занятий</p>
-            <h1 id="hero-h">Одна ссылка<br />на всё занятие.</h1>
+            <p class="label label--on-brand">For lectures and hands-on classes</p>
+            <h1 id="hero-h">One link<br />for the whole class.</h1>
             <p class="lead prose" id="hero-p">
-              Общий Python-ноутбук, слайды с рукописными заметками и задания с отдельным ответом для
-              каждого. Студенту нужны только браузер и имя.
+              A shared Python notebook, slides with handwritten notes and tasks where everyone answers
+              on their own sheet. A student needs a browser and a name.
             </p>
             <div class="hero-actions">
               <a class="action-primary" href="#kak"
-                >Посмотреть, как это работает <span aria-hidden="true">↗</span></a
+                >See how a class runs <span aria-hidden="true">↗</span></a
               >
               <a class="action-text" href="#konsilium"
-                >Новое: Консилиум <span aria-hidden="true">↓</span></a
+                >New: Council <span aria-hidden="true">↓</span></a
               >
             </div>
             <div class="room-line" aria-hidden="true">
               <div class="avatars" id="room">
-                <span style="background: #e8734a">АК</span>
-                <span style="background: #8b6bd9">МР</span>
-                <span style="background: #2fa36b">ДК</span>
-                <span style="background: #e3a72f">СП</span>
+                <span style="background: #e8734a">AL</span>
+                <span style="background: #8b6bd9">BN</span>
+                <span style="background: #2fa36b">DN</span>
+                <span style="background: #e3a72f">SF</span>
                 <span style="background: #374b9b">+8</span>
               </div>
-              <p class="room-count">В комнате <span id="room-n">двенадцать</span> человек</p>
+              <p class="room-count"><span id="room-n">Twelve</span> people in the room</p>
 
               <span class="room-say" id="room-say"></span>
             </div>
 
             <p class="release-note">
-              Открытый код под MIT. <code>pip install colloq</code> — и занятие идёт на вашей
-              машине.
+              Open source under MIT. <code>pip install colloq</code> and the class runs on your own
+              machine.
             </p>
           </div>
-          <aside class="lesson-index" aria-label="Три режима занятия">
+          <aside class="lesson-index" aria-label="Three ways to run a class">
             <div class="lesson-index-head">
-              <span class="label">В одной комнате</span
+              <span class="label">In one room</span
               ><span class="lesson-mark" aria-hidden="true">[ 3 ]</span>
             </div>
             <a href="#seminar"
               ><span class="lesson-number">01</span
-              ><span><strong>Семинар</strong><small>Пишем и запускаем код вместе</small></span
+              ><span><strong>Class</strong><small>Write and run code together</small></span
               ><span class="lesson-arrow" aria-hidden="true">↗</span></a
             >
             <a href="#lekciya"
               ><span class="lesson-number">02</span
-              ><span><strong>Лекция</strong><small>Объясняем на слайдах и от руки</small></span
+              ><span><strong>Lecture</strong><small>Explain on slides and by hand</small></span
               ><span class="lesson-arrow" aria-hidden="true">↗</span></a
             >
             <a href="#konsilium"
               ><span class="lesson-number">03</span
-              ><span><strong>Консилиум</strong><small>Каждый решает, обсуждаем вместе</small></span
+              ><span><strong>Council</strong><small>Everyone answers, the class discusses</small></span
               ><span class="lesson-arrow" aria-hidden="true">↗</span></a
             >
             <p class="lesson-index-foot">
-              Режим выбирается при создании занятия.<br />Правила можно менять по ходу.
+              You pick the format when you create the class.<br />The rules can change as you go.
             </p>
           </aside>
         </div>
         <div class="hero-bottom">
-          <span>На вашем сервере</span><span>Вход без регистрации</span
-          ><span>Материалы остаются по ссылке</span>
+          <span>On your own server</span><span>No sign-up to join</span
+          ><span>Materials stay behind the link</span>
         </div>
       </div>
     </header>
@@ -211,18 +213,18 @@
       <section class="section install-section" id="start" aria-labelledby="start-h">
         <div class="inner install-layout">
           <div class="install-copy">
-            <p class="label">Установка · три команды</p>
-            <h2 class="h2" id="start-h">Поставьте пакет.<br />Отправьте ссылку.</h2>
+            <p class="label">Install · three commands</p>
+            <h2 class="h2" id="start-h">Install the package.<br />Send one link.</h2>
             <p class="prose">
-              Colloq ставится как обычный Python-пакет и поднимает занятие на вашей машине.
-              Студентам нужна одна ссылка — ни аккаунтов, ни установки Python.
+              Colloq installs like any Python package and brings a class up on your own machine.
+              Students need one link — no accounts, no Python to install.
             </p>
           </div>
           <div class="install-term">
             <code>pip install colloq</code>
             <div>
               <code>colloq start</code>
-              <p>занятие на этой машине</p>
+              <p>a class on this machine</p>
             </div>
             <div>
               <code>colloq start --share</code>
@@ -230,13 +232,13 @@
                 Ровно то, что делает флаг: быстрый туннель Cloudflare. Обещать
                 постоянный адрес нельзя — он новый при каждом запуске.
               -->
-              <p>одна ссылка для студентов, пока открыт терминал</p>
+              <p>one link for your students, while the terminal stays open</p>
             </div>
           </div>
         </div>
         <div class="inner install-actions">
-          <a class="action-primary action-primary--dark" href="/docs/"
-            >Документация <span aria-hidden="true">↗</span></a
+          <a class="action-primary action-primary--dark" href="/docs/en/"
+            >Documentation <span aria-hidden="true">↗</span></a
           >
           <a class="action-ghost" href="https://github.com/sleep3r/colloq"
             >GitHub <span aria-hidden="true">↗</span></a
@@ -255,13 +257,13 @@
       >
         <div class="shot-head">
           <div>
-            <p class="label">01 / Семинар</p>
-            <h2 class="h2" id="seminar-h">Код на проекторе.<br />Курсоры всей группы.</h2>
+            <p class="label">01 / Class</p>
+            <h2 class="h2" id="seminar-h">Code on the projector.<br />Cursors from the whole room.</h2>
           </div>
           <p class="prose">
-            Открываете ноутбук, и группа работает в нём вместе с вами. Правки и результаты запуска
-            видны всем. Данные, которые вы загрузили в Python, доступны в следующих ячейках — в том
-            числе студентам.
+            You open the notebook and the room works in it with you. Edits and run output are visible
+            to everyone. Data you loaded into Python is there for the next cells — students’
+            cells too.
           </p>
         </div>
         <!--
@@ -273,27 +275,27 @@
         <figure class="scene-band">
           <div class="scene-plate">
             <img
-              src="/img/scenes/run-ru-light.svg"
+              src="/img/scenes/run-light.svg"
               width="880"
               height="300"
-              alt="Мария запускает третью ячейку, Иван дописывает четвёртую; запуск Ивана ждёт очереди в общем ядре и получает тот же df"
+              alt="Maria runs cell 03 while Ivan finishes cell 04; Ivan’s run waits its turn in the room’s one kernel and gets the same df"
               loading="lazy"
               decoding="async"
             />
           </div>
-          <figcaption class="scene-hint">Сцену можно пролистать вбок →</figcaption>
+          <figcaption class="scene-hint">The scene scrolls sideways →</figcaption>
         </figure>
       </section>
 
       <section class="section section--surface" id="lekciya" aria-labelledby="lec-h">
         <div class="inner">
           <div class="sec-head">
-            <p class="label">02 / Лекция</p>
-            <h2 class="h2" id="lec-h">Пишите на слайде.<br />Видно даже с последнего ряда.</h2>
+            <p class="label">02 / Lecture</p>
+            <h2 class="h2" id="lec-h">Write on the slide.<br />Legible from the back row.</h2>
           </div>
           <p class="prose sec-lead">
-            Загрузите PDF, откройте проекцию на большом экране и подключите планшет как пульт.
-            Студенты видят слайды и ваши рукописные заметки в своих браузерах.
+            Upload a PDF, open the projection on the big screen and connect a tablet as the lecture
+            console. Students see the slides and your handwriting in their own browsers.
           </p>
 
           <!--
@@ -302,26 +304,26 @@
           -->
           <div class="lec-grid lecture-cards">
             <article class="lec-card">
-              <p class="label">Пульт на планшете</p>
+              <p class="label">Lecture console on a tablet</p>
               <p>
-                Перо, маркер, ластик и указка. Добавьте чистый лист для вывода формулы; заметки
-                спикера останутся только у вас.
+                Pen, highlighter, eraser and pointer. Add a blank sheet to derive a formula; speaker
+                notes stay with you.
               </p>
             </article>
 
             <article class="lec-card">
-              <p class="label">Проектор</p>
+              <p class="label">Projector</p>
               <p>
-                Слайд на весь экран в отдельном окне. Можно листать стрелками или презентационным
-                пультом и показывать код из ноутбука во время объяснения.
+                The slide fills a separate window. Page through it with the arrow keys or a presentation
+                remote, and show code from the notebook while you explain.
               </p>
             </article>
 
             <article class="lec-card">
-              <p class="label">Студент</p>
+              <p class="label">Student</p>
               <p>
-                Может вернуться к предыдущей странице, дочитать и одним нажатием догнать лекцию.
-                Ноутбук с практикой уже открыт в той же комнате.
+                Can go back a page, finish reading and catch up with one tap. The practice notebook is
+                already open in the same room.
               </p>
             </article>
           </div>
@@ -329,18 +331,19 @@
           <figure class="scene-band">
             <div class="scene-plate">
               <img
-                src="/img/scenes/lecture-ru-light.svg"
+                src="/img/scenes/lecture-light.svg"
                 width="880"
                 height="300"
-                alt="Преподаватель подчёркивает η и пишет «размер шага» на пульте; та же разметка и красная указка появляются на проекторе, а студент дочитывает предыдущую страницу"
+                alt="The teacher underlines η and writes “step size” on the console; the same ink and the red pointer appear on the projector, while a student finishes the previous page"
                 loading="lazy"
                 decoding="async"
               />
             </div>
-            <figcaption class="scene-hint">Сцену можно пролистать вбок →</figcaption>
+            <figcaption class="scene-hint">The scene scrolls sideways →</figcaption>
           </figure>
           <p class="lec-note">
-            Пульт рассчитан на iPad с Apple Pencil. Поддерживает отсечение ладони и Split View.
+            The console is built for an iPad with Apple Pencil. Palm rejection and Split View are
+            supported.
           </p>
         </div>
       </section>
@@ -348,24 +351,23 @@
       <section class="section council-section" id="konsilium" aria-labelledby="council-h">
         <div class="inner council-layout">
           <div class="council-copy">
-            <p class="label">03 / Консилиум <span class="new-tag">Новое</span></p>
-            <h2 class="h2" id="council-h">Одно задание.<br />У каждого — <br />своё решение.</h2>
+            <p class="label">03 / Council <span class="new-tag">New</span></p>
+            <h2 class="h2" id="council-h">One task.<br />Everyone writes — <br />their own answer.</h2>
           </div>
           <div class="council-copy">
             <p class="prose">
-              Откройте ячейку в режиме «Консилиум». Студенты пишут каждый в своей версии: чужие
-              ответы им не видны, пока вы не выберете один для общего разбора.
+              Open a cell in Council. Every student writes on their own sheet: they do not see each
+              other’s answers until you show one to the class.
             </p>
             <ul class="council-points">
-              <li><span>01</span>Видно, кто ещё пишет и кто уже сдал.</li>
-              <li><span>02</span>Каждый запуск ограничен по времени и идёт через общее ядро.</li>
+              <li><span>01</span>You see who is still writing and who has submitted.</li>
+              <li><span>02</span>Every run is capped in time and goes through the one kernel.</li>
               <li>
-                <span>03</span>Выбранное решение показывается классу — с именем автора или без.
+                <span>03</span>The answer you pick is shown to the class, with or without the name.
               </li>
             </ul>
             <p class="council-ai">
-              Оракул может подготовить сводку и черновики ответов. Вы решаете, что отправить
-              студентам.
+              The Oracle can draft a summary and replies. You decide what reaches the students.
             </p>
           </div>
         </div>
@@ -378,21 +380,21 @@
         <figure class="scene-band">
           <div class="scene-plate">
             <img
-              src="/img/scenes/council-ru-light.svg"
+              src="/img/scenes/council-light.svg"
               width="880"
               height="380"
-              alt="Анна, Марат и Дина пишут каждый в своём листе; их запуски идут по очереди через общее ядро, а классу пока не показано ничего"
+              alt="Anna, Marat and Dina each write on their own sheet; their runs queue through the room’s one kernel, and nothing is shown to the class yet"
               loading="lazy"
               decoding="async"
             />
           </div>
-          <figcaption class="scene-hint">Сцену можно пролистать вбок →</figcaption>
+          <figcaption class="scene-hint">The scene scrolls sideways →</figcaption>
         </figure>
         <div class="inner">
           <p class="council-kernel">
-            <strong>Ответы отдельные, Python-ядро общее.</strong> Студенты используют подготовленные
-            вами данные. Запуски идут по очереди; изменения общих объектов и файлов могут влиять на
-            следующие решения.
+            <strong>Separate answers, one shared Python kernel.</strong> Students work on the data
+            you prepared. Runs go one at a time; changes to shared objects and files can
+            affect the answers that follow.
           </p>
         </div>
       </section>
@@ -400,39 +402,39 @@
       <section class="section" id="kak">
         <div class="inner">
           <div class="steps-head">
-            <h2 class="h2">Как начать занятие</h2>
+            <h2 class="h2">How a class starts</h2>
             <span class="rule"></span>
-            <span class="meta">Преподаватель → группа</span>
+            <span class="meta">Teacher → room</span>
           </div>
 
           <div class="steps">
             <article class="step">
               <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
-              <p class="label">Шаг 01 · Преподаватель</p>
-              <h3>Подготовьте комнату</h3>
+              <p class="label">Step 01 · Teacher</p>
+              <h3>Prepare the room</h3>
               <p>
-                Выберите режим, окружение и правила доступа. Загрузите PDF, начните с пустого
-                ноутбука или импортируйте материалы с GitHub.
+                Pick the format, the environment and the rules. Upload a PDF, start from an empty
+                notebook or import materials from GitHub.
               </p>
             </article>
 
             <article class="step">
               <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
-              <p class="label">Шаг 02 · Студент</p>
-              <h3>Студенты входят по ссылке</h3>
+              <p class="label">Step 02 · Student</p>
+              <h3>Students join from the link</h3>
               <p>
-                Студент вводит имя и выбирает метку. Почта, пароль и установка Python на его
-                компьютере не нужны.
+                A student types a name and picks a mark. No email, no password, no Python on their
+                computer.
               </p>
             </article>
 
             <article class="step">
               <div class="step-rule" aria-hidden="true"><i></i><b></b></div>
-              <p class="label">Шаг 03 · Занятие</p>
-              <h3>Проводите занятие</h3>
+              <p class="label">Step 03 · The class</p>
+              <h3>Run the class</h3>
               <p>
-                Показывайте слайды, пишите код вместе или предложите каждому своё решение. После
-                занятия материалы можно перечитать по той же ссылке.
+                Show slides, write code together or let everyone answer on their own. Afterwards the
+                materials stay readable behind the same link.
               </p>
             </article>
           </div>
@@ -445,15 +447,15 @@
           <figure class="scene-band">
             <div class="scene-plate">
               <img
-                src="/img/scenes/room-ru-light.svg"
+                src="/img/scenes/room-light.svg"
                 width="880"
                 height="320"
-                alt="Студентка вводит имя по ссылке занятия и попадает в комнату: счётчик растёт, а в панели «Люди» видно, кто что сейчас делает"
+                alt="A student types her name on the class link and joins the room: the count ticks up and the People panel shows who is doing what"
                 loading="lazy"
                 decoding="async"
               />
             </div>
-            <figcaption class="scene-hint">Сцену можно пролистать вбок →</figcaption>
+            <figcaption class="scene-hint">The scene scrolls sideways →</figcaption>
           </figure>
         </div>
       </section>
@@ -481,34 +483,34 @@
               </p>
 
               <div class="door-bill">
-                <p class="door-eyebrow">Вы заходите на</p>
-                <h3 class="door-title">Лекция 4. Свёрточные сети</h3>
+                <p class="door-eyebrow">You are joining</p>
+                <h3 class="door-title">Lecture 4. Convolutional networks</h3>
                 <p class="door-when">
                   <span>25.08 · 18:10</span>
                   <i aria-hidden="true"></i>
-                  Александр Калашников
+                  Alexander Kalashnikov
                 </p>
               </div>
 
               <p class="door-inside">
                 <span class="door-stack" id="door-stack" aria-hidden="true">
-                  <span style="background: #8b6bd9">МР</span>
-                  <span style="background: #2fa36b">ДК</span>
-                  <span style="background: #e3a72f">СП</span>
-                  <span style="background: #4fc3ee">РН</span>
+                  <span style="background: #8b6bd9">BN</span>
+                  <span style="background: #2fa36b">DN</span>
+                  <span style="background: #e3a72f">SF</span>
+                  <span style="background: #4fc3ee">RT</span>
                 </span>
-                <span id="door-count" data-n="7">внутри уже 7 человек</span>
+                <span id="door-count" data-n="7">7 people already inside</span>
               </p>
             </aside>
 
             <form class="door-form" id="door-form" novalidate>
               <div class="door-bill door-bill--small">
-                <p class="door-eyebrow">Вы заходите на</p>
-                <h3 class="door-title">Лекция 4. Свёрточные сети</h3>
+                <p class="door-eyebrow">You are joining</p>
+                <h3 class="door-title">Lecture 4. Convolutional networks</h3>
               </div>
 
               <div class="door-field">
-                <label for="door-name">Как вас зовут</label>
+                <label for="door-name">What is your name</label>
 
                 <input
                   id="door-name"
@@ -517,22 +519,22 @@
                   maxlength="40"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="Александр"
+                  placeholder="Alexander"
                 />
               </div>
 
               <div class="door-field">
                 <p class="door-legend">
-                  <label for="door-change" id="door-mark-label">Ваша метка</label>
-                  <span class="door-hint" id="door-hint" hidden>40 меток</span>
+                  <label for="door-change" id="door-mark-label">Your mark</label>
+                  <span class="door-hint" id="door-hint" hidden>40 marks</span>
                 </p>
 
                 <div class="door-mark" id="door-card">
                   <span class="door-glyph" id="door-glyph" aria-hidden="true">🦊</span>
                   <span class="door-said">
-                    <b id="door-said">Теперь вы — лиса</b>
-                    Выбрана из тех, что в этой комнате ещё никто не занял, — чтобы курсор всегда был
-                    узнаваемо ваш.
+                    <b id="door-said">You are now the fox</b>
+                    Picked from the ones nobody in this room has taken, so that the cursor is always
+                    recognisably yours.
                   </span>
                   <button
                     type="button"
@@ -554,7 +556,8 @@
                       <path d="M20 11a8 8 0 1 0-2.3 5.7" />
                       <path d="M20 4v7h-7" />
                     </svg>
-                    Другую
+                                        Another one
+
                   </button>
                 </div>
 
@@ -569,7 +572,7 @@
 
               <button type="submit" class="door-go" id="door-go">
                 <span class="door-go-mark" id="door-go-mark" aria-hidden="true" hidden></span>
-                <span id="door-go-text">Войти</span>
+                <span id="door-go-text">Join</span>
                 <svg
                   width="16"
                   height="16"
@@ -602,63 +605,63 @@
               </button>
 
               <p class="door-foot" id="door-foot">
-                Ни аккаунта, ни почты. Ссылка и есть занятие: закройте вкладку — та же ссылка вернёт
-                вас обратно.
+                No account, no email. The link is the class: close the tab and the same link brings
+                you back.
               </p>
             </form>
           </div>
         </div>
 
         <p class="shot-caption">
-          Попробуйте экран входа: введите имя и выберите метку. Это пример на странице — подключение
-          к занятию здесь не происходит.
+          Try the join screen: type a name and pick a mark. This is a sample on the page — nothing
+          connects to a real class here.
         </p>
       </section>
 
       <section class="section section--surface" id="chto">
         <div class="inner">
           <div class="feat-head">
-            <h2 class="h2">Всё, что нужно по ходу пары</h2>
+            <h2 class="h2">Everything a class needs, in one room</h2>
             <p>
-              Ноутбук, файлы, терминал и ИИ-помощник доступны в одной комнате. Кто может ими
-              пользоваться, определяет преподаватель.
+              The notebook, files, terminal and the Oracle live in the same room. The teacher decides
+              who may use them.
             </p>
           </div>
 
           <div class="kernel">
             <div class="kernel-head">
-              <p class="label">Одно ядро</p>
+              <p class="label">One kernel</p>
               <p class="kernel-hint" aria-live="polite">
-                Две ячейки одного документа. Порядок запуска выбираете вы.
+                Two cells of the same notebook. You choose the order they run in.
               </p>
             </div>
 
             <div class="cell" data-owner="maria" data-run="idle">
-              <p class="cell-who">Мария, студентка · ячейка 3</p>
+              <p class="cell-who">Maria, student · cell 3</p>
               <span class="cell-prompt" aria-hidden="true">In [ ]</span>
               <pre class="cell-src">
 df = pd.read_csv("data.csv")
 df.shape</pre
               >
               <button class="cell-run" type="button" aria-keyshortcuts="Shift+Enter">
-                Запустить ячейку Марии
+                Run Maria’s cell
               </button>
               <div class="cell-out" role="status"><p></p></div>
             </div>
 
             <div class="cell" data-owner="you" data-run="idle">
-              <p class="cell-who">Вы · ячейка 4</p>
+              <p class="cell-who">You · cell 4</p>
               <span class="cell-prompt" aria-hidden="true">In [ ]</span>
               <pre class="cell-src">df["target"].mean()</pre>
               <button class="cell-run" type="button" aria-keyshortcuts="Shift+Enter">
-                Запустить вашу ячейку
+                Run your cell
               </button>
               <div class="cell-out" role="status"><p></p></div>
             </div>
 
             <p class="kernel-note">
-              Интерактивный пример: сначала запустите ячейку Марии, затем свою. Python здесь не
-              выполняется.
+              An interactive sample: run Maria’s cell first, then yours. No Python runs on this
+              page.
             </p>
           </div>
 
@@ -678,11 +681,11 @@ df.shape</pre
                   <path d="M4 5h16M4 12h10M4 19h13" />
                   <circle cx="19" cy="12" r="2.2" fill="#0FA0D7" stroke="none" />
                 </svg>
-                <h3>Один документ на всех</h3>
+                <h3>One document for everyone</h3>
               </div>
               <p>
-                Можно редактировать одну ячейку одновременно. Курсоры подписаны именами, правки
-                появляются у всей группы.
+                People can edit the same cell at once. Cursors carry names, and edits show up for the
+                whole room.
               </p>
             </article>
 
@@ -702,11 +705,11 @@ df.shape</pre
                   <path d="M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3" />
                   <circle cx="12" cy="12" r="2.2" fill="#0FA0D7" stroke="none" />
                 </svg>
-                <h3>Одно ядро на комнату</h3>
+                <h3>One kernel per room</h3>
               </div>
               <p>
-                Переменная из третьей ячейки доступна в четвёртой независимо от того, кто её
-                запускает. Вывод и очередь запусков общие.
+                A variable from cell three is there in cell four, whoever ran it. Output and the run
+                queue are shared.
               </p>
             </article>
 
@@ -727,11 +730,10 @@ df.shape</pre
                   <path d="M6.5 9.5l3 2.5-3 2.5" stroke="#0FA0D7" />
                   <path d="M12.5 15h5" stroke="#0FA0D7" />
                 </svg>
-                <h3>Общий терминал</h3>
+                <h3>A shared terminal</h3>
               </div>
               <p>
-                Установили пакет один раз — он доступен группе. Команды выполняются в окружении
-                занятия.
+                Install a package once and the room has it. Commands run in the class environment.
               </p>
             </article>
           </div>
@@ -761,11 +763,12 @@ df.shape</pre
                   />
                   <path d="M15.5 17h5.5M15.5 20.5h3.5" />
                 </svg>
-                <h3>Оракул в комнате</h3>
+                <h3>The Oracle in the room</h3>
               </div>
               <p>
-                ИИ-помощник отвечает с учётом кода и вывода ячеек. Вопросы и ответы видит вся
-                группа. При создании занятия можно выбрать подсказки или отключить помощника.
+                The assistant answers with the cells’ code and output in view. The whole room sees
+                the questions and the answers. When you create a class you can leave it on
+                hints only, or turn it off.
               </p>
             </article>
 
@@ -788,11 +791,11 @@ df.shape</pre
                   <path d="M13.5 3v5.5H19" stroke="#0FA0D7" />
                   <path d="M8.5 13.5h7M8.5 17h4.5" stroke="#0FA0D7" />
                 </svg>
-                <h3>Общие файлы</h3>
+                <h3>Shared files</h3>
               </div>
               <p>
-                Загрузите данные перетаскиванием, разложите файлы по папкам. Они доступны из
-                ноутбука и терминала занятия.
+                Drag data in, sort files into folders. They are there from the notebook and from the
+                terminal of the class.
               </p>
             </article>
 
@@ -812,11 +815,11 @@ df.shape</pre
                   <circle cx="6.5" cy="7" r="1.3" fill="#0FA0D7" stroke="none" />
                   <circle cx="6.5" cy="17" r="1.3" fill="#0FA0D7" stroke="none" />
                 </svg>
-                <h3>Своё железо</h3>
+                <h3>Your own hardware</h3>
               </div>
               <p>
-                Запускайте Colloq на своём компьютере или сервере. Для разных курсов можно
-                подготовить отдельные окружения с нужными пакетами.
+                Run Colloq on your own computer or server. Different courses can get their own
+                environments with the packages they need.
               </p>
             </article>
           </div>
@@ -839,11 +842,11 @@ df.shape</pre
                   <path d="M3 3.5v4h4" stroke="#0FA0D7" />
                   <path d="M12 7.5V12l3 1.8" stroke="#0FA0D7" />
                 </svg>
-                <h3>История комнаты</h3>
+                <h3>Room history</h3>
               </div>
               <p>
-                Посмотрите, кто изменил код. Преподаватель может восстановить ячейку или весь
-                ноутбук; Ctrl+Z отменяет собственные правки.
+                See who changed the code. The teacher can restore a cell or the whole notebook; Ctrl+Z
+                undoes your own edits.
               </p>
             </article>
 
@@ -864,11 +867,11 @@ df.shape</pre
                   <path d="M17 4.5v7M13.5 8h7" stroke="#0FA0D7" />
                   <path d="M14.5 17.5l2 2 4-4.5" stroke="#0FA0D7" />
                 </svg>
-                <h3>Оракул правит ячейку</h3>
+                <h3>The Oracle edits a cell</h3>
               </div>
               <p>
-                Попросите объяснить ошибку или предложить правку. Изменения кода видны до принятия;
-                их можно отклонить.
+                Ask it to explain an error or propose an edit. The change is visible before you accept
+                it, and you can discard it.
               </p>
             </article>
 
@@ -888,11 +891,11 @@ df.shape</pre
                   <path d="M12 3l7.5 3v6c0 4.4-3.1 7.9-7.5 9-4.4-1.1-7.5-4.6-7.5-9V6L12 3z" />
                   <path d="M9 12.2l2.1 2.1L15.2 10" stroke="#0FA0D7" />
                 </svg>
-                <h3>Правила комнаты</h3>
+                <h3>Room rules</h3>
               </div>
               <p>
-                Настраивайте, кто редактирует, запускает код и загружает файлы. После завершения
-                занятия студентам остаётся доступ для чтения.
+                Set who may edit, run code and upload files. After you end the class, students keep
+                read access.
               </p>
             </article>
           </div>
@@ -904,15 +907,15 @@ df.shape</pre
           <figure class="scene-band">
             <div class="scene-plate">
               <img
-                src="/img/scenes/oracle-ru-light.svg"
+                src="/img/scenes/oracle-light.svg"
                 width="880"
                 height="300"
-                alt="Студентка просит оракула переписать ячейку: вопрос и ответ появляются в общей ветке комнаты, а правку кода можно принять или отклонить"
+                alt="A student asks the Oracle to rewrite a cell: the question and the answer appear in the room’s shared thread, and the proposed edit can be accepted or discarded"
                 loading="lazy"
                 decoding="async"
               />
             </div>
-            <figcaption class="scene-hint">Сцену можно пролистать вбок →</figcaption>
+            <figcaption class="scene-hint">The scene scrolls sideways →</figcaption>
           </figure>
         </div>
       </section>
@@ -920,70 +923,69 @@ df.shape</pre
       <section class="section faq-section" id="voprosy" aria-labelledby="faq-h">
         <div class="inner faq-layout">
           <div>
-            <p class="label">До первой пары</p>
-            <h2 class="h2" id="faq-h">Практические<br />вопросы</h2>
+            <p class="label">Before your first class</p>
+            <h2 class="h2" id="faq-h">Practical<br />questions</h2>
             <p class="prose faq-intro">
-              Что общее, что сохраняется и где проходят границы инструмента.
+              What is shared, what is kept, and where this tool stops.
             </p>
           </div>
           <div class="faq-list">
             <details open>
-              <summary>Что остаётся после занятия?</summary>
+              <summary>What is left after the class?</summary>
               <p>
-                Ноутбук, файлы и ответы оракула доступны по прежней ссылке. Кнопка «Закончить
-                занятие» оставляет студентам чтение, а редактирование и запуски — преподавателю.
-                Занятие можно продолжить; ноутбук можно скачать в формате .ipynb.
+                The notebook, the files and the Oracle thread stay behind the same link. End class
+                leaves students with reading, and keeps editing and runs for the teacher. You
+                can resume the class; the notebook downloads as .ipynb.
               </p>
             </details>
             <details>
-              <summary>Что, если кто-то удалит код или запустит бесконечный цикл?</summary>
+              <summary>What if someone deletes the code or starts an endless loop?</summary>
               <p>
-                Преподаватель может остановить выполнение, восстановить ячейку из истории или
-                ограничить редактирование и запуск. Перезапуск ядра сбросит переменные, но сохранит
-                текст ноутбука и файлы.
+                The teacher can interrupt the run, restore a cell from history, or restrict editing
+                and running. Restarting the kernel clears the variables but keeps the
+                notebook text and the files.
               </p>
             </details>
             <details>
-              <summary>А если студент потеряет соединение?</summary>
+              <summary>What if a student loses the connection?</summary>
               <p>
-                Занятие у остальных продолжается. Сохранённые в браузере правки синхронизируются
-                после восстановления связи. По той же ссылке студент может вернуться в комнату.
+                The class goes on for everyone else. Edits kept in the browser sync once the
+                connection is back. The same link brings the student into the room again.
               </p>
             </details>
             <details>
-              <summary>Кто видит решения в «Консилиуме»?</summary>
+              <summary>Who sees the answers in Council?</summary>
               <p>
-                Студент видит свой ответ, преподаватель — ответы группы. Для обсуждения
-                преподаватель может показать выбранное решение всем. Вычисления проходят в общем
-                ядре: этот режим предназначен для учебного разбора, а не для изолированной проверки
-                экзаменационных работ.
+                A student sees their own answer, the teacher sees the room’s. To discuss one, the
+                teacher can show it to everybody. The code runs in the shared kernel: this is
+                a teaching format, not an isolated sandbox for grading exams.
               </p>
             </details>
             <details>
-              <summary>Куда отправляются данные при работе с ИИ?</summary>
+              <summary>Where does data go when the Oracle is used?</summary>
               <p>
-                К настроенному вами провайдеру: вопрос, контекст ноутбука и диалога, а также
-                открытого файла. При разборе «Консилиума» — задание и сданные решения; в режиме
-                работы с файлами помощник может читать дополнительные файлы комнаты. Вы выбираете
-                провайдера и задаёте лимиты.
+                To the provider you configured: the question, the notebook and thread context, and the
+                open file. In a Council review — the task and the submitted answers; in Act
+                mode the assistant may read further files of the room. You choose the
+                provider and set the limits.
               </p>
               <p>
-                Можно подключить локальную модель через Ollama или vLLM. Без настроенного провайдера
-                занятие работает без оракула.
-              </p>
-            </details>
-            <details>
-              <summary>Подойдёт для дистанционного занятия?</summary>
-              <p>
-                Да, если сервер доступен группе по сети. Голос и видео остаются в привычном сервисе
-                звонков, а код, слайды и задания открываются в Colloq.
+                You can point it at a local model through Ollama or vLLM. With no provider configured,
+                the class simply runs without the Oracle.
               </p>
             </details>
             <details>
-              <summary>Можно вести здесь весь курс?</summary>
+              <summary>Does it work for a remote class?</summary>
               <p>
-                Colloq отвечает за само занятие и его материалы. Расписание, домашние задания,
-                оценки и ведомости остаются в вашей системе управления курсом.
+                Yes, as long as the room can reach the server. Voice and video stay in whatever call
+                service you use; the code, the slides and the tasks open in Colloq.
+              </p>
+            </details>
+            <details>
+              <summary>Can a whole course live here?</summary>
+              <p>
+                Colloq covers the class itself and its materials. Schedules, homework, grades and
+                rosters stay in your own course system.
               </p>
             </details>
           </div>
@@ -992,42 +994,42 @@ df.shape</pre
       <section class="section section--brand on-brand" id="razvernut" aria-labelledby="deploy-h">
         <div class="inner deploy">
           <div>
-            <p class="label label--on-brand">На своей машине</p>
-            <h2 class="h2" id="deploy-h">Окружение курса<br />под вашим контролем.</h2>
+            <p class="label label--on-brand">On your own machine</p>
+            <h2 class="h2" id="deploy-h">The course environment<br />stays under your control.</h2>
             <p class="prose">
-              Colloq можно развернуть на ноутбуке преподавателя, кафедральном сервере или VPS.
-              Python работает на этой машине; студенты подключаются из браузера.
+              Colloq runs on a teacher’s laptop, a department server or a VPS. Python executes on
+              that machine; students connect from a browser.
             </p>
             <p class="deploy-release">
-              Исходный код открыт под MIT, пакет лежит на PyPI. Python выполняется на вашей машине,
-              материалы занятия остаются там же.
+              The source is open under MIT and the package is on PyPI. Python runs on your machine,
+              and the class materials stay there too.
             </p>
           </div>
           <div class="setup-sheet">
-            <p class="label label--on-brand">Что потребуется</p>
+            <p class="label label--on-brand">What you need</p>
             <ol>
               <li>
                 <span>01</span>
                 <div>
-                  <strong>Компьютер или сервер</strong>
-                  <p>Python, Node.js 22+ и Docker; ресурсы — под задачи курса.</p>
+                  <strong>A computer or a server</strong>
+                  <p>Python, Node.js 22+ and Docker; resources to match the course.</p>
                 </div>
               </li>
               <li>
                 <span>02</span>
                 <div>
-                  <strong>Адрес, доступный группе</strong>
+                  <strong>An address your room can reach</strong>
                   <p>
-                    Локальная сеть, свой домен или <code>--share</code>. Адреса Cloudflare не
-                    открываются из России — для таких групп поднимается свой ретранслятор.
+                    A local network, your own domain or <code>--share</code>. Cloudflare addresses do
+                    not open from Russia — for those rooms you run your own relay.
                   </p>
                 </div>
               </li>
               <li>
                 <span>03</span>
                 <div>
-                  <strong>Модель для оракула — по желанию</strong>
-                  <p>API выбранного провайдера или локальная модель.</p>
+                  <strong>A model for the Oracle — optional</strong>
+                  <p>An API from the provider you pick, or a local model.</p>
                 </div>
               </li>
             </ol>
@@ -1037,18 +1039,19 @@ df.shape</pre
       <section class="section contact-section" id="contact">
         <div class="inner finale">
           <div>
-            <p class="label">Связаться с автором</p>
-            <h2>Хотите провести<br />свою пару в Colloq?</h2>
+            <p class="label">Talk to the author</p>
+            <h2>Want to run<br />your class in Colloq?</h2>
           </div>
           <div class="finale-call">
             <p class="prose">
-              Напишите, что преподаёте и как устроено занятие: подскажу, с чего начать и какое
-              окружение собрать. Ошибки и пожелания удобнее заводить issue на GitHub.
+              Write what you teach and how your class is built: I will suggest where to start and
+              which environment to assemble. Bugs and wishes are easier to file as a GitHub
+              issue.
             </p>
             <a
               class="action-primary action-primary--dark"
-              href="mailto:sleep3r@icloud.com?subject=Colloq%20для%20моего%20курса"
-              >Написать Александру <span aria-hidden="true">↗</span></a
+              href="mailto:sleep3r@icloud.com?subject=Colloq%20for%20my%20course"
+              >Email Alexander <span aria-hidden="true">↗</span></a
             >
             <p class="contact-email">sleep3r@icloud.com</p>
           </div>
@@ -1072,20 +1075,20 @@ df.shape</pre
             </svg>
             <span>COLLOQ</span>
           </div>
-          <p>Инструмент для занятий, который мы делаем и используем сами.</p>
+          <p>A teaching tool we build and teach with ourselves.</p>
         </div>
 
         <div class="foot-col">
-          <p class="label label--on-brand">Проект</p>
-          <a href="/docs/">Документация</a>
+          <p class="label label--on-brand">Project</p>
+          <a href="/docs/en/">Documentation</a>
           <a href="https://github.com/sleep3r/colloq">GitHub</a>
           <a href="https://pypi.org/project/colloq/">PyPI</a>
-          <a href="/en/" lang="en" hreflang="en">English</a>
+          <a href="/" lang="ru" hreflang="ru">Русский</a>
         </div>
 
         <div class="foot-col">
-          <p class="label label--on-brand">Автор</p>
-          <span>Александр Калашников</span>
+          <p class="label label--on-brand">Author</p>
+          <span>Alexander Kalashnikov</span>
           <a class="host" href="mailto:sleep3r@icloud.com">sleep3r@icloud.com</a>
           <span class="host">colloq.ru</span>
         </div>
@@ -1099,131 +1102,123 @@ df.shape</pre
     -->
     <script>
       window.COLLOQ_I18N = {
-        /* [инициалы, цвет, имя, женский род] — род нужен только строке
-           «вошла/вышел»; в английском словаре оба варианта совпадают. */
+        /* [инициалы, цвет, имя, женский род] — род нужен только русской
+           строке «вошла/вышел»; здесь оба варианта совпадают, и четвёртое
+           поле стоит нулём во всех строках. Поле не выброшено нарочно:
+           списки двух языков должны читаться одной и той же программой. */
         roster: [
-          ['АК', '#e8734a', 'Алиса', 1],
-          ['МР', '#8b6bd9', 'Марат', 0],
-          ['ДК', '#2fa36b', 'Дина', 1],
-          ['СП', '#e3a72f', 'Соня', 1],
-          ['РН', '#3ec9a7', 'Рита', 1],
-          ['ИЛ', '#4fc3ee', 'Игорь', 0],
-          ['ТБ', '#4fc3ee', 'Тимур', 0],
-          ['ЮК', '#8b6bd9', 'Юля', 1],
-          ['ВГ', '#2fa36b', 'Вера', 1],
-          ['ЛС', '#e8734a', 'Лёша', 0],
-          ['ОП', '#e3a72f', 'Оля', 1],
-          ['НЖ', '#4fc3ee', 'Никита', 0],
-          ['ЕС', '#8b6bd9', 'Егор', 0],
-          ['КМ', '#3ec9a7', 'Катя', 1],
-          ['ДБ', '#e8734a', 'Даня', 0],
-          ['ПЛ', '#e8734a', 'Полина', 1],
+          ['AL', '#e8734a', 'Alice', 0],
+          ['BN', '#8b6bd9', 'Ben', 0],
+          ['DN', '#2fa36b', 'Dina', 0],
+          ['SF', '#e3a72f', 'Sofia', 0],
+          ['RT', '#3ec9a7', 'Rita', 0],
+          ['IG', '#4fc3ee', 'Igor', 0],
+          ['TM', '#4fc3ee', 'Tim', 0],
+          ['JL', '#8b6bd9', 'Julia', 0],
+          ['VR', '#2fa36b', 'Vera', 0],
+          ['LO', '#e8734a', 'Leo', 0],
+          ['OV', '#e3a72f', 'Olive', 0],
+          ['NK', '#4fc3ee', 'Nick', 0],
+          ['ED', '#8b6bd9', 'Ed', 0],
+          ['KT', '#3ec9a7', 'Kate', 0],
+          ['DA', '#e8734a', 'Dan', 0],
+          ['PA', '#e8734a', 'Paula', 0],
         ],
-        /* «двенадцать», а не «12»: в рейке это часть фразы, а не счётчик. */
+        /* «twelve», а не «12»: в рейке это часть фразы, а не счётчик.
+           Первое слово с заглавной — строка начинается с него. */
         counts: [
-          'ноль',
-          'один',
-          'двое',
-          'трое',
-          'четверо',
-          'пятеро',
-          'шестеро',
-          'семеро',
-          'восемь',
-          'девять',
-          'десять',
-          'одиннадцать',
-          'двенадцать',
-          'тринадцать',
-          'четырнадцать',
-          'пятнадцать',
-          'шестнадцать',
-          'семнадцать',
+          'Zero',
+          'One',
+          'Two',
+          'Three',
+          'Four',
+          'Five',
+          'Six',
+          'Seven',
+          'Eight',
+          'Nine',
+          'Ten',
+          'Eleven',
+          'Twelve',
+          'Thirteen',
+          'Fourteen',
+          'Fifteen',
+          'Sixteen',
+          'Seventeen',
         ],
-        joined: ['вошёл', 'вошла'],
-        left: ['вышел', 'вышла'],
+        joined: ['joined', 'joined'],
+        left: ['left', 'left'],
         /* Метки — ровно тот набор и в том же порядке, что в продукте:
-           страница обещает «сорок меток» и должна показывать сорок. */
+           страница обещает «40 marks» и должна показывать сорок. */
         marks: [
-          ['🦊', 'лиса'],
-          ['🐢', 'черепаха'],
-          ['🐙', 'осьминог'],
-          ['🦉', 'сова'],
-          ['🐝', 'пчела'],
-          ['🐬', 'дельфин'],
-          ['🦋', 'бабочка'],
-          ['🐧', 'пингвин'],
-          ['🦩', 'фламинго'],
-          ['🐨', 'коала'],
-          ['🦔', 'ёж'],
-          ['🐳', 'кит'],
-          ['🦜', 'попугай'],
-          ['🐞', 'божья коровка'],
-          ['🦈', 'акула'],
-          ['🐸', 'лягушка'],
-          ['🦌', 'олень'],
-          ['🐿️', 'белка'],
-          ['🦇', 'летучая мышь'],
-          ['🐺', 'волк'],
-          ['🦅', 'орёл'],
-          ['🐡', 'рыба-шар'],
-          ['🦂', 'скорпион'],
-          ['🐌', 'улитка'],
-          ['🦕', 'динозавр'],
-          ['🦖', 'тираннозавр'],
-          ['🐊', 'крокодил'],
-          ['🦚', 'павлин'],
-          ['🦡', 'барсук'],
-          ['🐫', 'верблюд'],
-          ['🦥', 'ленивец'],
-          ['🦦', 'выдра'],
-          ['🦫', 'бобр'],
-          ['🐆', 'леопард'],
-          ['🦓', 'зебра'],
-          ['🦒', 'жираф'],
-          ['🦘', 'кенгуру'],
-          ['🐘', 'слон'],
-          ['🦏', 'носорог'],
-          ['🦛', 'бегемот'],
+          ['🦊', 'fox'],
+          ['🐢', 'turtle'],
+          ['🐙', 'octopus'],
+          ['🦉', 'owl'],
+          ['🐝', 'bee'],
+          ['🐬', 'dolphin'],
+          ['🦋', 'butterfly'],
+          ['🐧', 'penguin'],
+          ['🦩', 'flamingo'],
+          ['🐨', 'koala'],
+          ['🦔', 'hedgehog'],
+          ['🐳', 'whale'],
+          ['🦜', 'parrot'],
+          ['🐞', 'ladybird'],
+          ['🦈', 'shark'],
+          ['🐸', 'frog'],
+          ['🦌', 'deer'],
+          ['🐿️', 'squirrel'],
+          ['🦇', 'bat'],
+          ['🐺', 'wolf'],
+          ['🦅', 'eagle'],
+          ['🐡', 'pufferfish'],
+          ['🦂', 'scorpion'],
+          ['🐌', 'snail'],
+          ['🦕', 'dinosaur'],
+          ['🦖', 'tyrannosaur'],
+          ['🐊', 'crocodile'],
+          ['🦚', 'peacock'],
+          ['🦡', 'badger'],
+          ['🐫', 'camel'],
+          ['🦥', 'sloth'],
+          ['🦦', 'otter'],
+          ['🦫', 'beaver'],
+          ['🐆', 'leopard'],
+          ['🦓', 'zebra'],
+          ['🦒', 'giraffe'],
+          ['🦘', 'kangaroo'],
+          ['🐘', 'elephant'],
+          ['🦏', 'rhino'],
+          ['🦛', 'hippo'],
         ],
-        names: ['Алиса', 'Марат', 'Дина', 'Тимур', 'Соня', 'Артём', 'Рита', 'Гоша'],
-        markLead: 'Теперь вы — ',
+        names: ['Alice', 'Ben', 'Dina', 'Tim', 'Sofia', 'Adam', 'Rita', 'Nina'],
+        markLead: 'You are now the ',
         markCount: function (n) {
-          return n + ' меток'
+          return n + ' marks'
         },
-        /* «1 человек», «22 человека», «7 человек». Правило короткое, но
-           забывают о нём ровно до первого «7 человека» на экране, и тогда
-           страница выглядит машинным переводом самой себя.
-           Одиннадцать-четырнадцать — исключение, они всегда «человек». */
+        /* Единственное число ровно одно — «1 person»; на этом английское
+           правило и кончается, но без него первый же вошедший читает
+           «1 people inside already». */
         inside: function (n) {
-          var tail = n % 10
-          var teen = n % 100
-          var word =
-            teen >= 11 && teen <= 14
-              ? 'человек'
-              : tail === 1
-                ? 'человек'
-                : tail >= 2 && tail <= 4
-                  ? 'человека'
-                  : 'человек'
-          return 'внутри уже ' + n + ' ' + word
+          return n + (n === 1 ? ' person' : ' people') + ' already inside'
         },
-        enter: 'Войти',
+        enter: 'Join',
         entered: function (who) {
-          return who + ' в комнате'
+          return who + ' is in the room'
         },
         doorFoot:
-          'Ни аккаунта, ни почты. Ссылка и есть занятие: закройте вкладку — та же ссылка вернёт вас обратно.',
-        exampleLead: 'Это пример входа. Можно ',
-        again: 'войти ещё раз',
-        kernelFixed: 'Ошибки больше нет: переменную создала ячейка Марии. Запустите свою.',
-        kernelLoaded: 'Ячейка Марии загрузила df. Теперь он доступен вашей ячейке.',
-        kernelShared: 'df доступен обеим ячейкам. Так группа работает с одними данными.',
-        kernelMissing: 'Переменной ещё нет: её создаёт ячейка Марии.',
-        kernelQueued: 'Ядро занято. Следующая ячейка запустится после текущей.',
-        kernelQueuedOut: '… ждёт очереди: ядро занято',
+          'No account, no email. The link is the class: close the tab and the same link brings you back.',
+        exampleLead: 'This is a sample join screen. You can ',
+        again: 'join again',
+        kernelFixed: 'The error is gone: Maria’s cell created the variable. Run yours.',
+        kernelLoaded: 'Maria’s cell loaded df. Your cell can use it now.',
+        kernelShared: 'df is there for both cells. That is how a room works on the same data.',
+        kernelMissing: 'The variable does not exist yet: Maria’s cell creates it.',
+        kernelQueued: 'The kernel is busy. The next cell starts when this one finishes.',
+        kernelQueuedOut: '… waiting its turn: the kernel is busy',
       }
     </script>
-    <script src="demos.js?v=e70eb42c" defer></script>
+    <script src="/demos.js?v=e70eb42c" defer></script>
   </body>
 </html>

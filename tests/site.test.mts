@@ -11,6 +11,8 @@ import assert from 'node:assert/strict'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const html = readFileSync(resolve(ROOT, 'site/index.html'), 'utf8')
+/** Живые куски лендинга переехали в общий файл: обе страницы читают его. */
+const demos = readFileSync(resolve(ROOT, 'site/demos.js'), 'utf8')
 
 /** Тот же хеш, что печатает `git hash-object`: sha1 от «blob <длина>\0» и содержимого. */
 function blobHash(rel: string): string {
@@ -31,6 +33,18 @@ test('метка кэша у styles.css — хеш самого styles.css', () 
   )
 })
 
+test('метка кэша у demos.js — хеш самого demos.js', () => {
+  const marker = /src="\/?demos\.js\?v=([0-9a-f]+)"/.exec(html)?.[1]
+  assert.ok(marker, 'в index.html нет ссылки на demos.js с меткой версии')
+  const want = blobHash('site/demos.js').slice(0, marker.length)
+  assert.equal(
+    marker,
+    want,
+    'demos.js поправили, а метку — нет: страница приедет новой, а демо на ней ' +
+      `останутся старыми. Новое значение: ${want}`,
+  )
+})
+
 test('счёт на афише двери берётся из data-n, а не из русской строки', () => {
   const tag = /<span id="door-count"([^>]*)>([^<]*)<\/span>/.exec(html)
   assert.ok(tag, 'строки #door-count в разметке нет')
@@ -42,17 +56,17 @@ test('счёт на афише двери берётся из data-n, а не и
   )
   assert.equal(attr, /(\d+)/.exec(tag[2])?.[1], 'число в data-n и число в строке разъехались')
   assert.doesNotMatch(
-    html,
+    demos,
     /parseInt\(\s*count\.textContent/,
     'счёт снова читается из строки, которая начинается со слова: это NaN, то есть ноль мест',
   )
 })
 
 test('слой декоративных кареток закрыт от диктора', () => {
-  const at = html.indexOf("layer.className = 'cursors'")
+  const at = demos.indexOf("layer.className = 'cursors'")
   assert.ok(at > 0, 'слоя .cursors в скрипте героя нет')
   assert.match(
-    html.slice(at, at + 800),
+    demos.slice(at, at + 800),
     /layer\.setAttribute\('aria-hidden', 'true'\)/,
     'слой лежит внутри h1, и без aria-hidden подписи кареток въезжают в его ' +
       'доступное имя: «Занятия, где делают, а не смотрят НИКИТА ТИМУР»',

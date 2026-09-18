@@ -2740,3 +2740,312 @@ summary:focus-visible {
     transform: none;
   }
 }
+
+/*
+ * =========================================================== два языка ===
+ *
+ * Переключатель — тот же, что в документации (site/docs/docs.css): две
+ * метки моноширинным, точка между ними, текущий язык подчёркнут. Отличие
+ * одно и вынужденное: здесь он стоит на синем, поэтому цвета берутся из
+ * пары ссылок шапки, а не из --muted, который на этой земле не читается.
+ *
+ * Текущий язык — не ссылка: вести со страницы на неё же незачем, а
+ * скринридер получает aria-current и не предлагает переход.
+ */
+.lang-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding-left: clamp(4px, 1vw, 16px);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.lang-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 32px — не украшение: это минимальная мишень под палец, а метка
+     шириной в две буквы сама по себе даёт около двадцати. */
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 4px;
+  color: rgba(255, 255, 255, 0.7);
+  text-decoration: none;
+  transition: color var(--t-color) ease;
+}
+
+.lang-option[aria-current] {
+  color: #fff;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 6px;
+}
+
+.lang-option:focus-visible {
+  color: #fff;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  a.lang-option:hover {
+    color: #fff;
+  }
+}
+
+.lang-sep {
+  color: var(--brand-2);
+}
+
+/*
+ * ========================================================== установка ===
+ *
+ * Блок сразу под героем: три команды и три ссылки. Терминал тёмный — та же
+ * земля, на которой работает терминал продукта (--term-bg), потому что это
+ * и есть терминал, а не картинка про него.
+ */
+.install-section {
+  padding-top: clamp(56px, 6vw, 88px);
+  padding-bottom: clamp(48px, 5vw, 72px);
+}
+
+.install-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
+  gap: clamp(32px, 5vw, 80px);
+  align-items: start;
+}
+
+.install-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.install-copy .prose {
+  font-size: 17px;
+  line-height: 28px;
+  color: var(--muted);
+  max-width: 480px;
+}
+
+.install-term {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(14px, 1.6vw, 22px);
+  min-width: 0;
+  padding: clamp(22px, 2.8vw, 36px) clamp(18px, 2.8vw, 40px);
+  background: var(--term-bg);
+}
+
+/*
+ * Строка команды целиком выделяется мышью и копируется как есть: приглашение
+ * «$» лежит в ::before, а не в тексте, — иначе в буфер уезжает доллар, и
+ * первая же вставка в чужой терминал ломается.
+ */
+.install-term code {
+  display: block;
+  font-family: var(--mono);
+  font-size: clamp(13px, 1.1vw, 16px);
+  line-height: 26px;
+  color: #fff;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.install-term code::before {
+  content: '$ ';
+  color: var(--term-ok);
+}
+
+.install-term p {
+  padding-left: 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--term-faint);
+}
+
+.install-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-top: clamp(28px, 3.4vw, 44px);
+}
+
+.action-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 52px;
+  padding: 13px 20px;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  text-decoration: none;
+  transition:
+    border-color 120ms,
+    background 120ms;
+}
+
+.action-ghost span {
+  color: var(--faint);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .action-ghost:hover {
+    border-color: var(--accent-text);
+    background: var(--surface);
+  }
+}
+
+/* Требования уезжают к правому полю и отбиваются линейкой — тот же приём,
+   что у шапки шагов (.steps-head). */
+.install-req {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex: 1 1 260px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--faint);
+}
+
+.install-req::before {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+/*
+ * ============================================================= сцены ===
+ *
+ * Пять анимированных SVG вместо снимков экрана. Каждый лежит на белой
+ * плите с рамкой: собственная подложка сцены — это --surface, и на
+ * секции того же цвета она растворяется без рамки.
+ *
+ * Ширина картинки ограничена 1040px при колонке в 1248: на всю колонку
+ * сцена шириной 880 растягивается в полтора раза, и подписи внутри неё
+ * становятся крупнее прозы самой страницы — то есть страница начинает
+ * кричать собственной иллюстрацией.
+ */
+.scene-band {
+  margin: 0;
+  padding-top: clamp(36px, 4.5vw, 64px);
+}
+
+.scene-plate {
+  width: 100%;
+  max-width: 1248px;
+  margin: 0 auto;
+  padding: clamp(14px, 2.4vw, 32px) clamp(12px, 5vw, 104px);
+  background: var(--canvas);
+  border: 1px solid var(--line);
+}
+
+/* В полосе, вынесенной за поле страницы (.bleed), поля берёт на себя сама
+   плита: у секции их нет. */
+.bleed .scene-plate {
+  width: calc(100% - 2 * var(--gutter));
+}
+
+.scene-plate img {
+  display: block;
+  width: 100%;
+  max-width: 1040px;
+  height: auto;
+  margin: 0 auto;
+}
+
+/* Подсказка про боковую прокрутку нужна только там, где прокрутка есть.
+   Коробку она берёт ту же, что плита: в полосе за полем страницы (.bleed)
+   у секции полей нет, и подпись иначе прижимается к самому краю экрана. */
+.scene-hint {
+  display: none;
+  width: 100%;
+  max-width: 1248px;
+  margin: 0 auto;
+  padding-top: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--faint);
+}
+
+.bleed .scene-hint {
+  width: calc(100% - 2 * var(--gutter));
+}
+
+/* Под лекцией три карточки объясняют ровно те три экрана, что нарисованы
+   в сцене, — поэтому она идёт сразу под ними, а не сбоку. */
+.lecture-cards {
+  padding-top: clamp(32px, 4vw, 56px);
+}
+
+@media (max-width: 760px) {
+  /*
+   * Переключатель уходит на первую строку к марке: на этой ширине .nav
+   * переносится, и .nav-links занимает вторую строку целиком — без order
+   * языки оказались бы на третьей, ниже навигации.
+   */
+  .hero .lang-switch {
+    order: 0;
+    margin-left: auto;
+    padding-left: 0;
+  }
+  .hero .nav-links {
+    order: 1;
+  }
+
+  .install-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Кнопки переносятся по две в ряд, требования уезжают на свою строку — и
+     линейка перед ними схлопывается в огрызок длиной в палец. Убираем. */
+  .install-req::before {
+    display: none;
+  }
+
+  /*
+   * Сцена шириной 880 в колонку 350 сжимает подписи до пяти пикселей —
+   * это уже не рисунок, а текстура. Поэтому на телефоне плита становится
+   * лентой: картинка держит 760px и листается вбок.
+   */
+  .scene-plate {
+    padding: 10px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .scene-plate img {
+    width: 760px;
+    max-width: none;
+  }
+  .scene-hint {
+    display: block;
+  }
+}
+
+/* Команда внутри прозы — моноширинным, но в цвет окружающего текста:
+   это имя команды, а не выделенный кусок кода. */
+.release-note code,
+.setup-sheet code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: inherit;
+}
+
+/* Заметка про общее ядро переехала из сетки под сцену — сетка больше не
+   отбивает её от соседа сверху, и отступ нужен свой. */
+.council-section .scene-band + .inner .council-kernel {
+  margin-top: clamp(28px, 3vw, 40px);
+}

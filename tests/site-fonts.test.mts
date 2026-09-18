@@ -21,16 +21,32 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const html = readFileSync(resolve(ROOT, 'site/index.html'), 'utf8').replace(/<!--[\s\S]*?-->/g, '')
+const read = (rel: string) =>
+  readFileSync(resolve(ROOT, rel), 'utf8').replace(/<!--[\s\S]*?-->/g, '')
+const html = read('site/index.html')
+/**
+ * Английская страница лежит на этаж глубже, и адреса у неё корневые. Проверять
+ * надо обе: забыть crossorigin или сослаться на несуществующий файл можно ровно
+ * на той, которую в этот раз не открывали.
+ */
+const pages: Array<[string, string]> = [
+  ['ru', html],
+  ['en', read('site/en/index.html')],
+]
+/** «/fonts/x.woff2» и «fonts/x.woff2» — один и тот же файл в site/. */
+const inSite = (href: string) => href.replace(/^\//, '')
 const css = readFileSync(resolve(ROOT, 'site/styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
 
 test('за шрифтами лендинг никуда не ходит', () => {
   for (const host of ['fonts.googleapis.com', 'fonts.gstatic.com']) {
-    assert.ok(
-      !html.includes(host) && !css.includes(host),
-      `шрифт снова тянется с ${host}: в изолированной сети страница наберётся ` +
-        'системным моноширинным, у которого другие ширины',
-    )
+    for (const [name, page] of pages) {
+      assert.ok(
+        !page.includes(host),
+        `${name}: шрифт снова тянется с ${host}: в изолированной сети страница ` +
+          'наберётся системным моноширинным, у которого другие ширины',
+      )
+    }
+    assert.ok(!css.includes(host), `шрифт снова тянется с ${host} из стилей`)
   }
   // И ни одного шрифта с чужого домена вообще: свои лежат рядом, в site/fonts.
   for (const src of css.matchAll(/url\(['"]?([^'")]+)['"]?\)/g)) {
@@ -40,17 +56,24 @@ test('за шрифтами лендинг никуда не ходит', () => 
 })
 
 test('предзагружается ровно то, чем страница набрана', () => {
-  const preloads = [...html.matchAll(/<link[^>]*rel="preload"[^>]*>/g)].map((m) => m[0])
-  assert.ok(preloads.length > 0, 'на странице не осталось ни одной предзагрузки шрифта')
-  for (const tag of preloads) {
-    const href = /href="([^"]+)"/.exec(tag)?.[1]
-    assert.ok(href, 'предзагрузка без адреса')
-    assert.ok(existsSync(resolve(ROOT, 'site', href)), `${href} предзагружается, а файла нет`)
-    // Файл, которого нет ни в одном @font-face, — это лишний запрос на пути к
-    // первому кадру и предупреждение в консоли, а не забота о скорости.
-    assert.ok(css.includes(href), `${href} предзагружается, но ни одним @font-face не набран`)
-    // Без crossorigin шрифт скачается дважды: он запрашивается в режиме CORS.
-    assert.match(tag, /crossorigin/, `${href} предзагружается без crossorigin — это второй запрос`)
+  for (const [name, page] of pages) {
+    const preloads = [...page.matchAll(/<link[^>]*rel="preload"[^>]*>/g)].map((m) => m[0])
+    assert.ok(preloads.length > 0, `${name}: не осталось ни одной предзагрузки шрифта`)
+    for (const tag of preloads) {
+      const href = /href="([^"]+)"/.exec(tag)?.[1]
+      assert.ok(href, `${name}: предзагрузка без адреса`)
+      const rel = inSite(href)
+      assert.ok(existsSync(resolve(ROOT, 'site', rel)), `${name}: ${href} предзагружается, а файла нет`)
+      // Файл, которого нет ни в одном @font-face, — это лишний запрос на пути к
+      // первому кадру и предупреждение в консоли, а не забота о скорости.
+      assert.ok(css.includes(rel), `${name}: ${href} предзагружается, но ни одним @font-face не набран`)
+      // Без crossorigin шрифт скачается дважды: он запрашивается в режиме CORS.
+      assert.match(
+        tag,
+        /crossorigin/,
+        `${name}: ${href} предзагружается без crossorigin — это второй запрос`,
+      )
+    }
   }
 })
 
