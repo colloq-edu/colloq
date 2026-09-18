@@ -95,7 +95,7 @@
       crossorigin
     />
 
-    <link rel="stylesheet" href="styles.css?v=8218d015" />
+    <link rel="stylesheet" href="styles.css?v=bc7b1897" />
   </head>
 
   <body>
@@ -458,162 +458,6 @@
         </div>
       </section>
 
-      <section
-        class="section bleed"
-        style="padding-top: 0; padding-bottom: clamp(64px, 7.8vw, 104px)"
-      >
-        <div class="door-band">
-          <div class="door" id="door">
-            <aside class="door-poster">
-              <p class="door-brand">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true">
-                  <rect x="2" y="2" width="6" height="6" rx="1.6" />
-                  <rect x="9" y="2" width="6" height="6" rx="1.6" fill="#374B9B" />
-                  <rect x="16" y="2" width="6" height="6" rx="1.6" />
-                  <rect x="2" y="9" width="6" height="6" rx="1.6" fill="#374B9B" />
-                  <rect x="9" y="9" width="6" height="6" rx="1.6" />
-                  <rect x="16" y="9" width="6" height="6" rx="1.6" fill="#374B9B" />
-                  <rect x="2" y="16" width="6" height="6" rx="1.6" />
-                  <rect x="9" y="16" width="6" height="6" rx="1.6" fill="#374B9B" />
-                  <rect x="16" y="16" width="6" height="6" rx="1.6" />
-                </svg>
-                <span>COLLOQ</span>
-              </p>
-
-              <div class="door-bill">
-                <p class="door-eyebrow">Вы заходите на</p>
-                <h3 class="door-title">Лекция 4. Свёрточные сети</h3>
-                <p class="door-when">
-                  <span>25.08 · 18:10</span>
-                  <i aria-hidden="true"></i>
-                  Александр Калашников
-                </p>
-              </div>
-
-              <p class="door-inside">
-                <span class="door-stack" id="door-stack" aria-hidden="true">
-                  <span style="background: #8b6bd9">МР</span>
-                  <span style="background: #2fa36b">ДК</span>
-                  <span style="background: #e3a72f">СП</span>
-                  <span style="background: #4fc3ee">РН</span>
-                </span>
-                <span id="door-count" data-n="7">внутри уже 7 человек</span>
-              </p>
-            </aside>
-
-            <form class="door-form" id="door-form" novalidate>
-              <div class="door-bill door-bill--small">
-                <p class="door-eyebrow">Вы заходите на</p>
-                <h3 class="door-title">Лекция 4. Свёрточные сети</h3>
-              </div>
-
-              <div class="door-field">
-                <label for="door-name">Как вас зовут</label>
-
-                <input
-                  id="door-name"
-                  name="door-name"
-                  type="text"
-                  maxlength="40"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="Александр"
-                />
-              </div>
-
-              <div class="door-field">
-                <p class="door-legend">
-                  <label for="door-change" id="door-mark-label">Ваша метка</label>
-                  <span class="door-hint" id="door-hint" hidden>40 меток</span>
-                </p>
-
-                <div class="door-mark" id="door-card">
-                  <span class="door-glyph" id="door-glyph" aria-hidden="true">🦊</span>
-                  <span class="door-said">
-                    <b id="door-said">Теперь вы — лиса</b>
-                    Выбрана из тех, что в этой комнате ещё никто не занял, — чтобы курсор всегда был
-                    узнаваемо ваш.
-                  </span>
-                  <button
-                    type="button"
-                    id="door-change"
-                    class="door-change"
-                    aria-expanded="false"
-                    aria-controls="door-grid"
-                  >
-                    <svg
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2.2"
-                      stroke-linecap="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M20 11a8 8 0 1 0-2.3 5.7" />
-                      <path d="M20 4v7h-7" />
-                    </svg>
-                    Другую
-                  </button>
-                </div>
-
-                <div
-                  class="door-grid"
-                  id="door-grid"
-                  role="group"
-                  aria-labelledby="door-mark-label"
-                  hidden
-                ></div>
-              </div>
-
-              <button type="submit" class="door-go" id="door-go">
-                <span class="door-go-mark" id="door-go-mark" aria-hidden="true" hidden></span>
-                <span id="door-go-text">Войти</span>
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.4"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                  id="door-go-arrow"
-                >
-                  <path d="M5 12h13M12 5l7 7-7 7" />
-                </svg>
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                  id="door-go-check"
-                  hidden
-                >
-                  <path d="M4 12.5l5.5 5.5L20 7" />
-                </svg>
-              </button>
-
-              <p class="door-foot" id="door-foot">
-                Ни аккаунта, ни почты. Ссылка и есть занятие: закройте вкладку — та же ссылка вернёт
-                вас обратно.
-              </p>
-            </form>
-          </div>
-        </div>
-
-        <p class="shot-caption">
-          Попробуйте экран входа: введите имя и выберите метку. Это пример на странице — подключение
-          к занятию здесь не происходит.
-        </p>
-      </section>
 
       <section class="section section--surface" id="chto">
         <div class="inner">
@@ -1034,26 +878,6 @@ df.shape</pre
           </div>
         </div>
       </section>
-      <section class="section contact-section" id="contact">
-        <div class="inner finale">
-          <div>
-            <p class="label">Связаться с автором</p>
-            <h2>Хотите провести<br />свою пару в Colloq?</h2>
-          </div>
-          <div class="finale-call">
-            <p class="prose">
-              Напишите, что преподаёте и как устроено занятие: подскажу, с чего начать и какое
-              окружение собрать. Ошибки и пожелания удобнее заводить issue на GitHub.
-            </p>
-            <a
-              class="action-primary action-primary--dark"
-              href="mailto:sleep3r@icloud.com?subject=Colloq%20для%20моего%20курса"
-              >Написать Александру <span aria-hidden="true">↗</span></a
-            >
-            <p class="contact-email">sleep3r@icloud.com</p>
-          </div>
-        </div>
-      </section>
     </main>
     <footer class="foot">
       <div class="foot-inner">
@@ -1095,7 +919,7 @@ df.shape</pre
     <!--
       Словарь живых кусков страницы. Логика лежит в demos.js и общая для
       обоих языков; здесь только то, что на них отличается, — имена, слова
-      числительных, сорок меток и реплики ядра.
+      числительных и реплики ядра.
     -->
     <script>
       window.COLLOQ_I18N = {
@@ -1142,80 +966,6 @@ df.shape</pre
         ],
         joined: ['вошёл', 'вошла'],
         left: ['вышел', 'вышла'],
-        /* Метки — ровно тот набор и в том же порядке, что в продукте:
-           страница обещает «сорок меток» и должна показывать сорок. */
-        marks: [
-          ['🦊', 'лиса'],
-          ['🐢', 'черепаха'],
-          ['🐙', 'осьминог'],
-          ['🦉', 'сова'],
-          ['🐝', 'пчела'],
-          ['🐬', 'дельфин'],
-          ['🦋', 'бабочка'],
-          ['🐧', 'пингвин'],
-          ['🦩', 'фламинго'],
-          ['🐨', 'коала'],
-          ['🦔', 'ёж'],
-          ['🐳', 'кит'],
-          ['🦜', 'попугай'],
-          ['🐞', 'божья коровка'],
-          ['🦈', 'акула'],
-          ['🐸', 'лягушка'],
-          ['🦌', 'олень'],
-          ['🐿️', 'белка'],
-          ['🦇', 'летучая мышь'],
-          ['🐺', 'волк'],
-          ['🦅', 'орёл'],
-          ['🐡', 'рыба-шар'],
-          ['🦂', 'скорпион'],
-          ['🐌', 'улитка'],
-          ['🦕', 'динозавр'],
-          ['🦖', 'тираннозавр'],
-          ['🐊', 'крокодил'],
-          ['🦚', 'павлин'],
-          ['🦡', 'барсук'],
-          ['🐫', 'верблюд'],
-          ['🦥', 'ленивец'],
-          ['🦦', 'выдра'],
-          ['🦫', 'бобр'],
-          ['🐆', 'леопард'],
-          ['🦓', 'зебра'],
-          ['🦒', 'жираф'],
-          ['🦘', 'кенгуру'],
-          ['🐘', 'слон'],
-          ['🦏', 'носорог'],
-          ['🦛', 'бегемот'],
-        ],
-        names: ['Алиса', 'Марат', 'Дина', 'Тимур', 'Соня', 'Артём', 'Рита', 'Гоша'],
-        markLead: 'Теперь вы — ',
-        markCount: function (n) {
-          return n + ' меток'
-        },
-        /* «1 человек», «22 человека», «7 человек». Правило короткое, но
-           забывают о нём ровно до первого «7 человека» на экране, и тогда
-           страница выглядит машинным переводом самой себя.
-           Одиннадцать-четырнадцать — исключение, они всегда «человек». */
-        inside: function (n) {
-          var tail = n % 10
-          var teen = n % 100
-          var word =
-            teen >= 11 && teen <= 14
-              ? 'человек'
-              : tail === 1
-                ? 'человек'
-                : tail >= 2 && tail <= 4
-                  ? 'человека'
-                  : 'человек'
-          return 'внутри уже ' + n + ' ' + word
-        },
-        enter: 'Войти',
-        entered: function (who) {
-          return who + ' в комнате'
-        },
-        doorFoot:
-          'Ни аккаунта, ни почты. Ссылка и есть занятие: закройте вкладку — та же ссылка вернёт вас обратно.',
-        exampleLead: 'Это пример входа. Можно ',
-        again: 'войти ещё раз',
         kernelFixed: 'Ошибки больше нет: переменную создала ячейка Марии. Запустите свою.',
         kernelLoaded: 'Ячейка Марии загрузила df. Теперь он доступен вашей ячейке.',
         kernelShared: 'df доступен обеим ячейкам. Так группа работает с одними данными.',
@@ -1224,6 +974,6 @@ df.shape</pre
         kernelQueuedOut: '… ждёт очереди: ядро занято',
       }
     </script>
-    <script src="demos.js?v=e70eb42c" defer></script>
+    <script src="demos.js?v=5ac985ff" defer></script>
   </body>
 </html>

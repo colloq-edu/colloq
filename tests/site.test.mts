@@ -45,23 +45,6 @@ test('метка кэша у demos.js — хеш самого demos.js', () => {
   )
 })
 
-test('счёт на афише двери берётся из data-n, а не из русской строки', () => {
-  const tag = /<span id="door-count"([^>]*)>([^<]*)<\/span>/.exec(html)
-  assert.ok(tag, 'строки #door-count в разметке нет')
-  const attr = /\bdata-n="(\d+)"/.exec(tag[1])?.[1]
-  assert.ok(
-    attr,
-    '#door-count без data-n: parseInt по «внутри уже 7 человек» даёт NaN, ' +
-      'и вошедший читатель видит «внутри уже 1 человек» при пяти кругах',
-  )
-  assert.equal(attr, /(\d+)/.exec(tag[2])?.[1], 'число в data-n и число в строке разъехались')
-  assert.doesNotMatch(
-    demos,
-    /parseInt\(\s*count\.textContent/,
-    'счёт снова читается из строки, которая начинается со слова: это NaN, то есть ноль мест',
-  )
-})
-
 test('слой декоративных кареток закрыт от диктора', () => {
   const at = demos.indexOf("layer.className = 'cursors'")
   assert.ok(at > 0, 'слоя .cursors в скрипте героя нет')
