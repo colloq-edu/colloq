@@ -123,6 +123,9 @@ test('nothing points at the removed cut-release machinery', () => {
     ...workflows.map((file) => `.github/workflows/${file}`),
     'Makefile',
     'README.md',
+    // Русский README тоже рассказывает про выпуски: переводу стареть здесь так
+    // же нельзя, как оригиналу.
+    'README.ru.md',
     'RELEASING.md',
     'CONTRIBUTING.md',
     'CHANGELOG.md',

@@ -3,6 +3,10 @@
 </p>
 <h1 align="center">Colloq</h1>
 <p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/English-0F2D69?style=for-the-badge" alt="English — this file"></a>
+  <a href="README.ru.md"><img src="https://img.shields.io/badge/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-6B7280?style=for-the-badge" alt="Русский — the same README in Russian"></a>
+</p>
+<p align="center">
   <strong>One link. One live notebook. The whole room.</strong><br>
   A self-hosted classroom for teaching Python, data science and ML together.
   Students join from a browser with just a name.
@@ -23,6 +27,22 @@
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme/room-dark.svg"><img src=".github/assets/readme/room-light.svg" width="880" alt="Anna opens the class link, types her name and joins; the room count goes from 6 to 7 and her row appears in the teacher's People panel, editing cell 03; Timur and Rita arrive, and Ivan leaves."></picture></p>
 <p align="center"><sub>Share one link; the class fills the room and everyone sees where everyone is.</sub></p>
 
+```bash
+pip install colloq
+colloq start          # a class on this computer, in your browser
+colloq start --share  # …and one link to give your students
+```
+
+Installing needs **Python 3.9 or newer**; running a class needs
+**Node.js 22 or newer** and **Docker** (macOS and Linux; on Windows, WSL 2). The
+server, the web app and the room image come with the package, and your classes
+live in `~/.colloq`.
+
+**[Documentation](https://colloq.ru/docs/en/)** ·
+[Your first class](https://colloq.ru/docs/en/getting-started.html) ·
+[Releases](https://github.com/sleep3r/colloq/releases) ·
+[From source](#from-source)
+
 ## What Colloq is
 
 A teacher creates a class and shares its link. Students type a name, get a mark,
@@ -41,8 +61,10 @@ for questions, or individual attempts the teacher brings back to the room.
 - **For operators:** a laptop for one class, one Linux VM with k3s for a term, or
   a rented GPU box for a deep-learning course.
 
-> **Status:** pre-1.0 (0.1.0). Colloq is used in the author's own courses; the
-> public release is being prepared.
+> **Status:** pre-1.0; the version badge above carries the current one. Colloq
+> runs the author's own courses. Before 1.0 a release can still change how
+> something works, so read [CHANGELOG.md](CHANGELOG.md) before upgrading an
+> instance that has classes on it.
 
 ## How a class runs
 
@@ -171,6 +193,61 @@ Guide: [the Oracle](https://colloq.ru/docs/en/oracle.html)
 
 ## Quick start
 
+### Install with pip
+
+The whole app ships as a Python package: the server, the built web app, the CLI
+and the room's Dockerfile, behind one `colloq` command. Python itself only
+carries them — the class runs on Node and Docker.
+
+```bash
+pip install colloq     # Python 3.9+, into a virtualenv or with pipx
+colloq start           # a class on this computer, in your browser
+```
+
+The machine needs **Node.js 22 or newer** and **Docker** running. `colloq` finds
+Node on its own, including under nvm, fnm, volta and asdf, and says so in words
+when it is missing; the first run installs the server's dependencies once, out
+loud. Ctrl+C saves the notebook and stops the class.
+
+1. Claim the instance at `/admin` with the token `colloq start` prints — it is
+   kept in `~/.colloq/data/setup-token`.
+2. Create a class and choose its preset and Python environment.
+3. Share the class link, `/s/<id>`, and never a link with `/admin/` in it.
+
+State lives in `~/.colloq`, never inside the package: `.env`, the database,
+`workspace/` and the environments you create. Reinstalling or upgrading leaves
+all of it alone, and `COLLOQ_HOME` moves it elsewhere. `colloq host`, `status`,
+`doctor`, `backup` and `env` cover the rest — `colloq --help` lists them, and
+[python/README.md](python/README.md) and [cli/README.md](cli/README.md) explain
+them.
+
+<details>
+<summary><strong>One link for your students: <code>colloq start --share</code></strong></summary>
+
+`colloq start --share` starts the class, opens a quick Cloudflare tunnel and
+prints one block: the link to hand out (`https://….trycloudflare.com/s/<id>`),
+or, with no class yet, where to create one. Ctrl+C closes the link together with
+the class, and a quick tunnel takes a new address on every start, so the link is
+a new one each time. The first `--share` downloads a pinned `cloudflared`,
+checked against a pinned SHA-256 before it is ever run and kept in
+`~/.colloq/bin` (`COLLOQ_CLOUDFLARED=/path` uses your own,
+`COLLOQ_CLOUDFLARED_DOWNLOAD=0` forbids the download). macOS and Linux only; on
+Windows, use WSL 2.
+
+**The isolation gate.** A class goes online only when every room's Python runs
+in a container of its own. `--share` and `--host` are refused before the start
+if kernels are not one container per room, and again before the tunnel unless
+Docker answers and the server confirms it. A refusal leaves the class running
+locally. What stays true either way: the link is a door, and whoever has it runs
+code in a sandbox on this computer. Keep it for your class.
+
+**Cloudflare addresses do not open from Russia.** For students there, publish
+through a relay of your own: `colloq start --host <name>` with the `RELAY_*`
+lines in `~/.colloq/.env`; from a checkout, `make relay-setup` prepares the
+relay ([Give the room an address](#give-the-room-an-address)).
+
+</details>
+
 ### From source
 
 You need **Node.js 22 or newer**, npm, **Docker** (running) and Make.
@@ -215,23 +292,9 @@ use. Production uses the private broker described under
 
 </details>
 
-### The `colloq` command
-
-The same app ships as a Python package with a `colloq` command, for a teacher who
-wants no checkout. **It is not on PyPI yet**, so `pip install colloq` does not work
-today. Until the first release is published, build the wheel from a checkout
-(after `npm ci`; it needs Python 3 with pip):
-
-```bash
-make wheel                              # python/dist/colloq-0.1.0-py3-none-any.whl
-pip install python/dist/colloq-*.whl    # into a virtualenv, or with pipx
-colloq start
-```
-
-The machine needs Node.js 22+ and Docker. State lives in `~/.colloq`
-(`COLLOQ_HOME` moves it). `colloq host`, `status`, `doctor`, `backup` and `env`
-cover the rest; see [python/README.md](python/README.md) and
-[cli/README.md](cli/README.md).
+A checkout also builds the package itself: `make wheel` writes
+`python/dist/colloq-*.whl` (after `npm ci`; it needs Python 3 with pip), and
+installing that wheel gives exactly what `pip install colloq` gives.
 
 ### A rented GPU box on Vast.ai
 
@@ -292,9 +355,14 @@ bundle contains the cluster and recovery tools.
 | Your own relay | `make relay-setup WHERE=root@your-relay`, then `make host HOST=seminar.example.edu` | A public relay, its domain, and relay settings in `.env`. |
 | Direct HTTPS | `sudo make host-direct HOST=seminar.example.edu` | Public Linux host, reachable ports 80/443, and a Cloudflare DNS token; Caddy serves the app. |
 
+From the pip package the first three rows are `colloq start --share` and
+`colloq start --host <name>` (or `colloq host <name>` beside a running class),
+with the `RELAY_*` lines in `~/.colloq/.env`.
+
 Test access from the students' network before class. Use your own relay or direct
-hosting where the Cloudflare tunnel is unreachable. Keep the relay sized for the
-connected audience: every room published through it depends on that machine.
+hosting where the Cloudflare tunnel is unreachable — it does not open from
+Russia. Keep the relay sized for the connected audience: every room published
+through it depends on that machine.
 
 ### Keep the work recoverable
 
@@ -389,12 +457,26 @@ development backend; the production installer supplies broker configuration.
 ## Security model
 
 Isolation is **between classes**, not inside one: participants in a class share
-Python, files and a terminal. Containers share the host Linux kernel; standard
-Kubernetes NetworkPolicy has a local-node traffic exception; one node provides no
-high availability; and PVC capacity is not an enforced per-room disk quota. On the
-Docker-based paths (local runs, `make up` and the Vast image) the server controls
-the Docker daemon, which on a Linux host amounts to root; room containers there
-run as uid 1000 with no capabilities and no access to local addresses. Review the [runtime boundary](runtime/README.md)
+Python, files and a terminal, and anyone allowed to run code reaches the class's
+files through Python whatever the Files panel allows.
+
+Each room's Python runs in a hardened container of its own, on every path and
+whether or not the class is published. It runs as uid 1000 with every Linux
+capability dropped and no way to regain them, under a process ceiling
+(`KERNEL_PIDS`, 512 by default). The room keeps the internet, so pip, datasets
+and APIs work; it loses the local network — the LAN, the router, the host
+itself, a neighbouring room, cloud metadata. Port 53 is the deliberate
+exception, because Docker's resolver forwards from addresses that differ per
+machine. A room refuses to start when that block cannot be installed, rather
+than opening quietly; `COLLOQ_ROOM_NETWORK=open` lifts it for a trusted machine,
+and the server and `colloq doctor` say so out loud.
+
+What the boundary does not do: containers share the host Linux kernel, so this
+is not VM isolation; on the Docker-based paths (`colloq start`, `make dev`,
+`make up` and the Vast image) the server controls the Docker daemon, which on a
+Linux host amounts to root; standard Kubernetes NetworkPolicy has a local-node
+traffic exception; one node provides no high availability; and PVC capacity is
+not an enforced per-room disk quota. Review the [runtime boundary](runtime/README.md)
 before admitting untrusted workloads, and report vulnerabilities privately as
 described in [SECURITY.md](SECURITY.md).
 
@@ -407,6 +489,7 @@ publishing, networking, backups and updates, in
 Operator and developer references live next to the code: [deploy/k3s](deploy/k3s/README.md),
 [deploy/vast](deploy/vast/README.md), [runtime](runtime/README.md),
 [tests](tests/README.md), [cli](cli/README.md) and [python](python/README.md).
+This page in Russian: [README.ru.md](README.ru.md).
 
 ## Versions and releases
 
@@ -418,9 +501,9 @@ they agree. Versions are never bumped by hand. Commits on `main` follow
 [release-please](https://github.com/googleapis/release-please) keeps a release
 pull request open that bumps every copy and adds the changelog section. Merging
 that pull request tags `vX.Y.Z`, creates the GitHub Release and attaches the pip
-wheel. Publishing to PyPI and GHCR is switched on separately, and the k3s release
-bundle comes from a separate, manually started workflow. A running server
-reports its version at `/api/health`.
+wheel; a separate workflow publishes that wheel to PyPI and pushes the images to
+GHCR, and the k3s release bundle is started by hand. A running server reports
+its version at `/api/health`.
 
 What changed is in [CHANGELOG.md](CHANGELOG.md); how a release is cut is in
 [RELEASING.md](RELEASING.md).
