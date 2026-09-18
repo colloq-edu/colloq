@@ -58,7 +58,7 @@ OFF  := \033[0m
 # страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell activity \
         service-install service-restart service-stop service-status service-logs \
-        host host-direct relay-setup relay-page tunnel-setup site readme-art ui sync load course \
+        host host-direct relay-setup relay-page tunnel-setup site mirror readme-art ui sync load course \
         vast-up vast-status vast-sync vast-logs vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
         backup restore test check pack wheel version bump
@@ -466,7 +466,19 @@ site: ## Выложить сайт colloq.ru — лендинг и опубли�
 	@# умеет приватные» — неправда, и второй клон рядом больше не нужен.
 	@npx tsx scripts/publish-site.mts $(if $(SITE),--site "$(SITE)",) $(if $(BASE),--base "$(BASE)",) $(if $(DRY),--dry,)
 
-readme-art: ## Перерисовать анимации README (.github/assets/readme)
+mirror: ## Обновить зеркало colloq.cc (тот же сайт для тех, кому Cloudflare открыт). DRY=1 — только рассказать
+	@# Второе имя, а не второй сайт: содержимое то же самое, из site/, и
+	@# источник у него один — colloq.ru на GitHub Pages. Pages отдаёт сайт по
+	@# ОДНОМУ своему имени (site/CNAME), поэтому вторым CNAME так не сделать:
+	@# на границе Cloudflare стоит воркер и подменяет Host. Сам colloq.ru при
+	@# этом остаётся серым и смотрит прямо на Pages — адреса Cloudflare из
+	@# России не открываются, и трогать его нельзя. Подробности рядом со
+	@# скриптом: deploy/cloudflare/colloq-cc/README.md.
+	@./deploy/cloudflare/colloq-cc/deploy.sh $(if $(DRY),--dry-run,)
+
+readme-art: ## Перерисовать анимации сцен (.github/assets/readme и site/img/scenes)
+	@# Двадцать файлов: пять сцен × два языка × две темы. Каталога два, потому
+	@# что лендинг раздаётся Pages из site/ и до .github/ не дотягивается.
 	@node --import tsx scripts/readme-art.mts
 
 course: ## Курс из расписания в таблице. SHEET=<id> GID=<gid> COL="ML · сильная"
