@@ -58,7 +58,7 @@ OFF  := \033[0m
 # страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell activity \
         service-install service-restart service-stop service-status service-logs \
-        host host-direct relay-setup relay-page tunnel-setup site mirror readme-art ui sync load course \
+        host host-direct relay-setup relay-page tunnel-setup site mirror readme-art site-icons ui sync load course \
         vast-up vast-status vast-sync vast-logs vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
         backup restore test check pack wheel version bump
@@ -475,6 +475,9 @@ mirror: ## Обновить зеркало colloq.cc (тот же сайт дл�
 	@# России не открываются, и трогать его нельзя. Подробности рядом со
 	@# скриптом: deploy/cloudflare/colloq-cc/README.md.
 	@./deploy/cloudflare/colloq-cc/deploy.sh $(if $(DRY),--dry-run,)
+
+site-icons: ## Перерисовать значки сайта из site/favicon.svg (favicon.ico, PNG 48/96/192, apple-touch, icon-512)
+	@node --import tsx scripts/site-icons.mts
 
 readme-art: ## Перерисовать анимации сцен (.github/assets/readme и site/img/scenes)
 	@# Двадцать файлов: пять сцен × два языка × две темы. Каталога два, потому

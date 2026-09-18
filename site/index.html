@@ -80,10 +80,78 @@
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
 
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2232%22%20height%3D%2232%22%20viewBox%3D%220%200%2024%2024%22%3E%3Crect%20width%3D%2224%22%20height%3D%2224%22%20fill%3D%22%230F2D69%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%222%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%229%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%222%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3Crect%20x%3D%229%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%232E4E8C%22%2F%3E%3Crect%20x%3D%2216%22%20y%3D%2216%22%20width%3D%226%22%20height%3D%226%22%20rx%3D%221.6%22%20fill%3D%22%23FFFFFF%22%2F%3E%3C%2Fsvg%3E"
-    />
+    <!--
+      Значок — настоящими файлами, а не data:-ссылкой: Google ставит его в
+      выдачу только с адреса, который может скачать его робот, и только
+      квадратным со стороной, кратной 48 px (или SVG). Файлы рисует
+      scripts/site-icons.mts из favicon.svg.
+    -->
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-96.png" type="image/png" sizes="96x96" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!--
+      Имя сайта и логотип для поисковиков: по этой разметке Google называет сайт
+      «Colloq», а не доменом, и берёт логотип организации.
+    -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          "@id": "https://colloq.ru/#site",
+          "url": "https://colloq.ru/",
+          "name": "Colloq",
+          "alternateName": [
+            "colloq",
+            "Colloq — classroom notebook"
+          ],
+          "inLanguage": [
+            "ru",
+            "en"
+          ],
+          "publisher": {
+            "@id": "https://colloq.ru/#org"
+          }
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://colloq.ru/#org",
+          "name": "Colloq",
+          "url": "https://colloq.ru/",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://colloq.ru/icon-512.png",
+            "width": 512,
+            "height": 512
+          },
+          "sameAs": [
+            "https://github.com/sleep3r/colloq",
+            "https://pypi.org/project/colloq/"
+          ]
+        },
+        {
+          "@type": "SoftwareApplication",
+          "name": "Colloq",
+          "applicationCategory": "EducationalApplication",
+          "operatingSystem": "macOS, Linux",
+          "url": "https://colloq.ru/",
+          "license": "https://opensource.org/licenses/MIT",
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+          },
+          "inLanguage": "ru",
+          "publisher": {
+            "@id": "https://colloq.ru/#org"
+          }
+        }
+      ]
+    }
+    </script>
 
     <link rel="preload" href="fonts/hse-sans-900.woff2" as="font" type="font/woff2" crossorigin />
 

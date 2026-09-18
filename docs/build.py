@@ -172,6 +172,36 @@ def render(p, pages, have):
 <dialog id="search-dialog" aria-labelledby="search-title"><div class="search-heading"><h2 id="search-title">{s['search_title']}</h2><button class="close-search" type="button" aria-label="{s['close_search']}">×</button></div><label class="sr-only" for="search-input">{s['search_label']}</label><input id="search-input" type="search" placeholder="{s['placeholder']}" autocomplete="off" spellcheck="false" aria-describedby="search-status"><p id="search-status" role="status">{s['search_status']}</p><div id="search-results"></div><div class="search-foot"><span>{s['search_foot']}</span><span><kbd>Esc</kbd> {s['esc']}</span></div></dialog></body></html>'''
 
 
+def sitemap(site_dir, by_lang):
+    """site/sitemap.xml: the landing, every guide in both languages, published courses.
+
+    Without a sitemap a crawler reaches /docs/en/ only by following the language
+    switch, and the published courses under /c/ only if someone links to them.
+    hreflang pairs are repeated here because a sitemap is where Google reads them
+    for pages it has not rendered yet. No <lastmod>: the build must stay
+    byte-for-byte reproducible, and an invented date is worse than none.
+    """
+    def entry(loc, alternates=()):
+        links = ''.join(f'<xhtml:link rel="alternate" hreflang="{lang}" href="{href}"/>' for lang, href in alternates)
+        return f'<url><loc>{loc}</loc>{links}</url>'
+    home = [('ru', SITE.replace('docs/', '')), ('en', SITE.replace('docs/', '') + 'en/')]
+    root = home[0][1]
+    rows = [entry(href, home + [('x-default', home[1][1])]) for _, href in home]
+    translated = {p['slug'] for p in by_lang['en']}
+    for p in by_lang['ru']:
+        pair = [('ru', public('ru', p['slug']))] + ([('en', public('en', p['slug']))] if p['slug'] in translated else [])
+        rows += [entry(href, pair if len(pair) > 1 else ()) for _, href in pair]
+    courses = site_dir / 'c'
+    if courses.is_dir():
+        rows += [entry(f'{root}c/{d.name}/') for d in sorted(courses.iterdir()) if (d / 'index.html').is_file()]
+    body = '\n'.join(rows)
+    (site_dir / 'sitemap.xml').write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
+        f'{body}\n</urlset>\n')
+    return len(rows)
+
+
 def index_entries(p):
     plain = lambda x: html.unescape(re.sub('<[^>]+>', ' ', x)).strip()
     url = rel(p['lang'], p['lang'], p['slug'])
@@ -221,6 +251,9 @@ def main():
         print(f'{lang}: {len(pages)} HTML pages and {len(search)} searchable entries in {out}' if pages else f'{lang}: no pages yet (add docs/pages/{lang}/<slug>.html)')
     for page, slugs in fallbacks.items():
         print(f'  note: {page} links to {", ".join(sorted(slugs))} in Russian until they are translated')
+    # Only for the real site: a build into a scratch --out must not touch site/.
+    if args.out.resolve() == (ROOT / 'site' / 'docs').resolve():
+        print(f'sitemap: {sitemap(args.out.parent, by_lang)} URLs in {args.out.parent / "sitemap.xml"}')
     (args.out / 'favicon.svg').write_text(LOGO.replace('<svg width="24"', '<svg xmlns="http://www.w3.org/2000/svg" width="24"').replace('fill="currentColor"', 'fill="#0f2d69"'))
 
 

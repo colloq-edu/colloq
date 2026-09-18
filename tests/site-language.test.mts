@@ -190,9 +190,14 @@ test('домен виден только как простой текст в э�
      дочерние узлы или собрать скриптом, на зеркале останется colloq.ru. */
   for (const [name, html] of PAGES) {
     assert.match(html, /<span class="host">colloq\.ru<\/span>/, `${name}: подпись домена не простой текст`)
+    // Содержимое <script> и <style> — не текст страницы: в разметке schema.org
+    // адреса сайта стоят по делу, а зеркало правит только `body .host`.
+    // Разделитель — \u0000 записью, а не самим байтом: с буквальным NUL файл
+    // для grep и для диффа на GitHub становился двоичным.
     const visible = withoutComments(html)
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/ colloq\.ru /g, '')
+      .replace(/<(script|style)\b[\s\S]*?<\/\1>/g, '\u0000')
+      .replace(/<[^>]*>/g, '\u0000')
+      .replace(/\u0000colloq\.ru\u0000/g, '')
     assert.ok(!visible.includes('colloq.ru'), `${name}: домен напечатан ещё где-то в тексте`)
   }
 })
@@ -209,5 +214,48 @@ test('каждая местная ссылка и картинка ведёт в
       const target = bare.endsWith('/') ? resolve(where, 'index.html') : where
       assert.ok(existsSync(target), `${name}: ссылка ${ref} никуда не ведёт (${target})`)
     }
+  }
+})
+
+/*
+ * Значок и карта сайта — для поисковика, а не для браузера.
+ *
+ * Значок лендинга был data:-ссылкой, /favicon.ico отвечал 404, и в выдаче Google
+ * у colloq.ru стоял серый глобус: робот берёт значок только с настоящего адреса
+ * и только квадратным со стороной, кратной 48 px (или SVG).
+ */
+test('значок сайта — настоящие файлы, которые может скачать робот', () => {
+  for (const file of ['index.html', 'en/index.html']) {
+    const head = readFileSync(resolve(SITE, file), 'utf8').split('</head>')[0]!
+    assert.doesNotMatch(head, /rel="icon"[^>]*href="data:/, `${file}: значок снова вшит data:-ссылкой`)
+    for (const href of ['/favicon.ico', '/favicon.svg', '/favicon-96.png', '/apple-touch-icon.png']) {
+      assert.ok(head.includes(`href="${href}"`), `${file}: нет ссылки на ${href}`)
+    }
+    const ld = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(head)?.[1]
+    assert.ok(ld, `${file}: нет разметки schema.org`)
+    const graph = (JSON.parse(ld) as { '@graph': { '@type': string; name?: string; logo?: { url: string } }[] })['@graph']
+    assert.equal(graph.find((node) => node['@type'] === 'WebSite')?.name, 'Colloq')
+    assert.equal(graph.find((node) => node['@type'] === 'Organization')?.logo?.url, 'https://colloq.ru/icon-512.png')
+  }
+  // PNG: сторона из заголовка IHDR; Google просит кратную 48.
+  for (const [name, side] of [['favicon-48.png', 48], ['favicon-96.png', 96], ['favicon-192.png', 192], ['icon-512.png', 512]] as const) {
+    const png = readFileSync(resolve(SITE, name))
+    assert.equal(png.readUInt32BE(16), side, `${name}: ширина`)
+    assert.equal(png.readUInt32BE(20), side, `${name}: высота`)
+  }
+  for (const side of [48, 96, 192]) assert.equal(side % 48, 0)
+  const ico = readFileSync(resolve(SITE, 'favicon.ico'))
+  assert.equal(ico.readUInt16LE(2), 1, 'favicon.ico: не значок')
+  assert.ok(ico.readUInt16LE(4) >= 1)
+})
+
+test('robots.txt пускает всех и называет карту сайта, а карта знает обе версии лендинга', () => {
+  const robots = readFileSync(resolve(SITE, 'robots.txt'), 'utf8')
+  assert.match(robots, /^User-agent: \*$/m)
+  assert.doesNotMatch(robots, /^Disallow: \/\s*$/m)
+  assert.match(robots, /^Sitemap: https:\/\/colloq\.ru\/sitemap\.xml$/m)
+  const map = readFileSync(resolve(SITE, 'sitemap.xml'), 'utf8')
+  for (const loc of ['https://colloq.ru/', 'https://colloq.ru/en/', 'https://colloq.ru/docs/', 'https://colloq.ru/docs/en/']) {
+    assert.ok(map.includes(`<loc>${loc}</loc>`), `в карте сайта нет ${loc}`)
   }
 })

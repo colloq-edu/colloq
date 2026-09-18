@@ -62,11 +62,13 @@ jobs:
         # --porcelain, а не git diff: новая статья — это НЕотслеживаемый файл
         # в site/docs/en/, и git diff его не видит.
         run: |
-          changed="$(git status --porcelain -- site/docs)"
+          # sitemap.xml пишет та же сборка: новая статья без строки в карте сайта —
+          # это страница, которую поисковик найдёт только по ссылке из соседней.
+          changed="$(git status --porcelain -- site/docs site/sitemap.xml)"
           if [ -n "$changed" ]; then
-            echo "::error::site/docs is out of date with docs/pages. Run 'python3 docs/build.py' and commit the regenerated site/docs together with the sources."
+            echo "::error::site/docs or site/sitemap.xml is out of date with docs/pages. Run 'python3 docs/build.py' and commit the regenerated files together with the sources."
             echo "$changed"
-            git diff --stat -- site/docs
+            git diff --stat -- site/docs site/sitemap.xml
             exit 1
           fi
           echo "site/docs matches docs/pages."
