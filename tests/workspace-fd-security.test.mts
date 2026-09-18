@@ -73,7 +73,7 @@ test('recursive removal does not follow a child directory swapped into a symlink
 test('held read descriptor survives replacement and paths outside the root are refused', { skip: !linux }, () => {
   const { root, outside, safe } = fixture(); const opened = safe.openRead(path.join(root, 'room/sub/file'))
   fs.unlinkSync(path.join(root, 'room/sub/file')); fs.symlinkSync(path.join(outside, 'file'), path.join(root, 'room/sub/file'))
-  try { assert.equal(fs.readFileSync(opened.path, 'utf8'), 'room'); assert.throws(() => safe.readFileSync(path.join(outside, 'file'), 'utf8'), /outside/); assert.throws(() => safe.mkdirSync(path.join(root, 'room/sub/file/new'), { recursive: true })) }
+  try { assert.equal(fs.readFileSync(opened.path, 'utf8'), 'room'); assert.throws(() => safe.readFileSync(path.join(outside, 'file'), 'utf8'), /outside|вне workspace/); assert.throws(() => safe.mkdirSync(path.join(root, 'room/sub/file/new'), { recursive: true })) }
   finally { opened.close(); safe.close() }
 })
 test('create and rename keep both parents anchored across replacement', { skip: !linux }, () => {

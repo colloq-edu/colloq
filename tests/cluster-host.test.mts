@@ -102,7 +102,9 @@ test('k3s: no docker needed, the panel link comes from the cluster state and Ctr
   const s = stand()
   let run: Awaited<ReturnType<typeof publish>> | undefined
   try {
-    assert.equal(spawnSync(path.join(s.bin, 'sh'), ['-c', 'command -v docker'], { env: s.env }).status, 1, 'docker leaked into the stand PATH')
+    // Не «ровно 1»: bash отвечает на ненайденное имя единицей, а dash (sh в
+    // Ubuntu, где идёт CI) — 127. Важно одно: docker в стенде не находится.
+    assert.notEqual(spawnSync(path.join(s.bin, 'sh'), ['-c', 'command -v docker'], { env: s.env }).status, 0, 'docker leaked into the stand PATH')
     run = await publish(s)
     const out = run.read()
     assert.equal(run.host.exitCode, null, out)

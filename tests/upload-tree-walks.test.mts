@@ -74,7 +74,23 @@ function socket(): { ws: WebSocket; heard: ControlServerMessage[] } {
 const real = fs.readdirSync
 const walks = new Map<string, number>()
 function countingReaddir(target: fs.PathLike, options?: unknown): unknown {
-  const at = String(target)
+  /*
+   * На Linux обход идёт не по имени, а по дескриптору: secure-files.ts открывает
+   * корень и читает `/proc/self/fd/N`, чтобы подменённый симлинк не увёл обход
+   * наружу. Такой путь переводится обратно в имя — иначе на Linux обходов
+   * насчитывалось ноль, и тест проверял бы пустоту.
+   */
+  let at = String(target)
+  // secure-files.ts читает `/proc/self/fd/N/.` — с точкой на конце, а readlink
+  // понимает только сам `/proc/self/fd/N`.
+  const fd = /^\/proc\/self\/fd\/(\d+)(?:\/\.)?$/.exec(at)
+  if (fd) {
+    try {
+      at = fs.readlinkSync(`/proc/self/fd/${fd[1]}`)
+    } catch {
+      // Дескриптор уже закрыт — такой вызов к корню комнаты отношения не имеет.
+    }
+  }
   if (walks.has(at)) walks.set(at, (walks.get(at) ?? 0) + 1)
   return (real as (p: fs.PathLike, o?: unknown) => unknown)(target, options)
 }
