@@ -1,9 +1,9 @@
 /**
- * Анимации README: пять сцен в .github/assets/readme, каждая в светлом и
- * тёмном варианте (README подставляет их через <picture>).
+ * Анимации README: пять сцен в .github/assets/readme, каждая на двух языках и
+ * в светлом и тёмном варианте (README подставляет их через <picture>).
  *
  *   make readme-art
- *   node --import tsx scripts/readme-art.mts [каталог]
+ *   node --import tsx scripts/readme-art.mts [каталог...]
  *
  * Сцены — обычный SVG с CSS @keyframes: без скриптов, SMIL, внешних шрифтов и
  * картинок, потому что GitHub показывает SVG через <img>, а там работает только
@@ -12,9 +12,18 @@
  * CellView.svelte, PeoplePanel.svelte, ConsoleView.svelte); где сцена
  * отступает от брифа, об этом сказано в её шапке. Сцены независимы друг от
  * друга: у каждой свои помощники внутри своей функции, поэтому правка одной не
- * трогает остальные. Прогон пишет все десять файлов и падает, если файл
- * дорос до 40 КБ или в нём появилось то, что <img> не покажет.
+ * трогает остальные. Прогон пишет все двадцать файлов в оба каталога и падает,
+ * если файл дорос до 40 КБ или в нём появилось то, что <img> не покажет.
  *
+ * Два языка. У каждой сцены наверху свой словарь TEXT: en и ru, ключ локали в
+ * комментарии рядом со строкой. Русские подписи — это то, что человек правда
+ * видит в продукте (shared/locales/*.ts, значения "ru"); выдуманных строк в
+ * сценах нет, отступления отмечены комментарием. Код внутри ячеек одинаков на
+ * обоих языках — Python остаётся Python.
+ *
+ * Ширины меряются, а не угадываются, и меряются по-разному для языков:
+ * кириллические прописные шире латинских, поэтому у каждой сцены свой трекинг
+ * прописных (.12em против .04em) и свои измеренные в браузере таблицы ширин.
  * Поправили сцену — перегенерируйте и посмотрите кадры в браузере: сравнить
  * глазами светлый и тёмный вариант на белом и на #0d1117, и кадр перед
  * концом цикла с первым кадром (петля не должна «прыгать»).
@@ -24,7 +33,8 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 type Theme = 'light' | 'dark'
-type Scene = (theme: Theme) => string
+type Lang = 'en' | 'ru'
+type Scene = (theme: Theme, lang: Lang) => string
 
 
 // ====================================================================== room
@@ -41,6 +51,76 @@ type Scene = (theme: Theme) => string
  * app notification — the product has no such toast.
  */
 function roomArt(): Scene {
+  /* ------------------------------------------------------------- строки --- */
+
+  /**
+   * Всё видимое — здесь, по языкам. Ключ локали стоит рядом со строкой: это
+   * то, что человек правда читает в комнате, а не пересказ.
+   *
+   * `caret` и `glyph` — измеренные в браузере позиции (тот же стек шрифтов,
+   * 600 15px): имя в поле набирается по буквам, и накрывающая полоса с
+   * кареткой шагает по этим отсечкам. У кириллицы свои ширины, поэтому и
+   * отсечки свои. `joinLabelX`/`joinArrowX` — центр подписи кнопки и левый
+   * край стрелки: «ВОЙТИ НА ЗАНЯТИЕ» на треть длиннее «JOIN THE CLASS» и при
+   * английской раскладке упёрлось бы в стрелку.
+   */
+  const TEXT = {
+    en: {
+      title: 'One link, the whole room',
+      desc:
+        'Anna types her name on the class link and joins; her face lands in the room’s header, the count ticks up, and the teacher’s ' +
+        'People panel adds her row and shows her editing cell 03, while Timur and Rita arrive, Dina moves on to cell 05 and Ivan leaves.',
+      names: { AL: 'Alex', AN: 'Anna', DI: 'Dina', IV: 'Ivan', MA: 'Marat', OL: 'Oleg', RI: 'Rita', SO: 'Sonya' },
+      joining: 'YOU’RE JOINING', // room.ui.840
+      classLines: ['Week 4 · Convolutional', 'networks'],
+      classLine: 'Week 4 · Convolutional networks',
+      yourName: 'YOUR NAME', // room.ui.848
+      placeholder: 'Alex', // room.ui.849
+      yourMark: 'YOUR MARK', // room.ui.123
+      join: 'JOIN THE CLASS', // room.ui.862
+      inTheRoom: 'IN THE ROOM', // room.ui.896
+      people: 'PEOPLE', // room.ui.658
+      teacher: 'Teacher · you', // room.ui.674
+      terminal: 'in the terminal', // room.ui.1113
+      oracle: 'asking the oracle', // room.ui.1114
+      editing: (n: string) => `editing cell ${n}`, // room.ui.1115
+      running: (n: string) => `running cell ${n}`, // room.ui.1112
+      ticker: { AN: 'ANNA JOINED', TI: 'TIMUR JOINED', RI: 'RITA JOINED', IV: 'IVAN LEFT' },
+      caps: '.12em',
+      glyph: [0, 10.5, 20, 29.5],
+      caret: [0, 11.5, 21, 30.5, 39.5],
+      joinLabelX: 140,
+      joinArrowX: 229,
+    },
+    ru: {
+      title: 'Одна ссылка — вся комната',
+      desc:
+        'Анна набирает имя на странице входа по ссылке занятия; её лицо встаёт в шапке комнаты, счётчик растёт, а в панели «Люди» у ' +
+        'преподавателя появляется её строка — «правит ячейку 03». Следом входят Тимур и Рита, Дина переходит к ячейке 05, Иван выходит.',
+      names: { AL: 'Алексей', AN: 'Анна', DI: 'Дина', IV: 'Иван', MA: 'Марат', OL: 'Олег', RI: 'Рита', SO: 'Соня' },
+      joining: 'ВЫ ВХОДИТЕ В',
+      classLines: ['Неделя 4 · Свёрточные', 'сети'],
+      classLine: 'Неделя 4 · Свёрточные сети',
+      yourName: 'ВАШЕ ИМЯ',
+      placeholder: 'Александр',
+      yourMark: 'ВАША МЕТКА',
+      join: 'ВОЙТИ НА ЗАНЯТИЕ',
+      inTheRoom: 'В КОМНАТЕ',
+      people: 'ЛЮДИ',
+      teacher: 'Преподаватель · вы',
+      terminal: 'в терминале',
+      oracle: 'спрашивает оракула',
+      editing: (n: string) => `правит ячейку ${n}`,
+      running: (n: string) => `запускает ячейку ${n}`,
+      ticker: { AN: 'АННА ВОШЛА', TI: 'ТИМУР ВОШЁЛ', RI: 'РИТА ВОШЛА', IV: 'ИВАН ВЫШЕЛ' },
+      caps: '.04em',
+      glyph: [0, 10.5, 20, 29],
+      caret: [0, 11.5, 21, 30, 38.5],
+      joinLabelX: 141.5,
+      joinArrowX: 231.5,
+    },
+  } as const
+
   /* ------------------------------------------------------------ shared bits */
 
   const SANS = `-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif`
@@ -117,22 +197,23 @@ function roomArt(): Scene {
    * (self first, then everyone by name — which is why Anna lands second, Timur and
    * Rita only move the chip, and Ivan's exit pulls Marat back into the stack).
    */
-  function roomScene(theme: Theme): string {
+  function roomScene(theme: Theme, lang: Lang): string {
     const L = 12000
     const T = TOKENS[theme]
+    const S = TEXT[lang]
     const k = timeline(L)
     const NAVY = '#0f2d69'
     const H = 320
 
     const P = {
-      AL: { name: 'Alex', color: '#7e82f0' },
-      AN: { name: 'Anna', color: '#f97362' },
-      DI: { name: 'Dina', color: '#3ec9a7' },
-      IV: { name: 'Ivan', color: '#ef6ba8' },
-      MA: { name: 'Marat', color: '#f2a33c' },
-      OL: { name: 'Oleg', color: '#c273e6' },
-      RI: { name: 'Rita', color: '#4aa8f0' },
-      SO: { name: 'Sonya', color: '#8ac44a' },
+      AL: { name: S.names.AL, color: '#7e82f0' },
+      AN: { name: S.names.AN, color: '#f97362' },
+      DI: { name: S.names.DI, color: '#3ec9a7' },
+      IV: { name: S.names.IV, color: '#ef6ba8' },
+      MA: { name: S.names.MA, color: '#f2a33c' },
+      OL: { name: S.names.OL, color: '#c273e6' },
+      RI: { name: S.names.RI, color: '#4aa8f0' },
+      SO: { name: S.names.SO, color: '#8ac44a' },
     } as const
     type Who = keyof typeof P
     for (const p of Object.values(P)) if (!PARTICIPANT_COLORS.includes(p.color)) throw new Error(p.color)
@@ -178,7 +259,7 @@ function roomArt(): Scene {
 
     // Join card
     anim('fr', k(hide, [[FOCUS, 120, show], [PRESS, 120, hide]]))
-    const caret = [0, 11.5, 21, 30.5, 39.5] // caret x after 0..4 characters
+    const caret = S.caret // caret x after 0..4 characters, measured per language
     const cx = (n: number) => `transform:translateX(${caret[n] - caret[4]}px)`
     anim('ca', k(`${hide};${cx(0)}`, [
       [FOCUS, 1, `${show};${cx(0)}`],
@@ -247,13 +328,15 @@ function roomArt(): Scene {
       `<circle r="${ring ? r - 1 : r}" fill="${P[who].color}"${ring ? ` stroke="${NAVY}" stroke-width="2"` : ''}/>` +
       `<text class="av" y="4" fill="${inkOn(P[who].color)}">${initials(P[who].name)}</text>`
 
+    /* Живые строки участников — whereabouts() в web/src/lib/room.ts. */
+    const live = (s: string, cls = 'ui mu') => `<text class="${cls}" x="${LINE_X}" y="19.5">${esc(s)}</text>`
     const line = (who: Who): string =>
       ({
-        AL: `<text class="nm ac" x="${LINE_X}" y="19.5">Teacher · you</text>`,
-        IV: `<text class="ui mu" x="${LINE_X}" y="19.5">in the terminal</text>`,
-        MA: `<text class="ui mu" x="${LINE_X}" y="19.5">editing cell 03</text>`,
-        OL: `<text class="ui mu" x="${LINE_X}" y="19.5">asking the oracle</text>`,
-        SO: `<text class="ui mu" x="${LINE_X}" y="19.5">editing cell 01</text>`,
+        AL: live(S.teacher, 'nm ac'),
+        IV: live(S.terminal),
+        MA: live(S.editing('03')),
+        OL: live(S.oracle),
+        SO: live(S.editing('01')),
       } as Partial<Record<Who, string>>)[who] ?? ''
 
     const rowDef = (who: Who) =>
@@ -273,10 +356,10 @@ function roomArt(): Scene {
     const joinButtonFace =
       `<rect x="44" y="240" width="216" height="44" rx="6" class="pr"/>`
     const joinButtonLabel =
-      `<text class="bn pi" x="140" y="266.5">JOIN THE CLASS</text>` +
-      `<path d="M229 262h11m-4.5-4.5 4.5 4.5-4.5 4.5" class="ps" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`
+      `<text class="bn pi" x="${S.joinLabelX}" y="266.5">${esc(S.join)}</text>` +
+      `<path d="M${S.joinArrowX} 262h11m-4.5-4.5 4.5 4.5-4.5 4.5" class="ps" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`
 
-    const countSuffix = `<text class="lb w2" x="764" y="42">IN THE ROOM</text>`
+    const countSuffix = `<text class="lb w2" x="764" y="42">${esc(S.inTheRoom)}</text>`
     const digit = (n: number, x: number, yy: number, cls: string, extra = '') =>
       `<text class="${cls}" x="${x}" y="${yy}"${extra}>${n}</text>`
 
@@ -293,7 +376,9 @@ function roomArt(): Scene {
     /* ------------------------------------------------------------- styles */
     const style =
       `.s{font-family:${SANS}}` +
-      `.lb{font:600 11px ${MONO};letter-spacing:.12em}` +
+      // Трекинг прописных — по языку: кириллические прописные шире, и при .12em
+      // «В КОМНАТЕ» и «ВАША МЕТКА» вылезали бы из своих колонок.
+      `.lb{font:600 11px ${MONO};letter-spacing:${S.caps}}` +
       `.tk{font:600 11px ${MONO};letter-spacing:.08em}` +
       `.nm{font:600 13px ${SANS}}.ui{font:13px ${SANS}}.tt{font:700 15px ${SANS}}` +
       `.av{font:600 11px ${SANS};text-anchor:middle}` +
@@ -320,31 +405,33 @@ function roomArt(): Scene {
     const card = `<rect x=".5" y=".5" width="879" height="${H - 1}" rx="12" fill="${NAVY}"/>`
 
     // Left: the join card (JoinScreen, abstracted)
+    const NAME_X = 56 // левый край имени в поле
+    const last = caret[4]
     const join =
       `<rect x="24.5" y="24.5" width="255" height="279" rx="8" class="c ln"/>` +
-      `<text class="lb mu" x="44" y="52">YOU’RE JOINING</text>` +
-      `<text class="tt i" x="44" y="77">Week 4 · Convolutional</text>` +
-      `<text class="tt i" x="44" y="97">networks</text>` +
-      `<text class="lb mu" x="44" y="128">YOUR NAME</text>` +
+      `<text class="lb mu" x="44" y="52">${esc(S.joining)}</text>` +
+      `<text class="tt i" x="44" y="77">${esc(S.classLines[0])}</text>` +
+      `<text class="tt i" x="44" y="97">${esc(S.classLines[1])}</text>` +
+      `<text class="lb mu" x="44" y="128">${esc(S.yourName)}</text>` +
       `<rect x="44.5" y="136.5" width="215" height="35" rx="6" class="c ln"/>` +
       `<g class="fr" opacity="0" fill="none" stroke="${T.accent}">` +
       `<rect x="44.5" y="136.5" width="215" height="35" rx="6"/>` +
       `<rect x="42" y="134" width="220" height="40" rx="8" stroke-width="3" stroke-opacity=".22"/></g>` +
-      `<text class="fd i" x="56 66.5 76 85.5" y="160">Anna</text>` +
-      `<rect class="cv c" x="94.5" y="141" width="41" height="26"/>` +
-      `<text class="ph fp fa" x="56" y="160" opacity="0">Alex</text>` +
-      `<rect class="ca" x="95" y="145.5" width="2" height="18" fill="${T.accent}" opacity="0"/>` +
+      `<text class="fd i" x="${S.glyph.map((g) => NAME_X + g).join(' ')}" y="160">${esc(P.AN.name)}</text>` +
+      `<rect class="cv c" x="${NAME_X + last - 1}" y="141" width="${last + 1.5}" height="26"/>` +
+      `<text class="ph fp fa" x="56" y="160" opacity="0">${esc(S.placeholder)}</text>` +
+      `<rect class="ca" x="${NAME_X + last - 0.5}" y="145.5" width="2" height="18" fill="${T.accent}" opacity="0"/>` +
       `<rect x="44.5" y="184.5" width="215" height="39" rx="3" class="sf ln"/>` +
       `<circle cx="66" cy="204" r="12" fill="${P.AN.color}"/>` +
-      `<text class="mi av" x="66" y="208" fill="${DISC_DARK}">AN</text>` +
-      `<text class="lb mu" x="88" y="208">YOUR MARK</text>` +
+      `<text class="mi av" x="66" y="208" fill="${DISC_DARK}">${initials(P.AN.name)}</text>` +
+      `<text class="lb mu" x="88" y="208">${esc(S.yourMark)}</text>` +
       `<g class="bt">${joinButtonFace}<g class="bl" opacity="0">${joinButtonLabel}</g>` +
       `<path class="ck ps" d="M145 262l5 5 9-10" fill="none" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="21"/></g>`
 
     // Right: the room — header on the brand band, ticker, People panel
     const header =
       logo +
-      `<text class="tt w" x="330" y="43.5">Week 4 · Convolutional networks</text>` +
+      `<text class="tt w" x="330" y="43.5">${esc(S.classLine)}</text>` +
       // chip first, then faces right-to-left: the first person sits on top
       at(seat(4), SY, `<g class="cp">${chipCircle}${chipLabel(2, 'n2', true)}${chipLabel(3, 'n3', true)}${chipLabel(4, 'n4')}${chipLabel(5, 'n5', true)}</g>`) +
       at(seat(3), SY, `<g class="fMA" opacity="0">${use('hMA')}</g>`) +
@@ -360,23 +447,26 @@ function roomArt(): Scene {
       countSuffix
 
     const ticker =
-      `<text class="tk soft t1" x="304" y="74" opacity="0">ANNA JOINED</text>` +
-      `<text class="tk soft t2" x="304" y="74" opacity="0">TIMUR JOINED</text>` +
-      `<text class="tk soft t3" x="304" y="74" opacity="0">RITA JOINED</text>` +
-      `<text class="tk gone t4" x="304" y="74" opacity="0">IVAN LEFT</text>`
+      `<text class="tk soft t1" x="304" y="74" opacity="0">${esc(S.ticker.AN)}</text>` +
+      `<text class="tk soft t2" x="304" y="74" opacity="0">${esc(S.ticker.TI)}</text>` +
+      `<text class="tk soft t3" x="304" y="74" opacity="0">${esc(S.ticker.RI)}</text>` +
+      `<text class="tk gone t4" x="304" y="74" opacity="0">${esc(S.ticker.IV)}</text>`
 
     const pdigit = (n: number, cls: string, hidden = true) =>
       `<text class="lb mu tn ${cls}" x="840" y="111" text-anchor="end"${hidden ? ' opacity="0"' : ''}>${n}</text>`
 
+    /* Линейка после подписи панели: её начало считается от ширины самой подписи. */
+    const capsW = (s: string) => [...s].length * 6.6 + ([...s].length - 1) * parseFloat(S.caps) * 11
+    const ruleX = Math.round((320 + capsW(S.people) + 10) * 2) / 2
     const people =
       `<rect x="304.5" y="88.5" width="551" height="215" rx="8" class="c ln"/>` +
-      `<text class="lb mu" x="320" y="111">PEOPLE</text>` +
-      `<path d="M376 107.5h448" class="ln"/>` +
+      `<text class="lb mu" x="320" y="111">${esc(S.people)}</text>` +
+      `<path d="M${ruleX} 107.5h${824 - ruleX}" class="ln"/>` +
       pdigit(6, 'd6') + pdigit(7, 'd7') + pdigit(8, 'd8', false) + pdigit(9, 'd9') +
       `<g clip-path="url(#rows)">` +
       at(RX, rowY(0), use('pAL')) +
-      at(RX, rowY(1), `<g class="rAN">${use('pAN')}<text class="ui mu lAN" x="${LINE_X}" y="19.5">editing cell 03</text></g>`) +
-      at(RX, rowY(2), `<g class="rDN">${use('pDI')}<text class="ui mu lD1" x="${LINE_X}" y="19.5" opacity="0">running cell 04</text><text class="ui mu lD2" x="${LINE_X}" y="19.5">editing cell 05</text></g>`) +
+      at(RX, rowY(1), `<g class="rAN">${use('pAN')}<text class="ui mu lAN" x="${LINE_X}" y="19.5">${esc(S.editing('03'))}</text></g>`) +
+      at(RX, rowY(2), `<g class="rDN">${use('pDI')}<text class="ui mu lD1" x="${LINE_X}" y="19.5" opacity="0">${esc(S.running('04'))}</text><text class="ui mu lD2" x="${LINE_X}" y="19.5">${esc(S.editing('05'))}</text></g>`) +
       at(RX, rowY(3), `<g class="rIV" opacity="0">${use('pIV')}</g>`) +
       at(RX, rowY(3), `<g class="rBU">${use('pMA')}</g>`) +
       at(RX, rowY(4), `<g class="rBU">${use('pOL')}</g>`) +
@@ -389,7 +479,7 @@ function roomArt(): Scene {
       `<g class="rs" opacity="0">` +
       // join card: empty field with placeholder, bare mark, disabled button
       `<rect x="45" y="137" width="214" height="34" rx="5.5" class="c"/>` +
-      `<text class="fp fa" x="56" y="160">Alex</text>` +
+      `<text class="fp fa" x="56" y="160">${esc(S.placeholder)}</text>` +
       `<rect x="53" y="191" width="26" height="26" class="sf"/><circle cx="66" cy="204" r="12" fill="${P.AN.color}"/>` +
       `<rect x="42" y="238" width="220" height="48" class="c"/>` +
       `<g opacity=".4">${joinButtonFace}${joinButtonLabel}</g>` +
@@ -407,21 +497,16 @@ function roomArt(): Scene {
       `<text class="lb mu tn" x="840" y="111" text-anchor="end">6</text>` +
       `<rect x="307" y="116" width="546" height="183" class="c"/>` +
       at(RX, rowY(0), use('pAL')) +
-      at(RX, rowY(1), use('pDI') + `<text class="ui mu" x="${LINE_X}" y="19.5">running cell 04</text>`) +
+      at(RX, rowY(1), use('pDI') + `<text class="ui mu" x="${LINE_X}" y="19.5">${esc(S.running('04'))}</text>`) +
       at(RX, rowY(2), use('pIV')) +
       at(RX, rowY(3), use('pMA')) +
       at(RX, rowY(4), use('pOL')) +
       at(RX, rowY(5), use('pSO')) +
       `</g>`
 
-    const title = 'One link, the whole room'
-    const desc =
-      'Anna types her name on the class link and joins; her face lands in the room’s header, the count ticks up, and the teacher’s ' +
-      'People panel adds her row and shows her editing cell 03, while Timur and Rita arrive, Dina moves on to cell 05 and Ivan leaves.'
-
     return (
-      `<svg xmlns="http://www.w3.org/2000/svg" width="880" height="${H}" viewBox="0 0 880 ${H}" role="img" aria-labelledby="t d">` +
-      `<title id="t">${esc(title)}</title><desc id="d">${esc(desc)}</desc>` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="880" height="${H}" viewBox="0 0 880 ${H}" lang="${lang}" role="img" aria-labelledby="t d">` +
+      `<title id="t">${esc(S.title)}</title><desc id="d">${esc(S.desc)}</desc>` +
       `<style>${style}</style>` +
       defs +
       card +
@@ -447,6 +532,77 @@ function roomArt(): Scene {
  * the status row and the elapsed() timer format follow CellView.svelte.
  */
 function runArt(): Scene {
+  /* ------------------------------------------------------------ строки --- */
+
+  /**
+   * Видимые строки по языкам; ключ локали — рядом. Код в ячейках один и тот
+   * же: Python остаётся Python, меняются только подписи вокруг него.
+   *
+   * `bold` — ширины букв на 1000 для подписи каретки: латиница взята из Arial
+   * Bold, кириллица измерена в браузере тем же стеком шрифтов на 700/12. Имя в
+   * ярлыке прижимается к коробке через textLength, и коробку надо померить, а
+   * не угадать. `caps` — трекинг прописных: у кириллицы он меньше, иначе
+   * «ВЫПОЛНЯЕТСЯ» и «В ОЧЕРЕДИ» не помещаются в те же места, что RUNNING.
+   *
+   * Имена в русской сцене мужские не случайно: строка запуска в приложении —
+   * это «запустил» плюс имя (room.ui.394), и с женским именем она читалась бы
+   * неверно. «от Ивана» — единственное место, где имя склонено: сам предлог
+   * взят из room.ui.399, склонение добавлено, иначе строка не по-русски.
+   */
+  const TEXT = {
+    en: {
+      title: 'Write together, run once, everyone sees it',
+      desc:
+        'Maria runs cell 03 while Ivan finishes typing cell 04 and Alex selects a word in it. ' +
+        'Ivan’s run waits its turn in the room’s single kernel, then uses the df that Maria’s cell loaded, ' +
+        'and every participant sees the same outputs.',
+      maria: 'Maria',
+      ivan: 'Ivan',
+      alex: 'Alex',
+      running: 'RUNNING', // room.ui.393
+      startedBy: (who: string) => `started by ${who}`, // room.ui.394
+      interrupt: 'INTERRUPT', // room.ui.395
+      place: (n: number) => `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'} in queue`, // place() + room.ui.397
+      queued: 'QUEUED', // room.ui.398
+      by: 'by Ivan', // room.ui.399 + имя
+      cancel: 'CANCEL', // room.ui.376
+      caption: 'One kernel per room — df from cell 03 is there for everyone in cell 04.',
+      people: 'PEOPLE', // room.ui.658
+      teacher: 'Teacher', // room.ui.675
+      editing: (n: string) => `editing cell ${n}`, // room.ui.1115
+      runningCell: (n: string) => `running cell ${n}`, // room.ui.1112
+      caps: 0.12,
+      bold: { M: 833, a: 556, r: 389, i: 278, I: 278, v: 556, n: 611, A: 722, l: 278, e: 556, x: 556 } as Record<string, number>,
+    },
+    ru: {
+      title: 'Пишут вместе, запуск один, вывод видят все',
+      desc:
+        'Марат запускает ячейку 03, пока Иван дописывает ячейку 04, а Алексей выделяет в ней слово. ' +
+        'Запуск Ивана ждёт своей очереди в единственном ядре комнаты, потом берёт тот самый df, который загрузила ячейка Марата, ' +
+        'и одинаковый вывод видит вся комната.',
+      maria: 'Марат',
+      ivan: 'Иван',
+      alex: 'Алексей',
+      running: 'ВЫПОЛНЯЕТСЯ',
+      startedBy: (who: string) => `запустил ${who}`,
+      interrupt: 'ПРЕРВАТЬ',
+      place: (n: number) => `${n}-й в очереди`, // room.ui.1236 пишет место как «{n}-й»
+      queued: 'В ОЧЕРЕДИ',
+      by: 'от Ивана',
+      cancel: 'ОТМЕНА',
+      caption: 'Ядро одно на всю комнату — df из ячейки 03 есть у всех в ячейке 04.',
+      people: 'ЛЮДИ',
+      teacher: 'Преподаватель',
+      editing: (n: string) => `правит ячейку ${n}`,
+      runningCell: (n: string) => `запускает ячейку ${n}`,
+      caps: 0.04,
+      bold: {
+        А: 740, И: 795, М: 916,
+        а: 600, в: 600, е: 611, й: 648, к: 580, л: 621, н: 642, р: 657, с: 594, т: 533,
+      } as Record<string, number>,
+    },
+  } as const
+
   /* ------------------------------------------------------------ tokens --- */
 
   type Tokens = {
@@ -577,12 +733,14 @@ function runArt(): Scene {
   const SANS = `-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif`
   const MONO = `ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace`
   const CW = 7.8 // 0.6 × 13px
-  const CAPS_W = (n: number) => +(n * 6.6 + (n - 1) * 1.32).toFixed(2) // mono 11px, .12em tracking
+  // Трекинг прописных задаётся языком: у кириллицы он меньше (см. TEXT).
+  let CAPS_TRACK = 1.32 // mono 11px, .12em
+  const CAPS_W = (n: number) => +(n * 6.6 + (n - 1) * CAPS_TRACK).toFixed(2)
   const MONO11_W = (n: number) => +(n * 6.6).toFixed(2)
 
-  /* Arial Bold advance widths (per 1000) for the caret labels, so the label box
+  /* Advance widths (per 1000) for the caret labels, so the label box
    * is measured instead of guessed; textLength then pins the string to it. */
-  const BOLD: Record<string, number> = { M: 833, a: 556, r: 389, i: 278, I: 278, v: 556, n: 611, A: 722, l: 278, e: 556, x: 556 }
+  let BOLD: Record<string, number> = TEXT.en.bold
   const boldW = (s: string, px: number) => ([...s].reduce((w, ch) => w + (BOLD[ch] ?? 611), 0) * px) / 1000
 
   const r5 = (n: number) => Math.round(n * 2) / 2
@@ -592,10 +750,13 @@ function runArt(): Scene {
 
   type Tok = [cls: string, text: string]
 
-  function runScene(T: Tokens): string {
+  function runScene(T: Tokens, lang: Lang): string {
     css = ''
     seq = 0
     seen = new Map()
+    const S = TEXT[lang]
+    CAPS_TRACK = +(S.caps * 11).toFixed(2)
+    BOLD = S.bold
     const W = 880
     const H = 300
     const CX = 96 // code text x
@@ -641,12 +802,12 @@ function runArt(): Scene {
     const runningRow = (cy: number, who: string, color: string, spinCls: string, timers: [string, string][]): string => {
       const capX = 138
       return (
-        avatarXs(105, cy, color, who[0]) +
+        avatarXs(105, cy, color, [...who][0]) +
         spinner(126, cy, spinCls) +
-        caps(capX, cy + 4, 'RUNNING', 'acc') +
-        `<text class="s ui mu" x="${r5(capX + CAPS_W(7) + 8)}" y="${cy + 4.5}">started by ${who}</text>` +
+        caps(capX, cy + 4, S.running, 'acc') +
+        `<text class="s ui mu" x="${r5(capX + CAPS_W(S.running.length) + 8)}" y="${cy + 4.5}">${esc(S.startedBy(who))}</text>` +
         timers.map(([s, cls]) => mono11(546, cy + 4, s, `mu tn ${cls}`, 'end')).join('') +
-        button(640, cy, 'INTERRUPT')
+        button(640, cy, S.interrupt)
       )
     }
 
@@ -711,7 +872,7 @@ function runArt(): Scene {
     const t3 = [track(O(1), [[3000, O(0), 1]]), track(O(0), [[3000, O(1), 1], [3500, O(0), 1]]), track(O(0), [[3500, O(1), 1], [4000, O(0), 1]]), track(O(0), [[4000, O(1), 1]])]
     add(
       `<g class="${rise(RUN3, DONE3)}" opacity="0">` +
-        runningRow(c3Slot, 'Maria', MARIA, track('transform:rotate(0deg)', [[RUN3, 'transform:rotate(0deg)', 1], [RUN3 + 1, 'transform:rotate(620deg)', DONE3 + 160 - RUN3 - 1, 'linear']]), [
+        runningRow(c3Slot, S.maria, MARIA, track('transform:rotate(0deg)', [[RUN3, 'transform:rotate(0deg)', 1], [RUN3 + 1, 'transform:rotate(620deg)', DONE3 + 160 - RUN3 - 1, 'linear']]), [
           ['0.0s', t3[0]], ['0.5s', t3[1]], ['1.0s', t3[2]], ['1.5s', t3[3]],
         ]) +
         `</g>`,
@@ -739,22 +900,23 @@ function runArt(): Scene {
     add(`<rect class="${typing}" x="${r5(colX(col4))}" y="${c4Top}" width="${r5(typed.length * CW + 2)}" height="22" fill="${T.surface}" transform="translate(${+(typed.length * CW).toFixed(1)} 0)"/>`)
     // Queued row: 1st in queue · QUEUED · by Ivan · CANCEL.
     {
-      const chipW = r5(MONO11_W(12) + 12)
+      const place = S.place(1)
+      const chipW = r5(MONO11_W(place.length) + 12)
       const qx = CX + chipW + 8
       add(
         `<g class="${rise(RUN4, START4, 120)}" opacity="0">` +
           `<rect x="${CX}" y="${c4Slot - 10}" width="${chipW}" height="20" rx="3" fill="${T.raised}"/>` +
-          mono11(CX + 6, c4Slot + 4, '1st in queue', 'mu') +
-          caps(qx, c4Slot + 4, 'QUEUED', 'acc') +
-          `<text class="s ui mu" x="${r5(qx + CAPS_W(6) + 8)}" y="${c4Slot + 4.5}">by Ivan</text>` +
-          button(640, c4Slot, 'CANCEL') +
+          mono11(CX + 6, c4Slot + 4, place, 'mu') +
+          caps(qx, c4Slot + 4, S.queued, 'acc') +
+          `<text class="s ui mu" x="${r5(qx + CAPS_W(S.queued.length) + 8)}" y="${c4Slot + 4.5}">${esc(S.by)}</text>` +
+          button(640, c4Slot, S.cancel) +
           `</g>`,
       )
     }
     const t4 = [track(O(1), [[5100, O(0), 1]]), track(O(0), [[5100, O(1), 1], [5600, O(0), 1]]), track(O(0), [[5600, O(1), 1]])]
     add(
       `<g class="${rise(START4 + 100, DONE4)}" opacity="0">` +
-        runningRow(c4Slot, 'Ivan', IVAN, track('transform:rotate(0deg)', [[START4 + 100, 'transform:rotate(0deg)', 1], [START4 + 101, 'transform:rotate(420deg)', DONE4 + 160 - START4 - 101, 'linear']]), [
+        runningRow(c4Slot, S.ivan, IVAN, track('transform:rotate(0deg)', [[START4 + 100, 'transform:rotate(0deg)', 1], [START4 + 101, 'transform:rotate(420deg)', DONE4 + 160 - START4 - 101, 'linear']]), [
           ['0.0s', t4[0]], ['0.5s', t4[1]], ['1.0s', t4[2]],
         ]) +
         `</g>`,
@@ -781,50 +943,50 @@ function runArt(): Scene {
         [M_MOVE, `opacity:1;${TX(0)}`, 420],
         [R0, `opacity:0;${TX(0)}`, R1 - R0],
       ], `opacity:0;${TX((mStart - mEnd) * CW)}`)}">` +
-        caret(mEnd, c3Top, 'Maria', MARIA, track(O(0), [[M_IN, O(1), 200], [RUN3 + 1500, O(0), 200]])) +
+        caret(mEnd, c3Top, S.maria, MARIA, track(O(0), [[M_IN, O(1), 200], [RUN3 + 1500, O(0), 200]])) +
         `</g>`,
     )
     // Alex: selection head after "group".
-    add(`<g class="${selCls}">${caret(17, c4Top, 'Alex', ALEX, track(O(0), [[A_IN, O(1), 200], [A_IN + 1500, O(0), 200]]))}</g>`)
+    add(`<g class="${selCls}">${caret(17, c4Top, S.alex, ALEX, track(O(0), [[A_IN, O(1), 200], [A_IN + 1500, O(0), 200]]))}</g>`)
     // Ivan: types the tail of cell 04 one character at a time, then runs it.
     add(
       `<g class="${shown(I_IN, null)}"><g class="${typing}" transform="translate(${typedShift} 0)">` +
-        caret(col4, c4Top, 'Ivan', IVAN, track(O(0), [[I_IN, O(1), 200], [START4, O(0), 200]])) +
+        caret(col4, c4Top, S.ivan, IVAN, track(O(0), [[I_IN, O(1), 200], [START4, O(0), 200]])) +
         `</g></g>`,
     )
 
     /* ---- caption ---- */
-    add(`<text class="s cap2 ${rise(CAPTION, null)}" x="32" y="282">One kernel per room — df from cell 03 is there for everyone in cell 04.</text>`)
+    add(`<text class="s cap2 ${rise(CAPTION, null)}" x="32" y="282">${esc(S.caption)}</text>`)
 
     /* ---- people rail ---- */
-    add(caps(692, 38, 'PEOPLE', 'mu'))
-    add(`<path d="M${r5(692 + CAPS_W(6) + 10)} 34.5H836" stroke="${T.line}"/>`)
+    add(caps(692, 38, S.people, 'mu'))
+    add(`<path d="M${r5(692 + CAPS_W(S.people.length) + 10)} 34.5H836" stroke="${T.line}"/>`)
     add(mono11(848, 38, '3', 'mu', 'end'))
     const person = (i: number, name: string, color: string, lines: string): string => {
       const cy = 68 + i * 42
       return (
         `<circle cx="704" cy="${cy}" r="12" fill="${color}"/>` +
-        `<text class="s ini" x="704" y="${cy + 4.5}" text-anchor="middle" font-size="12">${name[0]}</text>` +
-        `<text class="s nm" x="726" y="${cy - 2}">${name}</text>` +
+        `<text class="s ini" x="704" y="${cy + 4.5}" text-anchor="middle" font-size="12">${[...name][0]}</text>` +
+        `<text class="s nm" x="726" y="${cy - 2}">${esc(name)}</text>` +
         lines
       )
     }
     const act = (i: number, s: string, cls: string, extra = '', tone = 'mu act') =>
-      `<text class="s ${tone} ${cls}"${extra} x="726" y="${68 + i * 42 + 14}">${s}</text>`
+      `<text class="s ${tone} ${cls}"${extra} x="726" y="${68 + i * 42 + 14}">${esc(s)}</text>`
     add(
-      person(0, 'Maria', MARIA,
-        act(0, 'editing cell 03', hidden(RUN3, DONE3 + 100)) +
-        act(0, 'running cell 03', shown(RUN3 + 100, DONE3, 160, 120), ' opacity="0"')),
+      person(0, S.maria, MARIA,
+        act(0, S.editing('03'), hidden(RUN3, DONE3 + 100)) +
+        act(0, S.runningCell('03'), shown(RUN3 + 100, DONE3, 160, 120), ' opacity="0"')),
     )
     add(
-      person(1, 'Ivan', IVAN,
-        act(1, 'editing cell 04', hidden(START4, DONE4 + 100)) +
-        act(1, 'running cell 04', shown(START4 + 100, DONE4, 160, 120), ' opacity="0"')),
+      person(1, S.ivan, IVAN,
+        act(1, S.editing('04'), hidden(START4, DONE4 + 100)) +
+        act(1, S.runningCell('04'), shown(START4 + 100, DONE4, 160, 120), ' opacity="0"')),
     )
     add(
-      person(2, 'Alex', ALEX,
-        act(2, 'Teacher', hidden(A_IN, A_OUT + 100), ' opacity="0"', 'acc badge') +
-        act(2, 'editing cell 04', shown(A_IN + 100, A_OUT, 160, 120))),
+      person(2, S.alex, ALEX,
+        act(2, S.teacher, hidden(A_IN, A_OUT + 100), ' opacity="0"', 'acc badge') +
+        act(2, S.editing('04'), shown(A_IN + 100, A_OUT, 160, 120))),
     )
 
     const style =
@@ -839,15 +1001,9 @@ function runArt(): Scene {
       css +
       `@media (prefers-reduced-motion:reduce){*{animation:none!important}}`
 
-    const title = 'Write together, run once, everyone sees it'
-    const desc =
-      'Maria runs cell 03 while Ivan finishes typing cell 04 and Alex selects a word in it. ' +
-      'Ivan’s run waits its turn in the room’s single kernel, then uses the df that Maria’s cell loaded, ' +
-      'and every participant sees the same outputs.'
-
     return (
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="run-t run-d">` +
-      `<title id="run-t">${title}</title><desc id="run-d">${esc(desc)}</desc>` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" lang="${lang}" role="img" aria-labelledby="run-t run-d">` +
+      `<title id="run-t">${S.title}</title><desc id="run-d">${esc(S.desc)}</desc>` +
       `<style>${style}</style>` +
       out.join('') +
       `</svg>\n`
@@ -857,7 +1013,7 @@ function runArt(): Scene {
       return `<text class="m c ${cls}"${extra} x="${x}" y="${y}"${anchor ? ` text-anchor="${anchor}"` : ''} textLength="${+(s.length * CW).toFixed(1)}" lengthAdjust="spacing">${esc(s)}</text>`
     }
   }
-  return (theme) => runScene(theme === 'light' ? LIGHT : DARK)
+  return (theme, lang) => runScene(theme === 'light' ? LIGHT : DARK, lang)
 }
 
 // ====================================================================== council
@@ -873,6 +1029,117 @@ function runArt(): Scene {
  * "Answer 12" without his name. Students never see Correct / Needs revision.
  */
 function councilArt(): Scene {
+  // ---------------------------------------------------------------- строки ----
+
+  /**
+   * Видимые строки по языкам, ключ локали рядом. Код решений один и тот же:
+   * три ответа на Python и KeyError — это данные, а не интерфейс.
+   *
+   * `caps` — трекинг прописных. Кириллические прописные шире латинских, и при
+   * .12em «1 ВЫПОЛНЯЕТСЯ · 0 В ОЧЕРЕДИ» налезало на вкладки; .04em оставляет
+   * подписи прописными и укладывает строку в ту же полосу.
+   *
+   * `tabs.x` и `tabs.box` — позиции вкладок: они зависят от ширины подписей,
+   * измеренных в браузере (13px/600), и от того, сколько места осталось справа
+   * под счётчик очереди.
+   *
+   * `counter` — счётчик очереди посимвольно: цифры перещёлкиваются на месте,
+   * поэтому нужны их индексы в строке, а не только сама строка.
+   */
+  const TEXT = {
+    en: {
+      title: 'Council: everyone answers, the class discusses one',
+      desc:
+        'Anna, Marat and Dina each write their own answer to cell 07; their runs queue through the room’s one kernel one at a time once Oleg’s slow loop is stopped by the 15-second limit, the teacher marks the results in the council console, and shows Marat’s answer to the class as “Answer 12”, without his name.',
+      cellLabel: 'CELL 07 · COUNCIL', // room.ui.526 + room.pult.v2.title
+      task: 'Mean score per group in <tspan class="c13">df</tspan>',
+      // room.pult.v2.rules.*: runLead/runEveryone, limitLead/limitValue+sec, screenLead/screenAnon
+      rules: [
+        ['RUNS · ', 'BY ANYONE, IN TURN'],
+        ['EACH RUN · ', 'CAPPED AT 15 S'],
+        ['ON SCREEN · ', 'WITHOUT NAMES'],
+      ] as [string, string][],
+      names: { anna: 'Anna', marat: 'Marat', dina: 'Dina', oleg: 'Oleg' },
+      yourSheet: ' · your sheet', // room.ui.1222
+      onlyTeacher: 'only the teacher sees your text', // room.ui.1222
+      submit: 'Submit', // room.ui.356
+      submitW: 74,
+      submitted: 'SUBMITTED 18:42 · AWAITING REVIEW', // room.ui.1224
+      yourOnScreen: 'YOUR ANSWER IS ON SCREEN', // room.ui.1227
+      onScreen: 'ON SCREEN', // room.ui.349
+      answer: 'Answer 12', // room.ui.1255
+      nothingShown: 'Nothing is shown to the class', // room.pult.v2.nothingShown
+      onClassScreen: 'On the class screen', // room.pult.v2.projection.title
+      since: ' · since 18:47',
+      showClass: 'Show the class', // room.ui.1336
+      clearScreen: 'Clear class screen', // room.pult.v2.projection.clear
+      tabs: {
+        // room.pult.v2.workTab / queueTab / oracleTab
+        labels: ['Work', 'Queue', 'Class Oracle'],
+        x: [19, 82, 148],
+        box: { x: 10, w: 54 },
+      },
+      // room.pult.v2.queue.counts
+      counter: { label: '1 RUNNING · 0 QUEUED', running: [2, 'RUNNING ·'] as [number, string], queued: [14, 'QUEUED'] as [number, string], digits: [0, 12] },
+      running: 'RUNNING', // room.pult.v2.execution.running
+      stopped: 'STOPPED: LONGER THAN 15 S', // room.pult.v2.execution.timedOut
+      queued: 'QUEUED', // room.pult.v2.execution.queued
+      done: 'EXECUTION COMPLETED', // room.pult.v2.execution.ok
+      error: 'EXECUTION ERROR', // room.pult.v2.execution.error
+      correct: 'CORRECT', // room.pult.v2.review.correct
+      revise: 'NEEDS REVISION', // room.pult.v2.review.wrong
+      stoppedNote: 'ran past the limit · the queue moved on without them', // room.pult.v2.queue.stoppedNote
+      same: '4 others answered the same', // room.pult.v2.workSame
+      shownBy: 'shown by the teacher · 18:47 · 4 more wrote the same', // room.ui.1256
+      runByTeacher: 'RUN BY THE TEACHER', // room.ui.61
+      caps: 0.12,
+    },
+    ru: {
+      title: 'Консилиум: отвечают все, разбирают одного',
+      desc:
+        'Анна, Марат и Дина пишут свой ответ на ячейку 07; запуски идут по очереди через единственное ядро комнаты, как только медленный цикл Олега останавливается на пределе в 15 секунд. Преподаватель отмечает результаты в пульте консилиума и показывает классу вариант Марата как «Вариант 12» — без имени.',
+      cellLabel: 'ЯЧЕЙКА 07 · КОНСИЛИУМ',
+      task: 'Средняя оценка по группам в <tspan class="c13">df</tspan>',
+      rules: [
+        ['ЗАПУСКАЮТ · ', 'ВСЕ ПО ОЧЕРЕДИ'],
+        ['КАЖДЫЙ ЗАПУСК · ', 'ДО 15 С'],
+        ['НА ЭКРАНЕ · ', 'БЕЗ ИМЁН'],
+      ] as [string, string][],
+      names: { anna: 'Анна', marat: 'Марат', dina: 'Дина', oleg: 'Олег' },
+      yourSheet: ' · ваш лист',
+      onlyTeacher: 'ваш текст видит только преподаватель',
+      submit: 'Сдать',
+      submitW: 60,
+      submitted: 'СДАНО 18:42 · ЖДЁТ РАЗБОРА',
+      yourOnScreen: 'ВАШ ВАРИАНТ НА ЭКРАНЕ',
+      onScreen: 'НА ЭКРАНЕ',
+      answer: 'Вариант 12',
+      nothingShown: 'На экране класса пока ничего',
+      onClassScreen: 'На экране класса',
+      since: ' · с 18:47',
+      showClass: 'Показать классу',
+      clearScreen: 'Убрать с экрана',
+      tabs: {
+        labels: ['Работы', 'Очередь', 'Оракул о классе'],
+        x: [13, 73, 141],
+        box: { x: 4, w: 67 },
+      },
+      counter: { label: '1 ВЫПОЛНЯЕТСЯ · 0 В ОЧЕРЕДИ', running: [2, 'ВЫПОЛНЯЕТСЯ ·'] as [number, string], queued: [18, 'В ОЧЕРЕДИ'] as [number, string], digits: [0, 16] },
+      running: 'ВЫПОЛНЯЕТСЯ',
+      stopped: 'ОСТАНОВЛЕН: ДОЛЬШЕ 15 С',
+      queued: 'В ОЧЕРЕДИ',
+      done: 'ЗАПУСК ВЫПОЛНЕН',
+      error: 'ОШИБКА ЗАПУСКА',
+      correct: 'ВЕРНО',
+      revise: 'НА ДОРАБОТКУ',
+      stoppedNote: 'считали дольше предела · очередь пошла дальше без вас',
+      same: 'Так же ответили ещё 4',
+      shownBy: 'показал преподаватель · 18:47 · так же написали ещё 4',
+      runByTeacher: 'ЗАПУСКАЛ ПРЕПОДАВАТЕЛЬ',
+      caps: 0.04,
+    },
+  } as const
+
   // ---------------------------------------------------------------- tokens ----
 
   type Theme = 'light' | 'dark'
@@ -1033,9 +1300,12 @@ function councilArt(): Scene {
 
   const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-  /** Width of a mono run: chars × 0.6 × size, plus .12em tracking for caps labels. */
+  /** Трекинг прописных: задаётся языком сцены (см. TEXT). */
+  let CAPS_TRACK: number = TEXT.en.caps
+
+  /** Width of a mono run: chars × 0.6 × size, plus the caps tracking. */
   const monoW = (s: string, size: number, caps: boolean): number =>
-    s.length * 0.6 * size + (caps ? (s.length - 1) * 0.12 * size : 0)
+    [...s].length * 0.6 * size + (caps ? ([...s].length - 1) * CAPS_TRACK * size : 0)
 
   type Tok = [text: string, cls: string]
   const CODE = new Map<string, { id: string; svg: string }>()
@@ -1097,8 +1367,10 @@ function councilArt(): Scene {
 
   interface Student { name: string; color: string; code: Tok[]; typeFrom: number; typeTo: number }
 
-  function council(theme: Theme): string {
+  function council(theme: Theme, lang: Lang): string {
     const P = PALETTE[theme]
+    const S = TEXT[lang]
+    CAPS_TRACK = S.caps
     const m = new Motion()
     CODE.clear()
     CHIPS.clear()
@@ -1121,16 +1393,16 @@ function councilArt(): Scene {
     }
 
     const students: Student[] = [
-      { name: 'Anna', color: '#4aa8f0', code: py('df.groupby("group")["score"].mean()'), typeFrom: 400, typeTo: 3200 },
-      { name: 'Marat', color: '#8ac44a', code: py('df["score"].mean()'), typeFrom: 1000, typeTo: 2700 },
-      { name: 'Dina', color: '#c273e6', code: py('df.groupby("group")["scores"].mean()'), typeFrom: 450, typeTo: 3330 },
+      { name: S.names.anna, color: '#4aa8f0', code: py('df.groupby("group")["score"].mean()'), typeFrom: 400, typeTo: 3200 },
+      { name: S.names.marat, color: '#8ac44a', code: py('df["score"].mean()'), typeFrom: 1000, typeTo: 2700 },
+      { name: S.names.dina, color: '#c273e6', code: py('df.groupby("group")["scores"].mean()'), typeFrom: 450, typeTo: 3330 },
     ]
-    const oleg = { name: 'Oleg', color: '#f2a33c', code: py('for n in range(10**9): s += n') }
+    const oleg = { name: S.names.oleg, color: '#f2a33c', code: py('for n in range(10**9): s += n') }
     for (const c of [...students.map((s) => s.color), oleg.color]) {
       if (inkOn(c) !== DISC_DARK) throw new Error(`avatar ink on ${c} is not ${DISC_DARK}`)
       if (contrastRatio(DISC_DARK, c) < 4.5) throw new Error(`avatar contrast on ${c}`)
     }
-    const initials = (n: string): string => n.slice(0, 2).toUpperCase()
+    const initials = (n: string): string => [...n].slice(0, 2).join('').toUpperCase()
 
     // Beats (ms)
     const RUN = [3300, 3800, 4300] // ▶ pressed by Anna, Marat, Dina → joins the queue
@@ -1151,14 +1423,10 @@ function councilArt(): Scene {
     push(`<rect x=".5" y=".5" width="879" height="${H - 1}" rx="12" class="bs sl"/>`)
 
     // ---- top strip
-    push(monoText(16, 25, 'CELL 07 · COUNCIL', { caps: true, cls: 'ta' }))
-    push(sans(16, 46, `Mean score per group in <tspan class="c13">df</tspan>`, 'h'))
+    push(monoText(16, 25, S.cellLabel, { caps: true, cls: 'ta' }))
+    push(sans(16, 46, S.task, 'h'))
     {
-      const rules: [string, string][] = [
-        ['RUNS · ', 'BY ANYONE, IN TURN'],
-        ['EACH RUN · ', 'CAPPED AT 15 S'],
-        ['ON SCREEN · ', 'WITHOUT NAMES'],
-      ]
+      const rules = S.rules
       let right = 864
       const parts: string[] = []
       for (const [lead, value] of [...rules].reverse()) {
@@ -1190,7 +1458,7 @@ function councilArt(): Scene {
     /** Compact shown plate under a student's sheet. */
     const smallPlate = (y: number, id: string, enterAt: number): string => {
       defs.push(`<clipPath id="${id}"><rect x="${LX}" y="${y}" width="${LW}" height="${PLATE_S}" rx="6"/></clipPath>`)
-      const c = chip(LX + 12, y + 3, 'ON SCREEN', 'Ps')
+      const c = chip(LX + 12, y + 3, S.onScreen, 'Ps')
       const codeW = monoW('df["score"].mean()', 13, false)
       return (
         `<g ${attrs(m, st(0, 'translateY(-4px)'), [[enterAt, st(1), 260]], 'p')}>` +
@@ -1199,7 +1467,7 @@ function councilArt(): Scene {
         `<rect x="${LX}" y="${y}" width="4" height="${PLATE_S}" class="bP"/></g>` +
         c.svg +
         `<circle cx="${LX + 12 + c.w + 12}" cy="${y + 12}" r="6.5" class="br sl"/>` +
-        sans(LX + 12 + c.w + 23, y + 16.5, 'Answer 12', 'n') +
+        sans(LX + 12 + c.w + 23, y + 16.5, S.answer, 'n') +
         monoText(LX + LW - 10 - codeW, y + 16.5, shownCode) +
         `</g>`
       )
@@ -1215,7 +1483,7 @@ function councilArt(): Scene {
       // header
       g.push(`<circle cx="${sx + 18}" cy="${sy + 17}" r="11" fill="${s.color}"/>`)
       g.push(sans(sx + 18, sy + 21, initials(s.name), 'av m'))
-      g.push(sans(sx + 38, sy + 21.5, `<tspan class="w6 ti">${s.name}</tspan> · your sheet`, 'u tm'))
+      g.push(sans(sx + 38, sy + 21.5, `<tspan class="w6 ti">${esc(s.name)}</tspan>${esc(S.yourSheet)}`, 'u tm'))
       // code band
       const bandY = sy + 29
       g.push(`<rect x="${sx + 10}" y="${bandY}" width="${LW - 20}" height="24" rx="4" class="bs"/>`)
@@ -1274,23 +1542,23 @@ function councilArt(): Scene {
       }
       // footer: hint + Submit (draft) → submitted chip → (Marat) on screen
       const fy = sy + 57
-      g.push(`<g ${fade(m, 1, [[SUB[i] + 140, 0]])}>${sans(sx + 12, fy + 13.5, 'only the teacher sees your text', 'u tm')}</g>`)
+      g.push(`<g ${fade(m, 1, [[SUB[i] + 140, 0]])}>${sans(sx + 12, fy + 13.5, esc(S.onlyTeacher), 'u tm')}</g>`)
       g.push(
         `<g ${attrs(m, st(1, 'scale(1)'), [
           [SUB[i], st(1, 'scale(.97)'), 70],
           [SUB[i] + 70, st(1, 'scale(1)'), 70],
           [SUB[i] + 140, st(0, 'scale(1)'), 160],
         ], 'p')}>` +
-          `<rect x="${sx + LW - 86}" y="${fy}" width="74" height="18" rx="6" class="bpr"/>` +
-          sans(sx + LW - 49, fy + 13, 'Submit', 'u w6 tpi m') +
+          `<rect x="${sx + LW - 12 - S.submitW}" y="${fy}" width="${S.submitW}" height="18" rx="6" class="bpr"/>` +
+          sans(sx + LW - 12 - S.submitW / 2, fy + 13, esc(S.submit), 'u w6 tpi m') +
           `</g>`,
       )
-      const sub = chip(sx + LW - 12, fy, 'SUBMITTED 18:42 · AWAITING REVIEW', 'S', { right: true })
+      const sub = chip(sx + LW - 12, fy, S.submitted, 'S', { right: true })
       const subChanges: [number, 0 | 1, number?][] = [[SUB[i] + 260, 1, 200]]
       if (i === 1) subChanges.push([SHOW, 0, 100])
       g.push(`<g ${fade(m, 0, subChanges)}>${sub.svg}</g>`)
       if (i === 1) {
-        const on = chip(sx + LW - 12, fy, 'YOUR ANSWER IS ON SCREEN', 'p15', { right: true })
+        const on = chip(sx + LW - 12, fy, S.yourOnScreen, 'p15', { right: true })
         g.push(`<g ${fade(m, 0, [[SHOW + 90, 1, 180]])}>${on.svg}</g>`)
       }
       sheets.push(g.join(''))
@@ -1316,9 +1584,9 @@ function councilArt(): Scene {
 
     // banner row: what the class screen shows
     con.push(`<rect x="${RX}" y="${CY}" width="4" height="30" ${fade(m, 0, [[SHOW, 1, 180]], 'bP')}/>`)
-    con.push(`<g ${fade(m, 1, [[SHOW, 0, 120]])}>${sans(RX + 16, CY + 19.5, 'Nothing is shown to the class', 'u tm')}</g>`)
+    con.push(`<g ${fade(m, 1, [[SHOW, 0, 120]])}>${sans(RX + 16, CY + 19.5, esc(S.nothingShown), 'u tm')}</g>`)
     con.push(
-      `<g ${fade(m, 0, [[SHOW + 100, 1, 180]])}>${sans(RX + 16, CY + 19.5, `<tspan class="w7 tp">On the class screen</tspan> · since 18:47`, 'u tm')}</g>`,
+      `<g ${fade(m, 0, [[SHOW + 100, 1, 180]])}>${sans(RX + 16, CY + 19.5, `<tspan class="w7 tp">${esc(S.onClassScreen)}</tspan>${esc(S.since)}`, 'u tm')}</g>`,
     )
     {
       // "Show the class" appears with the selection, is pressed, then becomes "Clear class screen"
@@ -1332,13 +1600,13 @@ function councilArt(): Scene {
           [SHOW, st(0, 'scale(1)'), 110],
         ], 'p')}>` +
           `<rect x="${bx}" y="${CY + 5}" width="${bw}" height="20" rx="6" class="bpr"/>` +
-          sans(bx + bw / 2, CY + 19.5, 'Show the class', 'u w6 tpi m') +
+          sans(bx + bw / 2, CY + 19.5, esc(S.showClass), 'u w6 tpi m') +
           `</g>`,
       )
       con.push(
         `<g ${fade(m, 0, [[SHOW + 100, 1, 180]])}>` +
           `<rect x="${bx + 0.5}" y="${CY + 5.5}" width="${bw - 1}" height="19" rx="6" class="bc sl"/>` +
-          sans(bx + bw / 2, CY + 19.5, 'Clear class screen', 'u tm m') +
+          sans(bx + bw / 2, CY + 19.5, esc(S.clearScreen), 'u tm m') +
           `</g>`,
       )
     }
@@ -1346,13 +1614,13 @@ function councilArt(): Scene {
 
     // tabs + queue strip
     const TY = CY + 31
-    con.push(`<rect x="${RX + 10}" y="${TY + 5}" width="54" height="18" rx="3" class="br"/>`)
-    con.push(sans(RX + 19, TY + 18, 'Work', 'u w6 ti'))
-    con.push(sans(RX + 82, TY + 18, 'Queue', 'u tm'))
-    con.push(sans(RX + 148, TY + 18, 'Class Oracle', 'u tm'))
+    con.push(`<rect x="${RX + S.tabs.box.x}" y="${TY + 5}" width="${S.tabs.box.w}" height="18" rx="3" class="br"/>`)
+    con.push(sans(RX + S.tabs.x[0], TY + 18, esc(S.tabs.labels[0]), 'u w6 ti'))
+    con.push(sans(RX + S.tabs.x[1], TY + 18, esc(S.tabs.labels[1]), 'u tm'))
+    con.push(sans(RX + S.tabs.x[2], TY + 18, esc(S.tabs.labels[2]), 'u tm'))
     {
-      const label = '1 RUNNING · 0 QUEUED'
-      const pitch = 6.6 + 1.32
+      const { label, running, queued, digits } = S.counter
+      const pitch = 6.6 + CAPS_TRACK * 11
       const sx = r5(RX + RW - 12 - monoW(label, 11, true))
       const y = TY + 18
       // dot: accent while the kernel is busy, muted once idle
@@ -1360,15 +1628,15 @@ function councilArt(): Scene {
       con.push(`<circle cx="${sx - 9}" cy="${TY + 14}" r="3.5" ${fade(m, 1, [[DONE[2], 0, 160]], 'fA')}/>`)
       const digit = (ch: number, d: string, changes: [number, 0 | 1, number?][], v0: 0 | 1): string =>
         `<g ${fade(m, v0, changes.map(([ms, v]) => (v ? [ms + 60, 1, 120] : [ms, 0, 80]) as [number, 0 | 1, number]))}><text x="${r5(sx + ch * pitch)}" y="${y}" class="L ti">${d}</text></g>`
-      con.push(monoText(sx + 2 * pitch, y, 'RUNNING ·', { caps: true, cls: 'tm' }))
-      con.push(monoText(sx + 14 * pitch, y, 'QUEUED', { caps: true, cls: 'tm' }))
-      con.push(digit(0, '1', [[DONE[2], 0, 120]], 1))
-      con.push(digit(0, '0', [[DONE[2], 1, 120]], 0))
+      con.push(monoText(sx + running[0] * pitch, y, running[1], { caps: true, cls: 'tm' }))
+      con.push(monoText(sx + queued[0] * pitch, y, queued[1], { caps: true, cls: 'tm' }))
+      con.push(digit(digits[0], '1', [[DONE[2], 0, 120]], 1))
+      con.push(digit(digits[0], '0', [[DONE[2], 1, 120]], 0))
       // queued: 0 → 1 → 2 → 3 → 2 → 1 → 0
-      con.push(digit(12, '0', [[RUN[0], 0, 120], [DONE[1], 1, 120]], 1))
-      con.push(digit(12, '1', [[RUN[0], 1, 120], [RUN[1], 0, 120], [DONE[0], 1, 120], [DONE[1], 0, 120]], 0))
-      con.push(digit(12, '2', [[RUN[1], 1, 120], [RUN[2], 0, 120], [STOP, 1, 120], [DONE[0], 0, 120]], 0))
-      con.push(digit(12, '3', [[RUN[2], 1, 120], [STOP, 0, 120]], 0))
+      con.push(digit(digits[1], '0', [[RUN[0], 0, 120], [DONE[1], 1, 120]], 1))
+      con.push(digit(digits[1], '1', [[RUN[0], 1, 120], [RUN[1], 0, 120], [DONE[0], 1, 120], [DONE[1], 0, 120]], 0))
+      con.push(digit(digits[1], '2', [[RUN[1], 1, 120], [RUN[2], 0, 120], [STOP, 1, 120], [DONE[0], 0, 120]], 0))
+      con.push(digit(digits[1], '3', [[RUN[2], 1, 120], [STOP, 0, 120]], 0))
     }
     con.push(`<rect x="${RX}" y="${TY + 28}" width="${RW}" height="1" class="bl"/>`)
 
@@ -1401,7 +1669,7 @@ function councilArt(): Scene {
       if (i > 0) parts.push(`<rect x="${RX}" y="${y}" width="${RW}" height="1" class="bL"/>`)
       parts.push(`<circle cx="${RX + 22}" cy="${y + 19}" r="12" fill="${who.color}"/>`)
       parts.push(sans(RX + 22, y + 23, initials(who.name), 'av m'))
-      parts.push(sans(RX + 42, y + 15, who.name, "n"))
+      parts.push(sans(RX + 42, y + 15, esc(who.name), "n"))
       parts.push(inner)
       const content = parts.join('')
       return enter === null
@@ -1424,10 +1692,10 @@ function councilArt(): Scene {
     {
       const y = ROW0
       const inner =
-        stateChip(y, 'RUNNING', 'A', 1, null, STOP, spinner('A', STOP)) +
-        stateChip(y, 'STOPPED: LONGER THAN 15 S', 'W', 0, STOP, null, clock) +
+        stateChip(y, S.running, 'A', 1, null, STOP, spinner('A', STOP)) +
+        stateChip(y, S.stopped, 'W', 0, STOP, null, clock) +
         `<g ${fade(m, 1, [[STOP, 0, 100]])}>${monoText(RX + 42, y + 32, oleg.code)}</g>` +
-        `<g ${fade(m, 0, [[STOP + 90, 1, 200]])}>${sans(RX + 42, y + 32, 'ran past the limit · the queue moved on without them', 'u tm')}</g>`
+        `<g ${fade(m, 0, [[STOP + 90, 1, 200]])}>${sans(RX + 42, y + 32, esc(S.stoppedNote), 'u tm')}</g>`
       con.push(row(0, oleg, inner, null))
     }
     // rows that enter during the story leave as a whole at the seam
@@ -1436,10 +1704,10 @@ function councilArt(): Scene {
     {
       const y = ROW0 + ROW_H
       const inner =
-        stateChip(y, 'QUEUED', 'A', 1, null, STOP) +
-        stateChip(y, 'RUNNING', 'A', 0, STOP, DONE[0], spinner('A', DONE[0], STOP)) +
-        stateChip(y, 'EXECUTION COMPLETED', 'P', 0, DONE[0], null) +
-        stateChip(y, 'CORRECT', 'P', 0, MARK[0], null, undefined, true) +
+        stateChip(y, S.queued, 'A', 1, null, STOP) +
+        stateChip(y, S.running, 'A', 0, STOP, DONE[0], spinner('A', DONE[0], STOP)) +
+        stateChip(y, S.done, 'P', 0, DONE[0], null) +
+        stateChip(y, S.correct, 'P', 0, MARK[0], null, undefined, true) +
         monoText(RX + 42, y + 32, students[0].code) +
         time(y, SUB[0] + 260)
       con.push(row(1, students[0], inner, RUN[0]))
@@ -1448,12 +1716,12 @@ function councilArt(): Scene {
     {
       const y = ROW0 + 2 * ROW_H
       const inner =
-        stateChip(y, 'QUEUED', 'A', 1, null, DONE[0]) +
-        stateChip(y, 'RUNNING', 'A', 0, DONE[0], DONE[1], spinner('A', DONE[1], DONE[0])) +
-        stateChip(y, 'EXECUTION COMPLETED', 'P', 0, DONE[1], null) +
-        stateChip(y, 'NEEDS REVISION', 'W', 0, MARK[1], null, undefined, true) +
+        stateChip(y, S.queued, 'A', 1, null, DONE[0]) +
+        stateChip(y, S.running, 'A', 0, DONE[0], DONE[1], spinner('A', DONE[1], DONE[0])) +
+        stateChip(y, S.done, 'P', 0, DONE[1], null) +
+        stateChip(y, S.revise, 'W', 0, MARK[1], null, undefined, true) +
         monoText(RX + 42, y + 32, students[1].code) +
-        `<g ${fade(m, 0, [[DONE[1] + 90, 1, 200]])}>${sans(r5(RX + 42 + monoW('df["score"].mean()', 13, false) + 12), y + 32, '4 others answered the same', 'u tm')}</g>` +
+        `<g ${fade(m, 0, [[DONE[1] + 90, 1, 200]])}>${sans(r5(RX + 42 + monoW('df["score"].mean()', 13, false) + 12), y + 32, esc(S.same), 'u tm')}</g>` +
         time(y, SUB[1] + 260)
       con.push(row(2, students[1], inner, RUN[1], true))
     }
@@ -1461,9 +1729,9 @@ function councilArt(): Scene {
     {
       const y = ROW0 + 3 * ROW_H
       const inner =
-        stateChip(y, 'QUEUED', 'A', 1, null, DONE[1]) +
-        stateChip(y, 'RUNNING', 'A', 0, DONE[1], DONE[2], spinner('A', DONE[2], DONE[1])) +
-        stateChip(y, 'EXECUTION ERROR', 'D', 0, DONE[2], null) +
+        stateChip(y, S.queued, 'A', 1, null, DONE[1]) +
+        stateChip(y, S.running, 'A', 0, DONE[1], DONE[2], spinner('A', DONE[2], DONE[1])) +
+        stateChip(y, S.error, 'D', 0, DONE[2], null) +
         `<g ${fade(m, 1, [[DONE[2], 0, 100]])}>${monoText(RX + 42, y + 32, students[2].code)}</g>` +
         `<g ${fade(m, 0, [[DONE[2] + 90, 1, 200]])}>${monoText(RX + 42, y + 32, "KeyError: 'scores'", { cls: 'td' })}</g>` +
         time(y, SUB[2] + 260)
@@ -1479,7 +1747,7 @@ function councilArt(): Scene {
       const y = CY + CH + 8
       const h = H - 16 - y
       defs.push(`<clipPath id="cp"><rect x="${RX}" y="${y}" width="${RW}" height="${h}" rx="8"/></clipPath>`)
-      const c = chip(RX + 14, y + 6, 'ON SCREEN', 'Ps')
+      const c = chip(RX + 14, y + 6, S.onScreen, 'Ps')
       const tint = 42
       const plate =
         `<g clip-path="url(#cp)">` +
@@ -1491,11 +1759,11 @@ function councilArt(): Scene {
         `<rect x="${RX + 0.5}" y="${y + 0.5}" width="${RW - 1}" height="${h - 1}" rx="8" class="sl" fill="none"/>` +
         c.svg +
         `<circle cx="${RX + 14 + c.w + 14}" cy="${y + 15}" r="8" class="br sl"/>` +
-        sans(RX + 14 + c.w + 28, y + 19.5, 'Answer 12', 'n') +
-        sans(RX + 14, y + 36, 'shown by the teacher · 18:47 · 4 more wrote the same', 'u tm') +
+        sans(RX + 14 + c.w + 28, y + 19.5, S.answer, 'n') +
+        sans(RX + 14, y + 36, esc(S.shownBy), 'u tm') +
         monoText(RX + 16, y + tint + 16.5, shownCode) +
         monoText(RX + 16, y + tint + 24 + 15.5, '0.6412', { cls: 'ti' }) +
-        monoText(r5(RX + RW - 14 - monoW('RUN BY THE TEACHER', 11, true)), y + tint + 24 + 15, 'RUN BY THE TEACHER', { caps: true, cls: 'tf' })
+        monoText(r5(RX + RW - 14 - monoW(S.runByTeacher, 11, true)), y + tint + 24 + 15, S.runByTeacher, { caps: true, cls: 'tf' })
       push(`<g ${attrs(m, st(0, 'translateY(4px)'), [[SHOW, st(1), 260]], 'p')}>${plate}</g>`)
     }
 
@@ -1527,13 +1795,9 @@ function councilArt(): Scene {
       `@media (prefers-reduced-motion:reduce){*{animation:none!important}}`,
     ].join('')
 
-    const title = 'Council: everyone answers, the class discusses one'
-    const desc =
-      'Anna, Marat and Dina each write their own answer to cell 07; their runs queue through the room’s one kernel one at a time once Oleg’s slow loop is stopped by the 15-second limit, the teacher marks the results in the council console, and shows Marat’s answer to the class as “Answer 12”, without his name.'
-
     return (
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="council-title council-desc">` +
-      `<title id="council-title">${esc(title)}</title><desc id="council-desc">${esc(desc)}</desc>` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" lang="${lang}" role="img" aria-labelledby="council-title council-desc">` +
+      `<title id="council-title">${esc(S.title)}</title><desc id="council-desc">${esc(S.desc)}</desc>` +
       `<style>${css}</style><defs>${defs.join('')}${[...CODE.values(), ...CHIPS.values()].map((c) => c.svg).join('')}</defs>` +
       body.join('') +
       `</svg>`
@@ -1554,6 +1818,100 @@ function councilArt(): Scene {
  */
 function lectureArt(): Scene {
   type Theme = 'light' | 'dark'
+
+  /*
+   * Слайд — это PDF преподавателя, а не интерфейс: его текст взят с лендинга
+   * (site/index.html, секция #lekciya), где тот же слайд нарисован по-русски.
+   * Интерфейсные подписи — из локалей, ключ рядом со строкой.
+   *
+   * `hand` — рукописная пометка: настоящие штрихи пером, по одному на букву.
+   * Английское «step size» и русское «размер шага» — разные наборы кривых,
+   * потому что буквы разные; `handScale` подгоняет слово под поле справа от
+   * формулы, чтобы оно не уехало за край страницы.
+   *
+   * `btn` и `tip` — геометрия кнопки «К лекции» и подсказки над ней: русская
+   * подпись короче, а текст подсказки длиннее, и обе коробки меряются по ним.
+   */
+  const TEXT = {
+    en: {
+      title: 'A PDF, your pen, every screen',
+      desc:
+        'The teacher underlines η and writes “step size” on the iPad console; the ink and the red laser appear at the same spot on the projector. The page turns to 08 everywhere, and a student reading back on page 05 sees the presenter’s dot move and returns to the presenter’s page in one tap.',
+      deck: 'OPTIMIZATION METHODS',
+      lectureNo: 'Lecture 04',
+      slide07: 'Gradient descent',
+      slide08: 'Choosing η',
+      tooSmall: 'too small',
+      tooLarge: 'too large',
+      convex: 'Convex functions',
+      toLecture: 'TO LECTURE', // room.ui.725
+      readOwn: 'READ ON MY OWN', // room.ui.299
+      here: (who: string) => `${who} is here`, // room.extra.300
+      reading: ['independent reading'] as readonly string[], // room.ui.727
+      readingY: 119.5,
+      readingGap: 0,
+      tagDy: 0,
+      backToPresenter: 'Return to the presenter’s page', // room.ui.724
+      console: 'LECTURE CONSOLE · IPAD',
+      projector: 'PROJECTOR',
+      student: 'STUDENT',
+      teacher: 'Alex',
+      caps: 0.12,
+      btn: { x: 747, w: 104 },
+      tip: { x: 651, y: 26, w: 209, h: 22 },
+      handScale: 1.15,
+      /* "step size", one pen stroke per letter, x-height 8, baseline 0. */
+      hand:
+        'M5 -6.5C3.5 -8 .5 -7.5 1 -5.5C1.5 -3.8 5.2 -3.6 5 -1.6C4.8 .4 1.3 .6 0 -.8' + // s
+        'M8.8 -10.5C8.6 -6.5 8.2 -2.5 8.8 -.8C9.3 .4 11 .2 12 -1M6.8 -7C8.5 -7.2 10.5 -7.3 12 -7.4' + // t
+        'M14.5 -3.6C16.8 -3.4 19.6 -4.4 19.2 -6.2C18.8 -8 15 -7.8 14.4 -4.6C13.9 -1.6 15.8 .3 19.8 -1.2' + // e
+        'M23 -7.5C23 -3 22.8 1 22.6 4.5M23 -5.8C24.2 -7.8 28.6 -8.2 28.6 -4.2C28.6 -.4 24.6 .4 23 -1.6' + // p
+        'M39 -6.5C37.5 -8 34.5 -7.5 35 -5.5C35.5 -3.8 39.2 -3.6 39 -1.6C38.8 .4 35.3 .6 34 -.8' + // s
+        'M42.6 -7C42.4 -4.5 42.2 -2 42.8 -.6M42.9 -10.4L43.2 -10.1' + // i
+        'M46 -7.2C48 -7.4 50 -7.4 51.8 -7.4L46.2 -.2C48.2 -.4 50.2 -.2 52.4 -.4' + // z
+        'M55.1 -3.6C57.4 -3.4 60.2 -4.4 59.8 -6.2C59.4 -8 55.6 -7.8 55 -4.6C54.5 -1.6 56.4 .3 60.4 -1.2', // e
+    },
+    ru: {
+      title: 'PDF, ваше перо, все экраны',
+      desc:
+        'Преподаватель подчёркивает η и пишет «размер шага» на пульте с iPad; те же чернила и красная указка появляются в том же месте на проекторе. Страница листается до 08 у всех, а студент, отставший на странице 05, видит, где ведущий, и возвращается к его странице одним нажатием.',
+      deck: 'МЕТОДЫ ОПТИМИЗАЦИИ',
+      lectureNo: 'Лекция 04',
+      slide07: 'Градиентный спуск',
+      slide08: 'Выбор η',
+      tooSmall: 'слишком мал',
+      tooLarge: 'слишком велик',
+      convex: 'Выпуклые функции',
+      toLecture: 'К ЛЕКЦИИ',
+      readOwn: 'ЧИТАТЬ САМОМУ',
+      here: (who: string) => `${who} здесь`,
+      reading: ['самостоятельный', 'просмотр'] as readonly string[],
+      readingY: 115,
+      readingGap: 11,
+      tagDy: -6,
+      backToPresenter: 'Вернуться к странице, на которой ведущий',
+      console: 'ПУЛЬТ ЛЕКЦИИ · IPAD',
+      projector: 'ПРОЕКТОР',
+      student: 'СТУДЕНТ',
+      teacher: 'Алексей',
+      caps: 0.04,
+      btn: { x: 769, w: 82 },
+      tip: { x: 603, y: 20, w: 257, h: 22 },
+      handScale: 1,
+      /* «размер шага» тем же пером: свой штрих на букву, x-height 8, базовая 0. */
+      hand:
+        'M.4 -7.5C.4 -3 .2 1 0 4.5M.4 -5.8C1.6 -7.8 6 -8.2 6 -4.2C6 -.4 2 .4 .4 -1.6' + // р
+        'M13 -5.4C11.8 -7.6 8 -7.2 7.6 -4.2C7.2 -1.2 10.6 -.2 12.6 -2.4M13.1 -6.4C12.8 -3.8 12.6 -1.6 13.3 -.5' + // а
+        'M15 -6.4C16.2 -7.8 19.4 -7.4 19.2 -5.5C19.1 -4.2 17.4 -3.8 16.4 -3.9C17.6 -4 19.6 -3.5 19.5 -1.8C19.4 -.1 16.4 .5 15.1 -1' + // з
+        'M21.2 -.6C21.4 -3.4 21.6 -5.8 21.8 -7.4L24.4 -3.4L27 -7.4C27.2 -5.6 27.4 -3 27.5 -.6' + // м
+        'M29 -3.6C31.3 -3.4 34.1 -4.4 33.7 -6.2C33.3 -8 29.5 -7.8 28.9 -4.6C28.4 -1.6 30.3 .3 34.3 -1.2' + // е
+        'M36.1 -7.5C36.1 -3 35.9 1 35.7 4.5M36.1 -5.8C37.3 -7.8 41.7 -8.2 41.7 -4.2C41.7 -.4 37.7 .4 36.1 -1.6' + // р
+        'M47.2 -7.3C46.9 -4.8 46.9 -2.4 47.3 -1M50.8 -7.3C50.5 -4.8 50.5 -2.4 50.9 -1M54.4 -7.3C54.1 -4.6 54.2 -2 54.7 -.8M47.3 -1C49.7 -.3 52.3 -.4 54.7 -.8' + // ш
+        'M61.8 -5.4C60.6 -7.6 56.8 -7.2 56.4 -4.2C56 -1.2 59.4 -.2 61.4 -2.4M61.9 -6.4C61.6 -3.8 61.4 -1.6 62.1 -.5' + // а
+        'M63.8 -7.3C65.9 -7.6 68 -7.5 69.4 -7.2M64.1 -7.3C63.8 -4.8 63.8 -2.2 64.4 -.7' + // г
+        'M76.5 -5.4C75.3 -7.6 71.5 -7.2 71.1 -4.2C70.7 -1.2 74.1 -.2 76.1 -2.4M76.6 -6.4C76.3 -3.8 76.1 -1.6 76.8 -.5', // а
+    },
+  } as const
 
   interface Tokens {
     canvas: string
@@ -1662,6 +2020,10 @@ function lectureArt(): Scene {
 
   /* ---------------------------------------------------------------- text */
 
+  /* Язык сцены. Помощники слайда живут снаружи scene(), поэтому строки и
+   * трекинг прописных задаются один раз на прогон сцены. */
+  let STR: (typeof TEXT)[Lang] = TEXT.en
+
   const h = (v: number): number => Math.round(v * 2) / 2
   const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   const len = (s: string): number => [...s].length
@@ -1674,10 +2036,10 @@ function lectureArt(): Scene {
     return `<text class="m" x="${h(x)}" y="${h(y)}"${fs} fill="${fill}" textLength="${tl}"${extra}>${esc(text)}</text>`
   }
 
-  /** Width of a mono caps label (0.6em advance + .12em tracking). */
-  const capWidth = (text: string): number => len(text) * 0.6 * 11 + (len(text) - 1) * 0.12 * 11
+  /** Width of a mono caps label (0.6em advance + the language's tracking). */
+  const capWidth = (text: string): number => len(text) * 0.6 * 11 + (len(text) - 1) * STR.caps * 11
 
-  /** The landing .label: mono 11px caps, .12em, 600. */
+  /** The landing .label: mono 11px caps, 600, tracking by language. */
   function cap(x: number, y: number, text: string, fill: string, extra = ''): string {
     return `<text class="m c" x="${h(x)}" y="${h(y)}" fill="${fill}" textLength="${capWidth(text).toFixed(1)}"${extra}>${esc(text)}</text>`
   }
@@ -1753,17 +2115,6 @@ function lectureArt(): Scene {
     return { d: `M${x0} ${y0}C${p(17, 7)} ${p(30, 16)} ${p(42, 37)}M${p(33, 33)}L${p(44, 39)}L${p(44, 25)}`, x0, y0 }
   })()
 
-  /* "step size", one pen stroke per letter, x-height 8, baseline 0. */
-  const HAND =
-    'M5 -6.5C3.5 -8 .5 -7.5 1 -5.5C1.5 -3.8 5.2 -3.6 5 -1.6C4.8 .4 1.3 .6 0 -.8' + // s
-    'M8.8 -10.5C8.6 -6.5 8.2 -2.5 8.8 -.8C9.3 .4 11 .2 12 -1M6.8 -7C8.5 -7.2 10.5 -7.3 12 -7.4' + // t
-    'M14.5 -3.6C16.8 -3.4 19.6 -4.4 19.2 -6.2C18.8 -8 15 -7.8 14.4 -4.6C13.9 -1.6 15.8 .3 19.8 -1.2' + // e
-    'M23 -7.5C23 -3 22.8 1 22.6 4.5M23 -5.8C24.2 -7.8 28.6 -8.2 28.6 -4.2C28.6 -.4 24.6 .4 23 -1.6' + // p
-    'M39 -6.5C37.5 -8 34.5 -7.5 35 -5.5C35.5 -3.8 39.2 -3.6 39 -1.6C38.8 .4 35.3 .6 34 -.8' + // s
-    'M42.6 -7C42.4 -4.5 42.2 -2 42.8 -.6M42.9 -10.4L43.2 -10.1' + // i
-    'M46 -7.2C48 -7.4 50 -7.4 51.8 -7.4L46.2 -.2C48.2 -.4 50.2 -.2 52.4 -.4' + // z
-    'M55.1 -3.6C57.4 -3.4 60.2 -4.4 59.8 -6.2C59.4 -8 55.6 -7.8 55 -4.6C54.5 -1.6 56.4 .3 60.4 -1.2' // e
-
   /*
    * Shared once in <defs>. The ink paths leave stroke-dashoffset unset, so each
    * <use> instance inherits the offset its own class animates.
@@ -1775,8 +2126,8 @@ function lectureArt(): Scene {
       '<defs>' +
       stroke('u', UNDERLINE, PAPER.red, 2.5) +
       stroke('a', ARROW.d, PAPER.green, 2.5) +
-      stroke('w', HAND, PAPER.green, 1.9, ` transform="translate(${h(ARROW.x0 + 4)} 144) scale(1.15)"`) +
-      `<g id="f7">${sans(20, 54, 'Gradient descent', 20, 800, PAPER.ink)}` +
+      stroke('w', STR.hand, PAPER.green, 1.9, ` transform="translate(${h(ARROW.x0 + 4)} 144) scale(${STR.handScale})"`) +
+      `<g id="f7">${sans(20, 54, STR.slide07, 20, 800, PAPER.ink)}` +
       `<rect x="${h(ETA_X - 1)}" y="80" width="${h(ETA_W + 2)}" height="25" fill="${PAPER.highlight}"/>${F.main}${F.sub}</g>` +
       `<g id="pl">${plots08()}</g>` +
       '</defs>'
@@ -1800,8 +2151,8 @@ function lectureArt(): Scene {
   function chrome(page: number, greek: boolean): string {
     const num = `${String(page).padStart(2, '0')} / 24`
     return (
-      smallText(20, 28, 'OPTIMIZATION METHODS', PAPER.label, greek, true) +
-      smallText(20, 170, 'Lecture 04', PAPER.muted, greek) +
+      smallText(20, 28, STR.deck, PAPER.label, greek, true) +
+      smallText(20, 170, STR.lectureNo, PAPER.muted, greek) +
       smallText(SLIDE_W - 20 - len(num) * 6.6, 170, num, PAPER.muted, greek)
     )
   }
@@ -1837,10 +2188,10 @@ function lectureArt(): Scene {
   function slide08(greek: boolean): string {
     return (
       chrome(8, greek) +
-      sans(20, 54, 'Choosing η', 20, 800, PAPER.ink) +
+      sans(20, 54, STR.slide08, 20, 800, PAPER.ink) +
       '<use href="#pl"/>' +
-      smallText(24, 150, 'too small', PAPER.muted, greek) +
-      smallText(176, 150, 'too large', PAPER.muted, greek)
+      smallText(24, 150, STR.tooSmall, PAPER.muted, greek) +
+      smallText(176, 150, STR.tooLarge, PAPER.muted, greek)
     )
   }
 
@@ -1865,7 +2216,8 @@ function lectureArt(): Scene {
 
   /* ---------------------------------------------------------------- scene */
 
-  function scene(theme: Theme): string {
+  function scene(theme: Theme, lang: Lang): string {
+    STR = TEXT[lang]
     const T = theme === 'light' ? LIGHT : DARK
     const D = DARK // the console
     const css: string[] = []
@@ -2171,12 +2523,12 @@ function lectureArt(): Scene {
     )
 
     // Toolbar, reading on their own: page counter and "To lecture".
-    const btn = { x: 747, y: S.y + 2, w: 104, h: 18 }
+    const btn = { x: STR.btn.x, y: S.y + 2, w: STR.btn.w, h: 18 }
     out.push(
       `<g class="so" opacity="0">${mono(S.x + 6, S.y + 15, '05 / 24', 11, T.muted)}` +
         `<g class="bp fc"><rect x="${btn.x + 0.5}" y="${btn.y + 0.5}" width="${btn.w - 1}" height="${btn.h - 1}" rx="6" fill="${T.canvas}" stroke="${T.line}"/>` +
         icon('board', btn.x + 6, btn.y + 4, 10, T.accentText) +
-        cap(btn.x + 20, btn.y + 13, 'TO LECTURE', T.accentText) +
+        cap(btn.x + 20, btn.y + 13, STR.toLecture, T.accentText) +
         `</g></g>`,
     )
     // Toolbar, following: the lecture bar with "Read on my own".
@@ -2185,7 +2537,7 @@ function lectureArt(): Scene {
         `<circle cx="${S.x + 8.5}" cy="${S.y + 11}" r="3" fill="${ALEX}"/>` +
         `<g class="off">${mono(S.x + 15, S.y + 15, '07 / 24', 11, T.muted)}</g>` +
         `<g class="on" opacity="0">${mono(S.x + 15, S.y + 15, '08 / 24', 11, T.muted)}</g>` +
-        cap(S.x + S.w - 4 - capWidth('READ ON MY OWN'), S.y + 15, 'READ ON MY OWN', T.muted) +
+        cap(S.x + S.w - 4 - capWidth(STR.readOwn), S.y + 15, STR.readOwn, T.muted) +
         `</g>`,
     )
 
@@ -2214,7 +2566,7 @@ function lectureArt(): Scene {
     const ps = PAGE.s
     const studentPage = (title: string, body: string): string =>
       `<g transform="${pageT}">` +
-      bar(20 * ps, 9, capWidth('OPTIMIZATION METHODS') * ps, 3, PAPER.label, 0.3) +
+      bar(20 * ps, 9, capWidth(STR.deck) * ps, 3, PAPER.label, 0.3) +
       sans(8.5, 24, title, 11, 700, PAPER.ink) +
       `<g transform="scale(${ps})">${body}</g>` +
       bar(20 * ps, 69, 66 * ps, 3, PAPER.muted, 0.3) +
@@ -2232,35 +2584,41 @@ function lectureArt(): Scene {
       bar(20, 86, 277, 10, PAPER.ink, 0.35)
     out.push(
       `<rect x="${PAGE.x + 0.5}" y="${PAGE.y + 0.5}" width="${PAGE.w - 1}" height="${ph - 1}" fill="#ffffff" stroke="${T.line}"/>`,
-      `<g class="so" opacity="0">${studentPage('Convex functions', convex)}</g>`,
-      `<g class="off">${studentPage('Gradient descent', formulaBar)}</g>`,
-      `<g class="sf" opacity="0">${studentPage('Choosing η', '<use href="#pl"/>')}</g>`,
+      `<g class="so" opacity="0">${studentPage(STR.convex, convex)}</g>`,
+      `<g class="off">${studentPage(STR.slide07, formulaBar)}</g>`,
+      `<g class="sf" opacity="0">${studentPage(STR.slide08, '<use href="#pl"/>')}</g>`,
     )
 
     // "independent reading" under the page while they read on their own.
-    out.push(
-      `<g class="so" opacity="0"><circle cx="${PAGE.x + 4}" cy="${S.y + 115.5}" r="3" fill="${ALEX}"/>` +
-        sans(PAGE.x + 11, S.y + 119.5, 'independent reading', 11, 400, T.muted) +
-        `</g>`,
-    )
+    // Русская подпись вдвое длиннее английской: под страницей ей нужны две
+    // строки, они начинаются выше, а ярлык ведущего поднимается, чтобы верхняя
+    // строка не села на него.
+    {
+      const top = S.y + STR.readingY
+      out.push(
+        `<g class="so" opacity="0"><circle cx="${PAGE.x + 4}" cy="${top - 4}" r="3" fill="${ALEX}"/>` +
+          STR.reading.map((r, i) => sans(PAGE.x + 11, top + i * STR.readingGap, r, 11, 400, T.muted)).join('') +
+          `</g>`,
+      )
+    }
 
     // The presenter's dot and its title.
-    const tagText = 'Alex is here'
+    const tagText = STR.here(STR.teacher)
     const tagW = h(len(tagText) * 6.6 + 10)
     out.push(
       `<g class="rd">` +
         `<circle cx="${thumbX}" cy="${hiY + 5}" r="3.5" fill="${ALEX}" stroke="${T.surface}" stroke-width="1.5"/>` +
-        `<g class="tg" opacity="0"><rect x="${S.x + 48}" y="${hiY - 15}" width="${tagW}" height="18" rx="2" fill="${ALEX}"/>` +
-        mono(S.x + 53, hiY - 2, tagText, 11, TAG_INK, ' font-weight="600"') +
+        `<g class="tg" opacity="0"><rect x="${S.x + 48}" y="${hiY - 15 + STR.tagDy}" width="${tagW}" height="18" rx="2" fill="${ALEX}"/>` +
+        mono(S.x + 53, hiY - 2 + STR.tagDy, tagText, 11, TAG_INK, ' font-weight="600"') +
         `</g></g>`,
     )
 
     // Hover tooltip over "To lecture", and the pointer that presses it.
-    const tip = { x: 651, y: 26, w: 209, h: 22 }
+    const tip = { ...STR.tip }
     out.push(
       `<g class="tt" opacity="0"><rect x="${tip.x + 0.5}" y="${tip.y + 0.5}" width="${tip.w - 1}" height="${tip.h - 1}" rx="6" fill="${T.ink}"/>` +
         `<path d="M${btn.x + 44} ${tip.y + tip.h}l6 6 6-6Z" fill="${T.ink}"/>` +
-        sans(tip.x + 9, tip.y + 15, 'Return to the presenter’s page', 11, 400, T.canvas) +
+        sans(tip.x + 9, tip.y + 15, STR.backToPresenter, 11, 400, T.canvas) +
         `</g>`,
       `<g class="cu" opacity="0"><path transform="translate(${btn.x + 58} ${btn.y + 8})" d="M0 0V14L3.6 10.6L6.2 16.2L8.6 15.1L6.1 9.6H11Z" fill="${T.ink}" stroke="${T.canvas}" stroke-linejoin="round"/></g>`,
     )
@@ -2268,25 +2626,21 @@ function lectureArt(): Scene {
     /* ---------------- labels ---------------- */
 
     out.push(
-      cap(C.x, 258, 'LECTURE CONSOLE · IPAD', T.accentText),
-      cap(P.x, 258, 'PROJECTOR', T.accentText),
-      cap(LAP.x, 258, 'STUDENT', T.accentText),
+      cap(C.x, 258, STR.console, T.accentText),
+      cap(P.x, 258, STR.projector, T.accentText),
+      cap(LAP.x, 258, STR.student, T.accentText),
     )
 
     const style =
       `*{animation:${LOOP / 1000}s ${EASE.out} infinite both}` +
-      `.m{font-family:${MONO}}.s{font-family:${SANS}}.c{font-size:11px;font-weight:600;letter-spacing:.12em}` +
+      `.m{font-family:${MONO}}.s{font-family:${SANS}}.c{font-size:11px;font-weight:600;letter-spacing:${String(STR.caps).replace(/^0/, '')}em}` +
       `.fl{transform-box:fill-box;transform-origin:0 50%}.fc{transform-box:fill-box;transform-origin:50% 50%}` +
       css.join('') +
       `@media (prefers-reduced-motion:reduce){*{animation:none!important}}`
 
-    const title = 'A PDF, your pen, every screen'
-    const desc =
-      'The teacher underlines η and writes “step size” on the iPad console; the ink and the red laser appear at the same spot on the projector. The page turns to 08 everywhere, and a student reading back on page 05 sees the presenter’s dot move and returns to the presenter’s page in one tap.'
-
     return (
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-size="11" role="img" aria-labelledby="t d">` +
-      `<title id="t">${esc(title)}</title><desc id="d">${esc(desc)}</desc>` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-size="11" lang="${lang}" role="img" aria-labelledby="t d">` +
+      `<title id="t">${esc(STR.title)}</title><desc id="d">${esc(STR.desc)}</desc>` +
       `<style>${style}</style>` +
       defs() +
       out.join('') +
@@ -2324,6 +2678,97 @@ function lectureArt(): Scene {
  */
 function oracleArt(): Scene {
   type Theme = 'light' | 'dark'
+
+  /* ------------------------------------------------------------------ строки */
+
+  /**
+   * Видимые строки по языкам, ключ локали рядом. Ответ оракула — не строка
+   * интерфейса, а его собственный текст; русский вариант взят с лендинга
+   * (site/index.html, секция #konsilium: «Сейчас получилось одно число для всей
+   * таблицы. Сгруппируйте строки по group, а затем посчитайте среднее в каждой
+   * группе»), разбитый на те же шесть кусков, что приходят потоком.
+   *
+   * `caps` — трекинг прописных: кириллица шире, .12em не влезал бы в плашки.
+   * Ширины кнопок и плашек измерены в браузере тем же стеком шрифтов: подписи
+   * «Попросить переписать» и «Отклонить» длиннее английских.
+   */
+  const TEXT = {
+    en: {
+      title: 'An AI the whole class can follow',
+      desc:
+        'Dina asks the oracle to rewrite notebook cell 04; her request and the streamed answer appear in the room’s shared Oracle thread, ' +
+        'the proposed diff lands in the cell with Accept and Discard, she accepts it into the shared cell, and Marat is already typing the next question.',
+      dina: 'Dina',
+      marat: 'Marat',
+      you: 'you', // room.ui.544
+      request: 'Average per group',
+      askPlaceholder: 'What should this cell do instead?', // room.ui.373
+      askSend: 'Ask for a rewrite', // room.ui.375
+      cancel: 'Cancel', // room.ui.376
+      askNote: ['The whole room sees the question', 'and the answer.'] as readonly string[], // room.ui.377
+      working: 'The oracle is looking at this cell', // room.oracle.working
+      proposed: 'Proposed by the oracle', // room.ui.378
+      accept: 'Accept', // room.ui.382
+      discard: 'Discard', // room.ui.380
+      applyNote: ['Applying updates the shared cell', 'and records you as the author.'] as readonly string[], // room.ui.383
+      oracle: 'Oracle', // room.ui.488
+      shared: 'Shared ·', // room.ui.490
+      ask: 'Ask', // room.ui.513
+      act: 'Act', // room.ui.514
+      // Переключатель режима: коробка, активная плашка и центры подписей.
+      // Правый край один и тот же на обоих языках, растёт он влево.
+      seg: { x: 764.5, w: 84, pillX: 767, pillW: 39, askX: 786.5, actX: 827 },
+      empty: 'No questions yet.', // room.ui.494
+      // room.ui.495, разложенная по строкам панели
+      emptyHint: ['Ask about the class materials.', 'Your name, question and answer will be visible', 'to the whole group.'] as readonly string[],
+      rewrite: 'Rewrite', // room.ui.578
+      thinking: 'thinking', // room.ui.545
+      answer: ['averages the whole column.', 'Group the rows first,', ' then average each group.', 'I’ve proposed an edit', ' to cell 04.'] as readonly string[],
+      typingQuestion: (who: string) => `${who} is typing a question…`, // room.ui.519
+      footer: 'The whole room sees the question and answer.', // room.ui.517
+      caps: 0.12,
+      askBtnW: 150,
+      acceptW: 70,
+      discardW: 72,
+      sharedW: 90,
+    },
+    ru: {
+      title: 'ИИ, за которым следит весь класс',
+      desc:
+        'Дина просит оракула переписать ячейку 04; её вопрос и ответ, приходящий потоком, видит вся комната в общей ленте оракула. ' +
+        'Предложенная правка ложится в ячейку с кнопками «Принять» и «Отклонить»; Дина принимает её в общую ячейку, а Марат уже печатает следующий вопрос.',
+      dina: 'Дина',
+      marat: 'Марат',
+      you: 'вы',
+      request: 'Среднее по группам',
+      askPlaceholder: 'Что должна делать эта ячейка?',
+      askSend: 'Попросить переписать',
+      cancel: 'Отмена',
+      askNote: ['Вопрос и ответ видит', 'вся комната.'] as readonly string[],
+      working: 'Оракул смотрит эту ячейку',
+      proposed: 'Предложение оракула',
+      accept: 'Принять',
+      discard: 'Отклонить',
+      applyNote: ['Изменение обновит общую ячейку.', 'Автором будете указаны вы.'] as readonly string[],
+      oracle: 'Оракул',
+      shared: 'общая ·',
+      ask: 'Спросить',
+      act: 'Сделать',
+      seg: { x: 694.5, w: 154, pillX: 697, pillW: 79, askX: 736.5, actX: 811 },
+      empty: 'Вопросов пока нет.',
+      emptyHint: ['Задайте вопрос по материалам занятия.', 'Ваше имя, вопрос и ответ будут', 'видны всей группе.'] as readonly string[],
+      rewrite: 'Переписать',
+      thinking: 'думает',
+      answer: ['даёт одно число на всю таблицу.', 'Сгруппируйте строки по group,', ' потом среднее в каждой группе.', 'Я предложил правку', ' для ячейки 04.'] as readonly string[],
+      typingQuestion: (who: string) => `${who} печатает вопрос…`,
+      footer: 'Вопрос и ответ видит вся комната.',
+      caps: 0.04,
+      askBtnW: 198,
+      acceptW: 81,
+      discardW: 94,
+      sharedW: 77,
+    },
+  } as const
 
   /* ------------------------------------------------------------------ tokens */
 
@@ -2460,8 +2905,10 @@ function oracleArt(): Scene {
 
   /** Mono advance at a size: chars × 0.6em, so carets and chunks land the same in every font. */
   const monoLen = (chars: number, size = 13): number => chars * 0.6 * size
-  /** Caps label: mono 11 with .12em tracking between glyphs. */
-  const capsLen = (chars: number): number => chars * 6.6 + (chars - 1) * 1.32
+  /** Трекинг прописных: задаётся языком сцены (см. TEXT). */
+  let CAPS_TRACK: number = TEXT.en.caps
+  /** Caps label: mono 11 with the language's tracking between glyphs. */
+  const capsLen = (chars: number): number => chars * 6.6 + (chars - 1) * CAPS_TRACK * 11
 
   type Tok = [cls: string, text: string]
   function code(x: number, y: number, toks: Tok[], cls = ''): string {
@@ -2470,10 +2917,10 @@ function oracleArt(): Scene {
     return `<text x="${r5(x)}" y="${r5(y)}" class="m c13${cls ? ` ${cls}` : ''}" textLength="${num(monoLen(chars))}" lengthAdjust="spacing">${spans}</text>`
   }
   function caps(x: number, y: number, s: string, cls: string): string {
-    return `<text x="${r5(x)}" y="${r5(y)}" class="m cap ${cls}" textLength="${num(capsLen(s.length))}" lengthAdjust="spacing">${esc(s.toUpperCase())}</text>`
+    return `<text x="${r5(x)}" y="${r5(y)}" class="m cap ${cls}" textLength="${num(capsLen([...s].length))}" lengthAdjust="spacing">${esc(s.toUpperCase())}</text>`
   }
   function mono11(x: number, y: number, s: string, cls: string): string {
-    return `<text x="${r5(x)}" y="${r5(y)}" class="m c11 ${cls}" textLength="${num(monoLen(s.length, 11))}" lengthAdjust="spacing">${esc(s)}</text>`
+    return `<text x="${r5(x)}" y="${r5(y)}" class="m c11 ${cls}" textLength="${num(monoLen([...s].length, 11))}" lengthAdjust="spacing">${esc(s)}</text>`
   }
   function sans(x: number, y: number, s: string, cls: string, anchor?: 'middle'): string {
     return `<text x="${r5(x)}" y="${r5(y)}" class="s ${cls}"${anchor ? ' text-anchor="middle"' : ''}>${esc(s)}</text>`
@@ -2541,10 +2988,11 @@ function oracleArt(): Scene {
     ['sx', 'df'], ['sp', '.'], ['sn', 'groupby'], ['sp', '('], ['ss', '"group"'], ['sp', ')['],
     ['ss', '"score"'], ['sp', '].'], ['sn', 'mean'], ['sp', '()'],
   ]
-  const REQUEST = 'Average per group'
-
-  function oracleScene(theme: Theme): string {
+  function oracleScene(theme: Theme, lang: Lang): string {
     const t = TOKENS[theme]
+    const S = TEXT[lang]
+    CAPS_TRACK = S.caps
+    const REQUEST = S.request
     const m = new Motion()
 
     /* ---------- left: notebook cell 04 */
@@ -2594,16 +3042,23 @@ function oracleArt(): Scene {
     ])
     const typed: string[] = []
     {
+      /*
+       * Темп набора — не константа, а следствие длины просьбы: последняя буква
+       * обязана лечь за 92 мс до Enter, иначе она мигнёт уже в закрывающемся
+       * поле. Для английской строки формула даёт ровно прежние 88 мс.
+       */
+      const chars = [...REQUEST]
+      const perChar = Math.min(B.perChar, Math.floor((B.send - 92 - B.typeAt) / (chars.length - 1)))
       let k = 0
-      for (let i = 0; i < REQUEST.length; i++) {
-        const ch = REQUEST[i]
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i]
         if (ch === ' ') continue
-        const when = B.typeAt + i * B.perChar
+        const when = B.typeAt + i * perChar
         const name = m.track(`k${k++}`, [
           [0, 'opacity:0'], [when, 'opacity:0'], [when + 40, 'opacity:1'],
           [B.send + 200, 'opacity:1'], [B.send + 201, 'opacity:0'], [LOOP, 'opacity:0'],
         ])
-        typed.push(tail(84, 98, REQUEST.slice(0, i), ch, 'c13 ink', name))
+        typed.push(tail(84, 98, chars.slice(0, i).join(''), ch, 'c13 ink', name))
       }
     }
 
@@ -2675,11 +3130,6 @@ function oracleArt(): Scene {
 
     const ANSWER_Y = [149.5, 169.5, 189.5]
 
-    const title = 'An AI the whole class can follow'
-    const desc =
-      'Dina asks the oracle to rewrite notebook cell 04; her request and the streamed answer appear in the room’s shared Oracle thread, ' +
-      'the proposed diff lands in the cell with Accept and Discard, she accepts it into the shared cell, and Marat is already typing the next question.'
-
     const left = [
       rect(LX, LY, LW, LH, 'pan', 8),
       // Gutter: the selected ordinal and its run mark.
@@ -2696,26 +3146,27 @@ function oracleArt(): Scene {
       rect(56, 68, 4, 124, 'inkb'),
       rect(60, 68, 340, 124, 'su'),
       rect(72.5, 78.5, 315, 30, 'fld', 4),
-      `<g class="${placeholder}">${sans(84, 98, 'What should this cell do instead?', 'c13 mu')}</g>`,
+      `<g class="${placeholder}">${sans(84, 98, S.askPlaceholder, 'c13 mu')}</g>`,
       ...typed,
-      rect(72.5, 118.5, 150, 28, 'pr', 6),
-      sans(147.5, 137, 'Ask for a rewrite', 'c13 w6 pi', 'middle'),
-      sans(260.5, 137, 'Cancel', 'c13 w6 mu', 'middle'),
-      sans(72, 166, 'The whole room sees the question', 'c13 mu'),
-      sans(72, 184, 'and the answer.', 'c13 mu'),
+      // Кнопки меряются по своей подписи: «Попросить переписать» длиннее английской,
+      // «Отмена» встаёт на те же 38 px правее края кнопки.
+      rect(72.5, 118.5, S.askBtnW, 28, 'pr', 6),
+      sans(72.5 + S.askBtnW / 2, 137, S.askSend, 'c13 w6 pi', 'middle'),
+      sans(72.5 + S.askBtnW + 38, 137, S.cancel, 'c13 w6 mu', 'middle'),
+      ...S.askNote.map((line, i) => sans(72, 166 + i * 18, line, 'c13 mu')),
       `</g>`,
 
       // Status row while the oracle works on this cell.
       `<g class="${status}" opacity="0">`,
       spinner(78, 107.5, 'sat', spinB),
-      caps(92, 112, 'The oracle is looking at this cell', 'at'),
+      caps(92, 112, S.working, 'at'),
       `</g>`,
 
       // Proposal (static frame shows it open).
       `<g class="${block}">`,
       rect(56, 68, 4, 160, 'acb'),
       rect(60, 68, 340, 160, 'ta'),
-      caps(72, 86, 'Proposed by the oracle', 'at'),
+      caps(72, 86, S.proposed, 'at'),
       mono11(258, 86, '+1', 'po'),
       mono11(277.5, 86, '−1', 'da'),
       rect(60, 96, 340, 22, 'td'),
@@ -2726,49 +3177,57 @@ function oracleArt(): Scene {
       code(92, 133.5, NEW_SRC),
       hline(60, 400, 146.5, 'lns'),
       `<g class="${accept}">`,
-      rect(72.5, 154.5, 70, 28, 'pr', 6),
-      sans(107.5, 173, 'Accept', 'c13 w6 pi', 'middle'),
+      rect(72.5, 154.5, S.acceptW, 28, 'pr', 6),
+      sans(72.5 + S.acceptW / 2, 173, S.accept, 'c13 w6 pi', 'middle'),
       `</g>`,
-      rect(150.5, 154.5, 72, 28, 'ol', 6),
-      sans(186.5, 173, 'Discard', 'c13 w6 ink', 'middle'),
-      sans(72, 204, 'Applying updates the shared cell', 'c13 mu'),
-      sans(72, 222, 'and records you as the author.', 'c13 mu'),
+      rect(80.5 + S.acceptW, 154.5, S.discardW, 28, 'ol', 6),
+      sans(80.5 + S.acceptW + S.discardW / 2, 173, S.discard, 'c13 w6 ink', 'middle'),
+      ...S.applyNote.map((line, i) => sans(72, 204 + i * 18, line, 'c13 mu')),
       `</g>`,
 
       // Output of the last run — accepting rewrites the source, it does not run it.
       `<g class="${output}">${code(CODE_X, OUT_Y, [['sx', '0.6412']])}</g>`,
     ]
 
+    /*
+     * Ширины, которые зависят от подписи, а не от языка вообще: плашка «общая ·»
+     * с числом за ней и плашка вида запроса. Правый край обеих остаётся там же,
+     * где в английской сцене, — с ними соседствуют фиксированные элементы.
+     */
+    const countX = r5(524 + capsLen([...S.shared].length)) + 10
+    const badgeW = r5(capsLen([...S.rewrite].length) + 12)
+    const badgeX = 769.5 - badgeW
+    const initials = (n: string): string => [...n].slice(0, 2).join('').toUpperCase()
+
     const right = [
       rect(RX, LY, RW, LH, 'pan', 8),
       // Header.
       icon(440, 29.5, 14, SPARKLES, 'ist'),
-      caps(462, 40.5, 'Oracle', 'ink'),
-      rect(518.5, 27.5, 90, 18, 'rs', 3),
-      caps(524, 40.5, 'Shared ·', 'ink'),
-      `<g class="${count0}" opacity="0">${mono11(596, 40.5, '0', 'ink w6')}</g>`,
-      `<g class="${count1}">${mono11(596, 40.5, '1', 'ink w6')}</g>`,
-      rect(764.5, 24.5, 84, 24, 'seg', 6),
-      rect(767, 27, 39, 19, 'pr', 4),
-      sans(786.5, 41, 'Ask', 'c13 w6 pi', 'middle'),
-      sans(827, 41, 'Act', 'c13 w6 mu', 'middle'),
+      caps(462, 40.5, S.oracle, 'ink'),
+      // Плашка «общая · N» меряется по подписи: русская короче английской.
+      rect(518.5, 27.5, S.sharedW, 18, 'rs', 3),
+      caps(524, 40.5, S.shared, 'ink'),
+      `<g class="${count0}" opacity="0">${mono11(countX, 40.5, '0', 'ink w6')}</g>`,
+      `<g class="${count1}">${mono11(countX, 40.5, '1', 'ink w6')}</g>`,
+      rect(S.seg.x, 24.5, S.seg.w, 24, 'seg', 6),
+      rect(S.seg.pillX, 27, S.seg.pillW, 19, 'pr', 4),
+      sans(S.seg.askX, 41, S.ask, 'c13 w6 pi', 'middle'),
+      sans(S.seg.actX, 41, S.act, 'c13 w6 mu', 'middle'),
       hline(425, 863, 56.5, 'ln'),
 
       // Empty thread (start frame only).
       `<g class="${empty}" opacity="0">`,
-      sans(TX, 84, 'No questions yet.', 't15 ink'),
-      sans(TX, 108, 'Ask about the class materials.', 'c13 mu'),
-      sans(TX, 126, 'Your name, question and answer will be visible', 'c13 mu'),
-      sans(TX, 144, 'to the whole group.', 'c13 mu'),
+      sans(TX, 84, S.empty, 't15 ink'),
+      ...S.emptyHint.map((line, i) => sans(TX, 108 + i * 18, line, 'c13 mu')),
       `</g>`,
 
       // Dina's turn.
       `<g class="${turn}">`,
       rect(425, 57, 2, 80, '', 0, ` fill="${PEOPLE.dina}"`),
-      avatar(453, 80, 12, PEOPLE.dina, 'DI'),
-      `<text x="473" y="84.5" class="s c13"><tspan class="w6 ink">Dina</tspan><tspan dx="6" class="fa">you</tspan></text>`,
-      rect(703.5, 71.5, 66, 18, 'rs', 3),
-      caps(709.5, 84.5, 'Rewrite', 'mu'),
+      avatar(453, 80, 12, PEOPLE.dina, initials(S.dina)),
+      `<text x="473" y="84.5" class="s c13"><tspan class="w6 ink">${esc(S.dina)}</tspan><tspan dx="6" class="fa">${esc(S.you)}</tspan></text>`,
+      rect(badgeX, 71.5, badgeW, 18, 'rs', 3),
+      caps(badgeX + 6, 84.5, S.rewrite, 'mu'),
       rect(777.5, 71.5, 26, 18, 'ol', 3),
       mono11(784, 84.5, '04', 'mu'),
       mono11(815, 84.5, '10:42', 'fa'),
@@ -2783,28 +3242,28 @@ function oracleArt(): Scene {
       // Thinking, then the answer in six chunks.
       `<g class="${thinking}" opacity="0">`,
       spinner(447, 145, 'smu', spinA),
-      sans(459, 149.5, 'thinking', 'c13 mu'),
+      sans(459, 149.5, S.thinking, 'c13 mu'),
       `</g>`,
       `<g class="${chunk(0)}">`,
       rect(TX, 136.5, 146.5, 18, 'rs', 3),
       code(444, ANSWER_Y[0], OLD_SRC),
       `</g>`,
-      `<g class="${chunk(1)}">${sans(591, ANSWER_Y[0], 'averages the whole column.', 'c13 ink')}</g>`,
-      `<g class="${chunk(2)}">${sans(TX, ANSWER_Y[1], 'Group the rows first,', 'c13 ink')}</g>`,
-      `<g class="${chunk(3)}">${tail(TX, ANSWER_Y[1], 'Group the rows first,', ' then average each group.', 'c13 ink')}</g>`,
-      `<g class="${chunk(4)}">${sans(TX, ANSWER_Y[2], 'I’ve proposed an edit', 'c13 ink')}</g>`,
-      `<g class="${chunk(5)}">${tail(TX, ANSWER_Y[2], 'I’ve proposed an edit', ' to cell 04.', 'c13 ink')}</g>`,
+      `<g class="${chunk(1)}">${sans(591, ANSWER_Y[0], S.answer[0], 'c13 ink')}</g>`,
+      `<g class="${chunk(2)}">${sans(TX, ANSWER_Y[1], S.answer[1], 'c13 ink')}</g>`,
+      `<g class="${chunk(3)}">${tail(TX, ANSWER_Y[1], S.answer[1], S.answer[2], 'c13 ink')}</g>`,
+      `<g class="${chunk(4)}">${sans(TX, ANSWER_Y[2], S.answer[3], 'c13 ink')}</g>`,
+      `<g class="${chunk(5)}">${tail(TX, ANSWER_Y[2], S.answer[3], S.answer[4], 'c13 ink')}</g>`,
 
       // Somebody else is following the same thread.
       `<g class="${marat}">`,
-      avatar(451, 224, 10, PEOPLE.marat, 'MA', true),
-      sans(469, 228.5, 'Marat is typing a question…', 'c13 it mu'),
+      avatar(451, 224, 10, PEOPLE.marat, initials(S.marat), true),
+      sans(469, 228.5, S.typingQuestion(S.marat), 'c13 it mu'),
       `</g>`,
 
       // Footer.
       hline(425, 863, 251.5, 'ln'),
       icon(440, 261, 13, USERS, 'imu'),
-      sans(460, 272, 'The whole room sees the question and answer.', 'c13 mu'),
+      sans(460, 272, S.footer, 'c13 mu'),
     ]
 
     const css =
@@ -2832,8 +3291,8 @@ function oracleArt(): Scene {
     const ptr = `<g transform="translate(${TIP.x} ${TIP.y})"><g class="${pointer}" opacity="0"><path d="M0 0V15.5L4 11.8 6.6 17.6 9.1 16.5 6.6 10.9H12Z" class="ptr"/></g></g>`
 
     return (
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-labelledby="oracle-title oracle-desc">` +
-      `<title id="oracle-title">${title}</title><desc id="oracle-desc">${esc(desc)}</desc>` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" lang="${lang}" role="img" aria-labelledby="oracle-title oracle-desc">` +
+      `<title id="oracle-title">${S.title}</title><desc id="oracle-desc">${esc(S.desc)}</desc>` +
       `<style>${css}</style>` +
       rect(0.5, 0.5, W - 1, H - 1, 'card', 12) +
       left.join('') +
@@ -2859,26 +3318,65 @@ const SCENES: Record<string, () => Scene> = {
 const FORBIDDEN = /<script|foreignObject|<image|@import|base64|url\((?!#)|href="(?!#)/i
 const LIMIT_KB = 40
 
-const outDir = resolve(process.argv[2] ?? fileURLToPath(new URL('../.github/assets/readme', import.meta.url)))
-mkdirSync(outDir, { recursive: true })
-let failed = false
-for (const [slug, make] of Object.entries(SCENES)) {
-  const scene = make()
-  for (const theme of ['light', 'dark'] as const) {
-    const svg = scene(theme)
-    const file = join(outDir, `${slug}-${theme}.svg`)
-    writeFileSync(file, svg)
-    const kb = Buffer.byteLength(svg) / 1024
-    console.log(`${file}  ${kb.toFixed(1)} KB`)
-    if (kb >= LIMIT_KB) {
-      console.error(`${file}: ${LIMIT_KB} KB or larger`)
-      failed = true
+/**
+ * Имя файла сцены. Английский остаётся без пометки языка — на него ссылается
+ * README и лендинг, переименование сломало бы обе ссылки; русский получает
+ * `-ru` перед темой.
+ */
+export function sceneFile(slug: string, lang: Lang, theme: Theme): string {
+  return `${slug}${lang === 'en' ? '' : `-${lang}`}-${theme}.svg`
+}
+
+/** Все двадцать файлов: пять сцен × два языка × две темы. */
+export function renderAll(): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const [slug, make] of Object.entries(SCENES)) {
+    const scene = make()
+    for (const lang of ['en', 'ru'] as const) {
+      for (const theme of ['light', 'dark'] as const) {
+        out.set(sceneFile(slug, lang, theme), scene(theme, lang))
+      }
     }
-    const bad = svg.match(FORBIDDEN)
-    if (bad) {
-      console.error(`${file}: forbidden construct ${bad[0]}`)
+  }
+  return out
+}
+
+/** Что <img> не покажет, и что переросло предел: одна проверка на файл. */
+export function complaints(name: string, svg: string): string[] {
+  const out: string[] = []
+  if (Buffer.byteLength(svg) / 1024 >= LIMIT_KB) out.push(`${name}: ${LIMIT_KB} KB or larger`)
+  const bad = svg.match(FORBIDDEN)
+  if (bad) out.push(`${name}: forbidden construct ${bad[0]}`)
+  return out
+}
+
+/*
+ * Куда писать. Каталогов два, и они не взаимозаменяемы: README читает
+ * .github/assets/readme, а лендинг раздаётся Pages из site/ и до .github/ не
+ * дотягивается — значит, у него должна быть своя копия тех же файлов.
+ */
+export const OUT_DIRS = [
+  fileURLToPath(new URL('../.github/assets/readme', import.meta.url)),
+  fileURLToPath(new URL('../site/img/scenes', import.meta.url)),
+]
+
+// Файл и импортируют (тесты зовут renderAll), и запускают. Писать на диск — только во втором случае.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2)
+  const dirs = (args.length ? args : OUT_DIRS).map((d) => resolve(d))
+  const files = renderAll()
+  let failed = false
+  for (const [name, svg] of files) {
+    console.log(`${name}  ${(Buffer.byteLength(svg) / 1024).toFixed(1)} KB`)
+    for (const line of complaints(name, svg)) {
+      console.error(line)
       failed = true
     }
   }
+  for (const dir of dirs) {
+    mkdirSync(dir, { recursive: true })
+    for (const [name, svg] of files) writeFileSync(join(dir, name), svg)
+    console.log(`→ ${dir}`)
+  }
+  if (failed) process.exit(1)
 }
-if (failed) process.exit(1)
