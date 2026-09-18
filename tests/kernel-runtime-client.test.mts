@@ -95,3 +95,101 @@ test('permanent retirement is explicit; idle stop remains reopenable', async()=>
     assert.deepEqual(seen,['/v1/rooms/one','/v1/rooms/one?retire=true'])
   }finally{await remote.close()}
 })
+
+test('room memory rides the ensure intent and a live resize is a PATCH of memory alone', async()=>{
+  // 18.09: форма обещала память, а брокеру она не доезжала вовсе.
+  const seen:Array<{method?:string;url?:string;body:string}>=[]
+  let reply:unknown=endpoint
+  const remote=await fixture(async(req,res)=>{
+    let body='';for await(const chunk of req)body+=chunk
+    seen.push({method:req.method,url:req.url,body})
+    res.setHeader('content-type','application/json');res.end(JSON.stringify(reply))
+  })
+  try{
+    const client=new RuntimeClient({url:remote.url,token:'a'.repeat(64)})
+    await client.ensure('seminar_1','base',revision,null,6144)
+    assert.deepEqual(JSON.parse(seen[0].body),{environment:'base',revision,memoryMb:6144})
+    await client.ensure('seminar_1','base',revision,4,null)
+    assert.deepEqual(JSON.parse(seen[1].body),{environment:'base',revision,cpus:4},'no number means the broker default')
+    reply={outcome:'applied',memoryMb:8192}
+    assert.deepEqual(await client.resize('seminar_1',{memoryMb:8192}),{outcome:'applied',memoryMb:8192})
+    assert.equal(seen[2].method,'PATCH'); assert.equal(seen[2].url,'/v1/rooms/seminar_1')
+    assert.deepEqual(JSON.parse(seen[2].body),{memoryMb:8192})
+    reply={outcome:'absent'}
+    assert.deepEqual(await client.resize('seminar_1',{memoryMb:null}),{outcome:'absent'})
+    assert.deepEqual(JSON.parse(seen[3].body),{memoryMb:null})
+    for (const bad of [{outcome:'maybe'},{outcome:'applied',memoryMb:1.5},{outcome:'applied',memoryMb:'8Gi'}]) {
+      reply=bad
+      await assert.rejects(()=>client.resize('seminar_1',{memoryMb:8192}),/runtime response/i)
+    }
+    await assert.rejects(()=>client.resize('seminar_1',{memoryMb:1.5}),/memory/i)
+    assert.equal(seen.length,7,'an invalid number must not reach the broker')
+  }finally{await remote.close()}
+})
+
+test('a live CPU change is a PATCH of cores alone, and the broker answer is checked', async()=>{
+  // До 18.09 ядра на k3s в живую комнату не ехали вовсе: пул отвечал pending,
+  // а Pod сносился на следующем подъёме вместе с переменными семинара.
+  const seen:Array<{method?:string;url?:string;body:string}>=[]
+  let reply:unknown={outcome:'applied',cpus:6}
+  const remote=await fixture(async(req,res)=>{
+    let body='';for await(const chunk of req)body+=chunk
+    seen.push({method:req.method,url:req.url,body})
+    res.setHeader('content-type','application/json');res.end(JSON.stringify(reply))
+  })
+  try{
+    const client=new RuntimeClient({url:remote.url,token:'a'.repeat(64)})
+    assert.deepEqual(await client.resize('seminar_1',{cpus:6}),{outcome:'applied',cpus:6})
+    assert.equal(seen[0].method,'PATCH'); assert.equal(seen[0].url,'/v1/rooms/seminar_1')
+    assert.deepEqual(JSON.parse(seen[0].body),{cpus:6},'memory that was not asked for is not sent')
+    // Умолчание брокера может быть дробным (RUNTIME_KERNEL_CPU=1500m).
+    reply={outcome:'applied',cpus:1.5}
+    assert.deepEqual(await client.resize('seminar_1',{cpus:null}),{outcome:'applied',cpus:1.5})
+    assert.deepEqual(JSON.parse(seen[1].body),{cpus:null})
+    for (const bad of [{outcome:'applied',cpus:'6'},{outcome:'applied',cpus:0},{outcome:'pending',cpus:65}]) {
+      reply=bad
+      await assert.rejects(()=>client.resize('seminar_1',{cpus:6}),/runtime response/i)
+    }
+    for (const change of [{cpus:1.5},{cpus:0},{cpus:65},{}])
+      await assert.rejects(()=>client.resize('seminar_1',change),/CPU|cpus|requires/i)
+    assert.equal(seen.length,5,'an invalid number must not reach the broker')
+  }finally{await remote.close()}
+})
+
+test('broker health carries its memory default and ceiling, and garbage there is not believed', async()=>{
+  let reply:unknown={ok:true,reason:null,defaultCpus:2,defaultMemoryMb:2048,maxMemoryMb:71680}
+  const remote=await fixture((_req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(reply))})
+  try{
+    const client=new RuntimeClient({url:remote.url,token:'a'.repeat(64)})
+    assert.deepEqual(await client.health(),{ok:true,reason:null,defaultCpus:2,defaultMemoryMb:2048,maxMemoryMb:71680})
+    reply={ok:true,reason:null,defaultMemoryMb:-1}
+    assert.equal((await client.health()).ok,false)
+    reply={rooms:[{sessionId:'r1',instanceId:'u',phase:'ready',environment:'base',revision,memoryMb:4096}]}
+    assert.equal((await client.rooms())[0].memoryMb,4096)
+    reply={rooms:[{sessionId:'r1',instanceId:'u',phase:'ready',environment:'base',revision,memoryMb:'4Gi'}]}
+    await assert.rejects(()=>client.rooms(),/room list/i)
+  }finally{await remote.close()}
+})
+
+test('an unschedulable room reaches the app as a word and numbers, and the room reads a short note instead of the broker text', async()=>{
+  let reply:unknown={error:'Room Pod cannot be scheduled: node lacks allocatable memory',unschedulable:'memory',memoryMb:6144,cpus:2}
+  const remote=await fixture((_req,res)=>{res.statusCode=503;res.setHeader('content-type','application/json');res.end(JSON.stringify(reply))})
+  try{
+    const client=new RuntimeClient({url:remote.url,token:'a'.repeat(64)})
+    await assert.rejects(()=>client.ensure('r1','base',revision),(err:any)=>{
+      assert.equal(err.status,503)
+      assert.deepEqual(err.failure,{unschedulable:'memory',memoryMb:6144,cpus:2})
+      // Это текст для всей комнаты: без устройства сервера и без слов брокера.
+      assert.match(err.message,/teacher can see why/)
+      assert.doesNotMatch(err.message,/allocatable|Pod|memory/i)
+      return true
+    })
+    // Не то слово или не те числа — не отказ планировщика, а обычная ошибка брокера.
+    reply={error:'Room startup timed out: Pending',unschedulable:'disk',memoryMb:6144}
+    await assert.rejects(()=>client.ensure('r1','base',revision),(err:any)=>
+      err.failure===undefined && /timed out/.test(err.message))
+    reply={error:'x',unschedulable:'memory',memoryMb:'6Gi',cpus:-1}
+    await assert.rejects(()=>client.ensure('r1','base',revision),(err:any)=>
+      JSON.stringify(err.failure)===JSON.stringify({unschedulable:'memory'}))
+  }finally{await remote.close()}
+})

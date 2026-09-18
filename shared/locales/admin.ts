@@ -14,8 +14,12 @@ export const adminMessages: MessageCatalog = {
     "en": "back to the instance default"
   },
   "admin.resources.cpuHint": {
-    "ru": "На машине {p0} ядер; по умолчанию {p1}. В Docker квота меняется сразу; в кластере — после перезапуска ядра. Перезапустите ядро, чтобы numpy и torch также использовали новое число потоков.",
-    "en": "The machine has {p0} cores; the default is {p1}. Docker updates the quota immediately; the cluster applies it after a kernel restart. Restart the kernel so numpy and torch also use the new thread count."
+    "ru": "На машине {p0} ядер; по умолчанию {p1}. Новое число действует сразу, без перезапуска ядра. Но numpy и torch держат число потоков, с которым запустился контейнер комнаты, даже после перезапуска ядра; новое они получат, когда комната запустится заново после простоя.",
+    "en": "The machine has {p0} cores; the default is {p1}. The new count applies immediately, without restarting the kernel. numpy and torch, however, keep the thread count the room's container started with, even after a kernel restart; they get the new one when the room starts again after standing idle."
+  },
+  "admin.resources.cpuHintDocker": {
+    "ru": "В Docker {p0} ядер; по умолчанию {p1}. Новое число действует сразу, без перезапуска ядра. Но numpy и torch держат число потоков, с которым запустился контейнер комнаты, даже после перезапуска ядра; новое они получат, когда комната запустится заново после простоя.",
+    "en": "Docker has {p0} cores; the default is {p1}. The new count applies immediately, without restarting the kernel. numpy and torch, however, keep the thread count the room's container started with, even after a kernel restart; they get the new one when the room starts again after standing idle."
   },
   "admin.seminar.settingsMenu": {
     "ru": "Настройки",
@@ -38,8 +42,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Resources"
   },
   "admin.resources.description": {
-    "ru": "Сколько машины достаётся ядру этой комнаты. Память можно поднять и во время занятия — ядро при этом не перезапускается.",
-    "en": "How much of the machine this room's kernel gets. Memory can be raised mid-class; the kernel is not restarted."
+    "ru": "Сколько машины достаётся ядру этой комнаты. Память и ядра можно менять и во время занятия — ядро при этом не перезапускается.",
+    "en": "How much of the machine this room's kernel gets. Memory and cores can be changed mid-class; the kernel is not restarted."
   },
   "admin.resources.memoryLabel": {
     "ru": "Память ядра комнаты, ГБ",
@@ -57,13 +61,21 @@ export const adminMessages: MessageCatalog = {
     "ru": "На машине {p0} ГБ, свободно {p1} ГБ; по умолчанию для окружения {p2} — {p3} ГБ.",
     "en": "The machine has {p0} GB, {p1} GB free; the default for environment {p2} is {p3} GB."
   },
+  "admin.resources.hintDocker": {
+    "ru": "Комнаты живут в Docker: там {p0} ГБ, свободно {p1} ГБ; по умолчанию для окружения {p2} — {p3} ГБ.",
+    "en": "Rooms live in Docker: it has {p0} GB, {p1} GB free; the default for environment {p2} is {p3} GB."
+  },
+  "admin.resources.hintNoFree": {
+    "ru": "На машине {p0} ГБ; по умолчанию для окружения {p1} — {p2} ГБ.",
+    "en": "The machine has {p0} GB; the default for environment {p1} is {p2} GB."
+  },
   "admin.resources.thisEnvironment": {
     "ru": "этого окружения",
     "en": "this environment"
   },
   "admin.resources.overFree": {
-    "ru": "Это больше, чем свободно на машине прямо сейчас. Ядро может не подняться — или поднимется, когда освободится соседняя комната.",
-    "en": "That is more than the machine has free right now. The kernel may not start — or it will once a neighbouring room closes."
+    "ru": "Это больше, чем свободно прямо сейчас. Ядро может не подняться — или поднимется, когда освободится соседняя комната.",
+    "en": "That is more than is free right now. The kernel may not start — or it will once a neighbouring room closes."
   },
   "admin.resources.envUsesGpu": {
     "ru": "выбранное окружение берёт карту",
@@ -402,8 +414,8 @@ export const adminMessages: MessageCatalog = {
     "en": "The page is accessible by link without signing in."
   },
   "admin.the.course.page.shows.seminar.names.in.the.chosen.order.and.links": {
-    "ru": "На странице курса показаны названия занятий в указанном порядке и ссылки на их публикации. У остальных занятий стоит «ещё не опубликовано». Ссылки для входа в комнаты на странице курса не размещаются.",
-    "en": "The course page shows class names in the chosen order and links to their publications. Other classes are marked “not published yet”. Links to join rooms are not shown on the course page."
+    "ru": "На странице курса показаны названия занятий в указанном порядке и ссылки на их публикации. У остальных занятий стоит «ещё не опубликовано», у тем по плану — неделя из расписания. Ссылки для входа в комнаты на странице курса не размещаются.",
+    "en": "The course page shows class names in the chosen order and links to their publications. Other classes are marked “not published yet”; planned topics show their week from the schedule. Links to join rooms are not shown on the course page."
   },
   "admin.no.seminars.available.to.add": {
     "ru": "Нет доступных занятий для добавления.",
@@ -418,12 +430,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Publication"
   },
   "admin.planned": {
-    "ru": "по плану ·",
-    "en": "planned ·"
-  },
-  "admin.no.room.yet": {
-    "ru": "комнаты ещё нет",
-    "en": "no room yet"
+    "ru": "по плану",
+    "en": "planned"
   },
   "admin.remove.row": {
     "ru": "Убрать строку",
@@ -1098,7 +1106,7 @@ export const adminMessages: MessageCatalog = {
     "en": "Teacher controls"
   },
   "admin.interrupting.a.cell.somebody.else.started.renaming.the.seminar.re": {
-    "ru": "Остановка ячейки, запущенной другим участником · переименование занятия · восстановление старой версии и создание чекпоинта · удаление файлов из панели файлов · закрытие доступа участнику через панель «Участники», которое также удаляет его из комнаты.",
+    "ru": "Остановка ячейки, запущенной другим участником · переименование занятия · восстановление старой версии и создание чекпоинта · удаление файлов из панели файлов · закрытие доступа участнику через панель «Люди», которое также удаляет его из комнаты.",
     "en": "Interrupting a cell somebody else started · renaming the class · restoring an old version and marking a checkpoint · deleting files from the file panel · closing somebody's access from the People panel, which also takes them out of the room."
   },
   "admin.choose.oracle.access.for.this.seminar.within.the.server.s.allowed": {
@@ -1774,8 +1782,8 @@ export const adminMessages: MessageCatalog = {
     "en": "Steps come from checkpoints. Click"
   },
   "admin.checkpoint": {
-    "ru": "«Чекпоинт»",
-    "en": "“Checkpoint”"
+    "ru": "«Отметить момент»",
+    "en": "“Mark a moment”"
   },
   "admin.in.the.version.history.to.save.the.notebook.at.a.key.point.in.the": {
     "ru": "в ленте версий, чтобы сохранить тетрадь на нужном этапе занятия. Например, перед упражнением или после разбора решения.",
@@ -2732,6 +2740,54 @@ export const adminMessages: MessageCatalog = {
       "one": "{count} moment skipped",
       "other": "{count} moments skipped"
     }
+  },
+  "admin.course.addPlanned": {
+    "ru": "+ Тема по плану",
+    "en": "+ Planned topic"
+  },
+  "admin.course.plannedTopic": {
+    "ru": "Тема занятия",
+    "en": "Class topic"
+  },
+  "admin.course.plannedWhen": {
+    "ru": "Неделя, например 14–20 сен",
+    "en": "Week, e.g. Sep 14–20"
+  },
+  "admin.course.plannedWhenLabel": {
+    "ru": "Неделя по расписанию",
+    "en": "Week in the schedule"
+  },
+  "admin.course.addToPlan": {
+    "ru": "Добавить в план",
+    "en": "Add to plan"
+  },
+  "admin.course.editPlanned": {
+    "ru": "Изменить",
+    "en": "Edit"
+  },
+  "admin.course.removePlanned": {
+    "ru": "Убрать",
+    "en": "Remove"
+  },
+  "admin.course.seat": {
+    "ru": "Поставить занятие",
+    "en": "Assign class"
+  },
+  "admin.course.seatQuestion": {
+    "ru": "Какое занятие поставить вместо «{name}»? Строка займёт то же место, а тема сменится названием занятия.",
+    "en": "Which class goes in place of “{name}”? It keeps this position, and the row shows the class name instead of the topic."
+  },
+  "admin.course.plannedCount": {
+    "ru": "· {count} по плану",
+    "en": "· {count} planned"
+  },
+  "admin.course.planRowMoved": {
+    "ru": "Эту строку плана уже изменили или переставили. Список обновлён — откройте её ещё раз.",
+    "en": "This planned row was changed or moved. The list is up to date now — open it again."
+  },
+  "admin.course.planHint": {
+    "ru": "Темы по плану видны на странице курса с неделей из расписания. Когда занятие состоится, поставьте его на место темы.",
+    "en": "Planned topics appear on the course page with their week. Once a class has taken place, assign it in place of the topic."
   },
   "admin.course.deleteHeading": {
     "ru": "Удалить курс «{name}»?",

@@ -30,6 +30,7 @@ import {
   cellLock,
   cellSource,
   councilSettingsOf,
+  DEFAULT_COUNCIL,
   createCell,
   findCell,
   getCells,
@@ -251,7 +252,9 @@ test('в консилиум ячейку ставит преподаватель
   council(at)
   assert.equal(lockOf(at), 'council')
   const found = findCell(getSessionDoc(at.id).doc, at.cell)
-  assert.deepEqual(councilSettingsOf(found!.cell), { studentRun: false, namesOnProjector: true })
+  // Умолчания целиком, а не перечислением: ручка, добавленная завтра, должна
+  // приезжать на новую ячейку со своим умолчанием, а не ронять эту строку.
+  assert.deepEqual(councilSettingsOf(found!.cell), DEFAULT_COUNCIL)
 
   // Хосту — стопка, каждому — свой пустой лист, комнате — счётчик.
   assert.equal(board(at).lock, 'council')

@@ -1656,6 +1656,7 @@
             cpus={ruling.cpus ?? null}
             busy={memoryBusy}
             refusal={memoryError}
+            roomId={ruling.id}
             onmemory={(mb) => void setMemory(ruling as AdminSeminar, mb)}
             oncpus={(cores) => void setCpus(ruling as AdminSeminar, cores)}
           />

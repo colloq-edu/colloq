@@ -38,6 +38,8 @@ const ACTIONS = code(read(`${PULT}/PultActions.svelte`))
 const WINDOW = code(read(`${PULT}/PultWindow.svelte`))
 const QUEUE = code(read(`${PULT}/PultQueueStrip.svelte`))
 const STATUS = code(read(`${PULT}/PultStatusLine.svelte`))
+const HEADER = code(read(`${PULT}/PultHeader.svelte`))
+const RULES = code(read(`${PULT}/PultRules.svelte`))
 const CELL = code(read('web/src/components/notebook/CellView.svelte'))
 
 /* ------------------------------------------- утечка на проектор закрыта */
@@ -208,17 +210,80 @@ test('очередь показана на просмотр: переставл�
   assert.doesNotMatch(QUEUE, /draggable|room\.ui\.1348/, 'ни перетаскивания, ни «Убрать»')
 })
 
-test('ручка запуска — три положения настроек консилиума, и все три подписаны', () => {
-  assert.match(QUEUE, /value: false, key: 'room\.pult\.v2\.queue\.policyTeacher'/)
-  assert.match(QUEUE, /value: true, key: 'room\.pult\.v2\.queue\.policyEveryone'/)
-  assert.match(QUEUE, /value: 'request', key: 'room\.pult\.v2\.queue\.policyRequest'/)
-  assert.match(WINDOW, /session\.council\.lock\(cellId, 'council', \{ studentRun \}\)/)
+test('предел виден там, где срабатывает: полосой под идущим запуском', () => {
+  /*
+   * Единственный вопрос к чужому запуску перед классом — ждать или прерывать,
+   * и отвечает на него полоса, а не число в настройках. Она же ловит случай,
+   * когда ждать бессмысленно: время вышло, а запуск идёт — остановка не взяла.
+   */
+  assert.match(QUEUE, /limitMs !== null/, 'без предела полосы нет')
+  assert.match(QUEUE, /class="limit-fill" class:over=\{overLimit\}/)
+  assert.match(QUEUE, /Math\.min\(100, \(elapsed \/ limitMs\) \* 100\)/, 'заливка вылезает за полосу')
+  assert.match(QUEUE, /room\.pult\.v2\.queue\.limitStuck[\s\S]{0,120}room\.pult\.v2\.queue\.limitStops/)
+  assert.match(QUEUE, /\.limit-fill\.over \{ background: rgb\(var\(--danger\)\)/)
 })
 
-test('ручка имён живёт рядом с показом, а не в настройках комнаты', () => {
-  assert.match(STATUS, /role="switch"/)
-  assert.match(STATUS, /aria-checked=\{names\}/)
-  assert.match(WINDOW, /session\.council\.lock\(cellId, 'council', \{ namesOnProjector \}\)/)
+test('остановленные пределом стоят отдельной секцией и подписаны по тому же правилу, что соседи', () => {
+  // Их нет ни в очереди, ни среди ждущих, а вопрос «почему у половины класса
+  // нет вывода» задают именно здесь. Имя — через who(): при выключенных именах
+  // в очереди «Работа без имени», и в этой секции обязано быть то же.
+  assert.match(QUEUE, /timedOutAttempts\(attempts\)/)
+  assert.match(QUEUE, /\{#if stopped\.length > 0\}/, 'пустая секция не рисуется')
+  assert.match(QUEUE, /class="stopped-limit">\{pultDuration\(timedOutLimit\(attempt\)!\)\}/)
+  assert.match(QUEUE, /class="stopped-row" onclick=\{\(\) => onopen\(attempt\.participantId\)\}/)
+  const rows = QUEUE.slice(QUEUE.indexOf('stopped-section'))
+  assert.doesNotMatch(rows, /<(strong|span|code)[^>]*>\{attempt\.name\}/, 'имя в обход правила «имена на проекторе»')
+  assert.match(rows, /who\(attempt\)/)
+  assert.match(QUEUE, /\.stopped-limit \{[^}]*color: rgb\(var\(--danger\)\)/)
+})
+
+test('остановленный пределом не подписан общей «ошибкой запуска» ни в строке, ни в работе', () => {
+  assert.match(ROW, /execution\.icon \?\?/, 'знак состояния подменён общим по тону')
+  assert.match(WORK, /stoppedAt !== null/)
+  assert.match(WORK, /room\.pult\.v2\.rules\.workTimedOut/)
+  // И рядом — действующий предел той же кнопкой-значением, что в шапке.
+  assert.match(WORK, /class="pult-value" onclick=\{\(event\) => onrules\('runLimit', event\.currentTarget\)\}/)
+  assert.match(WORK, /room\.pult\.v2\.rules\.limitLink/)
+})
+
+test('все четыре правила ячейки живут на одном листе, и ни одного — в очереди или строке состояния', () => {
+  /*
+   * Настройка в подвале вкладки — это настройка, которую ищут. «Кто запускает»
+   * стояло подвалом очереди, «имена на проекторе» — переключателем внизу
+   * окна, а меняют их обе в одну и ту же секунду и по одному поводу: что
+   * сейчас можно классу. Теперь они рядом, и каждое правило подписано.
+   */
+  for (const key of ['whoTeacher', 'whoEveryone', 'whoRequest', 'limitTitle', 'pauseTitle', 'screenTitle']) {
+    assert.match(RULES, new RegExp(`room\\.pult\\.v2\\.rules\\.${key}`), `правила «${key}» на листе нет`)
+  }
+  assert.doesNotMatch(QUEUE, /policy|studentRun:/, 'ручка запуска вернулась в очередь')
+  assert.doesNotMatch(STATUS, /role="switch"|namesOnProjector/, 'ручка имён вернулась в строку состояния')
+  // Одно место отправки на все четыре: кадр тот же, что у замка ячейки.
+  assert.match(WINDOW, /session\.council\.lock\(cellId, 'council', patch\)/)
+  assert.match(WINDOW, /function setRule\(patch: Partial<CouncilSettings>\): void/)
+})
+
+test('правила применяются нажатием, а не кнопкой «Сохранить»', () => {
+  // «Готово» закрывает лист и ничего не отправляет: между «поставил 1 мин» и
+  // «действует 1 мин» не должно быть шага, на котором написанное — неправда.
+  assert.match(RULES, /onclick=\{segment\.pick\}/)
+  assert.doesNotMatch(RULES, /room\.ui\.\d+.*[Сс]охранить|onsave/)
+  assert.match(RULES, /data-pult-rules-done onclick=\{onclose\}/)
+})
+
+test('регламент читается предложением в шапке, и каждое значение — дверь в лист', () => {
+  assert.match(HEADER, /rulesSentence|rules: RulePart\[\]/, 'предложение собирают не в компоненте')
+  assert.match(HEADER, /class="pult-value"[\s\S]{0,400}?onrules\(part\.rule, event\.currentTarget\)/)
+  assert.match(HEADER, /aria-expanded=\{openRule === part\.rule\}/, 'не видно, о чём открыт лист')
+  assert.doesNotMatch(HEADER, /room\.pult\.v2\.private/, 'строка «личный пульт» вернулась на место регламента')
+  // Ниже 650 px от предложения остаётся имя — и оно же дверь.
+  assert.match(HEADER, /@media\(max-width:650px\)[\s\S]*?\.pult-rules-line \{ display:none/)
+})
+
+test('лист забирает клавиатуру целиком: за ним не ходят по списку', () => {
+  assert.match(WINDOW, /if \(rulesOpen\) \{[\s\S]{0,200}?event\.key === 'Escape'[\s\S]{0,120}?closeRules\(\)[\s\S]{0,40}?\}\s*\n\s*return/)
+  assert.match(RULES, /event\.key !== 'Tab'/, 'Tab уходит за лист')
+  assert.match(RULES, /aria-modal="true"/)
 })
 
 test('вывод, не поехавший со стопкой, пульт просит по открытой работе', () => {
@@ -233,7 +298,10 @@ test('плита кода не растёт от чужого кода и чес
 
 test('вывод подписан тем, кто запускал, и окрашен исходом', () => {
   assert.match(WORK, /data-tone=\{execution\?\.tone\}/)
-  assert.match(WORK, /run\.by === 'host' \? tr\('room\.ui\.61'\) : tr\('room\.ui\.1061'\)/)
+  assert.match(WORK, /run\.by === 'host' \? tr\('room\.ui\.61'\) : tr\('room\.pult\.v2\.ranByAuthor'\)/)
+  // «запускали вы» — строка автора; в пульте смотрит преподаватель, и «вы»
+  // называло бы запускавшим его самого.
+  assert.doesNotMatch(WORK, /room\.ui\.1061/)
   assert.match(WORK, /execution\?\.label/, 'явная подпись запуска')
 })
 

@@ -43,7 +43,7 @@ function withEnv(vars: Record<string, string | undefined>, body: () => void): vo
   }
 }
 
-const room = { sessionId: 'pvhu2h7f', mount: '/srv/workspace/pvhu2h7f', network: '', gpu: null }
+const room = { sessionId: 'pvhu2h7f', mount: '/srv/workspace/pvhu2h7f', network: 'colloq-rooms', publish: true, gpu: null }
 
 afterEach(() => {
   useDockerForPostmortem(null)

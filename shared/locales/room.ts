@@ -2,6 +2,8 @@ import type { MessageCatalog } from '../i18n-types.js'
 
 /** Explicit display-copy catalog for entry, room, lecture, and public readers. */
 export const roomMessages: MessageCatalog = {
+  "room.council.nextRun": {"ru": "Запуск через {p0}", "en": "Run in {p0}"},
+  "room.council.nextRunWhy": {"ru": "Пауза между запусками — правило преподавателя: ядро одно на всю комнату", "en": "The pause between runs is the teacher’s rule: the room shares one kernel"},
   "room.oracle.working": {"ru": "Оракул смотрит эту ячейку", "en": "The oracle is looking at this cell"},
   "room.goto.unknown": {"ru": "Не нашлось, где определено «{name}» — ни в тетрадях комнаты, ни в файлах занятия", "en": "No definition for “{name}” — not in the room’s notebooks, not in the class files"},
   "room.goto.outsideModule": {"ru": "Модуль {module} лежит не в папке занятия, а в библиотеках — открыть его нечем", "en": "Module {module} lives in the libraries, not in the class folder — there is nothing to open"},
@@ -43,11 +45,60 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.queue.queuedTitle": {"ru": "В очереди {count}", "en": "Queued · {count}"},
   "room.pult.v2.queue.noQueued": {"ru": "В этой ячейке нет запусков в очереди", "en": "No queued runs for this cell"},
   "room.pult.v2.queue.order": {"ru": "Порядком запусков управляет общее ядро комнаты", "en": "The shared room kernel manages the run order"},
-  "room.pult.v2.queue.policyTitle": {"ru": "Кто может запускать код", "en": "Who can run code"},
-  "room.pult.v2.queue.policyTeacher": {"ru": "Только преподаватель", "en": "Teacher only"},
-  "room.pult.v2.queue.policyEveryone": {"ru": "Все по очереди", "en": "Everyone, in turn"},
-  "room.pult.v2.queue.policyRequest": {"ru": "По разрешению", "en": "With approval"},
   "room.pult.v2.queue.anonymous": {"ru": "Работа без имени", "en": "Anonymous work"},
+  "room.pult.v2.queue.limitStops": {"ru": "остановится сам на {duration}", "en": "stops itself at {duration}"},
+  "room.pult.v2.queue.limitStuck": {"ru": "не останавливается — прервите или перезапустите ядро", "en": "not stopping — interrupt it or restart the kernel"},
+  "room.pult.v2.queue.stoppedTitle": {"ru": "Остановлены сами {count}", "en": "Stopped by the limit · {count}"},
+  "room.pult.v2.queue.stoppedNote": {"ru": "считали дольше предела · очередь пошла дальше без вас", "en": "ran past the limit · the queue moved on without them"},
+  "room.pult.v2.queue.stoppedOpen": {"ru": "Открыть работу · {name}", "en": "Open the work · {name}"},
+  "room.pult.v2.rules.label": {"ru": "Регламент", "en": "Rules"},
+  "room.pult.v2.rules.open": {"ru": "Открыть регламент консилиума", "en": "Open the council rules"},
+  "room.pult.v2.rules.keys": {"ru": "Регламент ячейки", "en": "Council rules"},
+  "room.pult.v2.rules.sec": {"ru": "{count} с", "en": "{count} s"},
+  "room.pult.v2.rules.min": {"ru": "{count} мин", "en": "{count} min"},
+  "room.pult.v2.rules.minSec": {"ru": "{count} мин {sec} с", "en": "{count} min {sec} s"},
+  "room.pult.v2.rules.runLead": {"ru": "Запускают", "en": "Runs"},
+  "room.pult.v2.rules.runLeadTeacher": {"ru": "Запускаю", "en": "Runs"},
+  "room.pult.v2.rules.runTeacher": {"ru": "только я", "en": "by me only"},
+  "room.pult.v2.rules.runEveryone": {"ru": "все по очереди", "en": "by anyone, in turn"},
+  "room.pult.v2.rules.runRequest": {"ru": "по просьбе", "en": "on request"},
+  "room.pult.v2.rules.limitLead": {"ru": "каждый запуск", "en": "each run"},
+  "room.pult.v2.rules.limitValue": {"ru": "до {duration}", "en": "capped at {duration}"},
+  "room.pult.v2.rules.limitNone": {"ru": "без предела", "en": "uncapped"},
+  "room.pult.v2.rules.pauseLead": {"ru": "повтор", "en": "rerun"},
+  "room.pult.v2.rules.pauseValue": {"ru": "через {duration}", "en": "after {duration}"},
+  "room.pult.v2.rules.pauseNow": {"ru": "сразу", "en": "right away"},
+  "room.pult.v2.rules.pauseShort": {"ru": "повтор через {duration}", "en": "rerun after {duration}"},
+  "room.pult.v2.rules.pauseShortNow": {"ru": "повтор сразу", "en": "rerun right away"},
+  "room.pult.v2.rules.screenLead": {"ru": "на экране", "en": "on screen"},
+  "room.pult.v2.rules.screenNames": {"ru": "с именами", "en": "with names"},
+  "room.pult.v2.rules.screenAnon": {"ru": "без имён", "en": "without names"},
+  "room.pult.v2.rules.title": {"ru": "Регламент консилиума", "en": "Council rules"},
+  "room.pult.v2.rules.subtitle": {"ru": "Правила этой ячейки · действуют сразу, студенты видят их у себя", "en": "Rules for this cell · they take effect at once, and students see them"},
+  "room.pult.v2.rules.done": {"ru": "Готово", "en": "Done"},
+  "room.pult.v2.rules.whoTitle": {"ru": "Кто запускает", "en": "Who runs code"},
+  "room.pult.v2.rules.whoTeacher": {"ru": "Только я", "en": "Only me"},
+  "room.pult.v2.rules.whoEveryone": {"ru": "Все по очереди", "en": "Everyone in turn"},
+  "room.pult.v2.rules.whoRequest": {"ru": "По просьбе", "en": "On request"},
+  "room.pult.v2.rules.whyTeacher": {"ru": "Студенты пишут код, запускаете его вы.", "en": "Students write the code, you run it."},
+  "room.pult.v2.rules.whyEveryone": {"ru": "Студент запускает свою попытку сам; ядро одно, поэтому по одному за раз.", "en": "A student runs their own attempt; the kernel is shared, so one at a time."},
+  "room.pult.v2.rules.whyRequest": {"ru": "Студент просит — вы разрешаете именно эту версию кода.", "en": "The student asks, and you approve exactly this version of the code."},
+  "room.pult.v2.rules.whoPending": {"ru": {"one":"Сейчас ждёт {count} просьба: при смене режима она снимется.","few":"Сейчас ждут {count} просьбы: при смене режима они снимутся.","many":"Сейчас ждут {count} просьб: при смене режима они снимутся.","other":"Сейчас ждут {count} просьбы: при смене режима они снимутся."}, "en": {"one":"{count} request is waiting: changing the mode drops it.","other":"{count} requests are waiting: changing the mode drops them."}},
+  "room.pult.v2.rules.limitTitle": {"ru": "Предел запуска", "en": "Run limit"},
+  "room.pult.v2.rules.limitWhy": {"ru": "Дольше — запуск останавливается сам, очередь идёт дальше. Ваши запуски тоже.", "en": "Longer than that and the run stops itself, the queue moves on. Your own runs too."},
+  "room.pult.v2.rules.limitStats": {"ru": "Последние запуски: обычно {median} · самый долгий {max}", "en": "Latest runs: typically {median} · longest {max}"},
+  "room.pult.v2.ranByAuthor": {"ru": "запускал автор", "en": "run by the author"},
+  "room.pult.v2.rules.limitNoneOption": {"ru": "Без предела", "en": "No limit"},
+  "room.pult.v2.rules.pauseTitle": {"ru": "Повтор запуска", "en": "Rerun pause"},
+  "room.pult.v2.rules.pauseWhy": {"ru": "Сколько студент ждёт после своего запуска, прежде чем встать в очередь снова. Вас пауза не касается.", "en": "How long a student waits after their own run before queueing again. The pause does not apply to you."},
+  "room.pult.v2.rules.pauseOff": {"ru": "Студенты сейчас не запускают — пауза ни на что не влияет.", "en": "Students do not run code right now, so the pause changes nothing."},
+  "room.pult.v2.rules.pauseNowOption": {"ru": "Сразу", "en": "Right away"},
+  "room.pult.v2.rules.screenTitle": {"ru": "На экране класса", "en": "On the class screen"},
+  "room.pult.v2.rules.screenWhy": {"ru": "Без имён показанное решение подписано «Вариант 12» — одинаково в тетради у всех и на проекторе.", "en": "Without names a shown solution is signed “Variant 12” — the same in everyone’s notebook and on the projector."},
+  "room.pult.v2.rules.screenNamesOption": {"ru": "С именами", "en": "With names"},
+  "room.pult.v2.rules.screenAnonOption": {"ru": "Без имён", "en": "Without names"},
+  "room.pult.v2.rules.workTimedOut": {"ru": "Запуск остановлен сам: считался дольше {duration}", "en": "The run stopped itself: it ran longer than {duration}"},
+  "room.pult.v2.rules.limitLink": {"ru": "предел {duration}", "en": "limit {duration}"},
   "room.pult.v2.oracle.title": {"ru": "Оракул о классе", "en": "Oracle on the class"},
   "room.pult.v2.oracle.purpose": {"ru": "Обобщает сданные решения и помогает выбрать тему разбора.", "en": "Summarizes submitted solutions and helps choose what to discuss."},
   "room.pult.v2.oracle.submitted": {"ru": "сдано", "en": "submitted"},
@@ -81,7 +132,6 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.projection.clear": {"ru": "Убрать с экрана", "en": "Clear class screen"},
 
   "room.pult.v2.title": {"ru": "Консилиум", "en": "Council"},
-  "room.pult.v2.private": {"ru": "Личный пульт преподавателя", "en": "Private teacher console"},
   "room.pult.v2.workTab": {"ru": "Работы", "en": "Work"},
   "room.pult.v2.queueTab": {"ru": "Очередь", "en": "Queue"},
   "room.pult.v2.oracleTab": {"ru": "Оракул о классе", "en": "Class Oracle"},
@@ -96,7 +146,6 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.noAttempts": {"ru": "Работы появятся здесь", "en": "Work will appear here"},
   "room.pult.v2.noAttemptsHint": {"ru": "Участники могут писать свой код и сдавать решения.", "en": "Participants can write code and submit their work."},
   "room.pult.v2.nothingShown": {"ru": "На экране класса пока ничего", "en": "Nothing is shown to the class"},
-  "room.pult.v2.names": {"ru": "Имена на проекторе", "en": "Names on the projector"},
   "room.pult.v2.keys": {"ru": "Клавиши", "en": "Keyboard shortcuts"},
   "room.pult.v2.review.draft": {"ru": "Черновик", "en": "Draft"},
   "room.pult.v2.review.pending": {"ru": "Не проверено", "en": "Not reviewed"},
@@ -105,6 +154,7 @@ export const roomMessages: MessageCatalog = {
   "room.pult.v2.execution.running": {"ru": "Выполняется", "en": "Running"},
   "room.pult.v2.execution.queued": {"ru": "В очереди", "en": "Queued"},
   "room.pult.v2.execution.error": {"ru": "Ошибка запуска", "en": "Execution error"},
+  "room.pult.v2.execution.timedOut": {"ru": "Остановлен: дольше {duration}", "en": "Stopped: longer than {duration}"},
   "room.pult.v2.execution.request": {"ru": "Просит запуск", "en": "Run requested"},
   "room.pult.v2.execution.ok": {"ru": "Запуск выполнен", "en": "Execution completed"},
   "room.pult.v2.execution.none": {"ru": "Не запускали", "en": "Not run"},
@@ -1838,8 +1888,8 @@ export const roomMessages: MessageCatalog = {
     "en": "Enter to send, Shift+Enter for a new line"
   },
   "room.ui.516": {
-    "ru": "Оракул может менять файлы и запускать код. Правки ячеек требуют принятия.",
-    "en": "The oracle can change files and run code. Cell edits require acceptance."
+    "ru": "Оракул сам правит ячейки и файлы и запускает код — правки применяются сразу.",
+    "en": "The oracle edits cells and files and runs code itself — its edits apply at once."
   },
   "room.ui.517": {
     "ru": "Вопрос и ответ видит вся комната.",
@@ -4448,6 +4498,38 @@ export const roomMessages: MessageCatalog = {
   "room.kernel.state.dead": {
     "ru": "ЯДРО ОСТАНОВЛЕНО",
     "en": "KERNEL STOPPED"
+  },
+  "room.kernel.unschedulable.memory": {
+    "ru": "Сервер не может выделить комнате {gb} ГБ: память узла занята другими комнатами — уменьшите память этой или других комнат или закройте ненужные.",
+    "en": "The server can’t give this room {gb} GB: the node’s memory is taken by other rooms — lower the memory of this room or of others, or close rooms you don’t need."
+  },
+  "room.kernel.unschedulable.memoryAny": {
+    "ru": "Серверу не хватает памяти для этой комнаты: память узла занята другими комнатами — уменьшите память этой или других комнат или закройте ненужные.",
+    "en": "The server doesn’t have enough memory for this room: the node’s memory is taken by other rooms — lower the memory of this room or of others, or close rooms you don’t need."
+  },
+  "room.kernel.unschedulable.cpu": {
+    "ru": {
+      "one": "Сервер не может выделить комнате {count} ядро: процессор узла занят другими комнатами — уменьшите число ядер этой или других комнат или закройте ненужные.",
+      "few": "Сервер не может выделить комнате {count} ядра: процессор узла занят другими комнатами — уменьшите число ядер этой или других комнат или закройте ненужные.",
+      "many": "Сервер не может выделить комнате {count} ядер: процессор узла занят другими комнатами — уменьшите число ядер этой или других комнат или закройте ненужные.",
+      "other": "Сервер не может выделить комнате {count} ядра: процессор узла занят другими комнатами — уменьшите число ядер этой или других комнат или закройте ненужные."
+    },
+    "en": {
+      "one": "The server can’t give this room {count} CPU core: the node’s processor is taken by other rooms — lower the core count of this room or of others, or close rooms you don’t need.",
+      "other": "The server can’t give this room {count} CPU cores: the node’s processor is taken by other rooms — lower the core count of this room or of others, or close rooms you don’t need."
+    }
+  },
+  "room.kernel.unschedulable.cpuAny": {
+    "ru": "Серверу не хватает процессора для этой комнаты: ядра узла заняты другими комнатами — уменьшите число ядер этой или других комнат или закройте ненужные.",
+    "en": "The server doesn’t have enough CPU for this room: the node’s cores are taken by other rooms — lower the core count of this room or of others, or close rooms you don’t need."
+  },
+  "room.kernel.unschedulable.gpu": {
+    "ru": "Сервер не может выделить комнате видеокарту: все видеокарты узла заняты другими комнатами — закройте комнату, которая держит видеокарту, или выберите для этой окружение без GPU.",
+    "en": "The server can’t give this room a GPU: every GPU on the node is held by other rooms — close a room that holds one, or pick an environment without a GPU for this room."
+  },
+  "room.kernel.unschedulable.other": {
+    "ru": "Kubernetes не может разместить эту комнату на узле, и дело не в памяти, процессоре или видеокарте. Передайте администратору сервера: причина — в событиях кластера (kubectl get events).",
+    "en": "Kubernetes can’t place this room on the node, and it isn’t memory, CPU or a GPU. Pass this on to the server administrator: the reason is in the cluster events (kubectl get events)."
   },
   "room.head.fold": {
     "ru": "Свернуть шапку",

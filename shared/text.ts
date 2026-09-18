@@ -1,3 +1,4 @@
+import { tr } from './i18n.js'
 /**
  * Имя, которое кто-то напечатал, — одной меркой на все двери.
  *
@@ -18,4 +19,26 @@ export function normalizeLabel(value: unknown): string {
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * Длительность словами: «30 с», «1 мин», «2 мин 30 с».
+ *
+ * Регламент консилиума хранится в секундах, а читается предложением, и обе
+ * фразы про него — «запуск шёл дольше 5 мин» на сервере и «следующий запуск
+ * через 1 мин» под кнопкой у студента — берут одно и то же число. «300 с» в
+ * такой строке читается как опечатка: пять минут человек узнаёт, только
+ * посчитав их в уме, а отсчёт под кнопкой он читает на бегу.
+ *
+ * Секунды не округляются в ноль: предел ставят из списка круглых чисел, а вот
+ * отсчёт идёт по живым часам и попадает в любую щель — «через 1 мин» за
+ * полторы минуты до кнопки было бы обещанием, которого сервер не держит.
+ */
+export function durationWords(totalSeconds: number): string {
+  const total = Math.max(0, Math.round(totalSeconds))
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  if (minutes === 0) return tr('server.duration.seconds', { p0: total })
+  if (seconds === 0) return tr('server.duration.minutes', { p0: minutes })
+  return tr('server.duration.minutesSeconds', { p0: minutes, p1: seconds })
 }

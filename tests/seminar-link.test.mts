@@ -22,7 +22,7 @@ const LOCAL = 'http://localhost:3000'
 test('a configured public address is honoured, whatever the panel is open on', () => {
   // The operator who administers over an SSH tunnel on localhost while the room
   // uses a real hostname has said what they mean; this must not second-guess it.
-  assert.equal(seminarLink('https://colloq.hse.ru', LOCAL, 'abc'), 'https://colloq.hse.ru/s/abc')
+  assert.equal(seminarLink('https://colloq.example.edu', LOCAL, 'abc'), 'https://colloq.example.edu/s/abc')
 })
 
 test('a PUBLIC_URL left on localhost loses to the address actually being read', () => {
@@ -42,18 +42,18 @@ test('working locally keeps a local link, because both answers agree', () => {
 })
 
 test('a port is part of the address and survives', () => {
-  assert.equal(seminarLink('https://colloq.hse.ru:8443', LOCAL, 'abc'), 'https://colloq.hse.ru:8443/s/abc')
+  assert.equal(seminarLink('https://colloq.example.edu:8443', LOCAL, 'abc'), 'https://colloq.example.edu:8443/s/abc')
 })
 
 test('a path, query or fragment on PUBLIC_URL is dropped, not glued on', () => {
   // PUBLIC_URL is operator-configured; a trailing slash or a stray path would
   // otherwise produce //s/abc or /admin/s/abc, both of which 404.
-  assert.equal(seminarLink('https://colloq.hse.ru/', LOCAL, 'abc'), 'https://colloq.hse.ru/s/abc')
-  assert.equal(seminarLink('https://colloq.hse.ru/admin?x=1#y', LOCAL, 'abc'), 'https://colloq.hse.ru/s/abc')
+  assert.equal(seminarLink('https://colloq.example.edu/', LOCAL, 'abc'), 'https://colloq.example.edu/s/abc')
+  assert.equal(seminarLink('https://colloq.example.edu/admin?x=1#y', LOCAL, 'abc'), 'https://colloq.example.edu/s/abc')
 })
 
 test('a PUBLIC_URL that is not a URL at all falls through to the page', () => {
-  for (const junk of ['', 'colloq.hse.ru', 'not a url', '/s/abc']) {
+  for (const junk of ['', 'colloq.example.edu', 'not a url', '/s/abc']) {
     assert.equal(seminarLink(junk, TUNNEL, 'abc'), `${TUNNEL}/s/abc`, JSON.stringify(junk))
   }
 })
@@ -63,7 +63,7 @@ test('the id is what identifies the seminar, and it is never rewritten', () => {
 })
 
 test('there is exactly one slash between the origin and the path', () => {
-  for (const base of ['https://colloq.hse.ru', 'https://colloq.hse.ru/', 'https://colloq.hse.ru///']) {
-    assert.equal(seminarLink(base, LOCAL, 'abc'), 'https://colloq.hse.ru/s/abc', base)
+  for (const base of ['https://colloq.example.edu', 'https://colloq.example.edu/', 'https://colloq.example.edu///']) {
+    assert.equal(seminarLink(base, LOCAL, 'abc'), 'https://colloq.example.edu/s/abc', base)
   }
 })

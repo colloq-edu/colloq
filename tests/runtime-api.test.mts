@@ -41,6 +41,14 @@ test('private API authenticates every route and accepts only bounded room intent
       remove: async (id) => {
         calls.push(id)
       },
+      resize: async (id, request) => {
+        calls.push(`${id}:${request.memoryMb}:${request.cpus}`)
+        return {
+          outcome: 'applied',
+          ...(request.memoryMb !== undefined ? { memoryMb: request.memoryMb ?? 2048 } : {}),
+          ...(request.cpus !== undefined ? { cpus: request.cpus ?? 2 } : {}),
+        }
+      },
     },
   })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
@@ -88,7 +96,38 @@ test('private API authenticates every route and accepts only bounded room intent
       await (await fetch(base + '/v1/rooms/roomA', { method: 'DELETE', headers })).json(),
       { ok: true },
     )
-    assert.deepEqual(calls, ['roomA', 'roomA'])
+    // Живой комнате — только память и ядра: ни окружения, ни образа, ни шаблона.
+    for (const body of [
+      '{}',
+      '{"memoryMb":4096,"environment":"base"}',
+      '{"cpus":4,"image":"evil"}',
+      '{"memoryMb":"4Gi"}',
+      '{"memoryMb":4096.5}',
+      '{"cpus":1.5}',
+      '{"cpus":"4"}',
+    ])
+      assert.equal(
+        (await fetch(base + '/v1/rooms/roomA', { method: 'PATCH', headers, body })).status,
+        400,
+        body,
+      )
+    assert.equal(
+      (await fetch(base + '/v1/rooms/roomA', { method: 'PATCH', body: '{"memoryMb":4096}' })).status,
+      401,
+    )
+    assert.deepEqual(
+      await (
+        await fetch(base + '/v1/rooms/roomA', { method: 'PATCH', headers, body: '{"memoryMb":4096}' })
+      ).json(),
+      { outcome: 'applied', memoryMb: 4096 },
+    )
+    assert.deepEqual(
+      await (
+        await fetch(base + '/v1/rooms/roomA', { method: 'PATCH', headers, body: '{"cpus":6}' })
+      ).json(),
+      { outcome: 'applied', cpus: 6 },
+    )
+    assert.deepEqual(calls, ['roomA', 'roomA', 'roomA:4096:undefined', 'roomA:undefined:6'])
   } finally {
     server.closeAllConnections()
     await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())))
@@ -113,6 +152,18 @@ test('configuration fails closed on absent or weak secrets and invalid resource 
     assert.throws(() => loadRuntimeConfig({ ...env, RUNTIME_KERNEL_CPU: 'Infinity' }))
     assert.throws(() => loadRuntimeConfig({ ...env, RUNTIME_KERNEL_MEMORY: '0Gi' }))
     assert.throws(() => loadRuntimeConfig({ ...env, RUNTIME_KUBE_URL: 'http://localhost' }))
+    // Потолок памяти комнаты: явный у оператора, иначе узел минус гигабайт.
+    assert.equal(loadRuntimeConfig(env, 73728).maxMemoryMb, 72704)
+    assert.equal(loadRuntimeConfig({ ...env, RUNTIME_KERNEL_MEMORY_MAX: '16Gi' }, 73728).maxMemoryMb, 16384)
+    // Умолчание обязано влезать под потолок: иначе каждая комната без своего
+    // числа нарушала бы политику брокера.
+    assert.throws(
+      () => loadRuntimeConfig({ ...env, RUNTIME_KERNEL_MEMORY: '8Gi', RUNTIME_KERNEL_MEMORY_MAX: '4Gi' }),
+      /exceeds/,
+    )
+    assert.throws(() => loadRuntimeConfig({ ...env, RUNTIME_KERNEL_MEMORY_MAX: '16G' }), /MAX/)
+    // Узел меньше умолчания — потолок не ниже умолчания, а не отказ стартовать.
+    assert.equal(loadRuntimeConfig(env, 1024).maxMemoryMb, 2048)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -154,6 +205,12 @@ test('Kubernetes HTTPS client verifies CA, rereads rotating token, and bounds re
         res.end(JSON.stringify({ reason: 'Forbidden', message: 'secret-value'.repeat(1000) }))
         return
       }
+      if (req.url === '/resize') {
+        res.writeHead(403)
+        res.end(JSON.stringify({ reason: 'Forbidden', message:
+          `pods "x" is forbidden: node didn't have enough allocatable resources: memory, requested: 1, allocatable: 0 ${'secret-value'.repeat(10)}` }))
+        return
+      }
       if (req.url === '/huge') {
         res.end('x'.repeat(3000))
         return
@@ -180,6 +237,12 @@ test('Kubernetes HTTPS client verifies CA, rereads rotating token, and bounds re
       (err) =>
         err instanceof Error && err.message.length < 250 && !err.message.includes('secret-value'),
     )
+    // Из тела отказа наружу выходит только имя ресурса, которого не хватило.
+    await assert.rejects(
+      client.request('PATCH', '/resize', {}, 'application/strategic-merge-patch+json'),
+      (err: any) => err.insufficient === 'memory' && !err.message.includes('secret-value'),
+    )
+    await assert.rejects(client.request('PATCH', '/resize', {}, 'text/x-evil'), /content type/)
     await assert.rejects(client.request('GET', '/huge'), /large|limit/i)
     writeFileSync(cert, '')
     await assert.rejects(client.request('GET', '/ready'), /self.signed|certificate|issuer/i)

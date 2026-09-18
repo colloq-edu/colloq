@@ -17,6 +17,7 @@
   import {
     MAX_COURSE_BLURB,
     MAX_COURSE_NAME,
+    MAX_PLANNED_WHEN,
     slugOk,
     suggestSlug,
     type AddressHolder,
@@ -24,6 +25,14 @@
     type CourseItem,
   } from '@shared/publish'
   import type { AdminSeminar } from '@shared/admin'
+  import {
+    courseTally,
+    plannedRow,
+    putPlanned,
+    seatSeminar,
+    type PlannedTarget,
+  } from '@/admin/course-plan'
+  import { tick } from 'svelte'
 
   interface Props {
     /** Открытый курс, если адрес его называет. */
@@ -138,25 +147,38 @@
    *
    * Несовпадение не ошибка, а гонка: другой преподаватель переставил этот курс,
    * пока экран держал его старым. Ответ несёт список таким, какой он сейчас.
+   *
+   * Итог записи — словом, а не пустотой: форме строки плана надо знать, стирать
+   * ли набранное. Успех — стирать; гонка (409) — закрыть, потому что под
+   * формой уже другой список; сбой сети — оставить, чтобы нажать ещё раз, а
+   * не набирать тему заново.
    */
-  async function writeItems(items: CourseItem[]): Promise<void> {
+  async function writeItems(items: CourseItem[]): Promise<'ok' | 'conflict' | 'failed'> {
     // busy проверяется, а не только выставляется: «Убрать строку» и «Добавить
     // семинар» гаснут по нему, но два быстрых нажатия успевают уйти с одним и
     // тем же `rev`, и второе возвращалось как «этот курс успел изменить кто-то
     // ещё» — про собственный двойной клик.
-    if (!course || busy) return
+    if (!course || busy) return 'failed'
     busy = true
     errorText = null
     try {
       course = await adminApi.setCourseItems(course.id, course.rev, items)
+      return 'ok'
     } catch (cause) {
       if (cause instanceof AdminApiError && cause.reason === 'unauthenticated') void adminAuth.refresh('revoked')
       if (cause instanceof AdminApiError && cause.status === 409) {
-        errorText = () => (tr("admin.another.user.changed.the.course.the.current.version.will.load.ple"))
+        /*
+         * Сначала перечитать, потом сказать. Было наоборот, а успешный
+         * `loadOne` сам обнуляет ошибку — и фраза «повторите изменение» гасла,
+         * не успев показаться: список молча становился другим, а правка
+         * преподавателя пропадала без единого слова.
+         */
         await loadOne(course.id)
-      } else {
-        errorText = () => (explain(cause))
+        errorText = () => (tr("admin.another.user.changed.the.course.the.current.version.will.load.ple"))
+        return 'conflict'
       }
+      errorText = () => (explain(cause))
+      return 'failed'
     } finally {
       busy = false
     }
@@ -168,11 +190,13 @@
     const to = index + by
     if (to < 0 || to >= next.length) return
     ;[next[index], next[to]] = [next[to], next[index]]
+    closeRowForms()
     void writeItems(next)
   }
 
   function drop(index: number): void {
     if (!course) return
+    closeRowForms()
     void writeItems(course.items.filter((_, i) => i !== index))
   }
 
@@ -185,6 +209,119 @@
       ...course.items,
       { kind: 'seminar', sessionId, name: session.name, publication: null },
     ])
+  }
+
+  /**
+   * Строки плана — прямо в списке курса.
+   *
+   * Одна форма на экран: новая тема (внизу, `target: null`) или правка
+   * существующей (на месте строки). Две открытые сразу держали бы два номера
+   * строк, и после первого сохранения второй указывал бы уже не туда.
+   *
+   * Правка знает, какой строка БЫЛА (course-plan.ts · PlannedTarget): номер
+   * строки после чужой перестановки — это другая неделя, и переименовать её
+   * вместо своей значило бы испортить план молча.
+   */
+  let plan = $state<{ target: PlannedTarget | null; name: string; when: string } | null>(null)
+  /** Строка плана, на место которой выбирают занятие. */
+  let seating = $state<PlannedTarget | null>(null)
+  let planTopic = $state<HTMLInputElement | null>(null)
+
+  const planReady = $derived(plan !== null && plannedRow(plan.name, plan.when) !== null)
+
+  /**
+   * Перестановка или удаление строки сдвигает номера, и открытые на строках
+   * формы закрываются: правка по сдвинутому номеру правила бы соседа. Новая
+   * тема внизу номера не держит и остаётся с набранным.
+   */
+  function closeRowForms(): void {
+    if (plan?.target) plan = null
+    seating = null
+  }
+
+  async function openPlan(at: number | null): Promise<void> {
+    const row = at === null ? null : course?.items[at]
+    seating = null
+    adding = false
+    plan =
+      row?.kind === 'planned' && at !== null
+        ? { target: { at, was: row }, name: row.name, when: row.when }
+        : { target: null, name: '', when: '' }
+    await tick()
+    planTopic?.focus()
+  }
+
+  async function savePlan(): Promise<void> {
+    const draft = plan
+    if (!course || !draft || busy) return
+    const row = plannedRow(draft.name, draft.when)
+    if (!row) {
+      planTopic?.focus()
+      return
+    }
+    const next = putPlanned(course.items, row, draft.target)
+    if (!next) {
+      plan = null
+      errorText = () => tr('admin.course.planRowMoved')
+      return
+    }
+    // Правка закрывается и после гонки: под ней уже другой список.
+    if (draft.target) {
+      if ((await writeItems(next)) !== 'failed') plan = null
+      return
+    }
+    /*
+     * План семестра набирают подряд — пятнадцать тем за один присест. Форма
+     * остаётся открытой, курсор снова в теме: иначе каждая неделя стоила бы
+     * лишнего нажатия «+ Тема по плану».
+     *
+     * Пустеет форма СРАЗУ, а не по ответу. По ответу было так: Enter в поле
+     * недели, курсор остаётся там же, следующая тема печатается в хвост недели
+     * («1–7 сенДеревья»), а пришедший ответ стирает обе строки — на медленном
+     * плече это секунды, и набранное пропадало молча. И «Отмена» посреди
+     * записи открывала форму снова, когда ответ доезжал.
+     *
+     * Не записалось (сбой, 409) — набранное возвращается, если в пустую форму
+     * ещё ничего не начали печатать и её не закрыли: набирать тему заново
+     * из-за сети незачем, а начатое поверх затирать нельзя.
+     */
+    const typed = { name: draft.name, when: draft.when }
+    const writing = writeItems(next)
+    plan = { target: null, name: '', when: '' }
+    const fresh = plan
+    await tick()
+    planTopic?.focus()
+    if ((await writing) === 'ok') return
+    if (plan === fresh && !fresh.name && !fresh.when) plan = { target: null, ...typed }
+  }
+
+  function openSeat(at: number): void {
+    const row = course?.items[at]
+    if (row?.kind !== 'planned') return
+    plan = null
+    adding = false
+    seating = seating?.at === at ? null : { at, was: row }
+  }
+
+  async function seat(sessionId: string): Promise<void> {
+    const target = seating
+    const session = seminars.find((s) => s.id === sessionId)
+    if (!course || !target || !session || busy) return
+    const next = seatSeminar(course.items, target, session)
+    if (!next) {
+      seating = null
+      errorText = () => tr('admin.course.planRowMoved')
+      return
+    }
+    if ((await writeItems(next)) !== 'failed') seating = null
+  }
+
+  function planKeys(event: KeyboardEvent): void {
+    // Enter, которым подтверждают набор в IME, — не «Добавить»: тема ушла бы
+    // недонабранной.
+    if (event.isComposing) return
+    if (event.key === 'Enter') void savePlan()
+    if (event.key === 'Escape') plan = null
   }
 
   /** Семинары, которых в этом курсе ещё нет. */
@@ -238,6 +375,10 @@
     }
     if (drafted === open.id) return
     drafted = open.id
+    // Форма строки плана принадлежит курсу: номер строки из соседнего курса
+    // здесь указывал бы на чужую неделю.
+    plan = null
+    seating = null
     slugDraft = open.slug ?? suggestSlug(open.name)
     nameDraft = open.name
     blurbDraft = open.blurb ?? ''
@@ -449,6 +590,50 @@
     'duration-100 hover:border-faint hover:text-ink disabled:border-line-soft disabled:text-faint'
 </script>
 
+<!--
+  Поля строки плана — одни на новую тему и на правку существующей. Тема
+  обязательна (сервер без неё отказывает), неделя — нет: у темы «на потом»
+  недели ещё может не быть.
+-->
+{#snippet planForm(label: string)}
+  {#if plan}
+    <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      <input
+        bind:this={planTopic}
+        class="h-9 min-w-0 flex-[3_1_200px] border border-line bg-canvas px-3 text-ui text-ink
+               placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+        placeholder={tr('admin.course.plannedTopic')}
+        aria-label={tr('admin.course.plannedTopic')}
+        maxlength={MAX_COURSE_NAME}
+        bind:value={plan.name}
+        onkeydown={planKeys}
+      />
+      <input
+        class="h-9 min-w-0 flex-[1_1_150px] border border-line bg-canvas px-3 text-ui text-ink
+               placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+        placeholder={tr('admin.course.plannedWhen')}
+        aria-label={tr('admin.course.plannedWhenLabel')}
+        maxlength={MAX_PLANNED_WHEN}
+        bind:value={plan.when}
+        onkeydown={planKeys}
+      />
+      <div class="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          class="btn-primary h-9 px-3 text-2xs"
+          disabled={busy || !planReady}
+          onclick={() => void savePlan()}
+        >
+          {label}
+        </button>
+        <button type="button" class="btn-ghost h-9 px-3 text-2xs" onclick={() => (plan = null)}>
+          {tr('admin.cancel')}
+        </button>
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
 {#if !open}
   <AdminPage
     title={tr("admin.courses")}
@@ -458,7 +643,9 @@
       <button type="button" class="btn-primary" onclick={() => (creating = true)}>{tr("admin.new.course")}</button>
     {/snippet}
 
-    <div class="px-8 py-6">
+    <!-- Свой отступ — только от sm: у AdminPage он уже есть, и на телефоне
+         двойной съедал под списком курсов почти треть ширины. -->
+    <div class="py-6 sm:px-8">
       {#if error}
         <p class="pb-4 text-ui text-danger">{error}</p>
       {/if}
@@ -496,16 +683,14 @@
       {/if}
 
       {#each courses as item (item.id)}
-        {@const published = item.items.filter(
-          (i) => i.kind === 'seminar' && i.publication !== null,
-        ).length}
-        {@const waiting = item.items.filter(
-          (i) => i.kind === 'seminar' && i.publication === null,
-        ).length}
-        <div class="flex items-center gap-5 border-b border-line py-3.5">
+        {@const tally = courseTally(item.items)}
+        <!-- flex-wrap и basis-48: со счётом «по плану» строка счёта длиннее,
+             чем осталось места на телефоне, и без переноса она вылезала за
+             край, а название курса сжималось в ноль. -->
+        <div class="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-line py-3.5">
           <button
             type="button"
-            class="min-w-0 flex-1 text-left"
+            class="min-w-0 flex-1 basis-48 text-left"
             onclick={() => navigate(`/admin/courses/${item.id}`)}
           >
             <p class="text-ui-lg font-semibold text-ink">{item.name}</p>
@@ -514,7 +699,8 @@
             <p class="mt-0.5 font-mono text-2xs text-muted">/c/{addressOf(item)}</p>
           </button>
           <p class="shrink-0 text-ui text-muted">
-            {published} {tr("admin.published")} {waiting} {tr("admin.not.yet")}
+            {tally.published} {tr("admin.published")} {tally.waiting} {tr("admin.not.yet")}
+            {#if tally.planned > 0}{tr('admin.course.plannedCount', { count: tally.planned })}{/if}
           </p>
         </div>
       {/each}
@@ -605,7 +791,7 @@
       </button>
     {/snippet}
 
-    <div class="px-8 py-6">
+    <div class="py-6 sm:px-8">
       <button
         type="button"
         class="mb-5 text-ui text-muted transition-colors hover:text-ink"
@@ -750,7 +936,9 @@
             {tr("admin.the.page.is.accessible.by.link.without.signing.in")}
           </p>
         </div>
-        <p class="min-w-0 max-w-[640px] flex-1 text-ui leading-relaxed text-muted">
+        <!-- basis: без неё flex-1 оставался в строке рядом с подписью шириной в
+             тридцать пикселей и вылезал за край, вместо того чтобы уйти ниже. -->
+        <p class="min-w-0 max-w-[640px] flex-1 basis-[260px] text-ui leading-relaxed text-muted">
           {tr("admin.the.course.page.shows.seminar.names.in.the.chosen.order.and.links")}
         </p>
       </div>
@@ -777,44 +965,79 @@
         </div>
       {/if}
 
+      <!--
+        Список — в контейнере со своей шириной: колонка «Публикация» в 290px и
+        стрелки не помещались рядом с названием уже на планшете с открытым
+        меню, а на телефоне название сжималось в столбик и текст публикации
+        ложился поверх него. Точка перелома — по ширине самого списка, а не
+        окна: меню панели съедает разную ширину на разных экранах.
+      -->
+      <div class="course-rows">
       <div class="flex items-center gap-4 pb-2">
         <span class="w-[26px] shrink-0"></span>
         <span class="flex-1 text-micro font-bold uppercase tracking-caps text-muted">{tr("admin.seminar")}</span>
-        <span class="w-[290px] shrink-0 text-micro font-bold uppercase tracking-caps text-muted">
+        <span class="course-head-state w-[290px] shrink-0 text-micro font-bold uppercase tracking-caps text-muted">
           {tr("admin.publication")}
         </span>
         <span class="w-[60px] shrink-0"></span>
       </div>
 
       {#each shown.items as item, index (index)}
-        <div class={ROW}>
+        {@const editing = plan?.target?.at === index}
+        <div class="course-row {ROW}">
           <span class="w-[26px] shrink-0 font-mono text-2xs text-faint">
             {String(index + 1).padStart(2, '0')}
           </span>
-          {#if item.kind === 'planned'}
-            <div class="min-w-0 flex-1">
+          {#if editing}
+            {@render planForm(tr('admin.save'))}
+          {:else if item.kind === 'planned'}
+            <!--
+              Строка плана: тема и неделя, и три действия с ней. «Поставить
+              занятие» — главное из них и потому акцентом, как «Опубликовать» у
+              занятия: это и есть жизнь такой строки — прошла неделя, комната
+              встаёт на её место, нумерация недель не уезжает.
+            -->
+            <div class="course-name min-w-0 flex-1">
               <p class="text-ui text-ink">{item.name}</p>
-              <p class="mt-0.5 text-2xs text-muted">{tr("admin.planned")} {item.when}</p>
+              <p class="mt-0.5 text-2xs text-muted">
+                {tr("admin.planned")}{item.when ? ` · ${item.when}` : ''}
+              </p>
             </div>
-            <div class="flex w-[290px] shrink-0 items-baseline gap-3">
-              <span class="text-ui text-muted">{tr("admin.no.room.yet")}</span>
+            <div class="course-state flex w-[290px] shrink-0 items-baseline gap-3">
               <button
                 type="button"
-                class="text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
+                class="whitespace-nowrap text-ui font-semibold text-accent-text disabled:text-faint"
+                disabled={busy}
+                aria-expanded={seating?.at === index}
+                onclick={() => openSeat(index)}
+              >
+                {tr('admin.course.seat')}
+              </button>
+              <button
+                type="button"
+                class="whitespace-nowrap text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
+                disabled={busy}
+                onclick={() => void openPlan(index)}
+              >
+                {tr('admin.course.editPlanned')}
+              </button>
+              <button
+                type="button"
+                class="whitespace-nowrap text-ui font-semibold text-muted hover:text-ink disabled:text-faint"
                 disabled={busy}
                 onclick={() => drop(index)}
               >
-                {tr("admin.remove.row")}
+                {tr('admin.course.removePlanned')}
               </button>
             </div>
           {:else if item.kind === 'gone'}
-            <div class="min-w-0 flex-1">
+            <div class="course-name min-w-0 flex-1">
               <p class="text-ui text-muted">{item.name}</p>
               <p class="mt-0.5 text-2xs text-muted">
                 {tr("admin.seminar.deleted.position.in.list.kept")}
               </p>
             </div>
-            <div class="flex w-[290px] shrink-0 items-baseline gap-3">
+            <div class="course-state flex w-[290px] shrink-0 items-baseline gap-3">
               <!-- «Публиковать нечего» — правда только когда страницы нет.
                    Комнату удалили, а чтение осталось: с курса до него иначе не
                    дойти, хотя курс — единственный адрес, который дают классу. -->
@@ -840,11 +1063,11 @@
               </button>
             </div>
           {:else}
-            <div class="min-w-0 flex-1">
+            <div class="course-name min-w-0 flex-1">
               <p class="text-ui font-semibold text-ink">{item.name}</p>
               <p class="mt-0.5 font-mono text-2xs text-muted">/s/{item.sessionId}</p>
             </div>
-            <div class="flex w-[290px] shrink-0 items-baseline gap-3">
+            <div class="course-state flex w-[290px] shrink-0 items-baseline gap-3">
               {#if item.publication}
                 <a
                   class="text-ui text-accent-text"
@@ -867,37 +1090,106 @@
               {/if}
             </div>
           {/if}
-          <div class="flex w-[60px] shrink-0 items-center justify-end gap-1">
-            <button
-              type="button"
-              class={ARROW}
-              disabled={index === 0 || busy}
-              aria-label={tr("admin.move.up")}
-              onclick={() => move(index, -1)}
-            >
-              <Icon name="chevron-up" size={11} />
-            </button>
-            <button
-              type="button"
-              class={ARROW}
-              disabled={index === shown.items.length - 1 || busy}
-              aria-label={tr("admin.move.down")}
-              onclick={() => move(index, 1)}
-            >
-              <Icon name="chevron-down" size={11} />
-            </button>
-          </div>
+          <!-- Пока строка правится, стрелок у неё нет: переставленная правка
+               сохранялась бы уже в чужую позицию. -->
+          {#if !editing}
+            <div class="course-moves flex w-[60px] shrink-0 items-center justify-end gap-1">
+              <button
+                type="button"
+                class={ARROW}
+                disabled={index === 0 || busy}
+                aria-label={tr("admin.move.up")}
+                onclick={() => move(index, -1)}
+              >
+                <Icon name="chevron-up" size={11} />
+              </button>
+              <button
+                type="button"
+                class={ARROW}
+                disabled={index === shown.items.length - 1 || busy}
+                aria-label={tr("admin.move.down")}
+                onclick={() => move(index, 1)}
+              >
+                <Icon name="chevron-down" size={11} />
+              </button>
+            </div>
+          {/if}
         </div>
+
+        <!-- Выбор занятия — под самой строкой, а не над списком: в плане на
+             семестр нужная неделя стоит далеко внизу, и панель наверху
+             оказывалась за краем экрана от кнопки, которая её открыла. -->
+        {#if seating && seating.at === index}
+          {@const place = seating}
+          <div class="mb-2.5 ml-[42px] border border-line bg-surface p-3">
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 pb-2.5">
+              <p class="min-w-0 flex-1 text-2xs leading-snug text-muted">
+                {tr('admin.course.seatQuestion', { name: place.was.name })}
+              </p>
+              <button
+                type="button"
+                class="shrink-0 text-2xs font-semibold text-muted hover:text-ink"
+                onclick={() => (seating = null)}
+              >
+                {tr('admin.cancel')}
+              </button>
+            </div>
+            {#if addable.length === 0}
+              <p class="text-ui text-muted">{tr("admin.no.seminars.available.to.add")}</p>
+            {:else}
+              <div class="flex flex-wrap gap-2">
+                {#each addable as session (session.id)}
+                  <button
+                    type="button"
+                    class="border border-line bg-canvas px-3 py-1.5 text-ui text-ink transition-colors
+                           hover:border-faint disabled:text-faint"
+                    disabled={busy}
+                    onclick={() => void seat(session.id)}
+                  >
+                    {session.name}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
       {/each}
 
-      {#if shown.items.length === 0}
+      {#if shown.items.length === 0 && !(plan && !plan.target)}
         <p class="border-t border-line py-8 text-center text-ui text-muted">
           {tr("admin.this.course.has.no.seminars.yet")}
         </p>
       {/if}
 
-      <p class="border-t border-line pt-4 text-2xs text-muted">
+      <!--
+        Новая тема — внизу списка, там, где она и окажется, и с номером, который
+        получит. Кнопка стоит на месте строки, а не в шапке: план набирают подряд,
+        и форма остаётся открытой, пока не нажали «Отмена».
+      -->
+      {#if plan && !plan.target}
+        <div class="course-row {ROW}">
+          <span class="w-[26px] shrink-0 font-mono text-2xs text-faint">
+            {String(shown.items.length + 1).padStart(2, '0')}
+          </span>
+          {@render planForm(tr('admin.course.addToPlan'))}
+        </div>
+      {:else}
+        <div class="border-t border-line py-2.5 pl-[42px]">
+          <button
+            type="button"
+            class="text-ui font-semibold text-accent-text hover:brightness-110 disabled:text-faint"
+            disabled={busy}
+            onclick={() => void openPlan(null)}
+          >
+            {tr('admin.course.addPlanned')}
+          </button>
+        </div>
+      {/if}
+      </div>
+
+      <p class="border-t border-line pt-4 text-2xs leading-relaxed text-muted">
         {tr("admin.use.the.arrows.to.reorder.seminars.the.new.order.appears.when.the")}
+        {tr('admin.course.planHint')}
       </p>
 
       <!-- Удаление живёт внутри самого курса и называет ссылку, которую ломает:
@@ -1061,3 +1353,50 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /*
+   * Узкий список: название — своей строкой, публикация и стрелки — под ним.
+   *
+   * Точка перелома — ширина самого списка (container), а не окна: меню панели
+   * на md занимает 236px, и окно в 768 оставляет списку меньше, чем окно в 640
+   * с узким меню. 559px — это номер, колонка «Публикация» в 290, стрелки и
+   * хоть какое-то место для названия.
+   */
+  .course-rows {
+    container-type: inline-size;
+  }
+
+  @container (max-width: 559px) {
+    /* Номер — у названия, а не посередине двух строк: по центру он читался
+       как номер строки публикации. */
+    .course-row {
+      flex-wrap: wrap;
+      align-items: flex-start;
+      row-gap: 0.5rem;
+    }
+
+    /* Номер 26px и зазор 16px — название забирает остаток первой строки. */
+    .course-name {
+      flex-basis: calc(100% - 42px);
+    }
+
+    .course-state {
+      order: 1;
+      flex: 1 1 0%;
+      width: auto;
+      min-width: 0;
+      margin-left: 42px;
+      flex-wrap: wrap;
+      row-gap: 0.25rem;
+    }
+
+    .course-moves {
+      order: 2;
+    }
+
+    .course-head-state {
+      display: none;
+    }
+  }
+</style>

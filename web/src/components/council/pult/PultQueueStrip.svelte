@@ -2,37 +2,40 @@
   import { tr } from '@shared/i18n'
   import Avatar from '@/components/ui/Avatar.svelte'
   import type { CouncilAttempt } from '@shared/protocol'
-  import { COUNCIL_SHARED_KERNEL_NOTE, type CouncilSettings } from '@shared/notebook'
-  import { requestReason, type KernelView } from '@/lib/council-pult'
+  import type { CouncilSettings } from '@shared/notebook'
+  import { pultDuration, requestReason, timedOutAttempts, timedOutLimit, type KernelView } from '@/lib/council-pult'
   import { clock } from '@/lib/history'
   import { spell } from '@/lib/utils'
 
   interface Props {
     kernel: KernelView
+    /** Регламент ячейки: отсюда очередь знает предел запуска. Меняют его в листе. */
     settings: CouncilSettings
+    /** Вся стопка — ради секции «Остановлены сами»: её работы уже не в очереди. */
+    attempts: readonly CouncilAttempt[]
     names: boolean
     now: number
     /** Retained for callers; global navigation now controls this view. */
     open: boolean
     disabled: boolean
     ontoggle: () => void
-    onpolicy: (value: CouncilSettings['studentRun']) => void
     oninterrupt: () => void
     onapprove: (attempt: CouncilAttempt) => void
     ondecline: (attempt: CouncilAttempt) => void
     onapproveall: () => void
+    onopen: (participantId: string) => void
     onremove: (attempt: CouncilAttempt, event: MouseEvent) => void
   }
 
-  let { kernel, settings, names, now, disabled, onpolicy, oninterrupt, onapprove, ondecline, onapproveall, onremove }: Props = $props()
+  let { kernel, settings, attempts, names, now, disabled, oninterrupt, onapprove, ondecline, onapproveall, onopen, onremove }: Props = $props()
   const running = $derived(kernel.running)
   const elapsed = $derived(running ? Math.max(now - running.run!.startedAt, 0) : 0)
-  const POLICY: { value: CouncilSettings['studentRun']; key: string }[] = [
-    { value: false, key: 'room.pult.v2.queue.policyTeacher' },
-    { value: true, key: 'room.pult.v2.queue.policyEveryone' },
-    { value: 'request', key: 'room.pult.v2.queue.policyRequest' },
-  ]
+  const limitMs = $derived(settings.runLimitSec === null ? null : settings.runLimitSec * 1000)
+  /** Предел вышел, а запуск идёт: SIGINT не взял, и дальше — только руками. */
+  const overLimit = $derived(limitMs !== null && elapsed >= limitMs)
+  const stopped = $derived(timedOutAttempts(attempts))
   const who = (attempt: CouncilAttempt): string => names ? attempt.name : tr('room.pult.v2.queue.anonymous')
+  const firstLine = (text: string): string => text.split('\n').find((line) => line.trim()) ?? ''
 </script>
 
 <div class="queue-view" data-pult-queue>
@@ -54,6 +57,25 @@
             {#if names}<Avatar name={running.name} color={running.color} avatar={running.avatar} size="md" />{/if}
             <strong>{who(running)}</strong><span class="running-time">{spell(elapsed)}</span>
           </div>
+          <!--
+            Предел — там, где он срабатывает.
+            Полоса отвечает на единственный вопрос к чужому запуску, идущему
+            перед всем классом: ждать его или прерывать. Она же и ловит случай,
+            когда ждать бессмысленно: время вышло, а запуск идёт — значит
+            остановка не взяла, и дальше поможет только рука.
+          -->
+          {#if limitMs !== null}
+            <div class="running-limit">
+              <span class="limit-track" aria-hidden="true">
+                <span class="limit-fill" class:over={overLimit} style:width={`${Math.min(100, (elapsed / limitMs) * 100)}%`}></span>
+              </span>
+              <span class="limit-note" class:over={overLimit}>
+                {overLimit
+                  ? tr('room.pult.v2.queue.limitStuck')
+                  : tr('room.pult.v2.queue.limitStops', { duration: pultDuration(settings.runLimitSec!) })}
+              </span>
+            </div>
+          {/if}
         </div>
         <div class="running-actions">
           <button type="button" class="pult-button pult-button--danger" {disabled} onclick={oninterrupt}>{tr('room.pult.v2.queue.interrupt')}</button>
@@ -113,7 +135,7 @@
                 {#if names}<Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="md" />{:else}<span class="anonymous-avatar"></span>{/if}
               </span>
               <strong class="queued-author">{who(attempt)}</strong>
-              <code>{attempt.text.split('\n').find((line) => line.trim()) ?? ''}</code>
+              <code>{firstLine(attempt.text)}</code>
               <button type="button" class="pult-button pult-button--danger" {disabled} data-pult-remove
                 onclick={(event) => onremove(attempt, event)}>{tr('room.ui.78')}</button>
             </li>
@@ -122,27 +144,46 @@
         <p class="queue-order pult-meta">{tr('room.pult.v2.queue.order')}</p>
       {/if}
     </section>
-  </div>
 
-  <section class="queue-policy" aria-label={tr('room.pult.v2.queue.policyTitle')}>
-    <div class="policy-controls">
-      <h3>{tr('room.pult.v2.queue.policyTitle')}</h3>
-      <div class="policy-options">
-        {#each POLICY as item (String(item.value))}
-          <button type="button" class="pult-button" class:pult-button--selected={settings.studentRun === item.value} aria-pressed={settings.studentRun === item.value} {disabled} onclick={() => onpolicy(item.value)}>
-            {tr(item.key)}{settings.studentRun === item.value ? ' ✓' : ''}
-          </button>
-        {/each}
-      </div>
-    </div>
-    <p class="pult-meta shared-note">{tr(COUNCIL_SHARED_KERNEL_NOTE)}</p>
-  </section>
+    <!--
+      Последняя секция — те, кого очередь обогнала.
+      Их в очереди уже нет, и в ленте работ они стоят обычными строками, но
+      вопрос «почему у половины класса нет вывода» задают именно здесь, глядя
+      на очередь. Слева — предел, который сработал: он мог с тех пор
+      поменяться, и число говорит про СВОЙ запуск, а не про сегодняшнее
+      правило.
+    -->
+    {#if stopped.length > 0}
+      <section class="stopped-section" aria-label={tr('room.pult.v2.queue.stoppedTitle', { count: stopped.length })}>
+        <div class="section-heading">
+          <h3 class="stopped-title">{tr('room.pult.v2.queue.stoppedTitle', { count: stopped.length })}</h3>
+          <p class="pult-meta">{tr('room.pult.v2.queue.stoppedNote')}</p>
+        </div>
+        <ul class="attempt-list">
+          {#each stopped as attempt (attempt.participantId)}
+            <li>
+              <button type="button" class="stopped-row" onclick={() => onopen(attempt.participantId)}
+                aria-label={tr('room.pult.v2.queue.stoppedOpen', { name: who(attempt) })}>
+                <span class="stopped-limit">{pultDuration(timedOutLimit(attempt)!)}</span>
+                <span class="avatar-slot" aria-hidden="true">
+                  {#if names}<Avatar name={attempt.name} color={attempt.color} avatar={attempt.avatar} size="md" />{:else}<span class="anonymous-avatar"></span>{/if}
+                </span>
+                <strong class="queued-author">{who(attempt)}</strong>
+                <code>{firstLine(attempt.text)}</code>
+                <time class="pult-meta stopped-time" datetime={new Date(attempt.run!.startedAt).toISOString()}>{clock(attempt.run!.startedAt)}</time>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+  </div>
 </div>
 
 <style>
   .queue-view { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; color: rgb(var(--ink)); }
   .queue-content { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 28px; }
-  .queue-heading, .section-heading, .policy-controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  .queue-heading, .section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
   h2 { font-size: 24px; line-height: 30px; font-weight: 700; }
   .queue-heading p { margin-top: 6px; color: rgb(var(--muted)); font-size: 14px; line-height: 20px; }
   .queue-counts { flex-shrink: 0; }
@@ -175,13 +216,20 @@
   .queued-author { width: 170px; flex-shrink: 0; }
   code { min-width: 0; color: rgb(var(--muted)); font-family: var(--font-mono); font-size: 14px; line-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .queue-order { margin-top: 8px; color: rgb(var(--muted)); }
-  .queue-policy { flex-shrink: 0; padding: 18px 28px; border-top: 1px solid rgb(var(--line)); background: rgb(var(--surface)); }
-  .policy-controls h3 { font-size: 15px; line-height: 20px; }
-  .policy-options { display: flex; flex-wrap: wrap; gap: 8px; }
-  .shared-note { margin-top: 12px; color: rgb(var(--muted)); line-height: 20px; }
+  .running-limit { display: flex; align-items: center; gap: 12px; padding-top: 7px; }
+  .limit-track { flex: 1; min-width: 0; height: 4px; background: rgb(var(--canvas)); }
+  .limit-fill { display: block; height: 100%; background: rgb(var(--accent)); }
+  .limit-fill.over { background: rgb(var(--danger)); }
+  .limit-note { flex-shrink: 0; color: rgb(var(--muted)); font-size: 13px; line-height: 18px; }
+  .limit-note.over { color: rgb(var(--danger)); }
+  .stopped-section { margin-top: 24px; }
+  .stopped-title { color: rgb(var(--muted)); line-height: 22px; }
+  .stopped-row { display: flex; align-items: center; gap: 16px; width: 100%; padding: 12px 0; border-top: 1px solid rgb(var(--line)); text-align: left; cursor: pointer; }
+  .stopped-row:hover { background: rgb(var(--surface)); }
+  .stopped-limit { width: 36px; flex-shrink: 0; color: rgb(var(--danger)); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stopped-time { flex-shrink: 0; }
   @media (max-width: 850px) {
     .queue-content { padding: 20px; }
-    .queue-policy { padding: 16px 20px; }
     .pending-row { flex-wrap: wrap; gap: 12px; }
     .attempt-copy { min-width: 180px; }
     .request-reason { max-width: none; flex-basis: 100%; padding-left: 44px; order: 1; }

@@ -16,6 +16,7 @@ import {
   BLOB_MIMES,
   MAX_COURSE_BLURB,
   MAX_COURSE_NAME,
+  MAX_PLANNED_WHEN,
   MAX_STEPS,
   MAX_STEP_LABEL,
   PUBLICATION_NOT_FOUND,
@@ -184,8 +185,18 @@ export function courseRoutes(): Router {
     const items: CourseItem[] = []
     for (const raw of incoming as Record<string, unknown>[]) {
       if (raw?.kind === 'planned') {
+        /*
+         * Строка плана без темы — отказ словами, а не пропажа.
+         *
+         * Раньше такая строка выбрасывалась молча и ответ был 200: пока строки
+         * плана заводил только скрипт из таблицы, пустых тем он не присылал.
+         * Теперь их набирают руками в панели, и «Добавить» с пустой темой
+         * отвечало бы успехом, после которого строки нет, — нумерация
+         * остальных недель при этом уже не та, что в расписании.
+         */
         const name = str(raw.name, MAX_COURSE_NAME)
-        if (name) items.push({ kind: 'planned', name, when: str(raw.when, 40) })
+        if (!name) return bad(res, tr('server.course.plannedNeedsTopic'))
+        items.push({ kind: 'planned', name, when: str(raw.when, MAX_PLANNED_WHEN) })
         continue
       }
       if (raw?.kind === 'gone') {

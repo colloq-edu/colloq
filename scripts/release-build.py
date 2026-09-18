@@ -84,7 +84,7 @@ def pinned(base):
 def main():
     global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', required=True)
+    parser.add_argument('--version', help='release tag; defaults to v<package.json version> at --source-commit')
     parser.add_argument('--registry', required=True, help='repository prefix, e.g. ghcr.io/owner/colloq')
     parser.add_argument('--k3s-version', required=True)
     parser.add_argument('--environments', default='base,cv,gpu')
@@ -96,13 +96,26 @@ def main():
     args = parser.parse_args()
     if '/' not in args.registry or not release.image_reference(args.registry + '-runtime@sha256:' + '0' * 64):
         parser.error('--registry must be a lowercase registry/repository prefix')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', args.version):
+    if args.version is not None and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', args.version):
         parser.error('invalid release version')
     output = pathlib.Path(args.output).resolve()
     build_context = tempfile.TemporaryDirectory(prefix='colloq-source-')
     # All Dockerfiles, COPY inputs and package lists come from this exact commit.
     # Live tracked edits, ignored files and untracked files never enter the build.
     ROOT = archive_source(ROOT, args.source_commit, pathlib.Path(build_context.name) / 'source')
+    # The release version is the source's version: the root package.json at
+    # that exact commit (release-please bumps every copy together, and
+    # scripts/version.mts check holds them equal).
+    # A free-form --version used to label images independently of the code
+    # inside them, so :v0.2.0 could hold a tree that still called itself 0.1.0.
+    expected = 'v' + str(json.loads((ROOT / 'package.json').read_text()).get('version', ''))
+    if args.version is None:
+        args.version = expected
+    elif args.version != expected:
+        parser.error(f'--version {args.version} does not match package.json at {args.source_commit[:12]} '
+                     f'({expected}); release that version through the release-please pull request and build its tag')
+    if not re.fullmatch(r'v[A-Za-z0-9][A-Za-z0-9._-]{0,62}', args.version):
+        parser.error('package.json at the source commit has no usable version')
     selected = [name for name in args.environments.split(',') if name]
     ordered = {}
     for name in selected:

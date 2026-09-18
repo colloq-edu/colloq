@@ -6,8 +6,9 @@ import { randomUUID } from 'node:crypto'
 import { config } from '../config.js'
 import {
   imageRevision, isRuntimeSessionId, parseRuntimeCatalog, parseRuntimeEnsureRequest,
-  resolveRuntimeEnvironment, RUNTIME_REVISION,
-  type RuntimeCatalog, type RuntimeEndpoint, type RuntimeHealth, type RuntimeRoom,
+  parseRuntimeResizeRequest, resolveRuntimeEnvironment, RUNTIME_MEMORY_MAX_MB, RUNTIME_MEMORY_MIN_MB,
+  RUNTIME_REVISION, parseRuntimeStartFailure, type RuntimeStartFailure,
+  type RuntimeCatalog, type RuntimeEndpoint, type RuntimeHealth, type RuntimeResizeRequest, type RuntimeResizeResult, type RuntimeRoom,
 } from '@shared/runtime'
 
 export type KernelBackend = 'broker' | 'docker' | 'test'
@@ -32,11 +33,23 @@ export function requireKernelIsolation(env: NodeJS.ProcessEnv = process.env): vo
 }
 
 export class RuntimeRequestError extends Error {
-  constructor(message: string, readonly status = 0) { super(message); this.name = 'RuntimeRequestError' }
+  constructor(
+    message: string,
+    readonly status = 0,
+    /** Почему комната не поднялась — словом брокера; преподавателю из него пишут совет (shared/kernel-problem.ts). */
+    readonly failure?: RuntimeStartFailure,
+  ) { super(message); this.name = 'RuntimeRequestError' }
 }
 interface ClientOptions { url: string; tokenFile?: string; token?: string; timeoutMs?: number }
 const TOKEN = /^[A-Za-z0-9_-]{32,256}$/
 const MAX_RESPONSE = 1024 * 1024
+/** Мебибайты от брокера — целые и в границах протокола; иначе ответ не его. */
+const memoryField = (value: unknown): boolean =>
+  value === undefined ||
+  (typeof value === 'number' && Number.isInteger(value) && value >= RUNTIME_MEMORY_MIN_MB && value <= RUNTIME_MEMORY_MAX_MB)
+/** Ядра от брокера — как в переписи комнат: дробные можно (1500m у оператора), мусор нельзя. */
+const cpusField = (value: unknown): boolean =>
+  value === undefined || (typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 64)
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RuntimeRequestError(tr("server.invalidKernelRuntimeResponse.110f37"))
   return value as Record<string, unknown>
@@ -97,6 +110,16 @@ export class RuntimeClient {
     } catch { throw new RuntimeRequestError(tr("server.kernelRuntimeIsUnreachableOrDidNot.86406b")) }
     const value = await boundedJson(response)
     if (!response.ok) {
+      /*
+       * Pod комнаты не встал на узел — и это видит вся комната.
+       *
+       * Текст брокера («node lacks allocatable memory») здесь не годится: он
+       * уходит в ячейку и журнал ядра общего документа, то есть студентам. Им —
+       * короткое и без устройства сервера; преподавателю совет с числами
+       * рисует комната сама по `failure` (см. kernel/index.ts · kernelProblem).
+       */
+      const failure = parseRuntimeStartFailure(value)
+      if (failure) throw new RuntimeRequestError(tr('server.kernel.unschedulable'), response.status, failure)
       const message = value && typeof value === 'object' && typeof (value as Record<string,unknown>).error === 'string'
         ? String((value as Record<string,unknown>).error).slice(0,512)
         : tr("server.kernelRuntimeRefusedTheRequest.39c35d", { p0: response.status })
@@ -104,9 +127,16 @@ export class RuntimeClient {
     }
     return value
   }
-  async ensure(sessionId: string, environment: string, revision?: string, cpus?: number | null): Promise<RuntimeEndpoint> {
+  async ensure(
+    sessionId: string, environment: string, revision?: string, cpus?: number | null, memoryMb?: number | null,
+  ): Promise<RuntimeEndpoint> {
     if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
-    const body = parseRuntimeEnsureRequest({environment,...(revision ? {revision} : {}), ...(cpus != null ? {cpus} : {})})
+    const body = parseRuntimeEnsureRequest({
+      environment, ...(revision ? {revision} : {}), ...(cpus != null ? {cpus} : {}),
+      // Своё число комнаты — или ничего, и тогда умолчание брокера. До 18.09
+      // этого поля не было, и Pod на k3s получал 2Gi при любом числе в форме.
+      ...(memoryMb != null ? {memoryMb} : {}),
+    })
     const value = object(await this.request('POST',`/v1/rooms/${encodeURIComponent(sessionId)}`,body,180000))
     if (typeof value.url !== 'string' || typeof value.token !== 'string' || value.token.length < 16 ||
       /[\r\n]/.test(value.token) || typeof value.instanceId !== 'string' || !value.instanceId ||
@@ -119,6 +149,26 @@ export class RuntimeClient {
     if (!['http:','https:'].includes(target.protocol) || target.username || target.password || target.search || target.hash ||
       !['','/'].includes(target.pathname)) throw new RuntimeRequestError(tr("server.invalidJupyterEndpointUrl.edef18"))
     return {url:value.url, token:value.token, instanceId:value.instanceId,environment,revision:value.revision}
+  }
+  /**
+   * Память и ядра живой комнате — без нового Pod и без потери её Python.
+   *
+   * Поля нет — ресурс не трогается; `null` — умолчание брокера. Pod нет —
+   * `absent`, и это не ошибка: число уже в строке семинара, следующий подъём
+   * возьмёт его оттуда.
+   */
+  async resize(sessionId: string, change: RuntimeResizeRequest): Promise<RuntimeResizeResult> {
+    if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
+    const body = parseRuntimeResizeRequest(change)
+    // Встаёт в очередь комнаты за её подъёмом — отсюда срок как у ensure.
+    const value = object(await this.request('PATCH',`/v1/rooms/${encodeURIComponent(sessionId)}`,body,180000))
+    if (!['applied','pending','absent'].includes(String(value.outcome)) || !memoryField(value.memoryMb) || !cpusField(value.cpus))
+      throw new RuntimeRequestError(tr("server.invalidKernelRuntimeResponse.110f37"))
+    return {
+      outcome:value.outcome as RuntimeResizeResult['outcome'],
+      ...(typeof value.memoryMb === 'number' ? {memoryMb:value.memoryMb} : {}),
+      ...(typeof value.cpus === 'number' ? {cpus:value.cpus} : {}),
+    }
   }
   async stop(sessionId: string, permanent = false): Promise<void> {
     if (!isRuntimeSessionId(sessionId)) throw new RuntimeRequestError(tr("server.invalidSessionIdentifier.0f97c4"))
@@ -134,7 +184,14 @@ export class RuntimeClient {
       const cpus = value.defaultCpus
       if (cpus !== undefined && (typeof cpus !== 'number' || !Number.isFinite(cpus) || cpus <= 0 || cpus > 64))
         throw new RuntimeRequestError(tr("server.invalidKernelRuntimeHealthResponse.dc255b"))
-      return {ok:value.ok,reason:value.ok ? null : value.reason as string | null, ...(typeof cpus === 'number' ? {defaultCpus:cpus} : {})}
+      if (!memoryField(value.defaultMemoryMb) || !memoryField(value.maxMemoryMb))
+        throw new RuntimeRequestError(tr("server.invalidKernelRuntimeHealthResponse.dc255b"))
+      return {
+        ok:value.ok,reason:value.ok ? null : value.reason as string | null,
+        ...(typeof cpus === 'number' ? {defaultCpus:cpus} : {}),
+        ...(typeof value.defaultMemoryMb === 'number' ? {defaultMemoryMb:value.defaultMemoryMb} : {}),
+        ...(typeof value.maxMemoryMb === 'number' ? {maxMemoryMb:value.maxMemoryMb} : {}),
+      }
     } catch(error) { return {ok:false,reason:error instanceof Error ? error.message : tr("server.kernelRuntimeIsUnavailable.44455e")} }
   }
   async catalog(): Promise<RuntimeCatalog> { return parseRuntimeCatalog(await this.request('GET','/v1/catalog')) }
@@ -148,6 +205,7 @@ export class RuntimeClient {
         typeof row.revision!=='string'||!RUNTIME_REVISION.test(row.revision)) throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
       if (row.cpus !== undefined && (typeof row.cpus !== 'number' || !Number.isFinite(row.cpus) || row.cpus <= 0 || row.cpus > 64))
         throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
+      if (!memoryField(row.memoryMb)) throw new RuntimeRequestError(tr("server.invalidRuntimeRoomList.9cdcda"))
       return row as unknown as RuntimeRoom
     })
   }

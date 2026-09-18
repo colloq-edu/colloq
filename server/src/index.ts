@@ -18,7 +18,7 @@ import { tr } from '@shared/i18n'
 // здесь же — это тот самый модуль, а не второй: журнал у процесса один.
 import { startJournal, stopJournal } from './log.js'
 import { retireDatabaseKernels, stopsLocalKernelsOnExit } from './local/kernel-cleanup.js'
-import { dropLocalRoomKernel } from './kernel/pool.js'
+import { dropLocalRoomKernel, warmRoomPerimeter } from './kernel/pool.js'
 import { kernelRetirementInProgress } from './kernel/retirement.js'
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
@@ -37,6 +37,7 @@ import { kernelCensus, shutdownKernels } from './kernel/index.js'
 import { sweepAllStaleUploads } from './workspace.js'
 import { roleFor } from './routes/sessions.js'
 import { app } from './app.js'
+import { COLLOQ_VERSION } from './version.js'
 
 /** A whole notebook's state travels in one sync frame; images make it big. */
 const MAX_WS_PAYLOAD = 16 * 1024 * 1024
@@ -287,7 +288,7 @@ const bindAddr = (process.env.BIND_ADDR ?? '').trim()
 
 server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const)), () => {
   const ai = aiEnabled() ? `on (${config.ai.model})` : 'off'
-  console.log(`colloq ready — open ${config.publicUrl} · ai ${ai} · jupyter ${config.jupyter.url}`)
+  console.log(`colloq ${COLLOQ_VERSION} ready — open ${config.publicUrl} · ai ${ai} · jupyter ${config.jupyter.url}`)
   announceSetupToken()
   announceBind()
   announceJupyterToken()
@@ -305,6 +306,12 @@ server.listen(config.port, ...(bindAddr ? ([bindAddr] as const) : ([] as const))
    * правку console за всё, что модули печатают при загрузке.
    */
   startJournal(() => ({ ...roomCensus(), kernels: kernelCensus() }))
+  /*
+   * Сеть комнат и запрет на локальные адреса — сразу, а не с первым Run:
+   * отказ (нет прав на помощника, чужой файрвол) оператор видит в журнале до
+   * пары, а первая комната не ждёт лишнюю секунду (kernel/perimeter.ts).
+   */
+  void warmRoomPerimeter()
 })
 
 /**

@@ -51,6 +51,9 @@ COPY server/package.json ./package.json
 # видно и правится». Compose поверх монтирует эту же папку с хоста, так что
 # правки из панели переживают пересборку образа.
 COPY kernel/environments ./kernel/environments
+# Образ — копия программы: MIT велит везти текст лицензии с ней, а бандлы
+# несут чужой код под своими лицензиями (THIRD_PARTY_NOTICES.md).
+COPY LICENSE THIRD_PARTY_NOTICES.md ./
 
 RUN mkdir -p /data /workspace && chown -R node:node /data /workspace /app
 USER node
@@ -75,6 +78,7 @@ FROM ${NODE_IMAGE} AS broker
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/runtime/dist/runtime.js ./runtime.js
+COPY LICENSE ./
 USER node
 EXPOSE 8787
 CMD ["node", "runtime.js"]

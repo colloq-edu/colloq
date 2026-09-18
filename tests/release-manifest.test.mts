@@ -31,6 +31,14 @@ test('release validator accepts explicit digests and rejects mutable images and 
     assert.notEqual(result.status, 0, field); assert.match(result.stderr, new RegExp(field))
   }
 })
+test('release refuses a k3s older than in-place Pod resize: the memory field would never reach a live room', () => {
+  const old = release(); old.k3sVersion = 'v1.32.9+k3s1'
+  const refused = run('validate', old)
+  assert.notEqual(refused.status, 0)
+  assert.match(refused.stderr, /v1\.33 or newer/)
+  const floor = release(); floor.k3sVersion = 'v1.33.0+k3s1'
+  assert.equal(run('validate', floor).status, 0)
+})
 test('catalog rejects ambiguous defaults, duplicate current revisions, and unknown schema', () => {
   const value = release(); value.catalog.defaultEnvironment = 'absent'
   assert.notEqual(run('validate', value).status, 0)
@@ -66,7 +74,12 @@ test('render confines broker privileges and isolates credentials and persistent 
   assert.equal(projectedTokenDirectory.startsWith(brokerAuth.mountPath + '/'), false,
     'read-only auth mount must not shadow the service-account projection (/var/run links to /run)')
   assert.equal(brokerEnv.RUNTIME_TOKEN_FILE, `${brokerAuth.mountPath}/runtime-token`)
-  assert.deepEqual(find('Role', 'colloq-runtime').rules, [{ apiGroups: [''], resources: ['pods', 'services'], verbs: ['get', 'list', 'create', 'delete'] }])
+  // Единственная запись сверх create/delete — подресурс resize: память живой
+  // комнате меняют на месте. Сам Pod (образ, команда, монтирования) патчу закрыт.
+  assert.deepEqual(find('Role', 'colloq-runtime').rules, [
+    { apiGroups: [''], resources: ['pods', 'services'], verbs: ['get', 'list', 'create', 'delete'] },
+    { apiGroups: [''], resources: ['pods/resize'], verbs: ['patch'] },
+  ])
   assert.equal(find('PersistentVolume', 'colloq-data').spec.persistentVolumeReclaimPolicy, 'Retain')
   assert.equal(find('PersistentVolume', 'colloq-workspace').spec.local.path, '/var/lib/colloq/workspace')
   assert.equal(find('Service', 'colloq-app').spec.ports[0].nodePort, 30080)
@@ -157,4 +170,70 @@ test('GPU releases require exact host tooling and render a pinned plugin and CUD
   assert.equal(pod.spec.automountServiceAccountToken, false)
   assert.equal(pod.spec.containers[0].resources.limits['nvidia.com/gpu'], 1)
   assert.match(pod.spec.containers[0].command.join(' '), /torch.*cuda/)
+})
+/*
+ * Память комнат по умолчанию и её потолок — у оператора, а не в правке руками.
+ *
+ * До 18.09 Deployment брокера не нёс RUNTIME_KERNEL_MEMORY[_MAX] вовсе: задать
+ * их можно было только `kubectl edit`, и следующий update рендерил Deployment
+ * заново и молча стирал правку. Теперь они едут из того же env-файла, что и
+ * настройки приложения, и только в брокер.
+ */
+function withEnv(text: string, check: (file: string) => void) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-env-'))
+  try {
+    const file = path.join(dir, 'instance.env')
+    fs.writeFileSync(file, text)
+    check(file)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+}
+const brokerEnv = (stdout: string) => {
+  const items = JSON.parse(stdout).items as any[]
+  const broker = items.find(x => x.kind === 'Deployment' && x.metadata.name === 'colloq-runtime')
+  return Object.fromEntries(broker.spec.template.spec.containers[0].env.map((e: any) => [e.name, e.value]))
+}
+test('render puts the operator memory default and ceiling into the broker and nowhere else', () => {
+  withEnv('PUBLIC_URL=https://x.example\nRUNTIME_KERNEL_MEMORY=4Gi\nRUNTIME_KERNEL_MEMORY_MAX="24Gi"\nRUNTIME_KERNEL_CPU=8\nRUNTIME_NAMESPACE=evil\n', file => {
+    const result = run('render', release(), ['--env-file', file])
+    assert.equal(result.status, 0, result.stderr)
+    const env = brokerEnv(result.stdout)
+    assert.equal(env.RUNTIME_KERNEL_MEMORY, '4Gi')
+    assert.equal(env.RUNTIME_KERNEL_MEMORY_MAX, '24Gi')
+    // Только эти два ключа: остальное у брокера закреплено установщиком.
+    assert.equal(env.RUNTIME_KERNEL_CPU, undefined)
+    assert.equal(env.RUNTIME_NAMESPACE, 'colloq')
+    const app = JSON.parse(result.stdout).items.find((x: any) => x.kind === 'Deployment' && x.metadata.name === 'colloq-app')
+    assert.equal(JSON.stringify(app).includes('RUNTIME_KERNEL_MEMORY'), false)
+    // И в Secret приложения они не попадают.
+    const config = run('config', release(), ['--env-file', file])
+    assert.equal(config.status, 0, config.stderr)
+    assert.deepEqual(Object.keys(JSON.parse(config.stdout).stringData), ['PUBLIC_URL'])
+  })
+  // Без файла и с пустыми значениями — умолчания брокера, а не пустая переменная.
+  assert.equal(brokerEnv(run('render').stdout).RUNTIME_KERNEL_MEMORY, undefined)
+  withEnv('RUNTIME_KERNEL_MEMORY=\nRUNTIME_KERNEL_MEMORY_MAX=\n', file => {
+    const env = brokerEnv(run('render', release(), ['--env-file', file]).stdout)
+    assert.equal('RUNTIME_KERNEL_MEMORY' in env || 'RUNTIME_KERNEL_MEMORY_MAX' in env, false)
+  })
+})
+test('render refuses memory the broker would refuse at start: bad quantity, out of bounds, default above ceiling', () => {
+  for (const [text, pattern] of [
+    ['RUNTIME_KERNEL_MEMORY=4G', /RUNTIME_KERNEL_MEMORY must be/],
+    ['RUNTIME_KERNEL_MEMORY=4096M', /RUNTIME_KERNEL_MEMORY must be/],
+    ['RUNTIME_KERNEL_MEMORY=1.5Gi', /RUNTIME_KERNEL_MEMORY must be/],
+    ['RUNTIME_KERNEL_MEMORY_MAX=32Mi', /RUNTIME_KERNEL_MEMORY_MAX must be/],
+    ['RUNTIME_KERNEL_MEMORY_MAX=512Gi', /RUNTIME_KERNEL_MEMORY_MAX must be/],
+    ['RUNTIME_KERNEL_MEMORY=8Gi\nRUNTIME_KERNEL_MEMORY_MAX=4Gi', /exceeds RUNTIME_KERNEL_MEMORY_MAX/],
+    // Умолчание брокера 2Gi: потолок ниже него брокер не принял бы при старте.
+    ['RUNTIME_KERNEL_MEMORY_MAX=1Gi', /\(2Gi\) exceeds/],
+  ] as const) {
+    withEnv(text + '\n', file => {
+      const result = run('render', release(), ['--env-file', file])
+      assert.notEqual(result.status, 0, text)
+      assert.match(result.stderr, pattern, text)
+    })
+  }
+  withEnv('RUNTIME_KERNEL_MEMORY=1536Mi\nRUNTIME_KERNEL_MEMORY_MAX=1536Mi\n', file => {
+    assert.equal(run('render', release(), ['--env-file', file]).status, 0)
+  })
 })

@@ -180,7 +180,7 @@ test('пульт, выданный по куке, отбирается вмес�
    * token_host, и снятый из штата преподаватель оставался ведущим навсегда в
    * каждой комнате, где хоть раз нажал «Пульт».
    */
-  const teacher = createTeacher({ name: 'Нина', email: 'nina.handoff@hse.ru', role: 'teacher' })
+  const teacher = createTeacher({ name: 'Нина', email: 'nina.handoff@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   const cookie = mintCookie(teacher)

@@ -11,10 +11,12 @@ RELEASE="${RELEASE_MANIFEST:-}"
 ENV_FILE=""
 REGISTRY_CONFIG=""
 PUBLIC_URL=""
+EXPECT_URL=""
 if [ "$CMD" = public-url ]; then PUBLIC_URL="${1:-}"; [ "$#" -eq 0 ] || shift; fi
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --release) RELEASE="${2:?--release requires a file}"; shift 2 ;;
+    --if-current) EXPECT_URL="${2:?--if-current requires a URL}"; shift 2 ;;
     --env-file) ENV_FILE="${2:?--env-file requires a file}"; shift 2 ;;
     --registry-config) REGISTRY_CONFIG="${2:?--registry-config requires docker config JSON}"; shift 2 ;;
     --*) printf 'unknown argument: %s\n' "$1" >&2; exit 1 ;;
@@ -48,6 +50,21 @@ data_release() {
   if [ -f "$STATE/recovery/release.json" ]; then printf '%s\n' "$STATE/recovery/release.json";
   else printf '%s\n' "$STATE/releases/current.json"; fi
 }
+# Файл оператора, по которому рендерится брокер: новый --env-file или
+# config.env прошлой установки — тот же выбор, что делает prepare. Из него
+# брокер получает RUNTIME_KERNEL_MEMORY[_MAX]; без этого память комнат по
+# умолчанию задавалась только правкой Deployment, и update её стирал.
+operator_env() {
+  if [ -n "$ENV_FILE" ]; then printf '%s\n' "$ENV_FILE"
+  elif [ -r "$STATE/config.env" ]; then printf '%s\n' "$STATE/config.env"; fi
+}
+# Проверить эти числа, пока ничего не остановлено: иначе плохое значение
+# всплыло бы после бэкапа и остановки комнат — или CrashLoop-ом брокера.
+check_operator_env() {
+  local file
+  file="$(operator_env)"
+  [ -z "$file" ] || release render --release "$1" --state-dir "$STATE" --env-file "$file" >/dev/null
+}
 
 case "$CMD" in
   validate|render|prepare|install|update|rollback)
@@ -57,16 +74,20 @@ case "$CMD" in
 esac
 case "$CMD" in
   validate) exec python3 "$SCRIPT_DIR/release.py" validate --release "$RELEASE" ;;
-  render) exec python3 "$SCRIPT_DIR/release.py" render --release "$RELEASE" --state-dir "$STATE" --node-name "${COLLOQ_NODE_NAME:-colloq}" ;;
+  render)
+    runtime=(); env_file="$(operator_env)"; [ -z "$env_file" ] || runtime=(--env-file "$env_file")
+    exec python3 "$SCRIPT_DIR/release.py" render --release "$RELEASE" --state-dir "$STATE" --node-name "${COLLOQ_NODE_NAME:-colloq}" ${runtime[@]+"${runtime[@]}"} ;;
   help)
     cat <<'HELP'
 cluster.sh validate|render --release FILE       inspect before host changes
 cluster.sh prepare --release FILE [--env-file FILE] [--registry-config FILE]
                                                install resources, all writers stopped
-cluster.sh install|update|rollback --release FILE
+cluster.sh install|update|rollback --release FILE [--env-file FILE]
                                                prepare, start, verify readiness
+                                               (env file: app settings, RUNTIME_KERNEL_MEMORY[_MAX])
 cluster.sh start|stop|status|logs                manage the installed application
 cluster.sh public-url https://example.edu       update public URL, restart app if running
+cluster.sh public-url URL --if-current OLD      only while it is still OLD; exit 4 otherwise
 cluster.sh smoke|gpu-preflight                 disposable room/CUDA execution checks
 
 State: /var/lib/colloq (COLLOQ_STATE_DIR overrides). App: 127.0.0.1:30080.
@@ -295,7 +316,7 @@ elif len(nodes)==1:
 }
 
 prepare() {
-  local effective node current policy_version data extras=()
+  local effective node current policy_version data extras=() runtime=()
   guard_restore
   mkdir -p "$STATE/releases" "$STATE/secrets" "$STATE/data" "$STATE/workspace"
   chmod 0750 "$STATE/data" "$STATE/workspace"
@@ -311,6 +332,7 @@ prepare() {
     release merge --release "$effective" --previous "$STATE/recovery/release.json" --data-release "$data" > "$effective.recovery"
     mv "$effective.recovery" "$effective"
   fi
+  check_operator_env "$effective"
   RELEASE="$effective" bootstrap
   need_cluster
   node="$(wait_for_node)"
@@ -350,7 +372,8 @@ prepare() {
   elif ! k get secret colloq-app-config >/dev/null 2>&1; then
     release config --release "$effective" | k apply -f - >/dev/null
   fi
-  release render --release "$effective" --node-name "$node" --state-dir "$STATE" | k apply -f -
+  [ ! -f "$STATE/config.env" ] || runtime=(--env-file "$STATE/config.env")
+  release render --release "$effective" --node-name "$node" --state-dir "$STATE" ${runtime[@]+"${runtime[@]}"} | k apply -f -
   [ ! -f "$current" ] || cp "$current" "$STATE/releases/previous.json"
   mv "$effective" "$current"
   printf 'Release prepared; all writers stopped. Restore if needed, then cluster.sh start.\n'
@@ -398,6 +421,7 @@ case "$CMD" in
     # Validate schema compatibility before taking writers down for a backup.
     data="$(data_release)"
     release merge --release "$RELEASE" --previous "$STATE/releases/current.json" --data-release "$data" >/dev/null
+    check_operator_env "$RELEASE"
     [ -x "$SCRIPT_DIR/backup.sh" ] || die 'backup.sh is required before an update'
     MODE=consistent RESUME=0 RELEASE="$data" COLLOQ_STATE_DIR="$STATE" "$SCRIPT_DIR/backup.sh"
     prepare; start ;;
@@ -429,7 +453,7 @@ PY
   public-url)
     need_cluster
     changed=0
-    PUBLIC_URL="$PUBLIC_URL" STATE="$STATE" python3 - <<'PY' || changed=$?
+    PUBLIC_URL="$PUBLIC_URL" EXPECT_URL="$EXPECT_URL" STATE="$STATE" python3 - <<'PY' || changed=$?
 import os, pathlib, urllib.parse
 url = os.environ['PUBLIC_URL']
 parsed = urllib.parse.urlsplit(url)
@@ -440,11 +464,23 @@ lines = file.read_text().splitlines() if file.exists() else []
 current = next((x[11:] for x in reversed(lines) if x.startswith('PUBLIC_URL=')), None)
 if current == url:
     raise SystemExit(3)
+# --if-current: снять адрес может только тот, кто его ставил. scripts/host.sh
+# на выходе возвращает localhost, и без этой сверки его уборка затирала адрес,
+# который за это время поставил кто-то другой (второй туннель, оператор руками),
+# — живая ссылка молча превращалась в localhost. Сверка стоит здесь, под замком
+# состояния, рядом с записью: сверить снаружи и записать потом — это гонка.
+expected = os.environ.get('EXPECT_URL') or ''
+if expected and current != expected:
+    raise SystemExit(4)
 temp = file.with_suffix('.tmp')
 temp.write_text('\n'.join([x for x in lines if not x.startswith('PUBLIC_URL=')] + ['PUBLIC_URL=' + url, '']))
 temp.replace(file)
 PY
     [ "$changed" != 3 ] || exit 0
+    if [ "$changed" = 4 ]; then
+      printf 'cluster: public URL is no longer %s; left unchanged\n' "$EXPECT_URL" >&2
+      exit 4
+    fi
     [ "$changed" = 0 ] || die 'could not update public URL'
     release config --release "$STATE/releases/current.json" --env-file "$STATE/config.env" | k apply -f - >/dev/null
     if [ "$(k get deployment colloq-app -o jsonpath='{.spec.replicas}')" != 0 ]; then

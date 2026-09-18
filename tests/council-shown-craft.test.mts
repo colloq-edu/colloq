@@ -154,20 +154,23 @@ test('вывод на проекторе — строками текста, бе
 
 /* ------------------------------------------------------------- ручка имён */
 
-test('ручка «имена на проекторе» стоит рядом с показом — в пульте, а не в тетради', () => {
+test('ручка «имена на проекторе» стоит в регламенте ячейки — в пульте, а не в тетради', () => {
   /*
-   * Решение «подписывать ли на стене именем» принимают за секунду до показа, а
-   * не за день, и стоять ручка должна рядом с тем, что печатает имя. Показывает
-   * классу пульт — там же, в его строке состояния, и ручка.
+   * Решение «подписывать ли на стене именем» — правило ЯЧЕЙКИ, наравне с тем,
+   * кому дозволен запуск: обе ручки про то, что можно классу, и обе меняют за
+   * секунду до показа. Стояла она переключателем в строке состояния и уехала
+   * на лист регламента ко всем четырём; в строке состояния осталось зеркало
+   * зала — что он видит сейчас.
    */
+  const rules = code(read('web/src/components/council/pult/PultRules.svelte'))
   const status = code(read('web/src/components/council/pult/PultStatusLine.svelte'))
   const window = code(read('web/src/components/council/pult/PultWindow.svelte'))
-  assert.match(status, /role="switch"/, 'ручка — переключатель, а не строка текста')
-  assert.match(status, /aria-checked=\{names\}/)
-  assert.match(status, /tr\('room\.pult\.v2\.names'\)/)
-  assert.match(status, /onclick=\{\(\) => onnames\(!names\)\}/)
-  assert.match(window, /function setNames\(namesOnProjector: boolean\): void/)
-  assert.match(window, /session\.council\.lock\(cellId, 'council', \{ namesOnProjector \}\)/)
+  assert.match(rules, /room\.pult\.v2\.rules\.screenNamesOption/, 'ряд «на экране класса» пропал')
+  assert.match(rules, /room\.pult\.v2\.rules\.screenAnonOption/)
+  assert.match(rules, /onchange\(\{ namesOnProjector: value \}\)/)
+  assert.doesNotMatch(status, /namesOnProjector|role="switch"/, 'ручка вернулась в строку состояния')
+  assert.match(window, /function setRule\(patch: Partial<CouncilSettings>\): void/)
+  assert.match(window, /session\.council\.lock\(cellId, 'council', patch\)/)
   // И в тетради её нет: меню замка — три положения и ничего больше.
   assert.doesNotMatch(CELL, /namesOnProjector/, 'ручка имён вернулась в меню замка')
   assert.match(translate('ru', 'room.ui.1258'), /^Имена на проекторе$/)

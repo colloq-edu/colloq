@@ -22,6 +22,7 @@ import {
   cellLock,
   cloneCell,
   councilSettingsOf,
+  DEFAULT_COUNCIL,
   createCell,
   findCell,
   isCellCouncil,
@@ -150,14 +151,16 @@ test('консилиум — третье положение того же кл�
   assert.equal(isCellCouncil(cell), true)
   assert.equal(cellLock(cell), 'council')
   // Ручки с умолчаниями на каждое поле отдельно: ключа нет — запуск студентам
-  // выключен, имена на проекторе включены.
-  assert.deepEqual(councilSettingsOf(cell), { studentRun: false, namesOnProjector: true })
+  // выключен, имена на проекторе включены, регламент умолчаний. Сравнение с
+  // `DEFAULT_COUNCIL` целиком, а не перечислением: ручка, добавленная завтра,
+  // должна приезжать своим умолчанием, а не ронять эту строку.
+  assert.deepEqual(councilSettingsOf(cell), DEFAULT_COUNCIL)
   cell.set('council', { studentRun: true })
-  assert.deepEqual(councilSettingsOf(cell), { studentRun: true, namesOnProjector: true })
+  assert.deepEqual(councilSettingsOf(cell), { ...DEFAULT_COUNCIL, studentRun: true })
   const snap = readCell(cell)
   assert.equal(snap.open, false, 'снимок сказал «печатать можно»')
   assert.equal(snap.lock, 'council')
-  assert.deepEqual(snap.council, { studentRun: true, namesOnProjector: true })
+  assert.deepEqual(snap.council, { ...DEFAULT_COUNCIL, studentRun: true })
   // А вне консилиума ручек нет, какой бы мусор ни остался в ключе.
   cell.set('open', true)
   assert.equal(cellLock(cell), 'open')
@@ -177,6 +180,7 @@ test('перестановка соседа не теряет консилиум
   }, 'server')
   assert.equal(cellLock(cellAt(server, 2)), 'council')
   assert.deepEqual(councilSettingsOf(cellAt(server, 2)), {
+    ...DEFAULT_COUNCIL,
     studentRun: true,
     namesOnProjector: false,
   })

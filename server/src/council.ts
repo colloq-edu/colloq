@@ -575,8 +575,58 @@ export function cellsOfParticipant(sessionId: string, participantId: string): st
  */
 const runFor = new Map<string, string>()
 
+/**
+ * Запуск, который идёт, — СВОЙ для автора попытки.
+ *
+ * Своими считаются два: прямое нажатие студента и одобренная его просьба.
+ * Второе по `CouncilRun.by` не узнать — там записан тот, кто НАЖАЛ, а
+ * «одобрить» нажимает преподаватель, — но ядро в обоих случаях потратило время
+ * на этого человека, и пауза между запусками (notebook.ts · rerunPauseSec)
+ * обязана считаться одинаково. Иначе режим «по просьбе» — единственный, где
+ * паузы нет вовсе, а нужна она там же, где и везде.
+ *
+ * Запуск, который преподаватель завёл сам, разглядывая чужое решение, паузы
+ * автору не ставит: тот не просил и мог о нём не знать.
+ */
+const ownRun = new Set<string>()
+
+/**
+ * Когда кончился последний свой запуск — от этой засечки идёт пауза.
+ *
+ * В памяти, а не в базе, и это осознанно: перезапуск сервера забудет
+ * тридцатисекундную паузу у полусотни человек, и не случится ничего — очередь
+ * к тому времени пуста, а ядро всё равно поднимается заново. Столбца в таблице
+ * и записи на каждый конец запуска это не стоит.
+ *
+ * Хранится КОНЕЦ запуска, а не срок, до которого нельзя: преподаватель меняет
+ * паузу посреди пары, и «правила действуют сразу» значит, что уже отстоявшие
+ * считаются по новому числу, а не по тому, которое им когда-то записали.
+ */
+const ownRunEnded = new Map<string, number>()
+
 function runKey(sessionId: string, cellId: string, participantId: string): string {
   return `${sessionId}\u0000${cellId}\u0000${participantId}`
+}
+
+/**
+ * С какой секунды автор снова может запускать; `null` — хоть сейчас.
+ *
+ * Считается на каждый вопрос из конца прошлого запуска и ТЕКУЩЕЙ паузы: ручка,
+ * снятая преподавателем, отпускает всех немедленно, а поставленная — достаёт и
+ * тех, кто уже отстрелялся.
+ */
+export function nextRunAtFor(
+  sessionId: string,
+  cellId: string,
+  participantId: string,
+  pauseSec: number,
+  now: number = Date.now(),
+): number | null {
+  if (pauseSec <= 0) return null
+  const ended = ownRunEnded.get(runKey(sessionId, cellId, participantId))
+  if (ended === undefined) return null
+  const at = ended + pauseSec * 1000
+  return at > now ? at : null
 }
 
 /**
@@ -618,8 +668,22 @@ export function recordRun(
    */
   if (run.state === 'queued') {
     runFor.set(key, prior.text)
+    // Чей это запуск — решается здесь, пока просьба ещё видна: строкой ниже
+    // `runRequest` снимается, и по кадрам самого запуска одобренную просьбу от
+    // преподавательского любопытства уже не отличить (см. `ownRun`).
+    if (run.by === 'author' || prior.runRequest?.status === 'pending') ownRun.add(key)
+    else ownRun.delete(key)
     save({ ...prior, run, runRequest: null })
     return true
+  }
+  /*
+   * Засечка для паузы ставится ДО проверки на опоздавший кадр: ядро потратило
+   * на этого человека своё время независимо от того, успел ли он за минуту
+   * ожидания переписать лист. Иначе пауза снималась бы одной правкой текста —
+   * то есть ровно тем движением, которое делают перед новым запуском.
+   */
+  if ((run.state === 'ok' || run.state === 'error') && ownRun.delete(key)) {
+    ownRunEnded.set(key, Date.now())
   }
   if (runFor.get(key) !== prior.text) return false
   save({ ...prior, run })
@@ -807,7 +871,12 @@ export function purgeAttempts(sessionId: string, participantId: string): number 
     if (cell.delete(participantId)) gone++
     // Строки нет — значит, и кадру запуска ложиться некуда: отпечаток можно
     // забыть вместе с ней. Саму запись в очереди ядра снимает control.ts.
-    runFor.delete(runKey(sessionId, cellId, participantId))
+    // Заодно уходит и пауза до следующего запуска: человека в комнате больше
+    // нет, а вернувшись после снятия бана, он начинает с чистого листа.
+    const key = runKey(sessionId, cellId, participantId)
+    runFor.delete(key)
+    ownRun.delete(key)
+    ownRunEnded.delete(key)
   }
   deleteOfPerson.run(sessionId, participantId)
   return gone
@@ -828,6 +897,8 @@ export function discardCouncil(sessionId: string): void {
   cache.delete(sessionId)
   const prefix = `${sessionId}\u0000`
   for (const key of runFor.keys()) if (key.startsWith(prefix)) runFor.delete(key)
+  for (const key of ownRun) if (key.startsWith(prefix)) ownRun.delete(key)
+  for (const key of ownRunEnded.keys()) if (key.startsWith(prefix)) ownRunEnded.delete(key)
   deleteOfRoom.run(sessionId)
   deleteOraclesOfRoom.run(sessionId)
   deleteSeedsOfRoom.run(sessionId)
@@ -850,6 +921,8 @@ function statusOf(attempt: StoredAttempt): CouncilStatus {
  *
  * `queue` — место в очереди на запуск, если попытка ждёт; его знает ядро, и
  * control.ts передаёт его сюда, чтобы снимок собирался в одном месте.
+ * `pauseSec` — ручка паузы между запусками с той же ячейки, и приходит она
+ * оттуда же и по тому же доводу: ячейку читает control.ts.
  *
  * `seed` — задание (`rememberSeed`), и едет оно в ОБЕИХ ветках. В первой ради
  * него всё и написано: пустой лист засевается заданием, а не тем, что в ячейке
@@ -864,10 +937,19 @@ export function mineFor(
   participantId: string,
   closed: boolean,
   queue: number | null = null,
+  pauseSec = 0,
 ): CouncilMine | null {
   const attempt = attemptOf(sessionId, cellId, participantId)
   const seed = seedOf(sessionId, cellId)
   const task = seed === null ? {} : { seed }
+  /*
+   * Отсчёт до следующего запуска — поле, а не право: право сервер держит сам и
+   * откажет без всякого поля. Это для того, чтобы на месте кнопки стоял отсчёт,
+   * а не кнопка, отвечающая отказом. Нет паузы — нет и поля: пустая строка в
+   * каждом из пятисот листов на каждый кадр ничего не рассказывает.
+   */
+  const nextRunAt = nextRunAtFor(sessionId, cellId, participantId, pauseSec)
+  const wait = nextRunAt === null ? {} : { nextRunAt }
   if (!attempt) {
     if (closed) return null
     // Консилиум открыт, а попытки ещё нет: пустой лист, чтобы клиент знал,
@@ -884,6 +966,7 @@ export function mineFor(
       queue: null,
       closed,
       ...task,
+      ...wait,
     }
   }
   return {
@@ -900,6 +983,7 @@ export function mineFor(
     queue,
     closed,
     ...task,
+    ...wait,
   }
 }
 

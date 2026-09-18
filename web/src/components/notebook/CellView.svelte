@@ -80,6 +80,7 @@
     sheetSeed,
     watchCellLock,
   } from '@/lib/council.svelte'
+  import { pauseClock, pauseLeftMs } from '@/lib/council-pause'
   import { clock } from '@/lib/history'
   import CouncilOnScreen from '@/components/council/CouncilOnScreen.svelte'
   import {
@@ -680,10 +681,21 @@
    * Путь у неё свой, не `/ai/ask`: тот пишет вопрос и ответ в общую ленту, а
    * тексты консилиума частные. Ответ приходит письмом в саму попытку
    * (`council:hint` в control.ts), и виден он тем же двоим, что видят её текст.
+   *
+   * Остановленный пределом запуск кнопки не получает вовсе (`run.timedOut`).
+   * Упал он не о код: сервер прервал его по регламенту ячейки, трейсбека нет, а
+   * есть одна переведённая строка про предел — и модели остаётся гадать по
+   * тексту попытки, то есть решать за студента. Вдобавок вопрос стоит места в
+   * лимите комнаты, а ответ на него человек уже прочитал в выводе: сократите
+   * расчёт и запустите снова.
    */
   const hint = $derived(session.council.hints[id] ?? null)
   const mayHint = $derived(
-    !councilClosed && mine?.run?.state === 'error' && mayAttempt && session.connected,
+    !councilClosed &&
+      mine?.run?.state === 'error' &&
+      !mine.run.timedOut &&
+      mayAttempt &&
+      session.connected,
   )
   /** Вопрос «вернуть?» — на месте кнопки, без окна браузера. */
   let restoreAsking = $state(false)
@@ -757,6 +769,14 @@
   const RUN_HINT_MS = 2000
 
   function sheetRunKey(): void {
+    // Пауза — прежде всех веток: пока идёт отсчёт (ниже · runPaused), клавиша
+    // не шлёт ничего, потому что сервер это всё равно отвергнет, а отказ здесь
+    // стоил бы тоста на каждое нажатие. Ответ — вспышка чипа, и он же кончится
+    // сам.
+    if (runPaused) {
+      nudgePause()
+      return
+    }
     if (councilSettings.studentRun === 'request' && mayRequestRun) {
       requestAttemptRun()
       return
@@ -792,6 +812,65 @@
   }
 
   $effect(() => () => window.clearTimeout(flashTimer))
+
+  /* ---- пауза между запусками: отсчёт на месте кнопки */
+
+  /**
+   * Свой тик — и только пока есть что отсчитывать.
+   *
+   * Секундомер ячейки (`now` ниже) для этого не годится дважды: он бьёт пятую
+   * долю секунды и живёт ровно столько, сколько ЯЧЕЙКА считается, — а пауза
+   * идёт как раз после того, как всё кончилось. Заводится он поэтому от самой
+   * паузы и снимается, как только она вышла: иначе в тетради на сорок ячеек
+   * консилиума до конца пары висело бы сорок интервалов ни для чего.
+   *
+   * Полсекунды, а не секунда: интервал заводится не по границе секунды, и на
+   * целом шаге цифра менялась бы с опозданием до секунды — отсчёт, отстающий от
+   * часов, читается как зависший.
+   */
+  let pauseNow = $state(Date.now())
+  const pauseLeft = $derived(
+    pauseLeftMs(mine?.nextRunAt, pauseNow, session.clockSkewMs, councilSettings.rerunPauseSec),
+  )
+  const pauseTicking = $derived(pauseLeft > 0)
+  $effect(() => {
+    if (!pauseTicking) return
+    const id = window.setInterval(() => (pauseNow = Date.now()), 500)
+    return () => window.clearInterval(id)
+  })
+
+  /**
+   * Отсчёт СТОИТ НА МЕСТЕ КНОПКИ — и только там, где кнопка была бы.
+   *
+   * У сданной попытки и у той, что уже ждёт очереди, место занято тем, что
+   * важнее; там, где запускает преподаватель, паузы нет вовсе — правило про
+   * повтор СВОЕГО запуска. Ноль в `pauseLeft` возвращает кнопку сам, тиком:
+   * спрашивать сервер о конце паузы не у кого и незачем — он то же самое число
+   * и прислал.
+   */
+  const runPaused = $derived(
+    pauseLeft > 0 && submittedAt === null && !runWaiting && (mayRunAttempt || mayRequestRun),
+  )
+
+  /**
+   * ⇧↵ во время паузы — вспышка отсчёта, а не запрос, который отвергнут.
+   *
+   * Клавиша обязана соглашаться с кнопкой: кнопки на экране нет, значит и
+   * сообщения на сервер нет. Иначе каждое нажатие стоило бы отказа — тоста
+   * поверх набора и строки в журнале, — и всё это ради правила, о котором в
+   * подвале уже написано словами. Мигает сам отсчёт, тем же движением, что и
+   * кнопка сдачи на ⌘⇧↵: смотреть надо туда.
+   */
+  let pauseNudge = $state(false)
+  let nudgeTimer: number | undefined
+
+  function nudgePause(): void {
+    window.clearTimeout(nudgeTimer)
+    pauseNudge = true
+    nudgeTimer = window.setTimeout(() => (pauseNudge = false), FLASH_MS)
+  }
+
+  $effect(() => () => window.clearTimeout(nudgeTimer))
 
   /* ---- замок в три положения */
 
@@ -2983,6 +3062,33 @@
                             onclick={cancelAttemptRunRequest}
                           >{requestSending?.action === 'cancel' ? tr('room.ui.360') : tr('room.ui.1238')}</button>
                         {/if}
+                      </span>
+                    {:else if runPaused}
+                      <!--
+                        Отсчёт — в ТОМ ЖЕ МЕСТЕ и тем же чипом, что «В очереди:
+                        3», но без акцента: очередь — про твой запуск, который
+                        уже идёт, а пауза — правило преподавателя, и тревожить
+                        ею незачем. Кромка и приглушённый текст говорят ровно
+                        это: не беда и не действие, а условие.
+
+                        `aria-live="off"` при `role="status"`: цифра меняется
+                        дважды в секунду, и обычная вежливая лента заставила бы
+                        экранный диктор читать её весь отсчёт. Имя при этом
+                        несёт и остаток, и причину целиком — их и прочитают,
+                        когда дойдут до чипа.
+                      -->
+                      <span
+                        class={cn(
+                          CAPS,
+                          'inline-flex h-7 items-center border px-3 tabular-nums',
+                          pauseNudge ? 'border-ink text-ink' : 'border-line text-muted',
+                        )}
+                        role="status"
+                        aria-live="off"
+                        aria-label={`${tr('room.council.nextRun', { p0: pauseClock(pauseLeft) })} · ${tr('room.council.nextRunWhy')}`}
+                        title={tr('room.council.nextRunWhy')}
+                      >
+                        {tr('room.council.nextRun', { p0: pauseClock(pauseLeft) })}
                       </span>
                     {:else if mayRunAttempt || mayRequestRun}
                       <!--

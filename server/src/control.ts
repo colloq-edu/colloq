@@ -38,6 +38,8 @@ import {
   cellSource,
   cellType,
   councilSettingsOf,
+  COUNCIL_RERUN_PAUSE_MAX,
+  COUNCIL_RUN_LIMIT_MAX,
   DEFAULT_COUNCIL,
   findCell,
   findChatEntry,
@@ -53,6 +55,7 @@ import {
   type KernelStatus,
 } from '@shared/notebook'
 import { colorForId } from '@shared/protocol'
+import { durationWords } from '@shared/text'
 import type {
   ControlClientMessage,
   ControlServerMessage,
@@ -121,6 +124,7 @@ import {
   councilQueuePositions,
   queueIsOnly,
   requestCouncilRun,
+  retimeCouncilRun,
   startedTheRunningCell,
 } from './kernel/index.js'
 import {
@@ -134,6 +138,7 @@ import {
   countsFor,
   discardCouncil,
   mineFor,
+  nextRunAtFor,
   purgeAttempts,
   recordRun,
   rememberSeed,
@@ -1142,6 +1147,19 @@ const notesOpen = new WeakMap<WebSocket, string>()
 const COUNCIL_CLOSED = () => tr("server.councilIsClosedYourTextRemainsIn.b08319")
 
 /**
+ * Отказ по паузе между запусками — с тем же числом, что тикает под кнопкой.
+ *
+ * Секунды округляются ВВЕРХ, и это не мелочь: отказ «через 0 с» читается как
+ * поломка, а нажатие ровно в ту миллисекунду, которую назвал прошлый отказ,
+ * должно проходить, а не встречать «через 0 с» второй раз.
+ */
+function rerunPauseNote(until: number): string {
+  return tr("server.yourNextRunIsInTheTeacher.95d4f8", {
+    p0: durationWords(Math.ceil(Math.max(0, until - Date.now()) / 1000)),
+  })
+}
+
+/**
  * Сказать всем преподавателям комнаты — и никому больше.
  *
  * Не `toHosts`: тот отбирает ещё и по документу заметок. Стопка консилиума —
@@ -1176,15 +1194,24 @@ function teachersOnline(sessionId: string): boolean {
 }
 
 /**
+ * Ячейка консилиума одним чтением: замок и ручки.
+ *
+ * Именем, а не парой полей по месту: то и другое читают вместе — лист студента
+ * спрашивает у одной и той же ячейки и «идёт ли консилиум», и «какая тут
+ * пауза», — а ячейку ищут по всем тетрадям комнаты.
+ */
+interface CouncilCell {
+  lock: CellLock
+  settings: CouncilSettings
+}
+
+/**
  * Положение замка и ручки — из документа, где их записал сервер.
  *
  * Ячейки нет — замок закрыт: попытку в неё не принять, а стопка по ней всё ещё
  * собирается (попытки остаются на просмотр), только с закрытым замком.
  */
-function councilCellOf(
-  sessionId: string,
-  id: string,
-): { lock: CellLock; settings: CouncilSettings } {
+function councilCellOf(sessionId: string, id: string): CouncilCell {
   const found = findCell(getSessionDoc(sessionId).doc, id)
   if (!found) return { lock: 'closed', settings: DEFAULT_COUNCIL }
   return { lock: cellLock(found.cell), settings: councilSettingsOf(found.cell) ?? DEFAULT_COUNCIL }
@@ -1391,10 +1418,10 @@ function mineOut(
   sessionId: string,
   cellId: string,
   participantId: string,
-  lock?: CellLock,
+  cell?: CouncilCell,
   position?: number | null,
 ): void {
-  const message = mineMessage(sessionId, cellId, participantId, lock, position)
+  const message = mineMessage(sessionId, cellId, participantId, cell, position)
   if (message) tell(sessionId, participantId, message)
 }
 
@@ -1402,10 +1429,14 @@ function mineMessage(
   sessionId: string,
   cellId: string,
   participantId: string,
-  known?: CellLock,
+  known?: CouncilCell,
   knownPosition?: number | null,
 ): ControlServerMessage | null {
-  const lock = known ?? councilCellOf(sessionId, cellId).lock
+  // Замок и ручки читаются одним заходом: обе стороны листа — «идёт ли
+  // консилиум» и «сколько ждать до следующего запуска» — живут на одной ячейке,
+  // и второй её поиск по всем тетрадям стоил бы ровно столько же, сколько
+  // первый.
+  const cell = known ?? councilCellOf(sessionId, cellId)
   const position =
     knownPosition !== undefined
       ? knownPosition
@@ -1414,9 +1445,10 @@ function mineMessage(
     sessionId,
     cellId,
     participantId,
-    lock !== 'council',
+    cell.lock !== 'council',
     // Ноль — «считается сейчас», и об этом говорит сам `run.state`.
     position !== null && position > 0 ? position : null,
+    cell.settings.rerunPauseSec,
   )
   return state ? { t: 'council:mine', cellId, state } : null
 }
@@ -1547,10 +1579,11 @@ function councilAudience(sessionId: string, cellId: string): Set<string> {
 /** Замок сменился — хосту стопка, каждому его лист, комнате счётчик и экран. */
 function councilChanged(sessionId: string, cellId: string): void {
   boardOut(sessionId, cellId)
-  // Замок читается один раз на всех: он один на ячейку, а листов пятьсот.
-  const { lock } = councilCellOf(sessionId, cellId)
+  // Ячейка читается один раз на всех: замок и ручки на ней одни, а листов
+  // пятьсот.
+  const cell = councilCellOf(sessionId, cellId)
   for (const participantId of councilAudience(sessionId, cellId))
-    mineOut(sessionId, cellId, participantId, lock)
+    mineOut(sessionId, cellId, participantId, cell)
   countOut(sessionId, cellId)
   // И «что на экране»: сюда же приходит перемена ручки имён, а она решает,
   // чьим именем подписано показанное — или номером варианта вместо имени.
@@ -1679,13 +1712,37 @@ export function purgeCouncilOf(sessionId: string, participantId: string): number
   return gone
 }
 
-/** Ручки консилиума из сообщения — только известные значения. */
+/** Целое в границах — иначе ручку считаем неприложенной. */
+function whole(value: unknown, min: number, max: number): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+    ? value
+    : null
+}
+
+/**
+ * Ручки консилиума из сообщения — только известные значения.
+ *
+ * Непонятное ОТБРАСЫВАЕТСЯ, а не подменяется умолчанием: сообщение с одной
+ * ручкой — это «переключить её», остальные остаются как были, и «предел 99999»
+ * из чужого клиента не должен молча вернуть ячейку к тридцати секундам. Второй
+ * замок — `readCouncilSettings` над слитыми ручками там, где их пишут в
+ * документ: он чинит и то, что уже лежит в ячейке.
+ */
 function pickSettings(raw: unknown): Partial<CouncilSettings> {
   const out: Partial<CouncilSettings> = {}
   if (!raw || typeof raw !== 'object') return out
   const from = raw as Record<string, unknown>
   if (typeof from.studentRun === 'boolean' || from.studentRun === 'request') out.studentRun = from.studentRun
   if (typeof from.namesOnProjector === 'boolean') out.namesOnProjector = from.namesOnProjector
+  // `null` у предела — законное значение и единственное не-число здесь: «без
+  // предела» это выбор преподавателя, а не отсутствие ручки.
+  if (from.runLimitSec === null) out.runLimitSec = null
+  else {
+    const limit = whole(from.runLimitSec, 1, COUNCIL_RUN_LIMIT_MAX)
+    if (limit !== null) out.runLimitSec = limit
+  }
+  const pause = whole(from.rerunPauseSec, 0, COUNCIL_RERUN_PAUSE_MAX)
+  if (pause !== null) out.rerunPauseSec = pause
   return out
 }
 
@@ -3580,12 +3637,26 @@ export function dispatch(
        * с тем же положением и новыми ручками — это и есть «переключить ручку».
        */
       const prior = readCouncilSettings(found.cell.get('council'))
-      const next: CouncilSettings | null = state === 'council' ? { ...prior, ...settings } : null
+      /*
+       * Слитые ручки — ЧЕРЕЗ санитайзер, а не как пришли.
+       *
+       * `pickSettings` уже отбросил непонятное из сообщения, но слева от него
+       * стоит то, что лежит в документе, а документ в комнате пишут все. Ячейка
+       * с `runLimitSec: "много"`, приехавшим мимо этого обработчика, доехала бы
+       * до ядра и завела там будильник на NaN — то есть сняла бы предел молча.
+       * Санитайзер здесь и есть та единственная дверь, за которой в документе
+       * лежат только годные ручки.
+       */
+      const next: CouncilSettings | null =
+        state === 'council' ? readCouncilSettings({ ...prior, ...settings }) : null
       // Повторное нажатие — не событие: лишняя версия в истории на каждый
       // щелчок по уже открытой ячейке ничего не рассказывает.
       const sameKnobs =
         next === null ||
-        (next.studentRun === prior.studentRun && next.namesOnProjector === prior.namesOnProjector)
+        (next.studentRun === prior.studentRun &&
+          next.namesOnProjector === prior.namesOnProjector &&
+          next.runLimitSec === prior.runLimitSec &&
+          next.rerunPauseSec === prior.rerunPauseSec)
       if (was === state && sameKnobs) return
       if (was !== state || next?.studentRun !== prior.studentRun) {
         clearRunRequests(sessionId, id)
@@ -3618,6 +3689,19 @@ export function dispatch(
         found.cell.set('open', openValueFor(state))
         if (next !== null || found.cell.get('council') != null) found.cell.set('council', next)
       }, ORIGIN)
+      /*
+       * Предел, поменянный посреди чужого запуска, действует на него же.
+       *
+       * «Правила действуют сразу» — обещание всей комнаты, и предел запуска не
+       * может быть из него исключением: преподаватель ставит его, ГЛЯДЯ на
+       * зависший цикл, и ждать конца этого самого цикла — единственное, чего он
+       * в эту секунду не хочет. Новый предел отсчитывается от начала идущей
+       * попытки, так что «тридцать секунд» на попытке, идущей минуту, срабатывает
+       * сразу (kernel/index.ts · retimeCouncilRun).
+       */
+      if (next !== null && next.runLimitSec !== prior.runLimitSec) {
+        retimeCouncilRun(sessionId, id, next.runLimitSec)
+      }
       /*
        * Консилиум открыли, переключили или закрыли — комнате об этом надо
        * сказать по управляющему проводу: попытки не в документе, и студент
@@ -3782,6 +3866,19 @@ export function dispatch(
         send(ws, { t: 'error', message: tr("server.writeYourSolutionFirst.b04f1e") })
         return
       }
+      /*
+       * Пауза спрашивается на ПРОСЬБЕ, а не на одобрении.
+       *
+       * Иначе она наказывала бы преподавателя: очередь просьб копится, он
+       * разбирает её через минуту — и половина одобрений упирается в паузу,
+       * которую отстояли, пока просьба лежала. Студент же о ней узнаёт там же,
+       * где нажимает, и отсчёт у него под кнопкой стоит с конца его запуска.
+       */
+      const waitUntil = nextRunAtFor(sessionId, id, payload.participantId, settings.rerunPauseSec)
+      if (waitUntil !== null) {
+        send(ws, { t: 'error', message: rerunPauseNote(waitUntil) })
+        return
+      }
       if (councilQueuePosition(sessionId, id, payload.participantId) !== null ||
           !requestAttemptRun(sessionId, id, payload.participantId, Date.now())) {
         send(ws, { t: 'error', message: tr("server.theAttemptIsAlreadyRunningOrQueued.fc3fa7") })
@@ -3854,6 +3951,20 @@ export function dispatch(
         send(ws, { t: 'error', message: tr("server.theRequestHasChangedOrHasAlready.2ee147") })
         return
       }
+      /*
+       * Пауза между своими запусками — только своя и только не преподавателю.
+       *
+       * Преподаватель не ждёт никогда: он запускает чужую попытку, разбирая её
+       * у доски, и пауза автора к этому нажатию отношения не имеет — как и к
+       * одобрению просьбы, которую спросили на ней же.
+       */
+      if (payload.role !== 'host' && own) {
+        const waitUntil = nextRunAtFor(sessionId, id, target, settings.rerunPauseSec)
+        if (waitUntil !== null) {
+          send(ws, { t: 'error', message: rerunPauseNote(waitUntil) })
+          return
+        }
+      }
       const outcome = requestCouncilRun(
         sessionId,
         {
@@ -3861,6 +3972,13 @@ export function dispatch(
           participantId: target,
           source: attempt.text,
           by: payload.role === 'host' ? 'host' : 'author',
+          /*
+           * Предел снимается с ячейки в секунду нажатия и едет с заданием: ядро
+           * документа не читает (kernel/council.ts · CouncilJob.limitSec).
+           * Касается и преподавательских запусков: жирный код не становится
+           * легче оттого, кто нажал, а ядро одно на всю комнату.
+           */
+          limitSec: settings.runLimitSec,
           /*
            * Каждый кадр ядра — к попытке и двоим, кому она видна. Очередь после
            * конца запуска сдвинулась — ждущим новый номер.

@@ -324,7 +324,26 @@ export interface RoomResource {
  * знал только тот, у кого есть ssh.
  */
 export interface InstanceResources {
-  memory: { totalMb: number; availableMb: number }
+  memory: {
+    totalMb: number
+    /**
+     * Сколько ещё можно раздать комнатам; `null` — «не знаем».
+     *
+     * Не знаем там, где число было бы выдумкой: у macOS нет MemAvailable, а
+     * `os.freemem()` там считает свободной только память, не занятую ничем, и
+     * на Маке с 36 ГБ выдавал «свободно 0,5». Пугать таким числом хуже, чем
+     * промолчать, поэтому форма про свободное тогда не говорит вовсе.
+     */
+    availableMb: number | null
+    /**
+     * Чьи это числа: машины сервера или демона docker.
+     *
+     * Под колимой и Docker Desktop контейнеры живут в виртуалке со своей
+     * памятью, и потолок комнаты ставит она, а не Мак. Форма обязана называть
+     * вещи своими именами: «в Docker 11,7 ГБ» вместо «на машине 36».
+     */
+    source: 'host' | 'docker'
+  }
   cpus: number
   gpus: GpuCard[]
   kernel: {

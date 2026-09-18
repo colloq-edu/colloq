@@ -421,7 +421,7 @@ test('activity identifies a council draft owner separately from the teacher runn
   const room = await seminar()
   let done = false
   requestCouncilRun(room.id, {
-    cellId: room.cellId, participantId: 'p_student', source: 'print("attempt")', by: 'host',
+    cellId: room.cellId, participantId: 'p_student', source: 'print("attempt")', by: 'host', limitSec: null,
     onChange: run => { done = run?.state === 'ok' },
   }, 'Teacher', 'p_teacher')
   assert.ok(await until(() => done))
@@ -461,7 +461,7 @@ test('activity treats explicit KeyboardInterrupt as cancellation for cells and c
     swallowExecutes = true
     try {
       if (council) requestCouncilRun(room.id, {
-        cellId: room.cellId, participantId: 'p_student', source: 'print("long")', by: 'host', onChange() {},
+        cellId: room.cellId, participantId: 'p_student', source: 'print("long")', by: 'host', limitSec: null, onChange() {},
       }, 'Teacher', 'p_teacher')
       else requestRun(room.id, [room.cellId], 'Student', 'p_student')
       assert.ok(await until(() => held.length > 0))
@@ -511,6 +511,7 @@ test('попытка консилиума считается без истори
       participantId: 'p_student',
       source: 'print("attempt")',
       by: 'host',
+      limitSec: null,
       onChange: (run) => {
         last = run
       },
@@ -1637,6 +1638,7 @@ test('правка листа перезапускает попытку, а не
         participantId: 'p_1',
         source,
         by: 'author',
+        limitSec: null,
         onChange: (run) => seen.push(run?.state ?? null),
       },
       'Ада',
@@ -1701,6 +1703,7 @@ test('номера очереди консилиума считаются одн
         participantId,
         source: `print("${participantId}")`,
         by: 'host',
+        limitSec: null,
         onChange: () => {},
       },
       'Ада',
@@ -1753,6 +1756,7 @@ test('бан участника останавливает его текущую
     participantId: 'offender',
     source: 'while True: pass',
     by: 'author',
+    limitSec: null,
     onChange: (run) => offender.push(run?.state ?? null),
   }, 'Нарушитель', 'offender')
   requestCouncilRun(room.id, {
@@ -1760,6 +1764,7 @@ test('бан участника останавливает его текущую
     participantId: 'neighbour',
     source: 'print(2)',
     by: 'author',
+    limitSec: null,
     onChange: (run) => neighbour.push(run?.state ?? null),
   }, 'Сосед', 'neighbour')
   assert.ok(await until(() => offender.includes('running')), 'попытка нарушителя не началась')
@@ -1797,6 +1802,7 @@ test('бан другого участника снимает только ег�
     participantId: 'running-neighbour',
     source: 'while True: pass',
     by: 'author',
+    limitSec: null,
     onChange: (run) => running.push(run?.state ?? null),
   }, 'Сосед', 'running-neighbour')
   requestCouncilRun(room.id, {
@@ -1804,6 +1810,7 @@ test('бан другого участника снимает только ег�
     participantId: 'offline-offender',
     source: 'print(1)',
     by: 'author',
+    limitSec: null,
     onChange: (run) => removed.push(run?.state ?? null),
   }, 'Ушедший', 'offline-offender')
   assert.ok(await until(() => running.includes('running')), 'чужая попытка не началась')
@@ -1842,6 +1849,7 @@ test('опоздавшее прерывание бана не попадает �
     participantId: 'late-offender',
     source: 'while True: pass',
     by: 'author',
+    limitSec: null,
     onChange: (run) => offender.push(run?.state ?? null),
   }, 'Нарушитель', 'late-offender')
   requestCouncilRun(room.id, {
@@ -1849,6 +1857,7 @@ test('опоздавшее прерывание бана не попадает �
     participantId: 'next-author',
     source: 'print(2)',
     by: 'author',
+    limitSec: null,
     onChange: (run) => neighbour.push(run?.state ?? null),
   }, 'Следующий', 'next-author')
   assert.ok(await until(() => offender.includes('running')))

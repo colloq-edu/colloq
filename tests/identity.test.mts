@@ -162,7 +162,7 @@ test('a teacher who joined as a student is a host to HTTP too', async () => {
    * could interrupt the kernel over the socket and be refused a checkpoint over
    * HTTP in the same second.
    */
-  const teacher = createTeacher({ name: 'Ada', email: 'ada.identity@hse.ru', role: 'teacher' })
+  const teacher = createTeacher({ name: 'Ada', email: 'ada.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
 
@@ -180,7 +180,7 @@ test('a teacher who joined as a student is a host to HTTP too', async () => {
 test('a staff cookie does not open a token minted for another room', () => {
   // The cookie raises a role; it never replaces the check that the credential
   // belongs to the seminar in the path.
-  const teacher = createTeacher({ name: 'Grace', email: 'grace.identity@hse.ru', role: 'teacher' })
+  const teacher = createTeacher({ name: 'Grace', email: 'grace.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   const elsewhere = signToken({ sessionId: 'another-room', participantId: 'p_x', role: 'host' })
@@ -188,7 +188,7 @@ test('a staff cookie does not open a token minted for another room', () => {
 })
 
 test('no credential at all is nobody, cookie or not', () => {
-  const teacher = createTeacher({ name: 'Katherine', email: 'kj.identity@hse.ru', role: 'teacher' })
+  const teacher = createTeacher({ name: 'Katherine', email: 'kj.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   assert.equal(sessionAuth(request('', mintCookie(teacher))), null)
@@ -289,7 +289,7 @@ test('поток новых участников ограничен: цикл н
   assert.equal(back.status, 200, 'вернувшегося не пустили в собственную комнату')
 
   // И преподавателя тоже: комнату под потоком ведёт кто-то живой.
-  const teacher = createTeacher({ name: 'Vera', email: 'vera.flood@hse.ru', role: 'teacher' })
+  const teacher = createTeacher({ name: 'Vera', email: 'vera.flood@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   const staff = await knock({ name: 'Vera' }, mintCookie(teacher))
@@ -401,7 +401,7 @@ test('вход по HTTP и вход по сокету отвечают один
    */
   const author = await join({ name: 'Scripted Two', hostToken: signHostToken(ROOM) })
   const student = await join({ name: 'Olga' })
-  const teacher = createTeacher({ name: 'Emmy', email: 'emmy.identity@hse.ru', role: 'teacher' })
+  const teacher = createTeacher({ name: 'Emmy', email: 'emmy.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   const cookie = mintCookie(teacher)
@@ -425,7 +425,7 @@ test('вход по HTTP и вход по сокету отвечают один
 test('кука даёт ведущего только пока она есть', async () => {
   // Куку можно отобрать — в этом её смысл, и поэтому «ведущий по куке» никогда
   // не записывается в строку участника.
-  const teacher = createTeacher({ name: 'Sofia', email: 'sofia.identity@hse.ru', role: 'teacher' })
+  const teacher = createTeacher({ name: 'Sofia', email: 'sofia.identity@example.edu', role: 'teacher' })
   assert.ok(teacher)
   rotateLinkKey(teacher.id)
   const joined = await join({ name: 'Sofia' }, mintCookie(teacher))

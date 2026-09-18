@@ -71,3 +71,14 @@ test('маршрут отдаёт картинку комнаты и 404 нез�
   const missing = await fetch(`${base}/og/rooms/nosuchroom.png`)
   assert.equal(missing.status, 404)
 })
+
+test('шрифт карточки едет в образ и колесо вместе с текстом своей лицензии', () => {
+  // server/assets целиком копируют и Dockerfile, и scripts/pack.mts, то есть
+  // каталог — это распространение, а не только рисовалка. SIL OFL 1.1 при
+  // этом требует класть текст лицензии рядом с файлами шрифта; у копий в
+  // web/public/fonts и site/fonts он лежал, а здесь его не было.
+  const fonts = path.resolve(import.meta.dirname, '../server/assets/fonts')
+  assert.ok(fs.existsSync(path.join(fonts, 'JetBrainsMono-Medium.ttf')))
+  const license = fs.readFileSync(path.join(fonts, 'JetBrainsMono-OFL.txt'), 'utf8')
+  assert.match(license, /SIL Open Font License, Version 1\.1/)
+})

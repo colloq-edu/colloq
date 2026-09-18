@@ -16,18 +16,34 @@ export interface KubeObject {
   status?: Record<string, any>
 }
 export interface KubernetesClient {
-  request<T>(method: string, path: string, body?: unknown): Promise<T>
+  /**
+   * `contentType` нужен ровно PATCH: подресурс resize принимает стратегическое
+   * слияние, где контейнеры сливаются по имени. Обычный JSON заменил бы список
+   * контейнеров целиком — такой патч API отвергает.
+   */
+  request<T>(method: string, path: string, body?: unknown, contentType?: string): Promise<T>
 }
 export class KubernetesError extends Error {
   constructor(
     readonly status: number,
     reason: string,
+    /**
+     * Какого ресурса узлу не хватило — единственное, что из тела ответа API
+     * выходит наружу, и только именем ресурса. 403 на `pods/resize` значит
+     * одно из двух: у брокера нет права или узлу столько не дать (так API
+     * 1.35+ отвечает на невыполнимое изменение, проверено на k3s 1.36).
+     * Преподавателю нужно второе, оператору — первое; путать их нельзя.
+     */
+    readonly insufficient?: string,
   ) {
     super(
-      `Kubernetes HTTP ${status}: ${/^[A-Za-z]{1,80}$/.test(reason) ? reason : 'RequestFailed'}`,
+      `Kubernetes HTTP ${status}: ${/^[A-Za-z]{1,80}$/.test(reason) ? reason : 'RequestFailed'}` +
+        (insufficient ? ` (node lacks allocatable ${insufficient})` : ''),
     )
   }
 }
+const INSUFFICIENT = /enough allocatable resources: ([a-z0-9./-]{1,63})/
+const CONTENT_TYPES = new Set(['application/json', 'application/strategic-merge-patch+json'])
 export class HttpsKubernetesClient implements KubernetesClient {
   private readonly origin: URL
   constructor(
@@ -50,9 +66,10 @@ export class HttpsKubernetesClient implements KubernetesClient {
     )
       throw new Error('Kubernetes API must be an HTTPS origin')
   }
-  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async request<T>(method: string, path: string, body?: unknown, contentType = 'application/json'): Promise<T> {
     if (!path.startsWith('/') || path.startsWith('//') || /[\r\n#\\]/.test(path))
       throw new Error('Invalid Kubernetes request path')
+    if (!CONTENT_TYPES.has(contentType)) throw new Error('Unsupported Kubernetes request content type')
     const token = readBoundedFile(this.options.tokenFile, 16384).trim()
     if (!token || /[\s]/.test(token)) throw new Error('Invalid Kubernetes service account token')
     // Projected token and CA files are read per request, including after rotations.
@@ -73,7 +90,7 @@ export class HttpsKubernetesClient implements KubernetesClient {
             Authorization: `Bearer ${token}`,
             Accept: 'application/json',
             ...(payload
-              ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+              ? { 'Content-Type': contentType, 'Content-Length': Buffer.byteLength(payload) }
               : {}),
           },
         },
@@ -103,10 +120,13 @@ export class HttpsKubernetesClient implements KubernetesClient {
             }
             const status = res.statusCode ?? 502
             if (status < 200 || status >= 300) {
+              const lacking =
+                typeof data?.message === 'string' ? INSUFFICIENT.exec(data.message)?.[1] : undefined
               reject(
                 new KubernetesError(
                   status,
                   typeof data?.reason === 'string' ? data.reason : 'RequestFailed',
+                  lacking,
                 ),
               )
               return

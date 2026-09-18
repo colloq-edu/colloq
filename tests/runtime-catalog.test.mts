@@ -5,6 +5,7 @@ import {
   resolveRuntimeEnvironment,
   imageRevision,
   parseRuntimeEnsureRequest,
+  parseRuntimeResizeRequest,
   isRuntimeSessionId,
 } from '../shared/runtime.js'
 
@@ -76,4 +77,36 @@ test('room CPU intent accepts bounded whole cores without accepting container se
   assert.deepEqual(parseRuntimeEnsureRequest({ environment: 'base', cpus: 6 }), { environment: 'base', cpus: 6 })
   for (const cpus of [0, -1, 1.5, 65, '6', null])
     assert.throws(() => parseRuntimeEnsureRequest({ environment: 'base', cpus }))
+})
+
+test('room memory intent carries whole MiB within the protocol bounds and nothing else', () => {
+  // До 18.09 брокер этого поля не принимал вовсе, и Pod на k3s получал 2Gi при
+  // любом числе в форме занятия.
+  assert.deepEqual(parseRuntimeEnsureRequest({ environment: 'base', memoryMb: 4096 }), {
+    environment: 'base',
+    memoryMb: 4096,
+  })
+  for (const memoryMb of [0, 63, 262145, 1024.5, '4096', null, -1])
+    assert.throws(() => parseRuntimeEnsureRequest({ environment: 'base', memoryMb }), /memory/)
+})
+
+test('live resize intent is memory and/or whole cores: a number, or null for the broker default', () => {
+  assert.deepEqual(parseRuntimeResizeRequest({ memoryMb: 8192 }), { memoryMb: 8192 })
+  assert.deepEqual(parseRuntimeResizeRequest({ memoryMb: null }), { memoryMb: null })
+  // Ядра с 18.09 — тем же входом: до того их меняла только замена Pod.
+  assert.deepEqual(parseRuntimeResizeRequest({ cpus: 4 }), { cpus: 4 })
+  assert.deepEqual(parseRuntimeResizeRequest({ cpus: null }), { cpus: null })
+  assert.deepEqual(parseRuntimeResizeRequest({ memoryMb: 8192, cpus: 4 }), { memoryMb: 8192, cpus: 4 })
+  for (const value of [
+    {},
+    { memoryMb: 1.5 },
+    { memoryMb: '8Gi' },
+    { cpus: 1.5 },
+    { cpus: 0 },
+    { cpus: 65 },
+    { cpus: 4, environment: 'base' },
+    null,
+    [],
+  ])
+    assert.throws(() => parseRuntimeResizeRequest(value))
 })

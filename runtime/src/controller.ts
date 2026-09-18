@@ -5,13 +5,19 @@ import {
   imageRevision,
   isRuntimeSessionId,
   parseRuntimeEnsureRequest,
+  parseRuntimeResizeRequest,
   resolveRuntimeEnvironment,
+  RUNTIME_MEMORY_MAX_MB,
   type RuntimeCatalog,
   type RuntimeEndpoint,
   type RuntimeEnsureRequest,
   type RuntimeEnvironment,
   type RuntimeHealth,
+  type RuntimeResizeRequest,
+  type RuntimeResizeResult,
   type RuntimeRoom,
+  type RuntimeStartFailure,
+  type RuntimeUnschedulable,
 } from '../../shared/runtime.js'
 import { KubernetesError, type KubernetesClient, type KubeObject } from './kubernetes.js'
 import type { WorkloadConfig } from './config.js'
@@ -25,6 +31,8 @@ export class RuntimeError extends Error {
   constructor(
     message: string,
     readonly status = 503,
+    /** Почему подъём не вышел — словом, которое веб переводит человеку (см. http.ts). */
+    readonly failure?: RuntimeStartFailure,
   ) {
     super(message)
   }
@@ -43,6 +51,10 @@ interface Options {
   pollMs?: number
   startupTimeoutMs?: number
   deletionTimeoutMs?: number
+  /** Сколько ждать, пока kubelet переставит память и ядра живому Pod. */
+  resizeTimeoutMs?: number
+  /** Сколько Pod может стоять с отказом планировщика, пока подъём не сдастся. */
+  unschedulableGraceMs?: number
 }
 const labels = (id: string) => ({
   'colloq.dev/role': 'kernel',
@@ -84,6 +96,45 @@ function resourceQuantity(name: string, value: unknown): unknown {
   }
   if (name === 'nvidia.com/gpu' && /^[0-9]+$/.test(text)) return Number(text)
   return value
+}
+const MiB = 1024 ** 2
+const KERNEL = 'kernel'
+const RESIZE_PATCH = 'application/strategic-merge-patch+json'
+/** Что поменять живому Pod: память в MiB, ядра — количеством Kubernetes («2», «1500m»). */
+interface ResizeTarget {
+  memoryMb?: number
+  cpu?: string
+}
+/** Память контейнера kernel (limits) в MiB — из spec или из status. */
+function memoryOf(resources: any): number | undefined {
+  const bytes = resourceQuantity('memory', resources?.limits?.memory)
+  return typeof bytes === 'number' && bytes > 0 ? Math.floor(bytes / MiB) : undefined
+}
+/** Ядра контейнера kernel (limits) в милликорах — из spec или из status. */
+function milliCpuOf(resources: any): number | undefined {
+  const milli = resourceQuantity('cpu', resources?.limits?.cpu)
+  return typeof milli === 'number' && milli > 0 ? milli : undefined
+}
+const kernelOf = (containers: unknown): any =>
+  Array.isArray(containers) ? containers.find((c: any) => c?.name === KERNEL) : undefined
+/**
+ * Spec без памяти и ядер контейнера kernel.
+ *
+ * Это ровно те поля Pod, которые брокер меняет у ЖИВОГО Pod (подресурс
+ * resize). Хэш шаблона и сравнение для изменения на месте считаются без них:
+ * иначе первое же изменение лимита делало бы Pod «чужим», и следующий ensure
+ * сносил бы его вместе со всеми переменными семинара — ровно то, ради чего
+ * лимит меняют на месте, а не пересозданием. С ядрами так и было до 18.09:
+ * они стояли в хэше, и смена числа в форме стоила комнате её Python при
+ * следующем подъёме — например, когда кто-то открывал терминал.
+ */
+function withoutResizable(input: Record<string, any>): Record<string, any> {
+  const spec = structuredClone(input)
+  const kernel = kernelOf(spec.containers)
+  for (const group of ['requests', 'limits'])
+    for (const name of ['memory', 'cpu'])
+      if (kernel?.resources?.[group]) delete kernel.resources[group][name]
+  return spec
 }
 /** Compare the ENTIRE spec after removing only known API defaults. A copied
  * template-hash annotation cannot authorize additional executable or secret
@@ -132,6 +183,16 @@ function canonicalPod(input: Record<string, any>): Record<string, any> {
       tty: false,
     }))
       omitDefault(container, key, value)
+    // Изменение на месте без перезапуска — умолчание API; явная запись и
+    // подставленная сервером — одно и то же, и ни та ни другая не повод менять Pod.
+    if (Array.isArray(container.resizePolicy)) {
+      container.resizePolicy = container.resizePolicy.filter(
+        (p: any) =>
+          !(['cpu', 'memory'].includes(p?.resourceName) && p?.restartPolicy === 'NotRequired' &&
+            Object.keys(p).length === 2),
+      )
+      omitDefault(container, 'resizePolicy', [])
+    }
     const security = container.securityContext
     if (security) {
       omitDefault(security, 'privileged', false)
@@ -179,6 +240,33 @@ function podMatches(actual: Record<string, any>, expected: Record<string, any>):
     return false
   }
 }
+/**
+ * Тот же Pod, только с другой памятью или ядрами — его меняют на месте, а не сносят.
+ *
+ * Всё остальное сравнивается так же строго, как в podMatches: подменённая
+ * команда или монтирование по-прежнему означают замену. Память и ядра обязаны
+ * быть разборчивыми и одинаковыми в requests и limits — иначе Pod уже не
+ * Guaranteed и не тот, что создавал брокер.
+ */
+function onlyResizableDiffers(actual: Record<string, any>, expected: Record<string, any>): boolean {
+  try {
+    const resources = kernelOf(actual.containers)?.resources
+    const limit = memoryOf(resources)
+    if (limit === undefined || memoryOf({ limits: resources?.requests }) !== limit) return false
+    const cpu = milliCpuOf(resources)
+    if (cpu === undefined || milliCpuOf({ limits: resources?.requests }) !== cpu) return false
+    return isDeepStrictEqual(
+      canonicalPod(withoutResizable(actual)),
+      canonicalPod(withoutResizable(expected)),
+    )
+  } catch {
+    return false
+  }
+}
+/** Условия, которыми kubelet (1.33+) говорит, что изменение ещё не доехало. */
+function resizeCondition(pod: KubeObject, type: 'PodResizePending' | 'PodResizeInProgress') {
+  return pod.status?.conditions?.find((c: any) => c?.type === type && c?.status === 'True')
+}
 function canonicalService(input: Record<string, any>): Record<string, any> {
   const spec = structuredClone(input)
   const ip = spec.clusterIP
@@ -211,13 +299,48 @@ function podPhase(pod: KubeObject): RuntimeRoom['phase'] {
     ? 'ready'
     : 'pending'
 }
+/** Условие PodScheduled=False: Pod ещё не поставлен на узел, и планировщик сказал почему. */
+const notScheduled = (pod: KubeObject) =>
+  pod.status?.conditions?.find((c: any) => c?.type === 'PodScheduled' && c?.status === 'False')
 function podReason(pod: KubeObject): string | undefined {
   const state = pod.status?.containerStatuses?.find(
     (c: any) => c.state?.waiting || c.state?.terminated,
   )?.state
-  const reason = state?.waiting?.reason ?? state?.terminated?.reason ?? pod.status?.reason
+  // Последним — причина планировщика (`Unschedulable`): у Pod, которому нет
+  // места на узле, нет ни контейнеров, ни status.reason, и перепись комнат
+  // вместе с таймаутом говорили про него одно «pending».
+  const reason =
+    state?.waiting?.reason ?? state?.terminated?.reason ?? pod.status?.reason ?? notScheduled(pod)?.reason
   return typeof reason === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(reason) ? reason : undefined
 }
+/** Имена ресурсов Kubernetes → слово протокола; порядок — порядок важности. */
+const SHORTAGES: ReadonlyArray<readonly [string, RuntimeUnschedulable]> = [
+  // Видеокарта первой: её не поделить, и совет «уменьшите память» комнате,
+  // которой не досталось карты, ничего бы не дал.
+  ['nvidia.com/gpu', 'gpu'],
+  ['memory', 'memory'],
+  ['cpu', 'cpu'],
+]
+/**
+ * Чего узлу не хватило, чтобы поставить Pod, — или ничего, если Pod уже на узле.
+ *
+ * Из сообщения планировщика берутся только имена ресурсов после «Insufficient»:
+ * сам текст говорит про узлы и чужие Pod кластера, а в ответ брокера и дальше
+ * к людям из тела API выходит лишь имя ресурса (то же правило, что у
+ * KubernetesError.insufficient). Нехватки нет, а отказ есть — `other`.
+ */
+function unschedulable(pod: KubeObject): RuntimeUnschedulable | undefined {
+  const condition = notScheduled(pod)
+  if (pod.spec?.nodeName || condition?.reason !== 'Unschedulable') return undefined
+  const message = typeof condition.message === 'string' ? condition.message.slice(0, 4096) : ''
+  const lacking = new Set(
+    // Имя кончается буквой или цифрой: точка после него — конец фразы планировщика.
+    [...message.matchAll(/\bInsufficient ([a-z0-9](?:[a-z0-9./-]{0,61}[a-z0-9])?)/g)].map((match) => match[1]),
+  )
+  return SHORTAGES.find(([name]) => lacking.has(name))?.[1] ?? 'other'
+}
+/** Сколько ждать Pod, которому планировщик отказал, прежде чем сказать об этом. */
+const UNSCHEDULABLE_GRACE_MS = 20000
 
 export class RuntimeController {
   private readonly queues = new Map<string, RoomQueue>()
@@ -249,10 +372,22 @@ export class RuntimeController {
   }
   ensure(id: string, intent: RuntimeEnsureRequest): Promise<RuntimeEndpoint> {
     let environment: RuntimeEnvironment, queue: RoomQueue
-    let cpus: number | undefined
+    let cpus: number | undefined, memoryMb: number | undefined
     try {
       const request = parseRuntimeEnsureRequest(intent)
       cpus = request.cpus
+      /*
+       * Выше потолка — не отказ, а потолок. Отказ здесь значил бы комнату без
+       * Python вовсе: число записано в строке семинара, и каждый следующий
+       * запуск ячейки получал бы тот же 400. Веб проверяет по потолку сам (он
+       * его читает из /v1/health), так что сюда такое доезжает только мимо
+       * формы; а что Pod получил на самом деле, перепись комнат скажет из status.
+       */
+      if (request.memoryMb !== undefined) {
+        memoryMb = Math.min(request.memoryMb, this.maxMemoryMb())
+        if (memoryMb !== request.memoryMb)
+          console.warn(`[runtime] room memory ${request.memoryMb}Mi capped at ${memoryMb}Mi`)
+      }
       environment = resolveRuntimeEnvironment(
         this.options.catalog(),
         request.environment,
@@ -267,10 +402,19 @@ export class RuntimeController {
       )
     }
     const generation = queue.generation,
-      key = `${generation}:${environment.name}:${imageRevision(environment.image)}:${cpus ?? 'default'}`
+      workload = `${generation}:${environment.name}:${imageRevision(environment.image)}:`,
+      key = `${workload}${cpus ?? 'default'}:${memoryMb ?? 'default'}`
     const existing = queue.inflight.get(key)
     if (existing) return existing
-    if ([...queue.inflight.keys()].some((k) => k.startsWith(`${generation}:`)))
+    /*
+     * Другие память или ядра при том же окружении — не конфликт, а очередь.
+     *
+     * Преподаватель поднимает память, пока Pod комнаты ещё встаёт (после OOM
+     * все жмут Run разом), и следующий Run приходит уже с новым числом. Отказ
+     * 409 «другая ревизия» здесь отнимал бы у студента запуск ни за что: такой
+     * ensure встаёт за текущим и, дождавшись Pod, меняет ему ресурсы на месте.
+     */
+    if ([...queue.inflight.keys()].some((k) => k.startsWith(`${generation}:`) && !k.startsWith(workload)))
       return Promise.reject(
         new RuntimeError('Room is starting with a different environment revision', 409),
       )
@@ -278,7 +422,9 @@ export class RuntimeController {
       if (queue.generation !== generation)
         throw new RuntimeError('Room startup cancelled by deletion', 409)
     }
-    const task = this.enqueue(id, queue, () => this.ensureWorkload(id, environment, check, cpus)).finally(
+    const task = this.enqueue(id, queue, () =>
+      this.ensureWorkload(id, environment, check, cpus, memoryMb),
+    ).finally(
       () => queue.inflight.delete(key),
     )
     queue.inflight.set(key, task)
@@ -293,6 +439,175 @@ export class RuntimeController {
     }
     queue.generation++
     return this.enqueue(id, queue, () => permanent ? this.retireWorkload(id) : this.deleteWorkload(id))
+  }
+  /**
+   * Поднять или опустить память и ядра ЖИВОЙ комнате, не трогая её Python.
+   *
+   * Это та же ручка, что `docker update --memory`/`--cpus` на машине
+   * разработчика: преподаватель, чьё ядро только что убили по памяти или
+   * которому мало ядер на обучении, добавляет их и запускает ячейку заново.
+   * Kubernetes 1.33+ умеет менять cgroup работающего контейнера через
+   * подресурс `pods/resize`; Pod и его UID остаются прежними.
+   *
+   * Pod нет — не ошибка и не повод его поднимать: число уже лежит в строке
+   * семинара, и следующий ensure создаст Pod сразу с ним. Встаёт в ту же
+   * очередь комнаты, что ensure и DELETE, чтобы не менять Pod, который прямо
+   * сейчас поднимают или сносят.
+   */
+  resize(id: string, intent: RuntimeResizeRequest): Promise<RuntimeResizeResult> {
+    let queue: RoomQueue
+    const target: ResizeTarget = {}
+    try {
+      const request = parseRuntimeResizeRequest(intent)
+      if (request.memoryMb !== undefined) {
+        target.memoryMb = request.memoryMb ?? this.defaultMemoryMb()
+        // Здесь, в отличие от ensure, выше потолка — отказ: живой комнате ничего
+        // не сломается, а вызывающий должен узнать, что числа не будет.
+        if (target.memoryMb > this.maxMemoryMb())
+          throw new RuntimeError(
+            `Room memory limit exceeds the runtime ceiling of ${this.maxMemoryMb()} MiB`,
+            400,
+          )
+      }
+      // `null` — умолчание брокера той же строкой, что у нового Pod, хоть бы и
+      // дробной («1500m»): сброс не должен давать Pod, которого ensure не создаст.
+      if (request.cpus !== undefined)
+        target.cpu = request.cpus === null ? this.options.config.cpu : String(request.cpus)
+      queue = this.queue(id)
+    } catch (err) {
+      return Promise.reject(
+        err instanceof RuntimeError
+          ? err
+          : new RuntimeError(err instanceof Error ? err.message : 'Invalid resize intent', 400),
+      )
+    }
+    return this.enqueue(id, queue, () => this.resizeWorkload(id, target))
+  }
+  private defaultMemoryMb(): number {
+    return Math.floor(Number(resourceQuantity('memory', this.options.config.memory)) / MiB)
+  }
+  private maxMemoryMb(): number {
+    return this.options.config.maxMemoryMb ?? RUNTIME_MEMORY_MAX_MB
+  }
+  /**
+   * Патч в подресурс resize — только память и ядра, только контейнер kernel, и
+   * только те из двух, что просили: память, которую не трогали, не переписывается
+   * числом, прочитанным секунду назад.
+   */
+  private patchResources(id: string, pod: KubeObject, target: ResizeTarget): Promise<KubeObject> {
+    const values: Record<string, string> = {
+      ...(target.memoryMb !== undefined ? { memory: `${target.memoryMb}Mi` } : {}),
+      ...(target.cpu !== undefined ? { cpu: target.cpu } : {}),
+    }
+    return this.options.kube.request<KubeObject>(
+      'PATCH',
+      `${this.root}/pods/${roomName(id)}/resize`,
+      {
+        // resourceVersion — предусловие: Pod, который успели заменить или
+        // изменить между чтением и патчем, получит 409, а не чужие лимиты.
+        metadata: { resourceVersion: pod.metadata.resourceVersion },
+        spec: {
+          containers: [
+            { name: KERNEL, resources: { requests: { ...values }, limits: { ...values } } },
+          ],
+        },
+      },
+      RESIZE_PATCH,
+    )
+  }
+  private async resizeWorkload(id: string, target: ResizeTarget): Promise<RuntimeResizeResult> {
+    const wantCpu = target.cpu === undefined ? undefined : milliCpuOf({ limits: { cpu: target.cpu } })
+    let uid: string | undefined
+    // Что у Pod есть на деле — к этому spec возвращается, если узлу столько не дать.
+    let before: ResizeTarget = {}
+    for (let attempt = 0; ; attempt++) {
+      const pod = await this.get('pods', id)
+      if (!pod || pod.metadata.deletionTimestamp || podPhase(pod) === 'failed')
+        return { outcome: 'absent' }
+      assertOwned(pod, id)
+      uid = pod.metadata.uid
+      const kernel = kernelOf(pod.spec.containers)
+      if (!kernel) throw new RuntimeError('Managed room Pod has no kernel container', 409)
+      const status = kernelOf(pod.status?.containerStatuses)?.resources
+      const memory = memoryOf(status) ?? memoryOf(kernel.resources)
+      const cpu = milliCpuOf(status) !== undefined ? status.limits.cpu : kernel.resources?.limits?.cpu
+      before = {
+        ...(target.memoryMb !== undefined && memory !== undefined ? { memoryMb: memory } : {}),
+        ...(target.cpu !== undefined && milliCpuOf({ limits: { cpu } }) !== undefined ? { cpu: String(cpu) } : {}),
+      }
+      const memoryDone =
+        target.memoryMb === undefined ||
+        (memoryOf(kernel.resources) === target.memoryMb &&
+          memoryOf({ limits: kernel.resources?.requests }) === target.memoryMb)
+      const cpuDone =
+        wantCpu === undefined ||
+        (milliCpuOf(kernel.resources) === wantCpu &&
+          milliCpuOf({ limits: kernel.resources?.requests }) === wantCpu)
+      if (memoryDone && cpuDone) break
+      try {
+        await this.patchResources(id, pod, target)
+        break
+      } catch (err) {
+        // Kubelet обновил status между чтением и патчем — перечитать и повторить.
+        if (err instanceof KubernetesError && err.status === 409 && attempt < 2) continue
+        if (err instanceof KubernetesError && err.status === 404)
+          throw new RuntimeError('Kubernetes does not support in-place Pod resize (1.33+ required)', 501)
+        // API 1.35+ отвергает невыполнимое изменение сразу, не трогая spec
+        // (на k3s 1.36 проверено и для памяти, и для ядер).
+        if (err instanceof KubernetesError && err.insufficient)
+          throw new RuntimeError(
+            `Room resize is infeasible on this node: not enough allocatable ${err.insufficient}`,
+            409,
+          )
+        throw err
+      }
+    }
+    const deadline = Date.now() + (this.options.resizeTimeoutMs ?? 10000)
+    while (true) {
+      const pod = await this.get('pods', id)
+      if (!pod || pod.metadata.uid !== uid || pod.metadata.deletionTimestamp)
+        return { outcome: 'absent' }
+      assertOwned(pod, id)
+      const status = kernelOf(pod.status?.containerStatuses)?.resources
+      const actualMemory = memoryOf(status)
+      const actualCpu = milliCpuOf(status)
+      const pending = resizeCondition(pod, 'PodResizePending')
+      if (pending?.reason === 'Infeasible') {
+        /*
+         * Узлу столько не дать никогда. Оставить в spec невыполнимое число
+         * нельзя: следующий Pod этой комнаты, созданный по нему же, повис бы в
+         * Pending навсегда. Возвращаем spec к тому, что у Pod есть, и говорим
+         * вызывающему честное «нет».
+         */
+        const revert: ResizeTarget = {
+          ...(before.memoryMb !== undefined && before.memoryMb !== target.memoryMb
+            ? { memoryMb: before.memoryMb }
+            : {}),
+          ...(before.cpu !== undefined && milliCpuOf({ limits: { cpu: before.cpu } }) !== wantCpu
+            ? { cpu: before.cpu }
+            : {}),
+        }
+        if (Object.keys(revert).length)
+          await this.patchResources(id, pod, revert).catch(() => undefined)
+        throw new RuntimeError('Room resize is infeasible on this node', 409)
+      }
+      const reached =
+        (target.memoryMb === undefined || actualMemory === target.memoryMb) &&
+        (wantCpu === undefined || actualCpu === wantCpu)
+      if (reached && !pending && !resizeCondition(pod, 'PodResizeInProgress'))
+        return {
+          outcome: 'applied',
+          ...(target.memoryMb !== undefined ? { memoryMb: target.memoryMb } : {}),
+          ...(wantCpu !== undefined ? { cpus: wantCpu / 1000 } : {}),
+        }
+      if (Date.now() >= deadline)
+        return {
+          outcome: 'pending',
+          ...(target.memoryMb !== undefined && actualMemory !== undefined ? { memoryMb: actualMemory } : {}),
+          ...(wantCpu !== undefined && actualCpu !== undefined ? { cpus: actualCpu / 1000 } : {}),
+        }
+      await delay(this.options.pollMs ?? 500)
+    }
   }
   private async get(kind: 'pods' | 'services', id: string): Promise<KubeObject | null> {
     try {
@@ -322,16 +637,19 @@ export class RuntimeController {
     assertOwned(created, id)
     return created
   }
-  private pod(id: string, environment: RuntimeEnvironment, token: string, cpus?: number): KubeObject {
+  private pod(
+    id: string,
+    environment: RuntimeEnvironment,
+    token: string,
+    cpus?: number,
+    memoryMb?: number,
+  ): KubeObject {
     const { config } = this.options
     const revision = imageRevision(environment.image)
     const quota = cpus === undefined ? config.cpu : String(cpus)
-    const cpu = quota.endsWith('m')
-      ? Number(quota.slice(0, -1)) / 1000
-      : Number(quota)
     const limits: Record<string, string | number> = {
       cpu: quota,
-      memory: config.memory,
+      memory: memoryMb === undefined ? config.memory : `${memoryMb}Mi`,
       'ephemeral-storage': config.ephemeral,
       ...(environment.gpu ? { 'nvidia.com/gpu': 1 } : {}),
     }
@@ -363,12 +681,38 @@ export class RuntimeController {
           env: [
             { name: 'JUPYTER_TOKEN', value: token },
             { name: 'HOME', value: '/home/runner' },
-            ...['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'].map((name) => ({
-              name,
-              value: String(Math.max(1, Math.floor(cpu))),
-            })),
+            /*
+             * Потоки численных библиотек — по ядрам Pod, а не по ядрам узла
+             * (их `os.cpu_count()` видит внутри), иначе numpy поднимает десятки
+             * потоков на два ядра и дерётся за них. Число берёт kubelet из
+             * limits.cpu при старте контейнера (Downward API), а не брокер
+             * строкой: так шаблон Pod не зависит от ядер, и смена ядер на месте
+             * не делает Pod «чужим» для следующего ensure. Округление здесь
+             * вверх (1500m → 2) — так Kubernetes считает делитель 1; целые ядра
+             * комнаты выходят ровно.
+             *
+             * Живому Python это число уже не поменять ничем: переменные
+             * окружения читаются при старте процесса, и даже перезапуск ядра
+             * Jupyter наследует их от сервера в том же контейнере. Новое число
+             * потоков получит следующий Pod комнаты — так же, как в docker,
+             * где их задаёт `docker run`.
+             */
+            ...['OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'].map(
+              (name) => ({
+                name,
+                valueFrom: {
+                  resourceFieldRef: { containerName: 'kernel', resource: 'limits.cpu', divisor: '1' },
+                },
+              }),
+            ),
           ],
           resources: { requests: { ...limits }, limits },
+          // Память и ядра меняют живому Pod (см. resize): перезапуск контейнера
+          // при этом — потеря всех переменных семинара, поэтому без него.
+          resizePolicy: [
+            { resourceName: 'memory', restartPolicy: 'NotRequired' },
+            { resourceName: 'cpu', restartPolicy: 'NotRequired' },
+          ],
           volumeMounts: [
             { name: 'workspace', mountPath: `/workspace/${id}`, subPath: id },
             { name: 'tmp', mountPath: '/tmp' },
@@ -403,7 +747,7 @@ export class RuntimeController {
         annotations: {
           'colloq.dev/session-id': id,
           'colloq.dev/revision': revision,
-          'colloq.dev/template-hash': hash(JSON.stringify(spec)),
+          'colloq.dev/template-hash': hash(JSON.stringify(withoutResizable(spec))),
         },
       },
       spec,
@@ -430,12 +774,13 @@ export class RuntimeController {
     environment: RuntimeEnvironment,
     check: () => void,
     cpus?: number,
+    memoryMb?: number,
   ): Promise<RuntimeEndpoint> {
     check()
     const token = createHmac('sha256', this.options.roomSecret())
       .update(`jupyter:${id}`)
       .digest('hex')
-    const desired = this.pod(id, environment, token, cpus),
+    const desired = this.pod(id, environment, token, cpus, memoryMb),
       desiredService = this.service(id)
     let [pod, service] = await Promise.all([this.get('pods', id), this.get('services', id)])
     check()
@@ -450,8 +795,24 @@ export class RuntimeController {
         service.spec.externalName)
     )
       throw new RuntimeError('Managed room Service does not match the private service policy', 409)
+    /*
+     * Живой Pod, у которого отличаются одни память и ядра, — это изменение
+     * лимита, не доехавшее раньше (брокер лежал, патч отказал, веб старее
+     * брокера). Его меняют на месте: сносить Pod ради лимита значит отнять у
+     * семинара все переменные ровно тогда, когда ему добавили, чтобы их не
+     * потерять.
+     */
+    const resize =
+      pod &&
+      !pod.metadata.deletionTimestamp &&
+      podPhase(pod) !== 'failed' &&
+      pod.metadata.annotations?.['colloq.dev/template-hash'] ===
+        desired.metadata.annotations?.['colloq.dev/template-hash'] &&
+      !podMatches(pod.spec, desired.spec) &&
+      onlyResizableDiffers(pod.spec, desired.spec)
     if (
       pod &&
+      !resize &&
       (pod.metadata.deletionTimestamp ||
         podPhase(pod) === 'failed' ||
         pod.metadata.annotations?.['colloq.dev/template-hash'] !==
@@ -481,6 +842,21 @@ export class RuntimeController {
       check()
       if (!podMatches(pod.spec, desired.spec))
         throw new RuntimeError('Managed Pod does not match the requested workload policy', 409)
+    } else if (resize) {
+      // Не дожидаясь kubelet: комнате нужен Python, а не отчёт о cgroup. Не
+      // вышло (узлу сейчас нечем, API старый) — Pod остаётся прежним и рабочим,
+      // а перепись комнат покажет те память и ядра, что у него есть на деле.
+      const resources = kernelOf(desired.spec.containers).resources
+      const target: ResizeTarget = {
+        memoryMb: memoryOf(resources)!,
+        cpu: String(resources.limits.cpu),
+      }
+      await this.patchResources(id, pod, target).catch((err) =>
+        console.warn(
+          `[runtime] in-place resize to ${target.memoryMb}Mi/${target.cpu} CPU failed: ${err instanceof Error ? err.message.slice(0, 200) : 'error'}`,
+        ),
+      )
+      check()
     }
     const endpoint: RuntimeEndpoint = {
       url: `http://${roomName(id)}.${this.options.config.namespace}.svc:8888`,
@@ -491,6 +867,8 @@ export class RuntimeController {
     }
     const deadline = Date.now() + (this.options.startupTimeoutMs ?? 120000)
     let reason = 'Pending'
+    // Pod, которому планировщик отказал, и с какого момента он так стоит.
+    let refused: { pod: KubeObject; lacking: RuntimeUnschedulable; since: number } | undefined
     while (Date.now() < deadline) {
       check()
       const current = await this.get('pods', id)
@@ -502,6 +880,20 @@ export class RuntimeController {
       reason = podReason(current) ?? phase
       if (phase === 'failed' || phase === 'terminating')
         throw new RuntimeError(`Room Pod cannot start: ${reason}`)
+      /*
+       * Отказ планировщика — не повод ждать две минуты до таймаута.
+       *
+       * Память комнаты зарезервирована целиком (requests = limits), и на
+       * занятом узле Pod встаёт в Pending с «Insufficient memory» и стоит там,
+       * пока кто-то не освободит место. Короткий отказ бывает и у здоровой
+       * комнаты — соседняя только что закрылась, и её Pod ещё гасится, — а
+       * планировщик сам повторит, как только тот исчезнет. Поэтому сначала
+       * пауза, и только отказ, переживший её, становится ответом со словом.
+       */
+      const lacking = phase === 'pending' ? unschedulable(current) : undefined
+      refused = lacking ? { pod: current, lacking, since: refused?.since ?? Date.now() } : undefined
+      if (refused && Date.now() - refused.since >= (this.options.unschedulableGraceMs ?? UNSCHEDULABLE_GRACE_MS))
+        return this.refuseUnschedulable(id, refused.pod, refused.lacking)
       if (phase === 'ready') {
         const ready = await (this.options.probe ?? probeJupyter)(endpoint)
         check()
@@ -510,7 +902,44 @@ export class RuntimeController {
       }
       await delay(this.options.pollMs ?? 500)
     }
+    // Срок вышел раньше паузы (подъём короче её): причина та же, и сказать её
+    // словом честнее, чем «timed out: Unschedulable».
+    if (refused) return this.refuseUnschedulable(id, refused.pod, refused.lacking)
     throw new RuntimeError(`Room startup timed out: ${reason}`)
+  }
+  /**
+   * Pod, которому на узле нет места, — отказ со словом и числами, а не таймаут.
+   *
+   * Сам Pod удаляется. Он ни разу не стоял на узле, Python в нём не было, и
+   * терять нечего; а оставшись в Pending, он держал бы старые числа: учёт
+   * ресурсов считал бы его память обещанной, а следующий подъём после того,
+   * как преподаватель уменьшил память комнаты, менял бы её Pod-у, которого нет
+   * ни на одном узле. Следующий ensure создаст новый — уже с тем, что в форме.
+   */
+  private async refuseUnschedulable(
+    id: string,
+    pod: KubeObject,
+    lacking: RuntimeUnschedulable,
+  ): Promise<never> {
+    const resources = kernelOf(pod.spec.containers)?.resources
+    const memoryMb = memoryOf(resources)
+    const milli = resourceQuantity('cpu', resources?.limits?.cpu)
+    await this.deleteResource('pods', id, pod).catch((err) =>
+      console.warn(
+        `[runtime] unschedulable room Pod was not deleted: ${err instanceof Error ? err.message.slice(0, 200) : 'error'}`,
+      ),
+    )
+    throw new RuntimeError(
+      lacking === 'other'
+        ? 'Room Pod cannot be scheduled on the node'
+        : `Room Pod cannot be scheduled: node lacks allocatable ${lacking}`,
+      503,
+      {
+        unschedulable: lacking,
+        ...(memoryMb !== undefined ? { memoryMb } : {}),
+        ...(typeof milli === 'number' && milli > 0 ? { cpus: milli / 1000 } : {}),
+      },
+    )
   }
   private async retireWorkload(id: string): Promise<void> {
     const [pod, service] = await Promise.all([this.get('pods', id), this.get('services', id)])
@@ -602,7 +1031,14 @@ export class RuntimeController {
     return pods.flatMap((pod) => {
       const id = pod.metadata.annotations?.['colloq.dev/session-id']
       if (!id || !isRuntimeSessionId(id) || !owned(pod, id) || !pod.metadata.uid) return []
-      const milliCpus = resourceQuantity('cpu', pod.spec.containers?.find((container: any) => container.name === 'kernel')?.resources?.limits?.cpu)
+      // Что у Pod есть, а не что ему записано: после изменения на месте spec
+      // уже новый, а kubelet мог ещё не успеть или узлу было нечем (Deferred).
+      const milliCpus =
+        milliCpuOf(kernelOf(pod.status?.containerStatuses)?.resources) ??
+        milliCpuOf(kernelOf(pod.spec.containers)?.resources)
+      const memoryMb =
+        memoryOf(kernelOf(pod.status?.containerStatuses)?.resources) ??
+        memoryOf(kernelOf(pod.spec.containers)?.resources)
       return [
         {
           sessionId: id,
@@ -610,7 +1046,8 @@ export class RuntimeController {
           phase: podPhase(pod),
           environment: pod.metadata.labels?.['colloq.dev/environment'] ?? '',
           revision: pod.metadata.annotations?.['colloq.dev/revision'] ?? '',
-          ...(typeof milliCpus === 'number' && milliCpus > 0 ? { cpus: milliCpus / 1000 } : {}),
+          ...(milliCpus !== undefined ? { cpus: milliCpus / 1000 } : {}),
+          ...(memoryMb !== undefined ? { memoryMb } : {}),
           ...(podReason(pod) ? { reason: podReason(pod) } : {}),
         },
       ]
@@ -625,7 +1062,13 @@ export class RuntimeController {
           this.options.kube.request('GET', `${this.root}/${kind}?limit=1`),
         ),
       )
-      return { ok: true, reason: null, defaultCpus: Number(resourceQuantity('cpu', this.options.config.cpu)) / 1000 }
+      return {
+        ok: true,
+        reason: null,
+        defaultCpus: Number(resourceQuantity('cpu', this.options.config.cpu)) / 1000,
+        defaultMemoryMb: this.defaultMemoryMb(),
+        maxMemoryMb: this.maxMemoryMb(),
+      }
     } catch (err) {
       return {
         ok: false,

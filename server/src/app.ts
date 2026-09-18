@@ -48,6 +48,7 @@ import { instanceSettingsRoutes } from './routes/instance-settings.js'
 import { instanceResourcesRoutes } from './routes/instance-resources.js'
 import { workspaceFs } from './workspace.js'
 import { PUBLIC_PAGES_INDEXED } from '@shared/publish'
+import { COLLOQ_VERSION } from './version.js'
 
 const STARTED_AT = Date.now()
 
@@ -296,6 +297,26 @@ async function kernelHealth(): Promise<{ ok: boolean; reason: string | null }> {
   return probe
 }
 
+/**
+ * Чем отделены друг от друга ядра комнат — для того, кто открывает дверь наружу.
+ *
+ * Публиковать занятие в интернет можно только тогда, когда у каждой комнаты
+ * свой контейнер (решение автора): scripts/host.sh и супервизор colloq
+ * (cli/src/launch-share.ts) спрашивают об этом здесь, а не угадывают по .env.
+ * Ответ — не настройка, а факт: поле ставится, только когда проверка ядра
+ * прошла, то есть requireKernelIsolation не отказал, а демон docker или
+ * брокер ответили (probeKernel). Бэкенд test изоляции не даёт вовсе — null.
+ */
+function roomIsolation(kernelOk: boolean): 'docker' | 'broker' | null {
+  if (!kernelOk) return null
+  try {
+    const backend = kernelBackend()
+    return backend === 'docker' || backend === 'broker' ? backend : null
+  } catch {
+    return null
+  }
+}
+
 async function probeKernel(): Promise<{ ok: boolean; reason: string | null }> {
   // Общее ядро compose кэша не заводит: у `jupyterReachable` он свой, на те же
   // пять секунд, и второй копии здесь взяться неоткуда.
@@ -385,6 +406,8 @@ app.get('/api/health', (_req, res) => {
         ok,
         reason,
         kernel: kernel.ok,
+        // docker | broker | null — у каждой ли комнаты свой контейнер (roomIsolation).
+        isolation: roomIsolation(kernel.ok),
         database: dbOk,
         workspace: workspaceOk,
         uptimeMs: Date.now() - STARTED_AT,
@@ -400,6 +423,13 @@ app.get('/api/health', (_req, res) => {
          */
         publicUrl: config.publicUrl,
         localRunId: process.env.COLLOQ_LOCAL_SESSION === '1' ? process.env.COLLOQ_LOCAL_RUN_ID ?? null : null,
+        /*
+         * Какая версия отвечает. Разбор неполадок начинается с вопроса «какой
+         * у вас выпуск», и до этого поля ответить было нечем: ни сервер, ни
+         * образ числа не знали. Здесь, а не в /api/livez: livez — пульс для
+         * зонда k3s, его тело никто не читает.
+         */
+        version: COLLOQ_VERSION,
       })
     })()
   })

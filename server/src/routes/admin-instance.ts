@@ -53,7 +53,7 @@ import {
   stepCount,
 } from '../publish/store.js'
 import { environmentOf, shutdownSession } from '../kernel/index.js'
-import { applyCpuLimit, applyMemoryLimit, defaultCpus } from '../kernel/pool.js'
+import { applyCpuLimit, applyMemoryLimit } from '../kernel/pool.js'
 import {
   cpuBounds,
   forgetResources,
@@ -568,11 +568,11 @@ export function adminInstanceRoutes(): Router {
        * а число уже записано — контейнера нет или docker отказал, и его
        * возьмёт следующий пуск. Что именно случилось, скажет журнал ядра.
        */
-      if (memory.mb !== null) {
-        void applyMemoryLimit(row.id, memory.mb).catch((err: unknown) => {
-          console.error(`[kernel] лимит памяти для ${row.id} не доехал:`, err)
-        })
-      }
+      // Сброс к умолчанию (`null`) тоже едет: брокер возвращает живой Pod к
+      // своему умолчанию сразу, docker по-прежнему ждёт следующего пуска.
+      void applyMemoryLimit(row.id, memory.mb).catch((err: unknown) => {
+        console.error(`[kernel] лимит памяти для ${row.id} не доехал:`, err)
+      })
     }
 
     if (body?.cpus !== undefined) {
@@ -581,13 +581,15 @@ export function adminInstanceRoutes(): Router {
       setSessionCpus(row.id, cpu.cpus)
       forgetResources()
       /*
-       * Живой комнате — сразу, как и память. Оговорка одна и честная: потоки
-       * numpy и torch считаются при старте интерпретатора, так что уже
-       * запущенное ядро будет считать прежним их числом до перезапуска. Форма
-       * об этом говорит вслух, поэтому здесь ядро не трогается.
+       * Живой комнате — сразу, как и память, на обоих бэкендах: `docker
+       * update --cpus` или `pods/resize` брокера. Оговорка одна и честная:
+       * потоки numpy и torch задаются при создании контейнера комнаты, и
+       * живому их не поменять — даже перезапуском ядра. Форма об этом говорит
+       * вслух, поэтому здесь ядро не трогается.
        */
-      // Сброс к умолчанию тоже меняет квоту уже работающего контейнера.
-      void applyCpuLimit(row.id, cpu.cpus ?? defaultCpus()).catch((err: unknown) => {
+      // Сброс к умолчанию тоже меняет квоту уже работающего контейнера;
+      // чьё это умолчание (KERNEL_CPUS или брокера), решает пул.
+      void applyCpuLimit(row.id, cpu.cpus).catch((err: unknown) => {
         console.error(`[kernel] число ядер для ${row.id} не доехало:`, err)
       })
     }

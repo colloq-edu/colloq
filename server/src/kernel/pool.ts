@@ -13,6 +13,15 @@ import { config } from '../config.js'
 import { activeName, needsGpu } from '../environments.js'
 import { sessionDir } from '../workspace.js'
 import { defaultEndpoint, type KernelEndpoint } from './jupyter.js'
+import {
+  ROOM_NETWORK,
+  ROOM_PROFILE,
+  ensureRoomPerimeter,
+  perimeterStale,
+  roomHardeningArgs,
+  warmPerimeter,
+  type RoomNetworkTarget,
+} from './perimeter.js'
 
 const IMAGE_PREFIX = 'colloq-kernel'
 const ROOM_PREFIX = 'colloq-room'
@@ -178,6 +187,38 @@ async function sameNetwork(container: string, network: string): Promise<boolean>
   return joined.out.trim().split(/\s+/).includes(network)
 }
 
+/** Версия укреплённого профиля, с которой поднят контейнер; пусто — поднят до него. */
+async function profileOf(container: string): Promise<string> {
+  const res = await run(['inspect', container, '--format', '{{index .Config.Labels "colloq.profile"}}'])
+  if (res.code !== 0) return ''
+  const label = res.out.trim()
+  return label === '<no value>' ? '' : label
+}
+
+/**
+ * Есть ли дорога до живого контейнера, поднятого до профиля, — той, по
+ * которой его звали тогда.
+ *
+ * На хосте он стоит в `bridge` с опубликованным портом, и порт этот работает и
+ * сейчас: сеть `colloq-rooms` ему не нужна, чтобы дожить пару. В контейнерной
+ * форме сеть не менялась вовсе — хватает членства в ней.
+ */
+async function legacyReachable(container: string, network: string): Promise<boolean> {
+  if (publishes()) return (await publishedPort(container)) !== null
+  return sameNetwork(container, network)
+}
+
+/** Сказано один раз на комнату: живой контейнер без профиля — дыра до его остановки. */
+const legacyWarned = new Set<string>()
+
+function warnLegacy(sessionId: string): void {
+  if (legacyWarned.has(sessionId)) return
+  legacyWarned.add(sessionId)
+  console.warn(
+    `[kernel] room ${sessionId} keeps its pre-hardening container (default privileges, open network) until it stops; the next start recreates it hardened`,
+  )
+}
+
 /**
  * Есть ли вообще docker у этого процесса.
  *
@@ -242,6 +283,19 @@ async function canIsolate(): Promise<boolean> {
 /** Правда ли у этой комнаты свой контейнер — панели, чтобы не обещать лишнего. */
 export function isolationAvailable(): Promise<boolean> {
   return canIsolate()
+}
+
+/**
+ * Сеть комнат и запрет на локальные адреса — на старте сервера, заранее.
+ *
+ * Правила iptables переживают перезапуск сервера, но не перезагрузку VM colima
+ * или Docker Desktop; заодно так отказ виден в журнале до пары, а не на первом
+ * Run. Ошибка здесь не роняет сервер: комнаты откажут сами, со своим текстом.
+ */
+export async function warmRoomPerimeter(): Promise<void> {
+  if (kernelBackend() !== 'docker') return
+  if (!(await canIsolate())) return
+  await warmPerimeter(run, perimeterTarget(), `${IMAGE_PREFIX}:${activeName()}`)
 }
 
 /**
@@ -350,8 +404,7 @@ function inContainer(): boolean {
 }
 
 /**
- * Сеть, в которую ставить контейнер комнаты, — и она же признак того, как его
- * потом звать.
+ * Сеть, в которую ставить контейнер комнаты.
  *
  * Под `make run` сервер на хосте, порт публикуется на хостовой петле, и
  * `127.0.0.1:<порт>` — верный адрес. Под `make up` сервер сам в контейнере, и
@@ -361,10 +414,26 @@ function inContainer(): boolean {
  * публикуется вовсе — и Jupyter комнаты не виден с хоста никому, что строго
  * лучше прежнего. Имя сети знает только тот, кто нас запустил: `KERNEL_NETWORK`.
  *
+ * На хосте комнаты больше не стоят в `bridge` по умолчанию, а живут в своей
+ * сети `colloq-rooms` (18.09.2026): у неё известная подсеть, и запрет на
+ * локальные адреса пишется ровно по ней, не задевая чужие контейнеры машины
+ * (perimeter.ts). В контейнерной форме сеть остаётся общей с сервером — иначе
+ * до ядра не дойти по имени; подсеть её perimeter.ts читает у docker.
+ *
  * Признак «сервер в контейнере» — тот же, по которому берётся путь монтирования.
  */
 function roomNetwork(): string {
-  return inContainer() ? (process.env.KERNEL_NETWORK ?? '').trim() : ''
+  return inContainer() ? (process.env.KERNEL_NETWORK ?? '').trim() : ROOM_NETWORK
+}
+
+/** Как сервер доходит до Jupyter комнаты: портом на своей петле (true) или по имени в общей сети. */
+function publishes(): boolean {
+  return !inContainer()
+}
+
+/** Сеть комнат для perimeter.ts: свою заводим сами, общую — тот, кто нас запустил. */
+function perimeterTarget(): RoomNetworkTarget {
+  return { network: roomNetwork(), create: publishes() }
 }
 
 /* --------------------------------------------------------------- срезы GPU */
@@ -615,7 +684,14 @@ export function runArgs(opts: {
   sessionId: string
   env: string
   mount: string
+  /** Сеть комнаты: `colloq-rooms` на хосте, KERNEL_NETWORK в контейнерной форме. */
   network: string
+  /**
+   * Публиковать ли Jupyter на петле хоста — так до него доходит сервер,
+   * живущий на хосте. В контейнерной форме сервер ходит по имени в общей сети,
+   * и порт не публикуется вовсе.
+   */
+  publish: boolean
   gpu: string | null
   /**
    * Лимит памяти именно ЭТОЙ комнаты, если преподаватель его задал.
@@ -637,7 +713,7 @@ export function runArgs(opts: {
    */
   cpus?: number | null
 }): string[] {
-  const { sessionId, env, mount, network, gpu } = opts
+  const { sessionId, env, mount, network, publish, gpu } = opts
   const memory = opts.memoryMb ? memSpec(opts.memoryMb) : memoryLimit(env)
   const cpus = opts.cpus && opts.cpus > 0 ? opts.cpus : defaultCpus()
   const threads = threadLimit(cpus)
@@ -647,18 +723,31 @@ export function runArgs(opts: {
     '--name',
     containerFor(sessionId),
     /*
-     * Либо общая сеть compose и адрес по имени контейнера (сервер сам в
-     * контейнере), либо порт на петле хоста. Петля тут не украшение: без
-     * неё Jupyter комнаты открыт на всех интерфейсах, а Wi-Fi семинара —
-     * один из них. В сетевом режиме порт не публикуется вовсе.
+     * Своя сеть комнат (на хосте) или общая сеть compose (сервер сам в
+     * контейнере) — и в любой из них действует запрет на локальные адреса
+     * (perimeter.ts).
      */
-    ...(network ? ['--network', network] : ['-p', '127.0.0.1:0:8888']),
+    ...(network ? ['--network', network] : []),
+    /*
+     * Порт на петле хоста — только когда сервер на хосте. Петля тут не
+     * украшение: без неё Jupyter комнаты открыт на всех интерфейсах, а Wi-Fi
+     * аудитории — один из них. В контейнерной форме порт не публикуется вовсе.
+     */
+    ...(publish ? ['-p', '127.0.0.1:0:8888'] : []),
+    /*
+     * Укреплённый профиль — всегда, а не только когда занятие открыто наружу:
+     * uid 1000, никаких capabilities, no-new-privileges, потолок процессов,
+     * без IPv6, метка версии профиля (perimeter.ts · roomHardeningArgs).
+     */
+    ...roomHardeningArgs(),
     // Один срез, названный так, как его зовёт docker. Комната на обычном
     // окружении сюда не попадает и устройства не занимает.
     ...(gpu ? ['--gpus', `device=${gpu}`] : []),
     '-e',
     `JUPYTER_TOKEN=${roomToken(sessionId)}`,
-    // Ядер у комнаты столько, сколько ей выдали, — и потоков столько же.
+    // Ядер у комнаты столько, сколько ей выдали, — и потоков столько же. Но
+    // только на момент `docker run`: `docker update --cpus` меняет квоту живому
+    // контейнеру, а его переменные окружения — нет (см. applyCpuLimit).
     '-e',
     `OMP_NUM_THREADS=${threads}`,
     '-e',
@@ -682,7 +771,6 @@ export function runArgs(opts: {
      */
     `--memory-swap=${memory}`,
     `--cpus=${cpus}`,
-    '--pids-limit=512',
     /*
      * Разделяемая память нужна только там, где есть GPU: умолчание docker —
      * 64 МБ, и `DataLoader(num_workers=4)` падает на нём «bus error», не
@@ -749,12 +837,24 @@ export type LimitOutcome = 'applied' | 'pending' | 'failed'
  *
  * Контейнера нет — не беда и не ошибка: число уже лежит в строке семинара, и
  * следующий пуск возьмёт его оттуда.
+ *
+ * Под брокером (k3s) — то же самое руками Kubernetes: брокер меняет память
+ * живого Pod через подресурс `pods/resize`, Pod и его Python остаются. До 18.09
+ * здесь стоял ранний `pending`, и поле памяти на k3s не делало ничего вовсе:
+ * ни живой комнате, ни следующему Pod — брокер числа не принимал.
+ *
+ * `null` — «как у окружения». Docker его здесь не трогает (прежнее поведение:
+ * умолчание возьмёт следующий `docker run`), а брокер возвращает Pod к своему
+ * умолчанию сразу — ровно как сброс ядер.
  */
-export async function applyMemoryLimit(sessionId: string, mb: number): Promise<LimitOutcome> {
+export async function applyMemoryLimit(sessionId: string, mb: number | null): Promise<LimitOutcome> {
   const container = containerFor(sessionId)
+  if (!limitsInjected && kernelBackend() === 'broker') return resizeRoomPod(sessionId, { memoryMb: mb })
+  // Сброс docker ждёт следующего `docker run` — и без похода к демону: до
+  // брокерной правки маршрут с `null` сюда не звал вовсе.
+  if (mb === null) return 'pending'
   if (!limitsInjected) {
-    // Под брокером контейнерами распоряжаемся не мы, а под тестовым бэкендом
-    // их нет вовсе. И там и там число ждёт следующего пуска.
+    // Под тестовым бэкендом контейнеров нет вовсе — число ждёт следующего пуска.
     if (kernelBackend() !== 'docker') return 'pending'
     if (!(await canIsolate())) return 'pending'
   }
@@ -773,20 +873,56 @@ export async function applyMemoryLimit(sessionId: string, mb: number): Promise<L
   return 'failed'
 }
 
+/** Память или ядра живого Pod комнаты через брокер — ответ брокера в словах пула. */
+async function resizeRoomPod(
+  sessionId: string,
+  change: { memoryMb: number | null } | { cpus: number | null },
+): Promise<LimitOutcome> {
+  const [value] = Object.values(change)
+  const shown =
+    'memoryMb' in change
+      ? value === null ? 'умолчание брокера памяти' : `${value} МБ памяти`
+      : value === null ? 'умолчание брокера ядер' : `${value} ядер`
+  try {
+    const result = await kernelRuntimeClient().resize(sessionId, change)
+    if (result.outcome === 'applied') {
+      console.log(`[kernel] комнате ${sessionId} выдано ${shown} на живом Pod`)
+      return 'applied'
+    }
+    // absent — Pod нет, возьмёт следующий подъём; pending — узлу сейчас нечем
+    // (Deferred), kubelet применит сам, когда соседняя комната освободит своё.
+    console.log(`[kernel] комнате ${sessionId} записано ${shown}; Pod: ${result.outcome}`)
+    return 'pending'
+  } catch (err) {
+    console.error(`[kernel] брокер не выдал комнате ${sessionId} ${shown}: ${err instanceof Error ? err.message.slice(0, 300) : err}`)
+    return 'failed'
+  }
+}
+
 /**
- * Поднять (или опустить) число ядер живой комнате.
+ * Поднять (или опустить) число ядер живой комнате — на обоих бэкендах сразу.
  *
  * `docker update --cpus` меняет cgroup работающего контейнера, и ядру от этого
- * становится просторнее в ту же секунду. Оговорка одна, и она честная: потоки
- * numpy и torch считаются ОДИН раз, при старте интерпретатора, по переменным
- * окружения контейнера — так что уже запущенное ядро будет считать прежним
- * числом потоков, пока его не перезапустят. Об этом сказано в подсказке под
- * полем, а не только здесь.
+ * становится просторнее в ту же секунду. Под брокером (k3s) то же самое делает
+ * подресурс `pods/resize`: Pod, его UID и Python остаются. До 18.09 здесь под
+ * брокером стоял ранний `pending`, подсказка обещала «после перезапуска ядра»,
+ * а на деле ядра доезжали, только когда следующий подъём сносил Pod целиком —
+ * вместе со всеми переменными семинара.
  *
- * Swap-подобной пары флагов тут нет: `--cpus` самодостаточен.
+ * Оговорка одна, и она честная: потоки numpy и torch (OMP_NUM_THREADS и
+ * соседи) задаются при СОЗДАНИИ контейнера — `docker run` или новый Pod — и
+ * живому контейнеру их не поменять. Перезапуск ядра Jupyter тут не помогает:
+ * новый Python наследует окружение сервера в том же контейнере. Новое число
+ * потоков получит следующий контейнер комнаты. Об этом сказано в подсказке
+ * под полем, а не только здесь.
+ *
+ * `null` — «как у инстанса»: docker берёт KERNEL_CPUS, брокер — своё
+ * умолчание. Swap-подобной пары флагов тут нет: `--cpus` самодостаточен.
  */
-export async function applyCpuLimit(sessionId: string, cpus: number): Promise<LimitOutcome> {
+export async function applyCpuLimit(sessionId: string, own: number | null): Promise<LimitOutcome> {
   const container = containerFor(sessionId)
+  if (!limitsInjected && kernelBackend() === 'broker') return resizeRoomPod(sessionId, { cpus: own })
+  const cpus = own ?? defaultCpus()
   if (!limitsInjected) {
     if (kernelBackend() !== 'docker') return 'pending'
     if (!(await canIsolate())) return 'pending'
@@ -891,13 +1027,35 @@ async function startContainer(
      * студента падал `import transformers`, и ничто на экране с ним не спорило.
      */
     if (!(await sameImage(container, image))) return recreate(tr("server.theEnvironmentImageWasRebuilt.229a9d"))
-    // Контейнер прошлого режима: адреса, по которому мы теперь его зовём, у
-    // него нет — ни имени в нашей сети, ни опубликованного порта.
-    if (!(await sameNetwork(container, network))) return recreate(tr("server.theServerChangedNetworks.08933e"))
+    /*
+     * Контейнер, поднятый до укреплённого профиля (без метки colloq.profile):
+     * с привилегиями docker по умолчанию и в сети без запрета.
+     *
+     * Остановленный пересоздаётся — терять в нём нечего, кроме пакетов,
+     * поставленных в слой (так же, как при пересборке образа), а поднять его
+     * `docker start` значило бы снова выпустить ядро со старыми правами.
+     * Живой доживает до остановки: снести его — значит отнять у пары все
+     * переменные посреди занятия; решение владельца — «до перезапуска».
+     */
+    const legacy = (await profileOf(container)) !== ROOM_PROFILE
+    if (legacy && state === 'stopped') return recreate(tr('server.roomPerimeter.migrated'))
+    if (legacy) {
+      // Дорога до него прежняя: опубликованный порт на хосте или имя в общей
+      // сети. Нет и её — это уже не профиль, а сменившийся режим сервера.
+      if (!(await legacyReachable(container, network))) return recreate(tr("server.theServerChangedNetworks.08933e"))
+      warnLegacy(sessionId)
+    } else if (!(await sameNetwork(container, network))) {
+      // Контейнер прошлого режима: адреса, по которому мы теперь его зовём, у
+      // него нет — ни имени в нашей сети, ни опубликованного порта.
+      return recreate(tr("server.theServerChangedNetworks.08933e"))
+    }
     // Контейнер без среза (или с чужим) для GPU-окружения не годится: устройства
     // внутрь него не пробросить иначе как заново.
     if (!(await sameGpu(container, gpu))) return recreate(tr("server.theContainerWasStartedWithADifferent.bc4d7d"))
     if (state === 'stopped') {
+      // Запрет на локальные адреса — до того, как ядро проснётся, а не после:
+      // не встал он — комната не поднимается (perimeter.ts · RoomPerimeterError).
+      await ensureRoomPerimeter(run, perimeterTarget(), image)
       assertLocalRoomRunning(sessionId)
       const started = await run(['start', container], 60_000)
       // Результат читается: не поднявшийся контейнер дальше отвечал бы «could
@@ -917,6 +1075,9 @@ async function startContainer(
      * содержимое `/workspace` внутрь больше не попадает вовсе.
      */
     const mount = hostMount(sessionId)
+    // Сеть комнат заводится здесь же, если её нет, и запрет встаёт раньше
+    // первого пакета ядра; не встал — отказ, а не открытая сеть.
+    await ensureRoomPerimeter(run, perimeterTarget(), image)
     assertLocalRoomRunning(sessionId)
     const created = await run(
       runArgs({
@@ -924,6 +1085,7 @@ async function startContainer(
         env,
         mount,
         network,
+        publish: publishes(),
         gpu,
         memoryMb: sessionMemoryMb(sessionId),
         cpus: sessionCpus(sessionId),
@@ -931,6 +1093,9 @@ async function startContainer(
       120_000,
     )
     if (created.code !== 0) {
+      // Сеть могли снести между проверкой и запуском: следующая попытка
+      // спросит заново, а не поверит запомненному минуту назад.
+      if (/network .* not found/i.test(created.out)) perimeterStale()
       /*
        * Самая частая беда GPU-комнаты — не в нас: на хосте не поставлен
        * nvidia-container-toolkit, и docker отвечает «could not select device
@@ -947,7 +1112,7 @@ async function startContainer(
 
   assertLocalRoomRunning(sessionId)
   let url: string
-  if (network) {
+  if (!publishes()) {
     // Внутри сети слушают тот же 8888, публиковать нечего.
     url = `http://${container}:8888`
   } else {
@@ -1030,7 +1195,9 @@ export async function endpointForSession(
     const pinned = runtimeEnvironment(sessionEnvironment(sessionId), revision)
     const starts = brokerStarts.get(sessionId) ?? new Set<Promise<KernelEndpoint>>()
     brokerStarts.set(sessionId, starts)
-    const attempt = kernelRuntimeClient().ensure(sessionId, pinned.name, revision, sessionCpus(sessionId))
+    const attempt = kernelRuntimeClient().ensure(
+      sessionId, pinned.name, revision, sessionCpus(sessionId), sessionMemoryMb(sessionId),
+    )
     starts.add(attempt)
     try {
       const endpoint = await attempt

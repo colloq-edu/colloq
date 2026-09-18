@@ -54,6 +54,8 @@
     busy?: boolean
     /** Отказ сервера, если он был: печатается под полем, а не в стороне. */
     refusal?: string | null
+    /** Чья это форма; нет — новое занятие, у которого ядра ещё нет. */
+    roomId?: string | null
   }
 
   let {
@@ -66,6 +68,7 @@
     oncpus,
     busy = false,
     refusal = null,
+    roomId = null,
   }: Props = $props()
 
   const MB_IN_GB = 1024
@@ -158,9 +161,29 @@
    * комнату закроют, её контейнер уберут. Но взять восемь гигабайт там, где
    * свободно два, — это ядро, которое не поднимется, и узнать об этом лучше
    * сейчас, чем первым Run на занятии.
+   *
+   * `null` — «свободное неизвестно» (macOS без docker: MemAvailable там нет), и
+   * тогда предупреждения нет вовсе. Раньше на его месте стоял `os.freemem()`,
+   * который на Маке всегда около нуля, и раздел краснел на любом лимите —
+   * пугая ровно там, где бояться было нечего.
    */
+  /*
+   * Живая комната свою память уже держит — просит она только прибавку.
+   *
+   * На k3s и под колимой «свободно» — это ещё НЕ обещанное, и обещанное этой
+   * же комнате из него уже вычтено. Без поправки настройки идущего занятия
+   * краснели сами по себе: Pod с 8 ГБ на узле в 16 «просил больше, чем
+   * свободно» (16 − 1 − 8 = 7) — ровно тогда, когда преподаватель пришёл
+   * поднять память посреди пары.
+   */
+  const heldMb = $derived(
+    (roomId && resources?.rooms.find((room) => room.id === roomId && room.alive)?.memoryMb) || 0,
+  )
   const tight = $derived(
-    resources !== null && effectiveMb > resources.memory.availableMb && effectiveMb > 0,
+    resources !== null &&
+      resources.memory.availableMb !== null &&
+      effectiveMb - heldMb > resources.memory.availableMb &&
+      effectiveMb > 0,
   )
 
   /** Доля процессора машины, которую просит комната. */
@@ -306,13 +329,37 @@
         ></div>
       </div>
 
+      <!--
+        Три подписи под полем — потому что машин под комнатой бывает две.
+
+        Под колимой и Docker Desktop контейнеры живут в виртуалке со своей
+        памятью, и «на машине 36 ГБ» на Маке было прямой неправдой: раздать
+        можно её двенадцать. Когда числа пришли от демона, так и сказано.
+        Когда свободное неизвестно (macOS без docker), про него молчим — а не
+        печатаем `freemem`, который там всегда около нуля.
+      -->
       <p class="text-2xs leading-snug text-muted">
-        {tr('admin.resources.hint', {
-          p0: asGb(resources.memory.totalMb),
-          p1: asGb(resources.memory.availableMb),
-          p2: environment || tr('admin.resources.thisEnvironment'),
-          p3: asGb(defaultMb ?? resources.kernel.defaultMemoryMb),
-        })}
+        {#if resources.memory.availableMb === null}
+          {tr('admin.resources.hintNoFree', {
+            p0: asGb(resources.memory.totalMb),
+            p1: environment || tr('admin.resources.thisEnvironment'),
+            p2: asGb(defaultMb ?? resources.kernel.defaultMemoryMb),
+          })}
+        {:else if resources.memory.source === 'docker'}
+          {tr('admin.resources.hintDocker', {
+            p0: asGb(resources.memory.totalMb),
+            p1: asGb(resources.memory.availableMb),
+            p2: environment || tr('admin.resources.thisEnvironment'),
+            p3: asGb(defaultMb ?? resources.kernel.defaultMemoryMb),
+          })}
+        {:else}
+          {tr('admin.resources.hint', {
+            p0: asGb(resources.memory.totalMb),
+            p1: asGb(resources.memory.availableMb),
+            p2: environment || tr('admin.resources.thisEnvironment'),
+            p3: asGb(defaultMb ?? resources.kernel.defaultMemoryMb),
+          })}
+        {/if}
       </p>
 
       {#if tight}
@@ -346,11 +393,20 @@
           ></div>
         </div>
 
+        <!-- Ядра — тем же правилом, что и память: у виртуалки докера их своя
+             доля («--cpu 10» из двенадцати), и названы они её именем. -->
         <p class="text-2xs leading-snug text-muted">
-          {tr('admin.resources.cpuHint', {
-            p0: resources.cpus,
-            p1: defaultCores ?? resources.kernel.defaultCpus,
-          })}
+          {#if resources.memory.source === 'docker'}
+            {tr('admin.resources.cpuHintDocker', {
+              p0: resources.cpus,
+              p1: defaultCores ?? resources.kernel.defaultCpus,
+            })}
+          {:else}
+            {tr('admin.resources.cpuHint', {
+              p0: resources.cpus,
+              p1: defaultCores ?? resources.kernel.defaultCpus,
+            })}
+          {/if}
         </p>
       </div>
 

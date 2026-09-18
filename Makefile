@@ -6,7 +6,7 @@
 #   make host              поднять семинар и получить ссылку для аудитории
 #   make env-use NAME=cv   окружение Python для новых семинаров
 #
-# Локальная сессия в терминале: ./colloq; меню: ./colloq menu (см. cli/README.md).
+# Разработка: make dev — сервер с перезагрузкой и Vite в одном терминале.
 #
 # Всё считается на этой машине. Наружу её выводит `make host` — туннелем,
 # исходящим соединением, так что ни белого IP, ни проброса портов на роутере
@@ -58,14 +58,12 @@ OFF  := \033[0m
 # страниц, ни коммита, ни пуша, — отчитываясь при этом успехом.
 .PHONY: help up dev run dirs docker-gid stop logs-run down restart logs status ps shell activity \
         service-install service-restart service-stop service-status service-logs \
-        host host-direct relay-setup relay-page tunnel-setup site ui sync load course \
+        host host-direct relay-setup relay-page tunnel-setup site readme-art ui sync load course \
         vast-up vast-status vast-sync vast-logs vast-down vast-adopt \
         env-list env-show env-new env-use env-build env-freeze \
-        backup restore test check pack wheel
+        backup restore test check pack wheel version bump
 
 ## ------------------------------------------------------------------ запуск
-
-DEV := -f docker-compose.yml -f docker-compose.dev.yml
 
 up: .env dirs docker-gid ## Локальная разработка в Docker: отдельное ядро каждой комнате
 	docker compose build kernel
@@ -113,13 +111,16 @@ docker-gid:
 	  fi; \
 	}
 
-dev: .env dirs ## Ядро в docker, сервер на хосте (npm run dev рядом)
-	@# Только ядро и только с override: он публикует 8888 на хост и монтирует
-	@# ./workspace, иначе сервер с хоста ядра не видит, а файлы расходятся.
-	docker compose $(DEV) build kernel
-	@printf '$(BOLD)образ ядра собран:$(OFF) $(CYAN)$(CURRENT_ENV)$(OFF) $(DIM)(окружение: $(CURRENT_ENV))$(OFF)\n'
-	@printf '$(DIM)теперь: NODE_ENV=development KERNEL_BACKEND=docker npm run dev$(OFF)\n'
-	@if [ "$$(uname -s)" != Linux ]; then printf '$(DIM)для нативного запуска: COLLOQ_UNSAFE_DEV_FILES=1 в .env (только доверенная локальная разработка); сервер в Docker: make up$(OFF)\n'; fi
+DEV := -f docker-compose.yml -f docker-compose.dev.yml
+
+dev: ## Разработка: сервер с перезагрузкой и Vite, у каждой комнаты своё ядро. OPEN=0 — без браузера, SHARE=1 — ссылка через быстрый туннель
+	@# Тот же супервизор, что поднимает занятие у `colloq start` (cli/src/launch.ts):
+	@# сам заводит .env, собирает образ ядра, запускает сервер под tsx watch и
+	@# Vite, открывает браузер, а по Ctrl+C гасит всё вместе с ядрами этой базы.
+	@# Перезагрузка сервера ядра комнат не трогает. Раньше цель только собирала
+	@# ядро compose, а сервер поднимали второй командой — и забывали про неё.
+	@# SHARE=1 — то же, что `colloq start --share` (cli/src/launch-share.ts).
+	@node --import tsx cli/src/launch.ts dev $(if $(filter 0,$(OPEN)),--no-open) $(if $(filter 1,$(SHARE)),--share)
 
 ## Как это запускается на самом деле.
 ##
@@ -202,14 +203,19 @@ run: .env dirs ## Собрать и запустить. FAST=1 — не сжим
 	@# секунды — это либо долго, либо мало, и «мало» печатает ссылку над
 	@# инстансом, который ещё поднимается. /api/health отвечает 200 только
 	@# когда и база читается, и Jupyter отзывается.
+	@#
+	@# Ссылка — PUBLIC_URL, а без него то же, что берёт сервер (config.ts ·
+	@# readPublicUrl): localhost:PORT. Строки в .env может не быть вовсе: её
+	@# нет в файле, который пишут цель .env и colloq, — и готовый сервер
+	@# объявлялся пустым «colloq на».
 	@ok=; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
 	  if ! kill -0 "$$(cat $(PID) 2>/dev/null)" 2>/dev/null; then break; fi; \
 	  if curl -fsS -m 2 "http://localhost:$(PORT)/api/health" >/dev/null 2>&1; then ok=1; break; fi; \
 	  sleep 1; \
 	done; \
 	if [ -n "$$ok" ]; then \
-	  printf '\n$(BOLD)colloq на$(OFF) $(CYAN)%s$(OFF)\n' \
-	    "$$(grep -E '^PUBLIC_URL=' .env | tail -1 | cut -d= -f2-)"; \
+	  url="$$(grep -E '^PUBLIC_URL=' .env | tail -1 | cut -d= -f2-)"; \
+	  printf '\n$(BOLD)colloq на$(OFF) $(CYAN)%s$(OFF)\n' "$${url:-http://localhost:$(PORT)}"; \
 	  printf '$(DIM)логи: make logs-run · остановить: make stop · наружу: make host$(OFF)\n'; \
 	elif kill -0 "$$(cat $(PID) 2>/dev/null)" 2>/dev/null; then \
 	  printf '$(RED)сервер запущен, но не отвечает готовностью — ядро не поднялось?$(OFF)\n'; \
@@ -328,7 +334,9 @@ status: ## Что запущено и в каком состоянии
 	  printf '\n$(DIM)ядра семинаров:$(OFF)\n'; echo "$$rooms" | sed 's/^/  /'; \
 	fi
 	@printf '\n$(DIM)окружение ядра:$(OFF) $(BOLD)$(CURRENT_ENV)$(OFF)\n'
-	@printf '$(DIM)PUBLIC_URL:$(OFF) %s\n' "$$(grep -E '^PUBLIC_URL=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+	@# Нет строки — сервер берёт localhost:PORT (как и make run выше), это и печатаем.
+	@url="$$(grep -E '^PUBLIC_URL=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"; \
+	printf '$(DIM)PUBLIC_URL:$(OFF) %s\n' "$${url:-http://localhost:$(PORT)}"
 
 ps: status
 
@@ -458,6 +466,9 @@ site: ## Выложить сайт colloq.ru — лендинг и опубли�
 	@# умеет приватные» — неправда, и второй клон рядом больше не нужен.
 	@npx tsx scripts/publish-site.mts $(if $(SITE),--site "$(SITE)",) $(if $(BASE),--base "$(BASE)",) $(if $(DRY),--dry,)
 
+readme-art: ## Перерисовать анимации README (.github/assets/readme)
+	@node --import tsx scripts/readme-art.mts
+
 course: ## Курс из расписания в таблице. SHEET=<id> GID=<gid> COL="ML · сильная"
 	@test -n "$(SHEET)" || { printf '$(RED)Укажите таблицу: make course SHEET=<id> COL="ML · сильная"$(OFF)\n'; exit 1; }
 	@npx tsx scripts/course-from-sheet.mts \
@@ -465,7 +476,7 @@ course: ## Курс из расписания в таблице. SHEET=<id> GID=
 	  $(if $(NAME),--name "$(NAME)",) $(if $(BLURB),--blurb "$(BLURB)",) $(if $(DRY),--dry,)
 
 relay-setup: ## Поставить ретранслятор для *.colloq.ru. WHERE=root@адрес
-	@test -n "$(WHERE)" || { printf '$(RED)Укажите машину: make relay-setup WHERE=root@203.0.113.11$(OFF)\n'; exit 1; }
+	@test -n "$(WHERE)" || { printf '$(RED)Укажите машину: make relay-setup WHERE=root@203.0.113.10$(OFF)\n'; exit 1; }
 	@./scripts/relay-setup.sh "$(WHERE)"
 
 relay-page: ## Обновить страницу «комната ещё не открыта». WHERE=root@адрес
@@ -474,7 +485,7 @@ relay-page: ## Обновить страницу «комната ещё не о
 	@# установка ради одного абзаца — это
 	@# пакеты, бинарники и перезапуск обеих служб на боевой машине, где висят
 	@# живые адреса. Здесь только файл: ни одна служба не перезапускается.
-	@test -n "$(WHERE)" || { printf '$(RED)Укажите машину: make relay-page WHERE=root@203.0.113.11$(OFF)\n'; exit 1; }
+	@test -n "$(WHERE)" || { printf '$(RED)Укажите машину: make relay-page WHERE=root@203.0.113.10$(OFF)\n'; exit 1; }
 	@./scripts/relay-setup.sh --page "$(WHERE)"
 
 tunnel-setup: ## Один раз завести постоянный адрес. HOST=seminar.example.ru
@@ -545,6 +556,45 @@ vast-adopt: ## Назвать средой машину со старой мет
 	@# машине, арендованной до того, как сред стало несколько.
 	@test -n "$(NAME)" || { printf '$(RED)Назовите среду: make vast-adopt NAME=demo$(OFF)\n'; exit 1; }
 	@NAME="$(NAME)" ./scripts/vast.sh adopt
+
+## ------------------------------------------------------ образ для vast
+##
+## Готовый образ вместо сборки на арендованной машине: сервер, клиент,
+## туннели и контекст ядер в одном colloq-vast. На Vast VM его запускает
+## on-start шаблона (deploy/vast/onstart.sh), ядра комнат — соседние
+## контейнеры на docker этой VM. Почему VM, а не обычный Docker-инстанс, —
+## deploy/vast/README.md, «Design».
+
+# TAG, а не VAST_IMAGE: VAST_IMAGE в .env — уже образ ВИРТУАЛКИ для аренды
+# (scripts/vast-legacy.sh, scripts/vast.sh), и одно имя с двумя смыслами
+# однажды пометило бы сборку как docker.io/vastai/kvm:… . `=`, а не `?=`:
+# переменная окружения с тем же именем сюда не протекает, только make TAG=….
+TAG = colloq-vast:dev
+
+.PHONY: vast-image vast-image-run vast-image-stop
+
+vast-image: ## Собрать образ colloq-vast. TAG=имя:тег PLATFORM=linux/amd64
+	@# Версия — из корневого package.json (единственный её источник, см.
+	@# scripts/version.mts), ревизия — из git: обе едут в метки OCI и в
+	@# `colloq-vast version`. Публикация — отдельный шаг владельца: docker push.
+	@# Ревизия с -dirty, если дерево расходится с HEAD: иначе метка образа,
+	@# собранного из незакоммиченного, называла бы исходником чужой коммит.
+	docker build -f deploy/vast/Dockerfile \
+	  $(if $(PLATFORM),--platform $(PLATFORM),) \
+	  --build-arg COLLOQ_VERSION="$$(node -p "require('./package.json').version")" \
+	  --build-arg GIT_SHA="$$(git rev-parse --short HEAD)$$(git diff --quiet HEAD -- 2>/dev/null || echo -dirty)" \
+	  -t "$(TAG)" .
+
+vast-image-run: ## Проверить образ у себя: dind вместо VM, комната, ячейка, копия. SEED_KERNEL=1 — не собирать ядро
+	@# Внутри docker:dind, а не на docker этой машины: уборка простоя сносит
+	@# контейнеры комнат ВСЕХ инстансов на демоне, и стенд рядом с make dev
+	@# через полчаса убил бы ядра чужой пары. Стенд остаётся жить — адрес
+	@# напечатан; убрать его: make vast-image-stop.
+	@IMAGE="$(TAG)" SEED_KERNEL="$(SEED_KERNEL)" ./deploy/vast/smoke.sh up
+	@IMAGE="$(TAG)" ./deploy/vast/smoke.sh e2e
+
+vast-image-stop: ## Убрать стенд make vast-image-run вместе со всем, что в нём было
+	@./deploy/vast/smoke.sh down
 
 ## ------------------------------------------------------------- окружения
 
@@ -618,7 +668,12 @@ env-build: ## Собрать образ окружения, не переклю�
 	  parent=colloq-kernel:$$step; \
 	done
 
-env-use: ## Окружение по умолчанию для новых семинаров. NAME=cv
+env-use: .env ## Окружение по умолчанию для новых семинаров. NAME=cv
+	@# Пререквизит .env — не формальность. Без него на свежем клоне строка ниже
+	@# заводила .env из одной строки KERNEL_ENV=…, и дальше ни make up, ни
+	@# make dev своего файла не писали (он же есть): занятие шло с умолчаниями,
+	@# с общеизвестным токеном ядра. Та же ошибка у `colloq env use` —
+	@# cli/src/commands/env.ts, там основой берётся тот же localClassEnv.
 	@test -n "$(NAME)" || { printf '$(RED)Укажите имя: make env-use NAME=cv$(OFF)\n'; exit 1; }
 	@test -f $(ENV_DIR)/$(NAME).txt || { printf '$(RED)Нет $(ENV_DIR)/$(NAME).txt — сначала make env-new NAME=$(NAME)$(OFF)\n'; exit 1; }
 	@printf '$(DIM)первый раз может быть долго$(OFF)\n'
@@ -682,21 +737,40 @@ wheel: pack ## Собрать колесо pip в python/dist (публикуе�
 	@printf '$(BOLD)Колесо:$(OFF) %s\n' "$$(ls python/dist/*.whl)"
 	@printf '$(DIM)Проверить: python3 -m venv /tmp/colloq-venv && /tmp/colloq-venv/bin/pip install python/dist/*.whl$(OFF)\n'
 
+## ------------------------------------------------------------------ версия
+
+# Версия одна — "version" в корневом package.json. Остальное её копии
+# (воркспейсы, замок, python/colloq/_version.py, манифест release-please) и
+# производные (веб, сервер, колесо, теги образов); scripts/version.mts
+# сверяет их, CI тоже.
+#
+# Версию здесь не поднимают. Число, CHANGELOG, тег и выпуск делает
+# release-please: он держит PR «chore(main): release X.Y.Z», и слияние этого PR
+# и есть выпуск. Прежнего `make bump` нет: следующее число решают Conventional
+# Commits в main, а не часть, выбранная руками. Цель оставлена, чтобы старая
+# привычка получила ответ, а не «No rule to make target». RELEASING.md.
+
+version: ## Версия проекта и сверка всех её копий (то же проверяет CI)
+	@node --import tsx scripts/version.mts current
+	@node --import tsx scripts/version.mts check
+
+bump:
+	@printf '$(RED)Версию поднимает release-please: слейте его PR «chore(main): release X.Y.Z».$(OFF)\n'
+	@printf '$(DIM)Следующее число — из Conventional Commits в main; своё — футер Release-As: X.Y.Z. RELEASING.md$(OFF)\n'
+	@exit 1
+
 .env:
 	@test -f .env || { \
-	  printf '$(BOLD)нет .env — делаю из .env.example$(OFF)\n'; \
-	  cp .env.example .env; \
+	  printf '$(BOLD)нет .env — пишу .env этой машины (ядра в docker, свой токен ядра)$(OFF)\n'; \
 	  : ; \
-	  : 'Секрет между приложением и ядром — свой на каждой установке.'; \
-	  : 'В примере стоит colloq-dev-token, и он лежит в публичном репозитории:'; \
-	  : 'копия примера как есть означала, что у всех, кто ставил Colloq, один и'; \
-	  : 'тот же пароль к контейнеру с Python. Порт слушает только петля, так что'; \
-	  : 'это не дыра наружу, — но и оставлять общеизвестное значение незачем,'; \
-	  : 'когда его можно выписать одной строкой.'; \
-	  tok="$$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 32)"; \
-	  tmp="$$(mktemp)"; \
-	  sed "s|^JUPYTER_TOKEN=.*|JUPYTER_TOKEN=$$tok|" .env > "$$tmp" && mv "$$tmp" .env; \
-	  printf '$(DIM)загляните в него перед семинаром: там ключ ассистента и почта админа$(OFF)\n'; \
+	  : 'Не копия .env.example. Тот — шаблон прода, KERNEL_BACKEND=broker, и'; \
+	  : 'после make up (run, host) супервизор make dev отказывал на нём как на'; \
+	  : 'установке с брокером. Пишем тот же файл, что colloq при первом запуске,'; \
+	  : 'со своим JUPYTER_TOKEN; почему шеллом, а не node, — scripts/local-env.sh.'; \
+	  : 'umask 077: внутри будут ключи входа; упал писатель — пустой .env не'; \
+	  : 'оставляем, иначе make счёл бы цель сделанной.'; \
+	  ( umask 077; bash scripts/local-env.sh > .env ) || { rm -f .env; exit 1; }; \
+	  printf '$(DIM)загляните в него перед семинаром: там ключ ассистента; все настройки — в .env.example$(OFF)\n'; \
 	}
 
 help: ## Показать этот список
@@ -707,14 +781,7 @@ help: ## Показать этот список
 	@printf '$(DIM)Разработка в Docker: make up$(OFF)\n'
 	@printf '$(DIM)Управление k3s: make cluster-status · cluster-logs · cluster-stop$(OFF)\n'
 	@printf '$(DIM)Окружение ядра сейчас: $(BOLD)$(CURRENT_ENV)$(OFF)\n'
-	@printf '$(DIM)Локальная сессия: ./colloq · меню: ./colloq menu$(OFF)\n'
-
-# Обёртка: ./colloq. Сама зовёт эти же цели, но знает, какие у них аргументы,
-# и умеет спрашивать. .PHONY тут не формальность: рядом лежит каталог cli/, и
-# без него make говорил бы «cli is up to date» и не делал ничего.
-.PHONY: cli
-cli: ## Локальная сессия ./colloq; меню: make cli ARGS=menu
-	@./colloq $(ARGS)
+	@printf '$(DIM)Разработка: make dev · занятие у преподавателя: pip install colloq, colloq start$(OFF)\n'
 
 .PHONY: install update rollback cluster-start cluster-stop cluster-status cluster-logs backup backup-legacy restore-legacy release-validate
 install: ## Установить версию на Linux VM. RELEASE=/путь/release.json

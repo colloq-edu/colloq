@@ -7,13 +7,18 @@
  * сказать это надо там, где он на вывод смотрит и где решает, кому запускать.
  * Шапка `COUNCIL_SHARED_KERNEL_NOTE` называет три таких места: ручка «кто может
  * запускать», подсказка кнопки запуска у студента, README. Первое было в меню
- * замка и уехало в полосу очереди пульта вместе с самой ручкой; второе и
- * третье закрыты своими тестами (notebook-craft, docs-promises), первое — здесь.
+ * замка, потом в полосе очереди пульта, теперь — в подвале листа регламента,
+ * под всеми четырьмя правилами; второе и третье закрыты своими тестами
+ * (notebook-craft, docs-promises), первое — здесь.
  *
  * Проверяется и то, что строка не переписана своими словами: копия одна, в
  * shared/notebook.ts, иначе ручка и строка разъедутся на первой же правке, — и
  * что она стоит текстом, а не подсказкой: пульт ведут с планшета, где наведения
  * нет вовсе.
+ *
+ * С листом регламента (PultRules.svelte) ручка переехала из подвала очереди
+ * туда, где стоят все четыре правила ячейки, — и строка про общее ядро уехала
+ * вместе с ней: она объясняет цену ИМЕННО этой ручки.
  *
  * Разметка читается прямо из компонента — тот же приём, что в panels-craft.
  */
@@ -32,23 +37,22 @@ function code(source: string): string {
   return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
-const QUEUE = code(read('web/src/components/council/pult/PultQueueStrip.svelte'))
+const RULES = code(read('web/src/components/council/pult/PultRules.svelte'))
 
-/** Панель ручки: секция выбора политики и пояснения. */
+/** Лист регламента: ряд «Кто запускает» и подвал под всеми правилами. */
 function knob(): string {
-  const from = QUEUE.indexOf('<section class="queue-policy"')
-  const to = QUEUE.indexOf('</section>', from)
-  assert.ok(from > 0 && to > from, 'ручки запуска в полосе очереди больше нет')
-  return QUEUE.slice(from, to)
+  const from = RULES.indexOf("PULT_RULES.map")
+  assert.ok(from > 0, 'рядов регламента больше нет')
+  return RULES.slice(from)
 }
 
 test('ручка запуска говорит про общее ядро — строкой из shared', () => {
-  assert.match(QUEUE, /import \{ COUNCIL_SHARED_KERNEL_NOTE[^}]*\} from '@shared\/notebook'/)
+  assert.match(RULES, /import \{ COUNCIL_SHARED_KERNEL_NOTE[^}]*\} from '@shared\/notebook'/)
   assert.match(knob(), /\{tr\(COUNCIL_SHARED_KERNEL_NOTE\)\}/, 'у ручки строки нет')
 
   // Своей копии нет: первые слова фразы в компоненте встретиться не должны.
   const opening = COUNCIL_SHARED_KERNEL_NOTE.slice(0, 24)
-  assert.ok(!QUEUE.includes(opening), 'строка переписана копией')
+  assert.ok(!RULES.includes(opening), 'строка переписана копией')
 })
 
 test('строка видна без наведения — на планшете наведения нет', () => {

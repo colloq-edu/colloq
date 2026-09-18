@@ -20,6 +20,7 @@
  * бывают ответы» против «кто только что сдал»).
  */
 import { tr } from '@shared/i18n'
+import { COUNCIL_RERUN_PAUSES, COUNCIL_RUN_LIMITS, type CouncilSettings } from '@shared/notebook'
 import type { CouncilAttempt, CouncilGroup, CouncilStatus } from '@shared/protocol'
 import { groupTitle } from './council-board'
 
@@ -32,7 +33,12 @@ export function pultPresence(connected: boolean, people: ReadonlyMap<string, unk
 }
 
 export type PultTone = 'neutral' | 'positive' | 'warning' | 'danger' | 'accent'
-export interface PultBadge { label: string; tone: PultTone }
+export interface PultBadge {
+  label: string
+  tone: PultTone
+  /** Знак перед словом, когда тон о состоянии не договаривает. См. attemptExecution. */
+  icon?: string
+}
 export type PultView = 'work' | 'queue' | 'oracle'
 
 /** Evaluation and execution are separate facts: running code successfully is not a grade. */
@@ -44,9 +50,22 @@ export function attemptReview(attempt: Pick<CouncilAttempt, 'submittedAt' | 'cor
 }
 
 export function attemptExecution(attempt: {
-  run: Pick<NonNullable<CouncilAttempt['run']>, 'state'> | null
+  run: Pick<NonNullable<CouncilAttempt['run']>, 'state' | 'timedOut'> | null
   runRequest?: Pick<NonNullable<CouncilAttempt['runRequest']>, 'status'> | null
 }): PultBadge {
+  /*
+   * Остановленный пределом запуск — не «ошибка запуска».
+   *
+   * `state` у него тот же `error`, и общим словом он встал бы в один ряд с
+   * TypeError, то есть человек шёл бы читать вывод и искать в нём опечатку. А
+   * править тут нечего: код, возможно, верный, ему не хватило секунд, и
+   * решение принимает преподаватель — поднять предел или прервать соседа.
+   * Поэтому у остановленного своё слово и свой знак часов.
+   */
+  const limit = timedOutLimit(attempt)
+  if (limit !== null) {
+    return { label: tr('room.pult.v2.execution.timedOut', { duration: pultDuration(limit) }), tone: 'danger', icon: '◷' }
+  }
   switch (attempt.run?.state) {
     case 'running': return { label: tr('room.pult.v2.execution.running'), tone: 'accent' }
     case 'queued': return { label: tr('room.pult.v2.execution.queued'), tone: 'accent' }
@@ -59,7 +78,10 @@ export function attemptExecution(attempt: {
 
 export function pultShortcutAllowed(action: PultAction, view: PultView, navigation: boolean, overlay = false): boolean {
   if (overlay || action === null) return false
-  if (action === 'help' || action === 'escape' || action === 'search') return true
+  // Регламент — правило ЯЧЕЙКИ, а не открытой работы: из очереди и от оракула
+  // к нему тянутся так же часто, как из списка, и «сначала вернись в работы»
+  // было бы ответом ни на что.
+  if (action === 'help' || action === 'escape' || action === 'search' || action === 'rules') return true
   return view === 'work' && !navigation
 }
 
@@ -181,7 +203,9 @@ export function matchesFilter(
     case 'new':
       return unread.has(attempt.participantId)
     case 'error':
-      return attempt.run?.state === 'error' || attempt.correct === false
+      // Остановленный пределом считается «с ошибкой» наравне с упавшим: чип
+      // отбирает работы, которым запуск не удался, а не имена исключений.
+      return attempt.run?.state === 'error' || timedOutLimit(attempt) !== null || attempt.correct === false
     case 'unrun':
       return attempt.run === null
     case 'groups':
@@ -398,6 +422,7 @@ export type PultAction =
   | 'send'
   | 'escape'
   | 'help'
+  | 'rules'
   | null
 
 export interface PultKey {
@@ -458,6 +483,12 @@ export function pultKeyAction(event: PultKey, focus: PultFocus): PultAction {
       return 'wrong'
     case '3':
       return 'clearShown'
+    // «п» — правила; латинская g стоит на той же клавише, как о и j у курсора.
+    case 'g':
+    case 'G':
+    case 'п':
+    case 'П':
+      return 'rules'
     case 'ArrowRight':
       return 'neighbourNext'
     case 'ArrowLeft':
@@ -522,6 +553,192 @@ export function kernelView(attempts: readonly CouncilAttempt[]): KernelView {
         a.participantId.localeCompare(b.participantId),
     )
   return { running, queued, pending }
+}
+
+/* ---------------------------------------------------------- регламент */
+
+/**
+ * Четыре правила ячейки — и один порядок на все места, где о них говорят.
+ *
+ * Порядок не по важности и не по алфавиту, а по ходу занятия: сперва кто
+ * вообще запускает, потом сколько длится один запуск, потом когда разрешён
+ * повтор, и в конце — что из этого увидит зал. Предложение в шапке, строки
+ * листа и подсветка «того правила, ради которого лист открыли» читают его
+ * отсюда: разойдясь, они начали бы показывать разное на одно нажатие.
+ */
+export type PultRule = 'studentRun' | 'runLimit' | 'rerunPause' | 'names'
+export const PULT_RULES: readonly PultRule[] = ['studentRun', 'runLimit', 'rerunPause', 'names']
+
+/**
+ * Длительность регламента словами: «30 с», «1 мин», «1 мин 30 с».
+ *
+ * Не `spell()` из utils: та говорит о СЛУЧИВШЕМСЯ («считался 4 с») и округляет
+ * до секунды, а здесь число — выбранная настройка, и 90 выбирали как «1 мин
+ * 30 с», а не как «2 мин». Одна функция на предложение, лист, полосу запуска и
+ * строку «Остановлен: дольше 30 с» — иначе предел в одном месте читался бы
+ * иначе, чем в другом, и спор был бы о том, какое из двух чисел настоящее.
+ *
+ * Множественного числа в ключах нет намеренно: сокращения «с» и «мин» (s/min)
+ * не склоняются ни в одном из двух языков.
+ */
+export function pultDuration(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds))
+  if (whole < 60) return tr('room.pult.v2.rules.sec', { count: whole })
+  const minutes = Math.floor(whole / 60)
+  const rest = whole % 60
+  return rest === 0
+    ? tr('room.pult.v2.rules.min', { count: minutes })
+    : tr('room.pult.v2.rules.minSec', { count: minutes, sec: rest })
+}
+
+/** Кусок предложения регламента: связка, значение-кнопка и то же значение в узком окне. */
+export interface RulePart {
+  rule: PultRule
+  /** Связка перед значением; в узком окне прячется. */
+  lead: string
+  /** Значение — по нему и нажимают: оно открывает лист на своём правиле. */
+  value: string
+  /**
+   * Чем значение становится, когда связки спрятаны.
+   *
+   * Совпадает со `value` везде, кроме паузы: «через 30 с» без связки читается
+   * как второй предел запуска, поэтому в узком окне «повтор» переезжает ВНУТРЬ
+   * значения — «повтор через 30 с».
+   */
+  short: string
+  /** Единственное жёлтое значение в предложении — запуск без предела. */
+  warn: boolean
+}
+
+/**
+ * Регламент одной строкой — предложением, а не списком ручек.
+ *
+ * Запускать студенты не могут вовсе — кусок про повтор ИСЧЕЗАЕТ, а не гаснет:
+ * пауза между запусками у того, кто не запускает, не означает ничего, и серая
+ * «повтор сразу» в предложении — это лишнее слово, которое читают каждый раз.
+ * Без предела — единственное жёлтое: очередь на нём встаёт насмерть, и знать
+ * об этом надо не открывая лист.
+ */
+export function rulesSentence(settings: CouncilSettings): RulePart[] {
+  const parts: RulePart[] = []
+  const run = settings.studentRun
+  const runValue = tr(
+    run === false
+      ? 'room.pult.v2.rules.runTeacher'
+      : run === true
+        ? 'room.pult.v2.rules.runEveryone'
+        : 'room.pult.v2.rules.runRequest',
+  )
+  parts.push({
+    rule: 'studentRun',
+    lead: tr(run === false ? 'room.pult.v2.rules.runLeadTeacher' : 'room.pult.v2.rules.runLead'),
+    value: runValue,
+    short: runValue,
+    warn: false,
+  })
+
+  const limit = settings.runLimitSec
+  const limitValue =
+    limit === null
+      ? tr('room.pult.v2.rules.limitNone')
+      : tr('room.pult.v2.rules.limitValue', { duration: pultDuration(limit) })
+  parts.push({
+    rule: 'runLimit',
+    lead: tr('room.pult.v2.rules.limitLead'),
+    value: limitValue,
+    short: limitValue,
+    warn: limit === null,
+  })
+
+  if (run !== false) {
+    const pause = settings.rerunPauseSec
+    const duration = pultDuration(pause)
+    parts.push({
+      rule: 'rerunPause',
+      lead: tr('room.pult.v2.rules.pauseLead'),
+      value: pause > 0 ? tr('room.pult.v2.rules.pauseValue', { duration }) : tr('room.pult.v2.rules.pauseNow'),
+      short: pause > 0 ? tr('room.pult.v2.rules.pauseShort', { duration }) : tr('room.pult.v2.rules.pauseShortNow'),
+      warn: false,
+    })
+  }
+
+  const names = tr(
+    settings.namesOnProjector ? 'room.pult.v2.rules.screenNames' : 'room.pult.v2.rules.screenAnon',
+  )
+  parts.push({ rule: 'names', lead: tr('room.pult.v2.rules.screenLead'), value: names, short: names, warn: false })
+  return parts
+}
+
+/**
+ * Что показать в ряду кнопок: заготовки, а при чужом значении — и его.
+ *
+ * Сервер принимает любое целое в границах (notebook.ts · COUNCIL_RUN_LIMIT_MAX),
+ * и значение могло приехать из другой сборки, из истории или из будущего
+ * списка заготовок. Ряд, в котором не нажата ни одна кнопка, читается как
+ * «настройка сломана»; поэтому чужое число встаёт своей кнопкой — на своё
+ * место по величине, а «без предела» остаётся последним.
+ */
+export function limitOptions(current: number | null): (number | null)[] {
+  if (COUNCIL_RUN_LIMITS.includes(current)) return [...COUNCIL_RUN_LIMITS]
+  const numbers = COUNCIL_RUN_LIMITS.filter((one): one is number => one !== null)
+  // «Без предела» остаётся последним: это не самое большое число, а его отсутствие.
+  return [...[...numbers, current as number].sort((a, b) => a - b), null]
+}
+
+export function pauseOptions(current: number): number[] {
+  if (COUNCIL_RERUN_PAUSES.includes(current)) return [...COUNCIL_RERUN_PAUSES]
+  return [...COUNCIL_RERUN_PAUSES, current].sort((a, b) => a - b)
+}
+
+/** Сколько на самом деле считают запуски этой ячейки: медиана, самый долгий и по скольким. */
+export interface RunStats { median: number; max: number; count: number }
+
+/**
+ * Числа под выбором предела — чтобы его ставили по классу, а не по страху.
+ *
+ * Считается по ЗАКОНЧЕННЫМ запускам: у идущего длительности ещё нет, а у
+ * остановленного пределом она не настоящая — там измерен сам предел, и медиана
+ * поехала бы вверх ровно от того правила, которое по ней и выбирают (поставили
+ * 5 с — «обычно 5 с» — поставили 15 с). Прерванные руки дают `ranMs: null` и
+ * сюда тоже не попадают.
+ */
+export function runStats(attempts: readonly CouncilAttempt[]): RunStats | null {
+  const spans = attempts
+    .map((attempt) => attempt.run)
+    .filter((run): run is NonNullable<CouncilAttempt['run']> =>
+      run !== null && run !== undefined && run.ranMs !== null && timedOutLimit({ run }) === null)
+    .map((run) => run.ranMs as number)
+    .sort((a, b) => a - b)
+  if (spans.length === 0) return null
+  const middle = Math.floor(spans.length / 2)
+  return {
+    median: spans.length % 2 === 1 ? spans[middle] : Math.round((spans[middle - 1] + spans[middle]) / 2),
+    max: spans[spans.length - 1],
+    count: spans.length,
+  }
+}
+
+/** Предел, который остановил этот запуск, — или `null`, если его никто не останавливал. */
+export function timedOutLimit(attempt: {
+  run: Pick<NonNullable<CouncilAttempt['run']>, 'timedOut'> | null
+}): number | null {
+  const limit = attempt.run?.timedOut
+  return typeof limit === 'number' ? limit : null
+}
+
+/**
+ * «Остановлены сами» — свежие сверху, по началу запуска.
+ *
+ * По началу, а не по сдаче: секция про то, что случилось с ОЧЕРЕДЬЮ минуту
+ * назад, и работа, сданная утром и запущенная сейчас, стоит первой.
+ */
+export function timedOutAttempts(attempts: readonly CouncilAttempt[]): CouncilAttempt[] {
+  return attempts
+    .filter((attempt) => timedOutLimit(attempt) !== null)
+    .sort(
+      (a, b) =>
+        (b.run?.startedAt ?? 0) - (a.run?.startedAt ?? 0) || a.participantId.localeCompare(b.participantId),
+    )
 }
 
 /** Доли полосы «весь класс одной строкой» — по статусам, без округлений. */

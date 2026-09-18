@@ -12,7 +12,7 @@ NAME="${NAME:-}"
 case "$MODE" in live|consistent) ;; *) echo 'MODE must be live or consistent' >&2; exit 1;; esac
 case "$NAME" in *[!A-Za-z0-9-]*|-*|*-) echo 'invalid environment name' >&2; exit 1;; esac
 RELEASE="${RELEASE:-$STATE/releases/current.json}"
-[ -f "$RELEASE" ] || { echo 'No installed release. Legacy backup: make backup-legacy; cluster backup needs an installed release.' >&2; exit 1; }
+[ -f "$RELEASE" ] || { echo 'No installed release. Local backup: colloq backup (make backup-legacy); cluster backup needs an installed release.' >&2; exit 1; }
 OUT="${OUT:-backups${NAME:+/$NAME}/colloq-$(date -u +%Y%m%dT%H%M%SZ)-$MODE.tar.gz}"
 mkdir -p "$STATE"
 if ! python3 scripts/state-lock.py held --state "$STATE"; then

@@ -4,7 +4,7 @@
   import { councilLetters, type CouncilAttempt, type CouncilGroup } from '@shared/protocol'
   import CellOutputs from '@/components/notebook/CellOutputs.svelte'
   import Code from '@/components/ui/Code.svelte'
-  import { attemptReview, attemptExecution, type PultPresence } from '@/lib/council-pult'
+  import { attemptReview, attemptExecution, pultDuration, timedOutLimit, type PultPresence, type PultRule } from '@/lib/council-pult'
   import { clock } from '@/lib/history'
   import { spell } from '@/lib/utils'
   import PultActions from './PultActions.svelte'
@@ -28,6 +28,9 @@
     shownAt: number | null
     disabled: boolean
     hasNeighbour: boolean
+    /** Предел запуска из регламента ячейки; `null` — без предела. */
+    limit: number | null
+    onrules: (rule: PultRule, from: HTMLElement) => void
     reply: string
     replyToGroup: boolean
     /** У группы есть черновик оракула. */
@@ -64,6 +67,8 @@
     shownAt,
     disabled,
     hasNeighbour,
+    limit,
+    onrules,
     reply,
     replyToGroup,
     replyDraft,
@@ -89,6 +94,8 @@
   const same = $derived(group ? group.count - 1 : 0)
   const review = $derived(attempt ? attemptReview(attempt) : null)
   const execution = $derived(attempt ? attemptExecution(attempt) : null)
+  /** Предел, оборвавший ИМЕННО этот запуск: регламент с тех пор могли поменять. */
+  const stoppedAt = $derived(attempt ? timedOutLimit(attempt) : null)
 
   const place = $derived.by(() => {
     if (!attempt) return ''
@@ -140,9 +147,26 @@
       </section>
 
       <section class="work-execution" data-tone={execution?.tone} aria-label={tr('room.pult.v2.workExecution')}>
-        <div class="work-execution-title" role="status">
-          {tr('room.pult.v2.workExecution')}: {execution?.label}
-          {#if run?.ranMs !== null && run?.ranMs !== undefined} · {spell(run.ranMs)}{/if}
+        <!--
+          Остановленный пределом объясняется здесь целиком, а не словом «ошибка».
+          Рядом — действующий предел: его меняют ровно в эту секунду, глядя на
+          чужой код, который не досчитал, и уходить за ним во вкладку значит
+          потерять работу из виду.
+        -->
+        <div class="work-execution-head">
+          <span class="work-execution-title" role="status">
+            {#if stoppedAt !== null}
+              {tr('room.pult.v2.rules.workTimedOut', { duration: pultDuration(stoppedAt) })}
+            {:else}
+              {tr('room.pult.v2.workExecution')}: {execution?.label}
+              {#if run?.ranMs !== null && run?.ranMs !== undefined} · {spell(run.ranMs)}{/if}
+            {/if}
+          </span>
+          {#if stoppedAt !== null && limit !== null}
+            <button type="button" class="pult-value" onclick={(event) => onrules('runLimit', event.currentTarget)}>
+              {tr('room.pult.v2.rules.limitLink', { duration: pultDuration(limit) })}
+            </button>
+          {/if}
         </div>
         {#if run}
           {#if run.outputs.length > 0}
@@ -153,7 +177,9 @@
           {:else if run.outputsOmitted}
             <p class="pult-meta">{tr('room.pult.v2.workLoadingOutput')}</p>
           {/if}
-          <p class="pult-meta">{run.by === 'host' ? tr('room.ui.61') : tr('room.ui.1061')}</p>
+          <!-- У автора «запускали вы», а здесь смотрит преподаватель: «вы» в его
+               пульте называло бы запускавшим его самого. -->
+          <p class="pult-meta">{run.by === 'host' ? tr('room.ui.61') : tr('room.pult.v2.ranByAuthor')}</p>
         {/if}
       </section>
 
@@ -204,7 +230,8 @@
   .work-execution[data-tone='warning'] { --run-tone: var(--warning); }
   .work-execution[data-tone='danger'] { --run-tone: var(--danger); }
   .work-execution[data-tone='accent'] { --run-tone: var(--accent-text); }
-  .work-execution-title { color: rgb(var(--run-tone)); font-size: 14px; line-height: 20px; font-weight: 600; }
+  .work-execution-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+  .work-execution-title { min-width: 0; color: rgb(var(--run-tone)); font-size: 14px; line-height: 20px; font-weight: 600; }
   .work-output { max-height: 320px; overflow: auto; }
   .work-output :global(.output-stream), .work-output :global(.text-code) { font-size: 14px; line-height: 22px; }
   .work-output :global(button) { min-height: 40px; font-size: 14px; }

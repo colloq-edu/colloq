@@ -34,7 +34,15 @@
 # есть свой публичный адрес.
 #
 # Что ставится: frpc (brew install frpc) для ретранслятора, cloudflared для
-# Cloudflare, caddy для прямого режима — последний скрипт поставит сам.
+# Cloudflare, caddy для прямого режима — последний скрипт поставит сам. Нет
+# cloudflared в PATH — colloq скачивает закреплённый выпуск со сверкой суммы
+# в <состояние>/bin (cli/src/launch-cloudflared.ts); COLLOQ_CLOUDFLARED=/путь
+# называет файл явно.
+#
+# Замок: наружу уходит только сервер, у которого ядро каждой комнаты в своём
+# контейнере — так он сам отвечает полем isolation в /api/health (docker или
+# broker). Ссылка — это дверь: кто её получил, тот запускает код на этой
+# машине, и общее ядро за такой дверью не публикуется никаким транспортом.
 #
 set -euo pipefail
 
@@ -44,7 +52,19 @@ RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; CYAN=$'\033[36m'; OFF=$'\033[0
 say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
-command -v docker >/dev/null 2>&1 || die "docker is not installed."
+# docker нужен не каждой форме, а только той, с которой скрипт говорит через
+# него, — контейнеру `make up`: узнать его, пересоздать с новым PUBLIC_URL,
+# достать токен установки из тома (см. «Кто именно держит порт» ниже).
+#
+# Здесь стоял безусловный отказ «docker is not installed», и он ронял
+# k3s-машину на первой же строке: под релизом сервер и ядра живут в k3s, докера
+# на арендованной VM может не быть вовсе, и `make vast-up HOST=…` оставлял
+# семинар без адреса — tmux-сессия с этим скриптом умирала через секунду.
+# Локальной сессии, службе и `make run` докер от этого скрипта тоже не нужен:
+# ядра — забота сервера, и если они не встают, об этом скажет /api/health на
+# первом шаге. Без докера просто не бывает формы «контейнер».
+HAVE_DOCKER=""
+if command -v docker >/dev/null 2>&1; then HAVE_DOCKER=1; fi
 
 # Настройки ретранслятора живут в .env рядом со всем остальным. Пусто — значит
 # этот инстанс им не пользуется, и остаётся Cloudflare.
@@ -80,6 +100,15 @@ if [ -f cli/public-url-lease.mjs ]; then
   LEASE=(node cli/public-url-lease.mjs)
 else
   LEASE=(node --import tsx scripts/public-url-lease.mts)
+fi
+# Супервизор занятия — тем же выбором: собранный в пакете, исходник рядом с
+# репозиторием. Отсюда он нужен одним словом, cloudflared: найти или скачать
+# (со сверкой суммы) и назвать путь. Правило поиска живёт там одно на всех —
+# и для `colloq start --share`, и для `colloq host`, и для `make host`.
+if [ -f cli/launch.mjs ]; then
+  LAUNCHER=(node cli/launch.mjs)
+else
+  LAUNCHER=(node --import tsx cli/src/launch.ts)
 fi
 
 RELAY_DOMAIN="$(read_env RELAY_DOMAIN)"
@@ -151,8 +180,19 @@ case "$VIA" in
     [ -x ./scripts/dns.sh ] || die "no scripts/dns.sh — it is what sets the A record for the name."
     ;;
   *)
-    command -v cloudflared >/dev/null 2>&1 || die \
-      "cloudflared is not installed. brew install cloudflared — then run this again."
+    # Названный явно (супервизор передаёт уже найденный и сверенный) — берём
+    # как есть. Поставленный в PATH — тоже: быстрый путь без node. Иначе
+    # спрашиваем супервизор: он сверит свою копию в <состояние>/bin или
+    # скачает закреплённый выпуск, говоря об этом в stderr, а путь отдаст в
+    # stdout. Проверка суммы — там; своей копии без неё отсюда не запускаем.
+    CLOUDFLARED="${COLLOQ_CLOUDFLARED:-$(read_env COLLOQ_CLOUDFLARED)}"
+    if [ -z "$CLOUDFLARED" ]; then CLOUDFLARED="$(command -v cloudflared 2>/dev/null || true)"; fi
+    if [ -z "$CLOUDFLARED" ]; then
+      CLOUDFLARED="$("${LAUNCHER[@]}" cloudflared)" || die \
+        "there is no cloudflared, and colloq could not fetch it (the reason is above).
+  Install it yourself (brew install cloudflared) or name the file: COLLOQ_CLOUDFLARED=/path/to/cloudflared"
+    fi
+    [ -x "$CLOUDFLARED" ] || die "cloudflared at ${CLOUDFLARED} is not an executable file."
     ;;
 esac
 
@@ -179,6 +219,11 @@ fi
 HEALTH_LOCAL="http://127.0.0.1:${PORT}"
 # Only the local origin sees this rewrite; the public Host still routes at the relay.
 # Vite retains its Host protection instead of accepting every external hostname.
+#
+# Раскрывается ниже как ${ORIGIN_ARGS[@]+"${ORIGIN_ARGS[@]}"}, а не голым
+# "${ORIGIN_ARGS[@]}": пустой массив под set -u в bash до 4.4 — «unbound
+# variable», а это штатный /bin/bash macOS (3.2). Туннель Cloudflare без
+# локальной сессии (служба, `make run`, k3s) падал там, не успев стартовать.
 ORIGIN_ARGS=()
 if [ -n "$LOCAL_RUN_ID" ]; then ORIGIN_ARGS=(--http-host-header "127.0.0.1:${TUNNEL_PORT}"); fi
 
@@ -193,6 +238,12 @@ LISTEN_PID=""
 LISTEN_LOG=""
 # Ставили ли мы PUBLIC_URL сами — см. cleanup.
 TOUCHED_ENV=""
+# Какой адрес мы отдали кластеру k3s (cluster.sh public-url) — его и только
+# его cleanup снимает на выходе, см. там.
+CLUSTER_PUBLISHED=""
+# Где k3s держит данные приложения — тот же каталог состояния и то же
+# умолчание, что у scripts/cluster.sh, backup.sh и restore.sh.
+CLUSTER_STATE="${COLLOQ_STATE_DIR:-/var/lib/colloq}"
 
 # Шагов у транспортов разное число, а нумерация нужна везде: человек по ней
 # понимает, где скрипт застрял. Поэтому счётчик, а не вписанные руками «1/4»,
@@ -205,6 +256,14 @@ step() { STEP=$((STEP + 1)); say "${BOLD}${STEP}/${STEPS}${OFF} $*"; }
 cleanup() {
   local code=$?
   trap - EXIT INT TERM
+  # Уборка идёт до конца, а не до первого отказа, и закрытое окно её не
+  # обрывает. На арендованной машине скрипт живёт в tmux как `host.sh | tee`:
+  # Ctrl+C убивает и tee, и первая же строка уборки получала бы SIGPIPE —
+  # оболочка умерла бы, не вернув адрес; закрытая сессия (SIGHUP) рвала бы на
+  # полпути cluster.sh, который как раз перезапускает приложение. Всё ниже и
+  # так лучшее усилие с `|| true`; set -e здесь только обрывал бы на выводе.
+  set +e
+  trap '' HUP PIPE
   [ -n "$LEASE_PID" ] && kill "$LEASE_PID" 2>/dev/null || true
   if [ -n "$LEASE_OWNER" ]; then
     "${LEASE[@]}" release "$LEASE_FILE" "$LOCAL_RUN_ID" "$LEASE_OWNER" || true
@@ -219,13 +278,50 @@ cleanup() {
   # и закрытый ssh. Вернуть адрес на localhost значило бы, что после выхода из
   # скрипта работающий семинар начинает раздавать ссылки на localhost.
   if [ "$VIA" = direct ]; then rm -f "$LOG"; exit $code; fi
-  # Ссылка мертва вместе с туннелем. Оставить её в .env значит, что следующий
-  # `make up` без туннеля раздаст студентам адрес, который никуда не ведёт.
+  # k3s. Адрес здесь живёт не в .env, а в конфиге кластера: `cluster.sh
+  # public-url` пишет его в <состояние>/config.env и перезапускает приложение,
+  # которое читает PUBLIC_URL один раз, при старте. Уборка раньше обходила
+  # кластер вовсе, и после Ctrl+C панель так и раздавала ссылки на туннель,
+  # которого больше нет, а `make vast-status` пересказывал мёртвый адрес как
+  # живой.
   #
-  # Только если её ставили мы: отказ на первом шаге — «докера нет», «инстанс
-  # нездоров» — не повод переписывать чужую настройку, к которой мы ещё не
-  # прикасались.
-  if [ "${WHO:-}" != cluster ] && [ -n "$TOUCHED_ENV" ] && [ -f "$ENV_FILE" ] && grep -qE '^PUBLIC_URL=https://' "$ENV_FILE" 2>/dev/null; then
+  # Снимаем ровно то, что ставили, — как локальная сессия отпускает только
+  # свою аренду адреса (release с владельцем, выше): --if-current сверяет под
+  # замком состояния, что в кластере всё ещё наш адрес, и чужой не трогает.
+  # Цена — перезапуск приложения, но зал к этому моменту и так отрезан:
+  # туннель уже закрыт строками выше.
+  #
+  # Причину отказа показываем: «не смог» без неё отправляло бы человека гадать
+  # между замком состояния (идёт vast-sync), не-root и таймаутом перезапуска —
+  # а в tmux эти строки и есть единственный след в host.log.
+  if [ -n "$CLUSTER_PUBLISHED" ]; then
+    say "${DIM}taking ${CLUSTER_PUBLISHED} off the cluster — the app restarts, up to 3 minutes${OFF}"
+    local why rc
+    why="$(bash scripts/cluster.sh public-url "$LOCAL" --if-current "$CLUSTER_PUBLISHED" 2>&1 >/dev/null)"
+    rc=$?
+    case $rc in
+      0) say "${DIM}PUBLIC_URL is back at ${LOCAL}${OFF}" ;;
+      4) say "${DIM}the cluster's PUBLIC_URL is not ${CLUSTER_PUBLISHED} any more — left as it is${OFF}" ;;
+      *) say "${RED}could not take ${CLUSTER_PUBLISHED} off the cluster (exit ${rc}):${OFF}"
+         [ -z "$why" ] || printf '%s\n' "$why" | tail -3 | sed 's/^/    /'
+         say "${DIM}By hand, as root:${OFF} bash scripts/cluster.sh public-url ${LOCAL}"
+         # Кластер так и раздаёт мёртвый адрес — значит, и запись в .env должна
+         # его называть: по ней vast-status проверит адрес снаружи и скажет
+         # «не отвечает», а не «наружу не выставлен» при живых ссылках на туннель.
+         TOUCHED_ENV="" ;;
+    esac
+  fi
+  # Ссылка мертва вместе с туннелем. Оставить её в .env значит, что следующий
+  # `make up` без туннеля раздаст студентам адрес, который никуда не ведёт. На
+  # k3s .env приложение не читает, но по нему `make vast-status` узнаёт, какой
+  # адрес машина обслуживает, — и мёртвый там был бы той же неправдой.
+  #
+  # Только если её ставили мы: отказ на первом шаге — «инстанс нездоров»,
+  # «ретранслятор отказал» — не повод переписывать чужую настройку, к которой
+  # мы ещё не прикасались. И только если в файле всё ещё НАШ адрес: второй
+  # `make host`, поднятый поверх, переписал его своим, и вернуть localhost
+  # поверх живого чужого туннеля значило бы сломать ему ссылки.
+  if [ -n "$TOUCHED_ENV" ] && [ -f "$ENV_FILE" ] && [ "$(read_env PUBLIC_URL)" = "${PUBLIC:-}" ]; then
     restore_public_url
     # Вернуть строку в .env мало тому, кто читает её один раз, при запуске.
     #
@@ -242,10 +338,13 @@ cleanup() {
     #
     # Сервер, запущенный через `make run`, тоже не трогаем: его подняли руками,
     # и снимать его молча, за спиной, нельзя. Он перечитает адрес оттуда же.
+    #
+    # Кластеру — уже сказано выше: .env для него только запись, и о снятом
+    # адресе строкой выше отчитался cluster.sh.
     case "${WHO:-}" in
       container) PUBLIC_URL="$LOCAL" docker compose up -d app >/dev/null 2>&1 || true ;;
     esac
-    say "${DIM}PUBLIC_URL is back at ${LOCAL}${OFF}"
+    [ "${WHO:-}" = cluster ] || say "${DIM}PUBLIC_URL is back at ${LOCAL}${OFF}"
   fi
   rm -f "$LOG"
   exit $code
@@ -383,7 +482,10 @@ step "checking colloq at ${LOCAL}"
 # поэтому «не отвечает» здесь значит и «никого нет», и «есть, но семинар вести
 # нельзя» — второе curl -sf тоже считает отказом, и правильно делает.
 #
-if curl -sf -o /dev/null --max-time 5 "$HEALTH_LOCAL/api/health" 2>/dev/null; then
+# Тело ответа не выбрасываем: в нём поле isolation, по которому ниже решается,
+# можно ли вообще открывать дверь.
+HEALTH_BODY=""
+if HEALTH_BODY="$(curl -sf --max-time 5 "$HEALTH_LOCAL/api/health" 2>/dev/null)"; then
   say "${DIM}    already running — touching nothing${OFF}"
 elif [ "$CLUSTER" = 1 ]; then
   die "k3s application is not ready at $LOCAL. Inspect: bash scripts/cluster.sh status; bash scripts/cluster.sh logs"
@@ -431,6 +533,30 @@ else
   die "start the class first — colloq start — then try again."
 fi
 
+# Замок публикации — до первого действия наружу, одинаковый для всех форм.
+#
+# Решение автора: в интернет уходит только занятие, где ядро каждой комнаты
+# сидит в своём контейнере. Кто получил ссылку, тот запускает код на этой
+# машине; общее ядро за такой дверью — это чужой код рядом с тетрадями всего
+# класса, и никакой транспорт это не лечит. Судим не по .env (у локального
+# занятия супервизор всё равно ставит docker сам), а по ответу сервера: поле
+# isolation он ставит, только когда проверка ядра прошла — демон docker или
+# брокер ответили (server/src/app.ts · roomIsolation). Нет поля — значит, это
+# сервер старше этой проверки или бэкенд без изоляции, и в обоих случаях
+# публиковать нечего.
+#
+# Строгое сравнение по строке, без jq: JSON.stringify пишет без пробелов, а
+# этот скрипт обходится тем, что есть на голой машине.
+case "$HEALTH_BODY" in
+  *'"isolation":"docker"'* | *'"isolation":"broker"'*) : ;;
+  *) die "not publishing: the server at ${LOCAL} does not confirm that every room
+  runs in a container of its own (the isolation field of /api/health).
+  A public link lets anyone who has it run code on this machine, so a class
+  goes online only with room kernels in Docker, one container per room
+  (KERNEL_BACKEND=docker and Docker running), or behind the runtime broker.
+  Check: curl -s ${LOCAL}/api/health — restart or update colloq if the field is missing." ;;
+esac
+
 # Кто именно держит порт. Случаев четыре, и все четыре настоящие:
 #
 #   служба      — systemd на выделенной машине: сервер на хосте, в docker
@@ -458,7 +584,7 @@ elif [ "$CLUSTER" = 1 ]; then
   WHO="cluster"
 elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet colloq 2>/dev/null; then
   WHO="service"
-elif docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running; then
+elif [ -n "$HAVE_DOCKER" ] && docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running; then
   WHO="container"
 elif [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
   WHO="host"
@@ -1097,12 +1223,12 @@ elif [ -n "${COLLOQ_HOSTNAME:-}" ]; then
   # выяснялось это уже в аудитории, где ссылка не открылась ни у кого.
   say "${DIM}    through Cloudflare. Your own relay (Cloudflare addresses do not${OFF}"
   say "${DIM}    open from Russia) — RELAY_* in .env, see make relay-setup${OFF}"
-  cloudflared tunnel --no-autoupdate run --url "$LOCAL" "${ORIGIN_ARGS[@]}" colloq >"$LOG" 2>&1 &
+  "$CLOUDFLARED" tunnel --no-autoupdate run --url "$LOCAL" ${ORIGIN_ARGS[@]+"${ORIGIN_ARGS[@]}"} colloq >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC="https://${COLLOQ_HOSTNAME}"
 else
   step "opening the quick Cloudflare tunnel"
-  cloudflared tunnel --no-autoupdate --url "$LOCAL" "${ORIGIN_ARGS[@]}" >"$LOG" 2>&1 &
+  "$CLOUDFLARED" tunnel --no-autoupdate --url "$LOCAL" ${ORIGIN_ARGS[@]+"${ORIGIN_ARGS[@]}"} >"$LOG" 2>&1 &
   TUNNEL_PID=$!
   PUBLIC=""
   # Адрес приходит не сразу и не первой строкой — cloudflared сначала пишет
@@ -1129,6 +1255,9 @@ case "$WHO" in
     LEASE_PID=$!
     ;;
   cluster)
+    # Запоминаем ДО вызова: упади он на полпути, config.env уже может нести
+    # этот адрес, и cleanup должен знать, что снимать.
+    CLUSTER_PUBLISHED="$PUBLIC"
     bash scripts/cluster.sh public-url "$PUBLIC"
     ;;
   service)
@@ -1195,6 +1324,9 @@ case "$WHO" in
   *)
     # Молча пройти мимо нельзя: аудитория получит localhost, то есть ничего.
     say "${RED}    ${LOCAL} is held by some other process, not colloq.${OFF}"
+    # Без докера форму «контейнер» не спросить вовсе, и `make up` здесь
+    # неотличим от чужого процесса — сказать это честнее, чем «не colloq».
+    [ -n "$HAVE_DOCKER" ] || say "${DIM}    (there is no docker here, so a make up container could not even be asked)${OFF}"
     say "${DIM}    Its PUBLIC_URL cannot be changed from here — restart it yourself with${OFF}"
     say "${DIM}    PUBLIC_URL=${PUBLIC}, or links to classes will lead to localhost.${OFF}"
     ;;
@@ -1227,6 +1359,23 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
+# `colloq start --share`: итог печатает супервизор, одним блоком — со ссылкой
+# на занятие из базы, которой здесь не видно (cli/src/launch-share.ts). Отсюда
+# ему нужна одна строка-метка: адрес поднят, проверка снаружи прошла или нет.
+# Экрана она не достигает — супервизор её забирает.
+#
+# Ссылки с токеном установки здесь нет намеренно: терминал с --share часто
+# стоит на проекторе, а CLI токена не печатает никогда (colloq link). Панель
+# на этом компьютере открыта по локальному адресу, и вход туда уже есть.
+#
+# Только у локальной сессии: переменная, забытая в оболочке, не должна
+# прятать итог у службы или кластера.
+if [ "${COLLOQ_SHARE:-}" = 1 ] && [ "$WHO" = local ]; then
+  if [ -n "$ok" ]; then say "@colloq-share ok ${PUBLIC}"; else say "@colloq-share unverified ${PUBLIC}"; fi
+  wait "$TUNNEL_PID"
+  exit 0
+fi
+
 #
 # Токен. Кука админки привязана к origin, а туннель каждый раз выдаёт новый —
 # значит после каждого `make host` преподаватель оказывается разлогинен и
@@ -1247,15 +1396,26 @@ token_works() {
   [ "$code" = "200" ] || [ "$code" = "409" ]
 }
 
+#
+# У k3s кандидат третий: том colloq-data — это <состояние>/data на хосте
+# (scripts/release.py · render, deploy/k3s/README.md), то есть
+# /var/lib/colloq/data, если COLLOQ_STATE_DIR не назван. Раньше его здесь не
+# было, и на k3s-машине ссылка на панель печаталась только тому, кто догадался
+# сам выставить DATA_DIR, — а `make vast-up` отсылал за ней именно сюда, в
+# вывод этой сессии. Спрашивается он первым и проверяется тем же token_works.
 read_setup_token() {
-  local t dir
-  if docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running; then
+  local t dir dirs=()
+  if [ "$CLUSTER" = 1 ]; then
+    dirs=("$CLUSTER_STATE/data")
+  elif [ -n "$HAVE_DOCKER" ] && docker compose ps app --format '{{.State}}' 2>/dev/null | grep -q running; then
     t="$(docker compose exec -T app cat /data/setup-token 2>/dev/null | tr -d '\r\n' || true)"
     [ -n "$t" ] && token_works "$t" && { printf '%s' "$t"; return 0; }
   fi
-  dir="${DATA_DIR:-$COLLOQ_STATE_ROOT/data}"
-  t="$(cat "$dir/setup-token" 2>/dev/null | tr -d '\r\n' || true)"
-  [ -n "$t" ] && token_works "$t" && { printf '%s' "$t"; return 0; }
+  dirs+=("${DATA_DIR:-$COLLOQ_STATE_ROOT/data}")
+  for dir in "${dirs[@]}"; do
+    t="$(cat "$dir/setup-token" 2>/dev/null | tr -d '\r\n' || true)"
+    [ -n "$t" ] && token_works "$t" && { printf '%s' "$t"; return 0; }
+  done
   return 1
 }
 SETUP_TOKEN="$(read_setup_token || true)"
@@ -1297,8 +1457,15 @@ else
   # ткнёт в неё, прежде чем усомнится в ссылке, а не в себе.
   printf '\n'
   say "${DIM}Not printing the sign-in link for the panel: none of the setup tokens found${OFF}"
-  say "${DIM}suited the server at ${LOCAL}. Take it from the DATA_DIR of the server that${OFF}"
-  say "${DIM}answers there and open ${PUBLIC}/admin/t/<token>.${OFF}"
+  if [ "$CLUSTER" = 1 ]; then
+    # Каталог данных k3s — 0750 и принадлежит uid 1000 приложения (cluster.sh
+    # · prepare): не root его не прочтёт, поэтому и совет — через sudo.
+    say "${DIM}suited the server at ${LOCAL}. On k3s it lies in ${CLUSTER_STATE}/data/setup-token${OFF}"
+    say "${DIM}(readable by root): sudo cat it and open ${PUBLIC}/admin/t/<token>.${OFF}"
+  else
+    say "${DIM}suited the server at ${LOCAL}. Take it from the DATA_DIR of the server that${OFF}"
+    say "${DIM}answers there and open ${PUBLIC}/admin/t/<token>.${OFF}"
+  fi
 fi
 
 printf '\n'
@@ -1335,6 +1502,12 @@ else
 fi
 say "${DIM}to this window. Close it (Ctrl+C) and the link stops working, while colloq${OFF}"
 say "${DIM}keeps turning locally at ${LOCAL}.${OFF}"
+# Про кластер — вслух и заранее: уборка там не мгновенная (перезапуск
+# приложения), и второй Ctrl+C посреди неё оборвал бы cluster.sh на полпути.
+if [ -n "$CLUSTER_PUBLISHED" ]; then
+  say "${DIM}On exit the address is taken off the cluster too: the app restarts with${OFF}"
+  say "${DIM}PUBLIC_URL=${LOCAL} — let that finish, do not press Ctrl+C twice.${OFF}"
+fi
 printf '\n'
 
 # Держим окно живым: туннель существует ровно столько, сколько этот процесс.

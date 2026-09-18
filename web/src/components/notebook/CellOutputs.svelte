@@ -238,7 +238,10 @@
             {@const traceback = withoutEcho(output.traceback, output.ename, output.evalue)}
             <div class="px-1 py-0.5">
               <div class="font-mono text-code font-semibold text-danger">
-                {output.ename}{output.evalue ? `: ${output.evalue}` : ''}
+                <!-- Без имени — только текст: так сервер подписывает свои
+                     остановки (предел запуска консилиума), и двоеточие перед
+                     фразой читалось бы как обрыв. -->
+                {[output.ename, output.evalue].filter(Boolean).join(': ')}
               </div>
               {#if traceback}
                 <div

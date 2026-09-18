@@ -54,19 +54,19 @@ function fresh(name: string, email: string, role: 'owner' | 'teacher' = 'teacher
 }
 
 test('an email is one identity however it was typed', () => {
-  assert.equal(normalizeEmail('  Ada.Lovelace@HSE.RU '), 'ada.lovelace@hse.ru')
-  const ada = fresh('Ada', 'Ada.Lovelace@HSE.RU', 'owner')
-  assert.equal(ada.email, 'ada.lovelace@hse.ru')
+  assert.equal(normalizeEmail('  Ada.Lovelace@EXAMPLE.EDU '), 'ada.lovelace@example.edu')
+  const ada = fresh('Ada', 'Ada.Lovelace@EXAMPLE.EDU', 'owner')
+  assert.equal(ada.email, 'ada.lovelace@example.edu')
   // The same person, shouted: a second row here is a second account nobody knows about.
   assert.equal(
-    createTeacher({ name: 'Ada again', email: ' ADA.lovelace@hse.ru ', role: 'teacher' }),
+    createTeacher({ name: 'Ada again', email: ' ADA.lovelace@example.edu ', role: 'teacher' }),
     null,
   )
-  assert.ok(getTeacherByEmail('ada.lovelace@hse.ru'))
+  assert.ok(getTeacherByEmail('ada.lovelace@example.edu'))
 })
 
 test('a sign-in link is never in a listing', () => {
-  const grace = fresh('Grace Hopper', 'grace@hse.ru')
+  const grace = fresh('Grace Hopper', 'grace@example.edu')
   const listed = listTeachers().find((t) => t.id === grace.id)
   assert.ok(listed)
   assert.equal(listed.hasLink, true)
@@ -75,7 +75,7 @@ test('a sign-in link is never in a listing', () => {
 })
 
 test('rotating a link kills the old one and every session opened from it', () => {
-  const katherine = fresh('Katherine Johnson', 'katherine@hse.ru')
+  const katherine = fresh('Katherine Johnson', 'katherine@example.edu')
   const oldKey = linkKeyOf(katherine.id)
   assert.ok(oldKey)
   const cookie = mintCookie(katherine)
@@ -92,7 +92,7 @@ test('rotating a link kills the old one and every session opened from it', () =>
 })
 
 test('deleting a teacher kills their cookie too', () => {
-  const pavel = fresh('Pavel', 'pavel@hse.ru')
+  const pavel = fresh('Pavel', 'pavel@example.edu')
   const cookie = mintCookie(pavel)
   assert.equal(staffFromCookieHeader(cookie)?.id, pavel.id)
   assert.equal(deleteTeacher(pavel.id), true)
@@ -100,7 +100,7 @@ test('deleting a teacher kills their cookie too', () => {
 })
 
 test('a forged or absent cookie is nobody', () => {
-  const marina = fresh('Marina', 'marina@hse.ru')
+  const marina = fresh('Marina', 'marina@example.edu')
   const cookie = mintCookie(marina)
   const value = cookie.slice(STAFF_COOKIE.length + 1)
   const [body, sig] = [
@@ -113,7 +113,7 @@ test('a forged or absent cookie is nobody', () => {
   assert.equal(staffFromCookieHeader(`${STAFF_COOKIE}=nonsense`), null)
   assert.equal(staffFromCookieHeader(`${STAFF_COOKIE}=${body}.tampered`), null)
   // Someone else's signature over your own id.
-  const other = mintCookie(fresh('Other', 'other@hse.ru'))
+  const other = mintCookie(fresh('Other', 'other@example.edu'))
   const otherSig = other.slice(other.lastIndexOf('.') + 1)
   assert.equal(staffFromCookieHeader(`${STAFF_COOKIE}=${body}.${otherSig}`), null)
   assert.notEqual(sig, otherSig)
@@ -121,7 +121,7 @@ test('a forged or absent cookie is nobody', () => {
 
 test('the owner count tracks promotion and demotion', () => {
   const before = countOwners()
-  const dmitry = fresh('Dmitry', 'dmitry@hse.ru')
+  const dmitry = fresh('Dmitry', 'dmitry@example.edu')
   assert.equal(countOwners(), before)
   updateTeacherRole(dmitry.id, 'owner')
   assert.equal(countOwners(), before + 1)
@@ -146,29 +146,29 @@ test('a wrong setup token is refused and a right one is not', () => {
 })
 
 test('a teacher can be renamed without losing their link', () => {
-  const marina = fresh('Ada Lovelace', 'ada@example.edu')
-  const key = linkKeyOf(marina.id)
+  const mary = fresh('Mary Somervile', 'somervile@example.edu')
+  const key = linkKeyOf(mary.id)
 
-  const fixed = updateTeacherIdentity(marina.id, {
-    name: 'Ada Lovelace',
-    email: 'Ada@Example.edu ',
+  const fixed = updateTeacherIdentity(mary.id, {
+    name: 'Mary Somerville',
+    email: 'M.Somerville@EXAMPLE.edu ',
   })
-  assert.equal(fixed?.name, 'Ada Lovelace')
+  assert.equal(fixed?.name, 'Mary Somerville')
   // Тот же адрес, приведённый к одному виду — как и на заведении.
-  assert.equal(fixed?.email, 'ada@example.edu')
+  assert.equal(fixed?.email, 'm.somerville@example.edu')
   // Смысл правки в том, что ссылка остаётся: иначе это удаление с заводом заново.
-  assert.equal(linkKeyOf(marina.id), key)
-  assert.ok(getTeacherByEmail('ada@example.edu'))
-  assert.equal(getTeacherByEmail('ada@example.edu'), null)
+  assert.equal(linkKeyOf(mary.id), key)
+  assert.ok(getTeacherByEmail('m.somerville@example.edu'))
+  assert.equal(getTeacherByEmail('somervile@example.edu'), null)
 })
 
 test('a rename onto somebody else’s address is refused, not merged', () => {
-  const one = fresh('Sergey', 'sergey@hse.ru')
-  fresh('Olga', 'olga@hse.ru')
+  const one = fresh('Sergey', 'sergey@example.edu')
+  fresh('Olga', 'olga@example.edu')
 
-  assert.equal(updateTeacherIdentity(one.id, { name: 'Sergey', email: 'olga@hse.ru' }), null)
+  assert.equal(updateTeacherIdentity(one.id, { name: 'Sergey', email: 'olga@example.edu' }), null)
   // Отказ не должен переименовать наполовину.
-  assert.equal(getTeacherByEmail('sergey@hse.ru')?.id, one.id)
+  assert.equal(getTeacherByEmail('sergey@example.edu')?.id, one.id)
 })
 
 /* ------------------------------------------------------- the routes themselves */
@@ -235,17 +235,17 @@ test('the last owner cannot be demoted or removed', async () => {
 })
 
 test('a teacher is refused the owner-only doors, and told which one', async () => {
-  const teacher = fresh('Anna', 'anna.routes@hse.ru')
+  const teacher = fresh('Anna', 'anna.routes@example.edu')
   const refused = await call('POST', '/api/admin/teachers', {
     cookie: mintCookie(teacher),
-    body: { name: 'Someone', email: 'someone.routes@hse.ru' },
+    body: { name: 'Someone', email: 'someone.routes@example.edu' },
   })
   assert.equal(refused.status, 403)
   const body = (await refused.json()) as { error: string; reason: string }
   assert.equal(body.reason, 'forbidden')
   // Отказ называет то, что отказано: «only an owner can …» про список штата.
   assert.match(body.error, /список преподавателей/)
-  assert.equal(getTeacherByEmail('someone.routes@hse.ru'), null)
+  assert.equal(getTeacherByEmail('someone.routes@example.edu'), null)
 })
 
 test('a write from somebody else’s page is refused before it is read', async () => {
@@ -256,16 +256,16 @@ test('a write from somebody else’s page is refused before it is read', async (
   const foreign = await call('POST', '/api/admin/teachers', {
     cookie,
     origin: 'https://evil.example',
-    body: { name: 'Mallory', email: 'mallory.routes@hse.ru' },
+    body: { name: 'Mallory', email: 'mallory.routes@example.edu' },
   })
   assert.equal(foreign.status, 403)
-  assert.equal(getTeacherByEmail('mallory.routes@hse.ru'), null)
+  assert.equal(getTeacherByEmail('mallory.routes@example.edu'), null)
 
   // Со своего происхождения тот же запрос проходит — иначе проверка запрещает всё.
   const own = await call('POST', '/api/admin/teachers', {
     cookie,
     origin: base,
-    body: { name: 'Mallory', email: 'mallory.routes@hse.ru' },
+    body: { name: 'Mallory', email: 'mallory.routes@example.edu' },
   })
   assert.equal(own.status, 201)
 })
@@ -282,7 +282,7 @@ test('the dev server on its own port is not somebody else', async () => {
   const dev = await call('POST', '/api/admin/teachers', {
     cookie: mintCookie(owner),
     origin: 'http://localhost:5173',
-    body: { name: 'Dev', email: 'dev.routes@hse.ru' },
+    body: { name: 'Dev', email: 'dev.routes@example.edu' },
   })
   assert.equal(dev.status, 201)
 })
@@ -473,7 +473,7 @@ test('панель заканчивает занятие и открывает �
 })
 
 test('a cookie older than its month is nobody', () => {
-  const boris = fresh('Boris', 'boris.routes@hse.ru')
+  const boris = fresh('Boris', 'boris.routes@example.edu')
   const key = linkKeyOf(boris.id)
   assert.ok(key)
   const stale = (ageMs: number): string => {

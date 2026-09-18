@@ -4,7 +4,7 @@ export const commonMessages: MessageCatalog = {
   'common.loading': { ru: 'Загрузка…', en: 'Loading…' },
   'common.agentSteps': { ru: 'Действий на запрос', en: 'Actions per request' },
   'common.agentStepsUnit': { ru: 'действий', en: 'actions' },
-  'common.agentStepsNote': { ru: 'Для режима «Сделать»: чтение, правка и запуск — отдельные действия. 0 — без лимита, остановить можно вручную.', en: 'For Do mode: reading, editing and running each count as one action. 0 means unlimited; you can stop manually.' },
+  'common.agentStepsNote': { ru: 'Для режима «Сделать»: чтение, правка и запуск — отдельные действия. 0 — без лимита, остановить можно вручную.', en: 'For Act mode: reading, editing and running each count as one action. 0 means unlimited; you can stop manually.' },
   'common.agentStepsRoomNote': { ru: '0 — без лимита; пустое поле — как на сервере. Если на сервере задан лимит, занятие может только уменьшить его.', en: '0 means unlimited; leave blank to inherit the server setting. A class can only lower a finite server limit.' },
   'common.unlimitedActions': { ru: 'Без лимита действий', en: 'Unlimited actions' },
   'common.actionCount': { ru: '{count} действий на запрос', en: '{count} actions per request' },

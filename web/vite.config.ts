@@ -13,6 +13,14 @@ import { activityMessages } from '../shared/locales/activity'
 import { collectEntryMessages, collectClientKeys } from './scripts/entry-messages'
 
 const API_TARGET = process.env.VITE_API_TARGET ?? 'http://localhost:3000'
+/*
+ * Версия — из корневого package.json, единственного её источника (см.
+ * scripts/version.mts). Панель рисует её у логотипа; раньше там была зашитая
+ * строка «v0.1», которая не менялась бы ни с одним выпуском.
+ */
+const COLLOQ_VERSION = (JSON.parse(
+  fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+) as { version: string }).version
 const LOCALES: readonly Locale[] = ['ru', 'en']
 
 /** Server imports keep all catalogs; browser entry carries only its own copy. */
@@ -371,6 +379,7 @@ function firstPaint(): Plugin {
 
 export default defineConfig({
   plugins: [entryLanguage(), screenLanguage(), svelte(), firstPaint()],
+  define: { __COLLOQ_VERSION__: JSON.stringify(COLLOQ_VERSION) },
   resolve: {
     alias: {
       '@shared': fileURLToPath(new URL('../shared', import.meta.url)),

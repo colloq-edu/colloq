@@ -221,12 +221,33 @@
       <!-- Без строки организации, и не по забывчивости: рельс шириной 236px,
            его единственную строку уже делят логотип и версия, а надпись «кто
            мы» адресована пришедшим по ссылке, а не тем, кто здесь работает. -->
-      <div class="hidden w-full md:block">
-        <Wordmark version="v0.1" />
-      </div>
-      <!-- The mark alone: the lockup is a word at 0.22em tracking and there is
-           no room for a word here. -->
-      <Icon name="logo" size={18} class="text-white md:hidden" />
+      <!--
+        Логотип — ссылка на список занятий, как на любом сайте.
+
+        Из формы «Новое занятие» выходят именно сюда: рука идёт в левый верхний
+        угол раньше, чем глаз находит «Отмена» внизу формы, и некликабельный
+        логотип в этом месте читался как зависшая страница. Ссылка, а не кнопка:
+        средний щелчок и ⌘-щелчок открывают список в новой вкладке — тем же
+        `open`, что у строк навигации, и с тем же маршрутом, что у «Занятий».
+        Ссылка занимает всю высоту шапки рельса: цель в 16 пикселей значка —
+        промах, а шапка пуста и так.
+      -->
+      <a
+        href="/admin"
+        aria-label={tr("admin.seminars")}
+        title={tr("admin.seminars")}
+        onclick={(event) => open(event, '/admin')}
+        class="flex h-full w-full items-center justify-center transition-opacity duration-100
+               hover:opacity-80 focus:outline-none focus-visible:ring-4 focus-visible:ring-inset
+               focus-visible:ring-accent/30 md:justify-start"
+      >
+        <div class="hidden w-full md:block">
+          <Wordmark version={'v' + __COLLOQ_VERSION__} />
+        </div>
+        <!-- The mark alone: the lockup is a word at 0.22em tracking and there is
+             no room for a word here. -->
+        <Icon name="logo" size={18} class="text-white md:hidden" />
+      </a>
     </div>
 
     {@render section(tr("admin.teaching"), TEACHING, true)}

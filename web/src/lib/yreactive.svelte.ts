@@ -37,6 +37,7 @@ import {
   type YChatEntry,
 } from '@shared/notebook'
 import type { AwarenessUser } from '@shared/protocol'
+import { KERNEL_PROBLEM_KEY, readKernelProblem, type KernelProblem } from '@shared/kernel-problem'
 import { PRESENCE_TICK_MS } from './peers'
 
 /**
@@ -668,6 +669,8 @@ export function watchText(cell: () => YCell | null): Reactive<string> {
 export interface NotebookMeta {
   title: string
   kernelStatus: KernelStatus
+  /** Почему последний подъём ядра не вышел, если это можно объяснить (shared/kernel-problem.ts). */
+  kernelProblem: KernelProblem | null
   queue: string[]
   runningCellId: string | null
 }
@@ -685,6 +688,7 @@ export interface NotebookMeta {
 class MetaRegistry {
   readonly title = box('')
   readonly kernelStatus = box<KernelStatus>('starting')
+  readonly kernelProblem = box<KernelProblem | null>(null)
   readonly queue = box<string[]>(EMPTY_IDS)
   readonly runningCellId = box<string | null>(null)
   readonly view: NotebookMeta
@@ -701,6 +705,9 @@ class MetaRegistry {
       },
       get kernelStatus() {
         return fields.kernelStatus.value
+      },
+      get kernelProblem() {
+        return fields.kernelProblem.value
       },
       get queue() {
         return fields.queue.value
@@ -743,6 +750,12 @@ class MetaRegistry {
 
     const status = (this.#meta.get('kernelStatus') as KernelStatus) ?? 'starting'
     if (status !== this.kernelStatus.value) this.kernelStatus.value = status
+
+    // Значение — обычный объект, и каждое чтение даёт новый: сравниваем по
+    // содержимому, иначе любая правка meta будила бы всех, кто смотрит на совет.
+    const problem = readKernelProblem(this.#meta.get(KERNEL_PROBLEM_KEY))
+    if (JSON.stringify(problem) !== JSON.stringify(this.kernelProblem.value))
+      this.kernelProblem.value = problem
 
     const running = (this.#meta.get('runningCell') as string | null) ?? null
     if (running !== this.runningCellId.value) this.runningCellId.value = running

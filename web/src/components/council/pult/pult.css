@@ -36,6 +36,27 @@
 [data-council-pult] .pult-button[data-tone="warning"] { color: rgb(var(--warning)); }
 [data-council-pult] .pult-button[data-tone="positive"][aria-pressed="true"] { background: rgb(var(--positive) / .12); border-color: rgb(var(--positive)); }
 [data-council-pult] .pult-button[data-tone="warning"][aria-pressed="true"] { background: rgb(var(--warning) / .12); border-color: rgb(var(--warning)); }
+/*
+ * Значение регламента — слово, по которому нажимают.
+ *
+ * Ни рамки, ни заливки: это часть предложения, и кнопка в нём читалась бы как
+ * действие («запустить»), а не как «30 с — это настройка, её можно поменять».
+ * Остаётся пунктир под словом — единственный общий знак «здесь нажимают»,
+ * который не рвёт строку по высоте. Открытый лист подменяет пунктир сплошной
+ * чертой: тогда видно, О ЧЁМ открыт лист, не отрывая глаз от предложения.
+ */
+[data-council-pult] .pult-value {
+  padding: 0 1px;
+  border-bottom: 1px dashed rgb(var(--primary) / 0.5);
+  background: transparent;
+  color: rgb(var(--primary));
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 140ms;
+}
+[data-council-pult] .pult-value:hover:not(:disabled) { background: rgb(var(--raised)); }
+[data-council-pult] .pult-value[aria-expanded='true'] { background: rgb(var(--raised)); border-bottom-style: solid; }
+[data-council-pult] .pult-value[data-tone='warning'] { color: rgb(var(--warning)); border-bottom-color: rgb(var(--warning) / 0.5); }
 [data-council-pult] .pult-meta { font-size: 13px; line-height: 18px; color: rgb(var(--muted)); }
 [data-council-pult] .pult-badge {
   display: inline-flex;

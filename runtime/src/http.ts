@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import {
   isRuntimeSessionId,
   parseRuntimeEnsureRequest,
+  parseRuntimeResizeRequest,
   RUNTIME_RETIRE_QUERY,
   type RuntimeCatalog,
 } from '../../shared/runtime.js'
@@ -12,7 +13,7 @@ import { KubernetesError } from './kubernetes.js'
 interface Options {
   token: () => string
   catalog: () => RuntimeCatalog
-  controller: Pick<RuntimeController, 'ensure' | 'remove' | 'list' | 'health'>
+  controller: Pick<RuntimeController, 'ensure' | 'remove' | 'list' | 'health' | 'resize'>
 }
 const digest = (value: string) => createHash('sha256').update(value).digest()
 const reply = (res: ServerResponse, status: number, value: unknown) => {
@@ -82,6 +83,18 @@ export function createRuntimeServer(options: Options) {
             reply(res, 200, await options.controller.ensure(id, intent))
             return
           }
+          if (req.method === 'PATCH') {
+            // Только память и ядра живой комнаты — Pod этим входом не создать.
+            let intent
+            try {
+              intent = parseRuntimeResizeRequest(await body(req))
+            } catch (err) {
+              if (err instanceof RuntimeError) throw err
+              throw new RuntimeError(err instanceof Error ? err.message : 'Invalid resize intent', 400)
+            }
+            reply(res, 200, await options.controller.resize(id, intent))
+            return
+          }
           if (req.method === 'DELETE') {
             if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0)
               throw new RuntimeError('DELETE does not accept a request body', 400)
@@ -99,7 +112,10 @@ export function createRuntimeServer(options: Options) {
           err instanceof RuntimeError || err instanceof KubernetesError
             ? err.message.slice(0, 300)
             : 'Runtime service is unavailable'
-        reply(res, status, { error })
+        // Рядом с текстом — слово и числа отказа, если они есть: веб переводит
+        // их человеку сам, а текст остаётся для журнала (shared/runtime.ts).
+        const failure = err instanceof RuntimeError ? err.failure : undefined
+        reply(res, status, { error, ...failure })
         req.resume()
       }
     })()

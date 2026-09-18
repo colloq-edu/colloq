@@ -185,7 +185,10 @@
   })
 
   onMount(() => {
-    const onPop = () => (path = location.pathname)
+    const onPop = () => {
+      path = location.pathname
+      makingSeminar = false
+    }
     window.addEventListener('popstate', onPop)
 
     const credential = readEntryCredential(location.pathname)
@@ -203,6 +206,15 @@
   function navigate(next: string): void {
     if (next !== location.pathname) history.pushState({}, '', next)
     path = next
+    /*
+     * Любой переход — это уход из формы «Новое занятие».
+     *
+     * Форма не маршрут (см. `makingSeminar`), и переход на тот же `/admin` —
+     * с логотипа или со строки «Занятия» — адреса не меняет. Без этой строки
+     * щелчок по ним на открытой форме не делал ничего, а уход на «Курсы» и
+     * обратно возвращал в ту же форму: флаг переживал смену вкладки.
+     */
+    makingSeminar = false
   }
 </script>
 

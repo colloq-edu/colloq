@@ -53,7 +53,7 @@ function call(
 }
 
 const teacher = (() => {
-  const made = createTeacher({ name: 'Пётр', email: 'petr.wiring@hse.ru', role: 'teacher' })
+  const made = createTeacher({ name: 'Пётр', email: 'petr.wiring@example.edu', role: 'teacher' })
   assert.ok(made, 'не завёлся преподаватель для теста')
   rotateLinkKey(made.id)
   return made

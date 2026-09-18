@@ -89,6 +89,38 @@ use_env() {
   NAME_ARG="${ENV_NAME:+ NAME=$ENV_NAME}"
 }
 use_env
+
+# again КОМАНДА [ИМЯ=ЗНАЧЕНИЕ…] — как повторить команду, строкой для подсказки.
+#
+# `make vast-*` выбирает скрипт по одному признаку — RELEASE (Makefile ·
+# VAST_SCRIPT): есть — этот, нет — прежний scripts/vast-legacy.sh. Подсказки
+# здесь были голыми «make vast-sync NAME=hse», и без RELEASE такая строка
+# уводила k3s-машину в прежний путь: legacy-sync зовёт там `make
+# backup-legacy`, а под релизом на машине нет ни Makefile, ни data/colloq.db,
+# и копия не снимается вовсе; legacy-up раскатывает рабочее дерево и службу
+# systemd на машину, где стоит релиз. Поэтому: RELEASE известен — make с ним
+# же, тем путём, каким сюда и пришли; не известен — сам скрипт, мимо
+# переключателя. `up` без релиза не работает вовсе, и его подсказка называет
+# RELEASE вслух.
+#
+# Аргументы — готовые пары вроде «NAME=hse» или «$NAME_ARG» (ведущий пробел
+# срезается, пустые пропускаются): у make это его переменные, у скрипта —
+# окружение перед именем, как и читает их этот файл.
+again() {
+  local cmd="$1" args="" a
+  shift
+  for a in "$@"; do
+    a="${a# }"
+    [ -z "$a" ] || args="$args $a"
+  done
+  if [ -n "${RELEASE:-}" ]; then
+    printf 'make vast-%s%s RELEASE=%q' "$cmd" "$args" "$RELEASE"
+  elif [ "$cmd" = up ]; then
+    printf 'make vast-up%s RELEASE=/path/release.json' "$args"
+  else
+    printf '%sscripts/vast.sh %s' "${args:+${args# } }" "$cmd"
+  fi
+}
 # Образ виртуалки. Теги в vastai/kvm датированные, `latest` там нет вовсе;
 # список — hub.docker.com/r/vastai/kvm/tags.
 IMAGE="$(read_env VAST_IMAGE)";         IMAGE="${IMAGE:-docker.io/vastai/kvm:ubuntu_cli_22.04-2025-11-21}"
@@ -361,8 +393,8 @@ print_envs() {
     if [ -n "$db" ]; then
       printf '               %sкопия здесь: %s%s\n' "$DIM" "$(backup_age "$db")" "$OFF"
     else
-      printf '               %sкопий здесь нет%s %s(make vast-sync%s)%s\n' \
-        "$RED" "$OFF" "$DIM" "${name:+ NAME=$name}" "$OFF"
+      printf '               %sкопий здесь нет%s %s(%s)%s\n' \
+        "$RED" "$OFF" "$DIM" "$(again sync "${name:+NAME=$name}")" "$OFF"
     fi
   done <<<"$lines"
 }
@@ -382,7 +414,7 @@ resolve_env() {
   if [ "$n" -gt 1 ]; then
     say "${RED}сред арендовано несколько — назовите, какую $what${OFF}" >&2
     print_envs "$lines" >&2
-    die "например: make vast-${CMD} NAME=<имя>"
+    die "например: $(again "$CMD" 'NAME=<имя>')"
   fi
   picked="$(printf '%s' "$lines" | cut -d "$SEP" -f1)"
   if [ -n "$picked" ]; then
@@ -412,12 +444,12 @@ print(((json.load(sys.stdin).get("instances") or {}).get("status_msg") or "").st
         say "${RED}    машина встала в «${st}» — в running это уже не перейдёт${OFF}"
         if [ -n "$msg" ]; then say "${DIM}    $msg${OFF}"; fi
         die "деньги идут, пока инстанс существует. Уничтожьте его и повторите:
-  make vast-down$NAME_ARG · потом make vast-up$NAME_ARG" ;;
+  $(again down "$NAME_ARG") · потом $(again up "$NAME_ARG")" ;;
     esac
     sleep 10; waited=$((waited + 10))
   done
   die "машина не дошла до running за 15 минут.
-  Посмотреть: make vast-status$NAME_ARG · уничтожить: make vast-down$NAME_ARG"
+  Посмотреть: $(again status "$NAME_ARG") · уничтожить: $(again down "$NAME_ARG")"
 }
 
 # Сколько уже натикало. Не счёт, а порядок величины: vast считает по секундам и
@@ -480,7 +512,7 @@ esac
 if [ -n "$WANT_HOST" ] && [ -n "$ENV_NAME" ] && [ "${WANT_HOST%%.*}" != "$ENV_NAME" ]; then
   die "среда «${ENV_NAME}» и адрес «${WANT_HOST}» — разные имена.
   Имя среды и первая часть адреса — одно слово. Или так:
-      make vast-up NAME=${WANT_HOST%%.*} HOST=${WANT_HOST}
+      $(again up "NAME=${WANT_HOST%%.*}" "HOST=${WANT_HOST}")
   или адрес под именем среды: HOST=${ENV_NAME}.${RELAY_DOMAIN:-colloq.ru}"
 fi
 
@@ -635,7 +667,7 @@ cmd_adopt() {
   local mine="$LABEL" addr answer
   LABEL="$LABEL_BASE"
   load_instance || die "безымянной машины (метка «${LABEL_BASE}») на vast.ai нет.
-  Смотреть, что арендовано: make vast-status"
+  Смотреть, что арендовано: $(again status)"
 
   printf '\n'
   say "${BOLD}назвать инстанс $INST_ID средой «${ENV_NAME}»${OFF} ${DIM}($INST_NGPU x $INST_GPU, \$$INST_DPH/час)${OFF}"
@@ -659,7 +691,7 @@ cmd_adopt() {
   fi
   relabel "$INST_ID" "$mine"
   printf '\n'
-  say "${BOLD}готово${OFF} ${DIM}— теперь: make vast-status NAME=${ENV_NAME}${OFF}"
+  say "${BOLD}готово${OFF} ${DIM}— теперь: $(again status "NAME=${ENV_NAME}")${OFF}"
   say "${DIM}Копии этой среды отныне снимаются в backups/${ENV_NAME}/. Те, что уже${OFF}"
   say "${DIM}лежат россыпью в backups/, считаются копиями безымянной среды и этой${OFF}"
   say "${DIM}машине больше не поедут. Если они её — перенесите руками:${OFF}"
@@ -869,7 +901,7 @@ if offers:
     [ -n "$pick" ] || die "под эти условия ничего не нашлось.
   Искалось: карта «${GPU_NAME:-любая}», память $GPU_RAM_TEXT, до \$$MAX_PRICE/час,
   диск от $DISK ГБ.
-  Ослабить разово: make vast-up GPU=\"RTX 4090\" — или насовсем, в .env:
+  Ослабить разово: $(again up "$NAME_ARG" 'GPU="RTX 4090"') — или насовсем, в .env:
   VAST_GPU, VAST_GPU_RAM, VAST_MAX_PRICE. Виртуалок на рынке заметно меньше, чем
   обычных инстансов, — это цена решения арендовать именно их."
 
@@ -915,7 +947,7 @@ import json, sys
 print(json.load(sys.stdin).get("new_contract") or "")')"
     [ -n "$new_id" ] || die "vast не сказал, что арендовал.
   Загляните на https://cloud.vast.ai/instances/ — если машина всё же появилась,
-  повторите make vast-up$NAME_ARG: он развернётся поверх неё."
+  повторите $(again up "$NAME_ARG"): он развернётся поверх неё."
     say "${DIM}    инстанс $new_id${OFF}"
     wait_running "$new_id"
     load_instance || die "инстанс $new_id арендован, но по метке не находится.
@@ -924,7 +956,7 @@ print(json.load(sys.stdin).get("new_contract") or "")')"
 
   say "${BOLD}4/$STEPS${OFF} жду ssh"
   [ -n "$INST_SSH_HOST" ] && [ -n "$INST_SSH_PORT" ] \
-    || die "vast ещё не назвал адрес ssh. Повторите через минуту: make vast-up$NAME_ARG"
+    || die "vast ещё не назвал адрес ssh. Повторите через минуту: $(again up "$NAME_ARG")"
   say "${DIM}    ssh root@$INST_SSH_HOST -p $INST_SSH_PORT${OFF}"
   local waited=0
   until rssh true </dev/null 2>/dev/null; do
@@ -962,9 +994,11 @@ REMOTE
   fi
   # Only deployment/application configuration is eligible for first installation.
   # Billing and DNS credentials are never transferred. Existing remote config wins.
+  # RUNTIME_KERNEL_MEMORY[_MAX] — память комнаты по умолчанию и потолок для
+  # брокера: cluster.sh кладёт их в Deployment брокера из того же файла.
   local tmpenv
   tmpenv="$(mktemp -t colloq-vast-env.XXXXXX)"; TMPS+=("$tmpenv")
-  grep -E '^(UI_LANGUAGE|RELAY_(ADDR|PORT|TOKEN|DOMAIN)|INSTITUTION|SESSION_SECRET|ORACLE_[A-Z_]+|OPENAI_[A-Z_]+|ANTHROPIC_[A-Z_]+)=' .env > "$tmpenv" || true
+  grep -E '^(UI_LANGUAGE|RELAY_(ADDR|PORT|TOKEN|DOMAIN)|INSTITUTION|SESSION_SECRET|ORACLE_[A-Z_]+|OPENAI_[A-Z_]+|ANTHROPIC_[A-Z_]+|RUNTIME_KERNEL_MEMORY(_MAX)?)=' .env > "$tmpenv" || true
   local public_url="http://127.0.0.1:30080"
   [ -z "$WANT_HOST" ] || public_url="https://$WANT_HOST"
   printf 'PORT=30080\nCOLLOQ_CLUSTER=1\nPUBLIC_URL=%s\n' "$public_url" >> "$tmpenv"
@@ -1035,6 +1069,36 @@ REMOTE
 set -euo pipefail
 cd "$REMOTE_DIR"
 
+# Прежняя сессия убирается до новой. Ретранслятор не пускает второй frpc с тем
+# же поддоменом («already exists»), и повторный vast-up получал бы отказ от
+# собственного, ещё живого туннеля — самый обидный вид «занято».
+#
+# Ctrl+C с ожиданием, а не kill-session, и до проверки здоровья, а не после.
+# host.sh на выходе снимает свой адрес с кластера: cluster.sh public-url
+# возвращает localhost и перезапускает приложение — до трёх минут. Оборви его
+# на полпути — адрес останется мёртвым; не дождись — старая уборка вернёт
+# localhost уже ПОВЕРХ адреса новой сессии (имя у них одно), а то и новая
+# упрётся в замок состояния, который держит старая. Здоровье спрашивается
+# после: оно и дождётся приложения, перезапущенного этой уборкой.
+#
+# Ждём уборку host.sh, а не окно. Сессию с этим именем заводят и руками —
+# `tmux new -s …`, как советует сам vast.sh, когда адрес не назван, — и после
+# Ctrl+C она остаётся жить голой оболочкой: по одному has-session такой заход
+# простаивал бы все двести секунд ни за чем. Шаблон — от начала строки и с
+# bash: командную строку host.sh целиком носит и сервер tmux (он остаётся
+# процессом `tmux new-session … bash scripts/host.sh …`), и оболочка `sh -c`
+# сессии, а `.sh` — ещё и домен в адресе. Без pgrep — прежнее ожидание окна.
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  echo "    останавливаю прежнюю сессию $TMUX_SESSION — она снимает адрес с кластера"
+  tmux send-keys -t "$TMUX_SESSION" C-c 2>/dev/null || true
+  for _ in $(seq 1 100); do
+    tmux has-session -t "$TMUX_SESSION" 2>/dev/null || break
+    if command -v pgrep >/dev/null 2>&1; then pgrep -f '^[^ ]*bash ([^ ]*/)?scripts/host\.sh' >/dev/null 2>&1 || break; fi
+    sleep 2
+  done
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+fi
+
 # host.sh отказывается открывать туннель поверх нездорового инстанса — и
 # правильно делает. Но `make up` возвращается, как только compose принял
 # команду, а ядро поднимается ещё с полминуты: без этого ожидания «одна команда
@@ -1049,16 +1113,15 @@ done
   exit 1
 }
 
-# Прежняя сессия убирается до новой. Ретранслятор не пускает второй frpc с тем
-# же поддоменом («already exists»), и повторный vast-up получал бы отказ от
-# собственного, ещё живого туннеля — самый обидный вид «занято».
-tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
-
 # Туннель живёт ровно столько, сколько живёт `make host`. Запущенный прямо в
 # ssh-сессии, он умер бы вместе с ней — то есть в ту секунду, когда закрыли
 # ноутбук. Журнал пишется рядом: когда адрес не отвечает, смотреть будут его.
+#
+# tee -i: Ctrl+C в этом окне достаётся всей группе процессов, и простой tee
+# умирал первым — уборка host.sh (снятие адреса с кластера) писала уже в
+# пустоту, и ни в окне, ни в host.log не оставалось, снят адрес или нет.
 tmux new-session -d -s "$TMUX_SESSION" \
-  "cd '$REMOTE_DIR' && COLLOQ_CLUSTER=1 COLLOQ_HOSTNAME='$WANT_HOST' bash scripts/host.sh 2>&1 | tee -a host.log"
+  "cd '$REMOTE_DIR' && COLLOQ_CLUSTER=1 COLLOQ_HOSTNAME='$WANT_HOST' bash scripts/host.sh 2>&1 | tee -i -a host.log"
 sleep 2
 tmux has-session -t "$TMUX_SESSION" 2>/dev/null || {
   echo "tmux-сессия $TMUX_SESSION не завелась" >&2
@@ -1119,11 +1182,11 @@ REMOTE
     # чем повторить. Повтор безопасен: машина уже арендована, и vast-up
     # развернётся поверх неё, а не возьмёт вторую.
     say "${BOLD}Адрес не подтверждён${OFF} ${DIM}— куда смотреть, сказано выше${OFF}"
-    say "  ${DIM}повторить, не арендуя ничего заново: make vast-up HOST=$WANT_HOST${OFF}"
+    say "  ${DIM}повторить, не арендуя ничего заново: $(again up "HOST=$WANT_HOST")${OFF}"
   else
     say "${BOLD}Наружу — оттуда, а не отсюда${OFF} ${DIM}(семинар считается там, где стоит ядро)${OFF}"
     if [ -n "$RELAY_DOMAIN" ]; then
-      say "  ${CYAN}make vast-up HOST=<имя>.$RELAY_DOMAIN${OFF} ${DIM}— отсюда, одной командой${OFF}"
+      say "  ${CYAN}$(again up "HOST=<имя>.$RELAY_DOMAIN")${OFF} ${DIM}— отсюда, одной командой${OFF}"
       say "  ${DIM}или руками на машине: cd $REMOTE_DIR && COLLOQ_CLUSTER=1 COLLOQ_HOSTNAME=<имя>.$RELAY_DOMAIN bash scripts/host.sh${OFF}"
     else
       say "  ${CYAN}cd $REMOTE_DIR && COLLOQ_CLUSTER=1 bash scripts/host.sh${OFF}"
@@ -1139,7 +1202,7 @@ REMOTE
   say "${DIM}  перезапуск  ssh … 'cd $REMOTE_DIR && bash scripts/cluster.sh start'${OFF}"
   say "${DIM}  обновление  make vast-up$NAME_ARG RELEASE=/path/release.json${OFF}"
   say "${DIM}Окружения собраны заранее и записаны digest-ами в каталоге релиза.${OFF}"
-  say "${DIM}Данные оттуда: make vast-sync$NAME_ARG · уничтожить машину: make vast-down$NAME_ARG${OFF}"
+  say "${DIM}Данные оттуда: $(again sync "$NAME_ARG") · уничтожить машину: $(again down "$NAME_ARG")${OFF}"
   say "${RED}Всё, что на этой машине, живёт ровно до её уничтожения.${OFF}"
 }
 
@@ -1160,7 +1223,7 @@ cmd_status() {
       say "${BOLD}арендовано сред: $n${OFF}"
       print_envs "$lines"
       printf '\n'
-      say "${DIM}подробности одной: make vast-status NAME=<имя>${OFF}"
+      say "${DIM}подробности одной: $(again status 'NAME=<имя>')${OFF}"
       say "${DIM}у каждой среды свои машина, счёт и данные — общего только код и ретранслятор${OFF}"
       return 0
     fi
@@ -1171,7 +1234,7 @@ cmd_status() {
   db="$(last_backup)"
   if ! load_instance; then
     say "${DIM}на vast.ai ничего не арендовано${OFF} ${DIM}(метка «${LABEL}»)${OFF}"
-    say "${DIM}арендовать: make vast-up$NAME_ARG${OFF}"
+    say "${DIM}арендовать: $(again up "$NAME_ARG")${OFF}"
     if [ -n "$db" ]; then say "${DIM}последняя копия здесь: $(backup_age "$db")${OFF}"; fi
     return 0
   fi
@@ -1226,20 +1289,20 @@ cmd_status() {
         fi
         if [ "$alive" != alive ]; then
           say "  ${DIM}tmux-сессии «${TMUX_SESSION}» на машине нет — держать туннель некому${OFF}"
-          say "  ${DIM}поднять снова: make vast-up HOST=${name:-<имя>}${OFF}"
+          say "  ${DIM}поднять снова: $(again up "HOST=${name:-<имя>}")${OFF}"
         fi ;;
       *)
         if [ "$alive" = alive ]; then
           say "  ${DIM}туннель «${TMUX_SESSION}» поднимается — адреса в .env ещё нет${OFF}"
         else
-          say "  ${DIM}наружу не выставлен${OFF} ${DIM}(make vast-up HOST=<имя>${RELAY_DOMAIN:+.$RELAY_DOMAIN})${OFF}"
+          say "  ${DIM}наружу не выставлен${OFF} ${DIM}($(again up "HOST=<имя>${RELAY_DOMAIN:+.$RELAY_DOMAIN}"))${OFF}"
         fi ;;
     esac
   fi
   if [ -n "$db" ]; then
     say "${DIM}последняя копия здесь: $(backup_age "$db")${OFF}"
   else
-    say "${RED}копий здесь нет вовсе${OFF} ${DIM}— снять: make vast-sync$NAME_ARG${OFF}"
+    say "${RED}копий здесь нет вовсе${OFF} ${DIM}— снять: $(again sync "$NAME_ARG")${OFF}"
   fi
 }
 
@@ -1254,7 +1317,7 @@ cmd_sync() {
   resolve_env "снимать"
   load_instance || die "с меткой «${LABEL}» на vast.ai ничего не арендовано — снимать не с чего."
   [ "$INST_STATUS" = running ] || die "инстанс $INST_ID сейчас «${INST_STATUS}».
-  Снять данные можно только с работающей машины: поднимите её (make vast-up$NAME_ARG)
+  Снять данные можно только с работающей машины: поднимите её ($(again up "$NAME_ARG"))
   и повторите."
 
   local mode="${MODE:-live}"
@@ -1332,7 +1395,7 @@ cmd_logs() {
   load_instance || die "с меткой «${LABEL}» на vast.ai ничего не арендовано — журнал брать не с чего."
   [ "$INST_STATUS" = running ] || die "инстанс $INST_ID сейчас «${INST_STATUS}».
   Журнал лежит на диске машины, и достать его можно только с работающей:
-  поднимите её (make vast-up$NAME_ARG) и повторите."
+  поднимите её ($(again up "$NAME_ARG")) и повторите."
 
   local since="${SINCE:-2h}" dir
   # Kubernetes accepts durations, not journalctl's freeform date expressions.
@@ -1367,7 +1430,7 @@ cmd_down() {
   if [ -n "$db" ]; then
     say "${DIM}последняя копия здесь: $(backup_age "$db")${OFF}"
   else
-    say "${RED}копий здесь нет вовсе.${OFF} ${DIM}Снять: make vast-sync$NAME_ARG${OFF}"
+    say "${RED}копий здесь нет вовсе.${OFF} ${DIM}Снять: $(again sync "$NAME_ARG")${OFF}"
   fi
 
   if [ "${FORCE:-}" != 1 ]; then
@@ -1379,7 +1442,16 @@ cmd_down() {
 
   api DELETE "instances/$INST_ID/" >/dev/null
   say "${DIM}инстанс $INST_ID уничтожен — счётчик остановлен${OFF}"
-  say "${DIM}развернуть эти данные заново: make vast-up$NAME_ARG${ENV_NAME:+ HOST=$ENV_NAME.${RELAY_DOMAIN:-colloq.ru}} — или здесь: make restore$NAME_ARG${OFF}"
+  # «Или здесь: make restore NAME=…» здесь больше не советуется: переносимую
+  # копию k3s разворачивает только k3s (restore.sh --archive останавливает
+  # кластер), а `make restore` без ARCHIVE и RELEASE отказывает сразу.
+  #
+  # ARCHIVE — только переносимая копия: last_backup находит и прежнюю пару
+  # .db, а restore.sh --archive её не примет, и совет отказал бы вторым шагом.
+  local archive="<копия из $BACKUP_DIR/>"
+  case "$db" in *-live.tar.gz|*-consistent.tar.gz) archive="$db" ;; esac
+  say "${DIM}развернуть эти данные заново: $(again up "$NAME_ARG" "${ENV_NAME:+HOST=$ENV_NAME.${RELAY_DOMAIN:-colloq.ru}}")${OFF}"
+  say "${DIM}или на своей Linux-машине с k3s: make restore$NAME_ARG ARCHIVE=${archive} RELEASE=${RELEASE:-/path/release.json}${OFF}"
 }
 
 case "$CMD" in
@@ -1403,7 +1475,8 @@ case "$CMD" in
     say "  scripts/vast.sh down    ${DIM}уничтожить машину вместе со всем, что на ней${OFF}"
     say "  scripts/vast.sh adopt   ${DIM}назвать средой машину со старой меткой «${LABEL_BASE}»${OFF}"
     say ""
-    say "${DIM}то же через make: make vast-up · vast-status · vast-sync · vast-logs · vast-down · vast-adopt${OFF}"
+    say "${DIM}то же через make — только с RELEASE=/path/release.json: без него make vast-up ·${OFF}"
+    say "${DIM}vast-status · vast-sync · vast-logs · vast-down ведут в прежний scripts/vast-legacy.sh${OFF}"
     say "${DIM}Среда — это отдельная машина: отдельные деньги и отдельные данные.${OFF}"
     if [ -n "$CMD" ]; then die "не знаю команды «${CMD}»."; fi
     ;;

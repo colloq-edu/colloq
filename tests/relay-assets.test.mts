@@ -155,7 +155,7 @@ suite('зеркало статики ретранслятора', { skip: HAVE_P
   })
 
   test('своё зеркало и только своё: имя в пути — то, по которому пришли', async () => {
-    const other = await put(build('app-aaaa1111.js'), { host: HOST, target: 'event.example.org' })
+    const other = await put(build('app-aaaa1111.js'), { host: HOST, target: 'other.colloq.ru' })
     assert.equal(other.status, 403, 'один семинар переписал зеркало другого')
     const alien = await put(build('app-aaaa1111.js'), { host: 'hse.example.com', target: 'hse.example.com' })
     assert.equal(alien.status, 400)

@@ -865,6 +865,10 @@ export const serverMessages: MessageCatalog = {
     "ru": "Список элементов должен быть массивом",
     "en": "items must be an array"
   },
+  "server.course.plannedNeedsTopic": {
+    "ru": "У строки плана должна быть тема",
+    "en": "A planned row needs a topic"
+  },
   "server.thisCourseHasAlreadyBeenChanged.70c236": {
     "ru": "этот курс уже изменили",
     "en": "this course has already been changed"
@@ -1429,6 +1433,14 @@ export const serverMessages: MessageCatalog = {
     "ru": "сервер сменил сеть",
     "en": "the server changed networks"
   },
+  "server.roomPerimeter.migrated": {
+    "ru": "контейнер поднят до укреплённого профиля (без привилегий и без доступа к локальной сети) и пересоздаётся уже с ним",
+    "en": "the container predates the hardened profile (no privileges, no access to the local network) and is recreated with it"
+  },
+  "server.roomPerimeter.refused": {
+    "ru": "Комнату не запустить: не удалось закрыть ей доступ к локальным адресам этой машины ({p0}). Без этого запрета код студента дотянулся бы до роутера, до самого компьютера и до его сервисов, поэтому ядро не поднимается. Нужно, чтобы Docker мог запустить привилегированный служебный контейнер в сети хоста: в Docker Desktop выключите Enhanced Container Isolation, а rootless Docker и podman этого не умеют. Если машина и класс доверенные, допишите в .env строку COLLOQ_ROOM_NETWORK=open и перезапустите Colloq — комнаты пойдут без запрета.",
+    "en": "The room cannot start: blocking its access to this machine's local addresses failed ({p0}). Without that block, student code could reach the router, this computer and its services, so the kernel is not started. Docker has to be able to run a privileged helper container on the host network: turn off Enhanced Container Isolation in Docker Desktop; rootless Docker and podman cannot do this. If the machine and the class are trusted, add the line COLLOQ_ROOM_NETWORK=open to .env and restart Colloq — rooms then start without the block."
+  },
   "server.theContainerWasStartedWithADifferent.bc4d7d": {
     "ru": "контейнер поднят не с тем срезом GPU",
     "en": "the container was started with a different GPU device"
@@ -1448,6 +1460,10 @@ export const serverMessages: MessageCatalog = {
   "server.theRoomKernelDidNotRespondWithin.1324d5": {
     "ru": "ядро комнаты не ответило за 90 с ({p0})",
     "en": "the room kernel did not respond within 90 seconds ({p0})"
+  },
+  "server.kernel.unschedulable": {
+    "ru": "Python в этой комнате сейчас не запускается: на сервере нет для неё места. Преподаватель видит причину и может это исправить.",
+    "en": "Python can’t start in this room right now: the server has no capacity left for it. Your teacher can see why and can fix it."
   },
   "server.cannotStartKernelSeminarIsStopping.9820e1": {
     "ru": "Не удалось запустить ядро: занятие останавливается",
@@ -2440,6 +2456,26 @@ export const serverMessages: MessageCatalog = {
   "server.council.hintNotInCouncil": {
     "ru": "Консилиум в этой ячейке закрыт",
     "en": "The council is closed in this cell"
+  },
+  "server.stoppedTheRunTookLongerThanThe.87bfc0": {
+    "ru": "Остановлено: запуск шёл дольше {p0}. Предел задаёт преподаватель — ядро одно на всю комнату.",
+    "en": "Stopped: the run took longer than {p0}. The teacher sets the limit — the kernel is shared by the whole room."
+  },
+  "server.yourNextRunIsInTheTeacher.95d4f8": {
+    "ru": "Следующий запуск — через {p0}. Паузу между запусками задаёт преподаватель.",
+    "en": "Your next run is in {p0}. The teacher sets the pause between runs."
+  },
+  "server.duration.seconds": {
+    "ru": "{p0} с",
+    "en": "{p0} s"
+  },
+  "server.duration.minutes": {
+    "ru": "{p0} мин",
+    "en": "{p0} min"
+  },
+  "server.duration.minutesSeconds": {
+    "ru": "{p0} мин {p1} с",
+    "en": "{p0} min {p1} s"
   },
   "server.council.oracleName": {
     "ru": "Оракул",

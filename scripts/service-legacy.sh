@@ -234,7 +234,8 @@ cmd_install() {
   if [ "$(read_env KERNEL_ISOLATION)" = off ]; then
     say "${RED}    KERNEL_ISOLATION=off — у комнат не будет своих ядер${OFF}"
     say "${DIM}    А общее ядро compose здесь не поднимается: подняли бы его вы сами${OFF}"
-    say "${DIM}    (make dev публикует 8888 на петлю). Иначе Python не будет ни у кого.${OFF}"
+    say "${DIM}    (docker compose с docker-compose.dev.yml публикует 8888 на петлю).${OFF}"
+    say "${DIM}    Иначе Python не будет ни у кого.${OFF}"
   fi
   say "${DIM}    .env на месте${OFF}"
 

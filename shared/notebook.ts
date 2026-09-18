@@ -415,15 +415,50 @@ export type CellLock = 'closed' | 'open' | 'council'
  *                      выключенной ручке его в кадре нет вовсе. Автор у себя
  *                      всё равно видит «ваш вариант на экране» — про себя он и
  *                      так знает.
+ *   runLimitSec      — предел ОДНОГО запуска попытки в секундах; `null` — без
+ *                      предела. Ядро в комнате одно, и очередь на весь поток
+ *                      стоит за тем, что считается: `while True` у одного — это
+ *                      «В очереди: 37» у остальных до конца пары, пока
+ *                      преподаватель не заметит и не нажмёт «Прервать». Предел
+ *                      нажимает её сам: сервер прерывает запуск, попытка
+ *                      получает отметку `CouncilRun.timedOut`, очередь идёт
+ *                      дальше. Касается всех запусков попыток — и тех, что
+ *                      запустил преподаватель: жирный код не становится легче
+ *                      оттого, кто нажал. Умолчание 30 с: попытка консилиума —
+ *                      несколько строк, обычный запуск идёт доли секунды.
+ *   rerunPauseSec    — сколько секунд студент ждёт после конца СВОЕГО запуска,
+ *                      прежде чем встать в очередь снова (и самозапуск, и
+ *                      просьба); 0 — сразу. На потоке в пятьсот человек очередь
+ *                      из нажимающих «Запустить» после каждой правки не
+ *                      кончается никогда. Преподавателя пауза не касается.
  */
 export interface CouncilSettings {
   /** false: teacher only; true: direct student runs; request: teacher approval. */
   studentRun: boolean | 'request'
   /** Имя автора показанной попытки или «Вариант N» — см. заметку выше. */
   namesOnProjector: boolean
+  /** Предел одного запуска, с; `null` — без предела. См. заметку выше. */
+  runLimitSec: number | null
+  /** Пауза между запусками одного студента, с; 0 — нет. См. заметку выше. */
+  rerunPauseSec: number
 }
 
-export const DEFAULT_COUNCIL: CouncilSettings = { studentRun: false, namesOnProjector: true }
+export const DEFAULT_COUNCIL: CouncilSettings = {
+  studentRun: false,
+  namesOnProjector: true,
+  runLimitSec: 30,
+  rerunPauseSec: 0,
+}
+
+/**
+ * Что предлагает лист «Регламент» в пульте. Сервер принимает любое целое в
+ * границах ниже, а не только эти числа: список — про интерфейс, а не про право.
+ */
+export const COUNCIL_RUN_LIMITS: readonly (number | null)[] = [5, 15, 30, 60, 300, null]
+export const COUNCIL_RERUN_PAUSES: readonly number[] = [0, 15, 30, 60, 120]
+/** Границы, в которых сервер принимает предел запуска и паузу. */
+export const COUNCIL_RUN_LIMIT_MAX = 3600
+export const COUNCIL_RERUN_PAUSE_MAX = 3600
 
 /**
  * Что консилиум обещает про изоляцию попыток — и чего не обещает.
@@ -1123,9 +1158,29 @@ export function openValueFor(lock: CellLock): true | 'council' | null {
  */
 export function readCouncilSettings(raw: unknown): CouncilSettings {
   const from = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  /*
+   * Предел: `null` — «без предела», и это осознанный выбор преподавателя, а не
+   * отсутствие поля. Поля нет вовсе (ячейка из вчерашней версии) — умолчание:
+   * иначе обновление сервера молча сняло бы предел со всех открытых консилиумов.
+   * Мусор — тоже умолчание, а не «без предела»: безопасная сторона здесь одна.
+   */
+  const limit = from.runLimitSec
+  const runLimitSec =
+    limit === null
+      ? null
+      : typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= COUNCIL_RUN_LIMIT_MAX
+        ? limit
+        : DEFAULT_COUNCIL.runLimitSec
+  const pause = from.rerunPauseSec
+  const rerunPauseSec =
+    typeof pause === 'number' && Number.isInteger(pause) && pause >= 0 && pause <= COUNCIL_RERUN_PAUSE_MAX
+      ? pause
+      : DEFAULT_COUNCIL.rerunPauseSec
   return {
     studentRun: from.studentRun === 'request' ? 'request' : from.studentRun === true,
     namesOnProjector: from.namesOnProjector !== false,
+    runLimitSec,
+    rerunPauseSec,
   }
 }
 

@@ -620,6 +620,7 @@ h1{font-size:38px;line-height:1.1;letter-spacing:-.02em;margin:0 0 12px}
 .row .t{flex:1 1 auto;font-size:17px;font-weight:600;min-width:0}
 .row .s{flex:0 0 auto;color:var(--muted);font-size:14px;white-space:nowrap}
 .row.off .t{font-weight:400;color:var(--muted)}
+.row.off .s{white-space:normal;max-width:45%;overflow-wrap:break-word;text-align:right}
 .row a{text-decoration:none;color:inherit;display:flex;align-items:baseline;gap:20px;width:100%}
 .row a:hover .t{color:var(--accent)}
 .foot-note{color:var(--muted);font-size:14px;margin-top:34px}
@@ -767,6 +768,9 @@ export function renderCourse(course: PublicCourseView, base: string): string {
         ].join('')
       }
       if (item.kind === 'planned') {
+        // Неделю набирают руками в панели, до сорока знаков: с `nowrap` на
+        // телефоне она забирала всю строку и ложилась поверх темы. Отсюда
+        // `.row.off .s` в STYLE — перенос и не больше 45% ширины.
         return `<li class="row off"><span class="n">${n}</span><span class="t">${esc(item.name)}</span><span class="s">${esc(item.when)}</span></li>`
       }
       if (!item.publication) {

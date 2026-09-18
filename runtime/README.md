@@ -30,15 +30,27 @@ Secret and catalog files are reread on requests, supporting atomic file updates.
 | `RUNTIME_KUBE_CA_FILE`      | `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` |
 | `RUNTIME_IMAGE_PULL_SECRET` | unset                                                  |
 | `RUNTIME_KERNEL_MEMORY`     | `2Gi`                                                  |
+| `RUNTIME_KERNEL_MEMORY_MAX` | node MemTotal minus 1Gi (at least the default)         |
 | `RUNTIME_KERNEL_CPU`        | `2`                                                    |
 | `RUNTIME_KERNEL_EPHEMERAL`  | `2Gi`                                                  |
 
 Memory accepts integral Mi/Gi from 64Mi to 256Gi; ephemeral storage accepts 64Mi
 to 1Ti (expressed in Gi/Mi); CPU accepts cores or millicores above zero through 64.
-Requests equal limits. GPU environments additionally request exactly one
+Requests equal limits. `RUNTIME_KERNEL_MEMORY` is the room default; a room's own
+`memoryMb` replaces it up to `RUNTIME_KERNEL_MEMORY_MAX` (ensure caps above it,
+a live resize refuses). The default must not exceed the ceiling. GPU environments additionally request exactly one
 `nvidia.com/gpu` with RuntimeClass `nvidia`. GPU shared memory is 1Gi; CPU shared
 memory is 64Mi; memory-backed volumes consume the Pod memory limit. The operator
 sets the node PID limit and namespace quota. PVC capacity is not a per-room quota.
+
+On k3s, set `RUNTIME_KERNEL_MEMORY` and `RUNTIME_KERNEL_MEMORY_MAX` in the
+operator env file (`--env-file` of `cluster.sh install|prepare|update`, kept as
+`/var/lib/colloq/config.env`). `release.py render` copies only these two runtime
+keys into the broker Deployment, validates them with the same grammar and bounds
+as the broker (and an explicit ceiling against the default, `2Gi` when unset),
+and re-renders them on every update. An empty value means the broker default.
+Other `RUNTIME_*` variables stay fixed by the installer. See
+[deploy/k3s/README.md](../deploy/k3s/README.md#room-memory).
 
 Kubernetes requests verify the configured CA and reread projected credentials
 on every request. Redirects are not followed. Requests have a 10-second timeout,
@@ -54,12 +66,30 @@ private cluster network; use a secured transport boundary for remote access.
 
 | Method and path                    | Request                    | Response                                                         |
 | ---------------------------------- | -------------------------- | ---------------------------------------------------------------- |
-| GET `/v1/health`                   | —                          | `{ok, reason}`; 503 when unavailable                             |
+| GET `/v1/health`                   | —                          | `{ok, reason, defaultCpus?, defaultMemoryMb?, maxMemoryMb?}`; 503 when unavailable |
 | GET `/v1/catalog`                  | —                          | validated catalog                                                |
 | GET `/v1/rooms`                    | —                          | `{rooms: RuntimeRoom[]}`                                         |
-| POST `/v1/rooms/:id`               | `{environment, revision?}` | `RuntimeEndpoint`                                                |
+| POST `/v1/rooms/:id`               | `{environment, revision?, cpus?, memoryMb?}` | `RuntimeEndpoint`                              |
+| PATCH `/v1/rooms/:id`              | `{memoryMb?: number \| null, cpus?: number \| null}` (at least one) | `{outcome: applied\|pending\|absent, memoryMb?, cpus?}` |
 | DELETE `/v1/rooms/:id`             | no body                    | `{ok: true}` after deletion                                      |
 | DELETE `/v1/rooms/:id?retire=true` | no body                    | `{ok: true}` after durable permanent retirement and Pod deletion |
+
+PATCH changes only the memory and/or whole-core CPU of a live room Pod through
+the `pods/resize` subresource (Kubernetes 1.33+; the broker Role grants `patch`
+on it and nothing else): the Pod UID, container and Python state stay. An absent
+field is left alone; `null` means the runtime default. No Pod answers `absent`
+and creates nothing; `pending` means the API accepted the change but the node
+cannot fit it yet (Deferred) — the kubelet applies it later. A node that can
+never fit it returns 409 and leaves the spec unchanged. Memory and CPU are
+excluded from the Pod template hash and both carry `resizePolicy: NotRequired`,
+so an ensure whose Pod differs only in memory or CPU is resized the same way
+instead of being replaced; any other difference still replaces the Pod. The
+room census reports `memoryMb` and `cpus` from the container status, i.e. what
+the kubelet actually applied. `OMP_NUM_THREADS`, `MKL_NUM_THREADS`,
+`OPENBLAS_NUM_THREADS` and `NUMEXPR_NUM_THREADS` come from the Downward API
+(`limits.cpu`, rounded up) and are fixed when the container starts: a live CPU
+resize does not change them, and neither does a Jupyter kernel restart; the
+room's next Pod gets the new value.
 
 Permanent retirement returns HTTP 410 to later ensure requests, including delayed
 POST bodies and requests after a broker restart. Other DELETE query parameters
@@ -67,6 +97,10 @@ are rejected. POST requires JSON, at most 4096 bytes, and rejects unknown keys. 
 `^[A-Za-z0-9_-]{1,64}$`; Kubernetes names/labels use their SHA-256 hash, while the
 original ID is an annotation. Revision is `sha256:` followed by 64 lowercase hex
 digits. Errors use `{error: string}` with 400/401/409/413/415/503 as appropriate.
+An ensure whose Pod the scheduler cannot place adds
+`unschedulable: memory|cpu|gpu|other` and the Pod's `memoryMb`/`cpus` to that
+503 body, so the app can explain it; nothing else from the scheduler message
+leaves the broker — only the resource name after `Insufficient`.
 
 Catalogs require schemaVersion 1, release, defaultEnvironment and environments.
 Each entry contains name, digest-pinned image, gpu, optional packages and optional
@@ -78,13 +112,18 @@ missing pinned revision fails, without substituting the current image.
 `/v1/health` verifies configuration and access to the namespaced Pod/Service API.
 It does **not** prove image pull, scheduling, volume mount, GPU or network success.
 An actual ensure waits for Pod readiness and an authenticated Jupyter status
-response from the runtime. Deployment smoke tests must additionally exercise the
+response from the runtime. A Pod that stays `PodScheduled=False/Unschedulable`
+for 20 seconds (or until the startup timeout, if shorter) ends the ensure early
+with that structured 503 instead of `Room startup timed out`; the never-scheduled
+Pod is deleted, so the next ensure creates one with the room's current numbers.
+The room census reports such a Pod's `reason` as `Unschedulable`. Deployment smoke tests must additionally exercise the
 app-to-Jupyter path and run a cell. A TCP probe proves only process availability.
 
 ## Lifecycle and isolation
 
 Ensure calls for the same room/revision coalesce. Conflicting concurrent revisions
-return 409. DELETE invalidates earlier ensures and waits for serialized cleanup.
+return 409; a concurrent ensure that differs only in `memoryMb` or `cpus`
+queues behind the running one and then resizes that Pod in place. DELETE invalidates earlier ensures and waits for serialized cleanup.
 Deletion uses UID preconditions, never force-deletes, and waits for actual resource
 absence before allowing a new Pod. Persistent room files are not deleted. Runtime
 shutdown leaves room Pods alive; a replacement process adopts their existing UID.

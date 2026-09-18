@@ -55,6 +55,44 @@ test('archived build context excludes untracked inputs and uses committed conten
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('release version defaults to v<package.json version> at the source commit and refuses any other', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-release-version-'))
+  try {
+    const repo = path.join(dir, 'repo'); fs.mkdirSync(path.join(repo, 'kernel/environments'), { recursive: true })
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim()
+    git('init', '-q')
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'colloq', version: '0.3.0' }))
+    fs.writeFileSync(path.join(repo, 'kernel/environments/base.txt'), '# base\n')
+    git('add', '.'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
+    const commit = git('rev-parse', 'HEAD')
+    // Сборка и публикация подменены: проверяется только, каким числом помечены образы и манифест.
+    const code = `import importlib.util,sys,json,pathlib
+s=importlib.util.spec_from_file_location('builder',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+repo,commit,out=sys.argv[2],sys.argv[3],sys.argv[4]
+m.ROOT=pathlib.Path(repo); tags=[]
+m.pinned=lambda base: base+'@sha256:'+'0'*64
+def build(tag,*a,**k):
+ tags.append(tag); return tag.rsplit(':',1)[0]+'@sha256:'+'1'*64
+m.build=build
+m.release.tooling_hashes=lambda root: {f: '0'*64 for f in m.release.TOOLING_FILES}
+sys.argv=['release-build.py','--registry','ghcr.io/example/colloq','--k3s-version','v1.36.4+k3s1','--source-commit',commit,'--environments','base','--output',out]+sys.argv[5:]
+m.main()
+print(json.dumps({'tags':tags,'version':json.load(open(out))['version']}))
+`
+    const out = path.join(dir, 'release.json')
+    const run = (...extra: string[]) => spawnSync('python3', ['-c', code, path.join(root, 'scripts/release-build.py'), repo, commit, out, ...extra], { encoding: 'utf8' })
+    const defaulted = run()
+    assert.equal(defaulted.status, 0, defaulted.stderr)
+    const said = JSON.parse(defaulted.stdout.trim().split('\n').pop()!)
+    assert.equal(said.version, 'v0.3.0')
+    assert.deepEqual(said.tags, ['ghcr.io/example/colloq-app:v0.3.0', 'ghcr.io/example/colloq-runtime:v0.3.0', 'ghcr.io/example/colloq-kernel:v0.3.0-base'])
+    assert.equal(run('--version', 'v0.3.0').status, 0)
+    const mismatch = run('--version', 'v0.2.0')
+    assert.notEqual(mismatch.status, 0)
+    assert.match(mismatch.stderr, /does not match package\.json/)
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('Git-less deployment tooling must match every hash in the selected release', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colloq-tools-'))
   try {

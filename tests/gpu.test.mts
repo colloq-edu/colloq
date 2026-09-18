@@ -120,7 +120,7 @@ function valueOf(args: string[], flag: string): string | null {
   return at >= 0 ? (args[at + 1] ?? null) : null
 }
 
-const room = { sessionId: 'seminar1', env: 'gpu', mount: '/srv/workspace/seminar1', network: '' }
+const room = { sessionId: 'seminar1', env: 'gpu', mount: '/srv/workspace/seminar1', network: 'colloq-rooms', publish: true }
 
 test('GPU-комната получает устройство, метку и разделяемую память', () => {
   const args = runArgs({ ...room, gpu: 'MIG-GPU-a1b2/1/0' })
@@ -150,7 +150,7 @@ test('обычная комната запускается ровно как р�
 })
 
 test('в сетевом режиме порт не публикуется вовсе', () => {
-  const args = runArgs({ ...room, network: 'colloq', gpu: null })
+  const args = runArgs({ ...room, network: 'colloq', publish: false, gpu: null })
   assert.equal(valueOf(args, '--network'), 'colloq')
   assert.ok(!args.includes('-p'), 'Jupyter комнаты открылся на хосте')
 })

@@ -330,6 +330,14 @@ export function refusedStep(status: number, message: string): 'step' | 'publicat
 
 export const MAX_COURSE_NAME = 120
 export const MAX_COURSE_BLURB = 140
+/**
+ * Неделя строки плана — «31 авг — 6 сен», а не абзац.
+ *
+ * Сорок стояли числом внутри маршрута, и поле в панели о них не знало:
+ * набранное длиннее молча обрезалось сервером, и сохранённая строка
+ * расходилась с тем, что человек видел в поле. Одна константа на обе стороны.
+ */
+export const MAX_PLANNED_WHEN = 40
 export const MAX_STEP_LABEL = 80
 /** Сколько шагов можно опубликовать за раз. Сорок — это уже семестр. */
 export const MAX_STEPS = 40

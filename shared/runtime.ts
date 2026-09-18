@@ -26,6 +26,47 @@ export interface RuntimeEnsureRequest {
   revision?: string
   /** Whole CPU cores for this room; absent uses the runtime's default. */
   cpus?: number
+  /**
+   * Память комнаты в мебибайтах; нет поля — умолчание брокера.
+   *
+   * До 18.09 поле памяти в форме занятия на k3s не делало ничего: брокер
+   * принимал только окружение, ревизию и ядра, и каждый Pod комнаты получал
+   * свои 2Gi, сколько бы преподаватель ни написал. Число едет тем же
+   * намерением, что и ядра, — шаблона Pod через этот вход не передать.
+   */
+  memoryMb?: number
+}
+/**
+ * Поднять или опустить память и ядра ЖИВОЙ комнате — без нового Pod.
+ *
+ * Поля нет — этот ресурс не трогается; `null` — вернуть умолчание брокера.
+ * Нужно хотя бы одно поле. Отдельно от ensure намеренно: ensure поднимает Pod,
+ * если его нет, а смена лимита в панели не должна запускать Python комнате, в
+ * которой сейчас никого.
+ *
+ * Ядра здесь с 18.09. До того число ядер доезжало только через ensure и
+ * входило в хэш шаблона Pod: смена его в форме ничего не меняла живой комнате,
+ * а следующий подъём (открыли терминал, переподключилось ядро) молча сносил
+ * Pod вместе со всеми переменными семинара.
+ */
+export interface RuntimeResizeRequest {
+  memoryMb?: number | null
+  /** Целые ядра, как в ensure. */
+  cpus?: number | null
+}
+/**
+ * Что стало с ресурсами живой комнаты.
+ *
+ * `applied` — kubelet уже переставил cgroup; `pending` — API принял, но узлу
+ * пока нечем (Deferred) или kubelet ещё не успел; `absent` — Pod нет, число
+ * возьмёт следующий подъём. Числа — только тех ресурсов, что просили менять.
+ */
+export interface RuntimeResizeResult {
+  outcome: 'applied' | 'pending' | 'absent'
+  /** Сколько у Pod есть сейчас по словам kubelet; нет Pod — поля нет. */
+  memoryMb?: number
+  /** Ядра, которые у Pod есть сейчас; дробные, если так задал оператор. */
+  cpus?: number
 }
 export interface RuntimeEndpoint {
   url: string
@@ -38,6 +79,10 @@ export interface RuntimeHealth {
   ok: boolean
   reason: string | null
   defaultCpus?: number
+  /** Сколько памяти получает комната, которой ничего не задали. */
+  defaultMemoryMb?: number
+  /** Больше этого брокер комнате не выдаст: потолок оператора или узла. */
+  maxMemoryMb?: number
 }
 export interface RuntimeRoom {
   sessionId: string
@@ -47,7 +92,60 @@ export interface RuntimeRoom {
   revision: string
   reason?: string
   cpus?: number
+  /** Память, которая у Pod есть на самом деле, — из status, а не из spec. */
+  memoryMb?: number
 }
+/**
+ * Почему Pod комнаты не встал на узел: ресурс, которого узлу не хватило, или
+ * `other` — планировщик отказал по иной причине (taint, affinity, привязка тома).
+ *
+ * Слово, а не текст Kubernetes. Сообщение планировщика — это «0/1 nodes are
+ * available: 1 Insufficient memory. preemption: …», и до 18.09 наружу не
+ * выходило даже оно: комната читала «Room startup timed out: pending» через две
+ * минуты ожидания. Из сообщения брокер берёт только имя ресурса — остальное
+ * там про чужие узлы и чужие Pod, и показывать это людям незачем.
+ */
+export type RuntimeUnschedulable = 'memory' | 'cpu' | 'gpu' | 'other'
+const RUNTIME_UNSCHEDULABLE: readonly RuntimeUnschedulable[] = ['memory', 'cpu', 'gpu', 'other']
+/**
+ * Отказ подъёма, который можно объяснить человеку: поля тела ошибки брокера
+ * рядом с `error`. Числа — то, что Pod просил, а не то, что было в форме: их
+ * брокер знает точно (умолчание, потолок), и ровно их узел не смог дать.
+ */
+export interface RuntimeStartFailure {
+  unschedulable: RuntimeUnschedulable
+  memoryMb?: number
+  /** Ядра Pod; дробные, если так задал оператор (RUNTIME_KERNEL_CPU=1500m). */
+  cpus?: number
+}
+/** Разбор недоверенного тела ошибки: не то слово или не те числа — не отказ, а ничего. */
+export function parseRuntimeStartFailure(value: unknown): RuntimeStartFailure | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const row = value as Record<string, unknown>
+  const kind = RUNTIME_UNSCHEDULABLE.find((known) => known === row.unschedulable)
+  if (!kind) return undefined
+  const cpus = row.cpus
+  return {
+    unschedulable: kind,
+    ...(runtimeMemoryMb(row.memoryMb) ? { memoryMb: row.memoryMb } : {}),
+    ...(typeof cpus === 'number' && Number.isFinite(cpus) && cpus > 0 && cpus <= 64 ? { cpus } : {}),
+  }
+}
+
+/**
+ * Границы числа памяти в протоколе — те же, что брокер принимает у оператора
+ * в RUNTIME_KERNEL_MEMORY. Потолок конкретного узла строже и живёт в брокере.
+ */
+export const RUNTIME_MEMORY_MIN_MB = 64
+export const RUNTIME_MEMORY_MAX_MB = 262144
+const runtimeMemoryMb = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isInteger(value) &&
+  value >= RUNTIME_MEMORY_MIN_MB &&
+  value <= RUNTIME_MEMORY_MAX_MB
+/** Ядра комнаты в протоколе — целые, от одного до 64, как и в форме. */
+const runtimeCpus = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 64
 
 export const RUNTIME_SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/
 export const RUNTIME_REVISION = /^sha256:[a-f0-9]{64}$/
@@ -73,7 +171,7 @@ export function imageRevision(image: string): string {
 }
 export function parseRuntimeEnsureRequest(value: unknown): RuntimeEnsureRequest {
   const row = object(value)
-  onlyKeys(row, ['environment', 'revision', 'cpus'])
+  onlyKeys(row, ['environment', 'revision', 'cpus', 'memoryMb'])
   if (typeof row.environment !== 'string' || !ENVIRONMENT_NAME.test(row.environment))
     throw new Error('Invalid environment name')
   if (
@@ -81,12 +179,34 @@ export function parseRuntimeEnsureRequest(value: unknown): RuntimeEnsureRequest 
     (typeof row.revision !== 'string' || !RUNTIME_REVISION.test(row.revision))
   )
     throw new Error('Invalid environment revision')
-  if ('cpus' in row && (typeof row.cpus !== 'number' || !Number.isInteger(row.cpus) || row.cpus < 1 || row.cpus > 64))
+  if ('cpus' in row && !runtimeCpus(row.cpus))
     throw new Error('Invalid room CPU limit: expected 1 to 64 whole cores')
+  if ('memoryMb' in row && !runtimeMemoryMb(row.memoryMb))
+    throw new Error(
+      `Invalid room memory limit: expected ${RUNTIME_MEMORY_MIN_MB} to ${RUNTIME_MEMORY_MAX_MB} whole MiB`,
+    )
   return {
     environment: row.environment,
     ...(typeof row.revision === 'string' ? { revision: row.revision } : {}),
     ...(typeof row.cpus === 'number' ? { cpus: row.cpus } : {}),
+    ...(typeof row.memoryMb === 'number' ? { memoryMb: row.memoryMb } : {}),
+  }
+}
+export function parseRuntimeResizeRequest(value: unknown): RuntimeResizeRequest {
+  const row = object(value)
+  onlyKeys(row, ['memoryMb', 'cpus'])
+  // Хотя бы одно поле: пустое тело — не «умолчание», а ошибка вызывающего.
+  if (!('memoryMb' in row) && !('cpus' in row))
+    throw new Error('Resize requires memoryMb or cpus')
+  if ('memoryMb' in row && row.memoryMb !== null && !runtimeMemoryMb(row.memoryMb))
+    throw new Error(
+      `Invalid room memory limit: expected null or ${RUNTIME_MEMORY_MIN_MB} to ${RUNTIME_MEMORY_MAX_MB} whole MiB`,
+    )
+  if ('cpus' in row && row.cpus !== null && !runtimeCpus(row.cpus))
+    throw new Error('Invalid room CPU limit: expected null or 1 to 64 whole cores')
+  return {
+    ...('memoryMb' in row ? { memoryMb: row.memoryMb as number | null } : {}),
+    ...('cpus' in row ? { cpus: row.cpus as number | null } : {}),
   }
 }
 export function parseRuntimeCatalog(value: unknown): RuntimeCatalog {

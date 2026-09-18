@@ -21,11 +21,14 @@
     pultShortcutAllowed,
     type PultView,
     pultPresence,
+    rulesSentence,
+    runStats,
     selectable,
     unreadIds,
     variantNumbers,
     type PultFilter,
     type PultFocus,
+    type PultRule,
   } from '@/lib/council-pult'
   import { announcePult, savePultPlace } from '@/lib/council-pult-window'
   import { getSessionState } from '@/lib/session.svelte'
@@ -37,6 +40,7 @@
   import PultOnScreen from './PultOnScreen.svelte'
   import PultOracleTab from './PultOracleTab.svelte'
   import PultQueueStrip from './PultQueueStrip.svelte'
+  import PultRules from './PultRules.svelte'
   import PultStatusLine from './PultStatusLine.svelte'
   import PultWork from './PultWork.svelte'
 
@@ -134,6 +138,24 @@
   let seen = $state.raw<ReadonlySet<string>>(new Set())
   let tab = $state<PultView>('work')
   let helpOpen = $state(false)
+  /**
+   * Лист регламента: на каком правиле открыт и куда вернуть фокус.
+   *
+   * Правило хранится вместе с признаком «открыт», потому что лист всегда
+   * открывают РАДИ правила — из предложения в шапке, из строки запуска, с
+   * клавиши; строка этого правила подсвечена, и на ней же стоит фокус.
+   * Возвращающий элемент запоминается самим открывающим: кнопка в шапке и
+   * ссылка «предел 30 с» в работе — разные места, и «вернуть фокус туда, где
+   * он был» значит именно туда, а не на первую попавшуюся.
+   */
+  let rulesOpen = $state(false)
+  let rulesRule = $state<PultRule>('studentRun')
+  /** Предложение в шапке и числа под пределом — по требованию: лист чаще закрыт. */
+  const sentence = $derived(rulesSentence(settings))
+  const stats = $derived(runStats(attempts))
+  let rulesBack: HTMLElement | null = null
+  /** Высота шапки: от её низа падает лист. Меняется от ширины окна и длины имени. */
+  let headHeight = $state(0)
   let focus = $state<PultFocus>('list')
   type ReplyDraft = { text: string; toGroup: boolean; fromOracle: boolean; groupKey: string }
   // A draft belongs to its recipient, even when filters or live arrivals move the cursor.
@@ -357,14 +379,39 @@
     for (const attempt of kernel.pending) letThrough(attempt)
   }
 
-  function setPolicy(studentRun: CouncilSettings['studentRun']): void {
-    if (disabled || studentRun === settings.studentRun) return
-    session.council.lock(cellId, 'council', { studentRun })
+  /**
+   * Правило регламента — тем же кадром, что и замок ячейки.
+   *
+   * Кадра «настройка консилиума» нет и не будет: ручки едут `cell:lock` вместе
+   * с положением замка (council.svelte.ts · lock), и сервер кладёт их в ту же
+   * версию истории. Повторное нажатие по уже выбранному не отправляется: это
+   * не событие, а лишняя версия на каждый щелчок.
+   */
+  function setRule(patch: Partial<CouncilSettings>): void {
+    if (disabled) return
+    const changed = Object.entries(patch).some(
+      ([key, value]) => settings[key as keyof CouncilSettings] !== value,
+    )
+    if (!changed) return
+    session.council.lock(cellId, 'council', patch)
   }
 
-  function setNames(namesOnProjector: boolean): void {
-    if (disabled || namesOnProjector === settings.namesOnProjector) return
-    session.council.lock(cellId, 'council', { namesOnProjector })
+  function openRules(rule: PultRule, from: HTMLElement | null = null): void {
+    rulesBack = from
+    rulesRule = rule
+    rulesOpen = true
+  }
+
+  function closeRules(): void {
+    rulesOpen = false
+    const back = rulesBack
+    rulesBack = null
+    // Кнопка могла исчезнуть вместе со своим куском предложения: запретили
+    // студентам запускать — «повтор …» ушёл из строки. Тогда фокус принимает
+    // имя регламента: оно есть при любой ширине и в любом состоянии.
+    void tick().then(() =>
+      (back?.isConnected ? back : document.querySelector<HTMLElement>('[data-pult-rules-open]'))?.focus(),
+    )
   }
 
   function sendReply(): void {
@@ -449,6 +496,19 @@
       }
       return
     }
+    /*
+     * Открытый лист забирает клавиатуру целиком.
+     *
+     * Иначе j и k ходили бы по списку за затемнением, а Esc закрывал бы заодно
+     * поиск — и лист. Внутри листа своя жизнь: Tab по кругу, пробел на кнопке.
+     */
+    if (rulesOpen) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeRules()
+      }
+      return
+    }
     const at = where(event.target)
     focus = at
     const action = pultKeyAction(
@@ -510,6 +570,11 @@
       case 'help':
         helpOpen = !helpOpen
         return
+      case 'rules':
+        // С клавиши — всегда с первого правила: у «п» нет значения, по
+        // которому нажали, и «где-то там, где были в прошлый раз» — не ответ.
+        openRules('studentRun')
+        return
       case 'escape':
         if (helpOpen) helpOpen = false
         else if (searching) {
@@ -549,7 +614,16 @@
   </div>
 {:else}
   <div class="relative flex h-full min-h-0 w-full flex-col bg-canvas text-ink" data-council-pult={cellId}>
-    <PultHeader {cellIndex} title={session.session.name} {onexit} />
+    <div class="pult-head" bind:clientHeight={headHeight}>
+      <PultHeader
+        {cellIndex}
+        title={session.session.name}
+        rules={sentence}
+        openRule={rulesOpen ? rulesRule : null}
+        onrules={openRules}
+        {onexit}
+      />
+    </div>
     {#if offline}<p class="border-b border-warning px-4 py-2 text-ui text-warning" role="status">{tr(OFFLINE_REASON)}</p>{/if}
     {#if oracleError}<p class="border-b border-danger px-4 py-2 text-ui text-danger" role="alert">{oracleError}</p>{/if}
 
@@ -623,6 +697,8 @@
             shownAt={shown?.shownAt ?? null}
             {disabled}
             hasNeighbour={neighbour !== null}
+            limit={settings.runLimitSec}
+            onrules={openRules}
             {reply}
             {replyToGroup}
             replyDraft={groupDraft !== ''}
@@ -647,9 +723,9 @@
       </div>
     </section>
     {#if tab === 'queue'}
-      <PultQueueStrip {kernel} {settings} {names} {now} open={true} {disabled}
-        ontoggle={() => {}} onpolicy={setPolicy} oninterrupt={interrupt} onapprove={letThrough}
-        ondecline={declineRun} onapproveall={approveAll} onremove={remove} />
+      <PultQueueStrip {kernel} {settings} {attempts} {names} {now} open={true} {disabled}
+        ontoggle={() => {}} oninterrupt={interrupt} onapprove={letThrough}
+        ondecline={declineRun} onapproveall={approveAll} onopen={open} onremove={remove} />
     {:else if tab === 'oracle'}
       <PultOracleTab oracle={board.oracle} {attempts} submitted={counts.submitted} {names}
         askWhy={offline ? tr(OFFLINE_REASON) : null} onask={() => void askOracle(false)} onstop={() => void askOracle(true)} />
@@ -658,14 +734,24 @@
     <PultStatusLine
       onScreen={shown === null ? null : (shown.name ?? tr('room.ui.1255', { p0: shown.variant }))}
       inFrame={shown?.shownAt ? spell(Math.max(now - shown.shownAt, 0)) : ''}
-      {names}
       index={place}
       total={ids.length}
-      disabled={disabled}
-      onnames={setNames}
       onclear={clearShown}
       onhelp={() => (helpOpen = true)}
     />
+
+    {#if rulesOpen}
+      <PultRules
+        {settings}
+        rule={rulesRule}
+        pending={kernel.pending.length}
+        {stats}
+        {disabled}
+        top={headHeight}
+        onchange={setRule}
+        onclose={closeRules}
+      />
+    {/if}
 
     {#if helpOpen}
       <PultKeys onclose={() => (helpOpen = false)} />
@@ -674,6 +760,7 @@
 {/if}
 
 <style>
+  .pult-head { flex-shrink:0; }
   .pult-nav { display:flex; align-items:center; flex-wrap:wrap; gap:8px; flex-shrink:0; padding:12px var(--pult-pad); background:rgb(var(--surface)); border-bottom:1px solid rgb(var(--line)); }
   .pult-view-tab { display:inline-flex; align-items:center; justify-content:center; gap:10px; min-height:48px; padding:10px 18px; border:1px solid rgb(var(--line)); background:rgb(var(--canvas)); font-size:16px; font-weight:600; line-height:24px; cursor:pointer; }
   .pult-view-tab[aria-pressed="true"] { background:rgb(var(--primary)); border-color:rgb(var(--primary)); color:rgb(var(--primary-ink)); font-weight:700; }

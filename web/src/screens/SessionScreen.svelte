@@ -46,6 +46,7 @@
   import { onLanguageChange } from '@/lib/i18n.svelte'
   import type { PaletteItem } from '@/components/ui/palette'
   import { watchBooks, watchCellNumbers, watchNotebookMeta } from '@/lib/yreactive.svelte'
+  import { kernelProblemAdvice } from '@shared/kernel-problem'
   import {
     cellLock,
     cellSource,
@@ -541,6 +542,24 @@
   }
 
   const kernel = $derived(KERNEL[meta.current.kernelStatus])
+
+  /*
+   * Почему Python комнаты не поднялся — совет ведущему, и только ему.
+   *
+   * Pod комнаты на k3s не встаёт, когда узлу нечего дать: память каждой
+   * комнаты зарезервирована целиком. Студент видит в ячейке и журнале ядра
+   * короткое «на сервере нет места, преподаватель видит причину», а исправить
+   * это может только тот, кто меняет память комнат, — ему здесь сказано, что
+   * именно уменьшить. Висит, пока ядро мертво по этой причине; закрытый
+   * крестиком возвращается только с новым советом (другое число, другой ресурс).
+   */
+  const kernelAdvice = $derived(
+    isHost && meta.current.kernelStatus === 'dead' && meta.current.kernelProblem
+      ? kernelProblemAdvice(meta.current.kernelProblem)
+      : null,
+  )
+  let adviceDismissed = $state<string | null>(null)
+  const adviceUp = $derived(kernelAdvice !== null && kernelAdvice !== adviceDismissed)
 
   /* ------------------------------------------------------------- layout */
 
@@ -3168,6 +3187,25 @@
         <p class="min-w-0 flex-1 text-ui leading-snug text-muted">
           {#if session.finished} {tr('room.ui.938')} {:else} {tr('room.ui.939')} {/if}
         </p>
+      </div>
+    {/if}
+
+    <!-- Ядро не поднялось, и ведущий может это исправить: тоном ошибки, до крестика. -->
+    {#if adviceUp}
+      <div
+        role="status"
+        class={cn(TOAST, 'items-start py-2 pl-3 pr-1.5')}
+        transition:fly={{ y: prefersReducedMotion() ? 0 : 8, duration: 140, easing: quintOut }}
+      >
+        <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-danger"></span>
+        <p class="min-w-0 flex-1 break-words py-0.5 text-ui leading-snug text-muted">{kernelAdvice}</p>
+        <button
+          class="btn-ghost h-6 w-6 shrink-0 px-0"
+          onclick={() => (adviceDismissed = kernelAdvice)}
+          aria-label={tr('room.ui.941')}
+        >
+          <Icon name="x" size={14} />
+        </button>
       </div>
     {/if}
 

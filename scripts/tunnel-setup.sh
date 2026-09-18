@@ -7,9 +7,9 @@
 # пары это нормально, но ссылку из прошлой недели уже не переоткрыть, и в
 # расписание её не поставишь. Постоянный адрес заводится один раз и живёт.
 #
-#     ./scripts/tunnel-setup.sh seminar.sleep3r.ru
+#     ./scripts/tunnel-setup.sh seminar.example.org
 #
-# После этого `make host HOST=seminar.sleep3r.ru` всегда поднимает этот адрес.
+# После этого `make host HOST=seminar.example.org` всегда поднимает этот адрес.
 #
 set -euo pipefail
 
@@ -20,7 +20,7 @@ say() { printf '%s\n' "$*"; }
 die() { printf '%s%s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
 HOSTNAME_ARG="${1:-}"
-[ -n "$HOSTNAME_ARG" ] || die "Укажите адрес: ./scripts/tunnel-setup.sh seminar.sleep3r.ru"
+[ -n "$HOSTNAME_ARG" ] || die "Укажите адрес: ./scripts/tunnel-setup.sh seminar.example.org"
 
 command -v cloudflared >/dev/null 2>&1 || die \
   "cloudflared не установлен. brew install cloudflared — и запустите снова."

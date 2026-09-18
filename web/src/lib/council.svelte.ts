@@ -235,7 +235,7 @@ export function shownOutputLines(run: CouncilMine['run'], limit = 4): string[] {
   const lines: string[] = []
   for (const output of run?.outputs ?? []) {
     if (output.kind === 'stream') lines.push(...output.text.replace(/\n+$/, '').split('\n'))
-    else if (output.kind === 'error') lines.push(`${output.ename}: ${output.evalue}`)
+    else if (output.kind === 'error') lines.push([output.ename, output.evalue].filter(Boolean).join(': '))
     else if (output.data['text/plain']) {
       lines.push(...output.data['text/plain'].replace(/\n+$/, '').split('\n'))
     }

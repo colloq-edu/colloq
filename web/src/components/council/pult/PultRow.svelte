@@ -16,7 +16,9 @@
   const draft = $derived(attempt.submittedAt === null)
   const runText = $derived(draft && !attempt.run && attempt.runRequest?.status !== 'pending' && presence !== 'unknown'
     ? tr(presence === 'online' ? 'room.pult.online' : 'room.pult.offline') : execution.label)
-  const runIcon = $derived(execution.tone === 'danger' ? '×' : execution.tone === 'accent' ? '▶' : execution.tone === 'warning' ? '◷' : '')
+  // Знак от самого состояния, если оно его прислало: у остановленного пределом
+  // тон общий с упавшим (красный), а часы говорят, что ошибки в коде не было.
+  const runIcon = $derived(execution.icon ?? (execution.tone === 'danger' ? '×' : execution.tone === 'accent' ? '▶' : execution.tone === 'warning' ? '◷' : ''))
 </script>
 <div class="pult-row" class:selected class:focused class:in-group={inGroup} class:asking={meaning==='asking'} class:on-screen={meaning==='screen'} data-pult-row={attempt.participantId} data-selected={selected?'yes':'no'} data-presence={presence}>
   <button type="button" class="pult-row-select" data-pult-select tabindex={selected?0:-1} aria-pressed={selected} title={title} onclick={onopen}>

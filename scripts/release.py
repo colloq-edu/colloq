@@ -43,6 +43,11 @@ def validate(value):
     require(isinstance(value.get('version'), str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', value['version']), 'version must be an explicit release identifier')
     require(re.fullmatch(r'[a-f0-9]{40}', str(value.get('sourceCommit', ''))), 'sourceCommit must be a full commit SHA')
     require(re.fullmatch(r'v\d+\.\d+\.\d+\+k3s\d+', str(value.get('k3sVersion', ''))), 'k3sVersion must pin an exact vX.Y.Z+k3sN release')
+    # The room memory field is applied to a live Pod through pods/resize, which
+    # Kubernetes enables by default from 1.33. An older cluster would accept the
+    # form's number and never apply it while the room runs.
+    require(tuple(int(x) for x in value['k3sVersion'][1:].split('+')[0].split('.')[:2]) >= (1, 33),
+            'k3sVersion must be v1.33 or newer: room memory is resized in place')
     for key in ('appImage', 'runtimeImage'):
         require(image_reference(value.get(key)), f'{key} must be a registry image pinned by sha256 digest')
     require(type(value.get('dataSchemaVersion')) is int and value['dataSchemaVersion'] >= 1, 'dataSchemaVersion must be a positive integer')
@@ -144,6 +149,53 @@ def verify_tooling(value, root):
         raise ValueError('Git-less deployment requires verified archived tooling.sourceFiles hashes') from error
 
 
+def read_env(file):
+    """Lines KEY=VALUE of an operator env file, read as data and never sourced."""
+    settings = {}
+    with open(file, encoding='utf-8') as stream:
+        for line in stream:
+            key, separator, val = line.strip().partition('=')
+            if separator:
+                settings[key] = val.strip().strip('\"\'')
+    return settings
+
+
+# Настройки брокера из того же файла оператора, что и настройки приложения.
+# Раньше их не было в Deployment вовсе: единственный способ задать память
+# комнаты по умолчанию и потолок был править Deployment руками, а следующий
+# update рендерил его заново и молча стирал правку. Теперь они живут в
+# config.env рядом с PUBLIC_URL и переживают update так же, как он.
+RUNTIME_SETTINGS = ('RUNTIME_KERNEL_MEMORY', 'RUNTIME_KERNEL_MEMORY_MAX')
+# Умолчание брокера (runtime/src/config.ts): с ним сравнивается заданный потолок.
+RUNTIME_DEFAULT_MEMORY = '2Gi'
+
+
+def memory_mi(value):
+    # Та же грамматика и те же границы, что у брокера: целые Mi/Gi от 64Mi до
+    # 256Gi. Проверка здесь — чтобы плохое число остановило установку до того,
+    # как остановлены комнаты, а не уронило брокер в CrashLoop после.
+    match = re.fullmatch(r'([1-9][0-9]*)(Mi|Gi)', value)
+    mi = int(match.group(1)) * (1024 if match.group(2) == 'Gi' else 1) if match else 0
+    return mi if 64 <= mi <= 262144 else None
+
+
+def runtime_settings(file):
+    settings = {}
+    if file:
+        # Пустое значение — «как по умолчанию»: пустая переменная окружения
+        # брокеру не умолчание, а неразборчивое число.
+        settings = {key: val for key, val in read_env(file).items() if key in RUNTIME_SETTINGS and val}
+    for key, val in settings.items():
+        require(memory_mi(val), f'{key} must be a Kubernetes quantity in whole Mi or Gi from 64Mi to 256Gi, e.g. 4Gi')
+    if 'RUNTIME_KERNEL_MEMORY_MAX' in settings:
+        # Без потолка брокер сам берёт память узла минус гигабайт и умолчание под
+        # него подгоняет; заданный потолок ниже умолчания он отвергает при старте.
+        default = settings.get('RUNTIME_KERNEL_MEMORY', RUNTIME_DEFAULT_MEMORY)
+        require(memory_mi(default) <= memory_mi(settings['RUNTIME_KERNEL_MEMORY_MAX']),
+                f'RUNTIME_KERNEL_MEMORY ({default}) exceeds RUNTIME_KERNEL_MEMORY_MAX')
+    return settings
+
+
 def resource(kind, name, spec=None, **fields):
     api = {'Deployment': 'apps/v1', 'DaemonSet': 'apps/v1', 'RuntimeClass': 'node.k8s.io/v1', 'Role': 'rbac.authorization.k8s.io/v1',
            'RoleBinding': 'rbac.authorization.k8s.io/v1', 'NetworkPolicy': 'networking.k8s.io/v1'}.get(kind, 'v1')
@@ -155,7 +207,7 @@ def resource(kind, name, spec=None, **fields):
     return {**value, **fields}
 
 
-def render(value, node_name, state_dir):
+def render(value, node_name, state_dir, runtime_env=None):
     require(re.fullmatch(r'[a-z0-9][a-z0-9.-]*', node_name), 'node name is invalid')
     require(os.path.isabs(state_dir) and '..' not in state_dir.split('/'), 'state-dir must be an absolute normalized path')
     items = [resource('Namespace', NAMESPACE)]
@@ -180,8 +232,12 @@ def render(value, node_name, state_dir):
     items.append(resource('ConfigMap', 'colloq-catalog', data={'catalog.json': json.dumps(value['catalog'])}))
     for name in ['colloq-app', 'colloq-runtime', 'colloq-kernel']:
         items.append(resource('ServiceAccount', name, automountServiceAccountToken=False))
+    # pods/resize is the only write beyond create/delete: it changes a live room's
+    # container resources in place (Kubernetes 1.33+), so a memory raise mid-class
+    # keeps the room's Python. It cannot alter image, command, mounts or security.
     items.append(resource('Role', 'colloq-runtime', rules=[{'apiGroups': [''],
-        'resources': ['pods', 'services'], 'verbs': ['get', 'list', 'create', 'delete']}]))
+        'resources': ['pods', 'services'], 'verbs': ['get', 'list', 'create', 'delete']},
+        {'apiGroups': [''], 'resources': ['pods/resize'], 'verbs': ['patch']}]))
     items.append(resource('RoleBinding', 'colloq-runtime', roleRef={'apiGroup': 'rbac.authorization.k8s.io',
         'kind': 'Role', 'name': 'colloq-runtime'}, subjects=[{'kind': 'ServiceAccount',
         'name': 'colloq-runtime', 'namespace': NAMESPACE}]))
@@ -223,6 +279,7 @@ def render(value, node_name, state_dir):
                 'RUNTIME_KUBE_URL': 'https://kubernetes.default.svc',
                 'RUNTIME_KUBE_TOKEN_FILE': '/var/run/secrets/kubernetes.io/serviceaccount/token',
                 'RUNTIME_KUBE_CA_FILE': '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'})
+            env.update(runtime_env or {})
             volumes.append({'name': 'room-secret', 'secret': {'secretName': 'colloq-room-secret', 'defaultMode': 0o440}})
             mounts.append({'name': 'room-secret', 'mountPath': '/run/room-secret', 'readOnly': True})
         container = {'name': role, 'image': value['appImage' if app else 'runtimeImage'],
@@ -303,7 +360,7 @@ def main():
         verify_tooling(value, args.tooling_root)
         print('verified deployment tooling for ' + value['sourceCommit'])
     elif args.command == 'render':
-        print(json.dumps(render(value, args.node_name, args.state_dir), indent=2))
+        print(json.dumps(render(value, args.node_name, args.state_dir, runtime_settings(args.env_file)), indent=2))
     elif args.command == 'merge':
         print(json.dumps(value, indent=2))
     elif args.command == 'images':
@@ -368,13 +425,7 @@ def main():
         allowed = {'UI_LANGUAGE', 'PUBLIC_URL', 'ADMIN_EMAIL', 'INSTITUTION', 'OPEN_SEMINAR_CREATION',
             'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'AI_PROVIDER', 'AI_REASONING',
             'SESSION_SECRET', 'TZ', 'MAX_UPLOAD_MB', 'MAX_SESSION_MB'}
-        settings = {}
-        if args.env_file:
-            with open(args.env_file, encoding='utf-8') as stream:
-                for line in stream:
-                    key, separator, val = line.strip().partition('=')
-                    if separator and key in allowed:
-                        settings[key] = val.strip().strip('\"\'')
+        settings = {k: v for k, v in read_env(args.env_file).items() if k in allowed} if args.env_file else {}
         print(json.dumps(resource('Secret', 'colloq-app-config', type='Opaque', stringData=settings)))
     else:
         print('valid release ' + value['version'])

@@ -322,17 +322,16 @@ say "${BOLD}done${OFF}"
 # `make env-build NAME=…`. У поставленного через pip colloq make нет вовсе
 # (в колесо едут приложение и scripts/, Makefile не едет — scripts/pack.mts ·
 # SCRIPTS), и обе строки врали ровно тому, кто только что развернул копию на
-# новой машине и ищет, чем её запустить. `colloq start` есть у обоих: и у
-# пакета, и рядом с исходниками. Образ окружения он собирает сам, первым
-# запуском — тот же ответ, что даёт отказ `colloq env build` у дистрибутива
-# (cli/src/commands/env.ts).
-#
-# Про службу говорим только там, где make есть: выделенную машину ставят из
-# репозитория, и цель service-install живёт там же.
-say "${DIM}Start a class: colloq start${OFF}"
+# новой машине и ищет, чем её запустить. У пакета это `colloq start`: образ
+# окружения он собирает сам, первым запуском (cli/src/commands/env.ts · env
+# use). Рядом с исходниками — make: там же живёт и цель service-install
+# выделенной машины.
 if [ "$STATE" = "$APP" ]; then
+  say "${DIM}Start a class: make run (make dev for development)${OFF}"
   say "${DIM}On a dedicated machine the class is held by a service: make service-install.${OFF}"
+else
+  say "${DIM}Start a class: colloq start${OFF}"
 fi
 say "${DIM}Kernel environments are not restored here —${OFF}"
-say "${DIM}the image is built on your first colloq start.${OFF}"
+say "${DIM}the image is built on the next start of a class.${OFF}"
 say "${DIM}The Oracle key, RELAY_* and PUBLIC_URL live in .env, not in the backup.${OFF}"

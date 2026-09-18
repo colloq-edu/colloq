@@ -122,7 +122,11 @@
           <li class="flex items-baseline gap-6 border-b border-line py-5">
             <span class="w-[34px] shrink-0 font-mono text-ui text-faint">{ordinal}</span>
             <span class="min-w-0 flex-1 text-title text-muted">{item.name}</span>
-            <span class="shrink-0 whitespace-nowrap text-ui text-muted">{item.when}</span>
+            <!-- Неделю теперь набирают руками в панели, до сорока знаков, и в
+                 одну строку на телефоне она забирала всю ширину: тема сжималась
+                 до слова в строке, а неделя ложилась поверх неё. Короткая
+                 («14–20 сен») по-прежнему не переносится — ей хватает 45%. -->
+            <span class="max-w-[45%] shrink-0 break-words text-right text-ui text-muted">{item.when}</span>
             <span class="w-4 shrink-0"></span>
           </li>
         {:else}
